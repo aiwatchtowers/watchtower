@@ -204,6 +204,29 @@ func TestTheOwnersReturnDuringThePauseSkipsOurs(t *testing.T) {
 	if !sess.promptHoldsText() {
 		t.Fatal("`\\` then Return left no draft")
 	}
+
+	// Through Deliver, the owner typing inside the settle sleep: their
+	// "text⏎" sent the line, so no second Return of ours; a Return into a
+	// dialog leaves ours to come; `\` then Return leaves the line typed.
+	var hook pauseHook
+	st := newStub(t, hook.opts(), "claude", rawEchoAgent)
+	cl := st.hub()
+	hook.during = func() { st.desktop.typeChunks([]byte("and this\r")) }
+	wantOutcome(t, st.deliver(cl, st.req("x"), okCheck), OutcomeSubmitted, "")
+	wantBytes(t, st.written(), cat(paste("x"), []byte("and this\r")), "no second Return of ours")
+
+	st.hint(true)
+	hook.during = func() {
+		st.desktop.typeChunks([]byte{0x0D})
+		st.hint(false)
+	}
+	wantOutcome(t, st.deliver(cl, st.req("z"), okCheck), OutcomeSubmitted, "")
+	wantBytes(t, st.written(), cat(paste("z"), []byte{0x0D}, []byte{0x0D}),
+		"the dialog's Return, then ours")
+
+	hook.during = func() { st.desktop.typeChunks([]byte("a\\\r")) }
+	wantOutcome(t, st.deliver(cl, st.req("w"), okCheck), OutcomeTyped, TypedTextDuringPause)
+	wantBytes(t, st.written(), cat(paste("w"), []byte("a\\\r")), "no Return of ours")
 }
 
 // Twin of the dialog half of testOverTheOwnersDraftSubmitPromptOnlyPastes and
@@ -262,6 +285,18 @@ func TestCodexDraftTrackingUsesCodexNewline(t *testing.T) {
 	if sess.promptHoldsText() {
 		t.Fatal("a plain Return did not submit Codex's draft")
 	}
+
+	// Through Deliver, under the codex profile: over the Ctrl+J draft the
+	// line is only pasted; after the owner's plain Return the next line
+	// gets its CR.
+	st := newStub(t, Options{}, "codex", rawEchoAgent)
+	cl := st.hub()
+	st.desktop.typeChunks([]byte("half\n"))
+	wantOutcome(t, st.deliver(cl, st.req("x"), noCheck(t)), OutcomeTyped, TypedBesideText)
+	st.desktop.typeChunks([]byte{0x0D})
+	wantOutcome(t, st.deliver(cl, st.req("y"), nil), OutcomeSubmitted, "")
+	wantBytes(t, st.written(), cat([]byte("half\n"), paste("x"), []byte{0x0D}, paste("y"), []byte{0x0D}),
+		"one CR of the owner's, then the next line's own")
 }
 
 // Review Focus 1: the owner types in one client's pane (attached, Input

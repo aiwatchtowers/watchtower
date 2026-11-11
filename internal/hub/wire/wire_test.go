@@ -51,11 +51,11 @@ func TestTime_NegativeAndFraction(t *testing.T) {
 func TestControl_TransportSwitchedCarriesTargetAndKeybox(t *testing.T) {
 	target, by := wire.TransportRelay, "dev"
 	ep := uint32(2)
-	b, err := wire.Marshal(wire.Control{ID: "c1", Kind: wire.ControlSwitched, Target: &target, By: &by, Epoch: &ep,
-		Keybox: &wire.Keybox{Grant: wire.DeviceGrant{DeviceID: "dev"}, Keys: &wire.KeyboxKeys{Epoch: 2}}})
+	kb := "c2VhbGVk"
+	b, err := wire.Marshal(wire.Control{ID: "c1", Kind: wire.ControlSwitched, Target: &target, By: &by, Epoch: &ep, Keybox: &kb})
 	require.NoError(t, err)
 	require.Contains(t, string(b), `"target":"relay"`)
-	require.Contains(t, string(b), `"keybox":{`)
+	require.Contains(t, string(b), `"keybox":"c2VhbGVk"`)
 	secs := uint32(300)
 	b, err = wire.Marshal(wire.Control{ID: "c2", Kind: wire.ControlSwitchRejected, RetryAfterS: &secs})
 	require.NoError(t, err)

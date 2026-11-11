@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import Testing
 @testable import WatchtowerCore
 
@@ -9,15 +10,21 @@ struct ManagedPolicyCenterTests {
     func refreshPublishesOnlyOnChange() {
         var raw: [String: Any] = ["MobileSync": "off"]
         let center = ManagedPolicyCenter { raw }
-        var changes = 0
-        center.onChange = { _ in changes += 1 }
+        // The policy is observable: count what an observer of it is told.
+        final class Count { var value = 0 }
+        let changes = Count()
+        func observe() {
+            withObservationTracking { _ = center.policy } onChange: { changes.value += 1 }
+        }
+        observe()
         center.refresh()
+        observe()
         center.refresh()
-        #expect(changes == 1)
+        #expect(changes.value == 1)
         #expect(center.policy.mobileSyncMode == "off")
         raw["MobileSync"] = "workbench_only"
         center.refresh()
-        #expect(changes == 2)
+        #expect(changes.value == 2)
     }
 
     @Test("a profile removed while running unlocks every key")

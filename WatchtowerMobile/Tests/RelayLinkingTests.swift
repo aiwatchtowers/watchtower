@@ -460,6 +460,128 @@ final class RelayLinkingTests: XCTestCase {
         XCTAssertEqual((kept[otherHub] as? [String: Any])?["state"] as? [String: [String: String]], ["fromANewerBuild": [:]])
     }
 
+    /// Rewrites `hubID`'s stored promoted entry as a newer build's (a `State` case this build cannot read).
+    private func makePromotedUnreadable(_ hubID: String) throws {
+        let key = "link.promoted"
+        var json = try XCTUnwrap(try JSONSerialization.jsonObject(with: XCTUnwrap(defaults.data(forKey: key))) as? [String: Any])
+        var entry = try XCTUnwrap(json[hubID] as? [String: Any])
+        entry["state"] = ["fromANewerBuild": [String: Any]()]
+        json[hubID] = entry
+        defaults.set(try JSONSerialization.data(withJSONObject: json), forKey: key)
+    }
+
+    /// #1499: an entry this build cannot read is logged once per hub per `LinkStore`, however often it is read; a
+    /// clean read of the hub re-arms the line.
+    func testAnUnreadablePromotedEntryIsLoggedOncePerHub() throws {
+        try seedPromoted(relayCode(otherHub, macName: "Work Mac", by: otherMac), state: .needsOwner(.slotsFull))
+        let readable = try seedPromoted(relayCode(), state: .confirmed)
+        try makePromotedUnreadable(otherHub)
+        let reader = LinkStore(defaults: defaults)
+        var logged: [String] = []
+        reader.onUnreadableLogged = { logged.append($0) }
+
+        for _ in 0..<4 {
+            _ = reader.promoted
+            _ = reader.unreadablePromotedHubIDs
+        }
+        reader.update(readable)
+        XCTAssertEqual(logged, [otherHub], "one line for the hub, none for the readable one")
+
+        reader.removeUnreadablePromoted(otherHub)
+        _ = reader.promoted
+        XCTAssertEqual(logged, [otherHub])
+        XCTAssertEqual(reader.promoted.keys.sorted(), [hub])
+    }
+
+    /// #1499: a clean read of the hub re-arms the line: unreadable (logged), readable, unreadable again (logged again).
+    func testACleanReadReArmsTheUnreadableLog() throws {
+        let seeded = try seedPromoted(relayCode(otherHub, macName: "Work Mac", by: otherMac), state: .needsOwner(.slotsFull))
+        let stored = try XCTUnwrap(defaults.data(forKey: "link.promoted"))
+        let reader = LinkStore(defaults: defaults)
+        var logged: [String] = []
+        reader.onUnreadableLogged = { logged.append($0) }
+
+        try makePromotedUnreadable(otherHub)
+        _ = reader.promoted
+        _ = reader.promoted
+        XCTAssertEqual(logged, [otherHub])
+
+        defaults.set(stored, forKey: "link.promoted")
+        XCTAssertEqual(reader.promoted[otherHub], seeded)
+        XCTAssertEqual(logged, [otherHub], "a readable entry logs nothing")
+
+        try makePromotedUnreadable(otherHub)
+        _ = reader.promoted
+        XCTAssertEqual(logged, [otherHub, otherHub], "logged again after a clean read")
+    }
+
+    /// #1499: Unlink of a Mac removes the unreadable promoted entry of its hub; it does not come back on a later read
+    /// or write, and another hub's entries stay.
+    func testUnlinkRemovesTheUnreadablePromotedEntryOfThatHub() async throws {
+        seedRelayRow(otherHub, macName: "Work Mac", relayMac: otherMac)
+        try seedPromoted(relayCode(otherHub, macName: "Work Mac", by: otherMac), state: .needsOwner(.slotsFull))
+        let kept = try seedPromoted(relayCode(), state: .confirmed)
+        try makePromotedUnreadable(otherHub)
+        relay.slots = [otherMac.deviceID]
+        let model = makeModel()
+        model.refreshLinks()
+        XCTAssertEqual(store.unreadablePromotedHubIDs, [otherHub])
+
+        await model.unlink(otherHub)
+
+        XCTAssertTrue(store.unreadablePromotedHubIDs.isEmpty)
+        XCTAssertEqual(store.promoted, [hub: kept], "the other hub's link is untouched")
+        var moved = kept
+        moved.state = .promoteSent
+        store.update(moved)
+        store.removePromoted(hub)
+        XCTAssertTrue(LinkStore(defaults: defaults).unreadablePromotedHubIDs.isEmpty, "not back after a write or a restart")
+        XCTAssertNil(defaults.object(forKey: "link.promoted"))
+    }
+
+    /// #1499: Forget of a registry row that cannot be read removes the unreadable entry of its hub too.
+    func testForgetRemovesTheUnreadablePromotedEntryOfThatHub() async throws {
+        try seedPromoted(relayCode(otherHub, macName: "Work Mac", by: otherMac), state: .needsOwner(.slotsFull))
+        try makePromotedUnreadable(otherHub)
+        host.unreadable = [otherHub]
+        let model = makeModel()
+
+        await model.forget(otherHub)
+
+        XCTAssertTrue(store.unreadablePromotedHubIDs.isEmpty)
+    }
+
+    /// #1499: the entry goes before the unlink's other steps. A kill right after it leaves the row, and the next
+    /// Unlink finds nothing to resurrect; a kill before it leaves everything as it was.
+    func testARestartAfterTheEntryWentLeavesTheRowUnlinkableAndNothingBack() async throws {
+        seedRelayRow(otherHub, macName: "Work Mac", relayMac: otherMac)
+        try seedPromoted(relayCode(otherHub, macName: "Work Mac", by: otherMac), state: .needsOwner(.slotsFull))
+        try makePromotedUnreadable(otherHub)
+        store.removeUnreadablePromoted(otherHub)
+
+        let relaunched = makeModel()
+        relaunched.refreshLinks()
+        XCTAssertEqual(relaunched.links.map(\.hubID), [otherHub], "the row is still there")
+        await relaunched.unlink(otherHub)
+
+        XCTAssertTrue(relaunched.links.isEmpty)
+        XCTAssertTrue(store.unreadablePromotedHubIDs.isEmpty)
+    }
+
+    /// #1499: only an unreadable entry of an owner action goes: a readable one is not touched by the removal helper,
+    /// and a hub the owner never unlinks keeps its unreadable entry.
+    func testTheRemovalHelperNeverTouchesReadableEntriesOrOtherHubs() throws {
+        let readable = try seedPromoted(relayCode(), state: .confirmed)
+        try seedPromoted(relayCode(otherHub, macName: "Work Mac", by: otherMac), state: .needsOwner(.slotsFull))
+        try makePromotedUnreadable(otherHub)
+
+        store.removeUnreadablePromoted(hub)
+        store.removeUnreadablePromoted(thirdHub)
+
+        XCTAssertEqual(store.promoted, [hub: readable])
+        XCTAssertEqual(store.unreadablePromotedHubIDs, [otherHub])
+    }
+
     func testRemovingStateDisablesTheOtherRows() {
         let state = RelaySlotsState(macs: ["m1", "m2"], removing: "m1")
         let screen = RelaySlotsModel(state: state, links: [], promoted: [])
@@ -551,7 +673,7 @@ final class RelayLinkingTests: XCTestCase {
         XCTAssertEqual(pending.deadline, Date(timeIntervalSince1970: TimeInterval(payload.exp) + LinkingViewModel.expiryGrace))
         XCTAssertEqual(pending.relaySlot, "slot-1")
         flow.cancel()
-        await flow.value
+        try await flow.value(within: 60, "flow")
     }
 
     // MARK: - After the owner confirmed: the live flow
@@ -1044,6 +1166,151 @@ final class RelayLinkingTests: XCTestCase {
         XCTAssertTrue(host.slotRemovals.isEmpty)
     }
 
+    // MARK: - The pause before remove_slot (G1)
+
+    /// The relay refuses the hub's mailbox read once the slot is gone, so the farewell gets 3 s to be read.
+    func testAnUnlinkOverTheRelayPausesBeforeFreeingTheSlot() async throws {
+        seedRelayRow(otherHub, macName: "Work Mac", relayMac: otherMac)
+        relay.slots = [otherMac.deviceID]
+        let model = makeModel()
+
+        await model.unlink(otherHub)
+
+        XCTAssertEqual(clock.slept, 3)
+        XCTAssertEqual(relay.ops, ["removeSlot \(otherMac.deviceID)"])
+        XCTAssertTrue(host.slotRemovals.isEmpty, "freed: nothing kept")
+    }
+
+    /// The app dying in the pause: the removal is already kept, and the next launch frees the slot.
+    func testAKilledPauseLeavesTheSlotRemovalForTheNextLaunch() async throws {
+        seedRelayRow(otherHub, macName: "Work Mac", relayMac: otherMac)
+        relay.slots = [otherMac.deviceID]
+        clock.parked = true
+        let model = makeModel()
+        let unlink = Task { await model.unlink(otherHub) }
+        await waitUntil { self.host.slotRemovals == [self.otherMac.deviceID] }
+        XCTAssertEqual(relay.count("removeSlot"), 0, "still in the pause")
+
+        clock.parked = false
+        let relaunched = makeModel()
+        await relaunched.retrySlotRemovals()
+
+        XCTAssertEqual(relay.count("removeSlot"), 1)
+        XCTAssertTrue(relay.slots.isEmpty)
+        XCTAssertTrue(host.slotRemovals.isEmpty)
+        unlink.cancel()
+        await unlink.value
+    }
+
+    func testACancelledPauseStillFreesTheSlot() async throws {
+        seedRelayRow(otherHub, macName: "Work Mac", relayMac: otherMac)
+        relay.slots = [otherMac.deviceID]
+        clock.parked = true
+        let model = makeModel()
+        let unlink = Task { await model.unlink(otherHub) }
+        await waitUntil { !self.host.slotRemovals.isEmpty }
+
+        unlink.cancel()
+        await unlink.value
+
+        XCTAssertTrue(relay.slots.isEmpty)
+        XCTAssertTrue(host.slotRemovals.isEmpty)
+    }
+
+    /// A farewell that did not go out has nothing to wait for: the slot goes at once.
+    func testAFarewellThatDidNotGoOutFreesTheSlotWithNoPause() async throws {
+        seedRelayRow(otherHub, macName: "Work Mac", relayMac: otherMac)
+        relay.slots = [otherMac.deviceID]
+        host.keepsFarewell = true
+        let model = makeModel()
+
+        await model.unlink(otherHub)
+
+        XCTAssertEqual(clock.slept, 0)
+        XCTAssertTrue(relay.slots.isEmpty)
+    }
+
+    func testACancelledLinkPausesOnlyWhenItsFarewellWentOut() async throws {
+        try seedPromoted(relayCode(), state: .promoted)
+        host.resendSucceeds = false
+        relay.slots = [mac.deviceID]
+        await makeModel().cancelPromoted(hub)
+        XCTAssertEqual(clock.slept, 0, "not sent: no pause")
+        XCTAssertTrue(relay.slots.isEmpty)
+
+        try seedPromoted(relayCode(), state: .promoted)
+        host.resendSucceeds = true
+        relay.slots = [mac.deviceID]
+        await makeModel().cancelPromoted(hub)
+        XCTAssertEqual(clock.slept, 3)
+        XCTAssertTrue(relay.slots.isEmpty)
+    }
+
+    /// A link made to the same Mac during the pause keeps its slot.
+    func testALinkMadeDuringThePauseKeepsItsSlot() async throws {
+        seedRelayRow(otherHub, macName: "Work Mac", relayMac: otherMac)
+        relay.slots = [otherMac.deviceID]
+        clock.parked = true
+        let model = makeModel()
+        let unlink = Task { await model.unlink(otherHub) }
+        await waitUntil { !self.host.slotRemovals.isEmpty }
+
+        seedRelayRow(otherHub, macName: "Work Mac", relayMac: otherMac)
+        unlink.cancel()
+        await unlink.value
+
+        XCTAssertEqual(relay.count("removeSlot"), 0)
+        XCTAssertTrue(host.slotRemovals.isEmpty)
+    }
+
+    /// A kept relay farewell sent at launch gets its 3 s too, once, before the kept removals.
+    func testAFarewellResentAtLaunchPausesOnceBeforeTheKeptRemovals() async throws {
+        try seedPromoted(relayCode(), state: .promoted)
+        host.resendSucceeds = false
+        relay.slots = [mac.deviceID]
+        relay.fail("removeSlot", with: HostedRelayPairing.Refusal.unreachable)
+        await makeModel().cancelPromoted(hub)
+        XCTAssertEqual(host.slotRemovals, [mac.deviceID])
+        XCTAssertEqual(clock.slept, 0)
+
+        host.resendSucceeds = true
+        let relaunched = makeModel()
+        await relaunched.retryFarewells()
+        await relaunched.retrySlotRemovals()
+
+        XCTAssertEqual(clock.slept, 3)
+        XCTAssertTrue(relay.slots.isEmpty)
+        await relaunched.retrySlotRemovals()
+        XCTAssertEqual(clock.slept, 3, "once")
+    }
+
+    /// Resent with no removal waiting: a removal kept later owes nothing to that farewell.
+    func testAResentFarewellWithNoRemovalLeavesNoPauseOwed() async throws {
+        host.keptFarewells = [PendingFarewell(
+            hubID: otherHub, route: .hostedRelay(macDeviceID: otherMac.deviceID), userRecordName: "",
+            record: CloudRecord(recordName: "wire", zone: .relay, kind: "wt", modifiedAt: Date(), payload: Data([1])), since: clock.now()
+        )]
+        host.resendSucceeds = true
+        let model = makeModel()
+        await model.retryFarewells()
+        XCTAssertTrue(host.keptFarewells.isEmpty)
+        await model.retrySlotRemovals()
+
+        host.slotRemovals = [mac.deviceID]
+        relay.slots = [mac.deviceID]
+        await model.retrySlotRemovals()
+
+        XCTAssertEqual(clock.slept, 0)
+        XCTAssertTrue(relay.slots.isEmpty)
+    }
+
+    private func waitUntil(_ condition: @escaping @MainActor () -> Bool) async {
+        for _ in 0..<2000 where !condition() {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertTrue(condition(), "timed out")
+    }
+
     func testCancelBothFailKeepsTheSlotRemovalForLaunch() async throws {
         try seedPromoted(relayCode(), state: .promoted)
         host.resendSucceeds = false
@@ -1119,7 +1386,7 @@ final class RelayLinkingTests: XCTestCase {
         try await poll { model.phase == .waiting(macName: "build-box") }
         host.slotRemovals = [mac.deviceID]
         flow.cancel()
-        await flow.value
+        try await flow.value(within: 60, "flow")
         await makeModel().retrySlotRemovals()
         XCTAssertTrue(host.slotRemovals.isEmpty)
         XCTAssertEqual(relay.count("removeSlot"), 0, "the pending link names the Mac")
@@ -1195,8 +1462,8 @@ final class RelayLinkingTests: XCTestCase {
         try await poll({ !model.resumer.isLive(hub) }, "the cancel never fenced the attempt")
         XCTAssertFalse(relay.ops.contains { $0.hasPrefix("removeSlot") }, "the cancel waits for the running attempt")
         relay.release("promote")
-        let freed = await cancel.value
-        await resume.value
+        let freed = try await cancel.value(within: 60, "cancel")
+        try await resume.value(within: 60, "resume")
 
         XCTAssertTrue(freed)
         XCTAssertEqual(relay.ops.filter { $0.hasPrefix("promote") || $0.hasPrefix("removeSlot") },
@@ -1222,8 +1489,8 @@ final class RelayLinkingTests: XCTestCase {
         let removal = Task { await model.removeFromSlots(self.mac.deviceID) }
         try await poll({ !model.resumer.isLive(hub) }, "the removal never fenced the attempt")
         host.parksPrepare = false
-        await removal.value
-        await resume.value
+        try await removal.value(within: 60, "removal")
+        try await resume.value(within: 60, "resume")
 
         XCTAssertTrue(host.linkedCalls.isEmpty, "linked never ran after the cancel")
         XCTAssertNil(host.row(hub))

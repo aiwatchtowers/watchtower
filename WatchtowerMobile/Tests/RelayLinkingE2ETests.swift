@@ -71,6 +71,8 @@ final class RelayLinkingE2ETests: XCTestCase {
         let env = try AppEnvironment.live(
             registry: registry, paths: paths, factory: factory, identity: identity, defaults: defaults, relay: shared
         ) { _ in }
+        // As the scene does: a session on the relay dials only once active, and the test host's own state says nothing.
+        env.setActive(true)
         let linkClock = GateLinkClock()
         addTeardownBlock { linkClock.release() }
         let root = AppRoot(
@@ -155,7 +157,7 @@ final class RelayLinkingE2ETests: XCTestCase {
         )
         try await macSave(bed.mac, zone: pairZone, try TestPhone.grantRecord(grant, keys: TestPhone.keyboxKeys(), modifiedAt: Date()))
         bed.linkClock.release()
-        await flow.value
+        try await flow.value(within: 60, "flow")
 
         XCTAssertEqual(root.linking.phase, .linked(macName: "build-box"))
         XCTAssertEqual(root.linking.links.first?.link.route, .hostedRelay(macDeviceID: bed.mac.deviceID))

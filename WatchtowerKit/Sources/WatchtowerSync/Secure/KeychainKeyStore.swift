@@ -9,7 +9,11 @@ public final class KeychainPhoneKeyStore: PhoneKeyStore, @unchecked Sendable {
     private let privateGroup: String?
     private let alertGroup: String?
     private let now: @Sendable () -> Date
-    private let lock = NSLock()
+    /// Recursive: `updateHubLink`'s closure may read the identity (`merging` needs it) on the same thread.
+    private let lock = NSRecursiveLock()
+    /// true while an `updateHubLink` closure runs (read and written under `lock`): a write then throws
+    /// `.reentrantWrite`, so the outer write can never silently undo it (an unlink undone).
+    private var updatingHubLink = false
 
     /// `now` dates the epoch retention of `saveHubLink`.
     public init(
@@ -26,6 +30,11 @@ public final class KeychainPhoneKeyStore: PhoneKeyStore, @unchecked Sendable {
 
     private func put(_ data: Data, _ account: String, _ access: KeyAccess, useAlertGroup: Bool = false) throws {
         try backend.write(data, account: account, access: access, group: useAlertGroup ? alertGroup : privateGroup, dataProtection: true)
+    }
+
+    private func putIfChanged(_ data: Data, _ account: String, _ access: KeyAccess, useAlertGroup: Bool = false) throws {
+        guard try backend.read(account: account, group: useAlertGroup ? alertGroup : privateGroup) != data else { return }
+        try put(data, account, access, useAlertGroup: useAlertGroup)
     }
 
     public func identity() throws -> DeviceIdentityKeys {
@@ -99,23 +108,53 @@ public final class KeychainPhoneKeyStore: PhoneKeyStore, @unchecked Sendable {
     }
 
     public func saveHubLink(_ keys: HubLinkKeys) throws {
-        let sizes = [keys.hubSigningKey, keys.hubAgreementKey] + (keys.metaKey.map { [$0] } ?? [])
-            + keys.epochs.flatMap { [$0.dataKey, $0.alertKey] }
+        try lock.withLock {
+            guard !updatingHubLink else { throw KeyStoreError.reentrantWrite }
+            _ = try writeHubLink(keys)
+        }
+    }
+
+    public func updateHubLink(_ hubID: String, _ change: (HubLinkKeys) throws -> HubLinkKeys) throws -> HubLinkKeys? {
+        try lock.withLock {
+            guard !updatingHubLink else { throw KeyStoreError.reentrantWrite }
+            guard let current = try hubLink(hubID) else { return nil }
+            updatingHubLink = true
+            defer { updatingHubLink = false }
+            let changed = try change(current)
+            guard changed.hubID == hubID else { throw KeyStoreError.corrupt("a hub link update changed its hub id") }
+            return try writeHubLink(changed)
+        }
+    }
+
+    /// Checks every key, keeps `retained(now:)` and writes each of the three copies that differs from what the
+    /// Keychain holds, so a retry after a failure between writes repairs the copies left behind (an unchanged
+    /// link writes nothing). Returns what the secret item holds. Callers hold `lock`.
+    private func writeHubLink(_ keys: HubLinkKeys) throws -> HubLinkKeys {
+        let ephemerals = [keys.currentKX, keys.offeredKX].compactMap { $0 }
+        var sizes: [Data] = [keys.hubSigningKey, keys.hubAgreementKey] + (keys.metaKey.map { [$0] } ?? [])
+        for epoch in keys.epochs {
+            sizes += [epoch.dataKey, epoch.alertKey]
+            if let pair = epoch.relayKeys { sizes += [pair.p2h, pair.h2p, pair.hubPub, pair.devicePub] }
+            if let cleared = epoch.relayKeysCleared { sizes += [cleared.hubPub, cleared.devicePub].compactMap { $0 } }
+        }
+        for ephemeral in ephemerals { sizes += [ephemeral.publicKey, ephemeral.privateKey] }
         guard sizes.allSatisfy({ $0.count == 32 }) else { throw KeyStoreError.corrupt("a hub link key is not 32 bytes") }
-        // The NSE's alert material carries the same epochs, so it opens an alert sealed in any kept one.
+        for ephemeral in ephemerals { _ = try ephemeral.agreementKey() }
+        // The NSE's alert material carries the same epochs, so it opens an alert sealed in any kept one. Built field
+        // by field: no data key, no relay keys, no ephemeral key ever reaches the afterFirstUnlock copy.
         let trimmed = keys.retained(now: now())
         let alert = AlertMaterial(
             epochs: trimmed.epochs.map { EpochKeys(epoch: $0.epoch, dataKey: Data(), alertKey: $0.alertKey) },
             hubSigningKey: keys.hubSigningKey)
-        try lock.withLock {
-            try put(try JSONEncoder().encode(trimmed), "hub.\(keys.hubID)", .whenUnlocked)
-            try put(keys.hubSigningKey, "hubpub.\(keys.hubID)", .afterFirstUnlock)
-            try put(try JSONEncoder().encode(alert), "alert.\(keys.hubID)", .afterFirstUnlock, useAlertGroup: true)
-        }
+        try putIfChanged(try JSONEncoder().encode(trimmed), "hub.\(keys.hubID)", .whenUnlocked)
+        try putIfChanged(keys.hubSigningKey, "hubpub.\(keys.hubID)", .afterFirstUnlock)
+        try putIfChanged(try JSONEncoder().encode(alert), "alert.\(keys.hubID)", .afterFirstUnlock, useAlertGroup: true)
+        return trimmed
     }
 
     public func removeHubLink(_ hubID: String) throws {
         try lock.withLock {
+            guard !updatingHubLink else { throw KeyStoreError.reentrantWrite }
             try backend.delete(account: "hub.\(hubID)", group: privateGroup)
             try backend.delete(account: "hubpub.\(hubID)", group: privateGroup)
             try backend.delete(account: "alert.\(hubID)", group: alertGroup)
@@ -184,6 +223,10 @@ public final class KeychainHubKeyStore: HubKeyStore, @unchecked Sendable {
             }
             return (fresh, true)
         }
+    }
+
+    public func existingHubIdentity(hubID: String) throws -> HubIdentityKeys? {
+        try lock.withLock { try load(hubID) }
     }
 
     /// nil when no item exists; all three must parse, otherwise `.corrupt`.

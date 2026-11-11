@@ -16,6 +16,7 @@ type FakeClock struct {
 	mu      sync.Mutex
 	now     time.Time
 	waiters []fakeWaiter
+	added   chan struct{} // closed and replaced by each pending After
 }
 
 type fakeWaiter struct {
@@ -45,7 +46,31 @@ func (c *FakeClock) After(d time.Duration) <-chan time.Time {
 		return ch
 	}
 	c.waiters = append(c.waiters, fakeWaiter{at: at, ch: ch})
+	if c.added != nil {
+		close(c.added)
+	}
+	c.added = make(chan struct{})
 	return ch
+}
+
+// AwaitWaiter blocks until an After channel due at the time at is pending: the code
+// under test armed that timer, so an Advance to at fires it.
+func (c *FakeClock) AwaitWaiter(at time.Time) {
+	for {
+		c.mu.Lock()
+		for _, w := range c.waiters {
+			if w.at.Equal(at) {
+				c.mu.Unlock()
+				return
+			}
+		}
+		if c.added == nil {
+			c.added = make(chan struct{})
+		}
+		added := c.added
+		c.mu.Unlock()
+		<-added
+	}
 }
 
 // Advance moves the clock forward by d (a negative d moves it back).

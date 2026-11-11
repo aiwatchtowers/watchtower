@@ -74,7 +74,7 @@ Five chat-only destinations inside the workbench's own folder (`projects.folder_
 
 ## Chat proposals
 
-- Migration `00184_tuning_chat.sql` rebuilds `coach_proposals` (wider `destination` CHECK; new `origin` `weekly|chat`, `skill`, `conversation_id` → `chat_conversations` ON DELETE SET NULL, `written_branch`, `measure_from`) and adds `skill_pack_overlays(id, skill, text, proposal_id, created_at)`.
+- Migration `00187_tuning_chat.sql` rebuilds `coach_proposals` (wider `destination` CHECK; new `origin` `weekly|chat`, `skill`, `conversation_id` → `chat_conversations` ON DELETE SET NULL, `written_branch`, `measure_from`) and adds `skill_pack_overlays(id, skill, text, proposal_id, created_at)`.
 - `coach.ValidateChatProposal(ctx, d, e ChatEdit, env Env)` is `Validate` minus the two weekly gates (no 3-source floor, no 3-open cap, D10). Everything else stays: allowed destination, `find` once in whole lines, budget, `SafeAllowRule` and its Codex twin, fingerprint uniqueness ("already proposed as #N (<status>)"), one open proposal per destination text. Refusals wrap `coach.ErrRefused` and go back to the chat as tool errors.
 - A `prompt_addition` is refused for a prompt `prompts.TakesAdditions` rejects: a `MovedToBuiltin` prompt ("<prompt> belongs to a built-in automation") or a custom-track prompt `TrackRun`/`TrackShortlist`/`TrackCompose` ("<prompt> does not take additions"). One function, `coach.PromptAdditionRefusal`, is called by `ValidateChatProposal` and by `ValidateAfter`, so Accept checks it too.
 - `db.InsertChatCoachProposal(p, convID, now)` is one short write transaction: a fingerprint conflict returns `0, nil`; another open proposal on the same text is `db.ErrCoachTextBusy`; a deleted conversation is `db.ErrConversationRemoved`.
@@ -120,7 +120,7 @@ Codex prices and repricing, the cache-write mapping and `codex_usage_mismatch`, 
 
 ## Tests
 
-- Migration: `TestMigration00184_CoachRebuildKeepsRows`, `_DestinationCheck`, `_FailureLeavesNothing`, `_DanglingLinkAborts`, `_DownUp`.
+- Migration: `TestMigration00187_CoachRebuildKeepsRows`, `_DestinationCheck`, `_FailureLeavesNothing`, `_DanglingLinkAborts`, `_DownUp`.
 - Coach: `TestValidateChatProposal_*` (`_Refusals`, `_NoSourceFloorNoCap`, `_SkillsAreSeparateTexts`, `_AfterAcceptRevalidates`, `_DeletedConversationProposalCanBeDeclined`, `_RepoArgs`), `TestInsertChatCoachProposal_*`, `TestTakesAdditions`, `TestCodexSkillPath_OneCopyOnly`, `TestCodexSkill_TwoCopiesRefused`, `TestCodexRules_*`, `TestWriteCut_*`, `TestAgentFor`, `TestJudge_ClaudeDestinationIgnoresCodexRows`, `TestAccept_PackOverlayRendersEveryCopy`, `TestRollback_PackOverlayRemovesItsLinesAndRerenders`, `TestInstall_OverlayIsNotDrift`, `TestInstall_UpgradeCarriesOverlay`.
 - Repository files: `TestAccept_Repo*` (`_FileWritesAndRunsNoGitWrite`, `_FileDirtyRefused`, `_FileIgnoredIsClean`, `_FolderNotGitRefused`, `_ClaudeMDCreatedAndRollbackDeletes`, `_SymlinkedFolderRefused`, `_AgentWritesBetweenCheckAndRename_IsStale`, `_KilledBeforeStatusCAS_NextAccept`, `_RecordsBranch`), `TestRollback_RepoAfterOwnerCommit`, `TestRollback_RepoChangedSince`, `TestPathStatus_*`, `TestFileAtHead*`, `TestRepoMeasureFrom_*` (daemon).
 - Guards: `TestCOACH01_HomeDestinationsStayUnderHome`, `TestCOACH01_RepoFilesOnlyInTheWorkbenchFolder`, `TestCOACH01_NoGitWrites` (+ `_ScansTheTuningPackage`), `TestCodeQuestionGuard_NoGoToolReadsChatHistory`, `TestListChatTurnsForIdeas_SkipsTuningChats`, `TestChatArtifactSource_SkipsTuningChats`.

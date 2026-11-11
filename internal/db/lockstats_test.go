@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"watchtower/internal/db/lockmetrics"
@@ -100,52 +101,56 @@ func TestSampleLockStats_WALEventWithoutPoolWait(t *testing.T) {
 	}
 }
 
+// In a synctest bubble the pool's wait runs on the bubble's clock: the
+// holder keeps the connection exactly 30 ms, with no real time spent.
 func TestSampleLockStats_PoolWaitDelta(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "watchtower.db")
-	database, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = database.Close() })
-	events := configureLockSink(t, path)
-	ctx := context.Background()
+	synctest.Test(t, func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "watchtower.db")
+		database, err := Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = database.Close() })
+		events := configureLockSink(t, path)
+		ctx := context.Background()
 
-	prev := database.Stats()
-	// The pool holds one connection: a query issued while it is checked
-	// out waits for the pool until the holder returns it.
-	conn, err := database.Conn(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	released := make(chan struct{})
-	go func() {
-		defer close(released)
-		time.Sleep(30 * time.Millisecond)
-		_ = conn.Close()
-	}()
-	if _, err := database.ExecContext(ctx, `SELECT 1`); err != nil {
-		t.Fatal(err)
-	}
-	<-released
+		prev := database.Stats()
+		// The pool holds one connection: a query issued while it is checked
+		// out waits for the pool until the holder returns it.
+		conn, err := database.Conn(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		released := make(chan struct{})
+		go func() {
+			defer close(released)
+			time.Sleep(30 * time.Millisecond)
+			_ = conn.Close()
+		}()
+		if _, err := database.ExecContext(ctx, `SELECT 1`); err != nil {
+			t.Fatal(err)
+		}
+		<-released
 
-	next := database.SampleLockStats(ctx, prev)
-	pw := eventsOfKind(events(), lockmetrics.KindPoolWait)
-	if len(pw) != 1 {
-		t.Fatalf("want one pool_wait event, got %+v", pw)
-	}
-	wantMS := (next.WaitDuration - prev.WaitDuration).Milliseconds()
-	if pw[0].WaitMS != wantMS || pw[0].WaitMS < 1 {
-		t.Errorf("wait_ms = %d, want the delta %d (≥ 1)", pw[0].WaitMS, wantMS)
-	}
+		next := database.SampleLockStats(ctx, prev)
+		pw := eventsOfKind(events(), lockmetrics.KindPoolWait)
+		if len(pw) != 1 {
+			t.Fatalf("want one pool_wait event, got %+v", pw)
+		}
+		wantMS := (next.WaitDuration - prev.WaitDuration).Milliseconds()
+		if pw[0].WaitMS != wantMS || pw[0].WaitMS != 30 {
+			t.Errorf("wait_ms = %d, want the delta %d, the 30 ms the holder kept the connection", pw[0].WaitMS, wantMS)
+		}
 
-	// Nothing waited since: the next sample writes no new pool_wait line.
-	database.SampleLockStats(ctx, next)
-	if pw := eventsOfKind(events(), lockmetrics.KindPoolWait); len(pw) != 1 {
-		t.Errorf("a zero delta must not add a pool_wait event, got %+v", pw)
-	}
-	if wal := eventsOfKind(events(), lockmetrics.KindWAL); len(wal) != 2 {
-		t.Errorf("want a wal event per sample, got %+v", wal)
-	}
+		// Nothing waited since: the next sample writes no new pool_wait line.
+		database.SampleLockStats(ctx, next)
+		if pw := eventsOfKind(events(), lockmetrics.KindPoolWait); len(pw) != 1 {
+			t.Errorf("a zero delta must not add a pool_wait event, got %+v", pw)
+		}
+		if wal := eventsOfKind(events(), lockmetrics.KindWAL); len(wal) != 2 {
+			t.Errorf("want a wal event per sample, got %+v", wal)
+		}
+	})
 }
 
 func TestSampleLockStats_SubMillisecondPoolWaitIsDropped(t *testing.T) {

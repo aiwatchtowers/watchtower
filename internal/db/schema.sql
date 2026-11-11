@@ -2729,6 +2729,7 @@ CREATE TABLE IF NOT EXISTS terminal_sessions (
     agent_tool_run    INTEGER NOT NULL DEFAULT 0, -- 1 = the stored state came from a main-thread PostToolUse (written by Go; the Desktop's Start fresh resets it to 0)
     agent_background  INTEGER CHECK (agent_background IS NULL OR agent_background >= 0), -- in-flight background subagents at the last Stop of this run, lowered by later reports; NULL = none / unknown; meaningful only under agent_state = 'waiting' (written by the hooks; the Desktop's Start fresh clears it)
     agent_background_at TEXT, -- last report about those subagents (the Stop, a subagent's tool result, a SubagentStop), agent_state_at format; NULL when agent_background is NULL
+    agent_background_shells INTEGER CHECK (agent_background_shells IS NULL OR agent_background_shells >= 0), -- in-flight background shells (run_in_background Bash) at the last Stop of this run, lowered by a SubagentStop's snapshot; set and NULLed with agent_background; NULL = none / unknown
     chat_question     TEXT, -- a question the Stop ask guard let through and recorded for escalation: strict, a short one while the owner was present; soft, any chat question or full request, present or away: JSON {"question": "...", "options": [{"label","recommended"}], "level": "full"} (level only for a full request soft recorded with the message's own text); NULL = none (written by Go; the Desktop's Start fresh clears it)
     chat_question_at  TEXT, -- the guard's Stop time, agent_state_at format; NULL with chat_question
     agent_turns       TEXT, -- JSON {"since": run mark, "turns": {"<agent_id>": {"start": stamp, "stop": stamp}}}: the last SubagentStart/SubagentStop per subagent or teammate of this run, open while start > stop; a stamp before since writes nothing; NULL = none (written by Go; the Desktop's Start fresh clears it)
@@ -2743,6 +2744,7 @@ CREATE TABLE IF NOT EXISTS terminal_sessions (
     target_bound_at   TEXT, -- when Go last re-bound target_id after launch (set_session_target / `workbench session-target`), RFC 3339 UTC; NULL when unbound or never re-bound (the binding stamp is then created_at) (00168)
     agent_watch_issue TEXT CHECK(agent_watch_issue IN ('missing','permission','compressed','unreadable')), -- why the session host's codex rollout watch cannot read a working codex row's rollout (00175, Go only); NULL = watched; the next hook event clears it
     agent_watch_issue_at TEXT, -- when that issue was written, agent_state_at format; NULL with agent_watch_issue
+    start_notice      TEXT, -- Go's start (`workbench session start`): the owner's line about the place (worktree warnings, "Started in the folder: …", the setup command that did not run, a failed move); NULL/'' = nothing to say (00179)
     CHECK (title != '' AND folder_path != ''),
     CHECK (kind <> 'claude' OR claude_session_id IS NOT NULL)
 );
@@ -3687,7 +3689,8 @@ CREATE TABLE IF NOT EXISTS pending_transcripts (
     meta_json      TEXT,
     started_at     REAL NOT NULL,
     transcribed_at REAL,
-    private        INTEGER NOT NULL DEFAULT 0 CHECK (private IN (0, 1))
+    private        INTEGER NOT NULL DEFAULT 0 CHECK (private IN (0, 1)),
+    upload_id      TEXT -- the Go hub phone upload the recording came from (Desktop only)
 );
 
 -- An embedded chat's owner message queued but not yet sent (00157, #604;

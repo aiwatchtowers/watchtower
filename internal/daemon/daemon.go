@@ -254,6 +254,10 @@ type Daemon struct {
 	cycleSection    atomic.Int32
 	fetchProgressAt atomic.Int64
 	loopMono        func() time.Duration // runLoop's monotonic clock, nil = time.Since(monoEpoch); a seam for tests
+	// cycleEnded, a test seam, runs on the cycle's goroutine after each
+	// cycle's runSync returned, so a test waits for the cycle instead of a
+	// fixed run window; nil outside tests.
+	cycleEnded func()
 	// fullWake reports the system capability bits and whether the Mac is in
 	// a full wake rather than a Power Nap DarkWake (SetFullWakeProbe);
 	// runLoop starts no scheduled cycle while it says no. nil = always a

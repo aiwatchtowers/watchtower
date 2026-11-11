@@ -52,11 +52,39 @@ type ReportSummary struct {
 // TerminalSessionOptions wires the terminal_session source. Liveness (nil =
 // nothing live) is read once per Items; ReportSummary (nil = none) is the
 // summary runner's last good summary of (workbench, session); Now (nil =
-// time.Now) the time a background agent count is judged at (#411).
+// time.Now) the time a background agent count is judged at (#411). View
+// (nil = none) is what the Desktop reported it shows (desktop_view): the
+// sessions waiting in its Undo batch (PROJ-17), never published, and the
+// sessions whose background count it shows over (#411), published as the
+// Mac shows them; read once per Items.
 type TerminalSessionOptions struct {
 	Liveness      func() Liveness
 	ReportSummary func(workbenchID, sessionID int64) (ReportSummary, bool)
 	Now           func() time.Time
+	View          func() (hidden map[int64]bool, displayOver map[int64]ShownOver)
+}
+
+// ShownOver is a background count the Desktop shows over (the Swift
+// ShownOverCount): the run it was judged for (zero = the session was not
+// live) and the count's agent_background_at stamp ("" = none). It applies
+// only while the row still holds that run and that report, so a newer report
+// or another run is agents working again.
+type ShownOver struct {
+	Run        time.Time
+	ReportedAt string
+}
+
+// holds reports whether the row (its live run, when live, and its report
+// stamp) is the one the count was judged for. Runs compare at the agent-state
+// stamp's millisecond precision.
+func (o ShownOver) holds(run time.Time, live bool, reportedAt *string) bool {
+	if live != !o.Run.IsZero() || (live && db.AgentStateStamp(run) != db.AgentStateStamp(o.Run)) {
+		return false
+	}
+	if reportedAt == nil {
+		return o.ReportedAt == ""
+	}
+	return *reportedAt == o.ReportedAt
 }
 
 // TerminalSessionSource is the `terminal_session` slice (mobile POC spec
@@ -67,13 +95,9 @@ type TerminalSessionOptions struct {
 // sessionstate.Resolve gives (SessionStatePresentation); the caption carries
 // no age, so a record does not change every minute. claude_session_id,
 // folder_path and the raw hook columns are never published. Wire shape: the
-// Kit mirror WatchtowerKit.TerminalSessionState.
-//
-// Known divergences from the Swift slice: the Desktop's Undo batch
-// (hiddenIDs, PROJ-17) and its "shown over" background counts (displayOver,
-// #411 §10) are Desktop memory the Go hub cannot read, so a session waiting
-// for Undo is still published and a count the Mac shows over after two
-// failed probes still reads as agents working.
+// Kit mirror WatchtowerKit.TerminalSessionState. A session in the Desktop's
+// Undo batch is left out (before the window, as the Swift slice), and a
+// count the Desktop shows over resolves as over (TerminalSessionOptions.View).
 type TerminalSessionSource struct {
 	d *db.DB
 	o TerminalSessionOptions
@@ -87,6 +111,9 @@ func TerminalSessions(d *db.DB, o TerminalSessionOptions) *TerminalSessionSource
 	}
 	if o.Now == nil {
 		o.Now = time.Now
+	}
+	if o.View == nil {
+		o.View = func() (map[int64]bool, map[int64]ShownOver) { return nil, nil }
 	}
 	return &TerminalSessionSource{d: d, o: o}
 }
@@ -273,13 +300,14 @@ func (s *TerminalSessionSource) published(ctx context.Context, tx *sql.Tx) ([]pu
 		workbenches[r.id] = true
 	}
 	live := s.o.Liveness()
+	hidden, over := s.o.View()
 	now := s.o.Now()
 	seen := map[int64]int{}
 	var out []publishedSession
 	err = scanRows(ctx, tx, `
 SELECT s.id, s.project_id, s.kind, s.title, s.target_id, s.created_at, s.last_active_at,
        s.agent_state, s.agent_state_at, s.finished_at, s.finish_summary, s.agent_failed_at, s.agent_error,
-       s.agent_background, s.agent_background_at, COALESCE(s.agent_watch_issue, ''),
+       s.agent_background, s.agent_background_at, s.agent_background_shells, COALESCE(s.agent_watch_issue, ''),
        (SELECT COUNT(*) FROM owner_asks a WHERE a.session_id = s.id AND a.status = 'open' AND `+askVisible+`),
        (SELECT MIN(a.id) FROM owner_asks a WHERE a.session_id = s.id AND a.status = 'open' AND `+askVisible+`),
        (SELECT COUNT(*) FROM owner_asks a
@@ -297,11 +325,11 @@ ORDER BY s.last_active_at DESC, s.id DESC`, nil, func(r *sql.Rows) error {
 		)
 		if err := r.Scan(&p.id, &p.workbenchID, &kind, &p.title, &target, &p.createdAt, &p.lastActiveAt,
 			&row.AgentState, &row.AgentStateAt, &row.FinishedAt, &p.finishSummary, &row.AgentFailedAt, &agentError,
-			&row.AgentBackground, &row.AgentBackgroundAt, &watchIssue,
+			&row.AgentBackground, &row.AgentBackgroundAt, &row.AgentBackgroundShells, &watchIssue,
 			&row.OpenAsks, &oldest, &row.OpenQuestionAsks, &row.OpenReviewAsks); err != nil {
 			return err
 		}
-		if !workbenches[p.workbenchID] {
+		if !workbenches[p.workbenchID] || hidden[p.id] {
 			return nil
 		}
 		start, isLive := live.Runs[p.id]
@@ -313,6 +341,9 @@ ORDER BY s.last_active_at DESC, s.id DESC`, nil, func(r *sql.Rows) error {
 		p.agent, _ = agentkind.Parse(kind)
 		p.targetID = nullInt(target)
 		row.ID, row.Kind = p.id, kind
+		if so, ok := over[p.id]; ok {
+			row.DisplayOver = so.holds(start, isLive, row.AgentBackgroundAt)
+		}
 		if isLive {
 			row.RunStartedAt = db.AgentStateStamp(start)
 		}
@@ -390,6 +421,7 @@ type sessionState struct {
 	err                      string // agent_error of a failed turn
 	oldestAskID              *int64 // nil without open asks
 	agents                   int    // background agents of a background session
+	shells                   int    // background shells of a background session (board #1712)
 	watchIssue               string // agent_watch_issue; shown only on a working session
 }
 
@@ -434,6 +466,7 @@ func resolveState(r sessionstate.Row, now time.Time, agentError string, oldest *
 		if r.AgentBackground != nil {
 			st.agents = *r.AgentBackground
 		}
+		st.shells = sessionstate.BackgroundShells(r, now)
 	case sessionstate.StateNeedsApproval:
 		st.kind = kindNeedsApproval
 	case sessionstate.StateError:
@@ -450,6 +483,10 @@ func resolveState(r sessionstate.Row, now time.Time, agentError string, oldest *
 	}
 	return st
 }
+
+// shellsOnly: a background session whose only background work is shells
+// (SessionSwitcherPresentation.State.shellsOnly).
+func (st sessionState) shellsOnly() bool { return st.agents <= 0 && st.shells > 0 }
 
 func (st sessionState) asksAreOnlyChecks() bool { return st.openAsks > 0 && st.openQuestion == 0 }
 func (st sessionState) asksAreOnlyReviews() bool {
@@ -517,6 +554,9 @@ func (st sessionState) glyph() string {
 		if st.openAsks > 0 {
 			return askGlyph
 		}
+		if st.shellsOnly() {
+			return "hourglass"
+		}
 		return "person.2.fill"
 	case kindWaitingOnAsk:
 		return "questionmark"
@@ -563,7 +603,7 @@ func (st sessionState) caption() string {
 		}
 		return "Finished"
 	case kindStopped:
-		return "Stopped"
+		return "Idle"
 	case kindBackground:
 		agents := "Agents working"
 		switch {
@@ -571,6 +611,10 @@ func (st sessionState) caption() string {
 			agents = "1 agent working"
 		case st.agents > 1:
 			agents = strconv.Itoa(st.agents) + " agents working"
+		case st.shells == 1:
+			agents = "Background task running"
+		case st.shells > 1:
+			agents = strconv.Itoa(st.shells) + " background tasks running"
 		}
 		if st.openAsks > 0 {
 			return agents + " · " + asksOpen(st.openAsks)

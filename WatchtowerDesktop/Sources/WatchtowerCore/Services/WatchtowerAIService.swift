@@ -107,6 +107,70 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         return (ok: true, provider: provider, model: model)
     }
 
+    /// `ai test --json` for the onboarding check: never throws, a launch or
+    /// parse failure is an answer (`ok: false`). `provider` / `cliPath` map to
+    /// `--provider` / `--cli-path`; nil sends neither. `watchtower` overrides
+    /// the CLI binary (tests).
+    package static func testResult(
+        provider: String?,
+        cliPath: String?,
+        watchtower: String? = nil
+    ) async -> OnboardingAgentTestResult {
+        guard let binary = watchtower ?? Constants.findCLIPath() else {
+            return OnboardingAgentTestResult(ok: false, errorCode: "launch", error: "Watchtower CLI not found")
+        }
+        var args = ["ai", "test", "--json"]
+        if let provider, !provider.isEmpty { args += ["--provider", provider] }
+        if let cliPath, !cliPath.isEmpty { args += ["--cli-path", cliPath] }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: binary)
+        process.currentDirectoryURL = Constants.processWorkingDirectory()
+        process.arguments = args
+        let output = await ProcessPipes.run(process)
+        return decodeTestResult(output)
+    }
+
+    /// The `ai test --json` object; a missing one is a launch failure (exit
+    /// -1) or the CLI's own stderr.
+    package static func decodeTestResult(_ output: ProcessOutput) -> OnboardingAgentTestResult {
+        if output.exitCode == -1 {
+            return OnboardingAgentTestResult(ok: false, errorCode: "launch", error: output.stderr)
+        }
+        guard let json = try? JSONSerialization.jsonObject(with: Data(output.stdout.utf8)) as? [String: Any] else {
+            return OnboardingAgentTestResult(ok: false, errorCode: nil, error: CLILog.detail(output.stderr))
+        }
+        let ok = json["ok"] as? Bool ?? false
+        return OnboardingAgentTestResult(
+            ok: ok,
+            errorCode: json["error_code"] as? String,
+            error: ok ? nil : (json["error"] as? String ?? "Unknown error")
+        )
+    }
+
+    /// Go's own lookup of an agent executable (`ai which --json`). A fresh
+    /// process per call, nothing cached. Only a clean `found:false` is
+    /// `.notFound`; a CLI that could not answer (missing, crashed, an
+    /// unreadable config) is `.failed`, never read as "not installed".
+    package static func which(provider: String, watchtower: String? = nil) async -> AgentLookup {
+        guard let binary = watchtower ?? Constants.findCLIPath() else { return .failed("Watchtower CLI not found") }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: binary)
+        process.currentDirectoryURL = Constants.processWorkingDirectory()
+        process.arguments = ["ai", "which", "--provider", provider, "--json"]
+        return decodeWhich(await ProcessPipes.run(process))
+    }
+
+    package static func decodeWhich(_ output: ProcessOutput) -> AgentLookup {
+        guard output.exitCode == 0,
+              let json = try? JSONSerialization.jsonObject(with: Data(output.stdout.utf8)) as? [String: Any],
+              let found = json["found"] as? Bool else {
+            let detail = CLILog.detail(output.stderr)
+            return .failed(detail.isEmpty ? nil : detail)
+        }
+        guard found, let path = json["path"] as? String, !path.isEmpty else { return .notFound }
+        return .found(path)
+    }
+
     // MARK: - Private
 
     /// Build the `watchtower ai query` argument list. Pulled out of `run()` so

@@ -1421,7 +1421,8 @@ CREATE TABLE IF NOT EXISTS "terminal_sessions" (
     chat_question_at  TEXT,
     agent_turns       TEXT,
     agent_transcript_path TEXT, agent_cwd TEXT, agent_cwd_at TEXT, cleanup_result TEXT, cleanup_at TEXT, worktree_branch TEXT, worktree_base TEXT, automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, target_bound_at TEXT, agent_watch_issue TEXT
-    CHECK(agent_watch_issue IN ('missing','permission','compressed','unreadable')), agent_watch_issue_at TEXT,
+    CHECK(agent_watch_issue IN ('missing','permission','compressed','unreadable')), agent_watch_issue_at TEXT, start_notice TEXT, agent_background_shells INTEGER
+    CHECK (agent_background_shells IS NULL OR agent_background_shells >= 0),
     CHECK (title != '' AND folder_path != ''),
     CHECK (kind <> 'claude' OR claude_session_id IS NOT NULL)
 );
@@ -2261,7 +2262,7 @@ CREATE TABLE IF NOT EXISTS pending_transcripts (
     meta_json      TEXT,
     started_at     REAL NOT NULL,
     transcribed_at REAL
-, private INTEGER NOT NULL DEFAULT 0 CHECK (private IN (0, 1)));
+, private INTEGER NOT NULL DEFAULT 0 CHECK (private IN (0, 1)), upload_id TEXT);
 CREATE TABLE IF NOT EXISTS chat_queued_drafts (
     surface_key TEXT PRIMARY KEY,
     text        TEXT NOT NULL,

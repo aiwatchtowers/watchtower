@@ -14,7 +14,7 @@ const coachV1Columns = `id, fingerprint, kind, destination, workbench_id, prompt
 	before_text, after_text, evidence, sources, status, reverts_id, created_at, decided_at,
 	baseline, baseline_n, verdict, verdict_value, verdict_at`
 
-// tuningChatNewDestinations are the destinations 00184 adds to the CHECK.
+// tuningChatNewDestinations are the destinations 00187 adds to the CHECK.
 var tuningChatNewDestinations = []string{
 	"claude_skill_user", "codex_skill_user", "pack_overlay", "codex_agents_md_user", "codex_rules_allow",
 	"repo_claude_md", "repo_agents_md", "repo_claude_skill", "repo_codex_skill", "repo_workflow",
@@ -108,9 +108,9 @@ func insertCoachDest(raw *sql.DB, id int, dest, origin string) error {
 	return err
 }
 
-func TestMigration00184_CoachRebuildKeepsRows(t *testing.T) {
+func TestMigration00187_CoachRebuildKeepsRows(t *testing.T) {
 	t.Parallel()
-	raw := openRawDBAtVersion(t, 183)
+	raw := openRawDBAtVersion(t, 186)
 	seedCoachV1(t, raw)
 	before := coachRowsDump(t, raw)
 
@@ -159,9 +159,9 @@ func TestMigration00184_CoachRebuildKeepsRows(t *testing.T) {
 	}
 }
 
-func TestMigration00184_DestinationCheck(t *testing.T) {
+func TestMigration00187_DestinationCheck(t *testing.T) {
 	t.Parallel()
-	raw := openRawDBAtVersion(t, 183)
+	raw := openRawDBAtVersion(t, 186)
 	applyNextMigration(t, raw)
 
 	for i, dest := range tuningChatNewDestinations {
@@ -195,9 +195,9 @@ func openRawFileDBAtVersion(t *testing.T, version int64) *sql.DB {
 	return raw
 }
 
-func TestMigration00184_FailureLeavesNothing(t *testing.T) {
+func TestMigration00187_FailureLeavesNothing(t *testing.T) {
 	t.Parallel()
-	raw := openRawFileDBAtVersion(t, 183)
+	raw := openRawFileDBAtVersion(t, 186)
 	seedCoachV1(t, raw)
 	// The last object the block creates already exists under this name.
 	tcExec(t, raw, `CREATE TABLE planted(a)`)
@@ -215,8 +215,8 @@ func TestMigration00184_FailureLeavesNothing(t *testing.T) {
 	if tcObjectExists(t, raw, "table", "coach_proposals_new") {
 		t.Error("coach_proposals_new left behind")
 	}
-	if v, err := goose.GetDBVersion(raw); err != nil || v != 183 {
-		t.Fatalf("goose version = %d (err %v), want 183", v, err)
+	if v, err := goose.GetDBVersion(raw); err != nil || v != 186 {
+		t.Fatalf("goose version = %d (err %v), want 186", v, err)
 	}
 	// The driver discards the failed connection; the new one starts with
 	// foreign keys off until Open's connection setup turns them on.
@@ -235,9 +235,9 @@ func TestMigration00184_FailureLeavesNothing(t *testing.T) {
 	}
 }
 
-func TestMigration00184_DownUp(t *testing.T) {
+func TestMigration00187_DownUp(t *testing.T) {
 	t.Parallel()
-	raw := openRawDBAtVersion(t, 183)
+	raw := openRawDBAtVersion(t, 186)
 	seedCoachV1(t, raw)
 	applyNextMigration(t, raw)
 
@@ -252,12 +252,12 @@ func TestMigration00184_DownUp(t *testing.T) {
 	tcExec(t, raw, `UPDATE coach_proposals SET reverts_id = 100 WHERE id = 4`)
 	tcExec(t, raw, `UPDATE prompt_additions SET proposal_id = 101 WHERE id = 2`)
 
-	if err := gooseDownTo(raw, "migrations", 183); err != nil {
+	if err := gooseDownTo(raw, "migrations", 186); err != nil {
 		t.Fatalf("down: %v", err)
 	}
 	if tcHasColumn(t, raw, "coach_proposals", "origin") || tcObjectExists(t, raw, "table", "skill_pack_overlays") ||
 		tcObjectExists(t, raw, "index", "coach_proposals_conversation") {
-		t.Fatal("down left 00184 objects behind")
+		t.Fatal("down left 00187 objects behind")
 	}
 	var ids string
 	if err := raw.QueryRow(`SELECT group_concat(id, ',') FROM (SELECT id FROM coach_proposals ORDER BY id)`).Scan(&ids); err != nil {
@@ -283,12 +283,12 @@ func TestMigration00184_DownUp(t *testing.T) {
 	assertNoFKViolations(t, raw)
 }
 
-// TestMigration00184_DanglingLinkAborts: the temp-table CHECK over
+// TestMigration00187_DanglingLinkAborts: the temp-table CHECK over
 // pragma_foreign_key_check refuses a rebuild that would leave a link to a
 // missing proposal, and the block rolls back.
-func TestMigration00184_DanglingLinkAborts(t *testing.T) {
+func TestMigration00187_DanglingLinkAborts(t *testing.T) {
 	t.Parallel()
-	raw := openRawFileDBAtVersion(t, 183)
+	raw := openRawFileDBAtVersion(t, 186)
 	seedCoachV1(t, raw)
 	tcExec(t, raw, `PRAGMA foreign_keys = OFF`)
 	tcExec(t, raw, `INSERT INTO prompt_additions (id, prompt_id, text, proposal_id, created_at)
@@ -300,9 +300,9 @@ func TestMigration00184_DanglingLinkAborts(t *testing.T) {
 	}
 	tcExec(t, raw, `PRAGMA foreign_keys = ON`)
 	if tcHasColumn(t, raw, "coach_proposals", "origin") || tcObjectExists(t, raw, "table", "skill_pack_overlays") {
-		t.Fatal("aborted run left 00184 objects behind")
+		t.Fatal("aborted run left 00187 objects behind")
 	}
-	if v, err := goose.GetDBVersion(raw); err != nil || v != 183 {
-		t.Fatalf("goose version = %d (err %v), want 183", v, err)
+	if v, err := goose.GetDBVersion(raw); err != nil || v != 186 {
+		t.Fatalf("goose version = %d (err %v), want 186", v, err)
 	}
 }

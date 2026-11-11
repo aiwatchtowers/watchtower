@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"watchtower/internal/config"
 
 	"watchtower/internal/agentkind"
 	"watchtower/internal/claudesession"
@@ -378,4 +379,8 @@ func noSymlinkBelow(root, p string) bool {
 		}
 	}
 	return true
+}
+
+func (codexAdapter) Binary(cfg *config.Config, f Finders) (string, string) {
+	return resolveBinary(cfg.CodexPath, f.Codex), "codex"
 }

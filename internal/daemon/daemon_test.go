@@ -163,10 +163,7 @@ func TestDaemon_RunsInitialSync(t *testing.T) {
 	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test-daemon] ", 0))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
-
-	err := d.Run(ctx)
+	err := runDaemonCycles(t, d, 1)
 	assert.NoError(t, err)
 	assert.GreaterOrEqual(t, syncCount.Load(), int32(1), "daemon should run at least one initial sync")
 }
@@ -259,12 +256,8 @@ func TestDaemon_GracefulShutdown(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	cancel()
 
-	select {
-	case err := <-done:
-		assert.NoError(t, err, "daemon should shut down cleanly on context cancellation")
-	case <-time.After(2 * time.Second):
-		t.Fatal("daemon did not shut down within timeout")
-	}
+	err := <-done
+	assert.NoError(t, err, "daemon should shut down cleanly on context cancellation")
 }
 
 func TestWakeChannel_NilWhenDisabled(t *testing.T) {
@@ -333,10 +326,7 @@ func TestDaemon_RunWithPIDFile(t *testing.T) {
 	d.SetLogger(log.New(os.Stderr, "[test-daemon] ", 0))
 	d.SetPIDPath(pidPath)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
-
-	err := d.Run(ctx)
+	err := runDaemonCycles(t, d, 1)
 	assert.NoError(t, err)
 
 	// PID file should be removed after Run completes.
@@ -608,10 +598,7 @@ func TestDaemon_RunSyncWithDigestPipeline(t *testing.T) {
 	d.SetLogger(log.New(os.Stderr, "[test-daemon] ", 0))
 	d.SetDigestPipeline(pipe)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-	defer cancel()
-
-	err := d.Run(ctx)
+	err := runDaemonCycles(t, d, 1)
 	assert.NoError(t, err)
 	assert.GreaterOrEqual(t, syncCount.Load(), int32(1))
 }
@@ -655,10 +642,7 @@ func TestDaemon_RunSyncWithAllPipelines(t *testing.T) {
 	d.SetTracksPipeline(tracksPipe)
 	d.SetPeoplePipeline(peoplePipe)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-	defer cancel()
-
-	err := d.Run(ctx)
+	err := runDaemonCycles(t, d, 1)
 	assert.NoError(t, err)
 	assert.GreaterOrEqual(t, syncCount.Load(), int32(1))
 }
@@ -793,10 +777,7 @@ func TestDaemon_RunSyncWithPeopleThrottle(t *testing.T) {
 	// Set lastPeople to recent time — pipeline should be skipped
 	d.lastPeople = time.Now()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
-
-	err := d.Run(ctx)
+	err := runDaemonCycles(t, d, 1)
 	assert.NoError(t, err)
 }
 
@@ -817,10 +798,7 @@ func TestDaemon_MinPollInterval(t *testing.T) {
 	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test-daemon] ", 0))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
-
-	err := d.Run(ctx)
+	err := runDaemonCycles(t, d, 1)
 	assert.NoError(t, err)
 	// Should still have run at least the initial sync
 	assert.GreaterOrEqual(t, syncCount.Load(), int32(1))
@@ -874,10 +852,7 @@ func TestDaemon_UnsnoozeExpiredTasks(t *testing.T) {
 	d.SetLogger(log.New(os.Stderr, "[test-daemon] ", 0))
 	d.SetDB(database)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-	defer cancel()
-
-	err = d.Run(ctx)
+	err = runDaemonCycles(t, d, 1)
 	assert.NoError(t, err)
 
 	// Verify: expired task should be unsnoozed.
@@ -929,10 +904,7 @@ func TestDaemon_NotifiesDueTargets(t *testing.T) {
 	d.SetLogger(log.New(os.Stderr, "[test-daemon] ", 0))
 	d.SetDB(database)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-	defer cancel()
-
-	err = d.Run(ctx)
+	err = runDaemonCycles(t, d, 1)
 	assert.NoError(t, err)
 
 	// Inbox should now contain a target_due row pointing back to the target.
@@ -1226,19 +1198,19 @@ func TestDaemon_ManualTriggerCausesSync(t *testing.T) {
 // landed on ctx.Done(), re-entering runSync several times on the dead ctx —
 // each one writing a "context canceled" pipeline_runs row and overwriting
 // last_sync.json with a bogus result. The channel is closed while ctx is
-// still alive so the count is deterministic: a spinning loop would run
-// hundreds of syncs before the timeout, a correct one exactly the initial one.
+// still alive: a correct loop drops it and runs exactly the initial sync.
 func TestDaemon_ClosedTriggerChannelDoesNotSpinSyncs(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		wire func(d *Daemon, ch chan struct{})
+		name    string
+		wire    func(d *Daemon, ch chan struct{})
+		dropped func(d *Daemon) bool
 	}{
-		{"trigger", func(d *Daemon, ch chan struct{}) { d.triggerCh = ch }},
+		{"trigger", func(d *Daemon, ch chan struct{}) { d.triggerCh = ch }, func(d *Daemon) bool { return d.triggerCh == nil }},
 		{"wake", func(d *Daemon, _ chan struct{}) {
 			wake := make(chan time.Duration)
 			close(wake)
 			d.wakeCh = wake
-		}},
+		}, func(d *Daemon) bool { return d.wakeCh == nil }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
@@ -1253,9 +1225,12 @@ func TestDaemon_ClosedTriggerChannelDoesNotSpinSyncs(t *testing.T) {
 			tc.wire(d, ch)
 			close(ch)
 
-			ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-			defer cancel()
-			require.NoError(t, d.Run(ctx))
+			// No time window: the loop sits in its select while the initial
+			// cycle runs, with the closed channel the only ready case, so it
+			// drops the channel before the cycle ends. A loop that kept
+			// reading it never drops it — and starts a cycle per read.
+			require.NoError(t, runDaemonCycles(t, d, 1))
+			assert.True(t, tc.dropped(d), "the closed %s channel is dropped, not read as an endless stream of events", tc.name)
 			assert.Equal(t, int32(1), syncCount.Load(), "a closed %s channel must not be read as an endless stream of events", tc.name)
 		})
 	}

@@ -1023,18 +1023,20 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	return d.Run(ctx)
 }
 
-// startGoHub starts the Go hub beside the daemon when hub.FromEnv says so
+// startGoHub starts the Go hub beside the daemon when hub.Resolve says so
 // and logs whether it did; the returned func stops it and waits. Its cycle
 // tick is the daemon's poll interval.
 func startGoHub(ctx context.Context, cfg *config.Config, database *db.DB, logger *log.Logger) (stop func()) {
-	o, ok, err := hub.FromEnv(cfg, database)
+	o, err := hub.Resolve(cfg, database, hostProbe())
 	if err != nil {
 		logger.Printf("hub: off (%s)", hub.Refusal(err))
 		return func() {}
 	}
-	if !ok {
-		return func() {}
-	}
+	// The session port's seams; the socket stays Resolve's (test mode: the
+	// override only, never the Desktop's host; live: the default socket).
+	sd := sessionStartDeps(cfg, database)
+	sd.Socket = o.SessionStart.Socket
+	o.SessionStart = sd
 	ctx, cancel := context.WithCancel(ctx)
 	interval := cfg.Sync.PollInterval
 	if interval < time.Minute {
@@ -1064,7 +1066,22 @@ func startGoHub(ctx context.Context, cfg *config.Config, database *db.DB, logger
 			logger.Printf("hub: off (%s)", hub.Refusal(err))
 		}
 	}()
-	logger.Printf("hub: started (dir set)")
+	switch {
+	case o.Desktop != nil:
+		// The hub's Run keeps the never-two-hubs gate: say what it waits for.
+		switch r := hub.AdoptionWait(o); r {
+		case "":
+			logger.Printf("hub: started (live, desktop)")
+		case hub.ReasonSwiftBesideGo:
+			logger.Printf("hub: held off (live, desktop, %s)", r)
+		default:
+			logger.Printf("hub: waiting for adoption (live, desktop, %s)", r)
+		}
+	case o.Mode == hub.ModeLive:
+		logger.Printf("hub: started (live, %s)", o.Host)
+	default:
+		logger.Printf("hub: started (test workspace)")
+	}
 	return func() {
 		cancel()
 		<-done

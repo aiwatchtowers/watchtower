@@ -81,7 +81,12 @@ final class SessionAgentStateCenter {
     /// after two failed staleness probes (#411), each with the run and the
     /// report stamp it was judged for; set before `onChange`, so the mobile
     /// hub's fast lane copies it with the statuses. Empty once stopped.
-    @ObservationIgnored private(set) var displayOver: [Int64: ShownOverCount] = [:]
+    @ObservationIgnored private(set) var displayOver: [Int64: ShownOverCount] = [:] {
+        didSet { if displayOver != oldValue { onDisplayOverChange?(displayOver) } }
+    }
+    /// Every change of `displayOver` (the Go hub's `desktop_view`,
+    /// `HubCenter.follow`). One subscriber.
+    @ObservationIgnored var onDisplayOverChange: (([Int64: ShownOverCount]) -> Void)?
     /// Reads overlap (the poll, a refresh): only one started after the last
     /// applied read is applied, so a slow older read never undoes a newer one.
     @ObservationIgnored private var readsStarted = 0

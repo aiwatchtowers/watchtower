@@ -47,6 +47,11 @@ package struct SessionAgentStateRow: Decodable, FetchableRecord, Equatable, Send
     package var agentBackground: Int?
     /// When that count was reported (same format as `agentStateAt`).
     package var agentBackgroundAt: String?
+    /// The background shells (`run_in_background` Bash) the same Stop
+    /// counted beside `agentBackground` (migration 00186, board #1712),
+    /// stamped by `agentBackgroundAt`; nil = none, unknown, or a database
+    /// without the column.
+    package var agentBackgroundShells: Int?
     /// The Chat question the Stop ask guard recorded (migration 00107, Go
     /// writes only): JSON `{"question", "options"}`; nil = none.
     package var chatQuestion: String?
@@ -85,6 +90,7 @@ package struct SessionAgentStateRow: Decodable, FetchableRecord, Equatable, Send
         openReviewAsks: Int = 0,
         agentBackground: Int? = nil,
         agentBackgroundAt: String? = nil,
+        agentBackgroundShells: Int? = nil,
         chatQuestion: String? = nil,
         chatQuestionAt: String? = nil,
         agentCwdAt: String? = nil,
@@ -109,6 +115,7 @@ package struct SessionAgentStateRow: Decodable, FetchableRecord, Equatable, Send
         self.openReviewAsks = openReviewAsks
         self.agentBackground = agentBackground
         self.agentBackgroundAt = agentBackgroundAt
+        self.agentBackgroundShells = agentBackgroundShells
         self.chatQuestion = chatQuestion
         self.chatQuestionAt = chatQuestionAt
         self.agentCwdAt = agentCwdAt
@@ -137,6 +144,7 @@ package struct SessionAgentStateRow: Decodable, FetchableRecord, Equatable, Send
         case openReviewAsks = "open_review_asks"
         case agentBackground = "agent_background"
         case agentBackgroundAt = "agent_background_at"
+        case agentBackgroundShells = "agent_background_shells"
         case chatQuestion = "chat_question"
         case chatQuestionAt = "chat_question_at"
         case agentCwdAt = "agent_cwd_at"
@@ -212,8 +220,8 @@ package struct SessionAgentStatus: Equatable, Sendable {
     ) -> SessionSwitcherPresentation.State {
         let hook = live ? trustedHook(row, startedAt: startedAt) : nil
         let failed = hook == .waiting && row.agentFailedAt != nil && row.agentFailedAt == row.agentStateAt
-        let agents = hook == .waiting && !failed && !displayOver
-            ? backgroundAgents(row, now: now, policy: policy) : nil
+        let background = hook == .waiting && !failed && !displayOver
+            ? backgroundWork(row, now: now, policy: policy) : nil
         let kind: SessionSwitcherPresentation.State.Kind
         if hook == .approval {
             kind = .needsApproval
@@ -221,14 +229,15 @@ package struct SessionAgentStatus: Equatable, Sendable {
             kind = .failed
         } else if hook == .working {
             kind = .working
-        } else if agents != nil {
+        } else if background != nil {
             kind = .background
         } else {
             kind = restingKind(row, turnEnded: hook == .waiting, live: live)
         }
         return SessionSwitcherPresentation.State(
             kind: kind, live: live, openAsks: row.openAsks, error: failed ? row.agentError : "",
-            oldestAskID: row.openAsks > 0 ? row.oldestOpenAskID : nil, backgroundAgents: agents ?? 0,
+            oldestAskID: row.openAsks > 0 ? row.oldestOpenAskID : nil,
+            backgroundAgents: background?.agents ?? 0, backgroundShells: background?.shells ?? 0,
             openQuestionAsks: row.openQuestionAsks, openReviewAsks: row.openReviewAsks,
             watchIssue: row.agentWatchIssue
         )
@@ -247,15 +256,20 @@ package struct SessionAgentStatus: Equatable, Sendable {
         return live ? .running : .notStarted
     }
 
-    /// The row's background agent count while `policy` says they run; nil
-    /// without a count, with an unreadable report stamp, or once over.
-    private static func backgroundAgents(
+    /// The row's background work while `policy` says it runs: the agent
+    /// count (0 when only shells run) and the shells still inside
+    /// `policy`'s shell cap (board #1712); nil without a count, with an
+    /// unreadable report stamp, or once both are over.
+    private static func backgroundWork(
         _ row: SessionAgentStateRow, now: Date, policy: SessionBackgroundPolicy
-    ) -> Int? {
+    ) -> (agents: Int, shells: Int)? {
         guard let count = row.agentBackground,
-              let reported = row.agentBackgroundAt.flatMap(parseStamp),
-              policy.verdict(count: count, lastReport: reported, now: now) == .running else { return nil }
-        return count
+              let reported = row.agentBackgroundAt.flatMap(parseStamp) else { return nil }
+        let agentsRun = policy.verdict(count: count, lastReport: reported, now: now) == .running
+        let shells = policy.shellsRun(shells: row.agentBackgroundShells ?? 0, lastReport: reported, now: now)
+            ? row.agentBackgroundShells ?? 0 : 0
+        guard agentsRun || shells > 0 else { return nil }
+        return (agentsRun ? count : 0, shells)
     }
 
     /// The row's hook state when it was written during the run started at

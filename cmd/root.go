@@ -4,6 +4,7 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -89,21 +90,15 @@ func Execute() int {
 	// Calls land in the setup spool until the root pre-run resolves the
 	// workspace; a command with its own no-op PersistentPreRunE keeps it.
 	wireLLMUsage(nil)
-	go sweepStaleTemp()
+	if shouldSweepTemp(role) {
+		startTempSweep()
+	}
 	wrapContentCommands()
 	contentRan.Store(nil)
 	err := rootCmd.Execute()
 	auditCLIRun(os.Getenv, err)
 	if err != nil {
-		// The final error is for the owner (a terminal, or the Desktop that
-		// shows a failed command's stderr), so CLI stderr and HTTP bodies
-		// show in full (logredact.Full) — except in the detached daemon,
-		// whose stderr is watchtower.log.
-		if os.Getenv(daemon.DetachEnvKey) == "1" {
-			fmt.Fprintln(os.Stderr, err)
-		} else {
-			fmt.Fprintln(os.Stderr, logredact.Full(err))
-		}
+		printFinalError(os.Stderr, err, os.Getenv(daemon.DetachEnvKey) == "1")
 		var ec *exitCodeError
 		if errors.As(err, &ec) {
 			return ec.code
@@ -111,6 +106,21 @@ func Execute() int {
 		return 1
 	}
 	return 0
+}
+
+// printFinalError prints the command's final error. It is for the owner (a
+// terminal, or the Desktop that shows a failed command's stderr), so CLI
+// stderr and HTTP bodies show in full (logredact.Full) — except in the
+// detached daemon, whose stderr is watchtower.log. errQuietExit prints
+// nothing: its exit code says it all.
+func printFinalError(w io.Writer, err error, detached bool) {
+	switch {
+	case errors.Is(err, errQuietExit):
+	case detached:
+		_, _ = fmt.Fprintln(w, err)
+	default:
+		_, _ = fmt.Fprintln(w, logredact.Full(err))
+	}
 }
 
 // staleTempAge matches the daemon's sweep: a live call never keeps an unheld
@@ -125,6 +135,14 @@ const staleTempAge = 10 * time.Minute
 func sweepStaleTemp() {
 	_, _ = fsutil.SweepStaleTemp(staleTempAge, time.Now())
 }
+
+// startTempSweep starts sweepStaleTemp in the background; a seam so a test
+// can run the sweep synchronously and see whether a command skipped it.
+var startTempSweep = func() { go sweepStaleTemp() }
+
+// shouldSweepTemp is false for `diagnostics`, which removes nothing — not
+// even another process's stale temp files (spec "What it writes").
+func shouldSweepTemp(role string) bool { return role != "cli:diagnostics" }
 
 func init() {
 	rootCmd.SilenceErrors = true

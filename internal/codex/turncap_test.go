@@ -11,9 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -357,19 +355,8 @@ func cappedClient(t *testing.T, steps []string, maxTurns int, runHome string) (*
 			b.WriteString(`printf '%s\n' '` + s + `'` + "\n")
 		}
 	}
-	pid := func() int {
-		data, err := os.ReadFile(pidFile)
-		if err != nil {
-			return 0
-		}
-		n, _ := strconv.Atoi(strings.TrimSpace(string(data)))
-		return n
-	}
-	t.Cleanup(func() {
-		if p := pid(); p > 0 {
-			_ = syscall.Kill(-p, syscall.SIGKILL)
-		}
-	})
+	pid := func() int { return readPID(pidFile) }
+	t.Cleanup(func() { reapGroup(pid()) })
 	c := NewClient("m", "", "")
 	c.codexCmd = writeStubCodex(t, b.String())
 	c.SetMaxTurns(maxTurns)
@@ -382,9 +369,7 @@ func cappedClient(t *testing.T, steps []string, maxTurns int, runHome string) (*
 // runQuery drains a streaming Query: its text and its error.
 func runQuery(t *testing.T, c *Client) (string, error) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	textCh, errCh, sidCh := c.Query(ctx, "sys", "hi", "")
+	textCh, errCh, sidCh := c.Query(context.Background(), "sys", "hi", "")
 	var text strings.Builder
 	for ch := range textCh {
 		text.WriteString(ch.Text)
@@ -412,8 +397,7 @@ func assertBudget(t *testing.T, err error, n int) {
 func assertGroupGone(t *testing.T, pid int) {
 	t.Helper()
 	require.Positive(t, pid, "the stub ran")
-	assert.Eventually(t, func() bool { return errors.Is(syscall.Kill(-pid, 0), syscall.ESRCH) },
-		10*time.Second, 20*time.Millisecond, "the stub's process group is gone")
+	waitGroupGone(pid)
 }
 
 func writeRollout(t *testing.T, home, content string) string {
@@ -444,9 +428,7 @@ func TestCodexClient_UsageAfterTheCapStillCounts(t *testing.T) {
 		toolStart("c") + "\n" + `{"type":"turn.completed","usage":{"input_tokens":70,"output_tokens":9}}`, "HOLD"}
 	c, _ := cappedClient(t, steps, 2, "")
 	c.EmitToolEvents()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	textCh, errCh, sidCh := c.Query(ctx, "sys", "hi", "")
+	textCh, errCh, sidCh := c.Query(context.Background(), "sys", "hi", "")
 	var usage *ai.TurnUsage
 	for ch := range textCh {
 		if ch.Usage != nil {

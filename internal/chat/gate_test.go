@@ -209,11 +209,7 @@ func (s *fakeSink) waitRows(t *testing.T, n int) {
 
 func waitUntil(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
 	for !cond() {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %s", what)
-		}
 		time.Sleep(10 * time.Millisecond)
 	}
 }
@@ -343,17 +339,12 @@ func denyMessage(t *testing.T, answer map[string]json.RawMessage) string {
 func (h *harness) until(want string) []Event {
 	h.t.Helper()
 	var out []Event
-	deadline := time.After(10 * time.Second)
 	for {
-		select {
-		case e, ok := <-h.events:
-			require.True(h.t, ok, "session ended before a %s event", want)
-			out = append(out, e)
-			if e.Type == want {
-				return out
-			}
-		case <-deadline:
-			h.t.Fatalf("no %s event within 10s", want)
+		e, ok := <-h.events
+		require.True(h.t, ok, "session ended before a %s event", want)
+		out = append(out, e)
+		if e.Type == want {
+			return out
 		}
 	}
 }
@@ -460,11 +451,7 @@ func TestChat05_DeadSessionNeverRunsAnApprovedCall(t *testing.T) {
 	// The owner approves; the child dies before the session claims it.
 	require.True(t, fx.sink.approve(1, ""))
 	require.NoError(t, syscall.Kill(-readPIDFile(t, fx.files.pid), syscall.SIGKILL))
-	select {
-	case <-turnDone:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the turn did not end after the child died")
-	}
+	<-turnDone
 	require.NoError(t, b.Close())
 	row := fx.sink.row(1)
 	assert.Equal(t, "failed", row.status, "an approved call of a dead child never runs")
@@ -535,18 +522,14 @@ func TestChat03_CloseWhileWaitingForApprovalRejectsAndReaps(t *testing.T) {
 	fx.sink.waitRows(t, 1)
 
 	require.NoError(t, b.Close())
-	select {
-	case <-turnDone:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the turn did not end after Close")
-	}
+	<-turnDone
 	row := fx.sink.row(1)
 	assert.Equal(t, "rejected", row.status)
 	assert.Equal(t, "stopped", row.reason)
 	answers := fx.controlAnswers(t)["r1"]
 	require.Len(t, answers, 1)
 	assert.Equal(t, denyStopped, denyMessage(t, answers[0]))
-	waitGone(t, pid, "claude")
+	waitGone(t, pid)
 	_, err = os.Stat(fx.pub.Path())
 	assert.ErrorIs(t, err, os.ErrNotExist, "Close removes the publish dir")
 }
@@ -676,6 +659,14 @@ func TestGate_StopDeniesWaitingCall(t *testing.T) {
 		h.next(EventSessionReady)
 		h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "send"})
 		h.next(EventToolWait)
+		// tool_wait goes out before the gate's first status read: wait for
+		// that read (pending) so the gate sleeps on its hour-long poll — an
+		// Approve before it would be claimed and run before Stop.
+		waitUntil(t, "the gate's first status read", func() bool {
+			fx.sink.mu.Lock()
+			defer fx.sink.mu.Unlock()
+			return fx.sink.statusReads >= 1
+		})
 		require.True(t, fx.sink.approve(1, ""))
 		h.send(Command{Type: CommandCancel})
 		h.next(EventTurnDone)
@@ -748,15 +739,16 @@ func TestGate_PermanentStatusErrorDeniesAtOnce(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			fx := gateFake(t, gmailSend("r1", "tu1"))
 			fx.sink.statusErr = statusErr
-			fx.opts.Gate.ApprovalTimeout = time.Minute
+			// The window is already over at the first poll: a gate that
+			// polled on would time the call out — a different deny text and
+			// a rejected row — so "at once" needs no wall-clock bound.
+			fx.opts.Gate.ApprovalTimeout = time.Nanosecond
 			h := startSession(t, NewClaudeBackend(fx.opts), nil)
 			h.next(EventSessionReady)
-			start := time.Now()
 			h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "send"})
 			h.next(EventTurnDone)
 			require.NoError(t, h.finish())
 
-			assert.Less(t, time.Since(start), 10*time.Second, "denied at once, not after the approval window")
 			answers := fx.controlAnswers(t)["r1"]
 			require.Len(t, answers, 1)
 			assert.Equal(t, "deny", behavior(t, answers[0]))
@@ -836,13 +828,8 @@ func readLine(t *testing.T, r *os.File) string {
 		n, _ := r.Read(buf)
 		done <- string(buf[:n])
 	}()
-	select {
-	case s := <-done:
-		return s
-	case <-time.After(5 * time.Second):
-		t.Fatal("no line written to the CLI")
-		return ""
-	}
+	s := <-done
+	return s
 }
 
 func TestGate_RouteControlAnswersEveryRequest(t *testing.T) {
@@ -895,11 +882,7 @@ func TestGate_StopDuringAStatusReadNeverClaims(t *testing.T) {
 	})
 	close(release)
 	<-cancelled
-	select {
-	case <-turnDone:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the turn did not end after Stop")
-	}
+	<-turnDone
 	require.NoError(t, b.Close())
 
 	row := fx.sink.row(1)

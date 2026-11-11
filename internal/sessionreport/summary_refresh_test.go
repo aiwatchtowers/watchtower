@@ -54,8 +54,10 @@ func TestRefreshedSummaries_AnUnsavedVerdictStillCounts(t *testing.T) {
 }
 
 // Review F2: with another process holding the write lock, each cache write
-// of the row lines' refresh gives up after summaryWriteWait, not after the
-// handle's 5 s busy_timeout (three refs: 15 s at 5 s each).
+// of the row lines' refresh waits summaryWriteWait for it, not the handle's
+// 5 s busy_timeout (three refs: 15 s at 5 s each), and the handle's own wait
+// comes back after. The test sees each write's wait through setWriteWait
+// and lets the write fail at once instead of waiting it out.
 func TestRefreshedSummaries_CacheWritesWaitBriefly(t *testing.T) {
 	d, id, _, path := repoBoard(t)
 	other, err := db.Open(path)
@@ -65,14 +67,29 @@ func TestRefreshedSummaries_CacheWritesWaitBriefly(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = tx.Rollback() })
 
-	start := time.Now()
-	rows, res, err := RefreshedSummaries(context.Background(), d, id, RefreshOptions{Budget: time.Minute})
-	elapsed := time.Since(start)
+	var before int64
+	require.NoError(t, d.QueryRow("PRAGMA busy_timeout").Scan(&before))
+	require.Equal(t, int64(5000), before, "the handle's own wait")
+	var waits []time.Duration
+	prev := setWriteWait
+	setWriteWait = func(h *db.DB, wait time.Duration) error {
+		waits = append(waits, wait)
+		return prev(h, 0) // fail at once on the held lock: no real wait
+	}
+	t.Cleanup(func() { setWriteWait = prev })
+
+	now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+	rows, res, err := RefreshedSummaries(context.Background(), d, id,
+		RefreshOptions{Budget: time.Minute, Now: func() time.Time { return now }})
 	require.NoError(t, err)
-	assert.Less(t, elapsed, 10*time.Second, "three writes of at most %s each", summaryWriteWait)
-	assert.Contains(t, res.Note, "was read but could not be saved")
+	assert.Equal(t, []time.Duration{summaryWriteWait, summaryWriteWait, summaryWriteWait}, waits,
+		"each of the three cache writes waits summaryWriteWait")
+	assert.Contains(t, res.Note, "the state of 3 ref(s) was read but could not be saved")
 	require.Len(t, rows, 1)
 	assert.Equal(t, 1, rows[0].Merged)
+	var after int64
+	require.NoError(t, d.QueryRow("PRAGMA busy_timeout").Scan(&after))
+	assert.Equal(t, before, after, "the handle's wait comes back after the refresh")
 }
 
 // Review major (envelope symmetry): merged_stale says the row's merged
