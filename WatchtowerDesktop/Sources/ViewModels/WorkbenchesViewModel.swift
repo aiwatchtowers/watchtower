@@ -564,12 +564,16 @@ final class WorkbenchesViewModel {
     @ObservationIgnored var rescanAutomations: ((_ workbenchID: Int64) async throws -> Void)?
     /// How long recipe-folder changes settle before one rescan runs.
     @ObservationIgnored var automationRescanDelay: Duration = .seconds(1)
+    /// Waits out `automationRescanDelay` (a seam: tests open the wait by hand).
+    @ObservationIgnored var automationRescanSleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     /// The debounced rescan waiting per workbench (`automationRecipesChanged`).
     @ObservationIgnored var automationRescanTimers: [Int64: Task<Void, Never>] = [:]
     /// The workbenches with a rescan running, and those asked for again
     /// meanwhile (one follow-up rescan, not one per ask).
     @ObservationIgnored var automationRescansInFlight: Set<Int64> = []
     @ObservationIgnored var automationRescansAgain: Set<Int64> = []
+    /// The running rescan per workbench (`automationRescansSettled`).
+    @ObservationIgnored var automationRescanRuns: [Int64: Task<Void, Never>] = [:]
     /// The workbenches asked for a rescan before the Feature Manager state
     /// loaded: rescanned once it has.
     @ObservationIgnored var automationRescansDeferred: Set<Int64> = []

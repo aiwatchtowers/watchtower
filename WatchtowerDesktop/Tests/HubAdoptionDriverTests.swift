@@ -17,6 +17,8 @@ final class HubAdoptionDriverTests: XCTestCase {
     private var keys: FakeHubKeyStore!
     private var restartSettled = true
     private var restartWaiters: [CheckedContinuation<Void, Never>] = []
+    /// The test waiting for the restart step to park (`untilRestartWaits`).
+    private var parkWatchers: [CheckedContinuation<Void, Never>] = []
     private var settings = HubAdoptSettings(enabled: true, startSessionAllows: [:])
     private var delivered = 0
     private var deadline: Duration = HubAdoptionDriver.stepDeadline
@@ -27,6 +29,7 @@ final class HubAdoptionDriverTests: XCTestCase {
         keys = FakeHubKeyStore(log: log)
         restartSettled = true
         restartWaiters = []
+        parkWatchers = []
         delivered = 0
         deadline = HubAdoptionDriver.stepDeadline
     }
@@ -39,7 +42,14 @@ final class HubAdoptionDriverTests: XCTestCase {
             waitForHostRestart: { [weak self] in
                 guard let self else { return }
                 self.log.append("restart-wait")
-                if !self.restartSettled { await withCheckedContinuation { self.restartWaiters.append($0) } }
+                if !self.restartSettled {
+                    await withCheckedContinuation {
+                        self.restartWaiters.append($0)
+                        let watchers = self.parkWatchers
+                        self.parkWatchers = []
+                        watchers.forEach { $0.resume() }
+                    }
+                }
                 self.log.append("restart-settled")
             },
             cancelPhoneRecordings: { [log] names in
@@ -52,6 +62,13 @@ final class HubAdoptionDriverTests: XCTestCase {
             settings: { [weak self] in self?.settings ?? HubAdoptSettings(enabled: false, startSessionAllows: [:]) },
             settingsDelivered: { [weak self] in self?.delivered += 1 }
         ))
+    }
+
+    /// Returns once the restart step waits for Continue: the event, not a
+    /// count of yields (40 yields were not enough on a loaded CI runner).
+    private func untilRestartWaits() async {
+        guard restartWaiters.isEmpty else { return }
+        await withCheckedContinuation { parkWatchers.append($0) }
     }
 
     private func settleRestart() {
@@ -96,7 +113,7 @@ final class HubAdoptionDriverTests: XCTestCase {
         restartSettled = false
         let driver = makeDriver()
         let run = Task { await driver.run() }
-        for _ in 0..<40 { await Task.yield() }
+        await untilRestartWaits()
         XCTAssertEqual(log.events, ["cli:--status", "restart-wait"],
                        "nothing but the unseen read runs before Continue")
         XCTAssertEqual(driver.state, .idle)
