@@ -20,24 +20,34 @@ import (
 // detector (phaseInbox).
 const SlotWaitingForMe Slot = "waiting_for_me"
 
-// Waiting for me's read limits.
+// attention.waiting's read limits.
 const (
-	// WaitingLimit is how many open items attention.waiting returns, the
-	// Desktop's InboxQueries.openMessageLimit.
-	WaitingLimit = 200
+	// WaitingPeopleLimit is how many open people items (every feed trigger
+	// but email_received) attention.waiting returns in items, the Desktop's
+	// InboxQueries.openMessageLimit.
+	WaitingPeopleLimit = 200
+	// WaitingMailLimit is how many open mail items it returns in mail_items.
+	WaitingMailLimit = 200
+	// WaitingSendersLimit is how many mail senders it returns in senders.
+	WaitingSendersLimit = 200
 	// WaitingTextRunes caps an item's text.
 	WaitingTextRunes = 300
 	// waitingNameRunes caps an item's who and where, so "<who> in <where>"
 	// stays within a list row's title.
 	waitingNameRunes = 120
-	// waitingBudgetBytes bounds the JSON size of every item's shown strings
-	// together, below the block document's cap (blocks.MaxBlocksBytes):
-	// each row gets an even share, and its text gets what the row's other
-	// strings leave of it.
-	waitingBudgetBytes = 100 << 10
-	// waitingRowOverhead is a row's JSON besides its strings: the keys,
-	// badge, tone, ref and the title's joiner.
-	waitingRowOverhead = 160
+	// The byte budgets bound the JSON size of each list's rows together:
+	// every row gets an even share of its list's budget, and its longest
+	// string (an item's text, a sender's subject) gets what the row's other
+	// fields leave of it. Together with the counts they keep the result
+	// under automations.MaxSDKResultBytes, and the people rows a recipe
+	// shows under the block document's cap (blocks.MaxBlocksBytes).
+	waitingPeopleBudgetBytes  = 90 << 10
+	waitingMailBudgetBytes    = 40 << 10
+	waitingSendersBudgetBytes = 80 << 10
+	// waitingRowOverhead is an item row's JSON besides its strings and its
+	// stamp: the keys, the numbers, kind, section and trigger — more than
+	// a list row's keys, badge, tone, ref and the title's joiner.
+	waitingRowOverhead = 220
 )
 
 // ReadPrimitives are the built-ins' read primitives
@@ -49,11 +59,22 @@ func ReadPrimitives(d *db.DB, now func() time.Time) map[string]automations.Primi
 	return out
 }
 
-// WaitingPrimitives returns attention.waiting over d: the open attention
-// items (db.OpenInboxItems, newest first, at most WaitingLimit) as
-// {status: "done", items: [{id, who, where, text, trigger, permalink, at,
-// age, age_hours, count, count_label}]}. It reads only and calls no model.
-// now is the clock the open check and the ages use.
+// WaitingPrimitives returns attention.waiting over d. It returns
+// {status: "done", items, mail_items, people, mail, senders}:
+//   - items: the open people items (db.WaitingPeople, newest first, at most
+//     WaitingPeopleLimit) and mail_items: the open mail of unmuted senders
+//     (db.WaitingMail, at most WaitingMailLimit), each row {id, kind, section,
+//     who, where, text, trigger, permalink, at, age, age_hours, count,
+//     count_label}. Mail is never in items, so a recipe written before the
+//     split never gets a mail row or more than 200 rows.
+//   - people: {open, today, week, older} over every open people item.
+//   - mail: {open, today, senders, top_ten_share} over the unmuted mail.
+//   - senders: the busiest unmuted senders (at most WaitingSendersLimit),
+//     {address, actionable, open, today, subject, at, permalink}.
+//
+// It reads only and calls no model. now is the clock the open check, the
+// ages and the sections use; a section is placed in now's location (the
+// daemon's local zone).
 func WaitingPrimitives(d *db.DB, now func() time.Time) map[string]automations.PrimitiveFunc {
 	return map[string]automations.PrimitiveFunc{
 		automations.PrimitiveAttentionWaiting: func(ctx context.Context, _ automations.PrimitiveCall) (automations.PrimitiveResult, error) {
@@ -61,39 +82,120 @@ func WaitingPrimitives(d *db.DB, now func() time.Time) map[string]automations.Pr
 				return automations.PrimitiveResult{}, errNotWired
 			}
 			at := now()
-			open, err := d.OpenInboxItems(ctx, at, WaitingLimit)
+			people, counts, err := waitingPeople(ctx, d, at)
 			if err != nil {
 				return automations.PrimitiveResult{}, err
 			}
-			items, err := waitingItems(d, open, at)
+			mail, err := d.OpenInboxItemsOfKind(ctx, at, db.WaitingMail, WaitingMailLimit)
 			if err != nil {
 				return automations.PrimitiveResult{}, err
 			}
-			return automations.PrimitiveResult{Status: "done", Fields: map[string]any{"items": items}}, nil
+			mailItems, err := waitingItems(d, mail, at, waitingMailBudgetBytes)
+			if err != nil {
+				return automations.PrimitiveResult{}, err
+			}
+			senders, mailCounts, err := waitingSenders(ctx, d, at)
+			if err != nil {
+				return automations.PrimitiveResult{}, err
+			}
+			return automations.PrimitiveResult{Status: "done", Fields: map[string]any{
+				"items": people, "mail_items": mailItems, "people": counts,
+				"mail": mailCounts, "senders": senders,
+			}}, nil
 		},
 	}
 }
 
-// WaitingFingerprint hashes what attention.waiting returns at now, as the
-// row shows it: every item's fields but its exact stamp and hours, with
-// whether its row is past 24 hours instead. Equal fingerprints mean the
-// shipped recipe would write the same artifact, so a quiet cycle can skip
-// the run.
-func WaitingFingerprint(ctx context.Context, d *db.DB, now time.Time) (string, error) {
-	open, err := d.OpenInboxItems(ctx, now, WaitingLimit)
+// waitingPeople is attention.waiting's items and people at now.
+func waitingPeople(ctx context.Context, d *db.DB, now time.Time) ([]any, map[string]any, error) {
+	open, err := d.OpenInboxItemsOfKind(ctx, now, db.WaitingPeople, WaitingPeopleLimit)
 	if err != nil {
-		return "", err
+		return nil, nil, err
 	}
-	items, err := waitingItems(d, open, now)
+	items, err := waitingItems(d, open, now, waitingPeopleBudgetBytes)
 	if err != nil {
-		return "", err
+		return nil, nil, err
 	}
-	shown := make([]map[string]any, 0, len(items))
-	for _, it := range items {
-		m := it.(map[string]any)
-		shown = append(shown, map[string]any{"id": m["id"], "who": m["who"], "where": m["where"], "text": m["text"],
-			"trigger": m["trigger"], "permalink": m["permalink"], "age": m["age"], "warning": m["age_hours"].(int) >= 24,
-			"count": m["count"], "count_label": m["count_label"]})
+	c, err := d.OpenPeopleCounts(ctx, now)
+	if err != nil {
+		return nil, nil, err
+	}
+	return items, map[string]any{"open": c.Open, "today": c.Today, "week": c.Week, "older": c.Older}, nil
+}
+
+// waitingSenders is attention.waiting's senders and mail at now.
+func waitingSenders(ctx context.Context, d *db.DB, now time.Time) ([]any, map[string]any, error) {
+	w, err := d.OpenMailSenders(ctx, now, WaitingSendersLimit)
+	if err != nil {
+		return nil, nil, err
+	}
+	// A hard budget, measured as the executor marshals the result: each row
+	// gets an even share of what the list's brackets and commas leave.
+	share := (waitingSendersBudgetBytes-2)/max(len(w.Senders), 1) - 1
+	senders := make([]any, 0, len(w.Senders))
+	for _, s := range w.Senders {
+		actionable := blocks.ValidSenderAddress(s.Address)
+		addr := s.Address
+		if !actionable {
+			// Only an actionable address is a ref, never clipped: at most
+			// 254 bytes that JSON never escapes. Any other is display text.
+			addr = clipJSON(addr, share/4)
+		}
+		link := webLink(s.Permalink)
+		if jsonLen(link) > share/4 {
+			link = ""
+		}
+		row := map[string]any{
+			"address":    addr,
+			"actionable": actionable,
+			"open":       s.Open,
+			"today":      s.Today,
+			"subject":    "",
+			"at":         s.At,
+			"permalink":  link,
+		}
+		if jsonSize(row) > share {
+			row["permalink"] = ""
+		}
+		// The empty subject's quotes are already in the row's size.
+		left := share - jsonSize(row) + jsonLen("")
+		row["subject"] = clipJSON(clipRunes(strings.Join(strings.Fields(s.Subject), " "), WaitingTextRunes), left)
+		senders = append(senders, row)
+	}
+	mail := map[string]any{"open": w.Open, "today": w.Today, "senders": w.SenderCount, "top_ten_share": w.TopTenShare}
+	return senders, mail, nil
+}
+
+// WaitingFingerprint hashes what attention.waiting returns at now for kind,
+// as the rows show it. People: every people item's fields but its exact
+// stamp and hours, with whether its row is past 24 hours instead, its
+// section, and the people counts. Mail: the senders and the mail counts.
+// Equal fingerprints mean the shipped recipe of that kind would write the
+// same artifact, so a quiet cycle can skip the run.
+func WaitingFingerprint(ctx context.Context, d *db.DB, now time.Time, kind db.WaitingKind) (string, error) {
+	var shown any
+	switch kind {
+	case db.WaitingPeople:
+		items, counts, err := waitingPeople(ctx, d, now)
+		if err != nil {
+			return "", err
+		}
+		rows := make([]map[string]any, 0, len(items))
+		for _, it := range items {
+			m := it.(map[string]any)
+			rows = append(rows, map[string]any{"id": m["id"], "who": m["who"], "where": m["where"], "text": m["text"],
+				"trigger": m["trigger"], "permalink": m["permalink"], "age": m["age"], "warning": m["age_hours"].(int) >= 24,
+				"count": m["count"], "count_label": m["count_label"], "section": m["section"]})
+		}
+		shown = map[string]any{"items": rows, "people": counts}
+	case db.WaitingMail:
+		senders, counts, err := waitingSenders(ctx, d, now)
+		if err != nil {
+			return "", err
+		}
+		shown = map[string]any{"senders": senders, "mail": counts}
+	default:
+		return "", fmt.Errorf("unknown waiting kind %q", kind)
 	}
 	data, err := json.Marshal(shown)
 	if err != nil {
@@ -103,9 +205,10 @@ func WaitingFingerprint(ctx context.Context, d *db.DB, now time.Time) (string, e
 	return hex.EncodeToString(sum[:]), nil
 }
 
-// waitingItems is the script's view of open: who and where as the Desktop's
-// HomeFeedQueries.who / whereText word them.
-func waitingItems(d *db.DB, open []db.OpenInboxItem, now time.Time) ([]any, error) {
+// waitingItems is the script's view of open within budget bytes: who and
+// where as the Desktop's HomeFeedQueries.who / whereText word them, the
+// item's kind and its section at now.
+func waitingItems(d *db.DB, open []db.OpenInboxItem, now time.Time, budget int) ([]any, error) {
 	var raws []string
 	for _, o := range open {
 		raws = append(raws, o.Mentions)
@@ -115,7 +218,7 @@ func waitingItems(d *db.DB, open []db.OpenInboxItem, now time.Time) ([]any, erro
 		return nil, err
 	}
 	items := make([]any, 0, len(open))
-	share := waitingBudgetBytes / max(len(open), 1)
+	share := budget / max(len(open), 1)
 	for _, o := range open {
 		mentions, _ := db.ParseInboxMentions(o.Mentions)
 		count := len(mentions) + o.MentionsEarlier
@@ -138,10 +241,12 @@ func waitingItems(d *db.DB, open []db.OpenInboxItem, now time.Time) ([]any, erro
 		if jsonLen(link) > share/4 {
 			link = ""
 		}
-		left := share - waitingRowOverhead - jsonLen(who) - jsonLen(where) - jsonLen(link) - jsonLen(label) - jsonLen(age)
+		left := share - waitingRowOverhead - jsonLen(o.At) - jsonLen(who) - jsonLen(where) - jsonLen(link) - jsonLen(label) - jsonLen(age)
 		text := clipJSON(clipRunes(strings.Join(strings.Fields(o.Snippet), " "), WaitingTextRunes), left)
 		items = append(items, map[string]any{
 			"id":          int64(o.ID),
+			"kind":        string(db.WaitingKindOf(o.TriggerType)),
+			"section":     string(db.WaitingSectionOf(at, now)),
 			"who":         who,
 			"where":       where,
 			"text":        text,
@@ -247,6 +352,12 @@ func clipRunes(s string, n int) string {
 // jsonLen is s's length as a JSON string (quotes and escapes included).
 func jsonLen(s string) int {
 	data, _ := json.Marshal(s) // a string always marshals
+	return len(data)
+}
+
+// jsonSize is v's length as JSON, as the executor marshals a result.
+func jsonSize(v any) int {
+	data, _ := json.Marshal(v) // the rows hold strings, numbers and booleans only
 	return len(data)
 }
 

@@ -66,6 +66,20 @@ func TestPhaseWaitingForMe_RunsOnlyWhenWhatItShowsChanged(t *testing.T) {
 	assert.Len(t, f.waitingRuns(t), 2, "and the cycle after it is quiet again")
 }
 
+// The gate reads the people fingerprint: a new mail item (Mail waiting's)
+// leaves Waiting for me quiet.
+func TestPhaseWaitingForMe_NewMailIsQuiet(t *testing.T) {
+	f := newMBFixture(t, nil)
+	f.d.builtinActive[waitingForMeID] = true
+	f.d.phaseWaitingForMe(context.Background())
+	require.Len(t, f.waitingRuns(t), 1)
+	_, err := f.db.Exec(`INSERT INTO inbox_items (channel_id, message_ts, sender_user_id, trigger_type, snippet, created_at)
+		VALUES ('gmail', '2000.0001', 'a@example.com', 'email_received', 'Hello — body', ?)`, time.Now().UTC().Format(time.RFC3339))
+	require.NoError(t, err)
+	f.d.phaseWaitingForMe(context.Background())
+	assert.Len(t, f.waitingRuns(t), 1, "a mail item does not run Waiting for me")
+}
+
 // wireWaitingRunner points the daemon's slot runner at an executor whose
 // attention.waiting fails while fail is set (the gate still reads).
 func (f *mbFixture) wireWaitingRunner(t *testing.T, fail *atomic.Bool) {

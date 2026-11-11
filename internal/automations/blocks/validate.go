@@ -245,14 +245,19 @@ func (v *validator) ref(path string, raw any) (*Ref, error) {
 }
 
 // ValidSenderAddress is the one rule for a mail_sender ref's id: 3–254
-// bytes with exactly one "@", no space, control character, `"`, "<", ">"
-// or ",", and already ASCII-lowercase (the sender key's spelling).
+// bytes of valid UTF-8 with exactly one "@", no space (unicode.IsSpace),
+// control or format character (Cc, Cf), `"`, "<", ">", ",", "&" or "\\",
+// and already ASCII-lowercase (the sender key's spelling). Invalid UTF-8 is
+// refused because the stored ref would carry U+FFFD instead, a key no bulk
+// resolve matches; with "&" and "\\" refused too, nothing in an address is
+// escaped by JSON, so its JSON size is its length plus the two quotes.
 func ValidSenderAddress(s string) bool {
-	if len(s) < 3 || len(s) > 254 || strings.Count(s, "@") != 1 {
+	if len(s) < 3 || len(s) > 254 || strings.Count(s, "@") != 1 || !utf8.ValidString(s) {
 		return false
 	}
 	for _, c := range s {
-		if unicode.IsControl(c) || c == ' ' || c == '"' || c == '<' || c == '>' || c == ',' || ('A' <= c && c <= 'Z') {
+		if unicode.IsControl(c) || unicode.IsSpace(c) || unicode.Is(unicode.Cf, c) ||
+			c == '"' || c == '<' || c == '>' || c == ',' || c == '&' || c == '\\' || ('A' <= c && c <= 'Z') {
 			return false
 		}
 	}
