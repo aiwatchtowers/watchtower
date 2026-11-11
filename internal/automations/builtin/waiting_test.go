@@ -919,23 +919,26 @@ func TestWaitingForMe_Sections(t *testing.T) {
 
 // The Older list starts with the note row (the waiting_older ref, no
 // badge) and the older items follow it, newest first; one item reads in
-// the singular. At 200 older items the note row takes one of the list's
-// 200 rows.
+// the singular. At 200 older items and nothing newer, items holds 200
+// older rows and the note row takes one of the list's 200 rows.
 func TestWaitingForMe_OlderNoteRow(t *testing.T) {
 	for name, c := range map[string]struct {
 		n         int
 		title     string
 		listTitle string
 		itemRows  int
+		today     bool
 	}{
-		"one":  {1, "1 item is older than 7 days", "Older · 1", 1},
-		"two":  {2, "2 items are older than 7 days", "Older · 2", 2},
-		"full": {WaitingPeopleLimit, "200 items are older than 7 days", "Older · 200", blocks.MaxListRows - 1},
+		"one":  {1, "1 item is older than 7 days", "Older · 1", 1, true},
+		"two":  {2, "2 items are older than 7 days", "Older · 2", 2, true},
+		"full": {WaitingPeopleLimit, "200 items are older than 7 days", "Older · 200", blocks.MaxListRows - 1, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newFixture(t)
 			f.sync(t)
-			f.insertItem(t, "1000.0000", "mention", f.clock.Now().Add(-time.Hour))
+			if c.today {
+				f.insertItem(t, "1000.0000", "mention", f.clock.Now().Add(-time.Hour))
+			}
 			for i := 1; i <= c.n; i++ {
 				f.insertItem(t, fmt.Sprintf("1000.%04d", i), "mention", f.clock.Now().Add(-8*24*time.Hour-time.Duration(i)*time.Minute))
 			}
