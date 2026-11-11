@@ -78,10 +78,10 @@ func (s *Syncer) CatchUpSent(ctx context.Context, now time.Time) (int, error) {
 	return count, nil
 }
 
-// catchUpFailed wraps a failed pass's error and, when it counts, stamps now
-// on the sentCatchUpMaxAttempts-th such failure.
+// catchUpFailed counts a failed pass and, when it counts, stamps now on the
+// sentCatchUpMaxAttempts-th such failure. The error goes back unwrapped: the
+// daemon's log line already names the sent catch-up.
 func (s *Syncer) catchUpFailed(now time.Time, err error) error {
-	err = fmt.Errorf("gmail sent catch-up: %w", err)
 	if !catchUpCountsFailure(err) {
 		return err
 	}
@@ -110,9 +110,11 @@ func isNotFound(err error) bool {
 // catchUpCountsFailure reports whether a failed catch-up pass counts toward
 // sentCatchUpMaxAttempts: only a non-transient failure does. A transient one
 // (rate limit or server error, a network error, a cancelled or expired
-// context) says nothing about the message and is retried without limit.
+// context, revoked access) says nothing about the message and is retried
+// without limit.
 func catchUpCountsFailure(err error) bool {
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, io.ErrUnexpectedEOF) {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, ErrAuthRevoked) {
 		return false
 	}
 	var se *StatusError

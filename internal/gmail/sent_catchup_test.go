@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -344,6 +345,8 @@ func TestCatchUpCountsFailure(t *testing.T) {
 		{"unexpected EOF", fmt.Errorf("reading response: %w", io.ErrUnexpectedEOF), false},
 		{"canceled", fmt.Errorf("fetch message x: %w", context.Canceled), false},
 		{"deadline", fmt.Errorf("fetch message x: %w", context.DeadlineExceeded), false},
+		{"auth revoked", fmt.Errorf("fetch message x: %w", ErrAuthRevoked), false},
+		{"url.Error", fmt.Errorf("fetch message x: %w", &url.Error{Op: "Get", URL: "https://gmail.example.com", Err: errors.New("tls handshake timeout")}), false},
 	} {
 		if got := catchUpCountsFailure(tc.err); got != tc.want {
 			t.Errorf("%s: catchUpCountsFailure = %v, want %v", tc.name, got, tc.want)
