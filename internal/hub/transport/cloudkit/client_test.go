@@ -62,7 +62,7 @@ func newRig(t *testing.T, opts ...bridgefake.Option) *rig {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	r := &rig{t: t, ctx: ctx, dir: dir, hub: kr.HubID().String(), st: st, ident: ident, kr: kr, sealer: secure.NewSealer(kr)}
 	r.fake = bridgefake.Serve(t, dir, opts...)
@@ -127,17 +127,11 @@ func (r *rig) lastSave() *pb.Save {
 	return nil
 }
 
-func (r *rig) nextEvent(what string, ok func(transport.Event) bool) transport.Event {
+func (r *rig) nextEvent(_ string, ok func(transport.Event) bool) transport.Event {
 	r.t.Helper()
-	deadline := time.After(10 * time.Second)
 	for {
-		select {
-		case e := <-r.c.Events():
-			if ok(e) {
-				return e
-			}
-		case <-deadline:
-			r.t.Fatalf("no %s event", what)
+		if e := <-r.c.Events(); ok(e) {
+			return e
 		}
 	}
 }

@@ -3,9 +3,11 @@ package cloudkit_test
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -124,20 +126,10 @@ func TestSupervisorStopsTheBridgeWithItsContext(t *testing.T) {
 	}})
 	done := make(chan error, 1)
 	go func() { done <- s.Run(ctx) }()
-	var p *os.Process
-	select {
-	case p = <-started:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the bridge was not launched")
-	}
+	p := <-started
 	cancel()
-	select {
-	case err := <-done:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatal(err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("Run did not return after its context ended")
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
 	}
 	if err := p.Signal(syscall.Signal(0)); !errors.Is(err, os.ErrProcessDone) {
 		t.Fatalf("the bridge still runs: %v", err)
@@ -154,34 +146,42 @@ func TestSupervisorWithoutLauncher(t *testing.T) {
 // process group, so a helper the bridge started goes with it.
 func TestSupervisorStopsTheWholeProcessGroup(t *testing.T) {
 	st := newStubs(t)
-	pidFile := filepath.Join(t.TempDir(), "child.pid")
+	// Two FIFOs: the helper's pid comes through one; the helper holds the
+	// other's only write end, so its EOF is the helper's exit.
+	dir := t.TempDir()
+	pidFIFO, lifeFIFO := filepath.Join(dir, "pid"), filepath.Join(dir, "life")
+	for _, f := range []string{pidFIFO, lifeFIFO} {
+		if err := syscall.Mkfifo(f, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s := cloudkit.NewSupervisor(cloudkit.Config{Launch: func(context.Context) (*os.Process, error) {
-		return st.start("sleep 30 & echo $! > '" + pidFile + "'; wait")
+		return st.start("sleep 30 > '" + lifeFIFO + "' & echo $! > '" + pidFIFO + "'; wait")
 	}})
 	done := make(chan error, 1)
 	go func() { done <- s.Run(ctx) }()
-	var child int
-	deadline := time.Now().Add(10 * time.Second)
-	for child == 0 {
-		if b, err := os.ReadFile(pidFile); err == nil {
-			child, _ = strconv.Atoi(strings.TrimSpace(string(b)))
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the bridge's helper did not start")
-		}
-		time.Sleep(10 * time.Millisecond)
+	b, err := os.ReadFile(pidFIFO) // blocks until the shell wrote the pid and closed
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil {
+		t.Fatalf("helper pid %q: %v", b, err)
 	}
 	t.Cleanup(func() { _ = syscall.Kill(child, syscall.SIGKILL) })
+	life, err := os.Open(lifeFIFO) // blocks until the helper opened its end
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = life.Close() }()
 	cancel()
 	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
 	}
-	for syscall.Kill(child, 0) == nil {
-		if time.Now().After(deadline) {
-			t.Fatal("the bridge's helper outlived the stop")
-		}
-		time.Sleep(10 * time.Millisecond)
+	// EOF only when the helper, the write end's only holder, has exited.
+	if _, err := io.ReadAll(life); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -199,12 +199,10 @@ func TestSupervisorRunningFollowsTheBridge(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() { done <- s.Run(ctx) }()
-	deadline := time.Now().Add(5 * time.Second)
+	// Running turns true right after Launch returns; no real time is waited
+	// on, the loop only yields until the supervisor's goroutine got there.
 	for !s.Running() {
-		if time.Now().After(deadline) {
-			t.Fatal("never running")
-		}
-		time.Sleep(10 * time.Millisecond)
+		runtime.Gosched()
 	}
 	cancel()
 	<-done
