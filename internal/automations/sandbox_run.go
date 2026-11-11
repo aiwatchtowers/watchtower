@@ -29,6 +29,10 @@ var abandonedRuns atomic.Int64
 // still running. The executor claims no new run while it is above zero.
 func AbandonedRuns() int { return int(abandonedRuns.Load()) }
 
+// abandonedRunEnded, when set (tests only), is called each time an
+// abandoned script goroutine ends, after AbandonedRuns went down.
+var abandonedRunEnded atomic.Pointer[func()]
+
 const (
 	wrapPrefix = "(function (" + returnHookParam + ") { " + returnHookParam +
 		"((function (" + returnHookParam + `) {"use strict";`
@@ -295,12 +299,12 @@ func (s *Sandbox) Run() (any, error) {
 		return s.outcome(r.v, r.err)
 	case <-s.stopped:
 	}
-	grace := time.NewTimer(AbandonGrace)
-	defer grace.Stop()
+	// The grace runs on the meter's clock (the real one in production), so a
+	// test can expire it without waiting.
 	select {
 	case r := <-results:
 		return s.outcome(r.v, r.err)
-	case <-grace.C:
+	case <-s.env.Meter.clock.After(AbandonGrace):
 		return nil, s.abandon(results)
 	}
 }
@@ -334,6 +338,9 @@ func (s *Sandbox) abandon(results <-chan runResult) error {
 	go func() {
 		<-results
 		abandonedRuns.Add(-1)
+		if f := abandonedRunEnded.Load(); f != nil {
+			(*f)()
+		}
 	}()
 	s.mu.Lock()
 	fatal, reason := s.fatal, s.reason
@@ -453,39 +460,68 @@ type heapWatch struct {
 // be released) on the first sample whose live heap passed the baseline plus
 // RunHeapBudget (see RunHeapBudget for when the baseline moves).
 func (s *Sandbox) watchHeap(done <-chan struct{}, start heapWatch) {
-	m := s.env.Meter
-	base, events, paused := start.base, start.events, false
-	ceiling := base + RunHeapBudget // the baseline never rises above this
-	var nextGC uint64               // objects reading that may force the next confirming GC
-	tick := time.NewTicker(heapPollInterval)
-	defer tick.Stop()
+	w := heapWatcher{m: s.env.Meter, base: start.base, events: start.events}
+	w.ceiling = w.base + RunHeapBudget // the baseline never rises above this
+	tick, stop := heapTicker(w.m)
+	defer stop()
 	for {
 		select {
 		case <-done:
 			return
-		case <-tick.C:
+		case <-tick:
 		}
-		if m.Paused() {
-			paused = true
-			continue
-		}
-		live, objects := heapReadings()
-		if e := runEvents.Load(); paused || e != events {
-			paused, events, base = false, e, min(max(base, objects), ceiling)
-		}
-		limit := base + RunHeapBudget
-		if live <= limit && objects > limit && objects >= nextGC {
-			// The live reading waits for the next GC, which a growing heap
-			// pushes ever further out (GOGC=100): get an exact one now.
-			runtime.GC()
-			live, objects = heapReadings()
-			nextGC = objects + RunHeapBudget/4
-		}
-		if live > limit {
+		over := w.sample()
+		if over {
 			s.abort(errTooMuchMemory())
+		}
+		if f := heapSampled.Load(); f != nil {
+			(*f)(w.m)
+		}
+		if over {
 			return
 		}
 	}
+}
+
+// heapTicker is watchHeap's sampling clock for a run's meter: a
+// heapPollInterval ticker. A test replaces it to sample on demand.
+var heapTicker = func(*Meter) (<-chan time.Time, func()) {
+	t := time.NewTicker(heapPollInterval)
+	return t.C, t.Stop
+}
+
+// heapSampled, when set (tests only), is called after each sample watchHeap
+// took (a paused one too), after it stopped the run for memory.
+var heapSampled atomic.Pointer[func(*Meter)]
+
+// heapWatcher is one watchHeap's state between samples.
+type heapWatcher struct {
+	m             *Meter
+	base, ceiling uint64
+	nextGC        uint64 // objects reading that may force the next confirming GC
+	events        int64
+	paused        bool
+}
+
+// sample takes one reading; it reports a live heap past the limit.
+func (w *heapWatcher) sample() bool {
+	if w.m.Paused() {
+		w.paused = true
+		return false
+	}
+	live, objects := heapReadings()
+	if e := runEvents.Load(); w.paused || e != w.events {
+		w.paused, w.events, w.base = false, e, min(max(w.base, objects), w.ceiling)
+	}
+	limit := w.base + RunHeapBudget
+	if live <= limit && objects > limit && objects >= w.nextGC {
+		// The live reading waits for the next GC, which a growing heap
+		// pushes ever further out (GOGC=100): get an exact one now.
+		runtime.GC()
+		live, objects = heapReadings()
+		w.nextGC = objects + RunHeapBudget/4
+	}
+	return live > limit
 }
 
 // watchDeadline interrupts the run at the meter's deadline (re-armed on
@@ -493,7 +529,6 @@ func (s *Sandbox) watchHeap(done <-chan struct{}, start heapWatch) {
 func (s *Sandbox) watchDeadline(done <-chan struct{}) {
 	m := s.env.Meter
 	for {
-		var timer *time.Timer
 		var fired <-chan time.Time
 		if !m.Paused() {
 			left := m.Deadline().Sub(m.clock.Now())
@@ -501,14 +536,11 @@ func (s *Sandbox) watchDeadline(done <-chan struct{}) {
 				s.Interrupt(InterruptTimeout)
 				return
 			}
-			timer = time.NewTimer(left)
-			fired = timer.C
+			// The meter's clock times the deadline it reads, so a fake
+			// clock's Advance fires it (the real clock in production).
+			fired = m.clock.After(left)
 		}
-		stop := s.awaitDeadline(done, fired)
-		if timer != nil {
-			timer.Stop()
-		}
-		if stop {
+		if s.awaitDeadline(done, fired) {
 			return
 		}
 	}

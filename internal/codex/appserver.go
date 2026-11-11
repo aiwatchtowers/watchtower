@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strconv"
@@ -24,9 +25,25 @@ import (
 // the protocol changed). The workbench status then reads hooks_trusted null.
 var ErrCodexTrustUnavailable = errors.New("codex hook trust unavailable")
 
-// appServerBudget bounds one app-server conversation, from start to exit. A
-// var so a test can shorten it.
-var appServerBudget = 10 * time.Second
+// appServerBudget bounds one app-server conversation, from start to exit.
+const appServerBudget = 10 * time.Second
+
+// AppServerConn is one running `codex app-server` as the conversation sees
+// it: its stdio and its lifetime. The real one is a child process
+// (StartAppServer, ReadUsage); a test serves the protocol in-process
+// (codextest.Server) and runs the conversation under testing/synctest.
+type AppServerConn interface {
+	// Stdin is the server's input; closing it is the EOF codex exits on.
+	Stdin() io.WriteCloser
+	// Stdout is the server's JSON-RPC output, one message per line.
+	Stdout() io.ReadCloser
+	// Stderr is the server's diagnostics, closed when it exits.
+	Stderr() io.ReadCloser
+	// Exited is closed once the server has exited.
+	Exited() <-chan struct{}
+	// Kill ends the server and everything it spawned at once.
+	Kill()
+}
 
 // sessionFlagsSource is the hooks/list source of a hook passed as a launch
 // flag (-c hooks.<Event>=…). Its trust key is the same for every folder.
@@ -109,13 +126,19 @@ func wireEventName(event string) string {
 // own process group, which Close also kills once the server has exited, so
 // nothing it spawned outlives the conversation.
 func StartAppServer(ctx context.Context, bin string, extraArgs []string, env []string) (AppServer, error) {
-	budget, cancel := context.WithTimeout(ctx, appServerBudget)
-	s, err := startAppServerProcess(budget, cancel, bin, extraArgs, env)
+	return startAppServer(ctx, appServerProcess(bin, extraArgs, env, ""), appServerBudget)
+}
+
+// appServerLauncher starts one app-server; the conversation's budget is
+// already running.
+type appServerLauncher func() (AppServerConn, error)
+
+func startAppServer(ctx context.Context, launch appServerLauncher, budget time.Duration) (AppServer, error) {
+	s, err := openAppServer(ctx, launch, budget)
 	if err != nil {
-		cancel()
 		return nil, err
 	}
-	if err := s.initialize(budget); err != nil {
+	if err := s.initialize(s.budget); err != nil {
 		_ = s.Close()
 		return nil, err
 	}
@@ -123,16 +146,15 @@ func StartAppServer(ctx context.Context, bin string, extraArgs []string, env []s
 }
 
 type appServer struct {
-	cmd    *exec.Cmd
+	conn   AppServerConn
 	budget context.Context
 	cancel context.CancelFunc
-	stdin  *os.File
-	stdout *os.File
-	lines  chan []byte // one JSON message per line, closed at EOF
+	// limit is the budget's length, for the error text.
+	limit time.Duration
+	lines chan []byte // one JSON message per line, closed at EOF
 	// readErr is why the output stopped short of EOF (a line over the
 	// buffer, a read error); set by readLines before it closes lines.
 	readErr error
-	exited  chan struct{} // closed once the process has been waited for
 	stderr  *tailBuffer
 
 	writeMu   sync.Mutex
@@ -140,47 +162,75 @@ type appServer struct {
 	closeOnce sync.Once
 }
 
-func startAppServerProcess(budget context.Context, cancel context.CancelFunc, bin string, extraArgs, env []string) (*appServer, error) {
-	return startAppServerProcessInDir(budget, cancel, bin, extraArgs, env, "")
-}
-
-func startAppServerProcessInDir(budget context.Context, cancel context.CancelFunc, bin string, extraArgs, env []string, cwd string) (*appServer, error) {
-	cmd := exec.Command(bin, append([]string{"app-server"}, extraArgs...)...)
-	cmd.Dir = cwd
-	cmd.Env = env
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	// Plain pipes, not cmd's: Wait must not block on a pipe a grandchild
-	// still holds open.
-	inR, inW, err := os.Pipe()
+// openAppServer starts the conversation's budget, launches the server and
+// starts reading it. A budget that runs out (or ctx ending) kills the server.
+func openAppServer(ctx context.Context, launch appServerLauncher, limit time.Duration) (*appServer, error) {
+	budget, cancel := context.WithTimeout(ctx, limit)
+	conn, err := launch()
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrCodexTrustUnavailable, err)
+		cancel()
+		return nil, err
 	}
-	outR, outW, err := os.Pipe()
-	if err != nil {
-		closeAll(inR, inW)
-		return nil, fmt.Errorf("%w: %v", ErrCodexTrustUnavailable, err)
-	}
-	errR, errW, err := os.Pipe()
-	if err != nil {
-		closeAll(inR, inW, outR, outW)
-		return nil, fmt.Errorf("%w: %v", ErrCodexTrustUnavailable, err)
-	}
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = inR, outW, errW
-	if err := cmd.Start(); err != nil {
-		closeAll(inR, inW, outR, outW, errR, errW)
-		return nil, fmt.Errorf("%w: starting %s app-server: %v", ErrCodexTrustUnavailable, bin, err)
-	}
-	closeAll(inR, outW, errW) // the child's ends
 	s := &appServer{
-		cmd: cmd, budget: budget, cancel: cancel, stdin: inW, stdout: outR,
-		lines: make(chan []byte, 16), exited: make(chan struct{}), stderr: &tailBuffer{max: 2048},
+		conn: conn, budget: budget, cancel: cancel, limit: limit,
+		lines: make(chan []byte, 16), stderr: &tailBuffer{max: 2048},
 	}
 	go s.readLines()
-	go s.stderr.drain(errR)
-	go func() { _ = cmd.Wait(); close(s.exited) }()
+	go s.stderr.drain(conn.Stderr())
 	go s.watchdog()
 	return s, nil
 }
+
+// appServerProcess launches `<bin> app-server <extraArgs…>` in cwd ("" =
+// this process's) as the leader of its own process group.
+func appServerProcess(bin string, extraArgs, env []string, cwd string) appServerLauncher {
+	return func() (AppServerConn, error) {
+		cmd := exec.Command(bin, append([]string{"app-server"}, extraArgs...)...)
+		cmd.Dir = cwd
+		cmd.Env = env
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		// Plain pipes, not cmd's: Wait must not block on a pipe a grandchild
+		// still holds open.
+		inR, inW, err := os.Pipe()
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrCodexTrustUnavailable, err)
+		}
+		outR, outW, err := os.Pipe()
+		if err != nil {
+			closeAll(inR, inW)
+			return nil, fmt.Errorf("%w: %v", ErrCodexTrustUnavailable, err)
+		}
+		errR, errW, err := os.Pipe()
+		if err != nil {
+			closeAll(inR, inW, outR, outW)
+			return nil, fmt.Errorf("%w: %v", ErrCodexTrustUnavailable, err)
+		}
+		cmd.Stdin, cmd.Stdout, cmd.Stderr = inR, outW, errW
+		if err := cmd.Start(); err != nil {
+			closeAll(inR, inW, outR, outW, errR, errW)
+			return nil, fmt.Errorf("%w: starting %s app-server: %v", ErrCodexTrustUnavailable, bin, err)
+		}
+		closeAll(inR, outW, errW) // the child's ends
+		p := &processConn{cmd: cmd, stdin: inW, stdout: outR, stderr: errR, exited: make(chan struct{})}
+		go func() { _ = cmd.Wait(); close(p.exited) }()
+		return p, nil
+	}
+}
+
+// processConn is an app-server child process.
+type processConn struct {
+	cmd                   *exec.Cmd
+	stdin, stdout, stderr *os.File
+	exited                chan struct{} // closed once the process has been waited for
+}
+
+func (p *processConn) Stdin() io.WriteCloser   { return p.stdin }
+func (p *processConn) Stdout() io.ReadCloser   { return p.stdout }
+func (p *processConn) Stderr() io.ReadCloser   { return p.stderr }
+func (p *processConn) Exited() <-chan struct{} { return p.exited }
+
+// Kill kills the server's process group: the server and what it spawned.
+func (p *processConn) Kill() { _ = syscall.Kill(-p.cmd.Process.Pid, syscall.SIGKILL) }
 
 func closeAll(files ...*os.File) {
 	for _, f := range files {
@@ -188,22 +238,18 @@ func closeAll(files ...*os.File) {
 	}
 }
 
-// watchdog kills the process group once the budget is spent.
+// watchdog kills the server once the budget is spent.
 func (s *appServer) watchdog() {
 	select {
 	case <-s.budget.Done():
-		s.killGroup()
-	case <-s.exited:
+		s.conn.Kill()
+	case <-s.conn.Exited():
 	}
-}
-
-func (s *appServer) killGroup() {
-	_ = syscall.Kill(-s.cmd.Process.Pid, syscall.SIGKILL)
 }
 
 func (s *appServer) readLines() {
 	defer close(s.lines)
-	sc := bufio.NewScanner(s.stdout)
+	sc := bufio.NewScanner(s.conn.Stdout())
 	defer func() { s.readErr = sc.Err() }() // runs before the close
 	sc.Buffer(make([]byte, 64*1024), 16*1024*1024)
 	for sc.Scan() {
@@ -243,7 +289,7 @@ func (s *appServer) send(msg map[string]any) error {
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	if _, err := s.stdin.Write(append(b, '\n')); err != nil {
+	if _, err := s.conn.Stdin().Write(append(b, '\n')); err != nil {
 		return s.unavailable(fmt.Sprintf("writing %v", msg["method"]), err)
 	}
 	return nil
@@ -273,7 +319,7 @@ func (s *appServer) call(ctx context.Context, method string, params any, result 
 				return err
 			}
 		case <-s.budget.Done():
-			return s.unavailable(method, fmt.Errorf("no answer within %s", appServerBudget))
+			return s.unavailable(method, fmt.Errorf("no answer within %s", s.limit))
 		case <-ctx.Done():
 			return s.unavailable(method, ctx.Err())
 		}
@@ -369,13 +415,13 @@ func (s *appServer) TrustHooks(ctx context.Context, entries []HookEntry) error {
 func (s *appServer) Close() error {
 	var err error
 	s.closeOnce.Do(func() {
-		_ = s.stdin.Close()
+		_ = s.conn.Stdin().Close()
 		if !s.waitExit() {
-			err = s.unavailable("closing", fmt.Errorf("the app-server did not exit within %s", appServerBudget))
+			err = s.unavailable("closing", fmt.Errorf("the app-server did not exit within %s", s.limit))
 		}
-		s.killGroup()
+		s.conn.Kill()
 		s.cancel()
-		_ = s.stdout.Close()
+		_ = s.conn.Stdout().Close()
 	})
 	return err
 }
@@ -384,15 +430,15 @@ func (s *appServer) Close() error {
 // first (the watchdog then kills the group, and the exit follows).
 func (s *appServer) waitExit() bool {
 	select {
-	case <-s.exited:
+	case <-s.conn.Exited():
 		return true
 	default:
 	}
 	select {
-	case <-s.exited:
+	case <-s.conn.Exited():
 		return true
 	case <-s.budget.Done():
-		<-s.exited
+		<-s.conn.Exited()
 		return false
 	}
 }
@@ -404,7 +450,7 @@ type tailBuffer struct {
 	buf []byte
 }
 
-func (t *tailBuffer) drain(f *os.File) {
+func (t *tailBuffer) drain(f io.ReadCloser) {
 	defer func() { _ = f.Close() }()
 	b := make([]byte, 4096)
 	for {

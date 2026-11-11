@@ -140,6 +140,9 @@ func (d *Daemon) startCycle(ctx context.Context, resetTicker bool) *syncCycle {
 		defer close(c.done)
 		defer cancel(nil)
 		d.runSync(ctx, fetchCtx)
+		if d.cycleEnded != nil {
+			d.cycleEnded()
+		}
 	}()
 	return c
 }

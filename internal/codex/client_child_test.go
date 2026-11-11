@@ -4,11 +4,8 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
-	"syscall"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -52,19 +49,7 @@ func TestCodexQuerySync_ChildEnvReplacesEnviron(t *testing.T) {
 func TestCodexProcessGroupKilledOnCancel(t *testing.T) {
 	dir := t.TempDir()
 	pidFile := filepath.Join(dir, "pid")
-	readPid := func() int {
-		b, err := os.ReadFile(pidFile)
-		if err != nil {
-			return 0
-		}
-		n, _ := strconv.Atoi(strings.TrimSpace(string(b)))
-		return n
-	}
-	t.Cleanup(func() {
-		if pid := readPid(); pid > 0 {
-			_ = syscall.Kill(-pid, syscall.SIGKILL)
-		}
-	})
+	t.Cleanup(func() { reapGroup(readPID(pidFile)) })
 	c := NewClient("m", "", "")
 	c.codexCmd = writeStubCodex(t, "echo $$ > "+pidFile+".tmp; mv "+pidFile+".tmp "+pidFile+"\nsleep 60 &\nwait\n")
 
@@ -75,16 +60,8 @@ func TestCodexProcessGroupKilledOnCancel(t *testing.T) {
 		_, _, err := c.QuerySync(ctx, "sys", "hi", "")
 		done <- err
 	}()
-	require.Eventually(t, func() bool { return readPid() > 0 }, 20*time.Second, 20*time.Millisecond)
-	pgid := readPid()
+	pgid := waitPID(pidFile)
 	cancel()
-	select {
-	case err := <-done:
-		require.Error(t, err)
-	case <-time.After(15 * time.Second):
-		t.Fatal("QuerySync did not return")
-	}
-	require.Eventually(t, func() bool {
-		return syscall.Kill(-pgid, 0) == syscall.ESRCH
-	}, 10*time.Second, 50*time.Millisecond, "process group %d still alive", pgid)
+	require.Error(t, <-done)
+	waitGroupGone(pgid) // the sleep it left behind goes with it
 }

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -58,7 +59,12 @@ func TestCredentials_ErrorsNeverCarryTheToken(t *testing.T) {
 }
 
 // A hung `security` call is cut off and the file fallback still answers.
+// The cut-off runs in a synctest bubble: the bubble's time, not the clock.
 func TestCredentials_KeychainTimeoutFallsBack(t *testing.T) {
+	synctest.Test(t, testKeychainTimeoutFallsBack)
+}
+
+func testKeychainTimeoutFallsBack(t *testing.T) {
 	home := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(home, ".claude"), 0o700))
 	require.NoError(t, os.WriteFile(filepath.Join(home, ".claude", ".credentials.json"), []byte(credJSON), 0o600))

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"watchtower/internal/db/lockmetrics"
@@ -40,36 +41,43 @@ func skipUnlessDefaultThreshold(t *testing.T) {
 	}
 }
 
+// holdWriteLock holds d's write lock for hold through WithTx: the site of
+// its tx event is "internal/db.(*DB).WithTx <- internal/db.holdWriteLock".
+func holdWriteLock(d *DB, hold time.Duration) error {
+	return d.WithTx(func(*sql.Tx) error { time.Sleep(hold); return nil })
+}
+
 // Open goes through the measuring driver: a slow WithTx is written next to
 // the file, named by the helper and its caller, with the busy timeout
-// SetBusyTimeout set.
+// SetBusyTimeout set. In a synctest bubble (the handle opens inside it), on
+// whose clock the measuring driver reads an exact hold with no real wait.
 func TestOpenMeasuresSlowTxThroughWithTx(t *testing.T) {
 	skipUnlessDefaultThreshold(t)
-	path := filepath.Join(t.TempDir(), "watchtower.db")
-	d, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = d.Close() })
-	if err := d.SetBusyTimeout(1500 * time.Millisecond); err != nil {
-		t.Fatal(err)
-	}
-
-	hold := lockmetrics.DefaultThreshold + 50*time.Millisecond
-	if err := d.WithTx(func(*sql.Tx) error { time.Sleep(hold); return nil }); err != nil {
-		t.Fatal(err)
-	}
-
-	const site = "internal/db.(*DB).WithTx <- internal/db.TestOpenMeasuresSlowTxThroughWithTx"
-	for _, e := range lockEvents(t, path) {
-		if e.Kind == lockmetrics.KindTx && e.Site == site {
-			if e.HoldMS < hold.Milliseconds() || e.BusyTimeoutMS != 1500 {
-				t.Fatalf("tx event = %+v, want hold_ms >= %d and busy_timeout_ms 1500", e, hold.Milliseconds())
-			}
-			return
+	synctest.Test(t, func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "watchtower.db")
+		d, err := Open(path)
+		if err != nil {
+			t.Fatal(err)
 		}
-	}
-	t.Fatalf("no tx event with site %q in %+v", site, lockEvents(t, path))
+		t.Cleanup(func() { _ = d.Close() })
+		if err := d.SetBusyTimeout(1500 * time.Millisecond); err != nil {
+			t.Fatal(err)
+		}
+
+		hold := lockmetrics.DefaultThreshold + 50*time.Millisecond
+		mustOK(t, holdWriteLock(d, hold))
+
+		const site = "internal/db.(*DB).WithTx <- internal/db.holdWriteLock"
+		for _, e := range lockEvents(t, path) {
+			if e.Kind == lockmetrics.KindTx && e.Site == site {
+				if e.HoldMS != hold.Milliseconds() || e.WaitMS != 0 || e.BusyTimeoutMS != 1500 {
+					t.Fatalf("tx event = %+v, want hold_ms %d, no wait_ms and busy_timeout_ms 1500", e, hold.Milliseconds())
+				}
+				return
+			}
+		}
+		t.Fatalf("no tx event with site %q in %+v", site, lockEvents(t, path))
+	})
 }
 
 // A hook opener's busy error is recorded with the hook's busy timeout, and
@@ -88,7 +96,7 @@ func TestOpenExistingRWRecordsBusyWithItsTimeout(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = held.Rollback() })
 
-	rw, err := OpenExistingRW(path, 50*time.Millisecond)
+	rw, err := OpenExistingRW(path, time.Millisecond)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,8 +108,8 @@ func TestOpenExistingRWRecordsBusyWithItsTimeout(t *testing.T) {
 
 	for _, e := range lockEvents(t, path) {
 		if e.Kind == lockmetrics.KindBusy && e.Site == "internal/db.TestOpenExistingRWRecordsBusyWithItsTimeout" {
-			if e.Err != "SQLITE_BUSY" || e.BusyTimeoutMS != 50 {
-				t.Fatalf("busy event = %+v, want err SQLITE_BUSY, busy_timeout_ms 50", e)
+			if e.Err != "SQLITE_BUSY" || e.BusyTimeoutMS != 1 {
+				t.Fatalf("busy event = %+v, want err SQLITE_BUSY, busy_timeout_ms 1", e)
 			}
 			return
 		}
@@ -114,37 +122,39 @@ func TestOpenExistingRWRecordsBusyWithItsTimeout(t *testing.T) {
 // still lands next to its own file, and nothing is written by the missing one.
 func TestFailedOpenKeepsTheLockMetricsSink(t *testing.T) {
 	skipUnlessDefaultThreshold(t)
-	path := filepath.Join(t.TempDir(), "watchtower.db")
-	d, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = d.Close() })
+	synctest.Test(t, func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "watchtower.db")
+		d, err := Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = d.Close() })
 
-	missingDir := t.TempDir()
-	if _, err := OpenExisting(filepath.Join(missingDir, "missing.db"), 50*time.Millisecond); err == nil {
-		t.Fatal("OpenExisting of a missing file succeeded")
-	}
-	if _, err := OpenExistingRW(filepath.Join(missingDir, "missing.db"), 50*time.Millisecond); err == nil {
-		t.Fatal("OpenExistingRW of a missing file succeeded")
-	}
+		missingDir := t.TempDir()
+		if _, err := OpenExisting(filepath.Join(missingDir, "missing.db"), 50*time.Millisecond); err == nil {
+			t.Fatal("OpenExisting of a missing file succeeded")
+		}
+		if _, err := OpenExistingRW(filepath.Join(missingDir, "missing.db"), 50*time.Millisecond); err == nil {
+			t.Fatal("OpenExistingRW of a missing file succeeded")
+		}
 
-	hold := lockmetrics.DefaultThreshold + 50*time.Millisecond
-	if err := d.WithTx(func(*sql.Tx) error { time.Sleep(hold); return nil }); err != nil {
-		t.Fatal(err)
-	}
+		// On a synctest bubble's clock, which the measuring driver reads: the
+		// hold is exact and no real time passes.
+		hold := lockmetrics.DefaultThreshold + 50*time.Millisecond
+		mustOK(t, holdWriteLock(d, hold))
 
-	const site = "internal/db.(*DB).WithTx <- internal/db.TestFailedOpenKeepsTheLockMetricsSink"
-	found := false
-	for _, e := range lockEvents(t, path) {
-		found = found || e.Kind == lockmetrics.KindTx && e.Site == site
-	}
-	if !found {
-		t.Fatalf("no tx event with site %q next to the open database: %+v", site, lockEvents(t, path))
-	}
-	if _, err := os.Stat(filepath.Join(missingDir, lockmetrics.FileName)); !os.IsNotExist(err) {
-		t.Fatalf("a sink was written next to the missing database (stat err %v)", err)
-	}
+		const site = "internal/db.(*DB).WithTx <- internal/db.holdWriteLock"
+		found := false
+		for _, e := range lockEvents(t, path) {
+			found = found || e.Kind == lockmetrics.KindTx && e.Site == site
+		}
+		if !found {
+			t.Fatalf("no tx event with site %q next to the open database: %+v", site, lockEvents(t, path))
+		}
+		if _, err := os.Stat(filepath.Join(missingDir, lockmetrics.FileName)); !os.IsNotExist(err) {
+			t.Fatalf("a sink was written next to the missing database (stat err %v)", err)
+		}
+	})
 }
 
 // pingFresh opens a connection, so a busy error on the open names this
@@ -176,7 +186,8 @@ func TestPoolConnectionOpenRecordsBusy(t *testing.T) {
 		}
 	}
 
-	fresh := openPoolWith(metricsConnector(path + "?_busy_timeout=50"))
+	// The engine waits out the busy timeout for real: keep it at 1 ms.
+	fresh := openPoolWith(metricsConnector(path + "?_busy_timeout=1"))
 	t.Cleanup(func() { _ = fresh.Close() })
 	if err := pingFresh(fresh); !IsBusy(err) {
 		t.Fatalf("open under an exclusive lock: want a busy error, got %v", err)
@@ -185,8 +196,8 @@ func TestPoolConnectionOpenRecordsBusy(t *testing.T) {
 	const site = "internal/db.(*pragmaConnector).Connect <- internal/db.pingFresh"
 	for _, e := range lockEvents(t, path) {
 		if e.Kind == lockmetrics.KindBusy && e.Site == site {
-			if e.BusyTimeoutMS != 50 {
-				t.Fatalf("busy event = %+v, want busy_timeout_ms 50", e)
+			if e.BusyTimeoutMS != 1 {
+				t.Fatalf("busy event = %+v, want busy_timeout_ms 1", e)
 			}
 			return
 		}

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,17 +20,73 @@ import (
 // The site of an event raised from this file names this package's helpers.
 const testPkg = "internal/db/lockmetrics_test."
 
+// fakeClock is the driver's clock in these tests: it stands still unless a
+// test moves it, so every wait and hold is the one the test made — nothing
+// is slept, and a loaded machine cannot make a statement slow.
+type fakeClock struct {
+	mu     sync.Mutex
+	t      time.Time
+	step   time.Duration // added after every read
+	onRead func()        // runs once, on the next read, after it
+}
+
+// clockStart is the fake clock's first reading, on a whole millisecond as
+// the sink's stamps are.
+var clockStart = time.Date(2026, 10, 15, 9, 30, 0, 0, time.UTC)
+
+func (c *fakeClock) Now() time.Time {
+	c.mu.Lock()
+	r := c.t
+	c.t = c.t.Add(c.step)
+	hook := c.onRead
+	c.onRead = nil
+	c.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	return r
+}
+
+func (c *fakeClock) SetStep(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.step = d
+}
+
+func (c *fakeClock) Advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = c.t.Add(d)
+}
+
+// AdvanceAfterNextRead moves the clock by d right after its next read and
+// closes the returned channel then: a statement that read its start sees d
+// pass before it ends.
+func (c *fakeClock) AdvanceAfterNextRead(d time.Duration) <-chan struct{} {
+	read := make(chan struct{})
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.onRead = func() {
+		c.Advance(d)
+		close(read)
+	}
+	return read
+}
+
 // setupDriver starts from a fresh process state with the given threshold
-// env and the sink next to a DB file in a temp dir. It returns both paths.
-func setupDriver(t *testing.T, thresholdMS string) (dbPath, sinkPath string) {
+// env, the sink next to a DB file in a temp dir and the driver on a fake
+// clock. It returns both paths and the clock.
+func setupDriver(t *testing.T, thresholdMS string) (dbPath, sinkPath string, clock *fakeClock) {
 	t.Helper()
 	t.Setenv("WATCHTOWER_DBLOCK_THRESHOLD_MS", thresholdMS)
 	lockmetrics.ResetForTest()
 	t.Cleanup(lockmetrics.ResetForTest)
+	clock = &fakeClock{t: clockStart}
+	lockmetrics.SetNowForTest(clock.Now)
 	dir := t.TempDir()
 	dbPath = filepath.Join(dir, "watchtower.db")
 	lockmetrics.Configure(dbPath)
-	return dbPath, filepath.Join(dir, lockmetrics.FileName)
+	return dbPath, filepath.Join(dir, lockmetrics.FileName), clock
 }
 
 // wrapped is dsn's engine connector wrapped by the lock metrics, as
@@ -85,8 +142,8 @@ func ofKind(events []lockmetrics.Event, kind string) []lockmetrics.Event {
 	return out
 }
 
-// holdTx runs a write transaction that keeps the lock for d.
-func holdTx(t *testing.T, d *sql.DB, hold time.Duration) {
+// holdTx runs a write transaction that keeps the lock for hold on clock.
+func holdTx(t *testing.T, d *sql.DB, clock *fakeClock, hold time.Duration) {
 	t.Helper()
 	tx, err := d.Begin()
 	if err != nil {
@@ -95,7 +152,7 @@ func holdTx(t *testing.T, d *sql.DB, hold time.Duration) {
 	if _, err := tx.Exec(`INSERT INTO t (v) VALUES (1)`); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	time.Sleep(hold)
+	clock.Advance(hold)
 	if err := tx.Commit(); err != nil {
 		t.Fatalf("commit: %v", err)
 	}
@@ -115,18 +172,18 @@ func insertRow(d *sql.DB) error {
 }
 
 func TestDriverSlowTxRecordedWithSiteAndBusyTimeout(t *testing.T) {
-	dbPath, sink := setupDriver(t, "30")
+	dbPath, sink, clock := setupDriver(t, "30")
 	d := openMetrics(t, dbPath+"?_txlock=immediate&_busy_timeout=1234")
 
-	holdTx(t, d, 60*time.Millisecond)
+	holdTx(t, d, clock, 60*time.Millisecond)
 
 	txs := ofKind(readEvents(t, sink), lockmetrics.KindTx)
 	if len(txs) != 1 {
 		t.Fatalf("want 1 tx event, got %+v", txs)
 	}
 	e := txs[0]
-	if e.HoldMS < 60 {
-		t.Errorf("hold_ms = %d, want >= 60", e.HoldMS)
+	if e.HoldMS != 60 || e.WaitMS != 0 {
+		t.Errorf("hold_ms = %d, wait_ms = %d, want 60 and 0", e.HoldMS, e.WaitMS)
 	}
 	if e.Site != testPkg+"holdTx" {
 		t.Errorf("site = %q, want %q", e.Site, testPkg+"holdTx")
@@ -140,10 +197,10 @@ func TestDriverSlowTxRecordedWithSiteAndBusyTimeout(t *testing.T) {
 }
 
 func TestDriverBelowThresholdWritesNothing(t *testing.T) {
-	dbPath, sink := setupDriver(t, "10000")
+	dbPath, sink, clock := setupDriver(t, "10000")
 	d := openMetrics(t, dbPath+"?_txlock=immediate")
 
-	holdTx(t, d, 0)
+	holdTx(t, d, clock, 0)
 	if err := insertRow(d); err != nil {
 		t.Fatal(err)
 	}
@@ -154,15 +211,18 @@ func TestDriverBelowThresholdWritesNothing(t *testing.T) {
 }
 
 func TestDriverBusyIsRecordedAndErrorPassesThroughUnwrapped(t *testing.T) {
-	dbPath, sink := setupDriver(t, "10000") // busy is written whatever the threshold
+	dbPath, sink, clock := setupDriver(t, "10000") // busy is written whatever the threshold
 	holder := openMetrics(t, dbPath+"?_txlock=immediate")
-	d := openMetrics(t, dbPath+"?_txlock=immediate&_busy_timeout=50")
+	// The engine really waits out its busy timeout: 1 and 2 ms keep that
+	// short, while the clock gives every failed statement a 50 ms wait.
+	d := openMetrics(t, dbPath+"?_txlock=immediate&_busy_timeout=1")
 
 	held, err := holder.Begin()
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = held.Rollback() })
+	clock.SetStep(50 * time.Millisecond)
 
 	err = beginWrite(d)
 	var se sqlcipher.Error
@@ -170,7 +230,7 @@ func TestDriverBusyIsRecordedAndErrorPassesThroughUnwrapped(t *testing.T) {
 		t.Fatalf("begin under a held lock: want sqlcipher.Error SQLITE_BUSY, got %T %v", err, err)
 	}
 
-	if _, err := d.Exec(`PRAGMA busy_timeout=70`); err != nil {
+	if _, err := d.Exec(`PRAGMA busy_timeout=2`); err != nil {
 		t.Fatal(err)
 	}
 	err = insertRow(d)
@@ -185,13 +245,13 @@ func TestDriverBusyIsRecordedAndErrorPassesThroughUnwrapped(t *testing.T) {
 	for i, want := range []struct {
 		site    string
 		timeout int64
-	}{{testPkg + "beginWrite", 50}, {testPkg + "insertRow", 70}} {
+	}{{testPkg + "beginWrite", 1}, {testPkg + "insertRow", 2}} {
 		e := busy[i]
 		if e.Err != "SQLITE_BUSY" || e.Site != want.site || e.BusyTimeoutMS != want.timeout {
 			t.Errorf("busy[%d] = %+v, want err SQLITE_BUSY site %s timeout %d", i, e, want.site, want.timeout)
 		}
-		if e.WaitMS < 40 {
-			t.Errorf("busy[%d] wait_ms = %d, want about the busy timeout", i, e.WaitMS)
+		if e.WaitMS != 50 {
+			t.Errorf("busy[%d] wait_ms = %d, want the 50 ms the clock moved across the statement", i, e.WaitMS)
 		}
 	}
 }
@@ -201,7 +261,7 @@ func TestDriverBusyIsRecordedAndErrorPassesThroughUnwrapped(t *testing.T) {
 // an exec that only queued behind another writer still shows a long hold_ms.
 // `db lockstats` therefore never sums it with tx holds or names it a holder.
 func TestDriverSlowAutocommitExecRecordsWaitPlusHoldCombined(t *testing.T) {
-	dbPath, sink := setupDriver(t, "30")
+	dbPath, sink, clock := setupDriver(t, "30")
 	holder := openMetrics(t, dbPath+"?_txlock=immediate")
 	d := openMetrics(t, dbPath+"?_txlock=immediate&_busy_timeout=5000")
 
@@ -209,9 +269,12 @@ func TestDriverSlowAutocommitExecRecordsWaitPlusHoldCombined(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// insertRow reads its start, then waits behind holder while 80 ms pass;
+	// holder commits only once that start was read.
+	started := clock.AdvanceAfterNextRead(80 * time.Millisecond)
 	released := make(chan error, 1)
 	go func() {
-		time.Sleep(80 * time.Millisecond)
+		<-started
 		released <- held.Commit()
 	}()
 	if err := insertRow(d); err != nil {
@@ -232,8 +295,8 @@ func TestDriverSlowAutocommitExecRecordsWaitPlusHoldCombined(t *testing.T) {
 	}
 	// insertRow itself held the lock for a moment; the 80 ms is its wait
 	// behind holder, and it lands in hold_ms.
-	if execs[0].HoldMS < 70 || execs[0].WaitMS != 0 || execs[0].BusyTimeoutMS != 5000 {
-		t.Errorf("exec event = %+v, want hold_ms >= 70 (the wait behind the holder included), no wait_ms, busy_timeout_ms 5000", execs[0])
+	if execs[0].HoldMS != 80 || execs[0].WaitMS != 0 || execs[0].BusyTimeoutMS != 5000 {
+		t.Errorf("exec event = %+v, want hold_ms 80 (the wait behind the holder included), no wait_ms, busy_timeout_ms 5000", execs[0])
 	}
 }
 
@@ -243,7 +306,7 @@ func TestDriverSlowAutocommitExecRecordsWaitPlusHoldCombined(t *testing.T) {
 // the extended code, records the busy from inside the transaction, and the
 // rolled-back transaction leaves no tx event of its own.
 func TestDriverBusySnapshotNamedByExtendedCode(t *testing.T) {
-	dbPath, sink := setupDriver(t, "10000")                // busy is written whatever the threshold
+	dbPath, sink, _ := setupDriver(t, "10000")             // busy is written whatever the threshold
 	reader := openMetrics(t, dbPath+"?_busy_timeout=2000") // no _txlock: BEGIN is deferred
 	writer := openMetrics(t, dbPath)
 
@@ -280,7 +343,7 @@ func TestDriverBusySnapshotNamedByExtendedCode(t *testing.T) {
 }
 
 func TestDriverReadOnlyTxAndReadsAreNotMeasured(t *testing.T) {
-	dbPath, sink := setupDriver(t, "0") // 0 logs every measured tx/exec
+	dbPath, sink, clock := setupDriver(t, "0") // 0 logs every measured tx/exec
 	d := openMetrics(t, dbPath+"?_txlock=immediate")
 	if err := os.Remove(sink); err != nil { // drop openMetrics' own DDL events
 		t.Fatal(err)
@@ -303,17 +366,17 @@ func TestDriverReadOnlyTxAndReadsAreNotMeasured(t *testing.T) {
 		t.Fatalf("read-only work was measured: %+v", got)
 	}
 
-	holdTx(t, d, 0)
+	holdTx(t, d, clock, 0)
 	if got := ofKind(readEvents(t, sink), lockmetrics.KindTx); len(got) != 1 {
 		t.Fatalf("a write tx at threshold 0: want 1 tx event, got %+v", got)
 	}
 }
 
 func TestDriverMemoryDatabaseIsNotMeasured(t *testing.T) {
-	_, sink := setupDriver(t, "0")
+	_, sink, clock := setupDriver(t, "0")
 	d := openMetrics(t, ":memory:?_txlock=immediate")
 
-	holdTx(t, d, 0)
+	holdTx(t, d, clock, 0)
 	if err := insertRow(d); err != nil {
 		t.Fatal(err)
 	}
@@ -326,7 +389,7 @@ func TestDriverMemoryDatabaseIsNotMeasured(t *testing.T) {
 func TestDriverKeepsTxLockMode(t *testing.T) {
 	// BEGIN IMMEDIATE takes the write lock at Begin, so a second writer's
 	// Begin is busy before either has written anything.
-	dbPath, _ := setupDriver(t, "off")
+	dbPath, _, _ := setupDriver(t, "off")
 	a := openMetrics(t, dbPath+"?_txlock=immediate")
 	b := openMetrics(t, dbPath+"?_txlock=immediate&_busy_timeout=0")
 	tx, err := a.Begin()
@@ -410,16 +473,17 @@ func TestDSNBusyTimeoutMS(t *testing.T) {
 // The tx event is stamped when COMMIT is done, so [ts-hold_ms, ts] is the
 // interval the lock was held (db lockstats overlaps busy events with it).
 func TestDriverTxEventIsStampedAfterCommit(t *testing.T) {
-	dbPath, sink := setupDriver(t, "30")
+	dbPath, sink, clock := setupDriver(t, "30")
 	d := openMetrics(t, dbPath+"?_txlock=immediate")
 
-	beforeBegin := time.Now()
+	clock.Advance(time.Second)
+	beforeBegin := clock.Now()
 	tx, err := d.Begin()
 	if err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(60 * time.Millisecond)
-	beforeCommit := time.Now()
+	clock.Advance(60 * time.Millisecond)
+	beforeCommit := clock.Now()
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
@@ -429,13 +493,11 @@ func TestDriverTxEventIsStampedAfterCommit(t *testing.T) {
 		t.Fatalf("want 1 tx event, got %+v", txs)
 	}
 	e := txs[0]
-	// ts is written with millisecond precision (truncated): allow 1 ms.
-	ts := e.TS.Add(time.Millisecond)
-	if ts.Before(beforeCommit) {
-		t.Errorf("ts %v is before COMMIT was called (%v): stamped at begin?", e.TS, beforeCommit)
+	if !e.TS.Equal(beforeCommit) {
+		t.Errorf("ts %v, want %v when COMMIT was called: stamped at begin?", e.TS, beforeCommit)
 	}
-	if start := ts.Add(-time.Duration(e.HoldMS) * time.Millisecond); start.Before(beforeBegin.Add(-time.Millisecond)) {
-		t.Errorf("ts - hold_ms = %v starts before Begin was called (%v)", start, beforeBegin)
+	if start := e.TS.Add(-time.Duration(e.HoldMS) * time.Millisecond); !start.Equal(beforeBegin) {
+		t.Errorf("ts - hold_ms = %v, want %v when Begin was called", start, beforeBegin)
 	}
 }
 
@@ -443,7 +505,7 @@ func TestDriverTxEventIsStampedAfterCommit(t *testing.T) {
 // transactions and statements are not timed even at threshold 0, but its
 // busy errors are still recorded.
 func TestDriverQueryOnlyConnectionRecordsOnlyBusy(t *testing.T) {
-	dbPath, sink := setupDriver(t, "0")
+	dbPath, sink, clock := setupDriver(t, "0")
 	holder := openMetrics(t, dbPath+"?_txlock=immediate")
 	ro := openQueryOnly(t, dbPath)
 	if err := os.Remove(sink); err != nil { // drop openMetrics' own DDL events
@@ -458,7 +520,7 @@ func TestDriverQueryOnlyConnectionRecordsOnlyBusy(t *testing.T) {
 	if err := tx.QueryRow(`SELECT count(*) FROM t`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(20 * time.Millisecond)
+	clock.Advance(20 * time.Millisecond)
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
@@ -486,8 +548,8 @@ func TestDriverQueryOnlyConnectionRecordsOnlyBusy(t *testing.T) {
 		t.Fatal("read under an exclusive lock succeeded")
 	}
 	busy := ofKind(readEvents(t, sink), lockmetrics.KindBusy)
-	if len(busy) != 1 || busy[0].Site != testPkg+"countRows" || busy[0].BusyTimeoutMS != 50 {
-		t.Fatalf("want 1 busy event from countRows with busy_timeout_ms 50, got %+v", readEvents(t, sink))
+	if len(busy) != 1 || busy[0].Site != testPkg+"countRows" || busy[0].BusyTimeoutMS != 1 {
+		t.Fatalf("want 1 busy event from countRows with busy_timeout_ms 1, got %+v", readEvents(t, sink))
 	}
 	if txs := ofKind(readEvents(t, sink), lockmetrics.KindTx); len(txs) != 0 {
 		t.Fatalf("a query_only connection was timed: %+v", txs)
@@ -497,7 +559,8 @@ func TestDriverQueryOnlyConnectionRecordsOnlyBusy(t *testing.T) {
 // openQueryOnly opens dbPath the way db.OpenExisting does.
 func openQueryOnly(t *testing.T, dbPath string) *sql.DB {
 	t.Helper()
-	d := sql.OpenDB(wrapped("file:" + dbPath + "?mode=rw&_busy_timeout=50&_query_only=1"))
+	// The engine waits out the busy timeout for real: keep it at 1 ms.
+	d := sql.OpenDB(wrapped("file:" + dbPath + "?mode=rw&_busy_timeout=1&_query_only=1"))
 	d.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = d.Close() })
 	return d
@@ -510,7 +573,7 @@ func countRows(d *sql.DB) error {
 
 // An autocommit write run through Query (… RETURNING) is timed like an Exec.
 func TestDriverSlowWriteThroughQueryRecordedAsExec(t *testing.T) {
-	dbPath, sink := setupDriver(t, "30")
+	dbPath, sink, clock := setupDriver(t, "30")
 	holder := openMetrics(t, dbPath+"?_txlock=immediate")
 	d := openMetrics(t, dbPath+"?_txlock=immediate&_busy_timeout=5000")
 
@@ -518,9 +581,11 @@ func TestDriverSlowWriteThroughQueryRecordedAsExec(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// As for an Exec: 80 ms pass behind holder after the start was read.
+	started := clock.AdvanceAfterNextRead(80 * time.Millisecond)
 	released := make(chan error, 1)
 	go func() {
-		time.Sleep(80 * time.Millisecond)
+		<-started
 		released <- held.Commit()
 	}()
 	if err := insertReturning(d); err != nil {
@@ -532,8 +597,8 @@ func TestDriverSlowWriteThroughQueryRecordedAsExec(t *testing.T) {
 
 	for _, e := range ofKind(readEvents(t, sink), lockmetrics.KindExec) {
 		if e.Site == testPkg+"insertReturning" {
-			if e.HoldMS < 30 {
-				t.Errorf("exec event = %+v, want hold_ms >= 30", e)
+			if e.HoldMS != 80 || e.WaitMS != 0 {
+				t.Errorf("exec event = %+v, want hold_ms 80, no wait_ms", e)
 			}
 			return
 		}
@@ -621,7 +686,7 @@ func benchTx(b *testing.B, measured bool) {
 // implementing one of the interfaces the wrapper forwards: Wrap would then
 // refuse the open (errUnmeasurable) instead of measuring.
 func TestWrapMeasuresEveryConnection(t *testing.T) {
-	dbPath, _ := setupDriver(t, "10000")
+	dbPath, _, _ := setupDriver(t, "10000")
 	d := sql.OpenDB(wrapped(dbPath))
 	t.Cleanup(func() { _ = d.Close() })
 	c, err := d.Conn(context.Background())

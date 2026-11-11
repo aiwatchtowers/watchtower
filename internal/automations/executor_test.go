@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/dop251/goja"
@@ -73,7 +74,7 @@ func failCases() []failCase {
 func TestAuto04_FailedRunLeavesStateAndOutputsUnchanged(t *testing.T) {
 	for _, tc := range failCases() {
 		t.Run(tc.name, func(t *testing.T) {
-			f := newExFixture(t, exOpts{gen: tc.gen, modules: jumpModules(0)})
+			f := newExFixture(t, exOpts{gen: tc.gen, modules: jumpModules(nil, nil)})
 			a := f.seed(t, "digest", `state.set("k", 2); output.inbox({title: "new", body: "x"}); `+tc.tail, false)
 			f.commitPrior(t, a)
 			before := f.dump(t)
@@ -94,9 +95,9 @@ func TestAuto04_FailedRunLeavesStateAndOutputsUnchanged(t *testing.T) {
 }
 
 // jumpModules adds jump() (pastDeadlineModule) over the fixture's clock.
-func jumpModules(sleep time.Duration) func(f *exFixture) []automations.Module {
+func jumpModules(entered, stuck chan struct{}) func(f *exFixture) []automations.Module {
 	return func(f *exFixture) []automations.Module {
-		return []automations.Module{pastDeadlineModule(f.clock, sleep)}
+		return []automations.Module{pastDeadlineModule(f.clock, entered, stuck)}
 	}
 }
 
@@ -419,31 +420,35 @@ func waitModule(ready *atomic.Bool) automations.Module {
 
 func TestWaiter_PauseTimeoutExpires(t *testing.T) {
 	t.Run("expires", func(t *testing.T) {
-		var ready atomic.Bool
-		f := newExFixture(t, exOpts{modules: func(*exFixture) []automations.Module { return []automations.Module{waitModule(&ready)} }})
-		id := f.enqueue(t, f.seed(t, "digest", `waitFor(); return 1`, false), db.TriggerManual)
-		f.stepNoWait(t, 1)
-		f.waitStatus(t, id, db.RunWaiting)
-		f.clock.Advance(73 * time.Hour) // past the default pause_timeout_hours of 72
-		f.e.Wake()
-		f.e.Wait()
-		f.wantRun(t, id, db.RunExpired, db.ErrKindExpired)
+		synctest.Test(t, func(t *testing.T) {
+			var ready atomic.Bool
+			f := newExFixture(t, exOpts{modules: func(*exFixture) []automations.Module { return []automations.Module{waitModule(&ready)} }})
+			id := f.enqueue(t, f.seed(t, "digest", `waitFor(); return 1`, false), db.TriggerManual)
+			f.stepNoWait(t, 1)
+			f.waitStatus(t, id, db.RunWaiting)
+			f.clock.Advance(73 * time.Hour) // past the default pause_timeout_hours of 72
+			f.e.Wake()
+			f.e.Wait()
+			f.wantRun(t, id, db.RunExpired, db.ErrKindExpired)
+		})
 	})
 	t.Run("resumes", func(t *testing.T) {
-		var ready atomic.Bool
-		f := newExFixture(t, exOpts{modules: func(*exFixture) []automations.Module { return []automations.Module{waitModule(&ready)} }})
-		id := f.enqueue(t, f.seed(t, "digest", `return waitFor()`, false), db.TriggerManual)
-		f.stepNoWait(t, 1)
-		f.waitStatus(t, id, db.RunWaiting)
-		f.clock.Advance(time.Hour)
-		ready.Store(true)
-		f.e.Wake()
-		f.e.Wait()
-		r := f.wantRun(t, id, db.RunSucceeded, "")
-		if r.Summary != "resumed" || r.ActiveMS >= time.Hour.Milliseconds() || r.WaitingReason != "" {
-			t.Fatalf("run summary %q active_ms %d reason %q; want resumed with the hour of pause excluded",
-				r.Summary, r.ActiveMS, r.WaitingReason)
-		}
+		synctest.Test(t, func(t *testing.T) {
+			var ready atomic.Bool
+			f := newExFixture(t, exOpts{modules: func(*exFixture) []automations.Module { return []automations.Module{waitModule(&ready)} }})
+			id := f.enqueue(t, f.seed(t, "digest", `return waitFor()`, false), db.TriggerManual)
+			f.stepNoWait(t, 1)
+			f.waitStatus(t, id, db.RunWaiting)
+			f.clock.Advance(time.Hour)
+			ready.Store(true)
+			f.e.Wake()
+			f.e.Wait()
+			r := f.wantRun(t, id, db.RunSucceeded, "")
+			if r.Summary != "resumed" || r.ActiveMS >= time.Hour.Milliseconds() || r.WaitingReason != "" {
+				t.Fatalf("run summary %q active_ms %d reason %q; want resumed with the hour of pause excluded",
+					r.Summary, r.ActiveMS, r.WaitingReason)
+			}
+		})
 	})
 }
 
@@ -496,24 +501,21 @@ func TestExecutor_MalformedEventJSONFailsAsBackend(t *testing.T) {
 	}
 }
 
-func waitNoAbandoned(t *testing.T) {
-	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for automations.AbandonedRuns() > 0 {
-		if time.Now().After(deadline) {
-			t.Fatalf("AbandonedRuns = %d after 30 s", automations.AbandonedRuns())
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-}
-
 func TestExecutor_AbandonedRunDisablesAutomation(t *testing.T) {
-	waitNoAbandoned(t)
-	t.Cleanup(func() { waitNoAbandoned(t) })
-	f := newExFixture(t, exOpts{modules: jumpModules(automations.AbandonGrace + 2*time.Second)})
+	if n := automations.AbandonedRuns(); n != 0 {
+		t.Fatalf("AbandonedRuns = %d at the start; an earlier test left one behind", n)
+	}
+	ended := make(chan struct{}, 1)
+	t.Cleanup(automations.OnAbandonedRunEnd(func() { ended <- struct{}{} }))
+	entered, stuck := make(chan struct{}), make(chan struct{})
+	f := newExFixture(t, exOpts{modules: jumpModules(entered, stuck)})
 	a := f.seed(t, "digest", `jump(); return 1`, false)
 	id := f.enqueue(t, a, db.TriggerManual)
-	f.step(t, 1)
+	f.stepNoWait(t, 1)
+	<-entered // past the deadline, stuck in a native call
+	f.clock.AwaitWaiter(f.clock.Now().Add(automations.AbandonGrace))
+	f.clock.Advance(automations.AbandonGrace)
+	f.e.Wait()
 	r := f.wantRun(t, id, db.RunTimedOut, db.ErrKindTimeout)
 	mustContain(t, "run error", r.Error, "runaway script — check and re-enable")
 	mustContain(t, "log", f.logs.String(), "abandoned")
@@ -525,6 +527,8 @@ func TestExecutor_AbandonedRunDisablesAutomation(t *testing.T) {
 	if got.DisabledReason != "runaway script — check and re-enable" || got.DisabledAt == nil {
 		t.Errorf("disabled_reason=%q disabled_at=%v, want the runaway reason and a time", got.DisabledReason, got.DisabledAt)
 	}
+	close(stuck)
+	<-ended
 }
 
 func TestExecutor_NoClaimsWhileTwoRunsAbandoned(t *testing.T) {
@@ -560,36 +564,41 @@ func TestExecutor_ExecuteInlineRefusesLostClaim(t *testing.T) {
 // that becomes ready while MaxConcurrent runs are running stays waiting until
 // one of them finishes.
 func TestWaiter_ResumeWaitsForAFreeSlot(t *testing.T) {
-	var ready atomic.Bool
-	gen := newBlockingGen()
-	f := newExFixture(t, exOpts{gen: gen, maxConcurrent: 2, modules: func(*exFixture) []automations.Module {
-		return []automations.Module{waitModule(&ready)}
-	}})
-	var waiters, busy []int64
-	for _, slug := range []string{"wait-one", "wait-two"} {
-		waiters = append(waiters, f.enqueue(t, f.seed(t, slug, `return waitFor()`, false), db.TriggerManual))
-	}
-	f.stepNoWait(t, 2)
-	for _, id := range waiters {
-		f.waitStatus(t, id, db.RunWaiting)
-	}
-	for _, slug := range []string{"busy-one", "busy-two"} {
-		busy = append(busy, f.enqueue(t, f.seed(t, slug, `llm("x"); return 1`, false), db.TriggerManual))
-	}
-	f.stepNoWait(t, 2) // the waiting runs hold no slot
-	gen.waitEntered(t)
-	gen.waitEntered(t)
-	ready.Store(true)
-	f.e.Wake()
-	time.Sleep(200 * time.Millisecond) // give the waits a chance to (wrongly) resume
-	for _, id := range waiters {
-		f.wantRun(t, id, db.RunWaiting, "")
-	}
-	close(gen.release) // the busy runs finish and wake the waits
-	f.e.Wait()
-	for _, id := range append(waiters, busy...) {
-		f.wantRun(t, id, db.RunSucceeded, "")
-	}
+	synctest.Test(t, func(t *testing.T) {
+		var ready atomic.Bool
+		gen := newBlockingGen()
+		f := newExFixture(t, exOpts{gen: gen, maxConcurrent: 2, modules: func(*exFixture) []automations.Module {
+			return []automations.Module{waitModule(&ready)}
+		}})
+		var waiters, busy []int64
+		for _, slug := range []string{"wait-one", "wait-two"} {
+			waiters = append(waiters, f.enqueue(t, f.seed(t, slug, `return waitFor()`, false), db.TriggerManual))
+		}
+		f.stepNoWait(t, 2)
+		for _, id := range waiters {
+			f.waitStatus(t, id, db.RunWaiting)
+		}
+		for _, slug := range []string{"busy-one", "busy-two"} {
+			busy = append(busy, f.enqueue(t, f.seed(t, slug, `llm("x"); return 1`, false), db.TriggerManual))
+		}
+		f.stepNoWait(t, 2) // the waiting runs hold no slot
+		gen.waitEntered(t)
+		gen.waitEntered(t)
+		ready.Store(true)
+		f.e.Wake()
+		synctest.Wait() // the waits ran their ready checks and found no free slot
+		if n := automations.ExecutorReadyWaits(f.e); n != 2 {
+			t.Fatalf("ready waits = %d once settled; want 2", n)
+		}
+		for _, id := range waiters {
+			f.wantRun(t, id, db.RunWaiting, "")
+		}
+		close(gen.release) // the busy runs finish and wake the waits
+		f.e.Wait()
+		for _, id := range append(waiters, busy...) {
+			f.wantRun(t, id, db.RunSucceeded, "")
+		}
+	})
 }
 
 func TestExecutor_CancelledRunRecordsActiveTime(t *testing.T) {
@@ -618,13 +627,8 @@ func runExecutor(t *testing.T, f *exFixture) (stop func()) {
 	go func() { done <- f.e.Run(ctx) }()
 	return func() {
 		cancel()
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Fatalf("Run: %v", err)
-			}
-		case <-time.After(30 * time.Second):
-			t.Fatal("Run did not return after its ctx ended")
+		if err := <-done; err != nil {
+			t.Fatalf("Run: %v", err)
 		}
 	}
 }
@@ -641,27 +645,31 @@ func TestExecutor_DaemonStopMidRunEndsInterrupted(t *testing.T) {
 }
 
 func TestWaiter_CancelOfWaitingRunEndsCancelled(t *testing.T) {
-	var ready atomic.Bool
-	f := newExFixture(t, exOpts{modules: func(*exFixture) []automations.Module { return []automations.Module{waitModule(&ready)} }})
-	id := f.enqueue(t, f.seed(t, "digest", `waitFor(); return 1`, false), db.TriggerManual)
-	f.stepNoWait(t, 1)
-	f.waitStatus(t, id, db.RunWaiting)
-	if ok, err := f.d.CancelAutomationRun(id, f.clock.Now()); err != nil || !ok {
-		t.Fatalf("cancel = (%v, %v)", ok, err)
-	}
-	f.e.Wake()
-	f.e.Wait()
-	f.wantRun(t, id, db.RunCancelled, db.ErrKindCancelled)
+	synctest.Test(t, func(t *testing.T) {
+		var ready atomic.Bool
+		f := newExFixture(t, exOpts{modules: func(*exFixture) []automations.Module { return []automations.Module{waitModule(&ready)} }})
+		id := f.enqueue(t, f.seed(t, "digest", `waitFor(); return 1`, false), db.TriggerManual)
+		f.stepNoWait(t, 1)
+		f.waitStatus(t, id, db.RunWaiting)
+		if ok, err := f.d.CancelAutomationRun(id, f.clock.Now()); err != nil || !ok {
+			t.Fatalf("cancel = (%v, %v)", ok, err)
+		}
+		f.e.Wake()
+		f.e.Wait()
+		f.wantRun(t, id, db.RunCancelled, db.ErrKindCancelled)
+	})
 }
 
 func TestWaiter_DaemonStopDuringWaitEndsInterrupted(t *testing.T) {
-	var ready atomic.Bool
-	f := newExFixture(t, exOpts{modules: func(*exFixture) []automations.Module { return []automations.Module{waitModule(&ready)} }})
-	id := f.enqueue(t, f.seed(t, "digest", `waitFor(); return 1`, false), db.TriggerManual)
-	stop := runExecutor(t, f)
-	f.waitStatus(t, id, db.RunWaiting)
-	stop()
-	f.wantRun(t, id, db.RunFailed, db.ErrKindInterrupted)
+	synctest.Test(t, func(t *testing.T) {
+		var ready atomic.Bool
+		f := newExFixture(t, exOpts{modules: func(*exFixture) []automations.Module { return []automations.Module{waitModule(&ready)} }})
+		id := f.enqueue(t, f.seed(t, "digest", `waitFor(); return 1`, false), db.TriggerManual)
+		stop := runExecutor(t, f)
+		f.waitStatus(t, id, db.RunWaiting)
+		stop()
+		f.wantRun(t, id, db.RunFailed, db.ErrKindInterrupted)
+	})
 }
 
 func TestExecutor_ExecuteInlineStopSaysDryRunStopped(t *testing.T) {
@@ -726,12 +734,9 @@ func newSlotFixture(t *testing.T) *slotFixture {
 	}
 	sf.ready.Store(true)
 	sf.e.Wake()
-	deadline := time.Now().Add(10 * time.Second)
-	for automations.ExecutorReadyWaits(sf.e) != 2 {
-		if time.Now().After(deadline) {
-			t.Fatalf("ready waits = %d; want 2 waiting for a slot", automations.ExecutorReadyWaits(sf.e))
-		}
-		time.Sleep(5 * time.Millisecond)
+	synctest.Wait()
+	if n := automations.ExecutorReadyWaits(sf.e); n != 2 {
+		t.Fatalf("ready waits = %d once settled; want 2 waiting for a slot", n)
 	}
 	return sf
 }
@@ -750,34 +755,38 @@ func (sf *slotFixture) freeHolders(t *testing.T) {
 // TestExecutor_ReadyWaitsGetFreedSlotsBeforeQueuedRuns: slots freed while
 // ready waits are owed them are not given to a queued run.
 func TestExecutor_ReadyWaitsGetFreedSlotsBeforeQueuedRuns(t *testing.T) {
-	sf := newSlotFixture(t)
-	queued := sf.enqueue(t, sf.seed(t, "queued", `return 1`, false), db.TriggerManual)
-	sf.freeHolders(t)
-	sf.stepNoWait(t, 0) // the freed slots belong to the ready waits
-	sf.wantRun(t, queued, db.RunQueued, "")
-	sf.e.Wake()
-	for _, id := range sf.waiters {
-		sf.waitStatus(t, id, db.RunRunning)
-	}
-	close(sf.gate)
-	sf.e.Wait()
-	sf.step(t, 1)
-	for _, id := range append(sf.waiters, queued) {
-		sf.wantRun(t, id, db.RunSucceeded, "")
-	}
+	synctest.Test(t, func(t *testing.T) {
+		sf := newSlotFixture(t)
+		queued := sf.enqueue(t, sf.seed(t, "queued", `return 1`, false), db.TriggerManual)
+		sf.freeHolders(t)
+		sf.stepNoWait(t, 0) // the freed slots belong to the ready waits
+		sf.wantRun(t, queued, db.RunQueued, "")
+		sf.e.Wake()
+		for _, id := range sf.waiters {
+			sf.waitStatus(t, id, db.RunRunning)
+		}
+		close(sf.gate)
+		sf.e.Wait()
+		sf.step(t, 1)
+		for _, id := range append(sf.waiters, queued) {
+			sf.wantRun(t, id, db.RunSucceeded, "")
+		}
+	})
 }
 
 // TestWaiter_SlotWaitStillExpires: a ready wait that never gets a slot still
 // ends expired after pause_timeout_hours.
 func TestWaiter_SlotWaitStillExpires(t *testing.T) {
-	sf := newSlotFixture(t)
-	sf.clock.Advance(73 * time.Hour)
-	sf.e.Wake()
-	sf.e.Wait()
-	for _, id := range sf.waiters {
-		sf.wantRun(t, id, db.RunExpired, db.ErrKindExpired)
-	}
-	close(sf.gate)
+	synctest.Test(t, func(t *testing.T) {
+		sf := newSlotFixture(t)
+		sf.clock.Advance(73 * time.Hour)
+		sf.e.Wake()
+		sf.e.Wait()
+		for _, id := range sf.waiters {
+			sf.wantRun(t, id, db.RunExpired, db.ErrKindExpired)
+		}
+		close(sf.gate)
+	})
 }
 
 // A caller that checked the recipe at one approval hash (the CLI's D16 gate)

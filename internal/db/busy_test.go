@@ -19,7 +19,7 @@ func TestIsBusy(t *testing.T) {
 		t.Fatal(err)
 	}
 	lockExclusively(t, holder)
-	rw, err := OpenExistingRW(path, 50*time.Millisecond)
+	rw, err := OpenExistingRW(path, time.Millisecond)
 	if err == nil {
 		t.Cleanup(func() { _ = rw.Close() })
 		_, err = rw.Exec(`UPDATE projects SET name = 'x'`)
