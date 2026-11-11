@@ -326,13 +326,17 @@ func TestSandbox_BigIntNotAvailable(t *testing.T) {
 // light). The run fails with a RangeError; the process lives on.
 func TestSandbox_HeapBudgetStopsTheRun(t *testing.T) {
 	lowHeapBudget(t, 64<<20)
+	h := manualHeapSamples(t)
+	// Each step allocates, then has the watchdog take one sample (sample is
+	// manualHeapSamples' SDK call): no real ticker, no race with it.
 	for name, script := range map[string]string{
-		"string doubling": `var s = "x"; try { for (;;) { s = s + s } } catch (e) { return "caught" }`,
-		"many arrays":     `var keep = []; try { for (;;) { keep.push(new Array(1000).fill(1)) } } catch (e) { return "caught" }`,
-		"string spread":   `var keep = []; try { for (;;) { keep.push([..."x".repeat(1e5)]) } } catch (e) { return "caught" }`,
+		"string doubling": `var s = "x"; try { for (;;) { s = s + s; sample(1) } } catch (e) { return "caught" }`,
+		"many arrays": `var keep = []; try { for (var i = 0; ; i++) { keep.push(new Array(1000).fill(1)); if (i % 64 === 0) { sample(1) } } }
+			catch (e) { return "caught" }`,
+		"string spread": `var keep = []; try { for (;;) { keep.push([..."x".repeat(1e5)]); sample(1) } } catch (e) { return "caught" }`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := runScript(t, script, sbOpts{})
+			_, err := runScript(t, script, sbOpts{modules: []Module{testModule(), h.module()}})
 			var se *ScriptError
 			if !errors.As(err, &se) || se.Name != "RangeError" || !strings.Contains(se.Message, "too much memory") {
 				t.Fatalf("Run = %v; want the memory RangeError", err)
@@ -509,10 +513,10 @@ func TestSandbox_HeapBudgetSparesAWaitingRun(t *testing.T) {
 // catastrophic pattern in an exec loop throws instead of reading as "no
 // match"; the prototype keeps goja's own exec.
 func TestSandbox_ExecCallsAreTimed(t *testing.T) {
-	restore := shortRegexpTimeout(t)
+	slowRegexClock(t)
 	for _, script := range []string{
-		`var re = /(a+)+b(?=c)/g, s = "a".repeat(33), m, n = 0; while ((m = re.exec(s))) { n++ } return n`,
-		`var re = /(a+)+b(?=c)/; return re["exec"]("a".repeat(33))`,
+		`var re = /(a+)+b(?=c)/g, s = "aab", m, n = 0; while ((m = re.exec(s))) { n++ } return n`,
+		`var re = /(a+)+b(?=c)/; return re["exec"]("aab")`,
 	} {
 		_, err := runScript(t, script, sbOpts{})
 		var se *ScriptError
@@ -520,7 +524,7 @@ func TestSandbox_ExecCallsAreTimed(t *testing.T) {
 			t.Errorf("%s → %v; want the regex timeout RangeError", script, err)
 		}
 	}
-	restore() // ordinary matches below: the real timeout
+	useRegexClock(t, func() int64 { return 0 }) // ordinary timing below
 	got := mustRun(t, `var re = /(\d)/g, out = [], m; while ((m = re.exec("a1b2"))) { out.push(m[1] + m.index) }
 		var o = { exec: function (x) { return "own " + x } };
 		return [out.join(), o.exec("y"), /b/["exec"]("abc")[0], RegExp.prototype.exec === /x/.exec,

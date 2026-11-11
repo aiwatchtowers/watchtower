@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -51,38 +52,60 @@ func TestAuto07_NoCodeFromStrings(t *testing.T) {
 }
 
 func TestSandbox_CatastrophicRegexEndsWithinDeadline(t *testing.T) {
-	if regexp2.DefaultMatchTimeout != RegexpMatchTimeout || regexpMatchTimeout != RegexpMatchTimeout {
-		t.Fatalf("regexp2.DefaultMatchTimeout = %v, sandbox %v; want %v", regexp2.DefaultMatchTimeout, regexpMatchTimeout, RegexpMatchTimeout)
+	// A backtracking match the interrupt cannot reach ends by regexp2's own
+	// timeout, within the grace Run gives a stuck script: never abandoned
+	// for a regex. The library's timer is real time, so it is checked as
+	// configuration; no test runs a catastrophic match.
+	if regexp2.DefaultMatchTimeout != RegexpMatchTimeout {
+		t.Fatalf("regexp2.DefaultMatchTimeout = %v; want %v", regexp2.DefaultMatchTimeout, RegexpMatchTimeout)
 	}
-	// A match the interrupt cannot reach ends by its own timeout, within the
-	// grace Run gives a stuck script: never abandoned for a regex.
 	if RegexpMatchTimeout > AbandonGrace {
 		t.Fatalf("RegexpMatchTimeout %v > AbandonGrace %v", RegexpMatchTimeout, AbandonGrace)
 	}
-	shortRegexpTimeout(t)
+	// The deadline passing while a match runs still ends the run as a
+	// timeout once the match returns: the regex timer's first read (the
+	// match about to start) moves the run's clock to its deadline and waits
+	// for the interrupt.
 	clock := newSBClock()
 	start := clock.Now()
-	sb, _ := newTestSandbox(t, `return /(a+)+b(?=c)/.test("a".repeat(33))`,
+	sb, _ := newTestSandbox(t, `return /(a+)+b(?=c)/.test("aab")`,
 		sbOpts{budget: Budget{Tokens: 1000, Minutes: 1}, clock: clock})
-	res := runAsync(sb)
-	clock.expireDeadline(start, 1)
-	r := <-res // the grace never expires: the match itself ended
+	var once sync.Once
+	useRegexClock(t, func() int64 {
+		once.Do(func() {
+			clock.expireDeadline(start, 1)
+			<-sb.stopped
+		})
+		return 0
+	})
+	r := <-runAsync(sb)
 	wantInterrupt(t, r.err, InterruptTimeout)
 	wantNotAbandoned(t, r.err)
 }
 
-// shortRegexpTimeout makes a backtracking match time out after 1 ms (regexp2
-// checks its clock every 100 ms or so), so a catastrophic pattern costs the
-// test a fraction of a second, not RegexpMatchTimeout. Any timed call of
-// 1 ms or more then throws, so only catastrophic patterns may run before
-// the returned restore (also a cleanup).
-func shortRegexpTimeout(t *testing.T) (restore func()) {
+// useRegexClock replaces the regex timer's clock for one test.
+func useRegexClock(t *testing.T, now func() int64) {
 	t.Helper()
-	prevLib, prev := regexp2.DefaultMatchTimeout, regexpMatchTimeout
-	regexp2.DefaultMatchTimeout, regexpMatchTimeout = time.Millisecond, time.Millisecond
-	restore = func() { regexp2.DefaultMatchTimeout, regexpMatchTimeout = prevLib, prev }
-	t.Cleanup(restore)
-	return restore
+	prev := regexClock
+	regexClock = now
+	t.Cleanup(func() { regexClock = prev })
+}
+
+// slowRegexClock makes every timed regex call take RegexpMatchTimeout on
+// the regex timer's clock (each read is that much later than the last), so
+// it ends as a timed-out match would, whatever the pattern.
+func slowRegexClock(t *testing.T) {
+	t.Helper()
+	var reads atomic.Int64
+	useRegexClock(t, func() int64 { return reads.Add(1) * RegexpMatchTimeout.Milliseconds() })
+}
+
+func TestSandbox_RegexClockIsTheRealClock(t *testing.T) {
+	before := time.Now().UnixMilli()
+	got := productionRegexClock()
+	if after := time.Now().UnixMilli(); got < before || got > after {
+		t.Fatalf("regex clock = %d; want the wall clock, in [%d, %d]", got, before, after)
+	}
 }
 
 // stuckModule defines `stuck`, a native call that ignores its context until
@@ -401,20 +424,20 @@ func TestSandbox_JSONStringifyStillWorks(t *testing.T) {
 }
 
 func TestSandbox_RegexTimeoutThrows(t *testing.T) {
-	restore := shortRegexpTimeout(t)
-	_, err := runScript(t, `return /(a+)+b(?=c)/.test("a".repeat(33))`, sbOpts{}) // deadline 5 min
+	slowRegexClock(t)
+	_, err := runScript(t, `return /(a+)+b(?=c)/.test("aab")`, sbOpts{}) // deadline 5 min
 	var se *ScriptError
 	if !errors.As(err, &se) || se.Name != "RangeError" || !strings.Contains(se.Message, "too long") {
 		t.Fatalf("Run = %v; want an uncaught RangeError, never false", err)
 	}
 	got := mustRun(t, `var out = [];
 		try { RegExp.prototype[Symbol.replace] = function () { return "fake" } } catch (e) { out.push(e.name) }
-		try { "a".repeat(33).replace(/(a+)+b(?=c)/, "x"); out.push("ran") } catch (e) { out.push(e.name) }
+		try { "aab".replace(/(a+)+b(?=c)/, "x"); out.push("ran") } catch (e) { out.push(e.name) }
 		return out.join(",")`, sbOpts{})
 	if got != "TypeError,RangeError" {
 		t.Fatalf("got %v; want TypeError,RangeError", got)
 	}
-	restore()
+	useRegexClock(t, func() int64 { return 0 }) // ordinary timing below
 	// exec stays goja's own (wrapping it takes RegExp off goja's fast path):
 	// a script that deletes it only breaks its own run.
 	if _, err := runScript(t, `delete RegExp.prototype.exec; return "a".replace(/a/, "b")`, sbOpts{}); err == nil {

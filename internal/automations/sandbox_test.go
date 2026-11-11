@@ -18,6 +18,16 @@ import (
 	"watchtower/internal/tools"
 )
 
+// productionRegexClock is the regex timer's real clock, kept for
+// TestSandbox_RegexClockIsTheRealClock.
+var productionRegexClock = regexClock
+
+// No regex call in this test binary is timed on the wall clock: the regex
+// timer reads a clock that stands still (no call is ever "too long") unless
+// a test installs another (useRegexClock, slowRegexClock). Package variables
+// are initialised before any init, so productionRegexClock holds the real one.
+func init() { regexClock = func() int64 { return 0 } }
+
 // sbClock is a minimal fake Clock for these in-package tests: they cannot use
 // automationstest.FakeClock, which imports this package (an import cycle).
 // Like FakeClock, After channels fire when Advance reaches their time, so the
