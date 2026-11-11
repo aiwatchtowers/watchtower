@@ -68,7 +68,9 @@ func IsSubmit(b []byte, backslashBefore bool, p Profile) bool {
 // clear/quit; at most they empty the prompt, so leaving the draft state as
 // it was errs to a draft, never to a Return submitted with the owner's
 // text. Every other key — cursor keys too (Up recalls history) — stays a
-// draft by IsSubmit's rule. Twin of TerminalCenter.isNonTextKey.
+// draft by IsSubmit's rule. Only these legacy encodings count: under an
+// extended keyboard protocol (kitty `CSI u`) the same keys still read as a
+// draft, which fails safe. Twin of TerminalCenter.isNonTextKey.
 func IsNonTextKey(b []byte) bool {
 	switch string(b) {
 	case "\x1b", "\x1b[Z", "\x03":
