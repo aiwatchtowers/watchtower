@@ -415,6 +415,7 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 	if h.sw != nil {
 		h.sw.SetPublisher(pub)
 	}
+	h.respellCloudKitZones(ctx)
 	if h.paying != nil {
 		// Paused until the first account state shows a paying phone.
 		h.paused = true
@@ -512,7 +513,7 @@ func ensureEnabledAt(st *state.Store, now time.Time) error {
 // heartbeat is the heartbeat source's facts.
 func (h *hubRuntime) heartbeat(st *state.Store, name string) slices.HeartbeatFacts {
 	f := slices.HeartbeatFacts{
-		HubID: h.kr.HubID().String(), MacName: name, AppVersion: guide.Version, Flavor: wire.FlavorOf(BuildFlavor),
+		HubID: h.kr.HubIDText(), MacName: name, AppVersion: guide.Version, Flavor: wire.FlavorOf(BuildFlavor),
 		Clock: h.sup.o.Clock,
 		LastPublishAt: func() (time.Time, bool) {
 			if h.pub == nil {

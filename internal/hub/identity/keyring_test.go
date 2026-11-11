@@ -182,6 +182,9 @@ func TestKeyring_OpensSwiftSealedKeys(t *testing.T) {
 	if k.HubID() != hub {
 		t.Fatalf("hub id %s, want %s", k.HubID(), hub)
 	}
+	if k.HubIDText() != strings.ToLower(v.HubID) {
+		t.Fatalf("hub id text %q, want the stored lowercase spelling", k.HubIDText()) // #1746
+	}
 	meta, err := k.MetaKey()
 	if err != nil || hex.EncodeToString(meta) != v.KMeta {
 		t.Fatalf("MetaKey: %v", err)
@@ -206,8 +209,8 @@ func TestKeyring_SealsWhatSwiftFormatReads(t *testing.T) {
 	if err != nil || !ok || hubText != strings.ToUpper(hubText) {
 		t.Fatalf("hub_id %q ok %v err %v, want an uppercase UUID", hubText, ok, err)
 	}
-	if hubText != k.HubID().String() {
-		t.Fatal("stored hub_id differs from HubID")
+	if hubText != k.HubID().String() || k.HubIDText() != hubText {
+		t.Fatal("stored hub_id differs from HubID or HubIDText")
 	}
 	if k.HubID()[6]>>4 != 4 || k.HubID()[8]>>6 != 2 {
 		t.Fatal("hub_id is not a version 4 UUID")

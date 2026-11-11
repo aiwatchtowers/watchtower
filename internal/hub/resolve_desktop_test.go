@@ -673,6 +673,110 @@ func TestDesktopHostAnnouncesBothTransports(t *testing.T) {
 	})
 }
 
+// TestDesktopHostNamesItsCloudKitZonesWithTheStoredHubID (#1746): a hub
+// adopted from the Swift hub keeps that hub's lowercase hub_id, and its
+// CloudKit zones (DataZone-/RelayZone-<hub_id>, case-sensitive) and its
+// phones' links are named with it. The bridge must get that spelling: the
+// uppercase canonical form names two new, empty zones no phone reads or
+// writes, so no phone action ever reached the hub.
+func TestDesktopHostNamesItsCloudKitZonesWithTheStoredHubID(t *testing.T) {
+	bubble(t, func(t *testing.T) {
+		policytest.Set(t, nil)
+		r := newDeskRig(t, shortDir(t))
+		const stored = "0a1b2c3d-4e5f-4a6b-8c7d-8e9fa0b1c2d3" // the Swift hub's UUID().uuidString.lowercased()
+		setMeta(t, r.dir, state.MetaEnabled, "1", state.MetaHubID, stored)
+		var bridged, dialled atomic.Value
+		o := r.options()
+		dial, supervise := o.Desktop.newCloudKit, o.Desktop.supervise
+		o.Desktop.newCloudKit = func(c cloudkit.Config) transport.Transport {
+			dialled.Store(c.HubID)
+			return dial(c)
+		}
+		o.Desktop.supervise = func(c cloudkit.Config) bridgeRunner {
+			bridged.Store(c.HubID)
+			return supervise(c)
+		}
+		r.start(o)
+		r.waitState(StateRunning, "")
+		if got, _ := dialled.Load().(string); got != stored {
+			t.Errorf("the CloudKit client names the zones after %q, want the stored %q", got, stored)
+		}
+		if got, _ := bridged.Load().(string); got != stored {
+			t.Errorf("the bridge names the zones after %q, want the stored %q", got, stored)
+		}
+		if v, _ := readMetaRO(t, r.dir, state.MetaHubID); v != stored {
+			t.Errorf("hub_id re-spelled to %q", v)
+		}
+	})
+}
+
+// TestRespelledCloudKitZonesRepublishOnce (#1746): a hub that published
+// into the uppercase-named zones (no mark: every build before the fix)
+// forgets what it published and rewinds CloudKit's mailbox once, so the
+// phones' zones get every record and the hub reads the actions they hold;
+// the next start changes nothing. A hub whose stored hub_id is uppercase
+// (made by the Go hub) had the right zones and wipes nothing.
+func TestRespelledCloudKitZonesRepublishOnce(t *testing.T) {
+	bubble(t, func(t *testing.T) {
+		policytest.Set(t, nil)
+		r := newDeskRig(t, shortDir(t))
+		const stored = "0a1b2c3d-4e5f-4a6b-8c7d-8e9fa0b1c2d3"
+		setMeta(t, r.dir, state.MetaEnabled, "1", state.MetaHubID, stored, state.MetaSyncGeneration, "5")
+		r.start(r.options())
+		r.waitState(StateRunning, "")
+		if v, _ := readMetaRO(t, r.dir, state.MetaSyncGeneration); v != "6" {
+			t.Fatalf("sync generation %q after the respelling, want one wipe (6)", v)
+		}
+		if v, _ := readMetaRO(t, r.dir, metaCloudKitZonesHubID); v != stored {
+			t.Fatalf("zones' hub id mark %q, want %q", v, stored)
+		}
+		if err := r.stop(); err != nil {
+			t.Fatal(err)
+		}
+		r.start(r.options())
+		r.waitState(StateRunning, "")
+		if v, _ := readMetaRO(t, r.dir, state.MetaSyncGeneration); v != "6" {
+			t.Fatalf("sync generation %q after a second start, want no second wipe", v)
+		}
+
+		// The mailbox half: CloudKit's mailbox token of the old zones goes, so
+		// the phones' zone is read from the start.
+		mailbox := transport.SharedMailboxZone(r.rec.last().RelayDeviceID)
+		if err := r.stop(); err != nil {
+			t.Fatal(err)
+		}
+		setMeta(t, r.dir, metaCloudKitZonesHubID, strings.ToUpper(stored))
+		setZoneToken(t, r.dir, mailbox, 77)
+		r.start(r.options())
+		r.waitState(StateRunning, "")
+		if err := r.stop(); err != nil {
+			t.Fatal(err)
+		}
+		st, err := state.OpenReadOnly(r.dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = st.Close() }()
+		if tok, err := st.ZoneToken(mailbox); err != nil || tok == 77 {
+			t.Fatalf("CloudKit's mailbox token %d (%v) after the respelling, want it rewound", tok, err)
+		}
+	})
+	bubble(t, func(t *testing.T) {
+		policytest.Set(t, nil)
+		r := newDeskRig(t, shortDir(t))
+		const stored = "0A1B2C3D-4E5F-4A6B-8C7D-8E9FA0B1C2D3"
+		setMeta(t, r.dir, state.MetaEnabled, "1", state.MetaHubID, stored, state.MetaSyncGeneration, "5")
+		r.start(r.options())
+		r.waitState(StateRunning, "")
+		if v, _ := readMetaRO(t, r.dir, state.MetaSyncGeneration); v != "5" {
+			t.Fatalf("sync generation %q on a hub whose zones were right, want no wipe", v)
+		}
+		if v, _ := readMetaRO(t, r.dir, metaCloudKitZonesHubID); v != stored {
+			t.Fatalf("zones' hub id mark %q, want %q", v, stored)
+		}
+	})
+}
+
 // TestRecordingsDirIsAppSupport: a desktop host keeps the phones' recordings
 // in <app support>/recordings, the folder Desktop's transcriber uses.
 func TestRecordingsDirIsAppSupport(t *testing.T) {
@@ -1041,4 +1145,17 @@ func startStub(t *testing.T, script string) (*os.Process, error) {
 	pid := cmd.Process.Pid
 	t.Cleanup(func() { _ = syscall.Kill(-pid, syscall.SIGKILL) })
 	return cmd.Process, nil
+}
+
+// setZoneToken stores a zone's token with no hub running.
+func setZoneToken(t *testing.T, dir, zone string, since uint64) {
+	t.Helper()
+	st, err := state.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	if err := st.SetZoneToken(zone, since); err != nil {
+		t.Fatal(err)
+	}
 }

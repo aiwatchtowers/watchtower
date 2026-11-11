@@ -123,7 +123,7 @@ final class SessionChatRequester {
         do {
             try await send(route)
         } catch {
-            logger.warning("session chat request failed: \(error.localizedDescription, privacy: .public)")
+            logger.warning("session chat request failed: \(String(describing: error), privacy: .public)")
         }
     }
 }
