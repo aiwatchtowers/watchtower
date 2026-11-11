@@ -16,6 +16,7 @@ private final class AnalyticsActionLog {
     var files: [String] = []
     var askOpens = 0
     var discussed: [String] = []
+    var retries = 0
     var asksWaiting = true
 
     var actions: AgentAnalyticsActions {
@@ -26,9 +27,20 @@ private final class AnalyticsActionLog {
             openFile: { self.files.append($0) },
             openAsks: { self.askOpens += 1 },
             discuss: { self.discussed.append($0) },
+            retry: { self.retries += 1 },
             asksWaiting: asksWaiting
         )
     }
+}
+
+/// An older CLI: refuses `--agent` with cobra's usage error.
+private final class RefusingAgentRunner: CLIRunnerProtocol, @unchecked Sendable {
+    func run(args: [String]) async throws -> Data {
+        throw CLIRunnerError.nonZeroExit(code: 1, stderr: "Error: unknown flag: --agent")
+    }
+
+    func run(args: [String], timeout: TimeInterval) async throws -> Data { try await run(args: args) }
+    func run(args: [String], stdin: Data) async throws -> Data { try await run(args: args) }
 }
 
 /// Answers the coach's reads from the fixtures.
@@ -641,6 +653,73 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
             XCTAssertFalse(pixel.red == pixel.green && pixel.green == pixel.blue && abs(pixel.red - background) < 20,
                            "\(name.rawValue): \(pixel) looks like the background")
         }
+    }
+
+    // MARK: - Agent filter (#1517)
+
+    /// The header reads the filter off the report: a Codex report under the
+    /// Codex filter is current and keeps its picker; under All it is the old
+    /// answer ("Updating…").
+    func testCodexFilterHeader() throws {
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: Self.fixture("agent-report-overview")) as? [String: Any])
+        json["agent"] = "codex"
+        json["agent_filter"] = nil
+        let codex = try JSONDecoder().decode(AgentReportOverview.self, from: JSONSerialization.data(withJSONObject: json))
+        XCTAssertEqual(AgentAnalyticsFormat.agent(of: codex), .kind(.codex))
+
+        func view(_ agent: AgentAnalyticsCenter.Agent) -> AgentAnalyticsOverviewView {
+            AgentAnalyticsOverviewView(state: .overview(codex, staleError: nil), period: .constant(.week),
+                                       agent: .constant(agent), actions: AnalyticsActionLog().actions)
+        }
+        // ViewInspector matches a generic view by its name only, so the
+        // agent picker is found by its tooltip, not its type.
+        func picker(_ view: AgentAnalyticsOverviewView) throws -> InspectableView<ViewType.ClassifiedView> {
+            try view.inspect().find { (try? $0.help().string()) == AgentAnalyticsFormat.agentHelp }
+        }
+        let current = view(.kind(.codex))
+        XCTAssertThrowsError(try current.inspect().find(text: "Updating…"))
+        XCTAssertNoThrow(try picker(current), "a chosen filter keeps its picker")
+        let stale = view(.all)
+        XCTAssertNoThrow(try stale.inspect().find(text: "Updating…"))
+        XCTAssertThrowsError(try picker(stale), "All with one agent in the period: no picker")
+
+        json["agent"] = "gemini"
+        let unknown = try JSONDecoder().decode(AgentReportOverview.self, from: JSONSerialization.data(withJSONObject: json))
+        XCTAssertEqual(AgentAnalyticsFormat.agent(of: unknown), .all, "a kind this build does not know reads as All")
+    }
+
+    /// AppState wires the center's refusal to the view model: the
+    /// workbench's filter entry goes, so the pane shows All.
+    func testAgentRefusalResetsTheViewModelFilter() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "AgentRefusal-\(UUID().uuidString)"))
+        let vm = WorkbenchesViewModel(dbPool: pool, cli: nil, defaults: defaults)
+        let appState = AppState()
+        appState.replaceAgentAnalytics(cliRunner: RefusingAgentRunner(), workbenches: vm)
+        let center = try XCTUnwrap(vm.agentAnalytics)
+        defer { center.stop(); vm.coach?.stop() }
+
+        vm.analyticsAgent[3] = .kind(.codex)
+        center.show(workbench: 3, period: .week, agent: .kind(.codex))
+        let deadline = Date().addingTimeInterval(5)
+        while vm.analyticsAgent[3] != nil, Date() < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertNil(vm.analyticsAgent[3])
+        XCTAssertNotNil(center.overviews[3]?.error)
+    }
+
+    /// An older CLI's refusal of `--agent` lands on the report's error line,
+    /// which offers Retry.
+    func testErrorLineOffersRetry() throws {
+        let log = AnalyticsActionLog()
+        let stale = AgentAnalyticsOverviewView(
+            state: .overview(try Self.overview(), staleError: "Error: unknown flag: --agent"),
+            period: .constant(.week), actions: log.actions)
+        try stale.inspect().find(button: "Retry").tap()
+        let failed = AgentAnalyticsOverviewView(
+            state: .failed("Error: unknown flag: --agent"), period: .constant(.week), actions: log.actions)
+        try failed.inspect().find(button: "Retry").tap()
+        XCTAssertEqual(log.retries, 2)
     }
 
     // MARK: - Coach sections (#1120)

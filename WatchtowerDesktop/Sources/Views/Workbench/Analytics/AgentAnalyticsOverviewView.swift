@@ -7,6 +7,8 @@ import WatchtowerCore
 struct AgentAnalyticsOverviewView: View {
     let state: AgentAnalyticsPaneState
     @Binding var period: AgentAnalyticsCenter.Period
+    /// The agent filter (#1517); a pane hosted without one shows All.
+    var agent: Binding<AgentAnalyticsCenter.Agent> = .constant(.all)
     let actions: AgentAnalyticsActions
     /// The coach sections (nil: a pane hosted without the coach).
     var coach: CoachCenter?
@@ -26,6 +28,7 @@ struct AgentAnalyticsOverviewView: View {
             VStack(spacing: Spacing.compact) {
                 Label("Could not load analytics", systemImage: "exclamationmark.triangle").font(.headline)
                 Text(error).foregroundStyle(.secondary)
+                Button("Retry", action: actions.retry).buttonStyle(.kitSecondary)
             }
             .padding(24)
         case let .off(enabling, error):
@@ -84,10 +87,13 @@ struct AgentAnalyticsOverviewView: View {
             }
             header(overview)
             if let staleError {
-                Label(staleError, systemImage: "exclamationmark.triangle")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                    .help("The last refresh failed; these numbers are from an earlier run.")
+                HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
+                    Label(staleError, systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(Tone.warning)
+                        .help("The last refresh failed; these numbers are from an earlier run.")
+                    Button("Retry", action: actions.retry).buttonStyle(.kitSecondary).controlSize(.small)
+                }
             }
             if let coach {
                 CoachSectionsView(
@@ -166,10 +172,17 @@ struct AgentAnalyticsOverviewView: View {
             if let previous = AgentAnalyticsFormat.previousPeriodLabel(overview) {
                 Text("against \(previous)").font(.caption).foregroundStyle(.secondary)
             }
-            if AgentAnalyticsFormat.period(of: overview) != period {
+            if AgentAnalyticsFormat.period(of: overview) != period
+                || AgentAnalyticsFormat.agent(of: overview) != agent.wrappedValue {
                 Text("Updating…").font(.caption).foregroundStyle(.secondary)
             }
             Spacer(minLength: Spacing.regular)
+            if AgentAnalyticsFormat.showsAgentPicker(overview, filter: agent.wrappedValue) {
+                KitSegmentedPicker(title: "Agent", selection: agent, segments: AgentAnalyticsCenter.Agent.allCases.map {
+                    KitSegment(value: $0, title: AgentAnalyticsFormat.agentTitle($0))
+                })
+                .help(AgentAnalyticsFormat.agentHelp)
+            }
             KitSegmentedPicker(title: "Period", selection: $period, segments: [
                 KitSegment(value: AgentAnalyticsCenter.Period.day, title: "1 day"),
                 KitSegment(value: AgentAnalyticsCenter.Period.week, title: "7 days"),

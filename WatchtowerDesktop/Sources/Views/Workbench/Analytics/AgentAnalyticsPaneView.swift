@@ -29,6 +29,7 @@ struct AgentAnalyticsPaneView: View {
                     state: .make(overview: center?.overviews[project.id],
                                  enabling: center?.enabling.contains(project.id) ?? false),
                     period: period,
+                    agent: agent,
                     actions: actions,
                     coach: vm.coach,
                     workbench: project.id,
@@ -39,15 +40,15 @@ struct AgentAnalyticsPaneView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
-            center?.show(workbench: project.id, period: period.wrappedValue)
+            center?.show(workbench: project.id, period: period.wrappedValue, agent: agent.wrappedValue)
             syncCoach()
         }
         .onDisappear {
             center?.hide(workbench: project.id)
             vm.coach?.hide(workbench: project.id)
         }
-        .onChange(of: period.wrappedValue) { _, new in
-            center?.show(workbench: project.id, period: new)
+        .onChange(of: query) { _, new in
+            center?.show(workbench: project.id, period: new.period, agent: new.agent)
             syncCoach()
         }
         .onChange(of: analyticsOn) { _, _ in syncCoach() }
@@ -58,7 +59,7 @@ struct AgentAnalyticsPaneView: View {
 
     private func syncCoach() {
         if analyticsOn {
-            vm.coach?.show(workbench: project.id, period: period.wrappedValue)
+            vm.coach?.show(workbench: project.id, period: period.wrappedValue, agent: agent.wrappedValue)
         } else {
             vm.coach?.hide(workbench: project.id)
         }
@@ -69,6 +70,17 @@ struct AgentAnalyticsPaneView: View {
             get: { vm.analyticsPeriod[project.id] ?? .week },
             set: { vm.analyticsPeriod[project.id] = $0 }
         )
+    }
+
+    private var agent: Binding<AgentAnalyticsCenter.Agent> {
+        Binding(
+            get: { vm.analyticsAgent[project.id] ?? .all },
+            set: { vm.analyticsAgent[project.id] = $0 == .all ? nil : $0 }
+        )
+    }
+
+    private var query: AgentAnalyticsCenter.Query {
+        AgentAnalyticsCenter.Query(period: period.wrappedValue, agent: agent.wrappedValue)
     }
 
     private var actions: AgentAnalyticsActions {
@@ -83,6 +95,7 @@ struct AgentAnalyticsPaneView: View {
             },
             openAsks: { Task { await vm.showWaitingForYou(projectID: project.id) } },
             discuss: { [appState] in appState?.openHelpChat(prefill: $0) },
+            retry: { center?.retry(workbench: project.id) },
             asksWaiting: !vm.asks.stack(projectID: project.id).asks.isEmpty
         )
     }
@@ -102,6 +115,8 @@ struct AgentAnalyticsActions {
     let openAsks: () -> Void
     /// Discuss in Chat: the chat popup with this text in its composer.
     let discuss: (String) -> Void
+    /// Retry on the report's error line: the overview runs once more.
+    var retry: () -> Void = {}
     /// Whether an ask of the workbench waits now (Open Waiting for You is
     /// off without one).
     let asksWaiting: Bool

@@ -112,6 +112,21 @@ final class CoachCenterTests: XCTestCase {
         XCTAssertEqual(center.proposals?.value?.map(\.id), [7, 5])
     }
 
+    /// The tiles follow the pane's agent filter (#1517, spec §4.7).
+    func testStatusFollowsAgentFilter() async {
+        let runner = ScriptedCoachRunner(Self.standard())
+        let center = makeCenter(runner)
+        center.show(workbench: 3, period: .week, agent: .kind(.codex))
+        await waitUntil { center.status[3]?.value != nil }
+        XCTAssertTrue(runner.invocations.contains(
+            ["coach", "status", "--workbench", "3", "--days", "7", "--agent", "codex", "--json"]), "\(runner.invocations)")
+
+        center.show(workbench: 3, period: .week, agent: .all)
+        await waitUntil { runner.invocations.filter { $0.dropFirst().first == "status" }.count == 2 }
+        let last = runner.invocations.last { $0.dropFirst().first == "status" }
+        XCTAssertEqual(last, ["coach", "status", "--workbench", "3", "--days", "7", "--json"])
+    }
+
     func testPeriodChangeDropsStaleStatus() async {
         let runner = ScriptedCoachRunner(Self.standard())
         runner.hold()
