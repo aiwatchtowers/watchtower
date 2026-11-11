@@ -24,13 +24,23 @@ final class SidebarSectionTests: XCTestCase {
     }
 
     func testSectionMembership() {
-        XCTAssertEqual(SidebarSection.today.items, [.catchUp, .inbox])
+        XCTAssertEqual(SidebarSection.today.items, [.catchUp, .targets])
         XCTAssertEqual(SidebarSection.delivery.items, [.projectMap, .releases, .blockers, .workload])
         XCTAssertEqual(SidebarSection.analytics.items, [.digests, .people, .memory, .statistics])
     }
 
     func testRootItems() {
-        XCTAssertEqual(SidebarDestination.rootItems, [.home, .targets, .workbench, .automations, .calendar])
+        XCTAssertEqual(SidebarDestination.rootItems, [.home, .inbox, .workbench, .automations, .calendar])
+    }
+
+    /// A root item has no hide menu: a `sidebar.hiddenItems` entry for the
+    /// Inbox (left from hiding it in FOCUS) does not hide it at the root.
+    func testAHiddenInboxEntryIsIgnoredAtTheRoot() {
+        XCTAssertTrue(SidebarDestination.rootItems.contains(.inbox))
+        XCTAssertNil(SidebarSection.containing(.inbox), "no section partitions the Inbox by hiddenItems")
+        for section in SidebarSection.ordered {
+            XCTAssertFalse(section.partition(hidden: [SidebarDestination.inbox.id]).hidden.contains(.inbox), "\(section)")
+        }
     }
 
     /// Briefings, Day Plan, Tracks and Ideas are Inbox filters since C1: no
@@ -78,11 +88,11 @@ final class SidebarSectionTests: XCTestCase {
     func testContainingReturnsTheOwningSection() {
         XCTAssertEqual(SidebarSection.containing(.digests), .analytics)
         XCTAssertEqual(SidebarSection.containing(.releases), .delivery)
-        XCTAssertEqual(SidebarSection.containing(.inbox), .today)
+        XCTAssertEqual(SidebarSection.containing(.targets), .today)
     }
 
     func testContainingIsNilForRootAndToolItems() {
-        XCTAssertNil(SidebarSection.containing(.targets))
+        XCTAssertNil(SidebarSection.containing(.inbox))
         XCTAssertNil(SidebarSection.containing(.calendar))
         XCTAssertNil(SidebarSection.containing(.chat))
         XCTAssertNil(SidebarSection.containing(.usage))
@@ -124,7 +134,13 @@ final class SidebarSectionTests: XCTestCase {
     }
 
     func testExpandingSectionNilWhenDestinationHasNoSection() {
-        XCTAssertNil(SidebarView.expandingSection(for: .targets, in: [SidebarSection.analytics.id: true]))
+        XCTAssertNil(SidebarView.expandingSection(for: .inbox, in: [SidebarSection.analytics.id: true]))
+    }
+
+    /// Targets lives in FOCUS: navigating to it opens a folded FOCUS.
+    func testExpandingSectionForTargetsExpandsFocus() {
+        let updated = SidebarView.expandingSection(for: .targets, in: [SidebarSection.today.id: true])
+        XCTAssertEqual(updated?[SidebarSection.today.id], false)
     }
 
     func testExpandingSectionNilWhenMapHasNoEntryForTheSection() {
@@ -342,7 +358,7 @@ final class SidebarSectionTests: XCTestCase {
     /// Fixed per-item counts for the Today section, so the sums below are
     /// arithmetic rather than a live SidebarCountsViewModel read.
     private static let todayCounts: [SidebarDestination: Int] = [
-        .catchUp: 2, .inbox: 5
+        .catchUp: 2, .targets: 5
     ]
 
     private func todayBadge(
@@ -367,12 +383,12 @@ final class SidebarSectionTests: XCTestCase {
         XCTAssertEqual(
             todayBadge(disabled: ["secretary-inbox", "slack-digests", "stream-digests"]),
             5,
-            "Catch Up's 2 drops out; only the feature-ungated .inbox count survives"
+            "Catch Up's 2 drops out; only the feature-ungated .targets count survives"
         )
     }
 
     /// Same rule on the source axis: with no source at all, Catch-Up's 2
-    /// drops out; the ungated Inbox's 5 stays.
+    /// drops out; the ungated Targets' 5 stays.
     func testSectionBadgeExcludesSourceGatedItems() {
         XCTAssertEqual(todayBadge(connected: .none), 5)
     }

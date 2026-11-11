@@ -81,14 +81,16 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
     }
 
     /// Always-visible items rendered above the collapsible sections, Home
-    /// first. Automations follows Workbench (hidden with its feature off).
-    /// Calendar sits right under them (board #206; it was in FOCUS before): a root
-    /// item has no hide menu, so a `sidebar.hiddenItems` entry left from
-    /// hiding it in FOCUS is ignored and the tab shows again. Tracks left the
-    /// root with the one Inbox (C1): its cards are the Inbox root's Track my
-    /// threads entry (inbox builder B).
+    /// first. The Inbox sits in Targets' old place, with its badge, and
+    /// Targets lives in FOCUS (2026-11 Inbox redesign, #1076). Automations
+    /// follows Workbench. Calendar sits right under them (board #206; it was
+    /// in FOCUS before). A root item has no hide menu, so a
+    /// `sidebar.hiddenItems` entry left from hiding the Inbox or Calendar in
+    /// FOCUS is ignored and the tab shows again. Tracks left the root with
+    /// the one Inbox (C1): its cards are the Inbox root's Track my threads
+    /// entry (inbox builder B).
     static var rootItems: [Self] {
-        [.home, .targets, .workbench, .automations, .calendar]
+        [.home, .inbox, .workbench, .automations, .calendar]
     }
 
     /// Always-visible items rendered below the collapsible sections, as the last
