@@ -181,6 +181,7 @@ func start(t testing.TB, inMemory bool) *Server {
 		s.pipes = newPipeListener()
 		tr := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) { return s.pipes.dial(ctx) }}
 		s.pipeClient = &http.Client{Transport: tr}
+		//nolint:gosec // G112: a test relay over in-memory pipes, as httptest.NewServer's (no header timeout)
 		s.srv = &httptest.Server{Listener: s.pipes, Config: &http.Server{Handler: handler}}
 		s.srv.Start()
 		t.Cleanup(tr.CloseIdleConnections)

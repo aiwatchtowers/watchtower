@@ -404,14 +404,24 @@ VALUES (?, 'claude', 'Session', '/tmp/hubtest-acme', '00000000-0000-4000-8000-00
 		// soon; the publish then follows within the debounce — far under the
 		// 60 s hubslices.FullDiffEvery the result waited for before.
 		const prompt = 3 * time.Second
+		// soon waits for cond and fails when it took longer than prompt on
+		// the bubble's clock.
+		soon := func(what string, cond func() bool) {
+			t.Helper()
+			start := time.Now()
+			eventually(t, what, cond)
+			if d := time.Since(start); d > prompt {
+				t.Fatalf("%s after %v, want within %v", what, d, prompt)
+			}
+		}
 		reportGate.open()
-		eventually(t, "the first report published", func() bool { return len(hashes("session_report")) == 1 })
+		soon("the first report published", func() bool { return len(hashes("session_report")) == 1 })
 		first := hashes("session_report")
 
 		if !w.set.Report.RequestReport(session) {
 			t.Fatal("the request was refused")
 		}
-		eventually(t, "the requested report published", func() bool {
+		soon("the requested report published", func() bool {
 			for name, r := range hashes("session_report") {
 				if r.Hash != first[name].Hash {
 					return true
@@ -426,7 +436,7 @@ VALUES (?, 'claude', 'Session', '/tmp/hubtest-acme', '00000000-0000-4000-8000-00
 		mu.Unlock()
 
 		gitGate.open()
-		eventually(t, "the workbench republished with its git status", func() bool {
+		soon("the workbench republished with its git status", func() bool {
 			for name, r := range hashes("workbench") {
 				if r.Hash != workbench[name].Hash {
 					return true

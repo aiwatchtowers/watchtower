@@ -463,7 +463,10 @@ func TestIssuingACodeRunsAPassAtOnce(t *testing.T) {
 			t.Fatal(err)
 		}
 		h.next(link.EventQR)
-		eventually(t, "a pass after the code", func() bool { return h.passes.Load() > settled })
+		synctest.Wait() // at once: no time passes on the bubble's clock
+		if h.passes.Load() <= settled {
+			t.Fatal("no pass at once after the code")
+		}
 	})
 }
 
@@ -489,7 +492,10 @@ func TestPullNowRunsAPassAtOnce(t *testing.T) {
 		mu.Unlock()
 		h.ck.inject(transport.Event{PullNow: true})
 		// A pass at once, and the link check's pass after it (the relay's resync).
-		eventually(t, "two passes after the push", func() bool { return h.passes.Load() >= settled+2 })
+		synctest.Wait() // at once: no time passes on the bubble's clock
+		if n := h.passes.Load() - settled; n < 2 {
+			t.Fatalf("%d passes at once after the push, want 2", n)
+		}
 		mu.Lock()
 		defer mu.Unlock()
 		if !urgent {

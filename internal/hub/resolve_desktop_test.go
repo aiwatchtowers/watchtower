@@ -1022,7 +1022,7 @@ func backdate(t *testing.T, roots ...string) {
 			if err != nil {
 				return err
 			}
-			return os.Chtimes(path, old, old)
+			return os.Chtimes(path, old, old) //nolint:gosec // G122: the test's own temp dirs
 		}); err != nil {
 			t.Fatal(err)
 		}
