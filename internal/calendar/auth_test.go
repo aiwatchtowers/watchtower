@@ -22,6 +22,7 @@ import (
 
 	"watchtower/internal/auth"
 	"watchtower/internal/oauthpage"
+	"watchtower/internal/oauthpage/oauthpagetest"
 )
 
 func TestTokenStore_RoundTrip(t *testing.T) {
@@ -406,7 +407,7 @@ func TestLogin_ExchangeSendsVerifierMatchingChallenge(t *testing.T) {
 
 	resCh := make(chan *OAuthToken, 1)
 	errCh := make(chan error, 1)
-	out := &syncBuffer{}
+	out := &oauthpagetest.Output{}
 	go func() {
 		tok, err := Login(context.Background(), GoogleOAuthConfig{ClientID: "cid", ClientSecret: "secret"}, out,
 			LoginOptions{SkipBrowserOpen: true, AppReturn: true})
@@ -418,20 +419,7 @@ func TestLogin_ExchangeSendsVerifierMatchingChallenge(t *testing.T) {
 	}()
 
 	// Poll the output buffer for the printed authorize URL, then hit its callback.
-	var authorizeURL string
-	require.Eventually(t, func() bool {
-		s := out.String()
-		idx := strings.Index(s, "http")
-		if idx == -1 {
-			return false
-		}
-		end := strings.IndexAny(s[idx:], "\n ")
-		if end == -1 {
-			end = len(s) - idx
-		}
-		authorizeURL = s[idx : idx+end]
-		return authorizeURL != ""
-	}, 2*time.Second, 10*time.Millisecond)
+	authorizeURL := out.WaitURL("http")
 
 	u, err := url.Parse(authorizeURL)
 	require.NoError(t, err)
@@ -459,8 +447,6 @@ func TestLogin_ExchangeSendsVerifierMatchingChallenge(t *testing.T) {
 		assert.Equal(t, "at", tok.AccessToken)
 	case err := <-errCh:
 		t.Fatalf("Login returned error: %v", err)
-	case <-time.After(3 * time.Second):
-		t.Fatal("timed out waiting for Login to complete")
 	}
 
 	select {

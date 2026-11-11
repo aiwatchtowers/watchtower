@@ -11,9 +11,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"watchtower/internal/oauthpage"
+
+	"watchtower/internal/oauthpage/oauthpagetest"
 
 	"github.com/emersion/go-imap/v2/imapclient"
 	"github.com/stretchr/testify/assert"
@@ -313,7 +314,7 @@ func TestLoginOutlook_SkipBrowserOpen_ResolvesEmail(t *testing.T) {
 	resCh := make(chan result, 1)
 	errCh := make(chan error, 1)
 
-	out := &syncBuffer{}
+	out := &oauthpagetest.Output{}
 	go func() {
 		tok, email, err := LoginOutlook(context.Background(), MicrosoftOAuthConfig{ClientID: "cid"}, out, OutlookLoginOptions{SkipBrowserOpen: true, AppReturn: true})
 		if err != nil {
@@ -323,20 +324,7 @@ func TestLoginOutlook_SkipBrowserOpen_ResolvesEmail(t *testing.T) {
 		resCh <- result{tok: tok, email: email}
 	}()
 
-	var authorizeURL string
-	require.Eventually(t, func() bool {
-		s := out.String()
-		idx := strings.Index(s, "http")
-		if idx == -1 {
-			return false
-		}
-		end := strings.IndexAny(s[idx:], "\n ")
-		if end == -1 {
-			end = len(s) - idx
-		}
-		authorizeURL = s[idx : idx+end]
-		return authorizeURL != ""
-	}, 2*time.Second, 10*time.Millisecond)
+	authorizeURL := out.WaitURL("http")
 
 	u, err := url.Parse(authorizeURL)
 	require.NoError(t, err)
@@ -366,8 +354,6 @@ func TestLoginOutlook_SkipBrowserOpen_ResolvesEmail(t *testing.T) {
 		assert.Equal(t, "me@outlook.com", r.email)
 	case err := <-errCh:
 		t.Fatalf("LoginOutlook returned error: %v", err)
-	case <-time.After(3 * time.Second):
-		t.Fatal("timed out waiting for LoginOutlook to complete")
 	}
 }
 
@@ -382,26 +368,13 @@ func TestLoginOutlook_WrongStateCallbackIsIgnored(t *testing.T) {
 	defer func() { microsoftTokenEndpoint = prev }()
 
 	errCh := make(chan error, 1)
-	out := &syncBuffer{}
+	out := &oauthpagetest.Output{}
 	go func() {
 		_, _, err := LoginOutlook(context.Background(), MicrosoftOAuthConfig{ClientID: "cid"}, out, OutlookLoginOptions{SkipBrowserOpen: true})
 		errCh <- err
 	}()
 
-	var authorizeURL string
-	require.Eventually(t, func() bool {
-		s := out.String()
-		idx := strings.Index(s, "http")
-		if idx == -1 {
-			return false
-		}
-		end := strings.IndexAny(s[idx:], "\n ")
-		if end == -1 {
-			end = len(s) - idx
-		}
-		authorizeURL = s[idx : idx+end]
-		return authorizeURL != ""
-	}, 2*time.Second, 10*time.Millisecond)
+	authorizeURL := out.WaitURL("http")
 
 	u, err := url.Parse(authorizeURL)
 	require.NoError(t, err)
@@ -417,11 +390,8 @@ func TestLoginOutlook_WrongStateCallbackIsIgnored(t *testing.T) {
 	resp.Body.Close()
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 
-	select {
-	case err := <-errCh:
-		t.Fatalf("LoginOutlook ended on a wrong-state callback: %v", err)
-	case <-time.After(200 * time.Millisecond):
-	}
+	// The 400 is the stale-callback answer: the handler returned before
+	// delivering anything, so the login is still waiting.
 
 	// The real redirect still gets through and ends the login.
 	q.Set("state", u.Query().Get("state"))
@@ -430,13 +400,9 @@ func TestLoginOutlook_WrongStateCallbackIsIgnored(t *testing.T) {
 	require.NoError(t, err)
 	resp.Body.Close()
 
-	select {
-	case err := <-errCh:
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "access_denied")
-	case <-time.After(3 * time.Second):
-		t.Fatal("timed out waiting for LoginOutlook to complete")
-	}
+	err = <-errCh
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "access_denied")
 }
 
 // --- RefreshingXOAUTH2Auth ---

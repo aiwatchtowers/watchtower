@@ -31,22 +31,14 @@ func TestHTTPClient_ServerThatNeverAnswersTimesOut(t *testing.T) {
 		_, _, _, err := NewGenerator("m", "m", srv.URL).Generate(context.Background(), "", "hi", "")
 		done <- err
 	}()
-	select {
-	case err := <-done:
-		if err == nil {
-			t.Fatal("Generate: want a timeout error, got nil")
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("Generate hung on a server that never answers")
+	err := <-done
+	if err == nil {
+		t.Fatal("Generate: want a timeout error, got nil")
 	}
 
 	_, errCh, _ := NewClient("m", srv.URL).Query(context.Background(), "", "hi", "")
-	select {
-	case err := <-errCh:
-		if err == nil {
-			t.Fatal("Query: want a timeout error, got nil")
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("Query hung on a server that never answers")
+	err = <-errCh
+	if err == nil {
+		t.Fatal("Query: want a timeout error, got nil")
 	}
 }

@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"net/http"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -33,6 +34,22 @@ const appReturnURL = "watchtower-auth://connected"
 // closeAttemptMS is when the success page tries window.close(). Late enough
 // to read the page if a browser does allow it.
 const closeAttemptMS = "3000"
+
+// callbackCloseGrace caps how long CloseCallbackServer waits for the
+// callback's response to reach the browser.
+const callbackCloseGrace = 500 * time.Millisecond
+
+// CloseCallbackServer stops a loopback callback server once the callback's
+// page has gone out: it waits for requests still being answered — the browser
+// receiving its success or error page — for at most callbackCloseGrace, then
+// closes whatever is left. With nothing in flight it returns at once.
+func CloseCallbackServer(server *http.Server) {
+	ctx, cancel := context.WithTimeout(context.Background(), callbackCloseGrace)
+	defer cancel()
+	if err := server.Shutdown(ctx); err != nil {
+		_ = server.Close()
+	}
+}
 
 // ErrLoginTimedOut is what every loopback Login wraps when its wait for the
 // callback ends (timeout, or the login was cancelled) — ReturnAfterLogin does not pull the app forward for it.

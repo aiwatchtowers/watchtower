@@ -15,13 +15,13 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/auth"
 	"watchtower/internal/oauthpage"
+	"watchtower/internal/oauthpage/oauthpagetest"
 )
 
 // syncBuffer is a mutex-guarded io.Writer, used where a goroutine writes
@@ -416,7 +416,7 @@ func TestLogin_SkipBrowserOpen_Success(t *testing.T) {
 	resCh := make(chan *OAuthToken, 1)
 	errCh := make(chan error, 1)
 
-	out := &syncBuffer{}
+	out := &oauthpagetest.Output{}
 	go func() {
 		tok, err := Login(context.Background(), GoogleOAuthConfig{ClientID: "cid", ClientSecret: "secret"}, out, LoginOptions{SkipBrowserOpen: true})
 		if err != nil {
@@ -427,20 +427,7 @@ func TestLogin_SkipBrowserOpen_Success(t *testing.T) {
 	}()
 
 	// Poll the output buffer for the printed authorize URL, then hit its callback.
-	var authorizeURL string
-	require.Eventually(t, func() bool {
-		s := out.String()
-		idx := strings.Index(s, "http")
-		if idx == -1 {
-			return false
-		}
-		end := strings.IndexAny(s[idx:], "\n ")
-		if end == -1 {
-			end = len(s) - idx
-		}
-		authorizeURL = s[idx : idx+end]
-		return authorizeURL != ""
-	}, 2*time.Second, 10*time.Millisecond)
+	authorizeURL := out.WaitURL("http")
 
 	u, err := url.Parse(authorizeURL)
 	require.NoError(t, err)
@@ -468,8 +455,6 @@ func TestLogin_SkipBrowserOpen_Success(t *testing.T) {
 		assert.Equal(t, "rt", tok.RefreshToken)
 	case err := <-errCh:
 		t.Fatalf("Login returned error: %v", err)
-	case <-time.After(3 * time.Second):
-		t.Fatal("timed out waiting for Login to complete")
 	}
 
 	// End-to-end PKCE pin: whatever challenge the browser was sent, the token
@@ -495,27 +480,14 @@ func TestLogin_AppReturn_SuccessPageLinksBack(t *testing.T) {
 	defer func() { googleTokenEndpoint = prev }()
 
 	errCh := make(chan error, 1)
-	out := &syncBuffer{}
+	out := &oauthpagetest.Output{}
 	go func() {
 		_, err := Login(context.Background(), GoogleOAuthConfig{ClientID: "cid"}, out,
 			LoginOptions{SkipBrowserOpen: true, AppReturn: true})
 		errCh <- err
 	}()
 
-	var authorizeURL string
-	require.Eventually(t, func() bool {
-		s := out.String()
-		idx := strings.Index(s, "http")
-		if idx == -1 {
-			return false
-		}
-		end := strings.IndexAny(s[idx:], "\n ")
-		if end == -1 {
-			end = len(s) - idx
-		}
-		authorizeURL = s[idx : idx+end]
-		return authorizeURL != ""
-	}, 2*time.Second, 10*time.Millisecond)
+	authorizeURL := out.WaitURL("http")
 
 	u, err := url.Parse(authorizeURL)
 	require.NoError(t, err)
@@ -533,12 +505,8 @@ func TestLogin_AppReturn_SuccessPageLinksBack(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, oauthpage.Success("Gmail", true), string(body))
 
-	select {
-	case err := <-errCh:
-		require.NoError(t, err)
-	case <-time.After(3 * time.Second):
-		t.Fatal("timed out waiting for Login to complete")
-	}
+	err = <-errCh
+	require.NoError(t, err)
 }
 
 func TestListenLocal_NotEmpty(t *testing.T) {

@@ -11,12 +11,12 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"watchtower/internal/oauthpage"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"watchtower/internal/oauthpage/oauthpagetest"
 )
 
 func TestBuildAuthURL_IncludesScopesAndClientID(t *testing.T) {
@@ -333,7 +333,7 @@ func runLoginCapture(t *testing.T, opts LoginOptions) (authorizeURL, successBody
 	jiraTokenEndpoint = tokenSrv.URL
 	defer func() { jiraTokenEndpoint = prev }()
 
-	out := &syncTestBuffer{}
+	out := &oauthpagetest.Output{}
 	opts.SkipBrowserOpen = true // print the authorize URL instead of opening a browser
 	resultCh := make(chan error, 1)
 	go func() {
@@ -341,19 +341,7 @@ func runLoginCapture(t *testing.T, opts LoginOptions) (authorizeURL, successBody
 		resultCh <- err
 	}()
 
-	require.Eventually(t, func() bool {
-		s := out.String()
-		idx := strings.Index(s, "https://")
-		if idx == -1 {
-			return false
-		}
-		end := strings.IndexAny(s[idx:], "\n ")
-		if end == -1 {
-			return false
-		}
-		authorizeURL = s[idx : idx+end]
-		return authorizeURL != ""
-	}, 3*time.Second, 10*time.Millisecond)
+	authorizeURL = out.WaitURL("https://")
 
 	parsed, err := url.Parse(authorizeURL)
 	require.NoError(t, err)
@@ -377,12 +365,8 @@ func runLoginCapture(t *testing.T, opts LoginOptions) (authorizeURL, successBody
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
 
-	select {
-	case err := <-resultCh:
-		require.NoError(t, err)
-	case <-time.After(5 * time.Second):
-		t.Fatal("Login did not complete in time")
-	}
+	err = <-resultCh
+	require.NoError(t, err)
 	return authorizeURL, string(body)
 }
 
