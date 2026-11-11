@@ -127,7 +127,9 @@ final class CoachCenter {
     }
 
     /// Returns the `diff` when the destination changed since the accept (the
-    /// owner may then force it); nil otherwise.
+    /// owner may then force it); nil otherwise. A forced rollback the CLI
+    /// still refuses (a created CLAUDE.md/AGENTS.md edited since is never
+    /// deleted, spec §4.3a) shows the CLI's line on the card.
     func rollback(_ id: Int64, force: Bool) async -> String? {
         guard pending.insert(id).inserted else { return nil }
         defer { pending.remove(id) }
@@ -138,7 +140,7 @@ final class CoachCenter {
             reloadAll()
             return nil
         } catch {
-            if let failure = Self.failure(error), failure.code == "changed_since" {
+            if !force, let failure = Self.failure(error), failure.code == "changed_since" {
                 return failure.diff ?? ""
             }
             decisionFailed(id, error)

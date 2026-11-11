@@ -246,6 +246,23 @@ final class CoachCenterTests: XCTestCase {
         XCTAssertNil(center.cardErrors[5])
     }
 
+    func testForcedRollbackStillRefusedShowsTheLine() async {
+        let runner = ScriptedCoachRunner { _ in
+            throw Self.failure(#"{"ok":false,"error":"CLAUDE.md changed since Accept","code":"changed_since","diff":"+x"}"#)
+        }
+        let center = makeCenter(runner)
+        let diff = await center.rollback(9, force: true)
+        XCTAssertNil(diff)
+        XCTAssertEqual(center.cardErrors[9], "CLAUDE.md changed since Accept", "the sheet stays open with the reason")
+    }
+
+    func testDirtyBeforeTheListLoadedShowsTheCLILine() async {
+        let runner = ScriptedCoachRunner { _ in throw Self.failure(Self.dirtyFailure) }
+        let center = makeCenter(runner)
+        await center.accept(9, editedText: nil)
+        XCTAssertEqual(center.cardErrors[9], try? XCTUnwrap(CoachFailure.parse(stderr: Self.dirtyFailure)).error)
+    }
+
     /// A repository proposal (#9, the workbench's CLAUDE.md) in the list.
     nonisolated private static let repoList = #"{"ok":true,"proposals":[{"id":9,"title":"Tests","why":"w","#
         + #""destination":"repo_claude_md","workbench_id":3,"prompt_id":"","kind":"add","metric":"corrections","#

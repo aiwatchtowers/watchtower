@@ -338,14 +338,15 @@ final class TuningPanelViewTests: XCTestCase {
     func testAcceptedEditsRepoRows() throws {
         let coach = CoachCenter(runner: ProposalsRunner(status: "accepted"), interval: .seconds(3600))
         defer { coach.stop() }
-        func rowText(_ p: CoachProposal) throws -> String {
-            let view = CoachAcceptedLogView(accepted: [p], open: [], coach: coach) { _ in }
-            return try view.inspect().find(text: p.verdictLine(hasCut: false, now: Date())).string()
+        func row(_ p: CoachProposal) -> CoachAcceptedLogView {
+            CoachAcceptedLogView(accepted: [p], open: [], coach: coach) { _ in }
         }
-        XCTAssertEqual(try rowText(try Self.repoProposal(#","written_branch":"main""#)), TuningChatTexts.awaitingCommit)
-        XCTAssertEqual(try rowText(try Self.repoProposal("", verdict: "too_little_data")), TuningChatTexts.notCommitted)
-        XCTAssertEqual(try rowText(try Self.repoProposal("", status: "rolled_back")),
-                       TuningChatTexts.rolledBackRepoFile(path: "CLAUDE.md"))
+        XCTAssertNoThrow(try row(try Self.repoProposal(#","written_branch":"main""#)).inspect()
+            .find(text: TuningChatTexts.awaitingCommit))
+        XCTAssertNoThrow(try row(try Self.repoProposal("", verdict: "too_little_data")).inspect()
+            .find(text: TuningChatTexts.notCommitted))
+        XCTAssertNoThrow(try row(try Self.repoProposal("", status: "rolled_back")).inspect()
+            .find(text: TuningChatTexts.rolledBackRepoFile(path: "CLAUDE.md")))
     }
 
     func testNoAddToKnowledgeInThePanel() async throws {
