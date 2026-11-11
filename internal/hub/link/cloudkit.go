@@ -17,7 +17,7 @@ package link
 // the next run's CloseLink(CloseRestart).
 //
 // Concurrency, as on the Swift main actor whose share calls interleave: no
-// lock is held across a bridge call except issueMu. The public link has one
+// lock is held across a bridge call except issueSem. The public link has one
 // writer goroutine (writeLink, the Swift link writer of #262) whose calls
 // are never cancelled, so one runs at a time and a call that timed out for
 // its caller and lands late is followed by the wanted state. The share state
@@ -241,8 +241,8 @@ type retiredCode struct{ nonce, reason string }
 // flight, then issues the newest code (the one that links), as two New code
 // clicks did in Swift — so one issue's close never shuts another's link.
 func (c *Center) IssueCloudKit(ctx context.Context, s transport.Shares) (wire.LinkPayload, string, error) {
-	c.issueMu.Lock()
-	defer c.issueMu.Unlock()
+	c.issueSem <- struct{}{}
+	defer func() { <-c.issueSem }()
 	c.ck.mu.Lock()
 	c.ck.issuing++
 	c.ck.sweepAt, c.ck.sweepTries, c.ck.linkCloseAt, c.ck.linkCloseTries = time.Time{}, 0, time.Time{}, 0

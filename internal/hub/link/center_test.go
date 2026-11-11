@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -1002,8 +1003,15 @@ func TestKeyboxesNeverSealTheUnlinkEpochToTheUnlinkedPhone(t *testing.T) {
 	done := make(chan error, 1)
 	r.c.beforeKeys = func() {
 		r.c.beforeKeys = nil
-		go func() { done <- r.c.Unlink(a.id.String()) }()
-		time.Sleep(50 * time.Millisecond) // time enough for an unlocked Unlink to rotate
+		started := make(chan struct{})
+		go func() { close(started); done <- r.c.Unlink(a.id.String()) }()
+		<-started
+		// Chances enough for an unlocked Unlink to rotate (no wall-clock wait:
+		// a locked Unlink blocks on the center's mutex, which a synctest bubble
+		// cannot see as blocked).
+		for range 1000 {
+			runtime.Gosched()
+		}
 	}
 	boxes, err := r.c.Keyboxes()
 	if err != nil {
@@ -1060,17 +1068,7 @@ func TestPublishCallbackMayReadKeyboxes(t *testing.T) {
 		}
 		reads++
 	}
-	// The pairing runs here; a watchdog only waits. A deadlock never returns,
-	// so the watchdog ends the run with a panic naming it.
-	done := make(chan struct{})
-	defer close(done)
-	go func() {
-		select {
-		case <-done:
-		case <-time.After(10 * time.Second):
-			panic("TestPublishCallbackMayReadKeyboxes: a Publish callback reading Keyboxes deadlocked")
-		}
-	}()
+	// A deadlock never returns: go test -timeout ends the run with its stacks.
 	a, b := newPhone(t), newPhone(t)
 	code := r.issue()
 	r.handle(a, code.Nonce)

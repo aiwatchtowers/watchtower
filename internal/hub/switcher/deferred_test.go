@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"watchtower/internal/hub/hubtest"
@@ -62,7 +63,7 @@ func staleWriter(t *testing.T, w *world) (a, b *hubtest.Phone) {
 // Path 1: phone a's transport_switch(relay) is first in the CloudKit pass with
 // the account read hanging; phone b's Switch to iCloud sits behind it.
 func TestARelayRequestOnAHungAccountReadLeavesThePressBehindItRead(t *testing.T) {
-	eachFlavour(t, func(t *testing.T, w *world) {
+	eachFlavourHung(t, func(t *testing.T, w *world) {
 		a, b := w.addPhone(true), w.addPhone(true)
 		w.moveTo(a, wire.TransportRelay, b)
 		w.unreadable("hanging")
@@ -88,7 +89,7 @@ func TestARelayRequestOnAHungAccountReadLeavesThePressBehindItRead(t *testing.T)
 // However many asks wait, the Step makes one account read for them, so a press
 // behind them waits one old-side timeout, not one per ask.
 func TestARunOfDecisionsMakesOneAccountRead(t *testing.T) {
-	eachFlavour(t, func(t *testing.T, w *world) {
+	eachFlavourHung(t, func(t *testing.T, w *world) {
 		a, b, c := w.addPhone(true), w.addPhone(true), w.addPhone(true)
 		w.moveTo(a, wire.TransportRelay, b, c)
 		w.unreadable("hanging")
@@ -112,7 +113,7 @@ func TestARunOfDecisionsMakesOneAccountRead(t *testing.T) {
 
 // The reviewer's proof of the same path through whole hub cycles.
 func TestAHungAccountReadNeverKeepsTheHubOnTheRelayBehindARelayRequest(t *testing.T) {
-	eachFlavour(t, func(t *testing.T, w *world) {
+	eachFlavourHung(t, func(t *testing.T, w *world) {
 		a, b := w.addPhone(true), w.addPhone(true)
 		w.moveTo(a, wire.TransportRelay, b)
 		w.unreadable("hanging")
@@ -130,7 +131,7 @@ func TestAHungAccountReadNeverKeepsTheHubOnTheRelayBehindARelayRequest(t *testin
 // Path 2: phone a's stale action is first in the CloudKit pass with the account
 // read hanging (Stale's hub_on_relay check); b's press sits behind it.
 func TestAStaleWriteOnAHungAccountReadLeavesThePressBehindItRead(t *testing.T) {
-	eachFlavour(t, func(t *testing.T, w *world) {
+	eachFlavourHung(t, func(t *testing.T, w *world) {
 		a, b := staleWriter(t, w)
 		w.act(a)
 		w.unreadable("hanging")
@@ -155,7 +156,7 @@ func TestAStaleWriteOnAHungAccountReadLeavesThePressBehindItRead(t *testing.T) {
 // pass's context is gone after the read: b's epoch_ack cannot commit, the read
 // stops there, and the press behind it is never reached.
 func TestAHungAccountReadNeverKeepsTheHubOnTheRelayBehindAStaleWrite(t *testing.T) {
-	eachFlavour(t, func(t *testing.T, w *world) {
+	eachFlavourHung(t, func(t *testing.T, w *world) {
 		a, b := staleWriter(t, w)
 		w.act(a)
 		w.unreadable("hanging")
@@ -309,7 +310,7 @@ func TestAStaleAnswerWaitingForTheStepSurvivesARestart(t *testing.T) {
 func TestAnUnreadableAccountAtTheStepCountsAsPaying(t *testing.T) {
 	for _, how := range []string{"failed", "hanging"} {
 		t.Run(how, func(t *testing.T) {
-			eachFlavour(t, func(t *testing.T, w *world) {
+			eachFlavourFor(t, how, func(t *testing.T, w *world) {
 				free := w.addPhone(false)
 				w.unreadable(how)
 				w.ask(free, wire.TransportRelay)
@@ -333,7 +334,7 @@ func TestAnUnreadableAccountAtTheStepCountsAsPaying(t *testing.T) {
 func TestAnUnreadableAccountNeverTellsAStalePhoneHubOnRelay(t *testing.T) {
 	for _, how := range []string{"failed", "hanging"} {
 		t.Run(how, func(t *testing.T) {
-			eachFlavour(t, func(t *testing.T, w *world) {
+			eachFlavourFor(t, how, func(t *testing.T, w *world) {
 				free, b := w.addPhone(false), w.addPhone(true)
 				w.moveTo(b, wire.TransportRelay)
 				if _, err := free.Sync(); err != nil {
@@ -735,9 +736,10 @@ func (c countedPolls) Changes(ctx context.Context, zone string, since uint64) (t
 
 // An ask that cannot be finished does not spin Run: it is retried at the run
 // loop's tick, not by a kick of its own, so its tries last. The one kick is the
-// ask's own, from the pass.
+// ask's own, from the pass. Run waits on the bubble's clock (eachFlavourHung):
+// a spinning loop never lets it move, so the test hangs instead of passing.
 func TestAWaitingAskDoesNotSpinTheRunLoop(t *testing.T) {
-	eachFlavour(t, func(t *testing.T, w *world) {
+	eachFlavourHung(t, func(t *testing.T, w *world) {
 		free := w.addPhone(false)
 		var polls atomic.Int64
 		w.rebuild(func(c *switcher.Config) {
@@ -753,7 +755,8 @@ func TestAWaitingAskDoesNotSpinTheRunLoop(t *testing.T) {
 		done := make(chan struct{})
 		go func() { defer close(done); _ = w.sw.Run(ctx) }()
 		t.Cleanup(func() { stop(); <-done })
-		time.Sleep(2 * testOldSide)     // far longer than a loop
+		time.Sleep(2 * testOldSide)     // far longer than a loop, on the bubble's clock
+		synctest.Wait()
 		if n := polls.Load(); n > 2*2 { // two mailboxes at most, two loops
 			t.Fatalf("%d relay reads: the run loop spins", n)
 		}
