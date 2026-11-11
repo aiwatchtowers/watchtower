@@ -146,6 +146,7 @@ func pendingRequests(ctx context.Context, tx *sql.Tx, live Liveness, now time.Ti
 	for _, r := range refs {
 		published[r.id] = true
 	}
+	//nolint:gosec // G202: the concatenations are package constants (db.NotDeletingSQL and the like); every value is a bound arg.
 	rows, err := tx.QueryContext(ctx, `
 SELECT r.id, r.terminal_session_id, r.workbench_id, r.tool_name, r.summary, r.summary_clipped,
        r.created_at, s.project_id

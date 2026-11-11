@@ -134,6 +134,7 @@ func (l *stateLane) stateChanged(ctx context.Context, workbenches []int64) {
 // readSessionFacts is every session's hook facts and open asks; a row
 // being deleted (#1716) is left out, as if it were gone.
 func readSessionFacts(ctx context.Context, d *sql.DB) (map[int64]sessionFacts, error) {
+	//nolint:gosec // G202: the concatenations are package constants (db.NotDeletingSQL and the like); every value is a bound arg.
 	rows, err := d.QueryContext(ctx, `
 SELECT t.id, COALESCE(t.project_id, 0), COALESCE(t.agent_state, ''), COALESCE(t.agent_state_at, ''),
        COALESCE(t.finished_at, ''), COALESCE(t.agent_failed_at, ''), COALESCE(t.agent_background, -1),
