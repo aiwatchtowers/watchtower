@@ -161,7 +161,7 @@ On entering the Inbox (or a folder): restore the last selected entry of that fol
 
 ### Mail closes on reply (phase 4)
 
-- Gmail sync also lists the owner's sent messages (`in:sent`, same incremental window and backfill rules), storing them in `gmail_messages` with their `thread_id` and a `SENT` label.
+- Gmail sync also lists the owner's sent messages (`in:sent`, same incremental window and backfill rules), storing them in `gmail_messages` with their `thread_id` and a `SENT` label. **Sent mail is ordinary mail** (owner's decision, ask #634): every reader of `gmail_messages` sees it — knowledge search, memory, media, `list_emails`/`get_email`. Two readers must still treat it as the owner's own: the Gmail detector (no `email_received` for a message from the owner; it already skips those) and the `gmail.new_messages` automation event (the owner's own messages are not news, AUTO-09's event rule). The builder checks every other reader for an assumption that a row is received mail (counts, "from" labels) and lists them in the plan.
 - `autoResolveByRules` gains a mail branch: an open `email_received` item whose Gmail thread has a sent message from the owner newer than the item → `ResolveInboxItem(id, "User replied")`. Same watermark rules (INBOX-09). INBOX-02 is extended to mail (amendment below).
 - IMAP: not in this project (no Sent folder sync, no thread headers). Documented as a v1 limit.
 - Source deletions and purge treat sent rows like received ones (SRCDEL, PURGE scopes checked by the builder).
@@ -169,7 +169,7 @@ On entering the Inbox (or a folder): restore the last selected entry of that fol
 ### Slack today (phase 5)
 
 - **Raw window primitive** as specified in the umbrella (scope, per-automation cursor advanced only on success, `concurrency: 1`, 500 messages / 200 k characters caps, 7-day skip, `fenceData`), Slack only in this project. Board #920 takes the remaining sources and the moves of the other built-ins.
-- **Built-in `slack-today`** ("Slack today"): runs after each sync, at most once per hour *(agent's call)*; scope = channels the owner is a member of, minus muted channels; reads the raw window since its cursor; one `llm()` step (light tier) that groups by channel and labels each line `decided` | `asks you` | `needs someone` | `fyi`, dropping channels with nothing for the owner; writes one living artifact with a block per channel (heading with new count and **Open in Slack**, chip + line), a folded "N channels with nothing for you" line, and the header "Today · N messages in K channels". Lines addressed to the owner personally are left out (they live in Waiting for me).
+- **Built-in `slack-today`** ("Slack today"): runs after each sync, at most once per hour *(agent's call)*; scope = every channel the owner is a member of, minus channels muted for AI (owner's decision, ask #634); reads the raw window since its cursor; one `llm()` step (light tier) that groups by channel and labels each line `decided` | `asks you` | `needs someone` | `fyi`, dropping channels with nothing for the owner; writes one living artifact with a block per channel (heading with new count and **Open in Slack**, chip + line), a folded "N channels with nothing for you" line, and the header "Today · N messages in K channels". Lines addressed to the owner personally are left out (they live in Waiting for me).
 - **The window is today** (local midnight to now), read incrementally: each run reads only the raw window since its cursor and merges its labelled lines into the automation's state for today; the state resets at local midnight; the artifact is rewritten from the state. So each message goes through the model once. The header reads "Today · N messages in K channels"; **Mark All Seen** marks the artifact read (the living rule makes it unread again when a new line lands). *(Agent's call: cheaper and simpler than a window from the owner's last open, which would re-read the same messages every hour; the name already says "today".)* A channel's "muted" = the existing `is_muted_for_llm` flag.
 - New feature id `slack-today` (FEAT-01: off reads nothing), default on when Slack is connected; Settings and the guide list it with the other built-ins.
 - Prompt `inbox.slack_today` via `add-ai-prompt` (claude + codex, light tier).
@@ -199,6 +199,9 @@ Needs the owner's approval before the phase that relies on it:
 - **IDEA-04** note (phase 3): Clear Old Ideas is one owner action applying `not_now` to many ideas; still owner-only, never automatic.
 - **TRACKS-07** note (phase 3): bulk Stop Tracking sets `dismissed_at` only.
 - **AUTO-*** (phase 5): the raw window primitive's contracts as the umbrella spec states them (AUTO-01 capability, AUTO-04 cursor on success, AUTO-05 concurrency 1); FEAT-01 for `slack-today`.
+- **Raw window scope** (phase 5, umbrella amendment): a built-in may widen the scope to every channel the owner is a member of, minus channels muted for AI (owner's decision, ask #634). Owner recipes keep the umbrella's narrow scope.
+
+Approved by the owner in ask #634: INBOX-05, INBOX-02, the STRIP badge change, the raw window scope for Slack today, sent mail as ordinary mail.
 
 - **STRIP badge** (phase 1): the sidebar badge becomes Needs approval + people waiting newer than 24 h (owner's choice in the brainstorm); ideas, briefings and owner-folder artifacts leave it; the guard `InboxFeedQueriesTests::testBadgeCountsDecisionsUnreadMessagesLatestUnreadDayAndDueReminders` is rewritten to the new terms.
 
