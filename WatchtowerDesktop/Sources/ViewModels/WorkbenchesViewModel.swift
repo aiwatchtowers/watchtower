@@ -189,6 +189,9 @@ final class WorkbenchesViewModel {
     /// Per workbench, the Not fully cleaned rows (`fetchDeleting`, marked
     /// and not queued) for the finished group.
     var notFullyCleanedRows: [Int64: [TerminalSession]] = [:]
+    /// The Not fully cleaned rows whose Clean Up Again is queued or runs:
+    /// they stay listed, reading "Cleaning up…", until the outcome.
+    var cleaningAgain: Set<Int64> = []
     /// The quiet notice of the background cleanups that ended clean, on the
     /// Undo bar's place for `cleanupNoticeDuration`; deletes in a row join
     /// into one.

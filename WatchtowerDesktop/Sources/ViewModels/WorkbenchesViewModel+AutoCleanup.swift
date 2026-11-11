@@ -100,10 +100,36 @@ extension WorkbenchesViewModel {
 
     /// **Clean Up Again** on a Not fully cleaned row: the same background
     /// cleanup; on a clean outcome the row goes, else it is marked anew.
+    /// The row stays in the finished group meanwhile, reading "Cleaning
+    /// up…" with its actions off (spec §7).
     func cleanUpAgain(_ id: Int64) {
         guard markedRowIsFree(id), let row = notFullyCleanedRow(id), let workbenchID = row.projectID else { return }
-        clearMark(id, workbenchID: workbenchID)
+        notFullyCleaned[id] = nil
+        cleaningAgain.insert(id)
         enqueueAutoCleanup(sessionID: id, workbenchID: workbenchID, title: row.title)
+    }
+
+    /// Opening a Not fully cleaned row: its report, with the Cleanup
+    /// section the apply stored (spec §3). It never starts the session.
+    func openNotFullyCleaned(_ id: Int64, projectID: Int64) {
+        guard notFullyCleanedRow(id) != nil else { return }
+        beginSwitch(projectID: projectID)
+        var updated = layout(projectID: projectID)
+        updated.show(.sessionReport(id))
+        setLayout(updated, projectID: projectID)
+    }
+
+    /// A row out of the session lists that keeps its pane in the layout:
+    /// queued or running its background cleanup, or Not fully cleaned.
+    func keepsPaneWhileCleaning(_ id: Int64, projectID: Int64) -> Bool {
+        closedForCleanup.contains(id) || cleaningAgain.contains(id)
+            || notFullyCleanedSession(id, projectID: projectID) != nil
+    }
+
+    /// Workbench `projectID`'s Not fully cleaned row `id`, if listed: the
+    /// report finds it there, since the session lists leave it out.
+    func notFullyCleanedSession(_ id: Int64, projectID: Int64) -> TerminalSession? {
+        notFullyCleanedRows[projectID]?.first { $0.id == id }
     }
 
     /// **Delete Anyway** on a Not fully cleaned row: the row is deleted now
@@ -181,13 +207,16 @@ extension WorkbenchesViewModel {
     }
 
     /// Reads workbench `projectID`'s Not fully cleaned rows: the deleting
-    /// rows with a mark and no cleanup queued. A failed read is logged and
+    /// rows with a mark and no cleanup queued, and the ones Clean Up Again
+    /// runs on. A failed read is logged and
     /// keeps the last list.
     func loadNotFullyCleaned(projectID: Int64) async {
         do {
             let rows = try await dbPool.read { try TerminalSessionQueries.fetchDeleting($0, projectID: projectID) }
             let queued = closedForCleanup
-            notFullyCleanedRows[projectID] = rows.filter { notFullyCleaned[$0.id] != nil && !queued.contains($0.id) }
+            notFullyCleanedRows[projectID] = rows.filter {
+                cleaningAgain.contains($0.id) || (notFullyCleaned[$0.id] != nil && !queued.contains($0.id))
+            }
         } catch {
             NSLog("WorkbenchesViewModel: reading workbench %lld's sessions not fully cleaned failed: %@",
                   projectID, error.localizedDescription)
@@ -224,6 +253,7 @@ extension WorkbenchesViewModel {
             ?? .init(runError: CLIRunnerError.binaryNotFound.localizedDescription)
         guard !autoCleanupStopped else { return }
         autoCleanupTitles[id] = nil
+        cleaningAgain.remove(id)
         switch SessionAutoCleanupOutcome.evaluate(result: run.result, title: title, runError: run.runError) {
         case let .clean(notice):
             do {
@@ -233,6 +263,7 @@ extension WorkbenchesViewModel {
                 return
             }
             notFullyCleaned[id] = nil
+            notFullyCleanedRows[workbenchID]?.removeAll { $0.id == id }
             if notice != nil, let result = run.result { showCleanupNotice(title: title, result: result) }
         case let .notFullyCleaned(mark):
             notFullyCleaned[id] = mark

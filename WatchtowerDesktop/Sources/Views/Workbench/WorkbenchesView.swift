@@ -90,6 +90,7 @@ struct WorkbenchesView: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: vm.pendingDeleteToast)
+        .animation(.easeInOut(duration: 0.2), value: vm.cleanupNotice)
         // ⌥⌘S, the title row's toggle, "All Workbenches" and the switchers' "Show
         // Sessions Panel" all slide the panel the same way.
         .animation(.easeInOut(duration: 0.2), value: vm.panelVisible)

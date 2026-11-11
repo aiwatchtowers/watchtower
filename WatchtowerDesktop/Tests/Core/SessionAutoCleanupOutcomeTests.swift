@@ -116,7 +116,7 @@ final class SessionAutoCleanupOutcomeTests: XCTestCase {
         )
         XCTAssertEqual(
             Outcome.evaluate(result: full, title: "T", runError: nil),
-            .clean(SessionCleanupNotice(text: "Cleaned up “T”: removed 3 worktrees and 12 branches (~2.1 GB)."))
+            .clean(SessionCleanupNotice(lead: "Cleaned up", rest: " “T”: removed 3 worktrees and 12 branches (~2.1 GB)."))
         )
 
         let kept = result([
@@ -126,7 +126,7 @@ final class SessionAutoCleanupOutcomeTests: XCTestCase {
         ])
         XCTAssertEqual(
             Outcome.evaluate(result: kept, title: "T", runError: nil),
-            .clean(SessionCleanupNotice(text: "Cleaned up “T”: removed 2 worktrees (~1.4 GB). Kept 1 branch — unpushed commits."))
+            .clean(SessionCleanupNotice(lead: "Cleaned up", rest: " “T”: removed 2 worktrees (~1.4 GB). Kept 1 branch — unpushed commits."))
         )
 
         let nothing = result([branch("main", reason: "default_branch")])
@@ -141,15 +141,29 @@ final class SessionAutoCleanupOutcomeTests: XCTestCase {
         XCTAssertEqual(
             SessionCleanupNotice.joined([("A", one), ("B", two), ("C", three), ("D", four)]),
             SessionCleanupNotice(
-                text: "Cleaned up 4 sessions: removed 2 worktrees and 2 branches (~1.5 GB). Kept 1 branch — unpushed commits."
+                lead: "Cleaned up 4 sessions",
+                rest: ": removed 2 worktrees and 2 branches (~1.5 GB). Kept 1 branch — unpushed commits."
             )
         )
         XCTAssertEqual(
             SessionCleanupNotice.joined([("A", one)]),
-            SessionCleanupNotice(text: "Cleaned up “A”: removed 1 worktree and 1 branch (~1.0 GB).")
+            SessionCleanupNotice(lead: "Cleaned up", rest: " “A”: removed 1 worktree and 1 branch (~1.0 GB).")
         )
         XCTAssertNil(SessionCleanupNotice.joined([("D", four), ("E", four)]))
         XCTAssertNil(SessionCleanupNotice.joined([]))
+    }
+
+    /// The emphasis is built with the text, never parsed back out of it:
+    /// a title with a colon keeps its lead.
+    func testNoticeLeadAndRest() {
+        let one = result([worktree("a", bytes: 1_000_000_000, done: true)])
+        let single = SessionCleanupNotice.single(title: "Fix: login: flow", result: one)
+        XCTAssertEqual(single?.lead, "Cleaned up")
+        XCTAssertEqual(single?.rest, " “Fix: login: flow”: removed 1 worktree (~1.0 GB).")
+        XCTAssertEqual(single?.text, "Cleaned up “Fix: login: flow”: removed 1 worktree (~1.0 GB).")
+        let joined = SessionCleanupNotice.joined([("A: x", one), ("B", one)])
+        XCTAssertEqual(joined?.lead, "Cleaned up 2 sessions")
+        XCTAssertEqual(joined?.rest, ": removed 2 worktrees (~2.0 GB).")
     }
 
     // MARK: Not fully cleaned

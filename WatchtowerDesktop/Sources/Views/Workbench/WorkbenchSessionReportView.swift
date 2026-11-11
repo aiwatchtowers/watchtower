@@ -24,7 +24,11 @@ struct WorkbenchSessionReportView: View {
                 vm.reportSessionChanged(sessionID: sessionID, projectID: project.id)
             }
             .task(id: sessionID) {
-                if vm.session(sessionID, projectID: project.id) == nil { await vm.loadSessions(projectID: project.id) }
+                // A Not fully cleaned row (board #1716) is never in the list.
+                if vm.session(sessionID, projectID: project.id) == nil,
+                   vm.notFullyCleanedSession(sessionID, projectID: project.id) == nil {
+                    await vm.loadSessions(projectID: project.id)
+                }
             }
             .task(id: project.id) { await vm.loadGitHubRepository(project: project) }
     }

@@ -409,6 +409,12 @@ struct ContainersPage: View {
                     }
                     .frame(width: 300)
                 }
+                Sample("kitRow(tint:): a row with a status keeps its tone's plate",
+                       usage: "content.kitRow(isSelected: false, tint: Tone.warning)") {
+                    Label("Not fully cleaned", systemImage: "exclamationmark.triangle")
+                        .kitRow(isSelected: false, tint: Tone.warning)
+                        .frame(width: 300)
+                }
             }
         }
     }

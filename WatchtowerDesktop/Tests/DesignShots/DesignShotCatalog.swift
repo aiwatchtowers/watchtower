@@ -590,6 +590,7 @@ enum DesignShotCatalog {
                     .detailBackground())
             }
         } + ProviderFallbackShotFixtures.runtimeShots + InboxBuilderAShotFixtures.shots + InboxBuilderBShotFixtures.shots
+            + AutoCleanupShotFixtures.shots
     }
 }
 
@@ -624,6 +625,7 @@ enum DesignShotFixtures {
         AutomationShotFixtures.cleanUp()
         BuiltinShotFixtures.cleanUp()
         CleanupShotFixtures.cleanUp()
+        AutoCleanupShotFixtures.cleanUp()
         AgentSettingsShotFixtures.cleanUp()
         CoachShotFixtures.cleanUp()
         InboxFolderMenuShotFixtures.cleanUp()

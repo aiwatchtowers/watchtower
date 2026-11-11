@@ -420,12 +420,84 @@ final class WorkbenchesViewModelAutoCleanupTests: XCTestCase {
         let row = try await markedRow(vm, p)
 
         vm.cleanUpAgain(row.id)
-        XCTAssertTrue(vm.notFullyCleanedRows[p]?.isEmpty ?? true, "hidden while it runs")
+        // Spec §7 state 8: listed, "Cleaning up…", its actions off.
+        XCTAssertEqual(vm.notFullyCleanedRows[p]?.map(\.id), [row.id], "listed while it runs")
+        XCTAssertTrue(vm.cleaningAgain.contains(row.id))
+        XCTAssertNil(vm.notFullyCleaned[row.id])
+        vm.cleanUpAgain(row.id)
+        XCTAssertEqual(vm.autoCleanupCount(projectID: p), 1, "a second press queues nothing")
         await vm.autoCleanupIdle()
 
         let gone = try await stored(row.id)
         XCTAssertNil(gone)
         XCTAssertNil(vm.notFullyCleaned[row.id])
+        XCTAssertFalse(vm.cleaningAgain.contains(row.id))
+        XCTAssertTrue(vm.notFullyCleanedRows[p]?.isEmpty ?? true, "gone once clean")
+    }
+
+    /// Review #804: a marked row's report survives a list reload (the
+    /// view's reload skips it, and the layout keeps it), and a pane of a
+    /// marked or queued row is not pruned by the reload either.
+    func testNotFullyCleanedPaneSurvivesSessionReload() async throws {
+        let (vm, _, streamer) = makeVM([.success(AutoCleanupFixture.processRunning), .success(CleanupFixture.applied)])
+        let p = try await workbench()
+        let row = try await markedRow(vm, p)
+
+        vm.openNotFullyCleaned(row.id, projectID: p)
+        await vm.loadSessions(projectID: p)
+        XCTAssertEqual(vm.layout(projectID: p).primary, .sessionReport(row.id), "the report stays")
+        XCTAssertEqual(vm.reportSession(row.id, projectID: p)?.id, row.id)
+
+        var layout = vm.layout(projectID: p)
+        layout.show(.sessionChat(row.id))
+        vm.setLayout(layout, projectID: p)
+        await vm.loadSessions(projectID: p)
+        XCTAssertTrue(vm.layout(projectID: p).referencedSessionIDs.contains(row.id), "marked: its pane stays")
+
+        streamer.holdsCalls = true
+        vm.cleanUpAgain(row.id)
+        await waitUntilHeld(streamer, 1)
+        await vm.loadSessions(projectID: p)
+        XCTAssertTrue(vm.layout(projectID: p).referencedSessionIDs.contains(row.id), "queued: its pane stays")
+        streamer.release()
+        await vm.autoCleanupIdle()
+        XCTAssertFalse(vm.layout(projectID: p).referencedSessionIDs.contains(row.id), "clean: the pane goes with the row")
+    }
+
+    /// Review #804 item 11: a quit while Clean Up Again runs leaves the row
+    /// marked deleted; the next launch queues it again.
+    func testQuitDuringCleanUpAgainRequeuesAtLaunch() async throws {
+        let (vm, _, streamer) = makeVM([.success(AutoCleanupFixture.processRunning), .success(CleanupFixture.applied)])
+        let p = try await workbench()
+        let row = try await markedRow(vm, p)
+        streamer.holdsCalls = true
+        vm.cleanUpAgain(row.id)
+        await waitUntilHeld(streamer, 1)
+
+        await vm.stopAutoCleanupForQuit()
+        await vm.autoCleanupIdle()
+        let requested = try await deleteRequestedAt(row.id)
+        XCTAssertNotNil(requested, "the delete request survives the quit")
+
+        let (next, _, nextStreamer) = makeVM([.success(CleanupFixture.applied)])
+        await next.requeueDeletingRowsAtLaunch()
+        await next.autoCleanupIdle()
+
+        XCTAssertEqual(applies(nextStreamer).count, 1, "queued again at launch")
+        let gone = try await stored(row.id)
+        XCTAssertNil(gone)
+    }
+
+    func testOpenNotFullyCleanedShowsItsReport() async throws {
+        let (vm, _, _) = makeVM([.success(AutoCleanupFixture.processRunning)])
+        let p = try await workbench()
+        let row = try await markedRow(vm, p)
+
+        vm.openNotFullyCleaned(row.id, projectID: p)
+
+        XCTAssertEqual(vm.layout(projectID: p).primary, .sessionReport(row.id))
+        XCTAssertEqual(vm.reportSession(row.id, projectID: p)?.id, row.id, "the report finds the marked row")
+        XCTAssertNil(vm.session(row.id, projectID: p), "still out of the session lists")
     }
 
     func testCleanUpAgainFailureKeepsNewMark() async throws {
@@ -438,6 +510,7 @@ final class WorkbenchesViewModelAutoCleanupTests: XCTestCase {
         vm.cleanUpAgain(row.id)
         await vm.autoCleanupIdle()
 
+        XCTAssertFalse(vm.cleaningAgain.contains(row.id))
         let kept = try await stored(row.id)
         XCTAssertNotNil(kept)
         XCTAssertEqual(vm.notFullyCleaned[row.id], "Not fully cleaned: 1 branch — could not be removed.")
