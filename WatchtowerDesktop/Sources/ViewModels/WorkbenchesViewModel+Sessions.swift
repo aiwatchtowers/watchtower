@@ -105,6 +105,12 @@ extension WorkbenchesViewModel {
            !layout.showsSession(sessionID) {
             asks.hideDrawer(projectID: projectID)
         }
+        // So does a session's closed list (#1713); the session-less lists
+        // sit over the whole workspace and stay.
+        if let sessionID = asks.drawerClosedList(projectID: projectID)?.sessionID,
+           !layout.showsSession(sessionID) {
+            asks.hideDrawer(projectID: projectID)
+        }
         // A session came on screen: its panel section is kept (#480).
         refreshStickySection()
         do {

@@ -169,10 +169,21 @@ package struct CommentAnchor: Hashable, Sendable {
     /// `origins` costs O(collapsed length) in total across the whole
     /// search, not per hit.
     private static func collapsedOccurrences(of needle: [Character], in text: String) -> [Range<String.Index>] {
+        var steps = 0
+        return collapsedOccurrences(of: needle, in: text, steps: &steps)
+    }
+
+    /// `steps` counts the walk's own work: one per character collapsed, per
+    /// cursor move and per hit (tests pin it linear in the text, so a
+    /// per-hit rescan or a hand-rolled O(n·m) scan here cannot come back).
+    package static func collapsedOccurrences(
+        of needle: [Character], in text: String, steps: inout Int
+    ) -> [Range<String.Index>] {
         var collapsedText = ""
         var origins: [String.Index] = []
         var lastWasSpace = false
         for index in text.indices {
+            steps += 1
             let character = text[index]
             if character.isWhitespace {
                 if !lastWasSpace {
@@ -198,7 +209,9 @@ package struct CommentAnchor: Hashable, Sendable {
             while cursor < hit.lowerBound {
                 cursor = collapsedText.index(after: cursor)
                 position += 1
+                steps += 1
             }
+            steps += 1
             let last = origins[position + needle.count - 1]
             found.append(origins[position]..<text.index(after: last))
             searchStart = collapsedText.index(after: hit.lowerBound)

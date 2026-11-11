@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -243,25 +244,28 @@ func TestSecretStore_DeleteAndExists(t *testing.T) {
 // second Lock waits and gives up with the context's error; after unlock the
 // next Lock succeeds. Lock also creates a missing workspace directory.
 func TestSecretStore_LockSerializesHolders(t *testing.T) {
-	st := NewSecretStore(filepath.Join(t.TempDir(), "ws"), 4)
-	unlock, err := st.Lock(context.Background())
-	if err != nil {
-		t.Fatalf("first Lock: %v", err)
-	}
+	// Virtual time: the second Lock polls on a timer until its deadline.
+	synctest.Test(t, func(t *testing.T) {
+		st := NewSecretStore(filepath.Join(t.TempDir(), "ws"), 4)
+		unlock, err := st.Lock(context.Background())
+		if err != nil {
+			t.Fatalf("first Lock: %v", err)
+		}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
-	defer cancel()
-	if second, err := st.Lock(ctx); err == nil {
-		second()
-		t.Fatal("second Lock while held = nil error, want a context error")
-	} else if !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("second Lock err = %v, want context.DeadlineExceeded", err)
-	}
+		ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+		defer cancel()
+		if second, err := st.Lock(ctx); err == nil {
+			second()
+			t.Fatal("second Lock while held = nil error, want a context error")
+		} else if !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("second Lock err = %v, want context.DeadlineExceeded", err)
+		}
 
-	unlock()
-	again, err := st.Lock(context.Background())
-	if err != nil {
-		t.Fatalf("Lock after unlock: %v", err)
-	}
-	again()
+		unlock()
+		again, err := st.Lock(context.Background())
+		if err != nil {
+			t.Fatalf("Lock after unlock: %v", err)
+		}
+		again()
+	})
 }

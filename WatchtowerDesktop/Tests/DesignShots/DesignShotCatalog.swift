@@ -567,7 +567,10 @@ enum DesignShotCatalog {
             DesignShot(name: "mobileAdoptionFailed-narrow", size: NSSize(width: 320, height: 200)) {
                 HubAdoptionShotFixtures.screen(.failed(reason: "swift_schema"))
             }
-        ] + ProviderFallbackShotFixtures.shots + MobileSettingsShotFixtures.Frame.allCases.map { frame in
+        ] + ProviderFallbackShotFixtures.shots
+        + OnboardingAgentShotFixtures.shots
+        + OnboardingStepLiveShotFixtures.shots
+        + MobileSettingsShotFixtures.Frame.allCases.map { frame in
             // Settings → Mobile over `watchtower hub …` (go hub phase 3 Task 23), mockup §1–§9.
             DesignShot(name: frame.name, size: frame.size) { MobileSettingsShotFixtures.screen(frame) }
         } + MobileSettingsShotFixtures.Pairing.allCases.map { shot in
@@ -591,6 +594,7 @@ enum DesignShotCatalog {
             }
         } + ProviderFallbackShotFixtures.runtimeShots + InboxBuilderAShotFixtures.shots + InboxBuilderBShotFixtures.shots
             + AutoCleanupShotFixtures.shots
+            + ClosedAsksShotFixtures.shots
     }
 }
 
@@ -632,6 +636,7 @@ enum DesignShotFixtures {
         InboxFoldersShotFixtures.cleanUp()
         InboxApprovalsShotFixtures.cleanUp()
         ProjectPageShotFixtures.cleanUp()
+        ClosedAsksShotFixtures.cleanUp()
         if let newTaskPoolPath { TestDatabase.cleanup(path: newTaskPoolPath) }
         newTaskPoolPath = nil
         UserDefaults().removePersistentDomain(forName: defaultsSuite)

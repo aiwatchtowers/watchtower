@@ -5,9 +5,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"io/fs"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -16,13 +16,13 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"watchtower/internal/config"
 	"watchtower/internal/hub/hubtest"
 	"watchtower/internal/hub/identity"
 	"watchtower/internal/hub/link"
-	"watchtower/internal/hub/platform"
 	hubslices "watchtower/internal/hub/slices"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
@@ -46,35 +46,55 @@ func shortDir(t *testing.T) string {
 
 // recorder keeps every status a Run reports.
 type recorder struct {
-	mu  sync.Mutex
-	all []Status
+	mu      sync.Mutex
+	all     []Status
+	changed chan struct{} // closed and replaced by every report
 }
 
 func (r *recorder) report(s Status) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.all = append(r.all, s)
+	if r.changed != nil {
+		close(r.changed)
+	}
+	r.changed = make(chan struct{})
 }
 
 func (r *recorder) last() Status {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if len(r.all) == 0 {
-		return Status{}
-	}
-	return r.all[len(r.all)-1]
+	s, _ := r.lastAndChanged()
+	return s
 }
 
-// eventually polls cond until it holds or d passes.
-func eventually(t *testing.T, d time.Duration, what string, cond func() bool) {
+// lastAndChanged is the last status and a channel closed by the next report.
+func (r *recorder) lastAndChanged() (Status, <-chan struct{}) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.changed == nil {
+		r.changed = make(chan struct{})
+	}
+	if len(r.all) == 0 {
+		return Status{}, r.changed
+	}
+	return r.all[len(r.all)-1], r.changed
+}
+
+// eventually polls cond until it holds. Run in a synctest bubble, the
+// polling sleeps are the bubble's: the clock moves only when every goroutine
+// waits. A cond that never holds is bounded by go test -timeout.
+func eventually(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(d)
+	_ = what // names the wait for a reader of the test
 	for !cond() {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %s", what)
-		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+// bubble runs f in a synctest bubble: every timer, ticker and sleep in it
+// is on the bubble's clock, which moves only once every goroutine in it
+// waits, so no wait depends on the machine's load.
+func bubble(t *testing.T, f func(t *testing.T)) {
+	synctest.Test(t, f)
 }
 
 // rig is one Run under test.
@@ -83,6 +103,8 @@ type rig struct {
 	dir    string
 	fake   *memfake.Fake
 	rec    *recorder
+	ctl    *memControl  // nil = the real control socket
+	http   *http.Client // the relay transport's HTTP (nil = its own)
 	opens  atomic.Int32
 	dials  atomic.Int32
 	cancel context.CancelFunc
@@ -92,7 +114,7 @@ type rig struct {
 // options are a test Run's options over the fake: short cadences, every
 // store open and transport build counted.
 func (r *rig) options() Options {
-	return Options{
+	o := Options{
 		Dir: r.dir,
 		newTransport: func(context.Context, identity.Identity, *state.Store, []string) (transport.Transport, error) {
 			r.dials.Add(1)
@@ -107,11 +129,43 @@ func (r *rig) options() Options {
 		passEvery:  200 * time.Millisecond,
 		lockRetry:  50 * time.Millisecond,
 	}
+	if r.ctl != nil {
+		r.ctl.configure(&o)
+	}
+	o.httpClient = r.http
+	return o
 }
 
 func newRig(t *testing.T, dir string) *rig {
 	t.Helper()
 	return &rig{t: t, dir: dir, fake: memfake.New(transport.KindRelay, nil), rec: &recorder{}}
+}
+
+// newBubbleRig is newRig for a test in a bubble: the control socket is
+// in memory (dial reaches it).
+func newBubbleRig(t *testing.T, dir string) *rig {
+	t.Helper()
+	r := newRig(t, dir)
+	r.ctl = newMemControl()
+	return r
+}
+
+// dial connects a control client: in memory for a bubble rig, else over the
+// socket once it is served.
+func (r *rig) dial() *ControlClient {
+	r.t.Helper()
+	if r.ctl != nil {
+		return r.ctl.dial()
+	}
+	eventually(r.t, "the control socket", func() bool {
+		_, err := os.Stat(filepath.Join(r.dir, SocketName))
+		return err == nil
+	})
+	c, err := Dial(r.dir)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	return c
 }
 
 // start runs o in the background until the test ends.
@@ -131,21 +185,19 @@ func (r *rig) stop() error {
 	}
 	r.cancel()
 	r.cancel = nil
-	select {
-	case err := <-r.done:
-		return err
-	case <-time.After(10 * time.Second):
-		r.t.Fatal("Run did not return after cancel")
-		return nil
-	}
+	return <-r.done
 }
 
+// waitState waits for a report of state/reason as the last one.
 func (r *rig) waitState(state, reason string) {
 	r.t.Helper()
-	eventually(r.t, 10*time.Second, state+"/"+reason, func() bool {
-		s := r.rec.last()
-		return s.State == state && s.Reason == reason
-	})
+	for {
+		s, changed := r.rec.lastAndChanged()
+		if s.State == state && s.Reason == reason {
+			return
+		}
+		<-changed
+	}
 }
 
 // setMeta writes hub_meta values with no hub running.
@@ -222,87 +274,98 @@ func noEntries(t *testing.T, dir string) {
 }
 
 func TestSecondHubRefusedWhileLocked(t *testing.T) {
-	policytest.Set(t, nil)
-	dir := shortDir(t)
-	setMeta(t, dir, state.MetaEnabled, "1")
-	first := newRig(t, dir)
-	first.start(first.options())
-	first.waitState(StateRunning, "")
+	bubble(t, func(t *testing.T) {
+		policytest.Set(t, nil)
+		dir := shortDir(t)
+		setMeta(t, dir, state.MetaEnabled, "1")
+		first := newBubbleRig(t, dir)
+		first.start(first.options())
+		first.waitState(StateRunning, "")
 
-	second := newRig(t, dir)
-	second.fake = first.fake
-	second.start(second.options())
-	second.waitState(StateStarting, ReasonLocked)
-	time.Sleep(200 * time.Millisecond) // a few lock retries
-	if n := second.opens.Load(); n != 0 {
-		t.Fatalf("the second hub opened the sidecar %d times while the first held the lock", n)
-	}
-	if s, err := ReadStatus(dir); err != nil || s.State != StateRunning {
-		t.Fatalf("the waiting hub overwrote the running hub's status: %+v, %v", s, err)
-	}
+		second := newBubbleRig(t, dir)
+		second.fake = first.fake
+		second.start(second.options())
+		second.waitState(StateStarting, ReasonLocked)
+		time.Sleep(200 * time.Millisecond) // a few lock retries on the bubble's clock
+		synctest.Wait()
+		if n := second.opens.Load(); n != 0 {
+			t.Fatalf("the second hub opened the sidecar %d times while the first held the lock", n)
+		}
+		if s, err := ReadStatus(dir); err != nil || s.State != StateRunning {
+			t.Fatalf("the waiting hub overwrote the running hub's status: %+v, %v", s, err)
+		}
 
-	if err := first.stop(); err != nil {
-		t.Fatal(err)
-	}
-	second.waitState(StateRunning, "")
-	if n := second.opens.Load(); n != 1 {
-		t.Fatalf("second hub opened the sidecar %d times", n)
-	}
+		if err := first.stop(); err != nil {
+			t.Fatal(err)
+		}
+		second.waitState(StateRunning, "")
+		if n := second.opens.Load(); n != 1 {
+			t.Fatalf("second hub opened the sidecar %d times", n)
+		}
+	})
 }
 
 func TestHubStartWaitsForACLIHoldingTheLock(t *testing.T) {
 	policytest.Set(t, nil)
 	t.Run("within the retry window", func(t *testing.T) {
-		dir := shortDir(t)
-		setMeta(t, dir, state.MetaEnabled, "1")
-		lock, err := state.AcquireLock(dir)
-		if err != nil {
-			t.Fatal(err)
-		}
-		r := newRig(t, dir)
-		o := r.options()
-		o.lockRetry = 0 // the production 1 s
-		r.start(o)
-		r.waitState(StateStarting, ReasonLocked)
-		if s, _ := ReadStatus(dir); s.State != StateStarting || s.Reason != ReasonLocked {
-			t.Fatalf("status while a CLI holds the lock: %+v", s)
-		}
-		time.Sleep(2500 * time.Millisecond)
-		if r.opens.Load() != 0 {
-			t.Fatal("the sidecar was opened while the CLI held the lock")
-		}
-		released := time.Now()
-		if err := lock.Release(); err != nil {
-			t.Fatal(err)
-		}
-		r.waitState(StateRunning, "")
-		if d := time.Since(released); d > 2*time.Second { // one 1 s retry plus scheduling slack under load
-			t.Fatalf("the hub started %s after the lock was released, want within the 1 s retry", d)
-		}
+		bubble(t, func(t *testing.T) {
+			dir := shortDir(t)
+			setMeta(t, dir, state.MetaEnabled, "1")
+			lock, err := state.AcquireLock(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := newBubbleRig(t, dir)
+			o := r.options()
+			o.lockRetry = 0 // the production 1 s
+			r.start(o)
+			r.waitState(StateStarting, ReasonLocked)
+			if s, _ := ReadStatus(dir); s.State != StateStarting || s.Reason != ReasonLocked {
+				t.Fatalf("status while a CLI holds the lock: %+v", s)
+			}
+			time.Sleep(2500 * time.Millisecond)
+			synctest.Wait()
+			if r.opens.Load() != 0 {
+				t.Fatal("the sidecar was opened while the CLI held the lock")
+			}
+			released := time.Now()
+			if err := lock.Release(); err != nil {
+				t.Fatal(err)
+			}
+			r.waitState(StateRunning, "")
+			// Retries at +1 s, +2 s, +3 s on the bubble's clock: released at
+			// +2.5 s, the hub starts at the +3 s retry, never later.
+			if d := time.Since(released); d != 500*time.Millisecond {
+				t.Fatalf("the hub started %s after the lock was released, want the next 1 s retry (500ms)", d)
+			}
+		})
 	})
 	t.Run("past the window it retries per cycle", func(t *testing.T) {
-		dir := shortDir(t)
-		setMeta(t, dir, state.MetaEnabled, "1")
-		lock, err := state.AcquireLock(dir)
-		if err != nil {
-			t.Fatal(err)
-		}
-		r := newRig(t, dir)
-		tick := make(chan struct{})
-		o := r.options()
-		o.lockRetry, o.lockWindow, o.CycleTick = 20*time.Millisecond, 100*time.Millisecond, tick
-		r.start(o)
-		r.waitState(StateStarting, ReasonLocked)
-		time.Sleep(200 * time.Millisecond) // past the window
-		if err := lock.Release(); err != nil {
-			t.Fatal(err)
-		}
-		time.Sleep(300 * time.Millisecond)
-		if r.opens.Load() != 0 {
-			t.Fatal("the hub retried the lock past its window without a daemon cycle")
-		}
-		tick <- struct{}{}
-		r.waitState(StateRunning, "")
+		bubble(t, func(t *testing.T) {
+			dir := shortDir(t)
+			setMeta(t, dir, state.MetaEnabled, "1")
+			lock, err := state.AcquireLock(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := newBubbleRig(t, dir)
+			tick := make(chan struct{})
+			o := r.options()
+			o.lockRetry, o.lockWindow, o.CycleTick = 20*time.Millisecond, 100*time.Millisecond, tick
+			r.start(o)
+			r.waitState(StateStarting, ReasonLocked)
+			time.Sleep(200 * time.Millisecond) // past the window
+			if err := lock.Release(); err != nil {
+				t.Fatal(err)
+			}
+			time.Sleep(300 * time.Millisecond)
+			synctest.Wait()
+			if r.opens.Load() != 0 {
+				t.Fatal("the hub retried the lock past its window without a daemon cycle")
+			}
+			tick <- struct{}{}
+			r.waitState(StateRunning, "")
+		})
 	})
 }
 
@@ -389,56 +452,55 @@ func TestHubOffWithoutRelayOrigin(t *testing.T) {
 // the running hub and deletes what it published, and the owner's switch is
 // left as it was; turning it on is refused while off.
 func TestPolicy03_OffStopsHubKeepsSetting(t *testing.T) {
-	policytest.Set(t, map[string]any{"MobileSync": "allowed"})
-	dir := shortDir(t)
-	setMeta(t, dir, state.MetaEnabled, "1")
-	linkPhoneDirectly(t, dir)
-	r := newRig(t, dir)
-	r.start(r.options())
-	r.waitState(StateRunning, "")
-	s, err := ReadStatus(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	data := transport.DataZone(s.RelayDeviceID)
-	eventually(t, 10*time.Second, "the heartbeat published", func() bool {
-		return slices.Contains(liveRecords(t, r.fake, data), "heartbeat")
-	})
-
-	policytest.Set(t, map[string]any{"MobileSync": "off"})
-	r.waitState(StateOff, ReasonPolicyOff)
-	if got := liveRecords(t, r.fake, data); len(got) != 0 {
-		t.Fatalf("the data zone still holds %v after the policy turned off", got)
-	}
-	c, err := Dial(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	a, err := c.Do(ControlRequest{Op: OpEnable})
-	_ = c.Close()
-	if err != nil || a.OK || a.Error != ErrClassPolicyOff {
-		t.Fatalf("enable under off: %+v, %v", a, err)
-	}
-	if err := r.stop(); err != nil {
-		t.Fatal(err)
-	}
-	if v, _ := readMeta(t, dir, state.MetaEnabled); v != "1" {
-		t.Fatalf("the owner's switch was rewritten to %q", v)
-	}
-	st, err := state.Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = st.Close() }()
-	for _, k := range []string{"heartbeat", "device_grant"} {
-		if h, err := st.SliceHashes(k); err != nil || len(h) != 0 {
-			t.Fatalf("slice state of %s kept after the wipe: %v %v", k, h, err)
+	bubble(t, func(t *testing.T) {
+		policytest.Set(t, map[string]any{"MobileSync": "allowed"})
+		dir := shortDir(t)
+		setMeta(t, dir, state.MetaEnabled, "1")
+		linkPhoneDirectly(t, dir)
+		r := newBubbleRig(t, dir)
+		r.start(r.options())
+		r.waitState(StateRunning, "")
+		s, err := ReadStatus(dir)
+		if err != nil {
+			t.Fatal(err)
 		}
-	}
-	// The policy's off is not the owner's (ask #956): the phones stay linked.
-	if devices, err := st.Devices(); err != nil || len(devices) != 1 {
-		t.Fatalf("the policy's off unlinked the phone: %v %v", devices, err)
-	}
+		data := transport.DataZone(s.RelayDeviceID)
+		eventually(t, "the heartbeat published", func() bool {
+			return slices.Contains(liveRecords(t, r.fake, data), "heartbeat")
+		})
+
+		policytest.Set(t, map[string]any{"MobileSync": "off"})
+		r.waitState(StateOff, ReasonPolicyOff)
+		if got := liveRecords(t, r.fake, data); len(got) != 0 {
+			t.Fatalf("the data zone still holds %v after the policy turned off", got)
+		}
+		c := r.dial()
+		a, err := c.Do(ControlRequest{Op: OpEnable})
+		_ = c.Close()
+		if err != nil || a.OK || a.Error != ErrClassPolicyOff {
+			t.Fatalf("enable under off: %+v, %v", a, err)
+		}
+		if err := r.stop(); err != nil {
+			t.Fatal(err)
+		}
+		if v, _ := readMeta(t, dir, state.MetaEnabled); v != "1" {
+			t.Fatalf("the owner's switch was rewritten to %q", v)
+		}
+		st, err := state.Open(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = st.Close() }()
+		for _, k := range []string{"heartbeat", "device_grant"} {
+			if h, err := st.SliceHashes(k); err != nil || len(h) != 0 {
+				t.Fatalf("slice state of %s kept after the wipe: %v %v", k, h, err)
+			}
+		}
+		// The policy's off is not the owner's (ask #956): the phones stay linked.
+		if devices, err := st.Devices(); err != nil || len(devices) != 1 {
+			t.Fatalf("the policy's off unlinked the phone: %v %v", devices, err)
+		}
+	})
 }
 
 // TestPolicy03_LooseningDoesNotStartHubWhenSettingOff is the Go twin of
@@ -446,26 +508,29 @@ func TestPolicy03_OffStopsHubKeepsSetting(t *testing.T) {
 // loosening the policy with the owner's switch off starts nothing, wipes
 // nothing and leaves the switch off.
 func TestPolicy03_LooseningDoesNotStartHubWhenSettingOff(t *testing.T) {
-	policytest.Set(t, map[string]any{"MobileSync": "off"})
-	dir := shortDir(t)
-	r := newRig(t, dir)
-	r.start(r.options())
-	r.waitState(StateOff, ReasonPolicyOff)
-	policytest.Set(t, map[string]any{"MobileSync": "allowed"})
-	r.waitState(StateOff, ReasonDisabled)
-	time.Sleep(200 * time.Millisecond)
-	if n := r.dials.Load(); n != 0 {
-		t.Fatalf("a transport was built %d times", n)
-	}
-	if err := r.stop(); err != nil {
-		t.Fatal(err)
-	}
-	if v, ok := readMeta(t, dir, state.MetaEnabled); ok && v == "1" {
-		t.Fatal("loosening turned the owner's switch on")
-	}
-	if _, err := os.Stat(filepath.Join(dir, identity.FileName)); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatal("a hub identity was created for a hub that never started")
-	}
+	bubble(t, func(t *testing.T) {
+		policytest.Set(t, map[string]any{"MobileSync": "off"})
+		dir := shortDir(t)
+		r := newBubbleRig(t, dir)
+		r.start(r.options())
+		r.waitState(StateOff, ReasonPolicyOff)
+		policytest.Set(t, map[string]any{"MobileSync": "allowed"})
+		r.waitState(StateOff, ReasonDisabled)
+		time.Sleep(200 * time.Millisecond)
+		synctest.Wait()
+		if n := r.dials.Load(); n != 0 {
+			t.Fatalf("a transport was built %d times", n)
+		}
+		if err := r.stop(); err != nil {
+			t.Fatal(err)
+		}
+		if v, ok := readMeta(t, dir, state.MetaEnabled); ok && v == "1" {
+			t.Fatal("loosening turned the owner's switch on")
+		}
+		if _, err := os.Stat(filepath.Join(dir, identity.FileName)); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatal("a hub identity was created for a hub that never started")
+		}
+	})
 }
 
 func TestSidecarUnreadableKeepsHubOffAndSaysSo(t *testing.T) {
@@ -523,25 +588,16 @@ func TestRunReleasesLockOnCancel(t *testing.T) {
 	}
 }
 
+// TestControlSocketIsPrivateAndChecksPeer: the real socket is 0600 and the
+// owner's own client, checked by its real peer credentials, is answered.
 func TestControlSocketIsPrivateAndChecksPeer(t *testing.T) {
 	policytest.Set(t, nil)
 	dir := shortDir(t)
 	r := newRig(t, dir)
-	var foreign atomic.Bool
-	o := r.options()
-	o.peerUID = func(c *net.UnixConn) (int, error) {
-		uid, err := platform.PeerUID(c)
-		if foreign.Load() {
-			return uid + 1, err
-		}
-		return uid, err
-	}
-	r.start(o)
+	r.start(r.options())
 	r.waitState(StateOff, ReasonDisabled)
-	eventually(t, 5*time.Second, "the control socket", func() bool {
-		_, err := os.Stat(filepath.Join(dir, SocketName))
-		return err == nil
-	})
+	c := r.dial()
+	defer func() { _ = c.Close() }()
 	fi, err := os.Stat(filepath.Join(dir, SocketName))
 	if err != nil {
 		t.Fatal(err)
@@ -549,27 +605,6 @@ func TestControlSocketIsPrivateAndChecksPeer(t *testing.T) {
 	if fi.Mode().Type() != fs.ModeSocket || fi.Mode().Perm() != 0o600 {
 		t.Fatalf("control socket mode %v", fi.Mode())
 	}
-
-	foreign.Store(true)
-	c, err := Dial(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if a, err := c.Do(ControlRequest{Op: OpEnable}); err == nil {
-		t.Fatalf("a client of another user was answered: %+v", a)
-	}
-	_ = c.Close()
-	time.Sleep(200 * time.Millisecond)
-	if s := r.rec.last(); s.State != StateOff || s.Reason != ReasonDisabled {
-		t.Fatalf("a foreign client's request was applied: %+v", s)
-	}
-
-	foreign.Store(false)
-	c, err = Dial(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = c.Close() }()
 	a, err := c.Do(ControlRequest{Op: OpEnable})
 	if err != nil || !a.OK || a.Enabled == nil || !*a.Enabled {
 		t.Fatalf("enable: %+v, %v", a, err)
@@ -577,52 +612,85 @@ func TestControlSocketIsPrivateAndChecksPeer(t *testing.T) {
 	r.waitState(StateRunning, "")
 }
 
+// TestControlSocketRefusesAnotherUser: a client whose peer is another user
+// is closed unanswered and its request never applied; the owner's next
+// client is answered.
+func TestControlSocketRefusesAnotherUser(t *testing.T) {
+	bubble(t, func(t *testing.T) {
+		policytest.Set(t, nil)
+		dir := shortDir(t)
+		r := newBubbleRig(t, dir)
+		var foreign atomic.Bool
+		o := r.options()
+		o.peerUID = func(net.Conn) (int, error) {
+			if foreign.Load() {
+				return os.Getuid() + 1, nil
+			}
+			return os.Getuid(), nil
+		}
+		r.start(o)
+		r.waitState(StateOff, ReasonDisabled)
+
+		foreign.Store(true)
+		c := r.dial()
+		if a, err := c.Do(ControlRequest{Op: OpEnable}); err == nil {
+			t.Fatalf("a client of another user was answered: %+v", a)
+		}
+		_ = c.Close()
+		synctest.Wait() // everything the hub would do with it is done
+		if s := r.rec.last(); s.State != StateOff || s.Reason != ReasonDisabled {
+			t.Fatalf("a foreign client's request was applied: %+v", s)
+		}
+
+		foreign.Store(false)
+		c = r.dial()
+		defer func() { _ = c.Close() }()
+		a, err := c.Do(ControlRequest{Op: OpEnable})
+		if err != nil || !a.OK || a.Enabled == nil || !*a.Enabled {
+			t.Fatalf("enable: %+v, %v", a, err)
+		}
+		r.waitState(StateRunning, "")
+	})
+}
+
 // TestControlSocketClosesWhenPeerCredentialsFail: a connection whose peer
 // credentials cannot be read is closed before any request is read, never
 // trusted.
 func TestControlSocketClosesWhenPeerCredentialsFail(t *testing.T) {
-	policytest.Set(t, nil)
-	dir := shortDir(t)
-	r := newRig(t, dir)
-	var failing atomic.Bool
-	failing.Store(true)
-	o := r.options()
-	o.peerUID = func(c *net.UnixConn) (int, error) {
-		if failing.Load() {
-			return os.Getuid(), errors.New("peer credentials unreadable")
+	bubble(t, func(t *testing.T) {
+		policytest.Set(t, nil)
+		dir := shortDir(t)
+		r := newBubbleRig(t, dir)
+		var failing atomic.Bool
+		failing.Store(true)
+		o := r.options()
+		o.peerUID = func(net.Conn) (int, error) {
+			if failing.Load() {
+				return os.Getuid(), errors.New("peer credentials unreadable")
+			}
+			return os.Getuid(), nil
 		}
-		return platform.PeerUID(c)
-	}
-	r.start(o)
-	r.waitState(StateOff, ReasonDisabled)
-	eventually(t, 5*time.Second, "the control socket", func() bool {
-		_, err := os.Stat(filepath.Join(dir, SocketName))
-		return err == nil
+		r.start(o)
+		r.waitState(StateOff, ReasonDisabled)
+
+		c := r.dial()
+		if a, err := c.Do(ControlRequest{Op: OpEnable}); err == nil {
+			t.Fatalf("a client with unreadable credentials was answered: %+v", a)
+		}
+		_ = c.Close()
+		synctest.Wait()
+		if s := r.rec.last(); s.State != StateOff || s.Reason != ReasonDisabled {
+			t.Fatalf("an untrusted client's request was applied: %+v", s)
+		}
+
+		failing.Store(false)
+		c = r.dial()
+		defer func() { _ = c.Close() }()
+		if a, err := c.Do(ControlRequest{Op: OpEnable}); err != nil || !a.OK {
+			t.Fatalf("enable once the credentials read: %+v, %v", a, err)
+		}
+		r.waitState(StateRunning, "")
 	})
-
-	c, err := Dial(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if a, err := c.Do(ControlRequest{Op: OpEnable}); err == nil {
-		t.Fatalf("a client with unreadable credentials was answered: %+v", a)
-	}
-	_ = c.Close()
-	time.Sleep(200 * time.Millisecond)
-	if s := r.rec.last(); s.State != StateOff || s.Reason != ReasonDisabled {
-		t.Fatalf("an untrusted client's request was applied: %+v", s)
-	}
-
-	failing.Store(false)
-	c, err = Dial(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = c.Close() }()
-	if a, err := c.Do(ControlRequest{Op: OpEnable}); err != nil || !a.OK {
-		t.Fatalf("enable once the credentials read: %+v, %v", a, err)
-	}
-	r.waitState(StateRunning, "")
 }
 
 // targetSource is a stand-in for a Plan 1b slice outside workbench_only.
@@ -637,35 +705,37 @@ func (targetSource) Items(context.Context) ([]hubslices.Item, error) {
 // fails to delete a kind it no longer allows, the running hub deletes it on
 // a later housekeeping pass instead of forgetting it.
 func TestWorkbenchOnlyRetriesAFailedDelete(t *testing.T) {
-	policytest.Set(t, map[string]any{"MobileSync": "allowed"})
-	dir := shortDir(t)
-	setMeta(t, dir, state.MetaEnabled, "1")
-	linkPhoneDirectly(t, dir)
-	r := newRig(t, dir)
-	o := r.options()
-	o.Sources = func(*state.Store) []hubslices.Source { return []hubslices.Source{targetSource{}} }
-	r.start(o)
-	r.waitState(StateRunning, "")
-	s, err := ReadStatus(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	data := transport.DataZone(s.RelayDeviceID)
-	count := func() int { return len(liveRecords(t, r.fake, data)) }
-	eventually(t, 10*time.Second, "the target published", func() bool { return count() >= 3 }) // grant, heartbeat, target
-	published := count()
+	bubble(t, func(t *testing.T) {
+		policytest.Set(t, map[string]any{"MobileSync": "allowed"})
+		dir := shortDir(t)
+		setMeta(t, dir, state.MetaEnabled, "1")
+		linkPhoneDirectly(t, dir)
+		r := newBubbleRig(t, dir)
+		o := r.options()
+		o.Sources = func(*state.Store) []hubslices.Source { return []hubslices.Source{targetSource{}} }
+		r.start(o)
+		r.waitState(StateRunning, "")
+		s, err := ReadStatus(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data := transport.DataZone(s.RelayDeviceID)
+		count := func() int { return len(liveRecords(t, r.fake, data)) }
+		eventually(t, "the target published", func() bool { return count() >= 3 }) // grant, heartbeat, target
+		published := count()
 
-	r.fake.FailNext("delete", transport.ErrUnavailable)
-	policytest.Set(t, map[string]any{"MobileSync": "workbench_only"})
-	eventually(t, 10*time.Second, "the target deleted on a retry", func() bool { return count() == published-1 })
-	st, err := state.Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = st.Close() }()
-	if h, err := st.SliceHashes("target"); err != nil || len(h) != 0 {
-		t.Fatalf("the target's slice state is kept: %v %v", h, err)
-	}
+		r.fake.FailNext("delete", transport.ErrUnavailable)
+		policytest.Set(t, map[string]any{"MobileSync": "workbench_only"})
+		eventually(t, "the target deleted on a retry", func() bool { return count() == published-1 })
+		st, err := state.Open(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = st.Close() }()
+		if h, err := st.SliceHashes("target"); err != nil || len(h) != 0 {
+			t.Fatalf("the target's slice state is kept: %v %v", h, err)
+		}
+	})
 }
 
 // refusingWatcher is the memfake with the relay's WatchZone, refusing each
@@ -703,7 +773,7 @@ func refusingRig(t *testing.T) (*rig, *refusingWatcher, string, string) {
 	dir := shortDir(t)
 	setMeta(t, dir, state.MetaEnabled, "1")
 	phone := linkPhoneDirectly(t, dir)
-	r := newRig(t, dir)
+	r := newBubbleRig(t, dir)
 	w := &refusingWatcher{Fake: r.fake, refused: map[string]bool{}, watched: map[string]int{}}
 	o := r.options()
 	o.newTransport = func(context.Context, identity.Identity, *state.Store, []string) (transport.Transport, error) {
@@ -726,14 +796,17 @@ func refusingRig(t *testing.T) (*rig, *refusingWatcher, string, string) {
 // subscribes each zone (data zone and mailbox), retrying a refused one,
 // then never again.
 func TestRefusedZoneSubscriptionRetriedByLinkUpkeep(t *testing.T) {
-	_, w, data, mailbox := refusingRig(t)
-	eventually(t, 10*time.Second, "both zones subscribed after their refusal", func() bool {
-		return w.count(data) == 1 && w.count(mailbox) == 1
+	bubble(t, func(t *testing.T) {
+		_, w, data, mailbox := refusingRig(t)
+		eventually(t, "both zones subscribed after their refusal", func() bool {
+			return w.count(data) == 1 && w.count(mailbox) == 1
+		})
+		time.Sleep(300 * time.Millisecond) // several more upkeeps
+		synctest.Wait()
+		if w.count(data) != 1 || w.count(mailbox) != 1 {
+			t.Fatalf("subscribed data %d, mailbox %d times", w.count(data), w.count(mailbox))
+		}
 	})
-	time.Sleep(300 * time.Millisecond) // several more upkeeps
-	if w.count(data) != 1 || w.count(mailbox) != 1 {
-		t.Fatalf("subscribed data %d, mailbox %d times", w.count(data), w.count(mailbox))
-	}
 }
 
 // TestDroppedZoneResubscribedAndStatusRecovers: a zone the relay dropped
@@ -741,124 +814,111 @@ func TestRefusedZoneSubscriptionRetriedByLinkUpkeep(t *testing.T) {
 // by the link upkeep, and a status left at relay_unreachable by a
 // transport failure recovers once the subscription takes.
 func TestDroppedZoneResubscribedAndStatusRecovers(t *testing.T) {
-	r, w, data, _ := refusingRig(t)
-	eventually(t, 10*time.Second, "the data zone subscribed", func() bool { return w.count(data) == 1 })
-	r.fake.SendEvent(transport.Event{Err: transport.ErrUnavailable})
-	r.waitState(StateRunning, ReasonRelayUnreachable)
-	r.fake.SendEvent(transport.Event{Zone: data, Err: transport.ErrForbidden})
-	eventually(t, 10*time.Second, "the dropped data zone subscribed again", func() bool { return w.count(data) == 2 })
-	r.waitState(StateRunning, "")
+	bubble(t, func(t *testing.T) {
+		r, w, data, _ := refusingRig(t)
+		eventually(t, "the data zone subscribed", func() bool { return w.count(data) == 1 })
+		r.fake.SendEvent(transport.Event{Err: transport.ErrUnavailable})
+		r.waitState(StateRunning, ReasonRelayUnreachable)
+		r.fake.SendEvent(transport.Event{Zone: data, Err: transport.ErrForbidden})
+		eventually(t, "the dropped data zone subscribed again", func() bool { return w.count(data) == 2 })
+		r.waitState(StateRunning, "")
+	})
 }
 
 // TestStartFailureHasItsOwnReason: a start step that is not a sidecar read
 // (here an identity file with loose permissions) reads starting/start_failed,
 // never sidecar_unreadable.
 func TestStartFailureHasItsOwnReason(t *testing.T) {
-	policytest.Set(t, nil)
-	dir := shortDir(t)
-	setMeta(t, dir, state.MetaEnabled, "1")
-	if err := os.WriteFile(filepath.Join(dir, identity.FileName), make([]byte, 136), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	r := newRig(t, dir)
-	r.start(r.options())
-	r.waitState(StateStarting, ReasonStartFailed)
-	if r.dials.Load() != 0 {
-		t.Fatal("a transport was built without an identity")
-	}
+	bubble(t, func(t *testing.T) {
+		policytest.Set(t, nil)
+		dir := shortDir(t)
+		setMeta(t, dir, state.MetaEnabled, "1")
+		if err := os.WriteFile(filepath.Join(dir, identity.FileName), make([]byte, 136), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		r := newBubbleRig(t, dir)
+		r.start(r.options())
+		r.waitState(StateStarting, ReasonStartFailed)
+		if r.dials.Load() != 0 {
+			t.Fatal("a transport was built without an identity")
+		}
+	})
 }
 
 // TestControlSocketDropsAStalledClient: a pairing stream that stops reading
 // is dropped (write deadline or full queue) and never holds back another
-// stream, which gets every pairing event.
+// stream, which gets every pairing event. In a bubble over in-memory pipes:
+// a pipe has no buffer, so the stalled stream blocks on its first write and
+// the write deadline is the bubble's.
 func TestControlSocketDropsAStalledClient(t *testing.T) {
-	policytest.Set(t, nil)
-	dir := shortDir(t)
-	setMeta(t, dir, state.MetaEnabled, "1")
-	r := newRig(t, dir)
-	o := r.options()
-	// Deterministic on every OS: a small queue and small socket buffers
-	// on both ends, so the events below overflow the kernel buffer (Linux
-	// gives unix sockets ~200 KiB by default, macOS ~8 KiB) and then the
-	// queue, whichever trips first: the write deadline or the full queue.
-	o.writeTimeout, o.pairQueue, o.sendBuffer = 200*time.Millisecond, 8, 4096
-	r.start(o)
-	r.waitState(StateRunning, "")
+	bubble(t, func(t *testing.T) {
+		policytest.Set(t, nil)
+		dir := shortDir(t)
+		setMeta(t, dir, state.MetaEnabled, "1")
+		r := newBubbleRig(t, dir)
+		o := r.options()
+		o.writeTimeout, o.pairQueue = 200*time.Millisecond, 8
+		r.start(o)
+		r.waitState(StateRunning, "")
 
-	stalled, err := Dial(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = stalled.Close() }()
-	if err := stalled.c.(*net.UnixConn).SetReadBuffer(4096); err != nil {
-		t.Fatal(err)
-	}
-	if err := stalled.Send(ControlRequest{Op: OpPair}); err != nil {
-		t.Fatal(err)
-	}
-
-	good, err := Dial(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = good.Close() }()
-	var qrs atomic.Int32
-	answers := make(chan ControlAnswer, 1)
-	go func() {
-		for {
-			a, err := good.Next()
-			if err != nil {
-				close(answers)
-				return
-			}
-			switch {
-			case a.Event == link.EventQR:
-				qrs.Add(1)
-			case a.Op != "":
-				answers <- a
-			}
-		}
-	}()
-	// The reading client paces the sends: the next pair goes out only once
-	// it has read the previous qr event, so at most one event waits on its
-	// stream and a slow runner can never make it look stalled; the stalled
-	// client gets all n and must overflow.
-	const n = 120 // × ~600-byte qr events: far past 2 × 4 KiB buffers plus 8 queued
-	for i := range n {
-		if err := good.Send(ControlRequest{Op: OpPair}); err != nil {
+		stalled := r.dial()
+		defer func() { _ = stalled.Close() }()
+		if err := stalled.Send(ControlRequest{Op: OpPair}); err != nil {
 			t.Fatal(err)
 		}
-		select {
-		case a, ok := <-answers:
-			if !ok || !a.OK {
+
+		good := r.dial()
+		defer func() { _ = good.Close() }()
+		const n = 120
+		// n qr events, or n+1 when the stalled client's own pair reached
+		// this stream.
+		qrs := make(chan struct{}, n+1)
+		answers := make(chan ControlAnswer, 1)
+		go func() {
+			for {
+				a, err := good.Next()
+				if err != nil {
+					close(answers)
+					return
+				}
+				switch {
+				case a.Event == link.EventQR:
+					qrs <- struct{}{}
+				case a.Op != "":
+					answers <- a
+				}
+			}
+		}()
+		// The reading client paces the sends: the next pair goes out only once
+		// it has read the previous qr event; the stalled client gets all n and
+		// must overflow its queue of 8.
+		for i := range n {
+			if err := good.Send(ControlRequest{Op: OpPair}); err != nil {
+				t.Fatal(err)
+			}
+			if a, ok := <-answers; !ok || !a.OK {
 				t.Fatalf("pair %d: %+v (open %v)", i, a, ok)
 			}
-		case <-time.After(5 * time.Second):
-			t.Fatalf("pair %d: no answer: the stalled client holds the hub up", i)
+			<-qrs
 		}
-		eventually(t, 5*time.Second, fmt.Sprintf("qr event %d on the reading stream", i+1), func() bool {
-			return qrs.Load() >= int32(i+1)
-		})
-	}
-	// n, or n+1 when the stalled client's own pair reached this stream.
-	if got := qrs.Load(); got < n {
-		t.Fatalf("%d qr events on the reading stream, want %d", got, n)
-	}
 
-	// The stalled stream was closed: draining it ends in EOF, not a timeout.
-	_ = stalled.c.SetReadDeadline(time.Now().Add(10 * time.Second))
-	buf := make([]byte, 64<<10)
-	for {
-		_, err := stalled.c.Read(buf)
-		if err == nil {
-			continue
+		// The stalled stream was closed: draining it ends in EOF, not a
+		// timeout (a deadline on the bubble's clock, which only a hub that
+		// never dropped it would reach).
+		_ = stalled.c.SetReadDeadline(time.Now().Add(10 * time.Second))
+		buf := make([]byte, 64<<10)
+		for {
+			_, err := stalled.c.Read(buf)
+			if err == nil {
+				continue
+			}
+			var ne net.Error
+			if errors.As(err, &ne) && ne.Timeout() {
+				t.Fatal("the stalled client was never dropped")
+			}
+			break
 		}
-		var ne net.Error
-		if errors.As(err, &ne) && ne.Timeout() {
-			t.Fatal("the stalled client was never dropped")
-		}
-		break
-	}
+	})
 }
 
 // TestEndToEndOverMemfake links a hubtest phone through the control socket
@@ -866,26 +926,30 @@ func TestControlSocketDropsAStalledClient(t *testing.T) {
 // its device_grant from the data zone with ordered_actions 1 — every record
 // on the fake sealed (no plaintext marker in any frame).
 func TestEndToEndOverMemfake(t *testing.T) {
-	runEndToEnd(t, "", nil)
+	bubble(t, func(t *testing.T) {
+		runEndToEnd(t, "", nil)
+	})
 }
 
 // TestFILES01_HubLogsNoNamesCodesOrKeys: the whole flow — a renamed hub
 // (restarted for the name), a pairing, a link and two actions — logs no
 // name, no link code or URL and no four-digit code.
 func TestFILES01_HubLogsNoNamesCodesOrKeys(t *testing.T) {
-	sink := logcanary.Capture(t)
-	e := runEndToEnd(t, logcanary.Text("hub.name"), nil)
-	sink.AssertClean(t)
-	for what, v := range map[string]string{"link URL": e.url, "link nonce": e.nonce, "phone name": "Test Phone"} {
-		if strings.Contains(sink.String(), v) {
-			t.Errorf("the %s reached the log", what)
+	bubble(t, func(t *testing.T) {
+		sink := logcanary.Capture(t)
+		e := runEndToEnd(t, logcanary.Text("hub.name"), nil)
+		sink.AssertClean(t)
+		for what, v := range map[string]string{"link URL": e.url, "link nonce": e.nonce, "phone name": "Test Phone"} {
+			if strings.Contains(sink.String(), v) {
+				t.Errorf("the %s reached the log", what)
+			}
 		}
-	}
-	// The four-digit code is matched as a whole token only: as a substring it
-	// also turns up by chance inside a logged UUID's hex run.
-	if regexp.MustCompile(`(^|[^0-9A-Za-z])` + regexp.QuoteMeta(e.code) + `($|[^0-9A-Za-z])`).MatchString(sink.String()) {
-		t.Error("the code reached the log")
-	}
+		// The four-digit code is matched as a whole token only: as a substring it
+		// also turns up by chance inside a logged UUID's hex run.
+		if regexp.MustCompile(`(^|[^0-9A-Za-z])` + regexp.QuoteMeta(e.code) + `($|[^0-9A-Za-z])`).MatchString(sink.String()) {
+			t.Error("the code reached the log")
+		}
+	})
 }
 
 // endToEnd is what a run showed the owner and the phone, and the linked
@@ -904,21 +968,14 @@ func runEndToEnd(t *testing.T, name string, configure func(*Options)) endToEnd {
 	t.Helper()
 	policytest.Set(t, nil)
 	dir := shortDir(t)
-	r := newRig(t, dir)
+	r := newBubbleRig(t, dir)
 	o := r.options()
 	if configure != nil {
 		configure(&o)
 	}
 	r.start(o)
 	r.waitState(StateOff, ReasonDisabled)
-	eventually(t, 5*time.Second, "the control socket", func() bool {
-		_, err := os.Stat(filepath.Join(dir, SocketName))
-		return err == nil
-	})
-	c, err := Dial(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	c := r.dial()
 	defer func() { _ = c.Close() }()
 	if a, err := c.Do(ControlRequest{Op: OpEnable}); err != nil || !a.OK {
 		t.Fatalf("enable: %+v, %v", a, err)
@@ -953,7 +1010,7 @@ func runEndToEnd(t *testing.T, name string, configure func(*Options)) endToEnd {
 			t.Fatalf("action_seq %d, want %d", seq, want)
 		}
 	}
-	eventually(t, 15*time.Second, "applied echoes for a1..a2", func() bool {
+	eventually(t, "applied echoes for a1..a2", func() bool {
 		if _, err := phone.Sync(); err != nil {
 			t.Fatal(err)
 		}
@@ -961,7 +1018,7 @@ func runEndToEnd(t *testing.T, name string, configure func(*Options)) endToEnd {
 	})
 
 	data := transport.DataZone(status.RelayDeviceID)
-	eventually(t, 15*time.Second, "the device_grant in the data zone", func() bool {
+	eventually(t, "the device_grant in the data zone", func() bool {
 		kb, ok, err := phone.ReadKeybox(data)
 		if err != nil {
 			t.Fatal(err)
@@ -969,7 +1026,7 @@ func runEndToEnd(t *testing.T, name string, configure func(*Options)) endToEnd {
 		return ok && kb.Grant.Linked && kb.Grant.OrderedActions != nil && *kb.Grant.OrderedActions == 1 &&
 			slices.Equal(kb.Grant.Transports, []string{wire.TransportRelay})
 	})
-	eventually(t, 5*time.Second, "one phone in the status", func() bool {
+	eventually(t, "one phone in the status", func() bool {
 		s, err := ReadStatus(dir)
 		return err == nil && s.Phones == 1
 	})
@@ -1029,7 +1086,7 @@ func pairOverMemfake(t *testing.T, r *rig, c *ControlClient, relayDeviceID strin
 		t.Fatalf("sas for %s, want %s", sas.DeviceID, phone.ID())
 	}
 	var awaiting wire.Keybox
-	eventually(t, 10*time.Second, "the awaiting keybox in the pair zone", func() bool {
+	eventually(t, "the awaiting keybox in the pair zone", func() bool {
 		kb, ok, err := phone.ReadKeybox(pair)
 		if err != nil {
 			t.Fatal(err)
@@ -1050,7 +1107,7 @@ func pairOverMemfake(t *testing.T, r *rig, c *ControlClient, relayDeviceID strin
 	if linked := next(link.EventLinked); linked.DeviceID != phone.ID().String() {
 		t.Fatalf("linked: %+v", linked)
 	}
-	eventually(t, 10*time.Second, "the keys in the pair zone", func() bool {
+	eventually(t, "the keys in the pair zone", func() bool {
 		kb, ok, err := phone.ReadKeybox(pair)
 		if err != nil {
 			t.Fatal(err)

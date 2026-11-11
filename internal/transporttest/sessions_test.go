@@ -382,20 +382,9 @@ func (e *sessionEnv) fire(c hookCall) {
 			e.background = append(e.background, cmd)
 			continue
 		}
-		done := make(chan error, 1)
-		if err := cmd.Start(); err != nil {
-			e.t.Fatal(err)
-		}
-		go func() { done <- cmd.Wait() }()
-		select {
-		case err := <-done:
-			if err != nil {
-				e.t.Errorf("%s hook %q: %v", c.event, command, err)
-			}
-		case <-time.After(30 * time.Second):
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-			<-done
-			e.t.Errorf("%s hook %q did not finish", c.event, command)
+		// A hook that never finishes is go test -timeout's to report.
+		if err := cmd.Run(); err != nil {
+			e.t.Errorf("%s hook %q: %v", c.event, command, err)
 		}
 		if s := strings.TrimSpace(stderr.String()); s != "" {
 			e.stderr = append(e.stderr, s)
@@ -420,15 +409,11 @@ func (e *sessionEnv) environ() []string {
 
 func (e *sessionEnv) stopBackground() {
 	for _, cmd := range e.background {
+		// The prompt is closed the way the agent closes it; the hook's own
+		// SIGTERM handling is under test. One that ignores it is go test
+		// -timeout's to report.
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
-		done := make(chan struct{})
-		go func() { _ = cmd.Wait(); close(done) }()
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-			<-done
-		}
+		_ = cmd.Wait()
 	}
 	e.background = nil
 }
@@ -507,7 +492,12 @@ func (ag *sessionAgent) run(t *testing.T, s *Scenario) *sessionResult {
 	for _, step := range s.Fixture.Session {
 		ag.play(e, step, res)
 		if step == stepPermission {
-			e.waitFor(func() bool { return e.pendingPermissions() > 0 })
+			// The request row is written by the permission-wait hook running
+			// in the background; with none (no permission wait) every hook
+			// has finished and the count is final.
+			if len(e.background) > 0 {
+				e.waitFor(func() bool { return e.pendingPermissions() > 0 })
+			}
 			res.PendingPermissions = e.pendingPermissions()
 		}
 		row := e.rowNow()
@@ -573,19 +563,19 @@ func (ag *sessionAgent) play(e *sessionEnv, step sessionStep, res *sessionResult
 	}
 }
 
+// waitFor polls cond, which another process's write makes true (the
+// database is the only signal). No deadline: a wait that never ends is go
+// test -timeout's to report.
 func (e *sessionEnv) waitFor(cond func() bool) {
-	deadline := time.Now().Add(5 * time.Second)
-	for !cond() && time.Now().Before(deadline) {
-		time.Sleep(50 * time.Millisecond)
+	for !cond() {
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 
 // feed runs `workbench session-feed --json` for the row and counts its
 // entries.
 func (e *sessionEnv) feed() (entries, subagents int, liveOK bool, err error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, bins.watchtower, "workbench", "session-feed", "--session", strconv.FormatInt(e.row, 10), "--json")
+	cmd := exec.Command(bins.watchtower, "workbench", "session-feed", "--session", strconv.FormatInt(e.row, 10), "--json")
 	cmd.Dir = e.folder
 	cmd.Env = e.environ()
 	var stdout, stderr bytes.Buffer
@@ -1085,9 +1075,7 @@ func codexPull(t *testing.T, e *sessionEnv, step sessionStep, res *sessionResult
 func codexProbe(t *testing.T, e *sessionEnv) error {
 	writeCodexRollout(t, e.transcript, "rollout_failed")
 	restampRollout(t, e.transcript, time.Now())
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, bins.watchtower, "workbench", "session-probe",
+	cmd := exec.Command(bins.watchtower, "workbench", "session-probe",
 		"--workbench", strconv.FormatInt(e.workbench, 10), "--session", strconv.FormatInt(e.row, 10))
 	cmd.Dir = e.folder
 	cmd.Env = e.environ()

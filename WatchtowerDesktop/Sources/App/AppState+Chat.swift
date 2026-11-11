@@ -45,9 +45,9 @@ extension AppState {
         followSetupProviderSwitch(cvm)
     }
 
-    /// Setup's Codex fallback (`OnboardingCLIProbe`) rewrote `ai.provider`
-    /// after this chat snapshotted it: the chat follows, or its next turn
-    /// would start the CLI that is not installed.
+    /// Setup's Continue (the agent choice) writes `ai.provider` after this
+    /// chat snapshotted it: the chat follows, or its next turn would start
+    /// the other agent.
     func followSetupProviderSwitch(_ cvm: ChatViewModel) {
         onboardingGoals.onProviderSwitched = { [weak cvm] provider in
             cvm?.switchProvider(AIProvider.fromConfig(provider))

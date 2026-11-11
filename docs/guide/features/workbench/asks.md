@@ -71,10 +71,20 @@ kind: feature
 since: 0.24.0
 action: nav:projects
 -->
+<!-- learn
+id: asks-closed-list
+title: Look back at closed asks
+text: Click **▸ N closed** on a session to read its past asks by day, with your answers.
+area: development
+level: next
+kind: tip
+since: next
+action: nav:projects
+-->
 
-Open asks wait, oldest first, in **Waiting for you (N)** at the top of the sessions panel. Each row shows the kind, the title, the ask number (`#145`), what to do next (**Review doc**, **Answer 2 questions**, **Run 3 checks**), the session and its age. Each session row shows its open count, and **▸ N closed** lists its past asks. Asks filed from your own terminal app are grouped as **Outside the app**.
+Open asks wait, oldest first, in **Waiting for you (N)** at the top of the sessions panel. Each row shows the kind, title, number (`#145`), next step (**Review doc**, **Answer 2 questions**, **Run 3 checks**), session and age. Each session row shows its open count; **▸ N closed** lists its past asks by day with status and your answer, searchable from 10; one opens read-only, Esc goes back. Asks from your own terminal app are grouped as **Outside the app**.
 
-When the agent writes `ask #145` in the terminal, that text is a link. Hover it for a card, click it to open the drawer.
+`ask #145` in the terminal is a link: hover it for a card, click it for the drawer.
 
 ### Answer an ask
 
@@ -128,7 +138,7 @@ Watchtower notifies you when an agent files an ask (**Agent asks: <title>**). Se
 
 - **The drawer did not open.** The pane may be too narrow for it beside the terminal; use **Open** on the banner. Or you closed it with **Later**; it stays closed until the next Full ask.
 - **The answer did not reach the agent.** Look for the highlighted line over the terminal: it says whether it is waiting for a permission prompt, typed but not sent, or copied to the clipboard because the terminal could not take it. Follow what it says.
-- **A closed ask says "withdrawn by the agent" or "replaced by #N".** The agent withdrew it or filed a newer round. It opens read-only.
+- **Withdrawn or Replaced.** The agent withdrew the ask or filed a newer round. It moves to **▸ N closed**.
 - **Unsent answers on quit.** Drafts survive switching sessions, workbenches and tabs. Quitting Watchtower with unsent answers asks first.
 
 Answer not reaching the agent? See [A Workbench session or ask is stuck](../../troubleshooting/workbench-session-or-ask-stuck.md).

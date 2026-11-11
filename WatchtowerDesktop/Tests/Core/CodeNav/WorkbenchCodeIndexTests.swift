@@ -140,39 +140,42 @@ final class WorkbenchCodeIndexTests: XCTestCase {
     }
 
     /// Spec §7 target: ≤ 50 ms per keystroke over a 3 000-file /
-    /// 30 000-symbol index. The assertion allows 300 ms for the slowest query:
-    /// a loaded machine took 67–148 ms, while a pathological regression (a
-    /// quadratic match over 30 000 symbols) takes seconds. `measure` keeps
-    /// reporting the real figure. Each query counts with its fastest of the
-    /// `measure` runs: a regression is slow every time, while one run stalled
-    /// by the CI VM's scheduler is not (a single 523 ms sample failed main).
-    /// The fastest run also hides a query's first-run warm-up (caches, lazy
-    /// state), so the slowest single sample keeps a loose 2 s bound of its own:
-    /// a stall stays far under it, a cold query that takes seconds does not.
-    func testQueryLatencyOnASyntheticRepository() {
-        let index = WorkbenchCodeIndex()
-        index.applyIndexLines(Self.syntheticRepository(files: 3000, symbolsPerFile: 10), from: .fullRun)
-        XCTAssertEqual(index.files.count, 3000)
+    /// 30 000-symbol index — guarded by counting the query's work, not by a
+    /// clock (a time budget flaked on loaded CI runners: one 523 ms sample
+    /// against 300 ms). The work is the corpus scan's (one per slot looked
+    /// at, plus query × slot units per slot aligned) and one per hit ranked.
+    /// It must grow linearly with the index — 4× the files cost at most
+    /// 4.4× the work, where a quadratic match costs about 16× — and stay
+    /// under a fixed budget per keystroke on the 3 000-file index: the
+    /// costliest query ("store.swift") counted 1 782 474 on 2026-11-11, so
+    /// 2 500 000 leaves 40 % headroom while a slower match — more cells per
+    /// slot, or slots the filters used to skip — goes over it.
+    func testQueryWorkScalesLinearlyAndStaysInBudget() {
+        let small = WorkbenchCodeIndex()
+        small.applyIndexLines(Self.syntheticRepository(files: 750, symbolsPerFile: 10), from: .fullRun)
+        let large = WorkbenchCodeIndex()
+        large.applyIndexLines(Self.syntheticRepository(files: 3000, symbolsPerFile: 10), from: .fullRun)
+        XCTAssertEqual(large.files.count, 3000)
         let queries = [
             "c", "cf", "cfb", "cfbuf", "save", "saveNow", "vm/cfb", "src/mod", "Handler", "hndlr",
             "zz", "x", "parse", "ParseConfig", "pkg/svc/h", "renderView", "rv", "conf", "e", "store.swift"
         ]
         let boosts = CodeRankingBoosts(openTabs: ["Sources/Module7/Feature3/File7.swift"], recent: [], gitModified: [])
-        var fastest = [String: Duration]()
-        var worstSample: Duration = .zero
-        measure {
-            for query in queries {
-                let start = ContinuousClock.now
-                _ = index.query(query, scope: .all, boosts: boosts)
-                let took = ContinuousClock.now - start
-                fastest[query] = min(fastest[query] ?? took, took)
-                worstSample = max(worstSample, took)
-            }
+        var total = (small: 0, large: 0)
+        var worst = (query: "", work: 0)
+        for query in queries {
+            var smallWork = 0
+            _ = small.query(query, scope: .all, boosts: boosts, work: &smallWork)
+            var largeWork = 0
+            _ = large.query(query, scope: .all, boosts: boosts, work: &largeWork)
+            total.small += smallWork
+            total.large += largeWork
+            if largeWork > worst.work { worst = (query, largeWork) }
         }
-        XCTAssertEqual(fastest.count, queries.count)
-        let worst = fastest.values.max() ?? .zero
-        XCTAssertLessThanOrEqual(worst, .milliseconds(300), "slowest query took \(worst)")
-        XCTAssertLessThanOrEqual(worstSample, .seconds(2), "slowest single sample took \(worstSample)")
+        XCTAssertGreaterThan(total.small, 0, "the scan is counted")
+        let ratio = Double(total.large) / Double(total.small)
+        XCTAssertLessThanOrEqual(ratio, 4.4, "3 000 files cost \(ratio)× the work of 750 files")
+        XCTAssertLessThanOrEqual(worst.work, 2_500_000, "\"\(worst.query)\" counted \(worst.work) on 3 000 files")
     }
 
     private static func syntheticRepository(files: Int, symbolsPerFile: Int) -> [CodeIndexLine] {

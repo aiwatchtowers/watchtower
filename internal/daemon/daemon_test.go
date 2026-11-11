@@ -10,8 +10,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	gosync "sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -161,35 +163,24 @@ func TestDaemon_RunsInitialSync(t *testing.T) {
 	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test-daemon] ", 0))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
-
-	err := d.Run(ctx)
+	err := runDaemonCycles(t, d, 1)
 	assert.NoError(t, err)
 	assert.GreaterOrEqual(t, syncCount.Load(), int32(1), "daemon should run at least one initial sync")
 }
 
 func TestDaemon_PollTriggersSync(t *testing.T) {
-	// A sync writes last_sync.json and the heartbeat under WorkspaceDir(),
-	// which is derived from HOME — keep those out of the real workspace dir.
-	t.Setenv("HOME", t.TempDir())
-	var syncCount atomic.Int32
-	orch, _ := newTestOrchestrator(t, &syncCount)
+	synctest.Test(t, func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		var syncCount atomic.Int32
+		d := newBubbleDaemon(t, &syncCount)
+		d.config.Sync.PollInterval = 50 * time.Millisecond
+		start := time.Now()
 
-	cfg := &config.Config{
-		Sync: config.SyncConfig{
-			PollInterval: 50 * time.Millisecond,
-			SyncOnWake:   false,
-		},
-	}
-
-	d := newDaemon(orch, cfg)
-	d.SetLogger(log.New(os.Stderr, "[test-daemon] ", 0))
-
-	// Initial sync + at least one 50ms poll sync, under a deadline generous
-	// enough for a loaded or -race runner.
-	err := runDaemonUntil(t, d, func() bool { return syncCount.Load() >= 2 })
-	assert.NoError(t, err)
+		// The initial sync, then one poll tick's on the bubble's clock.
+		require.NoError(t, runDaemonCycles(t, d, 2))
+		assert.Equal(t, int32(2), syncCount.Load())
+		assert.Equal(t, 50*time.Millisecond, time.Since(start), "the second sync is the first tick's")
+	})
 }
 
 func TestDaemon_WakeEventTriggersSync(t *testing.T) {
@@ -246,23 +237,9 @@ func TestDaemon_GracefulShutdown(t *testing.T) {
 	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test-daemon] ", 0))
 
-	ctx, cancel := context.WithCancel(context.Background())
-
-	done := make(chan error, 1)
-	go func() {
-		done <- d.Run(ctx)
-	}()
-
-	// Let the daemon run briefly, then cancel.
-	time.Sleep(100 * time.Millisecond)
-	cancel()
-
-	select {
-	case err := <-done:
-		assert.NoError(t, err, "daemon should shut down cleanly on context cancellation")
-	case <-time.After(2 * time.Second):
-		t.Fatal("daemon did not shut down within timeout")
-	}
+	// Cancelled once the first cycle has ended.
+	err := runDaemonCycles(t, d, 1)
+	assert.NoError(t, err, "daemon should shut down cleanly on context cancellation")
 }
 
 func TestWakeChannel_NilWhenDisabled(t *testing.T) {
@@ -331,10 +308,7 @@ func TestDaemon_RunWithPIDFile(t *testing.T) {
 	d.SetLogger(log.New(os.Stderr, "[test-daemon] ", 0))
 	d.SetPIDPath(pidPath)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
-
-	err := d.Run(ctx)
+	err := runDaemonCycles(t, d, 1)
 	assert.NoError(t, err)
 
 	// PID file should be removed after Run completes.
@@ -606,10 +580,7 @@ func TestDaemon_RunSyncWithDigestPipeline(t *testing.T) {
 	d.SetLogger(log.New(os.Stderr, "[test-daemon] ", 0))
 	d.SetDigestPipeline(pipe)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-	defer cancel()
-
-	err := d.Run(ctx)
+	err := runDaemonCycles(t, d, 1)
 	assert.NoError(t, err)
 	assert.GreaterOrEqual(t, syncCount.Load(), int32(1))
 }
@@ -653,10 +624,7 @@ func TestDaemon_RunSyncWithAllPipelines(t *testing.T) {
 	d.SetTracksPipeline(tracksPipe)
 	d.SetPeoplePipeline(peoplePipe)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-	defer cancel()
-
-	err := d.Run(ctx)
+	err := runDaemonCycles(t, d, 1)
 	assert.NoError(t, err)
 	assert.GreaterOrEqual(t, syncCount.Load(), int32(1))
 }
@@ -725,9 +693,20 @@ func TestDaemon_AutoMarkReadAfterDigests(t *testing.T) {
 }
 
 func TestDaemon_RunSyncContextCancelled(t *testing.T) {
-	// When context is cancelled during sync, pipelines should be skipped.
+	// When context is cancelled during sync, pipelines should be skipped. The
+	// shutdown lands while the Slack sync is searching.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	base := testMux()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/search.messages" {
+			cancel()
+		}
+		base.ServeHTTP(w, r)
+	})
 	var syncCount atomic.Int32
-	orch, _ := newTestOrchestrator(t, &syncCount)
+	orch, _ := newStatusTrackingOrchestrator(t, mux, &syncCount)
 
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
@@ -747,14 +726,13 @@ func TestDaemon_RunSyncContextCancelled(t *testing.T) {
 	}
 
 	d := newDaemon(orch, cfg)
-	d.SetLogger(log.New(os.Stderr, "[test-daemon] ", 0))
-
-	// Very short context so runSync hits ctx.Err() != nil branch
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
+	logs := &lockedLog{}
+	d.SetLogger(log.New(logs, "", 0))
 
 	err := d.Run(ctx)
 	assert.NoError(t, err)
+	assert.Equal(t, int32(1), syncCount.Load(), "the one cycle the shutdown cut")
+	assert.Equal(t, 1, logs.count("source syncs stopped by shutdown, skipping pipelines"))
 }
 
 func TestDaemon_RunSyncWithPeopleThrottle(t *testing.T) {
@@ -791,10 +769,7 @@ func TestDaemon_RunSyncWithPeopleThrottle(t *testing.T) {
 	// Set lastPeople to recent time — pipeline should be skipped
 	d.lastPeople = time.Now()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
-
-	err := d.Run(ctx)
+	err := runDaemonCycles(t, d, 1)
 	assert.NoError(t, err)
 }
 
@@ -815,10 +790,7 @@ func TestDaemon_MinPollInterval(t *testing.T) {
 	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test-daemon] ", 0))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
-
-	err := d.Run(ctx)
+	err := runDaemonCycles(t, d, 1)
 	assert.NoError(t, err)
 	// Should still have run at least the initial sync
 	assert.GreaterOrEqual(t, syncCount.Load(), int32(1))
@@ -872,10 +844,7 @@ func TestDaemon_UnsnoozeExpiredTasks(t *testing.T) {
 	d.SetLogger(log.New(os.Stderr, "[test-daemon] ", 0))
 	d.SetDB(database)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-	defer cancel()
-
-	err = d.Run(ctx)
+	err = runDaemonCycles(t, d, 1)
 	assert.NoError(t, err)
 
 	// Verify: expired task should be unsnoozed.
@@ -927,10 +896,7 @@ func TestDaemon_NotifiesDueTargets(t *testing.T) {
 	d.SetLogger(log.New(os.Stderr, "[test-daemon] ", 0))
 	d.SetDB(database)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-	defer cancel()
-
-	err = d.Run(ctx)
+	err = runDaemonCycles(t, d, 1)
 	assert.NoError(t, err)
 
 	// Inbox should now contain a target_due row pointing back to the target.
@@ -1224,19 +1190,19 @@ func TestDaemon_ManualTriggerCausesSync(t *testing.T) {
 // landed on ctx.Done(), re-entering runSync several times on the dead ctx —
 // each one writing a "context canceled" pipeline_runs row and overwriting
 // last_sync.json with a bogus result. The channel is closed while ctx is
-// still alive so the count is deterministic: a spinning loop would run
-// hundreds of syncs before the timeout, a correct one exactly the initial one.
+// still alive: a correct loop drops it and runs exactly the initial sync.
 func TestDaemon_ClosedTriggerChannelDoesNotSpinSyncs(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		wire func(d *Daemon, ch chan struct{})
+		name    string
+		wire    func(d *Daemon, ch chan struct{})
+		dropped func(d *Daemon) bool
 	}{
-		{"trigger", func(d *Daemon, ch chan struct{}) { d.triggerCh = ch }},
+		{"trigger", func(d *Daemon, ch chan struct{}) { d.triggerCh = ch }, func(d *Daemon) bool { return d.triggerCh == nil }},
 		{"wake", func(d *Daemon, _ chan struct{}) {
 			wake := make(chan time.Duration)
 			close(wake)
 			d.wakeCh = wake
-		}},
+		}, func(d *Daemon) bool { return d.wakeCh == nil }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
@@ -1251,9 +1217,12 @@ func TestDaemon_ClosedTriggerChannelDoesNotSpinSyncs(t *testing.T) {
 			tc.wire(d, ch)
 			close(ch)
 
-			ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-			defer cancel()
-			require.NoError(t, d.Run(ctx))
+			// No time window: the loop sits in its select while the initial
+			// cycle runs, with the closed channel the only ready case, so it
+			// drops the channel before the cycle ends. A loop that kept
+			// reading it never drops it — and starts a cycle per read.
+			require.NoError(t, runDaemonCycles(t, d, 1))
+			assert.True(t, tc.dropped(d), "the closed %s channel is dropped, not read as an endless stream of events", tc.name)
 			assert.Equal(t, int32(1), syncCount.Load(), "a closed %s channel must not be read as an endless stream of events", tc.name)
 		})
 	}
@@ -1283,6 +1252,29 @@ func TestSyncHeartbeat_PublishesLiveProgress(t *testing.T) {
 	assert.False(t, progress.IsSyncing(time.Now()))
 }
 
+// startGatedHeartbeat starts d's sync heartbeat with each ticker beat handed
+// to the test: next returns once the beat after the call has written — so its
+// write saw everything the test did before calling next. stop ends the
+// heartbeat; the cleanup calls it too.
+func startGatedHeartbeat(t *testing.T, d *Daemon, o *sync.Orchestrator) (next, stop func()) {
+	t.Helper()
+	beats, quit := make(chan struct{}), make(chan struct{})
+	d.heartbeatBeat = func() {
+		select {
+		case beats <- struct{}{}:
+		case <-quit:
+		}
+	}
+	stopBeat := d.startSyncHeartbeat(o)
+	var once gosync.Once
+	stop = func() { once.Do(func() { close(quit); stopBeat() }) }
+	t.Cleanup(stop)
+	// A beat blocked in the hand-off may have written before the call; the
+	// one after it wrote after the call.
+	next = func() { <-beats; <-beats }
+	return next, stop
+}
+
 // A heartbeat whose Slack progress moved stamps the cycle's fetch progress,
 // so Sync Now never restarts a long sync that is still moving; a beat with
 // nothing new leaves the stamp, so a stuck one still reads as stalled.
@@ -1298,16 +1290,18 @@ func TestSyncHeartbeat_StampsFetchProgressOnlyWhenItMoves(t *testing.T) {
 	mono := &fakeMono{}
 	d.loopMono = mono.now
 
-	stop := d.startSyncHeartbeat(orch)
-	defer stop()
+	nextBeat, _ := startGatedHeartbeat(t, d, orch)
 	assert.Zero(t, d.fetchStalledFor(), "the first beat stamps the progress")
 
 	mono.advance(time.Minute)
-	time.Sleep(20 * syncHeartbeatInterval) // beats with nothing new
+	for range 3 {
+		nextBeat() // beats with nothing new
+	}
 	assert.Equal(t, time.Minute, d.fetchStalledFor(), "a beat with nothing new leaves the stamp")
 
 	orch.Progress().AddMessages(1)
-	eventually(t, func() bool { return d.fetchStalledFor() == 0 }, "a beat stamping the moved progress")
+	nextBeat()
+	assert.Zero(t, d.fetchStalledFor(), "a beat stamping the moved progress")
 }
 
 // The Slack passes that move no Progress counter — the read-state refresh
@@ -1327,14 +1321,14 @@ func TestSyncHeartbeat_StampsFetchProgressOnAnsweredSlackCalls(t *testing.T) {
 	mono := &fakeMono{}
 	d.loopMono = mono.now
 
-	stop := d.startSyncHeartbeat(orch)
-	defer stop()
+	nextBeat, _ := startGatedHeartbeat(t, d, orch)
 	snap := orch.Progress().Snapshot()
 	for i := range 3 {
 		mono.advance(manualRestartAfter)
 		_, _ = client.GetChannelReadCursor(context.Background(), "C001") // answered, here with an error
 		client.ResetAPIStats()
-		eventually(t, func() bool { return d.fetchStalledFor() == 0 }, fmt.Sprintf("a beat stamping read-state call %d", i+1))
+		nextBeat()
+		assert.Zero(t, d.fetchStalledFor(), "a beat stamping read-state call %d", i+1)
 	}
 	assert.Equal(t, snap, orch.Progress().Snapshot(), "only API calls moved")
 }
@@ -1481,14 +1475,20 @@ func TestInbox09_RunSyncBoundsAndFreezesInboxWatermark(t *testing.T) {
 	// BEHAVIOR INBOX-09 — see docs/inventory/inbox-pulse.md
 	// Do not weaken or remove without explicit owner approval.
 	t.Setenv("HOME", t.TempDir())
-	const slowSync = 2 * time.Second
-	base := testMux()
+	// The sync-start clock is the test's: the Slack search moves it 2 s, as a
+	// slow sync would move the real one, so a start read after any source
+	// synced would land past base.
+	// An hour back, so a watermark read off the real clock cannot match.
+	base := time.Now().Add(-time.Hour).Truncate(time.Second)
+	var clock atomic.Int64
+	clock.Store(base.UnixNano())
 	slow := http.NewServeMux()
+	baseMux := testMux()
 	slow.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/search.messages" {
-			time.Sleep(slowSync)
+			clock.Add(int64(2 * time.Second))
 		}
-		base.ServeHTTP(w, r)
+		baseMux.ServeHTTP(w, r)
 	})
 	newCycle := func(mux *http.ServeMux) (*Daemon, *db.DB) {
 		var count atomic.Int32
@@ -1505,16 +1505,17 @@ func TestInbox09_RunSyncBoundsAndFreezesInboxWatermark(t *testing.T) {
 		d.SetLogger(l)
 		d.SetDB(database)
 		d.SetInboxPipeline(inbox.New(database, cfg, nil, l))
+		d.syncStartClock = func() time.Time { return time.Unix(0, clock.Load()) }
 		return d, database
 	}
 
 	d, database := newCycle(slow)
 	d.runSync(context.Background(), context.Background())
+	require.Greater(t, clock.Load(), base.UnixNano(), "the Slack sync searched, moving the clock")
 	wm, err := database.GetInboxLastProcessedTS()
 	require.NoError(t, err)
-	assert.Greater(t, wm, 1000.0, "a clean cycle advances the watermark")
-	assert.Less(t, wm, float64(time.Now().Add(-30*time.Minute).Unix())-1,
-		"the watermark stops at the cycle's sync start − 30 min, not at now − 30 min")
+	assert.Equal(t, float64(base.Add(-30*time.Minute).Unix()), wm,
+		"a clean cycle advances the watermark to the cycle's sync start − 30 min, not to a later instant − 30 min")
 
 	d, database = newCycle(http.NewServeMux()) // every Slack call fails
 	d.runSync(context.Background(), context.Background())
@@ -1545,9 +1546,7 @@ func TestDaemon_StartReapsAbandonedPipelineRuns(t *testing.T) {
 	d := newDaemon(nil, &config.Config{Sync: config.SyncConfig{PollInterval: 10 * time.Second}})
 	d.SetLogger(log.New(io.Discard, "", 0))
 	d.SetDB(database)
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
-	require.NoError(t, d.Run(ctx))
+	require.NoError(t, runDaemonCycles(t, d, 1)) // the reap runs before the first cycle
 
 	status := func(id int64) string {
 		var s string

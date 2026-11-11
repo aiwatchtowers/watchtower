@@ -348,13 +348,15 @@ func TestTemplate_NewMailSummaryKeepsPerAccountDone(t *testing.T) {
 	}
 
 	second := event("c2")
+	before := time.Now()
 	f.step(t, 1)
+	after := time.Now()
 	f.wantRun(t, second, db.RunSucceeded, "")
 	if n := f.count(t, "automation_outputs"); n != 1 {
 		t.Fatalf("outputs after the second run = %d; want still 1", n)
 	}
 	reads := f.reg.ReadCalls()
-	wantWindowSince(t, string(reads[len(reads)-1].Args))
+	wantWindowSince(t, string(reads[len(reads)-1].Args), before, after)
 }
 
 func hasKey(m map[string]int64, k string) bool {

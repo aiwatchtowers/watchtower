@@ -577,10 +577,7 @@ func TestResolveProcess_ReaderErrorButProcessGoneOnRecheckIsGone(t *testing.T) {
 
 	stubProcessIdentity(t, func(p int) (processIdentity, error) {
 		_ = helper.Process.Kill()
-		_, _ = helper.Process.Wait()
-		for i := 0; i < 100 && syscall.Kill(pid, 0) == nil; i++ {
-			time.Sleep(10 * time.Millisecond)
-		}
+		_, _ = helper.Process.Wait() // reaped: the pid is gone once this returns
 		require.NotNil(t, syscall.Kill(pid, 0), "test setup: helper should be confirmed dead before the stub returns")
 		return processIdentity{}, errors.New("simulated read failure mid-race")
 	})

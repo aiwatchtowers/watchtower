@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,22 +21,18 @@ import (
 func TestSyncer_Sync_WatermarkIsThePassStart(t *testing.T) {
 	database := syncerDBWithBoard(t, "PROJ")
 	require.NoError(t, database.UpdateJiraSyncState(1, "PROJ", "2026-01-01T00:00:00Z", 0))
-	var (
-		mu       sync.Mutex
-		searchAt time.Time
-	)
+	start := time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC)
+	var clock atomic.Int64 // the pass clock, in Unix seconds
+	clock.Store(start.Unix())
+	var searched atomic.Bool
 	mux := http.NewServeMux()
 	mux.HandleFunc("/rest/api/3/search/jql", func(w http.ResponseWriter, _ *http.Request) {
-		mu.Lock()
-		if searchAt.IsZero() {
-			searchAt = time.Now().UTC()
-		}
-		mu.Unlock()
+		searched.Store(true)
 		body, _ := json.Marshal(SearchResult{Issues: []Issue{makeIssue("PROJ-1")}, IsLast: true})
 		_, _ = w.Write(body)
 	})
 	mux.HandleFunc("/rest/api/3/issue/PROJ-1/comment", func(w http.ResponseWriter, _ *http.Request) {
-		time.Sleep(1100 * time.Millisecond) // a slow comment pass, past the next second
+		clock.Add(int64(time.Hour / time.Second)) // a slow comment pass
 		_, _ = w.Write([]byte(`{"startAt":0,"maxResults":50,"total":0,"comments":[]}`))
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
@@ -46,6 +42,7 @@ func TestSyncer_Sync_WatermarkIsThePassStart(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	s := quietSyncer(t, database, srv.URL)
+	s.passClock = func() time.Time { return time.Unix(clock.Load(), 0) }
 	s.SetCommentSyncLimit(10)
 	_, err := s.Sync(context.Background())
 	require.NoError(t, err)
@@ -53,11 +50,8 @@ func TestSyncer_Sync_WatermarkIsThePassStart(t *testing.T) {
 	state, err := database.GetJiraSyncState(1, "PROJ")
 	require.NoError(t, err)
 	require.NotNil(t, state)
-	wm, err := time.Parse(time.RFC3339, state.LastSyncedAt)
-	require.NoError(t, err)
-	mu.Lock()
-	defer mu.Unlock()
-	require.False(t, searchAt.IsZero(), "the issue search must have run")
-	assert.False(t, wm.After(searchAt),
-		"watermark %s must not be later than the issue search (%s)", wm, searchAt)
+	require.True(t, searched.Load(), "the issue search must have run")
+	require.NotEqual(t, start.Unix(), clock.Load(), "the comment pass must have run")
+	assert.Equal(t, start.Format(time.RFC3339), state.LastSyncedAt,
+		"the watermark is the pass start, not the end of the comment pass")
 }

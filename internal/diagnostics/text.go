@@ -5,6 +5,7 @@ package diagnostics
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -230,6 +231,23 @@ func PipelineRunsUnknown(unknown string) string {
 	return RowIndent + fmt.Sprintf(pipelineRunsUnknownFmt, unknown)
 }
 
+// RecentErrors is the Recent errors block: the title, then the non-empty
+// row groups (each already indented, possibly several rows joined by
+// "\n"); `Recent errors: none` when every group is empty.
+func RecentErrors(groups ...string) string {
+	kept := make([]string, 0, len(groups)+1)
+	kept = append(kept, RecentErrorsTitle)
+	for _, g := range groups {
+		if g != "" {
+			kept = append(kept, g)
+		}
+	}
+	if len(kept) == 1 {
+		return RecentErrorsNone
+	}
+	return strings.Join(kept, "\n")
+}
+
 // Schema is `schema <goose version>`.
 func Schema(version int64) string { return fmt.Sprintf(schemaFmt, version) }
 
@@ -254,3 +272,116 @@ func CrashScanStopped(mb int) string { return fmt.Sprintf(crashScanStoppedFmt, m
 
 // CrashNoneScanStopped is `none in the first <N> MB of the logs (scan stopped)`.
 func CrashNoneScanStopped(mb int) string { return fmt.Sprintf(crashNoneScanStoppedFmt, mb) }
+
+// ---- Local lines (Task 10): version, machine, daemon, logs, crash, policy,
+// iPhone. Kept as one block so parallel line tasks merge cleanly.
+
+// Chip options of the GitHub form, `Apple M1`…`Apple M5`.
+const chipAppleFmt = "Apple M%d"
+
+// Ages of the last cycle and file sizes.
+const (
+	AgeUnderMinute = "under 1 min"
+	ageMinutesFmt  = "%d min"
+	ageHoursFmt    = "%d h"
+	ageDaysFmt     = "%d d"
+	sizeFmt        = "%s %s"
+	SizeB          = "B"
+	SizeKB         = "KB"
+	SizeMB         = "MB"
+	SizeGB         = "GB"
+	logSizeFmt     = "%s %s"
+	iPhoneFmt      = "%s %s"
+)
+
+// ChipApple is the form's `Apple M<n>` option.
+func ChipApple(n int) string { return fmt.Sprintf(chipAppleFmt, n) }
+
+// Age is the `<n> min|h|d` of `last cycle <age> ago`; under a minute (or a
+// time in the future, a skewed clock) is `under 1 min`.
+func Age(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return AgeUnderMinute
+	case d < time.Hour:
+		return fmt.Sprintf(ageMinutesFmt, int(d/time.Minute))
+	case d < 48*time.Hour:
+		return fmt.Sprintf(ageHoursFmt, int(d/time.Hour))
+	default:
+		return fmt.Sprintf(ageDaysFmt, int(d/(24*time.Hour)))
+	}
+}
+
+// Size prints a byte count as `<n> B|KB|MB|GB` (1024-based): one decimal
+// below 10 of a unit (`1.2 GB`, `4 MB` when exact), whole numbers above.
+func Size(n int64) string {
+	if n < 1024 {
+		return fmt.Sprintf(sizeFmt, strconv.FormatInt(max(n, 0), 10), SizeB)
+	}
+	v, unit := float64(n)/1024, SizeKB
+	for _, u := range []string{SizeMB, SizeGB} {
+		if v < 1024 {
+			break
+		}
+		v, unit = v/1024, u
+	}
+	var num string
+	if v < 10 {
+		num = strings.TrimSuffix(strconv.FormatFloat(v, 'f', 1, 64), ".0")
+	} else {
+		num = strconv.FormatInt(int64(v), 10)
+	}
+	return fmt.Sprintf(sizeFmt, num, unit)
+}
+
+// LogSize is one `<file> <size|missing|unreadable>` part of the Logs line.
+func LogSize(file, size string) string { return fmt.Sprintf(logSizeFmt, file, size) }
+
+// IPhone is the `iPhone companion on|off` part.
+func IPhone(state string) string { return fmt.Sprintf(iPhoneFmt, IPhoneCompanion, state) }
+
+// ---- Database parts (Task 9, lines_db.go / sources.go) ----
+
+// Source kinds as the Sources line prints them. The form's checkbox
+// labels are the same words, except FormEmailOverIMAP (IMAP and Outlook
+// mailboxes both tick it); CalDAV/ICS calendars have no checkbox.
+const (
+	KindSlack          = "Slack"
+	KindGmail          = "Gmail"
+	KindGoogleCalendar = "Google Calendar"
+	KindJira           = "Jira"
+	KindConfluence     = "Confluence"
+	KindLinear         = "Linear"
+	KindEmailIMAP      = "Email (IMAP)"
+	KindOutlook        = "Outlook"
+	KindCalDAV         = "Calendar (CalDAV/ICS)"
+	FormEmailOverIMAP  = "Email over IMAP"
+)
+
+// Sources line formats: `Slack 2 ok`, `Gmail 2 (1 needs sign-in)`,
+// `Confluence 3 spaces ok`, `Linear unknown`, `Quick Connections 4`.
+const (
+	kindCountFmt  = "%s %d"
+	kindWordFmt   = "%s %s"
+	kindStatesFmt = "%s (%s)"
+	stateCountFmt = "%d %s"
+	StateSep      = ", "
+)
+
+// UnknownOlderSchema is the reason of a Recent errors row when the
+// database predates pipeline_runs: `  pipeline runs unknown (older schema)`.
+const UnknownOlderSchema = "unknown (older schema)"
+
+// kindCount is `<kind> <n>`.
+func kindCount(kind string, n int) string { return fmt.Sprintf(kindCountFmt, kind, n) }
+
+// kindWord is `<kind> <word>`, e.g. `Linear unknown`, `Slack 2 ok`.
+func kindWord(kind, word string) string { return fmt.Sprintf(kindWordFmt, kind, word) }
+
+// kindStates is `<kind> <n> (<states>)`.
+func kindStates(head string, states []string) string {
+	return fmt.Sprintf(kindStatesFmt, head, strings.Join(states, StateSep))
+}
+
+// stateCount is `<k> <state>`.
+func stateCount(k int, state string) string { return fmt.Sprintf(stateCountFmt, k, state) }

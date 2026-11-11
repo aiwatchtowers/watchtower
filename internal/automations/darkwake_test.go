@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"watchtower/internal/automations"
@@ -38,13 +39,8 @@ func darkWakeRun(t *testing.T, s *automations.Scheduler) (stop func()) {
 	go func() { done <- s.Run(ctx) }()
 	return func() {
 		cancel()
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Errorf("Run = %v, want nil after cancel", err)
-			}
-		case <-time.After(5 * time.Second):
-			t.Fatal("Run did not return after cancel")
+		if err := <-done; err != nil {
+			t.Errorf("Run = %v, want nil after cancel", err)
 		}
 	}
 }
@@ -182,46 +178,46 @@ func TestExecutor_NoClaimsInDarkWake(t *testing.T) {
 // TestExecutor_DarkWakeDoesNotResumeKeptRun: a waiting run the previous
 // daemon kept for a resume is resumed only at full wake.
 func TestExecutor_DarkWakeDoesNotResumeKeptRun(t *testing.T) {
-	var awake atomic.Bool
-	awake.Store(true)
-	w := newWriteFixtureOpts(t, exOpts{fullWake: boolProbe(&awake)})
-	a := w.seedWorkbenchOutput(t, "deploy", []string{"ask:owner"}, "inbox",
-		`const r = `+resumeAskCall+`; return JSON.stringify(r)`)
-	id := w.enqueue(t, a, db.TriggerManual)
-	w.stopWhileWaiting(t, id)
+	synctest.Test(t, func(t *testing.T) {
+		var awake atomic.Bool
+		awake.Store(true)
+		w := newWriteFixtureOpts(t, exOpts{fullWake: boolProbe(&awake)})
+		a := w.seedWorkbenchOutput(t, "deploy", []string{"ask:owner"}, "inbox",
+			`const r = `+resumeAskCall+`; return JSON.stringify(r)`)
+		id := w.enqueue(t, a, db.TriggerManual)
+		w.stopWhileWaiting(t, id)
 
-	w.restart()
-	awake.Store(false)
-	if !automations.ExecutorMarkInterrupted(context.Background(), w.e) {
-		t.Fatal("the restart sweep did not run")
-	}
-	kept, err := w.d.NextResumePendingAutomationRuns()
-	if err != nil || len(kept) != 1 || kept[0].ID != id {
-		t.Fatalf("runs kept for a resume = %+v, %v; want run %d", kept, err, id)
-	}
-	w.step(t, 0) // a dark-wake poll starts nothing
-	w.step(t, 0)
-	if r := w.run(t, id); r.Status != db.RunWaiting {
-		t.Fatalf("run in a dark wake = %s; want still waiting", r.Status)
-	}
-	if kept, err := w.d.NextResumePendingAutomationRuns(); err != nil || len(kept) != 1 {
-		t.Fatalf("runs kept for a resume after the dark polls = %d, %v; want 1", len(kept), err)
-	}
+		w.restart()
+		awake.Store(false)
+		if !automations.ExecutorMarkInterrupted(context.Background(), w.e) {
+			t.Fatal("the restart sweep did not run")
+		}
+		kept, err := w.d.NextResumePendingAutomationRuns()
+		if err != nil || len(kept) != 1 || kept[0].ID != id {
+			t.Fatalf("runs kept for a resume = %+v, %v; want run %d", kept, err, id)
+		}
+		w.step(t, 0) // a dark-wake poll starts nothing
+		w.step(t, 0)
+		if r := w.run(t, id); r.Status != db.RunWaiting {
+			t.Fatalf("run in a dark wake = %s; want still waiting", r.Status)
+		}
+		if kept, err := w.d.NextResumePendingAutomationRuns(); err != nil || len(kept) != 1 {
+			t.Fatalf("runs kept for a resume after the dark polls = %d, %v; want 1", len(kept), err)
+		}
 
-	awake.Store(true)
-	stop := runExecutor(t, w.exFixture)
-	defer stop()
-	waitLog(t, w.logs, "resumed after restart")
+		awake.Store(true)
+		stop := runExecutor(t, w.exFixture)
+		defer stop()
+		waitLog(t, w.logs, "resumed after restart")
+	})
 }
 
-// waitLog waits (real time) until logs contains want.
+// waitLog lets the test's synctest bubble settle and wants logs to contain
+// want then. Bubble only.
 func waitLog(t *testing.T, logs *syncBuffer, want string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for !strings.Contains(logs.String(), want) {
-		if time.Now().After(deadline) {
-			t.Fatalf("log never contained %q:\n%s", want, logs.String())
-		}
-		time.Sleep(5 * time.Millisecond)
+	synctest.Wait()
+	if !strings.Contains(logs.String(), want) {
+		t.Fatalf("log does not contain %q once settled:\n%s", want, logs.String())
 	}
 }

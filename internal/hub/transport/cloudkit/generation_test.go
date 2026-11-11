@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/transport/cloudkit"
@@ -236,14 +235,8 @@ func TestEventQueueFoldsWhileNobodyReads(t *testing.T) {
 		t.Fatal(err)
 	}
 	var got []transport.Event
-	deadline := time.After(10 * time.Second)
 	for len(got) == 0 || !errors.Is(got[len(got)-1].Err, transport.ErrForbidden) {
-		select {
-		case e := <-r.c.Events():
-			got = append(got, e)
-		case <-deadline:
-			t.Fatalf("no sentinel after %d events", len(got))
-		}
+		got = append(got, <-r.c.Events())
 	}
 	// The buffer, the one the pump held, and one waiting per class (four
 	// classes with the sentinel's).

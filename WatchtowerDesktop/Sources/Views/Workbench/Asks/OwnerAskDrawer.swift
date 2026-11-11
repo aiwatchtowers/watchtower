@@ -59,8 +59,22 @@ struct OwnerAskDrawerHost<Workspace: View>: View {
     let vm: WorkbenchesViewModel
     /// The ask to show here; nil leaves `workspace` alone.
     let ask: OwnerAsk?
+    /// The closed list to show here in place of an ask (#1713).
+    var closedList: OwnerAsksViewModel.ClosedListKey?
     @ViewBuilder let workspace: () -> Workspace
     @State private var liveWidth: Double?
+
+    init(
+        vm: WorkbenchesViewModel,
+        ask: OwnerAsk?,
+        closedList: OwnerAsksViewModel.ClosedListKey? = nil,
+        @ViewBuilder workspace: @escaping () -> Workspace
+    ) {
+        self.vm = vm
+        self.ask = ask
+        self.closedList = closedList
+        self.workspace = workspace
+    }
     @Environment(\.askDrawerCovers) private var outerCovers
 
     var body: some View {
@@ -68,7 +82,7 @@ struct OwnerAskDrawerHost<Workspace: View>: View {
         GeometryReader { geometry in
             let frames = OwnerAskDrawerLayout.frames(
                 total: geometry.size.width, drawerWidth: CGFloat(liveWidth ?? asks.drawerWidth),
-                hasDrawer: ask != nil, expanded: asks.drawerExpanded
+                hasDrawer: ask != nil || closedList != nil, expanded: asks.drawerExpanded
             )
             let expanded = frames.covers
             ZStack(alignment: .topLeading) {
@@ -82,10 +96,14 @@ struct OwnerAskDrawerHost<Workspace: View>: View {
                     .allowsHitTesting(!expanded)
                     .accessibilityHidden(expanded)
                     .environment(\.askDrawerCovers, OwnerAskDrawerLayout.contentCovered(outer: outerCovers, by: frames))
-                if let ask {
+                if ask != nil || closedList != nil {
                     HStack(spacing: 0) {
                         if !expanded { Divider() }
-                        OwnerAskDrawer(vm: vm, ask: ask)
+                        if let ask {
+                            OwnerAskDrawer(vm: vm, ask: ask)
+                        } else if let closedList {
+                            OwnerAskClosedListPane(vm: vm, key: closedList)
+                        }
                     }
                     .frame(width: frames.drawer, height: geometry.size.height)
                     .overlay(alignment: .leading) {
@@ -172,10 +190,18 @@ struct OwnerAskDrawer: View {
         ScrollViewReader { proxy in
             content
                 .background(OwnerAskKeyCatcher(
-                    onPress: { keys.press($0) },
+                    onPress: { [asks, projectID = ask.projectID] press in
+                        // Esc in an ask opened from a closed list: back to it (#1713).
+                        if press.key == .escape {
+                            return asks.escapeInDrawer(projectID: projectID, otherModifiers: press.otherModifiers,
+                                                       isRepeat: press.isRepeat)
+                        }
+                        return keys.press(press)
+                    },
                     onMouseDown: { [asks, projectID = ask.projectID] inside in asks.setDrawerKeysActive(inside, projectID: projectID) },
                     resizeEdge: asks.drawerExpanded ? 0 : PanelResizeHandle.thickness,
-                    canHandBack: { [asks, projectID = ask.projectID] in asks.drawerAskIDs[projectID] == nil },
+                    // Back to a closed list keeps the keyboard in the drawer (#1713).
+                    canHandBack: { [asks, projectID = ask.projectID] in asks.drawerIsEmpty(projectID: projectID) },
                     loan: asks.keyboardLoan(projectID: ask.projectID),
                     onKey: pressAnswerKey
                 ))
@@ -199,6 +225,9 @@ struct OwnerAskDrawer: View {
 
     private var content: some View {
         VStack(spacing: 0) {
+            if let origin = asks.closedListOrigins[ask.projectID] {
+                OwnerAskClosedBackRow(vm: vm, key: origin)
+            }
             OwnerAskDrawerHeader(vm: vm, ask: ask)
             Divider()
             if ask.kind == .review {

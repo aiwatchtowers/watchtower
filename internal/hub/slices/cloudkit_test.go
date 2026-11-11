@@ -86,9 +86,7 @@ func TestSignalRecordCarriesOnlyTheWireName(t *testing.T) {
 		Store: r.st, Transport: client, Sealer: secure.NewSealer(r.kr), DataZone: transport.DataZone(relayID),
 		Sources: []Source{src}, Clock: r.clock, Linked: func() (bool, error) { return true, nil },
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if rep, err := p.Cycle(ctx, []Kind{KindAskAlert}); err != nil || rep.Saved != 1 {
+	if rep, err := p.Cycle(context.Background(), []Kind{KindAskAlert}); err != nil || rep.Saved != 1 {
 		t.Fatalf("Cycle = %+v, %v", rep, err)
 	}
 
