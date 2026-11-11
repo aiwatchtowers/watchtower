@@ -30,7 +30,7 @@ var knownNonLLMExec = map[string]string{
 	"chat.NewChildSandboxAt":             "probes sandbox-exec with /usr/bin/true",
 	"claude.loginShellPATH":              "login shell `echo $PATH`",
 	"claude.loginShellWhich":             "login shell `which claude`",
-	"claude.readLoginShellEnv":           "login shell `env -0`",
+	"claude.readLoginShellEnvUntil":      "login shell `env -0`",
 	"claudesession.SystemProcs.Start":    "ps -o lstart",
 	"cmd.LaunchSpecReview":               "starts this binary's `workbench spec-review run`, whose reviewer call records in that process",
 	"cmd.execCommandRunner":              "claude mcp add/remove/get for the workbench install (MCP config, no model call)",

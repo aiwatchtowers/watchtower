@@ -94,12 +94,6 @@ func launchStub(t *testing.T, srv *Server, path string, row int64, agent, script
 	return st
 }
 
-func (st *stubSession) ring() []byte {
-	st.sess.mu.Lock()
-	defer st.sess.mu.Unlock()
-	return st.sess.ring.Snapshot()
-}
-
 // waitRing returns the ring once it holds want, woken by each output.
 func (st *stubSession) waitRing(want string) []byte {
 	st.t.Helper()
@@ -712,13 +706,18 @@ func TestSettleIsClampedToMaxSettle(t *testing.T) {
 // A reply sent before the host asked its DeliverCheck is no answer to it:
 // a pre-answered Fresh/CanSubmit gets no Return.
 func TestACheckReplyBeforeTheCheckIsIgnored(t *testing.T) {
-	st := newStub(t, Options{checkTimeout: 200 * time.Millisecond}, "claude", rawEchoAgent)
+	// The pause holds until the early reply was handled: the host reads a
+	// connection's frames in order, so the Listed after it says so.
+	release := make(chan struct{})
+	st := newStub(t, Options{checkTimeout: 200 * time.Millisecond, settle: func(time.Duration) { <-release }}, "claude", rawEchoAgent)
 	raw := dial(t, st.path)
 	r := st.req("answer")
 	r.ID = "x1"
-	r.SettleMs = 300
 	raw.send(Deliver, r)
 	raw.send(DeliverCheckReply, DeliverCheckReplyMsg{ID: "x1", Fresh: true, CanSubmit: true})
+	raw.send(List, nil)
+	raw.expect(Listed)
+	close(release)
 	raw.expect(DeliverCheck) // asked, never answered after it
 	var out DeliveredMsg
 	if err := json.Unmarshal(raw.expect(Delivered), &out); err != nil {
