@@ -413,6 +413,11 @@ final class WorkbenchesViewModel {
     nonisolated static let defaultQuitDeleteWait = TimeInterval(DBLockInstrumentation.busyTimeoutMS) / 1000 + 3
     /// `defaultQuitDeleteWait`; a seam for tests.
     @ObservationIgnored var quitDeleteWait: TimeInterval = WorkbenchesViewModel.defaultQuitDeleteWait
+    /// Arms the quit's bound: calls `fire` once `quitDeleteWait` has passed.
+    /// A seam for tests, which fire it by hand.
+    @ObservationIgnored var quitDeleteTimeout: @Sendable (TimeInterval, @escaping @Sendable () -> Void) -> Void = { bound, fire in
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + bound, execute: fire)
+    }
     /// The Undo window's wait. A seam for tests.
     @ObservationIgnored var deleteSleep: (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     /// Runs deferred DELETEs in one write — the only DELETE path of the

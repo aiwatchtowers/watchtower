@@ -4,6 +4,9 @@ import GRDB
 
 final class DBLockMetricsTests: XCTestCase {
     private var dir: URL!
+    /// The metrics' clock: moves only when a test advances it or the busy
+    /// callback sleeps, so every wait and hold is exact.
+    private var clock: FakeLockClock!
     private var dbPath: String { dir.appendingPathComponent("watchtower.db").path }
     private var sinkPath: String { dir.appendingPathComponent(DBLockSink.fileName).path }
 
@@ -11,6 +14,7 @@ final class DBLockMetricsTests: XCTestCase {
         dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("dblock-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        clock = FakeLockClock()
     }
 
     override func tearDownWithError() throws {
@@ -32,7 +36,7 @@ final class DBLockMetricsTests: XCTestCase {
     /// `desktop:?` line. That is setup, not what a test measures.
     private func makePool(sink: DBLockSink?, busyTimeoutMS: Int = DBLockInstrumentation.busyTimeoutMS) throws -> DatabasePool {
         var config = Configuration()
-        DBLockInstrumentation.install(on: &config, sink: sink, busyTimeoutMS: busyTimeoutMS)
+        DBLockInstrumentation.install(on: &config, sink: sink, busyTimeoutMS: busyTimeoutMS, clock: clock.lockClock)
         let pool = try DatabasePool(path: dbPath, configuration: config)
         try pool.writeWithoutTransaction { try $0.execute(sql: "CREATE TABLE IF NOT EXISTS t (v INTEGER)") }
         if let sink {
@@ -57,6 +61,15 @@ final class DBLockMetricsTests: XCTestCase {
 
     private func release(_ holder: DatabaseQueue) throws {
         try holder.writeWithoutTransaction { try $0.execute(sql: "ROLLBACK") }
+    }
+
+    /// Releases `holder` from inside the busy wait once it has slept `ms`.
+    private func release(_ holder: DatabaseQueue, afterSleepingMS ms: Int64) {
+        clock.onSleep = { [weak self] slept in
+            guard slept >= ms else { return false }
+            try? self?.release(holder)
+            return true
+        }
     }
 
     private func lines(_ path: String? = nil) throws -> [[String: Any]] {
@@ -195,11 +208,10 @@ final class DBLockMetricsTests: XCTestCase {
         let holder = try holdWriteLock()
         defer { try? release(holder) }
 
-        let start = Date()
         XCTAssertThrowsError(try pool.write { try $0.execute(sql: "INSERT INTO t VALUES (1)") }) { error in
             XCTAssertEqual((error as? DatabaseError)?.resultCode, .SQLITE_BUSY)
         }
-        XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(start), 0.3)
+        XCTAssertEqual(clock.sleptMS, 300, "slept exactly the busy budget")
         sink.flush()
         let busy = try lines().filter { $0["kind"] as? String == "busy" }
         XCTAssertEqual(busy.count, 1)
@@ -207,7 +219,7 @@ final class DBLockMetricsTests: XCTestCase {
         XCTAssertEqual(event["err"] as? String, "SQLITE_BUSY")
         XCTAssertEqual(event["busy_timeout_ms"] as? Int, 300)
         XCTAssertEqual(event["site"] as? String, "desktop:?")
-        XCTAssertGreaterThanOrEqual(event["wait_ms"] as? Int ?? 0, 290)
+        XCTAssertEqual(event["wait_ms"] as? Int, 300)
         XCTAssertEqual(event["proc"] as? String, "desktop")
     }
 
@@ -218,21 +230,17 @@ final class DBLockMetricsTests: XCTestCase {
         let holder = try holdWriteLock()
         defer { try? release(holder) }
 
-        let start = Date()
         XCTAssertThrowsError(try pool.write { try $0.execute(sql: "INSERT INTO t VALUES (1)") }) { error in
             XCTAssertEqual((error as? DatabaseError)?.resultCode, .SQLITE_BUSY)
         }
-        let elapsed = Date().timeIntervalSince(start)
-        XCTAssertGreaterThanOrEqual(elapsed, 5.0)
-        // Only a "did not wait forever" bound: a loaded CI runner has taken
-        // ~9 s here, so the 5 s budget itself is pinned by the event below.
-        XCTAssertLessThan(elapsed, 20.0)
+        // The callback slept exactly the 5 s budget, then gave up.
+        XCTAssertEqual(clock.sleptMS, 5000)
         sink.flush()
         let busy = try lines().filter { $0["kind"] as? String == "busy" }
         XCTAssertEqual(busy.count, 1)
         let event = try XCTUnwrap(busy.first)
         XCTAssertEqual(event["busy_timeout_ms"] as? Int, 5000)
-        XCTAssertGreaterThanOrEqual(event["wait_ms"] as? Int ?? 0, 5000)
+        XCTAssertEqual(event["wait_ms"] as? Int, 5000)
     }
 
     func testNilSinkRecordsNothing() throws {
@@ -248,13 +256,14 @@ final class DBLockMetricsTests: XCTestCase {
         let sink = try makeSink(thresholdMS: 100)
         let pool = try makePool(sink: sink)
         let holder = try holdWriteLock()
-        DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) { try? self.release(holder) }
+        release(holder, afterSleepingMS: 300)
 
         try pool.write { try $0.execute(sql: "INSERT INTO t VALUES (1)") }
         sink.flush()
         let event = try XCTUnwrap(lines().first)
         XCTAssertEqual(event["kind"] as? String, "tx")
-        XCTAssertGreaterThanOrEqual(event["wait_ms"] as? Int ?? 0, 200)
+        XCTAssertGreaterThanOrEqual(clock.sleptMS, 300)
+        XCTAssertEqual(event["wait_ms"] as? Int, Int(clock.sleptMS), "the wait is the whole busy wait")
         XCTAssertEqual(event["site"] as? String, "desktop:t")
         XCTAssertTrue(try lines().allSatisfy { $0["kind"] as? String != "busy" })
     }
@@ -268,21 +277,24 @@ final class DBLockMetricsTests: XCTestCase {
             try db.execute(sql: "SELECT count(*) FROM t")
             try db.execute(sql: "INSERT INTO t VALUES (1)")
             try db.execute(sql: "UPDATE t SET v = 2")
-            Thread.sleep(forTimeInterval: 0.08)
+            self.clock.advance(ms: 80)
         }
         sink.flush()
         let events = try lines()
         XCTAssertEqual(events.count, 1)
         let event = try XCTUnwrap(events.first)
         XCTAssertEqual(event["kind"] as? String, "tx")
-        XCTAssertGreaterThanOrEqual(event["hold_ms"] as? Int ?? 0, 80)
+        XCTAssertEqual(event["hold_ms"] as? Int, 80)
         XCTAssertEqual(event["site"] as? String, "desktop:t")
     }
 
     func testFastWriteBelowThresholdRecordsNothing() throws {
         let sink = try makeSink(thresholdMS: 1000)
         let pool = try makePool(sink: sink)
-        try pool.write { try $0.execute(sql: "INSERT INTO t VALUES (1)") }
+        try pool.write { db in
+            try db.execute(sql: "INSERT INTO t VALUES (1)")
+            self.clock.advance(ms: 999)
+        }
         sink.flush()
         XCTAssertEqual(try lines().count, 0)
     }
@@ -290,7 +302,7 @@ final class DBLockMetricsTests: XCTestCase {
     func testSlowTransactionWithoutWritesHasUnknownSite() throws {
         let sink = try makeSink(thresholdMS: 50)
         let pool = try makePool(sink: sink)
-        try pool.write { _ in Thread.sleep(forTimeInterval: 0.06) }
+        try pool.write { _ in self.clock.advance(ms: 60) }
         sink.flush()
         XCTAssertEqual(try lines().map { $0["site"] as? String }, ["desktop:?"])
     }
@@ -301,7 +313,7 @@ final class DBLockMetricsTests: XCTestCase {
         struct Boom: Error {}
         XCTAssertThrowsError(try pool.write { db in
             try db.execute(sql: "DELETE FROM t")
-            Thread.sleep(forTimeInterval: 0.06)
+            self.clock.advance(ms: 60)
             throw Boom()
         })
         sink.flush()
@@ -334,7 +346,7 @@ final class DBLockMetricsTests: XCTestCase {
             try db.readOnly {
                 try db.inSavepoint {
                     _ = try Int.fetchOne(db, sql: "SELECT count(*) FROM t")
-                    Thread.sleep(forTimeInterval: 0.05)
+                    self.clock.advance(ms: 50)
                     return .commit
                 }
             }
@@ -351,9 +363,9 @@ final class DBLockMetricsTests: XCTestCase {
         try pool.writeWithoutTransaction { db in
             try db.inTransaction(.deferred) {
                 _ = try Int.fetchOne(db, sql: "SELECT count(*) FROM t")
-                Thread.sleep(forTimeInterval: 0.5)
+                self.clock.advance(ms: 500)
                 try db.execute(sql: "INSERT INTO t VALUES (1)")
-                Thread.sleep(forTimeInterval: 0.06)
+                self.clock.advance(ms: 60)
                 return .commit
             }
         }
@@ -363,12 +375,9 @@ final class DBLockMetricsTests: XCTestCase {
         let event = try XCTUnwrap(events.first)
         XCTAssertEqual(event["kind"] as? String, "tx")
         XCTAssertEqual(event["site"] as? String, "desktop:t")
-        let hold = event["hold_ms"] as? Int ?? 0
-        XCTAssertGreaterThanOrEqual(hold, 60)
-        // Measured from BEGIN either would be >= 500 ms (the pre-write
-        // sleep); 400 leaves a loaded runner room without losing that.
-        XCTAssertLessThan(hold, 400, "the hold starts at the first write, not at BEGIN")
-        XCTAssertLessThan(event["wait_ms"] as? Int ?? 0, 400)
+        // Measured from BEGIN either would include the pre-write 500 ms.
+        XCTAssertEqual(event["hold_ms"] as? Int, 60, "the hold starts at the first write, not at BEGIN")
+        XCTAssertNil(event["wait_ms"], "an uncontended first write waited 0 ms")
     }
 
     /// A deferred transaction whose first write waits for another writer:
@@ -377,22 +386,20 @@ final class DBLockMetricsTests: XCTestCase {
         let sink = try makeSink(thresholdMS: 50)
         let pool = try makePool(sink: sink)
         let holder = try holdWriteLock()
-        DispatchQueue.global().asyncAfter(deadline: .now() + 0.6) { try? self.release(holder) }
+        release(holder, afterSleepingMS: 600)
         try pool.writeWithoutTransaction { db in
             try db.inTransaction(.deferred) {
                 try db.execute(sql: "INSERT INTO t VALUES (1)")
-                Thread.sleep(forTimeInterval: 0.06)
+                self.clock.advance(ms: 60)
                 return .commit
             }
         }
         sink.flush()
         let event = try XCTUnwrap(lines().first { $0["kind"] as? String == "tx" })
-        XCTAssertGreaterThanOrEqual(event["wait_ms"] as? Int ?? 0, 550, "the first write waited for the holder")
-        let hold = event["hold_ms"] as? Int ?? 0
-        XCTAssertGreaterThanOrEqual(hold, 60)
-        // Counting the wait again would make the hold >= 610 ms; 500 leaves
-        // a loaded runner room without losing that.
-        XCTAssertLessThan(hold, 500, "the first write's wait is not counted again as hold")
+        XCTAssertGreaterThanOrEqual(clock.sleptMS, 600)
+        XCTAssertEqual(event["wait_ms"] as? Int, Int(clock.sleptMS), "the first write waited for the holder")
+        // Counting the wait again would make the hold 60 ms plus the wait.
+        XCTAssertEqual(event["hold_ms"] as? Int, 60, "the first write's wait is not counted again as hold")
     }
 
     /// The sink's names and cap are a Go↔Swift dual path; the Go suite
@@ -433,5 +440,48 @@ final class DBLockMetricsTests: XCTestCase {
         XCTAssertNil(WriteTransactionTracker.boundary("ROLLBACK\tTO\nSAVEPOINT grdb"))
         XCTAssertNil(WriteTransactionTracker.boundary("RELEASE SAVEPOINT grdb"))
         XCTAssertNil(WriteTransactionTracker.boundary("SELECT 1"))
+    }
+}
+
+/// The lock metrics' clock in a test: it moves only on `advance` and on the
+/// busy callback's sleeps, which never sleep for real. `onSleep` runs after
+/// each busy sleep with the total slept so far (on the writer's thread) and
+/// returns whether it is done.
+private final class FakeLockClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var nanos: UInt64 = 1_000_000_000
+    private var slept: Int64 = 0
+    private var sleepHook: ((Int64) -> Bool)?
+
+    var onSleep: ((Int64) -> Bool)? {
+        get { locked { sleepHook } }
+        set { locked { sleepHook = newValue } }
+    }
+
+    /// Milliseconds the busy callback has slept.
+    var sleptMS: Int64 { locked { slept } }
+
+    func advance(ms: Int64) {
+        locked { nanos += UInt64(ms) * 1_000_000 }
+    }
+
+    var lockClock: DBLockClock {
+        DBLockClock(
+            now: { [self] in locked { nanos } },
+            sleepMS: { [self] ms in
+                let (total, hook) = locked {
+                    nanos += UInt64(ms) * 1_000_000
+                    slept += Int64(ms)
+                    return (slept, sleepHook)
+                }
+                if hook?(total) == true { onSleep = nil }
+            }
+        )
+    }
+
+    private func locked<T>(_ body: () -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return body()
     }
 }
