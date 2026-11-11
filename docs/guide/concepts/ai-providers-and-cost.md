@@ -84,6 +84,10 @@ The reserve is chosen before a new turn starts. A quota failure after work start
 
 A healthy reserve stays with the chat after the preferred provider recovers. **Use Claude** or **Use Codex** switches back between turns and keeps your draft. If that reserve later reaches its own limit, the next new turn can use the recovered compatible preferred provider. **Claude can be tried** or **Codex can be tried** means no local quota block is currently recorded. It does not prove a background task completed or that the provider will accept the next request. Availability refreshes when you enter a chat, return to the app or finish a turn; the app never sends a paid test prompt just to check recovery.
 
+An automatic chat moves to the reserve at a quota limit even when it was offered claude.ai tools, which only Claude supplies. The chat then shows **claude.ai tools are unavailable with Codex. This chat continues without them.**, and the line stays while the chat uses that reserve, including after you reopen it. Switch back with **Use Claude** between turns to get the tools again. A started turn is never repeated; required attachments, explicit pins and your organization's policy still apply.
+
+To stop using the reserve, turn off **Use reserve when limits are reached** and save. Without it, chats never move to another provider. Future jobs use the preferred provider and active work finishes with its current settings; your model settings, chats, pending source data, usage and sign-ins stay in place.
+
 ## What drives cost
 <!-- learn
 id: ai-mute-channel
@@ -150,22 +154,3 @@ See [Plans and subscription limits](../features/plans.md) for window selection, 
 - [Troubleshooting](../troubleshooting/README.md)
 
 For developers: [docs/features/llm-usage-ledger.md](../../features/llm-usage-ledger.md), [docs/features/model-provider-registry.md](../../features/model-provider-registry.md), [docs/features/claude-plan-limits.md](../../features/claude-plan-limits.md)
-
-
-To stop using the reserve, turn off **Use reserve when limits are reached** and
-save. Future jobs use the preferred provider; active work finishes with its
-current settings. Both providers' model settings, chats, pending source data,
-usage and credentials stay in place. Do not reset AI data or remove credentials
-to disable the feature. Downgrading to an older binary is a separate operation:
-older versions may not understand the new fields, and manually rolling back a
-live database's migrations is unsupported.
-
-This routing implementation was tested with fake providers and local fixtures;
-no paid or live-account acceptance check was performed. It does not automatically
-repeat custom recipes or started tool turns. An automatic main chat can continue
-with Codex when Claude is out of quota, without Claude-native claude.ai tools.
-The chat shows **claude.ai tools are unavailable with Codex**; those tools have
-not moved to Codex. This notice stays while the chat uses that reserve, including
-after reopening it. Required attachments, explicit provider/model choices and
-organization policy still apply. To use native tools again, switch back to a
-provider that supplies them between turns.

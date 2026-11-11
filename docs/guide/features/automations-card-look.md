@@ -60,7 +60,7 @@ When your change gives the recipe a new `llm()` step, the footer says **This cha
 
 ## When it's empty or wrong
 
-- **"This automation doesn't make an Inbox card."** The recipe has no Inbox output. Ask the assistant to put its result in the Inbox.
+- **"This automation doesn't make an Inbox card."** The recipe has no Inbox output. Ask the chat to put its result in the Inbox.
 - **"Dry-run the recipe to see its card on your data."** Nothing was dry-run yet. Press **Dry run**.
 - **"The recipe changed since this preview."** The text moved on after the last dry run; the old card is dimmed. Press **Dry run**, or ask the assistant for the change again.
 - **"This dry run made no card — it found nothing to show."** The recipe ran but found nothing. Try again when there is data, or ask the assistant to show an empty state.

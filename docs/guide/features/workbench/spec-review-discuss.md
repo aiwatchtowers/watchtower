@@ -21,6 +21,17 @@ When only the agent can answer (what it meant, what it plans), the assistant ask
 If the agent does not answer within 30 minutes, the thread says **The author did not answer** and the assistant goes on without it. A question still waiting when you quit the app is not typed again; it runs out the same way, and the thread says **The question may not have reached the author**. If the question was typed but not sent, or only copied, the thread tells you to press Return in the agent's session, or to paste it there. A thread asks one question at a time. Answers that land while the Mac app is closed are picked up when you open the thread again.
 
 ### When the conversation finds something new
+<!-- learn
+id: spec-review-discuss-add-finding
+title: Add a finding the review missed
+text: When a **Discuss** thread turns up a gap, press **Add to review** to make it a finding in its chapter.
+area: development
+level: power
+kind: tip
+since: next
+action: nav:projects
+-->
+
 
 The assistant can propose a finding the review missed. It shows as a card in the thread, quoting the document or your own words in the thread. Nothing is added until you press **Add to review**. A finding whose quote cannot be found is refused with **not added: quote not found**. If the assistant's question or finding is malformed, the thread says it could not be sent or shown, and why. An added finding appears in its chapter with the **From discussion** chip and works like any other finding.
 
