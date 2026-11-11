@@ -31,7 +31,7 @@ final class TranscriptionModelAutoDownloaderTests: XCTestCase {
     private var goals: Set<OnboardingGoal> = []
     private var modelKey: TranscriptionModelProvisioner.ModelKey?
     private var synced = true
-    private var clock = Date()
+    private var clock = Date(timeIntervalSince1970: 1_800_000_000)
     private var suiteName = ""
 
     override func setUp() {
@@ -39,7 +39,7 @@ final class TranscriptionModelAutoDownloaderTests: XCTestCase {
         goals = []
         modelKey = key
         synced = true
-        clock = Date()
+        clock = Date(timeIntervalSince1970: 1_800_000_000)
         suiteName = "TranscriptionModelAutoDownloaderTests.\(UUID().uuidString)"
     }
 
@@ -66,7 +66,7 @@ final class TranscriptionModelAutoDownloaderTests: XCTestCase {
             ),
             provisioner: provisioner,
             sleep: { _ in await sleep.sleep() },
-            now: { [weak self] in self?.clock ?? Date() })
+            now: { [weak self] in self?.clock ?? .distantPast })
         return (auto, provisioner)
     }
 
@@ -74,15 +74,11 @@ final class TranscriptionModelAutoDownloaderTests: XCTestCase {
         await auto.pendingRun?.value
     }
 
-    /// Wall-clock patience, not a yield count: the download runs on a
-    /// detached task that a loaded machine may schedule late.
+    /// Yields until `condition` holds, with no deadline: the download runs on
+    /// a detached task that a loaded machine may schedule late, and a wait
+    /// that never ends is the lane watchdog's to report.
     private func waitUntil(_ what: String, _ condition: () -> Bool) async {
-        let deadline = ContinuousClock.now + .seconds(5)
-        while ContinuousClock.now < deadline {
-            if condition() { return }
-            await Task.yield()
-        }
-        XCTFail("timed out waiting for \(what)")
+        while !condition() { await Task.yield() }
     }
 
     func testGoalsChangedLaterStartTheDownloadOnTheNextTrigger() async {

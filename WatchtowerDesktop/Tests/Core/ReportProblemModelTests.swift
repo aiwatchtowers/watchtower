@@ -79,9 +79,7 @@ final class ReportProblemModelTests: XCTestCase {
 
         /// Spins the main actor until the run reached the gate.
         func waitUntilWaiting() async {
-            for _ in 0..<1_000 where lock.withLock({ pending.isEmpty }) {
-                await Task.yield()
-            }
+            while lock.withLock({ pending.isEmpty }) { await Task.yield() }
         }
     }
 

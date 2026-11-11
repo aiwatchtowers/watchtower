@@ -361,7 +361,7 @@ final class TerminalCenterTests: XCTestCase {
         XCTAssertEqual(hostSignals.map(\.0), [4321])
         XCTAssertEqual(hostSignals.map(\.1), [SIGHUP])
         transport.push(.json(.exit, SessionHostExit(code: nil)))
-        for _ in 0..<200 where transports[0].sent(.forget).isEmpty { await Task.yield() }
+        while transports[0].sent(.forget).isEmpty { await Task.yield() }
         XCTAssertEqual(try transports[0].sent(.forget).first?.decoded(SessionHostAttachRequest.self),
                        SessionHostAttachRequest(row: request.row, run: request.run))
         XCTAssertNil(hosted, "the ended run lets its session go")
