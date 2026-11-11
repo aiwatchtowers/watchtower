@@ -7,11 +7,15 @@ import WatchtowerCore
 /// panel's list (above FILES), or over the page while the panel is hidden.
 /// Undo restores the whole batch and hands the keyboard to the panel,
 /// where ⌘Z does the same. Gone on Undo or once the batch is committed.
+/// In its place, when no Undo window runs, the quiet notice of the
+/// background cleanups that ended clean (board #1716), for 6 s.
 struct SessionDeleteToast: View {
     @Bindable var vm: WorkbenchesViewModel
 
     var body: some View {
-        if let text = vm.pendingDeleteToast {
+        if vm.pendingDeleteToast == nil, let notice = vm.cleanupNotice {
+            SessionCleanupNoticeBar(notice: notice)
+        } else if let text = vm.pendingDeleteToast {
             HStack(spacing: 8) {
                 Text(text)
                     .font(.callout)
@@ -36,6 +40,40 @@ struct SessionDeleteToast: View {
                 AccessibilityNotification.Announcement("\(text). Undo is available.").post()
             }
         }
+    }
+}
+
+/// "Cleaned up “T”: removed 3 worktrees and 12 branches (~2.1 GB)." on the
+/// Undo bar's place (spec 2026-11-10-auto-cleanup-on-session-delete §3):
+/// the lead in the success tone, the rest plain; several deletes in a row
+/// read as one joined notice. The view model hides it after
+/// `cleanupNoticeDuration`.
+struct SessionCleanupNoticeBar: View {
+    let notice: SessionCleanupNotice
+
+    var body: some View {
+        Text(attributed)
+            .font(.callout)
+            .lineLimit(3)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, Spacing.cozy)
+            .padding(.vertical, Spacing.compact)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: Radius.row))
+            .overlay(RoundedRectangle(cornerRadius: Radius.row).strokeBorder(.separator))
+            .padding(Spacing.regular)
+            .accessibilityElement(children: .combine)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+            .onChange(of: notice.text, initial: true) { _, text in
+                AccessibilityNotification.Announcement(text).post()
+            }
+    }
+
+    private var attributed: AttributedString {
+        var lead = AttributedString(notice.lead)
+        lead.font = .callout.weight(.semibold)
+        lead.foregroundColor = Tone.success
+        return lead + AttributedString(notice.rest)
     }
 }
 

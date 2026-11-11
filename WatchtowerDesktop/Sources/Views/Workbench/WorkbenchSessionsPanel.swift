@@ -30,12 +30,10 @@ struct WorkbenchSessionsPanel: View {
             header
             OwnerAskStackSection(vm: vm, project: project)
             SessionStartNotice(vm: vm, projectID: project.id)
-            Text("SESSIONS")
-                .sidebarSectionLabel()
+            SessionsPanelSectionLabel(vm: vm, projectID: project.id)
                 .padding(.horizontal, 12)
                 .padding(.top, 4)
                 .padding(.bottom, 2)
-                .accessibilityAddTraits(.isHeader)
                 .contentShape(Rectangle())
                 .onTapGesture { vm.requestPanelKeyboard() }
             // No List selection: its highlight would draw over the tab. The
@@ -126,12 +124,21 @@ struct WorkbenchSessionsPanel: View {
                 vm.moveSessions(mainSessions, projectID: project.id, from: $0, to: $1)
             }
         }
-        if sections.finishedCount > 0 {
-            PanelFoldHeader(count: sections.finishedCount, label: "finished", itemName: "session", expanded: sections.expanded) {
+        let marked = vm.notFullyCleanedRows[project.id] ?? []
+        if sections.finishedCount + marked.count > 0 {
+            PanelFoldHeader(
+                count: sections.finishedCount + marked.count, label: "finished", itemName: "session",
+                expanded: sections.expanded
+            ) {
                 vm.setFinishedGroupExpanded(!sections.expanded, projectID: project.id)
                 vm.requestPanelKeyboard()
             }
             .id(SessionPanelSections.groupHeaderScrollID)
+            // Not fully cleaned rows (board #1716) wait for the owner: shown
+            // folded or not, first in the group, never numbered.
+            ForEach(marked) { session in
+                NotFullyCleanedSessionRow(vm: vm, projectID: project.id, session: session, hoveredRow: $hoveredRow)
+            }
             ForEach(sections.finished + (sections.pinned.map { [$0] } ?? [])) { row in
                 SessionsPanelSessionRow(
                     vm: vm, projectID: project.id, row: row, actions: actions,

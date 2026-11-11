@@ -87,3 +87,163 @@ struct SessionsPanelSessionRow: View {
         }
     }
 }
+
+/// A deleted session whose background cleanup could not remove everything
+/// (board #1716, spec 2026-11-10-auto-cleanup-on-session-delete §3, §7), in
+/// the finished group: its title and the warning line in place of the
+/// summary, on a warning-tone fill. **Clean Up Again**, **Delete Anyway**
+/// and **Show in Clean Up** show on hover as plain row buttons; while Clean
+/// Up Again runs the line reads "Cleaning up…" and they are off. In a narrow
+/// panel the line keeps one line and the actions move into a ⋯ menu. A click
+/// opens the session's report (with its Cleanup section), never the
+/// session. No ⌘1…⌘9 number: it is not in the panel's order.
+struct NotFullyCleanedSessionRow: View {
+    @Bindable var vm: WorkbenchesViewModel
+    let projectID: Int64
+    let session: TerminalSession
+    /// The row under the mouse, kept by the panel: its actions show.
+    @Binding var hoveredRow: Int64?
+    @State private var isNarrow = false
+
+    private typealias Copy = SessionAutoCleanupPresentation
+
+    /// Below this width the actions move into the ⋯ menu.
+    static let narrowWidth: CGFloat = 230
+
+    private var cleaning: Bool { vm.cleaningAgain.contains(session.id) }
+    private var actionsOff: Bool { cleaning || vm.autoCleanupBusy.contains(session.id) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.small) {
+            HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
+                opener
+                if isNarrow { menu }
+            }
+            if !isNarrow, cleaning || hoveredRow == session.id { actionButtons }
+        }
+        .padding(.horizontal, Spacing.cozy)
+        .padding(.vertical, Spacing.regular)
+        .background(Tone.warning.opacity(Fill.selectedOpacity), in: RoundedRectangle(cornerRadius: Radius.row))
+        .onGeometryChange(for: Bool.self) { $0.size.width < Self.narrowWidth } action: { isNarrow = $0 }
+        .onHover { inside in
+            if inside {
+                hoveredRow = session.id
+            } else if hoveredRow == session.id {
+                hoveredRow = nil
+            }
+        }
+        .contextMenu { menuItems }
+        .listRowSeparator(.hidden)
+    }
+
+    private var opener: some View {
+        VStack(alignment: .leading, spacing: Spacing.tight) {
+            Text(session.title)
+                .fontWeight(.medium)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Text(Copy.rowLine(mark: vm.notFullyCleaned[session.id], cleaning: cleaning))
+                .font(.caption)
+                .foregroundStyle(Tone.warning)
+                .lineLimit(isNarrow ? 1 : 2)
+                .truncationMode(.tail)
+                .fixedSize(horizontal: false, vertical: !isNarrow)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .onTapGesture { vm.openNotFullyCleaned(session.id, projectID: projectID) }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { vm.openNotFullyCleaned(session.id, projectID: projectID) }
+        .help(Copy.openHelp)
+    }
+
+    private var actionButtons: some View {
+        // The three fit in one line in a wide panel, else wrap after two.
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: Spacing.regular) {
+                cleanUpAgainButton
+                deleteAnywayButton
+                showInCleanUpButton
+            }
+            VStack(alignment: .leading, spacing: Spacing.compact) {
+                HStack(spacing: Spacing.regular) {
+                    cleanUpAgainButton
+                    deleteAnywayButton
+                }
+                showInCleanUpButton
+            }
+        }
+        .buttonStyle(.kitSecondary)
+        .controlSize(.small)
+        .disabled(actionsOff)
+    }
+
+    private var cleanUpAgainButton: some View {
+        Button(Copy.cleanUpAgain) { vm.cleanUpAgain(session.id) }
+            .help(Copy.cleanUpAgainHelp)
+    }
+
+    private var deleteAnywayButton: some View {
+        Button(Copy.deleteAnyway, action: deleteAnyway)
+            .help(Copy.deleteAnywayHelp)
+    }
+
+    private func deleteAnyway() {
+        let (vm, id) = (vm, session.id)
+        Task { await vm.deleteAnyway(id) }
+    }
+
+    private var showInCleanUpButton: some View {
+        Button(Copy.showInCleanUp) { vm.showInCleanUp(session.id) }
+            .help(Copy.showInCleanUpHelp)
+    }
+
+    private var menu: some View {
+        Menu {
+            menuItems
+        } label: {
+            Image(systemName: "ellipsis")
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .foregroundStyle(.secondary)
+        .help(Copy.moreActions)
+        .accessibilityLabel(Copy.moreActions)
+    }
+
+    @ViewBuilder
+    private var menuItems: some View {
+        Group {
+            Button(Copy.cleanUpAgain) { vm.cleanUpAgain(session.id) }
+            Button(Copy.deleteAnyway, action: deleteAnyway)
+            Button(Copy.showInCleanUp) { vm.showInCleanUp(session.id) }
+        }
+        .disabled(actionsOff)
+    }
+}
+
+/// The sessions panel's SESSIONS label, with "Cleaning up 2 sessions…" on
+/// its right while the workbench's background cleanups run (board #1716,
+/// spec §3). No spinner: the owner already deleted those rows.
+struct SessionsPanelSectionLabel: View {
+    let vm: WorkbenchesViewModel
+    let projectID: Int64
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
+            Text("SESSIONS")
+                .sidebarSectionLabel()
+                .accessibilityAddTraits(.isHeader)
+            Spacer(minLength: Spacing.small)
+            if let line = SessionAutoCleanupPresentation.cleaningHeader(count: vm.autoCleanupCount(projectID: projectID)) {
+                Text(line)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+        }
+    }
+}
