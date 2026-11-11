@@ -119,6 +119,13 @@ extension WorkbenchesViewModel {
         setLayout(updated, projectID: projectID)
     }
 
+    /// A row out of the session lists that keeps its pane in the layout:
+    /// queued or running its background cleanup, or Not fully cleaned.
+    func keepsPaneWhileCleaning(_ id: Int64, projectID: Int64) -> Bool {
+        closedForCleanup.contains(id) || cleaningAgain.contains(id)
+            || notFullyCleanedSession(id, projectID: projectID) != nil
+    }
+
     /// Workbench `projectID`'s Not fully cleaned row `id`, if listed: the
     /// report finds it there, since the session lists leave it out.
     func notFullyCleanedSession(_ id: Int64, projectID: Int64) -> TerminalSession? {

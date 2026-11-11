@@ -125,9 +125,10 @@ struct WorkbenchSessionsPanel: View {
             }
         }
         let marked = vm.notFullyCleanedRows[project.id] ?? []
-        if sections.finishedCount + marked.count > 0 {
+        let groupCount = sections.finishedCount + marked.count
+        if groupCount > 0 {
             PanelFoldHeader(
-                count: sections.finishedCount + marked.count, label: "finished", itemName: "session",
+                count: groupCount, label: "finished", itemName: "session",
                 expanded: sections.expanded
             ) {
                 vm.setFinishedGroupExpanded(!sections.expanded, projectID: project.id)

@@ -26,18 +26,12 @@ package enum SessionAutoCleanupPresentation {
         return "Its terminal stops. Worktrees and branches it created that are merged or pushed are removed in the background."
     }
 
-    package static let deleteButton = "Delete"
-    package static let cancelButton = "Cancel"
-
     // MARK: The Not fully cleaned row
-
-    /// While Clean Up Again runs on the row.
-    package static let cleaningLine = "Cleaning up…"
 
     /// The row's warning line: its mark, or "Cleaning up…" while Clean Up
     /// Again runs on it.
     package static func rowLine(mark: String?, cleaning: Bool) -> String {
-        if cleaning { return cleaningLine }
+        if cleaning { return "Cleaning up…" }
         return mark ?? "Not fully cleaned."
     }
 
@@ -50,22 +44,4 @@ package enum SessionAutoCleanupPresentation {
     package static let deleteAnywayHelp = "Delete the session now; what was not removed stays on disk"
     package static let showInCleanUpHelp = "Open the Clean Up screen for this session"
     package static let openHelp = "Show the session's report"
-}
-
-extension SessionCleanupNotice {
-    /// The notice's emphasised start: "Cleaned up" before a session's
-    /// title, "Cleaned up 4 sessions" for a joined notice.
-    package var lead: String {
-        let prefix = "Cleaned up"
-        guard text.hasPrefix(prefix) else { return "" }
-        let after = text.dropFirst(prefix.count)
-        if after.hasPrefix(" “") { return prefix }
-        guard let colon = text.firstIndex(of: ":") else { return prefix }
-        return String(text[..<colon])
-    }
-
-    /// The text after `lead`.
-    package var rest: String {
-        String(text.dropFirst(lead.count))
-    }
 }

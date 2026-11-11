@@ -91,19 +91,20 @@ struct SessionsPanelSessionRow: View {
 /// A deleted session whose background cleanup could not remove everything
 /// (board #1716, spec 2026-11-10-auto-cleanup-on-session-delete §3, §7), in
 /// the finished group: its title and the warning line in place of the
-/// summary, on a warning-tone fill. **Clean Up Again**, **Delete Anyway**
-/// and **Show in Clean Up** show on hover as plain row buttons; while Clean
-/// Up Again runs the line reads "Cleaning up…" and they are off. In a narrow
-/// panel the line keeps one line and the actions move into a ⋯ menu. A click
-/// opens the session's report (with its Cleanup section), never the
-/// session. No ⌘1…⌘9 number: it is not in the panel's order.
+/// summary, on the kit row's warning-tone plate. **Clean Up Again**,
+/// **Delete Anyway** and **Show in Clean Up** are plain row buttons that
+/// show on hover; their space is always laid out, so the row never changes
+/// height. While Clean Up Again runs the line reads "Cleaning up…" and they
+/// are off. In a narrow panel the line keeps to one line and the actions
+/// move into a ⋯ menu. A click opens the session's report (with its
+/// Cleanup section), never the session. No ⌘1…⌘9 number: it is not in the
+/// panel's order.
 struct NotFullyCleanedSessionRow: View {
     @Bindable var vm: WorkbenchesViewModel
     let projectID: Int64
     let session: TerminalSession
     /// The row under the mouse, kept by the panel: its actions show.
     @Binding var hoveredRow: Int64?
-    @State private var isNarrow = false
 
     private typealias Copy = SessionAutoCleanupPresentation
 
@@ -112,19 +113,22 @@ struct NotFullyCleanedSessionRow: View {
 
     private var cleaning: Bool { vm.cleaningAgain.contains(session.id) }
     private var actionsOff: Bool { cleaning || vm.autoCleanupBusy.contains(session.id) }
+    private var showsActions: Bool { cleaning || hoveredRow == session.id }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.small) {
-            HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
-                opener
-                if isNarrow { menu }
+        // Picked by width, before the first frame: no wide-then-narrow flicker.
+        ViewThatFits(in: .horizontal) {
+            VStack(alignment: .leading, spacing: Spacing.small) {
+                opener(lineLimit: 2)
+                inlineActions
             }
-            if !isNarrow, cleaning || hoveredRow == session.id { actionButtons }
+            .frame(minWidth: Self.narrowWidth, idealWidth: Self.narrowWidth, maxWidth: .infinity, alignment: .leading)
+            HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
+                opener(lineLimit: 1)
+                menu
+            }
         }
-        .padding(.horizontal, Spacing.cozy)
-        .padding(.vertical, Spacing.regular)
-        .background(Tone.warning.opacity(Fill.selectedOpacity), in: RoundedRectangle(cornerRadius: Radius.row))
-        .onGeometryChange(for: Bool.self) { $0.size.width < Self.narrowWidth } action: { isNarrow = $0 }
+        .kitRow(isSelected: false, tint: Tone.warning)
         .onHover { inside in
             if inside {
                 hoveredRow = session.id
@@ -132,11 +136,11 @@ struct NotFullyCleanedSessionRow: View {
                 hoveredRow = nil
             }
         }
-        .contextMenu { menuItems }
+        .contextMenu { actions }
         .listRowSeparator(.hidden)
     }
 
-    private var opener: some View {
+    private func opener(lineLimit: Int) -> some View {
         VStack(alignment: .leading, spacing: Spacing.tight) {
             Text(session.title)
                 .fontWeight(.medium)
@@ -145,9 +149,9 @@ struct NotFullyCleanedSessionRow: View {
             Text(Copy.rowLine(mark: vm.notFullyCleaned[session.id], cleaning: cleaning))
                 .font(.caption)
                 .foregroundStyle(Tone.warning)
-                .lineLimit(isNarrow ? 1 : 2)
+                .lineLimit(lineLimit)
                 .truncationMode(.tail)
-                .fixedSize(horizontal: false, vertical: !isNarrow)
+                .fixedSize(horizontal: false, vertical: lineLimit > 1)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
@@ -158,50 +162,49 @@ struct NotFullyCleanedSessionRow: View {
         .help(Copy.openHelp)
     }
 
-    private var actionButtons: some View {
-        // The three fit in one line in a wide panel, else wrap after two.
+    /// The buttons under the line: laid out always, shown on hover or while
+    /// Clean Up Again runs. One line when they fit, else two.
+    private var inlineActions: some View {
         ViewThatFits(in: .horizontal) {
-            HStack(spacing: Spacing.regular) {
-                cleanUpAgainButton
-                deleteAnywayButton
-                showInCleanUpButton
-            }
-            VStack(alignment: .leading, spacing: Spacing.compact) {
-                HStack(spacing: Spacing.regular) {
-                    cleanUpAgainButton
-                    deleteAnywayButton
+            HStack(spacing: Spacing.compact) { actions }
+            VStack(alignment: .leading, spacing: Spacing.tight) {
+                HStack(spacing: Spacing.compact) {
+                    button(.cleanUpAgain)
+                    button(.deleteAnyway)
                 }
-                showInCleanUpButton
+                button(.showInCleanUp)
             }
         }
-        .buttonStyle(.kitSecondary)
+        .buttonStyle(.kitQuiet)
         .controlSize(.small)
-        .disabled(actionsOff)
+        .opacity(showsActions ? 1 : 0)
+        .allowsHitTesting(showsActions)
+        .accessibilityHidden(!showsActions)
     }
 
-    private var cleanUpAgainButton: some View {
-        Button(Copy.cleanUpAgain) { vm.cleanUpAgain(session.id) }
-            .help(Copy.cleanUpAgainHelp)
+    private enum RowAction: CaseIterable { case cleanUpAgain, deleteAnyway, showInCleanUp }
+
+    /// The three actions in order: the inline buttons, the ⋯ menu and the
+    /// context menu are all built from `button(_:)`.
+    private var actions: some View {
+        ForEach(RowAction.allCases, id: \.self) { button($0) }
     }
 
-    private var deleteAnywayButton: some View {
-        Button(Copy.deleteAnyway, action: deleteAnyway)
-            .help(Copy.deleteAnywayHelp)
-    }
-
-    private func deleteAnyway() {
+    private func button(_ action: RowAction) -> some View {
         let (vm, id) = (vm, session.id)
-        Task { await vm.deleteAnyway(id) }
-    }
-
-    private var showInCleanUpButton: some View {
-        Button(Copy.showInCleanUp) { vm.showInCleanUp(session.id) }
-            .help(Copy.showInCleanUpHelp)
+        let (title, help, run): (String, String, () -> Void) = switch action {
+        case .cleanUpAgain: (Copy.cleanUpAgain, Copy.cleanUpAgainHelp, { vm.cleanUpAgain(id) })
+        case .deleteAnyway: (Copy.deleteAnyway, Copy.deleteAnywayHelp, { Task { await vm.deleteAnyway(id) } })
+        case .showInCleanUp: (Copy.showInCleanUp, Copy.showInCleanUpHelp, { vm.showInCleanUp(id) })
+        }
+        return Button(title, action: run)
+            .help(help)
+            .disabled(actionsOff)
     }
 
     private var menu: some View {
         Menu {
-            menuItems
+            actions
         } label: {
             Image(systemName: "ellipsis")
         }
@@ -211,16 +214,6 @@ struct NotFullyCleanedSessionRow: View {
         .foregroundStyle(.secondary)
         .help(Copy.moreActions)
         .accessibilityLabel(Copy.moreActions)
-    }
-
-    @ViewBuilder
-    private var menuItems: some View {
-        Group {
-            Button(Copy.cleanUpAgain) { vm.cleanUpAgain(session.id) }
-            Button(Copy.deleteAnyway, action: deleteAnyway)
-            Button(Copy.showInCleanUp) { vm.showInCleanUp(session.id) }
-        }
-        .disabled(actionsOff)
     }
 }
 

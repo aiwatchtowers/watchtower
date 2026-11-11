@@ -110,38 +110,44 @@ package enum SessionAutoCleanupOutcome: Equatable, Sendable {
 }
 
 /// The notice on the Undo bar's place after a clean background cleanup:
-/// "Cleaned up “T”: removed 3 worktrees and 12 branches (~2.1 GB)."
+/// "Cleaned up “T”: removed 3 worktrees and 12 branches (~2.1 GB)." Built
+/// in two parts: `lead` ("Cleaned up", or "Cleaned up 4 sessions" when
+/// joined) is the view's emphasis, `rest` the remainder.
 package struct SessionCleanupNotice: Equatable, Sendable {
-    package let text: String
+    package let lead: String
+    package let rest: String
 
-    package init(text: String) {
-        self.text = text
+    package var text: String { lead + rest }
+
+    package init(lead: String, rest: String) {
+        self.lead = lead
+        self.rest = rest
     }
 
     /// One session's notice; nil when nothing was removed.
     package static func single(title: String, result: SessionCleanupPlan) -> Self? {
-        make(subject: "“\(title)”", results: [result])
+        make(lead: "Cleaned up", subject: " “\(title)”", results: [result])
     }
 
     /// Several deletes in a row as one notice: "Cleaned up 4 sessions:
     /// removed …"; one entry reads as `single`. Nil when nothing was removed.
     package static func joined(_ notices: [(title: String, result: SessionCleanupPlan)]) -> Self? {
         guard notices.count != 1 else { return single(title: notices[0].title, result: notices[0].result) }
-        return make(subject: "\(notices.count) sessions", results: notices.map(\.result))
+        return make(lead: "Cleaned up \(notices.count) sessions", subject: "", results: notices.map(\.result))
     }
 
-    private static func make(subject: String, results: [SessionCleanupPlan]) -> Self? {
+    private static func make(lead: String, subject: String, results: [SessionCleanupPlan]) -> Self? {
         let items = results.flatMap(\.items)
         let removed = items.filter { SessionAutoCleanupOutcome.group($0) == .removed }
         let parts = SessionCleanupPresentation.countParts(removed)
         guard !parts.isEmpty else { return nil }
         let bytes = results.reduce(Int64(0)) { $0 + $1.removedBytes }
-        var text = "Cleaned up \(subject): removed \(listText(parts))"
-        if bytes > 0 { text += " (~\(SessionCleanupPresentation.byteText(bytes)))" }
-        text += "."
+        var rest = "\(subject): removed \(listText(parts))"
+        if bytes > 0 { rest += " (~\(SessionCleanupPresentation.byteText(bytes)))" }
+        rest += "."
         let kept = items.filter { SessionAutoCleanupOutcome.group($0) == .keptOnPurpose }
-        if let keptText = SessionCleanupPresentation.keptText(kept) { text += " Kept \(keptText)." }
-        return Self(text: text)
+        if let keptText = SessionCleanupPresentation.keptText(kept) { rest += " Kept \(keptText)." }
+        return Self(lead: lead, rest: rest)
     }
 
     /// "a", "a and b", "a, b and c".

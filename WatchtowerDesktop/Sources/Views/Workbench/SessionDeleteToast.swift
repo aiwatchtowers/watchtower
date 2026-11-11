@@ -29,13 +29,8 @@ struct SessionDeleteToast: View {
                 .accessibilityLabel("Undo delete")
                 .help("Restore what was deleted (⌘Z in the sessions panel)")
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.separator))
-            .padding(8)
+            .deleteBarChrome()
             .accessibilityElement(children: .contain)
-            .transition(.move(edge: .bottom).combined(with: .opacity))
             .onChange(of: text, initial: true) { _, text in
                 AccessibilityNotification.Announcement("\(text). Undo is available.").post()
             }
@@ -57,13 +52,8 @@ struct SessionCleanupNoticeBar: View {
             .lineLimit(3)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, Spacing.cozy)
-            .padding(.vertical, Spacing.compact)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: Radius.row))
-            .overlay(RoundedRectangle(cornerRadius: Radius.row).strokeBorder(.separator))
-            .padding(Spacing.regular)
+            .deleteBarChrome()
             .accessibilityElement(children: .combine)
-            .transition(.move(edge: .bottom).combined(with: .opacity))
             .onChange(of: notice.text, initial: true) { _, text in
                 AccessibilityNotification.Announcement(text).post()
             }
@@ -74,6 +64,20 @@ struct SessionCleanupNoticeBar: View {
         lead.font = .callout.weight(.semibold)
         lead.foregroundColor = Tone.success
         return lead + AttributedString(notice.rest)
+    }
+}
+
+private extension View {
+    /// The bar under the sessions list that the Undo bar and the cleanup
+    /// notice share: a material plate with a hairline, sliding in from the
+    /// bottom.
+    func deleteBarChrome() -> some View {
+        padding(.horizontal, Spacing.cozy)
+            .padding(.vertical, Spacing.compact)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: Radius.row))
+            .overlay(RoundedRectangle(cornerRadius: Radius.row).strokeBorder(.separator))
+            .padding(Spacing.regular)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
     }
 }
 

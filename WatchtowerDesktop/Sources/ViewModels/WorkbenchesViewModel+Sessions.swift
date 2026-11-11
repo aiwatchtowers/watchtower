@@ -151,9 +151,12 @@ extension WorkbenchesViewModel {
             terminalSessions[projectID] = rows
             sessionLoadErrors[projectID] = nil
             // A row gone from the list (deleted from another window, or a
-            // layout restored from an older run) leaves the layout too.
+            // layout restored from an older run) leaves the layout too. A
+            // deleted row still being cleaned up or marked Not fully cleaned
+            // (board #1716) is out of the list but not gone: its pane stays.
             if load == loads.started {
-                for id in layout(projectID: projectID).referencedSessionIDs where !rows.contains(where: { $0.id == id }) {
+                for id in layout(projectID: projectID).referencedSessionIDs
+                where !rows.contains(where: { $0.id == id }) && !keepsPaneWhileCleaning(id, projectID: projectID) {
                     forgetInLayout(id, projectID: projectID)
                 }
             }

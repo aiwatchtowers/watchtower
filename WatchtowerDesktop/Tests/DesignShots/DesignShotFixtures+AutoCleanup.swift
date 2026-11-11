@@ -38,18 +38,18 @@ enum AutoCleanupShotFixtures {
                     ("Spec review", cleanPlan), ("Review payments PR", keptPlan)
                 ])
             },
-            DesignShot(name: "auto-cleanup-7a-process-running", size: NSSize(width: panelWidth, height: 110)) {
+            DesignShot(name: "auto-cleanup-7a-process-running", size: NSSize(width: panelWidth, height: 130)) {
                 markedRow(title: "Fix login flow", mark: mark(result: plan([worktree("a", reason: "process_running")])))
             },
-            DesignShot(name: "auto-cleanup-7b-git-refused", size: NSSize(width: panelWidth, height: 110)) {
+            DesignShot(name: "auto-cleanup-7b-git-refused", size: NSSize(width: panelWidth, height: 130)) {
                 markedRow(title: "Plan run 1527", mark: mark(result: plan([
                     worktree("a", reason: "git_refused"), worktree("b", reason: "git_refused")
                 ])))
             },
-            DesignShot(name: "auto-cleanup-7c-cleanup-failed", size: NSSize(width: panelWidth, height: 110)) {
+            DesignShot(name: "auto-cleanup-7c-cleanup-failed", size: NSSize(width: panelWidth, height: 130)) {
                 markedRow(title: "Spec review", mark: mark(result: nil, runError: "watchtower exited with code 1"))
             },
-            DesignShot(name: "auto-cleanup-8-clean-up-again-running", size: NSSize(width: panelWidth, height: 110)) {
+            DesignShot(name: "auto-cleanup-8-clean-up-again-running", size: NSSize(width: panelWidth, height: 130)) {
                 markedRow(title: "Fix login flow", mark: nil, cleaningAgain: true)
             },
             DesignShot(name: "auto-cleanup-9-narrow-panel", size: NSSize(width: 210, height: 80)) {

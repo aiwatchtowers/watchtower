@@ -20,10 +20,10 @@ struct SessionDeleteConfirmSheet: View {
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: Spacing.regular) {
                 Spacer()
-                Button(Copy.cancelButton, role: .cancel) { dismiss() }
+                Button("Cancel", role: .cancel) { dismiss() }
                     .buttonStyle(.kitSecondary)
                     .keyboardShortcut(.cancelAction)
-                Button(Copy.deleteButton, role: .destructive) {
+                Button("Delete", role: .destructive) {
                     let (vm, session) = (vm, session)
                     dismiss()
                     Task { await vm.delete(session) }

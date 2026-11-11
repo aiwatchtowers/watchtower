@@ -3,8 +3,8 @@ import XCTest
 
 /// The auto-cleanup screens' copy (spec
 /// 2026-11-10-auto-cleanup-on-session-delete §1, §3, §7), word for word:
-/// the sessions panel header, the Delete dialog, the Not fully cleaned
-/// row and the clean notice's lead.
+/// the sessions panel header, the Delete dialog, and the Not fully cleaned
+/// row.
 final class SessionsPanelHeaderCopyTests: XCTestCase {
     typealias Copy = SessionAutoCleanupPresentation
 
@@ -25,8 +25,6 @@ final class SessionsPanelHeaderCopyTests: XCTestCase {
             AgentChoicePresentation.deleteSessionMessage(.agent(.codex)),
             "a standalone terminal has no worktrees to clean up"
         )
-        XCTAssertEqual(Copy.deleteButton, "Delete")
-        XCTAssertEqual(Copy.cancelButton, "Cancel")
     }
 
     func testNotFullyCleanedRowCopy() {
@@ -43,15 +41,5 @@ final class SessionsPanelHeaderCopyTests: XCTestCase {
         XCTAssertEqual(Copy.deleteAnywayHelp, "Delete the session now; what was not removed stays on disk")
         XCTAssertEqual(Copy.showInCleanUpHelp, "Open the Clean Up screen for this session")
         XCTAssertEqual(Copy.openHelp, "Show the session's report")
-    }
-
-    func testNoticeLead() {
-        let single = SessionCleanupNotice(text: "Cleaned up “Fix login flow”: removed 3 worktrees and 12 branches (~2.1 GB).")
-        XCTAssertEqual(single.lead, "Cleaned up")
-        XCTAssertEqual(single.rest, " “Fix login flow”: removed 3 worktrees and 12 branches (~2.1 GB).")
-        let joined = SessionCleanupNotice(text: "Cleaned up 4 sessions: removed 9 worktrees and 31 branches (~6.8 GB).")
-        XCTAssertEqual(joined.lead, "Cleaned up 4 sessions")
-        XCTAssertEqual(joined.rest, ": removed 9 worktrees and 31 branches (~6.8 GB).")
-        XCTAssertEqual(joined.lead + joined.rest, joined.text)
     }
 }
