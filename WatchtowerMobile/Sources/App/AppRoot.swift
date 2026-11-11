@@ -812,6 +812,7 @@ final class AppRoot {
     static func resendDirectly(
         _ farewell: PendingFarewell,
         cap: Duration,
+        sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) },
         save: @escaping @Sendable (PendingFarewell) async throws -> Void
     ) async -> Bool {
         let race = FirstOf()
@@ -825,7 +826,7 @@ final class AppRoot {
             }
         }
         let timer = Task { @MainActor in
-            try? await Task.sleep(for: cap)
+            await sleep(cap)
             race.finish(.cap)
         }
         let winner = await race.wait()

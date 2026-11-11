@@ -202,7 +202,7 @@ final class HubSwitcherTests: XCTestCase {
         let remoteFetch: (@Sendable (RemoteFetchDepth) async throws -> Void)? = remote.map { remote in
             { try await remote.fetch($0) }
         }
-        let sleep: @Sendable (Duration) async throws -> Void = { _ in try await Task.sleep(for: .seconds(3600)) }
+        let sleep: @Sendable (Duration) async throws -> Void = { _ in try await sleepUntilCancelled() }
         let session = try HubSession(
             transport: transport,
             replicaPath: paths.replicaPath(hubID),

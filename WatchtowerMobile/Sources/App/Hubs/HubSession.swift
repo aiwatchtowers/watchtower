@@ -208,8 +208,10 @@ final class HubSession {
     @ObservationIgnored private(set) var outboxWork: Task<Void, Never>?
     /// The last `epoch_ack` the session queued after a raised epoch (`keysMerged`), not awaited (tests wait on it).
     @ObservationIgnored private(set) var epochAckWork: Task<Void, Never>?
-    /// How long `shutDown()` waits for the outbox's chain before it goes on; tests shorten it.
+    /// How long `shutDown()` waits for the outbox's chain before it goes on.
     @ObservationIgnored var outboxDrainCap: Duration = .seconds(10)
+    /// Waits out `outboxDrainCap` in `shutDown()`, cancelled once the chain drained; tests replace it.
+    @ObservationIgnored var outboxDrainSleep: @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     /// The phone recorder (record a meeting or a voice note), owned for the
     /// app's lifetime so a capture survives any navigation.
     let recorder: PhoneRecorderController
@@ -1928,7 +1930,7 @@ final class HubSession {
         // A raise's upload pass must not go on over the transport about to stop (a switch's merge starts one).
         uploadKick?.cancel()
         await uploadKick?.value
-        await Self.drain(outbox, cap: outboxDrainCap)
+        await Self.drain(outbox, cap: outboxDrainCap, sleep: outboxDrainSleep)
         // A start not yet run must not want its socket after the stop.
         await relayStart?.value
         await liveTransport?.stop()
@@ -1937,7 +1939,7 @@ final class HubSession {
     /// `outbox.drain()`, raced against `cap`: a hung save never holds a shutdown. A write cut off this way is
     /// left `queued` or `sent` in the replica and heals at the next launch (its flush, `resend_from` or the 24 h
     /// rule).
-    private static func drain(_ outbox: ActionOutbox, cap: Duration) async {
+    private static func drain(_ outbox: ActionOutbox, cap: Duration, sleep: @escaping @Sendable (Duration) async -> Void) async {
         let finished = OSAllocatedUnfairLock(initialState: false)
         var timer: Task<Void, Never>?
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
@@ -1946,7 +1948,7 @@ final class HubSession {
             }
             Task { await outbox.drain(); finish() }
             timer = Task {
-                try? await Task.sleep(for: cap)
+                await sleep(cap)
                 if !Task.isCancelled {
                     logger.notice("outbox drain cut off at shutdown")
                 }

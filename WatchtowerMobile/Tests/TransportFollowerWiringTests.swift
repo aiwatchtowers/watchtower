@@ -479,7 +479,8 @@ final class Bed {
         let relay: SharedRelaySession
         let keys: InMemoryPhoneKeyStore
         let looksAtWake: Bool
-        let stopLookCap: Duration
+        /// `stop()`'s wait for a hung look runs out at once; otherwise it never does.
+        let stopLookCapRunsOut: Bool
         /// The farewell's delivery reads the hub's own send queue, as the live app's does, so a save the relay refuses
         /// keeps it (relay client Phase 5, Task 17); otherwise every farewell reads as sent.
         var farewellLive = false
@@ -504,7 +505,7 @@ final class Bed {
         on route: TransportKind,
         hubTransports: [String] = ["cloudkit", "relay"],
         looksAtWake: Bool = false,
-        stopLookCap: Duration = .seconds(10),
+        stopLookCapRunsOut: Bool = false,
         macRelayID: Bool = true,
         relayOff: Bool = false,
         alertWake: (any PushWake)? = nil,
@@ -580,7 +581,7 @@ final class Bed {
             clock: FakeLinkClock(now: Date()), availability: relayOff ? .off(.notConfigured) : .available(FakeRelayOps.origin))
         var launch = Launch(
             paths: paths, factory: factory, identity: identity, defaults: defaults, relay: rootRelay, keys: keys,
-            looksAtWake: looksAtWake, stopLookCap: stopLookCap)
+            looksAtWake: looksAtWake, stopLookCapRunsOut: stopLookCapRunsOut)
         launch.farewellLive = farewellLive
         let root = try Self.root(launch, registry: registry, relayOps: relayOps, clock: clock)
         Self.tearDown(root, in: test)
@@ -605,8 +606,9 @@ final class Bed {
             startWork: nil,
             farewellDelivery: farewellDelivery(launch),
             sideMailbox: SideMailboxTiming(
-                now: { clock.now }, sleep: { _ in try await Task.sleep(for: .seconds(86_400)) },
-                looksAtWake: launch.looksAtWake, stopLookCap: launch.stopLookCap)
+                now: { clock.now }, sleep: { _ in try await sleepUntilCancelled() },
+                looksAtWake: launch.looksAtWake,
+                stopLookSleep: launch.stopLookCapRunsOut ? { _ in } : { _ in await untilCancelled() })
         ) { clock.now }
         root.linking.refreshLinks()
         return root
@@ -1032,6 +1034,7 @@ actor CloudSide: LiveTransport, ConditionalTransport {
     private var readsHeld = 0
     private var holdingStop = false
     private var heldStop: CheckedContinuation<Void, Never>?
+    private var heldWaiters: [CheckedContinuation<Void, Never>] = []
     /// A `stop()` has returned (its hold, if any, released).
     private(set) var stopEnded = false
 
@@ -1051,13 +1054,9 @@ actor CloudSide: LiveTransport, ConditionalTransport {
         heldReads = []
     }
 
-    /// True once a relay-zone read is waiting; false when none did within `timeout`, so the test fails instead of
-    /// hanging.
-    func readIsHeld(timeout: TimeInterval = 5) async -> Bool {
-        let deadline = Date().addingTimeInterval(timeout)
-        while readsHeld == 0, Date() < deadline {
-            try? await Task.sleep(for: .milliseconds(10))
-        }
+    /// Returns true once a relay-zone read is waiting (no wall-clock cap).
+    func readIsHeld() async -> Bool {
+        while readsHeld == 0 { await withCheckedContinuation { heldWaiters.append($0) } }
         return readsHeld > 0
     }
 
@@ -1072,13 +1071,16 @@ actor CloudSide: LiveTransport, ConditionalTransport {
         heldStop = nil
     }
 
-    /// True once a `stop()` is waiting; false when none did within `timeout`.
-    func stopIsHeld(timeout: TimeInterval = 5) async -> Bool {
-        let deadline = Date().addingTimeInterval(timeout)
-        while heldStop == nil, Date() < deadline {
-            try? await Task.sleep(for: .milliseconds(10))
-        }
+    /// Returns true once a `stop()` is waiting (no wall-clock cap).
+    func stopIsHeld() async -> Bool {
+        while heldStop == nil { await withCheckedContinuation { heldWaiters.append($0) } }
         return heldStop != nil
+    }
+
+    /// Wakes `readIsHeld()`/`stopIsHeld()` once something waits in a hold.
+    private func noteHeld() {
+        heldWaiters.forEach { $0.resume() }
+        heldWaiters = []
     }
 
     private func note() {
@@ -1099,7 +1101,10 @@ actor CloudSide: LiveTransport, ConditionalTransport {
         note()
         if zone == .relay, holding {
             readsHeld += 1
-            await withCheckedContinuation { heldReads.append($0) }
+            await withCheckedContinuation {
+                heldReads.append($0)
+                noteHeld()
+            }
         }
         return try await inner.changes(in: zone, since: token)
     }
@@ -1122,7 +1127,10 @@ actor CloudSide: LiveTransport, ConditionalTransport {
     func stop() async {
         stops += 1
         if holdingStop {
-            await withCheckedContinuation { heldStop = $0 }
+            await withCheckedContinuation {
+                heldStop = $0
+                noteHeld()
+            }
         }
         stopEnded = true
     }
@@ -1216,7 +1224,8 @@ private final class FlakyMergeHost: TransportFollowerHost {
         relayCalls += 1
         mostRelayCallsAtOnce = max(mostRelayCallsAtOnce, relayCalls)
         defer { relayCalls -= 1 }
-        try? await Task.sleep(for: .milliseconds(20)) // a network call: another decision could run meanwhile
+        // A network call: another decision could run meanwhile, so the call gives every other job its turns.
+        for _ in 0..<20 { await Task.yield() }
         return await root.relayUse(for: link)
     }
 

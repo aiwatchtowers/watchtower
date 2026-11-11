@@ -229,7 +229,7 @@ final class SideMailboxWiringTests: XCTestCase {
     /// Final review M2: a look hung on the other transport holds `stop()` for `stopLookCap` at most; then the look is
     /// cancelled and the transport stopped anyway, and the late look reaches nothing.
     func testAStopCutsOffAHungLookAtTheCap() async throws {
-        let bed = try await Bed.make(self, on: .relay, stopLookCap: .milliseconds(100))
+        let bed = try await Bed.make(self, on: .relay, stopLookCapRunsOut: true)
         let first = try await bed.orderedSession()
         let reader = try XCTUnwrap(first.sideReader)
         bed.fake.crash()
@@ -249,7 +249,8 @@ final class SideMailboxWiringTests: XCTestCase {
             await reader.stop()
             stopped = true
         }
-        try await poll({ stopped }, "stop() waited past its cap for a look that never answers")
+        await stopping.value
+        XCTAssertTrue(stopped, "stop() returned at its cap for a look that never answers")
 
         let stops = await side.stops
         XCTAssertEqual(stops, 1, "stopped at the cap")
@@ -281,7 +282,9 @@ final class SideMailboxWiringTests: XCTestCase {
             await reader.stop()
             return await side.stopEnded
         }
-        try await Task.sleep(for: .milliseconds(50)) // an early return of stop() would happen here
+        // Main-actor jobs run in order: the stop() queued first runs up to its wait on the close before this resumes,
+        // so an early return of stop() would happen here.
+        await Task.yield()
         await side.releaseStop()
         let closedFirst = try await stopping.value
 

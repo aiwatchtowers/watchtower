@@ -75,7 +75,7 @@ final class MultiHubRecordingTests: XCTestCase {
                     now: { clock.now }, tickInterval: nil
                 )
             },
-            sleep: { _ in try await Task.sleep(for: .seconds(3600)) }
+            sleep: { _ in try await sleepUntilCancelled() }
         )
         addTeardownBlock { @MainActor in session.stop() }
         return Hub(session: session, transport: transport, engine: engine, clock: clock)
@@ -233,7 +233,8 @@ final class MultiHubRecordingTests: XCTestCase {
         hubA.engine.holdFinish = true
 
         let stopping = Task { await env.recorder.stop() }
-        try await poll({ hubA.session.recorder.phase == .saving }, "the stop never began saving")
+        // The engine's finish must be the one held before it is released (the phase moves first).
+        try await poll({ hubA.session.recorder.phase == .saving && hubA.engine.finishCount == 1 }, "the stop never began saving")
         XCTAssertFalse(env.canStartCapture, "A is saving")
         XCTAssertTrue(env.recorder === hubA.session.recorder)
         hubA.engine.releaseFinish()

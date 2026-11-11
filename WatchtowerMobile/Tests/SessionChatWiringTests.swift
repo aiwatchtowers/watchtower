@@ -173,10 +173,12 @@ final class SessionChatWiringTests: XCTestCase {
         let wireName = try await store.reader.read {
             try String.fetchOne($0, sql: "SELECT record_name FROM slice_records WHERE plain_name = 'session_chat-11'")
         }
+        // A wait begun before the chat arrived may be in the list already: the new timer is the one past it.
+        let waitsBefore = releases.count
         let batch = CloudChangeBatch(changed: [], deletedRecordNames: [try XCTUnwrap(wireName)], newToken: CloudChangeToken(value: Int.max / 2))
         XCTAssertTrue(try store.apply(batch))
         try await poll({ model.chat == nil }, "the chat stayed")
-        try await poll({ !releases.isEmpty }, "no patience timer after the chat went away")
+        try await poll({ releases.count > waitsBefore }, "no patience timer after the chat went away")
         releases.forEach { $0.resume() }
         try await poll({ model.waitingTooLong }, "never waited too long")
         model.disappeared()

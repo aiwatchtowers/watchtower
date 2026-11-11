@@ -557,7 +557,8 @@ final class RecorderTests: XCTestCase {
         rig.clock.advance(20)
         rig.controller.markMoment()
         let stopping = Task { await rig.controller.stop() }
-        try await poll { rig.controller.phase == .saving }
+        // The engine's finish must be the one held before it is released (the phase moves first).
+        try await poll { rig.controller.phase == .saving && rig.engine.finishCount == 1 }
 
         XCTAssertFalse(rig.controller.isCapturing, "the view disables every control off a capture")
         rig.controller.markMoment()

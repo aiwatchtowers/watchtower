@@ -53,7 +53,7 @@ final class SharedAlertWiringTests: XCTestCase {
             recordingsDirectory: try makeRecordingsDirectory(),
             route: route,
             alertPosting: posted.posting,
-            sleep: { _ in try await Task.sleep(for: .seconds(3_600)) } // swiftlint:disable:this trailing_closure
+            sleep: { _ in try await sleepUntilCancelled() } // swiftlint:disable:this trailing_closure
         )
         closeAtTeardown(session)
         // Manual fetch assertions start after the launch fetch and boot work settle.

@@ -201,7 +201,7 @@ final class AlertSubscriptionTests: XCTestCase {
             keys: try TestHub.keys(TestHub.home),
             defaults: try makeDefaults(),
             recordingsDirectory: try makeRecordingsDirectory(),
-            sleep: { _ in try await Task.sleep(for: .seconds(86_400)) } // swiftlint:disable:this trailing_closure
+            sleep: { _ in try await sleepUntilCancelled() } // swiftlint:disable:this trailing_closure
         )
         addTeardownBlock { @MainActor in session.stop() }
         bed.root.env.add(session)

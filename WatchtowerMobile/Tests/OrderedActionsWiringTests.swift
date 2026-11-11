@@ -144,19 +144,22 @@ final class OrderedActionsWiringTests: XCTestCase {
         await transport.holdNextSave()
         addTeardownBlock { await transport.releaseHeldSave() }
         try await env.boardWriter.setStatus(.done, on: try target(415))
-        let deadline = Date().addingTimeInterval(5)
-        while await transport.conditionalSaves.count == savesBefore, Date() < deadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
+        await transport.untilSaveHeld()
         let held = await transport.conditionalSaves.count
         XCTAssertGreaterThan(held, savesBefore, "the enqueue's own flush is held in its save")
 
+        // The cap never runs out here; its wait starting means shutDown() reached the drain.
+        let drainWaits = AsyncStream.makeStream(of: Void.self)
+        env.outboxDrainSleep = { _ in
+            drainWaits.continuation.yield()
+            await untilCancelled()
+        }
         var shutDown = false
         let shutting = Task {
             await env.shutDown()
             shutDown = true
         }
-        try await Task.sleep(for: .milliseconds(200))
+        for await _ in drainWaits.stream { break }
         XCTAssertFalse(shutDown, "the outbox's flush is still running")
 
         await transport.releaseHeldSave()
@@ -169,15 +172,12 @@ final class OrderedActionsWiringTests: XCTestCase {
     func testAHungSaveDoesNotHoldShutDownPastTheCap() async throws {
         let transport = SwitchableTransport()
         let env = try await orderedSession(over: transport)
-        env.outboxDrainCap = .milliseconds(100)
+        env.outboxDrainSleep = { _ in } // the cap runs out at once
         let savesBefore = await transport.conditionalSaves.count
         await transport.holdNextSave()
         addTeardownBlock { await transport.releaseHeldSave() }
         try await env.boardWriter.setStatus(.done, on: try target(415))
-        let deadline = Date().addingTimeInterval(5)
-        while await transport.conditionalSaves.count == savesBefore, Date() < deadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
+        await transport.untilSaveHeld()
         let held = await transport.conditionalSaves.count
         XCTAssertGreaterThan(held, savesBefore, "the enqueue's own flush is held in its save")
 
@@ -494,6 +494,7 @@ private actor SwitchableTransport: ConditionalTransport {
     /// The next conditional save waits here until released.
     private var holdsNextSave = false
     private var heldSave: CheckedContinuation<Void, Never>?
+    private var heldWaiters: [CheckedContinuation<Void, Never>] = []
     private(set) var conditionalSaves: [ConditionalSave] = []
 
     func refuse(_ refusal: TransportRefusal?) {
@@ -502,6 +503,12 @@ private actor SwitchableTransport: ConditionalTransport {
 
     func holdNextSave() {
         holdsNextSave = true
+    }
+
+    /// Returns once a conditional save waits in the hold.
+    func untilSaveHeld() async {
+        if heldSave != nil { return }
+        await withCheckedContinuation { heldWaiters.append($0) }
     }
 
     func releaseHeldSave() {
@@ -526,7 +533,11 @@ private actor SwitchableTransport: ConditionalTransport {
         conditionalSaves += items
         if holdsNextSave {
             holdsNextSave = false
-            await withCheckedContinuation { heldSave = $0 }
+            await withCheckedContinuation {
+                heldSave = $0
+                heldWaiters.forEach { $0.resume() }
+                heldWaiters.removeAll()
+            }
         }
         if let refusal {
             return items.map { _ in .refused(refusal) }

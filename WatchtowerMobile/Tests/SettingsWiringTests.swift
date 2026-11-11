@@ -285,28 +285,27 @@ final class SettingsWiringTests: XCTestCase {
         let settings = DeviceSettings(transport: try TestPhone.transport(), defaults: defaults, hubID: TestHub.acme)
         settings.linkedDevice = device
         var savedAtSend: Bool? // swiftlint:disable:this discouraged_optional_boolean
-        var parked = true
+        var parked: [CheckedContinuation<Void, Never>] = []
+        let sends = AsyncStream.makeStream(of: Void.self)
         settings.sendAfterWrite = {
-            guard parked else { return }
-            savedAtSend = try? reread().permissionsRequested
-            while parked {
-                try? await Task.sleep(for: .milliseconds(5))
+            if savedAtSend == nil { savedAtSend = try? reread().permissionsRequested }
+            await withCheckedContinuation {
+                parked.append($0)
+                sends.continuation.yield()
             }
         }
+        var arrived = sends.stream.makeAsyncIterator()
 
         let first = Task { await settings.setPermissionsRequested(true) }
-        for _ in 0..<400 where savedAtSend == nil {
-            try await Task.sleep(for: .milliseconds(5))
-        }
+        _ = await arrived.next()
         XCTAssertEqual(savedAtSend, true, "saved before the send")
 
+        // The first send stays parked: the second toggle still reaches its own send, saved.
         let second = Task { await settings.setTypingRequested(true) }
-        for _ in 0..<400 where try !reread().typingRequested {
-            try await Task.sleep(for: .milliseconds(5))
-        }
+        _ = await arrived.next()
         XCTAssertTrue(try reread().typingRequested, "a slow send held the next toggle back")
 
-        parked = false
+        parked.forEach { $0.resume() }
         await first.value
         await second.value
     }
@@ -718,14 +717,11 @@ final class SettingsWiringTests: XCTestCase {
         XCTAssertEqual(store.newerFormatCount(), 1)
     }
 
-    /// Waits (bounded) until the spy has seen `count` save calls.
+    /// Waits until the spy has seen `count` save calls (no wall-clock cap).
     private func pollSaves(_ transport: SpyTransport, _ count: Int) async throws {
-        let deadline = Date().addingTimeInterval(5)
-        while await transport.saves.count < count, Date() < deadline {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        await transport.untilSaves(count)
         let seen = await transport.saves.count
-        XCTAssertEqual(seen, count, "the spy did not see the save in time")
+        XCTAssertEqual(seen, count, "the spy saw more saves than expected")
     }
 
     /// Settings reads the hub's grant for this phone.
@@ -924,6 +920,13 @@ private actor SpyTransport: CloudSyncTransport {
     private let holdSaves: Bool
     private var released: Set<Int> = []
     private var waiters: [Int: CheckedContinuation<Void, Never>] = [:]
+    private var countWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+
+    /// Returns once `count` save calls arrived.
+    func untilSaves(_ count: Int) async {
+        if saves.count >= count { return }
+        await withCheckedContinuation { countWaiters.append((count, $0)) }
+    }
 
     init(failingSaves: Set<Int> = [], holdSaves: Bool = false) {
         self.failingSaves = failingSaves
@@ -933,6 +936,9 @@ private actor SpyTransport: CloudSyncTransport {
     func save(_ records: [CloudRecord]) async throws {
         let index = saves.count
         saves.append(records)
+        let reached = countWaiters.filter { $0.count <= saves.count }
+        countWaiters.removeAll { $0.count <= saves.count }
+        reached.forEach { $0.continuation.resume() }
         inFlight += 1
         maxInFlight = max(maxInFlight, inFlight)
         defer { inFlight -= 1 }

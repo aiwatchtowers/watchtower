@@ -423,7 +423,7 @@ final class FetchCadenceWiringTests: XCTestCase {
         PushCompletion.serve(
             AppEnvironment.single(env, defaults: try makeDefaults()), arrivedAt: arrivedAt, inForeground: false,
             startWork: BackgroundWork.starter(runner: tasks, suspension: suspension) { true },
-            sleep: { _ in try await Task.sleep(for: .seconds(86_400)) },
+            sleep: { _ in try await sleepUntilCancelled() },
             completion: { completions.append($0) }
         )
         XCTAssertEqual(tasks.begun, ["silent-push-fetch"])
@@ -458,7 +458,7 @@ final class FetchCadenceWiringTests: XCTestCase {
             recordingsDirectory: try makeRecordingsDirectory(),
             route: route,
             remoteFetch: { try await remote.fetch($0) },
-            sleep: { _ in try await Task.sleep(for: .seconds(86_400)) }
+            sleep: { _ in try await sleepUntilCancelled() }
         )
         addTeardownBlock { @MainActor in session.stop() }
         return session
@@ -516,7 +516,7 @@ final class FetchCadenceWiringTests: XCTestCase {
                 guard case let .push(since, pollOnFallback) = depth else { return }
                 try await transport.fetchForPush(since: since, grace: 0, pollOnFallback: pollOnFallback)
             },
-            sleep: { _ in try await Task.sleep(for: .seconds(86_400)) }
+            sleep: { _ in try await sleepUntilCancelled() }
         )
         addTeardownBlock { @MainActor in session.stop() }
         await session.waitForBoot()
@@ -541,7 +541,7 @@ final class FetchCadenceWiringTests: XCTestCase {
         PushCompletion.serve(
             AppEnvironment.single(env, defaults: try makeDefaults()), arrivedAt: arrivedAt, inForeground: false,
             startWork: BackgroundWork.starter(runner: tasks, suspension: suspension) { true },
-            sleep: { _ in try await Task.sleep(for: .seconds(86_400)) },
+            sleep: { _ in try await sleepUntilCancelled() },
             completion: { completions.append($0) }
         )
         try await poll({ remote.heldCount == 1 }, "the launch fetch never began")

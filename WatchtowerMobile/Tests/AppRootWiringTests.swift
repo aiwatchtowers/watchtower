@@ -1303,7 +1303,7 @@ final class AppRootWiringTests: XCTestCase {
         try await poll { first.recorder.phase == .saving && self.engine.finishCount == 1 }
 
         let removal = Task { await root.removeHub(TestHub.acme, keepRecordings: true, farewell: nil) }
-        try await Task.sleep(for: .milliseconds(50))
+        try await poll { (try? self.registry.row(TestHub.acme)) == nil } // the row goes before the first wait
         XCTAssertTrue(root.env.session(TestHub.acme) === first, "the removal waits for the save")
         engine.releaseFinish()
         let wipe = await removal.value

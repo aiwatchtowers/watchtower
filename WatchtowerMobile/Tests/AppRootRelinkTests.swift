@@ -350,14 +350,12 @@ final class AppRootRelinkTests: XCTestCase {
     /// Review round 1 (F4): a direct save still running at the cap reads as
     /// not sent, at once.
     func testADirectSaveStillRunningAtTheCapIsNotSent() async {
-        let started = ContinuousClock.now
+        // The save never ends on its own; the cap's wait runs out at once.
+        let sent = await AppRoot.resendDirectly(
+            keptFarewell(), cap: .milliseconds(100), sleep: { _ in }, save: { _ in try await sleepUntilCancelled() }
+        )
 
-        let sent = await AppRoot.resendDirectly(keptFarewell(), cap: .milliseconds(100)) { _ in
-            try await Task.sleep(for: .seconds(60))
-        }
-
-        XCTAssertFalse(sent)
-        XCTAssertLessThan(started.duration(to: .now), .seconds(5), "the cap ended it")
+        XCTAssertFalse(sent, "the cap ended it")
     }
 
     /// Review round 1 (F10/F4): each activation retries the kept farewells

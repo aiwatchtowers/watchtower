@@ -490,3 +490,16 @@ private final class TestHubKeys: SecureKeyProvider, @unchecked Sendable {
     func hubAgreementPublicKey() throws -> Curve25519.KeyAgreement.PublicKey { throw SecureTransportError.wrongRole }
     func linkNonce() throws -> Data { throw SecureTransportError.wrongRole }
 }
+
+/// A sleeper that never ends on its own: it returns once its task is cancelled (a test's "the timer never fires").
+func untilCancelled() async {
+    let (stream, continuation) = AsyncStream<Void>.makeStream()
+    for await _ in stream {}
+    continuation.finish()
+}
+
+/// `untilCancelled()` for a throwing sleep seam: throws `CancellationError` on the cancel, as `Task.sleep` does.
+func sleepUntilCancelled() async throws {
+    await untilCancelled()
+    throw CancellationError()
+}

@@ -199,7 +199,7 @@ final class AlertRouteMoveWiringTests: XCTestCase {
             transport: InMemoryCloudTransport(), replicaPath: try makeReplicaPath(), backend: .live, hubID: TestE2E.hubID.uuidString,
             keys: try TestPhone.keys(), defaults: try makeDefaults(), recordingsDirectory: try makeRecordingsDirectory(),
             route: .hostedRelay(macDeviceID: "mac-1"), pushWake: CloudKitPushWake(saver: AlertSaver()),
-            sleep: { _ in try await Task.sleep(for: .seconds(3_600)) } // swiftlint:disable:this trailing_closure
+            sleep: { _ in try await sleepUntilCancelled() } // swiftlint:disable:this trailing_closure
         )
         closeAtTeardown(session)
         XCTAssertNil(session.alertRegistrar)
@@ -405,7 +405,7 @@ final class AlertRouteMoveWiringTests: XCTestCase {
         let session = try HubSession(
             transport: transport, replicaPath: replicaPath, backend: .live, hubID: hubID, keys: try TestPhone.keys(),
             defaults: defaults, recordingsDirectory: try makeRecordingsDirectory(), route: route, link: link, alertPosting: posted.posting,
-            sleep: { _ in try await Task.sleep(for: .seconds(3_600)) } // swiftlint:disable:this trailing_closure
+            sleep: { _ in try await sleepUntilCancelled() } // swiftlint:disable:this trailing_closure
         )
         closeAtTeardown(session)
         let settings = session.deviceSettings

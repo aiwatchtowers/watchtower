@@ -172,7 +172,7 @@ final class PushLaunchSocketTests: XCTestCase {
             route: route,
             startsActive: false,
             uploadRetriesAllowed: false,
-            sleep: { _ in try await Task.sleep(for: .seconds(86_400)) } // swiftlint:disable:this trailing_closure
+            sleep: { _ in try await sleepUntilCancelled() } // swiftlint:disable:this trailing_closure
         )
         addTeardownBlock { @MainActor in await session.shutDown() }
         return session
