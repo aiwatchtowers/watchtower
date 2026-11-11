@@ -55,6 +55,7 @@ final class SessionLineDeliveryReviewTests: XCTestCase {
         let line = ReviewDeliveryLine.line(roundID: 7, comments: 2)
         let result = await delivery.deliverLine(line, key: .review(7), sessionID: sessionID) { _ in }
         XCTAssertEqual(result, .typed)
+        XCTAssertEqual(sessions[0].host.lines.map(\.submitIf), [false], "the host is asked for no Return")
         XCTAssertFalse(sessions[0].inputs.contains([0x0D]), "no Return without hook state")
     }
 
@@ -78,5 +79,16 @@ final class SessionLineDeliveryReviewTests: XCTestCase {
         XCTAssertTrue(SessionLineDelivery.LineKey.input("a").keepsFormatCharacters)
         XCTAssertFalse(SessionLineDelivery.LineKey.ask(1).keepsFormatCharacters)
         XCTAssertFalse(SessionLineDelivery.LineKey.review(1).keepsFormatCharacters)
+    }
+
+    /// Only the phone's lines are held by the host over text in the prompt
+    /// (PROJ-16); a review's, an answer's and the Workchat's are typed
+    /// beside it without their Return (PROJ-12).
+    func testOnlyPhoneInputHoldsOverPromptText() {
+        XCTAssertTrue(SessionLineDelivery.LineKey.input("a").holdsOverPromptText)
+        XCTAssertFalse(SessionLineDelivery.LineKey.ask(1).holdsOverPromptText)
+        XCTAssertFalse(SessionLineDelivery.LineKey.review(1).holdsOverPromptText)
+        XCTAssertFalse(SessionLineDelivery.LineKey.workchat(UUID()).holdsOverPromptText)
+        XCTAssertFalse(SessionLineDelivery.LineKey.specReview(1).holdsOverPromptText)
     }
 }

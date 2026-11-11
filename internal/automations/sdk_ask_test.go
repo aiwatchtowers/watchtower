@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"watchtower/internal/asks"
@@ -93,29 +94,31 @@ func (w *writeFixture) wantAskWithdrawnByAgent(t *testing.T, wb, id int64) {
 }
 
 func TestAsk_WaitsAndDelivers(t *testing.T) {
-	w := newWriteFixture(t)
-	a := w.seedAskAutomation(t, askScript)
-	runID, ask := w.startAskWait(t, a)
-	checkFiledAsk(t, ask, runID)
+	synctest.Test(t, func(t *testing.T) {
+		w := newWriteFixture(t)
+		a := w.seedAskAutomation(t, askScript)
+		runID, ask := w.startAskWait(t, a)
+		checkFiledAsk(t, ask, runID)
 
-	// The Desktop's answer write.
-	if _, err := w.d.Exec(`UPDATE owner_asks SET status = 'answered', answer = ?,
+		// The Desktop's answer write.
+		if _, err := w.d.Exec(`UPDATE owner_asks SET status = 'answered', answer = ?,
 		answered_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ? AND status = 'open'`,
-		`{"answers":[{"id":"1","labels":["Yes"]}],"note":"go"}`, ask.ID); err != nil {
-		t.Fatal(err)
-	}
-	r := w.finishWait(t, runID)
-	out := summaryObject(t, r)
-	answers, _ := out["answers"].([]any)
-	if out["note"] != "go" || len(answers) != 1 || !strings.Contains(r.Summary, `"labels":["Yes"]`) {
-		t.Fatalf("script got %s; want the parsed answer", r.Summary)
-	}
-	if got, err := w.d.GetOwnerAsk(a.ProjectID, ask.ID); err != nil || got.Status != "delivered" {
-		t.Fatalf("ask = %+v, %v; want delivered", got, err)
-	}
-	if s := w.askStep(t, runID); s.Status != automations.StepOK || s.AskID != ask.ID || s.FinishedAt == nil {
-		t.Fatalf("ask step = %s ask %d finished %v; want ok, linked to %d", s.Status, s.AskID, s.FinishedAt != nil, ask.ID)
-	}
+			`{"answers":[{"id":"1","labels":["Yes"]}],"note":"go"}`, ask.ID); err != nil {
+			t.Fatal(err)
+		}
+		r := w.finishWait(t, runID)
+		out := summaryObject(t, r)
+		answers, _ := out["answers"].([]any)
+		if out["note"] != "go" || len(answers) != 1 || !strings.Contains(r.Summary, `"labels":["Yes"]`) {
+			t.Fatalf("script got %s; want the parsed answer", r.Summary)
+		}
+		if got, err := w.d.GetOwnerAsk(a.ProjectID, ask.ID); err != nil || got.Status != "delivered" {
+			t.Fatalf("ask = %+v, %v; want delivered", got, err)
+		}
+		if s := w.askStep(t, runID); s.Status != automations.StepOK || s.AskID != ask.ID || s.FinishedAt == nil {
+			t.Fatalf("ask step = %s ask %d finished %v; want ok, linked to %d", s.Status, s.AskID, s.FinishedAt != nil, ask.ID)
+		}
+	})
 }
 
 // checkFiledAsk checks the open ask askScript filed for run runID.
@@ -137,27 +140,31 @@ func checkFiledAsk(t *testing.T, ask db.OwnerAsk, runID int64) {
 }
 
 func TestAsk_CancelWithdraws(t *testing.T) {
-	w := newWriteFixture(t)
-	a := w.seedAskAutomation(t, askScript)
-	runID, ask := w.startAskWait(t, a)
-	if ok, err := w.d.CancelAutomationRun(runID, w.clock.Now()); err != nil || !ok {
-		t.Fatalf("cancel = (%v, %v)", ok, err)
-	}
-	w.e.Wake()
-	w.e.Wait()
-	w.wantRun(t, runID, db.RunCancelled, db.ErrKindCancelled)
-	w.wantAskWithdrawnByAgent(t, a.ProjectID, ask.ID)
+	synctest.Test(t, func(t *testing.T) {
+		w := newWriteFixture(t)
+		a := w.seedAskAutomation(t, askScript)
+		runID, ask := w.startAskWait(t, a)
+		if ok, err := w.d.CancelAutomationRun(runID, w.clock.Now()); err != nil || !ok {
+			t.Fatalf("cancel = (%v, %v)", ok, err)
+		}
+		w.e.Wake()
+		w.e.Wait()
+		w.wantRun(t, runID, db.RunCancelled, db.ErrKindCancelled)
+		w.wantAskWithdrawnByAgent(t, a.ProjectID, ask.ID)
+	})
 }
 
 func TestAsk_ExpiryWithdraws(t *testing.T) {
-	w := newWriteFixture(t)
-	a := w.seedAskAutomation(t, askScript)
-	runID, ask := w.startAskWait(t, a)
-	w.clock.Advance(time.Duration(a.PauseTimeoutHours)*time.Hour + time.Minute)
-	w.e.Wake()
-	w.e.Wait()
-	w.wantRun(t, runID, db.RunExpired, db.ErrKindExpired)
-	w.wantAskWithdrawnByAgent(t, a.ProjectID, ask.ID)
+	synctest.Test(t, func(t *testing.T) {
+		w := newWriteFixture(t)
+		a := w.seedAskAutomation(t, askScript)
+		runID, ask := w.startAskWait(t, a)
+		w.clock.Advance(time.Duration(a.PauseTimeoutHours)*time.Hour + time.Minute)
+		w.e.Wake()
+		w.e.Wait()
+		w.wantRun(t, runID, db.RunExpired, db.ErrKindExpired)
+		w.wantAskWithdrawnByAgent(t, a.ProjectID, ask.ID)
+	})
 }
 
 // Ruling R-P5-5: a review needs a document and a session to re-round it.

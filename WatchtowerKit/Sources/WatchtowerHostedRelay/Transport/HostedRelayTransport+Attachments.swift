@@ -89,6 +89,10 @@ extension HostedRelayTransport {
             try? FileManager.default.removeItem(at: file)
             throw Self.downloadError(error, zone: zone)
         }
+        #if DEBUG
+        let size = (try? FileManager.default.attributesOfItem(atPath: file.path)[.size] as? Int) ?? 0
+        traffic.recordDownload(bytes: size)
+        #endif
         guard let stashed = store.stashAsset(from: file, recordName: record.name, zone: zone, maxBytes: maxAttachmentBytes) else {
             return file
         }

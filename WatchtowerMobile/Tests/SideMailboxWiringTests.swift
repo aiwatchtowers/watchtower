@@ -20,7 +20,7 @@ final class SideMailboxWiringTests: XCTestCase {
         let first = try await bed.orderedSession()
         let reader = try XCTUnwrap(first.sideReader)
         bed.fake.crash()
-        await bed.fetch(first)
+        try await bed.fetch(first)
         try await bed.writeSwitch(target: .cloudKit, epoch: 2, on: .cloudKit)
 
         await reader.tick() // the outage starts
@@ -36,7 +36,7 @@ final class SideMailboxWiringTests: XCTestCase {
         let read = try await bed.cloudMailboxNames()
         XCTAssertFalse(read.contains(try bed.switchWire), "deleted where it was read")
         XCTAssertEqual(try bed.row()?.link.transport, .cloudKit)
-        await bed.root.routeMoves[hubID]?.value
+        try await bed.root.routeMoves[hubID]?.value(within: 60, "bed.root.routeMoves[hubID]")
     }
 
     /// `TestSwitchToCloudKitDuringRelayOutage`'s second phone: another phone switched the hub to CloudKit while the
@@ -47,7 +47,7 @@ final class SideMailboxWiringTests: XCTestCase {
         let envelopes = try await bed.sendTwoActions(first)
         let reader = try XCTUnwrap(first.sideReader)
         bed.fake.crash()
-        await bed.fetch(first)
+        try await bed.fetch(first)
         try await bed.writeSwitch(target: .cloudKit, epoch: 2, on: .cloudKit)
 
         for step in [0, 30, 29] as [TimeInterval] {
@@ -59,14 +59,14 @@ final class SideMailboxWiringTests: XCTestCase {
 
         bed.clock.advance(2)
         await reader.tick()
-        await bed.root.routeMoves[hubID]?.value
+        try await bed.root.routeMoves[hubID]?.value(within: 60, "bed.root.routeMoves[hubID]")
         let second = try bed.session()
         XCTAssertFalse(second === first, "the session moved")
         XCTAssertEqual(second.route, .cloudKit(.private), "after 60 s")
         XCTAssertEqual(try bed.row()?.link.leftTransport, .relay)
         XCTAssertEqual(try bed.keys.hubLink(hubID)?.epochs.map(\.epoch), [1, 2])
         await second.waitForBoot()
-        await bed.fetch(second)
+        try await bed.fetch(second)
         let onCloud = try await bed.cloudMailbox()
         for envelope in envelopes {
             XCTAssertTrue(onCloud.contains { $0.payload == envelope }, "the same bytes on CloudKit")
@@ -198,7 +198,7 @@ final class SideMailboxWiringTests: XCTestCase {
         let first = try await bed.orderedSession()
         let reader = try XCTUnwrap(first.sideReader)
         bed.fake.crash()
-        await bed.fetch(first)
+        try await bed.fetch(first)
         await reader.tick()
         bed.clock.advance(61)
         await reader.tick() // the first poll builds the CloudKit side; nothing there yet
@@ -212,8 +212,8 @@ final class SideMailboxWiringTests: XCTestCase {
         XCTAssertTrue(held, "the look never reached the relay-zone read")
         let stopping = Task { await reader.stop() }
         await side.release()
-        await stopping.value
-        await looking.value
+        try await stopping.value(within: 60, "stopping")
+        try await looking.value(within: 60, "looking")
 
         XCTAssertFalse(try Bed.handled(first, bed.switchID), "read after the stop: left undecided")
         XCTAssertEqual(try bed.row()?.link.transport, .relay)
@@ -233,7 +233,7 @@ final class SideMailboxWiringTests: XCTestCase {
         let first = try await bed.orderedSession()
         let reader = try XCTUnwrap(first.sideReader)
         bed.fake.crash()
-        await bed.fetch(first)
+        try await bed.fetch(first)
         await reader.tick()
         bed.clock.advance(61)
         await reader.tick() // the first poll builds the CloudKit side
@@ -254,8 +254,8 @@ final class SideMailboxWiringTests: XCTestCase {
         let stops = await side.stops
         XCTAssertEqual(stops, 1, "stopped at the cap")
         await side.release()
-        await stopping.value
-        await looking.value
+        try await stopping.value(within: 60, "stopping")
+        try await looking.value(within: 60, "looking")
         let late = await side.callsAfterStop
         XCTAssertEqual(late, 0, "the late look reaches nothing")
     }
@@ -267,7 +267,7 @@ final class SideMailboxWiringTests: XCTestCase {
         let first = try await bed.orderedSession()
         let reader = try XCTUnwrap(first.sideReader)
         bed.fake.crash()
-        await bed.fetch(first)
+        try await bed.fetch(first)
         await reader.tick()
         bed.clock.advance(61)
         await reader.tick() // the first poll builds the CloudKit side
@@ -283,7 +283,7 @@ final class SideMailboxWiringTests: XCTestCase {
         }
         try await Task.sleep(for: .milliseconds(50)) // an early return of stop() would happen here
         await side.releaseStop()
-        let closedFirst = await stopping.value
+        let closedFirst = try await stopping.value(within: 60, "stopping")
 
         let stops = await side.stops
         XCTAssertTrue(closedFirst, "stop() returned only after the close")
@@ -296,7 +296,7 @@ final class SideMailboxWiringTests: XCTestCase {
         let first = try await bed.orderedSession()
         let reader = try XCTUnwrap(first.sideReader)
         bed.fake.crash()
-        await bed.fetch(first)
+        try await bed.fetch(first)
         await reader.tick()
         bed.clock.advance(61)
         await reader.tick()
@@ -307,20 +307,20 @@ final class SideMailboxWiringTests: XCTestCase {
         XCTAssertEqual(leftover, [true], "a poll does not wipe the store")
 
         bed.fake.restart()
-        await bed.fetch(first)
+        try await bed.fetch(first)
         await reader.tick()
         let stoppedAtTheEnd = await polled.stops
         XCTAssertEqual(stoppedAtTheEnd, 1, "the relay answers again")
 
         bed.fake.crash()
-        await bed.fetch(first)
+        try await bed.fetch(first)
         await reader.tick()
         bed.clock.advance(61)
         await reader.tick()
         let again = try XCTUnwrap(bed.sides.cloud.last)
         XCTAssertFalse(again === polled)
         first.setActive(false)
-        await reader.wake?.value
+        try await reader.wake?.value(within: 60, "reader.wake")
         let stoppedOnLeaving = await again.stops
         XCTAssertEqual(stoppedOnLeaving, 1, "the app left the foreground")
     }
@@ -331,20 +331,20 @@ final class SideMailboxWiringTests: XCTestCase {
         let first = try await bed.orderedSession()
         try await bed.sendTwoActions(first)
         try await bed.writeSwitch(target: .cloudKit, epoch: 2, on: .relay)
-        await bed.fetch(first)
+        try await bed.fetch(first)
         bed.fake.crash() // before the next session's boot look
-        await bed.root.routeMoves[hubID]?.value
+        try await bed.root.routeMoves[hubID]?.value(within: 60, "bed.root.routeMoves[hubID]")
         let second = try bed.session()
         await second.waitForBoot()
         let reader = try XCTUnwrap(second.sideReader)
-        await reader.wake?.value
+        try await reader.wake?.value(within: 60, "reader.wake")
         XCTAssertEqual(try bed.row()?.link.leftTransport, .relay, "the boot look found the relay down")
 
         bed.fake.restart()
         second.setActive(false)
-        await reader.wake?.value
+        try await reader.wake?.value(within: 60, "reader.wake")
         second.setActive(true)
-        await reader.wake?.value
+        try await reader.wake?.value(within: 60, "reader.wake")
 
         XCTAssertNil(try bed.row()?.link.leftTransport, "drained by the look on the return")
         let after = try await bed.relayMailbox()
@@ -358,7 +358,7 @@ final class SideMailboxWiringTests: XCTestCase {
         let bed = try await Bed.make(self, on: .relay, hubTransports: ["relay"])
         let first = try await bed.orderedSession()
         bed.fake.crash()
-        await bed.fetch(first)
+        try await bed.fetch(first)
 
         XCTAssertNil(try bed.row()?.link.otherRoute)
         XCTAssertNil(first.sideReader)

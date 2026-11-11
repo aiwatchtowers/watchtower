@@ -62,3 +62,10 @@ var RegistryErrorForTest = registryError
 // ExecutorMarkInterrupted runs the executor's start sweep (Run's first step)
 // without its poll loop.
 func ExecutorMarkInterrupted(ctx context.Context, e *Executor) bool { return e.markInterrupted(ctx) }
+
+// OnAbandonedRunEnd calls f each time an abandoned script goroutine ends
+// (tests); the returned func removes it.
+func OnAbandonedRunEnd(f func()) (remove func()) {
+	abandonedRunEnded.Store(&f)
+	return func() { abandonedRunEnded.Store(nil) }
+}

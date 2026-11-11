@@ -600,12 +600,32 @@ func backgroundColumns(t *testing.T, d *DB, id int64) (sql.NullInt64, sql.NullSt
 	return n, at
 }
 
-// requireNoBackground fails unless row id stores neither background column.
+// requireNoBackground fails unless row id stores none of the background
+// columns (the shells since board #1712).
 func requireNoBackground(t *testing.T, d *DB, id int64, what string) {
 	t.Helper()
 	if n, at := backgroundColumns(t, d, id); n.Valid || at.Valid {
 		t.Fatalf("%s: agent_background %v, agent_background_at %v, want both NULL", what, n, at)
 	}
+	if shells := shellColumn(t, d, id); shells.Valid {
+		t.Fatalf("%s: agent_background_shells %v, want NULL", what, shells)
+	}
+}
+
+// shellColumn reads row id's agent_background_shells as stored.
+func shellColumn(t *testing.T, d *DB, id int64) sql.NullInt64 {
+	t.Helper()
+	var n sql.NullInt64
+	if err := d.QueryRow(`SELECT agent_background_shells FROM terminal_sessions WHERE id = ?`, id).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// stopWithShells is a Stop counting agents and shells (board #1712).
+func stopWithShells(agents, shells int64) AgentOrder {
+	return AgentOrder{Stop: true, Background: sql.NullInt64{Int64: agents, Valid: true},
+		Shells: sql.NullInt64{Int64: shells, Valid: true}}
 }
 
 // requireBackground fails unless row id stores count n reported at at.
@@ -724,7 +744,7 @@ func TestProj11_OnlyTheStopStartsBackground(t *testing.T) {
 	before := terminalRowSnapshot(t, d, id)
 	one := int64(1)
 	for _, count := range []*int64{nil, &one} {
-		if w(d.LowerTerminalBackground(id, pid, agentStateUUID, t0.Add(time.Second), count)) {
+		if w(d.LowerTerminalBackground(id, pid, agentStateUUID, t0.Add(time.Second), count, nil)) {
 			t.Fatalf("LowerTerminalBackground(%v) wrote over a NULL count", count)
 		}
 		if after := terminalRowSnapshot(t, d, id); after != before {
@@ -778,7 +798,7 @@ func TestProj11_LowerTerminalBackgroundOnlyLowers(t *testing.T) {
 		id := counted()
 		others := otherAgentColumns(t, d, id)
 		at := t0.Add(time.Second)
-		if !w(d.LowerTerminalBackground(id, pid, agentStateUUID, at, tc.count)) {
+		if !w(d.LowerTerminalBackground(id, pid, agentStateUUID, at, tc.count, nil)) {
 			t.Fatalf("%s: did not write", tc.name)
 		}
 		requireBackground(t, d, id, tc.wantN, at, tc.name)
@@ -816,12 +836,103 @@ func TestProj11_LowerTerminalBackgroundOnlyLowers(t *testing.T) {
 		}
 		before := terminalRowSnapshot(t, d, id)
 		for _, count := range []*int64{nil, ptr(1)} {
-			if w(d.LowerTerminalBackground(id, tc.workbench, tc.uuid, tc.at, count)) {
+			if w(d.LowerTerminalBackground(id, tc.workbench, tc.uuid, tc.at, count, nil)) {
 				t.Fatalf("%s: wrote (count %v)", tc.name, count)
 			}
 			if after := terminalRowSnapshot(t, d, id); after != before {
 				t.Fatalf("%s: the row changed:\nbefore %s\nafter  %s", tc.name, before, after)
 			}
+		}
+	}
+}
+
+// Board #1710 (db half): a SubagentStart's report raises a count the Stop
+// started — to the higher of the two, from 0 too — and stamps its time; it
+// never lowers, never starts a count, and holds back over another state, an
+// equal or older stamp, another conversation or workbench; no other column
+// changes.
+func TestProj11_RaiseTerminalBackgroundOnlyRaises(t *testing.T) {
+	const otherUUID = "1b6c1f7e-3c2a-4d5e-9f10-2a3b4c5d6e7f"
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	other := newTestWorkbench(t, d)
+	t0 := time.Now().UTC().Truncate(time.Millisecond)
+	w := writeResult(t)
+
+	counted := func(n int64) int64 {
+		id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+		if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", t0, "", nil, false, stopWith(3))) {
+			t.Fatal("the Stop did not write")
+		}
+		// The count a SubagentStop lowered it to.
+		if _, err := d.Exec(`UPDATE terminal_sessions SET agent_background = ? WHERE id = ?`, n, id); err != nil {
+			t.Fatal(err)
+		}
+		requireBackground(t, d, id, n, t0, "setup")
+		return id
+	}
+
+	for _, tc := range []struct {
+		name          string
+		stored, count int64
+		wantN         int64
+		garbledStamp  bool
+	}{
+		{"a higher count", 3, 5, 5, false},
+		{"a lower count keeps it", 3, 1, 3, false},
+		{"from zero", 0, 2, 2, false},
+		{"zero over zero still reports", 0, 0, 0, false},
+		{"an unreadable report stamp never blocks", 3, 2, 3, true},
+	} {
+		id := counted(tc.stored)
+		if tc.garbledStamp {
+			if _, err := d.Exec(`UPDATE terminal_sessions SET agent_background_at = 'garbage' WHERE id = ?`, id); err != nil {
+				t.Fatal(err)
+			}
+		}
+		others := otherAgentColumns(t, d, id)
+		at := t0.Add(time.Second)
+		if !w(d.RaiseTerminalBackground(id, pid, agentStateUUID, at, tc.count)) {
+			t.Fatalf("%s: did not write", tc.name)
+		}
+		requireBackground(t, d, id, tc.wantN, at, tc.name)
+		if got := otherAgentColumns(t, d, id); got != others {
+			t.Fatalf("%s: other columns changed:\nbefore %s\nafter  %s", tc.name, others, got)
+		}
+	}
+
+	for _, tc := range []struct {
+		name      string
+		setup     func(id int64)
+		workbench int64
+		uuid      string
+		at        time.Time
+	}{
+		{"an equal stamp", nil, pid, agentStateUUID, t0},
+		{"an older stamp", nil, pid, agentStateUUID, t0.Add(-time.Second)},
+		{"another conversation", nil, pid, otherUUID, t0.Add(time.Second)},
+		{"another workbench", nil, other, agentStateUUID, t0.Add(time.Second)},
+		{"no count", func(id int64) {
+			if _, err := d.Exec(`UPDATE terminal_sessions SET agent_background = NULL, agent_background_at = NULL WHERE id = ?`, id); err != nil {
+				t.Fatal(err)
+			}
+		}, pid, agentStateUUID, t0.Add(time.Second)},
+		{"over working", func(id int64) {
+			if _, err := d.Exec(`UPDATE terminal_sessions SET agent_state = 'working' WHERE id = ?`, id); err != nil {
+				t.Fatal(err)
+			}
+		}, pid, agentStateUUID, t0.Add(2 * time.Second)},
+	} {
+		id := counted(1)
+		if tc.setup != nil {
+			tc.setup(id)
+		}
+		before := terminalRowSnapshot(t, d, id)
+		if w(d.RaiseTerminalBackground(id, tc.workbench, tc.uuid, tc.at, 4)) {
+			t.Fatalf("%s: wrote", tc.name)
+		}
+		if after := terminalRowSnapshot(t, d, id); after != before {
+			t.Fatalf("%s: the row changed:\nbefore %s\nafter  %s", tc.name, before, after)
 		}
 	}
 }
@@ -912,7 +1023,7 @@ func TestProj11_MainTurnAndIdleNoticeClearTheCount(t *testing.T) {
 		{"an idle notice", "waiting", "", nil, false, AgentOrder{}},
 	} {
 		id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
-		if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", t0, "", nil, false, stopWith(2))) {
+		if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", t0, "", nil, false, stopWithShells(2, 1))) {
 			t.Fatalf("%s: the Stop did not write", tc.name)
 		}
 		if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, tc.state, t0.Add(time.Second), tc.onlyFrom, tc.failure, tc.prompt, tc.order)) {
@@ -960,7 +1071,7 @@ func TestProj11_NewRunAndConversationSwitchClearTheCount(t *testing.T) {
 		}},
 	} {
 		id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
-		if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", t0, "", nil, false, stopWith(2))) {
+		if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", t0, "", nil, false, stopWithShells(2, 1))) {
 			t.Fatalf("%s: the Stop did not write", tc.name)
 		}
 		if err := d.SetChatQuestion(id, pid, agentStateUUID, sampleChatQuestion("Which DB?"), t0); err != nil {
@@ -1289,7 +1400,7 @@ func TestEndTerminalBackgroundIsCompareAndClear(t *testing.T) {
 		uuid      string
 	}{
 		{"a newer report", func(id int64) {
-			if !w(d.LowerTerminalBackground(id, pid, agentStateUUID, t0.Add(time.Second), nil)) {
+			if !w(d.LowerTerminalBackground(id, pid, agentStateUUID, t0.Add(time.Second), nil, nil)) {
 				t.Fatal("the heartbeat did not write")
 			}
 		}, pid, agentStateUUID},
@@ -2053,6 +2164,163 @@ func TestProj11_LateHookOfThePreviousRunWritesNoCwd(t *testing.T) {
 	}
 }
 
+// terminalSessionColumns reads every column of a row but id and the creation
+// stamps, keyed by name, for comparing two rows.
+func terminalSessionColumns(t *testing.T, d *DB, id int64) map[string]any {
+	t.Helper()
+	rows, err := d.Query(`SELECT * FROM terminal_sessions WHERE id = ?`, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	cols, err := rows.Columns()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rows.Next() {
+		t.Fatalf("row %d missing", id)
+	}
+	vals := make([]any, len(cols))
+	ptrs := make([]any, len(cols))
+	for i := range vals {
+		ptrs[i] = &vals[i]
+	}
+	if err := rows.Scan(ptrs...); err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]any{}
+	for i, c := range cols {
+		switch c {
+		case "id", "created_at", "last_active_at":
+			continue
+		}
+		if b, ok := vals[i].([]byte); ok {
+			vals[i] = string(b)
+		}
+		out[c] = vals[i]
+	}
+	return out
+}
+
+// The Go insert writes the same row as the Desktop's
+// TerminalSessionQueries.create (its SQL copied here verbatim), for a target
+// row in a worktree and for a codex row with every optional column NULL.
+func TestCreateTerminalSessionMatchesDesktopColumns(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	res, err := d.Exec(`INSERT INTO targets (text, period_start, period_end, project_id) VALUES ('Ship it', '2026-01-01', '2026-12-31', ?)`, wb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, _ := res.LastInsertId()
+	run := insertAutomationRunForTest(t, d)
+	const desktopInsert = `INSERT INTO terminal_sessions
+                    (project_id, kind, title, target_id, folder_path, claude_session_id,
+                     worktree_branch, worktree_base, automation_run_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	for _, c := range []struct {
+		name    string
+		n       NewTerminalSession
+		desktop []any
+	}{
+		{"claude in a worktree", NewTerminalSession{
+			WorkbenchID: wb, Kind: "claude", Title: "Ship it", TargetID: target, FolderPath: "/repo/.claude/worktrees/a",
+			ClaudeSessionID: "uuid-a", WorktreeBranch: "wt/a", WorktreeBase: "abc", AutomationRunID: run,
+		}, []any{wb, "claude", "Ship it", target, "/repo/.claude/worktrees/a", "uuid-a", "wt/a", "abc", run}},
+		{"codex in the folder", NewTerminalSession{
+			WorkbenchID: wb, Kind: "codex", Title: "New session · 09:30", FolderPath: "/repo",
+		}, []any{wb, "codex", "New session · 09:30", nil, "/repo", nil, nil, nil, nil}},
+	} {
+		goID, err := d.CreateTerminalSession(t.Context(), c.n)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		res, err := d.Exec(desktopInsert, c.desktop...)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		swiftID, _ := res.LastInsertId()
+		got, want := terminalSessionColumns(t, d, goID), terminalSessionColumns(t, d, swiftID)
+		if fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Errorf("%s:\n go    %v\n swift %v", c.name, got, want)
+		}
+	}
+	var before int
+	if err := d.QueryRow(`SELECT COUNT(*) FROM terminal_sessions`).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.CreateTerminalSession(t.Context(), NewTerminalSession{WorkbenchID: wb, Kind: "claude", Title: "x", FolderPath: "/repo"}); err == nil {
+		t.Fatal("a claude row without its id was inserted")
+	}
+	var after int
+	if err := d.QueryRow(`SELECT COUNT(*) FROM terminal_sessions`).Scan(&after); err != nil || after != before {
+		t.Fatalf("rows %d -> %d (%v): the refused row was written", before, after, err)
+	}
+}
+
+func insertAutomationRunForTest(t *testing.T, d *DB) int64 {
+	t.Helper()
+	res, err := d.Exec(`INSERT INTO automations (slug, scope, path) VALUES ('a', 'personal', '/p/a.md')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aid, _ := res.LastInsertId()
+	res, err = d.Exec(`INSERT INTO automation_runs (automation_id, trigger, status) VALUES (?, 'manual', 'running')`, aid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := res.LastInsertId()
+	return id
+}
+
+func TestPlaceTerminalSessionMovesTheRowAndRestampsIt(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	id, err := d.CreateTerminalSession(t.Context(), NewTerminalSession{WorkbenchID: wb, Kind: "codex", Title: "s", FolderPath: "/repo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`UPDATE terminal_sessions SET created_at = '2000-01-01T00:00:00Z' WHERE id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.PlaceTerminalSession(t.Context(), id, "/repo/.claude/worktrees/s", "wt/s", "abc"); err != nil {
+		t.Fatal(err)
+	}
+	var folder, branch, base, created string
+	if err := d.QueryRow(`SELECT folder_path, worktree_branch, worktree_base, created_at FROM terminal_sessions WHERE id = ?`, id).
+		Scan(&folder, &branch, &base, &created); err != nil {
+		t.Fatal(err)
+	}
+	if folder != "/repo/.claude/worktrees/s" || branch != "wt/s" || base != "abc" || created == "2000-01-01T00:00:00Z" {
+		t.Fatalf("placed row %q %q %q %q", folder, branch, base, created)
+	}
+	if err := d.PlaceTerminalSession(t.Context(), id+100, "/x", "wt/x", ""); !errors.Is(err, ErrTerminalSessionNotFound) {
+		t.Fatalf("a gone row: %v", err)
+	}
+}
+
+func TestSetTerminalSessionLaunchErrorIsAFailedWaiting(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	id := newAgentStateRow(t, d, wb, "claude", "uuid-l")
+	at := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
+	long := strings.Repeat("é", 70)
+	if err := d.SetTerminalSessionLaunchError(t.Context(), id, long, at); err != nil {
+		t.Fatal(err)
+	}
+	s, err := d.GetTerminalSession(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.AgentState.String != "waiting" || s.AgentFailure == nil || s.AgentFailure.At != AgentStateStamp(at) ||
+		s.AgentFailure.Error != strings.Repeat("é", 60) || !s.AgentStateAt.Equal(at) {
+		t.Fatalf("row %+v failure %+v", s, s.AgentFailure)
+	}
+	if err := d.SetTerminalSessionLaunchError(t.Context(), id+100, "x", at); !errors.Is(err, ErrTerminalSessionNotFound) {
+		t.Fatalf("a gone row: %v", err)
+	}
+}
+
 // Board #1019: an interrupt's `waiting` stores its turn end in the same
 // UPDATE, under the tool run's SeenTurnEnd guard and the time order, and
 // clears agent_tool_run; held back, it moves neither.
@@ -2126,5 +2394,98 @@ func TestSetTerminalAgentState_InterruptOverWaitingMovesTheTurnEnd(t *testing.T)
 	}
 	if s, _ := d.GetTerminalSession(id); s.TurnEnd.Int64 != 420 {
 		t.Fatalf("turn end %v; want 420", s.TurnEnd)
+	}
+}
+
+// Board #1712: the idle notice (KeepShells) ends the agent count but keeps a
+// stored shell count and its stamp; over a row whose agents are already 0
+// it is a repeat (nothing written); with no shells stored it clears all
+// three as before.
+func TestIdleNoticeKeepsBackgroundShells(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	t0 := time.Now().UTC().Truncate(time.Millisecond)
+	w := writeResult(t)
+	idle := AgentOrder{KeepShells: true}
+
+	id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+	if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", t0, "", nil, false, stopWithShells(2, 1))) {
+		t.Fatal("the Stop did not write")
+	}
+	if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", t0.Add(time.Minute), "", nil, false, idle)) {
+		t.Fatal("the idle notice over counted agents did not write")
+	}
+	requireBackground(t, d, id, 0, t0, "agents ended, the shells' stamp kept")
+	if got := shellColumn(t, d, id); got.Int64 != 1 || !got.Valid {
+		t.Fatalf("shells %v, want 1", got)
+	}
+	if w(d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", t0.Add(2*time.Minute), "", nil, false, idle)) {
+		t.Fatal("a second idle notice over shells only wrote")
+	}
+
+	plain := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+	if !w(d.SetTerminalAgentState(plain, pid, agentStateUUID, "waiting", t0, "", nil, false, stopWith(2))) {
+		t.Fatal("the Stop did not write")
+	}
+	if !w(d.SetTerminalAgentState(plain, pid, agentStateUUID, "waiting", t0.Add(time.Minute), "", nil, false, idle)) {
+		t.Fatal("the idle notice did not write")
+	}
+	requireNoBackground(t, d, plain, "no shells stored")
+}
+
+// Board #1712: EndTerminalBackgroundAgents ends only the agents, only on the
+// stamp the probe read, only with shells counted; a second end is a no-op.
+func TestEndTerminalBackgroundAgentsIsCompareAndClear(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	t0 := time.Now().UTC().Truncate(time.Millisecond)
+	seen := t0.Format(agentStateAtLayout)
+	w := writeResult(t)
+	row := func(order AgentOrder) int64 {
+		id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+		if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", t0, "", nil, false, order)) {
+			t.Fatal("the Stop did not write")
+		}
+		return id
+	}
+
+	id := row(stopWithShells(2, 1))
+	if w(d.EndTerminalBackgroundAgents(id, pid, agentStateUUID, t0.Add(-time.Second).Format(agentStateAtLayout))) {
+		t.Fatal("ended on a stamp the probe did not read")
+	}
+	if !w(d.EndTerminalBackgroundAgents(id, pid, agentStateUUID, seen)) {
+		t.Fatal("did not end the agents")
+	}
+	requireBackground(t, d, id, 0, t0, "agents ended")
+	if got := shellColumn(t, d, id); got.Int64 != 1 {
+		t.Fatalf("shells %v, want 1", got)
+	}
+	if w(d.EndTerminalBackgroundAgents(id, pid, agentStateUUID, seen)) {
+		t.Fatal("a second end wrote")
+	}
+	if w(d.EndTerminalBackgroundAgents(row(stopWith(2)), pid, agentStateUUID, seen)) {
+		t.Fatal("ended agents with no shells counted")
+	}
+}
+
+// Board #1712: GetTerminalSession reads a database not yet migrated past
+// 00186 (the readers that open without migrating) as no shells.
+func TestGetTerminalSessionNeedsNoShellColumn(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+	w := writeResult(t)
+	if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", time.Now(), "", nil, false, stopWith(2))) {
+		t.Fatal("the Stop did not write")
+	}
+	if _, err := d.Exec(`ALTER TABLE terminal_sessions DROP COLUMN agent_background_shells`); err != nil {
+		t.Fatal(err)
+	}
+	s, err := d.GetTerminalSession(id)
+	if err != nil {
+		t.Fatalf("GetTerminalSession on a pre-00186 schema: %v", err)
+	}
+	if s.BackgroundShells.Valid || s.Background.Int64 != 2 {
+		t.Fatalf("background %v shells %v", s.Background, s.BackgroundShells)
 	}
 }

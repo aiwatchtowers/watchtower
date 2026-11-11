@@ -10,8 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -207,12 +207,14 @@ func (s *fakeSink) waitRows(t *testing.T, n int) {
 	waitUntil(t, fmt.Sprintf("%d proposed rows", n), func() bool { return s.count() >= n })
 }
 
+// waitUntil runs inside a testing/synctest bubble: it lets every goroutine
+// settle, then advances virtual time a poll at a time until cond holds.
 func waitUntil(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for !cond() {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %s", what)
+	for {
+		synctest.Wait()
+		if cond() {
+			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -343,17 +345,12 @@ func denyMessage(t *testing.T, answer map[string]json.RawMessage) string {
 func (h *harness) until(want string) []Event {
 	h.t.Helper()
 	var out []Event
-	deadline := time.After(10 * time.Second)
 	for {
-		select {
-		case e, ok := <-h.events:
-			require.True(h.t, ok, "session ended before a %s event", want)
-			out = append(out, e)
-			if e.Type == want {
-				return out
-			}
-		case <-deadline:
-			h.t.Fatalf("no %s event within 10s", want)
+		e, ok := <-h.events
+		require.True(h.t, ok, "session ended before a %s event", want)
+		out = append(out, e)
+		if e.Type == want {
+			return out
 		}
 	}
 }
@@ -368,205 +365,209 @@ func findEvent(evs []Event, typ, id string) (Event, int) {
 }
 
 func TestChat05_ConnectorWriteWaitsForApproval(t *testing.T) {
-	fx := gateFake(t, gmailSend("r1", "tu1"))
-	h := startSession(t, NewClaudeBackend(fx.opts), nil)
-	h.next(EventSessionReady)
-	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "send it"})
+	synctest.Test(t, func(t *testing.T) {
+		fx := gateFake(t, gmailSend("r1", "tu1"))
+		h := startSession(t, NewClaudeBackend(fx.opts), nil)
+		h.next(EventSessionReady)
+		h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "send it"})
 
-	evs := h.until(EventToolWait)
-	wait := evs[len(evs)-1]
-	assert.Equal(t, "t1", wait.TurnID)
-	assert.Equal(t, "tu1", wait.ID)
-	assert.Equal(t, ToolWaitMessage, wait.Message)
-	assert.EqualValues(t, 1, wait.ActionID)
-	row := fx.sink.row(1)
-	assert.Equal(t, "pending", row.status)
-	assert.Equal(t, ConnectorCall{TurnID: "t1", Server: "claude.ai Gmail", Tool: "mcp__claude_ai_Gmail__send",
-		Reason: "Send", Input: json.RawMessage(gmailSendInput)}, row.call)
+		evs := h.until(EventToolWait)
+		wait := evs[len(evs)-1]
+		assert.Equal(t, "t1", wait.TurnID)
+		assert.Equal(t, "tu1", wait.ID)
+		assert.Equal(t, ToolWaitMessage, wait.Message)
+		assert.EqualValues(t, 1, wait.ActionID)
+		row := fx.sink.row(1)
+		assert.Equal(t, "pending", row.status)
+		assert.Equal(t, ConnectorCall{TurnID: "t1", Server: "claude.ai Gmail", Tool: "mcp__claude_ai_Gmail__send",
+			Reason: "Send", Input: json.RawMessage(gmailSendInput)}, row.call)
 
-	time.Sleep(100 * time.Millisecond) // ten polls
-	assert.Empty(t, fx.controlAnswers(t)["r1"], "nothing reaches the CLI while the row is pending")
+		time.Sleep(100 * time.Millisecond) // ten polls
+		assert.Empty(t, fx.controlAnswers(t)["r1"], "nothing reaches the CLI while the row is pending")
 
-	edited := `{"to":"someone@example.com","body":"edited by the owner"}`
-	require.True(t, fx.sink.approve(1, edited))
-	end := h.next(EventToolEnd)
-	require.NotNil(t, end.OK)
-	assert.True(t, *end.OK)
-	h.next(EventTurnDone)
+		edited := `{"to":"someone@example.com","body":"edited by the owner"}`
+		require.True(t, fx.sink.approve(1, edited))
+		end := h.next(EventToolEnd)
+		require.NotNil(t, end.OK)
+		assert.True(t, *end.OK)
+		h.next(EventTurnDone)
 
-	answers := fx.controlAnswers(t)["r1"]
-	require.Len(t, answers, 1, "exactly one answer")
-	assert.Equal(t, "allow", behavior(t, answers[0]))
-	assert.JSONEq(t, edited, string(answers[0]["updatedInput"]), "the approved input runs, the owner's edit included")
-	row = fx.sink.row(1)
-	assert.Equal(t, "applied", row.status)
-	assert.Equal(t, 1, row.finishes)
-	assert.Equal(t, "ran", row.result)
-	require.NoError(t, h.finish())
+		answers := fx.controlAnswers(t)["r1"]
+		require.Len(t, answers, 1, "exactly one answer")
+		assert.Equal(t, "allow", behavior(t, answers[0]))
+		assert.JSONEq(t, edited, string(answers[0]["updatedInput"]), "the approved input runs, the owner's edit included")
+		row = fx.sink.row(1)
+		assert.Equal(t, "applied", row.status)
+		assert.Equal(t, 1, row.finishes)
+		assert.Equal(t, "ran", row.result)
+		require.NoError(t, h.finish())
+	})
 }
 
 func TestChat05_PublishOnlyFromThePublishDir(t *testing.T) {
-	outside := filepath.Join(t.TempDir(), "page.html")
-	fx := gateFake(t)
-	inside := filepath.Join(fx.pub.Path(), "page.html")
-	// The CLI's own __artifact* keys ride the request input: the allow must
-	// carry them back byte for byte.
-	insideInput := `{"action":"publish","file_path":"` + inside + `","icon":"code","__artifactPublishSourcePin":{"path":"` +
-		inside + `","sha256":"0f0f"}}`
-	fx.setRequests(t,
-		canUseTool("r1", "tu1", "Artifact", "", `{"action":"publish","file_path":"`+outside+`"}`),
-		canUseTool("r2", "tu2", "Artifact", "", insideInput),
-		canUseTool("r3", "tu3", "Write", "", `{"file_path":"`+outside+`","content":"x"}`),
-	)
-	h := startSession(t, NewClaudeBackend(fx.opts), nil)
-	h.next(EventSessionReady)
-	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "publish"})
-	h.next(EventTurnDone)
-	require.NoError(t, h.finish())
+	synctest.Test(t, func(t *testing.T) {
+		outside := filepath.Join(t.TempDir(), "page.html")
+		fx := gateFake(t)
+		inside := filepath.Join(fx.pub.Path(), "page.html")
+		// The CLI's own __artifact* keys ride the request input: the allow must
+		// carry them back byte for byte.
+		insideInput := `{"action":"publish","file_path":"` + inside + `","icon":"code","__artifactPublishSourcePin":{"path":"` +
+			inside + `","sha256":"0f0f"}}`
+		fx.setRequests(t,
+			canUseTool("r1", "tu1", "Artifact", "", `{"action":"publish","file_path":"`+outside+`"}`),
+			canUseTool("r2", "tu2", "Artifact", "", insideInput),
+			canUseTool("r3", "tu3", "Write", "", `{"file_path":"`+outside+`","content":"x"}`),
+		)
+		h := startSession(t, NewClaudeBackend(fx.opts), nil)
+		h.next(EventSessionReady)
+		h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "publish"})
+		h.next(EventTurnDone)
+		require.NoError(t, h.finish())
 
-	answers := fx.controlAnswers(t)
-	require.Len(t, answers["r1"], 1)
-	assert.Equal(t, "deny", behavior(t, answers["r1"][0]))
-	assert.Contains(t, denyMessage(t, answers["r1"][0]), "may only publish files inside "+fx.pub.Path())
-	require.Len(t, answers["r2"], 1)
-	assert.Equal(t, "allow", behavior(t, answers["r2"][0]))
-	assert.Equal(t, insideInput, string(answers["r2"][0]["updatedInput"]), "the request's input echoed")
-	require.Len(t, answers["r3"], 1)
-	assert.Equal(t, "deny", behavior(t, answers["r3"][0]))
-	assert.Contains(t, denyMessage(t, answers["r3"][0]), "Write may only use files inside")
-	assert.Zero(t, fx.sink.count(), "no approval row for a publish or a Write")
-	_, err := os.Lstat(outside)
-	assert.ErrorIs(t, err, os.ErrNotExist)
+		answers := fx.controlAnswers(t)
+		require.Len(t, answers["r1"], 1)
+		assert.Equal(t, "deny", behavior(t, answers["r1"][0]))
+		assert.Contains(t, denyMessage(t, answers["r1"][0]), "may only publish files inside "+fx.pub.Path())
+		require.Len(t, answers["r2"], 1)
+		assert.Equal(t, "allow", behavior(t, answers["r2"][0]))
+		assert.Equal(t, insideInput, string(answers["r2"][0]["updatedInput"]), "the request's input echoed")
+		require.Len(t, answers["r3"], 1)
+		assert.Equal(t, "deny", behavior(t, answers["r3"][0]))
+		assert.Contains(t, denyMessage(t, answers["r3"][0]), "Write may only use files inside")
+		assert.Zero(t, fx.sink.count(), "no approval row for a publish or a Write")
+		_, err := os.Lstat(outside)
+		assert.ErrorIs(t, err, os.ErrNotExist)
+	})
 }
 
 func TestChat05_DeadSessionNeverRunsAnApprovedCall(t *testing.T) {
-	fx := gateFake(t, gmailSend("r1", "tu1"))
-	fx.opts.Gate.PollInterval = time.Hour // the approval is read only when the child's exit wakes the wait
-	b := NewClaudeBackend(fx.opts)
-	t.Cleanup(func() { _ = b.Close() })
-	_, err := b.Start(context.Background())
-	require.NoError(t, err)
-	turnDone := make(chan error, 1)
-	go func() { turnDone <- b.Turn(context.Background(), Command{TurnID: "t1", Text: "send"}, func(Event) {}) }()
-	fx.sink.waitRows(t, 1)
-	// The gate read the row as pending and sleeps on its hour-long poll: an
-	// Approve before that read would be claimed by a live child.
-	waitUntil(t, "the gate's first status read", func() bool {
-		fx.sink.mu.Lock()
-		defer fx.sink.mu.Unlock()
-		return fx.sink.statusReads >= 1
+	synctest.Test(t, func(t *testing.T) {
+		fx := gateFake(t, gmailSend("r1", "tu1"))
+		fx.opts.Gate.PollInterval = time.Hour // the approval is read only when the child's exit wakes the wait
+		b := NewClaudeBackend(fx.opts)
+		t.Cleanup(func() { _ = b.Close() })
+		_, err := b.Start(context.Background())
+		require.NoError(t, err)
+		turnDone := make(chan error, 1)
+		go func() { turnDone <- b.Turn(context.Background(), Command{TurnID: "t1", Text: "send"}, func(Event) {}) }()
+		fx.sink.waitRows(t, 1)
+		// The gate read the row as pending and sleeps on its hour-long poll: an
+		// Approve before that read would be claimed by a live child.
+		waitUntil(t, "the gate's first status read", func() bool {
+			fx.sink.mu.Lock()
+			defer fx.sink.mu.Unlock()
+			return fx.sink.statusReads >= 1
+		})
+
+		// The owner approves; the child dies before the session claims it.
+		require.True(t, fx.sink.approve(1, ""))
+		fx.files.cli.last().kill()
+		<-turnDone
+		require.NoError(t, b.Close())
+		row := fx.sink.row(1)
+		assert.Equal(t, "failed", row.status, "an approved call of a dead child never runs")
+		assert.Equal(t, "session ended before approval", row.reason)
+
+		// A row a whole dead process left behind (no gate alive to expire it),
+		// approved later: the next session start fails it before it spawns.
+		orphan, err := fx.sink.ProposeConnectorCall(context.Background(), ConnectorCall{Server: "claude.ai Gmail", Tool: "send"})
+		require.NoError(t, err)
+		require.True(t, fx.sink.approve(orphan, ""))
+		spawnedAtExpire := -1
+		fx.sink.onExpireOrphans = func() { spawnedAtExpire = len(argvRuns(t, fx.files.argv)) }
+		fx.setRequests(t)
+		b2 := NewClaudeBackend(fx.opts)
+		t.Cleanup(func() { _ = b2.Close() })
+		_, err = b2.Start(context.Background())
+		require.NoError(t, err)
+		require.NoError(t, b2.Close())
+		assert.Equal(t, 1, spawnedAtExpire, "ExpireOrphans runs before the new child spawns")
+		_, claimed, err := fx.sink.ClaimApproved(context.Background(), orphan)
+		require.NoError(t, err)
+		assert.False(t, claimed)
+		assert.Equal(t, "failed", fx.sink.row(orphan).status)
+		assert.Empty(t, fx.controlAnswers(t)["r1"], "no answer at all reached either child")
 	})
-
-	// The owner approves; the child dies before the session claims it.
-	require.True(t, fx.sink.approve(1, ""))
-	require.NoError(t, syscall.Kill(-readPIDFile(t, fx.files.pid), syscall.SIGKILL))
-	select {
-	case <-turnDone:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the turn did not end after the child died")
-	}
-	require.NoError(t, b.Close())
-	row := fx.sink.row(1)
-	assert.Equal(t, "failed", row.status, "an approved call of a dead child never runs")
-	assert.Equal(t, "session ended before approval", row.reason)
-
-	// A row a whole dead process left behind (no gate alive to expire it),
-	// approved later: the next session start fails it before it spawns.
-	orphan, err := fx.sink.ProposeConnectorCall(context.Background(), ConnectorCall{Server: "claude.ai Gmail", Tool: "send"})
-	require.NoError(t, err)
-	require.True(t, fx.sink.approve(orphan, ""))
-	spawnedAtExpire := -1
-	fx.sink.onExpireOrphans = func() { spawnedAtExpire = len(argvRuns(t, fx.files.argv)) }
-	fx.setRequests(t)
-	b2 := NewClaudeBackend(fx.opts)
-	t.Cleanup(func() { _ = b2.Close() })
-	_, err = b2.Start(context.Background())
-	require.NoError(t, err)
-	require.NoError(t, b2.Close())
-	assert.Equal(t, 1, spawnedAtExpire, "ExpireOrphans runs before the new child spawns")
-	_, claimed, err := fx.sink.ClaimApproved(context.Background(), orphan)
-	require.NoError(t, err)
-	assert.False(t, claimed)
-	assert.Equal(t, "failed", fx.sink.row(orphan).status)
-	assert.Empty(t, fx.controlAnswers(t)["r1"], "no answer at all reached either child")
 }
 
 func TestChat02_GateDecisionsAreSteps(t *testing.T) {
-	fx := gateFake(t)
-	fx.setRequests(t,
-		canUseTool("r1", "tu1", "Write", "", `{"file_path":"/etc/passwd","content":"x"}`),
-		gmailSend("r2", "tu2"),
-	)
-	h := startSession(t, NewClaudeBackend(fx.opts), nil)
-	h.next(EventSessionReady)
-	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "go"})
-	evs := h.until(EventToolWait)
-	fx.sink.waitRows(t, 1)
-	require.True(t, fx.sink.reject(1))
-	evs = append(evs, h.until(EventTurnDone)...)
-	require.NoError(t, h.finish())
+	synctest.Test(t, func(t *testing.T) {
+		fx := gateFake(t)
+		fx.setRequests(t,
+			canUseTool("r1", "tu1", "Write", "", `{"file_path":"/etc/passwd","content":"x"}`),
+			gmailSend("r2", "tu2"),
+		)
+		h := startSession(t, NewClaudeBackend(fx.opts), nil)
+		h.next(EventSessionReady)
+		h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "go"})
+		evs := h.until(EventToolWait)
+		fx.sink.waitRows(t, 1)
+		require.True(t, fx.sink.reject(1))
+		evs = append(evs, h.until(EventTurnDone)...)
+		require.NoError(t, h.finish())
 
-	for _, e := range evs {
-		assert.NotEqual(t, "reset", e.Type)
-	}
-	denied, _ := findEvent(evs, EventToolEnd, "tu1")
-	require.NotNil(t, denied.OK)
-	assert.False(t, *denied.OK, "a denied call is a red step")
-	assert.Contains(t, denied.Summary, "Write may only use files inside")
+		for _, e := range evs {
+			assert.NotEqual(t, "reset", e.Type)
+		}
+		denied, _ := findEvent(evs, EventToolEnd, "tu1")
+		require.NotNil(t, denied.OK)
+		assert.False(t, *denied.OK, "a denied call is a red step")
+		assert.Contains(t, denied.Summary, "Write may only use files inside")
 
-	_, start := findEvent(evs, EventToolStart, "tu2")
-	_, wait := findEvent(evs, EventToolWait, "tu2")
-	asked, end := findEvent(evs, EventToolEnd, "tu2")
-	require.True(t, start >= 0 && wait > start && end > wait, "tool_start → tool_wait → tool_end (%d, %d, %d)", start, wait, end)
-	require.NotNil(t, asked.OK)
-	assert.False(t, *asked.OK)
-	assert.Contains(t, asked.Summary, "The owner rejected this call")
+		_, start := findEvent(evs, EventToolStart, "tu2")
+		_, wait := findEvent(evs, EventToolWait, "tu2")
+		asked, end := findEvent(evs, EventToolEnd, "tu2")
+		require.True(t, start >= 0 && wait > start && end > wait, "tool_start → tool_wait → tool_end (%d, %d, %d)", start, wait, end)
+		require.NotNil(t, asked.OK)
+		assert.False(t, *asked.OK)
+		assert.Contains(t, asked.Summary, "The owner rejected this call")
+	})
 }
 
 func TestChat03_CloseWhileWaitingForApprovalRejectsAndReaps(t *testing.T) {
-	fx := gateFake(t, gmailSend("r1", "tu1"))
-	b := NewClaudeBackend(fx.opts)
-	t.Cleanup(func() { _ = b.Close() })
-	_, err := b.Start(context.Background())
-	require.NoError(t, err)
-	pid := readPIDFile(t, fx.files.pid)
-	turnDone := make(chan error, 1)
-	go func() { turnDone <- b.Turn(context.Background(), Command{TurnID: "t1", Text: "send"}, func(Event) {}) }()
-	fx.sink.waitRows(t, 1)
+	synctest.Test(t, func(t *testing.T) {
+		fx := gateFake(t, gmailSend("r1", "tu1"))
+		b := NewClaudeBackend(fx.opts)
+		t.Cleanup(func() { _ = b.Close() })
+		_, err := b.Start(context.Background())
+		require.NoError(t, err)
+		child := fx.files.cli.last()
+		turnDone := make(chan error, 1)
+		go func() { turnDone <- b.Turn(context.Background(), Command{TurnID: "t1", Text: "send"}, func(Event) {}) }()
+		fx.sink.waitRows(t, 1)
 
-	require.NoError(t, b.Close())
-	select {
-	case <-turnDone:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the turn did not end after Close")
-	}
-	row := fx.sink.row(1)
-	assert.Equal(t, "rejected", row.status)
-	assert.Equal(t, "stopped", row.reason)
-	answers := fx.controlAnswers(t)["r1"]
-	require.Len(t, answers, 1)
-	assert.Equal(t, denyStopped, denyMessage(t, answers[0]))
-	waitGone(t, pid, "claude")
-	_, err = os.Stat(fx.pub.Path())
-	assert.ErrorIs(t, err, os.ErrNotExist, "Close removes the publish dir")
+		require.NoError(t, b.Close())
+		<-turnDone
+		row := fx.sink.row(1)
+		assert.Equal(t, "rejected", row.status)
+		assert.Equal(t, "stopped", row.reason)
+		answers := fx.controlAnswers(t)["r1"]
+		require.Len(t, answers, 1)
+		assert.Equal(t, denyStopped, denyMessage(t, answers[0]))
+		assert.False(t, child.alive(), "Close reaped the child")
+		_, err = os.Stat(fx.pub.Path())
+		assert.ErrorIs(t, err, os.ErrNotExist, "Close removes the publish dir")
+	})
 }
 
 func TestGate_TimeoutCancelsAndTellsTheModel(t *testing.T) {
-	fx := gateFake(t, gmailSend("r1", "tu1"))
-	fx.opts.Gate.ApprovalTimeout = 50 * time.Millisecond
-	h := startSession(t, NewClaudeBackend(fx.opts), nil)
-	h.next(EventSessionReady)
-	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "send"})
-	end := h.next(EventToolEnd)
-	h.next(EventTurnDone)
-	require.NoError(t, h.finish())
+	synctest.Test(t, func(t *testing.T) {
+		fx := gateFake(t, gmailSend("r1", "tu1"))
+		fx.opts.Gate.ApprovalTimeout = 50 * time.Millisecond
+		h := startSession(t, NewClaudeBackend(fx.opts), nil)
+		h.next(EventSessionReady)
+		h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "send"})
+		end := h.next(EventToolEnd)
+		h.next(EventTurnDone)
+		require.NoError(t, h.finish())
 
-	require.NotNil(t, end.OK)
-	assert.False(t, *end.OK)
-	assert.Contains(t, end.Summary, "did not approve within 50ms")
-	row := fx.sink.row(1)
-	assert.Equal(t, "rejected", row.status)
-	assert.Equal(t, "not approved within 50ms", row.reason)
+		require.NotNil(t, end.OK)
+		assert.False(t, *end.OK)
+		assert.Contains(t, end.Summary, "did not approve within 50ms")
+		row := fx.sink.row(1)
+		assert.Equal(t, "rejected", row.status)
+		assert.Equal(t, "not approved within 50ms", row.reason)
+	})
 }
 
 func TestGate_ApprovalWindowIsFifteenMinutes(t *testing.T) {
@@ -578,164 +579,188 @@ func TestGate_ApprovalWindowIsFifteenMinutes(t *testing.T) {
 }
 
 func TestGate_ApproveRacingTimeoutHasOneOutcome(t *testing.T) {
-	fx := gateFake(t, gmailSend("r1", "tu1"))
-	fx.opts.Gate.ApprovalTimeout = 50 * time.Millisecond
-	// The owner's Approve lands after the timeout fired, before the cancel.
-	fx.sink.beforeCancel = func(id int64) { fx.sink.approve(id, "") }
-	h := startSession(t, NewClaudeBackend(fx.opts), nil)
-	h.next(EventSessionReady)
-	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "send"})
-	end := h.next(EventToolEnd)
-	h.next(EventTurnDone)
-	require.NoError(t, h.finish())
+	synctest.Test(t, func(t *testing.T) {
+		fx := gateFake(t, gmailSend("r1", "tu1"))
+		fx.opts.Gate.ApprovalTimeout = 50 * time.Millisecond
+		// The owner's Approve lands after the timeout fired, before the cancel.
+		fx.sink.beforeCancel = func(id int64) { fx.sink.approve(id, "") }
+		h := startSession(t, NewClaudeBackend(fx.opts), nil)
+		h.next(EventSessionReady)
+		h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "send"})
+		end := h.next(EventToolEnd)
+		h.next(EventTurnDone)
+		require.NoError(t, h.finish())
 
-	require.NotNil(t, end.OK)
-	assert.True(t, *end.OK, "the approved call ran")
-	answers := fx.controlAnswers(t)["r1"]
-	require.Len(t, answers, 1, "one outcome: never both an allow and a deny")
-	assert.Equal(t, "allow", behavior(t, answers[0]))
-	row := fx.sink.row(1)
-	assert.Equal(t, "applied", row.status)
-	assert.Equal(t, 1, row.finishes)
+		require.NotNil(t, end.OK)
+		assert.True(t, *end.OK, "the approved call ran")
+		answers := fx.controlAnswers(t)["r1"]
+		require.Len(t, answers, 1, "one outcome: never both an allow and a deny")
+		assert.Equal(t, "allow", behavior(t, answers[0]))
+		row := fx.sink.row(1)
+		assert.Equal(t, "applied", row.status)
+		assert.Equal(t, 1, row.finishes)
+	})
 }
 
 func TestGate_TwoParallelAsksAreIndependent(t *testing.T) {
-	fx := gateFake(t, gmailSend("r1", "tu1"), gmailSend("r2", "tu2"))
-	h := startSession(t, NewClaudeBackend(fx.opts), nil)
-	h.next(EventSessionReady)
-	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "send both"})
-	// The rows are proposed concurrently: find which is which by the
-	// tool_wait events.
-	waits := map[string]int64{}
-	for len(waits) < 2 {
-		e := h.next(EventToolWait)
-		waits[e.ID] = e.ActionID
-	}
-	require.True(t, fx.sink.reject(waits["tu1"]))
-	end := h.next(EventToolEnd)
-	assert.Equal(t, "tu1", end.ID)
-	time.Sleep(50 * time.Millisecond)
-	assert.Equal(t, "pending", fx.sink.row(waits["tu2"]).status, "rejecting one leaves the other waiting")
-	assert.Empty(t, fx.controlAnswers(t)["r2"])
+	synctest.Test(t, func(t *testing.T) {
+		fx := gateFake(t, gmailSend("r1", "tu1"), gmailSend("r2", "tu2"))
+		h := startSession(t, NewClaudeBackend(fx.opts), nil)
+		h.next(EventSessionReady)
+		h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "send both"})
+		// The rows are proposed concurrently: find which is which by the
+		// tool_wait events.
+		waits := map[string]int64{}
+		for len(waits) < 2 {
+			e := h.next(EventToolWait)
+			waits[e.ID] = e.ActionID
+		}
+		require.True(t, fx.sink.reject(waits["tu1"]))
+		end := h.next(EventToolEnd)
+		assert.Equal(t, "tu1", end.ID)
+		synctest.Wait()
+		assert.Equal(t, "pending", fx.sink.row(waits["tu2"]).status, "rejecting one leaves the other waiting")
+		assert.Empty(t, fx.controlAnswers(t)["r2"])
 
-	require.True(t, fx.sink.approve(waits["tu2"], ""))
-	end = h.next(EventToolEnd)
-	assert.Equal(t, "tu2", end.ID)
-	require.NotNil(t, end.OK)
-	assert.True(t, *end.OK)
-	h.next(EventTurnDone)
-	require.NoError(t, h.finish())
-	assert.Equal(t, "rejected", fx.sink.row(waits["tu1"]).status)
-	assert.Equal(t, "applied", fx.sink.row(waits["tu2"]).status)
+		require.True(t, fx.sink.approve(waits["tu2"], ""))
+		end = h.next(EventToolEnd)
+		assert.Equal(t, "tu2", end.ID)
+		require.NotNil(t, end.OK)
+		assert.True(t, *end.OK)
+		h.next(EventTurnDone)
+		require.NoError(t, h.finish())
+		assert.Equal(t, "rejected", fx.sink.row(waits["tu1"]).status)
+		assert.Equal(t, "applied", fx.sink.row(waits["tu2"]).status)
+	})
 }
 
 func TestGate_StopDeniesWaitingCall(t *testing.T) {
 	t.Run("pending row is rejected", func(t *testing.T) {
-		fx := gateFake(t, gmailSend("r1", "tu1"))
-		h := startSession(t, NewClaudeBackend(fx.opts), nil)
-		h.next(EventSessionReady)
-		h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "send"})
-		h.next(EventToolWait)
-		h.send(Command{Type: CommandCancel})
-		h.next(EventTurnDone)
-		require.NoError(t, h.finish())
+		synctest.Test(t, func(t *testing.T) {
+			fx := gateFake(t, gmailSend("r1", "tu1"))
+			h := startSession(t, NewClaudeBackend(fx.opts), nil)
+			h.next(EventSessionReady)
+			h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "send"})
+			h.next(EventToolWait)
+			h.send(Command{Type: CommandCancel})
+			h.next(EventTurnDone)
+			require.NoError(t, h.finish())
 
-		row := fx.sink.row(1)
-		assert.Equal(t, "rejected", row.status)
-		assert.Equal(t, "stopped", row.reason)
-		answers := fx.controlAnswers(t)["r1"]
-		require.Len(t, answers, 1)
-		assert.Equal(t, denyStopped, denyMessage(t, answers[0]))
-		stdin, err := os.ReadFile(fx.files.stdin)
-		require.NoError(t, err)
-		deny, interrupt := strings.Index(string(stdin), denyStopped), strings.Index(string(stdin), `"subtype":"interrupt"`)
-		assert.True(t, deny >= 0 && interrupt > deny, "the deny precedes the interrupt")
+			row := fx.sink.row(1)
+			assert.Equal(t, "rejected", row.status)
+			assert.Equal(t, "stopped", row.reason)
+			answers := fx.controlAnswers(t)["r1"]
+			require.Len(t, answers, 1)
+			assert.Equal(t, denyStopped, denyMessage(t, answers[0]))
+			stdin, err := os.ReadFile(fx.files.stdin)
+			require.NoError(t, err)
+			deny, interrupt := strings.Index(string(stdin), denyStopped), strings.Index(string(stdin), `"subtype":"interrupt"`)
+			assert.True(t, deny >= 0 && interrupt > deny, "the deny precedes the interrupt")
+		})
 	})
 	t.Run("the next turn asks again", func(t *testing.T) {
-		fx := gateFake(t, gmailSend("r1", "tu1"))
-		h := startSession(t, NewClaudeBackend(fx.opts), nil)
-		h.next(EventSessionReady)
-		h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "send"})
-		h.next(EventToolWait)
-		h.send(Command{Type: CommandCancel})
-		h.next(EventTurnDone)
+		synctest.Test(t, func(t *testing.T) {
+			fx := gateFake(t, gmailSend("r1", "tu1"))
+			h := startSession(t, NewClaudeBackend(fx.opts), nil)
+			h.next(EventSessionReady)
+			h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "send"})
+			h.next(EventToolWait)
+			h.send(Command{Type: CommandCancel})
+			h.next(EventTurnDone)
 
-		fx.setRequests(t, gmailSend("r2", "tu2"))
-		h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "send again"})
-		wait := h.next(EventToolWait)
-		assert.Equal(t, "tu2", wait.ID, "a Stop holds for its own turn only")
-		assert.Equal(t, "pending", fx.sink.row(wait.ActionID).status)
-		require.True(t, fx.sink.reject(wait.ActionID))
-		h.next(EventTurnDone)
-		require.NoError(t, h.finish())
+			fx.setRequests(t, gmailSend("r2", "tu2"))
+			h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "send again"})
+			wait := h.next(EventToolWait)
+			assert.Equal(t, "tu2", wait.ID, "a Stop holds for its own turn only")
+			assert.Equal(t, "pending", fx.sink.row(wait.ActionID).status)
+			require.True(t, fx.sink.reject(wait.ActionID))
+			h.next(EventTurnDone)
+			require.NoError(t, h.finish())
+		})
 	})
 	t.Run("approved but unclaimed row is expired", func(t *testing.T) {
-		fx := gateFake(t, gmailSend("r1", "tu1"))
-		fx.opts.Gate.PollInterval = time.Hour // the approval is never read before Stop
-		h := startSession(t, NewClaudeBackend(fx.opts), nil)
-		h.next(EventSessionReady)
-		h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "send"})
-		h.next(EventToolWait)
-		require.True(t, fx.sink.approve(1, ""))
-		h.send(Command{Type: CommandCancel})
-		h.next(EventTurnDone)
-		require.NoError(t, h.finish())
+		synctest.Test(t, func(t *testing.T) {
+			fx := gateFake(t, gmailSend("r1", "tu1"))
+			fx.opts.Gate.PollInterval = time.Hour // the approval is never read before Stop
+			h := startSession(t, NewClaudeBackend(fx.opts), nil)
+			h.next(EventSessionReady)
+			h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "send"})
+			h.next(EventToolWait)
+			// tool_wait goes out before the gate's first status read: wait for
+			// that read (pending) so the gate sleeps on its hour-long poll — an
+			// Approve before it would be claimed and run before Stop.
+			waitUntil(t, "the gate's first status read", func() bool {
+				fx.sink.mu.Lock()
+				defer fx.sink.mu.Unlock()
+				return fx.sink.statusReads >= 1
+			})
+			require.True(t, fx.sink.approve(1, ""))
+			h.send(Command{Type: CommandCancel})
+			h.next(EventTurnDone)
+			require.NoError(t, h.finish())
 
-		row := fx.sink.row(1)
-		assert.Equal(t, "failed", row.status)
-		assert.Equal(t, reasonStopped, row.reason, "the card reads it as Chat stopped — not sent")
-		answers := fx.controlAnswers(t)["r1"]
-		require.Len(t, answers, 1)
-		assert.Equal(t, "deny", behavior(t, answers[0]))
+			row := fx.sink.row(1)
+			assert.Equal(t, "failed", row.status)
+			assert.Equal(t, reasonStopped, row.reason, "the card reads it as Chat stopped — not sent")
+			answers := fx.controlAnswers(t)["r1"]
+			require.Len(t, answers, 1)
+			assert.Equal(t, "deny", behavior(t, answers[0]))
+		})
 	})
 }
 
 func TestGate_ReadOnlyConnectorCallWritesNoRow(t *testing.T) {
-	docsRead := `{"ref":{"object":"project","id":"some-doc"}}`
-	fx := gateFake(t, canUseTool("r1", "tu1", "mcp__claude_ai_Claude_Docs__read", "claude.ai Claude Docs", docsRead))
-	h := startSession(t, NewClaudeBackend(fx.opts), nil)
-	h.next(EventSessionReady)
-	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "read"})
-	h.next(EventTurnDone)
-	require.NoError(t, h.finish())
+	synctest.Test(t, func(t *testing.T) {
+		docsRead := `{"ref":{"object":"project","id":"some-doc"}}`
+		fx := gateFake(t, canUseTool("r1", "tu1", "mcp__claude_ai_Claude_Docs__read", "claude.ai Claude Docs", docsRead))
+		h := startSession(t, NewClaudeBackend(fx.opts), nil)
+		h.next(EventSessionReady)
+		h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "read"})
+		h.next(EventTurnDone)
+		require.NoError(t, h.finish())
 
-	answers := fx.controlAnswers(t)["r1"]
-	require.Len(t, answers, 1)
-	assert.Equal(t, "allow", behavior(t, answers[0]))
-	assert.Equal(t, docsRead, string(answers[0]["updatedInput"]))
-	assert.Zero(t, fx.sink.count())
+		answers := fx.controlAnswers(t)["r1"]
+		require.Len(t, answers, 1)
+		assert.Equal(t, "allow", behavior(t, answers[0]))
+		assert.Equal(t, docsRead, string(answers[0]["updatedInput"]))
+		assert.Zero(t, fx.sink.count())
+	})
 }
 
 func TestGate_OffDeniesEveryRequest(t *testing.T) {
-	fx := gateFake(t, canUseTool("r1", "tu1", "Write", "", `{"file_path":"/tmp/x","content":"x"}`))
-	fx.opts.Gate = nil
-	h := startSession(t, NewClaudeBackend(fx.opts), nil)
-	h.next(EventSessionReady)
-	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "write"})
-	end := h.next(EventToolEnd)
-	h.next(EventTurnDone)
-	require.NoError(t, h.finish())
+	synctest.Test(t, func(t *testing.T) {
+		fx := gateFake(t, canUseTool("r1", "tu1", "Write", "", `{"file_path":"/tmp/x","content":"x"}`))
+		fx.opts.Gate = nil
+		h := startSession(t, NewClaudeBackend(fx.opts), nil)
+		h.next(EventSessionReady)
+		h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "write"})
+		end := h.next(EventToolEnd)
+		h.next(EventTurnDone)
+		require.NoError(t, h.finish())
 
-	require.NotNil(t, end.OK)
-	assert.False(t, *end.OK)
-	answers := fx.controlAnswers(t)["r1"]
-	require.Len(t, answers, 1, "answered, never left waiting")
-	assert.Equal(t, "Write is not available in this chat", denyMessage(t, answers[0]))
+		require.NotNil(t, end.OK)
+		assert.False(t, *end.OK)
+		answers := fx.controlAnswers(t)["r1"]
+		require.Len(t, answers, 1, "answered, never left waiting")
+		assert.Equal(t, "Write is not available in this chat", denyMessage(t, answers[0]))
+	})
 }
 
 func TestGate_ProposeErrorDenies(t *testing.T) {
-	fx := gateFake(t, gmailSend("r1", "tu1"))
-	fx.sink.proposeErr = errors.New("database is locked")
-	h := startSession(t, NewClaudeBackend(fx.opts), nil)
-	h.next(EventSessionReady)
-	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "send"})
-	h.next(EventTurnDone)
-	require.NoError(t, h.finish())
+	synctest.Test(t, func(t *testing.T) {
+		fx := gateFake(t, gmailSend("r1", "tu1"))
+		fx.sink.proposeErr = errors.New("database is locked")
+		h := startSession(t, NewClaudeBackend(fx.opts), nil)
+		h.next(EventSessionReady)
+		h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "send"})
+		h.next(EventTurnDone)
+		require.NoError(t, h.finish())
 
-	answers := fx.controlAnswers(t)["r1"]
-	require.Len(t, answers, 1)
-	assert.Equal(t, "deny", behavior(t, answers[0]))
-	assert.Contains(t, denyMessage(t, answers[0]), "database is locked")
+		answers := fx.controlAnswers(t)["r1"]
+		require.Len(t, answers, 1)
+		assert.Equal(t, "deny", behavior(t, answers[0]))
+		assert.Contains(t, denyMessage(t, answers[0]), "database is locked")
+	})
 }
 
 // A row that vanished or belongs to another session process can never be
@@ -746,22 +771,25 @@ func TestGate_PermanentStatusErrorDeniesAtOnce(t *testing.T) {
 		"not this session": fmt.Errorf("#1: %w", tools.ErrNotThisSession),
 	} {
 		t.Run(name, func(t *testing.T) {
-			fx := gateFake(t, gmailSend("r1", "tu1"))
-			fx.sink.statusErr = statusErr
-			fx.opts.Gate.ApprovalTimeout = time.Minute
-			h := startSession(t, NewClaudeBackend(fx.opts), nil)
-			h.next(EventSessionReady)
-			start := time.Now()
-			h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "send"})
-			h.next(EventTurnDone)
-			require.NoError(t, h.finish())
+			synctest.Test(t, func(t *testing.T) {
+				fx := gateFake(t, gmailSend("r1", "tu1"))
+				fx.sink.statusErr = statusErr
+				// The window is already over at the first poll: a gate that
+				// polled on would time the call out — a different deny text and
+				// a rejected row — so "at once" needs no wall-clock bound.
+				fx.opts.Gate.ApprovalTimeout = time.Nanosecond
+				h := startSession(t, NewClaudeBackend(fx.opts), nil)
+				h.next(EventSessionReady)
+				h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "send"})
+				h.next(EventTurnDone)
+				require.NoError(t, h.finish())
 
-			assert.Less(t, time.Since(start), 10*time.Second, "denied at once, not after the approval window")
-			answers := fx.controlAnswers(t)["r1"]
-			require.Len(t, answers, 1)
-			assert.Equal(t, "deny", behavior(t, answers[0]))
-			assert.Equal(t, denyRowGone, denyMessage(t, answers[0]))
-			assert.Equal(t, "pending", fx.sink.row(1).status, "nothing claimed")
+				answers := fx.controlAnswers(t)["r1"]
+				require.Len(t, answers, 1)
+				assert.Equal(t, "deny", behavior(t, answers[0]))
+				assert.Equal(t, denyRowGone, denyMessage(t, answers[0]))
+				assert.Equal(t, "pending", fx.sink.row(1).status, "nothing claimed")
+			})
 		})
 	}
 }
@@ -772,51 +800,55 @@ func TestGate_InvalidOptionsRefuseToStart(t *testing.T) {
 		"nil sink":     func(o *GateOptions) { o.Sink = nil },
 	} {
 		t.Run(name, func(t *testing.T) {
-			fx := gateFake(t)
-			mutate(fx.opts.Gate)
-			b := NewClaudeBackend(fx.opts)
-			t.Cleanup(func() { _ = b.Close() })
-			_, err := b.Start(context.Background())
-			require.Error(t, err)
-			require.NoError(t, b.Close())
-			_, statErr := os.Stat(fx.files.argv)
-			assert.ErrorIs(t, statErr, os.ErrNotExist, "no child was spawned")
+			synctest.Test(t, func(t *testing.T) {
+				fx := gateFake(t)
+				mutate(fx.opts.Gate)
+				b := NewClaudeBackend(fx.opts)
+				t.Cleanup(func() { _ = b.Close() })
+				_, err := b.Start(context.Background())
+				require.Error(t, err)
+				require.NoError(t, b.Close())
+				_, statErr := os.Stat(fx.files.argv)
+				assert.ErrorIs(t, statErr, os.ErrNotExist, "no child was spawned")
+			})
 		})
 	}
 }
 
 func TestGate_DocsWritesAreFreeOnlyOnTheDocTheSessionCreated(t *testing.T) {
-	const newDoc = "3f2a9c1e-5b7d-4e8a-9c21-7d4e5f6a8b90"
-	birth := `{"container":{"kind":"project","create":{"name":"Plan","doc":{"markdown":"# Plan"}}},"batch":[]}`
-	fx := gateFake(t, canUseTool("r1", "tu1", "mcp__claude_ai_Claude_Docs__batch", "claude.ai Claude Docs", birth))
-	fx.opts.Env = append(fx.opts.Env, "FAKE_GATE_RESULT=created https://claude.ai/artifact/Plan-"+newDoc)
-	h := startSession(t, NewClaudeBackend(fx.opts), nil)
-	h.next(EventSessionReady)
-	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "make a doc"})
-	end := h.next(EventToolEnd)
-	h.next(EventTurnDone)
-	require.Len(t, end.Sources, 1)
-	assert.Equal(t, SourceKindPublished, end.Sources[0].Kind)
-	assert.Equal(t, "Plan", end.Sources[0].Title)
+	synctest.Test(t, func(t *testing.T) {
+		const newDoc = "3f2a9c1e-5b7d-4e8a-9c21-7d4e5f6a8b90"
+		birth := `{"container":{"kind":"project","create":{"name":"Plan","doc":{"markdown":"# Plan"}}},"batch":[]}`
+		fx := gateFake(t, canUseTool("r1", "tu1", "mcp__claude_ai_Claude_Docs__batch", "claude.ai Claude Docs", birth))
+		fx.opts.Env = append(fx.opts.Env, "FAKE_GATE_RESULT=created https://claude.ai/artifact/Plan-"+newDoc)
+		h := startSession(t, NewClaudeBackend(fx.opts), nil)
+		h.next(EventSessionReady)
+		h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "make a doc"})
+		end := h.next(EventToolEnd)
+		h.next(EventTurnDone)
+		require.Len(t, end.Sources, 1)
+		assert.Equal(t, SourceKindPublished, end.Sources[0].Kind)
+		assert.Equal(t, "Plan", end.Sources[0].Title)
 
-	own := `{"ref":{"object":"node","id":"n1"},"container":{"kind":"project","id":"` + newDoc + `"},"payload":{"ops":[]}}`
-	foreign := `{"ref":{"object":"node","id":"n1"},"container":{"kind":"project","id":"another-doc"},"payload":{"ops":[]}}`
-	fx.setRequests(t,
-		canUseTool("r2", "tu2", "mcp__claude_ai_Claude_Docs__update", "claude.ai Claude Docs", own),
-		canUseTool("r3", "tu3", "mcp__claude_ai_Claude_Docs__update", "claude.ai Claude Docs", foreign),
-	)
-	h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "edit both"})
-	wait := h.next(EventToolWait)
-	assert.Equal(t, "tu3", wait.ID, "only the foreign doc's edit waits")
-	require.True(t, fx.sink.reject(wait.ActionID))
-	h.next(EventTurnDone)
-	require.NoError(t, h.finish())
+		own := `{"ref":{"object":"node","id":"n1"},"container":{"kind":"project","id":"` + newDoc + `"},"payload":{"ops":[]}}`
+		foreign := `{"ref":{"object":"node","id":"n1"},"container":{"kind":"project","id":"another-doc"},"payload":{"ops":[]}}`
+		fx.setRequests(t,
+			canUseTool("r2", "tu2", "mcp__claude_ai_Claude_Docs__update", "claude.ai Claude Docs", own),
+			canUseTool("r3", "tu3", "mcp__claude_ai_Claude_Docs__update", "claude.ai Claude Docs", foreign),
+		)
+		h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "edit both"})
+		wait := h.next(EventToolWait)
+		assert.Equal(t, "tu3", wait.ID, "only the foreign doc's edit waits")
+		require.True(t, fx.sink.reject(wait.ActionID))
+		h.next(EventTurnDone)
+		require.NoError(t, h.finish())
 
-	answers := fx.controlAnswers(t)
-	assert.Equal(t, "allow", behavior(t, answers["r1"][0]))
-	assert.Equal(t, "allow", behavior(t, answers["r2"][0]))
-	assert.Equal(t, "deny", behavior(t, answers["r3"][0]))
-	assert.Equal(t, 1, fx.sink.count())
+		answers := fx.controlAnswers(t)
+		assert.Equal(t, "allow", behavior(t, answers["r1"][0]))
+		assert.Equal(t, "allow", behavior(t, answers["r2"][0]))
+		assert.Equal(t, "deny", behavior(t, answers["r3"][0]))
+		assert.Equal(t, 1, fx.sink.count())
+	})
 }
 
 // pipeProc is a claudeProc whose stdin is a pipe the test reads.
@@ -825,7 +857,7 @@ func pipeProc(t *testing.T) (*claudeProc, *os.File) {
 	r, w, err := os.Pipe()
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = r.Close(); _ = w.Close() })
-	return &claudeProc{stdin: w, events: make(chan Event, 16), exited: make(chan struct{}), stop: make(chan struct{})}, r
+	return &claudeProc{stdin: w, writeLock: make(chan struct{}, 1), events: make(chan Event, 16), exited: make(chan struct{}), stop: make(chan struct{})}, r
 }
 
 func readLine(t *testing.T, r *os.File) string {
@@ -836,13 +868,8 @@ func readLine(t *testing.T, r *os.File) string {
 		n, _ := r.Read(buf)
 		done <- string(buf[:n])
 	}()
-	select {
-	case s := <-done:
-		return s
-	case <-time.After(5 * time.Second):
-		t.Fatal("no line written to the CLI")
-		return ""
-	}
+	s := <-done
+	return s
 }
 
 func TestGate_RouteControlAnswersEveryRequest(t *testing.T) {
@@ -862,100 +889,102 @@ func TestGate_RouteControlAnswersEveryRequest(t *testing.T) {
 }
 
 func TestGate_StopDuringAStatusReadNeverClaims(t *testing.T) {
-	fx := gateFake(t, gmailSend("r1", "tu1"))
-	entered, release := make(chan struct{}), make(chan struct{})
-	var once sync.Once
-	b := NewClaudeBackend(fx.opts)
-	t.Cleanup(func() { _ = b.Close() })
-	_, err := b.Start(context.Background())
-	require.NoError(t, err)
-	turnDone := make(chan error, 1)
-	go func() { turnDone <- b.Turn(context.Background(), Command{TurnID: "t1", Text: "send"}, func(Event) {}) }()
-	fx.sink.waitRows(t, 1)
+	synctest.Test(t, func(t *testing.T) {
+		fx := gateFake(t, gmailSend("r1", "tu1"))
+		entered, release := make(chan struct{}), make(chan struct{})
+		var once sync.Once
+		b := NewClaudeBackend(fx.opts)
+		t.Cleanup(func() { _ = b.Close() })
+		_, err := b.Start(context.Background())
+		require.NoError(t, err)
+		turnDone := make(chan error, 1)
+		go func() { turnDone <- b.Turn(context.Background(), Command{TurnID: "t1", Text: "send"}, func(Event) {}) }()
+		fx.sink.waitRows(t, 1)
 
-	// The owner approves; the read that sees it is still in flight when the
-	// owner presses Stop.
-	fx.sink.mu.Lock()
-	fx.sink.beforeStatus = func(int64) {
-		once.Do(func() {
-			close(entered)
-			<-release
+		// The owner approves; the read that sees it is still in flight when the
+		// owner presses Stop.
+		fx.sink.mu.Lock()
+		fx.sink.beforeStatus = func(int64) {
+			once.Do(func() {
+				close(entered)
+				<-release
+			})
+		}
+		fx.sink.mu.Unlock()
+		require.True(t, fx.sink.approve(1, ""))
+		<-entered
+		cancelled := make(chan struct{})
+		go func() { _ = b.Cancel(); close(cancelled) }()
+		waitUntil(t, "the stop to reach the gate", func() bool {
+			g := b.(*claudeBackend).gate
+			g.mu.Lock()
+			defer g.mu.Unlock()
+			return g.halted
 		})
-	}
-	fx.sink.mu.Unlock()
-	require.True(t, fx.sink.approve(1, ""))
-	<-entered
-	cancelled := make(chan struct{})
-	go func() { _ = b.Cancel(); close(cancelled) }()
-	waitUntil(t, "the stop to reach the gate", func() bool {
-		g := b.(*claudeBackend).gate
-		g.mu.Lock()
-		defer g.mu.Unlock()
-		return g.halted
-	})
-	close(release)
-	<-cancelled
-	select {
-	case <-turnDone:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the turn did not end after Stop")
-	}
-	require.NoError(t, b.Close())
+		close(release)
+		<-cancelled
+		<-turnDone
+		require.NoError(t, b.Close())
 
-	row := fx.sink.row(1)
-	assert.Equal(t, "failed", row.status, "approved but stopped: expired, never claimed")
-	assert.Equal(t, reasonStopped, row.reason, "the card reads it as Chat stopped — not sent")
-	answers := fx.controlAnswers(t)["r1"]
-	require.Len(t, answers, 1)
-	assert.Equal(t, denyStopped, denyMessage(t, answers[0]))
+		row := fx.sink.row(1)
+		assert.Equal(t, "failed", row.status, "approved but stopped: expired, never claimed")
+		assert.Equal(t, reasonStopped, row.reason, "the card reads it as Chat stopped — not sent")
+		answers := fx.controlAnswers(t)["r1"]
+		require.Len(t, answers, 1)
+		assert.Equal(t, denyStopped, denyMessage(t, answers[0]))
+	})
 }
 
 func TestGate_WithdrawnBeforeTheRowExistsNeverWaits(t *testing.T) {
-	sink := newFakeSink()
-	entered, release := make(chan struct{}), make(chan struct{})
-	sink.beforePropose = func() { close(entered); <-release }
-	g, err := newGate(GateOptions{Sink: sink, Policy: connectorpolicy.Policy{Disabled: map[string]bool{}},
-		PollInterval: 10 * time.Millisecond}, func() string { return "t1" }, io.Discard)
-	require.NoError(t, err)
-	g.catalog.set(testCatalog(t))
-	p, r := pipeProc(t)
-	req, ok := parseControlRequest([]byte(gmailSend("r1", "tu1")))
-	require.True(t, ok)
+	synctest.Test(t, func(t *testing.T) {
+		sink := newFakeSink()
+		entered, release := make(chan struct{}), make(chan struct{})
+		sink.beforePropose = func() { close(entered); <-release }
+		g, err := newGate(GateOptions{Sink: sink, Policy: connectorpolicy.Policy{Disabled: map[string]bool{}},
+			PollInterval: 10 * time.Millisecond}, func() string { return "t1" }, io.Discard)
+		require.NoError(t, err)
+		g.catalog.set(testCatalog(t))
+		p, r := pipeProc(t)
+		req, ok := parseControlRequest([]byte(gmailSend("r1", "tu1")))
+		require.True(t, ok)
 
-	g.dispatch(p, req)
-	<-entered
-	g.withdraw("r1") // the CLI withdrew it while the row was being written
-	close(release)
-	waitUntil(t, "the row to settle", func() bool { return sink.row(1).status == "rejected" })
-	assert.Equal(t, "stopped", sink.row(1).reason)
-	require.NoError(t, p.stdin.Close())
-	rest, _ := io.ReadAll(r)
-	assert.Empty(t, string(rest), "a withdrawn request gets no answer")
+		g.dispatch(p, req)
+		<-entered
+		g.withdraw("r1") // the CLI withdrew it while the row was being written
+		close(release)
+		waitUntil(t, "the row to settle", func() bool { return sink.row(1).status == "rejected" })
+		assert.Equal(t, "stopped", sink.row(1).reason)
+		require.NoError(t, p.stdin.Close())
+		rest, _ := io.ReadAll(r)
+		assert.Empty(t, string(rest), "a withdrawn request gets no answer")
+	})
 }
 
 func TestGate_ApprovedForeignUpdateIsNoStandingGrant(t *testing.T) {
-	const foreign = "https://claude.ai/artifact/ForeignQQQQQQQQQQQQQQQ"
-	fx := gateFake(t)
-	update := `{"action":"publish","url":"` + foreign + `","file_path":"` + filepath.Join(fx.pub.Path(), "p.html") + `"}`
-	fx.setRequests(t, canUseTool("r1", "tu1", "Artifact", "", update))
-	fx.opts.Env = append(fx.opts.Env, "FAKE_GATE_RESULT=Updated "+foreign)
-	h := startSession(t, NewClaudeBackend(fx.opts), nil)
-	h.next(EventSessionReady)
-	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "update it"})
-	wait := h.next(EventToolWait)
-	require.True(t, fx.sink.approve(wait.ActionID, ""))
-	end := h.next(EventToolEnd)
-	require.NotNil(t, end.OK)
-	assert.True(t, *end.OK)
-	h.next(EventTurnDone)
+	synctest.Test(t, func(t *testing.T) {
+		const foreign = "https://claude.ai/artifact/ForeignQQQQQQQQQQQQQQQ"
+		fx := gateFake(t)
+		update := `{"action":"publish","url":"` + foreign + `","file_path":"` + filepath.Join(fx.pub.Path(), "p.html") + `"}`
+		fx.setRequests(t, canUseTool("r1", "tu1", "Artifact", "", update))
+		fx.opts.Env = append(fx.opts.Env, "FAKE_GATE_RESULT=Updated "+foreign)
+		h := startSession(t, NewClaudeBackend(fx.opts), nil)
+		h.next(EventSessionReady)
+		h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "update it"})
+		wait := h.next(EventToolWait)
+		require.True(t, fx.sink.approve(wait.ActionID, ""))
+		end := h.next(EventToolEnd)
+		require.NotNil(t, end.OK)
+		assert.True(t, *end.OK)
+		h.next(EventTurnDone)
 
-	fx.setRequests(t, canUseTool("r2", "tu2", "Artifact", "", update))
-	h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "update it again"})
-	again := h.next(EventToolWait)
-	assert.Equal(t, "tu2", again.ID, "the second update of a page this chat did not publish asks again")
-	require.True(t, fx.sink.reject(again.ActionID))
-	h.next(EventTurnDone)
-	require.NoError(t, h.finish())
+		fx.setRequests(t, canUseTool("r2", "tu2", "Artifact", "", update))
+		h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "update it again"})
+		again := h.next(EventToolWait)
+		assert.Equal(t, "tu2", again.ID, "the second update of a page this chat did not publish asks again")
+		require.True(t, fx.sink.reject(again.ActionID))
+		h.next(EventTurnDone)
+		require.NoError(t, h.finish())
+	})
 }
 
 // claimedByGate reports whether the gate holds toolUseID as claimed: the
@@ -979,82 +1008,90 @@ func unitGate(t *testing.T, sink *fakeSink) (*gate, *claudeProc, *os.File) {
 }
 
 func TestGate_ApprovedFreshDocIsNotTheSessionsOwn(t *testing.T) {
-	const newDoc = "3f2a9c1e-5b7d-4e8a-9c21-7d4e5f6a8b90"
-	// A birth that mentions someone asks; the owner approves it.
-	birth := `{"container":{"kind":"project","create":{"name":"Plan","doc":{"blocks":{"m":{"type":"mention","user":"someone@example.com"}},"markdown":"# Plan"}}},"batch":[]}`
-	fx := gateFake(t, canUseTool("r1", "tu1", "mcp__claude_ai_Claude_Docs__batch", "claude.ai Claude Docs", birth))
-	fx.opts.Env = append(fx.opts.Env, "FAKE_GATE_RESULT=created https://claude.ai/artifact/Plan-"+newDoc)
-	h := startSession(t, NewClaudeBackend(fx.opts), nil)
-	h.next(EventSessionReady)
-	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "make a doc"})
-	wait := h.next(EventToolWait)
-	require.True(t, fx.sink.approve(wait.ActionID, ""))
-	h.next(EventTurnDone)
+	synctest.Test(t, func(t *testing.T) {
+		const newDoc = "3f2a9c1e-5b7d-4e8a-9c21-7d4e5f6a8b90"
+		// A birth that mentions someone asks; the owner approves it.
+		birth := `{"container":{"kind":"project","create":{"name":"Plan","doc":{"blocks":{"m":{"type":"mention","user":"someone@example.com"}},"markdown":"# Plan"}}},"batch":[]}`
+		fx := gateFake(t, canUseTool("r1", "tu1", "mcp__claude_ai_Claude_Docs__batch", "claude.ai Claude Docs", birth))
+		fx.opts.Env = append(fx.opts.Env, "FAKE_GATE_RESULT=created https://claude.ai/artifact/Plan-"+newDoc)
+		h := startSession(t, NewClaudeBackend(fx.opts), nil)
+		h.next(EventSessionReady)
+		h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "make a doc"})
+		wait := h.next(EventToolWait)
+		require.True(t, fx.sink.approve(wait.ActionID, ""))
+		h.next(EventTurnDone)
 
-	update := `{"ref":{"object":"node","id":"n1"},"container":{"kind":"project","id":"` + newDoc + `"},"payload":{"ops":[]}}`
-	fx.setRequests(t, canUseTool("r2", "tu2", "mcp__claude_ai_Claude_Docs__update", "claude.ai Claude Docs", update))
-	h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "edit it"})
-	again := h.next(EventToolWait)
-	assert.Equal(t, "tu2", again.ID, "a doc an approved call made is not free to edit")
-	require.True(t, fx.sink.reject(again.ActionID))
-	h.next(EventTurnDone)
-	require.NoError(t, h.finish())
+		update := `{"ref":{"object":"node","id":"n1"},"container":{"kind":"project","id":"` + newDoc + `"},"payload":{"ops":[]}}`
+		fx.setRequests(t, canUseTool("r2", "tu2", "mcp__claude_ai_Claude_Docs__update", "claude.ai Claude Docs", update))
+		h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "edit it"})
+		again := h.next(EventToolWait)
+		assert.Equal(t, "tu2", again.ID, "a doc an approved call made is not free to edit")
+		require.True(t, fx.sink.reject(again.ActionID))
+		h.next(EventTurnDone)
+		require.NoError(t, h.finish())
+	})
 }
 
 func TestGate_ClaimedCallOfAGoneChildIsOfUnknownOutcome(t *testing.T) {
-	sink := newFakeSink()
-	g, p, _ := unitGate(t, sink)
-	req, ok := parseControlRequest([]byte(gmailSend("r1", "tu1")))
-	require.True(t, ok)
-	g.dispatch(p, req)
-	sink.waitRows(t, 1)
-	require.True(t, sink.approve(1, ""))
-	waitUntil(t, "the claim", func() bool { return claimedByGate(g, "tu1") })
+	synctest.Test(t, func(t *testing.T) {
+		sink := newFakeSink()
+		g, p, _ := unitGate(t, sink)
+		req, ok := parseControlRequest([]byte(gmailSend("r1", "tu1")))
+		require.True(t, ok)
+		g.dispatch(p, req)
+		sink.waitRows(t, 1)
+		require.True(t, sink.approve(1, ""))
+		waitUntil(t, "the claim", func() bool { return claimedByGate(g, "tu1") })
 
-	g.procGone(p) // the child died before its tool_result
-	row := sink.row(1)
-	assert.Equal(t, "failed", row.status)
-	assert.Equal(t, "session ended while the call ran; outcome unknown", row.callErr)
-	assert.Equal(t, 1, row.finishes)
-	g.onResult(toolResult{toolUseID: "tu1", text: "late"})
-	assert.Equal(t, 1, sink.row(1).finishes, "a late result records nothing twice")
+		g.procGone(p) // the child died before its tool_result
+		row := sink.row(1)
+		assert.Equal(t, "failed", row.status)
+		assert.Equal(t, "session ended while the call ran; outcome unknown", row.callErr)
+		assert.Equal(t, 1, row.finishes)
+		g.onResult(toolResult{toolUseID: "tu1", text: "late"})
+		assert.Equal(t, 1, sink.row(1).finishes, "a late result records nothing twice")
+	})
 }
 
 func TestGate_StopRightAfterTheClaimSendsNothing(t *testing.T) {
-	sink := newFakeSink()
-	g, p, r := unitGate(t, sink)
-	sink.afterClaim = func(int64) { g.withdraw("r1") }
-	req, ok := parseControlRequest([]byte(gmailSend("r1", "tu1")))
-	require.True(t, ok)
-	g.dispatch(p, req)
-	sink.waitRows(t, 1)
-	require.True(t, sink.approve(1, ""))
-	waitUntil(t, "the claimed call to settle", func() bool { return sink.row(1).finishes == 1 })
+	synctest.Test(t, func(t *testing.T) {
+		sink := newFakeSink()
+		g, p, r := unitGate(t, sink)
+		sink.afterClaim = func(int64) { g.withdraw("r1") }
+		req, ok := parseControlRequest([]byte(gmailSend("r1", "tu1")))
+		require.True(t, ok)
+		g.dispatch(p, req)
+		sink.waitRows(t, 1)
+		require.True(t, sink.approve(1, ""))
+		waitUntil(t, "the claimed call to settle", func() bool { return sink.row(1).finishes == 1 })
 
-	row := sink.row(1)
-	assert.Equal(t, "failed", row.status)
-	assert.Equal(t, reasonStopped, row.callErr, "the card reads it as Chat stopped — not sent")
-	require.NoError(t, p.stdin.Close())
-	rest, _ := io.ReadAll(r)
-	assert.NotContains(t, string(rest), `"allow"`, "no allow after the stop")
+		row := sink.row(1)
+		assert.Equal(t, "failed", row.status)
+		assert.Equal(t, reasonStopped, row.callErr, "the card reads it as Chat stopped — not sent")
+		require.NoError(t, p.stdin.Close())
+		rest, _ := io.ReadAll(r)
+		assert.NotContains(t, string(rest), `"allow"`, "no allow after the stop")
+	})
 }
 
 // A child gone right after the claim is a session end, not a Stop: the card
 // says the chat session ended.
 func TestGate_ChildGoneRightAfterTheClaimIsASessionEnd(t *testing.T) {
-	sink := newFakeSink()
-	g, p, _ := unitGate(t, sink)
-	sink.afterClaim = func(int64) { close(p.exited) }
-	req, ok := parseControlRequest([]byte(gmailSend("r1", "tu1")))
-	require.True(t, ok)
-	g.dispatch(p, req)
-	sink.waitRows(t, 1)
-	require.True(t, sink.approve(1, ""))
-	waitUntil(t, "the claimed call to settle", func() bool { return sink.row(1).finishes == 1 })
+	synctest.Test(t, func(t *testing.T) {
+		sink := newFakeSink()
+		g, p, _ := unitGate(t, sink)
+		sink.afterClaim = func(int64) { close(p.exited) }
+		req, ok := parseControlRequest([]byte(gmailSend("r1", "tu1")))
+		require.True(t, ok)
+		g.dispatch(p, req)
+		sink.waitRows(t, 1)
+		require.True(t, sink.approve(1, ""))
+		waitUntil(t, "the claimed call to settle", func() bool { return sink.row(1).finishes == 1 })
 
-	row := sink.row(1)
-	assert.Equal(t, "failed", row.status)
-	assert.Equal(t, reasonSessionEnded, row.callErr)
+		row := sink.row(1)
+		assert.Equal(t, "failed", row.status)
+		assert.Equal(t, reasonSessionEnded, row.callErr)
+	})
 }
 
 // stopTestCall is r1/tu1 as the gate received it, with its pending row.
@@ -1146,45 +1183,47 @@ func TestGate_StopRightAfterTheClaimKeepsTheSnapshot(t *testing.T) {
 		"child already exited":    {true, reasonSessionEnded, false},
 	} {
 		t.Run(name, func(t *testing.T) {
-			sink := newFakeSink()
-			g, p, r := unitGate(t, sink)
-			halted := make(chan struct{})
-			sink.afterClaim = func(int64) {
-				g.mu.Lock()
-				w := g.waits["r1"]
-				g.mu.Unlock()
-				if tc.exitedBeforeStop {
-					close(p.exited)
+			synctest.Test(t, func(t *testing.T) {
+				sink := newFakeSink()
+				g, p, r := unitGate(t, sink)
+				halted := make(chan struct{})
+				sink.afterClaim = func(int64) {
+					g.mu.Lock()
+					w := g.waits["r1"]
+					g.mu.Unlock()
+					if tc.exitedBeforeStop {
+						close(p.exited)
+					}
+					go func() { g.halt(false); close(halted) }()
+					<-w.stop
+					if !tc.exitedBeforeStop {
+						close(p.stop) // Close stops the child after the stop
+						close(p.exited)
+					}
 				}
-				go func() { g.halt(false); close(halted) }()
-				<-w.stop
-				if !tc.exitedBeforeStop {
-					close(p.stop) // Close stops the child after the stop
-					close(p.exited)
-				}
-			}
-			req, ok := parseControlRequest([]byte(gmailSend("r1", "tu1")))
-			require.True(t, ok)
-			g.dispatch(p, req)
-			sink.waitRows(t, 1)
-			require.True(t, sink.approve(1, ""))
-			<-halted
-			waitUntil(t, "the request to settle", func() bool {
-				g.mu.Lock()
-				defer g.mu.Unlock()
-				return len(g.waits) == 0
-			})
+				req, ok := parseControlRequest([]byte(gmailSend("r1", "tu1")))
+				require.True(t, ok)
+				g.dispatch(p, req)
+				sink.waitRows(t, 1)
+				require.True(t, sink.approve(1, ""))
+				<-halted
+				waitUntil(t, "the request to settle", func() bool {
+					g.mu.Lock()
+					defer g.mu.Unlock()
+					return len(g.waits) == 0
+				})
 
-			row := sink.row(1)
-			assert.Equal(t, "failed", row.status)
-			assert.Equal(t, tc.reason, row.callErr)
-			out := cliAnswers(t, p, r)
-			assert.NotContains(t, out, `"allow"`)
-			if tc.denied {
-				assert.Contains(t, out, denyStopped)
-			} else {
-				assert.Empty(t, out)
-			}
+				row := sink.row(1)
+				assert.Equal(t, "failed", row.status)
+				assert.Equal(t, tc.reason, row.callErr)
+				out := cliAnswers(t, p, r)
+				assert.NotContains(t, out, `"allow"`)
+				if tc.denied {
+					assert.Contains(t, out, denyStopped)
+				} else {
+					assert.Empty(t, out)
+				}
+			})
 		})
 	}
 }
@@ -1197,19 +1236,21 @@ func TestGate_ErrorResultLandsFailed(t *testing.T) {
 		"blank text": {"  \n", "the connector call failed"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			sink := newFakeSink()
-			g, p, _ := unitGate(t, sink)
-			req, ok := parseControlRequest([]byte(gmailSend("r1", "tu1")))
-			require.True(t, ok)
-			g.dispatch(p, req)
-			sink.waitRows(t, 1)
-			require.True(t, sink.approve(1, ""))
-			waitUntil(t, "the claim", func() bool { return claimedByGate(g, "tu1") })
+			synctest.Test(t, func(t *testing.T) {
+				sink := newFakeSink()
+				g, p, _ := unitGate(t, sink)
+				req, ok := parseControlRequest([]byte(gmailSend("r1", "tu1")))
+				require.True(t, ok)
+				g.dispatch(p, req)
+				sink.waitRows(t, 1)
+				require.True(t, sink.approve(1, ""))
+				waitUntil(t, "the claim", func() bool { return claimedByGate(g, "tu1") })
 
-			g.onResult(toolResult{toolUseID: "tu1", text: tc.text, isError: true})
-			row := sink.row(1)
-			assert.Equal(t, "failed", row.status)
-			assert.Equal(t, tc.want, row.callErr)
+				g.onResult(toolResult{toolUseID: "tu1", text: tc.text, isError: true})
+				row := sink.row(1)
+				assert.Equal(t, "failed", row.status)
+				assert.Equal(t, tc.want, row.callErr)
+			})
 		})
 	}
 }
@@ -1217,54 +1258,60 @@ func TestGate_ErrorResultLandsFailed(t *testing.T) {
 // A request the policy would allow that reaches the gate after Stop, before
 // the CLI's interrupt, is denied.
 func TestGate_AllowAfterStopIsDenied(t *testing.T) {
-	sink := newFakeSink()
-	g, p, r := unitGate(t, sink)
-	g.halt(false)
-	req, ok := parseControlRequest([]byte(canUseTool("r1", "tu1", "mcp__claude_ai_Claude_Docs__read",
-		"claude.ai Claude Docs", `{"ref":{"object":"project","id":"some-doc"}}`)))
-	require.True(t, ok)
-	g.dispatch(p, req)
-	waitUntil(t, "the answer", func() bool {
-		g.mu.Lock()
-		defer g.mu.Unlock()
-		return len(g.waits) == 0
+	synctest.Test(t, func(t *testing.T) {
+		sink := newFakeSink()
+		g, p, r := unitGate(t, sink)
+		g.halt(false)
+		req, ok := parseControlRequest([]byte(canUseTool("r1", "tu1", "mcp__claude_ai_Claude_Docs__read",
+			"claude.ai Claude Docs", `{"ref":{"object":"project","id":"some-doc"}}`)))
+		require.True(t, ok)
+		g.dispatch(p, req)
+		waitUntil(t, "the answer", func() bool {
+			g.mu.Lock()
+			defer g.mu.Unlock()
+			return len(g.waits) == 0
+		})
+		require.NoError(t, p.stdin.Close())
+		out, _ := io.ReadAll(r)
+		assert.Contains(t, string(out), denyStopped)
+		assert.NotContains(t, string(out), `"allow"`)
 	})
-	require.NoError(t, p.stdin.Close())
-	out, _ := io.ReadAll(r)
-	assert.Contains(t, string(out), denyStopped)
-	assert.NotContains(t, string(out), `"allow"`)
 }
 
 func TestGate_DuplicateRequestIDIsDenied(t *testing.T) {
-	sink := newFakeSink()
-	g, p, r := unitGate(t, sink)
-	req, ok := parseControlRequest([]byte(gmailSend("r1", "tu1")))
-	require.True(t, ok)
-	g.dispatch(p, req)
-	sink.waitRows(t, 1)
-	g.dispatch(p, req)
-	line := readLine(t, r)
-	assert.Contains(t, line, `"behavior":"deny"`)
-	assert.Contains(t, line, "already being answered")
-	assert.Equal(t, 1, sink.count(), "the duplicate proposes nothing")
-	g.halt(true)
+	synctest.Test(t, func(t *testing.T) {
+		sink := newFakeSink()
+		g, p, r := unitGate(t, sink)
+		req, ok := parseControlRequest([]byte(gmailSend("r1", "tu1")))
+		require.True(t, ok)
+		g.dispatch(p, req)
+		sink.waitRows(t, 1)
+		g.dispatch(p, req)
+		line := readLine(t, r)
+		assert.Contains(t, line, `"behavior":"deny"`)
+		assert.Contains(t, line, "already being answered")
+		assert.Equal(t, 1, sink.count(), "the duplicate proposes nothing")
+		g.halt(true)
+	})
 }
 
 func TestGate_ChildDyingAfterTheClaimLeavesNoRowExecuting(t *testing.T) {
-	fx := gateFake(t, gmailSend("r1", "tu1"))
-	fx.opts.Env = append(fx.opts.Env, "FAKE_GATE_DIE_ON_ALLOW=1")
-	h := startSession(t, NewClaudeBackend(fx.opts), nil)
-	h.next(EventSessionReady)
-	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "send"})
-	wait := h.next(EventToolWait)
-	require.True(t, fx.sink.approve(wait.ActionID, ""))
-	h.next(EventError) // the child died mid-turn
+	synctest.Test(t, func(t *testing.T) {
+		fx := gateFake(t, gmailSend("r1", "tu1"))
+		fx.opts.Env = append(fx.opts.Env, "FAKE_GATE_DIE_ON_ALLOW=1")
+		h := startSession(t, NewClaudeBackend(fx.opts), nil)
+		h.next(EventSessionReady)
+		h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "send"})
+		wait := h.next(EventToolWait)
+		require.True(t, fx.sink.approve(wait.ActionID, ""))
+		h.next(EventError) // the child died mid-turn
 
-	// The warm session lives on; the call is settled without waiting for Close.
-	row := fx.sink.row(wait.ActionID)
-	assert.Equal(t, "failed", row.status)
-	assert.Equal(t, "session ended while the call ran; outcome unknown", row.callErr)
-	require.NoError(t, h.finish())
+		// The warm session lives on; the call is settled without waiting for Close.
+		row := fx.sink.row(wait.ActionID)
+		assert.Equal(t, "failed", row.status)
+		assert.Equal(t, "session ended while the call ran; outcome unknown", row.callErr)
+		require.NoError(t, h.finish())
+	})
 }
 
 // The card (WatchtowerCore ConnectorCallProposal) matches these texts
@@ -1280,18 +1327,20 @@ func TestGate_RowReasonTextsMatchTheCard(t *testing.T) {
 // must be committed before tool_wait goes out, and carry the protocol turn
 // id the Desktop sent.
 func TestGate_RowIsCommittedBeforeToolWait(t *testing.T) {
-	fx := gateFake(t, gmailSend("r1", "tu1"))
-	fx.sink.beforePropose = func() { time.Sleep(100 * time.Millisecond) } // a slow write
-	h := startSession(t, NewClaudeBackend(fx.opts), nil)
-	h.next(EventSessionReady)
-	h.send(Command{Type: CommandTurn, TurnID: "turn-from-desktop", Text: "send"})
-	wait := h.next(EventToolWait)
-	row := fx.sink.row(wait.ActionID)
-	assert.Equal(t, "pending", row.status, "the row exists when tool_wait arrives")
-	assert.Equal(t, "turn-from-desktop", row.call.TurnID)
-	require.True(t, fx.sink.reject(wait.ActionID))
-	h.next(EventTurnDone)
-	require.NoError(t, h.finish())
+	synctest.Test(t, func(t *testing.T) {
+		fx := gateFake(t, gmailSend("r1", "tu1"))
+		fx.sink.beforePropose = func() { time.Sleep(100 * time.Millisecond) } // a slow write
+		h := startSession(t, NewClaudeBackend(fx.opts), nil)
+		h.next(EventSessionReady)
+		h.send(Command{Type: CommandTurn, TurnID: "turn-from-desktop", Text: "send"})
+		wait := h.next(EventToolWait)
+		row := fx.sink.row(wait.ActionID)
+		assert.Equal(t, "pending", row.status, "the row exists when tool_wait arrives")
+		assert.Equal(t, "turn-from-desktop", row.call.TurnID)
+		require.True(t, fx.sink.reject(wait.ActionID))
+		h.next(EventTurnDone)
+		require.NoError(t, h.finish())
+	})
 }
 
 // A wait that looks between halt setting halted and its own stop signal gets
@@ -1323,30 +1372,32 @@ func TestGate_HaltReasonIsSetWithTheHaltedState(t *testing.T) {
 // with a reason (CHAT-02) and records the row as of unknown outcome, the
 // child staying up — never a row left executing until the session ends.
 func TestGate_SkippedResultLineSettlesTheCall(t *testing.T) {
-	old := maxWarmLine
-	maxWarmLine = 16 << 10
-	t.Cleanup(func() { maxWarmLine = old })
-	fx := gateFake(t, gmailSend("r1", "tu1"))
-	// The result rides in one environment string, which Linux caps at
-	// 128 KiB (MAX_ARG_STRLEN): a bigger one fails the child's exec, so
-	// the session would end before it is ready. Twice the cap is enough.
-	fx.opts.Env = append(fx.opts.Env, "FAKE_GATE_RESULT="+strings.Repeat("x", 2*maxWarmLine))
-	h := startSession(t, NewClaudeBackend(fx.opts), nil)
-	h.next(EventSessionReady)
-	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "send it"})
-	h.until(EventToolWait)
-	require.True(t, fx.sink.approve(1, ""))
-	end := h.next(EventToolEnd)
-	assert.Equal(t, "tu1", end.ID)
-	require.NotNil(t, end.OK)
-	assert.False(t, *end.OK)
-	assert.Equal(t, lostResultSummary, end.Summary)
-	h.next(EventUsage)
-	assert.Equal(t, StatusComplete, h.next(EventTurnDone).Status)
-	row := fx.sink.row(1)
-	assert.Equal(t, "failed", row.status)
-	assert.Equal(t, reasonOutcomeUnknown, row.callErr)
-	assert.Equal(t, 1, row.finishes)
-	assert.NoError(t, syscall.Kill(readPIDFile(t, fx.files.pid), 0), "the child stays up")
-	require.NoError(t, h.finish())
+	synctest.Test(t, func(t *testing.T) {
+		old := maxWarmLine
+		maxWarmLine = 16 << 10
+		t.Cleanup(func() { maxWarmLine = old })
+		fx := gateFake(t, gmailSend("r1", "tu1"))
+		// The result rides in one environment string, which Linux caps at
+		// 128 KiB (MAX_ARG_STRLEN): a bigger one fails the child's exec, so
+		// the session would end before it is ready. Twice the cap is enough.
+		fx.opts.Env = append(fx.opts.Env, "FAKE_GATE_RESULT="+strings.Repeat("x", 2*maxWarmLine))
+		h := startSession(t, NewClaudeBackend(fx.opts), nil)
+		h.next(EventSessionReady)
+		h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "send it"})
+		h.until(EventToolWait)
+		require.True(t, fx.sink.approve(1, ""))
+		end := h.next(EventToolEnd)
+		assert.Equal(t, "tu1", end.ID)
+		require.NotNil(t, end.OK)
+		assert.False(t, *end.OK)
+		assert.Equal(t, lostResultSummary, end.Summary)
+		h.next(EventUsage)
+		assert.Equal(t, StatusComplete, h.next(EventTurnDone).Status)
+		row := fx.sink.row(1)
+		assert.Equal(t, "failed", row.status)
+		assert.Equal(t, reasonOutcomeUnknown, row.callErr)
+		assert.Equal(t, 1, row.finishes)
+		assert.True(t, fx.files.cli.last().alive(), "the child stays up")
+		require.NoError(t, h.finish())
+	})
 }

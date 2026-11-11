@@ -23,7 +23,8 @@ final class SessionAgentStatusTests: XCTestCase {
         questions: Int? = nil,
         reviews: Int = 0,
         background: Int? = nil,
-        backgroundAt: String? = nil
+        backgroundAt: String? = nil,
+        shells: Int? = nil
     ) -> SessionAgentStateRow {
         // `questions` defaults to `openAsks`: a fixture that names no ask
         // kinds holds questions only, the one kind every ask was read as
@@ -32,7 +33,8 @@ final class SessionAgentStatusTests: XCTestCase {
         SessionAgentStateRow(id: 1, projectID: 7, title: "s", agentState: stored, agentStateAt: at, workbenchName: "acme",
                              finishedAt: finishedAt, agentFailedAt: failedAt, agentError: error, openAsks: openAsks,
                              openQuestionAsks: questions ?? openAsks, openReviewAsks: reviews,
-                             agentBackground: background, agentBackgroundAt: backgroundAt)
+                             agentBackground: background, agentBackgroundAt: backgroundAt,
+                             agentBackgroundShells: shells)
     }
 
     private func effective(
@@ -173,7 +175,7 @@ final class SessionAgentStatusTests: XCTestCase {
         let state = effective(.waiting, at: stamp(1), startedAt: started)
         XCTAssertEqual(state, .live(.stopped))
         XCTAssertEqual(SessionStatePresentation.color(for: state), .secondary)
-        XCTAssertEqual(SessionStatePresentation.caption(for: state, oldestAskID: nil), "Stopped")
+        XCTAssertEqual(SessionStatePresentation.caption(for: state, oldestAskID: nil), "Idle")
         let asked = SessionAgentStatus.effective(row: row("waiting", at: stamp(1), openAsks: 1), live: true,
                                                  startedAt: started, now: readAt)
         XCTAssertEqual(asked.kind, .waitingOnAsk)
@@ -427,6 +429,56 @@ final class SessionAgentStatusTests: XCTestCase {
                        .live(.background, backgroundAgents: 3), "a count above zero never ends on the Desktop's clock")
     }
 
+    /// PROJ-11 (#1712): a turn end with only background shells running (a
+    /// CI watch the agent waits on) is not Stopped: Claude Code wakes the
+    /// agent when the shell exits. The shells show for `shellCap` after
+    /// their report, never longer (a dev server never exits); agents above
+    /// zero still never end on the clock.
+    func testProj11_BackgroundShellsAreNotStopped() {
+        func shells(_ agents: Int?, _ shells: Int?, now: Date) -> SessionSwitcherPresentation.State {
+            let input = row("waiting", at: stamp(1), background: agents, backgroundAt: stamp(2), shells: shells)
+            return SessionAgentStatus.effective(row: input, live: true, startedAt: started, now: now)
+        }
+        let reported = started.addingTimeInterval(2)
+        let cap = SessionBackgroundPolicy.shellCap
+        XCTAssertEqual(shells(0, 1, now: reported.addingTimeInterval(600)), .live(.background, backgroundShells: 1))
+        XCTAssertTrue(shells(0, 1, now: reported.addingTimeInterval(600)).shellsOnly)
+        XCTAssertEqual(shells(0, 2, now: reported.addingTimeInterval(cap - 1)), .live(.background, backgroundShells: 2))
+        XCTAssertEqual(shells(0, 1, now: reported.addingTimeInterval(cap)), .live(.stopped), "a dev server ends at the cap")
+        XCTAssertEqual(shells(2, 1, now: reported.addingTimeInterval(cap + 60)), .live(.background, backgroundAgents: 2),
+                       "agents still count past the shell cap")
+        XCTAssertEqual(shells(1, 1, now: reported.addingTimeInterval(60)),
+                       .live(.background, backgroundAgents: 1, backgroundShells: 1))
+        XCTAssertEqual(shells(0, 0, now: reported.addingTimeInterval(600)), .live(.stopped), "no shells, grace over")
+        XCTAssertEqual(shells(0, nil, now: reported.addingTimeInterval(600)), .live(.stopped), "no shell column")
+        XCTAssertEqual(shells(nil, 1, now: reported.addingTimeInterval(60)), .live(.stopped),
+                       "shells never count without the Stop's count beside them")
+        let future = row("waiting", at: stamp(1), background: 0, backgroundAt: stamp(600), shells: 1)
+        XCTAssertEqual(SessionAgentStatus.effective(row: future, live: true, startedAt: started, now: readAt),
+                       .live(.stopped), "a report from the future")
+        let shown = row("waiting", at: stamp(1), background: 0, backgroundAt: stamp(2), shells: 1)
+        XCTAssertEqual(SessionAgentStatus.effective(row: shown, live: false, startedAt: started, now: readAt),
+                       .notStarted, "the session process exited: no background")
+        XCTAssertEqual(SessionAgentStatus.effective(row: shown, live: true, startedAt: started, now: readAt,
+                                                    displayOver: true),
+                       .live(.stopped), "two failed probes show the shells over too")
+    }
+
+    /// The shell cap and the probe's due time (#1712): shells alone are
+    /// probed after `staleAfter` like agents.
+    func testShellsRunAndNeedsProbeTable() {
+        let policy = SessionBackgroundPolicy.current
+        let at = started
+        XCTAssertTrue(policy.shellsRun(shells: 1, lastReport: at, now: at))
+        XCTAssertFalse(policy.shellsRun(shells: 0, lastReport: at, now: at))
+        XCTAssertFalse(policy.shellsRun(shells: 1, lastReport: at, now: at.addingTimeInterval(-1)), "future report")
+        XCTAssertFalse(policy.shellsRun(shells: 1, lastReport: at, now: at.addingTimeInterval(SessionBackgroundPolicy.shellCap)))
+        let stale = at.addingTimeInterval(SessionBackgroundPolicy.staleAfter)
+        XCTAssertTrue(policy.needsProbe(count: 0, shells: 1, lastReport: at, now: stale))
+        XCTAssertFalse(policy.needsProbe(count: 0, shells: 1, lastReport: at, now: stale.addingTimeInterval(-1)))
+        XCTAssertFalse(policy.needsProbe(count: 0, shells: 0, lastReport: at, now: stale))
+    }
+
     /// PROJ-11 (#411): an unreadable, missing or future report stamp, or no
     /// count, is no background.
     func testProj11_UnreadableOrFutureBackgroundStampIsNotBackground() {
@@ -536,7 +588,7 @@ final class SessionAgentStatusTests: XCTestCase {
         waiting.agentWatchIssue = "missing"
         let stopped = SessionAgentStatus.effective(row: waiting, live: true, startedAt: started, now: readAt)
         XCTAssertNil(stopped.watchIssue)
-        XCTAssertEqual(SessionStatePresentation.caption(for: stopped), "Stopped")
+        XCTAssertEqual(SessionStatePresentation.caption(for: stopped), "Idle")
         XCTAssertNil(SessionStatePresentation.watchIssueHelp(for: stopped))
 
         let plain = SessionAgentStatus.effective(row: row("working", at: stamp(1)), live: true, startedAt: started, now: readAt)

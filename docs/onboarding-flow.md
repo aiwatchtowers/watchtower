@@ -36,11 +36,17 @@ Customize screen never loses what was picked.
  │ 1. GOALS (purpose)                                               │
  │  goals: Work communication · Tasks & Jira · Meetings ·           │
  │         Development in Workbench   (default: all four)           │
- │  "Customize features →"  · assistant language row · AI CLI check │
- │  Continue blocked until `watchtower ai test` passes              │
- │  (ai.provider unset, no claude binary, Claude fails → `ai test   │
- │   --provider codex`; on success ai.provider + workbench agent    │
- │   := codex, wroteChanges — OnboardingCLIProbe)                   │
+ │  "Customize features →" · assistant language row · AI agent      │
+ │  section (Claude Code | Codex CLI tiles, owner's pick)           │
+ │  per agent: `ai which` finds the executable (none/forbidden →    │
+ │  no request); installed ones tested in parallel, `ai test        │
+ │  --cli-path` (OnboardingAgentCheck → OnboardingAgentChoice).     │
+ │  Signed out → sign-in terminal opens once by itself, closes on   │
+ │  success / leaving the step / quit; a too-old CLI updates first. │
+ │  Ollama set in Settings → one line, tested as before.            │
+ │  Continue blocked until the picked agent is ready; the check     │
+ │  never writes — Continue writes workbench.default_agent then     │
+ │  ai.provider when the pick differs from the configured one       │
  │  Continue: workspace init (no Slack yet) → history depth (unset) │
  │            → digest.language (if changed) → features             │
  └───────────────┬──────────────────────────────────────────────────┘

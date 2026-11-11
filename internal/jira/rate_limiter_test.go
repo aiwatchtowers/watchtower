@@ -4,27 +4,32 @@ import (
 	"context"
 	"net/http"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
+// Runs on the synctest bubble's clock: the refill wait is virtual time.
 func TestRateLimiter_Wait(t *testing.T) {
-	rl := NewRateLimiter()
+	synctest.Test(t, func(t *testing.T) {
+		rl := NewRateLimiter()
 
-	// Should be able to consume all 8 tokens immediately.
-	ctx := context.Background()
-	for range 8 {
+		// Should be able to consume all 8 tokens immediately.
+		ctx := context.Background()
+		start := time.Now()
+		for range 8 {
+			require.NoError(t, rl.Wait(ctx))
+		}
+		assert.Zero(t, time.Since(start), "a full bucket does not wait")
+
+		// The 9th waits for the refill: 8 tokens/s, polled every 50 ms, so the
+		// first whole token is there at the third poll.
+		start = time.Now()
 		require.NoError(t, rl.Wait(ctx))
-	}
-
-	// 9th should require waiting (tokens depleted).
-	start := time.Now()
-	require.NoError(t, rl.Wait(ctx))
-	elapsed := time.Since(start)
-	// Should have waited some time for token refill.
-	assert.Greater(t, elapsed, 10*time.Millisecond)
+		assert.Equal(t, 150*time.Millisecond, time.Since(start))
+	})
 }
 
 func TestRateLimiter_Wait_CancelledContext(t *testing.T) {

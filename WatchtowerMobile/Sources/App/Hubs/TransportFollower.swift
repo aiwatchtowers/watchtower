@@ -17,6 +17,21 @@ protocol TransportFollowerHost: AnyObject {
     func openSwitchKeybox(_ sealed: Data, hubID: String) async -> Keybox?
     /// Merges `keybox`'s epoch keys into the Keychain; false when they could not be stored.
     func mergeSwitchKeys(_ keybox: Keybox, hubID: String) async -> Bool
+    /// This phone's offer for the hub, drawn and saved when it holds none (`HubSession.relayOffer`); nil when no ack
+    /// would carry it or no link is stored. Throws while the Keychain is locked.
+    func relayOffer(hubID: String) async throws -> Data?
+    /// Erases the hub's two private ephemeral keys, stored pairs kept (`HubLinkKeys.clearingEphemeral`); false when the
+    /// Keychain could not be written.
+    func clearEphemeral(hubID: String) -> Bool
+    /// Erases the hub's private ephemeral keys and every stored pair (`HubLinkKeys.droppingEphemeral`): an opened
+    /// `hub_on_relay` proves the hub cleared them. false when the Keychain could not be written.
+    func dropEphemeral(hubID: String) -> Bool
+    /// The phone's relay key source is gone (a lapse, a lost slot, the hub's word that it runs without this phone):
+    /// the feed's parked mark goes and the feed stops silently at a pending record (`HubSession.keySourceGone`).
+    func relayKeySourceGone(hubID: String) async
+    /// The marks that took the key source away are gone (a marker toward the relay cleared `macMoved`): the feed reads
+    /// again unless another mark stands (`HubSession.keySourceBack`).
+    func relayKeySourceBack(hubID: String) async
     /// Saves `link` on its registry row in one write; false when it was not written.
     func persistRoute(_ link: LinkRecord) -> Bool
     /// Puts the hub's session on its row's route once the session's current fetch ended.
@@ -28,11 +43,15 @@ protocol TransportFollowerHost: AnyObject {
 /// (from `ReplicaHydrator`); the policy decides, this class acts on the hub's session and registry row.
 ///
 /// State: the route and the transport left are the registry row's (`LinkRecord.transport`, `leftTransport`, with
-/// `switchedBy` and `switchedAt`); the newest epoch is the Keychain's. A move is made crash-safe by its order:
+/// `switchedBy` and `switchedAt`); the newest epoch is the Keychain's. A move to the relay, or a `requestAnswered` naming
+/// the relay, ends a pending upgrade from iCloud as `switched` (`LinkRecord.relayUpgrade`, Phase 3b Task 19); while one
+/// waits, the policy takes a same-epoch `transport_switched{relay}` on iCloud as that move
+/// (`FollowerState.relaySwitchRequested`). A move is made crash-safe by its order:
 /// 1. the outbox stops writing (`holdFlushes`), then its unechoed actions are queued again for the new transport
 ///    (rule 13) or listed as Not delivered (R32);
 /// 2. the new route is written to the row, in one registry write;
-/// 3. the switch's keybox is merged;
+/// 3. the switch's keybox is merged; on iCloud the private ephemeral keys are erased right after it (relay client
+///    Phase 5: the hub cleared this phone's offer when it left the relay; stored pairs stay for resends);
 /// 4. only then is the control reported handled (the feed marks and deletes it), and the session is rebuilt on the
 ///    new route's own store once its fetch ended (`TransportFollowerHost.moveSession`): a new session on the same
 ///    replica, whose tokens reset at open (`ReplicaStore.adoptRoute`), so the outbox, controls, keys and the alert
@@ -44,7 +63,12 @@ final class TransportFollower {
     let hubID: String
     private let outbox: ActionOutbox
     private weak var host: (any TransportFollowerHost)?
-    private let now: () -> Date
+    private let now: @MainActor () -> Date
+    /// Executes the policy's `requestSwitch` (a lapse's request toward iCloud): set by the hub's `TransportRequester`.
+    var onRequestSwitch: (@MainActor (TransportKind, String) async -> Void)?
+    /// Called once a decision has ended `hubOnRelayAt` on the row (a later move, or the hub's answer for where it runs):
+    /// the session forgets the `hub_on_relay` it read (`HubSession.forgetHubOnRelay`), set by `AppRoot.wire`.
+    var onHubOnRelayEnded: (@MainActor () -> Void)?
     /// The opened keybox of each `transport_switched` being decided, by control id.
     private var keyboxes: [String: Keybox] = [:]
     /// The last decision started: each one waits for the one before (`handle(_:)`), so the feed, the hydrator and the
@@ -52,7 +76,7 @@ final class TransportFollower {
     private var lastDecision: Task<Bool, Never>?
     nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "TransportFollower")
 
-    init(hubID: String, outbox: ActionOutbox, host: any TransportFollowerHost, now: @escaping () -> Date = Date.init) {
+    init(hubID: String, outbox: ActionOutbox, host: any TransportFollowerHost, now: @escaping @MainActor () -> Date = Date.init) {
         self.hubID = hubID
         self.outbox = outbox
         self.host = host
@@ -116,13 +140,21 @@ final class TransportFollower {
         }
         let state = FollowerState(
             route: link.transport ?? .cloudKit, newestEpoch: epoch, canUseRelay: canUseRelay,
-            leftTransport: link.leftTransport)
+            leftTransport: link.leftTransport, relaySwitchRequested: Self.upgradeRequested(link),
+            hasOtherRoute: link.offersCloudKit, macMovedEpoch: link.macMoved)
         let (next, commands) = TransportFollowerPolicy.decide(input, state: state, now: now())
         guard !commands.isEmpty else {
             Self.logger.notice("transport input left for a later pass")
             return false
         }
-        return await execute(commands, next: next, link: link, input: input, host: host)
+        return await execute(commands, next: next, link: link, input: input, canUseRelay: canUseRelay, host: host)
+    }
+
+    /// An upgrade's `transport_switch{relay}` waits for its answer (relay client Phase 3b Task 19): the policy then
+    /// takes a same-epoch `transport_switched{relay}` on iCloud as the move (`FollowerState.relaySwitchRequested`).
+    private static func upgradeRequested(_ link: LinkRecord) -> Bool {
+        guard let upgrade = link.relayUpgrade else { return false }
+        return upgrade.isPending && upgrade.step == .requested
     }
 
     /// Asked only when the input could lead to the relay (the policy reads it nowhere else).
@@ -146,6 +178,26 @@ final class TransportFollower {
         var listUndelivered = false
         var handled = false
         var decided = false
+        var answered = false
+        var requestSwitch: (target: TransportKind, reason: String)?
+        var withdraw = false
+        var dropEphemeral = false
+        var refused: RelayRefusal?
+        /// A relay-only link read its Mac's move to iCloud in this epoch (S59).
+        var moved: UInt32?
+        var clearsMoved = false
+
+        /// Relay client Phase 5's commands: withdraw, drop the keys, start the term, mark or clear a move.
+        mutating func takeReaderStatus(_ command: FollowerCommand) {
+            switch command {
+            case .withdrawUnechoed: withdraw = true
+            case .dropEphemeral: dropEphemeral = true
+            case .markRefused(let cause): refused = cause
+            case .markMoved(let epoch): moved = epoch
+            case .clearMoved: clearsMoved = true
+            default: break
+            }
+        }
     }
 
     /// The commands gathered into one plan.
@@ -154,15 +206,21 @@ final class TransportFollower {
         for command in commands {
             switch command {
             case .mergeKeybox: plan.merge = true
-            case .requestAnswered: logger.notice("the hub answered on the transport the phone is on")
+            case .requestAnswered:
+                logger.notice("the hub answered on the transport the phone is on")
+                plan.answered = true
             case let .moveRoute(to, _, by, at): plan.move = (to, by, at)
             case .resendUnechoedOnNewTransport: plan.resend = true
             case .sendEpochAck(let epoch): plan.ack = epoch
             case .listUnechoedAsUndelivered: plan.listUndelivered = true
             case .drainMailbox(let kind): logger.notice("the \(kind.rawValue, privacy: .public) mailbox is left to drain")
             case .pollOtherMailbox: break
+            case let .requestSwitch(target, reason):
+                plan.requestSwitch = (target, reason)
+                plan.decided = true
             case .markHandled: plan.handled = true
             case .ignore: plan.decided = true
+            case .withdrawUnechoed, .dropEphemeral, .markRefused, .markMoved, .clearMoved: plan.takeReaderStatus(command)
             }
         }
         return plan
@@ -173,6 +231,7 @@ final class TransportFollower {
         next: FollowerState,
         link: LinkRecord,
         input: FollowerInput,
+        canUseRelay: RelayUse,
         host: any TransportFollowerHost
     ) async -> Bool {
         let plan = Self.plan(commands)
@@ -183,17 +242,24 @@ final class TransportFollower {
             return false
         }
         guard await moveOutbox(plan, moves: moves) else { return false }
-        if let move = plan.move, !persist(move, next: next, link: link, host: host) {
+        await keySource(input, plan, host: host)
+        let effects = RequestEffects(plan: plan, moves: moves)
+        if let move = plan.move, !persist(move, next: next, effects: effects, host: host) {
             // Nothing moved: the session goes on on its route, so its outbox writes there again.
             if moves { await outbox.releaseFlushes() }
             return false
         }
+        if plan.move == nil, !persistRequestState(effects, host: host) { return false }
+        hubOnRelayEnded(effects)
         if plan.merge {
             guard case let .switched(_, _, _, _, _, controlID, _) = input, let keybox = keyboxes[controlID],
                   await host.mergeSwitchKeys(keybox, hubID: hubID) else { return false }
         }
+        // After the merge, so a kill before it keeps the keys the keybox may be sealed to. A pass read again after a
+        // failed clear answers `requestAnswered` on iCloud and clears then.
+        guard eraseKeys(plan, next: next, input: input, host: host) else { return false }
         if let ack = plan.ack, let newest = host.newestEpoch(hubID: hubID), newest >= ack {
-            await acknowledge(ack)
+            await acknowledge(ack, offering: next.route == .relay, host: host)
         }
         if moves {
             Self.logger.notice("the hub moved to \(next.route.rawValue, privacy: .public) in epoch \(next.newestEpoch, privacy: .public)")
@@ -204,14 +270,35 @@ final class TransportFollower {
         if plan.move != nil {
             host.moveSession(hubID: hubID)
         }
+        if plan.answered, case .switched(.relay, _, _, _, _, _, _) = input, !upgradeAnswered(host: host) { return false }
+        if let ask = plan.requestSwitch { await onRequestSwitch?(ask.target, ask.reason) }
+        if plan.clearsMoved { await host.relayKeySourceBack(hubID: hubID) }
         if case .marker = input { return true }
         return plan.handled || plan.decided
+    }
+
+    /// Once the row no longer holds `hubOnRelayAt`, the session forgets the `hub_on_relay` it read.
+    private func hubOnRelayEnded(_ effects: RequestEffects) {
+        guard effects.clearsHubOnRelay else { return }
+        onHubOnRelayEnded?()
+    }
+
+    /// The hub answered a pending upgrade's request that it runs on the relay, where the phone already is (relay client
+    /// Phase 3b Task 19): the upgrade ends as `switched`. An answer naming iCloud is no switch and leaves it waiting. false when the row could not be written (the control is read again).
+    private func upgradeAnswered(host: any TransportFollowerHost) -> Bool {
+        guard var link = host.followerLink(hubID: hubID), var upgrade = link.relayUpgrade, upgrade.isPending,
+              upgrade.step == .requested else { return true }
+        upgrade.step = .switched
+        link.relayUpgrade = upgrade
+        return host.persistRoute(link)
     }
 
     /// Step 1: on a move the outbox stops writing; unechoed actions go back to the queue for the new transport, or
     /// to Not delivered. false when the replica could not be written.
     private func moveOutbox(_ plan: Plan, moves: Bool) async -> Bool {
         do {
+            // Before anything is listed: a withdrawn action can never be applied, so its Retry cannot run it twice.
+            if plan.withdraw { try await outbox.withdrawUnechoed() }
             if moves { await outbox.holdFlushes() }
             if plan.resend, let target = plan.move?.to { try await outbox.resendUnechoed(onNewTransport: target) }
             if plan.listUndelivered { try await outbox.listUnechoedAsUndelivered(reason: .hubOnRelay) }
@@ -224,12 +311,50 @@ final class TransportFollower {
         }
     }
 
-    /// Queued in the replica: on a move, the new session's outbox writes it on the new transport.
-    private func acknowledge(_ epoch: UInt32) async {
+    /// Queued in the replica: on a move, the new session's outbox writes it on the new transport. On the relay it
+    /// carries this phone's offer, saved before the ack is queued (relay client Phase 5); on iCloud none. An offer
+    /// that cannot be drawn (locked) queues no ack: the new session's boot sends it with the offer.
+    private func acknowledge(_ epoch: UInt32, offering: Bool, host: any TransportFollowerHost) async {
         do {
-            try await outbox.enqueueEpochAck(epoch: epoch)
+            let nextKX: Data?
+            if offering {
+                guard let offer = try await host.relayOffer(hubID: hubID) else { return }
+                nextKX = offer
+            } else {
+                nextKX = nil
+            }
+            try await outbox.enqueueEpochAck(epoch: epoch, nextKX: nextKX)
         } catch {
             Self.logger.warning("epoch_ack not queued: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    /// After the merge, so a kill before it keeps the keys the keybox may be sealed to: an opened `hub_on_relay` drops
+    /// every relay key (the hub cleared them before it wrote the notice); a follow to iCloud erases the private keys,
+    /// stored pairs kept; a lost slot erases nothing. false when the Keychain could not be written.
+    private func eraseKeys(_ plan: Plan, next: FollowerState, input: FollowerInput, host: any TransportFollowerHost) -> Bool {
+        if plan.dropEphemeral { return host.dropEphemeral(hubID: hubID) }
+        guard next.route == .cloudKit, plan.move != nil || plan.answered || plan.merge, !Self.keepsKeys(input) else { return true }
+        return host.clearEphemeral(hubID: hubID)
+    }
+
+    /// A lapse, a lost slot or the hub's word that it runs without this phone ends its relay key source.
+    private func keySource(_ input: FollowerInput, _ plan: Plan, host: any TransportFollowerHost) async {
+        if Self.endsKeySource(input, plan) { await host.relayKeySourceGone(hubID: hubID) }
+    }
+
+    /// A lost slot erases no key, even when the phone moves to iCloud for it: the hub may not have acted yet, and a slot
+    /// given back meanwhile must still open a keybox sealed to the offer (F17). Its `hub_on_relay` drops them later.
+    private static func keepsKeys(_ input: FollowerInput) -> Bool {
+        if case .slotLost = input { return true }
+        return false
+    }
+
+    /// A lapse, a lost slot or the hub's word that it runs without this phone ends its relay key source.
+    private static func endsKeySource(_ input: FollowerInput, _ plan: Plan) -> Bool {
+        switch input {
+        case .relayLapsed, .slotLost: true
+        default: plan.listUndelivered || plan.moved != nil
         }
     }
 
@@ -247,19 +372,29 @@ final class TransportFollower {
     }
 
     /// The row takes the route, who switched and when, and the transport left, in one write (`refusal` checked
-    /// first).
+    /// first). Applied to the row as it stands now, not the one read before the move's awaits: a newer write meanwhile
+    /// (an answered account read clearing `relayRefused`, the term's `termReadAt`) is kept, as the writers table
+    /// says the newest event wins. No row left (unlinked meanwhile): nothing moves.
     private func persist(
         _ move: (to: TransportKind, by: String, at: Date),
         next: FollowerState,
-        link: LinkRecord,
+        effects: RequestEffects,
         host: any TransportFollowerHost
     ) -> Bool {
+        guard let link = host.followerLink(hubID: hubID) else { return false }
         var moved = link
         switch move.to {
         case .relay:
             guard let mac = link.relayMacDeviceID else { return false }
             moved.setRelay(mac: mac)
             moved.leftTransport = next.leftTransport
+            // An upgrade under way (or refused meanwhile) ends here: the hub is on the relay with this phone.
+            if var upgrade = moved.relayUpgrade, upgrade.step != .switched {
+                upgrade.step = .switched
+                upgrade.refusal = nil
+                upgrade.retryAt = nil
+                moved.relayUpgrade = upgrade
+            }
         case .cloudKit:
             moved.setCloudKit(left: next.leftTransport)
         }
@@ -267,7 +402,60 @@ final class TransportFollower {
             moved.switchedBy = move.by
             moved.switchedAt = move.at
         }
+        effects.apply(to: &moved, at: now())
         guard moved != link else { return true }
         return host.persistRoute(moved)
+    }
+
+    /// What a decision does to this phone's request toward iCloud and to `hubOnRelayAt` (relay client Phase 4
+    /// Task 5), written with the move when there is one.
+    private struct RequestEffects {
+        /// The request is over: the hub moved (so the route is no longer the one it was made on), answered with the
+        /// transport it runs on, or stays on the relay without this phone.
+        let clearsRequest: Bool
+        /// The hub stays on the relay for another paying phone (`hub_on_relay`, or a move to the relay this phone
+        /// cannot follow): only `withoutHub` lists the unechoed actions as Not delivered.
+        let setsHubOnRelay: Bool
+        /// A later move, or the hub's answer for where it runs, ends that.
+        let clearsHubOnRelay: Bool
+        /// A relay-only link the relay refuses starts its term, once (`LinkRecord.relayRefused`).
+        let refused: RelayRefusal?
+        /// A move to iCloud this relay-only link cannot follow (S59), or a marker that says the Mac is back.
+        let moved: UInt32?
+        let clearsMoved: Bool
+
+        init(plan: Plan, moves: Bool) {
+            refused = plan.refused
+            moved = plan.moved
+            clearsMoved = plan.clearsMoved
+            let routeMoved = plan.move != nil
+            setsHubOnRelay = plan.listUndelivered
+            clearsRequest = moves || plan.answered || plan.listUndelivered
+            // A newer-epoch move or marker toward the route the phone is already on (an iCloud phone, the Mac back on
+            // iCloud) moves nothing but still ends it.
+            clearsHubOnRelay = !plan.listUndelivered && (routeMoved || plan.answered)
+        }
+
+        func apply(to link: inout LinkRecord, at date: Date) {
+            if let refused, link.relayRefused == nil { link.relayRefused = RelayRefusedRecord(since: date, cause: refused) }
+            if let moved, moved > (link.macMoved ?? 0) { link.macMoved = moved }
+            if clearsMoved { link.macMoved = nil }
+            if clearsRequest { link.transportRequest = nil }
+            if setsHubOnRelay {
+                link.hubOnRelayAt = date
+            } else if clearsHubOnRelay {
+                link.hubOnRelayAt = nil
+            }
+        }
+    }
+
+    /// The request and `hubOnRelayAt` of a decision that moves nothing, on the row as it stands now (the request
+    /// pass may have written it meanwhile). false when the row could not be written.
+    private func persistRequestState(_ effects: RequestEffects, host: any TransportFollowerHost) -> Bool {
+        guard var fresh = host.followerLink(hubID: hubID) else { return true }
+        let before = fresh
+        effects.apply(to: &fresh, at: now())
+        guard fresh != before else { return true }
+        return host.persistRoute(fresh)
     }
 }

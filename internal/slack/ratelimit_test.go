@@ -5,6 +5,7 @@ import (
 	"context"
 	"log"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -34,21 +35,27 @@ func TestWaitUnknownTierPassesThrough(t *testing.T) {
 	rl.Done(99)
 }
 
+// The timing tests run in a synctest bubble: the clock is the bubble's,
+// so a wait is measured exactly and a loaded machine cannot stretch it.
+
 func TestWaitRespectsBackoff(t *testing.T) {
-	rl := NewRateLimiter()
+	synctest.Test(t, func(t *testing.T) {
+		rl := NewRateLimiter()
 
-	// Set a short backoff.
-	backoffDuration := 50 * time.Millisecond
-	rl.HandleRateLimit(Tier2, backoffDuration)
+		// Set a short backoff.
+		backoffDuration := 50 * time.Millisecond
+		rl.HandleRateLimit(Tier2, backoffDuration)
 
-	start := time.Now()
-	err := rl.Wait(context.Background(), Tier2)
-	elapsed := time.Since(start)
+		start := time.Now()
+		err := rl.Wait(context.Background(), Tier2)
+		elapsed := time.Since(start)
 
-	require.NoError(t, err)
-	rl.Done(Tier2)
-	// Should have waited at least the backoff duration (which includes jitter up to 25%).
-	assert.GreaterOrEqual(t, elapsed.Milliseconds(), backoffDuration.Milliseconds())
+		require.NoError(t, err)
+		rl.Done(Tier2)
+		// Waits out the backoff, which includes jitter up to 25%.
+		assert.GreaterOrEqual(t, elapsed, backoffDuration)
+		assert.LessOrEqual(t, elapsed, backoffDuration*5/4)
+	})
 }
 
 func TestHandleRateLimitSetsBackoff(t *testing.T) {
@@ -67,21 +74,23 @@ func TestHandleRateLimitSetsBackoff(t *testing.T) {
 }
 
 func TestBackoffContextCancellation(t *testing.T) {
-	rl := NewRateLimiter()
+	synctest.Test(t, func(t *testing.T) {
+		rl := NewRateLimiter()
 
-	// Set a long backoff.
-	rl.HandleRateLimit(Tier2, 10*time.Second)
+		// Set a long backoff.
+		rl.HandleRateLimit(Tier2, 10*time.Second)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
 
-	start := time.Now()
-	err := rl.Wait(ctx, Tier2)
-	elapsed := time.Since(start)
+		start := time.Now()
+		err := rl.Wait(ctx, Tier2)
+		elapsed := time.Since(start)
 
-	assert.Error(t, err)
-	// Should have been cancelled quickly, not waiting 10 seconds.
-	assert.Less(t, elapsed, 1*time.Second)
+		assert.ErrorIs(t, err, context.DeadlineExceeded)
+		// Ends with the context, not after the 10-second backoff.
+		assert.Equal(t, 50*time.Millisecond, elapsed)
+	})
 }
 
 func TestTierConstants(t *testing.T) {
@@ -90,18 +99,19 @@ func TestTierConstants(t *testing.T) {
 }
 
 func TestUnlimitedRateLimiter(t *testing.T) {
-	rl := NewUnlimitedRateLimiter()
+	synctest.Test(t, func(t *testing.T) {
+		rl := NewUnlimitedRateLimiter()
 
-	// Should be able to make many rapid calls without blocking
-	start := time.Now()
-	for range 100 {
-		err := rl.Wait(context.Background(), Tier2)
-		require.NoError(t, err)
-		err = rl.Wait(context.Background(), Tier3)
-		require.NoError(t, err)
-	}
-	elapsed := time.Since(start)
-	assert.Less(t, elapsed, 1*time.Second, "unlimited limiter should not throttle")
+		// Many rapid calls never wait.
+		start := time.Now()
+		for range 100 {
+			err := rl.Wait(context.Background(), Tier2)
+			require.NoError(t, err)
+			err = rl.Wait(context.Background(), Tier3)
+			require.NoError(t, err)
+		}
+		assert.Zero(t, time.Since(start), "unlimited limiter should not throttle")
+	})
 }
 
 func TestStatsAndResetStats(t *testing.T) {
@@ -193,20 +203,22 @@ func TestDoneIncrementsCount(t *testing.T) {
 }
 
 func TestBackoffExpires(t *testing.T) {
-	rl := NewRateLimiter()
+	synctest.Test(t, func(t *testing.T) {
+		rl := NewRateLimiter()
 
-	// Set a very short backoff
-	rl.HandleRateLimit(Tier2, 10*time.Millisecond)
+		// Set a very short backoff
+		rl.HandleRateLimit(Tier2, 10*time.Millisecond)
 
-	// Wait for backoff to expire
-	time.Sleep(50 * time.Millisecond)
+		// Wait for backoff to expire
+		time.Sleep(50 * time.Millisecond)
 
-	// Should succeed without significant delay
-	start := time.Now()
-	err := rl.Wait(context.Background(), Tier2)
-	elapsed := time.Since(start)
+		// Should succeed without any delay
+		start := time.Now()
+		err := rl.Wait(context.Background(), Tier2)
+		elapsed := time.Since(start)
 
-	require.NoError(t, err)
-	rl.Done(Tier2)
-	assert.Less(t, elapsed, 500*time.Millisecond, "expired backoff should not cause delay")
+		require.NoError(t, err)
+		rl.Done(Tier2)
+		assert.Zero(t, elapsed, "expired backoff should not cause delay")
+	})
 }

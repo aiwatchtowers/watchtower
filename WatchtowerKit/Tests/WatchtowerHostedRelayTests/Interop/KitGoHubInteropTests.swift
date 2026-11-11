@@ -19,6 +19,9 @@ import XCTest
 /// `PhoneKeyProvider`, `EnvelopeReplicaOpener`, `ReplicaStore`, `ActionOutbox` and `RelayFeed`.
 final class KitGoHubInteropTests: HostedRelayScenarioCase {
     static let handoffVariable = "WT_GO_HUB_INTEROP_DIR"
+    /// Set to 1 by `RELAY_INTEROP_DESKTOP=1`: the Go hub is a desktop host and the handoff folder is its run's
+    /// (Phase 3b Task 24), so the relay-only run below skips.
+    static let desktopVariable = "WT_GO_HUB_INTEROP_DESKTOP"
     /// A step the Go side answers in seconds; the long ones (the hub's checks) get `goWait`.
     static let stepWait: TimeInterval = 120
     static let goWait: TimeInterval = 300
@@ -28,7 +31,7 @@ final class KitGoHubInteropTests: HostedRelayScenarioCase {
         return try RelayBackend.standFromEnvironment()
     }
 
-    private func handoffDir() throws -> URL {
+    func handoffDir() throws -> URL {
         guard let dir = ProcessInfo.processInfo.environment[Self.handoffVariable], !dir.isEmpty else {
             throw XCTSkip("\(Self.handoffVariable) is not set: run `make relay-interop-kit-hub RELAY=<relay checkout>`")
         }
@@ -38,6 +41,9 @@ final class KitGoHubInteropTests: HostedRelayScenarioCase {
     // MARK: - The run
 
     func testKitPhoneLinksDrivesAndUnlinksTheGoHub() async throws {
+        if ProcessInfo.processInfo.environment[Self.desktopVariable] == "1" {
+            throw XCTSkip("\(Self.desktopVariable)=1: the handoff folder is the desktop host's run")
+        }
         let handoff = Handoff(dir: try handoffDir())
         do {
             try await linkDriveAndUnlink(handoff)
@@ -142,7 +148,7 @@ final class KitGoHubInteropTests: HostedRelayScenarioCase {
         handoff.step = "epoch_ack"
         let grantKeys = try XCTUnwrap(grantBox.keys)
         try link.merge(grantKeys)
-        let queued = try await outbox.enqueueEpochAck(epoch: grantKeys.epoch)
+        let queued = try await outbox.enqueueEpochAck(epoch: grantKeys.epoch, nextKX: nil)
         XCTAssertTrue(queued)
         _ = try await outbox.flush()
 
@@ -152,12 +158,26 @@ final class KitGoHubInteropTests: HostedRelayScenarioCase {
         handoff.write("actions.done", String(bytes: try JSONSerialization.data(withJSONObject: report), encoding: .utf8) ?? "")
         _ = try await handoff.wait("go.ok", Self.goWait)
 
-        // 10. Unlink (R14): the farewell, flushed, then remove_slot.
+        // 10. The device record over the relay (G1): a rename, a permission request, the alerts switch.
+        handoff.step = "device_record"
+        let base = link.device(nonce: nil, unlinked: false)
+        let rewritten = DevicePayload(
+            deviceID: base.deviceID, name: "Renamed on the relay", model: base.model, appVersion: base.appVersion,
+            scope: base.scope, userRecordName: base.userRecordName, typingRequested: base.typingRequested,
+            startSessions: base.startSessions, permissionsRequested: true, updatedAt: Date(), workAlertsOff: true
+        )
+        try await secure.save([try CloudRecordFactory.record(for: rewritten, modifiedAt: rewritten.updatedAt)])
+        try await hubT.pull()
+        handoff.write("device.sent", "")
+        _ = try await handoff.wait("device.ok", Self.goWait)
+
+        // 11. Unlink (R14): the farewell, flushed, then remove_slot. The hub reads it before remove_slot: an unslotted
+        // hub is unvouched and cannot read the mailbox. The app pauses 3 s between the two, and the hub side fails the
+        // run if it takes longer, counted from this handoff, before the save.
         handoff.step = "unlink"
+        handoff.write("farewell.sent", "")
         try await secure.save([try CloudRecordFactory.record(for: link.device(nonce: nil, unlinked: true), modifiedAt: Date())])
         try await hubT.pull()
-        // The hub reads it before remove_slot: an unslotted hub is unvouched and cannot read the mailbox.
-        handoff.write("farewell.sent", "")
         _ = try await handoff.wait("farewell.ok", Self.goWait)
         try await pairing.removeSlot(mac: mac)
         let afterRemove = try await pairing.accountState().macs
@@ -165,7 +185,7 @@ final class KitGoHubInteropTests: HostedRelayScenarioCase {
         handoff.write("unlinked", "")
         _ = try await handoff.wait("unlink.ok", Self.goWait)
 
-        // 11. The slot is free again: add_slot of the same Mac. promote consumed the vouch (Worker
+        // 12. The slot is free again: add_slot of the same Mac. promote consumed the vouch (Worker
         // `pairing.ts`), so the phone vouches first, as before any add_slot.
         handoff.step = "readd"
         var add = Relay_V1_AddMacSlot()
@@ -182,7 +202,7 @@ final class KitGoHubInteropTests: HostedRelayScenarioCase {
 
     // MARK: - Helpers
 
-    private func expectServerCode(
+    func expectServerCode(
         _ code: Relay_V1_ErrorCode,
         _ what: String,
         file: StaticString = #filePath,
@@ -198,7 +218,7 @@ final class KitGoHubInteropTests: HostedRelayScenarioCase {
     }
 
     /// Runs `body` every second until it returns true; throws when `limit` passes first.
-    private func poll(within limit: TimeInterval, _ what: String, _ body: () async throws -> Bool) async throws {
+    func poll(within limit: TimeInterval, _ what: String, _ body: () async throws -> Bool) async throws {
         let deadline = Date().addingTimeInterval(limit)
         while true {
             if try await body() { return }
@@ -214,7 +234,7 @@ enum GoHubInteropFailure: Error, Equatable {
 }
 
 /// The handoff folder: files written whole (temp + rename), read by polling.
-private final class Handoff: @unchecked Sendable {
+final class Handoff: @unchecked Sendable {
     let dir: URL
     /// The step running now, written to kit.fail when the run throws.
     var step = "start"
@@ -250,8 +270,8 @@ private final class Handoff: @unchecked Sendable {
 }
 
 /// The phone's side of one link: its keys, the hub's keys from the code, the replica and the sealing.
-private struct PhoneLink {
-    let keys = InMemoryPhoneKeyStore()
+struct PhoneLink {
+    let keys: InMemoryPhoneKeyStore
     let identity: DeviceIdentityKeys
     let hubID: String
     let hubUUID: UUID
@@ -266,7 +286,9 @@ private struct PhoneLink {
         identity.deviceID
     }
 
-    init(code: LinkPayload) throws {
+    /// `now` dates the key store's epoch retention (the rotation run moves it with the hub's clock).
+    init(code: LinkPayload, now: @escaping @Sendable () -> Date = { Date() }) throws {
+        keys = InMemoryPhoneKeyStore(now: now)
         identity = try keys.identity()
         hubID = code.hubID
         hubUUID = try WireBytes.hubUUID(code.hubID)

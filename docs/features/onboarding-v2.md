@@ -179,6 +179,31 @@ account #1 is live is refused with a pointer to `slack add` (#279).
 wiring, including the notification-permission request, runs once at
 completion.
 
+**AI agent section** (Goals step, #1521; design and decisions in
+[the spec](../superpowers/specs/2026-11-10-onboarding-agent-choice-design.md),
+mockups in `docs/design/mockups/onboarding-agent/`). It replaces the old
+silent CLI probe. `OnboardingAgentCheck`
+asks `watchtower ai which --json` for each agent's executable (Go's own
+lookup, so Swift and Go never pick different copies); a missing agent, or
+one `AllowedAIProviders` forbids, costs no request, and the installed ones
+are tested in parallel with `ai test --json --provider <agent> --cli-path`.
+`OnboardingAgentChoice` (WatchtowerCore, pure, holds all the copy) keeps the
+per-agent status, the owner's pick (later checks never move it; the default
+is the configured provider, then the first ready agent) and the Continue
+rule: enabled only while the picked agent is ready. The check never writes;
+Continue sets `workbench.default_agent` and then `ai.provider` when the pick
+differs from the configured one. A signed-out agent opens the sign-in
+terminal once on its own (`OnboardingSignInCoordinator`, SwiftTerm, in the
+login-shell environment, not a Workbench session): it closes on success,
+when the owner leaves the step, picks the other tile or quits (leaving or a
+tile switch leaves it idle with "Press Sign in again to open the sign-in
+here."; every recheck shows Checking… with the buttons that would start
+another run disabled); a CLI too old
+for its login command is updated first, by the way it was installed, and
+never in a loop. With no agent the setup panel shows the curl installers
+and **Other ways to install**; a provider set elsewhere (Ollama / Local)
+shows one line and is tested as before.
+
 **People load.** A Slack account connected during onboarding (or one
 already there on a relaunch mid-onboarding) starts `watchtower sync --users-only --progress-json
 --account <id>` (`PeopleRosterLoad`, held by `AppState`): roster only, no

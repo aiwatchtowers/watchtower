@@ -42,6 +42,9 @@ type fakeAS struct {
 	// RedirectURI is the redirect_uri /token requires on the
 	// authorization_code grant; empty skips the check.
 	RedirectURI string
+	// BeforeToken, when set before the server is used, runs at the start of
+	// every /token request — a test's hold point while a callback is mid-exchange.
+	BeforeToken func()
 
 	mu sync.Mutex
 
@@ -164,6 +167,9 @@ func (as *fakeAS) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 func (as *fakeAS) handleToken(t *testing.T) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		t.Helper()
+		if as.BeforeToken != nil {
+			as.BeforeToken()
+		}
 		if err := r.ParseForm(); err != nil {
 			http.Error(w, "bad form body", http.StatusBadRequest)
 			return

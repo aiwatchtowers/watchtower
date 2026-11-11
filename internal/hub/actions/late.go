@@ -28,7 +28,7 @@ var ErrNotDecided = errors.New("actions: no decided action of a linked phone at 
 // lock is not re-entrant) — the handlers queue it on a goroutine of their
 // own. E2E: sealed relayToPhone to r.Device like every echo, never written
 // in the clear. The queued write is flushed at once (best effort: a failed
-// write stays queued for the next pass).
+// write stays queued for the next pass), except while paused (SetPaused).
 func (p *Processor) LateEcho(ctx context.Context, r Request, o Outcome) error {
 	if p.cfg.Sealer == nil {
 		return errors.New("actions: no sealer for a late echo")
@@ -84,12 +84,16 @@ func (p *Processor) LateEcho(ctx context.Context, r Request, o Outcome) error {
 		if err := state.MarkDone(tx, key, ledgerOutcome(o), stored, nil, p.cfg.Clock()); err != nil {
 			return err
 		}
-		return state.Enqueue(tx, q.control(b.zone))
+		return state.Enqueue(tx, q.control(b.queue))
 	}); err != nil {
 		if errors.Is(err, errRelinked) {
 			return ErrNotDecided
 		}
 		return err
+	}
+	if p.paused.Load() {
+		// Queued: the first pass after the pause writes it.
+		return nil
 	}
 	if _, _, err := p.flushMailbox(ctx, b); err != nil {
 		log.Printf("hub: flushing device %s's mailbox after a late echo: %s", b.id, errClass(err))

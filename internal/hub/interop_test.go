@@ -16,9 +16,11 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -35,12 +37,17 @@ import (
 	"watchtower/internal/hub/hubtest"
 	"watchtower/internal/hub/identity"
 	"watchtower/internal/hub/link"
+	"watchtower/internal/hub/platform"
 	"watchtower/internal/hub/secure"
+	hubslices "watchtower/internal/hub/slices"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
+	"watchtower/internal/hub/transport/cloudkit/bridgefake"
 	"watchtower/internal/hub/transport/relay"
 	"watchtower/internal/hub/transport/relay/client"
 	"watchtower/internal/hub/wire"
+	"watchtower/internal/logcanary"
+	"watchtower/internal/policy"
 	"watchtower/internal/policy/policytest"
 )
 
@@ -146,6 +153,12 @@ type tappedTransport struct {
 
 	mu      sync.Mutex
 	resyncs map[string]int
+	// dropZone, when set, is a mailbox zone whose every save is deleted
+	// again at once (dropped counts them); readers is the last reader set
+	// the hub gave set_hub_readers (TestInterop_KitPhoneFollowsASwitch).
+	dropZone string
+	dropped  int
+	readers  []string
 }
 
 func newTappedTransport(tr *relay.Transport) *tappedTransport {
@@ -192,6 +205,15 @@ func (t *tappedTransport) resyncsOf(zone string) int {
 type interopOpts struct {
 	passEvery, linkEvery time.Duration
 	register             func(*actions.Dispatcher)
+	sources              func(*state.Store) []hubslices.Source
+	away                 platform.Away
+	// httpWrap, when set, wraps the round tripper of the hub's relay HTTP
+	// client (the phone's is not wrapped).
+	httpWrap func(http.RoundTripper) http.RoundTripper
+	// clock, when set, is the hub's clock (startDesktopHub only; the relay
+	// transport keeps time.Now); cycle is its daemon cycle tick.
+	clock func() time.Time
+	cycle <-chan struct{}
 }
 
 // interopHub is one Run on the stand.
@@ -204,6 +226,10 @@ type interopHub struct {
 	ctl    *ControlClient
 	cancel context.CancelFunc
 	done   chan error
+
+	// bridge is a desktop host's CloudKit bridge (startDesktopHub); nil on a
+	// headless hub.
+	bridge *bridgefake.Fake
 
 	mu sync.Mutex
 	tr *tappedTransport // the transport of the hub's current start
@@ -219,9 +245,29 @@ func (h *interopHub) transport() *tappedTransport {
 // stand, turns it on over the control socket and waits until it runs.
 func startHub(t *testing.T, opts interopOpts) *interopHub {
 	t.Helper()
+	return launchHub(t, opts, false)
+}
+
+// launchHub is startHub; a shared hub outlives t (sharedAlertHub): its dir,
+// policy and stop are undone after every test (afterTests), and nothing of
+// it logs through t once it runs.
+func launchHub(t *testing.T, opts interopOpts, shared bool) *interopHub {
+	t.Helper()
 	origin := needStand(t)
-	policytest.Set(t, nil)
-	dir := shortDir(t)
+	logf := t.Logf
+	var dir string
+	if shared {
+		restore := policy.SetReaderForTesting(func() map[string]any { return nil })
+		base, err := os.MkdirTemp("/tmp", "hubt")
+		if err != nil {
+			t.Fatal(err)
+		}
+		afterTests = append(afterTests, restore, func() { _ = os.RemoveAll(base) })
+		dir, logf = filepath.Join(base, "h"), log.Printf
+	} else {
+		policytest.Set(t, nil)
+		dir = shortDir(t)
+	}
 	t.Setenv(EnvHubDir, dir)
 	t.Setenv(EnvRelayOrigin, origin)
 	t.Setenv(EnvTestWorkspace, interopWorkspace)
@@ -233,10 +279,13 @@ func startHub(t *testing.T, opts interopOpts) *interopHub {
 	// The production relay transport, over the wire tap and seen through
 	// tappedTransport.
 	o.httpClient = h.tap.httpClient()
+	if opts.httpWrap != nil {
+		o.httpClient.Transport = opts.httpWrap(o.httpClient.Transport)
+	}
 	o.newTransport = func(ctx context.Context, id identity.Identity, st *state.Store, zones []string) (transport.Transport, error) {
 		tr, err := o.relayTransport(ctx, id, st, zones)
 		if err != nil {
-			t.Logf("hub transport: %v", err)
+			logf("hub transport: %v", err)
 			return nil, err
 		}
 		tapped := newTappedTransport(tr.(*relay.Transport))
@@ -251,12 +300,17 @@ func startHub(t *testing.T, opts interopOpts) *interopHub {
 	o.checkEvery = 100 * time.Millisecond
 	o.lockRetry = 50 * time.Millisecond
 	o.passEvery, o.linkEvery, o.Register = opts.passEvery, opts.linkEvery, opts.register
+	o.Sources, o.away = opts.sources, opts.away
 
 	ctx, cancel := context.WithCancel(context.Background())
 	h.cancel, h.done = cancel, make(chan error, 1)
 	go func() { h.done <- Run(ctx, o) }()
-	t.Cleanup(h.stop)
-	eventually(t, stepWait, "the control socket", func() bool {
+	if shared {
+		afterTests = append(afterTests, h.stop)
+	} else {
+		t.Cleanup(h.stop)
+	}
+	eventuallyOnStand(t, stepWait, "the control socket", func() bool {
 		_, err := os.Stat(filepath.Join(dir, SocketName))
 		return err == nil
 	})
@@ -272,7 +326,7 @@ func startHub(t *testing.T, opts interopOpts) *interopHub {
 
 func (h *interopHub) waitRunning() {
 	h.t.Helper()
-	eventually(h.t, stepWait, "the hub running on the stand", func() bool {
+	eventuallyOnStand(h.t, stepWait, "the hub running on the stand", func() bool {
 		return h.rec.last().State == StateRunning
 	})
 }
@@ -289,7 +343,11 @@ func (h *interopHub) stop() {
 	select {
 	case <-h.done:
 	case <-time.After(30 * time.Second):
-		h.t.Error("Run did not return after cancel")
+		if h.t != nil {
+			h.t.Error("Run did not return after cancel")
+		} else {
+			log.Printf("interop: a shared hub's Run did not return after cancel")
+		}
 	}
 }
 
@@ -432,7 +490,7 @@ func linkPhone(t *testing.T, h *interopHub) *linked {
 		t.Fatalf("sas for %s, want %s", sas.DeviceID, phone.ID())
 	}
 	var awaiting wire.Keybox
-	eventually(t, stepWait, "the awaiting keybox in the pair zone", func() bool {
+	eventuallyOnStand(t, stepWait, "the awaiting keybox in the pair zone", func() bool {
 		kb, ok, err := phone.ReadKeybox(pair)
 		if err != nil {
 			t.Fatal(err)
@@ -453,22 +511,33 @@ func linkPhone(t *testing.T, h *interopHub) *linked {
 	if l := h.next(link.EventLinked); l.DeviceID != phone.ID().String() {
 		t.Fatalf("linked: %+v", l)
 	}
-	eventually(t, stepWait, "the keys in the pair zone", func() bool {
+	eventuallyOnStand(t, stepWait, "the keys in the pair zone", func() bool {
 		kb, ok, err := phone.ReadKeybox(pair)
 		if err != nil {
 			t.Fatal(err)
 		}
 		return ok && kb.Keys != nil
 	})
+	// Vouched hubs: linked but in no slot, the hub is not_vouched, and the
+	// stand refuses a promote with no vouch (HUB_NOT_VOUCHED to the phone).
+	if s, err := ReadStatus(h.dir); err != nil || s.Reason != ReasonNotVouched {
+		t.Fatalf("status before the vouch: %+v, %v", s, err)
+	}
+	if err := store.PromotePairing(ctx, slot); !errors.Is(err, transport.ErrNotVouched) {
+		t.Fatalf("promote_pairing without a vouch: %v", err)
+	}
+	if err := phone.VouchLink(ctx, lp); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.PromotePairing(ctx, slot); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, stepWait, "the hub admitted with one phone", func() bool {
+	eventuallyOnStand(t, stepWait, "the hub admitted with one phone", func() bool {
 		s, err := ReadStatus(h.dir)
 		return err == nil && s.State == StateRunning && s.Reason == "" && s.Phones == 1
 	})
 	data := transport.DataZone(status.RelayDeviceID)
-	eventually(t, stepWait, "the device_grant in the data zone", func() bool {
+	eventuallyOnStand(t, stepWait, "the device_grant in the data zone", func() bool {
 		kb, ok, err := phone.ReadKeybox(data)
 		if err != nil {
 			return false // not a reader yet: the next readers sync adds the phone
@@ -529,13 +598,31 @@ func queueMarked(t *testing.T, p *hubtest.Phone, mark string) uint64 {
 	return seq
 }
 
-// waitApplied syncs the phone until every seq has an applied echo.
+// standPoll is how often a wait that reads the stand polls it: the stand
+// limits each device to 50 ops/s (burst 100), and a phone polling faster
+// stays refused for good once its burst is spent.
+const standPoll = 100 * time.Millisecond
+
+// eventuallyOnStand is eventually for a cond that reads the stand.
+func eventuallyOnStand(t *testing.T, d time.Duration, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(d)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(standPoll)
+	}
+}
+
+// waitApplied syncs the phone until every seq has an applied echo. A sync
+// that fails part-way may still have taken the echoes in: they are checked
+// either way.
 func waitApplied(t *testing.T, p *hubtest.Phone, wait time.Duration, seqs ...uint64) {
 	t.Helper()
-	eventually(t, wait, fmt.Sprintf("applied echoes for %v", seqs), func() bool {
+	eventuallyOnStand(t, wait, fmt.Sprintf("applied echoes for %v", seqs), func() bool {
 		if _, err := p.Sync(); err != nil {
 			t.Logf("phone sync: %v", err)
-			return false
 		}
 		for _, s := range seqs {
 			if p.Echoes[s].Status != wire.StatusApplied {
@@ -548,18 +635,45 @@ func waitApplied(t *testing.T, p *hubtest.Phone, wait time.Duration, seqs ...uin
 
 // ---- the tests ----
 
-// TestInterop_LinkOverPairingSlot: the Go phone opens a pairing slot for
-// the hub, the hub answers its hello with a keybox, both show the same
-// four-digit code, the owner confirms, the phone gets the keys and promotes
-// the slot; the relay then admits the hub (status running, no reason, one
-// phone) and lets the phone read its device_grant from the data zone
-// (linkPhone checks each step).
-func TestInterop_LinkOverPairingSlot(t *testing.T) {
-	h := startHub(t, interopOpts{passEvery: time.Second, linkEvery: time.Second})
-	l := linkPhone(t, h)
+// TestInterop_VouchedHubLinksAndPublishes (relay "Vouched hubs" on the
+// stand; it absorbs Phase 1's TestInterop_LinkOverPairingSlot: the stand
+// allows 10 registrations a minute per address and each test registers a
+// hub and a phone, so the suite keeps four link tests). The Go phone opens
+// a pairing slot for the hub — registered as DEVICE_KIND_HUB with no
+// attestation —, the hub answers its hello with a keybox, both show the same
+// four-digit code, the owner confirms and the phone gets the keys; the hub
+// is then not_vouched and the stand refuses a promote with no vouch; the
+// phone vouches and promotes, and the relay admits the hub (status running,
+// no reason, one phone), the phone reads its device_grant from the data zone
+// (linkPhone checks each step), the phone is stamped relay_admitted_at and
+// the heartbeat is published. Its hub and phone are sharedAlertHub's.
+func TestInterop_VouchedHubLinksAndPublishes(t *testing.T) {
+	h, l, _ := sharedAlertHub(t)
 	if len(l.code) != 4 || strings.Trim(l.code, "0123456789") != "" {
 		t.Fatalf("code %q is not four digits", l.code)
 	}
+	eventuallyOnStand(t, stepWait, "the phone stamped admitted", func() bool {
+		st, err := state.OpenReadOnly(h.dir)
+		if err != nil {
+			return false
+		}
+		defer func() { _ = st.Close() }()
+		devices, err := st.Devices()
+		return err == nil && len(devices) == 1 && !devices[0].RelayAdmittedAt.IsZero()
+	})
+	data := transport.DataZone(l.status.RelayDeviceID)
+	eventuallyOnStand(t, stepWait, "the heartbeat in the data zone", func() bool {
+		recs, err := l.phone.OpenData(data)
+		if err != nil {
+			return false
+		}
+		for _, r := range recs {
+			if r.Frame.Kind == "heartbeat" {
+				return true
+			}
+		}
+		return false
+	})
 }
 
 // TestInterop_ActionsInOrderWithEchoes: a1..a5 with a3 held back; the hub
@@ -580,6 +694,11 @@ func TestInterop_ActionsInOrderWithEchoes(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	defer func() {
+		if t.Failed() {
+			dumpOrder(t, h, p, m)
+		}
+	}()
 	waitApplied(t, p, 2*stepWait, 1, 2, 3, 4, 5)
 	resends := 0
 	for _, c := range p.Controls {
@@ -627,14 +746,14 @@ func TestInterop_ReconnectResubscribesAndPulls(t *testing.T) {
 	tr := h.transport()
 	before := tr.resyncsOf(mailbox)
 	restartStand(t, h.origin)
-	eventually(t, restartWait, "a resync of the mailbox after the restart", func() bool {
+	eventuallyOnStand(t, restartWait, "a resync of the mailbox after the restart", func() bool {
 		return tr.resyncsOf(mailbox) > before
 	})
 	if h.transport() != tr {
 		t.Fatal("the hub restarted instead of reconnecting")
 	}
 	a2 := queueMarked(t, p, "after-restart")
-	eventually(t, stepWait, "a2 written after the restart", func() bool {
+	eventuallyOnStand(t, stepWait, "a2 written after the restart", func() bool {
 		return p.Send(a2) == nil
 	})
 	waitApplied(t, p, stepWait, a2)
@@ -659,8 +778,8 @@ func restartStand(t *testing.T, origin string) {
 		_ = res.Body.Close()
 		return res.StatusCode == http.StatusOK
 	}
-	eventually(t, stepWait, "the stand going down", func() bool { return !healthy() })
-	eventually(t, restartWait, "the stand answering again", healthy)
+	eventuallyOnStand(t, stepWait, "the stand going down", func() bool { return !healthy() })
+	eventuallyOnStand(t, restartWait, "the stand answering again", healthy)
 }
 
 // TestInterop_NoPlaintextOnTheWire is the E2E red line on the real wire:
@@ -677,7 +796,7 @@ func TestInterop_NoPlaintextOnTheWire(t *testing.T) {
 		t.Fatalf("name: %+v, %v", a, err)
 	}
 	// The hub restarts for its new name: a new transport, then running.
-	eventually(t, stepWait, "the hub restarted for its new name", func() bool {
+	eventuallyOnStand(t, stepWait, "the hub restarted for its new name", func() bool {
 		return h.transport() != before && h.rec.last().State == StateRunning
 	})
 	l := linkPhone(t, h)
@@ -757,5 +876,85 @@ func TestInterop_NoPlaintextOnTheWire(t *testing.T) {
 	}
 	if zones[p.Zone()] == 0 || zones[data] == 0 || zones[transport.PairZone(l.slot)] == 0 {
 		t.Fatalf("records read back per zone: %v", zones)
+	}
+}
+
+// alertProbe is a work-alert slice raised by an interop_alert action, and
+// the log it settles into.
+type alertProbe struct {
+	src   *pushSource
+	logs  *logcanary.Sink
+	items []hubslices.Item
+}
+
+// sharedAlert is one hub and one linked phone on the stand that
+// TestInterop_VouchedHubLinksAndPublishes and
+// TestInterop_SendAlertOnTheLocalStandIsPushOff share: the stand allows 10
+// registrations a minute per address, which a fifth hub and phone would
+// pass. The first of them to run starts it; it stops after every test.
+var sharedAlert struct {
+	once  sync.Once
+	ok    bool
+	h     *interopHub
+	l     *linked
+	probe *alertProbe
+}
+
+func sharedAlertHub(t *testing.T) (*interopHub, *linked, *alertProbe) {
+	t.Helper()
+	sharedAlert.once.Do(func() {
+		probe := &alertProbe{src: &pushSource{}, logs: &logcanary.Sink{}}
+		probe.src.set(t, workAlert("ask-1"))
+		probe.items, probe.src.items = probe.src.items, nil
+		prev := log.Writer()
+		log.SetOutput(io.MultiWriter(prev, probe.logs))
+		afterTests = append(afterTests, func() { log.SetOutput(prev) })
+		h := launchHub(t, interopOpts{
+			passEvery: time.Second, linkEvery: time.Second, away: alwaysAway{},
+			sources: func(*state.Store) []hubslices.Source { return []hubslices.Source{probe.src} },
+			register: func(d *actions.Dispatcher) {
+				d.Register("interop_alert", func(context.Context, actions.Request) actions.Outcome {
+					probe.src.mu.Lock()
+					probe.src.items = probe.items
+					probe.src.mu.Unlock()
+					return actions.Outcome{Status: wire.StatusApplied}
+				}, actions.KindOptions{Nudges: []string{string(hubslices.KindAskAlert)}})
+			},
+		}, true)
+		l := linkPhone(t, h)
+		h.t = nil // t ends before the hub does
+		sharedAlert.h, sharedAlert.l, sharedAlert.probe, sharedAlert.ok = h, l, probe, true
+	})
+	if !sharedAlert.ok {
+		t.Fatal("the shared hub did not start (see the test that started it)")
+	}
+	return sharedAlert.h, sharedAlert.l, sharedAlert.probe
+}
+
+// TestInterop_SendAlertOnTheLocalStandIsPushOff: the stand has no APNs key,
+// so a work alert's send_alert is answered "not implemented": the push
+// settles push_off after its one attempt, a final outcome (its ledger row is
+// settled, so nothing can retry it).
+func TestInterop_SendAlertOnTheLocalStandIsPushOff(t *testing.T) {
+	h, l, probe := sharedAlertHub(t)
+	seq, err := l.phone.Act("interop_alert")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitApplied(t, l.phone, stepWait, seq)
+	device := l.phone.ID().String()
+	line := "push of ask-1 to " + device + ": push_off after 1 attempts"
+	eventuallyOnStand(t, stepWait, "the push settled push_off", func() bool { return strings.Contains(probe.logs.String(), line) })
+	st, err := state.OpenReadOnly(h.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	last, err := st.LastAlertOutcomes(time.Now().Add(-time.Hour))
+	if err != nil || last[device] != state.AlertPushOff {
+		t.Fatalf("ledger outcomes %v, %v; want push_off", last, err)
+	}
+	if n, err := st.ExpirePendingAlertPushes(time.Now()); err == nil && n != 0 {
+		t.Fatalf("%d pushes still pending", n)
 	}
 }

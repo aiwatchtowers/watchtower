@@ -2,6 +2,7 @@ package sources
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -47,7 +48,9 @@ func TestRecordingJobProgress(t *testing.T) {
 	if _, err := st.ClaimRecording("up-1", t0.Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	if p := jobPayloads(t, st, t0)["up-1"]; p["status"] != "transcribing" || num(p["updated_at"]) != 1_800_000_001 {
+	// Claimed but not started by the transcriber yet: queued, as the Swift
+	// hub's job read until the transcriber's first report.
+	if p := jobPayloads(t, st, t0)["up-1"]; p["status"] != "queued" || num(p["updated_at"]) != 1_800_000_001 {
 		t.Errorf("claimed = %v", p)
 	}
 	tid := int64(42)
@@ -73,6 +76,43 @@ func TestRecordingJobFailedCarriesOnlyTheErrorClass(t *testing.T) {
 	}
 	if _, ok := p["transcript_id"]; ok {
 		t.Error("a failed job has no transcript")
+	}
+}
+
+// TestRecordingFailureTextsPinned: the classes Desktop finishes a phone
+// recording with (PhoneRecordingQueue.FailureClass, a Go↔Swift dual path)
+// read on the phone as these sentences, byte for byte: never "send it
+// again" (the phone deleted its copy on received; the audio is on the Mac);
+// an unknown class still reads as itself.
+func TestRecordingFailureTextsPinned(t *testing.T) {
+	want := map[string]string{
+		state.ClassNoSpeech:            "No speech recognized",
+		state.ClassTranscriptionFailed: "Your Mac could not transcribe this recording. It keeps the audio; you can retry it in Watchtower on the Mac.",
+		state.ClassNotAudio:            "Your Mac could not open this recording as audio. It keeps the file on the Mac.",
+		state.ClassUnreadable:          "Your Mac could not read this recording yet. It keeps the audio and will try again.",
+		state.ClassIngestFailed:        "Your Mac could not save this recording yet. It keeps the audio and will try again.",
+		state.ClassMissingAudio:        "Your Mac no longer has this recording's audio.",
+		"something_new":                "something_new",
+	}
+	for class, text := range want {
+		if class != "something_new" && strings.Contains(strings.ToLower(text), "send it again") {
+			t.Errorf("%s asks the phone to send it again", class)
+		}
+	}
+	st := openSidecar(t)
+	t0 := time.Unix(1_800_000_000, 0)
+	for class := range want {
+		_ = st.QueueRecording(class, jobDevice, t0)
+		_, _ = st.ClaimRecording(class, t0)
+		if _, err := st.FinishRecording(class, nil, class, t0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := jobPayloads(t, st, t0)
+	for class, text := range want {
+		if got[class]["error"] != text {
+			t.Errorf("%s reads %q, want %q", class, got[class]["error"], text)
+		}
 	}
 }
 
@@ -114,5 +154,92 @@ func TestRecordingJobAtMost100LatestFirst(t *testing.T) {
 func TestRecordingJobNeedsTheHubState(t *testing.T) {
 	if _, err := RecordingJob(nil, nil); err == nil {
 		t.Error("no store must be refused")
+	}
+}
+
+// TestRecordingProgressMapsToSwiftStatuses: claimed + Desktop's phase reads
+// as RecordingJobSlice's statuses, so a phone sees no change from the Swift
+// hub; a finished job reads done with its transcript.
+func TestRecordingProgressMapsToSwiftStatuses(t *testing.T) {
+	st := openSidecar(t)
+	t0 := time.Unix(1_800_000_000, 0)
+	if err := st.QueueRecording("up-1", jobDevice, t0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ClaimRecording("up-1", t0); err != nil {
+		t.Fatal(err)
+	}
+	forty := 40
+	cases := []struct {
+		phase   string
+		percent *int
+		status  string
+		pct     int64 // -1 = no percent key
+	}{
+		{state.PhaseTranscribing, &forty, "transcribing", 40},
+		{state.PhaseTranscribing, nil, "transcribing", -1},
+		{state.PhaseDiarizing, nil, "diarizing", -1},
+		{state.PhaseSummarizing, nil, "summarizing", -1},
+	}
+	for _, c := range cases {
+		if err := st.RecordingProgress("up-1", c.phase, c.percent); err != nil {
+			t.Fatalf("%s: %v", c.phase, err)
+		}
+		p := jobPayloads(t, st, t0)["up-1"]
+		got, has := p["percent"]
+		if p["status"] != c.status || (c.pct >= 0) != has || (has && num(got) != c.pct) {
+			t.Errorf("%s %v = %v", c.phase, c.percent, p)
+		}
+	}
+	tid := int64(7)
+	if _, err := st.FinishRecording("up-1", &tid, "", t0); err != nil {
+		t.Fatal(err)
+	}
+	p := jobPayloads(t, st, t0)["up-1"]
+	if _, has := p["percent"]; p["status"] != "done" || num(p["transcript_id"]) != 7 || has {
+		t.Errorf("done = %v", p)
+	}
+}
+
+// TestPercentOnlyWhileTranscribing: a percent goes with transcribing only,
+// within 0...100; a later phase drops it; a job not claimed takes no progress.
+func TestPercentOnlyWhileTranscribing(t *testing.T) {
+	st := openSidecar(t)
+	t0 := time.Unix(1_800_000_000, 0)
+	_ = st.QueueRecording("up-1", jobDevice, t0)
+	pct := func(v int) *int { return &v }
+	if err := st.RecordingProgress("up-1", state.PhaseTranscribing, nil); !errors.Is(err, state.ErrJobState) {
+		t.Errorf("progress of a queued job: %v", err)
+	}
+	if err := st.RecordingProgress("nope", state.PhaseTranscribing, nil); !errors.Is(err, state.ErrNoRecordingJob) {
+		t.Errorf("progress of no job: %v", err)
+	}
+	_, _ = st.ClaimRecording("up-1", t0)
+	for _, bad := range []struct {
+		phase string
+		pct   *int
+	}{
+		{state.PhaseDiarizing, pct(10)}, {state.PhaseSummarizing, pct(0)},
+		{state.PhaseTranscribing, pct(-1)}, {state.PhaseTranscribing, pct(101)},
+		{"uploading", nil}, {"", nil},
+	} {
+		if err := st.RecordingProgress("up-1", bad.phase, bad.pct); !errors.Is(err, state.ErrBadProgress) {
+			t.Errorf("%q %v: %v, want ErrBadProgress", bad.phase, bad.pct, err)
+		}
+	}
+	for _, ok := range []int{0, 100} {
+		if err := st.RecordingProgress("up-1", state.PhaseTranscribing, pct(ok)); err != nil {
+			t.Errorf("percent %d: %v", ok, err)
+		}
+	}
+	if err := st.RecordingProgress("up-1", state.PhaseDiarizing, nil); err != nil {
+		t.Fatal(err)
+	}
+	job, err := st.RecordingJob("up-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Phase != state.PhaseDiarizing || job.Percent != nil {
+		t.Errorf("diarizing kept the percent: %+v", job)
 	}
 }

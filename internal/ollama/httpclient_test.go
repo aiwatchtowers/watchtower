@@ -1,52 +1,58 @@
 package ollama
 
 import (
+	"bufio"
 	"context"
+	"io"
+	"net"
 	"net/http"
-	"net/http/httptest"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
 // A server that accepts the request and never answers fails the call once the
 // response-header bound passes, instead of hanging it forever — for both the
-// non-streaming Generator and the streaming Client.
+// non-streaming Generator and the streaming Client. On synctest's clock over
+// in-memory connections, so the bound passes in virtual time.
 func TestHTTPClient_ServerThatNeverAnswersTimesOut(t *testing.T) {
-	old := responseHeaderTimeout
+	oldTimeout, oldDial := responseHeaderTimeout, dialContext
 	responseHeaderTimeout = 100 * time.Millisecond
-	t.Cleanup(func() { responseHeaderTimeout = old })
+	t.Cleanup(func() { responseHeaderTimeout, dialContext = oldTimeout, oldDial })
 
-	release := make(chan struct{})
-	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		select {
-		case <-r.Context().Done():
-		case <-release:
+	synctest.Test(t, func(t *testing.T) {
+		// Each connection's server reads the request and then only waits:
+		// it never writes a byte back.
+		dialContext = func(context.Context, string, string) (net.Conn, error) {
+			client, server := net.Pipe()
+			go func() {
+				defer func() { _ = server.Close() }()
+				br := bufio.NewReader(server)
+				if _, err := http.ReadRequest(br); err != nil {
+					return
+				}
+				_, _ = io.Copy(io.Discard, br) // until the client gives up and closes
+			}()
+			return client, nil
 		}
-	}))
-	t.Cleanup(srv.Close)
-	t.Cleanup(func() { close(release) })
+		const url = "http://ollama.invalid"
 
-	done := make(chan error, 1)
-	go func() {
-		_, _, _, err := NewGenerator("m", "m", srv.URL).Generate(context.Background(), "", "hi", "")
-		done <- err
-	}()
-	select {
-	case err := <-done:
+		start := time.Now()
+		_, _, _, err := NewGenerator("m", "m", url).Generate(context.Background(), "", "hi", "")
 		if err == nil {
 			t.Fatal("Generate: want a timeout error, got nil")
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("Generate hung on a server that never answers")
-	}
+		if got := time.Since(start); got != responseHeaderTimeout {
+			t.Errorf("Generate failed after %v, want the %v response-header bound", got, responseHeaderTimeout)
+		}
 
-	_, errCh, _ := NewClient("m", srv.URL).Query(context.Background(), "", "hi", "")
-	select {
-	case err := <-errCh:
-		if err == nil {
+		start = time.Now()
+		_, errCh, _ := NewClient("m", url).Query(context.Background(), "", "hi", "")
+		if err := <-errCh; err == nil {
 			t.Fatal("Query: want a timeout error, got nil")
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("Query hung on a server that never answers")
-	}
+		if got := time.Since(start); got != responseHeaderTimeout {
+			t.Errorf("Query failed after %v, want the %v response-header bound", got, responseHeaderTimeout)
+		}
+	})
 }

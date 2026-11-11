@@ -1,6 +1,7 @@
 package media
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/binary"
@@ -28,6 +29,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -458,17 +460,60 @@ func TestPipeline_LinkToImageDescribedAsImage(t *testing.T) {
 	assert.Zero(t, text)
 }
 
+// manualTimer stands in for a link's page timer: it fires when the test says
+// so, never on a clock.
+type manualTimer struct {
+	mu             sync.Mutex
+	f              func()
+	stopped, fired bool
+	stoppedCh      chan struct{}
+}
+
+func (m *manualTimer) Stop() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.stopped || m.fired {
+		return false
+	}
+	m.stopped = true
+	close(m.stoppedCh)
+	return true
+}
+
+func (m *manualTimer) fire() {
+	m.mu.Lock()
+	if m.stopped || m.fired {
+		m.mu.Unlock()
+		return
+	}
+	m.fired = true
+	m.mu.Unlock()
+	m.f()
+}
+
 // A link is requested once: an image answer is read under the download
 // timeout (past the link timeout), while a page is still cut at the link
-// timeout.
+// timeout. The page timer is fired by the server mid-body: links are
+// fetched one at a time, so each request takes the timer made for it.
 func TestPipeline_LinkRequestedOnceImageOutlivesPageTimeout(t *testing.T) {
-	prev := linkFetchTimeout
-	linkFetchTimeout = 100 * time.Millisecond
-	t.Cleanup(func() { linkFetchTimeout = prev })
+	timers := make(chan *manualTimer, 4)
+	var armed []time.Duration // under armedMu: each page timer's duration
+	var armedMu sync.Mutex
+	prev := pageTimer
+	pageTimer = func(d time.Duration, f func()) interface{ Stop() bool } {
+		armedMu.Lock()
+		armed = append(armed, d)
+		armedMu.Unlock()
+		m := &manualTimer{f: f, stoppedCh: make(chan struct{})}
+		timers <- m
+		return m
+	}
+	t.Cleanup(func() { pageTimer = prev })
 	e := newEnv(t)
 	img := noisePNG(t, 64, 64, 3)
 	var imageHits, pageHits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cut := <-timers
 		if r.URL.Path == "/slow.png" {
 			imageHits.Add(1)
 			w.Header().Set("Content-Type", "image/png")
@@ -478,16 +523,16 @@ func TestPipeline_LinkRequestedOnceImageOutlivesPageTimeout(t *testing.T) {
 		}
 		w.WriteHeader(http.StatusOK)
 		w.(http.Flusher).Flush()
-		select { // the body comes after the link timeout
-		case <-time.After(300 * time.Millisecond):
-		case <-r.Context().Done():
-			return
-		}
 		if r.URL.Path == "/slow.png" {
+			// The headers said image: the pipeline stops the page timer, and
+			// the link timeout passing now cuts nothing.
+			<-cut.stoppedCh
+			cut.fire()
 			_, _ = w.Write(img)
 			return
 		}
-		_, _ = w.Write([]byte(page(longText)))
+		cut.fire() // the link timeout passes while the page body is pending
+		<-r.Context().Done()
 	}))
 	t.Cleanup(srv.Close)
 	e.web(map[string]*httptest.Server{"public.example": srv})
@@ -504,6 +549,9 @@ func TestPipeline_LinkRequestedOnceImageOutlivesPageTimeout(t *testing.T) {
 	p := e.row(pageID)
 	assert.Equal(t, "pending", p.Status, "a timed-out page waits for its next attempt")
 	assert.Equal(t, "timeout", p.Error)
+	armedMu.Lock()
+	defer armedMu.Unlock()
+	assert.Equal(t, []time.Duration{linkFetchTimeout, linkFetchTimeout}, armed, "each link's page timer is the link timeout")
 }
 
 func TestPipeline_NoVisionMarksUnavailableWithoutOpening(t *testing.T) {
@@ -684,30 +732,24 @@ func TestPipeline_SweepsStaleTempFiles(t *testing.T) {
 	assert.Equal(t, os.FileMode(0o700), info.Mode().Perm())
 }
 
+// On synctest's clock: the describe deadline passes in virtual time.
 func TestPipeline_HungDescriberCutAtDeadline(t *testing.T) {
 	e := newEnv(t)
 	prev := describeTimeout
 	describeTimeout = 50 * time.Millisecond
 	t.Cleanup(func() { describeTimeout = prev })
-	release := make(chan struct{})
-	t.Cleanup(func() { close(release) })
-	e.gen.describe = func(context.Context, string, string) (string, error) {
-		<-release // ignores ctx
-		return "", errors.New("released")
-	}
 	id := e.image("1:C1", "1758000000.000100", "F1", noisePNG(t, 64, 64, 1))
 
-	done := make(chan Stats, 1)
-	go func() {
+	synctest.Test(t, func(t *testing.T) {
+		release := make(chan struct{})
+		defer close(release) // lets the abandoned describe call end with the bubble
+		e.gen.describe = func(context.Context, string, string) (string, error) {
+			<-release // ignores ctx
+			return "", errors.New("released")
+		}
 		st, _ := e.p.Run(context.Background(), time.Minute)
-		done <- st
-	}()
-	select {
-	case st := <-done:
 		assert.Equal(t, 1, st.Failed)
-	case <-time.After(5 * time.Second):
-		t.Fatal("Run did not return after the describe deadline")
-	}
+	})
 	r := e.row(id)
 	assert.Equal(t, 1, r.Attempts)
 	assert.Equal(t, "timeout", r.Error)
@@ -1027,14 +1069,10 @@ func TestLocalOpener_NoFollowRegularOnly(t *testing.T) {
 	require.NoError(t, syscall.Mkfifo(fifo, 0o600))
 	done := make(chan error, 1)
 	go func() { _, err := openLocal(o, fifo); done <- err }()
-	select {
-	case err := <-done:
-		assert.ErrorIs(t, err, ErrGone)
-	case <-time.After(3 * time.Second):
-		t.Fatal("opening a FIFO blocked")
-	}
+	err := <-done
+	assert.ErrorIs(t, err, ErrGone)
 
-	_, err := openLocal(o, filepath.Join(root, "conversations"))
+	_, err = openLocal(o, filepath.Join(root, "conversations"))
 	assert.ErrorIs(t, err, ErrGone, "a directory is no regular file")
 
 	// A symlink swapped in after the root check is refused by O_NOFOLLOW.
@@ -1061,76 +1099,89 @@ func TestLocalOpener_TooLarge(t *testing.T) {
 
 // --- sips, sniffing, policy, classes ----------------------------------------
 
-// The deadline must fire after the stub is ready, or there is no group to
-// prove killed: an attempt whose deadline beat the stub's start (a loaded
-// machine) is retried with a doubled deadline.
-func TestRunSips_TimeoutKillsGroup(t *testing.T) {
-	prevPath, prevTimeout := sipsPath, sipsTimeout
-	t.Cleanup(func() { sipsPath, sipsTimeout = prevPath, prevTimeout })
-	for timeout := 300 * time.Millisecond; timeout < 10*time.Second; timeout *= 2 {
-		if runSipsTimeoutAttempt(t, timeout) {
-			return
-		}
-		t.Logf("stub not ready within %v; retrying with a longer deadline", timeout)
-	}
-	t.Fatal("the stub never got ready before a deadline under 10 s")
-}
-
-// runSipsTimeoutAttempt runs one stub under timeout: it writes its pids and
-// a partial output, marks itself ready and waits on a forked sleep. The
-// result and cleanup are asserted on every attempt; the group kill only when
-// the stub was ready (false: retry).
-func runSipsTimeoutAttempt(t *testing.T, timeout time.Duration) bool {
-	t.Helper()
+// A run ended under it kills sips's whole process group. The stub tells the
+// test it is ready over a FIFO it holds open as fd 3, and so does the sleep it
+// forks: the test cancels only once the stub is ready, and the FIFO's EOF is
+// the proof both processes are gone — process events, no clock.
+func TestRunSips_CancelKillsGroup(t *testing.T) {
+	prevPath := sipsPath
+	t.Cleanup(func() { sipsPath = prevPath })
 	dir := t.TempDir()
-	parentPID := filepath.Join(dir, "parent.pid")
-	childPID := filepath.Join(dir, "child.pid")
-	ready := filepath.Join(dir, "ready")
+	fifo := filepath.Join(dir, "ready")
+	require.NoError(t, syscall.Mkfifo(fifo, 0o600))
 	script := filepath.Join(dir, "sips")
-	body := "#!/bin/sh\necho $$ > '" + parentPID + "'\nsleep 30 &\necho $! > '" + childPID +
-		"'\nfor a; do last=$a; done\necho partial > \"$last\"\n: > '" + ready + "'\nwait\n"
+	body := "#!/bin/sh\nexec 3>'" + fifo + "'\nsleep 3600 &\nfor a; do last=$a; done\n" +
+		"echo partial > \"$last\"\necho \"ready $$\" >&3\nwait\n"
 	require.NoError(t, os.WriteFile(script, []byte(body), 0o700))
-	sipsPath, sipsTimeout = script, timeout
+	sipsPath = script
 	work := filepath.Join(dir, "work")
 	require.NoError(t, os.Mkdir(work, 0o700))
 	in := filepath.Join(work, "media-in")
 	require.NoError(t, os.WriteFile(in, []byte("x"), 0o600))
-	t.Cleanup(func() {
-		for _, f := range []string{parentPID, childPID} {
-			if pid := readPID(f); pid > 0 {
-				_ = syscall.Kill(pid, syscall.SIGKILL)
-			}
-		}
-	})
 
-	out, err := runSips(context.Background(), in, "-s", "format", "jpeg")
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	type result struct {
+		out string
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		out, err := runSips(ctx, in, "-s", "format", "jpeg")
+		done <- result{out, err}
+	}()
 
-	require.Error(t, err)
-	assert.Empty(t, out)
-	assert.Equal(t, "convert_failed", ClassifyError(err))
+	f, err := os.Open(fifo) // returns once the stub has opened its end
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = f.Close() })
+	ready := bufio.NewReader(f)
+	line, err := ready.ReadString('\n')
+	require.NoError(t, err)
+	pidText, ok := strings.CutPrefix(strings.TrimSpace(line), "ready ")
+	require.True(t, ok, "ready line %q", line)
+	pid, err := strconv.Atoi(pidText)
+	require.NoError(t, err)
+	require.Greater(t, pid, 1)
+	// Whatever the run under test does, the stub's group (sips runs in its
+	// own) never outlives the test.
+	t.Cleanup(func() { _ = syscall.Kill(-pid, syscall.SIGKILL) })
+
+	cancel()
+	res := <-done
+	require.Error(t, res.err)
+	assert.Empty(t, res.out)
+	assert.Equal(t, "convert_failed", ClassifyError(res.err))
 	entries, err := os.ReadDir(work)
 	require.NoError(t, err)
 	require.Len(t, entries, 1, "the partial output file is removed, never reused")
 	assert.Equal(t, "media-in", entries[0].Name())
-	if _, err := os.Stat(ready); err != nil {
-		return false
-	}
-	for _, f := range []string{parentPID, childPID} {
-		pid := readPID(f)
-		require.Positive(t, pid, f)
-		assert.Eventually(t, func() bool { return errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) },
-			3*time.Second, 20*time.Millisecond, "process %d is gone", pid)
-	}
-	return true
+
+	// EOF only once every holder of fd 3 — the stub and the sleep it forked
+	// — has exited; a sleep left alive would hold this read past the
+	// package's go test timeout.
+	rest, err := io.ReadAll(ready)
+	require.NoError(t, err)
+	assert.Empty(t, rest)
 }
 
-func readPID(path string) int {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return 0
-	}
-	n, _ := strconv.Atoi(strings.TrimSpace(string(b)))
-	return n
+// sipsTimeout bounds every run: one already past its deadline never starts.
+func TestRunSips_TimeoutBoundsTheRun(t *testing.T) {
+	prevPath, prevTimeout := sipsPath, sipsTimeout
+	t.Cleanup(func() { sipsPath, sipsTimeout = prevPath, prevTimeout })
+	dir := t.TempDir()
+	ran := filepath.Join(dir, "ran")
+	script := filepath.Join(dir, "sips")
+	require.NoError(t, os.WriteFile(script, []byte("#!/bin/sh\n: > '"+ran+"'\n"), 0o700))
+	sipsPath, sipsTimeout = script, -time.Second
+	in := filepath.Join(dir, "media-in")
+	require.NoError(t, os.WriteFile(in, []byte("x"), 0o600))
+
+	out, err := runSips(context.Background(), in, "-s", "format", "jpeg")
+
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.Empty(t, out)
+	assert.Equal(t, "convert_failed", ClassifyError(err))
+	assert.NoFileExists(t, ran, "a run past sipsTimeout never starts")
 }
 
 // hugePNG is a PNG signature and IHDR declaring w×h, then filler and no
@@ -1484,7 +1535,10 @@ func TestPipeline_BadReplyAndOwnTimeoutCountAttempts(t *testing.T) {
 		return "", digest.WithCause(errors.New("signal: killed"), digest.ErrAICall)
 	}
 	slow := e2.image("1:C1", "1758000000.000100", "F1", noisePNG(t, 64, 64, 1))
-	e2.run()
+	synctest.Test(t, func(t *testing.T) { // the deadline passes in virtual time
+		_, err := e2.p.Run(context.Background(), time.Minute)
+		require.NoError(t, err)
+	})
 	assert.Equal(t, 1, e2.row(slow).Attempts)
 	assert.Equal(t, "timeout", e2.row(slow).Error)
 }

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -228,148 +229,160 @@ func fastPipeline(g digest.Generator) *Pipeline {
 // chapters are described, the summary runs over them with the failed ones
 // not covered, and the assembled overview names them incomplete.
 func TestRun_FailedAndHungBatchesLeaveTheRest(t *testing.T) {
-	d := dirsDiff(20)
-	m := dirsMap(d)
-	keys := batchKeysOf(Pack(m, d, nil))
-	require.Len(t, keys, 3)
-	g := &keyGen{fail: map[string]bool{keys[0][0]: true}, hang: map[string]bool{keys[1][0]: true}}
-	store, ev := newMemStore(), &events{}
-	o, err := fastPipeline(g).Run(context.Background(), store, m, d, okIntent(), nil,
-		RunOptions{ProjectID: 1, Tree: "t", Base: "b", Emit: ev.emit})
-	require.NoError(t, err)
+	synctest.Test(t, func(t *testing.T) {
+		d := dirsDiff(20)
+		m := dirsMap(d)
+		keys := batchKeysOf(Pack(m, d, nil))
+		require.Len(t, keys, 3)
+		g := &keyGen{fail: map[string]bool{keys[0][0]: true}, hang: map[string]bool{keys[1][0]: true}}
+		store, ev := newMemStore(), &events{}
+		o, err := fastPipeline(g).Run(context.Background(), store, m, d, okIntent(), nil,
+			RunOptions{ProjectID: 1, Tree: "t", Base: "b", Emit: ev.emit})
+		require.NoError(t, err)
 
-	failed := append(slices.Clone(keys[0]), keys[1]...)
-	assert.ElementsMatch(t, failed, o.Incomplete)
-	states := ev.chapterStates()
-	for _, k := range keys[0] {
-		assert.Equal(t, StateFailed, states[k].State)
-		assert.Equal(t, ClassProvider, states[k].Error.Class)
-		assert.Equal(t, "provider exploded", states[k].Error.Detail)
-	}
-	for _, k := range keys[1] {
-		assert.Equal(t, ClassTimeout, states[k].Error.Class)
-	}
-	for _, k := range keys[2] {
-		assert.Equal(t, StateOK, states[k].State)
-		assert.Equal(t, "about "+k, states[k].What)
-	}
-	assert.Equal(t, len(keys[2]), store.partPuts, "only described chapters are cached")
-	assert.Equal(t, 4, g.calls, "three batches and the summary")
-	assert.Equal(t, prompts.ReviewSummary, g.sources[3])
-	assert.Equal(t, "the summary", o.Summary)
-	last := ev.all[len(ev.all)-1]
-	assert.Equal(t, "summary", last.Event)
-	assert.Equal(t, StateOK, last.State)
-	assert.ElementsMatch(t, failed, last.NotCovered)
-	assert.Equal(t, o, store.overview(t), "the assembled overview is written")
+		failed := append(slices.Clone(keys[0]), keys[1]...)
+		assert.ElementsMatch(t, failed, o.Incomplete)
+		states := ev.chapterStates()
+		for _, k := range keys[0] {
+			assert.Equal(t, StateFailed, states[k].State)
+			assert.Equal(t, ClassProvider, states[k].Error.Class)
+			assert.Equal(t, "provider exploded", states[k].Error.Detail)
+		}
+		for _, k := range keys[1] {
+			assert.Equal(t, ClassTimeout, states[k].Error.Class)
+		}
+		for _, k := range keys[2] {
+			assert.Equal(t, StateOK, states[k].State)
+			assert.Equal(t, "about "+k, states[k].What)
+		}
+		assert.Equal(t, len(keys[2]), store.partPuts, "only described chapters are cached")
+		assert.Equal(t, 4, g.calls, "three batches and the summary")
+		assert.Equal(t, prompts.ReviewSummary, g.sources[3])
+		assert.Equal(t, "the summary", o.Summary)
+		last := ev.all[len(ev.all)-1]
+		assert.Equal(t, "summary", last.Event)
+		assert.Equal(t, StateOK, last.State)
+		assert.ElementsMatch(t, failed, last.NotCovered)
+		assert.Equal(t, o, store.overview(t), "the assembled overview is written")
+	})
 }
 
 // Nothing described: no summary call and no assembled overview.
 func TestRun_ZeroDescribedNoSummary(t *testing.T) {
-	d := dirsDiff(12)
-	m := dirsMap(d)
-	keys := batchKeysOf(Pack(m, d, nil))
-	g := &keyGen{fail: map[string]bool{keys[0][0]: true, keys[1][0]: true}}
-	store := newMemStore()
-	_, err := fastPipeline(g).Run(context.Background(), store, m, d, nil, nil, RunOptions{})
-	var re *RunError
-	require.ErrorAs(t, err, &re)
-	assert.Equal(t, ClassProvider, re.Class)
-	assert.Equal(t, 2, g.calls)
-	assert.NotContains(t, g.sources, prompts.ReviewSummary)
-	assert.Empty(t, store.overviews)
+	synctest.Test(t, func(t *testing.T) {
+		d := dirsDiff(12)
+		m := dirsMap(d)
+		keys := batchKeysOf(Pack(m, d, nil))
+		g := &keyGen{fail: map[string]bool{keys[0][0]: true, keys[1][0]: true}}
+		store := newMemStore()
+		_, err := fastPipeline(g).Run(context.Background(), store, m, d, nil, nil, RunOptions{})
+		var re *RunError
+		require.ErrorAs(t, err, &re)
+		assert.Equal(t, ClassProvider, re.Class)
+		assert.Equal(t, 2, g.calls)
+		assert.NotContains(t, g.sources, prompts.ReviewSummary)
+		assert.Empty(t, store.overviews)
+	})
 }
 
 // --chapter redoes only those chapters (ignoring their part rows), then the
 // summary.
 func TestRun_ChaptersRedoesOnlyThose(t *testing.T) {
-	d := dirsDiff(20)
-	m := dirsMap(d)
-	keys := batchKeysOf(Pack(m, d, nil))
-	g := &keyGen{}
-	store := newMemStore()
-	p := fastPipeline(g)
-	_, err := p.Run(context.Background(), store, m, d, nil, nil, RunOptions{})
-	require.NoError(t, err)
-	require.Equal(t, 4, g.calls)
+	synctest.Test(t, func(t *testing.T) {
+		d := dirsDiff(20)
+		m := dirsMap(d)
+		keys := batchKeysOf(Pack(m, d, nil))
+		g := &keyGen{}
+		store := newMemStore()
+		p := fastPipeline(g)
+		_, err := p.Run(context.Background(), store, m, d, nil, nil, RunOptions{})
+		require.NoError(t, err)
+		require.Equal(t, 4, g.calls)
 
-	g2 := &keyGen{}
-	ev := &events{}
-	redo := []string{keys[0][1], keys[2][0]}
-	o, err := fastPipeline(g2).Run(context.Background(), store, m, d, nil, nil, RunOptions{Chapters: redo, Emit: ev.emit})
-	require.NoError(t, err)
-	assert.Equal(t, 2, g2.calls, "one batch of the two chapters, then the summary")
-	assert.ElementsMatch(t, redo, g2.batchKeys[0])
-	assert.Equal(t, prompts.ReviewSummary, g2.sources[1])
-	assert.Empty(t, o.Incomplete)
-	states := ev.chapterStates()
-	assert.Equal(t, StateOK, states[redo[0]].State)
-	assert.Equal(t, StateCached, states[keys[1][0]].State)
+		g2 := &keyGen{}
+		ev := &events{}
+		redo := []string{keys[0][1], keys[2][0]}
+		o, err := fastPipeline(g2).Run(context.Background(), store, m, d, nil, nil, RunOptions{Chapters: redo, Emit: ev.emit})
+		require.NoError(t, err)
+		assert.Equal(t, 2, g2.calls, "one batch of the two chapters, then the summary")
+		assert.ElementsMatch(t, redo, g2.batchKeys[0])
+		assert.Equal(t, prompts.ReviewSummary, g2.sources[1])
+		assert.Empty(t, o.Incomplete)
+		states := ev.chapterStates()
+		assert.Equal(t, StateOK, states[redo[0]].State)
+		assert.Equal(t, StateCached, states[keys[1][0]].State)
+	})
 }
 
 // --chapter: a chapter neither redone nor cached gets a not_started event,
 // so a card left from an earlier run is told it has no description.
 func TestRun_ChaptersUndescribedOthersNotStarted(t *testing.T) {
-	d := dirsDiff(20)
-	m := dirsMap(d)
-	keys := batchKeysOf(Pack(m, d, nil))
-	store := newMemStore()
-	_, err := fastPipeline(&keyGen{fail: map[string]bool{keys[0][0]: true}}).Run(context.Background(), store, m, d, nil, nil, RunOptions{})
-	require.NoError(t, err)
+	synctest.Test(t, func(t *testing.T) {
+		d := dirsDiff(20)
+		m := dirsMap(d)
+		keys := batchKeysOf(Pack(m, d, nil))
+		store := newMemStore()
+		_, err := fastPipeline(&keyGen{fail: map[string]bool{keys[0][0]: true}}).Run(context.Background(), store, m, d, nil, nil, RunOptions{})
+		require.NoError(t, err)
 
-	ev := &events{}
-	o, err := fastPipeline(&keyGen{}).Run(context.Background(), store, m, d, nil, nil,
-		RunOptions{Chapters: []string{keys[1][0]}, Emit: ev.emit})
-	require.NoError(t, err)
-	states := ev.chapterStates()
-	for _, k := range keys[0] {
-		assert.Equal(t, StateNotStarted, states[k].State, k)
-	}
-	assert.Equal(t, StateOK, states[keys[1][0]].State)
-	assert.Equal(t, StateCached, states[keys[2][0]].State)
-	assert.ElementsMatch(t, keys[0], o.Incomplete)
+		ev := &events{}
+		o, err := fastPipeline(&keyGen{}).Run(context.Background(), store, m, d, nil, nil,
+			RunOptions{Chapters: []string{keys[1][0]}, Emit: ev.emit})
+		require.NoError(t, err)
+		states := ev.chapterStates()
+		for _, k := range keys[0] {
+			assert.Equal(t, StateNotStarted, states[k].State, k)
+		}
+		assert.Equal(t, StateOK, states[keys[1][0]].State)
+		assert.Equal(t, StateCached, states[keys[2][0]].State)
+		assert.ElementsMatch(t, keys[0], o.Incomplete)
+	})
 }
 
 // --summary needs every part; with them it makes only the summary call.
 func TestRun_SummaryOnly(t *testing.T) {
-	d := dirsDiff(12)
-	m := dirsMap(d)
-	store := newMemStore()
-	g := &keyGen{}
-	_, err := fastPipeline(g).Run(context.Background(), store, m, d, nil, nil, RunOptions{SummaryOnly: true})
-	var re *RunError
-	require.ErrorAs(t, err, &re)
-	assert.Equal(t, ClassMissingParts, re.Class)
-	assert.Zero(t, g.calls)
+	synctest.Test(t, func(t *testing.T) {
+		d := dirsDiff(12)
+		m := dirsMap(d)
+		store := newMemStore()
+		g := &keyGen{}
+		_, err := fastPipeline(g).Run(context.Background(), store, m, d, nil, nil, RunOptions{SummaryOnly: true})
+		var re *RunError
+		require.ErrorAs(t, err, &re)
+		assert.Equal(t, ClassMissingParts, re.Class)
+		assert.Zero(t, g.calls)
 
-	_, err = fastPipeline(g).Run(context.Background(), store, m, d, nil, nil, RunOptions{})
-	require.NoError(t, err)
-	g2 := &keyGen{}
-	_, err = fastPipeline(g2).Run(context.Background(), store, m, d, nil, nil, RunOptions{SummaryOnly: true})
-	require.NoError(t, err)
-	assert.Equal(t, []string{prompts.ReviewSummary}, g2.sources)
+		_, err = fastPipeline(g).Run(context.Background(), store, m, d, nil, nil, RunOptions{})
+		require.NoError(t, err)
+		g2 := &keyGen{}
+		_, err = fastPipeline(g2).Run(context.Background(), store, m, d, nil, nil, RunOptions{SummaryOnly: true})
+		require.NoError(t, err)
+		assert.Equal(t, []string{prompts.ReviewSummary}, g2.sources)
+	})
 }
 
 // A re-run after one file changed calls only for that file's chapter, then
 // the summary; an intent change redoes no chapter.
 func TestRun_CacheRedoesOnlyTheEditedChapter(t *testing.T) {
-	d := dirsDiff(12)
-	m := dirsMap(d)
-	store := newMemStore()
-	_, err := fastPipeline(&keyGen{}).Run(context.Background(), store, m, d, nil, nil, RunOptions{})
-	require.NoError(t, err)
+	synctest.Test(t, func(t *testing.T) {
+		d := dirsDiff(12)
+		m := dirsMap(d)
+		store := newMemStore()
+		_, err := fastPipeline(&keyGen{}).Run(context.Background(), store, m, d, nil, nil, RunOptions{})
+		require.NoError(t, err)
 
-	d.Files[3].NewBlob = "edited"
-	g := &keyGen{}
-	_, err = fastPipeline(g).Run(context.Background(), store, dirsMap(d), d, okIntent(), nil, RunOptions{})
-	require.NoError(t, err)
-	require.Equal(t, 2, g.calls)
-	assert.Equal(t, []string{"dir:d03"}, g.batchKeys[0])
+		d.Files[3].NewBlob = "edited"
+		g := &keyGen{}
+		_, err = fastPipeline(g).Run(context.Background(), store, dirsMap(d), d, okIntent(), nil, RunOptions{})
+		require.NoError(t, err)
+		require.Equal(t, 2, g.calls)
+		assert.Equal(t, []string{"dir:d03"}, g.batchKeys[0])
 
-	g2 := &keyGen{}
-	_, err = fastPipeline(g2).Run(context.Background(), store, dirsMap(d), d, []IntentItem{{Text: "other"}}, nil, RunOptions{})
-	require.NoError(t, err)
-	assert.Equal(t, []string{prompts.ReviewSummary}, g2.sources)
+		g2 := &keyGen{}
+		_, err = fastPipeline(g2).Run(context.Background(), store, dirsMap(d), d, []IntentItem{{Text: "other"}}, nil, RunOptions{})
+		require.NoError(t, err)
+		assert.Equal(t, []string{prompts.ReviewSummary}, g2.sources)
+	})
 }
 
 // A map that fits one batch is always the one full call, part rows or not;
@@ -420,96 +433,104 @@ func TestRun_FullCallBadSummaryKeepsTheChapters(t *testing.T) {
 // Carry-over: a chapter the reply left out is failed (parse); the rest of
 // its batch is described.
 func TestRun_ChapterLeftOutOfTheReplyIsParse(t *testing.T) {
-	d := dirsDiff(12)
-	m := dirsMap(d)
-	keys := batchKeysOf(Pack(m, d, nil))
-	ev := &events{}
-	o, err := fastPipeline(&keyGen{skip: map[string]bool{keys[0][2]: true}}).Run(context.Background(), newMemStore(), m, d, nil, nil,
-		RunOptions{Emit: ev.emit})
-	require.NoError(t, err)
-	assert.Equal(t, []string{keys[0][2]}, o.Incomplete)
-	st := ev.chapterStates()[keys[0][2]]
-	assert.Equal(t, StateFailed, st.State)
-	assert.Equal(t, ClassParse, st.Error.Class)
-	assert.Equal(t, StateOK, ev.chapterStates()[keys[0][0]].State)
+	synctest.Test(t, func(t *testing.T) {
+		d := dirsDiff(12)
+		m := dirsMap(d)
+		keys := batchKeysOf(Pack(m, d, nil))
+		ev := &events{}
+		o, err := fastPipeline(&keyGen{skip: map[string]bool{keys[0][2]: true}}).Run(context.Background(), newMemStore(), m, d, nil, nil,
+			RunOptions{Emit: ev.emit})
+		require.NoError(t, err)
+		assert.Equal(t, []string{keys[0][2]}, o.Incomplete)
+		st := ev.chapterStates()[keys[0][2]]
+		assert.Equal(t, StateFailed, st.State)
+		assert.Equal(t, ClassParse, st.Error.Class)
+		assert.Equal(t, StateOK, ev.chapterStates()[keys[0][0]].State)
+	})
 }
 
 // Batches whose turn comes after the run's ceiling are not_started; the
-// summary still runs.
+// summary still runs. The budgets are a synctest bubble's time.
 func TestRun_NotStartedPastTheCeiling(t *testing.T) {
-	d := dirsDiff(36)
-	m := dirsMap(d)
-	keys := batchKeysOf(Pack(m, d, nil))
-	require.Len(t, keys, 5)
-	slow := map[string]bool{}
-	for _, b := range keys[:4] {
-		slow[b[0]] = true
-	}
-	p := New(&keyGen{slowKeys: slow, slow: 500 * time.Millisecond})
-	p.callBudget = func(int) time.Duration { return 150 * time.Millisecond }
-	p.summaryBudget = 5 * time.Second
-	ev := &events{}
-	o, err := p.Run(context.Background(), newMemStore(), m, d, nil, nil, RunOptions{Emit: ev.emit})
-	require.NoError(t, err)
-	assert.ElementsMatch(t, keys[4], o.Incomplete)
-	for _, k := range keys[4] {
-		assert.Equal(t, StateNotStarted, ev.chapterStates()[k].State)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		d := dirsDiff(36)
+		m := dirsMap(d)
+		keys := batchKeysOf(Pack(m, d, nil))
+		require.Len(t, keys, 5)
+		slow := map[string]bool{}
+		for _, b := range keys[:4] {
+			slow[b[0]] = true
+		}
+		p := New(&keyGen{slowKeys: slow, slow: 500 * time.Millisecond})
+		p.callBudget = func(int) time.Duration { return 150 * time.Millisecond }
+		p.summaryBudget = 5 * time.Second
+		ev := &events{}
+		o, err := p.Run(context.Background(), newMemStore(), m, d, nil, nil, RunOptions{Emit: ev.emit})
+		require.NoError(t, err)
+		assert.ElementsMatch(t, keys[4], o.Incomplete)
+		for _, k := range keys[4] {
+			assert.Equal(t, StateNotStarted, ev.chapterStates()[k].State)
+		}
+	})
 }
 
 // SIGTERM mid-run (a cancelled context): finished parts stay, the run ends
 // cancelled, and a re-run calls only for the rest.
 func TestRun_CancelKeepsFinishedParts(t *testing.T) {
-	d := dirsDiff(12)
-	m := dirsMap(d)
-	keys := batchKeysOf(Pack(m, d, nil))
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	store := newMemStore()
-	g := &keyGen{hang: map[string]bool{keys[1][0]: true}}
-	g.onBatchReturn = func(k []string) {
-		if k[0] == keys[0][0] {
-			go cancel() // the first batch is written; stop the run
+	synctest.Test(t, func(t *testing.T) {
+		d := dirsDiff(12)
+		m := dirsMap(d)
+		keys := batchKeysOf(Pack(m, d, nil))
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		store := newMemStore()
+		g := &keyGen{hang: map[string]bool{keys[1][0]: true}}
+		g.onBatchReturn = func(k []string) {
+			if k[0] == keys[0][0] {
+				go cancel() // the first batch is written; stop the run
+			}
 		}
-	}
-	p := New(g)
-	_, err := p.Run(ctx, store, m, d, nil, nil, RunOptions{})
-	var re *RunError
-	require.ErrorAs(t, err, &re)
-	assert.Equal(t, ClassCancelled, re.Class)
-	assert.Equal(t, len(keys[0]), store.partPuts)
-	assert.Empty(t, store.overviews)
+		p := New(g)
+		_, err := p.Run(ctx, store, m, d, nil, nil, RunOptions{})
+		var re *RunError
+		require.ErrorAs(t, err, &re)
+		assert.Equal(t, ClassCancelled, re.Class)
+		assert.Equal(t, len(keys[0]), store.partPuts)
+		assert.Empty(t, store.overviews)
 
-	g2 := &keyGen{}
-	_, err = New(g2).Run(context.Background(), store, m, d, nil, nil, RunOptions{})
-	require.NoError(t, err)
-	require.Equal(t, 2, g2.calls)
-	assert.ElementsMatch(t, keys[1], g2.batchKeys[0])
+		g2 := &keyGen{}
+		_, err = New(g2).Run(context.Background(), store, m, d, nil, nil, RunOptions{})
+		require.NoError(t, err)
+		require.Equal(t, 2, g2.calls)
+		assert.ElementsMatch(t, keys[1], g2.batchKeys[0])
+	})
 }
 
 // Parts are database rows: a new handle on the same file reuses them.
 func TestRun_PartsSurviveANewDBHandle(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "w.db")
-	d := dirsDiff(12)
-	m := dirsMap(d)
-	open := func() *db.DB {
-		database, err := db.Open(path)
+	synctest.Test(t, func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "w.db")
+		d := dirsDiff(12)
+		m := dirsMap(d)
+		open := func() *db.DB {
+			database, err := db.Open(path)
+			require.NoError(t, err)
+			return database
+		}
+		first := open()
+		wb, err := first.CreateWorkbench("acme", t.TempDir())
 		require.NoError(t, err)
-		return database
-	}
-	first := open()
-	wb, err := first.CreateWorkbench("acme", t.TempDir())
-	require.NoError(t, err)
-	_, err = fastPipeline(&keyGen{}).Run(context.Background(), first, m, d, nil, nil, RunOptions{ProjectID: wb, Tree: "t", Base: "b"})
-	require.NoError(t, err)
-	require.NoError(t, first.Close())
+		_, err = fastPipeline(&keyGen{}).Run(context.Background(), first, m, d, nil, nil, RunOptions{ProjectID: wb, Tree: "t", Base: "b"})
+		require.NoError(t, err)
+		require.NoError(t, first.Close())
 
-	second := open()
-	t.Cleanup(func() { _ = second.Close() })
-	g := &keyGen{}
-	_, err = fastPipeline(g).Run(context.Background(), second, m, d, []IntentItem{{Text: "new"}}, nil, RunOptions{ProjectID: wb, Tree: "t", Base: "b"})
-	require.NoError(t, err)
-	assert.Equal(t, []string{prompts.ReviewSummary}, g.sources)
+		second := open()
+		t.Cleanup(func() { _ = second.Close() })
+		g := &keyGen{}
+		_, err = fastPipeline(g).Run(context.Background(), second, m, d, []IntentItem{{Text: "new"}}, nil, RunOptions{ProjectID: wb, Tree: "t", Base: "b"})
+		require.NoError(t, err)
+		assert.Equal(t, []string{prompts.ReviewSummary}, g.sources)
+	})
 }
 
 func TestRun_ErrorTextsVerbatim(t *testing.T) {
@@ -598,25 +619,27 @@ func TestPartHash(t *testing.T) {
 // classes and counts only — no chapter title, path or provider text; the
 // provider's text reaches stderr.
 func TestFILES01_ReviewOverviewNeverLogsContent(t *testing.T) {
-	sink := logcanary.Capture(t)
-	dir := logcanary.Text("dir")
-	var d reviewdiff.Diff
-	for i := range 12 {
-		f := fileOf(fmt.Sprintf("%s%02d/f.go", dir, i), 300)
-		d.Files = append(d.Files, f)
-	}
-	m := dirsMap(d)
-	keys := batchKeysOf(Pack(m, d, nil))
-	g := &keyGen{fail: map[string]bool{keys[0][0]: true}, failErr: errors.New(logcanary.Text("provider")),
-		sumErr: errors.New(logcanary.Text("summary-provider"))}
-	var stderr bytes.Buffer
-	_, err := fastPipeline(g).Run(context.Background(), newMemStore(), m, d, nil, nil, RunOptions{Stderr: &stderr})
-	var re *RunError
-	require.ErrorAs(t, err, &re)
-	sink.AssertClean(t)
-	assert.NotEmpty(t, sink.String(), "the failures are logged")
-	assert.Contains(t, stderr.String(), logcanary.Text("provider"))
-	assert.Contains(t, re.Detail, logcanary.Text("summary-provider"))
+	synctest.Test(t, func(t *testing.T) {
+		sink := logcanary.Capture(t)
+		dir := logcanary.Text("dir")
+		var d reviewdiff.Diff
+		for i := range 12 {
+			f := fileOf(fmt.Sprintf("%s%02d/f.go", dir, i), 300)
+			d.Files = append(d.Files, f)
+		}
+		m := dirsMap(d)
+		keys := batchKeysOf(Pack(m, d, nil))
+		g := &keyGen{fail: map[string]bool{keys[0][0]: true}, failErr: errors.New(logcanary.Text("provider")),
+			sumErr: errors.New(logcanary.Text("summary-provider"))}
+		var stderr bytes.Buffer
+		_, err := fastPipeline(g).Run(context.Background(), newMemStore(), m, d, nil, nil, RunOptions{Stderr: &stderr})
+		var re *RunError
+		require.ErrorAs(t, err, &re)
+		sink.AssertClean(t)
+		assert.NotEmpty(t, sink.String(), "the failures are logged")
+		assert.Contains(t, stderr.String(), logcanary.Text("provider"))
+		assert.Contains(t, re.Detail, logcanary.Text("summary-provider"))
+	})
 }
 
 // A summary that fails after the batches (the multi-batch path): the
@@ -624,33 +647,35 @@ func TestFILES01_ReviewOverviewNeverLogsContent(t *testing.T) {
 // nothing is assembled, the parts stay, and a summary-only run then makes
 // the overview from them without describing anything again (spec frame 2c).
 func TestRun_MultiBatchSummaryFailureKeepsPartsAndEmitsFailed(t *testing.T) {
-	var d reviewdiff.Diff
-	for i := range 12 {
-		d.Files = append(d.Files, fileOf(fmt.Sprintf("dir%02d/f.go", i), 300))
-	}
-	m := dirsMap(d)
-	require.Greater(t, len(Pack(m, d, nil)), 1, "the multi-batch path")
-	store := newMemStore()
-	var events []Event
-	var mu sync.Mutex
-	g := &keyGen{sumErr: errors.New("HTTP 529")}
-	_, err := fastPipeline(g).Run(context.Background(), store, m, d, nil, nil, RunOptions{Stderr: io.Discard,
-		Emit: func(e Event) { mu.Lock(); events = append(events, e); mu.Unlock() }})
-	var re *RunError
-	require.ErrorAs(t, err, &re)
-	assert.Contains(t, re.Text, "the summary")
-	last := events[len(events)-1]
-	assert.Equal(t, "summary", last.Event)
-	assert.Equal(t, StateFailed, last.State)
-	require.NotNil(t, last.Error)
-	assert.Equal(t, re.Text, last.Error.Text)
-	assert.Empty(t, store.overviews, "nothing assembled")
-	assert.NotZero(t, store.partPuts, "the described chapters are kept")
+	synctest.Test(t, func(t *testing.T) {
+		var d reviewdiff.Diff
+		for i := range 12 {
+			d.Files = append(d.Files, fileOf(fmt.Sprintf("dir%02d/f.go", i), 300))
+		}
+		m := dirsMap(d)
+		require.Greater(t, len(Pack(m, d, nil)), 1, "the multi-batch path")
+		store := newMemStore()
+		var events []Event
+		var mu sync.Mutex
+		g := &keyGen{sumErr: errors.New("HTTP 529")}
+		_, err := fastPipeline(g).Run(context.Background(), store, m, d, nil, nil, RunOptions{Stderr: io.Discard,
+			Emit: func(e Event) { mu.Lock(); events = append(events, e); mu.Unlock() }})
+		var re *RunError
+		require.ErrorAs(t, err, &re)
+		assert.Contains(t, re.Text, "the summary")
+		last := events[len(events)-1]
+		assert.Equal(t, "summary", last.Event)
+		assert.Equal(t, StateFailed, last.State)
+		require.NotNil(t, last.Error)
+		assert.Equal(t, re.Text, last.Error.Text)
+		assert.Empty(t, store.overviews, "nothing assembled")
+		assert.NotZero(t, store.partPuts, "the described chapters are kept")
 
-	g2 := &keyGen{}
-	o, err := fastPipeline(g2).Run(context.Background(), store, m, d, nil, nil, RunOptions{SummaryOnly: true, Stderr: io.Discard})
-	require.NoError(t, err)
-	assert.Equal(t, "the summary", o.Summary)
-	assert.Equal(t, 1, g2.calls, "only the summary call")
-	assert.Len(t, store.overviews, 1)
+		g2 := &keyGen{}
+		o, err := fastPipeline(g2).Run(context.Background(), store, m, d, nil, nil, RunOptions{SummaryOnly: true, Stderr: io.Discard})
+		require.NoError(t, err)
+		assert.Equal(t, "the summary", o.Summary)
+		assert.Equal(t, 1, g2.calls, "only the summary call")
+		assert.Len(t, store.overviews, 1)
+	})
 }

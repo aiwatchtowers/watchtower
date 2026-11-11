@@ -215,7 +215,11 @@ final class SessionAgentStateCenterTests: XCTestCase {
                            arguments: [row.id])
         }
         activations.post(name: NSApplication.didBecomeActiveNotification, object: nil)
-        await eventually("app activation reads") { log.reads == [[]] }
+        // The log records when a read STARTS; the statuses land when it ends.
+        await eventually("app activation reads") {
+            log.reads == [[]]
+                && center.statuses[row.id]?.state == SessionSwitcherPresentation.State(kind: .finished, live: false)
+        }
         XCTAssertEqual(center.statuses[row.id]?.state, SessionSwitcherPresentation.State(kind: .finished, live: false),
                        "a closed finished session: a blue ring")
         XCTAssertFalse(center.isPolling, "a refresh starts no loop")
@@ -676,7 +680,7 @@ final class SessionAgentStateCenterTests: XCTestCase {
         await center.poll()
         await center.poll()
         XCTAssertEqual(notifier.posted, [.init(sessionID: row.id, workbenchID: try XCTUnwrap(row.projectID),
-                                               title: "Release work stopped", body: "acme")])
+                                               title: "Release work is idle", body: "acme")])
         XCTAssertEqual(notifier.posted.first?.identifier, "workbench-session-\(row.id)")
         try hookWrites(row.id, "approval", at: 2)
         await center.poll()
@@ -756,9 +760,35 @@ final class SessionAgentStateCenterTests: XCTestCase {
         XCTAssertEqual(center.statuses[row.id]?.at, stamp(1))
         XCTAssertEqual(changes, 1)
         XCTAssertEqual(notifier.posted, [.init(sessionID: row.id, workbenchID: try XCTUnwrap(row.projectID),
-                                               title: "Release work stopped", body: "acme")])
+                                               title: "Release work is idle", body: "acme")])
         await center.poll()
         XCTAssertEqual(notifier.posted.count, 1, "announced once")
+    }
+
+    /// Ask #1217 (board #1712): a turn that ends with only a background
+    /// shell running is announced at once — the row still reads Background
+    /// task running — and the shell's end on the clock (the shell cap, no
+    /// write) is no second notice.
+    func testAShellsOnlyTurnEndIsAnnouncedAtOnce() async throws {
+        let row = try await session(title: "Release work")
+        terminals.start(row, fresh: true)
+        let stored = SessionAgentStateRow(
+            id: row.id, projectID: row.projectID, title: "Release work", agentState: "waiting",
+            agentStateAt: stamp(1), workbenchName: "acme", agentBackground: 0, agentBackgroundAt: stamp(1),
+            agentBackgroundShells: 1
+        )
+        let clock = ManualClock(started.addingTimeInterval(60))
+        let center = makeCenter(interval: .seconds(60), read: { _ in [stored] }, clock: { clock.now })
+        await center.poll()
+        XCTAssertEqual(center.statuses[row.id]?.state, .live(.background, backgroundShells: 1))
+        XCTAssertEqual(notifier.posted, [.init(sessionID: row.id, workbenchID: try XCTUnwrap(row.projectID),
+                                               title: "Release work is idle", body: "acme")],
+                       "the turn end is announced while the shell runs")
+
+        clock.now = started.addingTimeInterval(1 + SessionBackgroundPolicy.shellCap + 1)
+        await center.poll()
+        XCTAssertEqual(center.statuses[row.id]?.state, .live(.stopped))
+        XCTAssertEqual(notifier.posted.count, 1, "the shell's end at the same stamp: no second notice")
     }
 
     /// The row a background test reads, which a fake Go write changes.
@@ -805,7 +835,7 @@ final class SessionAgentStateCenterTests: XCTestCase {
         ]])
         XCTAssertEqual(center.statuses[row.id]?.at, stamp(1))
         XCTAssertEqual(notifier.posted, [.init(sessionID: row.id, workbenchID: try XCTUnwrap(row.projectID),
-                                               title: "Release work stopped", body: "acme")])
+                                               title: "Release work is idle", body: "acme")])
         clock.now = clock.now.addingTimeInterval(3600)
         await center.poll()
         XCTAssertEqual(notifier.posted.count, 1, "announced once")
@@ -837,7 +867,7 @@ final class SessionAgentStateCenterTests: XCTestCase {
         }
         XCTAssertEqual(stored.row, backgroundRow(row), "nothing written")
         XCTAssertEqual(notifier.posted, [.init(sessionID: row.id, workbenchID: try XCTUnwrap(row.projectID),
-                                               title: "Release work stopped", body: "acme")])
+                                               title: "Release work is idle", body: "acme")])
         clock.now = clock.now.addingTimeInterval(SessionBackgroundProber.retryAfter)
         await center.poll()
         try await Task.sleep(for: .milliseconds(30))
@@ -873,9 +903,9 @@ final class SessionAgentStateCenterTests: XCTestCase {
         let waiting = SessionSwitcherPresentation.rows([session], liveIDs: [id], statuses: [id: status], now: Date())[0]
         let live = TerminalSessionRow(row: waiting, actions: actions)
         let label = try live.inspect().find(SessionStateLabel.self)
-        XCTAssertNoThrow(try label.find(text: "Stopped"))
+        XCTAssertNoThrow(try label.find(text: "Idle"))
         XCTAssertEqual(try label.find(ViewType.Image.self).actualImage().name(), "pause.fill")
-        XCTAssertEqual(try label.hStack().accessibilityLabel().string(), "Stopped", "the caption is read out")
+        XCTAssertEqual(try label.hStack().accessibilityLabel().string(), "Idle", "the caption is read out")
         let dot = try live.inspect().find(SessionLiveDot.self)
         XCTAssertEqual(try dot.actualView().state, .live(.stopped))
         XCTAssertEqual(try dot.find(ViewType.Image.self).foregroundStyleShapeStyle(Color.self), .secondary)
@@ -885,7 +915,7 @@ final class SessionAgentStateCenterTests: XCTestCase {
         let idle = TerminalSessionRow(row: dead, actions: actions)
         XCTAssertNoThrow(try idle.inspect().find(text: "Not running · 5m"))
         XCTAssertNoThrow(try idle.inspect().find(viewWithAccessibilityLabel: "Not running · 5m"), "the age is read")
-        XCTAssertThrowsError(try idle.inspect().find(text: "Stopped"))
+        XCTAssertThrowsError(try idle.inspect().find(text: "Idle"))
         XCTAssertThrowsError(try idle.inspect().find(SessionStateLabel.self).find(ViewType.Image.self), "no glyph")
     }
 
@@ -913,7 +943,7 @@ final class SessionAgentStateCenterTests: XCTestCase {
         let expected: [(SessionSwitcherPresentation.State, Color, String, String)] = [
             (.live(.running), .green, "Running", "circle.fill"),
             (.live(.working), .green, "Working", "circle.fill"),
-            (.live(.stopped), .secondary, "Stopped", "circle.fill"),
+            (.live(.stopped), .secondary, "Idle", "circle.fill"),
             (.live(.waitingOnAsk, openAsks: 1), .orange, "Waiting for you", "circle.fill"),
             (.live(.waitingOnAsk, openAsks: 2, oldestAskID: 12), .orange, "Waiting for you · ask #12 · 2 asks", "circle.fill"),
             (SessionSwitcherPresentation.State(kind: .waitingOnAsk, live: false, openAsks: 1, oldestAskID: 3), .orange,

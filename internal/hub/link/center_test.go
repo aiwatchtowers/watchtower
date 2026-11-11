@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"regexp"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -32,6 +34,9 @@ type rig struct {
 	mu        sync.Mutex
 	now       time.Time
 	published []string
+	// out: the phones (uppercase ids) whose data-zone keybox the runtime's
+	// KeysInZone keeps the keys out of (guarded by mu).
+	out map[string]bool
 }
 
 const (
@@ -65,8 +70,24 @@ func newRig(t *testing.T) *rig {
 			defer r.mu.Unlock()
 			r.published = append(r.published, kinds...)
 		},
+		KeysInZone: func(device string) bool {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			return !r.out[strings.ToUpper(device)]
+		},
 	})
 	return r
+}
+
+// keepOut makes KeysInZone say no for p (a free phone on the relay), or yes
+// again with in.
+func (r *rig) keepOut(p phone, out bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.out == nil {
+		r.out = map[string]bool{}
+	}
+	r.out[strings.ToUpper(p.id.String())] = out
 }
 
 func (r *rig) clock() time.Time {
@@ -624,7 +645,7 @@ func TestConfirmSealsKeyboxWithGrantAndKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	kb := r.mustKeybox(a)
-	want, err := r.kr.KeyboxKeys()
+	want, err := r.kr.KeyboxKeysFor(a.id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -972,6 +993,16 @@ func TestConfirmOnAReplacedRequestIsCodeChanged(t *testing.T) {
 	}
 }
 
+// unlinkWaitsOnTheCenter: a goroutine's Center.unlink waits in the
+// center's mutex Lock.
+func unlinkWaitsOnTheCenter() bool {
+	buf := make([]byte, 1<<20)
+	buf = buf[:runtime.Stack(buf, true)]
+	return unlinkWaitRE.Match(buf)
+}
+
+var unlinkWaitRE = regexp.MustCompile(`sync\.\(\*Mutex\)\.Lock[^\n]*\n[^\n]*\nwatchtower/internal/hub/link\.\(\*Center\)\.unlink\(`)
+
 // An Unlink while Keyboxes is between its device read and its key read
 // waits for it: the unlinked phone never gets the epoch its unlink begins.
 func TestKeyboxesNeverSealTheUnlinkEpochToTheUnlinkedPhone(t *testing.T) {
@@ -983,8 +1014,24 @@ func TestKeyboxesNeverSealTheUnlinkEpochToTheUnlinkedPhone(t *testing.T) {
 	done := make(chan error, 1)
 	r.c.beforeKeys = func() {
 		r.c.beforeKeys = nil
-		go func() { done <- r.c.Unlink(a.id.String()) }()
-		time.Sleep(50 * time.Millisecond) // time enough for an unlocked Unlink to rotate
+		unlinked := make(chan error, 1)
+		go func() { unlinked <- r.c.Unlink(a.id.String()) }()
+		// Until the Unlink either waits on the center's mutex (its first
+		// step: seen in its stack, no clock involved) or, unlocked, has run
+		// to its end (its rotation then shows in the boxes below).
+		for {
+			select {
+			case err := <-unlinked:
+				done <- err
+				return
+			default:
+			}
+			if unlinkWaitsOnTheCenter() {
+				go func() { done <- <-unlinked }()
+				return
+			}
+			runtime.Gosched()
+		}
 	}
 	boxes, err := r.c.Keyboxes()
 	if err != nil {
@@ -1041,17 +1088,7 @@ func TestPublishCallbackMayReadKeyboxes(t *testing.T) {
 		}
 		reads++
 	}
-	// The pairing runs here; a watchdog only waits. A deadlock never returns,
-	// so the watchdog ends the run with a panic naming it.
-	done := make(chan struct{})
-	defer close(done)
-	go func() {
-		select {
-		case <-done:
-		case <-time.After(10 * time.Second):
-			panic("TestPublishCallbackMayReadKeyboxes: a Publish callback reading Keyboxes deadlocked")
-		}
-	}()
+	// A deadlock never returns: go test -timeout ends the run with its stacks.
 	a, b := newPhone(t), newPhone(t)
 	code := r.issue()
 	r.handle(a, code.Nonce)
@@ -1110,5 +1147,248 @@ func TestOnRevokeIsToldOfTypingRevokesAndUnlinks(t *testing.T) {
 	_ = r.c.Unlink(b.id.String()) // not linked any more: nothing to tell
 	if want := []string{a.id.String(), b.id.String()}; !slices.Equal(told, want) {
 		t.Fatalf("told %v, want %v", told, want)
+	}
+}
+
+// TestLinkSecretsGoWhenTheRequestEnds: a request's four-digit code, confirm
+// nonce and its copy of the link nonce live only in its pending_devices row,
+// which goes when the link completes, is refused or its code expires. What
+// stays is the code's own row (link_codes.nonce: a used or expired code is
+// still told apart from an unknown one) and devices.link_nonce, an input of
+// the phone's relay keys.
+func TestLinkSecretsGoWhenTheRequestEnds(t *testing.T) {
+	pendingRows := func(t *testing.T, r *rig) int {
+		t.Helper()
+		var n int
+		if err := r.st.ReadTx(context.Background(), func(tx *sql.Tx) error {
+			return tx.QueryRow(`SELECT COUNT(*) FROM pending_devices WHERE sas IS NOT NULL OR confirm_nonce IS NOT NULL OR link_nonce IS NOT NULL`).Scan(&n)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	for _, end := range []string{"linked", "refused", "expired"} {
+		t.Run(end, func(t *testing.T) {
+			r := newRig(t)
+			code := r.issue()
+			a := newPhone(t)
+			r.handle(a, code.Nonce)
+			if pendingRows(t, r) != 1 {
+				t.Fatal("the request's row is not there while it waits")
+			}
+			switch end {
+			case "linked":
+				if err := r.c.Confirm(a.id.String(), r.code(a), true); err != nil {
+					t.Fatal(err)
+				}
+			case "refused":
+				if err := r.c.Confirm(a.id.String(), "", false); err != nil {
+					t.Fatal(err)
+				}
+			case "expired":
+				r.advance(601 * time.Second)
+				if err := r.c.Sweep(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if n := pendingRows(t, r); n != 0 {
+				t.Errorf("%d rows still hold a code or nonce after the request %s", n, end)
+			}
+		})
+	}
+}
+
+// keyboxIn is p's keybox in boxes (Keyboxes or KeyboxesAll), as the phone
+// opens it.
+func (r *rig) keyboxIn(boxes []wire.Keybox, p phone) wire.Keybox {
+	r.t.Helper()
+	for _, kb := range boxes {
+		if strings.EqualFold(kb.Grant.DeviceID, p.id.String()) {
+			return kb
+		}
+	}
+	r.t.Fatalf("no keybox for %s", p.id)
+	return wire.Keybox{}
+}
+
+// sameKeys says whether got are the keybox keys the keyring hands p now.
+func (r *rig) sameKeys(got *wire.KeyboxKeys, p phone) bool {
+	r.t.Helper()
+	want, err := r.kr.KeyboxKeysFor(p.id)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	if got == nil {
+		return false
+	}
+	a, _ := json.Marshal(got)
+	b, _ := json.Marshal(want)
+	return string(a) == string(b)
+}
+
+// toRelay marks the hub as on the relay and rotates into a relay epoch.
+func (r *rig) toRelay() {
+	r.t.Helper()
+	if err := r.st.SetMeta(state.MetaTransport, "relay"); err != nil {
+		r.t.Fatal(err)
+	}
+	r.rotateOnRelay()
+}
+
+func (r *rig) rotateOnRelay() {
+	r.t.Helper()
+	if err := r.kr.RotateToward(identity.ReasonTransportSwitch, true, nil); err != nil {
+		r.t.Fatal(err)
+	}
+}
+
+// offer stores a fresh relay key offer for p in the current epoch, as its
+// epoch_ack would, and returns its public half.
+func (r *rig) offer(p phone) []byte {
+	r.t.Helper()
+	k, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	cur, err := r.kr.CurrentEpoch()
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	pub := k.PublicKey().Bytes()
+	if err := r.st.WithTx(context.Background(), func(tx *sql.Tx) error {
+		ok, err := state.SetKXOffer(tx, p.id.String(), pub, cur)
+		if err == nil && !ok {
+			err = errors.New("offer refused")
+		}
+		return err
+	}); err != nil {
+		r.t.Fatal(err)
+	}
+	return pub
+}
+
+// Relay client Phase 5, mixed fleets: on the relay a free phone is not a
+// reader of the data zone, so its keybox there carries the grant and no keys;
+// the paying phone's keybox is unchanged, and KeyboxesAll (a
+// transport_switched) still carries the free phone's keys.
+func TestFreePhoneKeyboxOnRelayHasNoKeys(t *testing.T) {
+	r := newRig(t)
+	paying, free := newPhone(t), newPhone(t)
+	r.confirmLinked(paying)
+	r.confirmLinked(free)
+	r.toRelay()
+	r.keepOut(free, true)
+
+	zone, err := r.c.Keyboxes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kb := r.keyboxIn(zone, paying); !r.sameKeys(kb.Keys, paying) {
+		t.Fatalf("paying phone's zone keybox %+v", kb.Keys)
+	}
+	kb := r.keyboxIn(zone, free)
+	if kb.Keys != nil {
+		t.Fatalf("a free phone's zone keybox carries keys: %+v", kb.Keys)
+	}
+	if !kb.Grant.Linked || kb.Grant.LinkedAt == nil || kb.Grant.DeviceID != free.id.String() {
+		t.Fatalf("the free phone's grant %+v", kb.Grant)
+	}
+	// The phone reads it as its own grant (sealed and opened as the zone does).
+	if got := r.mustKeybox(free); got.Keys != nil || !got.Grant.Linked {
+		t.Fatalf("the free phone opened %+v", got)
+	}
+	grants, err := r.c.Grants()
+	if err != nil || len(grants) != 2 {
+		t.Fatalf("grants %d %v", len(grants), err)
+	}
+
+	all, err := r.c.KeyboxesAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []phone{paying, free} {
+		if kb := r.keyboxIn(all, p); !r.sameKeys(kb.Keys, p) {
+			t.Fatalf("KeyboxesAll for %s: %+v", p.id, kb.Keys)
+		}
+	}
+	// Back in the zone (the phone pays and reads it): keys again.
+	r.keepOut(free, false)
+	if kb := r.mustKeybox(free); !r.sameKeys(kb.Keys, free) {
+		t.Fatalf("a reader again has no keys: %+v", kb.Keys)
+	}
+}
+
+// A relay phone with no offer (its first minutes, a lost first ack, an old
+// build) gets static keys in every epoch, with the keys in its keybox.
+func TestPhoneWithNoOfferStaysStaticAcrossRotations(t *testing.T) {
+	r := newRig(t)
+	p := newPhone(t)
+	r.confirmLinked(p)
+	r.toRelay()
+	for range 3 {
+		cur, err := r.kr.CurrentEpoch()
+		if err != nil {
+			t.Fatal(err)
+		}
+		kb := r.mustKeybox(p)
+		if kb.Keys == nil || kb.Keys.Epoch != cur || kb.Keys.RelayKX != nil || kb.Keys.PreviousRelayKX != nil {
+			t.Fatalf("epoch %d keybox %+v", cur, kb.Keys)
+		}
+		if !r.sameKeys(kb.Keys, p) {
+			t.Fatalf("epoch %d keybox is not the keyring's", cur)
+		}
+		r.rotateOnRelay()
+	}
+}
+
+// zoneKeybox is p's keybox in Keyboxes, unsealed (a phone with an offer opens
+// it with the offer's private key, which the rig does not keep).
+func (r *rig) zoneKeybox(p phone) wire.Keybox {
+	r.t.Helper()
+	boxes, err := r.c.Keyboxes()
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	return r.keyboxIn(boxes, p)
+}
+
+// Two phones' offers and zone rules are independent: one phone's offer gives
+// only it a relay-key pair, and keeping one phone's keys out of the zone leaves
+// the other's keybox as it was.
+func TestSecondPhoneIndependentOffers(t *testing.T) {
+	r := newRig(t)
+	a, b := newPhone(t), newPhone(t)
+	r.confirmLinked(a)
+	r.confirmLinked(b)
+	r.toRelay()
+	offerA := r.offer(a)
+	r.rotateOnRelay()
+
+	ka := r.zoneKeybox(a)
+	if ka.Keys == nil || ka.Keys.RelayKX == nil || ka.Keys.RelayKX.DevicePub != b64.EncodeToString(offerA) {
+		t.Fatalf("a's keybox %+v", ka.Keys)
+	}
+	kb := r.zoneKeybox(b)
+	if kb.Keys == nil || kb.Keys.RelayKX != nil {
+		t.Fatalf("b's keybox %+v", kb.Keys)
+	}
+	if ka.Keys.Epoch != kb.Keys.Epoch || ka.Keys.DataKey != kb.Keys.DataKey {
+		t.Fatal("one epoch's data key differs between the phones")
+	}
+
+	offerB := r.offer(b)
+	r.rotateOnRelay()
+	ka, kb = r.zoneKeybox(a), r.zoneKeybox(b)
+	if ka.Keys.RelayKX == nil || kb.Keys.RelayKX == nil || ka.Keys.RelayKX.DevicePub == kb.Keys.RelayKX.DevicePub ||
+		kb.Keys.RelayKX.DevicePub != b64.EncodeToString(offerB) || ka.Keys.RelayKX.HubPub == kb.Keys.RelayKX.HubPub {
+		t.Fatalf("pairs a %+v b %+v", ka.Keys.RelayKX, kb.Keys.RelayKX)
+	}
+
+	r.keepOut(b, true)
+	if got := r.zoneKeybox(a); !r.sameKeys(got.Keys, a) {
+		t.Fatalf("a's keybox changed with b out of the zone: %+v", got.Keys)
+	}
+	if got := r.zoneKeybox(b); got.Keys != nil {
+		t.Fatalf("b out of the zone still has keys: %+v", got.Keys)
 	}
 }

@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"path/filepath"
 	"testing"
-	"time"
 )
 
 // openTwoWriters opens two independent handles (two processes, in effect) on
@@ -52,19 +51,14 @@ func TestTxLock_BeginTakesWriteLockUpFront(t *testing.T) {
 		t.Fatalf("read in A: %v", err)
 	}
 
-	bDone := make(chan error, 1)
-	go func() {
-		_, err := b.Exec(`UPDATE txlock_probe SET n = n + 100`)
-		bDone <- err
-	}()
-	// With the write lock held by A, B cannot commit until A does. Give it a
-	// bounded window to (wrongly) get through.
-	bEarly := false
-	var bErr error
-	select {
-	case bErr = <-bDone:
-		bEarly = true
-	case <-time.After(300 * time.Millisecond):
+	// With the write lock held by A, B cannot write until A commits: not
+	// waiting at all, B's write is refused busy (the wait itself is
+	// busy_timeout's).
+	if err := b.SetBusyTimeout(0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Exec(`UPDATE txlock_probe SET n = n + 100`); !IsBusy(err) {
+		t.Fatalf("B's write while A's write transaction was open: want busy, got %v: Begin did not take the write lock", err)
 	}
 
 	if _, err := tx.Exec(`UPDATE txlock_probe SET n = ?`, n+1); err != nil {
@@ -73,10 +67,7 @@ func TestTxLock_BeginTakesWriteLockUpFront(t *testing.T) {
 	if err := tx.Commit(); err != nil {
 		t.Fatalf("commit A: %v", err)
 	}
-	if bEarly {
-		t.Fatalf("B wrote while A's write transaction was open (err=%v): Begin did not take the write lock", bErr)
-	}
-	if err := <-bDone; err != nil {
+	if _, err := b.Exec(`UPDATE txlock_probe SET n = n + 100`); err != nil {
 		t.Fatalf("B's write after A committed: %v", err)
 	}
 
@@ -103,18 +94,12 @@ func TestTxLock_ReadOnlyTxDoesNotTakeWriteLock(t *testing.T) {
 		t.Fatalf("read in A: %v", err)
 	}
 
-	bDone := make(chan error, 1)
-	go func() {
-		_, err := b.Exec(`UPDATE txlock_probe SET n = n + 1`)
-		bDone <- err
-	}()
-	select {
-	case err := <-bDone:
-		if err != nil {
-			t.Fatalf("B's write during A's read-only tx: %v", err)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("B's write blocked behind a read-only transaction")
+	// Not waiting at all, B's write still goes through.
+	if err := b.SetBusyTimeout(0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Exec(`UPDATE txlock_probe SET n = n + 1`); err != nil {
+		t.Fatalf("B's write during A's read-only tx (blocked behind it?): %v", err)
 	}
 }
 

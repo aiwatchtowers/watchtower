@@ -41,6 +41,10 @@ type Client struct {
 	// tokenEndpoint) — the default for both NewClient and every
 	// struct-literal test client that predates this field.
 	tokenURL string
+	// beforeTokenLock, when set (tests only), runs right before a refresh
+	// takes the cross-process token lock — the point a racing second process
+	// has read the stale token and is about to wait for the first one.
+	beforeTokenLock func()
 
 	oauthCfg    JiraOAuthConfig
 	tokenStore  *TokenStore
@@ -259,7 +263,7 @@ func (c *Client) getAccessToken(ctx context.Context) (string, error) {
 	// another process (the daemon, a `jira`/`confluence` CLI) may have
 	// refreshed while this one waited, and refreshing again with the refresh
 	// token it already rotated away would fail with invalid_grant.
-	unlock, err := c.tokenStore.Lock(ctx)
+	unlock, err := c.lockTokenStore(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -296,7 +300,7 @@ func (c *Client) getAccessToken(ctx context.Context) (string, error) {
 func (c *Client) refreshIfCurrent(ctx context.Context, usedToken string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	unlock, err := c.tokenStore.Lock(ctx)
+	unlock, err := c.lockTokenStore(ctx)
 	if err != nil {
 		return err
 	}
@@ -322,6 +326,14 @@ func (c *Client) refreshIfCurrent(ctx context.Context, usedToken string) error {
 		return fmt.Errorf("saving refreshed token: %w", err)
 	}
 	return nil
+}
+
+// lockTokenStore takes the token store's cross-process lock.
+func (c *Client) lockTokenStore(ctx context.Context) (func(), error) {
+	if c.beforeTokenLock != nil {
+		c.beforeTokenLock()
+	}
+	return c.tokenStore.Lock(ctx)
 }
 
 // carryOverUnreturnedFields fills newToken's RefreshToken/Scope from old

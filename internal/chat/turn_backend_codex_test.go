@@ -7,7 +7,6 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -31,18 +30,13 @@ func codexStub(t *testing.T, jsonl string) string {
 // turnEvents collects the session's events up to the turn's terminal one.
 func (h *harness) turnEvents() []Event {
 	h.t.Helper()
-	deadline := time.After(10 * time.Second)
 	var out []Event
 	for {
-		select {
-		case e, ok := <-h.events:
-			require.True(h.t, ok, "session ended before the turn did")
-			out = append(out, e)
-			if e.Type == EventTurnDone || e.Type == EventError {
-				return out
-			}
-		case <-deadline:
-			h.t.Fatalf("turn did not end within 10s")
+		e, ok := <-h.events
+		require.True(h.t, ok, "session ended before the turn did")
+		out = append(out, e)
+		if e.Type == EventTurnDone || e.Type == EventError {
+			return out
 		}
 	}
 }

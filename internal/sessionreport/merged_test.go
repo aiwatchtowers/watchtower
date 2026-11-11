@@ -3,8 +3,10 @@ package sessionreport
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -449,11 +451,11 @@ func TestRefresh_MergedBranchWithNewWorkReadsOpen(t *testing.T) {
 	assert.Equal(t, "open", states(t, d, id)[ref].State, "unmerged work on the branch again")
 }
 
-// Board #1016: a group of 1000 sibling leaves is walked once, not once per
-// leaf (counted, so the memo is pinned without a clock), and every key is
-// checked in a set — the refs come back in board order, one per not-done
-// leaf, in well under the seconds the per-leaf walk with a list scan took.
-func TestMergeRefs_ManySiblingsAreLinear(t *testing.T) {
+// siblingsBoard is a database whose session 1 works epic 100 with group
+// 110 of n sibling leaves (every tenth done), and the refs mergeRefs owes:
+// one per not-done leaf, in board order.
+func siblingsBoard(t *testing.T, n int) (*db.DB, []string) {
+	t.Helper()
 	d := db.OpenTestDB(t)
 	runSQL(t, d, `INSERT INTO projects (id, name, folder_path) VALUES (1, 'acme', '/tmp/acme');
 		INSERT INTO targets (id, text, period_start, period_end, parent_id, status, project_id, branch) VALUES
@@ -461,7 +463,6 @@ func TestMergeRefs_ManySiblingsAreLinear(t *testing.T) {
 		(110, 'Group', '2026-09-28', '2026-10-05', 100, 'in_progress', 1, '');
 		INSERT INTO terminal_sessions (id, project_id, kind, title, target_id, folder_path, claude_session_id) VALUES
 		(1, 1, 'claude', 'S1', 100, '/tmp/acme', 'u1')`)
-	const n = 1000
 	var want, rows []string
 	for i := range n {
 		status := "todo"
@@ -472,17 +473,72 @@ func TestMergeRefs_ManySiblingsAreLinear(t *testing.T) {
 		}
 		rows = append(rows, fmt.Sprintf("(%d, 'l', '2026-09-28', '2026-10-05', 110, '%s', 1, 'wt/%d')", 1000+i, status, i))
 	}
+	// The status rollup re-reads every sibling on each insert (quadratic in
+	// n); the group is in progress either way, so the fixture skips it.
+	runSQL(t, d, `DROP TRIGGER targets_project_status_rollup_ai`)
 	runSQL(t, d, `INSERT INTO targets (id, text, period_start, period_end, parent_id, status, project_id, branch) VALUES `+
 		strings.Join(rows, ", "))
-	_, sc, err := loadScope(context.Background(), d, 1, 1)
-	require.NoError(t, err)
-	before := sc.b.walks
-	start := time.Now()
-	got := sc.mergeRefs()
-	elapsed := time.Since(start)
-	assert.Equal(t, want, got)
-	assert.Equal(t, 1, sc.b.walks-before, "the shared parent is walked once, not once per leaf")
-	assert.Less(t, elapsed, time.Second, "1000 siblings took %v", elapsed)
+	return d, want
+}
+
+// siblingsGrowth is how many times more siblings the big group has than
+// the small one, and siblingsMaxGrowth the most mergeRefs's CPU time may
+// grow: linear work grows by about siblingsGrowth (measured ×12–×15, from
+// the maps and caches of the larger group), the per-leaf walk or a list
+// scan of the keys by siblingsGrowth² = 64; the cap sits halfway (log
+// scale) between the two.
+const (
+	siblingsGrowth    = 8
+	siblingsMaxGrowth = 4 * siblingsGrowth
+)
+
+// Board #1016: a group of 8000 sibling leaves is walked once, not once per
+// leaf (counted, so the memo is pinned without a clock), and every key is
+// checked in a set — the refs come back in board order, one per not-done
+// leaf, and 8× the siblings (64000) cost about 8× the CPU time, not the 64×
+// of a list scan (CPU time, fastest of interleaved runs, so a loaded machine
+// cannot fail it).
+func TestMergeRefs_ManySiblingsAreLinear(t *testing.T) {
+	const n = 8000 // the small group's walk alone takes over a millisecond
+	small, smallWant := siblingsBoard(t, n)
+	big, bigWant := siblingsBoard(t, n*siblingsGrowth)
+	mergeRefs := func(d *db.DB, want []string) time.Duration {
+		_, sc, err := loadScope(context.Background(), d, 1, 1)
+		require.NoError(t, err)
+		before := sc.b.walks
+		var got []string
+		took := cpuTime(t, func() { got = sc.mergeRefs() })
+		assert.Equal(t, want, got)
+		assert.Equal(t, 1, sc.b.walks-before, "the shared parent is walked once, not once per leaf")
+		return took
+	}
+	fastSmall, fastBig := time.Duration(1<<62), time.Duration(1<<62)
+	for range 3 {
+		fastSmall = min(fastSmall, mergeRefs(small, smallWant))
+		fastBig = min(fastBig, mergeRefs(big, bigWant))
+	}
+	ratio := float64(fastBig) / float64(max(fastSmall, time.Millisecond))
+	t.Logf("mergeRefs CPU: %v over %d siblings, %v over %d, x%.2f", fastBig, n*siblingsGrowth, fastSmall, n, ratio)
+	assert.LessOrEqual(t, ratio, float64(siblingsMaxGrowth), "%d× the siblings cost x%.2f CPU, want at most x%d (linear)",
+		siblingsGrowth, ratio, siblingsMaxGrowth)
+}
+
+// cpuTime is the user plus system CPU time the process spends running f.
+// Unlike the wall clock it does not grow while other processes have the
+// machine.
+func cpuTime(t *testing.T, f func()) time.Duration {
+	t.Helper()
+	runtime.GC() // a collection owed by an earlier run is not f's
+	before := processCPU(t)
+	f()
+	return processCPU(t) - before
+}
+
+func processCPU(t *testing.T) time.Duration {
+	t.Helper()
+	var ru syscall.Rusage
+	require.NoError(t, syscall.Getrusage(syscall.RUSAGE_SELF, &ru))
+	return time.Duration(ru.Utime.Nano() + ru.Stime.Nano())
 }
 
 // Board #1016: a key two leaves resolve to — a second leaf on the same

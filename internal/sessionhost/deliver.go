@@ -147,6 +147,9 @@ func (s *Server) deliver(c *conn, p []byte) {
 		out := s.runDelivery(c, req, replies)
 		out.ID = req.ID
 		c.send(Delivered, encode(out))
+		if s.opts.delivered != nil {
+			s.opts.delivered()
+		}
 	}()
 }
 
@@ -205,7 +208,10 @@ func (s *Server) runDelivery(c *conn, req DeliverReq, replies <-chan DeliverChec
 		return DeliveredMsg{Outcome: OutcomeTyped, Reason: reason}
 	}
 
-	time.Sleep(settleFor(req.SettleMs, sess.profile))
+	s.opts.settle(settleFor(req.SettleMs, sess.profile))
+	if s.opts.inPause != nil {
+		s.opts.inPause()
+	}
 	reply := s.recheck(c, req.ID, replies)
 	return s.afterPause(sess, req, reply)
 }

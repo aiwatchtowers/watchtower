@@ -606,15 +606,9 @@ func TestMemfake_EventsNeverDropped(t *testing.T) {
 	// The first overflow event may already be in the pump's hands when the
 	// next one for its zone arrives, so the 10 box writes fold into one or two.
 	var tail []transport.Event
-	timeout := time.After(5 * time.Second)
 	for n := 0; len(tail) == 0 || tail[len(tail)-1].Err == nil; n++ {
-		select {
-		case e := <-f.Events():
-			if n >= eventBuffer {
-				tail = append(tail, e)
-			}
-		case <-timeout:
-			t.Fatalf("lost events: overflow tail %+v", tail)
+		if e := <-f.Events(); n >= eventBuffer {
+			tail = append(tail, e)
 		}
 	}
 	boxes := 0
@@ -632,14 +626,38 @@ func TestMemfake_EventsNeverDropped(t *testing.T) {
 	if _, err := f.Write(box, "b-1", []byte("x"), absent); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case e := <-f.Events():
-		if e.Zone != box {
-			t.Errorf("after drain: %+v", e)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("no event after drain")
+	if e := <-f.Events(); e.Zone != box {
+		t.Errorf("after drain: %+v", e)
 	}
+}
+
+// RefuseWrites refuses the hub's saves and the phone's writes into one zone
+// (an item's Refused, Write's error) until cleared; deletes go on.
+func TestMemfake_RefuseWritesPerZone(t *testing.T) {
+	eachKind(t, func(t *testing.T, f *Fake, s *secure.Sealer) {
+		rec := seal(t, s, "target-1", `{"v":1}`)
+		if o := saveOne(t, f, rec, absent); !o.Saved {
+			t.Fatalf("save: %+v", o)
+		}
+		f.RefuseWrites(zone, transport.ErrEntitlementInactive)
+		if o := saveOne(t, f, seal(t, s, "target-2", `{"v":1}`), absent); o.Saved || !errors.Is(o.Refused, transport.ErrEntitlementInactive) {
+			t.Fatalf("save while refused: %+v", o)
+		}
+		if _, err := f.Write(zone, "phone-record", []byte{1}, absent); !errors.Is(err, transport.ErrEntitlementInactive) {
+			t.Fatalf("write while refused: %v", err)
+		}
+		if _, err := f.Write("other-zone", "phone-record", []byte{1}, absent); err != nil {
+			t.Fatalf("another zone refused: %v", err)
+		}
+		del, err := f.Delete(context.Background(), zone, []transport.DeleteItem{{Name: rec.WireName()}})
+		if err != nil || !del[0].Saved {
+			t.Fatalf("delete while refused: %+v %v", del, err)
+		}
+		f.RefuseWrites(zone, nil)
+		if o := saveOne(t, f, seal(t, s, "target-2", `{"v":1}`), absent); !o.Saved {
+			t.Fatalf("save after clearing: %+v", o)
+		}
+	})
 }
 
 func TestZoneNames(t *testing.T) {

@@ -212,10 +212,12 @@ final class RecordingUploaderTests: XCTestCase {
         let second = try await register(uploader, file: try makeAudioFile(name: "two.m4a"))
 
         let passA = Task { try await uploader.uploadPending() }
-        try await eventually { await spy.heldCount == 1 }
+        await spy.untilHeld(1)
         let passB = Task { try await uploader.uploadPending() }
-        // A pass that does not wait for A reaches the transport at once.
-        _ = try? await eventually(timeout: 0.5) { await spy.heldCount > 1 }
+        // B queues behind A (no clock: yield until the uploader books it).
+        while !(await uploader.hasQueuedPass) { await Task.yield() }
+        let heldWhileQueued = await spy.heldCount
+        XCTAssertEqual(heldWhileQueued, 1, "a queued pass does not reach the transport")
         await spy.release()
         _ = try await passA.value
         _ = try await passB.value
@@ -235,7 +237,7 @@ final class RecordingUploaderTests: XCTestCase {
         let recording = try await register(uploader, file: try makeAudioFile())
 
         let pass = Task { try await uploader.uploadPending() }
-        try await eventually { await spy.heldCount == 1 }
+        await spy.untilHeld(1)
         try await uploader.applyEcho(echo(for: recording, status: .received))
         XCTAssertEqual(try store.phoneRecording(id: recording.id)?.state, .delivered)
         await spy.release()
@@ -401,18 +403,6 @@ final class RecordingUploaderTests: XCTestCase {
 
         let saves = await spy.savedNames
         XCTAssertEqual(saves, [try wire(recording.id), try wire(recording.id)])
-    }
-
-    /// Polls `condition` until it holds or `timeout` passes (then throws).
-    private func eventually(
-        timeout: TimeInterval = 5,
-        _ condition: @Sendable () async -> Bool
-    ) async throws {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !(await condition()) {
-            guard Date() < deadline else { throw EventuallyTimedOut() }
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
     }
 
     func testTransportFailureLeavesRowForNextPass() async throws {
@@ -1372,10 +1362,7 @@ final class RecordingUploaderTests: XCTestCase {
 
         await spy.holdSaves()
         let retry = Task { try await uploader.retryFailed(id: recording.id) }
-        for _ in 0 ..< 500 {
-            if await spy.heldCount > 0 { break }
-            try await Task.sleep(for: .milliseconds(2))
-        }
+        await spy.untilHeld(1)
         let held = await spy.heldCount
         XCTAssertEqual(held, 1, "the re-seal's save is in flight")
         // The Mac rotated again meanwhile: the in-flight envelope (epoch 2) is now stale.
@@ -1412,6 +1399,279 @@ final class RecordingUploaderTests: XCTestCase {
         guard saves.count == 2 else { return XCTFail("expected two saves, got \(saves.count)") }
         XCTAssertEqual(saves[1].name, try wire(recording.id))
         XCTAssertEqual(try Envelope.parse(saves[1].payload).header.epoch, 2)
+    }
+
+    // MARK: - Rotation on a relay route (relay client Phase 5, Task 9)
+
+    /// An uploader on a relay route over `inner`: it reseals an envelope of an older epoch.
+    private func relayStack(
+        transport inner: any CloudSyncTransport & Sendable = InMemoryCloudTransport()
+    ) throws -> (RecordingUploader, ReplicaStore, SecureTransport) {
+        let store = try makeStore()
+        let transport = try phone(inner)
+        let uploader = RecordingUploader(
+            transport: transport, store: store, directory: dir, deviceID: Self.deviceID,
+            resealsOlderEpochs: { true }) // swiftlint:disable:this trailing_closure
+        return (uploader, store, transport)
+    }
+
+    private func rotate(to epochs: [UInt32]) throws {
+        try phoneKeys.saveHubLink(try XCTUnwrap(try TestE2E.phoneStore(epochs: epochs).hubLink(TestE2E.hubID.uuidString)))
+    }
+
+    private func relayRecord(_ transport: SecureTransport, _ id: String) async throws -> CloudRecord {
+        let batch = try await transport.changes(in: .relay, since: nil)
+        return try XCTUnwrap(batch.changed.first { $0.recordName == "recupload-\(id)" })
+    }
+
+    /// Sends one capture in epoch 1, then fails it by echo so Retry sends it again.
+    private func sentAndFailed(
+        _ uploader: RecordingUploader, _ store: ReplicaStore, bytes: Int = 512
+    ) async throws -> (PhoneRecording, URL) {
+        let (recording, file) = try await finishedCapture(uploader, bytes: Data(repeating: 5, count: bytes))
+        _ = try await uploader.uploadPending()
+        try await uploader.applyEcho(echo(for: recording, status: .failed, errorMessage: "Upload stuck"))
+        return (recording, file)
+    }
+
+    func testARowSealedInAnOlderEpochIsResealedBeforeSending() async throws {
+        let (uploader, store, transport) = try relayStack()
+        let (recording, _) = try await sentAndFailed(uploader, store)
+        let before = try await relayRecord(transport, recording.id)
+        let oldRow = try XCTUnwrap(try store.phoneRecording(id: recording.id))
+        let sealedBytes = try Data(contentsOf: sealedFile(recording.id))
+
+        try rotate(to: [1, 2])
+        try await uploader.retryFailed(id: recording.id)
+
+        let after = try await relayRecord(transport, recording.id)
+        let row = try XCTUnwrap(try store.phoneRecording(id: recording.id))
+        XCTAssertNotEqual(row.envelope, oldRow.envelope, "a new stored envelope")
+        XCTAssertEqual(try Envelope.parse(try XCTUnwrap(row.envelope)).header.epoch, 2)
+        XCTAssertEqual(row.wireName, oldRow.wireName, "the same wire name")
+        XCTAssertEqual(row.sealedPath, oldRow.sealedPath, "the same sealed file")
+        XCTAssertEqual(try Data(contentsOf: sealedFile(recording.id)), sealedBytes)
+        XCTAssertEqual(after.asset, before.asset, "the same asset descriptor")
+        XCTAssertEqual(after.assetFileURL, before.assetFileURL)
+        XCTAssertEqual(row.state, .uploading)
+    }
+
+    func testARowInTheCurrentEpochSendsItsBytesUnchanged() async throws {
+        let spy = SpyTransport()
+        let (uploader, store, _) = try relayStack(transport: spy)
+        let (recording, _) = try await sentAndFailed(uploader, store)
+        let stored = try XCTUnwrap(try store.phoneRecording(id: recording.id)?.envelope)
+
+        try await uploader.retryFailed(id: recording.id)
+
+        let saves = await spy.saves
+        XCTAssertEqual(saves.count, 2)
+        XCTAssertEqual(saves[1], saves[0], "no rotation: the same bytes")
+        XCTAssertEqual(try store.phoneRecording(id: recording.id)?.envelope, stored)
+    }
+
+    /// Today's behaviour on a link that does not reseal in place (iCloud only): a stale row is sealed fresh from its
+    /// plain file under the current epoch, the same wire name and a new asset key (final review Kit I1).
+    func testAnICloudOnlyLinkSealsAStaleRowFresh() async throws {
+        let (uploader, store, transport) = try makeStack()
+        let (recording, _) = try await sentAndFailed(uploader, store)
+        let before = try await relayRecord(transport, recording.id)
+        let oldRow = try XCTUnwrap(try store.phoneRecording(id: recording.id))
+        try rotate(to: [1, 2])
+        let armed = try await uploader.epochRaised()
+        XCTAssertEqual(armed, 0)
+
+        try await uploader.retryFailed(id: recording.id)
+
+        let row = try XCTUnwrap(try store.phoneRecording(id: recording.id))
+        XCTAssertEqual(try Envelope.parse(try XCTUnwrap(row.envelope)).header.epoch, 2)
+        XCTAssertEqual(row.wireName, oldRow.wireName, "the same wire name")
+        let after = try await relayRecord(transport, recording.id)
+        XCTAssertNotEqual(after.asset, before.asset, "a fresh asset key")
+        XCTAssertEqual(row.sealedPath, "\(recording.id)-1.enc")
+    }
+
+    func testEpochRaisedReArmsAStuckRow() async throws {
+        let spy = SpyTransport()
+        let (uploader, store, _) = try relayStack(transport: spy)
+        let (recording, _) = try await finishedCapture(uploader, bytes: Data(repeating: 4, count: 256))
+        _ = try await uploader.uploadPending()
+        for _ in 0 ..< PhoneRecording.uploadAttemptCap {
+            try store.recordPhoneRecordingUploadAttempt(id: recording.id, at: Date())
+        }
+        XCTAssertEqual(try store.phoneRecording(id: recording.id)?.isUploadStuck, true)
+        let resentBefore = try await uploader.uploadPending()
+        XCTAssertEqual(resentBefore, 0, "a stuck row waits for the owner")
+
+        let armed78592 = try await uploader.epochRaised()
+        XCTAssertEqual(armed78592, 0, "still the current epoch: nothing to re-arm")
+        try rotate(to: [1, 2])
+        let armed78723 = try await uploader.epochRaised()
+        XCTAssertEqual(armed78723, 1)
+        XCTAssertEqual(try store.phoneRecording(id: recording.id)?.uploadAttempts, 0)
+        let sent = try await uploader.uploadPending()
+
+        XCTAssertEqual(sent, 1)
+        let saves = await spy.saves
+        XCTAssertEqual(try Envelope.parse(try XCTUnwrap(saves.last).payload).header.epoch, 2)
+    }
+
+    /// The old epoch's key is gone (the link holds ephemeral state and never got epoch 1's pair): the seal is
+    /// forgotten and the row is sealed fresh from the plain file under the current epoch.
+    func testAKeyGoneRowIsSealedFreshFromThePlainFile() async throws {
+        let (uploader, store, transport) = try relayStack()
+        let (recording, _) = try await sentAndFailed(uploader, store)
+        let before = try await relayRecord(transport, recording.id)
+        try keyGone(epoch: 3)
+
+        try await uploader.retryFailed(id: recording.id)
+
+        let row = try XCTUnwrap(try store.phoneRecording(id: recording.id))
+        XCTAssertEqual(try Envelope.parse(try XCTUnwrap(row.envelope)).header.epoch, 3)
+        XCTAssertEqual(row.sealedPath, "\(recording.id)-1.enc", "sealed again into a new file")
+        let after = try await relayRecord(transport, recording.id)
+        XCTAssertNotEqual(after.asset, before.asset, "a fresh asset key")
+        XCTAssertEqual(row.state, .uploading)
+        XCTAssertNil(row.failure)
+    }
+
+    func testAKeyGoneRowWithNoPlainFileFailsAsTheMissingFileCase() async throws {
+        let (uploader, store, _) = try relayStack()
+        let (recording, file) = try await sentAndFailed(uploader, store)
+        try FileManager.default.removeItem(at: file)
+        try keyGone(epoch: 3)
+
+        try await uploader.retryFailed(id: recording.id)
+
+        let row = try XCTUnwrap(try store.phoneRecording(id: recording.id))
+        XCTAssertEqual(row.failure, .missingFile)
+        XCTAssertFalse(row.offersRetry, "the existing missing-file case: no Retry")
+    }
+
+    func testALockedPhoneKeepsTheRowWaiting() async throws {
+        let (uploader, store, transport) = try relayStack()
+        let (recording, _) = try await sentAndFailed(uploader, store)
+        let before = try await relayRecord(transport, recording.id)
+        let stored = try XCTUnwrap(try store.phoneRecording(id: recording.id)?.envelope)
+        try rotate(to: [1, 2])
+        // A pass while unlocked reads the new epoch (the failed row is nothing to send yet).
+        let idle = try await uploader.uploadPending()
+        XCTAssertEqual(idle, 0)
+
+        phoneKeys.isLocked = true
+        try await uploader.retryFailed(id: recording.id)
+        var row = try XCTUnwrap(try store.phoneRecording(id: recording.id))
+        XCTAssertEqual(row.state, .waiting)
+        XCTAssertNil(row.failure)
+        XCTAssertEqual(row.envelope, stored, "nothing is changed while the keychain is locked")
+
+        phoneKeys.isLocked = false
+        _ = try await uploader.uploadPending()
+        row = try XCTUnwrap(try store.phoneRecording(id: recording.id))
+        XCTAssertEqual(try Envelope.parse(try XCTUnwrap(row.envelope)).header.epoch, 2)
+        XCTAssertEqual(row.state, .uploading)
+        let after = try await relayRecord(transport, recording.id)
+        XCTAssertEqual(after.asset, before.asset)
+    }
+
+    /// The same rotation reaching a relaunched uploader: the in-flight row is resealed in place before it is re-saved.
+    func testARelaunchPassResealsAnInFlightEnvelopeInPlaceOnARelayRoute() async throws {
+        let spy = SpyTransport()
+        let (uploader, store, _) = try relayStack(transport: spy)
+        let (recording, _) = try await finishedCapture(uploader, bytes: Data(repeating: 3, count: 2_048))
+        _ = try await uploader.uploadPending()
+        try rotate(to: [1, 2])
+        let relaunched = RecordingUploader(
+            transport: try phone(spy), store: store, directory: dir, deviceID: Self.deviceID,
+            now: { Date().addingTimeInterval(RecordingUploader.retryDelays[0] + 1) },
+            resealsOlderEpochs: { true })
+        let resent = try await relaunched.uploadPending()
+
+        XCTAssertEqual(resent, 1)
+        let saves = await spy.saves
+        guard saves.count == 2 else { return XCTFail("expected two saves, got \(saves.count)") }
+        XCTAssertEqual(saves[1].name, try wire(recording.id))
+        XCTAssertEqual(saves[1].file, saves[0].file, "the same sealed file")
+        XCTAssertEqual(saves[1].asset, saves[0].asset)
+        XCTAssertEqual(try Envelope.parse(saves[1].payload).header.epoch, 2)
+    }
+
+    /// Review M1: with the keys locked a row already in the current epoch is still saved; only a row known to be
+    /// stale waits.
+    func testALockedPhoneStillSendsARowInTheCurrentEpoch() async throws {
+        let spy = SpyTransport()
+        let (uploader, _, _) = try relayStack(transport: spy)
+        let (recording, _) = try await finishedCapture(uploader, bytes: Data(repeating: 2, count: 256))
+        _ = try await uploader.sealPending()
+        let expected = try wire(recording.id)
+        phoneKeys.isLocked = true
+        let sent = try await uploader.uploadPending()
+
+        XCTAssertEqual(sent, 1, "a stored envelope needs no key to be saved")
+        let names = await spy.savedNames
+        XCTAssertEqual(names, [expected])
+    }
+
+    /// Review M2: a raise re-arms the stale in-flight row only; a current-epoch in-flight row is not saved again.
+    /// The stale row stays stale here because its reseal fails (a Keychain fault), then the fault clears.
+    func testEpochRaisedSavesOnlyTheStaleInFlightRowAgain() async throws {
+        let spy = SpyTransport()
+        let store = try makeStore()
+        let flaky = FlakyKeys(try TestE2E.phone(store: phoneKeys))
+        let uploader = RecordingUploader(
+            transport: TestE2E.phoneTransport(flaky, inner: spy), store: store, directory: dir, deviceID: Self.deviceID,
+            resealsOlderEpochs: { true }) // swiftlint:disable:this trailing_closure
+        let (stale, _) = try await finishedCapture(uploader, bytes: Data(repeating: 1, count: 256))
+        _ = try await uploader.uploadPending()
+        try rotate(to: [1, 2])
+        flaky.failEpoch = 1
+        let (current, _) = try await finishedCapture(uploader, bytes: Data(repeating: 2, count: 256))
+        _ = try await uploader.uploadPending()
+        let beforeRaise = await spy.saves.count
+        flaky.failEpoch = nil
+
+        let armed = try await uploader.epochRaised()
+        XCTAssertEqual(armed, 1)
+        _ = try await uploader.uploadPending()
+
+        let saves = await spy.saves
+        XCTAssertEqual(saves.count, beforeRaise + 1)
+        XCTAssertEqual(saves.last?.name, try wire(stale.id))
+        XCTAssertEqual(try store.phoneRecording(id: current.id)?.uploadAttempts, 1)
+    }
+
+    /// Review I1: a reseal that fails for a reason other than a lock is that row's failure: the row waits, the
+    /// pass goes on and saves the others.
+    func testARowWhoseResealThrowsDoesNotBlockTheOthers() async throws {
+        let spy = SpyTransport()
+        let store = try makeStore()
+        let flaky = FlakyKeys(try TestE2E.phone(store: phoneKeys))
+        let uploader = RecordingUploader(
+            transport: TestE2E.phoneTransport(flaky, inner: spy), store: store, directory: dir, deviceID: Self.deviceID,
+            resealsOlderEpochs: { true }) // swiftlint:disable:this trailing_closure
+        let (bad, _) = try await finishedCapture(uploader, bytes: Data(repeating: 7, count: 256))
+        _ = try await uploader.sealPending()
+        let oldEnvelope = try XCTUnwrap(try store.phoneRecording(id: bad.id)?.envelope)
+        try rotate(to: [1, 2])
+        flaky.failEpoch = 1
+        let (good, _) = try await finishedCapture(uploader, bytes: Data(repeating: 8, count: 256))
+
+        let sent = try await uploader.uploadPending()
+
+        XCTAssertEqual(sent, 1)
+        let names = await spy.savedNames
+        XCTAssertEqual(names, [try wire(good.id)])
+        let row = try XCTUnwrap(try store.phoneRecording(id: bad.id))
+        XCTAssertEqual(row.state, .waiting)
+        XCTAssertEqual(row.envelope, oldEnvelope, "the failing row is left as it is for the next pass")
+        XCTAssertNil(row.failure)
+    }
+
+    /// A link with ephemeral state whose only held epoch is `epoch`: every older epoch's relay key is gone.
+    private func keyGone(epoch: UInt32) throws {
+        var link = try XCTUnwrap(try TestE2E.phoneStore(epochs: [epoch]).hubLink(TestE2E.hubID.uuidString))
+        link.offeredKX = EphemeralKey.generate()
+        try phoneKeys.saveHubLink(link)
     }
 
     /// The cap is the spec's 90 MB of audio: the plain size decides, before sealing adds its tags.
@@ -1649,7 +1909,42 @@ private actor FailingTransport: CloudSyncTransport {
     }
 }
 
-private struct EventuallyTimedOut: Error {}
+/// A phone key provider that throws a non-lock error for the p2h relay key of one epoch (a Keychain fault).
+private final class FlakyKeys: SecureKeyProvider, @unchecked Sendable {
+    struct Fault: Error {}
+    private let inner: PhoneKeyProvider
+    private let lock = NSLock()
+    private var failing: UInt32?
+    var failEpoch: UInt32? {
+        get { lock.withLock { failing } }
+        set { lock.withLock { failing = newValue } }
+    }
+
+    init(_ inner: PhoneKeyProvider) { self.inner = inner }
+
+    var role: SecureRole { inner.role }
+    func metaKey() throws -> SymmetricKey { try inner.metaKey() }
+    func currentEpoch() throws -> UInt32 { try inner.currentEpoch() }
+    func dataKey(epoch: UInt32) throws -> SymmetricKey { try inner.dataKey(epoch: epoch) }
+    func alertKey(epoch: UInt32) throws -> SymmetricKey { try inner.alertKey(epoch: epoch) }
+    func relayKey(_ direction: RelayDirection, deviceID: UUID, epoch: UInt32) throws -> SymmetricKey {
+        if epoch == failEpoch { throw Fault() }
+        return try inner.relayKey(direction, deviceID: deviceID, epoch: epoch)
+    }
+    func acceptsRelayEpoch(_ epoch: UInt32, deviceID: UUID) throws -> Bool {
+        try inner.acceptsRelayEpoch(epoch, deviceID: deviceID)
+    }
+    func relayDeviceIDs() throws -> [UUID] { try inner.relayDeviceIDs() }
+    func nextSeq() throws -> UInt64 { try inner.nextSeq() }
+    func hubSigner() throws -> Curve25519.Signing.PrivateKey { try inner.hubSigner() }
+    func hubAgreement() throws -> Curve25519.KeyAgreement.PrivateKey { try inner.hubAgreement() }
+    func keyboxRecipient(deviceID: UUID) throws -> Curve25519.KeyAgreement.PublicKey? {
+        try inner.keyboxRecipient(deviceID: deviceID)
+    }
+    func deviceSigner() throws -> Curve25519.Signing.PrivateKey { try inner.deviceSigner() }
+    func hubAgreementPublicKey() throws -> Curve25519.KeyAgreement.PublicKey { try inner.hubAgreementPublicKey() }
+    func linkNonce() throws -> Data { try inner.linkNonce() }
+}
 
 /// Transport that records every saved record name and, when told to,
 /// holds each save until `release()` — the overlapping-pass branch.
@@ -1667,10 +1962,19 @@ private actor SpyTransport: CloudSyncTransport {
     private(set) var saves: [Save] = []
     private var holding = false
     private var held: [CheckedContinuation<Void, Never>] = []
-
+    private var heldWaiters: [UUID: (count: Int, continuation: CheckedContinuation<Void, Never>)] = [:]
     var heldCount: Int { held.count }
-
     func holdSaves() { holding = true }
+
+    /// Returns once `count` saves are held — the save itself, not a clock (no
+    /// per-wait timeout: a hang is the test run's own watchdog's to end).
+    func untilHeld(_ count: Int) async {
+        guard held.count < count else { return }
+        await withCheckedContinuation { heldWaiters[UUID()] = (count, $0) }
+    }
+    private func resumeWaiter(_ id: UUID) {
+        heldWaiters.removeValue(forKey: id)?.continuation.resume()
+    }
 
     /// While true every save is recorded, then throws (a transient failure).
     private(set) var failing = false
@@ -1691,7 +1995,10 @@ private actor SpyTransport: CloudSyncTransport {
                 asset: record.assetFileURL.flatMap { try? Data(contentsOf: $0) }, file: record.assetFileURL?.lastPathComponent)
         }
         if holding {
-            await withCheckedContinuation { held.append($0) }
+            await withCheckedContinuation { continuation in
+                held.append(continuation)
+                heldWaiters.filter { $0.value.count <= held.count }.keys.forEach { resumeWaiter($0) }
+            }
         }
         if failing { throw SaveFailed() }
     }

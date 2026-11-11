@@ -1,0 +1,479 @@
+package relaytest_test
+
+import (
+	"bytes"
+	"crypto/ecdh"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"slices"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/coder/websocket"
+	"google.golang.org/protobuf/proto"
+
+	"watchtower/internal/hub/hubtest"
+	"watchtower/internal/hub/relaytest"
+	"watchtower/internal/hub/secure"
+	"watchtower/internal/hub/state"
+	"watchtower/internal/hub/transport"
+	"watchtower/internal/hub/transport/relay"
+	"watchtower/internal/hub/transport/relay/client"
+	"watchtower/internal/hub/transport/relay/relayv1"
+)
+
+// hub is a hub's relay transport over the fake, with its keys for a phone.
+type hub struct {
+	tr      *relay.Transport
+	c       *client.Client
+	relayID string
+	id      secure.ID
+	sig     ed25519.PublicKey
+	kx      *ecdh.PrivateKey
+}
+
+func newHub(t *testing.T, srv *relaytest.Server) *hub {
+	t.Helper()
+	pub, key, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kx, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := state.Open(filepath.Join(t.TempDir(), "hub"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	c := relay.NewClient(srv.URL, key)
+	if _, err := c.Register(t.Context()); err != nil { // a phone can vouch for it before it connects
+		t.Fatal(err)
+	}
+	tr := relay.New(c, relay.Options{Origin: srv.URL, HubRelayID: c.DeviceID(), Store: st, AssetDir: t.TempDir()})
+	t.Cleanup(func() { _ = tr.Close() })
+	return &hub{tr: tr, c: c, relayID: c.DeviceID(), id: secure.DeviceID(pub), sig: pub, kx: kx}
+}
+
+func (h *hub) connect(t *testing.T) {
+	t.Helper()
+	if err := h.tr.Connect(t.Context(), nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// phone is a hubtest phone on the fake relay, registered.
+func newPhone(t *testing.T, srv *relaytest.Server, h *hub) (*hubtest.Phone, *hubtest.RelayStore) {
+	t.Helper()
+	store := &hubtest.RelayStore{}
+	meta := make([]byte, 32)
+	if _, err := rand.Read(meta); err != nil {
+		t.Fatal(err)
+	}
+	p, err := hubtest.New(hubtest.Config{
+		Hub: h.id, HubKX: h.kx.PublicKey(), HubSig: h.sig, MetaKey: meta, Epoch: 1,
+		HubRelayID: h.relayID, Transport: store,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.C = hubtest.NewPhoneClient(srv.URL, p)
+	if account, err := store.Register(t.Context()); err != nil || account == "" {
+		t.Fatalf("phone register: %q, %v", account, err)
+	}
+	return p, store
+}
+
+// waitEvent waits for the first hub event match accepts, skipping others.
+func waitEvent(t *testing.T, tr *relay.Transport, _ string, match func(transport.Event) bool) transport.Event {
+	t.Helper()
+	for {
+		if ev := <-tr.Events(); match(ev) {
+			return ev
+		}
+	}
+}
+
+func control(kind transport.ControlKind, detail string) func(transport.Event) bool {
+	return func(ev transport.Event) bool {
+		return ev.Control != nil && ev.Control.Kind == kind && ev.Control.Detail == detail
+	}
+}
+
+// addSlot vouches for h as the store's phone and puts it into the phone's
+// slots.
+func addSlot(t *testing.T, store *hubtest.RelayStore, h *hub) {
+	t.Helper()
+	vouch(t, store, h)
+	if err := addSlotOnly(t, store, h.relayID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func addSlotOnly(t *testing.T, store *hubtest.RelayStore, mac string) error {
+	t.Helper()
+	_, err := store.C.Do(t.Context(), &relayv1.Request{Op: &relayv1.Request_AddSlot{AddSlot: &relayv1.AddMacSlot{
+		MacDeviceId: mac,
+	}}})
+	return err
+}
+
+// vouch is the phone's vouch_hub for h (registered by newHub).
+func vouch(t *testing.T, store *hubtest.RelayStore, h *hub) {
+	t.Helper()
+	if err := store.VouchHub(t.Context(), h.sig); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func phonesOf(t *testing.T, h *hub) []*relayv1.SlotHolder {
+	t.Helper()
+	st, err := h.tr.AccountState(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st.GetPhones()
+}
+
+// A phone pairs with the hub through the fake: open_pairing tells the hub
+// over its WebSocket, the hello in pair/<slot> reaches it as a zone event,
+// and promote_pairing puts the hub in the phone's slot (paying), which the
+// hub's account state and readers then see.
+func TestPairingThroughTheFakeRelay(t *testing.T) {
+	srv := relaytest.Start(t)
+	h := newHub(t, srv)
+	h.connect(t)
+	p, store := newPhone(t, srv, h)
+
+	slot, err := store.OpenPairing(t.Context(), h.relayID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitEvent(t, h.tr, "PAIRING_OPENED", control(transport.PairingOpened, slot))
+	if err := h.tr.WatchPairZone(t.Context(), slot); err != nil {
+		t.Fatal(err)
+	}
+	pair := transport.PairZone(slot)
+	if err := p.Hello(pair); err != nil {
+		t.Fatal(err)
+	}
+	waitEvent(t, h.tr, "a zone event for the pair zone", func(ev transport.Event) bool { return ev.Zone == pair })
+	b, err := h.tr.Changes(t.Context(), pair, 0)
+	if err != nil || len(b.Changed) != 1 || b.Changed[0].Name != p.HelloName() {
+		t.Fatalf("pair zone: %+v, %v", b, err)
+	}
+
+	if got := phonesOf(t, h); len(got) != 0 || h.tr.Admitted() {
+		t.Fatalf("phones before promote_pairing: %v", got)
+	}
+	vouch(t, store, h)
+	if err := store.PromotePairing(t.Context(), slot); err != nil {
+		t.Fatal(err)
+	}
+	waitEvent(t, h.tr, "SLOT_ADDED", control(transport.SlotAdded, p.RelayDeviceID()))
+	if !h.tr.Vouched() {
+		t.Fatal("SLOT_ADDED came before the account state showed the slot")
+	}
+	got := phonesOf(t, h)
+	if len(got) != 1 || got[0].GetPhoneDeviceId() != p.RelayDeviceID() || !got[0].GetPaying() || !h.tr.Admitted() {
+		t.Fatalf("phones after promote_pairing: %v", got)
+	}
+	if err := store.PromotePairing(t.Context(), slot); err == nil {
+		t.Fatal("a pairing slot promoted twice")
+	}
+	ps, err := store.C.Do(t.Context(), &relayv1.Request{Op: &relayv1.Request_GetAccountState{GetAccountState: &relayv1.GetAccountState{}}})
+	if err != nil || !slices.Equal(ps.GetAccountState().GetMacDeviceIds(), []string{h.relayID}) ||
+		ps.GetAccountState().GetEntitlement().GetState() != relayv1.EntitlementKind_ENTITLEMENT_KIND_ACTIVE {
+		t.Fatalf("the phone's account state: %v, %v", ps, err)
+	}
+	if err := h.tr.SetLinkedReaders(t.Context(), []string{p.RelayDeviceID()}); err != nil {
+		t.Fatal(err)
+	}
+	if r := srv.Readers(); len(r) != 1 || !slices.Equal(r[0], []string{p.RelayDeviceID()}) {
+		t.Fatalf("readers: %v", r)
+	}
+}
+
+// A pairing opened while the hub has no WebSocket reaches it when it
+// connects.
+func TestPairingOpenedIsHeldForAnOfflineHub(t *testing.T) {
+	srv := relaytest.Start(t)
+	h := newHub(t, srv)
+	_, store := newPhone(t, srv, h)
+	slot, err := store.OpenPairing(t.Context(), h.relayID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.connect(t)
+	waitEvent(t, h.tr, "the held PAIRING_OPENED", control(transport.PairingOpened, slot))
+}
+
+// SetPaying(false) sends ENTITLEMENT_EXPIRED naming the phone to the hub it
+// holds, and the hub's account state shows the phone not paying; paying
+// again sends nothing and shows it paying.
+func TestSetPayingSendsEntitlementExpiredToTheHub(t *testing.T) {
+	srv := relaytest.Start(t)
+	h := newHub(t, srv)
+	h.connect(t)
+	p, store := newPhone(t, srv, h)
+	addSlot(t, store, h)
+	if got := phonesOf(t, h); len(got) != 1 || !got[0].GetPaying() {
+		t.Fatalf("phones after add_slot: %v", got)
+	}
+
+	srv.SetPaying(p.RelayDeviceID(), false)
+	waitEvent(t, h.tr, "ENTITLEMENT_EXPIRED", control(transport.EntitlementExpired, p.RelayDeviceID()))
+	if got := phonesOf(t, h); len(got) != 1 || got[0].GetPaying() || h.tr.Admitted() {
+		t.Fatalf("phones after SetPaying(false): %v", got)
+	}
+	sockets, parked := srv.EventsQueuedFor(h.relayID)
+	srv.SetPaying(p.RelayDeviceID(), false) // already off: no second control
+
+	srv.SetPaying(p.RelayDeviceID(), true)
+	if got := phonesOf(t, h); len(got) != 1 || !got[0].GetPaying() || !h.tr.Admitted() {
+		t.Fatalf("phones after SetPaying(true): %v", got)
+	}
+	// The relay queued nothing more for the hub (the transport's only
+	// ENTITLEMENT_EXPIRED source is the relay's control).
+	if s2, p2 := srv.EventsQueuedFor(h.relayID); !slices.Equal(s2, sockets) || p2 != parked {
+		t.Fatalf("events for the hub went from %v (+%d parked) to %v (+%d): a second ENTITLEMENT_EXPIRED", sockets, parked, s2, p2)
+	}
+}
+
+// Frames holds every message the relay received — the phone's sealed
+// action among them — and no plaintext from the hello or the action.
+func TestFramesCaptureEverythingAndNoPlaintext(t *testing.T) {
+	srv := relaytest.Start(t)
+	h := newHub(t, srv)
+	h.connect(t)
+	p, store := newPhone(t, srv, h)
+	slot, err := store.OpenPairing(t.Context(), h.relayID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Hello(transport.PairZone(slot)); err != nil {
+		t.Fatal(err)
+	}
+	const marker = "wt-canary-relaytest-7f3a91"
+	a := p.NewAction("interop_mark")
+	a.Params["mark"] = json.RawMessage(`"` + marker + `"`)
+	seq, err := p.Queue(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Send(seq); err != nil {
+		t.Fatal(err)
+	}
+	_, env := p.Sealed(seq)
+
+	frames := srv.Frames()
+	if len(frames) == 0 {
+		t.Fatal("no frames captured")
+	}
+	sawEnv := false
+	for _, f := range frames {
+		sawEnv = sawEnv || bytes.Contains(f, env)
+		for _, plain := range []string{marker, "Test Phone", "interop_mark"} {
+			if bytes.Contains(f, []byte(plain)) {
+				t.Fatalf("plaintext %q in a frame the relay received", plain)
+			}
+		}
+	}
+	if !sawEnv {
+		t.Fatal("the phone's sealed action is not among the frames")
+	}
+}
+
+// Guard: relaytest is a test-only package; no non-test package imports it,
+// on either platform the hub ships for (a linux-only file counts too).
+func TestRelaytestIsImportedOnlyByTests(t *testing.T) {
+	const pkg = "watchtower/internal/hub/relaytest"
+	for _, goos := range []string{"linux", "darwin"} {
+		cmd := exec.Command("go", "list", "-f", "{{.ImportPath}} {{join .Imports \" \"}}", "watchtower/...")
+		cmd.Dir = filepath.Join("..", "..", "..")
+		cmd.Env = append(os.Environ(), "GOOS="+goos, "CGO_ENABLED=1")
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("GOOS=%s go list: %v", goos, err)
+		}
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) == 0 || fields[0] == pkg {
+				continue
+			}
+			if slices.Contains(fields[1:], pkg) {
+				t.Errorf("GOOS=%s: %s imports %s from a non-test file", goos, fields[0], pkg)
+			}
+		}
+	}
+}
+
+// ---- raw WebSockets (a device's sockets under the test's control) ----
+
+func dialWS(t *testing.T, srv *relaytest.Server, device string) *websocket.Conn {
+	t.Helper()
+	ws, _, err := websocket.Dial(t.Context(), "ws"+strings.TrimPrefix(srv.URL, "http")+"/v1/ws", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ws.CloseNow() })
+	hello, _ := proto.Marshal(&relayv1.Frame{Kind: &relayv1.Frame_Hello{Hello: &relayv1.Hello{
+		ProtocolVersion: relayv1.ProtocolVersion, SessionToken: "tok-" + device,
+	}}})
+	if err := ws.Write(t.Context(), websocket.MessageBinary, hello); err != nil {
+		t.Fatal(err)
+	}
+	if fr := readFrame(t, ws); fr == nil || fr.GetHelloOk() == nil {
+		t.Fatalf("no hello_ok: %v", fr)
+	}
+	return ws
+}
+
+// subscribeWS subscribes zones and waits for the answer.
+func subscribeWS(t *testing.T, ws *websocket.Conn, zones ...string) {
+	t.Helper()
+	b, _ := proto.Marshal(&relayv1.Frame{Kind: &relayv1.Frame_Request{Request: &relayv1.Request{
+		Id: 1, Op: &relayv1.Request_Subscribe{Subscribe: &relayv1.Subscribe{Zones: zones}},
+	}}})
+	if err := ws.Write(t.Context(), websocket.MessageBinary, b); err != nil {
+		t.Fatal(err)
+	}
+	if fr := readFrame(t, ws); fr == nil || fr.GetResponse() == nil {
+		t.Fatalf("no subscribe answer: %v", fr)
+	}
+}
+
+// readFrame reads one frame, nil when the socket ended.
+func readFrame(t *testing.T, ws *websocket.Conn) *relayv1.Frame {
+	t.Helper()
+	_, b, err := ws.Read(t.Context())
+	if err != nil {
+		return nil
+	}
+	var fr relayv1.Frame
+	if err := proto.Unmarshal(b, &fr); err != nil {
+		t.Fatal(err)
+	}
+	return &fr
+}
+
+// A control sent to a socket that just died is not lost: the device's next
+// socket gets it.
+func TestControlOnADeadSocketReachesTheNextOne(t *testing.T) {
+	srv := relaytest.Start(t)
+	h := newHub(t, srv)
+	_, store := newPhone(t, srv, h)
+	dead := dialWS(t, srv, h.relayID)
+	_ = dead.CloseNow() // the relay may still hold it as current
+	slot, err := store.OpenPairing(t.Context(), h.relayID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := dialWS(t, srv, h.relayID)
+	fr := readFrame(t, next)
+	if c := fr.GetEvent().GetControl(); c.GetKind() != relayv1.ControlKind_CONTROL_KIND_PAIRING_OPENED || c.GetDetail() != slot {
+		t.Fatalf("the next socket got %v, want PAIRING_OPENED %s", fr, slot)
+	}
+}
+
+// A device's newer socket replaces the older one: controls and Push go to
+// the newer only.
+func TestNewSocketReplacesTheOldForControlsAndPush(t *testing.T) {
+	srv := relaytest.Start(t)
+	h := newHub(t, srv)
+	p, store := newPhone(t, srv, h)
+	addSlot(t, store, h)
+	old := dialWS(t, srv, h.relayID)
+	subscribeWS(t, old, "z")
+	cur := dialWS(t, srv, h.relayID)
+	subscribeWS(t, cur, "z")
+
+	srv.SetPaying(p.RelayDeviceID(), false)
+	if c := readFrame(t, cur).GetEvent().GetControl(); c.GetKind() != relayv1.ControlKind_CONTROL_KIND_ENTITLEMENT_EXPIRED {
+		t.Fatalf("the current socket got control %v", c)
+	}
+	srv.Push(t, &relayv1.Event{Kind: &relayv1.Event_ZoneChanged{ZoneChanged: &relayv1.ZoneChanged{Zone: "z", Seq: 7}}})
+	if zc := readFrame(t, cur).GetEvent().GetZoneChanged(); zc.GetSeq() != 7 {
+		t.Fatalf("the current socket got %v from Push", zc)
+	}
+	// Two device sockets, oldest first: every event went to the newer one.
+	if got, parked := srv.EventsQueuedFor(h.relayID); !slices.Equal(got, []int{0, 2}) || parked != 0 {
+		t.Fatalf("events queued per socket %v (+%d parked); want [0 2]: the replaced socket got some", got, parked)
+	}
+}
+
+// Zone events reach a socket in seq order while several devices write the
+// zone at once.
+func TestZoneEventsArriveInSeqOrderAcrossWriters(t *testing.T) {
+	srv := relaytest.Start(t)
+	h := newHub(t, srv)
+	ws := dialWS(t, srv, h.relayID)
+	subscribeWS(t, ws, "z")
+	const writers, each = 3, 20
+	stores := make([]*hubtest.RelayStore, writers)
+	for i := range stores {
+		_, stores[i] = newPhone(t, srv, h)
+	}
+	var wg sync.WaitGroup
+	errs := make(chan error, writers*each)
+	for i, st := range stores {
+		wg.Go(func() {
+			for n := range each {
+				if _, err := st.Write("z", fmt.Sprintf("r%d-%d", i, n), []byte{1}, transport.Expect{}); err != nil {
+					errs <- err
+				}
+			}
+		})
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	var last uint64
+	for range writers * each {
+		zc := readFrame(t, ws).GetEvent().GetZoneChanged()
+		if zc == nil || zc.GetSeq() <= last {
+			t.Fatalf("zone event %v after seq %d", zc, last)
+		}
+		last = zc.GetSeq()
+	}
+}
+
+// register_push takes a phone's hex token with an env and refuses a hub
+// (FORBIDDEN) or a malformed token (UNSPECIFIED "invalid request"), as the
+// relay does.
+func TestRegisterPushChecksKindAndToken(t *testing.T) {
+	srv := relaytest.Start(t)
+	h := newHub(t, srv)
+	_, store := newPhone(t, srv, h)
+	reg := func(c *client.Client, tok string, env relayv1.PushEnv) error {
+		_, err := c.Do(t.Context(), &relayv1.Request{Op: &relayv1.Request_RegisterPush{RegisterPush: &relayv1.RegisterPushToken{Token: tok, Env: env}}})
+		return err
+	}
+	addSlot(t, store, h) // a vouched hub, so the refusal is register_push's own
+	if err := reg(h.c, "ab12", relayv1.PushEnv_PUSH_ENV_SANDBOX); client.Code(err) != relayv1.ErrorCode_ERROR_CODE_FORBIDDEN {
+		t.Errorf("hub register_push: %v, want FORBIDDEN", err)
+	}
+	for _, c := range []struct {
+		tok string
+		env relayv1.PushEnv
+	}{{"", relayv1.PushEnv_PUSH_ENV_SANDBOX}, {"abc", relayv1.PushEnv_PUSH_ENV_SANDBOX}, {"zz", relayv1.PushEnv_PUSH_ENV_PRODUCTION}, {"ab12", relayv1.PushEnv_PUSH_ENV_UNSPECIFIED}} {
+		err := reg(store.C, c.tok, c.env)
+		var pe *client.Error
+		if !errors.As(err, &pe) || pe.E.GetCode() != relayv1.ErrorCode_ERROR_CODE_UNSPECIFIED || pe.E.GetMessage() != "invalid request" {
+			t.Errorf("token %q env %v: %v, want invalid request", c.tok, c.env, err)
+		}
+	}
+	if err := reg(store.C, "ab12", relayv1.PushEnv_PUSH_ENV_PRODUCTION); err != nil {
+		t.Errorf("valid register_push: %v", err)
+	}
+}

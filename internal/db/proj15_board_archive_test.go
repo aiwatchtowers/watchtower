@@ -483,26 +483,66 @@ func seedLargeBoard(t *testing.T, d *DB, pid int64, roots, children, grandchildr
 	return n
 }
 
-// The view runs on every board read: a 2000-target board must stay cheap.
-// Measured ~30 ms locally (the view alone ~12 ms with a second 2000-target
-// workbench in the database). The bound is far above that, so a loaded
-// machine passes, yet still trips on a read that walks the board
-// quadratically; the race detector scales it.
+// boardGrowth is how many times more targets the large board has than the
+// small one, and boardMaxGrowth the most its read's CPU time may grow:
+// linear work grows by about boardGrowth (less, with fixed costs), a read
+// that walks the board quadratically by boardGrowth² = 64.
+const (
+	boardGrowth    = 8
+	boardMaxGrowth = 3 * boardGrowth
+)
+
+// largeBoardReadBound caps the CPU time of one 2000-target board read (~30
+// ms measured): far above it, so any machine passes, yet a read that grows
+// costlier at every size still trips it, which the ratio alone would not
+// see. CPU time does not grow with the machine's load; the race detector
+// scales it.
 const largeBoardReadBound = 3 * time.Second * raceSlowdown
 
+// largeBoardRead seeds a 2000-target board (40 roots × 7 children × 6
+// grandchildren) and one boardGrowth times smaller, each in its own
+// database and put through prepare, and reads both boards three times,
+// interleaved. It returns the large board, its fastest read's CPU time and
+// how much more that is than the small one's — CPU time, so a loaded
+// machine cannot fail the check.
+func largeBoardRead(t *testing.T, prepare func(d *DB, pid int64)) ([]BoardNode, time.Duration, float64) {
+	t.Helper()
+	seed := func(roots int) (*DB, int64) {
+		d := openTestDB(t)
+		pid := newTestWorkbench(t, d)
+		require.Equal(t, roots*50, seedLargeBoard(t, d, pid, roots, 7, 6))
+		prepare(d, pid)
+		return d, pid
+	}
+	small, smallPID := seed(40 / boardGrowth)
+	large, largePID := seed(40)
+	var board []BoardNode
+	fastSmall, fastLarge := time.Duration(1<<62), time.Duration(1<<62)
+	for range 3 {
+		fastSmall = min(fastSmall, cpuTime(t, func() {
+			_, err := small.GetWorkbenchBoard(smallPID)
+			require.NoError(t, err)
+		}))
+		fastLarge = min(fastLarge, cpuTime(t, func() {
+			var err error
+			board, err = large.GetWorkbenchBoard(largePID)
+			require.NoError(t, err)
+		}))
+	}
+	ratio := float64(fastLarge) / float64(max(fastSmall, time.Millisecond))
+	t.Logf("board read CPU: %v at 2000 targets, %v at %d, x%.2f", fastLarge, fastSmall, 2000/boardGrowth, ratio)
+	return board, fastLarge, ratio
+}
+
+// The view runs on every board read: a 2000-target board must stay cheap
+// (measured ~30 ms locally, the view alone ~12 ms) — linear in the board,
+// never a read that walks it quadratically.
 func TestProj15_LargeBoardReadIsFast(t *testing.T) {
-	d := openTestDB(t)
-	pid := newTestWorkbench(t, d)
-	require.Equal(t, 2000, seedLargeBoard(t, d, pid, 40, 7, 6))
-
-	start := time.Now()
-	board, err := d.GetWorkbenchBoard(pid)
-	elapsed := time.Since(start)
-	require.NoError(t, err)
-
-	t.Logf("2000-target board read: %s", elapsed)
+	board, took, ratio := largeBoardRead(t, func(*DB, int64) {})
 	assert.Len(t, board, 40)
 	// 30 roots × (1 + 7 + 42) archived; the other 10 roots × 7 × 5 closed grandchildren.
 	assert.Equal(t, 30*50+10*7*5, CountArchived(board))
-	assert.Less(t, elapsed, largeBoardReadBound, "2000-target board read")
+	assert.LessOrEqual(t, ratio, float64(boardMaxGrowth), "%d× the targets cost x%.2f CPU, want at most x%d (linear)",
+		boardGrowth, ratio, boardMaxGrowth)
+	assert.Less(t, took, largeBoardReadBound, "2000-target board read CPU time")
 }

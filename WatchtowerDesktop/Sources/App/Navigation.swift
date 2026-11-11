@@ -189,16 +189,23 @@ struct MainNavigationView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .detailBackground()
                     .safeAreaInset(edge: .top, spacing: 0) {
-                        if let banner = appState.daemonBanner {
-                            DaemonBannerView(
-                                banner: banner,
-                                onStart: { appState.startDaemonFromBanner() },
-                                onOpenLogs: { openWindow(id: "logs") },
-                                onDismiss: { appState.dismissDaemonBanner() }
-                            )
-                        } else if let notice = appState.databaseCompaction.notice {
-                            DatabaseCompactionNoticeView(text: notice) {
-                                appState.databaseCompaction.dismissNotice()
+                        VStack(spacing: 0) {
+                            // The one-time v1-host restart (go hub spec §8 p. 4b): above the rest.
+                            if let step = appState.hostRestart, let notice = step.notice {
+                                HostRestartNotice(notice: notice, onPress: { Task { await step.pressContinue() } },
+                                                  onSecondary: { Task { await step.pressSetAside() } })
+                            }
+                            if let banner = appState.daemonBanner {
+                                DaemonBannerView(
+                                    banner: banner,
+                                    onStart: { appState.startDaemonFromBanner() },
+                                    onOpenLogs: { openWindow(id: "logs") },
+                                    onDismiss: { appState.dismissDaemonBanner() }
+                                )
+                            } else if let notice = appState.databaseCompaction.notice {
+                                DatabaseCompactionNoticeView(text: notice) {
+                                    appState.databaseCompaction.dismissNotice()
+                                }
                             }
                         }
                     }

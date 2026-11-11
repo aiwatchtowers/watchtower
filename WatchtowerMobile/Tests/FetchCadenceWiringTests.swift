@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import WatchtowerHostedRelay
 import WatchtowerSync
 import XCTest
 @testable import WatchtowerMobile
@@ -444,6 +445,87 @@ final class FetchCadenceWiringTests: XCTestCase {
         remote.holding = false
         env.setActive(true)
         try await poll({ remote.fullCount == 1 && sleeper.waitingCount == 1 }, "the first activation did not fetch in full")
+    }
+
+    // MARK: - Pushes by transport (relay client Phase 4 Task 13)
+
+    private func routedSession(_ hubID: String, route: HubRoute, remote: RemoteFetchRecorder) throws -> HubSession {
+        let session = try HubSession(
+            transport: InMemoryCloudTransport(),
+            replicaPath: try makeReplicaPath(),
+            hubID: hubID,
+            defaults: try makeDefaults(),
+            recordingsDirectory: try makeRecordingsDirectory(),
+            route: route,
+            remoteFetch: { try await remote.fetch($0) },
+            sleep: { _ in try await Task.sleep(for: .seconds(86_400)) }
+        )
+        addTeardownBlock { @MainActor in session.stop() }
+        return session
+    }
+
+    /// One CloudKit hub and one relay hub, booted.
+    private func mixedHubs() async throws -> (env: AppEnvironment, cloud: RemoteFetchRecorder, relay: RemoteFetchRecorder) {
+        let cloud = RemoteFetchRecorder()
+        let relay = RemoteFetchRecorder()
+        let env = AppEnvironment(backend: .live, defaults: try makeDefaults())
+        env.add(try routedSession(TestHub.acme, route: .cloudKit(.private), remote: cloud))
+        env.add(try routedSession(TestHub.home, route: .hostedRelay(macDeviceID: "mac-home"), remote: relay))
+        await env.waitForBoot()
+        return (env, cloud, relay)
+    }
+
+    func testARelayPushReachesOnlyRelaySessions() async throws {
+        let hubs = try await mixedHubs()
+        _ = await hubs.env.handlePush(inForeground: false, scope: .hostedRelay)
+        XCTAssertEqual(hubs.relay.pushCount, 1)
+        XCTAssertEqual(hubs.cloud.pushCount, 0, "a relay push leaves the CloudKit hub alone")
+    }
+
+    func testACloudKitPushReachesOnlyItsScope() async throws {
+        let hubs = try await mixedHubs()
+        _ = await hubs.env.handlePush(inForeground: false, scope: .private)
+        XCTAssertEqual(hubs.cloud.pushCount, 1)
+        XCTAssertEqual(hubs.relay.pushCount, 0, "a CloudKit push leaves the relay hub alone")
+        _ = await hubs.env.handlePush(inForeground: false, scope: .shared)
+        XCTAssertEqual(hubs.cloud.pushCount, 1, "another database's push")
+        XCTAssertEqual(hubs.relay.pushCount, 0)
+    }
+
+    /// A push's fetch logs in when it must; a refused App Attest assertion is a failed fetch, and the data waits for
+    /// the next open (a real background assertion is manual check M4).
+    func testAFailedLoginIsAFailedFetch() async throws {
+        let clock = ManualRelayClock(now: Date())
+        let fake = FakeHostedRelay(attest: .enforce(exemptDeviceIDs: []), clock: clock)
+        let parts = RelayParts(
+            attest: SpyAppAttest(supported: true), keychain: InMemoryKeychainBackend(), keychainGroup: nil, http: fake.http,
+            sockets: fake.sockets, clock: clock
+        )
+        let relay = SharedRelaySession(config: RelayConfig.parse(fake.origin)) { parts }
+        let transport = try TransportFactory.live(relay: relay).make(
+            .hostedRelay(macDeviceID: "mac-acme"), try TransportStore(path: ":memory:"), TestHub.acme, nil
+        )
+        let session = try HubSession(
+            transport: InMemoryCloudTransport(),
+            replicaPath: try makeReplicaPath(),
+            hubID: TestHub.acme,
+            defaults: try makeDefaults(),
+            recordingsDirectory: try makeRecordingsDirectory(),
+            route: .hostedRelay(macDeviceID: "mac-acme"),
+            remoteFetch: { depth in
+                guard case let .push(since, pollOnFallback) = depth else { return }
+                try await transport.fetchForPush(since: since, grace: 0, pollOnFallback: pollOnFallback)
+            },
+            sleep: { _ in try await Task.sleep(for: .seconds(86_400)) }
+        )
+        addTeardownBlock { @MainActor in session.stop() }
+        await session.waitForBoot()
+
+        let env = AppEnvironment(backend: .live, defaults: try makeDefaults())
+        env.add(session)
+        let outcome = await env.handlePush(inForeground: false, scope: .hostedRelay)
+        XCTAssertEqual(outcome, .failed)
+        XCTAssertEqual(outcome.backgroundFetchResult, .failed)
     }
 
     /// A push launch whose scene turns active while the boot still runs:

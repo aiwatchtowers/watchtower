@@ -8,7 +8,13 @@ import WatchtowerCore
 /// phone and the Mac cannot drift apart.
 final class MergedShareParityTests: XCTestCase {
     func testTheRowCaptionWordsTheSharedCases() throws {
-        let file = try SliceJSON.kitFixture("workbench/merged_share_cases.json")
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // MobileHub
+            .deletingLastPathComponent() // Tests
+            .deletingLastPathComponent() // WatchtowerDesktop
+            .deletingLastPathComponent()
+            .appendingPathComponent("WatchtowerKit/Tests/Fixtures/workbench/merged_share_cases.json")
+        let file = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
         let cases = try XCTUnwrap(file["cases"] as? [[String: Any]])
         XCTAssertFalse(cases.isEmpty)
         for item in cases {

@@ -12,9 +12,8 @@ import (
 )
 
 // Go twins of TerminalSessionSliceTests (the summary runner's tests move
-// with the runner). Not ported, by design: the Undo batch (hiddenIDs) and
-// the shown-over background count (displayOver) are Desktop memory the Go
-// hub cannot read — the documented divergences of TerminalSessionSource.
+// with the runner). The Undo batch (hiddenIDs) and the shown-over background
+// count (displayOver) reach the hub as the Desktop's view (desktop_view).
 
 type sessionRig struct {
 	t       *testing.T
@@ -55,6 +54,7 @@ type stateSeed struct {
 	finished   bool
 	failed     *string // agent_error of a StopFailure
 	background *int
+	shells     *int // agent_background_shells (board #1712)
 	bgAt       *time.Duration
 }
 
@@ -83,8 +83,9 @@ func (r *sessionRig) setState(id int64, s stateSeed) {
 		bgAt = r.stamp(off)
 	}
 	exec(r.t, r.d, `UPDATE terminal_sessions SET agent_state = ?, agent_state_at = ?, finished_at = ?,
-    agent_failed_at = ?, agent_error = ?, agent_background = ?, agent_background_at = ? WHERE id = ?`,
-		s.state, stateAt, finished, failedAt, agentErr, s.background, bgAt, id)
+    agent_failed_at = ?, agent_error = ?, agent_background = ?, agent_background_at = ?,
+    agent_background_shells = ? WHERE id = ?`,
+		s.state, stateAt, finished, failedAt, agentErr, s.background, bgAt, s.shells, id)
 }
 
 func countsOf(t *testing.T, d *db.DB, s *TerminalSessionSource) map[int64]sessionCounts {
@@ -184,7 +185,7 @@ func TestEveryStateKindPublishesTheMacsPresentation(t *testing.T) {
 			insertAsk(t, r.d, project, askSeed{session: &id})
 		}, want{"finished", "Finished · 2 asks open", "checkmark", "orange"}},
 		{"stopped", true, func(id int64) { r.setState(id, stateSeed{state: ptr("waiting")}) },
-			want{"stopped", "Stopped", "pause.fill", "secondary"}},
+			want{"stopped", "Idle", "pause.fill", "secondary"}},
 		// #411: agents working has no wire kind; it goes out as working.
 		{"agents working", true, func(id int64) { r.setState(id, stateSeed{state: ptr("waiting"), background: ptr(2)}) },
 			want{"working", "2 agents working", "person.2.fill", "green"}},
@@ -194,6 +195,17 @@ func TestEveryStateKindPublishesTheMacsPresentation(t *testing.T) {
 			want{"failed", "Stopped on an error", "exclamationmark", "red"}},
 		// No age: the caption never ticks.
 		{"not started", false, func(int64) {}, want{"not_started", "Not running", "", "secondary"}},
+		// #1712: background shells alone go out as working too, with their
+		// own caption and glyph; agents win the caption beside them.
+		{"background shell", true, func(id int64) {
+			r.setState(id, stateSeed{state: ptr("waiting"), background: ptr(0), shells: ptr(1)})
+		}, want{"working", "Background task running", "hourglass", "green"}},
+		{"background shells", true, func(id int64) {
+			r.setState(id, stateSeed{state: ptr("waiting"), background: ptr(0), shells: ptr(2)})
+		}, want{"working", "2 background tasks running", "hourglass", "green"}},
+		{"agents and a shell", true, func(id int64) {
+			r.setState(id, stateSeed{state: ptr("waiting"), background: ptr(1), shells: ptr(1)})
+		}, want{"working", "1 agent working", "person.2.fill", "green"}},
 		// §3.5 (U6): a working codex row the Mac cannot watch.
 		{"working, not watched", true, func(id int64) {
 			r.setState(id, stateSeed{state: ptr("working")})
@@ -271,6 +283,77 @@ func TestWatchIssueShowsOnlyOnWorking(t *testing.T) {
 	p := payloads(t, r.source([]int64{id}, time.Time{}, nil))[id]
 	if _, has := p["watch_issue"]; has || p["watch_help"] != nil || p["state_caption"] != "Needs approval" {
 		t.Errorf("payload = %v", p)
+	}
+}
+
+// TestHiddenSessionIsNotPublished is the Go twin of the Swift
+// testASessionInTheUndoBatchIsNotPublished: a session in the Desktop's Undo
+// batch (PROJ-17) is not published and not counted; Undo publishes it again.
+func TestHiddenSessionIsNotPublished(t *testing.T) {
+	r := newSessionRig(t)
+	project := insertWorkbench(t, r.d, "acme", "/tmp/acme")
+	kept := insertSession(t, r.d, project, sessionSeed{})
+	hidden := insertSession(t, r.d, project, sessionSeed{})
+	view := map[int64]bool{hidden: true}
+	src := TerminalSessions(r.d, TerminalSessionOptions{
+		Now:  func() time.Time { return r.now },
+		View: func() (map[int64]bool, map[int64]ShownOver) { return view, nil },
+	})
+	if got := payloads(t, src); len(got) != 1 || got[kept] == nil {
+		t.Fatalf("published %v, want only %d", sessionIDs(got), kept)
+	}
+	if c := countsOf(t, r.d, src)[project]; c.NotRunning != 1 {
+		t.Errorf("counts = %+v, want the hidden session left out", c)
+	}
+	view = nil
+	if got := payloads(t, src); len(got) != 2 || got[hidden] == nil {
+		t.Errorf("published %v after Undo, want both", sessionIDs(got))
+	}
+}
+
+func sessionIDs(m map[int64]map[string]any) []int64 {
+	var out []int64
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
+// TestDisplayOverCountReadsAsShownOver is the Go twin of the Swift
+// testACountShownOverOnTheMacIsPublishedAsStoppedOnlyForThatCount: a
+// background count the Desktop shows over (#411) goes out as Stopped, only
+// for the run and report stamp it was judged for; without it, for an older
+// report or for another run, the same row is agents working.
+func TestDisplayOverCountReadsAsShownOver(t *testing.T) {
+	r := newSessionRig(t)
+	project := insertWorkbench(t, r.d, "acme", "/tmp/acme")
+	id := insertSession(t, r.d, project, sessionSeed{})
+	r.setState(id, stateSeed{state: ptr("waiting"), background: ptr(2), bgAt: ptr(2 * time.Second)})
+	var over map[int64]ShownOver
+	src := TerminalSessions(r.d, TerminalSessionOptions{
+		Liveness: func() Liveness { return Liveness{Runs: map[int64]time.Time{id: r.started}} },
+		Now:      func() time.Time { return r.now },
+		View:     func() (map[int64]bool, map[int64]ShownOver) { return nil, over },
+	})
+	kind := func() any { return payloads(t, src)[id]["state_kind"] }
+	if p := payloads(t, src)[id]; p["state_kind"] != "working" || p["state_caption"] != "2 agents working" {
+		t.Errorf("not shown over = %v", p)
+	}
+	over = map[int64]ShownOver{id: {Run: r.started, ReportedAt: r.stamp(2 * time.Second)}}
+	if p := payloads(t, src)[id]; p["state_kind"] != "stopped" || p["state_caption"] != "Idle" {
+		t.Errorf("shown over = %v", p)
+	}
+	over = map[int64]ShownOver{id: {Run: r.started, ReportedAt: r.stamp(time.Second)}}
+	if k := kind(); k != "working" {
+		t.Errorf("the row holds a newer report than the one judged over: %v", k)
+	}
+	over = map[int64]ShownOver{id: {Run: r.started.Add(-time.Minute), ReportedAt: r.stamp(2 * time.Second)}}
+	if k := kind(); k != "working" {
+		t.Errorf("judged over for another run: %v", k)
+	}
+	over = map[int64]ShownOver{id: {ReportedAt: r.stamp(2 * time.Second)}}
+	if k := kind(); k != "working" {
+		t.Errorf("judged over while not live, now live: %v", k)
 	}
 }
 

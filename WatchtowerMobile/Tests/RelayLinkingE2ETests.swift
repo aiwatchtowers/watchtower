@@ -71,6 +71,8 @@ final class RelayLinkingE2ETests: XCTestCase {
         let env = try AppEnvironment.live(
             registry: registry, paths: paths, factory: factory, identity: identity, defaults: defaults, relay: shared
         ) { _ in }
+        // As the scene does: a session on the relay dials only once active, and the test host's own state says nothing.
+        env.setActive(true)
         let linkClock = GateLinkClock()
         addTeardownBlock { linkClock.release() }
         let root = AppRoot(
@@ -155,7 +157,7 @@ final class RelayLinkingE2ETests: XCTestCase {
         )
         try await macSave(bed.mac, zone: pairZone, try TestPhone.grantRecord(grant, keys: TestPhone.keyboxKeys(), modifiedAt: Date()))
         bed.linkClock.release()
-        await flow.value
+        try await flow.value(within: 60, "flow")
 
         XCTAssertEqual(root.linking.phase, .linked(macName: "build-box"))
         XCTAssertEqual(root.linking.links.first?.link.route, .hostedRelay(macDeviceID: bed.mac.deviceID))
@@ -172,7 +174,10 @@ final class RelayLinkingE2ETests: XCTestCase {
         XCTAssertEqual(root.linking.links.first?.state, .linked, "never a removal")
         XCTAssertNil(root.linking.notice)
 
-        // The Mac's readers sync names the phone: the next pull reads the data zone.
+        // The Mac's readers sync names the phone: the next pull reads the data zone. The session's launch fetch may
+        // still be paging from before the sync; one pull runs at a time and a later one joins it, so the next pull
+        // would share that pull's FORBIDDEN. It is awaited first, and the pull below starts after the sync.
+        await session.waitForFetches()
         var readers = Relay_V1_SetHubReaders()
         readers.phoneDeviceIds = [bed.phone.deviceID]
         _ = try await bed.mac.perform(.setHubReaders(readers))

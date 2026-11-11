@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -35,12 +36,43 @@ type stubSession struct {
 	sess    *session
 	from    int // ring offset up to which bytes were read
 	marks   int
+	pauses  *pauseLog
+	exited  <-chan struct{} // a receive per recorded exit (Options.exitRecorded)
+}
+
+// pauseLog is the stub host's Options.settle: it records each delivery's
+// settle pause instead of sleeping it.
+type pauseLog struct {
+	mu sync.Mutex
+	ds []time.Duration
+}
+
+func (p *pauseLog) record(d time.Duration) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.ds = append(p.ds, d)
+}
+
+func (p *pauseLog) all() []time.Duration {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]time.Duration(nil), p.ds...)
 }
 
 func newStub(t *testing.T, opts Options, agent, script string) *stubSession {
 	t.Helper()
+	pauses := &pauseLog{}
+	if opts.settle == nil {
+		opts.settle = pauses.record
+	}
+	var exited <-chan struct{}
+	if opts.exitRecorded == nil {
+		opts.exitRecorded, exited = exitsRecorded()
+	}
 	path, srv := startHost(t, opts)
-	return launchStub(t, srv, path, 1, agent, script)
+	st := launchStub(t, srv, path, 1, agent, script)
+	st.pauses, st.exited = pauses, exited
+	return st
 }
 
 func launchStub(t *testing.T, srv *Server, path string, row int64, agent, script string) *stubSession {
@@ -62,24 +94,22 @@ func launchStub(t *testing.T, srv *Server, path string, row int64, agent, script
 	return st
 }
 
-func (st *stubSession) ring() []byte {
-	st.sess.mu.Lock()
-	defer st.sess.mu.Unlock()
-	return st.sess.ring.Snapshot()
-}
-
+// waitRing returns the ring once it holds want, woken by each output.
 func (st *stubSession) waitRing(want string) []byte {
 	st.t.Helper()
-	deadline := time.Now().Add(ioTimeout)
 	for {
-		r := st.ring()
+		st.sess.mu.Lock()
+		r := st.sess.ring.Snapshot()
 		if bytes.Contains(r, []byte(want)) {
+			st.sess.mu.Unlock()
 			return r
 		}
-		if time.Now().After(deadline) {
-			st.t.Fatalf("ring never held %q: %q", want, r)
+		if st.sess.ringWritten == nil {
+			st.sess.ringWritten = make(chan struct{})
 		}
-		time.Sleep(5 * time.Millisecond)
+		written := st.sess.ringWritten
+		st.sess.mu.Unlock()
+		<-written
 	}
 }
 
@@ -156,23 +186,56 @@ func wantBytes(t *testing.T, got, want []byte, what string) {
 	}
 }
 
+// hint tells the host, on the attached pane's connection, whether a
+// permission dialog is up (Desktop's PromptHint).
+func (st *stubSession) hint(dialog bool) {
+	st.t.Helper()
+	st.desktop.send(PromptHint, PromptHintMsg{Row: st.info.Row, Run: st.info.Run, Dialog: dialog})
+	st.desktop.expectNoError()
+}
+
+// relaunch kills the run, forgets it once it exited and launches the row
+// again (run "r1" again, a new launch): a new run with an empty prompt.
+func (st *stubSession) relaunch(agent string) *stubSession {
+	st.t.Helper()
+	_ = syscall.Kill(-st.info.Pid, syscall.SIGKILL)
+	<-st.exited
+	ctl := dial(st.t, st.path)
+	ctl.send(Forget, AttachReq{Row: st.info.Row, Run: st.info.Run})
+	ctl.expect(Forgot)
+	next := launchStub(st.t, st.srv, st.path, st.info.Row, agent, rawEchoAgent)
+	next.pauses, next.exited = st.pauses, st.exited
+	return next
+}
+
+// pauseHook is an Options.inPause whose body a test sets once its stub is
+// up (the owner typing during a delivery's pause).
+type pauseHook struct{ during func() }
+
+func (h *pauseHook) opts() Options {
+	return Options{inPause: func() {
+		if h.during != nil {
+			h.during()
+		}
+	}}
+}
+
 // Twin of testAnAnswerLineIsPastedAsOneLineThenSubmittedWithItsOwnReturn:
-// one bracketed paste with no control byte inside, then the Return alone,
-// strictly after the pause.
+// one bracketed paste with no control byte inside (a CR LF, an ESC, a tab
+// and a newline dropped), then the Return alone, strictly after the pause.
 func TestProj12_AnAnswerLineIsPastedAsOneLineThenSubmittedWithItsOwnReturn(t *testing.T) {
 	st := newStub(t, Options{}, "claude", rawEchoAgent)
 	line := "Ask #7 answered (choice: yes)\n— read it\twith get_ask 7"
-	start := time.Now()
 	var atCheck []byte
-	out := st.deliver(st.hub(), st.req(line), func(context.Context) DeliverCheckReplyMsg {
-		if el := time.Since(start); el < testSettle*time.Millisecond {
-			t.Errorf("re-check after %v, before the pause ended", el)
+	out := st.deliver(st.hub(), st.req(line+"\r\n\x1bmore"), func(context.Context) DeliverCheckReplyMsg {
+		if got := st.pauses.all(); len(got) != 1 || got[0] != testSettle*time.Millisecond {
+			t.Errorf("pauses before the re-check = %v, want one of %dms", got, testSettle)
 		}
 		atCheck = st.waitRing(string(pasteEnd))[st.from:] // the paste echoed
 		return okCheck(context.Background())
 	})
 	wantOutcome(t, out, OutcomeSubmitted, "")
-	one := "Ask #7 answered (choice: yes)— read itwith get_ask 7"
+	one := "Ask #7 answered (choice: yes)— read itwith get_ask 7more"
 	wantBytes(t, atCheck, paste(one), "before the Return")
 	wantBytes(t, st.written(), cat(paste(one), []byte{0x0D}), "the delivery")
 	if st.sess.promptHoldsText() {
@@ -180,40 +243,76 @@ func TestProj12_AnAnswerLineIsPastedAsOneLineThenSubmittedWithItsOwnReturn(t *te
 	}
 }
 
-// Twin of testOverTheOwnersDraftSubmitPromptOnlyPastes.
+// Twin of testOverTheOwnersDraftSubmitPromptOnlyPastes: over the owner's
+// draft the line is only pasted; once the owner's Return sent it, a key
+// into a permission dialog is no draft, so the next line gets its Return;
+// a relaunch starts with an empty prompt even over a draft of the last run.
 func TestProj12_OverTheOwnersDraftSubmitPromptOnlyPastes(t *testing.T) {
 	st := newStub(t, Options{}, "claude", rawEchoAgent)
+	cl := st.hub()
 	st.desktop.typeChunks([]byte("half"))
 	wantBytes(t, st.written(), []byte("half"), "the draft")
 
-	out := st.deliver(st.hub(), st.req("answer"), noCheck(t))
+	out := st.deliver(cl, st.req("x"), noCheck(t))
 	wantOutcome(t, out, OutcomeTyped, TypedBesideText)
-	wantBytes(t, st.written(), paste("answer"), "over the draft")
+	wantBytes(t, st.written(), paste("x"), "over the draft")
+
+	st.desktop.typeChunks([]byte("more\r"))
+	st.hint(true)
+	st.desktop.typeChunks([]byte("2"))
+	st.hint(false)
+	wantBytes(t, st.written(), []byte("more\r2"), "the owner's Return, then a key into the dialog")
+	wantOutcome(t, st.deliver(cl, st.req("y"), nil), OutcomeSubmitted, "")
+	wantBytes(t, st.written(), cat(paste("y"), []byte{0x0D}), "after the owner's Return")
+
+	st.desktop.typeChunks([]byte("z"))
+	next := st.relaunch("claude")
+	wantOutcome(t, next.deliver(next.hub(), next.req("w"), nil), OutcomeSubmitted, "")
+	wantBytes(t, next.written(), cat(paste("w"), []byte{0x0D}), "a new run starts with an empty prompt")
 }
 
-// Twin of testTheOwnerTypingDuringThePauseStopsTheReturn.
+// Twin of testTheOwnerTypingDuringThePauseStopsTheReturn: the owner types
+// during the settle sleep itself (the host's pause seam), so the re-check
+// finds a draft the Return would submit with the line.
 func TestProj12_TheOwnerTypingDuringThePauseStopsTheReturn(t *testing.T) {
-	st := newStub(t, Options{}, "claude", rawEchoAgent)
-	out := st.deliver(st.hub(), st.req("answer"), func(context.Context) DeliverCheckReplyMsg {
-		st.desktop.typeChunks([]byte("x"))
-		return okCheck(context.Background())
-	})
+	var hook pauseHook
+	st := newStub(t, hook.opts(), "claude", rawEchoAgent)
+	hook.during = func() { st.desktop.typeChunks([]byte("a")) }
+	out := st.deliver(st.hub(), st.req("x"), okCheck)
 	wantOutcome(t, out, OutcomeTyped, TypedTextDuringPause)
-	wantBytes(t, st.written(), cat(paste("answer"), []byte("x")), "no Return of ours")
+	wantBytes(t, st.written(), cat(paste("x"), []byte("a")), "no Return over it")
 	if !st.sess.promptHoldsText() {
 		t.Fatal("the line left typed does not hold the prompt")
 	}
 }
 
-// Twin of testALineLeftWithoutItsReturnKeepsTheNextFromSubmittingIt.
+// Twin of testALineLeftWithoutItsReturnKeepsTheNextFromSubmittingIt: a line
+// the host left without its Return keeps the next from submitting it; a
+// Return into a permission dialog (a real PromptHint) leaves it there; the
+// owner's own Return empties the prompt, and so does a relaunch.
 func TestProj12_ALineLeftWithoutItsReturnKeepsTheNextFromSubmittingIt(t *testing.T) {
 	st := newStub(t, Options{}, "claude", rawEchoAgent)
 	cl := st.hub()
-	first := st.req("hand-off")
+	first := st.req("a")
 	first.SubmitIf = false
 	wantOutcome(t, st.deliver(cl, first, noCheck(t)), OutcomeTyped, TypedNoSubmit)
-	wantOutcome(t, st.deliver(cl, st.req("answer"), noCheck(t)), OutcomeTyped, TypedBesideText)
-	wantBytes(t, st.written(), cat(paste("hand-off"), paste("answer")), "two lines, no Return")
+
+	st.hint(true)
+	st.desktop.typeChunks([]byte{0x0D})
+	st.hint(false)
+	wantOutcome(t, st.deliver(cl, st.req("b"), noCheck(t)), OutcomeTyped, TypedBesideText)
+	wantBytes(t, st.written(), cat(paste("a"), []byte{0x0D}, paste("b")), "the dialog's Return only, none of ours")
+
+	st.desktop.typeChunks([]byte{0x0D})
+	wantOutcome(t, st.deliver(cl, st.req("c"), nil), OutcomeSubmitted, "")
+	wantBytes(t, st.written(), cat([]byte{0x0D}, paste("c"), []byte{0x0D}), "after the owner's Return")
+
+	left := st.req("d")
+	left.SubmitIf = false
+	wantOutcome(t, st.deliver(cl, left, noCheck(t)), OutcomeTyped, TypedNoSubmit)
+	next := st.relaunch("claude")
+	wantOutcome(t, next.deliver(next.hub(), next.req("e"), nil), OutcomeSubmitted, "")
+	wantBytes(t, next.written(), cat(paste("e"), []byte{0x0D}), "a new run starts with an empty prompt")
 }
 
 // Twin of testAFailedRefreshAfterThePauseStopsTheReturn.
@@ -249,17 +348,8 @@ func TestProj12_ARelaunchDuringThePauseGetsNoReturn(t *testing.T) {
 	var next *stubSession
 	out := st.deliver(st.hub(), st.req("answer"), func(context.Context) DeliverCheckReplyMsg {
 		_ = syscall.Kill(-st.info.Pid, syscall.SIGKILL)
+		<-st.exited
 		ctl := dial(t, st.path)
-		deadline := time.Now().Add(ioTimeout)
-		for {
-			if l := ctl.list(); len(l) == 1 && l[0].Exited {
-				break
-			}
-			if time.Now().After(deadline) {
-				t.Fatal("the old run never exited")
-			}
-			time.Sleep(5 * time.Millisecond)
-		}
 		ctl.send(Forget, AttachReq{Row: 1, Run: "r1"})
 		ctl.expect(Forgot)
 		next = launchStub(t, st.srv, st.path, 1, "claude", rawEchoAgent)
@@ -316,10 +406,9 @@ func TestProj12_CodexSubmitIsBracketedPasteThenCR(t *testing.T) {
 	st := newStub(t, Options{}, "codex", rawEchoAgent)
 	r := st.req("Fix the flaky test")
 	r.SettleMs = 0 // the profile's pasteSettle
-	start := time.Now()
 	out := st.deliver(st.hub(), r, func(context.Context) DeliverCheckReplyMsg {
-		if el := time.Since(start); el < ProfileFor("codex").PasteSettle {
-			t.Errorf("re-check after %v, before codex's pasteSettle", el)
+		if got := st.pauses.all(); len(got) != 1 || got[0] != ProfileFor("codex").PasteSettle {
+			t.Errorf("pauses before the re-check = %v, want one of codex's pasteSettle", got)
 		}
 		return okCheck(context.Background())
 	})
@@ -338,6 +427,48 @@ func TestProj12_CodexMultilineAnswerOnePrompt(t *testing.T) {
 	wantOutcome(t, st.deliver(cl, st.req("line one\nline two"), nil), OutcomeSubmitted, "")
 	wantBytes(t, st.written(),
 		cat(paste("first\nsecond\nthird"), []byte{0x0D}, paste("line oneline two"), []byte{0x0D}), "codex")
+}
+
+// Twin of testALineIntoARelaunchedRunDuringAnOldPauseIsSubmitted (Go hub
+// phase 3, Task 7): the row is relaunched while an older line waits out its
+// pause; a line into the new run, sent before that pause ends, is submitted
+// with its own Return — the new run's prompt held nothing — and the old
+// line gets no Return.
+func TestALineIntoARelaunchedRunDuringAnOldPauseIsSubmitted(t *testing.T) {
+	st := newStub(t, Options{}, "claude", rawEchoAgent)
+	var next *stubSession
+	var second DeliveredMsg
+	out := st.deliver(st.hub(), st.req("x"), func(context.Context) DeliverCheckReplyMsg {
+		next = st.relaunch("claude")
+		second = next.deliver(next.hub(), next.req("y"), nil)
+		return okCheck(context.Background())
+	})
+	wantOutcome(t, out, OutcomeNoSession, "")
+	wantOutcome(t, second, OutcomeSubmitted, "")
+	wantBytes(t, next.written(), cat(paste("y"), []byte{0x0D}), "the new run: its own line and one Return")
+}
+
+// Go twin (the host's half) of OwnerAsksViewModelTests::
+// testProj12_OverTheOwnersHalfTypedTextTheLineIsOnlyPasted: an answer over
+// the owner's half-typed text is only pasted; then, while the app holds the
+// next answer at a permission prompt, the owner's key into the dialog
+// leaves no draft but the text typed after it does, so the held answer —
+// delivered once the prompt is answered — is only pasted too. The app's
+// half (the hold, the typed note) stays in the Swift guard.
+func TestProj12_OverTheOwnersHalfTypedTextTheLineIsOnlyPasted(t *testing.T) {
+	st := newStub(t, Options{}, "claude", rawEchoAgent)
+	cl := st.hub()
+	st.desktop.typeChunks([]byte("fix the"))
+	wantOutcome(t, st.deliver(cl, st.req("first"), noCheck(t)), OutcomeTyped, TypedBesideText)
+	wantBytes(t, st.written(), cat([]byte("fix the"), paste("first")), "the paste, no Return")
+
+	st.desktop.typeChunks([]byte{0x0D})
+	st.hint(true)
+	st.desktop.typeChunks([]byte("1"))
+	st.hint(false)
+	st.desktop.typeChunks([]byte("next step"))
+	wantOutcome(t, st.deliver(cl, st.req("second"), noCheck(t)), OutcomeTyped, TypedBesideText)
+	wantBytes(t, st.written(), cat([]byte("\r1next step"), paste("second")), "pasted over the new draft, no Return")
 }
 
 func (st *stubSession) phoneReq(text string) DeliverReq {
@@ -441,25 +572,20 @@ func TestDeliverCheckTimeoutLeavesLineTyped(t *testing.T) {
 // The hub crashes during the pause: its connection drops, no Return
 // follows and the pending Return clears.
 func TestADroppedRequesterDuringThePauseLeavesTheLineTyped(t *testing.T) {
-	st := newStub(t, Options{}, "claude", rawEchoAgent)
+	finished := make(chan struct{}, 1)
+	st := newStub(t, Options{delivered: func() { finished <- struct{}{} }}, "claude", rawEchoAgent)
 	raw := dial(t, st.path)
 	r := st.req("answer")
 	r.ID = "x1"
 	raw.send(Deliver, r)
 	raw.expect(DeliverCheck)
 	_ = raw.nc.Close()
-	deadline := time.Now().Add(ioTimeout)
-	for {
-		st.sess.mu.Lock()
-		pending, left := st.sess.prompt.pendingReturn, st.sess.prompt.leftTyped
-		st.sess.mu.Unlock()
-		if !pending && left {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("pendingReturn = %v, leftTyped = %v after the hub dropped", pending, left)
-		}
-		time.Sleep(5 * time.Millisecond)
+	<-finished // the delivery ended, its outcome sent nowhere
+	st.sess.mu.Lock()
+	pending, left := st.sess.prompt.pendingReturn, st.sess.prompt.leftTyped
+	st.sess.mu.Unlock()
+	if pending || !left {
+		t.Fatalf("pendingReturn = %v, leftTyped = %v; want false, true", pending, left)
 	}
 	wantBytes(t, st.written(), paste("answer"), "no Return after the hub dropped")
 }
@@ -580,13 +706,18 @@ func TestSettleIsClampedToMaxSettle(t *testing.T) {
 // A reply sent before the host asked its DeliverCheck is no answer to it:
 // a pre-answered Fresh/CanSubmit gets no Return.
 func TestACheckReplyBeforeTheCheckIsIgnored(t *testing.T) {
-	st := newStub(t, Options{checkTimeout: 200 * time.Millisecond}, "claude", rawEchoAgent)
+	// The pause holds until the early reply was handled: the host reads a
+	// connection's frames in order, so the Listed after it says so.
+	release := make(chan struct{})
+	st := newStub(t, Options{checkTimeout: 200 * time.Millisecond, settle: func(time.Duration) { <-release }}, "claude", rawEchoAgent)
 	raw := dial(t, st.path)
 	r := st.req("answer")
 	r.ID = "x1"
-	r.SettleMs = 300
 	raw.send(Deliver, r)
 	raw.send(DeliverCheckReply, DeliverCheckReplyMsg{ID: "x1", Fresh: true, CanSubmit: true})
+	raw.send(List, nil)
+	raw.expect(Listed)
+	close(release)
 	raw.expect(DeliverCheck) // asked, never answered after it
 	var out DeliveredMsg
 	if err := json.Unmarshal(raw.expect(Delivered), &out); err != nil {

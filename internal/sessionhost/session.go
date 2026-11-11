@@ -44,9 +44,14 @@ type session struct {
 	ring      *Ring
 	readDone  chan struct{}
 	signal    func(pgid int, sig syscall.Signal) error // Stop's group signal
-	afterReap func()                                   // test hook: between reap and drain
-	stopWatch func()                                   // ends the codex rollout watch; nil = none
-	watched   bool                                     // a rollout watch runs for this session (SessionInfo.Watched)
+	// afterFunc starts Stop's kill timer: time.AfterFunc, or a test's.
+	afterFunc func(time.Duration, func()) *time.Timer
+	afterReap func() // test hook: between reap and drain
+	// ringWritten is closed by the next output written to the ring; nil
+	// until a waiter (a test) asks for it. Guarded by mu.
+	ringWritten chan struct{}
+	stopWatch   func() // ends the codex rollout watch; nil = none
+	watched     bool   // a rollout watch runs for this session (SessionInfo.Watched)
 
 	// wmu orders writes to the PTY: an owner's Input (with its prompt
 	// update), an InputTo and a delivery's decide-then-write steps, so no
@@ -96,6 +101,7 @@ func startSession(req LaunchReq, launch uint64, ringSize int, now time.Time) (*s
 		ring:      NewRing(ringSize),
 		readDone:  make(chan struct{}),
 		signal:    killGroup,
+		afterFunc: time.AfterFunc,
 	}, nil
 }
 
@@ -110,6 +116,10 @@ func (s *session) readLoop() {
 			chunk := append([]byte(nil), buf[:n]...)
 			s.mu.Lock()
 			s.ring.Write(chunk)
+			if s.ringWritten != nil {
+				close(s.ringWritten)
+				s.ringWritten = nil
+			}
 			s.modes.Observe(chunk)
 			if s.conn != nil {
 				s.conn.send(Output, chunk)
@@ -245,7 +255,7 @@ func (s *session) stop() (alreadyExited bool, err error) {
 		return false, fmt.Errorf("stop: signal group: %w", err)
 	}
 	s.requested = true
-	s.killTime = time.AfterFunc(stopGrace, func() {
+	s.killTime = s.afterFunc(stopGrace, func() {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		if !s.reaped {

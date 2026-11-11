@@ -10,7 +10,8 @@ public enum HostedRelayLimits {
 
 /// The phone's account ops of linking over the relay (R3 of Phase 3; relay `proto/README.md`
 /// "Slots", "Vouched hubs", Worker `do/account/pairing.ts` / `slots.ts`): `get_account_state`,
-/// `open_pairing`, `vouch_hub`, `promote_pairing`, `close_pairing`, `remove_slot`. The hello and keybox themselves go through a
+/// `open_pairing`, `vouch_hub`, `promote_pairing`, `close_pairing`, `add_slot` (an upgraded iCloud link), `remove_slot`. The
+/// hello and keybox themselves go through a
 /// `HostedRelayTransport` in `.pairing(slot:)` mode. Every call is one HTTPS op on the session's
 /// client (its login and `UNAVAILABLE` retry); no socket is opened.
 ///
@@ -102,6 +103,16 @@ public struct HostedRelayPairing: Sendable {
         } catch {
             Self.logger.info("relay close_pairing failed: \(Self.code(error), privacy: .public)")
         }
+    }
+
+    /// `add_slot` for `mac` (an iCloud link upgraded to the relay, relay client Phase 3b Task 19): within the 10
+    /// minutes of a `vouch`; a Mac already in the slots is a no-op on the relay. The answers a flow acts on are thrown
+    /// as `Refusal` (`notPaying`, `slotsFull`, `replacementLimit`, ...); `HUB_NOT_VOUCHED`, `NOT_FOUND` and `FORBIDDEN`
+    /// are rethrown as the client threw them.
+    public func addSlot(mac: String) async throws {
+        var request = Relay_V1_AddMacSlot()
+        request.macDeviceID = mac
+        try await refusing("addSlot") { try await client.addSlot(request) }
     }
 
     /// `remove_slot` with Phase 2's `UNAVAILABLE` retry (the client's); `NOT_FOUND` counts as done (R14).

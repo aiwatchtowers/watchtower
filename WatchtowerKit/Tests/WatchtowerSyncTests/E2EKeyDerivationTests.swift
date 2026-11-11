@@ -9,6 +9,7 @@ struct KDFVectors: Codable, Equatable {
     var recordNames: [String: String]
     var sas: String
     var linkCodeTag: String
+    var ephemeralRelayKeys: EphemeralRelayVectors
 
     init(keys k: E2EFixtureKeys) throws {
         deviceID = k.deviceID.uuidString
@@ -31,6 +32,27 @@ struct KDFVectors: Codable, Equatable {
         ]
         sas = k.sas()
         linkCodeTag = KeyDerivation.linkCodeTag(linkNonce: k.linkNonce)
+        ephemeralRelayKeys = try EphemeralRelayVectors(keys: k)
+    }
+}
+
+/// The `wt/relay/v2/` keys of the fixture's ephemeral pair, with the two ephemeral public keys, as hex.
+struct EphemeralRelayVectors: Codable, Equatable {
+    var hubEphemeralPublic: String
+    var deviceEphemeralPublic: String
+    var keys: [String: String]
+
+    init(keys k: E2EFixtureKeys) throws {
+        hubEphemeralPublic = k.hubEph.publicKey.rawRepresentation.hexString
+        deviceEphemeralPublic = k.devEph.publicKey.rawRepresentation.hexString
+        var derived = [String: String]()
+        for epoch: UInt32 in [1, 2] {
+            for direction in RelayDirection.allCases {
+                derived["\(direction.rawValue)/\(epoch)"] = try k.ephemeralRelayKey(direction, epoch)
+                    .withUnsafeBytes { Data($0) }.hexString
+            }
+        }
+        keys = derived
     }
 }
 
@@ -49,6 +71,77 @@ final class E2EKeyDerivationTests: XCTestCase {
         XCTAssertEqual(try key(k.hubKX, k.devKX.publicKey, .phoneToHub, 1), try key(k.devKX, k.hubKX.publicKey, .phoneToHub, 1))
         XCTAssertNotEqual(try key(k.hubKX, k.devKX.publicKey, .phoneToHub, 1), try key(k.hubKX, k.devKX.publicKey, .hubToPhone, 1))
         XCTAssertNotEqual(try key(k.hubKX, k.devKX.publicKey, .phoneToHub, 1), try key(k.hubKX, k.devKX.publicKey, .phoneToHub, 2))
+    }
+
+    /// The frozen `ephemeralRelayKeys` block of `kdf.json`, which the Go hub reads too.
+    func testEphemeralRelayKeyVector() throws {
+        let k = try E2EFixtureKeys()
+        let url = E2EFixtures.directory.appendingPathComponent("kdf.json")
+        let frozen = try JSONDecoder().decode(KDFVectors.self, from: Data(contentsOf: url)).ephemeralRelayKeys
+        XCTAssertEqual(try EphemeralRelayVectors(keys: k), frozen)
+        XCTAssertEqual(Set(frozen.keys.keys), ["p2h/1", "h2p/1", "p2h/2", "h2p/2"])
+    }
+
+    func testEphemeralRelayKeysAgreeAndBindEveryInput() throws {
+        let k = try E2EFixtureKeys()
+        let base = try k.ephemeralRelayKey(.phoneToHub, 1)
+        XCTAssertEqual(base, try k.ephemeralRelayKey(.phoneToHub, 1, phoneSide: true))
+        XCTAssertNotEqual(base, try KeyDerivation.relayKey(
+            agreementPrivate: k.hubKX, peerPublic: k.devKX.publicKey, linkNonce: k.linkNonce,
+            hubID: k.hubID, deviceID: k.deviceID, epoch: 1, direction: .phoneToHub))
+        XCTAssertNotEqual(base, try k.ephemeralRelayKey(.hubToPhone, 1))
+        XCTAssertNotEqual(base, try k.ephemeralRelayKey(.phoneToHub, 2))
+        XCTAssertNotEqual(base, try k.ephemeralRelayKey(.phoneToHub, 1, hubEph: .init()))
+        XCTAssertNotEqual(base, try k.ephemeralRelayKey(.phoneToHub, 1, devEph: .init()))
+    }
+
+    /// A low-order peer key (u = 0, u = 1) makes X25519 all zero, on the ephemeral half or the static half: the
+    /// derivation throws. CryptoKit refuses such an agreement itself, before `refuseAllZero` runs, so this pins
+    /// CryptoKit's refusal; `testRefuseAllZeroFoldsEveryByte` covers the Kit's own check.
+    func testEphemeralRelayKeyRefusesAnAllZeroSharedSecret() throws {
+        let k = try E2EFixtureKeys()
+        var one = Data(count: 32)
+        one[0] = 1
+        let lowOrder = [
+            try Curve25519.KeyAgreement.PublicKey(rawRepresentation: Data(count: 32)),
+            try Curve25519.KeyAgreement.PublicKey(rawRepresentation: one)
+        ]
+        func derive(
+            peerEphemeral: Curve25519.KeyAgreement.PublicKey,
+            peerStatic: Curve25519.KeyAgreement.PublicKey,
+            hubEphemeralPublic: Data? = nil
+        ) throws -> SymmetricKey {
+            try KeyDerivation.ephemeralRelayKey(
+                ownEphemeral: k.hubEph, peerEphemeral: peerEphemeral, ownStatic: k.hubKX, peerStatic: peerStatic,
+                hubEphemeralPublic: hubEphemeralPublic ?? k.hubEph.publicKey.rawRepresentation,
+                deviceEphemeralPublic: peerEphemeral.rawRepresentation,
+                linkNonce: k.linkNonce, hubID: k.hubID, deviceID: k.deviceID, epoch: 1, direction: .phoneToHub)
+        }
+        for point in lowOrder {
+            XCTAssertThrowsError(try k.hubEph.sharedSecretFromKeyAgreement(with: point)) {
+                XCTAssertTrue($0 is CryptoKitError, "CryptoKit refuses the low-order point: \($0)")
+            }
+            XCTAssertThrowsError(try derive(peerEphemeral: point, peerStatic: k.devKX.publicKey))
+            XCTAssertThrowsError(try derive(peerEphemeral: k.devEph.publicKey, peerStatic: point))
+        }
+        // The transcript's ephemeral publics are 32 bytes each.
+        XCTAssertThrowsError(try derive(
+            peerEphemeral: k.devEph.publicKey, peerStatic: k.devKX.publicKey,
+            hubEphemeralPublic: k.hubEph.publicKey.rawRepresentation.prefix(31))) {
+            XCTAssertEqual($0 as? E2EError, .badEphemeralPublicKey)
+        }
+    }
+
+    /// The constant-time fold refuses only the all-zero secret: one non-zero byte anywhere passes.
+    func testRefuseAllZeroFoldsEveryByte() throws {
+        XCTAssertThrowsError(try KeyDerivation.refuseAllZero(Data(count: 32))) {
+            XCTAssertEqual($0 as? E2EError, .allZeroSharedSecret)
+        }
+        for index in [0, 15, 31] {
+            var secret = Data(count: 32)
+            secret[index] = 0x01
+            XCTAssertNoThrow(try KeyDerivation.refuseAllZero(secret), "byte \(index)")
+        }
     }
 
     func testRecordNameIs26Base32CharactersAndBindsZoneKindAndID() {

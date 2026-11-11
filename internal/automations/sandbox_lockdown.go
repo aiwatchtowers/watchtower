@@ -23,6 +23,14 @@ import (
 // still reads a timed-out match as "no match" (v1 limit).
 const RegexpMatchTimeout = 2 * time.Second
 
+// regexClock is the regex timer's clock in Unix milliseconds: the real one,
+// never the script's (recorded, replayed) clock, so timing a match records
+// nothing. Tests replace it to time a call without waiting.
+var regexClock = realRegexMillis
+
+// realRegexMillis is the wall clock in Unix milliseconds.
+func realRegexMillis() int64 { return time.Now().UnixMilli() }
+
 // MaxBuiltinAlloc caps the cheap amplifiers, in characters, elements or
 // bytes per call: String.prototype.repeat/padStart/padEnd/concat, the text
 // replace/replaceAll/RegExp@@replace insert, String.raw,
@@ -904,9 +912,8 @@ func (s *Sandbox) lockdown() error {
 		}
 		return s.rt.ToValue("")
 	}
-	// realNow is the regex timer's clock: the real one, never the script's
-	// (recorded, replayed) clock, so timing a match records nothing.
-	realNow := func(goja.FunctionCall) goja.Value { return s.rt.ToValue(time.Now().UnixMilli()) }
+	// realNow is the regex timer's clock (regexClock).
+	realNow := func(goja.FunctionCall) goja.Value { return s.rt.ToValue(regexClock()) }
 	expanded := func(call goja.FunctionCall) goja.Value {
 		str, _ := call.Argument(1).(goja.String)
 		return s.rt.ToValue(expandedLength(call.Argument(0).String(), str, int(call.Argument(2).ToInteger())))
