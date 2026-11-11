@@ -71,9 +71,10 @@ func (d *Daemon) WaitingForMePrimitives() map[string]automations.PrimitiveFunc {
 }
 
 // WaitingForMeGate is Waiting for me's sync gate: due when what it would
-// show differs from what its last succeeded run showed — the open items as
-// their rows read by the shipped recipe (builtin.WaitingFingerprint) with
-// the recipe's hashes. A quiet cycle writes no run. An owner's copy runs
+// show differs from what its last succeeded run showed — the open people
+// items as the shipped recipe reads them (builtin.WaitingFingerprint over
+// db.WaitingPeople; mail is Mail waiting's) with the recipe's hashes. A
+// quiet cycle writes no run. An owner's copy runs
 // every cycle: it may show what the fingerprint does not cover. A failed read is
 // due (the run reports it); a daemon start knows no fingerprint, so its
 // first cycle runs. Attention detection off skips the built-in before the
@@ -96,7 +97,7 @@ func (g waitingForMeGate) Due(ctx context.Context, _ builtin.Entry, now time.Tim
 		// (other reads, other fields): it runs every cycle.
 		return true
 	}
-	fp, err := builtin.WaitingFingerprint(ctx, d.db, now)
+	fp, err := builtin.WaitingFingerprint(ctx, d.db, now, db.WaitingPeople)
 	if err != nil {
 		d.logger.Printf("waiting-for-me: reading the open items: %v", err)
 		return true

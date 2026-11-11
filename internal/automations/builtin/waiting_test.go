@@ -2,7 +2,10 @@ package builtin
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"maps"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -115,8 +118,9 @@ func TestWaitingForMe_ShippedRecipeHasNoLLM(t *testing.T) {
 }
 
 // Over the shared fixture the run writes one living artifact `waiting`
-// with one ref row per open item, newest first, worded as the Desktop's
-// message rows; the run costs no tokens.
+// with one ref row per open people item (mail is in mail_items, not
+// items), newest first, worded as the Desktop's message rows; the run costs
+// no tokens.
 func TestWaitingForMe_WritesOneRowPerOpenItem(t *testing.T) {
 	f := newFixture(t)
 	fx := db.SeedTestOpenItemsFixture(t, f.d, openItemsFixture)
@@ -143,8 +147,10 @@ func TestWaitingForMe_WritesOneRowPerOpenItem(t *testing.T) {
 		ids = append(ids, r.Ref.ID)
 		byID[r.Ref.ID] = r
 	}
-	if !slices.Equal(ids, fx.OpenIDs) {
-		t.Fatalf("row refs = %v, want %v", ids, fx.OpenIDs)
+	// Item 15 is the fixture's one open mail item.
+	people := slices.DeleteFunc(slices.Clone(fx.OpenIDs), func(id int64) bool { return id == 15 })
+	if !slices.Equal(ids, people) {
+		t.Fatalf("row refs = %v, want %v", ids, people)
 	}
 	checks := []struct {
 		id                     int64
@@ -155,7 +161,6 @@ func TestWaitingForMe_WritesOneRowPerOpenItem(t *testing.T) {
 		{2, "Colleague A in a DM", "Got a minute?", "1 h", "", "https://acme.slack.com/archives/D001/p10000002"},
 		{17, "Colleague A in #general", "3 mentions · Any news on the launch?", "< 1 h", "", "https://acme.slack.com/archives/C001/p10000017"},
 		{18, "Colleague A in #general", "", "2 h", "", ""},
-		{15, "colleague-a@example.com — Budget review", "Budget review — please confirm the numbers", "2 h", "", "https://mail.example.com/m/15"},
 		{10, "ACME-1 — assigned to you", "Fix the login page", "2 days", "warning", "https://acme.atlassian.net/browse/ACME-1"},
 		{16, "ENG-7 — assigned to you", "Tidy the settings screen", "16 h", "", "https://linear.app/acme/issue/ENG-7"},
 	}
@@ -214,19 +219,22 @@ func TestWaitingForMe_ItemWithEmptyText(t *testing.T) {
 	}
 }
 
-// At most 200 rows, the newest.
+// At most 200 rows, the newest people items: newer mail takes none of them.
 func TestWaitingForMe_CapsAt200(t *testing.T) {
 	f := newFixture(t)
 	f.sync(t)
 	for i := 1; i <= 201; i++ {
 		f.insertItem(t, fmt.Sprintf("1000.%04d", i), "mention", f.clock.Now().Add(-time.Duration(i)*time.Minute))
 	}
+	for i := 1; i <= 5; i++ {
+		f.insertMail(t, fmt.Sprintf("2000.%04d", i), "a@example.com", "Hello", f.clock.Now())
+	}
 	if run := f.runOnce(t, waitingID); run.Status != db.RunSucceeded {
 		t.Fatalf("run = %+v (%s)", run, run.Error)
 	}
 	rows := f.waitingArtifacts(t)[0].list.Rows
-	if len(rows) != WaitingLimit || rows[0].Badge.Text != "< 1 h" {
-		t.Errorf("%d rows, first %+v; want %d, the newest first", len(rows), rows[0], WaitingLimit)
+	if len(rows) != WaitingPeopleLimit || rows[0].Badge.Text != "< 1 h" || rows[0].Ref.ID != 1 {
+		t.Errorf("%d rows, first %+v; want %d, the newest people item first", len(rows), rows[0], WaitingPeopleLimit)
 	}
 }
 
@@ -326,7 +334,7 @@ func TestWaitingForMe_ByteBudgetKeepsLongTextsUnderTheCap(t *testing.T) {
 	f := newFixture(t)
 	f.sync(t)
 	text := strings.Repeat("Ж", 300)
-	for i := 1; i <= WaitingLimit; i++ {
+	for i := 1; i <= WaitingPeopleLimit; i++ {
 		if _, err := f.d.Exec(`INSERT INTO inbox_items (channel_id, message_ts, sender_user_id, trigger_type, snippet, permalink, created_at)
 			VALUES ('C009', ?, 'U009', 'mention', ?, ?, ?)`, fmt.Sprintf("1000.%04d", i), text,
 			fmt.Sprintf("https://acme.slack.com/archives/C009/p1000%04d", i),
@@ -339,8 +347,8 @@ func TestWaitingForMe_ByteBudgetKeepsLongTextsUnderTheCap(t *testing.T) {
 		t.Fatalf("run = %s (%s); want succeeded", run.Status, run.Error)
 	}
 	rows := f.waitingArtifacts(t)[0].list.Rows
-	if len(rows) != WaitingLimit || rows[0].Subtitle == "" || !strings.HasSuffix(rows[0].Subtitle, "…") || rows[0].Link == "" {
-		t.Errorf("%d rows, first %+v; want %d rows with trimmed texts and their links", len(rows), rows[0], WaitingLimit)
+	if len(rows) != WaitingPeopleLimit || rows[0].Subtitle == "" || !strings.HasSuffix(rows[0].Subtitle, "…") || rows[0].Link == "" {
+		t.Errorf("%d rows, first %+v; want %d rows with trimmed texts and their links", len(rows), rows[0], WaitingPeopleLimit)
 	}
 }
 
@@ -370,7 +378,7 @@ func TestWaitingFingerprint(t *testing.T) {
 	f.insertItem(t, "1000.0001", "mention", now.Add(-2*time.Hour-5*time.Minute))
 	fp := func(at time.Time) string {
 		t.Helper()
-		s, err := WaitingFingerprint(ctx, f.d, at)
+		s, err := WaitingFingerprint(ctx, f.d, at, db.WaitingPeople)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -428,5 +436,349 @@ func TestWaitingForMe_WebLinkKeepsOnlyLinksTheBlocksAdmit(t *testing.T) {
 		if got := webLink(in); got != want {
 			t.Errorf("webLink(%.40q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// insertMail adds one open mail item from sender (stored as is) whose
+// snippet is "<subject> — body".
+func (f *fixture) insertMail(t *testing.T, ts, sender, subject string, at time.Time) {
+	t.Helper()
+	if _, err := f.d.Exec(`INSERT INTO inbox_items (channel_id, message_ts, sender_user_id, trigger_type, snippet, created_at)
+		VALUES ('gmail', ?, ?, 'email_received', ?, ?)`, ts, sender, subject+" — body",
+		at.UTC().Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// waitingFields is attention.waiting's result at now.
+func waitingFields(t *testing.T, d *db.DB, now time.Time) map[string]any {
+	t.Helper()
+	read := WaitingPrimitives(d, func() time.Time { return now })[automations.PrimitiveAttentionWaiting]
+	res, err := read(context.Background(), automations.PrimitiveCall{})
+	if err != nil || res.Status != "done" {
+		t.Fatalf("attention.waiting = %+v, %v", res, err)
+	}
+	return res.Fields
+}
+
+// rowsOf is a list field of the result as maps.
+func rowsOf(t *testing.T, fields map[string]any, key string) []map[string]any {
+	t.Helper()
+	list, ok := fields[key].([]any)
+	if !ok {
+		t.Fatalf("%s = %T; want a list", key, fields[key])
+	}
+	out := make([]map[string]any, 0, len(list))
+	for _, r := range list {
+		out = append(out, r.(map[string]any))
+	}
+	return out
+}
+
+// 250 people and 250 mail items: items holds the 200 newest people items,
+// mail_items the 200 newest mail items, each row tagged with its kind; the
+// counts cover every item.
+func TestAttentionWaiting_SplitsKindsWithSeparateCaps(t *testing.T) {
+	f := newFixture(t)
+	now := f.clock.Now()
+	for i := 1; i <= 250; i++ {
+		at := now.Add(-time.Duration(i) * time.Minute)
+		f.insertItem(t, fmt.Sprintf("1000.%04d", i), "mention", at)
+		f.insertMail(t, fmt.Sprintf("2000.%04d", i), fmt.Sprintf("s%d@example.com", i%7), "Hello", at.Add(30*time.Second))
+	}
+	fields := waitingFields(t, f.d, now)
+	items, mail := rowsOf(t, fields, "items"), rowsOf(t, fields, "mail_items")
+	if len(items) != WaitingPeopleLimit || len(mail) != WaitingMailLimit {
+		t.Fatalf("%d items, %d mail items; want %d and %d", len(items), len(mail), WaitingPeopleLimit, WaitingMailLimit)
+	}
+	for i, r := range items {
+		if r["kind"] != "people" || r["trigger"] != "mention" {
+			t.Fatalf("items[%d] = %v; want a people row", i, r)
+		}
+	}
+	for i, r := range mail {
+		if r["kind"] != "mail" || r["trigger"] != "email_received" {
+			t.Fatalf("mail_items[%d] = %v; want a mail row", i, r)
+		}
+	}
+	if items[0]["at"].(string) < items[1]["at"].(string) || mail[0]["at"].(string) < mail[1]["at"].(string) {
+		t.Error("rows are not newest first")
+	}
+	people := fields["people"].(map[string]any)
+	if people["open"] != 250 || people["today"].(int)+people["week"].(int)+people["older"].(int) != 250 {
+		t.Errorf("people = %v; want 250 open", people)
+	}
+	m := fields["mail"].(map[string]any)
+	if m["open"] != 250 || m["senders"] != 7 || m["top_ten_share"] != 100 {
+		t.Errorf("mail = %v; want 250 open from 7 senders", m)
+	}
+	if n := len(rowsOf(t, fields, "senders")); n != 7 {
+		t.Errorf("%d senders; want 7", n)
+	}
+}
+
+// waitingForMePrePhase2 is Waiting for me's recipe as shipped before the
+// people/mail split: it reads items only.
+const waitingForMePrePhase2 = "testdata/waiting_for_me_pre_phase2.md"
+
+// An owner's copy of Waiting for me written before the split (overridden,
+// confirmed) still runs: one row per open people item, at most 200, and no
+// mail row even when the mail is the newest.
+func TestAttentionWaiting_OwnerCopyOfWaitingForMeGetsNoMail(t *testing.T) {
+	f := newFixture(t)
+	f.sync(t)
+	text, err := os.ReadFile(waitingForMePrePhase2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.writeCopyOf(t, waitingID, text)
+	f.sync(t)
+	a := f.rowOf(t, waitingID)
+	if !a.Overridden || a.ParseError != "" {
+		t.Fatalf("row = overridden %v parse %q; want the owner's copy", a.Overridden, a.ParseError)
+	}
+	if err := f.d.ConfirmAutomation(a.ID, a.ApprovalHash, f.clock.Now()); err != nil {
+		t.Fatal(err)
+	}
+	now := f.clock.Now()
+	for i := 1; i <= 3; i++ {
+		f.insertMail(t, fmt.Sprintf("2000.%04d", i), "a@example.com", "Hello", now)
+	}
+	check := func(want int) {
+		t.Helper()
+		if run := f.runOnce(t, waitingID); run.Status != db.RunSucceeded {
+			t.Fatalf("run = %+v (%s)", run, run.Error)
+		}
+		var mailIDs []int64
+		idRows, err := f.d.Query(`SELECT id FROM inbox_items WHERE trigger_type = 'email_received'`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for idRows.Next() {
+			var id int64
+			if err := idRows.Scan(&id); err != nil {
+				t.Fatal(err)
+			}
+			mailIDs = append(mailIDs, id)
+		}
+		if err := idRows.Close(); err != nil || len(mailIDs) != 3 {
+			t.Fatalf("mail ids = %v, %v", mailIDs, err)
+		}
+		rows := f.waitingArtifacts(t)[0].list.Rows
+		if len(rows) != want {
+			t.Fatalf("%d rows; want %d", len(rows), want)
+		}
+		for _, r := range rows {
+			if r.Ref == nil || r.Ref.Kind != blocks.RefInboxItem || slices.Contains(mailIDs, r.Ref.ID) {
+				t.Fatalf("row %+v; want a people item's row", r)
+			}
+		}
+	}
+	for i := 1; i <= 2; i++ {
+		f.insertItem(t, fmt.Sprintf("1000.%04d", i), "mention", now.Add(-time.Duration(i)*time.Minute))
+	}
+	check(2)
+	for i := 3; i <= 201; i++ {
+		f.insertItem(t, fmt.Sprintf("1000.%04d", i), "mention", now.Add(-time.Duration(i)*time.Minute))
+	}
+	check(WaitingPeopleLimit)
+}
+
+// A raw From address the ref would refuse is still grouped and counted,
+// but not actionable.
+func TestAttentionWaiting_SenderNotActionable(t *testing.T) {
+	f := newFixture(t)
+	now := f.clock.Now()
+	long := strings.Repeat("a", 288) + "@example.com" // 300 bytes
+	raw := []string{`"Name" <a@example.com>`, "a@@example.com", "a b@example.com", long, "ok@example.com"}
+	for i, s := range raw {
+		f.insertMail(t, fmt.Sprintf("2000.%04d", 2*i), s, "Hello", now.Add(-time.Duration(i)*time.Minute))
+		f.insertMail(t, fmt.Sprintf("2000.%04d", 2*i+1), s, "Hello", now.Add(-time.Duration(i)*time.Minute))
+	}
+	fields := waitingFields(t, f.d, now)
+	got := map[string]map[string]any{}
+	for _, s := range rowsOf(t, fields, "senders") {
+		got[s["address"].(string)] = s
+	}
+	want := map[string]bool{`"name" <a@example.com>`: false, "a@@example.com": false, "a b@example.com": false,
+		long: false, "ok@example.com": true}
+	for addr, actionable := range want {
+		s, ok := got[addr]
+		if !ok {
+			t.Errorf("no sender %.40q in %v", addr, got)
+			continue
+		}
+		if s["actionable"] != actionable || s["open"] != 2 {
+			t.Errorf("sender %.40q = actionable %v open %v; want %v, 2", addr, s["actionable"], s["open"], actionable)
+		}
+	}
+	if m := fields["mail"].(map[string]any); m["senders"] != len(raw) || m["open"] != 2*len(raw) {
+		t.Errorf("mail = %v; want %d senders, %d open", m, len(raw), 2*len(raw))
+	}
+}
+
+// Sections follow the clock's zone: just after local midnight is today, and
+// an item of today's UTC date that is local yesterday is this week.
+func TestAttentionWaiting_SectionsInLocalZone(t *testing.T) {
+	f := newFixture(t)
+	loc := time.FixedZone("UTC-5", -5*3600)
+	now := time.Date(2026, 10, 22, 10, 0, 0, 0, loc) // 15:00 UTC
+	f.insertItem(t, "1000.0001", "mention", time.Date(2026, 10, 22, 0, 30, 0, 0, loc))
+	f.insertItem(t, "1000.0002", "mention", time.Date(2026, 10, 22, 2, 0, 0, 0, time.UTC)) // 21:00 local yesterday
+	f.insertItem(t, "1000.0003", "mention", now.Add(-8*24*time.Hour))
+	f.insertMail(t, "2000.0001", "a@example.com", "Hello", time.Date(2026, 10, 22, 2, 0, 0, 0, time.UTC))
+	fields := waitingFields(t, f.d, now)
+	sections := map[string]string{}
+	for _, r := range rowsOf(t, fields, "items") {
+		sections[r["at"].(string)] = r["section"].(string)
+	}
+	want := map[string]string{"2026-10-22T05:30:00Z": "today", "2026-10-22T02:00:00Z": "week", "2026-10-14T15:00:00Z": "older"}
+	if !maps.Equal(sections, want) {
+		t.Errorf("sections = %v; want %v", sections, want)
+	}
+	if p := fields["people"].(map[string]any); p["today"] != 1 || p["week"] != 1 || p["older"] != 1 || p["open"] != 3 {
+		t.Errorf("people = %v; want 1 today, 1 week, 1 older", p)
+	}
+	if m := rowsOf(t, fields, "mail_items"); len(m) != 1 || m[0]["section"] != "week" {
+		t.Errorf("mail_items = %v; want one week row", m)
+	}
+	if m := fields["mail"].(map[string]any); m["today"] != 0 {
+		t.Errorf("mail = %v; want none today", m)
+	}
+}
+
+// A muted sender's mail is in neither mail_items nor senders; its items
+// stay open.
+func TestAttentionWaiting_MutedSenderLeftOut(t *testing.T) {
+	f := newFixture(t)
+	now := f.clock.Now()
+	f.insertMail(t, "2000.0001", "Muted@Example.com", "Spam", now)
+	f.insertMail(t, "2000.0002", "kept@example.com", "Hello", now.Add(-time.Minute))
+	if _, err := f.d.Exec(`INSERT INTO inbox_learned_rules (rule_type, scope_key, weight, source, last_updated)
+		VALUES ('source_mute', 'email:muted@example.com', -1, 'user_rule', ?)`, now.UTC().Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
+	fields := waitingFields(t, f.d, now)
+	if m := rowsOf(t, fields, "mail_items"); len(m) != 1 || m[0]["who"] != "kept@example.com" {
+		t.Errorf("mail_items = %v; want kept@example.com's only", m)
+	}
+	if s := rowsOf(t, fields, "senders"); len(s) != 1 || s[0]["address"] != "kept@example.com" {
+		t.Errorf("senders = %v; want kept@example.com only", s)
+	}
+	if m := fields["mail"].(map[string]any); m["open"] != 1 || m["senders"] != 1 {
+		t.Errorf("mail = %v; want 1 open from 1 sender", m)
+	}
+	var open int
+	if err := f.d.QueryRow(`SELECT COUNT(*) FROM inbox_items WHERE status = 'pending'`).Scan(&open); err != nil || open != 2 {
+		t.Errorf("pending items = %d, %v; want both still open", open, err)
+	}
+}
+
+// 200 people, 200 mail items and 200 senders of long non-Latin text, names,
+// subjects and links: the result stays under the SDK's cap, and the shipped
+// recipe still writes every people row.
+func TestAttentionWaiting_WorstCaseUnderSDKCap(t *testing.T) {
+	f := newFixture(t)
+	f.sync(t)
+	now := f.clock.Now()
+	long := strings.Repeat("Ж", 400)
+	if _, err := f.d.Exec(`INSERT INTO users (id, name, display_name) VALUES ('U009', ?, ?)`, long, long); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.d.Exec(`INSERT INTO channels (id, name, type) VALUES ('C009', ?, 'public')`, long); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 200; i++ {
+		at := now.Add(-time.Duration(i) * time.Minute).UTC().Format(time.RFC3339)
+		if _, err := f.d.Exec(`INSERT INTO inbox_items (channel_id, message_ts, sender_user_id, trigger_type, snippet, permalink, created_at)
+			VALUES ('C009', ?, 'U009', 'mention', ?, ?, ?)`, fmt.Sprintf("1000.%04d", i), long,
+			fmt.Sprintf("https://acme.slack.com/archives/C009/p1000%04d", i), at); err != nil {
+			t.Fatal(err)
+		}
+		// 253 bytes: the longest address a ref admits.
+		addr := fmt.Sprintf("%03d", i) + strings.Repeat("ж", 119) + "@example.com"
+		if _, err := f.d.Exec(`INSERT INTO inbox_items (channel_id, message_ts, sender_user_id, trigger_type, snippet, permalink, created_at)
+			VALUES ('gmail', ?, ?, 'email_received', ?, ?, ?)`, fmt.Sprintf("2000.%04d", i), addr, long+" — "+long,
+			fmt.Sprintf("https://mail.example.com/m/%04d", i), at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fields := waitingFields(t, f.d, now)
+	for key, want := range map[string]int{"items": WaitingPeopleLimit, "mail_items": WaitingMailLimit, "senders": WaitingSendersLimit} {
+		if n := len(rowsOf(t, fields, key)); n != want {
+			t.Errorf("%d %s; want %d", n, key, want)
+		}
+	}
+	for _, s := range rowsOf(t, fields, "senders") {
+		if s["actionable"] != true || len(s["address"].(string)) != 253 {
+			t.Fatalf("sender %v; want its whole address, actionable", s)
+		}
+	}
+	data, err := json.Marshal(map[string]any{"status": "done", "fields": fields})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) > automations.MaxSDKResultBytes {
+		t.Errorf("result is %d bytes; the SDK's cap is %d", len(data), automations.MaxSDKResultBytes)
+	}
+	run := f.runOnce(t, waitingID)
+	if run.Status != db.RunSucceeded {
+		t.Fatalf("run = %s (%s); want succeeded", run.Status, run.Error)
+	}
+	if rows := f.waitingArtifacts(t)[0].list.Rows; len(rows) != WaitingPeopleLimit {
+		t.Errorf("%d rows; want %d", len(rows), WaitingPeopleLimit)
+	}
+}
+
+// A new mail item leaves the people fingerprint as it was and moves the
+// mail one.
+func TestWaitingFingerprint_PeopleIgnoresMail(t *testing.T) {
+	f := newFixture(t)
+	ctx, now := context.Background(), f.clock.Now()
+	f.insertItem(t, "1000.0001", "mention", now.Add(-time.Hour))
+	fp := func(kind db.WaitingKind) string {
+		t.Helper()
+		s, err := WaitingFingerprint(ctx, f.d, now, kind)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	people, mail := fp(db.WaitingPeople), fp(db.WaitingMail)
+	f.insertMail(t, "2000.0001", "a@example.com", "Hello", now)
+	if fp(db.WaitingPeople) != people {
+		t.Error("the people fingerprint moved with a mail item")
+	}
+	if fp(db.WaitingMail) == mail {
+		t.Error("the mail fingerprint kept after a mail item")
+	}
+	if _, err := WaitingFingerprint(ctx, f.d, now, db.WaitingKind("other")); err == nil {
+		t.Error("an unknown kind has a fingerprint")
+	}
+}
+
+// The same items, the clock moved past local midnight with every age
+// reading the same: the item moves from Today to This week, and the people
+// fingerprint moves with it.
+func TestWaitingFingerprint_SectionChangeAtMidnight(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	loc := time.FixedZone("UTC+3", 3*3600)
+	before := time.Date(2026, 10, 22, 23, 50, 0, 0, loc)
+	f.insertItem(t, "1000.0001", "mention", before.Add(-30*time.Minute))
+	fp := func(at time.Time) string {
+		t.Helper()
+		s, err := WaitingFingerprint(ctx, f.d, at, db.WaitingPeople)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	after := before.Add(20 * time.Minute)
+	if a, b := rowsOf(t, waitingFields(t, f.d, before), "items")[0], rowsOf(t, waitingFields(t, f.d, after), "items")[0]; a["age"] != b["age"] || a["section"] != "today" || b["section"] != "week" {
+		t.Fatalf("before %v, after %v; want the same age, today then week", a, b)
+	}
+	if fp(before) == fp(after) {
+		t.Error("the people fingerprint kept across midnight")
 	}
 }
