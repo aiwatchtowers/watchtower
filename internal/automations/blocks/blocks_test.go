@@ -499,6 +499,11 @@ func TestValidSenderAddress(t *testing.T) {
 		"a@@example.com": false, "a@b@c": false, "example.com": false, " a@example.com": false,
 		"a@example.com\n": false, "a\t@b": false, `"a"@b`: false, "<a@b>": false, "a,b@c": false,
 		"a@b\x7f": false, "a@b\u0085": false, "a@ex\u00e4mple.com": true,
+		// Invalid UTF-8 would be rewritten to U+FFFD in the stored ref, so
+		// its key would differ from the bulk resolve's; spaces and format
+		// characters are invisible.
+		"a@b\xff": false, "a\xc3@b": false, "a\u00a0b@c": false, "a\u200b@b": false,
+		"\ufeffa@b": false, "a@b\u2028": false, "a@b\u3000": false,
 	} {
 		if got := blocks.ValidSenderAddress(s); got != want {
 			t.Errorf("ValidSenderAddress(%q) = %v; want %v", s, got, want)
