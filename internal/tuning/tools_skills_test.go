@@ -350,7 +350,47 @@ func TestListCoachProposals_IncludesDeclinedChat(t *testing.T) {
 	assert.Equal(t, "chat", r["origin"])
 	assert.Equal(t, coach.DestClaudeMDUser, r["destination"])
 	assert.Equal(t, "Run tests first", r["title"])
-	assert.Equal(t, "Run tests first.\n", r["after_text"])
+	assert.NotContains(t, r, "after_text", "a listing carries no texts")
+
+	rows = f.rows(t, "list_coach_proposals", fmt.Sprintf(`{"id":%d}`, id))
+	require.Len(t, rows, 1)
+	assert.Equal(t, "Run tests first.\n", rows[0]["after_text"])
+}
+
+// A history of skill-sized proposals stays under the read cap: the listing
+// carries no texts and one proposal's texts come by id (review F1).
+func TestListCoachProposals_LargeHistoryStaysUnderReadCap(t *testing.T) {
+	f := newFixture(t)
+	big := strings.Repeat("Ж", 19000) + "\n"
+	var last int64
+	for i := range 120 {
+		id, err := f.d.InsertCoachProposal(db.CoachProposal{
+			Fingerprint: fmt.Sprintf("fp-%d", i), Kind: "replace", Destination: coach.DestClaudeSkillUser, Skill: fmt.Sprintf("s%d", i%3),
+			Title: fmt.Sprintf("Edit %d", i), Why: strings.Repeat("w", 500), Metric: "corrections",
+			BeforeText: big, AfterText: big + "More.\n", Origin: "chat",
+		}, testNow)
+		require.NoError(t, err)
+		require.NoError(t, f.d.DecideCoachProposal(id, "open", "declined", testNow))
+		last = id
+	}
+	rows := f.rows(t, "list_coach_proposals", `{}`)
+	assert.Len(t, rows, 50, "default limit")
+	assert.InDelta(t, last, rows[0]["id"], 0, "newest first")
+	assert.Len(t, f.rows(t, "list_coach_proposals", `{"limit":500}`), 100, "limit is clamped")
+
+	rows = f.rows(t, "list_coach_proposals", `{"destination":"claude_skill_user","skill":"s1","limit":100}`)
+	assert.Len(t, rows, 40)
+	for _, r := range rows {
+		assert.Equal(t, "s1", r["skill"])
+	}
+	assert.Empty(t, f.rows(t, "list_coach_proposals", `{"destination":"claude_md_user"}`))
+
+	rows = f.rows(t, "list_coach_proposals", fmt.Sprintf(`{"id":%d}`, last))
+	require.Len(t, rows, 1)
+	assert.Equal(t, big, rows[0]["before_text"])
+
+	_, err := f.call(t, "list_coach_proposals", `{"id":999999}`)
+	require.Error(t, err)
 }
 
 func TestListCoachProposals_Empty(t *testing.T) {

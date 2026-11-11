@@ -172,6 +172,16 @@ final class CoachPresentationTests: XCTestCase {
         }
     }
 
+    /// The card's error lines match Go's `coach.RepoDirtyLine` / `RepoNotGitLine` through one fixture.
+    func testRepoRefusalLinesSharedFixture() throws {
+        struct Lines: Decodable { let dirty_path: String; let dirty: String; let not_git: String }
+        let root = (0..<4).reduce(URL(fileURLWithPath: #filePath)) { url, _ in url.deletingLastPathComponent() }
+        let url = root.appendingPathComponent("internal/coach/testdata/repo_lines.json")
+        let lines = try JSONDecoder().decode(Lines.self, from: Data(contentsOf: url))
+        XCTAssertEqual(TuningChatTexts.repoDirty(path: lines.dirty_path), lines.dirty)
+        XCTAssertEqual(TuningChatTexts.repoNotGit, lines.not_git)
+    }
+
     func testOpenRepoCardCaptionNamesTheBranch() {
         func caption(_ branch: Any?) -> String {
             proposal(destination: "repo_claude_md", workbench: 3, extra: branch.map { ["folder_branch": $0] } ?? [:])

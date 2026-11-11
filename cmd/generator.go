@@ -171,17 +171,7 @@ func newQueryClient(cfg *config.Config, dbPath string, opts transport.Options) (
 	if toolRoutingEnabled(cfg, aiFlagModel) {
 		routed := newToolRouteProvider(cfg, func(actual *config.Config) (ai.Provider, func(), error) { return newQueryClient(actual, dbPath, opts) })
 		routed.readFolder = opts.ReadFolder
-		routed.capable = func(provider string) (bool, error) {
-			if provider == cfg.AI.Provider || aiFlagTools != "chat" {
-				return true, nil
-			}
-			database, err := db.Open(dbPath)
-			if err != nil {
-				return false, fmt.Errorf("opening reserve capability database: %w", err)
-			}
-			defer database.Close()
-			return reserveConnectionsCapable(cfg, database, provider)
-		}
+		routed.capable = queryReserveCapable(cfg, dbPath, aiFlagTools, aiFlagSurface)
 		return routed, func() {}, nil
 	}
 	noop := func() {}
@@ -230,6 +220,23 @@ func newQueryClient(cfg *config.Config, dbPath string, opts transport.Options) (
 		}
 	}
 	return buildQuerier(cfg, opts), noop, nil
+}
+
+// queryReserveCapable is a routed query's reserve check: only a chat-tools
+// turn on a surface that mounts the owner's Quick Connections needs them to
+// work on the reserve provider.
+func queryReserveCapable(cfg *config.Config, dbPath, toolSet, surface string) func(string) (bool, error) {
+	return func(provider string) (bool, error) {
+		if provider == cfg.AI.Provider || toolSet != "chat" || !quickConnectionsOn(surface) {
+			return true, nil
+		}
+		database, err := db.Open(dbPath)
+		if err != nil {
+			return false, fmt.Errorf("opening reserve capability database: %w", err)
+		}
+		defer database.Close()
+		return reserveConnectionsCapable(cfg, database, provider)
+	}
 }
 
 // quickConnectionsOn reports whether a chat surface mounts the owner's Quick

@@ -76,7 +76,7 @@ Read tools (all `CompanyData` where they return content, within the bulk-read li
 | `list_prompts` / `get_prompt` | prompt ids with their purposes, spend over 30 days, version and additions; one prompt's resolved template, additions and history |
 | `list_skills` / `get_skill` | global Claude skills, global Codex skills, the pack skills with their overlays, and the workbench folder's `.claude/skills` and `.agents/skills` (§4.3a); one skill's text |
 | `get_agent_instructions` | `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, the Claude allow list and the Codex rules file, and the workbench folder's `CLAUDE.md`, `AGENTS.md` and `.watchtower/workflow.md` with their git state (clean, changed, not a git repository; §4.3a), each with its budget |
-| `list_coach_proposals` | the coach's open, accepted and declined proposals (so the chat never repeats a declined one) |
+| `list_coach_proposals` | the coach's open, accepted and declined proposals (so the chat never repeats a declined one); newest first without texts (`destination`/`skill` narrow it, `limit` 50 by default, at most 100), one proposal's before and after texts by `id` — a listing of skill-sized texts would pass the 256 KB read cap |
 
 Proposal tool (it writes only a proposal row, never a destination):
 

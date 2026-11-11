@@ -1121,7 +1121,12 @@ func remeasureCoachBaselines(cfg *config.Config, database *db.DB, al *agentlogdb
 		return
 	}
 	unlock, ok, err := fsutil.TryLockFile(coach.LockPath(cfg.WorkspaceDir()))
-	if err != nil || !ok {
+	if err != nil {
+		logger.Printf("coach: re-measuring baselines per agent: taking coach.lock: %s; retried before the next judging",
+			logredact.Body([]byte(err.Error())))
+		return
+	}
+	if !ok {
 		return
 	}
 	defer unlock()

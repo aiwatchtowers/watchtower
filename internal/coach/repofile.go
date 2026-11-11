@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"path"
 	"path/filepath"
@@ -180,14 +181,15 @@ func (a *Applier) writtenBranch(p db.CoachProposal) string {
 		return ""
 	}
 	folder, err := repoFolder(a.DB, p.WorkbenchID)
-	if err != nil {
-		return ""
+	if err == nil {
+		var branch string
+		if branch, err = a.RepoBranch(folder); err == nil {
+			return branch
+		}
 	}
-	branch, err := a.RepoBranch(folder)
-	if err != nil {
-		return ""
-	}
-	return branch
+	log.Printf("coach: proposal %d written; reading its branch in workbench %d: %s", p.ID, p.WorkbenchID,
+		logredact.Body([]byte(err.Error())))
+	return ""
 }
 
 // repoGitCheck reads the git state of dest's file in folder: not a work tree

@@ -30,7 +30,7 @@ Registered in `buildToolRegistry` (`cmd/actions_registry.go`) through `tuningDep
 | `list_prompts` / `get_prompt` | prompt ids with purposes, 30-day spend, version and additions; one prompt's resolved template, additions and history |
 | `list_skills` / `get_skill` | global Claude skills, global Codex skills, the pack skills with their overlays, the workbench folder's `.claude/skills` and `.agents/skills`; one skill's text |
 | `get_agent_instructions` | `~/.claude/CLAUDE.md`, the Codex `AGENTS.md`, the Claude allow list, the Codex rules, and the workbench folder's `CLAUDE.md`, `AGENTS.md`, `.watchtower/workflow.md` with their git state and budget |
-| `list_coach_proposals` | open, accepted and declined proposals, so the chat never repeats a declined one |
+| `list_coach_proposals` | open, accepted and declined proposals, so the chat never repeats a declined one; newest first without texts (`destination`/`skill` narrow it, `limit` 50 by default, at most 100), one proposal's before and after texts by `id` — a listing of skill-sized texts would pass the 256 KB read cap |
 | `propose_tuning_edit` | `{destination, workbench_id?, prompt_id?, skill?, kind, find?, replace?, after?, title, why, metric}` → `coach.ValidateChatProposal` → `db.InsertChatCoachProposal` |
 
 `after` maps to the edit's replacement (`insertAfter`); a `repo_*` destination defaults to the panel's workbench. Every chat turn runs `ai query --purpose tuning.chat` (`tuning.ChatPurpose`), so Usage shows it as its own line, "Tuning chat" (`LLMPurposeNames`, D53).

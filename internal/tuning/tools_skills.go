@@ -90,11 +90,13 @@ func skillTools(deps Deps) []*tools.Tool {
 			func(_ context.Context, d *db.DB, b tools.Binding, a listSkillsArgs) (any, error) {
 				return agentInstructions(d, deps, b, a.WorkbenchID)
 			}),
-		readTool[struct{}]("list_coach_proposals",
-			"List every coach proposal — open, accepted, declined, rolled back — with its texts, so you never "+
-				"propose an edit that is already open, accepted or declined.",
-			func(_ context.Context, d *db.DB, _ tools.Binding, _ struct{}) (any, error) {
-				return listCoachProposals(d)
+		readTool[listProposalsArgs]("list_coach_proposals",
+			"List the coach's proposals — open, accepted, declined, rolled back — newest first, without their "+
+				"texts, so you never propose an edit that is already open, accepted or declined. Narrow with "+
+				"destination and skill; limit defaults to 50 (at most 100). Pass id for one proposal with its "+
+				"before and after texts.",
+			func(_ context.Context, d *db.DB, _ tools.Binding, a listProposalsArgs) (any, error) {
+				return listCoachProposals(d, a)
 			}),
 	}
 }
@@ -296,16 +298,16 @@ func getSkill(d *db.DB, deps Deps, b tools.Binding, a getSkillArgs) (*skillText,
 			return nil, err
 		}
 		row.Destination = k.repo
-		row.Path, _ = coach.RepoRelPath(k.repo, a.Name)
+		row.Path, _ = coach.RepoRelPath(k.repo, a.Name) // the name passed the skill-name check above
 	} else {
 		// The Claude skill's path, or the one Codex copy (none when the skill
 		// is in neither or both Codex folders: the read says which).
-		p, ok := coach.ClaudeSkillPath(env, a.Name), true
 		if k.home == coach.DestCodexSkillUser {
-			p, ok = coach.CodexSkillPath(env, a.Name)
-		}
-		if ok {
-			row.Path = homePath(env.Home, p)
+			if p, ok := coach.CodexSkillPath(env, a.Name); ok {
+				row.Path = homePath(env.Home, p)
+			}
+		} else {
+			row.Path = homePath(env.Home, coach.ClaudeSkillPath(env, a.Name))
 		}
 	}
 	cur, err := coach.ReadText(d, env, row.Destination, wb, "", a.Name)
@@ -468,23 +470,63 @@ type proposalRow struct {
 	WorkbenchID int64  `json:"workbench_id,omitempty"`
 	Title       string `json:"title"`
 	Why         string `json:"why"`
-	BeforeText  string `json:"before_text"`
-	AfterText   string `json:"after_text"`
+	// The texts come only with id: a listing of skill-sized texts would pass
+	// the read cap (tools.MaxReadResultBytes) after a few proposals.
+	BeforeText *string `json:"before_text,omitempty"`
+	AfterText  *string `json:"after_text,omitempty"`
 }
 
-// listCoachProposals is list_coach_proposals: every status, newest first.
-func listCoachProposals(d *db.DB) ([]proposalRow, error) {
+type listProposalsArgs struct {
+	ID          int64  `json:"id,omitempty" jsonschema:"one proposal, with its before and after texts"`
+	Destination string `json:"destination,omitempty" jsonschema:"only proposals for this destination"`
+	Skill       string `json:"skill,omitempty" jsonschema:"only proposals for this skill"`
+	Limit       int    `json:"limit,omitempty" jsonschema:"most rows to return; default 50, at most 100"`
+}
+
+const (
+	proposalsDefaultLimit = 50
+	proposalsMaxLimit     = 100 // rows carry why (≤ 600 runes): 100 stay well under the read cap
+)
+
+// listCoachProposals is list_coach_proposals: every status, newest first,
+// without texts; with id, that one proposal with its texts.
+func listCoachProposals(d *db.DB, a listProposalsArgs) ([]proposalRow, error) {
+	if a.ID != 0 {
+		p, err := d.GetCoachProposal(a.ID)
+		if err != nil {
+			return nil, err
+		}
+		r := proposalRowOf(p)
+		r.BeforeText, r.AfterText = &p.BeforeText, &p.AfterText
+		return []proposalRow{r}, nil
+	}
+	limit := a.Limit
+	switch {
+	case limit <= 0:
+		limit = proposalsDefaultLimit
+	case limit > proposalsMaxLimit:
+		limit = proposalsMaxLimit
+	}
 	ps, err := d.ListCoachProposals()
 	if err != nil {
 		return nil, err
 	}
-	out := make([]proposalRow, 0, len(ps))
+	out := make([]proposalRow, 0, min(len(ps), limit))
 	for _, p := range ps {
-		out = append(out, proposalRow{ID: p.ID, Status: p.Status, Origin: p.Origin, Destination: p.Destination,
-			Skill: p.Skill, PromptID: p.PromptID, WorkbenchID: p.WorkbenchID, Title: p.Title, Why: p.Why,
-			BeforeText: p.BeforeText, AfterText: p.AfterText})
+		if (a.Destination != "" && p.Destination != a.Destination) || (a.Skill != "" && p.Skill != a.Skill) {
+			continue
+		}
+		if len(out) == limit {
+			break
+		}
+		out = append(out, proposalRowOf(p))
 	}
 	return out, nil
+}
+
+func proposalRowOf(p db.CoachProposal) proposalRow {
+	return proposalRow{ID: p.ID, Status: p.Status, Origin: p.Origin, Destination: p.Destination,
+		Skill: p.Skill, PromptID: p.PromptID, WorkbenchID: p.WorkbenchID, Title: p.Title, Why: p.Why}
 }
 
 // folderOf is the workbench's own folder (projects.folder_path).
