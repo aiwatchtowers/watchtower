@@ -1,27 +1,34 @@
 package digest
 
 import (
+	"bufio"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"syscall"
 	"testing"
-	"time"
 )
 
 // A cancelled isolated child is killed with its whole process group (a
-// grandchild included), and the dropped variables never reach it.
+// grandchild included), and the dropped variables never reach it. The test
+// waits on process events only: the group holds a FIFO open, so its "ready"
+// line says the grandchild runs and EOF says the whole group has exited.
 func TestIsolateChildKillsTheGroupAndDropsEnv(t *testing.T) {
 	dir := t.TempDir()
+	fifo := filepath.Join(dir, "group")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	script := filepath.Join(dir, "child.sh")
 	if err := os.WriteFile(script, []byte("#!/bin/sh\n"+
+		"exec 3>'"+fifo+"'\n"+
 		"env > '"+dir+"/env'\n"+
 		"sleep 60 &\n"+
-		"echo $! > '"+dir+"/grandchild.tmp' && mv '"+dir+"/grandchild.tmp' '"+dir+"/grandchild'\n"+
+		"echo ready >&3\n"+
 		"wait\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -37,26 +44,21 @@ func TestIsolateChildKillsTheGroupAndDropsEnv(t *testing.T) {
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		_ = cmd.Wait()
 	})
-	var grandchild int
-	deadline := time.Now().Add(10 * time.Second)
-	for grandchild == 0 {
-		if b, err := os.ReadFile(filepath.Join(dir, "grandchild")); err == nil {
-			grandchild, _ = strconv.Atoi(strings.TrimSpace(string(b)))
-		} else if time.Now().After(deadline) {
-			t.Fatal("the child never started its grandchild")
-		} else {
-			time.Sleep(20 * time.Millisecond)
-		}
+	group, err := os.Open(fifo) // blocks until the child opens its end
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer group.Close()
+	if line, err := bufio.NewReader(group).ReadString('\n'); err != nil || line != "ready\n" {
+		t.Fatalf("the child never started its grandchild: %q, %v", line, err)
 	}
 
 	cancel()
 	_ = cmd.Wait()
 
-	for syscall.Kill(grandchild, 0) == nil {
-		if time.Now().After(deadline) {
-			t.Fatalf("grandchild %d outlived the cancelled child", grandchild)
-		}
-		time.Sleep(20 * time.Millisecond)
+	// EOF once every holder — the grandchild included — has exited.
+	if _, err := io.Copy(io.Discard, group); err != nil {
+		t.Fatal(err)
 	}
 	env, err := os.ReadFile(filepath.Join(dir, "env"))
 	if err != nil {
