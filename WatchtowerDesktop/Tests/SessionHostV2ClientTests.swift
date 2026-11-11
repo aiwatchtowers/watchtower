@@ -488,6 +488,21 @@ final class SessionHostV2ClientTests: XCTestCase {
         XCTAssertEqual(transport.sent(.input).map(\.payload), [Array("y".utf8)], "only the owner's key is input")
     }
 
+    /// The bug's own trigger: with focus reporting on (DECSET 1004, as
+    /// Claude Code sets it) a window focus change's reports go as `inputTo`.
+    func testFocusReportsGoAsInputTo() async throws {
+        let (_, _, hosted, transport) = try await hostedSession()
+        let view = try XCTUnwrap(hosted.view as? PalettedTerminalView)
+        transport.push(SessionHostFrame(type: .output, payload: Array("\u{1b}[?1004h".utf8)))
+
+        view.getTerminal().setTerminalFocus(false)
+        view.getTerminal().setTerminalFocus(true)
+
+        let sent = try transport.sent(.inputTo).flatMap { try Array($0.decoded(SessionHostInputTo.self).data) }
+        XCTAssertTrue(String(bytes: sent, encoding: .utf8)?.hasSuffix("\u{1b}[O\u{1b}[I") == true, "the focus-out and focus-in reports")
+        XCTAssertTrue(transport.sent(.input).isEmpty, "no report reads as the owner's typing")
+    }
+
     /// The dialog hint goes on the pane's own (bound) connection.
     func testPromptHintsGoToTheRunsHost() async throws {
         let (center, s, hosted, transport) = try await hostedSession()

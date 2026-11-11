@@ -2938,3 +2938,12 @@ Entry format:
 - weak-dimension: 7. A timing repro with `Thread.sleep` "red without, green with" on one machine was offered as proof. Four lanes doubted it would reproduce on CI.
 - rule-gap: the existing "a test never puts a window on screen" rule (review-rules Tests) worked. It was raised by 4 of 5 lanes. Candidate addition: *an AppKit/SwiftUI glitch fix tests the corrective write directly with a planted bad state; a framework-animation repro that needs an on-screen window or wall-clock sleeps stays a manual check in the PR.*
 - outcome: TBD
+
+## 2026-11-11 — fix/1743 hosted terminal replies as InputTo (18d0dbd1d: the hosted pane sends the terminal's own replies and the app's input as v2 `InputTo` instead of `Input`; 12 files +143/−23; panel: prosecutor (4: 2 minor, 2 nit) + codex (0); pr-review-toolkit specialists unavailable; judge verified by reading the diff, Go `InputToReq`/`Server.inputTo`, no runs) — verdict: approve
+
+- contested: whether the Swift test proves the fix when it never drives the headline trigger (a focus change's ESC[I/ESC[O). Held minor: the DA reply goes through the same `send(source:)` → `forwardingAppInput` → `owner == false` branch, so the test fails on the pre-fix code (it would be `Input`). A focus-report case is still worth adding because it is the symptom the owner saw. [7]
+- false-positive: none dismissed. F2 (Go `TestProj12_TerminalRepliesAsInputToKeepTheAnswersReturn` pins host behaviour that predates the fix, yet the inventory calls it a "New guard" for #1743) stands as minor: it pins the host half of the contract the fix now depends on, but it cannot fail on the Swift regression, so the changelog should say "pins the host half" and not imply it guards the fix. [7]
+- miss: none late. Codex and the prosecutor agreed on the wire shape, the chunk bound ((max − 4096)/8·3 survives base64 plus worst-case `\/` escaping) and the v1/pre-launch fallback.
+- weak-dimension: 7, mildly. A cross-process fix (Swift sender, Go receiver) listed a Go test as a "new guard" for a defect that lived only on the Swift side.
+- rule-gap (candidate, dim 7): *in a Go↔Swift dual-path fix, the inventory changelog labels a test "new guard" only if it fails on the pre-fix code of the side that was broken. A test that pins the other side's unchanged behaviour is listed as "supporting".*
+- outcome: TBD

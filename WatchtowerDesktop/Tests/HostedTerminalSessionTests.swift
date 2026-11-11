@@ -117,9 +117,11 @@ final class HostedTerminalSessionTests: XCTestCase {
         return (session, transport)
     }
 
-    private func launched(_ transport: FakeSessionHostTransport, session: HostedTerminalSession, pid: Int = 5150) throws {
+    private func launched(_ transport: FakeSessionHostTransport, session: HostedTerminalSession, pid: Int = 5150, launch: UInt64 = 0) throws {
         let key = try XCTUnwrap(session.key)
-        transport.push(.json(.launched, SessionHostSessionInfo(row: key.row, run: key.run, pid: pid, startedAtMs: 1, exited: false, code: nil)))
+        transport.push(.json(.launched, SessionHostSessionInfo(
+            row: key.row, run: key.run, pid: pid, startedAtMs: 1, exited: false, code: nil, launch: launch
+        )))
     }
 
     private func terminalView(_ session: HostedTerminalSession) throws -> PalettedTerminalView {
@@ -201,10 +203,7 @@ final class HostedTerminalSessionTests: XCTestCase {
     /// stays within the host's limit; the bytes arrive whole and in order.
     func testInputToOverTheFrameLimitIsSplit() async throws {
         let (session, transport) = try await startedSession()
-        let key = try XCTUnwrap(session.key)
-        transport.push(.json(.launched, SessionHostSessionInfo(
-            row: key.row, run: key.run, pid: 5150, startedAtMs: 1, exited: false, code: nil, launch: 2
-        )))
+        try launched(transport, session: session, launch: 2)
         let bytes = (0..<(HostedTerminalSession.inputToChunk + 10)).map { UInt8(truncatingIfNeeded: $0) }
         session.sendInput(bytes)
         let frames = transport.sent(.inputTo)
