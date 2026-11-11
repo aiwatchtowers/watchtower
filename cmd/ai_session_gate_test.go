@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -338,11 +339,7 @@ func startAISession(t *testing.T, claudePath, surface string) *aiSessionRun {
 	// closes it) and waits for it, so no session outlives its test.
 	t.Cleanup(func() {
 		_ = inW.Close()
-		select {
-		case <-r.done:
-		case <-time.After(15 * time.Second):
-			t.Error("ai session did not exit at the end of the test")
-		}
+		<-r.done
 	})
 	go func() {
 		sc := bufio.NewScanner(outR)
@@ -360,16 +357,11 @@ func startAISession(t *testing.T, claudePath, surface string) *aiSessionRun {
 // next returns the next event of type want, skipping the others.
 func (r *aiSessionRun) next(want string) chat.Event {
 	r.t.Helper()
-	deadline := time.After(20 * time.Second)
 	for {
-		select {
-		case e, ok := <-r.events:
-			require.True(r.t, ok, "stream ended before %s", want)
-			if e.Type == want {
-				return e
-			}
-		case <-deadline:
-			r.t.Fatalf("no %s event", want)
+		e, ok := <-r.events
+		require.True(r.t, ok, "stream ended before %s", want)
+		if e.Type == want {
+			return e
 		}
 	}
 }
@@ -386,12 +378,7 @@ func (r *aiSessionRun) send(c chat.Command) {
 func (r *aiSessionRun) close() {
 	r.t.Helper()
 	r.send(chat.Command{Type: chat.CommandClose})
-	select {
-	case err := <-r.done:
-		assert.NoError(r.t, err)
-	case <-time.After(15 * time.Second):
-		r.t.Fatal("ai session did not exit after close")
-	}
+	assert.NoError(r.t, <-r.done)
 }
 
 // gateFakeClaude installs internal/chat's fake CLI in gate mode in a fresh
@@ -415,41 +402,30 @@ func gateFakeClaude(t *testing.T) (string, string) {
 }
 
 // reapProcessesOf kills every process started from dir (the fake CLI and
-// anything it left behind) and waits until none is left; a survivor fails
-// the test.
+// anything it left behind) and repeats until none is left — a process that
+// SIGKILL cannot end hangs the run into go test's -timeout.
 func reapProcessesOf(t *testing.T, dir string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
 	for {
 		_ = exec.Command("pkill", "-KILL", "-f", dir).Run()
 		out, _ := exec.Command("pgrep", "-f", dir).Output()
 		if strings.TrimSpace(string(out)) == "" {
 			return
 		}
-		if time.Now().After(deadline) {
-			t.Errorf("processes of %s survived the test: %s", dir, out)
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
 	}
 }
 
-// spawnArgv waits for the fake CLI's first spawn to record its argv (the
-// child writes it after session_ready may already be out) and returns it.
+// spawnArgv returns the argv the fake CLI's first spawn recorded. The fake
+// writes it before it reads stdin, so call it only after an event the fake
+// itself produced (a turn's answer) or after the session closed (Close
+// waits for the child's exit).
 func spawnArgv(t *testing.T, dir string) []string {
 	t.Helper()
-	path := filepath.Join(dir, "argv")
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		data, err := os.ReadFile(path)
-		if run, _, found := strings.Cut(string(data), "\n--\n"); err == nil && found {
-			return strings.Split(run, "\n")
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the fake CLI recorded no argv (%v)", err)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	data, err := os.ReadFile(filepath.Join(dir, "argv"))
+	require.NoError(t, err)
+	run, _, found := strings.Cut(string(data), "\n--\n")
+	require.True(t, found, "the fake CLI recorded no argv")
+	return strings.Split(run, "\n")
 }
 
 // gateConnectors is the fake's mcp_status answer: Gmail with an unannotated
@@ -500,16 +476,26 @@ func TestAISession_ClaudeAIGateEndToEnd(t *testing.T) {
 	read := gmailRequest("r-read", "tu-read", "search", `{"q":"invoice"}`)
 	write := gmailRequest("r-send", "tu-send", "send", `{"to":"someone@example.com","body":"hello"}`)
 	require.NoError(t, os.WriteFile(requests, []byte(read+"\n"+write+"\n"), 0o600))
-	prevTimeout, prevPoll := aiSessionApprovalTimeout, aiSessionGatePoll
+	// The approval deadline runs on a clock only the test moves: it stands
+	// still until the test lets it run, so turn 1 can never time out however
+	// slow the machine is; once running, every reading is an hour on, so
+	// turn 2's wait — whenever it took its deadline — runs out at its next
+	// poll.
+	var running atomic.Bool
+	var readings atomic.Int64
+	base := time.Now()
+	prevTimeout, prevPoll, prevNow := aiSessionApprovalTimeout, aiSessionGatePoll, aiSessionGateNow
 	aiSessionApprovalTimeout, aiSessionGatePoll = 2*time.Second, 20*time.Millisecond
-	t.Cleanup(func() { aiSessionApprovalTimeout, aiSessionGatePoll = prevTimeout, prevPoll })
+	aiSessionGateNow = func() time.Time {
+		if !running.Load() {
+			return base
+		}
+		return base.Add(time.Duration(readings.Add(1)) * time.Hour)
+	}
+	t.Cleanup(func() { aiSessionApprovalTimeout, aiSessionGatePoll, aiSessionGateNow = prevTimeout, prevPoll, prevNow })
 
 	r := startAISession(t, bin, "main")
 	r.next(chat.EventSessionReady)
-	argv := spawnArgv(t, dir)
-	assert.Equal(t, "stdio", argv[slices.Index(argv, "--permission-prompt-tool")+1])
-	assert.NotContains(t, argv, "--strict-mcp-config")
-	assert.Equal(t, ai.ClaudeAISessionBuiltinTools, argv[slices.Index(argv, "--tools")+1])
 
 	database, err := db.Open(r.dbPath)
 	require.NoError(t, err)
@@ -542,6 +528,10 @@ func TestAISession_ClaudeAIGateEndToEnd(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, ok)
 	r.next(chat.EventTurnDone)
+	argv := spawnArgv(t, dir)
+	assert.Equal(t, "stdio", argv[slices.Index(argv, "--permission-prompt-tool")+1])
+	assert.NotContains(t, argv, "--strict-mcp-config")
+	assert.Equal(t, ai.ClaudeAISessionBuiltinTools, argv[slices.Index(argv, "--tools")+1])
 	answers := controlAnswers(t, filepath.Join(dir, "stdin"))
 	require.Len(t, answers["r-read"], 1)
 	assert.Equal(t, "allow", answers["r-read"][0]["behavior"], "a connector read runs without a row")
@@ -558,6 +548,7 @@ func TestAISession_ClaudeAIGateEndToEnd(t *testing.T) {
 	require.NoError(t, os.WriteFile(requests, []byte(write2+"\n"), 0o600))
 	r.send(chat.Command{Type: chat.CommandTurn, TurnID: "desk-turn-2", Text: "send again"})
 	wait2 := r.next(chat.EventToolWait)
+	running.Store(true)
 	r.next(chat.EventTurnDone)
 	got, err = database.GetAgentAction(wait2.ActionID)
 	require.NoError(t, err)
@@ -582,6 +573,7 @@ func TestClaudeSessionOptions_APIKeyEnvTurnsClaudeAIOff(t *testing.T) {
 
 	r := startAISession(t, bin, "main")
 	r.next(chat.EventSessionReady)
+	r.close()
 	args := spawnArgv(t, dir)
 	assert.Contains(t, args, "--strict-mcp-config")
 	assert.NotContains(t, args, "--permission-prompt-tool")
@@ -595,7 +587,6 @@ func TestClaudeSessionOptions_APIKeyEnvTurnsClaudeAIOff(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, snap.Available)
 	assert.Equal(t, "claude.ai tools need a claude.ai login; this chat uses an API key.", snap.UnavailableReason)
-	r.close()
 }
 
 // An embedded surface never writes the sidecar: its "none" is not the main
@@ -606,9 +597,9 @@ func TestAISession_TargetSurfaceWritesNoConnectorsFile(t *testing.T) {
 	t.Setenv("FAKE_MODE", "normal")
 	r := startAISession(t, bin, "target")
 	r.next(chat.EventSessionReady)
+	r.close()
 	argv := spawnArgv(t, dir)
 	assert.Contains(t, argv, "--strict-mcp-config")
 	_, err := os.Stat(connectorsFilePath(r.dbPath))
 	assert.ErrorIs(t, err, os.ErrNotExist)
-	r.close()
 }

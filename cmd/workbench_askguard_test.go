@@ -14,6 +14,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 	"unicode/utf8"
 
@@ -427,36 +428,37 @@ func TestProj13_AskGuardFinishesFastOnALockedDatabase(t *testing.T) {
 	// Presence reads that stall after the workbench was found: the read
 	// budget cuts them off and the hook denies with the away reason (never
 	// the present one the stalled read would have returned), well inside 2 s.
+	// The hook runs in a synctest bubble: the stall is the only durable wait,
+	// so the bubble's clock moves exactly to the budget's end and the hook's
+	// time is measured on that clock, however loaded the machine is.
 	t.Run("pre-tool-use presence reads stall", func(t *testing.T) {
 		database := writeActionsConfig(t)
 		id, err := database.CreateWorkbench("acme", t.TempDir())
 		require.NoError(t, err)
-		// Without the deadline the stall ends after 3 s with the present
-		// answer, so the assertions below fail rather than hang. The stub
-		// is waited for before the temp dir goes.
-		release, done := make(chan struct{}), make(chan struct{})
-		t.Cleanup(func() { close(release); <-done })
-		orig := askGuardOwnerPresence
-		askGuardOwnerPresence = func(*db.DB, int64, string) bool {
-			defer close(done)
-			select {
-			case <-release:
-			case <-time.After(3 * time.Second):
+		synctest.Test(t, func(t *testing.T) {
+			// The stall ends only when the test ends, with the present answer:
+			// without the budget the hook would never answer. The stub is
+			// waited for before the bubble ends.
+			release, done := make(chan struct{}), make(chan struct{})
+			t.Cleanup(func() { close(release); <-done })
+			orig := askGuardOwnerPresence
+			askGuardOwnerPresence = func(*db.DB, int64, string) bool {
+				defer close(done)
+				<-release
+				return true
 			}
-			return true
-		}
-		t.Cleanup(func() { askGuardOwnerPresence = orig })
+			t.Cleanup(func() { askGuardOwnerPresence = orig })
 
-		start := time.Now()
-		out, errOut, err := runAskGuard(t, strconv.FormatInt(id, 10), strings.NewReader(askToolPayload("AskUserQuestion")))
-		elapsed := time.Since(start)
+			start := time.Now()
+			out, errOut, err := runAskGuard(t, strconv.FormatInt(id, 10), strings.NewReader(askToolPayload("AskUserQuestion")))
+			elapsed := time.Since(start)
 
-		t.Logf("answered in %v", elapsed)
-		assert.Less(t, elapsed, askGuardReadBudget+300*time.Millisecond)
-		assert.Less(t, elapsed, 2*time.Second)
-		require.NoError(t, err)
-		assert.Equal(t, denialWith(t, askToolDenialReasonAway), out)
-		assert.Empty(t, errOut)
+			assert.Equal(t, askGuardReadBudget, elapsed, "the budget's end, and nothing else, ends the wait")
+			assert.Less(t, askGuardInputWait+askGuardReadBudget, 2*time.Second, "PROJ-13: the hook's bounded waits fit in 2 s")
+			require.NoError(t, err)
+			assert.Equal(t, denialWith(t, askToolDenialReasonAway), out)
+			assert.Empty(t, errOut)
+		})
 	})
 	// --stop with a stub model: the locked database reads as the owner being
 	// away, decided within the stub's time plus 2 s.
@@ -1186,7 +1188,7 @@ func cancelledModelCallLeavesNoProcess(t *testing.T, sig syscall.Signal) {
 	script := filepath.Join(dir, "fake-claude")
 	require.NoError(t, os.WriteFile(script, []byte("#!/bin/sh\n"+
 		"echo $$ > '"+dir+"/pid.tmp' && mv '"+dir+"/pid.tmp' '"+dir+"/pid'\n"+
-		"sleep 60 &\n"+
+		"sleep 86400 &\n"+
 		"echo $! > '"+dir+"/child.tmp' && mv '"+dir+"/child.tmp' '"+dir+"/child'\n"+
 		"wait\n"), 0o755))
 	cfgPath := fakeModelConfig(t, dir, "claude", script)
@@ -1200,18 +1202,17 @@ func cancelledModelCallLeavesNoProcess(t *testing.T, sig syscall.Signal) {
 
 	readPID := func(name string) int {
 		t.Helper()
-		deadline := time.Now().Add(20 * time.Second)
-		for {
-			if b, err := os.ReadFile(filepath.Join(dir, name)); err == nil {
-				n, err := strconv.Atoi(strings.TrimSpace(string(b)))
-				require.NoError(t, err)
-				return n
+		var n int
+		waitFor(t, "the fake model's "+name, func() bool {
+			b, err := os.ReadFile(filepath.Join(dir, name))
+			if err != nil {
+				return false
 			}
-			if time.Now().After(deadline) {
-				t.Fatalf("the fake model never wrote %s", name)
-			}
-			time.Sleep(20 * time.Millisecond)
-		}
+			n, err = strconv.Atoi(strings.TrimSpace(string(b)))
+			require.NoError(t, err)
+			return true
+		})
+		return n
 	}
 	group := readPID("pid")
 	// Reap the model's group whatever happens below.
@@ -1220,26 +1221,16 @@ func cancelledModelCallLeavesNoProcess(t *testing.T, sig syscall.Signal) {
 	require.NoError(t, syscall.Kill(-group, 0), "fixture: the model's group runs")
 
 	require.NoError(t, p.cmd.Process.Signal(sig))
-	done := make(chan error, 1)
-	go func() { done <- p.wait() }()
-	select {
-	case err := <-done:
-		assert.Equal(t, 0, exitCode(err), "PROJ-13: the hook exits 0")
-	case <-time.After(15 * time.Second):
-		t.Fatalf("the hook did not exit after %v", sig)
-	}
+	assert.Equal(t, 0, exitCode(p.wait()), "PROJ-13: the hook exits 0")
 	_, open := <-p.lines
 	assert.False(t, open, "PROJ-13: nothing on stdout")
 
 	// Killed at once; the init process may take a moment to reap the
-	// grandchild once it is a zombie.
-	deadline := time.Now().Add(2 * time.Second)
-	for syscall.Kill(-group, 0) == nil || syscall.Kill(child, 0) == nil {
-		if time.Now().After(deadline) {
-			t.Fatalf("the model's process group %d (child %d) outlived the hook", group, child)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	// grandchild once it is a zombie. The fake model never ends by itself,
+	// so a group the hook left alive hangs the run into go test's -timeout.
+	waitFor(t, "the model's process group gone", func() bool {
+		return syscall.Kill(-group, 0) != nil && syscall.Kill(child, 0) != nil
+	})
 }
 
 // The fixed reasons are the spec's literal strings (Part 4.5); R-finish is

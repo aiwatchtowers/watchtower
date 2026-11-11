@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -45,11 +46,11 @@ func runPermissionWait(t *testing.T, workbenchID int64, stdin string) (stdout, s
 	return out, errOut
 }
 
-// pendingPermissionID waits (bounded) for the hook's pending row of session
-// row and returns its id.
+// pendingPermissionID polls for the hook's pending row of session row and
+// returns its id. It has no deadline of its own: a row that never appears
+// hangs the run into go test's -timeout.
 func pendingPermissionID(database *db.DB, row int64) (int64, error) {
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
+	for {
 		var id int64
 		err := database.QueryRow(`SELECT id FROM permission_requests
 			WHERE terminal_session_id = ? AND status = 'pending'`, row).Scan(&id)
@@ -61,7 +62,6 @@ func pendingPermissionID(database *db.DB, row int64) (int64, error) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	return 0, errors.New("no pending permission request appeared")
 }
 
 func permissionRequestCount(t *testing.T, database *db.DB) int {
@@ -246,12 +246,16 @@ func TestProj21_PermissionWaitNotABoardSessionExitsSilently(t *testing.T) {
 	database, pid, _ := briefSessionFixture(t)
 	unsetTerminalEnv(t)
 
-	start := time.Now()
-	out, errOut := runPermissionWait(t, pid, permissionPayload(briefLaunchID))
+	// On the synctest bubble's clock any wait the hook makes — a poll, a
+	// timer — shows; it must make none.
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Now()
+		out, errOut := runPermissionWait(t, pid, permissionPayload(briefLaunchID))
 
-	assert.Less(t, time.Since(start), 100*time.Millisecond)
-	assert.Empty(t, out)
-	assert.Empty(t, errOut)
+		assert.Zero(t, time.Since(start), "the hook exits at once, without waiting")
+		assert.Empty(t, out)
+		assert.Empty(t, errOut)
+	})
 	assert.Equal(t, 0, permissionRequestCount(t, database))
 }
 

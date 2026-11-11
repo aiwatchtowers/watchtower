@@ -656,8 +656,13 @@ func TestIdeasBackfillSignalHelperProcess(t *testing.T) {
 	<-ctx.Done()
 	fmt.Println("cancelled")
 	// The real Backfill keeps running its deferred restore after ctx is
-	// cancelled; this blocks forever so the test can prove a second SIGTERM
-	// does not cut that short — only SIGKILL (sent at cleanup) may end it.
+	// cancelled; this answers every stdin line with "alive" and then blocks
+	// forever, so the test can prove a second SIGTERM does not cut that
+	// short — only SIGKILL (sent at cleanup) may end it.
+	in := bufio.NewScanner(os.Stdin)
+	for in.Scan() {
+		fmt.Println("alive")
+	}
 	select {}
 }
 
@@ -671,6 +676,8 @@ func TestIdeasBackfillSignalDisposition_SecondSignalDoesNotKill(t *testing.T) {
 	helper.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1")
 	helper.Stderr = os.Stderr
 
+	stdin, err := helper.StdinPipe()
+	require.NoError(t, err)
 	stdout, err := helper.StdoutPipe()
 	require.NoError(t, err)
 	require.NoError(t, helper.Start())
@@ -685,21 +692,31 @@ func TestIdeasBackfillSignalDisposition_SecondSignalDoesNotKill(t *testing.T) {
 		}
 	}()
 
-	waitForLine := func(want string, deadline time.Duration) {
+	waitForLine := func(want string) {
 		t.Helper()
-		select {
-		case line, ok := <-lines:
-			if !ok || line != want {
-				t.Fatalf("helper did not print %q (got %q, ok=%v)", want, line, ok)
-			}
-		case <-time.After(deadline):
-			t.Fatalf("timed out waiting for helper to print %q", want)
+		line, ok := <-lines
+		if !ok || line != want {
+			t.Fatalf("helper did not print %q (got %q, ok=%v) — a helper that exited on a second SIGTERM closes stdout: "+
+				"the backfill path must swallow it, not kill the process, or IDEA-01's floor-restore defer could be cut short", want, line, ok)
 		}
 	}
 
-	waitForLine("ready", 5*time.Second)
+	waitForLine("ready")
 	require.NoError(t, helper.Process.Signal(syscall.SIGTERM))
-	waitForLine("cancelled", 2*time.Second)
+	waitForLine("cancelled")
+
+	// Send a burst of second signals, each followed by a round trip through
+	// the helper: a signal with the default disposition kills the process
+	// on delivery, before it can answer the next line, and a handler that
+	// exits would race the answers it has to give 25 times. If the process
+	// dies from any of them, this is the notifyShutdownContext shape —
+	// exactly what the backfill path must NOT have.
+	for range 25 {
+		require.NoError(t, helper.Process.Signal(syscall.SIGTERM))
+		_, err := io.WriteString(stdin, "ping\n")
+		require.NoError(t, err)
+		waitForLine("alive")
+	}
 
 	waitCh := make(chan error, 1)
 	go func() {
@@ -707,25 +724,6 @@ func TestIdeasBackfillSignalDisposition_SecondSignalDoesNotKill(t *testing.T) {
 		}
 		waitCh <- helper.Wait()
 	}()
-
-	// Send a burst of second signals over a real window; if the process
-	// dies from any of them, this is the notifyShutdownContext shape —
-	// exactly what the backfill path must NOT have.
-	deadline := time.After(500 * time.Millisecond)
-	ticker := time.NewTicker(20 * time.Millisecond)
-	defer ticker.Stop()
-loop:
-	for {
-		select {
-		case <-deadline:
-			break loop
-		case <-ticker.C:
-			_ = helper.Process.Signal(syscall.SIGTERM)
-		case werr := <-waitCh:
-			t.Fatalf("helper exited on a second SIGTERM (err=%v) — the backfill path must swallow it, not kill the process, or IDEA-01's floor-restore defer could be cut short", werr)
-		}
-	}
-
 	_ = helper.Process.Kill()
 	<-waitCh
 }

@@ -183,21 +183,26 @@ func rotateLogIfLargerThan(path string, maxSize int64) error {
 
 // syncStopGracePeriod is how long a plain "sync stop" waits for the daemon
 // to exit after SIGTERM before giving up and printing the --force hint.
-// A package var, not a config key, so tests can shrink it instead of
-// waiting out the real 10s (see the daemon-shutdown-hang RCA §6c).
-var syncStopGracePeriod = 10 * time.Second
+const syncStopGracePeriod = 10 * time.Second
 
 // syncStopForceGracePeriod is how long "sync stop --force" waits after
 // escalating to a second SIGTERM — which, after cmd/shutdown.go's
 // notifyShutdownContext fix, terminates outright any command built on it —
 // before resorting to SIGKILL, and again after SIGKILL before giving up.
-// A package var for the same reason as syncStopGracePeriod.
-var syncStopForceGracePeriod = 5 * time.Second
+const syncStopForceGracePeriod = 5 * time.Second
 
 // syncStopPollInterval is the liveness-poll tick used while waiting out
-// either grace period above. A package var so tests using a shrunk grace
-// period can shrink this too and still get several polls in the window.
-var syncStopPollInterval = 200 * time.Millisecond
+// either grace period above.
+const syncStopPollInterval = 200 * time.Millisecond
+
+// syncStopKill sends the stop's signals and syncStopWaitExit waits out a
+// grace period for the daemon's exit. Package vars so tests record every
+// signal sent and resolve each wait on the helper process's own events
+// (it handled the signal and lives on, or it exited) instead of a clock.
+var (
+	syncStopKill     = syscall.Kill
+	syncStopWaitExit = waitForProcessExit
+)
 
 // errProcessGone marks a signal delivery that failed only because the
 // target process had already exited between our last liveness check and
@@ -226,7 +231,7 @@ var errProcessGone = errors.New("process already exited")
 // A package var, not a plain function, so tests can simulate
 // "gone/reused/unconfirmable" deterministically (real PID reuse is not
 // something a test can force) — the daemon-shutdown-hang RCA's
-// package-var-seam precedent (syncStopGracePeriod et al.).
+// package-var-seam precedent (syncStopKill, syncStopWaitExit).
 var verifyDaemonAlive = func(pidPath string, pid int) bool {
 	current, err := daemon.FindConfirmedProcess(pidPath)
 	if err != nil {
@@ -278,7 +283,7 @@ func runSyncStop(cfg *config.Config, force bool) error {
 		return fmt.Errorf("sending SIGTERM: %w", err)
 	}
 
-	if waitForProcessExit(pid, syncStopGracePeriod) {
+	if syncStopWaitExit(pid, syncStopGracePeriod) {
 		// pid is confirmed gone. reapPIDFile re-reads the file and removes
 		// it only if FindProcess itself decides to — which leaves a
 		// *different*, live, correctly-identified daemon's pid file
@@ -325,7 +330,7 @@ func forceStopSync(pidPath string, pid int) error {
 		}
 		return fmt.Errorf("sending second SIGTERM: %w", err)
 	}
-	if waitForProcessExit(pid, syncStopForceGracePeriod) {
+	if syncStopWaitExit(pid, syncStopForceGracePeriod) {
 		reapPIDFile(pidPath)
 		fmt.Printf("Daemon (PID %d) stopped (SIGTERM).\n", pid)
 		return nil
@@ -344,7 +349,7 @@ func forceStopSync(pidPath string, pid int) error {
 		}
 		return fmt.Errorf("sending SIGKILL: %w", err)
 	}
-	if !waitForProcessExit(pid, syncStopForceGracePeriod) {
+	if !syncStopWaitExit(pid, syncStopForceGracePeriod) {
 		return fmt.Errorf("daemon (PID %d) did not exit even after SIGKILL", pid)
 	}
 	reapPIDFile(pidPath)
@@ -356,7 +361,7 @@ func forceStopSync(pidPath string, pid int) error {
 // process exited in the gap between our last liveness poll and this
 // signal) rather than an error.
 func signalStop(pid int, sig syscall.Signal) error {
-	if err := syscall.Kill(pid, sig); err != nil {
+	if err := syncStopKill(pid, sig); err != nil {
 		if errors.Is(err, syscall.ESRCH) {
 			return errProcessGone
 		}
