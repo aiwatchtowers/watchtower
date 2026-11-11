@@ -755,7 +755,7 @@ func TestAWaitingAskDoesNotSpinTheRunLoop(t *testing.T) {
 		done := make(chan struct{})
 		go func() { defer close(done); _ = w.sw.Run(ctx) }()
 		t.Cleanup(func() { stop(); <-done })
-		time.Sleep(2 * testOldSide)     // far longer than a loop, on the bubble's clock
+		time.Sleep(2 * testOldSide) // far longer than a loop, on the bubble's clock
 		synctest.Wait()
 		if n := polls.Load(); n > 2*2 { // two mailboxes at most, two loops
 			t.Fatalf("%d relay reads: the run loop spins", n)
