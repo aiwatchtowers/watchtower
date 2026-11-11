@@ -96,6 +96,7 @@ type Server struct {
 	mu          sync.Mutex
 	ops         []string
 	reqs        []*relayv1.Request
+	opSeen      chan struct{}                // closed and replaced at each HTTP op (WaitRequests)
 	frames      [][]byte                     // every op body, WebSocket frame and blob received
 	fail        map[string][]*relayv1.Error  // op → scripted errors, one per call
 	failSave    map[string]relayv1.ErrorCode // zone → code for the next save into it
@@ -163,7 +164,7 @@ func start(t testing.TB, inMemory bool) *Server {
 	s := &Server{
 		fail: map[string][]*relayv1.Error{}, hubReaders: map[string][]string{}, pushTokens: map[string]string{}, failSave: map[string]relayv1.ErrorCode{}, zones: map[string]*zone{},
 		blobs: map[string][]byte{}, attZone: map[string]string{},
-		pageLimit: 500, ready: make(chan struct{}),
+		pageLimit: 500, ready: make(chan struct{}), opSeen: make(chan struct{}),
 		kinds: map[string]relayv1.DeviceKind{}, pairings: map[string]pairing{},
 		slots: map[string][]string{}, paying: map[string]bool{}, conns: map[string]*conn{}, pending: map[string][]frame{},
 		vouches: map[string]map[string]time.Time{}, vouchNonces: map[string]string{}, now: time.Now,
@@ -282,6 +283,24 @@ func (s *Server) Ops() []string {
 func (s *Server) Requests(op string) []*relayv1.Request {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.requestsLocked(op)
+}
+
+// WaitRequests waits until op was requested at least n times over HTTPS and
+// returns those requests (no deadline: go test -timeout bounds a hang).
+func (s *Server) WaitRequests(op string, n int) []*relayv1.Request {
+	for {
+		s.mu.Lock()
+		got, seen := s.requestsLocked(op), s.opSeen
+		s.mu.Unlock()
+		if len(got) >= n {
+			return got
+		}
+		<-seen
+	}
+}
+
+func (s *Server) requestsLocked(op string) []*relayv1.Request {
 	var out []*relayv1.Request
 	for _, r := range s.reqs {
 		if OpName(r) == op {
@@ -401,15 +420,12 @@ func (s *Server) Put(zoneName, name string, env []byte) uint64 {
 }
 
 // Push queues a server event on the current WebSocket of the device that
-// subscribed last, waiting up to 5 s for a first subscribe. A control
-// pushed while that device has no socket waits for its next one.
+// subscribed last, waiting for a first subscribe (no deadline: go test
+// -timeout bounds a hang). A control pushed while that device has no socket
+// waits for its next one.
 func (s *Server) Push(t testing.TB, ev *relayv1.Event) {
 	t.Helper()
-	select {
-	case <-s.ready:
-	case <-time.After(5 * time.Second):
-		t.Fatal("relaytest: no WebSocket subscribed")
-	}
+	<-s.ready
 	f := frame{b: eventFrame(ev), control: ev.GetControl() != nil}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -542,6 +558,8 @@ func (s *Server) serveOp(w http.ResponseWriter, r *http.Request) {
 	s.ops = append(s.ops, op)
 	s.reqs = append(s.reqs, proto.Clone(&req).(*relayv1.Request))
 	s.frames = append(s.frames, body)
+	close(s.opSeen)
+	s.opSeen = make(chan struct{})
 	var resp *relayv1.Response
 	if q := s.fail[op]; len(q) > 0 {
 		s.fail[op] = q[1:]
@@ -1003,6 +1021,7 @@ type conn struct {
 	device string
 	zones  map[string]bool
 	queue  []frame       // s.mu
+	queued int           // s.mu: event frames ever queued here (tests)
 	closed bool          // s.mu: ended; nothing more is queued here
 	wake   chan struct{} // cap 1: the queue grew
 	done   chan struct{} // closed when the socket ends
@@ -1016,6 +1035,7 @@ func eventFrame(ev *relayv1.Event) []byte {
 // enqueueLocked queues frames on c; s.mu is held and c is open.
 func (c *conn) enqueueLocked(fs ...frame) {
 	c.queue = append(c.queue, fs...)
+	c.queued += len(fs)
 	select {
 	case c.wake <- struct{}{}:
 	default:

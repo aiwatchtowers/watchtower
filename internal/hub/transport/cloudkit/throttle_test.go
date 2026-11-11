@@ -1,8 +1,11 @@
 package cloudkit_test
 
 import (
+	"sync"
 	"testing"
 	"time"
+
+	"watchtower/internal/hub/transport/cloudkit"
 )
 
 // TestRateLimitStartsTheThrottleAndASuccessEndsIt: the first rate_limited
@@ -11,6 +14,20 @@ import (
 // Mobile's "iCloud is slowing sync down", plan 3 Task 23).
 func TestRateLimitStartsTheThrottleAndASuccessEndsIt(t *testing.T) {
 	r := newRig(t)
+	// A clock that moves one second per read: a later refusal that re-read
+	// it would move the start.
+	var (
+		mu  sync.Mutex
+		now = time.Unix(1_800_000_000, 0)
+	)
+	_ = r.c.Close()
+	r.c = cloudkit.New(cloudkit.Config{Dir: r.dir, HubID: r.hub, RelayID: relayID, Clock: func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		now = now.Add(time.Second)
+		return now
+	}})
+	t.Cleanup(func() { _ = r.c.Close() })
 	if !r.c.ThrottledSince().IsZero() {
 		t.Fatal("throttled before any answer")
 	}
@@ -20,7 +37,6 @@ func TestRateLimitStartsTheThrottleAndASuccessEndsIt(t *testing.T) {
 	if first.IsZero() {
 		t.Fatal("a rate_limited answer did not start the throttle")
 	}
-	time.Sleep(2 * time.Millisecond)
 	r.fake.FailNext("changes", "rate_limited")
 	_, _ = r.c.Changes(r.ctx, dataZone, 0)
 	if got := r.c.ThrottledSince(); !got.Equal(first) {
