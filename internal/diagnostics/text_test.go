@@ -91,6 +91,10 @@ func TestDiagnosticsText_Helpers(t *testing.T) {
 		{"Version", Version("1.2.3", "abc", FlavorDefault, ""), "Watchtower 1.2.3 (commit abc, flavor: default)"},
 		{"Version app", Version("1.2.3", "abc", FlavorCorp, "1.2.4"), "Watchtower 1.2.3 (commit abc, flavor: corp) · app 1.2.4"},
 		{"MacOS", MacOS("15.5"), "macOS 15.5"},
+		{"RecentErrors none", RecentErrors("", ""), "Recent errors: none"},
+		{"RecentErrors unknown runs and sync row", RecentErrors(PipelineRunsUnknown(UnknownDatabaseBusy), SyncResultUnknown),
+			"Recent errors (last 20):\n  pipeline runs unknown (database busy)\n  sync result unknown"},
+		{"RecentErrors sync row only", RecentErrors("", SyncResultUnknown), "Recent errors (last 20):\n  sync result unknown"},
 	}
 	for _, c := range cases {
 		if c.got != c.want {

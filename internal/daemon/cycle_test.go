@@ -24,10 +24,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// loopWait bounds every wait for a loop event: generous for a loaded or -race
-// runner, never reached when the loop works.
-const loopWait = 10 * time.Second
-
 // lockedLog is a goroutine-safe log sink: the cycle goroutine and the loop
 // both write to the daemon logger.
 type lockedLog struct {
@@ -47,15 +43,11 @@ func (l *lockedLog) count(s string) int {
 	return strings.Count(l.buf.String(), s)
 }
 
-// eventually waits, bounded by loopWait, until cond holds — for a loop
-// side effect (a log line) written after the loop took the event.
-func eventually(t *testing.T, cond func() bool, what string) {
+// eventually polls until cond holds — for a loop side effect (a log line)
+// written after the loop took the event; go test -timeout bounds a broken run.
+func eventually(t *testing.T, cond func() bool, _ string) {
 	t.Helper()
-	deadline := time.Now().Add(loopWait)
 	for !cond() {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %s", what)
-		}
 		time.Sleep(time.Millisecond)
 	}
 }
@@ -228,11 +220,7 @@ func startLoop(t *testing.T, o loopOpts) *loopHarness {
 		if probe.hold != nil {
 			close(probe.hold)
 		}
-		select {
-		case <-h.done:
-		case <-time.After(loopWait):
-			t.Error("daemon did not stop")
-		}
+		<-h.done
 	})
 	return h
 }
@@ -272,35 +260,21 @@ func newLoopDB(t *testing.T, d *Daemon) *db.DB {
 func (h *loopHarness) stop(t *testing.T) {
 	t.Helper()
 	h.cancel()
-	select {
-	case err := <-h.done:
-		require.NoError(t, err)
-		h.done <- nil // for the cleanup
-	case <-time.After(loopWait):
-		t.Fatal("daemon did not stop after cancellation")
-	}
+	err := <-h.done
+	require.NoError(t, err)
+	h.done <- nil // for the cleanup
 }
 
 // letGo ends the held cancelled Sync (loopOpts.hold).
 func (h *loopHarness) letGo(t *testing.T) {
 	t.Helper()
-	select {
-	case h.probe.hold <- struct{}{}:
-	case <-time.After(loopWait):
-		t.Fatal("no cancelled Sync is held")
-	}
+	h.probe.hold <- struct{}{}
 }
 
 func recv[T any](t *testing.T, ch <-chan T, what string) T {
 	t.Helper()
-	select {
-	case v := <-ch:
-		return v
-	case <-time.After(loopWait):
-		t.Fatalf("timed out waiting for %s", what)
-		var zero T
-		return zero
-	}
+	v := <-ch
+	return v
 }
 
 // requireNone asserts nothing arrives on ch within d — for "no new cycle".
@@ -482,11 +456,7 @@ func (h *loopHarness) pressSyncNow(t *testing.T, line string) {
 // when no Sync is blocked (the cycle was cancelled after all).
 func (h *loopHarness) releaseProbe(t *testing.T) {
 	t.Helper()
-	select {
-	case h.probe.release <- struct{}{}:
-	case <-time.After(loopWait):
-		t.Fatal("no blocked Sync to release: the cycle did not run on")
-	}
+	h.probe.release <- struct{}{}
 }
 
 // inSlackSync marks the cycle blocked in the probe as in its Slack sync: the

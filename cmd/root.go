@@ -90,7 +90,9 @@ func Execute() int {
 	// Calls land in the setup spool until the root pre-run resolves the
 	// workspace; a command with its own no-op PersistentPreRunE keeps it.
 	wireLLMUsage(nil)
-	go sweepStaleTemp()
+	if shouldSweepTemp(role) {
+		startTempSweep()
+	}
 	wrapContentCommands()
 	contentRan.Store(nil)
 	err := rootCmd.Execute()
@@ -133,6 +135,14 @@ const staleTempAge = 10 * time.Minute
 func sweepStaleTemp() {
 	_, _ = fsutil.SweepStaleTemp(staleTempAge, time.Now())
 }
+
+// startTempSweep starts sweepStaleTemp in the background; a seam so a test
+// can run the sweep synchronously and see whether a command skipped it.
+var startTempSweep = func() { go sweepStaleTemp() }
+
+// shouldSweepTemp is false for `diagnostics`, which removes nothing — not
+// even another process's stale temp files (spec "What it writes").
+func shouldSweepTemp(role string) bool { return role != "cli:diagnostics" }
 
 func init() {
 	rootCmd.SilenceErrors = true

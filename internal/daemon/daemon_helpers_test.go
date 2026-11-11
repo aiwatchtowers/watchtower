@@ -163,10 +163,11 @@ func TestDaemon_New(t *testing.T) {
 	d.SetLogger(log.New(io.Discard, "", 0))
 }
 
-// runDaemonUntil runs d until cond holds (polled every 10ms under a 10s
-// deadline), then cancels it and returns Run's error. A deadline instead of a
-// fixed run window keeps the loop tests honest on a loaded or -race runner:
-// a slow sync only makes them take longer, never fail on a count.
+// runDaemonUntil runs d until cond holds (polled every 10ms), then cancels
+// it and returns Run's error. Waiting for the condition instead of a fixed
+// run window keeps the loop tests honest on a loaded or -race runner: a slow
+// sync only makes them take longer, never fail on a count. go test -timeout
+// is the only bound on a broken run.
 func runDaemonUntil(t *testing.T, d *Daemon, cond func() bool) error {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -174,21 +175,33 @@ func runDaemonUntil(t *testing.T, d *Daemon, cond func() bool) error {
 	done := make(chan error, 1)
 	go func() { done <- d.Run(ctx) }()
 
-	deadline := time.Now().Add(10 * time.Second)
 	for !cond() {
-		if time.Now().After(deadline) {
-			cancel()
-			<-done
-			t.Fatal("condition not reached within 10s")
-		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	cancel()
-	select {
-	case err := <-done:
-		return err
-	case <-time.After(10 * time.Second):
-		t.Fatal("daemon did not stop within 10s of cancellation")
-		return nil
+	return <-done
+}
+
+// runDaemonCycles runs d until n sync cycles have ended — each end is an
+// event the cycle sends, nothing is polled — then cancels it and returns
+// Run's error: what a test checks afterwards was written by whole cycles,
+// however long a loaded machine took over them.
+func runDaemonCycles(t *testing.T, d *Daemon, n int) error {
+	t.Helper()
+	ended := make(chan struct{}, n)
+	d.cycleEnded = func() {
+		select {
+		case ended <- struct{}{}:
+		default: // a cycle past the n-th: nobody waits for it
+		}
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- d.Run(ctx) }()
+	for range n {
+		<-ended
+	}
+	cancel()
+	return <-done
 }

@@ -146,6 +146,10 @@ type claudeBackend struct {
 	// most connSettle, and each answer is awaited up to connAnswer (also the
 	// gate's refresh bound).
 	connPoll, connSettle, connAnswer time.Duration
+	// graceAfter, a test seam, is stopProc's timer for each CloseGrace step
+	// (stdin EOF, then SIGTERM); nil = time.After. A test fires it itself,
+	// so the escalation is checked step by step instead of by wall clock.
+	graceAfter func(time.Duration) <-chan time.Time
 
 	mu        sync.Mutex
 	proc      *claudeProc
@@ -1272,14 +1276,28 @@ func (b *claudeBackend) Close() error {
 func (b *claudeBackend) stopProc(p *claudeProc) {
 	p.stopOnce.Do(func() { close(p.stop) })
 	p.closeStdin()
-	if !waitClosed(p.exited, b.opts.CloseGrace) {
+	if !b.waitGrace(p.exited) {
 		_ = syscall.Kill(-p.pgid, syscall.SIGTERM)
-		if !waitClosed(p.exited, b.opts.CloseGrace) {
+		if !b.waitGrace(p.exited) {
 			killGroup(p)
 			<-p.exited
 		}
 	}
 	sweep(p)
+}
+
+// waitGrace waits one CloseGrace step for ch; false when the step ran out.
+func (b *claudeBackend) waitGrace(ch <-chan struct{}) bool {
+	after := time.After
+	if b.graceAfter != nil {
+		after = b.graceAfter
+	}
+	select {
+	case <-ch:
+		return true
+	case <-after(b.opts.CloseGrace):
+		return false
+	}
 }
 
 // killGroup SIGKILLs the child and everything in its process group.

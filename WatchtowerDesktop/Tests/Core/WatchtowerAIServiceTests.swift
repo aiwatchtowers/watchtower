@@ -277,4 +277,45 @@ extension WatchtowerAIServiceTests {
         XCTAssertEqual(model, "actual-model")
         XCTAssertEqual(routing?.preferredProvider, "claude")
     }
+
+    // MARK: - testResult / which decoding (#1521)
+
+    private func out(_ stdout: String, exit: Int32 = 0, stderr: String = "") -> ProcessOutput {
+        ProcessOutput(exitCode: exit, stdout: stdout, stderr: stderr)
+    }
+
+    func testTestResultDecodesErrorCode() {
+        let result = WatchtowerAIService.decodeTestResult(out(
+            #"{"ok":false,"provider":"claude","model":"m","error":"x","error_code":"auth"}"#, exit: 1
+        ))
+        XCTAssertEqual(result, OnboardingAgentTestResult(ok: false, errorCode: "auth", error: "x"))
+    }
+
+    func testTestResultOk() {
+        let result = WatchtowerAIService.decodeTestResult(out(#"{"ok":true,"provider":"codex","model":"m"}"#))
+        XCTAssertEqual(result, OnboardingAgentTestResult(ok: true))
+    }
+
+    func testTestResultLaunchFailure() {
+        let result = WatchtowerAIService.decodeTestResult(out("", exit: -1, stderr: "no such file"))
+        XCTAssertEqual(result.errorCode, "launch")
+        XCTAssertFalse(result.ok)
+    }
+
+    func testWhichDecodes() {
+        XCTAssertEqual(WatchtowerAIService.decodeWhich(out(#"{"provider":"codex","path":"/x/codex","found":true}"#)), .found("/x/codex"))
+        XCTAssertEqual(WatchtowerAIService.decodeWhich(out(#"{"provider":"codex","path":"","found":false}"#)), .notFound)
+    }
+
+    /// M2: a CLI that could not answer is a failure, never "not installed".
+    func testWhichFailureIsNotNotFound() {
+        XCTAssertEqual(WatchtowerAIService.decodeWhich(out("not json")), .failed(nil))
+        XCTAssertEqual(
+            WatchtowerAIService.decodeWhich(out("", exit: 1, stderr: "loading config: permission denied\n")),
+            .failed("loading config: permission denied")
+        )
+        XCTAssertEqual(WatchtowerAIService.decodeWhich(out("", exit: -1, stderr: "no such file")), .failed("no such file"))
+        // A JSON object without `found` is not a clean answer either.
+        XCTAssertEqual(WatchtowerAIService.decodeWhich(out(#"{"provider":"codex"}"#)), .failed(nil))
+    }
 }
