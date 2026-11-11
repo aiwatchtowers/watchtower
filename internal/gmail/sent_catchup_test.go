@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"watchtower/internal/db"
+	"watchtower/internal/sqlcipher"
 )
 
 // catchUpServer is a fake Gmail API for CatchUpSent: it lists ids under any
@@ -345,6 +346,7 @@ func TestCatchUpCountsFailure(t *testing.T) {
 		{"unexpected EOF", fmt.Errorf("reading response: %w", io.ErrUnexpectedEOF), false},
 		{"canceled", fmt.Errorf("fetch message x: %w", context.Canceled), false},
 		{"deadline", fmt.Errorf("fetch message x: %w", context.DeadlineExceeded), false},
+		{"busy database", fmt.Errorf("upsert x: %w", sqlcipher.Error{Code: sqlcipher.ErrBusy}), false},
 		{"auth revoked", fmt.Errorf("fetch message x: %w", ErrAuthRevoked), false},
 		{"url.Error", fmt.Errorf("fetch message x: %w", &url.Error{Op: "Get", URL: "https://gmail.example.com", Err: errors.New("tls handshake timeout")}), false},
 	} {

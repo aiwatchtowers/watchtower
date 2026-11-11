@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"watchtower/internal/config"
+	"watchtower/internal/db"
 )
 
 // sentCatchUpMaxAttempts is how many CatchUpSent passes per account and
@@ -26,7 +27,7 @@ const sentCatchUpMaxAttempts = 3
 // Sync lists sent mail and stamps). It writes no watermark and no auth state.
 //
 // A message deleted between the listing and the fetch (404) is skipped. Any
-// other error stops the pass, wrapped, and stamps nothing, so the next cycle
+// other error stops the pass and stamps nothing, so the next cycle
 // retries; after sentCatchUpMaxAttempts passes that failed with a
 // non-transient error (catchUpCountsFailure) it stamps now anyway. A pass in
 // which every listed message was stored or skipped stamps now. Returns the
@@ -110,11 +111,11 @@ func isNotFound(err error) bool {
 // catchUpCountsFailure reports whether a failed catch-up pass counts toward
 // sentCatchUpMaxAttempts: only a non-transient failure does. A transient one
 // (rate limit or server error, a network error, a cancelled or expired
-// context, revoked access) says nothing about the message and is retried
+// context, revoked access, a busy database) says nothing about the message and is retried
 // without limit.
 func catchUpCountsFailure(err error) bool {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
-		errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, ErrAuthRevoked) {
+		errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, ErrAuthRevoked) || db.IsBusy(err) {
 		return false
 	}
 	var se *StatusError
