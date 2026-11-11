@@ -2841,3 +2841,13 @@ Entry format:
 - weak-dimension: 7. No test covers Codex SubagentStart over a counted `waiting`, and the DB raise test has no case for an unreadable stamp. Both are cheap and both pin a guard the docs promise.
 - rule-gap (candidate, dim 6): *a count built as a sum of disjoint-by-intent terms gets one table case per pair of terms that could claim the same id.*
 - outcome: TBD
+
+## 2026-11-11 — test/no-wallclock-go (1b0dcc2ff + round-1 fixes 54452c80e: Go tests stop depending on wall-clock time; 27 files +342/−227; panel: prosecutor (9) + codex (0); pr-review-toolkit specialists unavailable; judge verified by reading and ran the three fixed tests green) — verdict: approve
+
+- contested: removing a time bound from an event wait. Only safe when something else still ends the wait. F1/F3/F4 were real: the branch had turned "wait N s" into "wait forever", so a regression would hang to the `go test -timeout` panic and orphan its children (a `sleep 3600`) instead of failing. **"No wall-clock assertion" does not mean "no bound". Every event wait keeps a generous hang guard (here one minute) that fails the test so `t.Cleanup` still reaps.** [7]
+- contested: the branch raised the failure timeouts inside `TestChat03_*`/`TestChat05_*` guard tests (5–10 s → `hangGuard`). Held not-a-weakening. Each select still fails when the event never comes, and the one time contract (`assert.Less(..., 2*CloseGrace+1s)`) is untouched. Owner confirmation goes to Needs human per the inventory rule. [7]
+- false-positive: F8/F9, plan docs naming old tests. Plans under `docs/superpowers/plans` are historical records, not live docs. [5]
+- miss: none late. Codex returned nothing on a test-only branch. The prosecutor was the only lane that asked what bounds a wait once its timeout is gone.
+- weak-dimension: 7. A blocking FIFO open (both reader and writer) is a hang with no guard. The fixes were O_RDWR plus a close in Cleanup, or polling for a plain file.
+- rule-gap (candidate, dim 7): *a test that waits for an event (channel, FIFO, child exit) bounds it with a hang guard that fails the test. A FIFO is opened O_RDWR, or its blocked side is unblocked from `t.Cleanup`.*
+- outcome: TBD
