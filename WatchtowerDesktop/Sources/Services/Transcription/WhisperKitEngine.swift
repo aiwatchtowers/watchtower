@@ -68,15 +68,24 @@ final class WhisperKitEngine: WhisperWindowEngine, @unchecked Sendable {
     /// Downloads `modelName`'s files to the local WhisperKit cache without
     /// instantiating the model. `TranscriptionModelProvisioner` calls this to
     /// prefetch ahead of a recording; `load` below reuses it so the two
-    /// callers never diverge on how a download is performed. `WhisperKit.download`
-    /// is incremental (already-complete files are skipped), so calling this
-    /// again from `load` after a prefetch already finished is a fast on-disk
-    /// check, not a re-download.
+    /// callers never diverge on how a download is performed.
+    ///
+    /// A variant already complete on disk is returned without touching the
+    /// network: `WhisperKit.download` always lists the repo on huggingface.co
+    /// first and only falls back to the cache when macOS reports no network
+    /// at all, so with the network up but the Hub unreachable (a VPN, a
+    /// firewall, a Hub outage) every load failed with "The request timed out"
+    /// although the model was on disk.
     static func ensureModelFilesDownloaded(
         modelName: String,
         downloadProgress: @escaping @Sendable (Double) -> Void
     ) async throws -> URL {
-        try await WhisperKit.download(variant: modelName) { progress in
+        if let repo = WhisperKitProvider.hubRepoFolder,
+           let local = try? WhisperKitProvider.completeModelFolder(model: modelName, in: repo) {
+            downloadProgress(1)
+            return local
+        }
+        return try await WhisperKit.download(variant: modelName) { progress in
             downloadProgress(progress.fractionCompleted)
         }
     }
