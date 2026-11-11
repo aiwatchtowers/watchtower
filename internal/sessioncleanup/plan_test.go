@@ -576,8 +576,8 @@ func TestPlan_SweepMeasuresAtMostSizeWorkersAtOnce(t *testing.T) {
 		if _, err := PlanResult(context.Background(), d, Request{Sweep: true, WorkbenchID: testWorkbench}); err != nil {
 			t.Fatal(err)
 		}
-		if sizer.peak > sizeWorkers {
-			t.Fatalf("%d walks ran at once, want at most %d", sizer.peak, sizeWorkers)
+		if sizer.peak != sizeWorkers {
+			t.Fatalf("%d walks ran at once, want exactly %d (the bubble parks every worker in its walk)", sizer.peak, sizeWorkers)
 		}
 	})
 }

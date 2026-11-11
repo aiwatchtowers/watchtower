@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -128,7 +129,8 @@ func TestAskGivesUpWhenItsContextEnds(t *testing.T) {
 	got := make(chan Request, 1)
 	serveOnce(t, path, "", got)
 	trustPeer(t, nil)
-	ctx, cancel := context.WithCancel(context.Background())
+	// A deadline far off (Ask sets it on the connection), ended early.
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(time.Hour))
 	defer cancel()
 	go func() { <-got; cancel() }()
 	_, err := Ask(ctx, path, Request{Verb: "x"})
@@ -336,7 +338,8 @@ func TestAskWriteRunningOutOfTimeIsATimeout(t *testing.T) {
 	l, err := net.Listen("unix", path)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = l.Close() })
-	ctx, cancel := context.WithCancel(context.Background())
+	// A deadline far off (Ask sets it on the connection), ended early.
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(time.Hour))
 	defer cancel()
 	accepted := make(chan net.Conn, 1)
 	go func() {

@@ -81,7 +81,7 @@ type Options struct {
 	// delivered runs once a delivery's outcome is sent (tests only: one whose
 	// requester dropped sends it nowhere).
 	delivered func()
-	// settle replaces a delivery's settle sleep (tests only).
+	// settle is a delivery's settle pause: time.Sleep, or a test's recorder.
 	settle func(time.Duration)
 	// connClosed runs once a client connection is unregistered (tests only).
 	connClosed func()
@@ -127,6 +127,9 @@ func NewServer(opts Options) *Server {
 	}
 	if opts.checkTimeout <= 0 {
 		opts.checkTimeout = CheckTimeout
+	}
+	if opts.settle == nil {
+		opts.settle = time.Sleep
 	}
 	if opts.codexWatchEvery <= 0 {
 		opts.codexWatchEvery = CodexWatchEvery

@@ -208,11 +208,7 @@ func (s *Server) runDelivery(c *conn, req DeliverReq, replies <-chan DeliverChec
 		return DeliveredMsg{Outcome: OutcomeTyped, Reason: reason}
 	}
 
-	if s.opts.settle != nil {
-		s.opts.settle(settleFor(req.SettleMs, sess.profile))
-	} else {
-		time.Sleep(settleFor(req.SettleMs, sess.profile))
-	}
+	s.opts.settle(settleFor(req.SettleMs, sess.profile))
 	if s.opts.inPause != nil {
 		s.opts.inPause()
 	}

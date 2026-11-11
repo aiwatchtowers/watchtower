@@ -483,6 +483,18 @@ func TestServer_IdleExit(t *testing.T) {
 	requireIdleExit(t, kick, done)
 }
 
+// The idle timer itself ends Serve: an IdleExit of a nanosecond has passed
+// as soon as it is armed, so nothing is waited out.
+func TestServer_IdleExitOnItsTimer(t *testing.T) {
+	l, err := Listen(socketPath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := NewServer(Options{IdleExit: time.Nanosecond}).Serve(context.Background(), l); err != nil {
+		t.Fatalf("Serve = %v", err)
+	}
+}
+
 // The app's control connection is bound to no session: it does not keep an
 // idle host alive, so a newer host binary can take over.
 func TestServer_IdleExitIgnoresUnboundConnection(t *testing.T) {
@@ -510,8 +522,9 @@ func TestServer_IdleExitWaitsForBoundConnection(t *testing.T) {
 	ctl := dial(t, path)
 	ctl.send(Forget, AttachReq{Row: 1, Run: "r1"})
 	ctl.expect(Forgot)
-	// Each accepted kick is a pass of Serve's loop that did not return.
-	for range 3 {
+	// Each accepted kick is a pass of Serve's loop that did not return after
+	// the kick before it: the fourth checks the third.
+	for range 4 {
 		select {
 		case err := <-done:
 			done <- err // for the cleanup

@@ -61,7 +61,10 @@ func TestReadLoginShellEnv_Timeout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pid, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil || pid <= 0 {
+		t.Fatalf("shell pid %q: %v", b, err) // never kill(0): that is this test's own group
+	}
 	t.Cleanup(func() { _ = syscall.Kill(-pid, syscall.SIGKILL) })
 	cancel()
 	if env := <-got; env != nil {
