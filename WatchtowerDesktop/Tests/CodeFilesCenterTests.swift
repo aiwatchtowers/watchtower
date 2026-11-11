@@ -44,14 +44,6 @@ final class CodeFilesCenterTests: XCTestCase {
         )
     }
 
-    /// Waits on state, not on a wall-clock margin.
-    private func eventually(_ condition: () async -> Bool) async {
-        let deadline = ContinuousClock.now + .seconds(3)
-        while await !condition(), ContinuousClock.now < deadline {
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-    }
-
     private func text(_ path: String) throws -> String {
         try String(contentsOf: folder.appendingPathComponent(path), encoding: .utf8)
     }
@@ -275,7 +267,7 @@ final class CodeFilesCenterTests: XCTestCase {
         XCTAssertNil(center.editorErrors[root], "editor errors are kept per root")
         center.startWatching(root)
         center.startWatching(worktree)
-        await eventually { center.git(for: root).files["Makefile"] != nil && center.gitErrors[worktree] != nil }
+        await center.gitSettled()
         XCTAssertEqual(center.git(for: root).files["Makefile"], .modified)
         XCTAssertNil(center.gitErrors[root])
         XCTAssertTrue(center.git(for: worktree).files.isEmpty, "the main folder's marks stay off the worktree")
@@ -379,14 +371,16 @@ final class CodeFilesCenterTests: XCTestCase {
             return .snapshot(GitStatusSnapshot())
         }
         center.startWatching(root)
-        await eventually { await runs.value == 1 }
+        await center.gitSettled()
+        let first = await runs.value
+        XCTAssertEqual(first, 1)
         center.stopShowing(root)
         center.handle(FolderWatcher.Batch(gitChanged: true), root: root)
-        try await Task.sleep(for: .milliseconds(100))
+        await center.gitSettled()
         let hidden = await runs.value
         XCTAssertEqual(hidden, 1, "no git run while nothing shows the workbench")
         center.startWatching(root)
-        await eventually { await runs.value == 2 }
+        await center.gitSettled()
         let shown = await runs.value
         XCTAssertEqual(shown, 2, "shown again: refreshed")
     }
@@ -398,11 +392,11 @@ final class CodeFilesCenterTests: XCTestCase {
             return .snapshot(GitStatusSnapshot())
         }
         let task = Task { await center.show(root) }
-        await eventually { await runs.value == 1 }
+        await runs.until(1)
         task.cancel()
         await task.value
         center.handle(FolderWatcher.Batch(gitChanged: true), root: root)
-        try await Task.sleep(for: .milliseconds(100))
+        await center.gitSettled()
         let count = await runs.value
         XCTAssertEqual(count, 1)
     }
@@ -486,11 +480,10 @@ final class CodeFilesCenterTests: XCTestCase {
             return .snapshot(GitStatusSnapshot(files: ["Makefile": .modified]))
         }
         center.startWatching(root)
-        await eventually { await runs.value == 1 }
+        await runs.until(1)
         for _ in 0 ..< 3 { center.handle(FolderWatcher.Batch(gitChanged: true), root: root) }
         await gate.open()
-        await eventually { await runs.value == 2 && center.git(for: root).files == ["Makefile": .modified] }
-        try await Task.sleep(for: .milliseconds(100))
+        await center.gitSettled()
         let count = await runs.value
         XCTAssertEqual(count, 2, "the first run, then exactly one queued")
         XCTAssertEqual(center.git(for: root).files, ["Makefile": .modified])
@@ -500,9 +493,10 @@ final class CodeFilesCenterTests: XCTestCase {
         let results = Results([.snapshot(GitStatusSnapshot(files: ["Makefile": .modified])), .failed("git exited 128: boom")])
         let center = makeCenter { _ in await results.next() }
         center.startWatching(root)
-        await eventually { !center.git(for: root).files.isEmpty }
+        await center.gitSettled()
+        XCTAssertFalse(center.git(for: root).files.isEmpty)
         center.handle(FolderWatcher.Batch(gitChanged: true), root: root)
-        await eventually { center.gitErrors[root] != nil }
+        await center.gitSettled()
         XCTAssertEqual(center.git(for: root).files, ["Makefile": .modified])
         XCTAssertEqual(center.gitErrors[root], "git exited 128: boom")
     }
@@ -529,7 +523,20 @@ private final class BrokenBridge: CodeEditorBridge {
 
 private actor Counter {
     private(set) var value = 0
-    func increment() { value += 1 }
+    private var waiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+
+    func increment() {
+        value += 1
+        let ready = waiters.filter { value >= $0.count }
+        waiters.removeAll { value >= $0.count }
+        ready.forEach { $0.continuation.resume() }
+    }
+
+    /// Returns once `count` runs started.
+    func until(_ count: Int) async {
+        if value >= count { return }
+        await withCheckedContinuation { waiters.append((count, $0)) }
+    }
 }
 
 private actor Gate {

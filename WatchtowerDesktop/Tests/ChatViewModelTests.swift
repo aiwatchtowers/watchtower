@@ -405,7 +405,7 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertEqual(sent, true)
         let fake = try lastFake()
         // Let the feed's first observation fetch run, so only a refresh can find the row.
-        try await Task.sleep(for: .milliseconds(300))
+        await untilObserved { vm?.actionFeed.hasObserved == true }
         // Synchronous, from another connection: the main actor must not yield
         // before the row exists, and the observation must not see it.
         let actionID = try insertConnectorCallSync(DatabasePool(path: dbPath), conversationID: convID, turnID: "turn-1")
@@ -886,7 +886,8 @@ final class ChatViewModelTests: XCTestCase {
         _ = await waitForCondition { runner.invocations.count == 1 }
         await vm.send(text: "q2")
         try await complete(vm, turn: "turn-2", text: "b")
-        try await Task.sleep(for: .milliseconds(50))
+        // A second request would be the last one started: it ends before the check.
+        await vm.titleTask?.value
         XCTAssertEqual(runner.invocations, [["chat", "title", String(convID)]])
     }
 
@@ -906,7 +907,7 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertTrue(finished)
         let stillNeeded = try await dbManager.dbPool.read { d in try ChatConversationQueries.needsAITitle(d, id: convID) }
         XCTAssertTrue(stillNeeded)
-        try await Task.sleep(for: .milliseconds(50))
+        await vm.titleTask?.value
         XCTAssertEqual(runner.invocations.count, 1)
     }
 
@@ -1036,31 +1037,27 @@ final class ChatViewModelTests: XCTestCase {
 
     /// With the thread view off screen the expanded panel still gets the
     /// live text (#786): the feed reports every published delta.
-    func testTheLiveArtifactFeedReportsTheStreamingText() {
+    func testTheLiveArtifactFeedReportsTheStreamingText() async {
         let turn = LiveTurn(messageID: 1, turnID: "t", startedAt: Date(), publishInterval: 0)
-        var received: [String] = []
+        // Every text the feed reports, awaited as it comes (SwiftUI reports
+        // on its own update, which the main run loop drives while we wait).
+        let (reports, report) = AsyncStream<String>.makeStream()
+        var received = reports.makeAsyncIterator()
         // Expanding mid-answer: the text streamed so far arrives at once.
         turn.appendDelta(":::artifact key=q3", now: Date())
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 100),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: ChatLiveArtifactFeed(turn: turn) { received.append($0) })
+        window.contentView = NSHostingView(rootView: ChatLiveArtifactFeed(turn: turn) { report.yield($0) })
         defer { window.close() }
 
-        spin { !received.isEmpty }
-        XCTAssertEqual(received.first, ":::artifact key=q3", "the text streamed before the feed appeared")
+        let first = await received.next()
+        XCTAssertEqual(first, ":::artifact key=q3", "the text streamed before the feed appeared")
         let expected = ":::artifact key=q3\nline"
         turn.appendDelta("\nline", now: Date())
-        spin { received.last == expected }
-        XCTAssertEqual(received.last, expected)
-    }
-
-    /// Spins the main run loop until `done` holds or two seconds pass.
-    private func spin(until done: () -> Bool) {
-        let deadline = Date().addingTimeInterval(2)
-        while !done(), Date() < deadline {
-            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
-        }
+        var latest: String?
+        repeat { latest = await received.next() } while latest != expected && latest != nil
+        XCTAssertEqual(latest, expected)
     }
 
     /// What only the conversation shows steps an expanded panel aside

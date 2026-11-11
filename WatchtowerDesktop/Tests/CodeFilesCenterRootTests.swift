@@ -53,13 +53,6 @@ final class CodeFilesCenterRootTests: XCTestCase {
         try String(contentsOf: dir.appendingPathComponent(path), encoding: .utf8)
     }
 
-    private func eventually(_ condition: () async -> Bool) async {
-        let deadline = ContinuousClock.now + .seconds(3)
-        while await !condition(), ContinuousClock.now < deadline {
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-    }
-
     // MARK: Guards (PROJ-03)
 
     func testProj03_ABufferNeverWritesIntoAnotherWorktree() async throws {
@@ -141,7 +134,9 @@ final class CodeFilesCenterRootTests: XCTestCase {
         dirty.keepMine()
         center.flushAll()
         await center.flushEverything()
-        try await Task.sleep(for: .milliseconds(1200))
+        // An autosave left scheduled would write here: it ends (cancelled,
+        // or after saving) before the check.
+        await dirty.autosaveTask?.value
         XCTAssertFalse(FileManager.default.fileExists(atPath: worktreeA.path), "no folder was recreated")
 
         // The folder coming back (a worktree added at the same path) does
@@ -335,7 +330,8 @@ final class CodeFilesCenterRootTests: XCTestCase {
 
     func testASwitchWaitsBoundedForASilentPageAndSaysSo() async {
         let center = makeCenter()
-        center.pendingTimeout = .milliseconds(50)
+        // A silent page never answers; the bound is what ends the wait.
+        center.pendingTimeout = .zero
         let page = SilentPage()
         center.register(page, for: rootA)
 
@@ -347,7 +343,8 @@ final class CodeFilesCenterRootTests: XCTestCase {
 
     func testAFlushWaitsBoundedForASilentPage() async {
         let center = makeCenter()
-        center.pendingTimeout = .milliseconds(50)
+        // A silent page never answers; the bound is what ends the wait.
+        center.pendingTimeout = .zero
         let page = SilentPage()
         center.register(page, for: main)
         center.open("Makefile", root: main, preview: false)
@@ -366,13 +363,14 @@ final class CodeFilesCenterRootTests: XCTestCase {
     /// Copy/Discard list, and deleting the workbench frees them.
     func testLateTextForACleanLockedBufferLandsAfterThePendingTimeout() async throws {
         let center = makeCenter()
-        center.pendingTimeout = .milliseconds(20)
+        // The timeout has passed at once; what keeps the buffer is the
+        // removed root's record, never a clock.
+        center.pendingTimeout = .zero
         let clean = center.buffer(for: rootA, relPath: "main.go")
         clean.loadIfNeeded()
         try FileManager.default.removeItem(at: worktreeA)
         center.rootRemoved(rootA)
 
-        try await Task.sleep(for: .milliseconds(200))
         center.apply([CodeEditorPendingEdit(id: clean.id, text: "package late\n", base: 0)], now: true)
 
         XCTAssertTrue(center.buffer(id: clean.id) === clean, "still held")
@@ -422,14 +420,14 @@ final class CodeFilesCenterRootTests: XCTestCase {
             return .snapshot(GitStatusSnapshot(files: ["Makefile": .modified]))
         }
         center.startWatching(rootA)
-        await eventually { await gate.waiting }
+        await gate.untilWaiting()
         center.stopShowing(rootA)
         await gate.open()
-        try await Task.sleep(for: .milliseconds(100))
+        await center.gitSettled()
         XCTAssertTrue(center.git(for: rootA).files.isEmpty, "the answer came after the root was hidden")
 
         center.startWatching(rootA)
-        await eventually { !center.git(for: rootA).files.isEmpty }
+        await center.gitSettled()
         XCTAssertEqual(center.git(for: rootA).files, ["Makefile": .modified], "shown again: git read afresh")
     }
 
@@ -488,7 +486,12 @@ final class CodeFilesActiveRootTests: XCTestCase {
             dbPool: pool, cli: WorkbenchCLI(runner: runner), defaults: defaults, terminalCenter: terminalCenter
         )
         vm.makeGitWatcher = { _, _, onChange in SessionPlaceViewModelTests.FakeWatcher(onChange: onChange) }
-        vm.gitPollSleep = { _ in try? await Task.sleep(for: .seconds(3600)) }
+        // The git poll never ticks: it waits until its task is cancelled.
+        vm.gitPollSleep = { _ in
+            let (stream, continuation) = AsyncStream<Never>.makeStream()
+            for await _ in stream {}
+            continuation.finish()
+        }
         vm.gitNotificationCenter = NotificationCenter()
         return vm
     }
@@ -501,10 +504,10 @@ final class CodeFilesActiveRootTests: XCTestCase {
 
     private func placed(_ vm: WorkbenchesViewModel) async {
         await vm.startGitWatching(project: project)
-        let deadline = ContinuousClock.now + .seconds(3)
-        while ContinuousClock.now < deadline {
-            if case .worktree = vm.sessionPlaces.currentPlace(sessionID: sessionID) { break }
-            try? await Task.sleep(for: .milliseconds(10))
+        let id = sessionID
+        await untilObserved {
+            if case .worktree = vm.sessionPlaces.currentPlace(sessionID: id) { return true }
+            return false
         }
         vm.stopGitWatching(projectID: project.id)
     }
@@ -630,11 +633,7 @@ final class CodeFilesActiveRootTests: XCTestCase {
         await placed(vm)
 
         XCTAssertEqual(vm.activeCodeRoot(project: project), root, "FILES shows the new worktree")
-        let deadline = ContinuousClock.now + .seconds(3)
-        while vm.codeFiles.removedRoots.contains(root), ContinuousClock.now < deadline {
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-        XCTAssertFalse(vm.codeFiles.removedRoots.contains(root))
+        await untilObserved { !vm.codeFiles.removedRoots.contains(root) }
         XCTAssertTrue(old.writesLocked, "the old buffer stays locked")
         XCTAssertEqual(vm.codeFiles.orphanedEdits(workbenchID: project.id).map(\.id), [old.id])
         let fresh = vm.codeFiles.buffer(for: root, relPath: "Makefile")
@@ -745,7 +744,8 @@ final class CodeFilesActiveRootTests: XCTestCase {
     func testAnAskLinkWhosePlaceStaysUnprovenOpensOnlyInTheShownRoot() async throws {
         try await unplaceSession()
         let vm = makeVM()
-        vm.askPlaceTimeout = .milliseconds(100)
+        // Unproven at once: the wait for the place has already run out.
+        vm.askPlaceTimeout = .zero
         await vm.reload()
         vm.setLayout(layout(.board), projectID: project.id)
         let folder = URL(fileURLWithPath: project.folderPath)
@@ -780,18 +780,14 @@ final class CodeFilesActiveRootTests: XCTestCase {
 
         let waiting = vm.clickAskLink(OpenQuicklyTarget(path: "main.go", line: 1, col: nil),
                                       projectID: project.id, sessionID: sessionID) { beeps += 1 }
-        let deadline = ContinuousClock.now + .seconds(3)
-        while !vm.layout(projectID: project.id).sessionIDs.contains(sessionID), ContinuousClock.now < deadline {
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-        XCTAssertTrue(vm.layout(projectID: project.id).sessionIDs.contains(sessionID), "the first is waiting")
+        let id = sessionID, projectID = project.id
+        await untilObserved { vm.layout(projectID: projectID).sessionIDs.contains(id) } // the first is waiting
         let second = vm.clickAskLink(OpenQuicklyTarget(path: "main.go", line: 2, col: nil),
                                      projectID: project.id, sessionID: nil) { beeps += 1 }
-        let started = ContinuousClock.now
         await waiting.value
         await second.value
 
-        XCTAssertLessThan(ContinuousClock.now - started, .seconds(10), "the first stopped waiting")
+        XCTAssertTrue(waiting.isCancelled, "the first stopped waiting: the second click cancelled it")
         XCTAssertEqual(beeps, 0)
         XCTAssertEqual(vm.codeFiles.tabs(for: project.mainCodeRoot).paths, ["main.go"])
         XCTAssertNil(vm.askLinkTasks[project.id], "the finished click lets go")
@@ -896,11 +892,21 @@ private final class PendingPage: CodeEditorBridge {
 private actor RootGate {
     private var continuation: CheckedContinuation<Void, Never>?
     private var isOpen = false
-    var waiting: Bool { continuation != nil }
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    /// Returns once a git read waits at the gate.
+    func untilWaiting() async {
+        if continuation != nil { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
 
     func wait() async {
         guard !isOpen else { return }
-        await withCheckedContinuation { continuation = $0 }
+        await withCheckedContinuation {
+            continuation = $0
+            waiters.forEach { $0.resume() }
+            waiters = []
+        }
     }
 
     func open() {

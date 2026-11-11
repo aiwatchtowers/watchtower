@@ -301,6 +301,8 @@ final class ChatViewModel {
     @ObservationIgnored private let cliRunner: CLIRunnerProtocol?
     @ObservationIgnored private let makeTurnID: () -> String
     @ObservationIgnored private var titleRequests: Set<Int64> = []
+    /// The last `chat title` request started (a test seam).
+    @ObservationIgnored private(set) var titleTask: Task<Void, Never>?
     @ObservationIgnored private var applyingConversationSettings = false
 
     init(
@@ -1407,7 +1409,7 @@ final class ChatViewModel {
         // At most once per conversation per app run: a failed call is not
         // retried on later turns (the prefix title stands).
         titleRequests.insert(id)
-        Task { [weak self] in
+        titleTask = Task { [weak self] in
             // ProcessCLIRunner logs a failure (CLILog); the prefix title stays, which is still correct.
             _ = try? await cliRunner.run(args: ["chat", "title", String(id)])
             guard let self else { return }
