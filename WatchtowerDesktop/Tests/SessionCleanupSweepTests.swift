@@ -253,10 +253,10 @@ final class SessionCleanupSweepTests: XCTestCase {
         runner.holdsCalls = true
         let (vm, cleanup) = makeVM(runner)
         vm.openCleanupScreen(projectID: workbenchID, sessionID: 9)
-        await waitUntil("the session plan") { runner.heldCount == 1 }
+        await until("the session plan") { runner.heldCount == 1 }
 
         let widened = vm.widenCleanupScope(projectID: workbenchID)
-        await waitUntil("the workbench plan") { runner.calls.count == 2 }
+        await until("the workbench plan") { runner.calls.count == 2 }
         runner.holdsCalls = false
         runner.release()
         await widened.value
@@ -311,7 +311,7 @@ final class SessionCleanupSweepTests: XCTestCase {
 
             runner.holdsCalls = true
             let apply = Task { await vm.applyCleanupScreen(projectID: workbenchID) }
-            await waitUntil("the apply") { runner.heldCount == 1 }
+            await until("the apply") { runner.heldCount == 1 }
             XCTAssertFalse(vm.canRefreshCleanup(projectID: workbenchID), "scope \(String(describing: sessionID))")
             let second = await vm.applyCleanupScreen(projectID: workbenchID)
             XCTAssertFalse(second, "a second Clean Up… launches nothing")
@@ -332,7 +332,7 @@ final class SessionCleanupSweepTests: XCTestCase {
 
         runner.holdsCalls = true
         let apply = Task { await vm.applyCleanupScreen(projectID: workbenchID) }
-        await waitUntil("the apply") { runner.heldCount == 1 }
+        await until("the apply") { runner.heldCount == 1 }
         vm.refreshCleanup(projectID: workbenchID)
         vm.widenCleanupScope(projectID: workbenchID)
         XCTAssertEqual(runner.calls.count, 2, "neither started a run")
@@ -362,7 +362,7 @@ final class SessionCleanupSweepTests: XCTestCase {
         guard case .failed = cleanup.cleanupPhase(for: .workbench(workbenchID)) else { return XCTFail("expected a failure") }
 
         vm.retryCleanup(projectID: workbenchID)
-        await waitUntil("the second apply") {
+        await until("the second apply") {
             if case .done = cleanup.cleanupPhase(for: .workbench(self.workbenchID)) { return true }
             return false
         }
@@ -381,7 +381,7 @@ final class SessionCleanupSweepTests: XCTestCase {
         guard case .failed = cleanup.cleanupPhase(for: .workbench(workbenchID)) else { return XCTFail("expected a failure") }
 
         vm.retryCleanup(projectID: workbenchID)
-        await waitUntil("the second plan") {
+        await until("the second plan") {
             if case .ready = cleanup.cleanupPhase(for: .workbench(self.workbenchID)) { return true }
             return false
         }
@@ -539,11 +539,14 @@ final class SessionCleanupSweepTests: XCTestCase {
         let runner = RepliedCleanupStreamer(replies: [.success(SweepFixture.plan)])
         runner.holdsCalls = true
         let (vm, cleanup) = makeVM(runner)
-        vm.cleanupHintTimeLimit = .milliseconds(20)
+        let limit = HintGate()
+        vm.cleanupHintLimitSleep = { try await limit.wait($0) }
 
         let page = Task { await vm.watchCleanupHint(projectID: workbenchID) }
         while runner.heldCount == 0 { await Task.yield() }
-        try await Task.sleep(for: .milliseconds(300))
+        await until("the time limit counts") { limit.waited == [vm.cleanupHintTimeLimit] }
+        limit.open() // the time limit is reached
+        await until("the CLI is stopped") { runner.cancelledCount == 1 }
         runner.release()
         await page.value
 
@@ -697,13 +700,16 @@ final class SessionCleanupSweepTests: XCTestCase {
         let runner = RepliedCleanupStreamer(replies: [.success(SweepFixture.plan)])
         runner.holdsCalls = true
         let (vm, cleanup) = makeVM(runner)
-        vm.cleanupHintTimeLimit = .milliseconds(50)
+        let limit = HintGate()
+        cleanup.timeLimitSleep = { try await limit.wait($0) }
         let first = Task { await vm.openCleanupScreen(projectID: workbenchID).value }
         while runner.heldCount == 0 { await Task.yield() }
         first.cancel()
         vm.closeCleanupScreen(projectID: workbenchID)
-        let reopened = Task { await vm.openCleanupScreen(projectID: workbenchID).value }
-        try await Task.sleep(for: .milliseconds(150))
+        let reopened = vm.openCleanupScreen(projectID: workbenchID)
+        await until("the time limit counts") { limit.waited == [vm.cleanupHintTimeLimit] }
+        limit.open() // the time limit is reached
+        await until("the CLI is stopped") { runner.cancelledCount == 1 }
         runner.release() // the real runner ends the child on cancel
         await reopened.value
 
@@ -776,8 +782,16 @@ final class SessionCleanupSweepTests: XCTestCase {
     }
 }
 
-/// The hint's 30 s wait, held until `open()`; throws when its task was
-/// cancelled, as `Task.sleep` does.
+/// Yields the main actor until `condition` holds. No deadline: the wait ends
+/// on the fakes' and the center's state, never on a clock — a wait that never
+/// ends is a hang the lane watchdog reports. `what` names it in a backtrace.
+@MainActor
+private func until(_ what: String, _ condition: @MainActor () -> Bool) async {
+    while !condition() { await Task.yield() }
+}
+
+/// A wait (the hint's 30 s, a plan's time limit), held until `open()`;
+/// throws when its task was cancelled, as `Task.sleep` does.
 @MainActor
 private final class HintGate {
     private(set) var waited: [Duration] = []

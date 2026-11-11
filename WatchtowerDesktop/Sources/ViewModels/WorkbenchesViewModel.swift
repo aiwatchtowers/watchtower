@@ -205,6 +205,11 @@ final class WorkbenchesViewModel {
     /// The longest a hint plan may run before it is stopped and the slot
     /// freed.
     @ObservationIgnored var cleanupHintTimeLimit: Duration = .seconds(5 * 60)
+    /// The wait for `cleanupHintTimeLimit`; throws once the plan ended first.
+    /// A seam for tests.
+    @ObservationIgnored var cleanupHintLimitSleep: @Sendable (Duration) async throws -> Void = {
+        try await Task.sleep(for: $0)
+    }
     /// The hint's clock (the 7-day re-check). A seam for tests.
     @ObservationIgnored var cleanupHintNow: () -> Date = { Date() }
     /// Where each session's agent works (board #565): the rows' place line
