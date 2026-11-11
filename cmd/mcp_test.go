@@ -305,17 +305,53 @@ func TestMCP_SurfaceFlagAcceptsAutomationEditor(t *testing.T) {
 }
 
 // Any surface value other than main, target, automation (the P6 agent()
-// server, routed to mcpAutomationOptions) and automation_editor is refused
-// before a server starts.
+// server, routed to mcpAutomationOptions), automation_editor and tuning is
+// refused before a server starts.
 func TestMCP_SurfaceFlagRejectsUnknown(t *testing.T) {
 	resetMCPFlags(t)
 	resetMCPChatBindingFlags(t)
 	database := openMCPTestDB(t)
 	mcpFlagChat = true
-	for _, surface := range []string{"x", "automation_edit"} {
+	for _, surface := range []string{"x", "automation_edit", "nope", "tuning_chat"} {
 		mcpFlagSurface = surface
 		_, err := mcpModeOptions(&config.Config{ActiveWorkspace: "test-ws"}, database, "t1", nil)
-		require.ErrorContains(t, err, "--surface must be main, target, automation or automation_editor", surface)
+		require.ErrorContains(t, err, "--surface must be one of main, target, automation_editor, tuning (or automation for an automation run's agent)", surface)
+	}
+}
+
+// The tuning chat (spec 2026-11-03 §4.1) is bound to its own conversation
+// and context and applies directly: its proposal tools only file a card.
+func TestMCPChatOptions_TuningBindsDirectApply(t *testing.T) {
+	resetMCPFlags(t)
+	resetMCPChatBindingFlags(t)
+	mcpFlagChat, mcpFlagSurface, mcpFlagConversation = true, tools.SurfaceTuning, 7
+	mcpFlagContextType, mcpFlagContextID = "analytics_tuning", "3"
+	b, err := mcpChatBinding("t1", nil)
+	require.NoError(t, err)
+	assert.Equal(t, tools.Binding{Surface: "tuning", ConversationID: 7, TurnID: "t1", DirectApply: true,
+		ContextType: "analytics_tuning", ContextID: "3"}, b)
+	_, err = mcpChatOptions(&config.Config{ActiveWorkspace: "test-ws"}, openMCPTestDB(t), "t1", nil)
+	require.NoError(t, err)
+
+	mcpFlagSurface = "main"
+	b, err = mcpChatBinding("t1", nil)
+	require.NoError(t, err)
+	assert.False(t, b.DirectApply, "only the tuning chat applies directly")
+}
+
+func TestMCPChatOptions_TuningNeedsConversation(t *testing.T) {
+	resetMCPFlags(t)
+	resetMCPChatBindingFlags(t)
+	database := openMCPTestDB(t)
+	mcpFlagChat, mcpFlagSurface = true, tools.SurfaceTuning
+	mcpFlagConversation, mcpFlagContextType, mcpFlagContextID = 0, "analytics_tuning", ""
+	_, err := mcpChatOptions(&config.Config{ActiveWorkspace: "test-ws"}, database, "t1", nil)
+	require.ErrorContains(t, err, "--surface tuning needs --conversation")
+
+	for _, ctxType := range []string{"", "target"} {
+		mcpFlagConversation, mcpFlagContextType = 7, ctxType
+		_, err = mcpChatOptions(&config.Config{ActiveWorkspace: "test-ws"}, database, "t1", nil)
+		require.ErrorContains(t, err, "--context-type analytics_tuning", ctxType)
 	}
 }
 

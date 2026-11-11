@@ -61,7 +61,10 @@ public struct PanelSplit<Main: View, Panel: View>: View {
                     .frame(width: liveWidth ?? width.clamped(storedWidth))
                     .frame(maxHeight: .infinity)
                     .overlay(alignment: .leading) {
-                        if showsEdgeLine { Divider() }
+                        // A Divider would lie flat here: an overlay gives it no stack axis.
+                        if showsEdgeLine {
+                            Rectangle().fill(Stroke.hairlineColor).frame(width: Stroke.hairline)
+                        }
                     }
                     .overlay(alignment: .leading) {
                         PanelResizeHandle(width: $storedWidth, liveWidth: $liveWidth,

@@ -13,7 +13,7 @@ import (
 func TestInstallWritesThePackAndIsIdempotent(t *testing.T) {
 	dir := t.TempDir()
 
-	first, err := Install(dir)
+	first, err := Install(dir, nil)
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
@@ -29,7 +29,7 @@ func TestInstallWritesThePackAndIsIdempotent(t *testing.T) {
 		}
 	}
 
-	second, err := Install(dir)
+	second, err := Install(dir, nil)
 	if err != nil {
 		t.Fatalf("reinstall: %v", err)
 	}
@@ -42,7 +42,7 @@ func TestInstallWritesThePackAndIsIdempotent(t *testing.T) {
 
 func TestInstallNeverClobbersAUserEditedSkill(t *testing.T) {
 	dir := t.TempDir()
-	if _, err := Install(dir); err != nil {
+	if _, err := Install(dir, nil); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 
@@ -53,7 +53,7 @@ func TestInstallNeverClobbersAUserEditedSkill(t *testing.T) {
 		t.Fatalf("editing: %v", err)
 	}
 
-	got, err := Install(dir)
+	got, err := Install(dir, nil)
 	if err != nil {
 		t.Fatalf("reinstall: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestInstallNeverClobbersAUserEditedSkill(t *testing.T) {
 
 func TestRemoveDeletesOnlyMarkedFiles(t *testing.T) {
 	dir := t.TempDir()
-	if _, err := Install(dir); err != nil {
+	if _, err := Install(dir, nil); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 
@@ -192,7 +192,7 @@ func skillWithDigest(name, body string) Skill {
 func TestStatusReportsMissingWithoutWriting(t *testing.T) {
 	dir := t.TempDir()
 
-	got, err := Status(dir)
+	got, err := Status(dir, nil)
 	if err != nil {
 		t.Fatalf("status: %v", err)
 	}

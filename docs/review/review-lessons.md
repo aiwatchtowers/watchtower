@@ -2920,3 +2920,12 @@ Entry format:
 - weak-dimension: 7. The prosecutor checked Cleanup registration but not what bounds the wait before Cleanup can run.
 - rule-gap (candidate, dim 7, second sighting after test/no-wallclock-go): *a test driving a real subprocess keeps a hang guard (≥ 1 min) that fails the test or fires the production kill, because `go test -timeout` skips `t.Cleanup`.* Worth promoting into §7.
 - outcome: TBD
+
+## 2026-11-11 — feature/1517-tuning-chat umbrella → main (PR #726, tuning chat, 240 files; panel: prosecutor (3) + style-guardian substitute (8); codex timed out, pr-review-toolkit specialists unavailable; judge verified by reading, no runs) — verdict: changes-needed
+
+- contested: whether an unbounded, argument-less `list_coach_proposals` is a real defect or a future concern — settled major: it is `CompanyData`, so `CallRead`'s 256 KB response cap refuses it with "narrow the request" while the tool has no argument to narrow, and skill before/after texts reach 20 000 runes each, so two or three skill proposals cross the cap; the surface contract tells the model to call it before every proposal [6]
+- false-positive: "no cmd-level test for ErrRepoDirty/ErrRepoNotGit → `dirty`/`not_git`" — `cmd/coach_test.go` `TestCoachAccept_RepoCodes` covers both codes and the success key set [7]
+- miss: on a 240-file umbrella no lane cross-checked a new read tool's unfiltered list against the read budget caps; per-task reviews each saw a small table [4/6]
+- weak-dimension: 7 (no independent test-coverage lane ran; codex timed out on the diff size)
+- rule-gap: a new `CompanyData` read tool that returns a growing list must take a `limit`/filter argument (or bound its output) so the 256 KB/200-row `CallRead` caps can never refuse every call — candidate rule for dimension 4/6
+- outcome: TBD

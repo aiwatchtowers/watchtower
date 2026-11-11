@@ -49,6 +49,27 @@ const (
 	DestClaudeMDUser = "claude_md_user"
 )
 
+// Destinations only a tuning chat names (origin 'chat'); all are global. The
+// three skill ones carry the skill's name in CurrentText.Skill.
+const (
+	DestClaudeSkillUser   = "claude_skill_user"
+	DestCodexSkillUser    = "codex_skill_user"
+	DestPackOverlay       = "pack_overlay"
+	DestCodexAgentsMDUser = "codex_agents_md_user"
+	DestCodexRulesAllow   = "codex_rules_allow"
+)
+
+// The workbench repository files a tuning chat may edit (spec §4.3a, owner
+// ask #1165): per workbench, inside its own folder only, written by Accept and
+// committed by the owner. RepoRelPath spells their paths.
+const (
+	DestRepoClaudeMD    = "repo_claude_md"    // CLAUDE.md
+	DestRepoAgentsMD    = "repo_agents_md"    // AGENTS.md
+	DestRepoClaudeSkill = "repo_claude_skill" // .claude/skills/<name>/SKILL.md
+	DestRepoCodexSkill  = "repo_codex_skill"  // .agents/skills/<name>/SKILL.md
+	DestRepoWorkflow    = "repo_workflow"     // workbenchmethod.FileRel
+)
+
 // Signal is one piece of evidence the model may cite. Ref is the citation key
 // the model's output is validated against: "ask:<id>#<item key>" (a spec
 // review finding), "s<id>" (a workbench session's owner line), "c<id>" (an AI
@@ -64,12 +85,14 @@ type Signal struct {
 }
 
 // CurrentText is one editable destination as it stands. WorkbenchID 0 is
-// global. Budget is the destination's rune budget; 0 means it is not a text
-// budget (the settings allow list).
+// global; Skill names the skill of a skill destination ("" otherwise). Budget
+// is the destination's rune budget; 0 means it is not a text budget (the
+// settings allow list).
 type CurrentText struct {
 	Destination string
 	WorkbenchID int64
 	PromptID    string
+	Skill       string
 	Text        string
 	Budget      int
 }
@@ -232,7 +255,7 @@ func hintSignals(d *db.DB, al *agentlogdb.DB, since, now time.Time) ([]Signal, e
 	}
 	var out []Signal
 	for _, id := range ids {
-		ov, err := agentreport.BuildOverview(d, al, id, since, now, agentreport.English)
+		ov, err := agentreport.BuildOverview(d, al, id, since, now, agentreport.English, agentreport.AgentAll)
 		if err != nil {
 			return nil, fmt.Errorf("building overview of workbench %d: %w", id, err)
 		}

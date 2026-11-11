@@ -605,6 +605,7 @@ enum DesignShotCatalog {
             }
         } + ProviderFallbackShotFixtures.runtimeShots + InboxBuilderAShotFixtures.shots + InboxBuilderBShotFixtures.shots
             + ClosedAsksShotFixtures.shots
+            + TuningChatShotFixtures.shots // The tuning chat over the Analytics pane (#1517).
     }
 }
 
@@ -644,6 +645,7 @@ enum DesignShotFixtures {
         InboxFolderMenuShotFixtures.cleanUp()
         InboxFoldersShotFixtures.cleanUp()
         InboxApprovalsShotFixtures.cleanUp()
+        TuningChatShotFixtures.cleanUp()
         ProjectPageShotFixtures.cleanUp()
         ClosedAsksShotFixtures.cleanUp()
         if let newTaskPoolPath { TestDatabase.cleanup(path: newTaskPoolPath) }

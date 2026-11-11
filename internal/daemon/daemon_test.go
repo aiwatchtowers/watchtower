@@ -23,6 +23,7 @@ import (
 	"watchtower/internal/dayplan"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/gittest"
 	"watchtower/internal/guide"
 	"watchtower/internal/inbox"
 	watchtowerslack "watchtower/internal/slack"
@@ -32,6 +33,7 @@ import (
 
 func TestMain(m *testing.M) {
 	runFakeCLIIfAsked()
+	gittest.DisableBackgroundGit() // the coach's commit-check tests create repositories
 	// Allow sub-second poll intervals in tests for fast execution.
 	minPollInterval = 1 * time.Millisecond
 	// Fresh database files under t.TempDir() start from the template too:

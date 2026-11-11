@@ -253,3 +253,178 @@ func TestReadStatus_IgnoresInheritedRepositoryEnvironment(t *testing.T) {
 	l := ListBranches(context.Background(), options(dir, &recorder{}))
 	assert.Equal(t, "main", l.Current)
 }
+
+func pathState(t *testing.T, dir, rel string) (PathState, *recorder) {
+	t.Helper()
+	rec := &recorder{}
+	st, err := PathStatus(context.Background(), options(dir, rec), rel)
+	require.NoError(t, err)
+	return st, rec
+}
+
+func TestPathStatus_Clean(t *testing.T) {
+	dir := newRepo(t)
+	st, _ := pathState(t, dir, "README.md")
+	assert.Equal(t, PathState{Git: true}, st)
+}
+
+func TestPathStatus_DirtyKinds(t *testing.T) {
+	cases := map[string]func(t *testing.T, dir string){
+		"unstaged edit": func(t *testing.T, dir string) { writeFile(t, dir, "README.md", "changed\n") },
+		"staged edit": func(t *testing.T, dir string) {
+			writeFile(t, dir, "README.md", "changed\n")
+			gitIn(t, dir, "add", "README.md")
+		},
+		"untracked": func(t *testing.T, dir string) { writeFile(t, dir, "NEW.md", "x\n") },
+		"deleted":   func(t *testing.T, dir string) { require.NoError(t, os.Remove(filepath.Join(dir, "README.md"))) },
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir := newRepo(t)
+			mutate(t, dir)
+			rel := "README.md"
+			if name == "untracked" {
+				rel = "NEW.md"
+			}
+			st, _ := pathState(t, dir, rel)
+			assert.Equal(t, PathState{Git: true, Dirty: true}, st)
+		})
+	}
+}
+
+func TestPathStatus_OtherPathDirty(t *testing.T) {
+	dir := newRepo(t)
+	writeFile(t, dir, "other.md", "x\n")
+	st, _ := pathState(t, dir, "README.md")
+	assert.Equal(t, PathState{Git: true}, st)
+}
+
+// A path git ignores is not in git, so its local text could be lost: it
+// counts as dirty, and so does any path inside an ignored folder (ask
+// #1236). A tracked file that a pattern matches is not ignored; an ignored
+// file not created yet holds nothing to lose and is clean.
+func TestPathStatus_IgnoredIsDirty(t *testing.T) {
+	dir := newRepo(t)
+	commit(t, dir, ".gitignore", "secret.md\nlocal/\nREADME.md\nCLAUDE.md\n", "ignore")
+	writeFile(t, dir, "secret.md", "x\n")
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "local"), 0o755))
+	writeFile(t, dir, "local/notes.md", "y\n")
+	for _, rel := range []string{"secret.md", "local/notes.md", "local/CLAUDE.md"} {
+		st, _ := pathState(t, dir, rel)
+		assert.Equal(t, PathState{Git: true, Dirty: true}, st, rel)
+	}
+	for _, rel := range []string{"README.md", "CLAUDE.md"} { // tracked though matched; ignored but absent
+		st, _ := pathState(t, dir, rel)
+		assert.Equal(t, PathState{Git: true}, st, rel)
+	}
+}
+
+func TestPathStatus_MissingFile(t *testing.T) {
+	dir := newRepo(t)
+	st, _ := pathState(t, dir, "CLAUDE.md")
+	assert.Equal(t, PathState{Git: true}, st)
+}
+
+func TestPathStatus_NotARepo(t *testing.T) {
+	newRepo(t) // skips without git
+	st, rec := pathState(t, t.TempDir(), "CLAUDE.md")
+	assert.Equal(t, PathState{}, st)
+	assert.Empty(t, rec.argv())
+}
+
+func TestPathStatus_RefusesEscapingPath(t *testing.T) {
+	dir := newRepo(t)
+	for _, rel := range []string{"../x", "/etc/x", "a/../../x", ""} {
+		rec := &recorder{}
+		_, err := PathStatus(context.Background(), options(dir, rec), rel)
+		require.Error(t, err, rel)
+		assert.Empty(t, rec.argv(), rel)
+	}
+}
+
+func TestPathStatus_RunsOnlyStatus(t *testing.T) {
+	dir := newRepo(t)
+	_, rec := pathState(t, dir, "sub/CLAUDE.md")
+	assert.Equal(t, [][]string{
+		{"rev-parse", "--absolute-git-dir", "--git-common-dir", "--show-toplevel"},
+		{"status", "--porcelain=v1", "-z", "--ignored=matching", "--", "sub/CLAUDE.md"},
+	}, rec.argv())
+}
+
+// ReadStatus, the coach's branch read (COACH-01: TestCOACH01_NoGitWrites),
+// runs only the probe's rev-parse and one porcelain v2 status.
+func TestReadStatus_RunsOnlyReadVerbs(t *testing.T) {
+	dir := newRepo(t)
+	writeFile(t, dir, "README.md", "changed\n")
+	rec := &recorder{}
+	st := ReadStatus(context.Background(), options(dir, rec))
+	require.True(t, st.StatusOK, st.StatusError)
+	assert.Equal(t, [][]string{
+		{"rev-parse", "--absolute-git-dir", "--git-common-dir", "--show-toplevel"},
+		{"status", "--porcelain=v2", "--branch", "-z", "--untracked-files=normal", "--ignore-submodules=all"},
+	}, rec.argv())
+}
+
+// FileAtHead, the coach's commit check (COACH-01: TestCOACH01_NoGitWrites),
+// runs only the probe's rev-parse and one `git show HEAD:./<rel>`.
+func TestFileAtHead(t *testing.T) {
+	dir := newRepo(t)
+	writeFile(t, dir, "README.md", "changed, not committed\n")
+	rec := &recorder{}
+	text, ok, err := FileAtHead(context.Background(), options(dir, rec), "README.md")
+	require.NoError(t, err)
+	assert.True(t, ok)
+	assert.Equal(t, "hello\n", text, "the committed text, not the work tree's")
+	assert.Equal(t, [][]string{
+		{"rev-parse", "--absolute-git-dir", "--git-common-dir", "--show-toplevel"},
+		{"show", "HEAD:./README.md"},
+	}, rec.argv())
+
+	for _, rel := range []string{"CLAUDE.md", "feature.txt"} { // absent; only on another branch
+		writeFile(t, dir, "CLAUDE.md", "on disk only\n")
+		text, ok, err = FileAtHead(context.Background(), options(dir, &recorder{}), rel)
+		require.NoError(t, err, rel)
+		assert.False(t, ok, rel)
+		assert.Empty(t, text, rel)
+	}
+
+	for _, rel := range []string{"../x", "/etc/x", "a/../../x", ""} {
+		rec := &recorder{}
+		_, _, err := FileAtHead(context.Background(), options(dir, rec), rel)
+		require.Error(t, err, rel)
+		assert.Empty(t, rec.argv(), rel)
+	}
+}
+
+func TestFileAtHead_Subdirectory(t *testing.T) {
+	dir := newRepo(t)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "sub"), 0o755))
+	commit(t, dir, "sub/CLAUDE.md", "sub rules\n", "sub")
+	commit(t, dir, "CLAUDE.md", "top rules\n", "top")
+	text, ok, err := FileAtHead(context.Background(), options(filepath.Join(dir, "sub"), &recorder{}), "CLAUDE.md")
+	require.NoError(t, err)
+	assert.True(t, ok)
+	assert.Equal(t, "sub rules\n", text, "relative to the folder, not the top level")
+}
+
+func TestFileAtHead_UnbornAndNotARepo(t *testing.T) {
+	gitBin(t)
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	gitIn(t, dir, "init", "-q", "-b", "main")
+	writeFile(t, dir, "CLAUDE.md", "x\n")
+	_, ok, err := FileAtHead(context.Background(), options(dir, &recorder{}), "CLAUDE.md")
+	require.NoError(t, err)
+	assert.False(t, ok, "no commit yet")
+
+	rec := &recorder{}
+	_, _, err = FileAtHead(context.Background(), options(t.TempDir(), rec), "CLAUDE.md")
+	require.Error(t, err)
+	assert.Empty(t, rec.argv())
+}
+
+func TestFileAtHead_GitFailureIsAnError(t *testing.T) {
+	dir := newRepo(t)
+	_, _, err := FileAtHead(context.Background(), options(dir, &recorder{fail: "show"}), "README.md")
+	require.Error(t, err)
+}

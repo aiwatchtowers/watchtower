@@ -163,7 +163,7 @@ package final class DaemonManager {
         }
 
         do {
-            let result = try await Self.runProcessCapturingStderr(path: path, arguments: ["sync", "--daemon", "--detach"])
+            let result = try await Self.launchDetachedDaemon(path: path)
             if result.status == 0 {
                 isRunning = true
                 errorMessage = nil
@@ -252,15 +252,50 @@ package final class DaemonManager {
         throw DaemonRestartError.timedOut
     }
 
+    /// The environment the daemon is launched with: `base` plus the login
+    /// shell's `CODEX_HOME` when it is an absolute path. Nothing else is taken
+    /// from `login` (PATH and the rest stay the app's), and `login == nil`
+    /// (the shell did not answer) leaves `base` as it is. The daemon's Codex
+    /// rollout reader only trusts files under its own `$CODEX_HOME`, which an
+    /// app launched from the Dock does not have.
+    nonisolated static func daemonEnvironment(
+        base: [String: String], login: [String: String]?
+    ) -> [String: String] {
+        var env = base
+        if let home = login?["CODEX_HOME"], home.hasPrefix("/") {
+            env["CODEX_HOME"] = home
+        }
+        return env
+    }
+
+    /// The one launch of `sync --daemon --detach`, shared by `startDaemon()`
+    /// and `restart()`, so both give the daemon the owner's `CODEX_HOME`.
+    /// `loginEnvironment` and `processFactory` are test seams.
+    nonisolated static func launchDetachedDaemon(
+        path: String,
+        loginEnvironment: () async -> [String: String]? = { await Constants.resolvedLoginEnvironment() },
+        processFactory: (String, [String]) -> Process = makeProcess
+    ) async throws -> (status: Int32, stderr: String) {
+        let login = await loginEnvironment()
+        return try await runProcessCapturingStderr(
+            path: path, arguments: ["sync", "--daemon", "--detach"]
+        ) { path, arguments in
+            let process = processFactory(path, arguments)
+            process.environment = daemonEnvironment(base: ProcessInfo.processInfo.environment, login: login)
+            return process
+        }
+    }
+
     /// `runProcess` with the child's stderr kept instead of muted, for the one
     /// call whose failure has no other trace (see `startFailureMessage`).
     /// The pipe is drained before `waitUntilExit` so a chatty child cannot
     /// block on a full pipe.
     nonisolated private static func runProcessCapturingStderr(
         path: String,
-        arguments: [String]
+        arguments: [String],
+        processFactory: (String, [String]) -> Process = makeProcess
     ) async throws -> (status: Int32, stderr: String) {
-        let process = makeProcess(path: path, arguments: arguments)
+        let process = processFactory(path, arguments)
         let pipe = Pipe()
         process.standardError = pipe
         try process.run()
@@ -324,7 +359,7 @@ package final class DaemonManager {
             }
         }
 
-        let result = try await runProcessCapturingStderr(path: path, arguments: ["sync", "--daemon", "--detach"])
+        let result = try await launchDetachedDaemon(path: path)
         if result.status != 0 {
             throw DaemonRestartError.startFailed(status: result.status, stderr: result.stderr)
         }

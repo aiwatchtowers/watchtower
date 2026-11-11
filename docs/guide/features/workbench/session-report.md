@@ -70,7 +70,7 @@ It refreshes every 30 seconds while on screen, and when the session's state chan
 
 ### Read the Analytics view
 
-The **Analytics** icon in the title row shows where this folder's Claude Code sessions spent their time and money:
+The **Analytics** icon in the title row shows where this folder's Claude Code and Codex sessions spent their time and money:
 
 - Pick **7 days**, **30 days** or **All**. The first time, press **Turn On**: it returns at once, and the daemon loads the history in the background. Until it is done, **Loading history — N files so far** sits above the numbers loaded so far.
 - **The main thing** card names the one change that would save the most, with a button that does it. **Context**, **Skills** and **Trouble** show what loads before the first message, which skills never ran and which calls failed. See [Agent analytics](../agent-analytics.md#what-the-analytics-view-shows).

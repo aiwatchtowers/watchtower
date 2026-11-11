@@ -12,6 +12,7 @@ import (
 	"watchtower/internal/linear"
 	watchtowerslack "watchtower/internal/slack"
 	"watchtower/internal/tools"
+	"watchtower/internal/tuning"
 	"watchtower/internal/workbenchfiles"
 )
 
@@ -243,6 +244,12 @@ func buildToolRegistry(cfg *config.Config, database *db.DB) *tools.Registry {
 	// read branch; the runtime-B loop calls them in-process. Dev-mode MCP mounts
 	// the same list via tools.NewReadRegistry.
 	regTools = append(regTools, tools.ReadTools()...)
+	// The tuning chat's tools (spec 2026-11-03-tuning-chat-design §4.2): the
+	// tuning surface only, which lists no surface-less tool. Its one write,
+	// propose_tuning_edit, files a coach proposal the owner accepts on the card.
+	deps := tuningDeps(cfg)
+	regTools = append(regTools, tuning.ReadTools(deps)...)
+	regTools = append(regTools, tuning.ProposalTools(deps)...)
 	for _, t := range regTools {
 		if err := reg.Register(t); err != nil {
 			panic("tool registry: " + err.Error())

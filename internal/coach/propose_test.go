@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -162,7 +163,7 @@ func TestValidate_WiderFindSameFingerprint(t *testing.T) {
 }
 
 func TestFingerprint_PartsCannotBeConfused(t *testing.T) {
-	k := keyOf(DestSession, 0, "")
+	k := keyOf(DestSession, 0, "", "")
 	// Removing " a b" and turning "a" into "b" normalise to the same words;
 	// their fingerprints must still differ.
 	cut, ok := fingerprint(k, "keep a b", "keep")
@@ -371,4 +372,82 @@ func TestPropose_AddedOrDismissedSuggestionTextBlocked(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, []string{"Three"}, titles(props), status)
 	}
+}
+
+func TestKeyOf_SkillSeparatesSkillDestinations(t *testing.T) {
+	assert.NotEqual(t, keyOf(DestClaudeSkillUser, 0, "", "a"), keyOf(DestClaudeSkillUser, 0, "", "b"))
+	assert.Equal(t, keyOf(DestClaudeSkillUser, 0, "", "a"), keyOf(DestClaudeSkillUser, 0, "", "a"))
+	assert.Equal(t, keyOf(DestSession, 0, "", "a"), keyOf(DestSession, 0, "", ""), "skill only for skill destinations")
+	assert.Equal(t, keyOf(DestPromptAdd, 0, "p", "a"), keyOf(DestPromptAdd, 0, "p", ""))
+	assert.Equal(t, int64(0), keyOf(DestPackOverlay, 7, "", "x").wb, "a pack overlay is global")
+	assert.Equal(t, "x", keyOf(DestPackOverlay, 7, "", "x").skill)
+	assert.Equal(t, "", keyOf(DestCodexSkillUser, 0, "p", "x").prompt, "prompt only for prompt additions")
+	for _, d := range []string{DestClaudeSkillUser, DestCodexSkillUser, DestPackOverlay, DestCodexAgentsMDUser, DestCodexRulesAllow} {
+		assert.Equal(t, int64(0), keyOf(d, 5, "", "").wb, d)
+	}
+}
+
+func TestFingerprint_ExistingFormatUnchanged(t *testing.T) {
+	fp, ok := fingerprint(keyOf(DestSession, 3, "", ""), "a", "a\nKeep it short.")
+	require.True(t, ok)
+	assert.Equal(t, "session|3|||keep it short", fp, "stored fingerprints must keep matching")
+	fp, ok = fingerprint(keyOf(DestPromptAdd, 3, "p.x", ""), "a", "a\nKeep it short.")
+	require.True(t, ok)
+	assert.Equal(t, "prompt_addition|0|p.x||keep it short", fp)
+
+	fp, ok = fingerprint(keyOf(DestClaudeSkillUser, 0, "", "review-pr"), "a", "a\nKeep it short.")
+	require.True(t, ok)
+	assert.Contains(t, fp, "|0|review-pr|")
+	other, _ := fingerprint(keyOf(DestClaudeSkillUser, 0, "", "spec"), "a", "a\nKeep it short.")
+	assert.NotEqual(t, fp, other, "the same edit to two skills is two edits")
+}
+
+// sessionAddReply is a weekly reply with one valid add to the global session text.
+const sessionAddReply = `{"proposals":[{"title":"Short","why":"w","destination":"session","workbench_id":0,"prompt_id":"",` +
+	`"kind":"add","find":"","replace":"Keep answers short.","metric":"corrections","evidence":["s1","s2","s3"]}]}`
+
+func chatOpen(dests ...[2]string) []db.CoachProposal {
+	var out []db.CoachProposal
+	for i, d := range dests {
+		out = append(out, db.CoachProposal{ID: int64(i + 1), Fingerprint: "chat" + strconv.Itoa(i), Origin: "chat",
+			Destination: d[0], Skill: d[1], Status: "open"})
+	}
+	return out
+}
+
+func TestValidate_ChatProposalTakesNoWeeklySlot(t *testing.T) {
+	in := proposeInputs()
+	in.Open = chatOpen([2]string{DestClaudeSkillUser, "a"}, [2]string{DestClaudeSkillUser, "b"}, [2]string{DestCodexSkillUser, "a"})
+	got, err := Validate(sessionAddReply, in)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"Short"}, titles(got), "three open chat proposals leave every weekly slot free")
+	assert.Equal(t, "", got[0].Skill)
+
+	in.Open = append(in.Open, db.CoachProposal{ID: 9, Fingerprint: "w1", Origin: "weekly", Destination: DestChat, Status: "open"},
+		db.CoachProposal{ID: 10, Fingerprint: "w2", Destination: DestProcedure, WorkbenchID: 1, Status: "open"},
+		db.CoachProposal{ID: 11, Fingerprint: "w3", Destination: DestPromptAdd, PromptID: prompts.SpecReview, Status: "open"})
+	got, err = Validate(sessionAddReply, in)
+	require.NoError(t, err)
+	assert.Empty(t, got, "three weekly proposals (\"\" origin counts as weekly) fill the slots")
+}
+
+func TestValidate_ChatProposalBlocksSameText(t *testing.T) {
+	in := proposeInputs()
+	in.Open = chatOpen([2]string{DestSession, ""})
+	got, err := Validate(sessionAddReply, in)
+	require.NoError(t, err)
+	assert.Empty(t, got, "a chat proposal on the same text blocks the weekly one")
+}
+
+func TestProposer_ChatProposalsDoNotFillSlots(t *testing.T) {
+	d := openDBs(t)
+	gen := &countingGen{out: fixture(t, "propose_slots.json")}
+	p := &Proposer{DB: d.DB, Gen: gen, Now: func() time.Time { return sigNow }}
+
+	in := proposeInputs()
+	in.Open = chatOpen([2]string{DestClaudeSkillUser, "a"}, [2]string{DestCodexSkillUser, "b"}, [2]string{DestPackOverlay, "c"})
+	_, _, err := p.Run(context.Background(), in)
+	require.NoError(t, err)
+	assert.Equal(t, 1, gen.calls, "chat proposals take no weekly slot")
+	assert.Contains(t, gen.user, "SLOTS: 3\n")
 }

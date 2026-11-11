@@ -52,7 +52,9 @@ func ToolClass(name, target string) string {
 	return ClassOther
 }
 
-func isAgentTool(name string) bool { return name == "Agent" || name == "Task" }
+// isAgentTool: Claude's Agent/Task call, or Codex's spawn_agent (its
+// spawned_agent_id set from the parent's spawn link).
+func isAgentTool(name string) bool { return name == "Agent" || name == "Task" || name == "spawn_agent" }
 
 // eventClass is ToolClass with the background flag of an Agent call applied.
 func eventClass(e agentlogdb.AgentReportEvent) string {

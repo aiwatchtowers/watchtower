@@ -63,6 +63,12 @@ func (d dbs) workbench(t *testing.T, name string, tasks int) (int64, []int64) {
 // every target, `interrupts` interrupts and `cost` of model spend.
 func (d dbs) session(t *testing.T, wb int64, uuid string, targets []int64, interrupts int, cost float64) {
 	t.Helper()
+	d.sessionOf(t, "claude", wb, uuid, targets, interrupts, cost)
+}
+
+// sessionOf is session for one agent's session ("claude" or "codex").
+func (d dbs) sessionOf(t *testing.T, agent string, wb int64, uuid string, targets []int64, interrupts int, cost float64) {
+	t.Helper()
 	path := "/tmp/x/" + uuid + ".jsonl"
 	at := func(s int) string { return t0.Add(time.Duration(s) * time.Second).Format(tsLayout) }
 	var evs []agentlogdb.AgentLogEvent
@@ -81,8 +87,8 @@ func (d dbs) session(t *testing.T, wb int64, uuid string, targets []int64, inter
 	}
 	add(agentlogdb.AgentLogEvent{Kind: "api_call", Name: "claude-opus-5-5", InputTokens: 10, OutputTokens: 5}, 60)
 	_, err := d.al.ApplyAgentLogBatch(agentlogdb.AgentLogBatch{
-		File: agentlogdb.AgentLogFile{Path: path, Agent: "claude", ReadOffset: 10, ParserVersion: 4}, ExpectOffset: -1,
-		Sessions: []agentlogdb.AgentLogSession{{SessionUUID: uuid, Agent: "claude", ProjectID: &wb, FolderPath: "/w", HomeCWD: "/w",
+		File: agentlogdb.AgentLogFile{Path: path, Agent: agent, ReadOffset: 10, ParserVersion: 4}, ExpectOffset: -1,
+		Sessions: []agentlogdb.AgentLogSession{{SessionUUID: uuid, Agent: agent, ProjectID: &wb, FolderPath: "/w", HomeCWD: "/w",
 			SourcePath: path, StartedAt: at(0), EndedAt: at(60), Model: "claude-opus-5-5"}},
 		Events: evs,
 	})
@@ -123,7 +129,7 @@ func twoWorkbenches(t *testing.T) (dbs, int64, int64) {
 
 func measure(t *testing.T, d dbs, wb int64) Metrics {
 	t.Helper()
-	m, err := Measure(d.DB, d.al, wb, time.Time{}, t0.Add(time.Hour))
+	m, err := Measure(d.DB, d.al, wb, time.Time{}, t0.Add(time.Hour), agentreport.AgentAll)
 	require.NoError(t, err)
 	return m
 }
@@ -142,7 +148,7 @@ func TestMeasure_PerTask(t *testing.T) {
 	assert.Equal(t, Value{V: 0.5, N: 2, Known: true}, mb.Corrections)
 	assert.InDelta(t, 1.5, mb.TaskCostUSD.V, 0.01, "3.0 across two tasks")
 
-	ov, err := agentreport.BuildOverview(d.DB, d.al, a, time.Time{}, t0.Add(time.Hour), agentreport.English)
+	ov, err := agentreport.BuildOverview(d.DB, d.al, a, time.Time{}, t0.Add(time.Hour), agentreport.English, agentreport.AgentAll)
 	require.NoError(t, err)
 	assert.InDelta(t, float64(ov.Time.OwnerMS)/float64(ov.Time.ActiveMS), ma.OwnerLoop.V, 1e-9)
 	assert.True(t, ma.OwnerLoop.Known)
@@ -200,7 +206,7 @@ func TestMeasure_SpecFindingsFirstRoundOnly(t *testing.T) {
 	assert.Equal(t, m.SpecFindings, m.Of("review_findings"))
 	assert.Equal(t, m.SpecFindings, measure(t, d, 0).SpecFindings)
 
-	late, err := Measure(d.DB, d.al, wb, t0.Add(time.Hour), t0.Add(2*time.Hour))
+	late, err := Measure(d.DB, d.al, wb, t0.Add(time.Hour), t0.Add(2*time.Hour), agentreport.AgentAll)
 	require.NoError(t, err)
 	assert.False(t, late.SpecFindings.Known, "outside the period")
 }
@@ -209,7 +215,7 @@ func TestMeasure_UntilBoundsSessions(t *testing.T) {
 	d := openDBs(t)
 	wb, ids := d.workbench(t, "a", 1)
 	d.session(t, wb, "s", ids, 1, 1.0)
-	before, err := Measure(d.DB, d.al, wb, time.Time{}, t0.Add(-time.Minute))
+	before, err := Measure(d.DB, d.al, wb, time.Time{}, t0.Add(-time.Minute), agentreport.AgentAll)
 	require.NoError(t, err)
 	assert.Zero(t, before.Sessions, "the session starts after until")
 	assert.False(t, before.OwnerLoop.Known)
@@ -249,4 +255,44 @@ func TestCoachMetrics_IncludeCodexSessions(t *testing.T) {
 	after := measure(t, d, wb)
 	assert.Equal(t, before.Sessions+1, after.Sessions)
 	assert.InDelta(t, before.Corrections.V+1, after.Corrections.V, 1e-9, "the codex interrupt is a correction of the one task")
+}
+
+func TestAgentFor(t *testing.T) {
+	for dest, want := range map[string]string{
+		DestClaudeMDUser: "claude", "claude_skill_user": "claude", DestSettingsAllow: "claude",
+		DestPromptAdd: "claude", "repo_claude_md": "claude", "repo_claude_skill": "claude",
+		DestChat: "claude", DestSession: agentreport.AgentAll, DestProcedure: agentreport.AgentAll,
+		"codex_skill_user": "codex", "codex_agents_md_user": "codex", "codex_rules_allow": "codex",
+		"repo_agents_md": "codex", "repo_codex_skill": "codex",
+		"pack_overlay": agentreport.AgentAll, "repo_workflow": agentreport.AgentAll,
+	} {
+		assert.Equal(t, want, AgentFor(dest), dest)
+	}
+}
+
+// TestMeasure_AgentFilter: a Claude session with 2 interrupts and a Codex one
+// with none, both on the one task of a workbench.
+func TestMeasure_AgentFilter(t *testing.T) {
+	d := openDBs(t)
+	wb, ids := d.workbench(t, "a", 1)
+	d.sessionOf(t, "claude", wb, "sc", ids, 2, 1.0)
+	d.sessionOf(t, "codex", wb, "sx", ids, 0, 3.0)
+	of := func(agent string) Metrics {
+		m, err := Measure(d.DB, d.al, wb, time.Time{}, t0.Add(time.Hour), agent)
+		require.NoError(t, err)
+		return m
+	}
+	claude, codex, all := of("claude"), of("codex"), of(agentreport.AgentAll)
+	assert.Equal(t, 1, claude.Sessions)
+	assert.Equal(t, Value{V: 2, N: 1, Known: true}, claude.Corrections)
+	assert.InDelta(t, 1.0, claude.TaskCostUSD.V, 0.01)
+	assert.Equal(t, 1, codex.Sessions)
+	assert.Equal(t, Value{V: 0, N: 1, Known: true}, codex.Corrections)
+	assert.InDelta(t, 3.0, codex.TaskCostUSD.V, 0.01)
+	assert.Equal(t, 2, all.Sessions)
+	assert.Equal(t, Value{V: 2, N: 1, Known: true}, all.Corrections)
+	assert.InDelta(t, 4.0, all.TaskCostUSD.V, 0.01)
+
+	_, err := Measure(d.DB, d.al, wb, time.Time{}, t0.Add(time.Hour), "gemini")
+	assert.ErrorIs(t, err, agentreport.ErrUnknownAgent)
 }

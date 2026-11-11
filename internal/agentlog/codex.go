@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"watchtower/internal/agentlogdb"
+	"watchtower/internal/sessionfeed"
 )
 
 // The agent column of a transcript's file and session rows: Claude Code, or a
@@ -44,7 +45,9 @@ type codexPayload struct {
 	Output    json.RawMessage `json:"output"`
 	Message   json.RawMessage `json:"message"`
 	Reason    string          `json:"reason"`
-	Git       *struct {
+	// NewThreadID is a collab_agent_spawn_end's spawned sub-agent thread.
+	NewThreadID string `json:"new_thread_id"`
+	Git         *struct {
 		Branch string `json:"branch"`
 	} `json:"git"`
 	Item *struct {
@@ -62,11 +65,12 @@ type codexPayload struct {
 }
 
 type codexUsage struct {
-	Input     int64 `json:"input_tokens"`
-	Cached    int64 `json:"cached_input_tokens"`
-	Output    int64 `json:"output_tokens"`
-	Reasoning int64 `json:"reasoning_output_tokens"`
-	Total     int64 `json:"total_tokens"`
+	Input      int64 `json:"input_tokens"`
+	Cached     int64 `json:"cached_input_tokens"`
+	CacheWrite int64 `json:"cache_write_input_tokens"`
+	Output     int64 `json:"output_tokens"`
+	Reasoning  int64 `json:"reasoning_output_tokens"`
+	Total      int64 `json:"total_tokens"`
 }
 
 // codexKnownTypes are the rollout line types the importer reads or
@@ -128,6 +132,9 @@ func ParseCodex(r io.Reader, startOffset int64, o ParseOptions) (*ParseResult, e
 		} else {
 			p.handle(raw, lineOff)
 		}
+		if p.err != nil {
+			return nil, p.err
+		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				break
@@ -140,6 +147,7 @@ func ParseCodex(r io.Reader, startOffset int64, o ParseOptions) (*ParseResult, e
 		}
 	}
 	p.res.CodexLineage = p.lineage.id
+	p.res.CodexModel, p.res.CodexCWD, p.res.CodexModelSeen = p.model, p.cwd, p.modelSeen
 	return p.res, nil
 }
 
@@ -151,7 +159,16 @@ type codexParser struct {
 	cwd       string          // the session's own working directory (its session_meta)
 	seen      map[string]bool // event keys added in this read
 	fromStart bool            // read from offset 0: the first line's time may start the session
+	linked    map[string]bool // spawn links added in this read
+	modelSeen bool            // a turn_context was read, or CodexPriorModel was asked
+	err       error           // CodexPriorModel's failure: fails the read
 }
+
+// child reports a sub-agent rollout read under its root's session.
+func (p *codexParser) child() bool { return p.o.AgentID != "" }
+
+// self is the rollout's own thread id: the sub-agent's, else the session's.
+func (p *codexParser) self() string { return cmp.Or(p.o.AgentID, p.o.SessionUUID) }
 
 func (p *codexParser) handle(raw []byte, off int64) {
 	var l codexRolloutLine
@@ -172,7 +189,7 @@ func (p *codexParser) handle(raw []byte, off int64) {
 	s := p.session(l.Timestamp)
 	switch l.Type {
 	case "session_meta":
-		if pl.ID == p.o.SessionUUID { // a fork replays its parent's session_meta: never ours
+		if pl.ID == p.self() { // a fork replays its parent's session_meta: never ours
 			s.HomeCWD = pl.CWD
 			if pl.CWD != "" {
 				p.cwd = pl.CWD
@@ -185,6 +202,7 @@ func (p *codexParser) handle(raw []byte, off int64) {
 			}
 		}
 	case "turn_context":
+		p.modelSeen = true
 		if pl.Model != "" {
 			p.model, s.Model = pl.Model, pl.Model
 		}
@@ -200,6 +218,9 @@ func (p *codexParser) handle(raw []byte, off int64) {
 // read from offset 0; a later read leaves it "" (the stored start stays), so
 // a fork's replayed parent lines never move its start back.
 func (p *codexParser) session(ts string) *agentlogdb.AgentLogSession {
+	if p.child() {
+		return &agentlogdb.AgentLogSession{} // the root's session row is the only one; a sub-agent's fields are dropped
+	}
 	s := p.res.Sessions[p.o.SessionUUID]
 	if s == nil {
 		s = &agentlogdb.AgentLogSession{SessionUUID: p.o.SessionUUID, Agent: AgentCodex, SourcePath: p.o.Path, Model: p.model}
@@ -221,6 +242,9 @@ func (p *codexParser) add(l codexRolloutLine, off int64, e agentlogdb.AgentLogEv
 	}
 	p.seen[e.Key] = true
 	e.SessionUUID, e.TS, e.SrcPath, e.SrcOffset = p.o.SessionUUID, l.Timestamp, p.o.Path, off
+	if p.child() {
+		e.AgentID, e.IsSidechain = p.o.AgentID, true
+	}
 	p.res.Events = append(p.res.Events, e)
 }
 
@@ -228,6 +252,13 @@ func (p *codexParser) event(l codexRolloutLine, pl codexPayload, off int64) {
 	switch pl.Type {
 	case "token_count":
 		p.tokens(l, pl, off)
+	case "collab_agent_spawn_end":
+		p.spawn(pl)
+	}
+	if p.child() {
+		return // a sub-agent's user messages and aborts are its parent agent's, not the owner's
+	}
+	switch pl.Type {
 	case "turn_aborted": // the owner stopped the turn (Esc), like Claude's interrupt line
 		if pl.Reason == "interrupted" {
 			p.add(l, off, agentlogdb.AgentLogEvent{Key: "owner_turn:codex:abort:" + l.Timestamp, Kind: "owner_turn", Trigger: "interrupt"})
@@ -255,6 +286,37 @@ func (p *codexParser) event(l codexRolloutLine, pl codexPayload, off int64) {
 			}
 		}
 		p.add(l, off, agentlogdb.AgentLogEvent{Key: key, Kind: "owner_turn", Trigger: codexTrigger(text)})
+	}
+}
+
+// spawn links the sub-agent a collab_agent_spawn_end names under the root
+// session, one level below the reading rollout (at most
+// sessionfeed.MaxSubagentDepth: a deeper link is counted, not stored, so
+// never read), and sets it on the spawn tool row of the same call id when
+// that row is stored (CodexSpawns: an update, never a new row). A link to the
+// reading rollout itself or to the root (a fork's replay) is not one; a
+// spawn with no thread id is counted.
+func (p *codexParser) spawn(pl codexPayload) {
+	id := pl.NewThreadID
+	if !sessionfeed.IsCodexThreadID(id) {
+		p.res.Unknown["<codex-spawn-no-thread>"]++
+		return
+	}
+	if id == p.self() || id == p.o.SessionUUID {
+		return
+	}
+	switch depth := p.o.Depth + 1; {
+	case depth > sessionfeed.MaxSubagentDepth:
+		p.res.Unknown["<codex-spawn-too-deep>"]++
+	case !p.linked[id]:
+		if p.linked == nil {
+			p.linked = map[string]bool{}
+		}
+		p.linked[id] = true
+		p.res.Subagents = append(p.res.Subagents, agentlogdb.AgentSubagent{SessionUUID: p.o.SessionUUID, AgentID: id, Depth: depth, SpawnLink: true})
+	}
+	if pl.CallID != "" {
+		p.res.CodexSpawns = append(p.res.CodexSpawns, agentlogdb.AgentSpawn{Key: "tool:codex:" + pl.CallID, AgentID: id})
 	}
 }
 
@@ -305,14 +367,30 @@ func (p *codexParser) tokens(l codexRolloutLine, pl codexPayload, off int64) {
 		p.res.Unknown["<codex-token-count>"]++
 		return
 	}
+	if !p.modelSeen && p.o.CodexPriorModel != nil {
+		p.modelSeen = true
+		m, err := p.o.CodexPriorModel()
+		if err != nil {
+			p.err = err
+			return
+		}
+		p.model = cmp.Or(m, p.model)
+	}
 	u, t := pl.Info.Last, pl.Info.Total
-	in := max(u.Input-u.Cached, 0) // OpenAI's input_tokens include the cached part
-	usd, known := Cost(p.model, "", in, u.Output, u.Cached, 0, 0)
+	// OpenAI's input_tokens include the cached and the cache-write parts;
+	// output_tokens include the reasoning, stored apart, never added twice.
+	in := u.Input - u.Cached - u.CacheWrite
+	if in < 0 {
+		in = 0
+		p.res.CodexUsageMismatch++
+	}
+	usd, known := CostFor(AgentCodex, p.model, "", in, u.Output, u.Cached, u.CacheWrite, 0)
+	// The key keeps its pre-cache-write figures, so no stored row changes key.
 	key := fmt.Sprintf("api_call:codex:%s/%d.%d.%d.%d.%d/%d.%d.%d.%d.%d", p.lineage.id, u.Input, u.Cached, u.Output, u.Reasoning, u.Total,
 		t.Input, t.Cached, t.Output, t.Reasoning, t.Total)
 	p.add(l, off, agentlogdb.AgentLogEvent{Key: key,
 		Kind: "api_call", Name: p.model, InputTokens: in, OutputTokens: u.Output, CacheReadTokens: u.Cached,
-		ThinkingTokens: u.Reasoning, CostUSD: usd, CostEstimated: !known, PriceVersion: PriceVersion})
+		CacheWrite5mTokens: u.CacheWrite, ThinkingTokens: u.Reasoning, CostUSD: usd, CostEstimated: !known, PriceVersion: PriceVersion})
 }
 
 func (p *codexParser) responseItem(l codexRolloutLine, pl codexPayload, off int64) {
