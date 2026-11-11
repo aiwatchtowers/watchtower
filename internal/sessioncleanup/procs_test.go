@@ -12,6 +12,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 const psFixture = `  501     1   501 S    Mon Oct 12 10:00:00 2026     /bin/sleep
@@ -360,15 +361,17 @@ func pids(procs []Proc) []int {
 
 // TestSystemProcs_SmokeOnARealChild is the one real run: a sleep in a temp
 // dir (never a protected folder), lsof scoped to its pid, then SIGTERM. The
-// child outlives any test (the cleanup kills it) and every wait is for an
-// event — ps and lsof answering, the child's exit — with the test binary's
-// own timeout as the only hang guard, so a loaded machine is only slower.
+// child outlives the test (the cleanup kills it) and every wait is for an
+// event — ps and lsof answering, the child's exit — under a one-minute hang
+// guard that fails the test (so the cleanup still reaps the child) instead
+// of asserting a time, so a loaded machine is only slower.
 func TestSystemProcs_SmokeOnARealChild(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("ps/lsof flags and paths are macOS's")
 	}
+	const hangGuard = time.Minute
 	dir := t.TempDir()
-	cmd := exec.Command("/bin/sleep", "3600")
+	cmd := exec.Command("/bin/sleep", "600")
 	cmd.Dir = dir
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
@@ -381,7 +384,9 @@ func TestSystemProcs_SmokeOnARealChild(t *testing.T) {
 		<-waited
 	})
 
-	procs, err := SystemProcs{pids: []int{cmd.Process.Pid}}.Scan(t.Context())
+	ctx, cancel := context.WithTimeout(t.Context(), hangGuard)
+	defer cancel()
+	procs, err := SystemProcs{pids: []int{cmd.Process.Pid}}.Scan(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -397,9 +402,13 @@ func TestSystemProcs_SmokeOnARealChild(t *testing.T) {
 	if err := (SystemProcs{}).Terminate(child); err != nil {
 		t.Fatal(err)
 	}
-	err = <-waited
-	waited <- err // for the cleanup
-	if !strings.Contains(fmt.Sprint(err), "terminated") {
-		t.Fatalf("child ended with %v, want SIGTERM", err)
+	select {
+	case err := <-waited:
+		waited <- err // for the cleanup
+		if !strings.Contains(fmt.Sprint(err), "terminated") {
+			t.Fatalf("child ended with %v, want SIGTERM", err)
+		}
+	case <-time.After(hangGuard):
+		t.Fatal("the child survived SIGTERM")
 	}
 }

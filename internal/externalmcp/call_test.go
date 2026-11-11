@@ -65,12 +65,25 @@ func TestCallTool_ContextEndStopsServer(t *testing.T) {
 	require.NoError(t, syscall.Mkfifo(fifo, 0o600))
 	spec := fakeStdioSpec(t, map[string]string{"WT_FAKE_PIDFILE": fifo})
 
-	ctx, cancel := context.WithCancel(context.Background())
+	// Opened read-write so the open never blocks; closing it in the cleanup
+	// ends a read the server never answered, so the reader cannot leak.
+	r, err := os.OpenFile(fifo, os.O_RDWR, 0)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = r.Close() })
+
+	// The hang guard only ends a run whose server never reaches the tool:
+	// the cancel below always comes first, and a deadline fails the
+	// context.Canceled assertion.
+	ctx, cancel := context.WithTimeout(context.Background(), hangGuard)
 	defer cancel()
 	started := make(chan string, 1)
 	go func() {
-		raw, _ := os.ReadFile(fifo) // blocks until the slow tool writes
-		started <- string(raw)
+		buf := make([]byte, 32)
+		n, err := r.Read(buf) // blocks until the slow tool writes its pid
+		if err != nil {
+			return
+		}
+		started <- string(buf[:n])
 		cancel()
 	}()
 	var pid int
@@ -78,14 +91,9 @@ func TestCallTool_ContextEndStopsServer(t *testing.T) {
 		if pid > 0 {
 			_ = syscall.Kill(-pid, syscall.SIGKILL)
 		}
-		// A server that never got to the tool leaves the reader blocked:
-		// a writer that opens and closes ends its read.
-		if w, err := os.OpenFile(fifo, os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
-			_ = w.Close()
-		}
 	})
 
-	_, err := CallTool(ctx, spec, "slow_thing", nil)
+	_, err = CallTool(ctx, spec, "slow_thing", nil)
 	require.ErrorIs(t, err, context.Canceled)
 
 	var raw string

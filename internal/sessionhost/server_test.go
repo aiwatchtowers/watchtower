@@ -175,22 +175,6 @@ func (c *client) listUntil(ok func([]SessionInfo) bool) []SessionInfo {
 	}
 }
 
-// release opens fifo for writing — it blocks until a child has it open
-// for reading — and writes a line, ending the child's read.
-func release(t *testing.T, fifo string) {
-	t.Helper()
-	w, err := os.OpenFile(fifo, os.O_WRONLY, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := w.WriteString("go\n"); err != nil {
-		t.Fatal(err)
-	}
-	if err := w.Close(); err != nil {
-		t.Fatal(err)
-	}
-}
-
 // launch starts a /bin/sh -c script session; t.Cleanup kills its process
 // group and waits until the host has reaped it.
 func (c *client) launch(row int64, script string, env ...string) SessionInfo {
@@ -302,16 +286,16 @@ func TestServer_LaunchUsesOnlyGivenEnv(t *testing.T) {
 
 func TestServer_ExitWhileDetachedIsKeptUntilForget(t *testing.T) {
 	path := startServer(t, Options{})
-	// The child exits only when the test writes to the FIFO, after the
-	// client went away — not after a sleep a loaded machine may outlast.
-	fifo := filepath.Join(t.TempDir(), "go")
-	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+	// The child exits only once the test creates the go file, after the
+	// client went away — not after a sleep a loaded machine may outlast. A
+	// host that lost the child fails listUntil's hang guard, never hangs.
+	goFile := filepath.Join(t.TempDir(), "go")
+	c1 := dial(t, path)
+	c1.launch(1, `while [ ! -e '`+goFile+`' ]; do /bin/sleep 0.01; done; exit 7`)
+	_ = c1.nc.Close()
+	if err := os.WriteFile(goFile, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	c1 := dial(t, path)
-	c1.launch(1, `read _ < '`+fifo+`'; exit 7`)
-	_ = c1.nc.Close()
-	release(t, fifo)
 
 	c2 := dial(t, path)
 	got := c2.listUntil(func(got []SessionInfo) bool { return len(got) == 1 && got[0].Exited })
