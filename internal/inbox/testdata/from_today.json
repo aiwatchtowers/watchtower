@@ -1,0 +1,17 @@
+{
+  "about": "The \"from today\" rule of the Inbox, shared by Swift (InboxToday) and Go (db.IsFromToday): in the zone tz, an item is from today when MAX(created_at, mentioned_at) is at or after the first instant of now's local date (local midnight, or the first instant after a DST gap that swallows midnight). Times are RFC 3339 UTC; mentioned_at \"\" (or null) = none. expected is the answer.",
+  "cases": [
+    {"name": "midnight_exact", "now": "2026-11-11T08:00:00Z", "tz": "Europe/Kyiv", "created_at": "2026-11-10T22:00:00Z", "mentioned_at": "", "expected": true},
+    {"name": "before_midnight", "now": "2026-11-11T08:00:00Z", "tz": "Europe/Kyiv", "created_at": "2026-11-10T21:59:59Z", "mentioned_at": "", "expected": false},
+    {"name": "mentioned_today", "now": "2026-11-11T08:00:00Z", "tz": "Europe/Kyiv", "created_at": "2026-11-10T10:00:00Z", "mentioned_at": "2026-11-11T06:00:00Z", "expected": true},
+    {"name": "mentioned_yesterday", "now": "2026-11-11T08:00:00Z", "tz": "Europe/Kyiv", "created_at": "2026-11-09T10:00:00Z", "mentioned_at": "2026-11-10T21:00:00Z", "expected": false},
+    {"name": "no_mention", "now": "2026-11-11T08:00:00Z", "tz": "Europe/Kyiv", "created_at": "2026-11-11T07:00:00Z", "mentioned_at": "", "expected": true},
+    {"name": "mention_before_creation", "now": "2026-11-11T08:00:00Z", "tz": "Europe/Kyiv", "created_at": "2026-11-11T07:00:00Z", "mentioned_at": "2026-11-09T12:00:00Z", "expected": true},
+    {"name": "utc_vs_local_kyiv", "now": "2026-11-11T08:00:00Z", "tz": "Europe/Kyiv", "created_at": "2026-11-10T22:30:00Z", "mentioned_at": "", "expected": true},
+    {"name": "utc_vs_local_utc", "now": "2026-11-11T08:00:00Z", "tz": "UTC", "created_at": "2026-11-10T22:30:00Z", "mentioned_at": "", "expected": false},
+    {"name": "dst_spring_forward_before", "now": "2026-03-08T15:00:00Z", "tz": "America/New_York", "created_at": "2026-03-08T04:59:59Z", "mentioned_at": "", "expected": false},
+    {"name": "dst_spring_forward_at", "now": "2026-03-08T15:00:00Z", "tz": "America/New_York", "created_at": "2026-03-08T05:00:00Z", "mentioned_at": "", "expected": true},
+    {"name": "dst_at_midnight_first_instant", "now": "2026-09-06T15:00:00Z", "tz": "America/Santiago", "created_at": "2026-09-06T04:00:00Z", "mentioned_at": "", "expected": true},
+    {"name": "dst_at_midnight_before", "now": "2026-09-06T15:00:00Z", "tz": "America/Santiago", "created_at": "2026-09-06T03:59:59Z", "mentioned_at": "", "expected": false}
+  ]
+}
