@@ -26,7 +26,7 @@ func TestHTTPClient_ServerThatNeverAnswersTimesOut(t *testing.T) {
 		dialContext = func(context.Context, string, string) (net.Conn, error) {
 			client, server := net.Pipe()
 			go func() {
-				defer server.Close()
+				defer func() { _ = server.Close() }()
 				br := bufio.NewReader(server)
 				if _, err := http.ReadRequest(br); err != nil {
 					return

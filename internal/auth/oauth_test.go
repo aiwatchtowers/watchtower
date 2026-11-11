@@ -16,11 +16,11 @@ import (
 	"time"
 
 	"watchtower/internal/oauthpage"
+	"watchtower/internal/oauthpage/oauthpagetest"
 
 	"github.com/slack-go/slack"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"watchtower/internal/oauthpage/oauthpagetest"
 )
 
 // captureBrowserURL replaces the browser opener for the test and returns the
