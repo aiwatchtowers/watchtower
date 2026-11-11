@@ -60,3 +60,85 @@ func (db *DB) SetGmailSentCatchUpAt(accountID int64, at time.Time) error {
 	}
 	return nil
 }
+
+// GmailItemsAnsweredByOwner returns the ids of the pending Gmail
+// email_received inbox items whose thread holds an owner sent row (see
+// GmailOwnSent) newer than the received message. The received message's
+// internal_date is the reference; when its row is gone or its date does not
+// parse, the item's created_at stands in. Dates are compared in Go (RFC 3339).
+// Items whose channel_id is not a Gmail one are skipped. Any read error
+// returns the error and no ids.
+func (db *DB) GmailItemsAnsweredByOwner() ([]int, error) {
+	candidates, err := db.pendingGmailReceivedItems()
+	if err != nil {
+		return nil, err
+	}
+
+	sentQuery := `SELECT MAX(m.internal_date) FROM gmail_messages m
+		JOIN google_accounts a ON a.id = m.account_id
+		WHERE m.thread_id = ? AND m.account_id = ? AND ` + GmailOwnSentSQL("m", "a")
+
+	var out []int
+	for _, c := range candidates {
+		accountID, threadID, ok := ParseGmailChannelID(c.channelID)
+		if !ok {
+			continue
+		}
+		var received string
+		err := db.QueryRow(`SELECT internal_date FROM gmail_messages WHERE account_id = ? AND id = ?`,
+			accountID, c.messageTS).Scan(&received)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("reading received gmail message for item %d: %w", c.id, err)
+		}
+		since, perr := time.Parse(time.RFC3339, received)
+		if perr != nil {
+			if since, perr = time.Parse(time.RFC3339, c.createdAt); perr != nil {
+				continue
+			}
+		}
+		var sent sql.NullString
+		if err := db.QueryRow(sentQuery, threadID, accountID).Scan(&sent); err != nil {
+			return nil, fmt.Errorf("reading owner sent mail for item %d: %w", c.id, err)
+		}
+		if !sent.Valid {
+			continue
+		}
+		sentAt, perr := time.Parse(time.RFC3339, sent.String)
+		if perr != nil || !sentAt.After(since) {
+			continue
+		}
+		out = append(out, c.id)
+	}
+	return out, nil
+}
+
+// gmailReceivedItem is one pending email_received inbox item.
+type gmailReceivedItem struct {
+	id                   int
+	channelID, messageTS string
+	createdAt            string
+}
+
+// pendingGmailReceivedItems reads every pending email_received item, fully
+// drained before the caller issues any further query (single-connection
+// SQLite).
+func (db *DB) pendingGmailReceivedItems() ([]gmailReceivedItem, error) {
+	rows, err := db.Query(`SELECT id, channel_id, message_ts, created_at FROM inbox_items
+		WHERE trigger_type = 'email_received' AND status = 'pending'`)
+	if err != nil {
+		return nil, fmt.Errorf("listing pending gmail items: %w", err)
+	}
+	defer rows.Close()
+	var out []gmailReceivedItem
+	for rows.Next() {
+		var c gmailReceivedItem
+		if err := rows.Scan(&c.id, &c.channelID, &c.messageTS, &c.createdAt); err != nil {
+			return nil, fmt.Errorf("scanning pending gmail item: %w", err)
+		}
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("listing pending gmail items: %w", err)
+	}
+	return out, nil
+}

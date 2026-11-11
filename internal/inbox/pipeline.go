@@ -757,13 +757,37 @@ type trackerOwn struct {
 }
 
 // autoResolveByRules runs all rule-based auto-resolve checks across Slack,
-// Jira, Linear and Calendar sources. Returns the total number of items resolved.
+// Jira, Linear, Calendar and Gmail sources. Returns the total number of items
+// resolved.
 func (p *Pipeline) autoResolveByRules(ctx context.Context, owner db.Owner, own trackerOwn) int {
 	resolved := 0
 	resolved += p.autoResolveSlack()
 	resolved += p.autoResolveJira(ctx, own.jira)
 	resolved += p.autoResolveLinear(own.linear)
 	resolved += p.autoResolveCalendar(ctx, owner.Email)
+	resolved += p.autoResolveGmail()
+	return resolved
+}
+
+// autoResolveGmail resolves pending Gmail email_received items whose thread
+// holds the owner's own sent mail newer than the received message (INBOX-02;
+// db.GmailItemsAnsweredByOwner). It is auto-resolve, not detection: it never
+// touches the inbox watermark and its errors are logged, never detector
+// errors (INBOX-09).
+func (p *Pipeline) autoResolveGmail() int {
+	ids, err := p.db.GmailItemsAnsweredByOwner()
+	if err != nil {
+		p.logger.Printf("inbox: autoResolveGmail: %v", err)
+		return 0
+	}
+	resolved := 0
+	for _, id := range ids {
+		if err := p.db.ResolveInboxItem(id, "User replied"); err != nil {
+			p.logger.Printf("inbox: autoResolveGmail: resolving item %d: %v", id, err)
+			continue
+		}
+		resolved++
+	}
 	return resolved
 }
 
