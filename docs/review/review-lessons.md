@@ -2938,3 +2938,12 @@ Entry format:
 - weak-dimension: 7. A timing repro with `Thread.sleep` "red without, green with" on one machine was offered as proof. Four lanes doubted it would reproduce on CI.
 - rule-gap: the existing "a test never puts a window on screen" rule (review-rules Tests) worked. It was raised by 4 of 5 lanes. Candidate addition: *an AppKit/SwiftUI glitch fix tests the corrective write directly with a planted bad state; a framework-animation repro that needs an on-screen window or wall-clock sleeps stays a manual check in the PR.*
 - outcome: TBD
+
+## 2026-11-11 — fix/1746-phone-keystore-corrupt (4550c40b7: CloudKit zones, link codes, grants, heartbeat and switch markers named with hub_id as stored (`Keyring.HubIDText`), one-time account-style CloudKit reset keyed on `hub_meta.cloudkit_zones_hub_id`; 14 files; panel: prosecutor (5) + codex (0); pr-review-toolkit specialists unavailable; judge verified by reading, no runs; an uncommitted fix round in the worktree was seen, not judged) — verdict: changes-needed
+
+- contested: F1, phones that linked to an adopted hub while it ran v0.28.0 got an uppercase code and are stranded by the respelling. Real (v0.28.0 `link/codes.go` used `HubID().String()`, adoption shipped in v0.28.0 the same day, Kit compares hub ids as text); settled as major-but-deferred to a documented v1 limit because the cohort is hours wide and recovery is a re-link. [6]
+- false-positive: none dismissed outright; F2 (control.go still uses `HubID().String()`) is a doc-accuracy issue only, the code is fine since controls' hub_id is parsed as a UUID. [3]
+- miss: codex reported zero findings and missed the release-cohort stranding (F1) — a "spelling now consistent" check does not ask who already holds the old spelling. [6]
+- weak-dimension: 6 — an identifier-respelling fix needs a "who already persisted the old form" sweep (links, zones, subscriptions), not just "every writer now agrees".
+- rule-gap: candidate rule: a fix that changes the textual form of a persisted/shared identifier must enumerate every party that stored the old form (peers, cloud names, subscriptions) and either migrate, document, or test each. [6]
+- outcome: TBD

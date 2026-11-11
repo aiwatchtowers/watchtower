@@ -346,10 +346,12 @@ func (k *Keyring) HubID() secure.ID { return k.hub }
 
 // HubIDText is hub_id spelled as stored: the text the CloudKit zone names
 // (DataZone-/RelayZone-<hub_id>), the link codes, the grants, the heartbeat
-// and the controls carry. A hub this runtime created stores HubID().String()
-// (uppercase); a hub adopted from the Swift hub keeps that hub's lowercase
-// spelling, which its CloudKit zones and its phones' stored links use, and
-// the phones compare hub ids as text (#1746). Never re-spell it.
+// and the switch markers carry. A hub this runtime created stores
+// HubID().String() (uppercase); a hub adopted from the Swift hub keeps that
+// hub's lowercase spelling, which its CloudKit zones and its phones' stored
+// links use, and the phones compare those hub ids as text (#1746). Never
+// re-spell it. (A phone parses a control's hub_id as a UUID, so either
+// spelling serves there.)
 func (k *Keyring) HubIDText() string { return k.hubText }
 
 // Signer is hub_sig.

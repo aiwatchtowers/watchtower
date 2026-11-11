@@ -738,6 +738,28 @@ func TestRespelledCloudKitZonesRepublishOnce(t *testing.T) {
 		if v, _ := readMetaRO(t, r.dir, state.MetaSyncGeneration); v != "6" {
 			t.Fatalf("sync generation %q after a second start, want no second wipe", v)
 		}
+
+		// The mailbox half: CloudKit's mailbox token of the old zones goes, so
+		// the phones' zone is read from the start.
+		mailbox := transport.SharedMailboxZone(r.rec.last().RelayDeviceID)
+		if err := r.stop(); err != nil {
+			t.Fatal(err)
+		}
+		setMeta(t, r.dir, metaCloudKitZonesHubID, strings.ToUpper(stored))
+		setZoneToken(t, r.dir, mailbox, 77)
+		r.start(r.options())
+		r.waitState(StateRunning, "")
+		if err := r.stop(); err != nil {
+			t.Fatal(err)
+		}
+		st, err := state.OpenReadOnly(r.dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = st.Close() }()
+		if tok, err := st.ZoneToken(mailbox); err != nil || tok == 77 {
+			t.Fatalf("CloudKit's mailbox token %d (%v) after the respelling, want it rewound", tok, err)
+		}
 	})
 	bubble(t, func(t *testing.T) {
 		policytest.Set(t, nil)
@@ -1123,4 +1145,17 @@ func startStub(t *testing.T, script string) (*os.Process, error) {
 	pid := cmd.Process.Pid
 	t.Cleanup(func() { _ = syscall.Kill(-pid, syscall.SIGKILL) })
 	return cmd.Process, nil
+}
+
+// setZoneToken stores a zone's token with no hub running.
+func setZoneToken(t *testing.T, dir, zone string, since uint64) {
+	t.Helper()
+	st, err := state.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	if err := st.SetZoneToken(zone, since); err != nil {
+		t.Fatal(err)
+	}
 }
