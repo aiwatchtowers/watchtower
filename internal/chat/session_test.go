@@ -61,8 +61,9 @@ func startSession(t *testing.T, b Backend, configure func(*Session)) *harness {
 		// (killing a real claude_backend's child and its process group) in
 		// its exit defer, so a test that never called h.finish() itself must
 		// still not tear down before that has happened — otherwise the kill
-		// races the process exit and a later assertNoProcessSurvives can
-		// catch a stub mid-escalation instead of a genuine leak.
+		// races the process exit and a later leak check (useRealProcess, the
+		// fake's live-children check) can catch a stub mid-escalation
+		// instead of a genuine leak.
 		<-h.runDone
 	})
 	return h

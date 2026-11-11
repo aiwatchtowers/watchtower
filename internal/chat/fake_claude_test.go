@@ -62,9 +62,6 @@ type fakeChild struct {
 	statusN  int
 }
 
-// exited is closed once the child is gone.
-func (k *fakeChild) exited() <-chan struct{} { return k.done }
-
 // kill is SIGKILL from outside (a test killing the child).
 func (k *fakeChild) kill() { k.signal(syscall.SIGKILL) }
 
@@ -162,8 +159,15 @@ func (c *fakeCLI) start(spec childSpec) (*claudeChild, error) {
 		stdin: newChanPipe(), stdout: newChanPipe(), stderr: newChanPipe(),
 		signaled: make(chan struct{}), done: make(chan struct{}),
 	}
-	if k.mode == "" {
+	switch k.mode {
+	case "":
 		k.mode = "normal"
+	case "normal", "slow", "ignore_interrupt", "crash_once", "crash_always", "stubborn", "internal_tool",
+		"noread", "error_once", "error_always", "gate", "exit_clean", "long_line", "quota":
+	default:
+		// grandchild (a process group) and anything unknown: only the
+		// script can be that child, so a test cannot pass vacuously here.
+		return nil, fmt.Errorf("fake claude: mode %q runs only as a real process (useRealProcess)", k.mode)
 	}
 	k.in = bufio.NewReader(pipeReader{k.stdin})
 	appendFile(env["FAKE_ARGV"], strings.Join(args, "\n")+"\n--\n")

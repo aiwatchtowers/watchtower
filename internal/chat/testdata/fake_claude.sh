@@ -1,8 +1,11 @@
 #!/bin/sh
 # Fake `claude` for internal/chat backend tests; behaviour by $FAKE_MODE.
 # Most tests run its Go twin in process (fakeCLI, fake_claude_test.go): a
-# change here goes there too. The script itself runs only in the tests of
-# the process wiring (useRealProcess).
+# change here goes there too (the twin also has a Go-only quota mode, and
+# refuses stubborn's group and grandchild modes it cannot model). The script
+# itself runs only in the tests of the process wiring (useRealProcess). The
+# grandchild sleeps a day: it never ends on its own within a test run, so
+# only the group kill can close its FIFO.
 #   normal (default) · slow (first turn never finishes until interrupted)
 #   ignore_interrupt (first turn never finishes and ignores the interrupt)
 #   crash_once (dies on the first user message ever)
@@ -48,14 +51,14 @@ done
 if [ "$FAKE_MODE" = "stubborn" ]; then
   trap '' TERM
   echo $$ > "$FAKE_PID"
-  sleep 300 > "$FAKE_CHILD_FIFO" &
+  sleep 86400 > "$FAKE_CHILD_FIFO" &
   while :; do sleep 1; done
 fi
 if [ "$FAKE_MODE" = "noread" ]; then
   while :; do sleep 1; done
 fi
 if [ "$FAKE_MODE" = "grandchild" ]; then
-  sleep 300 > "$FAKE_CHILD_FIFO" &
+  sleep 86400 > "$FAKE_CHILD_FIFO" &
 fi
 
 first_time() {

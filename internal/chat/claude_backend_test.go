@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -23,7 +24,7 @@ import (
 )
 
 type fakeFiles struct {
-	argv, stdin, pid, childPID, mark, cwd, workDir string
+	argv, stdin, pid, mark, cwd, workDir string
 	// cli is the in-process fake the options run (fakeCLI); a test of the
 	// process wiring itself switches to the script with useRealProcess.
 	cli *fakeCLI
@@ -50,7 +51,7 @@ func fakeClaude(t *testing.T, mode string) (ClaudeOptions, fakeFiles) {
 	require.NoError(t, os.WriteFile(bin, script, 0o755))
 	f := fakeFiles{
 		argv: filepath.Join(dir, "argv"), stdin: filepath.Join(dir, "stdin"),
-		pid: filepath.Join(dir, "pid"), childPID: filepath.Join(dir, "child"), mark: filepath.Join(dir, "mark"),
+		pid: filepath.Join(dir, "pid"), mark: filepath.Join(dir, "mark"),
 		cwd: filepath.Join(dir, "cwd"), workDir: filepath.Join(dir, "workdir"), cli: cli,
 	}
 	return ClaudeOptions{
@@ -58,7 +59,7 @@ func fakeClaude(t *testing.T, mode string) (ClaudeOptions, fakeFiles) {
 		MCPConfig: `{"mcpServers":{}}`, AllowedTools: "mcp__watchtower", DisallowedTools: "Bash",
 		WorkDir: f.workDir,
 		Env: []string{"FAKE_MODE=" + mode, "FAKE_ARGV=" + f.argv, "FAKE_STDIN=" + f.stdin,
-			"FAKE_PID=" + f.pid, "FAKE_CHILD_PID=" + f.childPID, "FAKE_MARK=" + f.mark, "FAKE_CWD=" + f.cwd},
+			"FAKE_PID=" + f.pid, "FAKE_MARK=" + f.mark, "FAKE_CWD=" + f.cwd},
 		InterruptGrace: 300 * time.Millisecond,
 		CloseGrace:     200 * time.Millisecond,
 		start:          cli.start,
@@ -68,7 +69,20 @@ func fakeClaude(t *testing.T, mode string) (ClaudeOptions, fakeFiles) {
 // useRealProcess makes opts start testdata/fake_claude.sh as a real child
 // process: only for the tests of the process wiring itself (spawn, the
 // payload pipes, process-group kill), which wait on process events only.
-func useRealProcess(opts *ClaudeOptions) { opts.start = nil }
+// Called before the test registers its own teardown, it also registers a
+// cleanup — run after that teardown — that fails the test when any process
+// whose argv names the stub's folder is still alive: one look, no polling
+// (the teardown reaped the stub; a grandchild a test watches is seen gone on
+// its FIFO first).
+func useRealProcess(t *testing.T, opts *ClaudeOptions) {
+	t.Helper()
+	opts.start = nil
+	dir := filepath.Dir(opts.Binary)
+	t.Cleanup(func() {
+		out, _ := exec.Command("pgrep", "-f", dir).Output()
+		assert.Empty(t, strings.TrimSpace(string(out)), "a fake claude process outlived the test")
+	})
+}
 
 // argvRuns splits the fake's argv log into one slice per process run.
 func argvRuns(t *testing.T, path string) [][]string {
@@ -270,28 +284,29 @@ func TestClaudeBackend_RespawnReplays(t *testing.T) {
 
 // Every spawn gets fresh pipes: the child that replaces a crashed one reads
 // the system prompt and the MCP config again (#604 G7).
+// A real process (the script): the payload pipes are what is under test.
 func TestClaudeBackend_RespawnReadsPromptPipesAgain(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		opts, f := fakeClaude(t, "crash_once")
-		read := filepath.Join(t.TempDir(), "read")
-		opts.Env = append(opts.Env, "FAKE_PROMPT="+read+".prompt", "FAKE_MCP="+read+".mcp")
-		h := startSession(t, NewClaudeBackend(opts), nil)
-		h.next(EventSessionReady)
+	opts, f := fakeClaude(t, "crash_once")
+	useRealProcess(t, &opts)
+	read := filepath.Join(t.TempDir(), "read")
+	opts.Env = append(opts.Env, "FAKE_PROMPT="+read+".prompt", "FAKE_MCP="+read+".mcp")
+	h := startSession(t, NewClaudeBackend(opts), nil)
+	h.next(EventSessionReady)
 
-		h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "x"})
-		h.next(EventError)
-		h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "retry"})
-		assert.Equal(t, StatusComplete, h.next(EventTurnDone).Status)
-		require.NoError(t, h.finish())
+	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "x"})
+	h.next(EventError)
+	h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "retry"})
+	assert.Equal(t, StatusComplete, h.next(EventTurnDone).Status)
+	require.NoError(t, h.finish())
 
-		require.Len(t, argvRuns(t, f.argv), 2)
-		prompt, err := os.ReadFile(read + ".prompt")
-		require.NoError(t, err)
-		assert.Equal(t, strings.Repeat("SYSTEM-PROMPT-SECRET\n--\n", 2), string(prompt))
-		mcp, err := os.ReadFile(read + ".mcp")
-		require.NoError(t, err)
-		assert.Equal(t, strings.Repeat(opts.MCPConfig+"\n--\n", 2), string(mcp))
-	})
+	require.Len(t, argvRuns(t, f.argv), 2)
+	prompt, err := os.ReadFile(read + ".prompt")
+	require.NoError(t, err)
+	assert.Equal(t, strings.Repeat("SYSTEM-PROMPT-SECRET\n--\n", 2), string(prompt))
+	mcp, err := os.ReadFile(read + ".mcp")
+	require.NoError(t, err)
+	assert.Equal(t, strings.Repeat(opts.MCPConfig+"\n--\n", 2), string(mcp))
+
 }
 
 func indexOf(list []string, s string) int {
@@ -334,7 +349,7 @@ func TestChat04_ClaudeArgvCarriesNoContent(t *testing.T) {
 	// inherited pipes the spawn hands over, end to end.
 	forEachClaudeAIModeReal(t, func(t *testing.T, mode ClaudeAIMode) {
 		opts, f := fakeClaude(t, "normal")
-		useRealProcess(&opts)
+		useRealProcess(t, &opts)
 		opts.ClaudeAI = mode
 		tmp := t.TempDir()
 		t.Setenv("TMPDIR", tmp)
@@ -710,7 +725,7 @@ func TestClaudeBackend_UnsafeWorkDirIsItsOwnNonRetryableCode(t *testing.T) {
 // grandchild's FIFO opening and reaching EOF.
 func TestChat03_CloseReapsStubbornChild(t *testing.T) {
 	opts, f := fakeClaude(t, "stubborn")
-	useRealProcess(&opts)
+	useRealProcess(t, &opts)
 	grandchild := childFIFO(t, &opts)
 	b := NewClaudeBackend(opts)
 	t.Cleanup(func() { _ = b.Close() })
@@ -760,9 +775,10 @@ func controlGrace(b Backend, fired int) func() []time.Duration {
 // what is under test, seen through the grandchild's FIFO.
 func TestClaudeBackend_StdinEOFEndsSessionAndSweepsGroup(t *testing.T) {
 	opts, _ := fakeClaude(t, "grandchild")
-	useRealProcess(&opts)
+	useRealProcess(t, &opts)
 	grandchild := childFIFO(t, &opts)
 	inR, inW := io.Pipe()
+	t.Cleanup(func() { _ = inW.Close() }) // ends the session if the test stops early
 	s := NewSession(NewClaudeBackend(opts), NewEventWriter(io.Discard))
 	done := make(chan error, 1)
 	go func() { done <- s.Run(context.Background(), inR) }()
@@ -926,7 +942,7 @@ func TestClaudeBackend_CancelBeforeMessageIsSentIsInterrupted(t *testing.T) {
 // is under test; the in-process fakes cannot show the kernel failing it.
 func TestChat03_CloseUnblocksAStuckWrite(t *testing.T) {
 	opts, _ := fakeClaude(t, "noread")
-	useRealProcess(&opts)
+	useRealProcess(t, &opts)
 	b := NewClaudeBackend(opts)
 	// Close is idempotent (closeOnce), so this is a no-op once the test's own
 	// Close() call below runs; it's the guarantee that the stub still gets

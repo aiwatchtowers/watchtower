@@ -154,7 +154,7 @@ func TestChat05_ClaudeAIChildNeverTouchesTCCGuardedFolders(t *testing.T) {
 		sandbox, err := NewChildSandboxAt(sandboxExecPath, []string{home})
 		require.NoError(t, err)
 		fx := gateFake(t)
-		useRealProcess(&fx.opts) // the real macOS sandbox confines a real child
+		useRealProcess(t, &fx.opts) // the real macOS sandbox confines a real child
 		fx.opts.ClaudeAI.Sandbox = sandbox
 		// The "CLI" first tries to read the canary, then runs the fake.
 		probe := filepath.Join(t.TempDir(), "probe")
