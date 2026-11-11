@@ -22,12 +22,14 @@ changed: Suggestions now live in Analytics and on Home, and repeated directions 
 
 Once a week the background daemon looks at the last four weeks: your marks on spec review findings (**Comment** counts as a real problem, **Not useful** as noise), the first round of your code reviews, the lines you sent to agents and chats, and the hints in **Analytics**. When a pattern shows up in at least three different sessions, specs or review rounds, it becomes a suggestion. At most three wait for you at once, and a suggestion you decline is not proposed again unless the text it would change has changed since.
 
-A suggestion edits one place, always your own setup and never a file in a repository:
+A weekly suggestion edits one place, always your own setup and never a file in a repository:
 
 - your instructions (global or per workbench), the target procedure and the chat text;
 - extra lines for a Watchtower prompt, such as the spec reviewer. They are added on top of the prompt, so prompt updates still reach you;
 - permission rules in `~/.claude/settings.json`, only for reading, searching and running the tests or build (`cat`, `ls`, `grep`, `head`, `tail`, `go test`, `go build`, `go vet`, `swift test`, `swift build`, `cargo test`, `npm test`, `pytest`). A test or build rule runs project code, so accept it only if you trust your projects;
 - your `~/.claude/CLAUDE.md`.
+
+The [tuning chat](tuning-chat.md) files proposals too, and they can also edit your Claude Code and Codex skills, extra lines for a Watchtower skill, `~/.codex/AGENTS.md`, the Codex allow rules, and the workbench folder's `CLAUDE.md`, `AGENTS.md`, skills and `.watchtower/workflow.md`, which you commit yourself.
 
 After you accept, the coach waits 14 days and compares the measure it targeted with the 14 days before. The verdict is **works**, **no effect** or **too little data**. It shows what changed since the edit, not that the edit caused it. A no-effect edit gets a suggestion to remove it.
 
@@ -36,7 +38,7 @@ After you accept, the coach waits 14 days and compares the measure it targeted w
 Open a workbench's **Analytics** (analytics must be on for it). From the top:
 
 - **How it's going** has four tiles for the period you pick (**1 day**, **7 days** or **30 days**) against the period before: corrections per task, hours and cost per task, your share of active time, and review findings. Lower is better; a change under 5 % reads "about the same", and a tile with too little behind it says so instead of showing a trend.
-- **Proposed edits** lists up to three suggestions. Each card shows what it moves, why, the lines removed and added, how big the text gets against its limit, and links to the evidence. **Accept** applies it. **Edit…** opens the whole proposed text so you can change it first (not for permission rules). **Decline** asks once and is for good. Below, **Run Now** does the weekly pass at once; if the daemon is already running it, the screen says so and updates when it finishes.
+- **Proposed edits** lists up to three weekly suggestions and the tuning chat's proposals. Each card shows what it moves, why, the lines removed and added, how big the text gets against its limit, and links to the evidence. **Accept** applies it. **Edit…** opens the whole proposed text so you can change it first (not for Claude Code permission rules). **Decline** asks once and is for good. Below, **Run Now** does the weekly pass at once; if the daemon is already running it, the screen says so and updates when it finishes.
 - **Accepted edits** is the log, newest first, with a verdict line: **works**, **no effect**, **too little data** or **measuring**. **Roll Back** undoes an edit; if you changed the text since, it shows the difference and offers **Roll Back Anyway**.
 - **Statistics** is the rest of the view, described in [Agent analytics](agent-analytics.md).
 
@@ -73,7 +75,7 @@ On a spec review's findings screen, **Not useful** sits next to **Fix**, **Skip*
 - **"The text changed since":** you edited that text meanwhile, so the card closes. The next weekly pass can suggest again.
 - **A superseded suggestion:** you edited that text meanwhile. The next weekly pass can suggest again.
 - **Rolled-back CLAUDE.md is empty:** if an edit created the file, rolling back leaves it empty.
-- The coach never edits a project's own `CLAUDE.md`, workflow file or skills.
+- The weekly pass never edits a project's own `CLAUDE.md`, workflow file or skills; only a tuning chat proposal you accept does.
 
 ## Related
 
