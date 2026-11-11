@@ -6,7 +6,6 @@ import (
 	"os"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -132,8 +131,7 @@ done
 	}})
 	t.Cleanup(func() { _ = b.Close() })
 	sink := collectLedger(t)
-	ctx, cancel := context.WithTimeout(context.Background(), hangGuard)
-	defer cancel()
+	ctx := context.Background()
 	_, err := b.Start(ctx)
 	require.NoError(t, err)
 	var events []Event
@@ -189,12 +187,8 @@ func TestRoutingCancelBeforeSelectionNeverBuildsChild(t *testing.T) {
 	go func() { finished <- b.Turn(context.Background(), Command{TurnID: "cancel"}, func(Event) {}) }()
 	<-entered
 	require.NoError(t, b.Cancel())
-	select {
-	case err := <-finished:
-		require.ErrorIs(t, err, context.Canceled)
-	case <-time.After(hangGuard):
-		t.Fatal("cancel did not end preflight")
-	}
+	err := <-finished
+	require.ErrorIs(t, err, context.Canceled)
 	require.Zero(t, builds)
 	require.NoError(t, b.Close())
 }
@@ -209,9 +203,5 @@ func TestRoutingCloseReapsStubbornWarmChild(t *testing.T) {
 	}()
 	_ = readPIDFile(t, files.pid)
 	require.NoError(t, b.Close())
-	select {
-	case <-finished:
-	case <-time.After(hangGuard):
-		t.Fatal("close did not end the pending turn")
-	}
+	<-finished
 }

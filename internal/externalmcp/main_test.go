@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"syscall"
 	"testing"
 	"time"
 
@@ -20,10 +21,14 @@ import (
 // exits, leaving the grandchild behind.
 const fakeStdioServerEnv = "WT_EXTERNALMCP_FAKE_STDIO_SERVER"
 
-// hangGuard bounds a wait for a fake server — starting the test binary,
-// a process ending — only so a broken run fails instead of hanging; it is
-// never what a test asserts, so a loaded machine only makes it slower.
-const hangGuard = time.Minute
+// waitGone polls until kill(target, 0) fails. target — a pid, or -pgid for a
+// process group — is not this process's child, so its end is seen only by
+// polling; go test -timeout is the only bound on a broken run.
+func waitGone(target int) {
+	for syscall.Kill(target, 0) == nil {
+		time.Sleep(20 * time.Millisecond)
+	}
+}
 
 func TestMain(m *testing.M) {
 	if os.Getenv(fakeStdioServerEnv) == "fail" {

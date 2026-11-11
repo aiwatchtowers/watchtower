@@ -66,20 +66,15 @@ func fakeClaude(t *testing.T, mode string) (ClaudeOptions, fakeFiles) {
 func assertNoProcessSurvives(t *testing.T, dir string) {
 	t.Helper()
 	t.Cleanup(func() {
-		deadline := time.Now().Add(hangGuard)
-		var out []byte
+		// Reaping by launchd is an event of another process: polled, with go
+		// test -timeout as the only bound — a leak hangs the run there, its
+		// goroutine dump naming this cleanup.
 		for {
-			out, _ = exec.Command("pgrep", "-f", dir).Output()
-			if len(strings.TrimSpace(string(out))) == 0 || time.Now().After(deadline) {
-				break
+			out, _ := exec.Command("pgrep", "-f", dir).Output()
+			if len(strings.TrimSpace(string(out))) == 0 {
+				return
 			}
 			time.Sleep(20 * time.Millisecond)
-		}
-		if s := strings.TrimSpace(string(out)); s != "" {
-			// A regression here must not also leave the process running: kill
-			// it (best-effort) so the failure is visible without leaking.
-			_ = exec.Command("pkill", "-9", "-f", dir).Run()
-			t.Errorf("process(es) from %s survived test cleanup (pid(s): %s)", dir, strings.Join(strings.Fields(s), ", "))
 		}
 	})
 }
@@ -105,14 +100,12 @@ func argvRuns(t *testing.T, path string) [][]string {
 // waitRuns polls until the fake has logged at least n process runs.
 func waitRuns(t *testing.T, path string, n int) {
 	t.Helper()
-	deadline := time.Now().Add(hangGuard)
-	for time.Now().Before(deadline) {
+	for {
 		if data, err := os.ReadFile(path); err == nil && strings.Count(string(data), "\n--\n") >= n {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("the fake claude never logged %d run(s)", n)
 }
 
 func contains(list []string, s string) bool {
@@ -121,8 +114,7 @@ func contains(list []string, s string) bool {
 
 func readPIDFile(t *testing.T, path string) int {
 	t.Helper()
-	deadline := time.Now().Add(hangGuard)
-	for time.Now().Before(deadline) {
+	for {
 		if b, err := os.ReadFile(path); err == nil {
 			if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && pid > 0 {
 				return pid
@@ -130,21 +122,18 @@ func readPIDFile(t *testing.T, path string) int {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("pid file %s never appeared", path)
-	return 0
 }
 
-// waitGone polls until pid no longer exists (reaped), bounded by hangGuard.
-func waitGone(t *testing.T, pid int, what string) {
+// waitGone polls until pid no longer exists (reaped): an event of another
+// process, so only polling sees it; go test -timeout ends a run it never comes.
+func waitGone(t *testing.T, pid int) {
 	t.Helper()
-	deadline := time.Now().Add(hangGuard)
-	for time.Now().Before(deadline) {
+	for {
 		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("%s (pid %d) is still alive", what, pid)
 }
 
 func TestClaudeBackend_MultiTurnInOneWarmProcess(t *testing.T) {
@@ -691,19 +680,48 @@ func TestClaudeBackend_UnsafeWorkDirIsItsOwnNonRetryableCode(t *testing.T) {
 // BEHAVIOR CHAT-03 — see docs/inventory/chat.md
 // TestChat03_CloseReapsStubbornChild: CHAT-03 / Review Focus 2 — a child that
 // ignores stdin EOF and SIGTERM, and its own child, are both gone after Close.
+// The escalation is bounded by construction, checked step by step instead of
+// by wall clock: exactly two CloseGrace waits (after EOF, after TERM), which
+// the test runs out itself, then KILL — the only signal that ends this child.
 func TestChat03_CloseReapsStubbornChild(t *testing.T) {
 	opts, f := fakeClaude(t, "stubborn")
 	b := NewClaudeBackend(opts)
+	steps := controlGrace(b, 2)
 	_, err := b.Start(context.Background())
 	require.NoError(t, err)
 	leader := readPIDFile(t, f.pid)
 	child := readPIDFile(t, f.childPID)
 
-	start := time.Now()
 	require.NoError(t, b.Close())
-	assert.Less(t, time.Since(start), 3*time.Second, "EOF, TERM, then KILL — bounded")
-	waitGone(t, leader, "claude")
-	waitGone(t, child, "claude's child")
+	assert.Equal(t, []time.Duration{opts.CloseGrace, opts.CloseGrace}, steps(),
+		"EOF, TERM, then KILL — two grace steps, nothing else waited on")
+	waitGone(t, leader)
+	waitGone(t, child)
+}
+
+// controlGrace takes over b's CloseGrace timer: the first fired steps run
+// out at once, a later one never does (only the child's exit ends it). The
+// returned func lists the durations stopProc asked for, in order.
+func controlGrace(b Backend, fired int) func() []time.Duration {
+	var mu sync.Mutex
+	var steps []time.Duration
+	b.(*claudeBackend).graceAfter = func(d time.Duration) <-chan time.Time {
+		mu.Lock()
+		steps = append(steps, d)
+		n := len(steps)
+		mu.Unlock()
+		if n > fired {
+			return nil
+		}
+		out := make(chan time.Time, 1)
+		out <- time.Time{}
+		return out
+	}
+	return func() []time.Duration {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(steps)
+	}
 }
 
 func TestClaudeBackend_StdinEOFEndsSessionAndSweepsGroup(t *testing.T) {
@@ -718,13 +736,9 @@ func TestClaudeBackend_StdinEOFEndsSessionAndSweepsGroup(t *testing.T) {
 	// its child proves nothing about the sweep.
 	child := readPIDFile(t, f.childPID)
 	require.NoError(t, inW.Close())
-	select {
-	case err := <-done:
-		assert.NoError(t, err)
-	case <-time.After(hangGuard):
-		t.Fatal("Run did not return after stdin EOF")
-	}
-	waitGone(t, child, "the MCP-server stand-in left behind by claude")
+	err := <-done
+	assert.NoError(t, err)
+	waitGone(t, child)
 }
 
 func TestClaudeBackend_ContextCancelEndsSession(t *testing.T) {
@@ -738,13 +752,9 @@ func TestClaudeBackend_ContextCancelEndsSession(t *testing.T) {
 
 	child := readPIDFile(t, f.childPID)
 	cancel()
-	select {
-	case err := <-done:
-		assert.NoError(t, err)
-	case <-time.After(hangGuard):
-		t.Fatal("Run did not return after ctx cancel")
-	}
-	waitGone(t, child, "claude's child")
+	err := <-done
+	assert.NoError(t, err)
+	waitGone(t, child)
 }
 
 func TestClaudeBackend_MissingBinaryIsProviderUnavailable(t *testing.T) {
@@ -805,12 +815,8 @@ func TestChat03_CloseDuringReplayNeverRespawns(t *testing.T) {
 	require.NoError(t, h.in.Close()) // the app went away mid-turn
 	time.Sleep(300 * time.Millisecond)
 	close(release)
-	select {
-	case err := <-h.done:
-		require.NoError(t, err)
-	case <-time.After(hangGuard):
-		t.Fatal("session did not stop")
-	}
+	err := <-h.done
+	require.NoError(t, err)
 	time.Sleep(300 * time.Millisecond) // a late spawn would log its argv by now
 	assert.Len(t, argvRuns(t, f.argv), 1, "no claude is spawned after Close")
 }
@@ -875,37 +881,53 @@ func TestChat03_CloseUnblocksAStuckWrite(t *testing.T) {
 	// Close() call below runs; it's the guarantee that the stub still gets
 	// reaped if an assertion fails first and skips the rest of the test body.
 	t.Cleanup(func() { _ = b.Close() })
+	// The escalation budget is checked by step, not by wall clock: the EOF
+	// step runs out at once, and the TERM step never runs out — only the
+	// child's exit on SIGTERM may end it.
+	steps := controlGrace(b, 1)
 	_, err := b.Start(context.Background())
 	require.NoError(t, err)
 	waitRuns(t, f.argv, 1)
 
+	// The turn's message write is seen entering the child's stdin; nothing
+	// reads that pipe, so an 8 MB write cannot complete.
+	cb := b.(*claudeBackend)
+	cb.mu.Lock()
+	entered := make(chan struct{})
+	cb.proc.stdin = &enteredWriter{WriteCloser: cb.proc.stdin, min: 1 << 20, entered: entered}
+	cb.mu.Unlock()
 	turnErr := make(chan error, 1)
 	go func() {
 		turnErr <- b.Turn(context.Background(), Command{Type: CommandTurn, TurnID: "t1",
 			Text: strings.Repeat("x", 8<<20)}, func(Event) {})
 	}()
-	time.Sleep(300 * time.Millisecond)
+	<-entered
 	select {
 	case err := <-turnErr:
 		t.Fatalf("the write was expected to block on the full pipe, the turn returned %v", err)
 	default:
 	}
 
-	closed := make(chan struct{})
-	start := time.Now()
-	go func() { _ = b.Close(); close(closed) }()
-	select {
-	case <-closed:
-		assert.Less(t, time.Since(start), 2*opts.CloseGrace+time.Second, "Close stays within its escalation budget")
-	case <-time.After(hangGuard):
-		t.Fatal("Close blocked behind the stuck write")
+	require.NoError(t, b.Close()) // a Close blocked behind the stuck write never returns
+	assert.Equal(t, []time.Duration{opts.CloseGrace, opts.CloseGrace}, steps(),
+		"Close stays within its escalation budget: EOF and TERM steps, no other wait")
+	require.ErrorIs(t, <-turnErr, errBackendClosed, "the blocked write fails once Close closes stdin")
+}
+
+// enteredWriter closes entered when a write of at least min bytes begins,
+// then hands it on: a test's event for "the big write is under way".
+type enteredWriter struct {
+	io.WriteCloser
+	min     int
+	entered chan struct{}
+	once    sync.Once
+}
+
+func (w *enteredWriter) Write(p []byte) (int, error) {
+	if len(p) >= w.min {
+		w.once.Do(func() { close(w.entered) })
 	}
-	select {
-	case err := <-turnErr:
-		require.ErrorIs(t, err, errBackendClosed, "the blocked write fails once Close closes stdin")
-	case <-time.After(hangGuard):
-		t.Fatal("the blocked write never returned")
-	}
+	return w.WriteCloser.Write(p)
 }
 
 // A cancel while the message write is stuck returns at once (the session
@@ -1004,7 +1026,7 @@ func TestClaudeBackend_OverlongProtocolLineFailsTheTurn(t *testing.T) {
 	require.ErrorAs(t, last.Cause, &failure)
 	assert.Equal(t, providers.InvalidOutput, failure.Category)
 	assert.Contains(t, last.Message, "reading claude output")
-	waitGone(t, readPIDFile(t, f.pid), "the child whose result line could not be read")
+	waitGone(t, readPIDFile(t, f.pid)) // the child whose result line could not be read
 }
 
 // A stdout line over maxWarmLine (a huge tool result) is skipped and

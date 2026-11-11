@@ -254,12 +254,8 @@ func TestDaemon_GracefulShutdown(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	cancel()
 
-	select {
-	case err := <-done:
-		assert.NoError(t, err, "daemon should shut down cleanly on context cancellation")
-	case <-time.After(loopWait):
-		t.Fatal("daemon did not shut down within timeout")
-	}
+	err := <-done
+	assert.NoError(t, err, "daemon should shut down cleanly on context cancellation")
 }
 
 func TestWakeChannel_NilWhenDisabled(t *testing.T) {
@@ -1200,19 +1196,19 @@ func TestDaemon_ManualTriggerCausesSync(t *testing.T) {
 // landed on ctx.Done(), re-entering runSync several times on the dead ctx —
 // each one writing a "context canceled" pipeline_runs row and overwriting
 // last_sync.json with a bogus result. The channel is closed while ctx is
-// still alive so the count is deterministic: a spinning loop would run
-// hundreds of syncs within the window, a correct one exactly the initial one.
+// still alive: a correct loop drops it and runs exactly the initial sync.
 func TestDaemon_ClosedTriggerChannelDoesNotSpinSyncs(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		wire func(d *Daemon, ch chan struct{})
+		name    string
+		wire    func(d *Daemon, ch chan struct{})
+		dropped func(d *Daemon) bool
 	}{
-		{"trigger", func(d *Daemon, ch chan struct{}) { d.triggerCh = ch }},
+		{"trigger", func(d *Daemon, ch chan struct{}) { d.triggerCh = ch }, func(d *Daemon) bool { return d.triggerCh == nil }},
 		{"wake", func(d *Daemon, _ chan struct{}) {
 			wake := make(chan time.Duration)
 			close(wake)
 			d.wakeCh = wake
-		}},
+		}, func(d *Daemon) bool { return d.wakeCh == nil }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
@@ -1227,21 +1223,12 @@ func TestDaemon_ClosedTriggerChannelDoesNotSpinSyncs(t *testing.T) {
 			tc.wire(d, ch)
 			close(ch)
 
-			// The initial cycle first, however long it takes, then a window
-			// the loop would spend spinning: a slow machine only shortens
-			// what the window sees, it cannot make a correct loop fail.
-			var ended atomic.Int32
-			d.cycleEnded = func() { ended.Add(1) }
-			var firstEnded time.Time
-			require.NoError(t, runDaemonUntil(t, d, func() bool {
-				if ended.Load() == 0 {
-					return false
-				}
-				if firstEnded.IsZero() {
-					firstEnded = time.Now()
-				}
-				return time.Since(firstEnded) >= 300*time.Millisecond
-			}))
+			// No time window: the loop sits in its select while the initial
+			// cycle runs, with the closed channel the only ready case, so it
+			// drops the channel before the cycle ends. A loop that kept
+			// reading it never drops it — and starts a cycle per read.
+			require.NoError(t, runDaemonCycles(t, d, 1))
+			assert.True(t, tc.dropped(d), "the closed %s channel is dropped, not read as an endless stream of events", tc.name)
 			assert.Equal(t, int32(1), syncCount.Load(), "a closed %s channel must not be read as an endless stream of events", tc.name)
 		})
 	}

@@ -157,16 +157,12 @@ func TestSpecReviewSweep_StopsOverdueReviewer(t *testing.T) {
 	row, err := database.GetSpecReview(id)
 	require.NoError(t, err)
 	assert.Equal(t, "failed", row.Status)
-	select {
-	case err := <-exited:
-		var ee *exec.ExitError
-		require.True(t, errors.As(err, &ee), "the reviewer was stopped: %v", err)
-		ws, _ := ee.Sys().(syscall.WaitStatus)
-		assert.Equal(t, syscall.SIGTERM, ws.Signal())
-		exited <- err // for the cleanup
-	case <-time.After(loopWait):
-		t.Fatal("the overdue reviewer is still running")
-	}
+	err = <-exited
+	var ee *exec.ExitError
+	require.True(t, errors.As(err, &ee), "the reviewer was stopped: %v", err)
+	ws, _ := ee.Sys().(syscall.WaitStatus)
+	assert.Equal(t, syscall.SIGTERM, ws.Signal())
+	exited <- err // for the cleanup
 }
 
 // A reviewer that claims the row between the sweep's listing and its

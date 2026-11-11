@@ -11,7 +11,6 @@ import (
 	"sync/atomic"
 	"syscall"
 	"testing"
-	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
@@ -27,7 +26,7 @@ func fakeStdioSpec(t *testing.T, env map[string]string) ServerSpec {
 }
 
 func TestCallTool_StdioStructuredResult(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), hangGuard)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	out, err := CallTool(ctx, fakeStdioSpec(t, map[string]string{}), "get_thing", json.RawMessage(`{"id":"PAY-1"}`))
 	require.NoError(t, err)
@@ -39,7 +38,7 @@ func TestCallTool_StdioStructuredResult(t *testing.T) {
 }
 
 func TestCallTool_TextResultWrapped(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), hangGuard)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	out, err := CallTool(ctx, fakeStdioSpec(t, map[string]string{}), "text_thing", nil)
 	require.NoError(t, err)
@@ -47,7 +46,7 @@ func TestCallTool_TextResultWrapped(t *testing.T) {
 }
 
 func TestCallTool_IsErrorIsToolError(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), hangGuard)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	_, err := CallTool(ctx, fakeStdioSpec(t, map[string]string{}), "fail_thing", nil)
 	var toolErr *ToolError
@@ -71,10 +70,7 @@ func TestCallTool_ContextEndStopsServer(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = r.Close() })
 
-	// The hang guard only ends a run whose server never reaches the tool:
-	// the cancel below always comes first, and a deadline fails the
-	// context.Canceled assertion.
-	ctx, cancel := context.WithTimeout(context.Background(), hangGuard)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	started := make(chan string, 1)
 	go func() {
@@ -106,10 +102,8 @@ func TestCallTool_ContextEndStopsServer(t *testing.T) {
 	require.NoError(t, err)
 	// The server is not this process's child: its end is observed by
 	// polling, bounded only by a hang guard.
-	assert.Eventually(t, func() bool { return syscall.Kill(pid, 0) != nil },
-		hangGuard, 20*time.Millisecond, "server process must be gone")
-	assert.Eventually(t, func() bool { return syscall.Kill(-pid, 0) != nil },
-		hangGuard, 20*time.Millisecond, "server process group must be gone")
+	waitGone(pid)  // server process must be gone
+	waitGone(-pid) // server process group must be gone
 }
 
 // A stdio server that starts but fails the handshake is still stopped as a
@@ -136,7 +130,7 @@ func TestCallTool_FailedHandshakeStopsServerGroup(t *testing.T) {
 					_ = syscall.Kill(-pid, syscall.SIGKILL)
 				}
 			})
-			ctx, cancel := context.WithTimeout(context.Background(), hangGuard)
+			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			require.Error(t, call(ctx, spec))
 			require.NoError(t, ctx.Err(), "the handshake failed, the context did not end")
@@ -145,8 +139,7 @@ func TestCallTool_FailedHandshakeStopsServerGroup(t *testing.T) {
 			require.NoError(t, rerr, "the server must have started")
 			pid, rerr = strconv.Atoi(string(raw))
 			require.NoError(t, rerr)
-			assert.Eventually(t, func() bool { return syscall.Kill(-pid, 0) != nil },
-				hangGuard, 20*time.Millisecond, "the server's process group must be gone")
+			waitGone(-pid) // the server's process group must be gone
 		})
 	}
 }
@@ -167,7 +160,7 @@ func TestCallTool_HTTPHeaders(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	ctx, cancel := context.WithTimeout(context.Background(), hangGuard)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	out, err := CallTool(ctx, ServerSpec{Kind: "http", URL: srv.URL,
 		Headers: map[string]string{"Authorization": "Bearer tok"}}, "get_thing", nil)
@@ -180,7 +173,7 @@ func TestCallTool_HTTPHeaders(t *testing.T) {
 // the server through its environment and never through its command line.
 func TestCallTool_SecretsTravelInEnvNotArgv(t *testing.T) {
 	const secret = "s3cr3t-token-value"
-	ctx, cancel := context.WithTimeout(context.Background(), hangGuard)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	out, err := CallTool(ctx, fakeStdioSpec(t, map[string]string{"WT_FAKE_SECRET": secret}), "get_thing", nil)
 	require.NoError(t, err)

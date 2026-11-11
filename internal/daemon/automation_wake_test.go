@@ -77,27 +77,18 @@ func TestWatchAutomationWake_ShutdownKeepsSignalIgnored(t *testing.T) {
 
 func drainUntilClosed(t *testing.T, ch <-chan struct{}) {
 	t.Helper()
-	deadline := time.After(loopWait)
 	for {
-		select {
-		case _, ok := <-ch:
-			if !ok {
-				return
-			}
-		case <-deadline:
-			t.Fatal("wake channel was not closed after context cancellation")
+		_, ok := <-ch
+		if !ok {
+			return
 		}
 	}
 }
 
 func receiveWithin(t *testing.T, ch <-chan struct{}, msg string) {
 	t.Helper()
-	select {
-	case _, ok := <-ch:
-		require.True(t, ok, "channel should deliver a wake, not a close")
-	case <-time.After(loopWait):
-		t.Fatal(msg)
-	}
+	_, ok := <-ch
+	require.True(t, ok, "channel should deliver a wake, not a close")
 }
 
 // newAutomationTestDaemon is a daemon over the counting test orchestrator

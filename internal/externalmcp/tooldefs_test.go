@@ -24,7 +24,7 @@ func TestListToolDefs_DescriptionAndSchema(t *testing.T) {
 	srv := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil))
 	t.Cleanup(srv.Close)
 
-	ctx, cancel := context.WithTimeout(context.Background(), hangGuard)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	defs, err := ListToolDefs(ctx, ServerSpec{Kind: "http", URL: srv.URL})
 	require.NoError(t, err)
