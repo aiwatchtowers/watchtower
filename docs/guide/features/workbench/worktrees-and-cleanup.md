@@ -79,6 +79,17 @@ Cleanup is Watchtower's own command, because an agent in auto mode is blocked fr
 
 Each item is either ticked for removal or greyed out with the reason it is kept. Nothing is forced.
 
+### What a delete cleans up
+
+Every session delete cleans up once its **Undo** bar goes away: the worktrees and branches the session and its agents created that are merged or pushed are removed, with no question. The sessions panel reads **Cleaning up 2 sessions…** meanwhile, then a notice such as **Cleaned up “Fix login flow”: removed 3 worktrees and 12 branches (~2.1 GB).** shows for six seconds.
+
+- Kept on purpose, and named in the notice: uncommitted changes, unpushed commits, a locked worktree, a git operation in progress. That is your work; the session still goes.
+- Never touched and not mentioned: what the session did not create, such as the main folder, the default branch or a worktree that is older than the session.
+- If something could not be removed (a process runs in a worktree, git refused, the cleanup failed), the session comes back in **▸ N finished** with an orange line such as **Not fully cleaned: 1 worktree — a process is running in it.** Click it for its report and **Cleanup** section. Hover it, or use its **⋯** menu in a narrow panel:
+  - **Clean Up Again** runs the cleanup again; the row reads **Cleaning up…** and goes once nothing is left.
+  - **Delete Anyway** deletes the session now. What was not removed stays on disk, and the Clean Up screen still lists it.
+  - **Show in Clean Up** opens the Clean Up screen for this session.
+
 ## Using it
 <!-- learn
 id: worktrees-clean-up-screen
@@ -92,7 +103,7 @@ replaces: [worktrees-clean-up]
 changed: Clean Up is now a screen you can leave while it removes in the background.
 action: nav:projects
 -->
-- **Delete…** on a session row (just **Delete Session** when there is nothing to clean) asks "Checking what this session left…" first. **Delete and Clean Up** removes the session and the worktrees and branches that can go; **Delete Only** leaves them. The quick ✕ and ⌘⌫ never clean up.
+- Deleting a session (**Delete…**, the ✕ or ⌘⌫) cleans it up in the background once its **Undo** bar goes away. See [What a delete cleans up](#what-a-delete-cleans-up).
 - **Clean Up…** in the row menu, or **Clean Up Old Worktrees…** in the title row's **…** menu, opens the **Clean Up** screen. It covers the workspace and is not a dialog: you can leave it, and a cleanup keeps working. From a row it shows that session's worktrees and branches, with a "Session: …" chip; click the ✕ on the chip to see the whole repository. From the menu it lists every worktree and branch of the repository, with an owner hint.
 - Nothing is ticked at first. Tick rows, **⇧-click** for a range, or choose **Select All That Can Go** (⌘A, except while the search box is focused); Esc clears the ticks. Narrow the list with search, **All / Worktrees / Branches**, an age (7, 30 or 90 days), an owner (a session, Subagent, Session deleted, Made by hand) and **Merged only**. A worktree's row includes its branch when that can go too.
 - Rows appear while Watchtower is still checking and measuring a big repository. **Clean Up…** waits until every row is checked (sizes may still be coming in), asks once, then removes in the background; rows leave the list as they are removed, and a bar reports "Freed ~X · removed …". Anything kept is folded away with its reason.
@@ -103,7 +114,7 @@ action: nav:projects
 ## When it's empty or wrong
 
 - **Something is "kept".** Read the reason next to it: uncommitted changes, unpushed commits and a running process are the common ones. Fix that and run cleanup again.
-- **"Cleanup failed, so … was kept".** The session stays so you can retry.
+- **A deleted session reads "Not fully cleaned: …".** Fix what the line names, then choose **Clean Up Again**, or **Delete Anyway** to keep the files ([What a delete cleans up](#what-a-delete-cleans-up)).
 - **A deleted workbench says "Kept n worktree(s) with work in them".** Those worktrees had work and are left on disk.
 
 ## Related

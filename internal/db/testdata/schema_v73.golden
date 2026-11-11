@@ -746,6 +746,12 @@ ended_at TEXT NOT NULL,
 reported_cost_usd REAL
 )
 
+table	agent_session_tombstones
+CREATE TABLE agent_session_tombstones (
+agent_session_id TEXT PRIMARY KEY,
+deleted_at TEXT NOT NULL
+)
+
 table	automation_draft_cache
 CREATE TABLE automation_draft_cache (
 conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
@@ -3211,7 +3217,7 @@ CREATE TABLE terminal_session_worktrees (
 session_id INTEGER NOT NULL REFERENCES terminal_sessions(id) ON DELETE CASCADE,
 root TEXT NOT NULL,
 branch TEXT NOT NULL DEFAULT '',
-first_at TEXT NOT NULL, last_at TEXT,
+first_at TEXT NOT NULL, last_at TEXT, source TEXT NOT NULL DEFAULT 'cwd' CHECK (source IN ('cwd','command')), kind TEXT NOT NULL DEFAULT 'worktree' CHECK (kind IN ('worktree','branch')),
 PRIMARY KEY (session_id, root, branch)
 )
 
@@ -3243,7 +3249,7 @@ chat_question_at TEXT,
 agent_turns TEXT,
 agent_transcript_path TEXT, agent_cwd TEXT, agent_cwd_at TEXT, cleanup_result TEXT, cleanup_at TEXT, worktree_branch TEXT, worktree_base TEXT, automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, target_bound_at TEXT, agent_watch_issue TEXT
 CHECK(agent_watch_issue IN ('missing','permission','compressed','unreadable')), agent_watch_issue_at TEXT, start_notice TEXT, agent_background_shells INTEGER
-CHECK (agent_background_shells IS NULL OR agent_background_shells >= 0),
+CHECK (agent_background_shells IS NULL OR agent_background_shells >= 0), delete_requested_at TEXT,
 CHECK (title != '' AND folder_path != ''),
 CHECK (kind <> 'claude' OR claude_session_id IS NOT NULL)
 )
@@ -3564,6 +3570,17 @@ domain TEXT NOT NULL DEFAULT '',
 synced_at TEXT, -- ISO8601 timestamp of last sync
 inbox_last_processed_ts REAL NOT NULL DEFAULT 0 -- Unix timestamp of last inbox pipeline run
 , secretary_profile TEXT NOT NULL DEFAULT '', compose_last_run_ts REAL NOT NULL DEFAULT 0, style_profile TEXT NOT NULL DEFAULT '', style_profile_updated_at TEXT NOT NULL DEFAULT '', memory_last_extracted_ts REAL NOT NULL DEFAULT 0, memory_last_ingested_situation_id INTEGER NOT NULL DEFAULT 0, memory_chat_turn_floor INTEGER NOT NULL DEFAULT 0, memory_calendar_last_extracted_ts REAL NOT NULL DEFAULT 0, memory_last_situation_feedback_id INTEGER NOT NULL DEFAULT 0, memory_focus_fingerprint TEXT NOT NULL DEFAULT '', memory_last_interaction_id INTEGER NOT NULL DEFAULT 0, ideas_digest_floor INTEGER NOT NULL DEFAULT 0, ideas_stream_digest_floor INTEGER NOT NULL DEFAULT 0, ideas_transcript_floor INTEGER NOT NULL DEFAULT 0, digest_fastforward_ts REAL NOT NULL DEFAULT 0, ideas_chat_floor INTEGER NOT NULL DEFAULT 0)
+
+trigger	agent_session_tombstones_bd
+CREATE TRIGGER agent_session_tombstones_bd BEFORE DELETE ON terminal_sessions
+BEGIN
+INSERT OR IGNORE INTO agent_session_tombstones (agent_session_id, deleted_at)
+SELECT agent_session_id, strftime('%Y-%m-%dT%H:%M:%SZ','now')
+FROM terminal_session_agent_sessions WHERE terminal_session_id = OLD.id;
+INSERT OR IGNORE INTO agent_session_tombstones (agent_session_id, deleted_at)
+SELECT OLD.claude_session_id, strftime('%Y-%m-%dT%H:%M:%SZ','now')
+WHERE OLD.claude_session_id IS NOT NULL;
+END
 
 trigger	automation_runs_replay_cleanup
 CREATE TRIGGER automation_runs_replay_cleanup AFTER UPDATE OF status ON automation_runs
@@ -4315,6 +4332,10 @@ GROUP BY up.ancestor
 9	started_at	TEXT	notnull=1	dflt=NULL	pk=0
 10	ended_at	TEXT	notnull=1	dflt=NULL	pk=0
 11	reported_cost_usd	REAL	notnull=0	dflt=NULL	pk=0
+
+## agent_session_tombstones
+0	agent_session_id	TEXT	notnull=0	dflt=NULL	pk=1
+1	deleted_at	TEXT	notnull=1	dflt=NULL	pk=0
 
 ## automation_draft_cache
 0	conversation_id	INTEGER	notnull=1	dflt=NULL	pk=1
@@ -6472,6 +6493,8 @@ GROUP BY up.ancestor
 2	branch	TEXT	notnull=1	dflt=''	pk=3
 3	first_at	TEXT	notnull=1	dflt=NULL	pk=0
 4	last_at	TEXT	notnull=0	dflt=NULL	pk=0
+5	source	TEXT	notnull=1	dflt='cwd'	pk=0
+6	kind	TEXT	notnull=1	dflt='worktree'	pk=0
 
 ## terminal_sessions
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
@@ -6511,6 +6534,7 @@ GROUP BY up.ancestor
 34	agent_watch_issue_at	TEXT	notnull=0	dflt=NULL	pk=0
 35	start_notice	TEXT	notnull=0	dflt=NULL	pk=0
 36	agent_background_shells	INTEGER	notnull=0	dflt=NULL	pk=0
+37	delete_requested_at	TEXT	notnull=0	dflt=NULL	pk=0
 
 ## tool_trust
 0	tool	TEXT	notnull=1	dflt=NULL	pk=1

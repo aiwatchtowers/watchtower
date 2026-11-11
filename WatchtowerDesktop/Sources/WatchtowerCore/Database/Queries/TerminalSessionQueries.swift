@@ -129,7 +129,10 @@ package enum TerminalSessionQueries {
     package static func fetchForWorkbench(_ db: Database, projectID: Int64) throws -> [TerminalSession] {
         try TerminalSession.fetchAll(
             db,
-            sql: "SELECT * FROM terminal_sessions WHERE project_id = ? ORDER BY last_active_at DESC, id DESC",
+            sql: """
+                SELECT * FROM terminal_sessions WHERE project_id = ? AND delete_requested_at IS NULL
+                ORDER BY last_active_at DESC, id DESC
+                """,
             arguments: [projectID]
         )
     }
@@ -139,20 +142,28 @@ package enum TerminalSessionQueries {
     package static func fetchAllWorkbenchSessions(_ db: Database) throws -> [TerminalSession] {
         try TerminalSession.fetchAll(
             db,
-            sql: "SELECT * FROM terminal_sessions WHERE project_id IS NOT NULL ORDER BY last_active_at DESC, id DESC"
+            sql: """
+                SELECT * FROM terminal_sessions WHERE project_id IS NOT NULL AND delete_requested_at IS NULL
+                ORDER BY last_active_at DESC, id DESC
+                """
         )
     }
 
     package static func fetchStandalone(_ db: Database) throws -> [TerminalSession] {
         try TerminalSession.fetchAll(
             db,
-            sql: "SELECT * FROM terminal_sessions WHERE project_id IS NULL ORDER BY last_active_at DESC, id DESC"
+            sql: """
+                SELECT * FROM terminal_sessions WHERE project_id IS NULL AND delete_requested_at IS NULL
+                ORDER BY last_active_at DESC, id DESC
+                """
         )
     }
 
     /// Whether the session's own agent has worked in the worktree at one of
     /// `roots` on `branch` ('' = a detached HEAD): a pair the state hooks
-    /// recorded in `terminal_session_worktrees` (migration 00111). Pass the
+    /// recorded in `terminal_session_worktrees` (migration 00111) as a `cwd`
+    /// row; a `command` row (00187, board #1716) means the session created
+    /// the pair, not that an agent worked there. Pass the
     /// worktree top both as given and symlink-resolved — the hooks store the
     /// resolved path.
     package static func hasWorktree(_ db: Database, sessionID: Int64, roots: [String], branch: String) throws -> Bool {
@@ -162,7 +173,7 @@ package enum TerminalSessionQueries {
             db,
             sql: """
                 SELECT EXISTS (SELECT 1 FROM terminal_session_worktrees
-                WHERE session_id = ? AND branch = ? AND root IN (\(marks)))
+                WHERE session_id = ? AND source = 'cwd' AND branch = ? AND root IN (\(marks)))
                 """,
             arguments: StatementArguments([sessionID, branch] as [any DatabaseValueConvertible] + roots)
         ) ?? false
@@ -171,7 +182,8 @@ package enum TerminalSessionQueries {
     /// What workbench `projectID`'s sessions work on (board #987), by
     /// session id: the targets their agents linked (`terminal_session_targets`,
     /// PROJ-14), the worktrees their agents worked in (`terminal_session_worktrees`,
-    /// migration 00111) with each one's last sighting (`last_at`, 00174, else
+    /// migration 00111; `cwd` rows only — a `command` row, 00187, is what the
+    /// session created, not where it worked) with each one's last sighting (`last_at`, 00174, else
     /// `first_at`) and the run start they are judged against (`agent_turns`'
     /// `since`, as `fetchAgentCwds` reads it). A session
     /// with neither a link nor a worktree is left out. Read-only: Go writes
@@ -181,7 +193,7 @@ package enum TerminalSessionQueries {
         let targets = try Row.fetchAll(db, sql: """
             SELECT l.session_id, l.target_id FROM terminal_session_targets l
             JOIN terminal_sessions s ON s.id = l.session_id
-            WHERE s.project_id = ? ORDER BY l.session_id, l.target_id
+            WHERE s.project_id = ? AND s.delete_requested_at IS NULL ORDER BY l.session_id, l.target_id
             """, arguments: [projectID])
         for row in targets {
             links[row["session_id"], default: SessionWorkLinks()].linkedTargetIDs.append(row["target_id"])
@@ -192,7 +204,7 @@ package enum TerminalSessionQueries {
                         THEN json_extract(s.agent_turns, '$.since') END AS run_start
             FROM terminal_session_worktrees w
             JOIN terminal_sessions s ON s.id = w.session_id
-            WHERE s.project_id = ? ORDER BY w.session_id, seen_at, w.root
+            WHERE s.project_id = ? AND s.delete_requested_at IS NULL AND w.source = 'cwd' ORDER BY w.session_id, seen_at, w.root
             """, arguments: [projectID])
         for row in worktrees {
             let id: Int64 = row["session_id"]
@@ -205,7 +217,10 @@ package enum TerminalSessionQueries {
     package static func fetchForTarget(_ db: Database, targetID: Int64) throws -> [TerminalSession] {
         try TerminalSession.fetchAll(
             db,
-            sql: "SELECT * FROM terminal_sessions WHERE target_id = ? ORDER BY last_active_at DESC, id DESC",
+            sql: """
+                SELECT * FROM terminal_sessions WHERE target_id = ? AND delete_requested_at IS NULL
+                ORDER BY last_active_at DESC, id DESC
+                """,
             arguments: [targetID]
         )
     }
@@ -242,7 +257,8 @@ package enum TerminalSessionQueries {
                         WHERE a.session_id = s.id AND a.status = 'open' AND \(open) AND a.kind = 'review') AS open_review_asks
                 FROM terminal_sessions s
                 LEFT JOIN projects p ON p.id = s.project_id
-                WHERE (s.kind IN \(AgentKind.sqlKinds) AND s.project_id IS NOT NULL) OR s.id IN (\(marks))
+                WHERE s.delete_requested_at IS NULL
+                  AND ((s.kind IN \(AgentKind.sqlKinds) AND s.project_id IS NOT NULL) OR s.id IN (\(marks)))
                 ORDER BY s.id
                 """,
             arguments: StatementArguments(liveIDs)
@@ -272,7 +288,7 @@ package enum TerminalSessionQueries {
                        CASE WHEN json_valid(agent_turns) AND json_type(agent_turns, '$.since') = 'text'
                             THEN json_extract(agent_turns, '$.since') END AS run_start
                 FROM terminal_sessions
-                WHERE project_id = ? AND agent_cwd IS NOT NULL
+                WHERE project_id = ? AND agent_cwd IS NOT NULL AND delete_requested_at IS NULL
                 """,
             arguments: [projectID]
         )
@@ -412,5 +428,43 @@ package enum TerminalSessionQueries {
 
     package static func delete(_ db: Database, id: Int64) throws {
         try db.execute(sql: "DELETE FROM terminal_sessions WHERE id = ?", arguments: [id])
+    }
+
+    // MARK: Deleting rows (board #1716, PROJ-17)
+
+    /// The rows the owner deleted whose background cleanup has not finished
+    /// (`delete_requested_at` set) — of workbench `projectID`, or of every
+    /// workbench with nil; oldest delete first. Only the background cleanup
+    /// and the finished group's Not fully cleaned rows read them.
+    package static func fetchDeleting(_ db: Database, projectID: Int64?) throws -> [TerminalSession] {
+        if let projectID {
+            return try TerminalSession.fetchAll(db, sql: """
+                SELECT * FROM terminal_sessions WHERE project_id = ? AND delete_requested_at IS NOT NULL
+                ORDER BY delete_requested_at, id
+                """, arguments: [projectID])
+        }
+        return try TerminalSession.fetchAll(db, sql: """
+            SELECT * FROM terminal_sessions WHERE project_id IS NOT NULL AND delete_requested_at IS NOT NULL
+            ORDER BY delete_requested_at, id
+            """)
+    }
+
+    /// Marks rows `ids` deleted when the Undo window ends (or at quit): they
+    /// leave every list and wait for their background cleanup. The Desktop
+    /// is the column's only writer. A row already marked keeps its moment.
+    package static func markDeleteRequested(_ db: Database, ids: [Int64], at: Date) throws {
+        let stamp = ISO8601DateFormatter().string(from: at)
+        for id in ids {
+            try db.execute(
+                sql: "UPDATE terminal_sessions SET delete_requested_at = ? WHERE id = ? AND delete_requested_at IS NULL",
+                arguments: [stamp, id]
+            )
+        }
+    }
+
+    /// Resume of a Not fully cleaned row: it is an ordinary finished session
+    /// again.
+    package static func clearDeleteRequested(_ db: Database, id: Int64) throws {
+        try db.execute(sql: "UPDATE terminal_sessions SET delete_requested_at = NULL WHERE id = ?", arguments: [id])
     }
 }

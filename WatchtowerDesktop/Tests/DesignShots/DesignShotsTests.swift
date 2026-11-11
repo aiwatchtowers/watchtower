@@ -204,3 +204,10 @@ extension DesignShotsTests {
         try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("big-branch-") })
     }
 }
+
+extension DesignShotsTests {
+    /// The auto-cleanup states only (board #1716), for iterating on them.
+    func testAutoCleanupShotsRender() throws {
+        try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("auto-cleanup-") })
+    }
+}

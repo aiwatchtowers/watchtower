@@ -290,6 +290,29 @@ final class AutomationSessionCenterTests: XCTestCase {
         XCTAssertEqual(go.invocations, [launched(r.step, orphan.id)])
     }
 
+    /// Board #1716: an unattached row of the run that the owner deleted
+    /// (`delete_requested_at`, its background cleanup pending) is never
+    /// adopted — the poll launches a new session for the step, as it did
+    /// once the delete removed the row.
+    func testDeletingRowNotAdoptedByAutomation() async throws {
+        let r = try await request()
+        let deleted = try await pool.write { db in
+            let row = try TerminalSessionQueries.create(db, .init(
+                projectID: r.workbench, kind: .claude, title: "⚙ Review", folderPath: "/tmp/acme",
+                claudeSessionID: UUID().uuidString.lowercased(), automationRunID: r.run
+            ))
+            try TerminalSessionQueries.markDeleteRequested(db, ids: [row.id], at: Date())
+            return row
+        }
+        let center = makeCenter()
+
+        await center.tick()
+
+        XCTAssertEqual(starter.calls.map(\.stepID), [r.step], "a new session is launched")
+        let fresh = try await sessions(run: r.run).filter { $0.id != deleted.id }
+        XCTAssertEqual(go.invocations, [launched(r.step, try XCTUnwrap(fresh.first).id)], "the deleting row is not attached")
+    }
+
     /// An adopted row whose process is gone (the app crashed and came back)
     /// is attached and reported stopped at once: nothing would report it.
     func testAdoptedDeadRowIsReportedStopped() async throws {

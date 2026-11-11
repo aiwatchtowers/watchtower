@@ -88,13 +88,20 @@ package enum SessionCleanupPresentation {
         return counts + sizeSuffix(items)
     }
 
-    private static func countText(_ items: [Item]) -> String? {
-        let parts = nouns.compactMap { noun -> String? in
+    /// "2 worktrees, 3 branches" over `items`; nil when none is of a known kind.
+    package static func countText(_ items: [Item]) -> String? {
+        let parts = countParts(items)
+        return parts.isEmpty ? nil : parts.joined(separator: ", ")
+    }
+
+    /// ["2 worktrees", "3 branches"]: one count per known kind present, in
+    /// worktree, branch, process, LaunchServices order.
+    package static func countParts(_ items: [Item]) -> [String] {
+        nouns.compactMap { noun -> String? in
             let count = items.filter { $0.kind == noun.kind }.count
             guard count > 0 else { return nil }
             return count == 1 ? "1 \(noun.one)" : "\(count) \(noun.many)"
         }
-        return parts.isEmpty ? nil : parts.joined(separator: ", ")
     }
 
     /// " (~12 GB)", " (size unknown)", " (~12 GB, some sizes unknown)", or
@@ -110,39 +117,6 @@ package enum SessionCleanupPresentation {
         case (false, 0): return ""
         default: return " (~\(byteText(total)))"
         }
-    }
-
-    // MARK: Delete dialog
-
-    /// The Delete dialog's line: "Also clean up: 2 worktrees, 3 branches
-    /// (~12 GB). After the terminal closes: 1 worktree, 1 branch, if
-    /// nothing else runs there. Kept: 1 worktree — uncommitted changes."
-    /// Nil when the dialog shows nothing to remove (it is then as before).
-    package static func offerLine(_ plan: SessionCleanupPlan) -> String? {
-        offerLine(SessionDeleteCleanupChoice(plan: plan))
-    }
-
-    package static func offerLine(_ choice: SessionDeleteCleanupChoice) -> String? {
-        var parts: [String] = []
-        if let now = totalText(choice.removable) { parts.append("Also clean up: \(now).") }
-        if let later = countText(choice.afterClose) {
-            parts.append("After the terminal closes: \(later), if nothing else runs there.")
-        }
-        guard !parts.isEmpty else { return nil }
-        if let kept = keptText(choice.kept) { parts.append("Kept: \(kept).") }
-        return parts.joined(separator: " ")
-    }
-
-    /// The page's notice after Delete and Clean Up when Go kept shown items
-    /// at apply time: "“Fix the form” deleted; 1 item was kept: feat/x —
-    /// unpushed commits". Nil when nothing shown was kept.
-    package static func keptAfterDeleteNotice(title: String, kept: [Item]) -> String? {
-        guard !kept.isEmpty else { return nil }
-        let list = kept.map { item in
-            "\(item.name.isEmpty ? item.key : item.name) — \(reasonText(item.reason ?? .unknown("")))"
-        }
-        let count = kept.count == 1 ? "1 item was kept" : "\(kept.count) items were kept"
-        return "“\(title)” deleted; \(count): \(list.joined(separator: "; "))"
     }
 
     /// "1 worktree, 2 branches — uncommitted changes, checked out": the

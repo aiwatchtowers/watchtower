@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Session auto cleanup</title>
+<style>
+:root{--bg:#f6f5f2;--panel:#fff;--ink:#1d1d1f;--muted:#6e6e73;--warn:#b25000;--warn-bg:#fff4e5;--ok:#1f7a3a;--accent:#2f6fde;--line:#e5e3de;--danger:#d70015;}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#1c1c1e;--panel:#2a2a2d;--ink:#f2f2f4;--muted:#a1a1a6;--warn:#ffb15c;--warn-bg:#3a2a17;--ok:#5fd37f;--accent:#7aa7ff;--line:#3a3a3d;--danger:#ff4d5e;}}
+:root[data-theme="dark"]{--bg:#1c1c1e;--panel:#2a2a2d;--ink:#f2f2f4;--muted:#a1a1a6;--warn:#ffb15c;--warn-bg:#3a2a17;--ok:#5fd37f;--accent:#7aa7ff;--line:#3a3a3d;--danger:#ff4d5e;}
+body{margin:0;background:var(--bg);color:var(--ink);font:13px -apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif;padding:24px 16px}
+h1{font-size:18px;margin:0 0 4px}
+p.note{color:var(--muted);margin:0 0 20px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:20px}
+.state{background:var(--panel);border-radius:10px;padding:14px;box-shadow:0 1px 2px rgba(0,0,0,.06)}
+.state h2{font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin:0 0 10px}
+.hdr{display:flex;justify-content:space-between;font-weight:600;margin-bottom:8px}
+.hdr .sub{font-weight:400;color:var(--muted)}
+.row{padding:8px 10px;border-radius:7px;margin:4px 0}
+.row .t{font-weight:500}
+.row .s{color:var(--muted);margin-top:2px}
+.row.warn{background:var(--warn-bg)}
+.row.warn .s{color:var(--warn)}
+.acts{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}
+.btn{border-radius:6px;padding:3px 10px;background:var(--bg);color:var(--ink);font-size:12px}
+.btn.primary{background:var(--accent);color:#fff}
+.btn.danger{background:var(--danger);color:#fff}
+.btn.dim{opacity:.45}
+.toast{border-radius:8px;padding:10px 12px;background:var(--bg)}
+.toast b{color:var(--ok);font-weight:600}
+.sheet{border-radius:10px;padding:16px;background:var(--bg)}
+.sheet .q{font-weight:600;margin-bottom:6px}
+.sheet .acts{justify-content:flex-end}
+.narrow{max-width:220px}
+.narrow .s{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.menu{float:right;color:var(--muted)}
+</style>
+</head>
+<body>
+<h1>Automatic cleanup on session delete</h1>
+<p class="note">Board #1716 · sample titles and sizes · every state of §7 of the spec. Row actions appear on hover; they are shown here always.</p>
+<div class="grid">
+
+<div class="state"><h2>1 · Delete dialog (live row)</h2>
+<div class="sheet"><div class="q">Delete “Fix login flow”?</div>
+<div>Its terminal stops. Worktrees and branches it created that are merged or pushed are removed in the background.</div>
+<div class="acts"><span class="btn">Cancel</span><span class="btn danger">Delete</span></div></div></div>
+
+<div class="state"><h2>2 · Undo window (unchanged)</h2>
+<div class="toast">Deleted “Fix login flow”. <span class="btn">Undo</span></div></div>
+
+<div class="state"><h2>3 · Background cleanup running</h2>
+<div class="hdr">Sessions <span class="sub">Cleaning up 2 sessions…</span></div>
+<div class="row"><div class="t">Review payments PR</div><div class="s">Finished · 2 h</div></div></div>
+
+<div class="state"><h2>4 · Clean — nothing kept</h2>
+<div class="toast"><b>Cleaned up</b> “Fix login flow”: removed 3 worktrees and 12 branches (~2.1 GB).</div></div>
+
+<div class="state"><h2>5 · Clean — with kept items</h2>
+<div class="toast"><b>Cleaned up</b> “Plan run 1527”: removed 2 worktrees (~1.4 GB). Kept 1 branch — unpushed commits.</div></div>
+
+<div class="state"><h2>6 · Several sessions joined</h2>
+<div class="toast"><b>Cleaned up 4 sessions</b>: removed 9 worktrees and 31 branches (~6.8 GB). Kept 2 branches — unpushed commits.</div></div>
+
+<div class="state"><h2>7a · Not fully cleaned — process running</h2>
+<div class="row warn"><div class="t">Fix login flow</div><div class="s">Not fully cleaned: 1 worktree — a process is running in it.</div>
+<div class="acts"><span class="btn">Clean Up Again</span><span class="btn">Delete Anyway</span><span class="btn">Show in Clean Up</span></div></div></div>
+
+<div class="state"><h2>7b · Not fully cleaned — git refused</h2>
+<div class="row warn"><div class="t">Plan run 1527</div><div class="s">Not fully cleaned: 2 worktrees — git refused.</div>
+<div class="acts"><span class="btn">Clean Up Again</span><span class="btn">Delete Anyway</span><span class="btn">Show in Clean Up</span></div></div></div>
+
+<div class="state"><h2>7c · Not fully cleaned — cleanup failed</h2>
+<div class="row warn"><div class="t">Spec review</div><div class="s">Not fully cleaned: the cleanup could not run — watchtower exited with code 1.</div>
+<div class="acts"><span class="btn">Clean Up Again</span><span class="btn">Delete Anyway</span><span class="btn">Show in Clean Up</span></div></div></div>
+
+<div class="state"><h2>8 · Clean Up Again running</h2>
+<div class="row warn"><div class="t">Fix login flow</div><div class="s">Cleaning up…</div>
+<div class="acts"><span class="btn dim">Clean Up Again</span><span class="btn dim">Delete Anyway</span><span class="btn dim">Show in Clean Up</span></div></div></div>
+
+<div class="state"><h2>9 · Narrow panel</h2>
+<div class="row warn narrow"><span class="menu">⋯</span><div class="t">Fix login flow</div><div class="s">Not fully cleaned: 1 worktree — a process is running in it.</div></div></div>
+
+</div>
+</body>
+</html>

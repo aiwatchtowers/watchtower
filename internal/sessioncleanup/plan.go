@@ -10,7 +10,9 @@ import (
 	"sync"
 	"time"
 
+	"watchtower/internal/db"
 	"watchtower/internal/gitbin"
+	"watchtower/internal/sessionagent"
 	"watchtower/internal/workbenchgit"
 )
 
@@ -258,8 +260,92 @@ func (b *builder) loadObserved(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("reading session %d target branches: %w", b.session.ID, err)
 	}
-	b.seen = observe(rows, targets, b.req.DeclaredWorktrees, b.req.DeclaredBranches)
+	b.seen = observe(b.ownRepoRows(rows), targets, b.req.DeclaredWorktrees, b.req.DeclaredBranches)
 	b.observePlacement()
+	return b.loadScratch(ctx)
+}
+
+// ownRepoRows drops the command rows whose root is no worktree (main or
+// linked) of the planned repository: a branch an agent named in another
+// repository names nothing here. cwd rows are kept as they were. v1 limit:
+// a worktree row whose worktree the agent already removed is dropped too, so
+// its branch is not named (fail closed; the Clean Up screen removes it).
+func (b *builder) ownRepoRows(rows []db.SessionWorktree) []db.SessionWorktree {
+	roots := map[string]bool{}
+	for _, w := range b.repo.worktrees {
+		roots[resolvePath(w.Root)] = true
+	}
+	out := rows[:0:0]
+	for _, r := range rows {
+		if r.Source != sourceCommand || roots[resolvePath(r.Root)] {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// loadScratch adopts the session's Claude scratchpad lanes (auto cleanup
+// spec 2026-11-10 §2b), only for a kind whose caps have ScratchpadLanes
+// (an unknown kind adopts nothing). An agent session id of this row
+// counts only when this row is its only owner (history or current id of any
+// terminal session, and no deleted row's tombstone), and a lane — a linked worktree strictly inside
+// `<base>/claude-<uid>/<slug>/<uuid>/` — only when it was born at or after
+// the moment this row acquired the uuid (second precision, so +1 s, as
+// bornReason): the order rows were deleted in, or a history gap, can leave
+// this row the only owner of a uuid another row used first. The lane's
+// checked-out branch is named only when born after that moment too. An
+// unknown birth or acquisition time adopts nothing; a failed read fails the
+// plan.
+func (b *builder) loadScratch(ctx context.Context) error {
+	if !sessionagent.CapsOf(b.session.Kind).ScratchpadLanes {
+		return nil
+	}
+	ids, err := b.deps.DB.AgentSessionIDs(ctx, b.session.ID)
+	if err != nil {
+		return err
+	}
+	uuids := make([]string, 0, len(ids))
+	for _, a := range ids {
+		if a.ID != "" {
+			uuids = append(uuids, a.ID)
+		}
+	}
+	owners, err := b.deps.DB.AgentSessionIDOwners(ctx, uuids)
+	if err != nil {
+		return err
+	}
+	acquired := map[string]time.Time{}
+	for _, a := range ids {
+		o := owners[a.ID]
+		since, perr := time.Parse(time.RFC3339, a.Since)
+		if a.ID != "" && perr == nil && len(o) == 1 && o[0] == b.session.ID {
+			acquired[a.ID] = since
+		}
+	}
+	if len(acquired) == 0 {
+		return nil
+	}
+	dirs := scratchDirs()
+	for _, w := range b.repo.worktrees {
+		if w.Main || w.Bare {
+			continue
+		}
+		since, ok := scratchLane(dirs, acquired, w.Root)
+		if !ok {
+			continue
+		}
+		after := since.Add(time.Second)
+		if birth, known := b.worktreeBirth(w.Root); !known || birth.Before(after) {
+			continue
+		}
+		b.seen.roots[w.Root] = true
+		if w.Branch == "" {
+			continue
+		}
+		if birth, known := b.repo.branchBirth(w.Branch); known && !birth.Before(after) {
+			b.seen.branches[w.Branch], b.seen.named[w.Branch] = true, true
+		}
+	}
 	return nil
 }
 

@@ -42,7 +42,7 @@ func (s DBStore) CleanupSession(ctx context.Context, sessionID int64) (SessionIn
 	if err != nil {
 		return SessionInfo{}, err
 	}
-	info := SessionInfo{ID: row.ID, WorkbenchID: row.WorkbenchID.Int64, CreatedAt: start}
+	info := SessionInfo{ID: row.ID, WorkbenchID: row.WorkbenchID.Int64, CreatedAt: start, Kind: row.Kind}
 	if row.WorktreeBranch.Valid {
 		info.PlacedCwd, info.PlacedBranch = row.FolderPath, row.WorktreeBranch.String
 	}
@@ -79,6 +79,16 @@ func (s DBStore) WorkbenchFolders(context.Context) ([]string, error) {
 		out = append(out, wb.FolderPath)
 	}
 	return out, nil
+}
+
+// AgentSessionIDs is db.DB.AgentSessionIDs.
+func (s DBStore) AgentSessionIDs(ctx context.Context, sessionID int64) ([]db.AgentSessionID, error) {
+	return s.DB.AgentSessionIDs(ctx, sessionID)
+}
+
+// AgentSessionIDOwners is db.DB.AgentSessionIDOwners.
+func (s DBStore) AgentSessionIDOwners(ctx context.Context, uuids []string) (map[string][]int64, error) {
+	return s.DB.AgentSessionIDOwners(ctx, uuids)
 }
 
 // WorkbenchSessionWorktrees is db.DB.WorkbenchSessionWorktrees.

@@ -374,65 +374,41 @@ final class WorkbenchesViewModelPlacedCleanupTests: XCTestCase {
         XCTAssertTrue(runner.calls.isEmpty, "the workbench delete owns its rows' cleanup")
     }
 
-    func testADeleteDialogPlanReadyFirstIsLeftAlone() async throws {
+    /// A deleted row waiting for its background cleanup (board #1716) is
+    /// that cleanup's: the exit starts no placed cleanup.
+    func testARowQueuedForItsBackgroundCleanupIsLeftAlone() async throws {
         let runner = FakeSessionCleanupRunner(replies: [.success(fullPlan)])
         let vm = makeVM(runner)
         let row = try await runningRow(finished: true)
-        await vm.planCleanupBeforeDelete(row)
-        XCTAssertNotNil(vm.deleteCleanupChoice(row))
+        vm.autoCleanupQueue[try XCTUnwrap(row.projectID)] = [row.id]
 
         try await exitAgent(vm, row)
 
-        XCTAssertEqual(runner.calls.count, 1, "the dialog's plan only")
-        XCTAssertTrue(applyCalls(runner).isEmpty)
-        XCTAssertNotNil(vm.deleteCleanupChoice(row), "the open dialog keeps its plan")
+        XCTAssertTrue(runner.calls.isEmpty)
     }
 
-    func testADeleteDialogPlanStartedDuringTheAutomaticPlanWins() async throws {
-        let runner = FakeSessionCleanupRunner(replies: [.success(fullPlan)])
-        runner.holdsCalls = true
-        let vm = makeVM(runner)
-        let row = try await runningRow(finished: true)
-
-        try XCTUnwrap(processes[row.id]).exit(0)
-        try await waitForHeld(runner, 1)
-        let dialog = Task { await vm.planCleanupBeforeDelete(row) }
-        try await waitForHeld(runner, 2)
-        runner.release()
-        await dialog.value
-        await vm.placedCleanupRuns[row.id]?.value
-
-        XCTAssertTrue(applyCalls(runner).isEmpty, "the automatic run never applies another owner's plan")
-        XCTAssertNotNil(vm.deleteCleanupChoice(row), "nor forgets it")
-    }
-
-    func testDeleteAndCleanUpStartedDuringTheAutomaticPlanAppliesOnce() async throws {
+    /// A background cleanup holds the workbench's slot: the placed cleanup
+    /// waits for it (never refused), then applies.
+    func testPlacedCleanupWaitsForTheBackgroundSlot() async throws {
         let runner = FakeSessionCleanupRunner(replies: [
             .success(fullPlan),
-            .success(plan([item("worktree:\(worktree)", "worktree", done: true)], mode: "apply"))
+            .success(plan([item("worktree:\(worktree)", "worktree", done: true),
+                           item("branch:wt/x", "branch", done: true)], mode: "apply"))
         ])
-        runner.holdsCalls = true
         let vm = makeVM(runner)
-        vm.deleteSleep = { _ in }
         let row = try await runningRow(finished: true)
+        let center = try XCTUnwrap(vm.sessionCleanup)
+        let workbenchID = try XCTUnwrap(row.projectID)
+        await center.acquireSlot(workbenchID: workbenchID)
 
         try XCTUnwrap(processes[row.id]).exit(0)
-        try await waitForHeld(runner, 1)
-        let choice = SessionDeleteCleanupChoice(plan: SessionCleanupPlan(items: [
-            SessionCleanupItem(key: "worktree:\(worktree)", kind: .worktree, action: .remove)
-        ]))
-        let delete = vm.startDeleteAndCleanUp(row, choice: choice)
-        try await waitForHeld(runner, 2)
-        XCTAssertTrue(vm.cleaningUpSessions.contains(row.id), "Delete and Clean Up holds the row")
-        runner.release()
-        await vm.placedCleanupRuns[row.id]?.value
-        XCTAssertTrue(vm.cleaningUpSessions.contains(row.id) || vm.cleanupRuns[row.id] == nil,
-                      "the automatic run never clears the delete's busy flag")
-        let deleted = await delete.value
+        await waitUntil(timeout: 0.3) { !self.applyCalls(runner).isEmpty }
+        XCTAssertTrue(applyCalls(runner).isEmpty, "waits for the slot")
+        XCTAssertNotNil(vm.placedCleanupRuns[row.id])
 
-        XCTAssertTrue(deleted)
-        XCTAssertEqual(applyCalls(runner).count, 1, "only Delete and Clean Up's apply")
-        XCTAssertEqual(applyCalls(runner).first?.filter { $0.hasPrefix("--item") }, ["--item=worktree:\(worktree)"])
+        center.releaseSlot(workbenchID: workbenchID)
+        await waitUntil { vm.placedCleanupRuns[row.id] == nil }
+        XCTAssertEqual(applyCalls(runner).count, 1, "applied once the slot was free")
     }
 
     /// Waits (bounded) until `runner` holds `count` calls.
@@ -454,10 +430,9 @@ final class WorkbenchesViewModelPlacedCleanupTests: XCTestCase {
         let vm = makeVM(runner)
         let row = try await runningRow(finished: true)
         let workbenchID = try XCTUnwrap(row.projectID)
-        // A Delete and Clean Up of another session of the workbench, held.
+        // The Clean Up screen's apply of the workbench, held.
         let (gate, open) = AsyncStream<Void>.makeStream()
-        vm.cleanupRunWorkbenches[99] = workbenchID
-        vm.cleanupRuns[99] = Task {
+        vm.sweepRuns[workbenchID] = Task {
             for await _ in gate {}
             return true
         }
@@ -467,8 +442,7 @@ final class WorkbenchesViewModelPlacedCleanupTests: XCTestCase {
         XCTAssertTrue(applyCalls(runner).isEmpty, "no apply beside another cleanup of the workbench")
         XCTAssertNotNil(vm.placedCleanupRuns[row.id], "the run waits instead of giving up")
 
-        vm.cleanupRunWorkbenches[99] = nil
-        vm.cleanupRuns[99] = nil
+        vm.sweepRuns[workbenchID] = nil
         open.finish()
         await waitUntil { vm.placedCleanupRuns[row.id] == nil }
         XCTAssertNil(vm.placedCleanupRuns[row.id], "the run did not end within 5 s")
@@ -477,7 +451,7 @@ final class WorkbenchesViewModelPlacedCleanupTests: XCTestCase {
         XCTAssertEqual(vm.sessionCleanup?.cleanupPhase(for: .session(row.id)), .idle)
     }
 
-    func testAnExitDuringDeleteAndCleanUpStartsNoSecondCleanup() async throws {
+    func testAnExitDuringACleanupApplyStartsNoSecondCleanup() async throws {
         let runner = FakeSessionCleanupRunner(replies: [.success(fullPlan)])
         let vm = makeVM(runner)
         let row = try await runningRow(finished: true)
@@ -485,6 +459,6 @@ final class WorkbenchesViewModelPlacedCleanupTests: XCTestCase {
 
         try await exitAgent(vm, row)
 
-        XCTAssertTrue(runner.calls.isEmpty, "the Delete dialog's own cleanup owns the row")
+        XCTAssertTrue(runner.calls.isEmpty, "the cleanup apply running on it owns the row")
     }
 }

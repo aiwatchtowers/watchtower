@@ -31,6 +31,7 @@ enum QuitCoordinator {
         detachTerminals: @escaping () async -> Void = {},
         stopDaemon: @escaping () async -> Void,
         finishPendingDeletes: @escaping () async -> Void = {},
+        stopBackgroundCleanups: @escaping () async -> Void = {},
         reply: @escaping (Bool) -> Void
     ) -> NSApplication.TerminateReply {
         let choice = hasBlockingWork
@@ -46,6 +47,11 @@ enum QuitCoordinator {
             // sessions kept or stopped. Bounded inside; awaited before the
             // reply.
             let deletes = Task { @MainActor in await finishPendingDeletes() }
+            // Board #1716: a deleted session's background cleanup still
+            // running gets SIGTERM to its process group, SIGKILL after 5 s —
+            // no cleanup outlives the app to race the next launch's, which
+            // queues the row again (it keeps `delete_requested_at`).
+            let cleanups = Task { @MainActor in await stopBackgroundCleanups() }
             // CHAT-03: every chat session gets `close`, then SIGTERM after
             // its grace — bounded, and each keeps its partial text (CHAT-01).
             await closeChatSessions()
@@ -60,6 +66,7 @@ enum QuitCoordinator {
             }
             await stopDaemon()
             await deletes.value
+            await cleanups.value
             // Always let termination proceed: a stuck daemon must never trap
             // the user in a quit — the next launch adopts or replaces it.
             reply(true)

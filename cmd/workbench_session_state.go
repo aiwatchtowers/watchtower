@@ -239,8 +239,9 @@ func joinedErrors(err error) []error {
 }
 
 // recordHookAgentState records the event's state, then — whatever the state
-// write did — the session's worktree ledger (recordSessionLedger), which
-// reports its own failure on stderr and never changes the returned error.
+// write did — the session's worktree ledger (recordSessionLedger) and the
+// worktrees and branches a Bash call created (recordCommandLedger), which
+// report their own failures on stderr and never change the returned error.
 func recordHookAgentState(stdin io.Reader, stderr io.Writer, rowID int64, rawWorkbenchID string) error {
 	workbenchID, err := strconv.ParseInt(strings.TrimSpace(rawWorkbenchID), 10, 64)
 	if err != nil || workbenchID <= 0 {
@@ -288,6 +289,7 @@ func recordHookAgentState(stdin io.Reader, stderr io.Writer, rowID int64, rawWor
 		err = recordAgentEvent(database, rowID, workbenchID, in, agentStateWrite{state: state, at: at, turn: turn})
 	}
 	recordSessionLedger(database, stderr, rowID, workbenchID, in.SessionID, in.Cwd, at, turn.lock)
+	recordCommandLedger(database, stderr, rowID, workbenchID, in, at, turn.lock)
 	return err
 }
 
@@ -344,8 +346,9 @@ func runCodexSessionStateHook(stdin io.Reader, stderr io.Writer) {
 // Codex runs its state hooks synchronously, so no hook outlives its turn and
 // the transcript turn order is not needed. An event of another session (a
 // foreign id, or a row with no id yet: spec I6) writes nothing. After the
-// state write comes the session's worktree ledger, as for Claude Code. Every
-// event clears the row's watch issue (spec 2026-11-05 §3.5).
+// state write come the session's worktree ledger and command rows, as for
+// Claude Code. Every event clears the row's watch issue (spec 2026-11-05
+// §3.5).
 func recordCodexHookState(stderr io.Writer, row db.TerminalSession, in hookEvent, at time.Time) error {
 	if !codexStateEvents[in.Event] || in.SessionID == "" || in.SessionID != row.ClaudeSessionID.String ||
 		(in.AgentTurnEvent() && in.AgentID == "") {
@@ -379,6 +382,7 @@ func recordCodexHookState(stderr io.Writer, row db.TerminalSession, in hookEvent
 		err = errors.Join(err, clearErr)
 	}
 	recordSessionLedger(database, stderr, rowID, workbenchID, in.SessionID, in.Cwd, at, turn.lock)
+	recordCommandLedger(database, stderr, rowID, workbenchID, in, at, turn.lock)
 	return err
 }
 

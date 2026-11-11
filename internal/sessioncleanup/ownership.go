@@ -1,6 +1,10 @@
 package sessioncleanup
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"watchtower/internal/db"
@@ -15,17 +19,35 @@ import (
 // folder_path (symlink-resolved); placedRoot and placedBranch are its
 // worktree and worktree_branch owned by record (born no later than the row,
 // observePlacement); all "" for every other row.
+//
+// Command ledger rows (auto cleanup spec 2026-11-10 §2a) name what the
+// agent created: a worktree row adds its root and names its branch, a
+// branch row names its branch only — its root is the repository's top
+// level, never a worktree root. A command row counts only when its root is
+// a worktree of the planned repository (loadObserved). The session's Claude
+// scratchpad lanes (§2b) are added to roots and named by loadScratch.
 type observed struct {
 	roots, branches, named              map[string]bool
 	placedCwd, placedRoot, placedBranch string
 }
 
+const (
+	sourceCommand = "command"
+	kindBranch    = "branch"
+)
+
 func observe(rows []db.SessionWorktree, targetBranches, declaredWorktrees, declaredBranches []string) observed {
 	o := observed{roots: map[string]bool{}, branches: map[string]bool{}, named: map[string]bool{}}
 	for _, r := range rows {
-		o.roots[resolvePath(r.Root)] = true
+		command := r.Source == sourceCommand
+		if !command || r.Kind != kindBranch {
+			o.roots[resolvePath(r.Root)] = true
+		}
 		if r.Branch != "" {
 			o.branches[r.Branch] = true
+			if command {
+				o.named[r.Branch] = true
+			}
 		}
 	}
 	for _, p := range declaredWorktrees {
@@ -39,10 +61,63 @@ func observe(rows []db.SessionWorktree, targetBranches, declaredWorktrees, decla
 	return o
 }
 
-// sawWorktree: the session recorded or declared the root, or a branch a
-// target or the agent named is checked out there.
+// sawWorktree: the session recorded or declared the root (a scratchpad
+// lane included), or a branch a target or the agent named is checked out
+// there.
 func (o observed) sawWorktree(w worktree) bool {
 	return o.roots[w.Root] || (w.Branch != "" && o.named[w.Branch])
+}
+
+// scratchLane reports whether root lies strictly inside
+// `<dir>/<any one segment>/<uuid>/` for one of dirs and one of ids' uuids
+// (an exact segment match), and that uuid's acquisition time.
+func scratchLane(dirs []string, ids map[string]time.Time, root string) (time.Time, bool) {
+	for _, dir := range dirs {
+		rest, ok := strings.CutPrefix(root, dir+"/")
+		if !ok {
+			continue
+		}
+		segs := strings.Split(rest, "/")
+		if len(segs) < 3 || segs[0] == "" || segs[2] == "" {
+			continue
+		}
+		if since, ok := ids[segs[1]]; ok {
+			return since, true
+		}
+	}
+	return time.Time{}, false
+}
+
+// scratchBases is the set of temp roots Claude Code may write its
+// scratchpads under, symlink-resolved and deduplicated: /tmp (where the
+// CLI writes whatever this process's TMPDIR is), os.TempDir() and
+// $CLAUDE_CODE_TMPDIR when set. A base that does not resolve is left out.
+// A package variable so tests point it at a temp dir.
+var scratchBases = func() []string {
+	cands := []string{"/tmp", os.TempDir()}
+	if d := os.Getenv("CLAUDE_CODE_TMPDIR"); d != "" {
+		cands = append(cands, d)
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, c := range cands {
+		r, err := filepath.EvalSymlinks(c)
+		if err != nil || !filepath.IsAbs(r) || seen[r] {
+			continue
+		}
+		seen[r] = true
+		out = append(out, r)
+	}
+	return out
+}
+
+// scratchDirs is `<base>/claude-<uid>` under every scratch base.
+func scratchDirs() []string {
+	var out []string
+	for _, b := range scratchBases() {
+		out = append(out, filepath.Join(b, fmt.Sprintf("claude-%d", os.Getuid())))
+	}
+	return out
 }
 
 // placedWorktree reports whether w is the row's own placed worktree: a

@@ -74,6 +74,7 @@ final class WorkbenchesViewModelPendingDeleteTests: XCTestCase {
     private var folder: URL!
     private var center: TerminalCenter!
     private var gate: DeleteWindowGate!
+    private var streamers: [RepliedCleanupStreamer] = []
 
     override func setUpWithError() throws {
         (pool, path) = try TestDatabase.createPool()
@@ -89,6 +90,8 @@ final class WorkbenchesViewModelPendingDeleteTests: XCTestCase {
     override func tearDown() {
         // A cancelled commit task still parked in the gate finishes now.
         gate.open()
+        streamers.forEach { $0.finishAll() }
+        streamers = []
         try? FileManager.default.removeItem(at: folder)
         TestDatabase.cleanup(path: path)
         super.tearDown()
@@ -119,6 +122,11 @@ final class WorkbenchesViewModelPendingDeleteTests: XCTestCase {
                                       terminalCenter: center)
         vm.titleService = { _ in .init(title: "", written: false) }
         vm.deleteSleep = { [gate] in await gate?.wait($0) }
+        // Every delete cleans up in the background (board #1716): here a
+        // clean apply with nothing to remove, so the row then goes.
+        let streamer = RepliedCleanupStreamer(replies: [.success(Data(#"{"mode":"apply","items":[]}"#.utf8))])
+        streamers.append(streamer)
+        vm.sessionCleanup = SessionCleanupCenter(runner: nil, streamer: streamer)
         return vm
     }
 
@@ -176,10 +184,20 @@ final class WorkbenchesViewModelPendingDeleteTests: XCTestCase {
         try await pool.read { try TerminalSessionQueries.fetch($0, id: id) }
     }
 
-    /// The Undo window ends: the parked commit task runs to its end.
+    /// Whether row `id` is marked deleted (board #1716) and still there.
+    private func marked(_ id: Int64) async throws -> Bool {
+        try await pool.read { db in
+            try Bool.fetchOne(db, sql: "SELECT delete_requested_at IS NOT NULL FROM terminal_sessions WHERE id = ?",
+                              arguments: [id]) ?? false
+        }
+    }
+
+    /// The Undo window ends: the parked commit task runs to its end, and
+    /// the background cleanups it queued end too.
     private func endWindow(_ vm: WorkbenchesViewModel) async {
         gate.open()
         await vm.deleteCommitTask?.value
+        await vm.autoCleanupIdle()
     }
 
     // MARK: - PROJ-17 guards
@@ -208,7 +226,7 @@ final class WorkbenchesViewModelPendingDeleteTests: XCTestCase {
         await endWindow(vm)
 
         let gone = try await stored(row.id)
-        XCTAssertNil(gone, "deleted once the window ended")
+        XCTAssertNil(gone, "deleted once the window ended and its cleanup ran clean")
         XCTAssertNil(vm.pendingDeleteToast)
     }
 
@@ -269,10 +287,15 @@ final class WorkbenchesViewModelPendingDeleteTests: XCTestCase {
 
         await vm.commitPendingDeletesForQuit()
 
+        // Board #1716 (PROJ-17 amended): at quit a workbench row is marked
+        // deleted, not deleted — the next launch cleans it up, then deletes
+        // it; a standalone terminal has nothing to clean and goes now.
         let after = try await snapshot(session.id, askID: askID)
-        XCTAssertTrue(after.session.isEmpty, "deleted before the window ended")
-        XCTAssertTrue(after.links.isEmpty)
-        XCTAssertEqual(after.ask.first?["session_id"], DatabaseValue.null)
+        XCTAssertEqual(after.session.count, 1, "kept for its cleanup at the next launch")
+        let isMarked = try await marked(session.id)
+        XCTAssertTrue(isMarked, "marked deleted before the window ended")
+        XCTAssertEqual(after.links.count, 1, "no cascade before the row goes")
+        XCTAssertEqual(after.ask.first?["session_id"], DatabaseValue(value: session.id))
         let standalone = try await stored(shell.id)
         XCTAssertNil(standalone)
         XCTAssertTrue(vm.pendingDeletes.batch.isEmpty)
@@ -312,7 +335,7 @@ final class WorkbenchesViewModelPendingDeleteTests: XCTestCase {
         let p = try await workbench()
         let row = try await insertSession(p)
         let vm = makeVM()
-        vm.commitSessionDeletes = { _ in throw WriteRefused() }
+        vm.commitDeleteRequests = { _, _ in throw WriteRefused() }
         await vm.reload()
         vm.selectedWorkbenchID = p
         await vm.loadSessions(projectID: p)
@@ -429,6 +452,7 @@ final class WorkbenchesViewModelPendingDeleteTests: XCTestCase {
 
         closing.release()
         await deletingB.value
+        await vm.autoCleanupIdle()
         let goneA = try await stored(a.id)
         let goneB = try await stored(b.id)
         XCTAssertNil(goneA)
@@ -517,10 +541,10 @@ final class WorkbenchesViewModelPendingDeleteTests: XCTestCase {
         let row = try await insertSession(p)
         let vm = makeVM()
         let (started, didStart) = AsyncStream<Void>.makeStream()
-        vm.commitSessionDeletes = { [pool] ids in
+        vm.commitDeleteRequests = { [pool] ids, at in
             didStart.yield()
             try await Task.sleep(for: .milliseconds(300))
-            try await pool?.write { db in for id in ids { try TerminalSessionQueries.delete(db, id: id) } }
+            try await pool?.write { try TerminalSessionQueries.markDeleteRequested($0, ids: ids, at: at) }
         }
         await vm.reload()
         await vm.delete(row)
@@ -531,8 +555,8 @@ final class WorkbenchesViewModelPendingDeleteTests: XCTestCase {
         let finished = await vm.commitPendingDeletesForQuit()
 
         XCTAssertTrue(finished)
-        let gone = try await stored(row.id)
-        XCTAssertNil(gone, "the quit waited for the window's write")
+        let isMarked = try await marked(row.id)
+        XCTAssertTrue(isMarked, "the quit waited for the window's write")
     }
 
     func testQuitIsBoundedWhenTheWriteHangs() async throws {
@@ -541,7 +565,7 @@ final class WorkbenchesViewModelPendingDeleteTests: XCTestCase {
         let vm = makeVM()
         let hang = DispatchSemaphore(value: 0)
         defer { hang.signal() }
-        vm.commitSessionDeletes = { _ in
+        vm.commitDeleteRequests = { _, _ in
             await withCheckedContinuation { continuation in
                 DispatchQueue.global().async {
                     hang.wait()
@@ -578,9 +602,9 @@ final class WorkbenchesViewModelPendingDeleteTests: XCTestCase {
         let p = try await workbench()
         let row = try await insertSession(p)
         let vm = makeVM()
-        vm.commitSessionDeletes = { [pool] ids in
+        vm.commitDeleteRequests = { [pool] ids, at in
             try await Task.sleep(for: .milliseconds(2300))
-            try await pool?.write { db in for id in ids { try TerminalSessionQueries.delete(db, id: id) } }
+            try await pool?.write { try TerminalSessionQueries.markDeleteRequested($0, ids: ids, at: at) }
         }
         await vm.reload()
         await vm.delete(row)
@@ -588,8 +612,8 @@ final class WorkbenchesViewModelPendingDeleteTests: XCTestCase {
         let finished = await vm.commitPendingDeletesForQuit()
 
         XCTAssertTrue(finished)
-        let gone = try await stored(row.id)
-        XCTAssertNil(gone, "the slow write landed")
+        let isMarked = try await marked(row.id)
+        XCTAssertTrue(isMarked, "the slow write landed")
     }
 
     /// Board #588: the quit waits for every delete write as one set — a
@@ -600,10 +624,10 @@ final class WorkbenchesViewModelPendingDeleteTests: XCTestCase {
         let second = try await insertSession(p, title: "Session B")
         let vm = makeVM()
         let (started, didStart) = AsyncStream<Void>.makeStream()
-        vm.commitSessionDeletes = { [pool] ids in
+        vm.commitDeleteRequests = { [pool] ids, at in
             didStart.yield()
             try await Task.sleep(for: .milliseconds(300))
-            try await pool?.write { db in for id in ids { try TerminalSessionQueries.delete(db, id: id) } }
+            try await pool?.write { try TerminalSessionQueries.markDeleteRequested($0, ids: ids, at: at) }
         }
         await vm.reload()
         vm.selectedWorkbenchID = p
@@ -618,8 +642,8 @@ final class WorkbenchesViewModelPendingDeleteTests: XCTestCase {
 
         XCTAssertTrue(finished)
         for id in [first.id, second.id] {
-            let gone = try await stored(id)
-            XCTAssertNil(gone)
+            let isMarked = try await marked(id)
+            XCTAssertTrue(isMarked)
         }
     }
 
@@ -633,8 +657,8 @@ final class WorkbenchesViewModelPendingDeleteTests: XCTestCase {
 
         await TrayAppDelegate.finishPendingDeletes(vm) { _ in {} }
 
-        let gone = try await stored(row.id)
-        XCTAssertNil(gone)
+        let isMarked = try await marked(row.id)
+        XCTAssertTrue(isMarked)
         XCTAssertTrue(vm.pendingDeletes.batch.isEmpty)
     }
 
@@ -642,7 +666,7 @@ final class WorkbenchesViewModelPendingDeleteTests: XCTestCase {
         let p = try await workbench()
         let row = try await insertSession(p)
         let vm = makeVM()
-        vm.commitSessionDeletes = { _ in throw WriteRefused() }
+        vm.commitDeleteRequests = { _, _ in throw WriteRefused() }
         await vm.reload()
         await vm.delete(row)
 
@@ -652,6 +676,8 @@ final class WorkbenchesViewModelPendingDeleteTests: XCTestCase {
         XCTAssertTrue(vm.pendingDeletes.batch.isEmpty)
         let kept = try await stored(row.id)
         XCTAssertNotNil(kept, "the safe side: the row survives")
+        let isMarked = try await marked(row.id)
+        XCTAssertFalse(isMarked)
     }
 
     // MARK: - The phone's slice (F7)

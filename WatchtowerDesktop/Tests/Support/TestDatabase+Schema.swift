@@ -1422,7 +1422,7 @@ CREATE TABLE IF NOT EXISTS "terminal_sessions" (
     agent_turns       TEXT,
     agent_transcript_path TEXT, agent_cwd TEXT, agent_cwd_at TEXT, cleanup_result TEXT, cleanup_at TEXT, worktree_branch TEXT, worktree_base TEXT, automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, target_bound_at TEXT, agent_watch_issue TEXT
     CHECK(agent_watch_issue IN ('missing','permission','compressed','unreadable')), agent_watch_issue_at TEXT, start_notice TEXT, agent_background_shells INTEGER
-    CHECK (agent_background_shells IS NULL OR agent_background_shells >= 0),
+    CHECK (agent_background_shells IS NULL OR agent_background_shells >= 0), delete_requested_at TEXT,
     CHECK (title != '' AND folder_path != ''),
     CHECK (kind <> 'claude' OR claude_session_id IS NOT NULL)
 );
@@ -1430,7 +1430,7 @@ CREATE TABLE IF NOT EXISTS terminal_session_worktrees (
     session_id INTEGER NOT NULL REFERENCES terminal_sessions(id) ON DELETE CASCADE,
     root       TEXT NOT NULL,
     branch     TEXT NOT NULL DEFAULT '',
-    first_at   TEXT NOT NULL, last_at TEXT,
+    first_at   TEXT NOT NULL, last_at TEXT, source TEXT NOT NULL DEFAULT 'cwd' CHECK (source IN ('cwd','command')), kind TEXT NOT NULL DEFAULT 'worktree' CHECK (kind IN ('worktree','branch')),
     PRIMARY KEY (session_id, root, branch)
 );
 CREATE TABLE IF NOT EXISTS "tool_trust" (
@@ -2457,6 +2457,10 @@ CREATE TABLE IF NOT EXISTS inbox_folder_routes (
     automation_id INTEGER PRIMARY KEY REFERENCES automations(id) ON DELETE CASCADE,
     folder_id     INTEGER NOT NULL REFERENCES inbox_folders(id)
 );
+CREATE TABLE IF NOT EXISTS agent_session_tombstones (
+    agent_session_id TEXT PRIMARY KEY,
+    deleted_at       TEXT NOT NULL
+);
 CREATE VIEW IF NOT EXISTS tracker_issues AS
 SELECT 'jira' AS tracker, ji.account_id, ji.id AS issue_id, ji.key, ji.project_key,
        ji.summary AS title, ji.description_text, ji.status, ji.status_category,
@@ -3218,6 +3222,15 @@ END;
 CREATE TRIGGER IF NOT EXISTS review_reviewer_threads_ad AFTER DELETE ON review_reviewer_threads
 BEGIN
   DELETE FROM chat_conversations WHERE id = OLD.conversation_id AND context_type = 'review_reviewer';
+END;
+CREATE TRIGGER IF NOT EXISTS agent_session_tombstones_bd BEFORE DELETE ON terminal_sessions
+BEGIN
+    INSERT OR IGNORE INTO agent_session_tombstones (agent_session_id, deleted_at)
+    SELECT agent_session_id, strftime('%Y-%m-%dT%H:%M:%SZ','now')
+    FROM terminal_session_agent_sessions WHERE terminal_session_id = OLD.id;
+    INSERT OR IGNORE INTO agent_session_tombstones (agent_session_id, deleted_at)
+    SELECT OLD.claude_session_id, strftime('%Y-%m-%dT%H:%M:%SZ','now')
+    WHERE OLD.claude_session_id IS NOT NULL;
 END;
 """#
 }

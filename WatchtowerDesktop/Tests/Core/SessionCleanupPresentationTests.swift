@@ -158,34 +158,6 @@ final class SessionCleanupPresentationTests: XCTestCase {
              reason: reason.map(SessionCleanupReason.init(code:)))
     }
 
-    func testOfferLineWithKeptItems() {
-        let plan = SessionCleanupPlan(items: [
-            worktreeItem("a", 7_000_000_000), worktreeItem("b", 5_000_000_000),
-            branchItem("x"), branchItem("y"), branchItem("z"),
-            worktreeItem("c", 1_000, keep: "uncommitted_changes")
-        ])
-        XCTAssertEqual(Presentation.offerLine(plan),
-                       "Also clean up: 2 worktrees, 3 branches (~12 GB). Kept: 1 worktree — uncommitted changes.")
-    }
-
-    func testOfferLineWithoutKeptItems() {
-        let plan = SessionCleanupPlan(items: [branchItem("x")])
-        XCTAssertEqual(Presentation.offerLine(plan), "Also clean up: 1 branch.")
-    }
-
-    func testOfferLineIsNilWhenNothingIsRemovable() {
-        XCTAssertNil(Presentation.offerLine(SessionCleanupPlan()))
-        let keptOnly = SessionCleanupPlan(items: [worktreeItem("a", 1, keep: "locked"), branchItem("b", keep: "default_branch")])
-        XCTAssertNil(Presentation.offerLine(keptOnly))
-    }
-
-    func testOfferLineSizeVariants() {
-        let unknown = SessionCleanupPlan(items: [worktreeItem("a", 0, known: false)])
-        XCTAssertEqual(Presentation.offerLine(unknown), "Also clean up: 1 worktree (size unknown).")
-        let some = SessionCleanupPlan(items: [worktreeItem("a", 2_000_000_000), worktreeItem("b", 0, known: false)])
-        XCTAssertEqual(Presentation.offerLine(some), "Also clean up: 2 worktrees (~2.0 GB, some sizes unknown).")
-    }
-
     func testKeptReasonsAreListedOnceInFirstSeenOrder() {
         let items = [
             branchItem("a", keep: "checked_out"), worktreeItem("b", 1, keep: "uncommitted_changes"),
@@ -231,9 +203,9 @@ final class SessionCleanupPresentationTests: XCTestCase {
     }
 
     /// Decoded JSON without `bytes_known`: the size is unknown, not "~0 B".
-    func testOfferLineFromDecodedJSONWithoutBytesKnown() throws {
+    func testTotalTextFromDecodedJSONWithoutBytesKnown() throws {
         let json = #"{"items":[{"key":"a","kind":"worktree","action":"remove","bytes":0}]}"#
         let plan = try JSONDecoder().decode(SessionCleanupPlan.self, from: Data(json.utf8))
-        XCTAssertEqual(Presentation.offerLine(plan), "Also clean up: 1 worktree (size unknown).")
+        XCTAssertEqual(Presentation.totalText(plan.items), "1 worktree (size unknown)")
     }
 }

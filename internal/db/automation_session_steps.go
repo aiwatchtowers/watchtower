@@ -65,7 +65,7 @@ func (db *DB) AttachAutomationSessionStep(stepID, sessionID int64) (bool, error)
 		  AND EXISTS (SELECT 1 FROM automation_runs r WHERE r.id = automation_run_steps.run_id
 		              AND r.status = 'waiting' AND r.waiting_reason = 'app')
 		  AND EXISTS (SELECT 1 FROM terminal_sessions s WHERE s.id = ?
-		              AND s.automation_run_id = automation_run_steps.run_id)
+		              AND s.automation_run_id = automation_run_steps.run_id AND s.`+NotDeletingSQL+`)
 		  AND NOT EXISTS (SELECT 1 FROM automation_run_steps o WHERE o.session_id = ?)`, sessionID, stepID, sessionID, sessionID)
 	if err != nil {
 		return false, fmt.Errorf("attaching session %d to automation run step %d: %w", sessionID, stepID, err)
@@ -113,7 +113,7 @@ func oneRowAffected(res sql.Result, what string) (bool, error) {
 type AutomationSessionStep struct {
 	Status, Error string
 	SessionID     int64 // 0 = none attached yet
-	SessionGone   bool  // the attached session's row was deleted
+	SessionGone   bool  // the attached session's row was deleted, or is being deleted (delete_requested_at, #1716)
 	Finished      bool  // finished_at is set (finish_session)
 	FinishSummary string
 	Failed        bool // agent_failed_at is set
@@ -140,7 +140,7 @@ func (db *DB) GetAutomationSessionStep(stepID int64) (AutomationSessionStep, err
 	var finished, failed sql.NullBool
 	var summary, agentErr, issue sql.NullString
 	err := db.QueryRow(`SELECT st.status, st.error, st.session_id, ts.id IS NULL, `+sessionEndColumns+`
-		FROM automation_run_steps st LEFT JOIN terminal_sessions ts ON ts.id = st.session_id
+		FROM automation_run_steps st LEFT JOIN terminal_sessions ts ON ts.id = st.session_id AND ts.`+NotDeletingSQL+`
 		WHERE st.id = ?`, stepID).
 		Scan(&s.Status, &s.Error, &session, &gone, &finished, &summary, &failed, &agentErr, &issue)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -158,10 +158,10 @@ func (db *DB) GetAutomationSessionStep(stepID int64) (AutomationSessionStep, err
 
 // SessionEnds reads terminal session sessionID the way a session() wait
 // does once it is attached (the step's own status aside):
-// ErrTerminalSessionNotFound when the row is gone.
+// ErrTerminalSessionNotFound when the row is gone or being deleted (#1716).
 func (db *DB) SessionEnds(sessionID int64) (AutomationSessionStep, error) {
 	s := AutomationSessionStep{SessionID: sessionID}
-	err := db.QueryRow(`SELECT `+sessionEndColumns+` FROM terminal_sessions ts WHERE ts.id = ?`, sessionID).
+	err := db.QueryRow(`SELECT `+sessionEndColumns+` FROM terminal_sessions ts WHERE ts.id = ? AND ts.`+NotDeletingSQL, sessionID).
 		Scan(&s.Finished, &s.FinishSummary, &s.Failed, &s.AgentError, &s.WatchIssue)
 	if errors.Is(err, sql.ErrNoRows) {
 		return s, ErrTerminalSessionNotFound

@@ -88,7 +88,7 @@ final class HubKeepAwake {
                     db,
                     sql: """
                         SELECT COUNT(DISTINCT project_id) FROM terminal_sessions
-                        WHERE kind IN \(AgentKind.sqlKinds) AND project_id IS NOT NULL
+                        WHERE kind IN \(AgentKind.sqlKinds) AND project_id IS NOT NULL AND delete_requested_at IS NULL
                           AND id IN (\(databaseQuestionMarks(count: ids.count)))
                         """,
                     arguments: StatementArguments(ids)

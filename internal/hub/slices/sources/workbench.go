@@ -231,13 +231,14 @@ type ref struct {
 // workbenchRows is WorkbenchSlice.publishedWorkbenches: every workbench with
 // the switcher's counts, ranked by rankWorkbenches.
 func workbenchRows(ctx context.Context, tx *sql.Tx) ([]workbenchRow, error) {
+	//nolint:gosec // G202: the concatenations are package constants (db.NotDeletingSQL and the like); every value is a bound arg.
 	rows, err := tx.QueryContext(ctx, `
 SELECT p.id, p.name, p.description, p.folder_path, p.archive_after_days,
        (SELECT COUNT(*) FROM owner_asks a WHERE a.project_id = p.id AND a.status = 'open' AND `+askVisible+`),
        (SELECT COUNT(*) FROM targets t WHERE t.project_id = p.id AND t.status IN ('todo','in_progress','in_review','blocked')),
        (SELECT COUNT(*) FROM targets t WHERE t.project_id = p.id AND t.status = 'in_progress'),
        (SELECT COUNT(*) FROM targets t WHERE t.project_id = p.id AND t.status = 'blocked'),
-       COALESCE((SELECT MAX(s.last_active_at) FROM terminal_sessions s WHERE s.project_id = p.id), '')
+       COALESCE((SELECT MAX(s.last_active_at) FROM terminal_sessions s WHERE s.project_id = p.id AND s.`+db.NotDeletingSQL+`), '')
 FROM projects p
 ORDER BY p.name COLLATE NOCASE, p.id`)
 	if err != nil {
@@ -263,12 +264,13 @@ ORDER BY p.name COLLATE NOCASE, p.id`)
 // set in its order from one light query, for the sources that need only
 // which workbenches are published.
 func publishedRefs(ctx context.Context, tx *sql.Tx) ([]ref, error) {
+	//nolint:gosec // G202: the concatenations are package constants (db.NotDeletingSQL and the like); every value is a bound arg.
 	rows, err := tx.QueryContext(ctx, `
 SELECT p.id, p.name, COALESCE(s.last, '')
 FROM projects p
 LEFT JOIN (
     SELECT project_id, MAX(last_active_at) AS last FROM terminal_sessions
-    WHERE project_id IS NOT NULL GROUP BY project_id
+    WHERE project_id IS NOT NULL AND `+db.NotDeletingSQL+` GROUP BY project_id
 ) s ON s.project_id = p.id
 ORDER BY p.name COLLATE NOCASE, p.id`)
 	if err != nil {

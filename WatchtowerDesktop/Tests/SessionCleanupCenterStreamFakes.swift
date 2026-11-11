@@ -16,6 +16,7 @@ final class ScriptedCleanupStreamer: SessionCleanupStreaming, @unchecked Sendabl
         private var exit: SessionCleanupStream.Exit?
         private var waiters: [CheckedContinuation<SessionCleanupStream.Exit, Never>] = []
         private var stops = 0
+        private var groupStops: [Duration] = []
 
         /// `ignoresCancellation`: the lines go through a channel whose
         /// reads ignore the reader's cancellation, as a pipe read already
@@ -34,6 +35,9 @@ final class ScriptedCleanupStreamer: SessionCleanupStreaming, @unchecked Sendabl
         }
 
         var stopCount: Int { lock.withLock { stops } }
+        /// The graces of the group stops (`stopWithin`: SIGTERM, then
+        /// SIGKILL after the grace); such a stop ends the run (exit 143).
+        var groupStopGraces: [Duration] { lock.withLock { groupStops } }
 
         func send(_ line: String) {
             continuation.yield(line)
@@ -56,7 +60,11 @@ final class ScriptedCleanupStreamer: SessionCleanupStreaming, @unchecked Sendabl
             SessionCleanupStream(
                 lines: lines,
                 exit: { [self] in await waitForExit() },
-                stop: { [self] in lock.withLock { stops += 1 } }
+                stop: { [self] in lock.withLock { stops += 1 } },
+                stopWithin: { [self] grace in
+                    lock.withLock { groupStops.append(grace) }
+                    finish(status: 143, message: "terminated")
+                }
             )
         }
 

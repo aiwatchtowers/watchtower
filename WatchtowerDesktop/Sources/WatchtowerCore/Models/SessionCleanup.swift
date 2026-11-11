@@ -357,3 +357,11 @@ package struct SessionCleanupRecord: Equatable, Sendable {
         self.at = at
     }
 }
+
+extension SessionCleanupItem.Kind {
+    /// A kind this build knows (not `.unknown`).
+    package var isKnown: Bool {
+        if case .unknown = self { return false }
+        return true
+    }
+}

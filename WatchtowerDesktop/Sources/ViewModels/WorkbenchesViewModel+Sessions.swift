@@ -66,8 +66,8 @@ extension WorkbenchesViewModel {
         /// newer Mac or CLI wrote it): it is never started (A7b; Go's
         /// session_start refuses it `not_supported`).
         case unsupportedAgent(String)
-        /// Delete and Clean Up closed the session's terminal and is removing
-        /// its worktree (board #535): it does not resume. Callers drop it
+        /// The session was deleted and its background cleanup is queued or
+        /// runs (board #1716): it does not resume. Callers drop it
         /// silently, as `inProgress`; the phone is told why.
         case cleaningUp
     }
@@ -157,9 +157,12 @@ extension WorkbenchesViewModel {
             terminalSessions[projectID] = rows
             sessionLoadErrors[projectID] = nil
             // A row gone from the list (deleted from another window, or a
-            // layout restored from an older run) leaves the layout too.
+            // layout restored from an older run) leaves the layout too. A
+            // deleted row still being cleaned up or marked Not fully cleaned
+            // (board #1716) is out of the list but not gone: its pane stays.
             if load == loads.started {
-                for id in layout(projectID: projectID).referencedSessionIDs where !rows.contains(where: { $0.id == id }) {
+                for id in layout(projectID: projectID).referencedSessionIDs
+                where !rows.contains(where: { $0.id == id }) && !keepsPaneWhileCleaning(id, projectID: projectID) {
                     forgetInLayout(id, projectID: projectID)
                 }
             }
@@ -548,9 +551,16 @@ extension WorkbenchesViewModel {
     /// `ticket` is the switch's `beginSwitch` when the caller took it before
     /// an await of its own; otherwise it is taken here.
     func open(_ session: TerminalSession, placement: Placement = .show, ticket: Int? = nil) async {
-        let ticket = placement == .background ? nil : ticket ?? beginSwitch(projectID: session.projectID)
         // A failure is reported already (`reopen`).
-        _ = try? await reopen(session, placement: placement, ticket: ticket, checkLaunch: placement == .background)
+        _ = try? await resume(session, placement: placement, ticket: ticket)
+    }
+
+    /// `open` that throws why the row did not resume (`TargetStartError`:
+    /// `.cleaningUp` for a deleted row whose cleanup is queued or runs).
+    @discardableResult
+    func resume(_ session: TerminalSession, placement: Placement = .show, ticket: Int? = nil) async throws -> TerminalSession {
+        let ticket = placement == .background ? nil : ticket ?? beginSwitch(projectID: session.projectID)
+        return try await reopen(session, placement: placement, ticket: ticket, checkLaunch: placement == .background)
     }
 
     /// `open` past its ticket; nil only for `.background`. Throws
@@ -560,10 +570,12 @@ extension WorkbenchesViewModel {
         _ session: TerminalSession, placement: Placement, ticket: Int?, checkLaunch: Bool
     ) async throws -> TerminalSession {
         // Every resume of an existing row comes here (a click, ⌘N, Work on
-        // It, the phone's open_existing): a row whose terminal Delete and
-        // Clean Up closed — its worktree being removed — is refused
-        // (board #535). A Clean Up… apply does not stop a resume.
-        guard !closedForCleanup.contains(session.id) else { throw TargetStartError.cleaningUp }
+        // It, the phone's open_existing): a deleted row whose background
+        // cleanup is queued or runs is refused (board #1716). A Clean Up…
+        // apply does not stop a resume.
+        // A Not fully cleaned row is an ordinary finished session again:
+        // its delete request is cleared in a write of its own first.
+        try await clearDeleteRequestForResume(session)
         // A kind this build has no adapter for is refused before anything
         // runs (A7b): never a shell, never Claude Code in its place. Its pane
         // opens on the not-supported line. A run the session host holds for
@@ -617,6 +629,9 @@ extension WorkbenchesViewModel {
     /// session: it just opens.
     func startFresh(_ session: TerminalSession, placement: Placement = .show) async {
         guard !cleaningUpSessions.contains(session.id), !preparingSessions.contains(session.id) else { return }
+        // A deleted row (board #1716) — queued, in a Resume or Delete Anyway,
+        // or Not fully cleaned — never starts fresh: Resume is its way back.
+        guard canResume(session.id), notFullyCleaned[session.id] == nil else { return }
         let ticket = beginSwitch(projectID: session.projectID)
         guard let agent = session.kind.agent else {
             await open(session, placement: placement, ticket: ticket)
@@ -754,7 +769,9 @@ extension WorkbenchesViewModel {
     /// (`startPlacedCleanup`), which decides itself whether the row
     /// qualifies.
     func sessionExited(_ id: Int64, code: Int32?, closedByApp: Bool = false) {
-        if !closedByApp { startPlacedCleanup(sessionID: id) }
+        // A row marked deleted whose run outlived the last launch (board
+        // #1716) is cleaned up now, never by the placed cleanup.
+        if !deletedRowExited(id), !closedByApp { startPlacedCleanup(sessionID: id) }
         // The run ended: what the owner pasted into its Workchat goes with it
         // (#604 S9), off the main thread.
         if let store = attachmentStore {

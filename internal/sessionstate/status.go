@@ -234,6 +234,8 @@ func backgroundReport(r Row, now time.Time) (time.Time, bool) {
 }
 
 // Load reads the session's row and its open asks. RunStartedAt stays empty.
+// A row being deleted (delete_requested_at, #1716) reads as missing:
+// sql.ErrNoRows, as for a row that is gone.
 func Load(ctx context.Context, q Querier, sessionID int64) (Row, error) {
 	r := Row{ID: sessionID}
 	err := q.QueryRowContext(ctx, `
@@ -242,7 +244,7 @@ SELECT t.kind, t.agent_state, t.agent_state_at, t.finished_at, t.agent_failed_at
        (SELECT COUNT(*) FROM owner_asks a WHERE a.session_id = t.id AND a.status = 'open'),
        (SELECT COUNT(*) FROM owner_asks a WHERE a.session_id = t.id AND a.status = 'open' AND a.kind = 'question'),
        (SELECT COUNT(*) FROM owner_asks a WHERE a.session_id = t.id AND a.status = 'open' AND a.kind = 'review')
-FROM terminal_sessions t WHERE t.id = ?`, sessionID).Scan(
+FROM terminal_sessions t WHERE t.id = ? AND t.`+db.NotDeletingSQL, sessionID).Scan(
 		&r.Kind, &r.AgentState, &r.AgentStateAt, &r.FinishedAt, &r.AgentFailedAt,
 		&r.AgentBackground, &r.AgentBackgroundAt, &r.AgentBackgroundShells, &r.ChatQuestionAt, &r.AgentCwdAt,
 		&r.OpenAsks, &r.OpenQuestionAsks, &r.OpenReviewAsks)

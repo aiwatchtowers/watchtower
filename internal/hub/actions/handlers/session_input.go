@@ -400,11 +400,13 @@ func (h *Handlers) mayType(r actions.Request) bool {
 }
 
 // boardSession is the session's agent when it is an agent session of a
-// workbench that exists (BoardSessionScope.fetchBoardSession).
+// workbench that exists (BoardSessionScope.fetchBoardSession). A row being
+// deleted (#1716) is not one: the phone's input and interrupt on it are
+// refused as for a missing row.
 func (h *Handlers) boardSession(ctx context.Context, sessionID int64) (agent agentkind.Kind, ok bool, err error) {
 	var kind string
 	err = h.d.DB.QueryRowContext(ctx, `SELECT t.kind FROM terminal_sessions t JOIN projects p ON p.id = t.project_id
-		WHERE t.id = ? AND t.kind IN `+agentkind.SQLKinds(), sessionID).Scan(&kind)
+		WHERE t.id = ? AND t.kind IN `+agentkind.SQLKinds()+` AND t.`+db.NotDeletingSQL, sessionID).Scan(&kind)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", false, nil
 	}

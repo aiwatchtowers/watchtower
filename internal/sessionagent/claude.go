@@ -136,7 +136,7 @@ func (claudeAdapter) Caps() Caps {
 		FailureSignal: SignalHook, InterruptSignal: SignalHook,
 		IdleSignal: true, PermissionWait: true, MidturnInput: true, PhoneInput: true, Elicitation: true,
 		RegistryProbe: true, SubagentFeed: true, Analytics: true, BackgroundTasks: true,
-		AppSessionID: true, AnalyticsContext: true,
+		AppSessionID: true, AnalyticsContext: true, ScratchpadLanes: true,
 	}
 }
 

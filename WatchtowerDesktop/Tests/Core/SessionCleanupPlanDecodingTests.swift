@@ -106,7 +106,6 @@ final class SessionCleanupPlanDecodingTests: XCTestCase {
         XCTAssertFalse(plan.items[0].isPendingRemoval)
         XCTAssertFalse(plan.items[1].isPendingRemoval)
         XCTAssertEqual(plan.removableKeys, [])
-        XCTAssertNil(SessionCleanupPresentation.offerLine(plan))
     }
 
     /// The memberwise defaults are the decoder's zero values.
