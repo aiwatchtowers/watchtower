@@ -27,8 +27,6 @@ import (
 	"watchtower/internal/sessionhost"
 )
 
-const waitFor = 10 * time.Second
-
 // world is a real in-process session-host on its own socket, a workspace
 // database with one workbench (a git repository) and stub agents: the login
 // shell stub drops -l and runs the -c command under /bin/sh with a PATH whose
@@ -78,11 +76,7 @@ func newWorld(t *testing.T) *world {
 	go func() { done <- sessionhost.NewServer(sessionhost.Options{CodexWatch: w.codexWatch}).Serve(ctx, l) }()
 	t.Cleanup(func() {
 		cancel()
-		select {
-		case <-done:
-		case <-time.After(waitFor):
-			t.Error("the session host did not stop")
-		}
+		<-done
 	})
 	t.Cleanup(w.reapAll) // runs before the host stops
 
@@ -140,9 +134,7 @@ func (w *world) deps() Deps {
 
 func (w *world) client() *sessionhost.Client {
 	w.t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), waitFor)
-	defer cancel()
-	c, err := sessionhost.Dial(ctx, w.socket)
+	c, err := sessionhost.Dial(context.Background(), w.socket)
 	require.NoError(w.t, err)
 	w.t.Cleanup(func() { _ = c.Close() })
 	return c
@@ -198,8 +190,7 @@ func (w *world) reapAll() {
 			continue
 		}
 		_ = syscall.Kill(-info.Pid, syscall.SIGKILL)
-		deadline := time.Now().Add(waitFor)
-		for syscall.Kill(info.Pid, 0) == nil && time.Now().Before(deadline) {
+		for syscall.Kill(info.Pid, 0) == nil { // until the host reaped it
 			time.Sleep(10 * time.Millisecond)
 		}
 	}
@@ -262,13 +253,12 @@ func (w *world) row(id int64) sessionRow {
 	return r
 }
 
-func eventually(t *testing.T, what string, ok func() bool) {
+// eventually checks ok until it holds — for what a stub process or the
+// session host writes on its own. No deadline: go test -timeout bounds a
+// broken run.
+func eventually(t *testing.T, _ string, ok func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(waitFor)
 	for !ok() {
-		if time.Now().After(deadline) {
-			t.Fatalf("never: %s", what)
-		}
 		time.Sleep(20 * time.Millisecond)
 	}
 }
@@ -457,7 +447,6 @@ func (p *pane) send(ft sessionhost.FrameType, b []byte) {
 // until reads frames until one of type want (an Error fails the test).
 func (p *pane) until(want sessionhost.FrameType) []byte {
 	p.t.Helper()
-	_ = p.nc.SetReadDeadline(time.Now().Add(waitFor))
 	for {
 		ft, b, err := sessionhost.ReadFrame(p.nc)
 		require.NoError(p.t, err)
