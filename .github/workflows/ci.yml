@@ -28,14 +28,24 @@ jobs:
   # for that run and goes ahead without it; any gh/API error also lets the
   # run go ahead (fail-open). See scripts/ci-dedupe-gate.sh.
   # On a pull request it also says which jobs the change can affect:
-  #   code   — anything but docs: Go and Swift test each other (Swift Test
-  #            builds the CLI, Go tests read Swift sources and the generated
-  #            test schema), so one switch covers both and the linters;
-  #            docs/guide/reference/keyboard-shortcuts.md counts as code, since
-  #            KeyboardShortcutCatalogTests reads it.
+  #   go     — Go Test, Go Lint, the Go builds and the code index: anything
+  #            but docs and the three Swift trees, plus the Swift files Go
+  #            tests read (the Desktop's Sources, which several guards scan;
+  #            the shared fixtures; the generated test schema; the phone's
+  #            release config) and any deleted or renamed Swift file (the
+  #            inventory guard checks the Swift guard tests exist).
+  #   swift  — Swift Lint + Kit Test and Swift Test: the Swift trees, the
+  #            Makefile, scripts/ and this file, plus the Go-side files Swift
+  #            tests read (shared testdata, schema.sql, contract files,
+  #            keyboard-shortcuts.md) and what the CLI they build runs
+  #            (CodeNavRealCLITests: `code index|search`; SQLCipherInteropTests:
+  #            internal/sqlcipher/cmd/interop) with go.mod/go.sum.
+  #            scripts/tests/test-ci-path-filters.sh fails when a test starts
+  #            reading a path across the line that its filter misses.
   #   mobile — the iPhone app, the Kit it builds on, the Makefile or this file.
   # A push (main included) and workflow_dispatch always run everything; the
-  # nightly schedule runs only the race pass (code, mobile and guide false).
+  # nightly schedule runs only the race pass (go, swift, mobile and guide
+  # false).
   # It also picks where the jobs run (scripts/ci-pick-runner.sh): the
   # owner's Mac when its self-hosted wt-general runners are online (set up by
   # scripts/ci-runner/setup-mac-runner.sh), else the GitHub-hosted runners —
@@ -54,7 +64,8 @@ jobs:
       pull-requests: read
     outputs:
       run: ${{ steps.check.outputs.run }}
-      code: ${{ github.event_name != 'schedule' && (github.event_name != 'pull_request' || steps.filter.outputs.code == 'true' || steps.filter.outputs.guide_input == 'true') }}
+      go: ${{ github.event_name != 'schedule' && (github.event_name != 'pull_request' || steps.filter.outputs.go == 'true' || steps.scope.outputs.go_input == 'true') }}
+      swift: ${{ github.event_name != 'schedule' && (github.event_name != 'pull_request' || steps.scope.outputs.swift == 'true') }}
       mobile: ${{ github.event_name != 'schedule' && (github.event_name != 'pull_request' || steps.filter.outputs.mobile == 'true') }}
       guide: ${{ github.event_name != 'schedule' && (github.event_name != 'pull_request' || steps.filter.outputs.guide == 'true') }}
       linux: ${{ steps.pick.outputs.linux || '"ubuntu-24.04"' }}
@@ -68,16 +79,60 @@ jobs:
         with:
           predicate-quantifier: every
           filters: |
-            code:
+            go:
               - '**'
               - '!docs/**'
               - '!*.md'
-            guide_input:
-              - 'docs/guide/reference/keyboard-shortcuts.md'
+              - '!WatchtowerDesktop/**'
+              - '!WatchtowerKit/**'
+              - '!WatchtowerMobile/**'
             mobile:
               - '{WatchtowerMobile/**,WatchtowerKit/**,Makefile,.github/workflows/ci.yml}'
             guide:
               - 'docs/guide/**'
+
+      # some (the default): a file counts when it matches any line. Both
+      # lists are checked against the tests' cross-reads by
+      # scripts/tests/test-ci-path-filters.sh.
+      - id: scope
+        if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            go_input:
+              - 'WatchtowerDesktop/Sources/**'
+              - 'WatchtowerDesktop/Tests/Core/Fixtures/**'
+              - 'WatchtowerDesktop/Tests/Support/TestDatabase+Schema.swift'
+              - 'WatchtowerKit/Sources/WatchtowerKit/Resources/agent_capabilities.json'
+              - 'WatchtowerKit/Sources/WatchtowerSync/Link/LinkPayload.swift'
+              - 'WatchtowerKit/Sources/WatchtowerSync/Relay/RelayRecordKind.swift'
+              - 'WatchtowerKit/Tests/Fixtures/**'
+              - 'WatchtowerMobile/*'
+              - 'WatchtowerMobile/WatchtowerMobile.xcodeproj/**'
+              - deleted|renamed: '{WatchtowerDesktop,WatchtowerKit,WatchtowerMobile}/**/*.swift'
+            swift:
+              - 'WatchtowerDesktop/**'
+              - 'WatchtowerKit/**'
+              - 'WatchtowerMobile/**'
+              - 'Makefile'
+              - '.github/workflows/ci.yml'
+              - 'scripts/**'
+              - 'docs/guide/reference/keyboard-shortcuts.md'
+              - 'cmd/testdata/**'
+              - 'internal/{asks,automations,automations/blocks,automations/builtin,chat,codewalk,codex,db,ideas,inbox,instructions,planusage,policy,reviewdiff,sessionhost,sessionstart,sessionstate,skills,specreview}/testdata/**'
+              - 'internal/hub/{identity,secure,transport/cloudkit}/testdata/**'
+              - 'internal/db/schema.sql'
+              - 'internal/chat/{artifacts_examples,questions_contract}.md'
+              - 'internal/features/registry.go'
+              - 'internal/inboxfolders/icons.json'
+              - 'internal/providers/{registry,capabilities,capabilities_test}.go'
+              - 'internal/sessionagent/agent_capabilities.json'
+              - 'main.go'
+              - 'go.mod'
+              - 'go.sum'
+              - 'cmd/root.go'
+              - 'cmd/code*.go'
+              - 'internal/{codeindex,codesearch,codewalk,gitbin,sqlcipher}/**'
 
       # Only the gate scripts: the job stays a few seconds long.
       - uses: actions/checkout@v4
@@ -139,7 +194,7 @@ jobs:
   go-lint:
     name: Go Lint
     needs: gate
-    if: needs.gate.outputs.run == 'true' && needs.gate.outputs.code == 'true'
+    if: needs.gate.outputs.run == 'true' && needs.gate.outputs.go == 'true'
     runs-on: ${{ fromJSON(needs.gate.outputs.linux) }}
     steps:
       - uses: actions/checkout@v4
@@ -232,7 +287,7 @@ jobs:
   go-build-linux:
     name: Go Build (Linux)
     needs: gate
-    if: needs.gate.outputs.run == 'true' && needs.gate.outputs.code == 'true'
+    if: needs.gate.outputs.run == 'true' && needs.gate.outputs.go == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -251,7 +306,7 @@ jobs:
   go-test:
     name: Go Test
     needs: gate
-    if: needs.gate.outputs.run == 'true' && needs.gate.outputs.code == 'true'
+    if: needs.gate.outputs.run == 'true' && needs.gate.outputs.go == 'true'
     runs-on: ${{ fromJSON(needs.gate.outputs.linux) }}
     # A hang must fail the job, not run to GitHub's 6 h default. Measured
     # 2026-10-02: ~7 min on a PR; the race pass runs in go-test-race.
@@ -307,7 +362,7 @@ jobs:
   go-linux-arm64:
     name: Go (linux/arm64)
     needs: gate
-    if: needs.gate.outputs.run == 'true' && needs.gate.outputs.code == 'true'
+    if: needs.gate.outputs.run == 'true' && needs.gate.outputs.go == 'true'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     steps:
@@ -385,7 +440,7 @@ jobs:
   codeindex-changes:
     name: Code index changes
     needs: gate
-    if: needs.gate.outputs.run == 'true' && needs.gate.outputs.code == 'true'
+    if: needs.gate.outputs.run == 'true' && needs.gate.outputs.go == 'true'
     runs-on: ${{ fromJSON(needs.gate.outputs.linux) }}
     permissions:
       contents: read
@@ -447,7 +502,7 @@ jobs:
   swift-lint:
     name: Swift Lint + Kit Test
     needs: gate
-    if: needs.gate.outputs.run == 'true' && needs.gate.outputs.code == 'true'
+    if: needs.gate.outputs.run == 'true' && needs.gate.outputs.swift == 'true'
     # macos-26 + Xcode 26.4.1 in the cloud, the Mac's Xcode (DEVELOPER_DIR in
     # its runners' .env) there: the Kit tests run on Swift Test's toolchain.
     runs-on: ${{ fromJSON(needs.gate.outputs.macos) }}
@@ -474,6 +529,12 @@ jobs:
       - name: Kit lint guard
         run: bash ../scripts/kit-lint-guard.sh
 
+      # The gate's go/swift path filters against the tests' cross-reads.
+      # Go Test runs it too (make test-scripts); here it also covers a
+      # Swift-only PR, which skips Go Test.
+      - name: Path filter guard
+        run: bash ../scripts/tests/test-ci-path-filters.sh
+
       - name: SwiftLint
         run: swiftlint lint --strict --baseline .swiftlint-baseline.json
 
@@ -496,7 +557,7 @@ jobs:
   swift-test:
     name: Swift Test
     needs: gate
-    if: needs.gate.outputs.run == 'true' && needs.gate.outputs.code == 'true'
+    if: needs.gate.outputs.run == 'true' && needs.gate.outputs.swift == 'true'
     # macos-26: its image carries Xcode 26.4+ (Swift 6.3). The pinned mlx-swift
     # 0.31.6 (via speech-swift) declares swift-tools-version 6.3, which Xcode
     # 26.3 (Swift 6.2.4, the newest on macos-15) cannot load on a cold SPM
