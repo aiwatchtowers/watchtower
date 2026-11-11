@@ -9,6 +9,7 @@ private final class MenuRunner: CLIRunnerProtocol, @unchecked Sendable {
     typealias Handler = @Sendable ([String]) throws -> Data
 
     private let lock = NSLock()
+    private let signal = StateSignal()
     private var handlers: [String: Handler] = [:]
     private var recorded: [[String]] = []
     private var held: String?
@@ -17,6 +18,12 @@ private final class MenuRunner: CLIRunnerProtocol, @unchecked Sendable {
 
     var invocations: [[String]] { lock.withLock { recorded } }
     var isHolding: Bool { lock.withLock { gate != nil } }
+
+    /// Returns once `condition` holds over this runner's state — its own
+    /// signal (a held call reaching the gate calls `signal.changed()`), no clock.
+    func until(_ condition: @escaping @Sendable (MenuRunner) -> Bool) async {
+        await signal.until { [self] in condition(self) }
+    }
 
     /// `verb` is `args[1]` for `automations`, `args[2]` for `inbox folders`.
     func on(_ verb: String, _ handler: @escaping Handler) { lock.withLock { handlers[verb] = handler } }
@@ -46,6 +53,7 @@ private final class MenuRunner: CLIRunnerProtocol, @unchecked Sendable {
                     gate = continuation
                     return false
                 }
+                signal.changed()
                 if now { continuation.resume() }
             }
         }
@@ -157,12 +165,6 @@ final class InboxArtifactMenuTests: XCTestCase {
 
     private func commands(_ entries: [InboxMenuEntry]) -> [String] {
         entries.map(\.title)
-    }
-
-    private func waitUntil(_ condition: @MainActor () -> Bool) async {
-        let deadline = Date().addingTimeInterval(5)
-        while !condition() && Date() < deadline { await Task.yield() }
-        XCTAssertTrue(condition(), "timed out")
     }
 
     nonisolated private static func failure(_ text: String) -> CLIRunnerError {
@@ -346,7 +348,7 @@ final class InboxArtifactMenuTests: XCTestCase {
         runner.hold("run")
         let menu = model()
         let first = Task { await menu.perform(.runNow, on: card(ids.owner)) }
-        await waitUntil { self.runner.isHolding }
+        await runner.until { $0.isHolding }
         XCTAssertTrue(menu.isWorking(card(ids.owner)))
         XCTAssertTrue(menu.isDisabled(card(ids.owner)), "the entries are off while it runs")
         await menu.perform(.runNow, on: card(ids.owner))
@@ -360,7 +362,7 @@ final class InboxArtifactMenuTests: XCTestCase {
         runner.hold("run")
         let menu = model()
         let tab = Task { await self.vm.runNow(self.ids.owner) }
-        await waitUntil { self.runner.isHolding }
+        await runner.until { $0.isHolding }
         XCTAssertTrue(menu.isDisabled(card(ids.owner)), "the Inbox entry is off while the tab's call runs")
         await menu.perform(.runNow, on: card(ids.owner))
         XCTAssertEqual(menu.headerErrors[ids.ownerOutput], AutomationCallResult.busyText)
@@ -375,7 +377,7 @@ final class InboxArtifactMenuTests: XCTestCase {
         await menu.perform(.delete, on: card(ids.owner))
         let pending = try XCTUnwrap(menu.pendingDelete)
         let first = Task { await menu.confirmDelete(pending) }
-        await waitUntil { self.runner.isHolding }
+        await runner.until { $0.isHolding }
         await menu.perform(.delete, on: card(ids.owner))
         XCTAssertNil(menu.pendingDelete, "no second confirmation while the first delete runs")
         await menu.confirmDelete(pending)

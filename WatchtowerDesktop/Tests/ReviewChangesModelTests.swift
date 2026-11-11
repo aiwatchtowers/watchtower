@@ -1208,7 +1208,7 @@ final class ReviewChangesModelTests: XCTestCase {
         let first = Task { _ = try? await h.model.setPhase(.chapters) }
         let mode = Task { _ = try? await h.model.setMode(.deep) }
         let last = Task { _ = try? await h.model.setPhase(.wrapup) }
-        let waiting = await boundedValue(Task { (h.model.mode, h.model.phase) }, timeout: .seconds(1))
+        let waiting = await boundedValue(Task { (h.model.mode, h.model.phase) })
         XCTAssertEqual(waiting?.0, .quick, "the main actor runs, and the mode waits for its save")
         XCTAssertEqual(waiting?.1, before)
         held.release()

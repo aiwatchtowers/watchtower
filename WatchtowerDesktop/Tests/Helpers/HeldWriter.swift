@@ -21,9 +21,7 @@ final class HeldWriter: @unchecked Sendable {
                 gate.wait()
             }
         }
-        if entered.wait(timeout: .now() + 5) == .timedOut {
-            XCTFail("the writer queue was not taken", file: file, line: line)
-        }
+        entered.wait() // the writer queue is taken: the detached write's own signal, no clock
     }
 
     func release() {
@@ -35,25 +33,10 @@ final class HeldWriter: @unchecked Sendable {
     }
 }
 
-/// What a task the test cannot trust to finish returned: nil when it did
-/// not finish within `timeout`, so a regression fails the test instead of
-/// hanging the suite.
+/// What `task` returned, awaited with no clock and no deadline (a task that
+/// never finishes is a hang the lane watchdog reports). Optional so the
+/// existing `XCTUnwrap(await boundedValue(…))` call sites read the same.
 @MainActor
-func boundedValue<T>(_ task: Task<T, Never>, timeout: Duration = .seconds(5)) async -> T? {
-    let outcome = TaskOutcome<T>()
-    Task { @MainActor in
-        outcome.value = await task.value
-        outcome.done = true
-    }
-    let start = ContinuousClock.now
-    while !outcome.done, !Task.isCancelled, ContinuousClock.now - start < timeout {
-        try? await Task.sleep(for: .milliseconds(5))
-    }
-    return outcome.value
-}
-
-@MainActor
-private final class TaskOutcome<T> {
-    var value: T?
-    var done = false
+func boundedValue<T>(_ task: Task<T, Never>) async -> T? {
+    await task.value
 }

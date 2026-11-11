@@ -50,15 +50,8 @@ final class TargetAssistantViewModelTests: XCTestCase {
         }
     }
 
-    private func waitForStreamEnd(_ chat: TargetChatViewModel, timeout: TimeInterval = 5) async throws {
-        let deadline = Date().addingTimeInterval(timeout)
-        while chat.isStreaming {
-            if Date() > deadline {
-                XCTFail("stream did not finish within \(timeout)s")
-                return
-            }
-            try await Task.sleep(nanoseconds: 5_000_000)
-        }
+    private func waitForStreamEnd(_ chat: TargetChatViewModel) async throws {
+        await untilObserved { !chat.isStreaming }
     }
 
     // MARK: - Opening
@@ -380,10 +373,8 @@ final class TargetAssistantViewModelTests: XCTestCase {
         // A real mid-turn state: the reply has streamed part of its text.
         chat.inputText = "go"
         chat.send()
-        let deadline = Date().addingTimeInterval(5)
-        while chat.engine.liveTurn?.fullText != "half a repl", Date() < deadline {
-            try await Task.sleep(nanoseconds: 5_000_000)
-        }
+        // `fullText` is plain (observation-ignored) state: re-checked per main-actor turn, no clock.
+        await untilTurn { chat.engine.liveTurn?.fullText == "half a repl" }
         XCTAssertTrue(chat.isStreaming)
 
         await assistant.close(secondID)

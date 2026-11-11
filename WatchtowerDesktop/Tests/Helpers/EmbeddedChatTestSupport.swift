@@ -2,6 +2,7 @@ import Foundation
 import GRDB
 @testable import WatchtowerDesktop
 import WatchtowerCore
+import WatchtowerTestSupport
 
 /// An engine for a surface's spec over the test database, streaming from
 /// `ai` — what `AppState.embeddedChatCenter` would hand the surface's view.
@@ -22,13 +23,10 @@ func makeSurfaceEngine(
     return EmbeddedChatEngine(spec: spec, store: store, aiService: ai, gate: gate ?? EmbeddedStreamGate())
 }
 
-/// Polls on the main actor until `condition` holds (a 5 s deadline).
+/// Waits on the main actor until `condition` holds — re-checked once per main-actor turn, no clock and no
+/// deadline (`untilTurn`). Always returns true (call sites assert it).
 @MainActor
 func eventually(_ condition: () -> Bool) async -> Bool {
-    let start = ContinuousClock.now
-    while ContinuousClock.now - start < .seconds(5) {
-        if condition() { return true }
-        try? await Task.sleep(for: .milliseconds(5))  // polling interval; cancellation ends the test anyway
-    }
-    return condition()
+    await untilTurn(condition)
+    return true
 }
