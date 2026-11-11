@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -287,6 +288,15 @@ func (c *Client) GetMessageUnix(ctx context.Context, id string) (int64, error) {
 	return time.UnixMilli(ms).Unix(), nil
 }
 
+// messagePermalink opens a message in Gmail's web UI: under #sent when it
+// is only in the owner's sent mail, else under #inbox.
+func messagePermalink(id string, labels []string) string {
+	if slices.Contains(labels, "SENT") && !slices.Contains(labels, "INBOX") {
+		return "https://mail.google.com/mail/u/0/#sent/" + id
+	}
+	return "https://mail.google.com/mail/u/0/#inbox/" + id
+}
+
 // GetMessage fetches and parses a single message in full format.
 func (c *Client) GetMessage(ctx context.Context, id string) (*Message, error) {
 	body, err := c.doGet(ctx, "/users/me/messages/"+id, url.Values{"format": {"full"}})
@@ -303,7 +313,7 @@ func (c *Client) GetMessage(ctx context.Context, id string) (*Message, error) {
 		ThreadID:  raw.ThreadID,
 		Snippet:   raw.Snippet,
 		Labels:    raw.LabelIDs,
-		Permalink: "https://mail.google.com/mail/u/0/#inbox/" + raw.ID,
+		Permalink: messagePermalink(raw.ID, raw.LabelIDs),
 	}
 	for _, l := range raw.LabelIDs {
 		if l == "UNREAD" {

@@ -108,3 +108,28 @@ func TestGetMessageUnixRequestsInternalDateProjection(t *testing.T) {
 		t.Fatalf("GetMessageUnix = %d, want 1700000000", got)
 	}
 }
+
+// A message only in the owner's sent mail opens under #sent; one that is
+// also in the inbox (a note to self) keeps #inbox.
+func TestGetMessagePermalinkSentOnly(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/users/me/messages/s1", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"id":"s1","threadId":"t1","labelIds":["SENT"],"internalDate":"1700000000000","payload":{"headers":[]}}`)
+	})
+	mux.HandleFunc("/users/me/messages/s2", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"id":"s2","threadId":"t2","labelIds":["SENT","INBOX"],"internalDate":"1700000000000","payload":{"headers":[]}}`)
+	})
+	s, _, _ := newTestSyncerForMux(t, mux)
+	for id, want := range map[string]string{
+		"s1": "https://mail.google.com/mail/u/0/#sent/s1",
+		"s2": "https://mail.google.com/mail/u/0/#inbox/s2",
+	} {
+		m, err := s.client.GetMessage(context.Background(), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if m.Permalink != want {
+			t.Errorf("%s permalink = %q, want %q", id, m.Permalink, want)
+		}
+	}
+}
