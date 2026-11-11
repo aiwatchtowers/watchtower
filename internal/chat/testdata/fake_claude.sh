@@ -1,10 +1,15 @@
 #!/bin/sh
-# Fake `claude` for internal/chat backend tests; behaviour by $FAKE_MODE:
+# Fake `claude` for internal/chat backend tests; behaviour by $FAKE_MODE.
+# Most tests run its Go twin in process (fakeCLI, fake_claude_test.go): a
+# change here goes there too. The script itself runs only in the tests of
+# the process wiring (useRealProcess).
 #   normal (default) · slow (first turn never finishes until interrupted)
 #   ignore_interrupt (first turn never finishes and ignores the interrupt)
 #   crash_once (dies on the first user message ever)
 #   crash_always (dies on every user message; stderr = $FAKE_CRASH or a panic)
-#   stubborn (ignores SIGTERM and stdin EOF) · grandchild (leaves a child behind)
+#   stubborn (ignores SIGTERM and stdin EOF; writes its pid to $FAKE_PID) · grandchild (leaves a child behind)
+#   (both modes' child holds the FIFO $FAKE_CHILD_FIFO open for writing, so
+#   the test sees it start — its open returns — and end — EOF — as events)
 #   internal_tool (runs Claude's ToolSearch before a watchtower tool)
 #   noread (never reads stdin, so a large turn blocks the writer)
 #   error_once (the first user message ever ends in an error result)
@@ -16,8 +21,7 @@
 #     answer gets the tool_result the CLI gives — $FAKE_GATE_RESULT (default
 #     "ran") for an allow, the deny message as an error for a deny. An
 #     interrupt withdraws the open ones with control_cancel_request; with
-#     $FAKE_GATE_DIE_ON_ALLOW set it dies on an allow instead. Writes its pid
-#     to $FAKE_PID.)
+#     $FAKE_GATE_DIE_ON_ALLOW set it dies on an allow instead.)
 # Every mode answers an mcp_status control request with the k-th line of the
 # file $FAKE_MCP_STATUS (an mcpServers JSON list; the last line repeats; no
 # file = []).
@@ -44,17 +48,14 @@ done
 if [ "$FAKE_MODE" = "stubborn" ]; then
   trap '' TERM
   echo $$ > "$FAKE_PID"
-  sleep 300 &
-  echo $! > "$FAKE_CHILD_PID"
+  sleep 300 > "$FAKE_CHILD_FIFO" &
   while :; do sleep 1; done
 fi
 if [ "$FAKE_MODE" = "noread" ]; then
   while :; do sleep 1; done
 fi
-case "$FAKE_MODE" in gate|long_line) echo $$ > "$FAKE_PID" ;; esac
 if [ "$FAKE_MODE" = "grandchild" ]; then
-  sleep 300 &
-  echo $! > "$FAKE_CHILD_PID"
+  sleep 300 > "$FAKE_CHILD_FIFO" &
 fi
 
 first_time() {

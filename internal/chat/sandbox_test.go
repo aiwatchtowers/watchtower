@@ -10,7 +10,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-	"time"
+	"testing/synctest"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -115,31 +115,35 @@ func TestChildSandbox_Homes(t *testing.T) {
 // a sandbox denial never reaches TCC, so no privacy prompt appears.
 func TestChat05_ClaudeAIChildNeverTouchesTCCGuardedFolders(t *testing.T) {
 	t.Run("an On session without a sandbox never starts the CLI", func(t *testing.T) {
-		fx := gateFake(t)
-		fx.opts.ClaudeAI.Sandbox = nil
-		_, err := NewClaudeBackend(fx.opts).Start(t.Context())
-		require.ErrorContains(t, err, "sandbox")
-		_, statErr := os.Stat(fx.files.argv)
-		assert.True(t, os.IsNotExist(statErr), "the CLI must not have run")
+		synctest.Test(t, func(t *testing.T) {
+			fx := gateFake(t)
+			fx.opts.ClaudeAI.Sandbox = nil
+			_, err := NewClaudeBackend(fx.opts).Start(t.Context())
+			require.ErrorContains(t, err, "sandbox")
+			_, statErr := os.Stat(fx.files.argv)
+			assert.True(t, os.IsNotExist(statErr), "the CLI must not have run")
+			assert.Empty(t, fx.files.cli.children(), "the CLI must not have run")
+		})
 	})
 
 	t.Run("an On session starts the CLI only through the sandbox", func(t *testing.T) {
-		fx := gateFake(t)
-		record := filepath.Join(t.TempDir(), "sandbox-argv")
-		fx.opts.Env = append(fx.opts.Env, "FAKE_SANDBOX_ARGV="+record)
-		startSession(t, NewClaudeBackend(fx.opts), nil)
-		var b []byte
-		require.Eventually(t, func() bool {
-			b, _ = os.ReadFile(record)
-			return strings.HasSuffix(string(b), "\x00\n")
-		}, 5*time.Second, 10*time.Millisecond)
-		argv := strings.Split(strings.TrimSuffix(string(b), "\x00\n"), "\x00")
-		dash := indexOf(argv, "--")
-		require.Positive(t, dash)
-		assert.Equal(t, "-p", argv[dash-2])
-		assert.Contains(t, argv[dash-1], "(deny file-read* file-write* file-test-existence")
-		require.Less(t, dash+1, len(argv))
-		assert.Equal(t, fx.opts.Binary, argv[dash+1])
+		synctest.Test(t, func(t *testing.T) {
+			fx := gateFake(t)
+			record := filepath.Join(t.TempDir(), "sandbox-argv")
+			fx.opts.Env = append(fx.opts.Env, "FAKE_SANDBOX_ARGV="+record)
+			h := startSession(t, NewClaudeBackend(fx.opts), nil)
+			h.next(EventSessionReady) // the child was started
+			b, err := os.ReadFile(record)
+			require.NoError(t, err)
+			require.True(t, strings.HasSuffix(string(b), "\x00\n"), "one sandbox-exec run recorded")
+			argv := strings.Split(strings.TrimSuffix(string(b), "\x00\n"), "\x00")
+			dash := indexOf(argv, "--")
+			require.Positive(t, dash)
+			assert.Equal(t, "-p", argv[dash-2])
+			assert.Contains(t, argv[dash-1], "(deny file-read* file-write* file-test-existence")
+			require.Less(t, dash+1, len(argv))
+			assert.Equal(t, fx.opts.Binary, argv[dash+1])
+		})
 	})
 
 	t.Run("the CLI the backend starts is confined", func(t *testing.T) {
@@ -150,6 +154,7 @@ func TestChat05_ClaudeAIChildNeverTouchesTCCGuardedFolders(t *testing.T) {
 		sandbox, err := NewChildSandboxAt(sandboxExecPath, []string{home})
 		require.NoError(t, err)
 		fx := gateFake(t)
+		useRealProcess(&fx.opts) // the real macOS sandbox confines a real child
 		fx.opts.ClaudeAI.Sandbox = sandbox
 		// The "CLI" first tries to read the canary, then runs the fake.
 		probe := filepath.Join(t.TempDir(), "probe")
@@ -158,11 +163,12 @@ func TestChat05_ClaudeAIChildNeverTouchesTCCGuardedFolders(t *testing.T) {
 			shQuote(filepath.Join(home, "Documents", "canary.md"))+" > "+shQuote(probe)+" 2>&1\nexec "+
 			shQuote(fx.opts.Binary)+` "$@"`+"\n"), 0o700))
 		fx.opts.Binary = bin
-		startSession(t, NewClaudeBackend(fx.opts), nil)
-		require.Eventually(t, func() bool {
-			_, err := os.Stat(fx.files.argv)
-			return err == nil
-		}, 5*time.Second, 10*time.Millisecond, "the CLI never started")
+		h := startSession(t, NewClaudeBackend(fx.opts), nil)
+		h.next(EventSessionReady)
+		// The probe runs before the fake reads stdin: a finished turn means
+		// it has run.
+		h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "hi"})
+		h.next(EventTurnDone)
 		out, err := os.ReadFile(probe)
 		require.NoError(t, err)
 		assert.Contains(t, string(out), "Operation not permitted")
