@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -15,12 +18,13 @@ import (
 
 // fakeStdioServerEnv makes the test binary act as a stdio MCP server
 // instead of running the tests, for the few tests of the real stdio wiring
-// (spawn, pipes, env, process-group stop): "1" serves newFakeServer — its
-// slow_thing starts a grandchild in the server's process group and writes
-// "<server pid> <grandchild pid>" to WT_FAKE_PIDFILE; "garble" starts a
-// grandchild, writes the same pids to WT_FAKE_PIDFILE and a line to stderr,
-// answers initialize with junk and exits, leaving the grandchild behind.
-// Every other test talks to newFakeServer in process (useFakeServer).
+// (spawn, pipes, env, process-group stop). "1" serves newFakeServer; its
+// slow_thing starts a grandchild. "garble" and "fail" start a grandchild,
+// write a line to stderr and exit: "garble" after answering initialize with
+// junk, "fail" at once with status 1. A grandchild is in the server's
+// process group, never exits on its own and is named in WT_FAKE_PIDFILE as
+// "<server pid> <grandchild pid>". "hold" is the grandchild itself. Every
+// other test talks to newFakeServer in process (useFakeServer).
 const fakeStdioServerEnv = "WT_EXTERNALMCP_FAKE_STDIO_SERVER"
 
 // newFakeServer is the fake MCP server, in process or as the stdio child.
@@ -67,10 +71,11 @@ func newFakeServer(slowStarted func()) *mcp.Server {
 func useFakeServer(t *testing.T) <-chan struct{} {
 	t.Helper()
 	slow := make(chan struct{})
+	var once sync.Once
 	prev := serverTransport
 	serverTransport = func(ctx context.Context, _ ServerSpec) (mcp.Transport, *headBuffer, error) {
 		clientSide, serverSide := mcp.NewInMemoryTransports()
-		if _, err := newFakeServer(func() { close(slow) }).Connect(ctx, serverSide, nil); err != nil {
+		if _, err := newFakeServer(func() { once.Do(func() { close(slow) }) }).Connect(ctx, serverSide, nil); err != nil {
 			return nil, nil, err
 		}
 		return clientSide, nil, nil
@@ -91,25 +96,49 @@ func fakePids(t *testing.T, raw string) (server, grandchild int) {
 	return server, grandchild
 }
 
-// startGrandchild starts a process in this one's process group (stdio nil:
-// it holds none of the server's pipes) and writes both pids to
-// WT_FAKE_PIDFILE.
+// startGrandchild starts a process in this one's process group that never
+// exits on its own ("hold"; stdio nil, so it holds none of the server's
+// pipes) and writes both pids to WT_FAKE_PIDFILE. A failure exits the server
+// with a message on stderr, so the test fails instead of waiting.
 func startGrandchild() {
-	child := exec.Command("sleep", "600")
+	exe, err := os.Executable()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "fake server:", err)
+		os.Exit(2)
+	}
+	child := exec.Command(exe)
+	child.Env = append(os.Environ(), fakeStdioServerEnv+"=hold")
 	if err := child.Start(); err != nil {
+		fmt.Fprintln(os.Stderr, "fake server: starting the grandchild:", err)
 		os.Exit(2)
 	}
 	pids := fmt.Sprintf("%d %d", os.Getpid(), child.Process.Pid)
-	_ = os.WriteFile(os.Getenv("WT_FAKE_PIDFILE"), []byte(pids), 0o600)
+	if err := os.WriteFile(os.Getenv("WT_FAKE_PIDFILE"), []byte(pids), 0o600); err != nil {
+		_ = child.Process.Kill()
+		fmt.Fprintln(os.Stderr, "fake server: writing the pid file:", err)
+		os.Exit(3)
+	}
 }
 
 func TestMain(m *testing.M) {
 	switch os.Getenv(fakeStdioServerEnv) {
+	case "hold":
+		// Blocks until killed; the signal channel keeps the runtime from
+		// reporting a deadlock.
+		block := make(chan os.Signal, 1)
+		signal.Notify(block, syscall.SIGUSR1)
+		for {
+			<-block
+		}
 	case "garble":
-		fmt.Fprintln(os.Stderr, "fake server: missing API key")
 		startGrandchild()
+		fmt.Fprintln(os.Stderr, "fake server: missing API key")
 		fmt.Println("not a JSON-RPC message")
 		os.Exit(0)
+	case "fail":
+		startGrandchild()
+		fmt.Fprintln(os.Stderr, "fake server: missing API key")
+		os.Exit(1)
 	case "1":
 		if err := newFakeServer(startGrandchild).Run(context.Background(), &mcp.StdioTransport{}); err != nil {
 			os.Exit(1)

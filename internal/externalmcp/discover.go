@@ -105,7 +105,7 @@ func ListToolDefs(ctx context.Context, spec ServerSpec) ([]ToolDef, error) {
 const stderrHeadLimit = 2048
 
 // serverTransport is how ListToolDefs and CallTool reach a server:
-// discoveryTransport, or in tests an in-process fake server (main_test.go).
+// discoveryTransport; tests replace it with an in-process fake server.
 var serverTransport = discoveryTransport
 
 // discoveryTransport builds the transport for spec, plus (stdio only) the

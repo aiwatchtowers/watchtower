@@ -8,7 +8,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// waitProcessExit blocks until pid has exited (a pidfd turns readable): a
+// waitProcessExit (a copy of internal/chat's test helper, to be shared)
+// blocks until pid has exited (a pidfd turns readable): a
 // process event, never a poll. A pid already gone returns at once.
 func waitProcessExit(t *testing.T, pid int) {
 	t.Helper()

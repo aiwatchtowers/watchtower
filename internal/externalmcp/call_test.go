@@ -59,24 +59,22 @@ func TestCallTool_IsErrorIsToolError(t *testing.T) {
 }
 
 // TestCallTool_ContextEndEndsTheCall: a tool that never answers ends with
-// the context's error once the context ends (cancelled once the tool has
-// started, so the cause is the context and not a slow start).
+// the context's error once the context ends (cancelled only once the tool
+// has started, so the cause is the context and not a slow start).
 func TestCallTool_ContextEndEndsTheCall(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		started := useFakeServer(t)
 		ctx, cancel := context.WithCancel(t.Context())
 		defer cancel()
 		go func() {
-			<-started
-			cancel()
+			select {
+			case <-started:
+				cancel()
+			case <-ctx.Done():
+			}
 		}()
 		_, err := CallTool(ctx, ServerSpec{Kind: "stdio"}, "slow_thing", nil)
 		require.ErrorIs(t, err, context.Canceled)
-		select {
-		case <-started:
-		default:
-			t.Fatal("the call ended before the slow tool started")
-		}
 	})
 }
 
@@ -94,10 +92,13 @@ func TestCallTool_DeadlineEndsTheCall(t *testing.T) {
 
 // TestStdio_ServerGroupStops is the real stdio wiring of a stopped server
 // (the test binary re-executed as the server, with a grandchild in its
-// process group): when the call's context ends, and when the server starts
-// but fails the handshake — CallTool and ListTools alike, quoting the
-// server's stderr — the whole group is gone after the call. Waits are on
-// process exits only (kqueue NOTE_EXIT / pidfd), never on time.
+// process group that never exits on its own): when the call's context
+// ends, and when the server starts but fails the handshake or dies before
+// it — CallTool and ListTools alike, quoting the server's stderr — the
+// grandchild is gone after the call. The server itself is this process's
+// child, reaped by the call (cmd.Wait); the grandchild is waited for on its
+// exit event only (kqueue NOTE_EXIT / pidfd), never on time, so a group
+// left running hangs the test into go test -timeout.
 func TestStdio_ServerGroupStops(t *testing.T) {
 	t.Run("context end", func(t *testing.T) {
 		fifo := filepath.Join(t.TempDir(), "pid")
@@ -124,50 +125,62 @@ func TestStdio_ServerGroupStops(t *testing.T) {
 			cancel()
 		}()
 
-		_, err = CallTool(ctx, spec, "slow_thing", nil)
-		require.ErrorIs(t, err, context.Canceled)
-
+		_, callErr := CallTool(ctx, spec, "slow_thing", nil)
 		var raw string
 		select {
 		case raw = <-started:
 		default:
-			t.Fatal("the call ended before the slow tool started")
+			t.Fatalf("the call ended before the slow tool started: %v", callErr)
 		}
-		server, grandchild := fakePids(t, raw)
-		t.Cleanup(func() { _ = syscall.Kill(-server, syscall.SIGKILL) })
-		waitProcessExit(t, server)
-		waitProcessExit(t, grandchild) // the rest of the group goes too
+		requireGrandchildGone(t, raw)
+		require.ErrorIs(t, callErr, context.Canceled)
 	})
 
-	for name, call := range map[string]func(context.Context, ServerSpec) error{
-		"failed handshake CallTool": func(ctx context.Context, spec ServerSpec) error {
+	exe, err := os.Executable()
+	require.NoError(t, err)
+	calls := map[string]func(context.Context, ServerSpec) error{
+		"CallTool": func(ctx context.Context, spec ServerSpec) error {
 			_, err := CallTool(ctx, spec, "get_thing", nil)
 			return err
 		},
-		"failed handshake ListTools": func(ctx context.Context, spec ServerSpec) error {
+		"ListTools": func(ctx context.Context, spec ServerSpec) error {
 			_, err := ListTools(ctx, spec)
 			return err
 		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			pidFile := filepath.Join(t.TempDir(), "pid")
-			exe, err := os.Executable()
-			require.NoError(t, err)
-			spec := ServerSpec{Kind: "stdio", Command: exe, Env: map[string]string{fakeStdioServerEnv: "garble", "WT_FAKE_PIDFILE": pidFile}}
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			err = call(ctx, spec)
-			require.ErrorContains(t, err, "missing API key", "a failed start quotes the server's stderr")
-			require.NoError(t, ctx.Err(), "the handshake failed, the context did not end")
-
-			raw, rerr := os.ReadFile(pidFile)
-			require.NoError(t, rerr, "the server must have started")
-			server, grandchild := fakePids(t, string(raw))
-			t.Cleanup(func() { _ = syscall.Kill(grandchild, syscall.SIGKILL) })
-			waitProcessExit(t, server)
-			waitProcessExit(t, grandchild) // the server's process group must be gone
-		})
 	}
+	for _, mode := range []string{"garble", "fail"} {
+		for name, call := range calls {
+			t.Run(mode+" "+name, func(t *testing.T) {
+				pidFile := filepath.Join(t.TempDir(), "pid")
+				spec := ServerSpec{Kind: "stdio", Command: exe, Env: map[string]string{fakeStdioServerEnv: mode, "WT_FAKE_PIDFILE": pidFile}}
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				callErr := call(ctx, spec)
+
+				raw, rerr := os.ReadFile(pidFile)
+				require.NoError(t, rerr, "the server must have started")
+				requireGrandchildGone(t, string(raw))
+				require.ErrorContains(t, callErr, "missing API key", "a failed start quotes the server's stderr")
+				require.NoError(t, ctx.Err(), "the server failed, the context did not end")
+			})
+		}
+	}
+}
+
+// requireGrandchildGone waits for the stdio fake's grandchild (named in raw,
+// see fakePids) to exit. Until it has, a cleanup kills it, so a test that
+// fails first leaves nothing behind.
+func requireGrandchildGone(t *testing.T, raw string) {
+	t.Helper()
+	_, grandchild := fakePids(t, raw)
+	gone := false
+	t.Cleanup(func() {
+		if !gone {
+			_ = syscall.Kill(grandchild, syscall.SIGKILL)
+		}
+	})
+	waitProcessExit(t, grandchild)
+	gone = true
 }
 
 func TestCallTool_HTTPHeaders(t *testing.T) {

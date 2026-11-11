@@ -8,7 +8,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// waitProcessExit blocks until pid has exited (kqueue NOTE_EXIT): a process
+// waitProcessExit (a copy of internal/chat's test helper, to be shared)
+// blocks until pid has exited (kqueue NOTE_EXIT): a process
 // event, never a poll. A pid already gone returns at once.
 func waitProcessExit(t *testing.T, pid int) {
 	t.Helper()
@@ -17,19 +18,17 @@ func waitProcessExit(t *testing.T, pid int) {
 	defer func() { _ = syscall.Close(kq) }()
 	ev := syscall.Kevent_t{Ident: uint64(pid), Filter: syscall.EVFILT_PROC,
 		Flags: syscall.EV_ADD | syscall.EV_ONESHOT, Fflags: syscall.NOTE_EXIT}
-	if _, err := syscall.Kevent(kq, []syscall.Kevent_t{ev}, nil, nil); errors.Is(err, syscall.ESRCH) {
+	_, err = syscall.Kevent(kq, []syscall.Kevent_t{ev}, nil, nil)
+	if errors.Is(err, syscall.ESRCH) {
 		return // already gone
-	} else {
-		require.NoError(t, err)
 	}
+	require.NoError(t, err)
 	out := make([]syscall.Kevent_t, 1)
 	for {
-		n, err := syscall.Kevent(kq, nil, out, nil)
-		if errors.Is(err, syscall.EINTR) {
-			continue
-		}
-		require.NoError(t, err)
-		if n > 0 {
+		// No timeout: returns only with the event (or EINTR).
+		_, err := syscall.Kevent(kq, nil, out, nil)
+		if !errors.Is(err, syscall.EINTR) {
+			require.NoError(t, err)
 			return
 		}
 	}
