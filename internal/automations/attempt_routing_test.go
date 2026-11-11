@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/require"
@@ -157,37 +158,42 @@ func TestLLMRoutingFailedUnknownBlocksReserve(t *testing.T) {
 
 func TestLLMRoutingBudgetCancellationAndKnownWait(t *testing.T) {
 	for _, kind := range []string{"tokens", "time", "cancel", "both_wait"} {
+		// In a synctest bubble the "cancel" case's 1 ms call bound runs on
+		// virtual time: it passes only once the primary waits in after(),
+		// never before the primary was called (a CI flake on the real clock).
 		t.Run(kind, func(t *testing.T) {
-			p, r := routedLeaves(false)
-			clock := automationstest.NewFakeClock(time.Now())
-			meter := automations.NewMeter(automations.Budget{Tokens: 300, Minutes: 5}, clock)
-			if kind == "time" {
-				p.after = func(context.Context) { clock.Advance(5 * time.Minute) }
-			}
-			if kind == "cancel" {
-				p.after = func(ctx context.Context) { /* parent deadline expires before reserve */ <-ctx.Done() }
-			}
-			gen := routedSDKGenerator(t, p, r, kind == "both_wait")
-			if kind == "cancel" { // A very short total call bound is enough; no second child.
-				cfg := &config.Config{}
-				cfg.AI.Provider = "claude"
-				cfg.AI.Fallback = config.AIFallbackConfig{Enabled: true, Provider: "codex"}
-				gen = providerrouting.WrapGenerator(cfg, p, func(id string) digest.Generator {
-					if id == "claude" {
-						return p
-					}
-					return r
-				}, providerrouting.GeneratorOptions{Timeout: time.Millisecond, Router: &providerrouting.Router{Allowed: func(string) error { return nil }}})
-			}
-			run := runSDK(t, `try{llm("task")}catch(e){};return 1`, sdkCase{perms: []string{"llm:light"}, backends: &automations.Backends{Generator: gen}, meter: meter})
-			require.Zero(t, r.calls)
-			if kind == "both_wait" {
-				require.Zero(t, p.calls)
-				require.Zero(t, run.env.Journal.Totals().InputTokens)
-			} else {
-				require.Equal(t, 1, p.calls)
-				require.Equal(t, int64(200), run.env.Journal.Totals().InputTokens)
-			}
+			synctest.Test(t, func(t *testing.T) {
+				p, r := routedLeaves(false)
+				clock := automationstest.NewFakeClock(time.Now())
+				meter := automations.NewMeter(automations.Budget{Tokens: 300, Minutes: 5}, clock)
+				if kind == "time" {
+					p.after = func(context.Context) { clock.Advance(5 * time.Minute) }
+				}
+				if kind == "cancel" {
+					p.after = func(ctx context.Context) { /* parent deadline expires before reserve */ <-ctx.Done() }
+				}
+				gen := routedSDKGenerator(t, p, r, kind == "both_wait")
+				if kind == "cancel" { // A very short total call bound is enough; no second child.
+					cfg := &config.Config{}
+					cfg.AI.Provider = "claude"
+					cfg.AI.Fallback = config.AIFallbackConfig{Enabled: true, Provider: "codex"}
+					gen = providerrouting.WrapGenerator(cfg, p, func(id string) digest.Generator {
+						if id == "claude" {
+							return p
+						}
+						return r
+					}, providerrouting.GeneratorOptions{Timeout: time.Millisecond, Router: &providerrouting.Router{Allowed: func(string) error { return nil }}})
+				}
+				run := runSDK(t, `try{llm("task")}catch(e){};return 1`, sdkCase{perms: []string{"llm:light"}, backends: &automations.Backends{Generator: gen}, meter: meter})
+				require.Zero(t, r.calls)
+				if kind == "both_wait" {
+					require.Zero(t, p.calls)
+					require.Zero(t, run.env.Journal.Totals().InputTokens)
+				} else {
+					require.Equal(t, 1, p.calls)
+					require.Equal(t, int64(200), run.env.Journal.Totals().InputTokens)
+				}
+			})
 		})
 	}
 }
