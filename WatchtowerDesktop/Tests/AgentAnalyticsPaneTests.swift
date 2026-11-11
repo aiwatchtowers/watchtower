@@ -13,7 +13,7 @@ final class AgentAnalyticsPaneTests: XCTestCase {
         AgentAnalyticsOverviewView(
             state: .overview(overview, staleError: nil), period: .constant(.week),
             actions: AgentAnalyticsActions(turnOn: {}, openSession: { _ in }, openTarget: { _ in }, openFile: { _ in },
-                                           openAsks: {}, discuss: { _ in }, asksWaiting: false)
+                                           openAsks: {}, tune: {}, asksWaiting: false)
         )
     }
 
@@ -25,7 +25,7 @@ final class AgentAnalyticsPaneTests: XCTestCase {
         AgentAnalyticsSessionRows(
             sessions: sessions,
             actions: AgentAnalyticsActions(turnOn: {}, openSession: { _ in }, openTarget: { _ in }, openFile: { _ in },
-                                           openAsks: {}, discuss: { _ in }, asksWaiting: false),
+                                           openAsks: {}, tune: {}, asksWaiting: false),
             compact: compact
         )
     }
@@ -66,7 +66,7 @@ final class AgentAnalyticsPaneTests: XCTestCase {
         let table = AgentAnalyticsSessionRows(
             sessions: codex,
             actions: AgentAnalyticsActions(turnOn: {}, openSession: { opened.append($0) }, openTarget: { _ in },
-                                           openFile: { _ in }, openAsks: {}, discuss: { _ in }, asksWaiting: false),
+                                           openFile: { _ in }, openAsks: {}, tune: {}, asksWaiting: false),
             compact: false
         )
         try table.inspect().find(button: "33333333").tap()

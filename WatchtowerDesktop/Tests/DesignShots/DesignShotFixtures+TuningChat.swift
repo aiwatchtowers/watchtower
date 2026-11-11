@@ -84,7 +84,7 @@ enum TuningChatShotFixtures {
         do {
             let overview = try JSONDecoder().decode(AgentReportOverview.self, from: fixture("agent-report-overview"))
             let actions = AgentAnalyticsActions(turnOn: {}, openSession: { _ in }, openTarget: { _ in },
-                                                openFile: { _ in }, openAsks: {}, discuss: { _ in }, asksWaiting: false)
+                                                openFile: { _ in }, openAsks: {}, tune: {}, asksWaiting: false)
             return AnyView(VStack(alignment: .leading, spacing: Spacing.page) {
                 TuningAnalyticsHeader(tuneOn: false)
                 SectionHeader(title: "Statistics", systemImage: "chart.bar")

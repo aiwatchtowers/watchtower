@@ -26,7 +26,7 @@ final class AgentAnalyticsFormatTests: XCTestCase {
         XCTAssertEqual(AgentAnalyticsCenter.Agent.allCases.map(\.flag), [nil] + AgentKind.allCases.map(\.rawValue))
 
         let actions = AgentAnalyticsActions(turnOn: {}, openSession: { _ in }, openTarget: { _ in }, openFile: { _ in },
-                                            openAsks: {}, discuss: { _ in }, asksWaiting: false)
+                                            openAsks: {}, tune: {}, asksWaiting: false)
         let view = AgentAnalyticsOverviewView(
             state: .overview(try Self.overview(agentFilter: ["claude", "codex"]), staleError: nil),
             period: .constant(.week), agent: .constant(.all), actions: actions

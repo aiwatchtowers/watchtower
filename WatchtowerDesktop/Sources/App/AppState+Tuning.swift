@@ -21,3 +21,18 @@ extension AppState {
         return chat
     }
 }
+
+extension AppState {
+    /// What a removed workbench takes with it: its code questions and
+    /// usages, its review, its tuning panel and the panel's chat engines.
+    func wireWorkbenchRemoved(_ vm: WorkbenchesViewModel) {
+        vm.onWorkbenchRemoved = { [weak self, weak codeQuestionCenter, weak codeUsagesCenter, weak vm] id in
+            codeQuestionCenter?.workbenchRemoved(id)
+            codeUsagesCenter?.workbenchRemoved(id)
+            vm?.reviewer?.workbenchRemoved(id)
+            vm?.tuningOpen.remove(id)
+            vm?.analyticsScroll[id] = nil
+            self?.embeddedChatCenter.dropContext(type: TuningChatSurface.contextType, id: String(id))
+        }
+    }
+}

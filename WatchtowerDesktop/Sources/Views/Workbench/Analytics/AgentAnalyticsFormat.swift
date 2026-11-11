@@ -148,28 +148,6 @@ enum AgentAnalyticsFormat {
         return "\(count)"
     }
 
-    /// What Discuss in Chat puts in the composer: the period's figures and
-    /// its top three hints with their actions, as the report words them.
-    static func discussText(_ overview: AgentReportOverview) -> String {
-        let totals = overview.totals
-        var lines = [
-            "Help me act on the agent analytics of this workbench (\(periodLabel(overview))): "
-                + "\(totals.sessions) sessions, \(cost(totals.costUSD)), active \(duration(totals.activeMS)), "
-                + "cache hit \(cacheHit(totals.tokens))."
-        ]
-        let top = overview.hints.prefix(3)
-        if top.isEmpty {
-            lines.append("The report has no hints for this period.")
-        } else {
-            lines.append("What would save the most:")
-            for (index, hint) in top.enumerated() {
-                lines.append("\(index + 1). \(hint.finding)")
-                if let action = hint.action, !action.isEmpty { lines.append("   \(action)") }
-            }
-        }
-        return lines.joined(separator: "\n")
-    }
-
     /// "Loading history — 1,234 files so far" until the import is done; nil
     /// then. Before the one-time move no scan runs, so the line says what
     /// unblocks it instead (`isImportWarning`). The count follows `locale`
