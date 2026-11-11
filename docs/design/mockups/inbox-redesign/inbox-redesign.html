@@ -247,7 +247,7 @@ const LIST = {
   ${item('mail','t-mail','mail','Mail waiting',true,'8 new today. Most of it comes from 10 senders: clear a sender in one press.','120 open · 70% from 10 senders','08:04','<span class="pill soft">8</span>')}
   <div class="lsec"><span>Today</span></div>
   ${item('brief','t-sun','sun','Morning brief',true,'3 meetings, 1 conflict at 14:00. Start with the ACME-12 review — Colleague C waits since Monday.','Wed 11 Nov','08:02','')}
-  ${item('slack','t-thr','thr','Slack today',true,'#acme-release decided the tag date. #acme-infra is looking for a migration reviewer. 4 channels with news.','Built in · since you last looked · 900 messages','10:20','<span class="pill soft">4</span>')}
+  ${item('slack','t-thr','thr','Slack today',true,'#acme-release decided the tag date. #acme-infra is looking for a migration reviewer. 4 channels with news.','Built in · today · 900 messages','10:20','<span class="pill soft">4</span>')}
   ${item('roundup','t-mail','mail','Weekly mail roundup',true,'Three threads from example.com need an answer this week.','Your automation · run #12','07:30','')}
   <div class="lsec"><span>Running</span></div>
   ${item('threads','t-thr','thr','Track my threads',false,'ACME-12 got a reply from Colleague C. #acme-release decided the tag date.','240 quiet threads folded','06:40','<span class="pill">6</span>')}
@@ -354,7 +354,7 @@ const PANE = {
    </div></div>
   <div class="foot"><span>The look and the rows come from the automation.</span><a class="kbtn quiet" style="height:auto">Edit the Look…</a><a class="kbtn quiet" style="height:auto">Run History</a></div>`},
  slack: { tools: tools(`<button class="kbtn">Mark All Seen</button>`), html: `
-  <div class="phead">${T('t-thr','thr')}<div><h2>Slack today</h2><div class="sub">Since you last looked at 08:10 · 900 messages in 46 channels · 4 with news for you</div></div></div>
+  <div class="phead">${T('t-thr','thr')}<div><h2>Slack today</h2><div class="sub">Today · 900 messages in 46 channels · 4 with news for you</div></div></div>
   <div class="card" style="display:flex;flex-direction:column;gap:10px">
    <div class="sh" style="margin:0"><span>#acme-release · 23 new</span><a>Open in Slack</a></div>
    <div><span class="chip c-ok">decided</span> The tag goes out Thursday, after QA signs off.</div>
