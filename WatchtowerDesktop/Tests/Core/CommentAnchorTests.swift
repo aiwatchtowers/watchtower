@@ -122,17 +122,29 @@ final class CommentAnchorTests: XCTestCase {
 
     // MARK: locate — a large document
 
+    /// The collapsed-text search walks the text once, counted rather than
+    /// timed (a time ratio to a linear pass flaked under memory pressure:
+    /// 6× against a 3.4 bound). Its own steps — one per character, cursor
+    /// move and hit — stay within 3× the characters and double with the text
+    /// on a document that is all hits, where the pre-fix hand-rolled scan
+    /// (a Character-array double loop) and a per-hit rescan both grow faster.
+    func testCollapsedSearchWorkIsLinearInTheText() {
+        func search(_ repeats: Int) -> (steps: Int, characters: Int, hits: Int) {
+            let text = String(repeating: "jumps  over\nthe dog. ", count: repeats)
+            var steps = 0
+            let hits = CommentAnchor.collapsedOccurrences(of: Array("jumps over the dog."), in: text, steps: &steps)
+            return (steps, text.count, hits.count)
+        }
+        let small = search(2_000)
+        let large = search(4_000)
+        XCTAssertEqual(small.hits, 2_000)
+        XCTAssertEqual(large.hits, 4_000)
+        XCTAssertGreaterThanOrEqual(small.steps, small.characters, "every character is walked")
+        XCTAssertLessThanOrEqual(large.steps, 3 * large.characters, "\(large.steps) steps for \(large.characters) characters")
+        XCTAssertEqual(Double(large.steps) / Double(small.steps), 2, accuracy: 0.01, "twice the text, twice the work")
+    }
+
     /// The collapsed-text path on a ~1 MB document finds the reflowed quote.
-    ///
-    /// No clock: this once also bounded `locate` at 3.4× one linear
-    /// whitespace-collapsing pass over the same document, to catch the pre-fix
-    /// hand-rolled Character-array scan (4.7× against ~2×). That is a
-    /// constant-factor gap, not a growth rate (with the quote length fixed the
-    /// old O(n·m) scan also grows linearly in n), so only a clock could see
-    /// it — and the clock could not tell it from load: `locate` allocates its
-    /// collapsed copy and index map (~16 MB), and under memory pressure it ran
-    /// at 6× the pass while the pass itself did not slow, on fastest-of-five
-    /// interleaved runs.
     func testReflowMatchOnLargeDocument() throws {
         let paragraph = "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore.\n\n"
         let padding = String(repeating: paragraph, count: 8_000) // ~1 MB, contains no copy of the quote below.

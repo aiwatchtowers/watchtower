@@ -140,15 +140,17 @@ final class WorkbenchCodeIndexTests: XCTestCase {
     }
 
     /// Spec §7 target: ≤ 50 ms per keystroke over a 3 000-file /
-    /// 30 000-symbol index — guarded by how a query scales, not by a clock
-    /// budget (an absolute bound flaked on loaded CI runners: one 523 ms
-    /// sample against 300 ms). The same queries run over a 750-file and a
-    /// 3 000-file index, alternately, five rounds; each index keeps every
-    /// query's fastest run (noise only adds time, and a stretch of load lands
-    /// on both sides). A match linear in the symbols costs about 4× on the
-    /// 4× index; a quadratic one, the pathological regression, about 16×.
-    /// The bound of 8 sits between them, 2× clear of each.
-    func testQueryCostScalesLinearlyWithTheIndex() {
+    /// 30 000-symbol index — guarded by counting the query's work, not by a
+    /// clock (a time budget flaked on loaded CI runners: one 523 ms sample
+    /// against 300 ms). The work is the corpus scan's (one per slot looked
+    /// at, plus query × slot units per slot aligned) and one per hit ranked.
+    /// It must grow linearly with the index — 4× the files cost at most
+    /// 4.4× the work, where a quadratic match costs about 16× — and stay
+    /// under a fixed budget per keystroke on the 3 000-file index: the
+    /// costliest query ("store.swift") counted 1 782 474 on 2026-11-11, so
+    /// 2 500 000 leaves 40 % headroom while a slower match — more cells per
+    /// slot, or slots the filters used to skip — goes over it.
+    func testQueryWorkScalesLinearlyAndStaysInBudget() {
         let small = WorkbenchCodeIndex()
         small.applyIndexLines(Self.syntheticRepository(files: 750, symbolsPerFile: 10), from: .fullRun)
         let large = WorkbenchCodeIndex()
@@ -159,19 +161,21 @@ final class WorkbenchCodeIndexTests: XCTestCase {
             "zz", "x", "parse", "ParseConfig", "pkg/svc/h", "renderView", "rv", "conf", "e", "store.swift"
         ]
         let boosts = CodeRankingBoosts(openTabs: ["Sources/Module7/Feature3/File7.swift"], recent: [], gitModified: [])
-        let clock = ContinuousClock()
-        var fastest = (small: [String: Duration](), large: [String: Duration]())
-        for _ in 0..<5 {
-            for query in queries {
-                let smallTook = clock.measure { _ = small.query(query, scope: .all, boosts: boosts) }
-                fastest.small[query] = min(fastest.small[query] ?? smallTook, smallTook)
-                let largeTook = clock.measure { _ = large.query(query, scope: .all, boosts: boosts) }
-                fastest.large[query] = min(fastest.large[query] ?? largeTook, largeTook)
-            }
+        var total = (small: 0, large: 0)
+        var worst = (query: "", work: 0)
+        for query in queries {
+            var smallWork = 0
+            _ = small.query(query, scope: .all, boosts: boosts, work: &smallWork)
+            var largeWork = 0
+            _ = large.query(query, scope: .all, boosts: boosts, work: &largeWork)
+            total.small += smallWork
+            total.large += largeWork
+            if largeWork > worst.work { worst = (query, largeWork) }
         }
-        let total = (small: fastest.small.values.reduce(.zero, +), large: fastest.large.values.reduce(.zero, +))
-        let ratio = total.large / max(total.small, .microseconds(1))
-        XCTAssertLessThan(ratio, 8, "3 000 files cost \(ratio)× 750 files (\(total.large) against \(total.small))")
+        XCTAssertGreaterThan(total.small, 0, "the scan is counted")
+        let ratio = Double(total.large) / Double(total.small)
+        XCTAssertLessThanOrEqual(ratio, 4.4, "3 000 files cost \(ratio)× the work of 750 files")
+        XCTAssertLessThanOrEqual(worst.work, 2_500_000, "\"\(worst.query)\" counted \(worst.work) on 3 000 files")
     }
 
     private static func syntheticRepository(files: Int, symbolsPerFile: Int) -> [CodeIndexLine] {
