@@ -220,6 +220,8 @@ func TestProj18_SessionInTheWorktreeKeepsIt(t *testing.T) {
 		{"another reported 25 h ago, not live", SessionActivity{ID: 9, AgentCwd: "sub", ReportedAt: time.Now().Add(-25 * time.Hour)}, false, 0, ""},
 		{"another finished, not live", SessionActivity{ID: 9, AgentCwd: "sub", ReportedAt: time.Now(), Finished: true}, false, 0, ""},
 		{"the caller itself", SessionActivity{ID: testSession, AgentCwd: "", ReportedAt: time.Now().Add(-48 * time.Hour)}, false, testSession, ReasonYouAreInIt},
+		{"the planned session itself, reported now, not live (a delete's background cleanup)", SessionActivity{ID: testSession, AgentCwd: "sub", ReportedAt: time.Now()}, false, 0, ""},
+		{"the planned session itself, live", SessionActivity{ID: testSession, AgentCwd: "sub", ReportedAt: time.Now()}, true, 0, ReasonSessionInIt},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

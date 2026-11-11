@@ -463,8 +463,11 @@ package enum TerminalSessionQueries {
     }
 
     /// Resume of a Not fully cleaned row: it is an ordinary finished session
-    /// again.
+    /// again. A row with no delete request is left as it is.
     package static func clearDeleteRequested(_ db: Database, id: Int64) throws {
-        try db.execute(sql: "UPDATE terminal_sessions SET delete_requested_at = NULL WHERE id = ?", arguments: [id])
+        try db.execute(
+            sql: "UPDATE terminal_sessions SET delete_requested_at = NULL WHERE id = ? AND delete_requested_at IS NOT NULL",
+            arguments: [id]
+        )
     }
 }

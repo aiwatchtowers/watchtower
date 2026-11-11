@@ -39,7 +39,10 @@ package enum SessionAutoCleanupOutcome: Equatable, Sendable {
     package static func group(reason: SessionCleanupReason) -> CleanupItemGroup {
         guard case let .known(code) = reason else { return .couldNot }
         switch code {
-        case .uncommittedChanges, .unpushedCommits, .operationInProgress, .locked, .containsWorktree:
+        case .uncommittedChanges, .unpushedCommits, .operationInProgress, .locked, .containsWorktree,
+             // Merged into what cannot be told (ask #1240): kept, named in
+             // the notice, and it does not keep the row.
+             .defaultBranchUnknown:
             return .keptOnPurpose
         case .notThisSession, .existedBeforeSession, .createdUnknown, .mainFolder, .workbenchFolder,
              .claudeHome, .defaultBranch, .checkedOut,
@@ -52,7 +55,7 @@ package enum SessionAutoCleanupOutcome: Equatable, Sendable {
              .bundleUnreadable, .notAttempted,
              // Not in spec §3's table: the background apply names no items
              // and has no caller session, so these mean something is off.
-             .youAreInIt, .defaultBranchUnknown, .notSelected, .notInPlan:
+             .youAreInIt, .notSelected, .notInPlan:
             return .couldNot
         }
     }
@@ -124,13 +127,15 @@ package struct SessionCleanupNotice: Equatable, Sendable {
         self.rest = rest
     }
 
-    /// One session's notice; nil when nothing was removed.
+    /// One session's notice; nil when nothing was removed or kept on
+    /// purpose.
     package static func single(title: String, result: SessionCleanupPlan) -> Self? {
         make(lead: "Cleaned up", subject: " “\(title)”", results: [result])
     }
 
     /// Several deletes in a row as one notice: "Cleaned up 4 sessions:
-    /// removed …"; one entry reads as `single`. Nil when nothing was removed.
+    /// removed …"; one entry reads as `single`. Nil when nothing was removed
+    /// or kept on purpose.
     package static func joined(_ notices: [(title: String, result: SessionCleanupPlan)]) -> Self? {
         guard notices.count != 1 else { return single(title: notices[0].title, result: notices[0].result) }
         return make(lead: "Cleaned up \(notices.count) sessions", subject: "", results: notices.map(\.result))
@@ -140,13 +145,17 @@ package struct SessionCleanupNotice: Equatable, Sendable {
         let items = results.flatMap(\.items)
         let removed = items.filter { SessionAutoCleanupOutcome.group($0) == .removed }
         let parts = SessionCleanupPresentation.countParts(removed)
-        guard !parts.isEmpty else { return nil }
+        let kept = items.filter { SessionAutoCleanupOutcome.group($0) == .keptOnPurpose }
+        let keptText = SessionCleanupPresentation.keptText(kept)
+        guard !parts.isEmpty else {
+            // Nothing removed: the notice still names what was kept.
+            return keptText.map { Self(lead: lead, rest: "\(subject): kept \($0).") }
+        }
         let bytes = results.reduce(Int64(0)) { $0 + $1.removedBytes }
         var rest = "\(subject): removed \(listText(parts))"
         if bytes > 0 { rest += " (~\(SessionCleanupPresentation.byteText(bytes)))" }
         rest += "."
-        let kept = items.filter { SessionAutoCleanupOutcome.group($0) == .keptOnPurpose }
-        if let keptText = SessionCleanupPresentation.keptText(kept) { rest += " Kept \(keptText)." }
+        if let keptText { rest += " Kept \(keptText)." }
         return Self(lead: lead, rest: rest)
     }
 

@@ -502,8 +502,8 @@ func TestSessionAutoCleanupColumns(t *testing.T) {
 }
 
 // A cwd sighting of a pair that so far exists only as a command row makes it
-// a cwd row ("an agent worked here"): source flips to cwd, kind stays, and
-// last_at moves forward. Until then the cwd path does not see the pair, and
+// a cwd row ("an agent worked here") when it is a worktree row: source flips
+// to cwd and last_at moves forward; a branch row stays a command row. Until then the cwd path does not see the pair, and
 // a full cwd ledger does not block the upgrade.
 func TestSessionWorktree_CwdSightingUpgradesCommandRow(t *testing.T) {
 	ctx := context.Background()
@@ -543,20 +543,21 @@ func TestSessionWorktree_CwdSightingUpgradesCommandRow(t *testing.T) {
 	if got, err := d.RecordSessionWorktree(ctx, nil, id, root, branch, later); err != nil || got {
 		t.Fatalf("a second cwd sighting = %v, %v; want already recorded", got, err)
 	}
-	// A branch row's kind survives the upgrade too.
+	// A branch row is never upgraded: it stays a command row of kind
+	// branch, and its last_at does not move.
 	const repo = "/tmp/example/repo"
 	if _, _, err := d.RecordSessionCommandRow(ctx, id, repo, "feat/b", "branch", ledgerAt); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := d.RecordSessionWorktree(ctx, nil, id, repo, "feat/b", later); err != nil || !got {
-		t.Fatalf("cwd sighting of a branch row = %v, %v", got, err)
+	if got, err := d.RecordSessionWorktree(ctx, nil, id, repo, "feat/b", later); err != nil || got {
+		t.Fatalf("cwd sighting of a branch row = %v, %v; want not recorded", got, err)
 	}
-	if err := d.QueryRow(`SELECT source, kind FROM terminal_session_worktrees
-		WHERE session_id = ? AND root = ? AND branch = ?`, id, repo, "feat/b").Scan(&source, &kind); err != nil {
+	if err := d.QueryRow(`SELECT source, kind, last_at FROM terminal_session_worktrees
+		WHERE session_id = ? AND root = ? AND branch = ?`, id, repo, "feat/b").Scan(&source, &kind, &lastAt); err != nil {
 		t.Fatal(err)
 	}
-	if source != "cwd" || kind != "branch" {
-		t.Fatalf("branch row = %s, %s; want cwd, branch", source, kind)
+	if source != "command" || kind != "branch" || lastAt != ledgerAt {
+		t.Fatalf("branch row = %s, %s, %s; want command, branch, %s", source, kind, lastAt, ledgerAt)
 	}
 }
 

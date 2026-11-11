@@ -83,7 +83,7 @@ The apply's `Result` sorts each item into one of three groups.
 | Item | Group | Effect on the row |
 |---|---|---|
 | `done` (removed) | removed | — |
-| kept for **the owner's work**: `uncommitted_changes`, `unpushed_commits`, `operation_in_progress`, `locked`, `contains_worktree` | kept on purpose | none: the row is deleted; the notice names them |
+| kept for **the owner's work**: `uncommitted_changes`, `unpushed_commits`, `operation_in_progress`, `locked`, `contains_worktree`; and `default_branch_unknown` (ask #1240) | kept on purpose | none: the row is deleted; the notice names them |
 | kept for **not ours / not the session's**: `not_this_session`, `existed_before_session`, `created_unknown`, `main_folder`, `workbench_folder`, `claude_home`, `default_branch`, `checked_out` (in a worktree that is not the session's) | not ours | none, and not shown |
 | **could not**: an item with `error`, or kept for `git_refused`, `moved`, `process_running`, `process_unknown`, `session_in_it`, `check_failed`, `bundle_unreadable`, `not_attempted`; or the run failed as a whole (exit ≠ 0, no JSON, timeout) | could not | the row stays, **Not fully cleaned** |
 
@@ -92,7 +92,8 @@ The table is one pure function in WatchtowerCore (`SessionAutoCleanupOutcome`). 
 **Clean** (no "could not" item): the row is deleted and a notice appears on the Undo bar's place for 6 s. The text, built in the model:
 - `Cleaned up “T”: removed 3 worktrees and 12 branches (~2.1 GB).`
 - with kept items: `Cleaned up “T”: removed 2 worktrees (~1.4 GB). Kept 1 branch — unpushed commits.`
-- nothing to remove: no notice (the row simply goes).
+- nothing removed, items kept on purpose: `Cleaned up “T”: kept 2 branches — default branch unknown.`
+- nothing removed and nothing kept on purpose: no notice (the row simply goes).
 
 Several deletes in a row join into one notice: `Cleaned up 4 sessions: removed …`.
 
@@ -136,7 +137,8 @@ While a background cleanup runs, the row is hidden (it is still in the deleting 
     - `Start` by id of a deleting row is refused with `db.ErrTerminalSessionNotFound`.
     The one way back is the Desktop's **Resume** on a Not-fully-cleaned row. It clears `delete_requested_at` in its own write before it starts the session. Resume is disabled while a background cleanup of that row runs (the state of mockup 8), so the two never overlap.
   The phone therefore drops the session when the Undo window ends, as if it were deleted, and never shows the mark. Its actions (input, interrupt) on such a row are refused as for a missing row (`hub/actions/handlers/session_input.go`).
-- **Lookups by id are unchanged**: session report, `owner_asks` joins, `review_agent`, agent analytics, automation session steps, `session_ticket`, `terminal_agent_turns`, the spec-review sweep. A deleting row behaves there as a finished session, and the cascade removes its rows when the row goes. No hook writes to it, because its terminal is closed.
+- **Lookups by id are unchanged**: session report, `owner_asks` joins, `review_agent`, agent analytics, `session_ticket`, `terminal_agent_turns`, the spec-review sweep. A deleting row behaves there as a finished session, and the cascade removes its rows when the row goes. No hook writes to it, because its terminal is closed.
+- **Automation session steps filter deleting rows**: a run step never attaches a deleting row, and a step whose session is deleting reads as having no session, so the run's next poll launches a new session (`internal/db/automation_session_steps.go`, `AutomationQueries.unattachedSession`).
 
 A Go guard test (`TestProj17_DeletingRowsLeaveEveryList`) lists every `FROM terminal_sessions` read outside `_test.go` and fails when a new one is neither filtered nor on the lookup allowlist.
 
@@ -196,6 +198,8 @@ There is no empty state: a workbench with no deletes looks as today.
 - Quit inside the Undo window defers the delete to the next launch instead of deleting — approved by the owner — ask #1210.
 - Guard test replacements in §5 — approved by the owner, ask #1210.
 - Workbench delete unchanged; remote branches never touched — agent's call, approved with the spec in ask #1213 (a deleted workbench's sessions are not auto-cleaned).
+- `default_branch_unknown` is kept on purpose, not "could not": the row is deleted and the notice names the kept items — owner, ask #1240.
+- Automation session steps filter deleting rows instead of treating them as lookups by id (§4) — approved by the owner in the plan review, asks #1223/#1227.
 - Implementation decisions (agent's call, all fail-closed):
   - The branch checked out in an adopted scratchpad worktree is adopted too. Every branch catch still applies: born after the uuid was acquired, merged or pushed, not checked out elsewhere.
   - A scratchpad lane is adopted only when it was born after this row acquired the uuid. A uuid ever held by a deleted row is treated as shared, using migration 00188 `agent_session_tombstones`, written by a `BEFORE DELETE` trigger on `terminal_sessions`.

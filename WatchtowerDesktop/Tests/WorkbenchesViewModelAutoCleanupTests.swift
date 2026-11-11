@@ -109,8 +109,7 @@ final class WorkbenchesViewModelAutoCleanupTests: XCTestCase {
     }
 
     private func waitUntilHeld(_ streamer: RepliedCleanupStreamer, _ count: Int) async {
-        let deadline = Date().addingTimeInterval(5)
-        while streamer.heldCount < count, Date() < deadline { try? await Task.sleep(for: .milliseconds(5)) }
+        await streamer.untilHeld(count)
         XCTAssertGreaterThanOrEqual(streamer.heldCount, count, "the apply never started")
     }
 
@@ -237,7 +236,7 @@ final class WorkbenchesViewModelAutoCleanupTests: XCTestCase {
     /// A Clean Up screen apply while the queue runs waits for the slot and
     /// is not refused; the queue's next item waits for it.
     func testScreenApplyWaitsForQueueSlot() async throws {
-        let (vm, _, streamer) = makeVM([
+        let (vm, cleanup, streamer) = makeVM([
             .success(CleanupFixture.applied), // a's background apply
             .success(CleanupFixture.plan), // the screen's plan
             .success(CleanupFixture.applied), // the screen's apply
@@ -255,9 +254,14 @@ final class WorkbenchesViewModelAutoCleanupTests: XCTestCase {
         await vm.openCleanupScreen(projectID: p, sessionID: other.id).value
         vm.cleanupScreens[p]?.ticks = ["worktree:/tmp/example/.claude/worktrees/x"]
         XCTAssertTrue(vm.canRefreshCleanup(projectID: p), "the background cleanup does not block the screen")
+        let (waits, signal) = AsyncStream.makeStream(of: Int64.self)
+        cleanup.onSlotWait = { signal.yield($0) }
         let screen = Task { await vm.applyCleanupScreen(projectID: p) }
-        await waitUntil("the screen's apply waits") { vm.sweepRuns[p] != nil }
-        try await Task.sleep(for: .milliseconds(50))
+        var events = waits.makeAsyncIterator()
+        let waited = await events.next()
+        cleanup.onSlotWait = nil
+        XCTAssertEqual(waited, p, "the screen's apply waits for the slot")
+        XCTAssertNotNil(vm.sweepRuns[p])
         XCTAssertEqual(applies(streamer).count, 1, "it waits for the slot: nothing launched yet")
         await vm.delete(b)
         await vm.deleteCommitTask?.value
@@ -369,6 +373,48 @@ final class WorkbenchesViewModelAutoCleanupTests: XCTestCase {
         XCTAssertTrue(streamer.calls.isEmpty, "a row that is live again is left alone")
         let kept = try await stored(row.id)
         XCTAssertNotNil(kept)
+    }
+
+    /// A failed launch read does not count as the launch's re-queue: the
+    /// next reload reads again and queues the rows.
+    func testFailedLaunchReadRetriesOnTheNextReload() async throws {
+        let p = try await workbench()
+        let row = try await insertSession(p)
+        try await pool.write { try TerminalSessionQueries.markDeleteRequested($0, ids: [row.id], at: Date()) }
+        let (vm, _, streamer) = makeVM([.success(AutoCleanupFixture.processRunning)])
+        let store = try XCTUnwrap(pool)
+        vm.deletingRowsRead = { throw DatabaseError(resultCode: .SQLITE_BUSY) }
+
+        await vm.requeueDeletingRowsAtLaunch()
+        XCTAssertFalse(vm.requeuedAtLaunch)
+        XCTAssertTrue(streamer.calls.isEmpty, "nothing queued after a failed read")
+
+        vm.deletingRowsRead = { try await store.read { try TerminalSessionQueries.fetchDeleting($0, projectID: nil) } }
+        await vm.reload()
+        await vm.autoCleanupIdle()
+
+        XCTAssertTrue(vm.requeuedAtLaunch)
+        XCTAssertEqual(applies(streamer).count, 1, "the reload queued the row")
+        XCTAssertNotNil(vm.notFullyCleaned[row.id])
+        await vm.reload()
+        await vm.autoCleanupIdle()
+        XCTAssertEqual(applies(streamer).count, 1, "once the read succeeded, no further re-queue")
+    }
+
+    /// Resume clears `delete_requested_at` of a deleting row this launch
+    /// never marked (its launch read failed).
+    func testResumeClearsDeleteRequestWithoutAMark() async throws {
+        let (vm, _, _) = makeVM([.success(CleanupFixture.applied)])
+        let p = try await workbench()
+        let row = try await insertSession(p)
+        await listed(vm, p)
+        try await pool.write { try TerminalSessionQueries.markDeleteRequested($0, ids: [row.id], at: Date()) }
+        XCTAssertNil(vm.notFullyCleaned[row.id])
+
+        try await vm.clearDeleteRequestForResume(row)
+
+        let requested = try await deleteRequestedAt(row.id)
+        XCTAssertNil(requested, "the delete request is cleared without an in-memory mark")
     }
 
     // MARK: - Resume

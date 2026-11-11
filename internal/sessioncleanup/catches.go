@@ -191,7 +191,10 @@ func procLabel(p Proc) string {
 
 // catchSessionInIt is W6: the caller works inside, or another session whose
 // agent works inside is live or reported within inUseWindow and is not
-// finished.
+// finished. In session mode the planned session's own row is not "another
+// session" unless its terminal is live: a delete's background cleanup plans
+// a session whose last report is fresh and whose finished_at a delete never
+// sets, and its own worktree is what that cleanup removes.
 func catchSessionInIt(_ context.Context, b *builder, w worktree) (string, string, error) {
 	reason, detail := "", ""
 	for _, a := range b.activity {
@@ -200,6 +203,9 @@ func catchSessionInIt(_ context.Context, b *builder, w worktree) (string, string
 		}
 		if b.req.CallerSessionID != 0 && a.ID == b.req.CallerSessionID {
 			return ReasonYouAreInIt, "", nil
+		}
+		if !b.req.Sweep && a.ID == b.req.SessionID && !b.live[a.ID] {
+			continue
 		}
 		if b.live[a.ID] || (!a.Finished && !a.ReportedAt.IsZero() && b.now.Sub(a.ReportedAt) <= inUseWindow) {
 			reason, detail = ReasonSessionInIt, a.Title

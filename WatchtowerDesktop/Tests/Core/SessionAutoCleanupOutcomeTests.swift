@@ -56,6 +56,7 @@ final class SessionAutoCleanupOutcomeTests: XCTestCase {
         "operation_in_progress": .keptOnPurpose,
         "locked": .keptOnPurpose,
         "contains_worktree": .keptOnPurpose,
+        "default_branch_unknown": .keptOnPurpose,
         "not_this_session": .notOurs,
         "existed_before_session": .notOurs,
         "created_unknown": .notOurs,
@@ -131,6 +132,27 @@ final class SessionAutoCleanupOutcomeTests: XCTestCase {
 
         let nothing = result([branch("main", reason: "default_branch")])
         XCTAssertEqual(Outcome.evaluate(result: nothing, title: "T", runError: nil), .clean(nil))
+    }
+
+    /// Ask #1240: a branch kept because the default branch is unknown does
+    /// not keep the row; the notice names it, with nothing removed too.
+    func testDefaultBranchUnknownIsKeptAndNamed() {
+        let onlyKept = result([
+            branch("feat/a", reason: "default_branch_unknown"), branch("feat/b", reason: "default_branch_unknown")
+        ])
+        XCTAssertEqual(
+            Outcome.evaluate(result: onlyKept, title: "T", runError: nil),
+            .clean(SessionCleanupNotice(lead: "Cleaned up", rest: " “T”: kept 2 branches — default branch unknown."))
+        )
+        let mixed = result([
+            worktree("a", bytes: 700_000_000, done: true), branch("feat/a", reason: "default_branch_unknown")
+        ])
+        XCTAssertEqual(
+            Outcome.evaluate(result: mixed, title: "T", runError: nil),
+            .clean(SessionCleanupNotice(
+                lead: "Cleaned up", rest: " “T”: removed 1 worktree (~700 MB). Kept 1 branch — default branch unknown."
+            ))
+        )
     }
 
     func testJoinedNoticeCopy() {

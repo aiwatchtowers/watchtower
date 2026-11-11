@@ -96,8 +96,7 @@ func ownerWrite(args []string) bool {
 // SessionInfo is the slice of a terminal_sessions row a session-mode plan
 // needs. PlacedCwd and PlacedBranch are the row's folder_path and
 // worktree_branch when Watchtower placed it in a worktree it created (board
-// #229), both "" otherwise.
-// Kind is the row's kind (claude, codex, shell).
+// #229), both "" otherwise. Kind is the row's kind (claude, codex, shell).
 type SessionInfo struct {
 	ID, WorkbenchID         int64
 	CreatedAt               time.Time

@@ -31,15 +31,15 @@ type SessionWorktree struct {
 // HasSessionWorktree reports whether session sessionID already recorded
 // (root, branch) as a source='cwd' row — an agent worked there; a pair that
 // so far is only a command row (board #1716) is not, and the next
-// RecordSessionWorktree upgrades it; stale, whether that pair's last sighting (last_at, else
-// first_at) is older than the session's run mark (agent_turns' since; never
-// without a readable one), so this run has not seen it yet (board #1018);
-// and whether the session is full — already at MaxSessionWorktrees cwd rows,
-// so a new pair would not be recorded (never for a command row of the pair:
-// its upgrade has no cap). It is one read in a read-only
-// transaction, so it works on a query_only handle and never takes the write
-// lock: the hook learns a pair is known in this run, or the session full,
-// without one.
+// RecordSessionWorktree upgrades it; stale, whether that pair's last
+// sighting (last_at, else first_at) is older than the session's run mark
+// (agent_turns' since; never without a readable one), so this run has not
+// seen it yet (board #1018); and whether the session is full — already at
+// MaxSessionWorktrees cwd rows, so a new pair would not be recorded (never
+// for a command row of the pair: its upgrade has no cap). It is one read in
+// a read-only transaction, so it works on a query_only handle and never
+// takes the write lock: the hook learns a pair is known in this run, or the
+// session full, without one.
 func (db *DB) HasSessionWorktree(ctx context.Context, sessionID int64, root, branch string) (has, stale, full bool, err error) {
 	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
@@ -79,8 +79,9 @@ func seenBeforeRun(seen string, since sql.NullString) bool {
 }
 
 // TouchSessionWorktree moves the last sighting (last_at) of session
-// sessionID's recorded source='cwd' (root, branch) to at (agent_state_at format) when the
-// stored one (last_at, else first_at) is older; first_at never changes.
+// sessionID's recorded source='cwd' (root, branch) to at (agent_state_at
+// format) when the stored one (last_at, else first_at) is older; first_at
+// never changes.
 // touched is false, with no error, when there is no such cwd pair (a
 // command-only pair goes through RecordSessionWorktree) or it was seen at or
 // after at already. last_at only moves forward; concurrent hooks of one
@@ -102,9 +103,10 @@ func (db *DB) TouchSessionWorktree(ctx context.Context, sessionID int64, root, b
 
 // RecordSessionWorktree records (root, branch) for session sessionID at time
 // `at` (agent_state_at format) inside tx, or in its own transaction when tx is
-// nil, as a source='cwd' row. A pair recorded only as a command row (board
-// #1716) is upgraded in place — source becomes cwd, kind stays, last_at moves
-// forward to at — with no cap check, and counts as recorded. A cwd pair
+// nil, as a source='cwd' row. A pair recorded only as a kind='worktree'
+// command row (board #1716) is upgraded in place — source becomes cwd,
+// last_at moves forward to at — with no cap check, and counts as recorded; a
+// kind='branch' command row stays a command row. A cwd pair
 // already recorded is left as it is. recorded is false, with no error, when
 // the cwd pair was already there or the session already holds
 // MaxSessionWorktrees cwd rows.
@@ -130,7 +132,7 @@ func (db *DB) RecordSessionWorktree(ctx context.Context, tx *sql.Tx, sessionID i
 func recordSessionWorktree(ctx context.Context, tx *sql.Tx, sessionID int64, root, branch, at string) (bool, error) {
 	res, err := tx.ExecContext(ctx, `UPDATE terminal_session_worktrees SET source = 'cwd',
 		last_at = CASE WHEN COALESCE(last_at, first_at) < ? THEN ? ELSE last_at END
-		WHERE session_id = ? AND root = ? AND branch = ? AND source = 'command'`, at, at, sessionID, root, branch)
+		WHERE session_id = ? AND root = ? AND branch = ? AND source = 'command' AND kind = 'worktree'`, at, at, sessionID, root, branch)
 	if err != nil {
 		return false, fmt.Errorf("recording terminal session %d worktree: %w", sessionID, err)
 	}

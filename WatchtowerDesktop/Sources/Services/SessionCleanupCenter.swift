@@ -240,6 +240,9 @@ final class SessionCleanupCenter {
     /// request order (board #1716).
     @ObservationIgnored private var slotHeld: Set<Int64> = []
     @ObservationIgnored private var slotWaiters: [Int64: [CheckedContinuation<Void, Never>]] = [:]
+    /// Called with the workbench id when a caller starts waiting for a taken
+    /// slot. A seam for tests (they wait for the event, not the clock).
+    @ObservationIgnored var onSlotWait: ((Int64) -> Void)?
     /// The background applies running, per session: the quit stops them.
     @ObservationIgnored private var backgroundChildren: [Int64: SessionCleanupStream] = [:]
     /// Set by the quit: no background apply starts after it.
@@ -649,7 +652,10 @@ final class SessionCleanupCenter {
             slotHeld.insert(workbenchID)
             return
         }
-        await withCheckedContinuation { slotWaiters[workbenchID, default: []].append($0) }
+        await withCheckedContinuation {
+            slotWaiters[workbenchID, default: []].append($0)
+            onSlotWait?(workbenchID)
+        }
     }
 
     /// Hands the slot to the next waiter, else frees it.

@@ -62,18 +62,24 @@ extension WorkbenchesViewModel {
     /// not live — the app quit inside the Undo window or during a cleanup —
     /// is queued again, once per launch (a row that fails again shows Not
     /// fully cleaned; no retry loop). Runs after the session host's
-    /// reattach, so a row whose run survived is seen live and left alone.
+    /// reattach, so a row whose run survived is seen live and left alone. A
+    /// failed read counts as not run: the next `reload` tries again, so the
+    /// deleting rows are not hidden for the whole launch.
     func requeueDeletingRowsAtLaunch() async {
-        guard !requeuedAtLaunch else { return }
-        requeuedAtLaunch = true
+        guard !requeuedAtLaunch, !launchRequeueRunning else { return }
+        launchRequeueRunning = true
+        defer { launchRequeueRunning = false }
         await hostReattach?.value
         let rows: [TerminalSession]
         do {
-            rows = try await dbPool.read { try TerminalSessionQueries.fetchDeleting($0, projectID: nil) }
+            rows = try await deletingRowsRead()
         } catch {
+            launchRequeueFailed = true
             NSLog("WorkbenchesViewModel: reading the sessions left to clean up failed: %@", error.localizedDescription)
             return
         }
+        requeuedAtLaunch = true
+        launchRequeueFailed = false
         let live = terminalCenter?.liveIDs ?? []
         for row in rows {
             guard let workbenchID = row.projectID else { continue }
@@ -164,10 +170,12 @@ extension WorkbenchesViewModel {
     /// the write — Clean Up Again and Delete Anyway refuse it until the mark
     /// is gone — and checked again after it. Throws `.cleaningUp` while the
     /// row is queued or in another transition, `.failed` when the write
-    /// failed (reported on the page).
+    /// failed (reported on the page). The write runs for a row with no mark
+    /// in memory too (a deleting row this launch did not mark, such as one
+    /// whose launch re-queue read failed); on an ordinary row it changes
+    /// nothing.
     func clearDeleteRequestForResume(_ session: TerminalSession) async throws {
         guard canResume(session.id) else { throw TargetStartError.cleaningUp }
-        guard notFullyCleaned[session.id] != nil else { return }
         autoCleanupBusy.insert(session.id)
         defer { autoCleanupBusy.remove(session.id) }
         do {
@@ -177,7 +185,9 @@ extension WorkbenchesViewModel {
             setSessionError(message, projectID: session.projectID)
             throw TargetStartError.failed(message)
         }
-        if let workbenchID = session.projectID { clearMark(session.id, workbenchID: workbenchID) }
+        if notFullyCleaned[session.id] != nil, let workbenchID = session.projectID {
+            clearMark(session.id, workbenchID: workbenchID)
+        }
         guard !closedForCleanup.contains(session.id) else { throw TargetStartError.cleaningUp }
     }
 
@@ -189,8 +199,8 @@ extension WorkbenchesViewModel {
         await sessionCleanup?.stopBackgroundApplies()
     }
 
-    /// Returns once no background cleanup queue has work (tests, and the
-    /// callers that wait for an outcome).
+    /// Returns once every workbench's queue worker has ended, a worker
+    /// started while it waited included. Only tests call it.
     func autoCleanupIdle() async {
         while let worker = autoCleanupWorkers.values.first {
             await worker.value
@@ -208,8 +218,7 @@ extension WorkbenchesViewModel {
 
     /// Reads workbench `projectID`'s Not fully cleaned rows: the deleting
     /// rows with a mark and no cleanup queued, and the ones Clean Up Again
-    /// runs on. A failed read is logged and
-    /// keeps the last list.
+    /// runs on. A failed read is logged and keeps the last list.
     func loadNotFullyCleaned(projectID: Int64) async {
         do {
             let rows = try await dbPool.read { try TerminalSessionQueries.fetchDeleting($0, projectID: projectID) }

@@ -20,13 +20,13 @@ const reasonCodesFixture = "testdata/reason_codes.json"
 
 // TestReasonCodesFixture keeps testdata/reason_codes.json — read by the
 // Desktop's SessionAutoCleanupOutcomeTests, which fail when a code has no
-// group — equal to AllReasonCodes, and AllReasonCodes equal to every
+// group — equal to allReasonCodes, and allReasonCodes equal to every
 // Reason* constant of the package, so a new reason code cannot skip the
 // Desktop's table.
 func TestReasonCodesFixture(t *testing.T) {
-	codes := AllReasonCodes()
+	codes := allReasonCodes()
 	if declared := declaredReasonCodes(t); !slices.Equal(sortedCopy(codes), declared) {
-		t.Fatalf("AllReasonCodes() = %v, the package declares %v: add the new code to reasons.go", sortedCopy(codes), declared)
+		t.Fatalf("allReasonCodes() = %v, the package declares %v: add the new code to reasons.go", sortedCopy(codes), declared)
 	}
 	want, err := json.MarshalIndent(map[string][]string{"reason_codes": codes}, "", "  ")
 	if err != nil {

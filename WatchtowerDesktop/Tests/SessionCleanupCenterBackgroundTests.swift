@@ -76,13 +76,19 @@ final class SessionCleanupCenterBackgroundTests: XCTestCase {
         let apply = Task { await center.applyInBackground(sessionID: 9, workbenchID: 2) }
         let run = try await XCTUnwrapAsync(await started())
         run.send(Self.cleanDone)
+        // The apply has read `done` once it waits for the child's exit.
+        await run.untilExitAwaited()
+        let (waits, signal) = AsyncStream.makeStream(of: Int64.self)
+        center.onSlotWait = { signal.yield($0) }
         var next = false
         let waiter = Task {
             await center.acquireSlot(workbenchID: 2)
             next = true
             center.releaseSlot(workbenchID: 2)
         }
-        try await Task.sleep(for: .milliseconds(50))
+        var events = waits.makeAsyncIterator()
+        let waited = await events.next()
+        XCTAssertEqual(waited, 2, "the next caller waits for the slot")
         XCTAssertFalse(next, "done alone does not free the slot")
 
         run.finish(status: 0)

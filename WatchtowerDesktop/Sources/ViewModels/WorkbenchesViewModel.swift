@@ -178,6 +178,10 @@ final class WorkbenchesViewModel {
     /// Rows still marked deleted whose terminal was live at launch: queued
     /// for their cleanup once that terminal ends.
     @ObservationIgnored var deletingLiveAtLaunch: [Int64: PendingSessionDeletes.Entry] = [:]
+    /// The launch re-queue's read of every deleting row. A seam for tests.
+    @ObservationIgnored lazy var deletingRowsRead: @Sendable () async throws -> [TerminalSession] = { [dbPool] in
+        try await dbPool.read { try TerminalSessionQueries.fetchDeleting($0, projectID: nil) }
+    }
     /// Clears a row's delete request for a Resume. A seam for tests.
     @ObservationIgnored lazy var clearDeleteRequestWrite: @Sendable (Int64) async throws -> Void = { [dbPool] id in
         try await dbPool.write { try TerminalSessionQueries.clearDeleteRequested($0, id: id) }
@@ -208,8 +212,13 @@ final class WorkbenchesViewModel {
     /// Set by the quit: no further background cleanup starts, and an
     /// outcome that arrives is dropped (the row keeps `delete_requested_at`).
     @ObservationIgnored var autoCleanupStopped = false
-    /// The launch's re-queue ran (once per view model).
+    /// The launch's re-queue read the deleting rows (once per view model).
     @ObservationIgnored var requeuedAtLaunch = false
+    /// The launch's re-queue failed to read them: the next `reload` tries
+    /// again.
+    @ObservationIgnored var launchRequeueFailed = false
+    /// A launch re-queue is under way (no second one starts beside it).
+    @ObservationIgnored var launchRequeueRunning = false
     /// The Clean Up screen's applies this view model owns, per workbench
     /// (either scope): closing the screen or leaving the page cancels none.
     var sweepRuns: [Int64: Task<Bool, Never>] = [:]
@@ -774,6 +783,7 @@ final class WorkbenchesViewModel {
         }
         if let selectedWorkbenchID { await loadSessions(projectID: selectedWorkbenchID) }
         await loadSessions(projectID: nil)
+        if launchRequeueFailed { await requeueDeletingRowsAtLaunch() }
         return true
     }
 

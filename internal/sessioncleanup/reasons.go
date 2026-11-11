@@ -1,13 +1,13 @@
 package sessioncleanup
 
-// AllReasonCodes is every reason code an item can carry, in declaration
+// allReasonCodes is every reason code an item can carry, in declaration
 // order (catches, ownership, apply). The Desktop sorts each into a group
 // of the background cleanup's outcome (WatchtowerCore
 // `SessionAutoCleanupOutcome`) and reads this list from
 // testdata/reason_codes.json, so a code added here without a group fails
 // its tests. TestReasonCodesFixture keeps the list equal to the package's
 // Reason* constants and the fixture equal to the list.
-func AllReasonCodes() []string {
+func allReasonCodes() []string {
 	return []string{
 		// Catches (catches.go).
 		ReasonMainFolder,
