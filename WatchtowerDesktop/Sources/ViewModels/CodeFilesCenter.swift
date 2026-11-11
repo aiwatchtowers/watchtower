@@ -129,6 +129,9 @@ final class CodeFilesCenter {
     @ObservationIgnored private let trash: (URL) throws -> Void
     @ObservationIgnored private let gitRead: (URL) async -> GitStatusRead
     @ObservationIgnored private let gitMinInterval: Duration
+    /// Every `git status` run not yet ended (a test seam: `gitSettled`).
+    @ObservationIgnored private var gitRuns: [Int: Task<Void, Never>] = [:]
+    @ObservationIgnored private var gitRunsStarted = 0
     /// Off in tests, which feed `handle` themselves.
     @ObservationIgnored private let watchesFolders: Bool
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
@@ -357,6 +360,12 @@ final class CodeFilesCenter {
         }
     }
 
+    /// Returns once no `git status` run is left, a queued rerun included
+    /// (a test seam).
+    func gitSettled() async {
+        while let run = gitRuns.values.first { await run.value }
+    }
+
     private func refreshAllGit() {
         sweepRemovedWorktrees()
         watched.filter { (showing[$0] ?? 0) > 0 }.forEach(refreshGit)
@@ -373,7 +382,10 @@ final class CodeFilesCenter {
         }
         gitRunning.insert(root)
         let wait = gitLastRun[root].map { gitMinInterval - (ContinuousClock.now - $0) } ?? .zero
-        Task { @MainActor in
+        gitRunsStarted += 1
+        let run = gitRunsStarted
+        gitRuns[run] = Task { @MainActor in
+            defer { gitRuns[run] = nil }
             if wait > .zero { try? await Task.sleep(for: wait) }
             let read = await gitRead(root.folder)
             gitRunning.remove(root)
