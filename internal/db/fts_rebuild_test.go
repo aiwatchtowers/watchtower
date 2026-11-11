@@ -744,23 +744,36 @@ func TestIsInterruption(t *testing.T) {
 	assert.True(t, isInterruption(fmt.Errorf("chunk: %w", sqlcipher.Error{Code: sqlcipher.ErrInterrupt})))
 	assert.False(t, isInterruption(sqlcipher.Error{Code: sqlcipher.ErrBusy}))
 
-	// An endless statement the cancelled ctx interrupts: the statement
-	// cancels it itself from its first row, so the interrupt always lands
+	// An endless statement the cancelled ctx interrupts, run as an Exec and
+	// as a Query (the engine's two interrupt paths): the statement cancels
+	// its context itself from its first row, so the interrupt always lands
 	// while it runs (an interrupt between statements is a no-op, and the
 	// endless statement would then never end).
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	var cancel atomic.Pointer[context.CancelFunc]
 	driverName := fmt.Sprintf("interruption-%d", interruptionDriverID.Add(1))
 	sql.Register(driverName, &sqlcipher.SQLiteDriver{ConnectHook: func(conn *sqlcipher.SQLiteConn) error {
-		return conn.RegisterFunc("cancel_now", func() int { cancel(); return 1 }, false)
+		return conn.RegisterFunc("cancel_now", func() int { (*cancel.Load())(); return 1 }, false)
 	}})
 	d, err := sql.Open(driverName, ":memory:")
 	require.NoError(t, err)
 	d.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = d.Close() })
-	_, err = d.ExecContext(ctx, `WITH RECURSIVE n(i) AS (SELECT cancel_now() UNION ALL SELECT i + 1 FROM n) SELECT COUNT(*) FROM n`)
+	const endless = `WITH RECURSIVE n(i) AS (SELECT cancel_now() UNION ALL SELECT i + 1 FROM n) SELECT COUNT(*) FROM n`
+	withCancel := func() context.Context {
+		ctx, c := context.WithCancel(context.Background())
+		t.Cleanup(c)
+		cancel.Store(&c)
+		return ctx
+	}
+
+	_, err = d.ExecContext(withCancel(), endless)
 	require.Error(t, err)
-	assert.True(t, isInterruption(err), "%v", err)
+	assert.True(t, isInterruption(err), "exec: %v", err)
+
+	var n int64
+	err = d.QueryRowContext(withCancel(), endless).Scan(&n)
+	require.Error(t, err)
+	assert.True(t, isInterruption(err), "query: %v", err)
 }
 
 // BenchmarkMessagesSearchFillChunk times default-size chunks — each one write
