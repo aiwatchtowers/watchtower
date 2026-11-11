@@ -8,8 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"strings"
-	"sync"
 	"testing"
 
 	"watchtower/internal/oauthpage"
@@ -20,26 +18,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-// syncBuffer is a mutex-guarded io.Writer, used where a goroutine writes
-// (LoginOutlook's progress output) while the test goroutine concurrently
-// reads — mirrors gmail's test helper of the same name/shape.
-type syncBuffer struct {
-	mu  sync.Mutex
-	buf strings.Builder
-}
-
-func (b *syncBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *syncBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
 
 // TestValidateGrantedScopes_MissingIMAPScopeRejected covers fix #10: a token
 // response that DOES have a refresh_token but whose granted scope string

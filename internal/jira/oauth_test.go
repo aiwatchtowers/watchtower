@@ -9,7 +9,6 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
-	"sync"
 	"testing"
 
 	"watchtower/internal/oauthpage"
@@ -287,25 +286,6 @@ func TestFetchAccessibleResources_BadJSON(t *testing.T) {
 
 func TestGetOpenBrowserFunc_NotNil(t *testing.T) {
 	assert.NotNil(t, getOpenBrowserFunc())
-}
-
-// syncTestBuffer is a mutex-guarded buffer so the Login goroutine can write the
-// authorize URL while the test reads it.
-type syncTestBuffer struct {
-	mu  sync.Mutex
-	buf strings.Builder
-}
-
-func (b *syncTestBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *syncTestBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
 }
 
 // runLoginCaptureSuccessBody drives a full Login(opts) with a mocked token

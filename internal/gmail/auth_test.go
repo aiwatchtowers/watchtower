@@ -1,7 +1,6 @@
 package gmail
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -13,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -23,25 +21,6 @@ import (
 	"watchtower/internal/oauthpage"
 	"watchtower/internal/oauthpage/oauthpagetest"
 )
-
-// syncBuffer is a mutex-guarded io.Writer, used where a goroutine writes
-// (Login's progress output) while the test goroutine concurrently reads.
-type syncBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *syncBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *syncBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
 
 func TestTokenStore_RoundTrip(t *testing.T) {
 	dir := t.TempDir()

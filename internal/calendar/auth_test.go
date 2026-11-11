@@ -1,7 +1,6 @@
 package calendar
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -13,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -367,25 +365,6 @@ func TestComplete_RejectsMissingVerifier(t *testing.T) {
 	_, err := Complete(context.Background(), GoogleOAuthConfig{}, "code-1", "http://x", "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "missing PKCE code verifier")
-}
-
-// syncBuffer is a mutex-guarded io.Writer, used where a goroutine writes the
-// authorize URL while the test polls for it.
-type syncBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *syncBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *syncBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
 }
 
 // TestLogin_ExchangeSendsVerifierMatchingChallenge is the end-to-end pin for
