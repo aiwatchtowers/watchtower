@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -19,49 +20,51 @@ func TestNewSessionPool(t *testing.T) {
 }
 
 func TestSessionPoolAcquireRelease(t *testing.T) {
-	p := NewSessionPool(2)
-	defer p.Close()
+	synctest.Test(t, func(t *testing.T) {
+		p := NewSessionPool(2)
+		defer p.Close()
 
-	ctx := context.Background()
+		ctx := context.Background()
 
-	// Acquire first worker
-	w1, err := p.Acquire(ctx)
-	if err != nil {
-		t.Fatalf("acquire 1 failed: %v", err)
-	}
-	if w1 == nil {
-		t.Fatal("worker 1 is nil")
-	}
+		// Acquire first worker
+		w1, err := p.Acquire(ctx)
+		if err != nil {
+			t.Fatalf("acquire 1 failed: %v", err)
+		}
+		if w1 == nil {
+			t.Fatal("worker 1 is nil")
+		}
 
-	// Acquire second worker
-	w2, err := p.Acquire(ctx)
-	if err != nil {
-		t.Fatalf("acquire 2 failed: %v", err)
-	}
-	if w2 == nil {
-		t.Fatal("worker 2 is nil")
-	}
+		// Acquire second worker
+		w2, err := p.Acquire(ctx)
+		if err != nil {
+			t.Fatalf("acquire 2 failed: %v", err)
+		}
+		if w2 == nil {
+			t.Fatal("worker 2 is nil")
+		}
 
-	// Acquire with timeout (should block)
-	ctx2, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-	_, err = p.Acquire(ctx2)
-	if err == nil {
-		t.Fatal("expected timeout error")
-	}
+		// Acquire with timeout (should block)
+		ctx2, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+		_, err = p.Acquire(ctx2)
+		if err == nil {
+			t.Fatal("expected timeout error")
+		}
 
-	// Release and retry
-	p.Release(w1)
-	w1b, err := p.Acquire(context.Background())
-	if err != nil {
-		t.Fatalf("acquire after release failed: %v", err)
-	}
-	if w1b == nil {
-		t.Fatal("released worker is nil")
-	}
+		// Release and retry
+		p.Release(w1)
+		w1b, err := p.Acquire(context.Background())
+		if err != nil {
+			t.Fatalf("acquire after release failed: %v", err)
+		}
+		if w1b == nil {
+			t.Fatal("released worker is nil")
+		}
 
-	p.Release(w2)
-	p.Release(w1b)
+		p.Release(w2)
+		p.Release(w1b)
+	})
 }
 
 func TestSessionPoolClose(t *testing.T) {
@@ -86,34 +89,36 @@ func TestSessionPoolClose(t *testing.T) {
 }
 
 func TestSessionPoolConcurrency(t *testing.T) {
-	p := NewSessionPool(3)
-	defer p.Close()
+	synctest.Test(t, func(t *testing.T) {
+		p := NewSessionPool(3)
+		defer p.Close()
 
-	const workers = 10
-	const iterations = 5
+		const workers = 10
+		const iterations = 5
 
-	done := make(chan struct{})
+		done := make(chan struct{})
 
-	for range workers {
-		go func() {
-			defer func() { done <- struct{}{} }()
-			ctx := context.Background()
-			for range iterations {
-				w, err := p.Acquire(ctx)
-				if err != nil {
-					t.Errorf("acquire failed: %v", err)
-					return
+		for range workers {
+			go func() {
+				defer func() { done <- struct{}{} }()
+				ctx := context.Background()
+				for range iterations {
+					w, err := p.Acquire(ctx)
+					if err != nil {
+						t.Errorf("acquire failed: %v", err)
+						return
+					}
+					// Simulate work
+					time.Sleep(1 * time.Millisecond)
+					p.Release(w)
 				}
-				// Simulate work
-				time.Sleep(1 * time.Millisecond)
-				p.Release(w)
-			}
-		}()
-	}
+			}()
+		}
 
-	for range workers {
-		<-done
-	}
+		for range workers {
+			<-done
+		}
+	})
 }
 
 func TestSessionPoolZeroSize(t *testing.T) {
@@ -240,35 +245,36 @@ func TestSessionLogConcurrent(t *testing.T) {
 }
 
 func TestSessionPoolResizeSharesOldAndNewAdmission(t *testing.T) {
-	p := NewSessionPool(2)
-	defer p.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	first, err := p.Acquire(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := p.Acquire(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	p.Resize(1)
-	p.Release(first)
-	waitCtx, stop := context.WithTimeout(ctx, 20*time.Millisecond)
-	defer stop()
-	if _, err := p.Acquire(waitCtx); err == nil {
-		t.Fatal("shrinking must count the still-active old generation")
-	}
-	p.Release(second)
-	next, err := p.Acquire(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	p.Resize(2)
-	parallel, err := p.Acquire(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	p.Release(parallel)
-	p.Release(next)
+	synctest.Test(t, func(t *testing.T) {
+		p := NewSessionPool(2)
+		defer p.Close()
+		ctx := context.Background()
+		first, err := p.Acquire(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		second, err := p.Acquire(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.Resize(1)
+		p.Release(first)
+		waitCtx, stop := context.WithTimeout(ctx, 20*time.Millisecond)
+		defer stop()
+		if _, err := p.Acquire(waitCtx); err == nil {
+			t.Fatal("shrinking must count the still-active old generation")
+		}
+		p.Release(second)
+		next, err := p.Acquire(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.Resize(2)
+		parallel, err := p.Acquire(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.Release(parallel)
+		p.Release(next)
+	})
 }

@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -8,7 +9,6 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-	"time"
 )
 
 // The dump is read only after the marker (whatever the startup files print
@@ -33,40 +33,40 @@ func TestParseLoginShellEnv(t *testing.T) {
 // A real login shell's environment carries a variable this process set.
 func TestReadLoginShellEnv(t *testing.T) {
 	t.Setenv("WT_LOGIN_ENV_TEST", "acme value=1")
-	got := readLoginShellEnv("/bin/sh", 10*time.Second)
+	got := readLoginShellEnvUntil(context.Background(), "/bin/sh") // no time limit of the test's own
 	if got["WT_LOGIN_ENV_TEST"] != "acme value=1" {
 		t.Fatalf("WT_LOGIN_ENV_TEST = %q", got["WT_LOGIN_ENV_TEST"])
 	}
 }
 
-// A shell that hangs yields no environment once the timeout passes, and its
-// process group is killed (nothing is left running).
+// A shell that hangs yields no environment once its time is up (here the
+// context ends once the shell is running), and its process group is killed:
+// nothing is left running. A group left alive would hang the read until go
+// test -timeout.
 func TestReadLoginShellEnv_Timeout(t *testing.T) {
 	dir := t.TempDir()
-	pidFile := filepath.Join(dir, "pid")
-	shell := filepath.Join(dir, "hang-shell")
-	if err := os.WriteFile(shell, []byte("#!/bin/sh\necho $$ > '"+pidFile+"'\nexec sleep 30\n"), 0o755); err != nil {
+	fifo := filepath.Join(dir, "pid")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		if b, err := os.ReadFile(pidFile); err == nil {
-			if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil {
-				_ = syscall.Kill(-pid, syscall.SIGKILL)
-			}
-		}
-	})
-	start := time.Now()
-	if got := readLoginShellEnv(shell, 2*time.Second); got != nil {
-		t.Fatalf("env = %v, want none", got)
+	shell := filepath.Join(dir, "hang-shell")
+	if err := os.WriteFile(shell, []byte("#!/bin/sh\necho $$ > '"+fifo+"'\nexec sleep 1000000\n"), 0o755); err != nil {
+		t.Fatal(err)
 	}
-	if d := time.Since(start); d > 5*time.Second {
-		t.Fatalf("took %v", d)
-	}
-	b, err := os.ReadFile(pidFile)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	got := make(chan map[string]string, 1)
+	go func() { got <- readLoginShellEnvUntil(ctx, shell) }()
+	b, err := os.ReadFile(fifo) // the shell is up once it wrote its pid
 	if err != nil {
 		t.Fatal(err)
 	}
 	pid, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+	t.Cleanup(func() { _ = syscall.Kill(-pid, syscall.SIGKILL) })
+	cancel()
+	if env := <-got; env != nil {
+		t.Fatalf("env = %v, want none", env)
+	}
 	if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
 		t.Errorf("the shell (pid %d) is still running: %v", pid, err)
 	}

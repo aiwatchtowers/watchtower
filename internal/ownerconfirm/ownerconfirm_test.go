@@ -12,7 +12,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -30,7 +29,7 @@ func shortSocket(t *testing.T) string {
 
 // serveOnce answers one request with reply ("" never answers) and hands the
 // request it read to got.
-func serveOnce(t *testing.T, path, reply string, got chan<- Request) {
+func serveOnce(t *testing.T, path, reply string, got chan<- Request) (served <-chan struct{}) {
 	t.Helper()
 	l, err := net.Listen("unix", path)
 	require.NoError(t, err)
@@ -56,6 +55,7 @@ func serveOnce(t *testing.T, path, reply string, got chan<- Request) {
 		}
 		_, _ = c.Read(make([]byte, 1)) // until the caller hangs up
 	}()
+	return done
 }
 
 // trustPeer stands in for the signature check, recording the pid it saw.
@@ -99,16 +99,17 @@ func TestAskSendsTheRequestAndReadsTheDecision(t *testing.T) {
 func TestAskRefusesAPeerThatFailsTheSignatureCheck(t *testing.T) {
 	path := shortSocket(t)
 	got := make(chan Request, 1)
-	serveOnce(t, path, `{"decision":"confirmed"}`, got)
+	served := serveOnce(t, path, `{"decision":"confirmed"}`, got)
 	trustPeer(t, errors.New("not signed"))
 
 	_, err := Ask(context.Background(), path, Request{Verb: "x", Args: []string{"actions", "approve", "5"}})
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, ErrUntrustedPeer), "%v", err)
+	<-served // Ask hung up: the listener read all it was ever sent
 	select {
 	case <-got:
 		t.Fatal("the request reached an untrusted listener")
-	case <-time.After(100 * time.Millisecond):
+	default:
 	}
 }
 
@@ -117,15 +118,19 @@ func TestAskWithoutADesktopIsErrNoDesktop(t *testing.T) {
 	assert.True(t, errors.Is(err, ErrNoDesktop), "%v", err)
 }
 
-func TestAskGivesUpAtTheDeadline(t *testing.T) {
+// Ask gives up when its context ends (a deadline is one) while the Desktop
+// has not answered: here the context ends once the request was read.
+func TestAskGivesUpWhenItsContextEnds(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("the peer pid is read on macOS only")
 	}
 	path := shortSocket(t)
-	serveOnce(t, path, "", make(chan Request, 1))
+	got := make(chan Request, 1)
+	serveOnce(t, path, "", got)
 	trustPeer(t, nil)
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	go func() { <-got; cancel() }()
 	_, err := Ask(ctx, path, Request{Verb: "x"})
 	require.Error(t, err)
 	assert.False(t, errors.Is(err, ErrNoDesktop))
@@ -244,16 +249,21 @@ func TestAskSendsALargeDetailWhole(t *testing.T) {
 func TestAskRefusesARequestOverTheLimit(t *testing.T) {
 	path := shortSocket(t)
 	got := make(chan Request, 1)
+	// Checked after serveOnce's cleanup closed the listener and its goroutine
+	// ended (cleanups run last-registered first): a request it had read would
+	// be on got by then.
+	t.Cleanup(func() {
+		select {
+		case <-got:
+			t.Error("an oversized request was sent")
+		default:
+		}
+	})
 	serveOnce(t, path, `{"decision":"confirmed"}`, got)
 	trustPeer(t, nil)
 
 	_, err := Ask(context.Background(), path, Request{Verb: "x", Detail: strings.Repeat("a", MaxRequestBytes)})
 	require.ErrorIs(t, err, ErrRequestTooLarge)
-	select {
-	case <-got:
-		t.Fatal("an oversized request was sent")
-	case <-time.After(100 * time.Millisecond):
-	}
 }
 
 // closesEarly serves one connection that reads a few bytes, writes reply
@@ -326,10 +336,13 @@ func TestAskWriteRunningOutOfTimeIsATimeout(t *testing.T) {
 	l, err := net.Listen("unix", path)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = l.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	accepted := make(chan net.Conn, 1)
 	go func() {
 		if c, err := l.Accept(); err == nil {
 			accepted <- c // held open, never read
+			cancel()      // the time runs out with the 256 KB write blocked or about to be
 		}
 	}()
 	t.Cleanup(func() {
@@ -340,16 +353,13 @@ func TestAskWriteRunningOutOfTimeIsATimeout(t *testing.T) {
 		}
 	})
 	trustPeer(t, nil)
-	const wait = 2 * time.Second
-	ctx, cancel := context.WithTimeout(context.Background(), wait)
-	defer cancel()
 
-	start := time.Now()
 	_, err = Ask(ctx, path, Request{Verb: "x", Detail: strings.Repeat("a", 256<<10)})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no answer from Watchtower Desktop in time")
+	// A write that ran out of time is not read for a denial (that would wait
+	// out writeFailed's second and report a closed connection).
 	assert.NotContains(t, err.Error(), "closed the connection")
-	assert.Less(t, time.Since(start), wait+500*time.Millisecond, "no extra wait past the deadline")
 }
 
 // The limit counts the whole line, its newline included.

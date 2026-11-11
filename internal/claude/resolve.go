@@ -228,6 +228,12 @@ const loginEnvMarker = "__WATCHTOWER_ENV__"
 func readLoginShellEnv(shell string, timeout time.Duration) map[string]string {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
+	return readLoginShellEnvUntil(ctx, shell)
+}
+
+// readLoginShellEnvUntil is readLoginShellEnv bounded by ctx: when ctx ends
+// the shell's process group is killed and it yields nil.
+func readLoginShellEnvUntil(ctx context.Context, shell string) map[string]string {
 	cmd := exec.CommandContext(ctx, shell, "-l", "-c", "printf '\\n"+loginEnvMarker+"\\n'; env -0")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
