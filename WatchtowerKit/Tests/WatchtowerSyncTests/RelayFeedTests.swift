@@ -490,7 +490,10 @@ final class RelayFeedTests: XCTestCase {
 
         func seed(_ records: [CloudRecord]) async throws { try await inner.save(records) }
 
+        private var isOpen = false
+
         func openGate() {
+            isOpen = true
             for waiter in waiters { waiter.resume() }
             waiters.removeAll()
         }
@@ -502,7 +505,7 @@ final class RelayFeedTests: XCTestCase {
 
         func changes(in zone: CloudZoneID, since token: CloudChangeToken?) async throws -> CloudChangeBatch {
             changesCalls += 1
-            await withCheckedContinuation { waiters.append($0) }
+            if !isOpen { await withCheckedContinuation { waiters.append($0) } }
             return try await inner.changes(in: zone, since: token)
         }
     }
@@ -514,11 +517,13 @@ final class RelayFeedTests: XCTestCase {
                         modifiedAt: base, payload: Data("{}".utf8))
         ])
         let feed = try makeFixtures(inner: transport).feed
+        let (joins, joined) = AsyncStream.makeStream(of: Void.self)
+        await feed.observeJoins { joined.yield() }
 
         async let first = feed.pollOnce()
         async let second = feed.pollOnce()
-        // Let both calls enter and the first suspend inside changes().
-        try await Task.sleep(for: .milliseconds(50))
+        // The gate opens only once one call joined the other's running cycle.
+        for await _ in joins { break }
         await transport.openGate()
 
         let (a, b) = try await (first, second)

@@ -57,13 +57,6 @@ final class CloudKitTransportPushFetchTests: XCTestCase {
         XCTAssertEqual(waiting, count, "the push fetch never waited on the engine's run")
     }
 
-    /// A sleeper that ends only when its task is cancelled.
-    private static func untilCancelled() async {
-        let (stream, continuation) = AsyncStream<Void>.makeStream()
-        for await _ in stream {}
-        continuation.finish()
-    }
-
     func testWithoutAnEngineRunAPushFetchesThroughTheEngineWithoutTheZonePoll() async throws {
         let engine = FakeSyncEngine()
         let counter = EnergyCounter(defaults: defaults)
@@ -277,7 +270,7 @@ final class CloudKitTransportPushFetchTests: XCTestCase {
         let timers = Collector<Bool>()
         let ended = Arrivals()
         let transport = try await phone(engine: engine, clock: clock) { _ in
-            await Self.untilCancelled()
+            await untilCancelled()
             timers.append(Task.isCancelled)
             await ended.arrive()
         }
@@ -316,7 +309,7 @@ final class CloudKitTransportPushFetchTests: XCTestCase {
         let engine = FakeSyncEngine(fetchErrors: [CKError(.requestRateLimited, userInfo: [CKErrorRetryAfterKey: 30.0])])
         let clock = TestClock()
         // A sleeper that outlasts the test keeps the throttle window open.
-        let transport = try await phone(engine: engine, clock: clock) { _ in await Self.untilCancelled() }
+        let transport = try await phone(engine: engine, clock: clock) { _ in await untilCancelled() }
         addTeardownBlock { await transport.retryTask?.cancel() }
         try await transport.pull()
         XCTAssertEqual(engine.fetchCount, 1)
@@ -460,23 +453,5 @@ final class CloudKitTransportPushFetchTests: XCTestCase {
         XCTAssertEqual(counter.counts(daysAgo: 0)[.engineFetchRun], 1)
         XCTAssertEqual(fired.values.count, 1)
         XCTAssertEqual(engine.fetchCount, 0)
-    }
-}
-
-/// Counts arrivals; `until(n)` returns once `n` have arrived (no deadline).
-actor Arrivals {
-    private var count = 0
-    private var waiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
-
-    func arrive() {
-        count += 1
-        let ready = waiters.filter { $0.count <= count }
-        waiters.removeAll { $0.count <= count }
-        ready.forEach { $0.continuation.resume() }
-    }
-
-    func until(_ target: Int) async {
-        if count >= target { return }
-        await withCheckedContinuation { waiters.append((target, $0)) }
     }
 }
