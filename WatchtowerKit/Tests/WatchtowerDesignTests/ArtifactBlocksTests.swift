@@ -23,6 +23,18 @@ final class ArtifactBlocksTests: XCTestCase {
         struct Ref: Decodable, Equatable {
             let kind: String
             let id: Int64
+            /// A text kind's id (`mail_sender`, `waiting_older`); nil otherwise.
+            var key: String?
+
+            init(kind: String, id: Int64, key: String? = nil) {
+                self.kind = kind
+                self.id = id
+                self.key = key
+            }
+
+            init(_ ref: ArtifactRef) {
+                self.init(kind: ref.kind.rawValue, id: ref.id, key: ref.kind.hasTextID ? ref.key : nil)
+            }
         }
 
         struct Unsupported: Decodable {
@@ -142,8 +154,37 @@ final class ArtifactBlocksTests: XCTestCase {
 
     func testRefsInDocumentOrder() throws {
         for sample in try samples().documents {
-            let refs = try document(sample).refs.map { Samples.Ref(kind: $0.kind.rawValue, id: $0.id) }
+            let refs = try document(sample).refs.map(Samples.Ref.init)
             XCTAssertEqual(refs, sample.refs, sample.name)
+        }
+    }
+
+    /// `mail_sender` and `waiting_older` carry a string id (`key`); the
+    /// integer kinds keep theirs.
+    func testTextRefsDecode() throws {
+        let json = #"{"v":1,"blocks":[{"type":"list","rows":["#
+            + #"{"title":"a","actions":[],"ref":{"kind":"mail_sender","id":"a@example.com"}},"#
+            + #"{"title":"b","actions":[],"ref":{"kind":"waiting_older","id":"people"}},"#
+            + #"{"title":"c","actions":[],"ref":{"kind":"track","id":3}}],"empty":"x"}]}"#
+        guard case let .document(document) = ArtifactDocument.decode(json) else {
+            return XCTFail("text refs do not decode")
+        }
+        XCTAssertEqual(document.refs, [ArtifactRef(kind: .mailSender, key: "a@example.com"),
+                                       ArtifactRef(kind: .waitingOlder, key: "people"),
+                                       ArtifactRef(kind: .track, id: 3)])
+        XCTAssertEqual(document.refs.map(\.kind.hasTextID), [true, true, false])
+        XCTAssertEqual(document.refs.first?.id, 0)
+        XCTAssertEqual(document.refs.last?.key, "")
+    }
+
+    /// A text kind with a number id, an integer kind with a string id, or a
+    /// text kind with an empty id: the document is unreadable.
+    func testTextKindWithNumberIDIsUnreadable() {
+        for ref in [#"{"kind":"mail_sender","id":5}"#, #"{"kind":"waiting_older","id":1}"#,
+                    #"{"kind":"track","id":"5"}"#, #"{"kind":"mail_sender","id":""}"#] {
+            let json = #"{"v":1,"blocks":[{"type":"list","rows":[{"title":"t","actions":[],"ref":"#
+                + ref + #"}],"empty":"x"}]}"#
+            XCTAssertEqual(ArtifactDocument.decode(json), .unreadable, ref)
         }
     }
 
@@ -317,7 +358,8 @@ extension ArtifactBlocksTests {
             let document = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(canonical.utf8)) as? [String: Any])
             let rows = (document["blocks"] as? [[String: Any]] ?? []).flatMap { $0["rows"] as? [Any] ?? [] }
             let refs = rows.compactMap { ($0 as? [String: Any])?["ref"] as? [String: Any] }.map {
-                Samples.Ref(kind: $0["kind"] as? String ?? "", id: ($0["id"] as? NSNumber)?.int64Value ?? 0)
+                Samples.Ref(kind: $0["kind"] as? String ?? "", id: ($0["id"] as? NSNumber)?.int64Value ?? 0,
+                            key: $0["id"] as? String)
             }
             let name = try XCTUnwrap(item["name"] as? String)
             guard case let .actions(cardActions) = ArtifactDocument.decodeActions(
@@ -397,7 +439,7 @@ extension ArtifactBlocksTests {
         let cases = try Self.goCases()
         XCTAssertTrue(cases.contains { !$0.refs.isEmpty })
         for goCase in cases {
-            let refs = try decoded(goCase).refs.map { Samples.Ref(kind: $0.kind.rawValue, id: $0.id) }
+            let refs = try decoded(goCase).refs.map(Samples.Ref.init)
             XCTAssertEqual(refs, goCase.refs, goCase.name)
         }
     }
