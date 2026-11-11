@@ -14,7 +14,7 @@ text: Switch Branch review's chat to Reviewer and ask what breaks if something c
 area: development
 level: next
 kind: feature
-since: next
+since: 0.28.0
 action: nav:projects
 -->
 

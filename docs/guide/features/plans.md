@@ -10,7 +10,7 @@ text: **Usage → Plans** shows each subscription's usage history and forecast b
 area: setup
 level: next
 kind: feature
-since: next
+since: 0.28.0
 action: nav:usage
 requires: feature:claude-plan-limits
 replaces: [ai-plan-limits]

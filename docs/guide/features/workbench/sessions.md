@@ -22,7 +22,7 @@ text: The caption says whether a session works, runs a background task, waits fo
 area: development
 level: basics
 kind: tip
-since: next
+since: 0.28.0
 action: nav:projects
 replaces: [sessions-states]
 changed: A background command keeps a session working, and a turn that ended reads **Idle** instead of Stopped.

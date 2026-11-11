@@ -16,7 +16,7 @@ text: In **Deep**, Branch review splits a big branch into chapters and lists **B
 area: development
 level: next
 kind: feature
-since: next
+since: 0.28.0
 action: nav:projects
 -->
 <!-- learn
@@ -26,7 +26,7 @@ text: List globs under `## Breaking` or `## Can skip` in `.watchtower/review-map
 area: development
 level: power
 kind: tip
-since: next
+since: 0.28.0
 action: nav:projects
 -->
 

@@ -26,7 +26,7 @@ text: Mail sent to you becomes an attention item in Catch Up, the briefing and t
 area: communication
 level: next
 kind: tip
-since: next
+since: 0.28.0
 replaces: [mail-attention]
 changed: The Inbox's Messages filter became Waiting for me.
 action: nav:inbox

@@ -28,7 +28,7 @@ text: When a **Discuss** thread turns up a gap, press **Add to review** to make 
 area: development
 level: power
 kind: tip
-since: next
+since: 0.28.0
 action: nav:projects
 -->
 
@@ -45,7 +45,7 @@ text: Open a spec review: **In short** sums up the document, and every point ope
 area: development
 level: next
 kind: tip
-since: next
+since: 0.28.0
 action: nav:projects
 -->
 
@@ -59,7 +59,7 @@ text: Press **Discuss** on a spec review finding to ask the assistant about it, 
 area: development
 level: next
 kind: feature
-since: next
+since: 0.28.0
 action: nav:projects
 -->
 
