@@ -107,10 +107,13 @@ func (db *DB) MailWatermarkSet(provider string, accountID int64) (bool, error) {
 // floor: the later of its created_at (when it was connected) and its newest
 // stored message date. Both are RFC 3339 UTC text, so they compare as text.
 // A Gmail account's own sent rows (GmailOwnSentSQL) are not news, so they
-// neither count nor move the floor.
+// neither count nor move the floor; the Gmail subquery walks the
+// (account_id, internal_date) index newest first to the first row that is
+// not one of them.
 var mailNewsFloorQueries = map[string]string{
-	"gmail": `SELECT MAX(a.created_at, COALESCE((SELECT MAX(m.internal_date) FROM gmail_messages m
-            WHERE m.account_id = a.id AND NOT ` + GmailOwnSentSQL("m", "a") + `), '')) FROM google_accounts a WHERE a.id = ?`,
+	"gmail": `SELECT MAX(a.created_at, COALESCE((SELECT m.internal_date FROM gmail_messages m
+            WHERE m.account_id = a.id AND NOT ` + GmailOwnSentSQL("m", "a") + `
+            ORDER BY m.internal_date DESC LIMIT 1), '')) FROM google_accounts a WHERE a.id = ?`,
 	"imap": `SELECT MAX(a.created_at, COALESCE((SELECT MAX(internal_date) FROM imap_messages
             WHERE account_id = a.id), '')) FROM email_accounts a WHERE a.id = ?`,
 }
