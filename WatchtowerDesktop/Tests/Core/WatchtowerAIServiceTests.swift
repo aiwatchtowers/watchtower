@@ -302,6 +302,20 @@ extension WatchtowerAIServiceTests {
         XCTAssertFalse(result.ok)
     }
 
+    func testTestResultCLIRefusalIsWatchtowersFailure() {
+        let result = WatchtowerAIService.decodeTestResult(out("", exit: 1, stderr: "Error: unknown flag: --json"))
+        XCTAssertEqual(result.errorCode, "cli")
+        XCTAssertFalse(result.ok)
+        let line = OnboardingAgentChoice.failureMessage(.claude, code: result.errorCode, error: result.error)
+        XCTAssertTrue(line.hasPrefix("Watchtower couldn’t run the check"), line)
+        XCTAssertFalse(line.contains("Claude Code"), line)
+    }
+
+    func testLaunchFailureLineBlamesWatchtower() {
+        let line = OnboardingAgentChoice.failureMessage(.codex, code: "launch", error: "no such file")
+        XCTAssertEqual(line, "Watchtower couldn’t run the check (no such file). Update or reinstall Watchtower, then check again.")
+    }
+
     func testWhichDecodes() {
         XCTAssertEqual(WatchtowerAIService.decodeWhich(out(#"{"provider":"codex","path":"/x/codex","found":true}"#)), .found("/x/codex"))
         XCTAssertEqual(WatchtowerAIService.decodeWhich(out(#"{"provider":"codex","path":"","found":false}"#)), .notFound)
