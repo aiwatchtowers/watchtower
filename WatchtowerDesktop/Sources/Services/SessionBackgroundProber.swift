@@ -81,6 +81,9 @@ final class SessionBackgroundProber {
     /// Whether a probe of `sessionID` is running (a test seam).
     func isProbing(_ sessionID: Int64) -> Bool { inFlight[sessionID] != nil }
 
+    /// The probe of `sessionID` running now, to await its end (a test seam).
+    func probeTask(_ sessionID: Int64) -> Task<Void, Never>? { inFlight[sessionID]?.task }
+
     /// The sessions whose count shows as over after failed probes. Drops the
     /// bookkeeping of every count that is no longer the row's — the session
     /// stopped, started again or reported anew.
