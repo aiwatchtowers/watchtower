@@ -17,7 +17,7 @@ An account that synced before this release has its sent mail only from the relea
 - `Syncer.CatchUpSent(ctx, now)` (`internal/gmail/sent_catchup.go`) lists `in:sent after:<now − gmail.initial_history_days>` once per account and stores each message with its own date as `synced_at` (`backfillSyncedAt`), so the inbox detector never sees the rows as new. It writes no watermark and no auth state.
 - No-op when the stamp is set, or when the account has not synced yet (watermark 0): a first `Sync` lists sent mail itself and stamps at its listing time.
 - `phaseGmailSync` (`internal/daemon/daemon.go`) runs it after a successful `Sync`, outside `observePhase`, so catch-up rows are never `gmail.new_messages` events.
-- Failures: a 404 on one message skips it; any other error stops the pass unstamped and the next cycle retries. A transient error (Gmail 429/5xx and rate-limit 403 via `StatusError.Transient`, a network or `*url.Error`, a cancelled or expired context, `io.ErrUnexpectedEOF`) retries without limit; after 3 passes in one process that failed with a non-transient error (`sentCatchUpMaxAttempts`) the pass stamps anyway and logs that it gave up.
+- Failures: a 404 on one message skips it; any other error stops the pass unstamped and the next cycle retries (a failed listing never counts). A transient error (Gmail 429/5xx and rate-limit 403 via `StatusError.Transient`, a network or `*url.Error`, a cancelled or expired context, `io.ErrUnexpectedEOF`, `ErrAuthRevoked`) retries without limit; after 3 passes in one process that failed with a non-transient error (`sentCatchUpMaxAttempts`) the pass stamps anyway and logs that it gave up.
 
 ### The owner-sent predicate
 
@@ -46,13 +46,13 @@ The rule: a reader that treats a row as something that happened to the owner ski
 | lifecycle | `cmd/gmail.go` | clear confirmation row count |
 | lifecycle | `cmd/google_legacy.go` | comment only |
 
-`list_emails`/`get_email` mark the owner's own mail with the `sent` key (an IMAP row only when its sender is the mailbox's own address). Not readers of `gmail_messages`: track updates, people cards, the Desktop, Kit and phone (no Swift reads the table), the briefing, day plan and Catch-Up (they read `inbox_items` and `stream_digests`).
+`list_emails`/`get_email` mark the owner's own mail with the `sent` key (an IMAP row only when its sender is the mailbox's own address). Readers that reach the rows only through those tools are outside the guard's reach and are checked by hand: the `new-mail-summary` template and the `create-automation` skill's mail examples skip `sent` rows. The Gmail sync's media "owner first" flag uses `db.GmailOwnSent` too. Not readers of `gmail_messages`: track updates, people cards, the Desktop, Kit and phone (no Swift reads the table), the briefing, day plan and Catch-Up (they read `inbox_items` and `stream_digests`).
 
 ### The mail branch
 
 `Pipeline.autoResolveGmail` (`internal/inbox/pipeline.go`) is the last check of `autoResolveByRules`, after Slack, Jira, Linear and Calendar. It resolves each id from `db.GmailItemsAnsweredByOwner` with `User replied`; errors are logged and never detector errors, and it never touches the inbox watermark (INBOX-09).
 
-`GmailItemsAnsweredByOwner` reads every pending `email_received` item whose `channel_id` parses as a Gmail one (`ParseGmailChannelID`; IMAP items are skipped), then the newest owner-sent `internal_date` in the same thread and account. Date rule: the item resolves when that reply is strictly after the received message's `internal_date` (the item's `message_ts`); when the received row is gone or its date does not parse, the item's `created_at` stands in, and an item with neither date is left alone. Dates are compared in Go as RFC 3339. `email_cc` items are not touched and still archive on their own.
+`GmailItemsAnsweredByOwner` reads every pending, unarchived `email_received` item whose `channel_id` parses as a Gmail one (`ParseGmailChannelID`; IMAP items are skipped), then the newest owner-sent `internal_date` in the same thread and account. Date rule: the item resolves when that reply is strictly after the received message's `internal_date` (the item's `message_ts`); when the received row is gone or its date does not parse, the item's `created_at` stands in, and an item with neither date is left alone. Dates are compared in Go as RFC 3339. `email_cc` items are not touched and still archive on their own.
 
 ### INBOX-02 amendment
 

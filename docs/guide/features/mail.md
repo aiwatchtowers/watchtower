@@ -49,7 +49,7 @@ since: next
 requires: source:google
 -->
 
-A Gmail item closes when you reply in its thread, from your address or a "Send mail as" alias, at the next sync. Gmail items that only copy you (Cc) still archive on their own after 7 days. Outlook and IMAP items never close on reply: they archive on their own, after 14 days if you are in To and after 7 days if you are in Cc.
+A Gmail item closes when you reply in its thread, from your address or a "Send mail as" alias, at the next sync. A Gmail item sent to you that you never answer still archives on its own after 14 days, and one that only copies you (Cc) after 7 days. Outlook and IMAP items never close on reply: they archive on their own, after 14 days if you are in To and after 7 days if you are in Cc.
 
 ## Using it
 

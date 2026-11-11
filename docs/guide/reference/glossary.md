@@ -4,7 +4,7 @@ Terms the guide uses, in alphabetical order. Each links to the page that explain
 
 - **Ask** — a question an agent in a [workbench](../features/workbench/README.md) puts to you and waits on. Asks collect under **Waiting for you**. See [Asks](../features/workbench/asks.md).
 - **Assistant** — the one name for Watchtower's AI. It writes briefings and digests, answers in [chat](../features/ai-chat.md), and proposes actions.
-- **Attention item** — a message or mail thread that needs your reply, such as a mention, a DM or a thread addressed to you. Slack, Jira, Linear, calendar and Gmail items close when you answer in the source; Gmail Cc items and Outlook/IMAP mail archive on their own after 7 or 14 days. See [Inbox](../features/inbox.md).
+- **Attention item** — a message or mail thread that needs your reply, such as a mention, a DM or a thread addressed to you. Slack, Jira, Linear, calendar and Gmail items close when you answer in the source; an unanswered Gmail item sent to you archives on its own after 14 days, and Gmail Cc items and Outlook/IMAP mail after 7 or 14 days. See [Inbox](../features/inbox.md).
 - **Automation** — an owner-written recipe the daemon runs on a schedule or on demand. See [Automations](../features/automations.md).
 - **Backfill** — the month of history loaded for a newly connected source, freshest first. See [History backfill](../concepts/history-backfill.md).
 - **Board** — a workbench's set of targets, shown as a list or Kanban. See [Board and targets](../features/workbench/board-and-targets.md).
