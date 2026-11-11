@@ -61,7 +61,7 @@ func (db *DB) SetGmailSentCatchUpAt(accountID int64, at time.Time) error {
 	return nil
 }
 
-// GmailItemsAnsweredByOwner returns the ids of the pending Gmail
+// GmailItemsAnsweredByOwner returns the ids of the pending, unarchived Gmail
 // email_received inbox items whose thread holds an owner sent row (see
 // GmailOwnSent) newer than the received message. The received message's
 // internal_date is the reference; when its row is gone or its date does not
@@ -119,12 +119,13 @@ type gmailReceivedItem struct {
 	createdAt            string
 }
 
-// pendingGmailReceivedItems reads every pending email_received item, fully
+// pendingGmailReceivedItems reads every pending, unarchived email_received
+// item (as GetInboxItems does for the sibling auto-resolvers), fully
 // drained before the caller issues any further query (single-connection
 // SQLite).
 func (db *DB) pendingGmailReceivedItems() ([]gmailReceivedItem, error) {
 	rows, err := db.Query(`SELECT id, channel_id, message_ts, created_at FROM inbox_items
-		WHERE trigger_type = 'email_received' AND status = 'pending'`)
+		WHERE trigger_type = 'email_received' AND status = 'pending' AND archived_at IS NULL`)
 	if err != nil {
 		return nil, fmt.Errorf("listing pending gmail items: %w", err)
 	}

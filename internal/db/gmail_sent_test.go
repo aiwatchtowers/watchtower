@@ -201,3 +201,12 @@ func TestGmailItemsAnsweredByOwner_OnlyPendingEmailReceived(t *testing.T) {
 	f.addMessage(t, f.acct, "s1", "owner@example.com", `["SENT"]`, f.recvAt.Add(5*time.Minute))
 	assert.Empty(t, answeredIDs(t, f.d))
 }
+
+func TestGmailItemsAnsweredByOwner_ArchivedItemSkipped(t *testing.T) {
+	f := seedGmailAnswered(t)
+	_, err := f.d.Exec(`UPDATE inbox_items SET archived_at = ? WHERE id = ?`,
+		time.Now().UTC().Format(time.RFC3339), f.itemID)
+	require.NoError(t, err)
+	f.addMessage(t, f.acct, "s1", "owner@example.com", `["SENT"]`, f.recvAt.Add(5*time.Minute))
+	assert.Empty(t, answeredIDs(t, f.d), "an archived pending item is not closed by a later reply")
+}
