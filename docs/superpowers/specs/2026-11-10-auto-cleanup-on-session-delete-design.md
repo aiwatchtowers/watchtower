@@ -8,7 +8,7 @@
 The disk is running out. One workbench repository has about 400 local branches and 190 linked worktrees. Half of the branches are already merged into the default branch, and 21 worktrees are prunable. The session cleanup exists, but two things keep it from working:
 
 1. **It runs only when the owner asks.** A quick delete (✕, ⌘⌫) and the dialog's **Delete Only** remove nothing. Only **Delete and Clean Up** cleans, and the owner has to choose it every time.
-2. **It does not see most of what a session creates.** A session owns only the worktrees its hooks saw as an agent's `cwd`, plus its targets' branches. Plan runs fan tasks out to subagent lanes: `git worktree add <scratchpad>/<lane> -b <branch>` under `/private/tmp/claude-<uid>/<project-slug>/<claude-session-uuid>/scratchpad/` or `/private/tmp/watchtower-<n>`. The subagents work there through `git -C` or `cd` inside a Bash call, so no hook event carries that `cwd`. Claude Code's own subagent worktrees (`isolation: worktree`, `<repo>/.claude/worktrees/agent-<id>` on a `worktree-agent-<id>` branch) are not seen either. The cleanup keeps all of them as `not_this_session`, and they pile up (on the owner's machine: 79 worktrees and 166 branches, 35+ of them `agent-<id>`).
+2. **It does not see most of what a session creates.** A session owns only the worktrees its hooks saw as an agent's `cwd`, plus its targets' branches. Plan runs fan tasks out to subagent lanes: `git worktree add <scratchpad>/<lane> -b <branch>` under `/private/tmp/claude-<uid>/<project-slug>/<claude-session-uuid>/scratchpad/` or `/private/tmp/watchtower-<n>`. The subagents work there through `git -C` or `cd` inside a Bash call, so no hook event carries that `cwd`. Claude Code's own subagent worktrees (`isolation: worktree`, `<repo>/.claude/worktrees/agent-<id>` on a `worktree-agent-<id>` branch) are not seen either. The cleanup keeps all of them as `not_this_session`, and they pile up — most of the pile is `agent-<id>` worktrees.
 
 ## Goal
 
@@ -54,7 +54,7 @@ Ownership comes from facts that Claude Code and git write themselves. Nothing pa
 
 ### 2a. Subagent worktrees (Claude Code `isolation: worktree`)
 
-Claude Code writes `<projects dir>/<slug>/<uuid>/subagents/agent-<id>.meta.json` for every subagent; a subagent started with a worktree has `"spawnedWithWorktree": true`, `"worktreePath": "<abs path>"` and `"worktreeBranch": "<branch>"` in it (seen on the owner's machine: the `.claude/worktrees/agent-<id>` pile). For each counted uuid the planner reads these files (the same directory lookup `internal/sessionfeed` uses for subagent feeds):
+Claude Code writes `<projects dir>/<slug>/<uuid>/subagents/agent-<id>.meta.json` for every subagent; a subagent started with a worktree has `"spawnedWithWorktree": true`, `"worktreePath": "<abs path>"` and `"worktreeBranch": "<branch>"` in it. For each counted uuid the planner reads these files (the same directory lookup `internal/sessionfeed` uses for subagent feeds):
 
 - A linked worktree of the planned repository whose root equals `worktreePath` (symlink-resolved) belongs to the session, when it was born at or after the moment this row acquired the uuid (+1 s, second precision, as `bornReason`).
 - `worktreeBranch` names a branch of the session, under the same birth rule.
