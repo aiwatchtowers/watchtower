@@ -8,9 +8,10 @@
 #      "internal/x/testdata/\(name)", a testdata directory, or — in a test
 #      that walks up to the repo root with #filePath — a directory, whose
 #      files it lists) must match a `swift` glob;
-#   2. a Go test's Swift-tree path (a literal, or filepath.Join's literal
-#      components), or one a shell test names (`make test-scripts` runs in
-#      Go Test), must match a `go_input` glob;
+#   2. a Go test's Swift-tree or docs/ path (a literal, or filepath.Join's
+#      literal components), or a Swift-tree path a shell test names (`make
+#      test-scripts` runs in Go Test), must match a `go_input` glob — except
+#      docs/guide, whose importers Guide Check must test;
 #   3. the Swift tests that run a Go toolchain are the two the filter maps
 #      (CodeNavRealCLITests, SQLCipherInteropTests), and the Go packages
 #      they build stay inside the `swift` globs (when a Go toolchain that
@@ -119,10 +120,12 @@ else
     printf '  %s\n' $missing
 fi
 
-# 2. Go tests → Swift trees. Path-shaped strings as test data, not reads:
-# internal/reviewmap classifies diff paths.
-GO_DATA_ONLY='^internal/reviewmap/'
-{ git grep -HE '"[^"]*Watchtower(Desktop|Kit|Mobile)' -- '*_test.go' || true; } | grep -vE "$GO_DATA_ONLY" \
+# 2. Go tests → Swift trees and docs/ (both outside the `go` filter). Files
+# whose repo-shaped paths are test data, not reads of the repo: reviewmap
+# classifies diff paths; devpack looks for a path inside skill text; the
+# others build the same names in a temp folder or pass one as a flag value.
+GO_DATA_ONLY='^(internal/reviewmap/|internal/devpack/workbench_flow_skill_test\.go|internal/specreview/inputs_test\.go|cmd/(workbench_test|workbench_resync_test|memory_test)\.go)'
+{ git grep -HE '"[^"]*Watchtower(Desktop|Kit|Mobile)|"(\.\./)*docs[/"]' -- '*_test.go' ':!docs/**' || true; } | grep -vE "$GO_DATA_ONLY" \
     | awk '{
         line = $0; sub(/^[^:]*:/, "", line)
         n = 0; s = line
@@ -130,7 +133,11 @@ GO_DATA_ONLY='^internal/reviewmap/'
         path = ""; started = 0
         for (i = 1; i <= n; i++) {
             v = lit[i]
-            if (!started) { if (match(v, /Watchtower(Desktop|Kit|Mobile)[^ \\%]*/)) { path = substr(v, RSTART, RLENGTH); started = 1 }; continue }
+            if (!started) {
+                if (match(v, /Watchtower(Desktop|Kit|Mobile)[^ \\%]*/)) { path = substr(v, RSTART, RLENGTH); started = 1 }
+                else if (v ~ /^(\.\.\/)*docs(\/[^ \\%]*)?$/) { path = v; sub(/^(\.\.\/)*/, "", path); started = 1 }
+                continue
+            }
             if (v ~ /^[A-Za-z0-9_.+-]+$/ && v != "..") path = path "/" v; else break
         }
         sub(/\/$/, "", path)
@@ -138,6 +145,9 @@ GO_DATA_ONLY='^internal/reviewmap/'
     }' | sort -u > "$WORK_DIR/go.lits"
 { git grep -ohE 'Watchtower(Desktop|Kit|Mobile)/[A-Za-z0-9_./+-]*' -- 'scripts/tests/*.sh' ':!scripts/tests/test-ci-path-filters.sh' || true; } \
     | sed 's#/$##' | sort -u >> "$WORK_DIR/go.lits"
+# A Go package under docs/ (the guide, go:embed) is read by every importer.
+{ git grep -ohE '"watchtower/docs/[A-Za-z0-9_/]+"' -- '*.go' ':!docs/**' || true; } \
+    | tr -d '"' | sed 's#^watchtower/##' | sort -u >> "$WORK_DIR/go.lits"
 awk 'NR == FNR { tracked[$0] = 1; files[++n] = $0; next }
      {
          p = $0
@@ -146,17 +156,34 @@ awk 'NR == FNR { tracked[$0] = 1; files[++n] = $0; next }
              hit = 0
              for (k = 1; k <= n; k++) if (index(files[k], p "/") == 1) { print files[k]; hit = 1 }
              if (hit) next
+             # docs/ paths are taken as written: a missing one is a name
+             # in a temp folder, not a file to walk up from.
+             if (p ~ /^docs\//) next
              sub(/\/[^\/]*$/, "", p)
          }
      }' "$WORK_DIR/tracked" "$WORK_DIR/go.lits" | sort -u > "$WORK_DIR/go.reads"
 [ -s "$WORK_DIR/go.reads" ] || note_fail "found no Swift-tree paths read by Go tests (scanner broke?)"
-missing="$(uncovered "$WORK_DIR/go_input.re" < "$WORK_DIR/go.reads")"
+grep -q '^docs/' "$WORK_DIR/go.reads" || note_fail "found no docs/ paths read by Go tests (scanner broke?)"
+# docs/guide is Guide Check's (the `guide` filter): its importers below.
+missing="$(grep -v '^docs/guide/' "$WORK_DIR/go.reads" | uncovered "$WORK_DIR/go_input.re")"
 if [ -z "$missing" ]; then
-    echo "ok: $(wc -l < "$WORK_DIR/go.reads" | tr -d ' ') Swift-tree paths read by Go tests are in the go_input filter"
+    echo "ok: $(wc -l < "$WORK_DIR/go.reads" | tr -d ' ') Swift-tree and docs/ paths read by Go tests are in the go_input filter (or the guide's)"
 else
-    note_fail "Go tests read Swift-tree paths the go_input filter misses — add them to the gate's scope.go_input in ci.yml:"
+    note_fail "Go tests read paths the go_input filter misses — add them to the gate's scope.go_input in ci.yml (or, for test data, to GO_DATA_ONLY):"
     printf '  %s\n' $missing
 fi
+
+# A guide-only PR runs only Guide Check: it must test every package that
+# reads the guide's pages. cmd and internal/hub import only guide.Version.
+guide_run="$(grep -E '^ +run: go test \./docs/guide/' "$CI" || true)"
+[ -n "$guide_run" ] || note_fail "Guide Check's go test line not found in ci.yml"
+for pkg in $({ git grep -l '"watchtower/docs/guide"' -- '*.go' ':!docs/**' || true; } | sed 's#/[^/]*$##' | sort -u); do
+    case "$pkg" in cmd|internal/hub) continue ;; esac
+    case "$guide_run" in
+        *" ./$pkg/"*) echo "ok: Guide Check tests $pkg (reads the guide)" ;;
+        *) note_fail "$pkg imports docs/guide but Guide Check does not test it — add ./$pkg/ to its go test line" ;;
+    esac
+done
 
 # The checks above can fail: drop one glob each and they must notice.
 mutant() { # mutant <glob-to-drop> <filter> <reads-file> <label>
@@ -166,6 +193,7 @@ mutant() { # mutant <glob-to-drop> <filter> <reads-file> <label>
 }
 mutant 'internal/db/schema.sql' swift "$WORK_DIR/swift.reads" "Swift reads schema.sql"
 mutant 'WatchtowerKit/Tests/Fixtures/**' go_input "$WORK_DIR/go.reads" "Go reads the Kit fixtures"
+mutant 'docs/inventory/**' go_input "$WORK_DIR/go.reads" "the inventory guard reads docs/inventory"
 
 # 3. Swift tests that build Go code. Each one's packages are mapped by hand.
 builders="$({ git grep -lE '"/go"|env go|"go", *"(build|run|test|list|vet|generate)"' -- "${SWIFT_TESTS[@]}" || true; } | sed 's#.*/##' | sort | tr '\n' ' ')"

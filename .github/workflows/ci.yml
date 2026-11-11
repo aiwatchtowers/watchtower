@@ -32,16 +32,19 @@ jobs:
   #            but docs and the three Swift trees, plus the Swift files Go
   #            and shell tests read (the Desktop's Sources, which several
   #            guards scan; the shared fixtures; the generated test schema;
-  #            the phone's release config) and any deleted or renamed Swift
-  #            file (the
-  #            inventory guard checks the Swift guard tests exist).
+  #            the phone's release config), docs/inventory (its guard) and
+  #            any deleted or renamed Swift file (the inventory guard checks
+  #            the Swift guard tests exist). docs/guide is Guide Check's.
   #   swift  — Swift Lint + Kit Test and Swift Test: the Swift trees, the
   #            Makefile, scripts/ and this file, plus the Go-side files Swift
   #            tests read (shared testdata, schema.sql, contract files, the
   #            Go packages dual-path tests list, keyboard-shortcuts.md, the
   #            issue form) and what the CLI they build runs
   #            (CodeNavRealCLITests: `code index|search`; SQLCipherInteropTests:
-  #            internal/sqlcipher/cmd/interop) with go.mod/go.sum.
+  #            internal/sqlcipher/cmd/interop) with go.mod/go.sum. The CLI's
+  #            shared internal packages (config, auditlog, …) are left out on
+  #            purpose: Go Test covers them, and a push to main runs every
+  #            job as the backstop.
   #            scripts/tests/test-ci-path-filters.sh fails when a test starts
   #            reading a path across the line that its filter misses.
   #   mobile — the iPhone app, the Kit it builds on, the Makefile or this file.
@@ -119,6 +122,9 @@ jobs:
               - 'WatchtowerMobile/*'
               - 'WatchtowerMobile/WatchtowerMobile.xcodeproj/**'
               - deleted|renamed: '{WatchtowerDesktop,WatchtowerKit,WatchtowerMobile}/**/*.swift'
+              # docs/ Go tests read: the inventory (its guard). The guide is
+              # Guide Check's, which runs the packages that read its pages.
+              - 'docs/inventory/**'
             swift:
               - 'WatchtowerDesktop/**'
               - 'WatchtowerKit/**'
@@ -182,7 +188,7 @@ jobs:
 
   # The user guide is a Go package (docs/guide): its links, anchors and page
   # sizes are checked by its tests. Runs on its own, so a guide-only PR gets
-  # just this and the leak check.
+  # just this and the leak check (plus Swift for keyboard-shortcuts.md).
   guide-check:
     name: Guide Check
     needs: gate
@@ -206,9 +212,12 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libssl-dev
 
       - name: Guide check
-        # internal/chat pins guide.Map() in the prompt golden and internal/kb
-        # searches every guide page, so a guide-only PR must run both.
-        run: go test ./docs/guide/ ./internal/kb/ ./internal/chat/
+        # internal/chat pins guide.Map() in the prompt golden, internal/kb
+        # searches every guide page and internal/learn validates the Learn
+        # cards, so a guide-only PR must run them (cmd and internal/hub
+        # import only guide.Version). scripts/tests/test-ci-path-filters.sh
+        # keeps this list in step with the guide's importers.
+        run: go test ./docs/guide/ ./internal/kb/ ./internal/chat/ ./internal/learn/
 
   go-lint:
     name: Go Lint
