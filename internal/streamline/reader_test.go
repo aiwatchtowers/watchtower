@@ -8,7 +8,6 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -124,10 +123,7 @@ func TestStreamline_DrainUnblocksAWriterBeforeWait(t *testing.T) {
 	waited := make(chan error, 1)
 	t.Cleanup(func() {
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		select {
-		case <-waited:
-		case <-time.After(5 * time.Second):
-		}
+		<-waited
 	})
 
 	r := New(stdout)
@@ -139,13 +135,11 @@ func TestStreamline_DrainUnblocksAWriterBeforeWait(t *testing.T) {
 		r.Drain()
 		waited <- cmd.Wait()
 	}()
-	select {
-	case err := <-waited:
-		waited <- err // for the cleanup
-		require.NoError(t, err)
-	case <-time.After(5 * time.Second):
-		t.Fatal("the writer did not exit after Drain: Wait hangs")
-	}
+	// A writer that does not exit after Drain hangs Wait, until go test
+	// -timeout.
+	err = <-waited
+	waited <- err // for the cleanup
+	require.NoError(t, err)
 }
 
 // OnSkip is given the head of every skipped line (a caller tells a protocol

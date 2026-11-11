@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -269,11 +270,11 @@ func TestCoachFactoryUsesSharedQuotaRouter(t *testing.T) {
 			spool := filepath.Join(t.TempDir(), "calls.jsonl")
 			llmusage.SetSpoolPath(spool)
 			t.Cleanup(func() { llmusage.SetSpoolPath("") })
-			// fakeCLI re-executes this test binary, which takes about a second to
-			// start under -race; the router starts it twice (preferred, then
-			// reserve). The deadline only guards against a hang.
-			ctx, cancel := context.WithTimeout(digest.WithSource(context.Background(), "coach.propose"), 30*time.Second)
-			defer cancel()
+			// fakeCLI re-executes this test binary (about a second under -race);
+			// the router starts it twice (preferred, then reserve). No deadline of
+			// the test's own: it waits for the children's exits, and go test
+			// -timeout bounds a hang.
+			ctx := digest.WithSource(context.Background(), "coach.propose")
 			text, _, _, err := coachGeneratorFactory(cfg).Generate(ctx, "", "request", "")
 			require.NoError(t, err)
 			require.Equal(t, "ok", text)
@@ -299,28 +300,30 @@ func (g *coachAdmissionGenerator) Generate(context.Context, string, string, stri
 	return g.provider, nil, "", nil
 }
 func TestCoachGeneratorUsesJobSnapshotAndSharedAdmission(t *testing.T) {
-	d := newQuietDaemon(t)
-	pool := sessions.NewSessionPool(1)
-	defer pool.Close()
-	d.SetAIWorkerPool(pool)
-	snapshot := &config.Config{}
-	snapshot.AI.Provider = "codex"
-	oldFactory := coachGeneratorFactory
-	defer func() { coachGeneratorFactory = oldFactory }()
-	leaf := &coachAdmissionGenerator{}
-	coachGeneratorFactory = func(cfg *config.Config) digest.Generator { leaf.provider = cfg.AI.Provider; return leaf }
-	ctx := config.WithRoutingSnapshot(context.Background(), snapshot)
-	gen := d.coachGenerator(ctx)
-	worker, err := pool.Acquire(ctx)
-	require.NoError(t, err)
-	waiting, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
-	defer cancel()
-	_, _, _, err = gen.Generate(waiting, "", "", "")
-	require.ErrorIs(t, err, context.DeadlineExceeded)
-	require.Zero(t, leaf.calls)
-	pool.Release(worker)
-	text, _, _, err := gen.Generate(ctx, "", "", "")
-	require.NoError(t, err)
-	require.Equal(t, "codex", text)
-	require.Equal(t, 1, leaf.calls)
+	synctest.Test(t, func(t *testing.T) {
+		d := newQuietDaemon(t)
+		pool := sessions.NewSessionPool(1)
+		defer pool.Close()
+		d.SetAIWorkerPool(pool)
+		snapshot := &config.Config{}
+		snapshot.AI.Provider = "codex"
+		oldFactory := coachGeneratorFactory
+		defer func() { coachGeneratorFactory = oldFactory }()
+		leaf := &coachAdmissionGenerator{}
+		coachGeneratorFactory = func(cfg *config.Config) digest.Generator { leaf.provider = cfg.AI.Provider; return leaf }
+		ctx := config.WithRoutingSnapshot(context.Background(), snapshot)
+		gen := d.coachGenerator(ctx)
+		worker, err := pool.Acquire(ctx)
+		require.NoError(t, err)
+		waiting, cancel := context.WithTimeout(ctx, 20*time.Millisecond) // on the bubble's clock
+		defer cancel()
+		_, _, _, err = gen.Generate(waiting, "", "", "")
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+		require.Zero(t, leaf.calls)
+		pool.Release(worker)
+		text, _, _, err := gen.Generate(ctx, "", "", "")
+		require.NoError(t, err)
+		require.Equal(t, "codex", text)
+		require.Equal(t, 1, leaf.calls)
+	})
 }

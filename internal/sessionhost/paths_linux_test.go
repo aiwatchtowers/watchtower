@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
-	"time"
 )
 
 // asClientEnv makes the test binary the client half of
@@ -25,9 +24,7 @@ func TestAClientWithoutXDGRuntimeDirFindsTheRunningHost(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		c, err := Dial(ctx, path)
+		c, err := Dial(context.Background(), path)
 		if err != nil {
 			t.Fatalf("dial %s: %v", path, err)
 		}
