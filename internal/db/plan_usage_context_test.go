@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"watchtower/internal/sqlcipher"
@@ -18,62 +19,63 @@ import (
 func TestPlanUsage_ContextPublicationWaitCancelsWithoutWrites(t *testing.T) {
 	for _, provider := range []string{"codex_success", "codex_failure", "claude_status", "claude_samples"} {
 		t.Run(provider, func(t *testing.T) {
-			d := openTestDB(t)
-			now := time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC)
-			codexBefore := codexTestStatus(now, "")
-			claudeBefore := PlanUsageStatus{State: "ok", FetchedAt: &now, UpdatedAt: now, LimitsJSON: "[]", BreakdownJSON: "[]"}
-			require.NoError(t, d.PublishCodexPlanUsage(codexBefore, nil))
-			require.NoError(t, d.UpsertPlanUsageStatus(claudeBefore))
-			codexSaved, err := d.GetCodexPlanUsageStatus()
-			require.NoError(t, err)
-			claudeSaved, err := d.GetPlanUsageStatus()
-			require.NoError(t, err)
-			// The single DB connection is deliberately occupied after source work,
-			// forcing publication to wait inside database/sql rather than a fetch.
-			held, err := d.Conn(context.Background())
-			require.NoError(t, err)
-			// Best-effort fallback if an assertion exits before the explicit close below.
-			defer func() { _ = held.Close() }()
-			waits := d.Stats().WaitCount
-			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-			defer cancel()
-			later := now.Add(time.Minute)
-			done := make(chan error, 1)
-			go func() {
-				switch provider {
-				case "codex_success":
-					done <- d.PublishCodexPlanUsageContext(ctx, codexTestStatus(later, ""), nil)
-				case "codex_failure":
-					st := codexBefore
-					st.State = "error"
-					st.UpdatedAt = later
-					done <- d.UpsertCodexPlanUsageStatusContext(ctx, st)
-				case "claude_status":
-					st := claudeBefore
-					st.State = "error"
-					st.UpdatedAt = later
-					done <- d.UpsertPlanUsageStatusContext(ctx, st)
-				case "claude_samples":
-					done <- d.InsertPlanUsageSamplesContext(ctx, []PlanUsageSample{{LimitKey: "q", TakenAt: later, Percent: 90}})
-				}
-			}()
-			select {
-			case err = <-done:
+			// In a synctest bubble the database, the pool's wait and the deadline
+			// all run on the bubble's clock: the deadline passes once publication
+			// waits for the held connection, with no real time spent.
+			synctest.Test(t, func(t *testing.T) {
+				d := openTestDB(t)
+				now := time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC)
+				codexBefore := codexTestStatus(now, "")
+				claudeBefore := PlanUsageStatus{State: "ok", FetchedAt: &now, UpdatedAt: now, LimitsJSON: "[]", BreakdownJSON: "[]"}
+				require.NoError(t, d.PublishCodexPlanUsage(codexBefore, nil))
+				require.NoError(t, d.UpsertPlanUsageStatus(claudeBefore))
+				codexSaved, err := d.GetCodexPlanUsageStatus()
+				require.NoError(t, err)
+				claudeSaved, err := d.GetPlanUsageStatus()
+				require.NoError(t, err)
+				// The single DB connection is deliberately occupied after source work,
+				// forcing publication to wait inside database/sql rather than a fetch.
+				held, err := d.Conn(context.Background())
+				require.NoError(t, err)
+				// Best-effort fallback if an assertion exits before the explicit close below.
+				defer func() { _ = held.Close() }()
+				waits := d.Stats().WaitCount
+				ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+				defer cancel()
+				later := now.Add(time.Minute)
+				done := make(chan error, 1)
+				go func() {
+					switch provider {
+					case "codex_success":
+						done <- d.PublishCodexPlanUsageContext(ctx, codexTestStatus(later, ""), nil)
+					case "codex_failure":
+						st := codexBefore
+						st.State = "error"
+						st.UpdatedAt = later
+						done <- d.UpsertCodexPlanUsageStatusContext(ctx, st)
+					case "claude_status":
+						st := claudeBefore
+						st.State = "error"
+						st.UpdatedAt = later
+						done <- d.UpsertPlanUsageStatusContext(ctx, st)
+					case "claude_samples":
+						done <- d.InsertPlanUsageSamplesContext(ctx, []PlanUsageSample{{LimitKey: "q", TakenAt: later, Percent: 90}})
+					}
+				}()
+				err = <-done
 				require.ErrorIs(t, err, context.DeadlineExceeded)
-			case <-time.After(2 * time.Second):
-				t.Fatal("publication ignored operation cancellation")
-			}
-			require.Greater(t, d.Stats().WaitCount, waits, "publication actually waited on the DB connection")
-			require.NoError(t, held.Close())
-			codexAfter, err := d.GetCodexPlanUsageStatus()
-			require.NoError(t, err)
-			require.Equal(t, codexSaved, codexAfter)
-			claudeAfter, err := d.GetPlanUsageStatus()
-			require.NoError(t, err)
-			require.Equal(t, claudeSaved, claudeAfter)
-			var count int
-			require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM plan_usage_samples`).Scan(&count))
-			require.Zero(t, count)
+				require.Greater(t, d.Stats().WaitCount, waits, "publication actually waited on the DB connection")
+				require.NoError(t, held.Close())
+				codexAfter, err := d.GetCodexPlanUsageStatus()
+				require.NoError(t, err)
+				require.Equal(t, codexSaved, codexAfter)
+				claudeAfter, err := d.GetPlanUsageStatus()
+				require.NoError(t, err)
+				require.Equal(t, claudeSaved, claudeAfter)
+				var count int
+				require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM plan_usage_samples`).Scan(&count))
+				require.Zero(t, count)
+			})
 		})
 	}
 }
