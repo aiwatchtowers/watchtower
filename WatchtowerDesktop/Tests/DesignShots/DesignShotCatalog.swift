@@ -72,6 +72,17 @@ enum DesignShotCatalog {
             DesignShot(name: "chat-markdown-streaming-narrow", size: NSSize(width: 344, height: 0)) {
                 AnyView(ChatMarkdownShotFixtures.streaming(width: 320).shotFrame().detailBackground())
             },
+            // A table wider than the column wraps its long column (ask #1197).
+            DesignShot(name: "chat-markdown-wide-table-finished", size: NSSize(width: 544, height: 0)) {
+                AnyView(ChatMarkdownShotFixtures.finished(width: 520, text: ChatMarkdownShotFixtures.wideTable)
+                    .shotFrame()
+                    .detailBackground())
+            },
+            DesignShot(name: "chat-markdown-wide-table-streaming", size: NSSize(width: 544, height: 0)) {
+                AnyView(ChatMarkdownShotFixtures.streaming(width: 520, text: ChatMarkdownShotFixtures.wideTable)
+                    .shotFrame()
+                    .detailBackground())
+            },
             DesignShot(name: "chat-composer-ollama-capabilities", size: NSSize(width: 620, height: 0)) {
                 AnyView(ProviderCapabilitiesShotFixtures.ollamaComposer().shotFrame().detailBackground())
             },
