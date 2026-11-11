@@ -48,6 +48,12 @@ final class TuningChatTextsTests: XCTestCase {
         }
     }
 
+    func testLoadErrors() {
+        XCTAssertEqual(TuningChatTexts.newChatFailed("disk full"), "Couldn't start a new tuning chat: disk full")
+        XCTAssertEqual(TuningChatTexts.cardsReadFailed("database is locked"),
+                       "Couldn't read the tuning chat's proposals: database is locked")
+    }
+
     func testFoldedProposal() {
         XCTAssertEqual(TuningChatTexts.foldedProposal(status: "accepted", title: "x"), "Accepted · measuring for 14 days")
         XCTAssertEqual(TuningChatTexts.foldedProposal(status: "declined", title: "x"), "Declined · x")

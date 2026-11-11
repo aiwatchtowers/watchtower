@@ -20,6 +20,16 @@ package enum TuningChatTexts {
     package static let accepted = "Accepted · measuring for 14 days"
     package static let showAccepted = "Show in Accepted edits"
 
+    // MARK: Load errors
+
+    /// **New** could not create the conversation.
+    package static func newChatFailed(_ reason: String) -> String { "Couldn't start a new tuning chat: \(reason)" }
+
+    /// The recent chats or the shown chat's proposal cards could not be read.
+    package static func cardsReadFailed(_ reason: String) -> String {
+        "Couldn't read the tuning chat's proposals: \(reason)"
+    }
+
     // MARK: Figures and starters
 
     package struct Figures: Equatable, Sendable {
