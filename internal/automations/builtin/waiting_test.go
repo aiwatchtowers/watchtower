@@ -674,59 +674,121 @@ func TestAttentionWaiting_MutedSenderLeftOut(t *testing.T) {
 	}
 }
 
-// 200 people, 200 mail items and 200 senders of long non-Latin text, names,
-// subjects and links: the result stays under the SDK's cap, and the shipped
-// recipe still writes every people row.
+// The worst cases of the senders list: 200 senders whose addresses are the
+// longest a ref admits, with links as long as the blocks admit; or 200 raw
+// addresses full of characters JSON escapes (not actionable, so clipped).
+// Beside 200 people and 200 mail items of long non-Latin text, names,
+// subjects and links, the senders stay within their budget, the result
+// under the SDK's cap, and the shipped recipe still writes every people row.
 func TestAttentionWaiting_WorstCaseUnderSDKCap(t *testing.T) {
-	f := newFixture(t)
-	f.sync(t)
-	now := f.clock.Now()
-	long := strings.Repeat("Ж", 400)
-	if _, err := f.d.Exec(`INSERT INTO users (id, name, display_name) VALUES ('U009', ?, ?)`, long, long); err != nil {
-		t.Fatal(err)
+	link := func(i int) string {
+		head := fmt.Sprintf("https://mail.example.com/m/%04d/", i)
+		return head + strings.Repeat("a", blocks.MaxLinkBytes-len(head))
 	}
-	if _, err := f.d.Exec(`INSERT INTO channels (id, name, type) VALUES ('C009', ?, 'public')`, long); err != nil {
-		t.Fatal(err)
+	for name, c := range map[string]struct {
+		address    func(i int) string
+		actionable bool
+	}{
+		// 254 bytes: the longest address a ref admits.
+		"longest actionable addresses": {func(i int) string {
+			return fmt.Sprintf("%03dx", i) + strings.Repeat("ж", 119) + "@example.com"
+		}, true},
+		// 245 bytes that JSON would escape to about 935: refused as refs,
+		// so clipped.
+		"escaped raw addresses": {func(i int) string {
+			return strings.Repeat(`&\`, 115) + fmt.Sprintf("%03d@example.com", i)
+		}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			f.sync(t)
+			now := f.clock.Now()
+			long := strings.Repeat("Ж", 400)
+			if _, err := f.d.Exec(`INSERT INTO users (id, name, display_name) VALUES ('U009', ?, ?)`, long, long); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.d.Exec(`INSERT INTO channels (id, name, type) VALUES ('C009', ?, 'public')`, long); err != nil {
+				t.Fatal(err)
+			}
+			for i := 1; i <= 200; i++ {
+				at := now.Add(-time.Duration(i) * time.Minute).UTC().Format(time.RFC3339)
+				if _, err := f.d.Exec(`INSERT INTO inbox_items (channel_id, message_ts, sender_user_id, trigger_type, snippet, permalink, created_at)
+					VALUES ('C009', ?, 'U009', 'mention', ?, ?, ?)`, fmt.Sprintf("1000.%04d", i), long, link(i), at); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.d.Exec(`INSERT INTO inbox_items (channel_id, message_ts, sender_user_id, trigger_type, snippet, permalink, created_at)
+					VALUES ('gmail', ?, ?, 'email_received', ?, ?, ?)`, fmt.Sprintf("2000.%04d", i), c.address(i), long+" — "+long,
+					link(i), at); err != nil {
+					t.Fatal(err)
+				}
+			}
+			fields := waitingFields(t, f.d, now)
+			for key, want := range map[string]int{"items": WaitingPeopleLimit, "mail_items": WaitingMailLimit, "senders": WaitingSendersLimit} {
+				if n := len(rowsOf(t, fields, key)); n != want {
+					t.Errorf("%d %s; want %d", n, key, want)
+				}
+			}
+			for _, s := range rowsOf(t, fields, "senders") {
+				if s["actionable"] != c.actionable {
+					t.Fatalf("sender %.60v; want actionable %v", s, c.actionable)
+				}
+				if c.actionable && len(s["address"].(string)) != 254 {
+					t.Fatalf("sender %.60v; want its whole address", s)
+				}
+			}
+			senders, err := json.Marshal(fields["senders"])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(senders) > waitingSendersBudgetBytes {
+				t.Errorf("senders are %d bytes; the budget is %d", len(senders), waitingSendersBudgetBytes)
+			}
+			data, err := json.Marshal(map[string]any{"status": "done", "fields": fields})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(data) > automations.MaxSDKResultBytes {
+				t.Errorf("result is %d bytes; the SDK's cap is %d", len(data), automations.MaxSDKResultBytes)
+			}
+			run := f.runOnce(t, waitingID)
+			if run.Status != db.RunSucceeded {
+				t.Fatalf("run = %s (%s); want succeeded", run.Status, run.Error)
+			}
+			if rows := f.waitingArtifacts(t)[0].list.Rows; len(rows) != WaitingPeopleLimit {
+				t.Errorf("%d rows; want %d", len(rows), WaitingPeopleLimit)
+			}
+		})
 	}
-	for i := 1; i <= 200; i++ {
-		at := now.Add(-time.Duration(i) * time.Minute).UTC().Format(time.RFC3339)
-		if _, err := f.d.Exec(`INSERT INTO inbox_items (channel_id, message_ts, sender_user_id, trigger_type, snippet, permalink, created_at)
-			VALUES ('C009', ?, 'U009', 'mention', ?, ?, ?)`, fmt.Sprintf("1000.%04d", i), long,
-			fmt.Sprintf("https://acme.slack.com/archives/C009/p1000%04d", i), at); err != nil {
+}
+
+// Every sender row fits its even share of the budget, whatever its
+// count: a few senders keep their links and long subjects, and the list
+// never passes the budget.
+func TestAttentionWaiting_SendersHardBudget(t *testing.T) {
+	for _, n := range []int{1, 3, 57, 200} {
+		f := newFixture(t)
+		now := f.clock.Now()
+		for i := 1; i <= n; i++ {
+			addr := fmt.Sprintf("%03dx", i) + strings.Repeat("ж", 119) + "@example.com"
+			if _, err := f.d.Exec(`INSERT INTO inbox_items (channel_id, message_ts, sender_user_id, trigger_type, snippet, permalink, created_at)
+				VALUES ('gmail', ?, ?, 'email_received', ?, ?, ?)`, fmt.Sprintf("2000.%04d", i), addr,
+				strings.Repeat("Ж", 400)+" — body", fmt.Sprintf("https://mail.example.com/m/%04d", i),
+				now.Add(-time.Duration(i)*time.Minute).UTC().Format(time.RFC3339)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		fields := waitingFields(t, f.d, now)
+		senders := rowsOf(t, fields, "senders")
+		data, err := json.Marshal(fields["senders"])
+		if err != nil {
 			t.Fatal(err)
 		}
-		// 253 bytes: the longest address a ref admits.
-		addr := fmt.Sprintf("%03d", i) + strings.Repeat("ж", 119) + "@example.com"
-		if _, err := f.d.Exec(`INSERT INTO inbox_items (channel_id, message_ts, sender_user_id, trigger_type, snippet, permalink, created_at)
-			VALUES ('gmail', ?, ?, 'email_received', ?, ?, ?)`, fmt.Sprintf("2000.%04d", i), addr, long+" — "+long,
-			fmt.Sprintf("https://mail.example.com/m/%04d", i), at); err != nil {
-			t.Fatal(err)
+		if len(senders) != n || len(data) > waitingSendersBudgetBytes {
+			t.Errorf("%d senders: %d rows, %d bytes; want %d rows within %d", n, len(senders), len(data), n, waitingSendersBudgetBytes)
 		}
-	}
-	fields := waitingFields(t, f.d, now)
-	for key, want := range map[string]int{"items": WaitingPeopleLimit, "mail_items": WaitingMailLimit, "senders": WaitingSendersLimit} {
-		if n := len(rowsOf(t, fields, key)); n != want {
-			t.Errorf("%d %s; want %d", n, key, want)
+		if n <= 3 && (senders[0]["permalink"] == "" || senders[0]["subject"] == "") {
+			t.Errorf("%d senders: first %.80v; want its link and subject", n, senders[0])
 		}
-	}
-	for _, s := range rowsOf(t, fields, "senders") {
-		if s["actionable"] != true || len(s["address"].(string)) != 253 {
-			t.Fatalf("sender %v; want its whole address, actionable", s)
-		}
-	}
-	data, err := json.Marshal(map[string]any{"status": "done", "fields": fields})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(data) > automations.MaxSDKResultBytes {
-		t.Errorf("result is %d bytes; the SDK's cap is %d", len(data), automations.MaxSDKResultBytes)
-	}
-	run := f.runOnce(t, waitingID)
-	if run.Status != db.RunSucceeded {
-		t.Fatalf("run = %s (%s); want succeeded", run.Status, run.Error)
-	}
-	if rows := f.waitingArtifacts(t)[0].list.Rows; len(rows) != WaitingPeopleLimit {
-		t.Errorf("%d rows; want %d", len(rows), WaitingPeopleLimit)
 	}
 }
 

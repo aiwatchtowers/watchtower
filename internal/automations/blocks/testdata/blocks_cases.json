@@ -3881,6 +3881,28 @@
       "error": "output.inbox(): blocks[0].rows[0].ref.id must be a sender address"
     },
     {
+      "name": "mail_sender id with an ampersand",
+      "built_in": true,
+      "input": {
+        "title": "Mail waiting",
+        "blocks": [
+          {
+            "type": "list",
+            "rows": [
+              {
+                "title": "c",
+                "ref": {
+                  "kind": "mail_sender",
+                  "id": "a&b@example.com"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "error": "output.inbox(): blocks[0].rows[0].ref.id must be a sender address"
+    },
+    {
       "name": "mail_sender id empty",
       "built_in": true,
       "input": {

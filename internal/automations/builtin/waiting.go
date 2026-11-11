@@ -48,9 +48,6 @@ const (
 	// stamp: the keys, the numbers, kind, section and trigger — more than
 	// a list row's keys, badge, tone, ref and the title's joiner.
 	waitingRowOverhead = 220
-	// waitingSenderOverhead is a sender row's JSON besides its address,
-	// subject, stamp and link: the keys, actionable and the counts.
-	waitingSenderOverhead = 100
 )
 
 // ReadPrimitives are the built-ins' read primitives
@@ -132,31 +129,38 @@ func waitingSenders(ctx context.Context, d *db.DB, now time.Time) ([]any, map[st
 	if err != nil {
 		return nil, nil, err
 	}
-	share := waitingSendersBudgetBytes / max(len(w.Senders), 1)
+	// A hard budget, measured as the executor marshals the result: each row
+	// gets an even share of what the list's brackets and commas leave.
+	share := (waitingSendersBudgetBytes-2)/max(len(w.Senders), 1) - 1
 	senders := make([]any, 0, len(w.Senders))
 	for _, s := range w.Senders {
 		actionable := blocks.ValidSenderAddress(s.Address)
 		addr := s.Address
 		if !actionable {
-			// Only an actionable address is a ref, which is never clipped
-			// (at most 254 bytes); any other is display text.
+			// Only an actionable address is a ref, never clipped: at most
+			// 254 bytes that JSON never escapes. Any other is display text.
 			addr = clipJSON(addr, share/4)
 		}
 		link := webLink(s.Permalink)
 		if jsonLen(link) > share/4 {
 			link = ""
 		}
-		left := share - waitingSenderOverhead - jsonLen(addr) - jsonLen(link) - jsonLen(s.At)
-		subject := clipJSON(clipRunes(strings.Join(strings.Fields(s.Subject), " "), WaitingTextRunes), left)
-		senders = append(senders, map[string]any{
+		row := map[string]any{
 			"address":    addr,
 			"actionable": actionable,
 			"open":       s.Open,
 			"today":      s.Today,
-			"subject":    subject,
+			"subject":    "",
 			"at":         s.At,
 			"permalink":  link,
-		})
+		}
+		if jsonSize(row) > share {
+			row["permalink"] = ""
+		}
+		// The empty subject's quotes are already in the row's size.
+		left := share - jsonSize(row) + jsonLen("")
+		row["subject"] = clipJSON(clipRunes(strings.Join(strings.Fields(s.Subject), " "), WaitingTextRunes), left)
+		senders = append(senders, row)
 	}
 	mail := map[string]any{"open": w.Open, "today": w.Today, "senders": w.SenderCount, "top_ten_share": w.TopTenShare}
 	return senders, mail, nil
@@ -348,6 +352,12 @@ func clipRunes(s string, n int) string {
 // jsonLen is s's length as a JSON string (quotes and escapes included).
 func jsonLen(s string) int {
 	data, _ := json.Marshal(s) // a string always marshals
+	return len(data)
+}
+
+// jsonSize is v's length as JSON, as the executor marshals a result.
+func jsonSize(v any) int {
+	data, _ := json.Marshal(v) // the rows hold strings, numbers and booleans only
 	return len(data)
 }
 

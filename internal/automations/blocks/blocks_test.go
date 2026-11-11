@@ -504,6 +504,9 @@ func TestValidSenderAddress(t *testing.T) {
 		// characters are invisible.
 		"a@b\xff": false, "a\xc3@b": false, "a\u00a0b@c": false, "a\u200b@b": false,
 		"\ufeffa@b": false, "a@b\u2028": false, "a@b\u3000": false,
+		// JSON escapes both (\u0026, \\): an actionable address's JSON is
+		// exactly its bytes plus the quotes.
+		"a&b@example.com": false, `a\b@example.com`: false,
 	} {
 		if got := blocks.ValidSenderAddress(s); got != want {
 			t.Errorf("ValidSenderAddress(%q) = %v; want %v", s, got, want)
