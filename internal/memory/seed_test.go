@@ -386,6 +386,33 @@ func TestSeedGmailSenderOutsideWindowSkipped(t *testing.T) {
 	assert.Zero(t, created, "out-of-window sender not seeded")
 }
 
+// TestSeedGmailSenderSkipsOwnSent: the owner's own sent rows (SENT label, or
+// the account's own address) never seed a correspondent, however many there
+// are; a colleague over the threshold still does.
+func TestSeedGmailSenderSkipsOwnSent(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	for i := range gmailSenderMinMessages + 1 {
+		gmailSeedSeq++
+		id := fmt.Sprintf("sent-m%d", gmailSeedSeq)
+		seedGmailMessage(t, d, id, id, "owner@example.com", "Owner", "Subj", "body", recentISO(gmailSeedSeq))
+		_, err := d.Exec(`UPDATE gmail_messages SET labels_json = '["SENT"]' WHERE id = ?`, id)
+		require.NoError(t, err)
+		// The account's own address without the label is own sent mail too.
+		gmailSeedSeq++
+		own := fmt.Sprintf("own-m%d-%d", gmailSeedSeq, i)
+		seedGmailMessage(t, d, own, own, fmt.Sprintf("stub%d@x.com", gmailTestAccountID), "Stub", "Subj", "body", recentISO(gmailSeedSeq))
+	}
+	seedGmailSenderN(t, d, "colleague-a@example.com", "Colleague A", gmailSenderMinMessages)
+
+	created, err := SeedEntities(v, d, seedGmailTestConfig, nil)
+	require.NoError(t, err)
+	assert.Equal(t, 1, created, "only the colleague is seeded")
+	_, err = Resolve(v, d, "colleague-a@example.com")
+	require.NoError(t, err)
+	_, err = Resolve(v, d, "owner@example.com")
+	assert.Error(t, err, "the owner's sent address is not a candidate")
+}
+
 // seedCalendarTestConfig is seedTestConfig with the calendar series source ON.
 var seedCalendarTestConfig = SeedConfig{MinMessages: 3, WindowDays: 30, Calendar: true}
 

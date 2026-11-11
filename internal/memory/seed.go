@@ -478,6 +478,10 @@ func trackerProjectKeys(database *db.DB) ([]string, error) {
 //   - a machine-sender pattern filter (isMachineSender): no-reply@, notifications@,
 //     mailer-daemon@ and friends are dropped no matter how high their volume.
 //
+// Seeding finds correspondents — who wrote to the owner — so the owner's own
+// sent rows (db.GmailOwnSentSQL: the SENT label or the account's own address)
+// are left out; memory extraction still reads them as knowledge.
+//
 // Identity stitching is free (resolved ambiguity, §5A): SeedEntities's
 // LookupMemoryAlias(aliases[0]) idempotency check unifies a sender whose email
 // already aliases a seeded Slack person (seedPeople carries the users.email as
@@ -493,11 +497,12 @@ func seedGmailSenders(database *db.DB, cfg SeedConfig, since float64) ([]seedCan
 		return nil, nil // source dark — seed no senders
 	}
 	rows, err := database.Query(`
-		SELECT lower(from_email) AS email, MAX(from_name) AS name
-		FROM gmail_messages
-		WHERE from_email != '' AND internal_date != ''
-		  AND CAST(strftime('%s', internal_date) AS INTEGER) > ?
-		GROUP BY lower(from_email)
+		SELECT lower(m.from_email) AS email, MAX(m.from_name) AS name
+		FROM gmail_messages m JOIN google_accounts a ON a.id = m.account_id
+		WHERE m.from_email != '' AND m.internal_date != ''
+		  AND CAST(strftime('%s', m.internal_date) AS INTEGER) > ?
+		  AND NOT `+db.GmailOwnSentSQL("m", "a")+`
+		GROUP BY lower(m.from_email)
 		HAVING COUNT(*) >= ?
 		ORDER BY email`, since, gmailSenderMinMessages)
 	if err != nil {

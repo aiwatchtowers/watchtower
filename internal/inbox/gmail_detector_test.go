@@ -188,3 +188,44 @@ func TestDetectGmailAccounts_GmailDisabledAccountSkippedCleanly(t *testing.T) {
 		t.Fatalf("want 0 items, got %d", n)
 	}
 }
+
+// TestDetectGmailAccounts_SkipsOwnSentFromAlias: a SENT-labelled row sent from
+// an alias (not the account address) and addressed to the account itself is
+// the owner's own sent mail and mints nothing; a received row in the same pass
+// still mints its email_received item.
+func TestDetectGmailAccounts_SkipsOwnSentFromAlias(t *testing.T) {
+	database := testDB(t)
+	now := time.Now().UTC()
+	syncedAt := now.Format(time.RFC3339)
+
+	acctID, err := database.CreateGoogleAccount(db.GoogleAccount{Email: "owner@example.com", Label: "acme", GmailEnabled: true})
+	if err != nil {
+		t.Fatalf("seed google account: %v", err)
+	}
+	if err := database.UpsertGmailMessage(acctID, db.GmailMessage{
+		ID: "sent1", ThreadID: "ts", FromEmail: "alias@example.com", Subject: "Note to self",
+		ToJSON: `["owner@example.com"]`, CcJSON: `[]`, LabelsJSON: `["SENT"]`,
+		InternalDate: now.Add(-time.Minute).Format(time.RFC3339), SyncedAt: syncedAt,
+	}); err != nil {
+		t.Fatalf("seed sent row: %v", err)
+	}
+	if err := database.UpsertGmailMessage(acctID, db.GmailMessage{
+		ID: "recv1", ThreadID: "tr", FromEmail: "colleague-a@example.com", Subject: "Hello",
+		ToJSON: `["owner@example.com"]`, CcJSON: `[]`, LabelsJSON: `["INBOX"]`,
+		InternalDate: now.Add(-2 * time.Minute).Format(time.RFC3339), SyncedAt: syncedAt,
+	}); err != nil {
+		t.Fatalf("seed received row: %v", err)
+	}
+
+	n, err := DetectGmailAccounts(context.Background(), database, now.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("want 1 item (the received row only), got %d", n)
+	}
+	received := queryInboxByTrigger(t, database, "email_received")
+	if len(received) != 1 || received[0].ChannelID != db.GmailChannelID(acctID, "tr") {
+		t.Errorf("want one email_received item for the received thread, got %+v", received)
+	}
+}

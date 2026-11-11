@@ -106,18 +106,22 @@ func (db *DB) MailWatermarkSet(provider string, accountID int64) (bool, error) {
 // mailNewsFloorQueries are, per mail event provider, the account's news
 // floor: the later of its created_at (when it was connected) and its newest
 // stored message date. Both are RFC 3339 UTC text, so they compare as text.
+// A Gmail account's own sent rows (GmailOwnSentSQL) are not news, so they
+// neither count nor move the floor.
 var mailNewsFloorQueries = map[string]string{
-	"gmail": `SELECT MAX(a.created_at, COALESCE((SELECT MAX(internal_date) FROM gmail_messages
-            WHERE account_id = a.id), '')) FROM google_accounts a WHERE a.id = ?`,
+	"gmail": `SELECT MAX(a.created_at, COALESCE((SELECT MAX(m.internal_date) FROM gmail_messages m
+            WHERE m.account_id = a.id AND NOT ` + GmailOwnSentSQL("m", "a") + `), '')) FROM google_accounts a WHERE a.id = ?`,
 	"imap": `SELECT MAX(a.created_at, COALESCE((SELECT MAX(internal_date) FROM imap_messages
             WHERE account_id = a.id), '')) FROM email_accounts a WHERE a.id = ?`,
 }
 
 // mailCountQueries count, per mail event provider, an account's stored
-// messages dated after a floor (the (account_id, internal_date) index).
+// messages dated after a floor (the (account_id, internal_date) index),
+// leaving out a Gmail account's own sent rows.
 var mailCountQueries = map[string]string{
-	"gmail": `SELECT COUNT(*) FROM gmail_messages WHERE account_id = ? AND internal_date > ?`,
-	"imap":  `SELECT COUNT(*) FROM imap_messages WHERE account_id = ? AND internal_date > ?`,
+	"gmail": `SELECT COUNT(*) FROM gmail_messages m JOIN google_accounts a ON a.id = m.account_id
+            WHERE m.account_id = ? AND m.internal_date > ? AND NOT ` + GmailOwnSentSQL("m", "a"),
+	"imap": `SELECT COUNT(*) FROM imap_messages WHERE account_id = ? AND internal_date > ?`,
 }
 
 // MailNewsFloor returns the date a mail account's message must be after to

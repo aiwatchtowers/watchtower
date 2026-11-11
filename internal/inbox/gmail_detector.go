@@ -20,9 +20,9 @@ import (
 // inbox watermark (INBOX-09), and this is exactly the case where mail is
 // sitting in gmail_messages unexamined — advancing over it would skip it
 // forever once the email does resolve. Trigger type is email_received when
-// the account's own email is a To recipient, otherwise email_cc (Cc only); a
-// message FROM the account's own address (sent by the owner, not received)
-// mints nothing. Each message is deduplicated on (channel_id, message_id,
+// the account's own email is a To recipient, otherwise email_cc (Cc only); the
+// owner's own sent mail (db.GmailOwnSent: the SENT label, or the account's own
+// address as sender — an alias included through the label) mints nothing. Each message is deduplicated on (channel_id, message_id,
 // trigger_type) so repeated calls are idempotent.
 func DetectGmailAccounts(ctx context.Context, database *db.DB, sinceTS time.Time) (int, error) {
 	accounts, err := database.ListGoogleAccounts()
@@ -59,8 +59,8 @@ func detectGmailAccount(database *db.DB, acct db.GoogleAccount, sinceISO string)
 
 	created := 0
 	for _, m := range msgs {
-		if strings.EqualFold(m.FromEmail, acct.Email) {
-			continue // sent by this account's own owner, not received
+		if db.GmailOwnSent(m.LabelsJSON, m.FromEmail, acct.Email) {
+			continue // the owner's own sent mail (SENT label or own address), not received
 		}
 
 		var to, cc []string

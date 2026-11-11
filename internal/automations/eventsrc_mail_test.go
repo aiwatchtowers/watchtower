@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"testing"
+	"time"
 
 	"watchtower/internal/db"
 )
@@ -181,4 +182,25 @@ func mailContentEvents(t *testing.T) []Event {
 		t.Fatalf("content fixtures published %d mail events, want 2", len(out))
 	}
 	return out
+}
+
+// The owner's own sent Gmail row dated after the floor is not news; a received
+// row in a later cycle still is.
+func TestMailSource_OwnSentIsNotNews(t *testing.T) {
+	d, gmailID, _ := mailFixture(t)
+	markSynced(t, d, "gmail", gmailID)
+	now := time.Now().UTC().Truncate(time.Second)
+	store := func(id, from, labels string, date time.Time) {
+		must(t, d.UpsertGmailMessage(gmailID, db.GmailMessage{ID: id, FromEmail: from, LabelsJSON: labels,
+			InternalDate: date.Format(time.RFC3339)}))
+	}
+
+	got := mailEvents(t, d, "gmail", gmailID, func() { store("sent", "alias@example.com", `["SENT"]`, now.Add(-time.Hour)) })
+	if len(got) != 0 {
+		t.Errorf("own sent row published %+v", got)
+	}
+	got = mailEvents(t, d, "gmail", gmailID, func() { store("recv", "colleague-a@example.com", `["INBOX"]`, now) })
+	if n := eventCount(t, got); n != 1 {
+		t.Errorf("received row: count %v, want 1", n)
+	}
 }
