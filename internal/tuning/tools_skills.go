@@ -44,11 +44,24 @@ type skillKind struct {
 	repoTop    string
 }
 
-var (
-	claudeSkills = skillKind{agentkind.Claude, coach.DestClaudeSkillUser, coach.DestRepoClaudeSkill, ".claude"}
-	codexSkills  = skillKind{agentkind.Codex, coach.DestCodexSkillUser, coach.DestRepoCodexSkill, ".agents"}
-	skillKinds   = []skillKind{claudeSkills, codexSkills}
-)
+// skillKinds has a row for every agentkind (TestSkillKinds_EveryAgent).
+var skillKinds = map[agentkind.Kind]skillKind{
+	agentkind.Claude: {agentkind.Claude, coach.DestClaudeSkillUser, coach.DestRepoClaudeSkill, ".claude"},
+	agentkind.Codex:  {agentkind.Codex, coach.DestCodexSkillUser, coach.DestRepoCodexSkill, ".agents"},
+}
+
+// unreadableSkills is the note of a skills folder that exists but could not
+// be listed: never an all-clear.
+const unreadableSkills = "this skills folder could not be read (a symlink, or no permission): its skills are not listed"
+
+// codexTwoFolders is the note of a Codex skill in both folders when the
+// coach's own sentence is not at hand (a copy went between the listing and
+// the read).
+const codexTwoFolders = "Codex sees this skill in two folders — remove one copy first."
+
+// repoFolderGone is the note and the row error of a workbench folder that
+// is gone (or is not a folder).
+const repoFolderGone = "workbench folder not found"
 
 // skillTools are list_skills, get_skill, get_agent_instructions and
 // list_coach_proposals.
@@ -116,31 +129,45 @@ type skillText struct {
 }
 
 // listSkills is list_skills: home skills, pack skills, then the workbench
-// folder's skills (when the chat has a workbench).
+// folder's skills (when the chat has a workbench). A skills folder that
+// exists but cannot be listed, and a workbench folder that is gone, are rows
+// with a note and no name: never an empty all-clear.
 func listSkills(d *db.DB, deps Deps, b tools.Binding, wbArg int64) ([]skillRow, error) {
-	env := deps.CoachEnv()
-	if env.Home == "" {
-		return nil, errors.New("no home folder")
+	env, err := deps.coachEnv()
+	if err != nil {
+		return nil, err
 	}
+	claude, codex := skillKinds[agentkind.Claude], skillKinds[agentkind.Codex]
 	out := []skillRow{}
-	for _, name := range skillNames(filepath.Join(env.Home, ".claude"), "skills") {
-		out = append(out, skillRow{Agent: string(claudeSkills.agent), Scope: scopeHome, Name: name,
-			Path: homePath(env.Home, coach.ClaudeSkillPath(env, name)), Destination: coach.DestClaudeSkillUser})
+	unreadable := func(k skillKind, scope, path string) {
+		out = append(out, skillRow{Agent: string(k.agent), Scope: scope, Path: path, Note: unreadableSkills})
 	}
-	agents, codexHome := filepath.Join(env.Home, ".agents"), codexHomeOf(env.Home, env.CodexHome)
+	claudeTop := filepath.Join(env.Home, ".claude")
+	names, ok := skillNames(claudeTop, "skills")
+	if !ok {
+		unreadable(claude, scopeHome, homePath(env.Home, filepath.Join(claudeTop, "skills")))
+	}
+	for _, name := range names {
+		out = append(out, skillRow{Agent: string(claude.agent), Scope: scopeHome, Name: name,
+			Path: homePath(env.Home, coach.ClaudeSkillPath(env, name)), Destination: claude.home})
+	}
 	in := map[string][]string{}
-	for _, top := range []string{agents, codexHome} {
-		for _, name := range skillNames(top, "skills") {
+	for _, top := range []string{filepath.Join(env.Home, ".agents"), codexHomeOf(env.Home, env.CodexHome)} {
+		names, ok := skillNames(top, "skills")
+		if !ok {
+			unreadable(codex, scopeHome, homePath(env.Home, filepath.Join(top, "skills")))
+		}
+		for _, name := range names {
 			in[name] = append(in[name], filepath.Join(top, "skills", name, "SKILL.md"))
 		}
 	}
 	for _, name := range slices.Sorted(maps.Keys(in)) {
-		row := skillRow{Agent: string(codexSkills.agent), Scope: scopeHome, Name: name, Destination: coach.DestCodexSkillUser}
+		row := skillRow{Agent: string(codex.agent), Scope: scopeHome, Name: name, Destination: codex.home}
 		if len(in[name]) > 1 {
 			// Codex loads both copies; the coach refuses to edit either (ask #1202).
-			row.Destination = ""
-			if _, err := coach.ReadText(d, env, coach.DestCodexSkillUser, 0, "", name); err != nil {
-				row.Note = err.Error()
+			row.Destination, row.Note = "", codexTwoFolders
+			if _, err := coach.ReadText(d, env, codex.home, 0, "", name); err != nil {
+				row.Note = err.Error() // the coach's sentence, naming the real Codex home
 			}
 		}
 		for _, p := range in[name] {
@@ -167,11 +194,19 @@ func listSkills(d *db.DB, deps Deps, b tools.Binding, wbArg int64) ([]skillRow, 
 	if err != nil {
 		return nil, err
 	}
-	for _, k := range skillKinds {
-		if !realDir(folder, k.repoTop) {
+	for _, k := range []skillKind{claude, codex} {
+		sub := filepath.Join(k.repoTop, "skills")
+		if fi, err := os.Lstat(folder); err != nil || !fi.IsDir() {
+			out = append(out, skillRow{Agent: string(k.agent), Scope: scopeWorkbench, Path: filepath.ToSlash(sub),
+				Note: repoFolderGone})
 			continue
 		}
-		for _, name := range skillNames(filepath.Join(folder, k.repoTop), "skills") {
+		names, ok := skillNames(folder, sub)
+		if !ok {
+			unreadable(k, scopeWorkbench, filepath.ToSlash(sub))
+		}
+		for _, name := range names {
+			// name passed skillNames' name check, so the path exists.
 			rel, _ := coach.RepoRelPath(k.repo, name)
 			out = append(out, skillRow{Agent: string(k.agent), Scope: scopeWorkbench, Name: name, Path: rel, Destination: k.repo})
 		}
@@ -179,46 +214,45 @@ func listSkills(d *db.DB, deps Deps, b tools.Binding, wbArg int64) ([]skillRow, 
 	return out, nil
 }
 
-// skillNames is the skill folders in top/sub, sorted: valid skill names that
+// skillNames is the skill folders in root/sub, sorted: valid skill names that
 // are real folders (never a symlink) holding a SKILL.md entry, minus
-// Watchtower's pack skills (listed once, as the pack). top itself may be a
-// symlink (a dotfiles home, D71); sub must be a real folder. A folder that
-// cannot be read lists nothing: get_skill reports why.
-func skillNames(top, sub string) []string {
-	if fi, err := os.Stat(top); err != nil || !fi.IsDir() || !realDir(top, sub) {
-		return nil
+// Watchtower's pack skills (listed once, as the pack). root itself may be a
+// symlink (a dotfiles home, D71); no folder of sub may be. A missing folder
+// is no skills; ok is false when a folder exists but cannot be listed.
+func skillNames(root, sub string) (names []string, ok bool) {
+	cur := root
+	for i, part := range append([]string{""}, strings.Split(sub, string(filepath.Separator))...) {
+		var fi os.FileInfo
+		var err error
+		if i == 0 {
+			fi, err = os.Stat(root)
+		} else {
+			cur = filepath.Join(cur, part)
+			fi, err = os.Lstat(cur)
+		}
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, true
+		}
+		if err != nil || !fi.IsDir() {
+			return nil, false
+		}
 	}
-	entries, err := os.ReadDir(filepath.Join(top, sub))
+	entries, err := os.ReadDir(cur)
 	if err != nil {
-		return nil
+		return nil, false
 	}
 	pack := devpack.PackSkillNames()
-	var out []string
 	for _, e := range entries {
 		name := e.Name()
 		// RepoRelPath accepts exactly the coach's skill names.
-		if _, ok := coach.RepoRelPath(coach.DestRepoClaudeSkill, name); !ok || !e.IsDir() || slices.Contains(pack, name) {
+		if _, valid := coach.RepoRelPath(coach.DestRepoClaudeSkill, name); !valid || !e.IsDir() || slices.Contains(pack, name) {
 			continue
 		}
-		if _, err := os.Lstat(filepath.Join(top, sub, name, "SKILL.md")); err == nil {
-			out = append(out, name)
+		if _, err := os.Lstat(filepath.Join(cur, name, "SKILL.md")); err == nil {
+			names = append(names, name)
 		}
 	}
-	return out
-}
-
-// realDir reports whether root/rel is a folder with no symlink among rel's
-// components (root itself is resolved by the OS).
-func realDir(root, rel string) bool {
-	cur := root
-	for _, part := range strings.Split(rel, string(filepath.Separator)) {
-		cur = filepath.Join(cur, part)
-		fi, err := os.Lstat(cur)
-		if err != nil || !fi.IsDir() {
-			return false
-		}
-	}
-	return true
+	return names, true
 }
 
 // getSkill is get_skill.
@@ -230,7 +264,7 @@ func getSkill(d *db.DB, deps Deps, b tools.Binding, a getSkillArgs) (*skillText,
 	case a.Agent != agentWatchtower && !agentkind.IsAgent(a.Agent):
 		return nil, &tools.ValidationError{Msg: fmt.Sprintf("invalid agent %q: must be claude, codex or watchtower", a.Agent)}
 	case a.Scope != scopeHome && a.Scope != scopeWorkbench && a.Scope != scopePack:
-		return nil, &tools.ValidationError{Msg: fmt.Sprintf("invalid scope %q: must be home or workbench", a.Scope)}
+		return nil, &tools.ValidationError{Msg: fmt.Sprintf("invalid scope %q: must be home, workbench or (agent watchtower) pack", a.Scope)}
 	}
 	if _, ok := coach.RepoRelPath(coach.DestRepoClaudeSkill, a.Name); !ok {
 		return nil, &tools.ValidationError{Msg: fmt.Sprintf("%q is not a skill name", a.Name)}
@@ -247,13 +281,17 @@ func getSkill(d *db.DB, deps Deps, b tools.Binding, a getSkillArgs) (*skillText,
 	if slices.Contains(devpack.PackSkillNames(), a.Name) {
 		return nil, &tools.ValidationError{Msg: a.Name + " is a Watchtower pack skill: read it with agent watchtower"}
 	}
-	kind, _ := agentkind.Parse(a.Agent)
-	k := skillKinds[slices.IndexFunc(skillKinds, func(k skillKind) bool { return k.agent == kind })]
-	env := deps.CoachEnv()
+	k, ok := skillKinds[agentkind.Kind(a.Agent)]
+	if !ok {
+		return nil, &tools.ValidationError{Msg: fmt.Sprintf("agent %s has no skill folders", a.Agent)}
+	}
+	env, err := deps.coachEnv()
+	if err != nil {
+		return nil, err
+	}
 	row := skillRow{Agent: a.Agent, Scope: a.Scope, Name: a.Name, Destination: k.home}
 	var wb int64
 	if a.Scope == scopeWorkbench {
-		var err error
 		if wb, err = workbenchOf(d, b, a.WorkbenchID); err != nil {
 			return nil, err
 		}
@@ -339,9 +377,9 @@ const (
 // agentInstructions is get_agent_instructions: the four home texts, then the
 // workbench folder's three (when the chat has a workbench).
 func agentInstructions(d *db.DB, deps Deps, b tools.Binding, wbArg int64) ([]instructionRow, error) {
-	env := deps.CoachEnv()
-	if env.Home == "" {
-		return nil, errors.New("no home folder")
+	env, err := deps.coachEnv()
+	if err != nil {
+		return nil, err
 	}
 	codexHome := codexHomeOf(env.Home, env.CodexHome)
 	out := []instructionRow{}
@@ -377,7 +415,7 @@ func agentInstructions(d *db.DB, deps Deps, b tools.Binding, wbArg int64) ([]ins
 		rel, _ := coach.RepoRelPath(dest, "")
 		row := instructionRow{Destination: dest, Path: rel}
 		if gone {
-			row.Error = "workbench folder not found"
+			row.Error = repoFolderGone
 			out = append(out, row)
 			continue
 		}
@@ -387,7 +425,8 @@ func agentInstructions(d *db.DB, deps Deps, b tools.Binding, wbArg int64) ([]ins
 			st, err := env.RepoState(folder, rel)
 			switch {
 			case err != nil:
-				row.Error = "git state not read: " + err.Error()
+				// git's own words may name folders (FILES-01).
+				row.Error = "the git state of " + rel + " could not be read"
 			case !st.Git:
 				row.Git = gitNotGit
 			case st.Dirty:
@@ -401,10 +440,10 @@ func agentInstructions(d *db.DB, deps Deps, b tools.Binding, wbArg int64) ([]ins
 	return out, nil
 }
 
-// readInto fills row from the file at path: a missing file is an empty text
-// with the destination's budget for an empty text (the missing rules file and
-// workflow.md are errors to the coach's reader, but not to this list); an
-// existing file the reader refuses carries the reason.
+// readInto fills row from the file at path: a file the coach's reader calls
+// missing (the rules file, workflow.md) is an empty text with the budget of
+// an empty text, as AGENTS.md and CLAUDE.md read when absent; a refused read
+// (a symlink anywhere below the root, too large, not text) carries the reason.
 func readInto(row *instructionRow, path string, read func() (coach.CurrentText, error)) {
 	_, err := os.Lstat(path)
 	row.Exists = !errors.Is(err, fs.ErrNotExist)
@@ -412,8 +451,8 @@ func readInto(row *instructionRow, path string, read func() (coach.CurrentText, 
 	switch {
 	case err == nil:
 		row.Text, row.BudgetRunes = cur.Text, cur.Budget
-	case !row.Exists:
-		row.BudgetRunes = coach.BudgetOf(row.Destination, "")
+	case coach.IsMissing(err):
+		row.Exists, row.BudgetRunes = false, coach.BudgetOf(row.Destination, "")
 	default:
 		row.Error = err.Error()
 	}
@@ -469,7 +508,8 @@ func codexHomeOf(home, codexHome string) string {
 // homePath shows p as "~/…" when it is under home, else as it is (a
 // $CODEX_HOME elsewhere).
 func homePath(home, p string) string {
-	if rel, err := filepath.Rel(home, p); err == nil && rel != "." && !strings.HasPrefix(rel, "..") {
+	if rel, err := filepath.Rel(home, p); err == nil && rel != "." && rel != ".." &&
+		!strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "~/" + filepath.ToSlash(rel)
 	}
 	return p

@@ -25,9 +25,9 @@ const maxReportDays = 90
 var ErrNotFound = errors.New("not found")
 
 // ReadTools are the tuning chat's analytics, usage, prompt, skill,
-// instruction and proposal reads. Every
-// one returns the owner's content, so every one is CompanyData and counts
-// against the read budget (READ-01); none writes anything.
+// instruction and proposal reads. Every one returns the owner's content, so
+// every one is CompanyData and counts against the read budget (READ-01);
+// none writes anything.
 func ReadTools(deps Deps) []*tools.Tool {
 	return append([]*tools.Tool{
 		readTool[reportArgs]("get_agent_report",

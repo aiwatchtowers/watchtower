@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -14,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/agentkind"
 	"watchtower/internal/coach"
 	"watchtower/internal/db"
 	"watchtower/internal/devpack"
@@ -105,10 +107,10 @@ func TestGetSkill_Refusals(t *testing.T) {
 		setup func(t *testing.T, skillDir string)
 	}{
 		{"symlinked SKILL.md", func(t *testing.T, skillDir string) {
-			real := filepath.Join(t.TempDir(), "real.md")
-			put(t, real, "Real.\n")
+			target := filepath.Join(t.TempDir(), "target.md")
+			put(t, target, "Real.\n")
 			require.NoError(t, os.MkdirAll(skillDir, 0o755))
-			require.NoError(t, os.Symlink(real, filepath.Join(skillDir, "SKILL.md")))
+			require.NoError(t, os.Symlink(target, filepath.Join(skillDir, "SKILL.md")))
 		}},
 		{"too large", func(t *testing.T, skillDir string) {
 			put(t, filepath.Join(skillDir, "SKILL.md"), strings.Repeat("a", 300<<10))
@@ -163,9 +165,9 @@ func TestGetSkill_ClaudeHome(t *testing.T) {
 // D71: the home folder itself may be a symlink (a dotfiles setup).
 func TestSkills_SymlinkedHomeFolder(t *testing.T) {
 	f := newFixture(t)
-	real := t.TempDir()
-	put(t, filepath.Join(real, "skills", "acme", "SKILL.md"), "Linked.\n")
-	require.NoError(t, os.Symlink(real, filepath.Join(f.home, ".claude")))
+	target := t.TempDir()
+	put(t, filepath.Join(target, "skills", "acme", "SKILL.md"), "Linked.\n")
+	require.NoError(t, os.Symlink(target, filepath.Join(f.home, ".claude")))
 	out, err := f.call(t, "get_skill", `{"agent":"claude","name":"acme"}`)
 	require.NoError(t, err)
 	assert.Equal(t, "Linked.\n", out["text"])
@@ -318,10 +320,10 @@ func TestGetAgentInstructions_HomeFiles(t *testing.T) {
 
 func TestGetAgentInstructions_UnsafeFileIsARowError(t *testing.T) {
 	f := newFixture(t)
-	real := filepath.Join(t.TempDir(), "real.md")
-	put(t, real, "Real.\n")
+	target := filepath.Join(t.TempDir(), "target.md")
+	put(t, target, "Real.\n")
 	require.NoError(t, os.MkdirAll(filepath.Join(f.home, ".claude"), 0o755))
-	require.NoError(t, os.Symlink(real, filepath.Join(f.home, ".claude", "CLAUDE.md")))
+	require.NoError(t, os.Symlink(target, filepath.Join(f.home, ".claude", "CLAUDE.md")))
 	rows := f.rows(t, "get_agent_instructions", `{}`)
 	r := find(rows, map[string]any{"destination": coach.DestClaudeMDUser})
 	require.NotNil(t, r)
@@ -441,4 +443,88 @@ func TestWorkbenchFiles_FolderGone(t *testing.T) {
 	assert.Nil(t, md["git"])
 	// The home rows are still read.
 	assert.NotNil(t, find(rows, map[string]any{"destination": coach.DestClaudeMDUser}))
+}
+
+func TestSkillKinds_EveryAgent(t *testing.T) {
+	for _, k := range agentkind.All() {
+		_, ok := skillKinds[k]
+		assert.True(t, ok, "agent %s has no skill folders", k)
+	}
+}
+
+func TestSkillTools_CoachEnvNotWired(t *testing.T) {
+	f := newFixture(t)
+	reg := tools.New(f.d)
+	for _, tl := range ReadTools(Deps{}) {
+		require.NoError(t, reg.Register(tl))
+	}
+	for _, name := range []string{"list_skills", "get_agent_instructions"} {
+		_, err := reg.CallRead(context.Background(), name, json.RawMessage(`{}`), f.binding(fmt.Sprint(f.wb)))
+		require.Error(t, err, name)
+		assert.Contains(t, err.Error(), "not wired", name)
+	}
+	_, err := reg.CallRead(context.Background(), "get_skill", json.RawMessage(`{"agent":"claude","name":"acme"}`), f.binding(fmt.Sprint(f.wb)))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not wired")
+}
+
+// A skills folder that exists but cannot be listed is a note row, never an
+// empty all-clear.
+func TestListSkills_UnreadableFolderIsANote(t *testing.T) {
+	f := newFixture(t)
+	target := t.TempDir()
+	put(t, filepath.Join(target, "acme", "SKILL.md"), "Linked.\n")
+	require.NoError(t, os.MkdirAll(filepath.Join(f.home, ".claude"), 0o755))
+	require.NoError(t, os.Symlink(target, filepath.Join(f.home, ".claude", "skills")))
+	rows := f.rows(t, "list_skills", `{}`)
+	assert.Nil(t, find(rows, map[string]any{"name": "acme"}))
+	note := find(rows, map[string]any{"agent": "claude", "scope": "home", "path": "~/.claude/skills"})
+	require.NotNil(t, note)
+	assert.Equal(t, unreadableSkills, note["note"])
+	assert.Nil(t, note["destination"])
+}
+
+func TestListSkills_WorkbenchFolderGone(t *testing.T) {
+	f := newFixture(t)
+	var err error
+	f.wb, err = f.d.CreateWorkbench("gone", filepath.Join(t.TempDir(), "gone"))
+	require.NoError(t, err)
+	rows := f.rows(t, "list_skills", `{}`)
+	for _, path := range []string{".claude/skills", ".agents/skills"} {
+		r := find(rows, map[string]any{"scope": "workbench", "path": path})
+		require.NotNil(t, r, path)
+		assert.Equal(t, repoFolderGone, r["note"], path)
+	}
+}
+
+// git's own error text may name folders: the row says which file, never why.
+func TestGetAgentInstructions_GitErrorNamesNoFolder(t *testing.T) {
+	f := newFixture(t)
+	dir := f.repoWorkbench(t, map[string]string{"CLAUDE.md": "Run tests.\n"})
+	reg := tools.New(f.d)
+	deps := Deps{CoachEnv: func() coach.Env {
+		return coach.Env{Home: f.home, RepoState: func(folder, _ string) (coach.RepoFileState, error) {
+			return coach.RepoFileState{}, errors.New("git failed in " + folder)
+		}}
+	}}
+	for _, tl := range ReadTools(deps) {
+		require.NoError(t, reg.Register(tl))
+	}
+	res, err := reg.CallRead(context.Background(), "get_agent_instructions", json.RawMessage(`{}`), f.binding(fmt.Sprint(f.wb)))
+	require.NoError(t, err)
+	raw, err := json.Marshal(res)
+	require.NoError(t, err)
+	assert.NotContains(t, string(raw), dir)
+	assert.Contains(t, string(raw), "the git state of CLAUDE.md could not be read")
+}
+
+// A symlinked folder above a missing file is a refusal, not "absent".
+func TestGetAgentInstructions_SymlinkedFolderMissingFile(t *testing.T) {
+	f := newFixture(t)
+	dir := f.repoWorkbench(t, map[string]string{"CLAUDE.md": "Run tests.\n"})
+	require.NoError(t, os.Symlink(t.TempDir(), filepath.Join(dir, ".watchtower")))
+	wf := find(f.rows(t, "get_agent_instructions", `{}`), map[string]any{"destination": coach.DestRepoWorkflow})
+	require.NotNil(t, wf)
+	assert.NotEmpty(t, wf["error"])
+	assert.Nil(t, wf["git"])
 }

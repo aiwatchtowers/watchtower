@@ -6,6 +6,7 @@ package tuning
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"watchtower/internal/coach"
@@ -44,4 +45,17 @@ type Deps struct {
 	// read-only `git status`). The skill and instruction reads use it, and
 	// the proposal tool passes it to coach.ValidateChatProposal.
 	CoachEnv func() coach.Env
+}
+
+// coachEnv is deps.CoachEnv(), refused when it is not wired or has no home
+// folder.
+func (deps Deps) coachEnv() (coach.Env, error) {
+	if deps.CoachEnv == nil {
+		return coach.Env{}, errors.New("the coach environment is not wired")
+	}
+	env := deps.CoachEnv()
+	if env.Home == "" {
+		return coach.Env{}, errors.New("no home folder")
+	}
+	return env, nil
 }

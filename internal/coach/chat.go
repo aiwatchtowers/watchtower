@@ -267,3 +267,11 @@ func ReadText(d *db.DB, env Env, dest string, wb int64, prompt, skill string) (C
 	a := &Applier{DB: d, Home: env.Home, CodexHome: env.CodexHome, RepoState: env.RepoState}
 	return a.readCurrent(db.CoachProposal{Destination: dest, WorkbenchID: wb, PromptID: prompt, Skill: skill})
 }
+
+// IsMissing reports whether a ReadText error only says the destination's
+// file does not exist (a skill, the Codex rules file, workflow.md): a reader
+// may show such a file as absent. A refused read (a symlink, too large, not
+// text) is not missing.
+func IsMissing(err error) bool {
+	return errors.Is(err, errSkillNotFound) || errors.Is(err, errCodexRulesMissing) || errors.Is(err, errWorkflowNotFound)
+}

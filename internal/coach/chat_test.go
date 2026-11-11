@@ -311,6 +311,22 @@ func TestReadText_ReadsTheDestination(t *testing.T) {
 	require.ErrorIs(t, err, errSkillNotFound)
 }
 
+func TestIsMissing(t *testing.T) {
+	d := openDBs(t)
+	env, _ := chatEnv(t, d)
+	_, err := ReadText(d.DB, env, DestClaudeSkillUser, 0, "", "gone")
+	assert.True(t, IsMissing(err))
+	_, err = ReadText(d.DB, Env{Home: t.TempDir()}, DestCodexRulesAllow, 0, "", "")
+	assert.True(t, IsMissing(err), "no rules file")
+	target := ClaudeSkillPath(env, "a")
+	require.NoError(t, os.MkdirAll(filepath.Dir(ClaudeSkillPath(env, "link")), 0o700))
+	require.NoError(t, os.Symlink(target, ClaudeSkillPath(env, "link")))
+	_, err = ReadText(d.DB, env, DestClaudeSkillUser, 0, "", "link")
+	require.Error(t, err)
+	assert.False(t, IsMissing(err), "a refused read is not missing")
+	assert.False(t, IsMissing(nil))
+}
+
 func TestValidateChatProposal_UnreadableTexts(t *testing.T) {
 	d := openDBs(t)
 	env, _ := chatEnv(t, d)
