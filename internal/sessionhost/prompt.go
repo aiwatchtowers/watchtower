@@ -32,19 +32,26 @@ type promptState struct {
 // ownerInput feeds one chunk of the owner's typing (an attached client's
 // Input; InputTo never comes here) by
 // TerminalCenter.ownerInput's rule: input while a permission dialog is up
-// changes nothing; a submitting Return (IsSubmit) empties the prompt; any
-// other input leaves a draft.
+// changes nothing; a submitting Return (IsSubmit) empties the prompt; a key
+// that puts no text in the prompt (IsNonTextKey) leaves it as it was, except
+// during a line's pause; any other input leaves a draft.
 func (p *promptState) ownerInput(b []byte, prof Profile) {
 	if len(b) == 0 || p.dialog {
 		return
 	}
-	if IsSubmit(b, p.backslash, prof) {
+	switch {
+	case IsSubmit(b, p.backslash, prof):
 		p.draft = false
 		p.leftTyped = false
 		if p.pendingReturn {
 			p.ownerReturnInPause = true
 		}
-	} else {
+	case IsNonTextKey(b) && !p.pendingReturn:
+		// Esc, Shift+Tab or Ctrl+C typed no text: the prompt holds what it
+		// held (and `\` stays pending, as EndsAfterBackslash reads them).
+	default:
+		// During a pause even those keys count: Ctrl+C or a double Esc may have
+		// cleared the line waiting for its Return.
 		p.draft = true
 	}
 	p.backslash = EndsAfterBackslash(b, p.backslash)

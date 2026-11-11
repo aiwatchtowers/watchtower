@@ -1295,6 +1295,70 @@ final class TerminalCenterTests: XCTestCase {
         XCTAssertEqual(afterText, .submitted, "a backslash followed by text no longer escapes the Return")
     }
 
+    /// PROJ-12 (#1748, ask #1256): the owner's Esc (interrupting the agent),
+    /// Shift+Tab (Claude Code's mode cycle) or Ctrl+C typed no text, so the
+    /// next answer still gets its own Return; a draft or a line left typed
+    /// before the key still holds it; after `\` the Return stays a line
+    /// break; during a line's pause the key is no owner Return and leaves
+    /// the line typed (Ctrl+C or Esc Esc may have cleared it). Esc then a
+    /// byte (Option+key) and the cursor keys stay drafts. Twin of Go
+    /// `TestProj12_NonTextKeysKeepTheDraftState` /
+    /// `TestProj12_NonTextKeysKeepTheAnswersReturn`.
+    func testProj12_NonTextKeysKeepTheAnswersReturn() async throws {
+        let keys: [(String, [UInt8])] = [("Esc", [0x1B]), ("Shift+Tab", [0x1B, 0x5B, 0x5A]), ("Ctrl+C", [0x03])]
+        for (name, key) in keys {
+            XCTAssertTrue(TerminalCenter.isNonTextKey(key), name)
+            sessions = []
+            let center = makeCenter(v1Host: true)
+            let s = try row()
+            center.start(s, fresh: true)
+
+            sessions[0].onOwnerInput?(key)
+            XCTAssertFalse(center.promptHoldsText(s.id), "\(name) alone left a draft")
+            let alone = await center.deliver("x", sessionID: s.id) { true }
+            XCTAssertEqual(alone, .submitted, "\(name) alone")
+            XCTAssertEqual(sessions[0].inputs.last, [0x0D], "\(name): the answer's Return")
+
+            sessions[0].onOwnerInput?(Array("half".utf8))
+            sessions[0].onOwnerInput?(key)
+            let overDraft = await center.deliver("y", sessionID: s.id) { true }
+            XCTAssertEqual(overDraft, .pasted, "\(name) cleared the owner's draft")
+            sessions[0].onOwnerInput?(key)
+            let overLeftTyped = await center.deliver("z", sessionID: s.id) { true }
+            XCTAssertEqual(overLeftTyped, .pasted, "\(name) cleared a line left typed")
+            sessions[0].onOwnerInput?([0x0D])
+
+            sessions[0].onOwnerInput?(Array("a\\".utf8))
+            sessions[0].onOwnerInput?(key)
+            sessions[0].onOwnerInput?([0x0D])
+            XCTAssertTrue(center.promptHoldsText(s.id), "`\\`, \(name), Return read as a submit")
+            sessions[0].onOwnerInput?(Array("b\r".utf8))
+
+            onSleep = { [weak self] in self?.sessions[0].onOwnerInput?(key) }
+            let before = sessions[0].inputs.count
+            let duringPause = await center.deliver("w", sessionID: s.id) { true }
+            onSleep = nil
+            XCTAssertEqual(duringPause, .pasted, "\(name) during the pause")
+            XCTAssertEqual(Array(sessions[0].inputs.dropFirst(before)), [bracketedPasteBytes("w")], "\(name): no Return of ours")
+        }
+
+        let drafts: [(String, [UInt8])] = [
+            ("Option+a (ESC a)", Array("\u{1B}a".utf8)),
+            ("Up arrow", Array("\u{1B}[A".utf8)),
+            ("Esc Esc in one chunk", [0x1B, 0x1B]),
+            ("Ctrl+C after text", Array("a".utf8) + [0x03])
+        ]
+        for (name, bytes) in drafts {
+            XCTAssertFalse(TerminalCenter.isNonTextKey(bytes), name)
+            sessions = []
+            let center = makeCenter(v1Host: true)
+            let s = try row()
+            center.start(s, fresh: true)
+            sessions[0].onOwnerInput?(bytes)
+            XCTAssertTrue(center.promptHoldsText(s.id), "\(name) left no draft")
+        }
+    }
+
     /// PROJ-12: after a failed state read the app does not know whether a
     /// permission prompt is on screen — no Return.
     func testAFailedRefreshAfterThePauseStopsTheReturn() async throws {
