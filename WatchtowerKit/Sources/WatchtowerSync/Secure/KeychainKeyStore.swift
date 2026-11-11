@@ -37,6 +37,17 @@ public final class KeychainPhoneKeyStore: PhoneKeyStore, @unchecked Sendable {
         try put(data, account, access, useAlertGroup: useAlertGroup)
     }
 
+    /// A JSON item is compared by value, not by bytes: `JSONEncoder` does not fix the order of an object's keys, so
+    /// two encodings of one value can differ and a byte compare would rewrite an unchanged item. An item that does
+    /// not decode is rewritten.
+    private func putIfChanged<Value: Codable & Equatable>(
+        _ value: Value, _ account: String, _ access: KeyAccess, useAlertGroup: Bool = false
+    ) throws {
+        if let stored = try backend.read(account: account, group: useAlertGroup ? alertGroup : privateGroup),
+           (try? JSONDecoder().decode(Value.self, from: stored)) == value { return }
+        try put(try JSONEncoder().encode(value), account, access, useAlertGroup: useAlertGroup)
+    }
+
     public func identity() throws -> DeviceIdentityKeys {
         try lock.withLock {
             let sigData = try backend.read(account: "identity.sig", group: privateGroup)
@@ -146,9 +157,9 @@ public final class KeychainPhoneKeyStore: PhoneKeyStore, @unchecked Sendable {
         let alert = AlertMaterial(
             epochs: trimmed.epochs.map { EpochKeys(epoch: $0.epoch, dataKey: Data(), alertKey: $0.alertKey) },
             hubSigningKey: keys.hubSigningKey)
-        try putIfChanged(try JSONEncoder().encode(trimmed), "hub.\(keys.hubID)", .whenUnlocked)
+        try putIfChanged(trimmed, "hub.\(keys.hubID)", .whenUnlocked)
         try putIfChanged(keys.hubSigningKey, "hubpub.\(keys.hubID)", .afterFirstUnlock)
-        try putIfChanged(try JSONEncoder().encode(alert), "alert.\(keys.hubID)", .afterFirstUnlock, useAlertGroup: true)
+        try putIfChanged(alert, "alert.\(keys.hubID)", .afterFirstUnlock, useAlertGroup: true)
         return trimmed
     }
 
