@@ -2938,3 +2938,12 @@ Entry format:
 - weak-dimension: 7. A timing repro with `Thread.sleep` "red without, green with" on one machine was offered as proof. Four lanes doubted it would reproduce on CI.
 - rule-gap: the existing "a test never puts a window on screen" rule (review-rules Tests) worked. It was raised by 4 of 5 lanes. Candidate addition: *an AppKit/SwiftUI glitch fix tests the corrective write directly with a planted bad state; a framework-animation repro that needs an on-screen window or wall-clock sleeps stays a manual check in the PR.*
 - outcome: TBD
+
+## 2026-11-11 — fix/1745-bridge-cloudkit-limits (PR #834: `CloudKitBridgeCloud` splits a frame's saves/deletes into ≤ 200-record / ~1 MiB modify requests and halves a request refused as `limitExceeded`; 5 files; panel: prosecutor (5) + codex (0); pr-review-toolkit specialists unavailable; judge verified 1c784561e by reading, no runs) — verdict: approve
+
+- contested: F1 (a non-`limitExceeded` throw on batch N drops the results of committed batches 1..N−1, so `BridgeServer` never records their tags). Real, but held minor, not major. The publisher's slice saves carry no `Expect`, so they are unconditional `.allKeys` overwrites, and the 60 s full diff resends them without any conflict. The same "rethrow drops earlier commits" shape already existed across the conditional/plain groups and across `BridgeServer.save`'s zone loop. Frames from the conditional writers (`.seq`/`.absent`) are small and fit one batch. **Before grading a "lost partial results → retry conflicts" finding, check whether the retried writes are conditional at all.** [6]
+- false-positive: none dismissed outright. F3 (unbounded halving, 2n−1 requests) went down to a nit: it needs every record to be refused alone, and that can't happen under CloudKit's 1 MB per-record cap. [4]
+- miss: none late. Codex was clean, and the prosecutor's points were all reachable by reading.
+- weak-dimension: 7. The fake's `saveFailure` fires on every call, so "batch 1 commits, batch 2 fails" can't be tested without a per-call failure hook.
+- rule-gap (candidate, dim 6): *a write that is split into several remote requests either returns per-item results for the committed part when a later request fails, or documents why a whole-call failure is safe (idempotent unconditional writes resent by the caller).*
+- outcome: TBD

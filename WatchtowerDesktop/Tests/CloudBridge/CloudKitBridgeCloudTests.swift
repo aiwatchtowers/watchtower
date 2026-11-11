@@ -224,6 +224,8 @@ final class FakeDatabase: BridgeDatabase, @unchecked Sendable {
     private var _requestLimit = Int.max
     private var _tooLarge: Set<String> = []
     private var _saveFailure: CKError?
+    private var _saveFailureAfter = 0
+    private var _passedSaves = 0
     private var _saveSizes: [Int] = []
     private var _deleteSizes: [Int] = []
 
@@ -251,10 +253,14 @@ final class FakeDatabase: BridgeDatabase, @unchecked Sendable {
         get { lock.withLock { _tooLarge } }
         set { lock.withLock { _tooLarge = newValue } }
     }
-    /// Thrown by every save request (after the limit check).
+    /// Thrown by every save request (after the limit check) once `saveFailureAfter` requests have passed it.
     var saveFailure: CKError? {
         get { lock.withLock { _saveFailure } }
         set { lock.withLock { _saveFailure = newValue } }
+    }
+    var saveFailureAfter: Int {
+        get { lock.withLock { _saveFailureAfter } }
+        set { lock.withLock { _saveFailureAfter = newValue } }
     }
     /// Records per save / delete request, in call order (refused requests included).
     var saveSizes: [Int] { lock.withLock { _saveSizes } }
@@ -307,7 +313,8 @@ final class FakeDatabase: BridgeDatabase, @unchecked Sendable {
             _saveSizes.append(saves.count)
             try zoneGate()
             try limitGate(saves.map(\.record.recordID))
-            if let failure = _saveFailure { throw failure }
+            if let failure = _saveFailure, _passedSaves >= _saveFailureAfter { throw failure }
+            _passedSaves += 1
             _policies.append(policy)
             var out: [CKRecord.ID: DatabaseSaveResult] = [:]
             for save in saves {

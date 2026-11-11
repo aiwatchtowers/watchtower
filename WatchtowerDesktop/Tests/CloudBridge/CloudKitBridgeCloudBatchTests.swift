@@ -67,6 +67,7 @@ final class CloudKitBridgeCloudBatchTests: XCTestCase {
         let results = try await cloud.save(zone: data, writes(5))
         XCTAssertEqual(results[2], .refused("record_too_large"))
         XCTAssertEqual(savedNames(results), ["k0", "k1", nil, "k3", "k4"])
+        XCTAssertEqual(db.saveSizes, [5, 2, 3, 1, 2], "halved until k2 went alone")
         XCTAssertNil(db.record(name: "k2", zone: zoneID))
     }
 
@@ -92,6 +93,16 @@ final class CloudKitBridgeCloudBatchTests: XCTestCase {
         XCTAssertEqual(db.saveSizes, [4], "only limitExceeded splits a request")
     }
 
+    func testAFailureAfterAnAppliedRequestKeepsItsResults() async throws {
+        db.saveFailure = CKError(.requestRateLimited)
+        db.saveFailureAfter = 1
+        let frame = writes(250)
+        let results = try await cloud.save(zone: data, frame)
+        XCTAssertEqual(db.saveSizes, [200, 50])
+        XCTAssertEqual(Array(savedNames(results).prefix(200)), frame.prefix(200).map(\.name), "the applied request is answered")
+        XCTAssertTrue(results.suffix(50).allSatisfy { $0 == .refused("rate_limited") }, "the rest carry the failure's class")
+    }
+
     func testDeletesAreBatchedAndHalvedToo() async throws {
         for i in 0..<450 {
             db.put(name: "k\(i)", zone: zoneID, payload: Data([1]), tag: "t")
@@ -105,5 +116,6 @@ final class CloudKitBridgeCloudBatchTests: XCTestCase {
         db.tooLarge = ["odd"]
         let small = try await cloud.delete(zone: data, [CloudDeletion(name: "a"), CloudDeletion(name: "odd")])
         XCTAssertEqual(small, [.done(nil), .refused("record_too_large")])
+        XCTAssertEqual(db.deleteSizes.suffix(3), [2, 1, 1], "the refused pair was halved")
     }
 }

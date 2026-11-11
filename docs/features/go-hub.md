@@ -392,7 +392,9 @@ decisions asks #843, #851, #956; the plan's Global Constraints are the contract)
   CloudKit mailboxes for a switch back (decision 4). One frame's saves or deletes reach CloudKit in modify requests of
   at most 200 records and about 1 MiB (`CloudKitBridgeCloud.batches`); a request CloudKit still refuses as a whole
   (`limitExceeded`) is halved and each half sent again, and only a record refused alone is answered
-  `record_too_large`, for that item alone (#1745: a 4 MiB frame in one request failed every publish cycle).
+  `record_too_large`, for that item alone (#1745: a 4 MiB frame in one request failed every publish cycle). A
+  request that fails otherwise after earlier ones went through keeps their results and refuses the rest with its
+  class; a failure before anything went through still fails the whole call.
 - **Adoption** (`hub adopt`). Desktop's `HubAdoptionDriver` reads the state only through `hub adopt --status --json`,
   hands the settings over on stdin (`--settings-stdin`), then the keys on stdin (`--keys-stdin`, a separate call),
   deletes its Keychain items, and confirms (`--confirm-deleted`). Go derives the Swift directory itself and leaves

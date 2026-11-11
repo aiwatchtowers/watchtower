@@ -410,6 +410,15 @@ public struct CloudKitBridgeCloud: BridgeCloud {
         }
     }
 
+    /// The answer when a request fails after earlier requests of the same call reached CloudKit: those keep their
+    /// results (the bridge's tag map must learn what they wrote) and every item not answered yet is refused with
+    /// the failure's class. A failure before anything reached CloudKit stays the whole call's.
+    static func partial(_ results: [CloudWriteResult?], after error: any Error) -> [CloudWriteResult] {
+        let failureClass = bridgeFailureClass(error)
+        bridgeLogger.error("a modify request failed after earlier ones were applied: \(failureClass, privacy: .public); the rest refused")
+        return results.map { $0 ?? .refused(failureClass) }
+    }
+
     static func isSignal(_ name: String, _ envelope: Data) -> Bool {
         envelope.isEmpty && name.hasPrefix("\(WireKind.signal)-")
     }
@@ -449,29 +458,35 @@ public struct CloudKitBridgeCloud: BridgeCloud {
             }
         }
         // CloudKit compares change tags only under .ifServerRecordUnchanged; an unconditional save overwrites.
-        for (group, policy) in [(conditional, CKModifyRecordsOperation.RecordSavePolicy.ifServerRecordUnchanged), (plain, .allKeys)]
-        where !group.isEmpty {
-            let size = { (at: Int) in Self.requestSize(name: writes[group[at].0].name, payload: writes[group[at].0].envelope.count) }
-            for batch in Self.batches(group.count, size: size) {
-                try await sendSplitting(batch) { range in
-                    let part = group[range]
-                    let saved = try await withZones(db) { try await db.save(part.map(\.1), policy: policy) }
-                    for (i, pending) in part {
-                        switch saved[pending.record.recordID] {
-                        case .saved(let server)?:
-                            results[i] = item(server, kind: kind).map { .done($0) } ?? .refused("unavailable")
-                        case .changed(let server)?:
-                            results[i] = .conflict(server.flatMap { item($0, kind: kind) })
-                        case .failed(let error)?:
-                            results[i] = .refused(bridgeFailureClass(error))
-                        case nil:
-                            results[i] = .refused("unavailable")
+        var applied = false
+        do {
+            for (group, policy) in [(conditional, CKModifyRecordsOperation.RecordSavePolicy.ifServerRecordUnchanged), (plain, .allKeys)]
+            where !group.isEmpty {
+                let size = { (at: Int) in Self.requestSize(name: writes[group[at].0].name, payload: writes[group[at].0].envelope.count) }
+                for batch in Self.batches(group.count, size: size) {
+                    try await sendSplitting(batch) { range in
+                        let part = group[range]
+                        let saved = try await withZones(db) { try await db.save(part.map(\.1), policy: policy) }
+                        applied = true
+                        for (i, pending) in part {
+                            switch saved[pending.record.recordID] {
+                            case .saved(let server)?:
+                                results[i] = item(server, kind: kind).map { .done($0) } ?? .refused("unavailable")
+                            case .changed(let server)?:
+                                results[i] = .conflict(server.flatMap { item($0, kind: kind) })
+                            case .failed(let error)?:
+                                results[i] = .refused(bridgeFailureClass(error))
+                            case nil:
+                                results[i] = .refused("unavailable")
+                            }
                         }
+                    } alone: { at, error in
+                        results[group[at].0] = .refused(bridgeFailureClass(error))
                     }
-                } alone: { at, error in
-                    results[group[at].0] = .refused(bridgeFailureClass(error))
                 }
             }
+        } catch where applied {
+            return Self.partial(results, after: error)
         }
         return results.map { $0 ?? .refused("unavailable") }
     }
@@ -507,28 +522,34 @@ public struct CloudKitBridgeCloud: BridgeCloud {
             }
         }
         let size = { (at: Int) in Self.requestSize(name: deletions[sendable[at]].name, payload: 0) }
-        for batch in Self.batches(sendable.count, size: size) {
-            try await sendSplitting(batch) { range in
-                let part = sendable[range]
-                let deleted: [CKRecord.ID: Result<Void, any Error>]
-                do {
-                    deleted = try await db.delete(part.map { ids[$0] })
-                } catch let error as CKError where error.code == .zoneNotFound || error.code == .userDeletedZone {
-                    deleted = [:] // no zone, no record: what was asked for
-                }
-                for i in part {
-                    switch deleted[ids[i]] {
-                    case .failure(let error as CKError)? where error.code == .unknownItem || error.code == .zoneNotFound:
-                        results[i] = .done(nil)
-                    case .failure(let error)?:
-                        results[i] = .refused(bridgeFailureClass(error))
-                    case .success?, nil:
-                        results[i] = .done(nil)
+        var applied = false
+        do {
+            for batch in Self.batches(sendable.count, size: size) {
+                try await sendSplitting(batch) { range in
+                    let part = sendable[range]
+                    let deleted: [CKRecord.ID: Result<Void, any Error>]
+                    do {
+                        deleted = try await db.delete(part.map { ids[$0] })
+                    } catch let error as CKError where error.code == .zoneNotFound || error.code == .userDeletedZone {
+                        deleted = [:] // no zone, no record: what was asked for
                     }
+                    applied = true
+                    for i in part {
+                        switch deleted[ids[i]] {
+                        case .failure(let error as CKError)? where error.code == .unknownItem || error.code == .zoneNotFound:
+                            results[i] = .done(nil)
+                        case .failure(let error)?:
+                            results[i] = .refused(bridgeFailureClass(error))
+                        case .success?, nil:
+                            results[i] = .done(nil)
+                        }
+                    }
+                } alone: { at, error in
+                    results[sendable[at]] = .refused(bridgeFailureClass(error))
                 }
-            } alone: { at, error in
-                results[sendable[at]] = .refused(bridgeFailureClass(error))
             }
+        } catch where applied {
+            return Self.partial(results, after: error)
         }
         return results.map { $0 ?? .refused("unavailable") }
     }
