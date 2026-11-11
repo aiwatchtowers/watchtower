@@ -45,6 +45,8 @@ final class AgentAnalyticsCenter {
 
     @ObservationIgnored private let runner: any CLIRunnerProtocol
     @ObservationIgnored private let interval: Duration
+    /// The wait between ticks. A seam for tests.
+    @ObservationIgnored private let sleep: @Sendable (Duration) async -> Void
     /// The workbenches whose pane is shown, with the period asked for.
     @ObservationIgnored private var shown: [Int64: Period] = [:]
     /// The period of the last overview run per workbench: a reload after
@@ -54,17 +56,25 @@ final class AgentAnalyticsCenter {
     @ObservationIgnored private var runsStarted = 0
     @ObservationIgnored private var queued: Set<RunKey> = []
     @ObservationIgnored private var enableRuns: [Int64: Task<Void, Never>] = [:]
-    @ObservationIgnored private var loop: Task<Void, Never>?
+    @ObservationIgnored private(set) var loop: Task<Void, Never>?
     /// A decode error is logged once per streak of failures.
     @ObservationIgnored private var failing: Set<RunKey> = []
 
-    init(runner: any CLIRunnerProtocol, interval: Duration = AgentAnalyticsCenter.interval) {
+    init(
+        runner: any CLIRunnerProtocol,
+        interval: Duration = AgentAnalyticsCenter.interval,
+        sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+    ) {
         self.runner = runner
         self.interval = interval
+        self.sleep = sleep
     }
 
     /// Whether the 60 s loop is running (a test seam).
     var isPolling: Bool { loop != nil }
+
+    /// The runs in flight, to await their end (a test seam).
+    var inFlightTasks: [Task<Void, Never>] { inFlight.values.map(\.task) }
 
     /// The workbench's Analytics pane is on screen: its overview runs now
     /// (when newly shown or the period changed), then every 60 s until `hide`.
@@ -74,9 +84,9 @@ final class AgentAnalyticsCenter {
         lastPeriod[workbench] = period
         if changed { request(.overview(workbench: workbench)) }
         guard loop == nil else { return }
-        loop = Task { [weak self, interval] in
+        loop = Task { [weak self, interval, sleep] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: interval)
+                await sleep(interval)
                 guard !Task.isCancelled, let self else { return }
                 self.tick()
             }
