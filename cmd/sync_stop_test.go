@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -175,8 +176,10 @@ func recordStop(t *testing.T, helpers ...*stopHelper) *stopRecorder {
 		r.graces = append(r.graces, grace)
 		r.mu.Unlock()
 		h, ok := byPID[pid]
-		if !ok {
-			t.Errorf("waited for pid %d, which is no helper of this test", pid)
+		if !ok || !r.signalled(pid) {
+			// Never signalled, a helper would never answer: a real wait
+			// would just run out its grace.
+			t.Errorf("waited for pid %d, which is no helper this stop signalled", pid)
 			return false
 		}
 		for line := range h.events {
@@ -191,6 +194,13 @@ func recordStop(t *testing.T, helpers ...*stopHelper) *stopRecorder {
 		return true
 	}
 	return r
+}
+
+// signalled reports whether the stop has signalled pid.
+func (r *stopRecorder) signalled(pid int) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.ContainsFunc(r.signals, func(s sentSignal) bool { return s.pid == pid })
 }
 
 // sent is a copy of the signals sent so far.

@@ -1188,7 +1188,7 @@ func cancelledModelCallLeavesNoProcess(t *testing.T, sig syscall.Signal) {
 	script := filepath.Join(dir, "fake-claude")
 	require.NoError(t, os.WriteFile(script, []byte("#!/bin/sh\n"+
 		"echo $$ > '"+dir+"/pid.tmp' && mv '"+dir+"/pid.tmp' '"+dir+"/pid'\n"+
-		"sleep 86400 &\n"+
+		"sleep 1800 &\n"+
 		"echo $! > '"+dir+"/child.tmp' && mv '"+dir+"/child.tmp' '"+dir+"/child'\n"+
 		"wait\n"), 0o755))
 	cfgPath := fakeModelConfig(t, dir, "claude", script)
@@ -1226,8 +1226,10 @@ func cancelledModelCallLeavesNoProcess(t *testing.T, sig syscall.Signal) {
 	assert.False(t, open, "PROJ-13: nothing on stdout")
 
 	// Killed at once; the init process may take a moment to reap the
-	// grandchild once it is a zombie. The fake model never ends by itself,
-	// so a group the hook left alive hangs the run into go test's -timeout.
+	// grandchild once it is a zombie. The fake model outlives any go test
+	// -timeout the repo runs this package under, so a group the hook left
+	// alive hangs the run into that timeout (25 m in CI), and is gone by itself 30
+	// minutes on.
 	waitFor(t, "the model's process group gone", func() bool {
 		return syscall.Kill(-group, 0) != nil && syscall.Kill(child, 0) != nil
 	})

@@ -118,13 +118,14 @@ func startPairTTY(t *testing.T, cols uint16) *ttyPair {
 	rootCmd.SetArgs([]string{"hub", "pair"})
 	go func() { r.done <- rootCmd.Execute() }()
 	t.Cleanup(func() {
+		// One line ends a prompt still waiting for the owner (a test that
+		// failed early) and releases a reader a prompt that ended without
+		// the owner's line (expiry, Ctrl-C) left blocked on the terminal,
+		// which would keep the pty open past the closes below.
+		_, _ = io.WriteString(ptm, "\n")
 		if !r.finished {
 			<-r.done
 		}
-		// A prompt that ended without the owner's line (expiry, Ctrl-C) left
-		// its reader blocked on the terminal, which keeps the pty open past
-		// the closes below: one line releases it.
-		_, _ = io.WriteString(ptm, "\n")
 		_ = tty.Close()
 		_ = ptm.Close()
 		<-copied

@@ -59,10 +59,13 @@ func TestRunSyncStop_RefusesWhenIdentityUnconfirmed(t *testing.T) {
 	require.NoError(t, statErr, "an unconfirmed identity must not remove the pid file")
 	assert.Contains(t, string(data), strconv.Itoa(helper.pid()))
 
-	// The delayed helper prints "signalled" immediately on SIGTERM receipt
-	// — its absence is a positive proof no signal was ever sent, not an
-	// inference from liveness.
 	assert.Empty(t, rec.sent(), "runSyncStop must refuse before ever sending a signal")
+	// The delayed helper prints "signalled" on SIGTERM receipt, so a signal
+	// sent around the seam may show too.
+	_ = helper.cmd.Process.Kill()
+	for line := range helper.events {
+		assert.NotEqual(t, "signalled", line, "the helper was signalled")
+	}
 }
 
 // TestRunSyncNow_RefusesWhenIdentityUnconfirmed pins the same requirement

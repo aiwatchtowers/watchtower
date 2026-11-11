@@ -412,6 +412,7 @@ func reapProcessesOf(t *testing.T, dir string) {
 		if strings.TrimSpace(string(out)) == "" {
 			return
 		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

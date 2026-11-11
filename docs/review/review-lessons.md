@@ -2850,3 +2850,12 @@ Entry format:
 - weak-dimension: 7. No test covers Codex SubagentStart over a counted `waiting`, and the DB raise test has no case for an unreadable stamp. Both are cheap and both pin a guard the docs promise.
 - rule-gap (candidate, dim 6): *a count built as a sum of disjoint-by-intent terms gets one table case per pair of terms that could claim the same id.*
 - outcome: TBD
+
+## 2026-11-11 — test/no-wallclock-cmd (e24931481 + uncommitted round-1 fixes: cmd tests off the wall clock through synctest, process-event waits and seams; 42 files +656/−902, cmd only; panel: prosecutor (12) + codex (0); pr-review-toolkit specialists unavailable; judge verified the fixes by reading, go vet ./cmd and the touched cmd tests green) — verdict: changes-needed
+
+- contested: F4/F5, a guard's real-time bound (`under 100 ms`, "well inside 2 s") replaced with an exact synctest-clock assertion. It is stronger for any timer or sleep (exact, load-proof) and blind to a non-timer stall (a C busy handler, a blocking read). The owner's brief says both "no real-time bounds" and "guards at least as strong", so it went to the owner, not to a ruling. The inventory line still promising "under 100 ms" has to change either way. [7]
+- false-positive: F2 (no per-wait deadline orphans subprocesses on a hang). It is the owner's stated rule (go test -timeout catches hangs, PR 803 pattern), not a defect. The real residue is per-test: a stub whose lifetime outlives the timeout, handled in F1 by bounding the stub's own lifetime. F9/F11 dropped as one-off/nit. [7]
+- miss: the F3 fix (end the poll once the hook returned) snapshots its counter inside the polling goroutine, so a hook that ends before the goroutine's first load still hangs. Only the judge's read caught it. A "the other side ended" signal must be snapshotted before the other side starts. [7]
+- weak-dimension: 7. Removing a wall-clock bound turns "fails slowly" into "hangs to -timeout", and each wait needs its own event that ends it. The prosecutor found three of these; codex found none.
+- rule-gap (candidate, dim 7): *a test change that drops a deadline names, per wait, the event that ends it on the failure path (process exit, hook return, synctest deadlock); "go test -timeout" is acceptable only where no such event exists, and a stub that must outlive that timeout (so a non-killing regression still fails) has its own bounded lifetime, never a day-long sleep.*
+- outcome: TBD
