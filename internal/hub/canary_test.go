@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"watchtower/internal/agentlog"
@@ -225,158 +226,158 @@ VALUES (?, ?, ?, 60, ?, ?)`, mTranscriptName, mTranscriptText, segments, stamp(n
 // fake, in the log, or anywhere in the sidecar but the two plaintext columns
 // of today, and every frame is a padded envelope.
 func TestCanary_NoPlaintextLeavesTheHub(t *testing.T) {
-	sink := logcanary.Capture(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
-	c := seedCanaryDB(t, home)
-	port := &canaryPort{start: c.started, running: c.session, runAt: time.Now().Add(-time.Minute)}
-	recordings := filepath.Join(t.TempDir(), "recordings")
-	e := runEndToEnd(t, "", func(o *Options) {
-		o.DB, o.Sessions, o.RecordingsDir = c.d, port, recordings
-		o.runnerGap, o.away = 100*time.Millisecond, alwaysAway{}
-		o.reportFetch = func(_ context.Context, _, sessionID int64, _ bool) (sessionreport.Report, error) {
-			return sessionreport.Report{
-				Session: sessionreport.Session{ID: sessionID, Title: mReportTitle, Kind: "claude"},
-				Phases:  []sessionreport.Phase{{TargetID: c.target, Text: mReportPhase, StartedAt: time.Now().UTC().Format(time.RFC3339)}},
-				PRNote:  mReportPRNote,
-			}, nil
-		}
-		o.gitFetch = func(context.Context, int64) (workbenchgit.Status, error) {
-			st := workbenchgit.Status{StatusOK: true, Git: true, GitAvailable: true}
-			st.Branch = "feature/acme"
-			return st, nil
-		}
-	})
-	phone, fake := e.phone, e.rig.fake
+	bubble(t, func(t *testing.T) {
+		sink := logcanary.Capture(t)
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
+		c := seedCanaryDB(t, home)
+		port := &canaryPort{start: c.started, running: c.session, runAt: time.Now().Add(-time.Minute)}
+		recordings := filepath.Join(t.TempDir(), "recordings")
+		e := runEndToEnd(t, "", func(o *Options) {
+			o.DB, o.Sessions, o.RecordingsDir = c.d, port, recordings
+			o.runnerGap, o.away = 100*time.Millisecond, alwaysAway{}
+			o.reportFetch = func(_ context.Context, _, sessionID int64, _ bool) (sessionreport.Report, error) {
+				return sessionreport.Report{
+					Session: sessionreport.Session{ID: sessionID, Title: mReportTitle, Kind: "claude"},
+					Phases:  []sessionreport.Phase{{TargetID: c.target, Text: mReportPhase, StartedAt: time.Now().UTC().Format(time.RFC3339)}},
+					PRNote:  mReportPRNote,
+				}, nil
+			}
+			o.gitFetch = func(context.Context, int64) (workbenchgit.Status, error) {
+				st := workbenchgit.Status{StatusOK: true, Git: true, GitAvailable: true}
+				st.Branch = "feature/acme"
+				return st, nil
+			}
+		})
+		phone, fake := e.phone, e.rig.fake
 
-	ctl, err := Dial(e.dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = ctl.Close() }()
-	for _, g := range []link.Grant{link.GrantTyping, link.GrantStartSessions, link.GrantPermissions} {
-		if a, err := ctl.Do(ControlRequest{Op: OpAllow, Device: phone.ID().String(), Grant: string(g), On: true}); err != nil || !a.OK {
-			t.Fatalf("allow %s: %+v, %v", g, a, err)
+		ctl := e.rig.dial()
+		defer func() { _ = ctl.Close() }()
+		for _, g := range []link.Grant{link.GrantTyping, link.GrantStartSessions, link.GrantPermissions} {
+			if a, err := ctl.Do(ControlRequest{Op: OpAllow, Device: phone.ID().String(), Grant: string(g), On: true}); err != nil || !a.OK {
+				t.Fatalf("allow %s: %+v, %v", g, a, err)
+			}
 		}
-	}
-	if a, err := ctl.Do(ControlRequest{Op: OpDesktopHeartbeat}); err != nil || !a.OK {
-		t.Fatalf("heartbeat: %+v, %v", a, err)
-	}
-	// The alert's ask: filed after the hub was enabled (an alert counts only
-	// newer asks; created_at has whole seconds, so in the next second), on the
-	// running session while the owner is away.
-	time.Sleep(time.Until(time.Now().Truncate(time.Second).Add(time.Second)))
-	if _, err := c.d.Exec(`INSERT INTO owner_asks (project_id, session_id, kind, title, payload, status, created_at)
+		if a, err := ctl.Do(ControlRequest{Op: OpDesktopHeartbeat}); err != nil || !a.OK {
+			t.Fatalf("heartbeat: %+v, %v", a, err)
+		}
+		// The alert's ask: filed after the hub was enabled (an alert counts only
+		// newer asks; created_at has whole seconds, so in the next second), on the
+		// running session while the owner is away.
+		time.Sleep(time.Until(time.Now().Truncate(time.Second).Add(time.Second)))
+		synctest.Wait()
+		if _, err := c.d.Exec(`INSERT INTO owner_asks (project_id, session_id, kind, title, payload, status, created_at)
 VALUES (?, ?, 'question', ?, '{}', 'open', ?)`, c.project, c.session, mAlert, time.Now().UTC().Format(time.RFC3339)); err != nil {
-		t.Fatal(err)
-	}
-
-	wb := json.RawMessage(strconv.FormatInt(c.project, 10))
-	text := func(s string) json.RawMessage { b, _ := json.Marshal(s); return b }
-	entity := func(id int64) *string { s := strconv.FormatInt(id, 10); return &s }
-	var seqs []uint64
-	act := func(kind string, ent *string, params map[string]json.RawMessage) {
-		t.Helper()
-		a := phone.NewAction(kind)
-		a.EntityID = ent
-		for k, v := range params {
-			a.Params[k] = v
+			t.Fatal(err)
 		}
-		seq, err := phone.Queue(a)
+
+		wb := json.RawMessage(strconv.FormatInt(c.project, 10))
+		text := func(s string) json.RawMessage { b, _ := json.Marshal(s); return b }
+		entity := func(id int64) *string { s := strconv.FormatInt(id, 10); return &s }
+		var seqs []uint64
+		act := func(kind string, ent *string, params map[string]json.RawMessage) {
+			t.Helper()
+			a := phone.NewAction(kind)
+			a.EntityID = ent
+			for k, v := range params {
+				a.Params[k] = v
+			}
+			seq, err := phone.Queue(a)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := phone.Send(seq); err != nil {
+				t.Fatal(err)
+			}
+			seqs = append(seqs, seq)
+		}
+		answer, _ := json.Marshal(map[string]any{
+			"verdict": "", "answers": []any{map[string]any{"id": "a", "labels": []string{"Yes"}, "other": ""}},
+			"checklist": []any{}, "comments": []any{}, "note": mAnswerNote,
+		})
+		act("session_chat_request", entity(c.session), map[string]json.RawMessage{"session_id": json.RawMessage(*entity(c.session))})
+		act("session_report_request", entity(c.session), nil)
+		act("session_input", entity(c.session), map[string]json.RawMessage{"text": text(mLine)})
+		act("ask_answer", entity(c.ask), map[string]json.RawMessage{"workbench_id": wb, "answer": answer})
+		act("board_comment_add", entity(c.target), map[string]json.RawMessage{"workbench_id": wb, "body": text(mCommentAction)})
+		act("board_comment_reply", entity(c.comment), map[string]json.RawMessage{"workbench_id": wb, "body": text(mReplyAction)})
+		act("board_target_create", nil, map[string]json.RawMessage{"workbench_id": wb, "text": text(mTargetAction), "priority": text("medium")})
+		act("session_start", nil, map[string]json.RawMessage{"workbench_id": wb, "mode": text("new"),
+			"plan_first": json.RawMessage("false"), "bring_forward": json.RawMessage("false"), "brief": text(mBrief)})
+
+		audio := append(bytes.Repeat([]byte{0x41}, 4000), mRecording...)
+		sealedAudio, desc, err := secure.EncryptAsset(audio, secure.ID{7}, bytes.Repeat([]byte{9}, 32), 1024)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := phone.Send(seq); err != nil {
+		upload, _ := json.Marshal(map[string]any{"id": "u1", "status": "pending", "device_id": phone.ID().String()})
+		if _, err := phone.WriteUpload("u1", upload, &desc, sealedAudio); err != nil {
 			t.Fatal(err)
 		}
-		seqs = append(seqs, seq)
-	}
-	answer, _ := json.Marshal(map[string]any{
-		"verdict": "", "answers": []any{map[string]any{"id": "a", "labels": []string{"Yes"}, "other": ""}},
-		"checklist": []any{}, "comments": []any{}, "note": mAnswerNote,
-	})
-	act("session_chat_request", entity(c.session), map[string]json.RawMessage{"session_id": json.RawMessage(*entity(c.session))})
-	act("session_report_request", entity(c.session), nil)
-	act("session_input", entity(c.session), map[string]json.RawMessage{"text": text(mLine)})
-	act("ask_answer", entity(c.ask), map[string]json.RawMessage{"workbench_id": wb, "answer": answer})
-	act("board_comment_add", entity(c.target), map[string]json.RawMessage{"workbench_id": wb, "body": text(mCommentAction)})
-	act("board_comment_reply", entity(c.comment), map[string]json.RawMessage{"workbench_id": wb, "body": text(mReplyAction)})
-	act("board_target_create", nil, map[string]json.RawMessage{"workbench_id": wb, "text": text(mTargetAction), "priority": text("medium")})
-	act("session_start", nil, map[string]json.RawMessage{"workbench_id": wb, "mode": text("new"),
-		"plan_first": json.RawMessage("false"), "bring_forward": json.RawMessage("false"), "brief": text(mBrief)})
 
-	audio := append(bytes.Repeat([]byte{0x41}, 4000), mRecording...)
-	sealedAudio, desc, err := secure.EncryptAsset(audio, secure.ID{7}, bytes.Repeat([]byte{9}, 32), 1024)
-	if err != nil {
-		t.Fatal(err)
-	}
-	upload, _ := json.Marshal(map[string]any{"id": "u1", "status": "pending", "device_id": phone.ID().String()})
-	if _, err := phone.WriteUpload("u1", upload, &desc, sealedAudio); err != nil {
-		t.Fatal(err)
-	}
-
-	eventually(t, 20*time.Second, "an answer to every action and the upload", func() bool {
-		if _, err := phone.Sync(); err != nil {
-			t.Fatal(err)
-		}
+		eventually(t, "an answer to every action and the upload", func() bool {
+			if _, err := phone.Sync(); err != nil {
+				t.Fatal(err)
+			}
+			for _, s := range seqs {
+				switch phone.Echoes[s].Status {
+				case wire.StatusApplied, wire.StatusHeld, wire.StatusFailed:
+				default:
+					return false
+				}
+			}
+			return phone.UploadEchoes["u1"]["status"] == "received"
+		})
 		for _, s := range seqs {
-			switch phone.Echoes[s].Status {
-			case wire.StatusApplied, wire.StatusHeld, wire.StatusFailed:
-			default:
-				return false
+			got := phone.Echoes[s]
+			want := wire.StatusApplied
+			if got.Kind == "session_input" { // the line waits behind the owner's draft
+				want = wire.StatusHeld
+			}
+			if got.Status != want {
+				t.Errorf("a%d (%s) echo %s (reason %v), want %s", s, got.Kind, got.Status, deref(got.Reason), want)
 			}
 		}
-		return phone.UploadEchoes["u1"]["status"] == "received"
+		port.mu.Lock()
+		if len(port.starts) != 1 || port.starts[0].Brief != mBrief {
+			t.Errorf("the start did not carry the brief: %d starts", len(port.starts))
+		}
+		port.mu.Unlock()
+		if got, err := os.ReadFile(handlers.RecordingAudioPath(recordings, "u1")); err != nil || !bytes.Equal(got, audio) {
+			t.Fatalf("the recording was not opened for the transcriber: %v", err)
+		}
+
+		// Each marker has its positive control: sealedAt, or one of the three
+		// checked where they went (held line, start request, recordings dir).
+		for _, m := range c.allMarkers {
+			if _, ok := sealedAt[m]; !ok && m != mLine && m != mBrief && m != mRecording {
+				t.Errorf("marker %s has no positive control", m)
+			}
+		}
+		assertEveryMarkerSealed(t, e.dir, phone, fake)
+		// The actions were applied with their text where it belongs.
+		for q, m := range map[string]string{
+			`SELECT COUNT(*) FROM project_comments WHERE body = ? AND author = 'owner' AND parent_id IS NULL`: mCommentAction,
+			`SELECT COUNT(*) FROM project_comments WHERE body = ? AND parent_id IS NOT NULL`:                  mReplyAction,
+			`SELECT COUNT(*) FROM targets WHERE text = ?`:                                                     mTargetAction,
+			`SELECT COUNT(*) FROM owner_asks WHERE status = 'answered' AND instr(answer, ?) > 0`:              mAnswerNote,
+		} {
+			var n int
+			if err := c.d.QueryRow(q, m).Scan(&n); err != nil || n != 1 {
+				t.Errorf("%s: %d rows (%v)", m, n, err)
+			}
+		}
+		if err := e.rig.stop(); err != nil {
+			t.Fatal(err)
+		}
+		// The running session's error milestone is stored, its text sealed.
+		if n := queryStrings(t, sidecarDB(t, e.dir), `SELECT COUNT(*) FROM session_milestones WHERE session_id = ?`, c.session); n[0] == "0" {
+			t.Error("no state milestone stored for the failed running session")
+		}
+
+		assertNothingReadableLeft(t, e.dir, fake, sink, encodings(c.allMarkers))
 	})
-	for _, s := range seqs {
-		got := phone.Echoes[s]
-		want := wire.StatusApplied
-		if got.Kind == "session_input" { // the line waits behind the owner's draft
-			want = wire.StatusHeld
-		}
-		if got.Status != want {
-			t.Errorf("a%d (%s) echo %s (reason %v), want %s", s, got.Kind, got.Status, deref(got.Reason), want)
-		}
-	}
-	port.mu.Lock()
-	if len(port.starts) != 1 || port.starts[0].Brief != mBrief {
-		t.Errorf("the start did not carry the brief: %d starts", len(port.starts))
-	}
-	port.mu.Unlock()
-	if got, err := os.ReadFile(handlers.RecordingAudioPath(recordings, "u1")); err != nil || !bytes.Equal(got, audio) {
-		t.Fatalf("the recording was not opened for the transcriber: %v", err)
-	}
-
-	// Each marker has its positive control: sealedAt, or one of the three
-	// checked where they went (held line, start request, recordings dir).
-	for _, m := range c.allMarkers {
-		if _, ok := sealedAt[m]; !ok && m != mLine && m != mBrief && m != mRecording {
-			t.Errorf("marker %s has no positive control", m)
-		}
-	}
-	assertEveryMarkerSealed(t, e.dir, phone, fake)
-	// The actions were applied with their text where it belongs.
-	for q, m := range map[string]string{
-		`SELECT COUNT(*) FROM project_comments WHERE body = ? AND author = 'owner' AND parent_id IS NULL`: mCommentAction,
-		`SELECT COUNT(*) FROM project_comments WHERE body = ? AND parent_id IS NOT NULL`:                  mReplyAction,
-		`SELECT COUNT(*) FROM targets WHERE text = ?`:                                                     mTargetAction,
-		`SELECT COUNT(*) FROM owner_asks WHERE status = 'answered' AND instr(answer, ?) > 0`:              mAnswerNote,
-	} {
-		var n int
-		if err := c.d.QueryRow(q, m).Scan(&n); err != nil || n != 1 {
-			t.Errorf("%s: %d rows (%v)", m, n, err)
-		}
-	}
-	if err := e.rig.stop(); err != nil {
-		t.Fatal(err)
-	}
-	// The running session's error milestone is stored, its text sealed.
-	if n := queryStrings(t, sidecarDB(t, e.dir), `SELECT COUNT(*) FROM session_milestones WHERE session_id = ?`, c.session); n[0] == "0" {
-		t.Error("no state milestone stored for the failed running session")
-	}
-
-	assertNothingReadableLeft(t, e.dir, fake, sink, encodings(c.allMarkers))
 }
 
 // assertEveryMarkerSealed: the phone opens the data zone with its keybox keys

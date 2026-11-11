@@ -105,16 +105,9 @@ func runWatch(t *testing.T, w *ChangeWatch, dirty func(...Kind)) {
 	})
 }
 
-// waitArmed waits (bounded) until more than n timers were armed on ft.
-func waitArmed(t *testing.T, ft *fakeTime, n int) {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for ft.armedCount() <= n {
-		if time.Now().After(deadline) {
-			t.Fatal("the loop never went back to sleep")
-		}
-		time.Sleep(time.Millisecond)
-	}
+// waitArmed waits until more than n timers were armed on ft.
+func waitArmed(_ *testing.T, ft *fakeTime, n int) {
+	ft.waitArmed(n)
 }
 
 // Every database-backed kind is marked once per change, deduplicated, and
@@ -241,6 +234,9 @@ func TestNextItemsNeverOverlapsAnUpload(t *testing.T) {
 	p := r.publisherWith(Config{Spacing: time.Nanosecond}, src)
 	p.c.Transport = tr
 
+	blocked := make(chan struct{}, 1)
+	p.cycleBlocked = func() { blocked <- struct{}{} }
+
 	first := make(chan error, 1)
 	go func() { _, err := p.Cycle(context.Background(), nil); first <- err }()
 	<-tr.started // the first cycle uploads
@@ -251,11 +247,10 @@ func TestNextItemsNeverOverlapsAnUpload(t *testing.T) {
 		_, err := p.Cycle(context.Background(), []Kind{"meeting_transcript"})
 		second <- err
 	}()
-	select {
-	case <-second:
-		t.Fatal("a second cycle ran while the first one's Save was in flight")
-	case <-time.After(50 * time.Millisecond): // the second cycle is waiting
-	}
+	// The second cycle found the first one in progress and waits for it (a
+	// cycle that did not wait never calls cycleBlocked: the test then hangs,
+	// and the overlap check below would fail).
+	<-blocked
 	close(tr.release)
 	if err := <-first; err != nil {
 		t.Fatal(err)

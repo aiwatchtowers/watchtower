@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"watchtower/internal/hub/actions"
@@ -43,6 +44,7 @@ func (sharedMailbox) MailboxFor(hub, _ string) string { return transport.SharedM
 type world struct {
 	t       *testing.T
 	ctx     context.Context
+	virtual bool // the world runs in a synctest bubble (eachFlavourHung, eachFlavourTimed)
 	st      *state.Store
 	keys    *identity.Keyring
 	ident   identity.Identity
@@ -88,6 +90,55 @@ func eachFlavour(t *testing.T, fn func(t *testing.T, w *world)) {
 	for _, f := range flavours {
 		t.Run(f, func(t *testing.T) { fn(t, newWorld(t, f)) })
 	}
+}
+
+// eachFlavourHung is eachFlavour for a test that waits out the switcher's
+// old-side timeout (a hung account read, a hanging transport): the memfake
+// world runs in a synctest bubble, so the timeout ends on the bubble's clock
+// and the test waits for no real time. The bridgefake flavour talks over a
+// unix socket, whose blocked reads keep a bubble's clock from moving, so it
+// is left out here; the old-side bound is the switcher's, the same over
+// either transport.
+func eachFlavourHung(t *testing.T, fn func(t *testing.T, w *world)) {
+	t.Helper()
+	t.Run("memfake", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) { fn(t, virtualWorld(t)) })
+	})
+}
+
+// eachFlavourTimed is eachFlavour with the memfake world in a synctest bubble
+// (w.virtual), where a test can check how long a step took on the bubble's
+// clock; the bridgefake world runs as in eachFlavour, without that check.
+func eachFlavourTimed(t *testing.T, fn func(t *testing.T, w *world)) {
+	t.Helper()
+	t.Run("memfake", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) { fn(t, virtualWorld(t)) })
+	})
+	t.Run("bridgefake", func(t *testing.T) { fn(t, newWorld(t, "bridgefake")) })
+}
+
+func virtualWorld(t *testing.T) *world {
+	w := newWorld(t, "memfake")
+	w.virtual = true
+	return w
+}
+
+// hangingIf is "hanging" when on: the how of eachFlavourFor.
+func hangingIf(on bool) string {
+	if on {
+		return "hanging"
+	}
+	return ""
+}
+
+// eachFlavourFor is eachFlavourHung when how is "hanging", else eachFlavour.
+func eachFlavourFor(t *testing.T, how string, fn func(t *testing.T, w *world)) {
+	t.Helper()
+	if how == "hanging" {
+		eachFlavourHung(t, fn)
+		return
+	}
+	eachFlavour(t, fn)
 }
 
 func (w *world) clock() time.Time {
@@ -305,9 +356,7 @@ func (w *world) onCloudKit(ph *hubtest.Phone) {
 // the switch step.
 func (w *world) hub() {
 	w.t.Helper()
-	pctx, cancel := context.WithTimeout(w.ctx, 2*testOldSide)
-	_, _ = w.sw.ActiveProcessor().Pass(pctx)
-	cancel()
+	_, _ = w.sw.ActiveProcessor().Pass(w.ctx)
 	if err := w.sw.Step(w.ctx); err != nil {
 		w.t.Fatalf("step: %v", err)
 	}

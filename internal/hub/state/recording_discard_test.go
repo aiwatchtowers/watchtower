@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -123,25 +124,26 @@ func TestDiscardRecordingAndAClaimInterleaved(t *testing.T) {
 	started := make(chan struct{})
 	prev := discardAfterRead
 	discardAfterRead = func() {
+		waits := s.db.Stats().WaitCount
 		go func() {
 			close(started)
 			_, err := s.ClaimRecording("u5", time.Unix(1_800_000_200, 0))
 			claimed <- err
 		}()
 		<-started
-		time.Sleep(50 * time.Millisecond) // the claim is now waiting for the write lock
+		// The claim waits for the store's one connection, which the Discard's
+		// transaction holds: it can begin only after the commit (no
+		// wall-clock wait, the pool counts the wait).
+		for s.db.Stats().WaitCount <= waits {
+			runtime.Gosched()
+		}
 	}
 	t.Cleanup(func() { discardAfterRead = prev })
 	if err := s.DiscardRecording(dir, "u5"); err != nil {
 		t.Fatalf("discard: %v", err)
 	}
-	select {
-	case err := <-claimed:
-		if !errors.Is(err, ErrNoRecordingJob) {
-			t.Fatalf("the interleaved claim: %v, want no job", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the interleaved claim never finished")
+	if err := <-claimed; !errors.Is(err, ErrNoRecordingJob) {
+		t.Fatalf("the interleaved claim: %v, want no job", err)
 	}
 	if _, err := os.Stat(audio); !os.IsNotExist(err) {
 		t.Fatalf("the audio is still there: %v", err)

@@ -59,9 +59,13 @@ type Desktop struct {
 	Bridge string
 
 	// Test seams (nil = production).
-	newCloudKit   func(c cloudkit.Config) transport.Transport
-	hostCheck     func(ctx context.Context) error // sessionhost.Dial's answer
-	launch        func(ctx context.Context) (*os.Process, error)
+	newCloudKit func(c cloudkit.Config) transport.Transport
+	hostCheck   func(ctx context.Context) error // sessionhost.Dial's answer
+	launch      func(ctx context.Context) (*os.Process, error)
+	// supervise runs the bridge (nil = cloudkit.NewSupervisor over
+	// c.Launch). A test in a synctest bubble runs one with no process: a
+	// goroutine reaping a real child is not durably blocked.
+	supervise     func(c cloudkit.Config) bridgeRunner
 	identityStore func(st *state.Store, dir string) (identity.Staging, error)
 }
 
@@ -77,6 +81,21 @@ func (d *Desktop) launcher(dir string) func(ctx context.Context) (*os.Process, e
 		return bridgeLauncher(d.Bridge, dir)
 	}
 	return nil
+}
+
+// bridgeRunner keeps the bridge running until its ctx ends
+// (cloudkit.Supervisor).
+type bridgeRunner interface {
+	Run(ctx context.Context) error
+	Running() bool
+}
+
+// supervisor is the bridge's supervisor over c.
+func (d *Desktop) supervisor(c cloudkit.Config) bridgeRunner {
+	if d.supervise != nil {
+		return d.supervise(c)
+	}
+	return cloudkit.NewSupervisor(c)
 }
 
 // store is the recorded identity store (identity.ForDesktopHost).

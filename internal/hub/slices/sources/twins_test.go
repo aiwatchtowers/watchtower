@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/rivo/uniseg"
@@ -373,20 +374,22 @@ func TestSessionSummaryMapsToTheReportFieldsAndAFailureKeepsTheLastValues(t *tes
 
 // twin of TerminalSessionSliceTests.testAHungSummaryTimesOutAndKeepsTheLastValues.
 func TestSessionSummaryAHungRunTimesOutAndKeepsTheLastValues(t *testing.T) {
-	r, run := summaryRig(t, func(ctx context.Context, _ int64) ([]sessionreport.Summary, error) {
-		<-ctx.Done()
-		return []sessionreport.Summary{{SessionID: 1, Done: 9, Total: 9}}, ctx.Err()
+	synctest.Test(t, func(t *testing.T) {
+		r, run := summaryRig(t, func(ctx context.Context, _ int64) ([]sessionreport.Summary, error) {
+			<-ctx.Done()
+			return []sessionreport.Summary{{SessionID: 1, Done: 9, Total: 9}}, ctx.Err()
+		})
+		project, session := r.seed()
+		r.setLive(session, true)
+		start := time.Now()
+		run.RunDue(context.Background())
+		if d := time.Since(start); d != 50*time.Millisecond {
+			t.Fatalf("the hung summary ran %v of bubble time; want its 50 ms timeout", d)
+		}
+		if _, ok := run.Summary(project, 1); ok {
+			t.Fatal("a hung summary stored a value")
+		}
 	})
-	project, session := r.seed()
-	r.setLive(session, true)
-	start := time.Now()
-	run.RunDue(context.Background())
-	if time.Since(start) > 5*time.Second {
-		t.Fatal("the hung summary was not cut at its timeout")
-	}
-	if _, ok := run.Summary(project, 1); ok {
-		t.Fatal("a hung summary stored a value")
-	}
 }
 
 // twin of TerminalSessionSliceTests.testAStopMidPassRunsTheUnfinishedWorkbenchesAgainAfterARestart:
