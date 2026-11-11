@@ -54,7 +54,7 @@ final class ViewModelAsyncWriteTests: XCTestCase {
         let fast = Task { await writes.run { order.append("second") } }
         let queued = await eventually { writes.depth == 2 }
         XCTAssertTrue(queued)
-        let early: Void? = await boundedValue(Task { () }, timeout: .seconds(1))
+        let early: Void? = await boundedValue(Task { () })
         XCTAssertNotNil(early)
         XCTAssertEqual(order, [], "the second body waits for the first")
         gate.release()

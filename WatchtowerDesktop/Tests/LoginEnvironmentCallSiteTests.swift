@@ -59,7 +59,7 @@ final class ChatSessionPoolWiringTests: XCTestCase {
         defer { TestDatabase.cleanup(path: path) }
         let pool = AppState().ensureChatSessionPool(manager)
         XCTAssertFalse(pool.admissionOpen, "held from the start")
-        let opened = await waitForCondition(timeout: .seconds(10)) { pool.admissionOpen }
+        let opened = await waitForCondition { pool.admissionOpen }
         XCTAssertTrue(opened, "opens once the login environment resolves")
         pool.stopPolicy()
         await pool.closeAll()
