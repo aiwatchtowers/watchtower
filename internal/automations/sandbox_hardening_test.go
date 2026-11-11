@@ -53,19 +53,16 @@ func TestAuto07_NoCodeFromStrings(t *testing.T) {
 
 func TestSandbox_CatastrophicRegexEndsWithinDeadline(t *testing.T) {
 	// A backtracking match the interrupt cannot reach ends by regexp2's own
-	// timeout, within the grace Run gives a stuck script: never abandoned
-	// for a regex. The library's timer is real time, so it is checked as
-	// configuration; no test runs a catastrophic match.
+	// timeout (TestSandbox_CatastrophicMatchEndsByItsOwnTimeout), so a run
+	// stuck in one is at worst abandoned after the grace, never left running.
 	if regexp2.DefaultMatchTimeout != RegexpMatchTimeout {
 		t.Fatalf("regexp2.DefaultMatchTimeout = %v; want %v", regexp2.DefaultMatchTimeout, RegexpMatchTimeout)
-	}
-	if RegexpMatchTimeout > AbandonGrace {
-		t.Fatalf("RegexpMatchTimeout %v > AbandonGrace %v", RegexpMatchTimeout, AbandonGrace)
 	}
 	// The deadline passing while a match runs still ends the run as a
 	// timeout once the match returns: the regex timer's first read (the
 	// match about to start) moves the run's clock to its deadline and waits
-	// for the interrupt.
+	// for the interrupt (a missing interrupt hangs the test until the
+	// package timeout).
 	clock := newSBClock()
 	start := clock.Now()
 	sb, _ := newTestSandbox(t, `return /(a+)+b(?=c)/.test("aab")`,
@@ -81,6 +78,21 @@ func TestSandbox_CatastrophicRegexEndsWithinDeadline(t *testing.T) {
 	r := <-runAsync(sb)
 	wantInterrupt(t, r.err, InterruptTimeout)
 	wantNotAbandoned(t, r.err)
+}
+
+// A real catastrophic match (2^33 backtracking steps) returns: goja's
+// regexp2 honours the library's default match timeout, lowered here so the
+// test is short. Nothing is timed: the regex timer's clock stands still, so
+// the wrapper never throws, and the call returning at all is the proof (a
+// timeout that is not honoured hangs the test until the package timeout).
+// Only this one pattern is compiled under the lowered timeout.
+func TestSandbox_CatastrophicMatchEndsByItsOwnTimeout(t *testing.T) {
+	prev := regexp2.DefaultMatchTimeout
+	regexp2.DefaultMatchTimeout = 5 * time.Millisecond
+	t.Cleanup(func() { regexp2.DefaultMatchTimeout = prev })
+	if got := mustRun(t, `return /(a+)+b(?=c)/.test("a".repeat(33))`, sbOpts{}); got != false {
+		t.Fatalf("catastrophic match = %v; want false (a timed-out match reads as no match)", got)
+	}
 }
 
 // useRegexClock replaces the regex timer's clock for one test.
@@ -102,7 +114,7 @@ func slowRegexClock(t *testing.T) {
 
 func TestSandbox_RegexClockIsTheRealClock(t *testing.T) {
 	before := time.Now().UnixMilli()
-	got := productionRegexClock()
+	got := realRegexMillis()
 	if after := time.Now().UnixMilli(); got < before || got > after {
 		t.Fatalf("regex clock = %d; want the wall clock, in [%d, %d]", got, before, after)
 	}
@@ -136,9 +148,7 @@ func requireNoAbandonedRuns(t *testing.T) {
 func watchAbandonedEnd(t *testing.T) <-chan struct{} {
 	t.Helper()
 	ended := make(chan struct{}, 8)
-	f := func() { ended <- struct{}{} }
-	abandonedRunEnded.Store(&f)
-	t.Cleanup(func() { abandonedRunEnded.Store(nil) })
+	t.Cleanup(OnAbandonedRunEnd(func() { ended <- struct{}{} }))
 	return ended
 }
 

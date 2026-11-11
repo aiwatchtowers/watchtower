@@ -205,8 +205,10 @@ func externalModuleCounting(v, reads *atomic.Int64) automations.Module {
 			reads.Add(1)
 			return v.Load(), nil
 		},
-		// hold blocks until the run is interrupted (a stuck step that,
-		// unlike a JS busy loop, lets a synctest bubble settle).
+		// hold blocks until the run's context ends, then returns at once:
+		// a script looping on it is parked (a synctest bubble settles) and,
+		// once the context ended, a running JS loop only goja's interrupt
+		// can stop.
 		"hold": func(env *automations.Env, _ goja.FunctionCall, _ *goja.Runtime) (any, error) {
 			<-env.Ctx.Done()
 			return nil, nil
@@ -458,9 +460,11 @@ func TestAuto08_ResumeAfterDefaultAgentChanged(t *testing.T) {
 }
 
 // loopScript waits on an ask after a log; once external() is non-zero (set
-// before the restart) the replay holds between the two until interrupted,
-// so a test can act while the replay has not reached the wait.
-const loopScript = `log("a"); if (external() > 0) { hold() } ` + resumeAskCall + `; return 1`
+// before the restart) the replay loops between the two until interrupted,
+// so a test can act while the replay has not reached the wait. hold() parks
+// each turn until the run's context ends; from then on the JS loop spins,
+// and only the interrupt reaching the running script ends it.
+const loopScript = `log("a"); if (external() > 0) { while (true) { hold() } } ` + resumeAskCall + `; return 1`
 
 // TestAuto08_StopDuringReplayReturnsToWaiting: a daemon stop before the
 // replay reached the wait puts the run back to waiting (its ask open, this

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/dop251/goja"
@@ -431,6 +432,40 @@ func (h *heapSamples) module() Module {
 			return nil, nil
 		},
 	}}
+}
+
+// The production watchdog samples on its own every heapPollInterval: in a
+// synctest bubble (virtual time) a run that grew past its budget and then
+// blocks is stopped by the default ticker alone, one poll later.
+func TestSandbox_HeapWatchdogTicksOnItsOwn(t *testing.T) {
+	lowHeapBudget(t, 32<<20)
+	synctest.Test(t, func(t *testing.T) {
+		var keep []byte
+		var grownAt, stoppedAt time.Time
+		grow := funcModule{name: "grow", fns: map[string]SDKFunc{
+			"grow": func(env *Env, _ goja.FunctionCall, _ *goja.Runtime) (any, error) {
+				keep = make([]byte, 128<<20)
+				for i := range keep {
+					keep[i] = 1
+				}
+				runtime.GC()
+				grownAt = time.Now()
+				<-env.Ctx.Done() // the watchdog's abort cancels it
+				stoppedAt = time.Now()
+				return nil, nil
+			},
+		}}
+		runtime.GC()
+		_, err := runScript(t, `grow(); return 1`, sbOpts{clock: newSBClock(), modules: []Module{testModule(), grow}})
+		keep = nil
+		var se *ScriptError
+		if !errors.As(err, &se) || !strings.Contains(se.Message, "too much memory") {
+			t.Fatalf("Run = %v; want the memory stop", err)
+		}
+		if d := stoppedAt.Sub(grownAt); d <= 0 || d > heapPollInterval {
+			t.Fatalf("stopped %v after the growth; want within one %v poll", d, heapPollInterval)
+		}
+	})
 }
 
 // Two runs under the budget each, together over it, do not stop each

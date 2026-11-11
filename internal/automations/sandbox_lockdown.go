@@ -26,7 +26,10 @@ const RegexpMatchTimeout = 2 * time.Second
 // regexClock is the regex timer's clock in Unix milliseconds: the real one,
 // never the script's (recorded, replayed) clock, so timing a match records
 // nothing. Tests replace it to time a call without waiting.
-var regexClock = func() int64 { return time.Now().UnixMilli() }
+var regexClock = realRegexMillis
+
+// realRegexMillis is the wall clock in Unix milliseconds.
+func realRegexMillis() int64 { return time.Now().UnixMilli() }
 
 // MaxBuiltinAlloc caps the cheap amplifiers, in characters, elements or
 // bytes per call: String.prototype.repeat/padStart/padEnd/concat, the text
