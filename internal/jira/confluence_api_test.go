@@ -36,6 +36,7 @@ func newTestClient(t *testing.T, apiBase, tokenURL, accessToken string) *Client 
 	c := NewClient("cloud1", JiraOAuthConfig{ClientID: "id", ClientSecret: "s"}, store)
 	c.apiRoot = apiBase
 	c.tokenURL = tokenURL
+	c.rateLimiter = unthrottledLimiter()
 	return c
 }
 
@@ -56,11 +57,20 @@ func (c *Client) getJSONForTest(ctx context.Context, path string) error {
 // Confluence (c.Confluence().GetJSON) requests, since a later task runs up
 // to 4 Confluence requests in parallel on the same Client.
 func TestConcurrent401sRefreshOnce(t *testing.T) {
+	const requests = 10
 	var refreshes atomic.Int32
 	var good atomic.Value
 	good.Store("old")
+	// Every request is held at the API until all of them have arrived with
+	// the stale token, so all their 401s race one refresh.
+	var unauthorized atomic.Int32
+	allStale := make(chan struct{})
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer "+good.Load().(string) {
+			if unauthorized.Add(1) == requests {
+				close(allStale)
+			}
+			<-allStale
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
@@ -69,7 +79,6 @@ func TestConcurrent401sRefreshOnce(t *testing.T) {
 	defer api.Close()
 	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		refreshes.Add(1)
-		time.Sleep(50 * time.Millisecond)
 		good.Store("new")
 		_, _ = w.Write([]byte(`{"access_token":"new","refresh_token":"rt2","expires_in":3600,"scope":"s"}`))
 	}))
@@ -77,7 +86,7 @@ func TestConcurrent401sRefreshOnce(t *testing.T) {
 
 	c := newTestClient(t, api.URL, tokenSrv.URL, "stale") // helper: stored token "stale", not expired
 	var wg sync.WaitGroup
-	for range 5 {
+	for range requests / 2 {
 		wg.Add(2)
 		go func() { defer wg.Done(); _ = c.getJSONForTest(context.Background(), "/rest/api/3/myself") }()
 		go func() {

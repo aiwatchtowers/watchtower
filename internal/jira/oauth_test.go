@@ -14,9 +14,10 @@ import (
 
 	"watchtower/internal/oauthpage"
 
+	"watchtower/internal/oauthpage/oauthpagetest"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"watchtower/internal/oauthpage/oauthpagetest"
 )
 
 func TestBuildAuthURL_IncludesScopesAndClientID(t *testing.T) {

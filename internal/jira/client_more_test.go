@@ -18,6 +18,12 @@ import (
 
 // makeTestClient constructs a Client wired to the given baseURL and a token
 // store seeded with a valid (non-expired) access token.
+// unthrottledLimiter is a rate limiter that never waits: tests count
+// requests, they do not pace them on the wall clock.
+func unthrottledLimiter() *RateLimiter {
+	return &RateLimiter{tokens: 1000, maxTokens: 1000, refillRate: 1000, lastRefill: time.Now()}
+}
+
 func makeTestClient(t *testing.T, baseURL string) *Client {
 	t.Helper()
 	dir := t.TempDir()
@@ -38,7 +44,7 @@ func makeTestClient(t *testing.T, baseURL string) *Client {
 		oauthCfg:    JiraOAuthConfig{ClientID: "cid", ClientSecret: "secret"},
 		tokenStore:  store,
 		httpClient:  &http.Client{Timeout: 5 * time.Second},
-		rateLimiter: NewRateLimiter(),
+		rateLimiter: unthrottledLimiter(),
 		logger:      log.New(io.Discard, "", 0),
 	}
 	return c
@@ -352,7 +358,7 @@ func TestClient_GetAccessToken_Refreshes(t *testing.T) {
 		oauthCfg:    JiraOAuthConfig{ClientID: "c", ClientSecret: "s"},
 		tokenStore:  store,
 		httpClient:  &http.Client{Timeout: 3 * time.Second},
-		rateLimiter: NewRateLimiter(),
+		rateLimiter: unthrottledLimiter(),
 		logger:      log.New(io.Discard, "", 0),
 	}
 	at, err := c.getAccessToken(context.Background())
@@ -412,13 +418,15 @@ func TestClient_GetAccessToken_CrossProcessRefreshOnce(t *testing.T) {
 	}))
 
 	var calls atomic.Int32
+	refreshing, release := make(chan struct{}), make(chan struct{})
 	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if calls.Add(1) > 1 {
 			w.WriteHeader(http.StatusBadRequest)
 			_, _ = w.Write([]byte(`{"error":"invalid_grant"}`))
 			return
 		}
-		time.Sleep(100 * time.Millisecond) // widen the race window
+		close(refreshing)
+		<-release // held until the second client is at the token lock
 		_, _ = w.Write([]byte(`{"access_token":"new","refresh_token":"rt2","expires_in":3600}`))
 	}))
 	defer tokenSrv.Close()
@@ -434,14 +442,24 @@ func TestClient_GetAccessToken_CrossProcessRefreshOnce(t *testing.T) {
 	}
 	clients := []*Client{newClient(), newClient()}
 
+	// The first client refreshes and is held at the token endpoint, holding
+	// the file lock; the second has read the same expired token and reaches
+	// the lock before the first is let go.
+	atLock := make(chan struct{})
+	clients[1].beforeTokenLock = func() { close(atLock) }
 	var wg sync.WaitGroup
 	tokens := make([]string, len(clients))
 	errs := make([]error, len(clients))
-	for i, c := range clients {
+	run := func(i int) {
 		wg.Go(func() {
-			tokens[i], errs[i] = c.getAccessToken(context.Background())
+			tokens[i], errs[i] = clients[i].getAccessToken(context.Background())
 		})
 	}
+	run(0)
+	<-refreshing
+	run(1)
+	<-atLock
+	close(release)
 	wg.Wait()
 
 	for i := range clients {
@@ -464,13 +482,15 @@ func TestClient_RefreshIfCurrent_CrossProcessRefreshOnce(t *testing.T) {
 	}))
 
 	var calls atomic.Int32
+	refreshing, release := make(chan struct{}), make(chan struct{})
 	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if calls.Add(1) > 1 {
 			w.WriteHeader(http.StatusBadRequest)
 			_, _ = w.Write([]byte(`{"error":"invalid_grant"}`))
 			return
 		}
-		time.Sleep(100 * time.Millisecond) // widen the race window
+		close(refreshing)
+		<-release // held until the second client is at the token lock
 		_, _ = w.Write([]byte(`{"access_token":"new","refresh_token":"rt2","expires_in":3600}`))
 	}))
 	defer tokenSrv.Close()
@@ -486,13 +506,23 @@ func TestClient_RefreshIfCurrent_CrossProcessRefreshOnce(t *testing.T) {
 	}
 	clients := []*Client{newClient(), newClient()}
 
+	// The first client refreshes and is held at the token endpoint, holding
+	// the file lock; the second, with the same stale access token, reaches
+	// the lock before the first is let go.
+	atLock := make(chan struct{})
+	clients[1].beforeTokenLock = func() { close(atLock) }
 	var wg sync.WaitGroup
 	errs := make([]error, len(clients))
-	for i, c := range clients {
+	run := func(i int) {
 		wg.Go(func() {
-			errs[i] = c.refreshIfCurrent(context.Background(), "stale")
+			errs[i] = clients[i].refreshIfCurrent(context.Background(), "stale")
 		})
 	}
+	run(0)
+	<-refreshing
+	run(1)
+	<-atLock
+	close(release)
 	wg.Wait()
 
 	for i := range clients {
