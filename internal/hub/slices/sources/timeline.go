@@ -266,6 +266,9 @@ func stateText(st sessionState) string {
 	case kindWorking:
 		return "Working"
 	case kindBackground:
+		if st.shellsOnly() {
+			return "Background task running"
+		}
 		return "Agents working"
 	case kindWaitingOnAsk:
 		return "Waiting for you"
@@ -279,7 +282,7 @@ func stateText(st sessionState) string {
 	case kindFinished:
 		return "Finished"
 	case kindStopped:
-		return "Stopped"
+		return "Idle"
 	case kindFailed:
 		// "Error: rate limit", or "Stopped on an error".
 		return st.caption()

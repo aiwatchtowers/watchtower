@@ -162,7 +162,7 @@ package enum TerminalSessionQueries {
     /// Whether the session's own agent has worked in the worktree at one of
     /// `roots` on `branch` ('' = a detached HEAD): a pair the state hooks
     /// recorded in `terminal_session_worktrees` (migration 00111) as a `cwd`
-    /// row; a `command` row (00186, board #1716) means the session created
+    /// row; a `command` row (00187, board #1716) means the session created
     /// the pair, not that an agent worked there. Pass the
     /// worktree top both as given and symlink-resolved — the hooks store the
     /// resolved path.
@@ -182,7 +182,7 @@ package enum TerminalSessionQueries {
     /// What workbench `projectID`'s sessions work on (board #987), by
     /// session id: the targets their agents linked (`terminal_session_targets`,
     /// PROJ-14), the worktrees their agents worked in (`terminal_session_worktrees`,
-    /// migration 00111; `cwd` rows only — a `command` row, 00186, is what the
+    /// migration 00111; `cwd` rows only — a `command` row, 00187, is what the
     /// session created, not where it worked) with each one's last sighting (`last_at`, 00174, else
     /// `first_at`) and the run start they are judged against (`agent_turns`'
     /// `since`, as `fetchAgentCwds` reads it). A session
@@ -238,13 +238,15 @@ package enum TerminalSessionQueries {
         let marks = liveIDs.isEmpty ? "NULL" : databaseQuestionMarks(count: liveIDs.count)
         let cwdAt = try hasAgentCwd(db) ? "s.agent_cwd_at" : "NULL"
         let watchIssue = try hasColumn(db, "agent_watch_issue") ? "s.agent_watch_issue" : "NULL"
+        let shells = try hasColumn(db, "agent_background_shells") ? "s.agent_background_shells" : "NULL"
         let open = OwnerAskQueries.notInSpecLoop("a")
         return try SessionAgentStateRow.fetchAll(
             db,
             sql: """
                 SELECT s.id, s.project_id, s.kind, s.title, s.agent_state, s.agent_state_at, p.name AS workbench_name,
                        s.finished_at, s.finish_summary, s.agent_failed_at, s.agent_error,
-                       s.agent_background, s.agent_background_at, s.chat_question, s.chat_question_at,
+                       s.agent_background, s.agent_background_at, \(shells) AS agent_background_shells,
+                       s.chat_question, s.chat_question_at,
                        \(cwdAt) AS agent_cwd_at, \(watchIssue) AS agent_watch_issue,
                        (SELECT COUNT(*) FROM owner_asks a WHERE a.session_id = s.id AND a.status = 'open' AND \(open)) AS open_asks,
                        (SELECT MIN(a.id) FROM owner_asks a WHERE a.session_id = s.id AND a.status = 'open' AND \(open))
@@ -352,12 +354,17 @@ package enum TerminalSessionQueries {
     /// The per-conversation columns a conversation change clears, as Go's
     /// `SetTerminalClaudeSessionID` and `SetTerminalAgentSessionID` clear
     /// them: the turn order, the background agent count, the agent turns and
-    /// the chat question. The working directory (`agent_cwd`) stays.
-    private static let conversationResetColumns = """
-        agent_turn_end = NULL, agent_tool_run = 0,
-        agent_background = NULL, agent_background_at = NULL, chat_question = NULL, chat_question_at = NULL,
-        agent_turns = NULL
-        """
+    /// the chat question. The working directory (`agent_cwd`) stays. The
+    /// background shell count (migration 00186, board #1712) goes too where
+    /// the column exists.
+    private static func conversationResetColumns(_ db: Database) throws -> String {
+        let shells = try hasColumn(db, "agent_background_shells") ? "agent_background_shells = NULL, " : ""
+        return """
+            agent_turn_end = NULL, agent_tool_run = 0,
+            agent_background = NULL, agent_background_at = NULL, \(shells)chat_question = NULL, chat_question_at = NULL,
+            agent_turns = NULL
+            """
+    }
 
     /// "Start fresh": a new Claude session id under the same named row. The
     /// old conversation's columns go with it, the same write as Go's
@@ -368,7 +375,7 @@ package enum TerminalSessionQueries {
         try db.execute(
             sql: """
                 UPDATE terminal_sessions SET claude_session_id = ?, agent_transcript_path = NULL,
-                \(conversationResetColumns)
+                \(try conversationResetColumns(db))
                 WHERE id = ?
                 """,
             arguments: [uuid, id]
@@ -387,7 +394,7 @@ package enum TerminalSessionQueries {
         try db.execute(
             sql: """
                 UPDATE terminal_sessions SET claude_session_id = NULL, agent_transcript_path = NULL,
-                \(conversationResetColumns)
+                \(try conversationResetColumns(db))
                 WHERE id = ? AND kind = 'codex'
                 """,
             arguments: [id]

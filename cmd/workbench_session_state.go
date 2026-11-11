@@ -269,6 +269,7 @@ func recordHookAgentState(stdin io.Reader, stderr io.Writer, rowID int64, rawWor
 		state = agentStateWaiting
 	}
 	turn, subagentToolRun := toolRunTurnOf(in)
+	turn.idle = in.Event == "Notification" && in.NotificationType == "idle_prompt"
 	turn.cwd = hookCwd(in.Event, in.AgentID, in.Cwd)
 	turn.lock = stateHookLockWait.until(deadline)
 	// Not under a deadline: db.Open may be applying a migration, which must
@@ -303,7 +304,7 @@ func recordSubagentToolRun(database *db.DB, rowID, workbenchID int64, in hookEve
 		agentStateWrite{state: state, onlyFrom: agentStateApproval, at: at, turn: hookTurn{lock: lock}}); err != nil {
 		return err
 	}
-	return recordBackgroundReport(database, rowID, workbenchID, in.SessionID, at, nil, lock)
+	return recordBackgroundReport(database, rowID, workbenchID, in.SessionID, at, nil, nil, lock)
 }
 
 // codexStateEvents are the Codex events `session-state --agent codex`
@@ -438,13 +439,18 @@ func recordAgentTurn(database *db.DB, rowID, workbenchID int64, in hookEvent, at
 			agentsInTurn(turns, parents), lock))
 	}
 	remaining, ok := backgroundAgents(in.BackgroundTasks, turns, in.AgentID, parents)
+	var shells *int64
+	if ok {
+		n := backgroundShells(in.BackgroundTasks)
+		shells = &n
+	}
 	if !listed {
-		remaining, ok = codexBackgroundCount(turns), true
+		remaining, ok, shells = codexBackgroundCount(turns), true, nil
 	}
 	if !ok {
 		return err
 	}
-	return errors.Join(err, recordBackgroundReport(database, rowID, workbenchID, in.SessionID, at, &remaining, lock))
+	return errors.Join(err, recordBackgroundReport(database, rowID, workbenchID, in.SessionID, at, &remaining, shells, lock))
 }
 
 // toolRunTurnOf classifies a tool event: subagent is true for one fired
@@ -487,9 +493,14 @@ type hookTurn struct {
 	// stopTranscript is the Stop's transcript_path: its session folder's
 	// subagent meta files give the agent tree the count follows (board #1710).
 	stopTranscript string
-	// background is the Stop's count of background agents at work; invalid
-	// for none or unknown, never zero.
-	background sql.NullInt64
+	// background is the Stop's count of background agents at work and
+	// shells its count of background shells (board #1712): both invalid for
+	// none or unknown, both valid (one may be zero) when either is above
+	// zero.
+	background, shells sql.NullInt64
+	// idle marks the idle_prompt notice: it keeps a stored shell count
+	// (board #1712, db.AgentOrder.KeepShells).
+	idle bool
 	// cwd is the main agent's working directory the event reports (hookCwd,
 	// board #566); "" = none. It rides in the state write, or is written
 	// alone when the state write is a repeat or held back.
@@ -641,13 +652,19 @@ func recordAgentState(database *db.DB, rowID, workbenchID int64, sessionID, stat
 		return err
 	}
 	at = at.Truncate(time.Millisecond) // the stored precision
+	if turn.idle && row.BackgroundShells.Int64 > 0 {
+		// What the write keeps: the shells, with the agents ended.
+		turn.background, turn.shells = sql.NullInt64{Int64: 0, Valid: true}, row.BackgroundShells
+	}
 	if turn.stop && turn.tasks.Present {
 		turns, err := readTerminalAgentTurns(database, row.ID)
 		if err != nil {
 			return err
 		}
-		if n, ok := backgroundAgents(turn.tasks, turns, "", subagentParents(turn.stopTranscript)); ok && n > 0 {
+		n, _ := backgroundAgents(turn.tasks, turns, "", subagentParents(turn.stopTranscript))
+		if shells := backgroundShells(turn.tasks); n > 0 || shells > 0 {
 			turn.background = sql.NullInt64{Int64: n, Valid: true}
+			turn.shells = sql.NullInt64{Int64: shells, Valid: true}
 		}
 	}
 	// The state first: under the hook's lock budget it is the write that
@@ -669,10 +686,10 @@ func recordAgentStateOver(database *db.DB, row *db.TerminalSession, workbenchID 
 	failure *db.AgentFailure, prompt bool, at time.Time, turn hookTurn) error {
 	rowID := row.ID
 	switch {
-	case repeatsAgentState(row, state, failure, prompt, turn.background) && !interruptMovesTurnEnd(row, turn):
+	case repeatsAgentState(row, state, failure, prompt, turn.background, turn.shells) && !interruptMovesTurnEnd(row, turn):
 		var reportErr error
 		if turn.stop && turn.background.Valid {
-			reportErr = writeBackgroundReport(database, rowID, workbenchID, sessionID, at, nil, turn.lock)
+			reportErr = writeBackgroundReport(database, rowID, workbenchID, sessionID, at, nil, nil, turn.lock)
 		}
 		return errors.Join(reportErr, recordCwdAlone(database, row.ID, workbenchID, sessionID, turn.cwd, at, turn.lock))
 	case onlyFrom != "" && row.AgentState.String != onlyFrom,
@@ -688,7 +705,7 @@ func recordAgentStateOver(database *db.DB, row *db.TerminalSession, workbenchID 
 // clear when a main-thread tool result ended a `waiting`.
 func writeAgentState(database *db.DB, row *db.TerminalSession, workbenchID int64, sessionID, state, onlyFrom string,
 	failure *db.AgentFailure, prompt bool, at time.Time, turn hookTurn) error {
-	order := db.AgentOrder{Stop: turn.stop, Background: turn.background, Cwd: turn.cwd, NotOverApproval: turn.notOverApproval,
+	order := db.AgentOrder{Stop: turn.stop, Background: turn.background, Shells: turn.shells, KeepShells: turn.idle, Cwd: turn.cwd, NotOverApproval: turn.notOverApproval,
 		ToolRun: turn.toolRun, Interrupt: turn.interrupt}
 	var noteErr error
 	if turn.toolRun || turn.interrupt {
@@ -874,18 +891,18 @@ func hookSessionRow(database *db.DB, rowID, workbenchID int64, sessionID string)
 // — no count, or another state — never waits for the write lock; it writes
 // only over a `waiting` with a positive count reported before at, and
 // LowerTerminalBackground repeats every guard.
-func recordBackgroundReport(database *db.DB, rowID, workbenchID int64, sessionID string, at time.Time, count *int64,
+func recordBackgroundReport(database *db.DB, rowID, workbenchID int64, sessionID string, at time.Time, count, shells *int64,
 	lock hookLockWait) error {
 	row, err := hookSessionRow(database, rowID, workbenchID, sessionID)
 	if row == nil || err != nil {
 		return err
 	}
 	at = at.Truncate(time.Millisecond) // the stored precision
-	if row.AgentState.String != agentStateWaiting || row.Background.Int64 <= 0 ||
+	if row.AgentState.String != agentStateWaiting || (row.Background.Int64 <= 0 && row.BackgroundShells.Int64 <= 0) ||
 		(!row.BackgroundAt.IsZero() && !at.After(row.BackgroundAt)) {
 		return nil
 	}
-	return writeBackgroundReport(database, rowID, workbenchID, sessionID, at, count, lock)
+	return writeBackgroundReport(database, rowID, workbenchID, sessionID, at, count, shells, lock)
 }
 
 // recordBackgroundRaise records a SubagentStart's report (board #1710, ask
@@ -916,11 +933,12 @@ func recordBackgroundRaise(database *db.DB, rowID, workbenchID int64, sessionID 
 }
 
 // writeBackgroundReport stamps agent_background_at with at and, with count,
-// lowers agent_background to it: a background report, never a transition.
-func writeBackgroundReport(database *db.DB, rowID, workbenchID int64, sessionID string, at time.Time, count *int64,
+// lowers agent_background to it, with shells agent_background_shells: a
+// background report, never a transition.
+func writeBackgroundReport(database *db.DB, rowID, workbenchID int64, sessionID string, at time.Time, count, shells *int64,
 	lock hookLockWait) error {
 	return lock.write(database, func() error {
-		_, err := database.LowerTerminalBackground(rowID, workbenchID, sessionID, at, count)
+		_, err := database.LowerTerminalBackground(rowID, workbenchID, sessionID, at, count, shells)
 		return err
 	})
 }
@@ -932,11 +950,11 @@ func writeBackgroundReport(database *db.DB, rowID, workbenchID int64, sessionID 
 // background count differs from background, the count the write stores
 // (invalid for every `waiting` but a Stop that counted some).
 func repeatsAgentState(row *db.TerminalSession, state string, failure *db.AgentFailure, prompt bool,
-	background sql.NullInt64) bool {
+	background, shells sql.NullInt64) bool {
 	switch {
 	case row.AgentState.String != state:
 		return false
-	case state == agentStateWaiting && row.Background != background:
+	case state == agentStateWaiting && (row.Background != background || row.BackgroundShells != shells):
 		return false
 	case failure != nil:
 		return row.AgentFailure != nil && row.AgentFailure.Error == failure.Error

@@ -198,5 +198,5 @@ There is no empty state: a workbench with no deletes looks as today.
 - Workbench delete unchanged; remote branches never touched — agent's call, approved with the spec in ask #1213 (a deleted workbench's sessions are not auto-cleaned).
 - Implementation decisions (agent's call, all fail-closed):
   - The branch checked out in an adopted scratchpad worktree is adopted too. Every branch catch still applies: born after the uuid was acquired, merged or pushed, not checked out elsewhere.
-  - A scratchpad lane is adopted only when it was born after this row acquired the uuid. A uuid ever held by a deleted row is treated as shared, using migration 00187 `agent_session_tombstones`, written by a `BEFORE DELETE` trigger on `terminal_sessions`.
+  - A scratchpad lane is adopted only when it was born after this row acquired the uuid. A uuid ever held by a deleted row is treated as shared, using migration 00188 `agent_session_tombstones`, written by a `BEFORE DELETE` trigger on `terminal_sessions`.
   - A command row counts only when its root is a worktree of the planned repository. v1 limit: if the agent itself removed a worktree created by a command, that worktree's branch is left for the Clean Up screen.

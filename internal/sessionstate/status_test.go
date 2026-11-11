@@ -13,17 +13,18 @@ import (
 )
 
 type fixtureRow struct {
-	Kind              string  `json:"kind"`
-	AgentState        *string `json:"agent_state"`
-	AgentStateAt      *string `json:"agent_state_at"`
-	FinishedAt        *string `json:"finished_at"`
-	AgentFailedAt     *string `json:"agent_failed_at"`
-	AgentBackground   *int    `json:"agent_background"`
-	AgentBackgroundAt *string `json:"agent_background_at"`
-	OpenAsks          int     `json:"open_asks"`
-	OpenQuestionAsks  int     `json:"open_question_asks"`
-	OpenReviewAsks    int     `json:"open_review_asks"`
-	RunStartedAt      string  `json:"run_started_at"`
+	Kind                  string  `json:"kind"`
+	AgentState            *string `json:"agent_state"`
+	AgentStateAt          *string `json:"agent_state_at"`
+	FinishedAt            *string `json:"finished_at"`
+	AgentFailedAt         *string `json:"agent_failed_at"`
+	AgentBackground       *int    `json:"agent_background"`
+	AgentBackgroundAt     *string `json:"agent_background_at"`
+	AgentBackgroundShells *int    `json:"agent_background_shells"`
+	OpenAsks              int     `json:"open_asks"`
+	OpenQuestionAsks      int     `json:"open_question_asks"`
+	OpenReviewAsks        int     `json:"open_review_asks"`
+	RunStartedAt          string  `json:"run_started_at"`
 }
 
 type fixtureCase struct {
@@ -35,6 +36,8 @@ type fixtureCase struct {
 		Idle          bool   `json:"idle"`
 		Working       bool   `json:"working"`
 		NeedsApproval bool   `json:"needs_approval"`
+		// BackgroundShells is the shell count shown (absent = 0).
+		BackgroundShells int `json:"background_shells"`
 	} `json:"expect"`
 }
 
@@ -60,7 +63,8 @@ func TestStatusFixtures(t *testing.T) {
 				ID: 1, Kind: c.Row.Kind, AgentState: c.Row.AgentState, AgentStateAt: c.Row.AgentStateAt,
 				FinishedAt: c.Row.FinishedAt, AgentFailedAt: c.Row.AgentFailedAt,
 				AgentBackground: c.Row.AgentBackground, AgentBackgroundAt: c.Row.AgentBackgroundAt,
-				OpenAsks: c.Row.OpenAsks, OpenQuestionAsks: c.Row.OpenQuestionAsks,
+				AgentBackgroundShells: c.Row.AgentBackgroundShells,
+				OpenAsks:              c.Row.OpenAsks, OpenQuestionAsks: c.Row.OpenQuestionAsks,
 				OpenReviewAsks: c.Row.OpenReviewAsks, RunStartedAt: c.Row.RunStartedAt,
 			}
 			s := Resolve(r, now)
@@ -78,6 +82,9 @@ func TestStatusFixtures(t *testing.T) {
 			}
 			if got := NeedsApproval(s); got != c.Expect.NeedsApproval {
 				t.Errorf("NeedsApproval = %v, want %v", got, c.Expect.NeedsApproval)
+			}
+			if got := BackgroundShells(r, now); got != c.Expect.BackgroundShells {
+				t.Errorf("BackgroundShells = %d, want %d", got, c.Expect.BackgroundShells)
 			}
 		})
 	}

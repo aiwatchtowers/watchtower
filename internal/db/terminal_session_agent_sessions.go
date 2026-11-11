@@ -75,7 +75,7 @@ func (db *DB) AgentSessionIDs(ctx context.Context, rowID int64) ([]AgentSessionI
 // AgentSessionIDOwners maps each of uuids to every terminal session row
 // whose history or current claude_session_id holds it, ascending; a uuid
 // no row holds is absent. A uuid a deleted row had (agent_session_tombstones,
-// 00187) also lists owner 0, "a deleted row". One query for all of them.
+// 00188) also lists owner 0, "a deleted row". One query for all of them.
 // More than one owner means the conversation was resumed in another tab, or
 // by a row since deleted (auto cleanup spec 2026-11-10 §2b: such a uuid
 // adopts nothing).

@@ -27,6 +27,7 @@ final class SessionAgentStatusFixtureTests: XCTestCase {
         let agentFailedAt: String?
         let agentBackground: Int?
         let agentBackgroundAt: String?
+        let agentBackgroundShells: Int?
         let openAsks: Int
         let openQuestionAsks: Int
         let openReviewAsks: Int
@@ -35,7 +36,8 @@ final class SessionAgentStatusFixtureTests: XCTestCase {
         enum CodingKeys: String, CodingKey {
             case agentState = "agent_state", agentStateAt = "agent_state_at", finishedAt = "finished_at"
             case agentFailedAt = "agent_failed_at", agentBackground = "agent_background"
-            case agentBackgroundAt = "agent_background_at", openAsks = "open_asks"
+            case agentBackgroundAt = "agent_background_at", agentBackgroundShells = "agent_background_shells"
+            case openAsks = "open_asks"
             case openQuestionAsks = "open_question_asks", openReviewAsks = "open_review_asks"
             case runStartedAt = "run_started_at"
         }
@@ -47,10 +49,13 @@ final class SessionAgentStatusFixtureTests: XCTestCase {
         let idle: Bool
         let working: Bool
         let needsApproval: Bool
+        /// The background shell count shown; absent = 0.
+        let backgroundShells: Int?
 
         enum CodingKeys: String, CodingKey {
             case state, idle, working
             case hooksReported = "hooks_reported", needsApproval = "needs_approval"
+            case backgroundShells = "background_shells"
         }
     }
 
@@ -71,7 +76,8 @@ final class SessionAgentStatusFixtureTests: XCTestCase {
                 id: 1, projectID: 1, title: "t", agentState: row.agentState, agentStateAt: row.agentStateAt,
                 workbenchName: "wb", finishedAt: row.finishedAt, agentFailedAt: row.agentFailedAt,
                 openAsks: row.openAsks, openQuestionAsks: row.openQuestionAsks, openReviewAsks: row.openReviewAsks,
-                agentBackground: row.agentBackground, agentBackgroundAt: row.agentBackgroundAt
+                agentBackground: row.agentBackground, agentBackgroundAt: row.agentBackgroundAt,
+                agentBackgroundShells: row.agentBackgroundShells
             )
             let status = try XCTUnwrap(SessionAgentStatus.resolve(
                 [stateRow], liveIDs: live ? [1] : [], startedAt: started.map { [1: $0] } ?? [:], now: now
@@ -81,6 +87,7 @@ final class SessionAgentStatusFixtureTests: XCTestCase {
             XCTAssertEqual(SessionControl.isIdle(status), item.expect.idle, item.name)
             XCTAssertEqual(SessionControl.isWorking(status), item.expect.working, item.name)
             XCTAssertEqual(status.state.kind == .needsApproval, item.expect.needsApproval, item.name)
+            XCTAssertEqual(status.state.backgroundShells, item.expect.backgroundShells ?? 0, item.name)
         }
     }
 

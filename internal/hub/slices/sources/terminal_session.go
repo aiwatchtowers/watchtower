@@ -307,7 +307,7 @@ func (s *TerminalSessionSource) published(ctx context.Context, tx *sql.Tx) ([]pu
 	err = scanRows(ctx, tx, `
 SELECT s.id, s.project_id, s.kind, s.title, s.target_id, s.created_at, s.last_active_at,
        s.agent_state, s.agent_state_at, s.finished_at, s.finish_summary, s.agent_failed_at, s.agent_error,
-       s.agent_background, s.agent_background_at, COALESCE(s.agent_watch_issue, ''),
+       s.agent_background, s.agent_background_at, s.agent_background_shells, COALESCE(s.agent_watch_issue, ''),
        (SELECT COUNT(*) FROM owner_asks a WHERE a.session_id = s.id AND a.status = 'open' AND `+askVisible+`),
        (SELECT MIN(a.id) FROM owner_asks a WHERE a.session_id = s.id AND a.status = 'open' AND `+askVisible+`),
        (SELECT COUNT(*) FROM owner_asks a
@@ -325,7 +325,7 @@ ORDER BY s.last_active_at DESC, s.id DESC`, nil, func(r *sql.Rows) error {
 		)
 		if err := r.Scan(&p.id, &p.workbenchID, &kind, &p.title, &target, &p.createdAt, &p.lastActiveAt,
 			&row.AgentState, &row.AgentStateAt, &row.FinishedAt, &p.finishSummary, &row.AgentFailedAt, &agentError,
-			&row.AgentBackground, &row.AgentBackgroundAt, &watchIssue,
+			&row.AgentBackground, &row.AgentBackgroundAt, &row.AgentBackgroundShells, &watchIssue,
 			&row.OpenAsks, &oldest, &row.OpenQuestionAsks, &row.OpenReviewAsks); err != nil {
 			return err
 		}
@@ -421,6 +421,7 @@ type sessionState struct {
 	err                      string // agent_error of a failed turn
 	oldestAskID              *int64 // nil without open asks
 	agents                   int    // background agents of a background session
+	shells                   int    // background shells of a background session (board #1712)
 	watchIssue               string // agent_watch_issue; shown only on a working session
 }
 
@@ -465,6 +466,7 @@ func resolveState(r sessionstate.Row, now time.Time, agentError string, oldest *
 		if r.AgentBackground != nil {
 			st.agents = *r.AgentBackground
 		}
+		st.shells = sessionstate.BackgroundShells(r, now)
 	case sessionstate.StateNeedsApproval:
 		st.kind = kindNeedsApproval
 	case sessionstate.StateError:
@@ -481,6 +483,10 @@ func resolveState(r sessionstate.Row, now time.Time, agentError string, oldest *
 	}
 	return st
 }
+
+// shellsOnly: a background session whose only background work is shells
+// (SessionSwitcherPresentation.State.shellsOnly).
+func (st sessionState) shellsOnly() bool { return st.agents <= 0 && st.shells > 0 }
 
 func (st sessionState) asksAreOnlyChecks() bool { return st.openAsks > 0 && st.openQuestion == 0 }
 func (st sessionState) asksAreOnlyReviews() bool {
@@ -548,6 +554,9 @@ func (st sessionState) glyph() string {
 		if st.openAsks > 0 {
 			return askGlyph
 		}
+		if st.shellsOnly() {
+			return "hourglass"
+		}
 		return "person.2.fill"
 	case kindWaitingOnAsk:
 		return "questionmark"
@@ -594,7 +603,7 @@ func (st sessionState) caption() string {
 		}
 		return "Finished"
 	case kindStopped:
-		return "Stopped"
+		return "Idle"
 	case kindBackground:
 		agents := "Agents working"
 		switch {
@@ -602,6 +611,10 @@ func (st sessionState) caption() string {
 			agents = "1 agent working"
 		case st.agents > 1:
 			agents = strconv.Itoa(st.agents) + " agents working"
+		case st.shells == 1:
+			agents = "Background task running"
+		case st.shells > 1:
+			agents = strconv.Itoa(st.shells) + " background tasks running"
 		}
 		if st.openAsks > 0 {
 			return agents + " · " + asksOpen(st.openAsks)

@@ -77,7 +77,7 @@ final class SessionSwitcherPresentationTests: XCTestCase {
             statuses: [1: .live(.working), 2: .live(.stopped), 3: .live(.needsApproval)]
         )
         XCTAssertEqual(result.map(\.state), [.live(.working), .live(.stopped), .live(.needsApproval), .live(.running)])
-        XCTAssertEqual(result.map(\.caption), ["Working", "Stopped", "Needs approval", "Running"],
+        XCTAssertEqual(result.map(\.caption), ["Working", "Idle", "Needs approval", "Running"],
                        "a live session never carries an age caption")
         XCTAssertTrue(result.allSatisfy(\.state.live))
     }

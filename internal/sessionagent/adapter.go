@@ -151,13 +151,14 @@ type HookSpec struct {
 	ReplacesMarkerPrompt bool
 }
 
-// Probe outcomes. busy and waiting leave the row alone; idle, shell,
-// unknown and gone end the count.
+// Probe outcomes. busy and waiting leave the row alone; shell ends the
+// subagent count and keeps the background shells (board #1712); idle,
+// unknown and gone end every count.
 const (
 	ProbeBusy    = "busy"    // the agents still work
 	ProbeWaiting = "waiting" // a prompt or a held message
 	ProbeIdle    = "idle"
-	ProbeShell   = "shell"   // only background shells run, which the count does not track
+	ProbeShell   = "shell"   // only background shells run: the subagents are over, the shells are not
 	ProbeUnknown = "unknown" // no status, or one this version does not know
 	ProbeGone    = "gone"    // no registry entry, or its process is dead or its pid reused
 )

@@ -2729,6 +2729,7 @@ CREATE TABLE IF NOT EXISTS terminal_sessions (
     agent_tool_run    INTEGER NOT NULL DEFAULT 0, -- 1 = the stored state came from a main-thread PostToolUse (written by Go; the Desktop's Start fresh resets it to 0)
     agent_background  INTEGER CHECK (agent_background IS NULL OR agent_background >= 0), -- in-flight background subagents at the last Stop of this run, lowered by later reports; NULL = none / unknown; meaningful only under agent_state = 'waiting' (written by the hooks; the Desktop's Start fresh clears it)
     agent_background_at TEXT, -- last report about those subagents (the Stop, a subagent's tool result, a SubagentStop), agent_state_at format; NULL when agent_background is NULL
+    agent_background_shells INTEGER CHECK (agent_background_shells IS NULL OR agent_background_shells >= 0), -- in-flight background shells (run_in_background Bash) at the last Stop of this run, lowered by a SubagentStop's snapshot; set and NULLed with agent_background; NULL = none / unknown
     chat_question     TEXT, -- a question the Stop ask guard let through and recorded for escalation: strict, a short one while the owner was present; soft, any chat question or full request, present or away: JSON {"question": "...", "options": [{"label","recommended"}], "level": "full"} (level only for a full request soft recorded with the message's own text); NULL = none (written by Go; the Desktop's Start fresh clears it)
     chat_question_at  TEXT, -- the guard's Stop time, agent_state_at format; NULL with chat_question
     agent_turns       TEXT, -- JSON {"since": run mark, "turns": {"<agent_id>": {"start": stamp, "stop": stamp}}}: the last SubagentStart/SubagentStop per subagent or teammate of this run, open while start > stop; a stamp before since writes nothing; NULL = none (written by Go; the Desktop's Start fresh clears it)
@@ -2744,7 +2745,7 @@ CREATE TABLE IF NOT EXISTS terminal_sessions (
     agent_watch_issue TEXT CHECK(agent_watch_issue IN ('missing','permission','compressed','unreadable')), -- why the session host's codex rollout watch cannot read a working codex row's rollout (00175, Go only); NULL = watched; the next hook event clears it
     agent_watch_issue_at TEXT, -- when that issue was written, agent_state_at format; NULL with agent_watch_issue
     start_notice      TEXT, -- Go's start (`workbench session start`): the owner's line about the place (worktree warnings, "Started in the folder: …", the setup command that did not run, a failed move); NULL/'' = nothing to say (00179)
-    delete_requested_at TEXT, -- the owner confirmed the delete and its background cleanup has not finished (Desktop only, 00186); NULL = not deleting
+    delete_requested_at TEXT, -- the owner confirmed the delete and its background cleanup has not finished (Desktop only, 00187); NULL = not deleting
     CHECK (title != '' AND folder_path != ''),
     CHECK (kind <> 'claude' OR claude_session_id IS NOT NULL)
 );
@@ -2928,8 +2929,8 @@ CREATE TABLE IF NOT EXISTS terminal_session_worktrees (
     branch     TEXT NOT NULL DEFAULT '',  -- short branch name at the time; '' = detached HEAD / unreadable
     first_at   TEXT NOT NULL,             -- agent_state_at format
     last_at    TEXT,                      -- last run it was seen in (00174), agent_state_at format; NULL = first_at
-    source     TEXT NOT NULL DEFAULT 'cwd' CHECK (source IN ('cwd','command')), -- 'cwd' = an agent worked there; 'command' = parsed from an agent's git command (00186)
-    kind       TEXT NOT NULL DEFAULT 'worktree' CHECK (kind IN ('worktree','branch')), -- 'branch' = a branch-only row, root = the repository's top level (00186)
+    source     TEXT NOT NULL DEFAULT 'cwd' CHECK (source IN ('cwd','command')), -- 'cwd' = an agent worked there; 'command' = parsed from an agent's git command (00187)
+    kind       TEXT NOT NULL DEFAULT 'worktree' CHECK (kind IN ('worktree','branch')), -- 'branch' = a branch-only row, root = the repository's top level (00187)
     PRIMARY KEY (session_id, root, branch)
 );
 
@@ -2943,7 +2944,7 @@ CREATE TABLE IF NOT EXISTS terminal_session_agent_sessions (
     PRIMARY KEY (terminal_session_id, agent_session_id)
 );
 
--- Every agent session id a deleted terminal session had (00187), written by a
+-- Every agent session id a deleted terminal session had (00188), written by a
 -- BEFORE DELETE trigger on terminal_sessions; no foreign key, it outlives the
 -- row. A tombstoned uuid counts as shared for the cleanup's scratchpad rule.
 CREATE TABLE IF NOT EXISTS agent_session_tombstones (

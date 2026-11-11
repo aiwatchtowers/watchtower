@@ -45,7 +45,7 @@
 Depends on: none
 
 **Files:**
-- Create: `internal/db/migrations/00186_session_auto_cleanup.sql` (renumber if `main` moved on)
+- Create: `internal/db/migrations/00187_session_auto_cleanup.sql` (renumbered from 00186: main took 00186)
 - Modify: `internal/db/schema.sql` (the `terminal_sessions` and `terminal_session_worktrees` blocks)
 - Modify: `internal/db/terminal_session_worktrees.go`
 - Regenerate: the golden snapshot + `WatchtowerDesktop/Tests/Support/TestDatabase+Schema.swift` (`go test ./internal/db/ -run 'TestSchemaGolden|TestDesktopTestSchema' -update`)
