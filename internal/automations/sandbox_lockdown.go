@@ -23,6 +23,11 @@ import (
 // still reads a timed-out match as "no match" (v1 limit).
 const RegexpMatchTimeout = 2 * time.Second
 
+// regexpMatchTimeout is the timeout in force: RegexpMatchTimeout, which a
+// test shortens (with regexp2.DefaultMatchTimeout) so a catastrophic
+// pattern ends in milliseconds instead of seconds.
+var regexpMatchTimeout = RegexpMatchTimeout
+
 // MaxBuiltinAlloc caps the cheap amplifiers, in characters, elements or
 // bytes per call: String.prototype.repeat/padStart/padEnd/concat, the text
 // replace/replaceAll/RegExp@@replace insert, String.raw,
@@ -912,7 +917,7 @@ func (s *Sandbox) lockdown() error {
 		return s.rt.ToValue(expandedLength(call.Argument(0).String(), str, int(call.Argument(2).ToInteger())))
 	}
 	nv, err := lock(goja.Undefined(), s.rt.GlobalObject(), s.rt.ToValue(MaxBuiltinAlloc), s.rt.ToValue(MaxJSONDepth),
-		s.rt.ToValue(RegexpMatchTimeout.Milliseconds()), s.rt.ToValue(MaxDefaultSortLength), s.rt.ToValue(MaxListing),
+		s.rt.ToValue(regexpMatchTimeout.Milliseconds()), s.rt.ToValue(MaxDefaultSortLength), s.rt.ToValue(MaxListing),
 		s.rt.ToValue(jsonLimits), s.rt.ToValue(quoted), s.rt.ToValue(classOf), s.rt.ToValue(expanded), s.rt.ToValue(execHelper),
 		s.rt.ToValue(realNow))
 	if err != nil {

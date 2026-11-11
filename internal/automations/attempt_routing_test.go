@@ -242,8 +242,6 @@ func TestBuiltinRoutingParallelWorkersShareInputReservation(t *testing.T) {
 	gen := routedSDKGenerator(t, p, r, false)
 	f := newExFixture(t, exOpts{backends: func(_ *exFixture, b *automations.Backends) {
 		b.Primitives = map[string]automations.PrimitiveFunc{"brief.compose": func(ctx context.Context, _ automations.PrimitiveCall) (automations.PrimitiveResult, error) {
-			ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-			defer cancel()
 			first := make(chan error, 1)
 			go func() { _, _, _, err := gen.Generate(ctx, strings.Repeat("x", 4000), "", ""); first <- err }()
 			<-started

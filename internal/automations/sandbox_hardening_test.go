@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -50,86 +51,120 @@ func TestAuto07_NoCodeFromStrings(t *testing.T) {
 }
 
 func TestSandbox_CatastrophicRegexEndsWithinDeadline(t *testing.T) {
-	if regexp2.DefaultMatchTimeout != RegexpMatchTimeout {
-		t.Fatalf("regexp2.DefaultMatchTimeout = %v; want %v", regexp2.DefaultMatchTimeout, RegexpMatchTimeout)
+	if regexp2.DefaultMatchTimeout != RegexpMatchTimeout || regexpMatchTimeout != RegexpMatchTimeout {
+		t.Fatalf("regexp2.DefaultMatchTimeout = %v, sandbox %v; want %v", regexp2.DefaultMatchTimeout, regexpMatchTimeout, RegexpMatchTimeout)
 	}
+	// A match the interrupt cannot reach ends by its own timeout, within the
+	// grace Run gives a stuck script: never abandoned for a regex.
+	if RegexpMatchTimeout > AbandonGrace {
+		t.Fatalf("RegexpMatchTimeout %v > AbandonGrace %v", RegexpMatchTimeout, AbandonGrace)
+	}
+	shortRegexpTimeout(t)
 	clock := newSBClock()
+	start := clock.Now()
 	sb, _ := newTestSandbox(t, `return /(a+)+b(?=c)/.test("a".repeat(33))`,
 		sbOpts{budget: Budget{Tokens: 1000, Minutes: 1}, clock: clock})
-	clock.Advance(59 * time.Second)
-	start := time.Now()
-	_, err := sb.Run()
-	wantInterrupt(t, err, InterruptTimeout)
-	if took := time.Since(start); took > time.Second+AbandonGrace+time.Second {
-		t.Fatalf("Run took %v", took)
-	}
-	waitNoAbandonedRuns(t)
+	res := runAsync(sb)
+	clock.expireDeadline(start, 1)
+	r := <-res // the grace never expires: the match itself ended
+	wantInterrupt(t, r.err, InterruptTimeout)
+	wantNotAbandoned(t, r.err)
 }
 
-// stuckModule defines `stuck`, a native call that ignores its context for
-// stuckFor (as a long builtin would).
-func stuckModule(stuckFor time.Duration) Module {
+// shortRegexpTimeout makes a backtracking match time out after 1 ms (regexp2
+// checks its clock every 100 ms or so), so a catastrophic pattern costs the
+// test a fraction of a second, not RegexpMatchTimeout. Any timed call of
+// 1 ms or more then throws, so only catastrophic patterns may run before
+// the returned restore (also a cleanup).
+func shortRegexpTimeout(t *testing.T) (restore func()) {
+	t.Helper()
+	prevLib, prev := regexp2.DefaultMatchTimeout, regexpMatchTimeout
+	regexp2.DefaultMatchTimeout, regexpMatchTimeout = time.Millisecond, time.Millisecond
+	restore = func() { regexp2.DefaultMatchTimeout, regexpMatchTimeout = prevLib, prev }
+	t.Cleanup(restore)
+	return restore
+}
+
+// stuckModule defines `stuck`, a native call that ignores its context until
+// release is closed (as a long builtin would); entered is closed on the
+// first call.
+func stuckModule(entered, release chan struct{}) Module {
+	var once sync.Once
 	return funcModule{name: "stuck", fns: map[string]SDKFunc{
 		"stuck": func(*Env, goja.FunctionCall, *goja.Runtime) (any, error) {
-			time.Sleep(stuckFor)
+			once.Do(func() { close(entered) })
+			<-release
 			return nil, nil
 		},
 	}}
 }
 
-func waitNoAbandonedRuns(t *testing.T) {
+// requireNoAbandonedRuns fails a test that starts while an earlier one left
+// a script goroutine behind.
+func requireNoAbandonedRuns(t *testing.T) {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for AbandonedRuns() > 0 {
-		if time.Now().After(deadline) {
-			t.Fatalf("AbandonedRuns = %d after 30 s", AbandonedRuns())
-		}
-		time.Sleep(20 * time.Millisecond)
+	if n := AbandonedRuns(); n != 0 {
+		t.Fatalf("AbandonedRuns = %d at the start; an earlier test left one behind", n)
 	}
 }
 
+// watchAbandonedEnd returns a channel that receives each time an abandoned
+// script goroutine ends.
+func watchAbandonedEnd(t *testing.T) <-chan struct{} {
+	t.Helper()
+	ended := make(chan struct{}, 8)
+	f := func() { ended <- struct{}{} }
+	abandonedRunEnded.Store(&f)
+	t.Cleanup(func() { abandonedRunEnded.Store(nil) })
+	return ended
+}
+
 func TestSandbox_StuckNativeIsAbandonedAfterGrace(t *testing.T) {
-	waitNoAbandonedRuns(t)
+	requireNoAbandonedRuns(t)
+	ended := watchAbandonedEnd(t)
+	entered, release := make(chan struct{}), make(chan struct{})
 	clock := newSBClock()
+	start := clock.Now()
 	sb, _ := newTestSandbox(t, `while (true) { try { stuck() } catch (e) {} }`,
-		sbOpts{budget: Budget{Tokens: 1000, Minutes: 1}, clock: clock, modules: []Module{stuckModule(AbandonGrace + 2*time.Second)}})
-	clock.Advance(59*time.Second + 500*time.Millisecond)
-	start := time.Now()
-	_, err := sb.Run()
-	took := time.Since(start)
+		sbOpts{budget: Budget{Tokens: 1000, Minutes: 1}, clock: clock, modules: []Module{stuckModule(entered, release)}})
+	res := runAsync(sb)
+	<-entered
+	clock.expireDeadline(start, 1)
+	clock.expireGrace() // Run waits the grace out only because the script is stuck
+	r := <-res
 	var ri *RunInterrupted
-	if !errors.As(err, &ri) || ri.Reason != InterruptTimeout || !ri.Abandoned {
-		t.Fatalf("Run = %v; want an abandoned timeout", err)
-	}
-	if took > 500*time.Millisecond+AbandonGrace+500*time.Millisecond {
-		t.Fatalf("Run took %v; want deadline + grace", took)
+	if !errors.As(r.err, &ri) || ri.Reason != InterruptTimeout || !ri.Abandoned {
+		t.Fatalf("Run = %v; want an abandoned timeout", r.err)
 	}
 	if AbandonedRuns() != 1 {
 		t.Fatalf("AbandonedRuns = %d; want 1", AbandonedRuns())
 	}
-	waitNoAbandonedRuns(t)
+	close(release)
+	<-ended
+	if AbandonedRuns() != 0 {
+		t.Fatalf("AbandonedRuns = %d after the stuck call returned; want 0", AbandonedRuns())
+	}
 }
 
 func TestSandbox_HugeJoinEndsWithinDeadlinePlusGrace(t *testing.T) {
 	clock := newSBClock()
+	start := clock.Now()
 	sb, _ := newTestSandbox(t, `var a = new Array(16e6); while (true) { a.join("") }`,
 		sbOpts{budget: Budget{Tokens: 1000, Minutes: 1}, clock: clock})
-	clock.Advance(59*time.Second + 700*time.Millisecond)
-	start := time.Now()
-	_, err := sb.Run()
-	wantInterrupt(t, err, InterruptTimeout)
-	if took := time.Since(start); took > 300*time.Millisecond+AbandonGrace+time.Second {
-		t.Fatalf("Run took %v", took)
-	}
-	waitNoAbandonedRuns(t)
+	res := runAsync(sb)
+	clock.expireDeadline(start, 1)
+	r := <-res // the grace never expires: the capped join itself ended
+	wantInterrupt(t, r.err, InterruptTimeout)
+	wantNotAbandoned(t, r.err)
 }
 
 func TestSandbox_DeepJSONStringifyRefused(t *testing.T) {
 	deep := `var o = {}, c = o; for (var i = 0; i < 200000; i++) { c.a = {}; c = c.a }`
-	start := time.Now()
+	// 200 000 levels would overflow the Go stack in goja's native
+	// stringify: the RangeError shows the depth check ran first.
 	got := mustRun(t, deep+` try { JSON.stringify(o); return "ran" } catch (e) { return e.name }`, sbOpts{})
-	if got != "RangeError" || time.Since(start) > 5*time.Second {
-		t.Fatalf("deep stringify = %v after %v; want a quick RangeError", got, time.Since(start))
+	if got != "RangeError" {
+		t.Fatalf("deep stringify = %v; want a RangeError", got)
 	}
 	ok := mustRun(t, `var o = {}, c = o; for (var i = 0; i < 900; i++) { c.a = {}; c = c.a }
 		var cyc = {}; cyc.self = cyc; var cycErr = "";
@@ -151,11 +186,14 @@ func TestSandbox_RepeatCapped(t *testing.T) {
 
 func TestSandbox_ReturnValueSerialisedUnderInterrupt(t *testing.T) {
 	clock := newSBClock()
+	start := clock.Now()
 	sb, _ := newTestSandbox(t, `return { get x() { while (true) {} } }`,
 		sbOpts{budget: Budget{Tokens: 1000, Minutes: 1}, clock: clock})
-	clock.Advance(59*time.Second + 500*time.Millisecond)
-	_, err := runWithin(t, sb, 5*time.Second)
-	wantInterrupt(t, err, InterruptTimeout)
+	res := runAsync(sb)
+	clock.expireDeadline(start, 1)
+	r := <-res
+	wantInterrupt(t, r.err, InterruptTimeout)
+	wantNotAbandoned(t, r.err)
 }
 
 func TestSandbox_ReturnValueIsJSON(t *testing.T) {
@@ -306,18 +344,19 @@ const deepJS = `function deep(n) { var o = {}, c = o; for (var i = 0; i < n; i++
 `
 
 // wantQuickRangeError runs script (which returns e.name or "ran") and wants
-// a RangeError within 5 s and no abandoned goroutine.
+// a RangeError and no abandoned goroutine. The scripts nest 200 000 levels,
+// past what goja's native recursion survives: the RangeError shows the
+// depth check ran before goja's own work.
 func wantQuickRangeError(t *testing.T, name, script string) {
 	t.Helper()
-	start := time.Now()
 	got := mustRun(t, deepJS+script, sbOpts{})
-	if got != "RangeError" || time.Since(start) > 5*time.Second || AbandonedRuns() != 0 {
-		t.Errorf("%s: got %v after %v (abandoned %d); want a quick RangeError", name, got, time.Since(start), AbandonedRuns())
+	if got != "RangeError" || AbandonedRuns() != 0 {
+		t.Errorf("%s: got %v (abandoned %d); want a RangeError", name, got, AbandonedRuns())
 	}
 }
 
 func TestSandbox_JSONDepthCannotBeBypassed(t *testing.T) {
-	waitNoAbandonedRuns(t)
+	requireNoAbandonedRuns(t)
 	wrap := func(body string) string {
 		return "try { " + body + "; return 'ran' } catch (e) { return e.name }"
 	}
@@ -362,14 +401,11 @@ func TestSandbox_JSONStringifyStillWorks(t *testing.T) {
 }
 
 func TestSandbox_RegexTimeoutThrows(t *testing.T) {
-	start := time.Now()
+	restore := shortRegexpTimeout(t)
 	_, err := runScript(t, `return /(a+)+b(?=c)/.test("a".repeat(33))`, sbOpts{}) // deadline 5 min
 	var se *ScriptError
 	if !errors.As(err, &se) || se.Name != "RangeError" || !strings.Contains(se.Message, "too long") {
 		t.Fatalf("Run = %v; want an uncaught RangeError, never false", err)
-	}
-	if took := time.Since(start); took > RegexpMatchTimeout+2*time.Second {
-		t.Fatalf("took %v", took)
 	}
 	got := mustRun(t, `var out = [];
 		try { RegExp.prototype[Symbol.replace] = function () { return "fake" } } catch (e) { out.push(e.name) }
@@ -378,6 +414,7 @@ func TestSandbox_RegexTimeoutThrows(t *testing.T) {
 	if got != "TypeError,RangeError" {
 		t.Fatalf("got %v; want TypeError,RangeError", got)
 	}
+	restore()
 	// exec stays goja's own (wrapping it takes RegExp off goja's fast path):
 	// a script that deletes it only breaks its own run.
 	if _, err := runScript(t, `delete RegExp.prototype.exec; return "a".replace(/a/, "b")`, sbOpts{}); err == nil {
@@ -505,10 +542,12 @@ func TestSandbox_AllocationCapsRound3(t *testing.T) {
 
 func TestSandbox_SortWithComparatorStaysInterruptible(t *testing.T) {
 	clock := newSBClock()
+	start := clock.Now()
 	sb, _ := newTestSandbox(t, `var a = []; for (var i = 0; i < 1500000; i++) { a.push(i % 7) }
 		a.sort(function (x, y) { while (true) {} })`, sbOpts{budget: Budget{Tokens: 1000, Minutes: 1}, clock: clock})
-	clock.Advance(59 * time.Second)
-	_, err := runWithin(t, sb, 10*time.Second)
+	res := runAsync(sb)
+	clock.expireDeadline(start, 1)
+	err := (<-res).err
 	var ri *RunInterrupted
 	if !errors.As(err, &ri) || ri.Reason != InterruptTimeout || ri.Abandoned {
 		t.Fatalf("Run = %v; want a timeout that did not need abandoning", err)

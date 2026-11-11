@@ -20,13 +20,23 @@ import (
 
 // sbClock is a minimal fake Clock for these in-package tests: they cannot use
 // automationstest.FakeClock, which imports this package (an import cycle).
-// Unlike FakeClock, After waits on the real clock.
+// Like FakeClock, After channels fire when Advance reaches their time, so the
+// run deadline and the abandon grace expire without waiting.
 type sbClock struct {
-	mu  sync.Mutex
-	now time.Time
+	mu      sync.Mutex
+	now     time.Time
+	waiters []sbWaiter
+	added   chan struct{} // closed and replaced by each After
 }
 
-func newSBClock() *sbClock { return &sbClock{now: time.Date(2026, 10, 14, 9, 0, 0, 0, time.UTC)} }
+type sbWaiter struct {
+	at time.Time
+	ch chan time.Time
+}
+
+func newSBClock() *sbClock {
+	return &sbClock{now: time.Date(2026, 10, 14, 9, 0, 0, 0, time.UTC), added: make(chan struct{})}
+}
 
 func (c *sbClock) Now() time.Time {
 	c.mu.Lock()
@@ -34,12 +44,65 @@ func (c *sbClock) Now() time.Time {
 	return c.now
 }
 
-func (c *sbClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
+func (c *sbClock) After(d time.Duration) <-chan time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	ch := make(chan time.Time, 1)
+	at := c.now.Add(d)
+	if !at.After(c.now) {
+		ch <- c.now
+		return ch
+	}
+	c.waiters = append(c.waiters, sbWaiter{at: at, ch: ch})
+	close(c.added)
+	c.added = make(chan struct{})
+	return ch
+}
 
 func (c *sbClock) Advance(d time.Duration) {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.now = c.now.Add(d)
-	c.mu.Unlock()
+	kept := c.waiters[:0]
+	for _, w := range c.waiters {
+		if c.now.Before(w.at) {
+			kept = append(kept, w)
+			continue
+		}
+		w.ch <- c.now
+	}
+	c.waiters = kept
+}
+
+// awaitWaiter blocks until an After channel due at the time at is pending (the run's
+// deadline watcher armed, or Run waiting out the abandon grace).
+func (c *sbClock) awaitWaiter(at time.Time) {
+	for {
+		c.mu.Lock()
+		for _, w := range c.waiters {
+			if w.at.Equal(at) {
+				c.mu.Unlock()
+				return
+			}
+		}
+		added := c.added
+		c.mu.Unlock()
+		<-added
+	}
+}
+
+// expireDeadline waits for the deadline watcher of a run started at start
+// with budget minutes, then moves the clock to that deadline.
+func (c *sbClock) expireDeadline(start time.Time, minutes int) {
+	at := start.Add(time.Duration(minutes) * time.Minute)
+	c.awaitWaiter(at)
+	c.Advance(at.Sub(c.Now()))
+}
+
+// expireGrace waits for Run to wait out the abandon grace, then ends it.
+func (c *sbClock) expireGrace() {
+	c.awaitWaiter(c.Now().Add(AbandonGrace))
+	c.Advance(AbandonGrace)
 }
 
 // funcModule defines each path of fns.
@@ -218,14 +281,15 @@ func TestSandbox_PreParseReportsTheScriptLine(t *testing.T) {
 
 func TestAuto08_InterruptOnTimeout(t *testing.T) {
 	clock := newSBClock()
+	start := clock.Now()
 	sb, _ := newTestSandbox(t, "while (true) {}", sbOpts{budget: Budget{Tokens: 50000, Minutes: 1}, clock: clock})
-	clock.Advance(59 * time.Second) // one real second of the deadline is left
-	start := time.Now()
-	_, err := sb.Run()
-	wantInterrupt(t, err, InterruptTimeout)
-	if took := time.Since(start); took > 2*time.Second {
-		t.Fatalf("Run took %v; want < 2s", took)
-	}
+	res := runAsync(sb)
+	clock.expireDeadline(start, 1)
+	// The abandon grace is never expired here, so the run can only end by
+	// the busy loop stopping at the interrupt.
+	r := <-res
+	wantInterrupt(t, r.err, InterruptTimeout)
+	wantNotAbandoned(t, r.err)
 }
 
 func TestSandbox_InterruptIsNotCatchable(t *testing.T) {
@@ -237,42 +301,57 @@ func TestSandbox_InterruptIsNotCatchable(t *testing.T) {
 		// The loop paces its SDK calls so the run's step cap
 		// (MaxStepsPerRun, board #562) does not end it before the
 		// interrupt lands; the interrupt still hits inside the try.
-		{"external interrupt", "while (true) { try { echo(1); for (let i = 0; i < 20000; i++) {} } catch (e) {} }", Budget{}, true},
+		{"external interrupt", "while (true) { try { echo(1); started(); for (let i = 0; i < 20000; i++) {} } catch (e) {} }", Budget{}, true},
 		{"debit crosses the budget", "while (true) { try { spend(30000) } catch (e) {} }", Budget{}, false},
 		{"spent budget refuses and the catch does not help",
 			"while (true) { try { refuse() } catch (e) {} finally {} }", Budget{Tokens: 0, Minutes: 5}, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			sb, _ := newTestSandbox(t, c.script, sbOpts{budget: c.budget})
+			started := make(chan struct{})
+			var once sync.Once
+			signal := funcModule{name: "signal", fns: map[string]SDKFunc{
+				"started": func(*Env, goja.FunctionCall, *goja.Runtime) (any, error) {
+					once.Do(func() { close(started) })
+					return nil, nil
+				},
+			}}
+			// The fake clock's grace never expires: the run ends only when
+			// the script stops.
+			sb, _ := newTestSandbox(t, c.script, sbOpts{budget: c.budget, clock: newSBClock(),
+				modules: []Module{testModule(), signal}})
+			res := runAsync(sb)
 			if c.external {
-				time.AfterFunc(50*time.Millisecond, func() { sb.Interrupt(InterruptBudget) })
+				<-started // the script is inside its try
+				sb.Interrupt(InterruptBudget)
 			}
-			_, err := runWithin(t, sb, 5*time.Second)
-			wantInterrupt(t, err, InterruptBudget)
+			r := <-res
+			wantInterrupt(t, r.err, InterruptBudget)
+			wantNotAbandoned(t, r.err)
 		})
 	}
 }
 
-func runWithin(t *testing.T, sb *Sandbox, limit time.Duration) (any, error) {
-	t.Helper()
-	type res struct {
-		v   any
-		err error
-	}
-	ch := make(chan res, 1)
+type asyncResult struct {
+	v   any
+	err error
+}
+
+// runAsync starts sb.Run and returns where its result arrives.
+func runAsync(sb *Sandbox) <-chan asyncResult {
+	ch := make(chan asyncResult, 1)
 	go func() {
 		v, err := sb.Run()
-		ch <- res{v, err}
+		ch <- asyncResult{v, err}
 	}()
-	select {
-	case r := <-ch:
-		return r.v, r.err
-	case <-time.After(limit):
-		sb.Interrupt(InterruptCancel)
-		<-ch
-		t.Fatalf("Run did not stop within %v", limit)
-		return nil, nil
+	return ch
+}
+
+func wantNotAbandoned(t *testing.T, err error) {
+	t.Helper()
+	var ri *RunInterrupted
+	if errors.As(err, &ri) && ri.Abandoned {
+		t.Fatalf("Run error = %v; want the script to stop, not be abandoned", err)
 	}
 }
 
@@ -448,13 +527,13 @@ func runBackendErrorAfterParentCancel(t *testing.T) {
 		},
 	}}
 	env := &Env{Ctx: ctx, Recipe: &Recipe{Script: `try { call() } catch (e) { return "caught " + e.name }`},
-		Journal: NewMemoryJournal(), Meter: NewMeter(Budget{Tokens: 1000, Minutes: 5}, nil),
+		Journal: NewMemoryJournal(), Meter: NewMeter(Budget{Tokens: 1000, Minutes: 5}, newSBClock()),
 		Buffer: NewCommitBuffer(nil)}
 	sb, err := NewSandbox(env, []Module{stopping})
 	if err != nil {
 		t.Fatal(err)
 	}
-	v, err := runWithin(t, sb, 5*time.Second)
+	v, err := sb.Run() // the fake clock's grace never expires: the script stops
 	if v != nil {
 		t.Fatalf("Run returned %v; the script must not see the error", v)
 	}
@@ -463,15 +542,22 @@ func runBackendErrorAfterParentCancel(t *testing.T) {
 
 func TestSandbox_ParentCancelInterrupts(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	env := &Env{Ctx: ctx, Recipe: &Recipe{Script: "while (true) {}"}, Journal: NewMemoryJournal(),
-		Meter: NewMeter(Budget{Tokens: 1000, Minutes: 5}, nil)}
-	sb, err := NewSandbox(env, nil)
+	started := make(chan struct{})
+	signal := funcModule{name: "signal", fns: map[string]SDKFunc{
+		"started": func(*Env, goja.FunctionCall, *goja.Runtime) (any, error) { close(started); return nil, nil },
+	}}
+	env := &Env{Ctx: ctx, Recipe: &Recipe{Script: "started(); while (true) {}"}, Journal: NewMemoryJournal(),
+		Meter: NewMeter(Budget{Tokens: 1000, Minutes: 5}, newSBClock())}
+	sb, err := NewSandbox(env, []Module{signal})
 	if err != nil {
 		t.Fatal(err)
 	}
-	time.AfterFunc(50*time.Millisecond, cancel)
-	_, err = runWithin(t, sb, 5*time.Second)
-	wantInterrupt(t, err, InterruptCancel)
+	res := runAsync(sb)
+	<-started // the busy loop is running
+	cancel()
+	r := <-res
+	wantInterrupt(t, r.err, InterruptCancel)
+	wantNotAbandoned(t, r.err)
 	if env.Ctx.Err() == nil {
 		t.Error("Env.Ctx was not cancelled")
 	}

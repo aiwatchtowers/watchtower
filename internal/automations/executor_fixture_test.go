@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/dop251/goja"
@@ -233,15 +234,14 @@ func (f *exFixture) wantRun(t *testing.T, id int64, status, kind string) *db.Aut
 	return r
 }
 
-// waitStatus waits (real time) until run id has status.
+// waitStatus lets the test's synctest bubble settle (every run goroutine
+// blocked: on a wait, the fake clock or a test gate) and wants run id at
+// status then. Bubble only.
 func (f *exFixture) waitStatus(t *testing.T, id int64, status string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for f.run(t, id).Status != status {
-		if time.Now().After(deadline) {
-			t.Fatalf("run %d never reached %s (is %s)", id, status, f.run(t, id).Status)
-		}
-		time.Sleep(5 * time.Millisecond)
+	synctest.Wait()
+	if r := f.run(t, id); r.Status != status {
+		t.Fatalf("run %d = %s/%s (%s) once settled; want %s", id, r.Status, r.ErrorKind, r.Error, status)
 	}
 }
 
@@ -363,11 +363,7 @@ func (g *blockingGen) Generate(ctx context.Context, _, _, sessionID string) (str
 
 func (g *blockingGen) waitEntered(t *testing.T) {
 	t.Helper()
-	select {
-	case <-g.entered:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the generator was never called")
-	}
+	<-g.entered
 }
 
 // exModule is a test SDK module.
@@ -385,16 +381,17 @@ func (m exModule) Install(def automations.Definer) {
 }
 
 // pastDeadlineModule defines jump(): the fake clock moves past the run's
-// 5-minute deadline and the meter's watcher is re-armed, so the deadline
-// fires at once in real time; it then sleeps for sleep (a native call that
-// ignores the interrupt, as a stuck builtin would).
-func pastDeadlineModule(clock *automationstest.FakeClock, sleep time.Duration) automations.Module {
+// 5-minute deadline, which fires the meter's watcher. With a non-nil stuck,
+// jump then blocks until stuck is closed (a native call that ignores the
+// interrupt, as a stuck builtin would), closing entered first.
+func pastDeadlineModule(clock *automationstest.FakeClock, entered, stuck chan struct{}) automations.Module {
 	return exModule{name: "jump", fns: map[string]automations.SDKFunc{
 		"jump": func(env *automations.Env, _ goja.FunctionCall, _ *goja.Runtime) (any, error) {
 			clock.Advance(6 * time.Minute)
-			env.Meter.PauseActive()
-			env.Meter.ResumeActive()
-			time.Sleep(sleep)
+			if stuck != nil {
+				close(entered)
+				<-stuck
+			}
 			return nil, nil
 		},
 	}}

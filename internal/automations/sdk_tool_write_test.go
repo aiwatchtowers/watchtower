@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
@@ -348,60 +349,68 @@ func TestToolWait_AppliedRejectedFailed(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			w := newWriteFixture(t)
-			runID, actionID := w.startWaiting(t, w.seedWrite(t, []string{"tool:create_target"}, "", waitScript))
-			tc.decide(t, w, actionID)
-			r := w.finishWait(t, runID)
-			out := summaryObject(t, r)
-			if out["status"] != tc.status || idOf(t, out) != actionID || r.WaitingReason != "" {
-				t.Fatalf("script got %v, waiting_reason %q; want status %s for %d", out, r.WaitingReason, tc.status, actionID)
-			}
-			if _, has := out[tc.wantKey]; tc.wantKey != "" && !has {
-				t.Fatalf("script got %v; want a %q key", out, tc.wantKey)
-			}
-			if tc.status == "failed" && out["error"] != "the remote side refused" {
-				t.Fatalf("error = %v; want the row's error", out["error"])
-			}
-			wantStep(t, w.toolStep(t, runID), tc.status, actionID, false)
+			synctest.Test(t, func(t *testing.T) {
+				w := newWriteFixture(t)
+				runID, actionID := w.startWaiting(t, w.seedWrite(t, []string{"tool:create_target"}, "", waitScript))
+				tc.decide(t, w, actionID)
+				r := w.finishWait(t, runID)
+				out := summaryObject(t, r)
+				if out["status"] != tc.status || idOf(t, out) != actionID || r.WaitingReason != "" {
+					t.Fatalf("script got %v, waiting_reason %q; want status %s for %d", out, r.WaitingReason, tc.status, actionID)
+				}
+				if _, has := out[tc.wantKey]; tc.wantKey != "" && !has {
+					t.Fatalf("script got %v; want a %q key", out, tc.wantKey)
+				}
+				if tc.status == "failed" && out["error"] != "the remote side refused" {
+					t.Fatalf("error = %v; want the row's error", out["error"])
+				}
+				wantStep(t, w.toolStep(t, runID), tc.status, actionID, false)
+			})
 		})
 	}
 }
 
 func TestToolWait_PauseExcludedFromActiveTime(t *testing.T) {
-	w := newWriteFixture(t)
-	runID, actionID := w.startWaiting(t, w.seedWrite(t, []string{"tool:create_target"}, "budget:\n  minutes: 1\n", waitScript))
-	w.clock.Advance(10 * time.Minute)
-	w.approveAndApply(t, actionID)
-	r := w.finishWait(t, runID)
-	if r.ActiveMS >= time.Minute.Milliseconds() {
-		t.Fatalf("active_ms = %d; want the 10 minutes of waiting excluded (< 60000)", r.ActiveMS)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		w := newWriteFixture(t)
+		runID, actionID := w.startWaiting(t, w.seedWrite(t, []string{"tool:create_target"}, "budget:\n  minutes: 1\n", waitScript))
+		w.clock.Advance(10 * time.Minute)
+		w.approveAndApply(t, actionID)
+		r := w.finishWait(t, runID)
+		if r.ActiveMS >= time.Minute.Milliseconds() {
+			t.Fatalf("active_ms = %d; want the 10 minutes of waiting excluded (< 60000)", r.ActiveMS)
+		}
+	})
 }
 
 func TestToolWait_ExpiresAfterPauseTimeout(t *testing.T) {
-	w := newWriteFixture(t)
-	runID, actionID := w.startWaiting(t, w.seedWrite(t, []string{"tool:create_target"}, "pause_timeout_hours: 1\n", waitScript))
-	w.clock.Advance(61 * time.Minute)
-	w.e.Wake()
-	w.e.Wait()
-	w.wantRun(t, runID, db.RunExpired, db.ErrKindExpired)
-	if row, err := w.d.GetAgentAction(actionID); err != nil || row.Status != "pending" {
-		t.Fatalf("row = %+v, %v; want still pending", row, err)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		w := newWriteFixture(t)
+		runID, actionID := w.startWaiting(t, w.seedWrite(t, []string{"tool:create_target"}, "pause_timeout_hours: 1\n", waitScript))
+		w.clock.Advance(61 * time.Minute)
+		w.e.Wake()
+		w.e.Wait()
+		w.wantRun(t, runID, db.RunExpired, db.ErrKindExpired)
+		if row, err := w.d.GetAgentAction(actionID); err != nil || row.Status != "pending" {
+			t.Fatalf("row = %+v, %v; want still pending", row, err)
+		}
+	})
 }
 
 func TestToolWait_CancelLeavesProposalPending(t *testing.T) {
-	w := newWriteFixture(t)
-	runID, actionID := w.startWaiting(t, w.seedWrite(t, []string{"tool:create_target"}, "", waitScript))
-	if ok, err := w.d.CancelAutomationRun(runID, w.clock.Now()); err != nil || !ok {
-		t.Fatalf("cancel = (%v, %v)", ok, err)
-	}
-	w.e.Wake()
-	w.e.Wait()
-	w.wantRun(t, runID, db.RunCancelled, db.ErrKindCancelled)
-	if row, err := w.d.GetAgentAction(actionID); err != nil || row.Status != "pending" {
-		t.Fatalf("row = %+v, %v; want still pending", row, err)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		w := newWriteFixture(t)
+		runID, actionID := w.startWaiting(t, w.seedWrite(t, []string{"tool:create_target"}, "", waitScript))
+		if ok, err := w.d.CancelAutomationRun(runID, w.clock.Now()); err != nil || !ok {
+			t.Fatalf("cancel = (%v, %v)", ok, err)
+		}
+		w.e.Wake()
+		w.e.Wait()
+		w.wantRun(t, runID, db.RunCancelled, db.ErrKindCancelled)
+		if row, err := w.d.GetAgentAction(actionID); err != nil || row.Status != "pending" {
+			t.Fatalf("row = %+v, %v; want still pending", row, err)
+		}
+	})
 }
 
 // runRowDump renders run id's automation_runs row and its steps, every
@@ -438,20 +447,22 @@ func (w *writeFixture) runRowDump(t *testing.T, id int64) string {
 }
 
 func TestToolWait_ApproveAfterRunEndedChangesNoRun(t *testing.T) {
-	w := newWriteFixture(t)
-	runID, actionID := w.startWaiting(t, w.seedWrite(t, []string{"tool:create_target"}, "pause_timeout_hours: 1\n", waitScript))
-	w.clock.Advance(61 * time.Minute)
-	w.e.Wake()
-	w.e.Wait()
-	w.wantRun(t, runID, db.RunExpired, db.ErrKindExpired)
-	before := w.runRowDump(t, runID)
-	w.approveAndApply(t, actionID)
-	if row, err := w.d.GetAgentAction(actionID); err != nil || row.Status != "applied" {
-		t.Fatalf("row = %+v, %v; want applied", row, err)
-	}
-	if after := w.runRowDump(t, runID); after != before {
-		t.Fatalf("the run changed after a late approval:\nbefore %s\nafter  %s", before, after)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		w := newWriteFixture(t)
+		runID, actionID := w.startWaiting(t, w.seedWrite(t, []string{"tool:create_target"}, "pause_timeout_hours: 1\n", waitScript))
+		w.clock.Advance(61 * time.Minute)
+		w.e.Wake()
+		w.e.Wait()
+		w.wantRun(t, runID, db.RunExpired, db.ErrKindExpired)
+		before := w.runRowDump(t, runID)
+		w.approveAndApply(t, actionID)
+		if row, err := w.d.GetAgentAction(actionID); err != nil || row.Status != "applied" {
+			t.Fatalf("row = %+v, %v; want applied", row, err)
+		}
+		if after := w.runRowDump(t, runID); after != before {
+			t.Fatalf("the run changed after a late approval:\nbefore %s\nafter  %s", before, after)
+		}
+	})
 }
 
 func TestAuto12_DryRunWriteNeverReachesRegistry(t *testing.T) {
@@ -656,18 +667,20 @@ func TestToolWait_MarkFailureKeepsActionLink(t *testing.T) {
 // TestToolWait_OwnerEditReachesResult: the owner approves the waited-on
 // proposal with an edit; the script's result is what the edited args applied.
 func TestToolWait_OwnerEditReachesResult(t *testing.T) {
-	w := newWriteFixture(t)
-	runID, actionID := w.startWaiting(t, w.seedWrite(t, []string{"tool:edit_note"}, "",
-		`return JSON.stringify(tool("edit_note", {text: "draft", reason: "scheduled"}, {wait: true}))`))
-	if ok, err := w.reg.Approve(context.Background(), actionID, json.RawMessage(`{"text":"edited by the owner"}`)); err != nil || !ok {
-		t.Fatalf("approve with edit = (%v, %v)", ok, err)
-	}
-	if _, err := w.reg.Apply(context.Background(), actionID); err != nil {
-		t.Fatalf("apply: %v", err)
-	}
-	out := summaryObject(t, w.finishWait(t, runID))
-	res, _ := out["result"].(map[string]any)
-	if out["status"] != "applied" || res["text"] != "edited by the owner" {
-		t.Fatalf("script got %v; want applied with the edited text", out)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		w := newWriteFixture(t)
+		runID, actionID := w.startWaiting(t, w.seedWrite(t, []string{"tool:edit_note"}, "",
+			`return JSON.stringify(tool("edit_note", {text: "draft", reason: "scheduled"}, {wait: true}))`))
+		if ok, err := w.reg.Approve(context.Background(), actionID, json.RawMessage(`{"text":"edited by the owner"}`)); err != nil || !ok {
+			t.Fatalf("approve with edit = (%v, %v)", ok, err)
+		}
+		if _, err := w.reg.Apply(context.Background(), actionID); err != nil {
+			t.Fatalf("apply: %v", err)
+		}
+		out := summaryObject(t, w.finishWait(t, runID))
+		res, _ := out["result"].(map[string]any)
+		if out["status"] != "applied" || res["text"] != "edited by the owner" {
+			t.Fatalf("script got %v; want applied with the edited text", out)
+		}
+	})
 }
