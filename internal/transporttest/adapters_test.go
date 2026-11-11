@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -375,6 +376,9 @@ type run struct {
 
 	srvOnce sync.Once
 	srv     *fakeServer
+	// hung hears that a fake reached its hang: the HTTP server's hang
+	// step, or the CLI's (announceHangs).
+	hung chan struct{}
 
 	dbOnce sync.Once
 	db     *db.DB
@@ -382,13 +386,50 @@ type run struct {
 }
 
 func newRun(t *testing.T, fixture string) *run {
-	r := &run{t: t, dir: t.TempDir(), fixture: fixture}
+	r := &run{t: t, dir: t.TempDir(), fixture: fixture, hung: make(chan struct{}, 1)}
 	r.fakeLog = filepath.Join(r.dir, "fake.log")
 	t.Setenv("WT_FAKECLI_FIXTURE", fixture)
 	t.Setenv("WT_FAKECLI_LOG", r.fakeLog)
 	t.Setenv("WT_FAKECLI_VERSION", codexVersion)
 	t.Cleanup(func() { reapAll(t, readLaunches(t, r.fakeLog)) })
 	return r
+}
+
+// announceHangs has the fake CLI write to a FIFO when it reaches a hang
+// directive, and forwards each line to r.hung.
+func (r *run) announceHangs() {
+	fifo := filepath.Join(r.dir, "hang")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		r.t.Fatal(err)
+	}
+	r.t.Setenv("WT_FAKECLI_HANG", fifo)
+	// Held open read-write, so the fake's open never waits for a reader and
+	// a read never sees EOF between fakes; closed at the cell's end.
+	f, err := os.OpenFile(fifo, os.O_RDWR, 0)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	stopped := make(chan struct{})
+	r.t.Cleanup(func() {
+		// The read may not be interruptible by Close on every kernel: a
+		// "stop" line ends the reader first.
+		_, _ = f.WriteString("stop\n")
+		<-stopped
+		_ = f.Close()
+	})
+	go func() {
+		defer close(stopped)
+		sc := bufio.NewScanner(f)
+		for sc.Scan() {
+			if sc.Text() == "stop" {
+				return
+			}
+			select {
+			case r.hung <- struct{}{}:
+			default:
+			}
+		}
+	}()
 }
 
 // mcpDB is the database path a CLI client mounts its MCP servers with when
@@ -410,7 +451,7 @@ func (r *run) workDir() string {
 }
 
 func (r *run) serverURL() string {
-	r.srvOnce.Do(func() { r.srv = newFakeServer(r.t, r.fixture) })
+	r.srvOnce.Do(func() { r.srv = newFakeServer(r.t, r.fixture, r.hung) })
 	return r.srv.URL
 }
 
@@ -521,6 +562,9 @@ type fakeServer struct {
 	*httptest.Server
 	mu   sync.Mutex
 	reqs []string
+	// hung gets one send (when there is room) each time a response
+	// reaches a hang step.
+	hung chan<- struct{}
 }
 
 // httpStep is one parsed line of a fakeServer section.
@@ -572,9 +616,9 @@ func parseHTTPFixture(t *testing.T, fixture string) [][]httpStep {
 	return sections
 }
 
-func newFakeServer(t *testing.T, fixture string) *fakeServer {
+func newFakeServer(t *testing.T, fixture string, hung chan<- struct{}) *fakeServer {
 	sections := parseHTTPFixture(t, fixture)
-	s := &fakeServer{}
+	s := &fakeServer{hung: hung}
 	s.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		body, _ := io.ReadAll(req.Body)
 		s.mu.Lock()
@@ -592,6 +636,10 @@ func newFakeServer(t *testing.T, fixture string) *fakeServer {
 			case step.hang:
 				w.WriteHeader(status)
 				writeLines(w, out)
+				select {
+				case s.hung <- struct{}{}:
+				default:
+				}
 				<-req.Context().Done()
 				return
 			default:
@@ -708,7 +756,7 @@ func driveChat(ctx context.Context, r *run, a *Adapter, s *Scenario, o *Outcome)
 		}
 	}
 	for _, l := range readLaunches(r.t, r.fakeLog) {
-		o.Alive = append(o.Alive, !pidGone(l.PID, 0))
+		o.Alive = append(o.Alive, !errors.Is(syscall.Kill(l.PID, 0), syscall.ESRCH))
 	}
 }
 
@@ -809,16 +857,22 @@ func runCell(t *testing.T, a *Adapter, s *Scenario, level Level) *Outcome {
 	if s.Fixture.ReadFolder {
 		r.readFolder = r.workDir()
 	}
-	timeout := 10 * time.Second
-	if raceEnabled {
-		timeout = 40 * time.Second
-	}
+	r.chatDB()
+	// No clock: a timeout cell's deadline passes once its fake hangs, and
+	// any other run has none (a hang is go test -timeout's to report).
+	var ctx context.Context = context.Background()
 	if s.Fixture.Drive == driveTimeout {
-		timeout = 1500 * time.Millisecond
+		deadline := newFiredDeadline()
+		r.announceHangs()
+		go func() {
+			select {
+			case <-r.hung:
+				deadline.fire()
+			case <-t.Context().Done(): // the cell ended without a hang
+			}
+		}()
+		ctx = deadline
 	}
-	r.chatDB() // set up before the run's deadline starts
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
 	ledger.take()
 	o := &Outcome{}
 	switch level {
@@ -898,4 +952,29 @@ func (f *fakeMCP) seen() []string {
 
 func (f *fakeMCP) server() ai.ExternalMCPServer {
 	return ai.ExternalMCPServer{ID: 1, Name: "acme", Kind: "http", URL: f.url, AllowTools: []string{"get_issue"}}
+}
+
+// firedDeadline is a context whose deadline the suite fires (a timeout
+// cell's, once its fake hangs): Err is context.DeadlineExceeded from then
+// on, as for a deadline that passed, with no clock behind it.
+type firedDeadline struct {
+	context.Context
+	once sync.Once
+	done chan struct{}
+}
+
+func newFiredDeadline() *firedDeadline {
+	return &firedDeadline{Context: context.Background(), done: make(chan struct{})}
+}
+
+func (c *firedDeadline) fire()                       { c.once.Do(func() { close(c.done) }) }
+func (c *firedDeadline) Done() <-chan struct{}       { return c.done }
+func (c *firedDeadline) Deadline() (time.Time, bool) { return time.Time{}, false }
+func (c *firedDeadline) Err() error {
+	select {
+	case <-c.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
 }
