@@ -281,11 +281,17 @@ func (r *vouchRig) admit(l linkedPhone) {
 	if err := l.store.PromotePairing(r.t.Context(), l.slot); err != nil {
 		r.t.Fatal(err)
 	}
-	// The clock is frozen, so an unvouched hub's backstop read answers from
-	// its window's cache. When an in-flight HUB_NOT_VOUCHED answer lands
-	// after the slot was added it empties the transport's account state and
-	// only a fresh read reopens the gate; let one window pass per half
-	// second, as production time would.
+	r.waitAdmitted()
+}
+
+// waitAdmitted waits for running/ after the phone put the hub in its slot.
+// The hub's clock is frozen, so an unvouched hub's backstop read answers
+// from its window's cache. When an in-flight HUB_NOT_VOUCHED answer lands
+// after the slot was added it empties the transport's account state and
+// only a fresh read reopens the gate; let one window pass per half second
+// of the bubble's clock, as production time would.
+func (r *vouchRig) waitAdmitted() {
+	r.t.Helper()
 	tick := 0
 	eventually(r.t, "running/", func() bool {
 		if s := r.rec.last(); s.State == StateRunning && s.Reason == "" {
@@ -552,7 +558,7 @@ func TestHubNotVouchedAfterAdmissionIsRevoked(t *testing.T) {
 		}}}); err != nil {
 			t.Fatal(err)
 		}
-		r2.waitState(StateRunning, "")
+		r2.waitAdmitted()
 	})
 }
 
@@ -575,7 +581,7 @@ func TestHubNeverCountsItselfOnTheRelayBeforeAdmitted(t *testing.T) {
 		if err := l.store.PromotePairing(t.Context(), l.slot); err != nil {
 			t.Fatal(err)
 		}
-		r.waitState(StateRunning, "")
+		r.waitAdmitted()
 	})
 }
 
