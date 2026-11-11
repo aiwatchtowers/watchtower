@@ -299,12 +299,24 @@ func TestPathStatus_OtherPathDirty(t *testing.T) {
 	assert.Equal(t, PathState{Git: true}, st)
 }
 
-func TestPathStatus_IgnoredIsClean(t *testing.T) {
+// A path git ignores is not in git, so its local text could be lost: it
+// counts as dirty, and so does any path inside an ignored folder (ask
+// #1236). A tracked file that a pattern matches is not ignored; an ignored
+// file not created yet holds nothing to lose and is clean.
+func TestPathStatus_IgnoredIsDirty(t *testing.T) {
 	dir := newRepo(t)
-	commit(t, dir, ".gitignore", "secret.md\n", "ignore")
+	commit(t, dir, ".gitignore", "secret.md\nlocal/\nREADME.md\nCLAUDE.md\n", "ignore")
 	writeFile(t, dir, "secret.md", "x\n")
-	st, _ := pathState(t, dir, "secret.md")
-	assert.Equal(t, PathState{Git: true}, st)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "local"), 0o755))
+	writeFile(t, dir, "local/notes.md", "y\n")
+	for _, rel := range []string{"secret.md", "local/notes.md", "local/CLAUDE.md"} {
+		st, _ := pathState(t, dir, rel)
+		assert.Equal(t, PathState{Git: true, Dirty: true}, st, rel)
+	}
+	for _, rel := range []string{"README.md", "CLAUDE.md"} { // tracked though matched; ignored but absent
+		st, _ := pathState(t, dir, rel)
+		assert.Equal(t, PathState{Git: true}, st, rel)
+	}
 }
 
 func TestPathStatus_MissingFile(t *testing.T) {
@@ -335,7 +347,7 @@ func TestPathStatus_RunsOnlyStatus(t *testing.T) {
 	_, rec := pathState(t, dir, "sub/CLAUDE.md")
 	assert.Equal(t, [][]string{
 		{"rev-parse", "--absolute-git-dir", "--git-common-dir", "--show-toplevel"},
-		{"status", "--porcelain=v1", "-z", "--", "sub/CLAUDE.md"},
+		{"status", "--porcelain=v1", "-z", "--ignored=matching", "--", "sub/CLAUDE.md"},
 	}, rec.argv())
 }
 

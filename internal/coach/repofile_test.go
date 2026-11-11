@@ -81,7 +81,8 @@ func (g *gitState) read(t *testing.T) func(folder, rel string) (RepoFileState, e
 		if out, _ := c.Output(); strings.TrimSpace(string(out)) != "true" {
 			return RepoFileState{}, nil
 		}
-		return RepoFileState{Git: true, Dirty: git(t, folder, "status", "--porcelain=v1", "-z", "--", rel) != ""}, nil
+		// As workbenchgit.PathStatus: a listed path, ignored ones included, is dirty.
+		return RepoFileState{Git: true, Dirty: git(t, folder, "status", "--porcelain=v1", "-z", "--ignored=matching", "--", rel) != ""}, nil
 	}
 }
 
@@ -282,15 +283,19 @@ func TestAccept_RepoFileDirtyRefused(t *testing.T) {
 	}
 }
 
-func TestAccept_RepoFileIgnoredIsClean(t *testing.T) {
+// An ignored path is refused like a dirty one: its local text is not in git,
+// so Accept could lose it (ask #1236).
+func TestAccept_RepoFileIgnoredRefused(t *testing.T) {
 	d := openDBs(t)
 	folder := repoFolderWith(t, map[string]string{".gitignore": "AGENTS.md\n"})
 	writeFile(t, filepath.Join(folder, "AGENTS.md"), "Local notes.\n")
 	wb := repoWorkbench(t, d, folder)
 	a, _ := repoApplier(t, d)
 	id := propose(t, d, repoProposal(DestRepoAgentsMD, wb, "", "Local notes.\n", "Local notes.\nRun tests.\n"))
-	require.NoError(t, a.acceptErr(id, ""))
-	assert.Equal(t, "Local notes.\nRun tests.\n", readFile(t, filepath.Join(folder, "AGENTS.md")))
+	err := a.acceptErr(id, "")
+	require.ErrorIs(t, err, ErrRepoDirty)
+	assert.Equal(t, "Local notes.\n", readFile(t, filepath.Join(folder, "AGENTS.md")))
+	assert.Equal(t, "open", proposal(t, d, id).Status)
 }
 
 func TestAccept_RepoFolderNotGitRefused(t *testing.T) {

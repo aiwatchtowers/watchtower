@@ -201,13 +201,16 @@ func (f *StatusFields) header(h string) error {
 	return nil
 }
 
-// PathState is what `git status --porcelain=v1 -z -- <rel>` says about one path.
+// PathState is what `git status --porcelain=v1 -z --ignored=matching -- <rel>` says about one path.
 type PathState struct {
 	Git   bool // the folder is a git work tree and git is available
-	Dirty bool // the path has any status entry: modified, staged, untracked, conflicted
+	Dirty bool // the path has any status entry (modified, staged, untracked, conflicted) or git ignores it
 }
 
-// PathStatus runs only `git status`; it never writes. rel is relative to
+// PathStatus runs only `git status` (with ignored entries); it never writes. A
+// path git ignores counts as dirty: its text is not in git, so a write could
+// lose it (ask #1236); an ignored path that does not exist yet, outside an
+// ignored folder, is not listed and holds nothing to lose. rel is relative to
 // o.Folder and must stay inside it (no "..", not absolute) — else an error.
 // No git, or a folder that is not a work tree, is {Git: false} with no
 // error; a failed git call is an error (callers refuse, never read it as
@@ -223,7 +226,7 @@ func PathStatus(ctx context.Context, o Options, rel string) (PathState, error) {
 	if err != nil {
 		return PathState{Git: true}, err
 	}
-	out, err := r.git(ctx, "status", "--porcelain=v1", "-z", "--", rel)
+	out, err := r.git(ctx, "status", "--porcelain=v1", "-z", "--ignored=matching", "--", rel)
 	if err != nil {
 		return PathState{Git: true}, err
 	}
