@@ -1189,6 +1189,7 @@ final class RelayLinkingTests: XCTestCase {
         let model = makeModel()
         let unlink = Task { await model.unlink(otherHub) }
         await waitUntil { self.host.slotRemovals == [self.otherMac.deviceID] }
+        await waitUntil { self.clock.parks == 1 } // in the pause
         XCTAssertEqual(relay.count("removeSlot"), 0, "still in the pause")
 
         clock.parked = false
@@ -1209,6 +1210,7 @@ final class RelayLinkingTests: XCTestCase {
         let model = makeModel()
         let unlink = Task { await model.unlink(otherHub) }
         await waitUntil { !self.host.slotRemovals.isEmpty }
+        await waitUntil { self.clock.parks == 1 } // in the pause
 
         unlink.cancel()
         await unlink.value
@@ -1254,6 +1256,7 @@ final class RelayLinkingTests: XCTestCase {
         let model = makeModel()
         let unlink = Task { await model.unlink(otherHub) }
         await waitUntil { !self.host.slotRemovals.isEmpty }
+        await waitUntil { self.clock.parks == 1 } // in the pause
 
         seedRelayRow(otherHub, macName: "Work Mac", relayMac: otherMac)
         unlink.cancel()
