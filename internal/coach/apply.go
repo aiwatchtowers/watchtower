@@ -54,20 +54,40 @@ func (a *Applier) now() time.Time {
 	return time.Now()
 }
 
-// Accept applies an open proposal. edited "" applies the proposed text;
-// otherwise edited is the owner's own whole after-text, checked by the same
-// rules. The destination must still hold the proposal's before-text, else the
-// proposal is superseded and ErrStale returned; an owner text is written by a
+// AcceptResult is what an Accept changed beyond the destination: for a pack
+// overlay, how many installed copies of the skill were re-rendered and how
+// many were left because the owner edited them by hand.
+type AcceptResult struct{ PackCopiesUpdated, PackCopiesDrifted int }
+
+// Accept applies an open proposal (accept); a pack overlay then re-renders
+// the skill's installed copies (rerenderPack) and the result counts them.
+func (a *Applier) Accept(id int64, edited string) (AcceptResult, error) {
+	p, err := a.DB.GetCoachProposal(id)
+	if err != nil {
+		return AcceptResult{}, err
+	}
+	if err := a.accept(p, edited); err != nil {
+		return AcceptResult{}, err
+	}
+	var r AcceptResult
+	if p.Destination == DestPackOverlay {
+		r.PackCopiesUpdated, r.PackCopiesDrifted = a.rerenderPack(p.Skill)
+	}
+	return r, nil
+}
+
+// accept applies p. edited "" applies the proposed text; otherwise edited is
+// the owner's own whole after-text, checked by the same rules. The
+// destination must still hold the proposal's before-text, else the proposal
+// is superseded and ErrStale returned; an owner text is written by a
 // compare-and-set on that before-text, so an edit made after the check is
 // never overwritten. When the destination already holds the proposal's own
 // after-text (an earlier Accept wrote it but failed to record it), only the
-// status is written; an edited text never takes that shortcut. The destination is written first, then the status; when
-// the status write fails the before-state is put back.
-func (a *Applier) Accept(id int64, edited string) error {
-	p, err := a.DB.GetCoachProposal(id)
-	if err != nil {
-		return err
-	}
+// status is written; an edited text never takes that shortcut. The
+// destination is written first, then the status; when the status write fails
+// the before-state is put back.
+func (a *Applier) accept(p db.CoachProposal, edited string) error {
+	id := p.ID
 	if p.Status != "open" {
 		return fmt.Errorf("coach proposal %d is %s, not open: %w", id, p.Status, db.ErrCoachStateChanged)
 	}
@@ -135,8 +155,9 @@ func (a *Applier) Decline(id int64) error {
 // Rollback undoes an accepted proposal. When the destination no longer holds
 // the accepted edit (stillHolds) and force is false, nothing is written and it
 // returns a unified diff (accepted → now) with ErrChangedSince. An owner text gets its
-// before-text back; a prompt loses the additions this proposal made and gets
-// back the ones it removed; the allow list loses the rules this proposal
+// before-text back; a prompt or a pack skill's overlay loses the lines this
+// proposal made and gets back the ones it removed (an overlay then re-renders
+// the skill's installed copies); the allow list loses the rules this proposal
 // added, every other key and rule staying as it is.
 func (a *Applier) Rollback(id int64, force bool) (string, error) {
 	p, err := a.DB.GetCoachProposal(id)
@@ -161,6 +182,11 @@ func (a *Applier) Rollback(id int64, force bool) (string, error) {
 	if err := a.restoreDestination(p, cur, now); err != nil {
 		return "", fmt.Errorf("rolling back coach proposal %d (%s): %w", id, p.Destination, err)
 	}
+	if p.Destination == DestPackOverlay {
+		// The rows are back: the copies follow them whatever the status write
+		// does. The counts are reported for an Accept only.
+		_, _ = a.rerenderPack(p.Skill)
+	}
 	// The destination is back; only the status is left. An accepted proposal
 	// can only move to rolled_back, so a failed CAS means another rollback won.
 	if err := a.DB.DecideCoachProposal(id, "accepted", "rolled_back", now); err != nil {
@@ -170,31 +196,14 @@ func (a *Applier) Rollback(id int64, force bool) (string, error) {
 }
 
 // stillHolds is whether the destination still contains p's accepted edit: an
-// owner text is exactly the after-text; a prompt still has every row this
-// proposal added, with the same text; the allow list or the Codex rules still
-// have every rule the proposal added. Later additions and rules of others do not count.
+// owner text is exactly the after-text; a prompt or a pack skill's overlay
+// still has every row this proposal added, with the same text; the allow list
+// or the Codex rules still have every rule the proposal added. Later
+// additions and rules of others do not count.
 func (a *Applier) stillHolds(p db.CoachProposal, cur CurrentText) (bool, error) {
 	switch p.Destination {
-	case DestPromptAdd:
-		rows, err := a.DB.ListPromptAdditions(p.PromptID)
-		if err != nil {
-			return false, err
-		}
-		added := linesAdded(p.BeforeText, p.AfterText)
-		left := countLines(added)
-		tagged := 0
-		for _, r := range rows {
-			if r.ProposalID != p.ID {
-				continue
-			}
-			tagged++
-			if k := strings.TrimSpace(r.Text); left[k] > 0 {
-				left[k]--
-				continue
-			}
-			return false, nil
-		}
-		return tagged == len(added), nil
+	case DestPromptAdd, DestPackOverlay:
+		return a.linesStillHold(p)
 	case DestSettingsAllow, DestCodexRulesAllow:
 		have := countLines(nonEmptyLines(cur.Text))
 		for _, r := range linesAdded(p.BeforeText, p.AfterText) {
@@ -290,13 +299,13 @@ func (a *Applier) readCurrent(p db.CoachProposal) (CurrentText, error) {
 		default:
 			t.Text = o.Chat
 		}
-	case DestPromptAdd:
-		t.Budget = BudgetOf(DestPromptAdd, "")
-		adds, err := a.DB.ListPromptAdditions(p.PromptID)
+	case DestPromptAdd, DestPackOverlay:
+		t.Budget = BudgetOf(p.Destination, "")
+		rows, err := a.linesOf(p).list()
 		if err != nil {
 			return CurrentText{}, err
 		}
-		t.Text = joinAdditions(adds)
+		t.Text = joinLines(rows)
 	case DestSettingsAllow:
 		path, err := a.settingsPath()
 		if err != nil {
@@ -366,8 +375,8 @@ func (a *Applier) writeDestination(p db.CoachProposal, cur CurrentText, after st
 			}
 			return err
 		}}, nil
-	case DestPromptAdd:
-		return a.writeAdditions(p, after, now)
+	case DestPromptAdd, DestPackOverlay:
+		return a.writeLines(p, after, now)
 	case DestSettingsAllow:
 		return a.writeAllow(p, cur, after)
 	case DestClaudeMDUser:
@@ -378,51 +387,6 @@ func (a *Applier) writeDestination(p db.CoachProposal, cur CurrentText, after st
 		return a.writeUserFile(p, cur, after)
 	}
 	return written{}, errNotSupported
-}
-
-// writeAdditions makes the prompt's additions the lines of after: the rows
-// whose text after still has are kept (in their order), the others removed,
-// and the new lines added, tagged with this proposal.
-func (a *Applier) writeAdditions(p db.CoachProposal, after string, now time.Time) (written, error) {
-	rows, err := a.DB.ListPromptAdditions(p.PromptID)
-	if err != nil {
-		return written{}, err
-	}
-	want := countLines(nonEmptyLines(after))
-	var kept []db.PromptAddition
-	var removed []db.PromptAddition
-	var removeIDs []int64
-	for _, r := range rows {
-		if k := strings.TrimSpace(r.Text); want[k] > 0 {
-			want[k]--
-			kept = append(kept, r)
-			continue
-		}
-		removed = append(removed, r)
-		removeIDs = append(removeIDs, r.ID)
-	}
-	have := map[string]int{}
-	for _, r := range kept {
-		have[strings.TrimSpace(r.Text)]++
-	}
-	var add []db.PromptAddition
-	for _, line := range nonEmptyLines(after) {
-		if have[line] > 0 {
-			have[line]--
-			continue
-		}
-		add = append(add, db.PromptAddition{Text: line, ProposalID: p.ID})
-	}
-	addedIDs, err := a.DB.EditPromptAdditions(p.PromptID, removeIDs, add, now)
-	if err != nil {
-		return written{}, err
-	}
-	result := append(append([]db.PromptAddition{}, kept...), add...)
-	return written{result: joinAdditions(result), undo: func() error {
-		// Put the removed rows back with their own proposal tags.
-		_, err := a.DB.EditPromptAdditions(p.PromptID, addedIDs, removed, now)
-		return err
-	}}, nil
 }
 
 // writeAllow appends the rules the proposal adds (after − its before-text);
@@ -523,40 +487,8 @@ func (a *Applier) restoreDestination(p db.CoachProposal, cur CurrentText, now ti
 			err = ErrChangedSince
 		}
 		return err
-	case DestPromptAdd:
-		rows, err := a.DB.ListPromptAdditions(p.PromptID)
-		if err != nil {
-			return err
-		}
-		var removeIDs []int64
-		left := map[string]int{}
-		for _, r := range rows {
-			if r.ProposalID == p.ID {
-				removeIDs = append(removeIDs, r.ID)
-				continue
-			}
-			left[strings.TrimSpace(r.Text)]++
-		}
-		// The lines the proposal removed, re-added unless still there. Their
-		// original proposal tags are not stored, so they come back untagged.
-		gone := countLines(nonEmptyLines(p.BeforeText))
-		for _, l := range nonEmptyLines(p.AfterText) {
-			gone[l]--
-		}
-		var add []db.PromptAddition
-		for _, l := range nonEmptyLines(p.BeforeText) {
-			if gone[l] <= 0 {
-				continue
-			}
-			gone[l]--
-			if left[l] > 0 {
-				left[l]--
-				continue
-			}
-			add = append(add, db.PromptAddition{Text: l})
-		}
-		_, err = a.DB.EditPromptAdditions(p.PromptID, removeIDs, add, now)
-		return err
+	case DestPromptAdd, DestPackOverlay:
+		return a.restoreLines(p, now)
 	case DestSettingsAllow:
 		path, err := a.settingsPath()
 		if err != nil {

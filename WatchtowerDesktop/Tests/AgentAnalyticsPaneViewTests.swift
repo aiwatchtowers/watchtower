@@ -15,7 +15,9 @@ private final class AnalyticsActionLog {
     var targets: [Int64] = []
     var files: [String] = []
     var askOpens = 0
-    var discussed: [String] = []
+    var tunes = 0
+    var tuneOn = false
+    var retries = 0
     var asksWaiting = true
 
     var actions: AgentAnalyticsActions {
@@ -25,10 +27,22 @@ private final class AnalyticsActionLog {
             openTarget: { self.targets.append($0) },
             openFile: { self.files.append($0) },
             openAsks: { self.askOpens += 1 },
-            discuss: { self.discussed.append($0) },
+            tune: { self.tunes += 1 },
+            tuneOn: tuneOn,
+            retry: { self.retries += 1 },
             asksWaiting: asksWaiting
         )
     }
+}
+
+/// An older CLI: refuses `--agent` with cobra's usage error.
+private final class RefusingAgentRunner: CLIRunnerProtocol, @unchecked Sendable {
+    func run(args: [String]) async throws -> Data {
+        throw CLIRunnerError.nonZeroExit(code: 1, stderr: "Error: unknown flag: --agent")
+    }
+
+    func run(args: [String], timeout: TimeInterval) async throws -> Data { try await run(args: args) }
+    func run(args: [String], stdin: Data) async throws -> Data { try await run(args: args) }
 }
 
 /// Answers the coach's reads from the fixtures.
@@ -410,16 +424,254 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
         XCTAssertNoThrow(try view.inspect().find(button: "Copy Allow Rules"))
     }
 
-    func testDiscussInChatSendsTheTopHints() throws {
-        let ov = try Self.filledOverview()
+    // MARK: - Tune (#1517, spec 2026-11-03 §3, §4.4)
+
+    /// The Tune toggle, found by its tooltip (the toggle's style draws its
+    /// label twice).
+    private func tuneToggle(_ view: some View) throws -> InspectableView<ViewType.Toggle> {
+        try view.inspect().find(ViewType.Toggle.self) { (try? $0.help().string()) == TuningChatTexts.tuneHelp }
+    }
+
+    func testTuneReplacesDiscuss() throws {
         let log = AnalyticsActionLog()
-        try overviewView(.overview(ov, staleError: nil), log: log).inspect().find(button: "Discuss in Chat").tap()
-        let text = try XCTUnwrap(log.discussed.first)
-        XCTAssertEqual(text, AgentAnalyticsFormat.discussText(ov))
-        XCTAssertTrue(text.contains(ov.hints[0].finding))
-        XCTAssertTrue(text.contains(try XCTUnwrap(ov.hints[0].action)))
-        XCTAssertTrue(text.contains(ov.hints[2].finding))
-        XCTAssertFalse(text.contains(ov.hints[3].finding), "the top three only")
+        let view = overviewView(.overview(try Self.filledOverview(), staleError: nil), log: log)
+        XCTAssertThrowsError(try view.inspect().find(button: "Discuss in Chat"))
+        let toggle = try tuneToggle(view)
+        XCTAssertEqual(try toggle.labelView().find(ViewType.Label.self).title().text().string(), "Tune")
+        XCTAssertFalse(try toggle.isOn())
+        try toggle.tap()
+        XCTAssertEqual(log.tunes, 1)
+
+        log.tuneOn = true
+        let on = overviewView(.overview(try Self.filledOverview(), staleError: nil), log: log)
+        XCTAssertTrue(try tuneToggle(on).isOn(), "Tune has the selected look while the panel is open")
+    }
+
+    func testTuneHiddenWhileAnalyticsOff() throws {
+        let view = overviewView(.off(enabling: false, error: nil))
+        XCTAssertThrowsError(try tuneToggle(view))
+        XCTAssertThrowsError(try overviewView(.loading).inspect().find(ViewType.Toggle.self))
+    }
+
+    func testAgentPickerOnlyWithBothAgents() throws {
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: Self.fixture("agent-report-overview")) as? [String: Any])
+        json["agent_filter"] = nil
+        let claudeOnly = try JSONDecoder().decode(AgentReportOverview.self, from: JSONSerialization.data(withJSONObject: json))
+        let single = AgentAnalyticsHeaderView(
+            overview: claudeOnly, period: .constant(.week), agent: .constant(.all), tuneOn: false,
+            showsAgentPicker: AgentAnalyticsFormat.showsAgentPicker(claudeOnly, filter: .all)) {}
+        XCTAssertThrowsError(try single.inspect().find(text: "Codex"))
+
+        json["agent_filter"] = ["claude", "codex"]
+        let both = try JSONDecoder().decode(AgentReportOverview.self, from: JSONSerialization.data(withJSONObject: json))
+        let header = AgentAnalyticsHeaderView(
+            overview: both, period: .constant(.week), agent: .constant(.all), tuneOn: false,
+            showsAgentPicker: AgentAnalyticsFormat.showsAgentPicker(both, filter: .all)) {}
+        let picker = try header.inspect().find { (try? $0.help().string()) == AgentAnalyticsFormat.agentHelp }
+        let titles = try picker.findAll(ViewType.Text.self).map { try $0.string() }
+        for title in ["All", "Claude Code", "Codex"] {
+            XCTAssertTrue(titles.contains(title), "\(title) missing in \(titles)")
+        }
+    }
+
+    /// What a hosted pane's tuning panel built: the workbench's chats, from
+    /// a real pool and embedded-chat center. `hold` keeps each build waiting
+    /// until `release()`.
+    @MainActor
+    private final class ChatFactory {
+        let pool: DatabasePool
+        let center: EmbeddedChatCenter
+        var made: [TuningChat] = []
+        var hold = false
+        private var waiting: [CheckedContinuation<Void, Never>] = []
+
+        init(pool: DatabasePool) {
+            self.pool = pool
+            center = EmbeddedChatCenter(idleTTL: 1, clock: Date.init) { spec, gate in
+                makeSurfaceEngine(spec, dbPool: pool, ai: ScriptedAIService(), gate: gate)
+            }
+        }
+
+        /// As `AppState.makeTuningChat`: the chat is made (and marked shown),
+        /// then a read that ignores cancellation (`refreshCards`) is awaited.
+        func make(_ workbenchID: Int64) async throws -> TuningChat? {
+            let conv = try await TuningChatSurface.latestOrNewConversation(dbPool: pool, workbenchID: workbenchID)
+            let chat = TuningChat(workbenchID: workbenchID, conversationID: conv, dbPool: pool, center: center,
+                                  coach: nil, decideTools: { false }, period: { .week })
+            made.append(chat)
+            if hold { await withCheckedContinuation { waiting.append($0) } }
+            return chat
+        }
+
+        func release() {
+            waiting.forEach { $0.resume() }
+            waiting = []
+        }
+
+        /// Whether a panel still shows `chat`: a closed one's engine is
+        /// released by a sweep past the idle time.
+        func isShown(_ chat: TuningChat) -> Bool {
+            center.sweep(now: Date().addingTimeInterval(3600))
+            return center.loaded(chat.engine.spec.key) != nil
+        }
+    }
+
+    /// A pane of a workbench with the report fixture loaded (analytics on,
+    /// or off with `off`), hosted in a window so its lifecycle runs.
+    private func hostedPane(
+        off: Bool = false, open: Bool, hold: Bool = false
+    ) async throws -> (WorkbenchesViewModel, Int64, ChatFactory, () -> Void) {
+        let (pool, path) = try TestDatabase.createPool()
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "AgentAnalyticsTune-\(UUID().uuidString)"))
+        let projectID = try await pool.write { d in try TestDatabase.insertWorkbench(d, folder: "/tmp/acme") }
+        let project = try await pool.read { d in
+            try XCTUnwrap(Workbench.fetchOne(d, sql: "SELECT * FROM projects WHERE id = ?", arguments: [projectID]))
+        }
+        let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: FakeCLIRunner()), defaults: defaults,
+                                      terminalCenter: nil)
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: Self.fixture("agent-report-overview")) as? [String: Any])
+        json["enabled"] = !off
+        let center = AgentAnalyticsCenter(runner: FakeCLIRunner(stdout: try JSONSerialization.data(withJSONObject: json)),
+                                          interval: .seconds(3600))
+        vm.agentAnalytics = center
+        // The fixture is a 7-day report.
+        vm.analyticsPeriod[projectID] = .week
+        if open { vm.tuningOpen.insert(projectID) }
+        let factory = ChatFactory(pool: pool)
+        factory.hold = hold
+        let pane = AgentAnalyticsPaneView(vm: vm, project: project, makeTuningChat: factory.make)
+        let host = NSHostingView(rootView: pane)
+        host.frame = NSRect(x: 0, y: 0, width: 1000, height: 600)
+        let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        return (vm, projectID, factory, {
+            factory.release()
+            window.close()
+            factory.made.forEach { $0.close() }
+            center.stop()
+            TestDatabase.cleanup(path: path)
+        })
+    }
+
+    private func settle() async {
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        try? await Task.sleep(for: .milliseconds(150))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+    }
+
+    /// Pumps the run loop until `condition` holds (5 s at most).
+    private func until(_ condition: () -> Bool) async {
+        let deadline = Date().addingTimeInterval(5)
+        while !condition(), Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    func testPanelOpensAndClosesWithTune() async throws {
+        let (vm, id, factory, cleanup) = try await hostedPane(open: true)
+        defer { cleanup() }
+        await until { !factory.made.isEmpty }
+        XCTAssertEqual(factory.made.map(\.workbenchID), [id], "the open panel builds the workbench's chat once")
+        let first = try XCTUnwrap(factory.made.first)
+        XCTAssertTrue(factory.isShown(first))
+
+        vm.tuningOpen.remove(id)
+        await until { !factory.isShown(first) }
+        XCTAssertFalse(factory.isShown(first), "a closed panel stops showing its chat")
+        vm.tuningOpen.insert(id)
+        await until { factory.made.count == 2 }
+        XCTAssertEqual(factory.made.count, 2, "a reopened panel builds it again")
+        await settle()
+        XCTAssertEqual(factory.made.count, 2, "once")
+        XCTAssertTrue(factory.isShown(factory.made[1]))
+    }
+
+    /// Closed while the chat was still being built: the late chat is closed
+    /// at once, not left marked as shown.
+    func testPanelClosedWhileBuildingClosesTheLateChat() async throws {
+        let (vm, id, factory, cleanup) = try await hostedPane(open: true, hold: true)
+        defer { cleanup() }
+        await until { !factory.made.isEmpty }
+        let late = try XCTUnwrap(factory.made.first)
+        vm.tuningOpen.remove(id)
+        await settle()
+        factory.release()
+        await until { !factory.isShown(late) }
+        XCTAssertFalse(factory.isShown(late))
+    }
+
+    func testAnalyticsOffClosesThePanel() async throws {
+        let (vm, _, factory, cleanup) = try await hostedPane(off: true, open: true)
+        defer { cleanup() }
+        await until { vm.tuningOpen.isEmpty }
+        await settle()
+        XCTAssertTrue(vm.tuningOpen.isEmpty, "analytics off: the panel is not offered")
+        XCTAssertTrue(factory.made.isEmpty, "no tuning chat is built for a workbench whose analytics is off")
+    }
+
+    func testPanelInputsFollowThePanesQuery() throws {
+        let ov = try Self.filledOverview()
+        let week = AgentAnalyticsCenter.Query(period: .week)
+        let ready = TuningPanelInputs.make(overview: ov, status: nil, query: week)
+        XCTAssertFalse(ready.loading)
+        XCTAssertEqual(ready.figures?.days, 7)
+        XCTAssertEqual(ready.figures?.sessions, ov.totals.sessions)
+        XCTAssertEqual(ready.figures?.tasks, ov.tasks.count + (ov.tasksMore ?? 0))
+        XCTAssertEqual(ready.starters.first?.title, ov.hints.first?.finding, "no cost growth known: the top hint leads")
+
+        XCTAssertTrue(TuningPanelInputs.make(overview: nil, status: nil, query: week).loading)
+        let month = TuningPanelInputs.make(overview: ov, status: nil, query: .init(period: .month))
+        XCTAssertTrue(month.loading, "a report of another period is still loading for the pane's")
+        XCTAssertNil(month.figures)
+    }
+
+    func testWorkbenchRemovedClosesThePanel() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "TuneRemoved-\(UUID().uuidString)"))
+        let vm = WorkbenchesViewModel(dbPool: pool, cli: nil, defaults: defaults)
+        let appState = AppState()
+        appState.wireWorkbenchRemoved(vm)
+        let spec = TuningChatSurface.spec(workbenchID: 3, conversationID: 1, tools: false,
+                                          period: { .week }, onWillSend: {})
+        _ = appState.embeddedChatCenter.engine(for: spec)
+        XCTAssertNotNil(appState.embeddedChatCenter.loaded(spec.key))
+        vm.tuningOpen = [3, 4]
+        vm.analyticsScroll[3] = CoachSectionsView.acceptedID
+
+        vm.onWorkbenchRemoved?(3)
+        XCTAssertEqual(vm.tuningOpen, [4])
+        XCTAssertNil(vm.analyticsScroll[3])
+        XCTAssertNil(appState.embeddedChatCenter.loaded(spec.key), "the tuning engine is dropped")
+    }
+
+    func testShowInAcceptedEditsScrolls() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "TuneScroll-\(UUID().uuidString)"))
+        let vm = WorkbenchesViewModel(dbPool: pool, cli: nil, defaults: defaults)
+        vm.analyticsSession[3] = "u-1"
+        vm.showAnalyticsSection(CoachSectionsView.acceptedID, projectID: 3)
+        XCTAssertNil(vm.analyticsSession[3], "an open session detail goes back to the overview")
+        XCTAssertEqual(vm.analyticsScroll[3], CoachSectionsView.acceptedID)
+
+        let coach = await loadedCoach()
+        defer { coach.stop() }
+        var request: String? = CoachSectionsView.acceptedID
+        let binding = Binding(get: { request }, set: { request = $0 })
+        let view = AgentAnalyticsOverviewView(
+            state: .overview(try Self.overview(), staleError: nil), period: .constant(.week),
+            actions: AnalyticsActionLog().actions, coach: coach, workbench: 3, scrollRequest: binding)
+        let host = NSHostingView(rootView: view)
+        host.frame = NSRect(x: 0, y: 0, width: 900, height: 500)
+        let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        defer { window.close() }
+        await settle()
+        XCTAssertNil(request, "the overview clears the request once scrolled")
     }
 
     func testFilledBlocks() throws {
@@ -641,6 +893,73 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
             XCTAssertFalse(pixel.red == pixel.green && pixel.green == pixel.blue && abs(pixel.red - background) < 20,
                            "\(name.rawValue): \(pixel) looks like the background")
         }
+    }
+
+    // MARK: - Agent filter (#1517)
+
+    /// The header reads the filter off the report: a Codex report under the
+    /// Codex filter is current and keeps its picker; under All it is the old
+    /// answer ("Updating…").
+    func testCodexFilterHeader() throws {
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: Self.fixture("agent-report-overview")) as? [String: Any])
+        json["agent"] = "codex"
+        json["agent_filter"] = nil
+        let codex = try JSONDecoder().decode(AgentReportOverview.self, from: JSONSerialization.data(withJSONObject: json))
+        XCTAssertEqual(AgentAnalyticsFormat.agent(of: codex), .kind(.codex))
+
+        func view(_ agent: AgentAnalyticsCenter.Agent) -> AgentAnalyticsOverviewView {
+            AgentAnalyticsOverviewView(state: .overview(codex, staleError: nil), period: .constant(.week),
+                                       agent: .constant(agent), actions: AnalyticsActionLog().actions)
+        }
+        // ViewInspector matches a generic view by its name only, so the
+        // agent picker is found by its tooltip, not its type.
+        func picker(_ view: AgentAnalyticsOverviewView) throws -> InspectableView<ViewType.ClassifiedView> {
+            try view.inspect().find { (try? $0.help().string()) == AgentAnalyticsFormat.agentHelp }
+        }
+        let current = view(.kind(.codex))
+        XCTAssertThrowsError(try current.inspect().find(text: "Updating…"))
+        XCTAssertNoThrow(try picker(current), "a chosen filter keeps its picker")
+        let stale = view(.all)
+        XCTAssertNoThrow(try stale.inspect().find(text: "Updating…"))
+        XCTAssertThrowsError(try picker(stale), "All with one agent in the period: no picker")
+
+        json["agent"] = "gemini"
+        let unknown = try JSONDecoder().decode(AgentReportOverview.self, from: JSONSerialization.data(withJSONObject: json))
+        XCTAssertEqual(AgentAnalyticsFormat.agent(of: unknown), .all, "a kind this build does not know reads as All")
+    }
+
+    /// AppState wires the center's refusal to the view model: the
+    /// workbench's filter entry goes, so the pane shows All.
+    func testAgentRefusalResetsTheViewModelFilter() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "AgentRefusal-\(UUID().uuidString)"))
+        let vm = WorkbenchesViewModel(dbPool: pool, cli: nil, defaults: defaults)
+        let appState = AppState()
+        appState.replaceAgentAnalytics(cliRunner: RefusingAgentRunner(), workbenches: vm)
+        let center = try XCTUnwrap(vm.agentAnalytics)
+        defer { center.stop(); vm.coach?.stop() }
+
+        vm.analyticsAgent[3] = .kind(.codex)
+        center.show(workbench: 3, period: .week, agent: .kind(.codex))
+        let deadline = Date().addingTimeInterval(5)
+        while vm.analyticsAgent[3] != nil, Date() < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertNil(vm.analyticsAgent[3])
+        XCTAssertNotNil(center.overviews[3]?.error)
+    }
+
+    /// An older CLI's refusal of `--agent` lands on the report's error line,
+    /// which offers Retry.
+    func testErrorLineOffersRetry() throws {
+        let log = AnalyticsActionLog()
+        let stale = AgentAnalyticsOverviewView(
+            state: .overview(try Self.overview(), staleError: "Error: unknown flag: --agent"),
+            period: .constant(.week), actions: log.actions)
+        try stale.inspect().find(button: "Retry").tap()
+        let failed = AgentAnalyticsOverviewView(
+            state: .failed("Error: unknown flag: --agent"), period: .constant(.week), actions: log.actions)
+        try failed.inspect().find(button: "Retry").tap()
+        XCTAssertEqual(log.retries, 2)
     }
 
     // MARK: - Coach sections (#1120)

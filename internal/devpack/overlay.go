@@ -133,6 +133,16 @@ func RerenderSkill(skillsDir, name string, lines []string) (State, error) {
 	return state, nil
 }
 
+// RerenderFolderSkill is RerenderSkill for a skills directory of a workbench
+// folder: it refuses (ErrSymlinkOutsideFolder) when skillsDir or the skill's
+// directory links outside folder, and writes nothing there (PROJ-04).
+func RerenderFolderSkill(folder, skillsDir, name string, lines []string) (State, error) {
+	if err := skillDirsInside(folder, skillsDir, Skill{Name: name}); err != nil {
+		return "", err
+	}
+	return RerenderSkill(skillsDir, name, lines)
+}
+
 // overlaid is s rendered with ov's lines for it.
 func (ov Overlays) overlaid(s Skill) Skill {
 	return Render(s, ov[s.Name])

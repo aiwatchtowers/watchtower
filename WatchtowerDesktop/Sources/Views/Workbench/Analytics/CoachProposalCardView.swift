@@ -125,7 +125,7 @@ struct CoachProposalCardView: View {
 
     private func diffBlock(_ diff: [CoachDiffLine]) -> some View {
         VStack(alignment: .leading, spacing: Spacing.tight) {
-            Text([proposal.destinationLabel, proposal.sizeLine].compactMap { $0 }.joined(separator: " · "))
+            Text(proposal.diffCaption)
                 .font(.caption)
                 .foregroundStyle(.secondary)
             ForEach(Array(diff.prefix(Self.maxDiffLines).enumerated()), id: \.offset) { _, line in

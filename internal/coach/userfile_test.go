@@ -119,7 +119,7 @@ func TestUserFile_SymlinkedHomeFolderAllowed(t *testing.T) {
 		}
 		id := propose(t, d, db.CoachProposal{Destination: c.dest, Skill: skill, BeforeText: "Before.\n",
 			AfterText: "Before.\nAfter.\n", Kind: "replace", Fingerprint: c.dest + "|" + target})
-		require.NoError(t, a.Accept(id, ""), c.rel)
+		require.NoError(t, a.acceptErr(id, ""), c.rel)
 		assert.Equal(t, "Before.\nAfter.\n", readFile(t, target), "written in the resolved folder")
 		fi, err := os.Lstat(c.top(a))
 		require.NoError(t, err)
@@ -143,7 +143,7 @@ func TestUserFile_SymlinkedHomeFolderAllowed(t *testing.T) {
 	a.CodexHome = filepath.Join(t.TempDir(), "codex-link")
 	require.NoError(t, os.Symlink(dot, a.CodexHome))
 	id := propose(t, d, db.CoachProposal{Destination: DestCodexAgentsMDUser, AfterText: "Rule.\n", Fingerprint: "agents|ch"})
-	require.NoError(t, a.Accept(id, ""))
+	require.NoError(t, a.acceptErr(id, ""))
 	assert.Equal(t, "Rule.\n", readFile(t, filepath.Join(dot, "AGENTS.md")))
 
 	// A top that is a link to a file, not a folder, is refused.
@@ -189,7 +189,7 @@ func TestUserFile_MissingSkillRefused(t *testing.T) {
 
 	// Accept never creates a skill.
 	id := propose(t, d, db.CoachProposal{Destination: DestClaudeSkillUser, Skill: "nope", AfterText: "New."})
-	require.ErrorIs(t, a.Accept(id, ""), errSkillNotFound)
+	require.ErrorIs(t, a.acceptErr(id, ""), errSkillNotFound)
 	assert.NoFileExists(t, ClaudeSkillPath(a.env(), "nope"))
 	assert.Equal(t, "open", proposal(t, d, id).Status)
 }
@@ -266,7 +266,7 @@ func TestCodexSkill_TwoCopiesRefused(t *testing.T) {
 	assert.Equal(t, want, err.Error())
 
 	id := propose(t, d, p)
-	err = a.Accept(id, "")
+	err = a.acceptErr(id, "")
 	require.ErrorIs(t, err, errCodexSkillTwice)
 	assert.Contains(t, err.Error(), want)
 	assert.Equal(t, "open", proposal(t, d, id).Status)
@@ -286,7 +286,7 @@ func TestCodexSkill_TwoCopiesRefused(t *testing.T) {
 	writeFile(t, only, "Before.\n")
 	p.Fingerprint = "two|rollback"
 	id = propose(t, d, p)
-	require.NoError(t, b.Accept(id, ""))
+	require.NoError(t, b.acceptErr(id, ""))
 	writeFile(t, filepath.Join(b.Home, ".agents", "skills", "a", "SKILL.md"), "Before.\nAfter.\n")
 	_, err = b.Rollback(id, false)
 	require.ErrorIs(t, err, errCodexSkillTwice)
@@ -319,7 +319,7 @@ func TestAccept_SkillRoundTrip(t *testing.T) {
 		p := f.proposal("Read the plan.\n", "Read the plan.\nRun package tests only.\n")
 		p.Kind, p.Fingerprint = "replace", f.dest+"|rt"
 		id := propose(t, d, p)
-		require.NoError(t, a.Accept(id, ""), f.dest)
+		require.NoError(t, a.acceptErr(id, ""), f.dest)
 		assert.Equal(t, "Read the plan.\nRun package tests only.\n", readFile(t, path))
 		fi, err := os.Stat(path)
 		require.NoError(t, err)
@@ -349,7 +349,7 @@ func TestAccept_SkillChangedAfterReread_IsStale(t *testing.T) {
 	assert.Equal(t, "The owner's edit.", readFile(t, path))
 
 	// Through Accept the proposal is superseded and the file kept.
-	require.ErrorIs(t, a.Accept(id, ""), ErrStale)
+	require.ErrorIs(t, a.acceptErr(id, ""), ErrStale)
 	assert.Equal(t, "superseded", proposal(t, d, id).Status)
 	assert.Equal(t, "The owner's edit.", readFile(t, path))
 
@@ -367,7 +367,7 @@ func TestRollback_CreatedAgentsMDLeftEmpty(t *testing.T) {
 	a := newApplier(t, d) // default Codex home: <Home>/.codex, created by Accept
 	path := codexAgentsMDPath(a.env())
 	id := propose(t, d, db.CoachProposal{Destination: DestCodexAgentsMDUser, AfterText: "Run tests.\n"})
-	require.NoError(t, a.Accept(id, ""))
+	require.NoError(t, a.acceptErr(id, ""))
 	assert.Equal(t, "Run tests.\n", readFile(t, path))
 	fi, err := os.Stat(path)
 	require.NoError(t, err)

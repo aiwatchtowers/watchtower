@@ -5,12 +5,16 @@ spec `docs/superpowers/specs/2026-11-03-tuning-chat-design.md` §3, §4.3a and �
 Each state has a light and a dark PNG.
 
 The pane and the panel sit side by side in a `PanelSplit` (`PanelSplitWidth`
-460, range 360–720). The panel, its feed rows, the composer and the pane
-header are mock views in the test target
-(`WatchtowerDesktop/Tests/DesignShots/DesignShotFixtures+TuningChat.swift`).
-These are real views running on fixture data:
-the proposal card in the feed (`CoachProposalCardView`), the pane's coach
-sections (`CoachSectionsView`) and the Statistics blocks. All data is synthetic.
+460, range 360–720). The mockups were drawn with test-target mock views; the
+shots now render the real views on fixture data
+(`WatchtowerDesktop/Tests/DesignShots/DesignShotFixtures+TuningChat.swift`,
+Task 5.13): the pane's `AgentAnalyticsHeaderView` and `CoachSectionsView`,
+and `TuningPanelView` over a `TuningChat` whose turns ran through the
+embedded-chat engine on a temporary database with a scripted AI service
+(the proposal card in the feed is `CoachProposalCardView`, a settled one
+`TuningAcceptedLine`), and the Statistics blocks. All data is synthetic.
+Compare a render with its mockup by eye; the differences kept on purpose are
+listed under "Differences from the mockups" below.
 
 | State | Spec | File |
 |---|---|---|
@@ -54,8 +58,29 @@ Product changes made with the mockups:
 - `CoachProposalCardView`: when the footer does not fit on one line, the
   evidence moves to its own line above the buttons.
 
-Known gaps: the `proposal-accepted-repo` pane lists only the earlier accepted
-edit in Accepted edits: the repository edit's row needs the `repo_*`
-destination labels ("Workbench CLAUDE.md", …), which Task 5.14 adds to
-`destinationLabel`. The stale line is `CoachCenter`'s existing text ("The text
-changed since — this proposal is closed"), which the spec keeps.
+Product change made with the shots (Task 5.13):
+
+- The panel's conversation picker is a button-style menu (`.menuStyle(.button)`
+  + `.buttonStyle(.plain)`): a borderless menu drew only the chip's text and
+  icon, without its capsule and chevron.
+
+Differences from the mockups, kept on purpose (the real panel uses the shared
+embedded-chat components, as every embedded chat does):
+
+- A short thread starts at the top of the feed: `ChatFeedView` follows the
+  last row, it does not pin short content to the bottom.
+- A finished turn's tool calls fold into the shared steps line ("Worked for
+  … · 4 steps"), expanded while the turn runs; the mockups drew them as
+  always-open quiet lines. The step labels are still
+  `TuningChatTexts.toolLine` ("Listed sessions", "Proposed an edit").
+- A finished reply carries the shared copy button and time.
+- The composer is `EmbeddedChatComposer` (a field with the send/stop button
+  beside it); at 360 pt its placeholder wraps to two lines.
+- A failed turn is the shared error card: the error code's sentence, the
+  provider's text under it and **Retry**, on the error tint.
+- The header's comparison label is main's `previousPeriodLabel`
+  ("against Oct 20 – Oct 27").
+- The `proposal-accepted-repo` pane lists the repository edit in Accepted
+  edits with its "Accepted · waiting for your commit" line (Task 5.14). The
+  stale line is `CoachCenter`'s existing text ("The text changed since — this
+  proposal is closed"), which the spec keeps.

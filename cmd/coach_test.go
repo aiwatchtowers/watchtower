@@ -213,13 +213,103 @@ func TestCoachProposals_JSONKeysPinned(t *testing.T) {
 	}
 	assert.ElementsMatch(t, []string{"id", "title", "why", "destination", "workbench_id", "prompt_id", "kind",
 		"metric", "before", "after", "evidence", "sources", "status", "created_at", "decided_at", "baseline",
-		"verdict", "verdict_value", "verdict_at", "reverts_id", "budget"}, got)
+		"verdict", "verdict_value", "verdict_at", "reverts_id", "budget", "origin", "skill", "conversation_id"}, got)
 	assert.JSONEq(t, `[{"kind":"session","ref":"s1"}]`, string(items[0]["evidence"]))
 	assert.Equal(t, "null", string(items[0]["decided_at"]))
+	assert.Equal(t, `"weekly"`, string(items[0]["origin"]))
+	assert.Equal(t, `""`, string(items[0]["skill"]))
+	assert.Equal(t, "null", string(items[0]["conversation_id"]))
 
 	out, err = runCoach(t, "", "proposals", "--status", "declined", "--json")
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"ok":true,"proposals":[]}`, out)
+}
+
+// insertChatCoachProposal files an open chat proposal on a user skill, made in
+// tuning conversation conv (created here with that id).
+func insertChatCoachProposal(t *testing.T, d *db.DB, conv int64) int64 {
+	t.Helper()
+	_, err := d.Exec(`INSERT INTO chat_conversations (id, title, context_type, created_at, updated_at)
+		VALUES (?, '', 'analytics_tuning', 0, 0)`, conv)
+	require.NoError(t, err)
+	id, err := d.InsertChatCoachProposal(db.CoachProposal{Fingerprint: "fp-chat", Kind: "add",
+		Destination: coach.DestClaudeSkillUser, Skill: "review-pr", Title: "Check tests", Why: "Asked in the chat.", Metric: "corrections",
+		AfterText: "Run the tests.", Evidence: []db.CoachEvidence{{Kind: "chat", Ref: "c7"}}, Sources: 1},
+		&conv, time.Now())
+	require.NoError(t, err)
+	require.NotZero(t, id)
+	return id
+}
+
+func coachFirstProposal(t *testing.T, out string) map[string]json.RawMessage {
+	t.Helper()
+	var items []map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(coachJSONObject(t, out)["proposals"], &items))
+	require.Len(t, items, 1)
+	return items[0]
+}
+
+func TestCoachProposals_ChatKeys(t *testing.T) {
+	d := coachSetup(t)
+	insertChatCoachProposal(t, d, 7)
+
+	out, err := runCoach(t, "", "proposals", "--json")
+	require.NoError(t, err)
+	p := coachFirstProposal(t, out)
+	assert.Equal(t, `"chat"`, string(p["origin"]))
+	assert.Equal(t, "7", string(p["conversation_id"]))
+	assert.Equal(t, `"review-pr"`, string(p["skill"]))
+
+	out, err = runCoach(t, "", "proposals")
+	require.NoError(t, err)
+	assert.Contains(t, out, "  where: "+coach.DestClaudeSkillUser+" [review-pr]\n")
+	assert.Contains(t, out, "  from: chat 7\n")
+}
+
+func TestCoachProposals_DeletedConversation(t *testing.T) {
+	d := coachSetup(t)
+	insertChatCoachProposal(t, d, 7)
+	_, err := d.Exec(`DELETE FROM chat_conversations WHERE id = 7`)
+	require.NoError(t, err)
+
+	out, err := runCoach(t, "", "proposals", "--json")
+	require.NoError(t, err)
+	p := coachFirstProposal(t, out)
+	assert.Equal(t, `"chat"`, string(p["origin"]))
+	assert.Equal(t, "null", string(p["conversation_id"]))
+
+	out, err = runCoach(t, "", "proposals")
+	require.NoError(t, err)
+	assert.Contains(t, out, "  from: chat deleted\n")
+}
+
+func TestCoachProposals_WeeklyHasNoFromLine(t *testing.T) {
+	d := coachSetup(t)
+	insertCoachProposal(t, d, "fp1", "Be brief.")
+	out, err := runCoach(t, "", "proposals")
+	require.NoError(t, err)
+	assert.NotContains(t, out, "from:")
+}
+
+func TestCodedCoachErr_Refused(t *testing.T) {
+	assert.Equal(t, "refused", codedCoachErr(fmt.Errorf("wrap: %w", coach.ErrRefused)).code)
+	assert.Equal(t, "failed", codedCoachErr(errors.New("boom")).code)
+}
+
+func TestCoachAccept_JSONKeysPinned(t *testing.T) {
+	d := coachSetup(t)
+	id := insertCoachProposal(t, d, "fp1", "Be brief.")
+
+	out, err := runCoach(t, "", "accept", strconv.FormatInt(id, 10), "--json")
+	require.NoError(t, err)
+	top := coachJSONObject(t, out)
+	var got []string
+	for k := range top {
+		got = append(got, k)
+	}
+	assert.ElementsMatch(t, []string{"ok", "id", "status", "pack_copies_updated", "pack_copies_drifted"}, got)
+	assert.Equal(t, "accepted", strings.Trim(string(top["status"]), `"`))
+	assert.Equal(t, "0", string(top["pack_copies_updated"]))
 }
 
 func TestCoachStatus_JSONKeysPinned(t *testing.T) {

@@ -118,12 +118,11 @@ func (m Metrics) Of(metric string) Value {
 // #1196); every other destination on Claude sessions. The chat instructions
 // stay on Claude: they reach the AI chats, not an agent session.
 func AgentFor(destination string) string {
-	// Phase 2 consts: the codex_*, pack_overlay and repo_* names are literals
-	// until the destination consts land on this base.
+	// The repo_* names stay literals until Task 2.13 adds their consts.
 	switch destination {
-	case "codex_skill_user", "codex_agents_md_user", "codex_rules_allow", "repo_agents_md", "repo_codex_skill":
+	case DestCodexSkillUser, DestCodexAgentsMDUser, DestCodexRulesAllow, "repo_agents_md", "repo_codex_skill":
 		return string(agentkind.Codex)
-	case DestSession, DestProcedure, "pack_overlay", "repo_workflow":
+	case DestSession, DestProcedure, DestPackOverlay, "repo_workflow":
 		return agentreport.AgentAll
 	}
 	return string(agentkind.Claude)
