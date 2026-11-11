@@ -520,8 +520,8 @@ Data is available in the desktop app (Usage tab).
 |----------|------|
 | Configuration | `~/.local/share/watchtower/{workspace}/config.yaml` |
 | Database | `~/.local/share/watchtower/{workspace}/watchtower.db` |
-| Daemon log (every line from the daemon's own logger, the stdlib default logger and the Jira sub-loggers; rotated past 20 MiB while the daemon runs, previous generation `watchtower.log.1`) | `~/.local/share/watchtower/{workspace}/watchtower.log` |
-| Crash log (the detached child's raw stdout/stderr: Go runtime panics, the parent's rotation note, and the pid-file cleanup warnings that write to stderr directly — the stdlib default logger and the Jira sub-loggers are routed into `watchtower.log`; rotated at daemon start) | `~/.local/share/watchtower/{workspace}/daemon.log` |
+| Daemon log (every line from the daemon's own logger, the stdlib default logger and the Jira sub-loggers; the detached daemon also points its stderr here and follows it across rotations, so **Go runtime panics land in `watchtower.log` or `watchtower.log.1`**; rotated past 20 MiB while the daemon runs, previous generation `watchtower.log.1`) | `~/.local/share/watchtower/{workspace}/watchtower.log` |
+| Crash log (the detached child's raw stdout/stderr up to the moment its logger starts: the parent's rotation note and early start-up output; all of its stderr, panics included, only when the stderr redirect failed — the log then says `stderr redirect: … (stderr stays on daemon.log)`; older installs may keep an unbounded file from before the redirect; rotated at daemon start) | `~/.local/share/watchtower/{workspace}/daemon.log` |
 | Sync result | `~/.local/share/watchtower/{workspace}/last_sync.json` |
 | People timestamp | `~/.local/share/watchtower/{workspace}/last_people.txt` |
 | Briefing timestamp | `~/.local/share/watchtower/{workspace}/last_briefing.txt` |
@@ -530,3 +530,5 @@ Data is available in the desktop app (Usage tab).
 | Daily-rollup attempt budget | `~/.local/share/watchtower/{workspace}/rollup_attempts.txt` |
 | Daemon PID | `~/.local/share/watchtower/{workspace}/daemon.pid` |
 | Digest lock | `~/.local/share/watchtower/{workspace}/digest.lock` |
+
+`watchtower diagnostics` (Help → **Report a Problem…**) only reads these files: `watchtower.log`, `watchtower.log.1` and `daemon.log` (sizes, and a streamed crash scan under a 2 s budget), `daemon.pid` (through `daemon.PeekProcess`, which never removes a stale file), `last_sync.json` and the database (`db.OpenExistingContext`: `query_only`, no migration, no checkpoint on close). It writes none of them; the only file effects are SQLite's own `-shm`, and on a cleanly stopped install a new empty `-wal`/`-shm` pair. See [docs/features/report-a-problem.md](features/report-a-problem.md).

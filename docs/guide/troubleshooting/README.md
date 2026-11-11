@@ -19,3 +19,15 @@ Find what you see on the screen in the first column; the second column opens the
 | The app does something other than what its own screen says | [Known issues](known-issues.md) |
 
 Nothing here? Run `watchtower status` and `watchtower logs` in a terminal ([Command line](../reference/cli.md)) and read the last lines for the failing step.
+
+## Report a problem
+<!-- learn: none -->
+
+Choose **Help → Report a Problem…** (or **Report a Problem…** next to **Open Logs** in **Settings → System → Logs**), describe what happened, and press **Open GitHub Issue**. The GitHub bug form opens in your browser already filled in; Watchtower sends nothing itself, so you read every line and submit it there.
+
+The report carries versions, macOS and the chip, the AI provider, the features you turned on, which kinds of sources are connected and how many, the sync daemon's state, the last 20 failures as time, step and error type, crash counts and file sizes. It never carries names, email addresses, ids, workspace or channel names, file paths, message text, error messages or log lines. GitHub issues are public, so check your own words before you submit.
+
+- **A question, not a problem?** Ask in [Discussions](https://github.com/aiwatchtowers/watchtower/discussions) instead.
+- **The report did not fit in the link:** press **Copy Report** and paste it into **Logs** on GitHub.
+- **From a terminal:** run `watchtower diagnostics` and paste its output into **Logs**.
+- **Your organization's build:** the window offers only **Save Diagnostics…**, which saves the report as a text file to send to your organization's support.

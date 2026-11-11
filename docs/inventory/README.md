@@ -45,6 +45,7 @@ Each entry is a guard against silent regression. Modifying any contract or its g
 | Inbox folders (the Inbox menu) | [inbox-folders.md](inbox-folders.md) | `internal/inboxfolders/`, `cmd/inbox_folders.go`, `WatchtowerDesktop/Sources/WatchtowerCore/Services/Inbox/NeedsApprovalSelection.swift`, `WatchtowerDesktop/Sources/WatchtowerCore/Services/Inbox/InboxFolderEntries.swift`, `WatchtowerDesktop/Sources/WatchtowerCore/Services/Inbox/InboxFolderMenuModel.swift` (`InboxFolderMenuSnapshot`) |
 | Files outside the database (logs, temp files) | [files.md](files.md) | `internal/logredact/`, `internal/logcanary/`, `internal/fsutil/prompt_pipe.go`, `internal/fsutil/private_temp.go`, `internal/{sync,meeting,digest,tracks,targets,briefing,guide,ai,codex,jira,ollama}/*files01_test.go` |
 | LLM transport independence | [llm-transport.md](llm-transport.md) | every LLM consumer in `cmd/`, `internal/`, `WatchtowerDesktop/Sources`, `WatchtowerKit/Sources` outside the adapters; guards `internal/transporttest/guard_test.go`, `WatchtowerDesktop/Tests/Core/LLMTransportGuardTests.swift` |
+| Diagnostics (Report a Problem) | [diagnostics.md](diagnostics.md) | `cmd/diagnostics.go`, `internal/diagnostics/`, `WatchtowerDesktop/Sources/WatchtowerCore/Services/ReportProblem/` |
 
 (Other modules will be added as their inventories are written.)
 
