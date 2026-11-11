@@ -43,9 +43,12 @@ type ckShares struct {
 	parts map[string][]string
 }
 
-func newCKShares() *ckShares {
+func newCKShares() *ckShares { return newCKSharesAt(nil) }
+
+// newCKSharesAt is newCKShares whose server time is clock (nil = time.Now).
+func newCKSharesAt(clock func() time.Time) *ckShares {
 	return &ckShares{
-		Fake: memfake.New(transport.KindCloudKit, nil), out: make(chan transport.Event, 64),
+		Fake: memfake.New(transport.KindCloudKit, clock), out: make(chan transport.Event, 64),
 		fail: map[string]int{}, held: map[string]chan struct{}{}, parts: map[string][]string{},
 	}
 }
@@ -197,7 +200,16 @@ func startCloudKitHub(t *testing.T, before func(dir string, ck *ckShares), confi
 	policytest.Set(t, nil)
 	dir := shortDir(t)
 	r := newBubbleRig(t, dir)
-	ck := newCKShares()
+	// The fake's server time is the hub's clock (set once the options are
+	// configured): mailbox hygiene ages records by server time against the
+	// hub's now, so two clocks apart would age a fresh hello out.
+	var hubClock atomic.Pointer[func() time.Time]
+	ck := newCKSharesAt(func() time.Time {
+		if c := hubClock.Load(); c != nil {
+			return (*c)()
+		}
+		return time.Now()
+	})
 	fctx, fcancel := context.WithCancel(context.Background())
 	t.Cleanup(fcancel)
 	go ck.forward(fctx)
@@ -213,6 +225,9 @@ func startCloudKitHub(t *testing.T, before func(dir string, ck *ckShares), confi
 	o.onPass = func() { passes.Add(1) }
 	if configure != nil {
 		configure(&o)
+	}
+	if o.Clock != nil {
+		hubClock.Store(&o.Clock)
 	}
 	r.start(o)
 	r.waitState(StateOff, ReasonDisabled)

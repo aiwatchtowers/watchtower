@@ -108,10 +108,6 @@ func control(kind transport.ControlKind, detail string) func(transport.Event) bo
 	}
 }
 
-func controlOf(kind transport.ControlKind) func(transport.Event) bool {
-	return func(ev transport.Event) bool { return ev.Control != nil && ev.Control.Kind == kind }
-}
-
 // addSlot vouches for h as the store's phone and puts it into the phone's
 // slots.
 func addSlot(t *testing.T, store *hubtest.RelayStore, h *hub) {
