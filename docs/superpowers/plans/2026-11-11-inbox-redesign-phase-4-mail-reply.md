@@ -27,8 +27,16 @@
 - Owner's own sent row = its `labels_json` contains the label id `"SENT"`, **or** its `from_email` equals the account's `google_accounts.email` (case-insensitive, trimmed).
 - Mail branch: item `trigger_type = 'email_received'`, `status = 'pending'`, resolved with `ResolveInboxItem(id, "User replied")`; `email_cc` items and `imap:` items are untouched.
 - "Newer than the item" = the owner's sent row's `internal_date` is strictly later than the item's received message's `internal_date` (row `account_id`, `id = message_ts`); when that row is gone or undated, than the item's `created_at`.
-- Sent catch-up: once per account, `in:sent` over the last `gmail.initial_history_days` days (default `7`), rows stamped with their own date as `synced_at`, no watermark or auth-state write; stamp column `google_accounts.gmail_sent_catchup_at` (RFC 3339 UTC, `''` = not yet).
+- Sent catch-up: once per account, `in:sent` over the last `gmail.initial_history_days` days (default `7`), rows stamped with their own date as `synced_at`, no watermark or auth-state write; stamp column `google_accounts.gmail_sent_catchup_at` (RFC 3339 UTC, `''` = not yet); a 404 message is skipped, and the pass gives up (stamps) after 3 failed attempts per process.
 - Inventory: INBOX-02 amendment as approved in ask #634; INBOX-09, SRCDEL-01..03, PURGE-02 unchanged and relied on.
+
+## Agent's calls (not in the spec; the owner can overturn any)
+
+1. **One-time sent catch-up, 7 days** (`gmail.initial_history_days`). Accounts connected before this release get their last week of sent mail once, so open items they already answered close. Older sent mail of those accounts is never fetched (their history backfill already ran); knowledge loses only that. Alternative the owner may prefer: a month (the backfill depth), at more Gmail API calls once.
+2. **`seedGmailSenders` is a skip reader.** It seeds correspondents ("who wrote to you"); without the skip the owner's own address would become a person node. Memory extraction stays a keep reader.
+3. **A sent-only message links to `#sent/<id>`** instead of `#inbox/<id>`, so **Open in Gmail** lands in the folder that holds it. Received mail's links are unchanged.
+4. **Sent and received mail share the per-cycle cap** (`gmail.max_messages_per_sync`, default 100, oldest first) because they are one listing. A cycle with more than 100 new messages in total delivers the rest next cycle, as today; an owner who sends a lot can see received mail arrive one cycle later. One listing keeps one watermark and no new loss path; a separate sent cursor would need its own watermark rules.
+5. **"Newer than the item" is measured against the received message's date**, so a reply sent before the cycle that creates the item still closes it.
 
 ## Review Focus
 
@@ -36,7 +44,7 @@
 - **The owner replies before the cycle that creates the item** (received 10:00, reply 10:05, detector runs 10:10): the comparison is against the received message's date, not the item's `created_at`, so the item still resolves — Task 5 `TestGmailItemsAnsweredByOwner_ReplyBeforeItemCreated`.
 - **The owner's older message in the same thread** (they wrote first, someone answered): the received answer stays pending — Task 5 `TestGmailItemsAnsweredByOwner_OlderOwnMessageKeepsItem`.
 - **The same Gmail thread id under two connected accounts:** a reply in account B never closes account A's item — Task 5 `TestGmailItemsAnsweredByOwner_OtherAccountKeepsItem`.
-- **An account connected before this release:** its last week of sent mail arrives once, and a failed catch-up retries next cycle without moving the Gmail watermark — Task 2 `TestCatchUpSent_ErrorLeavesStampAndWatermark`.
+- **An account connected before this release:** its last week of sent mail arrives once, a failed catch-up retries next cycle without moving the Gmail watermark, and a message that keeps failing (or was deleted mid-pass) never makes it re-download the week forever — Task 2 `TestCatchUpSent_ErrorLeavesStampAndWatermark`, `TestCatchUpSent_GoneMessageSkipped`, `TestCatchUpSent_GivesUpAfterThreeFailures`.
 
 ---
 
@@ -86,7 +94,7 @@
 - Produces:
   - `const listScope = "{in:inbox in:sent}"` in `internal/gmail/sync.go`; `Sync` lists `listScope + " after:<watermark>"` / `listScope + " newer_than:<days>d"`, `FetchRange` lists `listScope + " after:<from> before:<to>"`. Nothing else in `Sync` changes (cap, oldest-first, watermark rules, noise skip).
   - `Sync` on an account's first sync (watermark 0, listing succeeded) also calls `SetGmailSentCatchUpAt(accountID, listedAt)` (that window already held the sent mail); a failed stamp is logged, never returned.
-  - `func (s *Syncer) CatchUpSent(ctx context.Context, now time.Time) (int, error)` — no-op `(0, nil)` when the stamp is set or the watermark is 0; else lists `in:sent after:<now − initial_history_days·24h>` (all pages), stores each through `storeMessage` with `backfillSyncedAt` (own date) and `skipAtOrBelow = 0`, stamps `now` only after every message stored; the first error returns wrapped with no stamp. Writes no watermark, no auth state.
+  - `func (s *Syncer) CatchUpSent(ctx context.Context, now time.Time) (int, error)` — no-op `(0, nil)` when the stamp is set or the watermark is 0; else lists `in:sent after:<now − initial_history_days·24h>` (all pages), stores each through `storeMessage` with `backfillSyncedAt` (own date) and `skipAtOrBelow = 0`. A message whose `GetMessage` answers 404 (deleted between the listing and the fetch) is skipped, not an error. Any other error stops the pass, returns wrapped and stamps nothing, so the next cycle retries — at most `sentCatchUpMaxAttempts = 3` passes per account per process that fail on a message fetch or store (a failed listing — offline, revoked — never counts and never stamps) (`Syncer.catchUpFailures`, in memory); the third failure stamps `now` anyway and logs `gmail: sent catch-up for account <id> gave up after 3 attempts: <err>`, so one bad message can never re-download the week every cycle. Stamps `now` after a pass where every listed message was stored or skipped. Writes no watermark, no auth state.
   - `GetMessage` permalink: `#sent/<id>` when the labels contain `SENT` and not `INBOX`, else `#inbox/<id>` as today.
   - In `internal/daemon/daemon.go`: `type sentCatchUpper interface { CatchUpSent(ctx context.Context, now time.Time) (int, error) }`, `var _ sentCatchUpper = (*gmail.Syncer)(nil)`; `phaseGmailSync` calls it after a successful `Sync`, outside `observePhase` (catch-up rows are never news), before `CheckDeletions`; errors logged as `gmail sent catch-up error: …`.
 
@@ -95,7 +103,7 @@
   - `TestSyncFirstSyncStampsSentCatchUp` — after a first sync with ≥ 1 message, `GmailSentCatchUpAt` is non-empty; after a sync of an account with watermark > 0 it stays `''`.
   - Update `fetch_range_test.go`'s expected query to `{in:inbox in:sent} after:%d before:%d`.
   - `TestGetMessagePermalinkSentOnly` (client_test.go) — labels `["SENT"]` → `…#sent/<id>`; `["SENT","INBOX"]` → `…#inbox/<id>`.
-  - `sent_catchup_test.go`: `TestCatchUpSent_StoresOwnDateAndStamps` (watermark set, stamp `''`: query is `in:sent after:<now−7d>`, rows stored with `synced_at` = their own date, stamp = now, watermark unchanged, returns the stored count); `TestCatchUpSent_NoopWhenStampedOrFresh` (stamp set → no HTTP call; watermark 0 → no HTTP call); `TestCatchUpSent_ErrorLeavesStampAndWatermark` (second `GetMessage` fails → error returned, stamp `''`, watermark unchanged; next call with a healthy server stamps); `TestCatchUpSent_SkipsNoiseLabels` (a `CATEGORY_PROMOTIONS` message is not stored).
+  - `sent_catchup_test.go`: `TestCatchUpSent_StoresOwnDateAndStamps` (watermark set, stamp `''`: query is `in:sent after:<now−7d>`, rows stored with `synced_at` = their own date, stamp = now, watermark unchanged, returns the stored count); `TestCatchUpSent_NoopWhenStampedOrFresh` (stamp set → no HTTP call; watermark 0 → no HTTP call); `TestCatchUpSent_ErrorLeavesStampAndWatermark` (second `GetMessage` fails → error returned, stamp `''`, watermark unchanged; next call with a healthy server stamps); `TestCatchUpSent_SkipsNoiseLabels` (a `CATEGORY_PROMOTIONS` message is not stored); `TestCatchUpSent_GoneMessageSkipped` (one listed id's `GetMessage` answers 404: the others are stored, the pass stamps, nil error); `TestCatchUpSent_GivesUpAfterThreeFailures` (one id answers 500 every time: calls 1 and 2 return the error with no stamp, call 3 returns the error and stamps, call 4 makes no HTTP call; watermark unchanged throughout).
   - Daemon: `TestPhaseGmailSync_RunsSentCatchUpAfterSync` — a fake syncer implementing `sentCatchUpper` records calls: called once after a successful `Sync`, not called when `Sync` returns an error.
 - [ ] **Step 2: Run** `go test ./internal/gmail ./internal/daemon -run 'TestSync|TestFetchRange|TestGetMessagePermalink|TestCatchUpSent|TestPhaseGmailSync'` — Expected: FAIL.
 - [ ] **Step 3: Implement** per Interfaces. Existing `TestSync*` tests stay green unchanged except where they assert the literal query.
@@ -215,6 +223,7 @@
 | `internal/db/memory.go` | keep | `GmailMessageSender`, `GmailMessageExists`, `ListGmailThreadsForExtract` (memory extraction and ideas email digests) |
 | `internal/memory/gmail_extract.go`, `internal/memory/provenance.go` | keep | comments over the `internal/db/memory.go` readers |
 | `internal/db/emails_read.go` | keep | `ListLocalEmails`, `GetLocalEmail` (`list_emails`/`get_email`, `sent` key) |
+| `internal/tools/emails.go` | keep | `list_emails`/`get_email` tool texts naming the table (reads through `internal/db/emails_read.go`) |
 | `internal/db/gmail.go` | lifecycle | `upsertGmailMessage` (writer), `GmailMessagesSyncedAfter` (detector feed), `GmailStoredIDs` + `DeleteGmailMessages` (SRCDEL), `ClearGmailData` |
 | `internal/db/account_purge_steps.go` | lifecycle | PURGE-02 gmail step (`account_id = ?`) |
 | `internal/db/google_accounts.go` | lifecycle | `DeleteGoogleAccount` cascade (comment) |
@@ -258,5 +267,5 @@
 
 ## Self-review notes
 
+- The calls the spec left open are listed under **Agent's calls**.
 - Spec coverage: `in:sent` + incremental/backfill rules + `SENT` label → Task 2; reader rule over every reader with one test per skip reader → Tasks 3, 6 (registry) and 4 (keep side); mail branch → Task 5; INBOX-02 amendment + guard → Task 6; INBOX-09 relied on unchanged → Task 5 (no watermark touch, `TestInbox09_*` stay green); SRCDEL/PURGE scopes → Task 4; IMAP v1 limit → Tasks 6, 7; guide + feature note → Task 7.
-- Calls the spec left to the builder and taken here: the listing scope `{in:inbox in:sent}` (one listing, one watermark); the one-time sent catch-up for accounts connected before this release (window = `gmail.initial_history_days`); the date rule against the received message, not the item's `created_at`; `seedGmailSenders` as a skip reader; the `#sent/` permalink. No open spec question.
