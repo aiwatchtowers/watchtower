@@ -131,9 +131,9 @@ final class SQLCipherInteropTests: XCTestCase {
         // `runProcess`'s timeout path, with the timeout already past.
         XCTAssertFalse(process.waitOrTerminateGroup(timeout: 0), "the script still waits for its child")
 
+        // No timeout: the exit event is the wait (a hang is the lane watchdog's).
         var exited = kevent()
-        var hangGuard = timespec(tv_sec: 120, tv_nsec: 0) // a hang guard only, never reached on a pass
-        XCTAssertEqual(kevent(queue, nil, 0, &exited, 1, &hangGuard), 1, "the grandchild outlived its group")
+        XCTAssertEqual(kevent(queue, nil, 0, &exited, 1, nil), 1, "the grandchild outlived its group")
         XCTAssertEqual(exited.ident, UInt(child))
         XCTAssertNotEqual(exited.fflags & NOTE_EXIT, 0)
     }

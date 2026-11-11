@@ -572,6 +572,8 @@ final class WorkbenchesViewModel {
     /// meanwhile (one follow-up rescan, not one per ask).
     @ObservationIgnored var automationRescansInFlight: Set<Int64> = []
     @ObservationIgnored var automationRescansAgain: Set<Int64> = []
+    /// The running rescan per workbench (`automationRescansSettled`).
+    @ObservationIgnored var automationRescanRuns: [Int64: Task<Void, Never>] = [:]
     /// The workbenches asked for a rescan before the Feature Manager state
     /// loaded: rescanned once it has.
     @ObservationIgnored var automationRescansDeferred: Set<Int64> = []

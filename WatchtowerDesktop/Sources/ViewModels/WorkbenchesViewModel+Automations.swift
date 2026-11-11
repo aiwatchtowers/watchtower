@@ -41,6 +41,14 @@ extension WorkbenchesViewModel {
         }
     }
 
+    /// Returns once no rescan runs, the follow-ups asked for meanwhile
+    /// included (tests: they await the rescan itself, not a clock).
+    func automationRescansSettled() async {
+        while let run = automationRescanRuns.values.first {
+            await run.value
+        }
+    }
+
     /// Best effort, logged: a failed rescan leaves the index as it was.
     /// Only once the features list has loaded — asked for before, it waits for
     /// `automationsBecameReady`; one at a time per workbench — an ask
@@ -57,7 +65,7 @@ extension WorkbenchesViewModel {
             return
         }
         automationRescansInFlight.insert(workbenchID)
-        Task { [weak self] in
+        automationRescanRuns[workbenchID] = Task { [weak self] in
             do {
                 try await rescanAutomations(workbenchID)
             } catch {
@@ -66,6 +74,7 @@ extension WorkbenchesViewModel {
             }
             guard let self else { return }
             automationRescansInFlight.remove(workbenchID)
+            automationRescanRuns[workbenchID] = nil
             if automationRescansAgain.remove(workbenchID) != nil {
                 startAutomationRescan(workbenchID: workbenchID)
             }

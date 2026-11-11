@@ -10,16 +10,30 @@ import WatchtowerTestSupport
 private final class GatedRescanRunner: CLIRunnerProtocol, @unchecked Sendable {
     private let lock = NSLock()
     private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var startWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
     private var released = false
     private(set) var started = 0
     private(set) var finished = 0
     private(set) var cancelled = 0
+
+    /// Returns once `count` rescans have started: the event, not a clock.
+    func untilStarted(_ count: Int) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let reached = lock.withLock {
+                if started < count { startWaiters.append((count, continuation)) }
+                return started >= count
+            }
+            if reached { continuation.resume() }
+        }
+    }
 
     func run(args: [String]) async throws -> Data {
         guard args.starts(with: ["automations", "rescan"]) else { return Data() }
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             lock.lock()
             started += 1
+            let reached = startWaiters.filter { $0.count <= started }.map(\.continuation)
+            startWaiters.removeAll { $0.count <= started }
             if released {
                 lock.unlock()
                 continuation.resume()
@@ -27,6 +41,7 @@ private final class GatedRescanRunner: CLIRunnerProtocol, @unchecked Sendable {
                 waiters.append(continuation)
                 lock.unlock()
             }
+            reached.forEach { $0.resume() }
         }
         lock.lock()
         if Task.isCancelled { cancelled += 1 } else { finished += 1 }
@@ -97,15 +112,6 @@ final class WorkbenchAutomationRescanTests: XCTestCase {
         runner.invocations.filter { $0.starts(with: ["automations", "rescan"]) }
     }
 
-    private func waitUntil(timeout: TimeInterval = 5, _ condition: @escaping @MainActor () -> Bool) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !condition() && Date() < deadline {
-            await Task.yield()
-            try? await Task.sleep(for: .milliseconds(5))
-        }
-        XCTAssertTrue(condition(), "condition not met in time")
-    }
-
     /// The workbench's main root, watched as FILES would watch it.
     private func watchedRoot(_ vm: WorkbenchesViewModel, id: Int64) -> CodeRoot {
         let root = CodeRoot(main: Workbench(row: Row(["id": id, "name": "acme", "folder_path": folder.path])))
@@ -120,7 +126,7 @@ final class WorkbenchAutomationRescanTests: XCTestCase {
 
         vm.workbenchPageOpened(projectID: 7)
 
-        await waitUntil { self.rescans(runner).count == 1 }
+        await vm.automationRescansSettled()
         XCTAssertEqual(rescans(runner), [["automations", "rescan", "--workbench", "7"]])
     }
 
@@ -149,7 +155,7 @@ final class WorkbenchAutomationRescanTests: XCTestCase {
         await first.value
         await second.value
         await last.value
-        await waitUntil { self.rescans(runner).count == 1 }
+        await vm.automationRescansSettled()
         XCTAssertEqual(rescans(runner), [["automations", "rescan", "--workbench", "7"]], "one rescan for the three batches")
         XCTAssertTrue(vm.automationRescansAgain.isEmpty, "no second rescan queued behind it")
     }
@@ -190,19 +196,21 @@ final class WorkbenchAutomationRescanTests: XCTestCase {
         appState.selectedDestination = .workbench
         vm.selectedWorkbenchID = 7
         vm.workbenchPageOpened(projectID: 7)
-        await waitUntil { runner.started == 1 }
+        await runner.untilStarted(1)
 
         appState.selectedDestination = .inbox
         vm.selectedWorkbenchID = nil
         runner.release()
-        await waitUntil { runner.finished == 1 }
+        await vm.automationRescansSettled()
+        XCTAssertEqual(runner.finished, 1)
         XCTAssertEqual(runner.cancelled, 0, "navigation does not cancel the rescan")
 
         appState.selectedDestination = .workbench
         vm.selectedWorkbenchID = 7
         XCTAssertTrue(appState.workbenchesViewModel === vm)
         vm.workbenchPageOpened(projectID: 7)
-        await waitUntil { runner.finished == 2 }
+        await vm.automationRescansSettled()
+        XCTAssertEqual(runner.finished, 2)
     }
 
     /// Before the Feature Manager's first successful load (or after a
@@ -230,14 +238,16 @@ final class WorkbenchAutomationRescanTests: XCTestCase {
         // Loaded: each waiting workbench once.
         appState.featureVisibility.isLoaded = true
         appState.syncAutomationSessionCenter()
-        await waitUntil { self.rescans(runner).count == 2 && vm.automationRescansInFlight.isEmpty }
+        await vm.automationRescansSettled()
+        XCTAssertEqual(rescans(runner).count, 2)
         XCTAssertEqual(Set(rescans(runner).map { $0.last }), ["7", "9"])
         appState.syncAutomationSessionCenter()
         XCTAssertTrue(vm.automationRescansInFlight.isEmpty, "a later load rescans nothing again")
         XCTAssertEqual(rescans(runner).count, 2, "a later load rescans nothing again")
 
         vm.workbenchPageOpened(projectID: 7)
-        await waitUntil { self.rescans(runner).count == 3 }
+        await vm.automationRescansSettled()
+        XCTAssertEqual(rescans(runner).count, 3)
     }
 
     private func stopWiring(_ appState: AppState) {
@@ -257,18 +267,20 @@ final class WorkbenchAutomationRescanTests: XCTestCase {
         vm.automationsReady = { true }
 
         vm.workbenchPageOpened(projectID: 7)
-        await waitUntil { runner.started == 1 }
+        await runner.untilStarted(1)
         vm.workbenchPageOpened(projectID: 7)
         vm.workbenchPageOpened(projectID: 7)
         vm.workbenchPageOpened(projectID: 8)
-        await waitUntil { runner.started == 2 }
+        await runner.untilStarted(2)
         // The asks are booked as they are made: nothing else is on its way.
         XCTAssertEqual(vm.automationRescansInFlight, [7, 8])
         XCTAssertEqual(vm.automationRescansAgain, [7], "the two asks on workbench 7 wait as one")
         XCTAssertEqual(runner.started, 2, "workbench 7 once, workbench 8 once")
 
         runner.release()
-        await waitUntil { runner.finished == 3 && vm.automationRescansInFlight.isEmpty }
+        await vm.automationRescansSettled()
+        XCTAssertEqual(runner.finished, 3)
+        XCTAssertTrue(vm.automationRescansInFlight.isEmpty)
         XCTAssertTrue(vm.automationRescansAgain.isEmpty)
         XCTAssertEqual(runner.started, 3, "one follow-up for the two asks on workbench 7")
     }
