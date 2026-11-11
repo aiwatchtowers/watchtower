@@ -42,10 +42,20 @@ type Applier struct {
 	// means <Home>/.codex.
 	CodexHome string
 	Now       func() time.Time
+	// RepoState reads the git state of one workbench repository file
+	// (folder, its relative path); RepoBranch the branch checked out in a
+	// workbench folder ("detached:<short sha>" for a detached HEAD). Both are
+	// seams with no default here — internal/coach runs no git (COACH-01) — and
+	// cmd fills them over workbenchgit's read-only helpers. A nil RepoState
+	// refuses every Accept of a repository file.
+	RepoState  func(folder, rel string) (RepoFileState, error)
+	RepoBranch func(folder string) (string, error)
 }
 
 // env is where a's file destinations live.
-func (a *Applier) env() Env { return Env{Home: a.Home, CodexHome: a.CodexHome} }
+func (a *Applier) env() Env {
+	return Env{Home: a.Home, CodexHome: a.CodexHome, RepoState: a.RepoState}
+}
 
 func (a *Applier) now() time.Time {
 	if a.Now != nil {
@@ -56,8 +66,15 @@ func (a *Applier) now() time.Time {
 
 // AcceptResult is what an Accept changed beyond the destination: for a pack
 // overlay, how many installed copies of the skill were re-rendered and how
-// many were left because the owner edited them by hand.
-type AcceptResult struct{ PackCopiesUpdated, PackCopiesDrifted int }
+// many were left because the owner edited them by hand; for a workbench
+// repository file, the file written, relative to the workbench folder, and
+// the branch checked out there at the write ("detached:<short sha>" for a
+// detached HEAD; "" when it could not be read, and for every other
+// destination).
+type AcceptResult struct {
+	PackCopiesUpdated, PackCopiesDrifted int
+	WrittenPath, WrittenBranch           string
+}
 
 // Accept applies an open proposal (accept); a pack overlay then re-renders
 // the skill's installed copies (rerenderPack) and the result counts them.
@@ -66,12 +83,16 @@ func (a *Applier) Accept(id int64, edited string) (AcceptResult, error) {
 	if err != nil {
 		return AcceptResult{}, err
 	}
-	if err := a.accept(p, edited); err != nil {
+	branch, err := a.accept(p, edited)
+	if err != nil {
 		return AcceptResult{}, err
 	}
-	var r AcceptResult
+	r := AcceptResult{WrittenBranch: branch}
 	if p.Destination == DestPackOverlay {
 		r.PackCopiesUpdated, r.PackCopiesDrifted = a.rerenderPack(p.Skill)
+	}
+	if repoDestinations[p.Destination] {
+		r.WrittenPath, _ = RepoRelPath(p.Destination, p.Skill)
 	}
 	return r, nil
 }
@@ -85,21 +106,29 @@ func (a *Applier) Accept(id int64, edited string) (AcceptResult, error) {
 // after-text (an earlier Accept wrote it but failed to record it), only the
 // status is written; an edited text never takes that shortcut. The
 // destination is written first, then the status; when the status write fails
-// the before-state is put back.
-func (a *Applier) accept(p db.CoachProposal, edited string) error {
+// the before-state is put back. A workbench repository file's branch is read
+// between the two and returned ("" for any other destination).
+func (a *Applier) accept(p db.CoachProposal, edited string) (string, error) {
 	id := p.ID
 	if p.Status != "open" {
-		return fmt.Errorf("coach proposal %d is %s, not open: %w", id, p.Status, db.ErrCoachStateChanged)
+		return "", fmt.Errorf("coach proposal %d is %s, not open: %w", id, p.Status, db.ErrCoachStateChanged)
 	}
 	now := a.now()
 	// The slow measure runs first so the read and the write stay adjacent.
 	baseline, n, err := a.baseline(p, now)
 	if err != nil {
-		return fmt.Errorf("coach proposal %d: measuring the baseline: %w", id, err)
+		return "", fmt.Errorf("coach proposal %d: measuring the baseline: %w", id, err)
+	}
+	if repoDestinations[p.Destination] {
+		// The git check is not repeated after the write, which makes the path
+		// dirty itself (spec §4.3a).
+		if err := a.checkRepo(p); err != nil {
+			return "", fmt.Errorf("coach proposal %d (%s): %w", id, p.Destination, err)
+		}
 	}
 	cur, err := a.readCurrent(p)
 	if err != nil {
-		return fmt.Errorf("coach proposal %d (%s): %w", id, p.Destination, err)
+		return "", fmt.Errorf("coach proposal %d (%s): %w", id, p.Destination, err)
 	}
 	after := p.AfterText
 	if edited != "" {
@@ -108,32 +137,35 @@ func (a *Applier) accept(p db.CoachProposal, edited string) error {
 	if cur.Text != p.BeforeText {
 		// Recovery only: an edited text always takes the normal path below.
 		if cur.Text == p.AfterText {
-			if err := a.DB.MarkCoachAccepted(id, cur.Text, baseline, n, now); err != nil {
-				return fmt.Errorf("accepting coach proposal %d: %w", id, err)
+			// The branch now, which may not be the one of the earlier write.
+			branch := a.writtenBranch(p)
+			if err := a.DB.MarkCoachAccepted(id, cur.Text, branch, baseline, n, now); err != nil {
+				return "", fmt.Errorf("accepting coach proposal %d: %w", id, err)
 			}
-			return nil
+			return branch, nil
 		}
-		return a.supersede(p, now)
+		return "", a.supersede(p, now)
 	}
 	if err := ValidateAfter(cur, after); err != nil {
-		return logredact.Errorf("coach proposal %d (%s): %w: %s", id, p.Destination, ErrInvalidEdit,
+		return "", logredact.Errorf("coach proposal %d (%s): %w: %s", id, p.Destination, ErrInvalidEdit,
 			logredact.Text(err.Error()))
 	}
 	w, err := a.writeDestination(p, cur, after, now)
 	if errors.Is(err, ErrStale) {
-		return a.supersede(p, now)
+		return "", a.supersede(p, now)
 	}
 	if err != nil {
-		return fmt.Errorf("coach proposal %d (%s): %w", id, p.Destination, err)
+		return "", fmt.Errorf("coach proposal %d (%s): %w", id, p.Destination, err)
 	}
-	if err := a.DB.MarkCoachAccepted(id, w.result, baseline, n, now); err != nil {
+	branch := a.writtenBranch(p)
+	if err := a.DB.MarkCoachAccepted(id, w.result, branch, baseline, n, now); err != nil {
 		err = fmt.Errorf("accepting coach proposal %d: %w", id, err)
 		if uerr := w.undo(); uerr != nil {
-			return errors.Join(err, fmt.Errorf("restoring %s of coach proposal %d: %w", p.Destination, id, uerr))
+			return "", errors.Join(err, fmt.Errorf("restoring %s of coach proposal %d: %w", p.Destination, id, uerr))
 		}
-		return err
+		return "", err
 	}
-	return nil
+	return branch, nil
 }
 
 // supersede closes p because its destination no longer holds its before-text.
@@ -334,6 +366,8 @@ func (a *Applier) readCurrent(p db.CoachProposal) (CurrentText, error) {
 			return CurrentText{}, err
 		}
 		t.Budget = BudgetOf(p.Destination, t.Text)
+	case DestRepoClaudeMD, DestRepoAgentsMD, DestRepoClaudeSkill, DestRepoCodexSkill, DestRepoWorkflow:
+		return a.readRepo(p, t)
 	default:
 		return CurrentText{}, errors.New("unknown destination")
 	}
@@ -385,6 +419,8 @@ func (a *Applier) writeDestination(p db.CoachProposal, cur CurrentText, after st
 		// The Codex rules too: after is the whole file, its old text plus the
 		// added lines (ValidateAfter).
 		return a.writeUserFile(p, cur, after)
+	case DestRepoClaudeMD, DestRepoAgentsMD, DestRepoClaudeSkill, DestRepoCodexSkill, DestRepoWorkflow:
+		return a.writeRepoFile(p, cur, after)
 	}
 	return written{}, errNotSupported
 }
@@ -539,6 +575,8 @@ func (a *Applier) restoreDestination(p db.CoachProposal, cur CurrentText, now ti
 			return err
 		}
 		return nil
+	case DestRepoClaudeMD, DestRepoAgentsMD, DestRepoClaudeSkill, DestRepoCodexSkill, DestRepoWorkflow:
+		return a.restoreRepoFile(p, cur)
 	}
 	return errNotSupported
 }

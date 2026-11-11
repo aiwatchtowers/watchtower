@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/coach"
 	"watchtower/internal/db"
 	"watchtower/internal/llmusage"
 	"watchtower/internal/prompts"
@@ -31,8 +32,10 @@ type fixture struct {
 	d       *db.DB
 	reg     *tools.Registry
 	wb      int64
+	home    string
 	reports []reportCall
 	report  any // what the fake AgentReport returns
+	deps    Deps
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -42,7 +45,7 @@ func newFixture(t *testing.T) *fixture {
 	t.Cleanup(func() { _ = d.Close() })
 	wb, err := d.CreateWorkbench("acme", t.TempDir())
 	require.NoError(t, err)
-	f := &fixture{d: d, reg: tools.New(d), wb: wb, report: map[string]any{"sessions": []any{}}}
+	f := &fixture{d: d, reg: tools.New(d), wb: wb, home: t.TempDir(), report: map[string]any{"sessions": []any{}}}
 	deps := Deps{
 		Store: func(d *db.DB) *prompts.Store { return prompts.New(d, nil) },
 		AgentReport: func(_ context.Context, wb int64, days int, agent string) (any, error) {
@@ -58,12 +61,13 @@ func newFixture(t *testing.T) *fixture {
 		LLMUsage: func(_ context.Context, period string) (any, error) {
 			return map[string]any{"period": period}, nil
 		},
-		Home: func() (string, error) { return t.TempDir(), nil },
-		Now:  func() time.Time { return testNow },
+		Now:      func() time.Time { return testNow },
+		CoachEnv: func() coach.Env { return coach.Env{Home: f.home, RepoState: gitRepoState} },
 	}
 	for _, tl := range ReadTools(deps) {
 		require.NoError(t, f.reg.Register(tl))
 	}
+	f.deps = deps
 	return f
 }
 
@@ -97,7 +101,8 @@ func TestReadTools_SurfaceAndMarks(t *testing.T) {
 		assert.True(t, tl.CompanyData, tl.Name)
 	}
 	assert.Equal(t, []string{"get_agent_report", "list_agent_sessions", "get_agent_session",
-		"get_llm_usage", "list_prompts", "get_prompt"}, names)
+		"get_llm_usage", "list_prompts", "get_prompt",
+		"list_skills", "get_skill", "get_agent_instructions", "list_coach_proposals"}, names)
 	assert.Nil(t, tools.UndecidedReadTools(ts))
 }
 

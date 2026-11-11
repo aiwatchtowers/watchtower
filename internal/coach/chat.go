@@ -49,7 +49,7 @@ func ValidateChatProposal(ctx context.Context, d *db.DB, e ChatEdit, env Env) (d
 		return db.CoachProposal{}, err
 	}
 	dest := e.Destination
-	if !chatDestinations[dest] {
+	if !chatDestinations[dest] && !repoDestinations[dest] {
 		return db.CoachProposal{}, refuse("destination %q cannot be edited from the chat", dest)
 	}
 	title, why := oneLine(e.Title), strings.TrimSpace(e.Why)
@@ -75,6 +75,11 @@ func ValidateChatProposal(ctx context.Context, d *db.DB, e ChatEdit, env Env) (d
 	}
 	if skillDestinations[dest] {
 		if err := checkChatSkill(dest, e.Skill); err != nil {
+			return db.CoachProposal{}, err
+		}
+	}
+	if repoDestinations[dest] {
+		if err := checkRepoChat(d, env, e); err != nil {
 			return db.CoachProposal{}, err
 		}
 	}
@@ -134,6 +139,8 @@ func checkChatArgs(d *db.DB, e ChatEdit) error {
 		return refuse("%s takes no prompt_id", dest)
 	case !skillDestinations[dest] && e.Skill != "":
 		return refuse("%s takes no skill", dest)
+	case repoDestinations[dest] && e.WorkbenchID == 0:
+		return refuse("%s needs workbench_id", dest)
 	case globalDestinations[dest] && e.WorkbenchID != 0:
 		return refuse("%s has no per-workbench text", dest)
 	}
@@ -148,11 +155,29 @@ func checkChatArgs(d *db.DB, e ChatEdit) error {
 	return nil
 }
 
+// checkRepoChat refuses a repository file proposal for a folder that is gone
+// or is not a git work tree (spec §4.3a); uncommitted changes are Accept's
+// check, not this one's.
+func checkRepoChat(d *db.DB, env Env, e ChatEdit) error {
+	if env.RepoState == nil {
+		return errRepoNotWired
+	}
+	folder, err := repoFolder(d, e.WorkbenchID)
+	if err != nil {
+		return err
+	}
+	err = repoGitCheck(env.RepoState, folder, e.Destination, e.Skill, false)
+	if errors.Is(err, ErrRepoNotGit) {
+		return refusal(err.Error())
+	}
+	return readRefusal(err, e.Skill)
+}
+
 // PromptAdditionRefusal is nil for a prompt the owner's additions reach, else
 // the refusal naming why not.
 func PromptAdditionRefusal(id string) error {
 	if _, ok := prompts.Defaults[id]; !ok {
-		return refuse("unknown prompt %s", id)
+		return refuse("prompt %s not found", id)
 	}
 	if _, moved := prompts.MovedToBuiltin[id]; moved {
 		return refuse("%s belongs to a built-in automation", id)
@@ -190,7 +215,8 @@ func readRefusal(err error, skill string) error {
 		return refuse("%s is a Watchtower pack skill: propose a pack_overlay", skill)
 	case errors.Is(err, errUnsafeFile), errors.Is(err, errCodexRulesMissing), errors.Is(err, errCodexSkillTwice),
 		errors.Is(err, errClaudeMDNotRegular), errors.Is(err, errClaudeMDTooBig),
-		errors.Is(err, errSettingsNotRegular), errors.Is(err, errSettingsInvalid):
+		errors.Is(err, errSettingsNotRegular), errors.Is(err, errSettingsInvalid),
+		errors.Is(err, errWorkflowNotFound), errors.Is(err, errRepoFolderNotFound):
 		return refusal(err.Error())
 	}
 	return err
@@ -238,6 +264,14 @@ func chatEvidence(cited []string) ([]db.CoachEvidence, int) {
 
 // ReadText is the destination's current text, read the way Accept reads it.
 func ReadText(d *db.DB, env Env, dest string, wb int64, prompt, skill string) (CurrentText, error) {
-	a := &Applier{DB: d, Home: env.Home, CodexHome: env.CodexHome}
+	a := &Applier{DB: d, Home: env.Home, CodexHome: env.CodexHome, RepoState: env.RepoState}
 	return a.readCurrent(db.CoachProposal{Destination: dest, WorkbenchID: wb, PromptID: prompt, Skill: skill})
+}
+
+// IsMissing reports whether a ReadText error only says the destination's
+// file does not exist (a skill, the Codex rules file, workflow.md): a reader
+// may show such a file as absent. A refused read (a symlink, too large, not
+// text) is not missing.
+func IsMissing(err error) bool {
+	return errors.Is(err, errSkillNotFound) || errors.Is(err, errCodexRulesMissing) || errors.Is(err, errWorkflowNotFound)
 }

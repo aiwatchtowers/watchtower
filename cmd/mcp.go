@@ -20,6 +20,7 @@ import (
 	internalmcp "watchtower/internal/mcp"
 	"watchtower/internal/skills"
 	"watchtower/internal/tools"
+	"watchtower/internal/tuning"
 )
 
 var mcpCmd = &cobra.Command{
@@ -189,10 +190,6 @@ func mcpChatOptions(cfg *config.Config, database *db.DB, turn string, turnFunc f
 	return []internalmcp.ServerOption{internalmcp.WithRegistry(buildToolRegistry(cfg, database), binding)}, nil
 }
 
-// tuningContextType is the chat_conversations.context_type of a tuning chat
-// (spec 2026-11-03-tuning-chat-design §4.1).
-const tuningContextType = "analytics_tuning"
-
 // mcpChatBinding is the binding `mcp --chat` gives one of
 // tools.ChatSurfaces. The tuning chat
 // is bound to its own conversation (so READ-01's session key is
@@ -228,8 +225,8 @@ func checkTuningBinding(conversation int64, contextType string) error {
 	if conversation <= 0 {
 		return errors.New("--surface tuning needs --conversation N")
 	}
-	if contextType != tuningContextType {
-		return fmt.Errorf("--surface tuning needs --context-type %s", tuningContextType)
+	if contextType != tuning.ContextType {
+		return fmt.Errorf("--surface tuning needs --context-type %s", tuning.ContextType)
 	}
 	return nil
 }

@@ -18,6 +18,10 @@ const AgentAll = "all"
 // ErrUnknownAgent refuses an agent filter other than all, claude or codex.
 var ErrUnknownAgent = errors.New("agent must be all, claude or codex")
 
+// ErrSessionNotFound is BuildSession's error for a session the workbench
+// does not have.
+var ErrSessionNotFound = errors.New("session not found")
+
 // ValidAgent says whether agent is a filter BuildOverview takes ("" = all).
 func ValidAgent(agent string) bool {
 	return agent == "" || agent == AgentAll || agentkind.IsAgent(agent)
@@ -411,7 +415,7 @@ func BuildSession(main *db.DB, al *agentlogdb.DB, workbenchID int64, sessionUUID
 	}
 	i := slices.IndexFunc(all, func(s agentlogdb.AgentReportSession) bool { return s.SessionUUID == sessionUUID })
 	if i < 0 {
-		return nil, fmt.Errorf("session %s not found in workbench %d", sessionUUID, workbenchID)
+		return nil, fmt.Errorf("session %s not found in workbench %d: %w", sessionUUID, workbenchID, ErrSessionNotFound)
 	}
 	events, err := al.AgentReportEvents([]string{sessionUUID})
 	if err != nil {

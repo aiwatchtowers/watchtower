@@ -27,7 +27,7 @@ func remeasureFixture(t *testing.T) dbs {
 func acceptedAt(t *testing.T, d dbs, dest, after string, baseline *float64, at time.Time) int64 {
 	t.Helper()
 	id := propose(t, d, db.CoachProposal{Destination: dest, AfterText: after})
-	require.NoError(t, d.MarkCoachAccepted(id, after, baseline, 1, at))
+	require.NoError(t, d.MarkCoachAccepted(id, after, "", baseline, 1, at))
 	return id
 }
 
@@ -67,7 +67,7 @@ func TestRemeasureMixedBaselines(t *testing.T) {
 
 	// Once only: a second call rewrites nothing.
 	require.NoError(t, d.MarkCoachAccepted(propose(t, d, db.CoachProposal{Destination: DestClaudeMDUser, AfterText: "x"}),
-		"x", fl(6), 1, applyNow))
+		"x", "", fl(6), 1, applyNow))
 	n, err = RemeasureMixedBaselines(d.DB, d.al)
 	require.NoError(t, err)
 	assert.Zero(t, n)

@@ -9,6 +9,8 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -26,6 +28,7 @@ import (
 	"watchtower/internal/fsutil"
 	"watchtower/internal/ownerconfirm"
 	"watchtower/internal/specreview"
+	"watchtower/internal/workbenchgit"
 )
 
 // runCoach runs `watchtower coach <args>` with stdin and returns its output.
@@ -213,8 +216,11 @@ func TestCoachProposals_JSONKeysPinned(t *testing.T) {
 	}
 	assert.ElementsMatch(t, []string{"id", "title", "why", "destination", "workbench_id", "prompt_id", "kind",
 		"metric", "before", "after", "evidence", "sources", "status", "created_at", "decided_at", "baseline",
-		"verdict", "verdict_value", "verdict_at", "reverts_id", "budget", "origin", "skill", "conversation_id"}, got)
+		"verdict", "verdict_value", "verdict_at", "reverts_id", "budget", "origin", "skill", "conversation_id",
+		"written_branch", "measure_from"}, got)
 	assert.JSONEq(t, `[{"kind":"session","ref":"s1"}]`, string(items[0]["evidence"]))
+	assert.Equal(t, `""`, string(items[0]["written_branch"]))
+	assert.Equal(t, "null", string(items[0]["measure_from"]))
 	assert.Equal(t, "null", string(items[0]["decided_at"]))
 	assert.Equal(t, `"weekly"`, string(items[0]["origin"]))
 	assert.Equal(t, `""`, string(items[0]["skill"]))
@@ -307,9 +313,69 @@ func TestCoachAccept_JSONKeysPinned(t *testing.T) {
 	for k := range top {
 		got = append(got, k)
 	}
-	assert.ElementsMatch(t, []string{"ok", "id", "status", "pack_copies_updated", "pack_copies_drifted"}, got)
+	assert.ElementsMatch(t, []string{"ok", "id", "status", "pack_copies_updated", "pack_copies_drifted",
+		"written_path", "written_branch"}, got)
 	assert.Equal(t, "accepted", strings.Trim(string(top["status"]), `"`))
 	assert.Equal(t, "0", string(top["pack_copies_updated"]))
+	assert.JSONEq(t, `""`, string(top["written_path"]))
+	assert.JSONEq(t, `""`, string(top["written_branch"]))
+}
+
+// insertRepoProposal is an open chat edit creating CLAUDE.md in workbench wb.
+func insertRepoProposal(t *testing.T, d *db.DB, wb int64, fp string) int64 {
+	t.Helper()
+	id, err := d.InsertChatCoachProposal(db.CoachProposal{Fingerprint: fp, Kind: "add",
+		Destination: coach.DestRepoClaudeMD, WorkbenchID: wb, Title: "Run tests", Why: "Asked twice.",
+		Metric: "corrections", AfterText: "Run tests.\n", Sources: 1}, nil, time.Now())
+	require.NoError(t, err)
+	require.NotZero(t, id)
+	return id
+}
+
+// A workbench repository file: dirty → "dirty", not a git work tree →
+// "not_git", written → "written_path" relative to the folder.
+func TestCoachAccept_RepoCodes(t *testing.T) {
+	d := coachSetup(t)
+	repo := gitBranchRepo(t)
+	wb, err := d.CreateWorkbench("acme", repo)
+	require.NoError(t, err)
+	plain, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	wbPlain, err := d.CreateWorkbench("acme-plain", plain)
+	require.NoError(t, err)
+
+	// Untracked CLAUDE.md in the folder: dirty.
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "CLAUDE.md"), []byte("Mine.\n"), 0o644))
+	id := insertRepoProposal(t, d, wb, "repo1")
+	out, err := runCoach(t, "", "accept", strconv.FormatInt(id, 10), "--json")
+	require.Error(t, err)
+	top := coachJSONObject(t, out)
+	assert.JSONEq(t, `"dirty"`, string(top["code"]))
+	assert.NotContains(t, out, repo, "the folder is never named")
+
+	id2 := insertRepoProposal(t, d, wbPlain, "repo2")
+	out, err = runCoach(t, "", "accept", strconv.FormatInt(id2, 10), "--json")
+	require.Error(t, err)
+	assert.JSONEq(t, `"not_git"`, string(coachJSONObject(t, out)["code"]))
+
+	require.NoError(t, os.Remove(filepath.Join(repo, "CLAUDE.md")))
+	out, err = runCoach(t, "", "accept", strconv.FormatInt(id, 10), "--json")
+	require.NoError(t, err, out)
+	top = coachJSONObject(t, out)
+	var got []string
+	for k := range top {
+		got = append(got, k)
+	}
+	assert.ElementsMatch(t, []string{"ok", "id", "status", "pack_copies_updated", "pack_copies_drifted",
+		"written_path", "written_branch"}, got)
+	assert.JSONEq(t, `"CLAUDE.md"`, string(top["written_path"]))
+	assert.JSONEq(t, `"main"`, string(top["written_branch"]))
+	p, err := d.GetCoachProposal(id)
+	require.NoError(t, err)
+	assert.Equal(t, "main", p.WrittenBranch)
+	raw, err := os.ReadFile(filepath.Join(repo, "CLAUDE.md"))
+	require.NoError(t, err)
+	assert.Equal(t, "Run tests.\n", string(raw))
 }
 
 func TestCoachStatus_JSONKeysPinned(t *testing.T) {
@@ -775,4 +841,98 @@ func TestRemeasureCoachBaselines_SkipsWithoutAgentLogOrLock(t *testing.T) {
 	done, err = d.CoachBaselinesPerAgentDone()
 	require.NoError(t, err)
 	assert.True(t, done)
+}
+
+// coachProposalItems runs `coach proposals --json` with args and returns the rows.
+func coachProposalItems(t *testing.T, args ...string) []map[string]json.RawMessage {
+	t.Helper()
+	out, err := runCoach(t, "", append([]string{"proposals", "--json"}, args...)...)
+	require.NoError(t, err, out)
+	var items []map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(coachJSONObject(t, out)["proposals"], &items))
+	return items
+}
+
+func coachItemByID(t *testing.T, items []map[string]json.RawMessage, id int64) map[string]json.RawMessage {
+	t.Helper()
+	for _, it := range items {
+		if string(it["id"]) == strconv.FormatInt(id, 10) {
+			return it
+		}
+	}
+	t.Fatalf("proposal %d not listed", id)
+	return nil
+}
+
+// Spec §4.3a (D68): an open repository proposal names the branch checked out
+// in its workbench folder now, read once per workbench per call.
+func TestCoachProposals_FolderBranch(t *testing.T) {
+	d := coachSetup(t)
+	repo := gitBranchRepo(t)
+	wb, err := d.CreateWorkbench("acme", repo)
+	require.NoError(t, err)
+	plain, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	wbPlain, err := d.CreateWorkbench("acme-plain", plain)
+	require.NoError(t, err)
+	reads := 0
+	prev := coachFolderStatus
+	coachFolderStatus = func(ctx context.Context, folder string) workbenchgit.Status {
+		reads++
+		return prev(ctx, folder)
+	}
+	t.Cleanup(func() { coachFolderStatus = prev })
+	gitIn := func(args ...string) {
+		c := exec.Command("git", args...)
+		c.Dir = repo
+		out, err := c.CombinedOutput()
+		require.NoError(t, err, "git %v: %s", args, out)
+	}
+
+	gitIn("switch", "-q", "-c", "topic/x")
+	accepted := insertRepoProposal(t, d, wb, "repo4")
+	require.NoError(t, d.MarkCoachAccepted(accepted, "Run tests.\n", "main", nil, 0, time.Now()))
+	open1 := insertRepoProposal(t, d, wb, "repo1")
+	open2, err := d.InsertChatCoachProposal(db.CoachProposal{Fingerprint: "repo2", Kind: "add",
+		Destination: coach.DestRepoAgentsMD, WorkbenchID: wb, Title: "Lint", Why: "Asked.",
+		Metric: "corrections", AfterText: "Run lint.\n", Sources: 1}, nil, time.Now())
+	require.NoError(t, err)
+	inPlain := insertRepoProposal(t, d, wbPlain, "repo3")
+	global := insertCoachProposal(t, d, "fp-global", "Be brief.")
+
+	items := coachProposalItems(t, "--status", "all")
+	assert.Equal(t, 2, reads, "one read per workbench, not per proposal")
+	assert.JSONEq(t, `"topic/x"`, string(coachItemByID(t, items, open1)["folder_branch"]))
+	assert.JSONEq(t, `"topic/x"`, string(coachItemByID(t, items, open2)["folder_branch"]))
+	assert.JSONEq(t, `""`, string(coachItemByID(t, items, inPlain)["folder_branch"]), "the key is there, empty")
+	assert.NotContains(t, coachItemByID(t, items, global), "folder_branch")
+	acc := coachItemByID(t, items, accepted)
+	assert.NotContains(t, acc, "folder_branch")
+	assert.JSONEq(t, `"main"`, string(acc["written_branch"]))
+	assert.Equal(t, "null", string(acc["measure_from"]))
+	at := time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC)
+	_, err = d.SetCoachMeasureFrom(accepted, at)
+	require.NoError(t, err)
+	items = coachProposalItems(t, "--status", "accepted")
+	assert.JSONEq(t, `"2026-11-02T09:00:00Z"`, string(coachItemByID(t, items, accepted)["measure_from"]))
+
+	gitIn("switch", "-q", "--detach")
+	c := exec.Command("git", "rev-parse", "--short=7", "HEAD")
+	c.Dir = repo
+	sha, err := c.Output()
+	require.NoError(t, err)
+	items = coachProposalItems(t)
+	assert.JSONEq(t, `"detached:`+strings.TrimSpace(string(sha))+`"`, string(coachItemByID(t, items, open1)["folder_branch"]))
+
+	out, err := runCoach(t, "", "proposals")
+	require.NoError(t, err)
+	assert.Contains(t, out, "  where: "+coach.DestRepoClaudeMD+fmt.Sprintf(" (workbench %d) on detached:", wb))
+	assert.Contains(t, out, "  where: "+coach.DestRepoClaudeMD+fmt.Sprintf(" (workbench %d)\n", wbPlain), "no branch, no suffix")
+
+	// A folder gone: "" and no git read.
+	require.NoError(t, os.RemoveAll(plain))
+	reads = 0
+	items = coachProposalItems(t)
+	assert.JSONEq(t, `""`, string(coachItemByID(t, items, inPlain)["folder_branch"]))
+	assert.Equal(t, 1, reads, "only the live folder is read")
 }

@@ -65,8 +65,8 @@ func TestValidateChatProposal_Refusals(t *testing.T) {
 		edit ChatEdit
 		want string
 	}{
-		{"unknown destination", with(func(e *ChatEdit) { e.Destination = "repo_claude_md" }),
-			`destination "repo_claude_md" cannot be edited from the chat`},
+		{"unknown destination", with(func(e *ChatEdit) { e.Destination = "repo_readme" }),
+			`destination "repo_readme" cannot be edited from the chat`},
 		{"empty title", with(func(e *ChatEdit) { e.Title = "  " }), "title and why are required"},
 		{"empty why", with(func(e *ChatEdit) { e.Why = "" }), "title and why are required"},
 		{"long title", with(func(e *ChatEdit) { e.Title = strings.Repeat("t", 121) }), "title is over 120 characters"},
@@ -85,7 +85,7 @@ func TestValidateChatProposal_Refusals(t *testing.T) {
 		{"no such workbench", with(func(e *ChatEdit) { e.Destination, e.Skill, e.WorkbenchID = DestSession, "", 999 }),
 			"workbench 999 not found"},
 		{"unknown prompt", with(func(e *ChatEdit) { e.Destination, e.Skill, e.PromptID = DestPromptAdd, "", "no.such" }),
-			"unknown prompt no.such"},
+			"prompt no.such not found"},
 		{"built-in prompt", with(func(e *ChatEdit) {
 			e.Destination, e.Skill, e.PromptID = DestPromptAdd, "", prompts.BriefingDaily
 		}), prompts.BriefingDaily + " belongs to a built-in automation"},
@@ -309,6 +309,22 @@ func TestReadText_ReadsTheDestination(t *testing.T) {
 	assert.Equal(t, skillBudget(len(cur.Text)), cur.Budget)
 	_, err = ReadText(d.DB, env, DestClaudeSkillUser, 0, "", "gone")
 	require.ErrorIs(t, err, errSkillNotFound)
+}
+
+func TestIsMissing(t *testing.T) {
+	d := openDBs(t)
+	env, _ := chatEnv(t, d)
+	_, err := ReadText(d.DB, env, DestClaudeSkillUser, 0, "", "gone")
+	assert.True(t, IsMissing(err))
+	_, err = ReadText(d.DB, Env{Home: t.TempDir()}, DestCodexRulesAllow, 0, "", "")
+	assert.True(t, IsMissing(err), "no rules file")
+	target := ClaudeSkillPath(env, "a")
+	require.NoError(t, os.MkdirAll(filepath.Dir(ClaudeSkillPath(env, "link")), 0o700))
+	require.NoError(t, os.Symlink(target, ClaudeSkillPath(env, "link")))
+	_, err = ReadText(d.DB, env, DestClaudeSkillUser, 0, "", "link")
+	require.Error(t, err)
+	assert.False(t, IsMissing(err), "a refused read is not missing")
+	assert.False(t, IsMissing(nil))
 }
 
 func TestValidateChatProposal_UnreadableTexts(t *testing.T) {

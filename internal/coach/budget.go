@@ -24,7 +24,9 @@ func BudgetOf(destination, before string) int {
 		return prompts.MaxAdditionRunes
 	case DestClaudeMDUser, DestCodexAgentsMDUser:
 		return claudeMDBudget(utf8.RuneCountInString(before))
-	case DestClaudeSkillUser, DestCodexSkillUser:
+	case DestClaudeSkillUser, DestCodexSkillUser,
+		// The workbench repository files all follow the skill rule (spec §4.3a).
+		DestRepoClaudeMD, DestRepoAgentsMD, DestRepoClaudeSkill, DestRepoCodexSkill, DestRepoWorkflow:
 		return skillBudget(utf8.RuneCountInString(before))
 	case DestPackOverlay:
 		return packOverlayMaxRunes

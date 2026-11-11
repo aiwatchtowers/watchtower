@@ -26,6 +26,7 @@ import (
 	"watchtower/internal/providers/transport"
 	"watchtower/internal/specreview"
 	"watchtower/internal/tools"
+	"watchtower/internal/tuning"
 
 	"github.com/spf13/cobra"
 )
@@ -67,7 +68,7 @@ var (
 
 // queryPurposes are the --purpose values ai query accepts: embedded chats
 // whose turns the usage ledger shows apart from the plain chat.
-var queryPurposes = map[string]bool{"spec_review.discuss": true, "review.reviewer": true, "tuning.chat": true}
+var queryPurposes = map[string]bool{"spec_review.discuss": true, "review.reviewer": true, tuning.ChatPurpose: true}
 
 var aiCmd = &cobra.Command{
 	Use:   "ai",

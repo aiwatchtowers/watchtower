@@ -296,7 +296,7 @@ func TestAccept_StatusFailureRestoresBefore(t *testing.T) {
 	w, err := a.writeDestination(p, cur, "After.", applyNow)
 	require.NoError(t, err)
 	require.NoError(t, d.DecideCoachProposal(id, "open", "declined", applyNow))
-	require.ErrorIs(t, d.MarkCoachAccepted(id, w.result, nil, 0, applyNow), db.ErrCoachStateChanged)
+	require.ErrorIs(t, d.MarkCoachAccepted(id, w.result, "", nil, 0, applyNow), db.ErrCoachStateChanged)
 	require.NoError(t, w.undo())
 	got, err := d.GetOwnerInstructions()
 	require.NoError(t, err)

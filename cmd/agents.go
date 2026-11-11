@@ -274,19 +274,12 @@ func runAgentsReport(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	lang := agentreport.LangOf(cfg.Digest.Language)
-	database, al, _, err := openAgentsDBs(cfg)
+	ov, det, err := agentsReportValue(cfg, flagAgentsWorkbench, since, now, flagAgentsSession, flagAgentsAgent)
 	if err != nil {
 		return err
 	}
-	defer database.Close()
-	defer al.Close()
 	out := cmd.OutOrStdout()
-	if flagAgentsSession != "" {
-		det, err := agentreport.BuildSession(database, al, flagAgentsWorkbench, flagAgentsSession, now, lang)
-		if err != nil {
-			return err
-		}
+	if det != nil {
 		if flagAgentsJSON {
 			return writeJSON(out, det)
 		}
@@ -294,10 +287,6 @@ func runAgentsReport(cmd *cobra.Command, _ []string) error {
 		printReportTime(out, det.Time)
 		printReportHints(out, det.Hints)
 		return nil
-	}
-	ov, err := agentreport.BuildOverview(database, al, flagAgentsWorkbench, since, now, lang, flagAgentsAgent)
-	if err != nil {
-		return err
 	}
 	if flagAgentsJSON {
 		return writeJSON(out, ov)
@@ -307,6 +296,26 @@ func runAgentsReport(cmd *cobra.Command, _ []string) error {
 	printReportTime(out, ov.Time)
 	printReportHints(out, ov.Hints)
 	return nil
+}
+
+// agentsReportValue is `agents report`'s value: one session's detail when
+// session is set, else the workbench's overview from since (zero = the whole
+// retention) for agent (all, claude or codex). The tuning chat's report reads
+// (tuningDeps) call it too, so both read the same JSON.
+func agentsReportValue(cfg *config.Config, wb int64, since, now time.Time, session, agent string) (*agentreport.Overview, *agentreport.SessionDetail, error) {
+	lang := agentreport.LangOf(cfg.Digest.Language)
+	database, al, _, err := openAgentsDBs(cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer database.Close()
+	defer al.Close()
+	if session != "" {
+		det, err := agentreport.BuildSession(database, al, wb, session, now, lang)
+		return nil, det, err
+	}
+	ov, err := agentreport.BuildOverview(database, al, wb, since, now, lang, agent)
+	return ov, nil, err
 }
 
 func reportDur(ms int64) string {
