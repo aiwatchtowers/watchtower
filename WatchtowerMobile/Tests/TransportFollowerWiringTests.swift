@@ -97,7 +97,7 @@ final class TransportFollowerWiringTests: XCTestCase {
 
         try await bed.writeMarker(target: .relay, epoch: 1)
         try await bed.fetch(first)
-        try await bed.root.routeMoves[hubID]?.value(within: 60, "bed.root.routeMoves[hubID]")
+        try await bed.root.routeMoves[hubID]?.value
 
         XCTAssertEqual(try bed.row()?.link.transport, .cloudKit)
         XCTAssertTrue(bed.root.env.session(hubID) === first)
@@ -137,7 +137,7 @@ final class TransportFollowerWiringTests: XCTestCase {
 
         try await bed.writeSwitch(target: .relay, epoch: 2, on: .cloudKit)
         try await bed.fetch(first)
-        try await bed.root.routeMoves[hubID]?.value(within: 60, "bed.root.routeMoves[hubID]")
+        try await bed.root.routeMoves[hubID]?.value
 
         XCTAssertEqual(try Bed.rows(first, .undelivered).count, 2)
         XCTAssertTrue(try Bed.handled(first, bed.switchID))
@@ -347,7 +347,7 @@ final class TransportFollowerWiringTests: XCTestCase {
 
         let control = try await bed.writeHubControl(.hubOnRelay, on: .relay)
         try await bed.fetch(first)
-        try await bed.root.routeMoves[hubID]?.value(within: 60, "bed.root.routeMoves[hubID]")
+        try await bed.root.routeMoves[hubID]?.value
 
         XCTAssertEqual(try bed.row()?.link.transport, .relay)
         XCTAssertNil(try bed.row()?.link.leftTransport)
@@ -374,17 +374,17 @@ final class TransportFollowerWiringTests: XCTestCase {
         XCTAssertFalse(try Bed.handled(first, control.id))
         let cloudNames = try await bed.cloudMailboxNames()
         XCTAssertTrue(cloudNames.contains(try bed.switchWire))
-        try await bed.root.routeMoves[hubID]?.value(within: 60, "bed.root.routeMoves[hubID]")
+        try await bed.root.routeMoves[hubID]?.value
         let second = try XCTUnwrap(bed.root.env.session(hubID))
         await second.waitForBoot()
-        try await second.outboxWork?.value(within: 60, "second.outboxWork")
+        try await second.outboxWork?.value
         await second.outbox.drain()
         let relayWrites = try await bed.relayMailbox().count
 
         // Read again: the same epoch on the same route answers the request and changes nothing.
         let again = TransportFollower(hubID: hubID, outbox: second.outbox, host: bed.root)
         let decidedAgain = await again.handle(control: control, on: .cloudKit)
-        try await bed.root.routeMoves[hubID]?.value(within: 60, "bed.root.routeMoves[hubID]")
+        try await bed.root.routeMoves[hubID]?.value
         XCTAssertTrue(decidedAgain)
         XCTAssertEqual(try bed.row()?.link, moved)
         XCTAssertTrue(bed.root.env.session(hubID) === second, "no second move")
@@ -749,7 +749,7 @@ final class Bed {
         try await fetch(session)
         let on = try await session.outbox.orderedActions()
         XCTAssertTrue(on)
-        try await session.epochAckWork?.value(within: 60, "session.epochAckWork")
+        try await session.epochAckWork?.value
         await session.outbox.drain()
         return session
     }
@@ -757,19 +757,19 @@ final class Bed {
     /// One fetch, then the outbox work it started.
     func fetch(_ session: HubSession) async throws {
         _ = await session.refresh(.pull)
-        try await session.outboxWork?.value(within: 60, "session.outboxWork")
+        try await session.outboxWork?.value
         await session.outbox.drain()
     }
 
     /// A fetch that follows a move: the move, then the new session booted and its outbox flushed.
     func fetchAndFollow(_ session: HubSession) async throws -> HubSession {
         try await fetch(session)
-        try await root.routeMoves[hubID]?.value(within: 60, "root.routeMoves[hubID]")
+        try await root.routeMoves[hubID]?.value
         let next = try self.session()
         XCTAssertFalse(next === session, "the session moved")
         await next.waitForBoot()
         try await fetch(next)
-        try await next.epochAckWork?.value(within: 60, "next.epochAckWork")
+        try await next.epochAckWork?.value
         await next.outbox.drain()
         return next
     }

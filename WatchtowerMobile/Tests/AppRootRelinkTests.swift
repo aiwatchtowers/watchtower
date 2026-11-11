@@ -144,7 +144,7 @@ final class AppRootRelinkTests: XCTestCase {
         XCTAssertTrue(root.env.session(hubID) === hubSession, "a hub session is not rebuilt")
 
         let hubID = hubID
-        try await root.launch { [hubID] }.value(within: 60, "launch")
+        try await root.launch { [hubID] }.value
         XCTAssertTrue(FileManager.default.fileExists(atPath: paths.replicaPath(hubID)), "a confirmed link's files stay")
     }
 

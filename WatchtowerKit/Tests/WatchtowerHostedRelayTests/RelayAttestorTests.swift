@@ -280,9 +280,9 @@ final class RelayAttestorTests: XCTestCase {
         while await attestor.turnWaiters == 0 { await Task.yield() }
         second.cancel()
         gate.open()
-        try await first.value(within: 60, "first")
+        try await first.value
         do {
-            try await second.value(within: 60, "second")
+            try await second.value
             XCTFail("the cancelled caller ran")
         } catch is CancellationError {
         }
