@@ -202,10 +202,11 @@ var registry = []Entry{
 		Recipe:     mustRecipe("waiting-for-me"),
 		FeatureIDs: []string{"secretary-inbox"},
 		Primitives: []string{automations.PrimitiveAttentionWaiting},
-		Reads:      []string{"The mentions, messages, tickets and mail attention detection found"},
+		Reads:      []string{"The mentions, messages and tickets attention detection found"},
 		Does: []string{
-			"Lists everything that still waits on your answer, newest first",
+			"Lists the people waiting on your answer in Slack, Jira and Linear: today, this week and older",
 			"Updates the list after every sync; an item leaves when you answer it in the source, mark it done or snooze it",
+			"Mail is in Mail waiting",
 			"Uses no AI",
 		},
 		Sends:         []string{"One Waiting for me list in your Inbox"},

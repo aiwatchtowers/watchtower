@@ -23,10 +23,20 @@ const waitingID = "waiting-for-me"
 const openItemsFixture = "../../inbox/testdata/open_items.json"
 
 // waitingCard is the Waiting for me artifact as stored: its key, title and
-// list block.
+// list blocks (Today, This week, Older — each only when it has rows — or
+// one empty list).
 type waitingCard struct {
 	key, title string
-	list       *blocks.List
+	lists      []*blocks.List
+}
+
+// rows is every row of every list, in order.
+func (c waitingCard) rows() []blocks.ListRow {
+	var out []blocks.ListRow
+	for _, l := range c.lists {
+		out = append(out, l.Rows...)
+	}
+	return out
 }
 
 // waitingArtifacts reads every inbox output of Waiting for me.
@@ -46,10 +56,15 @@ func (f *fixture) waitingArtifacts(t *testing.T) []waitingCard {
 			t.Fatal(err)
 		}
 		doc, err := blocks.Decode(stored)
-		if err != nil || len(doc.Blocks) != 1 || doc.Blocks[0].List == nil {
-			t.Fatalf("blocks %s: %v; want one list block", stored, err)
+		if err != nil || len(doc.Blocks) == 0 {
+			t.Fatalf("blocks %s: %v; want list blocks", stored, err)
 		}
-		c.list = doc.Blocks[0].List
+		for _, b := range doc.Blocks {
+			if b.List == nil {
+				t.Fatalf("blocks %s: want list blocks only", stored)
+			}
+			c.lists = append(c.lists, b.List)
+		}
 		out = append(out, c)
 	}
 	if err := rows.Err(); err != nil {
@@ -137,10 +152,9 @@ func TestWaitingForMe_WritesOneRowPerOpenItem(t *testing.T) {
 	if len(cards) != 1 || cards[0].key != "waiting" || cards[0].title != "Waiting for me" {
 		t.Fatalf("artifacts = %+v; want one `waiting`", cards)
 	}
-	list := cards[0].list
 	var ids []int64
 	byID := map[int64]blocks.ListRow{}
-	for _, r := range list.Rows {
+	for _, r := range cards[0].rows() {
 		if r.Ref == nil || r.Ref.Kind != blocks.RefInboxItem {
 			t.Fatalf("row %+v has no inbox_item ref", r)
 		}
@@ -183,14 +197,14 @@ func TestWaitingForMe_EmptyThenOneItem(t *testing.T) {
 		t.Fatalf("run = %+v", run)
 	}
 	cards := f.waitingArtifacts(t)
-	if len(cards) != 1 || len(cards[0].list.Rows) != 0 || cards[0].list.Empty != "Nobody is waiting on you" {
+	if len(cards) != 1 || len(cards[0].lists) != 1 || len(cards[0].lists[0].Rows) != 0 || cards[0].lists[0].Empty != "Nobody is waiting on you" {
 		t.Fatalf("artifacts = %+v; want one empty `waiting`", cards)
 	}
 	f.insertItem(t, "1000.0001", "mention", f.clock.Now())
 	if run := f.runOnce(t, waitingID); run.Status != db.RunSucceeded {
 		t.Fatalf("run = %+v", run)
 	}
-	if cards = f.waitingArtifacts(t); len(cards) != 1 || len(cards[0].list.Rows) != 1 {
+	if cards = f.waitingArtifacts(t); len(cards) != 1 || len(cards[0].rows()) != 1 {
 		t.Fatalf("artifacts = %+v; want one `waiting` with one row", cards)
 	}
 }
@@ -213,7 +227,7 @@ func TestWaitingForMe_ItemWithEmptyText(t *testing.T) {
 	if run := f.runOnce(t, waitingID); run.Status != db.RunSucceeded {
 		t.Fatalf("run = %+v", run)
 	}
-	rows := f.waitingArtifacts(t)[0].list.Rows
+	rows := f.waitingArtifacts(t)[0].rows()
 	if len(rows) != 1 || rows[0].Title != "Someone" || rows[0].Subtitle != "" || rows[0].Badge.Text != "< 1 h" || rows[0].Link != "" {
 		t.Errorf("rows = %+v", rows)
 	}
@@ -232,7 +246,7 @@ func TestWaitingForMe_CapsAt200(t *testing.T) {
 	if run := f.runOnce(t, waitingID); run.Status != db.RunSucceeded {
 		t.Fatalf("run = %+v (%s)", run, run.Error)
 	}
-	rows := f.waitingArtifacts(t)[0].list.Rows
+	rows := f.waitingArtifacts(t)[0].rows()
 	if len(rows) != WaitingPeopleLimit || rows[0].Badge.Text != "< 1 h" || rows[0].Ref.ID != 1 {
 		t.Errorf("%d rows, first %+v; want %d, the newest people item first", len(rows), rows[0], WaitingPeopleLimit)
 	}
@@ -346,7 +360,7 @@ func TestWaitingForMe_ByteBudgetKeepsLongTextsUnderTheCap(t *testing.T) {
 	if run.Status != db.RunSucceeded {
 		t.Fatalf("run = %s (%s); want succeeded", run.Status, run.Error)
 	}
-	rows := f.waitingArtifacts(t)[0].list.Rows
+	rows := f.waitingArtifacts(t)[0].rows()
 	if len(rows) != WaitingPeopleLimit || rows[0].Subtitle == "" || !strings.HasSuffix(rows[0].Subtitle, "…") || rows[0].Link == "" {
 		t.Errorf("%d rows, first %+v; want %d rows with trimmed texts and their links", len(rows), rows[0], WaitingPeopleLimit)
 	}
@@ -408,7 +422,11 @@ func TestWaitingForMe_UnparsableStampHasNoBadge(t *testing.T) {
 	if run := f.runOnce(t, waitingID); run.Status != db.RunSucceeded {
 		t.Fatalf("run = %+v", run)
 	}
-	rows := f.waitingArtifacts(t)[0].list.Rows
+	// The section of an unparsable stamp is Older (db.WaitingSectionOf), so
+	// the Older note row comes first; the item's own row has no badge.
+	rows := slices.DeleteFunc(f.waitingArtifacts(t)[0].rows(), func(r blocks.ListRow) bool {
+		return r.Ref != nil && r.Ref.Kind == blocks.RefWaitingOlder
+	})
 	if len(rows) != 1 || rows[0].Badge != nil || rows[0].Tone != "" {
 		t.Errorf("rows = %+v; want one row without a badge or tone", rows)
 	}
@@ -564,7 +582,7 @@ func TestAttentionWaiting_OwnerCopyOfWaitingForMeGetsNoMail(t *testing.T) {
 		if err := idRows.Close(); err != nil || len(mailIDs) != 3 {
 			t.Fatalf("mail ids = %v, %v", mailIDs, err)
 		}
-		rows := f.waitingArtifacts(t)[0].list.Rows
+		rows := f.waitingArtifacts(t)[0].rows()
 		if len(rows) != want {
 			t.Fatalf("%d rows; want %d", len(rows), want)
 		}
@@ -754,7 +772,7 @@ func TestAttentionWaiting_WorstCaseUnderSDKCap(t *testing.T) {
 			if run.Status != db.RunSucceeded {
 				t.Fatalf("run = %s (%s); want succeeded", run.Status, run.Error)
 			}
-			if rows := f.waitingArtifacts(t)[0].list.Rows; len(rows) != WaitingPeopleLimit {
+			if rows := f.waitingArtifacts(t)[0].rows(); len(rows) != WaitingPeopleLimit {
 				t.Errorf("%d rows; want %d", len(rows), WaitingPeopleLimit)
 			}
 		})
@@ -842,5 +860,114 @@ func TestWaitingFingerprint_SectionChangeAtMidnight(t *testing.T) {
 	}
 	if fp(before) == fp(after) {
 		t.Error("the people fingerprint kept across midnight")
+	}
+}
+
+// runWaiting runs Waiting for me once and returns its one artifact.
+func (f *fixture) runWaiting(t *testing.T) waitingCard {
+	t.Helper()
+	if run := f.runOnce(t, waitingID); run.Status != db.RunSucceeded {
+		t.Fatalf("run = %+v (%s)", run, run.Error)
+	}
+	cards := f.waitingArtifacts(t)
+	if len(cards) != 1 || cards[0].key != "waiting" || cards[0].title != "Waiting for me" {
+		t.Fatalf("artifacts = %+v; want one `waiting`", cards)
+	}
+	return cards[0]
+}
+
+// The people items fall into Today, This week and Older, one list each
+// titled with its count; a section with no items draws no list.
+func TestWaitingForMe_Sections(t *testing.T) {
+	for name, c := range map[string]struct {
+		ages   []time.Duration
+		titles []string
+		rows   []int
+	}{
+		"all three": {
+			[]time.Duration{time.Minute, 2 * time.Hour, 24 * time.Hour, 2 * 24 * time.Hour, 3 * 24 * time.Hour, 8 * 24 * time.Hour},
+			[]string{"Today · 2", "This week · 3", "Older · 1"}, []int{2, 3, 2},
+		},
+		"no week": {
+			[]time.Duration{time.Minute, 10 * 24 * time.Hour, 9 * 24 * time.Hour},
+			[]string{"Today · 1", "Older · 2"}, []int{1, 3},
+		},
+		"week only": {
+			[]time.Duration{2 * 24 * time.Hour},
+			[]string{"This week · 1"}, []int{1},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			f.sync(t)
+			for i, age := range c.ages {
+				f.insertItem(t, fmt.Sprintf("1000.%04d", i+1), "mention", f.clock.Now().Add(-age))
+			}
+			card := f.runWaiting(t)
+			var titles []string
+			var rows []int
+			for _, l := range card.lists {
+				titles = append(titles, l.Title)
+				rows = append(rows, len(l.Rows))
+			}
+			if !slices.Equal(titles, c.titles) || !slices.Equal(rows, c.rows) {
+				t.Errorf("lists %v with %v rows; want %v with %v", titles, rows, c.titles, c.rows)
+			}
+		})
+	}
+}
+
+// The Older list starts with the note row (the waiting_older ref, no
+// badge) and the older items follow it, newest first; one item reads in
+// the singular. At 200 older items the note row takes one of the list's
+// 200 rows.
+func TestWaitingForMe_OlderNoteRow(t *testing.T) {
+	for name, c := range map[string]struct {
+		n         int
+		title     string
+		listTitle string
+		itemRows  int
+	}{
+		"one":  {1, "1 item is older than 7 days", "Older · 1", 1},
+		"two":  {2, "2 items are older than 7 days", "Older · 2", 2},
+		"full": {WaitingPeopleLimit, "200 items are older than 7 days", "Older · 200", blocks.MaxListRows - 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			f.sync(t)
+			f.insertItem(t, "1000.0000", "mention", f.clock.Now().Add(-time.Hour))
+			for i := 1; i <= c.n; i++ {
+				f.insertItem(t, fmt.Sprintf("1000.%04d", i), "mention", f.clock.Now().Add(-8*24*time.Hour-time.Duration(i)*time.Minute))
+			}
+			card := f.runWaiting(t)
+			older := card.lists[len(card.lists)-1]
+			if older.Title != c.listTitle || len(older.Rows) != 1+c.itemRows {
+				t.Fatalf("last list %q with %d rows; want %q with %d", older.Title, len(older.Rows), c.listTitle, 1+c.itemRows)
+			}
+			note := older.Rows[0]
+			if note.Title != c.title || note.Subtitle != "Nobody has followed up on them." || note.Badge != nil ||
+				note.Ref == nil || note.Ref.Kind != blocks.RefWaitingOlder || note.Ref.Key != "people" {
+				t.Errorf("note row = %+v (ref %+v)", note, note.Ref)
+			}
+			var prev int64
+			for _, r := range older.Rows[1:] {
+				if r.Ref == nil || r.Ref.Kind != blocks.RefInboxItem || r.Ref.ID <= prev || r.Tone != "warning" || r.Badge == nil {
+					t.Fatalf("older row %+v; want older items newest first", r)
+				}
+				prev = r.Ref.ID
+			}
+		})
+	}
+}
+
+// Only mail open: Waiting for me shows its one empty list, no mail row.
+func TestWaitingForMe_OnlyMailOpenShowsEmpty(t *testing.T) {
+	f := newFixture(t)
+	f.sync(t)
+	f.insertMail(t, "2000.0001", "a@example.com", "Hello", f.clock.Now())
+	f.insertMail(t, "2000.0002", "b@example.com", "Hi", f.clock.Now().Add(-9*24*time.Hour))
+	card := f.runWaiting(t)
+	if len(card.lists) != 1 || len(card.lists[0].Rows) != 0 || card.lists[0].Empty != "Nobody is waiting on you" || card.lists[0].Title != "" {
+		t.Errorf("lists = %+v; want one empty list", card.lists)
 	}
 }
