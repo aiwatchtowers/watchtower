@@ -32,6 +32,8 @@ package enum OwnerAskKeyMap {
             case returnKey
             case upArrow
             case downArrow
+            /// Esc: back to the closed list an ask was opened from (#1713).
+            case escape
             case other
         }
 
@@ -69,6 +71,7 @@ package enum OwnerAskKeyMap {
             case "\r", "\u{3}": return .returnKey
             case "\u{F700}": return .upArrow
             case "\u{F701}": return .downArrow
+            case "\u{1B}": return .escape
             default: return .character(Character(character.lowercased()))
             }
         }

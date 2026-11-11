@@ -2849,6 +2849,14 @@ Entry format:
 - miss: none late. Codex found nothing, so the prosecutor was the only lane that tried counting edge cases.
 - weak-dimension: 7. No test covers Codex SubagentStart over a counted `waiting`, and the DB raise test has no case for an unreadable stamp. Both are cheap and both pin a guard the docs promise.
 - rule-gap (candidate, dim 6): *a count built as a sum of disjoint-by-intent terms gets one table case per pair of terms that could claim the same id.*
+
+## 2026-11-10 — feature/1713-closed-asks-list (b9c84dd3d: closed asks list in the ask drawer, back row, Esc back, per-key query/cursor; 23 files +2006/−86; panel: prosecutor (12) + codex (2); pr-review-toolkit specialists unavailable; judge verified by reading, no runs) — verdict: changes-needed
+
+- contested: F5 (opening the list over an open ask, then closing the drawer, does not fill `dismissedAskIDs`, so the ask can open again by itself). The code is as described, but whether looking at the closed list counts as dismissing the open ask is a product call. Sent to Needs human, not ruled a defect. [6]
+- false-positive: none dismissed outright. F9–F12 (sections and `DateFormatter` built on every render, a second read per poll, the duplicated Expand/✕ header, tone picked by icon name) were cut to nit or minor. They are real, but cheap at drawer scale. [3/4]
+- miss: none found only late. Both lanes found the main defect: `isObscured` reads only `drawerAsk`, so an expanded closed list leaves the covered terminal focusable. Only the prosecutor saw the second half: the list's own Expand button skips the terminal-focus drop that `OwnerAskDrawerHeader` does. **A new kind of drawer content must go through every predicate that reads "the drawer shows X" (`isObscured`, `drawerIsEmpty`, keyboard loan/hand-back). Grep the readers of the old single-content accessor.** [6/8]
+- weak-dimension: 7. The workbench-switch test only reassigns `selectedWorkbenchID`. Esc and forget are called directly, not through the key path. There is no `isObscured` test for the new content.
+- rule-gap (candidate, dim 6/8): *when a drawer/panel gains a second content type beside the original, each guard that reads the original type's accessor (obscured, empty, keyboard loan, Esc routing) is extended or explicitly exempted in the same change, with a test per guard.*
 - outcome: TBD
 
 ## 2026-11-11 — test/no-wallclock-swift (#1727: Swift timing tests moved off wall-clock — code-index scaling ratio, CommentAnchor perf bound dropped, parse cache read directly, markdown source pin, rescan sleep seam, kqueue/FIFO group-reap test, `untilHeld` spy, SERIAL_CLASSES lane removed; 13 files; panel: prosecutor (14) + codex (0); pr-review-toolkit specialists unavailable; judge verified by reading, no runs) — verdict: changes-needed

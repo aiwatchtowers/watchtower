@@ -62,6 +62,10 @@ final class DesignShotsTests: XCTestCase {
         try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("workchat-activity-") })
     }
 
+    func testClosedAsksShotsRender() throws {
+        try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("closed-asks-") })
+    }
+
     func testReportProblemShotsRender() throws {
         try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("report-problem-") })
     }

@@ -774,6 +774,8 @@ final class WorkbenchesViewModel {
         // The rows are gone: an answer still streaming stops now, not at the
         // reload (a failed delete above leaves the questions as they were).
         onWorkbenchRemoved?(id)
+        // Its asks went with the cascade: so do its closed lists and drawer (#1713).
+        asks.forgetClosedLists(projectID: id)
         // Its hidden sessions went with the cascade: nothing to commit or restore.
         discardPendingDeletes(workbenchID: id)
         if let warning = result.cleanupWarning { errorMessage = warning }
