@@ -2929,3 +2929,12 @@ Entry format:
 - weak-dimension: 7 (no independent test-coverage lane ran; codex timed out on the diff size)
 - rule-gap: a new `CompanyData` read tool that returns a growing list must take a `limit`/filter argument (or bound its output) so the 256 KB/200-row `CallRead` caps can never refuse every call — candidate rule for dimension 4/6
 - outcome: TBD
+
+## 2026-11-10 — fix/chat-feed-stray-scroller-1073 (#1073: `FeedScrollerInset` writes the feed's trailing safe area to `enclosingScrollView.scrollerInsets.right` on update + one main-queue hop; 3 files; panel: prosecutor (2) + codex (1) + all three pr-review-toolkit specialists; judge verified by reading, no runs) — verdict: changes-needed
+
+- contested: whether the on-screen window in the repro test can simply be removed. Codex's caveat (scrollerInsets/animation may only run on an ordered-in window) is real. Settled by changing what the test checks rather than keeping the window: the regression is "a stale inset gets corrected", and that can be tested deterministically. Plant a stale `scrollerInsets.right` on a plain `NSScrollView` and call `apply()`. The SwiftUI-animation repro is a manual check, not a unit test. [7]
+- false-positive: none dismissed outright. Silent-failure's "nil enclosingScrollView should assert" went down to a nit: an embedded or unhosted feed legitimately has nothing to fix.
+- miss: only silent-failure asked whether one update + one async hop is guaranteed to run after SwiftUI's *last* write (`GeometryReader` may report the final safe area at the start of the close, while SwiftUI's per-frame writes continue after the hop). No lane could settle it by reading. **A fix that wins a race against framework-driven per-frame writes either re-settles on the event where the symptom shows (here the clip view's bounds change) or records why its one hop is after the last write.** [4/9]
+- weak-dimension: 7. A timing repro with `Thread.sleep` "red without, green with" on one machine was offered as proof. Four lanes doubted it would reproduce on CI.
+- rule-gap: the existing "a test never puts a window on screen" rule (review-rules Tests) worked. It was raised by 4 of 5 lanes. Candidate addition: *an AppKit/SwiftUI glitch fix tests the corrective write directly with a planted bad state; a framework-animation repro that needs an on-screen window or wall-clock sleeps stays a manual check in the PR.*
+- outcome: TBD

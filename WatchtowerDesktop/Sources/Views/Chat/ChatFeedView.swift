@@ -88,6 +88,8 @@ struct ChatFeedView<Content: View>: View {
                             )
                         }
                     )
+                    // The scroller follows a closing inspector (#1073).
+                    .background { FeedScrollerInset(trailing: viewport.safeAreaInsets.trailing) }
                 }
                 .coordinateSpace(name: Self.scrollSpace)
                 .onPreferenceChange(ChatContentFramePreferenceKey.self) { frame in
