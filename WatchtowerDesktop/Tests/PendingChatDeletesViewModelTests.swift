@@ -61,10 +61,17 @@ final class PendingChatDeletesViewModelTests: XCTestCase {
         return vm
     }
 
+    /// Yields the main actor until `condition` holds. No deadline: the wait
+    /// ends on the fakes' and the model's state, never on a clock — a wait
+    /// that never ends is a hang the lane watchdog reports.
+    private func until(_ what: String, _ condition: () -> Bool) async {
+        while !condition() { await Task.yield() }
+    }
+
     private func reloaded(_ vm: ChatHistoryViewModel) async {
         let done = expectation(description: "reload")
         vm.reloadRows { done.fulfill() }
-        await fulfillment(of: [done], timeout: 5)
+        await fulfillment(of: [done])
     }
 
     nonisolated private static func chat(_ d: Database, _ title: String, project: Int64? = nil) throws -> Int64 {
@@ -93,17 +100,14 @@ final class PendingChatDeletesViewModelTests: XCTestCase {
         XCTAssertEqual(vm.rows.map(\.id), [b], "hidden at once")
         XCTAssertEqual(vm.pendingDeleteToast, "Chat “alpha” deleted")
         XCTAssertEqual(vm.pendingDeletes.deadline, Date(timeIntervalSinceReferenceDate: 1_005))
-        let settled1 = await waitForCondition { self.gate.waits == [.seconds(5)] }
-        XCTAssertTrue(settled1, "the sessions panel's window")
+        await until("the sessions panel's window") { self.gate.waits == [.seconds(5)] }
         let stillThere = try await exists(a)
         XCTAssertTrue(stillThere, "nothing written inside the window")
         XCTAssertEqual(forgotten, [])
 
         gate.open()
-        let settled2 = await waitForCondition { self.forgotten == [a] }
-        XCTAssertTrue(settled2, "the session is retired at commit")
-        let settled3 = await waitForCondition { vm.committingDeletes.isEmpty }
-        XCTAssertTrue(settled3)
+        await until("the session is retired at commit") { self.forgotten == [a] }
+        await until("settled") { vm.committingDeletes.isEmpty }
         let gone = try await exists(a)
         XCTAssertFalse(gone)
         XCTAssertNil(vm.pendingDeleteToast)
@@ -115,16 +119,16 @@ final class PendingChatDeletesViewModelTests: XCTestCase {
         let a = try await dbManager.dbPool.write { try Self.chat($0, "alpha") }
         let vm = await makeViewModel()
         vm.deleteWithUndo(a)
-        let settled4 = await waitForCondition { self.gate.waits.count == 1 }
-        XCTAssertTrue(settled4)
+        await until("the window waits") { self.gate.waits.count == 1 }
+        let window = try XCTUnwrap(vm.deleteCommitTask)
 
         XCTAssertEqual(vm.undoPendingDelete(), a)
         XCTAssertEqual(vm.rows.map(\.id), [a])
         XCTAssertNil(vm.pendingDeleteToast)
         XCTAssertNil(vm.undoPendingDelete(), "nothing left to undo")
         gate.open()
-        await Task.yield()
-        try await Task.sleep(for: .milliseconds(50))
+        await window.value // the window ended: it commits nothing
+        await vm.writesSettled()
         let stillThere = try await exists(a)
         XCTAssertTrue(stillThere)
         XCTAssertEqual(forgotten, [])
@@ -139,10 +143,8 @@ final class PendingChatDeletesViewModelTests: XCTestCase {
         vm.deleteWithUndo(b)
         XCTAssertEqual(vm.pendingDeleteToast, "Chat “beta” deleted")
         XCTAssertEqual(vm.rows.map(\.id), [c], "the committing one stays hidden")
-        let settled5 = await waitForCondition { self.forgotten == [a] }
-        XCTAssertTrue(settled5)
-        let settled6 = await waitForCondition { vm.committingDeletes.isEmpty }
-        XCTAssertTrue(settled6)
+        await until("settled") { self.forgotten == [a] }
+        await until("settled") { vm.committingDeletes.isEmpty }
         let aGone = try await exists(a)
         let bThere = try await exists(b)
         XCTAssertFalse(aGone)
@@ -205,7 +207,8 @@ final class PendingChatDeletesViewModelTests: XCTestCase {
         let (a, b) = try await dbManager.dbPool.write { d in (try Self.chat(d, "alpha"), try Self.chat(d, "beta")) }
         let vm = await makeViewModel()
         vm.deleteWithUndo(a)
-        vm.quitDeleteSleep = { _ in try? await Task.sleep(for: .seconds(60)) }
+        // The bound never passes: the gate holds it until tearDown.
+        vm.quitDeleteSleep = { [gate] in await gate?.wait($0) }
         let finished = await vm.commitPendingDeleteForQuit(bound: .seconds(60))
         XCTAssertTrue(finished)
         let gone = try await exists(a)
