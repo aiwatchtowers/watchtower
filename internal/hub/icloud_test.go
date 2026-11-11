@@ -88,6 +88,7 @@ func startICloudDesk(t *testing.T, active transport.Kind, src hubslices.Source) 
 			s.State == wantState && s.Reason == wantReason
 	})
 	time.Sleep(300 * time.Millisecond) // a cycle or pass the hold waited for ends
+	synctest.Wait()
 	return r, ck
 }
 

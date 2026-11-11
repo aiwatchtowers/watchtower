@@ -617,54 +617,56 @@ func fakeV1Host(t *testing.T, path string) (string, *atomic.Int32) {
 // CloudKit and the relay (CloudKit only without a relay origin); a headless
 // host announces the relay alone.
 func TestDesktopHostAnnouncesBothTransports(t *testing.T) {
-	live := liveHome(t)
-	home, _ := os.UserHomeDir()
-	support, _ := config.AppSupportDir()
-	root := t.TempDir()
-	p := desktopProbe(home, support)
-	p.Stat = func(path string) (os.FileInfo, error) { return os.Stat(filepath.Join(root, path)) }
-	bin := filepath.Join(root, "/Applications/Watchtower.app", BridgeExecutable)
-	if err := os.MkdirAll(filepath.Dir(bin), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	pub := ed25519.PublicKey(make([]byte, ed25519.PublicKeySize))
+	bubble(t, func(t *testing.T) {
+		live := liveHome(t)
+		home, _ := os.UserHomeDir()
+		support, _ := config.AppSupportDir()
+		root := t.TempDir()
+		p := desktopProbe(home, support)
+		p.Stat = func(path string) (os.FileInfo, error) { return os.Stat(filepath.Join(root, path)) }
+		bin := filepath.Join(root, "/Applications/Watchtower.app", BridgeExecutable)
+		if err := os.MkdirAll(filepath.Dir(bin), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		pub := ed25519.PublicKey(make([]byte, ed25519.PublicKeySize))
 
-	o, err := Resolve(&config.Config{}, nil, p)
-	if err != nil || o.RelayOrigin != "" || !slices.Equal(o.Transports, []string{wire.TransportCloudKit}) {
-		t.Fatalf("no origin: %+v %v", o, err)
-	}
-	t.Setenv(EnvRelayOrigin, "https://relay.example.com")
-	o, err = Resolve(&config.Config{}, nil, p)
-	both := []string{wire.TransportCloudKit, wire.TransportRelay}
-	if err != nil || o.Dir != live || o.RelayOrigin != "https://relay.example.com" || !slices.Equal(o.Transports, both) {
-		t.Fatalf("with an origin: %+v %v", o, err)
-	}
-	if got := hostInfo(o, "acme", pub).Transports; !slices.Equal(got, both) {
-		t.Fatalf("announced %v", got)
-	}
-	if got := hostInfo(Options{}, "acme", pub).Transports; !slices.Equal(got, []string{wire.TransportRelay}) {
-		t.Fatalf("headless announces %v", got)
-	}
+		o, err := Resolve(&config.Config{}, nil, p)
+		if err != nil || o.RelayOrigin != "" || !slices.Equal(o.Transports, []string{wire.TransportCloudKit}) {
+			t.Fatalf("no origin: %+v %v", o, err)
+		}
+		t.Setenv(EnvRelayOrigin, "https://relay.example.com")
+		o, err = Resolve(&config.Config{}, nil, p)
+		both := []string{wire.TransportCloudKit, wire.TransportRelay}
+		if err != nil || o.Dir != live || o.RelayOrigin != "https://relay.example.com" || !slices.Equal(o.Transports, both) {
+			t.Fatalf("with an origin: %+v %v", o, err)
+		}
+		if got := hostInfo(o, "acme", pub).Transports; !slices.Equal(got, both) {
+			t.Fatalf("announced %v", got)
+		}
+		if got := hostInfo(Options{}, "acme", pub).Transports; !slices.Equal(got, []string{wire.TransportRelay}) {
+			t.Fatalf("headless announces %v", got)
+		}
 
-	// Running, the hub has both transports behind the switch: CloudKit
-	// active on a fresh hub, the relay polled as the other.
-	policytest.Set(t, nil)
-	r := newDeskRig(t, shortDir(t))
-	setMeta(t, r.dir, state.MetaEnabled, "1")
-	r.start(r.options())
-	r.waitState(StateRunning, "")
-	if r.dials.Load() != 1 || r.ckDial.Load() != 1 {
-		t.Fatalf("relay built %d, cloudkit %d", r.dials.Load(), r.ckDial.Load())
-	}
-	if s := r.rec.last(); s.Transport != string(transport.KindCloudKit) {
-		t.Fatalf("active transport %q", s.Transport)
-	}
-	if v, _ := readMetaRO(t, r.dir, switcher.MetaTransport); v != string(transport.KindCloudKit) {
-		t.Fatalf("hub_meta.transport %q", v)
-	}
+		// Running, the hub has both transports behind the switch: CloudKit
+		// active on a fresh hub, the relay polled as the other.
+		policytest.Set(t, nil)
+		r := newDeskRig(t, shortDir(t))
+		setMeta(t, r.dir, state.MetaEnabled, "1")
+		r.start(r.options())
+		r.waitState(StateRunning, "")
+		if r.dials.Load() != 1 || r.ckDial.Load() != 1 {
+			t.Fatalf("relay built %d, cloudkit %d", r.dials.Load(), r.ckDial.Load())
+		}
+		if s := r.rec.last(); s.Transport != string(transport.KindCloudKit) {
+			t.Fatalf("active transport %q", s.Transport)
+		}
+		if v, _ := readMetaRO(t, r.dir, switcher.MetaTransport); v != string(transport.KindCloudKit) {
+			t.Fatalf("hub_meta.transport %q", v)
+		}
+	})
 }
 
 // TestRecordingsDirIsAppSupport: a desktop host keeps the phones' recordings
