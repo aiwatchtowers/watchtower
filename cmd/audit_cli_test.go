@@ -223,6 +223,7 @@ var cliNoContentCommands = map[string]bool{
 	"db compact":                       true,
 	"db lockstats":                     true,
 	"db migrate":                       true,
+	"diagnostics":                      true, // kinds, counts, states and error classes only (DIAG-01)
 	"dictate clean":                    true,
 	"digest generate":                  true,
 	"digest reset-context":             true,

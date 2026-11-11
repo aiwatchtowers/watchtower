@@ -231,6 +231,23 @@ func PipelineRunsUnknown(unknown string) string {
 	return RowIndent + fmt.Sprintf(pipelineRunsUnknownFmt, unknown)
 }
 
+// RecentErrors is the Recent errors block: the title, then the non-empty
+// row groups (each already indented, possibly several rows joined by
+// "\n"); `Recent errors: none` when every group is empty.
+func RecentErrors(groups ...string) string {
+	kept := make([]string, 0, len(groups)+1)
+	kept = append(kept, RecentErrorsTitle)
+	for _, g := range groups {
+		if g != "" {
+			kept = append(kept, g)
+		}
+	}
+	if len(kept) == 1 {
+		return RecentErrorsNone
+	}
+	return strings.Join(kept, "\n")
+}
+
 // Schema is `schema <goose version>`.
 func Schema(version int64) string { return fmt.Sprintf(schemaFmt, version) }
 
