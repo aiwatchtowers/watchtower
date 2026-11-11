@@ -68,7 +68,7 @@ replaces: [inbox-messages]
 changed: The Messages filter became the Waiting for me list in the Inbox.
 -->
 
-**Attention detection** finds the mentions, DMs, thread replies, Jira and Linear issues assigned to you or mentioning you, and mail to you. The built-in **Waiting for me** turns them into one list after every sync, newest first, up to 200, with each item's age, flagged once it passes a day. An item leaves when you answer in the source, or press **Done**, **Hide** or **Snooze**. Detection makes no AI calls and needs an account that identifies you.
+**Attention detection** finds the mentions, DMs, thread replies, Jira and Linear issues assigned to you or mentioning you, and mail to you. The built-in **Waiting for me** turns them into one list after every sync, newest first, up to 200, with each item's age, flagged once it passes a day. An item leaves when you answer in the source (Gmail mail too; Outlook and IMAP mail archives on its own), or press **Done**, **Hide** or **Snooze**. Detection makes no AI calls.
 
 ### What the badge counts
 
