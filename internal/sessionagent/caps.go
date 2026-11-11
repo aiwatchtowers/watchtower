@@ -67,6 +67,11 @@ type Caps struct {
 	// start and the skill listing, which agent analytics' Context and Skills
 	// blocks read (Claude Code's; a Codex rollout records neither).
 	AnalyticsContext bool `json:"analytics_context"`
+	// ScratchpadLanes: the agent may create git worktrees under its own
+	// per-session scratchpad, <TMPDIR>/claude-<uid>/<slug>/<session uuid>/,
+	// which the session's cleanup adopts (auto cleanup spec 2026-11-10 §2b;
+	// Claude Code's; Codex has no such directory).
+	ScratchpadLanes bool `json:"scratchpad_lanes"`
 }
 
 // TakesLineWhileWorking reports whether a line may go into the session while

@@ -10,9 +10,9 @@ import (
 	"sync"
 	"time"
 
-	"watchtower/internal/agentkind"
 	"watchtower/internal/db"
 	"watchtower/internal/gitbin"
+	"watchtower/internal/sessionagent"
 	"watchtower/internal/workbenchgit"
 )
 
@@ -285,7 +285,8 @@ func (b *builder) ownRepoRows(rows []db.SessionWorktree) []db.SessionWorktree {
 }
 
 // loadScratch adopts the session's Claude scratchpad lanes (auto cleanup
-// spec 2026-11-10 §2b), claude rows only. An agent session id of this row
+// spec 2026-11-10 §2b), only for a kind whose caps have ScratchpadLanes
+// (an unknown kind adopts nothing). An agent session id of this row
 // counts only when this row is its only owner (history or current id of any
 // terminal session, and no deleted row's tombstone), and a lane — a linked worktree strictly inside
 // `<base>/claude-<uid>/<slug>/<uuid>/` — only when it was born at or after
@@ -296,7 +297,7 @@ func (b *builder) ownRepoRows(rows []db.SessionWorktree) []db.SessionWorktree {
 // unknown birth or acquisition time adopts nothing; a failed read fails the
 // plan.
 func (b *builder) loadScratch(ctx context.Context) error {
-	if b.session.Kind != string(agentkind.Claude) {
+	if !sessionagent.CapsOf(b.session.Kind).ScratchpadLanes {
 		return nil
 	}
 	ids, err := b.deps.DB.AgentSessionIDs(ctx, b.session.ID)
