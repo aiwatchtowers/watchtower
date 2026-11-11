@@ -10,8 +10,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	gosync "sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -167,26 +169,18 @@ func TestDaemon_RunsInitialSync(t *testing.T) {
 }
 
 func TestDaemon_PollTriggersSync(t *testing.T) {
-	// A sync writes last_sync.json and the heartbeat under WorkspaceDir(),
-	// which is derived from HOME — keep those out of the real workspace dir.
-	t.Setenv("HOME", t.TempDir())
-	var syncCount atomic.Int32
-	orch, _ := newTestOrchestrator(t, &syncCount)
+	synctest.Test(t, func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		var syncCount atomic.Int32
+		d := newBubbleDaemon(t, &syncCount)
+		d.config.Sync.PollInterval = 50 * time.Millisecond
+		start := time.Now()
 
-	cfg := &config.Config{
-		Sync: config.SyncConfig{
-			PollInterval: 50 * time.Millisecond,
-			SyncOnWake:   false,
-		},
-	}
-
-	d := newDaemon(orch, cfg)
-	d.SetLogger(log.New(os.Stderr, "[test-daemon] ", 0))
-
-	// Initial sync + at least one 50ms poll sync, under a deadline generous
-	// enough for a loaded or -race runner.
-	err := runDaemonUntil(t, d, func() bool { return syncCount.Load() >= 2 })
-	assert.NoError(t, err)
+		// The initial sync, then one poll tick's on the bubble's clock.
+		require.NoError(t, runDaemonCycles(t, d, 2))
+		assert.Equal(t, int32(2), syncCount.Load())
+		assert.Equal(t, 50*time.Millisecond, time.Since(start), "the second sync is the first tick's")
+	})
 }
 
 func TestDaemon_WakeEventTriggersSync(t *testing.T) {
@@ -243,18 +237,8 @@ func TestDaemon_GracefulShutdown(t *testing.T) {
 	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test-daemon] ", 0))
 
-	ctx, cancel := context.WithCancel(context.Background())
-
-	done := make(chan error, 1)
-	go func() {
-		done <- d.Run(ctx)
-	}()
-
-	// Let the daemon run briefly, then cancel.
-	time.Sleep(100 * time.Millisecond)
-	cancel()
-
-	err := <-done
+	// Cancelled once the first cycle has ended.
+	err := runDaemonCycles(t, d, 1)
 	assert.NoError(t, err, "daemon should shut down cleanly on context cancellation")
 }
 
@@ -709,9 +693,20 @@ func TestDaemon_AutoMarkReadAfterDigests(t *testing.T) {
 }
 
 func TestDaemon_RunSyncContextCancelled(t *testing.T) {
-	// When context is cancelled during sync, pipelines should be skipped.
+	// When context is cancelled during sync, pipelines should be skipped. The
+	// shutdown lands while the Slack sync is searching.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	base := testMux()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/search.messages" {
+			cancel()
+		}
+		base.ServeHTTP(w, r)
+	})
 	var syncCount atomic.Int32
-	orch, _ := newTestOrchestrator(t, &syncCount)
+	orch, _ := newStatusTrackingOrchestrator(t, mux, &syncCount)
 
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
@@ -731,14 +726,13 @@ func TestDaemon_RunSyncContextCancelled(t *testing.T) {
 	}
 
 	d := newDaemon(orch, cfg)
-	d.SetLogger(log.New(os.Stderr, "[test-daemon] ", 0))
-
-	// Very short context so runSync hits ctx.Err() != nil branch
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
+	logs := &lockedLog{}
+	d.SetLogger(log.New(logs, "", 0))
 
 	err := d.Run(ctx)
 	assert.NoError(t, err)
+	assert.Equal(t, int32(1), syncCount.Load(), "the one cycle the shutdown cut")
+	assert.Equal(t, 1, logs.count("source syncs stopped by shutdown, skipping pipelines"))
 }
 
 func TestDaemon_RunSyncWithPeopleThrottle(t *testing.T) {
@@ -1258,6 +1252,29 @@ func TestSyncHeartbeat_PublishesLiveProgress(t *testing.T) {
 	assert.False(t, progress.IsSyncing(time.Now()))
 }
 
+// startGatedHeartbeat starts d's sync heartbeat with each ticker beat handed
+// to the test: next returns once the beat after the call has written — so its
+// write saw everything the test did before calling next. stop ends the
+// heartbeat; the cleanup calls it too.
+func startGatedHeartbeat(t *testing.T, d *Daemon, o *sync.Orchestrator) (next, stop func()) {
+	t.Helper()
+	beats, quit := make(chan struct{}), make(chan struct{})
+	d.heartbeatBeat = func() {
+		select {
+		case beats <- struct{}{}:
+		case <-quit:
+		}
+	}
+	stopBeat := d.startSyncHeartbeat(o)
+	var once gosync.Once
+	stop = func() { once.Do(func() { close(quit); stopBeat() }) }
+	t.Cleanup(stop)
+	// A beat blocked in the hand-off may have written before the call; the
+	// one after it wrote after the call.
+	next = func() { <-beats; <-beats }
+	return next, stop
+}
+
 // A heartbeat whose Slack progress moved stamps the cycle's fetch progress,
 // so Sync Now never restarts a long sync that is still moving; a beat with
 // nothing new leaves the stamp, so a stuck one still reads as stalled.
@@ -1273,16 +1290,18 @@ func TestSyncHeartbeat_StampsFetchProgressOnlyWhenItMoves(t *testing.T) {
 	mono := &fakeMono{}
 	d.loopMono = mono.now
 
-	stop := d.startSyncHeartbeat(orch)
-	defer stop()
+	nextBeat, _ := startGatedHeartbeat(t, d, orch)
 	assert.Zero(t, d.fetchStalledFor(), "the first beat stamps the progress")
 
 	mono.advance(time.Minute)
-	time.Sleep(20 * syncHeartbeatInterval) // beats with nothing new
+	for range 3 {
+		nextBeat() // beats with nothing new
+	}
 	assert.Equal(t, time.Minute, d.fetchStalledFor(), "a beat with nothing new leaves the stamp")
 
 	orch.Progress().AddMessages(1)
-	eventually(t, func() bool { return d.fetchStalledFor() == 0 }, "a beat stamping the moved progress")
+	nextBeat()
+	assert.Zero(t, d.fetchStalledFor(), "a beat stamping the moved progress")
 }
 
 // The Slack passes that move no Progress counter — the read-state refresh
@@ -1302,14 +1321,14 @@ func TestSyncHeartbeat_StampsFetchProgressOnAnsweredSlackCalls(t *testing.T) {
 	mono := &fakeMono{}
 	d.loopMono = mono.now
 
-	stop := d.startSyncHeartbeat(orch)
-	defer stop()
+	nextBeat, _ := startGatedHeartbeat(t, d, orch)
 	snap := orch.Progress().Snapshot()
 	for i := range 3 {
 		mono.advance(manualRestartAfter)
 		_, _ = client.GetChannelReadCursor(context.Background(), "C001") // answered, here with an error
 		client.ResetAPIStats()
-		eventually(t, func() bool { return d.fetchStalledFor() == 0 }, fmt.Sprintf("a beat stamping read-state call %d", i+1))
+		nextBeat()
+		assert.Zero(t, d.fetchStalledFor(), "a beat stamping read-state call %d", i+1)
 	}
 	assert.Equal(t, snap, orch.Progress().Snapshot(), "only API calls moved")
 }
@@ -1456,14 +1475,20 @@ func TestInbox09_RunSyncBoundsAndFreezesInboxWatermark(t *testing.T) {
 	// BEHAVIOR INBOX-09 — see docs/inventory/inbox-pulse.md
 	// Do not weaken or remove without explicit owner approval.
 	t.Setenv("HOME", t.TempDir())
-	const slowSync = 2 * time.Second
-	base := testMux()
+	// The sync-start clock is the test's: the Slack search moves it 2 s, as a
+	// slow sync would move the real one, so a start read after any source
+	// synced would land past base.
+	// An hour back, so a watermark read off the real clock cannot match.
+	base := time.Now().Add(-time.Hour).Truncate(time.Second)
+	var clock atomic.Int64
+	clock.Store(base.UnixNano())
 	slow := http.NewServeMux()
+	baseMux := testMux()
 	slow.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/search.messages" {
-			time.Sleep(slowSync)
+			clock.Add(int64(2 * time.Second))
 		}
-		base.ServeHTTP(w, r)
+		baseMux.ServeHTTP(w, r)
 	})
 	newCycle := func(mux *http.ServeMux) (*Daemon, *db.DB) {
 		var count atomic.Int32
@@ -1480,16 +1505,17 @@ func TestInbox09_RunSyncBoundsAndFreezesInboxWatermark(t *testing.T) {
 		d.SetLogger(l)
 		d.SetDB(database)
 		d.SetInboxPipeline(inbox.New(database, cfg, nil, l))
+		d.syncStartClock = func() time.Time { return time.Unix(0, clock.Load()) }
 		return d, database
 	}
 
 	d, database := newCycle(slow)
 	d.runSync(context.Background(), context.Background())
+	require.Greater(t, clock.Load(), base.UnixNano(), "the Slack sync searched, moving the clock")
 	wm, err := database.GetInboxLastProcessedTS()
 	require.NoError(t, err)
-	assert.Greater(t, wm, 1000.0, "a clean cycle advances the watermark")
-	assert.Less(t, wm, float64(time.Now().Add(-30*time.Minute).Unix())-1,
-		"the watermark stops at the cycle's sync start − 30 min, not at now − 30 min")
+	assert.Equal(t, float64(base.Add(-30*time.Minute).Unix()), wm,
+		"a clean cycle advances the watermark to the cycle's sync start − 30 min, not to a later instant − 30 min")
 
 	d, database = newCycle(http.NewServeMux()) // every Slack call fails
 	d.runSync(context.Background(), context.Background())
@@ -1520,9 +1546,7 @@ func TestDaemon_StartReapsAbandonedPipelineRuns(t *testing.T) {
 	d := newDaemon(nil, &config.Config{Sync: config.SyncConfig{PollInterval: 10 * time.Second}})
 	d.SetLogger(log.New(io.Discard, "", 0))
 	d.SetDB(database)
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
-	require.NoError(t, d.Run(ctx))
+	require.NoError(t, runDaemonCycles(t, d, 1)) // the reap runs before the first cycle
 
 	status := func(id int64) string {
 		var s string
