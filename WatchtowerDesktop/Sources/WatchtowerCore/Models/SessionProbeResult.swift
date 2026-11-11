@@ -6,7 +6,8 @@ import Foundation
 /// agent_background_at}` or `{ok: false, error}`, exit 0 either way.
 package struct SessionProbeResult: Decodable, Equatable, Sendable {
     /// What the probe read. `busy` and `waiting` leave the count alone;
-    /// `idle`, `shell`, `unknown` and `gone` end it; `failed` stored a
+    /// `shell` ends the agents and keeps counted shells (board #1712);
+    /// `idle`, `unknown` and `gone` end it; `failed` stored a
     /// working codex row's failed turn, read from its rollout (board #959).
     /// Go writes, the Desktop only reads the row again.
     package enum Outcome: String, Decodable, Sendable {

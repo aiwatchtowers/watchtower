@@ -44,6 +44,10 @@ package enum SessionSwitcherPresentation {
         /// The background agents a background session counts; 0 for any
         /// other kind.
         package let backgroundAgents: Int
+        /// The background shells (`run_in_background` Bash) a background
+        /// session counts, inside the shell cap (board #1712); 0 for any
+        /// other kind.
+        package let backgroundShells: Int
         /// Those of `openAsks` whose kind is `question` (#534), for every
         /// kind.
         package let openQuestionAsks: Int
@@ -64,6 +68,7 @@ package enum SessionSwitcherPresentation {
             error: String = "",
             oldestAskID: Int64? = nil,
             backgroundAgents: Int = 0,
+            backgroundShells: Int = 0,
             openQuestionAsks: Int? = nil,
             openReviewAsks: Int = 0,
             watchIssue: String? = nil
@@ -74,6 +79,7 @@ package enum SessionSwitcherPresentation {
             self.error = error
             self.oldestAskID = oldestAskID
             self.backgroundAgents = backgroundAgents
+            self.backgroundShells = backgroundShells
             self.openQuestionAsks = openQuestionAsks ?? openAsks
             self.openReviewAsks = openReviewAsks
             self.watchIssue = kind == .working ? watchIssue : nil
@@ -86,6 +92,10 @@ package enum SessionSwitcherPresentation {
         /// Asks are open and every one is a review.
         package var asksAreOnlyReviews: Bool { asksAreOnlyChecks && openReviewAsks == openAsks }
 
+        /// A background session whose only background work is shells
+        /// (board #1712): a CI watch, a dev server, no agents.
+        package var shellsOnly: Bool { kind == .background && backgroundAgents <= 0 && backgroundShells > 0 }
+
         /// Not running, no asks, not finished.
         package static let notStarted = Self(kind: .notStarted, live: false)
 
@@ -96,11 +106,13 @@ package enum SessionSwitcherPresentation {
             error: String = "",
             oldestAskID: Int64? = nil,
             backgroundAgents: Int = 0,
+            backgroundShells: Int = 0,
             openQuestionAsks: Int? = nil,
             openReviewAsks: Int = 0
         ) -> Self {
             Self(kind: kind, live: true, openAsks: openAsks, error: error, oldestAskID: oldestAskID,
-                 backgroundAgents: backgroundAgents, openQuestionAsks: openQuestionAsks, openReviewAsks: openReviewAsks)
+                 backgroundAgents: backgroundAgents, backgroundShells: backgroundShells,
+                 openQuestionAsks: openQuestionAsks, openReviewAsks: openReviewAsks)
         }
     }
 
