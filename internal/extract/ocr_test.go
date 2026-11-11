@@ -51,12 +51,18 @@ func TestHelperOCRImageHasNoPagesFlag(t *testing.T) {
 }
 
 func TestHelperOCRTimeout(t *testing.T) {
-	helper, _ := fakeHelper(t, "exec sleep 5")
-	start := time.Now()
-	_, err := NewHelperOCR(helper, 200*time.Millisecond).Recognize(context.Background(), "/tmp/x.png", nil)
+	ready, waitReady := readyFIFO(t)
+	helper, _ := fakeHelper(t, "echo ready > '"+ready+"'\nexec sleep 60")
+	fire := manualHelperDeadline(t)
+	go func() {
+		waitReady() // the helper runs
+		fire()
+	}()
+	// Recognize returns once the helper was killed and reaped: a helper left
+	// running would keep it waiting.
+	_, err := NewHelperOCR(helper, time.Hour).Recognize(context.Background(), "/tmp/x.png", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "timed out")
-	assert.Less(t, time.Since(start), 4*time.Second, "the helper is killed at the timeout")
 }
 
 func TestHelperOCRExitError(t *testing.T) {
@@ -83,9 +89,10 @@ func TestHelperOCRMalformedOutput(t *testing.T) {
 }
 
 func TestHelperOCRCancelledContext(t *testing.T) {
-	helper, _ := fakeHelper(t, "exec sleep 5")
+	ready, waitReady := readyFIFO(t)
+	helper, _ := fakeHelper(t, "echo ready > '"+ready+"'\nexec sleep 60")
 	ctx, cancel := context.WithCancel(context.Background())
-	go func() { time.Sleep(100 * time.Millisecond); cancel() }()
+	go func() { waitReady(); cancel() }()
 	_, err := NewHelperOCR(helper, 10*time.Second).Recognize(ctx, "/tmp/x.png", nil)
 	require.ErrorIs(t, err, context.Canceled)
 }
