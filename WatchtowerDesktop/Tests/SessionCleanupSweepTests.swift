@@ -256,7 +256,8 @@ final class SessionCleanupSweepTests: XCTestCase {
         await until("the session plan") { runner.heldCount == 1 }
 
         let widened = vm.widenCleanupScope(projectID: workbenchID)
-        await until("the workbench plan") { runner.calls.count == 2 }
+        // Both plans hold their answers (the stopped session plan's too).
+        await until("the workbench plan") { runner.calls.count == 2 && runner.heldCount == 2 }
         runner.holdsCalls = false
         runner.release()
         await widened.value
