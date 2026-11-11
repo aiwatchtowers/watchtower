@@ -203,7 +203,7 @@ final class CalendarSetupChatViewModelTests: XCTestCase {
 
         vm.seedGreetingIfNeeded()
         vm.seedGreetingIfNeeded()
-        _ = await waitForCondition { !vm.messages.isEmpty }
+        await untilObserved { !vm.messages.isEmpty }
 
         XCTAssertEqual(vm.messages.count, 1, "greeting seeds once")
         XCTAssertEqual(vm.messages.first?.role, .assistant)
@@ -230,11 +230,10 @@ final class CalendarSetupChatViewModelTests: XCTestCase {
 
     // MARK: - Helpers
 
-    private func waitUntil(_ cond: @escaping () -> Bool) async throws {
-        for _ in 0..<200 where !cond() {
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        XCTAssertTrue(cond(), "condition not met within 2s")
+    /// Re-checks `cond` on every change of the observable state it reads
+    /// (`untilObserved`): no clock, no deadline.
+    private func waitUntil(_ cond: @escaping @MainActor () -> Bool) async throws {
+        await untilObserved(cond)
     }
 
     // MARK: - Unreadable or empty replies

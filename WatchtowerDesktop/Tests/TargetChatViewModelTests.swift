@@ -576,15 +576,8 @@ final class TargetChatViewModelTests: XCTestCase {
         }
     }
 
-    private func waitForStreamEnd(_ chat: TargetChatViewModel, timeout: TimeInterval = 5) async throws {
-        let deadline = Date().addingTimeInterval(timeout)
-        while chat.isStreaming {
-            if Date() > deadline {
-                XCTFail("stream did not finish within \(timeout)s")
-                return
-            }
-            try await Task.sleep(nanoseconds: 5_000_000)
-        }
+    private func waitForStreamEnd(_ chat: TargetChatViewModel) async throws {
+        await untilObserved { !chat.isStreaming }
     }
 
     // MARK: - Approve all
@@ -949,11 +942,12 @@ final class TargetChatViewModelTests: XCTestCase {
         // Cancelling must not auto-start another turn to drain the queue.
         XCTAssertFalse(chat.isStreaming)
 
+        let promptsBefore = mock.prompts.count
         chat.inputText = "what now?"
         chat.send()
         await chat.engine.finished()
-        let asked = await waitForCondition { mock.prompts.contains { $0.hasSuffix("what now?") } }
-        XCTAssertTrue(asked)
+        await mock.untilCalls(promptsBefore + 1)
+        XCTAssertTrue(mock.prompts.contains { $0.hasSuffix("what now?") })
         chat.cancelStream()
         await chat.engine.finished()
 
@@ -1019,7 +1013,7 @@ final class TargetChatViewModelTests: XCTestCase {
 
         XCTAssertEqual(notifications, 1, "the decision reports activity before the held follow-up ends")
         mock.release()
-        await fulfillment(of: [followUpEnded], timeout: 5)
+        await fulfillment(of: [followUpEnded])
         await chat.engine.finished()
         XCTAssertFalse(chat.isStreaming)
         XCTAssertEqual(notifications, 2, "the distinct completed follow-up reports one more activity")
@@ -1060,7 +1054,7 @@ final class TargetChatViewModelTests: XCTestCase {
         }
         XCTAssertEqual(notifications, 1, "the decision reports activity before the held follow-up ends")
         mock.release()
-        await fulfillment(of: [followUpEnded], timeout: 5)
+        await fulfillment(of: [followUpEnded])
         await chat.engine.finished()
         XCTAssertFalse(chat.isStreaming)
         XCTAssertEqual(notifications, 2, "the distinct completed follow-up reports one more activity")
@@ -1101,7 +1095,7 @@ final class TargetChatViewModelTests: XCTestCase {
 
         XCTAssertEqual(notifications, 1, "the decision reports activity before the held follow-up ends")
         mock.release()
-        await fulfillment(of: [followUpEnded], timeout: 5)
+        await fulfillment(of: [followUpEnded])
         await chat.engine.finished()
         XCTAssertFalse(chat.isStreaming)
         XCTAssertEqual(notifications, 2, "the distinct completed follow-up reports one more activity")
@@ -1390,7 +1384,7 @@ final class TargetChatViewModelTests: XCTestCase {
         chat.inputText = "make a ticket"
         chat.send()
         await chat.engine.finished()
-        for _ in 0..<50 where chat.isStreaming { try await Task.sleep(for: .milliseconds(20)) }
+        await untilObserved { !chat.isStreaming }
 
         let firstToolMode = try XCTUnwrap(mock.toolModes.first)
         let mode = try XCTUnwrap(firstToolMode)
@@ -1417,7 +1411,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let convID = try XCTUnwrap(fetchConversationID(manager, targetID: target.id))
         // An earlier row through the app's own pool proves the observation is live.
         try TestDatabase.insertAgentActionSync(manager.dbPool, conversationID: convID, turnID: "earlier")
-        for _ in 0..<50 where chat.actionFeed.rows.isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+        await untilObserved { !chat.actionFeed.rows.isEmpty }
         XCTAssertEqual(chat.actionFeed.rows.count, 1)
 
         chat.inputText = "file a ticket"
@@ -1427,7 +1421,7 @@ final class TargetChatViewModelTests: XCTestCase {
         let otherPool = try DatabasePool(path: path)
         try TestDatabase.insertAgentActionSync(otherPool, conversationID: convID, turnID: turnID)
         mock.release()
-        for _ in 0..<50 where chat.isStreaming { try await Task.sleep(for: .milliseconds(20)) }
+        await untilObserved { !chat.isStreaming }
 
         XCTAssertEqual(chat.actionFeed.cards(forTurn: turnID).count, 1,
                        "finishStream must refetch — the observation never sees the subprocess's insert")
@@ -1448,7 +1442,7 @@ final class TargetChatViewModelTests: XCTestCase {
         chat.inputText = "make a ticket"
         chat.send()
         await chat.engine.finished()
-        for _ in 0..<50 where chat.isStreaming { try await Task.sleep(for: .milliseconds(20)) }
+        await untilObserved { !chat.isStreaming }
 
         XCTAssertEqual(mock.toolModes, [nil])
         let firstSystemPrompt = try XCTUnwrap(mock.systemPrompts.first)
@@ -1810,7 +1804,8 @@ extension TargetChatViewModelTests {
 
         chat.inputText = "first"
         chat.send()
-        let started = await eventually { mock.toolModes.count == 1 }
+        await mock.untilCalls(1)
+        let started = mock.toolModes.count == 1
         XCTAssertTrue(started)
         XCTAssertTrue(chat.isStreaming)
         ProviderCatalogFixture.seedShared() // the read lands mid-turn
@@ -1818,14 +1813,16 @@ extension TargetChatViewModelTests {
         XCTAssertTrue(chat.isStreaming, "the running turn is not touched")
         mock.release()
         await chat.engine.finished()
-        let idle = await eventually { !chat.isStreaming }
+        await untilObserved { !chat.isStreaming }
+        let idle = !chat.isStreaming
         XCTAssertTrue(idle)
         XCTAssertNil(chat.errorMessage)
         XCTAssertNil(mock.toolModes[0], "the first turn ran draft-only")
 
         chat.inputText = "second"
         chat.send()
-        let second = await eventually { mock.toolModes.count == 2 }
+        await mock.untilCalls(2)
+        let second = mock.toolModes.count == 2
         XCTAssertTrue(second, "the second turn reached the provider")
         XCTAssertNotNil(mock.toolModes.count == 2 ? mock.toolModes[1] : nil, "the next turn carries the tools")
         await chat.engine.finished()

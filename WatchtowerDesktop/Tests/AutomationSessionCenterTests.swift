@@ -1,5 +1,6 @@
 import XCTest
 import GRDB
+import Observation
 @testable import WatchtowerDesktop
 import WatchtowerCore
 import WatchtowerTestSupport
@@ -15,9 +16,16 @@ private final class GoStandIn: CLIRunnerProtocol, @unchecked Sendable {
     private var attachAnswer = true
     private var endFailures = 0
     private var gate: AsyncGate?
+    private let signal = StateSignal()
 
     init(pool: DatabasePool) {
         self.pool = pool
+    }
+
+    /// Returns once `condition` holds over the recorded calls — this stand-in's
+    /// own signal, no clock.
+    func until(_ condition: @escaping @Sendable ([[String]]) -> Bool) async {
+        await signal.until { [self] in condition(invocations) }
     }
 
     /// The automations calls so far (other CLI calls the AppState wiring
@@ -40,6 +48,7 @@ private final class GoStandIn: CLIRunnerProtocol, @unchecked Sendable {
     func run(args: [String]) async throws -> Data {
         guard args.first == "automations" else { return Data("{}".utf8) }
         lock.withLock { calls.append(args) }
+        signal.changed()
         let flag = { (name: String) in args.firstIndex(of: name).flatMap { Int64(args[$0 + 1]) } ?? 0 }
         switch args[1] {
         case "session-launched":
@@ -82,9 +91,11 @@ private struct LaunchFailure: LocalizedError {
 /// session row with the run marker (before any launch check, as the real
 /// one does), then fails when told to, or waits on a gate. `live` plays the
 /// terminal center's running sessions: a launch that goes through runs.
+/// Observable, so a test waits for a call with `untilObserved`.
 @MainActor
+@Observable
 private final class FakeStarter {
-    private let pool: DatabasePool
+    @ObservationIgnored private let pool: DatabasePool
     var calls: [PendingSessionRequest] = []
     /// The rows written so far (a call cancelled before its write has none).
     var created: [Int64] = []
@@ -114,14 +125,25 @@ private final class FakeStarter {
     }
 }
 
-/// Counts the loop's sleeps; each lasts until the loop is stopped, so a
-/// started center makes one pass (the reconcile and a first tick).
+/// Counts the loop's sleeps; each lasts until the loop is stopped (its task
+/// cancelled), so a started center makes one pass (the reconcile and a first
+/// tick). No clock. Observable, so a test waits for a sleep with `untilObserved`.
 @MainActor
+@Observable
 private final class Pacer {
     var sleeps = 0
+    @ObservationIgnored private var waiters: [Int: CheckedContinuation<Void, Never>] = [:]
+
     func sleep() async {
         sleeps += 1
-        try? await Task.sleep(for: .seconds(60))
+        let key = sleeps
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                if Task.isCancelled { continuation.resume() } else { waiters[key] = continuation }
+            }
+        } onCancel: {
+            Task { @MainActor in self.waiters.removeValue(forKey: key)?.resume() }
+        }
     }
 }
 
@@ -223,15 +245,6 @@ final class AutomationSessionCenterTests: XCTestCase {
         }
     }
 
-    private func waitUntil(timeout: TimeInterval = 5, _ condition: @escaping @MainActor () -> Bool) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !condition() && Date() < deadline {
-            await Task.yield()
-            try? await Task.sleep(for: .milliseconds(5))
-        }
-        XCTAssertTrue(condition(), "condition not met in time")
-    }
-
     // MARK: - Launch
 
     func testLaunchOnRequestWritesSessionIDAndWakes() async throws {
@@ -257,7 +270,7 @@ final class AutomationSessionCenterTests: XCTestCase {
         let center = makeCenter()
 
         let first = Task { await center.tick() }
-        await waitUntil { self.starter.calls.count == 1 }
+        await untilObserved { self.starter.calls.count == 1 }
         XCTAssertEqual(center.launching, [r.step])
         await center.tick()
         await center.tick()
@@ -313,7 +326,7 @@ final class AutomationSessionCenterTests: XCTestCase {
         let center = makeCenter()
 
         center.start()
-        await waitUntil { self.pacer.sleeps >= 1 }
+        await untilObserved { self.pacer.sleeps >= 1 }
         center.stop()
 
         XCTAssertEqual(starter.calls.map(\.stepID), [r.step])
@@ -388,10 +401,10 @@ final class AutomationSessionCenterTests: XCTestCase {
         center.start()
         // The row is written and the launch is held: a stop before the
         // write would cancel the write itself, and leave nothing to adopt.
-        await waitUntil { self.starter.created.count == 1 }
+        await untilObserved { self.starter.created.count == 1 }
         center.stop()
         gate.release()
-        await waitUntil { center.launching.isEmpty }
+        await untilObserved { center.launching.isEmpty }
 
         XCTAssertTrue(go.invocations.isEmpty, "nothing reported: \(go.invocations)")
         XCTAssertTrue(disowned.isEmpty)
@@ -402,7 +415,8 @@ final class AutomationSessionCenterTests: XCTestCase {
 
         starter.gate = nil
         center.start()
-        await waitUntil { self.pacer.sleeps >= 1 && center.launching.isEmpty && !self.go.invocations.isEmpty }
+        await go.until { !$0.isEmpty }
+        await untilObserved { self.pacer.sleeps >= 1 && center.launching.isEmpty }
         center.stop()
 
         XCTAssertEqual(starter.calls.count, 1, "adopted, not launched again")
@@ -480,7 +494,7 @@ final class AutomationSessionCenterTests: XCTestCase {
         starter.live = [session]
         let center = makeCenter()
         center.start()
-        await waitUntil { self.pacer.sleeps >= 1 }
+        await untilObserved { self.pacer.sleeps >= 1 }
         XCTAssertTrue(go.invocations.isEmpty, "a live session is not reconciled")
 
         starter.live = []
@@ -495,7 +509,7 @@ final class AutomationSessionCenterTests: XCTestCase {
         starter.live = [finished, failed]
         let center = makeCenter()
         center.start()
-        await waitUntil { self.pacer.sleeps >= 1 }
+        await untilObserved { self.pacer.sleeps >= 1 }
 
         starter.live = []
         await center.sessionExited(rowID: finished)
@@ -511,7 +525,7 @@ final class AutomationSessionCenterTests: XCTestCase {
         let center = makeCenter()
 
         center.start()
-        await waitUntil { self.pacer.sleeps >= 1 }
+        await untilObserved { self.pacer.sleeps >= 1 }
 
         XCTAssertEqual(go.invocations, [stopped(dead)])
     }
@@ -580,14 +594,16 @@ final class AutomationSessionCenterTests: XCTestCase {
         await manager.load()
         XCTAssertNotNil(manager.loadError)
         XCTAssertFalse(center.isRunning, "a failed load leaves it stopped")
-        try await Task.sleep(for: .milliseconds(200))
+        // A stopped center has no loop (`isRunning` above), and only the loop
+        // launches: nothing queued on the main actor can launch either.
+        await Task { @MainActor in }.value
         XCTAssertTrue(go.invocations.isEmpty, "nothing launched: \(go.invocations)")
 
         features.shouldThrow = nil
         await manager.load()
         XCTAssertNil(manager.loadError)
         XCTAssertTrue(center.isRunning)
-        await waitUntil { self.go.invocations.contains { $0[1] == "session-launched" } }
+        await go.until { calls in calls.contains { $0[1] == "session-launched" } }
     }
 
     // MARK: - Navigation
@@ -634,13 +650,13 @@ final class AutomationSessionCenterTests: XCTestCase {
         let center = try XCTUnwrap(appState.automationSessionCenter)
         XCTAssertTrue(center.isRunning, "started with the Workbench wiring, the feature on")
 
-        await waitUntil { self.go.invocations.contains { $0[1] == "session-launched" } }
+        await go.until { calls in calls.contains { $0[1] == "session-launched" } }
         XCTAssertEqual(center.launching, [r.step])
         appState.selectedDestination = .inbox
         appState.selectedDestination = .workbench
         gate.release()
 
-        await waitUntil { center.launching.isEmpty }
+        await untilObserved { center.launching.isEmpty }
         XCTAssertTrue(appState.automationSessionCenter === center, "the same AppState-owned center")
         let attached = try await pool.read { db in
             try Int64.fetchOne(db, sql: "SELECT session_id FROM automation_run_steps WHERE id = ?", arguments: [r.step])

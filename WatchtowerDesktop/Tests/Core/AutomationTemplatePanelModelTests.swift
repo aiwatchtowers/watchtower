@@ -1,5 +1,7 @@
+import Observation
 import XCTest
 @testable import WatchtowerCore
+import WatchtowerTestSupport
 
 /// A CLI double answering by subcommand (`args[1]`), recording each call;
 /// `hold` parks the named subcommand until `release()`.
@@ -10,9 +12,16 @@ private final class PanelRunner: CLIRunnerProtocol, @unchecked Sendable {
     private var heldSubcommand: String?
     private var gate: CheckedContinuation<Void, Never>?
     private var gateOpened = false
+    private let signal = StateSignal()
 
     var invocations: [[String]] { lock.withLock { recorded } }
     var isHolding: Bool { lock.withLock { gate != nil } }
+
+    /// Returns once `condition` holds over this runner's state — its own
+    /// signal (every change below calls `signal.changed()`), no clock.
+    func until(_ condition: @escaping @Sendable (PanelRunner) -> Bool) async {
+        await signal.until { [self] in condition(self) }
+    }
 
     func answer(_ subcommand: String, _ result: Result<Data, CLIRunnerError>) {
         lock.withLock { answers[subcommand] = result }
@@ -28,6 +37,7 @@ private final class PanelRunner: CLIRunnerProtocol, @unchecked Sendable {
             defer { gate = nil }
             return gate
         }
+        signal.changed()
         waiting?.resume()
     }
 
@@ -43,6 +53,7 @@ private final class PanelRunner: CLIRunnerProtocol, @unchecked Sendable {
             recorded.append(args)
             return (answers[sub], heldSubcommand == sub)
         }
+        signal.changed()
         if held {
             await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
                 let resumeNow = lock.withLock {
@@ -50,6 +61,7 @@ private final class PanelRunner: CLIRunnerProtocol, @unchecked Sendable {
                     gate = continuation
                     return false
                 }
+                signal.changed()
                 if resumeNow { continuation.resume() }
             }
         }
@@ -58,9 +70,11 @@ private final class PanelRunner: CLIRunnerProtocol, @unchecked Sendable {
 }
 
 /// The debounce's wait: suspends until the test fires it (or tears down).
+/// Observable, so a test waits for a call with `untilObserved`.
 @MainActor
+@Observable
 private final class PanelSleeper {
-    private var waiting: [CheckedContinuation<Void, Never>] = []
+    @ObservationIgnored private var waiting: [CheckedContinuation<Void, Never>] = []
     private(set) var calls = 0
 
     func sleep(_: Duration) async {
@@ -151,18 +165,6 @@ final class AutomationTemplatePanelModelTests: XCTestCase {
         }
     }
 
-    private func waitUntil(timeout: TimeInterval = 5, _ condition: @MainActor () -> Bool) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !condition() {
-            if Date() > deadline {
-                XCTFail("timed out")
-                return
-            }
-            await Task.yield()
-            try? await Task.sleep(for: .milliseconds(5))
-        }
-    }
-
     private func renderedModel(_ hashes: [String], params: Bool = true) async throws
         -> AutomationTemplatePanelModel {
         runner.answer("install-template", Self.renderJSON(hashes))
@@ -188,12 +190,12 @@ final class AutomationTemplatePanelModelTests: XCTestCase {
         model.paramsChanged()
         model.params["PROJECT"] = "PAY"
         model.paramsChanged()
-        await waitUntil { self.sleeper.calls == 2 }
+        await untilObserved { self.sleeper.calls == 2 }
         sleeper.fire()
-        await waitUntil { self.renders.count == 2 }
+        await runner.until { $0.invocations.filter { $0.contains("--render") }.count == 2 }
         XCTAssertEqual(renders.last, ["automations", "install-template", "jira-state-report",
                                       "--param", "PROJECT=PAY", "--render", "--json"])
-        await waitUntil { model.canSave }
+        await untilObserved { model.canSave }
         XCTAssertEqual(renders.count, 2)
     }
 
@@ -306,9 +308,9 @@ final class AutomationTemplatePanelModelTests: XCTestCase {
 
         model.params["PROJECT"] = ""
         XCTAssertFalse(model.canSave, "a render is pending: the column says Checking…")
-        await waitUntil { self.sleeper.calls == 1 }
+        await untilObserved { self.sleeper.calls == 1 }
         sleeper.fire()
-        await waitUntil { !model.isRendering }
+        await untilObserved { !model.isRendering }
         XCTAssertTrue(model.canSave, "an emptied field is the CLI's choice, as rendered")
     }
 
@@ -353,11 +355,11 @@ final class AutomationTemplatePanelModelTests: XCTestCase {
         runner.answer("install-template", Self.installJSON(["h1"]))
         runner.hold("install-template")
         Task { [model] in await model?.saveAndTurnOn() }
-        await waitUntil { self.runner.isHolding }
+        await runner.until { $0.isHolding }
         model = nil // the view goes away
         runner.release()
         let kept = panels.panel(for: template, scope: .personal)
-        await waitUntil { kept.state == .done(firstID: 11) }
+        await untilObserved { kept.state == .done(firstID: 11) }
         XCTAssertEqual(writes, ["install-template", "confirm 11 --hash h1", "enable 11"])
 
         let other = panels.panel(for: template, scope: .workbench(id: 3, name: "acme", folder: "/acme"))
@@ -378,9 +380,9 @@ final class AutomationTemplatePanelModelTests: XCTestCase {
         XCTAssertEqual(model.columns.first?.status, .checking, "the shown column says Checking…")
         XCTAssertFalse(model.columns.first?.showsAllFields ?? true)
 
-        await waitUntil { self.sleeper.calls == 1 }
+        await untilObserved { self.sleeper.calls == 1 }
         sleeper.fire()
-        await waitUntil { !model.isRendering }
+        await untilObserved { !model.isRendering }
         XCTAssertEqual(model.columns.first?.status, .ready)
         XCTAssertTrue(model.canSave)
     }
@@ -391,7 +393,7 @@ final class AutomationTemplatePanelModelTests: XCTestCase {
         let model = try await renderedModel(["h1"])
         runner.hold("install-template")
         let inFlight = Task { await model.render() }
-        await waitUntil { self.runner.isHolding }
+        await runner.until { $0.isHolding }
 
         model.params["PROJECT"] = "OPS"
         model.paramsChanged()
@@ -400,9 +402,9 @@ final class AutomationTemplatePanelModelTests: XCTestCase {
         XCTAssertTrue(model.isRendering, "the overtaken render does not clear Checking…")
         XCTAssertFalse(model.canSave)
 
-        await waitUntil { self.sleeper.calls == 1 }
+        await untilObserved { self.sleeper.calls == 1 }
         sleeper.fire()
-        await waitUntil { !model.isRendering }
+        await untilObserved { !model.isRendering }
         XCTAssertTrue(model.canSave)
     }
 
