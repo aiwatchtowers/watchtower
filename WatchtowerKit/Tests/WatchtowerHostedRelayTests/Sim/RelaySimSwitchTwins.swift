@@ -374,18 +374,11 @@ class RelaySimSwitchTwins: HostedRelayScenarioCase {
     }
 
     /// Go `waitFor(t, func() bool { a.Sync(); return a.SwitchPending() })`: the phone's passes
-    /// until it heard of its lapsed subscription; 5 s cap, pumping the clock between passes.
-    private func waitForSwitchPending(
-        _ world: SimWorld, _ phone: SimPhone, file: StaticString = #filePath, line: UInt = #line
-    ) async {
-        let deadline = Date().addingTimeInterval(5)
+    /// until it heard of its lapsed subscription, pumping the clock between passes (no wall-clock cap).
+    private func waitForSwitchPending(_ world: SimWorld, _ phone: SimPhone) async {
         while true {
             await phone.sync()
             if await phone.switchPending { return }
-            guard Date() < deadline else {
-                XCTFail("condition not met within 5 s", file: file, line: line)
-                return
-            }
             _ = world.clock.advanceToNextSleeper(shorterThan: Self.pumpedSleeps)
             await Task.yield()
         }

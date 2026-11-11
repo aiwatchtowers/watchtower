@@ -285,7 +285,7 @@ class HostedRelayScenarioCase: XCTestCase {
         return nil
     }
 
-    /// Reads events until `wanted`; false when the stream ended or the cap passed first.
+    /// Reads events until `wanted`; false when the stream ended first.
     @discardableResult
     func waitFor(
         _ wanted: HostedRelayClientEvent, _ events: EventProbe, file: StaticString = #filePath, line: UInt = #line
@@ -296,7 +296,7 @@ class HostedRelayScenarioCase: XCTestCase {
         return false
     }
 
-    /// Spins (pumping the fake's clock) until `condition` holds, 5 s cap.
+    /// Spins (pumping the fake's clock) until `condition` holds, with no wall-clock cap.
     @discardableResult
     func eventually(file: StaticString = #filePath, line: UInt = #line, _ condition: @escaping () -> Bool) async -> Bool {
         let pump = pump

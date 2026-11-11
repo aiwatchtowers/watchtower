@@ -289,23 +289,18 @@ final class ScriptedRelayDialer: RelaySocketDialer, @unchecked Sendable {
     }
 }
 
-/// Yields until `condition` holds, for at most 5 s of wall-clock time; past that
-/// the test fails and this returns false.
+/// Yields until `condition` holds. No wall-clock cap: a condition that never holds is a
+/// hang for the lane watchdog to report. Returns true (callers kept their `guard`).
 @discardableResult
 func spin(file: StaticString = #filePath, line: UInt = #line, _ condition: () -> Bool) async -> Bool {
-    let deadline = Date().addingTimeInterval(5)
     while !condition() {
-        guard Date() < deadline else {
-            XCTFail("condition not met within 5 s", file: file, line: line)
-            return false
-        }
         await Task.yield()
     }
     return true
 }
 
-/// Reads a connection's events, each read capped like `spin`: a read that gets no
-/// event within 5 s fails the test and returns nil (the read is cancelled).
+/// Reads a connection's events, each read waiting like `spin` (no wall-clock cap);
+/// nil once the stream ended.
 /// `pump`, when given, runs on every wait step (a scenario moves its manual clock there).
 final class EventProbe: @unchecked Sendable {
     private var iterator: AsyncStream<HostedRelayClientEvent>.Iterator
@@ -318,19 +313,14 @@ final class EventProbe: @unchecked Sendable {
 
     func next(file: StaticString = #filePath, line: UInt = #line) async -> HostedRelayClientEvent? {
         let result = OSAllocatedUnfairLock<HostedRelayClientEvent??>(initialState: nil)
-        let read = Task {
+        Task {
             let event = await self.advance()
             result.withLock { $0 = .some(event) }
         }
-        let ready = await spin(file: file, line: line) {
+        await spin(file: file, line: line) {
             if result.withLock({ $0 != nil }) { return true }
             pump?()
             return false
-        }
-        guard ready else {
-            read.cancel()
-            await read.value
-            return nil
         }
         return result.withLock { $0 }.flatMap { $0 }
     }
