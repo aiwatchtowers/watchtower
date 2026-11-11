@@ -1,6 +1,7 @@
 import XCTest
 @testable import WatchtowerDesktop
 import WatchtowerCore
+import WatchtowerTestSupport
 
 /// Answers `coach` calls from a script, optionally holding calls open.
 private final class ScriptedCoachRunner: CLIRunnerProtocol, @unchecked Sendable {
@@ -11,6 +12,7 @@ private final class ScriptedCoachRunner: CLIRunnerProtocol, @unchecked Sendable 
     private var holding = false
     private var cancelledAtReturn: [Bool] = []
     private var script: @Sendable ([String]) throws -> Data
+    private var callWaiters: [(met: ([[String]]) -> Bool, continuation: CheckedContinuation<Void, Never>)] = []
 
     init(_ script: @escaping @Sendable ([String]) throws -> Data) { self.script = script }
 
@@ -22,6 +24,18 @@ private final class ScriptedCoachRunner: CLIRunnerProtocol, @unchecked Sendable 
     func answer(_ next: @escaping @Sendable ([String]) throws -> Data) { lock.withLock { script = next } }
     func release(_ index: Int) { lock.withLock { gates[index] }.release() }
 
+    /// Returns once the calls so far satisfy `met` (re-checked on every call).
+    func untilCalls(_ met: @escaping ([[String]]) -> Bool) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let now = lock.withLock { () -> Bool in
+                if met(calls) { return true }
+                callWaiters.append((met, continuation))
+                return false
+            }
+            if now { continuation.resume() }
+        }
+    }
+
     func run(args: [String]) async throws -> Data { try await record(args, stdin: nil) }
     func run(args: [String], stdin: Data) async throws -> Data {
         try await record(args, stdin: String(bytes: stdin, encoding: .utf8) ?? "")
@@ -29,12 +43,15 @@ private final class ScriptedCoachRunner: CLIRunnerProtocol, @unchecked Sendable 
 
     private func record(_ args: [String], stdin: String?) async throws -> Data {
         let gate = AsyncGate()
-        let held = lock.withLock {
+        let (held, ready) = lock.withLock { () -> (Bool, [CheckedContinuation<Void, Never>]) in
             calls.append(args)
             if let stdin { stdins.append(stdin) }
             gates.append(gate)
-            return holding
+            let ready = callWaiters.filter { $0.met(calls) }.map(\.continuation)
+            callWaiters.removeAll { $0.met(calls) }
+            return (holding, ready)
         }
+        ready.forEach { $0.resume() }
         if held { await gate.wait() }
         defer { lock.withLock { cancelledAtReturn.append(Task.isCancelled) } }
         return try lock.withLock { script }(args)
@@ -77,20 +94,10 @@ final class CoachCenterTests: XCTestCase {
         CLIRunnerError.nonZeroExit(code: 1, stderr: json + "\ncoach: failed\n")
     }
 
-    private func waitUntil(timeout: TimeInterval = 5, _ condition: @escaping @MainActor () -> Bool) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !condition() {
-            if Date() > deadline {
-                XCTFail("condition not met in \(timeout)s")
-                return
-            }
-            try? await Task.sleep(for: .milliseconds(5))
-        }
-    }
-
-    private func settle() async {
-        for _ in 0..<20 { await Task.yield() }
-        try? await Task.sleep(for: .milliseconds(30))
+    /// Waits until `condition` holds, re-checking on every change of the
+    /// center's observable state it reads — no deadline.
+    private func waitUntil(_ condition: @escaping @MainActor () -> Bool) async {
+        await untilObserved(condition)
     }
 
     func testShowLoadsStatusAndProposals() async {
@@ -132,17 +139,20 @@ final class CoachCenterTests: XCTestCase {
         runner.hold()
         let center = makeCenter(runner)
         center.show(workbench: 3, period: .week)
-        await waitUntil { runner.invocations.count == 2 }
+        await runner.untilCalls { $0.count == 2 }
         center.show(workbench: 3, period: .day)
         // Release the 7-day status (the first call) after the switch.
         guard let index = runner.invocations.firstIndex(where: { $0.contains("status") }) else { return XCTFail("no status call") }
         runner.release(index)
-        await settle()
+        // The 7-day call's run ended (its reply handled) once the queued
+        // 1-day status starts.
+        let oneDay = { (calls: [[String]]) in calls.contains { $0.contains("status") && $0.contains("1") } }
+        await runner.untilCalls(oneDay)
         XCTAssertNil(center.status[3]?.value, "a 7-day reply after a switch to 1 day is not stored")
         for i in 0..<runner.invocations.count where i != index {
             if i < runner.invocations.count { runner.release(i) }
         }
-        await waitUntil { runner.invocations.contains { $0.contains("status") && $0.contains("1") } }
+        await runner.untilCalls(oneDay)
     }
 
     func testStaleAcceptClosesCardAndReloads() async {
@@ -159,7 +169,7 @@ final class CoachCenterTests: XCTestCase {
         let before = runner.invocations.filter { $0.contains("proposals") }.count
         await center.accept(7, editedText: nil)
         XCTAssertEqual(center.cardErrors[7], "The text changed since — this proposal is closed")
-        await waitUntil { runner.invocations.filter { $0.contains("proposals") }.count > before }
+        await runner.untilCalls { $0.filter { $0.contains("proposals") }.count > before }
     }
 
     func testDoublePressRunsOnce() async {
@@ -235,7 +245,7 @@ final class CoachCenterTests: XCTestCase {
         runner.hold()
         let center = makeCenter(runner)
         let call = Task { await center.runNow() }
-        await waitUntil { runner.invocations.count == 1 }
+        await runner.untilCalls { $0.count == 1 }
         center.stop()
         runner.release(0)
         await call.value

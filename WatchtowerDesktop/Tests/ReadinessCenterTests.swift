@@ -26,25 +26,12 @@ final class ReadinessCenterTests: XCTestCase {
         Calendar.current.date(bySettingHour: hour, minute: 0, second: 0, of: Date()) ?? .distantPast
     }
 
-    /// Waits (bounded) until `condition` holds for the center's readiness,
-    /// re-checking on every change of it — no sleeping.
+    /// Waits until `condition` holds for the center's readiness, re-checking
+    /// on every change of it — no deadline.
     private func waitUntil(
-        _ center: ReadinessCenter,
-        timeout: TimeInterval = 5,
-        _ condition: @escaping ([ReadinessFeature: Readiness]) -> Bool
+        _ center: ReadinessCenter, _ condition: @escaping ([ReadinessFeature: Readiness]) -> Bool
     ) async {
-        let met = expectation(description: "readiness condition")
-        func check() {
-            if condition(center.readiness) {
-                met.fulfill()
-                return
-            }
-            withObservationTracking { _ = center.readiness } onChange: {
-                Task { @MainActor in check() }
-            }
-        }
-        check()
-        await fulfillment(of: [met], timeout: timeout)
+        await untilObserved { condition(center.readiness) }
     }
 
     private func insertDigest(_ pool: DatabasePool) throws {
@@ -82,7 +69,9 @@ final class ReadinessCenterTests: XCTestCase {
     /// tick's re-read must pick its write up.
     func testTickPicksUpAnotherConnectionsWrite() async throws {
         let pool = try makePool()
-        let center = ReadinessCenter(environment: FakeReadinessEnvironment(), tickInterval: .milliseconds(100))
+        let ticks = HandOpenedSleeps()
+        let center = ReadinessCenter(environment: FakeReadinessEnvironment())
+        center.tickSleep = { _ in await ticks.sleep() }
         center.start(pool: pool)
         defer { center.stop() }
         await waitUntil(center) { !$0.isEmpty }
@@ -91,6 +80,7 @@ final class ReadinessCenterTests: XCTestCase {
         let daemonPool = try DatabasePool(path: try XCTUnwrap(poolPaths.last))
         try insertDigest(daemonPool)
         try daemonPool.close()
+        ticks.open()
         await waitUntil(center) { $0[.digests] == .ready }
     }
 
@@ -188,18 +178,22 @@ final class ReadinessCenterTests: XCTestCase {
 
     func testStopCancelsObservationAndTick() async throws {
         let pool = try makePool()
+        let ticks = HandOpenedSleeps()
         let center = ReadinessCenter(environment: FakeReadinessEnvironment())
+        center.tickSleep = { _ in await ticks.sleep() }
         center.start(pool: pool)
         await waitUntil(center) { !$0.isEmpty }
         center.stop()
+        await ticks.untilCancelled()
         let before = center.readiness
 
-        let changed = expectation(description: "no readiness change after stop")
-        changed.isInverted = true
-        withObservationTracking { _ = center.readiness } onChange: { changed.fulfill() }
         try insertDigest(pool)
         center.refresh()
-        await fulfillment(of: [changed], timeout: 1)
+        // A second center seeing the write proves it was observable.
+        let witness = ReadinessCenter(environment: FakeReadinessEnvironment())
+        witness.start(pool: pool)
+        defer { witness.stop() }
+        await waitUntil(witness) { $0[.digests] == .ready }
         XCTAssertEqual(center.readiness, before)
     }
 

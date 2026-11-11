@@ -1,11 +1,14 @@
 import XCTest
+import Observation
+import WatchtowerTestSupport
 @testable import WatchtowerCore
 
 @MainActor
 final class PeopleRosterLoadTests: XCTestCase {
     /// A scripted `Run`: records each launch and parks until the test ends
     /// it (or the run is cancelled).
-    private final class FakeRun {
+    @Observable
+    final class FakeRun {
         var launches: [Int] = []
         var onLine: (@MainActor (String) -> Void)?
         var cancelled = false
@@ -47,12 +50,10 @@ final class PeopleRosterLoadTests: XCTestCase {
         PeopleRosterLoad { accountID, onLine in await fake.run(accountID, onLine) }
     }
 
-    /// Spins the main actor until `condition` holds (bounded).
-    private func waitUntil(_ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async {
-        for _ in 0..<2000 where !condition() {
-            await Task.yield()
-        }
-        XCTAssertTrue(condition(), "condition not reached", file: file, line: line)
+    /// Waits until `condition` holds, re-checking on every change of the
+    /// fake's observable state it reads — no deadline.
+    private func waitUntil(_ condition: @escaping @MainActor () -> Bool) async {
+        await untilObserved(condition)
     }
 
     private func started(_ load: PeopleRosterLoad, _ fake: FakeRun, account: Int = 1) async {
