@@ -42,7 +42,8 @@ func ProfileFor(agent string) Profile {
 // (Option+Return), does not end in the profile's Newline, and whose last
 // printable input before it — in this chunk or earlier ones
 // (backslashBefore), escape sequences and paste brackets skipped — is not
-// `\` (`\` then Return is a line break). Anything else is a draft. When
+// `\` (`\` then Return is a line break). Anything else is a draft, but for
+// the three keys IsNonTextKey names, which leave the prompt as it was. When
 // unsure the input counts as a draft, which costs the owner a Return of
 // their own, never a line submitted with theirs. Twin of
 // TerminalCenter.isSubmit.
@@ -58,6 +59,22 @@ func IsSubmit(b []byte, backslashBefore bool, p Profile) bool {
 		return false
 	}
 	return !EndsAfterBackslash(body, backslashBefore)
+}
+
+// IsNonTextKey reports whether the owner's input is exactly one key that
+// never puts text into the agent's prompt: a lone Esc (`ESC`, the whole
+// chunk — ESC then a byte is Option+key), Shift+Tab (`ESC [ Z`) or Ctrl+C
+// (`0x03`). Claude Code and Codex read them as interrupt, mode cycle and
+// clear/quit; at most they empty the prompt, so leaving the draft state as
+// it was errs to a draft, never to a Return submitted with the owner's
+// text. Every other key — cursor keys too (Up recalls history) — stays a
+// draft by IsSubmit's rule. Twin of TerminalCenter.isNonTextKey.
+func IsNonTextKey(b []byte) bool {
+	switch string(b) {
+	case "\x1b", "\x1b[Z", "\x03":
+		return true
+	}
+	return false
 }
 
 // EndsAfterBackslash reports whether, after b, the last printable input is

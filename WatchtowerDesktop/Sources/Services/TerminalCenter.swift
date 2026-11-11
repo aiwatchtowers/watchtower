@@ -952,17 +952,18 @@ final class TerminalCenter {
     /// The owner typed or pasted into the session. Input that answers a
     /// permission dialog changes nothing: the prompt still holds what it
     /// held. Otherwise a submitting Return (`isSubmit`) empties the prompt
-    /// (`promptDrafts`) and any other input leaves a draft in it. A copied
-    /// answer's hint turns into "press Return" (the paste was the first
-    /// step); a typed one has done its job; a held one waits for its
-    /// delivery.
+    /// (`promptDrafts`); `isNonTextKey` outside a pause leaves it as it was;
+    /// any other input leaves a draft. A copied answer's hint turns into
+    /// "press Return" (the paste was the first step); a typed one has done
+    /// its job; a held one waits for its delivery.
     private func ownerInput(_ sessionID: Int64, _ bytes: [UInt8]) {
         guard !bytes.isEmpty, !inputAnswersDialog(sessionID) else { return }
         let backslashBefore = ownerBackslashPending.contains(sessionID)
+        let inPause = runs[sessionID].map { pendingReturns.contains($0) } ?? false
         if Self.isSubmit(bytes, backslashBefore: backslashBefore, profile: inputProfile(sessionID)) {
             clearPromptDraft(sessionID)
-            if let run = runs[sessionID], pendingReturns.contains(run) { ownerReturnsInPause.insert(run) }
-        } else {
+            if inPause, let run = runs[sessionID] { ownerReturnsInPause.insert(run) }
+        } else if !Self.isNonTextKey(bytes) || inPause {
             promptDrafts.insert(sessionID)
         }
         if Self.endsAfterBackslash(bytes, backslashBefore: backslashBefore) {
@@ -985,9 +986,9 @@ final class TerminalCenter {
     /// brackets skipped — is not `\` (`\` then Return is a line break).
     /// Anything else is a draft: Ctrl+J (LF), Shift+Return under an extended
     /// keyboard protocol (an escape sequence ending in `u` or `~`), any
-    /// other key. When unsure the input counts as a draft, which costs the
-    /// owner a Return of their own, never a line submitted with theirs —
-    /// so the `\` rule holds for every agent, Codex too.
+    /// other key (`isNonTextKey` aside). When unsure the input counts as a
+    /// draft, which costs the owner a Return of their own, never a line
+    /// submitted with theirs — so the `\` rule holds for every agent.
     static func isSubmit(_ bytes: [UInt8], backslashBefore: Bool, profile: AgentInputProfile = .claude) -> Bool {
         if let newline = profile.newline, endsIn(bytes, newline) { return false }
         guard endsIn(bytes, profile.submit) else { return false }
@@ -995,6 +996,12 @@ final class TerminalCenter {
         if body.last == 0x1B { return false }
         return !endsAfterBackslash(body, backslashBefore: backslashBefore)
     }
+
+    /// Whether the owner's input is exactly a lone Esc (ESC then a byte is
+    /// Option+key), Shift+Tab or Ctrl+C: no text, so outside a line's pause
+    /// (Ctrl+C or a double Esc may clear that line) the draft state stays
+    /// (#1748). Twin of Go `sessionhost.IsNonTextKey`, which says why.
+    static func isNonTextKey(_ bytes: [UInt8]) -> Bool { [[0x1B], [0x1B, 0x5B, 0x5A], [0x03]].contains(bytes) }
 
     /// Whether `bytes` ends in the non-empty key sequence `key`.
     private static func endsIn(_ bytes: [UInt8], _ key: [UInt8]) -> Bool {
