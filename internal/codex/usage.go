@@ -88,7 +88,8 @@ func usageProcess(bin string, env []string) appServerLauncher {
 }
 
 // ReadUsageFrom is ReadUsage over the app-server launch returns, under the
-// same 10 s budget: the seam a test drives an in-process server through.
+// same conversation budget: the seam another package's test drives an
+// in-process server (codextest) through.
 func ReadUsageFrom(ctx context.Context, launch func() (AppServerConn, error), codexHome string) (UsageSnapshot, error) {
 	return readUsage(ctx, launch, codexHome, appServerBudget)
 }

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -28,6 +29,8 @@ const (
 	fakeModeEnv  = "WT_FAKE_APPSERVER_MODE"  // ok | usage
 	fakeHooksEnv = "WT_FAKE_APPSERVER_HOOKS" // ok: hooks/list's hooks, a JSON array
 	fakeFIFOEnv  = "WT_FAKE_APPSERVER_FIFO"  // a FIFO the server and its child hold open for writing
+	// fakeTestPIDEnv is the test binary's pid: the server's child lives while it does.
+	fakeTestPIDEnv = "WT_FAKE_APPSERVER_TEST_PID"
 )
 
 func TestMain(m *testing.M) {
@@ -70,7 +73,9 @@ func runFakeAppServer(mode string) int {
 		if err != nil {
 			return 2
 		}
-		child := exec.Command("sleep", "3600")
+		// The child outlives the server (only the group kill ends it) but
+		// not the test binary: a run go test -timeout ends leaves nothing.
+		child := exec.Command("/bin/sh", "-c", `while kill -0 "$`+fakeTestPIDEnv+`" 2>/dev/null; do sleep 1; done`)
 		child.ExtraFiles = []*os.File{fifo}
 		if err := child.Start(); err != nil {
 			return 2
@@ -451,7 +456,8 @@ func TestAppServer_OversizedLineSaysWhy(t *testing.T) {
 	})
 }
 
-// A server gone before it answered anything: unavailable, not a hang.
+// A server gone before it answered anything: unavailable, not a hang (the
+// real process: TestAppServer_ProcessWiring "early exit").
 func TestAppServer_EarlyExitIsUnavailable(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		s := codextest.New(silentServer)
@@ -504,7 +510,8 @@ func TestAppServer_ProcessWiring(t *testing.T) {
 	}
 	launch := func(t *testing.T) (appServerLauncher, func()) {
 		fifo, gone := heldFIFO(t)
-		env := append(os.Environ(), fakeModeEnv+"=ok", fakeHooksEnv+"="+string(hooks), fifo)
+		env := append(os.Environ(), fakeModeEnv+"=ok", fakeHooksEnv+"="+string(hooks), fifo,
+			fakeTestPIDEnv+"="+strconv.Itoa(os.Getpid()))
 		return appServerProcess(os.Args[0], []string{"-c", "hooks.Stop=[]"}, env, ""), gone
 	}
 	t.Run("close", func(t *testing.T) {
@@ -513,6 +520,7 @@ func TestAppServer_ProcessWiring(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		t.Cleanup(func() { _ = srv.Close() }) // kills the group on a failure path too
 		entries, err := srv.ListHooks(context.Background(), "/Users/example/proj")
 		if err != nil || len(entries) != 1 || entries[0].Key != "k" {
 			t.Fatalf("entries = %+v, err = %v", entries, err)
@@ -529,12 +537,20 @@ func TestAppServer_ProcessWiring(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		t.Cleanup(func() { _ = srv.Close() })
 		cancel()
 		gone() // before any Close
 		if _, err := srv.ListHooks(context.Background(), "/Users/example/proj"); !errors.Is(err, ErrCodexTrustUnavailable) {
 			t.Fatalf("ListHooks after cancel: %v", err)
 		}
-		_ = srv.Close()
+	})
+	t.Run("early exit", func(t *testing.T) {
+		// A real child gone before answering: its pipes close under the
+		// client (EPIPE on the write, EOF on the read).
+		_, err := startAppServer(context.Background(), appServerProcess("/usr/bin/true", nil, os.Environ(), ""), noBudget)
+		if !errors.Is(err, ErrCodexTrustUnavailable) {
+			t.Fatalf("err = %v", err)
+		}
 	})
 }
 

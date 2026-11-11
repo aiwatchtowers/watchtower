@@ -2860,3 +2860,12 @@ Entry format:
 - weak-dimension: 7. A blocking FIFO open (both reader and writer) is a hang with no guard. The fixes were O_RDWR plus a close in Cleanup, or polling for a plain file.
 - rule-gap (candidate, dim 7): *a test that waits for an event (channel, FIFO, child exit) bounds it with a hang guard that fails the test. A FIFO is opened O_RDWR, or its blocked side is unblocked from `t.Cleanup`.*
 - outcome: TBD
+
+## 2026-11-11 — test/no-wallclock-codex (9be058cb7 + uncommitted round-1 fixes: codex app-server stdio seam `AppServerConn`, in-process `codextest` fake under synctest, budget hook removed, `ReadUsageFrom` exported; panel: prosecutor (4) + codex (0); pr-review-toolkit specialists unavailable; judge verified by reading and ran the targeted tests green) — verdict: changes-needed
+
+- contested: F4 (`ReadUsageFrom` exported with only test callers). Kept: a seam that another package's tests need can't live in an `export_test.go`, and it replaces the removed `SetAppServerBudgetForTest`. Only the doc's hardcoded "10 s" was wrong. [9]
+- false-positive: none. F1–F3 were real and their fixes landed. The F1 fix (`t.Cleanup(srv.Close)`) covers only the `t.Fatal` path, not a hang. [7]
+- miss: the judge caught a gap that every lane missed, one day after the test/no-wallclock-go lesson. `noBudget = MaxInt64` ("a hang is go test -timeout's to end") makes the real-process wiring tests (`TestAppServer_ProcessWiring`, usage `readUsage` over the process, the FIFO `gone()` read) wait with no bound. A `-timeout` panic skips `t.Cleanup`, so the fake's `sleep 3600` child is orphaned. A generous budget (one minute) would let the production watchdog itself kill the group. **"No wall-clock wait" keeps being read as "no bound". Check every `MaxInt64`/no-budget constant in a real-process test.** [7]
+- weak-dimension: 7. The prosecutor checked Cleanup registration but not what bounds the wait before Cleanup can run.
+- rule-gap (candidate, dim 7, second sighting after test/no-wallclock-go): *a test driving a real subprocess keeps a hang guard (≥ 1 min) that fails the test or fires the production kill, because `go test -timeout` skips `t.Cleanup`.* Worth promoting into §7.
+- outcome: TBD

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"watchtower/internal/logredact"
 )
@@ -79,12 +80,13 @@ func TestQuerySync_PropagatesNonZeroExit(t *testing.T) {
 // transitively via exec failure paths.
 
 func TestQuerySync_ContextCancel(t *testing.T) {
-	// The script never ends by itself; cancelling the context once it runs
-	// must kill it — a run that is not killed hangs until go test -timeout.
+	// The script ends only with the test binary (its parent); cancelling the
+	// context once it runs must kill it — a run that is not killed hangs
+	// until go test -timeout, which then leaves no stub behind.
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "codex")
 	pidFile := filepath.Join(dir, "pid")
-	body := "#!/bin/sh\necho $$ > '" + pidFile + ".tmp'; mv '" + pidFile + ".tmp' '" + pidFile + "'\nexec sleep 3600\n"
+	body := "#!/bin/sh\necho $$ > '" + pidFile + ".tmp'; mv '" + pidFile + ".tmp' '" + pidFile + "'\nwhile kill -0 $PPID 2>/dev/null; do sleep 1; done\n"
 	if err := os.WriteFile(bin, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -93,14 +95,25 @@ func TestQuerySync_ContextCancel(t *testing.T) {
 	c := NewClient("gpt-5.4", "", bin)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go func() {
-		waitPID(pidFile)
+	returned := make(chan struct{})
+	go func() { // cancel once the stub runs; give up if QuerySync returned first
+		for readPID(pidFile) == 0 {
+			select {
+			case <-returned:
+				return
+			case <-time.After(20 * time.Millisecond):
+			}
+		}
 		cancel()
 	}()
 
 	_, _, err := c.QuerySync(ctx, "", "x", "")
+	close(returned)
 	if err == nil {
 		t.Fatal("expected error from cancelled context")
+	}
+	if ctx.Err() == nil || readPID(pidFile) == 0 {
+		t.Fatalf("QuerySync failed (%v) before the stub ran and was cancelled", err)
 	}
 }
 

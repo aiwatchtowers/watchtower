@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"os/exec"
@@ -202,7 +203,7 @@ func runPlanLockHelper() {
 		}
 		defer unlock()
 		fmt.Println("ready")
-		select {} // until the test kills it
+		_, _ = io.Copy(io.Discard, os.Stdin) // until killed, or the test binary is gone
 	}
 	var err error
 	if mode == "daemon" {
@@ -223,6 +224,10 @@ func planLockProcess(t *testing.T, dir, name, mode string) (*exec.Cmd, *bufio.Sc
 	cmd := exec.Command(bin)
 	cmd.Env = append(os.Environ(), "WATCHTOWER_TEST_PLAN_LOCK=1", "WATCHTOWER_TEST_PLAN_DIR="+dir, "WATCHTOWER_TEST_PLAN_NAME="+name, "WATCHTOWER_TEST_PLAN_MODE="+mode)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// Its stdin stays open while the test binary lives: a holder outlives
+	// neither a kill nor a run go test -timeout ends.
+	_, err = cmd.StdinPipe()
+	require.NoError(t, err)
 	stdout, err := cmd.StdoutPipe()
 	require.NoError(t, err)
 	require.NoError(t, cmd.Start())
