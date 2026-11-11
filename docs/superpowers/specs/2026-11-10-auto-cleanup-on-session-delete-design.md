@@ -8,7 +8,7 @@
 The disk is running out. One workbench repository has about 400 local branches and 190 linked worktrees. Half of the branches are already merged into the default branch, and 21 worktrees are prunable. The session cleanup exists, but two things keep it from working:
 
 1. **It runs only when the owner asks.** A quick delete (✕, ⌘⌫) and the dialog's **Delete Only** remove nothing. Only **Delete and Clean Up** cleans, and the owner has to choose it every time.
-2. **It does not see most of what a session creates.** A session owns only the worktrees its hooks saw as an agent's `cwd`, plus its targets' branches. Plan runs fan tasks out to subagent lanes: `git worktree add <scratchpad>/<lane> -b <branch>` under `/private/tmp/claude-<uid>/<project-slug>/<claude-session-uuid>/scratchpad/` or `/private/tmp/watchtower-<n>`. The subagents work there through `git -C` or `cd` inside a Bash call, so no hook event carries that `cwd`. The cleanup keeps those worktrees as `not_this_session`, and they pile up.
+2. **It does not see most of what a session creates.** A session owns only the worktrees its hooks saw as an agent's `cwd`, plus its targets' branches. Plan runs fan tasks out to subagent lanes: `git worktree add <scratchpad>/<lane> -b <branch>` under `/private/tmp/claude-<uid>/<project-slug>/<claude-session-uuid>/scratchpad/` or `/private/tmp/watchtower-<n>`. The subagents work there through `git -C` or `cd` inside a Bash call, so no hook event carries that `cwd`. Claude Code's own subagent worktrees (`isolation: worktree`, `<repo>/.claude/worktrees/agent-<id>` on a `worktree-agent-<id>` branch) are not seen either. The cleanup keeps all of them as `not_this_session`, and they pile up (on the owner's machine: 79 worktrees and 166 branches, 35+ of them `agent-<id>`).
 
 ## Goal
 
@@ -25,7 +25,7 @@ Deleting a session from the Desktop always removes, in the background, everythin
 
 - Removing anything with uncommitted changes, unpushed commits, a running process, or another live session in it. This is PROJ-18 as today, unchanged.
 - Removing what another session or the owner created. Ownership stays fail-closed: when in doubt, keep it.
-- Slowing the hooks. Hook events have 500 ms to 1 s of database budget. Parsing a command string costs microseconds; a git run in the hook is forbidden.
+- Slowing the hooks. Hook events have 500 ms to 1 s of database budget; this feature adds nothing to any hook. All reading happens in the planner.
 
 ## 1. Trigger: every delete cleans
 
@@ -48,33 +48,29 @@ Every Desktop session delete (✕, ⌘⌫ and the dialog) goes through `Workbenc
 
 ## 2. Ownership: the session sees what its agents created
 
-Two new sources feed the `observed` set of `internal/sessioncleanup` (`observe`, `ownership.go`). Every catch and birth rule applies to them as to a ledger row: born after the session started, merged or pushed, clean, and not in use.
+Ownership comes from facts that Claude Code and git write themselves. Nothing parses the commands an agent ran (ask #1244: the owner rejected command parsing). Three new sources feed the `observed` set of `internal/sessioncleanup` (`observe`, `ownership.go`). Every catch and birth rule applies to them as to a ledger row: born after the session started, merged or pushed, clean, and not in use. All three need the row's agent kind to have the session capability for them (`sessionagent` caps; Claude yes, Codex no); a kind without it adopts nothing from them.
 
-### 2a. Commands the agents ran (hook)
+**The row's agent sessions.** Sources 2a and 2b start from the row's Claude session uuids (`terminal_session_agent_sessions`, migration 00127, every id the row has had). A uuid counts only when **no other `terminal_sessions` row has it** — in its history or its current `claude_session_id` — and no deleted row ever had it (migration 00188 `agent_session_tombstones`, written by a `BEFORE DELETE` trigger). A uuid shared by two rows (a conversation resumed in another tab) adopts nothing for either of them, which is fail-closed. Each counted uuid has the moment this row acquired it.
 
-The session-state hook already gets `tool_name` and `tool_input` on PostToolUse, for the main agent and for subagents, and also for Codex (`sessionagent.Event`). For a successful `Bash` call (Codex: its shell tool), it parses the command text, with no git run:
+### 2a. Subagent worktrees (Claude Code `isolation: worktree`)
 
-| Command (any position in a `&&`/`;`/`|` chain, after `cd X &&` or `git -C X`) | Records |
-|---|---|
-| `git worktree add [opts] <path> [<commit-ish>]`, opts incl. `-b`/`-B <branch>` | worktree `<path>` (resolved against the effective directory) and `<branch>` if given |
-| `git branch [opts] <name> [<start>]` (not `-d`/`-D`/`-m`/`-l`/`--list`/`--show-current`, …) | branch `<name>` |
-| `git checkout -b/-B <name>`, `git switch -c/-C <name>` | branch `<name>` |
+Claude Code writes `<projects dir>/<slug>/<uuid>/subagents/agent-<id>.meta.json` for every subagent; a subagent started with a worktree has `"spawnedWithWorktree": true`, `"worktreePath": "<abs path>"` and `"worktreeBranch": "<branch>"` in it (seen on the owner's machine: the `.claude/worktrees/agent-<id>` pile). For each counted uuid the planner reads these files (the same directory lookup `internal/sessionfeed` uses for subagent feeds):
 
-- The effective directory is the hook's `cwd`, changed by a leading `cd <dir> &&` and by `git -C <dir>`.
-- A worktree path is recorded only when, after the call, `<path>/.git` is a file (a stat, not git). This keeps typos and failed commands out.
-- Rows land in `terminal_session_worktrees` with a new `source` column: `cwd` (today's rows) or `command`. They also get a `kind`: `worktree` for a root with its branch, or `branch` for a branch-only row, whose `root` is the effective repository's top level.
-- **The cap**: `cwd` rows keep today's 64. `command` rows get their own cap of 512 per session; past it, one stderr line per run, as today.
-- The parser is a pure Go function with a table test. A command it cannot parse records nothing. Quoting is handled the way `sh` would split words; command substitution and variables are not expanded, and a word holding `$` or a backtick is skipped.
-
-**Trust.** A branch or worktree an agent named in a command counts as *named* (like a target's branch, `observed.named`). That is stronger than a ledger branch: a worktree with a named branch checked out is observed. Birth time still has to fall after the session started (`ReasonExistedBeforeSession` / `ReasonCreatedUnknown` unchanged). So a command that names a branch someone else made earlier does not make it the session's.
+- A linked worktree of the planned repository whose root equals `worktreePath` (symlink-resolved) belongs to the session, when it was born at or after the moment this row acquired the uuid (+1 s, second precision, as `bornReason`).
+- `worktreeBranch` names a branch of the session, under the same birth rule.
+- A missing `subagents` directory means no subagents. A meta file without those keys, or with a non-absolute path, adopts nothing. A file that exists but cannot be read or parsed fails the plan (the row is marked "not fully cleaned"), so a broken read is never a silent "nothing to clean".
 
 ### 2b. The session's Claude scratchpad
 
-A linked worktree whose root lies under `<TMPDIR>/claude-<uid>/<any slug>/<claude-session-uuid>/` belongs to the session, if the uuid is one of the row's agent session ids (`terminal_session_agent_sessions`, migration 00127, every id the row has had) **and no other `terminal_sessions` row has that uuid**. "Has" means the uuid appears in the other row's history in `terminal_session_agent_sessions` (any id it ever had, not only its current `claude_session_id`), or in its current `claude_session_id`. A uuid shared by two rows (a conversation resumed in another tab) adopts nothing for either of them, which is fail-closed; the ledger and command sources still apply. This catches lanes made before the hook change shipped and commands the parser missed. The `TMPDIR` root is read from the environment of the process that plans (`os.TempDir()`, symlink-resolved, since `/tmp` → `/private/tmp`). Codex rows have no such directory; this rule does not apply to them.
+A linked worktree whose root lies strictly inside `<base>/claude-<uid>/<any slug>/<uuid>/`, for a counted uuid, belongs to the session when it was born at or after the moment this row acquired the uuid (+1 s). The bases are `/tmp`, `os.TempDir()` and `$CLAUDE_CODE_TMPDIR` when set, symlink-resolved and deduplicated. The branch checked out there is the session's too, under the same birth rule.
+
+### 2c. Branches used inside the session's worktrees (git's own HEAD log)
+
+For every linked worktree the session owns — by the cwd ledger, by placement, or by 2a/2b — the planner reads that worktree's own HEAD reflog (`git rev-parse --git-path logs/HEAD` in it; git writes it on every checkout, commit and reset). Each `checkout: moving from <a> to <b>` entry names `<b>`; the worktree's current branch is named too. A named branch is the session's only when its own birth (first entry of its ref log, as today) is at or after the session started (+1 s) — so `main`, or a branch someone else made earlier and the agent only checked out, is kept as `existed_before_session`. The main worktree's HEAD log is never read: the owner works there too. A worktree without a HEAD log names only its current branch; a log that exists but cannot be read fails the plan.
 
 ### What stays unseen
 
-Worktrees outside both sources (for example `/private/tmp/watchtower-<n>` made by a script the agent ran rather than a literal command) are still `not_this_session`. The owner removes them on the Clean Up screen.
+A worktree made outside these sources — for example `git worktree add` run by an agent into a folder of its own choice, or `/private/tmp/watchtower-<n>` made by a script — is still `not_this_session`, and so are branches made in the main worktree. The owner removes them on the Clean Up screen. If an agent removed a worktree itself, its HEAD log is gone with it, so the branches it used there are left for the Clean Up screen too (v1 limit).
 
 ## 3. Outcome: clean or not fully cleaned
 
@@ -119,7 +115,7 @@ While a background cleanup runs, the row is hidden (it is still in the deleting 
 
 **Writers of the same data:**
 - `delete_requested_at`: the Desktop only. It is set at window end or quit, and cleared by Resume, Delete Anyway (the row goes) and the clean outcome (the row goes).
-- `terminal_session_worktrees`: the Go hooks only (both sources). The row delete cascades it.
+- `terminal_session_worktrees`: the Go hooks only (cwd sightings, as on main). The row delete cascades it. The meta files and HEAD logs of §2 are written by Claude Code and git; the planner only reads them, and a file changing mid-read is a read error (the plan fails, the row is marked).
 - `cleanup_result`/`cleanup_at`: the Go apply only, as today.
 - **Removing the files**: the background cleanup, the agent's own `workbench cleanup --apply` before `finish_session`, the placed natural-exit cleanup, and a Clean Up screen apply. They do not race on one item: every apply re-plans, checks each tip just before it deletes (compare-and-delete, `moved`), and git's own refusals stop a double removal. A loser sees the item gone, and a gone item is not listed, so it is not a failure. The Desktop runs at most one apply per workbench at a time (§1). The agent's own apply is the one writer outside that slot: its race ends in `moved` or a gone item, never in a wrong removal.
 - **The phone** has no session delete. What it sees is covered under readers below.
@@ -148,21 +144,18 @@ A Go guard test (`TestProj17_DeletingRowsLeaveEveryList`) lists every `FROM term
 - **PROJ-18** (amended):
   - every Desktop delete applies the session cleanup;
   - the "Delete and Clean Up applies exactly the shown keys" sentence goes, because the background apply has no `--item` and removes what is removable when it runs;
-  - the ledger gains `source`/`kind` and the command source;
-  - the scratchpad rule extends "what the session observed";
-  - the 64 cap applies to `cwd` rows, and `command` rows have their own 512.
+  - the subagent-worktree, scratchpad and HEAD-log sources extend "what the session observed" (§2);
 
   "Only what the session observed and what was created after the session started" stays word for word.
-- **Guard tests**: `testQuickDeleteNeverCleansUp` is replaced by `testProj17_EveryDeleteCleansUpAfterTheWindow`. `testProj18_DeleteAppliesOnlyThePlannedItems` is replaced by `testProj18_BackgroundApplyHasNoItemFilter`. `testProj18_FailedCleanupKeepsTheSessionRow` stays (now with the mark). New Go tests: `TestProj18_CommandLedgerAdoptsWorktree`, `TestProj18_ScratchpadWorktreeIsTheSessions`, and `TestProj18_CommandNamedBranchOlderThanSessionIsKept`. The owner approved these replacements in ask #1210 (CLAUDE.md: a guard test is never weakened silently).
+- **Guard tests**: `testQuickDeleteNeverCleansUp` is replaced by `testProj17_EveryDeleteCleansUpAfterTheWindow`. `testProj18_DeleteAppliesOnlyThePlannedItems` is replaced by `testProj18_BackgroundApplyHasNoItemFilter`. `testProj18_FailedCleanupKeepsTheSessionRow` stays (now with the mark). New Go tests: `TestProj18_SubagentWorktreeIsTheSessions`, `TestProj18_ScratchpadWorktreeIsTheSessions`, and `TestProj18_HeadLogBranchOlderThanSessionIsKept` (the last replaces `TestProj18_CommandNamedBranchOlderThanSessionIsKept`, and the first replaces `TestProj18_CommandLedgerAdoptsWorktree`, which guarded the command parsing the owner dropped in ask #1244). The owner approved the Swift replacements in ask #1210 (CLAUDE.md: a guard test is never weakened silently).
 
 ## 6. Schema
 
-One migration:
-- `terminal_sessions.delete_requested_at TEXT` (NULL = not deleting);
-- `terminal_session_worktrees.source TEXT NOT NULL DEFAULT 'cwd' CHECK (source IN ('cwd','command'))`;
-- `terminal_session_worktrees.kind TEXT NOT NULL DEFAULT 'worktree' CHECK (kind IN ('worktree','branch'))`.
+Two migrations:
+- 00187: `terminal_sessions.delete_requested_at TEXT` (NULL = not deleting). The `source`/`kind` columns of `terminal_session_worktrees` that the command parsing needed are dropped from this migration before it ships (the branch never reached main), so the ledger stays as it is on main: `cwd` sightings only, cap 64.
+- 00188: `agent_session_tombstones` with its `BEFORE DELETE` trigger (§2).
 
-Adding a CHECKed column is an `ALTER TABLE ADD COLUMN` (allowed in SQLite with a constant default), so there is no table rebuild. The primary key stays `(session_id, root, branch)`, and a branch row uses the repository top level as `root`. If a builder finds that the PK collides between a `cwd` and a `command` row of the same pair, the existing row wins and only `last_at` moves; `source` is not overwritten. `schema.sql`, the golden snapshot and the Swift test schema are regenerated.
+`schema.sql`, the golden snapshot and the Swift test schema are regenerated.
 
 ## 7. Screens
 
@@ -192,7 +185,7 @@ There is no empty state: a workbench with no deletes looks as today.
 - If something could not be removed, the session stays in the list marked "not fully cleaned" — ask #1205.
 - The existing pile is cleared once by hand on the Clean Up screen, with no periodic sweep — ask #1205.
 - No LLM decides what to remove; rules only — approved by the owner — ask #1210.
-- New ownership sources: parsed agent commands + the Claude scratchpad uuid — agent's call (proposed in ask #1205), approved with the spec in ask #1213.
+- New ownership sources: facts only — subagent worktrees from Claude Code's `meta.json`, the Claude scratchpad uuid, and branches from the owned worktrees' HEAD logs; no parsing of the agents' commands — owner, ask #1244 (replaces the command parsing approved in ask #1213, after the final review showed a parsed command does not prove the command ran: asks #1240/#1244).
 - Kept-on-purpose items (uncommitted, unpushed, …) do not keep the row; only "could not" items do — approved by the owner — ask #1210.
 - The Delete dialog loses **Delete Only** / **Delete and Clean Up** — approved by the owner — ask #1210.
 - Quit inside the Undo window defers the delete to the next launch instead of deleting — approved by the owner — ask #1210.
@@ -203,4 +196,3 @@ There is no empty state: a workbench with no deletes looks as today.
 - Implementation decisions (agent's call, all fail-closed):
   - The branch checked out in an adopted scratchpad worktree is adopted too. Every branch catch still applies: born after the uuid was acquired, merged or pushed, not checked out elsewhere.
   - A scratchpad lane is adopted only when it was born after this row acquired the uuid. A uuid ever held by a deleted row is treated as shared, using migration 00188 `agent_session_tombstones`, written by a `BEFORE DELETE` trigger on `terminal_sessions`.
-  - A command row counts only when its root is a worktree of the planned repository. v1 limit: if the agent itself removed a worktree created by a command, that worktree's branch is left for the Clean Up screen.
