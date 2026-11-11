@@ -100,7 +100,7 @@ type dbResult struct {
 // query_only with no checkpoint on close.
 func ReadDB(ctx context.Context, b Budgets, path string, open OpenFunc) DBParts {
 	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
-		return failedParts(UnknownNoDatabase)
+		return FailedParts(UnknownNoDatabase)
 	}
 	dctx, cancel := context.WithTimeout(ctx, b.DB)
 	defer cancel()
@@ -109,6 +109,11 @@ func ReadDB(ctx context.Context, b Budgets, path string, open OpenFunc) DBParts 
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		defer func() {
+			if recover() != nil {
+				res.failRest(UnknownInternal)
+			}
+		}()
 		res.read(dctx, path, open)
 	}()
 
@@ -122,8 +127,8 @@ func ReadDB(ctx context.Context, b Budgets, path string, open OpenFunc) DBParts 
 	return res.snapshot()
 }
 
-// failedParts is every database part saying unknown for one reason.
-func failedParts(unknown string) DBParts {
+// FailedParts is every database part saying unknown for one reason.
+func FailedParts(unknown string) DBParts {
 	p := DBParts{
 		Sources:      unknown,
 		PipelineRuns: PipelineRunsUnknown(unknown),
@@ -146,6 +151,28 @@ func (r *dbResult) set(fn func()) bool {
 	return true
 }
 
+// failRest marks every part not yet read `unknown` for one reason (a panic
+// in the reader: UnknownInternal); parts already read stay. Quick
+// Connections is read before the sources, so when it is missing the
+// Sources part already says why.
+func (r *dbResult) failRest(unknown string) {
+	r.set(func() {
+		f := FailedParts(unknown)
+		if !r.schemaSet {
+			r.schema, r.schemaSet = f.Schema, true
+		}
+		if !r.quickSet {
+			r.quickSet = true
+		}
+		if !r.runsSet {
+			r.runs, r.runsSet = f.PipelineRuns, true
+		}
+		if !r.sourcesSet {
+			r.sources, r.sourcesSet = f.Sources, true
+		}
+	})
+}
+
 func (r *dbResult) read(ctx context.Context, path string, open OpenFunc) {
 	d, err := open(ctx, path)
 	if err != nil {
@@ -154,7 +181,7 @@ func (r *dbResult) read(ctx context.Context, path string, open OpenFunc) {
 			text = UnknownDatabaseBusy
 		}
 		r.set(func() {
-			f := failedParts(text)
+			f := FailedParts(text)
 			r.schema, r.runs, r.sources = f.Schema, f.PipelineRuns, f.Sources
 			r.schemaSet, r.runsSet, r.sourcesSet, r.quickSet = true, true, true, true
 			busy := text == UnknownDatabaseBusy
@@ -186,7 +213,7 @@ func (r *dbResult) snapshot() DBParts {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.stopped = true
-	busy := failedParts(UnknownDatabaseBusy)
+	busy := FailedParts(UnknownDatabaseBusy)
 	p := DBParts{Kinds: r.kinds}
 	anyBusy := false
 	pick := func(set, isBusy bool, v, fallback string) string {

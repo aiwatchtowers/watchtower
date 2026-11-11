@@ -14,6 +14,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -75,10 +76,12 @@ func diagSeams(t *testing.T) {
 	t.Helper()
 	oldVersion, oldCommit, oldFlavor := Version, Commit, BuildFlavor
 	oldBudgets, oldOpener, oldSysctl, oldPeek := diagnosticsBudgets, diagnosticsOpener, diagnosticsSysctl, diagnosticsPeek
+	oldResolve, oldReadDB := diagnosticsResolve, diagnosticsReadDB
 	oldConfig, oldWorkspace := flagConfig, flagWorkspace
 	t.Cleanup(func() {
 		Version, Commit, BuildFlavor = oldVersion, oldCommit, oldFlavor
 		diagnosticsBudgets, diagnosticsOpener, diagnosticsSysctl, diagnosticsPeek = oldBudgets, oldOpener, oldSysctl, oldPeek
+		diagnosticsResolve, diagnosticsReadDB = oldResolve, oldReadDB
 		flagConfig, flagWorkspace = oldConfig, oldWorkspace
 		diagnosticsFlagJSON, diagnosticsFlagAppVersion, diagnosticsFlagIPhone = false, "", ""
 	})
@@ -765,10 +768,17 @@ func TestDiagnostics_InputFailures(t *testing.T) {
 					return nil, context.Canceled
 				}
 			}
-			return diagArgs(in.cfgPath, "")
+			return diagArgs(in.cfgPath, "", "--iphone", "on")
 		}, func(t *testing.T, out string) {
-			if l := lineWith(t, out, diagnostics.LabelSources); l != "Sources: "+diagnostics.UnknownTimedOut+" · "+diagnostics.UnknownTimedOut {
+			to := diagnostics.UnknownTimedOut
+			if l := lineWith(t, out, diagnostics.LabelSources); l != "Sources: "+to+" · iPhone companion on" {
 				t.Errorf("sources %q", l)
+			}
+			if l := lineWith(t, out, "Recent errors"); l != "Recent errors: "+to {
+				t.Errorf("recent errors %q", l)
+			}
+			if l := lineWith(t, out, diagnostics.LabelDatabase); l != "Database: "+to+" · "+to+" · managed by organization: no" {
+				t.Errorf("database %q", l)
 			}
 			lineWith(t, out, "Config: ok")
 			if !strings.HasSuffix(strings.TrimSpace(out), "Partial report: timed out at 8 s") {
@@ -979,5 +989,153 @@ func TestDiagnostics_NoSignalHandler(t *testing.T) {
 		if bytes.Contains(src, []byte(banned)) {
 			t.Errorf("diagnostics.go uses %s", banned)
 		}
+	}
+}
+
+// The hard stop covers the up-front work: a config/workspace resolution
+// that hangs leaves its lines `unknown (timed out)`, the instant parts and
+// the version and machine lines print, the JSON keeps its defaults.
+func TestDiagnostics_HardStopCoversResolve(t *testing.T) {
+	in := newDiagInstall(t)
+	diagSeams(t)
+	diagnosticsBudgets.HardStop = 50 * time.Millisecond
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	diagnosticsResolve = func(diagnostics.Env) diagnostics.Resolved {
+		<-release
+		// After the test: no workspace, so nothing more is read.
+		return diagnostics.Resolved{ConfigLine: diagnostics.ConfigNone, WorkspaceReason: diagnostics.UnknownNoConfig}
+	}
+	out, code := runDiag(t, diagArgs(in.cfgPath, "", "--iphone", "on")...)
+	if code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	to := diagnostics.UnknownTimedOut
+	for _, want := range []string{
+		"Watchtower 0.0.0-test (commit abc1234, flavor: default)",
+		"macOS 15.5 · Apple M3",
+		"Config: " + to,
+		"Workspace: " + to,
+		"AI: " + to,
+		"Features on: " + to,
+		"Sources: " + to + " · iPhone companion on",
+		"Daemon: " + to,
+		"Recent errors: " + to,
+		"Crash: " + to,
+		"Logs: " + to,
+		"Database: " + to + " · " + to + " · managed by organization: no",
+		"Partial report: timed out at 8 s",
+	} {
+		if !slices.Contains(strings.Split(strings.TrimSpace(out), "\n"), want) {
+			t.Errorf("no line %q in:\n%s", want, out)
+		}
+	}
+	jsonOut, _ := runDiag(t, diagArgs(in.cfgPath, "", "--json", "--iphone", "off")...)
+	obj := lastJSON(t, jsonOut)
+	if obj["provider"] != "" || obj["partial"] != true || fmt.Sprint(obj["sources"]) != "[]" {
+		t.Errorf("json %v", obj)
+	}
+}
+
+// Panics anywhere in the inputs are contained: exit 0, the report prints,
+// the affected parts say `unknown (internal error)`.
+func TestDiagnostics_PanicsContained(t *testing.T) {
+	internal := diagnostics.UnknownInternal
+	dbInternal := func(t *testing.T, out string) {
+		t.Helper()
+		if l := lineWith(t, out, diagnostics.LabelSources); l != "Sources: "+internal {
+			t.Errorf("sources %q", l)
+		}
+		if !strings.Contains(out, "Recent errors (last 20):\n  pipeline runs "+internal) {
+			t.Errorf("recent errors:\n%s", out)
+		}
+		if l := lineWith(t, out, diagnostics.LabelDatabase); !strings.HasPrefix(l, "Database: schema "+internal+" · ") {
+			t.Errorf("database %q", l)
+		}
+		lineWith(t, out, "Config: ok")
+	}
+	cases := []struct {
+		name  string
+		setup func()
+		check func(t *testing.T, out string)
+	}{
+		{"opener_panics", func() {
+			diagnosticsOpener = func(time.Duration) diagnostics.OpenFunc {
+				return func(context.Context, string) (diagnostics.DBReader, error) { panic("opener bug") }
+			}
+		}, dbInternal},
+		{"read_db_panics", func() {
+			diagnosticsReadDB = func(context.Context, diagnostics.Budgets, string, diagnostics.OpenFunc) diagnostics.DBParts {
+				panic("reader bug")
+			}
+		}, dbInternal},
+		{"resolve_panics", func() {
+			diagnosticsResolve = func(diagnostics.Env) diagnostics.Resolved { panic("resolve bug") }
+		}, func(t *testing.T, out string) {
+			for _, want := range []string{"Config: " + internal, "AI: " + internal, "Features on: " + internal,
+				"Sources: " + internal, "Daemon: " + internal, "Logs: " + internal, "Crash: " + internal} {
+				lineWith(t, out, want)
+			}
+		}},
+		{"sysctl_panics", func() {
+			diagnosticsSysctl = func(string) (string, error) { panic("sysctl bug") }
+		}, func(t *testing.T, out string) {
+			if lines := strings.Split(out, "\n"); lines[1] != internal {
+				t.Errorf("machine line %q", lines[1])
+			}
+			lineWith(t, out, "Config: ok")
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			in := newDiagInstall(t)
+			diagSeams(t)
+			c.setup()
+			out, code := runDiag(t, diagArgs(in.cfgPath, "")...)
+			if code != 0 {
+				t.Fatalf("exit %d\n%s", code, out)
+			}
+			c.check(t, out)
+			jsonOut, code := runDiag(t, diagArgs(in.cfgPath, "", "--json")...)
+			if code != 0 {
+				t.Fatalf("json exit %d", code)
+			}
+			if c.name == "sysctl_panics" && lastJSON(t, jsonOut)["chip"] != diagnostics.ChipOther {
+				t.Errorf("chip %v", lastJSON(t, jsonOut)["chip"])
+			}
+		})
+	}
+}
+
+// The opener gets Budgets.Busy as its per-statement busy timeout.
+func TestDiagnostics_BusyBudgetReachesOpener(t *testing.T) {
+	in := newDiagInstall(t)
+	diagSeams(t)
+	diagnosticsBudgets.Busy = 123 * time.Millisecond
+	var got atomic.Int64
+	diagnosticsOpener = func(busy time.Duration) diagnostics.OpenFunc {
+		got.Store(int64(busy))
+		return diagnostics.Opener(busy)
+	}
+	if _, code := runDiag(t, diagArgs(in.cfgPath, "")...); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	if time.Duration(got.Load()) != diagnosticsBudgets.Busy {
+		t.Errorf("opener got busy %v, want %v", time.Duration(got.Load()), diagnosticsBudgets.Busy)
+	}
+}
+
+// A healthy install with no failed run and no failed sync.
+func TestDiagnostics_HealthyNoErrors(t *testing.T) {
+	in := newDiagInstall(t)
+	diagSeams(t)
+	diagWrite(t, filepath.Join(in.ws, "last_sync.json"), `{"finished_at":"2026-11-01T09:30:00Z"}`)
+	out, code := runDiag(t, diagArgs(in.cfgPath, "")...)
+	if code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	lineWith(t, out, diagnostics.RecentErrorsNone)
+	if strings.Contains(out, diagnostics.RecentErrorsTitle) || strings.Contains(out, "Partial report") {
+		t.Errorf("unexpected:\n%s", out)
 	}
 }

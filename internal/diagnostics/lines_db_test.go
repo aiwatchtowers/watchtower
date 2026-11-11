@@ -53,10 +53,14 @@ type fakeReader struct {
 	honorCtx bool
 	failOn   string
 	failErr  error
+	panicOn  string
 	closed   chan struct{}
 }
 
 func (f fakeReader) QueryContext(ctx context.Context, q string, args ...any) (*sql.Rows, error) {
+	if f.panicOn != "" && strings.Contains(q, f.panicOn) {
+		panic("reader bug")
+	}
 	if f.failOn != "" && strings.Contains(q, f.failOn) {
 		return nil, f.failErr
 	}
@@ -621,6 +625,38 @@ func TestDiagnostics_ReadDBHeldLock(t *testing.T) {
 	}
 	if p.Sources != UnknownDatabaseBusy || p.PipelineRuns != PipelineRunsUnknown(UnknownDatabaseBusy) ||
 		p.Schema != SchemaUnknownBecause(UnknownDatabaseBusy) || !slices.Equal(p.Reasons, []string{ReasonDatabaseBusy}) {
+		t.Errorf("got %+v", p)
+	}
+}
+
+// A panic inside the reader goroutine is contained: the parts read before
+// it stay, the rest print `unknown (internal error)`, and the database is
+// still closed.
+func TestDiagnostics_ReadDBPanicIsContained(t *testing.T) {
+	path, _ := newDBFile(t)
+	p := ReadDB(context.Background(), DefaultBudgets, path, wrapOpener(t, fakeReader{panicOn: "pipeline_runs"}))
+	if !strings.HasPrefix(p.Schema, "schema ") || p.Schema == SchemaUnknown || strings.Contains(p.Schema, UnknownWord) {
+		t.Errorf("schema %q", p.Schema)
+	}
+	if p.QuickConnections != kindCount(QuickConnections, 0) {
+		t.Errorf("quick connections %q", p.QuickConnections)
+	}
+	if p.PipelineRuns != PipelineRunsUnknown(UnknownInternal) || p.Sources != UnknownInternal {
+		t.Errorf("got %+v", p)
+	}
+	if len(p.Reasons) != 0 {
+		t.Errorf("reasons %v", p.Reasons)
+	}
+}
+
+// A panic in the open itself: every part is `unknown (internal error)`.
+func TestDiagnostics_ReadDBOpenPanicIsContained(t *testing.T) {
+	path, _ := newDBFile(t)
+	p := ReadDB(context.Background(), DefaultBudgets, path, func(context.Context, string) (DBReader, error) {
+		panic("opener bug")
+	})
+	want := FailedParts(UnknownInternal)
+	if p.Sources != want.Sources || p.PipelineRuns != want.PipelineRuns || p.Schema != want.Schema || p.QuickConnections != "" {
 		t.Errorf("got %+v", p)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -21,10 +22,13 @@ var (
 	diagnosticsFlagIPhone     string
 )
 
-// Seams for tests: the budgets, the database opener (given the busy
-// timeout), the sysctl reader and the pid-file peek.
+// Seams for tests: the budgets, the config/workspace resolution, the
+// database read and its opener (given the busy timeout), the sysctl reader
+// and the pid-file peek.
 var (
 	diagnosticsBudgets = diagnostics.DefaultBudgets
+	diagnosticsResolve = diagnostics.Resolve
+	diagnosticsReadDB  = diagnostics.ReadDB
 	diagnosticsOpener  = diagnostics.Opener
 	diagnosticsSysctl  = diagnosticsSysctlString
 	diagnosticsPeek    = daemon.PeekProcess
@@ -94,6 +98,153 @@ const (
 	diagLineDatabase
 )
 
+// Positions of the parts sharing a line (Slot.Pos), whatever stage they ran
+// in: `Sources: <kinds> · iPhone companion …`, `Database: schema … · <size>
+// · managed by organization: …`.
+const (
+	diagPosDB = iota
+	diagPosSize
+	diagPosLocal
+)
+
+// recentErrorsStopLabel titles the Recent errors block when the runner
+// replaces it (`Recent errors: unknown (timed out)`); its own text carries
+// its title.
+const recentErrorsStopLabel = "Recent errors: "
+
+// diagSafe runs f and returns fallback when it panics.
+func diagSafe[T any](fallback T, f func() T) (out T) {
+	defer func() {
+		if recover() != nil {
+			out = fallback
+		}
+	}()
+	return f()
+}
+
+type diagPair struct{ a, b string }
+
+type diagTriple struct{ a, b, c string }
+
+// diagPrep is the up-front work the other lines depend on, run in its own
+// goroutine so the report's hard stop covers it too: the version and
+// machine values (then early closes), the config and workspace resolution,
+// the AI line and the start of the database read (then done closes). Each
+// step falls back to `unknown (internal error)` on a panic. Fields are read
+// only after their channel closed.
+type diagPrep struct {
+	early, done          chan struct{}
+	version, flavor      string
+	machine, macos, chip string
+	res                  diagnostics.Resolved
+	resolved             bool // false: Resolve panicked
+	ai, provider         string
+	dir, dbPath          string
+	db                   *dbFuture
+}
+
+// diagInputs are the seams, the build info and the flags, read once on the
+// command's goroutine: no worker goroutine reads a package variable.
+type diagInputs struct {
+	budgets diagnostics.Budgets
+	build   diagnostics.Build
+	iphone  string
+	resolve func(diagnostics.Env) diagnostics.Resolved
+	readDB  func(context.Context, diagnostics.Budgets, string, diagnostics.OpenFunc) diagnostics.DBParts
+	opener  func(time.Duration) diagnostics.OpenFunc
+	sysctl  func(string) (string, error)
+	peek    func(string) (int, daemon.PeekState, error)
+}
+
+func currentDiagInputs() diagInputs {
+	return diagInputs{
+		budgets: diagnosticsBudgets,
+		build: diagnostics.Build{
+			Version: Version, Commit: Commit, Flavor: BuildFlavor, AppVersion: diagnosticsFlagAppVersion,
+		},
+		iphone:  diagnosticsFlagIPhone,
+		resolve: diagnosticsResolve,
+		readDB:  diagnosticsReadDB,
+		opener:  diagnosticsOpener,
+		sysctl:  diagnosticsSysctl,
+		peek:    diagnosticsPeek,
+	}
+}
+
+func startDiagPrep(ctx context.Context, in diagInputs, env diagnostics.Env) *diagPrep {
+	p := &diagPrep{early: make(chan struct{}), done: make(chan struct{})}
+	go func() {
+		defer close(p.done)
+		closeEarly := sync.OnceFunc(func() { close(p.early) })
+		defer closeEarly()
+
+		v := diagSafe(diagPair{diagnostics.UnknownInternal, ""}, func() diagPair {
+			text, flavor := diagnostics.VersionLine(in.build)
+			return diagPair{text, flavor}
+		})
+		m := diagSafe(diagTriple{diagnostics.UnknownInternal, "", diagnostics.ChipOther}, func() diagTriple {
+			text, macos, chip := diagnostics.MachineLine(in.sysctl)
+			return diagTriple{text, macos, chip}
+		})
+		p.version, p.flavor = v.a, v.b
+		p.machine, p.macos, p.chip = m.a, m.b, m.c
+		closeEarly()
+
+		p.res = diagSafe(diagnostics.Resolved{
+			ConfigLine: diagnostics.UnknownInternal, WorkspaceReason: diagnostics.UnknownInternal,
+		}, func() diagnostics.Resolved {
+			r := in.resolve(env)
+			p.resolved = true
+			return r
+		})
+		p.ai = diagnostics.UnknownInternal
+		if p.resolved {
+			ai := diagSafe(diagPair{diagnostics.UnknownInternal, ""}, func() diagPair {
+				text, provider := diagnostics.AILine(env, p.res)
+				return diagPair{text, provider}
+			})
+			p.ai, p.provider = ai.a, ai.b
+		}
+		if p.res.Workspace != "" {
+			p.dir = filepath.Join(p.res.Root, p.res.Workspace)
+			p.dbPath = filepath.Join(p.dir, "watchtower.db")
+			p.db = startDBRead(ctx, in, p.dbPath)
+		}
+	}()
+	return p
+}
+
+// after is a part that waits for ch (or the hard stop) and then runs f.
+func after(ch chan struct{}, f func() string) diagnostics.Part {
+	return func(ctx context.Context) (string, string) {
+		if !waitClosed(ctx, ch) {
+			return diagnostics.UnknownTimedOut, diagnostics.ReasonTimedOut
+		}
+		return f(), ""
+	}
+}
+
+// waitClosed waits for ch to close; false when ctx (the hard stop) ends
+// first.
+func waitClosed(ctx context.Context, ch chan struct{}) bool {
+	select {
+	case <-ch:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// isClosed reports whether ch is closed, without waiting.
+func isClosed(ch chan struct{}) bool {
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
+	}
+}
+
 // dbFuture is the database read running beside the report's stages. Its
 // one result reaches the slots and the JSON `sources` only through done.
 type dbFuture struct {
@@ -101,186 +252,144 @@ type dbFuture struct {
 	parts diagnostics.DBParts
 }
 
-// startDBRead starts diagnostics.ReadDB under the parent ctx: ReadDB starts
+// startDBRead starts the database read under the parent ctx: ReadDB starts
 // its own database deadline before the open and stops waiting at the
-// fallback, so the read never runs past Budgets.DBFallback.
-func startDBRead(ctx context.Context, b diagnostics.Budgets, path string) *dbFuture {
+// fallback, so the read never runs past Budgets.DBFallback. A panic leaves
+// every database part `unknown (internal error)`.
+func startDBRead(ctx context.Context, in diagInputs, path string) *dbFuture {
 	f := &dbFuture{done: make(chan struct{})}
-	open := diagnosticsOpener(b.Busy)
 	go func() {
 		defer close(f.done)
-		f.parts = diagnostics.ReadDB(ctx, b, path, open)
+		defer func() {
+			if recover() != nil {
+				f.parts = diagnostics.FailedParts(diagnostics.UnknownInternal)
+			}
+		}()
+		f.parts = in.readDB(ctx, in.budgets, path, in.opener(in.budgets.Busy))
 	}()
 	return f
 }
 
-// wait returns the database parts, or false when the report stopped first.
-func (f *dbFuture) wait(ctx context.Context) (diagnostics.DBParts, bool) {
-	select {
-	case <-f.done:
-		return f.parts, true
-	case <-ctx.Done():
-		return diagnostics.DBParts{}, false
+// dbPart waits for the up-front work and the database read, then picks one
+// database part; without a workspace it prints noWS of the reason.
+func (p *diagPrep) dbPart(pick func(diagnostics.DBParts) string, noWS func(reason string) string) diagnostics.Part {
+	return func(ctx context.Context) (string, string) {
+		if !waitClosed(ctx, p.done) {
+			return diagnostics.UnknownTimedOut, diagnostics.ReasonTimedOut
+		}
+		if p.db == nil {
+			return noWS(p.res.WorkspaceReason), ""
+		}
+		if !waitClosed(ctx, p.db.done) {
+			return diagnostics.UnknownTimedOut, diagnostics.ReasonTimedOut
+		}
+		reason := ""
+		if len(p.db.parts.Reasons) > 0 {
+			reason = p.db.parts.Reasons[0]
+		}
+		return pick(p.db.parts), reason
 	}
 }
 
-// ready returns the parts when the read has finished, without waiting.
-func (f *dbFuture) ready() (diagnostics.DBParts, bool) {
-	select {
-	case <-f.done:
-		return f.parts, true
-	default:
-		return diagnostics.DBParts{}, false
-	}
-}
-
-// dbReason is the slot reason of the database parts (busy, or none).
-func dbReason(p diagnostics.DBParts) string {
-	if len(p.Reasons) > 0 {
-		return p.Reasons[0]
-	}
-	return ""
-}
-
-// constPart is a part whose value was computed before the stages ran.
-func constPart(text string) diagnostics.Part {
-	return func(context.Context) (string, string) { return text, "" }
-}
-
-// collectDiagnostics resolves the config and workspace, then runs the
-// report's stages under the hard stop: the values computed up front
-// (version, machine, config, workspace, AI — the JSON needs them), the
-// database parts (read beside the stages, see startDBRead), the local file
-// parts, then the crash scan under its own budget. Stage order is also the
-// order of the parts sharing a line (Sources: kinds · iPhone; Database:
-// schema · size · policy). Nothing here writes a file.
-func collectDiagnostics(ctx context.Context, env diagnostics.Env) diagnostics.Report {
-	b := diagnosticsBudgets
-	res := diagnostics.Resolve(env)
-	versionText, flavor := diagnostics.VersionLine(diagnostics.Build{
-		Version: Version, Commit: Commit, Flavor: BuildFlavor, AppVersion: diagnosticsFlagAppVersion,
+// wsPart runs f on the workspace folder once the up-front work is done;
+// without a workspace it prints why.
+func (p *diagPrep) wsPart(f func(dir string) string) diagnostics.Part {
+	return after(p.done, func() string {
+		if p.dir == "" {
+			return p.res.WorkspaceReason
+		}
+		return f(p.dir)
 	})
-	machineText, macos, chip := diagnostics.MachineLine(diagnosticsSysctl)
-	aiText, provider := diagnostics.AILine(env, res)
-	iphone := diagnostics.IPhonePart(diagnosticsFlagIPhone)
+}
 
-	upfront := []diagnostics.Slot{
-		{Line: diagLineVersion, Part: constPart(versionText)},
-		{Line: diagLineMachine, Part: constPart(machineText)},
-		{Line: diagLineConfig, Label: diagnostics.LabelConfig, Part: constPart(res.ConfigLine)},
-		{Line: diagLineAI, Label: diagnostics.LabelAI, Part: constPart(aiText)},
-	}
-	if res.WorkspaceLine != "" {
-		upfront = append(upfront, diagnostics.Slot{
-			Line: diagLineWorkspace, Label: diagnostics.LabelWorkspace, Part: constPart(res.WorkspaceLine),
-		})
-	}
+// collectDiagnostics runs the whole report under the hard stop: the
+// up-front work in its own goroutine (startDiagPrep), the database read
+// beside the stages (startDBRead), and four stages — the iPhone and policy
+// parts (instant, so they survive any stop) and the up-front lines, the
+// database parts, the local file parts, then the crash scan under its own
+// budget. Nothing here writes a file.
+func collectDiagnostics(ctx context.Context, env diagnostics.Env) diagnostics.Report {
+	in := currentDiagInputs()
+	b := in.budgets
+	p := startDiagPrep(ctx, in, env)
+	iphone := diagnostics.IPhonePart(in.iphone)
+	reasonOnly := func(reason string) string { return reason }
 
-	var (
-		dir, dbPath string
-		future      *dbFuture
-	)
-	if res.Workspace != "" {
-		dir = filepath.Join(res.Root, res.Workspace)
-		dbPath = filepath.Join(dir, "watchtower.db")
-		future = startDBRead(ctx, b, dbPath)
-	}
 	stages := []diagnostics.Stage{
-		{Name: "upfront", Parts: upfront},
-		{Name: "database", Parts: diagDatabaseSlots(future, dir, res.WorkspaceReason)},
-		{Name: "local", Parts: diagLocalSlots(res, env, dir, dbPath, iphone)},
-		{Name: "crash", Parts: []diagnostics.Slot{diagCrashSlot(b, dir, res.WorkspaceReason)}},
+		{Name: "upfront", Parts: []diagnostics.Slot{
+			{Line: diagLineSources, Pos: diagPosLocal, Part: func(context.Context) (string, string) { return iphone, "" }},
+			{Line: diagLineDatabase, Pos: diagPosLocal, Part: func(context.Context) (string, string) {
+				return diagnostics.PolicyPart(policy.Current()), ""
+			}},
+			{Line: diagLineVersion, Part: after(p.early, func() string { return p.version })},
+			{Line: diagLineMachine, Part: after(p.early, func() string { return p.machine })},
+			{Line: diagLineConfig, Label: diagnostics.LabelConfig, Part: after(p.done, func() string { return p.res.ConfigLine })},
+			{Line: diagLineWorkspace, Label: diagnostics.LabelWorkspace, Part: after(p.done, func() string { return p.res.WorkspaceLine })},
+			{Line: diagLineAI, Label: diagnostics.LabelAI, Part: after(p.done, func() string { return p.ai })},
+		}},
+		{Name: "database", Parts: []diagnostics.Slot{
+			{Line: diagLineSources, Pos: diagPosDB, Label: diagnostics.LabelSources, Part: p.dbPart(func(d diagnostics.DBParts) string {
+				return diagnostics.JoinParts(d.Sources, d.QuickConnections)
+			}, reasonOnly)},
+			{Line: diagLineRecentErrors, StopLabel: recentErrorsStopLabel, Part: p.dbPart(func(d diagnostics.DBParts) string {
+				row, _ := diagnostics.SyncRow(filepath.Join(p.dir, "last_sync.json")) // "" when there is no row
+				return diagnostics.RecentErrors(d.PipelineRuns, row)
+			}, func(reason string) string { return diagnostics.RecentErrors(diagnostics.PipelineRunsUnknown(reason)) })},
+			{Line: diagLineDatabase, Pos: diagPosDB, Label: diagnostics.LabelDatabase, Part: p.dbPart(func(d diagnostics.DBParts) string {
+				return d.Schema
+			}, diagnostics.SchemaUnknownBecause)},
+		}},
+		{Name: "local", Parts: []diagnostics.Slot{
+			{Line: diagLineFeatures, Label: diagnostics.LabelFeatures, Part: after(p.done, func() string {
+				if !p.resolved {
+					return diagnostics.UnknownInternal
+				}
+				return diagnostics.FeaturesLine(p.res, env)
+			})},
+			{Line: diagLineDaemon, Label: diagnostics.LabelDaemon, Part: p.wsPart(func(dir string) string {
+				return diagnostics.DaemonLine(filepath.Join(dir, "daemon.pid"), filepath.Join(dir, "last_sync.json"),
+					time.Now(), in.peek)
+			})},
+			{Line: diagLineLogs, Label: diagnostics.LabelLogs, Part: p.wsPart(diagnostics.LogsLine)},
+			{Line: diagLineDatabase, Pos: diagPosSize, Part: after(p.done, func() string {
+				if p.dbPath == "" {
+					return "" // the schema part already says why
+				}
+				st, err := os.Stat(p.dbPath)
+				if err != nil {
+					return "" // missing or unreadable: the size is left out
+				}
+				return diagnostics.Size(st.Size())
+			})},
+		}},
+		{Name: "crash", Parts: []diagnostics.Slot{
+			{Line: diagLineCrash, Label: diagnostics.LabelCrash, Part: func(ctx context.Context) (string, string) {
+				if !waitClosed(ctx, p.done) {
+					return diagnostics.UnknownTimedOut, diagnostics.ReasonTimedOut
+				}
+				if p.dir == "" {
+					return p.res.WorkspaceReason, ""
+				}
+				return diagnostics.CrashPart(p.dir, b, time.Now)(ctx)
+			}},
+		}},
 	}
 	r := diagnostics.Run(ctx, b, stages)
-	r.Version, r.MacOS, r.Chip, r.Provider, r.Flavor = Version, macos, chip, provider, flavor
-	if future != nil {
-		if p, ok := future.ready(); ok {
-			r.Sources = append(r.Sources, p.Kinds...)
+
+	// The JSON values of the up-front work that finished; the defaults
+	// (empty, chip Other) for what the hard stop cut off.
+	r.Version, r.Chip = in.build.Version, diagnostics.ChipOther
+	if isClosed(p.early) {
+		r.MacOS, r.Chip, r.Flavor = p.macos, p.chip, p.flavor
+	}
+	if isClosed(p.done) {
+		r.Provider = p.provider
+		if p.db != nil && isClosed(p.db.done) {
+			r.Sources = append(r.Sources, p.db.parts.Kinds...)
 		}
 	}
-	if diagnosticsFlagIPhone == diagnostics.OptionOn {
+	if in.iphone == diagnostics.OptionOn {
 		r.Sources = append(r.Sources, diagnostics.IPhoneCompanion)
 	}
 	return r
-}
-
-// diagDatabaseSlots are the database parts: the Sources kinds with Quick
-// Connections, the Recent errors block (pipeline runs, then the sync row
-// from last_sync.json) and the schema. Without a workspace each says why.
-func diagDatabaseSlots(future *dbFuture, dir, reason string) []diagnostics.Slot {
-	if future == nil {
-		return []diagnostics.Slot{
-			{Line: diagLineSources, Label: diagnostics.LabelSources, Part: constPart(reason)},
-			{Line: diagLineRecentErrors, Part: constPart(diagnostics.RecentErrors(diagnostics.PipelineRunsUnknown(reason)))},
-			{Line: diagLineDatabase, Label: diagnostics.LabelDatabase, Part: constPart(diagnostics.SchemaUnknownBecause(reason))},
-		}
-	}
-	part := func(pick func(diagnostics.DBParts) string) diagnostics.Part {
-		return func(ctx context.Context) (string, string) {
-			p, ok := future.wait(ctx)
-			if !ok {
-				return diagnostics.UnknownTimedOut, diagnostics.ReasonTimedOut
-			}
-			return pick(p), dbReason(p)
-		}
-	}
-	lastSync := filepath.Join(dir, "last_sync.json")
-	return []diagnostics.Slot{
-		{Line: diagLineSources, Label: diagnostics.LabelSources, Part: part(func(p diagnostics.DBParts) string {
-			return diagnostics.JoinParts(p.Sources, p.QuickConnections)
-		})},
-		{Line: diagLineRecentErrors, Part: part(func(p diagnostics.DBParts) string {
-			row, _ := diagnostics.SyncRow(lastSync) // "" when there is no row
-			return diagnostics.RecentErrors(p.PipelineRuns, row)
-		})},
-		{Line: diagLineDatabase, Label: diagnostics.LabelDatabase, Part: part(func(p diagnostics.DBParts) string {
-			return p.Schema
-		})},
-	}
-}
-
-// diagLocalSlots are the parts read from local files, flags and the policy:
-// features, the iPhone part, daemon, logs, the database file size and the
-// managed-by-organization part.
-func diagLocalSlots(res diagnostics.Resolved, env diagnostics.Env, dir, dbPath, iphone string) []diagnostics.Slot {
-	slots := []diagnostics.Slot{
-		{Line: diagLineFeatures, Label: diagnostics.LabelFeatures, Part: func(context.Context) (string, string) {
-			return diagnostics.FeaturesLine(res, env), ""
-		}},
-		{Line: diagLineSources, Part: constPart(iphone)},
-	}
-	if dir == "" {
-		slots = append(slots,
-			diagnostics.Slot{Line: diagLineDaemon, Label: diagnostics.LabelDaemon, Part: constPart(res.WorkspaceReason)},
-			diagnostics.Slot{Line: diagLineLogs, Label: diagnostics.LabelLogs, Part: constPart(res.WorkspaceReason)},
-		)
-	} else {
-		slots = append(slots,
-			diagnostics.Slot{Line: diagLineDaemon, Label: diagnostics.LabelDaemon, Part: func(context.Context) (string, string) {
-				return diagnostics.DaemonLine(filepath.Join(dir, "daemon.pid"), filepath.Join(dir, "last_sync.json"),
-					time.Now(), diagnosticsPeek), ""
-			}},
-			diagnostics.Slot{Line: diagLineLogs, Label: diagnostics.LabelLogs, Part: func(context.Context) (string, string) {
-				return diagnostics.LogsLine(dir), ""
-			}},
-			diagnostics.Slot{Line: diagLineDatabase, Part: func(context.Context) (string, string) {
-				st, err := os.Stat(dbPath)
-				if err != nil {
-					return "", "" // missing or unreadable: the size is left out
-				}
-				return diagnostics.Size(st.Size()), ""
-			}},
-		)
-	}
-	return append(slots, diagnostics.Slot{Line: diagLineDatabase, Part: func(context.Context) (string, string) {
-		return diagnostics.PolicyPart(policy.Current()), ""
-	}})
-}
-
-// diagCrashSlot scans the workspace's logs under Budgets.LogScan.
-func diagCrashSlot(b diagnostics.Budgets, dir, reason string) diagnostics.Slot {
-	if dir == "" {
-		return diagnostics.Slot{Line: diagLineCrash, Label: diagnostics.LabelCrash, Part: constPart(reason)}
-	}
-	return diagnostics.Slot{Line: diagLineCrash, Label: diagnostics.LabelCrash, Part: diagnostics.CrashPart(dir, b, time.Now)}
 }
