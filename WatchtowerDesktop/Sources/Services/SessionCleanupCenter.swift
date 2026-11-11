@@ -223,6 +223,9 @@ final class SessionCleanupCenter {
     @ObservationIgnored private var readyAt: [SessionCleanupScope: Date] = [:]
     /// A seam for tests.
     @ObservationIgnored var now: () -> Date = { Date() }
+    /// The wait for a plan's time limit; throws once the plan ended first.
+    /// A seam for tests.
+    @ObservationIgnored var timeLimitSleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     /// How often streamed events reach the view at most (spec §7). A seam
     /// for tests.
     @ObservationIgnored var eventBatchInterval: Duration = .milliseconds(100)
@@ -281,11 +284,12 @@ final class SessionCleanupCenter {
         _ body: @escaping @MainActor (SessionCleanupCenter) async -> Void
     ) -> Task<Void, Never> {
         let token = UUID()
+        let sleep = timeLimitSleep
         let run = Task<Void, Never> { [weak self] in
             guard let self else { return }
             let watchdog = timeLimit.map { limit in
                 Task { [weak self] in
-                    try? await Task.sleep(for: limit)
+                    try? await sleep(limit)
                     guard !Task.isCancelled, let self, let run = planRuns[scope], run.token == token else { return }
                     stoppedAtLimit[scope] = limit
                     run.task.cancel()
