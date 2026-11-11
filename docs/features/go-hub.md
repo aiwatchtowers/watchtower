@@ -389,7 +389,10 @@ decisions asks #843, #851, #956; the plan's Global Constraints are the contract)
   with backoff 1 s → 60 s) carries sealed envelopes and metadata over `<hub dir>/bridge.sock` (0600, peer UID
   checked, u32 BE length ‖ protobuf, 4 MiB max); assets travel as file paths only. It holds no hub key and opens no
   envelope. Its CloudKit state is `<hub dir>/cloudkit/`. It keeps running while the hub is on the relay, to poll the
-  CloudKit mailboxes for a switch back (decision 4).
+  CloudKit mailboxes for a switch back (decision 4). One frame's saves or deletes reach CloudKit in modify requests of
+  at most 200 records and about 1 MiB (`CloudKitBridgeCloud.batches`); a request CloudKit still refuses as a whole
+  (`limitExceeded`) is halved and each half sent again, and only a record refused alone is answered
+  `record_too_large`, for that item alone (#1745: a 4 MiB frame in one request failed every publish cycle).
 - **Adoption** (`hub adopt`). Desktop's `HubAdoptionDriver` reads the state only through `hub adopt --status --json`,
   hands the settings over on stdin (`--settings-stdin`), then the keys on stdin (`--keys-stdin`, a separate call),
   deletes its Keychain items, and confirms (`--confirm-deleted`). Go derives the Swift directory itself and leaves
