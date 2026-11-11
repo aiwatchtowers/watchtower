@@ -312,7 +312,6 @@ func TestClaudeBackend_RespawnReadsPromptPipesAgain(t *testing.T) {
 	mcp, err := os.ReadFile(read + ".mcp")
 	require.NoError(t, err)
 	assert.Equal(t, strings.Repeat(opts.MCPConfig+"\n--\n", 2), string(mcp))
-
 }
 
 func indexOf(list []string, s string) int {
