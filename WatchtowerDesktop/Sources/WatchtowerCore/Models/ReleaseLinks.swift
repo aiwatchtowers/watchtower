@@ -5,6 +5,8 @@ import Foundation
 package enum ReleaseLinks {
     // A fixed https string always parses.
     package static let repository = URL(string: "https://github.com/aiwatchtowers/watchtower")!
+    /// Report a Problem's "A question, not a problem? Ask in Discussions".
+    package static let discussions = repository.appendingPathComponent("discussions")
 
     /// `v<X.Y.Z>` for a clean `X.Y.Z` version (a leading `v` allowed); nil
     /// for anything else ("dev", "0.19.0-12-gabc-dirty"), whose tag may not

@@ -362,6 +362,9 @@ final class AppState {
     private(set) var automationSessionCenter: AutomationSessionCenter?
     /// The "Run Automation…" palette (⌃⌘R) is up.
     var isRunAutomationPaletteShown = false
+    /// Help → Report a Problem…'s sheet on the main window (#1527); nil
+    /// when closed. `reportProblem()` sets it, `closeReportProblem(_:)` drops it.
+    var reportProblemModel: ReportProblemModel?
     /// The main window's link gate (`AllowedURLSchemes` + screen links); one instance across re-renders.
     @ObservationIgnored private(set) lazy var mainWindowOpenURL = AllowedURLSchemes.openURLAction { [weak self] url in
         self?.openNavLink(url)

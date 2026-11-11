@@ -95,11 +95,8 @@ struct SystemSettings: View {
 
     private var logsSection: some View {
         Section {
-            Button {
-                openWindow(id: "logs")
-            } label: {
-                Label("Open Logs", systemImage: "doc.text")
-            }
+            // Report a Problem… fronts the main window over Settings, then the sheet (#1527).
+            LogsSectionButtons(openLogs: { openWindow(id: "logs") }, reportProblem: { appState.reportProblem() })
         }
     }
 
@@ -250,4 +247,24 @@ struct SystemSettings: View {
         }
     }
 
+}
+
+/// Settings → System → Logs: **Open Logs** and, beside it, **Report a Problem…**.
+struct LogsSectionButtons: View {
+    let openLogs: () -> Void
+    let reportProblem: () -> Void
+
+    var body: some View {
+        HStack(spacing: Spacing.regular) {
+            Button(action: openLogs) {
+                Label(ReportProblemCopy.openLogs, systemImage: "doc.text")
+            }
+            .buttonStyle(.kitSecondary)
+            Button(action: reportProblem) {
+                Label(ReportProblemCopy.settingsEntry, systemImage: "exclamationmark.bubble")
+            }
+            .buttonStyle(.kitSecondary)
+            Spacer(minLength: 0)
+        }
+    }
 }

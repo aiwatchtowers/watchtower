@@ -385,6 +385,8 @@ struct WatchtowerApp: App {
             .frame(minWidth: 800, minHeight: 600)
             // "Run Automation…" (⌃⌘R) over every destination, never per tab.
             .modifier(RunAutomationPaletteHost(appState: appState))
+            // Help → Report a Problem…'s one sheet (#1527).
+            .modifier(ReportProblemSheetHost(appState: appState))
             .background(OpaqueWindowBackground())
             // `.environment` must wrap the overlay too: the overlay attaches as a
             // sibling outside any environment applied deeper on NavigationRoot, so

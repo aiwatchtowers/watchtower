@@ -563,4 +563,37 @@ final class ReportProblemModelTests: XCTestCase {
         model.save(to: URL(fileURLWithPath: "/tmp/watchtower-diagnostics.txt"))
         XCTAssertEqual(written.count, 1)
     }
+
+    // MARK: - Sheet details (Task 15)
+
+    func testFieldRequiredShownOnlyWhenOpenWaitsForText() async {
+        let runner = FakeRunner(.answer(Fixture.json()), gated: true)
+        let model = makeModel(runner)
+        model.start()
+        XCTAssertFalse(model.showsFieldRequired, "collecting: the hint waits for the diagnostics")
+        await runner.waitUntilWaiting()
+        runner.release(.answer(Fixture.json()))
+        await model.collection?.value
+        XCTAssertTrue(model.showsFieldRequired)
+        model.text = " \n "
+        XCTAssertTrue(model.showsFieldRequired, "blank text still waits")
+        model.text = "The sync stopped."
+        XCTAssertFalse(model.showsFieldRequired)
+
+        let (corp, _) = await collected(.answer(Fixture.json()), isCorp: true)
+        XCTAssertTrue(corp.isCorp)
+        XCTAssertFalse(corp.showsFieldRequired, "a corporate build has no Open to wait for")
+
+        let (failed, _) = await collected(.failure(CLIRunnerError.binaryNotFound))
+        XCTAssertTrue(failed.showsFieldRequired, "failed still needs text for Open")
+    }
+
+    func testSaveFileNameIsTheLocalDay() throws {
+        // 2026-11-04 23:30 UTC is already 2026-11-05 in UTC+2.
+        let date = Date(timeIntervalSince1970: 1_793_835_000)
+        let utc = try XCTUnwrap(TimeZone(identifier: "UTC"))
+        let plusTwo = try XCTUnwrap(TimeZone(secondsFromGMT: 2 * 3_600))
+        XCTAssertEqual(ReportProblemModel.saveFileName(on: date, timeZone: utc), "watchtower-diagnostics-2026-11-04.txt")
+        XCTAssertEqual(ReportProblemModel.saveFileName(on: date, timeZone: plusTwo), "watchtower-diagnostics-2026-11-05.txt")
+    }
 }
