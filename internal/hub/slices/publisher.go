@@ -791,7 +791,8 @@ func (p *Publisher) diffItems(k Kind, items []Item, known map[string]state.Slice
 func (p *Publisher) saveChanged(ctx context.Context, k Kind, epoch uint32, saves []transport.SaveItem, pending []pushed, rep *CycleReport) (wrote bool, err error) {
 	// One Save per kind, not chunked: after a rotation or a new phone a
 	// big kind goes as one request of up to N sealed records. The hosted
-	// relay client (Task 8) or Plan 1b caps or splits the batch.
+	// relay client (Task 8) or Plan 1b caps or splits the batch; the
+	// CloudKit bridge splits each frame into CloudKit-sized requests.
 	p.noteWriteTransport()
 	outs, err := p.c.Transport.Save(ctx, saves)
 	if err != nil {

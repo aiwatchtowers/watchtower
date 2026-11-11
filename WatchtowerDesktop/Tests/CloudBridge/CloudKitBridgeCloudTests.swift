@@ -221,6 +221,13 @@ final class FakeDatabase: BridgeDatabase, @unchecked Sendable {
     private var _calls = 0
     private var _zonesMissing = false
     private var _page: Page?
+    private var _requestLimit = Int.max
+    private var _tooLarge: Set<String> = []
+    private var _saveFailure: CKError?
+    private var _saveFailureAfter = 0
+    private var _passedSaves = 0
+    private var _saveSizes: [Int] = []
+    private var _deleteSizes: [Int] = []
 
     var policies: [CKModifyRecordsOperation.RecordSavePolicy] { lock.withLock { _policies } }
     var fetches: [[CKRecord.ID]] { lock.withLock { _fetches } }
@@ -236,6 +243,28 @@ final class FakeDatabase: BridgeDatabase, @unchecked Sendable {
         get { lock.withLock { _page } }
         set { lock.withLock { _page = newValue } }
     }
+    /// A modify request of more records than this throws `.limitExceeded` as a whole.
+    var requestLimit: Int {
+        get { lock.withLock { _requestLimit } }
+        set { lock.withLock { _requestLimit = newValue } }
+    }
+    /// Names that make any modify request carrying them throw `.limitExceeded`, even alone.
+    var tooLarge: Set<String> {
+        get { lock.withLock { _tooLarge } }
+        set { lock.withLock { _tooLarge = newValue } }
+    }
+    /// Thrown by every save request (after the limit check) once `saveFailureAfter` requests have passed it.
+    var saveFailure: CKError? {
+        get { lock.withLock { _saveFailure } }
+        set { lock.withLock { _saveFailure = newValue } }
+    }
+    var saveFailureAfter: Int {
+        get { lock.withLock { _saveFailureAfter } }
+        set { lock.withLock { _saveFailureAfter = newValue } }
+    }
+    /// Records per save / delete request, in call order (refused requests included).
+    var saveSizes: [Int] { lock.withLock { _saveSizes } }
+    var deleteSizes: [Int] { lock.withLock { _deleteSizes } }
 
     private var _owner: String?
     var owner: String? {
@@ -272,10 +301,20 @@ final class FakeDatabase: BridgeDatabase, @unchecked Sendable {
         if _zonesMissing { throw CKError(.zoneNotFound) }
     }
 
+    private func limitGate(_ ids: [CKRecord.ID]) throws {
+        if ids.count > _requestLimit || ids.contains(where: { _tooLarge.contains($0.recordName) }) {
+            throw CKError(.limitExceeded)
+        }
+    }
+
     func save(_ saves: [DatabaseSave], policy: CKModifyRecordsOperation.RecordSavePolicy) async throws -> [CKRecord.ID: DatabaseSaveResult] {
         try lock.withLock {
             _calls += 1
+            _saveSizes.append(saves.count)
             try zoneGate()
+            try limitGate(saves.map(\.record.recordID))
+            if let failure = _saveFailure, _passedSaves >= _saveFailureAfter { throw failure }
+            _passedSaves += 1
             _policies.append(policy)
             var out: [CKRecord.ID: DatabaseSaveResult] = [:]
             for save in saves {
@@ -295,8 +334,10 @@ final class FakeDatabase: BridgeDatabase, @unchecked Sendable {
     }
 
     func delete(_ ids: [CKRecord.ID]) async throws -> [CKRecord.ID: Result<Void, any Error>] {
-        lock.withLock {
+        try lock.withLock {
             _calls += 1
+            _deleteSizes.append(ids.count)
+            try limitGate(ids)
             var out: [CKRecord.ID: Result<Void, any Error>] = [:]
             for id in ids {
                 store[id] = nil
