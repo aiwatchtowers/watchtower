@@ -1570,7 +1570,8 @@ CREATE TABLE IF NOT EXISTS google_accounts (
     created_at                     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     updated_at                     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     access_ok_at      TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC of the last confirmed authenticated call; '' = unknown (see 00148)
-    revoked_at        TEXT NOT NULL DEFAULT ''   -- RFC 3339 UTC when status turned revoked; cleared by ok (see 00148)
+    revoked_at        TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC when status turned revoked; cleared by ok (see 00148)
+    gmail_sent_catchup_at TEXT NOT NULL DEFAULT ''   -- RFC 3339 UTC when the one-time Gmail sent catch-up finished; '' = not yet (see 00188)
 );
 
 -- Multi-account Slack source: one row per connected Slack workspace.

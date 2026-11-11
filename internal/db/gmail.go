@@ -28,29 +28,37 @@ func GmailChannelID(accountID int64, threadID string) string {
 	return GmailChannelPrefix(accountID) + ":" + threadID
 }
 
+// ParseGmailChannelID splits a channel id built by GmailChannelID back into
+// its account and thread halves, reporting false for anything that is not one
+// (a Slack channel, a Jira key, an IMAP id, a truncated or non-numeric value,
+// an empty thread). It is the only parser of the format, deliberately living
+// beside the two builders so the layout of a Gmail channel id stays confined
+// to this file. A thread id may itself contain colons.
+func ParseGmailChannelID(channelID string) (accountID int64, threadID string, ok bool) {
+	rest, ok := strings.CutPrefix(channelID, gmailChannelScheme)
+	if !ok {
+		return 0, "", false
+	}
+	accountPart, threadID, ok := strings.Cut(rest, ":")
+	if !ok || threadID == "" {
+		return 0, "", false
+	}
+	accountID, err := strconv.ParseInt(accountPart, 10, 64)
+	if err != nil {
+		return 0, "", false
+	}
+	return accountID, threadID, true
+}
+
 // GmailAccountIDFromChannelID reads the account half back out of a channel id
-// built by GmailChannelID, reporting false for anything that is not one (a
-// Slack channel, a Jira key, a truncated or non-numeric value). It is the only
-// parser of the format, deliberately living beside the two builders so the
-// layout of a Gmail channel id stays confined to this file.
+// built by GmailChannelID through ParseGmailChannelID.
 //
 // Inbox rows carry the Gmail account only inside their channel_id, so this is
 // what lets a consumer of an email signal scope its gmail_messages lookup to
 // the right mailbox.
 func GmailAccountIDFromChannelID(channelID string) (int64, bool) {
-	rest, ok := strings.CutPrefix(channelID, gmailChannelScheme)
-	if !ok {
-		return 0, false
-	}
-	accountPart, _, ok := strings.Cut(rest, ":")
-	if !ok {
-		return 0, false
-	}
-	accountID, err := strconv.ParseInt(accountPart, 10, 64)
-	if err != nil {
-		return 0, false
-	}
-	return accountID, true
+	accountID, _, ok := ParseGmailChannelID(channelID)
+	return accountID, ok
 }
 
 // ClearGmailData removes the Gmail data synced for one account on the user's

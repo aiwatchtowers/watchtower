@@ -1561,7 +1561,7 @@ gmail_last_internal_date REAL NOT NULL DEFAULT 0, -- per-account Gmail sync wate
 memory_gmail_last_extracted_ts REAL NOT NULL DEFAULT 0, -- per-account memory extraction watermark (was workspace.memory_gmail_last_extracted_ts)
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
 updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-, ideas_email_floor REAL NOT NULL DEFAULT 0, deletions_checked_at TEXT NOT NULL DEFAULT '', access_ok_at TEXT NOT NULL DEFAULT '', revoked_at TEXT NOT NULL DEFAULT '')
+, ideas_email_floor REAL NOT NULL DEFAULT 0, deletions_checked_at TEXT NOT NULL DEFAULT '', access_ok_at TEXT NOT NULL DEFAULT '', revoked_at TEXT NOT NULL DEFAULT '', gmail_sent_catchup_at TEXT NOT NULL DEFAULT '')
 
 table	history_backfill
 CREATE TABLE history_backfill (
@@ -5053,6 +5053,7 @@ GROUP BY up.ancestor
 13	deletions_checked_at	TEXT	notnull=1	dflt=''	pk=0
 14	access_ok_at	TEXT	notnull=1	dflt=''	pk=0
 15	revoked_at	TEXT	notnull=1	dflt=''	pk=0
+16	gmail_sent_catchup_at	TEXT	notnull=1	dflt=''	pk=0
 
 ## history_backfill
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
