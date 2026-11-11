@@ -107,28 +107,34 @@ func contains(list []string, s string) bool {
 }
 
 // childFIFO makes the FIFO a real fake's grandchild (stubborn and grandchild
-// modes) holds open for writing, set in opts. Its open returns once the
-// grandchild started; reading it ends at EOF once the grandchild is gone,
-// whoever reaped it: process events, never a poll.
-func childFIFO(t *testing.T, opts *ClaudeOptions) (open func() *os.File) {
+// modes) writes its pid to, set in opts. The returned started waits for that
+// line — the grandchild runs — and returns its pid; waitProcessExit then
+// waits for its end. Process events only, never a poll. (EOF on the FIFO is
+// not used: macOS was seen to leave a reader blocked after its SIGKILLed
+// writer was gone.)
+func childFIFO(t *testing.T, opts *ClaudeOptions) (started func() int) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "child.fifo")
 	require.NoError(t, syscall.Mkfifo(path, 0o600))
 	opts.Env = append(opts.Env, "FAKE_CHILD_FIFO="+path)
-	return func() *os.File {
+	return func() int {
 		f, err := os.Open(path) // blocks until the grandchild opens it
 		require.NoError(t, err)
-		t.Cleanup(func() { _ = f.Close() })
-		return f
+		defer func() { _ = f.Close() }()
+		var line []byte
+		b := make([]byte, 1)
+		for {
+			_, err := f.Read(b)
+			require.NoError(t, err, "the grandchild's pid line")
+			if b[0] == '\n' {
+				break
+			}
+			line = append(line, b[0])
+		}
+		pid, err := strconv.Atoi(string(line))
+		require.NoError(t, err)
+		return pid
 	}
-}
-
-// requireGone reads the grandchild's FIFO to EOF: it returns once the
-// grandchild is dead.
-func requireGone(t *testing.T, fifo *os.File) {
-	t.Helper()
-	_, err := io.Copy(io.Discard, fifo)
-	require.NoError(t, err)
 }
 
 func TestClaudeBackend_MultiTurnInOneWarmProcess(t *testing.T) {
@@ -732,7 +738,7 @@ func TestChat03_CloseReapsStubbornChild(t *testing.T) {
 	steps := controlGrace(b, 2)
 	_, err := b.Start(context.Background())
 	require.NoError(t, err)
-	fifo := grandchild() // the stubborn child trapped TERM and started its own
+	child := grandchild() // the stubborn child trapped TERM and its own child runs
 	pidText, err := os.ReadFile(f.pid)
 	require.NoError(t, err)
 	leader, err := strconv.Atoi(strings.TrimSpace(string(pidText)))
@@ -743,7 +749,7 @@ func TestChat03_CloseReapsStubbornChild(t *testing.T) {
 		"EOF, TERM, then KILL — two grace steps, nothing else waited on")
 	// Close returns only once the leader was reaped.
 	assert.ErrorIs(t, syscall.Kill(leader, 0), syscall.ESRCH, "the stubborn child is gone")
-	requireGone(t, fifo)
+	waitProcessExit(t, child) // the grandchild is gone too (it would sleep a day)
 }
 
 // controlGrace takes over b's CloseGrace timer: the first fired steps run
@@ -785,11 +791,11 @@ func TestClaudeBackend_StdinEOFEndsSessionAndSweepsGroup(t *testing.T) {
 
 	// The grandchild first: a fake ended before it spawned its child proves
 	// nothing about the sweep.
-	fifo := grandchild()
+	child := grandchild()
 	require.NoError(t, inW.Close())
 	err := <-done
 	assert.NoError(t, err)
-	requireGone(t, fifo)
+	waitProcessExit(t, child) // swept with the group (it would sleep a day)
 }
 
 func TestClaudeBackend_ContextCancelEndsSession(t *testing.T) {
