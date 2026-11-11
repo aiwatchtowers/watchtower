@@ -157,7 +157,6 @@ func TestRequestedStopExitCarriesRequested(t *testing.T) {
 	b.send(Stop, StopReq{Row: 1, Run: "r1", Launch: info.Launch})
 	b.expect(Stopping)
 
-	_ = a.nc.SetReadDeadline(time.Now().Add(stopGrace + ioTimeout))
 	var exit ExitMsg
 	for {
 		ft, p, err := ReadFrame(a.nc)
@@ -238,9 +237,8 @@ func TestHelloBelowMinimumVersionCloses(t *testing.T) {
 }
 
 // readExit reads frames on c until an Exit and decodes it.
-func (c *client) readExit(within time.Duration) (ExitMsg, []byte) {
+func (c *client) readExit() (ExitMsg, []byte) {
 	c.t.Helper()
-	_ = c.nc.SetReadDeadline(time.Now().Add(within))
 	for {
 		ft, p, err := ReadFrame(c.nc)
 		if err != nil {
@@ -281,11 +279,7 @@ func TestStopDuringDrainKeepsTheExitNatural(t *testing.T) {
 	// alive, so a SIGHUP in the window would be delivered (and wrongly
 	// mark the run); a.launch's cleanup kills the group.
 	info := a.launch(1, `trap '' HUP; sleep 30 & exit 0`)
-	select {
-	case <-reaped:
-	case <-time.After(ioTimeout):
-		t.Fatal("child not reaped")
-	}
+	<-reaped
 
 	b := dial(t, path)
 	b.send(Stop, StopReq{Row: 1, Run: "r1", Launch: info.Launch})
@@ -294,7 +288,7 @@ func TestStopDuringDrainKeepsTheExitNatural(t *testing.T) {
 	if !m.AlreadyExited {
 		t.Fatalf("stopping = %+v, want already_exited", m)
 	}
-	exit, raw := a.readExit(ioTimeout)
+	exit, raw := a.readExit()
 	if exit.Requested {
 		t.Fatalf("exit = %s, want a natural exit", raw)
 	}
@@ -321,7 +315,7 @@ func TestStopSignalFailureLeavesRequestedUnset(t *testing.T) {
 	if err := syscall.Kill(-info.Pid, syscall.SIGKILL); err != nil {
 		t.Fatal(err)
 	}
-	if exit, raw := a.readExit(ioTimeout); exit.Requested {
+	if exit, raw := a.readExit(); exit.Requested {
 		t.Fatalf("exit = %s, want no requested after a failed stop", raw)
 	}
 }

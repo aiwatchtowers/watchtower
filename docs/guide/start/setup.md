@@ -33,11 +33,15 @@ Knowledge search and Attention detection are always switched on, whatever you ti
 
 The **Assistant language** row sets the language of Catch Up, briefings, tracks and digests. It starts as your Mac's first language (shown "from macOS").
 
-## The AI command-line tool must be signed in
+## Pick your AI agent
 
-Every AI feature runs through the Claude Code or Codex command-line tool on your Mac. Watchtower checks that one of them is installed and signed in, and **Continue** stays off until it is found ("Continue unlocks once the CLI is found"). It tries Claude Code first. If you have not picked a provider and Claude Code is not installed but Codex works, Watchtower picks Codex for you, for the AI features and for new Workbench sessions ("Codex CLI found and signed in"). A provider you picked in **Settings → System → AI** is never switched, and neither is an installed Claude Code that is only signed out.
+Every AI feature runs through the Claude Code or Codex command-line tool on your Mac. The **AI agent** section on the first screen shows both as tiles with their state: **Ready · signed in**, **Not installed**, **Installed · not signed in** or **Check failed**. Pick the one you want; once you pick one, later checks never change your pick. A tool your organization turns off shows **Turned off by your organization** and is dimmed. **Continue** unlocks when the picked one is ready, and only then is your choice saved. You can change it later in **Settings → System → AI**. If you set Ollama / Local there, the step shows one line saying so and tests it instead.
 
-If the check fails, a box shows the install commands for both tools and three helpers: **Check again**, **Set the Claude Code path manually** (a **Browse…** button and **Use this path**) and **No npm?** (you need Node.js first, from nodejs.org). More on providers is in [AI providers, models and cost](../concepts/ai-providers-and-cost.md).
+If the tool is not installed, the panel shows an install command with a copy button (no Node.js needed) and the sign-in command. **Other ways to install** opens the vendor's page for Homebrew and npm. Press **Check again**, or just come back to the window.
+
+If it is installed but signed out, the browser opens to sign in and a small terminal shows its progress. When sign-in finishes, the terminal closes and the tile turns ready. A tool too old to sign in from here updates first. If sign-in stops, press **Sign in again**.
+
+**Choose the executable…** also appears when the tool is **Not installed** or the check failed: pick the copy you use. If updating does not help, you may have two copies installed; use it there too. More on providers is in [AI providers, models and cost](../concepts/ai-providers-and-cost.md); if it still fails, see [The Claude or Codex tool is not found or not signed in](../troubleshooting/ai-tool-not-found-or-not-signed-in.md).
 
 ## What the Connect step shows
 

@@ -2,7 +2,6 @@ package planusage
 
 import (
 	"bufio"
-	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -53,6 +52,14 @@ func runFakeCodexUsageServer() {
 	}
 }
 
+// liftAppServerBudget makes the app-server budget a hang guard for a test
+// that reads usage from the fake app-server (this test binary): starting
+// it on a loaded machine may take longer than the real budget, and that
+// wait is never what the test asserts.
+func liftAppServerBudget(t *testing.T) {
+	t.Cleanup(codex.SetAppServerBudgetForTest(time.Minute))
+}
+
 func TestCodexStorage_RealReaderToAtomicSnapshot(t *testing.T) {
 	d, err := db.Open(":memory:")
 	require.NoError(t, err)
@@ -62,9 +69,8 @@ func TestCodexStorage_RealReaderToAtomicSnapshot(t *testing.T) {
 	bin, err := os.Executable()
 	require.NoError(t, err)
 	raw := fmt.Sprintf(`{"accountId":"account-canary","ordinaryUsageAllowed":false,"rateLimitsByLimitId":{"codex":{"primary":{"usedPercent":40,"windowDurationMins":10080,"resetsAt":%d},"secondary":{"usedPercent":20,"windowDurationMins":300,"resetsAt":%d}},"extra":{"primary":{"usedPercent":5,"windowDurationMins":90,"resetsAt":%d}}}}`, reset, reset, reset)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	response, err := codex.ReadUsage(ctx, bin, append(os.Environ(), "WATCHTOWER_TEST_CODEX_USAGE=1", "WATCHTOWER_TEST_CODEX_LIMITS="+raw), "synthetic-home")
+	liftAppServerBudget(t)
+	response, err := codex.ReadUsage(t.Context(), bin, append(os.Environ(), "WATCHTOWER_TEST_CODEX_USAGE=1", "WATCHTOWER_TEST_CODEX_LIMITS="+raw), "synthetic-home")
 	require.NoError(t, err)
 	require.True(t, response.IdentityKnown)
 	require.NoError(t, StoreCodexUsage(d, now, response))

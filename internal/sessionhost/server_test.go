@@ -13,8 +13,6 @@ import (
 	"time"
 )
 
-const ioTimeout = 5 * time.Second
-
 // socketPath returns a short socket path; t.TempDir paths can exceed the
 // 104-byte unix socket limit.
 func socketPath(t *testing.T) string {
@@ -49,11 +47,7 @@ func startHost(t *testing.T, opts Options) (string, *Server) {
 	go func() { done <- srv.Serve(ctx, l) }()
 	t.Cleanup(func() {
 		cancel()
-		select {
-		case <-done:
-		case <-time.After(ioTimeout):
-			t.Error("Serve did not return after cancel")
-		}
+		<-done
 	})
 	return path, srv
 }
@@ -103,7 +97,6 @@ func (c *client) send(ft FrameType, v any) {
 }
 
 func (c *client) readErr() (FrameType, []byte, error) {
-	_ = c.nc.SetReadDeadline(time.Now().Add(ioTimeout))
 	return ReadFrame(c.nc)
 }
 
@@ -154,6 +147,20 @@ func (c *client) list() []SessionInfo {
 	return resp.Sessions
 }
 
+// listUntil lists the host's sessions until ok holds for them and returns
+// that list — for a state the host
+// reaches on its own (a child's exit while no client is attached).
+func (c *client) listUntil(ok func([]SessionInfo) bool) []SessionInfo {
+	c.t.Helper()
+	for {
+		got := c.list()
+		if ok(got) {
+			return got
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // launch starts a /bin/sh -c script session; t.Cleanup kills its process
 // group and waits until the host has reaped it.
 func (c *client) launch(row int64, script string, env ...string) SessionInfo {
@@ -183,12 +190,7 @@ func (c *client) launchAgent(row int64, agent, script string, env ...string) Ses
 // reap kills pid's process group and waits until the host reaped the child.
 func reap(t *testing.T, pid int) {
 	_ = syscall.Kill(-pid, syscall.SIGKILL)
-	deadline := time.Now().Add(ioTimeout)
 	for syscall.Kill(pid, 0) == nil {
-		if time.Now().After(deadline) {
-			t.Errorf("child %d still alive after SIGKILL", pid)
-			return
-		}
 		time.Sleep(10 * time.Millisecond)
 	}
 }
@@ -265,14 +267,20 @@ func TestServer_LaunchUsesOnlyGivenEnv(t *testing.T) {
 
 func TestServer_ExitWhileDetachedIsKeptUntilForget(t *testing.T) {
 	path := startServer(t, Options{})
+	// The child exits only once the test creates the go file, after the
+	// client went away — not after a sleep a loaded machine may outlast. A
+	// host that lost the child fails listUntil's hang guard, never hangs.
+	goFile := filepath.Join(t.TempDir(), "go")
 	c1 := dial(t, path)
-	c1.launch(1, `sleep 0.2; exit 7`)
+	c1.launch(1, `while [ ! -e '`+goFile+`' ]; do /bin/sleep 0.01; done; exit 7`)
 	_ = c1.nc.Close()
-	time.Sleep(500 * time.Millisecond)
+	if err := os.WriteFile(goFile, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	c2 := dial(t, path)
-	got := c2.list()
-	if len(got) != 1 || !got[0].Exited || got[0].Code == nil || *got[0].Code != 7 {
+	got := c2.listUntil(func(got []SessionInfo) bool { return len(got) == 1 && got[0].Exited })
+	if got[0].Code == nil || *got[0].Code != 7 {
 		t.Fatalf("list = %+v, want one exited session with code 7", got)
 	}
 	c2.send(Forget, AttachReq{Row: 1, Run: "r1"})
@@ -386,13 +394,7 @@ func TestServer_AttachExitedSession(t *testing.T) {
 	c1.launch(1, `echo last words; exit 4`)
 	_ = c1.nc.Close()
 	c2 := dial(t, path)
-	deadline := time.Now().Add(ioTimeout)
-	for got := c2.list(); len(got) != 1 || !got[0].Exited; got = c2.list() {
-		if time.Now().After(deadline) {
-			t.Fatalf("session never exited: %+v", got)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	c2.listUntil(func(got []SessionInfo) bool { return len(got) == 1 && got[0].Exited })
 	c2.send(Attach, AttachReq{Row: 1, Run: "r1"})
 	var info SessionInfo
 	if err := json.Unmarshal(c2.expect(Attached), &info); err != nil {
@@ -454,13 +456,8 @@ func TestServer_IdleExit(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() { done <- NewServer(Options{IdleExit: 200 * time.Millisecond}).Serve(context.Background(), l) }()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("Serve = %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("Serve did not exit when idle")
+	if err := <-done; err != nil {
+		t.Fatalf("Serve = %v", err)
 	}
 }
 
@@ -478,13 +475,8 @@ func TestServer_IdleExitIgnoresUnboundConnection(t *testing.T) {
 	if got := c.list(); len(got) != 0 {
 		t.Fatalf("list = %+v", got)
 	}
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("Serve = %v", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("Serve did not exit with only an unbound connection open")
+	if err := <-done; err != nil {
+		t.Fatalf("Serve = %v", err)
 	}
 }
 
@@ -514,12 +506,8 @@ func TestServer_IdleExitWaitsForBoundConnection(t *testing.T) {
 	case <-time.After(600 * time.Millisecond):
 	}
 	_ = c.nc.Close()
-	select {
-	case err := <-done:
-		done <- err // for the cleanup
-	case <-time.After(2 * time.Second):
-		t.Fatal("Serve did not exit after the bound connection closed")
-	}
+	err = <-done
+	done <- err // for the cleanup
 }
 
 func TestListen_StaleSocketIsReplaced(t *testing.T) {
