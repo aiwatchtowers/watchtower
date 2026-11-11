@@ -10,6 +10,7 @@ The `watchtower` binary does everything the app does and a bit more. Add `--help
 | `watchtower status` | Sync status and statistics |
 | `watchtower logs` | Sync log output |
 | `watchtower version` | Version |
+| `watchtower diagnostics` | The privacy-safe summary **Help → Report a Problem…** puts in a bug report: kinds, counts, states and error types, never names or text. Reads only, writes nothing; `--json` for scripts. See [Report a problem](../troubleshooting/README.md#report-a-problem) |
 | `watchtower guide learn` | The Learn cards Home shows, read from this guide and checked; `--json` for scripts |
 | `watchtower workspace init` | Create the local workspace (data directory and database) |
 | `watchtower db migrate` | Apply database migrations |

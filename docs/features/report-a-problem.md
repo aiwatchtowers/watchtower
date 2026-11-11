@@ -1,0 +1,74 @@
+# Report a Problem — a privacy-safe bug report (2026-11-11, board #1527)
+
+- **Why.** Watchtower has no telemetry and no crash service (ask #996); a report the user files is the only way to hear about a problem on a stranger's Mac. Help → **Report a Problem…** opens the GitHub bug form already filled with what the app can work out itself. The app sends nothing: the user sees every character and submits it on GitHub.
+- **Who.** Everyone. A corporate build (`flavor: corp`) only saves the report to a file. Inventory: [DIAG-01](../inventory/diagnostics.md).
+- Design: `docs/superpowers/specs/2026-11-04-report-a-problem-design.md` (approved in ask #1141; per-decision asks in its Decisions table); plan: `docs/superpowers/plans/2026-11-10-report-a-problem.md`. Guide: [Troubleshooting → Report a problem](../guide/troubleshooting/README.md#report-a-problem).
+
+## One source: `watchtower diagnostics`
+
+`watchtower diagnostics [--json] [--app-version <v>] [--iphone on|off]` (`cmd/diagnostics.go`) composes the whole summary; the Desktop shows its `text` verbatim and builds no line of its own. A terminal user gets the same text, minus the `· app …` and `iPhone companion` parts the app passes in.
+
+- **Pieces.** `internal/diagnostics`: `text.go` (every fixed text, plain string constants, pinned by `TestDiagnosticsText_Pinned` against `testdata/text.golden`), `errorclass.go` (`ErrorClass`), `crash.go` (crash scan), `lines_config.go` (`Resolve`, config/workspace/AI/features), `lines_local.go` (version, machine, policy, iPhone, daemon, logs, crash part), `lines_db.go` (`Opener`, `ReadDB`: the command's own `QueryContext` reads — kept here, not in `cmd`, so they test against a migrated database; plan deviation), `sources.go` (Sources mapping), `runner.go` + `report.go` (stages, budgets, `Report.Text()`/`JSON()`).
+- **Text.** One fact per line, in this order: `Watchtower <version> (commit <sha>, flavor: default|corp) · app <v>`, `macOS <x.y> · <chip>`, `Config:`, `Workspace:` (only when no workspace resolves), `AI:`, `Features on:`, `Sources:`, `Daemon:`, `Recent errors (last 20):` (or `Recent errors: none`), `Crash:`, `Logs:`, `Database:`, and `Partial report: <reasons>` only when partial. Every value is from a closed list, a count, a size, a version, a UTC time (`yyyy-MM-dd HH:mmZ`) or a feature id; the exact vocabulary is the spec's template and Inputs table.
+- **`--json`** (pinned, `TestReport_JSONKeys` ↔ Swift `DiagnosticsAnswerTests.testDecodesPinnedKeys`): `text`, `version`, `macos`, `chip` (`Apple M1`…`Apple M5`, else `Other`), `provider` (the form option of the effective provider; `Not set up yet` with no config file; `""` when the config is invalid or unreadable), `sources` (the form's checkbox labels of connected kinds, plus `iPhone companion` with `--iphone on`), `flavor` (always filled, even when the hard stop cut the up-front work: `default` for an empty or `dev` build flavor, else `corp`; never the raw string), `partial`. Printed as the last stdout line.
+- **Exit code** is always 0 once the command starts; a failing input prints `unknown (<reason>)` in its own part only.
+
+### Writes nothing (Decision 15, ask #1033)
+
+- Own no-op `PersistentPreRunE`: no `ensureSchemaFormat`, no schema upgrade, no config rewrite. `Execute()` skips the stale-temp sweep for `cli:diagnostics` (`shouldSweepTemp`, seam `startTempSweep`).
+- No features migration: `config.FeatureMigrationPending` (read-only, shared with `MigrateFeatureGates`) decides; a legacy unmigrated install is evaluated on an in-memory copy through `ApplyLegacyDigestOff`, and the line gets ` (not yet migrated)`.
+- No pid-file cleanup: `daemon.PeekProcess` (`resolveProcess(path, removeStale=false)`).
+- `lockmetrics.Configure("")` at the start, so no `dblock.jsonl` line.
+- Database through `db.OpenExistingContext(ctx, path, 500 ms)`: `mode=rw` + `query_only`, no migration, `PingContext`, and `sqlcipher.Connector{NoCheckpointOnClose: true}` (`SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE` confirmed by the driver, plus `wal_autocheckpoint = 0`). A connect where the driver does not confirm the guard reads nothing and is not retried: `unknown (database not opened: checkpoint guard unavailable)`.
+- The only file effects are SQLite's: the `-shm` read marks / wal-index, and on a cleanly stopped install a new empty `-wal`/`-shm` pair. The main database file is byte-identical even with a left-over WAL. Guards: `TestDiagnostics_WritesNothing` (three database situations, temp-sweep control case), `TestDiagnostics_LeftOverWALMainFileUntouched`, `internal/sqlcipher::TestConnector_NoCheckpointOnClose`, `internal/daemon::TestPeekProcess_LeavesStalePIDFile`.
+- CLI audit: decided as a no-content command (`cliNoContentCommands`, decision 24, ask #1039), so no `com.watchtower.audit` line; not refused under agent markers (decision 25). READ-01/02 and AGENT-07 unchanged — see the 2026-11-11 line in `docs/inventory/agent-actions.md`.
+
+### Inputs and their failures
+
+- **Precedence:** config path → config load → data root → workspace; the first failing step prints its own line and every dependent part says `unknown (<that reason>)`. The command never calls `config.WorkspaceDir()`/`DBPath()` (they `log.Fatalf` without a home directory): it joins `config.DataRoot()` and the workspace itself. Empty `HOME` with no `WATCHTOWER_CONFIG_PATH` → `Config: unknown (no home directory)`; the full text is pinned by `cmd/testdata/no_home_dir.golden`.
+- **Config:** `os.Stat` then `config.Load`: `ok`, `none (not set up)`, `unreadable (parse|permission|invalid value|other)`. `invalid value` is `config.Load` failing on `*config.InvalidValueError` from `AIConfig.Validate` (same message text as before for every other caller).
+- **Workspace:** `--workspace` wins over `active_workspace` (as `ask`/`ai`); a name failing `ValidWorkspaceRe` → `unknown (invalid name)`, a missing folder → `unknown (not found)`; none chosen → `not chosen (<n> found)` / `none yet` / `unknown (lookup failed)`. Names are never printed. When this line prints, it replaces the workspace lines: Sources kinds, Daemon, Crash and Logs print the reason; **Recent errors prints only a `  pipeline runs unknown (<reason>)` row** (no sync row: there is no `last_sync.json` to read); **Database prints `schema unknown (<reason>)` without a size**, then the policy part.
+- **AI:** the app's own resolution (env `WATCHTOWER_AI_PROVIDER` > file > `claude` default; empty = `claude`), mapped to `Claude Code|Codex|Ollama`, suffixed ` (default, not chosen)` or ` (from environment)`, then `· reserve <Name>, automatic|off`. On `unreadable (invalid value)` a fresh raw read gives the preferred provider (an unknown one → `unknown (not a known provider)`) and `· reserve invalid` / `· provider settings invalid`. No raw value is ever printed.
+- **Sources:** one `GROUP BY status` read per account table (`slack_accounts`, `google_accounts` split into Gmail and Google Calendar, `jira_accounts`, Confluence `ext_sources` as `<n> spaces`, `linear_accounts`, `email_accounts` split into `Email (IMAP)` and `Outlook`, `calendar_accounts` as Calendar (CalDAV/ICS)); `removed` is never counted, `enabled = 0` → `off`, an unknown status → `<k> unknown state`, a missing table → that kind `unknown`; then `Quick Connections <n>` (enabled `external_connections`). Outlook maps to the form's `Email over IMAP` checkbox (decision 31); CalDAV/ICS and Quick Connections have no checkbox. Guard `TestDiagnostics_AccountTablesMapped` fails on any new `%_accounts` table without a mapping.
+- **iPhone companion:** from `--iphone` only. The Desktop passes `--iphone on` when the Go hub's last status (`HubCenter`) is not `off` **and** the policy's `MobileSync` is not `off`; before the first hub status arrives it passes `off` (decision 35, ask #1228). Without the flag (terminal) the part is left out.
+- **Policy:** `policy.Current()` → `managed by organization: yes|yes (with errors)|no`.
+- **Daemon:** `PeekProcess` states → `running`, `stopped`, `stopped (stale pid file)`, `unknown (process not confirmed)`, `unknown (pid file corrupt)`, `unknown (pid file unreadable: permission|other)`; then `last cycle <age> ago, done|error|running`, `no cycle yet` or `last cycle unknown` from `last_sync.json`.
+- **Recent errors:** the last 20 `pipeline_runs` with `status = 'error'` as `<time>  pipeline  <class>`, plus a `sync` row when `last_sync.json` records a failure (`  sync result unknown` when unparsable). `ErrorClass` checks the lower-cased message in a fixed order — `cancelled`, `timeout`, `rate_limit`, `quota`, `auth`, `not_found`, `network`, `parse`, else `other`; HTTP codes count only in a status form. The message itself is never printed.
+- **Crash:** streams `watchtower.log.1`, `watchtower.log` and `daemon.log` whole. A crash is a line starting `panic: ` or `fatal error: ` followed within 5 lines by a `goroutine <n> [` header (a `runtime stack:` line extends the window up to 200 lines). Time = the nearest preceding timestamped log line (local time printed as UTC, "after"), else `last time unknown`; place = the first `watchtower/` frame, else `location unknown`; newest by time, ties and unknown times by file order. Panics land in `watchtower.log`/`.1` because the detached daemon's stderr follows that file (`cmd/logfile.go` `followStderr`); `daemon.log` keeps only output from before the logger started. The panic message is never printed.
+- **Logs / Database size:** `os.Stat` only; a log is `missing` or `unreadable`; a missing database file leaves the size out. Database open errors print per SQLite class: `unknown (no database)`, `unknown (database unreadable: not a database|corrupt|permission|other)`.
+- **Panics are contained per part.** Every part runs through `SafeLine`, and each up-front step (version, machine, `Resolve`, AI line, features, the database read) has its own recover: a panic prints `unknown (internal error)` for that part only.
+
+### Budgets
+
+- **Database:** one `context.WithTimeout` of **4 s** started before the open; **500 ms** busy timeout per statement; the read runs in its own goroutine and the report stops waiting at **4.5 s**. Unfinished parts print `unknown (database busy)`; parts already read stay; file-based parts of the same line (size, policy, iPhone, the sync row) still print.
+- **Crash scan:** **2 s** for all three files → `… (scan stopped after <N> MB)` or `Crash: none in the first <N> MB of the logs (scan stopped)`.
+- **Hard stop:** **8 s** over everything, including the up-front reads — config resolution and `sysctl` run in their own goroutine (`startDiagPrep`), so a hung read there cannot pass the stop. Unfinished parts print `unknown (timed out)` (the Recent errors block as `Recent errors: unknown (timed out)`). A resolution that finishes after the stop starts no database read.
+- **`partial`** is true when any budget ran out or any part printed `database busy` or `timed out`; the last line names each reason once, in order: `Partial report: database busy, log scan stopped, timed out at 8 s`.
+- Worst case ≈ 0.5 + 4.5 + 2 = 7 s, inside the Desktop's **10 s** CLI timeout. Guards: `TestDiagnostics_BusyDatabaseFinishesInTime`, `TestDiagnostics_InputFailures` (`budget_*`, `busy_*`).
+
+## Desktop
+
+WatchtowerCore `Services/ReportProblem/`: `DiagnosticsAnswer` (decodes the **last** non-empty stdout line), `ReportProblemCopy` (every UI string, pinned), `ReportProblemLink` (pure link builder), `ReportProblemModel` (`@Observable` state; the view owns no logic).
+
+- **Run.** `watchtower diagnostics --json --app-version <CFBundleShortVersionString> --iphone on|off` through `CLIRunnerProtocol` with a 10 s timeout. A second Retry or re-open while collecting starts no second process. Failures (missing CLI, timeout, non-zero exit, unreadable answer) show the reason, **Retry**, and partial lines with the app and macOS versions from `ProcessInfo`. A partial report is shown as ready.
+- **Entry points.** Help → **Report a Problem…** and **Report a Problem…** beside **Open Logs** in Settings → System → Logs; both front the main window first, and one sheet is presented at a time.
+- **Link.** `issues/new?template=bug_report.yml` with `title` (first line of the user text, ≤ 80 characters), `version`, `macos`, `chip`, `provider`, `actual` (the user text, ≤ 2 000 characters) and `logs` (the diagnostics). The encoded URL stays ≤ **6 000** characters: first `logs` becomes `Paste the report from Watchtower here.`, then `actual` is cut at a character boundary with `… (full text in the pasted report)`, and the sheet offers **Copy Report**. A failed collection's link carries `version` and `macos` only.
+- **Rules.** **Open GitHub Issue** is disabled while the text is blank (trimmed) in every state. The clipboard is written only by **Copy Report** / **Copy Link**. The sheet stays open after Open and keeps the text until **Done** or Cancel; nothing is kept after it closes. **Save Diagnostics…** writes the user text + diagnostics atomically.
+- **Corporate build** (`HubIdentity.flavor(buildFlavor:)` is `.corp`): corp intro and placeholder, no public note, no Discussions link, only Cancel · **Save Diagnostics…**.
+
+## Dual paths
+
+- Flavor rule: Go `diagnostics.Flavor` ↔ Swift `HubIdentity.flavor(buildFlavor:)`, one case table `internal/diagnostics/testdata/report_problem_flavor_cases.json` (Go `TestFlavorCases`, Swift `ReportProblemFlavorCasesTests`).
+- Issue form: `.github/ISSUE_TEMPLATE/bug_report.yml` ids and options ↔ Go `chip`/`provider`/`sources` mappings (`TestDiagnostics_FormOptions`, skip list `Calendar (CalDAV/ICS)`, `Quick Connections`) ↔ Swift link keys (`testLinkKeysMatchForm`). Renaming a field id or an option breaks both.
+- JSON keys: `Report.JSON()` ↔ `DiagnosticsAnswer`.
+- `OpenExistingContext` ↔ `OpenExisting`/`OpenExistingRW` share the DSN and ping path; only `OpenExistingContext` sets `NoCheckpointOnClose`. `PeekProcess` ↔ `FindProcess` share `resolveProcess`.
+
+## v1 limits
+
+- GitHub only; no email or other channel for people without a GitHub account (ask #1026).
+- The app uploads nothing: no logs, screenshots or files; the user attaches a saved `.txt` by hand.
+- No issue search, duplicate detection or GitHub sign-in; no Report a Problem on the iPhone.
+- Dropdown prefill (`chip`, `provider`) relies on GitHub accepting the exact option label; checkboxes (`sources`) cannot be prefilled — the kinds are in the `Sources:` line.
+- Recent errors cover `pipeline_runs` and the last sync result only; account auth problems show as states in `Sources:`.
+- A crash scan cut by its budget says so instead of guessing.
+- The Settings → Logs "Crash Log" tab and caption are stale (panics land in the Sync Log); renaming them is a separate change.
