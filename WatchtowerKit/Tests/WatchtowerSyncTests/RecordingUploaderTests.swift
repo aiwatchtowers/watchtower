@@ -212,7 +212,7 @@ final class RecordingUploaderTests: XCTestCase {
         let second = try await register(uploader, file: try makeAudioFile(name: "two.m4a"))
 
         let passA = Task { try await uploader.uploadPending() }
-        await spy.untilHeld(1)
+        try await spy.untilHeld(1)
         let passB = Task { try await uploader.uploadPending() }
         // A pass that does not wait for A reaches the transport at once.
         _ = try? await eventually(timeout: 0.5) { await spy.heldCount > 1 }
@@ -235,7 +235,7 @@ final class RecordingUploaderTests: XCTestCase {
         let recording = try await register(uploader, file: try makeAudioFile())
 
         let pass = Task { try await uploader.uploadPending() }
-        await spy.untilHeld(1)
+        try await spy.untilHeld(1)
         try await uploader.applyEcho(echo(for: recording, status: .received))
         XCTAssertEqual(try store.phoneRecording(id: recording.id)?.state, .delivered)
         await spy.release()
@@ -1372,7 +1372,7 @@ final class RecordingUploaderTests: XCTestCase {
 
         await spy.holdSaves()
         let retry = Task { try await uploader.retryFailed(id: recording.id) }
-        await spy.untilHeld(1)
+        try await spy.untilHeld(1)
         let held = await spy.heldCount
         XCTAssertEqual(held, 1, "the re-seal's save is in flight")
         // The Mac rotated again meanwhile: the in-flight envelope (epoch 2) is now stale.
@@ -1974,18 +1974,25 @@ private actor SpyTransport: CloudSyncTransport {
     private(set) var saves: [Save] = []
     private var holding = false
     private var held: [CheckedContinuation<Void, Never>] = []
-
-    private var heldWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
-
+    private var heldWaiters: [UUID: (count: Int, continuation: CheckedContinuation<Bool, Never>)] = [:]
     var heldCount: Int { held.count }
-
     func holdSaves() { holding = true }
+    struct NeverHeld: Error {}
 
-    /// Returns once `count` saves are held: a test waits for the save
-    /// itself, not for a clock.
-    func untilHeld(_ count: Int) async {
+    /// Returns once `count` saves are held — the save itself, not a clock. The
+    /// 60 s guard only ends a run that would hang (throws); a pass never sees it.
+    func untilHeld(_ count: Int) async throws {
         guard held.count < count else { return }
-        await withCheckedContinuation { heldWaiters.append((count, $0)) }
+        let id = UUID()
+        let guardTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(60))
+            await self?.resumeWaiter(id, held: false)
+        }
+        defer { guardTask.cancel() }
+        guard await withCheckedContinuation({ heldWaiters[id] = (count, $0) }) else { throw NeverHeld() }
+    }
+    private func resumeWaiter(_ id: UUID, held: Bool) {
+        heldWaiters.removeValue(forKey: id)?.continuation.resume(returning: held)
     }
 
     /// While true every save is recorded, then throws (a transient failure).
@@ -2009,9 +2016,7 @@ private actor SpyTransport: CloudSyncTransport {
         if holding {
             await withCheckedContinuation { continuation in
                 held.append(continuation)
-                let reached = heldWaiters.filter { $0.count <= held.count }
-                heldWaiters.removeAll { $0.count <= held.count }
-                reached.forEach { $0.continuation.resume() }
+                heldWaiters.filter { $0.value.count <= held.count }.keys.forEach { resumeWaiter($0, held: true) }
             }
         }
         if failing { throw SaveFailed() }

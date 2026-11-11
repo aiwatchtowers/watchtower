@@ -2,8 +2,9 @@
 # Runs the already-built WatchtowerDesktop test bundle as SHARDS concurrent
 # xctest processes over disjoint round-robin slices of its XCTest classes,
 # next to one `swift test` process for the Swift Testing tests. No class
-# runs alone: a test that measures the CPU compares interleaved runs on the
-# same machine, never an absolute time, so a loaded runner does not fail it.
+# runs alone any more: the classes that did (#1727) no longer measure the CPU
+# against a fixed time — they compare interleaved runs on the same machine,
+# or pin the work itself.
 #
 # Why: the suite is ~7 000 short tests (~43 ms each, measured 2026-10-13) run
 # serially in one xctest process, ~5 min on a CI runner. `swift test --parallel`
