@@ -9,11 +9,13 @@ import (
 	"time"
 )
 
-// interruptQuery runs a query that cannot finish before its context
-// deadline, so SQLite interrupts it, and then drops the pool's connection
-// the way database/sql does with one it found bad or closed as idle
-// (SetMaxIdleConns(0) closes it): the next call opens a fresh one. The
-// engine keeps an interrupted connection usable, so the drop is explicit.
+// interruptQuery runs a query on a cancelled context (refused before it
+// runs: an endless query cancelled from outside can miss the interrupt,
+// a no-op between statements, and never end), then drops the pool's
+// connection the way database/sql does with one it found bad or closed as
+// idle (SetMaxIdleConns(0) closes it): the next call opens a fresh one.
+// The engine keeps an interrupted connection usable, so the drop is
+// explicit.
 // A per-connection marker (cache_size, a pragma no opener sets and
 // query_only does not refuse) proves the replacement, so the callers'
 // assertions never run against the old connection.
@@ -28,15 +30,15 @@ func interruptQuery(t *testing.T, d *DB) {
 			t.Fatal("the interrupted connection was not replaced; the test proves nothing")
 		}
 	}()
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
 	var n int64
 	err := d.QueryRowContext(ctx,
 		`WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c) SELECT count(*) FROM c`).Scan(&n)
 	if err == nil {
 		t.Fatal("endless query finished")
 	}
-	if !errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+	if !errors.Is(err, context.Canceled) && ctx.Err() == nil {
 		t.Fatalf("query failed for another reason: %v", err)
 	}
 	d.SetMaxIdleConns(0)

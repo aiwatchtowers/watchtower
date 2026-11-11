@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 )
 
 // A '?' in the database path must not split the driver DSN: before
@@ -49,32 +48,51 @@ func TestOpen_PathWithQuestionMarkOpensThatFile(t *testing.T) {
 	}
 
 	// _txlock=immediate still applies: an open write tx on A holds the write
-	// lock from Begin, so B's write waits for it instead of landing at once.
+	// lock from Begin, so B's write — not waiting at all — is refused busy
+	// instead of landing at once.
 	b, err := Open(path)
 	if err != nil {
 		t.Fatalf("open B: %v", err)
 	}
 	t.Cleanup(func() { b.Close() })
+	if err := b.SetBusyTimeout(0); err != nil {
+		t.Fatal(err)
+	}
 	tx, err := a.Begin()
 	if err != nil {
 		t.Fatalf("begin A: %v", err)
 	}
-	bDone := make(chan error, 1)
-	go func() {
-		_, err := b.Exec(`INSERT INTO dsn_probe (n) VALUES (1)`)
-		bDone <- err
-	}()
-	select {
-	case err := <-bDone:
+	if _, err := b.Exec(`INSERT INTO dsn_probe (n) VALUES (1)`); !IsBusy(err) {
 		_ = tx.Rollback()
-		t.Fatalf("B wrote while A held an IMMEDIATE tx (err %v): the DSN params were dropped", err)
-	case <-time.After(200 * time.Millisecond):
+		t.Fatalf("B's write while A held an IMMEDIATE tx: want busy, got %v: the DSN params were dropped", err)
 	}
 	if err := tx.Rollback(); err != nil {
 		t.Fatalf("rollback A: %v", err)
 	}
-	if err := <-bDone; err != nil {
+	if _, err := b.Exec(`INSERT INTO dsn_probe (n) VALUES (1)`); err != nil {
 		t.Fatalf("B after A released: %v", err)
+	}
+}
+
+// onUpgradeBegin replaces beforeUpgradeBegin for the test.
+func onUpgradeBegin(t *testing.T, f func(*sql.DB)) {
+	t.Helper()
+	prev := beforeUpgradeBegin
+	beforeUpgradeBegin = f
+	t.Cleanup(func() { beforeUpgradeBegin = prev })
+}
+
+// wantUpgradeBusyTimeout checks that the transition's handle waits Open's
+// busy timeout for another writer's lock.
+func wantUpgradeBusyTimeout(t *testing.T, raw *sql.DB) {
+	t.Helper()
+	var ms int
+	if err := raw.QueryRow(`PRAGMA busy_timeout`).Scan(&ms); err != nil {
+		t.Errorf("busy_timeout of the transition's handle: %v", err)
+		return
+	}
+	if ms != busyTimeoutMS {
+		t.Errorf("the transition's handle waits %d ms for a lock, want Open's %d", ms, busyTimeoutMS)
 	}
 }
 
@@ -96,12 +114,16 @@ func TestRunSchemaUpgrade_WaitsForAnotherWriter(t *testing.T) {
 	if _, err := tx.Exec(`CREATE TABLE lock_holder (x INTEGER)`); err != nil {
 		t.Fatalf("take write lock: %v", err)
 	}
+	// The holder lets go only once the transition is about to begin its
+	// write transaction, on a handle that waits busy_timeout for it.
 	released := make(chan struct{})
-	go func() {
-		defer close(released)
-		time.Sleep(300 * time.Millisecond)
-		_ = tx.Rollback()
-	}()
+	onUpgradeBegin(t, func(raw *sql.DB) {
+		wantUpgradeBusyTimeout(t, raw)
+		go func() {
+			defer close(released)
+			_ = tx.Rollback()
+		}()
+	})
 
 	if err := RunSchemaUpgrade(path); err != nil {
 		t.Fatalf("the transition must wait for the write lock, got: %v", err)
@@ -128,11 +150,19 @@ func TestRunSchemaUpgrade_ConcurrentUpgradersBothSucceed(t *testing.T) {
 		t.Fatalf("take write lock: %v", err)
 	}
 
+	// The holder lets go once both upgraders are past their first check (no
+	// goose table yet) and about to begin their write transactions.
+	arrived := make(chan struct{}, 2)
+	onUpgradeBegin(t, func(raw *sql.DB) {
+		wantUpgradeBusyTimeout(t, raw)
+		arrived <- struct{}{}
+	})
 	errs := make(chan error, 2)
 	for range 2 {
 		go func() { errs <- RunSchemaUpgrade(path) }()
 	}
-	time.Sleep(200 * time.Millisecond) // both upgraders are now past their first check, waiting
+	<-arrived
+	<-arrived
 	_ = tx.Rollback()
 	for range 2 {
 		if err := <-errs; err != nil {

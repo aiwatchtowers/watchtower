@@ -3,7 +3,6 @@ package lockmetrics
 import (
 	"bufio"
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -88,7 +87,8 @@ func TestRecordWritesLineWithFilledFieldsAndBindingKeys(t *testing.T) {
 	path := setup(t)
 	SetProcessRole("hook:session-state")
 
-	before := time.Now().UTC()
+	stamp := time.Date(2026, 10, 15, 9, 30, 0, 123_000_000, time.FixedZone("x", 3*3600))
+	now = func() time.Time { return stamp } // setup's resetForTest puts the clock back
 	Record(Event{
 		Kind:          KindBusy,
 		WaitMS:        12,
@@ -131,8 +131,8 @@ func TestRecordWritesLineWithFilledFieldsAndBindingKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ts not RFC3339Nano: %v", err)
 	}
-	if ts.Before(before.Add(-time.Second)) || ts.After(time.Now().Add(time.Second)) {
-		t.Fatalf("ts %v not around now", ts)
+	if tsStr != "2026-10-15T06:30:00.123Z" || !ts.Equal(stamp) {
+		t.Fatalf("ts %q, want the clock's reading in UTC", tsStr)
 	}
 }
 
@@ -224,18 +224,15 @@ func TestTwoProcessesNeverInterleave(t *testing.T) {
 	dbPath := filepath.Join(filepath.Dir(path), "watchtower.db")
 	const perProc = 500
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
 	var cmds []*exec.Cmd
 	for i := range 2 {
-		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestHelperProcessRecord$")
+		cmd := exec.Command(os.Args[0], "-test.run=^TestHelperProcessRecord$")
 		cmd.Env = append(os.Environ(),
 			helperEnv+"="+dbPath,
 			helperCountEnv+"="+strconv.Itoa(perProc),
 			helperRoleEnv+"=cli:helper"+strconv.Itoa(i),
 		)
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-		cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 		if err := cmd.Start(); err != nil {
 			t.Fatalf("start helper: %v", err)
 		}

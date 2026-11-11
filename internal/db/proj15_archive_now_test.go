@@ -304,18 +304,11 @@ func TestMigration00105_ArchivedThroughStartsNull(t *testing.T) {
 // The stamp branch keeps the large-board read cheap: archive_after_days = 0,
 // so only the stamp archives.
 func TestProj15_LargeBoardReadIsFastWithAStamp(t *testing.T) {
-	d := openTestDB(t)
-	pid := newTestWorkbench(t, d)
-	require.Equal(t, 2000, seedLargeBoard(t, d, pid, 40, 7, 6))
-	require.NoError(t, d.SetWorkbenchArchiveDays(pid, 0))
-	require.NoError(t, d.ArchiveWorkbenchClosedNow(pid))
-
-	start := time.Now()
-	board, err := d.GetWorkbenchBoard(pid)
-	elapsed := time.Since(start)
-	require.NoError(t, err)
-
-	t.Logf("2000-target board read with a stamp: %s", elapsed)
+	board, ratio := largeBoardRead(t, func(d *DB, pid int64) {
+		require.NoError(t, d.SetWorkbenchArchiveDays(pid, 0))
+		require.NoError(t, d.ArchiveWorkbenchClosedNow(pid))
+	})
 	assert.Equal(t, 30*50+10*7*5, CountArchived(board))
-	assert.Less(t, elapsed, largeBoardReadBound, "2000-target board read")
+	assert.LessOrEqual(t, ratio, float64(boardMaxGrowth), "%d× the targets cost x%.2f CPU, want at most x%d (linear)",
+		boardGrowth, ratio, boardMaxGrowth)
 }

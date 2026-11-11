@@ -353,7 +353,7 @@ func TestWithInboxFolderRevision_ConcurrentWritersOneWins(t *testing.T) {
 	wantRowCount(t, d1, "inbox_folders", 3)
 }
 
-// Another connection holds the write lock past busy_timeout: the write fails
+// Another connection holds the write lock past busy_timeout (1 ms): the write fails
 // with a busy error before fn runs, and nothing is written.
 func TestWithInboxFolderRevision_BusyWritesNothing(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "w.db")
@@ -363,7 +363,7 @@ func TestWithInboxFolderRevision_BusyWritesNothing(t *testing.T) {
 	held, err := holder.Begin() // BEGIN IMMEDIATE: holds the write lock
 	require.NoError(t, err)
 
-	writer, err := OpenExistingRW(path, 50*time.Millisecond)
+	writer, err := OpenExistingRW(path, time.Millisecond)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = writer.Close() })
 	called := false
@@ -590,7 +590,7 @@ func TestSeedInboxFolderRoute_RoutedTakesNoWriteLock(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = held.Rollback() })
 
-	writer, err := OpenExistingRW(path, 50*time.Millisecond)
+	writer, err := OpenExistingRW(path, time.Millisecond)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = writer.Close() })
 	seeded, err := writer.SeedInboxFolderRoute(ctx, routed, "needs-approval")

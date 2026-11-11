@@ -2,5 +2,5 @@
 
 package agentreport
 
-// raceEnabled skips wall-clock budgets: the race detector multiplies them.
+// raceEnabled skips the 150k-event scaling test: the race detector makes it too costly.
 const raceEnabled = false
