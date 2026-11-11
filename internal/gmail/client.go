@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"watchtower/internal/db"
 )
 
 // gmailAPIBase is overridable in tests via httptest.Server.
@@ -188,10 +190,10 @@ func (c *Client) GetProfile(ctx context.Context) (*Profile, error) {
 }
 
 // ListInboxMessageIDs returns message IDs matching the Gmail search query
-// (e.g. "in:inbox newer_than:7d" or "in:inbox after:1720519200"). Gmail
-// paginates list results (nextPageToken); this walks all pages, accumulating
-// IDs, until either the pages are exhausted or maxResults IDs have been
-// collected. Pass maxResults <= 0 to collect every ID in the query window
+// (e.g. "{in:inbox in:sent} newer_than:7d" or "{in:inbox in:sent}
+// after:1720519200", the sync's listScope). Gmail paginates list results
+// (nextPageToken); this walks all pages, accumulating IDs, until either the
+// pages are exhausted or maxResults IDs have been collected. Pass maxResults <= 0 to collect every ID in the query window
 // (walk pages until nextPageToken is empty) — messages.list is quota-cheap
 // compared to messages.get, so callers that need the full window before
 // deciding what to process (see Sync) should not cap the list phase.
@@ -291,7 +293,7 @@ func (c *Client) GetMessageUnix(ctx context.Context, id string) (int64, error) {
 // messagePermalink opens a message in Gmail's web UI: under #sent when it
 // is only in the owner's sent mail, else under #inbox.
 func messagePermalink(id string, labels []string) string {
-	if slices.Contains(labels, "SENT") && !slices.Contains(labels, "INBOX") {
+	if slices.Contains(labels, db.GmailSentLabel) && !slices.Contains(labels, "INBOX") {
 		return "https://mail.google.com/mail/u/0/#sent/" + id
 	}
 	return "https://mail.google.com/mail/u/0/#inbox/" + id

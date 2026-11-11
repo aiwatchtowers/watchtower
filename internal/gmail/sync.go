@@ -265,7 +265,7 @@ func (s *Syncer) storeMessage(ctx context.Context, id string, syncedAt func(inte
 		IsUnread: m.IsUnread, Permalink: m.Permalink,
 	}
 	row.SyncedAt = syncedAt(m.InternalDate)
-	if err := s.db.UpsertGmailMessageMedia(ctx, s.accountID, row, s.fromOwner(m.FromEmail), mediaFound(m.Images)); err != nil {
+	if err := s.db.UpsertGmailMessageMedia(ctx, s.accountID, row, s.fromOwner(row.LabelsJSON, m.FromEmail), mediaFound(m.Images)); err != nil {
 		return false, msgUnix, fmt.Errorf("upsert %s: %w", m.ID, err)
 	}
 	return true, msgUnix, nil
@@ -371,18 +371,20 @@ func isoToUnix(iso string) float64 {
 	return float64(t.Unix())
 }
 
-// fromOwner reports whether from is the account's own address. A failed
-// account read is retried on the next message.
-func (s *Syncer) fromOwner(from string) bool {
+// fromOwner reports whether the message is the owner's own sent mail
+// (db.GmailOwnSent: the SENT label, or the account's own address as sender),
+// so its media goes first. A failed account read falls back to the label
+// alone and is retried on the next message.
+func (s *Syncer) fromOwner(labelsJSON, from string) bool {
 	if s.ownEmail == "" {
 		acct, err := s.db.GetGoogleAccount(s.accountID)
 		if err != nil {
 			s.logger.Printf("gmail: reading account %d for its own address: %v", s.accountID, err)
-			return false
+		} else {
+			s.ownEmail = strings.TrimSpace(acct.Email)
 		}
-		s.ownEmail = strings.TrimSpace(acct.Email)
 	}
-	return s.ownEmail != "" && strings.EqualFold(strings.TrimSpace(from), s.ownEmail)
+	return db.GmailOwnSent(labelsJSON, from, s.ownEmail)
 }
 
 // mediaFound turns a message's image parts into media rows (locator
