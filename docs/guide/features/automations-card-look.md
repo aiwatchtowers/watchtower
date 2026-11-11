@@ -20,7 +20,7 @@ text: Ask for a card that stays current: each run updates the same Inbox card in
 area: automations
 level: power
 kind: tip
-since: next
+since: 0.28.0
 action: nav:automations
 -->
 
@@ -41,7 +41,7 @@ text: In the automation editor, open **Look** and tell the assistant how the car
 area: automations
 level: next
 kind: feature
-since: next
+since: 0.28.0
 action: nav:automations
 -->
 

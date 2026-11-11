@@ -78,7 +78,7 @@ text: Click **▸ N closed** on a session to read its past asks by day, with you
 area: development
 level: next
 kind: tip
-since: next
+since: 0.28.0
 action: nav:projects
 -->
 
