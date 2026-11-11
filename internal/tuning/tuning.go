@@ -37,9 +37,8 @@ type Deps struct {
 	AgentSession func(ctx context.Context, wb int64, uuid string) (any, error)
 	// LLMUsage is `usage llm --since period --json` (today, 7d or 30d).
 	LLMUsage func(ctx context.Context, period string) (any, error)
-	// Home is the owner's home folder.
-	Home func() (string, error)
-	Now  func() time.Time
+	// Now is the clock of the 30-day spend and a proposal's time; no default.
+	Now func() time.Time
 	// CoachEnv is where the coach reads the owner's files: Home, CodexHome
 	// and the RepoState seam (cmd fills it over workbenchgit.PathStatus, the
 	// read-only `git status`). The skill and instruction reads use it, and

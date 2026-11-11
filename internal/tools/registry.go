@@ -374,10 +374,19 @@ func (r *Registry) List(surface string) []*Tool {
 }
 
 // visibleOn reports whether surface may see t; a surface-less tool is visible
-// everywhere.
+// everywhere but on a named-only surface.
 func visibleOn(t *Tool, surface string) bool {
-	return len(t.Surfaces) == 0 || slices.Contains(t.Surfaces, surface)
+	if len(t.Surfaces) == 0 {
+		return !namedOnlySurface(surface)
+	}
+	return slices.Contains(t.Surfaces, surface)
 }
+
+// namedOnlySurface is a surface that sees only the tools naming it: the
+// tuning chat reads no company source text (spec 2026-11-03-tuning-chat-design
+// D62), so the surface-less source reads (messages, Jira, people, …) stay off
+// it.
+func namedOnlySurface(surface string) bool { return surface == SurfaceTuning }
 
 // VisibleOn reports whether surface may see t (a surface-less tool is
 // visible everywhere) — the check Propose makes, for a caller that wants it

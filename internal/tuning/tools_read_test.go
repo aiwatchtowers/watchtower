@@ -61,7 +61,6 @@ func newFixture(t *testing.T) *fixture {
 		LLMUsage: func(_ context.Context, period string) (any, error) {
 			return map[string]any{"period": period}, nil
 		},
-		Home:     func() (string, error) { return f.home, nil },
 		Now:      func() time.Time { return testNow },
 		CoachEnv: func() coach.Env { return coach.Env{Home: f.home, RepoState: gitRepoState} },
 	}

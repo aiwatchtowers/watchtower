@@ -865,6 +865,29 @@ func TestList_FiltersBySurface(t *testing.T) {
 	assert.Error(t, reg.Register(newEchoTool(t, false, &executed)), "duplicate name")
 }
 
+// The tuning surface sees only the tools naming it (spec
+// 2026-11-03-tuning-chat-design D62): a surface-less tool, visible on every
+// other surface, is not listed there, so the MCP server never mounts it.
+func TestList_TuningSeesOnlyNamedTools(t *testing.T) {
+	reg := New(openDB(t))
+	schema, err := jsonschema.For[echoArgs](nil)
+	require.NoError(t, err)
+	exec := func(context.Context, *db.DB, Call) (any, error) { return "ok", nil }
+	require.NoError(t, reg.Register(&Tool{Name: "anywhere", Description: "x", InputSchema: schema,
+		Access: AccessRead, Execute: exec}))
+	require.NoError(t, reg.Register(&Tool{Name: "tuned", Description: "x", InputSchema: schema,
+		Access: AccessRead, Surfaces: []string{SurfaceTuning}, Execute: exec}))
+	names := func(surface string) []string {
+		var out []string
+		for _, tl := range reg.List(surface) {
+			out = append(out, tl.Name)
+		}
+		return out
+	}
+	assert.Equal(t, []string{"tuned"}, names(SurfaceTuning))
+	assert.Equal(t, []string{"anywhere"}, names("main"))
+}
+
 func TestAll_ReturnsEveryToolInRegistrationOrder(t *testing.T) {
 	reg := New(openDB(t))
 	var executed []Call
