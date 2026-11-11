@@ -18,21 +18,24 @@ import (
 	"watchtower/internal/hub/state"
 )
 
-// watchLines dials the control socket, asks for desktop_watch and returns a
-// reader of its raw lines (each decoded into a key → value map).
-func watchLines(t *testing.T, dir string) func(time.Duration) (map[string]any, bool) {
+// watchLines connects to r's control socket, asks for desktop_watch and
+// returns a reader of its raw lines (each decoded into a key → value map).
+// next(wait) gives up after wait with no line (0 = no bound); r runs in a
+// bubble, so the wait is on the bubble's clock.
+func watchLines(t *testing.T, r *rig) func(wait time.Duration) (map[string]any, bool) {
 	t.Helper()
-	c, err := net.Dial("unix", filepath.Join(dir, SocketName))
-	if err != nil {
-		t.Fatal(err)
-	}
+	c := r.dial()
 	t.Cleanup(func() { _ = c.Close() })
-	if err := json.NewEncoder(c).Encode(ControlRequest{Op: OpDesktopWatch}); err != nil {
+	if err := c.Send(ControlRequest{Op: OpDesktopWatch}); err != nil {
 		t.Fatal(err)
 	}
-	sc := bufio.NewScanner(c)
+	sc := bufio.NewScanner(c.c)
 	next := func(wait time.Duration) (map[string]any, bool) {
-		_ = c.SetReadDeadline(time.Now().Add(wait))
+		deadline := time.Time{}
+		if wait > 0 {
+			deadline = time.Now().Add(wait)
+		}
+		_ = c.c.SetReadDeadline(deadline)
 		if !sc.Scan() {
 			return nil, false
 		}
@@ -42,7 +45,7 @@ func watchLines(t *testing.T, dir string) func(time.Duration) (map[string]any, b
 		}
 		return m, true
 	}
-	if a, ok := next(5 * time.Second); !ok || a["op"] != OpDesktopWatch || a["ok"] != true {
+	if a, ok := next(0); !ok || a["op"] != OpDesktopWatch || a["ok"] != true {
 		t.Fatalf("desktop_watch answer: %v", a)
 	}
 	return next
@@ -52,55 +55,54 @@ func watchLines(t *testing.T, dir string) func(time.Duration) (map[string]any, b
 // answered received reaches Desktop's watch as one recording_queued line
 // carrying the upload id only.
 func TestDesktopWatchStreamsRecordingQueued(t *testing.T) {
-	d, _ := fileDB(t)
-	recordings := filepath.Join(t.TempDir(), "recordings")
-	e := runEndToEnd(t, "", func(o *Options) { o.DB, o.RecordingsDir = d, recordings })
-	ctl, err := Dial(e.dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = ctl.Close() }()
-	if a, err := ctl.Do(ControlRequest{Op: OpDesktopHeartbeat}); err != nil || !a.OK {
-		t.Fatalf("heartbeat: %+v, %v", a, err)
-	}
-	next := watchLines(t, e.dir)
+	bubble(t, func(t *testing.T) {
+		d, _ := fileDB(t)
+		recordings := filepath.Join(t.TempDir(), "recordings")
+		e := runEndToEnd(t, "", func(o *Options) { o.DB, o.RecordingsDir = d, recordings })
+		ctl := e.rig.dial()
+		defer func() { _ = ctl.Close() }()
+		if a, err := ctl.Do(ControlRequest{Op: OpDesktopHeartbeat}); err != nil || !a.OK {
+			t.Fatalf("heartbeat: %+v, %v", a, err)
+		}
+		next := watchLines(t, e.rig)
 
-	sealed, desc, err := secure.EncryptAsset(bytes.Repeat([]byte{0x41}, 2000), secure.ID{7}, bytes.Repeat([]byte{9}, 32), 1024)
-	if err != nil {
-		t.Fatal(err)
-	}
-	upload, _ := json.Marshal(map[string]any{"id": "u1", "status": "pending", "device_id": e.phone.ID().String()})
-	if _, err := e.phone.WriteUpload("u1", upload, &desc, sealed); err != nil {
-		t.Fatal(err)
-	}
-	eventually(t, "the upload received", func() bool {
-		if _, err := e.phone.Sync(); err != nil {
+		sealed, desc, err := secure.EncryptAsset(bytes.Repeat([]byte{0x41}, 2000), secure.ID{7}, bytes.Repeat([]byte{9}, 32), 1024)
+		if err != nil {
 			t.Fatal(err)
 		}
-		return e.phone.UploadEchoes["u1"]["status"] == "received"
-	})
+		upload, _ := json.Marshal(map[string]any{"id": "u1", "status": "pending", "device_id": e.phone.ID().String()})
+		if _, err := e.phone.WriteUpload("u1", upload, &desc, sealed); err != nil {
+			t.Fatal(err)
+		}
+		eventually(t, "the upload received", func() bool {
+			if _, err := e.phone.Sync(); err != nil {
+				t.Fatal(err)
+			}
+			return e.phone.UploadEchoes["u1"]["status"] == "received"
+		})
 
-	var queued []map[string]any
-	for {
-		m, ok := next(2 * time.Second)
-		if !ok {
-			break
+		var queued []map[string]any
+		for {
+			m, ok := next(2 * time.Second) // a quiet window on the bubble's clock
+			if !ok {
+				break
+			}
+			if m["event"] == EventRecordingQueued {
+				queued = append(queued, m)
+			}
 		}
-		if m["event"] == EventRecordingQueued {
-			queued = append(queued, m)
+		if len(queued) != 1 {
+			t.Fatalf("recording_queued lines: %v, want one", queued)
 		}
-	}
-	if len(queued) != 1 {
-		t.Fatalf("recording_queued lines: %v, want one", queued)
-	}
-	var keys []string
-	for k := range queued[0] {
-		keys = append(keys, k)
-	}
-	slices.Sort(keys)
-	if !slices.Equal(keys, []string{"event", "ok", "upload_id"}) || queued[0]["upload_id"] != "u1" {
-		t.Errorf("recording_queued = %v, want only the upload id", queued[0])
-	}
+		var keys []string
+		for k := range queued[0] {
+			keys = append(keys, k)
+		}
+		slices.Sort(keys)
+		if !slices.Equal(keys, []string{"event", "ok", "upload_id"}) || queued[0]["upload_id"] != "u1" {
+			t.Errorf("recording_queued = %v, want only the upload id", queued[0])
+		}
+	})
 }
 
 // TestDesktopWatchHearsPairStepsWithoutCodes: a pairing step reaches the
