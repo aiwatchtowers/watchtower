@@ -56,11 +56,12 @@ func (db *DB) openInboxIDs(ctx context.Context, query string, args ...any) ([]in
 }
 
 // ResolveOpenInboxItems resolves, with reason, the given items that are
-// still pending; resolved, dismissed, snoozed and unknown ids are skipped.
+// still open at now (openInboxClause, the dry run's rule); resolved,
+// dismissed, snoozed, archived, deleted-Jira and unknown ids are skipped.
 // Duplicates are dropped; the distinct ids go in chunks of bulkResolveChunk,
 // each one transaction. It returns the ids it resolved, in the order asked;
 // on a failed chunk, the ids resolved by the chunks before it and the error.
-func (db *DB) ResolveOpenInboxItems(ctx context.Context, ids []int64, reason string) ([]int64, error) {
+func (db *DB) ResolveOpenInboxItems(ctx context.Context, now time.Time, ids []int64, reason string) ([]int64, error) {
 	distinct := make([]int64, 0, len(ids))
 	seen := make(map[int64]bool, len(ids))
 	for _, id := range ids {
@@ -71,7 +72,7 @@ func (db *DB) ResolveOpenInboxItems(ctx context.Context, ids []int64, reason str
 	}
 	resolved := []int64{}
 	for chunk := range slices.Chunk(distinct, bulkResolveChunk) {
-		done, err := db.resolvePendingChunk(ctx, chunk, reason)
+		done, err := db.resolveOpenChunk(ctx, now, chunk, reason)
 		if err != nil {
 			return resolved, err
 		}
@@ -84,11 +85,11 @@ func (db *DB) ResolveOpenInboxItems(ctx context.Context, ids []int64, reason str
 	return resolved, nil
 }
 
-// resolvePendingChunk resolves the pending items among ids in one write
+// resolveOpenChunk resolves the items among ids open at now in one write
 // transaction and returns the ids it changed.
-func (db *DB) resolvePendingChunk(ctx context.Context, ids []int64, reason string) (map[int64]bool, error) {
-	args := make([]any, 0, len(ids)+1)
-	args = append(args, reason)
+func (db *DB) resolveOpenChunk(ctx context.Context, now time.Time, ids []int64, reason string) (map[int64]bool, error) {
+	args := make([]any, 0, len(ids)+2)
+	args = append(args, reason, sqlStamp(now))
 	for _, id := range ids {
 		args = append(args, id)
 	}
@@ -99,7 +100,7 @@ func (db *DB) resolvePendingChunk(ctx context.Context, ids []int64, reason strin
 	defer func() { _ = tx.Rollback() }()
 	done, err := scanResolvedIDs(tx.QueryContext(ctx, `UPDATE inbox_items SET status = 'resolved', resolved_reason = ?,
 		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-		WHERE status = 'pending' AND id IN (?`+strings.Repeat(", ?", len(ids)-1)+`)
+		WHERE `+openInboxClause+` AND id IN (?`+strings.Repeat(", ?", len(ids)-1)+`)
 		RETURNING id`, args...))
 	if err != nil {
 		return nil, fmt.Errorf("resolving inbox items: %w", err)

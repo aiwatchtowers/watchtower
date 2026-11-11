@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Every spelling of a sender's address names the same open mail, newest
@@ -116,30 +117,60 @@ func insertBulkItem(t *testing.T, d *DB, id int64, status string) {
 	}
 }
 
-// Only rows still pending are resolved, with the bulk reason; closed,
-// snoozed and unknown ids are skipped; no other column changes.
+// bulkNow is the clock of the bulk-resolve tests.
+var bulkNow = time.Date(2026, 11, 11, 8, 0, 0, 0, time.UTC)
+
+// Only rows open at now (openInboxClause, the dry run's rule) are resolved,
+// with the bulk reason; closed, snoozed, archived, ambient, deleted-Jira and
+// unknown ids are skipped; no other column changes.
 func TestResolveOpenInboxItems_SkipsClosedSnoozedAndUnknown(t *testing.T) {
 	d := openTestDB(t)
-	statuses := map[int64]string{1: "pending", 2: "resolved", 3: "snoozed", 4: "dismissed", 5: "pending"}
+	statuses := map[int64]string{1: "pending", 2: "resolved", 3: "snoozed", 4: "dismissed", 5: "pending",
+		6: "pending", 7: "pending", 8: "pending", 9: "pending", 10: "pending"}
 	for _, id := range slices.Sorted(maps.Keys(statuses)) {
 		insertBulkItem(t, d, id, statuses[id])
 	}
+	account := SeedTestJiraAccount(t, d)
+	stamp := sqlStamp(bulkNow)
+	for _, q := range []string{
+		// 6: archived by the daemon after the dry run.
+		`UPDATE inbox_items SET archived_at = '2026-11-11T07:00:00Z', archive_reason = 'stale' WHERE id = 6`,
+		// 7: pending but snoozed until after now.
+		`UPDATE inbox_items SET snooze_until = '2026-11-12T08:00:00Z' WHERE id = 7`,
+		// 8: a Jira item whose issue was deleted at the source.
+		`UPDATE inbox_items SET trigger_type = 'jira_assigned', channel_id = 'ACME-2' WHERE id = 8`,
+		// 9: a snooze already past — open, resolved.
+		`UPDATE inbox_items SET snooze_until = '2026-11-11T06:00:00Z' WHERE id = 9`,
+		// 10: ambient — never open.
+		`UPDATE inbox_items SET item_class = 'ambient' WHERE id = 10`,
+	} {
+		if _, err := d.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := d.Exec(`INSERT INTO jira_issues (account_id, key, project_key, summary, status, status_category,
+		created_at, updated_at, synced_at, is_deleted) VALUES (?, 'ACME-2', 'ACME', 'ACME-2', 'To Do', 'new', ?, ?, ?, 1)`,
+		account, stamp, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+	wantResolved := []int64{5, 9, 1}
 	before := map[int64]map[string]any{}
 	for id := range statuses {
 		before[id] = inboxRow(t, d, id)
 	}
 
-	got, err := d.ResolveOpenInboxItems(context.Background(), []int64{5, 2, 3, 4, 999, 1, 5}, BulkResolveReason)
+	got, err := d.ResolveOpenInboxItems(context.Background(), bulkNow,
+		[]int64{5, 2, 3, 4, 6, 7, 8, 999, 9, 10, 1, 5}, BulkResolveReason)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(got, []int64{5, 1}) {
-		t.Fatalf("resolved = %v, want [5 1] (input order, duplicates dropped)", got)
+	if !slices.Equal(got, wantResolved) {
+		t.Fatalf("resolved = %v, want %v (input order, duplicates dropped)", got, wantResolved)
 	}
-	for id, status := range statuses {
+	for id := range statuses {
 		after := inboxRow(t, d, id)
 		want := maps.Clone(before[id])
-		if status == "pending" {
+		if slices.Contains(wantResolved, id) {
 			if after["updated_at"] == before[id]["updated_at"] {
 				t.Errorf("item %d: updated_at not moved", id)
 			}
@@ -149,7 +180,7 @@ func TestResolveOpenInboxItems_SkipsClosedSnoozedAndUnknown(t *testing.T) {
 			t.Errorf("item %d:\n got %v\nwant %v", id, after, want)
 		}
 	}
-	if got, err := d.ResolveOpenInboxItems(context.Background(), nil, BulkResolveReason); err != nil || len(got) != 0 {
+	if got, err := d.ResolveOpenInboxItems(context.Background(), bulkNow, nil, BulkResolveReason); err != nil || len(got) != 0 {
 		t.Errorf("no ids = %v, %v; want none", got, err)
 	}
 }
@@ -167,7 +198,7 @@ func TestResolveOpenInboxItems_ChunksAndReportsPartial(t *testing.T) {
 		WHEN OLD.id > 400 BEGIN SELECT RAISE(ABORT, 'chunk refused'); END`); err != nil {
 		t.Fatal(err)
 	}
-	got, err := d.ResolveOpenInboxItems(context.Background(), ids, BulkResolveReason)
+	got, err := d.ResolveOpenInboxItems(context.Background(), bulkNow, ids, BulkResolveReason)
 	if err == nil {
 		t.Fatal("want the third chunk's error")
 	}
@@ -190,7 +221,7 @@ func TestResolveOpenInboxItems_CancelledContext(t *testing.T) {
 	insertBulkItem(t, d, 1, "pending")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if got, err := d.ResolveOpenInboxItems(ctx, []int64{1}, BulkResolveReason); err == nil || len(got) != 0 {
+	if got, err := d.ResolveOpenInboxItems(ctx, bulkNow, []int64{1}, BulkResolveReason); err == nil || len(got) != 0 {
 		t.Errorf("cancelled = %v, %v; want an error and nothing", got, err)
 	}
 }

@@ -168,6 +168,41 @@ func TestInboxResolve_PartialFailureJSON(t *testing.T) {
 	assert.Equal(t, "pending", status)
 }
 
+// Without --json a partial failure names how many it closed.
+func TestInboxResolve_PartialFailureText(t *testing.T) {
+	d := newResolveEnv(t)
+	now := time.Now()
+	ids := make([]string, 0, 201)
+	var last int64
+	for range 201 {
+		last = seedResolveItem(t, d, "mention", "U002", "pending", now)
+		ids = append(ids, fmt.Sprint(last))
+	}
+	_, err := d.Exec(fmt.Sprintf(`CREATE TRIGGER fail_second_chunk BEFORE UPDATE OF status ON inbox_items
+		WHEN OLD.id = %d BEGIN SELECT RAISE(ABORT, 'chunk refused'); END`, last))
+	require.NoError(t, err)
+
+	out, err := runInboxResolveCLI(t, "--ids", strings.Join(ids, ","))
+	require.Error(t, err)
+	assert.Empty(t, out)
+	assert.Contains(t, err.Error(), "closed 200 of 201: ")
+	assert.Contains(t, err.Error(), "chunk refused")
+}
+
+// An item archived between the dry run and the press is skipped.
+func TestInboxResolve_IdsSkipArchived(t *testing.T) {
+	d := newResolveEnv(t)
+	id := seedResolveItem(t, d, "mention", "U002", "pending", time.Now().Add(-20*24*time.Hour))
+	_, err := d.Exec(`UPDATE inbox_items SET archived_at = ?, archive_reason = 'stale' WHERE id = ?`,
+		time.Now().UTC().Format(time.RFC3339), id)
+	require.NoError(t, err)
+	out, err := runInboxResolveCLI(t, "--ids", fmt.Sprint(id), "--json")
+	require.NoError(t, err)
+	assert.Equal(t, map[string]any{"resolved": float64(0), "skipped": float64(1), "ids": []any{}}, lastJSONLine(t, out))
+	status, _ := statusOf(t, d, id)
+	assert.Equal(t, "pending", status)
+}
+
 // AGENT-07: every bulk form is the owner's; an agent is refused before
 // anything is read or written.
 func TestInboxResolve_RefusedUnderAgent(t *testing.T) {

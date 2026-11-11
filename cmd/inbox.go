@@ -316,6 +316,10 @@ func runInboxResolveBulk(cmd *cobra.Command, args []string) error {
 			Error    string `json:"error"`
 		}{resolved, of, err.Error()})
 		fmt.Fprintln(cmd.OutOrStdout(), string(line))
+		return err
+	}
+	if resolved > 0 {
+		return fmt.Errorf("closed %d of %d: %w", resolved, of, err)
 	}
 	return err
 }
@@ -439,14 +443,14 @@ func parseInboxResolveIDs(s string) ([]int64, error) {
 	return ids, nil
 }
 
-// inboxResolveIDs resolves the still-open items among ids.
+// inboxResolveIDs resolves the items among ids that are still open now.
 func inboxResolveIDs(cmd *cobra.Command, ids []int64) (int, int, error) {
 	database, err := openDBFromConfig()
 	if err != nil {
 		return 0, len(ids), err
 	}
 	defer database.Close()
-	resolved, err := database.ResolveOpenInboxItems(cmd.Context(), ids, db.BulkResolveReason)
+	resolved, err := database.ResolveOpenInboxItems(cmd.Context(), time.Now(), ids, db.BulkResolveReason)
 	if err != nil {
 		return len(resolved), len(ids), err
 	}
