@@ -25,6 +25,9 @@ final class CoachCenter {
     private(set) var running = false
     private(set) var runLine: String?
     private(set) var cardErrors: [Int64: String] = [:]
+    /// The workbench repository file each Accept wrote (`written_path`,
+    /// `written_branch`): the folded line and the rollback line name it.
+    private(set) var written: [Int64: CoachWrittenFile] = [:]
     /// Proposals with an owner verb in flight: a second press on the same
     /// card does nothing and the card disables its buttons meanwhile.
     private(set) var pending: Set<Int64> = []
@@ -101,11 +104,12 @@ final class CoachCenter {
         cardErrors[id] = nil
         let args = ["coach", "accept", String(id), "--json"] + (editedText == nil ? [] : ["--stdin"])
         do {
-            if let editedText {
-                _ = try await runner.run(args: args, stdin: Data(editedText.utf8))
+            let data = if let editedText {
+                try await runner.run(args: args, stdin: Data(editedText.utf8))
             } else {
-                _ = try await runner.run(args: args)
+                try await runner.run(args: args)
             }
+            if let file = CoachWrittenFile.parse(acceptResult: data) { written[id] = file }
             reloadAll()
         } catch {
             decisionFailed(id, error)
@@ -125,7 +129,9 @@ final class CoachCenter {
     }
 
     /// Returns the `diff` when the destination changed since the accept (the
-    /// owner may then force it); nil otherwise.
+    /// owner may then force it); nil otherwise. A forced rollback the CLI
+    /// still refuses (a created CLAUDE.md/AGENTS.md edited since is never
+    /// deleted, spec §4.3a) shows the CLI's line on the card.
     func rollback(_ id: Int64, force: Bool) async -> String? {
         guard pending.insert(id).inserted else { return nil }
         defer { pending.remove(id) }
@@ -136,7 +142,7 @@ final class CoachCenter {
             reloadAll()
             return nil
         } catch {
-            if let failure = Self.failure(error), failure.code == "changed_since" {
+            if !force, let failure = Self.failure(error), failure.code == "changed_since" {
                 return failure.diff ?? ""
             }
             decisionFailed(id, error)
@@ -246,10 +252,17 @@ final class CoachCenter {
     // MARK: - Errors
 
     private func decisionFailed(_ id: Int64, _ error: Error) {
-        if let code = Self.failure(error)?.code, code == "stale" || code == "state_changed" {
+        switch Self.failure(error)?.code {
+        case "stale", "state_changed":
             cardErrors[id] = "The text changed since — this proposal is closed"
             reloadAll()
-        } else {
+        case "dirty":
+            // The card names its own file; the CLI's line carries the proposal id.
+            let path = proposals?.value?.first { $0.id == id }?.repoRelativePath
+            cardErrors[id] = path.map { TuningChatTexts.repoDirty(path: $0) } ?? Self.message(error)
+        case "not_git":
+            cardErrors[id] = TuningChatTexts.repoNotGit
+        default:
             cardErrors[id] = Self.message(error)
         }
     }

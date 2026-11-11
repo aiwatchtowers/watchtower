@@ -49,7 +49,10 @@ struct CoachAcceptedLogView: View {
                 Text(Self.date(p.decidedAt)).font(.caption.weight(.semibold).monospacedDigit())
                 Text(p.title).font(.callout).lineLimit(1)
                 Spacer(minLength: Spacing.regular)
-                Text(p.verdictLine(hasCut: hasCut, now: Date())).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Text(p.verdictLine(hasCut: hasCut, now: Date(), writtenPath: coach.written[p.id]?.path))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
                 if p.status == "accepted" {
                     Button("Roll Back") { onRollback(p) }
                         .buttonStyle(.kitQuiet)

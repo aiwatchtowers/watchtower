@@ -150,6 +150,29 @@ package struct CoachProposalList: Decodable, Equatable, Sendable {
     package let proposals: [CoachProposal]
 }
 
+/// The workbench repository file a `coach accept --json` wrote (`written_path`,
+/// relative to the workbench folder, and `written_branch`); nil for any other
+/// destination (an empty `written_path`).
+package struct CoachWrittenFile: Equatable, Sendable {
+    package let path: String
+    package let branch: String
+
+    package init(path: String, branch: String) {
+        self.path = path
+        self.branch = branch
+    }
+
+    package static func parse(acceptResult data: Data) -> Self? {
+        struct Out: Decodable {
+            let written_path: String?
+            let written_branch: String?
+        }
+        guard let out = try? JSONDecoder().decode(Out.self, from: data),
+              let path = out.written_path, !path.isEmpty else { return nil }
+        return Self(path: path, branch: out.written_branch ?? "")
+    }
+}
+
 /// The failure object `--json` writes to stderr, followed by a prose line.
 package struct CoachFailure: Decodable, Equatable, Sendable {
     package let ok: Bool

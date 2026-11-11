@@ -260,4 +260,73 @@ final class CoachCenterTests: XCTestCase {
         XCTAssertEqual(diff, "-a\n+b")
         XCTAssertNil(center.cardErrors[5])
     }
+
+    func testForcedRollbackStillRefusedShowsTheLine() async {
+        let runner = ScriptedCoachRunner { _ in
+            throw Self.failure(#"{"ok":false,"error":"CLAUDE.md changed since Accept","code":"changed_since","diff":"+x"}"#)
+        }
+        let center = makeCenter(runner)
+        let diff = await center.rollback(9, force: true)
+        XCTAssertNil(diff)
+        XCTAssertEqual(center.cardErrors[9], "CLAUDE.md changed since Accept", "the sheet stays open with the reason")
+    }
+
+    func testDirtyBeforeTheListLoadedShowsTheCLILine() async {
+        let runner = ScriptedCoachRunner { _ in throw Self.failure(Self.dirtyFailure) }
+        let center = makeCenter(runner)
+        await center.accept(9, editedText: nil)
+        XCTAssertEqual(center.cardErrors[9], try? XCTUnwrap(CoachFailure.parse(stderr: Self.dirtyFailure)).error)
+    }
+
+    /// A repository proposal (#9, the workbench's CLAUDE.md) in the list.
+    nonisolated private static let repoList = #"{"ok":true,"proposals":[{"id":9,"title":"Tests","why":"w","#
+        + #""destination":"repo_claude_md","workbench_id":3,"prompt_id":"","kind":"add","metric":"corrections","#
+        + #""before":"","after":"x","evidence":[],"sources":1,"status":"open","created_at":"2026-11-01T09:00:00Z","#
+        + #""decided_at":null,"verdict":"","reverts_id":0,"budget":0,"folder_branch":"main"}]}"#
+
+    /// The failure objects `coach accept --json` prints for the two git
+    /// refusals (`cmd/coach.go` `codedCoachErr`, the Applier's wrap around
+    /// `coach.RepoDirtyLine` / `coach.RepoNotGitLine`).
+    nonisolated private static let dirtyFailure = #"{"ok":false,"error":"coach proposal 9 (repo_claude_md): "#
+        + #"CLAUDE.md has uncommitted changes — commit or discard them, then press Accept again.","code":"dirty"}"#
+    nonisolated private static let notGitFailure = #"{"ok":false,"error":"coach proposal 9 (repo_claude_md): "#
+        + #"This workbench folder is not a git repository: Watchtower changes files here only where you can review "#
+        + #"and commit the change.","code":"not_git"}"#
+
+    func testRepoAcceptCodes() async throws {
+        let runner = ScriptedCoachRunner { args in
+            switch args.dropFirst().first {
+            case "proposals": return Data(Self.repoList.utf8)
+            case "accept": throw Self.failure(Self.dirtyFailure)
+            default: return Data(#"{"ok":true}"#.utf8)
+            }
+        }
+        let center = makeCenter(runner)
+        center.refreshProposals()
+        await waitUntil { center.proposals?.value != nil }
+
+        await center.accept(9, editedText: nil)
+        XCTAssertEqual(center.cardErrors[9], TuningChatTexts.repoDirty(path: "CLAUDE.md"))
+        let dirtyCLI = try XCTUnwrap(CoachFailure.parse(stderr: Self.dirtyFailure)).error
+        XCTAssertTrue(dirtyCLI.hasSuffix(try XCTUnwrap(center.cardErrors[9])), "the Go text, without its id prefix")
+
+        runner.answer { args in
+            if args.dropFirst().first == "accept" { throw Self.failure(Self.notGitFailure) }
+            return Data(Self.repoList.utf8)
+        }
+        await center.accept(9, editedText: nil)
+        XCTAssertEqual(center.cardErrors[9], TuningChatTexts.repoNotGit)
+        XCTAssertTrue(try XCTUnwrap(CoachFailure.parse(stderr: Self.notGitFailure)).error.hasSuffix(TuningChatTexts.repoNotGit))
+        XCTAssertNil(center.written[9])
+
+        runner.answer { args in
+            if args.dropFirst().first == "accept" {
+                return Data(#"{"ok":true,"id":9,"status":"accepted","written_path":"CLAUDE.md","written_branch":"main"}"#.utf8)
+            }
+            return Data(Self.repoList.utf8)
+        }
+        await center.accept(9, editedText: nil)
+        XCTAssertNil(center.cardErrors[9])
+        XCTAssertEqual(center.written[9], CoachWrittenFile(path: "CLAUDE.md", branch: "main"))
+    }
 }

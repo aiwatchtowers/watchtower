@@ -56,8 +56,18 @@ extension CoachProposal {
             .sorted { $0.id < $1.id }
     }
 
-    package func verdictLine(hasCut: Bool, now: Date) -> String {
-        if status == "rolled_back" { return "rolled back" }
+    /// The Accepted edits row's state. A repository file (§4.3a) is measured
+    /// from its commit (`measure_from`): until then it waits for the commit,
+    /// and 30 days without one end it unmeasured. `writtenPath` is the
+    /// accept result's path when the Desktop has it.
+    package func verdictLine(hasCut: Bool, now: Date, writtenPath: String? = nil) -> String {
+        let repoPath = writtenPath ?? repoRelativePath
+        if status == "rolled_back" {
+            return repoPath.map { TuningChatTexts.rolledBackRepoFile(path: $0) } ?? "rolled back"
+        }
+        if repoPath != nil, status == "accepted", measureFrom == nil {
+            return verdict == "too_little_data" ? TuningChatTexts.notCommitted : TuningChatTexts.awaitingCommit
+        }
         switch verdict {
         case "works":
             let base = baseline.map(Self.number) ?? "?"
@@ -68,7 +78,7 @@ extension CoachProposal {
         case "too_little_data":
             return "too little data"
         default:
-            guard status == "accepted", let decided = decidedAt.flatMap(Self.parseDate) else { return "" }
+            guard status == "accepted", let decided = (measureFrom ?? decidedAt).flatMap(Self.parseDate) else { return "" }
             let due = decided.addingTimeInterval(14 * 24 * 3600)
             let f = DateFormatter()
             f.locale = Locale(identifier: "en_US_POSIX")
@@ -92,6 +102,12 @@ extension CoachProposal {
         case "pack_overlay": return named("Watchtower skill")
         case "codex_agents_md_user": return "Codex AGENTS.md"
         case "codex_rules_allow": return "Codex rules"
+        // A workbench's own files name it already: no suffix either.
+        case "repo_claude_md": return "Workbench CLAUDE.md"
+        case "repo_agents_md": return "Workbench AGENTS.md"
+        case "repo_claude_skill": return named("Workbench Claude skill")
+        case "repo_codex_skill": return named("Workbench Codex skill")
+        case "repo_workflow": return "Workbench workflow.md"
         default: break
         }
         let base: String
@@ -105,6 +121,35 @@ extension CoachProposal {
         default: base = destination
         }
         return workbenchID == 0 ? base + " · all workbenches" : base
+    }
+
+    /// A workbench repository destination's file, relative to the workbench
+    /// folder: the twin of Go's `coach.RepoRelPath` (shared table
+    /// `internal/coach/testdata/repo_rel_paths.json`). nil for any other
+    /// destination and for a skill name Go refuses.
+    package var repoRelativePath: String? {
+        switch destination {
+        case "repo_claude_md": return "CLAUDE.md"
+        case "repo_agents_md": return "AGENTS.md"
+        case "repo_workflow": return ".watchtower/workflow.md"
+        case "repo_claude_skill", "repo_codex_skill":
+            guard let skill, skill.wholeMatch(of: Self.skillName) != nil else { return nil }
+            let top = destination == "repo_claude_skill" ? ".claude" : ".agents"
+            return "\(top)/skills/\(skill)/SKILL.md"
+        default: return nil
+        }
+    }
+
+    /// Go's `validSkillName`.
+    private static let skillName = #/[A-Za-z0-9][A-Za-z0-9._-]{0,63}/#
+
+    /// The caption above the card's diff: the destination, or for a
+    /// repository file its path and the branch now checked out (§4.3a,
+    /// D68), then the size line.
+    package var diffCaption: String {
+        let head = repoRelativePath.map { TuningChatTexts.repoCardCaption(path: $0, branch: folderBranch ?? "") }
+            ?? destinationLabel
+        return [head, sizeLine].compactMap { $0 }.joined(separator: " · ")
     }
 
     /// Sizes in Unicode scalars (Go runes); `String.count` counts graphemes.
