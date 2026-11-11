@@ -62,4 +62,4 @@ For a workbench file the folded line reads **Accepted · wrote CLAUDE.md on main
 - [Agent coach](agent-coach.md)
 - [Methodology](workbench/methodology.md)
 
-For developers: docs/features/tuning-chat.md
+For developers: [docs/features/tuning-chat.md](../../features/tuning-chat.md)
