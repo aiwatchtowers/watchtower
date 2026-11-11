@@ -103,7 +103,7 @@ final class TuningChat {
             let id = try await TuningChatSurface.newConversation(dbPool: dbPool, workbenchID: workbenchID)
             switchTo(id)
         } catch {
-            loadError = "Couldn't start a new tuning chat: \(error.localizedDescription)"
+            loadError = TuningChatTexts.newChatFailed(error.localizedDescription)
         }
     }
 
@@ -138,7 +138,7 @@ final class TuningChat {
             }
             loadError = nil
         } catch {
-            loadError = "Couldn't read the tuning chat's proposals: \(error.localizedDescription)"
+            loadError = TuningChatTexts.cardsReadFailed(error.localizedDescription)
         }
         coach?.refreshProposals()
     }
