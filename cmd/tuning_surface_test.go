@@ -274,3 +274,27 @@ func TestTuningDeps_ReportsThroughRealRegistry(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "7d", usage["period"])
 }
+
+// The tuning surface is no trust place: its binding applies directly and the
+// card's Accept is the owner's approval, so the listing shows no trust for
+// propose_tuning_edit and the CLI refuses to set one.
+func TestTuningSurface_NoTrustPlace(t *testing.T) {
+	writeActionsConfig(t)
+	out, err := runActions(t, "tools", "--json")
+	require.NoError(t, err)
+	var listed []struct {
+		Name           string            `json:"name"`
+		TrustBySurface map[string]string `json:"trust_by_surface"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &listed), out)
+	found := false
+	for _, l := range listed {
+		if l.Name == "propose_tuning_edit" {
+			found = true
+			assert.Empty(t, l.TrustBySurface)
+		}
+	}
+	require.True(t, found, out)
+	_, err = runActions(t, "trust", "propose_tuning_edit", "execute", "--surface", tools.SurfaceTuning)
+	require.ErrorIs(t, err, tools.ErrSurfaceNotOffered)
+}

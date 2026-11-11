@@ -415,7 +415,7 @@ func BuildSession(main *db.DB, al *agentlogdb.DB, workbenchID int64, sessionUUID
 	}
 	i := slices.IndexFunc(all, func(s agentlogdb.AgentReportSession) bool { return s.SessionUUID == sessionUUID })
 	if i < 0 {
-		return nil, fmt.Errorf("session %s in workbench %d: %w", sessionUUID, workbenchID, ErrSessionNotFound)
+		return nil, fmt.Errorf("session %s not found in workbench %d: %w", sessionUUID, workbenchID, ErrSessionNotFound)
 	}
 	events, err := al.AgentReportEvents([]string{sessionUUID})
 	if err != nil {

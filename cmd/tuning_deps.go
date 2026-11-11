@@ -19,7 +19,8 @@ import (
 // `usage llm`'s report, the prompt store, and the coach's environment — the
 // same home folders and git reader (coachRepoState) a CLI Accept uses, so the
 // MCP child and `coach accept` read a repository file's state alike. It runs
-// no git itself (COACH-01: TestCOACH01_NoGitWrites).
+// no git itself (COACH-01: TestCOACH01_NoGitWrites). Like the CLI commands,
+// each report read opens its own database handles.
 func tuningDeps(cfg *config.Config) tuning.Deps {
 	now := func() time.Time { return time.Now().UTC() }
 	return tuning.Deps{
@@ -29,9 +30,6 @@ func tuningDeps(cfg *config.Config) tuning.Deps {
 			var since time.Time
 			if days > 0 {
 				since = t.AddDate(0, 0, -days)
-			}
-			if agent == "" {
-				agent = agentreport.AgentAll
 			}
 			ov, _, err := agentsReportValue(cfg, wb, since, t, "", agent)
 			if err != nil {
@@ -50,7 +48,7 @@ func tuningDeps(cfg *config.Config) tuning.Deps {
 			return det, nil
 		},
 		LLMUsage: func(_ context.Context, period string) (any, error) {
-			since, err := usageLLMSince(period, time.Now())
+			since, err := usageLLMSince(period, now())
 			if err != nil {
 				return nil, err
 			}
