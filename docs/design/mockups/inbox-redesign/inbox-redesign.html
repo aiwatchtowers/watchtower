@@ -1,0 +1,441 @@
+<title>Inbox Redesign</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* Layout: one macOS window mock (rail 196 · list 372 · reading pane), then the "what changed" notes under it. Dark-first, like the app. */
+:root{
+  --page:#141416; --win:#1c1c1e; --rail:#232326; --list:#1e1e20; --pane:#19191b;
+  --fg:#f2f2f4; --fg2:rgba(235,235,245,.62); --fg3:rgba(235,235,245,.38);
+  --hair:rgba(255,255,255,.09); --rest:rgba(255,255,255,.04); --card:rgba(255,255,255,.06); --hover:rgba(255,255,255,.07);
+  --accent:#0a84ff; --sel:rgba(10,132,255,.14); --on:rgba(10,132,255,.30);
+  --warn:#ff9f0a; --bad:#ff453a; --ok:#30d158; --idea:#bf5af2; --sun:#ffd60a;
+  --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","Inter","Helvetica Neue",Arial,sans-serif;
+  --mono:ui-monospace,"SF Mono",Menlo,monospace;
+  color-scheme:dark;
+}
+@media (prefers-color-scheme: light){:root:not([data-theme="dark"]){
+  --page:#e9e9ec; --win:#f6f6f8; --rail:#ececef; --list:#f9f9fa; --pane:#ffffff;
+  --fg:#1d1d1f; --fg2:rgba(60,60,67,.66); --fg3:rgba(60,60,67,.40);
+  --hair:rgba(0,0,0,.10); --rest:rgba(0,0,0,.035); --card:rgba(0,0,0,.05); --hover:rgba(0,0,0,.06);
+  --accent:#007aff; --sel:rgba(0,122,255,.16); --on:rgba(0,122,255,.24);
+  --warn:#c46a00; --bad:#d70015; --ok:#248a3d; --idea:#8944ab; --sun:#b78b00; color-scheme:light;}}
+:root[data-theme="light"]{
+  --page:#e9e9ec; --win:#f6f6f8; --rail:#ececef; --list:#f9f9fa; --pane:#ffffff;
+  --fg:#1d1d1f; --fg2:rgba(60,60,67,.66); --fg3:rgba(60,60,67,.40);
+  --hair:rgba(0,0,0,.10); --rest:rgba(0,0,0,.035); --card:rgba(0,0,0,.05); --hover:rgba(0,0,0,.06);
+  --accent:#007aff; --sel:rgba(0,122,255,.16); --on:rgba(0,122,255,.24);
+  --warn:#c46a00; --bad:#d70015; --ok:#248a3d; --idea:#8944ab; --sun:#b78b00; color-scheme:light;}
+*{box-sizing:border-box}
+body{background:var(--page);color:var(--fg);font-family:var(--sans);font-size:13px;line-height:1.38;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:24px 48px}
+.wrap{max-width:1360px;margin:0 auto;display:flex;flex-direction:column;gap:28px}
+h1.page{font-size:22px;font-weight:650;margin:0;letter-spacing:-.01em;text-wrap:balance}
+.lede{color:var(--fg2);margin:4px 0 0;max-width:72ch}
+.scroller{overflow-x:auto;border-radius:12px}
+svg{display:block}
+.ic{width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+
+/* window */
+.win{width:1320px;height:820px;background:var(--win);border-radius:12px;border:.5px solid var(--hair);overflow:hidden;
+  display:grid;grid-template-rows:44px 1fr;box-shadow:0 30px 80px rgba(0,0,0,.35)}
+.titlebar{display:grid;grid-template-columns:196px 372px 1fr;align-items:center;border-bottom:.5px solid var(--hair)}
+.tl{display:flex;gap:8px;padding-left:14px}.tl i{width:12px;height:12px;border-radius:50%;background:var(--fg3);opacity:.6}
+.tbar-list{display:flex;align-items:center;gap:8px;padding:0 12px;height:100%;border-left:.5px solid var(--hair)}
+.tbar-list b{font-size:15px;font-weight:650}
+.search{flex:1;display:flex;align-items:center;gap:6px;height:26px;border-radius:6px;background:var(--card);color:var(--fg3);padding:0 8px;font-size:12px}
+.tbar-pane{display:flex;align-items:center;justify-content:flex-end;gap:6px;padding:0 12px;height:100%;border-left:.5px solid var(--hair)}
+.iconbtn{width:26px;height:26px;border-radius:6px;display:grid;place-items:center;color:var(--fg2);background:none;border:0;cursor:pointer}
+.iconbtn:hover{background:var(--hover)}
+.body{display:grid;grid-template-columns:196px 372px 1fr;min-height:0}
+
+/* rail */
+.rail{background:var(--rail);padding:10px 8px;display:flex;flex-direction:column;gap:2px;min-height:0}
+.rrow{display:flex;align-items:center;gap:8px;height:28px;padding:0 8px;border-radius:6px;color:var(--fg);cursor:pointer;border:0;background:none;font:inherit;text-align:left;width:100%}
+.rrow:hover{background:var(--hover)} .rrow.on{background:var(--sel)}
+.rrow .ic{color:var(--fg2)} .rrow.on .ic{color:var(--accent)}
+.rrow span.t{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cnt{font-size:11px;font-variant-numeric:tabular-nums;color:var(--fg2)}
+.cnt.act{color:#fff;background:var(--warn);border-radius:9px;padding:0 6px;line-height:17px;font-weight:600}
+:root[data-theme="light"] .cnt.act{color:#fff}
+.rsec{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--fg3);padding:14px 8px 4px;font-weight:600}
+.rquiet{color:var(--fg3);font-size:12px;padding:2px 8px;line-height:1.35}
+.rail .spacer{flex:1}
+.rfoot{display:flex;gap:6px;padding:4px}
+.kbtn{height:24px;padding:0 10px;border-radius:6px;border:0;background:var(--card);color:var(--fg);font:inherit;font-size:12px;cursor:pointer;display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.kbtn:hover{background:var(--hover)}
+.kbtn.primary{background:var(--accent);color:#fff;font-weight:600}
+.kbtn.quiet{background:none;color:var(--accent);padding:0 6px}
+.kbtn.quiet:hover{background:var(--rest)}
+
+/* list */
+.list{background:var(--list);border-left:.5px solid var(--hair);overflow-y:auto;padding:6px 8px 16px;min-height:0}
+.lhead{display:flex;align-items:center;justify-content:space-between;padding:6px 8px 2px;color:var(--fg3);font-size:11.5px}
+.seg{display:inline-flex;background:var(--card);border-radius:7px;padding:2px;gap:2px}
+.seg b{font-weight:500;font-size:11.5px;padding:2px 9px;border-radius:5px;color:var(--fg2);cursor:pointer}
+.seg b.on{background:var(--pane);color:var(--fg);box-shadow:0 0 0 .5px var(--hair)}
+.lsec{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--fg3);padding:14px 8px 5px;font-weight:600;display:flex;justify-content:space-between}
+.item{display:grid;grid-template-columns:30px 1fr auto;gap:10px;padding:8px;border-radius:8px;cursor:pointer;align-items:start;border:0;background:none;color:inherit;font:inherit;text-align:left;width:100%}
+.item+.item{margin-top:2px}
+.item:hover{background:var(--hover)} .item.on{background:var(--sel)}
+.item.on .tile{background:var(--card)}
+.tile{width:30px;height:30px;border-radius:8px;display:grid;place-items:center}
+.tile .ic{width:16px;height:16px}
+.t-sun{background:color-mix(in srgb,var(--sun) 18%,transparent);color:var(--sun)}
+.t-wait{background:color-mix(in srgb,var(--warn) 18%,transparent);color:var(--warn)}
+.t-thr{background:color-mix(in srgb,var(--accent) 18%,transparent);color:var(--accent)}
+.t-idea{background:color-mix(in srgb,var(--idea) 18%,transparent);color:var(--idea)}
+.t-mail{background:color-mix(in srgb,var(--ok) 18%,transparent);color:var(--ok)}
+.t-appr{background:color-mix(in srgb,var(--warn) 18%,transparent);color:var(--warn)}
+.ititle{font-weight:600;display:flex;gap:6px;align-items:baseline;min-width:0}
+.ititle .unread{width:7px;height:7px;border-radius:50%;background:var(--accent);flex:none;transform:translateY(-1px)}
+.iprev{color:var(--fg2);font-size:12.5px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-top:1px}
+.imeta{color:var(--fg3);font-size:11.5px;margin-top:3px}
+.iright{display:flex;flex-direction:column;align-items:flex-end;gap:5px;font-size:11.5px;color:var(--fg3);font-variant-numeric:tabular-nums;white-space:nowrap}
+.pill{font-size:11px;font-weight:600;padding:0 7px;line-height:18px;border-radius:9px;background:var(--accent);color:#fff;font-variant-numeric:tabular-nums}
+.pill.warn{background:var(--warn)}
+.pill.soft{background:var(--card);color:var(--fg2);font-weight:500}
+.foldline{display:flex;align-items:center;gap:8px;color:var(--fg3);font-size:12px;padding:6px 8px;border-radius:6px;cursor:pointer}
+.foldline:hover{background:var(--rest);color:var(--fg2)}
+
+/* pane */
+.pane{background:var(--pane);border-left:.5px solid var(--hair);overflow-y:auto;min-height:0}
+.col{max-width:760px;margin:0 auto;padding:22px 32px 40px;display:flex;flex-direction:column;gap:22px}
+.phead{display:flex;gap:12px;align-items:flex-start}
+.phead .tile{width:38px;height:38px;border-radius:10px}.phead .tile .ic{width:20px;height:20px}
+.phead h2{margin:0;font-size:20px;font-weight:650;letter-spacing:-.01em}
+.phead .sub{color:var(--fg2);font-size:12.5px;margin-top:2px}
+.phead .acts{margin-left:auto;display:flex;gap:6px;align-items:center}
+.stepper{display:inline-flex;align-items:center;background:var(--card);border-radius:6px;height:24px}
+.stepper button{border:0;background:none;color:var(--fg2);height:24px;width:24px;cursor:pointer;border-radius:6px}
+.stepper button:hover{background:var(--hover)}
+.stepper span{font-size:12px;padding:0 4px;color:var(--fg)}
+.sh{font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--fg3);font-weight:600;display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px}
+.sh a{color:var(--accent);text-transform:none;letter-spacing:0;font-size:12px;font-weight:500;text-decoration:none;cursor:pointer}
+.card{background:var(--card);border-radius:10px;padding:14px 16px}
+.lead{font-size:15px;line-height:1.5;margin:0}
+.focus{display:flex;flex-direction:column;gap:10px;margin:12px 0 0;padding:0;list-style:none}
+.focus li{display:grid;grid-template-columns:22px 1fr auto;gap:10px;align-items:start}
+.num{width:20px;height:20px;border-radius:50%;background:var(--on);color:var(--accent);font-size:11px;font-weight:700;display:grid;place-items:center}
+.focus .why{color:var(--fg2);font-size:12.5px}
+.chip{display:inline-flex;align-items:center;gap:4px;font-size:11px;padding:0 7px;line-height:18px;border-radius:9px;white-space:nowrap}
+.c-warn{background:color-mix(in srgb,var(--warn) 16%,transparent);color:var(--warn);box-shadow:inset 0 0 0 .5px color-mix(in srgb,var(--warn) 35%,transparent)}
+.c-bad{background:color-mix(in srgb,var(--bad) 16%,transparent);color:var(--bad);box-shadow:inset 0 0 0 .5px color-mix(in srgb,var(--bad) 35%,transparent)}
+.c-ok{background:color-mix(in srgb,var(--ok) 16%,transparent);color:var(--ok);box-shadow:inset 0 0 0 .5px color-mix(in srgb,var(--ok) 35%,transparent)}
+.c-n{background:var(--card);color:var(--fg2)}
+.tl2{display:flex;flex-direction:column}
+.slot{display:grid;grid-template-columns:52px 1fr auto;gap:12px;padding:7px 0;align-items:center}
+.slot+.slot{box-shadow:0 -.5px 0 var(--hair)}
+.slot time{color:var(--fg2);font-variant-numeric:tabular-nums;font-size:12.5px}
+.slot .ev{display:flex;flex-direction:column}
+.slot .ev small{color:var(--fg3);font-size:11.5px}
+.slot.now time{color:var(--accent);font-weight:600}
+.rows{display:flex;flex-direction:column;gap:2px}
+.wrow{display:grid;grid-template-columns:22px 1fr auto;gap:10px;padding:9px 10px;border-radius:8px;align-items:start;position:relative}
+.wrow:hover{background:var(--hover)}
+.wrow .src{width:20px;height:20px;border-radius:5px;display:grid;place-items:center;font-size:10px;font-weight:700;color:#fff}
+.s-slack{background:#611f69}.s-jira{background:#0052cc}.s-mail{background:#5b6b7f}.s-lin{background:#5e6ad2}
+.wrow .who{font-weight:600}.wrow .where{color:var(--fg2);font-weight:400}
+.wrow q{display:block;color:var(--fg2);font-size:12.5px;quotes:"“" "”";margin-top:1px}
+.wrow .age{display:flex;flex-direction:column;align-items:flex-end;gap:6px}
+.hover-acts{position:absolute;top:50%;right:8px;transform:translateY(-50%);display:flex;gap:4px;padding-left:24px;
+  background:linear-gradient(to right,transparent,var(--pane) 24px);opacity:0;pointer-events:none;transition:opacity .15s ease}
+.wrow:hover .hover-acts,.wrow.focus-row .hover-acts{opacity:1;pointer-events:auto}
+.wrow:hover .age,.wrow.focus-row .age{opacity:0}
+.wrow:hover,.wrow.focus-row{background:var(--hover)}
+.wrow:hover .hover-acts,.wrow.focus-row .hover-acts{background:linear-gradient(to right,transparent,color-mix(in srgb,var(--pane) 88%,var(--fg)) 24px)}
+@media (prefers-reduced-motion: reduce){.hover-acts{transition:none}}
+.kbd{display:flex;gap:14px;flex-wrap:wrap;color:var(--fg3);font-size:11.5px;padding-top:4px}
+.kbd kbd{font-family:var(--mono);font-size:10.5px;background:var(--card);border-radius:4px;padding:1px 5px;color:var(--fg2);margin-right:4px}
+.bulk{display:flex;align-items:center;gap:12px;justify-content:space-between;background:var(--rest);border-radius:10px;padding:10px 14px;color:var(--fg2);font-size:12.5px}
+.idea-card{background:var(--card);border-radius:12px;padding:20px 22px;display:flex;flex-direction:column;gap:12px}
+.idea-card h3{margin:0;font-size:17px;font-weight:650;letter-spacing:-.005em}
+.idea-card blockquote{margin:0;padding:8px 12px;border-radius:8px;background:var(--rest);color:var(--fg2);font-size:12.5px}
+.prog{height:4px;border-radius:2px;background:var(--card);overflow:hidden}.prog i{display:block;height:100%;background:var(--idea);width:30%}
+.blocks p{margin:0 0 8px}
+.mt{color:var(--fg3);font-size:11.5px}
+.foot{color:var(--fg3);font-size:11.5px;display:flex;gap:10px;flex-wrap:wrap}
+
+/* notes */
+.notes{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px}
+.note{background:var(--win);border:.5px solid var(--hair);border-radius:10px;padding:14px 16px;min-width:0}
+.note h3{margin:0 0 6px;font-size:13.5px;font-weight:650}
+.note .was{color:var(--bad);font-size:12px;margin-bottom:4px}
+.note .now{color:var(--fg2);font-size:12.5px;margin:0}
+.qs{background:var(--win);border:.5px solid var(--hair);border-radius:10px;padding:14px 18px}
+.qs h3{margin:0 0 8px;font-size:14px}
+.qs ol{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:6px;color:var(--fg2)}
+.qs b{color:var(--fg)}
+button:focus-visible,.item:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+</style>
+
+<svg width="0" height="0" style="position:absolute">
+ <symbol id="i-tray" viewBox="0 0 16 16"><path d="M2 9.5 3.6 3.6A1 1 0 0 1 4.6 3h6.8a1 1 0 0 1 1 .6L14 9.5V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z"/><path d="M2 9.5h3.5l1 1.5h3l1-1.5H14"/></symbol>
+ <symbol id="i-check" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/><path d="m5.5 8.2 1.8 1.8 3.3-3.6"/></symbol>
+ <symbol id="i-sun" viewBox="0 0 16 16"><circle cx="8" cy="8" r="3"/><path d="M8 1.5v1.6M8 12.9v1.6M1.5 8h1.6M12.9 8h1.6M3.4 3.4l1.1 1.1M11.5 11.5l1.1 1.1M3.4 12.6l1.1-1.1M11.5 4.5l1.1-1.1"/></symbol>
+ <symbol id="i-wait" viewBox="0 0 16 16"><path d="M2.5 4a1.5 1.5 0 0 1 1.5-1.5h8A1.5 1.5 0 0 1 13.5 4v5A1.5 1.5 0 0 1 12 10.5H7l-3 2.5v-2.5A1.5 1.5 0 0 1 2.5 9z"/><path d="M8 5v2l1.3.8"/></symbol>
+ <symbol id="i-thr" viewBox="0 0 16 16"><path d="M3 4h10M3 8h7M3 12h4"/><circle cx="12.5" cy="11.5" r="1.8"/></symbol>
+ <symbol id="i-idea" viewBox="0 0 16 16"><path d="M5.5 10.5a4 4 0 1 1 5 0V12h-5z"/><path d="M6 14h4"/></symbol>
+ <symbol id="i-mail" viewBox="0 0 16 16"><rect x="2" y="3.5" width="12" height="9" rx="1.5"/><path d="m2.5 4.5 5.5 4 5.5-4"/></symbol>
+ <symbol id="i-folder" viewBox="0 0 16 16"><path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h2.6l1.4 1.5h5A1.5 1.5 0 0 1 14 6v5.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5z"/></symbol>
+ <symbol id="i-search" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.2"/><path d="m10.2 10.2 3.3 3.3"/></symbol>
+ <symbol id="i-more" viewBox="0 0 16 16"><circle cx="3.5" cy="8" r=".9"/><circle cx="8" cy="8" r=".9"/><circle cx="12.5" cy="8" r=".9"/></symbol>
+ <symbol id="i-help" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/><path d="M6.4 6.3a1.7 1.7 0 1 1 2.3 1.6c-.5.2-.7.6-.7 1.1v.3M8 11.3v.1"/></symbol>
+ <symbol id="i-plus" viewBox="0 0 16 16"><path d="M8 3v10M3 8h10"/></symbol>
+ <symbol id="i-chev" viewBox="0 0 16 16"><path d="m6 4 4 4-4 4"/></symbol>
+ <symbol id="i-side" viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M6 3v10"/></symbol>
+</svg>
+
+<div class="wrap">
+ <header>
+  <h1 class="page">Inbox redesign — agreed mockup</h1>
+  <p class="lede">Clickable mockup on sample data. Click the rows in the middle column and the folders on the left: each opens its own reading pane. Sample data only (acme, example.com). Notes on what changed are below the window.</p>
+ </header>
+
+ <div class="scroller">
+ <div class="win" role="application" aria-label="Inbox mockup">
+  <div class="titlebar">
+   <div class="tl"><i></i><i></i><i></i></div>
+   <div class="tbar-list"><b>Inbox</b><div class="search"><svg class="ic"><use href="#i-search"/></svg>Search the Inbox</div></div>
+   <div class="tbar-pane" id="paneTools"></div>
+  </div>
+  <div class="body">
+   <nav class="rail" aria-label="Folders">
+    <button class="rrow on" data-scope="inbox"><svg class="ic"><use href="#i-tray"/></svg><span class="t">Inbox</span><span class="cnt">5</span></button>
+    <button class="rrow" data-scope="approvals"><svg class="ic"><use href="#i-check"/></svg><span class="t">Needs approval</span><span class="cnt act">9</span></button>
+    <div class="rsec">Folders</div>
+    <button class="rrow" data-scope="folder"><svg class="ic"><use href="#i-folder"/></svg><span class="t">Release acme 2.0</span><span class="cnt">2</span></button>
+    <div class="spacer"></div>
+    <div class="rfoot"><button class="kbtn"><svg class="ic"><use href="#i-plus"/></svg>New Artifact…</button><button class="iconbtn" title="New Folder"><svg class="ic"><use href="#i-folder"/></svg></button></div>
+   </nav>
+
+   <section class="list" id="list" aria-label="Inbox entries"></section>
+   <section class="pane" id="pane" aria-live="polite"></section>
+  </div>
+ </div>
+ </div>
+
+ <section>
+  <div class="sh" style="font-size:11.5px">What changes and why</div>
+  <div class="notes">
+   <div class="note"><h3>One brief, not twenty</h3><div class="was">Now: a "Morning brief" row for every unread day — 17 identical rows.</div><p class="now">One Morning brief row, always today's. Past days live inside it: ‹ › stepper and a History menu. A brief becomes read when a newer one arrives.</p></div>
+   <div class="note"><h3>Counts that mean "act"</h3><div class="was">Now: 747, 200 waiting, 1689 unread, 546 to judge — nobody can act on these.</div><p class="now">Each row counts only what is new or what you can finish today: 12 people waiting, 6 threads with news, 13 ideas for today. The backlog is a quiet second line. The sidebar badge = Needs approval + new waiting.</p></div>
+   <div class="note"><h3>The row tells you what is inside</h3><div class="was">Now: a grey dot, a title and "updated 3 h ago".</div><p class="now">A coloured tile per kind, the first real line of content (who asked what, what moved), time on the right, count pill. Unread is a blue dot next to the title.</p></div>
+   <div class="note"><h3>Never "Select a card"</h3><div class="was">Now: an empty right half with a stray line through it.</div><p class="now">The pane opens today's brief on arrival and remembers the last selection. Every pane is one centred reading column (760 pt).</p></div>
+   <div class="note"><h3>Sections by urgency</h3><div class="was">Now: one flat list, sorted by time.</div><p class="now">Needs you → Today → Running. Needs approval stays in the rail with an orange count because it blocks agents.</p></div>
+   <div class="note"><h3>A narrow folder rail</h3><div class="was">Now: a 480 pt column holding two rows.</div><p class="now">196 pt rail, collapsible (⌥⌘S). Folders only appear once you have one. New Artifact… and New Folder sit at the bottom as one row.</p></div>
+   <div class="note"><h3>Waiting for me is a triage queue</h3><div class="was">Now: 200 rows of the same weight.</div><p class="now">Today / This week / Older. Older than 7 days folds with one "Mark All Done" button. Keyboard: J/K, E done, R reply, S snooze.</p></div>
+   <div class="note"><h3>Backlogs come in batches</h3><div class="was">Now: "546 to judge" — a wall.</div><p class="now">Idea finder hands out a daily batch (13) as one card at a time: Keep / Drop / Later. Track my threads shows only threads with news; 240 quiet ones fold.</p></div>
+  </div>
+ </section>
+
+ <section>
+  <div class="sh" style="font-size:11.5px">App sidebar</div>
+  <div class="notes"><div class="note"><h3>Inbox goes to the top level</h3><div class="was">Now: Home, Targets, Workbench, Automations, Calendar · FOCUS: Catch Up, Inbox.</div><p class="now">Then: Home, Inbox, Workbench, Automations, Calendar · FOCUS: Catch Up, Targets. Inbox takes Targets' place and keeps its badge; Targets moves into FOCUS.</p></div></div>
+ </section>
+
+
+</div>
+
+<script>
+const I = id => `<svg class="ic"><use href="#i-${id}"/></svg>`;
+const T = (cls,id) => `<div class="tile ${cls}">${I(id)}</div>`;
+
+const LIST = {
+ inbox: `
+  <div class="lhead"><span>updated 6 min ago</span><span class="seg"><b class="on">All</b><b>Unread</b></span></div>
+  <div class="lsec"><span>Needs you</span></div>
+  ${item('wait','t-wait','wait','Waiting for me',true,'Colleague B in a DM: “Will you approve the budget?” · and 11 more today','People in Slack and Jira · 14 older, folded','08:10','<span class="pill warn">12</span>')}
+  ${item('mail','t-mail','mail','Mail waiting',true,'8 new today. Most of it comes from 10 senders: clear a sender in one press.','120 open · 70% from 10 senders','08:04','<span class="pill soft">8</span>')}
+  <div class="lsec"><span>Today</span></div>
+  ${item('brief','t-sun','sun','Morning brief',true,'3 meetings, 1 conflict at 14:00. Start with the ACME-12 review — Colleague C waits since Monday.','Wed 11 Nov','08:02','')}
+  ${item('slack','t-thr','thr','Slack today',true,'#acme-release decided the tag date. #acme-infra is looking for a migration reviewer. 4 channels with news.','Built in · since you last looked · 900 messages','10:20','<span class="pill soft">4</span>')}
+  ${item('roundup','t-mail','mail','Weekly mail roundup',true,'Three threads from example.com need an answer this week.','Your automation · run #12','07:30','')}
+  <div class="lsec"><span>Running</span></div>
+  ${item('threads','t-thr','thr','Track my threads',false,'ACME-12 got a reply from Colleague C. #acme-release decided the tag date.','240 quiet threads folded','06:40','<span class="pill">6</span>')}
+  ${item('ideas','t-idea','idea','Idea finder',false,'Today’s 13 ideas to judge. Top one: “One release checklist for every team”.','140 in the backlog · 60 older than 30 days','yesterday','<span class="pill soft">13</span>')}
+  <div class="lsec"><span>Earlier</span></div>
+  <div class="foldline">${I('chev')}Past briefs are inside Morning brief · 6 unread this month</div>`,
+ approvals: `
+  <div class="lhead"><span>9 wait for you</span><span class="seg"><b class="on">By kind</b><b>Oldest</b></span></div>
+  <div class="lsec"><span>Messages</span><span>3</span></div>
+  ${item('appr','t-appr','check','Reply to Colleague D',true,'#acme-release · “Tag goes out Thursday, checklist is green.”','Proposed from Waiting for me','09:12','')}
+  ${item('appr2','t-appr','check','Comment on ACME-31',true,'“Reproduced on staging, fix is in the session branch.”','Proposed by a workbench session','08:55','')}
+  <div class="lsec"><span>Tracks to create</span><span>4</span></div>
+  ${item('appr3','t-appr','check','Create 4 tracks',false,'Proposed by the reaction commands and the chat over the last two weeks.','Tracks','yesterday','<span class="pill soft">4</span>')}
+  <div class="lsec"><span>Targets</span><span>5</span></div>
+  ${item('appr4','t-appr','check','Create 5 targets',false,'From the spec “Billing export”.','Workbench · acme','yesterday','<span class="pill soft">5</span>')}
+  <div class="lsec"><span>Confluence and Jira</span><span>3</span></div>
+  ${item('appr2','t-appr','check','Edit “Release process” page',false,'2 page edits and 1 board to connect.','Confluence · Jira','Mon','<span class="pill soft">3</span>')}
+  `,
+ folder: `
+  <div class="lhead"><span>Release acme 2.0 · 2 new</span><span class="seg"><b class="on">All</b><b>Unread</b></span></div>
+  <div class="lsec"><span>Today</span></div>
+  ${item('blockers','t-mail','mail','Release blockers',true,'2 open blockers: ACME-44 and ACME-47. QA signs off Friday.','Your automation · every sync','10:05','<span class="pill">2</span>')}
+  ${item('chdigest','t-thr','thr','Release channel digest',true,'#acme-release: tag date moved to Thursday.','Your automation · daily','09:00','')}`
+};
+function item(key,cls,ic,title,unread,prev,meta,time,right){
+ return `<button class="item" data-key="${key}">${T(cls,ic)}<div style="min-width:0"><div class="ititle">${unread?'<i class="unread"></i>':''}<span>${title}</span></div><div class="iprev">${prev}</div><div class="imeta">${meta}</div></div><div class="iright"><span>${time}</span>${right}</div></button>`;
+}
+
+const tools = (extra='') => `${extra}<button class="iconbtn" title="More">${I('more')}</button><button class="iconbtn" title="Reaction commands and shortcuts">${I('help')}</button>`;
+
+const PANE = {
+ brief: { tools: tools(`<span class="stepper"><button aria-label="Previous day">‹</button><span>Wed 11 Nov</span><button aria-label="Next day" disabled style="opacity:.35">›</button></span><button class="kbtn">History ▾</button>`), html: `
+  <div class="phead">${T('t-sun','sun')}<div><h2>Morning brief</h2><div class="sub">Wednesday, 11 November · written 08:02 from Slack, mail, Jira and your calendar</div></div></div>
+  <div class="card"><p class="lead">A meeting-heavy day with one clash at 14:00. Your one must-do is the ACME-12 review: Colleague C has waited since Monday and the release tag depends on it.</p>
+   <ol class="focus">
+    <li><span class="num">1</span><div>Review ACME-12 — release checklist<div class="why">Blocks the Thursday tag · Colleague C asked twice</div></div><button class="kbtn">Open</button></li>
+    <li><span class="num">2</span><div>Answer Colleague B about the budget<div class="why">Waiting 26 h in a DM</div></div><button class="kbtn">Reply…</button></li>
+    <li><span class="num">3</span><div>Pick one of the two 14:00 meetings<div class="why">Design sync and Vendor call overlap</div></div><button class="kbtn">Calendar</button></li>
+   </ol></div>
+  <div><div class="sh"><span>Your day</span><a>Open Calendar</a></div>
+   <div class="tl2">
+    <div class="slot"><time>09:30</time><div class="ev">Standup · acme<small>15 min · Zoom</small></div><span class="chip c-n">done</span></div>
+    <div class="slot now"><time>11:00</time><div class="ev">Focus: ACME-12 review<small>Planned by the brief · 90 min</small></div><span class="chip c-ok">now</span></div>
+    <div class="slot"><time>14:00</time><div class="ev">Design sync<small>Colleague A, Colleague E · prep notes ready</small></div><span class="chip c-bad">clash</span></div>
+    <div class="slot"><time>14:00</time><div class="ev">Vendor call · example.com<small>Optional for you</small></div><span class="chip c-bad">clash</span></div>
+    <div class="slot"><time>16:30</time><div class="ev">1:1 with Colleague F<small>2 open topics from last week</small></div><span></span></div>
+   </div></div>
+  <div><div class="sh"><span>Waiting on you · top 3 of 6 new</span><a data-go="wait">All in Waiting for me</a></div>
+   <div class="rows">
+    ${wrow('slack','S','Colleague B','in a DM','Will you approve the budget?','26 h',true)}
+    ${wrow('jira','J','ACME-12','assigned to you','Release checklist v2 — ready for review','2 d',true)}
+    ${wrow('slack','S','Colleague A','in #acme-release','Can you check the checklist before the tag?','3 h',false)}
+   </div></div>
+  <div><div class="sh"><span>Moved overnight</span><a data-go="threads">Track my threads</a></div>
+   <div class="card" style="display:flex;flex-direction:column;gap:8px">
+    <div>#acme-release decided: the tag goes out Thursday after QA. <span class="mt">· 4 people · 23 messages</span></div>
+    <div>ACME-44 reopened by Colleague G — the login fix broke SSO on staging. <span class="mt">· Jira</span></div>
+   </div></div>
+  <div class="foot"><span>Read 1 min</span><span>·</span><span>Built in: Morning brief</span><span>·</span><a class="kbtn quiet" style="height:auto">Edit the Look…</a></div>`},
+ wait: { tools: tools(`<button class="kbtn">Select</button>`), html: `
+  <div class="phead">${T('t-wait','wait')}<div><h2>Waiting for me</h2><div class="sub">People in Slack and Jira · 12 new today · 14 older · updated 6 min ago · mail is in Mail waiting</div></div></div>
+  <div><div class="sh"><span>Today · 12</span></div><div class="rows">
+    ${wrow('slack','S','Colleague B','in a DM','Will you approve the budget?','26 h',true,true)}
+    ${wrow('slack','S','Colleague A','in #acme-release','Can you check the checklist before the tag?','3 h',false)}
+    ${wrow('jira','J','ACME-12','assigned to you','Release checklist v2 — ready for review','2 d',true)}
+    ${wrow('lin','L','ENG-210','mentioned you','“@you can we drop the old export?”','1 h',false)}
+    ${wrow('slack','S','Colleague D','in #acme-infra','Who reviews the migration?','40 min',false)}
+  </div></div>
+  <div><div class="sh"><span>This week · 40</span><a>Show</a></div></div>
+  <div class="bulk"><span>25 items are older than 7 days. Nobody has followed up on most of them.</span><button class="kbtn">Mark All Done…</button></div>
+  <div class="kbd"><span><kbd>J</kbd><kbd>K</kbd>move</span><span><kbd>E</kbd>done</span><span><kbd>R</kbd>reply</span><span><kbd>S</kbd>snooze</span><span><kbd>⏎</kbd>open in Slack</span><span><kbd>⌘K</kbd>hand to agent</span></div>`},
+ threads: { tools: tools(), html: `
+  <div class="phead">${T('t-thr','thr')}<div><h2>Track my threads</h2><div class="sub">6 threads with news for you · 240 quiet · scanned after every sync</div></div></div>
+  <div><div class="sh"><span>With news for you · 6</span></div><div class="rows">
+   ${trow('ACME-12 · Release checklist v2','Colleague C: “I’ve added the rollback step, take a look.”','3 new','reply to you')}
+   ${trow('#acme-release · Tag date','Decided: Thursday after QA. Colleague A asked you to confirm.','11 new','decision')}
+   ${trow('Budget 2027 · mail','Colleague H attached the final numbers.','2 new','attachment')}
+   ${trow('#acme-infra · DB migration','Colleague D is looking for a reviewer; you were mentioned.','5 new','mention')}
+   <div class="foldline">${I('chev')}2 more with news</div>
+  </div></div>
+  <div class="bulk"><span>240 threads have nothing new for you. 180 of them have been quiet for over 30 days.</span><button class="kbtn">Stop Tracking Quiet Ones…</button></div>`},
+ ideas: { tools: tools(`<button class="kbtn">Backlog · 140</button>`), html: `
+  <div class="phead">${T('t-idea','idea')}<div><h2>Idea finder</h2><div class="sub">Today’s batch · 3 of 13 judged · 140 more in the backlog</div></div></div>
+  <div class="prog" aria-label="3 of 13"><i></i></div>
+  <div class="idea-card">
+   <span class="chip c-n" style="align-self:flex-start">idea · from #acme-release, 2 days ago</span>
+   <h3>One release checklist for every team</h3>
+   <p style="margin:0;color:var(--fg2)">Three teams keep their own checklist and the tag waits on whichever is slowest. A shared template in the repo would cut the back-and-forth.</p>
+   <blockquote>Colleague A: “we copied the infra checklist again, can we just have one?” · Colleague E: “+1, ours is out of date”</blockquote>
+   <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="kbtn primary">Keep</button><button class="kbtn">Drop</button><button class="kbtn">Later</button><span style="flex:1"></span><button class="kbtn quiet">Make a Target…</button></div>
+  </div>
+  <div class="kbd"><span><kbd>K</kbd>keep</span><span><kbd>D</kbd>drop</span><span><kbd>L</kbd>later</span><span><kbd>T</kbd>make a target</span></div>
+  <div><div class="sh"><span>Kept today</span></div><div class="rows">
+   ${trow('Move the vendor call notes into Confluence','From the Vendor call transcript','kept','')}
+   ${trow('Automate the weekly QA status mail','From mail · example.com','kept','')}
+  </div></div>`},
+ roundup: { tools: tools(`<button class="kbtn">Run Now</button>`), html: `
+  <div class="phead">${T('t-mail','mail')}<div><h2>Weekly mail roundup</h2><div class="sub">Your automation · run #12 at 07:30 · every Wednesday</div></div></div>
+  <div class="card blocks"><p class="lead" style="margin-bottom:10px">Three threads from example.com need an answer this week.</p>
+   <div class="rows">
+    ${wrow('mail','@','colleague-h@example.com','Budget review','Please confirm the numbers by Friday','5 h',false)}
+    ${wrow('mail','@','vendor@example.com','Contract renewal','The quote expires on the 20th','2 d',true)}
+    ${wrow('mail','@','qa@example.com','QA sign-off','Can we move sign-off to Friday?','1 d',false)}
+   </div></div>
+  <div class="foot"><span>The look and the rows come from the automation.</span><a class="kbtn quiet" style="height:auto">Edit the Look…</a><a class="kbtn quiet" style="height:auto">Run History</a></div>`},
+ slack: { tools: tools(`<button class="kbtn">Mark All Seen</button>`), html: `
+  <div class="phead">${T('t-thr','thr')}<div><h2>Slack today</h2><div class="sub">Since you last looked at 08:10 · 900 messages in 46 channels · 4 with news for you</div></div></div>
+  <div class="card" style="display:flex;flex-direction:column;gap:10px">
+   <div class="sh" style="margin:0"><span>#acme-release · 23 new</span><a>Open in Slack</a></div>
+   <div><span class="chip c-ok">decided</span> The tag goes out Thursday, after QA signs off.</div>
+   <div><span class="chip c-warn">asks you</span> Colleague A: “Can you confirm Thursday works for your side?”</div>
+  </div>
+  <div class="card" style="display:flex;flex-direction:column;gap:10px">
+   <div class="sh" style="margin:0"><span>#acme-infra · 41 new</span><a>Open in Slack</a></div>
+   <div><span class="chip c-warn">needs someone</span> Colleague D is looking for a reviewer for the DB migration.</div>
+   <div><span class="chip c-n">fyi</span> Staging was down 20 min at 09:40; fixed.</div>
+  </div>
+  <div class="card" style="display:flex;flex-direction:column;gap:10px">
+   <div class="sh" style="margin:0"><span>#acme-finance · 7 new</span><a>Open in Slack</a></div>
+   <div><span class="chip c-n">fyi</span> Budget 2027 numbers are final; the file is pinned.</div>
+  </div>
+  <div class="card" style="display:flex;flex-direction:column;gap:10px">
+   <div class="sh" style="margin:0"><span>#acme-design · 12 new</span><a>Open in Slack</a></div>
+   <div><span class="chip c-ok">decided</span> The new onboarding screens ship in the next release.</div>
+  </div>
+  <div class="foldline">${I('chev')}42 channels with nothing for you · 820 messages</div>
+  <div class="foot"><span>Reads Slack directly, no digests.</span><span>·</span><span>What is addressed to you stays in Waiting for me.</span></div>`},
+ blockers: { tools: tools(`<button class="kbtn">Run Now</button>`), html: `
+  <div class="phead">${T('t-mail','mail')}<div><h2>Release blockers</h2><div class="sub">Your automation · updated 10:05 · after every sync</div></div></div>
+  <div class="card"><p class="lead" style="margin-bottom:10px">2 open blockers. QA signs off Friday.</p><div class="rows">
+   ${wrow('jira','J','ACME-44','reopened by Colleague G','The login fix broke SSO on staging','3 h',false)}
+   ${wrow('jira','J','ACME-47','assigned to Colleague D','Migration lock times out on the big tenant','1 d',true)}
+  </div></div>`},
+ chdigest: { tools: tools(`<button class="kbtn">Run Now</button>`), html: `
+  <div class="phead">${T('t-thr','thr')}<div><h2>Release channel digest</h2><div class="sub">Your automation · 09:00 · daily</div></div></div>
+  <div class="card" style="display:flex;flex-direction:column;gap:8px">
+   <div>The tag date moved to Thursday, after QA. <span class="mt">· Colleague A</span></div>
+   <div>The rollback step is now part of the checklist. <span class="mt">· Colleague C</span></div>
+  </div>`},
+ mail: { tools: tools(), html: `
+  <div class="phead">${T('t-mail','mail')}<div><h2>Mail waiting</h2><div class="sub">120 open · 8 new today · grouped by sender, the busiest first</div></div></div>
+  <div class="bulk"><span>10 senders send 70% of this mail. Most of it is notifications that nobody answers.</span><button class="kbtn">Mute Senders…</button></div>
+  <div class="rows">
+   ${srow('notifications@example.com','46 open · 3 today','automated')}
+   ${srow('jira@example.com','21 open · 2 today','automated')}
+   ${srow('calendar@example.com','12 open · 1 today','automated')}
+   ${srow('colleague-h@example.com','6 open · 2 today','person')}
+   ${srow('vendor@example.com','3 open · 1 today','person')}
+   <div class="foldline">${I('chev')}30 more senders</div>
+  </div>
+  <div class="kbd"><span><kbd>⏎</kbd>open the sender’s mail</span><span><kbd>E</kbd>mark the sender’s mail done</span><span><kbd>M</kbd>mute the sender</span></div>`},
+ appr: { tools: tools(), html: approval('Reply to Colleague D','#acme-release · proposed from Waiting for me at 09:12','Tag goes out Thursday, checklist is green. Ping me if QA finds anything.') },
+ appr2:{ tools: tools(), html: approval('Comment on ACME-31','Jira · proposed by a workbench session at 08:55','Reproduced on staging, fix is in the session branch. Will open the PR after the review.') },
+ appr3:{ tools: tools(), html: `
+  <div class="phead">${T('t-appr','check')}<div><h2>Move 12 targets to Done</h2><div class="sub">Workbench acme · a session finished “Release checklist v2”</div></div><div class="acts"><button class="kbtn">Decline</button><button class="kbtn primary">Approve All 12</button></div></div>
+  <div class="rows">${['Checklist template','Rollback step','QA sign-off field','Tag script','Release notes draft','Changelog link'].map(t=>trow(t,'in_review → done','','')).join('')}<div class="foldline">${I('chev')}6 more</div></div>`},
+ appr4:{ tools: tools(), html: `<div class="phead">${T('t-appr','check')}<div><h2>Create 19 targets</h2><div class="sub">From the spec “Billing export”</div></div><div class="acts"><button class="kbtn">Decline</button><button class="kbtn primary">Approve</button></div></div>`},
+ appr5:{ tools: tools(), html: `<div class="phead">${T('t-appr','check')}<div><h2>Send the budget numbers</h2><div class="sub">Reminder · due today 17:00</div></div><div class="acts"><button class="kbtn">Snooze ▾</button><button class="kbtn primary">Done</button></div></div>`}
+};
+function approval(title,sub,text){return `
+  <div class="phead">${T('t-appr','check')}<div><h2>${title}</h2><div class="sub">${sub}</div></div><div class="acts"><button class="kbtn">Decline</button><button class="kbtn">Edit…</button><button class="kbtn primary">Approve and Send</button></div></div>
+  <div class="card"><div class="mt" style="margin-bottom:6px">Message</div><p class="lead">${text}</p></div>
+  <div class="mt">Nothing is sent until you approve. ⌘⏎ approves, ⌫ declines.</div>`}
+function wrow(src,letter,who,where,text,age,old,focus){
+ return `<div class="wrow${focus?' focus-row':''}"><div class="src s-${src}">${letter}</div><div style="min-width:0"><div><span class="who">${who}</span> <span class="where">${where}</span></div><q>${text}</q>
+  <div class="hover-acts"><button class="kbtn">Reply…</button><button class="kbtn">Done</button><button class="kbtn">Snooze ▾</button><button class="kbtn quiet">Open</button></div></div>
+  <div class="age"><span class="chip ${old?'c-warn':'c-n'}">${age}</span></div></div>`}
+function srow(who,line,kind){
+ return `<div class="wrow"><div class="src s-mail">@</div><div style="min-width:0"><div><span class="who">${who}</span> <span class="where">${kind}</span></div><q style="quotes:none">${line}</q>
+  <div class="hover-acts"><button class="kbtn">Open</button><button class="kbtn">Mark All Done</button><button class="kbtn">Mute</button></div></div>
+  <div class="age"><span class="chip c-n">${line.split(' ')[0]}</span></div></div>`}
+function trow(title,line,badge,tag){
+ return `<div class="wrow"><div class="src" style="background:var(--card);color:var(--fg2)">${I('thr').replace('class="ic"','class="ic" style="width:12px;height:12px"')}</div><div style="min-width:0"><div class="who">${title}</div><q style="quotes:none">${line}</q></div><div class="age">${badge?`<span class="chip c-n">${badge}</span>`:''}${tag?`<span class="mt">${tag}</span>`:''}</div></div>`}
+
+const listEl=document.getElementById('list'), paneEl=document.getElementById('pane'), toolsEl=document.getElementById('paneTools');
+const firstKey={inbox:'brief',approvals:'appr',folder:'blockers'};
+function openPane(key){
+ const p=PANE[key]; if(!p) return;
+ paneEl.innerHTML=`<div class="col">${p.html}</div>`; toolsEl.innerHTML=p.tools; paneEl.scrollTop=0;
+ listEl.querySelectorAll('.item').forEach(b=>b.classList.toggle('on',b.dataset.key===key));
+ paneEl.querySelectorAll('[data-go]').forEach(a=>a.addEventListener('click',()=>openPane(a.dataset.go)));
+}
+function openScope(scope){
+ document.querySelectorAll('.rrow').forEach(r=>r.classList.toggle('on',r.dataset.scope===scope));
+ listEl.innerHTML=LIST[scope];
+ listEl.querySelectorAll('.item').forEach(b=>b.addEventListener('click',()=>openPane(b.dataset.key)));
+ openPane(firstKey[scope]);
+}
+document.querySelectorAll('.rrow').forEach(r=>r.addEventListener('click',()=>openScope(r.dataset.scope)));
+openScope('inbox');
+</script>
