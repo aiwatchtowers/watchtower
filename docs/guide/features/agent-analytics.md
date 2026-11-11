@@ -41,7 +41,7 @@ Once on, the background daemon keeps the numbers current: each cycle it reads on
 
 Turning the feature on returns at once. The daemon then loads the history already on disk in the background, a little each cycle, and the **Analytics** view shows **Loading history — N files so far** until it is done. Turning it off keeps what was stored. Deleting the workbench keeps it too, and a new workbench on the same folder picks it up again.
 
-Codex sessions count too, but only the ones the workbench started: Watchtower reads the rollout file of each of the workbench's Codex sessions under `$CODEX_HOME/sessions` or `$CODEX_HOME/archived_sessions` (`~/.codex` by default), compressed or not, and only when it ran in the workbench folder or one of its worktrees. Other Codex rollouts are never opened. A Codex session has times, tokens, tool calls, failed commands and interrupts. Watchtower has no price for Codex models, so their tokens show with **no price**. Context and Skills say **Not measured for Codex sessions**, because a rollout does not record what loads before your first message.
+Codex sessions count too, but only the ones started from a Watchtower workbench terminal; a plain shell or a `codex exec` run is never read. Watchtower reads the rollout file of each of the workbench's Codex sessions under `$CODEX_HOME/sessions` or `$CODEX_HOME/archived_sessions` (`~/.codex` by default), compressed or not, and only when it ran in the workbench folder or one of its worktrees. Other Codex rollouts are never opened. A Codex session has times, tokens, cost, tool calls, failed commands and interrupts, and its sub-agent threads count under it. Codex models are priced at OpenAI's standard rate even for inputs above 272K tokens, so very long Codex sessions show less than OpenAI bills; a cache write uses the published 30-minute write rate, else the input rate. Context and Skills say **Not measured for Codex sessions**, because a rollout does not record what loads before your first message.
 
 Besides counts, Watchtower stores sizes: how many bytes each tool result and each start-up part of a session held, how many tokens a compaction dropped, and a failure's class (for example "edit did not match"). It turns bytes into tokens with the ratio of the session's first call, so figures like "CLAUDE.md is 1,800 tokens" are estimates.
 
@@ -65,8 +65,8 @@ Find a workbench's number with `watchtower workbench list`, or use the id in its
 
 - **`stats` shows `"enabled": false`.** Run `enable` first.
 - **No sessions.** Nothing in `~/.claude/projects/` matched the folder. Sessions run before the folder moved are not found.
-- **Cost is 0 for a model.** The price table does not know it yet. The totals say how many calls had **no price**. Codex models have no price, so a Codex session always shows **no price**.
-- **A Codex session is missing.** Only sessions the workbench started are read, and only once Codex has reported the session (its first prompt). `scan --json` counts `codex_rollouts_missing` (no rollout file found) and `codex_outside_workbench` (the session ran outside the workbench folder). A Codex session's subagent threads are not counted yet.
+- **Cost is 0 for a model.** The price table does not know it yet. The totals say how many calls had **no price**.
+- **A Codex session is missing.** Only sessions started from a workbench terminal are read, and only once Codex has reported the session (its first prompt). `scan --json` counts `codex_rollouts_missing` (no rollout file found, a sub-agent's included), `codex_outside_workbench` (the session ran outside the workbench folder) and `codex_usage_mismatch` (token lines Codex reported inconsistently).
 - **History not moved yet — restart the daemon or run watchtower agents scan.** Analytics from an older version still sit in the main database and moving them failed. Nothing loads until the move succeeds; the daemon retries it every cycle, and the daemon log says why it failed.
 - **A block says "Not measured yet for older sessions".** The session was stored before the sizes were recorded. Wait for the daemon's next cycles, or run `watchtower agents scan`; if the transcript is gone, those sessions stay unmeasured.
 - **Repeated reads look wrong.** A file read in pages counts as read many times, because the page range is not stored.
@@ -85,19 +85,24 @@ since: 0.24.0
 action: nav:projects
 -->
 
-The header has the period (**1 day**, **7 days** or **30 days**) and **Discuss in Chat**. Above the statistics sit the coach's sections: **How it's going**, **Proposed edits** and **Accepted edits** (see [Agent coach](agent-coach.md)). Under **Statistics** the view starts with the totals, then **The main thing**: the hint that would save the most, in your assistant's language, with a button. The buttons are **Copy Allow Rules** (for `.claude/settings.json`), **Open Session**, **Open Waiting for You** and **Open `<path>`**, named after the file it opens.
+The header has **All**, **Claude Code** and **Codex** (when both agents have sessions), the period (**1 day**, **7 days** or **30 days**) and **Tune**. Above the statistics sit the coach's sections: **How it's going**, **Proposed edits** and **Accepted edits** (see [Agent coach](agent-coach.md)). Under **Statistics** the view starts with the totals, then **The main thing**: the hint that would save the most, in your assistant's language, with a button. The buttons are **Copy Allow Rules** (for `.claude/settings.json`), **Open Session**, **Open Waiting for You** and **Open `<path>`**, named after the file it opens.
 
 - **Context** starts with a sentence saying what matters, then shows what a session carries before your first message (instructions, skills, tools, hooks) and what grew it afterwards: which tools and files, files read three or more times without an edit, compactions, and the size of your `CLAUDE.md` and rules.
 - **Skills** (with its own sentence) shows which skills ran and how, and which listed skills never did. Once five sessions over a week were measured, never-used skills are suggested for removal because each one's listing costs tokens in every session.
 - **Trouble** (also with a sentence) shows failed calls by class, commands that were denied, how often you interrupted or rejected the agent, subagents that never finished and rate limits.
 - **What else would save** lists the remaining hints. The **Time** section, collapsed, keeps the time bar, tasks, sessions and commands.
-- **Discuss in Chat** opens the assistant with the report, so you can ask what to change.
 
 Sessions recorded before this version are shown as **Not measured yet for older sessions** and fill in as the next history scan rereads them, while the transcripts still exist (Claude Code removes them after about 30 days).
+
+## Tuning
+<!-- learn: none -->
+
+**Tune** in the header opens a chat that reads this report, your prompts and skills, and proposes edits you accept. See [Tuning chat](tuning-chat.md).
 
 ## Related
 
 - [Workbench](workbench/README.md)
+- [Tuning chat](tuning-chat.md)
 - [Sessions](workbench/sessions.md)
 
 For developers: [docs/features/agent-analytics.md](../../features/agent-analytics.md)
