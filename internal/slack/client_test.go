@@ -17,6 +17,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	goslack "github.com/slack-go/slack"
@@ -1178,23 +1179,29 @@ func TestDownloadFile_HostAllowlist(t *testing.T) {
 
 func TestDownloadFile_SharesTier4Gate(t *testing.T) {
 	srv := newFileServer(t, func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(pngBytes(3000)) })
-	c := NewClientWithAPIURL("xoxp-secret", "http://127.0.0.1:0/")
-	fileHosts(t, c, map[string]*httptest.Server{"files.slack.com": srv.Server})
+	hosts := map[string]*httptest.Server{"files.slack.com": srv.Server}
 
 	// The limiter's gate full (three API calls in flight): the download waits
-	// for it like any other Slack call and never reaches the host.
-	for range cap(c.rateLimiter.gate) {
-		c.rateLimiter.gate <- struct{}{}
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	_, _, err := c.DownloadFile(ctx, "https://files.slack.com/a.png", 1<<20)
-	cancel()
-	require.ErrorIs(t, err, context.DeadlineExceeded)
+	// for it like any other Slack call and never reaches the host. On
+	// synctest's clock, so the 100 ms deadline is virtual; the bubble's own
+	// client, since its gate channel belongs to the bubble.
+	synctest.Test(t, func(t *testing.T) {
+		c := NewClientWithAPIURL("xoxp-secret", "http://127.0.0.1:0/")
+		fileHosts(t, c, hosts)
+		for range cap(c.rateLimiter.gate) {
+			c.rateLimiter.gate <- struct{}{}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		start := time.Now()
+		_, _, err := c.DownloadFile(ctx, "https://files.slack.com/a.png", 1<<20)
+		cancel()
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+		assert.Equal(t, 100*time.Millisecond, time.Since(start), "it waited at the gate until the deadline")
+	})
 	assert.Empty(t, srv.requests())
-	for range cap(c.rateLimiter.gate) {
-		<-c.rateLimiter.gate
-	}
 
+	c := NewClientWithAPIURL("xoxp-secret", "http://127.0.0.1:0/")
+	fileHosts(t, c, hosts)
 	rc, _, err := c.DownloadFile(context.Background(), "https://files.slack.com/a.png", 1<<20)
 	require.NoError(t, err)
 	_ = rc.Close()

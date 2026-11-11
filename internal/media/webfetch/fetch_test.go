@@ -1,6 +1,7 @@
 package webfetch_test
 
 import (
+	"bufio"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"golang.org/x/net/dns/dnsmessage"
@@ -480,33 +482,51 @@ func TestGet_CapsBodyAndTime(t *testing.T) {
 		t.Errorf("10-byte cap: err = %v, want ErrTooLarge", err)
 	}
 
-	trickle := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html")
-		for {
-			_, _ = io.WriteString(w, "a")
-			w.(http.Flusher).Flush()
-			select {
-			case <-r.Context().Done():
-				return
-			case <-time.After(50 * time.Millisecond):
-			}
+	// A body trickling forever is cut at Timeout, body included. On
+	// synctest's clock over an in-memory connection: the trickle and the
+	// deadline are virtual time.
+	synctest.Test(t, func(t *testing.T) {
+		stop := make(chan struct{})
+		defer close(stop) // ends the trickle with the bubble
+		f := webfetch.NewForTest(allowAll)
+		f.SetDialForTest(func(context.Context, string, string) (net.Conn, error) {
+			client, server := net.Pipe()
+			go func() {
+				defer server.Close()
+				br := bufio.NewReader(server)
+				if _, err := http.ReadRequest(br); err != nil {
+					return
+				}
+				if _, err := io.WriteString(server, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nTransfer-Encoding: chunked\r\n\r\n"); err != nil {
+					return
+				}
+				for {
+					if _, err := io.WriteString(server, "1\r\na\r\n"); err != nil {
+						return // the client hung up
+					}
+					select {
+					case <-stop:
+						return
+					case <-time.After(50 * time.Millisecond):
+					}
+				}
+			}()
+			return client, nil
+		})
+		f.Timeout = 300 * time.Millisecond
+		begin := time.Now()
+		resp, err := f.Get(context.Background(), "http://trickle.example/", 0)
+		if err == nil {
+			_, err = io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
 		}
-	}))
-	defer trickle.Close()
-	f := webfetch.NewForTest(allowAll)
-	f.Timeout = 300 * time.Millisecond
-	begin := time.Now()
-	resp, err = f.Get(context.Background(), trickle.URL, 0)
-	if err == nil {
-		_, err = io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
-	}
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("trickle: err = %v, want a deadline error", err)
-	}
-	if el := time.Since(begin); el > f.Timeout+time.Second {
-		t.Errorf("trickle took %v, want within %v", el, f.Timeout+time.Second)
-	}
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("trickle: err = %v, want a deadline error", err)
+		}
+		if el := time.Since(begin); el != f.Timeout {
+			t.Errorf("trickle ended after %v, want at the %v timeout", el, f.Timeout)
+		}
+	})
 }
 
 func TestGet_StatusAndType(t *testing.T) {
