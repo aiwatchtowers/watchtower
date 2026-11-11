@@ -118,6 +118,7 @@ package enum TuningChatTexts {
         case "accepted": accepted
         case "declined": "Declined · \(title)"
         case "superseded": "Withdrawn · \(title)"
+        case "rolled_back": "Rolled back · \(title)"
         default: nil
         }
     }

@@ -61,7 +61,7 @@ struct TuningPanelView: View {
             EmbeddedChatComposer(engine: engine, placeholder: TuningChatTexts.placeholder, density: .compact,
                                  onEscape: onClose)
         }
-        .task { await chat.refreshCards() }
+        .task(id: ObjectIdentifier(chat)) { await chat.refreshCards() }
         .sheet(item: $editing) { proposal in
             if let coach { CoachEditSheet(proposal: proposal, coach: coach) }
         }
@@ -78,15 +78,20 @@ struct TuningPanelView: View {
                 }
             } label: {
                 MenuLabel(text: currentTitle, systemImage: "bubble.left.and.bubble.right", color: .secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
-            .fixedSize()
+            // A long title truncates; New and Close keep their room.
+            .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: Spacing.regular)
             Button(TuningChatTexts.newButton) { Task { await chat.startNew() } }
                 .buttonStyle(.kitQuiet)
+                .fixedSize()
             Button(action: onClose) { Image(systemName: "xmark") }
                 .buttonStyle(.kitIcon(isOn: false))
+                .fixedSize()
                 .help(TuningChatTexts.closeHelp)
                 .accessibilityLabel(TuningChatTexts.closeHelp)
         }
@@ -99,7 +104,7 @@ struct TuningPanelView: View {
         chat.recent.first { $0.id == chat.conversationID }.map(Self.title(of:)) ?? TuningChatTexts.newChat
     }
 
-    static func title(of conversation: ChatConversation) -> String {
+    private static func title(of conversation: ChatConversation) -> String {
         let title = conversation.title.trimmingCharacters(in: .whitespacesAndNewlines)
         return title.isEmpty ? TuningChatTexts.newChat : title
     }
@@ -129,15 +134,36 @@ struct TuningPanelView: View {
             cards(orphans)
         }
         cards(chat.cards.trailing)
+        if let error = unresolvedCardsError {
+            Label(error, systemImage: "exclamationmark.triangle")
+                .font(.caption)
+                .foregroundStyle(Tone.warning)
+        }
     }
 
-    /// Cards of turns with no assistant row on show.
+    /// The coach's list could not be read while the chat has cards it
+    /// cannot draw without it: say so instead of dropping them silently.
+    private var unresolvedCardsError: String? {
+        guard let error = coach?.proposals?.error else { return nil }
+        let known = Set(coach?.proposals?.value?.map(\.id) ?? [])
+        let all = chat.cards.trailing + chat.cards.byTurn.values.flatMap { $0 }
+        return all.contains { !known.contains(Self.proposalID($0)) } ? error : nil
+    }
+
+    private static func proposalID(_ card: TuningCard) -> Int64 {
+        switch card {
+        case let .proposal(id): id
+        }
+    }
+
+    /// Cards of turns with no assistant row on show, in the order they
+    /// were filed.
     private var orphans: [TuningCard] {
         let turns = Set(engine.messages.filter(\.message.isAssistant).map(\.message.turnID))
-        return chat.cards.byTurn.keys
-            .sorted()
-            .filter { !turns.contains($0) }
-            .flatMap { chat.cards.byTurn[$0] ?? [] }
+        return chat.cards.byTurn
+            .filter { !turns.contains($0.key) }
+            .flatMap(\.value)
+            .sorted { Self.proposalID($0) < Self.proposalID($1) }
     }
 
     @ViewBuilder private func cards(_ cards: [TuningCard]) -> some View {

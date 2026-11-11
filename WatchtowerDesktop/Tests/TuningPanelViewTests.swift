@@ -61,14 +61,17 @@ final class TuningPanelViewTests: XCTestCase {
 
     private var pool: DatabasePool { dbManager.dbPool }
 
-    private func chat(_ ai: ScriptedAIService, tools: Bool = true) async throws -> TuningChat {
+    private func chat(
+        _ ai: ScriptedAIService,
+        tools: @escaping @MainActor () -> Bool = { true }
+    ) async throws -> TuningChat {
         let pool = self.pool
         let center = EmbeddedChatCenter(idleTTL: 300, clock: Date.init) { spec, gate in
             makeSurfaceEngine(spec, dbPool: pool, ai: ai, gate: gate)
         }
         let conv = try await TuningChatSurface.latestOrNewConversation(dbPool: pool, workbenchID: 3)
         let chat = TuningChat(workbenchID: 3, conversationID: conv, dbPool: pool, center: center, coach: nil,
-                              decideTools: { tools }, period: { .week })
+                              decideTools: tools) { .week }
         chats.append(chat)
         return chat
     }
@@ -153,7 +156,8 @@ final class TuningPanelViewTests: XCTestCase {
         await chat.refreshCards()
         let view = panel(chat)
         XCTAssertNoThrow(try view.inspect().find(text: TuningChatTexts.title))
-        XCTAssertNoThrow(try view.inspect().find(text: TuningChatTexts.newChat), "an untitled chat is a new one")
+        XCTAssertNoThrow(try view.inspect().find(ViewType.Menu.self).labelView().find(text: TuningChatTexts.newChat),
+                         "an untitled chat is a new one")
         XCTAssertNoThrow(try view.inspect().find(button: TuningChatTexts.newButton))
         let close = try view.inspect().find(ViewType.Button.self) {
             (try? $0.labelView().image().actualImage().name()) == "xmark"
@@ -208,22 +212,35 @@ final class TuningPanelViewTests: XCTestCase {
     }
 
     func testNoToolsHidesStartersAndOffersSettings() async throws {
-        let ai = ScriptedAIService()
-        let chat = try await chat(ai, tools: false)
+        let chat = try await chat(ScriptedAIService()) { false }
         let fresh = panel(chat)
         XCTAssertNoThrow(try fresh.inspect().find(text: TuningChatTexts.figures(Self.figures)))
         XCTAssertThrowsError(try fresh.inspect().find(text: "Tune a skill"))
         XCTAssertNoThrow(try fresh.inspect().find(text: TuningChatTexts.noTools))
         XCTAssertNoThrow(try fresh.inspect().find(text: TuningChatTexts.noToolsDetail))
+        XCTAssertEqual(try fresh.inspect().find(ViewType.ScrollView.self).findAll(TuningNoToolsCard.self).count, 1,
+                       "a new chat shows the card in the feed")
         try fresh.inspect().find(button: TuningChatTexts.openSettings).tap()
         XCTAssertEqual(log.settings, 1)
+    }
 
-        // Midway: the turns and the open card stay, Accept still works.
+    /// The provider switches to one without tools after a turn: the turns
+    /// and the open card stay, Accept still works, the no-tools card sits
+    /// once, outside the feed.
+    func testNoToolsMidway() async throws {
+        let ai = ScriptedAIService()
+        var tools = true
+        let chat = try await chat(ai) { tools }
         let coach = await coach("open")
         try await turn(chat, ai, "Make review-pr cheaper") { try self.fileProposal(chat) }
-        XCTAssertEqual(chat.cards.trailing + (chat.cards.byTurn.values.flatMap { $0 }), [.proposal(21)])
+        XCTAssertThrowsError(try panel(chat, coach: coach).inspect().find(TuningNoToolsCard.self))
+        tools = false
+        chat.refreshToolAccess()
+        XCTAssertFalse(chat.toolsAvailable)
         let midway = panel(chat, coach: coach)
         XCTAssertEqual(try midway.inspect().findAll(TuningNoToolsCard.self).count, 1, "one card, above the composer")
+        XCTAssertTrue(try midway.inspect().find(ViewType.ScrollView.self).findAll(TuningNoToolsCard.self).isEmpty,
+                      "the card is not in the feed's scroll")
         XCTAssertNoThrow(try midway.inspect().find(text: TuningChatTexts.figures(Self.figures)))
         let accept = try midway.inspect().find(CoachProposalCardView.self).find(button: "Accept")
         XCTAssertFalse(accept.isDisabled())
@@ -233,7 +250,7 @@ final class TuningPanelViewTests: XCTestCase {
     /// draft-only) nor the no-tools card (the controller switches to tools
     /// when the catalog loads).
     func testCatalogNotReadYetShowsNeitherStartersNorNoTools() async throws {
-        let chat = try await chat(ScriptedAIService(), tools: false)
+        let chat = try await chat(ScriptedAIService()) { false }
         let catalog = AIModelCatalog()
         let view = panel(chat, catalog: catalog)
         XCTAssertNoThrow(try view.inspect().find(text: TuningChatTexts.figures(Self.figures)))
@@ -241,12 +258,18 @@ final class TuningPanelViewTests: XCTestCase {
         XCTAssertThrowsError(try view.inspect().find(TuningNoToolsCard.self))
     }
 
-    func testToolsState() {
+    func testToolsState() async {
         let unread = AIModelCatalog()
         XCTAssertEqual(TuningToolsState.of(toolsAvailable: false, catalog: unread), .undecided)
         XCTAssertEqual(TuningToolsState.of(toolsAvailable: true, catalog: unread), .on)
         XCTAssertEqual(TuningToolsState.of(toolsAvailable: false, catalog: .shared), .off)
         XCTAssertEqual(TuningToolsState.of(toolsAvailable: true, catalog: .shared), .on)
+
+        // A failed read is final enough to say why: the catalog's own line.
+        let failed = AIModelCatalog { nil }
+        await failed.load()
+        XCTAssertEqual(TuningToolsState.of(toolsAvailable: false, catalog: failed), .off)
+        XCTAssertEqual(TuningChatSurface.unavailableHelp(catalog: failed), AIModelCatalog.unreadNotice)
     }
 
     // MARK: - Proposal cards
@@ -293,6 +316,7 @@ final class TuningPanelViewTests: XCTestCase {
             :::
             """
         try await turn(chat, ai, "Draft a note", reply: reply)
+        XCTAssertNoThrow(try panel(chat).inspect().find(text: "Note"), "the artifact card is drawn")
         XCTAssertThrowsError(try panel(chat).inspect().find(button: "Add to Knowledge"))
     }
 

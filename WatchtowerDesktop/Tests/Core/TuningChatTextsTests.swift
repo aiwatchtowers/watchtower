@@ -53,6 +53,7 @@ final class TuningChatTextsTests: XCTestCase {
         XCTAssertEqual(TuningChatTexts.foldedProposal(status: "declined", title: "x"), "Declined · x")
         XCTAssertEqual(TuningChatTexts.foldedProposal(status: "superseded", title: "Removed with its source data"),
                        "Withdrawn · Removed with its source data")
+        XCTAssertEqual(TuningChatTexts.foldedProposal(status: "rolled_back", title: "x"), "Rolled back · x")
         XCTAssertNil(TuningChatTexts.foldedProposal(status: "open", title: "x"))
     }
 }
