@@ -182,8 +182,7 @@ func waitingWhere(o db.OpenInboxItem) string {
 	case "jira_comment_mention", "linear_comment_mention":
 		return "mentioned you"
 	case "email_received":
-		subject, _, _ := strings.Cut(o.Snippet, " — ")
-		return subject
+		return db.MailSubject(o.Snippet)
 	case "dm":
 		return "a DM"
 	}
