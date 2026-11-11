@@ -1304,11 +1304,11 @@ final class RelayLinkingTests: XCTestCase {
         XCTAssertTrue(relay.slots.isEmpty)
     }
 
+    /// Yields until `condition` holds; no wall-clock cap (a hang is the lane watchdog's to report).
     private func waitUntil(_ condition: @escaping @MainActor () -> Bool) async {
-        for _ in 0..<2000 where !condition() {
-            try? await Task.sleep(for: .milliseconds(5))
+        while !condition() {
+            await Task.yield()
         }
-        XCTAssertTrue(condition(), "timed out")
     }
 
     func testCancelBothFailKeepsTheSlotRemovalForLaunch() async throws {

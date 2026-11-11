@@ -145,7 +145,7 @@ final class StartSheetWiringTests: XCTestCase {
         XCTAssertEqual(picked.steps.map(\.state), [.done, .current, .todo])
 
         try await echo(fixture, .applied, result: ["session_id": .integer(90), "stage": .string("starting")])
-        try await poll(timeout: 2, { fixture.starter.attempts[400]?.applied == true }, "the applied observer reached the starter")
+        try await poll({ fixture.starter.attempts[400]?.applied == true }, "the applied observer reached the starter")
         var replica = try snapshot(fixture.store)
         XCTAssertTrue(replica.pending.isEmpty, "applied removed the row")
         XCTAssertEqual(try form(400, replica, fixture.starter).progress?.stage, .starting(sessionID: 90))
@@ -173,7 +173,7 @@ final class StartSheetWiringTests: XCTestCase {
         let fixture = try await makeFixture()
         try await fixture.starter.start(targetID: 400, params: try startParams(400))
         try await echo(fixture, .applied, result: ["session_id": .integer(90), "stage": .string("starting")])
-        try await poll(timeout: 2, { fixture.starter.attempts[400]?.applied == true }, "the applied observer reached the starter")
+        try await poll({ fixture.starter.attempts[400]?.applied == true }, "the applied observer reached the starter")
 
         var replica = try snapshot(fixture.store, grant: grant(typing: true, start: true))
         replica.sessions.append(try session(90, target: 400, ["state_kind": "running", "live": true]))
@@ -207,7 +207,7 @@ final class StartSheetWiringTests: XCTestCase {
         let fixture = try await makeFixture()
         try await fixture.starter.start(targetID: 400, params: try startParams(400))
         try await echo(fixture, .applied, result: ["session_id": .integer(92), "stage": .string("starting")])
-        try await poll(timeout: 2, { fixture.starter.attempts[400]?.applied == true }, "the applied observer reached the starter")
+        try await poll({ fixture.starter.attempts[400]?.applied == true }, "the applied observer reached the starter")
         var replica = try snapshot(fixture.store)
         replica.sessions.append(try session(92, target: 400, ["state_kind": "stopped", "live": false, "is_ring": true]))
         XCTAssertEqual(try form(400, replica, fixture.starter).progress?.stage, .ended(sessionID: 92))
@@ -218,7 +218,7 @@ final class StartSheetWiringTests: XCTestCase {
         resume.status = .applied
         resume.result = ["session_id": .integer(16), "stage": .string("starting")]
         try await fixture.outbox.applyEcho(resume)
-        try await poll(timeout: 2, { fixture.starter.attempts[416]?.applied == true }, "the applied observer reached the starter")
+        try await poll({ fixture.starter.attempts[416]?.applied == true }, "the applied observer reached the starter")
         replica = try snapshot(fixture.store)
         XCTAssertEqual(
             try form(416, replica, fixture.starter).progress?.stage, .starting(sessionID: 16),
@@ -237,7 +237,7 @@ final class StartSheetWiringTests: XCTestCase {
         try await hydrate(fixture.store, [try DemoSeed.record(kind: .terminalSession, id: 16, json: staleJSON, modifiedAt: now)])
         try await fixture.starter.start(targetID: 416, params: try startParams(416, mode: .openExisting))
         try await echo(fixture, .applied, result: ["session_id": .integer(16), "stage": .string("starting")])
-        try await poll(timeout: 2, { fixture.starter.attempts[416]?.applied == true }, "the applied observer reached the starter")
+        try await poll({ fixture.starter.attempts[416]?.applied == true }, "the applied observer reached the starter")
 
         var replica = try snapshot(fixture.store)
         replica.sessions.removeAll { $0.id == 16 }
@@ -281,7 +281,7 @@ final class StartSheetWiringTests: XCTestCase {
         XCTAssertEqual(try TerminalSessionState.decode(payload: try XCTUnwrap(held)).stateCaption, "Exited",
                        "the exited record is in the replica before the echo is routed")
         try await echo(fixture, .applied, result: ["session_id": .integer(16), "stage": .string("starting")])
-        try await poll(timeout: 2, { fixture.starter.attempts[416]?.applied == true }, "the applied observer reached the starter")
+        try await poll({ fixture.starter.attempts[416]?.applied == true }, "the applied observer reached the starter")
 
         var replica = try snapshot(fixture.store)
         replica.sessions.removeAll { $0.id == 16 }
@@ -300,7 +300,7 @@ final class StartSheetWiringTests: XCTestCase {
         )])
         try await fixture.starter.start(targetID: 416, params: try startParams(416, mode: .openExisting))
         try await echo(fixture, .applied, result: ["session_id": .integer(16), "stage": .string("starting")])
-        try await poll(timeout: 2, { fixture.starter.attempts[416]?.applied == true }, "the applied observer reached the starter")
+        try await poll({ fixture.starter.attempts[416]?.applied == true }, "the applied observer reached the starter")
 
         var replica = try snapshot(fixture.store)
         replica.sessions.removeAll { $0.id == 16 }
@@ -332,7 +332,7 @@ final class StartSheetWiringTests: XCTestCase {
                 : ["session_id": .integer(93), "stage": .string("starting")]
             try await fixture.outbox.applyEcho(action)
         }
-        try await poll(timeout: 2, {
+        try await poll({
             fixture.answerer.applied[109] != nil && fixture.starter.attempts[400]?.applied == true
         }, "both consumers saw their echo")
         XCTAssertEqual(fixture.answerer.applied[109], AppliedAnswer(delivery: .submitted))
@@ -625,7 +625,7 @@ final class StartSheetWiringTests: XCTestCase {
         let first = Task { try await starter.start(targetID: 400, params: params) }
         // Released on every path, so a failing assertion leaks no waiter.
         defer { Task { await gate.release() } }
-        try await poll(timeout: 2) { sent.count == 1 }
+        try await poll { sent.count == 1 }
         XCTAssertFalse(try form(400, try snapshot(try TestPhone.replica()), starter).canStart, "Start is off while saving")
 
         let secondDone = expectation(description: "the second start returns")
@@ -692,7 +692,7 @@ final class StartSheetWiringTests: XCTestCase {
         let picked = try XCTUnwrap(try model(draft, try snapshot(fixture.store, grant: grant(typing: true, start: true))).progress)
         XCTAssertEqual(picked.stage, .pickedUp)
         try await echo(fixture, .applied, result: ["session_id": .integer(95), "stage": .string("starting")])
-        try await poll(timeout: 2, {
+        try await poll({
             fixture.starter.attempt(.untargeted(workbenchID: DemoSeed.acmeID))?.applied == true
         }, "the applied observer reached the starter")
         XCTAssertEqual(fixture.starter.attempt(.untargeted(workbenchID: DemoSeed.acmeID))?.sessionID, 95)

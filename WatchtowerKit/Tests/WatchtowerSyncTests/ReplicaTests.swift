@@ -743,7 +743,8 @@ final class ReplicaTests: XCTestCase {
         ])
         let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         let (applied, didApply) = AsyncStream.makeStream(of: Void.self)
-        let hydrator = ReplicaHydrator(transport: transport, store: store, onRecordsApplied: { _ in didApply.yield() })
+        let onApplied: @Sendable ([AppliedSliceRecord]) -> Void = { _ in didApply.yield() }
+        let hydrator = ReplicaHydrator(transport: transport, store: store, onRecordsApplied: onApplied)
 
         await hydrator.start(interval: .milliseconds(10))
         for await _ in applied { break }

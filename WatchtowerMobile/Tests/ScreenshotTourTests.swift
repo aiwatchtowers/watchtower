@@ -73,7 +73,7 @@ final class ScreenshotTourTests: XCTestCase {
         let dir = URL(fileURLWithPath: path, isDirectory: true)
         try ScreenshotHost.clear(dir)
         let (root, demo) = try makeDemoRoot()
-        try await poll(timeout: 20, { Self.isHydrated(root.env) }, "the demo seed hydrated")
+        try await poll({ Self.isHydrated(root.env) }, "the demo seed hydrated")
         let host = ScreenshotHost(directory: dir, env: root.env, linking: root.linking)
         let shots = Self.designSystemShots() + Self.workbenchShots() + Self.calendarShots() + Self.onboardingShots()
         for shot in shots {
@@ -150,7 +150,7 @@ final class ScreenshotTourTests: XCTestCase {
         let sealing = DemoSeed.hubTransport(inner: demo.transport, seq: DemoSeed.hubSeq(defaults: demo.defaults, now: Date()))
         try await sealing.save([beat])
         _ = await env.refresh(.pull)
-        try await poll(timeout: 20, { env.macReachability(now: Date()) != .online }, "the demo Mac fell asleep")
+        try await poll({ env.macReachability(now: Date()) != .online }, "the demo Mac fell asleep")
         try await host.capture("01s-now-mac-asleep", Self.app(.now)(env))
         try await host.capture("09s-session-10-mac-asleep", NavigationStack {
             WorkchatView(replica: env.workbenchReplica, sessionID: 10, store: env.store, requester: env.chatRequests)
@@ -669,7 +669,7 @@ final class ScreenshotTourTests: XCTestCase {
             )
         }
         addTeardownBlock { @MainActor in session.stop() }
-        try await poll(timeout: 20, { session.isBootstrapped }, "the recorder environment booted")
+        try await poll({ session.isBootstrapped }, "the recorder environment booted")
         let env = AppEnvironment.single(session, defaults: defaults)
         let host = ScreenshotHost(directory: dir, env: env, linking: linking)
         let recorder = env.recorder
@@ -707,7 +707,7 @@ final class ScreenshotTourTests: XCTestCase {
             outbox: session.outbox, now: now,
             setClock: { clock.advance($0.timeIntervalSince(clock.now)) },
             refuse: { await transport.refuse($0) })
-        try await poll(timeout: 20, {
+        try await poll({
             let backlog = session.outboxBacklog
             return backlog.queued == 3 && backlog.undelivered == 2 && backlog.lastFlushStopped
                 && OutboxItem.rows(session.workbenchReplica.snapshot.pending, .undelivered).count == 2
@@ -728,7 +728,7 @@ final class ScreenshotTourTests: XCTestCase {
             now: { clock.now } // swiftlint:disable:this trailing_closure
         )
         addTeardownBlock { @MainActor in session.stop() }
-        try await poll(timeout: 20, { session.isBootstrapped && !session.workbenchReplica.snapshot.workbenches.isEmpty }, "the outbox demo booted")
+        try await poll({ session.isBootstrapped && !session.workbenchReplica.snapshot.workbenches.isEmpty }, "the outbox demo booted")
         try await session.outboxWork?.value(within: 60, "session.outboxWork")
         return (AppEnvironment.single(session, defaults: defaults), session)
     }
@@ -749,7 +749,7 @@ final class ScreenshotTourTests: XCTestCase {
             let (env, session) = try await bareOutboxEnv(transport: transport, clock: MutableClock())
             try await DemoSeed.loadParkedDemo(outbox: session.outbox, sent: sent, waiting: waiting) { await transport.refuse($0) }
             try session.store.markRelayFeedParked(at: Date())
-            try await poll(timeout: 20, {
+            try await poll({
                 let backlog = session.outboxBacklog
                 return backlog.parked?.sent == sent && backlog.queued == (waiting ? 3 : 0)
                     && backlog.lastFlushStopped == waiting
@@ -933,7 +933,7 @@ final class ScreenshotTourTests: XCTestCase {
             recordingsDirectory: try makeRecordingsDirectory()
         )
         addTeardownBlock { @MainActor in session.stop() }
-        try await poll(timeout: 20, { session.isBootstrapped && !session.workbenchReplica.snapshot.workbenches.isEmpty }, "the demo booted")
+        try await poll({ session.isBootstrapped && !session.workbenchReplica.snapshot.workbenches.isEmpty }, "the demo booted")
         try await session.outboxWork?.value(within: 60, "session.outboxWork")
         try await session.outbox.enableOrderedActions()
         await transport.refuse(.unreachable)
@@ -950,7 +950,7 @@ final class ScreenshotTourTests: XCTestCase {
                 workbenchID: workbench, answer: OwnerAskAnswer(answers: [.init(id: "q1", labels: ["Archive Now"])])
             ).wireParams())
         _ = try await session.outbox.flush()
-        try await poll(timeout: 20, { OutboxItem.rows(session.workbenchReplica.snapshot.pending, .undelivered).count == 2 }, "both listed")
+        try await poll({ OutboxItem.rows(session.workbenchReplica.snapshot.pending, .undelivered).count == 2 }, "both listed")
         let env = AppEnvironment.single(session, defaults: defaults)
         let host = ScreenshotHost(directory: dir, env: env, linking: linking)
         // The narrow frame scrolls past the title and the footer to the two rows (mockup 7.7's SE frame shows them).

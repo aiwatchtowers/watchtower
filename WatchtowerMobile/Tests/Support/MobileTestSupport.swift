@@ -2,6 +2,7 @@ import CryptoKit
 import Foundation
 import GRDB
 import Observation
+import os
 import WatchtowerE2ETesting
 import WatchtowerSync
 import XCTest
@@ -9,10 +10,12 @@ import XCTest
 
 /// Counts how often an `@Observable` property is SET (a set notifies its
 /// observers even when the value is equal), re-arming the tracking after
-/// each notification.
+/// each notification. The count moves inside the notification itself, so it
+/// is current as soon as the set returns.
 @MainActor
 final class ObservedSetCounter {
-    private(set) var count = 0
+    private let sets = OSAllocatedUnfairLock(initialState: 0)
+    var count: Int { sets.withLock { $0 } }
     private let read: @MainActor () -> Void
 
     init(_ read: @escaping @MainActor () -> Void) {
@@ -21,17 +24,16 @@ final class ObservedSetCounter {
     }
 
     private func arm() {
+        let sets = sets
         withObservationTracking { read() } onChange: { [weak self] in
-            Task { @MainActor in
-                self?.count += 1
-                self?.arm()
-            }
+            sets.withLock { $0 += 1 }
+            Task { @MainActor in self?.arm() }
         }
     }
 }
 
 /// Collects every value an async sequence publishes, so a test waits for
-/// them with a bounded `poll` instead of an unbounded `next()`.
+/// them with `poll` instead of holding the sequence's iterator.
 @MainActor
 final class PublishedValues<Value: Sendable> {
     private(set) var values: [Value] = []
@@ -156,39 +158,29 @@ extension XCTestCase {
     }
 
     /// Waits until the link flow's grant wait parks on `clock`
-    /// (`GateLinkClock.untilParked`): a signal, so a slow runner only
-    /// delays it; `timeout` fails a flow that never parks instead of
-    /// hanging the suite.
+    /// (`GateLinkClock.untilParked`): a signal, with no wall-clock cap (a flow
+    /// that never parks is a hang for the lane watchdog to report).
     @MainActor
-    func waitUntilParked(
-        _ clock: GateLinkClock, timeout: TimeInterval = 10, file: StaticString = #filePath, line: UInt = #line
-    ) async {
-        let parked = XCTestExpectation(description: "the grant wait parked on the clock")
-        let watch = Task {
-            await clock.untilParked()
-            parked.fulfill()
-        }
-        let result = await XCTWaiter().fulfillment(of: [parked], timeout: timeout)
-        watch.cancel()
-        XCTAssertEqual(result, .completed, "the grant wait never parked on the clock", file: file, line: line)
+    func waitUntilParked(_ clock: GateLinkClock) async {
+        await clock.untilParked()
     }
 
-    /// Polls the main run loop until `condition` holds or the timeout
-    /// elapses: the environment's bootstrap and the observations deliver
-    /// asynchronously, so tests must yield to let them land.
+    /// Yields the main actor until `condition` holds: the environment's
+    /// bootstrap and the observations deliver asynchronously (main-queue
+    /// jobs queued before each yield run first), so tests must yield to let
+    /// them land. No wall-clock cap: a condition that never holds is a hang
+    /// for the lane watchdog to report, with `message` naming what it waited
+    /// for in a debugger.
     @MainActor
     func poll(
-        timeout: TimeInterval = 5,
         _ condition: () -> Bool,
-        _ message: @autoclosure () -> String = "condition not met in time",
+        _ message: @autoclosure () -> String = "condition not met",
         file: StaticString = #filePath,
         line: UInt = #line
     ) async throws {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !condition(), Date() < deadline {
-            try await Task.sleep(for: .milliseconds(20))
+        while !condition() {
+            await Task.yield()
         }
-        XCTAssertTrue(condition(), message(), file: file, line: line)
     }
 }
 

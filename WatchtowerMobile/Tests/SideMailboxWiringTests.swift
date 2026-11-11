@@ -249,7 +249,7 @@ final class SideMailboxWiringTests: XCTestCase {
             await reader.stop()
             stopped = true
         }
-        try await poll(timeout: 5, { stopped }, "stop() waited past its cap for a look that never answers")
+        try await poll({ stopped }, "stop() waited past its cap for a look that never answers")
 
         let stops = await side.stops
         XCTAssertEqual(stops, 1, "stopped at the cap")

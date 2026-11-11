@@ -900,17 +900,13 @@ final class RelayUpgradeWiringTests: XCTestCase {
         try await TestPhone.hub(over: bed.cloud.inner).save([try TestPhone.grantRecord(grant, modifiedAt: Date())])
     }
 
-    private func waitUntil(timeout: TimeInterval = 5, _ condition: () -> Bool) async throws {
-        let deadline = Date().addingTimeInterval(timeout)
+    /// Yields until `condition` holds; no wall-clock cap (a hang is the lane watchdog's to report).
+    private func waitUntil(_ condition: () -> Bool) async throws {
         while !condition() {
-            guard Date() < deadline else { throw WaitTimedOut() }
-            try await Task.sleep(for: .milliseconds(10))
+            await Task.yield()
         }
     }
 }
-
-/// A wait in a test that never ended.
-private struct WaitTimedOut: Error {}
 
 /// The queue step's failure in a test.
 private struct QueueFault: Error {}

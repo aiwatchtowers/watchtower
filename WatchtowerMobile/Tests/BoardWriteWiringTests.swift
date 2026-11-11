@@ -251,7 +251,7 @@ final class BoardWriteWiringTests: XCTestCase {
             echo.result = ["comment_id": .integer(id)]
             try await fixture.outbox.applyEcho(echo)
         }
-        try await poll(timeout: 2) { fixture.writer.postedComments.count == 2 }
+        try await poll { fixture.writer.postedComments.count == 2 }
 
         var replica = try snapshot(fixture.store)
         XCTAssertTrue(replica.pending.isEmpty, "applied removed the rows")

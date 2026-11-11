@@ -421,6 +421,8 @@ final class HubSession {
     @ObservationIgnored private var lastAnswerClears = false
     /// The uploader's pass after a raise (`keysMerged`): stale recordings re-armed and sent. Not awaited (tests wait).
     @ObservationIgnored private(set) var uploadKick: Task<Void, Never>?
+    /// The upload pass the app's return to the foreground started (tests await it).
+    @ObservationIgnored private(set) var uploadRetryPass: Task<Void, Never>?
     /// The unlock signal's registration (`protectedDataDidBecomeAvailable`), removed by `stop()`.
     @ObservationIgnored private var unlockObserver: NotificationToken?
 
@@ -1271,7 +1273,7 @@ final class HubSession {
     /// open when it reaches it, so a cold launch runs one pass, not two.
     private func setUploadRetries(_ open: Bool) {
         guard uploadRetries.set(open), open, isBootstrapped, !stopped else { return }
-        Task { [weak self] in
+        uploadRetryPass = Task { [weak self] in
             guard let self, !self.stopped else { return }
             await self.recorder.uploadPending()
         }

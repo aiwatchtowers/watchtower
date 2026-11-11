@@ -41,7 +41,10 @@ final class CloudKitTransportPushFetchTests: XCTestCase {
 
     /// `sleep`, telling `timerStarts` first.
     private func counted(_ sleep: (@Sendable (TimeInterval) async -> Void)?) -> (@Sendable (TimeInterval) async -> Void)? {
-        guard let sleep else { return nil }
+        sleep.map(counted)
+    }
+
+    private func counted(_ sleep: @escaping @Sendable (TimeInterval) async -> Void) -> @Sendable (TimeInterval) async -> Void {
         let starts = timerStarts
         return { seconds in
             await starts.arrive()
@@ -376,7 +379,7 @@ final class CloudKitTransportPushFetchTests: XCTestCase {
                 }
             },
             now: { clock.now },
-            sleep: counted { _ in await gate.wait() }!
+            sleep: counted { _ in await gate.wait() }
         )
         await transport.start()
 
