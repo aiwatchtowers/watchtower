@@ -186,6 +186,9 @@ final class WorkbenchesViewModel {
     /// The automatic cleanups of finished placed sessions whose agent
     /// exited (session worktrees spec §9), per session; gone when done.
     @ObservationIgnored var placedCleanupRuns: [Int64: Task<Void, Never>] = [:]
+    /// Told when an automatic cleanup starts waiting for another cleanup
+    /// apply of its workbench to end (tests await it instead of a clock).
+    @ObservationIgnored var placedCleanupWaitsForApply: (Int64) -> Void = { _ in }
     /// Per deleted session, what its Delete and Clean Up kept of the items
     /// the dialog showed: told on the Undo bar while the row waits there,
     /// dropped once it leaves the batch (Undo or the commit).

@@ -92,19 +92,17 @@ final class WorkbenchesViewModelPlacedCleanupTests: XCTestCase {
     }
 
     /// The agent process of `row` exits; returns once the hook's cleanup ran
-    /// (its run clears itself when done). Bounded: a run that never ends
-    /// fails the test instead of hanging it.
+    /// (its run clears itself when done).
     private func exitAgent(_ vm: WorkbenchesViewModel, _ row: TerminalSession) async throws {
         try XCTUnwrap(processes[row.id]).exit(0)
-        await waitUntil { vm.placedCleanupRuns[row.id] == nil }
-        XCTAssertNil(vm.placedCleanupRuns[row.id], "the exit's cleanup run did not end within 5 s")
+        await untilPlacedRunEnds(vm, row.id)
+        XCTAssertNil(vm.placedCleanupRuns[row.id], "the exit's cleanup run ended")
     }
 
-    private func waitUntil(timeout: TimeInterval = 5, _ condition: @MainActor () -> Bool) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !condition(), Date() < deadline {
-            try? await Task.sleep(for: .milliseconds(5))
-        }
+    /// Awaits the automatic cleanup run of session `id` the view model
+    /// owns — and any run that replaced it — to its end.
+    private func untilPlacedRunEnds(_ vm: WorkbenchesViewModel, _ id: Int64) async {
+        while let run = vm.placedCleanupRuns[id] { await run.value }
     }
 
     private func item(
@@ -293,8 +291,8 @@ final class WorkbenchesViewModelPlacedCleanupTests: XCTestCase {
         // Resumed before the hook's task got to run.
         try XCTUnwrap(processes[row.id]).exit(0)
         terminals.start(row, fresh: false)
-        await waitUntil { vm.placedCleanupRuns[row.id] == nil }
-        XCTAssertNil(vm.placedCleanupRuns[row.id], "the exit's cleanup run did not end within 5 s")
+        await untilPlacedRunEnds(vm, row.id)
+        XCTAssertNil(vm.placedCleanupRuns[row.id], "the exit's cleanup run ended")
 
         XCTAssertTrue(runner.calls.isEmpty, "a live row is never cleaned up")
         XCTAssertTrue(terminals.liveIDs.contains(row.id))
@@ -311,13 +309,12 @@ final class WorkbenchesViewModelPlacedCleanupTests: XCTestCase {
         let row = try await runningRow(finished: true)
 
         try XCTUnwrap(processes[row.id]).exit(0)
-        let deadline = Date().addingTimeInterval(5)
-        while runner.heldCount == 0, Date() < deadline { await Task.yield() }
+        await waitUntil { runner.heldCount > 0 }
         XCTAssertEqual(runner.heldCount, 1, "the exit started a plan")
         terminals.start(row, fresh: false)
         runner.release()
-        await waitUntil { vm.placedCleanupRuns[row.id] == nil }
-        XCTAssertNil(vm.placedCleanupRuns[row.id], "the exit's cleanup run did not end within 5 s")
+        await untilPlacedRunEnds(vm, row.id)
+        XCTAssertNil(vm.placedCleanupRuns[row.id], "the exit's cleanup run ended")
 
         XCTAssertEqual(runner.calls.count, 1, "the plan ran")
         XCTAssertTrue(applyCalls(runner).isEmpty, "liveness is checked again right before the apply")
@@ -435,10 +432,9 @@ final class WorkbenchesViewModelPlacedCleanupTests: XCTestCase {
         XCTAssertEqual(applyCalls(runner).first?.filter { $0.hasPrefix("--item") }, ["--item=worktree:\(worktree)"])
     }
 
-    /// Waits (bounded) until `runner` holds `count` calls.
+    /// Waits until `runner` holds `count` calls.
     private func waitForHeld(_ runner: FakeSessionCleanupRunner, _ count: Int) async throws {
-        let deadline = Date().addingTimeInterval(5)
-        while runner.heldCount < count, Date() < deadline { await Task.yield() }
+        await waitUntil { runner.heldCount >= count }
         XCTAssertEqual(runner.heldCount, count)
     }
 
@@ -462,16 +458,19 @@ final class WorkbenchesViewModelPlacedCleanupTests: XCTestCase {
             return true
         }
 
+        let waits = CallSignal()
+        vm.placedCleanupWaitsForApply = { _ in waits.hit() }
+
         try XCTUnwrap(processes[row.id]).exit(0)
-        await waitUntil(timeout: 0.3) { !self.applyCalls(runner).isEmpty }
+        await waits.until(1)
         XCTAssertTrue(applyCalls(runner).isEmpty, "no apply beside another cleanup of the workbench")
         XCTAssertNotNil(vm.placedCleanupRuns[row.id], "the run waits instead of giving up")
 
         vm.cleanupRunWorkbenches[99] = nil
         vm.cleanupRuns[99] = nil
         open.finish()
-        await waitUntil { vm.placedCleanupRuns[row.id] == nil }
-        XCTAssertNil(vm.placedCleanupRuns[row.id], "the run did not end within 5 s")
+        await untilPlacedRunEnds(vm, row.id)
+        XCTAssertNil(vm.placedCleanupRuns[row.id], "the run ended")
         XCTAssertEqual(applyCalls(runner).map { $0.filter { $0.hasPrefix("--item") } },
                        [["--item=worktree:\(worktree)", "--item=branch:wt/x"]], "applied once the other ended")
         XCTAssertEqual(vm.sessionCleanup?.cleanupPhase(for: .session(row.id)), .idle)

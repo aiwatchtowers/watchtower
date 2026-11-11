@@ -146,6 +146,12 @@ package final class OwnerConfirmServer {
     private let present: (OwnerConfirmPrompt) -> Void
     private let timeout: Duration
     private let cooldown: Duration
+    /// Seconds a connection has to send its request line (`readTimeout`).
+    nonisolated private let lineTimeout: TimeInterval
+    /// The window's wait for the owner; tests run it out by hand.
+    private let sleep: (Duration) async -> Void
+    /// Told each admitted connection's count of open ones (tests).
+    private let onAdmit: (@Sendable (Int) -> Void)?
     private var cooldownUntil: ContinuousClock.Instant?
     private let io = OwnerConfirmIO()
     private var open: (prompt: OwnerConfirmPrompt, box: OwnerConfirmReplyBox)?
@@ -155,12 +161,18 @@ package final class OwnerConfirmServer {
         grants: OwnerConfirmGrants = .shared,
         timeout: Duration = promptTimeout,
         cooldown: Duration = deniedCooldown,
+        lineTimeout: TimeInterval = readTimeout,
+        sleep: @escaping (Duration) async -> Void = { try? await Task.sleep(for: $0) },
+        onAdmit: (@Sendable (Int) -> Void)? = nil,
         present: @escaping (OwnerConfirmPrompt) -> Void
     ) {
         self.path = path
         self.grants = grants
         self.timeout = timeout
         self.cooldown = cooldown
+        self.lineTimeout = lineTimeout
+        self.sleep = sleep
+        self.onAdmit = onAdmit
         self.present = present
     }
 
@@ -172,11 +184,8 @@ package final class OwnerConfirmServer {
             if OwnerConfirmIO.answers(path) { throw ServerError.anotherServer }
             unlink(path)
         }
-        try io.listen(
-            path: path,
-            pastCap: { [grants] pid in grants.hasLive(pid: pid) },
-            serve: { [weak self] fd in self?.serve(fd) }
-        )
+        let pastCap: @Sendable (Int32) -> Bool = { [grants] pid in grants.hasLive(pid: pid) }
+        try io.listen(path: path, pastCap: pastCap, onAdmit: onAdmit) { [weak self] fd in self?.serve(fd) }
     }
 
     /// Closes the socket and removes its file; an open window is withdrawn.
@@ -190,7 +199,7 @@ package final class OwnerConfirmServer {
     /// watch for a hang-up while the owner decides, write the answer.
     nonisolated private func serve(_ fd: Int32) {
         let line: Data
-        switch OwnerConfirmIO.readLine(fd, limit: Self.maxRequestBytes, within: Self.readTimeout) {
+        switch OwnerConfirmIO.readLine(fd, limit: Self.maxRequestBytes, within: lineTimeout) {
         case let .line(read):
             line = read
         case .tooLong:
@@ -250,8 +259,8 @@ package final class OwnerConfirmServer {
         }
         let prompt = OwnerConfirmPrompt(request: request)
         open = (prompt, box)
-        let deadline = Task { [weak self, timeout] in
-            try? await Task.sleep(for: timeout)
+        let deadline = Task { [weak self, timeout, sleep] in
+            await sleep(timeout)
             guard !Task.isCancelled else { return }
             self?.withdraw(box)
         }

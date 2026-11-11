@@ -370,14 +370,10 @@ final class DatabaseCompactionLaunchTests: XCTestCase {
         return (appState, daemon)
     }
 
-    /// Yields the main actor until `condition` holds; fails after a bounded
-    /// number of turns rather than hanging.
-    private func until(_ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async {
-        for _ in 0..<10_000 {
-            if condition() { return }
-            await Task.yield()
-        }
-        XCTFail("condition never held", file: file, line: line)
+    /// Yields the main actor until `condition` holds — no bound: a wait that
+    /// never ends is the lane watchdog's to report.
+    private func until(_ condition: () -> Bool) async {
+        while !condition() { await Task.yield() }
     }
 }
 

@@ -85,23 +85,21 @@ final class CleanupScreenViewTests: XCTestCase {
         window.isReleasedWhenClosed = false
         window.contentView = host
         defer { window.close() }
-        waitFor { process.view.window === window }
+        await render(host)
         XCTAssertTrue(process.view.window === window, "the terminal is on screen")
         let terminalHost = try XCTUnwrap(process.view.superview)
         let layout = vm.layout(projectID: projectID)
         // Positive control: uncovered, a focus request gives the terminal the keyboard.
         appState.terminalCenter.requestKeyboardFocus(session.id)
-        try await drainMainQueue()
+        await render(host)
         XCTAssertTrue(window.firstResponder === process.view, "the fake terminal takes the keyboard")
 
         await vm.openCleanupScreen(projectID: projectID).value
-        settle(0.1)
-        try await drainMainQueue()
+        await render(host)
         XCTAssertTrue(vm.isObscured(sessionID: session.id, projectID: projectID))
         XCTAssertFalse(window.firstResponder === process.view, "keys go to the screen, not the hidden terminal")
         appState.terminalCenter.requestKeyboardFocus(session.id)
-        settle(0.1)
-        try await drainMainQueue()
+        await render(host)
         XCTAssertFalse(window.firstResponder === process.view, "a focus request does not reach the covered terminal")
         XCTAssertTrue(vm.cleanupScreenOpen(projectID: projectID))
         XCTAssertTrue(process.view.window === window, "covered, not taken out of the window")
@@ -110,7 +108,7 @@ final class CleanupScreenViewTests: XCTestCase {
         XCTAssertEqual(vm.layout(projectID: projectID), layout, "the screen is not a layout value")
 
         vm.closeCleanupScreen(projectID: projectID)
-        settle(0.1)
+        await render(host)
         XCTAssertFalse(vm.cleanupScreenOpen(projectID: projectID))
         XCTAssertTrue(process.view.window === window)
         XCTAssertTrue(process.view.superview === terminalHost, "closing shows the very same terminal")
@@ -345,24 +343,15 @@ final class CleanupScreenViewTests: XCTestCase {
         XCTAssertTrue(try footer.inspect().find(button: "Clean Up…").isDisabled())
     }
 
-    /// The terminal host moves the keyboard in a main-queue block, which runs
-    /// only once this test's main-actor job suspends: suspend, then turn the
-    /// run loop.
-    private func drainMainQueue() async throws {
-        for _ in 0..<3 {
-            try await Task.sleep(for: .milliseconds(20))
-            settle(0.02)
+    /// SwiftUI applies the pending state to `host` (a forced layout runs its
+    /// update, and with it `updateNSView`), then the main-queue blocks queued
+    /// so far run — the terminal host moves the keyboard in one. No clock:
+    /// the hop is queued behind them.
+    private func render(_ host: NSView) async {
+        host.layoutSubtreeIfNeeded()
+        await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+            DispatchQueue.main.async { done.resume() }
         }
-    }
-
-    /// Turns the run loop until `condition` holds, bounded.
-    private func waitFor(_ condition: () -> Bool) {
-        let deadline = Date().addingTimeInterval(2)
-        while !condition(), Date() < deadline { settle(0.01) }
-    }
-
-    private func settle(_ seconds: TimeInterval) {
-        RunLoop.main.run(until: Date().addingTimeInterval(seconds))
     }
 }
 

@@ -4,11 +4,14 @@ import os
 import XCTest
 
 /// `ProcessCompactionCLI` over a real child: a `/bin/sh` stub stands in for
-/// the `watchtower` binary. Stubs that run on write their pid (`$$`) to
-/// `pidFile` once their traps are set; tearDown SIGKILLs any that is left.
+/// the `watchtower` binary. Stubs that run on write their pid (`$$`) into
+/// the `pidFile` FIFO once their traps are set, which the test reads — no
+/// clock, the write is the event; tearDown SIGKILLs any stub that is left.
 final class ProcessCompactionCLITests: XCTestCase {
     private var directory: URL?
     private var child: (any CompactionChild)?
+    /// The pid the stub reported through `pidFile`.
+    private var startedPID: pid_t?
 
     override func tearDown() async throws {
         // A child the test left running is killed and reaped.
@@ -18,7 +21,7 @@ final class ProcessCompactionCLITests: XCTestCase {
         }
         // A stub the test could not reap through a child handle (a `--check`
         // stub after a failed assertion) is killed by pid.
-        if let pid = stubPID(), Darwin.kill(pid, 0) == 0 {
+        if let pid = startedPID, Darwin.kill(pid, 0) == 0 {
             Darwin.kill(pid, SIGKILL)
         }
         if let directory { try? FileManager.default.removeItem(at: directory) }
@@ -48,27 +51,30 @@ final class ProcessCompactionCLITests: XCTestCase {
 
     /// Phase lines reach `onPhase` while the child still runs, in order; the
     /// result stays the last stdout line. The stub prints the second phase
-    /// only once the test creates `goFilePath`.
+    /// only once the test writes a line into the `goFilePath` FIFO.
     func testStartCompactReportsPhaseLinesAsTheyArrive() async throws {
         let stub = try makeStub("""
         #!/bin/sh
         echo '{"phase":"fts_rebuild"}'
-        while [ ! -f "\(goFilePath)" ]; do sleep 0.05; done
+        read go < "\(goFilePath)"
         echo '{"phase":"compact"}'
         echo '{"compacted":true,"fts_rebuilt":true}'
         """)
+        XCTAssertEqual(mkfifo(goFilePath, 0o600), 0)
         let phases = OSAllocatedUnfairLock<[CompactionRunPhase]>(initialState: [])
+        let (arrived, arrival) = AsyncStream<Void>.makeStream()
         let child = try ProcessCompactionCLI(executablePath: stub).startCompact { phase in
             phases.withLock { $0.append(phase) }
+            arrival.yield()
         }
         self.child = child
 
-        let deadline = ContinuousClock.now + .seconds(10)
-        while phases.withLock({ $0.isEmpty }), ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        var arrivals = arrived.makeAsyncIterator()
+        _ = await arrivals.next()
         XCTAssertEqual(phases.withLock { $0 }, [.ftsRebuild], "the first line arrives while the stub waits")
-        try Data().write(to: URL(fileURLWithPath: goFilePath))
+        let go = goFilePath
+        // Opening a FIFO for writing blocks until the stub opens it to read.
+        await Task.detached { FileHandle(forWritingAtPath: go)?.write(Data("go\n".utf8)) }.value
 
         let exit = await child.waitForExit()
         XCTAssertEqual(exit.status, 0)
@@ -80,11 +86,13 @@ final class ProcessCompactionCLITests: XCTestCase {
 
     /// SIGTERM reaches the child's handler: the CLI's interrupt path exits 4.
     func testTerminateEndsCompactWithItsTrapStatus() async throws {
+        // `wait` returns at once on a trapped signal; the trap ends the sleep too.
         let stub = try makeStub("""
         #!/bin/sh
-        trap 'exit 4' TERM
+        trap 'kill $! 2>/dev/null; exit 4' TERM
+        sleep 3600 &
         echo $$ > "\(pidFilePath)"
-        while :; do sleep 0.05; done
+        wait $!
         """)
         let child = try ProcessCompactionCLI(executablePath: stub).startCompact { _ in }
         self.child = child
@@ -99,18 +107,20 @@ final class ProcessCompactionCLITests: XCTestCase {
     /// A child that ignores SIGTERM is ended by `kill()`, and `waitForExit`
     /// returns with the signal.
     func testKillReapsChildThatIgnoresTerminate() async throws {
+        // An ignored SIGTERM stays ignored across `exec`: the sleep is the stub.
         let stub = try makeStub("""
         #!/bin/sh
         trap '' TERM
         echo $$ > "\(pidFilePath)"
-        while :; do :; done
+        exec sleep 3600
         """)
         let child = try ProcessCompactionCLI(executablePath: stub).startCompact { _ in }
         self.child = child
         let pid = try await waitForStubPID()
 
+        // `terminate()` sends SIGTERM synchronously, and an ignored signal is
+        // dropped when it is sent: nothing is left to wait for.
         child.terminate()
-        try await Task.sleep(for: .milliseconds(200))
         XCTAssertEqual(Darwin.kill(pid, 0), 0, "the stub ignores SIGTERM")
         child.kill()
         let exit = await child.waitForExit()
@@ -149,8 +159,8 @@ final class ProcessCompactionCLITests: XCTestCase {
     }
 
     /// Cancelling the calling task (a quit during the check) ends the check
-    /// with CancellationError well before the stub's 30 s, and the child is
-    /// gone.
+    /// with CancellationError — the stub would otherwise exit 0 with no
+    /// result — and the child is gone.
     func testCancellingCheckTerminatesChild() async throws {
         let stub = try makeStub("""
         #!/bin/sh
@@ -161,7 +171,6 @@ final class ProcessCompactionCLITests: XCTestCase {
         let check = Task { try await cli.check() }
         let pid = try await waitForStubPID()
 
-        let start = ContinuousClock.now
         check.cancel()
         do {
             _ = try await check.value
@@ -169,7 +178,6 @@ final class ProcessCompactionCLITests: XCTestCase {
         } catch is CancellationError {
             // expected
         }
-        XCTAssertLessThan(ContinuousClock.now - start, .seconds(2))
         XCTAssertNotEqual(Darwin.kill(pid, 0), 0, "the check's child is gone")
     }
 
@@ -183,25 +191,17 @@ final class ProcessCompactionCLITests: XCTestCase {
         directory?.appendingPathComponent("go").path ?? "/dev/null"
     }
 
-    private func stubPID() -> pid_t? {
-        guard let directory,
-              let text = try? String(contentsOf: directory.appendingPathComponent("stub.pid"), encoding: .utf8)
-        else { return nil }
-        return pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines))
-    }
-
-    /// Waits (bounded, 20 s: `check()` resolves the login-shell environment
-    /// first) until the stub has written its pid: its traps are set and it
-    /// is running.
+    /// Reads the stub's pid out of the `pidFilePath` FIFO: the read blocks
+    /// until the stub wrote it (its traps are set and it is running) — no
+    /// deadline (`check()` resolves the login-shell environment first).
     @discardableResult
-    private func waitForStubPID(file: StaticString = #filePath, line: UInt = #line) async throws -> pid_t {
-        let deadline = ContinuousClock.now + .seconds(20)
-        while ContinuousClock.now < deadline {
-            if let pid = stubPID() { return pid }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        XCTFail("the stub never started", file: file, line: line)
-        throw CancellationError()
+    private func waitForStubPID() async throws -> pid_t {
+        let path = pidFilePath
+        let data = await Task.detached { FileHandle(forReadingAtPath: path)?.readDataToEndOfFile() }.value
+        let text = String(bytes: data ?? Data(), encoding: .utf8) ?? ""
+        let pid = try XCTUnwrap(pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines)), "the stub's pid")
+        startedPID = pid
+        return pid
     }
 
     /// Creates the temp directory first so `pidFilePath` is valid inside
@@ -212,7 +212,9 @@ final class ProcessCompactionCLITests: XCTestCase {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         self.directory = directory
         let stub = directory.appendingPathComponent("watchtower")
-        try script().write(to: stub, atomically: true, encoding: .utf8)
+        let text = script()
+        try text.write(to: stub, atomically: true, encoding: .utf8)
+        if text.contains(pidFilePath) { XCTAssertEqual(mkfifo(pidFilePath, 0o600), 0) }
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stub.path)
         return stub.path
     }
