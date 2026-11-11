@@ -228,7 +228,7 @@ Needs the owner's approval before the phase that relies on it:
 
 - **INBOX-05** (phase 2): a `source_mute` rule with scope `email:<address>` hides that sender's mail from the Mail waiting artifact. Still never an `inbox_items` row change; the Desktop's rules writer gains the Mute button as an entry point (still the same writer).
 - **INBOX-02** (phase 4): "I reply… the item disappears" extended to Gmail mail; IMAP named as not covered.
-- **IDEA-04** note (phase 3): Clear Old Ideas is one owner action applying `not_now` to many ideas; still owner-only, never automatic.
+- **IDEA-04** note (phase 3): Clear Old Ideas is one owner action applying `dropped` to many ideas; still owner-only, never automatic.
 - **TRACKS-07** note (phase 3): bulk Stop Tracking sets `dismissed_at` only.
 - **AUTO-*** (phase 5): the raw window primitive's contracts as the umbrella spec states them (AUTO-01 capability, AUTO-04 cursor on success, AUTO-05 concurrency 1); FEAT-01 for `slack-today`.
 - **Raw window scope** (phase 5, umbrella amendment): a built-in may widen the scope to every channel the owner is a member of (owner's decision, ask #634), minus channels muted for AI (agent's call). Owner recipes keep the umbrella's narrow scope.
