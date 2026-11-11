@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	hubslices "watchtower/internal/hub/slices"
@@ -96,46 +97,52 @@ func startICloudDesk(t *testing.T, active transport.Kind, src hubslices.Source) 
 // it is woken; once the account is back (read at the next daemon cycle) it
 // publishes and reads again by itself.
 func TestNoICloudAccountHoldsCloudKitUntilItReturns(t *testing.T) {
-	src := &urgentSource{}
-	r, ck := startICloudDesk(t, transport.KindCloudKit, src)
-	reads, mbox := src.reads.Load(), ck.reads.Load()
-	ck.inject(transport.Event{PullNow: true}) // a pass now, the urgent kinds dirty
-	time.Sleep(hubslices.CloudKitSpacing + 500*time.Millisecond)
-	if n, m := src.reads.Load()-reads, ck.reads.Load()-mbox; n != 0 || m != 0 {
-		t.Fatalf("with no iCloud account the hub read a slice source %d times and the mailbox %d times", n, m)
-	}
+	bubble(t, func(t *testing.T) {
+		src := &urgentSource{}
+		r, ck := startICloudDesk(t, transport.KindCloudKit, src)
+		reads, mbox := src.reads.Load(), ck.reads.Load()
+		ck.inject(transport.Event{PullNow: true}) // a pass now, the urgent kinds dirty
+		time.Sleep(hubslices.CloudKitSpacing + 500*time.Millisecond)
+		synctest.Wait()
+		if n, m := src.reads.Load()-reads, ck.reads.Load()-mbox; n != 0 || m != 0 {
+			t.Fatalf("with no iCloud account the hub read a slice source %d times and the mailbox %d times", n, m)
+		}
 
-	ck.acct.Store(transport.AccountAvailable)
-	r.tick <- struct{}{} // the daemon cycle reads the account again
-	eventually(t, "the full diff and the pass after the account came back", func() bool {
-		return src.reads.Load() > reads && ck.reads.Load() > mbox
-	})
-	r.waitStatus("running again with the account", func(s Status) bool {
-		return s.State == StateRunning && s.Reason == "" && s.CloudKit.Account == string(transport.AccountAvailable)
+		ck.acct.Store(transport.AccountAvailable)
+		r.tick <- struct{}{} // the daemon cycle reads the account again
+		eventually(t, "the full diff and the pass after the account came back", func() bool {
+			return src.reads.Load() > reads && ck.reads.Load() > mbox
+		})
+		r.waitStatus("running again with the account", func(s Status) bool {
+			return s.State == StateRunning && s.Reason == "" && s.CloudKit.Account == string(transport.AccountAvailable)
+		})
 	})
 }
 
 // With the relay active, no iCloud account holds only CloudKit's mailbox
 // (the switch's standby poll of it); the relay side publishes on.
 func TestNoICloudAccountOnTheRelayHoldsOnlyCloudKitsMailbox(t *testing.T) {
-	src := &urgentSource{}
-	r, ck := startICloudDesk(t, transport.KindRelay, src)
-	mbox := ck.reads.Load()
-	rid := r.rec.last().RelayDeviceID
-	ck.inject(transport.Event{Zone: transport.SharedMailboxZone(rid)}) // a pass and the standby poll now
-	time.Sleep(500 * time.Millisecond)
-	if m := ck.reads.Load() - mbox; m != 0 {
-		t.Fatalf("with no iCloud account the standby poll read CloudKit's mailbox %d times", m)
-	}
-	reads := src.reads.Load()
-	ck.inject(transport.Event{PullNow: true})
-	eventually(t, "the relay side publishing", func() bool { return src.reads.Load() > reads })
+	bubble(t, func(t *testing.T) {
+		src := &urgentSource{}
+		r, ck := startICloudDesk(t, transport.KindRelay, src)
+		mbox := ck.reads.Load()
+		rid := r.rec.last().RelayDeviceID
+		ck.inject(transport.Event{Zone: transport.SharedMailboxZone(rid)}) // a pass and the standby poll now
+		time.Sleep(500 * time.Millisecond)
+		synctest.Wait()
+		if m := ck.reads.Load() - mbox; m != 0 {
+			t.Fatalf("with no iCloud account the standby poll read CloudKit's mailbox %d times", m)
+		}
+		reads := src.reads.Load()
+		ck.inject(transport.Event{PullNow: true})
+		eventually(t, "the relay side publishing", func() bool { return src.reads.Load() > reads })
 
-	ck.acct.Store(transport.AccountAvailable)
-	r.tick <- struct{}{}
-	eventually(t, "CloudKit's mailbox read after the account came back", func() bool {
-		ck.inject(transport.Event{Zone: transport.SharedMailboxZone(rid)})
-		return ck.reads.Load() > mbox
+		ck.acct.Store(transport.AccountAvailable)
+		r.tick <- struct{}{}
+		eventually(t, "CloudKit's mailbox read after the account came back", func() bool {
+			ck.inject(transport.Event{Zone: transport.SharedMailboxZone(rid)})
+			return ck.reads.Load() > mbox
+		})
 	})
 }
 
@@ -238,22 +245,24 @@ func (h *ckHub) exec(q string) {
 // — an iCloud account change wipes the published hashes and CloudKit's
 // mailbox token; the ledger, the hub id and enabled_at stay.
 func TestAnICloudAccountChangeWipesHashesAndTokenButKeepsTheLedger(t *testing.T) {
-	h, _ := ckResetRig(t)
-	_, _, _, hubID, enabledAt := h.published()
-	h.seedPublished()
-	gen := h.generation()
-	h.ck.inject(transport.Event{AccountChanged: true})
-	eventually(t, "the published state wiped", func() bool {
-		n, token, _, _, _ := h.published()
-		return n == 0 && token == 0 && h.generation() == gen+1
+	bubble(t, func(t *testing.T) {
+		h, _ := ckResetRig(t)
+		_, _, _, hubID, enabledAt := h.published()
+		h.seedPublished()
+		gen := h.generation()
+		h.ck.inject(transport.Event{AccountChanged: true})
+		eventually(t, "the published state wiped", func() bool {
+			n, token, _, _, _ := h.published()
+			return n == 0 && token == 0 && h.generation() == gen+1
+		})
+		_, _, phase, gotHub, gotEnabled := h.published()
+		if phase != state.PhaseDone {
+			t.Fatalf("the ledger row is %q: phone UUIDs cannot collide across accounts", phase)
+		}
+		if hubID == "" || gotHub != hubID || gotEnabled != enabledAt {
+			t.Fatalf("hub_id %q → %q, enabled_at %q → %q", hubID, gotHub, enabledAt, gotEnabled)
+		}
 	})
-	_, _, phase, gotHub, gotEnabled := h.published()
-	if phase != state.PhaseDone {
-		t.Fatalf("the ledger row is %q: phone UUIDs cannot collide across accounts", phase)
-	}
-	if hubID == "" || gotHub != hubID || gotEnabled != enabledAt {
-		t.Fatalf("hub_id %q → %q, enabled_at %q → %q", hubID, gotHub, enabledAt, gotEnabled)
-	}
 }
 
 // twin of MobileHubServiceTests.testDataZoneResetWipesHashesButKeepsTheRelayTokenAndTheLedger
@@ -263,74 +272,81 @@ func TestAnICloudAccountChangeWipesHashesAndTokenButKeepsTheLedger(t *testing.T)
 // relay buffer survived: rewinding it would re-read what was answered) and
 // the ledger.
 func TestRecreatedZonesWipeHashesButKeepTheMailboxTokenAndTheLedger(t *testing.T) {
-	h, _ := ckResetRig(t)
-	seedStagedAssets(t, h.dir)
-	h.seedPublished()
-	gen := h.generation()
-	h.ck.inject(transport.Event{ZonesRecreated: true})
-	eventually(t, "the published state and the staged assets wiped", func() bool {
-		n, _, _, _, _ := h.published()
-		file, row := stagedLeft(t, h.dir)
-		return n == 0 && !file && !row && h.generation() == gen+1
+	bubble(t, func(t *testing.T) {
+		h, _ := ckResetRig(t)
+		seedStagedAssets(t, h.dir)
+		h.seedPublished()
+		gen := h.generation()
+		h.ck.inject(transport.Event{ZonesRecreated: true})
+		eventually(t, "the published state and the staged assets wiped", func() bool {
+			n, _, _, _, _ := h.published()
+			file, row := stagedLeft(t, h.dir)
+			return n == 0 && !file && !row && h.generation() == gen+1
+		})
+		if _, token, phase, _, _ := h.published(); token != 7 || phase != state.PhaseDone {
+			t.Fatalf("mailbox token %d (want 7), ledger %q", token, phase)
+		}
+		if s := h.rec.last(); s.State != StateRunning {
+			t.Fatalf("the hub stopped: %+v", s)
+		}
 	})
-	if _, token, phase, _, _ := h.published(); token != 7 || phase != state.PhaseDone {
-		t.Fatalf("mailbox token %d (want 7), ledger %q", token, phase)
-	}
-	if s := h.rec.last(); s.State != StateRunning {
-		t.Fatalf("the hub stopped: %+v", s)
-	}
 }
 
 // A reset whose wipe fails keeps the published state as it was and is
 // retried at the next daemon cycle, which wipes it: released unwiped, the
 // full diff would match the old hashes and publish nothing into the new zone.
 func TestAFailedCloudKitWipeIsRetriedAtTheNextCycle(t *testing.T) {
-	h, tick := ckResetRig(t)
-	h.seedPublished()
-	gen := h.generation()
-	h.exec(`ALTER TABLE work_alerts RENAME TO work_alerts_away`) // the wipe's first statement fails
-	h.ck.inject(transport.Event{ZonesRecreated: true})
-	time.Sleep(500 * time.Millisecond) // the event handled, its wipe failed
-	if n, _, _, _, _ := h.published(); n != 1 || h.generation() != gen {
-		t.Fatalf("after a failed wipe: %d published rows, generation %d (want 1, %d)", n, h.generation(), gen)
-	}
-	h.exec(`ALTER TABLE work_alerts_away RENAME TO work_alerts`)
-	tick <- struct{}{}
-	eventually(t, "the retried wipe", func() bool {
-		n, _, _, _, _ := h.published()
-		return n == 0 && h.generation() == gen+1
+	bubble(t, func(t *testing.T) {
+		h, tick := ckResetRig(t)
+		h.seedPublished()
+		gen := h.generation()
+		h.exec(`ALTER TABLE work_alerts RENAME TO work_alerts_away`) // the wipe's first statement fails
+		h.ck.inject(transport.Event{ZonesRecreated: true})
+		time.Sleep(500 * time.Millisecond) // the event handled, its wipe failed
+		synctest.Wait()
+		if n, _, _, _, _ := h.published(); n != 1 || h.generation() != gen {
+			t.Fatalf("after a failed wipe: %d published rows, generation %d (want 1, %d)", n, h.generation(), gen)
+		}
+		h.exec(`ALTER TABLE work_alerts_away RENAME TO work_alerts`)
+		tick <- struct{}{}
+		eventually(t, "the retried wipe", func() bool {
+			n, _, _, _, _ := h.published()
+			return n == 0 && h.generation() == gen+1
+		})
 	})
 }
 
 // With the relay active, an iCloud account change rewinds only CloudKit's
 // mailbox: the relay's published state and the generation stay.
 func TestAnICloudAccountChangeOnTheRelayRewindsOnlyCloudKitsMailbox(t *testing.T) {
-	src := &urgentSource{}
-	r, ck := startICloudDesk(t, transport.KindRelay, src)
-	mailbox := transport.SharedMailboxZone(r.rec.last().RelayDeviceID)
-	st, err := state.Open(r.dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = st.Close() }()
-	eventually(t, "the relay side published", func() bool {
+	bubble(t, func(t *testing.T) {
+		src := &urgentSource{}
+		r, ck := startICloudDesk(t, transport.KindRelay, src)
+		mailbox := transport.SharedMailboxZone(r.rec.last().RelayDeviceID)
+		st, err := state.Open(r.dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = st.Close() }()
+		eventually(t, "the relay side published", func() bool {
+			hashes, err := st.SliceHashes("owner_ask")
+			return err == nil && len(hashes) > 0
+		})
+		if err := st.SetZoneToken(mailbox, 7); err != nil {
+			t.Fatal(err)
+		}
+		gen, err := st.SyncGeneration()
+		if err != nil {
+			t.Fatal(err)
+		}
+		ck.inject(transport.Event{AccountChanged: true})
+		eventually(t, "CloudKit's mailbox rewound", func() bool {
+			token, err := st.ZoneToken(mailbox)
+			return err == nil && token == 0
+		})
 		hashes, err := st.SliceHashes("owner_ask")
-		return err == nil && len(hashes) > 0
+		if g, gerr := st.SyncGeneration(); err != nil || gerr != nil || len(hashes) == 0 || g != gen {
+			t.Fatalf("the relay's published state: %d rows, generation %d -> %d (%v, %v)", len(hashes), gen, g, err, gerr)
+		}
 	})
-	if err := st.SetZoneToken(mailbox, 7); err != nil {
-		t.Fatal(err)
-	}
-	gen, err := st.SyncGeneration()
-	if err != nil {
-		t.Fatal(err)
-	}
-	ck.inject(transport.Event{AccountChanged: true})
-	eventually(t, "CloudKit's mailbox rewound", func() bool {
-		token, err := st.ZoneToken(mailbox)
-		return err == nil && token == 0
-	})
-	hashes, err := st.SliceHashes("owner_ask")
-	if g, gerr := st.SyncGeneration(); err != nil || gerr != nil || len(hashes) == 0 || g != gen {
-		t.Fatalf("the relay's published state: %d rows, generation %d -> %d (%v, %v)", len(hashes), gen, g, err, gerr)
-	}
 }

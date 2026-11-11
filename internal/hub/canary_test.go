@@ -250,10 +250,7 @@ func TestCanary_NoPlaintextLeavesTheHub(t *testing.T) {
 	})
 	phone, fake := e.phone, e.rig.fake
 
-	ctl, err := Dial(e.dir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	ctl := e.rig.dial()
 	defer func() { _ = ctl.Close() }()
 	for _, g := range []link.Grant{link.GrantTyping, link.GrantStartSessions, link.GrantPermissions} {
 		if a, err := ctl.Do(ControlRequest{Op: OpAllow, Device: phone.ID().String(), Grant: string(g), On: true}); err != nil || !a.OK {

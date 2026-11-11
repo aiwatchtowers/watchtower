@@ -23,7 +23,7 @@ func ownerOffRig(t *testing.T) (*rig, string) {
 	dir := shortDir(t)
 	setMeta(t, dir, state.MetaEnabled, "1")
 	linkPhoneDirectly(t, dir)
-	r := newRig(t, dir)
+	r := newBubbleRig(t, dir)
 	r.start(r.options())
 	r.waitState(StateRunning, "")
 	s, err := ReadStatus(dir)
@@ -37,21 +37,18 @@ func ownerOffRig(t *testing.T) (*rig, string) {
 	return r, data
 }
 
-func switchHub(t *testing.T, dir, op string) {
+func switchHub(t *testing.T, r *rig, op string) {
 	t.Helper()
-	c, err := Dial(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	c := r.dial()
 	defer func() { _ = c.Close() }()
 	if a, err := c.Do(ControlRequest{Op: op}); err != nil || !a.OK {
 		t.Fatalf("%s: %+v, %v", op, a, err)
 	}
 }
 
-func disableHub(t *testing.T, dir string) {
+func disableHub(t *testing.T, r *rig) {
 	t.Helper()
-	switchHub(t, dir, OpDisable)
+	switchHub(t, r, OpDisable)
 }
 
 // TestOwnerOffDeletesWhatWasPublished: the owner's off deletes what the hub
@@ -59,48 +56,52 @@ func disableHub(t *testing.T, dir string) {
 // unlinks the phones (ask #956: the phone's row goes, it reads revoked) and
 // says so in status (off_delete ok, no phones).
 func TestOwnerOffDeletesWhatWasPublished(t *testing.T) {
-	r, data := ownerOffRig(t)
-	disableHub(t, r.dir)
-	r.waitState(StateOff, ReasonDisabled)
-	if got := liveRecords(t, r.fake, data); len(got) != 0 {
-		t.Fatalf("the data zone still holds %v after the owner's off", got)
-	}
-	eventually(t, "off_delete ok, no phones", func() bool {
-		s := r.rec.last()
-		return s.OffDelete.State == OffDeleteOK && s.OffDelete.At != "" && s.Phones == 0
+	bubble(t, func(t *testing.T) {
+		r, data := ownerOffRig(t)
+		disableHub(t, r)
+		r.waitState(StateOff, ReasonDisabled)
+		if got := liveRecords(t, r.fake, data); len(got) != 0 {
+			t.Fatalf("the data zone still holds %v after the owner's off", got)
+		}
+		eventually(t, "off_delete ok, no phones", func() bool {
+			s := r.rec.last()
+			return s.OffDelete.State == OffDeleteOK && s.OffDelete.At != "" && s.Phones == 0
+		})
+		if err := r.stop(); err != nil {
+			t.Fatal(err)
+		}
+		st, err := state.Open(r.dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = st.Close() }()
+		if devices, err := st.Devices(); err != nil || len(devices) != 0 {
+			t.Fatalf("the phone stayed linked after the owner's off: %v %v", devices, err)
+		}
+		var revoked int
+		if err := st.ReadTx(context.Background(), func(tx *sql.Tx) error {
+			return tx.QueryRow(`SELECT COUNT(*) FROM revoked_devices`).Scan(&revoked)
+		}); err != nil || revoked != 1 {
+			t.Fatalf("the unlinked phone's revoked row: %d, %v", revoked, err)
+		}
 	})
-	if err := r.stop(); err != nil {
-		t.Fatal(err)
-	}
-	st, err := state.Open(r.dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = st.Close() }()
-	if devices, err := st.Devices(); err != nil || len(devices) != 0 {
-		t.Fatalf("the phone stayed linked after the owner's off: %v %v", devices, err)
-	}
-	var revoked int
-	if err := st.ReadTx(context.Background(), func(tx *sql.Tx) error {
-		return tx.QueryRow(`SELECT COUNT(*) FROM revoked_devices`).Scan(&revoked)
-	}); err != nil || revoked != 1 {
-		t.Fatalf("the unlinked phone's revoked row: %d, %v", revoked, err)
-	}
 }
 
 // TestOwnerOffThenOnNeedsAFreshPairing: after the owner's off, turning on
 // again runs the same hub (its identity kept, as the Swift hub's Keychain
 // identity) with no linked phone, so the phone has to pair again.
 func TestOwnerOffThenOnNeedsAFreshPairing(t *testing.T) {
-	r, _ := ownerOffRig(t)
-	hubID := r.rec.last().HubID
-	disableHub(t, r.dir)
-	r.waitState(StateOff, ReasonDisabled)
-	switchHub(t, r.dir, OpEnable)
-	r.waitState(StateRunning, "")
-	if s := r.rec.last(); s.HubID != hubID || s.Phones != 0 {
-		t.Fatalf("after off and on: hub %q (was %q), %d phones", s.HubID, hubID, s.Phones)
-	}
+	bubble(t, func(t *testing.T) {
+		r, _ := ownerOffRig(t)
+		hubID := r.rec.last().HubID
+		disableHub(t, r)
+		r.waitState(StateOff, ReasonDisabled)
+		switchHub(t, r, OpEnable)
+		r.waitState(StateRunning, "")
+		if s := r.rec.last(); s.HubID != hubID || s.Phones != 0 {
+			t.Fatalf("after off and on: hub %q (was %q), %d phones", s.HubID, hubID, s.Phones)
+		}
+	})
 }
 
 // offPhoneDir is a hub dir with a hub identity, the switch written as
@@ -153,92 +154,99 @@ func offPhonesLeft(t *testing.T, st *state.Store) (linked, waiting int) {
 // TestOwnerOffUnlinksWhileNoHubRuns: an off taken while no hub ran (the
 // reconcile path) unlinks the linked phone and refuses the waiting one.
 func TestOwnerOffUnlinksWhileNoHubRuns(t *testing.T) {
-	policytest.Set(t, map[string]any{"MobileSync": "allowed"})
-	dir := offPhoneDir(t, "0")
-	r := newRig(t, dir)
-	r.start(r.options())
-	r.waitState(StateOff, ReasonDisabled)
-	eventually(t, "no phones", func() bool { return r.rec.last().Phones == 0 })
-	if err := r.stop(); err != nil {
-		t.Fatal(err)
-	}
-	st, err := state.Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = st.Close() }()
-	if linked, waiting := offPhonesLeft(t, st); linked != 0 || waiting != 0 {
-		t.Fatalf("after the off: %d linked, %d waiting", linked, waiting)
-	}
+	bubble(t, func(t *testing.T) {
+		policytest.Set(t, map[string]any{"MobileSync": "allowed"})
+		dir := offPhoneDir(t, "0")
+		r := newBubbleRig(t, dir)
+		r.start(r.options())
+		r.waitState(StateOff, ReasonDisabled)
+		eventually(t, "no phones", func() bool { return r.rec.last().Phones == 0 })
+		if err := r.stop(); err != nil {
+			t.Fatal(err)
+		}
+		st, err := state.Open(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = st.Close() }()
+		if linked, waiting := offPhonesLeft(t, st); linked != 0 || waiting != 0 {
+			t.Fatalf("after the off: %d linked, %d waiting", linked, waiting)
+		}
+	})
 }
 
 // TestUnlinkForOffNeedsTheSwitchWrittenOff: unlinkForOff reads the switch
 // again under offlineMu, so an enable that lands after reconcile's read (or
 // a switch never written) keeps the phones.
 func TestUnlinkForOffNeedsTheSwitchWrittenOff(t *testing.T) {
-	for _, enabled := range []string{"1", ""} {
-		dir := offPhoneDir(t, enabled)
-		st, err := state.Open(dir)
-		if err != nil {
-			t.Fatal(err)
+	bubble(t, func(t *testing.T) {
+		for _, enabled := range []string{"1", ""} {
+			dir := offPhoneDir(t, enabled)
+			st, err := state.Open(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s := &supervisor{o: Options{Dir: dir}.withDefaults(), st: st}
+			s.unlinkForOff()
+			if linked, waiting := offPhonesLeft(t, st); linked != 1 || waiting != 1 {
+				t.Fatalf("switch %q: %d linked, %d waiting", enabled, linked, waiting)
+			}
+			_ = st.Close()
 		}
-		s := &supervisor{o: Options{Dir: dir}.withDefaults(), st: st}
-		s.unlinkForOff()
-		if linked, waiting := offPhonesLeft(t, st); linked != 1 || waiting != 1 {
-			t.Fatalf("switch %q: %d linked, %d waiting", enabled, linked, waiting)
-		}
-		_ = st.Close()
-	}
+	})
 }
 
 // TestOwnerOffThenOnPairsAgain: after the owner's off a phone pairs again
 // end to end (pair, hello, SAS, confirm), and the hub links it.
 func TestOwnerOffThenOnPairsAgain(t *testing.T) {
-	r, _ := ownerOffRig(t)
-	disableHub(t, r.dir)
-	r.waitState(StateOff, ReasonDisabled)
-	eventually(t, "no phones", func() bool { return r.rec.last().Phones == 0 })
-	switchHub(t, r.dir, OpEnable)
-	r.waitState(StateRunning, "")
-	c, err := Dial(r.dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = c.Close() }()
-	pairOverMemfake(t, r, c, r.rec.last().RelayDeviceID) // its keys are in the pair zone
-	eventually(t, "the new phone linked", func() bool { return r.rec.last().Phones == 1 })
+	bubble(t, func(t *testing.T) {
+		r, _ := ownerOffRig(t)
+		disableHub(t, r)
+		r.waitState(StateOff, ReasonDisabled)
+		eventually(t, "no phones", func() bool { return r.rec.last().Phones == 0 })
+		switchHub(t, r, OpEnable)
+		r.waitState(StateRunning, "")
+		c := r.dial()
+		defer func() { _ = c.Close() }()
+		pairOverMemfake(t, r, c, r.rec.last().RelayDeviceID) // its keys are in the pair zone
+		eventually(t, "the new phone linked", func() bool { return r.rec.last().Phones == 1 })
+	})
 }
 
 // TestOwnerOffRetriesAFailedDelete: a wipe that fails reads failed in
 // status and is tried again while the hub stays off, until nothing
 // published is left.
 func TestOwnerOffRetriesAFailedDelete(t *testing.T) {
-	prev := offWipeRetry
-	offWipeRetry = 100 * time.Millisecond
-	t.Cleanup(func() { offWipeRetry = prev })
-	r, data := ownerOffRig(t)
-	r.fake.FailNext("delete", transport.ErrUnavailable)
-	r.fake.FailNext("delete", transport.ErrUnavailable)
-	disableHub(t, r.dir)
-	r.waitState(StateOff, ReasonDisabled)
-	eventually(t, "off_delete failed", func() bool {
-		return r.rec.last().OffDelete.State == OffDeleteFailed
-	})
-	if got := liveRecords(t, r.fake, data); len(got) == 0 {
-		t.Fatal("the failed delete deleted anyway")
-	}
-	eventually(t, "the retry deleted it", func() bool {
-		return len(liveRecords(t, r.fake, data)) == 0 && r.rec.last().OffDelete.State == OffDeleteOK
+	bubble(t, func(t *testing.T) {
+		prev := offWipeRetry
+		offWipeRetry = 100 * time.Millisecond
+		t.Cleanup(func() { offWipeRetry = prev })
+		r, data := ownerOffRig(t)
+		r.fake.FailNext("delete", transport.ErrUnavailable)
+		r.fake.FailNext("delete", transport.ErrUnavailable)
+		disableHub(t, r)
+		r.waitState(StateOff, ReasonDisabled)
+		eventually(t, "off_delete failed", func() bool {
+			return r.rec.last().OffDelete.State == OffDeleteFailed
+		})
+		if got := liveRecords(t, r.fake, data); len(got) == 0 {
+			t.Fatal("the failed delete deleted anyway")
+		}
+		eventually(t, "the retry deleted it", func() bool {
+			return len(liveRecords(t, r.fake, data)) == 0 && r.rec.last().OffDelete.State == OffDeleteOK
+		})
 	})
 }
 
 // TestOffDeleteIsEmptyWhileOn: off_delete says nothing while the owner's
 // switch is on.
 func TestOffDeleteIsEmptyWhileOn(t *testing.T) {
-	r, _ := ownerOffRig(t)
-	if d := r.rec.last().OffDelete; d != (OffDeleteStatus{}) {
-		t.Fatalf("off_delete while on: %+v", d)
-	}
+	bubble(t, func(t *testing.T) {
+		r, _ := ownerOffRig(t)
+		if d := r.rec.last().OffDelete; d != (OffDeleteStatus{}) {
+			t.Fatalf("off_delete while on: %+v", d)
+		}
+	})
 }
 
 // TestOffWipeBacksOffWhileRecordsStay: a stopped retry that leaves records
@@ -246,42 +254,44 @@ func TestOffDeleteIsEmptyWhileOn(t *testing.T) {
 // start a desktop host's bridge every minute); a read failure is logged
 // once per streak and keeps the base wait.
 func TestOffWipeBacksOffWhileRecordsStay(t *testing.T) {
-	prevRetry, prevMax := offWipeRetry, offWipeMaxBackoff
-	offWipeRetry, offWipeMaxBackoff = time.Second, 4*time.Second
-	t.Cleanup(func() { offWipeRetry, offWipeMaxBackoff = prevRetry, prevMax })
-	r, data := ownerOffRig(t)
-	if err := r.stop(); err != nil {
-		t.Fatal(err)
-	}
-	st, err := state.Open(r.dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = st.Close() })
-	// The relay refuses every delete: what was published stays.
-	for i := 0; i < 4; i++ {
-		r.fake.FailNext("delete", transport.ErrForbidden)
-	}
-	if len(liveRecords(t, r.fake, data)) == 0 {
-		t.Fatal("nothing published to wipe")
-	}
-	s := &supervisor{o: r.options().withDefaults(), st: st, offWipeBackoff: offWipeRetry} // as ownerOff left it
-	var waits []time.Duration
-	for i := 0; i < 4; i++ {
-		s.offDeleteFailed = true
-		before := time.Now()
-		s.retryOffWipe(context.Background())
-		waits = append(waits, s.nextOffWipe.Sub(before).Round(time.Second))
-	}
-	if want := []time.Duration{2 * time.Second, 4 * time.Second, 4 * time.Second, 4 * time.Second}; !slices.Equal(waits, want) {
-		t.Fatalf("waits %v, want %v", waits, want)
-	}
-	if err := st.Close(); err != nil {
-		t.Fatal(err)
-	}
-	s.offWipeBackoff = 4 * time.Second
-	s.retryOffWipe(context.Background()) // the store is closed: the read fails
-	if !s.offWipeReadLogged || s.offWipeBackoff != time.Second {
-		t.Fatalf("a failed read: logged %v, backoff %v", s.offWipeReadLogged, s.offWipeBackoff)
-	}
+	bubble(t, func(t *testing.T) {
+		prevRetry, prevMax := offWipeRetry, offWipeMaxBackoff
+		offWipeRetry, offWipeMaxBackoff = time.Second, 4*time.Second
+		t.Cleanup(func() { offWipeRetry, offWipeMaxBackoff = prevRetry, prevMax })
+		r, data := ownerOffRig(t)
+		if err := r.stop(); err != nil {
+			t.Fatal(err)
+		}
+		st, err := state.Open(r.dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = st.Close() })
+		// The relay refuses every delete: what was published stays.
+		for i := 0; i < 4; i++ {
+			r.fake.FailNext("delete", transport.ErrForbidden)
+		}
+		if len(liveRecords(t, r.fake, data)) == 0 {
+			t.Fatal("nothing published to wipe")
+		}
+		s := &supervisor{o: r.options().withDefaults(), st: st, offWipeBackoff: offWipeRetry} // as ownerOff left it
+		var waits []time.Duration
+		for i := 0; i < 4; i++ {
+			s.offDeleteFailed = true
+			before := time.Now()
+			s.retryOffWipe(context.Background())
+			waits = append(waits, s.nextOffWipe.Sub(before).Round(time.Second))
+		}
+		if want := []time.Duration{2 * time.Second, 4 * time.Second, 4 * time.Second, 4 * time.Second}; !slices.Equal(waits, want) {
+			t.Fatalf("waits %v, want %v", waits, want)
+		}
+		if err := st.Close(); err != nil {
+			t.Fatal(err)
+		}
+		s.offWipeBackoff = 4 * time.Second
+		s.retryOffWipe(context.Background()) // the store is closed: the read fails
+		if !s.offWipeReadLogged || s.offWipeBackoff != time.Second {
+			t.Fatalf("a failed read: logged %v, backoff %v", s.offWipeReadLogged, s.offWipeBackoff)
+		}
+	})
 }

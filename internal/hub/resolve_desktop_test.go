@@ -49,9 +49,26 @@ type deskRig struct {
 	mobile    string
 	ckDial    atomic.Int32
 	v1        atomic.Bool  // the session-host probe answers as a v1 host
-	bridgePID atomic.Int64 // the stand-in bridge last launched
-	tick      chan struct{}
+	bridgePID atomic.Int64 // the stand-in bridge last launched (realBridge)
+	// realBridge: the production supervisor runs a stand-in bridge process;
+	// otherwise (a bubble rig) a process-less fake whose state is bridgeUp.
+	realBridge bool
+	bridgeUp   atomic.Bool
+	tick       chan struct{}
 }
+
+// fakeBridge is a bridge supervisor with no process: running from Run to
+// its ctx's end.
+type fakeBridge struct{ up *atomic.Bool }
+
+func (b fakeBridge) Run(ctx context.Context) error {
+	b.up.Store(true)
+	<-ctx.Done()
+	b.up.Store(false)
+	return ctx.Err()
+}
+
+func (b fakeBridge) Running() bool { return b.up.Load() }
 
 // bridgedFake is the CloudKit fake behind a bridge: a delete fails while no
 // bridge process runs (as the real client's, whose socket the bridge serves).
@@ -67,16 +84,40 @@ func (b bridgedFake) Delete(ctx context.Context, zone string, items []transport.
 	return b.Fake.Delete(ctx, zone, items)
 }
 
-// bridgeAlive: the last stand-in bridge runs (and was not reaped).
+// bridgeAlive: the bridge runs (a real rig's last stand-in bridge runs and
+// was not reaped).
 func (r *deskRig) bridgeAlive() bool {
+	if !r.realBridge {
+		return r.bridgeUp.Load()
+	}
 	pid := r.bridgePID.Load()
 	return pid > 0 && syscall.Kill(int(pid), 0) == nil
 }
 
+// newDeskRig is a desktop-host rig for a synctest bubble: the control
+// socket in memory, the bridge a process-less fake.
 func newDeskRig(t *testing.T, dir string) *deskRig {
 	t.Helper()
 	mobile := filepath.Join(filepath.Dir(dir), "MobileHub")
-	return &deskRig{rig: newRig(t, dir), ck: memfake.New(transport.KindCloudKit, nil), mobile: mobile, tick: make(chan struct{}, 1)}
+	return &deskRig{rig: newBubbleRig(t, dir), ck: memfake.New(transport.KindCloudKit, nil), mobile: mobile, tick: make(chan struct{}, 1)}
+}
+
+// newRealDeskRig is newDeskRig over the real control socket and the
+// production supervisor with a stand-in bridge process (no bubble).
+func newRealDeskRig(t *testing.T, dir string) *deskRig {
+	t.Helper()
+	mobile := filepath.Join(filepath.Dir(dir), "MobileHub")
+	return &deskRig{rig: newRig(t, dir), ck: memfake.New(transport.KindCloudKit, nil), mobile: mobile, tick: make(chan struct{}, 1), realBridge: true}
+}
+
+// cycles runs n daemon cycles through the hub's loop, whichever loop it is
+// in (the desktop gate, the lock wait or the reconcile loop): r.tick holds
+// one, so the n+1th send returns once n were taken and the loop is back at
+// its wait for the next.
+func (r *deskRig) cycles(n int) {
+	for range n + 1 {
+		r.tick <- struct{}{}
+	}
 }
 
 func (r *deskRig) options() Options {
@@ -104,6 +145,9 @@ func (r *deskRig) options() Options {
 			}
 			return nil
 		},
+	}
+	if !r.realBridge {
+		o.Desktop.supervise = func(cloudkit.Config) bridgeRunner { return fakeBridge{&r.bridgeUp} }
 	}
 	return o
 }
@@ -153,9 +197,17 @@ func lockHeld(t *testing.T, dir string) bool {
 	return false
 }
 
+// waitStatus waits for a report whose status meets cond (what names it).
 func (r *deskRig) waitStatus(what string, cond func(Status) bool) {
 	r.t.Helper()
-	eventually(r.t, what, func() bool { return cond(r.rec.last()) })
+	_ = what
+	for {
+		s, changed := r.rec.lastAndChanged()
+		if cond(s) {
+			return
+		}
+		<-changed
+	}
 }
 
 // TestDesktopHostOffUntilAdopted: beside the Swift hub's state the hub stays
@@ -164,131 +216,137 @@ func (r *deskRig) waitStatus(what string, cond func(Status) bool) {
 // starts on the handed-over identity once the hand-over is adopted, and
 // never makes one of its own.
 func TestDesktopHostOffUntilAdopted(t *testing.T) {
-	policytest.Set(t, nil)
-	r := newDeskRig(t, shortDir(t))
-	r.writeSwiftState()
-	before := listing(t, r.mobile)
-	r.start(r.options())
-	r.waitState(StateOff, ReasonAwaitingAdoption)
-	time.Sleep(200 * time.Millisecond) // a few gate checks
-	if _, err := os.Stat(filepath.Join(r.dir, state.FileName)); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("a sidecar beside the Swift hub's state (stat: %v)", err)
-	}
-	if lockHeld(t, r.dir) {
-		t.Fatal("the hub lock is held while the adoption waits (the adoption needs it)")
-	}
-	if r.opens.Load() != 0 || r.dials.Load() != 0 || r.ckDial.Load() != 0 {
-		t.Fatalf("opened %d, relay %d, cloudkit %d before the adoption", r.opens.Load(), r.dials.Load(), r.ckDial.Load())
-	}
-	if after := listing(t, r.mobile); !mapsEqual(before, after) {
-		t.Fatalf("MobileHub/ changed:\n%v\n%v", before, after)
-	}
+	bubble(t, func(t *testing.T) {
+		policytest.Set(t, nil)
+		r := newDeskRig(t, shortDir(t))
+		r.writeSwiftState()
+		before := listing(t, r.mobile)
+		r.start(r.options())
+		r.waitState(StateOff, ReasonAwaitingAdoption)
+		r.cycles(3) // a few gate checks
+		if _, err := os.Stat(filepath.Join(r.dir, state.FileName)); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("a sidecar beside the Swift hub's state (stat: %v)", err)
+		}
+		if lockHeld(t, r.dir) {
+			t.Fatal("the hub lock is held while the adoption waits (the adoption needs it)")
+		}
+		if r.opens.Load() != 0 || r.dials.Load() != 0 || r.ckDial.Load() != 0 {
+			t.Fatalf("opened %d, relay %d, cloudkit %d before the adoption", r.opens.Load(), r.dials.Load(), r.ckDial.Load())
+		}
+		if after := listing(t, r.mobile); !mapsEqual(before, after) {
+			t.Fatalf("MobileHub/ changed:\n%v\n%v", before, after)
+		}
 
-	// The adoption moved the Swift state in and stopped mid-way. Its Go
-	// sidecar is written while the Swift one is still there (the gate holds
-	// at every intermediate state: a real adoption renames a finished copy
-	// in), then the Swift one goes.
-	setMeta(t, r.dir, adopt.MetaAdoptStep, string(adopt.StepSettings), state.MetaEnabled, "1")
-	if err := os.Remove(filepath.Join(r.mobile, state.FileName)); err != nil {
-		t.Fatal(err)
-	}
-	r.waitStatus("in progress", func(s Status) bool {
-		return s.Reason == ReasonAwaitingAdoption && s.Adoption == AdoptionInProgress
-	})
-	setMeta(t, r.dir, adopt.MetaAdoptError, adopt.ClassSwiftBusy)
-	r.waitStatus("failed", func(s Status) bool {
-		return s.State == StateOff && s.Reason == ReasonAdoptionFailed && s.Adoption == AdoptionFailed
-	})
-	// Adopted, the keys only staged: still off.
-	id := adoptedIdentity(t, r.dir)
-	setMeta(t, r.dir, adopt.MetaAdoptError, "", adopt.MetaAdoptStep, string(adopt.StepDone),
-		adopt.MetaAdoptedAt, "1800000000", adopt.MetaIdentity, adopt.IdentityStaged)
-	r.waitStatus("keys staged", func(s Status) bool { return s.Reason == ReasonAwaitingAdoption })
-	time.Sleep(200 * time.Millisecond)
-	if r.opens.Load() != 0 || r.dials.Load() != 0 || r.ckDial.Load() != 0 {
-		t.Fatal("the hub started before the keys were adopted")
-	}
+		// The adoption moved the Swift state in and stopped mid-way. Its Go
+		// sidecar is written while the Swift one is still there (the gate holds
+		// at every intermediate state: a real adoption renames a finished copy
+		// in), then the Swift one goes.
+		setMeta(t, r.dir, adopt.MetaAdoptStep, string(adopt.StepSettings), state.MetaEnabled, "1")
+		if err := os.Remove(filepath.Join(r.mobile, state.FileName)); err != nil {
+			t.Fatal(err)
+		}
+		r.waitStatus("in progress", func(s Status) bool {
+			return s.Reason == ReasonAwaitingAdoption && s.Adoption == AdoptionInProgress
+		})
+		setMeta(t, r.dir, adopt.MetaAdoptError, adopt.ClassSwiftBusy)
+		r.waitStatus("failed", func(s Status) bool {
+			return s.State == StateOff && s.Reason == ReasonAdoptionFailed && s.Adoption == AdoptionFailed
+		})
+		// Adopted, the keys only staged: still off.
+		id := adoptedIdentity(t, r.dir)
+		setMeta(t, r.dir, adopt.MetaAdoptError, "", adopt.MetaAdoptStep, string(adopt.StepDone),
+			adopt.MetaAdoptedAt, "1800000000", adopt.MetaIdentity, adopt.IdentityStaged)
+		r.waitStatus("keys staged", func(s Status) bool { return s.Reason == ReasonAwaitingAdoption })
+		r.cycles(3)
+		if r.opens.Load() != 0 || r.dials.Load() != 0 || r.ckDial.Load() != 0 {
+			t.Fatal("the hub started before the keys were adopted")
+		}
 
-	setMeta(t, r.dir, adopt.MetaIdentity, adopt.IdentityAdopted)
-	r.waitState(StateRunning, "")
-	s := r.rec.last()
-	if s.RelayDeviceID != relayIDOf(id) {
-		t.Fatalf("the hub runs on identity %s, not the adopted one", s.RelayDeviceID)
-	}
-	if s.Adoption != AdoptionDone || s.Identity != identity.IdentityStoreFile || s.Transport != string(transport.KindCloudKit) {
-		t.Fatalf("status %+v", s)
-	}
+		setMeta(t, r.dir, adopt.MetaIdentity, adopt.IdentityAdopted)
+		r.waitState(StateRunning, "")
+		s := r.rec.last()
+		if s.RelayDeviceID != relayIDOf(id) {
+			t.Fatalf("the hub runs on identity %s, not the adopted one", s.RelayDeviceID)
+		}
+		if s.Adoption != AdoptionDone || s.Identity != identity.IdentityStoreFile || s.Transport != string(transport.KindCloudKit) {
+			t.Fatalf("status %+v", s)
+		}
+	})
 }
 
 // TestDesktopHostNeverMakesAnIdentityForAnAdoptedHub: an adopted sidecar
 // whose identity is missing from its store fails to start; no new identity
 // (and so no new hub_id) is made.
 func TestDesktopHostNeverMakesAnIdentityForAnAdoptedHub(t *testing.T) {
-	policytest.Set(t, nil)
-	r := newDeskRig(t, shortDir(t))
-	setMeta(t, r.dir, state.MetaEnabled, "1", adopt.MetaAdoptStep, string(adopt.StepDone),
-		adopt.MetaAdoptedAt, "1800000000", adopt.MetaIdentity, adopt.IdentityAdopted,
-		identity.MetaIdentityStore, identity.IdentityStoreFile)
-	r.start(r.options())
-	r.waitState(StateStarting, ReasonStartFailed)
-	if _, err := os.Stat(filepath.Join(r.dir, identity.FileName)); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("an identity was made for an adopted hub (stat: %v)", err)
-	}
+	bubble(t, func(t *testing.T) {
+		policytest.Set(t, nil)
+		r := newDeskRig(t, shortDir(t))
+		setMeta(t, r.dir, state.MetaEnabled, "1", adopt.MetaAdoptStep, string(adopt.StepDone),
+			adopt.MetaAdoptedAt, "1800000000", adopt.MetaIdentity, adopt.IdentityAdopted,
+			identity.MetaIdentityStore, identity.IdentityStoreFile)
+		r.start(r.options())
+		r.waitState(StateStarting, ReasonStartFailed)
+		if _, err := os.Stat(filepath.Join(r.dir, identity.FileName)); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("an identity was made for an adopted hub (stat: %v)", err)
+		}
+	})
 }
 
 // TestResolveIgnoresALaterMobileHub is Review Focus 2: a MobileHub/ that
 // appears after the adoption (adopted_at set) never holds the hub off and is
 // never read, changed or imported; the one line is logged once.
 func TestResolveIgnoresALaterMobileHub(t *testing.T) {
-	sink := logcanary.Capture(t)
-	live := liveHome(t)
-	home, _ := os.UserHomeDir()
-	support, err := config.AppSupportDir()
-	if err != nil {
-		t.Fatal(err)
-	}
-	setMeta(t, live, state.MetaEnabled, "1")
-	adoptedIdentity(t, live)
-	setMeta(t, live, adopt.MetaAdoptStep, string(adopt.StepDone), adopt.MetaAdoptedAt, "1800000000",
-		adopt.MetaIdentity, adopt.IdentityConfirmed)
-	mobile := filepath.Join(support, "MobileHub")
-	if err := os.MkdirAll(mobile, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(mobile, state.FileName), []byte("a pre-guard app's hub"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	beforeSwift := listing(t, mobile)
-	hubID, _ := readMeta(t, live, state.MetaHubID)
+	bubble(t, func(t *testing.T) {
+		sink := logcanary.Capture(t)
+		live := liveHome(t)
+		home, _ := os.UserHomeDir()
+		support, err := config.AppSupportDir()
+		if err != nil {
+			t.Fatal(err)
+		}
+		setMeta(t, live, state.MetaEnabled, "1")
+		adoptedIdentity(t, live)
+		setMeta(t, live, adopt.MetaAdoptStep, string(adopt.StepDone), adopt.MetaAdoptedAt, "1800000000",
+			adopt.MetaIdentity, adopt.IdentityConfirmed)
+		mobile := filepath.Join(support, "MobileHub")
+		if err := os.MkdirAll(mobile, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(mobile, state.FileName), []byte("a pre-guard app's hub"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		beforeSwift := listing(t, mobile)
+		hubID, _ := readMeta(t, live, state.MetaHubID)
 
-	o, err := Resolve(&config.Config{}, nil, desktopProbe(home, support))
-	if err != nil || o.Mode != ModeLive || o.Dir != live || o.Desktop == nil || o.Desktop.MobileHubDir != mobile {
-		t.Fatalf("Resolve: %+v, %v", o, err)
-	}
-	if reason, _, later, err := desktopGate(o.Dir, o.Desktop.MobileHubDir); reason != "" || !later || err != nil {
-		t.Fatalf("gate: %q later=%v %v", reason, later, err)
-	}
+		o, err := Resolve(&config.Config{}, nil, desktopProbe(home, support))
+		if err != nil || o.Mode != ModeLive || o.Dir != live || o.Desktop == nil || o.Desktop.MobileHubDir != mobile {
+			t.Fatalf("Resolve: %+v, %v", o, err)
+		}
+		if reason, _, later, err := desktopGate(o.Dir, o.Desktop.MobileHubDir); reason != "" || !later || err != nil {
+			t.Fatalf("gate: %q later=%v %v", reason, later, err)
+		}
 
-	// The hub runs beside it (over the fakes).
-	r := newDeskRig(t, live)
-	r.mobile = mobile
-	r.start(r.options())
-	r.waitState(StateRunning, "")
-	if err := r.stop(); err != nil {
-		t.Fatal(err)
-	}
-	if after := listing(t, mobile); !mapsEqual(beforeSwift, after) {
-		t.Fatalf("the later MobileHub/ changed:\n%v\n%v", beforeSwift, after)
-	}
-	if b, _ := os.ReadFile(filepath.Join(mobile, state.FileName)); string(b) != "a pre-guard app's hub" {
-		t.Fatal("the later MobileHub/ sidecar was rewritten")
-	}
-	if after, _ := readMeta(t, live, state.MetaHubID); hubID != "" && after != hubID {
-		t.Fatalf("hub_id changed: %q → %q", hubID, after)
-	}
-	if n := strings.Count(sink.String(), adopt.LaterMobileHubLog); n != 1 {
-		t.Fatalf("the later MobileHub line logged %d times:\n%s", n, sink.String())
-	}
+		// The hub runs beside it (over the fakes).
+		r := newDeskRig(t, live)
+		r.mobile = mobile
+		r.start(r.options())
+		r.waitState(StateRunning, "")
+		if err := r.stop(); err != nil {
+			t.Fatal(err)
+		}
+		if after := listing(t, mobile); !mapsEqual(beforeSwift, after) {
+			t.Fatalf("the later MobileHub/ changed:\n%v\n%v", beforeSwift, after)
+		}
+		if b, _ := os.ReadFile(filepath.Join(mobile, state.FileName)); string(b) != "a pre-guard app's hub" {
+			t.Fatal("the later MobileHub/ sidecar was rewritten")
+		}
+		if after, _ := readMeta(t, live, state.MetaHubID); hubID != "" && after != hubID {
+			t.Fatalf("hub_id changed: %q → %q", hubID, after)
+		}
+		if n := strings.Count(sink.String(), adopt.LaterMobileHubLog); n != 1 {
+			t.Fatalf("the later MobileHub line logged %d times:\n%s", n, sink.String())
+		}
+	})
 }
 
 // TestDesktopHostStaysOffBesideSwiftStateWhateverTheSidecarSays: while
@@ -297,29 +355,31 @@ func TestResolveIgnoresALaterMobileHub(t *testing.T) {
 // hand (a leftover headless run), and a running one stops and lets the lock
 // go when such a Swift sidecar shows up.
 func TestDesktopHostStaysOffBesideSwiftStateWhateverTheSidecarSays(t *testing.T) {
-	policytest.Set(t, nil)
-	r := newDeskRig(t, shortDir(t))
-	setMeta(t, r.dir, state.MetaEnabled, "1")
-	r.writeSwiftState()
-	r.start(r.options())
-	r.waitState(StateOff, ReasonSwiftBesideGo)
-	time.Sleep(200 * time.Millisecond)
-	if r.opens.Load() != 0 || r.dials.Load() != 0 || r.ckDial.Load() != 0 || lockHeld(t, r.dir) {
-		t.Fatal("a hub (or its lock) beside the Swift hub's state")
-	}
-	if err := r.stop(); err != nil {
-		t.Fatal(err)
-	}
+	bubble(t, func(t *testing.T) {
+		policytest.Set(t, nil)
+		r := newDeskRig(t, shortDir(t))
+		setMeta(t, r.dir, state.MetaEnabled, "1")
+		r.writeSwiftState()
+		r.start(r.options())
+		r.waitState(StateOff, ReasonSwiftBesideGo)
+		r.cycles(3)
+		if r.opens.Load() != 0 || r.dials.Load() != 0 || r.ckDial.Load() != 0 || lockHeld(t, r.dir) {
+			t.Fatal("a hub (or its lock) beside the Swift hub's state")
+		}
+		if err := r.stop(); err != nil {
+			t.Fatal(err)
+		}
 
-	// Running without Swift state; then one appears.
-	if err := os.Remove(filepath.Join(r.mobile, state.FileName)); err != nil {
-		t.Fatal(err)
-	}
-	r.start(r.options())
-	r.waitState(StateRunning, "")
-	r.writeSwiftState()
-	r.waitState(StateOff, ReasonSwiftBesideGo)
-	eventually(t, "the lock let go", func() bool { return !lockHeld(t, r.dir) })
+		// Running without Swift state; then one appears.
+		if err := os.Remove(filepath.Join(r.mobile, state.FileName)); err != nil {
+			t.Fatal(err)
+		}
+		r.start(r.options())
+		r.waitState(StateRunning, "")
+		r.writeSwiftState()
+		r.waitState(StateOff, ReasonSwiftBesideGo)
+		eventually(t, "the lock let go", func() bool { return !lockHeld(t, r.dir) })
+	})
 }
 
 // TestGoHubFirstThenSwiftSidecarIsSwiftBesideGo pins owner ask #949's
@@ -387,7 +447,7 @@ func TestResolve_DesktopHostNeverStartsBeforeAdoption(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(swift, state.FileName), []byte("swift"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(20 * time.Millisecond) // a write by Resolve would show in the mtimes
+	backdate(t, dir, swift) // a write by Resolve would show in the mtimes
 	before, beforeSwift := listing(t, dir), listing(t, swift)
 
 	resolved := map[string]Options{}
@@ -433,51 +493,55 @@ func TestResolve_DesktopHostNeverStartsBeforeAdoption(t *testing.T) {
 // the hub starts with a new hub_id and its identity in the store it
 // recorded.
 func TestFreshDesktopHostStartsWhenEnabled(t *testing.T) {
-	policytest.Set(t, nil)
-	r := newDeskRig(t, shortDir(t))
-	r.start(r.options())
-	r.waitState(StateOff, ReasonDisabled)
-	if _, err := os.Stat(filepath.Join(r.dir, state.FileName)); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("a sidecar before Mobile was turned on (stat: %v)", err)
-	}
-	setMeta(t, r.dir, state.MetaEnabled, "1") // `hub enable`, written directly
-	r.waitState(StateRunning, "")
-	s := r.rec.last()
-	if s.HubID == "" || s.Adoption != AdoptionNone || s.Identity != identity.IdentityStoreFile {
-		t.Fatalf("status %+v", s)
-	}
-	if err := r.stop(); err != nil {
-		t.Fatal(err)
-	}
-	if v, _ := readMeta(t, r.dir, identity.MetaIdentityStore); v != identity.IdentityStoreFile {
-		t.Fatalf("recorded identity store %q", v)
-	}
-	id, err := (identity.FileStore{Path: filepath.Join(r.dir, identity.FileName)}).Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if relayIDOf(id) != s.RelayDeviceID {
-		t.Fatal("the hub ran on another identity than the one it stored")
-	}
+	bubble(t, func(t *testing.T) {
+		policytest.Set(t, nil)
+		r := newDeskRig(t, shortDir(t))
+		r.start(r.options())
+		r.waitState(StateOff, ReasonDisabled)
+		if _, err := os.Stat(filepath.Join(r.dir, state.FileName)); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("a sidecar before Mobile was turned on (stat: %v)", err)
+		}
+		setMeta(t, r.dir, state.MetaEnabled, "1") // `hub enable`, written directly
+		r.waitState(StateRunning, "")
+		s := r.rec.last()
+		if s.HubID == "" || s.Adoption != AdoptionNone || s.Identity != identity.IdentityStoreFile {
+			t.Fatalf("status %+v", s)
+		}
+		if err := r.stop(); err != nil {
+			t.Fatal(err)
+		}
+		if v, _ := readMeta(t, r.dir, identity.MetaIdentityStore); v != identity.IdentityStoreFile {
+			t.Fatalf("recorded identity store %q", v)
+		}
+		id, err := (identity.FileStore{Path: filepath.Join(r.dir, identity.FileName)}).Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if relayIDOf(id) != s.RelayDeviceID {
+			t.Fatal("the hub ran on another identity than the one it stored")
+		}
+	})
 }
 
 // TestDaemonWaitsWhileAV1HostAnswers: while a v1 session host answers the
 // hub stays off (session_host_v1) and builds nothing (so no session host of
 // its own is started); a v2 host there starts it within one check.
 func TestDaemonWaitsWhileAV1HostAnswers(t *testing.T) {
-	policytest.Set(t, nil)
-	r := newDeskRig(t, shortDir(t))
-	setMeta(t, r.dir, state.MetaEnabled, "1")
-	r.v1.Store(true)
-	r.start(r.options())
-	r.waitState(StateOff, ReasonSessionHostV1)
-	time.Sleep(200 * time.Millisecond)
-	if r.dials.Load() != 0 || r.ckDial.Load() != 0 {
-		t.Fatal("the hub started beside a v1 session host")
-	}
-	r.v1.Store(false)
-	r.tick <- struct{}{} // the next daemon cycle probes again
-	r.waitState(StateRunning, "")
+	bubble(t, func(t *testing.T) {
+		policytest.Set(t, nil)
+		r := newDeskRig(t, shortDir(t))
+		setMeta(t, r.dir, state.MetaEnabled, "1")
+		r.v1.Store(true)
+		r.start(r.options())
+		r.waitState(StateOff, ReasonSessionHostV1)
+		r.cycles(3)
+		if r.dials.Load() != 0 || r.ckDial.Load() != 0 {
+			t.Fatal("the hub started beside a v1 session host")
+		}
+		r.v1.Store(false)
+		r.tick <- struct{}{} // the next daemon cycle probes again
+		r.waitState(StateRunning, "")
+	})
 }
 
 // TestDesktopHostV1ProbeOverTheSocket: the production probe says v1 only
@@ -496,7 +560,7 @@ func TestDesktopHostV1ProbeOverTheSocket(t *testing.T) {
 	// A v1 host over the real sessionhost.Dial: the hub waits, and no
 	// session host of its own is spawned.
 	policytest.Set(t, nil)
-	r := newDeskRig(t, shortDir(t))
+	r := newRealDeskRig(t, shortDir(t))
 	setMeta(t, r.dir, state.MetaEnabled, "1")
 	sock, hellos := fakeV1Host(t, filepath.Join(filepath.Dir(r.dir), "sh.sock"))
 	marker := filepath.Join(filepath.Dir(r.dir), "spawned")
@@ -509,7 +573,7 @@ func TestDesktopHostV1ProbeOverTheSocket(t *testing.T) {
 	o.SessionStart = sessionstart.Deps{Socket: sock, CLIPath: exe}
 	r.start(o)
 	r.waitState(StateOff, ReasonSessionHostV1)
-	time.Sleep(300 * time.Millisecond)
+	r.cycles(3)
 	if hellos.Load() == 0 {
 		t.Fatal("the v1 host was never asked")
 	}
@@ -628,7 +692,7 @@ func TestRecordingsDirIsAppSupport(t *testing.T) {
 // bridge goes with the hub.
 func TestBridgeUnavailableSaysSoInStatus(t *testing.T) {
 	policytest.Set(t, nil)
-	r := newDeskRig(t, shortDir(t))
+	r := newRealDeskRig(t, shortDir(t))
 	setMeta(t, r.dir, state.MetaEnabled, "1")
 	var h *hubRuntime
 	o := r.options()
@@ -670,31 +734,33 @@ func TestBridgeUnavailableSaysSoInStatus(t *testing.T) {
 // the switcher's Paying and the zone subscriptions see the relay while the
 // runtime is built (before the switcher exists).
 func TestDesktopHostWiresTheRelayBeforeTheSwitch(t *testing.T) {
-	policytest.Set(t, nil)
-	r := newDeskRig(t, shortDir(t))
-	setMeta(t, r.dir, state.MetaEnabled, "1")
-	phone := linkPhoneDirectly(t, r.dir)
-	pdev := phone.Device()
-	r.fake.SetAccountState(&relayv1.AccountState{Phones: []*relayv1.SlotHolder{{PhoneDeviceId: pdev.RelayDeviceID, Paying: true}}})
-	w := &watchFake{Fake: r.fake}
-	var h *hubRuntime
-	o := r.options()
-	o.newTransport = func(context.Context, identity.Identity, *state.Store, []string) (transport.Transport, error) {
-		r.dials.Add(1)
-		return w, nil
-	}
-	o.started = func(rt *hubRuntime) { h = rt }
-	r.start(o)
-	r.waitState(StateRunning, "")
-	if h.acct == nil {
-		t.Fatal("no account reader on the relay")
-	}
-	paying, err := h.payingByDevice(context.Background())
-	if err != nil || !paying[pdev.ID] {
-		t.Fatalf("Paying by device id: %v %v", paying, err)
-	}
-	mailbox := transport.MailboxZone(r.rec.last().RelayDeviceID, pdev.RelayDeviceID)
-	eventually(t, "the phone's mailbox subscribed", func() bool { return w.watched(mailbox) })
+	bubble(t, func(t *testing.T) {
+		policytest.Set(t, nil)
+		r := newDeskRig(t, shortDir(t))
+		setMeta(t, r.dir, state.MetaEnabled, "1")
+		phone := linkPhoneDirectly(t, r.dir)
+		pdev := phone.Device()
+		r.fake.SetAccountState(&relayv1.AccountState{Phones: []*relayv1.SlotHolder{{PhoneDeviceId: pdev.RelayDeviceID, Paying: true}}})
+		w := &watchFake{Fake: r.fake}
+		var h *hubRuntime
+		o := r.options()
+		o.newTransport = func(context.Context, identity.Identity, *state.Store, []string) (transport.Transport, error) {
+			r.dials.Add(1)
+			return w, nil
+		}
+		o.started = func(rt *hubRuntime) { h = rt }
+		r.start(o)
+		r.waitState(StateRunning, "")
+		if h.acct == nil {
+			t.Fatal("no account reader on the relay")
+		}
+		paying, err := h.payingByDevice(context.Background())
+		if err != nil || !paying[pdev.ID] {
+			t.Fatalf("Paying by device id: %v %v", paying, err)
+		}
+		mailbox := transport.MailboxZone(r.rec.last().RelayDeviceID, pdev.RelayDeviceID)
+		eventually(t, "the phone's mailbox subscribed", func() bool { return w.watched(mailbox) })
+	})
 }
 
 // watchFake is the relay fake with zone subscriptions (zoneWatcher).
@@ -720,32 +786,34 @@ func (w *watchFake) watched(zone string) bool {
 // TestDesktopGateKeepsTheLockMetricsSink: the gate's read-only sidecar open
 // leaves the daemon's dblock.jsonl beside its database.
 func TestDesktopGateKeepsTheLockMetricsSink(t *testing.T) {
-	policytest.Set(t, nil)
-	r := newDeskRig(t, shortDir(t))
-	ws := filepath.Join(filepath.Dir(r.dir), "ws")
-	if err := os.MkdirAll(ws, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	d, err := db.Open(filepath.Join(ws, "watchtower.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = d.Close() })
-	// A Go sidecar the gate opens on every check, beside Swift state.
-	setMeta(t, r.dir, state.MetaEnabled, "1")
-	r.writeSwiftState()
-	o := r.options()
-	o.DB = d
-	r.start(o)
-	r.waitState(StateOff, ReasonSwiftBesideGo)
-	time.Sleep(200 * time.Millisecond) // a few gate reads
-	lockmetrics.Record(lockmetrics.Event{Kind: lockmetrics.KindBusy})
-	if _, err := os.Stat(filepath.Join(ws, lockmetrics.FileName)); err != nil {
-		t.Fatalf("the event is not beside the database: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(r.dir, lockmetrics.FileName)); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("the sink moved to the hub dir (stat: %v)", err)
-	}
+	bubble(t, func(t *testing.T) {
+		policytest.Set(t, nil)
+		r := newDeskRig(t, shortDir(t))
+		ws := filepath.Join(filepath.Dir(r.dir), "ws")
+		if err := os.MkdirAll(ws, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		d, err := db.Open(filepath.Join(ws, "watchtower.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = d.Close() })
+		// A Go sidecar the gate opens on every check, beside Swift state.
+		setMeta(t, r.dir, state.MetaEnabled, "1")
+		r.writeSwiftState()
+		o := r.options()
+		o.DB = d
+		r.start(o)
+		r.waitState(StateOff, ReasonSwiftBesideGo)
+		r.cycles(3) // a few gate reads
+		lockmetrics.Record(lockmetrics.Event{Kind: lockmetrics.KindBusy})
+		if _, err := os.Stat(filepath.Join(ws, lockmetrics.FileName)); err != nil {
+			t.Fatalf("the event is not beside the database: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(r.dir, lockmetrics.FileName)); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("the sink moved to the hub dir (stat: %v)", err)
+		}
+	})
 }
 
 // linkCloudKitPhone links a phone with no relay id (a CloudKit link), so the
@@ -772,28 +840,30 @@ func linkCloudKitPhone(t *testing.T, dir string) {
 // what the hub published on CloudKit before the bridge stops (a delete
 // through a stopped bridge would fail and leave the records).
 func TestPolicy03_DesktopHostWipesWhileTheBridgeRuns(t *testing.T) {
-	policytest.Set(t, map[string]any{"MobileSync": "allowed"})
-	r := newDeskRig(t, shortDir(t))
-	setMeta(t, r.dir, state.MetaEnabled, "1")
-	linkCloudKitPhone(t, r.dir)
-	r.start(r.options())
-	r.waitState(StateRunning, "")
-	s := r.rec.last()
-	if s.Transport != string(transport.KindCloudKit) {
-		t.Fatalf("active %q", s.Transport)
-	}
-	data := transport.DataZone(s.RelayDeviceID)
-	eventually(t, "the heartbeat published on CloudKit", func() bool {
-		return slices.Contains(liveRecords(t, r.ck, data), "heartbeat")
+	bubble(t, func(t *testing.T) {
+		policytest.Set(t, map[string]any{"MobileSync": "allowed"})
+		r := newDeskRig(t, shortDir(t))
+		setMeta(t, r.dir, state.MetaEnabled, "1")
+		linkCloudKitPhone(t, r.dir)
+		r.start(r.options())
+		r.waitState(StateRunning, "")
+		s := r.rec.last()
+		if s.Transport != string(transport.KindCloudKit) {
+			t.Fatalf("active %q", s.Transport)
+		}
+		data := transport.DataZone(s.RelayDeviceID)
+		eventually(t, "the heartbeat published on CloudKit", func() bool {
+			return slices.Contains(liveRecords(t, r.ck, data), "heartbeat")
+		})
+		policytest.Set(t, map[string]any{"MobileSync": "off"})
+		r.waitState(StateOff, ReasonPolicyOff)
+		if got := liveRecords(t, r.ck, data); len(got) != 0 {
+			t.Fatalf("CloudKit still holds %v after the policy turned off", got)
+		}
+		if r.bridgeAlive() {
+			t.Fatal("the bridge outlived the stopped hub")
+		}
 	})
-	policytest.Set(t, map[string]any{"MobileSync": "off"})
-	r.waitState(StateOff, ReasonPolicyOff)
-	if got := liveRecords(t, r.ck, data); len(got) != 0 {
-		t.Fatalf("CloudKit still holds %v after the policy turned off", got)
-	}
-	if r.bridgeAlive() {
-		t.Fatal("the bridge outlived the stopped hub")
-	}
 }
 
 // TestPolicy03_StoppedDesktopHostWipesWithTheRecordedStore: a desktop host
@@ -801,47 +871,49 @@ func TestPolicy03_DesktopHostWipesWhileTheBridgeRuns(t *testing.T) {
 // wipes them under MobileSync = off with that identity, through a bridge
 // started for the wipe and stopped after it.
 func TestPolicy03_StoppedDesktopHostWipesWithTheRecordedStore(t *testing.T) {
-	policytest.Set(t, map[string]any{"MobileSync": "allowed"})
-	r := newDeskRig(t, shortDir(t))
-	setMeta(t, r.dir, state.MetaEnabled, "1")
-	linkCloudKitPhone(t, r.dir)
-	kc, _ := identitytest.NewKeychainStore(identity.KeychainService)
-	keychain := func(o Options) Options {
-		o.Desktop.identityStore = func(st *state.Store, _ string) (identity.Staging, error) {
-			if _, ok, err := st.Meta(identity.MetaIdentityStore); err != nil || !ok {
-				if err := st.SetMeta(identity.MetaIdentityStore, identity.IdentityStoreKeychain); err != nil {
-					return nil, err
+	bubble(t, func(t *testing.T) {
+		policytest.Set(t, map[string]any{"MobileSync": "allowed"})
+		r := newDeskRig(t, shortDir(t))
+		setMeta(t, r.dir, state.MetaEnabled, "1")
+		linkCloudKitPhone(t, r.dir)
+		kc, _ := identitytest.NewKeychainStore(identity.KeychainService)
+		keychain := func(o Options) Options {
+			o.Desktop.identityStore = func(st *state.Store, _ string) (identity.Staging, error) {
+				if _, ok, err := st.Meta(identity.MetaIdentityStore); err != nil || !ok {
+					if err := st.SetMeta(identity.MetaIdentityStore, identity.IdentityStoreKeychain); err != nil {
+						return nil, err
+					}
 				}
+				return kc, nil
 			}
-			return kc, nil
+			return o
 		}
-		return o
-	}
-	r.start(keychain(r.options()))
-	r.waitState(StateRunning, "")
-	s := r.rec.last()
-	if s.Identity != identity.IdentityStoreKeychain {
-		t.Fatalf("identity store %q", s.Identity)
-	}
-	data := transport.DataZone(s.RelayDeviceID)
-	eventually(t, "the heartbeat published on CloudKit", func() bool {
-		return slices.Contains(liveRecords(t, r.ck, data), "heartbeat")
-	})
-	if err := r.stop(); err != nil { // stopped with its records in place
-		t.Fatal(err)
-	}
-	if got := liveRecords(t, r.ck, data); len(got) == 0 {
-		t.Fatal("a plain stop deleted the records")
-	}
+		r.start(keychain(r.options()))
+		r.waitState(StateRunning, "")
+		s := r.rec.last()
+		if s.Identity != identity.IdentityStoreKeychain {
+			t.Fatalf("identity store %q", s.Identity)
+		}
+		data := transport.DataZone(s.RelayDeviceID)
+		eventually(t, "the heartbeat published on CloudKit", func() bool {
+			return slices.Contains(liveRecords(t, r.ck, data), "heartbeat")
+		})
+		if err := r.stop(); err != nil { // stopped with its records in place
+			t.Fatal(err)
+		}
+		if got := liveRecords(t, r.ck, data); len(got) == 0 {
+			t.Fatal("a plain stop deleted the records")
+		}
 
-	policytest.Set(t, map[string]any{"MobileSync": "off"})
-	r.start(keychain(r.options()))
-	r.waitState(StateOff, ReasonPolicyOff)
-	eventually(t, "the stopped hub's wipe", func() bool { return len(liveRecords(t, r.ck, data)) == 0 })
-	eventually(t, "the wipe's bridge stopped", func() bool { return !r.bridgeAlive() })
-	if _, err := os.Stat(filepath.Join(r.dir, identity.FileName)); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatal("an identity file was made beside the Keychain store")
-	}
+		policytest.Set(t, map[string]any{"MobileSync": "off"})
+		r.start(keychain(r.options()))
+		r.waitState(StateOff, ReasonPolicyOff)
+		eventually(t, "the stopped hub's wipe", func() bool { return len(liveRecords(t, r.ck, data)) == 0 })
+		eventually(t, "the wipe's bridge stopped", func() bool { return !r.bridgeAlive() })
+		if _, err := os.Stat(filepath.Join(r.dir, identity.FileName)); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatal("an identity file was made beside the Keychain store")
+		}
+	})
 }
 
 // TestFindBridge: the helper inside the running app's bundle first, then
@@ -885,43 +957,42 @@ func TestFindBridge(t *testing.T) {
 // transport's data zone; the owner's switch is left as it was and turning it
 // on is refused while off.
 func TestPolicy03_OffStopsDesktopHostHubKeepsSetting(t *testing.T) {
-	policytest.Set(t, map[string]any{"MobileSync": "allowed"})
-	r := newDeskRig(t, shortDir(t))
-	setMeta(t, r.dir, state.MetaEnabled, "1")
-	linkPhoneDirectly(t, r.dir)
-	r.start(r.options())
-	r.waitState(StateRunning, "")
-	// The phone came over the relay: a hub of relay links starts there.
-	s := r.rec.last()
-	active := r.fake
-	if s.Transport == string(transport.KindCloudKit) {
-		active = r.ck
-	}
-	data := transport.DataZone(s.RelayDeviceID)
-	eventually(t, "the heartbeat published", func() bool {
-		return slices.Contains(liveRecords(t, active, data), "heartbeat")
-	})
+	bubble(t, func(t *testing.T) {
+		policytest.Set(t, map[string]any{"MobileSync": "allowed"})
+		r := newDeskRig(t, shortDir(t))
+		setMeta(t, r.dir, state.MetaEnabled, "1")
+		linkPhoneDirectly(t, r.dir)
+		r.start(r.options())
+		r.waitState(StateRunning, "")
+		// The phone came over the relay: a hub of relay links starts there.
+		s := r.rec.last()
+		active := r.fake
+		if s.Transport == string(transport.KindCloudKit) {
+			active = r.ck
+		}
+		data := transport.DataZone(s.RelayDeviceID)
+		eventually(t, "the heartbeat published", func() bool {
+			return slices.Contains(liveRecords(t, active, data), "heartbeat")
+		})
 
-	policytest.Set(t, map[string]any{"MobileSync": "off"})
-	r.waitState(StateOff, ReasonPolicyOff)
-	if got := liveRecords(t, active, data); len(got) != 0 {
-		t.Fatalf("the data zone still holds %v after the policy turned off", got)
-	}
-	c, err := Dial(r.dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	a, err := c.Do(ControlRequest{Op: OpEnable})
-	_ = c.Close()
-	if err != nil || a.OK || a.Error != ErrClassPolicyOff {
-		t.Fatalf("enable under off: %+v, %v", a, err)
-	}
-	if err := r.stop(); err != nil {
-		t.Fatal(err)
-	}
-	if v, _ := readMeta(t, r.dir, state.MetaEnabled); v != "1" {
-		t.Fatalf("the owner's switch was rewritten to %q", v)
-	}
+		policytest.Set(t, map[string]any{"MobileSync": "off"})
+		r.waitState(StateOff, ReasonPolicyOff)
+		if got := liveRecords(t, active, data); len(got) != 0 {
+			t.Fatalf("the data zone still holds %v after the policy turned off", got)
+		}
+		c := r.dial()
+		a, err := c.Do(ControlRequest{Op: OpEnable})
+		_ = c.Close()
+		if err != nil || a.OK || a.Error != ErrClassPolicyOff {
+			t.Fatalf("enable under off: %+v, %v", a, err)
+		}
+		if err := r.stop(); err != nil {
+			t.Fatal(err)
+		}
+		if v, _ := readMeta(t, r.dir, state.MetaEnabled); v != "1" {
+			t.Fatalf("the owner's switch was rewritten to %q", v)
+		}
+	})
 }
 
 // readMetaRO reads one hub_meta value read-only (a hub may hold the lock).
@@ -937,6 +1008,23 @@ func readMetaRO(t *testing.T, dir, key string) (string, bool) {
 		t.Fatal(err)
 	}
 	return v, ok
+}
+
+// backdate sets every mtime under roots an hour back, so a later write
+// shows in a listing whatever the file system's time resolution.
+func backdate(t *testing.T, roots ...string) {
+	t.Helper()
+	old := time.Now().Add(-time.Hour)
+	for _, root := range roots {
+		if err := filepath.WalkDir(root, func(path string, _ fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			return os.Chtimes(path, old, old)
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 // startStub starts a stand-in bridge in its own process group, reaped at

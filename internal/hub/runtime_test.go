@@ -6,13 +6,12 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"database/sql"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"watchtower/internal/hub/hubtest"
@@ -197,7 +196,7 @@ func startCloudKitHub(t *testing.T, before func(dir string, ck *ckShares), confi
 	t.Helper()
 	policytest.Set(t, nil)
 	dir := shortDir(t)
-	r := newRig(t, dir)
+	r := newBubbleRig(t, dir)
 	ck := newCKShares()
 	fctx, fcancel := context.WithCancel(context.Background())
 	t.Cleanup(fcancel)
@@ -217,14 +216,7 @@ func startCloudKitHub(t *testing.T, before func(dir string, ck *ckShares), confi
 	}
 	r.start(o)
 	r.waitState(StateOff, ReasonDisabled)
-	eventually(t, "the control socket", func() bool {
-		_, err := os.Stat(filepath.Join(dir, SocketName))
-		return err == nil
-	})
-	c, err := Dial(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	c := r.dial()
 	t.Cleanup(func() { _ = c.Close() })
 	if a, err := c.Do(ControlRequest{Op: OpEnable}); err != nil || !a.OK {
 		t.Fatalf("enable: %+v, %v", a, err)
@@ -327,66 +319,70 @@ func (h *ckHub) tickPasses(f *fakeCadence, d time.Duration) bool {
 }
 
 func TestCloudKitPassIs3sWhileInTouchElse30s(t *testing.T) {
-	if CloudKitActivePass != 3*time.Second || CloudKitIdlePass != 30*time.Second || cloudKitTouchWindow != 10*time.Minute {
-		t.Fatalf("cadence = %v / %v, window %v", CloudKitActivePass, CloudKitIdlePass, cloudKitTouchWindow)
-	}
-	now := time.Unix(1_800_000_000, 0).UTC()
-	for _, tc := range []struct {
-		name      string
-		lastTouch time.Time
-		urgent    bool
-		want      time.Duration
-	}{
-		{"no phone wrote since start", time.Time{}, false, CloudKitIdlePass},
-		{"a phone wrote just now", now, false, CloudKitActivePass},
-		{"a phone wrote 9m59s ago", now.Add(-cloudKitTouchWindow + time.Second), false, CloudKitActivePass},
-		{"a phone wrote 10m ago", now.Add(-cloudKitTouchWindow), false, CloudKitIdlePass},
-		{"a link is waiting", time.Time{}, true, CloudKitActivePass},
-		{"a link is waiting, the phone long gone", now.Add(-time.Hour), true, CloudKitActivePass},
-	} {
-		if got := cloudKitPassEvery(now, tc.lastTouch, tc.urgent); got != tc.want {
-			t.Errorf("%s: %v, want %v", tc.name, got, tc.want)
+	bubble(t, func(t *testing.T) {
+		if CloudKitActivePass != 3*time.Second || CloudKitIdlePass != 30*time.Second || cloudKitTouchWindow != 10*time.Minute {
+			t.Fatalf("cadence = %v / %v, window %v", CloudKitActivePass, CloudKitIdlePass, cloudKitTouchWindow)
 		}
-	}
-	// A tick a few milliseconds early still passes (half a tick of slack).
-	last := now.Add(-CloudKitActivePass + 5*time.Millisecond)
-	if !cloudKitPassDue(now, last, now, false) {
-		t.Error("an active pass skipped for a tick 5 ms early")
-	}
-	if cloudKitPassDue(now, now.Add(-CloudKitActivePass), time.Time{}, false) {
-		t.Error("an idle hub passed after 3 s")
-	}
+		now := time.Unix(1_800_000_000, 0).UTC()
+		for _, tc := range []struct {
+			name      string
+			lastTouch time.Time
+			urgent    bool
+			want      time.Duration
+		}{
+			{"no phone wrote since start", time.Time{}, false, CloudKitIdlePass},
+			{"a phone wrote just now", now, false, CloudKitActivePass},
+			{"a phone wrote 9m59s ago", now.Add(-cloudKitTouchWindow + time.Second), false, CloudKitActivePass},
+			{"a phone wrote 10m ago", now.Add(-cloudKitTouchWindow), false, CloudKitIdlePass},
+			{"a link is waiting", time.Time{}, true, CloudKitActivePass},
+			{"a link is waiting, the phone long gone", now.Add(-time.Hour), true, CloudKitActivePass},
+		} {
+			if got := cloudKitPassEvery(now, tc.lastTouch, tc.urgent); got != tc.want {
+				t.Errorf("%s: %v, want %v", tc.name, got, tc.want)
+			}
+		}
+		// A tick a few milliseconds early still passes (half a tick of slack).
+		last := now.Add(-CloudKitActivePass + 5*time.Millisecond)
+		if !cloudKitPassDue(now, last, now, false) {
+			t.Error("an active pass skipped for a tick 5 ms early")
+		}
+		if cloudKitPassDue(now, now.Add(-CloudKitActivePass), time.Time{}, false) {
+			t.Error("an idle hub passed after 3 s")
+		}
+	})
 }
 
 // The worker's cadence on the fake clock: idle, a pass every 30 s and none
 // at the 3 s ticks between; in touch (a phone's write), one at every 3 s
 // tick; ten minutes after the touch, idle again.
 func TestCloudKitWorkerPassesOnTheCadence(t *testing.T) {
-	f := newFakeCadence()
-	h := startCloudKitHub(t, nil, f.configure)
-	h.settle()
-	for i := range 9 {
-		if h.tickPasses(f, CloudKitActivePass) {
-			t.Fatalf("idle: a pass at tick %d (%v after the last)", i+1, time.Duration(i+1)*CloudKitActivePass)
+	bubble(t, func(t *testing.T) {
+		f := newFakeCadence()
+		h := startCloudKitHub(t, nil, f.configure)
+		h.settle()
+		for i := range 9 {
+			if h.tickPasses(f, CloudKitActivePass) {
+				t.Fatalf("idle: a pass at tick %d (%v after the last)", i+1, time.Duration(i+1)*CloudKitActivePass)
+			}
 		}
-	}
-	if !h.tickPasses(f, CloudKitActivePass) {
-		t.Fatal("idle: no pass 30 s after the last")
-	}
-	h.ck.inject(transport.Event{Zone: transport.SharedMailboxZone(h.status.RelayDeviceID)}) // a phone wrote
-	eventually(t, "the pass of the phone's write", func() bool { return h.passes.Load() > 0 })
-	h.settle()
-	for i := range 5 {
 		if !h.tickPasses(f, CloudKitActivePass) {
-			t.Fatalf("in touch: no pass at tick %d", i+1)
+			t.Fatal("idle: no pass 30 s after the last")
 		}
-	}
-	if !h.tickPasses(f, cloudKitTouchWindow) {
-		t.Fatal("no pass after ten minutes")
-	}
-	if h.tickPasses(f, CloudKitActivePass) {
-		t.Fatal("still active ten minutes after the touch")
-	}
+		h.ck.inject(transport.Event{Zone: transport.SharedMailboxZone(h.status.RelayDeviceID)}) // a phone wrote
+		eventually(t, "the pass of the phone's write", func() bool { return h.passes.Load() > 0 })
+		h.settle()
+		for i := range 5 {
+			if !h.tickPasses(f, CloudKitActivePass) {
+				t.Fatalf("in touch: no pass at tick %d", i+1)
+			}
+		}
+		if !h.tickPasses(f, cloudKitTouchWindow) {
+			t.Fatal("no pass after ten minutes")
+		}
+		if h.tickPasses(f, CloudKitActivePass) {
+			t.Fatal("still active ten minutes after the touch")
+		}
+	})
 }
 
 // A hello read before any phone is linked; the confirm closes the link
@@ -395,128 +391,139 @@ func TestCloudKitWorkerPassesOnTheCadence(t *testing.T) {
 // grace's end the sweep takes the stranger's participant off and clears the
 // mark, and the cadence goes idle.
 func TestCloudKitConfirmCloseKeepsTheParticipantsForTheGrace(t *testing.T) {
-	f := newFakeCadence()
-	var zones []string
-	h := startCloudKitHub(t, func(dir string, ck *ckShares) {
-		leftOpenFailingOnce(t)(dir, ck)
-		ck.quiet.Store(true) // no zone events: passes come from the ticks only
-	}, f.configure)
-	zones = h.zones()
-	h.ck.join("_stranger-acme", zones...)
-	h.waitFailedRestartClose()
-	if err := h.c.Send(ControlRequest{Op: OpPair}); err != nil {
-		t.Fatal(err)
-	}
-	lp, err := wire.ParseLinkURL(h.next(link.EventQR).URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	phone, err := hubtest.FromLink(lp, h.ck.Fake, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := phone.Hello(zones[1]); err != nil {
-		t.Fatal(err)
-	}
-	h.settle()
-	if !h.tickPasses(f, CloudKitIdlePass) {
-		t.Fatal("no idle pass")
-	}
-	h.next(link.EventSAS)
-	if err := h.c.Send(ControlRequest{Op: OpConfirm, Device: phone.ID().String(), Confirm: true}); err != nil {
-		t.Fatal(err)
-	}
-	h.next(link.EventLinked)
-	eventually(t, "the close after the confirm", func() bool { return h.ck.count("set_public_link:close") == 2 })
-	h.settle()
-	reads := h.ck.count("participants")
-	for _, d := range []time.Duration{CloudKitActivePass, CloudKitActivePass, time.Minute} {
-		if !h.tickPasses(f, d) {
-			t.Fatal("no active pass while the answer grace runs")
+	bubble(t, func(t *testing.T) {
+		f := newFakeCadence()
+		var zones []string
+		h := startCloudKitHub(t, func(dir string, ck *ckShares) {
+			leftOpenFailingOnce(t)(dir, ck)
+			ck.quiet.Store(true) // no zone events: passes come from the ticks only
+		}, f.configure)
+		zones = h.zones()
+		h.ck.join("_stranger-acme", zones...)
+		h.waitFailedRestartClose()
+		if err := h.c.Send(ControlRequest{Op: OpPair}); err != nil {
+			t.Fatal(err)
 		}
-	}
-	if n := h.ck.count("participants"); n != reads || h.ck.count("remove_participants") != 0 {
-		t.Fatal("a sweep ran before the answer grace ended")
-	}
-	if !h.tickPasses(f, link.DefaultSweep.AnswerGrace) {
-		t.Fatal("no pass at the grace's end")
-	}
-	eventually(t, "the sweep after the grace", func() bool { return h.sweepMark() == "0" })
-	for _, z := range zones {
-		if got := h.ck.members(z); len(got) != 0 {
-			t.Errorf("%s still has %v", z, got)
+		lp, err := wire.ParseLinkURL(h.next(link.EventQR).URL)
+		if err != nil {
+			t.Fatal(err)
 		}
-	}
-	if h.tickPasses(f, CloudKitActivePass) {
-		t.Fatal("still active after the grace")
-	}
+		phone, err := hubtest.FromLink(lp, h.ck.Fake, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := phone.Hello(zones[1]); err != nil {
+			t.Fatal(err)
+		}
+		h.settle()
+		if !h.tickPasses(f, CloudKitIdlePass) {
+			t.Fatal("no idle pass")
+		}
+		h.next(link.EventSAS)
+		if err := h.c.Send(ControlRequest{Op: OpConfirm, Device: phone.ID().String(), Confirm: true}); err != nil {
+			t.Fatal(err)
+		}
+		h.next(link.EventLinked)
+		eventually(t, "the close after the confirm", func() bool { return h.ck.count("set_public_link:close") == 2 })
+		h.settle()
+		reads := h.ck.count("participants")
+		for _, d := range []time.Duration{CloudKitActivePass, CloudKitActivePass, time.Minute} {
+			if !h.tickPasses(f, d) {
+				t.Fatal("no active pass while the answer grace runs")
+			}
+		}
+		if n := h.ck.count("participants"); n != reads || h.ck.count("remove_participants") != 0 {
+			t.Fatal("a sweep ran before the answer grace ended")
+		}
+		if !h.tickPasses(f, link.DefaultSweep.AnswerGrace) {
+			t.Fatal("no pass at the grace's end")
+		}
+		eventually(t, "the sweep after the grace", func() bool { return h.sweepMark() == "0" })
+		for _, z := range zones {
+			if got := h.ck.members(z); len(got) != 0 {
+				t.Errorf("%s still has %v", z, got)
+			}
+		}
+		if h.tickPasses(f, CloudKitActivePass) {
+			t.Fatal("still active after the grace")
+		}
+	})
 }
 
 // twin of MobileHubServiceTests.testIssuingACodeWakesTheRelayLoop: a new
 // code runs a pass at once instead of waiting for the idle cadence's tick.
 func TestIssuingACodeRunsAPassAtOnce(t *testing.T) {
-	f := newFakeCadence()
-	h := startCloudKitHub(t, func(_ string, ck *ckShares) {
-		ck.quiet.Store(true) // no zone events: passes come from the ticks only
-	}, f.configure)
-	settled := h.settle()
-	if err := h.c.Send(ControlRequest{Op: OpPair}); err != nil {
-		t.Fatal(err)
-	}
-	h.next(link.EventQR)
-	eventually(t, "a pass after the code", func() bool { return h.passes.Load() > settled })
+	bubble(t, func(t *testing.T) {
+		f := newFakeCadence()
+		h := startCloudKitHub(t, func(_ string, ck *ckShares) {
+			ck.quiet.Store(true) // no zone events: passes come from the ticks only
+		}, f.configure)
+		settled := h.settle()
+		if err := h.c.Send(ControlRequest{Op: OpPair}); err != nil {
+			t.Fatal(err)
+		}
+		h.next(link.EventQR)
+		eventually(t, "a pass after the code", func() bool { return h.passes.Load() > settled })
+	})
 }
 
 func TestPullNowRunsAPassAtOnce(t *testing.T) {
-	var mu sync.Mutex
-	var urgent bool
-	h := startCloudKitHub(t, nil, func(o *Options) {
-		o.passEvery, o.linkEvery = time.Hour, time.Hour
-		o.published = func(kinds []hubslices.Kind) {
-			if slices.Contains(kinds, hubslices.UrgentKinds[0]) {
-				mu.Lock()
-				urgent = true
-				mu.Unlock()
+	bubble(t, func(t *testing.T) {
+		var mu sync.Mutex
+		var urgent bool
+		h := startCloudKitHub(t, nil, func(o *Options) {
+			o.passEvery, o.linkEvery = time.Hour, time.Hour
+			o.published = func(kinds []hubslices.Kind) {
+				if slices.Contains(kinds, hubslices.UrgentKinds[0]) {
+					mu.Lock()
+					urgent = true
+					mu.Unlock()
+				}
 			}
+		})
+		// The start's passes settle; with no phone in touch the CloudKit
+		// cadence is idle (30 s), so no tick passes meanwhile.
+		settled := h.settle()
+		mu.Lock()
+		urgent = false
+		mu.Unlock()
+		h.ck.inject(transport.Event{PullNow: true})
+		// A pass at once, and the link check's pass after it (the relay's resync).
+		eventually(t, "two passes after the push", func() bool { return h.passes.Load() >= settled+2 })
+		mu.Lock()
+		defer mu.Unlock()
+		if !urgent {
+			t.Fatal("the push did not publish what the phones wait for")
 		}
 	})
-	// The start's passes settle; with no phone in touch the CloudKit
-	// cadence is idle (30 s), so no tick passes meanwhile.
-	settled := h.settle()
-	mu.Lock()
-	urgent = false
-	mu.Unlock()
-	h.ck.inject(transport.Event{PullNow: true})
-	// A pass at once, and the link check's pass after it (the relay's resync).
-	eventually(t, "two passes after the push", func() bool { return h.passes.Load() >= settled+2 })
-	mu.Lock()
-	defer mu.Unlock()
-	if !urgent {
-		t.Fatal("the push did not publish what the phones wait for")
-	}
 }
 
 // A link an earlier run left open (the sweep marked pending) is closed once
 // at start, with no grace: the public link closes, the participants are
 // swept, the mark clears.
 func TestCloudKitHubClosesALinkLeftOpenAtStart(t *testing.T) {
-	h := startCloudKitHub(t, func(dir string, _ *ckShares) { setMeta(t, dir, link.MetaShareSweepPending, "1") }, nil)
-	eventually(t, "the restart close", func() bool { return h.sweepMark() == "0" })
-	if h.ck.count("set_public_link:close") == 0 || h.ck.count("participants") == 0 {
-		t.Fatalf("no restart close")
-	}
-	if n := h.ck.count("set_public_link:open"); n != 0 {
-		t.Fatalf("the public link was opened %d times", n)
-	}
+	bubble(t, func(t *testing.T) {
+		h := startCloudKitHub(t, func(dir string, _ *ckShares) { setMeta(t, dir, link.MetaShareSweepPending, "1") }, nil)
+		eventually(t, "the restart close", func() bool { return h.sweepMark() == "0" })
+		if h.ck.count("set_public_link:close") == 0 || h.ck.count("participants") == 0 {
+			t.Fatalf("no restart close")
+		}
+		if n := h.ck.count("set_public_link:open"); n != 0 {
+			t.Fatalf("the public link was opened %d times", n)
+		}
+	})
 }
 
 // With nothing marked the start makes no share call.
 func TestCloudKitHubStartsWithNoShareCallWhenNothingIsLeftOpen(t *testing.T) {
-	h := startCloudKitHub(t, nil, nil)
-	time.Sleep(300 * time.Millisecond)
-	if n := h.ck.count("set_public_link") + h.ck.count("participants") + h.ck.count("remove_participants"); n != 0 {
-		t.Fatalf("%d share calls at start", n)
-	}
+	bubble(t, func(t *testing.T) {
+		h := startCloudKitHub(t, nil, nil)
+		time.Sleep(300 * time.Millisecond)
+		synctest.Wait()
+		if n := h.ck.count("set_public_link") + h.ck.count("participants") + h.ck.count("remove_participants"); n != 0 {
+			t.Fatalf("%d share calls at start", n)
+		}
+	})
 }
 
 // leftOpenFailingOnce marks the sweep pending (a link an earlier run left
@@ -541,125 +548,128 @@ func (h *ckHub) waitFailedRestartClose() {
 // The bridge's account_changed closes the link the old iCloud user opened,
 // with no grace: the sweep runs at once.
 func TestCloudKitAccountChangedClosesTheLink(t *testing.T) {
-	h := startCloudKitHub(t, leftOpenFailingOnce(t), nil)
-	h.waitFailedRestartClose()
-	h.ck.inject(transport.Event{AccountChanged: true})
-	eventually(t, "the close after the account change", func() bool { return h.sweepMark() == "0" })
-	if n := h.ck.count("set_public_link:close"); n != 2 {
-		t.Fatalf("%d public-link closes, want 2", n)
-	}
+	bubble(t, func(t *testing.T) {
+		h := startCloudKitHub(t, leftOpenFailingOnce(t), nil)
+		h.waitFailedRestartClose()
+		h.ck.inject(transport.Event{AccountChanged: true})
+		eventually(t, "the close after the account change", func() bool { return h.sweepMark() == "0" })
+		if n := h.ck.count("set_public_link:close"); n != 2 {
+			t.Fatalf("%d public-link closes, want 2", n)
+		}
+	})
 }
 
 // A hello in the shared RelayZone reaches the link center before any phone
 // is linked; the owner's confirm links it and closes the link (CloseUsed:
 // the public link closes now, the participants wait for the grace).
 func TestCloudKitHelloInTheRelayZoneLinksAndTheConfirmClosesTheLink(t *testing.T) {
-	h := startCloudKitHub(t, leftOpenFailingOnce(t), nil)
-	h.waitFailedRestartClose()
-	if err := h.c.Send(ControlRequest{Op: OpPair}); err != nil {
-		t.Fatal(err)
-	}
-	lp, err := wire.ParseLinkURL(h.next(link.EventQR).URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	phone, err := hubtest.FromLink(lp, h.ck.Fake, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := phone.Hello(transport.SharedMailboxZone(h.status.RelayDeviceID)); err != nil {
-		t.Fatal(err)
-	}
-	sas := h.next(link.EventSAS)
-	if sas.DeviceID != phone.ID().String() {
-		t.Fatalf("sas for %s, want %s", sas.DeviceID, phone.ID())
-	}
-	if err := h.c.Send(ControlRequest{Op: OpConfirm, Device: phone.ID().String(), Confirm: true}); err != nil {
-		t.Fatal(err)
-	}
-	h.next(link.EventLinked)
-	eventually(t, "the close after the confirm", func() bool { return h.ck.count("set_public_link:close") == 2 })
-	if n := h.ck.count("remove_participants"); n != 0 {
-		t.Fatalf("participants swept before the answer grace (%d calls)", n)
-	}
+	bubble(t, func(t *testing.T) {
+		h := startCloudKitHub(t, leftOpenFailingOnce(t), nil)
+		h.waitFailedRestartClose()
+		if err := h.c.Send(ControlRequest{Op: OpPair}); err != nil {
+			t.Fatal(err)
+		}
+		lp, err := wire.ParseLinkURL(h.next(link.EventQR).URL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		phone, err := hubtest.FromLink(lp, h.ck.Fake, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := phone.Hello(transport.SharedMailboxZone(h.status.RelayDeviceID)); err != nil {
+			t.Fatal(err)
+		}
+		sas := h.next(link.EventSAS)
+		if sas.DeviceID != phone.ID().String() {
+			t.Fatalf("sas for %s, want %s", sas.DeviceID, phone.ID())
+		}
+		if err := h.c.Send(ControlRequest{Op: OpConfirm, Device: phone.ID().String(), Confirm: true}); err != nil {
+			t.Fatal(err)
+		}
+		h.next(link.EventLinked)
+		eventually(t, "the close after the confirm", func() bool { return h.ck.count("set_public_link:close") == 2 })
+		if n := h.ck.count("remove_participants"); n != 0 {
+			t.Fatalf("participants swept before the answer grace (%d calls)", n)
+		}
+	})
 }
 
 // F1/F2: with the bridge hanging, the owner's confirm and Remove are
 // answered once their database change is made, and the hub stops without
 // waiting for the hung share calls.
 func TestCloudKitConfirmAndRemoveNeverWaitOnTheBridge(t *testing.T) {
-	h := startCloudKitHub(t, func(dir string, ck *ckShares) {
-		leftOpenFailingOnce(t)(dir, ck)
-		linkSharedPhone(t, dir, sharedPhoneID, "_colleague-a")
-	}, nil)
-	h.waitFailedRestartClose()
-	h.ck.join("_colleague-a", h.zones()...)
-	release := h.ck.hold("set_public_link:close")
-	defer release()
-	defer h.ck.hold("remove_participants:" + h.zones()[0] + ":_colleague-a")()
-	if err := h.c.Send(ControlRequest{Op: OpPair}); err != nil {
-		t.Fatal(err)
-	}
-	lp, err := wire.ParseLinkURL(h.next(link.EventQR).URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	phone, err := hubtest.FromLink(lp, h.ck.Fake, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := phone.Hello(h.zones()[1]); err != nil {
-		t.Fatal(err)
-	}
-	h.next(link.EventSAS)
-
-	answered := func(what string, do func() ControlAnswer) {
-		t.Helper()
-		start := time.Now()
-		if a := do(); !a.OK {
-			t.Fatalf("%s: %+v", what, a)
-		}
-		if d := time.Since(start); d > 2*time.Second {
-			t.Fatalf("%s answered after %v: it waited on the bridge", what, d)
-		}
-	}
-	c2, err := Dial(h.dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = c2.Close() }()
-	answered("confirm", func() ControlAnswer {
-		if err := h.c.Send(ControlRequest{Op: OpConfirm, Device: phone.ID().String(), Confirm: true}); err != nil {
+	bubble(t, func(t *testing.T) {
+		h := startCloudKitHub(t, func(dir string, ck *ckShares) {
+			leftOpenFailingOnce(t)(dir, ck)
+			linkSharedPhone(t, dir, sharedPhoneID, "_colleague-a")
+		}, nil)
+		h.waitFailedRestartClose()
+		h.ck.join("_colleague-a", h.zones()...)
+		release := h.ck.hold("set_public_link:close")
+		defer release()
+		defer h.ck.hold("remove_participants:" + h.zones()[0] + ":_colleague-a")()
+		if err := h.c.Send(ControlRequest{Op: OpPair}); err != nil {
 			t.Fatal(err)
 		}
-		for {
-			a, err := h.c.Next()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if a.Event == "" || a.Error != "" {
-				return a
-			}
-		}
-	})
-	eventually(t, "the held close", func() bool { return h.ck.count("set_public_link:close") == 2 })
-	answered("unlink", func() ControlAnswer {
-		a, err := c2.Do(ControlRequest{Op: OpUnlink, Device: sharedPhoneID})
+		lp, err := wire.ParseLinkURL(h.next(link.EventQR).URL)
 		if err != nil {
 			t.Fatal(err)
 		}
-		return a
+		phone, err := hubtest.FromLink(lp, h.ck.Fake, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := phone.Hello(h.zones()[1]); err != nil {
+			t.Fatal(err)
+		}
+		h.next(link.EventSAS)
+
+		answered := func(what string, do func() ControlAnswer) {
+			t.Helper()
+			start := time.Now()
+			if a := do(); !a.OK {
+				t.Fatalf("%s: %+v", what, a)
+			}
+			if d := time.Since(start); d > 2*time.Second {
+				t.Fatalf("%s answered after %v: it waited on the bridge", what, d)
+			}
+		}
+		c2 := h.rig.dial()
+		defer func() { _ = c2.Close() }()
+		answered("confirm", func() ControlAnswer {
+			if err := h.c.Send(ControlRequest{Op: OpConfirm, Device: phone.ID().String(), Confirm: true}); err != nil {
+				t.Fatal(err)
+			}
+			for {
+				a, err := h.c.Next()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if a.Event == "" || a.Error != "" {
+					return a
+				}
+			}
+		})
+		eventually(t, "the held close", func() bool { return h.ck.count("set_public_link:close") == 2 })
+		answered("unlink", func() ControlAnswer {
+			a, err := c2.Do(ControlRequest{Op: OpUnlink, Device: sharedPhoneID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return a
+		})
+		eventually(t, "the held removal", func() bool {
+			return h.ck.count("remove_participants:"+h.zones()[0]+":_colleague-a") == 1
+		})
+		start := time.Now()
+		if err := h.stop(); err != nil {
+			t.Fatalf("stop: %v", err)
+		}
+		if d := time.Since(start); d > 3*time.Second {
+			t.Fatalf("the stop waited %v on the hung share calls", d)
+		}
 	})
-	eventually(t, "the held removal", func() bool {
-		return h.ck.count("remove_participants:"+h.zones()[0]+":_colleague-a") == 1
-	})
-	start := time.Now()
-	if err := h.stop(); err != nil {
-		t.Fatalf("stop: %v", err)
-	}
-	if d := time.Since(start); d > 3*time.Second {
-		t.Fatalf("the stop waited %v on the hung share calls", d)
-	}
 }
 
 const sharedPhoneID = "6F9619FF-8B86-D011-B42D-00C04FC964FF"
@@ -667,16 +677,18 @@ const sharedPhoneID = "6F9619FF-8B86-D011-B42D-00C04FC964FF"
 // The owner's Remove of a shared phone on CloudKit takes its iCloud user
 // off both shares at once (RemoveCloudKit).
 func TestCloudKitRemoveTakesThePhonesParticipant(t *testing.T) {
-	h := startCloudKitHub(t, func(dir string, _ *ckShares) { linkSharedPhone(t, dir, sharedPhoneID, "_colleague-a") }, nil)
-	h.ck.join("_colleague-a", h.zones()...)
-	if a, err := h.c.Do(ControlRequest{Op: OpUnlink, Device: sharedPhoneID}); err != nil || !a.OK {
-		t.Fatalf("unlink: %+v, %v", a, err)
-	}
-	for _, zone := range h.zones() {
-		eventually(t, "the removal from "+zone, func() bool {
-			return h.ck.count("remove_participants:"+zone+":_colleague-a") > 0 && len(h.ck.members(zone)) == 0
-		})
-	}
+	bubble(t, func(t *testing.T) {
+		h := startCloudKitHub(t, func(dir string, _ *ckShares) { linkSharedPhone(t, dir, sharedPhoneID, "_colleague-a") }, nil)
+		h.ck.join("_colleague-a", h.zones()...)
+		if a, err := h.c.Do(ControlRequest{Op: OpUnlink, Device: sharedPhoneID}); err != nil || !a.OK {
+			t.Fatalf("unlink: %+v, %v", a, err)
+		}
+		for _, zone := range h.zones() {
+			eventually(t, "the removal from "+zone, func() bool {
+				return h.ck.count("remove_participants:"+zone+":_colleague-a") > 0 && len(h.ck.members(zone)) == 0
+			})
+		}
+	})
 }
 
 // The sweep fallback: the removal fails, the Remove still answers OK, the
@@ -686,29 +698,31 @@ func TestCloudKitRemoveTakesThePhonesParticipant(t *testing.T) {
 // 60 s of the hub's clock — so the passes run on the fake clock: each probe
 // moves it past any retry and ticks a pass.
 func TestCloudKitAFailedRemovalIsLeftToTheSweep(t *testing.T) {
-	f := newFakeCadence()
-	h := startCloudKitHub(t, func(dir string, _ *ckShares) { linkSharedPhone(t, dir, sharedPhoneID, "_colleague-a") }, f.configure)
-	h.ck.join("_colleague-a", h.zones()...)
-	removal := "remove_participants:" + h.zones()[0] + ":_colleague-a"
-	h.ck.failNext(removal, 1)
-	if a, err := h.c.Do(ControlRequest{Op: OpUnlink, Device: sharedPhoneID}); err != nil || !a.OK {
-		t.Fatalf("unlink: %+v, %v", a, err)
-	}
-	if a, err := h.c.Do(ControlRequest{Op: OpUnlink, Device: sharedPhoneID}); err != nil || a.Error != ErrClassNoDevice {
-		t.Fatalf("a second unlink: %+v, %v", a, err)
-	}
-	eventually(t, "the sweep's removal", func() bool {
-		if h.ck.count(removal) >= 2 && h.sweepMark() == "0" {
-			return true
+	bubble(t, func(t *testing.T) {
+		f := newFakeCadence()
+		h := startCloudKitHub(t, func(dir string, _ *ckShares) { linkSharedPhone(t, dir, sharedPhoneID, "_colleague-a") }, f.configure)
+		h.ck.join("_colleague-a", h.zones()...)
+		removal := "remove_participants:" + h.zones()[0] + ":_colleague-a"
+		h.ck.failNext(removal, 1)
+		if a, err := h.c.Do(ControlRequest{Op: OpUnlink, Device: sharedPhoneID}); err != nil || !a.OK {
+			t.Fatalf("unlink: %+v, %v", a, err)
 		}
-		h.tickPasses(f, 2*time.Minute) // past the 60 s sweep retry, and an idle pass due
-		return false
+		if a, err := h.c.Do(ControlRequest{Op: OpUnlink, Device: sharedPhoneID}); err != nil || a.Error != ErrClassNoDevice {
+			t.Fatalf("a second unlink: %+v, %v", a, err)
+		}
+		eventually(t, "the sweep's removal", func() bool {
+			if h.ck.count(removal) >= 2 && h.sweepMark() == "0" {
+				return true
+			}
+			h.tickPasses(f, 2*time.Minute) // past the 60 s sweep retry, and an idle pass due
+			return false
+		})
+		for _, z := range h.zones() {
+			if got := h.ck.members(z); len(got) != 0 {
+				t.Errorf("%s still has %v", z, got)
+			}
+		}
 	})
-	for _, z := range h.zones() {
-		if got := h.ck.members(z); len(got) != 0 {
-			t.Errorf("%s still has %v", z, got)
-		}
-	}
 }
 
 // linkSharedPhone writes a shared-scope linked phone of user into the hub

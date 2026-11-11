@@ -48,7 +48,7 @@ func testSessionHost(t *testing.T) string {
 		for _, info := range list {
 			if info.Pid > 0 && !info.Exited {
 				_ = syscall.Kill(-info.Pid, syscall.SIGKILL)
-				for deadline := time.Now().Add(5 * time.Second); syscall.Kill(info.Pid, 0) == nil && time.Now().Before(deadline); {
+				for syscall.Kill(info.Pid, 0) == nil { // not our child: no wait to block on
 					time.Sleep(10 * time.Millisecond)
 				}
 			}
