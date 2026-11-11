@@ -13,8 +13,9 @@ and `TuningPanelView` over a `TuningChat` whose turns ran through the
 embedded-chat engine on a temporary database with a scripted AI service
 (the proposal card in the feed is `CoachProposalCardView`, a settled one
 `TuningAcceptedLine`), and the Statistics blocks. All data is synthetic.
-Compare a render with its mockup by eye; the differences kept on purpose are
-listed under "Differences from the mockups" below.
+The owner accepted the differences from the drawn mockups (ask #1233, spec
+D73), so the PNGs here are now the real renders; the list under "Differences
+from the mockups" below records what changed from the drawings.
 
 | State | Spec | File |
 |---|---|---|
@@ -64,7 +65,7 @@ Product change made with the shots (Task 5.13):
   + `.buttonStyle(.plain)`): a borderless menu drew only the chip's text and
   icon, without its capsule and chevron.
 
-Differences from the mockups, kept on purpose (the real panel uses the shared
+Differences from the drawn mockups, accepted by the owner (ask #1233) (the real panel uses the shared
 embedded-chat components, as every embedded chat does):
 
 - A short thread starts at the top of the feed: `ChatFeedView` follows the
