@@ -17,12 +17,16 @@ import (
 // once its headers arrive. A var so tests can shorten it.
 var responseHeaderTimeout = 15 * time.Minute
 
+// dialContext opens the client's connections; a var so a test can hand it an
+// in-memory connection instead of a socket.
+var dialContext = (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext
+
 // NewHTTPClient returns the client for an OpenAI-compatible server: bounded
 // dial, TLS handshake and wait for response headers, and no total timeout, so
 // a legitimately long generation or stream is never cut short.
 func NewHTTPClient() *http.Client {
 	t := http.DefaultTransport.(*http.Transport).Clone()
-	t.DialContext = (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext
+	t.DialContext = dialContext
 	t.TLSHandshakeTimeout = 10 * time.Second
 	t.ResponseHeaderTimeout = responseHeaderTimeout
 	return &http.Client{Transport: t}
