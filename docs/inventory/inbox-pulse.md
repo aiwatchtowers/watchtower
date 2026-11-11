@@ -135,7 +135,7 @@ INBOX-05's rule store.
 
 ## INBOX-05 — I can see and edit what the assistant has learned about me
 
-**Status:** Enforced (reworded 2026-09-14; reached from the Inbox's root ⋯ since 2026-11-08)
+**Status:** Enforced (reworded 2026-09-14; reached from the Inbox's root ⋯ since 2026-11-08; amended 2026-11-11, ask #634)
 
 **Observable:** Learned Rules — opened from the root's ⋯ in the Inbox's
 folder menu, into the reading pane (it was the "Learned" tab of the inbox
@@ -145,12 +145,18 @@ with weight, source ("learned from my feedback" / "I added this manually"), and
 an inline remove/edit. I can add a rule, remove a rule, change a weight; changes
 persist. The store is **cross-pipeline, not inbox-local**. Its **readers** are
 the digest, tracks, briefing and catch-up pipelines, which inject rules into
-their prompts via `ListLearnedRulesByPipeline`. Its **writers** are exactly two:
-this tab (manual `source='user_rule'` rows) and `watchtower catchup feedback`,
+their prompts via `ListLearnedRulesByPipeline`, and the `attention.waiting`
+primitive, which leaves out the mail of a sender with a `source_mute` rule
+scoped `email:<address>` (the address ASCII-lowercased, spaces trimmed). Its
+**writers** are exactly two: the Desktop's rules writer (manual
+`source='user_rule'` rows) — this tab, and since 2026-11-11 also **Mute** on a
+Mail waiting row and **Mute Senders…** — and `watchtower catchup feedback`,
 which mints a rule from a per-topic 👍/👎 that carried a comment. With the
 inbox's own implicit learner retired (INBOX-04), no automatic writer remains, so
 every row in the table is traceable to something the owner typed. The output a
-rule changes is a digest, track, briefing or recap — never an `inbox_items` row.
+rule changes is a digest, track, briefing, recap or the Mail waiting artifact —
+never an `inbox_items` row: a muted sender's mail stays open for Messages and
+Catch-Up.
 
 **Why locked:** Without visibility, the learning system is a black box and trust collapses. Without editability, users cannot recover from misclassifications — feedback becomes a one-way street. The rule store outliving the inbox screen makes the tab *more* load-bearing, not less: it is now the only place a learned preference can be inspected or undone.
 
@@ -159,6 +165,8 @@ rule changes is a digest, track, briefing or recap — never an `inbox_items` ro
 - `WatchtowerDesktop/Tests/InboxLearnedRulesViewModelTests.swift::test_INBOX_05_remove_rule`
 - `WatchtowerDesktop/Tests/Core/InboxLearnedRulesQueriesTests.swift::test_INBOX_05_list_rules_ordered_by_weight`
 - `internal/db/schema_contracts_test.go::TestInbox04_NoLegacyExplicitFeedbackTable` (historical name — the rule store exists and the legacy `explicit_feedback` table does not)
+- `internal/automations/builtin/inbox05_test.go::TestInbox05_MutedSenderLeavesMailWaitingOnly`
+- `WatchtowerDesktop/Tests/InboxLearnedRulesViewModelTests.swift::test_INBOX_05_mute_sender_writes_one_user_rule` (Desktop, with Mute — lands with the Mute button in the same phase)
 
 **Locked since:** 2026-04-27 (reworded to the cross-pipeline rule store 2026-09-14)
 
@@ -247,6 +255,7 @@ deleted with the triage stage, not relaxed.
 
 ## Changelog
 
+- 2026-11-11 (Inbox redesign phase 2, board #1076, approved in ask #634): **INBOX-05 amended** — the store gains a reader, the `attention.waiting` primitive, which leaves out the mail of a sender with a `source_mute` rule scoped `email:<address>` (ASCII-lowercased, spaces trimmed; a rule scoped any other way, e.g. `sender:<id>`, mutes nothing there). The outputs a rule changes gain the Mail waiting artifact, still never an `inbox_items` row (`db.OpenInboxItems`, the Messages / Catch-Up reader, still returns a muted sender's mail). The writers stay exactly two: the Desktop's rules writer, now also reached from **Mute** on a Mail waiting row and **Mute Senders…**, and `watchtower catchup feedback`. Guards added: `TestInbox05_MutedSenderLeavesMailWaitingOnly` (full-row compare of the item before and after the run) and `test_INBOX_05_mute_sender_writes_one_user_rule`; no guard relaxed.
 - 2026-11-11 (inbox redesign phase 4, board #1076, approved in ask #634): INBOX-02 extended to Gmail mail; IMAP and Outlook named as not covered. Guards added: `TestInbox02_AutoResolveGmailOnOwnerReply`, `TestInbox02_EveryGmailReaderHasASide`; no guard relaxed.
 - 2026-11-08 (Inbox builder B Task 16, approved in ask #451): **INBOX-05 amended** — the filter bar and its ⋯ are gone; Learned Rules (and Assistant Profile) are reached from the root's ⋯ in the Inbox's folder menu and still open in the reading pane. The store, its two writers, its readers and the guards are unchanged (`test_INBOX_05_add_manual_rule`, `test_INBOX_05_remove_rule`, `test_INBOX_05_list_rules_ordered_by_weight` green); `InboxReadingPaneTests::testRootMenuOffersLearnedRulesAndProfile` (not an inventory guard) pins the way in.
 - 2026-11-06 (Inbox builder B Task 9, board #1400, ask #952): no contract changed and no guard changed. **INBOX-02, INBOX-09:** the open items are now also shown by the **Waiting for me** built-in (`waiting-for-me`, `trigger: {sync: waiting_for_me}`, run by `phaseWaitingForMe` right after `phaseInbox`): its one living artifact lists them through `db.OpenInboxItems` — the Go twin of `HomeFeedQueries.openMessageClause`, at most 200, newest first, a channel-folded item (INBOX-09) one row with its count — and by the Messages legacy entry until its first run or after a failed one. An item INBOX-02 auto-resolves leaves the artifact at the next read through the Desktop's render-time check and at the next cycle's run. The detector, its auto-resolve and its watermark are untouched; the built-in only reads `inbox_items`. The shared fixture `internal/inbox/testdata/open_items.json` pins the Go and Swift open predicates (`TestOpenInboxItems_SharedFixture`).
