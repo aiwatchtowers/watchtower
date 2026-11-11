@@ -44,7 +44,7 @@ var knownNonLLMExec = map[string]string{
 	"codex.codexVersion":                 "codex --version probe",
 	"codex.loginShellPATH":               "login shell `echo $PATH`",
 	"codex.loginShellWhich":              "login shell `which codex`",
-	"codex.startAppServerProcessInDir":   "codex app-server for hook trust and quota reads, no model call",
+	"codex.appServerProcess":             "codex app-server for hook trust and quota reads, no model call",
 	"daemon.runPSLocaleIndependent":      "ps -p",
 	"externalmcp.discoveryTransport":     "starts an owner Quick Connection's MCP server to list its tools",
 	"extract.(*Extractor).runPDFHelper":  "our own PDF helper executable",

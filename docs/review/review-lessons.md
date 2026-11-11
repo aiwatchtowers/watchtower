@@ -2876,3 +2876,12 @@ Entry format:
 - weak-dimension: 7 — a replaced wait loop must keep its subprocess-reaping guarantee; the timeout context had been the only reaper on the go-test-timeout path (F3), fixed by stdin-EOF self-exit.
 - rule-gap (candidate, dim 7): *a test that replaces a wall-clock bound with a CPU-time ratio keeps (a) an absolute ceiling in CPU time, (b) a small run comfortably above the ratio's floor, (c) no `t.Parallel` on the measuring test; changing an inventory-listed perf guard this way gets a note-only changelog line.*
 - outcome: TBD
+
+## 2026-11-11 — test/no-wallclock-codex (9be058cb7 + uncommitted round-1 fixes: codex app-server stdio seam `AppServerConn`, in-process `codextest` fake under synctest, budget hook removed, `ReadUsageFrom` exported; panel: prosecutor (4) + codex (0); pr-review-toolkit specialists unavailable; judge verified by reading and ran the targeted tests green) — verdict: changes-needed
+
+- contested: F4 (`ReadUsageFrom` exported with only test callers). Kept: a seam that another package's tests need can't live in an `export_test.go`, and it replaces the removed `SetAppServerBudgetForTest`. Only the doc's hardcoded "10 s" was wrong. [9]
+- false-positive: none. F1–F3 were real and their fixes landed. The F1 fix (`t.Cleanup(srv.Close)`) covers only the `t.Fatal` path, not a hang. [7]
+- miss: the judge caught a gap that every lane missed, one day after the test/no-wallclock-go lesson. `noBudget = MaxInt64` ("a hang is go test -timeout's to end") makes the real-process wiring tests (`TestAppServer_ProcessWiring`, usage `readUsage` over the process, the FIFO `gone()` read) wait with no bound. A `-timeout` panic skips `t.Cleanup`, so the fake's `sleep 3600` child is orphaned. A generous budget (one minute) would let the production watchdog itself kill the group. **"No wall-clock wait" keeps being read as "no bound". Check every `MaxInt64`/no-budget constant in a real-process test.** [7]
+- weak-dimension: 7. The prosecutor checked Cleanup registration but not what bounds the wait before Cleanup can run.
+- rule-gap (candidate, dim 7, second sighting after test/no-wallclock-go): *a test driving a real subprocess keeps a hang guard (≥ 1 min) that fails the test or fires the production kill, because `go test -timeout` skips `t.Cleanup`.* Worth promoting into §7.
+- outcome: TBD
