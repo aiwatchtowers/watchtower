@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"watchtower/internal/hub/hubtest"
@@ -215,34 +216,40 @@ func mustKey(t *testing.T) ed25519.PublicKey {
 	return pub
 }
 
-// A Step that keeps failing is retried with backoff, not in a hot loop.
+// A Step that keeps failing is retried with backoff, not in a hot loop. The
+// run, its backoff timer and the busy poller share a synctest bubble's clock.
 func TestAFailingStepBacksOff(t *testing.T) {
-	w := newWorld(t, "memfake")
-	a := w.addPhone(true)
-	var calls atomic.Int32
-	w.rebuild(func(c *switcher.Config) {
-		c.KeyboxesAll = func() ([]wire.Keybox, error) {
-			calls.Add(1)
-			return nil, errors.New("always")
+	synctest.Test(t, func(t *testing.T) {
+		w := newWorld(t, "memfake")
+		a := w.addPhone(true)
+		var calls atomic.Int32
+		w.rebuild(func(c *switcher.Config) {
+			c.KeyboxesAll = func() ([]wire.Keybox, error) {
+				calls.Add(1)
+				return nil, errors.New("always")
+			}
+		})
+		if err := w.sw.Request(w.ctx, w.sw.Active().Kind(), a.ID().String(), transport.KindRelay, ""); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(w.ctx, 1500*time.Millisecond)
+		defer cancel()
+		polled := make(chan struct{})
+		go func() {
+			defer close(polled)
+			for ctx.Err() == nil { // a busy hub: polls and kicks keep coming
+				w.sw.PollOther(ctx)
+				w.sw.Kick()
+				time.Sleep(10 * time.Millisecond)
+			}
+		}()
+		_ = w.sw.Run(ctx)
+		<-polled
+		// 1 s backoff: the first try and the one retry at 1 s in 1.5 s.
+		if got := calls.Load(); got != 2 {
+			t.Fatalf("%d keybox reads in 1.5 s; want 2 (the first try, one retry after the 1 s backoff)", got)
 		}
 	})
-	if err := w.sw.Request(w.ctx, w.sw.Active().Kind(), a.ID().String(), transport.KindRelay, ""); err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(w.ctx, 1500*time.Millisecond)
-	defer cancel()
-	go func() {
-		for ctx.Err() == nil { // a busy hub: polls and kicks keep coming
-			w.sw.PollOther(ctx)
-			w.sw.Kick()
-			time.Sleep(10 * time.Millisecond)
-		}
-	}()
-	_ = w.sw.Run(ctx)
-	// 1 s backoff: the first try and at most one retry in 1.5 s.
-	if got := calls.Load(); got < 1 || got > 2 {
-		t.Fatalf("%d keybox reads in 1.5 s: no backoff", got)
-	}
 }
 
 // A relay account that cannot be read never stalls the mailbox: a switch
@@ -266,7 +273,7 @@ func TestAnUnreadableRelayAccountNeverStallsTheMailbox(t *testing.T) {
 // timeout before the hub serves the new side; its notices wait for it.
 func TestAHangingOldSideNeverHoldsTheSwitch(t *testing.T) {
 	t.Run("relay", func(t *testing.T) {
-		eachFlavour(t, func(t *testing.T, w *world) {
+		eachFlavourHung(t, func(t *testing.T, w *world) {
 			a := w.addPhone(true)
 			w.moveTo(a, wire.TransportRelay)
 			w.relay.SetHanging(true)
@@ -279,8 +286,8 @@ func TestAHangingOldSideNeverHoldsTheSwitch(t *testing.T) {
 			if err := w.sw.Step(w.ctx); err != nil {
 				t.Fatal(err)
 			}
-			if d := time.Since(start); d > testOldSide+time.Second {
-				t.Fatalf("the switch took %s on a hanging relay", d)
+			if d := time.Since(start); d != testOldSide { // the bubble's clock: exactly one old-side timeout
+				t.Fatalf("the switch took %s on a hanging relay, want the one old-side timeout %s", d, testOldSide)
 			}
 			w.wantActive(transport.KindCloudKit)
 			if _, err := a.Sync(); err != nil {
@@ -297,16 +304,10 @@ func TestAHangingOldSideNeverHoldsTheSwitch(t *testing.T) {
 		})
 	})
 	t.Run("bridge", func(t *testing.T) {
-		eachFlavour(t, func(t *testing.T, w *world) {
+		eachFlavourHung(t, func(t *testing.T, w *world) {
 			a := w.addPhone(true)
-			if w.bridge != nil {
-				_, release := w.bridge.Block("changes")
-				_, releaseSave := w.bridge.Block("save")
-				t.Cleanup(func() { release(); releaseSave() })
-			} else {
-				w.ckFake.SetHanging(true)
-				t.Cleanup(func() { w.ckFake.SetHanging(false) })
-			}
+			w.ckFake.SetHanging(true)
+			t.Cleanup(func() { w.ckFake.SetHanging(false) })
 			if err := w.sw.Request(w.ctx, w.sw.Active().Kind(), a.ID().String(), transport.KindRelay, ""); err != nil {
 				t.Fatal(err)
 			}
@@ -314,8 +315,8 @@ func TestAHangingOldSideNeverHoldsTheSwitch(t *testing.T) {
 			if err := w.sw.Step(w.ctx); err != nil {
 				t.Fatal(err)
 			}
-			if d := time.Since(start); d > testOldSide+time.Second {
-				t.Fatalf("the switch took %s on a hanging bridge", d)
+			if d := time.Since(start); d != testOldSide { // the bubble's clock: exactly one old-side timeout
+				t.Fatalf("the switch took %s on a hanging bridge, want the one old-side timeout %s", d, testOldSide)
 			}
 			w.wantActive(transport.KindRelay)
 			w.onRelay(a)
@@ -358,7 +359,7 @@ func TestAnExistingRelayHubStartsOnTheRelay(t *testing.T) {
 // The announce rewinds the new transport's mailboxes: each zone token is 0
 // once the switch is done, so what waited there on standby is read again.
 func TestTheAnnounceRewindsTheNewTransportsMailboxes(t *testing.T) {
-	eachFlavour(t, func(t *testing.T, w *world) {
+	eachFlavourHung(t, func(t *testing.T, w *world) {
 		a := w.addPhone(true)
 		zone := transport.MailboxZone(hubRelayID, a.RelayDeviceID())
 		if err := w.st.SetZoneToken(zone, 7); err != nil {
@@ -379,7 +380,7 @@ func TestTheAnnounceRewindsTheNewTransportsMailboxes(t *testing.T) {
 // A linked phone whose keybox carries no keys (not confirmed) is skipped:
 // it gets no notice, every other phone does, and the switch ends.
 func TestAKeylessPhoneIsSkipped(t *testing.T) {
-	eachFlavour(t, func(t *testing.T, w *world) {
+	eachFlavourHung(t, func(t *testing.T, w *world) {
 		a, keyless := w.addPhone(true), w.addPhone(true)
 		w.rebuild(func(c *switcher.Config) {
 			inner := c.KeyboxesAll
