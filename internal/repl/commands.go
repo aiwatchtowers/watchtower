@@ -128,6 +128,10 @@ func runStatus(deps Deps) string {
 	return b.String()
 }
 
+// newSlackClient builds an account's Slack client: watchtowerslack.NewClient,
+// which a test points at a fake server.
+var newSlackClient = watchtowerslack.NewClient
+
 func runSyncCommand(ctx context.Context, deps Deps) string {
 	cfg := deps.Config
 	database := deps.DB
@@ -165,7 +169,7 @@ func runSyncCommand(ctx context.Context, deps Deps) string {
 			skipped++
 			continue
 		}
-		client := watchtowerslack.NewClient(token.AccessToken)
+		client := newSlackClient(token.AccessToken)
 		client.SetLogger(discard)
 		orch := sync.NewOrchestrator(database, client, cfg, acct.ID)
 		orch.SetLogger(discard)

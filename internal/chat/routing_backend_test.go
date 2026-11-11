@@ -3,9 +3,8 @@ package chat
 import (
 	"context"
 	"errors"
-	"os"
-	"strings"
 	"testing"
+	"testing/synctest"
 
 	"github.com/stretchr/testify/require"
 
@@ -91,7 +90,7 @@ func TestRoutingBackendKnownQuotaCapabilityNoChild(t *testing.T) {
 	require.Equal(t, 1, builds)
 }
 
-// This traverses ClaudeBackend.Start (a real fake warm process), its reader,
+// This traverses ClaudeBackend.Start (the in-process fake warm child), its reader,
 // translator and the emitted-Cause/nil-Turn-error boundary, not a returned error.
 func TestRoutingRealClaudeQuotaTerminalRecordsHealthOnce(t *testing.T) {
 	for _, partial := range []bool{false, true} {
@@ -99,26 +98,16 @@ func TestRoutingRealClaudeQuotaTerminalRecordsHealthOnce(t *testing.T) {
 		if partial {
 			name = "partial-text"
 		}
-		t.Run(name, func(t *testing.T) { testRoutingRealClaudeQuota(t, partial) })
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) { testRoutingRealClaudeQuota(t, partial) })
+		})
 	}
 }
 func testRoutingRealClaudeQuota(t *testing.T, partial bool) {
-	opts, files := fakeClaude(t, "normal")
-	script := `#!/bin/sh
-printf 'spawn\n' >> "$FAKE_ARGV"
-while IFS= read -r line; do
- case "$line" in *'"type":"user"'*)
- [ "$TASK8_PARTIAL" = yes ] && printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial before quota"}}}'
- printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"quota exhausted","error":{"type":"usage_limit_reached"},"usage":{"input_tokens":2,"output_tokens":1}}'
- ;; esac
-done
-`
+	opts, files := fakeClaude(t, "quota")
 	if partial {
 		opts.Env = append(opts.Env, "TASK8_PARTIAL=yes")
-	} else {
-		script = strings.ReplaceAll(script, `"input_tokens":2,"output_tokens":1`, `"input_tokens":0,"output_tokens":0`)
 	}
-	require.NoError(t, os.WriteFile(opts.Binary, []byte(script), 0o755))
 	health := providerhealth.New(t.TempDir(), nil)
 	preferred := NewClaudeBackend(opts)
 	reserve := &routeTestBackend{}
@@ -136,10 +125,7 @@ done
 	require.NoError(t, err)
 	var events []Event
 	require.Error(t, b.Turn(ctx, Command{TurnID: "first", Text: "question"}, func(e Event) { events = append(events, e) }))
-	require.FileExists(t, files.argv)
-	data, err := os.ReadFile(files.argv)
-	require.NoError(t, err)
-	require.Equal(t, "spawn\n", string(data))
+	require.Len(t, files.cli.children(), 1, "one claude child, never a respawn")
 	require.Zero(t, reserve.starts)
 	terminal, texts := 0, 0
 	for _, e := range events {
@@ -169,9 +155,7 @@ done
 	require.Equal(t, 1, calls[0].Attempt)
 	require.NoError(t, b.Turn(ctx, Command{TurnID: "second", Text: "new question"}, func(Event) {}))
 	require.Equal(t, 1, reserve.starts)
-	data, err = os.ReadFile(files.argv)
-	require.NoError(t, err)
-	require.Equal(t, "spawn\n", string(data))
+	require.Len(t, files.cli.children(), 1, "the second turn went to the reserve, no claude respawn")
 	require.NoError(t, b.Close())
 }
 
@@ -193,15 +177,20 @@ func TestRoutingCancelBeforeSelectionNeverBuildsChild(t *testing.T) {
 	require.NoError(t, b.Close())
 }
 func TestRoutingCloseReapsStubbornWarmChild(t *testing.T) {
-	opts, files := fakeClaude(t, "stubborn")
-	req := providerrouting.Request{Preferred: "claude", Mode: providerrouting.Pinned, Profile: providers.ToolPreflight, Model: func(string, digest.Tier) string { return "m" }}
-	b := NewRoutingBackend(RoutingOptions{Router: &providerrouting.Router{Allowed: func(string) error { return nil }}, Select: func(context.Context, Command) (providerrouting.Request, string, error) { return req, "", nil }, Build: func(context.Context, string, string) (Backend, error) { return NewClaudeBackend(opts), nil }})
-	t.Cleanup(func() { _ = b.Close() })
-	finished := make(chan error, 1)
-	go func() {
-		finished <- b.Turn(context.Background(), Command{TurnID: "one", Text: "question"}, func(Event) {})
-	}()
-	_ = readPIDFile(t, files.pid)
-	require.NoError(t, b.Close())
-	<-finished
+	synctest.Test(t, func(t *testing.T) {
+		opts, files := fakeClaude(t, "stubborn")
+		req := providerrouting.Request{Preferred: "claude", Mode: providerrouting.Pinned, Profile: providers.ToolPreflight, Model: func(string, digest.Tier) string { return "m" }}
+		b := NewRoutingBackend(RoutingOptions{Router: &providerrouting.Router{Allowed: func(string) error { return nil }}, Select: func(context.Context, Command) (providerrouting.Request, string, error) { return req, "", nil }, Build: func(context.Context, string, string) (Backend, error) { return NewClaudeBackend(opts), nil }})
+		t.Cleanup(func() { _ = b.Close() })
+		finished := make(chan error, 1)
+		go func() {
+			finished <- b.Turn(context.Background(), Command{TurnID: "one", Text: "question"}, func(Event) {})
+		}()
+		synctest.Wait() // the stubborn child runs and holds the turn
+		child := files.cli.last()
+		require.NotNil(t, child)
+		require.NoError(t, b.Close())
+		<-finished
+		require.False(t, child.alive(), "Close reaped the child that ignores EOF and SIGTERM")
+	})
 }

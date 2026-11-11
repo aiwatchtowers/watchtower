@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -120,132 +121,142 @@ func stdinLines(t *testing.T, path string) []string {
 // End to end through the fake child: a fresh session's first message carries
 // the project file, the next message on the same child does not.
 func TestClaudeBackend_FreshSessionSendsProjectFilesOnFirstTurnOnly(t *testing.T) {
-	opts, f := fakeClaude(t, "normal")
-	att, marker := projectFixture(t)
-	opts.ProjectAttachments = []Attachment{att}
-	h := startSession(t, NewClaudeBackend(opts), nil)
-	h.next(EventSessionReady)
+	synctest.Test(t, func(t *testing.T) {
+		opts, f := fakeClaude(t, "normal")
+		att, marker := projectFixture(t)
+		opts.ProjectAttachments = []Attachment{att}
+		h := startSession(t, NewClaudeBackend(opts), nil)
+		h.next(EventSessionReady)
 
-	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "first"})
-	assert.Equal(t, StatusComplete, h.next(EventTurnDone).Status)
-	h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "second"})
-	assert.Equal(t, StatusComplete, h.next(EventTurnDone).Status)
-	require.NoError(t, h.finish())
+		h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "first"})
+		assert.Equal(t, StatusComplete, h.next(EventTurnDone).Status)
+		h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "second"})
+		assert.Equal(t, StatusComplete, h.next(EventTurnDone).Status)
+		require.NoError(t, h.finish())
 
-	lines := stdinLines(t, f.stdin)
-	require.Len(t, lines, 2)
-	assert.Contains(t, lines[0], marker, "the first turn carries the project file")
-	assert.Contains(t, lines[0], `"type":"document"`)
-	assert.NotContains(t, lines[1], marker, "the second turn on the same child does not")
+		lines := stdinLines(t, f.stdin)
+		require.Len(t, lines, 2)
+		assert.Contains(t, lines[0], marker, "the first turn carries the project file")
+		assert.Contains(t, lines[0], `"type":"document"`)
+		assert.NotContains(t, lines[1], marker, "the second turn on the same child does not")
+	})
 }
 
 // A Replay command replaces the warm child with a fresh session: its first
 // message carries the files again even though an earlier turn sent them.
 func TestClaudeBackend_ReplayRestartReattachesProjectFiles(t *testing.T) {
-	opts, f := fakeClaude(t, "normal")
-	att, marker := projectFixture(t)
-	opts.ProjectAttachments = []Attachment{att}
-	h := startSession(t, NewClaudeBackend(opts), nil)
-	h.next(EventSessionReady)
+	synctest.Test(t, func(t *testing.T) {
+		opts, f := fakeClaude(t, "normal")
+		att, marker := projectFixture(t)
+		opts.ProjectAttachments = []Attachment{att}
+		h := startSession(t, NewClaudeBackend(opts), nil)
+		h.next(EventSessionReady)
 
-	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "first"})
-	h.next(EventTurnDone)
-	h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "second"})
-	h.next(EventTurnDone)
-	h.send(Command{Type: CommandTurn, TurnID: "t3", Text: "edited", Replay: true})
-	h.next(EventTurnDone)
-	require.NoError(t, h.finish())
+		h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "first"})
+		h.next(EventTurnDone)
+		h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "second"})
+		h.next(EventTurnDone)
+		h.send(Command{Type: CommandTurn, TurnID: "t3", Text: "edited", Replay: true})
+		h.next(EventTurnDone)
+		require.NoError(t, h.finish())
 
-	lines := stdinLines(t, f.stdin)
-	require.Len(t, lines, 3)
-	assert.Contains(t, lines[0], marker)
-	assert.NotContains(t, lines[1], marker)
-	assert.Contains(t, lines[2], marker, "the replay restart is a fresh session")
+		lines := stdinLines(t, f.stdin)
+		require.Len(t, lines, 3)
+		assert.Contains(t, lines[0], marker)
+		assert.NotContains(t, lines[1], marker)
+		assert.Contains(t, lines[2], marker, "the replay restart is a fresh session")
+	})
 }
 
 // The review case (I1): a project file removed after the session started
 // never fails the turn. The first turn completes with the remaining file and
 // a warning; the next turn does not retry the skipped one.
 func TestClaudeBackend_ProjectFileRemovedAfterStartNeverFailsTheTurn(t *testing.T) {
-	opts, f := fakeClaude(t, "normal")
-	keep, keepMarker := projectFixture(t)
-	gonePath := filepath.Join(t.TempDir(), "diagram.png")
-	require.NoError(t, os.WriteFile(gonePath, fixturePNG, 0o600))
-	goneMarker := base64.StdEncoding.EncodeToString(fixturePNG)
-	var warn bytes.Buffer
-	opts.Warn = &warn
-	opts.ProjectAttachments = []Attachment{{Path: gonePath, Mime: "image/png", Name: "diagram.png"}, keep}
-	h := startSession(t, NewClaudeBackend(opts), nil)
-	h.next(EventSessionReady)
-	require.NoError(t, os.Remove(gonePath))
+	synctest.Test(t, func(t *testing.T) {
+		opts, f := fakeClaude(t, "normal")
+		keep, keepMarker := projectFixture(t)
+		gonePath := filepath.Join(t.TempDir(), "diagram.png")
+		require.NoError(t, os.WriteFile(gonePath, fixturePNG, 0o600))
+		goneMarker := base64.StdEncoding.EncodeToString(fixturePNG)
+		var warn bytes.Buffer
+		opts.Warn = &warn
+		opts.ProjectAttachments = []Attachment{{Path: gonePath, Mime: "image/png", Name: "diagram.png"}, keep}
+		h := startSession(t, NewClaudeBackend(opts), nil)
+		h.next(EventSessionReady)
+		require.NoError(t, os.Remove(gonePath))
 
-	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "first"})
-	assert.Equal(t, StatusComplete, h.next(EventTurnDone).Status)
-	h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "second"})
-	assert.Equal(t, StatusComplete, h.next(EventTurnDone).Status)
-	require.NoError(t, h.finish())
+		h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "first"})
+		assert.Equal(t, StatusComplete, h.next(EventTurnDone).Status)
+		h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "second"})
+		assert.Equal(t, StatusComplete, h.next(EventTurnDone).Status)
+		require.NoError(t, h.finish())
 
-	lines := stdinLines(t, f.stdin)
-	require.Len(t, lines, 2)
-	assert.Contains(t, lines[0], keepMarker, "the remaining project file is attached")
-	assert.NotContains(t, lines[0], goneMarker)
-	assert.NotContains(t, lines[1], keepMarker, "the next turn carries no project files")
-	assert.Contains(t, warn.String(), "diagram.png")
-	assert.Equal(t, 1, strings.Count(warn.String(), "skipped"), "the skipped file is not retried")
+		lines := stdinLines(t, f.stdin)
+		require.Len(t, lines, 2)
+		assert.Contains(t, lines[0], keepMarker, "the remaining project file is attached")
+		assert.NotContains(t, lines[0], goneMarker)
+		assert.NotContains(t, lines[1], keepMarker, "the next turn carries no project files")
+		assert.Contains(t, warn.String(), "diagram.png")
+		assert.Equal(t, 1, strings.Count(warn.String(), "skipped"), "the skipped file is not retried")
+	})
 }
 
 // A turn that ends in an error may never have reached the model (the
 // provider can reject the whole request): the next turn carries the project
 // files again instead of dropping them for the rest of the session.
 func TestClaudeBackend_FailedTurnKeepsProjectFilesPending(t *testing.T) {
-	opts, f := fakeClaude(t, "error_once")
-	att, marker := projectFixture(t)
-	opts.ProjectAttachments = []Attachment{att}
-	h := startSession(t, NewClaudeBackend(opts), nil)
-	h.next(EventSessionReady)
+	synctest.Test(t, func(t *testing.T) {
+		opts, f := fakeClaude(t, "error_once")
+		att, marker := projectFixture(t)
+		opts.ProjectAttachments = []Attachment{att}
+		h := startSession(t, NewClaudeBackend(opts), nil)
+		h.next(EventSessionReady)
 
-	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "first"})
-	h.next(EventError)
-	h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "retry"})
-	assert.Equal(t, StatusComplete, h.next(EventTurnDone).Status)
-	h.send(Command{Type: CommandTurn, TurnID: "t3", Text: "third"})
-	assert.Equal(t, StatusComplete, h.next(EventTurnDone).Status)
-	require.NoError(t, h.finish())
+		h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "first"})
+		h.next(EventError)
+		h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "retry"})
+		assert.Equal(t, StatusComplete, h.next(EventTurnDone).Status)
+		h.send(Command{Type: CommandTurn, TurnID: "t3", Text: "third"})
+		assert.Equal(t, StatusComplete, h.next(EventTurnDone).Status)
+		require.NoError(t, h.finish())
 
-	lines := stdinLines(t, f.stdin)
-	require.Len(t, lines, 3)
-	assert.Contains(t, lines[0], marker)
-	assert.Contains(t, lines[1], marker, "the retry after the failed turn still carries the project file")
-	assert.NotContains(t, lines[2], marker, "once a turn completed, the files are in the session")
+		lines := stdinLines(t, f.stdin)
+		require.Len(t, lines, 3)
+		assert.Contains(t, lines[0], marker)
+		assert.Contains(t, lines[1], marker, "the retry after the failed turn still carries the project file")
+		assert.NotContains(t, lines[2], marker, "once a turn completed, the files are in the session")
+	})
 }
 
 // A file the provider keeps refusing must not fail every turn: the files
 // ride one retry after a failed turn, then they are given up (named on Warn).
 func TestClaudeBackend_ProjectFilesGivenUpAfterTwoFailedTurns(t *testing.T) {
-	opts, f := fakeClaude(t, "error_always")
-	att, marker := projectFixture(t)
-	var warn bytes.Buffer
-	opts.Warn = &warn
-	opts.ProjectAttachments = []Attachment{att}
-	h := startSession(t, NewClaudeBackend(opts), nil)
-	h.next(EventSessionReady)
-	// The app replays after every failed turn: each retry is a fresh session.
-	for i, id := range []string{"t1", "t2", "t3", "t4"} {
-		h.send(Command{Type: CommandTurn, TurnID: id, Text: "q", Replay: i > 0})
-		h.next(EventError)
-	}
-	require.NoError(t, h.finish())
+	synctest.Test(t, func(t *testing.T) {
+		opts, f := fakeClaude(t, "error_always")
+		att, marker := projectFixture(t)
+		var warn bytes.Buffer
+		opts.Warn = &warn
+		opts.ProjectAttachments = []Attachment{att}
+		h := startSession(t, NewClaudeBackend(opts), nil)
+		h.next(EventSessionReady)
+		// The app replays after every failed turn: each retry is a fresh session.
+		for i, id := range []string{"t1", "t2", "t3", "t4"} {
+			h.send(Command{Type: CommandTurn, TurnID: id, Text: "q", Replay: i > 0})
+			h.next(EventError)
+		}
+		require.NoError(t, h.finish())
 
-	lines := stdinLines(t, f.stdin)
-	require.Len(t, lines, 4)
-	assert.Contains(t, lines[0], marker)
-	assert.Contains(t, lines[1], marker, "one retry after a failed turn")
-	for _, line := range lines[2:] {
-		assert.NotContains(t, line, marker, "then the files no longer fail the turns, fresh sessions included")
-		assert.Contains(t, line, "Project files not attached in this session", "and the model is told")
-		assert.Contains(t, line, "spec.pdf")
-	}
-	assert.Contains(t, warn.String(), "given up after 2 failed turns: spec.pdf")
+		lines := stdinLines(t, f.stdin)
+		require.Len(t, lines, 4)
+		assert.Contains(t, lines[0], marker)
+		assert.Contains(t, lines[1], marker, "one retry after a failed turn")
+		for _, line := range lines[2:] {
+			assert.NotContains(t, line, marker, "then the files no longer fail the turns, fresh sessions included")
+			assert.Contains(t, line, "Project files not attached in this session", "and the model is told")
+			assert.Contains(t, line, "spec.pdf")
+		}
+		assert.Contains(t, warn.String(), "given up after 2 failed turns: spec.pdf")
+	})
 }
 
 // A rate limit or a provider outage (or any failure the files cannot
@@ -287,28 +298,30 @@ func transientFailuresKeepProjectFiles(t *testing.T, errText, code string) {
 // session is stored, #604 G11): its first turn carries the project files
 // again, with the replayed history.
 func TestClaudeBackend_CancelKillResendsProjectFilesToTheNewChild(t *testing.T) {
-	opts, f := fakeClaude(t, "ignore_interrupt")
-	opts.Env = append(opts.Env, "FAKE_INIT_SID=sess-new")
-	att, marker := projectFixture(t)
-	opts.ProjectAttachments = []Attachment{att}
-	h := startSession(t, NewClaudeBackend(opts), nil)
-	h.next(EventSessionReady)
+	synctest.Test(t, func(t *testing.T) {
+		opts, f := fakeClaude(t, "ignore_interrupt")
+		opts.Env = append(opts.Env, "FAKE_INIT_SID=sess-new")
+		att, marker := projectFixture(t)
+		opts.ProjectAttachments = []Attachment{att}
+		h := startSession(t, NewClaudeBackend(opts), nil)
+		h.next(EventSessionReady)
 
-	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "long"})
-	h.next(EventTextDelta)
-	h.send(Command{Type: CommandCancel})
-	assert.Equal(t, StatusInterrupted, h.next(EventTurnDone).Status)
-	h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "next"})
-	h.next(EventTurnDone)
-	require.NoError(t, h.finish())
+		h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "long"})
+		h.next(EventTextDelta)
+		h.send(Command{Type: CommandCancel})
+		assert.Equal(t, StatusInterrupted, h.next(EventTurnDone).Status)
+		h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "next"})
+		h.next(EventTurnDone)
+		require.NoError(t, h.finish())
 
-	runs := argvRuns(t, f.argv)
-	require.Len(t, runs, 2)
-	assert.False(t, contains(runs[1], "--resume"))
-	lines := stdinLines(t, f.stdin)
-	require.Len(t, lines, 3, "turn 1, the interrupt, turn 2")
-	assert.Contains(t, lines[0], marker)
-	assert.Contains(t, lines[2], marker, "the new child holds nothing yet")
+		runs := argvRuns(t, f.argv)
+		require.Len(t, runs, 2)
+		assert.False(t, contains(runs[1], "--resume"))
+		lines := stdinLines(t, f.stdin)
+		require.Len(t, lines, 3, "turn 1, the interrupt, turn 2")
+		assert.Contains(t, lines[0], marker)
+		assert.Contains(t, lines[2], marker, "the new child holds nothing yet")
+	})
 }
 
 // The owner's own files leave too little of the cap for the project file:
@@ -347,26 +360,28 @@ func TestClaudeBackend_OwnerFilesLeaveNoRoomForAProjectFile(t *testing.T) {
 // up (named to the model), so a file the CLI cannot handle never crash-loops
 // every replay.
 func TestClaudeBackend_CrashesOnProjectFilesGiveThemUpAfterTwo(t *testing.T) {
-	opts, f := fakeClaude(t, "crash_always")
-	att, marker := projectFixture(t)
-	var warn bytes.Buffer
-	opts.Warn = &warn
-	opts.ProjectAttachments = []Attachment{att}
-	h := startSession(t, NewClaudeBackend(opts), nil)
-	h.next(EventSessionReady)
-	for i, id := range []string{"t1", "t2", "t3"} {
-		h.send(Command{Type: CommandTurn, TurnID: id, Text: "q", Replay: i > 0})
-		h.next(EventError)
-	}
-	require.NoError(t, h.finish())
+	synctest.Test(t, func(t *testing.T) {
+		opts, f := fakeClaude(t, "crash_always")
+		att, marker := projectFixture(t)
+		var warn bytes.Buffer
+		opts.Warn = &warn
+		opts.ProjectAttachments = []Attachment{att}
+		h := startSession(t, NewClaudeBackend(opts), nil)
+		h.next(EventSessionReady)
+		for i, id := range []string{"t1", "t2", "t3"} {
+			h.send(Command{Type: CommandTurn, TurnID: id, Text: "q", Replay: i > 0})
+			h.next(EventError)
+		}
+		require.NoError(t, h.finish())
 
-	lines := stdinLines(t, f.stdin)
-	require.Len(t, lines, 3)
-	assert.Contains(t, lines[0], marker)
-	assert.Contains(t, lines[1], marker, "one retry after a crash")
-	assert.NotContains(t, lines[2], marker, "then the files no longer crash the turns")
-	assert.Contains(t, lines[2], "Project files not attached in this session")
-	assert.Contains(t, warn.String(), "given up after 2 failed turns: spec.pdf")
+		lines := stdinLines(t, f.stdin)
+		require.Len(t, lines, 3)
+		assert.Contains(t, lines[0], marker)
+		assert.Contains(t, lines[1], marker, "one retry after a crash")
+		assert.NotContains(t, lines[2], marker, "then the files no longer crash the turns")
+		assert.Contains(t, lines[2], "Project files not attached in this session")
+		assert.Contains(t, warn.String(), "given up after 2 failed turns: spec.pdf")
+	})
 }
 
 // A crash's stderr is judged by its last lines and by phrases: startup noise
@@ -391,23 +406,25 @@ func TestCrashNotFileCaused(t *testing.T) {
 // A crash whose stderr says the account is rate-limited keeps the files and
 // counts nothing — and the skipped count is named on Warn.
 func TestClaudeBackend_RateLimitedCrashesNeverGiveUpProjectFiles(t *testing.T) {
-	opts, f := fakeClaude(t, "crash_always")
-	opts.Env = append(opts.Env, "FAKE_CRASH=boot ok\\nError: rate limit reached")
-	att, marker := projectFixture(t)
-	var warn bytes.Buffer
-	opts.Warn = &warn
-	opts.ProjectAttachments = []Attachment{att}
-	h := startSession(t, NewClaudeBackend(opts), nil)
-	h.next(EventSessionReady)
-	for i, id := range []string{"t1", "t2", "t3"} {
-		h.send(Command{Type: CommandTurn, TurnID: id, Text: "q", Replay: i > 0})
-		h.next(EventError)
-	}
-	require.NoError(t, h.finish())
+	synctest.Test(t, func(t *testing.T) {
+		opts, f := fakeClaude(t, "crash_always")
+		opts.Env = append(opts.Env, "FAKE_CRASH=boot ok\\nError: rate limit reached")
+		att, marker := projectFixture(t)
+		var warn bytes.Buffer
+		opts.Warn = &warn
+		opts.ProjectAttachments = []Attachment{att}
+		h := startSession(t, NewClaudeBackend(opts), nil)
+		h.next(EventSessionReady)
+		for i, id := range []string{"t1", "t2", "t3"} {
+			h.send(Command{Type: CommandTurn, TurnID: id, Text: "q", Replay: i > 0})
+			h.next(EventError)
+		}
+		require.NoError(t, h.finish())
 
-	for _, line := range stdinLines(t, f.stdin) {
-		assert.Contains(t, line, marker)
-	}
-	assert.NotContains(t, warn.String(), "given up")
-	assert.Contains(t, warn.String(), "not counted (rate limit)")
+		for _, line := range stdinLines(t, f.stdin) {
+			assert.Contains(t, line, marker)
+		}
+		assert.NotContains(t, warn.String(), "given up")
+		assert.Contains(t, warn.String(), "not counted (rate limit)")
+	})
 }

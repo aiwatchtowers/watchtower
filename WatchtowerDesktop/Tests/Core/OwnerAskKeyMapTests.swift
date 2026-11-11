@@ -166,4 +166,13 @@ final class OwnerAskKeyMapTests: XCTestCase {
         XCTAssertEqual(multi.toggling("B", multi: true), .init(labels: ["A", "B"], other: "mine"))
         XCTAssertEqual(multi.toggling("A", multi: true), .init(labels: [], other: "mine"))
     }
+
+    /// Esc reads as its own key (#1713: back to the closed list) and maps to
+    /// no drawer or card action of its own.
+    func testEscapeIsItsOwnKeyAndNoDrawerAction() {
+        let esc = Press(characters: "\u{1B}", keyCode: 0x35, shift: false, otherModifiers: false, isRepeat: false)
+        XCTAssertEqual(esc.key, .escape)
+        XCTAssertNil(OwnerAskKeyMap.mappedAction(for: esc, at: .drawer(choices: 3, isReview: false)))
+        XCTAssertNil(OwnerAskKeyMap.mappedAction(for: esc, at: .card(quickChoices: 2)))
+    }
 }

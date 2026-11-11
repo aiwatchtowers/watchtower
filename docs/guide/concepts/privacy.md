@@ -8,7 +8,7 @@ Watchtower has no account, no cloud service and no analytics of its own. Three t
 - **Sign-ins.** OAuth tokens for Slack, Google, Jira and Linear are stored as separate files in that folder, readable only by your user. Quick Connection secrets are the same.
 - **Meeting transcription.** Audio is captured and transcribed on the Mac. The speech models are downloaded once, on first use, then run locally. Recording audio is deleted after 30 days (**Settings → Meetings → Delete audio after N days**); transcript text is kept.
 - **Knowledge search.** The index is local; only its image descriptions and link summaries use AI (below).
-- **Mechanical features.** Attention detection and Claude plan limits make no AI calls.
+- **Mechanical features.** Attention detection and Subscription plan limits make no AI calls.
 
 Removing an account deletes its sign-in file. With **Delete an account's data when its access is revoked** on, a revoked account's synced data is deleted after a 72-hour notice, and so is a source's that Watchtower has not reached for 30 days: see [Revoked access deletes an account's data](revoked-access.md).
 
@@ -69,7 +69,7 @@ With **Ollama / Local** on a server on your own machine, the text never leaves i
 
 Slack is read-only. The assistant sends or edits something only after you approve it, unless you gave a confirmed automation an automatic grant for that action. A Quick Connection (an outside tool server you add) receives what the assistant sends it when you use it in chat, and what a confirmed automation sends it through `mcp()` on its schedule.
 
-Other network traffic: calls to each source's own service, Knowledge search opening public links like a browser visit (the site sees your Mac's address; a tracking link can tell its author), a version check against GitHub every 6 hours, and a read of your Claude plan limits from Anthropic using Claude Code's sign-in.
+Other network traffic: calls to each source's own service, Knowledge search opening public links like a browser visit (the site sees your Mac's address; a tracking link can tell its author), a version check against GitHub every 6 hours, a read of your Claude plan limits from Anthropic using Claude Code's sign-in, and a read of your Codex limits through the Codex tool's own sign-in.
 
 ## What goes to iCloud
 <!-- learn

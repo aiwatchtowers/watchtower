@@ -69,9 +69,22 @@ type Options struct {
 	Now func() time.Time
 	// signalGroup replaces Stop's process-group signal (tests only).
 	signalGroup func(pgid int, sig syscall.Signal) error
+	// stopTimer replaces Stop's time.AfterFunc for the kill after stopGrace
+	// (tests only).
+	stopTimer func(time.Duration, func()) *time.Timer
 	// afterReap runs once a child is reaped, before its output drains and
 	// its exit is recorded (tests only: holds the drain window open).
 	afterReap func()
+	// exitRecorded runs once a child's exit is recorded (tests only: a
+	// detached session's exit is no event a client sees).
+	exitRecorded func()
+	// delivered runs once a delivery's outcome is sent (tests only: one whose
+	// requester dropped sends it nowhere).
+	delivered func()
+	// settle is a delivery's settle pause: time.Sleep, or a test's recorder.
+	settle func(time.Duration)
+	// connClosed runs once a client connection is unregistered (tests only).
+	connClosed func()
 	// checkTimeout replaces CheckTimeout (tests only).
 	checkTimeout time.Duration
 	// inPause runs inside a delivery's pause, after its settle sleep and
@@ -85,6 +98,10 @@ type Options struct {
 	Logf func(format string, args ...any)
 	// codexWatchEvery replaces CodexWatchEvery (tests only).
 	codexWatchEvery time.Duration
+	// idleElapsed, when set, acts as the idle-exit timer firing whenever it
+	// is armed — a receive is "IdleExit has passed now" (tests only: the
+	// idle tests run on it with an IdleExit no test waits out).
+	idleElapsed <-chan struct{}
 }
 
 // Server owns hosted sessions and serves clients over a listener.
@@ -110,6 +127,9 @@ func NewServer(opts Options) *Server {
 	}
 	if opts.checkTimeout <= 0 {
 		opts.checkTimeout = CheckTimeout
+	}
+	if opts.settle == nil {
+		opts.settle = time.Sleep
 	}
 	if opts.codexWatchEvery <= 0 {
 		opts.codexWatchEvery = CodexWatchEvery
@@ -201,10 +221,31 @@ func (s *Server) Serve(ctx context.Context, l net.Listener) error {
 	}()
 
 	idle := time.NewTimer(s.opts.IdleExit)
-	if s.opts.IdleExit <= 0 {
+	armed := s.opts.IdleExit > 0 // whether idle is counting down
+	if !armed {
 		idle.Stop()
 	}
 	defer idle.Stop()
+	// elapsed handles the idle timer's firing; true = Serve returns.
+	elapsed := func() bool {
+		armed = false
+		// A change that raced the timer (a client just connected)
+		// restarts the wait instead of ending it.
+		select {
+		case <-s.changed:
+			if s.isIdle() {
+				idle.Reset(s.opts.IdleExit)
+				armed = true
+			}
+			return false
+		default:
+		}
+		if s.isIdle() {
+			s.shutdown(l)
+			return true
+		}
+		return false
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -216,23 +257,21 @@ func (s *Server) Serve(ctx context.Context, l net.Listener) error {
 		case <-s.changed:
 			if s.opts.IdleExit > 0 && s.isIdle() {
 				idle.Reset(s.opts.IdleExit)
+				armed = true
 			} else {
 				idle.Stop()
+				armed = false
 			}
 		case <-idle.C:
-			// A change that raced the timer (a client just connected)
-			// restarts the wait instead of ending it.
-			select {
-			case <-s.changed:
-				if s.isIdle() {
-					idle.Reset(s.opts.IdleExit)
-				}
-				continue
-			default:
-			}
-			if s.isIdle() {
-				s.shutdown(l)
+			if elapsed() {
 				return nil
+			}
+		case <-s.opts.idleElapsed:
+			if armed {
+				idle.Stop()
+				if elapsed() {
+					return nil
+				}
 			}
 		}
 	}
@@ -282,6 +321,9 @@ func (s *Server) unregister(c *conn) {
 	delete(s.conns, c)
 	s.mu.Unlock()
 	s.notify()
+	if s.opts.connClosed != nil {
+		s.opts.connClosed()
+	}
 }
 
 func (s *Server) shutdown(l net.Listener) {
@@ -420,6 +462,9 @@ func (s *Server) launch(c *conn, bound *session, p []byte) *session {
 		return nil
 	}
 	sess.watched = store != nil
+	if s.opts.stopTimer != nil {
+		sess.afterFunc = s.opts.stopTimer
+	}
 	if s.opts.signalGroup != nil {
 		sess.signal = s.opts.signalGroup
 	}
@@ -596,6 +641,9 @@ func (s *Server) watch(sess *session) {
 	}
 	sess.mu.Unlock()
 	s.notify()
+	if s.opts.exitRecorded != nil {
+		s.opts.exitRecorded()
+	}
 }
 
 func (s *Server) attach(c *conn, bound *session, p []byte) *session {

@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"regexp"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -991,6 +993,16 @@ func TestConfirmOnAReplacedRequestIsCodeChanged(t *testing.T) {
 	}
 }
 
+// unlinkWaitsOnTheCenter: a goroutine's Center.unlink waits in the
+// center's mutex Lock.
+func unlinkWaitsOnTheCenter() bool {
+	buf := make([]byte, 1<<20)
+	buf = buf[:runtime.Stack(buf, true)]
+	return unlinkWaitRE.Match(buf)
+}
+
+var unlinkWaitRE = regexp.MustCompile(`sync\.\(\*Mutex\)\.Lock[^\n]*\n[^\n]*\nwatchtower/internal/hub/link\.\(\*Center\)\.unlink\(`)
+
 // An Unlink while Keyboxes is between its device read and its key read
 // waits for it: the unlinked phone never gets the epoch its unlink begins.
 func TestKeyboxesNeverSealTheUnlinkEpochToTheUnlinkedPhone(t *testing.T) {
@@ -1002,8 +1014,24 @@ func TestKeyboxesNeverSealTheUnlinkEpochToTheUnlinkedPhone(t *testing.T) {
 	done := make(chan error, 1)
 	r.c.beforeKeys = func() {
 		r.c.beforeKeys = nil
-		go func() { done <- r.c.Unlink(a.id.String()) }()
-		time.Sleep(50 * time.Millisecond) // time enough for an unlocked Unlink to rotate
+		unlinked := make(chan error, 1)
+		go func() { unlinked <- r.c.Unlink(a.id.String()) }()
+		// Until the Unlink either waits on the center's mutex (its first
+		// step: seen in its stack, no clock involved) or, unlocked, has run
+		// to its end (its rotation then shows in the boxes below).
+		for {
+			select {
+			case err := <-unlinked:
+				done <- err
+				return
+			default:
+			}
+			if unlinkWaitsOnTheCenter() {
+				go func() { done <- <-unlinked }()
+				return
+			}
+			runtime.Gosched()
+		}
 	}
 	boxes, err := r.c.Keyboxes()
 	if err != nil {
@@ -1060,17 +1088,7 @@ func TestPublishCallbackMayReadKeyboxes(t *testing.T) {
 		}
 		reads++
 	}
-	// The pairing runs here; a watchdog only waits. A deadlock never returns,
-	// so the watchdog ends the run with a panic naming it.
-	done := make(chan struct{})
-	defer close(done)
-	go func() {
-		select {
-		case <-done:
-		case <-time.After(10 * time.Second):
-			panic("TestPublishCallbackMayReadKeyboxes: a Publish callback reading Keyboxes deadlocked")
-		}
-	}()
+	// A deadlock never returns: go test -timeout ends the run with its stacks.
 	a, b := newPhone(t), newPhone(t)
 	code := r.issue()
 	r.handle(a, code.Nonce)

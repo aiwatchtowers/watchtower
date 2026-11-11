@@ -224,6 +224,15 @@ package final class WorkbenchCodeIndex {
     /// boost order and no symbols; the Text scope is `code search`'s, so it
     /// answers nothing here.
     package func query(_ text: String, scope: CodeSearchScope, boosts: CodeRankingBoosts, limit: Int = 100) -> [CodeQuickResult] {
+        var work = 0
+        return query(text, scope: scope, boosts: boosts, limit: limit, work: &work)
+    }
+
+    /// `query`, adding its work to `work`: the corpus scan's count
+    /// (`FuzzyMatcher.scanCorpus`) and one per hit ranked.
+    package func query(
+        _ text: String, scope: CodeSearchScope, boosts: CodeRankingBoosts, limit: Int = 100, work: inout Int
+    ) -> [CodeQuickResult] {
         let trimmed = text.trimmingCharacters(in: .whitespaces)
         guard scope != .text, limit > 0 else { return [] }
         guard !trimmed.isEmpty else {
@@ -239,7 +248,8 @@ package final class WorkbenchCodeIndex {
         let boostByEntry = entryBoosts(boosts)
         var top = CodeTopRanked(limit: limit)
         var nameHit: (entry: Int, score: Int)?
-        let hits = matcher.scanCorpus(corpus, tags: tags)
+        let hits = matcher.scanCorpus(corpus, tags: tags, work: &work)
+        work += hits.count
         var index = 0
         while index < hits.count {
             let hit = hits[index]

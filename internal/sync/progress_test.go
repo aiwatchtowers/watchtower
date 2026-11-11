@@ -4,6 +4,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -261,15 +262,17 @@ func TestRenderSnapshotShowsElapsedDuringSync(t *testing.T) {
 }
 
 func TestSetPhaseResetsTimer(t *testing.T) {
-	p := NewProgress()
+	synctest.Test(t, func(t *testing.T) {
+		p := NewProgress()
 
-	p.SetPhase(PhaseMetadata)
-	snap1 := p.Snapshot()
+		p.SetPhase(PhaseMetadata)
+		snap1 := p.Snapshot()
 
-	time.Sleep(10 * time.Millisecond)
-	p.SetPhase(PhaseMessages)
-	snap2 := p.Snapshot()
+		time.Sleep(10 * time.Millisecond)
+		p.SetPhase(PhaseMessages)
+		snap2 := p.Snapshot()
 
-	// The phase start time should be later for the second phase
-	assert.True(t, snap2.PhaseStartTime.After(snap1.PhaseStartTime))
+		// The phase start time should be later for the second phase
+		assert.True(t, snap2.PhaseStartTime.After(snap1.PhaseStartTime))
+	})
 }

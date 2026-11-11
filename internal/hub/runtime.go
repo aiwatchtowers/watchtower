@@ -115,7 +115,7 @@ type hubRuntime struct {
 	// bridge process (nil: this build has none). All nil elsewhere.
 	rel, ck transport.Transport
 	sw      *switcher.Switcher
-	bridge  *cloudkit.Supervisor
+	bridge  bridgeRunner
 	// bridgeStop ends the bridge's supervisor and waits for it (stop calls
 	// it after the policy wipe, which may need the bridge).
 	bridgeStop func()

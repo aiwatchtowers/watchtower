@@ -278,7 +278,8 @@ enum MarkdownRunText {
 /// One run's non-editable, selectable TextKit 2 text view. Selection spans
 /// the run's paragraphs; ⌘C copies plain text; leaving the view drops the
 /// selection, as a selectable SwiftUI `Text`'s. Draws the block-quote bars.
-/// A table's view (`MarkdownTableTextView`) is one with its own width rule.
+/// A table's view (`MarkdownTableTextView`) is one on TextKit 1 with its
+/// own width rule.
 class MarkdownRunTextView: NSTextView {
     /// The last two measurements (SwiftUI may alternate two proposals).
     private var measured: [(width: CGFloat, size: CGSize)] = []
@@ -392,8 +393,15 @@ class MarkdownRunTextView: NSTextView {
         guard let storage = textStorage else { return string }
         let plain = NSMutableString(string: storage.string.replacingOccurrences(of: "\u{2028}", with: "\n"))
         storage.enumerateAttribute(.markdownPlainText, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
-            guard let value = value as? String, (value as NSString).length == range.length else { return }
-            plain.replaceCharacters(in: range, with: value)
+            guard let value = value as? String else { return }
+            let length = (value as NSString).length
+            // Neighbours with the same one-character value merge into one
+            // range (a table's cell ends): each character reads as it.
+            if length == 1, range.length > 1 {
+                plain.replaceCharacters(in: range, with: String(repeating: value, count: range.length))
+            } else if length == range.length {
+                plain.replaceCharacters(in: range, with: value)
+            }
         }
         return plain as String
     }

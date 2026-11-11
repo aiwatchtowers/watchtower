@@ -8,11 +8,11 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	gosync "sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"watchtower/internal/coach"
@@ -29,11 +29,17 @@ import (
 type lockedLog struct {
 	mu  gosync.Mutex
 	buf bytes.Buffer
+	// written is closed by the next Write; nil until a waiter asks for it.
+	written chan struct{}
 }
 
 func (l *lockedLog) Write(p []byte) (int, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.written != nil {
+		close(l.written)
+		l.written = nil
+	}
 	return l.buf.Write(p)
 }
 
@@ -43,19 +49,24 @@ func (l *lockedLog) count(s string) int {
 	return strings.Count(l.buf.String(), s)
 }
 
-// eventually polls until cond holds — for a loop side effect (a log line)
-// written after the loop took the event; go test -timeout bounds a broken run.
-func eventually(t *testing.T, cond func() bool, _ string) {
-	t.Helper()
-	for !cond() {
-		time.Sleep(time.Millisecond)
-	}
-}
-
-// waitLog waits until line has been logged n times in all.
+// waitLog waits until line has been logged n times in all — for a loop side
+// effect written after the loop took the event. It wakes on each write, never
+// on a timer; go test -timeout bounds a broken run.
 func (l *lockedLog) waitLog(t *testing.T, line string, n int) {
 	t.Helper()
-	eventually(t, func() bool { return l.count(line) >= n }, "log line "+strconv.Quote(line))
+	for {
+		l.mu.Lock()
+		if strings.Count(l.buf.String(), line) >= n {
+			l.mu.Unlock()
+			return
+		}
+		if l.written == nil {
+			l.written = make(chan struct{})
+		}
+		written := l.written
+		l.mu.Unlock()
+		<-written
+	}
 }
 
 // cycleProbe is an IMAP syncer that reports each cycle reaching it and, while
@@ -205,6 +216,9 @@ func startLoop(t *testing.T, o loopOpts) *loopHarness {
 	d.wakeCh = o.wake
 	trigger := make(chan struct{})
 	d.triggerCh = trigger
+	// No real signal watcher: the loop runs in a synctest bubble, and the
+	// runtime's signal goroutine cannot reach a channel made inside it.
+	d.automationWakeCh = make(chan struct{})
 	mono := &fakeMono{}
 	d.loopMono = mono.now
 	fullWake := &atomic.Bool{}
@@ -278,6 +292,7 @@ func recv[T any](t *testing.T, ch <-chan T, what string) T {
 }
 
 // requireNone asserts nothing arrives on ch within d — for "no new cycle".
+// The loop tests run in a synctest bubble, so d is the bubble's clock.
 func requireNone[T any](t *testing.T, ch <-chan T, d time.Duration, what string) {
 	t.Helper()
 	select {
@@ -301,67 +316,71 @@ const (
 // cycle skips its pipelines, the pooled connections are dropped at once, and
 // a fresh cycle starts once the settle delay has passed.
 func TestRunLoop_SleepCancelsRunningCycleAndStartsAFreshOne(t *testing.T) {
-	const settle = 50 * time.Millisecond
-	setWakeSettle(t, settle)
-	drops := countDrops(t)
-	h := startLoop(t, loopOpts{syncOnWake: true, blockFirst: true})
+	synctest.Test(t, func(t *testing.T) {
+		const settle = 50 * time.Millisecond
+		setWakeSettle(t, settle)
+		drops := countDrops(t)
+		h := startLoop(t, loopOpts{syncOnWake: true, blockFirst: true})
 
-	recv(t, h.probe.started, "the initial cycle")
-	h.probe.block.Store(false)
-	// Stamped before the wake is sent: the loop's settle timer starts after
-	// the cycle ends, which is after the wake, so this is never later than the
-	// timer's start (a stamp taken after the cancellation is received can be
-	// later on a loaded machine and measure a few ms short).
-	wokeAt := time.Now()
-	h.wake <- 20 * time.Minute
-	recv(t, h.probe.cancelled, "the running cycle's cancellation")
+		recv(t, h.probe.started, "the initial cycle")
+		h.probe.block.Store(false)
+		// The bubble's clock stands still while the loop works: the settle
+		// timer starts at this same instant.
+		wokeAt := time.Now()
+		h.wake <- 20 * time.Minute
+		recv(t, h.probe.cancelled, "the running cycle's cancellation")
 
-	restartedAt := recv(t, h.probe.started, "a fresh cycle after the wake")
-	assert.GreaterOrEqual(t, restartedAt.Sub(wokeAt), settle, "the fresh cycle waits out the settle delay")
-	h.stop(t)
+		restartedAt := recv(t, h.probe.started, "a fresh cycle after the wake")
+		assert.Equal(t, settle, restartedAt.Sub(wokeAt), "the fresh cycle waits out the settle delay, on the bubble clock")
+		h.stop(t)
 
-	assert.Equal(t, 1, h.logs.count("sleep detected (slept ~20m0s), "+logSleepCancels))
-	assert.Equal(t, 1, h.logs.count("skipping pipelines"), "only the cancelled cycle skips its pipelines")
-	assert.Equal(t, 1, h.logs.count(logSkipsForSleep), "the skip names the sleep")
-	assert.Equal(t, int32(1), drops.Load(), "the sleep drops the pooled connections")
+		assert.Equal(t, 1, h.logs.count("sleep detected (slept ~20m0s), "+logSleepCancels))
+		assert.Equal(t, 1, h.logs.count("skipping pipelines"), "only the cancelled cycle skips its pipelines")
+		assert.Equal(t, 1, h.logs.count(logSkipsForSleep), "the skip names the sleep")
+		assert.Equal(t, int32(1), drops.Load(), "the sleep drops the pooled connections")
+	})
 }
 
 // The cancel does not depend on sync.sync_on_wake; only the fresh cycle does:
 // with it off, the wake starts no cycle and the next tick runs one.
 func TestRunLoop_SleepCancelsCycleWithSyncOnWakeOff(t *testing.T) {
-	shortenWakeSettle(t)
-	h := startLoop(t, loopOpts{blockFirst: true, poll: 300 * time.Millisecond})
+	synctest.Test(t, func(t *testing.T) {
+		shortenWakeSettle(t)
+		h := startLoop(t, loopOpts{blockFirst: true, poll: 300 * time.Millisecond})
 
-	recv(t, h.probe.started, "the initial cycle")
-	h.probe.block.Store(false)
-	h.wake <- 5 * time.Minute
-	recv(t, h.probe.cancelled, "the running cycle's cancellation")
-	h.logs.waitLog(t, logSleptCycleEnds, 1)
-	recv(t, h.probe.started, "the next tick's cycle")
-	h.stop(t)
-	assert.Zero(t, h.logs.count("syncing after wake"), "the wake itself starts no cycle with sync_on_wake off")
+		recv(t, h.probe.started, "the initial cycle")
+		h.probe.block.Store(false)
+		h.wake <- 5 * time.Minute
+		recv(t, h.probe.cancelled, "the running cycle's cancellation")
+		h.logs.waitLog(t, logSleptCycleEnds, 1)
+		recv(t, h.probe.started, "the next tick's cycle")
+		h.stop(t)
+		assert.Zero(t, h.logs.count("syncing after wake"), "the wake itself starts no cycle with sync_on_wake off")
+	})
 }
 
 // Another wake inside the settle delay starts the delay over and drops the
 // connections again.
 func TestRunLoop_SleepDuringSettleRestartsTheDelay(t *testing.T) {
-	const settle = 400 * time.Millisecond
-	setWakeSettle(t, settle)
-	drops := countDrops(t)
-	h := startLoop(t, loopOpts{syncOnWake: true, blockFirst: true})
+	synctest.Test(t, func(t *testing.T) {
+		const settle = 400 * time.Millisecond
+		setWakeSettle(t, settle)
+		drops := countDrops(t)
+		h := startLoop(t, loopOpts{syncOnWake: true, blockFirst: true})
 
-	recv(t, h.probe.started, "the initial cycle")
-	h.probe.block.Store(false)
-	h.wake <- 10 * time.Minute
-	h.logs.waitLog(t, logSleptCycleEnds, 1) // the delay is counting down
-	secondWake := time.Now()
-	h.wake <- 10 * time.Minute
-	h.logs.waitLog(t, "post-wake wait over", 1)
+		recv(t, h.probe.started, "the initial cycle")
+		h.probe.block.Store(false)
+		h.wake <- 10 * time.Minute
+		h.logs.waitLog(t, logSleptCycleEnds, 1) // the delay is counting down
+		secondWake := time.Now()
+		h.wake <- 10 * time.Minute
+		h.logs.waitLog(t, "post-wake wait over", 1)
 
-	restartedAt := recv(t, h.probe.started, "the cycle after the wakes")
-	assert.GreaterOrEqual(t, restartedAt.Sub(secondWake), settle, "the second wake restarts the settle delay")
-	h.stop(t)
-	assert.Equal(t, int32(2), drops.Load(), "each sleep drops the pooled connections")
+		restartedAt := recv(t, h.probe.started, "the cycle after the wakes")
+		assert.Equal(t, settle, restartedAt.Sub(secondWake), "the second wake restarts the settle delay, on the bubble clock")
+		h.stop(t)
+		assert.Equal(t, int32(2), drops.Load(), "each sleep drops the pooled connections")
+	})
 }
 
 // A sleep detected while the cycle runs its pipelines never cuts them off
@@ -371,75 +390,81 @@ func TestRunLoop_SleepDuringSettleRestartsTheDelay(t *testing.T) {
 // there. The backfill after the pipelines is skipped (the fetch context is
 // cancelled, TestOnSleep_Paths).
 func TestRunLoop_SleepDuringPipelinesLetsThemFinish(t *testing.T) {
-	shortenWakeSettle(t)
-	drops := countDrops(t)
-	inPipeline := make(chan context.Context, 1)
-	finish := make(chan struct{})
-	var mined, calls atomic.Int32
-	prev := runCoachProposer
-	runCoachProposer = func(ctx context.Context, _ *coach.Proposer, _ coach.Inputs) (int, *digest.Usage, error) {
-		// Only the first call is the cycle under test; the coach's weekly
-		// stamp keeps later cycles out, and a stray call is not counted.
-		if calls.Add(1) > 1 {
-			return 0, nil, nil
+	synctest.Test(t, func(t *testing.T) {
+		shortenWakeSettle(t)
+		drops := countDrops(t)
+		inPipeline := make(chan context.Context, 1)
+		finish := make(chan struct{})
+		var mined, calls atomic.Int32
+		prev := runCoachProposer
+		runCoachProposer = func(ctx context.Context, _ *coach.Proposer, _ coach.Inputs) (int, *digest.Usage, error) {
+			// Only the first call is the cycle under test; the coach's weekly
+			// stamp keeps later cycles out, and a stray call is not counted.
+			if calls.Add(1) > 1 {
+				return 0, nil, nil
+			}
+			inPipeline <- ctx
+			select {
+			case <-finish:
+				mined.Add(1)
+			case <-ctx.Done(): // shutdown, only on a failed test
+			}
+			return 0, nil, ctx.Err()
 		}
-		inPipeline <- ctx
-		select {
-		case <-finish:
-			mined.Add(1)
-		case <-ctx.Done(): // shutdown, only on a failed test
-		}
-		return 0, nil, ctx.Err()
-	}
-	t.Cleanup(func() { runCoachProposer = prev })
-	h := startLoop(t, loopOpts{syncOnWake: true, withDB: true})
+		t.Cleanup(func() { runCoachProposer = prev })
+		h := startLoop(t, loopOpts{syncOnWake: true, withDB: true})
 
-	recv(t, h.probe.started, "the initial cycle")
-	pipelineCtx := recv(t, inPipeline, "the cycle's last pipeline")
-	require.Equal(t, sectionPipelines, h.d.section())
-	h.wake <- 10 * time.Minute
-	h.logs.waitLog(t, "during the cycle's pipelines, letting them finish", 1)
-	assert.Equal(t, int32(1), drops.Load(), "the idle connections are dropped at once")
-	require.NoError(t, pipelineCtx.Err(), "a sleep never cancels a running pipeline")
+		recv(t, h.probe.started, "the initial cycle")
+		pipelineCtx := recv(t, inPipeline, "the cycle's last pipeline")
+		require.Equal(t, sectionPipelines, h.d.section())
+		h.wake <- 10 * time.Minute
+		h.logs.waitLog(t, "during the cycle's pipelines, letting them finish", 1)
+		assert.Equal(t, int32(1), drops.Load(), "the idle connections are dropped at once")
+		require.NoError(t, pipelineCtx.Err(), "a sleep never cancels a running pipeline")
 
-	requireNone(t, h.probe.started, 50*time.Millisecond, "a cycle before the running one returned")
-	assert.Zero(t, h.logs.count(logSleptCycleEnds), "the loop waits for the pipelines")
-	close(finish)
-	h.logs.waitLog(t, logSleptCycleEnds, 1)
-	recv(t, h.probe.started, "the cycle after the wake")
-	h.stop(t)
+		requireNone(t, h.probe.started, 50*time.Millisecond, "a cycle before the running one returned")
+		assert.Zero(t, h.logs.count(logSleptCycleEnds), "the loop waits for the pipelines")
+		close(finish)
+		h.logs.waitLog(t, logSleptCycleEnds, 1)
+		recv(t, h.probe.started, "the cycle after the wake")
+		h.stop(t)
 
-	assert.Equal(t, int32(1), mined.Load(), "the pipeline ran to its end")
-	// The cycle after the wake may skip its pipelines on the shutdown.
-	assert.Zero(t, h.logs.count(logSkipsForSleep), "the slept cycle did not skip its pipelines")
-	var firstErr string
-	require.NoError(t, h.d.db.QueryRow(`SELECT COALESCE(error_msg, '') FROM pipeline_runs
+		assert.Equal(t, int32(1), mined.Load(), "the pipeline ran to its end")
+		// The cycle after the wake may skip its pipelines on the shutdown.
+		assert.Zero(t, h.logs.count(logSkipsForSleep), "the slept cycle did not skip its pipelines")
+		var firstErr string
+		require.NoError(t, h.d.db.QueryRow(`SELECT COALESCE(error_msg, '') FROM pipeline_runs
 		WHERE pipeline = 'coach' ORDER BY id LIMIT 1`).Scan(&firstErr))
-	assert.Empty(t, firstErr, "the pipeline's run is recorded without an error")
+		assert.Empty(t, firstErr, "the pipeline's run is recorded without an error")
+	})
 }
 
 // Shutdown mid-cycle: Run waits for the cycle to stop and starts no other.
 func TestRunLoop_ShutdownDuringCycleStartsNoNewOne(t *testing.T) {
-	shortenWakeSettle(t)
-	h := startLoop(t, loopOpts{syncOnWake: true, blockFirst: true})
+	synctest.Test(t, func(t *testing.T) {
+		shortenWakeSettle(t)
+		h := startLoop(t, loopOpts{syncOnWake: true, blockFirst: true})
 
-	recv(t, h.probe.started, "the initial cycle")
-	h.stop(t)
-	recv(t, h.probe.cancelled, "the cycle's cancellation")
-	requireNone(t, h.probe.started, 100*time.Millisecond, "cycle after shutdown")
-	assert.Equal(t, 1, h.logs.count("source syncs stopped by shutdown, skipping pipelines"))
+		recv(t, h.probe.started, "the initial cycle")
+		h.stop(t)
+		recv(t, h.probe.cancelled, "the cycle's cancellation")
+		requireNone(t, h.probe.started, 100*time.Millisecond, "cycle after shutdown")
+		assert.Equal(t, 1, h.logs.count("source syncs stopped by shutdown, skipping pipelines"))
+	})
 }
 
 // Shutdown inside the settle delay returns at once and starts no cycle.
 func TestRunLoop_ShutdownDuringSettleStartsNoCycle(t *testing.T) {
-	setWakeSettle(t, time.Hour)
-	h := startLoop(t, loopOpts{syncOnWake: true, blockFirst: true})
+	synctest.Test(t, func(t *testing.T) {
+		setWakeSettle(t, time.Hour)
+		h := startLoop(t, loopOpts{syncOnWake: true, blockFirst: true})
 
-	recv(t, h.probe.started, "the initial cycle")
-	h.wake <- 10 * time.Minute
-	h.logs.waitLog(t, logSleptCycleEnds, 1)
-	h.stop(t)
-	requireNone(t, h.probe.started, 100*time.Millisecond, "cycle after shutdown")
+		recv(t, h.probe.started, "the initial cycle")
+		h.wake <- 10 * time.Minute
+		h.logs.waitLog(t, logSleptCycleEnds, 1)
+		h.stop(t)
+		requireNone(t, h.probe.started, 100*time.Millisecond, "cycle after shutdown")
+	})
 }
 
 // pressSyncNow sends a manual trigger and returns once the loop has logged
@@ -467,42 +492,46 @@ func (h *loopHarness) inSlackSync() { h.d.setSection(sectionSlackFetch) }
 // manualRestartAfter cancels the source syncs and starts a fresh cycle at
 // once — no post-wake delay.
 func TestRunLoop_TriggerOnStalledSlackSyncRestartsTheCycle(t *testing.T) {
-	setWakeSettle(t, time.Hour)
-	drops := countDrops(t)
-	h := startLoop(t, loopOpts{syncOnWake: true, blockFirst: true})
+	synctest.Test(t, func(t *testing.T) {
+		setWakeSettle(t, time.Hour)
+		drops := countDrops(t)
+		h := startLoop(t, loopOpts{syncOnWake: true, blockFirst: true})
 
-	recv(t, h.probe.started, "the initial cycle")
-	h.probe.block.Store(false)
-	h.inSlackSync()
-	h.mono.advance(manualRestartAfter)
-	h.trigger <- struct{}{}
-	recv(t, h.probe.cancelled, "the stalled cycle's cancellation")
-	recv(t, h.probe.started, "the fresh cycle")
-	h.stop(t)
+		recv(t, h.probe.started, "the initial cycle")
+		h.probe.block.Store(false)
+		h.inSlackSync()
+		h.mono.advance(manualRestartAfter)
+		h.trigger <- struct{}{}
+		recv(t, h.probe.cancelled, "the stalled cycle's cancellation")
+		recv(t, h.probe.started, "the fresh cycle")
+		h.stop(t)
 
-	assert.Equal(t, int32(1), drops.Load(), "the pooled connections are dropped before the fresh cycle")
-	assert.Equal(t, 1, h.logs.count("manual sync trigger received after 1m0s "+logRestarts))
-	assert.Equal(t, 1, h.logs.count("source syncs stopped by Sync Now restart, skipping pipelines"))
+		assert.Equal(t, int32(1), drops.Load(), "the pooled connections are dropped before the fresh cycle")
+		assert.Equal(t, 1, h.logs.count("manual sync trigger received after 1m0s "+logRestarts))
+		assert.Equal(t, 1, h.logs.count("source syncs stopped by Sync Now restart, skipping pipelines"))
+	})
 }
 
 // Sync Now on an old cycle whose Slack sync still makes progress (a long
 // first sync) is queued: the cycle finishes and one more runs right after it.
 func TestRunLoop_TriggerOnMovingSlackSyncWaitsForTheCycle(t *testing.T) {
-	h := startLoop(t, loopOpts{syncOnWake: true, blockFirst: true})
+	synctest.Test(t, func(t *testing.T) {
+		h := startLoop(t, loopOpts{syncOnWake: true, blockFirst: true})
 
-	recv(t, h.probe.started, "the initial cycle")
-	h.probe.block.Store(false)
-	h.inSlackSync()
-	h.mono.advance(10 * manualRestartAfter)
-	h.d.markFetchProgress() // as the Slack heartbeat does when its counters move
-	h.mono.advance(manualRestartAfter - time.Second)
-	h.pressSyncNow(t, logQueuedFetching)
-	assert.Zero(t, h.logs.count("afresh"), "a cycle still making progress is not cancelled")
+		recv(t, h.probe.started, "the initial cycle")
+		h.probe.block.Store(false)
+		h.inSlackSync()
+		h.mono.advance(10 * manualRestartAfter)
+		h.d.markFetchProgress() // as the Slack heartbeat does when its counters move
+		h.mono.advance(manualRestartAfter - time.Second)
+		h.pressSyncNow(t, logQueuedFetching)
+		assert.Zero(t, h.logs.count("afresh"), "a cycle still making progress is not cancelled")
 
-	h.releaseProbe(t)
-	recv(t, h.probe.started, "the queued cycle")
-	h.stop(t)
-	assert.Empty(t, h.probe.cancelled, "no cycle was cancelled before shutdown")
+		h.releaseProbe(t)
+		recv(t, h.probe.started, "the queued cycle")
+		h.stop(t)
+		assert.Empty(t, h.probe.cancelled, "no cycle was cancelled before shutdown")
+	})
 }
 
 // Sync Now long into a Slack read-state pass — one conversations.info per
@@ -518,11 +547,12 @@ func TestRunLoop_TriggerDuringMovingReadStatePassWaitsForTheCycle(t *testing.T) 
 	recv(t, h.probe.started, "the initial cycle")
 	h.probe.block.Store(false)
 	h.inSlackSync()
-	stopBeat := h.d.startSyncHeartbeat(orch)
+	nextBeat, stopBeat := startGatedHeartbeat(t, h.d, orch)
 	for range 3 {
 		h.mono.advance(manualRestartAfter)
 		_, _ = client.GetChannelReadCursor(context.Background(), "C001")
-		eventually(t, func() bool { return h.d.fetchStalledFor() == 0 }, "a beat stamping the answered call")
+		nextBeat()
+		require.Zero(t, h.d.fetchStalledFor(), "a beat stamping the answered call")
 		h.pressSyncNow(t, logQueuedFetching)
 	}
 	stopBeat()
@@ -537,44 +567,48 @@ func TestRunLoop_TriggerDuringMovingReadStatePassWaitsForTheCycle(t *testing.T) 
 // Sync Now within manualRestartAfter of the cycle's start is queued: the
 // cycle finishes and one more runs right after it.
 func TestRunLoop_TriggerEarlyInSourceSyncsWaitsForTheCycle(t *testing.T) {
-	drops := countDrops(t)
-	h := startLoop(t, loopOpts{syncOnWake: true, blockFirst: true})
+	synctest.Test(t, func(t *testing.T) {
+		drops := countDrops(t)
+		h := startLoop(t, loopOpts{syncOnWake: true, blockFirst: true})
 
-	recv(t, h.probe.started, "the initial cycle")
-	h.probe.block.Store(false)
-	h.inSlackSync()
-	h.mono.advance(manualRestartAfter - time.Second)
-	h.pressSyncNow(t, logQueuedFetching)
-	h.pressSyncNow(t, logQueuedFetching)
-	assert.Zero(t, h.logs.count("afresh"), "a young cycle is not cancelled")
+		recv(t, h.probe.started, "the initial cycle")
+		h.probe.block.Store(false)
+		h.inSlackSync()
+		h.mono.advance(manualRestartAfter - time.Second)
+		h.pressSyncNow(t, logQueuedFetching)
+		h.pressSyncNow(t, logQueuedFetching)
+		assert.Zero(t, h.logs.count("afresh"), "a young cycle is not cancelled")
 
-	h.releaseProbe(t)
-	recv(t, h.probe.started, "the queued cycle")
-	requireNone(t, h.probe.started, 100*time.Millisecond, "a second queued cycle: triggers collapse into one")
-	h.stop(t)
-	assert.Empty(t, h.probe.cancelled, "no cycle was cancelled before shutdown")
-	assert.Zero(t, drops.Load(), "a queued trigger leaves the connections alone")
+		h.releaseProbe(t)
+		recv(t, h.probe.started, "the queued cycle")
+		requireNone(t, h.probe.started, 100*time.Millisecond, "a second queued cycle: triggers collapse into one")
+		h.stop(t)
+		assert.Empty(t, h.probe.cancelled, "no cycle was cancelled before shutdown")
+		assert.Zero(t, drops.Load(), "a queued trigger leaves the connections alone")
+	})
 }
 
 // Sync Now during a source fetch after the Slack sync (calendars, mail, Jira,
 // Linear, Confluence: 30 s client timeouts, no in-phase progress) is queued
 // however long ago the last progress stamp was.
 func TestRunLoop_TriggerOnOtherFetchWaitsForTheCycle(t *testing.T) {
-	drops := countDrops(t)
-	h := startLoop(t, loopOpts{syncOnWake: true, blockFirst: true})
+	synctest.Test(t, func(t *testing.T) {
+		drops := countDrops(t)
+		h := startLoop(t, loopOpts{syncOnWake: true, blockFirst: true})
 
-	recv(t, h.probe.started, "the initial cycle")
-	h.probe.block.Store(false)
-	require.Equal(t, sectionOtherFetch, h.d.section(), "the IMAP probe runs after the Slack sync")
-	h.mono.advance(10 * manualRestartAfter)
-	h.pressSyncNow(t, logQueuedFetching)
-	assert.Zero(t, h.logs.count("afresh"), "only a stalled Slack sync is restarted")
+		recv(t, h.probe.started, "the initial cycle")
+		h.probe.block.Store(false)
+		require.Equal(t, sectionOtherFetch, h.d.section(), "the IMAP probe runs after the Slack sync")
+		h.mono.advance(10 * manualRestartAfter)
+		h.pressSyncNow(t, logQueuedFetching)
+		assert.Zero(t, h.logs.count("afresh"), "only a stalled Slack sync is restarted")
 
-	h.releaseProbe(t)
-	recv(t, h.probe.started, "the queued cycle")
-	h.stop(t)
-	assert.Empty(t, h.probe.cancelled, "no cycle was cancelled before shutdown")
-	assert.Zero(t, drops.Load(), "a queued trigger leaves the connections alone")
+		h.releaseProbe(t)
+		recv(t, h.probe.started, "the queued cycle")
+		h.stop(t)
+		assert.Empty(t, h.probe.cancelled, "no cycle was cancelled before shutdown")
+		assert.Zero(t, drops.Load(), "a queued trigger leaves the connections alone")
+	})
 }
 
 // Sync Now right after the Mac woke, before the wake watcher reported the
@@ -582,40 +616,44 @@ func TestRunLoop_TriggerOnOtherFetchWaitsForTheCycle(t *testing.T) {
 // Mac slept through a Slack sync is no stall. The wake report then cancels
 // the cycle as a sleep.
 func TestRunLoop_TriggerAfterSleepBeforeTheWakeReportIsQueued(t *testing.T) {
-	shortenWakeSettle(t)
-	h := startLoop(t, loopOpts{syncOnWake: true, blockFirst: true})
+	synctest.Test(t, func(t *testing.T) {
+		shortenWakeSettle(t)
+		h := startLoop(t, loopOpts{syncOnWake: true, blockFirst: true})
 
-	recv(t, h.probe.started, "the initial cycle")
-	h.probe.block.Store(false)
-	h.inSlackSync()
-	h.mono.advance(5 * time.Second) // awake time; the 30-minute sleep moves only the wall clock
-	h.pressSyncNow(t, logQueuedFetching)
-	assert.Zero(t, h.logs.count("afresh"), "the sleep is not a stall")
+		recv(t, h.probe.started, "the initial cycle")
+		h.probe.block.Store(false)
+		h.inSlackSync()
+		h.mono.advance(5 * time.Second) // awake time; the 30-minute sleep moves only the wall clock
+		h.pressSyncNow(t, logQueuedFetching)
+		assert.Zero(t, h.logs.count("afresh"), "the sleep is not a stall")
 
-	h.wake <- 30 * time.Minute
-	recv(t, h.probe.cancelled, "the sleep's cancellation")
-	h.logs.waitLog(t, logSleptCycleEnds, 1)
-	recv(t, h.probe.started, "the cycle after the delay")
-	h.stop(t)
-	assert.Zero(t, h.logs.count("Sync Now restart"), "the cycle was cancelled by the sleep, not restarted")
+		h.wake <- 30 * time.Minute
+		recv(t, h.probe.cancelled, "the sleep's cancellation")
+		h.logs.waitLog(t, logSleptCycleEnds, 1)
+		recv(t, h.probe.started, "the cycle after the delay")
+		h.stop(t)
+		assert.Zero(t, h.logs.count("Sync Now restart"), "the cycle was cancelled by the sleep, not restarted")
+	})
 }
 
 // Sync Now while the cycle runs its pipelines is queued whatever its stall:
 // the sources are already fetched.
 func TestRunLoop_TriggerDuringPipelinesWaitsForTheCycle(t *testing.T) {
-	h := startLoop(t, loopOpts{syncOnWake: true, blockFirst: true})
+	synctest.Test(t, func(t *testing.T) {
+		h := startLoop(t, loopOpts{syncOnWake: true, blockFirst: true})
 
-	recv(t, h.probe.started, "the initial cycle")
-	h.probe.block.Store(false)
-	h.d.setSection(sectionPipelines) // as runSync marks it past the source syncs
-	h.mono.advance(10 * manualRestartAfter)
-	h.pressSyncNow(t, "during the cycle's pipelines, syncing after it")
-	assert.Zero(t, h.logs.count("afresh"), "a cycle in its pipelines is not cancelled")
+		recv(t, h.probe.started, "the initial cycle")
+		h.probe.block.Store(false)
+		h.d.setSection(sectionPipelines) // as runSync marks it past the source syncs
+		h.mono.advance(10 * manualRestartAfter)
+		h.pressSyncNow(t, "during the cycle's pipelines, syncing after it")
+		assert.Zero(t, h.logs.count("afresh"), "a cycle in its pipelines is not cancelled")
 
-	h.releaseProbe(t)
-	recv(t, h.probe.started, "the queued cycle")
-	h.stop(t)
-	assert.Empty(t, h.probe.cancelled, "no cycle was cancelled before shutdown")
+		h.releaseProbe(t)
+		recv(t, h.probe.started, "the queued cycle")
+		h.stop(t)
+		assert.Empty(t, h.probe.cancelled, "no cycle was cancelled before shutdown")
+	})
 }
 
 // The history backfill runs on the cycle's fetch context: Sync Now during it
@@ -623,82 +661,88 @@ func TestRunLoop_TriggerDuringPipelinesWaitsForTheCycle(t *testing.T) {
 // sleep cancels it, and the cancelled chunk is no strike and leaves no error
 // on the history-backfill row.
 func TestRunLoop_BackfillQueuesTriggersAndSleepCancelsIt(t *testing.T) {
-	shortenWakeSettle(t)
-	inFetch := make(chan struct{}, 1)
-	var fetched atomic.Bool
-	h := startLoop(t, loopOpts{syncOnWake: true, backfill: true, fetchRange: func(ctx context.Context) error {
-		if fetched.Swap(true) {
-			return nil // the later cycles' chunks fetch at once
-		}
-		inFetch <- struct{}{}
-		<-ctx.Done()
-		return ctx.Err()
-	}})
+	synctest.Test(t, func(t *testing.T) {
+		shortenWakeSettle(t)
+		inFetch := make(chan struct{}, 1)
+		var fetched atomic.Bool
+		h := startLoop(t, loopOpts{syncOnWake: true, backfill: true, fetchRange: func(ctx context.Context) error {
+			if fetched.Swap(true) {
+				return nil // the later cycles' chunks fetch at once
+			}
+			inFetch <- struct{}{}
+			<-ctx.Done()
+			return ctx.Err()
+		}})
 
-	recv(t, h.probe.started, "the initial cycle")
-	recv(t, inFetch, "the backfill's fetch")
-	require.Equal(t, sectionBackfill, h.d.section())
-	h.mono.advance(10 * manualRestartAfter)
-	h.pressSyncNow(t, "manual sync trigger received during the history backfill, syncing after it")
-	assert.Zero(t, h.logs.count("afresh"), "a trigger never cancels the backfill")
+		recv(t, h.probe.started, "the initial cycle")
+		recv(t, inFetch, "the backfill's fetch")
+		require.Equal(t, sectionBackfill, h.d.section())
+		h.mono.advance(10 * manualRestartAfter)
+		h.pressSyncNow(t, "manual sync trigger received during the history backfill, syncing after it")
+		assert.Zero(t, h.logs.count("afresh"), "a trigger never cancels the backfill")
 
-	h.wake <- 10 * time.Minute
-	h.logs.waitLog(t, "cancelling the running cycle's history backfill", 1)
-	h.logs.waitLog(t, logSleptCycleEnds, 1)
-	recv(t, h.probe.started, "the cycle after the delay")
-	h.stop(t)
-	assert.Equal(t, 1, h.logs.count("history backfill: stopped by sleep"))
+		h.wake <- 10 * time.Minute
+		h.logs.waitLog(t, "cancelling the running cycle's history backfill", 1)
+		h.logs.waitLog(t, logSleptCycleEnds, 1)
+		recv(t, h.probe.started, "the cycle after the delay")
+		h.stop(t)
+		assert.Equal(t, 1, h.logs.count("history backfill: stopped by sleep"))
 
-	rows, err := h.d.db.ListHistoryBackfills()
-	require.NoError(t, err)
-	require.Len(t, rows, 1)
-	assert.Zero(t, rows[0].ChunkFailures, "a cancelled chunk is no strike")
-	assert.Nil(t, rows[0].HeldSince, "a cancelled chunk is no hold")
-	var errored int
-	require.NoError(t, h.d.db.QueryRow(`SELECT COUNT(*) FROM pipeline_runs
+		rows, err := h.d.db.ListHistoryBackfills()
+		require.NoError(t, err)
+		require.Len(t, rows, 1)
+		assert.Zero(t, rows[0].ChunkFailures, "a cancelled chunk is no strike")
+		assert.Nil(t, rows[0].HeldSince, "a cancelled chunk is no hold")
+		var errored int
+		require.NoError(t, h.d.db.QueryRow(`SELECT COUNT(*) FROM pipeline_runs
 		WHERE pipeline = 'history-backfill' AND COALESCE(error_msg, '') != ''`).Scan(&errored))
-	assert.Zero(t, errored, "a cancelled Step leaves no error row")
+		assert.Zero(t, errored, "a cancelled Step leaves no error row")
+	})
 }
 
 // A sleep that lands after Sync Now restarted the cycle, before it returned,
 // does not lose the restart: the fresh cycle runs after the settle delay even
 // with sync_on_wake off.
 func TestRunLoop_RestartThenSleepStillSyncsAfterTheDelay(t *testing.T) {
-	shortenWakeSettle(t)
-	h := startLoop(t, loopOpts{blockFirst: true, hold: true})
+	synctest.Test(t, func(t *testing.T) {
+		shortenWakeSettle(t)
+		h := startLoop(t, loopOpts{blockFirst: true, hold: true})
 
-	recv(t, h.probe.started, "the initial cycle")
-	h.probe.block.Store(false)
-	h.inSlackSync()
-	h.mono.advance(manualRestartAfter)
-	h.trigger <- struct{}{}
-	recv(t, h.probe.cancelled, "the restart's cancellation")
-	h.wake <- 10 * time.Minute
-	h.logs.waitLog(t, logSleepCancels, 1)
-	h.letGo(t)
+		recv(t, h.probe.started, "the initial cycle")
+		h.probe.block.Store(false)
+		h.inSlackSync()
+		h.mono.advance(manualRestartAfter)
+		h.trigger <- struct{}{}
+		recv(t, h.probe.cancelled, "the restart's cancellation")
+		h.wake <- 10 * time.Minute
+		h.logs.waitLog(t, logSleepCancels, 1)
+		h.letGo(t)
 
-	h.logs.waitLog(t, logSleptCycleEnds, 1)
-	recv(t, h.probe.started, "the restarted cycle after the delay")
-	h.stop(t)
+		h.logs.waitLog(t, logSleptCycleEnds, 1)
+		recv(t, h.probe.started, "the restarted cycle after the delay")
+		h.stop(t)
+	})
 }
 
 // A trigger queued during a cycle a sleep then cancels runs after the settle
 // delay, sync_on_wake off.
 func TestRunLoop_TriggerQueuedBeforeSleepRunsAfterTheDelay(t *testing.T) {
-	shortenWakeSettle(t)
-	h := startLoop(t, loopOpts{blockFirst: true, hold: true})
+	synctest.Test(t, func(t *testing.T) {
+		shortenWakeSettle(t)
+		h := startLoop(t, loopOpts{blockFirst: true, hold: true})
 
-	recv(t, h.probe.started, "the initial cycle")
-	h.probe.block.Store(false)
-	h.pressSyncNow(t, logQueuedFetching)
-	h.wake <- 10 * time.Minute
-	recv(t, h.probe.cancelled, "the sleep's cancellation")
-	h.letGo(t)
+		recv(t, h.probe.started, "the initial cycle")
+		h.probe.block.Store(false)
+		h.pressSyncNow(t, logQueuedFetching)
+		h.wake <- 10 * time.Minute
+		recv(t, h.probe.cancelled, "the sleep's cancellation")
+		h.letGo(t)
 
-	h.logs.waitLog(t, logSleptCycleEnds, 1)
-	recv(t, h.probe.started, "the queued cycle after the delay")
-	h.stop(t)
-	assert.Equal(t, 1, h.logs.count("syncing after wake"))
+		h.logs.waitLog(t, logSleptCycleEnds, 1)
+		recv(t, h.probe.started, "the queued cycle after the delay")
+		h.stop(t)
+		assert.Equal(t, 1, h.logs.count("syncing after wake"))
+	})
 }
 
 // Sync Now during the settle delay is folded into the one cycle the delay
@@ -706,20 +750,22 @@ func TestRunLoop_TriggerQueuedBeforeSleepRunsAfterTheDelay(t *testing.T) {
 func TestRunLoop_TriggerDuringSettleRunsOneCycleAfterIt(t *testing.T) {
 	for _, syncOnWake := range []bool{true, false} {
 		t.Run(fmt.Sprintf("sync_on_wake=%v", syncOnWake), func(t *testing.T) {
-			const settle = 200 * time.Millisecond
-			setWakeSettle(t, settle)
-			h := startLoop(t, loopOpts{syncOnWake: syncOnWake, blockFirst: true})
+			synctest.Test(t, func(t *testing.T) {
+				const settle = 200 * time.Millisecond
+				setWakeSettle(t, settle)
+				h := startLoop(t, loopOpts{syncOnWake: syncOnWake, blockFirst: true})
 
-			recv(t, h.probe.started, "the initial cycle")
-			h.probe.block.Store(false)
-			h.wake <- 10 * time.Minute
-			h.logs.waitLog(t, logSleptCycleEnds, 1)
-			h.pressSyncNow(t, logQueuedSettling)
-			h.pressSyncNow(t, logQueuedSettling)
+				recv(t, h.probe.started, "the initial cycle")
+				h.probe.block.Store(false)
+				h.wake <- 10 * time.Minute
+				h.logs.waitLog(t, logSleptCycleEnds, 1)
+				h.pressSyncNow(t, logQueuedSettling)
+				h.pressSyncNow(t, logQueuedSettling)
 
-			recv(t, h.probe.started, "the cycle after the delay")
-			requireNone(t, h.probe.started, settle, "a second cycle")
-			h.stop(t)
+				recv(t, h.probe.started, "the cycle after the delay")
+				requireNone(t, h.probe.started, settle, "a second cycle")
+				h.stop(t)
+			})
 		})
 	}
 }

@@ -62,6 +62,9 @@ type Fetcher struct {
 	// allowPrivateForTest lets the dial to the initial URL's literal
 	// host:port (an httptest server) through; set only by tests.
 	allowPrivateForTest bool
+	// dialForTest, when set (tests only), replaces the dialer — and with it
+	// the connect-time gate — so a test can serve over an in-memory pipe.
+	dialForTest func(ctx context.Context, network, addr string) (net.Conn, error)
 
 	ownOnce sync.Once
 	own     []netip.Addr
@@ -169,9 +172,13 @@ func (f *Fetcher) checkRedirect(req *http.Request, via []*http.Request) error {
 // (so the headers stay exactly ours), every connection through control.
 func (f *Fetcher) transport(testAllow string) *http.Transport {
 	d := &net.Dialer{Timeout: dialTimeout, Resolver: f.Resolver, Control: f.control(testAllow)}
+	dial := d.DialContext
+	if f.dialForTest != nil {
+		dial = f.dialForTest
+	}
 	return &http.Transport{
 		Proxy:                  nil,
-		DialContext:            d.DialContext,
+		DialContext:            dial,
 		DisableCompression:     true,
 		TLSHandshakeTimeout:    dialTimeout,
 		MaxResponseHeaderBytes: 64 << 10,

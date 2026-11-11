@@ -212,10 +212,12 @@ final class RecordingUploaderTests: XCTestCase {
         let second = try await register(uploader, file: try makeAudioFile(name: "two.m4a"))
 
         let passA = Task { try await uploader.uploadPending() }
-        try await eventually { await spy.heldCount == 1 }
+        await spy.untilHeld(1)
         let passB = Task { try await uploader.uploadPending() }
-        // A pass that does not wait for A reaches the transport at once.
-        _ = try? await eventually(timeout: 0.5) { await spy.heldCount > 1 }
+        // B queues behind A (no clock: yield until the uploader books it).
+        while !(await uploader.hasQueuedPass) { await Task.yield() }
+        let heldWhileQueued = await spy.heldCount
+        XCTAssertEqual(heldWhileQueued, 1, "a queued pass does not reach the transport")
         await spy.release()
         _ = try await passA.value
         _ = try await passB.value
@@ -235,7 +237,7 @@ final class RecordingUploaderTests: XCTestCase {
         let recording = try await register(uploader, file: try makeAudioFile())
 
         let pass = Task { try await uploader.uploadPending() }
-        try await eventually { await spy.heldCount == 1 }
+        await spy.untilHeld(1)
         try await uploader.applyEcho(echo(for: recording, status: .received))
         XCTAssertEqual(try store.phoneRecording(id: recording.id)?.state, .delivered)
         await spy.release()
@@ -401,18 +403,6 @@ final class RecordingUploaderTests: XCTestCase {
 
         let saves = await spy.savedNames
         XCTAssertEqual(saves, [try wire(recording.id), try wire(recording.id)])
-    }
-
-    /// Polls `condition` until it holds or `timeout` passes (then throws).
-    private func eventually(
-        timeout: TimeInterval = 5,
-        _ condition: @Sendable () async -> Bool
-    ) async throws {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !(await condition()) {
-            guard Date() < deadline else { throw EventuallyTimedOut() }
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
     }
 
     func testTransportFailureLeavesRowForNextPass() async throws {
@@ -1372,10 +1362,7 @@ final class RecordingUploaderTests: XCTestCase {
 
         await spy.holdSaves()
         let retry = Task { try await uploader.retryFailed(id: recording.id) }
-        for _ in 0 ..< 500 {
-            if await spy.heldCount > 0 { break }
-            try await Task.sleep(for: .milliseconds(2))
-        }
+        await spy.untilHeld(1)
         let held = await spy.heldCount
         XCTAssertEqual(held, 1, "the re-seal's save is in flight")
         // The Mac rotated again meanwhile: the in-flight envelope (epoch 2) is now stale.
@@ -1922,8 +1909,6 @@ private actor FailingTransport: CloudSyncTransport {
     }
 }
 
-private struct EventuallyTimedOut: Error {}
-
 /// A phone key provider that throws a non-lock error for the p2h relay key of one epoch (a Keychain fault).
 private final class FlakyKeys: SecureKeyProvider, @unchecked Sendable {
     struct Fault: Error {}
@@ -1977,10 +1962,19 @@ private actor SpyTransport: CloudSyncTransport {
     private(set) var saves: [Save] = []
     private var holding = false
     private var held: [CheckedContinuation<Void, Never>] = []
-
+    private var heldWaiters: [UUID: (count: Int, continuation: CheckedContinuation<Void, Never>)] = [:]
     var heldCount: Int { held.count }
-
     func holdSaves() { holding = true }
+
+    /// Returns once `count` saves are held — the save itself, not a clock (no
+    /// per-wait timeout: a hang is the test run's own watchdog's to end).
+    func untilHeld(_ count: Int) async {
+        guard held.count < count else { return }
+        await withCheckedContinuation { heldWaiters[UUID()] = (count, $0) }
+    }
+    private func resumeWaiter(_ id: UUID) {
+        heldWaiters.removeValue(forKey: id)?.continuation.resume()
+    }
 
     /// While true every save is recorded, then throws (a transient failure).
     private(set) var failing = false
@@ -2001,7 +1995,10 @@ private actor SpyTransport: CloudSyncTransport {
                 asset: record.assetFileURL.flatMap { try? Data(contentsOf: $0) }, file: record.assetFileURL?.lastPathComponent)
         }
         if holding {
-            await withCheckedContinuation { held.append($0) }
+            await withCheckedContinuation { continuation in
+                held.append(continuation)
+                heldWaiters.filter { $0.value.count <= held.count }.keys.forEach { resumeWaiter($0) }
+            }
         }
         if failing { throw SaveFailed() }
     }
