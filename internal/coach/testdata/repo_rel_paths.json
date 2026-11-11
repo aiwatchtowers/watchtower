@@ -1,0 +1,17 @@
+{
+  "note": "Shared table: Go coach.RepoRelPath and Swift CoachProposal.repoRelativePath. A row with path null is refused (ok false in Go).",
+  "cases": [
+    {"destination": "repo_claude_md", "skill": "", "path": "CLAUDE.md"},
+    {"destination": "repo_agents_md", "skill": "", "path": "AGENTS.md"},
+    {"destination": "repo_workflow", "skill": "", "path": ".watchtower/workflow.md"},
+    {"destination": "repo_claude_skill", "skill": "review-pr", "path": ".claude/skills/review-pr/SKILL.md"},
+    {"destination": "repo_codex_skill", "skill": "review-pr", "path": ".agents/skills/review-pr/SKILL.md"},
+    {"destination": "repo_claude_skill", "skill": "v1.2_x", "path": ".claude/skills/v1.2_x/SKILL.md"},
+    {"destination": "repo_claude_skill", "skill": "", "path": null},
+    {"destination": "repo_codex_skill", "skill": "../x", "path": null},
+    {"destination": "repo_claude_skill", "skill": "a/b", "path": null},
+    {"destination": "repo_claude_skill", "skill": ".hidden", "path": null},
+    {"destination": "claude_md_user", "skill": "", "path": null},
+    {"destination": "claude_skill_user", "skill": "review-pr", "path": null}
+  ]
+}

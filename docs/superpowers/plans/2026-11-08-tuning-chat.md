@@ -1039,6 +1039,8 @@ No A/B replay (spec D61).
 
 ### Task 3.11: Wire the tuning tools into `buildToolRegistry` + surface failure-path tests
 
+**As shipped (PR #813):** `agentsReportValue` returns typed `(ov, det, err)`; `tuning.Deps.Home` is removed (nothing read it — `CoachEnv` carries Home); an unknown session wraps `tuning.ErrNotFound` through `agentreport.ErrSessionNotFound`; `tuning` lists only tools that name it (a surface-less tool is not visible on `tuning`, D62); `tuning` is no trust place (like the workbench; `actions trust --surface tuning` refused).
+
 **Depends on:** Task 3.1, Task 3.9, Task 3.10
 **Files:**
 - Modify: `cmd/actions_registry.go` (`regTools = append(regTools, tuning.ReadTools(tuningDeps(cfg))...)`, `tuning.ProposalTools(...)`)
@@ -1786,6 +1788,8 @@ action: nav:projects
 - [ ] **Step 3: Commit** — `git commit -m "docs(guide): tuning chat page, Codex sessions in Analytics (#1517)"`.
 
 ### Task 6.4: Inventory amendments
+
+**From Task 3.11 (PR #813):** AGENT-01 in `docs/inventory/agent-actions.md` also says `tuning` is no trust place (next to the workbench line), and AGENT-04 that surface-less tools are not visible on `tuning`.
 
 **Depends on:** Phases 1–3 merged (guard test names)
 **Files:**

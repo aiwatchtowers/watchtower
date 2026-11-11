@@ -138,9 +138,26 @@ final class WorkbenchesViewModel {
     @ObservationIgnored weak var coach: CoachCenter?
     /// The Analytics pane's period per workbench (7 days until picked).
     var analyticsPeriod: [Int64: AgentAnalyticsCenter.Period] = [:]
+    /// The Analytics pane's agent filter per workbench (All until picked;
+    /// an older CLI's refusal of `--agent` removes the entry).
+    var analyticsAgent: [Int64: AgentAnalyticsCenter.Agent] = [:]
     /// The session (its uuid) whose detail the Analytics pane shows per
     /// workbench; none = the overview.
     var analyticsSession: [Int64: String] = [:]
+    /// The workbenches whose Analytics pane shows the tuning side panel
+    /// (**Tune**, #1517); closed when analytics goes off or the workbench goes.
+    var tuningOpen: Set<Int64> = []
+    /// A section of the Analytics overview to scroll to once per workbench
+    /// (`CoachSectionsView.acceptedID` from the panel's Show in Accepted
+    /// edits); the overview clears it after scrolling.
+    var analyticsScroll: [Int64: String] = [:]
+
+    /// The Analytics overview, scrolled to the section `id` (a session
+    /// detail open beside the tuning panel goes back to the overview first).
+    func showAnalyticsSection(_ id: String, projectID: Int64) {
+        analyticsSession[projectID] = nil
+        analyticsScroll[projectID] = id
+    }
     /// Session cleanup (board #535): the Delete dialog's plan and apply, the
     /// Clean Up screen. Held here, on the AppState-owned view model, so a
     /// run survives navigating away. AppState wires its own; nil = Delete

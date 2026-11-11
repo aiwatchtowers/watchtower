@@ -3,7 +3,8 @@ import Observation
 import WatchtowerCore
 
 /// The agent coach (#1120), run through `watchtower coach …`: a workbench's
-/// metrics (`status --workbench N --days D`) while its Analytics pane is
+/// metrics (`status --workbench N --days D [--agent A]`, the pane's agent
+/// filter) while its Analytics pane is
 /// shown, the proposals (`proposals --status all`), and the owner's verbs
 /// Accept / Decline / Roll back / Run now.
 ///
@@ -24,6 +25,9 @@ final class CoachCenter {
     private(set) var running = false
     private(set) var runLine: String?
     private(set) var cardErrors: [Int64: String] = [:]
+    /// The workbench repository file each Accept wrote (`written_path`,
+    /// `written_branch`): the folded line and the rollback line name it.
+    private(set) var written: [Int64: CoachWrittenFile] = [:]
     /// Proposals with an owner verb in flight: a second press on the same
     /// card does nothing and the card disables its buttons meanwhile.
     private(set) var pending: Set<Int64> = []
@@ -37,7 +41,7 @@ final class CoachCenter {
 
     @ObservationIgnored private let runner: any CLIRunnerProtocol
     @ObservationIgnored private let interval: Duration
-    @ObservationIgnored private var shown: [Int64: AgentAnalyticsCenter.Period] = [:]
+    @ObservationIgnored private var shown: [Int64: AgentAnalyticsCenter.Query] = [:]
     @ObservationIgnored private var inFlight: [RunKey: (token: Int, task: Task<Void, Never>)] = [:]
     @ObservationIgnored private var runsStarted = 0
     @ObservationIgnored private var queued: Set<RunKey> = []
@@ -52,9 +56,10 @@ final class CoachCenter {
 
     var isPolling: Bool { loop != nil }
 
-    func show(workbench: Int64, period: AgentAnalyticsCenter.Period) {
-        let changed = shown[workbench] != period
-        shown[workbench] = period
+    func show(workbench: Int64, period: AgentAnalyticsCenter.Period, agent: AgentAnalyticsCenter.Agent = .all) {
+        let query = AgentAnalyticsCenter.Query(period: period, agent: agent)
+        let changed = shown[workbench] != query
+        shown[workbench] = query
         if changed {
             request(.status(workbench: workbench))
             if shown.count == 1 { request(.proposals) }
@@ -99,11 +104,12 @@ final class CoachCenter {
         cardErrors[id] = nil
         let args = ["coach", "accept", String(id), "--json"] + (editedText == nil ? [] : ["--stdin"])
         do {
-            if let editedText {
-                _ = try await runner.run(args: args, stdin: Data(editedText.utf8))
+            let data = if let editedText {
+                try await runner.run(args: args, stdin: Data(editedText.utf8))
             } else {
-                _ = try await runner.run(args: args)
+                try await runner.run(args: args)
             }
+            if let file = CoachWrittenFile.parse(acceptResult: data) { written[id] = file }
             reloadAll()
         } catch {
             decisionFailed(id, error)
@@ -123,7 +129,9 @@ final class CoachCenter {
     }
 
     /// Returns the `diff` when the destination changed since the accept (the
-    /// owner may then force it); nil otherwise.
+    /// owner may then force it); nil otherwise. A forced rollback the CLI
+    /// still refuses (a created CLAUDE.md/AGENTS.md edited since is never
+    /// deleted, spec §4.3a) shows the CLI's line on the card.
     func rollback(_ id: Int64, force: Bool) async -> String? {
         guard pending.insert(id).inserted else { return nil }
         defer { pending.remove(id) }
@@ -134,7 +142,7 @@ final class CoachCenter {
             reloadAll()
             return nil
         } catch {
-            if let failure = Self.failure(error), failure.code == "changed_since" {
+            if !force, let failure = Self.failure(error), failure.code == "changed_since" {
                 return failure.diff ?? ""
             }
             decisionFailed(id, error)
@@ -173,6 +181,12 @@ final class CoachCenter {
 
     // MARK: - Reads
 
+    /// Reloads the proposal list now (the tuning panel, after the chat
+    /// proposed an edit); the one-in-flight-plus-one-queued rule applies.
+    func refreshProposals() {
+        request(.proposals)
+    }
+
     private func tick() {
         guard isTabOnScreen() else { return }
         for workbench in shown.keys { request(.status(workbench: workbench)) }
@@ -207,15 +221,17 @@ final class CoachCenter {
     private func perform(_ key: RunKey) async {
         switch key {
         case let .status(workbench):
-            guard let period = shown[workbench] else { return }
-            let args = ["coach", "status", "--workbench", String(workbench), "--days", String(period.rawValue), "--json"]
+            guard let query = shown[workbench] else { return }
+            var args = ["coach", "status", "--workbench", String(workbench), "--days", String(query.period.rawValue)]
+            if let flag = query.agent.flag { args += ["--agent", flag] }
+            args.append("--json")
             do {
                 let value = try JSONDecoder().decode(CoachStatus.self, from: try await runner.run(args: args))
-                // A reply for a period the pane has since left is dropped.
-                guard !Task.isCancelled, shown[workbench] == period else { return }
+                // A reply for a period or filter the pane has since left is dropped.
+                guard !Task.isCancelled, shown[workbench] == query else { return }
                 status[workbench] = SessionReportCenter.Snapshot(value: value)
             } catch {
-                guard !Task.isCancelled, !(error is CancellationError), shown[workbench] == period else { return }
+                guard !Task.isCancelled, !(error is CancellationError), shown[workbench] == query else { return }
                 status[workbench, default: SessionReportCenter.Snapshot()].error = Self.message(error)
             }
         case .proposals:
@@ -236,10 +252,17 @@ final class CoachCenter {
     // MARK: - Errors
 
     private func decisionFailed(_ id: Int64, _ error: Error) {
-        if let code = Self.failure(error)?.code, code == "stale" || code == "state_changed" {
+        switch Self.failure(error)?.code {
+        case "stale", "state_changed":
             cardErrors[id] = "The text changed since — this proposal is closed"
             reloadAll()
-        } else {
+        case "dirty":
+            // The card names its own file; the CLI's line carries the proposal id.
+            let path = proposals?.value?.first { $0.id == id }?.repoRelativePath
+            cardErrors[id] = path.map { TuningChatTexts.repoDirty(path: $0) } ?? Self.message(error)
+        case "not_git":
+            cardErrors[id] = TuningChatTexts.repoNotGit
+        default:
             cardErrors[id] = Self.message(error)
         }
     }
