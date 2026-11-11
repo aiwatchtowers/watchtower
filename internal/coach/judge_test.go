@@ -280,7 +280,7 @@ func acceptedFor(t *testing.T, d dbs, dest string, wb int64, baseline float64) i
 	t.Helper()
 	id := propose(t, d, db.CoachProposal{Destination: dest, WorkbenchID: wb, AfterText: "Keep diffs small."})
 	require.NoError(t, d.MarkCoachAccepted(id, "Keep diffs small.", "", fl(baseline), 3, judgeDecided))
-	if isRepoDestination(dest) { // committed at once: measured from the Accept, as the others
+	if IsRepoDestination(dest) { // committed at once: measured from the Accept, as the others
 		_, err := d.SetCoachMeasureFrom(id, judgeDecided)
 		require.NoError(t, err)
 	}
@@ -387,10 +387,10 @@ func TestJudge_NoCutForCodexRulesAllow(t *testing.T) {
 
 func TestIsRepoDestination(t *testing.T) {
 	for _, dest := range repoDestinationsForTest {
-		assert.True(t, isRepoDestination(dest), dest)
+		assert.True(t, IsRepoDestination(dest), dest)
 	}
 	for _, dest := range []string{DestClaudeMDUser, DestCodexAgentsMDUser, DestProcedure, DestPackOverlay} {
-		assert.False(t, isRepoDestination(dest), dest)
+		assert.False(t, IsRepoDestination(dest), dest)
 	}
 }
 

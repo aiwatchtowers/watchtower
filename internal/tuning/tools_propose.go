@@ -47,6 +47,9 @@ func ProposalTools(deps Deps) []*tools.Tool {
 			return err
 		},
 		Normalize: withReason,
+		// Scope runs at Propose (a refusal writes no agent_actions row) and
+		// again at Apply; Execute validates once more for the proposal it
+		// files. Each run re-reads the destination: cheap next to a turn.
 		Scope: func(ctx context.Context, d *db.DB, raw json.RawMessage, b tools.Binding) error {
 			_, err := validateProposal(ctx, d, deps, raw, b)
 			return err
@@ -56,12 +59,7 @@ func ProposalTools(deps Deps) []*tools.Tool {
 			if err != nil {
 				return nil, err
 			}
-			now := time.Now
-			if deps.Now != nil {
-				now = deps.Now
-			}
-			conv := call.Binding.ConversationID
-			id, err := fileProposal(d, p, conv, now())
+			id, err := fileProposal(d, p, call.Binding.ConversationID, deps.Now())
 			if err != nil {
 				return nil, err
 			}
@@ -103,11 +101,15 @@ func decodePropose(raw json.RawMessage) (proposeArgs, error) {
 // An empty why is stored as the tool's name, so the coach's own refusal
 // ("title and why are required") answers rather than the registry's.
 func withReason(_ context.Context, _ *db.DB, raw json.RawMessage) (json.RawMessage, error) {
+	a, err := decodePropose(raw)
+	if err != nil {
+		return nil, err
+	}
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return nil, &tools.ValidationError{Msg: "invalid arguments: " + err.Error()}
 	}
-	reason := strings.TrimSpace(stringOf(m["why"]))
+	reason := strings.TrimSpace(a.Why)
 	if reason == "" {
 		reason = proposeToolName
 	}
@@ -117,12 +119,6 @@ func withReason(_ context.Context, _ *db.DB, raw json.RawMessage) (json.RawMessa
 	}
 	m["reason"] = why
 	return json.Marshal(m)
-}
-
-func stringOf(raw json.RawMessage) string {
-	var s string
-	_ = json.Unmarshal(raw, &s)
-	return s
 }
 
 // validateProposal builds the coach edit of one call and checks it with
@@ -138,19 +134,26 @@ func validateProposal(ctx context.Context, d *db.DB, deps Deps, raw json.RawMess
 	if b.ConversationID <= 0 {
 		return db.CoachProposal{}, &tools.ValidationError{Msg: "the tuning chat has no conversation"}
 	}
-	switch c, err := d.GetChatConversation(b.ConversationID); {
-	case err != nil:
+	c, err := d.GetChatConversation(b.ConversationID)
+	if err != nil {
 		return db.CoachProposal{}, err
-	case c == nil:
+	}
+	if c == nil {
 		return db.CoachProposal{}, &tools.ValidationError{Msg: "conversation removed"}
+	}
+	if c.ContextType != ContextType || c.ContextID != b.ContextID {
+		return db.CoachProposal{}, &tools.ValidationError{Msg: "this conversation is not the tuning chat's"}
 	}
 	env, err := deps.coachEnv()
 	if err != nil {
 		return db.CoachProposal{}, err
 	}
-	e, err := chatEditOf(a, b)
-	if err != nil {
-		return db.CoachProposal{}, err
+	e := chatEditOf(a, b.ConversationID)
+	if e.WorkbenchID == 0 && coach.IsRepoDestination(e.Destination) {
+		// A repository file defaults to the panel's workbench.
+		if e.WorkbenchID, err = workbenchOf(d, b, 0); err != nil {
+			return db.CoachProposal{}, err
+		}
 	}
 	p, err := coach.ValidateChatProposal(ctx, d, e, env)
 	if errors.Is(err, coach.ErrRefused) {
@@ -160,25 +163,17 @@ func validateProposal(ctx context.Context, d *db.DB, deps Deps, raw json.RawMess
 }
 
 // chatEditOf maps the tool's arguments onto coach.ChatEdit: after becomes a
-// Replace that keeps find and adds the lines after it; a repo_* destination
-// without workbench_id takes the panel's workbench; the evidence starts with
-// this conversation, then the refs the chat cites.
-func chatEditOf(a proposeArgs, b tools.Binding) (coach.ChatEdit, error) {
+// Replace that keeps find and adds the lines after it; the evidence starts
+// with this conversation, then the refs the chat cites.
+func chatEditOf(a proposeArgs, conv int64) coach.ChatEdit {
 	e := coach.ChatEdit{Destination: a.Destination, WorkbenchID: a.WorkbenchID, PromptID: a.PromptID,
 		Skill: a.Skill, Kind: a.Kind, Find: a.Find, Replace: a.Replace, Title: a.Title, Why: a.Why,
 		Metric: a.Metric}
 	if a.After != "" {
 		e.Replace = insertAfter(a.Find, a.After)
 	}
-	if e.WorkbenchID == 0 && strings.HasPrefix(a.Destination, "repo_") && b.ContextType == ContextType {
-		wb, err := strconv.ParseInt(b.ContextID, 10, 64)
-		if err != nil || wb <= 0 {
-			return e, &tools.ValidationError{Msg: fmt.Sprintf("the chat's workbench %q is not a workbench id; pass workbench_id", b.ContextID)}
-		}
-		e.WorkbenchID = wb
-	}
-	e.Evidence = append([]string{"c" + strconv.FormatInt(b.ConversationID, 10)}, a.Refs...)
-	return e, nil
+	e.Evidence = append([]string{"c" + strconv.FormatInt(conv, 10)}, a.Refs...)
+	return e
 }
 
 // insertAfter is the replacement that keeps find's lines and puts after's
@@ -201,8 +196,6 @@ func insertAfter(find, after string) string {
 func fileProposal(d *db.DB, p db.CoachProposal, conv int64, now time.Time) (int64, error) {
 	id, err := d.InsertChatCoachProposal(p, &conv, now)
 	switch {
-	case errors.Is(err, db.ErrConversationRemoved):
-		return 0, errors.New("conversation removed")
 	case err != nil:
 		return 0, err
 	case id != 0:

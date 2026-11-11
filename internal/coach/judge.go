@@ -76,7 +76,7 @@ func judge(d *db.DB, al *agentlogdb.DB, home string, now time.Time) (judged, cut
 	}
 	var errs []error
 	for _, p := range accepted {
-		if isRepoDestination(p.Destination) && !committedInTime(p) {
+		if IsRepoDestination(p.Destination) && !committedInTime(p) {
 			// Not committed yet: no window to measure. Past repoCommitWait
 			// it never will be (the daily commit check skips a judged row);
 			// a commit first seen after it counts as never committed.
@@ -132,7 +132,7 @@ func judge(d *db.DB, al *agentlogdb.DB, home string, now time.Time) (judged, cut
 // workbench repository file (zero until its commit is seen), the Accept for
 // every other destination.
 func windowStart(p db.CoachProposal) time.Time {
-	if isRepoDestination(p.Destination) {
+	if IsRepoDestination(p.Destination) {
 		return p.MeasureFrom
 	}
 	return p.DecidedAt
@@ -170,7 +170,7 @@ func writeCut(d *db.DB, al *agentlogdb.DB, home string, p db.CoachProposal, now 
 	// The owner removes such a rule with Rollback of the original proposal;
 	// its no_effect verdict stands. No cut for a workbench repository file
 	// either: it is the owner's change to commit (spec §4.3a, D67).
-	if p.Destination == DestSettingsAllow || p.Destination == DestCodexRulesAllow || isRepoDestination(p.Destination) {
+	if p.Destination == DestSettingsAllow || p.Destination == DestCodexRulesAllow || IsRepoDestination(p.Destination) {
 		return false, nil
 	}
 	open, err := d.ListCoachProposals("open")
@@ -223,9 +223,9 @@ func writeCut(d *db.DB, al *agentlogdb.DB, home string, p db.CoachProposal, now 
 	return id != 0, err
 }
 
-// isRepoDestination reports a workbench repository file destination (the
+// IsRepoDestination reports a workbench repository file destination (the
 // five of spec §4.3a).
-func isRepoDestination(dest string) bool { return repoDestinations[dest] }
+func IsRepoDestination(dest string) bool { return repoDestinations[dest] }
 
 // withoutEdit is cur with p's edit undone: for an owner text the added part
 // (where it still appears exactly once) is replaced by what the edit removed,

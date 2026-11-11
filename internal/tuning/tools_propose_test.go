@@ -191,6 +191,8 @@ func TestProposeTuningEdit_Refusals(t *testing.T) {
 func TestProposeTuningEdit_RepoFileDefaultsToThePanelsWorkbench(t *testing.T) {
 	f, conv := proposeFixture(t)
 	f.repoWorkbench(t, map[string]string{"CLAUDE.md": "Use make.\n"})
+	// The panel's workbench is the binding's context id; the conversation
+	// row names the same one.
 	_, err := f.d.Exec(`UPDATE chat_conversations SET context_id = ? WHERE id = ?`, fmt.Sprint(f.wb), conv)
 	require.NoError(t, err)
 
@@ -226,7 +228,7 @@ func TestProposeTuningEdit_ConversationRemovedAtInsert(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = fileProposal(f.d, p, conv, testNow)
-	require.EqualError(t, err, "conversation removed")
+	require.ErrorIs(t, err, db.ErrConversationRemoved)
 	assert.Zero(t, f.count(t, "coach_proposals"))
 }
 
@@ -278,4 +280,35 @@ func mustJSON(t *testing.T, v any) json.RawMessage {
 	raw, err := json.Marshal(v)
 	require.NoError(t, err)
 	return raw
+}
+
+func TestProposeTuningEdit_RefusesAForeignBinding(t *testing.T) {
+	f, conv := proposeFixture(t)
+	raw := mustJSON(t, skillEdit(nil))
+	main, err := f.d.Exec(`INSERT INTO chat_conversations (title, created_at, updated_at) VALUES ('', 1, 1)`)
+	require.NoError(t, err)
+	mainConv, err := main.LastInsertId()
+	require.NoError(t, err)
+
+	noConv := f.tuningBinding(0)
+	otherPanel := f.tuningBinding(conv)
+	otherPanel.ContextID = "77"
+	cases := map[string]struct {
+		b    tools.Binding
+		want string
+	}{
+		"no conversation":      {noConv, "the tuning chat has no conversation"},
+		"a main chat":          {f.tuningBinding(mainConv), "this conversation is not the tuning chat's"},
+		"another panel's chat": {otherPanel, "this conversation is not the tuning chat's"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := f.reg.Propose(context.Background(), proposeToolName, raw, tc.b)
+			var ve *tools.ValidationError
+			require.ErrorAs(t, err, &ve)
+			assert.Equal(t, tc.want, err.Error())
+			assert.Zero(t, f.count(t, "agent_actions"))
+			assert.Zero(t, f.count(t, "coach_proposals"))
+		})
+	}
 }
