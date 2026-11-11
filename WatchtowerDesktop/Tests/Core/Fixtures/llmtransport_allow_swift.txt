@@ -11,9 +11,6 @@ WatchtowerDesktop/Sources/Services/ConfigService.swift | migratedModel | "claude
 WatchtowerDesktop/Sources/Services/ConfigService.swift | migratedModel | "codex" | 1 | permanent: config migration: the legacy model regexes
 WatchtowerDesktop/Sources/ViewModels/OwnerAsksViewModel.swift | agentNoteName | .claude | 1 | permanent: display name of the asking agent
 WatchtowerDesktop/Sources/ViewModels/OwnerAsksViewModel.swift | agentNoteName | .codex | 1 | permanent: display name of the asking agent
-WatchtowerDesktop/Sources/Views/Onboarding/OnboardingGoalsStepView.swift | cliName | "claude" | 1 | permanent: display-name table for a provider id
-WatchtowerDesktop/Sources/Views/Onboarding/OnboardingGoalsStepView.swift | cliName | "codex" | 1 | permanent: display-name table for a provider id
-WatchtowerDesktop/Sources/Views/Onboarding/OnboardingGoalsStepView.swift | cliName | "ollama" | 1 | permanent: display-name table for a provider id
 WatchtowerDesktop/Sources/Views/Settings/ImportExternalConnectionsView.swift | serverRow | "codex" | 1 | permanent: path convention of the import source (~/.codex vs ~/.claude.json), not a transport
 WatchtowerDesktop/Sources/Views/Settings/ProviderSettings.swift | pathField | "codex" | 2 | permanent: the CLI path setting of a provider id (ai.claude_path / ai.codex_path)
 WatchtowerDesktop/Sources/Views/Settings/ProviderSettings.swift | selection | "codex" | 1 | permanent: the CLI path setting of a provider id (ai.claude_path / ai.codex_path)

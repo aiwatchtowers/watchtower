@@ -2,10 +2,13 @@ import Foundation
 import WatchtowerCore
 
 extension OnboardingGoalsModel {
-    /// The Goals step wired to the real CLI: `ai test` for the check (the
-    /// old Claude step's health check, with the Codex fallback), `workspace init` / `config set` /
+    /// The Goals step wired to the real CLI: the per-agent check (`ai which` + `ai test`), `workspace init` / `config set` /
     /// the Feature Manager for Continue.
-    static func production(defaults: UserDefaults, featureManager: FeatureManagerService) -> OnboardingGoalsModel {
+    static func production(
+        defaults: UserDefaults,
+        featureManager: FeatureManagerService,
+        policy: @escaping @MainActor () -> ManagedPolicy
+    ) -> OnboardingGoalsModel {
         // Resolved per call, not once here: AppState is built before the CLI
         // binary store sync, which may still move the binary.
         func run(_ args: [String]) async throws {
@@ -14,35 +17,15 @@ extension OnboardingGoalsModel {
         }
         return OnboardingGoalsModel(
             defaults: defaults,
-            checkCLI: {
-                // findInPath's PATH step needs the login-shell environment.
-                _ = await Constants.resolvedEnvironmentAsync()
-                let inputs = await MainActor.run { () -> OnboardingCLIProbe.Inputs in
-                    let config = ConfigService()
-                    let claudePath = config.claudePath?.trimmingCharacters(in: .whitespaces) ?? ""
-                    let claudeInstalled = (!claudePath.isEmpty && FileManager.default.isExecutableFile(atPath: claudePath))
-                        || Constants.findInPath("claude") != nil
-                    return OnboardingCLIProbe.Inputs(
-                        configuredProvider: config.aiProvider,
-                        configUnreadable: config.parseError != nil,
-                        claudeInstalled: claudeInstalled
-                    )
+            checkAgents: {
+                // Config and policy are read per check, so a Re-check sees a
+                // Choose-the-executable save and a changed profile.
+                let probes = await MainActor.run {
+                    OnboardingAgentProbes.production(config: ConfigService(), policy: policy())
                 }
-                return await OnboardingCLIProbe.check(
-                    inputs,
-                    test: { try await WatchtowerAIService.testConnection(provider: $0).provider },
-                    switchProvider: { provider in
-                        // No Claude Code here either: Workbench sessions
-                        // start the same agent. ai.provider goes last, so a
-                        // failed write leaves it unset and Check again
-                        // switches again.
-                        if ConfigService.readWorkbenchDefaultAgent().rawValue != provider {
-                            try await run(["config", "set", "workbench.default_agent", provider])
-                        }
-                        try await run(["config", "set", "ai.provider", provider])
-                    }
-                )
+                return await OnboardingAgentCheck.run(probes)
             },
+            configuredProvider: { ConfigService().aiProvider },
             actions: OnboardingGoalsActions(
                 initWorkspace: { try await run(["workspace", "init", "--json"]) },
                 setLanguage: { try await run(["config", "set", "digest.language", $0]) },
@@ -55,7 +38,15 @@ extension OnboardingGoalsModel {
                     return (applied ? nil : (featureManager.loadError ?? "Could not apply the feature selection."), changed)
                 },
                 historyDepthUnset: { ConfigService().initialHistoryDays == nil },
-                setHistoryDepth: { try await run(["config", "set", "sync.initial_history_days", "\($0)"]) }
+                setHistoryDepth: { try await run(["config", "set", "sync.initial_history_days", "\($0)"]) },
+                saveAgent: { provider in
+                    // Workbench sessions start the same agent. ai.provider
+                    // goes last, so a failed write leaves it unset.
+                    if ConfigService.readWorkbenchDefaultAgent().rawValue != provider {
+                        try await run(["config", "set", "workbench.default_agent", provider])
+                    }
+                    try await run(["config", "set", "ai.provider", provider])
+                }
             )
         )
     }
