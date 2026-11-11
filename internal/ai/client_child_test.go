@@ -4,14 +4,14 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"watchtower/internal/providers"
 )
 
 // stubResult is a minimal valid `--output-format json` envelope.
@@ -118,93 +118,55 @@ func countPrefix(l []string, p string) int {
 	return n
 }
 
-// groupStub starts-a-grandchild script: records its pgid-leader pid and the
-// grandchild's pid, then waits. Cleanup kills the whole group.
-func groupStub(t *testing.T) (script, pidFile string) {
+// runGroupStub runs QuerySync over a stub that starts a grandchild and
+// waits, ends ctx (end, once the stub runs) and returns the call's error
+// once QuerySync has returned and the whole group has exited. A background
+// job of a non-interactive sh ignores SIGINT, so the grace timer may be what
+// ends the sleep; the test's grace is short.
+func runGroupStub(t *testing.T, ctx context.Context, end func()) error {
 	t.Helper()
-	dir := t.TempDir()
-	pidFile = filepath.Join(dir, "pid")
-	script = "echo $$ > " + pidFile + ".tmp; mv " + pidFile + ".tmp " + pidFile + "\nsleep 60 &\nwait\n"
-	t.Cleanup(func() {
-		if pid := readPid(pidFile); pid > 0 {
-			_ = syscall.Kill(-pid, syscall.SIGKILL)
-		}
-	})
-	return script, pidFile
-}
-
-func readPid(path string) int {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return 0
-	}
-	n, _ := strconv.Atoi(strings.TrimSpace(string(b)))
-	return n
-}
-
-func waitPid(t *testing.T, path string) int {
-	t.Helper()
-	require.Eventually(t, func() bool { return readPid(path) > 0 }, 20*time.Second, 20*time.Millisecond)
-	return readPid(path)
-}
-
-func requireGroupGone(t *testing.T, pgid int) {
-	t.Helper()
-	require.Eventually(t, func() bool {
-		return syscall.Kill(-pgid, 0) == syscall.ESRCH
-	}, 10*time.Second, 50*time.Millisecond, "process group %d still alive", pgid)
-}
-
-func runGroupStub(t *testing.T, ctx context.Context, cancel context.CancelFunc) int {
-	t.Helper()
-	script, pidFile := groupStub(t)
+	setGroupKillGrace(t, 10*time.Millisecond)
+	g := newGroupFIFO(t)
 	c := NewClient("m", "", "")
-	c.claudeCmd = writeMockClaude(t, script)
+	c.claudeCmd = writeMockClaude(t, g.prefix()+"sleep 60 &\nwait\n")
 	done := make(chan error, 1)
 	go func() {
 		_, _, err := c.QuerySync(ctx, "sys", "hi", "")
 		done <- err
 	}()
-	pgid := waitPid(t, pidFile)
-	if cancel != nil {
-		cancel()
-	}
-	select {
-	case err := <-done:
-		require.Error(t, err)
-	case <-time.After(15 * time.Second):
-		t.Fatal("QuerySync did not return")
-	}
-	return pgid
+	g.waitPID(t)
+	end()
+	err := <-done
+	g.waitGone(t) // the sleep it left behind goes with it
+	return err
 }
 
 func TestCLIAgent_ProcessGroupKilledOnCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	requireGroupGone(t, runGroupStub(t, ctx, cancel))
+	err := runGroupStub(t, ctx, cancel)
+	require.Error(t, err)
+	assert.Equal(t, providers.Cancelled, failureCategory(t, err))
 }
 
 func TestCLIAgent_ProcessGroupKilledOnDeadline(t *testing.T) {
-	// The deadline must outlast the stub's start-up under full-suite load so
-	// the pid file exists before it fires; the kill still comes from the deadline.
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	requireGroupGone(t, runGroupStub(t, ctx, nil))
+	// The deadline fires once the stub runs; no real clock behind it.
+	ctx := newFiredDeadline()
+	err := runGroupStub(t, ctx, ctx.fire)
+	require.Error(t, err)
+	assert.Equal(t, providers.Timeout, failureCategory(t, err))
 }
 
-// A group that ignores SIGINT is SIGKILLed after GroupKillGrace, so the call
-// returns well within the automation sandbox's 2 s AbandonGrace.
+// A group that ignores SIGINT is SIGKILLed after the grace (GroupKillGrace in
+// production, which stays under the automation sandbox's 2 s AbandonGrace),
+// so the call returns with the whole group dead. The test's grace is short:
+// what it checks is that the timer's SIGKILL is what ends the group.
 func TestCLIAgent_SIGINTIgnoringGroupKilledWithinGrace(t *testing.T) {
-	dir := t.TempDir()
-	pidFile := filepath.Join(dir, "pid")
-	script := "trap '' INT\necho $$ > " + pidFile + ".tmp; mv " + pidFile + ".tmp " + pidFile + "\nsleep 60 &\nwait\nsleep 60\n"
-	t.Cleanup(func() {
-		if pid := readPid(pidFile); pid > 0 {
-			_ = syscall.Kill(-pid, syscall.SIGKILL)
-		}
-	})
+	require.Less(t, GroupKillGrace, 2*time.Second, "the grace stays under the sandbox's AbandonGrace")
+	setGroupKillGrace(t, 10*time.Millisecond)
+	g := newGroupFIFO(t)
 	c := NewClient("m", "", "")
-	c.claudeCmd = writeMockClaude(t, script)
+	c.claudeCmd = writeMockClaude(t, "trap '' INT\n"+g.prefix()+"sleep 60 &\nwait\nsleep 60\n")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
@@ -212,33 +174,21 @@ func TestCLIAgent_SIGINTIgnoringGroupKilledWithinGrace(t *testing.T) {
 		_, _, err := c.QuerySync(ctx, "sys", "hi", "")
 		done <- err
 	}()
-	pgid := waitPid(t, pidFile)
-	start := time.Now()
+	g.waitPID(t)
 	cancel()
-	select {
-	case err := <-done:
-		require.Error(t, err)
-	case <-time.After(10 * time.Second):
-		t.Fatal("QuerySync did not return")
-	}
-	assert.Less(t, time.Since(start), 2*time.Second, "returned within the sandbox's AbandonGrace")
-	requireGroupGone(t, pgid)
+	require.Error(t, <-done)
+	g.waitGone(t)
 }
 
 // A cancelled group whose leader exits at once on SIGINT while a grandchild
 // ignores it is killed when the call returns, not when the kill timer would
 // have fired: ConfigureChild's reap sends the pending SIGKILL and stops the
-// timer, so nothing signals the group id after the call.
+// timer, so nothing signals the group id after the call. The grace is an
+// hour here, so a group that is gone was ended by the reap.
 func TestCLIAgent_GroupReapedWhenWaitReturns(t *testing.T) {
-	dir := t.TempDir()
-	pidFile := filepath.Join(dir, "pid")
-	script := "trap 'exit 1' INT\n(trap '' INT; exec sleep 60) >/dev/null 2>&1 </dev/null &\n" +
-		"echo $$ > " + pidFile + ".tmp; mv " + pidFile + ".tmp " + pidFile + "\nwait\n"
-	t.Cleanup(func() {
-		if pid := readPid(pidFile); pid > 0 {
-			_ = syscall.Kill(-pid, syscall.SIGKILL)
-		}
-	})
+	setGroupKillGrace(t, time.Hour)
+	g := newGroupFIFO(t)
+	script := "trap 'exit 1' INT\n" + g.prefix() + "(trap '' INT; exec sleep 60) >/dev/null 2>&1 </dev/null &\nwait\n"
 	c := NewClient("m", "", "")
 	c.claudeCmd = writeMockClaude(t, script)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -248,16 +198,15 @@ func TestCLIAgent_GroupReapedWhenWaitReturns(t *testing.T) {
 		_, _, err := c.QuerySync(ctx, "sys", "hi", "")
 		done <- err
 	}()
-	pgid := waitPid(t, pidFile)
-	start := time.Now()
+	g.waitPID(t)
 	cancel()
-	select {
-	case err := <-done:
-		require.Error(t, err)
-	case <-time.After(10 * time.Second):
-		t.Fatal("QuerySync did not return")
-	}
-	require.Eventually(t, func() bool { return syscall.Kill(-pgid, 0) == syscall.ESRCH },
-		GroupKillGrace/2, 10*time.Millisecond, "the SIGINT-ignoring grandchild outlived the call")
-	assert.Less(t, time.Since(start), GroupKillGrace, "killed before the grace timer would have fired")
+	require.Error(t, <-done)
+	g.waitGone(t) // the SIGINT-ignoring grandchild did not outlive the call
+}
+
+func failureCategory(t *testing.T, err error) providers.ErrorCategory {
+	t.Helper()
+	var f *providers.Failure
+	require.ErrorAs(t, err, &f)
+	return f.Category
 }
