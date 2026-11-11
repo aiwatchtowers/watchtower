@@ -282,7 +282,7 @@ func TestWaitingForMe_SkippedWhenDetectionOff(t *testing.T) {
 	f.sync(t)
 	f.cfg.Inbox.Enabled = false
 	out := f.runner.RunSlot(context.Background(), SlotWaitingForMe)
-	if len(out) != 1 || out[0].BuiltinID != waitingID || out[0].Skipped != SkippedOff {
+	if len(out) != 2 || out[0].BuiltinID != waitingID || out[0].Skipped != SkippedOff {
 		t.Fatalf("slot = %+v; want waiting-for-me skipped off", out)
 	}
 	runs, err := f.d.ListAutomationRuns(f.rowOf(t, waitingID).ID, 0)

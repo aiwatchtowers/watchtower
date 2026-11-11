@@ -72,6 +72,11 @@ func TestInbox05_MutedSenderLeavesMailWaitingOnly(t *testing.T) {
 	if s := rowsOf(t, fields, "senders"); len(s) != 1 || s[0]["address"] != "other@example.com" {
 		t.Errorf("senders = %v; want other@example.com only", s)
 	}
+	for _, it := range rowsOf(t, fields, "items") {
+		if it["trigger"] == "email_received" {
+			t.Errorf("items has mail row %v; want people only (the muted mail in neither list)", it)
+		}
+	}
 
 	after := inboxRow(t, f.d, "3000.0001")
 	if len(after) != len(before) {

@@ -210,6 +210,8 @@ type Daemon struct {
 	// run showed, waitingSeen the one its gate read this cycle (both ""
 	// until known); phaseWaitingForMe's goroutine only.
 	waitingShown, waitingSeen string
+	// mailShown and mailSeen are Mail waiting's twins of them.
+	mailShown, mailSeen string
 
 	// ideasMu guards lastIdeas and lastIdeasLockSkip on every path: the Idea
 	// finder's gate reads them on the slot's goroutine and its primitive

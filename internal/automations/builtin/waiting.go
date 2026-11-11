@@ -17,8 +17,12 @@ import (
 )
 
 // SlotWaitingForMe is Waiting for me's slot, right after the attention
-// detector (phaseInbox).
+// detector (phaseInbox); Mail waiting runs at it right after Waiting for me.
 const SlotWaitingForMe Slot = "waiting_for_me"
+
+// MailWaitingID is Mail waiting's built-in id: the open mail of
+// attention.waiting's senders, one row per sender.
+const MailWaitingID = "mail-waiting"
 
 // attention.waiting's read limits.
 const (

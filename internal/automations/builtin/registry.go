@@ -215,6 +215,24 @@ var registry = []Entry{
 		RunNow:        true,
 	},
 	{
+		ID:         MailWaitingID,
+		Name:       "Mail waiting",
+		Slot:       SlotWaitingForMe, // right after Waiting for me
+		Recipe:     mustRecipe(MailWaitingID),
+		FeatureIDs: []string{"secretary-inbox"},
+		Primitives: []string{automations.PrimitiveAttentionWaiting},
+		Reads:      []string{"The mail attention detection found"},
+		Does: []string{
+			"Groups the mail that waits on you by sender, the busiest first",
+			"Updates the list after every sync; muted senders are left out",
+			"Uses no AI",
+		},
+		Sends:         []string{"One Mail waiting list in your Inbox"},
+		DefaultFolder: RootFolder,
+		When:          func(*config.Config) string { return "After every sync, while attention detection is on" },
+		RunNow:        true,
+	},
+	{
 		ID:         NeedsApprovalID,
 		Name:       "Needs approval",
 		Slot:       "", // no slot: the approval trigger queues its runs (Entry.Trigger)
