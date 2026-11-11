@@ -17,8 +17,8 @@ const MaxEmailBodyBytes = 32 * 1024
 
 type listEmailsArgs struct {
 	Account    string `json:"account" jsonschema:"the mailbox: a connected Google or IMAP account's label or email address, or gmail:<id> / imap:<id> when those are ambiguous"`
-	Since      string `json:"since,omitempty" jsonschema:"only messages received at or after this RFC 3339 time"`
-	Before     string `json:"before,omitempty" jsonschema:"only messages received before this RFC 3339 time (exclusive); to page older, pass the oldest date of the previous page"`
+	Since      string `json:"since,omitempty" jsonschema:"only messages sent or received at or after this RFC 3339 time"`
+	Before     string `json:"before,omitempty" jsonschema:"only messages sent or received before this RFC 3339 time (exclusive); to page older, pass the oldest date of the previous page"`
 	Limit      int    `json:"limit,omitempty" jsonschema:"max results, 0 = default (50), capped at 200"`
 	UnreadOnly bool   `json:"unread_only,omitempty" jsonschema:"only messages that were unread when synced (may be stale)"`
 }
@@ -37,6 +37,7 @@ type emailSummary struct {
 	Date      string `json:"date"`
 	Unread    bool   `json:"unread"` // the state when synced; may be stale
 	Permalink string `json:"permalink"`
+	Sent      bool   `json:"sent"` // the owner's own sent mail
 }
 
 type emailDetail struct {
@@ -59,6 +60,7 @@ func NewListEmails() *Tool {
 			"Filter with since (inclusive), before (exclusive; page older by passing the previous page's oldest date) and unread_only. " +
 			"Dates have one-second precision, so a page can end inside a second that holds more messages: page with " +
 			"before = that date + 1 s and skip the ids already seen. unread is the state when the message was synced and may be stale. " +
+			"The list includes the owner's own sent mail, marked sent: true. " +
 			"Read one message's body with get_email.",
 		InputSchema: mustSchema[listEmailsArgs]("list_emails"),
 		Access:      AccessRead,
@@ -270,7 +272,7 @@ func summarizeEmail(m db.LocalEmail) emailSummary {
 	}
 	return emailSummary{
 		ID: m.ID, ThreadID: m.ThreadID, From: from, Subject: m.Subject, Snippet: m.Snippet,
-		Date: m.InternalDate, Unread: m.IsUnread, Permalink: m.Permalink,
+		Date: m.InternalDate, Unread: m.IsUnread, Permalink: m.Permalink, Sent: m.Sent,
 	}
 }
 

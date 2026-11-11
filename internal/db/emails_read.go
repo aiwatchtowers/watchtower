@@ -22,7 +22,9 @@ const (
 // LocalEmail is one synced message as the automation email reads see it,
 // for either store. ID is the Gmail message id, or "<uidvalidity>-<uid>" for
 // an imap_messages row (ThreadID is empty there). BodyText is filled only by
-// GetLocalEmail.
+// GetLocalEmail. Sent marks the owner's own sent mail: a Gmail row by
+// GmailOwnSentSQL; an IMAP row only when its sender is the mailbox's own
+// address (no Sent folder is synced, so only a self-addressed message).
 type LocalEmail struct {
 	ID           string
 	ThreadID     string
@@ -36,6 +38,7 @@ type LocalEmail struct {
 	InternalDate string
 	IsUnread     bool
 	Permalink    string
+	Sent         bool
 }
 
 // LocalEmailQuery filters ListLocalEmails. Since and Before are RFC 3339 UTC
@@ -51,8 +54,20 @@ type LocalEmailQuery struct {
 	UnreadOnly bool
 }
 
-// imapEmailIDExpr renders an imap_messages row's id as "<uidvalidity>-<uid>".
-const imapEmailIDExpr = `CAST(uidvalidity AS TEXT) || '-' || CAST(uid AS TEXT)`
+// imapEmailIDExpr renders an imap_messages row's id (alias m) as
+// "<uidvalidity>-<uid>".
+const imapEmailIDExpr = `CAST(m.uidvalidity AS TEXT) || '-' || CAST(m.uid AS TEXT)`
+
+// imapOwnSentSQL marks an imap_messages row (alias m) of the email_accounts
+// row (alias a) sent by the mailbox's own address.
+const imapOwnSentSQL = `(a.email_address <> '' AND lower(trim(m.from_email)) = lower(trim(a.email_address)))`
+
+// The FROM clauses of the two stores, each row joined to its account row for
+// the Sent mark.
+const (
+	gmailEmailFrom = ` FROM gmail_messages m JOIN google_accounts a ON a.id = m.account_id`
+	imapEmailFrom  = ` FROM imap_messages m JOIN email_accounts a ON a.id = m.account_id`
+)
 
 // ListLocalEmails returns one account's synced messages, newest first,
 // without their bodies. It reads only the local store.
@@ -63,30 +78,30 @@ func (db *DB) ListLocalEmails(ctx context.Context, q LocalEmailQuery) ([]LocalEm
 	var query string
 	switch q.Store {
 	case EmailStoreGmail:
-		query = `SELECT id, thread_id, from_email, from_name, to_json, cc_json, subject, snippet,
-            internal_date, is_unread, permalink FROM gmail_messages WHERE account_id = ?`
+		query = `SELECT m.id, m.thread_id, m.from_email, m.from_name, m.to_json, m.cc_json, m.subject, m.snippet,
+            m.internal_date, m.is_unread, m.permalink, ` + GmailOwnSentSQL("m", "a") + gmailEmailFrom + ` WHERE m.account_id = ?`
 	case EmailStoreIMAP:
-		query = `SELECT ` + imapEmailIDExpr + `, '', from_email, from_name, to_json, cc_json, subject, snippet,
-            internal_date, is_unread, permalink FROM imap_messages WHERE account_id = ?`
+		query = `SELECT ` + imapEmailIDExpr + `, '', m.from_email, m.from_name, m.to_json, m.cc_json, m.subject, m.snippet,
+            m.internal_date, m.is_unread, m.permalink, ` + imapOwnSentSQL + imapEmailFrom + ` WHERE m.account_id = ?`
 	default:
 		return nil, fmt.Errorf("listing local emails: unknown store %q", q.Store)
 	}
 	args := []any{q.AccountID}
 	if q.Since != "" {
-		query += ` AND internal_date >= ?`
+		query += ` AND m.internal_date >= ?`
 		args = append(args, q.Since)
 	}
 	if q.Before != "" {
-		query += ` AND internal_date < ?`
+		query += ` AND m.internal_date < ?`
 		args = append(args, q.Before)
 	}
 	if q.UnreadOnly {
-		query += ` AND is_unread = 1`
+		query += ` AND m.is_unread = 1`
 	}
 	if q.Store == EmailStoreGmail {
-		query += ` ORDER BY internal_date DESC, id DESC LIMIT ?`
+		query += ` ORDER BY m.internal_date DESC, m.id DESC LIMIT ?`
 	} else {
-		query += ` ORDER BY internal_date DESC, uidvalidity DESC, uid DESC LIMIT ?`
+		query += ` ORDER BY m.internal_date DESC, m.uidvalidity DESC, m.uid DESC LIMIT ?`
 	}
 	args = append(args, q.Limit)
 
@@ -100,7 +115,7 @@ func (db *DB) ListLocalEmails(ctx context.Context, q LocalEmailQuery) ([]LocalEm
 		var m LocalEmail
 		var unread int
 		if err := rows.Scan(&m.ID, &m.ThreadID, &m.FromEmail, &m.FromName, &m.ToJSON, &m.CcJSON,
-			&m.Subject, &m.Snippet, &m.InternalDate, &unread, &m.Permalink); err != nil {
+			&m.Subject, &m.Snippet, &m.InternalDate, &unread, &m.Permalink, &m.Sent); err != nil {
 			return nil, fmt.Errorf("scanning local email: %w", err)
 		}
 		m.IsUnread = unread != 0
@@ -119,23 +134,23 @@ func (db *DB) GetLocalEmail(ctx context.Context, store EmailStore, accountID int
 	var row *sql.Row
 	switch store {
 	case EmailStoreGmail:
-		row = db.QueryRowContext(ctx, `SELECT id, thread_id, from_email, from_name, to_json, cc_json, subject,
-            snippet, body_text, internal_date, is_unread, permalink
-            FROM gmail_messages WHERE account_id = ? AND id = ?`, accountID, id)
+		row = db.QueryRowContext(ctx, `SELECT m.id, m.thread_id, m.from_email, m.from_name, m.to_json, m.cc_json, m.subject,
+            m.snippet, m.body_text, m.internal_date, m.is_unread, m.permalink, `+GmailOwnSentSQL("m", "a")+
+			gmailEmailFrom+` WHERE m.account_id = ? AND m.id = ?`, accountID, id)
 	case EmailStoreIMAP:
 		uidValidity, uid, ok := parseIMAPEmailID(id)
 		if !ok {
 			return LocalEmail{}, false, nil
 		}
-		row = db.QueryRowContext(ctx, `SELECT `+imapEmailIDExpr+`, '', from_email, from_name, to_json, cc_json,
-            subject, snippet, body_text, internal_date, is_unread, permalink
-            FROM imap_messages WHERE account_id = ? AND uidvalidity = ? AND uid = ?`, accountID, uidValidity, uid)
+		row = db.QueryRowContext(ctx, `SELECT `+imapEmailIDExpr+`, '', m.from_email, m.from_name, m.to_json, m.cc_json,
+            m.subject, m.snippet, m.body_text, m.internal_date, m.is_unread, m.permalink, `+imapOwnSentSQL+
+			imapEmailFrom+` WHERE m.account_id = ? AND m.uidvalidity = ? AND m.uid = ?`, accountID, uidValidity, uid)
 	default:
 		return LocalEmail{}, false, fmt.Errorf("getting local email: unknown store %q", store)
 	}
 	var unread int
 	err = row.Scan(&m.ID, &m.ThreadID, &m.FromEmail, &m.FromName, &m.ToJSON, &m.CcJSON, &m.Subject,
-		&m.Snippet, &m.BodyText, &m.InternalDate, &unread, &m.Permalink)
+		&m.Snippet, &m.BodyText, &m.InternalDate, &unread, &m.Permalink, &m.Sent)
 	if errors.Is(err, sql.ErrNoRows) {
 		return LocalEmail{}, false, nil
 	}

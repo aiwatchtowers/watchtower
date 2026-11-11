@@ -84,3 +84,53 @@ func localEmailIndexColumns(t *testing.T, d *DB, index string) []string {
 	require.NoError(t, rows.Err())
 	return cols
 }
+
+// TestListLocalEmails_MarksOwnSent: a Gmail row is Sent when it is the owner's
+// own sent mail (GmailOwnSentSQL); an IMAP row only when it is self-addressed
+// (no Sent folder is synced). Both reads carry the mark.
+func TestListLocalEmails_MarksOwnSent(t *testing.T) {
+	d := OpenTestDB(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	at := func(ago time.Duration) string { return now.Add(-ago).Format(time.RFC3339) }
+
+	gid, err := d.CreateGoogleAccount(GoogleAccount{Email: "owner@example.com", Label: "acme", GmailEnabled: true})
+	require.NoError(t, err)
+	require.NoError(t, d.UpsertGmailMessage(gid, GmailMessage{ID: "recv", ThreadID: "t1",
+		FromEmail: "colleague-a@example.com", ToJSON: `["owner@example.com"]`, CcJSON: "[]",
+		LabelsJSON: `["INBOX"]`, InternalDate: at(2 * time.Hour), SyncedAt: at(2 * time.Hour)}))
+	require.NoError(t, d.UpsertGmailMessage(gid, GmailMessage{ID: "sent", ThreadID: "t1",
+		FromEmail: "alias@example.com", ToJSON: `["colleague-a@example.com"]`, CcJSON: "[]",
+		LabelsJSON: `["` + GmailSentLabel + `"]`, InternalDate: at(time.Hour), SyncedAt: at(time.Hour)}))
+
+	gmail, err := d.ListLocalEmails(ctx, LocalEmailQuery{Store: EmailStoreGmail, AccountID: gid, Limit: 10})
+	require.NoError(t, err)
+	sent := map[string]bool{}
+	for _, m := range gmail {
+		sent[m.ID] = m.Sent
+	}
+	assert.Equal(t, map[string]bool{"recv": false, "sent": true}, sent)
+	one, found, err := d.GetLocalEmail(ctx, EmailStoreGmail, gid, "sent")
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.True(t, one.Sent)
+
+	iid, err := d.CreateEmailAccount(EmailAccount{Provider: "imap", EmailAddress: "Owner@example.com", Security: "ssl", Label: "home"})
+	require.NoError(t, err)
+	require.NoError(t, d.UpsertImapMessage(ImapMessage{AccountID: iid, UID: 1, UIDValidity: 3,
+		FromEmail: " owner@EXAMPLE.com ", ToJSON: `["owner@example.com"]`, CcJSON: "[]", InternalDate: at(time.Hour)}, at(time.Hour)))
+	require.NoError(t, d.UpsertImapMessage(ImapMessage{AccountID: iid, UID: 2, UIDValidity: 3,
+		FromEmail: "colleague-a@example.com", ToJSON: `["owner@example.com"]`, CcJSON: "[]", InternalDate: at(2 * time.Hour)}, at(2*time.Hour)))
+
+	imap, err := d.ListLocalEmails(ctx, LocalEmailQuery{Store: EmailStoreIMAP, AccountID: iid, Limit: 10})
+	require.NoError(t, err)
+	sent = map[string]bool{}
+	for _, m := range imap {
+		sent[m.ID] = m.Sent
+	}
+	assert.Equal(t, map[string]bool{"3-1": true, "3-2": false}, sent)
+	one, found, err = d.GetLocalEmail(ctx, EmailStoreIMAP, iid, "3-1")
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.True(t, one.Sent)
+}
