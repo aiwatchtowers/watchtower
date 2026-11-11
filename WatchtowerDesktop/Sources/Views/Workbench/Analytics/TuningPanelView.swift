@@ -81,7 +81,10 @@ struct TuningPanelView: View {
                     .lineLimit(1)
                     .truncationMode(.tail)
             }
-            .menuStyle(.borderlessButton)
+            // A button-style menu draws the chip as built (capsule and
+            // chevron); a borderless one keeps only its text and icon.
+            .menuStyle(.button)
+            .buttonStyle(.plain)
             .menuIndicator(.hidden)
             // A long title truncates; New and Close keep their room.
             .fixedSize(horizontal: false, vertical: true)

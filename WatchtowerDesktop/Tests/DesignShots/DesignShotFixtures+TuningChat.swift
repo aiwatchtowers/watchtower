@@ -1,13 +1,16 @@
+import GRDB
 import SwiftUI
 import XCTest
 @testable import WatchtowerDesktop
 import WatchtowerCore
+import WatchtowerTestSupport
 
-/// Mockups of the tuning chat beside the Analytics pane (board #1517, spec
-/// `2026-11-03-tuning-chat-design.md` §3, §4.3a and §4.4). Proposal only: the
-/// panel and its feed rows are test-target mock views; the
-/// coach card in the feed, the pane's coach sections and the Statistics
-/// blocks are the real views on fixture data. Everything is synthetic.
+/// The tuning chat beside the Analytics pane (board #1517, spec
+/// `2026-11-03-tuning-chat-design.md` §3, §4.3a and §4.4), rendered from the
+/// real views: `AgentAnalyticsHeaderView` and `CoachSectionsView` in the
+/// pane, `TuningPanelView` over a `TuningChat` whose turns ran through the
+/// embedded-chat engine on a temporary database and a scripted AI service,
+/// and the Statistics blocks. Everything is synthetic.
 @MainActor
 enum TuningChatShotFixtures {
     enum State: String, CaseIterable {
@@ -31,14 +34,28 @@ enum TuningChatShotFixtures {
             default: "open"
             }
         }
+
+        /// The provider the panel decides its tools from (data for the
+        /// seeded catalog, where ollama is an HTTP kind: no tools).
+        var provider: String { [.noTools, .noToolsMidway].contains(self) ? "ollama" : "claude" }
     }
 
     private static var centers: [String: CoachCenter] = [:]
+    private static var chats: [State: TuningChat] = [:]
+    private static var services: [ScriptedAIService] = []
+    private static var database: (pool: DatabasePool, path: String)?
     static let widthKeys = ["designShots.tuningPanelWidth.460", "designShots.tuningPanelWidth.360"]
 
     static func cleanUp() {
         centers.values.forEach { $0.stop() }
         centers = [:]
+        chats.values.forEach { $0.close() }
+        chats = [:]
+        // A held turn (streaming) ends so its engine lets go of the stream.
+        services.filter { !$0.calls.isEmpty }.forEach { $0.finish() }
+        services = []
+        if let database { TestDatabase.cleanup(path: database.path) }
+        database = nil
         widthKeys.forEach { UserDefaults.standard.removeObject(forKey: $0) }
     }
 
@@ -51,10 +68,14 @@ enum TuningChatShotFixtures {
         }
         return panes + [
             DesignShot(name: "tuning-chat-analytics-header", size: NSSize(width: 900, height: 58)) {
-                AnyView(TuningAnalyticsHeader(tuneOn: false)
-                    .padding(Spacing.large)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                    .detailBackground())
+                do {
+                    return AnyView(header(try overview(), tuneOn: false)
+                        .padding(Spacing.large)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                        .detailBackground())
+                } catch {
+                    return DesignShotFixtures.failure(error)
+                }
             },
             DesignShot(name: "tuning-chat-statistics-codex-caption", size: NSSize(width: 900, height: 590)) {
                 statistics()
@@ -71,7 +92,9 @@ enum TuningChatShotFixtures {
 
     static func screen(_ state: State) -> AnyView {
         do {
-            return AnyView(TuningPaneShot(state: state, coach: try loaded(state.coachVariant)))
+            let coach = try loaded(state.coachVariant)
+            return AnyView(TuningPaneShot(state: state, overview: try overview(), coach: coach,
+                                          chat: try chat(state, coach: coach)))
         } catch {
             return DesignShotFixtures.failure(error)
         }
@@ -82,11 +105,11 @@ enum TuningChatShotFixtures {
     /// sessions." (§4.7, ask #1132).
     static func statistics() -> AnyView {
         do {
-            let overview = try JSONDecoder().decode(AgentReportOverview.self, from: fixture("agent-report-overview"))
+            let overview = try overview()
             let actions = AgentAnalyticsActions(turnOn: {}, openSession: { _ in }, openTarget: { _ in },
                                                 openFile: { _ in }, openAsks: {}, tune: {}, asksWaiting: false)
             return AnyView(VStack(alignment: .leading, spacing: Spacing.page) {
-                TuningAnalyticsHeader(tuneOn: false)
+                header(overview, tuneOn: false)
                 SectionHeader(title: "Statistics", systemImage: "chart.bar")
                 AgentAnalyticsContextView(context: overview.context, codex: .some, actions: actions)
                 AgentAnalyticsSkillsView(skills: overview.skills, codex: .some)
@@ -100,31 +123,65 @@ enum TuningChatShotFixtures {
         }
     }
 
+    /// The pane's header over the fixture report: a 7-day period with both
+    /// agents in it, so the agent filter shows.
+    static func header(_ overview: AgentReportOverview, tuneOn: Bool) -> AgentAnalyticsHeaderView {
+        AgentAnalyticsHeaderView(overview: overview, period: .constant(.week), agent: .constant(.all), tuneOn: tuneOn,
+                                 showsAgentPicker: AgentAnalyticsFormat.showsAgentPicker(overview, filter: .all)) {}
+    }
+
+    /// `agent-report-overview` moved to the mockups' week, with Claude Code
+    /// and Codex sessions in it.
+    static func overview() throws -> AgentReportOverview {
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: fixture("agent-report-overview")) as? [String: Any])
+        json["since"] = "2026-10-27T00:00:00Z"
+        json["until"] = "2026-11-03T00:00:00Z"
+        json["agents"] = ["claude", "codex"]
+        json["agent_filter"] = ["claude", "codex"]
+        return try JSONDecoder().decode(AgentReportOverview.self, from: JSONSerialization.data(withJSONObject: json))
+    }
+
     nonisolated private static func fixture(_ name: String) throws -> Data {
         let tests = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         return try Data(contentsOf: tests.appendingPathComponent("Core/Fixtures/\(name).json"))
+    }
+
+    /// Runs the main loop until `condition` holds (a 5 s deadline): the
+    /// shots are built synchronously, the engine and the coach work in tasks.
+    private static func spin(_ what: String, until condition: () -> Bool) {
+        let deadline = Date().addingTimeInterval(5)
+        while !condition(), Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+        }
+        XCTAssertTrue(condition(), what)
+    }
+
+    /// Awaits `body` by running the main loop.
+    private static func wait(_ what: String, _ body: @escaping @MainActor () async -> Void) {
+        var done = false
+        Task { @MainActor in
+            await body()
+            done = true
+        }
+        spin(what) { done }
     }
 
     // MARK: - Coach fixture
 
     /// One center per card variant: `stale` fails its Accept with the CLI's
     /// stale code, `accepting` never returns from it (the card stays
-    /// pending), `accepted` lists the chat's proposal as accepted.
+    /// pending), `accepted` lists the chat's proposal as accepted,
+    /// `accepted-repo` lists the chat's accepted CLAUDE.md edit.
     private static func loaded(_ variant: String) throws -> CoachCenter {
         if let center = centers[variant] { return center }
         let coach = CoachCenter(runner: Runner(variant: variant), interval: .seconds(3600))
         coach.show(workbench: 3, period: .week)
-        let deadline = Date().addingTimeInterval(5)
-        while coach.status[3]?.value == nil || coach.proposals?.value == nil, Date() < deadline {
-            RunLoop.main.run(until: Date().addingTimeInterval(0.01))
-        }
-        XCTAssertNotNil(coach.proposals?.value, "the coach proposals loaded")
+        spin("the coach loaded") { coach.status[3]?.value != nil && coach.proposals?.value != nil }
         let id = TuningShotTexts.proposalID
         if variant == "stale" || variant == "accepting" {
             Task { await coach.accept(id, editedText: nil) }
-            while Date() < deadline,
-                  variant == "stale" ? coach.cardErrors[id] == nil : !coach.pending.contains(id) {
-                RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+            spin("the accept press landed") {
+                variant == "stale" ? coach.cardErrors[id] != nil : coach.pending.contains(id)
             }
         }
         centers[variant] = coach
@@ -141,21 +198,28 @@ enum TuningChatShotFixtures {
     "review_comments":{"value":1.5,"n":2,"known":true,"previous":2.0}},"open":1,"last_run":"2026-11-02T09:10:00Z"}
     """
 
+    nonisolated private static let earlierAccepted = #"""
+    {"id":4,"title":"Spec reviewer: skip naming nits","why":"Seen in several reviews.","destination":"prompt_addition",
+    "workbench_id":0,"prompt_id":"review.spec","kind":"add","metric":"spec_findings","before":"",
+    "after":"Skip naming nits.","evidence":[],"sources":3,"status":"accepted","created_at":"2026-10-24T09:00:00Z",
+    "decided_at":"2026-10-24T09:00:00Z","baseline":null,"verdict":"","verdict_value":null,"verdict_at":null,
+    "reverts_id":0,"budget":600}
+    """#
+
     /// The chat's proposal (a user skill, workbench 0) and one accepted edit.
-    /// `accepted-repo` lists only the earlier accepted edit; its folded line
-    /// reads `TuningChatTexts.acceptedRepoFile` (the shots move onto the real
-    /// views, the repository row with them, in Task 5.13).
+    /// `accepted-repo` lists the chat's accepted edit of workbench 3's
+    /// CLAUDE.md (#22, written on `main`, not committed yet) instead.
     nonisolated static func proposals(chatStatus: String) -> String {
         if chatStatus == "accepted-repo" {
             return #"""
             {"ok":true,"proposals":[
-            {"id":4,"title":"Spec reviewer: skip naming nits","why":"Seen in several reviews.","destination":"prompt_addition",
-            "workbench_id":0,"prompt_id":"review.spec","kind":"add","metric":"spec_findings","before":"",
-            "after":"Skip naming nits.","evidence":[],"sources":3,"status":"accepted","created_at":"2026-10-24T09:00:00Z",
-            "decided_at":"2026-10-24T09:00:00Z","baseline":null,"verdict":"","verdict_value":null,"verdict_at":null,
-            "reverts_id":0,"budget":600}
-            ]}
-            """#
+            {"id":22,"title":"Tests run the whole suite","why":"In 7 of 9 sessions the agent ran the whole suite.",
+            "destination":"repo_claude_md","workbench_id":3,"prompt_id":"","kind":"add","metric":"task_cost_usd",
+            "before":"","after":"Run only the touched package's tests while iterating.","evidence":[],"sources":2,
+            "status":"accepted","created_at":"2026-11-03T10:02:00Z","decided_at":"2026-11-03T10:05:00Z",
+            "baseline":null,"verdict":"","verdict_value":null,"verdict_at":null,"reverts_id":0,"budget":0,
+            "origin":"chat","written_branch":"main"},
+            """# + earlierAccepted + "]}"
         }
         let decided = chatStatus == "accepted" ? #""2026-11-03T10:05:00Z""# : "null"
         return #"""
@@ -169,13 +233,7 @@ enum TuningChatShotFixtures {
         "evidence":[{"kind":"chat","ref":"c12"},{"kind":"session","ref":"s41"}],"sources":2,"status":"\#(chatStatus)",
         "created_at":"2026-11-03T10:02:00Z","decided_at":\#(decided),"baseline":null,"verdict":"","verdict_value":null,
         "verdict_at":null,"reverts_id":0,"budget":6400},
-        {"id":4,"title":"Spec reviewer: skip naming nits","why":"Seen in several reviews.","destination":"prompt_addition",
-        "workbench_id":0,"prompt_id":"review.spec","kind":"add","metric":"spec_findings","before":"",
-        "after":"Skip naming nits.","evidence":[],"sources":3,"status":"accepted","created_at":"2026-10-24T09:00:00Z",
-        "decided_at":"2026-10-24T09:00:00Z","baseline":null,"verdict":"","verdict_value":null,"verdict_at":null,
-        "reverts_id":0,"budget":600}
-        ]}
-        """#
+        """# + earlierAccepted + "]}"
     }
 
     private final class Runner: CLIRunnerProtocol, @unchecked Sendable {
@@ -201,23 +259,154 @@ enum TuningChatShotFixtures {
         func run(args: [String], timeout: TimeInterval) async throws -> Data { try await run(args: args) }
         func run(args: [String], stdin: Data) async throws -> Data { try await run(args: args) }
     }
+
+    // MARK: - Chat fixture
+
+    /// The state's `TuningChat`: its own conversation of workbench 3 on the
+    /// shared temporary database, its turns run through the real engine
+    /// with a scripted AI service.
+    private static func chat(_ state: State, coach: CoachCenter) throws -> TuningChat {
+        if let chat = chats[state] { return chat }
+        ProviderCatalogFixture.seedShared()
+        let pool = try pool()
+        let ai = ScriptedAIService()
+        services.append(ai)
+        let center = EmbeddedChatCenter(idleTTL: 3600, clock: Date.init) { spec, gate in
+            makeSurfaceEngine(spec, dbPool: pool, ai: ai, gate: gate)
+        }
+        let title = Script.title(state)
+        let conversation = try pool.write { db in
+            try ChatConversationQueries.create(db, title: title, contextType: TuningChatSurface.contextType,
+                                               contextID: "3").id
+        }
+        // Midway: the turn runs with tools, the provider changes after it.
+        var provider = state == .noToolsMidway ? "claude" : state.provider
+        let chat = TuningChat(workbenchID: 3, conversationID: conversation, dbPool: pool, center: center,
+                              coach: coach, decideTools: { TuningChatSurface.toolsAvailable(provider: provider) },
+                              period: { .week })
+        chats[state] = chat
+        try Script.run(state, chat: chat, ai: ai, pool: pool)
+        if state == .noToolsMidway {
+            provider = state.provider
+            chat.refreshToolAccess()
+        }
+        wait("the cards were read") { await chat.refreshCards() }
+        spin("the coach listed the chat's proposal") { coach.proposals?.value != nil }
+        return chat
+    }
+
+    private static func pool() throws -> DatabasePool {
+        if let database { return database.pool }
+        let (pool, path) = try TestDatabase.createPool()
+        database = (pool, path)
+        return pool
+    }
+
+    /// The turns each state shows.
+    @MainActor private enum Script {
+        static func title(_ state: State) -> String {
+            switch state {
+            case .empty, .loading, .noTools: ""
+            case .streaming, .error: TuningShotTexts.costAsk
+            case .proposalAcceptedRepo: "Tests run the whole suite"
+            default: "review-pr reads every file"
+            }
+        }
+
+        static func run(_ state: State, chat: TuningChat, ai: ScriptedAIService, pool: DatabasePool) throws {
+            switch state {
+            case .empty, .loading, .noTools:
+                return
+            case .streaming:
+                let turn = start(chat, ai, TuningShotTexts.costAsk)
+                tool(ai, turn, "get_llm_usage", #"{"days":7}"#)
+                tool(ai, turn, "get_prompt", #"{"prompt_id":"digest.channel"}"#, ends: false)
+                ai.emit(.text(TuningShotTexts.costPartial), call: 0)
+                spin("the partial reply is on the live row") {
+                    chat.engine.liveTurn?.text == TuningShotTexts.costPartial
+                }
+            case .error:
+                let turn = start(chat, ai, TuningShotTexts.costAsk)
+                tool(ai, turn, "get_llm_usage", #"{"days":7}"#)
+                ai.emit(.failure(ChatSessionError(turnID: turn, code: .rateLimit,
+                                                  message: TuningShotTexts.turnError, retryable: true)), call: 0)
+                ai.finish(call: 0)
+                finish(chat)
+            case .proposalAcceptedRepo:
+                let turn = start(chat, ai, TuningShotTexts.repoAsk)
+                tool(ai, turn, "get_agent_instructions", "{}")
+                tool(ai, turn, "list_agent_sessions", #"{"days":7}"#)
+                tool(ai, turn, "list_coach_proposals", "{}")
+                tool(ai, turn, "propose_tuning_edit", #"{"destination":"repo_claude_md"}"#)
+                try filed(22, turn: turn, chat: chat, pool: pool)
+                reply(chat, ai, TuningShotTexts.repoAnswer)
+            default:
+                let turn = start(chat, ai, TuningShotTexts.skillAsk)
+                tool(ai, turn, "get_skill", #"{"name":"review-pr"}"#)
+                tool(ai, turn, "list_agent_sessions", #"{"days":7}"#)
+                tool(ai, turn, "list_coach_proposals", "{}")
+                tool(ai, turn, "propose_tuning_edit", #"{"skill":"review-pr"}"#)
+                try filed(TuningShotTexts.proposalID, turn: turn, chat: chat, pool: pool)
+                reply(chat, ai, TuningShotTexts.skillAnswer)
+            }
+        }
+
+        /// Sends the owner's text and waits for the turn's stream; the turn id.
+        private static func start(_ chat: TuningChat, _ ai: ScriptedAIService, _ text: String) -> String {
+            XCTAssertTrue(chat.engine.send(text))
+            spin("the turn started") { ai.calls.count == 1 && chat.engine.liveTurn != nil }
+            return chat.engine.liveTurn?.turnID ?? ""
+        }
+
+        private static func tool(
+            _ ai: ScriptedAIService,
+            _ turn: String,
+            _ name: String,
+            _ args: String,
+            ends: Bool = true
+        ) {
+            let id = "tool-\(name)"
+            ai.emit(.toolStart(ChatToolStart(turnID: turn, id: id, name: name, argsJSON: args)), call: 0)
+            if ends {
+                ai.emit(.toolEnd(ChatToolEnd(turnID: turn, id: id, ok: true, summary: "", sources: [])), call: 0)
+            }
+        }
+
+        /// The rows an applied `propose_tuning_edit` call writes: the card
+        /// sits under its turn.
+        private static func filed(_ id: Int64, turn: String, chat: TuningChat, pool: DatabasePool) throws {
+            try pool.write { db in
+                try db.execute(sql: """
+                    INSERT INTO agent_actions (tool, args_json, conversation_id, turn_id, status, result_json)
+                    VALUES ('propose_tuning_edit', '{}', ?, ?, 'applied', ?)
+                    """, arguments: [chat.conversationID, turn, #"{"proposal_id":\#(id)}"#])
+            }
+        }
+
+        private static func reply(_ chat: TuningChat, _ ai: ScriptedAIService, _ text: String) {
+            ai.emit(.text(text), .turnComplete(text), .done, call: 0)
+            ai.finish(call: 0)
+            finish(chat)
+        }
+
+        private static func finish(_ chat: TuningChat) {
+            spin("the turn ended") { !chat.engine.isStreaming }
+            TuningChatShotFixtures.wait("the turn was written") { await chat.engine.finished() }
+        }
+    }
 }
 
 // MARK: - Texts
 
-/// Fixture-only text of the mockups; the panel's own strings live in `TuningChatTexts`.
+/// Fixture-only text of the shots; the panel's own strings live in `TuningChatTexts`.
 enum TuningShotTexts {
-    static let figuresText = TuningChatTexts.figures(
-        .init(days: 7, sessions: 23, tasks: 7, costUSD: 41.2, perTaskUSD: 2.94, previousPerTaskUSD: 2.31)
-    )
-    static let starterTitles = starterPrompts.map(\.title)
-    private static let starterPrompts = TuningChatTexts.starters(
+    static let figures = TuningChatTexts.Figures(days: 7, sessions: 23, tasks: 7, costUSD: 41.2,
+                                                 perTaskUSD: 2.94, previousPerTaskUSD: 2.31)
+    static let starters = TuningChatTexts.starters(
         .init(costPerTaskGrew: true, topHintFinding: "Sessions re-read the same files: 41 times in 9 sessions")
     )
     static let proposalID: Int64 = 21
     static let turnError = "The model stopped: overloaded — the service is busy. Nothing was proposed."
-    /// The folded line of an accepted workbench repository file (§4.3a).
-    static let acceptedRepo = TuningChatTexts.acceptedRepoFile(path: "CLAUDE.md", branch: "main")
     static let skillAsk = "The review-pr skill makes the agent read every changed file. Can we fix that?"
     static let skillAnswer = "In 9 of 12 review sessions the agent opened every changed file in full before "
         + "looking at the diff. Step 2 of your review-pr skill asks for exactly that. Here is a smaller step 2:"
@@ -232,10 +421,16 @@ enum TuningShotTexts {
 
 // MARK: - Pane
 
-/// The Analytics pane and the tuning panel side by side (`PanelSplit`).
+/// The Analytics pane's header and coach sections beside the real tuning
+/// panel, in the pane's `PanelSplit`.
 private struct TuningPaneShot: View {
     let state: TuningChatShotFixtures.State
+    let overview: AgentReportOverview
     let coach: CoachCenter
+    let chat: TuningChat
+
+    private static let noActions = CoachActions(openAsk: { _ in }, openTerminalSession: { _ in },
+                                                scrollToStatistics: {})
 
     private var width: PanelSplitWidth {
         let narrow = state == .narrow
@@ -244,12 +439,11 @@ private struct TuningPaneShot: View {
     }
 
     var body: some View {
-        // Own edge line: the split's `Divider()` overlay lies flat in this host.
-        PanelSplit(isPanelShown: true, width: width, showsEdgeLine: false) {
+        PanelSplit(isPanelShown: true, width: width) {
             ScrollView {
                 VStack(alignment: .leading, spacing: Spacing.page) {
-                    TuningAnalyticsHeader(tuneOn: true)
-                    CoachSectionsView(coach: coach, workbench: 3, actions: TuningFeed.noActions)
+                    TuningChatShotFixtures.header(overview, tuneOn: true)
+                    CoachSectionsView(coach: coach, workbench: 3, actions: Self.noActions)
                 }
                 .frame(maxWidth: 900, alignment: .leading)
                 .padding(Spacing.large)
@@ -257,303 +451,10 @@ private struct TuningPaneShot: View {
             }
             .detailBackground()
         } panel: {
-            TuningPanelShot(state: state, coach: coach)
-                .background(Color(nsColor: .windowBackgroundColor))
-                .overlay(alignment: .leading) {
-                    Rectangle().fill(.separator).frame(width: Stroke.hairline)
-                }
-        }
-    }
-}
-
-/// The pane header (§3.1): the agent filter beside the period, and **Tune**
-/// in place of **Discuss in Chat**, on while the panel is open.
-struct TuningAnalyticsHeader: View {
-    let tuneOn: Bool
-
-    enum Agent: Hashable { case all, claude, codex }
-
-    var body: some View {
-        // One row when the pane is wide; the controls drop under the period
-        // when the tuning panel leaves the pane narrow.
-        ViewThatFits(in: .horizontal) {
-            HStack(alignment: .center, spacing: Spacing.regular) {
-                period
-                Spacer(minLength: Spacing.regular)
-                controls
-            }
-            VStack(alignment: .leading, spacing: Spacing.regular) {
-                period
-                HStack(spacing: Spacing.regular) {
-                    agentPicker
-                    periodControls
-                }
-            }
-            VStack(alignment: .leading, spacing: Spacing.regular) {
-                period
-                agentPicker
-                periodControls
-            }
-        }
-        .controlSize(.small)
-    }
-
-    private var period: some View {
-        HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
-            Text("Oct 27 – Nov 3").font(.headline)
-            Text("against Oct 20 – 27").font(.caption).foregroundStyle(.secondary)
-        }
-        .fixedSize()
-    }
-
-    private var controls: some View {
-        HStack(alignment: .center, spacing: Spacing.regular) {
-            agentPicker
-            periodControls
-        }
-    }
-
-    private var agentPicker: some View {
-        KitSegmentedPicker(title: "Agent", selection: .constant(Agent.all), segments: [
-            KitSegment(value: Agent.all, title: "All"),
-            KitSegment(value: Agent.claude, title: "Claude Code"),
-            KitSegment(value: Agent.codex, title: "Codex")
-        ])
-        .fixedSize()
-    }
-
-    private var periodControls: some View {
-        HStack(alignment: .center, spacing: Spacing.regular) {
-            KitSegmentedPicker(title: "Period", selection: .constant(AgentAnalyticsCenter.Period.week), segments: [
-                KitSegment(value: AgentAnalyticsCenter.Period.day, title: "1 day"),
-                KitSegment(value: AgentAnalyticsCenter.Period.week, title: "7 days"),
-                KitSegment(value: AgentAnalyticsCenter.Period.month, title: "30 days")
-            ])
-            Circle()
-                .fill(Tone.success)
-                .frame(width: IconSize.stateDot, height: IconSize.stateDot)
-            Toggle(isOn: .constant(tuneOn)) { Label("Tune", systemImage: "slider.horizontal.3") }
-                .toggleStyle(SegmentedToggleStyle(isHovered: false) { _ in })
-                .segmentCapsule()
-                .help("Tune prompts, skills and agent instructions in a chat")
-        }
-        .fixedSize()
-    }
-}
-
-// MARK: - Panel
-
-/// Title row, feed, composer.
-private struct TuningPanelShot: View {
-    let state: TuningChatShotFixtures.State
-    let coach: CoachCenter
-
-    private var isFresh: Bool { [.empty, .loading, .noTools].contains(state) }
-    private var busy: Bool { state == .streaming }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            titleRow
-            ScrollView {
-                TuningFeed(state: state, coach: coach)
-                    .padding(.horizontal, Spacing.medium)
-                    .padding(.vertical, Spacing.regular)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .defaultScrollAnchor(isFresh ? .top : .bottom)
-            if state == .noToolsMidway {
-                TuningFeed.noToolsCard
-                    .padding(.horizontal, Spacing.medium)
-                    .padding(.bottom, Spacing.regular)
-            }
-            composer
-        }
-    }
-
-    private var titleRow: some View {
-        HStack(spacing: Spacing.regular) {
-            Text(TuningChatTexts.title).font(.headline)
-            MenuLabel(text: isFresh ? TuningChatTexts.newChat : conversation,
-                      systemImage: "bubble.left.and.bubble.right", color: .secondary)
-                .lineLimit(1)
-            Spacer(minLength: Spacing.regular)
-            Button("New") {}.buttonStyle(.kitQuiet)
-            Button {} label: { Image(systemName: "xmark") }
-                .buttonStyle(.kitIcon(isOn: false))
-                .help("Close (Esc)")
-        }
-        .controlSize(.small)
-        .padding(.horizontal, Spacing.medium)
-        .padding(.vertical, Spacing.regular)
-    }
-
-    private var conversation: String {
-        switch state {
-        case .streaming, .error: "Which prompt costs the most?"
-        case .proposalAcceptedRepo: "Tests run the whole suite"
-        default: "review-pr reads every file"
-        }
-    }
-
-    private var composer: some View {
-        HStack(spacing: Spacing.compact) {
-            Text(TuningChatTexts.placeholder).foregroundStyle(.tertiary).lineLimit(1)
-            Spacer(minLength: Spacing.compact)
-            Image(systemName: busy ? "stop.fill" : "arrow.up")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(Color.accentColor)
-                .frame(width: IconSize.composerLarge, height: IconSize.composerLarge)
-                .help(busy ? "Stop" : "Send")
-        }
-        .font(.callout)
-        .padding(Spacing.cozy)
-        .background(Fill.card, in: RoundedRectangle(cornerRadius: Radius.control))
-        .padding(.horizontal, Spacing.medium)
-        .padding(.bottom, Spacing.medium)
-    }
-}
-
-// MARK: - Feed
-
-private struct TuningFeed: View {
-    let state: TuningChatShotFixtures.State
-    let coach: CoachCenter
-
-    static let noActions = CoachActions(openAsk: { _ in }, openTerminalSession: { _ in }, scrollToStatistics: {})
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.medium) {
-            switch state {
-            case .empty: fresh(starters: true)
-            case .loading:
-                HStack(spacing: Spacing.compact) {
-                    ProgressView().controlSize(.small)
-                    Text(TuningChatTexts.loading).font(.callout).foregroundStyle(.secondary)
-                }
-            case .noTools: fresh(starters: false); Self.noToolsCard
-            case .noToolsMidway: fresh(starters: false); skillTurn(folded: false)
-            case .streaming: streaming
-            case .error: turnError
-            case .proposal, .proposalAccepting, .proposalStale: skillTurn(folded: false)
-            case .proposalAccepted: skillTurn(folded: true)
-            case .proposalAcceptedRepo: repoTurn
-            case .narrow: skillTurn(folded: false)
-            }
-        }
-    }
-
-    @ViewBuilder private func fresh(starters: Bool) -> some View {
-        Text(TuningShotTexts.figuresText).font(.caption).foregroundStyle(.secondary)
-        if starters {
-            VStack(alignment: .leading, spacing: Spacing.compact) {
-                ForEach(TuningShotTexts.starterTitles, id: \.self) { starter in
-                    Button {} label: {
-                        HStack(spacing: Spacing.regular) {
-                            Image(systemName: "text.bubble").foregroundStyle(.secondary)
-                            Text(starter).multilineTextAlignment(.leading)
-                            Spacer(minLength: 0)
-                        }
-                        .font(.callout)
-                        .padding(.horizontal, Spacing.cozy)
-                        .padding(.vertical, Spacing.regular)
-                        .background(Fill.rest, in: RoundedRectangle(cornerRadius: Radius.row))
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-        }
-    }
-
-    static var noToolsCard: some View {
-        VStack(alignment: .leading, spacing: Spacing.regular) {
-            Label(TuningChatTexts.noTools, systemImage: "wrench.and.screwdriver")
-                .font(.callout)
-            Text("Without them the chat can talk, but it cannot read the report, prompts or skills, or propose an edit.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Button("Open Settings") {}.buttonStyle(.kitSecondary)
-        }
-        .padding(Spacing.medium)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .card()
-    }
-
-    @ViewBuilder private var streaming: some View {
-        UserMessageBubble(text: TuningShotTexts.costAsk)
-        TuningToolLines(lines: [tool("get_llm_usage", #"{"days":7}"#), ("Reading prompt digest.channel…", true)])
-        MarkdownView(text: TuningShotTexts.costPartial)
-        StreamingIndicator()
-    }
-
-    @ViewBuilder private var turnError: some View {
-        UserMessageBubble(text: TuningShotTexts.costAsk)
-        TuningToolLines(lines: [tool("get_llm_usage", #"{"days":7}"#)])
-        HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
-            Label(TuningShotTexts.turnError, systemImage: "exclamationmark.triangle")
-                .font(.callout)
-                .foregroundStyle(Tone.error)
-            Spacer(minLength: Spacing.regular)
-            Button("Retry") {}.buttonStyle(.kitSecondary)
-        }
-    }
-
-    @ViewBuilder private func skillTurn(folded: Bool) -> some View {
-        UserMessageBubble(text: TuningShotTexts.skillAsk)
-        TuningToolLines(lines: [tool("get_skill", #"{"name":"review-pr"}"#), tool("list_agent_sessions", "{}"),
-                                tool("list_coach_proposals", "{}"), tool("propose_tuning_edit", #"{"skill":"review-pr"}"#)])
-        Text(TuningShotTexts.skillAnswer)
-        if folded {
-            acceptedLine(TuningChatTexts.accepted)
-        } else if let proposal = coach.proposals?.value?.first(where: { $0.id == TuningShotTexts.proposalID }) {
-            CoachProposalCardView(proposal: proposal, isFirst: false, coach: coach, actions: Self.noActions) {}
-        }
-    }
-
-    /// A chat edit of the workbench folder's CLAUDE.md, accepted (§4.3a): the
-    /// file is written and the owner commits it; Watchtower runs no git write.
-    @ViewBuilder private var repoTurn: some View {
-        UserMessageBubble(text: TuningShotTexts.repoAsk)
-        TuningToolLines(lines: [tool("get_agent_instructions", "{}"), tool("list_agent_sessions", "{}"),
-                                tool("list_coach_proposals", "{}"), tool("propose_tuning_edit", #"{"name":"CLAUDE.md"}"#)])
-        MarkdownView(text: TuningShotTexts.repoAnswer)
-        acceptedLine(TuningShotTexts.acceptedRepo)
-    }
-
-    /// An accepted proposal folds to one line; the pane's Accepted edits holds the rest.
-    private func acceptedLine(_ text: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
-            Image(systemName: "checkmark.circle.fill").foregroundStyle(Tone.success)
-            Text(text).font(.callout).fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: Spacing.regular)
-            Button(TuningChatTexts.showAccepted) {}.buttonStyle(.kitQuiet).font(.callout)
-        }
-        .padding(.horizontal, Spacing.cozy)
-        .padding(.vertical, Spacing.regular)
-        .background(Fill.rest, in: RoundedRectangle(cornerRadius: Radius.row))
-    }
-}
-
-/// One finished tool line, worded by the app's own `TuningChatTexts.toolLine`.
-private func tool(_ name: String, _ args: String) -> (String, Bool) {
-    (TuningChatTexts.toolLine(name: name, args: args) ?? name, false)
-}
-
-/// Quiet tool-activity lines (§3.4): a check when done, a spinner on the live one.
-private struct TuningToolLines: View {
-    let lines: [(String, Bool)]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.small) {
-            ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
-                HStack(spacing: Spacing.compact) {
-                    if line.1 {
-                        ProgressView().controlSize(.mini)
-                    } else {
-                        Image(systemName: "checkmark").font(.caption2).foregroundStyle(.tertiary)
-                    }
-                    Text(line.0).font(.caption).foregroundStyle(.secondary)
-                }
-            }
+            TuningPanelView(chat: chat, coach: coach, figures: TuningShotTexts.figures,
+                            starters: TuningShotTexts.starters, loading: state == .loading,
+                            actions: Self.noActions, onClose: {}, onOpenSettings: {}, onShowAccepted: { _ in })
+                .panelBackground()
         }
     }
 }
