@@ -2929,3 +2929,13 @@ Entry format:
 - weak-dimension: 7 (no independent test-coverage lane ran; codex timed out on the diff size)
 - rule-gap: a new `CompanyData` read tool that returns a growing list must take a `limit`/filter argument (or bound its output) so the 256 KB/200-row `CallRead` caps can never refuse every call — candidate rule for dimension 4/6
 - outcome: TBD
+
+## 2026-11-11 — fix/transcription-offline-model (3c82ed6cf: `WhisperKitEngine.ensureModelFilesDownloaded` returns a variant folder whose three `weight.bin` files are on disk without calling `WhisperKit.download`; 3 files; panel: prosecutor (3) + codex (1, = F1) + pr-test-analyzer + silent-failure-hunter + code-reviewer; judge verified by reading the diff and the pinned WhisperKit / swift-transformers checkouts, no runs) — verdict: changes-needed
+
+- contested: whether a weights-only completeness rule is safe once it gates the load path — settled blocker: `HubApi.snapshot` downloads files in `Set` order and returns silently on `Task.isCancelled`, so an interrupted download can leave all three `weight.bin` files with `coremldata.bin`/`model.mil`/config missing; the same rule already existed in `modelFilesMissing`, but there `load` still ran `WhisperKit.download`, which repaired the folder — the fast path removed the only repair path [6/8]
+- false-positive: silent-failure-hunter's HIGH on `try?` around `completeModelFolder` — the fallback is the pre-fix download path, whose own error still surfaces; kept as a minor (log line), not a swallowed-error blocker [9]
+- false-positive: tie-break vs WhisperKit's openai preference — `hasSuffix("_<model>")` cannot match the distil folder for `large-v3`, so no real case is known [6]
+- miss: none beyond the lanes; four lanes converged on F1 independently
+- weak-dimension: 7 (the fix shipped with tests for the new helper only; the changed function has no seam, so nothing fails on the pre-fix code)
+- rule-gap: a "skip the network when the cache looks complete" shortcut must keep a repair path (on load failure, fall back to the library's verifying download) or check the same completeness the library's loader needs; a completeness predicate borrowed from a UI hint (`modelFilesMissing`) is the tell — candidate rule for dimension 6/8
+- outcome: TBD

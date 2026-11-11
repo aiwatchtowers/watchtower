@@ -70,6 +70,19 @@ final class WhisperKitModelFilesTests: XCTestCase {
         XCTAssertNil(try WhisperKitProvider.completeModelFolder(model: "medium", in: repo))
     }
 
+    func testTheWeightPartsAreTheThreeCoreMLModels() {
+        XCTAssertEqual(WhisperKitProvider.weightParts, ["AudioEncoder", "MelSpectrogram", "TextDecoder"])
+    }
+
+    /// The first matching folder in sorted order is incomplete; the complete
+    /// one after it is still found.
+    func testCompleteModelFolderSkipsAnIncompleteFirstCandidate() throws {
+        try makeVariant("aaa_medium", weights: ["AudioEncoder"])
+        try makeVariant("openai_whisper-medium")
+        let folder = try WhisperKitProvider.completeModelFolder(model: "medium", in: repo)
+        XCTAssertEqual(folder?.lastPathComponent, "openai_whisper-medium")
+    }
+
     func testCompleteModelFolderThrowsForAnAbsentRepo() throws {
         try FileManager.default.removeItem(at: repo)
         XCTAssertThrowsError(try WhisperKitProvider.completeModelFolder(model: "small", in: repo))
@@ -87,5 +100,84 @@ final class WhisperKitModelFilesTests: XCTestCase {
         try makeVariant("openai_whisper-small")
         try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: repo.path)
         XCTAssertFalse(missing("small"))
+    }
+}
+
+/// `WhisperKitEngine.openPreferringLocal`: the load path that skips the Hub
+/// for a model on disk and repairs it through one download when it does not
+/// open.
+final class WhisperKitOpenPreferringLocalTests: XCTestCase {
+    private let local = URL(filePath: "/models/local")
+    private let downloaded = URL(filePath: "/models/downloaded")
+    private struct OpenFailed: Error {}
+    private struct DownloadFailed: Error {}
+
+    func testAModelOnDiskOpensWithoutTheHub() async throws {
+        var downloads = 0
+        let opened = try await WhisperKitEngine.openPreferringLocal(
+            modelName: "small", localFolder: local,
+            download: { downloads += 1; return self.downloaded },
+            open: { $0 }
+        )
+        XCTAssertEqual(opened, local)
+        XCTAssertEqual(downloads, 0)
+    }
+
+    func testNoModelOnDiskDownloadsThenOpens() async throws {
+        var downloads = 0
+        let opened = try await WhisperKitEngine.openPreferringLocal(
+            modelName: "small", localFolder: nil,
+            download: { downloads += 1; return self.downloaded },
+            open: { $0 }
+        )
+        XCTAssertEqual(opened, downloaded)
+        XCTAssertEqual(downloads, 1)
+    }
+
+    /// A partly downloaded folder that does not open is repaired by one
+    /// download and opened again.
+    func testAModelOnDiskThatFailsToOpenIsRepairedByOneDownload() async throws {
+        var downloads = 0
+        var opens: [URL] = []
+        let opened = try await WhisperKitEngine.openPreferringLocal(
+            modelName: "small", localFolder: local,
+            download: { downloads += 1; return self.downloaded },
+            open: { folder in
+                opens.append(folder)
+                if folder == self.local { throw OpenFailed() }
+                return folder
+            }
+        )
+        XCTAssertEqual(opened, downloaded)
+        XCTAssertEqual(downloads, 1)
+        XCTAssertEqual(opens, [local, downloaded])
+    }
+
+    func testTheRepairDownloadsFailureComesOut() async {
+        do {
+            _ = try await WhisperKitEngine.openPreferringLocal(
+                modelName: "small", localFolder: local,
+                download: { throw DownloadFailed() },
+                open: { (_: URL) -> URL in throw OpenFailed() }
+            )
+            XCTFail("expected the download's error")
+        } catch {
+            XCTAssertTrue(error is DownloadFailed, "got \(error)")
+        }
+    }
+
+    func testCancellationIsNotTurnedIntoADownload() async {
+        var downloads = 0
+        do {
+            _ = try await WhisperKitEngine.openPreferringLocal(
+                modelName: "small", localFolder: local,
+                download: { downloads += 1; return self.downloaded },
+                open: { (_: URL) -> URL in throw CancellationError() }
+            )
+            XCTFail("expected cancellation")
+        } catch {
+            XCTAssertTrue(error is CancellationError, "got \(error)")
+        }
+        XCTAssertEqual(downloads, 0)
     }
 }

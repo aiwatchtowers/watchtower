@@ -66,49 +66,99 @@ final class WhisperKitEngine: WhisperWindowEngine, @unchecked Sendable {
     }
 
     /// Downloads `modelName`'s files to the local WhisperKit cache without
-    /// instantiating the model. `TranscriptionModelProvisioner` calls this to
-    /// prefetch ahead of a recording; `load` below reuses it so the two
-    /// callers never diverge on how a download is performed.
-    ///
-    /// A variant already complete on disk is returned without touching the
-    /// network: `WhisperKit.download` always lists the repo on huggingface.co
-    /// first and only falls back to the cache when macOS reports no network
-    /// at all, so with the network up but the Hub unreachable (a VPN, a
-    /// firewall, a Hub outage) every load failed with "The request timed out"
-    /// although the model was on disk.
+    /// instantiating the model; `TranscriptionModelProvisioner` calls this to
+    /// prefetch ahead of a recording. A variant already complete on disk is
+    /// returned without the network (see `load`).
     static func ensureModelFilesDownloaded(
         modelName: String,
         downloadProgress: @escaping @Sendable (Double) -> Void
     ) async throws -> URL {
-        if let repo = WhisperKitProvider.hubRepoFolder,
-           let local = try? WhisperKitProvider.completeModelFolder(model: modelName, in: repo) {
-            downloadProgress(1)
-            return local
-        }
-        return try await WhisperKit.download(variant: modelName) { progress in
-            downloadProgress(progress.fractionCompleted)
-        }
+        if let local = localModelFolder(modelName) { return local }
+        return try await downloadFromHub(modelName: modelName, downloadProgress: downloadProgress)
     }
 
     /// modelName e.g. "large-v3"; downloadProgress reports 0…1 during first-run model download.
     ///
     /// Uses the explicit download-then-load path because `WhisperKit(WhisperKitConfig(model:))`
     /// offers no download-progress hook in 0.18.0.
+    ///
+    /// A variant whose weight files are all on disk opens without the Hub:
+    /// `WhisperKit.download` always lists the repo on huggingface.co first
+    /// and falls back to the cache only when macOS reports no network at all,
+    /// so with the network up but the Hub unreachable (a VPN, a firewall, a
+    /// Hub outage) every load failed with "The request timed out" although
+    /// the model was on disk. Only the model files are covered: a tokenizer
+    /// that was never cached (a prefetched model's first load) still comes
+    /// from the Hub. Trade-off: a local variant is no longer compared with
+    /// the Hub, so an updated upload reaches it only through a repair.
     static func load(
         modelName: String,
         downloadProgress: @escaping @Sendable (Double) -> Void
     ) async throws -> WhisperKitEngine {
         downloadProgress(0)
-        let modelFolder = try await ensureModelFilesDownloaded(modelName: modelName, downloadProgress: downloadProgress)
-        downloadProgress(1)
-
-        let config = WhisperKitConfig(
-            modelFolder: modelFolder.path,
-            verbose: false,
-            load: true
+        let whisperKit = try await openPreferringLocal(
+            modelName: modelName,
+            localFolder: localModelFolder(modelName),
+            download: { try await downloadFromHub(modelName: modelName, downloadProgress: downloadProgress) },
+            open: { folder in
+                try await WhisperKit(WhisperKitConfig(modelFolder: folder.path, verbose: false, load: true))
+            }
         )
-        let whisperKit = try await WhisperKit(config)
+        downloadProgress(1)
         return WhisperKitEngine(whisperKit: whisperKit)
+    }
+
+    /// Opens the local folder when there is one; when that open fails (a
+    /// download interrupted after the weights landed — the Hub fetches files
+    /// in no fixed order), downloads once, which fills in the missing files,
+    /// and opens again. No local folder: download, then open. Cancellation
+    /// is never turned into a download.
+    static func openPreferringLocal<Model>(
+        modelName: String,
+        localFolder: URL?,
+        download: () async throws -> URL,
+        open: (URL) async throws -> Model
+    ) async throws -> Model {
+        if let localFolder {
+            do {
+                return try await open(localFolder)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                NSLog("WhisperKitEngine: %@ on disk failed to open (%@) — repairing it from the Hub",
+                      modelName, error.localizedDescription)
+            }
+        }
+        return try await open(try await download())
+    }
+
+    /// The variant's complete folder in the Hub cache, or nil (not there, or
+    /// the cache cannot be listed — the download then reports its own error).
+    private static func localModelFolder(_ modelName: String) -> URL? {
+        guard let repo = WhisperKitProvider.hubRepoFolder else { return nil }
+        do {
+            if let folder = try WhisperKitProvider.completeModelFolder(model: modelName, in: repo) {
+                NSLog("WhisperKitEngine: %@ is on disk — loading without the Hub", modelName)
+                return folder
+            }
+            return nil
+        } catch {
+            let nsError = error as NSError
+            if !(nsError.domain == NSCocoaErrorDomain && nsError.code == NSFileReadNoSuchFileError) {
+                NSLog("WhisperKitEngine: model cache unreadable (%@ %ld) — downloading %@",
+                      nsError.domain, nsError.code, modelName)
+            }
+            return nil
+        }
+    }
+
+    private static func downloadFromHub(
+        modelName: String,
+        downloadProgress: @escaping @Sendable (Double) -> Void
+    ) async throws -> URL {
+        try await WhisperKit.download(variant: modelName) { progress in
+            downloadProgress(progress.fractionCompleted)
+        }
     }
 
     func detectLanguage(_ samples: [Float]) async throws -> [String: Float] {
