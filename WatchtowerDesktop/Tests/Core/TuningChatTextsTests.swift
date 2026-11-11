@@ -62,4 +62,52 @@ final class TuningChatTextsTests: XCTestCase {
         XCTAssertEqual(TuningChatTexts.foldedProposal(status: "rolled_back", title: "x"), "Rolled back · x")
         XCTAssertNil(TuningChatTexts.foldedProposal(status: "open", title: "x"))
     }
+
+    func testRepoFileLines() {
+        XCTAssertEqual(TuningChatTexts.repoCardCaption(path: "CLAUDE.md", branch: "main"), "CLAUDE.md · on branch main")
+        XCTAssertEqual(TuningChatTexts.repoCardCaption(path: "CLAUDE.md", branch: "detached:abc1234"),
+                       "CLAUDE.md · on a detached HEAD (abc1234)")
+        XCTAssertEqual(TuningChatTexts.repoCardCaption(path: "CLAUDE.md", branch: ""), "CLAUDE.md")
+        XCTAssertEqual(TuningChatTexts.acceptedRepoFile(path: "CLAUDE.md", branch: "main"),
+                       "Accepted · wrote CLAUDE.md on main — commit it yourself")
+        XCTAssertEqual(TuningChatTexts.acceptedRepoFile(path: "CLAUDE.md", branch: "detached:abc1234"),
+                       "Accepted · wrote CLAUDE.md on a detached HEAD (abc1234) — commit it yourself")
+        XCTAssertEqual(TuningChatTexts.acceptedRepoFile(path: "AGENTS.md", branch: ""),
+                       "Accepted · wrote AGENTS.md — commit it yourself")
+        XCTAssertEqual(TuningChatTexts.committedRepoFile, "Accepted · committed · measuring for 14 days")
+        XCTAssertEqual(TuningChatTexts.awaitingCommit, "Accepted · waiting for your commit")
+        XCTAssertEqual(TuningChatTexts.notCommitted, "Not committed in 30 days — not measured")
+        XCTAssertEqual(TuningChatTexts.rolledBackRepoFile(path: ".claude/skills/review-pr/SKILL.md"),
+                       "Rolled back · restored .claude/skills/review-pr/SKILL.md — commit it yourself")
+        XCTAssertEqual(TuningChatTexts.repoDirty(path: "CLAUDE.md"),
+                       "CLAUDE.md has uncommitted changes — commit or discard them, then press Accept again.")
+        XCTAssertEqual(TuningChatTexts.repoNotGit,
+                       "This workbench folder is not a git repository: Watchtower changes files here only where you "
+                       + "can review and commit the change.")
+    }
+
+    func testFoldedRepoLine() throws {
+        func repo(_ extra: String) throws -> CoachProposal {
+            let json = #"{"id":9,"title":"Tests","why":"w","destination":"repo_claude_md","workbench_id":3,"prompt_id":"","#
+                + #""kind":"add","metric":"corrections","before":"","after":"x","evidence":[],"sources":1,"#
+                + #""status":"accepted","created_at":"2026-11-01T09:00:00Z","decided_at":"2026-11-01T09:00:00Z","#
+                + #""verdict":"","reverts_id":0,"budget":0"# + extra + "}"
+            return try JSONDecoder().decode(CoachProposal.self, from: Data(json.utf8))
+        }
+        XCTAssertEqual(TuningChatTexts.folded(try repo(#","written_branch":"main""#)),
+                       "Accepted · wrote CLAUDE.md on main — commit it yourself")
+        XCTAssertEqual(TuningChatTexts.folded(try repo(""), written: CoachWrittenFile(path: "CLAUDE.md", branch: "dev")),
+                       "Accepted · wrote CLAUDE.md on dev — commit it yourself")
+        XCTAssertEqual(TuningChatTexts.folded(try repo(#","written_branch":"main","measure_from":"2026-11-02T09:00:00Z""#)),
+                       TuningChatTexts.committedRepoFile)
+    }
+
+    func testWrittenFileFromTheAcceptResult() {
+        let ok = #"{"ok":true,"id":9,"status":"accepted","pack_copies_updated":0,"pack_copies_drifted":0,"#
+            + #""written_path":"CLAUDE.md","written_branch":"main"}"#
+        XCTAssertEqual(CoachWrittenFile.parse(acceptResult: Data(ok.utf8)), CoachWrittenFile(path: "CLAUDE.md", branch: "main"))
+        let other = #"{"ok":true,"id":9,"status":"accepted","written_path":"","written_branch":""}"#
+        XCTAssertNil(CoachWrittenFile.parse(acceptResult: Data(other.utf8)))
+        XCTAssertNil(CoachWrittenFile.parse(acceptResult: Data(#"{"ok":true}"#.utf8)))
+    }
 }

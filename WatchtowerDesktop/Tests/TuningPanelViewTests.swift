@@ -305,6 +305,49 @@ final class TuningPanelViewTests: XCTestCase {
         XCTAssertThrowsError(try line.inspect().find(button: TuningChatTexts.showAccepted))
     }
 
+    private static func repoProposal(
+        _ extra: String,
+        status: String = "accepted",
+        verdict: String = ""
+    ) throws -> CoachProposal {
+        let json = #"{"id":22,"title":"Tests run the whole suite","why":"w","destination":"repo_claude_md","#
+            + #""workbench_id":3,"prompt_id":"","kind":"add","metric":"corrections","before":"","after":"x","#
+            + #""evidence":[],"sources":1,"status":""# + status + #"","created_at":"2026-11-01T09:00:00Z","#
+            + #""decided_at":"2026-11-01T09:00:00Z","verdict":""# + verdict + #"","reverts_id":0,"budget":0,"origin":"chat","#
+            + #""conversation_id":12"# + extra + "}"
+        return try JSONDecoder().decode(CoachProposal.self, from: Data(json.utf8))
+    }
+
+    func testAcceptedRepoFileLine() throws {
+        let waiting = try Self.repoProposal(#","written_branch":"main""#)
+        var shown = 0
+        let line = TuningAcceptedLine(proposal: waiting) { shown += 1 }
+        XCTAssertNoThrow(try line.inspect().find(text: TuningChatTexts.acceptedRepoFile(path: "CLAUDE.md", branch: "main")))
+        try line.inspect().find(button: TuningChatTexts.showAccepted).tap()
+        XCTAssertEqual(shown, 1)
+
+        // The accept result's path and branch, when the Desktop has them.
+        let fromResult = TuningAcceptedLine(proposal: try Self.repoProposal(""),
+                                            written: CoachWrittenFile(path: "CLAUDE.md", branch: "dev")) {}
+        XCTAssertNoThrow(try fromResult.inspect().find(text: "Accepted · wrote CLAUDE.md on dev — commit it yourself"))
+
+        let committed = try Self.repoProposal(#","written_branch":"main","measure_from":"2026-11-02T09:00:00Z""#)
+        XCTAssertNoThrow(try TuningAcceptedLine(proposal: committed) {}.inspect().find(text: TuningChatTexts.committedRepoFile))
+    }
+
+    func testAcceptedEditsRepoRows() throws {
+        let coach = CoachCenter(runner: ProposalsRunner(status: "accepted"), interval: .seconds(3600))
+        defer { coach.stop() }
+        func rowText(_ p: CoachProposal) throws -> String {
+            let view = CoachAcceptedLogView(accepted: [p], open: [], coach: coach) { _ in }
+            return try view.inspect().find(text: p.verdictLine(hasCut: false, now: Date())).string()
+        }
+        XCTAssertEqual(try rowText(try Self.repoProposal(#","written_branch":"main""#)), TuningChatTexts.awaitingCommit)
+        XCTAssertEqual(try rowText(try Self.repoProposal("", verdict: "too_little_data")), TuningChatTexts.notCommitted)
+        XCTAssertEqual(try rowText(try Self.repoProposal("", status: "rolled_back")),
+                       TuningChatTexts.rolledBackRepoFile(path: "CLAUDE.md"))
+    }
+
     func testNoAddToKnowledgeInThePanel() async throws {
         let ai = ScriptedAIService()
         let chat = try await chat(ai)

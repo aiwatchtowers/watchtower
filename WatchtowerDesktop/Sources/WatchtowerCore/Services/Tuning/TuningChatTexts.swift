@@ -133,6 +133,62 @@ package enum TuningChatTexts {
         }
     }
 
+    // MARK: Workbench repository files (spec §4.3a, D66–D68)
+
+    /// The open card's diff caption: the file and the branch it would land
+    /// on ("" = the branch could not be read: the path only).
+    package static func repoCardCaption(path: String, branch: String) -> String {
+        guard let on = onBranch(branch, named: true) else { return path }
+        return "\(path) · \(on)"
+    }
+
+    /// The folded line of an accepted repository edit until its commit is seen.
+    package static func acceptedRepoFile(path: String, branch: String) -> String {
+        let on = onBranch(branch, named: false).map { " \($0)" } ?? ""
+        return "Accepted · wrote \(path)\(on) — commit it yourself"
+    }
+
+    /// The folded line once the daemon saw the edit committed (`measure_from`).
+    package static let committedRepoFile = "Accepted · committed · measuring for 14 days"
+    /// The Accepted edits row of a repository edit not committed yet.
+    package static let awaitingCommit = "Accepted · waiting for your commit"
+    /// The Accepted edits row of a repository edit not committed 30 days after Accept.
+    package static let notCommitted = "Not committed in 30 days — not measured"
+
+    /// The Accepted edits row after Roll Back of a repository file.
+    package static func rolledBackRepoFile(path: String) -> String {
+        "Rolled back · restored \(path) — commit it yourself"
+    }
+
+    /// The card's error line for CLI code `dirty` (Go `coach.RepoDirtyLine`).
+    package static func repoDirty(path: String) -> String {
+        "\(path) has uncommitted changes — commit or discard them, then press Accept again."
+    }
+
+    /// The card's error line for CLI code `not_git` (Go `coach.RepoNotGitLine`).
+    package static let repoNotGit = "This workbench folder is not a git repository: "
+        + "Watchtower changes files here only where you can review and commit the change."
+
+    /// The folded line of a settled chat proposal, nil while it is open. A
+    /// repository edit names the file and branch it wrote (`written`, from
+    /// the accept result, else derived from the proposal).
+    package static func folded(_ proposal: CoachProposal, written: CoachWrittenFile? = nil) -> String? {
+        if proposal.status == "accepted",
+           let path = written?.path ?? proposal.repoRelativePath {
+            if proposal.measureFrom != nil { return committedRepoFile }
+            return acceptedRepoFile(path: path, branch: written?.branch ?? proposal.writtenBranch)
+        }
+        return foldedProposal(status: proposal.status, title: proposal.title)
+    }
+
+    /// "on branch main" / "on main" (`named` false); "on a detached HEAD
+    /// (abc1234)" for the CLI's `detached:<short sha>`; nil for "".
+    private static func onBranch(_ branch: String, named: Bool) -> String? {
+        if branch.isEmpty { return nil }
+        if branch.hasPrefix("detached:") { return "on a detached HEAD (\(branch.dropFirst("detached:".count)))" }
+        return named ? "on branch \(branch)" : "on \(branch)"
+    }
+
     // MARK: Helpers
 
     private static func count(_ n: Int, _ noun: String) -> String { "\(n) \(noun)\(n == 1 ? "" : "s")" }

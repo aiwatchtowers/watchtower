@@ -185,7 +185,9 @@ struct TuningPanelView: View {
                     editing = proposal
                 }
             } else {
-                TuningAcceptedLine(proposal: proposal) { onShowAccepted(proposal.id) }
+                TuningAcceptedLine(proposal: proposal, written: coach.written[proposal.id]) {
+                    onShowAccepted(proposal.id)
+                }
             }
         }
     }
@@ -284,15 +286,17 @@ struct TuningNoToolsCard: View {
 
 /// A settled chat proposal folded to one line: accepted ones point at the
 /// pane's Accepted edits, where they are measured and can be rolled back.
-/// The workbench repository-file text is Task 5.14's.
+/// A workbench repository file names the file and branch it wrote until
+/// the commit is seen (§4.3a).
 struct TuningAcceptedLine: View {
     let proposal: CoachProposal
+    var written: CoachWrittenFile?
     let onShow: () -> Void
 
     private var isAccepted: Bool { proposal.status == "accepted" }
 
     var body: some View {
-        if let text = TuningChatTexts.foldedProposal(status: proposal.status, title: proposal.title) {
+        if let text = TuningChatTexts.folded(proposal, written: written) {
             HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
                 Image(systemName: isAccepted ? "checkmark.circle.fill" : "minus.circle")
                     .foregroundStyle(isAccepted ? Tone.success : .secondary)

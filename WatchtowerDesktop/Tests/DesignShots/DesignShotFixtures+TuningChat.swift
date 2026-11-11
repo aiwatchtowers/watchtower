@@ -142,8 +142,9 @@ enum TuningChatShotFixtures {
     """
 
     /// The chat's proposal (a user skill, workbench 0) and one accepted edit.
-    /// `accepted-repo` lists only the earlier accepted edit: the repository
-    /// edit's Accepted edits row needs the `repo_*` label Task 5.14 adds.
+    /// `accepted-repo` lists only the earlier accepted edit; its folded line
+    /// reads `TuningChatTexts.acceptedRepoFile` (the shots move onto the real
+    /// views, the repository row with them, in Task 5.13).
     nonisolated static func proposals(chatStatus: String) -> String {
         if chatStatus == "accepted-repo" {
             return #"""
@@ -216,7 +217,7 @@ enum TuningShotTexts {
     static let proposalID: Int64 = 21
     static let turnError = "The model stopped: overloaded — the service is busy. Nothing was proposed."
     /// The folded line of an accepted workbench repository file (§4.3a).
-    static let acceptedRepo = "Accepted · wrote CLAUDE.md on main — commit it yourself"
+    static let acceptedRepo = TuningChatTexts.acceptedRepoFile(path: "CLAUDE.md", branch: "main")
     static let skillAsk = "The review-pr skill makes the agent read every changed file. Can we fix that?"
     static let skillAnswer = "In 9 of 12 review sessions the agent opened every changed file in full before "
         + "looking at the diff. Step 2 of your review-pr skill asks for exactly that. Here is a smaller step 2:"
