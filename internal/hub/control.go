@@ -213,14 +213,9 @@ func (s *supervisor) serveControl(ctx context.Context) (stop func()) {
 			}
 			uid, err := s.o.peerUID(c)
 			if err != nil || uid != os.Getuid() {
-				log.Printf("hub: control socket: a client of another user refused")
+				log.Printf("hub: control socket: a client refused (another user, or its credentials unreadable)")
 				_ = c.Close()
 				continue
-			}
-			if uc, ok := c.(*net.UnixConn); ok && s.o.sendBuffer > 0 {
-				if err := uc.SetWriteBuffer(s.o.sendBuffer); err != nil {
-					log.Printf("hub: control socket: send buffer not set (%s)", errClass(err))
-				}
 			}
 			connsMu.Lock()
 			conns[c] = true

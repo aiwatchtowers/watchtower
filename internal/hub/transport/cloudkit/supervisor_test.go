@@ -156,8 +156,11 @@ func TestSupervisorStopsTheWholeProcessGroup(t *testing.T) {
 		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	// The helper never ends by itself (a 68-year sleep): only the group's
+	// stop can close its end, so a supervisor that misses the group leaves
+	// the read below blocked (go test -timeout fails it).
 	s := cloudkit.NewSupervisor(cloudkit.Config{Launch: func(context.Context) (*os.Process, error) {
-		return st.start("sleep 30 > '" + lifeFIFO + "' & echo $! > '" + pidFIFO + "'; wait")
+		return st.start("sleep 2147483647 > '" + lifeFIFO + "' & echo $! > '" + pidFIFO + "'; wait")
 	}})
 	done := make(chan error, 1)
 	go func() { done <- s.Run(ctx) }()

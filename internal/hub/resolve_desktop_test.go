@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"watchtower/internal/config"
@@ -110,13 +111,16 @@ func newRealDeskRig(t *testing.T, dir string) *deskRig {
 	return &deskRig{rig: newRig(t, dir), ck: memfake.New(transport.KindCloudKit, nil), mobile: mobile, tick: make(chan struct{}, 1), realBridge: true}
 }
 
-// cycles runs n daemon cycles through the hub's loop, whichever loop it is
-// in (the desktop gate, the lock wait or the reconcile loop): r.tick holds
-// one, so the n+1th send returns once n were taken and the loop is back at
-// its wait for the next.
+// cycles runs daemon cycles through the hub's loop, whichever loop it is in
+// (the desktop gate, the lock wait or the reconcile loop): r.tick holds one,
+// so the n+1th send returns once n were taken, so n-1 cycles have finished.
+// A bubble rig then settles, so all n have.
 func (r *deskRig) cycles(n int) {
 	for range n + 1 {
 		r.tick <- struct{}{}
+	}
+	if !r.realBridge {
+		synctest.Wait()
 	}
 }
 
@@ -842,30 +846,28 @@ func linkCloudKitPhone(t *testing.T, dir string) {
 // what the hub published on CloudKit before the bridge stops (a delete
 // through a stopped bridge would fail and leave the records).
 func TestPolicy03_DesktopHostWipesWhileTheBridgeRuns(t *testing.T) {
-	bubble(t, func(t *testing.T) {
-		policytest.Set(t, map[string]any{"MobileSync": "allowed"})
-		r := newDeskRig(t, shortDir(t))
-		setMeta(t, r.dir, state.MetaEnabled, "1")
-		linkCloudKitPhone(t, r.dir)
-		r.start(r.options())
-		r.waitState(StateRunning, "")
-		s := r.rec.last()
-		if s.Transport != string(transport.KindCloudKit) {
-			t.Fatalf("active %q", s.Transport)
-		}
-		data := transport.DataZone(s.RelayDeviceID)
-		eventually(t, "the heartbeat published on CloudKit", func() bool {
-			return slices.Contains(liveRecords(t, r.ck, data), "heartbeat")
-		})
-		policytest.Set(t, map[string]any{"MobileSync": "off"})
-		r.waitState(StateOff, ReasonPolicyOff)
-		if got := liveRecords(t, r.ck, data); len(got) != 0 {
-			t.Fatalf("CloudKit still holds %v after the policy turned off", got)
-		}
-		if r.bridgeAlive() {
-			t.Fatal("the bridge outlived the stopped hub")
-		}
+	policytest.Set(t, map[string]any{"MobileSync": "allowed"})
+	r := newRealDeskRig(t, shortDir(t))
+	setMeta(t, r.dir, state.MetaEnabled, "1")
+	linkCloudKitPhone(t, r.dir)
+	r.start(r.options())
+	r.waitState(StateRunning, "")
+	s := r.rec.last()
+	if s.Transport != string(transport.KindCloudKit) {
+		t.Fatalf("active %q", s.Transport)
+	}
+	data := transport.DataZone(s.RelayDeviceID)
+	eventually(t, "the heartbeat published on CloudKit", func() bool {
+		return slices.Contains(liveRecords(t, r.ck, data), "heartbeat")
 	})
+	policytest.Set(t, map[string]any{"MobileSync": "off"})
+	r.waitState(StateOff, ReasonPolicyOff)
+	if got := liveRecords(t, r.ck, data); len(got) != 0 {
+		t.Fatalf("CloudKit still holds %v after the policy turned off", got)
+	}
+	if r.bridgeAlive() {
+		t.Fatal("the bridge outlived the stopped hub")
+	}
 }
 
 // TestPolicy03_StoppedDesktopHostWipesWithTheRecordedStore: a desktop host
@@ -873,49 +875,47 @@ func TestPolicy03_DesktopHostWipesWhileTheBridgeRuns(t *testing.T) {
 // wipes them under MobileSync = off with that identity, through a bridge
 // started for the wipe and stopped after it.
 func TestPolicy03_StoppedDesktopHostWipesWithTheRecordedStore(t *testing.T) {
-	bubble(t, func(t *testing.T) {
-		policytest.Set(t, map[string]any{"MobileSync": "allowed"})
-		r := newDeskRig(t, shortDir(t))
-		setMeta(t, r.dir, state.MetaEnabled, "1")
-		linkCloudKitPhone(t, r.dir)
-		kc, _ := identitytest.NewKeychainStore(identity.KeychainService)
-		keychain := func(o Options) Options {
-			o.Desktop.identityStore = func(st *state.Store, _ string) (identity.Staging, error) {
-				if _, ok, err := st.Meta(identity.MetaIdentityStore); err != nil || !ok {
-					if err := st.SetMeta(identity.MetaIdentityStore, identity.IdentityStoreKeychain); err != nil {
-						return nil, err
-					}
+	policytest.Set(t, map[string]any{"MobileSync": "allowed"})
+	r := newRealDeskRig(t, shortDir(t))
+	setMeta(t, r.dir, state.MetaEnabled, "1")
+	linkCloudKitPhone(t, r.dir)
+	kc, _ := identitytest.NewKeychainStore(identity.KeychainService)
+	keychain := func(o Options) Options {
+		o.Desktop.identityStore = func(st *state.Store, _ string) (identity.Staging, error) {
+			if _, ok, err := st.Meta(identity.MetaIdentityStore); err != nil || !ok {
+				if err := st.SetMeta(identity.MetaIdentityStore, identity.IdentityStoreKeychain); err != nil {
+					return nil, err
 				}
-				return kc, nil
 			}
-			return o
+			return kc, nil
 		}
-		r.start(keychain(r.options()))
-		r.waitState(StateRunning, "")
-		s := r.rec.last()
-		if s.Identity != identity.IdentityStoreKeychain {
-			t.Fatalf("identity store %q", s.Identity)
-		}
-		data := transport.DataZone(s.RelayDeviceID)
-		eventually(t, "the heartbeat published on CloudKit", func() bool {
-			return slices.Contains(liveRecords(t, r.ck, data), "heartbeat")
-		})
-		if err := r.stop(); err != nil { // stopped with its records in place
-			t.Fatal(err)
-		}
-		if got := liveRecords(t, r.ck, data); len(got) == 0 {
-			t.Fatal("a plain stop deleted the records")
-		}
-
-		policytest.Set(t, map[string]any{"MobileSync": "off"})
-		r.start(keychain(r.options()))
-		r.waitState(StateOff, ReasonPolicyOff)
-		eventually(t, "the stopped hub's wipe", func() bool { return len(liveRecords(t, r.ck, data)) == 0 })
-		eventually(t, "the wipe's bridge stopped", func() bool { return !r.bridgeAlive() })
-		if _, err := os.Stat(filepath.Join(r.dir, identity.FileName)); !errors.Is(err, fs.ErrNotExist) {
-			t.Fatal("an identity file was made beside the Keychain store")
-		}
+		return o
+	}
+	r.start(keychain(r.options()))
+	r.waitState(StateRunning, "")
+	s := r.rec.last()
+	if s.Identity != identity.IdentityStoreKeychain {
+		t.Fatalf("identity store %q", s.Identity)
+	}
+	data := transport.DataZone(s.RelayDeviceID)
+	eventually(t, "the heartbeat published on CloudKit", func() bool {
+		return slices.Contains(liveRecords(t, r.ck, data), "heartbeat")
 	})
+	if err := r.stop(); err != nil { // stopped with its records in place
+		t.Fatal(err)
+	}
+	if got := liveRecords(t, r.ck, data); len(got) == 0 {
+		t.Fatal("a plain stop deleted the records")
+	}
+
+	policytest.Set(t, map[string]any{"MobileSync": "off"})
+	r.start(keychain(r.options()))
+	r.waitState(StateOff, ReasonPolicyOff)
+	eventually(t, "the stopped hub's wipe", func() bool { return len(liveRecords(t, r.ck, data)) == 0 })
+	eventually(t, "the wipe's bridge stopped", func() bool { return !r.bridgeAlive() })
+	if _, err := os.Stat(filepath.Join(r.dir, identity.FileName)); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatal("an identity file was made beside the Keychain store")
+	}
 }
 
 // TestFindBridge: the helper inside the running app's bundle first, then
@@ -959,42 +959,43 @@ func TestFindBridge(t *testing.T) {
 // transport's data zone; the owner's switch is left as it was and turning it
 // on is refused while off.
 func TestPolicy03_OffStopsDesktopHostHubKeepsSetting(t *testing.T) {
-	bubble(t, func(t *testing.T) {
-		policytest.Set(t, map[string]any{"MobileSync": "allowed"})
-		r := newDeskRig(t, shortDir(t))
-		setMeta(t, r.dir, state.MetaEnabled, "1")
-		linkPhoneDirectly(t, r.dir)
-		r.start(r.options())
-		r.waitState(StateRunning, "")
-		// The phone came over the relay: a hub of relay links starts there.
-		s := r.rec.last()
-		active := r.fake
-		if s.Transport == string(transport.KindCloudKit) {
-			active = r.ck
-		}
-		data := transport.DataZone(s.RelayDeviceID)
-		eventually(t, "the heartbeat published", func() bool {
-			return slices.Contains(liveRecords(t, active, data), "heartbeat")
-		})
-
-		policytest.Set(t, map[string]any{"MobileSync": "off"})
-		r.waitState(StateOff, ReasonPolicyOff)
-		if got := liveRecords(t, active, data); len(got) != 0 {
-			t.Fatalf("the data zone still holds %v after the policy turned off", got)
-		}
-		c := r.dial()
-		a, err := c.Do(ControlRequest{Op: OpEnable})
-		_ = c.Close()
-		if err != nil || a.OK || a.Error != ErrClassPolicyOff {
-			t.Fatalf("enable under off: %+v, %v", a, err)
-		}
-		if err := r.stop(); err != nil {
-			t.Fatal(err)
-		}
-		if v, _ := readMeta(t, r.dir, state.MetaEnabled); v != "1" {
-			t.Fatalf("the owner's switch was rewritten to %q", v)
-		}
+	policytest.Set(t, map[string]any{"MobileSync": "allowed"})
+	r := newRealDeskRig(t, shortDir(t))
+	setMeta(t, r.dir, state.MetaEnabled, "1")
+	linkPhoneDirectly(t, r.dir)
+	r.start(r.options())
+	r.waitState(StateRunning, "")
+	// The phone came over the relay: a hub of relay links starts there.
+	s := r.rec.last()
+	active := r.fake
+	if s.Transport == string(transport.KindCloudKit) {
+		active = r.ck
+	}
+	data := transport.DataZone(s.RelayDeviceID)
+	eventually(t, "the heartbeat published", func() bool {
+		return slices.Contains(liveRecords(t, active, data), "heartbeat")
 	})
+
+	policytest.Set(t, map[string]any{"MobileSync": "off"})
+	r.waitState(StateOff, ReasonPolicyOff)
+	if got := liveRecords(t, active, data); len(got) != 0 {
+		t.Fatalf("the data zone still holds %v after the policy turned off", got)
+	}
+	c, err := Dial(r.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := c.Do(ControlRequest{Op: OpEnable})
+	_ = c.Close()
+	if err != nil || a.OK || a.Error != ErrClassPolicyOff {
+		t.Fatalf("enable under off: %+v, %v", a, err)
+	}
+	if err := r.stop(); err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := readMeta(t, r.dir, state.MetaEnabled); v != "1" {
+		t.Fatalf("the owner's switch was rewritten to %q", v)
+	}
 }
 
 // readMetaRO reads one hub_meta value read-only (a hub may hold the lock).

@@ -156,7 +156,7 @@ func startDesktopHub(t *testing.T, opts interopOpts) *interopHub {
 	h.cancel, h.done = cancel, make(chan error, 1)
 	go func() { h.done <- Run(ctx, o) }()
 	t.Cleanup(h.stop) // runs before the bridgefake's Close and the stub sweep
-	eventually(t, "the control socket", func() bool {
+	eventuallyOnStand(t, stepWait, "the control socket", func() bool {
 		_, err := os.Stat(filepath.Join(dir, SocketName))
 		return err == nil
 	})
@@ -167,7 +167,7 @@ func startDesktopHub(t *testing.T, opts interopOpts) *interopHub {
 		t.Fatalf("enable: %+v, %v", a, err)
 	}
 	h.waitRunning()
-	eventually(t, "the bridge's Hello", func() bool { return h.bridge.HubID() != "" })
+	eventuallyOnStand(t, stepWait, "the bridge's Hello", func() bool { return h.bridge.HubID() != "" })
 	return h
 }
 

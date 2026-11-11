@@ -650,3 +650,31 @@ func TestLargeSavesSplitIntoFramesUnderTheCap(t *testing.T) {
 		t.Fatalf("%d save frames, want the items split", saves)
 	}
 }
+
+// TestAHeldCallReturnsWhenItsContextEnds: a request the bridge holds (a slow
+// CloudKit call) ends with its ctx: the client gives up on the socket read,
+// which is what bounds the switcher's old side on CloudKit. No clock: the
+// ctx is cancelled once the bridge holds the request.
+func TestAHeldCallReturnsWhenItsContextEnds(t *testing.T) {
+	r := newRig(t)
+	rec := r.data("workbench-1", []byte("{}"))
+	calls := map[string]func(ctx context.Context) error{
+		"changes": func(ctx context.Context) error { _, err := r.c.Changes(ctx, dataZone, 0); return err },
+		"save": func(ctx context.Context) error {
+			_, err := r.c.Save(ctx, []transport.SaveItem{{Record: rec}})
+			return err
+		},
+	}
+	for op, call := range calls {
+		arrived, release := r.fake.Block(op)
+		ctx, cancel := context.WithCancel(r.ctx)
+		errc := make(chan error, 1)
+		go func() { errc <- call(ctx) }()
+		<-arrived
+		cancel()
+		if err := <-errc; !errors.Is(err, context.Canceled) {
+			t.Errorf("%s held by the bridge, its ctx cancelled: %v", op, err)
+		}
+		release()
+	}
+}

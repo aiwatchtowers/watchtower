@@ -88,10 +88,10 @@ const writeTimeout = 5 * time.Second
 type Server struct {
 	URL  string
 	srv  *httptest.Server
-	hits atomic.Int64
+	hits atomic.Int64 // every HTTP request, the WebSocket and blobs included
 	// pipes and pipeClient: StartInMemory's listener and its clients' HTTP.
 	pipes      *pipeListener
-	pipeClient *http.Client // every HTTP request, the WebSocket and blobs included
+	pipeClient *http.Client
 
 	mu          sync.Mutex
 	ops         []string

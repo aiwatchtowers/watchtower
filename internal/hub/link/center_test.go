@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -992,6 +993,16 @@ func TestConfirmOnAReplacedRequestIsCodeChanged(t *testing.T) {
 	}
 }
 
+// unlinkWaitsOnTheCenter: a goroutine's Center.unlink waits in the
+// center's mutex Lock.
+func unlinkWaitsOnTheCenter() bool {
+	buf := make([]byte, 1<<20)
+	buf = buf[:runtime.Stack(buf, true)]
+	return unlinkWaitRE.Match(buf)
+}
+
+var unlinkWaitRE = regexp.MustCompile(`sync\.\(\*Mutex\)\.Lock[^\n]*\n[^\n]*\nwatchtower/internal/hub/link\.\(\*Center\)\.unlink\(`)
+
 // An Unlink while Keyboxes is between its device read and its key read
 // waits for it: the unlinked phone never gets the epoch its unlink begins.
 func TestKeyboxesNeverSealTheUnlinkEpochToTheUnlinkedPhone(t *testing.T) {
@@ -1003,13 +1014,22 @@ func TestKeyboxesNeverSealTheUnlinkEpochToTheUnlinkedPhone(t *testing.T) {
 	done := make(chan error, 1)
 	r.c.beforeKeys = func() {
 		r.c.beforeKeys = nil
-		started := make(chan struct{})
-		go func() { close(started); done <- r.c.Unlink(a.id.String()) }()
-		<-started
-		// Chances enough for an unlocked Unlink to rotate (no wall-clock wait:
-		// a locked Unlink blocks on the center's mutex, which a synctest bubble
-		// cannot see as blocked).
-		for range 1000 {
+		unlinked := make(chan error, 1)
+		go func() { unlinked <- r.c.Unlink(a.id.String()) }()
+		// Until the Unlink either waits on the center's mutex (its first
+		// step: seen in its stack, no clock involved) or, unlocked, has run
+		// to its end (its rotation then shows in the boxes below).
+		for {
+			select {
+			case err := <-unlinked:
+				done <- err
+				return
+			default:
+			}
+			if unlinkWaitsOnTheCenter() {
+				go func() { done <- <-unlinked }()
+				return
+			}
 			runtime.Gosched()
 		}
 	}

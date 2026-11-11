@@ -247,12 +247,10 @@ func TestNextItemsNeverOverlapsAnUpload(t *testing.T) {
 		_, err := p.Cycle(context.Background(), []Kind{"meeting_transcript"})
 		second <- err
 	}()
-	<-blocked // the second cycle found the first one in progress and waits
-	select {
-	case <-second:
-		t.Fatal("a second cycle ran while the first one's Save was in flight")
-	default:
-	}
+	// The second cycle found the first one in progress and waits for it (a
+	// cycle that did not wait never calls cycleBlocked: the test then hangs,
+	// and the overlap check below would fail).
+	<-blocked
 	close(tr.release)
 	if err := <-first; err != nil {
 		t.Fatal(err)

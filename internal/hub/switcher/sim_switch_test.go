@@ -211,7 +211,10 @@ func TestSwitchToCloudKitDuringRelayOutage(t *testing.T) {
 		w.ask(a, wire.TransportCloudKit)
 		start := time.Now()
 		w.settle(a)
-		if d := time.Since(start); w.virtual && d != 0 { // the bubble's clock: no wait at all
+		// The bubble's clock: no wait at all. The bridgefake flavour runs on
+		// the real clock, where an elapsed bound would only measure the
+		// machine's load; the memfake flavour holds the exact zero.
+		if d := time.Since(start); w.virtual && d != 0 {
 			t.Fatalf("the switch waited on the unreachable relay (%s)", d)
 		}
 		w.wantActive(transport.KindCloudKit)
