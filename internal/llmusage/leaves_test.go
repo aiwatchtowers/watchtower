@@ -26,7 +26,7 @@ var knownNonLLMExec = map[string]string{
 	"auth.OpenBrowser":                   "opens the OAuth URL in the browser (open / xdg-open)",
 	"auth.TrustCert":                     "security import / add-trusted-cert of the local TLS certificate",
 	"automations.processShellRunner.Run": "an owner automation's shell() command, not a model call",
-	"chat.(*claudeBackend).spawnLocked":  "the warm claude chat child; each turn is recorded from its result line by ClaudeTranslator (recordTurn/usageCall)",
+	"chat.startClaudeProcess":            "the warm claude chat child; each turn is recorded from its result line by ClaudeTranslator (recordTurn/usageCall)",
 	"chat.NewChildSandboxAt":             "probes sandbox-exec with /usr/bin/true",
 	"claude.loginShellPATH":              "login shell `echo $PATH`",
 	"claude.loginShellWhich":             "login shell `which claude`",
