@@ -99,7 +99,7 @@ func newFiredDeadline() *firedDeadline {
 
 func (c *firedDeadline) fire()                       { c.once.Do(func() { close(c.done) }) }
 func (c *firedDeadline) Done() <-chan struct{}       { return c.done }
-func (c *firedDeadline) Deadline() (time.Time, bool) { return time.Unix(0, 0), true }
+func (c *firedDeadline) Deadline() (time.Time, bool) { return time.Time{}, false }
 func (c *firedDeadline) Err() error {
 	select {
 	case <-c.done:
