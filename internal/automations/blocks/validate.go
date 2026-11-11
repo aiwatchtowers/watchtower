@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"watchtower/internal/db"
@@ -216,18 +217,46 @@ func (v *validator) ref(path string, raw any) (*Ref, error) {
 	if !slices.Contains(refKinds, kind) {
 		return nil, v.errf("%s.kind must be one of %s", path, strings.Join(refKinds, ", "))
 	}
-	id, isInt := m["id"].(int64)
-	if !isInt || id <= 0 {
-		return nil, v.errf("%s.id must be a positive integer", path)
+	r := &Ref{Kind: kind}
+	switch kind {
+	case RefMailSender:
+		if r.Key, _ = m["id"].(string); !ValidSenderAddress(r.Key) {
+			return nil, v.errf("%s.id must be a sender address", path)
+		}
+	case RefWaitingOlder:
+		if r.Key, _ = m["id"].(string); r.Key != "people" {
+			return nil, v.errf(`%s.id must be "people"`, path)
+		}
+	default:
+		id, isInt := m["id"].(int64)
+		if !isInt || id <= 0 {
+			return nil, v.errf("%s.id must be a positive integer", path)
+		}
+		r.ID = id
 	}
-	if (kind == RefAction || kind == RefReminder) && !v.opts.BuiltIn {
+	if kind != RefInboxItem && kind != RefTrack && kind != RefIdea && !v.opts.BuiltIn {
 		article := "a"
 		if kind == RefAction {
 			article = "an"
 		}
 		return nil, v.errf("%s: %s %s ref is only for built-in automations", path, article, kind)
 	}
-	return &Ref{Kind: kind, ID: id}, nil
+	return r, nil
+}
+
+// ValidSenderAddress is the one rule for a mail_sender ref's id: 3–254
+// bytes with exactly one "@", no space, control character, `"`, "<", ">"
+// or ",", and already ASCII-lowercase (the sender key's spelling).
+func ValidSenderAddress(s string) bool {
+	if len(s) < 3 || len(s) > 254 || strings.Count(s, "@") != 1 {
+		return false
+	}
+	for _, c := range s {
+		if unicode.IsControl(c) || c == ' ' || c == '"' || c == '<' || c == '>' || c == ',' || ('A' <= c && c <= 'Z') {
+			return false
+		}
+	}
+	return true
 }
 
 func (v *validator) table(path string, m map[string]any) (*Table, error) {
