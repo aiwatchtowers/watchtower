@@ -257,6 +257,11 @@ func (c *Client) childEnviron() []string {
 // leave a SIGINT-ignoring child behind.
 const GroupKillGrace = time.Second
 
+// groupKillGrace is the grace ConfigureChild applies: GroupKillGrace, which
+// a test replaces to tell the reap's kill from the timer's without waiting
+// out a real second.
+var groupKillGrace = GroupKillGrace
+
 // ConfigureChild applies the one cancel policy of every CLI child (spec
 // 2026-11-05 §3.4: group-only, so no caller can forget it): a process group
 // of its own that is interrupted and then killed as a whole (the leader's
@@ -267,7 +272,8 @@ const GroupKillGrace = time.Second
 // returns — even when WaitDelay ended the wait first — and no timer
 // outlives the call to signal a reused process group id later.
 func ConfigureChild(cmd *exec.Cmd) (reap func()) {
-	cmd.WaitDelay = GroupKillGrace
+	grace := groupKillGrace
+	cmd.WaitDelay = grace
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	var mu sync.Mutex
 	var kill *time.Timer
@@ -277,7 +283,7 @@ func ConfigureChild(cmd *exec.Cmd) (reap func()) {
 		defer mu.Unlock()
 		leader := cmd.Process.Pid // Setpgid: the leader's pid is the group id
 		pgid = leader
-		kill = time.AfterFunc(GroupKillGrace, func() { _ = syscall.Kill(-leader, syscall.SIGKILL) })
+		kill = time.AfterFunc(grace, func() { _ = syscall.Kill(-leader, syscall.SIGKILL) })
 		return syscall.Kill(-pgid, syscall.SIGINT)
 	}
 	return func() {

@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"watchtower/internal/db"
@@ -42,7 +43,16 @@ func execAll(t *testing.T, d *db.DB, stmts ...string) {
 
 func readParts(t *testing.T, path string) DBParts {
 	t.Helper()
-	return ReadDB(context.Background(), DefaultBudgets, path, Opener(DefaultBudgets.Busy))
+	return readDB(t, DefaultBudgets, path, Opener(DefaultBudgets.Busy))
+}
+
+// readDB is ReadDB in a synctest bubble: its budgets are the bubble's time,
+// which does not move while the reads run, so a slow machine never turns a
+// part into `unknown (database busy)`.
+func readDB(t *testing.T, b Budgets, path string, open OpenFunc) (p DBParts) {
+	t.Helper()
+	synctest.Test(t, func(*testing.T) { p = ReadDB(context.Background(), b, path, open) })
+	return p
 }
 
 // fakeReader wraps a real reader: it can delay every statement (honouring
@@ -92,13 +102,7 @@ func (f fakeReader) Close() error {
 func wrapOpener(t *testing.T, f fakeReader) OpenFunc {
 	t.Helper()
 	finished := make(chan struct{})
-	t.Cleanup(func() {
-		select {
-		case <-finished:
-		case <-time.After(10 * time.Second):
-			t.Error("the reader goroutine never closed its database")
-		}
-	})
+	t.Cleanup(func() { <-finished }) // a reader never closed is go test -timeout's
 	return func(ctx context.Context, p string) (DBReader, error) {
 		r, err := Opener(DefaultBudgets.Busy)(ctx, p)
 		if err != nil {
@@ -367,7 +371,7 @@ func TestDiagnostics_DBInputFailures(t *testing.T) {
 			if open == nil {
 				open = Opener(DefaultBudgets.Busy)
 			}
-			p := ReadDB(context.Background(), DefaultBudgets, path, open)
+			p := readDB(t, DefaultBudgets, path, open)
 			want := DBParts{
 				Sources:      tc.unknown,
 				PipelineRuns: "  pipeline runs " + tc.unknown,
@@ -417,52 +421,58 @@ func corruptDB(t *testing.T) string {
 
 // TestDiagnostics_DeadlineMidway is the spec's budget_db_midway case: each
 // statement takes 1.5 s; the parts finished before the 4 s deadline are
-// kept, the rest print `unknown (database busy)`. Only outcomes a ~1 s
-// stall cannot flip are asserted: the schema (done at 1.5 s) is kept; the
-// recent errors (third read, done at 4.5 s at the earliest) and the
-// sources (after it) are busy. Quick Connections (done at 3 s) may go
-// either way under load. ReadDB itself stops waiting at 4.5 s.
+// kept, the rest print `unknown (database busy)`: the schema (done at
+// 1.5 s) and Quick Connections (3 s) are kept, the recent errors (4.5 s)
+// and the sources (after it) are busy. The clock is a synctest bubble's,
+// so the read ends exactly at the deadline.
 func TestDiagnostics_DeadlineMidway(t *testing.T) {
 	t.Run("budget_db_midway", func(t *testing.T) {
-		path, _ := newDBFile(t)
-		start := time.Now()
-		p := ReadDB(context.Background(), DefaultBudgets, path, wrapOpener(t, fakeReader{delay: 1500 * time.Millisecond, honorCtx: true}))
-		if el := time.Since(start); el > 6*time.Second {
-			t.Errorf("took %v", el)
-		}
-		if !strings.HasPrefix(p.Schema, "schema ") || strings.Contains(p.Schema, "unknown") {
-			t.Errorf("Schema = %q, want a version", p.Schema)
-		}
-		if p.PipelineRuns != PipelineRunsUnknown(UnknownDatabaseBusy) || p.Sources != UnknownDatabaseBusy {
-			t.Errorf("runs %q, sources %q", p.PipelineRuns, p.Sources)
-		}
-		if !slices.Equal(p.Reasons, []string{ReasonDatabaseBusy}) {
-			t.Errorf("Reasons = %q", p.Reasons)
-		}
+		synctest.Test(t, func(t *testing.T) {
+			path, _ := newDBFile(t)
+			start := time.Now()
+			p := ReadDB(context.Background(), DefaultBudgets, path, wrapOpener(t, fakeReader{delay: 1500 * time.Millisecond, honorCtx: true}))
+			if el := time.Since(start); el != DefaultBudgets.DB {
+				t.Errorf("took %v, want the %v deadline", el, DefaultBudgets.DB)
+			}
+			if !strings.HasPrefix(p.Schema, "schema ") || strings.Contains(p.Schema, "unknown") {
+				t.Errorf("Schema = %q, want a version", p.Schema)
+			}
+			if p.QuickConnections != "Quick Connections 0" {
+				t.Errorf("QuickConnections = %q, done before the deadline", p.QuickConnections)
+			}
+			if p.PipelineRuns != PipelineRunsUnknown(UnknownDatabaseBusy) || p.Sources != UnknownDatabaseBusy {
+				t.Errorf("runs %q, sources %q", p.PipelineRuns, p.Sources)
+			}
+			if !slices.Equal(p.Reasons, []string{ReasonDatabaseBusy}) {
+				t.Errorf("Reasons = %q", p.Reasons)
+			}
+		})
 	})
 }
 
 // TestDiagnostics_DBFallbackStopsWaiting: statements that ignore their
 // context are abandoned at Budgets.DBFallback.
 func TestDiagnostics_DBFallbackStopsWaiting(t *testing.T) {
-	path, _ := newDBFile(t)
-	b := DefaultBudgets
-	b.DB, b.DBFallback = 2*time.Second, 500*time.Millisecond
-	start := time.Now()
-	p := ReadDB(context.Background(), b, path, wrapOpener(t, fakeReader{delay: 300 * time.Millisecond}))
-	if el := time.Since(start); el > 900*time.Millisecond {
-		t.Errorf("took %v, want about 500ms", el)
-	}
-	if strings.Contains(p.Schema, "unknown") {
-		t.Errorf("Schema = %q", p.Schema)
-	}
-	// Sources says why, so the Quick Connections part is left out.
-	if p.Sources != UnknownDatabaseBusy || p.PipelineRuns != PipelineRunsUnknown(UnknownDatabaseBusy) || p.QuickConnections != "" {
-		t.Errorf("got %+v", p)
-	}
-	if !slices.Equal(p.Reasons, []string{ReasonDatabaseBusy}) {
-		t.Errorf("Reasons = %q", p.Reasons)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		path, _ := newDBFile(t)
+		b := DefaultBudgets
+		b.DB, b.DBFallback = 2*time.Second, 500*time.Millisecond
+		start := time.Now()
+		p := ReadDB(context.Background(), b, path, wrapOpener(t, fakeReader{delay: 300 * time.Millisecond}))
+		if el := time.Since(start); el != b.DBFallback {
+			t.Errorf("took %v, want the %v fallback", el, b.DBFallback)
+		}
+		if strings.Contains(p.Schema, "unknown") {
+			t.Errorf("Schema = %q", p.Schema)
+		}
+		// Sources says why, so the Quick Connections part is left out.
+		if p.Sources != UnknownDatabaseBusy || p.PipelineRuns != PipelineRunsUnknown(UnknownDatabaseBusy) || p.QuickConnections != "" {
+			t.Errorf("got %+v", p)
+		}
+		if !slices.Equal(p.Reasons, []string{ReasonDatabaseBusy}) {
+			t.Errorf("Reasons = %q", p.Reasons)
+		}
+	})
 }
 
 // TestDiagnostics_ReadDBWritesNothing: on a file whose -wal holds
@@ -557,18 +567,20 @@ func TestDiagnostics_QueriesValid(t *testing.T) {
 }
 
 func TestDiagnostics_DBCancelled(t *testing.T) {
-	path, _ := newDBFile(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	start := time.Now()
-	p := ReadDB(ctx, DefaultBudgets, path, Opener(DefaultBudgets.Busy))
-	if el := time.Since(start); el > time.Second {
-		t.Errorf("took %v", el)
-	}
-	if p.Sources != UnknownDatabaseBusy || p.Schema != SchemaUnknownBecause(UnknownDatabaseBusy) ||
-		!slices.Equal(p.Reasons, []string{ReasonDatabaseBusy}) {
-		t.Errorf("got %+v", p)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		path, _ := newDBFile(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		start := time.Now()
+		p := ReadDB(ctx, DefaultBudgets, path, Opener(DefaultBudgets.Busy))
+		if el := time.Since(start); el != 0 {
+			t.Errorf("took %v", el)
+		}
+		if p.Sources != UnknownDatabaseBusy || p.Schema != SchemaUnknownBecause(UnknownDatabaseBusy) ||
+			!slices.Equal(p.Reasons, []string{ReasonDatabaseBusy}) {
+			t.Errorf("got %+v", p)
+		}
+	})
 }
 
 // busy_single_statement: one read fails with SQLITE_BUSY after its busy
@@ -577,7 +589,7 @@ func TestDiagnostics_BusySingleStatement(t *testing.T) {
 	t.Run("busy_single_statement", func(t *testing.T) {
 		path, d := newDBFile(t)
 		execAll(t, d, `INSERT INTO slack_accounts (status) VALUES ('ok')`)
-		p := ReadDB(context.Background(), DefaultBudgets, path,
+		p := readDB(t, DefaultBudgets, path,
 			wrapOpener(t, fakeReader{failOn: "FROM pipeline_runs", failErr: sqlcipher.Error{Code: sqlcipher.ErrBusy}}))
 		if p.PipelineRuns != PipelineRunsUnknown(UnknownDatabaseBusy) {
 			t.Errorf("PipelineRuns = %q", p.PipelineRuns)
@@ -591,7 +603,7 @@ func TestDiagnostics_BusySingleStatement(t *testing.T) {
 	})
 	t.Run("sources_query_error_other", func(t *testing.T) {
 		path, _ := newDBFile(t)
-		p := ReadDB(context.Background(), DefaultBudgets, path,
+		p := readDB(t, DefaultBudgets, path,
 			wrapOpener(t, fakeReader{failOn: "FROM jira_accounts", failErr: sqlcipher.Error{Code: sqlcipher.ErrCorrupt}}))
 		if p.Sources != DatabaseUnreadableCorrupt || p.Kinds != nil || len(p.Reasons) != 0 {
 			t.Errorf("got %+v", p)
@@ -602,31 +614,43 @@ func TestDiagnostics_BusySingleStatement(t *testing.T) {
 // TestDiagnostics_ReadDBHeldLock: another connection holds an exclusive
 // lock; every database part is busy and the read ends inside its budget.
 func TestDiagnostics_ReadDBHeldLock(t *testing.T) {
-	path, d := newDBFile(t)
-	ctx := context.Background()
-	conn, err := d.Conn(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = conn.Close() })
-	for _, s := range []string{`PRAGMA locking_mode = EXCLUSIVE`, `BEGIN EXCLUSIVE`, `INSERT INTO slack_accounts (status) VALUES ('ok')`} {
-		if _, err := conn.ExecContext(ctx, s); err != nil {
-			t.Fatalf("%s: %v", s, err)
+	synctest.Test(t, func(t *testing.T) {
+		path, d := newDBFile(t)
+		ctx := context.Background()
+		b := DefaultBudgets
+		b.DB, b.DBFallback, b.Busy = time.Second, 1500*time.Millisecond, 100*time.Millisecond
+		// The opener gives SQLite the short busy wait. Read back before the
+		// lock is taken: SQLite's own sleep is no clock of the bubble's.
+		r, err := Opener(b.Busy)(ctx, path)
+		if err != nil {
+			t.Fatal(err)
 		}
-	}
-	t.Cleanup(func() { _, _ = conn.ExecContext(ctx, `ROLLBACK`) })
+		var busyMS int64
+		if err := r.(*db.DB).QueryRowContext(ctx, `PRAGMA busy_timeout`).Scan(&busyMS); err != nil {
+			t.Fatal(err)
+		}
+		_ = r.(*db.DB).Close()
+		if busyMS != b.Busy.Milliseconds() {
+			t.Errorf("busy_timeout = %d ms, want %d", busyMS, b.Busy.Milliseconds())
+		}
+		conn, err := d.Conn(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = conn.Close() })
+		for _, s := range []string{`PRAGMA locking_mode = EXCLUSIVE`, `BEGIN EXCLUSIVE`, `INSERT INTO slack_accounts (status) VALUES ('ok')`} {
+			if _, err := conn.ExecContext(ctx, s); err != nil {
+				t.Fatalf("%s: %v", s, err)
+			}
+		}
+		t.Cleanup(func() { _, _ = conn.ExecContext(ctx, `ROLLBACK`) })
 
-	b := DefaultBudgets
-	b.DB, b.DBFallback, b.Busy = time.Second, 1500*time.Millisecond, 100*time.Millisecond
-	start := time.Now()
-	p := ReadDB(ctx, b, path, Opener(b.Busy))
-	if el := time.Since(start); el > 2*time.Second {
-		t.Errorf("took %v", el)
-	}
-	if p.Sources != UnknownDatabaseBusy || p.PipelineRuns != PipelineRunsUnknown(UnknownDatabaseBusy) ||
-		p.Schema != SchemaUnknownBecause(UnknownDatabaseBusy) || !slices.Equal(p.Reasons, []string{ReasonDatabaseBusy}) {
-		t.Errorf("got %+v", p)
-	}
+		p := ReadDB(ctx, b, path, Opener(b.Busy))
+		if p.Sources != UnknownDatabaseBusy || p.PipelineRuns != PipelineRunsUnknown(UnknownDatabaseBusy) ||
+			p.Schema != SchemaUnknownBecause(UnknownDatabaseBusy) || !slices.Equal(p.Reasons, []string{ReasonDatabaseBusy}) {
+			t.Errorf("got %+v", p)
+		}
+	})
 }
 
 // A panic inside the reader goroutine is contained: the parts read before
@@ -634,7 +658,7 @@ func TestDiagnostics_ReadDBHeldLock(t *testing.T) {
 // still closed.
 func TestDiagnostics_ReadDBPanicIsContained(t *testing.T) {
 	path, _ := newDBFile(t)
-	p := ReadDB(context.Background(), DefaultBudgets, path, wrapOpener(t, fakeReader{panicOn: "pipeline_runs"}))
+	p := readDB(t, DefaultBudgets, path, wrapOpener(t, fakeReader{panicOn: "pipeline_runs"}))
 	if !strings.HasPrefix(p.Schema, "schema ") || p.Schema == SchemaUnknown || strings.Contains(p.Schema, UnknownWord) {
 		t.Errorf("schema %q", p.Schema)
 	}
@@ -652,7 +676,7 @@ func TestDiagnostics_ReadDBPanicIsContained(t *testing.T) {
 // A panic in the open itself: every part is `unknown (internal error)`.
 func TestDiagnostics_ReadDBOpenPanicIsContained(t *testing.T) {
 	path, _ := newDBFile(t)
-	p := ReadDB(context.Background(), DefaultBudgets, path, func(context.Context, string) (DBReader, error) {
+	p := readDB(t, DefaultBudgets, path, func(context.Context, string) (DBReader, error) {
 		panic("opener bug")
 	})
 	want := FailedParts(UnknownInternal)

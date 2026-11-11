@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/stretchr/testify/assert"
@@ -518,16 +517,11 @@ func TestAgent05_ConcurrentApplyExecutesOnce(t *testing.T) {
 
 	<-entered // one Apply holds the claim and is inside Execute
 	// The winner cannot answer while it is blocked, so this is the loser. If
-	// nothing answers, the second Apply is blocked inside Execute too — which
-	// is exactly the defect, so say so instead of deadlocking the suite.
-	select {
-	case loser := <-results:
-		assert.ErrorIs(t, loser.err, ErrBadTransition)
-		assert.Nil(t, loser.row)
-	case <-time.After(5 * time.Second):
-		close(release)
-		t.Fatal("the second Apply reached Execute: the claim did not refuse it")
-	}
+	// nothing answers, the second Apply is blocked inside Execute too — the
+	// defect, which hangs here for go test -timeout to report.
+	loser := <-results
+	assert.ErrorIs(t, loser.err, ErrBadTransition)
+	assert.Nil(t, loser.row)
 
 	close(release)
 	winner := <-results

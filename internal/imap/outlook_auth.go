@@ -289,10 +289,7 @@ func LoginOutlook(ctx context.Context, cfg MicrosoftOAuthConfig, out io.Writer, 
 
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	go server.Serve(listener)
-	defer func() {
-		time.Sleep(500 * time.Millisecond)
-		server.Close()
-	}()
+	defer oauthpage.CloseCallbackServer(server)
 
 	if opt.SkipBrowserOpen {
 		fmt.Fprintf(out, "Authorize URL:\n\n  %s\n\n", authorizeURL)

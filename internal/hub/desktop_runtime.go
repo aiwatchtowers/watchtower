@@ -67,7 +67,7 @@ func (h *hubRuntime) desktopTransports(ctx context.Context, o Options) error {
 		log.Printf("hub: this build has no CloudKit bridge: CloudKit is unavailable")
 		return nil
 	}
-	h.bridge = cloudkit.NewSupervisor(c)
+	h.bridge = o.Desktop.supervisor(c)
 	if o.Desktop.newCloudKit != nil {
 		h.ck = o.Desktop.newCloudKit(c)
 	} else {
@@ -274,7 +274,7 @@ func (h *hubRuntime) startDesktop(ctx context.Context) {
 
 // runBridge runs sup until the returned stop, which ends it (the bridge
 // process goes with it) and waits.
-func runBridge(sup *cloudkit.Supervisor) (stop func()) {
+func runBridge(sup bridgeRunner) (stop func()) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -363,7 +363,7 @@ func (s *supervisor) wipeStoppedDesktop(ctx context.Context, published []publish
 	var ck, rel transport.Transport
 	if launch := d.launcher(o.Dir); launch != nil {
 		c := cloudkit.Config{Dir: o.Dir, HubID: hubID, RelayID: relayID, Clock: o.Clock, Launch: launch}
-		sup := cloudkit.NewSupervisor(c)
+		sup := d.supervisor(c)
 		stop := runBridge(sup)
 		defer stop()
 		deadline := time.Now().Add(bridgeUpWait)

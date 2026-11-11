@@ -123,13 +123,7 @@ func buildWithin(t *testing.T, d *db.DB, key string) *Doc {
 		}
 		done <- doc
 	}()
-	select {
-	case doc := <-done:
-		return doc
-	case <-time.After(5 * time.Second):
-		t.Fatal("the render blocked")
-		return nil
-	}
+	return <-done // a blocked render hangs here until the package timeout
 }
 
 // One byte over 2 MiB is cut and says so; exactly 2 MiB is not.

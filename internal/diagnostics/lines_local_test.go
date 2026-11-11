@@ -414,22 +414,9 @@ func TestDiagnostics_CrashPartSkipsNonRegular(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(dir, "daemon.log"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	done := make(chan string, 1)
-	go func() {
-		text, _ := CrashPart(dir, DefaultBudgets, time.Now)(context.Background())
-		done <- text
-	}()
-	select {
-	case text := <-done:
-		if text != UnknownNoLogs {
-			t.Errorf("CrashPart = %q, want %q", text, UnknownNoLogs)
-		}
-	case <-time.After(5 * time.Second):
-		// Unblock the stuck open so the goroutine can finish.
-		if f, err := os.OpenFile(filepath.Join(dir, "watchtower.log"), os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
-			_ = f.Close()
-		}
-		t.Fatal("CrashPart blocked on a FIFO log")
+	// A FIFO opened for reading would block: a hang is go test -timeout's.
+	if text, _ := CrashPart(dir, DefaultBudgets, time.Now)(context.Background()); text != UnknownNoLogs {
+		t.Errorf("CrashPart = %q, want %q", text, UnknownNoLogs)
 	}
 
 	// A regular log beside them is still scanned.

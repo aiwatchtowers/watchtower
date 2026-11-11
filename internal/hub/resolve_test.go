@@ -171,19 +171,21 @@ func TestResolve_LiveIsOffUntilEnabled(t *testing.T) {
 }
 
 func TestResolve_LiveNeedsARelayOrigin(t *testing.T) {
-	dir := liveHome(t)
-	setMeta(t, dir, state.MetaEnabled, "1")
-	for _, origin := range []string{"", "relay.example.com", "http://relay.example.com", "https://relay.example.com/x"} {
-		DefaultRelayOrigin = origin
-		_, mode, err := resolve(&config.Config{}, nil, headless())
-		if mode != ModeOff || !errors.Is(err, ErrNoRelayOrigin) || Refusal(err) != ReasonNoRelayOrigin {
-			t.Fatalf("origin %q: mode %q err %v", origin, mode, err)
+	bubble(t, func(t *testing.T) {
+		dir := liveHome(t)
+		setMeta(t, dir, state.MetaEnabled, "1")
+		for _, origin := range []string{"", "relay.example.com", "http://relay.example.com", "https://relay.example.com/x"} {
+			DefaultRelayOrigin = origin
+			_, mode, err := resolve(&config.Config{}, nil, headless())
+			if mode != ModeOff || !errors.Is(err, ErrNoRelayOrigin) || Refusal(err) != ReasonNoRelayOrigin {
+				t.Fatalf("origin %q: mode %q err %v", origin, mode, err)
+			}
+			if r := OffReason(&config.Config{}, ModeLive); r != ReasonNoRelayOrigin {
+				t.Fatalf("origin %q: OffReason %q", origin, r)
+			}
 		}
-		if r := OffReason(&config.Config{}, ModeLive); r != ReasonNoRelayOrigin {
-			t.Fatalf("origin %q: OffReason %q", origin, r)
-		}
-	}
-	DefaultRelayOrigin = ""
+		DefaultRelayOrigin = ""
+	})
 }
 
 func TestRelayOriginPrecedence(t *testing.T) {
@@ -223,18 +225,20 @@ func mustDefaultDir(t *testing.T) string {
 }
 
 func TestCheckRelayOrigin(t *testing.T) {
-	for _, ok := range []string{"https://relay.example.com", "https://relay.example.com:8443", "http://127.0.0.1:8787", "http://localhost:8787", "http://[::1]:8787"} {
-		if err := CheckRelayOrigin(ok); err != nil {
-			t.Fatalf("%q refused: %v", ok, err)
+	bubble(t, func(t *testing.T) {
+		for _, ok := range []string{"https://relay.example.com", "https://relay.example.com:8443", "http://127.0.0.1:8787", "http://localhost:8787", "http://[::1]:8787"} {
+			if err := CheckRelayOrigin(ok); err != nil {
+				t.Fatalf("%q refused: %v", ok, err)
+			}
 		}
-	}
-	for _, bad := range []string{"", "relay.example.com", "http://relay.example.com", "https://relay.example.com/", "https://relay.example.com/v1",
-		"https://relay.example.com?x=1", "https://relay.example.com?", "https://relay.example.com#f", "https://user@relay.example.com",
-		"https://relay.example.com:", "https://relay.example.com:x", "ftp://relay.example.com", "https://", "http://127.0.0.2"} {
-		if err := CheckRelayOrigin(bad); !errors.Is(err, ErrBadRelayOrigin) {
-			t.Fatalf("%q accepted", bad)
+		for _, bad := range []string{"", "relay.example.com", "http://relay.example.com", "https://relay.example.com/", "https://relay.example.com/v1",
+			"https://relay.example.com?x=1", "https://relay.example.com?", "https://relay.example.com#f", "https://user@relay.example.com",
+			"https://relay.example.com:", "https://relay.example.com:x", "ftp://relay.example.com", "https://", "http://127.0.0.2"} {
+			if err := CheckRelayOrigin(bad); !errors.Is(err, ErrBadRelayOrigin) {
+				t.Fatalf("%q accepted", bad)
+			}
 		}
-	}
+	})
 }
 
 func TestLiveHubUsesTheDefaultSessionHostSocket(t *testing.T) {
@@ -284,60 +288,66 @@ func liveRun(t *testing.T) func(*Options) {
 // TestLiveHubAnnouncesRelayOnly guards Phase 1 behaviour on a live hub: the
 // link code and every device_grant are relay only, with no share.
 func TestLiveHubAnnouncesRelayOnly(t *testing.T) {
-	e := runEndToEnd(t, "", liveRun(t))
-	lp, err := wire.ParseLinkURL(e.url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Equal(lp.Transports, []string{wire.TransportRelay}) || lp.Transport != wire.TransportRelay ||
-		lp.DataShare != nil || lp.RelayShare != nil {
-		t.Fatalf("link code: %+v", lp)
-	}
-	s, err := ReadStatus(e.dir)
-	if err != nil || s.Mode != string(ModeLive) || s.Host != string(hostkind.Headless) {
-		t.Fatalf("status: %+v, %v", s, err)
-	}
+	bubble(t, func(t *testing.T) {
+		e := runEndToEnd(t, "", liveRun(t))
+		lp, err := wire.ParseLinkURL(e.url)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(lp.Transports, []string{wire.TransportRelay}) || lp.Transport != wire.TransportRelay ||
+			lp.DataShare != nil || lp.RelayShare != nil {
+			t.Fatalf("link code: %+v", lp)
+		}
+		s, err := ReadStatus(e.dir)
+		if err != nil || s.Mode != string(ModeLive) || s.Host != string(hostkind.Headless) {
+			t.Fatalf("status: %+v, %v", s, err)
+		}
+	})
 }
 
 // TestLiveHubUsesTheFileIdentityStore guards the live hub's identity: the
 // 0600 identity.key in the hub dir (spec §12.2).
 func TestLiveHubUsesTheFileIdentityStore(t *testing.T) {
-	e := runEndToEnd(t, "", liveRun(t))
-	path := filepath.Join(e.dir, identity.FileName)
-	fi, err := os.Stat(path)
-	if err != nil || fi.Mode().Perm() != 0o600 {
-		t.Fatalf("identity file: %v %v", fi, err)
-	}
-	id, err := (identity.FileStore{Path: path}).Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	id.Zero()
+	bubble(t, func(t *testing.T) {
+		e := runEndToEnd(t, "", liveRun(t))
+		path := filepath.Join(e.dir, identity.FileName)
+		fi, err := os.Stat(path)
+		if err != nil || fi.Mode().Perm() != 0o600 {
+			t.Fatalf("identity file: %v %v", fi, err)
+		}
+		id, err := (identity.FileStore{Path: path}).Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		id.Zero()
+	})
 }
 
 func TestHostNameStripsTheDomain(t *testing.T) {
-	for _, c := range []struct {
-		host string
-		err  error
-		want string
-	}{
-		{"pi-acme.local", nil, "pi-acme"}, {"pi-acme", nil, "pi-acme"}, {"", nil, "Watchtower hub"},
-		{".local", nil, "Watchtower hub"}, {"x", errors.New("no name"), "Watchtower hub"},
-	} {
-		if got := shortHostName(func() (string, error) { return c.host, c.err }); got != c.want {
-			t.Fatalf("%q: %q, want %q", c.host, got, c.want)
+	bubble(t, func(t *testing.T) {
+		for _, c := range []struct {
+			host string
+			err  error
+			want string
+		}{
+			{"pi-acme.local", nil, "pi-acme"}, {"pi-acme", nil, "pi-acme"}, {"", nil, "Watchtower hub"},
+			{".local", nil, "Watchtower hub"}, {"x", errors.New("no name"), "Watchtower hub"},
+		} {
+			if got := shortHostName(func() (string, error) { return c.host, c.err }); got != c.want {
+				t.Fatalf("%q: %q, want %q", c.host, got, c.want)
+			}
 		}
-	}
-	dir := shortDir(t)
-	setMeta(t, dir, state.MetaDisplayName, "acme.hub")
-	st, err := state.Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = st.Close() }()
-	if got := (&supervisor{st: st}).hostName(); got != "acme.hub" {
-		t.Fatalf("display_name: %q", got)
-	}
+		dir := shortDir(t)
+		setMeta(t, dir, state.MetaDisplayName, "acme.hub")
+		st, err := state.Open(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = st.Close() }()
+		if got := (&supervisor{st: st}).hostName(); got != "acme.hub" {
+			t.Fatalf("display_name: %q", got)
+		}
+	})
 }
 
 // A live headless hub runs the relay-only rules (spec §7.3); the test mode

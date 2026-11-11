@@ -43,6 +43,9 @@ type Client struct {
 	mu       sync.Mutex // held across load-check-refresh-save
 	logger   *log.Logger
 	gate     rateGate
+	// beforeTokenLock, when set (tests only), runs right before a refresh
+	// takes the cross-process token lock.
+	beforeTokenLock func()
 }
 
 // NewClient creates a client reading and refreshing tokens through store.
@@ -197,7 +200,7 @@ func (c *Client) getAccessToken(ctx context.Context) (access string, isKey bool,
 	}
 	// Expired: refresh under the cross-process lock, re-reading first — another
 	// process may have rotated the refresh token while this one waited.
-	unlock, err := c.store.Lock(ctx)
+	unlock, err := c.lockStore(ctx)
 	if err != nil {
 		return "", false, err
 	}
@@ -213,6 +216,14 @@ func (c *Client) getAccessToken(ctx context.Context) (access string, isKey bool,
 	return access, false, err
 }
 
+// lockStore takes the token store's cross-process lock.
+func (c *Client) lockStore(ctx context.Context) (func(), error) {
+	if c.beforeTokenLock != nil {
+		c.beforeTokenLock()
+	}
+	return c.store.Lock(ctx)
+}
+
 // refreshIfCurrent refreshes the stored token only if its access token still
 // equals usedToken: racing requests that hit the same 401 must not both spend
 // the rotating refresh token. c.mu and the file lock make the check atomic
@@ -220,7 +231,7 @@ func (c *Client) getAccessToken(ctx context.Context) (access string, isKey bool,
 func (c *Client) refreshIfCurrent(ctx context.Context, usedToken string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	unlock, err := c.store.Lock(ctx)
+	unlock, err := c.lockStore(ctx)
 	if err != nil {
 		return err
 	}

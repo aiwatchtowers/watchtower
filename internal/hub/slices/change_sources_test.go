@@ -166,15 +166,8 @@ func (r *changeRig) write(text string) {
 	}
 }
 
-func waitArmed(t *testing.T, ft *slices.FakeTime, n int) {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for ft.Armed() <= n {
-		if time.Now().After(deadline) {
-			t.Fatal("the loop never went back to sleep")
-		}
-		time.Sleep(time.Millisecond)
-	}
+func waitArmed(_ *testing.T, ft *slices.FakeTime, n int) {
+	ft.WaitArmed(n)
 }
 
 func TestAWriteByAnotherConnectionPublishesWithinOnePoll(t *testing.T) {

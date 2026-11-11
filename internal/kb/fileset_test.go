@@ -86,12 +86,8 @@ func TestIndexFileSet_NamedPipeIsUnreadableNeverBlocking(t *testing.T) {
 		_, _, err := IndexFileSet(ctx, d, FileSet{Source: WorkbenchDocSource, Container: fixtureWorkbenchID, Root: folder, Files: []string{"pipe.md"}})
 		done <- err
 	}()
-	select {
-	case err := <-done:
-		require.NoError(t, err)
-	case <-time.After(5 * time.Second):
-		t.Fatal("indexing a named pipe blocked")
-	}
+	err := <-done
+	require.NoError(t, err)
 	var anchor string
 	require.NoError(t, d.QueryRow(`SELECT json_extract(anchor_json, '$.unreadable') FROM kb_documents WHERE id = 'wbdoc:1:pipe.md'`).Scan(&anchor))
 	assert.Equal(t, "not a regular file", anchor)

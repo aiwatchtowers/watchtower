@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -172,7 +173,8 @@ func TestHelperCheckSkippedOffDarwin(t *testing.T) {
 // set every call waits for its ctx to end (a hung codesign).
 type blockingCodesign struct {
 	fakeCodesign
-	block bool
+	block   bool
+	entered chan struct{} // one send per blocked call, when non-nil
 }
 
 func (b *blockingCodesign) run(ctx context.Context, args ...string) ([]byte, error) {
@@ -180,6 +182,9 @@ func (b *blockingCodesign) run(ctx context.Context, args ...string) ([]byte, err
 	block := b.block
 	b.mu.Unlock()
 	if block {
+		if b.entered != nil {
+			b.entered <- struct{}{}
+		}
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}
@@ -204,12 +209,16 @@ func TestHelperCheckStopsOnCancel(t *testing.T) {
 			cs.block = true
 			cs.mu.Unlock()
 
-			ctx, cancel := context.WithCancel(context.Background())
-			go func() { time.Sleep(50 * time.Millisecond); cancel() }()
-			start := time.Now()
-			_, err := ocr.Recognize(ctx, "/tmp/extract/att-1.png", nil)
-			require.ErrorIs(t, err, context.Canceled, "a cancelled check is not ErrOCRUnavailable")
-			assert.Less(t, time.Since(start), 5*time.Second, "codesign was stopped by the cancel, not its own timeout")
+			// In a synctest bubble codesign's own timeout cannot fire while
+			// the test cancels: the error says the cancel stopped it.
+			synctest.Test(t, func(t *testing.T) {
+				cs.entered = make(chan struct{})
+				ctx, cancel := context.WithCancel(context.Background())
+				go func() { <-cs.entered; cancel() }()
+				_, err := ocr.Recognize(ctx, "/tmp/extract/att-1.png", nil)
+				require.ErrorIs(t, err, context.Canceled, "a cancelled check is not ErrOCRUnavailable, nor codesign's own timeout")
+				cs.entered = nil
+			})
 			assert.NoFileExists(t, args)
 
 			cs.mu.Lock()

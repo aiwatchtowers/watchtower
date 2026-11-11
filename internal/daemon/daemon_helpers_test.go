@@ -163,20 +163,40 @@ func TestDaemon_New(t *testing.T) {
 	d.SetLogger(log.New(io.Discard, "", 0))
 }
 
-// runDaemonUntil runs d until cond holds (polled every 10ms), then cancels
-// it and returns Run's error. Waiting for the condition instead of a fixed
-// run window keeps the loop tests honest on a loaded or -race runner: a slow
-// sync only makes them take longer, never fail on a count. go test -timeout
-// is the only bound on a broken run.
-func runDaemonUntil(t *testing.T, d *Daemon, cond func() bool) error {
+// runDaemonUntil runs d until cond holds, then cancels it and returns Run's
+// error. cond is checked before the first cycle, after each cycle ends
+// (Daemon.cycleEnded) and after each send on pokes — nothing is polled, so a
+// slow sync only makes a test take longer, never fail on a count. go test
+// -timeout is the only bound on a broken run.
+func runDaemonUntil(t *testing.T, d *Daemon, cond func() bool, pokes ...<-chan struct{}) error {
 	t.Helper()
+	check := make(chan struct{}, 1)
+	nudge := func() {
+		select {
+		case check <- struct{}{}:
+		default: // a check is already due
+		}
+	}
+	d.cycleEnded = nudge
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	for _, poke := range pokes {
+		go func() {
+			for {
+				select {
+				case <-poke:
+					nudge()
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+	}
 	done := make(chan error, 1)
 	go func() { done <- d.Run(ctx) }()
 
 	for !cond() {
-		time.Sleep(10 * time.Millisecond)
+		<-check
 	}
 	cancel()
 	return <-done

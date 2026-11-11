@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"google.golang.org/protobuf/proto"
@@ -345,16 +346,9 @@ func (r *rig) enqueueText(key, title, body string) {
 	}, r.clock.Now())
 }
 
-// next waits for the next settle (bounded: a hang fails the test).
+// next waits for the next settle (a hang is bounded by go test -timeout).
 func (r *rig) next() settled {
-	r.t.Helper()
-	select {
-	case s := <-r.settles:
-		return s
-	case <-time.After(10 * time.Second):
-		r.t.Fatal("no push settled")
-		return settled{}
-	}
+	return <-r.settles
 }
 
 // nextN waits for n settles, sorted by device then key.
@@ -371,25 +365,11 @@ func (r *rig) nextN(n int) []settled {
 }
 
 func (r *rig) call() call {
-	r.t.Helper()
-	select {
-	case c := <-r.send.calls:
-		return c
-	case <-time.After(10 * time.Second):
-		r.t.Fatal("no send_alert")
-		return call{}
-	}
+	return <-r.send.calls
 }
 
 func (r *rig) wait() time.Duration {
-	r.t.Helper()
-	select {
-	case d := <-r.clock.waits:
-		return d
-	case <-time.After(10 * time.Second):
-		r.t.Fatal("no retry wait")
-		return 0
-	}
+	return <-r.clock.waits
 }
 
 func (r *rig) refreshes() int {
@@ -541,8 +521,6 @@ func TestRateLimitedRetriesAfterRetryAfterWithinFreshness(t *testing.T) {
 				t.Fatalf("send_alert %d times; want 43", n)
 			}
 			return
-		case <-time.After(10 * time.Second):
-			t.Fatal("stuck")
 		}
 	}
 }
@@ -629,25 +607,30 @@ func TestTransportFailureSettlesInFlightNoRetry(t *testing.T) {
 
 // Review Focus 3: a phone that stopped paying since the last account read.
 func TestEntitlementInactiveStopsRetriesAndRefreshesOnce(t *testing.T) {
-	r := newRig(t, "phone-a", "phone-b")
-	r.send.answer("relay-phone-a", relayErr(relayv1.ErrorCode_ERROR_CODE_ENTITLEMENT_INACTIVE, "", nil))
-	r.start()
-	r.enqueue("ask-1")
-	got := r.nextN(2)
-	want := []settled{{"ask-1", "phone-a", "not_paying", ""}, {"ask-1", "phone-b", "accepted", ""}}
-	if !slices.Equal(got, want) {
-		t.Fatalf("settled %v; want %v", got, want)
-	}
-	r.p.Stop()
-	if n := r.send.count("relay-phone-a"); n != 1 {
-		t.Fatalf("send_alert to the lapsed phone %d times; want 1 (no retry)", n)
-	}
-	if n := r.refreshes(); n != 1 {
-		t.Fatalf("account refreshed %d times; want 1", n)
-	}
-	if len(r.clock.waits) != 0 {
-		t.Fatal("a retry was scheduled")
-	}
+	synctest.Test(t, func(t *testing.T) {
+		r := newRig(t, "phone-a", "phone-b")
+		r.send.answer("relay-phone-a", relayErr(relayv1.ErrorCode_ERROR_CODE_ENTITLEMENT_INACTIVE, "", nil))
+		r.start()
+		r.enqueue("ask-1")
+		got := r.nextN(2)
+		want := []settled{{"ask-1", "phone-a", "not_paying", ""}, {"ask-1", "phone-b", "accepted", ""}}
+		if !slices.Equal(got, want) {
+			t.Fatalf("settled %v; want %v", got, want)
+		}
+		// The refresh starts after the settle the test saw; a Stop before it
+		// would skip it. Settled: every sender is back at its wait.
+		synctest.Wait()
+		r.p.Stop()
+		if n := r.send.count("relay-phone-a"); n != 1 {
+			t.Fatalf("send_alert to the lapsed phone %d times; want 1 (no retry)", n)
+		}
+		if n := r.refreshes(); n != 1 {
+			t.Fatalf("account refreshed %d times; want 1", n)
+		}
+		if len(r.clock.waits) != 0 {
+			t.Fatal("a retry was scheduled")
+		}
+	})
 }
 
 func TestOnePhoneRefusedOthersStillSent(t *testing.T) {
@@ -659,26 +642,29 @@ func TestOnePhoneRefusedOthersStillSent(t *testing.T) {
 		{"hub not vouched", relayErr(relayv1.ErrorCode_ERROR_CODE_HUB_NOT_VOUCHED, "", nil)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r := newRig(t, "phone-a", "phone-b", "phone-c")
-			r.send.answer("relay-phone-b", tc.err)
-			r.start()
-			r.enqueue("perm-9")
-			got := r.nextN(3)
-			want := []settled{
-				{"perm-9", "phone-a", "accepted", ""},
-				{"perm-9", "phone-b", "forbidden", ""},
-				{"perm-9", "phone-c", "accepted", ""},
-			}
-			if !slices.Equal(got, want) {
-				t.Fatalf("settled %v; want %v", got, want)
-			}
-			r.p.Stop()
-			if n := r.send.count("relay-phone-b"); n != 1 {
-				t.Fatalf("refused phone sent %d times; want 1", n)
-			}
-			if n := r.refreshes(); n != 1 {
-				t.Fatalf("account refreshed %d times; want 1", n)
-			}
+			synctest.Test(t, func(t *testing.T) {
+				r := newRig(t, "phone-a", "phone-b", "phone-c")
+				r.send.answer("relay-phone-b", tc.err)
+				r.start()
+				r.enqueue("perm-9")
+				got := r.nextN(3)
+				want := []settled{
+					{"perm-9", "phone-a", "accepted", ""},
+					{"perm-9", "phone-b", "forbidden", ""},
+					{"perm-9", "phone-c", "accepted", ""},
+				}
+				if !slices.Equal(got, want) {
+					t.Fatalf("settled %v; want %v", got, want)
+				}
+				synctest.Wait() // the refresh after the refused settle has started
+				r.p.Stop()
+				if n := r.send.count("relay-phone-b"); n != 1 {
+					t.Fatalf("refused phone sent %d times; want 1", n)
+				}
+				if n := r.refreshes(); n != 1 {
+					t.Fatalf("account refreshed %d times; want 1", n)
+				}
+			})
 		})
 	}
 }
@@ -941,29 +927,32 @@ func TestStartRefusedTwiceAndAfterStop(t *testing.T) {
 }
 
 func TestRefreshCoalescedAcrossPhones(t *testing.T) {
-	r := newRig(t, "phone-a", "phone-b", "phone-c")
-	r.refreshGate = make(chan struct{})
-	r.send.answer("relay-phone-a", relayErr(relayv1.ErrorCode_ERROR_CODE_FORBIDDEN, "", nil))
-	r.send.answer("relay-phone-b", relayErr(relayv1.ErrorCode_ERROR_CODE_ENTITLEMENT_INACTIVE, "", nil))
-	r.send.block["relay-phone-c"] = true
-	r.start()
-	r.enqueue("ask-1")
-	for range 3 {
-		r.call()
-	}
-	r.nextN(2) // a forbidden, b not_paying: one refresh runs, held
-	// Abandon never waits on the refresh.
-	if keys := r.p.Abandon(state.ReasonSwitched); !slices.Equal(keys, []string{"ask-1"}) {
-		t.Fatalf("Abandon = %v", keys)
-	}
-	if s := r.next(); s != (settled{"ask-1", "phone-c", "expired", "in_flight"}) {
-		t.Fatalf("settled %v", s)
-	}
-	close(r.refreshGate)
-	r.p.Stop()
-	if n := r.refreshes(); n != 1 {
-		t.Fatalf("account refreshed %d times; want 1 for the burst", n)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		r := newRig(t, "phone-a", "phone-b", "phone-c")
+		r.refreshGate = make(chan struct{})
+		r.send.answer("relay-phone-a", relayErr(relayv1.ErrorCode_ERROR_CODE_FORBIDDEN, "", nil))
+		r.send.answer("relay-phone-b", relayErr(relayv1.ErrorCode_ERROR_CODE_ENTITLEMENT_INACTIVE, "", nil))
+		r.send.block["relay-phone-c"] = true
+		r.start()
+		r.enqueue("ask-1")
+		for range 3 {
+			r.call()
+		}
+		r.nextN(2)      // a forbidden, b not_paying: one refresh runs, held
+		synctest.Wait() // both answers handed to refresh: the second joined the held one
+		// Abandon never waits on the refresh.
+		if keys := r.p.Abandon(state.ReasonSwitched); !slices.Equal(keys, []string{"ask-1"}) {
+			t.Fatalf("Abandon = %v", keys)
+		}
+		if s := r.next(); s != (settled{"ask-1", "phone-c", "expired", "in_flight"}) {
+			t.Fatalf("settled %v", s)
+		}
+		close(r.refreshGate)
+		r.p.Stop()
+		if n := r.refreshes(); n != 1 {
+			t.Fatalf("account refreshed %d times; want 1 for the burst", n)
+		}
+	})
 }
 
 func TestTooLargeAnswerIsLoggedOnce(t *testing.T) {
@@ -1091,46 +1080,56 @@ func TestEnqueueAfterStartContextEndsQueuesNothing(t *testing.T) {
 }
 
 // The window ends while a request is in progress, with no relay answer: it
-// may have reached the relay, so it counts as received.
+// may have reached the relay, so it counts as received. The attempt's own
+// deadline is a real context timer, so the test runs in a synctest bubble.
 func TestFreshnessTimeoutMidRequestSettlesInFlight(t *testing.T) {
-	r := newRig(t, "phone-a")
-	r.send.block["relay-phone-a"] = true // answers only when its ctx ends
-	r.start()
-	// 50 ms of the window left: the attempt's own deadline ends the call.
-	r.p.Enqueue("ask-1", secure.WorkAlertFields{Event: "ask", Key: "ask-1", Title: "t", Body: "b"},
-		r.clock.Now().Add(-Freshness+50*time.Millisecond))
-	if s := r.next(); s != (settled{"ask-1", "phone-a", "expired", "in_flight"}) {
-		t.Fatalf("settled %v; want expired (in_flight)", s)
-	}
-	if n := r.send.count("relay-phone-a"); n != 1 {
-		t.Fatalf("send_alert %d times; want 1", n)
-	}
-	if rec, err := r.st.ReceivedAlertPushes([]string{"ask-1"}); err != nil || !rec["ask-1"]["phone-a"] {
-		t.Fatalf("received %v, %v", rec, err)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		r := newRig(t, "phone-a")
+		r.send.block["relay-phone-a"] = true // answers only when its ctx ends
+		r.start()
+		// 50 ms of the window left: the attempt's own deadline ends the call.
+		r.p.Enqueue("ask-1", secure.WorkAlertFields{Event: "ask", Key: "ask-1", Title: "t", Body: "b"},
+			r.clock.Now().Add(-Freshness+50*time.Millisecond))
+		t0 := time.Now()
+		if s := r.next(); s != (settled{"ask-1", "phone-a", "expired", "in_flight"}) {
+			t.Fatalf("settled %v; want expired (in_flight)", s)
+		}
+		if d := time.Since(t0); d != 50*time.Millisecond {
+			t.Fatalf("the request ended after %v of bubble time; want the window's 50 ms", d)
+		}
+		if n := r.send.count("relay-phone-a"); n != 1 {
+			t.Fatalf("send_alert %d times; want 1", n)
+		}
+		if rec, err := r.st.ReceivedAlertPushes([]string{"ask-1"}); err != nil || !rec["ask-1"]["phone-a"] {
+			t.Fatalf("received %v, %v", rec, err)
+		}
+	})
 }
 
 func TestConcurrentStopWaitsForTheFirst(t *testing.T) {
-	r := newRig(t, "phone-a")
-	gate := make(chan struct{})
-	r.send.hold["relay-phone-a"] = gate // ignores its ctx: the first Stop waits on it
-	r.start()
-	r.enqueue("ask-1")
-	r.call()
-	callCtx := <-r.send.ctxs
-	first := make(chan struct{})
-	go func() { r.p.Stop(); close(first) }()
-	<-callCtx.Done() // the first Stop is in, waiting for the sender
-	second := make(chan struct{})
-	go func() { r.p.Stop(); close(second) }()
-	select {
-	case <-second:
-		t.Fatal("second Stop returned while the first still waits for the sender")
-	case <-time.After(50 * time.Millisecond):
-	}
-	close(gate)
-	<-first
-	<-second
+	synctest.Test(t, func(t *testing.T) {
+		r := newRig(t, "phone-a")
+		gate := make(chan struct{})
+		r.send.hold["relay-phone-a"] = gate // ignores its ctx: the first Stop waits on it
+		r.start()
+		r.enqueue("ask-1")
+		r.call()
+		callCtx := <-r.send.ctxs
+		first := make(chan struct{})
+		go func() { r.p.Stop(); close(first) }()
+		<-callCtx.Done() // the first Stop is in, waiting for the sender
+		second := make(chan struct{})
+		go func() { r.p.Stop(); close(second) }()
+		synctest.Wait() // every goroutine is blocked: the sender on gate, both Stops on it
+		select {
+		case <-second:
+			t.Fatal("second Stop returned while the first still waits for the sender")
+		default:
+		}
+		close(gate)
+		<-first
+		<-second
+	})
 }
 
 // A phone whose "When work stops" switch is off is no target, paying or not;
