@@ -136,7 +136,7 @@ since: 0.24.0
 action: nav:inbox
 -->
 
-A row in **Waiting for me** has **Open in Slack** (or Mail, Jira, Linear), **Reply…**, **Done**, **Hide**, **Snooze** (**Tomorrow**, **In 3 days**, **Next week**), **Discuss in Chat** and **Hand to Agent…**. A track row has **Done** and **Stop watching**, an idea row its verdict buttons. While a press runs the row's buttons wait; a failed press leaves the row with the error and **Retry**. The list re-reads every 30 seconds.
+A row in **Waiting for me** has **Open in Slack** (or Mail, Jira, Linear), **Reply…**, **Done**, **Hide**, **Snooze** (**Tomorrow**, **In 3 days**, **Next week**), **Discuss in Chat** and **Hand to Agent…**. A track row has **Done** and **⋯** (**Stop watching**, **Make a Task**; a custom track **Go to Target**, **Delete…**), an idea row its verdict buttons. A failed press leaves the row with the error and **Retry**. The list re-reads every 30 seconds.
 
 ### Reply to a message
 <!-- learn

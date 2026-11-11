@@ -31,9 +31,9 @@ Your Jira and Linear issues feed these sections when that tracker is switched on
 
 Rules you teach through [Catch Up](catch-up.md) feedback are applied to the briefing too.
 
-### Read and Done are separate
+### When a day card is read
 
-Opening a day card marks its briefing read, the same mark **I'm caught up** in [Catch Up](catch-up.md) sets. **Done** only lets today's card leave the top of the list: it then sorts by its time like any other card. The sidebar badge counts one while the latest briefing is unread.
+Opening a day card marks its briefing read, the same mark **I'm caught up** in [Catch Up](catch-up.md) sets. A read day leaves the Inbox's **Morning brief** entries, except today's, which stays until the next day. The sidebar badge counts one while the latest briefing is unread.
 
 ## Using it
 

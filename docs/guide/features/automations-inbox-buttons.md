@@ -42,9 +42,18 @@ Under the recipe's own buttons every card has a common row:
 - **Done** and **Dismiss**.
 
 ### Which folder a card goes to
-<!-- learn: none -->
+<!-- learn
+id: buttons-card-folder
+title: Send one card to its own folder
+text: Add `folder: "release"` to `output.inbox` to file that one card in a folder of yours.
+area: automations
+level: power
+kind: tip
+since: next
+action: nav:automations
+-->
 
-A card goes to its automation's Inbox folder: the **Inbox** root, unless you used **Move to Folder** in the card's **⋯** or saved a folder from the editor chat. A recipe can send one card elsewhere with `folder`, the folder's name as the recipe knows it (its slug, made from the first title and kept through renames): `output.inbox({title, body, folder: "release"})`. A slug no folder has sends the card to the automation's own folder, and the run's history says `folder "release" not found — shown in Inbox`; the run doesn't fail. A recipe never makes a folder.
+A card goes to its automation's Inbox folder: the **Inbox** root, unless you used **Move to Folder** in the card's **⋯** or saved a folder from the editor chat. A recipe can send one card elsewhere with `folder`, the folder's name as the recipe knows it (its slug, made from the first title and kept through renames): `output.inbox({title, body, folder: "release"})`. A slug no folder has sends the card to the automation's own folder, and the run's history says `folder "release" not found — shown in Inbox` (or the name of the automation's folder); the run doesn't fail. A recipe never makes a folder.
 
 ### Replying to a card
 <!-- learn

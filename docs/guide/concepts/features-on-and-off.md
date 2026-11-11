@@ -39,7 +39,7 @@ Setup picks the starting set from your goals; see [Set up Watchtower](../start/s
 | Daily Briefing | Light | Day Plan |
 | Day Plan | Light | |
 | Next Step Suggestions | Medium | |
-| Claude plan limits (no AI) | None | |
+| Subscription plan limits (no AI) | None | |
 
 The Tracks, Ideas & Decisions, Reaction Commands, Daily Briefing and Day Plan rows are switched on their built-in cards. Turning **Track my threads** off also pauses your custom-track watches.
 
