@@ -251,7 +251,7 @@ func TestRestartPushesAnAlertSavedAtOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	pr.src.set(t, workAlert("ask-9")) // new to the zone: the first cycle saves it
-	r2 := &vouchRig{rig: newRig(t, pr.dir), srv: pr.srv, clock: pr.clock}
+	r2 := &vouchRig{rig: newRelayRig(t, pr.dir, pr.srv), srv: pr.srv, clock: pr.clock}
 	o := r2.options()
 	o.newTransport, o.RelayOrigin, o.Clock, o.linkEvery = nil, pr.srv.URL, pr.clock.Now, time.Hour
 	o.away = alwaysAway{}

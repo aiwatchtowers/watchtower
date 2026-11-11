@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io/fs"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -102,7 +103,8 @@ type rig struct {
 	dir    string
 	fake   *memfake.Fake
 	rec    *recorder
-	ctl    *memControl // nil = the real control socket
+	ctl    *memControl  // nil = the real control socket
+	http   *http.Client // the relay transport's HTTP (nil = its own)
 	opens  atomic.Int32
 	dials  atomic.Int32
 	cancel context.CancelFunc
@@ -130,6 +132,7 @@ func (r *rig) options() Options {
 	if r.ctl != nil {
 		r.ctl.configure(&o)
 	}
+	o.httpClient = r.http
 	return o
 }
 

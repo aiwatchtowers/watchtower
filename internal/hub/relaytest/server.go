@@ -45,6 +45,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -87,7 +88,10 @@ const writeTimeout = 5 * time.Second
 type Server struct {
 	URL  string
 	srv  *httptest.Server
-	hits atomic.Int64 // every HTTP request, the WebSocket and blobs included
+	hits atomic.Int64
+	// pipes and pipeClient: StartInMemory's listener and its clients' HTTP.
+	pipes      *pipeListener
+	pipeClient *http.Client // every HTTP request, the WebSocket and blobs included
 
 	mu          sync.Mutex
 	ops         []string
@@ -143,6 +147,19 @@ type pairing struct{ phone, mac string }
 // Start runs a fake relay until the test ends.
 func Start(t testing.TB) *Server {
 	t.Helper()
+	return start(t, false)
+}
+
+// StartInMemory is Start served over in-memory pipes: every client must use
+// HTTPClient. Created inside a synctest bubble, the relay runs on the
+// bubble's clock with everything else in it.
+func StartInMemory(t testing.TB) *Server {
+	t.Helper()
+	return start(t, true)
+}
+
+func start(t testing.TB, inMemory bool) *Server {
+	t.Helper()
 	s := &Server{
 		fail: map[string][]*relayv1.Error{}, hubReaders: map[string][]string{}, pushTokens: map[string]string{}, failSave: map[string]relayv1.ErrorCode{}, zones: map[string]*zone{},
 		blobs: map[string][]byte{}, attZone: map[string]string{},
@@ -155,10 +172,20 @@ func Start(t testing.TB) *Server {
 	mux.HandleFunc("/v1/op", s.serveOp)
 	mux.HandleFunc("/v1/ws", s.serveWS)
 	mux.HandleFunc("/blob/", s.serveBlob)
-	s.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.hits.Add(1)
 		mux.ServeHTTP(w, r)
-	}))
+	})
+	if inMemory {
+		s.pipes = newPipeListener()
+		tr := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) { return s.pipes.dial(ctx) }}
+		s.pipeClient = &http.Client{Transport: tr}
+		s.srv = &httptest.Server{Listener: s.pipes, Config: &http.Server{Handler: handler}}
+		s.srv.Start()
+		t.Cleanup(tr.CloseIdleConnections)
+	} else {
+		s.srv = httptest.NewServer(handler)
+	}
 	s.URL = s.srv.URL
 	t.Cleanup(func() {
 		s.mu.Lock()
