@@ -12,7 +12,7 @@ What the owner gets:
 
 1. **Inbox at the top of the sidebar**, in Targets' place; Targets moves into FOCUS next to Catch Up.
 2. **Sections by urgency:** Needs you → Today → Running → Earlier.
-3. **One Morning brief row**, always today's. Past days are inside it (‹ › and History). An older brief counts as read once a newer one exists.
+3. **One Morning brief row**, always today's. Past days are inside it (‹ › and History). Past briefs leave the list; nothing marks them read for you.
 4. **Rows that show their content:** a coloured tile per kind, the first real line ("Colleague B in a DM: Will you approve the budget?"), time on the right, a count of what is new.
 5. **Counts mean "act":** people waiting today (since midnight), threads with news, ideas in today's batch. The backlog is a grey second line. The sidebar badge = Needs approval + people waiting today. Mail never counts.
 6. **Never an empty pane:** the Inbox opens today's brief, or the last thing the owner looked at.
