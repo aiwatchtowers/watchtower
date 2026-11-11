@@ -32,7 +32,7 @@ const (
 // oweMarkersTx records r's marker payload and adds owed to the markers still
 // to write, in the caller's transaction (the switch's announce).
 func (s *Switcher) oweMarkersTx(tx *sql.Tx, r switchRecord, owed map[transport.Kind]uint32) error {
-	hub, target, by, epoch := s.c.Keys.HubID().String(), string(r.Target), r.By, r.Epoch
+	hub, target, by, epoch := s.c.Keys.HubIDText(), string(r.Target), r.By, r.Epoch
 	payload, err := wire.Marshal(wire.Control{
 		ID: r.ID, Kind: wire.ControlSwitched, HubID: &hub, Target: &target, Epoch: &epoch, By: &by,
 		At: &wire.Time{Time: r.At},

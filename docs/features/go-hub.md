@@ -398,6 +398,16 @@ decisions asks #843, #851, #956; the plan's Global Constraints are the contract)
   the Desktop's Keychain items, which Reset All Data does not remove (the guide's privacy page says so).
   **Set up Mobile again** (`hub adopt --set-aside`, after `no_keys`) writes `MOVED` and moves the Swift files into
   `MobileHub/set-aside-<UTC time>/`: kept, never imported or deleted.
+- **`hub_id` keeps its stored spelling** (#1746). The Swift hub stored `UUID().uuidString.lowercased()`; the Go
+  hub makes an uppercase one. CloudKit zone names are case-sensitive and phones compare a grant's and a heartbeat's
+  `hub_id` with their link's as text, so everything that names the hub in text — the bridge's `DataZone-<hub_id>` /
+  `RelayZone-<hub_id>`, link codes, grants, the heartbeat, switch markers — uses `Keyring.HubIDText()` (hub_id as
+  stored), never `HubID().String()`. Releases up to v0.28.0 used the uppercase form, so an adopted hub published into
+  two new, empty zones its phones never read and read a mailbox no phone wrote: no phone action arrived and phones
+  kept the Swift hub's last grant. At start the hub compares `hub_meta.cloudkit_zones_hub_id` (absent = the uppercase
+  form) with the stored spelling; when they differ it runs the account-change reset once (published state forgotten,
+  CloudKit's mailbox read again from the start, the exactly-once ledger answering repeats) and records the mark. The
+  uppercase zones a v0.28.0 hub created stay in the owner's iCloud, unread (v1 limit).
 - **Transport switch.** Only a person switches: a paying phone's `transport_switch`, or `entitlement_expired`. A switch
   toward the relay waits at least 5 minutes after the previous one; a switch toward CloudKit is immediate. Every
   accepted switch rotates the keyring. A notice is left in the transport being left (decision 1), and old keys are

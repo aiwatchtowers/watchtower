@@ -562,7 +562,7 @@ final class AppRoot {
                 )
             }
         } catch {
-            Self.logger.error("heartbeat or grant read failed: \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("heartbeat or grant read failed: \(String(describing: error), privacy: .public)")
             return
         }
         let grant = reading.map { readGrant($0, hubID: hubID) } ?? .unreadable

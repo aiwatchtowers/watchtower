@@ -131,7 +131,7 @@ func (c *Center) newGrant(device string, answered map[string]bool) (wire.DeviceG
 	}
 	answered[id] = true
 	return wire.DeviceGrant{
-		DeviceID: id, HubID: c.keys.HubID().String(), StartSessionsAllowed: true, StartSessionsGranted: ptr(false),
+		DeviceID: id, HubID: c.keys.HubIDText(), StartSessionsAllowed: true, StartSessionsGranted: ptr(false),
 		OrderedActions: ptr(1), Transports: append([]string(nil), c.host.Transports...),
 		RelayDeviceID: c.host.RelayDeviceID, RelayAuthPub: c.host.RelayAuthPub,
 	}, true

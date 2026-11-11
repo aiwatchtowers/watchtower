@@ -119,6 +119,9 @@ type Keyring struct {
 	now func() time.Time
 	seq *secure.SeqAllocator
 
+	// hubText is hub_id as stored (HubIDText).
+	hubText string
+
 	// mu guards relay, unusable and checkpointOwed; relay material is only read
 	// under it.
 	mu       sync.Mutex
@@ -263,12 +266,14 @@ func NewKeyring(id Identity, st *state.Store, now func() time.Time) (*Keyring, e
 			}
 			k.hub[6] = k.hub[6]&0x0f | 0x40 // version 4
 			k.hub[8] = k.hub[8]&0x3f | 0x80 // RFC 4122 variant
-			if err := state.SetMetaTx(tx, state.MetaHubID, k.hub.String()); err != nil {
+			hubText = k.hub.String()
+			if err := state.SetMetaTx(tx, state.MetaHubID, hubText); err != nil {
 				return err
 			}
 		} else if k.hub, err = secure.ParseID(hubText); err != nil {
 			return errors.New("identity: hub_id is not a UUID")
 		}
+		k.hubText = hubText
 		if _, ok, err := state.MetaTx(tx, state.MetaKMetaSealed); err != nil {
 			return err
 		} else if !ok {
@@ -338,6 +343,14 @@ func (k *Keyring) insertEpoch(tx *sql.Tx, epoch uint32, at time.Time, r Reason, 
 
 // HubID is the hub's id.
 func (k *Keyring) HubID() secure.ID { return k.hub }
+
+// HubIDText is hub_id spelled as stored: the text the CloudKit zone names
+// (DataZone-/RelayZone-<hub_id>), the link codes, the grants, the heartbeat
+// and the controls carry. A hub this runtime created stores HubID().String()
+// (uppercase); a hub adopted from the Swift hub keeps that hub's lowercase
+// spelling, which its CloudKit zones and its phones' stored links use, and
+// the phones compare hub ids as text (#1746). Never re-spell it.
+func (k *Keyring) HubIDText() string { return k.hubText }
 
 // Signer is hub_sig.
 func (k *Keyring) Signer() ed25519.PrivateKey { return k.id.Signing }
