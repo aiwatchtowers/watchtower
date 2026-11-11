@@ -604,6 +604,7 @@ enum DesignShotCatalog {
                     .detailBackground())
             }
         } + ProviderFallbackShotFixtures.runtimeShots + InboxBuilderAShotFixtures.shots + InboxBuilderBShotFixtures.shots
+            + ClosedAsksShotFixtures.shots
     }
 }
 
@@ -644,6 +645,7 @@ enum DesignShotFixtures {
         InboxFoldersShotFixtures.cleanUp()
         InboxApprovalsShotFixtures.cleanUp()
         ProjectPageShotFixtures.cleanUp()
+        ClosedAsksShotFixtures.cleanUp()
         if let newTaskPoolPath { TestDatabase.cleanup(path: newTaskPoolPath) }
         newTaskPoolPath = nil
         UserDefaults().removePersistentDomain(forName: defaultsSuite)
