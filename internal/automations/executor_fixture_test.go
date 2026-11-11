@@ -381,12 +381,15 @@ func (m exModule) Install(def automations.Definer) {
 }
 
 // pastDeadlineModule defines jump(): the fake clock moves past the run's
-// 5-minute deadline, which fires the meter's watcher. With a non-nil stuck,
+// 5-minute deadline, which fires the meter's watcher (armed first). With a non-nil stuck,
 // jump then blocks until stuck is closed (a native call that ignores the
 // interrupt, as a stuck builtin would), closing entered first.
 func pastDeadlineModule(clock *automationstest.FakeClock, entered, stuck chan struct{}) automations.Module {
 	return exModule{name: "jump", fns: map[string]automations.SDKFunc{
 		"jump": func(env *automations.Env, _ goja.FunctionCall, _ *goja.Runtime) (any, error) {
+			// Once the deadline timer is armed: armed after the move, it
+			// would count from the new time and never fire.
+			clock.AwaitWaiter(env.Meter.Deadline())
 			clock.Advance(6 * time.Minute)
 			if stuck != nil {
 				close(entered)

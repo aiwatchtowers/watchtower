@@ -232,8 +232,12 @@ func TestAgent_CarvedDeadlineThrowsCatchableBudgetExceeded(t *testing.T) {
 	// catchable BudgetExceeded.
 	clock := automationstest.NewFakeClock(time.Date(2026, 10, 14, 9, 0, 0, 0, time.UTC))
 	// The run's deadline passes on its clock while the agent works.
-	c := agentCase(t, &automationstest.FakeAgent{UntilDone: true, OnRun: func(automations.AgentRequest) { clock.Advance(time.Second) }},
-		nil, "agent:run", "llm:light")
+	// (once the run's deadline timer is armed: armed after this move, it
+	// would count its second from the new time).
+	c := agentCase(t, &automationstest.FakeAgent{UntilDone: true, OnRun: func(automations.AgentRequest) {
+		clock.AwaitWaiter(time.Date(2026, 10, 14, 9, 5, 0, 0, time.UTC))
+		clock.Advance(time.Second)
+	}}, nil, "agent:run", "llm:light")
 	c.backends.Clock = clock
 	c.meter = automations.NewMeter(automations.Budget{Tokens: 50000, Minutes: 5}, clock)
 	clock.Advance(5*time.Minute - time.Second) // one second of the run is left
