@@ -7,6 +7,11 @@ import WatchtowerTestSupport
 /// (`context_type='automation_run'`) with "⚙ <name> · run #<n>" (spec §12.5).
 @MainActor
 final class AgentActionCardLabelTests: XCTestCase {
+    override func tearDown() async throws {
+        IdeaBatchDefaults.clearStandard()
+        try await super.tearDown()
+    }
+
     func testAutomationRowGetsLabel() async throws {
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }

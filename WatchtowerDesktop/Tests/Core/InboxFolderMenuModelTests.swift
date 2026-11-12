@@ -38,6 +38,7 @@ final class InboxFolderMenuModelTests: XCTestCase {
     }
 
     override func tearDown() {
+        IdeaBatchDefaults.clearStandard()
         TestDatabase.cleanup(path: path)
         super.tearDown()
     }

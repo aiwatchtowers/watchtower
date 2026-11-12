@@ -15,6 +15,11 @@ private typealias PlaceholderPane = InboxReadingPane<
 /// checked again by `InboxCardLinkPolicy`.
 @MainActor
 final class InboxReadingPaneTests: XCTestCase {
+    override func tearDown() async throws {
+        IdeaBatchDefaults.clearStandard()
+        try await super.tearDown()
+    }
+
     private func card(
         actions: String = "[]",
         link: String = "",

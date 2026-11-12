@@ -16,6 +16,11 @@ import WatchtowerTestSupport
 /// (`UNNotificationResponse` has no public initializer, so no test can synthesize one).
 @MainActor
 final class NotificationRouteTests: XCTestCase {
+    override func tearDown() async throws {
+        IdeaBatchDefaults.clearStandard()
+        try await super.tearDown()
+    }
+
 
     // MARK: - Forwarded responses are navigation-only
 

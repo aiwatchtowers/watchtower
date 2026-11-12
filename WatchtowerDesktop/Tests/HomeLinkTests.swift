@@ -10,6 +10,11 @@ import WatchtowerTestSupport
 /// new deep link — a calendar event — exactly once.
 @MainActor
 final class HomeLinkTests: XCTestCase {
+    override func tearDown() async throws {
+        IdeaBatchDefaults.clearStandard()
+        try await super.tearDown()
+    }
+
     private struct Landing: Equatable {
         var destination: SidebarDestination
         var targetID: Int?

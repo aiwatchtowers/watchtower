@@ -9,6 +9,11 @@ import WatchtowerTestSupport
 /// a pure read (STRIP-02, amended in ask #475).
 @MainActor
 final class ActionStripAutomationOutputTests: XCTestCase {
+    override func tearDown() async throws {
+        IdeaBatchDefaults.clearStandard()
+        try await super.tearDown()
+    }
+
     private struct Seed {
         let automationID: Int64
         let runID: Int64

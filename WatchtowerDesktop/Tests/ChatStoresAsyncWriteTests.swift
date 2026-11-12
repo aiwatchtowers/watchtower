@@ -19,6 +19,7 @@ final class ChatStoresAsyncWriteTests: XCTestCase {
     }
 
     override func tearDown() {
+        IdeaBatchDefaults.clearStandard()
         TestDatabase.cleanup(path: path)
     }
 

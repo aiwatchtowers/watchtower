@@ -34,6 +34,7 @@ final class InboxRouteTests: XCTestCase {
     }
 
     override func tearDown() async throws {
+        IdeaBatchDefaults.clearStandard()
         UserDefaults.standard.set(savedFolder, forKey: ActionStripViewModel.folderKey)
         UserDefaults.standard.set(savedFilter, forKey: Self.oldFilterKey)
         TestDatabase.cleanup(path: path)

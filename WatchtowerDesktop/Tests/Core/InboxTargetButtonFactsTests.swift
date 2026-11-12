@@ -8,6 +8,11 @@ import WatchtowerTestSupport
 /// press error it keeps across navigation, and Try again on the same row.
 @MainActor
 final class InboxTargetButtonFactsTests: XCTestCase {
+    override func tearDown() async throws {
+        IdeaBatchDefaults.clearStandard()
+        try await super.tearDown()
+    }
+
     private let context = "OUT:0:0123456789abcdef"
 
     private struct Fixture {
@@ -366,6 +371,11 @@ final class InboxTargetOrphanedProposalTests: XCTestCase {
 /// and otherwise keeps the card on screen with a notice (review A15 #1).
 @MainActor
 final class InboxTargetOpenProposalTests: XCTestCase {
+    override func tearDown() async throws {
+        IdeaBatchDefaults.clearStandard()
+        try await super.tearDown()
+    }
+
     func testOpenProposalNotListedKeepsTheSelection() async throws {
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }

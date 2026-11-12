@@ -37,6 +37,7 @@ final class AppStateInboxArtifactMenuTests: XCTestCase {
     }
 
     override func tearDown() async throws {
+        IdeaBatchDefaults.clearStandard()
         TestDatabase.cleanup(path: path)
         pool = nil
     }

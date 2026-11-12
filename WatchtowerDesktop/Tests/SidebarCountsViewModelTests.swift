@@ -8,6 +8,11 @@ import WatchtowerTestSupport
 
 @MainActor
 final class SidebarCountsViewModelTests: XCTestCase {
+    override func tearDown() async throws {
+        IdeaBatchDefaults.clearStandard()
+        try await super.tearDown()
+    }
+
 
     // MARK: - Catch-Up badge
     //

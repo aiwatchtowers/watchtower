@@ -14,6 +14,7 @@ final class ActionStripActionsViewTests: XCTestCase {
     private var paths: [String] = []
 
     override func tearDown() {
+        IdeaBatchDefaults.clearStandard()
         paths.forEach { TestDatabase.cleanup(path: $0) }
         paths = []
         super.tearDown()

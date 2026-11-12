@@ -21,6 +21,7 @@ final class EmptyStateTabWiringTests: XCTestCase {
     private var dbPath = ""
 
     override func tearDown() {
+        IdeaBatchDefaults.clearStandard()
         if !dbPath.isEmpty { TestDatabase.cleanup(path: dbPath) }
         super.tearDown()
     }

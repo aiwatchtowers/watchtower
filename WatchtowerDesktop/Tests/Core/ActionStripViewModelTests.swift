@@ -10,6 +10,11 @@ import WatchtowerTestSupport
 /// `AgentActionFeedTests`/`ReminderQueriesTests`.
 @MainActor
 final class ActionStripViewModelTests: XCTestCase {
+    override func tearDown() async throws {
+        IdeaBatchDefaults.clearStandard()
+        try await super.tearDown()
+    }
+
     private func makePool() throws -> (DatabasePool, String) { try TestDatabase.createPool() }
 
     func testRefreshPopulatesActionAndReminderRows() async throws {

@@ -15,6 +15,7 @@ final class InboxLayoutTests: XCTestCase {
     private var suites: [String] = []
 
     override func tearDown() {
+        IdeaBatchDefaults.clearStandard()
         paths.forEach { TestDatabase.cleanup(path: $0) }
         suites.forEach { UserDefaults.standard.removePersistentDomain(forName: $0) }
         paths = []

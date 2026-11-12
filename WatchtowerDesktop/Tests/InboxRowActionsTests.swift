@@ -19,6 +19,7 @@ final class InboxRowActionsTests: XCTestCase {
     }
 
     override func tearDown() async throws {
+        IdeaBatchDefaults.clearStandard()
         manager = nil
         TestDatabase.cleanup(path: path)
     }
