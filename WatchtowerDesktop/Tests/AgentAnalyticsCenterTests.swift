@@ -357,12 +357,16 @@ final class AgentAnalyticsCenterTests: XCTestCase {
         await waitUntil { runner.invocations.count == 1 }
         center.show(workbench: 3, period: .week, agent: .kind(.codex))
         runner.release(0)
+        // The second run starts only after the first one handled its answer
+        // (`perform`, then `finished` starts the queued rerun): the Claude
+        // answer has been dropped by the time it is invoked.
         await waitUntil { runner.invocations.count == 2 }
-        await settle(center)
         XCTAssertNil(center.overviews[3]?.value, "the Claude answer is dropped")
         runner.release(1)
         await waitUntil { center.overviews[3]?.value != nil }
         await settle(center)
+        // The tracker records on a main-actor hop after the change.
+        await waitUntil { !assigned.isEmpty }
         XCTAssertEqual(center.overviews[3]?.value?.agent, "codex")
         XCTAssertEqual(assigned, ["codex"], "only the Codex overview is ever shown")
     }
