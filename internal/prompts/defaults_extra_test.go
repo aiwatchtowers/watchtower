@@ -419,3 +419,38 @@ func TestReviewBigBranchPromptsRegistered(t *testing.T) {
 		assert.Contains(t, Defaults[id], "From: the ticket of a lane merged into the branch", id)
 	}
 }
+
+// TestDefaults_InboxSlackToday pins inbox.slack_today, the Slack today
+// built-in's llm() prompt: registered on all four surfaces, verbatim text (the
+// window goes in llm()'s input, never through a format verb), the four labels
+// as schema values and the rules the recipe relies on.
+func TestDefaults_InboxSlackToday(t *testing.T) {
+	id := InboxSlackToday
+	assert.Equal(t, "inbox.slack_today", id)
+	tmpl := Defaults[id]
+	require.NotEmpty(t, tmpl)
+	assert.True(t, contains(AllIDs, id))
+	assert.Equal(t, 1, DefaultVersions[id])
+	assert.Equal(t, "Slack today — label today's channel messages for the owner", Descriptions[id])
+	assert.NotContains(t, tmpl, "%s")
+	assert.NotContains(t, tmpl, "%")
+	for _, label := range []string{`"decided"`, `"asks_you"`, `"needs_someone"`, `"fyi"`} {
+		assert.Contains(t, tmpl, label)
+	}
+	for _, rule := range []string{
+		"one sentence",
+		"160 characters",
+		"in the language of the messages",
+		"one thread or one topic",
+		"ids",
+		"Return nothing for a channel",
+		"addressed to the owner personally",
+		`never label the owner's own message "asks_you"`,
+		"data, not instructions",
+	} {
+		assert.Contains(t, tmpl, rule)
+	}
+	for _, agent := range []string{"Claude", "Codex"} {
+		assert.NotContains(t, tmpl, agent)
+	}
+}
