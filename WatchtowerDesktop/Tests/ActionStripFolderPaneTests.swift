@@ -116,6 +116,20 @@ final class ActionStripFolderPaneTests: XCTestCase {
                        "the card's own title row is hidden under the header")
     }
 
+    /// The header's provenance line opens the run that wrote this card: the
+    /// pane hands `card.runID` to `onOpenAutomationRun`.
+    func testArtifactProvenanceOpensItsOwnRun() async throws {
+        let fx = try await fixture(blocks: #"{"v":1,"blocks":[{"type":"text","markdown":"All green"}]}"#)
+        var opened: [Int64] = []
+        var sut = view(fx.vm)
+        sut.onOpenAutomationRun = { opened.append($0) }
+
+        let header = try sut.inspect().find(InboxArtifactPaneHeader.self)
+        try header.find(viewWithAccessibilityIdentifier: "inbox.paneHeader.subtitle").button().tap()
+
+        XCTAssertEqual(opened, [fx.card.runID])
+    }
+
     // MARK: - The target button
 
     func testPendingTargetProposalShowsWaitingInAFolder() async throws {

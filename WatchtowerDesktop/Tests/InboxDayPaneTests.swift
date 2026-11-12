@@ -232,15 +232,14 @@ final class InboxDayPaneTests: XCTestCase {
                        "Thursday, 22 October · written 15:02", "the write time in the local time zone")
     }
 
-    /// The lead is the first attention item: Start here draws it, the lead
-    /// paragraph does not repeat it.
+    /// The lead is the first attention item: Start here draws it, and the
+    /// pane draws no lead paragraph of its own.
     func testLeadRepeatingStartHereIsDrawnOnce() async throws {
         try await insertBriefing(date: Self.today)
         let sut = try await pane(date: Self.today)
         let briefing = try XCTUnwrap(sut.card.briefing)
 
         XCTAssertEqual(InboxBriefLayout.lead(briefing), "Reply to the release thread", "the row's preview keeps it")
-        XCTAssertNil(InboxDayPane.shownLead(briefing))
         XCTAssertEqual(try texts(sut).filter { $0 == "Reply to the release thread" }.count, 1)
     }
 
@@ -254,7 +253,6 @@ final class InboxDayPaneTests: XCTestCase {
         let briefing = try XCTUnwrap(sut.card.briefing)
 
         XCTAssertEqual(InboxBriefLayout.lead(briefing), "Prepare the ACME-12 review")
-        XCTAssertNil(InboxDayPane.shownLead(briefing))
         XCTAssertEqual(try texts(sut).filter { $0 == "Prepare the ACME-12 review" }.count, 1)
         XCTAssertThrowsError(try sut.inspect().find(text: "Start here"), "no attention items, no Start here")
     }

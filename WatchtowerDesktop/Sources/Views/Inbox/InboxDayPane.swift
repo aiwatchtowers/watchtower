@@ -32,8 +32,8 @@ struct InboxBriefControls {
 
 /// The Inbox's Morning brief (spec "One brief row", §6.3, R3, R10, the
 /// mockup's order): the pane header with the day stepper, **History**,
-/// **Discuss in Chat** and the `?`; then the lead with **Start here** (the
-/// first three attention items), **Your day** (the plan and the brief's
+/// **Discuss in Chat** and the `?`; then **Start here** (the first three
+/// attention items), **Your day** (the plan and the brief's
 /// day items), today's **Waiting on you** and **Moved overnight**, and the
 /// rest of the brief (More for today, What happened, Team pulse, Coaching).
 /// In the folder model nothing pins a day card, so it has no Done (ask #607).
@@ -49,7 +49,8 @@ struct InboxBriefControls {
 struct InboxDayPane: View {
     let card: InboxDayCard
     /// "YYYY-MM-DD": only today's card offers Add and Regenerate (R10).
-    let today: String
+    /// The Inbox sets it from its own clock (`ActionStripActionsView.now`).
+    var today: String
     @Bindable var plan: DayPlanViewModel
     /// Regenerate runs the `day-plan` CLI, which needs the owner (OWNER-02).
     let owner: Owner
@@ -94,7 +95,7 @@ struct InboxDayPane: View {
                 )
             }
             if let briefing = card.briefing {
-                leadCard(briefing)
+                startHereCard(briefing)
             } else if showsPlan, briefingOn, card.date == today, owner.isKnown, let briefing {
                 InboxDayBriefRow(briefing: briefing) { Task { await makeBrief() } }
             }
@@ -119,36 +120,17 @@ struct InboxDayPane: View {
 
     // MARK: - The mockup's sections
 
-    /// The brief's lead line over **Start here**, its first three attention
-    /// items with their own actions. The lead is drawn only when it does not
-    /// repeat an item drawn below it (`shownLead`).
+    /// **Start here**: the brief's first three attention items with their
+    /// own actions, first in the pane. The lead (`InboxBriefLayout.lead`) is
+    /// the list row's preview only: it is always an item drawn here or in
+    /// Your day, so the pane never draws it as a paragraph of its own.
     @ViewBuilder
-    private func leadCard(_ briefing: Briefing) -> some View {
-        let lead = Self.shownLead(briefing)
-        if lead != nil || !InboxBriefLayout.startHere(briefing).isEmpty {
-            VStack(alignment: .leading, spacing: Spacing.medium) {
-                if let lead {
-                    Text(lead)
-                        .font(.body)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .textSelection(.enabled)
-                        .padding(Spacing.medium)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .card()
-                }
-                BriefingSectionsView(briefing: briefing,
-                                     parts: [.attention(from: 0, limit: InboxBriefLayout.topCount)],
-                                     onOpen: onOpenBriefingLink, onMakeTask: onMakeTask)
-            }
+    private func startHereCard(_ briefing: Briefing) -> some View {
+        if !InboxBriefLayout.startHere(briefing).isEmpty {
+            BriefingSectionsView(briefing: briefing,
+                                 parts: [.attention(from: 0, limit: InboxBriefLayout.topCount)],
+                                 onOpen: onOpenBriefingLink, onMakeTask: onMakeTask)
         }
-    }
-
-    /// `InboxBriefLayout.lead` as its own paragraph, or nil when its text is
-    /// one of the attention or your-day items the pane draws anyway.
-    static func shownLead(_ briefing: Briefing) -> String? {
-        guard let lead = InboxBriefLayout.lead(briefing) else { return nil }
-        let drawn = briefing.parsedAttention.map(\.text) + briefing.parsedYourDay.map(\.text)
-        return drawn.contains(lead) ? nil : lead
     }
 
     /// **Your day**: the plan (with "N conflicts" when it has them) and the

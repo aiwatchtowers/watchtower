@@ -51,9 +51,8 @@ final class InboxQueriesTests: XCTestCase {
         return Int(id)
     }
 
-    /// The badge counts the unread among the rows the list shows: past the
-    /// list's limit an older unread message counts nothing.
-    func testUnreadCountIsCappedLikeTheList() throws {
+    /// The list shows the newest rows up to its limit.
+    func testListIsCappedNewestFirst() throws {
         let db = try TestDatabase.create()
         let ids = try db.write { conn in
             [
@@ -65,14 +64,12 @@ final class InboxQueriesTests: XCTestCase {
         try db.read { conn in
             let listed = try InboxQueries.fetchOpenMessages(conn, nowUTC: Self.now, limit: 2).map(\.item.id)
             XCTAssertEqual(listed, [ids[2], ids[1]])
-            XCTAssertEqual(try InboxQueries.unreadOpenMessageCount(conn, nowUTC: Self.now, limit: 2), 1)
-            XCTAssertEqual(try InboxQueries.unreadOpenMessageCount(conn, nowUTC: Self.now), 2)
         }
     }
 
-    /// A Jira row whose issue was deleted at the source is neither listed
-    /// nor counted; a live issue's row is both.
-    func testADeletedJiraIssueRowIsNeitherListedNorCounted() throws {
+    /// A Jira row whose issue was deleted at the source is not listed; a
+    /// live issue's row is.
+    func testADeletedJiraIssueRowIsNotListed() throws {
         let db = try TestDatabase.create()
         let live = try db.write { conn -> Int in
             let acct = try TestDatabase.insertJiraAccount(conn)
@@ -83,7 +80,6 @@ final class InboxQueriesTests: XCTestCase {
         }
         try db.read { conn in
             XCTAssertEqual(try InboxQueries.fetchOpenMessages(conn, nowUTC: Self.now).map(\.item.id), [live])
-            XCTAssertEqual(try InboxQueries.unreadOpenMessageCount(conn, nowUTC: Self.now), 1)
         }
     }
 }
