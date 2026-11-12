@@ -157,6 +157,11 @@ final class TerminalCenter {
 
     /// Keyed by `terminal_sessions.id`.
     private(set) var states: [Int64: State] = [:]
+    /// Running sessions whose session host connection is lost while the
+    /// host may still run them (#1086): the pane shows the disconnected bar
+    /// with Reconnect, and no Restart. The state stays `.running` — the run
+    /// is not over until the host says so.
+    private(set) var hostLinks: [Int64: HostedTerminalSession.HostLink] = [:]
     /// Sessions whose last prompt went to the clipboard: the terminal pane
     /// shows the ⌘V hint until the owner dismisses it or the next delivery.
     private(set) var clipboardHints: Set<Int64> = []
@@ -977,75 +982,6 @@ final class TerminalCenter {
         }
     }
 
-    /// Whether the owner's input submits the agent's prompt: it ends in the
-    /// profile's `submit` (a plain Return, CR) that does not follow ESC
-    /// (Option+Return), does not end in the profile's `newline`, and whose
-    /// last printable input before it — in this chunk or earlier ones
-    /// (`backslashBefore`), escape sequences such as cursor keys and paste
-    /// brackets skipped — is not `\` (`\` then Return is a line break).
-    /// Anything else is a draft: Ctrl+J (LF), Shift+Return under an extended
-    /// keyboard protocol (an escape sequence ending in `u` or `~`), any
-    /// other key. When unsure the input counts as a draft, which costs the
-    /// owner a Return of their own, never a line submitted with theirs —
-    /// so the `\` rule holds for every agent, Codex too.
-    static func isSubmit(_ bytes: [UInt8], backslashBefore: Bool, profile: AgentInputProfile = .claude) -> Bool {
-        if let newline = profile.newline, endsIn(bytes, newline) { return false }
-        guard endsIn(bytes, profile.submit) else { return false }
-        let body = bytes.dropLast(profile.submit.count)
-        if body.last == 0x1B { return false }
-        return !endsAfterBackslash(body, backslashBefore: backslashBefore)
-    }
-
-    /// Whether `bytes` ends in the non-empty key sequence `key`.
-    private static func endsIn(_ bytes: [UInt8], _ key: [UInt8]) -> Bool {
-        !key.isEmpty && bytes.suffix(key.count).elementsEqual(key)
-    }
-
-    /// Whether, after `bytes`, the last printable input is `\` with only
-    /// escape sequences (CSI `ESC [ … final`, SS3 `ESC O x`, `ESC x`) since —
-    /// paste brackets are CSI sequences too. A CR or LF ends the line and
-    /// clears it; any other byte keeps it as it was (fail safe: a draft).
-    static func endsAfterBackslash<Bytes: Collection>(_ bytes: Bytes, backslashBefore: Bool) -> Bool
-        where Bytes.Element == UInt8 {
-        var pending = backslashBefore
-        var index = bytes.startIndex
-        while index != bytes.endIndex {
-            let byte = bytes[index]
-            index = bytes.index(after: index)
-            switch byte {
-            case 0x1B:
-                index = escapeSequenceEnd(in: bytes, after: index)
-            case 0x0D, 0x0A:
-                pending = false
-            case 0x20...0x7E, 0x80...:
-                pending = byte == UInt8(ascii: "\\")
-            default:
-                break
-            }
-        }
-        return pending
-    }
-
-    /// The index just past the escape sequence whose ESC came before
-    /// `start`.
-    private static func escapeSequenceEnd<Bytes: Collection>(in bytes: Bytes, after start: Bytes.Index) -> Bytes.Index
-        where Bytes.Element == UInt8 {
-        guard start != bytes.endIndex else { return start }
-        var index = bytes.index(after: start)
-        switch bytes[start] {
-        case UInt8(ascii: "["):
-            // Parameters and intermediates, then one final byte 0x40–0x7E.
-            while index != bytes.endIndex, !(0x40...0x7E).contains(bytes[index]) {
-                index = bytes.index(after: index)
-            }
-            return index == bytes.endIndex ? index : bytes.index(after: index)
-        case UInt8(ascii: "O"):
-            return index == bytes.endIndex ? index : bytes.index(after: index)
-        default:
-            return index
-        }
-    }
-
     /// `start`, first asking `launch-args` for a `codex` row (spec
     /// 2026-10-12 §4.2, §7); any other row starts at once. A Codex launch
     /// needs a workbench (its MCP server and hooks are the workbench's). No
@@ -1210,11 +1146,17 @@ final class TerminalCenter {
             // The owner's stop (the host's requested exit) is the app's too.
             let closedByApp = process.map { self.processes[id] !== $0 || $0.neverStarted || $0.exitRequested } ?? true
             states[id] = .exited(code)
+            hostLinks[id] = nil
             answerHints[id] = nil
             onSessionExit?(id, code, closedByApp)
             onRowExit?(id)
         }
         process.onOwnerInput = { [weak self] bytes in self?.ownerInput(id, bytes) }
+        hostLinks[id] = nil
+        (process as? HostedTerminalSession)?.onHostLinkChange = { [weak self, weak process] link in
+            guard let self, let process, processes[id] === process else { return }
+            hostLinks[id] = link == .connected ? nil : link
+        }
         process.onDeliveryEvent = { [weak self, weak process] event in
             guard let self, let process, processes[id] === process else { return }
             deliveryEvent(id, event)
@@ -1287,10 +1229,14 @@ final class TerminalCenter {
     /// is adopted too, so the pane shows its last output: its session
     /// reports the exit once through `onSessionExit` as a natural exit and
     /// forgets it; every other exited run is forgotten here. A running run
-    /// whose row is gone — or that is not the one the row runs — is
-    /// stopped (hang-up, then kill after `killGrace`) and forgotten in
-    /// `strayStops`, which the caller need not wait for. Runs this center already holds are left to their
-    /// session. Safe to call again: a second call finds its own runs held.
+    /// whose row is gone is stopped (hang-up, then kill after `killGrace`)
+    /// and forgotten in `strayStops`, which the caller need not wait for.
+    /// A running run of a row that still exists is never signalled
+    /// (#1086): one the row does not show — an older run beside the adopted
+    /// one, or one beside the run the row already shows — may be an agent
+    /// still at work, so it is only logged and left to the host. Runs this
+    /// center already holds are left to their session. Safe to call again:
+    /// a second call finds its own runs held.
     func reattach(_ listed: [SessionHostSessionInfo], rows existing: [Int64: TerminalSession]) async {
         guard let host = sessionHost else { return }
         let scope = sessionHostScope
@@ -1301,12 +1247,18 @@ final class TerminalCenter {
         var strays: [SessionHostSessionInfo] = []
         let running = Dictionary(grouping: unheld.filter { !$0.exited }, by: \.row)
         for (row, runs) in running {
-            let newestFirst = runs.sorted { $0.startedAtMs > $1.startedAtMs }
-            if let session = existing[row], states[row] != .running, let newest = newestFirst.first {
+            guard let session = existing[row] else {
+                strays += runs
+                continue
+            }
+            var newestFirst = runs.sorted { $0.startedAtMs > $1.startedAtMs }
+            if states[row] != .running, let newest = newestFirst.first {
                 adopt(session, info: newest)
-                strays += newestFirst.dropFirst()
-            } else {
-                strays += newestFirst
+                newestFirst.removeFirst()
+            }
+            for info in newestFirst {
+                NSLog("TerminalCenter: session %lld has another live hosted run %@ (pid %ld): left running",
+                      row, info.run, info.pid)
             }
         }
         let exited = Dictionary(grouping: unheld.filter(\.exited), by: \.row)
@@ -1523,6 +1475,7 @@ final class TerminalCenter {
         clipboardHints.remove(sessionID)
         pasteHints.remove(sessionID)
         answerHints[sessionID] = nil
+        hostLinks[sessionID] = nil
         focusOrder.removeAll { $0 == sessionID }
     }
 

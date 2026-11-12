@@ -265,8 +265,11 @@ final class TerminalCenterReattachTests: XCTestCase {
         XCTAssertEqual(transports.count, 1, "nothing attached")
     }
 
-    /// The host listed one row twice: the newest run is adopted, the other stopped.
-    func testReattachAdoptsTheNewestOfSeveralRuns() async throws {
+    /// #1086: the host listed one live row twice (a Restart launched a
+    /// second agent beside one the pane had lost): the newest run is
+    /// adopted and the older one — maybe an agent still at work — is left
+    /// running: never signalled, never forgotten.
+    func testReattachAdoptsTheNewestOfSeveralRunsAndLeavesTheOlderRunning() async throws {
         let row = try await sessionRow()
         center.sessionHostScope = "ws-a"
         alive = [7001, 7002]
@@ -282,9 +285,9 @@ final class TerminalCenterReattachTests: XCTestCase {
         let hosted = try XCTUnwrap(center.process(for: row.id) as? HostedTerminalSession)
         XCTAssertEqual(hosted.key, SessionHostAttachRequest(row: row.id, run: "run-new"))
         XCTAssertEqual(center.states[row.id], .running)
-        XCTAssertEqual(signals.map(\.0), [7001])
-        XCTAssertEqual(signals.map(\.1), [SIGHUP])
-        XCTAssertEqual(try forgotten(), [SessionHostAttachRequest(row: row.id, run: "run-old")])
+        XCTAssertNil(center.strayStops, "nothing to stop")
+        XCTAssertTrue(signals.isEmpty, "the older run is not signalled")
+        XCTAssertTrue(try forgotten().isEmpty, "nor forgotten")
         await hosted.connecting?.value
         hosted.detachFromHost()
     }
@@ -309,9 +312,10 @@ final class TerminalCenterReattachTests: XCTestCase {
         hosted.detachFromHost()
     }
 
-    /// A hosted run of a row that already runs locally is a second agent
-    /// on the row: stopped, and the local run kept.
-    func testHostedRunOfALocallyRunningRowIsStopped() async throws {
+    /// A hosted run of a row that already runs here is not the one the row
+    /// shows, but may be an agent at work (#1086): left running, and the
+    /// row's own run kept.
+    func testHostedRunOfARowRunningHereIsLeftRunning() async throws {
         let row = try await sessionRow()
         center.start(row, fresh: false)
         let local = try XCTUnwrap(center.process(for: row.id) as? FakeTerminalSession)
@@ -324,9 +328,8 @@ final class TerminalCenterReattachTests: XCTestCase {
 
         XCTAssertTrue(center.process(for: row.id) === local)
         XCTAssertEqual(center.states[row.id], .running)
-        XCTAssertEqual(signals.map(\.0), [7200])
-        XCTAssertEqual(signals.map(\.1), [SIGHUP])
-        XCTAssertEqual(try forgotten(), [SessionHostAttachRequest(row: row.id, run: "run-h")])
+        XCTAssertTrue(signals.isEmpty)
+        XCTAssertTrue(try forgotten().isEmpty)
         XCTAssertEqual(transports.count, 1, "nothing attached")
     }
 
@@ -425,5 +428,113 @@ final class TerminalCenterReattachTests: XCTestCase {
         XCTAssertTrue(control.sent(.forget).isEmpty)
         XCTAssertEqual(transports.count, 1)
         XCTAssertEqual(factoryCalls, 0)
+    }
+
+    // MARK: #1086 — a lost connection is not an exit, Restart attaches
+
+    /// Waits out a session's recovery: each look-up and the connection it
+    /// opens, until no new look-up follows.
+    private func settle(_ session: HostedTerminalSession) async {
+        var seen: Task<Void, Never>?
+        while let task = session.recovering, task != seen {
+            seen = task
+            await task.value
+            await session.connecting?.value
+        }
+        await session.connecting?.value
+    }
+
+    /// A row whose last run reads as ended here (the pane lost it).
+    private func endedRow() async throws -> TerminalSession {
+        let row = try await sessionRow()
+        center.start(row, fresh: false)
+        try XCTUnwrap(center.process(for: row.id) as? FakeTerminalSession).exit(nil)
+        XCTAssertEqual(center.states[row.id], .exited(nil))
+        XCTAssertEqual(factoryCalls, 1)
+        return row
+    }
+
+    /// Restart while the host still runs the row's agent attaches to it:
+    /// no launch, no `--resume`, no second agent on the transcript.
+    func testRestartAttachesToALiveRunInsteadOfLaunching() async throws {
+        let row = try await endedRow()
+        control.listed = [
+            SessionHostSessionInfo(row: row.id, run: "run-old", pid: 7400, startedAtMs: 1, exited: false, code: nil),
+            SessionHostSessionInfo(row: row.id, run: "run-live", pid: 7401, startedAtMs: 2, exited: false, code: nil),
+            SessionHostSessionInfo(row: row.id, run: "run-done", pid: 7402, startedAtMs: 3, exited: true, code: 0),
+            SessionHostSessionInfo(row: row.id, run: "run-other", pid: 7403, startedAtMs: 4, exited: false, code: nil,
+                                   scope: "another-workspace")
+        ]
+
+        await vm.open(row, placement: .inPlace)
+
+        XCTAssertEqual(factoryCalls, 1, "no launch process")
+        let hosted = try XCTUnwrap(center.process(for: row.id) as? HostedTerminalSession)
+        XCTAssertEqual(hosted.key, SessionHostAttachRequest(row: row.id, run: "run-live"))
+        XCTAssertEqual(center.states[row.id], .running)
+        await hosted.connecting?.value
+        XCTAssertEqual(launchesSent(), 0)
+        XCTAssertNil(vm.resumeStarts[row.id])
+        XCTAssertTrue(signals.isEmpty)
+        hosted.detachFromHost()
+    }
+
+    /// Restart with no live run of the row in the host launches as before.
+    func testRestartWithoutALiveRunLaunches() async throws {
+        let row = try await endedRow()
+        control.listed = [SessionHostSessionInfo(row: row.id, run: "run-done", pid: 7410, startedAtMs: 1, exited: true, code: 0)]
+
+        await vm.open(row, placement: .inPlace)
+
+        let local = try XCTUnwrap(center.process(for: row.id) as? FakeTerminalSession)
+        XCTAssertEqual(local.launches.count, 2, "relaunched")
+        XCTAssertEqual(center.states[row.id], .running)
+        XCTAssertEqual(control.sent(.list).count, 1, "the host was asked first")
+    }
+
+    /// A host that cannot say whether the row still runs gets no launch:
+    /// the error is shown and nothing starts beside a live agent.
+    func testRestartWhenTheHostCannotListLaunchesNothing() async throws {
+        let row = try await endedRow()
+        control.failedLists = 1
+
+        await vm.open(row, placement: .inPlace)
+
+        XCTAssertEqual(factoryCalls, 1, "nothing launched")
+        XCTAssertEqual(center.states[row.id], .exited(nil))
+        let error = try XCTUnwrap(vm.sessionActionErrors[row.projectID])
+        XCTAssertTrue(error.contains("Could not ask the session host"), error)
+    }
+
+    /// A lost connection of an adopted run shows as disconnected on a
+    /// running row — never an exit — and the owner's Reconnect reattaches.
+    func testADisconnectedRunStaysRunningAndReconnects() async throws {
+        let row = try await sessionRow()
+        let info = SessionHostSessionInfo(row: row.id, run: "run-r", pid: 7500, startedAtMs: 1, exited: false, code: nil)
+        control.listed = [info]
+        await vm.reattachHostedSessions()
+        let hosted = try XCTUnwrap(center.process(for: row.id) as? HostedTerminalSession)
+        hosted.sleep = { _ in }
+        await hosted.connecting?.value
+        try XCTUnwrap(transports.last).push(.json(.attached, info))
+        XCTAssertNil(center.hostLinks[row.id])
+
+        control.failedLists = 1000
+        try XCTUnwrap(transports.last).hangUp()
+        await settle(hosted)
+
+        XCTAssertEqual(center.states[row.id], .running, "the host may still run it")
+        XCTAssertEqual(center.hostLinks[row.id], .lost)
+        XCTAssertTrue(exits.isEmpty)
+
+        control.failedLists = 0
+        center.reconnect(sessionID: row.id)
+        XCTAssertEqual(center.hostLinks[row.id], .reconnecting)
+        await settle(hosted)
+        try XCTUnwrap(transports.last).push(.json(.attached, info))
+        XCTAssertNil(center.hostLinks[row.id])
+        XCTAssertTrue(exits.isEmpty)
+        XCTAssertEqual(launchesSent(), 0)
+        hosted.detachFromHost()
     }
 }

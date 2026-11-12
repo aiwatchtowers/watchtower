@@ -1309,7 +1309,8 @@ extension WorkbenchesViewModel {
         let isLatest = ticket.map { isLatestSwitch($0, projectID: row.projectID) } ?? false
         let previous = terminalCenter?.focusOrder.last
         if ticket != nil { notYetTitledStreak[row.id] = nil } // the owner is back in it: ask again
-        let restorable = refusedAsUnsupported(row) ? false : (fresh ? true : await restoreWorktree(row))
+        let launches = fresh ? true : await adoptsNoLiveHostRun(row, isLatest: isLatest, ticket: ticket)
+        let restorable = (!launches || refusedAsUnsupported(row)) ? false : (fresh ? true : await restoreWorktree(row))
         if restorable, let center = terminalCenter,
            let plan = await rowToLaunch(row, fresh: fresh, center: center, ticket: ticket) {
             let row = plan.row
@@ -1335,6 +1336,26 @@ extension WorkbenchesViewModel {
         placeInLayout(row, fresh: fresh, placement: placement, ticket: ticket)
         await loadSessions(projectID: row.projectID)
         if isLatest, let previous, previous != row.id { await refreshTitle(sessionID: previous) }
+    }
+
+    /// Whether a relaunch of `row` may go ahead (#1086): not when the
+    /// session host still holds a live run of the row — the pane lost it
+    /// and read it as ended — which is adopted instead (and focused for the
+    /// latest switch), nor when the host could not say (the error is
+    /// reported; nothing starts beside an agent that may still run).
+    private func adoptsNoLiveHostRun(_ row: TerminalSession, isLatest: Bool, ticket: Int?) async -> Bool {
+        guard let center = terminalCenter else { return true }
+        switch await center.adoptLiveHostRun(row) {
+        case .none:
+            return true
+        case .shown:
+            if isLatest { center.focus(row.id) }
+            return false
+        case let .unknown(reason):
+            reportStartError("Could not ask the session host whether this session still runs, so nothing was started: \(reason)",
+                             projectID: row.projectID, ticket: ticket)
+            return false
+        }
     }
 
     /// Places `row` in its own project's layout when its switch is still
