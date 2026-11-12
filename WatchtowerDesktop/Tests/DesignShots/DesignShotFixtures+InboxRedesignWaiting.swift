@@ -10,8 +10,9 @@ import WatchtowerTestSupport
 /// moment (the `InboxRedesignShotFixtures` pattern): Waiting for me by
 /// section with the folded Older and its note row, one row hot, the list
 /// with both entries in Needs you, Mail waiting by sender, the Mute Senders
-/// panel, a sender's Mark All Done… asking with its count and the line of
-/// a press that stopped part-way. The two artifacts carry the blocks their
+/// panel, a sender's Mark All Done… asking with its count (pointer on no
+/// row: the asking press keeps its buttons shown) and the line of a press
+/// that stopped part-way. The two artifacts carry the blocks their
 /// built-in recipes write, built from the seeded rows. Sample data only.
 ///
 /// A shot gives no keyboard focus and no pointer, so the hot row is the
@@ -59,6 +60,8 @@ enum InboxRedesignWaitingShotFixtures {
             ("inbox-r-list-mail-row", 640, .listMailRow),
             ("inbox-r-mail-waiting", 760, .mailWaiting),
             ("inbox-r-mail-mute-panel", 760, .mutePanel),
+            // The pointer is on no row: the asking press keeps its buttons shown.
+            ("inbox-r-mail-bulk-confirm", 760, .bulkConfirm),
             ("inbox-r-mail-bulk-partial", 760, .bulkPartial)
         ]
         return inbox.map { name, height, scene in
@@ -68,9 +71,6 @@ enum InboxRedesignWaitingShotFixtures {
             // over its trailing edge, cut at the line, never past the row.
             DesignShot(name: "inbox-r-waiting-hover", size: NSSize(width: 460, height: 620)) {
                 pane(.waitingHover)
-            },
-            DesignShot(name: "inbox-r-mail-bulk-confirm", size: NSSize(width: 720, height: 560)) {
-                pane(.bulkConfirm)
             }
         ]
     }
@@ -114,28 +114,23 @@ enum InboxRedesignWaitingShotFixtures {
         }
     }
 
-    /// The reading pane's column over the scene's artifact as the pane
-    /// draws it — the pane header, then the card with the Inbox's row
-    /// hooks — with one row hot.
+    /// The reading pane's column over Waiting for me as the pane draws it —
+    /// the pane header, then the card with the Inbox's row hooks — with one
+    /// row hot.
     static func pane(_ scene: Scene) -> AnyView {
         do {
             let (vm, seeded, _) = try model()
             open(scene, vm: vm, seeded: seeded)
-            let mail = scene == .bulkConfirm
-            let outputID = mail ? seeded.mailOutput : seeded.waitingOutput
-            guard let card = vm.feed.outputs.first(where: { $0.id == outputID }),
+            guard let card = vm.feed.outputs.first(where: { $0.id == seeded.waitingOutput }),
                   case let .artifact(result, cardActions) = InboxCardLayout.of(card) else {
-                XCTFail("the \(mail ? "Mail waiting" : "Waiting for me") card is not in the feed")
+                XCTFail("the Waiting for me card is not in the feed")
                 return AnyView(Text("no card").foregroundStyle(.red))
             }
-            let hot = mail ? ArtifactRef(kind: .mailSender, key: busiestSender)
-                : ArtifactRef(kind: .inboxItem, id: seeded.hotItem)
-            let snapshot = vm.folderMenu.snapshot
+            let hot = ArtifactRef(kind: .inboxItem, id: seeded.hotItem)
             let header = InboxArtifactPaneHeader(
                 content: InboxFolderEntries.content(.artifact(card), vm.entryInputs),
-                subtitle: mail ? InboxWaitingTexts.mailPaneSubtitle(snapshot.mailSummary)
-                    : InboxWaitingTexts.peoplePaneSubtitle(snapshot.peopleWaiting),
-                menu: nil, onReactionCommands: {}, muteSenders: mail ? muteButton(vm) : nil)
+                subtitle: InboxWaitingTexts.peoplePaneSubtitle(vm.folderMenu.snapshot.peopleWaiting),
+                menu: nil) {}
             let artifact = InboxArtifactCard(
                 card: card, result: result, cardActions: cardActions, people: vm.feed.artifactPeople,
                 navScreens: navScreens, isWriting: false, onCommand: { _ in }, onDone: {}, onDismiss: {},
@@ -217,10 +212,6 @@ enum InboxRedesignWaitingShotFixtures {
             await vm.refresh()
             finished.value = true
         }
-    }
-
-    private static func muteButton(_ vm: ActionStripViewModel) -> MuteSendersButton {
-        MuteSendersButton(load: { try await vm.muteSenderCandidates() }, mute: { _ in }, onFinished: {})
     }
 
     /// The Mute Senders panel where its popover opens, under **Mute

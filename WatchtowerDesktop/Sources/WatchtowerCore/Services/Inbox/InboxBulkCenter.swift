@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 
 /// What a **Mark All Done…** press closes: one Mail waiting sender's open
 /// mail, or Waiting for me's people items 7 days or more old.
@@ -17,6 +18,20 @@ package enum InboxBulkKey: Hashable, Sendable {
 /// Again is a new dry run. `onFinished` (the strip's `refresh()`) runs after
 /// every finished press — an apply's result, an empty plan (the pressed row
 /// was stale), a failed dry run — so the rows redraw with its result line.
+/// The bulk presses under way or waiting for the owner
+/// (`InboxBulkPressModel.pinsActions`), by canonical key. Observable, so a
+/// row that reads it while drawing redraws when its press starts or ends.
+@MainActor
+@Observable
+package final class InboxBulkPins {
+    package private(set) var keys: Set<InboxBulkKey> = []
+
+    fileprivate func set(_ key: InboxBulkKey, pinned: Bool) {
+        guard keys.contains(key) != pinned else { return }
+        if pinned { keys.insert(key) } else { keys.remove(key) }
+    }
+}
+
 @MainActor
 package final class InboxBulkCenter: ObservableObject {
     /// The days an item waits before it is in Older (Go's `db.WaitingOlderAfter`).
@@ -25,6 +40,7 @@ package final class InboxBulkCenter: ObservableObject {
     private let cli: @MainActor () -> InboxBulkCLI
     private let onFinished: @MainActor () async -> Void
     private var models: [InboxBulkKey: InboxBulkPressModel] = [:]
+    private let pins = InboxBulkPins()
 
     /// `cli` is called at each press, so a CLI installed meanwhile is found.
     package init(
@@ -59,8 +75,17 @@ package final class InboxBulkCenter: ObservableObject {
                 await onFinished()
                 return result
             })
+        model.onStateChange = { [pins] state in
+            pins.set(key, pinned: InboxBulkPressModel.pinsActions(state))
+        }
         models[key] = model
         return model
+    }
+
+    /// `key`'s press is planning, asking or running (any spelling): its row
+    /// keeps its actions shown until the owner answers. Observation-tracked.
+    package func isPinned(_ key: InboxBulkKey) -> Bool {
+        pins.keys.contains(Self.canonical(key))
     }
 
     /// Starts `key`'s press: its dry run (ignored while one is under way).

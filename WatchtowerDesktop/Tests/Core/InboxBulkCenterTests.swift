@@ -197,4 +197,27 @@ final class InboxBulkCenterTests: XCTestCase {
         XCTAssertEqual(runner.calls.last, InboxBulkCLI.args(.planSender("a@example.com")))
         XCTAssertEqual(runner.calls.count, 3)
     }
+
+    /// A press planning, asking or running pins its row's actions (any
+    /// spelling of the sender); idle, finished or cancelled does not.
+    func testPressPinsItsRowUntilAnswered() async {
+        let center = center(ScriptedRunner([]))
+        let model = center.model(for: .sender("A@example.com "))
+        XCTAssertFalse(center.isPinned(.sender("a@example.com")))
+        let plan = InboxBulkPlan(ids: ["1", "2"], count: 2)
+        model.begin { plan }
+        XCTAssertTrue(center.isPinned(.sender("a@example.com")), "planning")
+        await waitUntil(model, isConfirming)
+        XCTAssertTrue(center.isPinned(.sender(" A@EXAMPLE.com")), "asking")
+        XCTAssertFalse(center.isPinned(.olderPeople))
+        model.cancel()
+        XCTAssertFalse(center.isPinned(.sender("a@example.com")), "cancelled")
+
+        model.begin { plan }
+        await waitUntil(model, isConfirming)
+        model.confirm { _ in .done(count: 2, skipped: 0) }
+        XCTAssertTrue(center.isPinned(.sender("a@example.com")), "running")
+        await waitUntil(model) { $0 == .finished(.done(count: 2, skipped: 0)) }
+        XCTAssertFalse(center.isPinned(.sender("a@example.com")), "finished")
+    }
 }

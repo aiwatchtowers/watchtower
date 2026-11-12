@@ -107,6 +107,39 @@ final class ArtifactRowHoverTests: XCTestCase {
         XCTAssertEqual(pressed, [.done])
     }
 
+    /// A sender row whose Mark All Done… is asking keeps Cancel and
+    /// "Mark N Done" shown with neither the pointer nor the keyboard on it.
+    func testConfirmingSenderRowShowsItsActionsWithoutHover() async throws {
+        let center = InboxBulkCenter(cli: { InboxBulkCLI(runner: nil) }, onFinished: {})
+        let model = center.model(for: .sender("news@example.com"))
+        let senderRef = ArtifactRef(kind: .mailSender, key: "news@example.com")
+        let content = InboxRowActionsContent(kind: .mailSender(address: "news@example.com", openEnabled: true))
+        let hooks = InboxRefHooks.make(
+            isShown: { _ in true }, content: { _, _ in content }, bulk: { _ in model },
+            pins: { center.isPinned(.sender($0.key)) })
+        let row = ArtifactListRow(title: "news@example.com", subtitle: "46 open · 3 today",
+                                  badge: ArtifactBadge(text: "46"), ref: senderRef)
+        func overlay() throws -> InspectableView<ViewType.ClassifiedView> {
+            try ArtifactListRowView(row: row, firstIndex: 0, mode: .inbox)
+                .environment(\.artifactEnvironment, ArtifactEnvironment(refHooks: hooks))
+                .inspect()
+                .find(viewWithAccessibilityIdentifier: ArtifactRowChrome.actionsIdentifier)
+        }
+        XCTAssertEqual(try overlay().opacity(), 0, "idle: hover or focus only")
+
+        let plan = InboxBulkPlan(ids: ["1", "2", "3"], count: 3)
+        model.begin { plan }
+        let deadline = Date().addingTimeInterval(10)
+        while model.state != .confirming(plan), Date() < deadline { await Task.yield() }
+        let asking = try overlay()
+        XCTAssertEqual(try asking.opacity(), 1, "asking: shown without hover")
+        XCTAssertNoThrow(try asking.find(button: "Mark 3 Done"))
+        XCTAssertNoThrow(try asking.find(button: "Cancel"))
+
+        model.cancel()
+        XCTAssertEqual(try overlay().opacity(), 0, "answered: back to hover or focus")
+    }
+
     func testPreviewModeUnchanged() throws {
         XCTAssertTrue(ArtifactRowChrome.showsActions(isHovered: false, isFocused: false, mode: .preview))
         let preview = try view(focused: nil, mode: .preview).inspect()

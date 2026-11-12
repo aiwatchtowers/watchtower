@@ -257,6 +257,12 @@ struct ArtifactListRowView: View {
         row.ref != nil && row.ref == environment.focusedRef
     }
 
+    /// The row keeps its actions shown: Waiting for me's Older note row, or
+    /// the host's pin (a bulk press asking or running).
+    private var isPinned: Bool {
+        ArtifactRowChrome.pinsActions(row.ref) || (row.ref.map(environment.refHooks.pinsActions) ?? false)
+    }
+
     var body: some View {
         let footer = row.ref.flatMap { environment.refHooks.nativeFooter($0, mode) }
         VStack(alignment: .leading, spacing: Spacing.small) {
@@ -285,7 +291,7 @@ struct ArtifactListRowView: View {
     @ViewBuilder private var line: some View {
         if mode == .inbox {
             let shows = ArtifactRowChrome.showsActions(
-                isHovered: isHovered, isFocused: isFocused, mode: mode, pinned: ArtifactRowChrome.pinsActions(row.ref))
+                isHovered: isHovered, isFocused: isFocused, mode: mode, pinned: isPinned)
             HStack(alignment: .center, spacing: Spacing.regular) {
                 dot
                 texts(badgeInline: false)

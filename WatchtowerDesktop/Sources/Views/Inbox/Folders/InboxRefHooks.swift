@@ -22,8 +22,8 @@ struct InboxRefHooks {
     var hooks: ArtifactRefHooks {
         Self.make(
             isShown: { vm.folderMenu.snapshot.refState.isShown($0) },
-            content: content, subject: subject, bulk: bulkModel, workbenches: workbenches, onCommand: onCommand,
-            onPress: onPress)
+            content: content, subject: subject, bulk: bulkModel, pins: pinsActions, workbenches: workbenches,
+            onCommand: onCommand, onPress: onPress)
     }
 
     /// The hooks over `content` (nil: no native actions): the buttons at the
@@ -34,6 +34,7 @@ struct InboxRefHooks {
         content: @escaping (InboxRef, ArtifactRenderMode) -> InboxRowActionsContent?,
         subject: @escaping (InboxRef) -> InboxCardSubject? = { _ in nil },
         bulk: @escaping (InboxRef) -> InboxBulkPressModel? = { _ in nil },
+        pins: @escaping (InboxRef) -> Bool = { _ in false },
         workbenches: [Workbench] = [],
         onCommand: @escaping (InboxCardCommand) -> Void = { _ in },
         onPress: @escaping (InboxRef, InboxRowPress) -> Void = { _, _ in }
@@ -81,7 +82,10 @@ struct InboxRefHooks {
                         if press == .markAllDone, let model = bulk(inbox) { model.begin() } else { onPress(inbox, press) }
                     }
                 }
-            }
+            },
+            // A bulk press asking or running keeps the row's buttons shown
+            // until the owner answers, wherever the pointer is.
+            pinsActions: { ref in pins(inboxRef(ref)) }
         )
     }
 
@@ -242,6 +246,16 @@ struct InboxRefHooks {
                 address: ref.key, newestPermalink: refState.senderLinks[ref], navScreens: navScreens)
         case .waitingOlder:
             return vm.folderMenu.snapshot.refState.isShown(ref) ? .waitingOlder : nil
+        }
+    }
+
+    /// A sender or Older row whose **Mark All Done…** is planning, asking or
+    /// running (`InboxBulkCenter.isPinned`, Observation-tracked).
+    func pinsActions(_ ref: InboxRef) -> Bool {
+        switch ref.kind {
+        case .mailSender: vm.bulk.isPinned(.sender(ref.key))
+        case .waitingOlder: vm.bulk.isPinned(.olderPeople)
+        case .inboxItem, .track, .idea, .reminder, .action: false
         }
     }
 

@@ -28,6 +28,10 @@ public struct ArtifactRefHooks {
     /// `.inbox` they show only on hover or focus, and hidden they leave
     /// the accessibility tree.
     public var accessibilityActions: (ArtifactRef) -> [ArtifactAccessibilityAction]
+    /// True keeps the row's actions shown in `.inbox` without hover or
+    /// focus (a bulk press asking or running). Read while the row draws, so
+    /// an Observation-tracked answer redraws the row when it changes.
+    public var pinsActions: (ArtifactRef) -> Bool
 
     public init(
         isOpen: @escaping (ArtifactRef) -> Bool = { _ in true },
@@ -35,7 +39,8 @@ public struct ArtifactRefHooks {
         nativeKinds: @escaping (ArtifactRef) -> Set<ArtifactActionKind> = { _ in [] },
         nativeFooter: @escaping (ArtifactRef, ArtifactRenderMode) -> AnyView? = { _, _ in nil },
         open: @escaping (ArtifactRef) -> (() -> Void)? = { _ in nil },
-        accessibilityActions: @escaping (ArtifactRef) -> [ArtifactAccessibilityAction] = { _ in [] }
+        accessibilityActions: @escaping (ArtifactRef) -> [ArtifactAccessibilityAction] = { _ in [] },
+        pinsActions: @escaping (ArtifactRef) -> Bool = { _ in false }
     ) {
         self.isOpen = isOpen
         self.nativeActions = nativeActions
@@ -43,6 +48,7 @@ public struct ArtifactRefHooks {
         self.nativeFooter = nativeFooter
         self.open = open
         self.accessibilityActions = accessibilityActions
+        self.pinsActions = pinsActions
     }
 }
 
