@@ -1320,7 +1320,7 @@ final class TerminalCenterTests: XCTestCase {
         XCTAssertEqual(overDraft, .pasted, "Shift+Tab cleared the owner's draft")
         sessions[0].onOwnerInput?(key)
         let overLeftTyped = await center.deliver("z", sessionID: s.id) { true }
-        XCTAssertEqual(overLeftTyped, .pasted, "Shift+Tab cleared a line left typed")
+        XCTAssertEqual(overLeftTyped, .pasted, "Shift+Tab cleared the draft with a line left typed beside it")
         sessions[0].onOwnerInput?([0x0D])
 
         sessions[0].onOwnerInput?(Array("a\\".utf8))

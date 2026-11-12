@@ -2974,3 +2974,12 @@ Entry format:
 - weak-dimension: 7, mildly. A cross-process fix (Swift sender, Go receiver) listed a Go test as a "new guard" for a defect that lived only on the Swift side.
 - rule-gap (candidate, dim 7): *in a Go↔Swift dual-path fix, the inventory changelog labels a test "new guard" only if it fails on the pre-fix code of the side that was broken. A test that pins the other side's unchanged behaviour is listed as "supporting".*
 - outcome: TBD
+
+## 2026-11-12 — fix/1748-shift-tab-keeps-draft (1d452220c: an owner chunk that is exactly Shift+Tab `ESC [ Z` leaves the PROJ-12 draft state as it was, in Go `sessionhost.IsShiftTab`/`promptState.ownerInput` and Swift `TerminalCenter.isShiftTab`/`ownerInput`; Esc and Ctrl+C stay drafts; PROJ-12 amended under asks #1256/#1261; 10 files; panel: prosecutor (4: 1 minor, 3 nit) + codex (0); pr-review-toolkit specialists unavailable; judge verified by reading and ran the sessionhost ShiftTab/Esc/Proj12 tests green) — verdict: approve
+
+- contested: F4 (under the kitty keyboard protocol Shift+Tab arrives as `CSI 9;2u`, so the exemption never matches). Held minor/needs-human, not major: it falls back to the pre-fix "draft" reading, which costs the owner a Return and never submits their text, and the Go comment says so. Whether Claude Code or Codex turn on kitty mode inside SwiftTerm is an empirical question, not something to settle by reading. [6]
+- false-positive: none dismissed. F2 (the Swift `overLeftTyped` step doesn't isolate the left-typed state) stays a nit: Swift has no separate left-typed flag (`.leftTyped` → `promptDrafts.insert`), so the step can't isolate it there. The Go test does isolate it with `leaveTyped()`. [7]
+- miss: none late. Codex and the prosecutor agreed on the behaviour. The twin-name and guard-label slips (F1, F3) were caught only by the prosecutor.
+- weak-dimension: 3/7, mildly. Cross-language twin references in doc comments and in the inventory "New guards" list drifted from the real test names within one change. This is the same family as the #1743 "new guard vs supporting" lesson.
+- rule-gap (candidate, dim 7): a test listed under "New guards" in an inventory changelog follows the `Test<Module>NN_`/`testProjNN_` naming and is filed as a guard on the module's own line too. A doc comment that names a twin test names one that exists, which can be checked with grep.
+- outcome: TBD

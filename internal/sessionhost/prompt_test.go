@@ -400,8 +400,8 @@ func TestBracketedPasteModeFollowsTheOutput(t *testing.T) {
 // switch) puts no text into the prompt and takes none out, so it leaves the
 // draft state as it was — no draft over an empty prompt, still one over a
 // draft, and none during a line's pause — under both profiles. Twin of
-// TerminalCenterTests' testProj12_ShiftTabKeepsTheDraftState (Codex:
-// TerminalCenterSubmitTests' testCodexShiftTabKeepsTheDraftState).
+// TerminalCenterTests' testProj12_ShiftTabKeepsTheAnswersReturn (Codex:
+// TerminalCenterSubmitTests' testProj12_CodexShiftTabKeepsTheDraftState).
 func TestProj12_ShiftTabKeepsTheDraftState(t *testing.T) {
 	shiftTab := []byte("\x1b[Z")
 	for _, agent := range []string{"claude", "codex"} {

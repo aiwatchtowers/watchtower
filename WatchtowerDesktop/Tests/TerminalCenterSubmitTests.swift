@@ -287,7 +287,7 @@ final class TerminalCenterSubmitTests: XCTestCase {
     /// #1748 (asks #1256, #1261): in Codex too Shift+Tab puts no text into
     /// the composer, so it leaves the draft state as it was; Esc and Ctrl+C
     /// stay drafts (a cancel may move a queued message back into it).
-    func testCodexShiftTabKeepsTheDraftState() async throws {
+    func testProj12_CodexShiftTabKeepsTheDraftState() async throws {
         let (_, s, _) = try await runningCodexSession()
         let shiftTab: [UInt8] = [0x1B, 0x5B, 0x5A]
         processes[0].onOwnerInput?(shiftTab)
