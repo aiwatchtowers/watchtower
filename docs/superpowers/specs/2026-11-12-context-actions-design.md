@@ -135,7 +135,7 @@ Mockup of the screen: `docs/superpowers/specs/2026-11-12-context-actions-mockup.
 - `metric` gains `start_tokens`;
 - `origin` gains `context`;
 - `verdict` gains `reverted_outside`;
-- new columns `session_id` (a repo or memory Accept's session) and `source_key`. The PR is not stored: it is read from the session report's cache (`workbench_pr_states`) by the session's branch.
+- new columns `session_id` (a repo or memory Accept's session; NULL once the Desktop deletes the session row), `via_session` (the row was accepted through a session — survives that delete), `session_branch` (copied from the session while it exists, to find its PR later) and `source_key`. The PR is not stored: it is read from the session report's cache (`workbench_pr_states`) by the session's branch.
 
 In `agentlog.db`: the agent listing table and per-tool/per-server bytes, through its own goose provider.
 

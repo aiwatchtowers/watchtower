@@ -129,7 +129,7 @@ Lane: parallel with Task 1. Use the `add-migration` skill.
     - origin: `context`;
     - verdict: `reverted_outside` (a settings change found undone by someone else, Task 6).
   - No `pr` column: the PR is read from `workbench_pr_states` by the session's branch (Task 7); the spec's schema is updated to match.
-  - New columns: `session_id INTEGER REFERENCES terminal_sessions(id) ON DELETE SET NULL`, `source_key TEXT NOT NULL DEFAULT ''` (the plugin id / server name / `connectors` / `memory`: part of the text key, C5).
+  - New columns: `session_id INTEGER REFERENCES terminal_sessions(id) ON DELETE SET NULL`, `source_key TEXT NOT NULL DEFAULT ''` (the plugin id / server name / `connectors` / `memory`: part of the text key, C5), `via_session INTEGER NOT NULL DEFAULT 0` (set by `MarkCoachAcceptedWithSession`; it, not `session_id`, tells a session-accepted row from a legacy one, because the Desktop deletes `terminal_sessions` rows and `session_id` then becomes NULL), `session_branch TEXT NOT NULL DEFAULT ''` (the session's branch, copied onto the row by Task 6 while the session row still exists, so the PR can still be found after the session row is gone).
   - `db.CoachProposal` gains `SessionID *int64` and `SourceKey string`.
   - `func (d *DB) InsertContextCoachProposal(p CoachProposal, now time.Time) (int64, error)`: origin `context`. A global destination is stored with `workbench_id` NULL and has one open row per `(destination, source_key)` across the install; `repo_claude_md` / `claude_memory_index` have one open per `(destination, source_key, workbench)`. A second open row → `ErrCoachTextBusy`; a fingerprint conflict returns `0, nil`.
   - `func (d *DB) MarkCoachAcceptedWithSession(id, sessionID int64, baseline *float64, n int, now time.Time) error`: compare-and-set `open → accepted`; a row not open → `ErrCoachStateChanged`.
@@ -137,7 +137,9 @@ Lane: parallel with Task 1. Use the `add-migration` skill.
   - `TestInsertContextCoachProposal_OnePerSource`;
   - `TestInsertContextCoachProposal_GlobalOncePerInstall` (the same plugin filed from two workbenches → one row, `workbench_id` NULL);
   - `TestInsertContextCoachProposal_FingerprintNoop`;
-  - `TestMarkCoachAcceptedWithSession_CAS` (the second call gets `ErrCoachStateChanged`);
+  - `TestMarkCoachAcceptedWithSession_CAS` (the second call gets `ErrCoachStateChanged`; the first sets `via_session = 1`);
+  - `TestCoachProposal_SessionDeletedKeepsViaSessionAndBranch` (deleting the `terminal_sessions` row nulls `session_id` but leaves `via_session` and `session_branch`);
+  - `func (d *DB) SetCoachSessionBranch(id int64, branch string) error` (only fills an empty value);
   - `TestMigration00188_KeepsRows` (rows and FKs survive the rebuild).
 - [ ] **Step 2: Run** `go test ./internal/db -run 'Context|00188|WithSession'`. Expect FAIL.
 - [ ] **Step 3: Implement** the migration, then mirror it into `schema.sql`.
@@ -240,9 +242,11 @@ Depends on: Tasks 2, 3 and 4 (`Reapply` uses the per-key writers).
 **Interfaces:**
 - Consumes: `agentreport.StartTokensMedian`; `db.PRStates(workbenchID)` (`workbench_pr_states`, keyed by branch ref); the session's branch from `terminal_session_worktrees`.
 - Produces: `func (d *Daemon) coachMeasureCheck(ctx context.Context, now time.Time) (done bool)`. For each accepted `repo_*` / memory row with `measure_from IS NULL`:
-  - with a `session_id`: PR state `merged` → `SetCoachMeasureFrom(id, mergedAt)`; `closed` → `SetCoachVerdict(too_little_data)` with value nil;
-  - without a session (rows accepted before this change): keep today's `coachEditAtHead` rule — they have no session and no PR to watch (spec C8 now says so);
-  - memory: bound to the cleanup session, not to any change of the file (ordinary Claude Code sessions write MEMORY.md through auto-memory too). Nothing happens while the linked session (`session_id`) is running. Once it has ended: MEMORY.md ≠ `before_text` → `measure_from` = the session's end time and `after_text` = the index as read then (Rollback compares against it, Task 7); MEMORY.md = `before_text` → no `measure_from` (the card's "Session ended without a change"; 30 days → `too_little_data`). v1 limit, written in the feature note: lines that other sessions' auto-memory added *while* the cleanup session ran are part of `after_text`, and a Rollback drops them; the Rollback confirmation says so.
+  - first, for a row with `via_session = 1`, an empty `session_branch` and a live session row that has a branch (`terminal_session_worktrees`): `SetCoachSessionBranch`;
+  - `via_session = 1` (repo): the PR is looked up by `session_branch`. PR state `merged` → `SetCoachMeasureFrom(id, mergedAt)`; `closed` → `SetCoachVerdict(too_little_data)` with value nil;
+  - a session row deleted before its branch was copied (`session_branch` empty, `session_id` NULL): no PR can be found, the row waits out `repoCommitWait` and ends `too_little_data` — never the legacy HEAD rule;
+  - `via_session = 0` (rows accepted before this change): keep today's `coachEditAtHead` rule — they have no session and no PR to watch (spec C8 now says so);
+  - memory: bound to the cleanup session, not to any change of the file (ordinary Claude Code sessions write MEMORY.md through auto-memory too). Nothing happens while the linked session (`session_id`) is running. Once it has ended — or its row is gone (`session_id` NULL with `via_session = 1`, taken as ended at the time the check first sees it): MEMORY.md ≠ `before_text` → `measure_from` = the session's end time and `after_text` = the index as read then (Rollback compares against it, Task 7); MEMORY.md = `before_text` → no `measure_from` (the card's "Session ended without a change"; 30 days → `too_little_data`). v1 limit, written in the feature note: lines that other sessions' auto-memory added *while* the cleanup session ran are part of `after_text`, and a Rollback drops them; the Rollback confirmation says so.
   - Settings rows, accepted and without a verdict: if the own key reads `before` again (a running Claude Code wrote back its in-memory copy, or the owner did), set verdict `reverted_outside` instead of measuring it into `no_effect`. The card offers **Turn Off Again** (`Applier.Reapply(id)`: per-key compare-and-set `before → after`, clears the verdict, `measure_from = now`; Task 7 adds the CLI verb).
   - A PR refresh that fails (no `gh`, no network, auth) is logged at debug level and changes nothing: the row keeps waiting and is retried on the next tick; the 30-day `repoCommitWait` still ends it as `too_little_data`.
 - [ ] **Step 1: Write failing tests:**
@@ -251,6 +255,9 @@ Depends on: Tasks 2, 3 and 4 (`Reapply` uses the per-key writers).
   - `TestMeasureCheck_MergedPR`, `TestMeasureCheck_ClosedPR`, `TestMeasureCheck_OpenPRWaits`, `TestMeasureCheck_LegacyRowUsesHead`, `TestMeasureCheck_MemoryChanged`;
   - `TestMeasureCheck_MemoryWaitsForSessionEnd` (MEMORY.md changed by another session while the cleanup session runs → nothing recorded);
   - `TestMeasureCheck_MemoryUnchangedAtSessionEnd` (no `measure_from`);
+  - `TestMeasureCheck_MemorySessionRowDeleted` (MEMORY.md changed, session row deleted → `measure_from` = check time, `after_text` recorded);
+  - `TestMeasureCheck_RepoSessionRowDeletedAfterBranchCopied` (merged PR still found by `session_branch`);
+  - `TestMeasureCheck_RepoSessionRowDeletedBeforeBranch` (never the HEAD rule; 30 days → `too_little_data`);
   - `TestMeasureCheck_ThirtyDays` (no merge after `repoCommitWait` → `too_little_data`);
   - `TestMeasureCheck_RefreshErrorKeepsWaiting` (the refresher returns an error → row unchanged, no verdict);
   - `TestMeasureCheck_SettingsRevertedOutside` (the plugin key reads `true` again → verdict `reverted_outside`);
