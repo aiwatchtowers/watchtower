@@ -323,6 +323,7 @@ package final class ActionStripViewModel {
             dropLeftRowErrors()
             firstReadError = nil
             rebuildSections()
+            resetStaleApproveAll()
             keepSelectionListed(was: before)
             if firstRead {
                 showDefaultEntry()
@@ -444,8 +445,7 @@ package final class ActionStripViewModel {
         defaults.set(folderMenu.selectedFolderID, forKey: Self.folderKey)
         legacyList = nil
         selection = nil
-        briefDate = nil
-        briefHistoryShown = false
+        resetBriefDay()
         showDefaultEntry()
         arrival = Task { await ownerArrived() }
     }
@@ -465,8 +465,9 @@ package final class ActionStripViewModel {
     package func selectEntry(_ id: String?) async {
         let key = Self.entryKey(folderMenu.selectedFolderID)
         if let id { defaults.set(id, forKey: key) } else { defaults.removeObject(forKey: key) }
-        briefDate = nil
-        briefHistoryShown = false
+        // A click on the Morning brief opens it on today (`showEntry` keeps
+        // the day it shows for a day entry).
+        resetBriefDay()
         guard let opening = showEntry(id) else { return }
         await select(opening)
     }
@@ -478,7 +479,7 @@ package final class ActionStripViewModel {
         let folder = tree.folder(folderMenu.selectedFolderID) ?? tree.root
         _ = showEntry(InboxFolderEntries.defaultEntry(
             entries: folderEntries, saved: defaults.string(forKey: Self.entryKey(folder.id)),
-            folder: folder.kind, today: today))
+            folder: folder.kind, today: today, drawnRows: listedFolder.rows.map(\.id)))
     }
 
     /// The owner opened the Inbox (`ActionStripView.onAppear`) or picked a
@@ -516,10 +517,7 @@ package final class ActionStripViewModel {
             selection = nil
             return nil
         }
-        if case .legacyDay = entry {} else {
-            briefDate = nil
-            briefHistoryShown = false
-        }
+        if case .legacyDay = entry {} else { resetBriefDay() }
         if let list = entry.legacyList {
             openLegacy(list)
             return nil
@@ -589,6 +587,12 @@ package final class ActionStripViewModel {
     /// The brief's History popover is open.
     package var briefHistoryShown = false
 
+    /// The Morning brief back on today, its History closed.
+    private func resetBriefDay() {
+        briefDate = nil
+        briefHistoryShown = false
+    }
+
     /// The card the Morning brief shows: `briefDate`'s, or for today the
     /// root entry's card (its placeholder before anything is written).
     package var briefDay: InboxDayCard? {
@@ -612,7 +616,7 @@ package final class ActionStripViewModel {
         folderMenu.select(folderMenu.tree.root.id)
         briefDate = held && date < today ? date : nil
         briefHistoryShown = false
-        guard showEntry("day:\(today)") != nil else {
+        guard showEntry(InboxFolderEntry.dayID(today)) != nil else {
             entrySelection = nil
             briefDate = nil
             return
@@ -634,7 +638,7 @@ package final class ActionStripViewModel {
     /// The Earlier line: the root's Morning brief with its History open.
     /// Nothing opens while the root lists no Morning brief.
     package func openBriefHistory() {
-        let brief = "day:\(today)"
+        let brief = InboxFolderEntry.dayID(today)
         if folderMenu.selectedFolderID != folderMenu.tree.root.id || entrySelection != brief {
             closeLegacy()
             folderMenu.select(folderMenu.tree.root.id)
@@ -682,8 +686,8 @@ package final class ActionStripViewModel {
         let drawn = listedFolder.rows.map(\.id)
         let entries = folderEntries.map(\.id)
         guard !drawn.contains(current), !entries.contains(current) else { return }
-        let brief = "day:\(today)"
-        if current.hasPrefix("day:"), entries.contains(brief) {
+        let brief = InboxFolderEntry.dayID(today)
+        if current.hasPrefix(InboxFolderEntry.dayID("")), entries.contains(brief) {
             _ = showEntry(brief)
             return
         }
@@ -711,24 +715,55 @@ package final class ActionStripViewModel {
     package func approveAllModel(_ group: NeedsApprovalGroup) -> InboxBulkPressModel {
         if let model = approveAllModels[group] { return model }
         let model = InboxBulkPressModel(
-            plan: { [weak self] in self?.approveAllPlan(group) ?? InboxBulkPlan(ids: [], count: 0) },
+            plan: { [weak self] in
+                guard let self else { throw ApproveAllError.closed }
+                return try await approveAllPlan(group)
+            },
             apply: { [weak self] ids in
-                guard let self else { return .failed("The Inbox is closed.") }
-                return await approveAll(ids: ids)
+                guard let self else { return .failed(ApproveAllError.closed.localizedDescription) }
+                let result = await approveAll(ids: ids)
+                approveAllFinishedIDs[group] = approvableIDs(group)
+                return result
             })
         approveAllModels[group] = model
         return model
     }
 
+    /// Why **Approve All** could not plan or run.
+    private enum ApproveAllError: LocalizedError {
+        case closed
+        case unread(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .closed: "The Inbox is closed."
+            case .unread(let reason): "The Inbox could not be read: \(reason)"
+            }
+        }
+    }
+
     /// The args each planned row had when **Approve All** was planned (what
     /// the owner saw), by action id: `approveAll` approves with these, so a
     /// row whose args changed since is refused by Go and stops the run.
-    @ObservationIgnored private var approveAllShownArgs: [Int64: String] = [:]
+    /// A run's ids leave it when the run ends.
+    @ObservationIgnored package private(set) var approveAllShownArgs: [Int64: String] = [:]
 
-    /// What **Approve All** would approve in `group` now: its approvable
-    /// ids from the last read (`NeedsApprovalGroups.approveAllIDs`), their
+    /// Each group's approvable ids when its last press finished (nil: the
+    /// group was not listed): a later read that lists other ids, or drops
+    /// the group, puts its press back to idle (`resetStaleApproveAll`).
+    @ObservationIgnored private var approveAllFinishedIDs: [NeedsApprovalGroup: [Int64]?] = [:]
+
+    /// What **Approve All** would approve in `group` now: one read first,
+    /// then its approvable ids (`NeedsApprovalGroups.approveAllIDs`), their
     /// args pinned (`approveAllShownArgs`); empty when the group offers none.
-    package func approveAllPlan(_ group: NeedsApprovalGroup) -> InboxBulkPlan {
+    /// Throws when no read has landed or that read failed — never an empty
+    /// plan standing in for an Inbox it could not read.
+    package func approveAllPlan(_ group: NeedsApprovalGroup) async throws -> InboxBulkPlan {
+        await refresh()
+        approveAllFinishedIDs[group] = approvableIDs(group)
+        if let reason = hasRead ? lastError : (firstReadError ?? lastError ?? "nothing was read yet") {
+            throw ApproveAllError.unread(reason)
+        }
         let items = NeedsApprovalGroups.build(openApprovals).first { $0.0 == group }?.1 ?? []
         let ids = NeedsApprovalGroups.approveAllIDs(group, items) ?? []
         for item in items {
@@ -738,12 +773,36 @@ package final class ActionStripViewModel {
         return InboxBulkPlan(ids: ids.map(String.init), count: ids.count)
     }
 
+    /// `group`'s approvable ids from the last read; nil while it is not listed.
+    private func approvableIDs(_ group: NeedsApprovalGroup) -> [Int64]? {
+        guard let items = NeedsApprovalGroups.build(openApprovals).first(where: { $0.0 == group })?.1 else {
+            return nil
+        }
+        return NeedsApprovalGroups.approveAllIDs(group, items) ?? []
+    }
+
+    /// After a read: a finished press whose group now lists other approvable
+    /// ids (or is gone) goes back to idle, so its result line never speaks
+    /// for rows it did not see.
+    private func resetStaleApproveAll() {
+        for (group, model) in approveAllModels {
+            guard case .finished = model.state else { continue }
+            let now = approvableIDs(group)
+            if now == nil || approveAllFinishedIDs[group].map({ $0 != now }) ?? true {
+                model.reset()
+                approveAllFinishedIDs[group] = nil
+            }
+        }
+    }
+
     /// Approves `ids` one by one through the per-action path
     /// (`AgentActionFeed.approve`, args pinned to what the plan read). One
     /// read first; skipped (counted, the run goes on): an id never planned,
     /// no longer open or pending (closed or failed meanwhile), no longer
     /// `NeedsApprovalGroups.isBulkApprovable`, or whose approve found its
-    /// state moved (exit 3). The first failure — a changed row's args
+    /// state moved (exit 3). An approved `create_track` whose `tracks start`
+    /// failed counts as done (its warning stays on its card). The first
+    /// failure — a changed row's args
     /// refused by Go included — stops the run and selects that card while
     /// Needs approval is on screen, where its error shows; the rest are left
     /// for the owner. Ends with a read.
@@ -761,7 +820,10 @@ package final class ActionStripViewModel {
                 continue
             }
             await actionFeed.approve(id, shownArgs: shown)
-            if let error = actionFeed.rowErrors[id] {
+            // A `create_track` approved whose track is not watched yet
+            // (`AgentActionFeed.startVerb`) was approved: it counts as done
+            // and keeps its warning on its card.
+            if let error = actionFeed.rowErrors[id], error.verb != AgentActionFeed.startVerb {
                 failure = (row, error.message)
                 break
             }
@@ -773,6 +835,9 @@ package final class ActionStripViewModel {
         }
         await refresh()
         adoptFeedError()
+        for text in ids {
+            if let id = Int64(text) { approveAllShownArgs[id] = nil }
+        }
         guard let failure else { return .done(count: done, skipped: skipped) }
         // Set after the last read so it is not moved off, and only while the
         // folder that lists the card is selected: the owner may have moved
@@ -889,8 +954,7 @@ package final class ActionStripViewModel {
         await refresh()
         closeLegacy()
         entrySelection = nil
-        briefDate = nil
-        briefHistoryShown = false
+        resetBriefDay()
         if let folder { folderMenu.select(folderMenu.tree.folder(folder) == nil ? folderMenu.tree.root.id : folder) }
         switch entry {
         case nil:

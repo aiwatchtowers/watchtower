@@ -3,13 +3,16 @@ import WatchtowerCore
 
 /// A bulk press of the Inbox (Approve All, Close All…): the button, the
 /// confirmation naming the count, and one result line with Try Again after a
-/// partial or failed apply. The model holds the plan and the apply.
+/// partial or failed apply. The model holds the plan and the apply. A nil
+/// `title` draws no button — only a press already under way or finished
+/// (its spinner, its result line and Try Again), so a result outlives the
+/// moment its group stops offering the press.
 struct InboxBulkPressButton: View {
-    let title: String
+    let title: String?
     let confirmTitle: (Int) -> String
     @ObservedObject var model: InboxBulkPressModel
 
-    init(title: String, confirmTitle: @escaping (Int) -> String, model: InboxBulkPressModel) {
+    init(title: String?, confirmTitle: @escaping (Int) -> String, model: InboxBulkPressModel) {
         self.title = title
         self.confirmTitle = confirmTitle
         self.model = model
@@ -17,32 +20,21 @@ struct InboxBulkPressButton: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.small) {
-            Button {
-                model.begin()
-            } label: {
-                HStack(spacing: Spacing.compact) {
-                    if isBusy {
-                        ProgressView().controlSize(.small)
+            if let title {
+                Button {
+                    model.begin()
+                } label: {
+                    HStack(spacing: Spacing.compact) {
+                        if isBusy {
+                            ProgressView().controlSize(.small)
+                        }
+                        Text(title)
                     }
-                    Text(title)
                 }
-            }
-            .buttonStyle(.kitSecondary)
-            .disabled(isBusy)
-            .confirmationDialog(
-                confirmTitle(pending?.count ?? 0),
-                isPresented: Binding(
-                    get: { pending != nil },
-                    // A dismissal without a button: cancel after the press
-                    // that dismissed it, so a confirm is never undone (cancel
-                    // acts only while confirming).
-                    set: { shown in if !shown { Task { @MainActor in model.cancel() } } }
-                ),
-                titleVisibility: .visible,
-                presenting: pending
-            ) { plan in
-                Button(confirmTitle(plan.count)) { model.confirm() }
-                Button("Cancel", role: .cancel) { model.cancel() }
+                .buttonStyle(.kitSecondary)
+                .disabled(isBusy)
+            } else if isBusy {
+                ProgressView().controlSize(.small)
             }
             if case .finished(let result) = model.state {
                 if let line = Self.resultLine(result) {
@@ -57,6 +49,21 @@ struct InboxBulkPressButton: View {
                         .controlSize(.small)
                 }
             }
+        }
+        .confirmationDialog(
+            confirmTitle(pending?.count ?? 0),
+            isPresented: Binding(
+                get: { pending != nil },
+                // A dismissal without a button: cancel after the press
+                // that dismissed it, so a confirm is never undone (cancel
+                // acts only while confirming).
+                set: { shown in if !shown { Task { @MainActor in model.cancel() } } }
+            ),
+            titleVisibility: .visible,
+            presenting: pending
+        ) { plan in
+            Button(confirmTitle(plan.count)) { model.confirm() }
+            Button("Cancel", role: .cancel) { model.cancel() }
         }
     }
 

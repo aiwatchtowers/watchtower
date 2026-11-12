@@ -62,7 +62,7 @@ final class ActionStripApproveAllTests: XCTestCase {
         let vm = viewModel(pool, runner: runner)
         await vm.refresh()
 
-        let plan = vm.approveAllPlan(.targets)
+        let plan = try await vm.approveAllPlan(.targets)
         XCTAssertEqual(plan, InboxBulkPlan(ids: ids.map(String.init), count: 3))
         let result = await vm.approveAll(ids: plan.ids)
 
@@ -76,7 +76,7 @@ final class ActionStripApproveAllTests: XCTestCase {
         let runner = FakeCLIRunner(stdout: Self.ok)
         let vm = viewModel(pool, runner: runner)
         await vm.refresh()
-        let plan = vm.approveAllPlan(.tracksToCreate)
+        let plan = try await vm.approveAllPlan(.tracksToCreate)
         XCTAssertEqual(plan.count, 3)
 
         // Rejected elsewhere (the phone, the CLI) after the plan was read.
@@ -103,7 +103,8 @@ final class ActionStripApproveAllTests: XCTestCase {
         await vm.refresh()
         vm.selectFolder(folders.approvals)
 
-        let result = await vm.approveAll(ids: vm.approveAllPlan(.targets).ids)
+        let plan = try await vm.approveAllPlan(.targets)
+        let result = await vm.approveAll(ids: plan.ids)
 
         XCTAssertEqual(result, .partial(done: 1, of: 3, error: "boom"))
         XCTAssertEqual(runner.invocations.map { $0[2] }, [String(ids[0]), second], "the third is never approved")
@@ -131,7 +132,7 @@ final class ActionStripApproveAllTests: XCTestCase {
         let vm = viewModel(pool, runner: runner)
         await vm.refresh()
         vm.selectFolder(folders.approvals)
-        let plan = vm.approveAllPlan(.targets)
+        let plan = try await vm.approveAllPlan(.targets)
 
         let otherPool = try DatabasePool(path: pool.path)
         try await otherPool.write { db in
@@ -143,6 +144,55 @@ final class ActionStripApproveAllTests: XCTestCase {
         XCTAssertEqual(runner.invocations, [approveCall(ids[0], #"{"title":"Task 0"}"#),
                                             approveCall(ids[1], #"{"title":"Task 1"}"#)],
                        "the planned args' sha, and the third is never approved")
+    }
+
+    /// An approved `create_track` whose `tracks start` failed was approved:
+    /// it counts as done, keeps its "not watched yet" warning on its card,
+    /// and the run goes on to the next row.
+    func testApprovedTrackNotWatchedCountsAsDone() async throws {
+        let pool = try pool()
+        let (ids, tracks) = try await pool.write { db -> ([Int64], [Int]) in
+            _ = try InboxFolderFixtures.seed(db)
+            var ids: [Int64] = []
+            var tracks: [Int] = []
+            for index in 0..<2 {
+                let track = Int(try TestDatabase.insertTrack(db, text: "Watch \(index)"))
+                try db.execute(sql: "UPDATE tracks SET origin = 'custom' WHERE id = ?", arguments: [track])
+                tracks.append(track)
+                ids.append(try TestDatabase.insertAgentAction(
+                    db, tool: "create_track", argsJSON: #"{"text":"Watch \#(index)"}"#,
+                    createdAt: "2026-11-06T09:0\(index):00Z"))
+            }
+            return (ids, tracks)
+        }
+        // One reply for both verbs: `actions approve` and `tracks start`.
+        let runner = FakeCLIRunner(stdout: Data(
+            #"{"ok":true,"applied_ok":true,"error":"","track_id":\#(tracks[1]),"automation_id":9}"#.utf8))
+        let otherPool = try DatabasePool(path: pool.path)
+        let refusal = "confirm this watch in Automations first"
+        runner.onRun = { [runner] args in
+            runner.shouldThrow = nil
+            if args.prefix(2) == ["actions", "approve"], let index = ids.firstIndex(of: Int64(args[2]) ?? -1) {
+                _ = try? await otherPool.write { db in
+                    try db.execute(sql: "UPDATE agent_actions SET status = 'applied', result_json = ? WHERE id = ?",
+                                   arguments: [#"{"track_id":\#(tracks[index])}"#, ids[index]])
+                }
+            } else if args.prefix(3) == ["tracks", "start", String(tracks[0])] {
+                runner.shouldThrow = CLIRunnerError.nonZeroExit(code: 1, stderr: refusal + "\n")
+            }
+        }
+        let vm = viewModel(pool, runner: runner)
+        await vm.refresh()
+
+        let plan = try await vm.approveAllPlan(.tracksToCreate)
+        let result = await vm.approveAll(ids: plan.ids)
+
+        XCTAssertEqual(result, .done(count: 2, skipped: 0))
+        let approved = runner.invocations.filter { $0.prefix(2) == ["actions", "approve"] }.map { $0[2] }
+        XCTAssertEqual(approved, ids.map(String.init), "the run goes on past the unwatched track")
+        XCTAssertEqual(vm.actionFeed.rowErrors[ids[0]]?.verb, AgentActionFeed.startVerb, "its warning stays")
+        XCTAssertEqual(vm.actionFeed.rowErrors[ids[0]]?.message, AgentActionFeed.notWatchedPrefix + refusal)
+        XCTAssertNil(vm.actionFeed.rowErrors[ids[1]])
     }
 
     /// A row that failed meanwhile and an approve whose state moved (exit 3)
@@ -158,7 +208,7 @@ final class ActionStripApproveAllTests: XCTestCase {
         }
         let vm = viewModel(pool, runner: runner)
         await vm.refresh()
-        let plan = vm.approveAllPlan(.tracksToCreate)
+        let plan = try await vm.approveAllPlan(.tracksToCreate)
         XCTAssertEqual(plan.count, 4)
 
         let otherPool = try DatabasePool(path: pool.path)
@@ -191,7 +241,7 @@ final class ActionStripApproveAllTests: XCTestCase {
         let runner = FakeCLIRunner(stdout: Self.ok)
         let vm = viewModel(pool, runner: runner)
         await vm.refresh()
-        let plan = vm.approveAllPlan(.confluenceJira)
+        let plan = try await vm.approveAllPlan(.confluenceJira)
         XCTAssertEqual(plan.ids, ids.map(String.init))
 
         let otherPool = try DatabasePool(path: pool.path)
@@ -217,7 +267,7 @@ final class ActionStripApproveAllTests: XCTestCase {
         let vm = viewModel(pool, runner: runner)
         await vm.refresh()
         vm.selectFolder(folders.approvals)
-        let plan = vm.approveAllPlan(.targets)
+        let plan = try await vm.approveAllPlan(.targets)
         vm.selectFolder(folders.root)
         let before = vm.entrySelection
 
@@ -247,7 +297,8 @@ final class ActionStripApproveAllTests: XCTestCase {
         await vm.refresh()
         vm.selectFolder(folders.approvals)
 
-        let result = await vm.approveAll(ids: vm.approveAllPlan(.targets).ids)
+        let plan = try await vm.approveAllPlan(.targets)
+        let result = await vm.approveAll(ids: plan.ids)
 
         XCTAssertEqual(result, .partial(done: 1, of: 4, error: "boom"))
         let targets = vm.folderList.sections.first { $0.id == NeedsApprovalGroup.targets.rawValue }
@@ -312,7 +363,8 @@ final class ActionStripApproveAllTests: XCTestCase {
 
         model.begin()
         await waitUntil(model) { if case .confirming = $0 { true } else { false } }
-        XCTAssertEqual(model.state, .confirming(vm.approveAllPlan(.targets)))
+        let replanned = try await vm.approveAllPlan(.targets)
+        XCTAssertEqual(model.state, .confirming(replanned))
         model.confirm()
         vm.setOnScreen(false)
         await waitUntil(model) { if case .finished = $0 { true } else { false } }
@@ -320,6 +372,94 @@ final class ActionStripApproveAllTests: XCTestCase {
         XCTAssertTrue(model === vm.approveAllModel(.targets))
         XCTAssertEqual(model.state, .finished(.done(count: 3, skipped: 0)))
         XCTAssertEqual(runner.invocations.filter { $0.prefix(2) == ["actions", "approve"] }.count, 3)
+    }
+
+    /// The plan reads first and refuses an Inbox it could not read — no
+    /// read ever landed, or the last one failed — with a plain reason, never
+    /// an empty plan; the press finishes failed with that reason.
+    func testPlanThrowsOnABadRead() async throws {
+        let pool = try pool()
+        _ = try await seed(pool, tool: "create_targets", count: 2)
+        let vm = viewModel(pool, runner: FakeCLIRunner(stdout: Self.ok))
+        await vm.refresh()
+        let planned = try await vm.approveAllPlan(.targets)
+        XCTAssertEqual(planned.count, 2)
+
+        let otherPool = try DatabasePool(path: pool.path)
+        // Every later read fails on a column the proposals' query filters on
+        // (a missing table would read as empty, an older schema).
+        try await otherPool.write { db in
+            try db.execute(sql: "ALTER TABLE agent_actions RENAME COLUMN status TO status_gone")
+        }
+        await vm.refresh()
+        XCTAssertNotNil(vm.lastError, "the fixture breaks the read")
+        do {
+            _ = try await vm.approveAllPlan(.targets)
+            XCTFail("a failed read must not plan")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.hasPrefix("The Inbox could not be read: "),
+                          error.localizedDescription)
+        }
+        let model = vm.approveAllModel(.targets)
+        model.begin()
+        await waitUntil(model) { if case .finished = $0 { true } else { false } }
+        guard case let .finished(.failed(message)) = model.state else {
+            return XCTFail("\(model.state)")
+        }
+        XCTAssertTrue(message.hasPrefix("The Inbox could not be read: "), message)
+
+        // No read ever landed.
+        let unread = viewModel(pool, runner: FakeCLIRunner(stdout: Self.ok))
+        do {
+            _ = try await unread.approveAllPlan(.targets)
+            XCTFail("no read, no plan")
+        } catch {
+            XCTAssertFalse(unread.hasRead)
+            XCTAssertTrue(error.localizedDescription.hasPrefix("The Inbox could not be read: "),
+                          error.localizedDescription)
+        }
+    }
+
+    /// A finished press keeps its result while its group lists the same
+    /// approvable ids; a read that lists other ids, or drops the group,
+    /// puts it back to idle. A run's pinned args go when it ends.
+    func testFinishedPressResetsWhenTheGroupChanges() async throws {
+        let pool = try pool()
+        let (_, ids) = try await seed(pool, tool: "create_targets", count: 2)
+        let vm = viewModel(pool, runner: FakeCLIRunner(stdout: Self.ok))
+        await vm.refresh()
+        let model = vm.approveAllModel(.targets)
+
+        // The fake approves nothing: the same rows stay listed.
+        try await run(model)
+        XCTAssertEqual(model.state, .finished(.done(count: 2, skipped: 0)))
+        XCTAssertTrue(vm.approveAllShownArgs.isEmpty, "the run's pinned args are gone")
+        await vm.refresh()
+        XCTAssertEqual(model.state, .finished(.done(count: 2, skipped: 0)), "same ids: the result stays")
+
+        let otherPool = try DatabasePool(path: pool.path)
+        try await otherPool.write { db in
+            _ = try TestDatabase.insertAgentAction(
+                db, tool: "create_targets", argsJSON: #"{"title":"Later"}"#, createdAt: "2026-11-06T09:09:00Z")
+        }
+        await vm.refresh()
+        XCTAssertEqual(model.state, .idle, "another row joined the group")
+
+        try await run(model)
+        try await otherPool.write { db in
+            try db.execute(sql: "UPDATE agent_actions SET status = 'rejected' WHERE tool = 'create_targets'")
+        }
+        await vm.refresh()
+        XCTAssertEqual(model.state, .idle, "the group left the list")
+        XCTAssertEqual(ids.count, 2)
+    }
+
+    /// Plans, confirms and waits for `model` to finish.
+    private func run(_ model: InboxBulkPressModel) async throws {
+        model.begin()
+        await waitUntil(model) { if case .confirming = $0 { true } else { false } }
+        model.confirm()
+        await waitUntil(model) { if case .finished = $0 { true } else { false } }
     }
 
     /// Yields until `model` reaches a state `done` accepts, failing after 10 s.

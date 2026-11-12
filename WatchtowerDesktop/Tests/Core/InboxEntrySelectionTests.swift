@@ -281,6 +281,44 @@ final class InboxEntrySelectionTests: XCTestCase {
         XCTAssertEqual(vm.entrySelection, "day:\(today)", "moved away: today's brief")
     }
 
+    /// A Needs approval group row the owner opened (`group:<raw>`) is
+    /// restored while that row is drawn; once the group no longer draws one
+    /// row, the folder falls back to its first entry.
+    func testRestoreASavedGroupRow() async throws {
+        let (folders, ids) = try await pool.write { db -> (InboxFolderFixtures.Seed, [Int64]) in
+            let folders = try InboxFolderFixtures.seed(db)
+            let ids = try (0..<2).map { index in
+                try TestDatabase.insertAgentAction(
+                    db, tool: "create_targets", argsJSON: #"{"title":"Task \#(index)"}"#,
+                    createdAt: "2026-11-06T09:0\(index):00Z")
+            }
+            return (folders, ids)
+        }
+        let group = NeedsApprovalGroups.rowID(.targets)
+        let vm = makeVM()
+        await vm.refresh()
+        vm.selectFolder(folders.approvals)
+        await vm.arrival?.value
+        XCTAssertTrue(vm.folderList.rows.contains { $0.id == group }, "the fixture draws one group row")
+        await vm.selectEntry(group)
+
+        vm.selectFolder(folders.root)
+        await vm.arrival?.value
+        vm.selectFolder(folders.approvals)
+        await vm.arrival?.value
+        XCTAssertEqual(vm.entrySelection, group, "the group row opens again")
+
+        try await pool.write { db in
+            try db.execute(sql: "UPDATE agent_actions SET status = 'rejected' WHERE id = ?", arguments: [ids[1]])
+        }
+        await vm.refresh()
+        vm.selectFolder(folders.root)
+        await vm.arrival?.value
+        vm.selectFolder(folders.approvals)
+        await vm.arrival?.value
+        XCTAssertEqual(vm.entrySelection, "approval:action:\(ids[0])", "no group row: the first entry")
+    }
+
     func testRestoreNeverOpensALegacyList() async throws {
         let folders = try await seed()
         try await pool.write { db in _ = try TestDatabase.insertIdea(db, title: "A shared glossary") }

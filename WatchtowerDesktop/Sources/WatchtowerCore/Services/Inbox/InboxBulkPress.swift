@@ -90,6 +90,13 @@ package final class InboxBulkPressModel: ObservableObject {
         }
     }
 
+    /// A finished press back to idle (its result no longer speaks for the
+    /// list); a no-op unless finished.
+    package func reset() {
+        guard case .finished = state else { return }
+        state = .idle
+    }
+
     /// The owner said no: back to idle. Only while confirming.
     package func cancel() {
         guard case .confirming = state else { return }

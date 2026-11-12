@@ -20,7 +20,7 @@ package enum InboxFolderEntry: Identifiable, Equatable, Sendable {
         switch self {
         case let .artifact(card): "artifact:\(card.id)"
         case let .brief(action): "brief:\(action.id)"
-        case let .legacyDay(card): "day:\(card.date)"
+        case let .legacyDay(card): Self.dayID(card.date)
         case .legacyTracks: "tracks"
         case .legacyIdeas: "ideas"
         case .legacyMessages: "messages"
@@ -28,6 +28,10 @@ package enum InboxFolderEntry: Identifiable, Equatable, Sendable {
         case let .builtinNotice(notice): "notice:\(notice.builtinID)"
         }
     }
+
+    /// A Morning brief day's entry id (`"day:<yyyy-MM-dd>"`); `dayID("")`
+    /// is the prefix every one starts with.
+    package static func dayID(_ date: String) -> String { "day:\(date)" }
 
     /// A legacy entry whose pane is today's list (Track my threads, Idea
     /// finder, Messages): that list.
@@ -126,19 +130,23 @@ package enum InboxFolderEntries {
 
     /// The entry a folder opens on (spec "Selection"): `saved` (the owner's
     /// last pick there, `ActionStripViewModel.entryKey`) while it is listed
-    /// and is not a legacy list; else, in the root, today's Morning brief
-    /// (`"day:<today>"`) while it is listed; else the first entry that is
-    /// not a legacy list; else nil. A legacy list (Track my threads, Idea
-    /// finder, Messages) is never opened by default.
+    /// and is not a legacy list — a Needs approval group row
+    /// (`NeedsApprovalGroups.rowID`) while it is among `drawnRows`; else,
+    /// in the root, today's Morning brief (`"day:<today>"`) while it is
+    /// listed; else the first entry that is not a legacy list; else nil. A
+    /// legacy list (Track my threads, Idea finder, Messages) is never opened
+    /// by default.
     package static func defaultEntry(
         entries: [InboxFolderEntry],
         saved: String?,
         folder: InboxFolderKind,
-        today: String
+        today: String,
+        drawnRows: [String] = []
     ) -> String? {
         let openable = entries.filter { $0.legacyList == nil }.map(\.id)
         if let saved, openable.contains(saved) { return saved }
-        let brief = "day:\(today)"
+        if let saved, NeedsApprovalGroups.isGroupRowID(saved), drawnRows.contains(saved) { return saved }
+        let brief = InboxFolderEntry.dayID(today)
         if folder == .root, openable.contains(brief) { return brief }
         return openable.first
     }

@@ -48,6 +48,25 @@ final class InboxBulkPressButtonTests: XCTestCase {
         }
     }
 
+    /// A group that no longer offers Approve All (its rows went) keeps the
+    /// last press's result line and Try Again under its header; the button
+    /// itself is gone, and an idle press draws nothing.
+    func testResultLineOutlivesTheButton() async throws {
+        let partial = InboxBulkResult.partial(done: 1, of: 3, error: "card 2 is gone")
+        let finished = await finishedModel(partial)
+        let header = NeedsApprovalGroupHeader(title: "Tasks", count: 2, approveAll: (nil, finished))
+        XCTAssertThrowsError(try header.inspect().find(button: "Approve All 2…"))
+        XCTAssertNoThrow(try header.inspect().find(text: try XCTUnwrap(InboxBulkPressButton.resultLine(partial))))
+        XCTAssertNoThrow(try header.inspect().find(button: "Try Again"))
+
+        let offered = NeedsApprovalGroupHeader(title: "Tasks", count: 2, approveAll: (2, finished))
+        XCTAssertNoThrow(try offered.inspect().find(button: "Approve All 2…"))
+
+        let idle = InboxBulkPressButton(title: nil, confirmTitle: { "Approve \($0)" }, model: InboxBulkPressModel())
+        XCTAssertThrowsError(try idle.inspect().find(ViewType.Button.self))
+        XCTAssertThrowsError(try idle.inspect().find(ViewType.Text.self))
+    }
+
     func testTryAgainCallsTheStoredPlan() async throws {
         var planCalls = 0
         let model = InboxBulkPressModel()

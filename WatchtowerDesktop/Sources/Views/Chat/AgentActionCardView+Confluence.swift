@@ -8,7 +8,7 @@ import WatchtowerCore
 /// pinned at propose time (`internal/tools/confluence_page_edit.go`), which is
 /// exactly what Approve writes — the card never recomputes the edit.
 extension AgentActionCardView {
-    static let confluenceEditTool = "edit_confluence_page"
+    static let confluenceEditTool = AgentActionApproval.confluenceEditTool
 
     struct ConfluenceEdit: Equatable {
         struct Change: Equatable {
@@ -49,7 +49,9 @@ extension AgentActionCardView {
     private static func buildConfluenceEdit(_ action: AgentAction) -> ConfluenceEdit? {
         ConfluenceEditMemo.shared.builds += 1
         let args = action.args // one decode of the up-to-4-MiB args per build
-        guard let rawChanges = args["changes"] as? [[String: Any]], !rawChanges.isEmpty else { return nil }
+        guard AgentActionApproval.hasReadableChanges(args), let rawChanges = args["changes"] as? [[String: Any]] else {
+            return nil
+        }
         let pageURL = AgentAction.stringValue(args["url"]).flatMap(URL.init(string:)).flatMap { url in
             url.scheme == "https" || url.scheme == "http" ? url : nil
         }
@@ -64,8 +66,10 @@ extension AgentActionCardView {
     }
 
     /// Approve is offered only for a proposal whose diff the card can show:
-    /// approving an unreadable `edit_confluence_page` row would write a page
-    /// the owner never saw (F7). Every other tool is approvable as before.
+    /// the preview exists exactly when `AgentActionApproval.hasReadableChanges`
+    /// holds (`buildConfluenceEdit`), the rule Approve All uses through
+    /// `AgentActionApproval.canApproveOnCard`. Read off the memoized
+    /// preview, so a render never decodes the args again.
     static func canApprove(_ action: AgentAction) -> Bool {
         action.tool != confluenceEditTool || confluenceEdit(for: action) != nil
     }

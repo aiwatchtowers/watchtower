@@ -94,27 +94,31 @@ struct NeedsApprovalPane<Card: View>: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    /// `section`'s **Approve All**: its count and press, when it offers one.
-    private func approveAll(_ section: NeedsApprovalStackSection) -> (count: Int, model: InboxBulkPressModel)? {
-        guard let group = section.group, let ids = section.approveAllIDs, !ids.isEmpty else { return nil }
-        return (ids.count, approveAllModel(group))
+    /// `section`'s **Approve All** press, on every group that can ever
+    /// offer one: its count while the group offers it now (nil draws only a
+    /// press under way or its result, `InboxBulkPressButton`).
+    private func approveAll(_ section: NeedsApprovalStackSection) -> (count: Int?, model: InboxBulkPressModel)? {
+        guard let group = section.group, NeedsApprovalGroups.canOfferApproveAll(group) else { return nil }
+        let count = section.approveAllIDs.flatMap { $0.isEmpty ? nil : $0.count }
+        return (count, approveAllModel(group))
     }
 }
 
 /// A block's header in Needs approval's stack: the group's title and count,
 /// with **Approve All N…** when the group offers it
-/// (`NeedsApprovalGroups.approveAllIDs`).
+/// (`NeedsApprovalGroups.approveAllIDs`), and its last press's result line
+/// (with Try Again) even once it no longer does.
 struct NeedsApprovalGroupHeader: View {
     let title: String
     let count: Int
-    var approveAll: (count: Int, model: InboxBulkPressModel)?
+    var approveAll: (count: Int?, model: InboxBulkPressModel)?
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
             InboxListSectionHeading(title: title, count: count)
             if let approveAll {
                 InboxBulkPressButton(
-                    title: "Approve All \(approveAll.count)…", confirmTitle: { "Approve All \($0)" },
+                    title: approveAll.count.map { "Approve All \($0)…" }, confirmTitle: { "Approve All \($0)" },
                     model: approveAll.model)
                     .controlSize(.small)
             }

@@ -81,6 +81,12 @@ package enum NeedsApprovalGroups {
     /// The groups that can ever offer **Approve All**.
     private static let bulkGroups: Set<NeedsApprovalGroup> = [.tracksToCreate, .targets, .confluenceJira]
 
+    /// `group` can ever offer **Approve All** (Messages, Reminders and
+    /// Other never do).
+    package static func canOfferApproveAll(_ group: NeedsApprovalGroup) -> Bool {
+        bulkGroups.contains(group)
+    }
+
     /// The section ids around the groups.
     package static let noticesSectionID = "notices"
     package static let inFlightSectionID = "inFlight"
@@ -125,32 +131,12 @@ package enum NeedsApprovalGroups {
 
     /// A row **Approve All** may approve: pending, a `bulkTools` tool, not
     /// applied by a chat session, and one its own card would approve
-    /// (`canApproveOnCard`). Checked again when the run reaches the row.
+    /// (`AgentActionApproval.canApproveOnCard`). Checked again when the run
+    /// reaches the row.
     package static func isBulkApprovable(_ action: AgentAction) -> Bool {
-        action.isPending && bulkTools.contains(action.tool) && !action.isSessionApplied && canApproveOnCard(action)
+        action.isPending && bulkTools.contains(action.tool) && !action.isSessionApplied
+            && AgentActionApproval.canApproveOnCard(action)
     }
-
-    /// The tool whose card refuses Approve on args it cannot draw.
-    package static let confluenceEditTool = "edit_confluence_page"
-
-    /// The single card's Approve rule (`AgentActionCardView.canApprove`):
-    /// an `edit_confluence_page` row is approvable only when its args hold a
-    /// non-empty `changes` list — the card cannot show any other edit, and
-    /// approving it would write a page the owner never saw (F7). Every other
-    /// tool is. Remembered per action id while its args stay the same: the
-    /// args carry the whole page, and the list is drawn often.
-    package static func canApproveOnCard(_ action: AgentAction) -> Bool {
-        guard action.tool == confluenceEditTool else { return true }
-        if let cached = readable.withLock({ $0[action.id] }), cached.args == action.argsJSON { return cached.value }
-        let value = (action.args["changes"] as? [[String: Any]]).map { !$0.isEmpty } ?? false
-        readable.withLock { cache in
-            if cache.count >= 512 { cache.removeAll() }
-            cache[action.id] = (action.argsJSON, value)
-        }
-        return value
-    }
-
-    private static let readable = ArgsMemo<Bool>()
 
     /// A group's list rows: one row for a group **Approve All** covers,
     /// else one row per item.
@@ -160,6 +146,11 @@ package enum NeedsApprovalGroups {
 
     /// A group row's list id.
     package static func rowID(_ group: NeedsApprovalGroup) -> String { "group:\(group.rawValue)" }
+
+    /// `id` is a group row's list id (`rowID`).
+    package static func isGroupRowID(_ id: String) -> Bool {
+        NeedsApprovalGroup.allCases.contains { rowID($0) == id }
+    }
 
     /// An open approval: a due reminder, or an action that waits on the
     /// owner (`openActions`). An approved or executing row still in flight
@@ -364,7 +355,7 @@ package enum InboxApprovalText {
 
 /// Values made from an action's args, by action id, with the args they
 /// were made from.
-private final class ArgsMemo<Value>: @unchecked Sendable {
+final class ArgsMemo<Value>: @unchecked Sendable {
     private let lock = NSLock()
     private var cache: [Int64: (args: String, value: Value)] = [:]
 
