@@ -108,8 +108,8 @@ package enum NeedsApprovalGroups {
     /// The ids **Approve All** approves, or nil when the group offers none:
     /// only Tracks to create, Targets or Confluence and Jira, every action
     /// of one and the same tool from `bulkTools`, and at least two rows the
-    /// owner can approve (pending, not applied by a chat session). Messages,
-    /// Reminders and Other never get it.
+    /// owner can approve (`isBulkApprovable`). Messages, Reminders and Other
+    /// never get it.
     package static func approveAllIDs(_ group: NeedsApprovalGroup, _ items: [NeedsApprovalItem]) -> [Int64]? {
         guard bulkGroups.contains(group) else { return nil }
         var actions: [AgentAction] = []
@@ -119,9 +119,38 @@ package enum NeedsApprovalGroups {
         }
         let tools = Set(actions.map(\.tool))
         guard tools.count == 1, let tool = tools.first, bulkTools.contains(tool) else { return nil }
-        let approvable = actions.filter { $0.isPending && !$0.isSessionApplied }
+        let approvable = actions.filter(isBulkApprovable)
         return approvable.count >= 2 ? approvable.map(\.id) : nil
     }
+
+    /// A row **Approve All** may approve: pending, a `bulkTools` tool, not
+    /// applied by a chat session, and one its own card would approve
+    /// (`canApproveOnCard`). Checked again when the run reaches the row.
+    package static func isBulkApprovable(_ action: AgentAction) -> Bool {
+        action.isPending && bulkTools.contains(action.tool) && !action.isSessionApplied && canApproveOnCard(action)
+    }
+
+    /// The tool whose card refuses Approve on args it cannot draw.
+    package static let confluenceEditTool = "edit_confluence_page"
+
+    /// The single card's Approve rule (`AgentActionCardView.canApprove`):
+    /// an `edit_confluence_page` row is approvable only when its args hold a
+    /// non-empty `changes` list — the card cannot show any other edit, and
+    /// approving it would write a page the owner never saw (F7). Every other
+    /// tool is. Remembered per action id while its args stay the same: the
+    /// args carry the whole page, and the list is drawn often.
+    package static func canApproveOnCard(_ action: AgentAction) -> Bool {
+        guard action.tool == confluenceEditTool else { return true }
+        if let cached = readable.withLock({ $0[action.id] }), cached.args == action.argsJSON { return cached.value }
+        let value = (action.args["changes"] as? [[String: Any]]).map { !$0.isEmpty } ?? false
+        readable.withLock { cache in
+            if cache.count >= 512 { cache.removeAll() }
+            cache[action.id] = (action.argsJSON, value)
+        }
+        return value
+    }
+
+    private static let readable = ArgsMemo<Bool>()
 
     /// A group's list rows: one row for a group **Approve All** covers,
     /// else one row per item.
@@ -296,7 +325,7 @@ package enum InboxApprovalText {
     /// `edit_confluence_page` row carries the whole page, and the list is
     /// drawn far more often than its rows change.
     package static func preview(_ action: AgentAction) -> String {
-        if let cached = memo.withLock({ $0[action.id] }), cached.args == action.argsJSON { return cached.preview }
+        if let cached = memo.withLock({ $0[action.id] }), cached.args == action.argsJSON { return cached.value }
         let preview = compose(action)
         memo.withLock { cache in
             if cache.count >= memoLimit { cache.removeAll() }
@@ -318,7 +347,7 @@ package enum InboxApprovalText {
 
     private static let previewKeys = ["text", "message", "body", "comment", "title"]
     private static let memoLimit = 512
-    private static let memo = Memo()
+    private static let memo = ArgsMemo<String>()
 
     private static func compose(_ action: AgentAction) -> String {
         let args = action.args
@@ -331,16 +360,17 @@ package enum InboxApprovalText {
         }
         return ""
     }
+}
 
-    /// The previews by action id, with the args they were made from.
-    private final class Memo: @unchecked Sendable {
-        private let lock = NSLock()
-        private var cache: [Int64: (args: String, preview: String)] = [:]
+/// Values made from an action's args, by action id, with the args they
+/// were made from.
+private final class ArgsMemo<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cache: [Int64: (args: String, value: Value)] = [:]
 
-        func withLock<T>(_ body: (inout [Int64: (args: String, preview: String)]) -> T) -> T {
-            lock.lock()
-            defer { lock.unlock() }
-            return body(&cache)
-        }
+    func withLock<T>(_ body: (inout [Int64: (args: String, value: Value)]) -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return body(&cache)
     }
 }

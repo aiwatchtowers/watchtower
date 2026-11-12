@@ -130,6 +130,53 @@ final class NeedsApprovalGroupsTests: XCTestCase {
         XCTAssertNil(NeedsApprovalGroups.approveAllIDs(.other, sessionCalls))
     }
 
+    /// An `edit_confluence_page` whose args do not parse is never planned —
+    /// its own card refuses Approve — and a group left with one approvable
+    /// row gets no bulk at all.
+    func testUnreadableConfluenceEditsAreLeftOut() {
+        let readable = #"{"title":"Page","changes":[{"locator":"text","before":"a","after":"b"}]}"#
+        let base = Int64.random(in: 4_000_000...5_000_000)
+        let edits = [Self.action(base, tool: "edit_confluence_page", args: readable),
+                     Self.action(base + 1, tool: "edit_confluence_page", args: #"{"title":"Page"}"#),
+                     Self.action(base + 2, tool: "edit_confluence_page", args: readable),
+                     Self.action(base + 3, tool: "edit_confluence_page", args: #"{"changes":[]}"#)]
+        XCTAssertEqual(NeedsApprovalGroups.approveAllIDs(.confluenceJira, edits), [base, base + 2])
+        XCTAssertNil(NeedsApprovalGroups.approveAllIDs(.confluenceJira, Array(edits.prefix(2))),
+                     "one approvable row left")
+        XCTAssertEqual(NeedsApprovalGroups.listRows(.confluenceJira, Array(edits.prefix(2))),
+                       edits.prefix(2).map(NeedsApprovalListRow.item))
+    }
+
+    /// A failed row stays inside a group that still offers Approve All: the
+    /// one group row counts it.
+    func testFailedRowStaysInsideItsGroupRow() {
+        let tracks = [Self.action(1, tool: "create_track"),
+                      Self.action(2, tool: "create_track", created: "2026-11-06T09:01:00Z", status: "failed"),
+                      Self.action(3, tool: "create_track", created: "2026-11-06T09:02:00Z")]
+        let sections = NeedsApprovalGroups.sections(
+            tracks.map(InboxFolderEntry.approval), openActions: [1, 2, 3], now: Self.now, calendar: Self.utc
+        ) { InboxFolderListRow(id: $0.id, content: InboxRowContent(kind: .approval, title: $0.id)) }
+        XCTAssertEqual(sections.map(\.id), ["tracksToCreate"])
+        XCTAssertEqual(sections.first?.rows.map(\.id), ["group:tracksToCreate"])
+        XCTAssertEqual(sections.first?.count, 3)
+        XCTAssertEqual(NeedsApprovalGroups.approveAllIDs(.tracksToCreate, tracks), [1, 3])
+    }
+
+    /// The built-in notices head Needs approval's list, before every group,
+    /// whatever their dates.
+    func testNoticesComeFirstInTheList() {
+        let notice = InboxFolderEntry.builtinNotice(
+            BuiltinUpgradeNotice(builtinID: "morning-brief", error: "", updatedAt: Self.now))
+        let entries: [InboxFolderEntry] = [.approval(Self.reminder(1, created: "2026-11-01T08:00:00Z")),
+                                           .approval(Self.action(2, tool: "send_slack_message")), notice]
+        let sections = NeedsApprovalGroups.sections(entries, openActions: [2], now: Self.now, calendar: Self.utc) {
+            InboxFolderListRow(id: $0.id, content: InboxRowContent(kind: .approval, title: $0.id))
+        }
+        XCTAssertEqual(sections.map(\.id), [NeedsApprovalGroups.noticesSectionID, "reminders", "messages"])
+        XCTAssertEqual(sections.first?.title, "Built-in updates")
+        XCTAssertEqual(sections.first?.rows.map(\.id), ["notice:morning-brief"])
+    }
+
     func testBulkGroupIsOneListRow() {
         let tracks = Self.many("create_track", 4)
         let rows = NeedsApprovalGroups.listRows(.tracksToCreate, tracks)

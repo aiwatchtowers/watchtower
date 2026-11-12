@@ -28,6 +28,10 @@ package final class AgentActionFeed {
     /// on the row itself to say it failed). Cleared when the row's next CLI
     /// call starts.
     package private(set) var rowErrors: [Int64: RowError] = [:]
+    /// Rows whose last CLI call exited 3 (`stateMovedExit`): the row's state
+    /// moved under the press and nothing was decided. Cleared when the row's
+    /// next CLI call starts.
+    package private(set) var stateMovedRows: Set<Int64> = []
     /// Failures that belong to no single row: the observation, a refresh, the
     /// outcomes read.
     package var lastError: String?
@@ -111,6 +115,7 @@ package final class AgentActionFeed {
         conversationID = nil
         rows = []
         rowErrors = [:]
+        stateMovedRows = []
     }
 
     /// One-shot refetch from disk. The only thing that can surface a row a
@@ -274,6 +279,7 @@ package final class AgentActionFeed {
     /// still fails.
     private func run(_ verb: String, id: Int64, extra: [String] = []) async {
         rowErrors[id] = nil
+        stateMovedRows.remove(id)
         lastError = nil
         guard let runner = cliRunner ?? ProcessCLIRunner.makeDefault() else {
             rowErrors[id] = RowError(verb: verb, message: CLIRunnerError.binaryNotFound.localizedDescription)
@@ -293,6 +299,7 @@ package final class AgentActionFeed {
             // the press — a newer proposal is open. Not an error: the
             // refresh below draws the state the row is in now.
             completed = true
+            stateMovedRows.insert(id)
         } catch {
             rowErrors[id] = RowError(verb: verb, message: error.localizedDescription)
         }

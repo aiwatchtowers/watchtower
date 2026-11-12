@@ -111,6 +111,152 @@ final class ActionStripApproveAllTests: XCTestCase {
         XCTAssertEqual(vm.actionFeed.rowErrors[ids[1]]?.message, "boom", "the error shows on that card")
     }
 
+    /// The args the owner saw are pinned at plan time: a row whose args
+    /// changed before the run reached it is approved with the planned sha,
+    /// which Go refuses, and the run stops there — never approved with the
+    /// new args.
+    func testApproveAllPinsThePlannedArgs() async throws {
+        let pool = try pool()
+        let (folders, ids) = try await seed(pool, tool: "create_targets", count: 3)
+        let runner = FakeCLIRunner(stdout: Self.ok)
+        let changed = #"{"title":"Edited meanwhile"}"#
+        let second = String(ids[1])
+        let changedSHA = AgentActionFeed.argsSHA256(changed)
+        // Go's ApproveSeen: a sha that is not the row's current args' is refused.
+        runner.onRun = { [runner] args in
+            if args.contains(second), !args.contains(changedSHA) {
+                runner.shouldThrow = Boom()
+            }
+        }
+        let vm = viewModel(pool, runner: runner)
+        await vm.refresh()
+        vm.selectFolder(folders.approvals)
+        let plan = vm.approveAllPlan(.targets)
+
+        let otherPool = try DatabasePool(path: pool.path)
+        try await otherPool.write { db in
+            try db.execute(sql: "UPDATE agent_actions SET args_json = ? WHERE id = ?", arguments: [changed, ids[1]])
+        }
+        let result = await vm.approveAll(ids: plan.ids)
+
+        XCTAssertEqual(result, .partial(done: 1, of: 3, error: "boom"))
+        XCTAssertEqual(runner.invocations, [approveCall(ids[0], #"{"title":"Task 0"}"#),
+                                            approveCall(ids[1], #"{"title":"Task 1"}"#)],
+                       "the planned args' sha, and the third is never approved")
+    }
+
+    /// A row that failed meanwhile and an approve whose state moved (exit 3)
+    /// are skipped, and the run goes on.
+    func testApproveAllSkipsFailedAndMovedRows() async throws {
+        let pool = try pool()
+        let (_, ids) = try await seed(pool, tool: "create_track", count: 4)
+        let runner = FakeCLIRunner(stdout: Self.ok)
+        let third = String(ids[2])
+        runner.onRun = { [runner] args in
+            runner.shouldThrow = args.contains(third)
+                ? CLIRunnerError.nonZeroExit(code: AgentActionFeed.stateMovedExit, stderr: "state moved") : nil
+        }
+        let vm = viewModel(pool, runner: runner)
+        await vm.refresh()
+        let plan = vm.approveAllPlan(.tracksToCreate)
+        XCTAssertEqual(plan.count, 4)
+
+        let otherPool = try DatabasePool(path: pool.path)
+        try await otherPool.write { db in
+            try db.execute(sql: "UPDATE agent_actions SET status = 'failed' WHERE id = ?", arguments: [ids[1]])
+        }
+        let result = await vm.approveAll(ids: plan.ids)
+
+        XCTAssertEqual(result, .done(count: 2, skipped: 2))
+        let approved = runner.invocations.filter { $0.prefix(2) == ["actions", "approve"] }.map { $0[2] }
+        XCTAssertEqual(approved, [String(ids[0]), third, String(ids[3])], "the failed row is never approved")
+    }
+
+    /// Checked again when the run reaches a row: an `edit_confluence_page`
+    /// whose args no longer parse is skipped (its own card refuses Approve),
+    /// and an id never planned is skipped too.
+    func testApproveAllRechecksEachRowAtApply() async throws {
+        let pool = try pool()
+        let edit = #"{"title":"Page","changes":[{"locator":"text","before":"a","after":"b"}]}"#
+        let (ids, send) = try await pool.write { db -> ([Int64], Int64) in
+            _ = try InboxFolderFixtures.seed(db)
+            let ids = try (0..<3).map { index in
+                try TestDatabase.insertAgentAction(
+                    db, tool: "edit_confluence_page", argsJSON: edit, createdAt: "2026-11-06T09:0\(index):00Z")
+            }
+            let send = try TestDatabase.insertAgentAction(
+                db, tool: "send_slack_message", createdAt: "2026-11-06T09:05:00Z")
+            return (ids, send)
+        }
+        let runner = FakeCLIRunner(stdout: Self.ok)
+        let vm = viewModel(pool, runner: runner)
+        await vm.refresh()
+        let plan = vm.approveAllPlan(.confluenceJira)
+        XCTAssertEqual(plan.ids, ids.map(String.init))
+
+        let otherPool = try DatabasePool(path: pool.path)
+        try await otherPool.write { db in
+            try db.execute(sql: "UPDATE agent_actions SET args_json = '{}' WHERE id = ?", arguments: [ids[0]])
+        }
+        let result = await vm.approveAll(ids: plan.ids + [String(send)])
+
+        XCTAssertEqual(result, .done(count: 2, skipped: 2))
+        XCTAssertEqual(runner.invocations.map { $0[2] }, [String(ids[1]), String(ids[2])])
+    }
+
+    /// The failure selects its card only while Needs approval is the
+    /// selected folder: an owner who moved on keeps their selection.
+    func testApproveAllFailureKeepsAnotherFolderSelection() async throws {
+        let pool = try pool()
+        let (folders, ids) = try await seed(pool, tool: "update_target", count: 3)
+        let runner = FakeCLIRunner(stdout: Self.ok)
+        let second = String(ids[1])
+        runner.onRun = { [runner] args in
+            if args.contains(second) { runner.shouldThrow = Boom() }
+        }
+        let vm = viewModel(pool, runner: runner)
+        await vm.refresh()
+        vm.selectFolder(folders.approvals)
+        let plan = vm.approveAllPlan(.targets)
+        vm.selectFolder(folders.root)
+        let before = vm.entrySelection
+
+        let result = await vm.approveAll(ids: plan.ids)
+
+        XCTAssertEqual(result, .partial(done: 1, of: 3, error: "boom"))
+        XCTAssertEqual(vm.folderMenu.selectedFolderID, folders.root)
+        XCTAssertEqual(vm.entrySelection, before, "the root's selection is left alone")
+    }
+
+    /// A failed row inside a group the list still collapses: the group row
+    /// counts it, and the failure's selection is its card inside that row.
+    func testFailedRowInsideACollapsedGroup() async throws {
+        let pool = try pool()
+        let (folders, ids) = try await seed(pool, tool: "update_target", count: 4)
+        let runner = FakeCLIRunner(stdout: Self.ok)
+        let second = String(ids[1])
+        let otherPool = try DatabasePool(path: pool.path)
+        runner.onRun = { [runner] args in
+            guard args.contains(second) else { return }
+            _ = try? await otherPool.write { db in
+                try db.execute(sql: "UPDATE agent_actions SET status = 'failed' WHERE id = ?", arguments: [ids[1]])
+            }
+            runner.shouldThrow = Boom()
+        }
+        let vm = viewModel(pool, runner: runner)
+        await vm.refresh()
+        vm.selectFolder(folders.approvals)
+
+        let result = await vm.approveAll(ids: vm.approveAllPlan(.targets).ids)
+
+        XCTAssertEqual(result, .partial(done: 1, of: 4, error: "boom"))
+        let targets = vm.folderList.sections.first { $0.id == NeedsApprovalGroup.targets.rawValue }
+        XCTAssertEqual(targets?.rows.map(\.id), [NeedsApprovalGroups.rowID(.targets)], "still one group row")
+        XCTAssertEqual(targets?.count, 4, "the failed row is counted in it")
+        XCTAssertEqual(vm.entrySelection, "approval:action:\(ids[1])")
+        XCTAssertNotNil(vm.selectedEntry, "the failed card is on screen inside the group row")
+    }
+
     /// APPROVAL-01 (supporting): grouping never hides an open approval —
     /// every entry of `InboxFolderEntries.build` is a row of its own or
     /// inside its group's Approve All row, and nothing else is listed.

@@ -700,44 +700,67 @@ package final class ActionStripViewModel {
         return model
     }
 
+    /// The args each planned row had when **Approve All** was planned (what
+    /// the owner saw), by action id: `approveAll` approves with these, so a
+    /// row whose args changed since is refused by Go and stops the run.
+    @ObservationIgnored private var approveAllShownArgs: [Int64: String] = [:]
+
     /// What **Approve All** would approve in `group` now: its approvable
-    /// ids from the last read (`NeedsApprovalGroups.approveAllIDs`); empty
-    /// when the group offers none.
+    /// ids from the last read (`NeedsApprovalGroups.approveAllIDs`), their
+    /// args pinned (`approveAllShownArgs`); empty when the group offers none.
     package func approveAllPlan(_ group: NeedsApprovalGroup) -> InboxBulkPlan {
         let items = NeedsApprovalGroups.build(openApprovals).first { $0.0 == group }?.1 ?? []
-        let ids = NeedsApprovalGroups.approveAllIDs(group, items)?.map(String.init) ?? []
-        return InboxBulkPlan(ids: ids, count: ids.count)
+        let ids = NeedsApprovalGroups.approveAllIDs(group, items) ?? []
+        for item in items {
+            guard case let .action(action) = item.record, ids.contains(action.id) else { continue }
+            approveAllShownArgs[action.id] = action.argsJSON
+        }
+        return InboxBulkPlan(ids: ids.map(String.init), count: ids.count)
     }
 
     /// Approves `ids` one by one through the per-action path
-    /// (`AgentActionFeed.approve`, args pinned to what the list read). One
-    /// read first: an id no longer open is skipped. The first failure stops
-    /// the run and selects that card, where its error shows; the rest are
-    /// left for the owner. Ends with a read.
+    /// (`AgentActionFeed.approve`, args pinned to what the plan read). One
+    /// read first; skipped (counted, the run goes on): an id never planned,
+    /// no longer open or pending (closed or failed meanwhile), no longer
+    /// `NeedsApprovalGroups.isBulkApprovable`, or whose approve found its
+    /// state moved (exit 3). The first failure — a changed row's args
+    /// refused by Go included — stops the run and selects that card while
+    /// Needs approval is on screen, where its error shows; the rest are left
+    /// for the owner. Ends with a read.
     package func approveAll(ids: [String]) async -> InboxBulkResult {
         await refresh()
         var done = 0
         var skipped = 0
-        var failure: (id: Int64, message: String)?
+        var failure: (row: AgentAction, message: String)?
         for text in ids {
-            guard let id = Int64(text), folderMenu.snapshot.openActions.contains(id),
-                  let row = feed.proposals.first(where: { $0.id == id }) else {
+            guard let id = Int64(text), let shown = approveAllShownArgs[id],
+                  folderMenu.snapshot.openActions.contains(id),
+                  let row = feed.proposals.first(where: { $0.id == id }),
+                  NeedsApprovalGroups.isBulkApprovable(row) else {
                 skipped += 1
                 continue
             }
-            await actionFeed.approve(id, shownArgs: row.argsJSON)
+            await actionFeed.approve(id, shownArgs: shown)
             if let error = actionFeed.rowErrors[id] {
-                failure = (id, error.message)
+                failure = (row, error.message)
                 break
             }
-            done += 1
+            if actionFeed.stateMovedRows.contains(id) {
+                skipped += 1
+            } else {
+                done += 1
+            }
         }
         await refresh()
         adoptFeedError()
         guard let failure else { return .done(count: done, skipped: skipped) }
-        // The failed card's entry (`InboxFolderEntry.approval`'s id), set
-        // after the last read so it is not moved off.
-        entrySelection = "approval:\(InboxRef.Kind.action.rawValue):\(failure.id)"
+        // Set after the last read so it is not moved off, and only while the
+        // folder that lists the card is selected: the owner may have moved
+        // on while the run went.
+        let tree = folderMenu.tree
+        if folderMenu.selectedFolderID == (tree.approvals ?? tree.root).id, legacyList == nil {
+            entrySelection = InboxFolderEntry.approval(NeedsApprovalItem(.action(failure.row))).id
+        }
         return .partial(done: done, of: ids.count, error: failure.message)
     }
 
