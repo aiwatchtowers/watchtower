@@ -17,6 +17,8 @@ final class FakeSessionHostTransport: SessionHostTransport {
     /// How many Forgets are refused (as for a run not reaped yet) before
     /// they are answered.
     var refusedForgets = 0
+    /// How many Lists fail with an Error frame before they are answered.
+    var failedLists = 0
     /// The protocol version the host answers a Hello with.
     var helloVersion = SessionHostHello.protocolVersion
     /// Answers as a v1 host does: a hello of any other version is refused
@@ -50,6 +52,9 @@ final class FakeSessionHostTransport: SessionHostTransport {
             break // a v1 host skips frame types it does not know
         case .hello: push(.json(.helloOK, SessionHostHello(version: helloVersion, pid: 99)))
         case .stop: push(.json(.stopping, ["already_exited": false]))
+        case .list where failedLists > 0:
+            failedLists -= 1
+            push(.json(.error, SessionHostErrorMessage(message: "list failed")))
         case .list: push(.json(.listed, SessionHostListResponse(sessions: listed)))
         case .forget where refusedForgets > 0:
             refusedForgets -= 1
@@ -74,6 +79,8 @@ final class HostedTerminalSessionTests: XCTestCase {
     private var openErrors: [(any Error)?] = []
     private var spawned: [(String, String)] = []
     private var signals: [(pid_t, Int32)] = []
+    /// The pauses sessions took (`startedSession`'s), none of them real.
+    private var slept: [Duration] = []
 
     override func setUp() {
         super.setUp()
@@ -81,6 +88,24 @@ final class HostedTerminalSessionTests: XCTestCase {
         openErrors = []
         spawned = []
         signals = []
+        slept = []
+    }
+
+    /// The reconnect pauses taken, without the replay's quiet periods.
+    private var reconnectPauses: [Duration] {
+        slept.filter { $0 != HostedTerminalSession.replayQuietPeriod }
+    }
+
+    /// Waits out a recovery: each look-up and the connection it opens,
+    /// until no new look-up follows.
+    private func settle(_ session: HostedTerminalSession) async {
+        var seen: Task<Void, Never>?
+        while let task = session.recovering, task != seen {
+            seen = task
+            await task.value
+            await session.connecting?.value
+        }
+        await session.connecting?.value
     }
 
     private func makeClient(cli: String? = "/opt/watchtower") -> SessionHostClient {
@@ -110,6 +135,7 @@ final class HostedTerminalSessionTests: XCTestCase {
                                                   environment: ["WATCHTOWER_TERMINAL_SESSION_ID=7"], rowID: 7)
     ) async throws -> (HostedTerminalSession, FakeSessionHostTransport) {
         let session = HostedTerminalSession(client: await connectedClient())
+        session.sleep = { [weak self] in self?.slept.append($0) }
         session.start(launch)
         await session.connecting?.value
         XCTAssertEqual(transports.count, 2)
@@ -300,12 +326,14 @@ final class HostedTerminalSessionTests: XCTestCase {
         fresh.push(SessionHostFrame(type: .output, payload: Array("y".utf8)))
         XCTAssertEqual(try terminalView(session).getTerminal().getLine(row: 0)?.translateToString(trimRight: true), "y")
 
-        // The reattach's Attached does not restore the retry (two windows
-        // taking one run from each other must not loop): the next drop
-        // ends the run.
+        XCTAssertEqual(session.hostLink, .connected)
+        XCTAssertTrue(reconnectPauses.isEmpty, "the first look-up of an outage goes at once")
         fresh.hangUp()
-        XCTAssertEqual(exits, [nil])
-        XCTAssertEqual(transports[0].sent(.list).count, 1)
+        fresh.hangUp()
+        await settle(session)
+        XCTAssertTrue(exits.isEmpty)
+        XCTAssertEqual(transports[0].sent(.list).count, 2)
+        session.detachFromHost()
     }
 
     /// Another app instance attached the run: the pane says so and lets go,
@@ -335,8 +363,35 @@ final class HostedTerminalSessionTests: XCTestCase {
         XCTAssertTrue(transport.sent(.input).isEmpty)
     }
 
-    /// A second drop before the reattach was answered is the run's end.
-    func testASecondDropOfOneBindingReportsNilExit() async throws {
+    /// #1086: a long session's connection can drop more than once; every
+    /// drop of a run the host still runs is reattached, nothing reported.
+    func testTwoDropsInOneRunBothReattach() async throws {
+        let (session, transport) = try await startedSession()
+        var exits: [Int32?] = []
+        session.onExit = { exits.append($0) }
+        try launched(transport, session: session)
+        let key = try XCTUnwrap(session.key)
+        let info = SessionHostSessionInfo(row: key.row, run: key.run, pid: 5150, startedAtMs: 1, exited: false, code: nil)
+        transports[0].listed = [info]
+
+        for drop in 1...2 {
+            try XCTUnwrap(transports.last).hangUp()
+            await settle(session)
+            let fresh = try XCTUnwrap(transports.last)
+            XCTAssertEqual(fresh.sent.map(\.type), [.hello, .attach], "drop \(drop) reattaches")
+            XCTAssertEqual(session.hostLink, .reconnecting, "disconnected until the host answers")
+            fresh.push(.json(.attached, info))
+            XCTAssertEqual(session.hostLink, .connected)
+        }
+        XCTAssertTrue(exits.isEmpty)
+        XCTAssertEqual(transports.count, 4, "control, launch, two reattaches")
+        XCTAssertEqual(session.pid, 5150)
+        session.detachFromHost()
+    }
+
+    /// A reattach dropped before Attached is tried again after a pause
+    /// while the host lists the run running: never an exit.
+    func testAReattachDroppedBeforeAttachedIsRetried() async throws {
         let (session, transport) = try await startedSession()
         var exits: [Int32?] = []
         session.onExit = { exits.append($0) }
@@ -344,13 +399,103 @@ final class HostedTerminalSessionTests: XCTestCase {
         let key = try XCTUnwrap(session.key)
         transports[0].listed = [SessionHostSessionInfo(row: key.row, run: key.run, pid: 5150, startedAtMs: 1, exited: false, code: nil)]
         transport.hangUp()
-        await session.recovering?.value
-        await session.connecting?.value
+        await settle(session)
+        try XCTUnwrap(transports.last).hangUp()
+        await settle(session)
+
+        XCTAssertTrue(exits.isEmpty)
+        XCTAssertEqual(transports[0].sent(.list).count, 2)
+        XCTAssertEqual(try XCTUnwrap(transports.last).sent.map(\.type), [.hello, .attach])
+        XCTAssertEqual(reconnectPauses, [.milliseconds(500)])
+        XCTAssertEqual(session.hostLink, .reconnecting)
+        session.detachFromHost()
+    }
+
+    /// The pauses grow while the host does not answer and start over once
+    /// a reattach is answered.
+    func testTheRetryPauseResetsAfterAttached() async throws {
+        let (session, transport) = try await startedSession()
+        try launched(transport, session: session)
+        let key = try XCTUnwrap(session.key)
+        let info = SessionHostSessionInfo(row: key.row, run: key.run, pid: 5150, startedAtMs: 1, exited: false, code: nil)
+        let control = transports[0]
+        control.listed = [info]
+
+        control.failedLists = 3
+        transport.hangUp()
+        await settle(session)
+        XCTAssertEqual(reconnectPauses, [.milliseconds(500), .seconds(1), .seconds(2)])
+        try XCTUnwrap(transports.last).push(.json(.attached, info))
+
+        slept = []
+        control.failedLists = 1
+        try XCTUnwrap(transports.last).hangUp()
+        await settle(session)
+        XCTAssertEqual(reconnectPauses, [.milliseconds(500)], "the outage before is over: the pauses start over")
+        XCTAssertEqual(try XCTUnwrap(transports.last).sent.map(\.type), [.hello, .attach])
+        session.detachFromHost()
+    }
+
+    /// A host that cannot answer is never an exit: the pane stays
+    /// disconnected, the automatic retries stop at `reconnectGiveUp`, and
+    /// the owner's Reconnect later reattaches the run.
+    func testAListFailureIsDisconnectedNotAnExitAndReconnectReattaches() async throws {
+        let (session, transport) = try await startedSession()
+        var exits: [Int32?] = []
+        session.onExit = { exits.append($0) }
+        var links: [HostedTerminalSession.HostLink] = []
+        session.onHostLinkChange = { links.append($0) }
+        try launched(transport, session: session)
+        let key = try XCTUnwrap(session.key)
+        let info = SessionHostSessionInfo(row: key.row, run: key.run, pid: 5150, startedAtMs: 1, exited: false, code: nil)
+        let control = transports[0]
+        control.listed = [info]
+        control.failedLists = 1000
+
+        transport.hangUp()
+        await settle(session)
+
+        XCTAssertTrue(exits.isEmpty, "no answer is not an exit")
+        XCTAssertEqual(session.hostLink, .lost)
+        XCTAssertEqual(links, [.reconnecting, .lost])
+        XCTAssertEqual(transports.count, 2, "nothing reattached")
+        let waited = reconnectPauses.reduce(Duration.zero, +)
+        XCTAssertLessThanOrEqual(waited, HostedTerminalSession.reconnectGiveUp)
+        XCTAssertGreaterThan(waited, HostedTerminalSession.reconnectGiveUp - HostedTerminalSession.maxReconnectDelay)
+        XCTAssertTrue(reconnectPauses.allSatisfy { $0 <= HostedTerminalSession.maxReconnectDelay })
+        XCTAssertEqual(session.pid, 5150, "a close still reaches the run")
+
+        control.failedLists = 0
+        session.reconnectNow()
+        await settle(session)
         let fresh = try XCTUnwrap(transports.last)
-        fresh.hangUp()
+        XCTAssertEqual(fresh.sent.map(\.type), [.hello, .attach])
+        fresh.push(.json(.attached, info))
+        XCTAssertEqual(links, [.reconnecting, .lost, .reconnecting, .connected])
+        XCTAssertTrue(exits.isEmpty)
+        session.detachFromHost()
+    }
+
+    /// A reattach the host refuses (the run went meanwhile) asks the list
+    /// again; a run it no longer lists is gone.
+    func testARefusedReattachLooksTheRunUpAgain() async throws {
+        let (session, transport) = try await startedSession()
+        var exits: [Int32?] = []
+        session.onExit = { exits.append($0) }
+        try launched(transport, session: session)
+        let key = try XCTUnwrap(session.key)
+        transports[0].listed = [SessionHostSessionInfo(row: key.row, run: key.run, pid: 5150, startedAtMs: 1, exited: false, code: nil)]
+        transport.hangUp()
+        await settle(session)
+
+        transports[0].listed = []
+        try XCTUnwrap(transports.last).push(.json(.error, SessionHostErrorMessage(message: "no such session")))
+        await settle(session)
+
         XCTAssertEqual(exits, [nil])
+        XCTAssertEqual(transports[0].sent(.list).count, 2)
+        XCTAssertEqual(session.hostLink, .connected, "an ended run is not disconnected")
         XCTAssertFalse(session.neverStarted, "the run did run before its connection was lost")
-        XCTAssertEqual(transports[0].sent(.list).count, 1)
     }
 
     func testADroppedRunThatExitedReportsItsCodeAndForgets() async throws {
