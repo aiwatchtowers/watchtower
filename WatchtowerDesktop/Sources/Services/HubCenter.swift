@@ -66,9 +66,9 @@ final class HubCenter {
     @ObservationIgnored private let cli: (any CLIRunnerProtocol)?
     @ObservationIgnored private let sleep: @Sendable (Duration) async -> Void
     @ObservationIgnored private let interval: Duration
-    @ObservationIgnored private var heartbeatTask: Task<Void, Never>?
+    @ObservationIgnored private(set) var heartbeatTask: Task<Void, Never>?
     @ObservationIgnored private var watchTask: Task<Void, Never>?
-    @ObservationIgnored private var viewTask: Task<Void, Never>?
+    @ObservationIgnored private(set) var viewTask: Task<Void, Never>?
     @ObservationIgnored private var hidden: Set<Int64> = []
     @ObservationIgnored private var displayOver: [Int64: ShownOverCount] = [:]
     /// The view the hub last took (nil: none since `start()`).

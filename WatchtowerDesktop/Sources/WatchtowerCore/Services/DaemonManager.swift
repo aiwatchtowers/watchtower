@@ -391,20 +391,23 @@ package final class DaemonManager {
     }
 
     /// Polls `isAlive` every `step` until it reports death or `deadline`
-    /// (wall time from the first call) elapses. Pure aside from the clock
-    /// read and the sleep: `isAlive` is the only I/O seam, so both branches
-    /// are pinned with a fake counter instead of a real process.
+    /// (wall time from the first call) elapses. `isAlive` is the only I/O
+    /// seam; `now` and `sleep` are the clock (real by default), so both
+    /// branches are pinned with a fake counter and a fake clock instead of a
+    /// real process and real time.
     nonisolated static func waitForPidDeath(
         isAlive: () -> Bool,
         step: Duration,
-        deadline: Duration
+        deadline: Duration,
+        now: () -> ContinuousClock.Instant = { ContinuousClock.now },
+        sleep: (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     ) async -> PidWaitOutcome {
-        let start = ContinuousClock.now
+        let start = now()
         while isAlive() {
-            if ContinuousClock.now - start >= deadline {
+            if now() - start >= deadline {
                 return .timedOut
             }
-            try? await Task.sleep(for: step)
+            await sleep(step)
         }
         return .died
     }
@@ -420,13 +423,20 @@ package final class DaemonManager {
     /// daemon. Used by both callers that cannot afford an open-ended wait: the
     /// quit path (`terminateLater` must reply) and the launch path (the store
     /// sync runs before the database opens, behind the splash).
+    ///
+    /// `sleep` is the watchdog's clock (real by default): the timeout and the
+    /// SIGTERM grace each race the child's exit against one `sleep` call, so
+    /// a test decides when either runs out.
     package nonisolated static func stopDaemonBounded(
         timeout: Duration = .seconds(12),
-        cliPath: String? = Constants.findCLIPath()
+        cliPath: String? = Constants.findCLIPath(),
+        sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     ) async {
         guard let path = cliPath else { return }
 
         let process = makeProcess(path: path, arguments: ["sync", "stop"])
+        let exit = ProcessExitSignal()
+        process.terminationHandler = { _ in exit.fire() }
         do {
             try process.run()
         } catch {
@@ -435,19 +445,13 @@ package final class DaemonManager {
         }
 
         // Race: process exit vs timeout. Timeout wins → terminate subprocess
-        let startTime = ContinuousClock.now
-        while process.isRunning && ContinuousClock.now - startTime < timeout {
-            try? await Task.sleep(for: .milliseconds(50))
-        }
+        if await exit.wait(orSleep: timeout, sleep: sleep) { return }
         guard process.isRunning else { return }
         let pid = process.processIdentifier
         process.terminate()
         // Observe the outcome instead of sleeping blind: SIGTERM is a request,
         // and a child that ignores it is worth a line in the log.
-        let terminateStart = ContinuousClock.now
-        while process.isRunning && ContinuousClock.now - terminateStart < sigtermGrace {
-            try? await Task.sleep(for: .milliseconds(10))
-        }
+        if await exit.wait(orSleep: sigtermGrace, sleep: sleep) { return }
         if process.isRunning {
             NSLog("DaemonManager: `sync stop` (pid %d) survived SIGTERM; leaving it to the OS", pid)
         }
@@ -525,5 +529,61 @@ package final class DaemonManager {
 
     nonisolated private static func findWatchtowerSync() -> String? {
         Constants.findCLIPath()
+    }
+}
+
+/// A child's exit as an awaitable event (its `terminationHandler` fires it),
+/// so `stopDaemonBounded` waits on the exit itself instead of polling
+/// `isRunning`. Fired once; every wait after that returns at once.
+private final class ProcessExitSignal: @unchecked Sendable {
+    private let lock = NSLock()
+    private var fired = false
+    private var waiters: [UUID: CheckedContinuation<Void, Never>] = [:]
+
+    func fire() {
+        lock.lock()
+        fired = true
+        let resumed = waiters
+        waiters = [:]
+        lock.unlock()
+        resumed.values.forEach { $0.resume() }
+    }
+
+    /// Returns when the child has exited (true) or the task is cancelled
+    /// (whether it had exited by then).
+    func wait() async -> Bool {
+        let id = UUID()
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                lock.lock()
+                if fired || Task.isCancelled {
+                    lock.unlock()
+                    continuation.resume()
+                    return
+                }
+                waiters[id] = continuation
+                lock.unlock()
+            }
+        } onCancel: {
+            lock.lock()
+            let continuation = waiters.removeValue(forKey: id)
+            lock.unlock()
+            continuation?.resume()
+        }
+        lock.lock()
+        defer { lock.unlock() }
+        return fired
+    }
+
+    /// Races the exit against `sleep(duration)`: true when the child exited
+    /// first. The loser is cancelled.
+    func wait(orSleep duration: Duration, sleep: @escaping @Sendable (Duration) async -> Void) async -> Bool {
+        await withTaskGroup(of: Bool.self) { group in
+            group.addTask { await self.wait() }
+            group.addTask { await sleep(duration); return false }
+            let first = await group.next() ?? false
+            group.cancelAll()
+            return first
+        }
     }
 }
