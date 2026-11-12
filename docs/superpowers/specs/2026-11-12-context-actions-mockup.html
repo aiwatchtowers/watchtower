@@ -1,0 +1,93 @@
+<h2>Context — готовые действия сверху, разбор ниже</h2>
+<p class="subtitle">Набросок. Подписи в UI на английском, мои пояснения — серым по-русски.</p>
+
+<style>
+.ctx{background:#1c1c1e;color:#e5e5e7;border-radius:12px;padding:20px 22px;font:13px -apple-system,system-ui,sans-serif;max-width:900px}
+.ctx h4{margin:0 0 4px;font-size:15px}
+.muted{color:#8e8e93}
+.act{display:flex;align-items:flex-start;gap:12px;padding:12px 0;border-top:1px solid #2c2c2e}
+.act .save{min-width:62px;text-align:right;font-weight:600;color:#30d158}
+.act .body{flex:1}
+.act .ev{color:#8e8e93;font-size:12px;margin-top:2px}
+.btn{background:#0a84ff;color:#fff;border:0;border-radius:6px;padding:4px 10px;font-size:12px;white-space:nowrap}
+.btn.sec{background:#3a3a3c}
+.tag{font-size:10px;padding:1px 6px;border-radius:4px;background:#3a3a3c;color:#aeaeb2;margin-left:6px}
+.bar{display:flex;height:10px;border-radius:5px;overflow:hidden;margin:8px 0}
+.panel{background:#2c2c2e;border-radius:8px;padding:10px 12px;margin-top:8px}
+.diff{font:11px ui-monospace,Menlo,monospace;background:#111;border-radius:6px;padding:8px;margin:6px 0;line-height:1.5}
+.del{color:#ff6961}.add{color:#30d158}
+.row{display:flex;justify-content:space-between;padding:3px 0}
+.note{color:#8e8e93;font-size:12px;font-style:italic;margin:4px 0 0}
+.done{color:#30d158}
+</style>
+
+<div class="ctx">
+  <h4>Context</h4>
+  <div class="muted">Every session starts with 79.6k tokens. 4 changes would cut it to ~42k.</div>
+
+  <div class="bar">
+    <div style="flex:30;background:#bf5af2"></div><div style="flex:21;background:#0a84ff"></div>
+    <div style="flex:10;background:#64d2ff"></div><div style="flex:5;background:#5e5ce6"></div>
+    <div style="flex:4;background:#ff9f0a"></div><div style="flex:9;background:#8e8e93"></div>
+  </div>
+
+  <div style="margin-top:14px;font-weight:600">Do these</div>
+
+  <div class="act">
+    <div class="save">−30.2k</div>
+    <div class="body">Move feature summaries out of CLAUDE.md <span class="tag">repo · PR</span>
+      <div class="ev">Feature Notes is 74 of 88 KB; loads into every session and every subagent.</div>
+      <div class="panel">
+        <div class="muted">Watchtower prepared the change (agent, 2 min) — measured: 79.6k → 49.4k</div>
+        <div class="diff"><span class="del">− 67 paragraphs, 74 KB</span><br><span class="add">+ 69 one-line index entries, 3 KB</span><br><span class="add">+ docs/features/README.md (summaries, verbatim)</span></div>
+        <button class="btn">Open PR</button> <button class="btn sec">Show Diff</button> <button class="btn sec">Discard</button>
+      </div>
+      <p class="note">↑ правка репо делается тут же: агент в фоне, прогресс в строке, на выходе дифф + замер + кнопка</p>
+    </div>
+  </div>
+
+  <div class="act">
+    <div class="save">−4.1k</div>
+    <div class="body">Turn off 4 unused plugins <span class="tag">personal</span>
+      <div class="ev">ralph-method, documentation-generator, github, ask-dev — 0 calls in 30 days.</div>
+    </div>
+    <button class="btn">Turn Off</button>
+  </div>
+
+  <div class="act">
+    <div class="save">−2.0k</div>
+    <div class="body">Turn off claude.ai connectors in terminal sessions <span class="tag">personal</span>
+      <div class="ev">14 connectors, 0 calls from Claude Code in 30 days. The Watchtower chat keeps them.</div>
+    </div>
+    <button class="btn">Turn Off</button>
+  </div>
+
+  <div class="act">
+    <div class="save">−1.5k</div>
+    <div class="body">Archive 23 shipped-feature lines in memory <span class="tag">personal</span>
+      <div class="ev">MEMORY.md 19 KB; "Features (recent)" are all merged.</div>
+    </div>
+    <button class="btn">Archive</button>
+  </div>
+
+  <div class="act" style="opacity:.6">
+    <div class="save done">✓ −6.1k</div>
+    <div class="body">Done today: removed MCP servers atlassian-cloud, sentry <button class="btn sec" style="margin-left:6px">Undo</button>
+      <div class="ev">Re-measured on the next session start.</div>
+    </div>
+  </div>
+
+  <div style="margin-top:16px;font-weight:600">› What's in it <span class="muted" style="font-weight:400">(раскрывается)</span></div>
+  <div class="panel">
+    <div class="row"><b>Tool schemas · 21.1k</b><span></span></div>
+    <div class="row"><span>watchtower-workbench (62 tools)</span><span>9.8k · 4 137 calls</span></div>
+    <div class="row"><span>claude.ai connectors (14)</span><span>2.0k · 0 calls</span></div>
+    <div class="row"><span>atlassian-cloud</span><span>1.9k · 0 calls</span></div>
+    <div class="row muted"><span>built-in (Bash, Read, Agent…)</span><span>7.4k · can't change</span></div>
+    <div class="row" style="margin-top:8px"><b>Skill list · 10.2k</b><span></span></div>
+    <div class="row"><span>superpowers (14)</span><span>2.6k · 58 uses</span></div>
+    <div class="row"><span>ralph-method (5)</span><span>1.4k · 0 uses</span></div>
+    <div class="row muted"><span>…</span><span></span></div>
+  </div>
+  <p class="note">↑ каждая полоска раскрывается до источника: сколько весит на старте и сколько раз реально использовался</p>
+</div>

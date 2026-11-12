@@ -89,6 +89,24 @@ Analytics → Context:
 - The headline sentence (`lead`) adds "N changes would cut it to ~X".
 - Built from the design kit; the coach card is reused where it fits.
 
+## Failure paths
+
+Each has its exit and a test in the plan.
+
+| Failure | What happens | Test |
+|---|---|---|
+| Settings file changed between proposal and Accept (Claude Code or the owner wrote it) | Only the proposal's own key is compared. If that key changed, the proposal becomes `superseded` and the card says "changed since"; other keys never matter | settings CAS test with an unrelated key changed (applies) and the own key changed (stale) |
+| `settings.json` / `~/.claude.json` unreadable or not JSON | Accept is refused with the file's label and nothing is written; the proposer files nothing for that file | refusal test, proposer test |
+| Two Accepts at once (double press, Home + Analytics) | The status is flipped `open → accepted` by compare-and-set; the second gets `state_changed`, and Swift keeps the button disabled while one is pending | db CAS test, CoachCenter pending test |
+| A repo/memory session fails to start | No `coach accept` is called; the proposal stays open and the card shows the error and **Accept** again | CoachCenter test with a failing starter |
+| The session ends without a PR (repo) or without writing (memory) | The card says "Session ended without a PR" / "without a change" with **Open Session**, **Start Again** and **Decline**; the proposal stays `accepted` with no `measure_from`, and after 30 days it is `too_little_data` | presentation test, daemon window test |
+| The PR is closed unmerged | Verdict `too_little_data`, card "not merged" | daemon merge-check test |
+| Undo of an MCP server whose saved config is missing | Rollback is refused ("saved settings for this server are gone") and nothing is written | rollback test |
+| The proposer would touch a protected source (Watchtower servers, pack, `superpowers`, `pr-review-toolkit`) | It is never filed; Accept of a hand-made row with such a key is refused too | guard test `TestCOACH01_ContextNeverTouchesWatchtower` |
+| The daemon and `coach run` propose at the same time | Both hold `coach.lock`; the second logs `busy`. Fingerprints are UNIQUE, so a duplicate insert is a no-op | lock test exists; insert conflict test |
+
+Mockup of the screen: `docs/superpowers/specs/2026-11-12-context-actions-mockup.html`. Shots of the real screen come with the Desktop task (`make desktop-shots`).
+
 ## Non-goals and anti-goals
 
 - No change applied without a press. No silent background tuning.
