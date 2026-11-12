@@ -131,7 +131,9 @@ func (db *DB) SessionBindings(workbenchID int64) ([]SessionBinding, error) {
 // stay) in one transaction: target_id plus target_bound_at = now (NULL when
 // cleared) and, for a valid target, one status-stamped link of the target
 // itself. It writes no link row per leaf: the binding stamp on the session is
-// what takes the subtree's leaves for the progress count.
+// what takes the subtree's leaves for the progress count. An auto-named agent
+// session takes the target's title, just like a session launched for a target;
+// owner and AI titles are preserved. Clearing the binding keeps the title.
 func (db *DB) SetSessionTarget(sessionID int64, targetID sql.NullInt64) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	boundAt := sql.NullString{String: now, Valid: targetID.Valid}
@@ -145,6 +147,12 @@ func (db *DB) SetSessionTarget(sessionID int64, targetID sql.NullInt64) error {
 		return fmt.Errorf("binding terminal session %d: %w", sessionID, err)
 	}
 	if targetID.Valid {
+		if _, err := tx.Exec(`UPDATE terminal_sessions SET title = (
+			SELECT text FROM targets WHERE id = ? AND project_id = terminal_sessions.project_id)
+			WHERE id = ? AND title_source = 'auto' AND kind IN ('claude', 'codex')`,
+			targetID.Int64, sessionID); err != nil {
+			return fmt.Errorf("naming terminal session %d for target %d: %w", sessionID, targetID.Int64, err)
+		}
 		if err := upsertStatusLink(tx, sessionID, targetID.Int64, now); err != nil {
 			return err
 		}
