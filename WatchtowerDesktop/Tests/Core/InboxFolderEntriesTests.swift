@@ -269,7 +269,7 @@ final class InboxFolderEntriesTests: XCTestCase {
 
     /// Idea finder's entry shows its own pane (phase 3), not today's list;
     /// a card route still opens the list, and back returns to the entry.
-    func testLegacyListEntryOpensTodaysList() async throws {
+    func testIdeaFinderEntryShowsItsPaneAndCardRouteOpensList() async throws {
         let pool = try pool()
         let idea = try await pool.write { db in
             try InboxFolderFixtures.seed(db)
@@ -306,7 +306,7 @@ final class InboxFolderEntriesTests: XCTestCase {
 
     /// The selected artifact leaves and Idea finder is next: it is selected
     /// as a click selects it, on its own pane (phase 3).
-    func testSelectionMovingToALegacyEntryOpensItsList() async throws {
+    func testSelectionMovingToIdeaFinderSelectsItsPane() async throws {
         let inbox = try await rootWithArtifact { try TestDatabase.insertIdea($0, updatedAt: "2026-11-06T08:00:00Z") }
         XCTAssertEqual(inbox.vm.folderEntries.map(\.id), ["artifact:\(inbox.card)", "ideas"])
 
