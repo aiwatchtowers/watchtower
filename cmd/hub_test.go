@@ -113,11 +113,7 @@ func startTestHubOn(t *testing.T, dir string, tr transport.Transport) {
 	go func() { done <- hub.Run(ctx, o) }()
 	t.Cleanup(func() {
 		cancel()
-		select {
-		case <-done:
-		case <-time.After(10 * time.Second):
-			t.Error("hub.Run did not return")
-		}
+		<-done
 	})
 	waitFor(t, "the control socket", func() bool {
 		_, err := os.Stat(filepath.Join(dir, hub.SocketName))
@@ -125,14 +121,13 @@ func startTestHubOn(t *testing.T, dir string, tr transport.Transport) {
 	})
 }
 
-func waitFor(t *testing.T, what string, cond func() bool) {
+// waitFor polls cond until it holds; the string names what is awaited for
+// the reader. It has no deadline of its own: a condition that never holds
+// hangs the run into go test's -timeout, which dumps every goroutine.
+func waitFor(t *testing.T, _ string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
 	for !cond() {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %s", what)
-		}
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -868,13 +863,7 @@ func (p *pairRun) next(t *testing.T) map[string]any {
 
 func (p *pairRun) wait(t *testing.T) error {
 	t.Helper()
-	select {
-	case err := <-p.done:
-		return err
-	case <-time.After(10 * time.Second):
-		t.Fatal("hub pair did not finish")
-		return nil
-	}
+	return <-p.done
 }
 
 // pairPhone drives a pairing up to the sas line: the phone reads the QR's

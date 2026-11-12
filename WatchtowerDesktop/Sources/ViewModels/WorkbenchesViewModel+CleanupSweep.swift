@@ -306,8 +306,8 @@ extension WorkbenchesViewModel {
         let run = center.startStreamedPlan(.workbench(projectID), workbenchID: projectID)
         // A stalled plan (a read blocked on a dead mount) never holds the
         // one slot for longer than the limit.
-        let watchdog = Task { [limit = cleanupHintTimeLimit] in
-            try? await Task.sleep(for: limit)
+        let watchdog = Task { [limit = cleanupHintTimeLimit, sleep = cleanupHintLimitSleep] in
+            try? await sleep(limit)
             if !Task.isCancelled { run.cancel() }
         }
         defer { watchdog.cancel() }

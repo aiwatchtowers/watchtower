@@ -98,7 +98,7 @@ final class MobilePairingModel: Identifiable {
     @ObservationIgnored private let now: () -> Date
     @ObservationIgnored private let sleep: @Sendable (Duration) async -> Void
     @ObservationIgnored private var session: HubPairSession?
-    @ObservationIgnored private var reader: Task<Void, Never>?
+    @ObservationIgnored private(set) var reader: Task<Void, Never>?
     @ObservationIgnored private var countdown: Task<Void, Never>?
     @ObservationIgnored private var expiresAt: Date?
     @ObservationIgnored private var phone = ""

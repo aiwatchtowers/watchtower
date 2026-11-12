@@ -22,6 +22,8 @@ import os
 package final class AgentActionFeed {
     package private(set) var rows: [AgentAction] = []
     package private(set) var inFlight: Set<Int64> = []
+    /// The observation delivered its first rows since `start` (a test seam).
+    package private(set) var hasObserved = false
     /// Why the last Approve/Reject/Retry on a row failed, keyed by row id —
     /// rendered on that row's card, so a failure shows where the owner
     /// clicked (an SQLITE_BUSY approve leaves the row `pending`, with nothing
@@ -88,6 +90,7 @@ package final class AgentActionFeed {
                 for try await rows in observation.values(in: pool) {
                     guard !Task.isCancelled, let self else { break }
                     self.rows = rows
+                    if !self.hasObserved { self.hasObserved = true }
                 }
             } catch {
                 self?.lastError = error.localizedDescription
@@ -109,6 +112,7 @@ package final class AgentActionFeed {
         pollTask?.cancel()
         pollTask = nil
         conversationID = nil
+        hasObserved = false
         rows = []
         rowErrors = [:]
     }

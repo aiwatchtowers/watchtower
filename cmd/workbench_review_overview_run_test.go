@@ -353,20 +353,11 @@ func TestWorkbenchReviewOverview_StreamTicks(t *testing.T) {
 
 	res := make(chan []string, 1)
 	go func() { res <- overviewStreamLines(t, wb, "--round", round) }()
-	select {
-	case <-g.started:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the model call never started")
-	}
+	<-g.started
 	ticks <- time.Now()
 	ticks <- time.Now()
 	close(g.release)
-	var lines []string
-	select {
-	case lines = <-res:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the command did not return")
-	}
+	lines := <-res
 	assert.Equal(t, 30*time.Second, every)
 	var events []string
 	for _, l := range lines {

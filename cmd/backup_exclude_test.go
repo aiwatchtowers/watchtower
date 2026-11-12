@@ -11,7 +11,6 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -110,12 +109,7 @@ func TestBackup01_DaemonStartApplies(t *testing.T) {
 	cancel()
 	done := make(chan error, 1)
 	go func() { done <- runSyncDaemon(ctx, cfg, database, log.New(io.Discard, "", 0), nil) }()
-	select {
-	case err := <-done:
-		require.NoError(t, err)
-	case <-time.After(60 * time.Second):
-		t.Fatal("the daemon did not stop on a cancelled context")
-	}
+	require.NoError(t, <-done, "the daemon stops on a cancelled context")
 	require.Len(t, *calls, 1)
 	assert.Equal(t, []string{root, as}, (*calls)[0])
 }
