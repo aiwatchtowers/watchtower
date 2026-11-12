@@ -186,14 +186,21 @@ final class ReadinessCenterTests: XCTestCase {
         center.stop()
         await ticks.untilCancelled()
         let before = center.readiness
+        var changed = false
+        withObservationTracking { _ = center.readiness } onChange: { changed = true }
 
-        try insertDigest(pool)
-        center.refresh()
-        // A second center seeing the write proves it was observable.
+        // A witness observing before the write: the same commit notifies it and
+        // any observation the stop left behind.
         let witness = ReadinessCenter(environment: FakeReadinessEnvironment())
         witness.start(pool: pool)
         defer { witness.stop() }
+        await waitUntil(witness) { !$0.isEmpty }
+        try insertDigest(pool)
+        center.refresh()
         await waitUntil(witness) { $0[.digests] == .ready }
+        // The stop dropped the snapshot: a refresh after the write evaluates nothing.
+        center.refresh()
+        XCTAssertFalse(changed, "no readiness change after stop")
         XCTAssertEqual(center.readiness, before)
     }
 

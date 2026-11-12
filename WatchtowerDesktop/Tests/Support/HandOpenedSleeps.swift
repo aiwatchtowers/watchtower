@@ -1,8 +1,6 @@
 import Foundation
 import Observation
 import WatchtowerCore
-import WatchtowerTestSupport
-@testable import WatchtowerDesktop
 
 // Deadline-free seams for tests that would otherwise wait on a clock
 // (no-wall-clock tests, board #1738).
@@ -11,7 +9,7 @@ import WatchtowerTestSupport
 /// waiting `sleep()` return (banked when nobody sleeps yet). A sleeper whose
 /// task is cancelled returns at once and is counted, so a test waits for the
 /// cancel, or for a sleep to begin, instead of a clock.
-final class HandOpenedSleeps: @unchecked Sendable {
+package final class HandOpenedSleeps: @unchecked Sendable {
     private let lock = NSLock()
     private var banked = 0
     private var sleepers: [(id: UUID, continuation: CheckedContinuation<Void, Never>)] = []
@@ -20,7 +18,9 @@ final class HandOpenedSleeps: @unchecked Sendable {
     private var callWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
     private var cancelWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
 
-    func sleep() async {
+    package init() {}
+
+    package func sleep() async {
         let id = UUID()
         await withTaskCancellationHandler {
             await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
@@ -58,7 +58,7 @@ final class HandOpenedSleeps: @unchecked Sendable {
 
     /// Lets `count` sleeps return: the waiting ones first (oldest first), the
     /// rest banked for sleeps still to come.
-    func open(_ count: Int = 1) {
+    package func open(_ count: Int = 1) {
         lock.lock()
         var woken: [CheckedContinuation<Void, Never>] = []
         for _ in 0..<count {
@@ -73,7 +73,7 @@ final class HandOpenedSleeps: @unchecked Sendable {
     }
 
     /// Returns once `sleep()` has been called `count` times in all.
-    func untilCalled(_ count: Int) async {
+    package func untilCalled(_ count: Int) async {
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             lock.lock()
             if calls >= count {
@@ -87,7 +87,7 @@ final class HandOpenedSleeps: @unchecked Sendable {
     }
 
     /// Returns once `count` sleepers were ended by their task's cancel.
-    func untilCancelled(_ count: Int = 1) async {
+    package func untilCancelled(_ count: Int = 1) async {
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             lock.lock()
             if cancelled >= count {
@@ -110,12 +110,18 @@ final class HandOpenedSleeps: @unchecked Sendable {
     }
 }
 
-/// Returns only when its task is cancelled (then throws): a sleep seam's
-/// "this clock never fires on its own".
-func parkUntilTaskCancelled() async throws {
+/// A sleep seam that never returns on its own: it parks until its task is
+/// cancelled, so a poll loop under test waits on no clock.
+package func parkUntilCancelled() async {
     let (stream, continuation) = AsyncStream<Never>.makeStream()
     for await _ in stream {}
     withExtendedLifetime(continuation) {}
+}
+
+/// Returns only when its task is cancelled (then throws): a sleep seam's
+/// "this clock never fires on its own".
+package func parkUntilTaskCancelled() async throws {
+    await parkUntilCancelled()
     throw CancellationError()
 }
 
@@ -123,15 +129,15 @@ func parkUntilTaskCancelled() async throws {
 /// `untilObserved` re-checks a condition on `ai.calls` when a turn starts
 /// (the scripted service's own list is plain state).
 @Observable
-final class CallCountingAI: AIServiceProtocol, @unchecked Sendable {
-    @ObservationIgnored let inner: ScriptedAIService
-    private(set) var count = 0
+package final class CallCountingAI: AIServiceProtocol, @unchecked Sendable {
+    @ObservationIgnored package let inner: ScriptedAIService
+    package private(set) var count = 0
 
-    init(_ inner: ScriptedAIService) {
+    package init(_ inner: ScriptedAIService) {
         self.inner = inner
     }
 
-    func stream(
+    package func stream(
         prompt: String,
         systemPrompt: String?,
         sessionID: String?,
@@ -147,7 +153,7 @@ final class CallCountingAI: AIServiceProtocol, @unchecked Sendable {
     }
 
     // swiftlint:disable:next function_parameter_count
-    func stream(
+    package func stream(
         prompt: String,
         systemPrompt: String?,
         sessionID: String?,

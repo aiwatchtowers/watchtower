@@ -201,9 +201,9 @@ final class ChatQuestionEscalatorTests: XCTestCase {
         await settled(escalator)
     }
 
-    /// Waits for a real process's trace (a pid file, a reaped pid): plain
-    /// state nothing signals, re-checked once per main-actor turn — no clock,
-    /// no deadline. `what` names the wait for a reader of a hang.
+    /// Waits for a real process's trace (a reaped pid): plain state nothing
+    /// signals, re-checked once per main-actor turn — no clock, no deadline.
+    /// `what` names the wait for a reader of a hang.
     private func eventually(_ what: String, _ condition: () -> Bool) async {
         await untilTurn(condition)
     }
@@ -548,14 +548,16 @@ final class ChatQuestionEscalatorTests: XCTestCase {
         let stub = dir.appendingPathComponent("watchtower")
         try "#!/bin/sh\necho $$ > '\(pidFile.path)'\nexec sleep 30\n".write(to: stub, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stub.path)
+        // A FIFO: the read below blocks (off the main actor) until the stub writes its pid.
+        XCTAssertEqual(mkfifo(pidFile.path, 0o600), 0)
 
         let escalator = makeEscalator(ProcessCLIRunner(binaryPath: stub.path))
         now = asked.addingTimeInterval(600)
         escalator.evaluate()
-        await eventually("the stub starts") {
-            (try? String(contentsOf: pidFile, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-        }
-        let pid = try XCTUnwrap(pid_t(String(contentsOf: pidFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)))
+        let path = pidFile.path
+        let data = await Task.detached { FileHandle(forReadingAtPath: path)?.readDataToEndOfFile() }.value
+        let written = String(bytes: data ?? Data(), encoding: .utf8) ?? ""
+        let pid = try XCTUnwrap(pid_t(written.trimmingCharacters(in: .whitespacesAndNewlines)), "the stub starts")
         stubPID = pid
         XCTAssertTrue(escalator.isEscalating(1))
 

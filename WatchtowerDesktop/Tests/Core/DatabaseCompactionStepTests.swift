@@ -1,5 +1,6 @@
 import Foundation
 @testable import WatchtowerCore
+import WatchtowerTestSupport
 import XCTest
 
 @MainActor
@@ -48,7 +49,7 @@ final class DatabaseCompactionStepTests: XCTestCase {
     func testDueStopsDaemonThenCompactsInOrder() async {
         let step = makeStep(check: .success(.fixture(dbBytes: 2_000_000_000)))
         let run = Task { await step.run { "/db" } }
-        await until { step.phase != .idle && step.phase != .checking }
+        await untilTurn { step.phase != .idle && step.phase != .checking }
         XCTAssertEqual(step.phase, .compacting(dbBytes: 2_000_000_000))
         XCTAssertTrue(step.stoppedDaemon)
         XCTAssertTrue(step.isRunning)
@@ -199,7 +200,7 @@ final class DatabaseCompactionStepTests: XCTestCase {
         await step.terminateForQuit()
         let run = await startCompacting(step)
         let quit = Task { await step.terminateForQuit() }
-        await until { self.child.terminateCount == 1 }
+        await untilTurn { self.child.terminateCount == 1 }
         child.exit(status: 4)
         await quit.value
         await run.value
@@ -215,7 +216,7 @@ final class DatabaseCompactionStepTests: XCTestCase {
         let run = await startCompacting(step)
         let quit = Task { await step.terminateForQuit() }
         // The ticker's sleep and the grace's.
-        await until { self.child.terminateCount == 1 && self.sleeper.pendingCount == 2 }
+        await untilTurn { self.child.terminateCount == 1 && self.sleeper.pendingCount == 2 }
         XCTAssertEqual(child.killCount, 0)
         sleeper.releaseAll()
         await quit.value
@@ -245,7 +246,7 @@ final class DatabaseCompactionStepTests: XCTestCase {
         let parked = ParkedCheck()
         let step = makeStep(check: .success(.fixture()), parkedCheck: parked)
         let run = Task { await step.run { "/db" } }
-        await until { parked.isParked }
+        await untilTurn { parked.isParked }
         XCTAssertTrue(step.isRunning)
         await step.terminateForQuit()
         await run.value
@@ -330,7 +331,7 @@ final class DatabaseCompactionStepTests: XCTestCase {
 
         child.emit(.ftsRebuild)
         child.emit(.compact)
-        await until { step.phase == .compacting(dbBytes: 2_000) }
+        await untilTurn { step.phase == .compacting(dbBytes: 2_000) }
         XCTAssertEqual(step.phaseElapsedSeconds, 0, "the compaction line starts at 0:00")
         XCTAssertEqual(step.elapsedSeconds, 3)
         await tick(1, step)
@@ -364,7 +365,7 @@ final class DatabaseCompactionStepTests: XCTestCase {
         await tick(1, step)
         XCTAssertTrue(step.canSkip, "Skip shows 15 s into the step, in the search index phase")
         child.emit(.compact)
-        await until { step.phase == .compacting(dbBytes: 1_000) }
+        await untilTurn { step.phase == .compacting(dbBytes: 1_000) }
         XCTAssertTrue(step.canSkip, "Skip stays across the phase change")
         await tick(1, step)
         XCTAssertTrue(step.canSkip)
@@ -428,7 +429,7 @@ final class DatabaseCompactionStepTests: XCTestCase {
         let run = await startCompacting(step)
         child.emit(.ftsRebuild)
         child.emit(.compact)
-        await until { step.phase == .compacting(dbBytes: 5_000) }
+        await untilTurn { step.phase == .compacting(dbBytes: 5_000) }
         child.exit(status: 2, stdout: #"""
         {"phase":"fts_rebuild"}
         {"phase":"compact"}
@@ -728,7 +729,7 @@ final class DatabaseCompactionStepTests: XCTestCase {
     /// waits on the first sleep.
     private func startCompacting(_ step: DatabaseCompactionStep) async -> Task<Void, Never> {
         let run = Task { await step.run { "/db" } }
-        await until { step.phase != .idle && step.phase != .checking && self.sleeper.pendingCount == 1 }
+        await untilTurn { step.phase != .idle && step.phase != .checking && self.sleeper.pendingCount == 1 }
         return run
     }
 
@@ -737,7 +738,7 @@ final class DatabaseCompactionStepTests: XCTestCase {
         for _ in 0..<n {
             let before = step.elapsedSeconds
             sleeper.releaseOne()
-            await until { step.elapsedSeconds == before + 1 && self.sleeper.pendingCount == 1 }
+            await untilTurn { step.elapsedSeconds == before + 1 && self.sleeper.pendingCount == 1 }
         }
     }
 
@@ -746,12 +747,6 @@ final class DatabaseCompactionStepTests: XCTestCase {
     /// the main queue.
     private func drainMainActor() async {
         await Task { @MainActor in }.value
-    }
-
-    /// Yields the main actor until `condition` holds — no bound: a wait that
-    /// never ends is the lane watchdog's to report.
-    private func until(_ condition: () -> Bool) async {
-        while !condition() { await Task.yield() }
     }
 }
 

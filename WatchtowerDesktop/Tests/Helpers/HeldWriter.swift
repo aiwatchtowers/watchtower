@@ -15,13 +15,23 @@ final class HeldWriter: @unchecked Sendable {
     init(_ pool: DatabasePool, file: StaticString = #filePath, line: UInt = #line) {
         let entered = DispatchSemaphore(value: 0)
         let gate = gate
+        let failure = Locked<Error?>(nil)
         Thread.detachNewThread {
-            try? pool.write { _ in
+            do {
+                try pool.write { _ in
+                    entered.signal()
+                    gate.wait()
+                }
+            } catch {
+                // A write that never entered still wakes the waiting init.
+                failure.set(error)
                 entered.signal()
-                gate.wait()
             }
         }
-        entered.wait() // the writer queue is taken: the detached write's own signal, no clock
+        entered.wait() // the writer queue is taken (or the write failed): the detached write's own signal, no clock
+        if let error = failure.get() {
+            XCTFail("HeldWriter could not take the writer: \(error)", file: file, line: line)
+        }
     }
 
     func release() {
@@ -39,4 +49,15 @@ final class HeldWriter: @unchecked Sendable {
 @MainActor
 func boundedValue<T>(_ task: Task<T, Never>) async -> T? {
     await task.value
+}
+
+/// A value read and written from two threads.
+private final class Locked<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Value
+
+    init(_ value: Value) { self.value = value }
+
+    func get() -> Value { lock.withLock { value } }
+    func set(_ new: Value) { lock.withLock { value = new } }
 }

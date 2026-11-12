@@ -957,7 +957,12 @@ final class AppStateTests: XCTestCase {
         let reset = Task { try await appState.resetLLMData(workspaceDir: dir) }
         await untilObserved { daemon.isRestartParked }
         appState.startDaemonFromBanner()
+        // The main executor is FIFO: a job enqueued now runs behind the banner
+        // item's first turn, which — were it not queued behind the reset —
+        // would find the daemon stopped (the reset's stop) and start it.
+        await Task { @MainActor in }.value
         XCTAssertEqual(daemon.starts, 0, "the Start waits for the reset")
+        XCTAssertFalse(daemon.running, "the reset's restart is still parked")
         daemon.releaseRestart()
         try await reset.value
         await appState.daemonStartChain?.value

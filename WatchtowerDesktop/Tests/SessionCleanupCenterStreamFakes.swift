@@ -1,6 +1,7 @@
 import XCTest
 @testable import WatchtowerDesktop
 import WatchtowerCore
+import WatchtowerTestSupport
 
 /// A scripted `SessionCleanupStreaming` double: each call is a `Run` whose
 /// stdout lines and exit the test feeds by hand. `stop` is only recorded —
@@ -193,14 +194,6 @@ func waitUntil(
     _ condition: @MainActor () -> Bool
 ) async {
     while !condition() { await Task.yield() }
-}
-
-/// A sleep seam that never returns on its own: it parks until its task is
-/// cancelled, so a poll loop under test waits on no clock.
-func parkUntilCancelled() async {
-    let (stream, continuation) = AsyncStream<Never>.makeStream()
-    for await _ in stream {}
-    withExtendedLifetime(continuation) {}
 }
 
 /// Counts events a fake sees and lets a test await the n-th one — no

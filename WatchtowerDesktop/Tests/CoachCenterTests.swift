@@ -152,7 +152,7 @@ final class CoachCenterTests: XCTestCase {
         for i in 0..<runner.invocations.count where i != index {
             if i < runner.invocations.count { runner.release(i) }
         }
-        await runner.untilCalls(oneDay)
+        await waitUntil { center.status[3]?.value != nil }  // the 1-day reply is stored
     }
 
     func testStaleAcceptClosesCardAndReloads() async {

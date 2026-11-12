@@ -1,6 +1,7 @@
 import Foundation
 import XCTest
 @testable import WatchtowerCore
+import WatchtowerTestSupport
 
 /// AGENT-07 (board #568, ask #357): the Desktop's side of the owner's confirmation.
 @MainActor
@@ -417,11 +418,4 @@ private final class OpenOnce {
         waiting = []
         woken.forEach { $0.resume() }
     }
-}
-
-/// A sleep that never returns on its own: it parks until its task is cancelled.
-private func parkUntilCancelled() async {
-    let (stream, continuation) = AsyncStream<Never>.makeStream()
-    for await _ in stream {}
-    withExtendedLifetime(continuation) {}
 }

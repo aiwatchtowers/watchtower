@@ -128,7 +128,8 @@ final class DigestViewModel {
     /// Every write of this view model, in order (board #670).
     @ObservationIgnored private let writes = SerialWrites()
     /// The `stream_digests` observation delivered its baseline: a write from
-    /// now on surfaces in the feed (tests wait on it).
+    /// now on surfaces in the feed (tests wait on it); false again after
+    /// `stopObserving()`.
     private(set) var streamsObserved = false
     private var observationTask: Task<Void, Never>?
     private var streamsObservationTask: Task<Void, Never>?
@@ -211,6 +212,7 @@ final class DigestViewModel {
         observationTask = nil
         streamsObservationTask?.cancel()
         streamsObservationTask = nil
+        streamsObserved = false
         decisionsObservationTask?.cancel()
         decisionsObservationTask = nil
         decisionsPollTask?.cancel()

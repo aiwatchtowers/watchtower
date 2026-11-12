@@ -3,6 +3,7 @@ import Foundation
 @testable import WatchtowerDesktop
 import WatchtowerCore
 import WatchtowerSync
+import WatchtowerTestSupport
 
 /// The order of everything the hand-over did, across its seams.
 final class AdoptionLog: @unchecked Sendable {
@@ -62,7 +63,7 @@ final class FakeAdoptHub: HubAdoptRunning, @unchecked Sendable {
         calls.append(Call(args: args, stdin: stdin))
         log.append("cli:\(verb)")
         if hangOn.contains(verb) {
-            await untilCancelled() // a stuck child: returns only once its task is cancelled, no clock
+            await parkUntilCancelled() // a stuck child: returns only once its task is cancelled, no clock
             if Task.isCancelled { cancelled.append(verb) }
             return HubAdoptOutput(stdout: Data(), exitCode: -1)
         }
@@ -163,39 +164,5 @@ final class FakeHubKeyStore: HubKeyStore, @unchecked Sendable {
         try inner.deleteHubIdentity(hubID: hubID)
         lock.withLock { _ = present.remove(hubID) }
         if killAfter.contains("keychain:delete") { throw FakeKill() }
-    }
-}
-
-/// Suspends until the calling task is cancelled — no clock.
-private func untilCancelled() async {
-    let gate = CancelGate()
-    await withTaskCancellationHandler {
-        await withCheckedContinuation { gate.park($0) }
-    } onCancel: {
-        gate.open()
-    }
-}
-
-private final class CancelGate: @unchecked Sendable {
-    private let lock = NSLock()
-    private var opened = false
-    private var waiter: CheckedContinuation<Void, Never>?
-
-    func park(_ continuation: CheckedContinuation<Void, Never>) {
-        let resumeNow = lock.withLock {
-            if opened { return true }
-            waiter = continuation
-            return false
-        }
-        if resumeNow { continuation.resume() }
-    }
-
-    func open() {
-        let waiting: CheckedContinuation<Void, Never>? = lock.withLock {
-            opened = true
-            defer { waiter = nil }
-            return waiter
-        }
-        waiting?.resume()
     }
 }
