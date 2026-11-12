@@ -6,8 +6,10 @@ import WatchtowerCore
 /// with news (title, latest line, new-count chip, muted reason), "N more with
 /// news" past `TrackThreadsSummary.visibleNewsLimit`, then the quiet note
 /// with **Stop Tracking Quiet Ones…** when some quiet threads are old. A
-/// row opens that thread's `InboxTrackPane` (behind `InboxTrackBackBar`).
-/// The reading pane's `InboxCardColumn` scrolls and pads it.
+/// press's result stays after the threads it stopped are gone, until the
+/// owner leaves the pane. A row opens that thread's `InboxTrackPane`
+/// (behind `InboxTrackBackBar`). The reading pane's `InboxCardColumn`
+/// scrolls and pads it.
 struct InboxTracksNewsPane: View {
     let summary: TrackThreadsSummary
     /// Stop Tracking Quiet Ones…: built with its plan and apply by the view
@@ -42,9 +44,13 @@ struct InboxTracksNewsPane: View {
             }
             if let note = summary.quietNote {
                 quietNote(note)
+            } else if quietPress.holdsResult {
+                quietPressButton
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        // A days-old result never comes back with the pane.
+        .onDisappear { quietPress.reset() }
     }
 
     // MARK: - With news
@@ -114,16 +120,22 @@ struct InboxTracksNewsPane: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            if summary.showsStopQuiet {
-                InboxBulkPressButton(title: "Stop Tracking Quiet Ones…", confirmTitle: Self.confirmTitle,
-                                     model: quietPress)
-                    .controlSize(.small)
-                    .fixedSize()
+            if summary.showsStopQuiet || quietPress.holdsResult {
+                quietPressButton
             }
         }
         .padding(.vertical, Spacing.cozy)
         .padding(.horizontal, Spacing.medium)
         .card(fill: Fill.rest)
+    }
+
+    /// The press, or only its spinner and result once no quiet thread is
+    /// over the limit.
+    private var quietPressButton: some View {
+        InboxBulkPressButton(title: summary.showsStopQuiet ? "Stop Tracking Quiet Ones…" : nil,
+                             confirmTitle: Self.confirmTitle, model: quietPress)
+            .controlSize(.small)
+            .fixedSize()
     }
 
     /// The confirmation's title and button: "Stop Tracking 1 Thread",
@@ -136,10 +148,6 @@ struct InboxTracksNewsPane: View {
 /// Above an opened thread in Track my threads' pane: back to the news list.
 struct InboxTrackBackBar: View {
     let onBack: () -> Void
-
-    init(onBack: @escaping () -> Void) {
-        self.onBack = onBack
-    }
 
     var body: some View {
         Button(action: onBack) {

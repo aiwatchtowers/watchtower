@@ -97,6 +97,15 @@ package final class InboxBulkPressModel: ObservableObject {
         state = .idle
     }
 
+    /// Running or finished: its spinner or result line stays on screen even
+    /// once its group no longer offers the press.
+    package var holdsResult: Bool {
+        switch state {
+        case .running, .finished: true
+        case .idle, .planning, .confirming: false
+        }
+    }
+
     /// The owner said no: back to idle. Only while confirming.
     package func cancel() {
         guard case .confirming = state else { return }

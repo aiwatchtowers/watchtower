@@ -185,6 +185,28 @@ final class InboxTracksIdeasWiringTests: XCTestCase {
         XCTAssertThrowsError(try view(vm).environment(AppState.isolated()).inspect().find(button: "Clear Old Ideas…"))
     }
 
+    /// Clear Old Ideas' result stays in the Backlog header once no old idea
+    /// is left; leaving the Backlog sets the press back to idle.
+    func testClearOldIdeasResultStaysWithoutOldIdeas() async throws {
+        try seedIdeas(daysAgo: [1])
+        let vm = await makeVM()
+        vm.openLegacy(.ideas)
+        XCTAssertEqual(vm.ideaBatch.olderCount, 0)
+
+        vm.oldIdeasPress.begin()
+        let deadline = Date().addingTimeInterval(10)
+        while !vm.oldIdeasPress.holdsResult, Date() < deadline {
+            await Task.yield()
+        }
+        let sut = try view(vm).environment(AppState.isolated()).inspect()
+        XCTAssertNoThrow(try sut.find(text: "Nothing left to do."))
+        XCTAssertThrowsError(try sut.find(button: "Clear Old Ideas…"))
+
+        try sut.find(InboxBulkPressButton.self).callOnDisappear()
+        XCTAssertEqual(vm.oldIdeasPress.state, .idle)
+        XCTAssertThrowsError(try view(vm).environment(AppState.isolated()).inspect().find(InboxBulkPressButton.self))
+    }
+
     func testClearOldIdeasConfirmTitle() {
         XCTAssertEqual(ActionStripActionsView.clearOldIdeasTitle(1), "Clear 1 Old Idea")
         XCTAssertEqual(ActionStripActionsView.clearOldIdeasTitle(4), "Clear 4 Old Ideas")

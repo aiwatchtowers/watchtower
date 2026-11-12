@@ -144,6 +144,35 @@ final class InboxTracksNewsPaneTests: XCTestCase {
         XCTAssertEqual(stopped, [["9"]])
     }
 
+    /// A press whose threads are gone (the read after it found none over
+    /// the limit, or no quiet thread at all) keeps its result line and Try
+    /// Again; leaving the pane sets the press back to idle.
+    func testStopQuietResultOutlivesTheQuietThreads() async throws {
+        let model = InboxBulkPressModel(
+            plan: { InboxBulkPlan(ids: ["9", "10"], count: 2) },
+            apply: { _ in .partial(done: 1, of: 2, error: "timed out") })
+        model.begin()
+        await waitUntil { if case .confirming = model.state { true } else { false } }
+        model.confirm()
+        await waitUntil { if case .finished = model.state { true } else { false } }
+
+        for tracks in [[card(id: 1, hasUpdates: true)], [card(id: 1, hasUpdates: true), card(id: 2, lastEventDaysAgo: 5)]] {
+            let sut = InboxTracksNewsPane(summary: TrackThreadsSummary.build(tracks: tracks, now: now),
+                                          quietPress: model, onOpenThread: { _ in }, onAllThreads: {})
+            XCTAssertNoThrow(try sut.inspect().find(text: "Closed 1 of 2. timed out"))
+            XCTAssertNoThrow(try sut.inspect().find(button: "Try Again"))
+            XCTAssertThrowsError(try sut.inspect().find(button: "Stop Tracking Quiet Ones…"))
+        }
+
+        let sut = pane([card(id: 1, hasUpdates: true)])
+        XCTAssertThrowsError(try sut.inspect().find(InboxBulkPressButton.self), "an idle press shows nothing")
+
+        let leaving = InboxTracksNewsPane(summary: TrackThreadsSummary.build(tracks: [], now: now),
+                                          quietPress: model, onOpenThread: { _ in }, onAllThreads: {})
+        try leaving.inspect().vStack().callOnDisappear()
+        XCTAssertEqual(model.state, .idle)
+    }
+
     func testOpeningARowCallsOnOpenThreadWithItsID() throws {
         var opened: [Int] = []
         var allThreads = 0

@@ -370,11 +370,14 @@ struct ActionStripActionsView: View {
                                  row: Binding(get: { ideasRow }, set: openIdeasRow))
             }
             Spacer(minLength: 0)
-            if list == .ideas, vm.ideaBatch.olderCount > 0 {
-                InboxBulkPressButton(title: "Clear Old Ideas…", confirmTitle: Self.clearOldIdeasTitle,
-                                     model: vm.oldIdeasPress)
+            // The result stays once no old idea is left, until the owner
+            // leaves the Backlog.
+            if list == .ideas, vm.ideaBatch.olderCount > 0 || vm.oldIdeasPress.holdsResult {
+                InboxBulkPressButton(title: vm.ideaBatch.olderCount > 0 ? "Clear Old Ideas…" : nil,
+                                     confirmTitle: Self.clearOldIdeasTitle, model: vm.oldIdeasPress)
                     .controlSize(.small)
                     .fixedSize()
+                    .onDisappear { vm.oldIdeasPress.reset() }
             }
             InboxReactionCommandsButton { openAux(.reactionCommands) }
         }
