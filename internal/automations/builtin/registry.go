@@ -26,7 +26,8 @@ var recipeFS embed.FS
 // approval).
 type Slot string
 
-// The sync slots (automations.SyncSlots; SlotWaitingForMe is in waiting.go).
+// The sync slots (automations.SyncSlots; SlotWaitingForMe is in waiting.go,
+// SlotSlackToday in slacktoday.go).
 // SlotCustomTracks holds the watch recipes (Personal), no built-in.
 const (
 	SlotMorningBrief Slot = "morning_brief"
@@ -81,11 +82,11 @@ type Entry struct {
 	// reads; every entry listing slack.window sets it (an empty scope
 	// fails the call).
 	WindowScope db.WindowScope
-	Prompts    []PromptRef
-	Parameters []Parameter
-	Pipelines  []string // pipeline_runs names counted in Costs before the built-in's first run
-	Reads      []string // card copy
-	Sends      []string // card copy
+	Prompts     []PromptRef
+	Parameters  []Parameter
+	Pipelines   []string // pipeline_runs names counted in Costs before the built-in's first run
+	Reads       []string // card copy
+	Sends       []string // card copy
 	// Does is the card's steps in plain words, in order.
 	Does []string
 	// DefaultFolder is the slug of the Inbox folder the built-in's artifacts
@@ -216,6 +217,26 @@ var registry = []Entry{
 		Sends:         []string{"One Waiting for me list in your Inbox"},
 		DefaultFolder: RootFolder,
 		When:          func(*config.Config) string { return "After every sync, while attention detection is on" },
+		RunNow:        true,
+	},
+	{
+		ID:          SlackTodayID,
+		Name:        "Slack today",
+		Slot:        SlotSlackToday,
+		Recipe:      mustRecipe(SlackTodayID),
+		FeatureIDs:  []string{"slack-today"},
+		Primitives:  []string{automations.PrimitiveSlackWindow},
+		WindowScope: db.WindowScopeMemberChannels,
+		Prompts:     []PromptRef{{Name: "label", PromptID: prompts.InboxSlackToday}},
+		Reads:       []string{"Today's messages in the Slack channels you are a member of, except channels muted for AI"},
+		Does: []string{
+			"Reads the new messages in your channels since its last run, today only",
+			"Marks each line decided, asks you, needs someone or fyi, and leaves out what is addressed to you personally",
+			"Keeps one Slack today list in your Inbox, updated at most once an hour",
+		},
+		Sends:         []string{"One Slack today list in your Inbox"},
+		DefaultFolder: RootFolder,
+		When:          func(*config.Config) string { return "After a sync, at most once an hour" },
 		RunNow:        true,
 	},
 	{

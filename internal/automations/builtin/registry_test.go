@@ -22,6 +22,10 @@ import (
 
 var update = flag.Bool("update", false, "rewrite the testdata/show_*.json goldens")
 
+// llmPermissions are the llm:<tier> permissions a shipped recipe holds
+// besides its primitives' capabilities.
+var llmPermissions = map[string][]string{SlackTodayID: {"llm:light"}}
+
 func TestRegistry_ShippedRecipesParse(t *testing.T) {
 	ids := map[string]bool{}
 	for _, e := range All() {
@@ -41,7 +45,7 @@ func TestRegistry_ShippedRecipesParse(t *testing.T) {
 				!reflect.DeepEqual(r.Trigger.Event, want.Event) {
 				t.Errorf("trigger = %+v, want %+v", r.Trigger, want)
 			}
-			var want []string
+			want := slices.Clone(llmPermissions[e.ID])
 			for _, p := range e.Primitives {
 				want = append(want, automations.CapabilityForPrimitive(p))
 			}
@@ -179,33 +183,38 @@ func TestRegistry_ShowJSONGolden(t *testing.T) {
 	f := newFixture(t)
 	f.sync(t)
 	for _, e := range All() {
-		t.Run(e.ID, func(t *testing.T) {
-			card, err := Card(f.d, f.cfg, f.ws, e, f.rowOf(t, e.ID), f.clock.Now())
-			if err != nil {
-				t.Fatal(err)
-			}
-			got, err := json.MarshalIndent(card, "", "  ")
-			if err != nil {
-				t.Fatal(err)
-			}
-			got = append(got, '\n')
-			if want := fmt.Sprintf(`"run_now": %v`, e.RunNow); !bytes.Contains(got, []byte(want)) {
-				t.Errorf("card has no %s:\n%s", want, got)
-			}
-			path := filepath.Join("testdata", "show_"+strings.ReplaceAll(e.ID, "-", "_")+".json")
-			if *update {
-				if err := os.WriteFile(path, got, 0o644); err != nil {
-					t.Fatal(err)
-				}
-			}
-			want, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatalf("%v (run with -update)", err)
-			}
-			if !bytes.Equal(got, want) {
-				t.Errorf("card JSON differs from %s (run with -update):\n%s", path, got)
-			}
-		})
+		t.Run(e.ID, func(t *testing.T) { checkCardGolden(t, f, e) })
+	}
+}
+
+// checkCardGolden compares e's show JSON card with testdata/show_<id>.json
+// (-update rewrites it).
+func checkCardGolden(t *testing.T, f *fixture, e Entry) {
+	t.Helper()
+	card, err := Card(f.d, f.cfg, f.ws, e, f.rowOf(t, e.ID), f.clock.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := json.MarshalIndent(card, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = append(got, '\n')
+	if want := fmt.Sprintf(`"run_now": %v`, e.RunNow); !bytes.Contains(got, []byte(want)) {
+		t.Errorf("card has no %s:\n%s", want, got)
+	}
+	path := filepath.Join("testdata", "show_"+strings.ReplaceAll(e.ID, "-", "_")+".json")
+	if *update {
+		if err := os.WriteFile(path, got, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("%v (run with -update)", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Errorf("card JSON differs from %s (run with -update):\n%s", path, got)
 	}
 }
 
