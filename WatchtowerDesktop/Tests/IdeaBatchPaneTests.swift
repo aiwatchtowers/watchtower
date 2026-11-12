@@ -162,6 +162,29 @@ final class IdeaBatchPaneTests: XCTestCase {
         XCTAssertTrue(gate.admit(2, isWriting: false))
     }
 
+    /// The view's own gate: Keep tapped twice on one card hands one press
+    /// out; dismissing the error banner (a failed write) lets the next tap
+    /// through.
+    func testViewTakesOnePressPerCardAndDismissReleasesIt() throws {
+        let idea = try insert()
+        var presses: [IdeaBatchPress] = []
+        var view = IdeaBatchPane(
+            state: state(batchIDs: [idea.id], remaining: [idea]), isWriting: false,
+            errorMessage: "Could not save the verdict", loadFacts: { _ in nil },
+            onPress: { press, _ in presses.append(press) }, onNext: {}, onBacklog: {}, onDismissError: {})
+        view.gateOverride = IdeaBatchPressGate.Box()
+        let inspected = try view.inspect()
+
+        try inspected.find(button: "Keep").tap()
+        try inspected.find(button: "Keep").tap()
+        try inspected.find(button: "Drop").tap()
+        XCTAssertEqual(presses, [.keep])
+
+        try inspected.find(WriteErrorBanner.self).find(ViewType.Button.self).tap()
+        try inspected.find(button: "Keep").tap()
+        XCTAssertEqual(presses, [.keep, .keep])
+    }
+
     // MARK: - View
 
     func testShowsFirstRemainingWithFourButtonsKeepProminent() throws {

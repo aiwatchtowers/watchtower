@@ -24,7 +24,13 @@ struct IdeaBatchPane: View {
     let onBacklog: () -> Void
     let onDismissError: () -> Void
 
-    @State private var gate = IdeaBatchPressGate()
+    /// The press gate, held by reference: it is bookkeeping and never drawn,
+    /// so recording a press does not redraw the pane.
+    @State private var ownGate = IdeaBatchPressGate.Box()
+    /// A test's gate in place of the pane's own (an unhosted view keeps no
+    /// `@State` between taps).
+    var gateOverride: IdeaBatchPressGate.Box?
+    private var gate: IdeaBatchPressGate.Box { gateOverride ?? ownGate }
     @State private var facts: ShownFacts?
     @FocusState private var focused: Bool
 
@@ -57,7 +63,11 @@ struct IdeaBatchPane: View {
     var body: some View {
         VStack(spacing: 0) {
             if let errorMessage {
-                WriteErrorBanner(message: errorMessage, onClose: onDismissError)
+                // A dismissed failure leaves the card on screen: it can be pressed again.
+                WriteErrorBanner(message: errorMessage, onClose: {
+                    gate.value.release()
+                    onDismissError()
+                })
             }
             InboxCardColumn {
                 VStack(alignment: .leading, spacing: Spacing.large) {
@@ -87,13 +97,13 @@ struct IdeaBatchPane: View {
         .onAppear { focused = true }
         .onKeyPress(phases: .down) { handle($0) }
         // Another card is shown: it takes its own press.
-        .onChange(of: state.remaining.first?.id) { gate.release() }
+        .onChange(of: state.remaining.first?.id) { gate.value.release() }
         // A failed write leaves the card on screen: it can be pressed again.
         .onChange(of: errorMessage) { _, message in
-            if message != nil { gate.release() }
+            if message != nil { gate.value.release() }
         }
         .onChange(of: isWriting) { wasWriting, writing in
-            if wasWriting, !writing, errorMessage != nil { gate.release() }
+            if wasWriting, !writing, errorMessage != nil { gate.value.release() }
         }
     }
 
@@ -210,9 +220,7 @@ struct IdeaBatchPane: View {
                         Spacer(minLength: Spacing.regular)
                         Chip(text: "kept", color: Tone.status("green"))
                     }
-                    .padding(.vertical, Spacing.compact)
-                    .padding(.horizontal, Spacing.regular)
-                    .frame(minHeight: ListLayout.rowMinHeight)
+                    .kitRow(isSelected: false)
                 }
             }
         }
@@ -230,7 +238,7 @@ struct IdeaBatchPane: View {
     }
 
     private func dispatch(_ press: IdeaBatchPress, _ idea: Idea) {
-        guard gate.admit(idea.id, isWriting: isWriting) else { return }
+        guard gate.value.admit(idea.id, isWriting: isWriting) else { return }
         onPress(press, idea)
     }
 
@@ -256,6 +264,11 @@ struct IdeaBatchPane: View {
 /// is admitted while a verdict is writing.
 struct IdeaBatchPressGate: Equatable {
     private(set) var pressedID: Int?
+
+    /// The pane's reference to its gate.
+    final class Box {
+        var value = IdeaBatchPressGate()
+    }
 
     mutating func admit(_ ideaID: Int, isWriting: Bool) -> Bool {
         guard !isWriting, pressedID != ideaID else { return false }
