@@ -67,6 +67,25 @@ final class InboxBulkPressButtonTests: XCTestCase {
         XCTAssertThrowsError(try idle.inspect().find(ViewType.Text.self))
     }
 
+    /// A row's footer (the approved mockup): a partial or failed line in
+    /// the error tone with Try Again beside it, on one line; a success line
+    /// stays secondary with no Try Again.
+    func testInlineResultPutsTryAgainBesideTheError() async throws {
+        let partial = InboxBulkResult.partial(done: 12, of: 46, error: "database is locked")
+        let line = try XCTUnwrap(InboxBulkPressButton.resultLine(partial))
+        let failed = InboxBulkPressResult(model: await finishedModel(partial), inline: true)
+        let row = try failed.inspect().find(ViewType.HStack.self)
+        XCTAssertNoThrow(try row.find(text: line))
+        XCTAssertNoThrow(try row.find(button: "Try Again"))
+        XCTAssertEqual(try row.find(text: line).attributes().foregroundColor(), Tone.error)
+
+        let done = InboxBulkResult.done(count: 4, skipped: 2)
+        let success = InboxBulkPressResult(model: await finishedModel(done), inline: true)
+        let text = try success.inspect().find(text: try XCTUnwrap(InboxBulkPressButton.resultLine(done)))
+        XCTAssertNotEqual(try? text.attributes().foregroundColor(), Tone.error)
+        XCTAssertThrowsError(try success.inspect().find(button: "Try Again"))
+    }
+
     func testTryAgainCallsTheStoredPlan() async throws {
         var planCalls = 0
         let model = InboxBulkPressModel()

@@ -96,7 +96,16 @@ final class ArtifactRowHoverTests: XCTestCase {
         busy.state = .busy
         XCTAssertTrue(InboxRefHooks.accessibilityPresses(busy).isEmpty)
         let sender = InboxRowActionsContent(kind: .mailSender(address: "a@example.com", openEnabled: false))
-        XCTAssertEqual(InboxRefHooks.accessibilityPresses(sender).map(\.name), ["Mark All Done…", "Mute"])
+        XCTAssertEqual(InboxRefHooks.accessibilityPresses(sender, hasBulk: true).map(\.name),
+                       ["Mark All Done…", "Mute"])
+        // No bulk press: no Mark All Done… to name (the row draws none).
+        XCTAssertEqual(InboxRefHooks.accessibilityPresses(sender).map(\.name), ["Mute"])
+        let older = InboxRowActionsContent(kind: .waitingOlder)
+        XCTAssertTrue(InboxRefHooks.accessibilityPresses(older).isEmpty)
+        XCTAssertEqual(InboxRefHooks.accessibilityPresses(older, hasBulk: true).map(\.name), ["Mark All Done…"])
+        let opens = InboxRowActionsContent(kind: .mailSender(address: "a@example.com", openEnabled: true))
+        XCTAssertEqual(InboxRefHooks.accessibilityPresses(opens, hasBulk: true).map(\.name),
+                       ["Open", "Mark All Done…", "Mute"])
 
         var pressed: [InboxRowPress] = []
         let hooks = InboxRefHooks.make(
@@ -135,9 +144,15 @@ final class ArtifactRowHoverTests: XCTestCase {
         XCTAssertEqual(try asking.opacity(), 1, "asking: shown without hover")
         XCTAssertNoThrow(try asking.find(button: "Mark 3 Done"))
         XCTAssertNoThrow(try asking.find(button: "Cancel"))
+        XCTAssertNoThrow(try asking.find(text: "3 open from this sender"))
+        XCTAssertThrowsError(try asking.find(button: "Open"), "the question alone while it asks")
+        XCTAssertThrowsError(try asking.find(button: "Mute"), "the question alone while it asks")
 
         model.cancel()
-        XCTAssertEqual(try overlay().opacity(), 0, "answered: back to hover or focus")
+        let answered = try overlay()
+        XCTAssertEqual(try answered.opacity(), 0, "answered: back to hover or focus")
+        XCTAssertNoThrow(try answered.find(button: "Mute"), "the usual buttons are back")
+        XCTAssertNoThrow(try answered.find(button: "Mark All Done…"))
     }
 
     func testPreviewModeUnchanged() throws {

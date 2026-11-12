@@ -209,6 +209,13 @@ package struct InboxRowActionsContent: Equatable {
         }
     }
 
+    /// A sender row's Open can be pressed (its newest mail has a link the
+    /// card rules open); false for every other kind.
+    package var senderOpenEnabled: Bool {
+        if case let .mailSender(_, openEnabled) = kind { return openEnabled }
+        return false
+    }
+
     /// A sender or Older row's presses, in the order drawn; empty for every
     /// other kind (drawn by their own cases). Mark All Done… is a bulk
     /// press (`InboxBulkCenter`), never one of the row's own writes.
@@ -242,8 +249,15 @@ package struct InboxRowActionsContent: Equatable {
     }
 
     package static func senderLink(_ permalink: String?, navScreens: Set<String>) -> SenderLink {
-        guard let permalink, !permalink.isEmpty, let url = URL(string: permalink) else { return .missing }
+        guard let url = senderURL(permalink) else { return .missing }
         return InboxCardLinkPolicy.permits(url, navScreens: navScreens) ? .opens : .refused
+    }
+
+    /// The one parser of a sender's newest link, for Open's state and its
+    /// press alike: nil for no link, an empty one or one that is not a URL.
+    package static func senderURL(_ permalink: String?) -> URL? {
+        guard let permalink, !permalink.isEmpty else { return nil }
+        return URL(string: permalink)
     }
 
     /// The footer's **Retry** under a failed press. A proposal's repeats

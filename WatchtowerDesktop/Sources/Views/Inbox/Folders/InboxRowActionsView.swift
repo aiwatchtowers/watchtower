@@ -84,9 +84,22 @@ struct InboxRowActionsView: View {
                     .disabled(content.isOff(button.press))
             }
         case .mailSender, .waitingOlder:
-            ForEach(Array(content.bulkRowPresses.enumerated()), id: \.offset) { _, press in
-                bulkRowButton(press)
+            if let bulk {
+                InboxBulkRowButtons(model: bulk, isSender: isSender) { bulkRowButtons }
+            } else {
+                bulkRowButtons
             }
+        }
+    }
+
+    private var isSender: Bool {
+        if case .mailSender = content.kind { return true }
+        return false
+    }
+
+    private var bulkRowButtons: some View {
+        ForEach(Array(content.bulkRowPresses.enumerated()), id: \.offset) { _, press in
+            bulkRowButton(press)
         }
     }
 
@@ -162,6 +175,32 @@ struct InboxRowActionsView: View {
     }
 }
 
+/// A sender or Older row's buttons, observing its **Mark All Done…** press:
+/// while it asks, the row shows only the question — a sender's "<N> open
+/// from this sender", then **Cancel** and the prominent "Mark N Done" (no
+/// Open or Mute meanwhile, as the approved mockup) — and its usual buttons
+/// (`idle`) otherwise.
+struct InboxBulkRowButtons<Idle: View>: View {
+    @ObservedObject var model: InboxBulkPressModel
+    let isSender: Bool
+    @ViewBuilder let idle: () -> Idle
+
+    var body: some View {
+        if case let .confirming(plan) = model.state {
+            if isSender {
+                Text("\(plan.count) open from this sender")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            InboxBulkPressButton(
+                title: "Mark All Done…", confirmTitle: { "Mark \($0) Done" }, model: model, style: .inline)
+        } else {
+            idle()
+        }
+    }
+}
+
 /// What sits under a row with a `ref`: a proposal's own summary, the
 /// missing-CLI line on a row with a press that needs the CLI, a failed
 /// press's error with **Retry**, the Reply composer (or its refusal), or
@@ -220,7 +259,7 @@ struct InboxRowActionsFooter: View {
                 EmptyView()
             }
             if let bulk {
-                InboxBulkPressResult(model: bulk)
+                InboxBulkPressResult(model: bulk, inline: true)
             }
         }
         .controlSize(.small)

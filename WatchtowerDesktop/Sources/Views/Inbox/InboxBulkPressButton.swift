@@ -134,12 +134,30 @@ struct InboxBulkPressButton: View {
 }
 
 /// A finished bulk press's result line and, after a partial or failed
-/// apply, **Try Again** (a new dry run); nothing otherwise.
+/// apply, **Try Again** (a new dry run); nothing otherwise. `inline` (a
+/// row's footer, the approved mockup): a partial or failed line in the
+/// error tone with **Try Again** on the same line; a success line stays
+/// secondary. The header style (Approve All) keeps its secondary line with
+/// Try Again under it.
 struct InboxBulkPressResult: View {
     @ObservedObject var model: InboxBulkPressModel
+    var inline = false
 
     var body: some View {
-        if case .finished(let result) = model.state {
+        if inline, case .finished(let result) = model.state, InboxBulkPressButton.offersTryAgain(result) {
+            HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
+                if let line = InboxBulkPressButton.resultLine(result) {
+                    Text(line)
+                        .font(.caption)
+                        .foregroundStyle(Tone.error)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
+                Button("Try Again") { model.begin() }
+                    .buttonStyle(.kitSecondary)
+                    .controlSize(.small)
+            }
+        } else if case .finished(let result) = model.state {
             if let line = InboxBulkPressButton.resultLine(result) {
                 Text(line)
                     .font(.caption)

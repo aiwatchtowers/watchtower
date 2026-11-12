@@ -10,14 +10,6 @@ package enum InboxBulkKey: Hashable, Sendable {
     case olderPeople
 }
 
-/// The **Mark All Done…** presses of the Inbox's sender and Older rows: one
-/// `InboxBulkPressModel` per key, kept while the app runs (on the strip,
-/// AppState-owned), so a press under way or its result survives leaving the
-/// pane. A press plans with a dry run (`InboxBulkCLI.planSender` /
-/// `planOlderPeople(days: 7)`) and closes exactly the ids it named; Try
-/// Again is a new dry run. `onFinished` (the strip's `refresh()`) runs after
-/// every finished press — an apply's result, an empty plan (the pressed row
-/// was stale), a failed dry run — so the rows redraw with its result line.
 /// The bulk presses under way or waiting for the owner
 /// (`InboxBulkPressModel.pinsActions`), by canonical key. Observable, so a
 /// row that reads it while drawing redraws when its press starts or ends.
@@ -32,6 +24,14 @@ package final class InboxBulkPins {
     }
 }
 
+/// The **Mark All Done…** presses of the Inbox's sender and Older rows: one
+/// `InboxBulkPressModel` per key, kept while the app runs (on the strip,
+/// AppState-owned), so a press under way or its result survives leaving the
+/// pane. A press plans with a dry run (`InboxBulkCLI.planSender` /
+/// `planOlderPeople(days: 7)`) and closes exactly the ids it named; Try
+/// Again is a new dry run. `onFinished` (the strip's `refresh()`) runs after
+/// every finished press — an apply's result, an empty plan (the pressed row
+/// was stale), a failed dry run — so the rows redraw with its result line.
 @MainActor
 package final class InboxBulkCenter: ObservableObject {
     /// The days an item waits before it is in Older (Go's `db.WaitingOlderAfter`).

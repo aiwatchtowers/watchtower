@@ -145,7 +145,7 @@ Owner verbs, refused under every agent marker before anything is read (AGENT-07 
 - The Messages stand-in still lists mail while Waiting for me's run has failed (its badge term stays people only).
 - An owner's copy of Waiting for me written before phase 2 now lists people only: mail moved to `mail_items` and Mail waiting.
 - Older's note count comes from the last run; the Desktop's own read decides only whether the row shows.
-- Waiting for me's list-row preview still comes from the capped feed: a page full of mail can show "Nothing waits on you" while the pill shows N.
+- Waiting for me's list-row preview and the Morning brief's **Waiting on you** still come from the capped feed (200 open items, mail included): a page full of mail can show "Nothing waits on you" or leave Waiting on you empty while people wait and the pill shows N.
 - A "Closed N of M" line clears when its row leaves a read.
 - `mail_items` rows lose their text at full load (200 rows share 40 KiB); the shipped recipes read only `senders` for mail.
 - Closing the **Mute Senders…** popover while a press runs loses its "Muted N of M" line; the writes still finish.

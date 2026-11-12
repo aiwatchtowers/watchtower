@@ -76,10 +76,10 @@ struct InboxRefHooks {
             accessibilityActions: { ref in
                 let inbox = inboxRef(ref)
                 guard let content = content(inbox, .inbox) else { return [] }
-                return accessibilityPresses(content).map { name, press in
+                return accessibilityPresses(content, hasBulk: bulk(inbox) != nil).map { name, press in
                     ArtifactAccessibilityAction(name: name) {
                         // Mark All Done… is its bulk press: the inline confirmation asks.
-                        if press == .markAllDone, let model = bulk(inbox) { model.begin() } else { onPress(inbox, press) }
+                        if press == .markAllDone { bulk(inbox)?.begin() } else { onPress(inbox, press) }
                     }
                 }
             },
@@ -93,7 +93,9 @@ struct InboxRefHooks {
     /// labels: hidden until hover or focus, they leave the accessibility
     /// tree. A menu's choices are actions of their own; Hand to Agent…
     /// (its picker hangs from the buttons) is left out.
-    static func accessibilityPresses(_ content: InboxRowActionsContent) -> [(name: String, press: InboxRowPress)] {
+    static func accessibilityPresses(
+        _ content: InboxRowActionsContent, hasBulk: Bool = false
+    ) -> [(name: String, press: InboxRowPress)] {
         guard !content.isBusy, !content.isPreview else { return [] }
         let all: [(String, InboxRowPress)]
         switch content.kind {
@@ -112,10 +114,17 @@ struct InboxRefHooks {
             all = [("Done", .done), ("Snooze 1h", .snoozeHour)]
         case let .action(_, buttons):
             all = buttons.map { (actionName($0), $0.press) }
-        case let .mailSender(_, openEnabled):
-            all = (openEnabled ? [("Open", .open)] : []) + [("Mark All Done…", .markAllDone), ("Mute", .mute)]
-        case .waitingOlder:
-            all = [("Mark All Done…", .markAllDone)]
+        case .mailSender, .waitingOlder:
+            // The drawn row's own list: Open only when enabled, Mark All
+            // Done… only with its bulk press (the row draws none without).
+            all = content.bulkRowPresses.compactMap { press in
+                switch press {
+                case .open: content.senderOpenEnabled ? ("Open", .open) : nil
+                case .markAllDone: hasBulk ? ("Mark All Done…", .markAllDone) : nil
+                case .mute: ("Mute", .mute)
+                default: nil
+                }
+            }
         }
         return all.filter { !content.isOff($0.1) }.map { (name: $0.0, press: $0.1) }
     }
@@ -469,7 +478,7 @@ struct InboxRowActionHandler {
         switch press {
         case .open:
             let ref = InboxRef(kind: .mailSender, key: address)
-            if let link = vm.folderMenu.snapshot.refState.senderLinks[ref].flatMap(InboxMessagePane.link),
+            if let link = InboxRowActionsContent.senderURL(vm.folderMenu.snapshot.refState.senderLinks[ref]),
                InboxCardLinkPolicy.permits(link, navScreens: navScreens) {
                 onCommand(.openLink(link))
             }
