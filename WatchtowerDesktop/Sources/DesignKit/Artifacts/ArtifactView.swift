@@ -212,9 +212,18 @@ struct ArtifactListView: View {
 public enum ArtifactRowChrome {
     /// In `.inbox` the actions sit over the row's trailing edge and show
     /// while the pointer or the keyboard is on the row; every other mode
-    /// keeps them inline, always shown.
-    public static func showsActions(isHovered: Bool, isFocused: Bool, mode: ArtifactRenderMode) -> Bool {
-        mode != .inbox || isHovered || isFocused
+    /// keeps them inline, always shown. A `pinned` row (Waiting for me's
+    /// Older note row, whose **Mark All Done…** is its point and which has
+    /// no age chip) shows them always.
+    public static func showsActions(
+        isHovered: Bool, isFocused: Bool, mode: ArtifactRenderMode, pinned: Bool = false
+    ) -> Bool {
+        mode != .inbox || pinned || isHovered || isFocused
+    }
+
+    /// The row keeps its actions shown (`showsActions`'s `pinned`).
+    public static func pinsActions(_ ref: ArtifactRef?) -> Bool {
+        ref?.kind == .waitingOlder
     }
 
     /// The `.inbox` row's actions overlay.
@@ -275,7 +284,8 @@ struct ArtifactListRowView: View {
     /// keeps the badge by the title and the actions inline.
     @ViewBuilder private var line: some View {
         if mode == .inbox {
-            let shows = ArtifactRowChrome.showsActions(isHovered: isHovered, isFocused: isFocused, mode: mode)
+            let shows = ArtifactRowChrome.showsActions(
+                isHovered: isHovered, isFocused: isFocused, mode: mode, pinned: ArtifactRowChrome.pinsActions(row.ref))
             HStack(alignment: .center, spacing: Spacing.regular) {
                 dot
                 texts(badgeInline: false)

@@ -59,6 +59,11 @@ final class ArtifactRowHoverTests: XCTestCase {
         XCTAssertFalse(ArtifactRowChrome.showsActions(isHovered: false, isFocused: false, mode: .inbox))
         XCTAssertTrue(ArtifactRowChrome.showsActions(isHovered: true, isFocused: false, mode: .inbox))
         XCTAssertTrue(ArtifactRowChrome.showsActions(isHovered: false, isFocused: true, mode: .inbox))
+        // Waiting for me's Older note row keeps its Mark All Done… shown.
+        XCTAssertTrue(ArtifactRowChrome.showsActions(isHovered: false, isFocused: false, mode: .inbox, pinned: true))
+        XCTAssertTrue(ArtifactRowChrome.pinsActions(ArtifactRef(kind: .waitingOlder, key: "people")))
+        XCTAssertFalse(ArtifactRowChrome.pinsActions(ref))
+        XCTAssertFalse(ArtifactRowChrome.pinsActions(nil))
 
         let hidden = try view(focused: nil).inspect()
             .find(viewWithAccessibilityIdentifier: ArtifactRowChrome.actionsIdentifier)
