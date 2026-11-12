@@ -786,6 +786,26 @@ final class RelayAccountCenterTests: XCTestCase {
         XCTAssertEqual(center.purchase, .ready(product), "another account's row is not the press's")
     }
 
+    /// The token is the account id: a row StoreKit already held unfinished before the press carries it too, and a real
+    /// cancel then stays a cancel when that older row comes round again.
+    func testARowHeldBeforeTheCancelledBuyIsNotThePress() async throws {
+        let product = RelayProduct(id: "relay", displayPrice: "$4.99")
+        let (bed, token) = try await registeredBed()
+        bed.store.productResult = product
+        let center = await started(bed)
+        try await bed.until("the updates task") { bed.store.updatesCalls == 1 }
+        let earlier = bed.row(id: 4, original: "4000", token: token)
+        bed.store.unfinishedResult = [earlier]
+        await center.loadProduct()
+        bed.store.purchaseResult = .cancelled
+        await center.buy()
+
+        bed.fake.failNext("submitTransaction", with: .invalidTransaction)
+        bed.store.emit(earlier)
+        try await bed.until("the earlier row's submit") { bed.submitted.contains(earlier.jws) }
+        XCTAssertEqual(center.purchase, .ready(product), "an earlier row is not the cancelled press's")
+    }
+
     private static func frame(_ center: RelayAccountCenter) -> RelaySubscriptionModel {
         RelaySubscriptionModel(
             purchase: center.purchase, unconfirmed: center.unconfirmed, phase: center.phase,

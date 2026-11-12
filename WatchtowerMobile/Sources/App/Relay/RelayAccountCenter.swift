@@ -205,10 +205,16 @@ final class RelayAccountCenter {
     @ObservationIgnored private var settledIDs: Set<UInt64> = []
     /// The press `retryAccount()` repeats.
     @ObservationIgnored private var lastPress = Press.buy
-    /// The token of a Buy StoreKit answered as cancelled, until the next press. Apple can still finish that purchase (an
-    /// interrupted one: a sign-in or a dialog after the payment sheet), and its row then comes through `Transaction.updates`
-    /// or the sweep: the press's own, so it is confirmed as the press, past the read and the claim (`lateRow`).
-    @ObservationIgnored private var cancelledBuyToken: UUID?
+    /// A Buy StoreKit answered as cancelled, until the next press. Apple can still finish that purchase (an interrupted
+    /// one: a sign-in or a dialog after the payment sheet), and its row then comes through `Transaction.updates` or the
+    /// sweep: the press's own, so it is confirmed as the press, past the read and the claim (`isLateRow`). The token is the
+    /// account id, the same on every purchase, so the rows StoreKit held unfinished before the press are not its row.
+    private struct CancelledBuy {
+        let token: UUID
+        let earlierRows: Set<UInt64>
+    }
+
+    @ObservationIgnored private var cancelledBuy: CancelledBuy?
     /// Only the newest read writes: a slower older answer, or one a control overtook, is dropped.
     @ObservationIgnored private var readGeneration = 0
     /// When the last answered account read was applied: a slot check right after it reads nothing.
@@ -416,9 +422,10 @@ final class RelayAccountCenter {
     func buy() async {
         guard !pressRunning else { return }
         lastPress = .buy
-        cancelledBuyToken = nil
+        cancelledBuy = nil
         purchase = .buying
         guard let token = await pressAccountID() else { return }
+        let earlierRows = Set(await store.unfinished().map(\.id))
         do {
             switch try await store.purchase(accountToken: token) {
             case .purchased(let transaction):
@@ -427,7 +434,7 @@ final class RelayAccountCenter {
             case .pending:
                 purchase = .pending
             case .cancelled:
-                cancelledBuyToken = token
+                cancelledBuy = CancelledBuy(token: token, earlierRows: earlierRows)
                 purchase = product.map(PurchaseState.ready) ?? .idle
             case .unverified:
                 purchase = .refused
@@ -445,7 +452,7 @@ final class RelayAccountCenter {
         guard !pressRunning else { return }
         let prior = purchase
         lastPress = .restore
-        cancelledBuyToken = nil
+        cancelledBuy = nil
         purchase = .restoring
         guard await pressAccountID() != nil else { return }
         do {
@@ -488,16 +495,17 @@ final class RelayAccountCenter {
         await confirm(rows, tracksCharge: true)
     }
 
-    /// The row of a Buy StoreKit called cancelled, come after all (`cancelledBuyToken`). Not while another press runs.
+    /// The row of a Buy StoreKit called cancelled, come after all (`cancelledBuy`): its token, not a renewal, and not a row
+    /// StoreKit held before the press. Not while another press runs.
     private func isLateRow(_ row: RelayTransaction) -> Bool {
-        guard let cancelledBuyToken, !pressRunning, !row.isRenewal, isCurrent(row) else { return false }
-        return row.appAccountToken == cancelledBuyToken
+        guard let cancelledBuy, !pressRunning, !row.isRenewal, isCurrent(row) else { return false }
+        return row.appAccountToken == cancelledBuy.token && !cancelledBuy.earlierRows.contains(row.id)
     }
 
     /// The cancelled Buy goes on as a press with its late row: **Confirming with Relay…**, then the press's answer.
     private func confirmLateRow(_ row: RelayTransaction) async {
         Self.logger.notice("relay account: a cancelled purchase came through after all")
-        cancelledBuyToken = nil
+        cancelledBuy = nil
         purchase = .confirming
         await confirm([row], tracksCharge: true)
     }
