@@ -360,6 +360,59 @@ final class InboxEntrySelectionTests: XCTestCase {
         XCTAssertNil(other)
     }
 
+    /// Routes can overlap: while a second announced route has not opened
+    /// yet, the arrival still yields after the first one ends.
+    func testArrivalYieldsWhileOverlappingRoutesRun() async throws {
+        let picks = try await seedPicks()
+        let vm = makeVM()
+        await vm.refresh()
+
+        vm.beginRoute()
+        vm.beginRoute()
+        await vm.open(folder: nil, select: .card(.output(picks.root[0])))
+        try await pool.write { db in
+            try db.execute(sql: "UPDATE automation_outputs SET read_at = NULL")
+        }
+        await vm.refresh()
+        await vm.ownerArrived()
+        let first = try await outputReadAt(picks.root[0])
+        XCTAssertNil(first, "the second route is still on its way")
+
+        await vm.open(folder: nil, select: .card(.output(picks.root[1])))
+        let second = try await outputReadAt(picks.root[1])
+        XCTAssertNotNil(second, "the second route's card is opened")
+        let stillFirst = try await outputReadAt(picks.root[0])
+        XCTAssertNil(stillFirst)
+
+        // Both routes are over: the owner's next arrival marks its card.
+        try await pool.write { db in
+            try db.execute(sql: "UPDATE automation_outputs SET read_at = NULL")
+        }
+        await vm.refresh()
+        await vm.ownerArrived()
+        let after = try await outputReadAt(picks.root[1])
+        XCTAssertNotNil(after, "no route left pending")
+    }
+
+    /// A route to a day the read does not hold opens today's brief, which
+    /// stays unread: the owner clicked for another day.
+    func testRouteToAnUnshownDayMarksNothing() async throws {
+        try await seed()
+        let vm = makeVM()
+        await vm.refresh()
+
+        await vm.open(folder: nil, select: .card(.day(day(-5))))
+
+        XCTAssertEqual(vm.entrySelection, "day:\(today)")
+        XCTAssertNil(vm.briefDate)
+        let mark = try await readAt(today)
+        XCTAssertNil(mark, "today's brief was not the day asked for")
+
+        await vm.open(folder: nil, select: .card(.day(today)))
+        let opened = try await readAt(today)
+        XCTAssertNotNil(opened, "a route to today marks today")
+    }
+
     func testOpenBriefHistoryWithoutABriefOpensNothing() async throws {
         // No owner and nothing written: the root lists no Morning brief.
         try await pool.write { db in _ = try InboxFolderFixtures.seed(db) }

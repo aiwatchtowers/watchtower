@@ -550,18 +550,35 @@ package final class ActionStripViewModel {
 
     // MARK: - Routes
 
+    /// Routes announced by `beginRoute` whose `open` has not started yet.
+    private var announcedRoutes = 0
+    /// `open` calls running now.
+    private var runningRoutes = 0
     /// A route into the Inbox is on its way (`beginRoute`) or running
-    /// (`open`): the owner's arrival yields to it.
-    private var routePending = false
+    /// (`open`) — routes may overlap: the owner's arrival yields while any is.
+    private var routePending: Bool { announcedRoutes + runningRoutes > 0 }
     /// Bumped by each route, so an arrival that waited sees one started.
     private var routeGeneration = 0
 
     /// A route into the Inbox starts (AppState, before it shows the Inbox,
     /// so the view's arrival sees it): the arrival marks nothing until
-    /// `open` has opened the route's card. Ended by `open`.
+    /// `open` has opened the route's card. Each call is taken up by one
+    /// `open`.
     package func beginRoute() {
-        routePending = true
+        announcedRoutes += 1
         routeGeneration += 1
+    }
+
+    /// `open` starts: it takes up one announced route (an `open` with none
+    /// announced counts on its own) and runs until `endOpen`.
+    private func startOpen() {
+        if announcedRoutes > 0 { announcedRoutes -= 1 }
+        runningRoutes += 1
+        routeGeneration += 1
+    }
+
+    private func endOpen() {
+        runningRoutes -= 1
     }
 
     // MARK: - The Morning brief's day
@@ -585,8 +602,9 @@ package final class ActionStripViewModel {
     /// The owner picked `date` (History, the stepper, a route to a day):
     /// the root's Morning brief entry opens on that day and its briefing
     /// is marked read when unread (`select`). A date with neither a
-    /// briefing nor a plan in the read opens today. Nothing is selected
-    /// while the root lists no Morning brief.
+    /// briefing nor a plan in the read opens today with no read mark — the
+    /// owner asked for another day. Nothing is selected while the root
+    /// lists no Morning brief.
     package func showBriefDay(_ date: String) async {
         let today = today
         let held = feed.days.contains { $0.date == date && !$0.isEmpty }
@@ -599,7 +617,9 @@ package final class ActionStripViewModel {
             briefDate = nil
             return
         }
-        await select(.day(briefDate ?? today))
+        let shown = briefDate ?? today
+        guard shown == date else { return }
+        await select(.day(shown))
     }
 
     /// The stepper's ‹ (older) or › (newer): the next day with a brief or
@@ -864,8 +884,8 @@ package final class ActionStripViewModel {
     /// route's folder is not remembered (`inbox.folder` keeps the owner's
     /// own pick).
     package func open(folder: Int64?, select entry: InboxRoute.Entry?) async {
-        beginRoute()
-        defer { routePending = false }
+        startOpen()
+        defer { endOpen() }
         await refresh()
         closeLegacy()
         entrySelection = nil

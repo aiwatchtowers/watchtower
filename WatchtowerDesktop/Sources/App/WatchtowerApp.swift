@@ -188,8 +188,9 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
         case "daily_summary":
             appState?.selectedDestination = .digests
         case "agent_action":
-            // A proposal from a workbench terminal: its card is in Inbox → Actions.
-            appState?.selectedDestination = .inbox
+            // A proposal from a workbench terminal: its card is in the Inbox's
+            // Needs approval, opened as a route so the arrival yields to it.
+            appState?.openNeedsApproval()
         case "plan_usage":
             UserDefaults.standard.set(UsageView.Tab.plan.rawValue, forKey: UsageView.selectedTabKey)
             appState?.selectedDestination = .usage

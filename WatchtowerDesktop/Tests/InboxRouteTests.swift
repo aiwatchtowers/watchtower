@@ -1,3 +1,4 @@
+import UserNotifications
 import XCTest
 import GRDB
 import WatchtowerCore
@@ -416,5 +417,28 @@ final class InboxRouteTests: XCTestCase {
 
         await state.openBuiltinInInbox(automationID: automation + 1, defaultFolder: "inbox")?.value
         assertLanding(state, .root, "the root")
+    }
+
+    /// A proposal push's click opens Needs approval as a route: the owner's
+    /// arrival yields to it, so the brief on screen before stays unread.
+    func testProposalPushOpensNeedsApprovalAsARoute() async throws {
+        let ids = try await seedFolders()
+        try await manager.dbPool.write { db in try TestDatabase.insertBriefing(db, date: Self.today) }
+        let state = appState()
+        let vm = try XCTUnwrap(state.actionStripViewModel)
+        await vm.refresh()
+        XCTAssertEqual(vm.entrySelection, "day:\(Self.today)")
+
+        await NotificationDelegate.route(
+            actionID: UNNotificationDefaultActionIdentifier, userInfo: ["type": "agent_action"],
+            appState: state, forwarded: false)
+        await vm.ownerArrived()
+        await settle(state, Landing(folder: ids.approvals))
+
+        assertLanding(state, Landing(folder: ids.approvals), "Needs approval")
+        let mark = try await manager.dbPool.read { db in
+            try String.fetchOne(db, sql: "SELECT read_at FROM briefings")
+        }
+        XCTAssertNil(mark, "the arrival yielded to the route")
     }
 }
