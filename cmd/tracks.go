@@ -702,7 +702,7 @@ func parseTrackIDList(raw string) ([]int, error) {
 	return ids, nil
 }
 
-// listQuietTracks is the dry run: the active tracks quiet for days days
+// listQuietTracks is the dry run: the active tracks quiet for the given days
 // (tracks.QuietTrackIDs). It writes nothing.
 func listQuietTracks(cmd *cobra.Command, days int) error {
 	database, err := openTracksDB()

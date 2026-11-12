@@ -62,7 +62,7 @@ func IsQuiet(in NewsInput, now time.Time, quietDays int) bool {
 }
 
 // QuietTrackIDs returns, in rows' order, the ids of the tracks that are quiet
-// for days days (IsQuiet) — what `tracks dismiss --quiet-days N --dry-run`
+// for the given number of days (IsQuiet) — what `tracks dismiss --quiet-days N --dry-run`
 // lists.
 func QuietTrackIDs(rows []db.TrackNewsRow, now time.Time, days int) []int {
 	ids := []int{}
