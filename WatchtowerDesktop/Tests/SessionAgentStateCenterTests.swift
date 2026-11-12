@@ -11,32 +11,14 @@ import WatchtowerTestSupport
 private final class ReadLog: @unchecked Sendable {
     private let lock = NSLock()
     private var asked: [[Int64]] = []
-    private var waiters: [(met: @Sendable ([[Int64]]) -> Bool, continuation: CheckedContinuation<Void, Never>)] = []
     var fail = false
 
     var reads: [[Int64]] { lock.withLock { asked } }
 
     func record(_ ids: [Int64]) throws {
-        let ready = try lock.withLock {
+        try lock.withLock {
             asked.append(ids)
-            let asked = asked
-            let ready = waiters.filter { $0.met(asked) }.map(\.continuation)
-            waiters.removeAll { $0.met(asked) }
             if fail { throw CancellationError() }
-            return ready
-        }
-        ready.forEach { $0.resume() }
-    }
-
-    /// Returns once the reads started so far satisfy `met`.
-    func until(_ met: @escaping @Sendable ([[Int64]]) -> Bool) async {
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            let now = lock.withLock {
-                if met(asked) { return true }
-                waiters.append((met, continuation))
-                return false
-            }
-            if now { continuation.resume() }
         }
     }
 }
@@ -61,7 +43,11 @@ private final class LoopTicker {
         let mine = generation
         await withTaskCancellationHandler {
             await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                if Task.isCancelled { return continuation.resume() }
+                if Task.isCancelled {
+                    // Cancelled before it parked: still a sleep its cancel ended.
+                    sleepCancelled()
+                    return continuation.resume()
+                }
                 parked = continuation
                 arrivals.forEach { $0.resume() }
                 arrivals = []
@@ -74,8 +60,12 @@ private final class LoopTicker {
     private func cancel(_ sleep: Int) {
         guard sleep == generation, let continuation = parked else { return }
         parked = nil
-        cancelled += 1
         continuation.resume()
+        sleepCancelled()
+    }
+
+    private func sleepCancelled() {
+        cancelled += 1
         cancelWaiters.forEach { $0.resume() }
         cancelWaiters = []
     }
@@ -699,16 +689,21 @@ final class SessionAgentStateCenterTests: XCTestCase {
         }
         let center = try XCTUnwrap(appState.sessionAgentStateCenter)
         center.isAppActive = { false }
+        let ticker = LoopTicker()
+        center.sleep = ticker.sleep
         let vm = try XCTUnwrap(appState.workbenchesViewModel)
         XCTAssertTrue(vm.agentStates === center, "the VM reads the AppState-owned center")
 
         appState.selectedDestination = .workbench
         let row = try await session()
         appState.selectedDestination = .inbox
-        // Written before the start: the loop's first read, at once, is the
-        // one that publishes it — no wait for a later tick.
-        try hookWrites(row.id, "waiting", at: 1)
         appState.terminalCenter.start(row, fresh: true)
+        // The loop's first read has run and found nothing yet; the state is
+        // written after it, so a later tick of the poll is what reads it.
+        await ticker.untilParked()
+        XCTAssertNotEqual(center.statuses[row.id]?.state, .live(.stopped))
+        try hookWrites(row.id, "waiting", at: 1)
+        await ticker.tick()
         // Published with the Workbench tab not shown.
         await untilObserved { center.statuses[row.id]?.state == .live(.stopped) }
         XCTAssertEqual(sessionNotifier.posted.map(\.sessionID), [row.id], "announced with the tab not shown")

@@ -134,9 +134,8 @@ final class CodeFilesCenterRootTests: XCTestCase {
         dirty.keepMine()
         center.flushAll()
         await center.flushEverything()
-        // An autosave left scheduled would write here: it ends (cancelled,
-        // or after saving) before the check.
-        await dirty.autosaveTask?.value
+        // An autosave left scheduled would write later: none is.
+        XCTAssertNil(dirty.autosaveTask, "no autosave is left scheduled")
         XCTAssertFalse(FileManager.default.fileExists(atPath: worktreeA.path), "no folder was recreated")
 
         // The folder coming back (a worktree added at the same path) does

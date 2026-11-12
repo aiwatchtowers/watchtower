@@ -112,7 +112,11 @@ private final class LoopClock {
         let id = UUID()
         await withTaskCancellationHandler {
             await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                if Task.isCancelled { return continuation.resume() }
+                if Task.isCancelled {
+                    // Cancelled before it parked: still a sleep its cancel ended.
+                    sleepCancelled()
+                    return continuation.resume()
+                }
                 parked[id] = (interval, continuation)
                 let ready = arrivals.filter { $0.interval == interval }
                 arrivals.removeAll { $0.interval == interval }
@@ -125,8 +129,12 @@ private final class LoopClock {
 
     private func cancel(_ id: UUID) {
         guard let sleeper = parked.removeValue(forKey: id) else { return }
-        cancelledSleeps += 1
         sleeper.continuation.resume()
+        sleepCancelled()
+    }
+
+    private func sleepCancelled() {
+        cancelledSleeps += 1
         cancelWaiters.forEach { $0.resume() }
         cancelWaiters = []
     }
@@ -485,9 +493,14 @@ final class SessionReportCenterTests: XCTestCase {
         await runner.untilCalls(3)
 
         center.hide(session: 9)
+        reads = agents.reads.count
         agents.states[9] = .live(.working)
-        // Hidden: the follow was ended, so the change is not even read.
+        // The change hops to the main actor before it is followed; a turn
+        // queued after that hop runs once it has (the main queue is FIFO).
+        await Task { @MainActor in }.value
         await center.runsSettled()
+        // Hidden: the follow was ended, so the change is not even read.
+        XCTAssertEqual(agents.reads.count, reads, "a hidden session's change is not read")
         XCTAssertEqual(runner.invocations.count, 3, "a hidden session's change reruns nothing")
     }
 

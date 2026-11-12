@@ -402,6 +402,35 @@ final class DBLockMetricsTests: XCTestCase {
         XCTAssertEqual(event["hold_ms"] as? Int, 60, "the first write's wait is not counted again as hold")
     }
 
+    /// A trigger's body announces itself as a statement start (`-- name`)
+    /// in the middle of the write that fired it, after that write's busy
+    /// wait: it must not restart the write's clock, or the wait is lost.
+    func testATriggerInsideTheFirstWriteKeepsItsWait() throws {
+        let sink = try makeSink(thresholdMS: 50)
+        let pool = try makePool(sink: sink)
+        try pool.writeWithoutTransaction { db in
+            try db.execute(sql: "CREATE TABLE audit (v INTEGER)")
+            try db.execute(sql: "CREATE TRIGGER t_audit AFTER INSERT ON t BEGIN INSERT INTO audit VALUES (new.v); END")
+        }
+        sink.flush()
+        try? FileManager.default.removeItem(atPath: sink.path)
+        let holder = try holdWriteLock()
+        release(holder, afterSleepingMS: 600)
+        try pool.writeWithoutTransaction { db in
+            try db.inTransaction(.deferred) {
+                try db.execute(sql: "INSERT INTO t VALUES (1)")
+                self.clock.advance(ms: 60)
+                return .commit
+            }
+        }
+        sink.flush()
+        XCTAssertEqual(try pool.read { try Int.fetchOne($0, sql: "SELECT count(*) FROM audit") }, 1, "the trigger ran")
+        let event = try XCTUnwrap(lines().first { $0["kind"] as? String == "tx" })
+        XCTAssertGreaterThanOrEqual(clock.sleptMS, 600)
+        XCTAssertEqual(event["wait_ms"] as? Int, Int(clock.sleptMS), "the wait runs from the write's start, not the trigger's")
+        XCTAssertEqual(event["hold_ms"] as? Int, 60)
+    }
+
     /// The sink's names and cap are a Go↔Swift dual path; the Go suite
     /// (TestSinkNamesAndCapAreTheSharedLiterals) asserts the same literals,
     /// so a rename on one side fails a suite.

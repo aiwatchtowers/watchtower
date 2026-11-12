@@ -96,8 +96,10 @@ final class SessionAgentStateCenter {
     /// Every `refresh` read not yet ended (a test seam: `settled`).
     @ObservationIgnored private var refreshes: [Int: Task<Void, Never>] = [:]
     @ObservationIgnored private var refreshesStarted = 0
-    /// How the loop waits between reads (tests: a clock they tick by hand).
-    @ObservationIgnored private let sleep: @Sendable (Duration) async -> Void
+    /// How the loop waits between reads (tests: a clock they tick by hand;
+    /// settable for a center `AppState.initWorkbenches` builds). Read when
+    /// the loop starts.
+    @ObservationIgnored var sleep: @Sendable (Duration) async -> Void
 
     init(
         dbPool: DatabasePool,

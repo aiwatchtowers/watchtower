@@ -282,9 +282,10 @@ final class SessionLineDeliveryTests: XCTestCase {
 
         XCTAssertEqual(delivery, .held)
         XCTAssertEqual(vm.lineDelivery.heldKeys(sessionID: s.id), [.input("action-3")])
-        // No later try was even scheduled: nothing but a read sends it.
+        // No later try was booked: once every booked retry has ended,
+        // nothing but a read sends it.
         await vm.lineDelivery.settled()
-        XCTAssertTrue(typed.isEmpty, "no timer sends it")
+        XCTAssertTrue(typed.isEmpty, "no booked retry sends it")
         XCTAssertTrue(events.isEmpty)
         let failed = await agentStates.poll()
         XCTAssertFalse(failed)
