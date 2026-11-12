@@ -154,7 +154,7 @@ func (d *Daemon) phaseWaitingForMe(ctx context.Context) {
 		if d.builtinOn(id) {
 			active = true
 		} else {
-			d.cancelQueuedBuiltinRuns(id, now)
+			d.cancelQueuedBuiltinRuns(id, now, cancelInactive)
 		}
 	}
 	if !active {
@@ -312,7 +312,7 @@ func (d *Daemon) phaseTrackMyThreads(ctx context.Context, now time.Time) {
 			}
 		}
 	} else {
-		d.cancelQueuedBuiltinRuns(trackMyThreadsID, now)
+		d.cancelQueuedBuiltinRuns(trackMyThreadsID, now, cancelLegacy)
 		d.phaseTracks(ctx)
 	}
 	d.injectTrackContext()
@@ -324,7 +324,7 @@ func (d *Daemon) phaseTrackMyThreads(ctx context.Context, now time.Time) {
 // otherwise the built-in's slot run.
 func (d *Daemon) phaseIdeaFinder(ctx context.Context) {
 	if !d.builtinOn(ideaFinderID) {
-		d.cancelQueuedBuiltinRuns(ideaFinderID, time.Now())
+		d.cancelQueuedBuiltinRuns(ideaFinderID, time.Now(), cancelLegacy)
 		d.phaseIdeas(ctx)
 		return
 	}
