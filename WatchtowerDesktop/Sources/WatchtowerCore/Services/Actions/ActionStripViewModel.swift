@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import os
 
 /// The card the Inbox reading pane shows.
 package enum InboxSelection: Hashable, Sendable {
@@ -805,30 +806,44 @@ package final class ActionStripViewModel {
 
     /// Stops tracking `ids` through the CLI, then reads. A failed call (a
     /// timeout, a lost answer) may have committed before it ended: one read
-    /// of the ids' `dismissed_at` turns it into `.partial` with the CLI's
-    /// text when some did stop, so the owner never reads "failed" for
-    /// threads that stopped.
+    /// of the ids that were active before the press turns it into `.partial`
+    /// with the CLI's text when some of them did stop, so the owner never
+    /// reads "failed" for threads that stopped. A thread stopped elsewhere
+    /// before the press is never credited.
     package func stopTrackingQuiet(_ ids: [String]) async -> InboxBulkResult {
+        let numeric = ids.compactMap(Int64.init)
+        let activeBefore: [Int64]
+        do {
+            activeBefore = try await dbPool.read { try Self.trackIDs($0, ids: numeric, stopped: false) }
+        } catch {
+            Self.log.error("stop tracking quiet: active read failed: \(error.localizedDescription, privacy: .public)")
+            activeBefore = []
+        }
         var result = await tracksBulkCLI.dismiss(ids: ids)
-        if case let .failed(message) = result {
-            let numeric = ids.compactMap(Int64.init)
-            if let stopped = try? await dbPool.read({ try Self.dismissedCount($0, ids: numeric) }), stopped > 0 {
-                result = .partial(done: stopped, of: ids.count, error: message)
+        if case let .failed(message) = result, !activeBefore.isEmpty {
+            do {
+                let stopped = try await dbPool.read { try Self.trackIDs($0, ids: activeBefore, stopped: true) }.count
+                if stopped > 0 { result = .partial(done: stopped, of: ids.count, error: message) }
+            } catch {
+                // The failure stands as the CLI reported it.
+                Self.log.error("stop tracking quiet: reconcile read failed: \(error.localizedDescription, privacy: .public)")
             }
         }
         await refresh()
         return result
     }
 
-    /// How many of `ids` are dismissed now.
-    nonisolated private static func dismissedCount(_ db: Database, ids: [Int64]) throws -> Int {
-        guard !ids.isEmpty else { return 0 }
+    /// Those of `ids` that are stopped (`dismissed_at` set) or still active.
+    nonisolated private static func trackIDs(_ db: Database, ids: [Int64], stopped: Bool) throws -> [Int64] {
+        guard !ids.isEmpty else { return [] }
         let list = "[" + ids.map(String.init).joined(separator: ",") + "]"
-        return try Int.fetchOne(db, sql: """
-            SELECT COUNT(*) FROM tracks
-            WHERE dismissed_at != '' AND id IN (SELECT value FROM json_each(?))
-            """, arguments: [list]) ?? 0
+        return try Int64.fetchAll(db, sql: """
+            SELECT id FROM tracks
+            WHERE (dismissed_at != '') = ? AND id IN (SELECT value FROM json_each(?))
+            """, arguments: [stopped, list])
     }
+
+    nonisolated private static let log = Logger(subsystem: "com.watchtower.desktop", category: "inbox")
 
     /// The ideas awaiting a verdict for more than 30 days (one read).
     package func planOldIdeas() async throws -> InboxBulkPlan {

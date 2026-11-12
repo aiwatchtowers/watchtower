@@ -361,6 +361,41 @@ final class ActionStripTracksIdeasTests: XCTestCase {
         XCTAssertEqual(failed, .failed(TracksBulkCLI.timeoutMessage))
     }
 
+    func testStopTrackingQuietFailureCreditsOnlyThreadsItStopped() async throws {
+        let now = clock.now()
+        let ids = try await pool.write { db in
+            try InboxFolderFixtures.seed(db)
+            return [try Self.track(now, "Old vendor thread", daysAgo: 40, db: db),
+                    try Self.track(now, "Old budget thread", daysAgo: 45, db: db)]
+        }
+        let pool = try XCTUnwrap(pool)
+        // Stopped elsewhere after the plan, before the press.
+        try await pool.write { db in
+            try db.execute(sql: "UPDATE tracks SET dismissed_at = '2026-01-01T00:00:00Z' WHERE id = ?",
+                           arguments: [ids[0]])
+        }
+        let vm = makeVM(runner: ScriptedRunner { _ in
+            CLICapturedResult(
+                stdout: Data(#"{"dismissed":0,"of":2,"error":"database is locked"}"#.utf8), exitCode: 1,
+                stderr: "database is locked")
+        })
+        let result = await vm.stopTrackingQuiet(ids.map(String.init))
+        XCTAssertEqual(result, .failed("database is locked"), "a thread stopped elsewhere is not credited")
+
+        // The press does stop one of the two active threads before it fails.
+        try await pool.write { db in try db.execute(sql: "UPDATE tracks SET dismissed_at = ''") }
+        let committedOne = ScriptedRunner { _ in
+            try await pool.write { db in
+                try db.execute(sql: "UPDATE tracks SET dismissed_at = '2026-01-01T00:00:00Z' WHERE id = ?",
+                               arguments: [ids[1]])
+            }
+            throw CLIRunnerError.nonZeroExit(code: -1, stderr: "")
+        }
+        let other = makeVM(runner: committedOne)
+        let partial = await other.stopTrackingQuiet(ids.map(String.init))
+        XCTAssertEqual(partial, .partial(done: 1, of: 2, error: TracksBulkCLI.timeoutMessage))
+    }
+
     // MARK: - Clear Old Ideas…
 
     func testClearOldIdeasSkipsIdeasJudgedMeanwhile() async throws {
