@@ -18,9 +18,12 @@ extension WorkbenchesViewModel {
     func automationRecipesChanged(workbenchID: Int64) {
         automationRescanTimers[workbenchID]?.cancel()
         let delay = automationRescanDelay
+        let sleep = automationRescanSleep
         automationRescanTimers[workbenchID] = Task { [weak self] in
-            do { try await Task.sleep(for: delay) } catch { return }
-            guard let self else { return }
+            do { try await sleep(delay) } catch { return }
+            // A later change replaced this wait (a sleep that ignores the
+            // cancel, as a test's may, must not rescan too).
+            guard !Task.isCancelled, let self else { return }
             // Out of the map first: a later change must not cancel the
             // rescan itself (the runner would kill its process).
             automationRescanTimers[workbenchID] = nil
@@ -35,6 +38,14 @@ extension WorkbenchesViewModel {
         automationRescansDeferred = []
         for workbenchID in deferred.sorted() {
             startAutomationRescan(workbenchID: workbenchID)
+        }
+    }
+
+    /// Returns once no rescan runs, the follow-ups asked for meanwhile
+    /// included (tests: they await the rescan itself, not a clock).
+    func automationRescansSettled() async {
+        while let run = automationRescanRuns.values.first {
+            await run.value
         }
     }
 
@@ -54,7 +65,7 @@ extension WorkbenchesViewModel {
             return
         }
         automationRescansInFlight.insert(workbenchID)
-        Task { [weak self] in
+        automationRescanRuns[workbenchID] = Task { [weak self] in
             do {
                 try await rescanAutomations(workbenchID)
             } catch {
@@ -63,6 +74,7 @@ extension WorkbenchesViewModel {
             }
             guard let self else { return }
             automationRescansInFlight.remove(workbenchID)
+            automationRescanRuns[workbenchID] = nil
             if automationRescansAgain.remove(workbenchID) != nil {
                 startAutomationRescan(workbenchID: workbenchID)
             }

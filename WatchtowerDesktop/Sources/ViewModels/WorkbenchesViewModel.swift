@@ -138,9 +138,26 @@ final class WorkbenchesViewModel {
     @ObservationIgnored weak var coach: CoachCenter?
     /// The Analytics pane's period per workbench (7 days until picked).
     var analyticsPeriod: [Int64: AgentAnalyticsCenter.Period] = [:]
+    /// The Analytics pane's agent filter per workbench (All until picked;
+    /// an older CLI's refusal of `--agent` removes the entry).
+    var analyticsAgent: [Int64: AgentAnalyticsCenter.Agent] = [:]
     /// The session (its uuid) whose detail the Analytics pane shows per
     /// workbench; none = the overview.
     var analyticsSession: [Int64: String] = [:]
+    /// The workbenches whose Analytics pane shows the tuning side panel
+    /// (**Tune**, #1517); closed when analytics goes off or the workbench goes.
+    var tuningOpen: Set<Int64> = []
+    /// A section of the Analytics overview to scroll to once per workbench
+    /// (`CoachSectionsView.acceptedID` from the panel's Show in Accepted
+    /// edits); the overview clears it after scrolling.
+    var analyticsScroll: [Int64: String] = [:]
+
+    /// The Analytics overview, scrolled to the section `id` (a session
+    /// detail open beside the tuning panel goes back to the overview first).
+    func showAnalyticsSection(_ id: String, projectID: Int64) {
+        analyticsSession[projectID] = nil
+        analyticsScroll[projectID] = id
+    }
     /// Session cleanup (board #535): the Delete dialog's plan and apply, the
     /// Clean Up screen. Held here, on the AppState-owned view model, so a
     /// run survives navigating away. AppState wires its own; nil = Delete
@@ -564,12 +581,16 @@ final class WorkbenchesViewModel {
     @ObservationIgnored var rescanAutomations: ((_ workbenchID: Int64) async throws -> Void)?
     /// How long recipe-folder changes settle before one rescan runs.
     @ObservationIgnored var automationRescanDelay: Duration = .seconds(1)
+    /// Waits out `automationRescanDelay` (a seam: tests open the wait by hand).
+    @ObservationIgnored var automationRescanSleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     /// The debounced rescan waiting per workbench (`automationRecipesChanged`).
     @ObservationIgnored var automationRescanTimers: [Int64: Task<Void, Never>] = [:]
     /// The workbenches with a rescan running, and those asked for again
     /// meanwhile (one follow-up rescan, not one per ask).
     @ObservationIgnored var automationRescansInFlight: Set<Int64> = []
     @ObservationIgnored var automationRescansAgain: Set<Int64> = []
+    /// The running rescan per workbench (`automationRescansSettled`).
+    @ObservationIgnored var automationRescanRuns: [Int64: Task<Void, Never>] = [:]
     /// The workbenches asked for a rescan before the Feature Manager state
     /// loaded: rescanned once it has.
     @ObservationIgnored var automationRescansDeferred: Set<Int64> = []
@@ -770,6 +791,8 @@ final class WorkbenchesViewModel {
         // The rows are gone: an answer still streaming stops now, not at the
         // reload (a failed delete above leaves the questions as they were).
         onWorkbenchRemoved?(id)
+        // Its asks went with the cascade: so do its closed lists and drawer (#1713).
+        asks.forgetClosedLists(projectID: id)
         // Its hidden sessions went with the cascade: nothing to commit or restore.
         discardPendingDeletes(workbenchID: id)
         if let warning = result.cleanupWarning { errorMessage = warning }

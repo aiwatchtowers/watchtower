@@ -76,7 +76,7 @@ text: Press **⌃⌥D** in any app, say the idea and press **Save**: it lands in
 area: meetings
 level: next
 kind: shortcut
-since: next
+since: 0.28.0
 replaces: [dictation-quick-capture]
 changed: Ideas moved from the Inbox's Ideas filter to its Idea finder entry.
 action: hotkey:quick-capture

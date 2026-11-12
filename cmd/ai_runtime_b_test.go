@@ -85,3 +85,27 @@ func TestAIQuery_RuntimeBMountsQuickConnectionsExceptEditor(t *testing.T) {
 	assert.Equal(t, []string{"list_boards"}, main[0].AllowTools)
 	assert.Len(t, servers("target"), 1)
 }
+
+// TestAIQuery_RuntimeBRefusesTuning (spec 2026-11-03 D52): the tuning tools
+// need a provider that runs an MCP child, so the runtime-B loop refuses the
+// tuning surface before it opens the database; main still builds the loop.
+func TestAIQuery_RuntimeBRefusesTuning(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cfg := &config.Config{ActiveWorkspace: "test-ws", AI: config.AIConfig{Provider: "ollama"}}
+	dbPath := seedQuickConnection(t, cfg)
+
+	oldTools, oldModel, oldSurface := aiFlagTools, aiFlagModel, aiFlagSurface
+	defer func() { aiFlagTools, aiFlagModel, aiFlagSurface = oldTools, oldModel, oldSurface }()
+	aiFlagTools, aiFlagModel, aiFlagSurface = "chat", "llama", tools.SurfaceTuning
+	client, _, err := newQueryClient(cfg, dbPath, transport.Options{})
+	require.ErrorContains(t, err, "tuning tools need Claude or Codex")
+	assert.Nil(t, client)
+
+	aiFlagSurface = "main"
+	client, cleanup, err := newQueryClient(cfg, dbPath, transport.Options{})
+	require.NoError(t, err)
+	defer cleanup()
+	loop, ok := client.(*agentloop.Client)
+	require.True(t, ok, "got %T", client)
+	assert.Len(t, loop.ExternalServersForTest(), 1)
+}

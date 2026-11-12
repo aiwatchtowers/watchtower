@@ -174,7 +174,10 @@ final class RelayLinkingE2ETests: XCTestCase {
         XCTAssertEqual(root.linking.links.first?.state, .linked, "never a removal")
         XCTAssertNil(root.linking.notice)
 
-        // The Mac's readers sync names the phone: the next pull reads the data zone.
+        // The Mac's readers sync names the phone: the next pull reads the data zone. The session's launch fetch may
+        // still be paging from before the sync; one pull runs at a time and a later one joins it, so the next pull
+        // would share that pull's FORBIDDEN. It is awaited first, and the pull below starts after the sync.
+        await session.waitForFetches()
         var readers = Relay_V1_SetHubReaders()
         readers.phoneDeviceIds = [bed.phone.deviceID]
         _ = try await bed.mac.perform(.setHubReaders(readers))

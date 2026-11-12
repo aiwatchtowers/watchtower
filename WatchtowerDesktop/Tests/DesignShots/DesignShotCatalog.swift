@@ -72,6 +72,17 @@ enum DesignShotCatalog {
             DesignShot(name: "chat-markdown-streaming-narrow", size: NSSize(width: 344, height: 0)) {
                 AnyView(ChatMarkdownShotFixtures.streaming(width: 320).shotFrame().detailBackground())
             },
+            // A table wider than the column wraps its long column (ask #1197).
+            DesignShot(name: "chat-markdown-wide-table-finished", size: NSSize(width: 544, height: 0)) {
+                AnyView(ChatMarkdownShotFixtures.finished(width: 520, text: ChatMarkdownShotFixtures.wideTable)
+                    .shotFrame()
+                    .detailBackground())
+            },
+            DesignShot(name: "chat-markdown-wide-table-streaming", size: NSSize(width: 544, height: 0)) {
+                AnyView(ChatMarkdownShotFixtures.streaming(width: 520, text: ChatMarkdownShotFixtures.wideTable)
+                    .shotFrame()
+                    .detailBackground())
+            },
             DesignShot(name: "chat-composer-ollama-capabilities", size: NSSize(width: 620, height: 0)) {
                 AnyView(ProviderCapabilitiesShotFixtures.ollamaComposer().shotFrame().detailBackground())
             },
@@ -567,7 +578,10 @@ enum DesignShotCatalog {
             DesignShot(name: "mobileAdoptionFailed-narrow", size: NSSize(width: 320, height: 200)) {
                 HubAdoptionShotFixtures.screen(.failed(reason: "swift_schema"))
             }
-        ] + ProviderFallbackShotFixtures.shots + MobileSettingsShotFixtures.Frame.allCases.map { frame in
+        ] + ProviderFallbackShotFixtures.shots
+        + OnboardingAgentShotFixtures.shots
+        + OnboardingStepLiveShotFixtures.shots
+        + MobileSettingsShotFixtures.Frame.allCases.map { frame in
             // Settings → Mobile over `watchtower hub …` (go hub phase 3 Task 23), mockup §1–§9.
             DesignShot(name: frame.name, size: frame.size) { MobileSettingsShotFixtures.screen(frame) }
         } + MobileSettingsShotFixtures.Pairing.allCases.map { shot in
@@ -590,6 +604,8 @@ enum DesignShotCatalog {
                     .detailBackground())
             }
         } + ProviderFallbackShotFixtures.runtimeShots + InboxBuilderAShotFixtures.shots + InboxBuilderBShotFixtures.shots
+            + ClosedAsksShotFixtures.shots
+            + TuningChatShotFixtures.shots // The tuning chat over the Analytics pane (#1517).
     }
 }
 
@@ -629,7 +645,9 @@ enum DesignShotFixtures {
         InboxFolderMenuShotFixtures.cleanUp()
         InboxFoldersShotFixtures.cleanUp()
         InboxApprovalsShotFixtures.cleanUp()
+        TuningChatShotFixtures.cleanUp()
         ProjectPageShotFixtures.cleanUp()
+        ClosedAsksShotFixtures.cleanUp()
         if let newTaskPoolPath { TestDatabase.cleanup(path: newTaskPoolPath) }
         newTaskPoolPath = nil
         UserDefaults().removePersistentDomain(forName: defaultsSuite)

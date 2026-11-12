@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -36,8 +35,7 @@ func TestClaudeQuery_ExitZeroWithoutResultIsInvalidOutput(t *testing.T) {
 				c.claudeCmd = writeMockClaude(t, tc.script)
 				c.toolEvents = v2
 
-				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				t.Cleanup(cancel)
+				ctx := context.Background()
 				textCh, errCh, _ := c.Query(ctx, "system", "hello", "")
 				var text strings.Builder
 				for chunk := range textCh {

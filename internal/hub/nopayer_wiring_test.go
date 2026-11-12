@@ -144,7 +144,7 @@ func (g *g2Rig) poll() {
 // would make, a failed one tried again) until the host runs on CloudKit.
 func (g *g2Rig) onCloudKit(t *testing.T) {
 	t.Helper()
-	eventually(t, 10*time.Second, "the host on CloudKit", func() bool {
+	eventually(t, "the host on CloudKit", func() bool {
 		_ = g.h.sw.Step(context.Background())
 		return g.h.sw.IsActive(transport.KindCloudKit)
 	})
@@ -157,14 +157,16 @@ func TestG2TheDesktopWiringMovesOffARelayNobodyPays(t *testing.T) {
 			name = "HUB_NOT_VOUCHED"
 		}
 		t.Run(name, func(t *testing.T) {
-			g := startG2(t, unvouched)
-			g.fake.SetAccountState(&relayv1.AccountState{})
-			g.poll()
-			if !g.h.sw.IsActive(transport.KindRelay) || g.h.sw.Pending() {
-				t.Fatal("moved on one read")
-			}
-			g.poll()
-			g.onCloudKit(t)
+			bubble(t, func(t *testing.T) {
+				g := startG2(t, unvouched)
+				g.fake.SetAccountState(&relayv1.AccountState{})
+				g.poll()
+				if !g.h.sw.IsActive(transport.KindRelay) || g.h.sw.Pending() {
+					t.Fatal("moved on one read")
+				}
+				g.poll()
+				g.onCloudKit(t)
+			})
 		})
 	}
 }
@@ -172,45 +174,49 @@ func TestG2TheDesktopWiringMovesOffARelayNobodyPays(t *testing.T) {
 // The scenario of the review: a read that fails between the two G2 reads is
 // not forgotten when the second one lands in the unvouched window.
 func TestG2AFailedReadBetweenTheTwoDoesNotLetTheCacheAnswer(t *testing.T) {
-	g := startG2(t, true)
-	g.fake.SetAccountState(&relayv1.AccountState{})
-	g.poll() // count 1
-	g.fake.SetAvailable(false)
-	g.clock.Advance(switcher.NoPayerPoll - 10*time.Second)
-	if _, err := g.h.readAccount(context.Background()); err == nil { // the link upkeep's read
-		t.Fatal("the read should fail")
-	}
-	g.clock.Advance(11 * time.Second)
-	g.h.sw.PollOther(context.Background()) // inside the failed read's window
-	g.fake.SetAvailable(true)
-	g.clock.Advance(unvouchedPoll)
-	g.h.sw.PollOther(context.Background()) // a real read now: count 1, not 2 (a move would be accepted in it)
-	if !g.h.sw.IsActive(transport.KindRelay) || g.h.sw.Pending() {
-		t.Fatal("moved on a cached answer after a failed read")
-	}
+	bubble(t, func(t *testing.T) {
+		g := startG2(t, true)
+		g.fake.SetAccountState(&relayv1.AccountState{})
+		g.poll() // count 1
+		g.fake.SetAvailable(false)
+		g.clock.Advance(switcher.NoPayerPoll - 10*time.Second)
+		if _, err := g.h.readAccount(context.Background()); err == nil { // the link upkeep's read
+			t.Fatal("the read should fail")
+		}
+		g.clock.Advance(11 * time.Second)
+		g.h.sw.PollOther(context.Background()) // inside the failed read's window
+		g.fake.SetAvailable(true)
+		g.clock.Advance(unvouchedPoll)
+		g.h.sw.PollOther(context.Background()) // a real read now: count 1, not 2 (a move would be accepted in it)
+		if !g.h.sw.IsActive(transport.KindRelay) || g.h.sw.Pending() {
+			t.Fatal("moved on a cached answer after a failed read")
+		}
+	})
 }
 
 // A lapsed phone's row makes every poll's lapse recheck read the account.
 // G2 reads first on its tick, so its read is the real one and the recheck
 // takes the cached answer (the unvouched window): G2 is not starved by it.
 func TestG2IsNotStarvedByTheLapseRecheck(t *testing.T) {
-	g := startG2(t, true)
-	st, err := state.Open(g.dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = st.WithTx(context.Background(), func(tx *sql.Tx) error {
-		_, err := tx.Exec(`UPDATE devices SET relay_lapsed_at = 1`)
-		return err
+	bubble(t, func(t *testing.T) {
+		g := startG2(t, true)
+		st, err := state.Open(g.dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = st.WithTx(context.Background(), func(tx *sql.Tx) error {
+			_, err := tx.Exec(`UPDATE devices SET relay_lapsed_at = 1`)
+			return err
+		})
+		_ = st.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		g.fake.SetAccountState(&relayv1.AccountState{})
+		g.poll() // count 1
+		g.poll()
+		g.onCloudKit(t)
 	})
-	_ = st.Close()
-	if err != nil {
-		t.Fatal(err)
-	}
-	g.fake.SetAccountState(&relayv1.AccountState{})
-	g.poll() // count 1
-	g.poll()
-	g.onCloudKit(t)
 }
 
 // Rule 16 through the real reader and the desktop wiring (Config.AccountPhones):
@@ -223,31 +229,33 @@ func TestALapseReadsTheAccountThroughTheDesktopWiring(t *testing.T) {
 			name = "an unlinked phone pays"
 		}
 		t.Run(name, func(t *testing.T) {
-			g := startG2(t, true)
-			devices, err := g.h.st.Devices()
-			if err != nil || len(devices) != 1 {
-				t.Fatalf("devices %v %v", devices, err)
-			}
-			lapsed := devices[0]
-			// The relay may still list the lapsed phone as paying on a stale snapshot:
-			// it is never "another" payer.
-			phones := []*relayv1.SlotHolder{{PhoneDeviceId: lapsed.RelayDeviceID, Paying: true}}
-			if unlinkedPays {
-				phones = append(phones, &relayv1.SlotHolder{PhoneDeviceId: "unlinked-phone", Paying: true})
-			}
-			g.fake.SetAccountState(&relayv1.AccountState{Phones: phones})
-			g.clock.Advance(time.Minute) // past the reader's window
-			if err := g.h.sw.OnControl(context.Background(), transport.Control{Kind: transport.EntitlementExpired, Detail: lapsed.RelayDeviceID}); err != nil {
-				t.Fatal(err)
-			}
-			g.decideLapse(t)
-			if unlinkedPays {
-				if !g.h.sw.IsActive(transport.KindRelay) || g.h.sw.Pending() {
-					t.Fatal("moved with a paying phone in the account")
+			bubble(t, func(t *testing.T) {
+				g := startG2(t, true)
+				devices, err := g.h.st.Devices()
+				if err != nil || len(devices) != 1 {
+					t.Fatalf("devices %v %v", devices, err)
 				}
-				return
-			}
-			g.onCloudKit(t)
+				lapsed := devices[0]
+				// The relay may still list the lapsed phone as paying on a stale snapshot:
+				// it is never "another" payer.
+				phones := []*relayv1.SlotHolder{{PhoneDeviceId: lapsed.RelayDeviceID, Paying: true}}
+				if unlinkedPays {
+					phones = append(phones, &relayv1.SlotHolder{PhoneDeviceId: "unlinked-phone", Paying: true})
+				}
+				g.fake.SetAccountState(&relayv1.AccountState{Phones: phones})
+				g.clock.Advance(time.Minute) // past the reader's window
+				if err := g.h.sw.OnControl(context.Background(), transport.Control{Kind: transport.EntitlementExpired, Detail: lapsed.RelayDeviceID}); err != nil {
+					t.Fatal(err)
+				}
+				g.decideLapse(t)
+				if unlinkedPays {
+					if !g.h.sw.IsActive(transport.KindRelay) || g.h.sw.Pending() {
+						t.Fatal("moved with a paying phone in the account")
+					}
+					return
+				}
+				g.onCloudKit(t)
+			})
 		})
 	}
 }

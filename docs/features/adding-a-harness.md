@@ -55,7 +55,13 @@ change beyond its capability row.
    `display_name` and `wire_agent` match the fixture both ways. An older
    app that meets the new kind shows its sessions as not supported
    (`TerminalSession.Kind.unsupported`; the phone's `agentLabel`), never
-   as Claude Code or a shell.
+   as Claude Code or a shell. The adapter also fills its `AgentSetup`
+   (`SessionAgent.setup`: the onboarding tile's product name, install and
+   sign-in commands, the login help probe, the config key for a picked
+   executable, the installer's folders and the update per install kind),
+   so onboarding's AI agent section offers the kind without naming it
+   (LLMTRANSPORT-01); `AgentKindRegistryTests.testEveryKindHasSetup` fails
+   until it is filled.
 
 ## An LLM transport
 

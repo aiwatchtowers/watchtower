@@ -20,6 +20,9 @@ func (f *fakeTime) Advance(d time.Duration) bool { return f.advance(d) }
 // Armed is how many timers were ever armed.
 func (f *fakeTime) Armed() int { return f.armedCount() }
 
+// WaitArmed blocks until more than n timers were armed.
+func (f *fakeTime) WaitArmed(n int) { f.waitArmed(n) }
+
 // SetRunClock puts Run's monotonic clock and timers on a test clock.
 func SetRunClock(p *Publisher, mono func() time.Time, timer func(time.Duration) (<-chan time.Time, func())) {
 	p.mono, p.timer = mono, timer

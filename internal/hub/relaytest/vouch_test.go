@@ -173,12 +173,12 @@ func TestSlotAddedIsBestEffortAndTheGateHoldsOnAnOpenSocket(t *testing.T) {
 	ws := dialWS(t, srv, h.relayID)
 	subscribeWS(t, ws, "pair/x")
 	addSlot(t, store, h)
-	if c := readFrame(t, ws, 5*time.Second).GetEvent().GetControl(); c.GetKind() != relayv1.ControlKind_CONTROL_KIND_SLOT_ADDED || c.GetDetail() != p.RelayDeviceID() {
+	if c := readFrame(t, ws).GetEvent().GetControl(); c.GetKind() != relayv1.ControlKind_CONTROL_KIND_SLOT_ADDED || c.GetDetail() != p.RelayDeviceID() {
 		t.Fatalf("SLOT_ADDED: %v", c)
 	}
 
 	srv.RemoveSlot(p.RelayDeviceID(), h.relayID)
-	if c := readFrame(t, ws, 5*time.Second).GetEvent().GetControl(); c.GetKind() != relayv1.ControlKind_CONTROL_KIND_SLOT_REMOVED {
+	if c := readFrame(t, ws).GetEvent().GetControl(); c.GetKind() != relayv1.ControlKind_CONTROL_KIND_SLOT_REMOVED {
 		t.Fatalf("SLOT_REMOVED: %v", c)
 	}
 	b, _ := proto.Marshal(&relayv1.Frame{Kind: &relayv1.Frame_Request{Request: &relayv1.Request{
@@ -187,15 +187,16 @@ func TestSlotAddedIsBestEffortAndTheGateHoldsOnAnOpenSocket(t *testing.T) {
 	if err := ws.Write(t.Context(), websocket.MessageBinary, b); err != nil {
 		t.Fatal(err)
 	}
-	if r := readFrame(t, ws, 5*time.Second).GetResponse(); r.GetError().GetCode() != relayv1.ErrorCode_ERROR_CODE_HUB_NOT_VOUCHED {
+	if r := readFrame(t, ws).GetResponse(); r.GetError().GetCode() != relayv1.ErrorCode_ERROR_CODE_HUB_NOT_VOUCHED {
 		t.Fatalf("an op on the open socket of an unslotted hub: %v", r)
 	}
 
 	offline := newHub(t, srv) // no socket when it is slotted
 	addSlot(t, store, offline)
 	next := dialWS(t, srv, offline.relayID)
-	if fr := readFrame(t, next, 300*time.Millisecond); fr != nil {
-		t.Fatalf("a SLOT_ADDED with no socket was kept for the next one: %v", fr)
+	subscribeWS(t, next, "pair/y") // answered after the socket took its held controls
+	if got, parked := srv.EventsQueuedFor(offline.relayID); !slices.Equal(got, []int{0}) || parked != 0 {
+		t.Fatalf("a SLOT_ADDED with no socket was kept for the next one: queued %v (+%d parked)", got, parked)
 	}
 }
 

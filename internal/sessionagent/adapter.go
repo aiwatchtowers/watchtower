@@ -7,12 +7,15 @@
 package sessionagent
 
 import (
+	"os"
+
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"strings"
 	"time"
+	"watchtower/internal/config"
 
 	"watchtower/internal/agentkind"
 	"watchtower/internal/claudesession"
@@ -76,6 +79,32 @@ type Adapter interface {
 	// the agent's SessionStart reported (agent_transcript_path), which
 	// LoadSession reads.
 	StoresTranscriptPath() bool
+	// Binary is the executable this agent would run: its configured path
+	// when that names a non-directory, else the lookup in f. bare is the
+	// agent's fallback command name, which the lookup returns when it
+	// finds nothing.
+	Binary(cfg *config.Config, f Finders) (path, bare string)
+}
+
+// Finders resolves each agent's binary, through the caller's test seams;
+// only the adapter's own is called.
+type Finders struct {
+	Claude func() string
+	Codex  func() (string, error)
+}
+
+// resolveBinary mirrors claude.FindBinary / codex.FindBinary: a configured
+// path that exists and is not a directory wins over any lookup.
+func resolveBinary(override string, find func() (string, error)) string {
+	if override != "" {
+		if info, err := os.Stat(override); err == nil && !info.IsDir() {
+			return override
+		}
+	}
+	if p, err := find(); err == nil {
+		return p
+	}
+	return ""
 }
 
 // Row is what an adapter reads of a terminal session.
@@ -110,6 +139,15 @@ type Transcript interface {
 	// Open opens a file ImportFile returned, decompressed when compressed
 	// is true (in memory only, AGENTLOG-05).
 	Open(path string) (rc io.ReadCloser, compressed bool, err error)
+	// ChildImportFile finds the rollout of sub-agent thread childID that a
+	// rollout the importer reads named in a spawn event (AGENTLOG-04,
+	// ask #1132): under the same roots as ImportFile, by that id only, never
+	// through a symlink, reading only its first line, accepted only when its
+	// session_meta is childID's and names one of parents as its parent. err
+	// is a match that could not be read (not found or not the child: ok
+	// false, err nil). Claude's returns false (its sub-agents are listed by
+	// folder).
+	ChildImportFile(childID string, parents []string) (path string, ok bool, err error)
 }
 
 // Puller reads an agent's pull signals from its transcript (spec §3.5).

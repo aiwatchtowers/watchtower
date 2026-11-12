@@ -8,7 +8,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"watchtower/internal/chat"
 	"watchtower/internal/logredact"
@@ -502,14 +501,16 @@ func assertInterrupted(c *Cell) error {
 	return nil
 }
 
-// groupGone checks every fake pid of the cell, grandchildren included, is
-// gone (spec §4.1 "timeout and context kill").
+// groupGone waits until every fake pid of the cell, grandchildren
+// included, is gone (spec §4.1 "timeout and context kill"). A survivor
+// hangs the cell: go test -timeout reports it, naming waitPIDGone.
 func (c *Cell) groupGone() error {
 	for _, l := range c.O.Launches {
 		for _, pid := range append([]int{l.PID}, l.Grandchildren...) {
-			if !pidGone(pid, 3*time.Second) {
-				return fmt.Errorf("pid %d survived", pid)
+			if pid <= 1 {
+				return fmt.Errorf("launch log has pid %d", pid) // kill(0|1, 0) would never fail
 			}
+			waitPIDGone(pid)
 		}
 	}
 	return nil

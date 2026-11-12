@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -117,30 +118,48 @@ func TestLinear02_ConcurrentRefreshSingleFlight(t *testing.T) {
 
 func jsonInt(v int64) string { b, _ := json.Marshal(v); return string(b) }
 
+// handlerTransport answers a request in memory by running handler on it —
+// no sockets, so a synctest bubble's clock can advance while the handler waits.
+type handlerTransport struct{ handler http.HandlerFunc }
+
+func (h handlerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	rec := httptest.NewRecorder()
+	h.handler(rec, r)
+	if err := r.Context().Err(); err != nil {
+		return nil, err
+	}
+	return rec.Result(), nil
+}
+
+// Runs on synctest's clock: the token client's 200 ms timeout is virtual.
 func TestClient_StalledTokenEndpointTimesOut(t *testing.T) {
 	old := tokenHTTPClient
-	tokenHTTPClient = &http.Client{Timeout: 200 * time.Millisecond}
 	t.Cleanup(func() { tokenHTTPClient = old })
-	release := make(chan struct{})
-	c, store := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusUnauthorized)
-	}, func(_ http.ResponseWriter, r *http.Request) {
-		_ = r.ParseForm()
-		select { // never answers; released by the cleanup below or a dropped connection
-		case <-r.Context().Done():
-		case <-release:
-		}
+	synctest.Test(t, func(t *testing.T) {
+		tokenHTTPClient = &http.Client{Timeout: 200 * time.Millisecond, Transport: handlerTransport{
+			func(_ http.ResponseWriter, r *http.Request) {
+				_ = r.ParseForm()
+				<-r.Context().Done() // never answers
+			},
+		}}
+		store := NewTokenStore(t.TempDir(), 1)
+		require.NoError(t, store.Save(&Token{AccessToken: "a0", RefreshToken: "r0", Expiry: time.Now().Add(time.Hour).Format(time.RFC3339)}))
+		c := NewClient(OAuthConfig{ClientID: "cid"}, store)
+		c.endpoint, c.tokenURL = "http://linear.invalid/graphql", "http://linear.invalid/token"
+		c.http = &http.Client{Transport: handlerTransport{func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusUnauthorized)
+		}}}
+
+		start := time.Now()
+		err := c.Do(context.Background(), `query { a }`, nil, &struct{}{})
+		require.Error(t, err)
+		assert.NotErrorIs(t, err, ErrAuthRevoked)
+		assert.Equal(t, 200*time.Millisecond, time.Since(start), "the token client's timeout ends the stalled refresh")
+		// The lock is released: a later refresh attempt is not blocked.
+		unlock, err := store.Lock(context.Background())
+		require.NoError(t, err)
+		unlock()
 	})
-	t.Cleanup(func() { close(release) }) // runs before the servers' Close (LIFO)
-	start := time.Now()
-	err := c.Do(context.Background(), `query { a }`, nil, &struct{}{})
-	require.Error(t, err)
-	assert.NotErrorIs(t, err, ErrAuthRevoked)
-	assert.Less(t, time.Since(start), 5*time.Second)
-	// The lock is released: a later refresh attempt is not blocked.
-	unlock, err := store.Lock(context.Background())
-	require.NoError(t, err)
-	unlock()
 }
 
 // Two Client values on one token file stand in for two processes (the daemon
@@ -155,6 +174,7 @@ func TestLinear02_TwoClientsOneStoreSingleRefresh(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var refreshes atomic.Int32
+			atLock := [2]chan struct{}{make(chan struct{}), make(chan struct{})}
 			gql := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.Header.Get("Authorization") == "Bearer a0" {
 					w.WriteHeader(http.StatusUnauthorized)
@@ -166,7 +186,10 @@ func TestLinear02_TwoClientsOneStoreSingleRefresh(t *testing.T) {
 			tok := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				_ = r.ParseForm()
 				n := refreshes.Add(1)
-				time.Sleep(50 * time.Millisecond) // widen the race window
+				// Held until both clients have come to the token lock: the
+				// other one has read the same old token and now waits.
+				<-atLock[0]
+				<-atLock[1]
 				if r.PostForm.Get("refresh_token") != "r0" || n > 1 {
 					w.WriteHeader(http.StatusBadRequest)
 					_, _ = w.Write([]byte(`{"error":"invalid_grant"}`))
@@ -182,6 +205,8 @@ func TestLinear02_TwoClientsOneStoreSingleRefresh(t *testing.T) {
 			for i := range clients {
 				c := NewClient(OAuthConfig{ClientID: "cid"}, NewTokenStore(dir, 1))
 				c.endpoint, c.tokenURL = gql.URL, tok.URL
+				var once sync.Once
+				c.beforeTokenLock = func() { once.Do(func() { close(atLock[i]) }) }
 				clients[i] = c
 			}
 			var wg sync.WaitGroup

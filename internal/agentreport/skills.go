@@ -16,7 +16,8 @@ import (
 // of the whole listing. Only the sessions with the v2 facts (FactsSessions)
 // are measured.
 type SkillsReport struct {
-	Lead          string        `json:"lead"` // one plain sentence; "" when nothing was listed
+	Lead          string        `json:"lead"`   // one plain sentence; "" when nothing was listed
+	Agents        []string      `json:"agents"` // the agents whose sessions were measured, sorted
 	FactsSessions int           `json:"facts_sessions"`
 	Listed        int           `json:"listed"`
 	Used          int           `json:"used"` // listed skills with a row (≤ Listed); Rows may also hold unlisted ones
@@ -56,7 +57,7 @@ type UnusedSkill struct {
 // counts for the one listed "<plugin>:<name>" it matches, if exactly one.
 func Skills(sessions []agentlogdb.AgentReportSession, events map[string][]agentlogdb.AgentReportEvent,
 	parts []agentlogdb.AgentContextPart, listing []agentlogdb.AgentSkillListed) SkillsReport {
-	r := SkillsReport{Rows: []SkillRow{}, NeverUsed: []UnusedSkill{}}
+	r := SkillsReport{Agents: agentsOf(sessions, contextMeasured), Rows: []SkillRow{}, NeverUsed: []UnusedSkill{}}
 	facts := map[string]bool{}
 	for _, s := range sessions {
 		facts[s.SessionUUID] = contextMeasured(s)

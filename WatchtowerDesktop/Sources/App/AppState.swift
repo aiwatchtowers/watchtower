@@ -536,7 +536,10 @@ final class AppState {
         learnOnboardingFinishedAtLaunch = onboarding.currentStep == .complete
         self.workbenchDefaults = workbenchDefaults
         codeUsagesCenter = CodeUsagesCenter(defaults: workbenchDefaults)
-        self.onboardingGoals = onboardingGoals ?? .production(defaults: onboardingDefaults, featureManager: features)
+        self.onboardingGoals = onboardingGoals ?? .production(
+            defaults: onboardingDefaults,
+            featureManager: features
+        ) { [managedPolicy] in managedPolicy.policy }
         peopleRoster = PeopleRosterLoad(run: peopleRosterRun)
         self.migrateDatabase = migrateDatabase
         self.openDatabase = openDatabase
@@ -1795,11 +1798,7 @@ final class AppState {
         vm.managedPolicy = { [managedPolicy] in managedPolicy.policy }
         vm.automationsReady = { [weak self] in self?.automationsReady ?? false }
         wireCodeViewer(vm, dbPool: dbPool)
-        vm.onWorkbenchRemoved = { [weak codeQuestionCenter, weak codeUsagesCenter, weak vm] in
-            codeQuestionCenter?.workbenchRemoved($0)
-            codeUsagesCenter?.workbenchRemoved($0)
-            vm?.reviewer?.workbenchRemoved($0)
-        }
+        wireWorkbenchRemoved(vm)
         vm.closeTerminal = { [weak self] projectID in
             guard let center = self?.terminalCenter else { return }
             let ids = center.sessionIDs(ofWorkbench: projectID)
@@ -1887,10 +1886,11 @@ final class AppState {
     }
 
     /// Agent analytics (#298): the previous center stopped, a new one built.
-    private func replaceAgentAnalytics(cliRunner: (any CLIRunnerProtocol)?, workbenches vm: WorkbenchesViewModel) {
+    func replaceAgentAnalytics(cliRunner: (any CLIRunnerProtocol)?, workbenches vm: WorkbenchesViewModel) {
         let analytics = AgentAnalyticsCenter(runner: cliRunner ?? UnresolvedCLIRunner())
         let coach = CoachCenter(runner: cliRunner ?? UnresolvedCLIRunner())
         analytics.isTabOnScreen = { [weak vm] in vm?.isTabOnScreen() ?? false }; coach.isTabOnScreen = analytics.isTabOnScreen
+        analytics.onAgentRefused = { [weak vm] in vm?.analyticsAgent[$0] = nil }
         agentAnalyticsCenter?.stop(); coachCenter?.stop()
         (agentAnalyticsCenter, vm.agentAnalytics, coachCenter, vm.coach) = (analytics, analytics, coach, coach)
     }

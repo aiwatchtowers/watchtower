@@ -153,7 +153,7 @@ baseline's own columns, checked by the canary test.
 
 The host (`internal/sessionhost`) answers v1 and v2 hellos; a v2 client refuses a v1 host and never replaces it. v2 adds
 operations that never bind the connection to a session, so the hub never takes a run over from the app's window:
-`List`, `InputTo` (bytes into one run and launch — the phone's Interrupt Esc; never the owner's draft), `Deliver`
+`List`, `InputTo` (bytes into one run and launch — the phone's Interrupt Esc, the Desktop pane's terminal replies and app input (#1743); never the owner's draft), `Deliver`
 (PROJ-12's typed-never-submitted delivery inside the host: bracketed paste, the settle pause, `DeliverCheck` before
 the Return, `hold_if_prompt_text` for PROJ-16 lines; outcomes `submitted`, `typed`, `held`, `no_paste_mode`,
 `no_session`), `PromptHint` and `Stop` (the exit carries `requested`, so no PROJ-18 cleanup follows). Every launch of a
@@ -389,7 +389,12 @@ decisions asks #843, #851, #956; the plan's Global Constraints are the contract)
   with backoff 1 s → 60 s) carries sealed envelopes and metadata over `<hub dir>/bridge.sock` (0600, peer UID
   checked, u32 BE length ‖ protobuf, 4 MiB max); assets travel as file paths only. It holds no hub key and opens no
   envelope. Its CloudKit state is `<hub dir>/cloudkit/`. It keeps running while the hub is on the relay, to poll the
-  CloudKit mailboxes for a switch back (decision 4).
+  CloudKit mailboxes for a switch back (decision 4). One frame's saves or deletes reach CloudKit in modify requests of
+  at most 200 records and about 1 MiB (`CloudKitBridgeCloud.batches`); a request CloudKit still refuses as a whole
+  (`limitExceeded`) is halved and each half sent again, and only a record refused alone is answered
+  `record_too_large`, for that item alone (#1745: a 4 MiB frame in one request failed every publish cycle). A
+  request that fails otherwise after earlier ones went through keeps their results and refuses the rest with its
+  class; a failure before anything went through still fails the whole call.
 - **Adoption** (`hub adopt`). Desktop's `HubAdoptionDriver` reads the state only through `hub adopt --status --json`,
   hands the settings over on stdin (`--settings-stdin`), then the keys on stdin (`--keys-stdin`, a separate call),
   deletes its Keychain items, and confirms (`--confirm-deleted`). Go derives the Swift directory itself and leaves
@@ -398,6 +403,19 @@ decisions asks #843, #851, #956; the plan's Global Constraints are the contract)
   the Desktop's Keychain items, which Reset All Data does not remove (the guide's privacy page says so).
   **Set up Mobile again** (`hub adopt --set-aside`, after `no_keys`) writes `MOVED` and moves the Swift files into
   `MobileHub/set-aside-<UTC time>/`: kept, never imported or deleted.
+- **`hub_id` keeps its stored spelling** (#1746). The Swift hub stored `UUID().uuidString.lowercased()`; the Go
+  hub makes an uppercase one. CloudKit zone names are case-sensitive and phones compare a grant's and a heartbeat's
+  `hub_id` with their link's as text, so everything that names the hub in text — the bridge's `DataZone-<hub_id>` /
+  `RelayZone-<hub_id>`, link codes, grants, the heartbeat, switch markers — uses `Keyring.HubIDText()` (hub_id as
+  stored), never `HubID().String()` (controls such as `resend_from` keep `HubID().String()`: a phone parses their
+  `hub_id` as a UUID). Releases up to v0.28.0 used the uppercase form, so an adopted hub published into
+  two new, empty zones its phones never read and read a mailbox no phone wrote: no phone action arrived and phones
+  kept the Swift hub's last grant. At start the hub compares `hub_meta.cloudkit_zones_hub_id` (absent = the uppercase
+  form) with the stored spelling; when they differ it runs the account-change reset once (published state forgotten,
+  CloudKit's mailbox read again from the start, the exactly-once ledger answering repeats) and records the mark. v1
+  limits: the uppercase zones a v0.28.0 hub created, and its bridge's `watchtower-bridge-db-<UPPERCASE>` database
+  subscription (one extra silent push per private-database change), stay in the owner's iCloud; a phone that linked
+  to an adopted hub while it ran v0.28.0 got an uppercase code, lives in those zones and needs to link again.
 - **Transport switch.** Only a person switches: a paying phone's `transport_switch`, or `entitlement_expired`. A switch
   toward the relay waits at least 5 minutes after the previous one; a switch toward CloudKit is immediate. Every
   accepted switch rotates the keyring. A notice is left in the transport being left (decision 1), and old keys are

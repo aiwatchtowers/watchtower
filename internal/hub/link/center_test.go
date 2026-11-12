@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"regexp"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -44,11 +46,23 @@ const (
 
 func newRig(t *testing.T) *rig {
 	t.Helper()
+	return newRigWithHubID(t, "")
+}
+
+// newRigWithHubID is newRig over a sidecar that already stores hubID as its
+// hub_id ("" = none: the keyring makes one), the way an adopted hub does.
+func newRigWithHubID(t *testing.T, hubID string) *rig {
+	t.Helper()
 	st, err := state.Open(filepath.Join(t.TempDir(), "hub"))
 	if err != nil {
 		t.Fatalf("state.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
+	if hubID != "" {
+		if err := st.SetMeta(state.MetaHubID, hubID); err != nil {
+			t.Fatal(err)
+		}
+	}
 	id, err := identity.New()
 	if err != nil {
 		t.Fatal(err)
@@ -908,6 +922,33 @@ func TestEveryGrantAnnouncesOrderedActionsAndTransports(t *testing.T) {
 	}
 }
 
+// TestCodesAndGrantsSpellTheHubIDAsStored (#1746): an adopted hub's phones
+// stored the Swift hub's lowercase hub_id and compare a grant's hub_id with
+// it as text, and a phone linking later names the CloudKit zones after its
+// code's: both carry hub_id as stored, never re-spelled uppercase.
+func TestCodesAndGrantsSpellTheHubIDAsStored(t *testing.T) {
+	const stored = "0a1b2c3d-4e5f-4a6b-8c7d-8e9fa0b1c2d3"
+	r := newRigWithHubID(t, stored)
+	if r.kr.HubIDText() != stored || r.kr.HubID().String() != strings.ToUpper(stored) {
+		t.Fatalf("keyring hub id %q / %s", r.kr.HubIDText(), r.kr.HubID())
+	}
+	p, _, err := r.c.Issue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.HubID != stored {
+		t.Errorf("the code carries hub_id %q, want %q", p.HubID, stored)
+	}
+	r.confirmLinked(newPhone(t))
+	grants, err := r.c.Grants()
+	if err != nil || len(grants) != 1 {
+		t.Fatalf("grants %+v %v", grants, err)
+	}
+	if grants[0].HubID != stored {
+		t.Errorf("the grant carries hub_id %q, want %q", grants[0].HubID, stored)
+	}
+}
+
 func TestGrantsKeepEveryLinkedPhoneAndCapTheRest(t *testing.T) {
 	r := newRig(t)
 	for range MaxGrantRecords + 2 {
@@ -991,6 +1032,16 @@ func TestConfirmOnAReplacedRequestIsCodeChanged(t *testing.T) {
 	}
 }
 
+// unlinkWaitsOnTheCenter: a goroutine's Center.unlink waits in the
+// center's mutex Lock.
+func unlinkWaitsOnTheCenter() bool {
+	buf := make([]byte, 1<<20)
+	buf = buf[:runtime.Stack(buf, true)]
+	return unlinkWaitRE.Match(buf)
+}
+
+var unlinkWaitRE = regexp.MustCompile(`sync\.\(\*Mutex\)\.Lock[^\n]*\n[^\n]*\nwatchtower/internal/hub/link\.\(\*Center\)\.unlink\(`)
+
 // An Unlink while Keyboxes is between its device read and its key read
 // waits for it: the unlinked phone never gets the epoch its unlink begins.
 func TestKeyboxesNeverSealTheUnlinkEpochToTheUnlinkedPhone(t *testing.T) {
@@ -1002,8 +1053,24 @@ func TestKeyboxesNeverSealTheUnlinkEpochToTheUnlinkedPhone(t *testing.T) {
 	done := make(chan error, 1)
 	r.c.beforeKeys = func() {
 		r.c.beforeKeys = nil
-		go func() { done <- r.c.Unlink(a.id.String()) }()
-		time.Sleep(50 * time.Millisecond) // time enough for an unlocked Unlink to rotate
+		unlinked := make(chan error, 1)
+		go func() { unlinked <- r.c.Unlink(a.id.String()) }()
+		// Until the Unlink either waits on the center's mutex (its first
+		// step: seen in its stack, no clock involved) or, unlocked, has run
+		// to its end (its rotation then shows in the boxes below).
+		for {
+			select {
+			case err := <-unlinked:
+				done <- err
+				return
+			default:
+			}
+			if unlinkWaitsOnTheCenter() {
+				go func() { done <- <-unlinked }()
+				return
+			}
+			runtime.Gosched()
+		}
 	}
 	boxes, err := r.c.Keyboxes()
 	if err != nil {
@@ -1060,17 +1127,7 @@ func TestPublishCallbackMayReadKeyboxes(t *testing.T) {
 		}
 		reads++
 	}
-	// The pairing runs here; a watchdog only waits. A deadlock never returns,
-	// so the watchdog ends the run with a panic naming it.
-	done := make(chan struct{})
-	defer close(done)
-	go func() {
-		select {
-		case <-done:
-		case <-time.After(10 * time.Second):
-			panic("TestPublishCallbackMayReadKeyboxes: a Publish callback reading Keyboxes deadlocked")
-		}
-	}()
+	// A deadlock never returns: go test -timeout ends the run with its stacks.
 	a, b := newPhone(t), newPhone(t)
 	code := r.issue()
 	r.handle(a, code.Nonce)

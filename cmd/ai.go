@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"watchtower/internal/agentkind"
 	"watchtower/internal/ai"
 	"watchtower/internal/chat"
 	"watchtower/internal/config"
@@ -24,7 +25,10 @@ import (
 	"watchtower/internal/providerrouting"
 	"watchtower/internal/providers"
 	"watchtower/internal/providers/transport"
+	"watchtower/internal/sessionagent"
 	"watchtower/internal/specreview"
+	"watchtower/internal/tools"
+	"watchtower/internal/tuning"
 
 	"github.com/spf13/cobra"
 )
@@ -66,7 +70,7 @@ var (
 
 // queryPurposes are the --purpose values ai query accepts: embedded chats
 // whose turns the usage ledger shows apart from the plain chat.
-var queryPurposes = map[string]bool{"spec_review.discuss": true, "review.reviewer": true}
+var queryPurposes = map[string]bool{"spec_review.discuss": true, "review.reviewer": true, tuning.ChatPurpose: true}
 
 var aiCmd = &cobra.Command{
 	Use:   "ai",
@@ -84,6 +88,14 @@ var aiQueryCmd = &cobra.Command{
 var aiModelsFlagJSON bool
 var aiTestCLIPath string
 
+// aiTestFlagJSON is accepted because the Desktop's onboarding sends it
+// (`ai test --json`); the output is one JSON object either way.
+var aiTestFlagJSON bool
+
+// aiWhichFlagJSON is accepted for the documented spelling; the output is one
+// JSON line either way.
+var aiWhichFlagJSON bool
+
 // Catalog reads must not inherit the database/config schema upgrade hook:
 // Settings uses saved file identity to confirm daemon application.
 var aiModelsCmd = &cobra.Command{
@@ -100,6 +112,15 @@ var aiTestCmd = &cobra.Command{
 	Short:             "Test AI provider connectivity",
 	Long:              "Verifies that the configured AI provider is available and responds. Outputs JSON with status.",
 	RunE:              runAITest,
+}
+
+// aiWhichCmd reports the claude/codex executable Go's own lookup would run.
+var aiWhichCmd = &cobra.Command{
+	Use:               "which",
+	PersistentPreRunE: func(*cobra.Command, []string) error { return nil },
+	Short:             "Print the agent CLI binary watchtower would run",
+	Long:              "Prints {\"provider\",\"path\",\"found\"} for --provider claude|codex: the configured claude_path/codex_path when it is an executable file, else the same lookup every spawn uses. Read-only: no request, no auth read, no config write.",
+	RunE:              runAIWhich,
 }
 
 // aiStreamEvent is a JSON line emitted by `watchtower ai query`.
@@ -123,10 +144,13 @@ func init() {
 	aiCmd.AddCommand(aiQueryCmd)
 	aiCmd.AddCommand(aiTestCmd)
 	aiCmd.AddCommand(aiModelsCmd)
+	aiCmd.AddCommand(aiWhichCmd)
 
+	aiWhichCmd.Flags().BoolVar(&aiWhichFlagJSON, "json", false, "output JSON (always on)")
 	aiModelsCmd.Flags().BoolVar(&aiModelsFlagJSON, "json", false, "output JSON")
 	aiTestCmd.Flags().StringVar(&aiFlagModel, "model", "", "override AI model")
 	aiTestCmd.Flags().StringVar(&aiTestCLIPath, "cli-path", "", "test this CLI path without saving it")
+	aiTestCmd.Flags().BoolVar(&aiTestFlagJSON, "json", false, "output JSON (always on)")
 
 	aiQueryCmd.Flags().StringVar(&aiFlagModel, "model", "", "override AI model")
 	// Ignored since #604 G11 (no Claude session is stored); kept so an
@@ -145,7 +169,7 @@ func init() {
 	aiQueryCmd.MarkFlagsMutuallyExclusive("prompt-stdin", "system-prompt-stdin")
 	aiQueryCmd.Flags().StringVar(&aiFlagDBPath, "db-path", "", "SQLite database path for MCP (overrides default)")
 	aiQueryCmd.Flags().StringVar(&aiFlagTools, "tools", "", "tool mode: chat = mount the assistant's write tools as proposals")
-	aiQueryCmd.Flags().StringVar(&aiFlagSurface, "surface", "main", "chat surface for --tools chat: main|target|automation_editor")
+	aiQueryCmd.Flags().StringVar(&aiFlagSurface, "surface", "main", "chat surface for --tools chat: main|target|automation_editor|tuning")
 	aiQueryCmd.Flags().Int64Var(&aiFlagConversation, "conversation", 0, "chat conversation id for --tools chat")
 	aiQueryCmd.Flags().StringVar(&aiFlagTurn, "turn", "", "turn id for --tools chat")
 	aiQueryCmd.Flags().StringVar(&aiFlagContextType, "context-type", "", "chat context type (e.g. target)")
@@ -158,7 +182,7 @@ func init() {
 	aiQueryCmd.Flags().Int64Var(&aiFlagReadFolderRound, "read-folder-round", 0,
 		"run, like --read-folder, in the folder diff review round N was taken from; exit 2 if it is no such round")
 	aiQueryCmd.Flags().StringVar(&aiFlagPurpose, "purpose", "",
-		"record this query's LLM calls under this usage purpose (spec_review.discuss, review.reviewer); exit 2 on any other value")
+		"record this query's LLM calls under this usage purpose (spec_review.discuss, review.reviewer, tuning.chat); exit 2 on any other value")
 }
 
 // queryContext tags ctx with the --purpose value for the LLM usage ledger.
@@ -265,6 +289,18 @@ func runAIQuery(cmd *cobra.Command, args []string) error {
 	if aiFlagEvents != "v1" && aiFlagEvents != "v2" {
 		emitError(enc, fmt.Sprintf("--events must be v1 or v2, got %q", aiFlagEvents))
 		return nil
+	}
+	// Before any config or provider work: an unknown surface never starts a
+	// model call or an MCP child.
+	if !tools.KnownChatSurface(aiFlagSurface) {
+		emitError(enc, fmt.Sprintf("unknown chat surface %q", aiFlagSurface))
+		return nil
+	}
+	if aiFlagTools == "chat" && aiFlagSurface == tools.SurfaceTuning {
+		if err := checkTuningBinding(aiFlagConversation, aiFlagContextType); err != nil {
+			emitError(enc, err.Error())
+			return nil
+		}
 	}
 	// Before the config/DB work below, so a writer feeding a large prompt on
 	// stdin is not kept waiting (the Desktop tolerates a CLI that exits
@@ -759,4 +795,31 @@ func chatMCPArgs() []string {
 		args = append(args, "--context-type", aiFlagContextType, "--context-id", aiFlagContextID)
 	}
 	return args
+}
+
+// isExecutableFile reports whether p is a regular file with an execute bit.
+func isExecutableFile(p string) bool {
+	info, err := os.Stat(p)
+	return err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0
+}
+
+// runAIWhich prints the agent binary Go would run. found is false when the
+// lookup returned the bare fallback name, nothing, an error, or a path that
+// is not an executable file — a configured override that is not executable
+// included, since Go would run it rather than fall back; path is then "".
+func runAIWhich(cmd *cobra.Command, _ []string) error {
+	kind, ok := agentkind.Parse(flagProvider)
+	if !ok {
+		return &exitCodeError{code: 2, err: fmt.Errorf("ai which: --provider must be %s, got %q", agentkind.Choices("or"), flagProvider)}
+	}
+	provider := string(kind)
+	cfg, err := config.Load(flagConfig)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+	path, bare := sessionagent.MustFor(kind).Binary(cfg, sessionagent.Finders{Claude: claudeFindBinary, Codex: codexFindBinary})
+	if path == bare || !isExecutableFile(path) {
+		path = ""
+	}
+	return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{"provider": provider, "path": path, "found": path != ""})
 }

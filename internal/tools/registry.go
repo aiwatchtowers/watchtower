@@ -374,13 +374,22 @@ func (r *Registry) List(surface string) []*Tool {
 }
 
 // visibleOn reports whether surface may see t; a surface-less tool is visible
-// everywhere.
+// everywhere but on a named-only surface.
 func visibleOn(t *Tool, surface string) bool {
-	return len(t.Surfaces) == 0 || slices.Contains(t.Surfaces, surface)
+	if len(t.Surfaces) == 0 {
+		return !namedOnlySurface(surface)
+	}
+	return slices.Contains(t.Surfaces, surface)
 }
 
+// namedOnlySurface is a surface that sees only the tools naming it: the
+// tuning chat reads no company source text (spec 2026-11-03-tuning-chat-design
+// D62), so the surface-less source reads (messages, Jira, people, …) stay off
+// it.
+func namedOnlySurface(surface string) bool { return surface == SurfaceTuning }
+
 // VisibleOn reports whether surface may see t (a surface-less tool is
-// visible everywhere) — the check Propose makes, for a caller that wants it
+// visible everywhere but on a named-only surface) — the check Propose makes, for a caller that wants it
 // before paying for the call's arguments.
 func (t *Tool) VisibleOn(surface string) bool { return visibleOn(t, surface) }
 
@@ -444,7 +453,8 @@ func CheckTrustable(t *Tool) error {
 }
 
 // trustSurfaceErr refuses a surface that is no trust place for t: one t is
-// not on, the workbench (DEV-06) and the inbox (the owner's own press). The automation surface is a trust place
+// not on, the workbench (DEV-06), the inbox (the owner's own press) and the
+// tuning chat (DirectApply; the card's Accept is the approval). The automation surface is a trust place
 // like main (spec 2026-10-14-automations-design §6.2 step 4); its auto grants
 // are a separate table the registry reads first.
 func trustSurfaceErr(t *Tool, surface string) error {
@@ -453,6 +463,8 @@ func trustSurfaceErr(t *Tool, surface string) error {
 		return fmt.Errorf("%w: workbench tools always apply in their own workbench", ErrSurfaceNotOffered)
 	case surface == InboxSurface:
 		return fmt.Errorf("%w: inbox tools run only on the owner's press, which is the approval", ErrSurfaceNotOffered)
+	case surface == SurfaceTuning:
+		return fmt.Errorf("%w: tuning tools only file a card, and the owner's Accept on it is the approval", ErrSurfaceNotOffered)
 	case strings.TrimSpace(surface) == "" || !visibleOn(t, surface):
 		return fmt.Errorf("%w: %s is not on the %q surface", ErrSurfaceNotOffered, t.Name, surface)
 	}
@@ -462,7 +474,8 @@ func trustSurfaceErr(t *Tool, surface string) error {
 // TrustSurfaces is the surfaces of t a trust level is kept for: none for a
 // read tool, and for a write tool every surface but the workbench, whose
 // write tools apply under DirectApply and never read trust (DEV-06, target
-// 167), and the inbox, whose press is the owner's approval. The automation
+// 167), the inbox, whose press is the owner's approval, and the tuning chat,
+// which applies directly and whose card's Accept is the approval. The automation
 // surface is one (spec §6.2 step 4).
 func TrustSurfaces(t *Tool) []string {
 	out := make([]string, 0, len(t.Surfaces))
@@ -470,7 +483,7 @@ func TrustSurfaces(t *Tool) []string {
 		return out
 	}
 	for _, s := range t.Surfaces {
-		if s != WorkbenchSurface && s != InboxSurface {
+		if s != WorkbenchSurface && s != InboxSurface && s != SurfaceTuning {
 			out = append(out, s)
 		}
 	}

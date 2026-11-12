@@ -94,6 +94,10 @@ type config struct {
 	threshold time.Duration
 }
 
+// now is the clock of every measured wait and hold and of an event's
+// stamp; a variable so a test can drive it instead of waiting.
+var now = time.Now
+
 var (
 	settingsOnce sync.Once
 	settings     config
@@ -192,7 +196,7 @@ func Record(e Event) {
 		return
 	}
 	if e.TS.IsZero() {
-		e.TS = time.Now()
+		e.TS = now()
 	}
 	e.TS = e.TS.UTC()
 	e.PID = os.Getpid()

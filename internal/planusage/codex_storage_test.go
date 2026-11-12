@@ -1,56 +1,47 @@
 package planusage
 
 import (
-	"bufio"
-	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/codex"
+	"watchtower/internal/codex/codextest"
 	"watchtower/internal/db"
 )
 
-// The real reader launches this test binary as a fake app-server. It answers
-// only the allowed methods and exits on stdin EOF; ReadUsage owns/reaps it.
-func runFakeCodexUsageServer() {
-	scanner := bufio.NewScanner(os.Stdin)
-	for scanner.Scan() {
-		var message struct {
-			ID     json.RawMessage `json:"id"`
-			Method string          `json:"method"`
-		}
-		if json.Unmarshal(scanner.Bytes(), &message) != nil {
-			os.Exit(2)
-		}
-		var result any
-		switch message.Method {
-		case "initialize":
-			result = map[string]any{}
-		case "initialized":
-			continue
-		case "account/read":
-			result = map[string]any{"account": map[string]any{"type": "chatgpt", "planType": "pro", "email": "identity-canary@example.com"}}
-		case "account/rateLimits/read":
-			result = json.RawMessage(os.Getenv("WATCHTOWER_TEST_CODEX_LIMITS"))
-		default:
-			os.Exit(2)
-		}
-		encoded, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": message.ID, "result": result})
-		if err != nil {
-			os.Exit(2)
-		}
-		fmt.Println(string(encoded))
-	}
-	if scanner.Err() != nil {
-		os.Exit(2)
-	}
+// readFakeCodexUsage runs the real reader (codex.ReadUsageFrom) against an
+// in-process app-server, in a synctest bubble: the server answers only the
+// allowed methods, rateLimits/read with limits.
+func readFakeCodexUsage(t *testing.T, limits json.RawMessage, home string) codex.UsageSnapshot {
+	t.Helper()
+	var out codex.UsageSnapshot
+	synctest.Test(t, func(t *testing.T) {
+		server := codextest.New(func(m codextest.Message) []any {
+			switch m.Method {
+			case "initialize":
+				return []any{codextest.Result(m, map[string]any{})}
+			case "initialized":
+				return nil
+			case "account/read":
+				return []any{codextest.Result(m, map[string]any{"account": map[string]any{"type": "chatgpt", "planType": "pro", "email": "identity-canary@example.com"}})}
+			case "account/rateLimits/read":
+				return []any{codextest.Result(m, limits)}
+			}
+			t.Errorf("unexpected app-server method %q", m.Method)
+			return nil
+		})
+		var err error
+		out, err = codex.ReadUsageFrom(t.Context(), func() (codex.AppServerConn, error) { return server.Serve(), nil }, home)
+		require.NoError(t, err)
+	})
+	return out
 }
 
 func TestCodexStorage_RealReaderToAtomicSnapshot(t *testing.T) {
@@ -59,13 +50,8 @@ func TestCodexStorage_RealReaderToAtomicSnapshot(t *testing.T) {
 	t.Cleanup(func() { require.NoError(t, d.Close()) })
 	now := time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC)
 	reset := now.Add(2 * time.Hour).Unix()
-	bin, err := os.Executable()
-	require.NoError(t, err)
 	raw := fmt.Sprintf(`{"accountId":"account-canary","ordinaryUsageAllowed":false,"rateLimitsByLimitId":{"codex":{"primary":{"usedPercent":40,"windowDurationMins":10080,"resetsAt":%d},"secondary":{"usedPercent":20,"windowDurationMins":300,"resetsAt":%d}},"extra":{"primary":{"usedPercent":5,"windowDurationMins":90,"resetsAt":%d}}}}`, reset, reset, reset)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	response, err := codex.ReadUsage(ctx, bin, append(os.Environ(), "WATCHTOWER_TEST_CODEX_USAGE=1", "WATCHTOWER_TEST_CODEX_LIMITS="+raw), "synthetic-home")
-	require.NoError(t, err)
+	response := readFakeCodexUsage(t, json.RawMessage(raw), "synthetic-home")
 	require.True(t, response.IdentityKnown)
 	require.NoError(t, StoreCodexUsage(d, now, response))
 	st, err := d.GetCodexPlanUsageStatus()

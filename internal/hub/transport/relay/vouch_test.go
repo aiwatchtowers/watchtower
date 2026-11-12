@@ -3,7 +3,6 @@ package relay
 import (
 	"errors"
 	"testing"
-	"time"
 
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/transport/relay/relayv1"
@@ -80,22 +79,17 @@ func TestSlotAddedReadsTheAccountStateFirst(t *testing.T) {
 	h.relay.Push(t, &relayv1.Event{Kind: &relayv1.Event_Control{Control: &relayv1.Control{
 		Kind: relayv1.ControlKind_CONTROL_KIND_SLOT_ADDED, Detail: "phone1",
 	}}})
-	deadline := time.After(5 * time.Second)
 	for {
-		select {
-		case ev := <-h.tr.Events():
-			if ev.Control == nil || ev.Control.Kind != transport.SlotAdded {
-				continue
-			}
-			if ev.Control.Detail != "phone1" || !h.tr.Vouched() {
-				t.Fatalf("SLOT_ADDED %+v, vouched %v", ev.Control, h.tr.Vouched())
-			}
-			if n := len(h.relay.Requests("get_account_state")) - reads; n != 1 {
-				t.Fatalf("%d account-state reads for one SLOT_ADDED", n)
-			}
-			return
-		case <-deadline:
-			t.Fatal("no SLOT_ADDED")
+		ev := <-h.tr.Events()
+		if ev.Control == nil || ev.Control.Kind != transport.SlotAdded {
+			continue
 		}
+		if ev.Control.Detail != "phone1" || !h.tr.Vouched() {
+			t.Fatalf("SLOT_ADDED %+v, vouched %v", ev.Control, h.tr.Vouched())
+		}
+		if n := len(h.relay.Requests("get_account_state")) - reads; n != 1 {
+			t.Fatalf("%d account-state reads for one SLOT_ADDED", n)
+		}
+		return
 	}
 }

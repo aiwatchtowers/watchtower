@@ -58,12 +58,30 @@ final class DesignShotsTests: XCTestCase {
         })
     }
 
+    func testTuningChatShotsRender() throws {
+        try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("tuning-chat-") })
+    }
+
     func testWorkchatActivityShotsRender() throws {
         try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("workchat-activity-") })
     }
 
+    func testChatMarkdownShotsRender() throws {
+        try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("chat-markdown-") })
+    }
+
+    func testClosedAsksShotsRender() throws {
+        try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("closed-asks-") })
+    }
+
     func testReportProblemShotsRender() throws {
         try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("report-problem-") })
+    }
+
+    func testOnboardingAgentShotsRender() throws {
+        try renderShots(DesignShotCatalog.all.filter {
+            $0.name.hasPrefix("onboarding-agent-") || $0.name.hasPrefix("onboarding-step-live-")
+        })
     }
 
     private func renderShots(_ shots: [DesignShot]) throws {

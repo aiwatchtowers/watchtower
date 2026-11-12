@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"watchtower/internal/config"
@@ -124,100 +125,106 @@ func TestGeneratorImagesAndActualPerProviderTier(t *testing.T) {
 	}
 }
 func TestPooledRouteKnownQuotaDoesNotWaitForWorker(t *testing.T) {
-	cfg := routeConfig()
-	store := providerhealth.New(t.TempDir(), nil)
-	for _, p := range []string{"claude", "codex"} {
-		if err := store.RecordQuota(context.Background(), providerhealth.AccountScope(p, ""), &providers.Failure{Provider: p, Category: providers.Quota}); err != nil {
+	synctest.Test(t, func(t *testing.T) {
+		cfg := routeConfig()
+		store := providerhealth.New(t.TempDir(), nil)
+		for _, p := range []string{"claude", "codex"} {
+			if err := store.RecordQuota(context.Background(), providerhealth.AccountScope(p, ""), &providers.Failure{Provider: p, Category: providers.Quota}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		pool := sessions.NewSessionPool(1)
+		t.Cleanup(pool.Close)
+		worker, err := pool.Acquire(context.Background())
+		if err != nil {
 			t.Fatal(err)
 		}
-	}
-	pool := sessions.NewSessionPool(1)
-	t.Cleanup(pool.Close)
-	worker, err := pool.Acquire(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Release(worker)
-	factory := func(string) digest.Generator {
-		return digest.NewPooledGenerator(&fakeLeaf{call: func(context.Context, string, string, string) (string, *digest.Usage, string, error) {
-			t.Fatal("synthetic model call")
-			return "", nil, "", nil
-		}}, pool)
-	}
-	gen := WrapGenerator(cfg, &fakeLeaf{}, factory, GeneratorOptions{Router: &Router{Health: store, Allowed: func(string) error { return nil }}, Timeout: time.Second})
-	_, _, _, err = gen.Generate(context.Background(), "", "", "")
-	if !errors.Is(err, ErrDeferred) {
-		t.Fatal(err)
-	}
+		defer pool.Release(worker)
+		factory := func(string) digest.Generator {
+			return digest.NewPooledGenerator(&fakeLeaf{call: func(context.Context, string, string, string) (string, *digest.Usage, string, error) {
+				t.Fatal("synthetic model call")
+				return "", nil, "", nil
+			}}, pool)
+		}
+		gen := WrapGenerator(cfg, &fakeLeaf{}, factory, GeneratorOptions{Router: &Router{Health: store, Allowed: func(string) error { return nil }}, Timeout: time.Second})
+		_, _, _, err = gen.Generate(context.Background(), "", "", "")
+		if !errors.Is(err, ErrDeferred) {
+			t.Fatal(err)
+		}
+	})
 }
 func TestSharedPoolLimitAndDeadlineIncludesQueue(t *testing.T) {
-	cfg := routeConfig()
-	pool := sessions.NewSessionPool(1)
-	t.Cleanup(pool.Close)
-	worker, err := pool.Acquire(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	calls := 0
-	var mu sync.Mutex
-	factory := func(p string) digest.Generator {
-		return digest.NewPooledGenerator(&fakeLeaf{call: func(context.Context, string, string, string) (string, *digest.Usage, string, error) {
-			mu.Lock()
-			calls++
-			mu.Unlock()
-			return "ok", nil, "", nil
-		}}, pool)
-	}
-	gen := WrapGenerator(cfg, &fakeLeaf{}, factory, GeneratorOptions{Router: &Router{Allowed: func(string) error { return nil }}, Timeout: 20 * time.Millisecond})
-	_, _, _, err = gen.Generate(context.Background(), "", "", "")
-	pool.Release(worker)
-	if !errors.Is(err, context.DeadlineExceeded) || calls != 0 {
-		t.Fatal(err, calls)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		cfg := routeConfig()
+		pool := sessions.NewSessionPool(1)
+		t.Cleanup(pool.Close)
+		worker, err := pool.Acquire(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		calls := 0
+		var mu sync.Mutex
+		factory := func(p string) digest.Generator {
+			return digest.NewPooledGenerator(&fakeLeaf{call: func(context.Context, string, string, string) (string, *digest.Usage, string, error) {
+				mu.Lock()
+				calls++
+				mu.Unlock()
+				return "ok", nil, "", nil
+			}}, pool)
+		}
+		gen := WrapGenerator(cfg, &fakeLeaf{}, factory, GeneratorOptions{Router: &Router{Allowed: func(string) error { return nil }}, Timeout: 20 * time.Millisecond})
+		_, _, _, err = gen.Generate(context.Background(), "", "", "")
+		pool.Release(worker)
+		if !errors.Is(err, context.DeadlineExceeded) || calls != 0 {
+			t.Fatal(err, calls)
+		}
+	})
 }
 
 func TestBothLeavesShareOneConcurrencyLimit(t *testing.T) {
-	pool := sessions.NewSessionPool(1)
-	t.Cleanup(pool.Close)
-	var mu sync.Mutex
-	active, peak, total := 0, 0, 0
-	factory := func(p string) digest.Generator {
-		return digest.NewPooledGenerator(&fakeLeaf{call: func(ctx context.Context, _, _, _ string) (string, *digest.Usage, string, error) {
-			mu.Lock()
-			active++
-			total++
-			if active > peak {
-				peak = active
-			}
-			mu.Unlock()
-			timer := time.NewTimer(time.Millisecond)
-			defer timer.Stop()
-			select {
-			case <-ctx.Done():
-			case <-timer.C:
-			}
-			mu.Lock()
-			active--
-			mu.Unlock()
-			if p == "claude" {
-				return "", nil, "", quota(p)
-			}
-			return "ok", nil, "", nil
-		}}, pool)
-	}
-	gen := WrapGenerator(routeConfig(), &fakeLeaf{}, factory, GeneratorOptions{Router: &Router{Allowed: func(string) error { return nil }}, Timeout: time.Second})
-	var wg sync.WaitGroup
-	for range 6 {
-		wg.Go(func() {
-			if _, _, _, err := gen.Generate(context.Background(), "", "", ""); err != nil {
-				t.Error(err)
-			}
-		})
-	}
-	wg.Wait()
-	if peak != 1 || total != 12 {
-		t.Fatal(peak, total)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		pool := sessions.NewSessionPool(1)
+		t.Cleanup(pool.Close)
+		var mu sync.Mutex
+		active, peak, total := 0, 0, 0
+		factory := func(p string) digest.Generator {
+			return digest.NewPooledGenerator(&fakeLeaf{call: func(ctx context.Context, _, _, _ string) (string, *digest.Usage, string, error) {
+				mu.Lock()
+				active++
+				total++
+				if active > peak {
+					peak = active
+				}
+				mu.Unlock()
+				timer := time.NewTimer(time.Millisecond)
+				defer timer.Stop()
+				select {
+				case <-ctx.Done():
+				case <-timer.C:
+				}
+				mu.Lock()
+				active--
+				mu.Unlock()
+				if p == "claude" {
+					return "", nil, "", quota(p)
+				}
+				return "ok", nil, "", nil
+			}}, pool)
+		}
+		gen := WrapGenerator(routeConfig(), &fakeLeaf{}, factory, GeneratorOptions{Router: &Router{Allowed: func(string) error { return nil }}, Timeout: time.Second})
+		var wg sync.WaitGroup
+		for range 6 {
+			wg.Go(func() {
+				if _, _, _, err := gen.Generate(context.Background(), "", "", ""); err != nil {
+					t.Error(err)
+				}
+			})
+		}
+		wg.Wait()
+		if peak != 1 || total != 12 {
+			t.Fatal(peak, total)
+		}
+	})
 }
 
 // A raw cliGenerator caller such as chat.title has no context deadline. The
@@ -246,7 +253,7 @@ func TestRawRouteDefaultDeadlineRecoversDueCircuits(t *testing.T) {
 				var parentDeadline time.Time
 				if shortParent {
 					var cancel context.CancelFunc
-					ctx, cancel = context.WithTimeout(ctx, time.Second)
+					ctx, cancel = context.WithTimeout(ctx, time.Minute) // under the default bound; only its deadline is read
 					defer cancel()
 					parentDeadline, _ = ctx.Deadline()
 				}

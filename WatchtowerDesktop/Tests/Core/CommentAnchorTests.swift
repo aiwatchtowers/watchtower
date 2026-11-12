@@ -120,28 +120,32 @@ final class CommentAnchorTests: XCTestCase {
         XCTAssertEqual(made.locate(in: "Новий абзац.\n\n" + text).map { String(("Новий абзац.\n\n" + text)[$0]) }, "виклик 🔁 двічі")
     }
 
-    // MARK: locate — performance (the collapsed-text path must stay near-linear)
+    // MARK: locate — a large document
 
-    /// A regression guard against reintroducing the pre-fix collapsed-text
-    /// search (a hand-rolled Character-array scan), not a tight performance
-    /// budget.
-    ///
-    /// The bound is relative to the machine: `locate` must cost under
-    /// `maxBaselineMultiple` times one linear pass over the same document that
-    /// collapses its whitespace into a new String — work `locate` itself does
-    /// once. CI runners are noisy and also consistently slower than a laptop,
-    /// so a fixed wall-clock bound flaked (0.50–0.78 s against 0.5 s); a slow
-    /// runner slows both sides of the ratio alike. Each side is the fastest of
-    /// three runs on a monotonic clock, since noise only ever adds time.
-    /// Measured locally only (debug build): the current `locate` runs at
-    /// 1.95–1.99× the baseline idle and up to 2.4× with every core saturated;
-    /// the pre-fix scan at 4.71–4.86×. The bound of 3.4 is the geometric mean
-    /// of the worst current reading under load and the best pre-fix one
-    /// (√(2.4 × 4.71) ≈ 3.36), about 1.4× clear of each. (A 1 MB vs 2 MB
-    /// scaling check would not catch the old scan: with the quote length
-    /// fixed, O(n·m) also grows linearly in n.) The absolute 5 s ceiling is
-    /// only a backstop far above any CI reading.
-    func testReflowMatchOnLargeDocumentCompletesQuickly() throws {
+    /// The collapsed-text search walks the text once, counted rather than
+    /// timed (a time ratio to a linear pass flaked under memory pressure:
+    /// 6× against a 3.4 bound). Its own steps — one per character, cursor
+    /// move and hit — stay within 3× the characters and double with the text
+    /// on a document that is all hits, where the pre-fix hand-rolled scan
+    /// (a Character-array double loop) and a per-hit rescan both grow faster.
+    func testCollapsedSearchWorkIsLinearInTheText() {
+        func search(_ repeats: Int) -> (steps: Int, characters: Int, hits: Int) {
+            let text = String(repeating: "jumps  over\nthe dog. ", count: repeats)
+            var steps = 0
+            let hits = CommentAnchor.collapsedOccurrences(of: Array("jumps over the dog."), in: text, steps: &steps)
+            return (steps, text.count, hits.count)
+        }
+        let small = search(2_000)
+        let large = search(4_000)
+        XCTAssertEqual(small.hits, 2_000)
+        XCTAssertEqual(large.hits, 4_000)
+        XCTAssertGreaterThanOrEqual(small.steps, small.characters, "every character is walked")
+        XCTAssertLessThanOrEqual(large.steps, 3 * large.characters, "\(large.steps) steps for \(large.characters) characters")
+        XCTAssertEqual(Double(large.steps) / Double(small.steps), 2, accuracy: 0.01, "twice the text, twice the work")
+    }
+
+    /// The collapsed-text path on a ~1 MB document finds the reflowed quote.
+    func testReflowMatchOnLargeDocument() throws {
         let paragraph = "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore.\n\n"
         let padding = String(repeating: paragraph, count: 8_000) // ~1 MB, contains no copy of the quote below.
         let quote = "jumps over the lazy dog near the riverbank"
@@ -153,46 +157,10 @@ final class CommentAnchorTests: XCTestCase {
         let reflowedSentence = "The quick brown fox " + reflowedQuote + " at dawn."
         let insertAt = padding.index(padding.startIndex, offsetBy: padding.count / 2)
         let big = String(padding[..<insertAt]) + reflowedSentence + String(padding[insertAt...])
+        XCTAssertNil(big.range(of: quote), "only the reflowed copy is in the document")
 
-        var found: Range<String.Index>?
-        let locateTime = Self.fastestOfThree { found = made.locate(in: big) }
-        var collapsed = "" // counted outside the timing: only the collapse pass is measured
-        let baselineTime = Self.fastestOfThree {
-            var out = ""
-            var lastWasSpace = false
-            for character in big {
-                if character.isWhitespace {
-                    if !lastWasSpace { out.append(" ") }
-                    lastWasSpace = true
-                } else {
-                    out.append(character)
-                    lastWasSpace = false
-                }
-            }
-            collapsed = out
-        }
-        XCTAssertGreaterThan(collapsed.count, 0)
-
-        let maxBaselineMultiple = 3.4
-        let ratio = locateTime / max(baselineTime, 1e-6)
-        XCTAssertLessThan(
-            ratio, maxBaselineMultiple,
-            "reflow locate took \(locateTime)s, \(ratio)× a linear pass over the same ~1 MB document (\(baselineTime)s)"
-        )
-        XCTAssertLessThan(locateTime, 5, "reflow locate on a ~1 MB document took \(locateTime)s")
+        let found = made.locate(in: big)
         XCTAssertEqual(found.map { String(big[$0]) }, reflowedQuote)
-    }
-
-    /// Seconds taken by the fastest of three runs of `body`.
-    private static func fastestOfThree(_ body: () -> Void) -> Double {
-        let clock = ContinuousClock()
-        var fastest = Duration.seconds(Int64.max)
-        for _ in 0..<3 {
-            let start = clock.now
-            body()
-            fastest = min(fastest, clock.now - start)
-        }
-        return Double(fastest.components.seconds) + Double(fastest.components.attoseconds) / 1e18
     }
 
     /// Boundary check on the collapsed-text path itself: a match whose first

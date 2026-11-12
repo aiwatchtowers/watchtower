@@ -120,12 +120,7 @@ func TestRunHandsAFailedSaveToOnError(t *testing.T) {
 		cancel()
 		<-done
 	})
-	select {
-	case err := <-seen:
-		if !errors.Is(err, transport.ErrEntitlementInactive) {
-			t.Fatalf("OnError got %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("OnError never called")
+	if err := <-seen; !errors.Is(err, transport.ErrEntitlementInactive) {
+		t.Fatalf("OnError got %v", err)
 	}
 }

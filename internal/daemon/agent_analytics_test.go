@@ -6,6 +6,8 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 
 	"watchtower/internal/agentlog"
@@ -185,4 +187,58 @@ func TestPhaseAgentAnalytics_FailedMoveSkipsAndLogsOnce(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, moved, "the next cycle's retry succeeds")
 	assert.Equal(t, 1, countPipelineRuns(t, database, "agent-analytics"))
+}
+
+// codexMismatchWorkbench binds an analytics-on workbench whose codex row's
+// rollout (under a temp CODEX_HOME) has negative fresh input on mismatch
+// token lines (spec 2026-11-03 §4.7).
+func codexMismatchWorkbench(t *testing.T, database *db.DB, mismatch bool) {
+	t.Helper()
+	folder, _ := filepath.EvalSymlinks(t.TempDir())
+	wb, err := database.CreateWorkbench("app", folder)
+	require.NoError(t, err)
+	require.NoError(t, database.SetWorkbenchAgentAnalytics(wb, true))
+	claude := t.TempDir()
+	prev := agentAnalyticsClaudeDir
+	agentAnalyticsClaudeDir = func() string { return claude }
+	t.Cleanup(func() { agentAnalyticsClaudeDir = prev })
+	home := t.TempDir()
+	t.Setenv("CODEX_HOME", home)
+	const id = "00000000-0000-0000-0000-00000000c0d1"
+	cached := 10
+	if mismatch {
+		cached = 60
+	}
+	content := `{"timestamp":"2026-11-01T10:00:00Z","type":"session_meta","payload":{"id":"` + id + `","cwd":"` + folder + `"}}` + "\n" +
+		`{"timestamp":"2026-11-01T10:00:01Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":` +
+		`{"input_tokens":50,"cached_input_tokens":` + strconv.Itoa(cached) + `,"output_tokens":5,"total_tokens":55},` +
+		`"total_token_usage":{"total_tokens":55}}}}` + "\n"
+	dir := filepath.Join(home, "sessions", "2026", "11", "01")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "rollout-2026-11-01T10-00-00-"+id+".jsonl"), []byte(content), 0o600))
+	_, err = database.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id)
+		VALUES (?, 'codex', 'c', ?, ?)`, wb, folder, id)
+	require.NoError(t, err)
+}
+
+func TestPhaseAgentAnalytics_LogsCodexUsageMismatch(t *testing.T) {
+	for _, mismatch := range []bool{true, false} {
+		d, database := newAgentAnalyticsTestDaemon(t)
+		codexMismatchWorkbench(t, database, mismatch)
+		var logBuf bytes.Buffer
+		d.SetLogger(log.New(&logBuf, "", 0))
+
+		d.phaseAgentAnalytics(context.Background())
+
+		var n int
+		require.NoError(t, d.agentLog.QueryRow(`SELECT COUNT(*) FROM agent_log_events WHERE kind = 'api_call'`).Scan(&n))
+		require.Equal(t, 1, n, "the rollout was read")
+		const line = "codex token line(s) with negative fresh input"
+		if mismatch {
+			assert.Equal(t, 1, strings.Count(logBuf.String(), line), logBuf.String())
+			assert.Contains(t, logBuf.String(), ": 1 "+line)
+		} else {
+			assert.NotContains(t, logBuf.String(), line)
+		}
+	}
 }

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -510,7 +511,7 @@ func (s *barrierSizer) Size(ctx context.Context, root string, _ time.Duration) (
 	select {
 	case <-s.release:
 		return int64(len(root)), true
-	case <-time.After(time.Second):
+	case <-time.After(time.Second): // the bubble's clock: walks one at a time
 		return 0, false
 	case <-ctx.Done():
 		return 0, false
@@ -519,22 +520,26 @@ func (s *barrierSizer) Size(ctx context.Context, root string, _ time.Duration) (
 
 func TestPlan_SweepMeasuresWorktreesConcurrently(t *testing.T) {
 	t.Parallel()
-	f := newFixture(t)
-	a := f.pushedWork("wt-a", "feat/a")
-	b := f.pushedWork("wt-b", "feat/b")
-	d := f.deps()
-	d.Sizer = &barrierSizer{want: 2, release: make(chan struct{})}
+	// On the bubble's clock: a worker's pause ends only once every other
+	// worker is parked too, however slow the machine.
+	synctest.Test(t, func(t *testing.T) {
+		f := newFixture(t)
+		a := f.pushedWork("wt-a", "feat/a")
+		b := f.pushedWork("wt-b", "feat/b")
+		d := f.deps()
+		d.Sizer = &barrierSizer{want: 2, release: make(chan struct{})}
 
-	res, err := PlanResult(context.Background(), d, Request{Sweep: true, WorkbenchID: testWorkbench})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, root := range []string{a, b} {
-		it := wantItem(t, res.Plan, "worktree:"+root, ActionRemove, "")
-		if !it.BytesKnown || it.Bytes != int64(len(root)) {
-			t.Fatalf("%s measured %+v: the sizes were not walked at the same time", root, it)
+		res, err := PlanResult(context.Background(), d, Request{Sweep: true, WorkbenchID: testWorkbench})
+		if err != nil {
+			t.Fatal(err)
 		}
-	}
+		for _, root := range []string{a, b} {
+			it := wantItem(t, res.Plan, "worktree:"+root, ActionRemove, "")
+			if !it.BytesKnown || it.Bytes != int64(len(root)) {
+				t.Fatalf("%s measured %+v: the sizes were not walked at the same time", root, it)
+			}
+		}
+	})
 }
 
 // peakSizer records the most Size calls running at once.
@@ -557,20 +562,24 @@ func (s *peakSizer) Size(context.Context, string, time.Duration) (int64, bool) {
 
 func TestPlan_SweepMeasuresAtMostSizeWorkersAtOnce(t *testing.T) {
 	t.Parallel()
-	f := newFixture(t)
-	for i := range sizeWorkers + 2 {
-		f.pushedWork(fmt.Sprintf("wt-%d", i), fmt.Sprintf("feat/%d", i))
-	}
-	d := f.deps()
-	sizer := &peakSizer{}
-	d.Sizer = sizer
+	// On the bubble's clock: a worker's pause ends only once every other
+	// worker is parked too, however slow the machine.
+	synctest.Test(t, func(t *testing.T) {
+		f := newFixture(t)
+		for i := range sizeWorkers + 2 {
+			f.pushedWork(fmt.Sprintf("wt-%d", i), fmt.Sprintf("feat/%d", i))
+		}
+		d := f.deps()
+		sizer := &peakSizer{}
+		d.Sizer = sizer
 
-	if _, err := PlanResult(context.Background(), d, Request{Sweep: true, WorkbenchID: testWorkbench}); err != nil {
-		t.Fatal(err)
-	}
-	if sizer.peak > sizeWorkers {
-		t.Fatalf("%d walks ran at once, want at most %d", sizer.peak, sizeWorkers)
-	}
+		if _, err := PlanResult(context.Background(), d, Request{Sweep: true, WorkbenchID: testWorkbench}); err != nil {
+			t.Fatal(err)
+		}
+		if sizer.peak != sizeWorkers {
+			t.Fatalf("%d walks ran at once, want exactly %d (the bubble parks every worker in its walk)", sizer.peak, sizeWorkers)
+		}
+	})
 }
 
 // rootedWorktree adds a worktree at an explicit path under the repository.
@@ -752,59 +761,63 @@ func (g slowStatusGit) RunGit(ctx context.Context, dir, bin string, args ...stri
 
 func TestWorktreeChecksKeepOrderInParallel(t *testing.T) {
 	t.Parallel()
-	f := newFixture(t)
-	const n = 8
-	roots := make([]string, n)
-	delay := map[string]time.Duration{}
-	for i := range n {
-		roots[i] = f.pushedWork(fmt.Sprintf("wt-%d", i), fmt.Sprintf("feat/%d", i))
-		// The first listed finishes last.
-		delay[roots[i]] = time.Duration(n-i) * 30 * time.Millisecond
-		if i%2 == 1 {
-			writeFile(t, filepath.Join(roots[i], "notes.txt"), "new\n")
+	// On the bubble's clock: a worker's pause ends only once every other
+	// worker is parked too, however slow the machine.
+	synctest.Test(t, func(t *testing.T) {
+		f := newFixture(t)
+		const n = 8
+		roots := make([]string, n)
+		delay := map[string]time.Duration{}
+		for i := range n {
+			roots[i] = f.pushedWork(fmt.Sprintf("wt-%d", i), fmt.Sprintf("feat/%d", i))
+			// The first listed finishes last.
+			delay[roots[i]] = time.Duration(n-i) * 30 * time.Millisecond
+			if i%2 == 1 {
+				writeFile(t, filepath.Join(roots[i], "notes.txt"), "new\n")
+			}
 		}
-	}
-	var mu sync.Mutex
-	var running, peak int
-	f.git = slowStatusGit{delay: delay, mu: &mu, running: &running, peak: &peak}
-	rec := &recorder{}
-	p := f.planWith(Request{Sweep: true, Observer: rec}, nil)
-	if peak != checkWorkers {
-		t.Fatalf("%d git status ran at once, want %d", peak, checkWorkers)
-	}
+		var mu sync.Mutex
+		var running, peak int
+		f.git = slowStatusGit{delay: delay, mu: &mu, running: &running, peak: &peak}
+		rec := &recorder{}
+		p := f.planWith(Request{Sweep: true, Observer: rec}, nil)
+		if peak != checkWorkers {
+			t.Fatalf("%d git status ran at once, want %d", peak, checkWorkers)
+		}
 
-	var got []string
-	for _, it := range p.Plan.Items {
-		if it.Kind == KindWorktree {
-			got = append(got, it.Key)
+		var got []string
+		for _, it := range p.Plan.Items {
+			if it.Kind == KindWorktree {
+				got = append(got, it.Key)
+			}
 		}
-	}
-	listed := rec.of("listed")[0].items
-	var want []string
-	for _, it := range listed {
-		if it.Kind == KindWorktree {
-			want = append(want, it.Key)
+		listed := rec.of("listed")[0].items
+		var want []string
+		for _, it := range listed {
+			if it.Kind == KindWorktree {
+				want = append(want, it.Key)
+			}
 		}
-	}
-	if len(want) != n || !slices.Equal(got, want) {
-		t.Fatalf("items %v, want the listing order %v", got, want)
-	}
-	for i, root := range roots {
-		action, reason := ActionRemove, ""
-		if i%2 == 1 {
-			action, reason = ActionKeep, ReasonUncommittedChanges
+		if len(want) != n || !slices.Equal(got, want) {
+			t.Fatalf("items %v, want the listing order %v", got, want)
 		}
-		wantItem(t, p.Plan, "worktree:"+root, action, reason)
-	}
-	var checked []string
-	for _, e := range rec.of("checked") {
-		if strings.HasPrefix(e.key, "worktree:") {
-			checked = append(checked, e.key)
+		for i, root := range roots {
+			action, reason := ActionRemove, ""
+			if i%2 == 1 {
+				action, reason = ActionKeep, ReasonUncommittedChanges
+			}
+			wantItem(t, p.Plan, "worktree:"+root, action, reason)
 		}
-	}
-	if !slices.Equal(checked, want) {
-		t.Fatalf("Checked events %v, want the listing order %v", checked, want)
-	}
+		var checked []string
+		for _, e := range rec.of("checked") {
+			if strings.HasPrefix(e.key, "worktree:") {
+				checked = append(checked, e.key)
+			}
+		}
+		if !slices.Equal(checked, want) {
+			t.Fatalf("Checked events %v, want the listing order %v", checked, want)
+		}
+	})
 }
 
 // TestOrphanItemsNameTheirWorktree: a session-mode orphan carries its

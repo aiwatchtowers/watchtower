@@ -446,3 +446,67 @@ func TestWithOwnerInstructions_NoTextsUnchanged(t *testing.T) {
 		t.Fatalf("got %q, %v; want the prompt unchanged", got, err)
 	}
 }
+
+// An unknown --surface is refused before the config, the provider or an MCP
+// child is touched: the config path here does not exist, so any later check
+// would report a config error instead.
+func TestAIQuery_UnknownSurfaceFailsBeforeProvider(t *testing.T) {
+	origFlagConfig := flagConfig
+	flagConfig = filepath.Join(t.TempDir(), "does-not-exist.yaml")
+	t.Cleanup(func() { flagConfig = origFlagConfig })
+	resetSystemPromptFlags(t)
+	oldTools, oldEvents := aiFlagTools, aiFlagEvents
+	t.Cleanup(func() { aiFlagTools, aiFlagEvents = oldTools, oldEvents })
+	aiFlagTools, aiFlagEvents = "chat", "v1"
+	setAIChatFlags(t, "nope", 0, "", "", "")
+
+	out := captureStdout(t, func() {
+		require.NoError(t, runAIQuery(aiQueryCmd, []string{"hi"}))
+	})
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	require.Len(t, lines, 2, "one error event, then done: %s", out)
+	var ev, done map[string]any
+	require.NoError(t, json.Unmarshal([]byte(lines[0]), &ev))
+	require.NoError(t, json.Unmarshal([]byte(lines[1]), &done))
+	assert.Equal(t, "error", ev["type"])
+	assert.Contains(t, ev["error"], `unknown chat surface "nope"`)
+	assert.Equal(t, "done", done["type"])
+}
+
+// A tuning turn missing its conversation or context type fails before the
+// provider starts, as the MCP child would refuse it and the turn would run
+// with no tools (the same config trick as above proves the order).
+func TestAIQuery_TuningNeedsBindingBeforeProvider(t *testing.T) {
+	origFlagConfig := flagConfig
+	flagConfig = filepath.Join(t.TempDir(), "does-not-exist.yaml")
+	t.Cleanup(func() { flagConfig = origFlagConfig })
+	resetSystemPromptFlags(t)
+	oldTools, oldEvents := aiFlagTools, aiFlagEvents
+	t.Cleanup(func() { aiFlagTools, aiFlagEvents = oldTools, oldEvents })
+	aiFlagTools, aiFlagEvents = "chat", "v1"
+
+	for _, tc := range []struct {
+		conv    int64
+		ctxType string
+		want    string
+	}{
+		{0, "analytics_tuning", "--surface tuning needs --conversation"},
+		{7, "", "--surface tuning needs --context-type analytics_tuning"},
+	} {
+		setAIChatFlags(t, tools.SurfaceTuning, tc.conv, "t1", tc.ctxType, "3")
+		out := captureStdout(t, func() {
+			require.NoError(t, runAIQuery(aiQueryCmd, []string{"hi"}))
+		})
+		var ev map[string]any
+		require.NoError(t, json.Unmarshal([]byte(strings.Split(out, "\n")[0]), &ev))
+		assert.Equal(t, "error", ev["type"])
+		assert.Contains(t, ev["error"], tc.want)
+	}
+
+	// A complete binding passes the check and reaches the config load.
+	setAIChatFlags(t, tools.SurfaceTuning, 7, "t1", "analytics_tuning", "3")
+	out := captureStdout(t, func() {
+		require.NoError(t, runAIQuery(aiQueryCmd, []string{"hi"}))
+	})
+	assert.NotContains(t, out, "--surface tuning needs")
+}

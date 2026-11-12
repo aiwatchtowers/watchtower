@@ -315,12 +315,12 @@ final class MarkdownTextRunTests: XCTestCase {
         return host
     }
 
-    func testTableFitsWidthHasNoScrollView() throws {
+    func testTableHasNoScrollView() throws {
         let small = try hostTable("| a | b |\n|---|---|\n| 1 | 2 |", width: 400)
         XCTAssertEqual(scrollViews(in: small), 0, "a table that fits draws without a scroll view")
         let wideRow = (0..<12).map { "column \($0) with a long header" }
         let wide = "| " + wideRow.joined(separator: " | ") + " |\n|" + String(repeating: "---|", count: 12)
         let host = try hostTable(wide, width: 300)
-        XCTAssertEqual(scrollViews(in: host), 1, "a table wider than the column keeps its horizontal scroll")
+        XCTAssertEqual(scrollViews(in: host), 0, "a table wider than the column wraps instead of scrolling (ask #1197)")
     }
 }

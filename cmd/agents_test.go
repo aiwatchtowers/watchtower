@@ -21,6 +21,7 @@ import (
 
 	"watchtower/internal/agentlog"
 	"watchtower/internal/agentlogdb"
+	"watchtower/internal/agentreport"
 	"watchtower/internal/db"
 )
 
@@ -28,7 +29,7 @@ func runAgentsCmd(t *testing.T, args ...string) string {
 	t.Helper()
 	t.Cleanup(func() {
 		flagAgentsWorkbench, flagAgentsJSON = 0, false
-		flagAgentsSince, flagAgentsDays, flagAgentsSession = "", 7, ""
+		flagAgentsSince, flagAgentsDays, flagAgentsSession, flagAgentsAgent = "", 7, "", agentreport.AgentAll
 		rootCmd.SetArgs(nil)
 	})
 	var out, errOut bytes.Buffer
@@ -192,8 +193,9 @@ func TestAgentsReportJSON_PinnedKeys(t *testing.T) {
 	runAgentsCmd(t, "enable", "--workbench", wb)
 	runAgentsCmd(t, "scan", "--workbench", wb)
 	out := runAgentsCmd(t, "report", "--workbench", wb, "--days", "0", "--json")
-	assert.Equal(t, []string{"commands", "context", "enabled", "hints", "import", "models", "old_format_sessions", "sessions", "since",
+	assert.Equal(t, []string{"agent", "agents", "commands", "context", "enabled", "hints", "import", "models", "old_format_sessions", "sessions", "since",
 		"skills", "subagents", "tasks", "tasks_more", "time", "totals", "trouble", "until", "workbench_id"}, jsonKeys(t, out))
+	assert.Contains(t, out, `"agent": "all"`)
 	var ov struct {
 		Context  map[string]json.RawMessage `json:"context"`
 		Skills   map[string]json.RawMessage `json:"skills"`
@@ -205,10 +207,10 @@ func TestAgentsReportJSON_PinnedKeys(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(out), &ov))
 	require.Len(t, ov.Sessions, 1)
 	assert.Equal(t, []string{"files_stored", "state", "updated_at"}, mapKeys(ov.Import))
-	assert.Equal(t, []string{"baseline", "compactions", "disk", "facts_sessions", "growth", "lead", "repeated_reads", "sessions",
+	assert.Equal(t, []string{"agents", "baseline", "compactions", "disk", "facts_sessions", "growth", "lead", "repeated_reads", "sessions",
 		"subagent_baseline", "top_sources"}, mapKeys(ov.Context))
-	assert.Equal(t, []string{"facts_sessions", "lead", "listed", "listing_tokens", "never_used", "rows", "used"}, mapKeys(ov.Skills))
-	assert.Equal(t, []string{"classes", "denials", "facts_sessions", "interrupt_sessions", "interrupts", "lead", "rate_limited", "rejections",
+	assert.Equal(t, []string{"agents", "facts_sessions", "lead", "listed", "listing_tokens", "never_used", "rows", "used"}, mapKeys(ov.Skills))
+	assert.Equal(t, []string{"agents", "classes", "denials", "facts_sessions", "interrupt_sessions", "interrupts", "lead", "rate_limited", "rejections",
 		"unfinished_subagents"}, mapKeys(ov.Trouble))
 	var ctx struct {
 		Baseline    map[string]json.RawMessage `json:"baseline"`
@@ -468,4 +470,55 @@ func TestOpenAgentLog_MoveFailsKeepsHandle(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, ok)
 	assert.Equal(t, before, mainAgentLogCount(t, database))
+}
+
+// Task 4.4: with both agents in the period agent_filter appears; --agent codex
+// keeps only the codex session.
+func TestAgentsReportJSON_AgentFilterKeyWithBothAgents(t *testing.T) {
+	wb := agentsFixture(t)
+	id := strconv.FormatInt(wb, 10)
+	runAgentsCmd(t, "enable", "--workbench", id)
+	runAgentsCmd(t, "scan", "--workbench", id)
+	al := openAgentsTestLog(t)
+	const path = "/w/rollout-cx1.jsonl"
+	_, err := al.ApplyAgentLogBatch(agentlogdb.AgentLogBatch{
+		File: agentlogdb.AgentLogFile{Path: path, Agent: "codex", ReadOffset: 10, ParserVersion: agentlog.ParserVersion}, ExpectOffset: -1,
+		Sessions: []agentlogdb.AgentLogSession{{SessionUUID: "cx1", Agent: "codex", ProjectID: &wb, FolderPath: "/w", HomeCWD: "/w",
+			SourcePath: path, StartedAt: "2026-10-01T11:00:00.000Z", EndedAt: "2026-10-01T11:00:05.000Z", Model: "gpt-test"}},
+	})
+	require.NoError(t, err)
+
+	var ov struct {
+		Agent       string   `json:"agent"`
+		Agents      []string `json:"agents"`
+		AgentFilter []string `json:"agent_filter"`
+		Sessions    []struct {
+			UUID string `json:"session_uuid"`
+		} `json:"sessions"`
+		Context struct {
+			Agents []string `json:"agents"`
+		} `json:"context"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(runAgentsCmd(t, "report", "--workbench", id, "--days", "0", "--json")), &ov))
+	assert.Equal(t, "all", ov.Agent)
+	assert.Equal(t, []string{"claude", "codex"}, ov.Agents)
+	assert.Equal(t, []string{"claude", "codex"}, ov.AgentFilter)
+	assert.Len(t, ov.Sessions, 2)
+
+	out := runAgentsCmd(t, "report", "--workbench", id, "--days", "0", "--agent", "codex", "--json")
+	ov.Sessions, ov.Context.Agents = nil, nil
+	require.NoError(t, json.Unmarshal([]byte(out), &ov))
+	assert.Equal(t, "codex", ov.Agent)
+	assert.Equal(t, []string{"codex"}, ov.Agents)
+	assert.Equal(t, []string{"claude", "codex"}, ov.AgentFilter)
+	require.Len(t, ov.Sessions, 1)
+	assert.Equal(t, "cx1", ov.Sessions[0].UUID)
+	assert.Equal(t, []string{}, ov.Context.Agents)
+}
+
+func TestAgentsReport_AgentFlagRefusesUnknown(t *testing.T) {
+	rootCmd.SetArgs([]string{"agents", "report", "--workbench", "1", "--agent", "gemini"})
+	t.Cleanup(func() { flagAgentsWorkbench, flagAgentsAgent = 0, agentreport.AgentAll; rootCmd.SetArgs(nil) })
+	// No workspace is configured: the flag is refused before anything is read.
+	assert.EqualError(t, rootCmd.Execute(), "--agent must be all, claude or codex")
 }

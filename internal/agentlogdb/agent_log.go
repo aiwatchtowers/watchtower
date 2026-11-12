@@ -77,6 +77,11 @@ type AgentSubagent struct {
 	SessionUUID, AgentID, AgentType string
 	Depth                           int // 0 = unknown (no meta file or no spawnDepth)
 	Finished                        *bool
+	// SpawnLink: the row is a spawn link read from the parent's transcript
+	// (a Codex collab_agent_spawn_end), not meta; an existing row keeps the
+	// smaller depth, so a forked child replaying its parent's spawn events
+	// never pushes an earlier link deeper.
+	SpawnLink bool
 }
 
 // AgentLogBatch is what one parse of one file writes in one transaction.
@@ -89,7 +94,18 @@ type AgentLogBatch struct {
 	ContextParts []AgentContextPart
 	SkillListing []AgentSkillListed
 	Subagents    []AgentSubagent
+	// Lane is a Codex sub-agent batch's agent id: its tool results time and
+	// settle only that lane's rows, so a forked child's replay of its
+	// parent's results (under the same root session) never re-times the
+	// parent's call; a pending row of another lane is still filled untimed.
+	Lane string
+	// Spawns set spawned_agent_id on stored spawn tool rows (an update only:
+	// a spawn whose call was never stored writes nothing).
+	Spawns []AgentSpawn
 }
+
+// AgentSpawn links a stored tool row (Key) to the sub-agent it spawned.
+type AgentSpawn struct{ Key, AgentID string }
 
 // AgentLogStats is a workbench's totals for `agents stats --json` (pinned keys).
 type AgentLogStats struct {
@@ -232,9 +248,9 @@ func (d *DB) ApplyAgentLogBatch(b AgentLogBatch) (bool, error) {
 			if _, err := tx.Exec(`UPDATE agent_log_events SET outcome = ?, error_class = ?,
 				lines_added = ?, lines_removed = ?, result_bytes = ?,
 				duration_ms = CAST(ROUND((julianday(?) - julianday(ts)) * 86400000) AS INTEGER)
-				WHERE key = ? AND (? IS NULL OR session_uuid IN (SELECT value FROM json_each(?)))`,
+				WHERE key = ? AND (? IS NULL OR session_uuid IN (SELECT value FROM json_each(?))) AND (? = '' OR agent_id = ?)`,
 				r.Outcome, r.ErrorClass, r.LinesAdded, r.LinesRemoved, r.ResultBytes, r.TS,
-				"tool:"+r.ToolUseID, owners, owners); err != nil {
+				"tool:"+r.ToolUseID, owners, owners, b.Lane, b.Lane); err != nil {
 				return fmt.Errorf("pairing tool result: %w", err)
 			}
 			// A result only a replayed copy carries (the owner's transcript
@@ -256,6 +272,11 @@ func (d *DB) ApplyAgentLogBatch(b AgentLogBatch) (bool, error) {
 				}
 			}
 		}
+		for _, sp := range b.Spawns {
+			if _, err := tx.Exec(`UPDATE agent_log_events SET spawned_agent_id = ? WHERE key = ? AND kind = 'tool'`, sp.AgentID, sp.Key); err != nil {
+				return fmt.Errorf("linking spawned agent: %w", err)
+			}
+		}
 		for _, p := range b.ContextParts {
 			if _, err := tx.Exec(`INSERT INTO agent_log_context_parts (session_uuid, agent_id, part, bytes) VALUES (?, ?, ?, ?)
 				ON CONFLICT(session_uuid, agent_id, part) DO UPDATE SET bytes = MAX(bytes, excluded.bytes)`,
@@ -270,11 +291,16 @@ func (d *DB) ApplyAgentLogBatch(b AgentLogBatch) (bool, error) {
 				return fmt.Errorf("upserting skill listing: %w", err)
 			}
 		}
-		for _, a := range b.Subagents {
-			if _, err := tx.Exec(`INSERT INTO agent_log_subagents (session_uuid, agent_id, agent_type, depth, finished) VALUES (?, ?, ?, ?, ?)
-				ON CONFLICT(session_uuid, agent_id) DO UPDATE SET agent_type = excluded.agent_type,
-				depth = excluded.depth, finished = excluded.finished`,
-				a.SessionUUID, a.AgentID, a.AgentType, a.Depth, a.Finished); err != nil {
+		const subagentInsert = `INSERT INTO agent_log_subagents (session_uuid, agent_id, agent_type, depth, finished)
+				SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM agent_log_sessions WHERE session_uuid = ?)
+				ON CONFLICT(session_uuid, agent_id) DO UPDATE SET `
+		for _, a := range b.Subagents { // a link whose session row does not exist is skipped (UpsertAgentSubagent's rule)
+			set := `agent_type = excluded.agent_type, depth = excluded.depth, finished = excluded.finished`
+			if a.SpawnLink {
+				set = `depth = MIN(agent_log_subagents.depth, excluded.depth)`
+			}
+			if _, err := tx.Exec(subagentInsert+set,
+				a.SessionUUID, a.AgentID, a.AgentType, a.Depth, a.Finished, a.SessionUUID); err != nil {
 				return fmt.Errorf("upserting subagent: %w", err)
 			}
 		}
@@ -445,6 +471,25 @@ func (d *DB) CodexResumeState(sessionUUID string) (model, homeCWD string, err er
 	return model, homeCWD, nil
 }
 
+// CodexSubagents lists the Codex sub-agent links stored under a root
+// session, by depth, then id.
+func (d *DB) CodexSubagents(sessionUUID string) ([]AgentSubagent, error) {
+	var out []AgentSubagent
+	err := d.agentLogRows(`SELECT agent_id, depth FROM agent_log_subagents WHERE session_uuid = ? ORDER BY depth, agent_id`,
+		[]any{sessionUUID}, func(rs *sql.Rows) error {
+			a := AgentSubagent{SessionUUID: sessionUUID}
+			if err := rs.Scan(&a.AgentID, &a.Depth); err != nil {
+				return err
+			}
+			out = append(out, a)
+			return nil
+		})
+	if err != nil {
+		return nil, fmt.Errorf("codex subagents of %s: %w", sessionUUID, err)
+	}
+	return out, nil
+}
+
 // AgentLaneBaseline reports whether a lane (a session's agent id, "" for the
 // main agent) already has a stored api_call, and, when it has none, the
 // baseline part bytes stored for it so far, so a later read can continue them.
@@ -477,19 +522,22 @@ func (d *DB) AgentLaneBaseline(sessionUUID, agentID string) (bool, map[string]in
 }
 
 // RepriceAgentLogEvents recomputes cost for api_call rows priced with an
-// older table version, from their stored tokens.
-func (d *DB) RepriceAgentLogEvents(version int, price func(model, speed string, in, out, cacheRead, cw5m, cw1h int64) (float64, bool)) (int, error) {
+// older table version, from their stored tokens, by the agent of the row's
+// session (an event whose session row is missing is priced as Claude).
+func (d *DB) RepriceAgentLogEvents(version int, price func(agent, model, speed string, in, out, cacheRead, cw5m, cw1h int64) (float64, bool)) (int, error) {
 	type row struct {
 		id                     int64
-		model, speed           string
+		agent, model, speed    string
 		in, out, cr, cw5, cw1h int64
 	}
 	var todo []row
-	err := d.agentLogRows(`SELECT id, name, speed, input_tokens, output_tokens, cache_read_tokens, cache_write_5m_tokens,
-		cache_write_1h_tokens FROM agent_log_events WHERE kind = 'api_call' AND price_version < ?`, []any{version},
+	err := d.agentLogRows(`SELECT e.id, COALESCE(s.agent, 'claude'), e.name, e.speed, e.input_tokens, e.output_tokens,
+		e.cache_read_tokens, e.cache_write_5m_tokens, e.cache_write_1h_tokens
+		FROM agent_log_events e LEFT JOIN agent_log_sessions s ON s.session_uuid = e.session_uuid
+		WHERE e.kind = 'api_call' AND e.price_version < ?`, []any{version},
 		func(rs *sql.Rows) error {
 			var r row
-			if err := rs.Scan(&r.id, &r.model, &r.speed, &r.in, &r.out, &r.cr, &r.cw5, &r.cw1h); err != nil {
+			if err := rs.Scan(&r.id, &r.agent, &r.model, &r.speed, &r.in, &r.out, &r.cr, &r.cw5, &r.cw1h); err != nil {
 				return err
 			}
 			todo = append(todo, r)
@@ -506,7 +554,7 @@ func (d *DB) RepriceAgentLogEvents(version int, price func(model, speed string, 
 		n := min(len(todo), agentLogRepriceSlice)
 		err = d.withTx(func(tx *sql.Tx) error {
 			for _, r := range todo[:n] {
-				usd, known := price(r.model, r.speed, r.in, r.out, r.cr, r.cw5, r.cw1h)
+				usd, known := price(r.agent, r.model, r.speed, r.in, r.out, r.cr, r.cw5, r.cw1h)
 				if _, err := tx.Exec(`UPDATE agent_log_events SET cost_usd = ?, cost_estimated = ?, price_version = ? WHERE id = ?`,
 					usd, !known, version, r.id); err != nil {
 					return err

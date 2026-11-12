@@ -189,6 +189,7 @@ type Daemon struct {
 	lastIdeas           time.Time // when the ideas registry last ran (throttled by ideas.mine_interval_hours); ideasMu
 	lastCoach           time.Time // when the agent coach last ran (weekly, no catch-up)
 	lastCoachFailed     time.Time // when the coach's last run failed (retried a day later)
+	lastCoachCommits    time.Time // when the coach's daily commit check last ran (in memory: a restart checks again)
 	lastLLMPrune        time.Time // when phaseLLMLedger last pruned llm_calls (once per day)
 	lastIdeasLockSkip   time.Time // when phaseIdeas last LOGGED a lock-held skip (GB7 — throttles the log line, not the skip itself)
 	lastStreams         time.Time // when the stage-1 stream digests last ran (throttled by streams.interval_hours, decoupled from ideas.enabled)
@@ -253,6 +254,18 @@ type Daemon struct {
 	cycleSection    atomic.Int32
 	fetchProgressAt atomic.Int64
 	loopMono        func() time.Duration // runLoop's monotonic clock, nil = time.Since(monoEpoch); a seam for tests
+	// cycleEnded, a test seam, runs on the cycle's goroutine after each
+	// cycle's runSync returned, so a test waits for the cycle instead of a
+	// fixed run window; nil outside tests.
+	cycleEnded func()
+	// heartbeatBeat, a test seam, runs on the sync heartbeat's goroutine
+	// after each ticker beat's write, so a test waits for beats instead of
+	// sleeping through them; nil outside tests.
+	heartbeatBeat func()
+	// syncStartClock, a test seam, reads runSync's sync-start instant
+	// (INBOX-09), so a test moves it across a sync instead of sleeping
+	// through one; nil = time.Now.
+	syncStartClock func() time.Time
 	// fullWake reports the system capability bits and whether the Mac is in
 	// a full wake rather than a Power Nap DarkWake (SetFullWakeProbe);
 	// runLoop starts no scheduled cycle while it says no. nil = always a
@@ -623,6 +636,9 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 	// Every source sync below starts after this instant, so the data the
 	// inbox scans at the end of the cycle is complete up to it (INBOX-09).
 	syncStart := time.Now()
+	if d.syncStartClock != nil {
+		syncStart = d.syncStartClock()
+	}
 	d.cycleEvents = d.beginAutomationEvents()
 	var syncErr, inboxSyncErr error
 	d.observePhase(fetchCtx, automations.SlackSource(d.db), func() { syncErr, inboxSyncErr = d.phaseSlackSync(fetchCtx) })
@@ -1030,6 +1046,9 @@ func (d *Daemon) startSyncHeartbeat(o *sync.Orchestrator) (stop func()) {
 				return
 			case <-ticker.C:
 				write()
+				if d.heartbeatBeat != nil {
+					d.heartbeatBeat()
+				}
 			}
 		}
 	}()

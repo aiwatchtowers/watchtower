@@ -100,13 +100,7 @@ func (c *payClock) drain() {
 // waitArmed waits for the next armed timer and returns its duration.
 func (c *payClock) waitArmed(t *testing.T) time.Duration {
 	t.Helper()
-	select {
-	case d := <-c.armed:
-		return d
-	case <-time.After(5 * time.Second):
-		t.Fatal("no poll timer was armed")
-		return 0
-	}
+	return <-c.armed
 }
 
 func notPaying() *relayv1.AccountState {
@@ -172,156 +166,154 @@ func (r *watchRig) fail(err error) {
 // A paying hub re-reads its account state every NeedsRelayPoll too, so an
 // entitlement lost without a control still pauses it.
 func TestPayingHubRereadsTheAccountStateEvery5Min(t *testing.T) {
-	r := newWatchRig(t, onePaying())
-	start := r.nextRead(t)
-	if !r.nextChange(t) {
-		t.Fatal("one paying phone reported not paying")
-	}
-	if d := r.clock.waitArmed(t); d != NeedsRelayPoll {
-		t.Fatalf("poll armed for %v while paying, want %v", d, NeedsRelayPoll)
-	}
-	r.set(notPaying())
-	r.clock.Advance(NeedsRelayPoll)
-	if at := r.nextRead(t); at.Sub(start) != NeedsRelayPoll {
-		t.Fatalf("read at %v, want %v", at.Sub(start), NeedsRelayPoll)
-	}
-	if r.nextChange(t) {
-		t.Fatal("the lost entitlement did not end paying")
-	}
+	bubble(t, func(t *testing.T) {
+		r := newWatchRig(t, onePaying())
+		start := r.nextRead(t)
+		if !r.nextChange(t) {
+			t.Fatal("one paying phone reported not paying")
+		}
+		if d := r.clock.waitArmed(t); d != NeedsRelayPoll {
+			t.Fatalf("poll armed for %v while paying, want %v", d, NeedsRelayPoll)
+		}
+		r.set(notPaying())
+		r.clock.Advance(NeedsRelayPoll)
+		if at := r.nextRead(t); at.Sub(start) != NeedsRelayPoll {
+			t.Fatalf("read at %v, want %v", at.Sub(start), NeedsRelayPoll)
+		}
+		if r.nextChange(t) {
+			t.Fatal("the lost entitlement did not end paying")
+		}
+	})
 }
 
 // A recheck that fails (after ENTITLEMENT_EXPIRED) is retried after
 // ReadRetryFirst, doubling, until a read succeeds: the hub never stays
 // unpaused on a transient error.
 func TestFailedRecheckIsRetried(t *testing.T) {
-	r := newWatchRig(t, onePaying())
-	r.nextRead(t)
-	r.nextChange(t)
-	r.clock.waitArmed(t)
-	r.fail(transport.ErrUnavailable)
-	r.set(notPaying())
-	r.w.Observe(transport.Event{Control: &transport.Control{Kind: transport.EntitlementExpired}}, nil)
-	r.nextRead(t)
-	for _, want := range []time.Duration{ReadRetryFirst, 2 * ReadRetryFirst} {
-		if d := r.clock.waitArmed(t); d != want {
-			t.Fatalf("retry armed for %v, want %v", d, want)
-		}
-		r.clock.Advance(want)
+	bubble(t, func(t *testing.T) {
+		r := newWatchRig(t, onePaying())
 		r.nextRead(t)
-	}
-	r.fail(nil)
-	if d := r.clock.waitArmed(t); d != 4*ReadRetryFirst {
-		t.Fatalf("retry armed for %v, want %v", d, 4*ReadRetryFirst)
-	}
-	r.clock.Advance(4 * ReadRetryFirst)
-	r.nextRead(t)
-	if r.nextChange(t) {
-		t.Fatal("the retried read did not end paying")
-	}
-	if d := r.clock.waitArmed(t); d != NeedsRelayPoll {
-		t.Fatalf("after a good read the poll is %v, want %v", d, NeedsRelayPoll)
-	}
+		r.nextChange(t)
+		r.clock.waitArmed(t)
+		r.fail(transport.ErrUnavailable)
+		r.set(notPaying())
+		r.w.Observe(transport.Event{Control: &transport.Control{Kind: transport.EntitlementExpired}}, nil)
+		r.nextRead(t)
+		for _, want := range []time.Duration{ReadRetryFirst, 2 * ReadRetryFirst} {
+			if d := r.clock.waitArmed(t); d != want {
+				t.Fatalf("retry armed for %v, want %v", d, want)
+			}
+			r.clock.Advance(want)
+			r.nextRead(t)
+		}
+		r.fail(nil)
+		if d := r.clock.waitArmed(t); d != 4*ReadRetryFirst {
+			t.Fatalf("retry armed for %v, want %v", d, 4*ReadRetryFirst)
+		}
+		r.clock.Advance(4 * ReadRetryFirst)
+		r.nextRead(t)
+		if r.nextChange(t) {
+			t.Fatal("the retried read did not end paying")
+		}
+		if d := r.clock.waitArmed(t); d != NeedsRelayPoll {
+			t.Fatalf("after a good read the poll is %v, want %v", d, NeedsRelayPoll)
+		}
+	})
 }
 
 func (r *watchRig) nextRead(t *testing.T) time.Time {
 	t.Helper()
-	select {
-	case at := <-r.reads:
-		return at
-	case <-time.After(5 * time.Second):
-		t.Fatal("the account state was not read")
-		return time.Time{}
-	}
+	return <-r.reads
 }
 
 func (r *watchRig) nextChange(t *testing.T) bool {
 	t.Helper()
-	select {
-	case p := <-r.changes:
-		return p
-	case <-time.After(5 * time.Second):
-		t.Fatal("no paying change reported")
-		return false
-	}
+	return <-r.changes
 }
 
 // With no paying phone the account state is read at start and every
 // NeedsRelayPoll after: at 0, 5 and 10 minutes, never in between.
 func TestPausedHubRereadsTheAccountStateEvery5Min(t *testing.T) {
-	r := newWatchRig(t, notPaying())
-	start := r.nextRead(t)
-	if r.nextChange(t) {
-		t.Fatal("a state with no paying phone reported paying")
-	}
-	for i := 1; i <= 2; i++ {
-		if d := r.clock.waitArmed(t); d != NeedsRelayPoll {
-			t.Fatalf("poll armed for %v, want %v", d, NeedsRelayPoll)
+	bubble(t, func(t *testing.T) {
+		r := newWatchRig(t, notPaying())
+		start := r.nextRead(t)
+		if r.nextChange(t) {
+			t.Fatal("a state with no paying phone reported paying")
 		}
-		r.clock.Advance(NeedsRelayPoll - time.Second)
-		select {
-		case at := <-r.reads:
-			t.Fatalf("read at %v, before the poll", at.Sub(start))
-		default:
+		for i := 1; i <= 2; i++ {
+			if d := r.clock.waitArmed(t); d != NeedsRelayPoll {
+				t.Fatalf("poll armed for %v, want %v", d, NeedsRelayPoll)
+			}
+			r.clock.Advance(NeedsRelayPoll - time.Second)
+			select {
+			case at := <-r.reads:
+				t.Fatalf("read at %v, before the poll", at.Sub(start))
+			default:
+			}
+			r.clock.Advance(time.Second)
+			if at := r.nextRead(t); at.Sub(start) != time.Duration(i)*NeedsRelayPoll {
+				t.Fatalf("read %d at %v, want %v", i, at.Sub(start), time.Duration(i)*NeedsRelayPoll)
+			}
 		}
-		r.clock.Advance(time.Second)
-		if at := r.nextRead(t); at.Sub(start) != time.Duration(i)*NeedsRelayPoll {
-			t.Fatalf("read %d at %v, want %v", i, at.Sub(start), time.Duration(i)*NeedsRelayPoll)
-		}
-	}
+	})
 }
 
 // ENTITLEMENT_EXPIRED, SLOT_REMOVED and ENTITLEMENT_INACTIVE re-read the
 // account state at once, without waiting for a poll; other events do not.
 func TestEntitlementExpiredRereadsAtOnce(t *testing.T) {
-	r := newWatchRig(t, onePaying())
-	r.nextRead(t)
-	if !r.nextChange(t) {
-		t.Fatal("one paying phone reported not paying")
-	}
-	for _, c := range []struct {
-		name string
-		ev   transport.Event
-		err  error
-	}{
-		{"entitlement_expired", transport.Event{Control: &transport.Control{Kind: transport.EntitlementExpired}}, nil},
-		{"slot_removed", transport.Event{Control: &transport.Control{Kind: transport.SlotRemoved}}, nil},
-		{"inactive event", transport.Event{Err: fmt.Errorf("relay: %w", transport.ErrEntitlementInactive)}, nil},
-		{"inactive save", transport.Event{}, fmt.Errorf("save: %w", transport.ErrEntitlementInactive)},
-	} {
-		r.w.Observe(c.ev, c.err)
+	bubble(t, func(t *testing.T) {
+		r := newWatchRig(t, onePaying())
 		r.nextRead(t)
-	}
+		if !r.nextChange(t) {
+			t.Fatal("one paying phone reported not paying")
+		}
+		for _, c := range []struct {
+			name string
+			ev   transport.Event
+			err  error
+		}{
+			{"entitlement_expired", transport.Event{Control: &transport.Control{Kind: transport.EntitlementExpired}}, nil},
+			{"slot_removed", transport.Event{Control: &transport.Control{Kind: transport.SlotRemoved}}, nil},
+			{"inactive event", transport.Event{Err: fmt.Errorf("relay: %w", transport.ErrEntitlementInactive)}, nil},
+			{"inactive save", transport.Event{}, fmt.Errorf("save: %w", transport.ErrEntitlementInactive)},
+		} {
+			r.w.Observe(c.ev, c.err)
+			r.nextRead(t)
+		}
 
-	r.set(notPaying())
-	r.w.Observe(transport.Event{Control: &transport.Control{Kind: transport.EntitlementExpired}}, nil)
-	r.nextRead(t)
-	if r.nextChange(t) {
-		t.Fatal("the expired entitlement did not end paying")
-	}
+		r.set(notPaying())
+		r.w.Observe(transport.Event{Control: &transport.Control{Kind: transport.EntitlementExpired}}, nil)
+		r.nextRead(t)
+		if r.nextChange(t) {
+			t.Fatal("the expired entitlement did not end paying")
+		}
+	})
 }
 
 // Observe ignores every other event and error: nothing is queued.
 func TestObserveIgnoresOtherEvents(t *testing.T) {
-	w := NewPayingWatch(nil)
-	for _, c := range []struct {
-		ev  transport.Event
-		err error
-	}{
-		{transport.Event{Control: &transport.Control{Kind: transport.SessionExpired}}, nil},
-		{transport.Event{Control: &transport.Control{Kind: transport.SubscriptionMoved}}, nil},
-		{transport.Event{Control: &transport.Control{Kind: transport.PairingOpened, Detail: "s"}}, nil},
-		{transport.Event{Zone: "data/x"}, transport.ErrUnavailable},
-		{transport.Event{Err: transport.ErrForbidden}, nil},
-	} {
-		w.Observe(c.ev, c.err)
-		if len(w.kick) != 0 {
-			t.Fatalf("%+v / %v asked for a re-read", c.ev, c.err)
+	bubble(t, func(t *testing.T) {
+		w := NewPayingWatch(nil)
+		for _, c := range []struct {
+			ev  transport.Event
+			err error
+		}{
+			{transport.Event{Control: &transport.Control{Kind: transport.SessionExpired}}, nil},
+			{transport.Event{Control: &transport.Control{Kind: transport.SubscriptionMoved}}, nil},
+			{transport.Event{Control: &transport.Control{Kind: transport.PairingOpened, Detail: "s"}}, nil},
+			{transport.Event{Zone: "data/x"}, transport.ErrUnavailable},
+			{transport.Event{Err: transport.ErrForbidden}, nil},
+		} {
+			w.Observe(c.ev, c.err)
+			if len(w.kick) != 0 {
+				t.Fatalf("%+v / %v asked for a re-read", c.ev, c.err)
+			}
 		}
-	}
-	w.Observe(transport.Event{}, transport.ErrEntitlementInactive)
-	if len(w.kick) != 1 {
-		t.Fatal("ENTITLEMENT_INACTIVE asked for no re-read")
-	}
+		w.Observe(transport.Event{}, transport.ErrEntitlementInactive)
+		if len(w.kick) != 1 {
+			t.Fatal("ENTITLEMENT_INACTIVE asked for no re-read")
+		}
+	})
 }
 
 // countingTransport is the hub's side of the fake, counting the hub's
@@ -393,7 +385,7 @@ func startRelayOnly(t *testing.T, rules bool, st *relayv1.AccountState, linked b
 	if linked {
 		linkPhoneDirectly(t, dir)
 	}
-	r := &relayOnly{rig: newRig(t, dir), clock: newPayClock()}
+	r := &relayOnly{rig: newBubbleRig(t, dir), clock: newPayClock()}
 	r.ct = &countingTransport{Fake: r.fake, reads: map[string]int{}}
 	r.fake.SetAccountState(st)
 	o := r.options()
@@ -426,7 +418,7 @@ func (r *relayOnly) settled() {
 	r.barrier++
 	slot := fmt.Sprintf("barrier%d", r.barrier)
 	r.fake.SendEvent(transport.Event{Control: &transport.Control{Kind: transport.PairingOpened, Detail: slot}})
-	eventually(r.t, 10*time.Second, "the worker to reach "+slot, func() bool {
+	eventually(r.t, "the worker to reach "+slot, func() bool {
 		return r.ct.readsOf(transport.PairZone(slot)) > 0
 	})
 }
@@ -446,10 +438,7 @@ func (r *relayOnly) dataZone() string {
 func (r *relayOnly) pair(promote func()) (*hubtest.Phone, wire.LinkPayload) {
 	r.t.Helper()
 	t := r.t
-	c, err := Dial(r.dir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	c := r.dial()
 	t.Cleanup(func() { _ = c.Close() })
 	if err := c.Send(ControlRequest{Op: OpPair}); err != nil {
 		t.Fatal(err)
@@ -485,7 +474,7 @@ func (r *relayOnly) pair(promote func()) (*hubtest.Phone, wire.LinkPayload) {
 	r.fake.SendEvent(transport.Event{Control: &transport.Control{Kind: transport.PairingOpened, Detail: "slot1"}})
 	next(link.EventSAS)
 	var awaiting wire.Keybox
-	eventually(t, 10*time.Second, "the awaiting keybox in the pair zone", func() bool {
+	eventually(t, "the awaiting keybox in the pair zone", func() bool {
 		kb, ok, err := phone.ReadKeybox(pair)
 		if err != nil {
 			t.Fatal(err)
@@ -503,7 +492,7 @@ func (r *relayOnly) pair(promote func()) (*hubtest.Phone, wire.LinkPayload) {
 		t.Fatal(err)
 	}
 	next(link.EventLinked)
-	eventually(t, 10*time.Second, "the keys in the pair zone", func() bool {
+	eventually(t, "the keys in the pair zone", func() bool {
 		kb, ok, err := phone.ReadKeybox(pair)
 		if err != nil {
 			t.Fatal(err)
@@ -543,57 +532,63 @@ func (r *relayOnly) grantInDataZone(phone *hubtest.Phone) bool {
 // Off (FromEnv's test mode), nothing pauses and the account state is
 // never read: Phase 1's behaviour.
 func TestRelayOnlyRulesOffNeverPause(t *testing.T) {
-	r := startRelayOnly(t, false, notPaying(), true, nil)
-	r.waitState(StateRunning, "")
-	eventually(t, 10*time.Second, "the heartbeat published", func() bool {
-		return slices.Contains(liveRecords(t, r.fake, r.dataZone()), "heartbeat")
+	bubble(t, func(t *testing.T) {
+		r := startRelayOnly(t, false, notPaying(), true, nil)
+		r.waitState(StateRunning, "")
+		eventually(t, "the heartbeat published", func() bool {
+			return slices.Contains(liveRecords(t, r.fake, r.dataZone()), "heartbeat")
+		})
+		r.fake.SendEvent(transport.Event{Control: &transport.Control{Kind: transport.EntitlementExpired}})
+		r.settled()
+		if n := r.fake.AccountStateReads(); n != 0 {
+			t.Fatalf("the account state was read %d times with the rules off", n)
+		}
+		if s := r.rec.last(); s.State != StateRunning {
+			t.Fatalf("status %+v", s)
+		}
 	})
-	r.fake.SendEvent(transport.Event{Control: &transport.Control{Kind: transport.EntitlementExpired}})
-	r.settled()
-	if n := r.fake.AccountStateReads(); n != 0 {
-		t.Fatalf("the account state was read %d times with the rules off", n)
-	}
-	if s := r.rec.last(); s.State != StateRunning {
-		t.Fatalf("status %+v", s)
-	}
 }
 
 // Every phone holding the hub not paying: the hub pauses from its start,
 // writes nothing to its data zone or a mailbox, and says needs_relay.
 func TestHeadlessHubPausesWithoutAPayingPhone(t *testing.T) {
-	r := startRelayOnly(t, true, notPaying(), true, nil)
-	r.waitState(StatePaused, ReasonNeedsRelay)
-	s, err := ReadStatus(r.dir)
-	if err != nil || s.State != StatePaused || s.Reason != ReasonNeedsRelay {
-		t.Fatalf("status file %+v, %v", s, err)
-	}
-	r.fake.SendEvent(transport.Event{Zone: r.dataZone(), Resync: true})
-	r.settled()
-	if n := r.ct.hubWrites(); n != 0 {
-		t.Fatalf("a paused hub wrote %d records", n)
-	}
-	if got := liveRecords(t, r.fake, r.dataZone()); len(got) != 0 {
-		t.Fatalf("the data zone holds %d records", len(got))
-	}
+	bubble(t, func(t *testing.T) {
+		r := startRelayOnly(t, true, notPaying(), true, nil)
+		r.waitState(StatePaused, ReasonNeedsRelay)
+		s, err := ReadStatus(r.dir)
+		if err != nil || s.State != StatePaused || s.Reason != ReasonNeedsRelay {
+			t.Fatalf("status file %+v, %v", s, err)
+		}
+		r.fake.SendEvent(transport.Event{Zone: r.dataZone(), Resync: true})
+		r.settled()
+		if n := r.ct.hubWrites(); n != 0 {
+			t.Fatalf("a paused hub wrote %d records", n)
+		}
+		if got := liveRecords(t, r.fake, r.dataZone()); len(got) != 0 {
+			t.Fatalf("the data zone holds %d records", len(got))
+		}
+	})
 }
 
 // A hub with no phone yet (a fresh install) pairs while paused; once the
 // new phone pays, it resumes and publishes the device_grant.
 func TestPairingWorksWhilePaused(t *testing.T) {
-	r := startRelayOnly(t, true, nil, false, nil)
-	r.waitState(StatePaused, ReasonNeedsRelay)
-	phone, lp := r.pair(func() {
-		if got := liveRecords(t, r.fake, r.dataZone()); len(got) != 0 {
-			t.Fatalf("%d records went out while paused", len(got))
+	bubble(t, func(t *testing.T) {
+		r := startRelayOnly(t, true, nil, false, nil)
+		r.waitState(StatePaused, ReasonNeedsRelay)
+		phone, lp := r.pair(func() {
+			if got := liveRecords(t, r.fake, r.dataZone()); len(got) != 0 {
+				t.Fatalf("%d records went out while paused", len(got))
+			}
+			r.fake.SetAccountState(onePaying())
+		})
+		if !slices.Equal(lp.Transports, []string{wire.TransportRelay}) {
+			t.Fatalf("link code transports %v", lp.Transports)
 		}
-		r.fake.SetAccountState(onePaying())
-	})
-	if !slices.Equal(lp.Transports, []string{wire.TransportRelay}) {
-		t.Fatalf("link code transports %v", lp.Transports)
-	}
-	r.waitState(StateRunning, "")
-	eventually(t, 10*time.Second, "the device_grant in the data zone", func() bool {
-		return r.grantInDataZone(phone)
+		r.waitState(StateRunning, "")
+		eventually(t, "the device_grant in the data zone", func() bool {
+			return r.grantInDataZone(phone)
+		})
 	})
 }
 
@@ -601,64 +596,68 @@ func TestPairingWorksWhilePaused(t *testing.T) {
 // nothing is saved; after the resume (the 5-minute poll finds a paying
 // phone) it is applied once and echoed applied.
 func TestPausedHubKeepsStateAndRunsNoHandler(t *testing.T) {
-	r := startRelayOnly(t, true, nil, false, nil)
-	phone := r.pairAndRun()
-	r.clock.drain()
-	r.pauseNow()
-	writes := r.ct.hubWrites()
-	seq, err := phone.Act("test_mark")
-	if err != nil {
-		t.Fatal(err)
-	}
-	r.settled()
-	if n := r.marks.Load(); n != 0 {
-		t.Fatalf("the handler ran %d times while paused", n)
-	}
-	if n := r.ct.hubWrites() - writes; n != 0 {
-		t.Fatalf("a paused hub wrote %d records", n)
-	}
-	if _, err := phone.Sync(); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := phone.Echoes[seq]; ok {
-		t.Fatal("an echo reached the phone while paused")
-	}
-
-	r.fake.SetAccountState(onePaying())
-	if d := r.clock.waitArmed(t); d != NeedsRelayPoll {
-		t.Fatalf("poll armed for %v", d)
-	}
-	r.clock.Advance(NeedsRelayPoll)
-	r.waitState(StateRunning, "")
-	eventually(t, 10*time.Second, "the applied echo", func() bool {
+	bubble(t, func(t *testing.T) {
+		r := startRelayOnly(t, true, nil, false, nil)
+		phone := r.pairAndRun()
+		r.clock.drain()
+		r.pauseNow()
+		writes := r.ct.hubWrites()
+		seq, err := phone.Act("test_mark")
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.settled()
+		if n := r.marks.Load(); n != 0 {
+			t.Fatalf("the handler ran %d times while paused", n)
+		}
+		if n := r.ct.hubWrites() - writes; n != 0 {
+			t.Fatalf("a paused hub wrote %d records", n)
+		}
 		if _, err := phone.Sync(); err != nil {
 			t.Fatal(err)
 		}
-		return phone.Echoes[seq].Status == wire.StatusApplied
+		if _, ok := phone.Echoes[seq]; ok {
+			t.Fatal("an echo reached the phone while paused")
+		}
+
+		r.fake.SetAccountState(onePaying())
+		if d := r.clock.waitArmed(t); d != NeedsRelayPoll {
+			t.Fatalf("poll armed for %v", d)
+		}
+		r.clock.Advance(NeedsRelayPoll)
+		r.waitState(StateRunning, "")
+		eventually(t, "the applied echo", func() bool {
+			if _, err := phone.Sync(); err != nil {
+				t.Fatal(err)
+			}
+			return phone.Echoes[seq].Status == wire.StatusApplied
+		})
+		r.settled()
+		if n := r.marks.Load(); n != 1 {
+			t.Fatalf("the handler ran %d times, want once", n)
+		}
 	})
-	r.settled()
-	if n := r.marks.Load(); n != 1 {
-		t.Fatalf("the handler ran %d times, want once", n)
-	}
 }
 
 // One paying phone among others keeps the hub publishing, and an
 // ENTITLEMENT_EXPIRED that leaves it paying does not pause it.
 func TestOnePayingPhoneKeepsTheHubPublishing(t *testing.T) {
-	r := startRelayOnly(t, true, onePaying(), true, nil)
-	r.waitState(StateRunning, "")
-	eventually(t, 10*time.Second, "the heartbeat published", func() bool {
-		return slices.Contains(liveRecords(t, r.fake, r.dataZone()), "heartbeat")
+	bubble(t, func(t *testing.T) {
+		r := startRelayOnly(t, true, onePaying(), true, nil)
+		r.waitState(StateRunning, "")
+		eventually(t, "the heartbeat published", func() bool {
+			return slices.Contains(liveRecords(t, r.fake, r.dataZone()), "heartbeat")
+		})
+		reads := r.fake.AccountStateReads()
+		r.fake.SendEvent(transport.Event{Control: &transport.Control{Kind: transport.EntitlementExpired}})
+		eventually(t, "the account state re-read", func() bool {
+			return r.fake.AccountStateReads() > reads
+		})
+		r.settled()
+		if s := r.rec.last(); s.State != StateRunning || s.Reason != "" {
+			t.Fatalf("status %+v", s)
+		}
 	})
-	reads := r.fake.AccountStateReads()
-	r.fake.SendEvent(transport.Event{Control: &transport.Control{Kind: transport.EntitlementExpired}})
-	eventually(t, 10*time.Second, "the account state re-read", func() bool {
-		return r.fake.AccountStateReads() > reads
-	})
-	r.settled()
-	if s := r.rec.last(); s.State != StateRunning || s.Reason != "" {
-		t.Fatalf("status %+v", s)
-	}
 }
 
 // countingSource is a target slice that counts its reads.
@@ -673,76 +672,82 @@ func (s *countingSource) Items(context.Context) ([]hubslices.Item, error) {
 // A paused hub reads no slice source; the resume runs one full diff, which
 // publishes what is there.
 func TestResumePublishesOneFullDiff(t *testing.T) {
-	src := &countingSource{}
-	r := startRelayOnly(t, true, notPaying(), true, func(o *Options) {
-		o.Sources = func(*state.Store) []hubslices.Source { return []hubslices.Source{src} }
-	})
-	r.waitState(StatePaused, ReasonNeedsRelay)
-	r.clock.waitArmed(t)
-	r.settled()
-	if n := src.reads.Load(); n != 0 {
-		t.Fatalf("a paused hub read a source %d times", n)
-	}
+	bubble(t, func(t *testing.T) {
+		src := &countingSource{}
+		r := startRelayOnly(t, true, notPaying(), true, func(o *Options) {
+			o.Sources = func(*state.Store) []hubslices.Source { return []hubslices.Source{src} }
+		})
+		r.waitState(StatePaused, ReasonNeedsRelay)
+		r.clock.waitArmed(t)
+		r.settled()
+		if n := src.reads.Load(); n != 0 {
+			t.Fatalf("a paused hub read a source %d times", n)
+		}
 
-	r.fake.SetAccountState(onePaying())
-	r.clock.Advance(NeedsRelayPoll)
-	r.waitState(StateRunning, "")
-	eventually(t, 10*time.Second, "the full diff", func() bool {
-		got := liveRecords(t, r.fake, r.dataZone())
-		return slices.Contains(got, "heartbeat") && len(got) >= 2
+		r.fake.SetAccountState(onePaying())
+		r.clock.Advance(NeedsRelayPoll)
+		r.waitState(StateRunning, "")
+		eventually(t, "the full diff", func() bool {
+			got := liveRecords(t, r.fake, r.dataZone())
+			return slices.Contains(got, "heartbeat") && len(got) >= 2
+		})
+		if n := src.reads.Load(); n < 1 {
+			t.Fatalf("source read %d times after the resume", n)
+		}
 	})
-	if n := src.reads.Load(); n < 1 {
-		t.Fatalf("source read %d times after the resume", n)
-	}
 }
 
 // A headless hub stays relay-only: its link code and device_grant name the
 // relay alone, and a phone's transport_switch still gets Plan 1a's
 // transport_switch_rejected (guard over Phase 1).
 func TestHeadlessHubNeverUsesCloudKit(t *testing.T) {
-	r := startRelayOnly(t, true, nil, false, nil)
-	r.waitState(StatePaused, ReasonNeedsRelay)
-	phone, lp := r.pair(func() { r.fake.SetAccountState(onePaying()) })
-	if !slices.Equal(lp.Transports, []string{wire.TransportRelay}) {
-		t.Fatalf("link code transports %v", lp.Transports)
-	}
-	r.waitState(StateRunning, "")
-	eventually(t, 10*time.Second, "a relay-only device_grant", func() bool {
-		kb, ok, err := phone.ReadKeybox(r.dataZone())
-		if err != nil {
+	bubble(t, func(t *testing.T) {
+		r := startRelayOnly(t, true, nil, false, nil)
+		r.waitState(StatePaused, ReasonNeedsRelay)
+		phone, lp := r.pair(func() { r.fake.SetAccountState(onePaying()) })
+		if !slices.Equal(lp.Transports, []string{wire.TransportRelay}) {
+			t.Fatalf("link code transports %v", lp.Transports)
+		}
+		r.waitState(StateRunning, "")
+		eventually(t, "a relay-only device_grant", func() bool {
+			kb, ok, err := phone.ReadKeybox(r.dataZone())
+			if err != nil {
+				t.Fatal(err)
+			}
+			return ok && kb.Grant.Linked && slices.Equal(kb.Grant.Transports, []string{wire.TransportRelay})
+		})
+		target := wire.TransportCloudKit
+		if _, err := phone.WriteControl(wire.Control{Kind: wire.ControlSwitch, Target: &target}); err != nil {
 			t.Fatal(err)
 		}
-		return ok && kb.Grant.Linked && slices.Equal(kb.Grant.Transports, []string{wire.TransportRelay})
-	})
-	target := wire.TransportCloudKit
-	if _, err := phone.WriteControl(wire.Control{Kind: wire.ControlSwitch, Target: &target}); err != nil {
-		t.Fatal(err)
-	}
-	eventually(t, 10*time.Second, "transport_switch_rejected", func() bool {
-		if _, err := phone.Sync(); err != nil {
-			t.Fatal(err)
+		eventually(t, "transport_switch_rejected", func() bool {
+			if _, err := phone.Sync(); err != nil {
+				t.Fatal(err)
+			}
+			return slices.ContainsFunc(phone.Controls, func(c wire.Control) bool { return c.Kind == wire.ControlSwitchRejected })
+		})
+		if r.ct.Kind() != transport.KindRelay {
+			t.Fatal("the hub's transport is not the relay")
 		}
-		return slices.ContainsFunc(phone.Controls, func(c wire.Control) bool { return c.Kind == wire.ControlSwitchRejected })
 	})
-	if r.ct.Kind() != transport.KindRelay {
-		t.Fatal("the hub's transport is not the relay")
-	}
 }
 
 // A transport without the relay's account state cannot run the rules: the
 // hub does not start (fail closed) rather than run unpaused.
 func TestRelayOnlyRulesNeedTheAccountState(t *testing.T) {
-	policytest.Set(t, nil)
-	dir := shortDir(t)
-	setMeta(t, dir, state.MetaEnabled, "1")
-	r := newRig(t, dir)
-	o := r.options()
-	o.newTransport = func(context.Context, identity.Identity, *state.Store, []string) (transport.Transport, error) {
-		return struct{ transport.Transport }{r.fake}, nil
-	}
-	o.RelayOnlyRules = true
-	r.start(o)
-	r.waitState(StateStarting, ReasonStartFailed)
+	bubble(t, func(t *testing.T) {
+		policytest.Set(t, nil)
+		dir := shortDir(t)
+		setMeta(t, dir, state.MetaEnabled, "1")
+		r := newBubbleRig(t, dir)
+		o := r.options()
+		o.newTransport = func(context.Context, identity.Identity, *state.Store, []string) (transport.Transport, error) {
+			return struct{ transport.Transport }{r.fake}, nil
+		}
+		o.RelayOnlyRules = true
+		r.start(o)
+		r.waitState(StateStarting, ReasonStartFailed)
+	})
 }
 
 // askSource is an owner_ask slice whose payload the test changes.
@@ -756,24 +761,26 @@ func (s *askSource) Items(context.Context) ([]hubslices.Item, error) {
 // A publisher save refused with ENTITLEMENT_INACTIVE re-reads the account
 // state at once (no poll fires): the hub pauses.
 func TestPublisherSaveInactiveRereadsAtOnce(t *testing.T) {
-	src := &askSource{}
-	r := startRelayOnly(t, true, onePaying(), true, func(o *Options) {
-		o.Sources = func(*state.Store) []hubslices.Source { return []hubslices.Source{src} }
+	bubble(t, func(t *testing.T) {
+		src := &askSource{}
+		r := startRelayOnly(t, true, onePaying(), true, func(o *Options) {
+			o.Sources = func(*state.Store) []hubslices.Source { return []hubslices.Source{src} }
+		})
+		r.waitState(StateRunning, "")
+		eventually(t, "the first publish", func() bool {
+			return len(liveRecords(t, r.fake, r.dataZone())) >= 2
+		})
+		r.settled()
+		reads := r.fake.AccountStateReads()
+		r.fake.SetAccountState(notPaying())
+		r.fake.FailNext("save", fmt.Errorf("relay: %w", transport.ErrEntitlementInactive))
+		src.v.Add(1)
+		r.fake.SendEvent(transport.Event{Zone: r.dataZone(), Resync: true}) // owner_ask is urgent
+		r.waitState(StatePaused, ReasonNeedsRelay)
+		if r.fake.AccountStateReads() <= reads {
+			t.Fatal("paused without a re-read")
+		}
 	})
-	r.waitState(StateRunning, "")
-	eventually(t, 10*time.Second, "the first publish", func() bool {
-		return len(liveRecords(t, r.fake, r.dataZone())) >= 2
-	})
-	r.settled()
-	reads := r.fake.AccountStateReads()
-	r.fake.SetAccountState(notPaying())
-	r.fake.FailNext("save", fmt.Errorf("relay: %w", transport.ErrEntitlementInactive))
-	src.v.Add(1)
-	r.fake.SendEvent(transport.Event{Zone: r.dataZone(), Resync: true}) // owner_ask is urgent
-	r.waitState(StatePaused, ReasonNeedsRelay)
-	if r.fake.AccountStateReads() <= reads {
-		t.Fatal("paused without a re-read")
-	}
 }
 
 // A phone promoted after its link (promote_pairing sends the hub no event):
@@ -782,32 +789,34 @@ func TestPublisherSaveInactiveRereadsAtOnce(t *testing.T) {
 // linkEvery or the 5-minute poll, and the retry stops once every linked
 // phone is slotted.
 func TestPhonePromotedAfterItsLinkIsSeenWithinSeconds(t *testing.T) {
-	soon := newPayClock()
-	r := startRelayOnly(t, true, nil, false, func(o *Options) {
-		o.soonTimer = soon.Timer
-		o.linkEvery = time.Hour
+	bubble(t, func(t *testing.T) {
+		soon := newPayClock()
+		r := startRelayOnly(t, true, nil, false, func(o *Options) {
+			o.soonTimer = soon.Timer
+			o.linkEvery = time.Hour
+		})
+		r.waitState(StatePaused, ReasonNeedsRelay)
+		phone, _ := r.pair(nil)
+		r.settled()
+		if s, err := ReadStatus(r.dir); err != nil || s.State != StatePaused {
+			t.Fatalf("status before promote_pairing: %+v, %v", s, err)
+		}
+		r.fake.SetAccountState(&relayv1.AccountState{Phones: []*relayv1.SlotHolder{
+			{PhoneDeviceId: phone.RelayDeviceID(), Paying: true},
+		}})
+		eventually(t, "the hub resumed by the short link retry", func() bool {
+			soon.Advance(linkSoonEvery)
+			s, err := ReadStatus(r.dir)
+			return err == nil && s.State == StateRunning && s.Reason == ""
+		})
+		r.settled()
+		soon.mu.Lock()
+		pending := len(soon.timers)
+		soon.mu.Unlock()
+		if pending != 0 {
+			t.Fatalf("%d link retries still armed after every phone is slotted", pending)
+		}
 	})
-	r.waitState(StatePaused, ReasonNeedsRelay)
-	phone, _ := r.pair(nil)
-	r.settled()
-	if s, err := ReadStatus(r.dir); err != nil || s.State != StatePaused {
-		t.Fatalf("status before promote_pairing: %+v, %v", s, err)
-	}
-	r.fake.SetAccountState(&relayv1.AccountState{Phones: []*relayv1.SlotHolder{
-		{PhoneDeviceId: phone.RelayDeviceID(), Paying: true},
-	}})
-	eventually(t, 10*time.Second, "the hub resumed by the short link retry", func() bool {
-		soon.Advance(linkSoonEvery)
-		s, err := ReadStatus(r.dir)
-		return err == nil && s.State == StateRunning && s.Reason == ""
-	})
-	r.settled()
-	soon.mu.Lock()
-	pending := len(soon.timers)
-	soon.mu.Unlock()
-	if pending != 0 {
-		t.Fatalf("%d link retries still armed after every phone is slotted", pending)
-	}
 }
 
 // readersCounting is the counting transport with the relay's readers
@@ -832,114 +841,118 @@ func (r *readersCounting) SetReadersFrom(context.Context, *relayv1.AccountState,
 // window's first tick, and for each tick's re-armed timer (the tick ran)
 // instead of a barrier.
 func TestUnpromotedPhoneCostsOneReadPerTick(t *testing.T) {
-	soon := newPayClock()
-	rc := &readersCounting{}
-	var rt atomic.Pointer[hubRuntime]
-	r := startRelayOnly(t, true, nil, false, func(o *Options) {
-		o.soonTimer = soon.Timer
-		o.linkEvery = time.Hour
-		o.started = func(h *hubRuntime) { rt.Store(h) }
-		dial := o.newTransport
-		o.newTransport = func(ctx context.Context, id identity.Identity, st *state.Store, zones []string) (transport.Transport, error) {
-			tr, err := dial(ctx, id, st, zones)
-			if err != nil {
-				return nil, err
+	bubble(t, func(t *testing.T) {
+		soon := newPayClock()
+		rc := &readersCounting{}
+		var rt atomic.Pointer[hubRuntime]
+		r := startRelayOnly(t, true, nil, false, func(o *Options) {
+			o.soonTimer = soon.Timer
+			o.linkEvery = time.Hour
+			o.started = func(h *hubRuntime) { rt.Store(h) }
+			dial := o.newTransport
+			o.newTransport = func(ctx context.Context, id identity.Identity, st *state.Store, zones []string) (transport.Transport, error) {
+				tr, err := dial(ctx, id, st, zones)
+				if err != nil {
+					return nil, err
+				}
+				rc.countingTransport = tr.(*countingTransport)
+				return rc, nil
 			}
-			rc.countingTransport = tr.(*countingTransport)
-			return rc, nil
+		})
+		r.waitState(StatePaused, ReasonNeedsRelay)
+		r.pair(nil)
+		// The pairing's link and soon kicks consumed, and the worker past the
+		// work they started: nothing else kicks either while the phone waits.
+		h := rt.Load()
+		eventually(t, "the pairing's kicks consumed", func() bool {
+			r.settled()
+			r.settled()
+			return len(h.linkKick) == 0 && len(h.soonKick) == 0
+		})
+		tick := func() {
+			t.Helper()
+			soon.drain()
+			soon.Advance(linkSoonEvery)
+			soon.waitArmed(t) // the tick ran and armed the next one
+		}
+		tick() // the window's first tick: one full check
+		writes, sets, reads := r.ct.hubWrites(), rc.sets.Load(), r.fake.AccountStateReads()
+		const ticks = 5
+		for range ticks {
+			tick()
+		}
+		if n := r.fake.AccountStateReads() - reads; n != ticks {
+			t.Fatalf("%d account reads over %d ticks", n, ticks)
+		}
+		if n := r.ct.hubWrites() - writes; n != 0 {
+			t.Fatalf("%d hub writes over %d ticks of an unpromoted phone", n, ticks)
+		}
+		if n := rc.sets.Load() - sets; n != 0 {
+			t.Fatalf("%d readers sets over %d ticks of an unpromoted phone", n, ticks)
 		}
 	})
-	r.waitState(StatePaused, ReasonNeedsRelay)
-	r.pair(nil)
-	// The pairing's link and soon kicks consumed, and the worker past the
-	// work they started: nothing else kicks either while the phone waits.
-	h := rt.Load()
-	eventually(t, 10*time.Second, "the pairing's kicks consumed", func() bool {
-		r.settled()
-		r.settled()
-		return len(h.linkKick) == 0 && len(h.soonKick) == 0
-	})
-	tick := func() {
-		t.Helper()
-		soon.drain()
-		soon.Advance(linkSoonEvery)
-		soon.waitArmed(t) // the tick ran and armed the next one
-	}
-	tick() // the window's first tick: one full check
-	writes, sets, reads := r.ct.hubWrites(), rc.sets.Load(), r.fake.AccountStateReads()
-	const ticks = 5
-	for range ticks {
-		tick()
-	}
-	if n := r.fake.AccountStateReads() - reads; n != ticks {
-		t.Fatalf("%d account reads over %d ticks", n, ticks)
-	}
-	if n := r.ct.hubWrites() - writes; n != 0 {
-		t.Fatalf("%d hub writes over %d ticks of an unpromoted phone", n, ticks)
-	}
-	if n := rc.sets.Load() - sets; n != 0 {
-		t.Fatalf("%d readers sets over %d ticks of an unpromoted phone", n, ticks)
-	}
 }
 
 // After a proven record moved a relay id, the paying state follows it: the
 // account's slot counts for the prover and no longer for the old row
 // (payingByDevice, what transport_switch's not_paying reads).
 func TestAMovedRelayIDPaysForItsProver(t *testing.T) {
-	st, err := state.Open(filepath.Join(t.TempDir(), "hub"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = st.Close() })
-	id, err := identity.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	now := func() time.Time { return time.Unix(1_800_000_000, 0).UTC() }
-	kr, err := identity.NewKeyring(id, st, now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, key, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pub := key.Public().(ed25519.PublicKey)
-	relayID := identity.RelayDeviceID(pub)
-	stale, prover := "AAAAAAAA-0000-4000-8000-000000000001", "AAAAAAAA-0000-4000-8000-000000000002"
-	if err := st.WithTx(t.Context(), func(tx *sql.Tx) error {
-		if err := state.LinkDevice(tx, state.Device{ID: stale, Name: "Old", Scope: wire.ScopePrivate, LinkedAt: now(), RelayDeviceID: relayID}); err != nil {
-			return err
+	bubble(t, func(t *testing.T) {
+		st, err := state.Open(filepath.Join(t.TempDir(), "hub"))
+		if err != nil {
+			t.Fatal(err)
 		}
-		return state.LinkDevice(tx, state.Device{ID: prover, Name: "New", Scope: wire.ScopePrivate, LinkedAt: now().Add(time.Second)})
-	}); err != nil {
-		t.Fatal(err)
-	}
-	center := link.NewCenter(link.Config{Store: st, Keys: kr, Opener: secure.NewOpener(kr, kr), Clock: now})
-	acct := &relayv1.AccountState{Phones: []*relayv1.SlotHolder{{PhoneDeviceId: relayID, Paying: true}}}
-	r := &accountReader{
-		read:    func(context.Context) (*relayv1.AccountState, error) { return acct, nil },
-		vouched: func() bool { return true },
-		clock:   now,
-	}
-	h := &hubRuntime{sup: &supervisor{o: Options{Clock: now}}, st: st, kr: kr, acct: r}
-	before, err := h.payingByDevice(t.Context())
-	if err != nil || !before[stale] || before[prover] {
-		t.Fatalf("before the record: %v %v", before, err)
-	}
-	proverID, err := secure.ParseID(prover)
-	if err != nil {
-		t.Fatal(err)
-	}
-	enc := base64.RawURLEncoding
-	d := wire.DevicePayload{DeviceID: prover, Name: "New", Scope: wire.ScopePrivate, StartSessions: true,
-		RelayDeviceID: relayID, RelayAuthPub: enc.EncodeToString(pub),
-		RelayIDSig: enc.EncodeToString(ed25519.Sign(key, link.RelayIDProofMessage(kr.HubID(), proverID, relayID)))}
-	if err := center.ApplyDeviceRecord(t.Context(), prover, link.DeviceRecord{Payload: d}); err != nil {
-		t.Fatal(err)
-	}
-	after, err := h.payingByDevice(t.Context())
-	if err != nil || !after[prover] || after[stale] {
-		t.Fatalf("after the record: %v %v", after, err)
-	}
+		t.Cleanup(func() { _ = st.Close() })
+		id, err := identity.New()
+		if err != nil {
+			t.Fatal(err)
+		}
+		now := func() time.Time { return time.Unix(1_800_000_000, 0).UTC() }
+		kr, err := identity.NewKeyring(id, st, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, key, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pub := key.Public().(ed25519.PublicKey)
+		relayID := identity.RelayDeviceID(pub)
+		stale, prover := "AAAAAAAA-0000-4000-8000-000000000001", "AAAAAAAA-0000-4000-8000-000000000002"
+		if err := st.WithTx(t.Context(), func(tx *sql.Tx) error {
+			if err := state.LinkDevice(tx, state.Device{ID: stale, Name: "Old", Scope: wire.ScopePrivate, LinkedAt: now(), RelayDeviceID: relayID}); err != nil {
+				return err
+			}
+			return state.LinkDevice(tx, state.Device{ID: prover, Name: "New", Scope: wire.ScopePrivate, LinkedAt: now().Add(time.Second)})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		center := link.NewCenter(link.Config{Store: st, Keys: kr, Opener: secure.NewOpener(kr, kr), Clock: now})
+		acct := &relayv1.AccountState{Phones: []*relayv1.SlotHolder{{PhoneDeviceId: relayID, Paying: true}}}
+		r := &accountReader{
+			read:    func(context.Context) (*relayv1.AccountState, error) { return acct, nil },
+			vouched: func() bool { return true },
+			clock:   now,
+		}
+		h := &hubRuntime{sup: &supervisor{o: Options{Clock: now}}, st: st, kr: kr, acct: r}
+		before, err := h.payingByDevice(t.Context())
+		if err != nil || !before[stale] || before[prover] {
+			t.Fatalf("before the record: %v %v", before, err)
+		}
+		proverID, err := secure.ParseID(prover)
+		if err != nil {
+			t.Fatal(err)
+		}
+		enc := base64.RawURLEncoding
+		d := wire.DevicePayload{DeviceID: prover, Name: "New", Scope: wire.ScopePrivate, StartSessions: true,
+			RelayDeviceID: relayID, RelayAuthPub: enc.EncodeToString(pub),
+			RelayIDSig: enc.EncodeToString(ed25519.Sign(key, link.RelayIDProofMessage(kr.HubID(), proverID, relayID)))}
+		if err := center.ApplyDeviceRecord(t.Context(), prover, link.DeviceRecord{Payload: d}); err != nil {
+			t.Fatal(err)
+		}
+		after, err := h.payingByDevice(t.Context())
+		if err != nil || !after[prover] || after[stale] {
+			t.Fatalf("after the record: %v %v", after, err)
+		}
+	})
 }

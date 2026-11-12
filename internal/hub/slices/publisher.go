@@ -152,6 +152,10 @@ type Publisher struct {
 	mono  func() time.Time
 	timer func(d time.Duration) (<-chan time.Time, func())
 
+	// cycleBlocked, set by tests only, runs when a Cycle finds another one
+	// in progress, before it waits for it.
+	cycleBlocked func()
+
 	cycleMu sync.Mutex // one cycle at a time; guards the fields below
 	// lastWrite is when each kind last saved or deleted a record.
 	lastWrite map[Kind]time.Time
@@ -541,7 +545,12 @@ func (p *Publisher) Run(ctx context.Context) error {
 // once per payload); a source error skips its kind. A transport or state
 // failure fails the cycle with what it did so far.
 func (p *Publisher) Cycle(ctx context.Context, kinds []Kind) (CycleReport, error) {
-	p.cycleMu.Lock()
+	if !p.cycleMu.TryLock() {
+		if p.cycleBlocked != nil {
+			p.cycleBlocked()
+		}
+		p.cycleMu.Lock()
+	}
 	defer p.cycleMu.Unlock()
 	rep := CycleReport{Deferred: map[Kind]time.Time{}}
 	p.mu.Lock()
@@ -782,7 +791,8 @@ func (p *Publisher) diffItems(k Kind, items []Item, known map[string]state.Slice
 func (p *Publisher) saveChanged(ctx context.Context, k Kind, epoch uint32, saves []transport.SaveItem, pending []pushed, rep *CycleReport) (wrote bool, err error) {
 	// One Save per kind, not chunked: after a rotation or a new phone a
 	// big kind goes as one request of up to N sealed records. The hosted
-	// relay client (Task 8) or Plan 1b caps or splits the batch.
+	// relay client (Task 8) or Plan 1b caps or splits the batch; the
+	// CloudKit bridge splits each frame into CloudKit-sized requests.
 	p.noteWriteTransport()
 	outs, err := p.c.Transport.Save(ctx, saves)
 	if err != nil {

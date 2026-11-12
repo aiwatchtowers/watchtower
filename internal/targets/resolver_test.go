@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"watchtower/internal/db"
@@ -293,7 +294,10 @@ func TestJiraResolver_MCPTimeout(t *testing.T) {
 
 	r := &JiraResolver{db: d, mcp: mcp, timeout: 10 * time.Millisecond}
 	m := URLMatch{Source: "jira", RawURL: "https://org.atlassian.net/browse/PROJ-99", Key: "PROJ-99"}
-	e, err := r.Resolve(context.Background(), m)
+	var e *Enrichment
+	var err error
+	// On synctest's clock: the 10 ms MCP timeout passes in virtual time.
+	synctest.Test(t, func(*testing.T) { e, err = r.Resolve(context.Background(), m) })
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

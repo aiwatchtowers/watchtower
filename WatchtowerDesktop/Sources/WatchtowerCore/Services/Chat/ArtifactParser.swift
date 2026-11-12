@@ -60,7 +60,7 @@ package enum ArtifactParser {
     }()
 
     package static func parse(_ text: String, final: Bool) -> ParsedMessage {
-        let key = ((final ? "1" : "0") + text) as NSString
+        let key = cacheKey(text, final: final)
         if let hit = cache.object(forKey: key) { return hit.parsed }
         var machine = Machine(final: final)
         let lines = splitLines(text)
@@ -71,6 +71,15 @@ package enum ArtifactParser {
         let parsed = machine.finish()
         cache.setObject(Box(parsed), forKey: key, cost: text.utf16.count)
         return parsed
+    }
+
+    /// The memoized parse of `text`, if any (tests: a repeat is a cache hit).
+    package static func cached(_ text: String, final: Bool) -> ParsedMessage? {
+        cache.object(forKey: cacheKey(text, final: final))?.parsed
+    }
+
+    private static func cacheKey(_ text: String, final: Bool) -> NSString {
+        ((final ? "1" : "0") + text) as NSString
     }
 
     package static func slug(_ title: String) -> String {

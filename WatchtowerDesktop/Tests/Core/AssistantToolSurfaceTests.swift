@@ -25,4 +25,22 @@ final class AssistantToolSurfaceTests: XCTestCase {
     func testAnUnknownSurfaceShowsItsID() {
         XCTAssertEqual(AssistantToolSurface.label(for: "brand_new"), "brand_new")
     }
+
+    /// `tools.SurfaceTuning` (spec 2026-11-03 §4.1).
+    func testTuningLabel() {
+        XCTAssertEqual(AssistantToolSurface.label(for: "tuning"), "Tuning chat")
+    }
+
+    /// Dual path: Go's `tools.ChatSurfaces()` is pinned to the same fixture.
+    func testChatSurfacesMatchTheGoFixture() throws {
+        let path = URL(fileURLWithPath: #filePath)   // …/WatchtowerDesktop/Tests/Core/<this file>
+            .deletingLastPathComponent()              // …/Tests/Core
+            .deletingLastPathComponent()              // …/Tests
+            .deletingLastPathComponent()              // …/WatchtowerDesktop
+            .deletingLastPathComponent()              // repo root
+            .appendingPathComponent("internal/tools/testdata/chat_surfaces.txt")
+        let raw = try String(contentsOf: path, encoding: .utf8)
+        let lines = raw.split(separator: "\n").map(String.init)
+        XCTAssertEqual(lines, AssistantToolSurface.chatSurfaces)
+    }
 }
