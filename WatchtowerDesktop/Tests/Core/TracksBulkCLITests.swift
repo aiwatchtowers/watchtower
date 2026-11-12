@@ -109,6 +109,13 @@ final class TracksBulkCLITests: XCTestCase {
         XCTAssertEqual(result, .done(count: 3, skipped: 1))
     }
 
+    func testDismissNoIDsRunsNothing() async {
+        let (cli, runner) = cli(#"{"dismissed":0,"skipped":0,"ids":[]}"#)
+        let result = await cli.dismiss(ids: [])
+        XCTAssertEqual(result, .done(count: 0, skipped: 0))
+        XCTAssertTrue(runner.invocations.isEmpty)
+    }
+
     func testDismissWithoutPinnedKeysIsFailed() async {
         let (cli, _) = cli(#"{"dismissed":3}"#)
         let result = await cli.dismiss(ids: ["4"])

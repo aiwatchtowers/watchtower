@@ -66,8 +66,9 @@ package struct TracksBulkCLI {
     }
 
     /// Dismisses `ids`. A write error part-way is `.partial` when something
-    /// was dismissed, `.failed` when nothing was.
+    /// was dismissed, `.failed` when nothing was. No ids: nothing runs.
     package func dismiss(ids: [String]) async -> InboxBulkResult {
+        guard !ids.isEmpty else { return .done(count: 0, skipped: 0) }
         let result: CLICapturedResult
         do {
             result = try await capture(Self.dismissArgs(ids: ids))

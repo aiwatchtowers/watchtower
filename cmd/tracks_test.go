@@ -885,6 +885,7 @@ func TestTracksDismiss_FlagValidation(t *testing.T) {
 		"empty ids":                  {"--ids", ""},
 		"non-numeric id":             {"--ids", "1,x"},
 		"zero id":                    {"--ids", "0"},
+		"id with --json":             {sid, "--json"},
 	}
 	for name, args := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -893,6 +894,12 @@ func TestTracksDismiss_FlagValidation(t *testing.T) {
 			assert.Empty(t, dismissedImage(t, c.d)[id], "nothing is written")
 		})
 	}
+	t.Run("bad id quoted trimmed", func(t *testing.T) {
+		code, _, stderr := runCLI(t, "tracks", "dismiss", "--ids", "1, x")
+		assert.Equal(t, 2, code, stderr)
+		assert.Contains(t, stderr, `"x"`)
+		assert.NotContains(t, stderr, `" x"`)
+	})
 }
 
 func TestTracksDismiss_SingleIDUnchanged(t *testing.T) {

@@ -641,6 +641,8 @@ func runTracksDismiss(cmd *cobra.Command, args []string) error {
 		return listQuietTracks(cmd, tracksDismissFlagQuietDays)
 	case len(args) == 0:
 		return usageError("give a track <id>, --quiet-days N --dry-run or --ids ID,…")
+	case flags.Changed("json"):
+		return usageError("--json goes with --quiet-days or --ids")
 	}
 	return dismissOneTrack(cmd, args[0])
 }
@@ -690,7 +692,8 @@ func parseTrackIDList(raw string) ([]int, error) {
 	var ids []int
 	seen := map[int]bool{}
 	for _, part := range strings.Split(raw, ",") {
-		id, err := strconv.Atoi(strings.TrimSpace(part))
+		part = strings.TrimSpace(part)
+		id, err := strconv.Atoi(part)
 		if err != nil || id <= 0 {
 			return nil, usageError("invalid track id %q in --ids: must be a positive integer", part)
 		}
