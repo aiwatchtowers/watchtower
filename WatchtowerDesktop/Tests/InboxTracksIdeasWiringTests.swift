@@ -133,6 +133,26 @@ final class InboxTracksIdeasWiringTests: XCTestCase {
         XCTAssertNotNil(readAt)
     }
 
+    func testStopWatchingOnOpenedThreadStopsItAndGoesBack() async throws {
+        let trackID = try seedNewsTrack()
+        let vm = await makeVM()
+        await vm.selectEntry(InboxFolderEntry.legacyTracks.id)
+        vm.openNewsTrack(trackID)
+
+        try view(vm).environment(AppState.isolated()).inspect().find(InboxTrackPane.self)
+            .find(button: "Stop watching").tap()
+        let deadline = Date().addingTimeInterval(5)
+        while vm.openedNewsTrackID != nil, Date() < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        XCTAssertNil(vm.openedNewsTrackID, "Stop watching goes back to the news list")
+        let dismissedAt = try await manager.dbPool.read { db in
+            try String.fetchOne(db, sql: "SELECT dismissed_at FROM tracks WHERE id = ?", arguments: [trackID])
+        }
+        XCTAssertNotEqual(dismissedAt ?? "", "")
+    }
+
     // MARK: - Idea finder
 
     func testIdeasEntryDrawsBatchPane() async throws {

@@ -1390,8 +1390,9 @@ package final class ActionStripViewModel {
     // MARK: - Tracks
 
     /// Done on a track card (R4): the track read (TRACKS-04, with its digests)
-    /// and every event of it read, in one write.
-    package func markTrackDone(_ id: Int) async {
+    /// and every event of it read, in one write. True when it landed.
+    @discardableResult
+    package func markTrackDone(_ id: Int) async -> Bool {
         await write(.card(.track(id)), { db in
             try TrackQueries.markRead(db, id: id)
             try TrackEventQueries.markAllRead(db, trackId: id)
@@ -1400,16 +1401,17 @@ package final class ActionStripViewModel {
 
     /// Stop watching (R4): an auto track is dismissed (TRACKS-07); a custom
     /// track goes through the seam, which also turns its collection off. A
-    /// track deleted meanwhile is quiet.
-    package func stopWatching(_ track: Track) async {
+    /// track deleted meanwhile is quiet. True when it landed (or the track
+    /// was gone).
+    @discardableResult
+    package func stopWatching(_ track: Track) async -> Bool {
         let id = track.id
         guard track.isCustom else {
-            await write(.card(.track(id)), { db in
+            return await write(.card(.track(id)), { db in
                 do { try TrackQueries.dismiss(db, id: id) } catch is RowNotFoundError {}
             }, press: .stopWatching)
-            return
         }
-        await throughSeam(track, press: .stopWatching) { try await $0.stopWatching(track) }
+        return await throughSeam(track, press: .stopWatching) { try await $0.stopWatching(track) }
     }
 
     /// Restore on a stopped card (the undo of Stop watching, TRACKS-07's
@@ -1427,27 +1429,33 @@ package final class ActionStripViewModel {
         await throughSeam(track) { try await $0.resumeWatching(track) }
     }
 
-    /// One seam call per card at a time, then a read; a vanished row is quiet.
+    /// One seam call per card at a time, then a read; a vanished row is
+    /// quiet. True when the call landed or the row was gone (false too for
+    /// a press that did not run).
+    @discardableResult
     private func throughSeam(
         _ track: Track,
         press: InboxRowPress? = nil,
         _ call: @escaping (any CustomTrackControlling) async throws -> Void
-    ) async {
+    ) async -> Bool {
         let controls = customTrackControls
         let item = InboxSelection.track(track.id)
-        await pendingWrites.run(CardKey.card(item)) {
+        return await pendingWrites.run(CardKey.card(item)) {
             lastError = nil
             if press != nil { rowErrors[item] = nil }
             do {
                 try await call(controls)
                 await refresh()
+                return true
             } catch is RowNotFoundError {
                 await refresh()
+                return true
             } catch {
                 lastError = error.localizedDescription
                 if let press { rowErrors[item] = InboxRowFailure(message: error.localizedDescription, press: press) }
+                return false
             }
-        }
+        } ?? false
     }
 
     // MARK: - Messages

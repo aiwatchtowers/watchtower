@@ -1,4 +1,5 @@
 import GRDB
+import os
 import SwiftUI
 import WatchtowerCore
 
@@ -17,6 +18,8 @@ import WatchtowerCore
 /// when the Inbox is on screen, which drives its 30 s poll.
 struct ActionStripView: View {
     @Environment(AppState.self) private var appState
+
+    private static let log = Logger(subsystem: "com.watchtower.desktop", category: "inbox")
 
     var body: some View {
         Group {
@@ -143,7 +146,12 @@ struct ActionStripView: View {
     /// database or on a failed read (the card leaves them out).
     private func ideaFacts(_ ideaID: Int) async -> IdeaBatchCardFacts? {
         guard let pool = appState.databaseManager?.dbPool else { return nil }
-        return try? await pool.read { db in try IdeaBatchCardFacts.read(db, ideaID: ideaID) }
+        do {
+            return try await pool.read { db in try IdeaBatchCardFacts.read(db, ideaID: ideaID) }
+        } catch {
+            Self.log.error("idea facts read failed for idea \(ideaID): \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
     }
 
     /// The live dictionary (`reaction_command_map` + `tool_trust`) through
@@ -578,14 +586,12 @@ struct ActionStripActionsView: View {
                 isWriting: vm.isWriting(.track(card.track.id)),
                 onDone: {
                     Task {
-                        await vm.markTrackDone(card.track.id)
-                        if vm.lastError == nil { vm.closeNewsTrack() }
+                        if await vm.markTrackDone(card.track.id) { vm.closeNewsTrack() }
                     }
                 },
                 onStopWatching: {
                     Task {
-                        await vm.stopWatching(card.track)
-                        if vm.lastError == nil { vm.closeNewsTrack() }
+                        if await vm.stopWatching(card.track) { vm.closeNewsTrack() }
                     }
                 },
                 onRestore: { Task { await vm.restoreTrack(card.track) } },
