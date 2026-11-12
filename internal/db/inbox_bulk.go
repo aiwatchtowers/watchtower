@@ -42,22 +42,32 @@ func (db *DB) OpenPeopleItemIDsOlderThan(ctx context.Context, now time.Time, age
 		ORDER BY MAX(created_at, mentioned_at) DESC, id DESC LIMIT ?`, sqlStamp(now), sqlStamp(now.Add(-age)), BulkResolveMaxIDs)
 }
 
+// openInboxIDs runs query and returns its ids, in order.
 func (db *DB) openInboxIDs(ctx context.Context, query string, args ...any) ([]int64, error) {
 	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("reading open inbox ids: %w", err)
 	}
+	ids, err := scanIDs(rows)
+	if err != nil {
+		return nil, fmt.Errorf("reading open inbox ids: %w", err)
+	}
+	return ids, nil
+}
+
+// scanIDs reads one int64 id per row, in order, and closes rows.
+func scanIDs(rows *sql.Rows) ([]int64, error) {
 	defer rows.Close()
 	ids := []int64{}
 	for rows.Next() {
 		var id int64
 		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("scanning an open inbox id: %w", err)
+			return nil, fmt.Errorf("scanning an id: %w", err)
 		}
 		ids = append(ids, id)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("reading open inbox ids: %w", err)
+		return nil, err
 	}
 	return ids, nil
 }
@@ -105,34 +115,24 @@ func (db *DB) resolveOpenChunk(ctx context.Context, now time.Time, ids []int64, 
 		return nil, fmt.Errorf("resolving inbox items: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	done, err := scanResolvedIDs(tx.QueryContext(ctx, `UPDATE inbox_items SET status = 'resolved', resolved_reason = ?,
+	//nolint:gosec // G202: openInboxClause is a constant and the rest only "?" placeholders; every value is a bound arg.
+	rows, err := tx.QueryContext(ctx, `UPDATE inbox_items SET status = 'resolved', resolved_reason = ?,
 		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
 		WHERE `+openInboxClause+` AND id IN (?`+strings.Repeat(", ?", len(ids)-1)+`)
-		RETURNING id`, args...))
+		RETURNING id`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("resolving inbox items: %w", err)
+	}
+	changed, err := scanIDs(rows)
 	if err != nil {
 		return nil, fmt.Errorf("resolving inbox items: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("resolving inbox items: %w", err)
 	}
-	return done, nil
-}
-
-func scanResolvedIDs(rows *sql.Rows, err error) (map[int64]bool, error) {
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	done := map[int64]bool{}
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
+	done := make(map[int64]bool, len(changed))
+	for _, id := range changed {
 		done[id] = true
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return done, rows.Close()
+	return done, nil
 }
