@@ -93,20 +93,20 @@ package struct SlackTodaySummary: Equatable, Sendable {
         name.hasPrefix("@") || name.contains(" ") ? name : "#\(name)"
     }
 
-    /// "N channels with nothing for you · M messages", the folded ones
-    /// counted; nil when no channel is quiet.
+    /// "N conversations with nothing for you · M messages", the folded
+    /// ones counted; nil when no conversation is quiet.
     package var quietLine: String? {
         let count = quiet.count + quietRestChannels
         guard count > 0 else { return nil }
         let messages = quiet.reduce(0) { $0 + $1.messages } + quietRestMessages
-        return "\(Self.plural(count, "channel", "channels")) with nothing for you · "
+        return "\(Self.plural(count, "conversation", "conversations")) with nothing for you · "
             + Self.plural(messages, "message", "messages")
     }
 
-    /// The open fold's last row, "and N more channels", for the quiet
-    /// channels the state keeps no name of; nil when there are none.
+    /// The open fold's last row, "and N more conversations", for the quiet
+    /// conversations the state keeps no name of; nil when there are none.
     package var quietMoreLine: String? {
-        quietRestChannels > 0 ? "and \(Self.plural(quietRestChannels, "more channel", "more channels"))" : nil
+        quietRestChannels > 0 ? "and \(Self.plural(quietRestChannels, "more conversation", "more conversations"))" : nil
     }
 
     /// "1 message", "900 messages".

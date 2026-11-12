@@ -163,9 +163,9 @@ Board #1076, asks #634/#638/#653 (2026-11-11). Plan `docs/superpowers/plans/2026
 
 ### Pane
 
-- `SlackTodayPane` (via `InboxReadingPane.slackToday(_:)`): `InboxPaneHeader` with subtitle "Today · N messages in K channels · M with news for you" (`SlackTodayPaneText.subtitle`; "Nothing yet today" for another day), **Mark All Seen**, **Run Now** (when the ⋯ offers it), the ⋯ and `?`; then the card drawn without its title row.
+- `SlackTodayPane` (via `InboxReadingPane.slackToday(_:)`): `InboxPaneHeader` with subtitle "Today · N messages in K conversations · M with news for you" (`SlackTodayPaneText.subtitle`; "Nothing yet today" for another day), **Mark All Seen**, **Run Now** (when the ⋯ offers it), the ⋯ and `?`; then the card drawn without its title row.
 - Stale note "This is yesterday's list. Today's starts after the next sync." only when the state is another day's **and** the card was written before local midnight; a card written today over an older state is today's empty card (a skipped window after midnight writes no state).
-- Under the card, from today's state only: the folded line "N channels with nothing for you · M messages" (`quietLine`, folded ones counted); open, the quiet conversations busiest first as "#name · N messages", then "and N more channels" for `quiet_rest`.
+- Under the card, from today's state only: the folded line "N conversations with nothing for you · M messages" (`quietLine`, folded ones counted); open, the quiet conversations busiest first as "#name · N messages", then "and N more conversations" for `quiet_rest`.
 
 ### Mark All Seen
 

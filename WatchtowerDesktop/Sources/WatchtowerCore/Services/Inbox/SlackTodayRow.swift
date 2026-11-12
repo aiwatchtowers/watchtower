@@ -37,12 +37,12 @@ package enum SlackTodayPaneText {
     package static let nothingYet = "Nothing yet today"
     package static let staleNoteText = "This is yesterday's list. Today's starts after the next sync."
 
-    /// "Today · 900 messages in 46 channels · 4 with news for you"; nil
+    /// "Today · 900 messages in 46 conversations · 4 with news for you"; nil
     /// summary or another day's: "Nothing yet today".
     package static func subtitle(summary: SlackTodaySummary?, now: Date, calendar: Calendar) -> String {
         guard let summary, summary.isToday(now: now, calendar: calendar) else { return nothingYet }
         return "Today · \(SlackTodaySummary.plural(summary.messages, "message", "messages")) in "
-            + "\(SlackTodaySummary.plural(summary.channels, "channel", "channels")) · "
+            + "\(SlackTodaySummary.plural(summary.channels, "conversation", "conversations")) · "
             + "\(summary.newsChannels) with news for you"
     }
 

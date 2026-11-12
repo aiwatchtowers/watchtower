@@ -107,12 +107,12 @@ final class SlackTodayRowTests: XCTestCase {
     func testHeaderSubtitleSingulars() throws {
         let now = try date("2026-10-22T10:00:00Z")
         XCTAssertEqual(SlackTodayPaneText.subtitle(summary: try busyDay(), now: now, calendar: utc),
-                       "Today · 900 messages in 6 channels · 4 with news for you")
+                       "Today · 900 messages in 6 conversations · 4 with news for you")
         let one = try XCTUnwrap(SlackTodaySummary.decode(stateJSON: SlackTodaySummaryTests.state(channels: [
             #""C1":{"name":"acme-ops","n":1,"more":1,"link":"https://example.com/o"}"#
         ], messages: 1)))
         XCTAssertEqual(SlackTodayPaneText.subtitle(summary: one, now: now, calendar: utc),
-                       "Today · 1 message in 1 channel · 1 with news for you")
+                       "Today · 1 message in 1 conversation · 1 with news for you")
         XCTAssertEqual(SlackTodayPaneText.subtitle(summary: nil, now: now, calendar: utc), "Nothing yet today")
     }
 

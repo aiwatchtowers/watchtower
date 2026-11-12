@@ -443,7 +443,7 @@ func TestSlackToday_NoModelCallWithoutInput(t *testing.T) {
 	if s := f.stState(t); s.Messages != 2 || s.Channels["1:C0ACME"].N != 2 || len(s.Channels["1:C0ACME"].Lines) != 0 {
 		t.Errorf("state = %+v", s)
 	}
-	if got := cardText(f.stCard(t).doc); !slices.Equal(got, []string{`list "" empty "Nothing for you in your channels yet today": `}) {
+	if got := cardText(f.stCard(t).doc); !slices.Equal(got, []string{`list "" empty "Nothing for you in your channels or DMs yet today": `}) {
 		t.Errorf("card = %v", got)
 	}
 }
@@ -592,7 +592,7 @@ func TestSlackToday_LineCaps(t *testing.T) {
 		}
 		f.stOK(t, stWindow("2026-10-22", 0, msgs...), stReply(t, lines...))
 		got := cardText(f.stCard(t).doc)
-		if len(got) != 37 || got[36] != "text 7 more channels with news: #acme-18, #acme-19, #acme-20, #acme-21, #acme-22, #acme-23, #acme-24" {
+		if len(got) != 37 || got[36] != "text 7 more conversations with news: #acme-18, #acme-19, #acme-20, #acme-21, #acme-22, #acme-23, #acme-24" {
 			t.Errorf("%d blocks, last %q; want 18 channels (36 blocks) and the more-channels line", len(got), got[len(got)-1])
 		}
 	})
@@ -625,7 +625,7 @@ func TestSlackToday_EmptyDay(t *testing.T) {
 	if n := f.gen.CallCount(); n != 0 {
 		t.Errorf("generator calls = %d", n)
 	}
-	if got := cardText(f.stCard(t).doc); !slices.Equal(got, []string{`list "" empty "Nothing for you in your channels yet today": `}) {
+	if got := cardText(f.stCard(t).doc); !slices.Equal(got, []string{`list "" empty "Nothing for you in your channels or DMs yet today": `}) {
 		t.Errorf("card = %v", got)
 	}
 	if s := f.stState(t); s.V != 1 || s.Day != "2026-10-22" || s.Messages != 0 || len(s.Channels) != 0 {
@@ -846,7 +846,7 @@ func TestSlackToday_SkippedPrimitiveWritesNothingNew(t *testing.T) {
 		if _, has := f.stRawState(t)["today"]; has || f.gen.CallCount() != 0 {
 			t.Errorf("state %v, %d calls; want no today and no call", f.stRawState(t), f.gen.CallCount())
 		}
-		if got := cardText(f.stCard(t).doc); !slices.Equal(got, []string{`list "" empty "Nothing for you in your channels yet today": `}) {
+		if got := cardText(f.stCard(t).doc); !slices.Equal(got, []string{`list "" empty "Nothing for you in your channels or DMs yet today": `}) {
 			t.Errorf("card = %v", got)
 		}
 	})
@@ -861,7 +861,7 @@ func TestSlackToday_SkippedPrimitiveWritesNothingNew(t *testing.T) {
 		if after := f.stRawState(t)["today"]; !bytes.Equal(after, state) || f.gen.CallCount() != 1 {
 			t.Errorf("today: %s → %s, %d calls; want yesterday's state kept, no new call", state, after, f.gen.CallCount())
 		}
-		if got := cardText(f.stCard(t).doc); !slices.Equal(got, []string{`list "" empty "Nothing for you in your channels yet today": `}) {
+		if got := cardText(f.stCard(t).doc); !slices.Equal(got, []string{`list "" empty "Nothing for you in your channels or DMs yet today": `}) {
 			t.Errorf("card = %v; want today's empty card, not yesterday's lines", got)
 		}
 	})
@@ -889,7 +889,7 @@ func TestSlackToday_HeadingsOfDMsAndGroups(t *testing.T) {
 		!strings.HasPrefix(got[4], `list "#acme_02"`) {
 		t.Errorf("headings = %v", got)
 	}
-	if last := got[len(got)-1]; last != `text 2 more channels with news: #acme\_18, #acme\_19` {
+	if last := got[len(got)-1]; last != `text 2 more conversations with news: #acme\_18, #acme\_19` {
 		t.Errorf("last = %q", last)
 	}
 	if s := f.stState(t); s.Channels["1:C0CH0000"].Name != "@Colleague B" || s.Channels["1:C0CH0002"].Name != "acme_02" {
@@ -1071,7 +1071,7 @@ func TestSlackToday_ManyLabelledChannels(t *testing.T) {
 		t.Errorf("%d bytes, %d lines accounted, more_rest %+v", len(raw), lineAccount(s), s.MoreRest)
 	}
 	doc := f.stCard(t).doc
-	want := fmt.Sprintf("text %d more lines in %d other channels.", s.MoreRest.Lines, s.MoreRest.Channels)
+	want := fmt.Sprintf("text %d more lines in %d other conversations.", s.MoreRest.Lines, s.MoreRest.Channels)
 	if got := cardText(doc); len(doc.Blocks) > 39 || !slices.Contains(got, want) {
 		t.Errorf("%d blocks %v; want at most 39 with %q", len(doc.Blocks), got, want)
 	}

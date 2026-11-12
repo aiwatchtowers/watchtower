@@ -6,7 +6,7 @@ import WatchtowerCore
 
 /// Slack today's reading pane (inbox redesign phase 5): its header from the
 /// state, Mark All Seen at the drawn version, yesterday's note and the
-/// folded line of channels with nothing for the owner.
+/// folded line of conversations with nothing for the owner.
 @MainActor
 final class SlackTodayPaneTests: XCTestCase {
     private static let utc: Calendar = {
@@ -50,7 +50,7 @@ final class SlackTodayPaneTests: XCTestCase {
         var pressed = 0
         let sut = try pane(card: card(read: false), summary: summary()) { pressed += 1 }
         XCTAssertNoThrow(try sut.inspect().find(text: "Slack today"))
-        XCTAssertNoThrow(try sut.inspect().find(text: "Today · 900 messages in 43 channels · 1 with news for you"))
+        XCTAssertNoThrow(try sut.inspect().find(text: "Today · 900 messages in 43 conversations · 1 with news for you"))
         let button = try sut.inspect().find(button: "Mark All Seen")
         XCTAssertFalse(button.isDisabled())
         try button.tap()
@@ -74,13 +74,13 @@ final class SlackTodayPaneTests: XCTestCase {
     func testQuietChannelsFold() throws {
         let folded = try pane(card: card(read: true), summary: summary())
         let line = try folded.inspect().find(viewWithAccessibilityIdentifier: "slackToday.quietLine")
-        XCTAssertNoThrow(try line.find(text: "42 channels with nothing for you · 820 messages"))
+        XCTAssertNoThrow(try line.find(text: "42 conversations with nothing for you · 820 messages"))
         XCTAssertThrowsError(try folded.inspect().find(text: "#acme-random · 800 messages"), "folded by default")
 
         let open = try pane(card: card(read: true), summary: summary(), quietShown: true)
         XCTAssertNoThrow(try open.inspect().find(text: "#acme-random · 800 messages"))
         XCTAssertNoThrow(try open.inspect().find(text: "@Colleague A · 1 message"))
-        XCTAssertNoThrow(try open.inspect().find(text: "and 40 more channels"))
+        XCTAssertNoThrow(try open.inspect().find(text: "and 40 more conversations"))
         XCTAssertThrowsError(try open.inspect().find(text: "#acme-release · 23 messages"), "news is not quiet")
 
         let noQuiet = try XCTUnwrap(SlackTodaySummary.decode(stateJSON: #"{"today":{"v":1,"day":"2026-10-22","#

@@ -2,10 +2,10 @@ import SwiftUI
 import WatchtowerCore
 
 /// Slack today's reading pane (inbox redesign phase 5, mockup `slack`): its
-/// header from the state ("Today · N messages in K channels · M with news
+/// header from the state ("Today · N messages in K conversations · M with news
 /// for you") with **Mark All Seen**, Run Now and the ⋯; yesterday's note
 /// while the card is the day before's; the artifact (`artifact`, the
-/// reading pane's own card); then the folded line of channels with nothing
+/// reading pane's own card); then the folded line of conversations with nothing
 /// for the owner, drawn from the state, not the card, so a quiet message
 /// never marks the card unread.
 struct SlackTodayPane: View {
@@ -101,8 +101,8 @@ struct SlackTodayPane: View {
         }
     }
 
-    /// "N channels with nothing for you · M messages", folded by default;
-    /// open, "#name · N messages" busiest first, then "and N more channels"
+    /// "N conversations with nothing for you · M messages", folded by default;
+    /// open, "#name · N messages" busiest first, then "and N more conversations"
     /// for the ones the state keeps no name of.
     private func quietFold(_ today: SlackTodaySummary, line: String) -> some View {
         VStack(alignment: .leading, spacing: Spacing.small) {

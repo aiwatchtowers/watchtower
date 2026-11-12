@@ -1,6 +1,6 @@
 ---
 name: Slack today
-summary: What happened today in your Slack channels
+summary: What happened today in your Slack channels and DMs
 trigger:
   sync: slack_today
 artifacts: living
@@ -11,7 +11,7 @@ permissions:
 outputs: [inbox]
 budget: {tokens: 150000, minutes: 5}
 ---
-After a sync, at most once an hour, sums up today's messages in your Slack channels as one list of what was decided, what asks you and what needs someone.
+After a sync, at most once an hour, sums up today's messages in your Slack channels and DMs as one list of what was decided, what asks you and what needs someone.
 
 ```js
 // Label ranks: the caps take out the lowest first, the card shows the
@@ -317,16 +317,16 @@ function blocksOf(s) {
   var rest = news.slice(SHOWN_CHANNELS);
   if (rest.length > 0) {
     var names = rest.slice(0, NAMED_CHANNELS).map(function (e) { return escapeMarkdown(heading(e.c.name)); });
-    blocks.push({ type: "text", markdown: plural(rest.length, "more channel", "more channels") + " with news: " +
+    blocks.push({ type: "text", markdown: plural(rest.length, "more conversation", "more conversations") + " with news: " +
       names.join(", ") + (rest.length > NAMED_CHANNELS ? ", …" : "") });
   }
   var moreRest = s.more_rest || { channels: 0, lines: 0 };
   if (moreRest.channels > 0) {
     blocks.push({ type: "text", markdown: plural(moreRest.lines, "more line", "more lines") + " in " +
-      plural(moreRest.channels, "other channel", "other channels") + "." });
+      plural(moreRest.channels, "other conversation", "other conversations") + "." });
   }
   if (news.length === 0 && moreRest.channels === 0) {
-    blocks.push({ type: "list", rows: [], empty: "Nothing for you in your channels yet today" });
+    blocks.push({ type: "list", rows: [], empty: "Nothing for you in your channels or DMs yet today" });
   }
   if (s.missed_yesterday > 0) {
     blocks.push({ type: "text", markdown: plural(s.missed_yesterday, "message", "messages") + " from late yesterday " +

@@ -59,8 +59,8 @@ final class SlackTodaySummaryTests: XCTestCase {
         XCTAssertEqual(summary.quiet[1], .init(name: "acme-quiet-0000", messages: 1))
         XCTAssertFalse(summary.quiet.contains { $0.name == "acme-release" || $0.name == "acme-design" })
         // 200 entries + 2 folded; 2 + 199 + 2 messages.
-        XCTAssertEqual(summary.quietLine, "202 channels with nothing for you · 203 messages")
-        XCTAssertEqual(summary.quietMoreLine, "and 2 more channels")
+        XCTAssertEqual(summary.quietLine, "202 conversations with nothing for you · 203 messages")
+        XCTAssertEqual(summary.quietMoreLine, "and 2 more conversations")
 
         let hand = try XCTUnwrap(SlackTodaySummary.decode(stateJSON: Self.state(channels: [
             #""C1":{"name":"acme-ops","n":800}"#,
@@ -69,8 +69,8 @@ final class SlackTodaySummaryTests: XCTestCase {
             #""C4":{"name":"acme-misc","n":20}"#
         ], quietRest: (41, 0))))
         XCTAssertEqual(hand.quiet, [.init(name: "acme-ops", messages: 800), .init(name: "acme-misc", messages: 20)])
-        XCTAssertEqual(hand.quietLine, "43 channels with nothing for you · 820 messages")
-        XCTAssertEqual(hand.quietMoreLine, "and 41 more channels")
+        XCTAssertEqual(hand.quietLine, "43 conversations with nothing for you · 820 messages")
+        XCTAssertEqual(hand.quietMoreLine, "and 41 more conversations")
         // A channel with only `more` is news, not quiet.
         XCTAssertEqual(hand.newsChannels, 2)
         XCTAssertEqual(hand.channels, 45)
@@ -86,12 +86,12 @@ final class SlackTodaySummaryTests: XCTestCase {
         let one = try XCTUnwrap(SlackTodaySummary.decode(stateJSON: Self.state(channels: [
             #""C1":{"name":"acme-ops","n":1}"#
         ], quietRest: (1, 4))))
-        XCTAssertEqual(one.quietLine, "2 channels with nothing for you · 5 messages")
-        XCTAssertEqual(one.quietMoreLine, "and 1 more channel")
+        XCTAssertEqual(one.quietLine, "2 conversations with nothing for you · 5 messages")
+        XCTAssertEqual(one.quietMoreLine, "and 1 more conversation")
         let single = try XCTUnwrap(SlackTodaySummary.decode(stateJSON: Self.state(channels: [
             #""C1":{"name":"acme-ops","n":1}"#
         ])))
-        XCTAssertEqual(single.quietLine, "1 channel with nothing for you · 1 message")
+        XCTAssertEqual(single.quietLine, "1 conversation with nothing for you · 1 message")
         XCTAssertNil(single.quietMoreLine)
     }
 
