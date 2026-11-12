@@ -247,7 +247,7 @@ final class ScreenshotTourTests: XCTestCase {
         try await poll({ slotsRelay.isParked("removeSlot") }, "the removal is running")
         try await shot("R08", "relay-slots-removing", slots, "sheet, a removal running", RelaySlotsView {}.environment(slotsLinking))
         slotsRelay.release("removeSlot")
-        try await removal.value
+        await removal.value
         try await shot("R09", "relay-slots-remove-error", slots, "sheet, the removal failed", RelaySlotsView {}.environment(slotsLinking))
 
         try await captureRelayMacs(now: now) { number, slug, reached, view, settle in
@@ -278,7 +278,7 @@ final class ScreenshotTourTests: XCTestCase {
             AnyView(NavigationStack { MacsView() }.environment(busy)), .milliseconds(600)
         )
         busyRelay.release("vouch")
-        try await attempt.value
+        await attempt.value
 
         let (failed, _, failedHost) = try relayLinking(.promoted, now: now)
         failedHost.prepareError = CocoaError(.fileReadCorruptFile)
@@ -729,7 +729,7 @@ final class ScreenshotTourTests: XCTestCase {
         )
         addTeardownBlock { @MainActor in session.stop() }
         try await poll({ session.isBootstrapped && !session.workbenchReplica.snapshot.workbenches.isEmpty }, "the outbox demo booted")
-        try await session.outboxWork?.value
+        await session.outboxWork?.value
         return (AppEnvironment.single(session, defaults: defaults), session)
     }
 
@@ -934,7 +934,7 @@ final class ScreenshotTourTests: XCTestCase {
         )
         addTeardownBlock { @MainActor in session.stop() }
         try await poll({ session.isBootstrapped && !session.workbenchReplica.snapshot.workbenches.isEmpty }, "the demo booted")
-        try await session.outboxWork?.value
+        await session.outboxWork?.value
         try await session.outbox.enableOrderedActions()
         await transport.refuse(.unreachable)
         let workbench = DemoSeed.acmeID

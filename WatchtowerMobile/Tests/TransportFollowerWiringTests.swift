@@ -97,7 +97,7 @@ final class TransportFollowerWiringTests: XCTestCase {
 
         try await bed.writeMarker(target: .relay, epoch: 1)
         try await bed.fetch(first)
-        try await bed.root.routeMoves[hubID]?.value
+        await bed.root.routeMoves[hubID]?.value
 
         XCTAssertEqual(try bed.row()?.link.transport, .cloudKit)
         XCTAssertTrue(bed.root.env.session(hubID) === first)
@@ -137,7 +137,7 @@ final class TransportFollowerWiringTests: XCTestCase {
 
         try await bed.writeSwitch(target: .relay, epoch: 2, on: .cloudKit)
         try await bed.fetch(first)
-        try await bed.root.routeMoves[hubID]?.value
+        await bed.root.routeMoves[hubID]?.value
 
         XCTAssertEqual(try Bed.rows(first, .undelivered).count, 2)
         XCTAssertTrue(try Bed.handled(first, bed.switchID))
@@ -325,6 +325,7 @@ final class TransportFollowerWiringTests: XCTestCase {
         let first = try await bed.orderedSession()
         try await bed.sendTwoActions(first)
         let host = FlakyMergeHost(root: bed.root, failsFirstMerge: false)
+        host.holdRelayUntilOpened = 2
         let follower = TransportFollower(hubID: hubID, outbox: first.outbox, host: host)
         let control = try await bed.writeSwitch(target: .relay, epoch: 2, on: .cloudKit)
 
@@ -347,7 +348,7 @@ final class TransportFollowerWiringTests: XCTestCase {
 
         let control = try await bed.writeHubControl(.hubOnRelay, on: .relay)
         try await bed.fetch(first)
-        try await bed.root.routeMoves[hubID]?.value
+        await bed.root.routeMoves[hubID]?.value
 
         XCTAssertEqual(try bed.row()?.link.transport, .relay)
         XCTAssertNil(try bed.row()?.link.leftTransport)
@@ -374,17 +375,17 @@ final class TransportFollowerWiringTests: XCTestCase {
         XCTAssertFalse(try Bed.handled(first, control.id))
         let cloudNames = try await bed.cloudMailboxNames()
         XCTAssertTrue(cloudNames.contains(try bed.switchWire))
-        try await bed.root.routeMoves[hubID]?.value
+        await bed.root.routeMoves[hubID]?.value
         let second = try XCTUnwrap(bed.root.env.session(hubID))
         await second.waitForBoot()
-        try await second.outboxWork?.value
+        await second.outboxWork?.value
         await second.outbox.drain()
         let relayWrites = try await bed.relayMailbox().count
 
         // Read again: the same epoch on the same route answers the request and changes nothing.
         let again = TransportFollower(hubID: hubID, outbox: second.outbox, host: bed.root)
         let decidedAgain = await again.handle(control: control, on: .cloudKit)
-        try await bed.root.routeMoves[hubID]?.value
+        await bed.root.routeMoves[hubID]?.value
         XCTAssertTrue(decidedAgain)
         XCTAssertEqual(try bed.row()?.link, moved)
         XCTAssertTrue(bed.root.env.session(hubID) === second, "no second move")
@@ -485,6 +486,15 @@ final class Bed {
         /// keeps it (relay client Phase 5, Task 17); otherwise every farewell reads as sent.
         var farewellLive = false
         let farewellResends = FarewellResends()
+        let stopLookWaits = StopLookWaits()
+    }
+
+    /// The caps `stop()`'s waits for a hung look were asked to wait out.
+    final class StopLookWaits: @unchecked Sendable {
+        private let lock = NSLock()
+        private var caps: [Duration] = []
+        var all: [Duration] { lock.withLock { caps } }
+        func append(_ cap: Duration) { lock.withLock { caps.append(cap) } }
     }
 
     /// Kept farewells sent again at launch (none goes out on the bed).
@@ -497,6 +507,8 @@ final class Bed {
 
     /// The bed's kept-farewell resends.
     var farewellResends: [String] { launch.farewellResends.hubIDs }
+    /// The caps `stop()` waited out for a hung look (only when `stopLookCapRunsOut`).
+    var stopLookCaps: [Duration] { launch.stopLookWaits.all }
     /// The root's settings (the account center's claim lives here).
     var defaults: UserDefaults { launch.defaults }
 
@@ -608,7 +620,8 @@ final class Bed {
             sideMailbox: SideMailboxTiming(
                 now: { clock.now }, sleep: { _ in try await sleepUntilCancelled() },
                 looksAtWake: launch.looksAtWake,
-                stopLookSleep: launch.stopLookCapRunsOut ? { _ in } : { _ in await untilCancelled() })
+                stopLookSleep: launch.stopLookCapRunsOut
+                    ? { [waits = launch.stopLookWaits] cap in waits.append(cap) } : { _ in await untilCancelled() })
         ) { clock.now }
         root.linking.refreshLinks()
         return root
@@ -751,7 +764,7 @@ final class Bed {
         try await fetch(session)
         let on = try await session.outbox.orderedActions()
         XCTAssertTrue(on)
-        try await session.epochAckWork?.value
+        await session.epochAckWork?.value
         await session.outbox.drain()
         return session
     }
@@ -759,19 +772,19 @@ final class Bed {
     /// One fetch, then the outbox work it started.
     func fetch(_ session: HubSession) async throws {
         _ = await session.refresh(.pull)
-        try await session.outboxWork?.value
+        await session.outboxWork?.value
         await session.outbox.drain()
     }
 
     /// A fetch that follows a move: the move, then the new session booted and its outbox flushed.
     func fetchAndFollow(_ session: HubSession) async throws -> HubSession {
         try await fetch(session)
-        try await root.routeMoves[hubID]?.value
+        await root.routeMoves[hubID]?.value
         let next = try self.session()
         XCTAssertFalse(next === session, "the session moved")
         await next.waitForBoot()
         try await fetch(next)
-        try await next.epochAckWork?.value
+        await next.epochAckWork?.value
         await next.outbox.drain()
         return next
     }
@@ -1200,6 +1213,11 @@ private final class FlakyMergeHost: TransportFollowerHost {
     private var relayCalls = 0
     /// The most `relayUse` calls that were in flight at once.
     private(set) var mostRelayCallsAtOnce = 0
+    /// When above 0, `relayUse` waits until this many keyboxes were opened: every decision then got past its own
+    /// (off-main) keybox open, so only main-actor steps stand between it and the serialised chain.
+    var holdRelayUntilOpened = 0
+    private var keyboxesOpened = 0
+    private var openWaiters: [CheckedContinuation<Void, Never>] = []
 
     init(root: AppRoot, failsFirstMerge: Bool = true) {
         self.root = root
@@ -1208,7 +1226,15 @@ private final class FlakyMergeHost: TransportFollowerHost {
 
     func followerLink(hubID: String) -> LinkRecord? { root.followerLink(hubID: hubID) }
     func newestEpoch(hubID: String) -> UInt32? { root.newestEpoch(hubID: hubID) }
-    func openSwitchKeybox(_ sealed: Data, hubID: String) async -> Keybox? { await root.openSwitchKeybox(sealed, hubID: hubID) }
+    func openSwitchKeybox(_ sealed: Data, hubID: String) async -> Keybox? {
+        let keybox = await root.openSwitchKeybox(sealed, hubID: hubID)
+        keyboxesOpened += 1
+        if keyboxesOpened >= holdRelayUntilOpened {
+            for waiter in openWaiters { waiter.resume() }
+            openWaiters.removeAll()
+        }
+        return keybox
+    }
     func persistRoute(_ link: LinkRecord) -> Bool { persistFails ? false : root.persistRoute(link) }
     func relayOffer(hubID: String) async throws -> Data? { try await root.relayOffer(hubID: hubID) }
     func clearEphemeral(hubID: String) -> Bool { root.clearEphemeral(hubID: hubID) }
@@ -1224,7 +1250,11 @@ private final class FlakyMergeHost: TransportFollowerHost {
         relayCalls += 1
         mostRelayCallsAtOnce = max(mostRelayCallsAtOnce, relayCalls)
         defer { relayCalls -= 1 }
-        // A network call: another decision could run meanwhile, so the call gives every other job its turns.
+        if keyboxesOpened < holdRelayUntilOpened {
+            await withCheckedContinuation { openWaiters.append($0) }
+        }
+        // A network call: another decision could run meanwhile, so the call gives every other (main-actor) job its
+        // turns; a decision not held by the chain reaches `relayUse` within them.
         for _ in 0..<20 { await Task.yield() }
         return await root.relayUse(for: link)
     }

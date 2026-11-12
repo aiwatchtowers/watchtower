@@ -468,6 +468,10 @@ final class ReplicaTests: XCTestCase {
         private let inner = InMemoryCloudTransport()
         private(set) var changesCalls = 0
         private var waiters: [CheckedContinuation<Void, Never>] = []
+        /// Told on every `changes` entry (a second one means the cycles did not coalesce).
+        private var onChanges: @Sendable () -> Void = {}
+
+        func observeChanges(_ observer: @escaping @Sendable () -> Void) { onChanges = observer }
 
         func seed(_ records: [CloudRecord]) async throws { try await inner.save(records) }
 
@@ -486,10 +490,14 @@ final class ReplicaTests: XCTestCase {
 
         func changes(in zone: CloudZoneID, since token: CloudChangeToken?) async throws -> CloudChangeBatch {
             changesCalls += 1
+            onChanges()
             if !isOpen { await withCheckedContinuation { waiters.append($0) } }
             return try await inner.changes(in: zone, since: token)
         }
     }
+
+    /// What a coalescing test sees while both calls start.
+    private enum CycleStep { case joined, changes }
 
     func testConcurrentHydrateOnceCoalescesIntoOneCycle() async throws {
         let transport = GatedTransport()
@@ -498,13 +506,20 @@ final class ReplicaTests: XCTestCase {
         ])
         let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         let hydrator = ReplicaHydrator(transport: transport, store: store)
-        let (joins, joined) = AsyncStream.makeStream(of: Void.self)
-        await hydrator.observeJoins { joined.yield() }
+        let (steps, step) = AsyncStream.makeStream(of: CycleStep.self)
+        await hydrator.observeJoins { step.yield(.joined) }
+        await transport.observeChanges { step.yield(.changes) }
 
         async let first = hydrator.hydrateOnce()
         async let second = hydrator.hydrateOnce()
-        // The gate opens only once one call joined the other's running cycle.
-        for await _ in joins { break }
+        // The gate opens once one call joined the other's running cycle, or (coalescing broken) once both cycles
+        // reached `changes`: either way the assertions below run instead of the test hanging.
+        var changesSeen = 0
+        for await seen in steps {
+            if seen == .joined { break }
+            changesSeen += 1
+            if changesSeen == 2 { break }
+        }
         await transport.openGate()
 
         let (a, b) = try await (first, second)

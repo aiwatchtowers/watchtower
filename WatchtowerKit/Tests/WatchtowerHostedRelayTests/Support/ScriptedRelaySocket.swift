@@ -289,8 +289,9 @@ final class ScriptedRelayDialer: RelaySocketDialer, @unchecked Sendable {
     }
 }
 
-/// Yields until `condition` holds. No wall-clock cap: a condition that never holds is a
-/// hang for the lane watchdog to report. Returns true (callers kept their `guard`).
+/// Yields until `condition` holds. No wall-clock cap: a condition that never holds hangs the
+/// run (the Kit has no per-test watchdog; the CI step's timeout ends it). Always returns true
+/// (callers kept their `guard`).
 @discardableResult
 func spin(file: StaticString = #filePath, line: UInt = #line, _ condition: () -> Bool) async -> Bool {
     while !condition() {

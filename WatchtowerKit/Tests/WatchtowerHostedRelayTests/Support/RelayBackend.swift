@@ -277,7 +277,7 @@ class HostedRelayScenarioCase: XCTestCase {
     }
 
     /// The Go `nextZoneEvent`: the seq of the next `zoneChanged` of `zone` (0 = record-less),
-    /// skipping other events; nil when none came within the probe's cap.
+    /// skipping other events; nil when the stream ended first.
     func nextZoneEvent(_ events: EventProbe, _ zone: String, file: StaticString = #filePath, line: UInt = #line) async -> UInt64? {
         while let event = await events.next(file: file, line: line) {
             if case .zoneChanged(zone, let seq) = event { return seq }

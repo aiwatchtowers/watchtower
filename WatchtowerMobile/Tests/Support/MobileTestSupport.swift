@@ -159,7 +159,7 @@ extension XCTestCase {
 
     /// Waits until the link flow's grant wait parks on `clock`
     /// (`GateLinkClock.untilParked`): a signal, with no wall-clock cap (a flow
-    /// that never parks is a hang for the lane watchdog to report).
+    /// that never parks hangs the run until the CI step's timeout).
     @MainActor
     func waitUntilParked(_ clock: GateLinkClock) async {
         await clock.untilParked()
@@ -168,9 +168,10 @@ extension XCTestCase {
     /// Yields the main actor until `condition` holds: the environment's
     /// bootstrap and the observations deliver asynchronously (main-queue
     /// jobs queued before each yield run first), so tests must yield to let
-    /// them land. No wall-clock cap: a condition that never holds is a hang
-    /// for the lane watchdog to report, with `message` naming what it waited
-    /// for in a debugger.
+    /// them land. No wall-clock cap: a condition that never holds hangs the
+    /// run until the CI step's timeout (the phone suite has no per-test
+    /// watchdog). `message`, `file` and `line` are unused, kept so the call
+    /// sites still name what they wait for.
     @MainActor
     func poll(
         _ condition: () -> Bool,

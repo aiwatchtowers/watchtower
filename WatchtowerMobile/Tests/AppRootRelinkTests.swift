@@ -144,7 +144,7 @@ final class AppRootRelinkTests: XCTestCase {
         XCTAssertTrue(root.env.session(hubID) === hubSession, "a hub session is not rebuilt")
 
         let hubID = hubID
-        try await root.launch { [hubID] }.value
+        await root.launch { [hubID] }.value
         XCTAssertTrue(FileManager.default.fileExists(atPath: paths.replicaPath(hubID)), "a confirmed link's files stay")
     }
 
@@ -351,11 +351,14 @@ final class AppRootRelinkTests: XCTestCase {
     /// not sent, at once.
     func testADirectSaveStillRunningAtTheCapIsNotSent() async {
         // The save never ends on its own; the cap's wait runs out at once.
+        let caps = OSAllocatedUnfairLock<[Duration]>(initialState: [])
         let sent = await AppRoot.resendDirectly(
-            keptFarewell(), cap: .milliseconds(100), sleep: { _ in }, save: { _ in try await sleepUntilCancelled() }
+            keptFarewell(), cap: .milliseconds(100), sleep: { cap in caps.withLock { $0.append(cap) } },
+            save: { _ in try await sleepUntilCancelled() }
         )
 
         XCTAssertFalse(sent, "the cap ended it")
+        XCTAssertEqual(caps.withLock { $0 }, [.milliseconds(100)], "the wait was the cap")
     }
 
     /// Review round 1 (F10/F4): each activation retries the kept farewells

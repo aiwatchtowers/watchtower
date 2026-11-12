@@ -59,7 +59,7 @@ final class ReaderStatusWiringTests: XCTestCase {
         try await bed.sendTwoActions(session)
 
         await session.relaySlotLost()
-        try await bed.root.routeMoves[hubID]?.value
+        await bed.root.routeMoves[hubID]?.value
 
         XCTAssertEqual(try bed.row()?.link.transport, .cloudKit, "moved without waiting for hub_on_relay")
         XCTAssertNil(try bed.row()?.link.relayRefused, "a link with a route has no term")
@@ -110,7 +110,7 @@ final class ReaderStatusWiringTests: XCTestCase {
         bed.relayOps.paying = false
 
         let decided = await session.transportSignals.control(hubOnRelay())
-        try await bed.root.routeMoves[hubID]?.value
+        await bed.root.routeMoves[hubID]?.value
 
         XCTAssertTrue(decided)
         let link = try XCTUnwrap(try bed.keys.hubLink(hubID))
@@ -124,11 +124,11 @@ final class ReaderStatusWiringTests: XCTestCase {
         let session = try await bed.orderedSession()
         bed.relayOps.paying = false
         _ = await session.transportSignals.control(hubOnRelay())
-        try await bed.root.routeMoves[hubID]?.value
+        await bed.root.routeMoves[hubID]?.value
         let iCloud = try bed.session()
         await iCloud.waitForBoot()
         await bed.root.linking.reconcileKeyboxKeys(hubID: hubID, keybox: plainKeybox(epoch: 2))
-        try await iCloud.epochAckWork?.value
+        await iCloud.epochAckWork?.value
 
         let link = try XCTUnwrap(try bed.keys.hubLink(hubID))
         XCTAssertFalse(link.hasEphemeralState, "no offer on iCloud, no pair")
@@ -252,7 +252,7 @@ final class ReaderStatusWiringTests: XCTestCase {
         await reader.tick() // the outage starts
         bed.clock.advance(61)
         await reader.tick()
-        try await bed.root.routeMoves[hubID]?.value
+        await bed.root.routeMoves[hubID]?.value
 
         XCTAssertEqual(try bed.row()?.link.transport, .cloudKit, "hub_on_relay was read past the pending record")
         let second = try bed.session() // the session on iCloud, over the same replica

@@ -180,7 +180,7 @@ final class PermissionAnswerWiringTests: XCTestCase {
         XCTAssertTrue(actions.canInterrupt, "a refused interrupt does not hold the next")
     }
 
-    /// Yields until `condition` holds; no wall-clock cap (a hang is the lane watchdog's to report).
+    /// Yields until `condition` holds; no wall-clock cap (a hang runs until the CI step's timeout).
     private func waitFor(_ condition: @escaping @MainActor () -> Bool) async throws {
         while !condition() {
             await Task.yield()

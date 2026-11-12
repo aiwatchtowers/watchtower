@@ -900,7 +900,7 @@ final class RelayUpgradeWiringTests: XCTestCase {
         try await TestPhone.hub(over: bed.cloud.inner).save([try TestPhone.grantRecord(grant, modifiedAt: Date())])
     }
 
-    /// Yields until `condition` holds; no wall-clock cap (a hang is the lane watchdog's to report).
+    /// Yields until `condition` holds; no wall-clock cap (a hang runs until the CI step's timeout).
     private func waitUntil(_ condition: () -> Bool) async throws {
         while !condition() {
             await Task.yield()

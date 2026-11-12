@@ -288,8 +288,8 @@ final class FakeLinkHost: LinkHost {
         return transport
     }
 
-    /// When true, `fetchKeybox` waits until it is set false again (a link
-    /// flow held mid-check).
+    /// When true, `fetchKeybox` waits until it is set false again or its task
+    /// is cancelled (a link flow held mid-check).
     var parksFetchGrant = false {
         didSet { unpark() }
     }
@@ -317,7 +317,8 @@ final class FakeLinkHost: LinkHost {
     private(set) var keyMergeDropped: [Bool] = []
     /// How many keybox merges the flow asked for.
     private(set) var mergeCalls = 0
-    /// When true, `mergeKeybox` waits until it is set false again, before it reads the link (a merge held mid-way).
+    /// When true, `mergeKeybox` waits until it is set false again or its task is cancelled, before it reads the link
+    /// (a merge held mid-way; a cancelled merge goes on to its write, as a merge past its last suspension does).
     var parksMerge = false {
         didSet { unpark() }
     }
