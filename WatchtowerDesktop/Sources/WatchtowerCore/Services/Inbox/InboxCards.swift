@@ -62,11 +62,24 @@ package struct InboxTrackCard: Equatable, Sendable {
     package let track: Track
     package let lastEventAt: Date
     package let newEventCount: Int
+    /// The newest event's `summary`; "" = no event.
+    package let latestEventSummary: String
+    /// The track's newest item carries an image (`media_items` kind `image`):
+    /// its newest Slack source ref, or its newest mail event.
+    package let newestRefHasAttachment: Bool
 
-    package init(track: Track, lastEventAt: Date, newEventCount: Int) {
+    package init(
+        track: Track,
+        lastEventAt: Date,
+        newEventCount: Int,
+        latestEventSummary: String = "",
+        newestRefHasAttachment: Bool = false
+    ) {
         self.track = track
         self.lastEventAt = lastEventAt
         self.newEventCount = newEventCount
+        self.latestEventSummary = latestEventSummary
+        self.newestRefHasAttachment = newestRefHasAttachment
     }
 
     package var isUnread: Bool { track.isUnread || newEventCount > 0 }

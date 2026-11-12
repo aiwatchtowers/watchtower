@@ -27,18 +27,64 @@ package enum TrackQueries {
             SELECT t.*,
                    (SELECT MAX(e.created_at) FROM track_events e WHERE e.track_id = t.id) AS last_event_at,
                    (SELECT COUNT(*) FROM track_events e
-                    WHERE e.track_id = t.id AND (e.read_at IS NULL OR e.read_at = '')) AS new_events
+                    WHERE e.track_id = t.id AND (e.read_at IS NULL OR e.read_at = '')) AS new_events,
+                   (SELECT e.summary FROM track_events e WHERE e.track_id = t.id
+                    ORDER BY e.created_at DESC, e.id DESC LIMIT 1) AS latest_event_summary,
+                   (SELECT e.source_id FROM track_events e WHERE e.track_id = t.id AND e.source_type = 'email'
+                    ORDER BY e.created_at DESC, e.id DESC LIMIT 1) AS newest_mail_id
             FROM tracks t
             WHERE \(filter)
             ORDER BY \(order)
             """)
-        return rows.map { row in
+        return try rows.map { row in
             let track = Track(row: row)
-            let updated = AutomationDates.parse(track.updatedAt)
-            let event = AutomationDates.parse(row["last_event_at"] as String?)
-            let last = [updated, event].compactMap { $0 }.max() ?? Date(timeIntervalSince1970: 0)
-            return InboxTrackCard(track: track, lastEventAt: last, newEventCount: row["new_events"] ?? 0)
+            let last = TrackNewsRule.lastEventAt(updatedAt: track.updatedAt, newestEventAt: row["last_event_at"])
+            // Only the active list shows the attachment chip.
+            let attachment = try !stopped && (
+                newestSlackRefHasImage(db, track: track)
+                    || mailHasImage(db, sourceID: row["newest_mail_id"])
+            )
+            return InboxTrackCard(
+                track: track,
+                lastEventAt: last,
+                newEventCount: row["new_events"] ?? 0,
+                latestEventSummary: row["latest_event_summary"] ?? "",
+                newestRefHasAttachment: attachment
+            )
         }
+    }
+
+    /// The track's newest Slack source ref (highest `ts`) carries an image.
+    /// The media row's channel may be namespaced (`<account>:<channel>`); the
+    /// lookup goes through `messages` for its `ts_unix` index.
+    private static func newestSlackRefHasImage(_ db: Database, track: Track) throws -> Bool {
+        guard let ref = track.decodedSourceRefs.max(by: { (Double($0.ts) ?? 0) < (Double($1.ts) ?? 0) }),
+              let channel = ref.channelID, !channel.isEmpty else { return false }
+        let seconds = Double(ref.ts.split(separator: ".").first ?? "") ?? 0
+        return try Bool.fetchOne(db, sql: """
+            SELECT EXISTS (
+                SELECT 1 FROM messages msg
+                JOIN media_items m ON m.slack_channel_id = msg.channel_id AND m.slack_ts = msg.ts
+                WHERE msg.ts_unix = :seconds AND msg.ts = :ts
+                  AND (msg.channel_id = :channel OR substr(msg.channel_id, -length(:suffix)) = :suffix)
+                  AND m.parent_kind = 'slack' AND m.kind = 'image')
+            """, arguments: ["seconds": seconds, "ts": ref.ts, "channel": channel, "suffix": ":" + channel]) ?? false
+    }
+
+    /// A mail event's message carries an image. The watch scan records mail as
+    /// `source_type = 'email'` with `source_id` = the `list_emails` id: the
+    /// Gmail message id, or `<uidvalidity>-<uid>` for IMAP
+    /// (`internal/db/emails_read.go` `imapEmailIDExpr`).
+    private static func mailHasImage(_ db: Database, sourceID: String?) throws -> Bool {
+        guard let sourceID, !sourceID.isEmpty else { return false }
+        return try Bool.fetchOne(db, sql: """
+            SELECT EXISTS (
+                SELECT 1 FROM media_items m
+                WHERE m.kind = 'image' AND (
+                    (m.parent_kind = 'gmail' AND m.gmail_message_id = :id)
+                    OR (m.parent_kind = 'imap'
+                        AND CAST(m.imap_uidvalidity AS TEXT) || '-' || CAST(m.imap_uid AS TEXT) = :id)))
+            """, arguments: ["id": sourceID]) ?? false
     }
 
     package static func fetchUpdatedTracks(_ db: Database) throws -> [Track] {
