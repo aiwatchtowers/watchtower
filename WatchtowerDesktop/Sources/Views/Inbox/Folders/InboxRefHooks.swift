@@ -261,20 +261,12 @@ struct InboxRefHooks {
     /// A sender or Older row whose **Mark All Done…** is planning, asking or
     /// running (`InboxBulkCenter.isPinned`, Observation-tracked).
     func pinsActions(_ ref: InboxRef) -> Bool {
-        switch ref.kind {
-        case .mailSender: vm.bulk.isPinned(.sender(ref.key))
-        case .waitingOlder: vm.bulk.isPinned(.olderPeople)
-        case .inboxItem, .track, .idea, .reminder, .action: false
-        }
+        ActionStripViewModel.bulkKey(ref).map(vm.bulk.isPinned) ?? false
     }
 
     /// The **Mark All Done…** press of a sender or Older row; nil for every other kind.
     func bulkModel(_ ref: InboxRef) -> InboxBulkPressModel? {
-        switch ref.kind {
-        case .mailSender: vm.bulk.model(for: .sender(ref.key))
-        case .waitingOlder: vm.bulk.model(for: .olderPeople)
-        case .inboxItem, .track, .idea, .reminder, .action: nil
-        }
+        ActionStripViewModel.bulkKey(ref).map(vm.bulk.model(for:))
     }
 
     /// Busy while a press on the row runs; failed while its last press's

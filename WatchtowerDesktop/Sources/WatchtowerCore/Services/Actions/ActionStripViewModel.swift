@@ -719,8 +719,9 @@ package final class ActionStripViewModel {
         cli: { [weak self] in InboxBulkCLI(runner: self?.pressRunner()) },
         onFinished: { [weak self] in await self?.refresh() })
 
-    /// The bulk press a shown row offers; nil for a row without one.
-    nonisolated private static func bulkKey(_ ref: InboxRef) -> InboxBulkKey? {
+    /// The bulk press a shown row offers; nil for a row without one. The
+    /// one ref → key mapping (the row hooks' pin and press use it too).
+    nonisolated package static func bulkKey(_ ref: InboxRef) -> InboxBulkKey? {
         switch ref.kind {
         case .mailSender: .sender(ref.key)
         case .waitingOlder: .olderPeople
@@ -768,7 +769,7 @@ package final class ActionStripViewModel {
     /// write through it.
     package func writeSenderMute(_ address: String) async throws {
         try await InboxLearnedRulesQueries(dbPool: dbPool).upsertManual(
-            ruleType: "source_mute", scopeKey: InboxPeopleRule.muteScope(InboxPeopleRule.senderKey(address)),
+            ruleType: "source_mute", scopeKey: InboxPeopleRule.muteScope(address),
             weight: -1.0)
     }
 
