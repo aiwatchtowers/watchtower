@@ -13,26 +13,33 @@ import (
 // in bulk (`watchtower inbox resolve --ids …`).
 const BulkResolveReason = "Marked done in bulk"
 
+// BulkResolveMaxIDs caps both halves of a bulk press: a dry run names at
+// most this many ids (the newest), and `--ids` takes at most this many, so
+// a dry run's ids always fit a press. A larger backlog closes in turns: the
+// next dry run names the rest.
+const BulkResolveMaxIDs = 10000
+
 // bulkResolveChunk is how many ids one bulk-resolve transaction takes.
 const bulkResolveChunk = 200
 
 // OpenMailItemIDsFrom returns the open email_received items whose sender's
 // MailSenderKey is address's, muted or not, newest first by
-// MAX(created_at, mentioned_at), then id.
+// MAX(created_at, mentioned_at), then id; at most BulkResolveMaxIDs.
 func (db *DB) OpenMailItemIDsFrom(ctx context.Context, now time.Time, address string) ([]int64, error) {
 	return db.openInboxIDs(ctx, `SELECT id FROM inbox_items
 		WHERE `+openInboxClause+` AND trigger_type = 'email_received' AND lower(trim(sender_user_id)) = ?
-		ORDER BY MAX(created_at, mentioned_at) DESC, id DESC`, sqlStamp(now), MailSenderKey(address))
+		ORDER BY MAX(created_at, mentioned_at) DESC, id DESC LIMIT ?`, sqlStamp(now), MailSenderKey(address), BulkResolveMaxIDs)
 }
 
 // OpenPeopleItemIDsOlderThan returns the open people items whose
 // MAX(created_at, mentioned_at) is at or before now − age (with age =
-// WaitingOlderAfter: the Older section), newest first, then id.
+// WaitingOlderAfter: the Older section), newest first, then id; at most
+// BulkResolveMaxIDs.
 func (db *DB) OpenPeopleItemIDsOlderThan(ctx context.Context, now time.Time, age time.Duration) ([]int64, error) {
 	clause, _ := waitingKindClause(WaitingPeople)
 	return db.openInboxIDs(ctx, `SELECT id FROM inbox_items
 		WHERE `+openInboxClause+clause+` AND MAX(created_at, mentioned_at) <= ?
-		ORDER BY MAX(created_at, mentioned_at) DESC, id DESC`, sqlStamp(now), sqlStamp(now.Add(-age)))
+		ORDER BY MAX(created_at, mentioned_at) DESC, id DESC LIMIT ?`, sqlStamp(now), sqlStamp(now.Add(-age)), BulkResolveMaxIDs)
 }
 
 func (db *DB) openInboxIDs(ctx context.Context, query string, args ...any) ([]int64, error) {

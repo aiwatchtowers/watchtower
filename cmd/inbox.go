@@ -115,7 +115,7 @@ func init() {
 	rf.StringVar(&inboxResolveFlags.trigger, "trigger", "", "with --sender: email_received (the only value)")
 	rf.StringVar(&inboxResolveFlags.olderThan, "older-than", "", "with --dry-run --people: items at least <n>d old (1-365)")
 	rf.BoolVar(&inboxResolveFlags.people, "people", false, "with --older-than: open people items (every trigger but email_received)")
-	rf.StringVar(&inboxResolveFlags.ids, "ids", "", "resolve these open items: comma-separated ids, at most 10000")
+	rf.StringVar(&inboxResolveFlags.ids, "ids", "", fmt.Sprintf("resolve these open items: comma-separated ids, at most %d", inboxResolveMaxIDs))
 	rf.BoolVar(&inboxResolveFlags.json, "json", false, "print the result as one JSON line")
 	inboxGenerateCmd.Flags().BoolVar(&inboxGenFlagProgressJSON, "progress-json", false, "output progress as JSON lines")
 	inboxBackfillMentionsCmd.Flags().StringVar(&inboxBackfillMentionsFlagSince, "since", "", "recover mentions after this date (YYYY-MM-DD, parsed as UTC midnight; that instant itself is excluded); required")
@@ -286,8 +286,9 @@ var inboxResolveFlags struct {
 	ids                        string
 }
 
-// inboxResolveMaxIDs caps the distinct ids one --ids press resolves.
-const inboxResolveMaxIDs = 10000
+// inboxResolveMaxIDs caps the distinct ids one --ids press resolves: the
+// dry run's own cap, so a dry run's ids always fit a press.
+const inboxResolveMaxIDs = db.BulkResolveMaxIDs
 
 // inboxResolveBulk reports whether any bulk flag was given.
 func inboxResolveBulk(cmd *cobra.Command) bool {
