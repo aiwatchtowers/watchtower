@@ -203,20 +203,54 @@ func TestInboxResolve_IdsSkipArchived(t *testing.T) {
 	assert.Equal(t, "pending", status)
 }
 
+// inboxRowsSnapshot renders every inbox_items row, every column, so a
+// test can assert a command left the table byte-identical.
+func inboxRowsSnapshot(t *testing.T, d *db.DB) string {
+	t.Helper()
+	rows, err := d.Query(`SELECT * FROM inbox_items ORDER BY id`)
+	require.NoError(t, err)
+	defer rows.Close()
+	cols, err := rows.Columns()
+	require.NoError(t, err)
+	var b strings.Builder
+	for rows.Next() {
+		vals := make([]any, len(cols))
+		ptrs := make([]any, len(cols))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		require.NoError(t, rows.Scan(ptrs...))
+		for i, v := range vals {
+			if raw, ok := v.([]byte); ok {
+				v = string(raw)
+			}
+			fmt.Fprintf(&b, "%s=%#v;", cols[i], v)
+		}
+		b.WriteString("\n")
+	}
+	require.NoError(t, rows.Err())
+	return b.String()
+}
+
 // AGENT-07: every bulk form is the owner's; an agent is refused before
-// anything is read or written.
+// anything is read or written. A single `resolve <id>` stays open.
 func TestInboxResolve_RefusedUnderAgent(t *testing.T) {
 	forms := [][]string{
 		{"--dry-run", "--sender", "colleague-a@example.com", "--trigger", "email_received", "--json"},
 		{"--dry-run", "--older-than", "7d", "--people", "--json"},
 		{"--ids", "1", "--json"},
+		{"--ids", "1,2", "--json"},
 	}
 	for _, marker := range agentEnvMarkers {
 		for _, form := range forms {
-			t.Run(marker+" "+form[0]+" "+form[1], func(t *testing.T) {
+			t.Run(marker+" "+strings.Join(form, " "), func(t *testing.T) {
 				d := newResolveEnv(t)
 				id := seedResolveItem(t, d, "mention", "U002", "pending", time.Now().Add(-30*24*time.Hour))
 				require.Equal(t, int64(1), id)
+				// Open mail every bulk form would match without a marker.
+				mail := seedResolveItem(t, d, "email_received", "colleague-a@example.com", "pending", time.Now().Add(-30*24*time.Hour))
+				require.Equal(t, int64(2), mail)
+				before := inboxRowsSnapshot(t, d)
 				t.Setenv(marker, "1")
 
 				out, err := runInboxResolveCLI(t, form...)
@@ -229,6 +263,15 @@ func TestInboxResolve_RefusedUnderAgent(t *testing.T) {
 				assert.NotContains(t, got, "count", "nothing read")
 				status, _ := statusOf(t, d, id)
 				assert.Equal(t, "pending", status, "nothing written")
+				assert.Equal(t, before, inboxRowsSnapshot(t, d), "rows byte-identical")
+
+				// The single-id form stays open under the same marker.
+				out, err = runInboxResolveCLI(t, fmt.Sprint(mail))
+				require.NoError(t, err)
+				assert.Equal(t, fmt.Sprintf("Inbox item #%d resolved\n", mail), out)
+				status, reason := statusOf(t, d, mail)
+				assert.Equal(t, "resolved", status)
+				assert.Equal(t, "Manually resolved", reason)
 			})
 		}
 	}
