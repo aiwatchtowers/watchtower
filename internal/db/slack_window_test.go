@@ -2,7 +2,9 @@ package db
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -269,14 +271,82 @@ func TestSlackWindow_ByteBudgetCutsBeforeLLMLimit(t *testing.T) {
 	w := s.read(SlackWindowQuery{})
 	assert.True(t, w.Truncated)
 	require.NotEmpty(t, w.Messages)
+	// Every row is the same size (fixed-width ts, same text), so the window
+	// holds exactly as many rows as fit.
+	cost := slackWindowMessageBytes(w.Messages[0])
 	total := 0
 	for _, m := range w.Messages {
-		total += len(m.ChannelID) + len(m.ChannelName) + len(m.ChannelType) + len(m.TS) + len(m.ThreadTS) +
-			len(m.UserID) + len(m.Author) + len(m.Text) + len(m.Permalink)
+		require.Equal(t, cost, slackWindowMessageBytes(m))
+		total += cost
 	}
+	assert.Len(t, w.Messages, SlackWindowMaxBytes/cost)
 	assert.LessOrEqual(t, total, SlackWindowMaxBytes)
-	assert.Greater(t, total+4000, SlackWindowMaxBytes, "the next row would have crossed the budget")
+	assert.Greater(t, total+cost, SlackWindowMaxBytes, "the next row would have crossed the budget")
 	assert.Equal(t, w.Messages[len(w.Messages)-1].RowID, w.NextRowID)
+}
+
+// slackWindowLLMRow is the primitive's row shape as llm() receives it.
+type slackWindowLLMRow struct {
+	ID        int64  `json:"id"`
+	ChannelID string `json:"channel_id"`
+	Channel   string `json:"channel"`
+	Author    string `json:"author"`
+	At        string `json:"at"`
+	Time      string `json:"time"`
+	Text      string `json:"text"`
+	ThreadID  string `json:"thread_id"`
+	Permalink string `json:"permalink"`
+	ByOwner   bool   `json:"by_owner"`
+	ToOwner   bool   `json:"to_owner"`
+	Bot       bool   `json:"bot"`
+}
+
+func TestSlackWindow_JSONOfEscapedRowsFitsTheBudget(t *testing.T) {
+	s := newWindowSeed(t)
+	text := strings.Repeat("<@U0OWNER> глянь <https://example.com/a?b=1&c=2|ссылка> \"ок\"\n", 60)
+	for i := 0; i < SlackWindowMaxMessages; i++ {
+		s.msg("1:C0ACME", windowOwner, text, s.now.Add(-time.Hour))
+	}
+	w := s.read(SlackWindowQuery{})
+	assert.True(t, w.Truncated)
+	rows := make([]slackWindowLLMRow, 0, len(w.Messages))
+	for _, m := range w.Messages {
+		rows = append(rows, slackWindowLLMRow{
+			ID: m.RowID, ChannelID: m.ChannelID, Channel: m.ChannelName, Author: m.Author,
+			At: m.At.Format(time.RFC3339Nano), Time: m.At.Format("15:04"), Text: m.Text,
+			ThreadID: m.ThreadTS, Permalink: m.Permalink, ByOwner: m.ByOwner, ToOwner: m.ToOwner, Bot: m.Bot,
+		})
+	}
+	encoded, err := json.Marshal(rows)
+	require.NoError(t, err)
+	assert.LessOrEqual(t, len(encoded), SlackWindowMaxBytes)
+	raw := 0
+	for _, m := range w.Messages {
+		raw += len(m.Text)
+	}
+	assert.Greater(t, len(encoded), raw+raw/4, "escaping makes the JSON well over the raw text")
+}
+
+func TestSlackWindow_RowOverheadCoversTheRowShape(t *testing.T) {
+	empty, err := json.Marshal(slackWindowLLMRow{
+		ID: math.MaxInt64, At: "2026-11-12T10:00:00.123456789+05:30", Time: strings.Repeat("x", 32),
+	})
+	require.NoError(t, err)
+	// The row with every string value empty, plus the array comma; the
+	// string values (with their quotes) are counted per field on top.
+	assert.LessOrEqual(t, len(empty)+1, SlackWindowRowOverheadBytes)
+}
+
+func TestJSONStringBytesMatchesEncodingJSON(t *testing.T) {
+	for _, s := range []string{
+		"", "plain", "<@U0OWNER>", "<https://example.com/?a=1&b=2>", "quote \" back \\ slash",
+		"line\nfeed\r\ttab\b\f", "\x00\x01\x1f\x7f", "кириллица", "emoji \U0001F600", "sep \u2028 \u2029",
+		"bad \xff\xfe utf8", string([]byte{0xe2, 0x82}), "…",
+	} {
+		want, err := json.Marshal(s)
+		require.NoError(t, err)
+		assert.Equal(t, len(want), jsonStringBytes(s), "%q", s)
+	}
 }
 
 func TestSlackWindow_SevenDaySkipCounted(t *testing.T) {

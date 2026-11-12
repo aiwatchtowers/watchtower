@@ -23,15 +23,28 @@ type WindowScope string
 // exists only for the owner's own conversations).
 const WindowScopeMemberChannels WindowScope = "member_channels"
 
-// Slack window caps. The byte budget is the sum of each row's string fields
-// and stays below automations.MaxLLMInputBytes (200 KiB) with room for the
-// prompt and the schema.
+// Slack window caps. The byte budget bounds the window as llm() will see it
+// once serialised as JSON (automations.MaxLLMInputBytes, 200 KiB, counts the
+// prompt, the serialised input and the schema): each row costs the
+// JSON-encoded length of every string field, escaping included (encoding/json
+// writes < > & as \u003c-style 6-byte escapes, so every Slack mention and link
+// costs more than its raw bytes), plus SlackWindowRowOverheadBytes. The 20 KiB
+// left under the limit is for the prompt and the schema.
 const (
 	SlackWindowMaxMessages  = 500
 	SlackWindowMaxTextChars = 200_000
 	SlackWindowMaxBytes     = 180 << 10
 	SlackWindowMaxAge       = 7 * 24 * time.Hour
 	SlackWindowTextRunes    = 4000 // per message; a longer text is cut with "…"
+	// SlackWindowRowOverheadBytes is a row's JSON cost besides its string
+	// values, sized on the primitive's row shape {id, channel_id, channel,
+	// author, at, time, text, thread_id, permalink, by_owner, to_owner, bot}
+	// with generous non-string values: every string empty, the largest int64
+	// id, a 35-byte RFC 3339 "at" (nanoseconds and a zone offset), a 32-byte
+	// "time" and three false booleans encode to 238 bytes, plus 1 for the
+	// array comma; rounded up to 240. A field added to the row shape re-sizes
+	// it (TestSlackWindow_RowOverheadCoversTheRowShape).
+	SlackWindowRowOverheadBytes = 240
 )
 
 // SlackWindowQuery is one read of the Slack window.
@@ -300,9 +313,49 @@ func cutSlackWindowText(text string) string {
 	return string([]rune(text)[:SlackWindowTextRunes-1]) + "…"
 }
 
+// slackWindowMessageBytes is a row's cost against SlackWindowMaxBytes: the
+// JSON-encoded length (quotes and escapes included) of each string value the
+// primitive's row shape carries, plus SlackWindowRowOverheadBytes.
 func slackWindowMessageBytes(m SlackWindowMessage) int {
-	return len(m.ChannelID) + len(m.ChannelName) + len(m.ChannelType) + len(m.TS) + len(m.ThreadTS) +
-		len(m.UserID) + len(m.Author) + len(m.Text) + len(m.Permalink)
+	n := SlackWindowRowOverheadBytes
+	for _, f := range []string{m.ChannelID, m.ChannelName, m.Author, m.Text, m.ThreadTS, m.Permalink} {
+		n += jsonStringBytes(f)
+	}
+	return n
+}
+
+// jsonStringBytes is len(json.Marshal(s)) without the allocation: encoding/json
+// escapes " and \ (2 bytes), \n \r \t \b \f (2), other control bytes,
+// < > &, U+2028 and U+2029 (6), and writes each invalid UTF-8 byte as a raw
+// U+FFFD (3).
+func jsonStringBytes(s string) int {
+	n := 2
+	for i := 0; i < len(s); {
+		b := s[i]
+		if b < utf8.RuneSelf {
+			switch {
+			case b == '"' || b == '\\' || b == '\n' || b == '\r' || b == '\t' || b == '\b' || b == '\f':
+				n += 2
+			case b < 0x20 || b == '<' || b == '>' || b == '&':
+				n += 6
+			default:
+				n++
+			}
+			i++
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		switch {
+		case r == utf8.RuneError && size == 1:
+			n += 3 // written as a raw U+FFFD
+		case r == '\u2028' || r == '\u2029':
+			n += 6
+		default:
+			n += size
+		}
+		i += size
+	}
+	return n
 }
 
 // slackWindowGroupDM is a group DM with its members' handles, the owner's left out.
