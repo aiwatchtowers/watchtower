@@ -172,7 +172,7 @@ On entering the Inbox (or a folder): restore the last selected entry of that fol
 ### Slack today (phase 5)
 
 - **Raw window primitive** as specified in the umbrella (scope, per-automation cursor advanced only on success, `concurrency: 1`, 500 messages / 200 k characters caps, 7-day skip, `fenceData`), Slack only in this project. Board #920 takes the remaining sources and the moves of the other built-ins.
-- **Built-in `slack-today`** ("Slack today"): runs after each sync, at most once per hour *(agent's call)*; scope = every channel the owner is a member of (owner's decision, ask #634), minus channels muted for AI (agent's call); reads the raw window since its cursor; one `llm()` step (light tier) that groups by channel and labels each line `decided` | `asks you` | `needs someone` | `fyi`, dropping channels with nothing for the owner; writes one living artifact with a block per channel (heading with new count and **Open in Slack**, chip + line), a folded "N channels with nothing for you" line, and the header "Today · N messages in K channels". Lines addressed to the owner personally are left out (they live in Waiting for me).
+- **Built-in `slack-today`** ("Slack today"): runs after each sync, at most once per hour *(agent's call)*; scope = every channel the owner is a member of, 1:1 DMs and group DMs included (owner's decisions, asks #634 and #653), minus channels muted for AI (agent's call); reads the raw window since its cursor; one `llm()` step (light tier) that groups by channel and labels each line `decided` | `asks you` | `needs someone` | `fyi`, dropping channels with nothing for the owner; writes one living artifact with a block per channel (heading with new count and **Open in Slack**, chip + line), a folded "N channels with nothing for you" line, and the header "Today · N messages in K channels". Lines addressed to the owner personally are left out (they live in Waiting for me).
 - **The window is today** (local midnight to now), read incrementally: each run reads only the raw window since its cursor and merges its labelled lines into the automation's state for today; the state resets at local midnight; the artifact is rewritten from the state. So each message goes through the model once. The header reads "Today · N messages in K channels"; **Mark All Seen** marks the artifact read (the living rule makes it unread again when a new line lands). *(Agent's call: cheaper and simpler than a window from the owner's last open, which would re-read the same messages every hour; the name already says "today".)* A channel's "muted" = the existing `is_muted_for_llm` flag.
 - New feature id `slack-today` (FEAT-01: off reads nothing), default on when Slack is connected; Settings and the guide list it with the other built-ins.
 - Prompt `inbox.slack_today` via `add-ai-prompt` (claude + codex, light tier).
@@ -192,7 +192,7 @@ Owner's (brainstorm, 2026-11-11, and ask #634):
 6. Idea finder's daily batch is 13.
 7. Inbox moves to the sidebar root in Targets' place; Targets moves into FOCUS.
 8. Sent Gmail is ordinary mail (#634).
-9. Slack today reads every channel the owner is a member of (#634).
+9. Slack today reads every channel the owner is a member of, 1:1 DMs and group DMs included (#634, #653).
 10. INBOX-05 (mute a mail sender) and INBOX-02 (mail closes on reply) amendments approved (#634).
 
 Agent's calls (the owner can overturn any of them):
@@ -231,7 +231,7 @@ Needs the owner's approval before the phase that relies on it:
 - **IDEA-04** note (phase 3): Clear Old Ideas is one owner action applying `dropped` to many ideas; still owner-only, never automatic.
 - **TRACKS-07** note (phase 3): bulk Stop Tracking sets `dismissed_at` only.
 - **AUTO-*** (phase 5): the raw window primitive's contracts as the umbrella spec states them (AUTO-01 capability, AUTO-04 cursor on success, AUTO-05 concurrency 1); FEAT-01 for `slack-today`.
-- **Raw window scope** (phase 5, umbrella amendment): a built-in may widen the scope to every channel the owner is a member of (owner's decision, ask #634), minus channels muted for AI (agent's call). Owner recipes keep the umbrella's narrow scope.
+- **Raw window scope** (phase 5, umbrella amendment): a built-in may widen the scope to every channel the owner is a member of, 1:1 DMs and group DMs included (owner's decisions, asks #634 and #653), minus channels muted for AI (agent's call). Owner recipes keep the umbrella's narrow scope.
 
 Approved by the owner in ask #634: INBOX-05, INBOX-02, the STRIP badge change, the raw window scope for Slack today, sent mail as ordinary mail.
 
