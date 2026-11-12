@@ -111,7 +111,7 @@ struct InboxBulkPressButton: View {
     static func offersTryAgain(_ result: InboxBulkResult) -> Bool {
         switch result {
         case .partial, .failed: true
-        case .done: false
+        case .done, .unconfirmed: false
         }
     }
 
@@ -127,7 +127,7 @@ struct InboxBulkPressButton: View {
             "Done: \(count). \(skipped) were already closed."
         case let .partial(done, total, error):
             "Closed \(done) of \(total). \(error)"
-        case .failed(let error):
+        case .failed(let error), .unconfirmed(let error):
             error
         }
     }

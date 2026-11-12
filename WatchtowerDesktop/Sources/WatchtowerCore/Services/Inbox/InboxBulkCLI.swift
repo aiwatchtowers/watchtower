@@ -10,12 +10,15 @@ package enum InboxBulkCLIError: Error, Equatable, LocalizedError {
     case refused(String)
     /// The CLI answered without the pinned JSON: never taken as success.
     case unexpectedAnswer
+    /// The call was stopped (its timeout, a cancel) before it answered.
+    case stopped(String)
 
     package var errorDescription: String? {
         switch self {
         case .cliUnavailable: "The watchtower CLI isn't available"
         case let .refused(message): message
         case .unexpectedAnswer: "Unexpected answer from watchtower"
+        case let .stopped(reason): reason
         }
     }
 }
@@ -31,8 +34,24 @@ package struct InboxBulkCLI {
         case resolve(ids: [String])
     }
 
-    /// How long one call may take before the child is terminated.
+    /// How long a dry run may take before the child is terminated.
     static let timeout: TimeInterval = 120
+
+    /// A resolve's time: `timeout` plus a second per 100 ids, at most 15
+    /// minutes (Go closes them in 200-id chunks).
+    static func timeout(ids: Int) -> TimeInterval {
+        min(timeout + TimeInterval(ids / 100), 900)
+    }
+
+    /// A resolve stopped by its timeout or a cancel after some chunks may
+    /// have committed. Try Again re-plans, so it never closes more.
+    static func stoppedMessage(_ reason: String) -> String {
+        "Stopped before it finished; some items may already be closed. \(reason)"
+    }
+
+    /// Exit 0 after the write, but its answer is unreadable: the items were
+    /// closed, so no Try Again.
+    package static let unreadAnswerMessage = "Watchtower closed the items but its answer could not be read."
 
     private let runner: (any CLIRunnerProtocol)?
 
@@ -68,7 +87,9 @@ package struct InboxBulkCLI {
         if ids.isEmpty { return .done(count: 0, skipped: 0) }
         let result: CLICapturedResult
         do {
-            result = try await capture(.resolve(ids: ids))
+            result = try await capture(.resolve(ids: ids), timeout: Self.timeout(ids: ids.count))
+        } catch let InboxBulkCLIError.stopped(reason) {
+            return .failed(Self.stoppedMessage(reason))
         } catch {
             return .failed(error.localizedDescription)
         }
@@ -81,13 +102,18 @@ package struct InboxBulkCLI {
                 : .failed(failure.error)
         }
         guard let done: Resolved = Self.lastLine(result.stdout), done.resolved == done.ids.count else {
-            return .failed(InboxBulkCLIError.unexpectedAnswer.localizedDescription)
+            return .unconfirmed(Self.unreadAnswerMessage)
         }
         return .done(count: done.resolved, skipped: done.skipped)
     }
 
     private func plan(_ operation: Operation) async throws -> InboxBulkPlan {
-        let result = try await capture(operation)
+        let result: CLICapturedResult
+        do {
+            result = try await capture(operation, timeout: Self.timeout)
+        } catch let InboxBulkCLIError.stopped(reason) {
+            throw InboxBulkCLIError.refused(reason)
+        }
         if result.exitCode != 0 {
             if let failure: Failure = Self.lastLine(result.stdout) { throw InboxBulkCLIError.refused(failure.error) }
             throw Self.refusal(result)
@@ -98,12 +124,18 @@ package struct InboxBulkCLI {
         return InboxBulkPlan(ids: plan.ids, count: plan.count)
     }
 
-    private func capture(_ operation: Operation) async throws -> CLICapturedResult {
+    /// The child timed out (`ProcessCLIRunner`'s exit −1) or the press was
+    /// cancelled: `.stopped`, since it may have written part of its work.
+    private func capture(_ operation: Operation, timeout: TimeInterval) async throws -> CLICapturedResult {
         guard let runner else { throw InboxBulkCLIError.cliUnavailable }
         do {
-            return try await runner.capture(args: Self.args(operation), timeout: Self.timeout)
+            return try await runner.capture(args: Self.args(operation), timeout: timeout)
         } catch CLIRunnerError.binaryNotFound {
             throw InboxBulkCLIError.cliUnavailable
+        } catch let CLIRunnerError.nonZeroExit(code, stderr) where code == -1 {
+            throw InboxBulkCLIError.stopped(stderr)
+        } catch is CancellationError {
+            throw InboxBulkCLIError.stopped("The press was cancelled.")
         } catch {
             throw InboxBulkCLIError.refused(error.localizedDescription)
         }

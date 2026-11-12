@@ -116,14 +116,46 @@ final class InboxBulkCLITests: XCTestCase {
         let result = await InboxBulkCLI(runner: runner).resolve(ids: ["1", "2", "3"])
         XCTAssertEqual(result, .failed("database is locked"))
 
+        // Exit 0 is a write that ran: an unreadable answer says so and offers no Try Again.
         for stdout in ["", "oops", #"{"count":1,"ids":["1"]}"#, #"{"resolved":2,"skipped":0,"ids":["1"]}"#] {
             let odd = await InboxBulkCLI(runner: CaptureRunner(stdout: stdout)).resolve(ids: ["1"])
-            XCTAssertEqual(odd, .failed("Unexpected answer from watchtower"), stdout)
+            XCTAssertEqual(odd, .unconfirmed("Watchtower closed the items but its answer could not be read."), stdout)
         }
 
         let bare = await InboxBulkCLI(runner: CaptureRunner(stdout: "", exitCode: 1, stderr: "Error: boom"))
             .resolve(ids: ["1"])
         XCTAssertEqual(bare, .failed("Error: boom"))
+    }
+
+    /// A timeout or a cancel after some chunks committed is not a plain
+    /// failure: the line says some items may already be closed.
+    func testResolveStoppedSaysSomeMayBeClosed() async {
+        let timedOut = CaptureRunner(stdout: "", error: CLIRunnerError.nonZeroExit(code: -1, stderr: "timed out after 122 s"))
+        let result = await InboxBulkCLI(runner: timedOut).resolve(ids: (1...250).map(String.init))
+        XCTAssertEqual(result, .failed(
+            "Stopped before it finished; some items may already be closed. timed out after 122 s"))
+
+        let cancelled = CaptureRunner(stdout: "", error: CancellationError())
+        let stopped = await InboxBulkCLI(runner: cancelled).resolve(ids: ["1"])
+        XCTAssertEqual(stopped, .failed(
+            "Stopped before it finished; some items may already be closed. The press was cancelled."))
+
+        // A dry run stopped wrote nothing: its reason as a refusal.
+        do {
+            _ = try await InboxBulkCLI(runner: timedOut).planOlderPeople()
+            XCTFail("a timeout is not a plan")
+        } catch {
+            XCTAssertEqual(error as? InboxBulkCLIError, .refused("timed out after 122 s"))
+        }
+    }
+
+    func testResolveTimeoutScalesWithTheIDs() async {
+        XCTAssertEqual(InboxBulkCLI.timeout(ids: 3), 120)
+        XCTAssertEqual(InboxBulkCLI.timeout(ids: 1_000), 130)
+        XCTAssertEqual(InboxBulkCLI.timeout(ids: 1_000_000), 900, "capped")
+        let runner = CaptureRunner(stdout: #"{"resolved":1000,"skipped":0,"ids":[]}"#)
+        _ = await InboxBulkCLI(runner: runner).resolve(ids: (1...1_000).map(String.init))
+        XCTAssertEqual(runner.timeouts, [130])
     }
 
     func testNoBinaryFails() async {

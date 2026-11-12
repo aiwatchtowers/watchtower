@@ -31,7 +31,9 @@ final class InboxBulkPressButtonTests: XCTestCase {
             (.done(count: 0, skipped: 0), false),
             (.done(count: 3, skipped: 1), false),
             (.partial(done: 1, of: 3, error: "card 2 is gone"), true),
-            (.failed("database is locked"), true)
+            (.failed("database is locked"), true),
+            // The write ran, its answer unreadable: said, never offered again.
+            (.unconfirmed(InboxBulkCLI.unreadAnswerMessage), false)
         ]
         for (result, offered) in cases {
             let model = await finishedModel(result)

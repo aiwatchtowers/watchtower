@@ -18,6 +18,8 @@ package enum InboxBulkResult: Equatable, Sendable {
     /// The apply stopped part-way with `error`.
     case partial(done: Int, of: Int, error: String)
     case failed(String)
+    /// The write ran but its outcome could not be read: said, never retried.
+    case unconfirmed(String)
 }
 
 /// One bulk press of the Inbox (Approve All, Close All…): plan → confirm →
