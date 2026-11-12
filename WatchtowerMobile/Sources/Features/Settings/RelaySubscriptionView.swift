@@ -6,8 +6,6 @@ struct RelaySubscriptionView: View {
     @Environment(AppEnvironment.self) private var env
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
-    /// False once the screen is popped or its sheet dismissed; true while something only covers it.
-    @Environment(\.isPresented) private var isPresented
 
     /// A model to show in place of the live one (the screenshot tour's frames); its actions do nothing.
     private let modelOverride: RelaySubscriptionModel?
@@ -44,10 +42,7 @@ struct RelaySubscriptionView: View {
             guard let purchase, RelaySubscriptionModel.loadsProduct(on: purchase) else { return }
             Task { await center?.loadProduct() }
         }
-        // Only a real close clears a press's answer: a screen merely covered (a pushed screen, a system sheet) keeps it.
-        .onDisappear {
-            if !isPresented { center?.screenClosed() }
-        }
+        .onDisappear { center?.screenClosed() }
     }
 
     private func content(_ model: RelaySubscriptionModel) -> some View {

@@ -341,6 +341,7 @@ final class RelayAccountCenter {
     }
 
     private func pass() async {
+        await confirmLateRowIfAny()
         let outcome = await synced { await sweep(answered: $0) }
         if outcome != .failed { lastPassAt = now() }
         await refreshHeld()
@@ -496,9 +497,9 @@ final class RelayAccountCenter {
     }
 
     /// The row of a Buy StoreKit called cancelled, come after all (`cancelledBuy`): its token, not a renewal, and not a row
-    /// StoreKit held before the press. Not while another press runs.
+    /// StoreKit held before the press, nor one refused in this launch (as in `update()`). Not while another press runs.
     private func isLateRow(_ row: RelayTransaction) -> Bool {
-        guard let cancelledBuy, !pressRunning, !row.isRenewal, isCurrent(row) else { return false }
+        guard let cancelledBuy, !pressRunning, !row.isRenewal, isCurrent(row), !refusedIDs.contains(row.id) else { return false }
         return row.appAccountToken == cancelledBuy.token && !cancelledBuy.earlierRows.contains(row.id)
     }
 
@@ -508,6 +509,12 @@ final class RelayAccountCenter {
         cancelledBuy = nil
         purchase = .confirming
         await confirm([row], tracksCharge: true)
+    }
+
+    /// A pass looks for the late row first, before its read: a move the read would learn of never holds back a press.
+    private func confirmLateRowIfAny() async {
+        guard cancelledBuy != nil, let row = await currentRows().first(where: isLateRow) else { return }
+        await confirmLateRow(row)
     }
 
     /// The account id for a press, the state written on a failure.
@@ -877,18 +884,12 @@ final class RelayAccountCenter {
 
     /// `Transaction.unfinished` submitted, past the refused ones and those the claim holds back, which stay unfinished and set
     /// no `unconfirmed`. With no answer from the relay nothing is sent, and a charge this phone may send is said as not reached.
-    /// Writes no `purchase` but the settling rule and a cancelled Buy's late row (`isLateRow`), which goes as the press.
-    /// Returns whether anything was sent.
+    /// Writes no `purchase` but the settling rule. Returns whether anything was sent.
     private func sweep(answered: Bool) async -> Bool {
         let rows = await currentRows()
         recomputeUnconfirmed(current: rows)
         var sent = false
         for row in rows {
-            if isLateRow(row) {
-                await confirmLateRow(row)
-                sent = true
-                continue
-            }
             if refusedIDs.contains(row.id) {
                 if row.isRenewal { Self.logger.notice("relay account: refused renewal held until the next launch") }
                 continue

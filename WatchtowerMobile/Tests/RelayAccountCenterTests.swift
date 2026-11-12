@@ -744,21 +744,52 @@ final class RelayAccountCenterTests: XCTestCase {
         }
     }
 
-    /// The same late row found by the foreground sweep first, on a phone whose claim holds rows back: a press always sends.
-    func testACancelledBuyWhoseRowTheSweepFindsIsConfirmedPastTheClaim() async throws {
+    /// The same late row found by a foreground pass first, on a phone whose claim holds rows back or whose read says the
+    /// subscription moved: a press always sends, and the pass looks before its read.
+    func testACancelledBuyWhoseRowAPassFindsIsConfirmedPastTheReadAndTheClaim() async throws {
+        for setting in ["claim", "moved"] {
+            let (bed, token) = try await registeredBed()
+            if setting == "claim" {
+                bed.defaults.set(false, forKey: RelayAccountCenter.holdsSubscriptionKey)
+            } else {
+                try await paying(bed, token)
+                let newPhone = try await bed.otherPhone(seed: 0x42)
+                let phone = try XCTUnwrap(try bed.relay.session()).client.deviceID
+                try bed.fake.moveSubscription(fromPhone: phone, toPhone: newPhone.deviceID)
+            }
+            let center = await started(bed)
+            bed.store.purchaseResult = .cancelled
+            await center.buy()
+
+            let late = bed.row(token: token)
+            bed.store.unfinishedResult = [late]
+            await foreground(center, bed)
+
+            XCTAssertEqual(bed.submitted, [late.jws], setting)
+            XCTAssertNotEqual(center.purchase, .idle, setting)
+            if setting == "claim" {
+                XCTAssertEqual(center.purchase, .done)
+                XCTAssertEqual(bed.store.finished, [late])
+            }
+        }
+    }
+
+    /// The next press drops the cancelled Buy: a later row is that press's business, not the cancelled one's.
+    func testTheNextPressDropsTheCancelledBuy() async throws {
         let (bed, token) = try await registeredBed()
-        bed.defaults.set(false, forKey: RelayAccountCenter.holdsSubscriptionKey)
         let center = await started(bed)
+        try await bed.until("the updates task") { bed.store.updatesCalls == 1 }
         bed.store.purchaseResult = .cancelled
         await center.buy()
+        bed.store.restoreResult = nil
+        await center.restore()
+        XCTAssertEqual(center.purchase, .noSubscriptionFound)
 
         let late = bed.row(token: token)
-        bed.store.unfinishedResult = [late]
-        await foreground(center, bed)
-
-        XCTAssertEqual(center.purchase, .done)
-        XCTAssertEqual(bed.submitted, [late.jws])
-        XCTAssertEqual(bed.store.finished, [late])
+        bed.fake.failNext("submitTransaction", with: .invalidTransaction)
+        bed.store.emit(late)
+        try await bed.until("the row's submit") { bed.submitted.contains(late.jws) }
+        XCTAssertEqual(center.purchase, .noSubscriptionFound, "not taken as the cancelled Buy's row")
     }
 
     /// A real cancel stays a cancel: a renewal, another account's row or a row after the next press is not the press's.
