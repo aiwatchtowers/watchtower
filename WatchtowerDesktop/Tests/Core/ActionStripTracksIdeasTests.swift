@@ -182,6 +182,31 @@ final class ActionStripTracksIdeasTests: XCTestCase {
         XCTAssertNil(vm.openedNewsTrack)
     }
 
+    /// Done on thread A, then the owner opens thread B before A's write
+    /// lands: A's result leaves B open.
+    func testLateWriteClosesOnlyItsOwnThread() async throws {
+        let now = clock.now()
+        let (first, second) = try await pool.write { db in
+            try InboxFolderFixtures.seed(db)
+            return (try Self.track(now, "Release acme 2.0 checklist", daysAgo: 0.1, db: db),
+                    try Self.track(now, "Vendor contract renewal", daysAgo: 0.2, db: db))
+        }
+        let vm = makeVM()
+        await vm.refresh()
+        await vm.selectEntry("tracks")
+
+        vm.openNewsTrack(Int(first))
+        let done = Task { @MainActor in
+            if await vm.markTrackDone(Int(first)) { vm.closeNewsTrack(ifStill: Int(first)) }
+        }
+        vm.openNewsTrack(Int(second))
+        await done.value
+        XCTAssertEqual(vm.openedNewsTrackID, Int(second))
+
+        vm.closeNewsTrack(ifStill: Int(second))
+        XCTAssertNil(vm.openedNewsTrackID)
+    }
+
     func testOpenedNewsTrackResetsOnNavigation() async throws {
         let now = clock.now()
         let id = try await pool.write { db in
@@ -394,6 +419,20 @@ final class ActionStripTracksIdeasTests: XCTestCase {
         let other = makeVM(runner: committedOne)
         let partial = await other.stopTrackingQuiet(ids.map(String.init))
         XCTAssertEqual(partial, .partial(done: 1, of: 2, error: TracksBulkCLI.timeoutMessage))
+    }
+
+    /// The "active before" read failed: nothing to reconcile against, so the
+    /// failure says some threads may have stopped.
+    func testStopTrackingQuietWithoutActiveReadSaysOutcomeUnchecked() async throws {
+        try await pool.write { db in
+            try InboxFolderFixtures.seed(db)
+            try db.execute(sql: "ALTER TABLE tracks RENAME TO tracks_gone")
+        }
+        let vm = makeVM(runner: ScriptedRunner { _ in throw CLIRunnerError.nonZeroExit(code: -1, stderr: "") })
+
+        let result = await vm.stopTrackingQuiet(["1", "2"])
+
+        XCTAssertEqual(result, .failed(TracksBulkCLI.timeoutMessage + " Some threads may have stopped — check All Threads."))
     }
 
     // MARK: - Clear Old Ideas…

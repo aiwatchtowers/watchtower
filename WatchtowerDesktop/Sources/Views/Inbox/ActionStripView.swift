@@ -570,12 +570,12 @@ struct ActionStripActionsView: View {
                 isWriting: vm.isWriting(.track(card.track.id)),
                 onDone: {
                     Task {
-                        if await vm.markTrackDone(card.track.id) { vm.closeNewsTrack() }
+                        if await vm.markTrackDone(card.track.id) { vm.closeNewsTrack(ifStill: card.track.id) }
                     }
                 },
                 onStopWatching: {
                     Task {
-                        if await vm.stopWatching(card.track) { vm.closeNewsTrack() }
+                        if await vm.stopWatching(card.track) { vm.closeNewsTrack(ifStill: card.track.id) }
                     }
                 },
                 onRestore: { Task { await vm.restoreTrack(card.track) } },

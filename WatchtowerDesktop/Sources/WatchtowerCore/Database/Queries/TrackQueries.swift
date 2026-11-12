@@ -88,6 +88,16 @@ package enum TrackQueries {
             """, arguments: ["id": sourceID]) ?? false
     }
 
+    /// Those of `ids` that are stopped (`dismissed_at` set) or still active.
+    package static func ids(_ db: Database, among ids: [Int64], stopped: Bool) throws -> [Int64] {
+        guard !ids.isEmpty else { return [] }
+        let list = "[" + ids.map(String.init).joined(separator: ",") + "]"
+        return try Int64.fetchAll(db, sql: """
+            SELECT id FROM tracks
+            WHERE (dismissed_at != '') = ? AND id IN (SELECT value FROM json_each(?))
+            """, arguments: [stopped, list])
+    }
+
     package static func fetchUpdatedTracks(_ db: Database) throws -> [Track] {
         try Track.fetchAll(
             db,

@@ -1,6 +1,5 @@
 import Foundation
 import GRDB
-import os
 
 /// The card the Inbox reading pane shows.
 package enum InboxSelection: Hashable, Sendable {
@@ -169,28 +168,6 @@ package final class ActionStripViewModel {
         self.actionFeed = AgentActionFeed(dbPool: dbPool, cliRunner: cliRunner, automationsWake: automationsWake)
         self.folderMenu = InboxFolderMenuModel(
             dbPool: dbPool, runner: { cliRunner ?? findCLI() }, clock: clock)
-        // The two bulk presses reach this model through a weak link set
-        // once `self` exists (the `approveAllModel` pattern for a `let`).
-        let link = BulkPressLink()
-        self.quietTracksPress = InboxBulkPressModel(
-            plan: {
-                guard let model = link.model else { throw BulkPressLink.Closed() }
-                return try await model.planQuietTracks()
-            },
-            apply: { ids in
-                guard let model = link.model else { return .failed(BulkPressLink.Closed().localizedDescription) }
-                return await model.stopTrackingQuiet(ids)
-            })
-        self.oldIdeasPress = InboxBulkPressModel(
-            plan: {
-                guard let model = link.model else { throw BulkPressLink.Closed() }
-                return try await model.planOldIdeas()
-            },
-            apply: { ids in
-                guard let model = link.model else { return .failed(BulkPressLink.Closed().localizedDescription) }
-                return await model.clearOldIdeas(ids)
-            })
-        link.model = self
         self.dayChangeObserver = InboxDayChangeObserver(signals: dayChangeSignals) { [weak self] in
             Task { await self?.refresh() }
         }
@@ -744,19 +721,41 @@ package final class ActionStripViewModel {
 
     /// **Stop Tracking Quiet Ones…** on Track my threads' pane: plans with
     /// `planQuietTracks`, applies with `stopTrackingQuiet`.
-    package let quietTracksPress: InboxBulkPressModel
+    package var quietTracksPress: InboxBulkPressModel {
+        if let model = quietTracksPressModel { return model }
+        let model = bulkPress(plan: { try await $0.planQuietTracks() },
+                              apply: { await $0.stopTrackingQuiet($1) })
+        quietTracksPressModel = model
+        return model
+    }
+
     /// **Clear Old Ideas…** on Idea finder's pane: plans with
     /// `planOldIdeas`, applies with `clearOldIdeas`.
-    package let oldIdeasPress: InboxBulkPressModel
+    package var oldIdeasPress: InboxBulkPressModel {
+        if let model = oldIdeasPressModel { return model }
+        let model = bulkPress(plan: { try await $0.planOldIdeas() },
+                              apply: { await $0.clearOldIdeas($1) })
+        oldIdeasPressModel = model
+        return model
+    }
 
-    /// The bulk presses' weak way back to the model.
-    @MainActor
-    private final class BulkPressLink {
-        weak var model: ActionStripViewModel?
+    @ObservationIgnored private var quietTracksPressModel: InboxBulkPressModel?
+    @ObservationIgnored private var oldIdeasPressModel: InboxBulkPressModel?
 
-        struct Closed: LocalizedError {
-            var errorDescription: String? { "The Inbox is closed." }
-        }
+    /// A bulk press that reaches this model weakly (the `approveAllModel` way).
+    private func bulkPress(
+        plan: @escaping @MainActor (ActionStripViewModel) async throws -> InboxBulkPlan,
+        apply: @escaping @MainActor (ActionStripViewModel, [String]) async -> InboxBulkResult
+    ) -> InboxBulkPressModel {
+        InboxBulkPressModel(
+            plan: { [weak self] in
+                guard let self else { throw ApproveAllError.closed }
+                return try await plan(self)
+            },
+            apply: { [weak self] ids in
+                guard let self else { return .failed(ApproveAllError.closed.localizedDescription) }
+                return await apply(self, ids)
+            })
     }
 
     /// Track my threads' news and quiet threads, from the last read.
@@ -800,6 +799,13 @@ package final class ActionStripViewModel {
         openedNewsTrackID = nil
     }
 
+    /// A write on thread `id` landed: back to the news list only if that
+    /// thread is still the one open (the owner may have opened another
+    /// while it ran).
+    package func closeNewsTrack(ifStill id: Int) {
+        if openedNewsTrackID == id { openedNewsTrackID = nil }
+    }
+
     private var tracksBulkCLI: TracksBulkCLI {
         TracksBulkCLI(runner: cliRunner ?? findCLI())
     }
@@ -812,43 +818,46 @@ package final class ActionStripViewModel {
     /// Stops tracking `ids` through the CLI, then reads. A failed call (a
     /// timeout, a lost answer) may have committed before it ended: one read
     /// of the ids that were active before the press turns it into `.partial`
-    /// with the CLI's text when some of them did stop, so the owner never
-    /// reads "failed" for threads that stopped. A thread stopped elsewhere
-    /// before the press is never credited.
+    /// with the CLI's text when some of them did stop. A thread stopped
+    /// elsewhere before the press is never credited. When the "active
+    /// before" read itself failed there is nothing to reconcile against:
+    /// the failure says some threads may have stopped.
     package func stopTrackingQuiet(_ ids: [String]) async -> InboxBulkResult {
         let numeric = ids.compactMap(Int64.init)
-        let activeBefore: [Int64]
+        let activeBefore: [Int64]?
         do {
-            activeBefore = try await dbPool.read { try Self.trackIDs($0, ids: numeric, stopped: false) }
+            activeBefore = try await dbPool.read { try TrackQueries.ids($0, among: numeric, stopped: false) }
         } catch {
-            Self.log.error("stop tracking quiet: active read failed: \(error.localizedDescription, privacy: .public)")
-            activeBefore = []
+            InboxLog.logger.error("stop tracking quiet: active read failed: \(error.localizedDescription, privacy: .public)")
+            activeBefore = nil
         }
         var result = await tracksBulkCLI.dismiss(ids: ids)
-        if case let .failed(message) = result, !activeBefore.isEmpty {
-            do {
-                let stopped = try await dbPool.read { try Self.trackIDs($0, ids: activeBefore, stopped: true) }.count
-                if stopped > 0 { result = .partial(done: stopped, of: ids.count, error: message) }
-            } catch {
-                // The failure stands as the CLI reported it.
-                Self.log.error("stop tracking quiet: reconcile read failed: \(error.localizedDescription, privacy: .public)")
+        if case let .failed(message) = result {
+            if let activeBefore {
+                result = await reconcileQuietStop(message, activeBefore: activeBefore, of: ids.count)
+            } else {
+                result = .failed(message + Self.quietStopUncheckedNote)
             }
         }
         await refresh()
         return result
     }
 
-    /// Those of `ids` that are stopped (`dismissed_at` set) or still active.
-    nonisolated private static func trackIDs(_ db: Database, ids: [Int64], stopped: Bool) throws -> [Int64] {
-        guard !ids.isEmpty else { return [] }
-        let list = "[" + ids.map(String.init).joined(separator: ",") + "]"
-        return try Int64.fetchAll(db, sql: """
-            SELECT id FROM tracks
-            WHERE (dismissed_at != '') = ? AND id IN (SELECT value FROM json_each(?))
-            """, arguments: [stopped, list])
-    }
+    /// Appended to a failed bulk stop whose outcome could not be checked.
+    package static let quietStopUncheckedNote = " Some threads may have stopped — check All Threads."
 
-    nonisolated private static let log = Logger(subsystem: "com.watchtower.desktop", category: "inbox")
+    /// A failed bulk stop as `.partial` when some of `activeBefore` are now stopped.
+    private func reconcileQuietStop(_ message: String, activeBefore: [Int64], of total: Int) async -> InboxBulkResult {
+        guard !activeBefore.isEmpty else { return .failed(message) }
+        do {
+            let stopped = try await dbPool.read { try TrackQueries.ids($0, among: activeBefore, stopped: true) }.count
+            return stopped > 0 ? .partial(done: stopped, of: total, error: message) : .failed(message)
+        } catch {
+            // The failure stands as the CLI reported it.
+            InboxLog.logger.error("stop tracking quiet: reconcile read failed: \(error.localizedDescription, privacy: .public)")
+            return .failed(message)
+        }
+    }
 
     /// The ideas awaiting a verdict for more than 30 days (one read).
     package func planOldIdeas() async throws -> InboxBulkPlan {
