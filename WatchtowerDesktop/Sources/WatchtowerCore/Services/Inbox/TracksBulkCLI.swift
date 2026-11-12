@@ -59,14 +59,16 @@ package struct TracksBulkCLI {
         guard result.exitCode == 0 else {
             throw TracksBulkCLIError.refused(Self.failureMessage(result))
         }
-        guard let plan: Plan = Self.decodeLastLine(result.stdout) else {
+        guard let plan: Plan = try? InboxFoldersCLI.decodeLastLine(result.stdout) else {
             throw TracksBulkCLIError.unexpectedAnswer
         }
         return InboxBulkPlan(ids: plan.ids.map(String.init), count: plan.count)
     }
 
-    /// Dismisses `ids`. A write error part-way is `.partial` when something
-    /// was dismissed, `.failed` when nothing was. No ids: nothing runs.
+    /// Dismisses `ids`. The apply is all or nothing (one transaction): a
+    /// write error is `.failed` with the CLI's text, its envelope's
+    /// `dismissed` always 0. Only the view model's reconcile of a call that
+    /// ended without an answer makes a `.partial`. No ids: nothing runs.
     package func dismiss(ids: [String]) async -> InboxBulkResult {
         guard !ids.isEmpty else { return .done(count: 0, skipped: 0) }
         let result: CLICapturedResult
@@ -76,15 +78,14 @@ package struct TracksBulkCLI {
             return .failed(error.localizedDescription)
         }
         if result.exitCode == 0 {
-            guard let done: Done = Self.decodeLastLine(result.stdout) else {
+            guard let done: Done = try? InboxFoldersCLI.decodeLastLine(result.stdout) else {
                 return .failed(TracksBulkCLIError.unexpectedAnswer.localizedDescription)
             }
             return .done(count: done.dismissed, skipped: done.skipped)
         }
-        if result.exitCode != Self.timeoutExitCode, let partial: Partial = Self.decodeLastLine(result.stdout) {
-            return partial.dismissed > 0
-                ? .partial(done: partial.dismissed, of: partial.of, error: partial.error)
-                : .failed(partial.error)
+        if result.exitCode != Self.timeoutExitCode,
+           let failed: Failed = try? InboxFoldersCLI.decodeLastLine(result.stdout) {
+            return .failed(failed.error)
         }
         return .failed(Self.failureMessage(result))
     }
@@ -117,15 +118,6 @@ package struct TracksBulkCLI {
         return message.isEmpty ? "watchtower exited with code \(result.exitCode)" : message
     }
 
-    /// The last non-empty stdout line decoded as `T`; nil when it is not one
-    /// with every pinned key.
-    private static func decodeLastLine<T: Decodable>(_ data: Data) -> T? {
-        guard let text = String(bytes: data, encoding: .utf8) else { return nil }
-        let line = InboxFoldersCLI.lastLine(text)
-        guard !line.isEmpty else { return nil }
-        return try? JSONDecoder().decode(T.self, from: Data(line.utf8))
-    }
-
     // MARK: - Pinned `--json` keys
 
     /// `--dry-run --json`: `count`, `ids` (integers).
@@ -141,8 +133,9 @@ package struct TracksBulkCLI {
         let ids: [Int64]
     }
 
-    /// A write error (exit 1): `dismissed`, `of`, `error`.
-    private struct Partial: Decodable {
+    /// A write error (exit 1): `dismissed` (always 0: nothing was
+    /// committed), `of`, `error`.
+    private struct Failed: Decodable {
         let dismissed: Int
         let of: Int
         let error: String

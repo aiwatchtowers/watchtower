@@ -189,6 +189,11 @@ package struct InboxFoldersCLI {
         do {
             return try JSONDecoder().decode(T.self, from: Data(line.utf8))
         } catch {
+            // The reason (a missing pinned key, a changed type), never the line.
+            InboxLog.logger.error("""
+                undecodable --json line (\(line.utf8.count) bytes) as \(String(describing: T.self), privacy: .public): \
+                \(String(describing: error), privacy: .public)
+                """)
             throw InboxFoldersCLIError.unexpectedAnswer
         }
     }

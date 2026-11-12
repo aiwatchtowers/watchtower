@@ -6,7 +6,7 @@ import WatchtowerTestSupport
 /// run's plan and the `--ids` apply, with the pinned `--json` keys.
 final class TracksBulkCLITests: XCTestCase {
     /// A runner that hands back stdout with a non-zero exit, which
-    /// `FakeCLIRunner`'s default `capture` drops (the partial envelope).
+    /// `FakeCLIRunner`'s default `capture` drops (the error envelope).
     private struct CapturingRunner: CLIRunnerProtocol {
         let result: CLICapturedResult
 
@@ -122,15 +122,10 @@ final class TracksBulkCLITests: XCTestCase {
         XCTAssertEqual(result, .failed("Unexpected answer from watchtower"))
     }
 
-    func testDismissPartial() async {
-        let cli = cli(exit: 1, stdout: #"{"dismissed":2,"of":5,"error":"disk full"}"# + "\n",
-                      stderr: "disk full")
-        let result = await cli.dismiss(ids: ["1", "2", "3", "4", "5"])
-        XCTAssertEqual(result, .partial(done: 2, of: 5, error: "disk full"))
-    }
-
-    func testDismissNothingWrittenIsFailed() async {
-        let cli = cli(exit: 1, stdout: #"{"dismissed":0,"of":5,"error":"disk full"}"#, stderr: "disk full")
+    /// The apply is one transaction: a write error is `.failed` with the
+    /// envelope's text (its `dismissed` is always 0).
+    func testDismissWriteErrorIsFailed() async {
+        let cli = cli(exit: 1, stdout: #"{"dismissed":0,"of":5,"error":"disk full"}"# + "\n", stderr: "disk full")
         let result = await cli.dismiss(ids: ["1", "2", "3", "4", "5"])
         XCTAssertEqual(result, .failed("disk full"))
     }
