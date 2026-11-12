@@ -103,12 +103,13 @@ func stReply(t *testing.T, lines ...stLine) string {
 
 // todayState is the state's "today" value (shape v1).
 type todayState struct {
-	V               int                     `json:"v"`
-	Day             string                  `json:"day"`
-	Messages        int                     `json:"messages"`
-	MissedYesterday int                     `json:"missed_yesterday"`
-	Channels        map[string]todayChannel `json:"channels"`
-	QuietRest       struct {
+	V             int                     `json:"v"`
+	Day           string                  `json:"day"`
+	Messages      int                     `json:"messages"`
+	MissedEarlier int                     `json:"missed_earlier"`
+	SkippedOlder  int                     `json:"skipped_older"`
+	Channels      map[string]todayChannel `json:"channels"`
+	QuietRest     struct {
 		Channels int `json:"channels"`
 		Messages int `json:"messages"`
 	} `json:"quiet_rest"`
@@ -469,6 +470,49 @@ func TestSlackToday_UnknownIDsDropped(t *testing.T) {
 	}
 }
 
+// The lines the recipe drops (an id not in the input, or no text) are
+// counted in one run-log line naming their ids only; a run that drops none
+// logs nothing.
+func TestSlackToday_DroppedLinesLogged(t *testing.T) {
+	f := newFixture(t)
+	f.sync(t)
+	run := f.stRun(t, slackTodayWindow(t, ""), stReply(t,
+		stLine{IDs: []string{stReleaseNotes, "1:C0ACME/1000.000000"}, Label: "asks_you", Text: "Made up."},
+		stLine{IDs: []string{stPalette}, Label: "fyi", Text: "  "},
+		stLine{IDs: []string{stIcons}, Label: "fyi", Text: "The new icons are in."}))
+	if run.Status != db.RunSucceeded {
+		t.Fatalf("run = %s (%s)", run.Status, run.Error)
+	}
+	want := []string{"warning: 2 lines dropped for unknown ids or empty text: 1:C0ACME/1000.000000, " + stPalette}
+	if got := stLogLines(t, f, run.ID); !slices.Equal(got, want) {
+		t.Errorf("log lines = %q; want %q", got, want)
+	}
+
+	run = f.stRun(t, stWindow("2026-10-22", 0, stMsg{chan_: "C0ACME", name: "acme-release", ts: "1792660000.000001",
+		text: "hi", at: time.Date(2026, 10, 22, 12, 0, 0, 0, time.Local)}), `{"lines": []}`)
+	if run.Status != db.RunSucceeded {
+		t.Fatalf("run 2 = %s (%s)", run.Status, run.Error)
+	}
+	if got := stLogLines(t, f, run.ID); len(got) != 0 {
+		t.Errorf("log lines = %q; want none", got)
+	}
+}
+
+func stLogLines(t *testing.T, f *fixture, runID int64) []string {
+	t.Helper()
+	steps, err := f.d.ListAutomationRunSteps(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, s := range steps {
+		if s.Kind == automations.StepKindLog {
+			out = append(out, s.ArgsJSON)
+		}
+	}
+	return out
+}
+
 func TestSlackToday_SecondRunMerges(t *testing.T) {
 	f := newFixture(t)
 	f.sync(t)
@@ -598,23 +642,48 @@ func TestSlackToday_LineCaps(t *testing.T) {
 	})
 }
 
-func TestSlackToday_MissedTailNamedAfterMidnight(t *testing.T) {
-	f := newFixture(t)
-	f.sync(t)
-	w := slackTodayWindow(t, "")
-	w.Fields["below_floor"] = 12
-	f.stOK(t, w)
-	if s := f.stState(t); s.MissedYesterday != 12 {
-		t.Errorf("missed_yesterday = %d; want 12", s.MissedYesterday)
-	}
-	first := f.stCard(t)
-	got := cardText(first.doc)
-	if got[len(got)-1] != "text 12 messages from late yesterday were not read." {
-		t.Errorf("card = %v", got)
-	}
-	f.stOK(t, stWindow("2026-10-22", 0), `{"lines": []}`)
-	if f.stCard(t).hash != first.hash || f.stState(t).MissedYesterday != 12 {
-		t.Error("the next run moved the hash or the missed count")
+// What the window passed over is one text line: messages past the cursor
+// before local midnight ("earlier") and ones older than seven days
+// ("older"), set by the day's first run and added to by later ones.
+func TestSlackToday_MissedAndSkippedNamed(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		below, older int
+		want         string
+	}{
+		{"earlier", 12, 0, "text 12 earlier messages were not read."},
+		{"one earlier", 1, 0, "text 1 earlier message was not read."},
+		{"older", 0, 3, "text 3 older messages skipped."},
+		{"one older", 0, 1, "text 1 older message skipped."},
+		{"both", 12, 3, "text 12 earlier messages were not read; 3 older messages skipped."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			f.sync(t)
+			w := slackTodayWindow(t, "")
+			w.Fields["below_floor"] = tc.below
+			w.Fields["skipped_older"] = tc.older
+			f.stOK(t, w)
+			if s := f.stState(t); s.MissedEarlier != tc.below || s.SkippedOlder != tc.older {
+				t.Errorf("missed_earlier %d skipped_older %d; want %d %d", s.MissedEarlier, s.SkippedOlder, tc.below, tc.older)
+			}
+			first := f.stCard(t)
+			got := cardText(first.doc)
+			if got[len(got)-1] != tc.want || strings.HasPrefix(got[len(got)-2], "text ") {
+				t.Errorf("card = %v; want one last line %q", got, tc.want)
+			}
+			f.stOK(t, stWindow("2026-10-22", 0), `{"lines": []}`)
+			if s := f.stState(t); f.stCard(t).hash != first.hash || s.MissedEarlier != tc.below || s.SkippedOlder != tc.older {
+				t.Error("an empty next run moved the hash or the counts")
+			}
+			later := stWindow("2026-10-22", 2)
+			later.Fields["skipped_older"] = 1
+			f.stOK(t, later, `{"lines": []}`)
+			if s := f.stState(t); s.MissedEarlier != tc.below+2 || s.SkippedOlder != tc.older+1 {
+				t.Errorf("after a later run: missed_earlier %d skipped_older %d; want %d %d",
+					s.MissedEarlier, s.SkippedOlder, tc.below+2, tc.older+1)
+			}
+		})
 	}
 }
 

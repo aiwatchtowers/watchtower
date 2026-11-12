@@ -841,7 +841,7 @@
   },
   "day": "2026-10-22",
   "messages": 210,
-  "missed_yesterday": 0,
+  "missed_earlier": 0,
   "more_rest": {
     "channels": 0,
     "lines": 0
@@ -850,5 +850,6 @@
     "channels": 2,
     "messages": 2
   },
+  "skipped_older": 0,
   "v": 1
 }

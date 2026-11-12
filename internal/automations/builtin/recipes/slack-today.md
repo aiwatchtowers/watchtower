@@ -101,7 +101,7 @@ function plural(n, one, many) {
 }
 
 function freshDay(day) {
-  return { v: 1, day: day, messages: 0, missed_yesterday: 0, channels: {},
+  return { v: 1, day: day, messages: 0, missed_earlier: 0, skipped_older: 0, channels: {},
     quiet_rest: { channels: 0, messages: 0 }, more_rest: { channels: 0, lines: 0 } };
 }
 
@@ -222,18 +222,22 @@ function fitBudget(s, quiet, moreOnly) {
 }
 
 // addLine keeps a reply line whose ids are all in the input, in its first
-// message's channel.
-function addLine(s, byId, line) {
+// message's channel; a line it drops (an id not in the input, or no text)
+// is counted in dropped with its ids.
+function addLine(s, byId, line, dropped) {
   var msgs = [];
-  for (var i = 0; i < line.ids.length; i++) {
-    var m = byId[line.ids[i]];
-    if (!m) {
-      return;
+  var unknown = [];
+  line.ids.forEach(function (id) {
+    if (byId[id]) {
+      msgs.push(byId[id]);
+    } else {
+      unknown.push(id);
     }
-    msgs.push(m);
-  }
+  });
   var text = cut(line.text, LINE_CHARS);
-  if (!text) {
+  if (unknown.length > 0 || !text) {
+    dropped.lines += 1;
+    dropped.ids = dropped.ids.concat(unknown.length > 0 ? unknown : line.ids);
     return;
   }
   var at = msgs.reduce(function (newest, m) { return m.at > newest ? m.at : newest; }, "");
@@ -328,9 +332,19 @@ function blocksOf(s) {
   if (news.length === 0 && moreRest.channels === 0) {
     blocks.push({ type: "list", rows: [], empty: "Nothing for you in your channels or DMs yet today" });
   }
-  if (s.missed_yesterday > 0) {
-    blocks.push({ type: "text", markdown: plural(s.missed_yesterday, "message", "messages") + " from late yesterday " +
-      (s.missed_yesterday === 1 ? "was" : "were") + " not read." });
+  // What the window passed over: messages past the cursor before local
+  // midnight (a backfill, a new account, a Mac off over a weekend), and
+  // ones older than the window's seven days.
+  var missed = [];
+  if (s.missed_earlier > 0) {
+    missed.push(plural(s.missed_earlier, "earlier message", "earlier messages") + " " +
+      (s.missed_earlier === 1 ? "was" : "were") + " not read");
+  }
+  if (s.skipped_older > 0) {
+    missed.push(plural(s.skipped_older, "older message", "older messages") + " skipped");
+  }
+  if (missed.length > 0) {
+    blocks.push({ type: "text", markdown: missed.join("; ") + "." });
   }
   return blocks;
 }
@@ -342,7 +356,8 @@ if (w.status === "done") {
   if (!valid || s.day !== w.day) {
     s = freshDay(w.day);
   }
-  s.missed_yesterday += w.below_floor;
+  s.missed_earlier = (s.missed_earlier || 0) + w.below_floor;
+  s.skipped_older = (s.skipped_older || 0) + w.skipped_older;
   s.quiet_rest = s.quiet_rest || { channels: 0, messages: 0 };
   s.more_rest = s.more_rest || { channels: 0, lines: 0 };
   // In memory every channel has lines, more and the newest message's link;
@@ -374,7 +389,14 @@ if (w.status === "done") {
   });
   if (input.length > 0) {
     var reply = llm(builtin.defaultPrompt("label"), { input: { owner: w.owner, messages: input }, schema: SCHEMA, tier: "light" });
-    reply.lines.forEach(function (line) { addLine(s, byId, line); });
+    var dropped = { lines: 0, ids: [] };
+    reply.lines.forEach(function (line) { addLine(s, byId, line, dropped); });
+    if (dropped.lines > 0) {
+      // The ids come from the model: each cut, the first 20 named.
+      var named = dropped.ids.slice(0, 20).map(function (id) { return cut(String(id), 80); });
+      log("warning: " + plural(dropped.lines, "line", "lines") + " dropped for unknown ids or empty text: " +
+        named.join(", ") + (dropped.ids.length > 20 ? ", …" : ""));
+    }
     capLines(s);
   }
   compactDay(s);
