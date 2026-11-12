@@ -13,6 +13,7 @@ import (
 
 	"watchtower/internal/automations"
 	"watchtower/internal/config"
+	"watchtower/internal/db"
 	"watchtower/internal/features"
 	"watchtower/internal/prompts"
 )
@@ -76,6 +77,10 @@ type Entry struct {
 	Recipe     []byte   // the shipped recipe bytes
 	FeatureIDs []string // features registry ids whose config key is the on/off truth
 	Primitives []string // the engine primitives the recipe calls
+	// WindowScope is which Slack conversations the built-in's slack.window
+	// reads; every entry listing slack.window sets it (an empty scope
+	// fails the call).
+	WindowScope db.WindowScope
 	Prompts    []PromptRef
 	Parameters []Parameter
 	Pipelines  []string // pipeline_runs names counted in Costs before the built-in's first run
