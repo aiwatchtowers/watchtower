@@ -153,16 +153,19 @@ func (d *Daemon) SlackTodayPrimitives() map[string]automations.PrimitiveFunc {
 }
 
 // SlackTodayGate is Slack today's sync gate. Not due with no enabled Slack
-// account (removed and purged ones left out) or with Slack off by policy.
-// Due at once when the committed state's day is not today's local date (the
-// card resets after midnight, new messages or not) or when its window cursor
-// is behind (the last window was cut by a cap). Otherwise due when the last
-// failed sync run, if newer than the last succeeded one, is 15 minutes old,
-// else when the last succeeded sync run is an hour old (none = due) — and
-// only with material: an in-scope message past the cursor since local
-// midnight. A failed read is logged and counts as due (the run reports it).
-// Slack today off skips the built-in before the gate is asked (FEAT-01), and
-// a queued Run Now runs without asking it.
+// account (removed and purged ones left out) or with Slack off by policy,
+// nor within 15 minutes of a failed sync run newer than the last succeeded
+// one, whatever the day or the cursor says (a failing run is not retried
+// every cycle). Then due without waiting for the hour when the committed
+// state's day is not today's local date (the card resets after midnight,
+// new messages or not) or when its window cursor is behind (the last window
+// was cut by a cap). Otherwise due when that failure is 15 minutes old, else
+// when the last succeeded sync run is an hour old (none = due) — and only
+// with material: an in-scope message past the cursor since local midnight.
+// A failed read is logged and counts as due (the run reports it). An owner's
+// edited copy is read with the shipped state shape (a bad shape logs and
+// counts as due). Slack today off skips the built-in before the gate is
+// asked (FEAT-01), and a queued Run Now runs without asking it.
 func (d *Daemon) SlackTodayGate() builtin.Gate { return slackTodayGate{d: d} }
 
 type slackTodayGate struct{ d *Daemon }
@@ -189,6 +192,14 @@ func (g slackTodayGate) Due(ctx context.Context, e builtin.Entry, now time.Time)
 		d.logger.Printf("slack-today: reading automation %d's state: %v", a.ID, err)
 		return true
 	}
+	hold, timeDue, err := d.slackTodayTiming(ctx, a.ID, now)
+	if err != nil {
+		d.logger.Printf("slack-today: automation %d's last runs: %v", a.ID, err)
+		return true
+	}
+	if hold {
+		return false
+	}
 	local := now.In(time.Local)
 	day, err := slackTodayDay(state)
 	if err != nil {
@@ -206,11 +217,7 @@ func (g slackTodayGate) Due(ctx context.Context, e builtin.Entry, now time.Time)
 	if behind {
 		return true
 	}
-	switch due, err := d.slackTodayTimeDue(ctx, a.ID, now); {
-	case err != nil:
-		d.logger.Printf("slack-today: automation %d's last runs: %v", a.ID, err)
-		return true
-	case !due:
+	if !timeDue {
 		return false
 	}
 	has, err := d.db.SlackWindowHasMaterial(ctx, db.SlackWindowQuery{
@@ -226,24 +233,26 @@ func (g slackTodayGate) Due(ctx context.Context, e builtin.Entry, now time.Time)
 	return has
 }
 
-// slackTodayTimeDue is the gate's timing rule over automation id's sync
-// runs: a failed run newer than the last succeeded one is retried
-// slackTodayRetryAfter after it; otherwise the last succeeded run must be
-// slackTodayInterval old (none = due).
-func (d *Daemon) slackTodayTimeDue(ctx context.Context, id int64, now time.Time) (bool, error) {
+// slackTodayTiming is the gate's timing rule over automation id's sync runs.
+// hold: a failed run newer than the last succeeded one (or with none) is
+// less than slackTodayRetryAfter old — not due, whatever the day or the
+// cursor says. timeDue: that failure is old enough, or else the last
+// succeeded run is slackTodayInterval old (none = due).
+func (d *Daemon) slackTodayTiming(ctx context.Context, id int64, now time.Time) (hold, timeDue bool, err error) {
 	ok, hasOK, err := d.db.LastAutomationRunCreatedAt(ctx, id, db.TriggerSync, db.RunSucceeded)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	failed, hasFailed, err := d.db.LastAutomationRunCreatedAt(ctx, id, db.TriggerSync,
 		db.RunFailed, db.RunBudgetExceeded, db.RunTimedOut)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	if hasFailed && (!hasOK || failed.After(ok)) {
-		return now.Sub(failed) >= slackTodayRetryAfter, nil
+		retry := now.Sub(failed) >= slackTodayRetryAfter
+		return !retry, retry, nil
 	}
-	return !hasOK || now.Sub(ok) >= slackTodayInterval, nil
+	return false, !hasOK || now.Sub(ok) >= slackTodayInterval, nil
 }
 
 // slackAccountEnabled reports whether a Slack account is enabled and

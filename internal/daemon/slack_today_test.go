@@ -187,6 +187,34 @@ func TestSlackTodayGate_FailedRunRetriedAfter15Minutes(t *testing.T) {
 	assert.False(t, f.due(t), "a failure older than the success is the hour's rule")
 }
 
+// A failing run is not retried every cycle: within 15 minutes of a failed
+// sync run newer than the last success, neither a stale day nor a cut
+// window makes the gate due; at 15 minutes both do.
+func TestSlackTodayGate_FailedRunHoldsDayChangeAndBehind(t *testing.T) {
+	f := newSTFixture(t)
+	f.message(t, f.now.Add(-time.Hour))
+	yesterday := f.now.AddDate(0, 0, -1).Format("2006-01-02")
+	today := f.now.Format("2006-01-02")
+	for _, tc := range []struct {
+		name   string
+		day    string
+		behind bool
+	}{{"stale day", yesterday, false}, {"behind", today, true}} {
+		f.state(t, tc.day, 0, tc.behind)
+		f.clearRuns(t)
+		f.run(t, db.RunSucceeded, 3*time.Hour)
+		f.run(t, db.RunFailed, 5*time.Minute)
+		assert.False(t, f.due(t), "%s: failed 5 minutes ago", tc.name)
+		f.clearRuns(t)
+		f.run(t, db.RunFailed, 5*time.Minute)
+		assert.False(t, f.due(t), "%s: failed 5 minutes ago, no success yet", tc.name)
+		f.clearRuns(t)
+		f.run(t, db.RunSucceeded, 3*time.Hour)
+		f.run(t, db.RunFailed, 15*time.Minute)
+		assert.True(t, f.due(t), "%s: failed 15 minutes ago", tc.name)
+	}
+}
+
 func TestSlackTodayGate_NoMaterialNotDue(t *testing.T) {
 	f := newSTFixture(t)
 	f.message(t, f.now.Add(-time.Hour))
