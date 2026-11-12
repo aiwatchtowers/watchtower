@@ -68,7 +68,7 @@ Swift only: no migration, no Go source change, no prompt, no phone change. One s
 
 ### Phase 1 alone (interim)
 
-Waiting for me still holds people and mail, so "people waiting today" — in the badge, the root count and the row's pill — counts every open Waiting for me item from today, mail included; there is no Mail waiting row. The guide says so as it ships ("people and mail waiting on you since midnight"); phase 2 edits it. Track my threads and Idea finder rows show today's numbers (unread tracks, ideas to judge) in the new layout. Phase 2 narrows the people term; phase 3 changes the tracks and ideas rules.
+Waiting for me still holds people and mail, so "people waiting today" — in the badge, the root count and the row's pill — counts every open Waiting for me item from today, mail included; there is no Mail waiting row. The guide says so as it ships ("people and mail waiting on you since midnight"); phase 2 edits it (done: see Phase 2 below, the badge counts people only and never mail). Track my threads and Idea finder rows show today's numbers (unread tracks, ideas to judge) in the new layout. Phase 2 narrows the people term; phase 3 changes the tracks and ideas rules.
 
 ### v1 limits
 
@@ -82,6 +82,72 @@ Waiting for me still holds people and mail, so "people waiting today" — in the
 ### Inventory
 
 STRIP badge amendment (`docs/inventory/reaction-commands.md` changelog, approved in ask #634): the badge is approvals + people waiting today; the C1 guard is renamed `InboxFeedQueriesTests::testBadgeCountsApprovalsAndPeopleWaitingToday`, the STRIP-02 guard `testOpeningWritesOnlyReadAt` changes only its badge expectation. APPROVAL-01 note (`docs/inventory/inbox-folders.md` changelog): grouped list and Approve All, no semantic change; supporting `NeedsApprovalGroupsTests`, `ActionStripApproveAllTests::testEveryOpenApprovalStaysListed`.
+
+## Phase 2 — Waiting for me and Mail waiting
+
+Plan `docs/superpowers/plans/2026-11-11-inbox-redesign-phase-2-waiting-mail.md`, spec section "Waiting for me and Mail waiting (phase 2)". Waiting for me lists people only (every feed trigger but `email_received`) in three sections; mail moves to a new built-in, **Mail waiting**, one row per sender with bulk Mark All Done… and Mute. No migration.
+
+### The split and "today"
+
+- People = every feed trigger but `email_received`; mail = `email_received` (`db.WaitingKindOf`, Swift `InboxPeopleRule.isPeople`). A sender has one spelling: `db.MailSenderKey` / `InboxPeopleRule.senderKey`, spaces trimmed and ASCII letters lowered, other characters unchanged — exactly SQLite's `lower(trim(x))`.
+- "From today" has its Go twin: `db.StartOfToday` / `db.IsFromToday` (`internal/db/inbox_today.go`) read `internal/inbox/testdata/from_today.json` (`TestInboxToday_SharedFixture`), the fixture phase 1's `InboxToday` already pinned. Sections (`db.WaitingSectionOf`): Today from local midnight, Older at or before now − 7 × 24 h (`WaitingOlderAfter`) and not today, This week the rest.
+- `internal/inbox/testdata/waiting_split.json` pins the split, the people counts, the sender view (incl. spellings and mutes) for Go (`TestWaitingSplit_SharedFixture`) and Swift (`WaitingSplitParityTests`).
+
+### `attention.waiting`
+
+`builtin.WaitingPrimitives` returns `{status: "done", items, mail_items, people, mail, senders}`:
+
+- `items`: open people items (`db.OpenInboxItemsOfKind(…, WaitingPeople, 200)`), newest first; `mail_items`: open mail of unmuted senders (cap 200). Each row `{id, kind, section, who, where, text, trigger, permalink, at, age, age_hours, count, count_label}`. Mail never enters `items`, so a recipe written before the split never gets a mail row or more than 200 rows.
+- `people`: `{open, today, week, older}` over every open people item, uncapped (`db.OpenPeopleCounts`). `mail`: `{open, today, senders, top_ten_share}` over the unmuted mail (top ten senders' share of `open`, whole percent, rounded half up).
+- `senders`: at most 200 (`WaitingSendersLimit`), `db.OpenMailSenders` order (open DESC, newest DESC, address ASC), each `{address, actionable, open, today, subject, at, permalink}`. `actionable` = `blocks.ValidSenderAddress`: 3–254 bytes of valid UTF-8, exactly one `@`, no space, control or format rune, no `"`, `<`, `>`, `,`, `&`, `\` or ASCII capital. Only an actionable address is a ref and is never clipped; any other is display text.
+- Byte budgets: people rows 90 KiB, mail rows 40 KiB, senders 80 KiB, an even share per row; the longest string (text, subject) takes what the row's other fields leave, a link too long for its share is dropped. The senders budget is hard, measured as the executor marshals the result. Together they stay under `automations.MaxSDKResultBytes` and the people rows under the 128 KB block cap.
+- Muted mail: a `source_mute` learned rule scoped `email:<key>` (any weight, any pipeline) leaves that sender's mail out of `mail_items`, `mail` and `senders` (`mutedMailClause`); the items are never changed (INBOX-05 as amended).
+- Reads only, no model. `builtin.WaitingFingerprint(ctx, d, now, kind)` hashes what each shipped recipe shows (people: rows + counts; mail: senders + counts).
+
+### The two built-ins
+
+- **`waiting-for-me`** (people only): lists **Today · N**, **This week · N**, **Older · N** (each left out when empty; N = `people[section]`, never below the rows drawn), newest first, "Nobody is waiting on you" when none. Older starts with a note row ("N items are older than 7 days", "Nobody has followed up on them.", `ref {kind: waiting_older, id: "people"}`) and holds at most 199 item rows after it, so the list stays at 200. The Desktop folds Older. Title stays "Waiting for me".
+- **`mail-waiting`** ("Mail waiting", `recipes/mail-waiting.md`): slot `waiting_for_me` right after Waiting for me, `FeatureIDs: [secretary-inbox]`, capability `builtin:attention.waiting`, `DefaultFolder: inbox`, no `llm()`, `artifacts: living`, key `mail`. A text line "<share>% of this mail comes from <K> senders." (K = min(10, senders)), one list row per sender (title the address, subtitle "<open> open · <today> today · <subject>", badge the open count, link, `ref {kind: mail_sender, id: <address>}` only when `actionable`), "No mail is waiting on you" when empty, "N more senders" past the rows. Rows share 128 000 bytes; over its share a row drops its subject, then its link.
+- Gates: `Daemon.WaitingForMeGate` (fingerprint of `WaitingPeople`) and `Daemon.MailWaitingGate` (fingerprint of `WaitingMail`) with their own seen/shown marks, so a new person does not rerun Mail waiting and a new sender or a mute does not rerun Waiting for me. An owner's copy runs every cycle; an inactive built-in is never due and its queued Run Now is cancelled. Details in [built-in-automations.md](built-in-automations.md).
+
+### Ref kinds `mail_sender` and `waiting_older`
+
+`blocks.RefMailSender` / `RefWaitingOlder` carry a text id (`Ref.Key`); every other kind an integer. `mail_sender`'s id must pass `ValidSenderAddress`, `waiting_older`'s must be `"people"`. Both are built-in only, like `action`/`reminder`; the shared `blocks_cases.json` pins them for Go, the Kit and the Desktop. On the Desktop (`InboxRefState`) a sender ref is shown while the sender still has open, unmuted mail (`WaitingQueries.shownSenders`, matched by sender key, with the newest link from `newestPermalink`); the Older ref while people `older` > 0. A closed sender's row hides at the next read.
+
+### `watchtower inbox resolve` bulk forms
+
+Owner verbs, refused under every agent marker before anything is read (AGENT-07 as amended in ask #654). `--json` puts the result on the last stdout line.
+
+- `inbox resolve --dry-run --json --sender <addr> --trigger email_received` → `{"count":N,"ids":["…"]}`: every open mail item whose sender key is the address's, muted or not.
+- `inbox resolve --dry-run --json --older-than <n>d --people` (n 1–365) → same keys: open people items at or before now − n days.
+- `inbox resolve --ids a,b,c --json` (positive, at most 10 000 distinct) → `{"resolved":N,"skipped":N,"ids":["…"]}` (the resolved ids, decimal strings). The write resolves only ids still open by the dry run's rule (`db.ResolveOpenInboxItems`, chunks of 200, one transaction each) with reason "Marked done in bulk"; closed, snoozed, archived, deleted-Jira and unknown ids are skipped.
+- Failure: exit 1, last stdout line `{"resolved":N,"of":M,"error":"…"}` (`resolved` > 0 after a failed later chunk). `--ids` with a filter or `--dry-run`, or a filter without `--dry-run`, is refused. `resolve <id>` alone is unchanged.
+
+### Desktop
+
+- `WaitingQueries` (Core): `peopleCounts`, `mailSenders`, `shownSenders`, `newestPermalink`, Go twins of `db.OpenPeopleCounts` / `db.OpenMailSenders`; a missing table reads as no items. `InboxPeopleRule`: `isPeople`, `senderKey`, `muteScope`, the SQL clauses.
+- `InboxBulkCLI`: `planSender`, `planOlderPeople(days: 7)`, `resolve(ids:)`, each a `capture` (so the exit-1 line is read), 120 s timeout; output without the pinned keys is never success. `InboxBulkCenter` (on the strip, AppState-owned): one `InboxBulkPressModel` per sender key or the Older row, so a press and its result survive leaving the pane; Try Again is a new dry run; `onFinished` refreshes the strip. `InboxBulkPressButton(style: .inline)`: the row's own **Cancel** and "Mark N Done" in place of the button, the result line as the row's footer.
+- Sender row (`mailSender`): **Open** (newest open mail's link, through `InboxCardLinkPolicy`), **Mark All Done…**, **Mute** (`ActionStripViewModel.muteSender` → `InboxLearnedRulesQueries.upsertManual(ruleType: "source_mute", scopeKey: "email:<key>", weight: -1.0)`, then a refresh). Older note row (`waitingOlder`): **Mark All Done…**. Mail waiting's pane header has **Mute Senders…** (`MuteSendersModel`: the ten busiest unmuted senders, none ticked, **Mute N Senders**, one rule each in row order, "Muted N of M. <error>" at the first failure).
+- Row actions show over the trailing edge on hover or focus, in place of the age chip, and never change the row's height. Keys on the focused row of either pane: J/K move, E done, R reply (people rows that can reply), S opens the row's Snooze menu, ⏎ open, ⌘K hand to agent; on a sender ⏎ open, E Mark All Done… (the confirmation still asks), M mute; none on the Older note row.
+- Root row: the `mail-waiting` artifact (`InboxFolderQueries.mailWaiting`, `MailWaitingState`) is `InboxRowKind.mailWaiting` in **Needs you** right after Waiting for me, only once its first run wrote it (no stand-in); preview / meta / pane subtitles from `InboxWaitingTexts`; pill = mail today, neutral tone. It is never unread-counted, never in a folder count or the badge.
+- Counts: the badge's and Waiting for me pill's "people waiting today" count only `InboxPeopleRule.isPeople` items, in the artifact path and the Messages stand-in path. Badge = Needs approval + people waiting today; mail never counts.
+
+### Inventory
+
+- **STRIP-01** amended (`docs/inventory/reaction-commands.md`, approved in ask #649): the Mail waiting built-in's artifact is a view of `inbox_items`; guards `TestMailWaiting_ShippedRecipeHasNoLLM`, `TestMailWaiting_OneRowPerOpenSender`; `TestWaitingForMe_WritesOneRowPerOpenItem` keeps its name and pins people rows only.
+- **INBOX-05** amended (`docs/inventory/inbox-pulse.md`, ask #634): a `source_mute` rule scoped `email:<address>` hides that sender from Mail waiting only (`TestInbox05_MutedSenderLeavesMailWaitingOnly`).
+- **AGENT-07** amended (`docs/inventory/agent-actions.md`, ask #654): the bulk `inbox resolve` forms are refused under every agent marker (`TestInboxResolve_RefusedUnderAgent`).
+- Owner copies of Waiting for me now list people only (approved in ask #649), pinned by `TestAttentionWaiting_OwnerCopyOfWaitingForMeGetsNoMail`.
+
+### v1 limits
+
+- Sender rows' numbers refresh at the next sync; a closed or muted sender's row hides at once.
+- The Messages stand-in still lists mail while Waiting for me's run has failed (its badge term stays people only).
+- An owner's copy of Waiting for me written before phase 2 now lists people only: mail moved to `mail_items` and Mail waiting.
+- Older's note count comes from the last run; the Desktop's own read decides only whether the row shows.
+- Waiting for me's list-row preview still comes from the capped feed: a page full of mail can show "Nothing waits on you" while the pill shows N.
+- A "Closed N of M" line clears when its row leaves a read.
+- `mail_items` rows lose their text at full load (200 rows share 40 KiB); the shipped recipes read only `senders` for mail.
 
 ## Phase 4 — mail closes on reply (Gmail)
 
