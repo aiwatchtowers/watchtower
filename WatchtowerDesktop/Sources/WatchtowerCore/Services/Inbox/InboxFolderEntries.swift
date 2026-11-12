@@ -240,7 +240,7 @@ package enum InboxFolderEntries {
                 kind: .threads, title: action.reason.isEmpty ? "Thread brief" : action.reason,
                 meta: "Thread brief", time: AutomationDates.parse(action.appliedAt).map { time($0, inputs) } ?? "")
         case let .approval(item):
-            return InboxRowContent(kind: .approval, title: approvalTitle(item), isUnread: true)
+            return NeedsApprovalGroups.itemContent(item, now: now, calendar: inputs.calendar)
         case let .builtinNotice(notice):
             return InboxRowContent(kind: .approval, title: notice.title, isUnread: true)
         }
@@ -311,13 +311,6 @@ package enum InboxFolderEntries {
 
     private static func time(_ date: Date, _ inputs: Inputs) -> String {
         InboxRowTime.label(date, now: inputs.now, calendar: inputs.calendar)
-    }
-
-    private static func approvalTitle(_ item: NeedsApprovalItem) -> String {
-        switch item.record {
-        case let .action(action): action.reason.isEmpty ? action.tool : action.reason
-        case let .reminder(reminder): reminder.note.isEmpty ? "Reminder" : reminder.note
-        }
     }
 
     /// "updated 6 min ago", "updated just now".

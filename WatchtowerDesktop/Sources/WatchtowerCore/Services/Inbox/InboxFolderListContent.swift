@@ -26,11 +26,16 @@ package struct InboxListSection: Identifiable, Equatable, Sendable {
     package let id: String
     package let title: String
     package let rows: [InboxFolderListRow]
+    /// The count the heading shows after its title ("Targets · 4"); nil
+    /// shows none. A Needs approval group's approvals, which its one
+    /// Approve All row may stand for.
+    package let count: Int?
 
-    package init(id: String, title: String, rows: [InboxFolderListRow]) {
+    package init(id: String, title: String, rows: [InboxFolderListRow], count: Int? = nil) {
         self.id = id
         self.title = title
         self.rows = rows
+        self.count = count
     }
 }
 

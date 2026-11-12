@@ -352,17 +352,25 @@ package final class ActionStripViewModel {
     }
 
     /// The selected folder's list column: the root's and an owner folder's
-    /// sections (`InboxRootSections`), the root's Earlier line.
+    /// sections (`InboxRootSections`), the root's Earlier line, Needs
+    /// approval's groups (`NeedsApprovalGroups.sections`).
     package var folderList: InboxFolderListContent {
         let folder = folderMenu.tree.folder(folderMenu.selectedFolderID) ?? folderMenu.tree.root
         let inputs = entryInputs
-        let grouped = InboxRootSections.build(
-            entries: folderEntries, folder: folder.kind,
-            waitingForMeAutomationID: folderMenu.snapshot.waitingForMe.automationID,
-            now: inputs.now, calendar: inputs.calendar)
-        let sections = grouped.map { section, entries in
-            InboxListSection(id: section.rawValue, title: section.title,
-                             rows: entries.map { InboxFolderEntries.row($0, inputs) })
+        let sections: [InboxListSection]
+        if folder.kind == .approvals {
+            sections = NeedsApprovalGroups.sections(
+                folderEntries, openActions: folderMenu.snapshot.openActions, now: inputs.now,
+                calendar: inputs.calendar) { InboxFolderEntries.row($0, inputs) }
+        } else {
+            let grouped = InboxRootSections.build(
+                entries: folderEntries, folder: folder.kind,
+                waitingForMeAutomationID: folderMenu.snapshot.waitingForMe.automationID,
+                now: inputs.now, calendar: inputs.calendar)
+            sections = grouped.map { section, entries in
+                InboxListSection(id: section.rawValue, title: section.title,
+                                 rows: entries.map { InboxFolderEntries.row($0, inputs) })
+            }
         }
         let earlier = folder.kind == .root
             ? InboxRootSections.earlierLine(
@@ -467,6 +475,81 @@ package final class ActionStripViewModel {
         // artifact or a day is selected, and no read mark is written — a
         // poll or refresh never marks anything read (STRIP-02).
         _ = showEntry(below ?? before[..<index].last(where: listed.contains))
+    }
+
+    // MARK: - Approve All (Needs approval groups)
+
+    /// Each group's **Approve All** press, kept here (AppState-owned) so a
+    /// run survives leaving the Inbox.
+    @ObservationIgnored private var approveAllModels: [NeedsApprovalGroup: InboxBulkPressModel] = [:]
+
+    /// `group`'s **Approve All** press: one per group, planned with
+    /// `approveAllPlan` and applied with `approveAll(ids:)`.
+    package func approveAllModel(_ group: NeedsApprovalGroup) -> InboxBulkPressModel {
+        if let model = approveAllModels[group] { return model }
+        let model = InboxBulkPressModel(
+            plan: { [weak self] in self?.approveAllPlan(group) ?? InboxBulkPlan(ids: [], count: 0) },
+            apply: { [weak self] ids in
+                guard let self else { return .failed("The Inbox is closed.") }
+                return await approveAll(ids: ids)
+            })
+        approveAllModels[group] = model
+        return model
+    }
+
+    /// What **Approve All** would approve in `group` now: its approvable
+    /// ids from the last read (`NeedsApprovalGroups.approveAllIDs`); empty
+    /// when the group offers none.
+    package func approveAllPlan(_ group: NeedsApprovalGroup) -> InboxBulkPlan {
+        let items = NeedsApprovalGroups.build(openApprovals).first { $0.0 == group }?.1 ?? []
+        let ids = NeedsApprovalGroups.approveAllIDs(group, items)?.map(String.init) ?? []
+        return InboxBulkPlan(ids: ids, count: ids.count)
+    }
+
+    /// Approves `ids` one by one through the per-action path
+    /// (`AgentActionFeed.approve`, args pinned to what the list read). One
+    /// read first: an id no longer open is skipped. The first failure stops
+    /// the run and selects that card, where its error shows; the rest are
+    /// left for the owner. Ends with a read.
+    package func approveAll(ids: [String]) async -> InboxBulkResult {
+        await refresh()
+        var done = 0
+        var skipped = 0
+        var failure: (id: Int64, message: String)?
+        for text in ids {
+            guard let id = Int64(text), folderMenu.snapshot.openActions.contains(id),
+                  let row = feed.proposals.first(where: { $0.id == id }) else {
+                skipped += 1
+                continue
+            }
+            await actionFeed.approve(id, shownArgs: row.argsJSON)
+            if let error = actionFeed.rowErrors[id] {
+                failure = (id, error.message)
+                break
+            }
+            done += 1
+        }
+        await refresh()
+        adoptFeedError()
+        guard let failure else { return .done(count: done, skipped: skipped) }
+        // The failed card's entry (`InboxFolderEntry.approval`'s id), set
+        // after the last read so it is not moved off.
+        entrySelection = "approval:\(InboxRef.Kind.action.rawValue):\(failure.id)"
+        return .partial(done: done, of: ids.count, error: failure.message)
+    }
+
+    /// Needs approval's open approvals from the last read, whichever folder
+    /// is selected (the root holds them on a tree without Needs approval).
+    private var openApprovals: [NeedsApprovalItem] {
+        guard hasRead else { return [] }
+        let tree = folderMenu.tree
+        let open = folderMenu.snapshot.openActions
+        return InboxFolderEntries.build(folder: tree.approvals ?? tree.root, entryInputs).compactMap { entry in
+            guard case let .approval(item) = entry, NeedsApprovalGroups.isOpen(item, openActions: open) else {
+                return nil
+            }
+            return item
+        }
     }
 
     // MARK: - Needs approval's note
