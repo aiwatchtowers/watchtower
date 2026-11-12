@@ -687,6 +687,37 @@ func TestSlackToday_MissedAndSkippedNamed(t *testing.T) {
 	}
 }
 
+// A reset window (the cursor was above the newest message row) re-reads the
+// day since local midnight: the day's state starts over from it, so the
+// messages it delivers again are not counted or labelled twice.
+func TestSlackToday_CursorResetRebuildsTheDay(t *testing.T) {
+	f := newFixture(t)
+	f.sync(t)
+	w := slackTodayWindow(t, "")
+	w.Fields["below_floor"] = 4
+	w.Fields["skipped_older"] = 2
+	f.stOK(t, w)
+	before := f.stState(t)
+	if before.Messages == 0 || before.MissedEarlier != 4 || before.SkippedOlder != 2 {
+		t.Fatalf("precondition: state %+v", before)
+	}
+
+	again := slackTodayWindow(t, "")
+	again.Fields["cursor_reset"] = true
+	f.stOK(t, again)
+	s := f.stState(t)
+	if s.Messages != len(again.Fields["messages"].([]any)) || s.MissedEarlier != 0 || s.SkippedOlder != 0 {
+		t.Errorf("messages %d missed_earlier %d skipped_older %d; want the window's %d, 0 and 0",
+			s.Messages, s.MissedEarlier, s.SkippedOlder, len(again.Fields["messages"].([]any)))
+	}
+	for id, c := range s.Channels {
+		if c.N != before.Channels[id].N || len(c.Lines) != len(before.Channels[id].Lines) {
+			t.Errorf("%s: n %d lines %d; want %d and %d (nothing twice)", id, c.N, len(c.Lines),
+				before.Channels[id].N, len(before.Channels[id].Lines))
+		}
+	}
+}
+
 func TestSlackToday_EmptyDay(t *testing.T) {
 	f := newFixture(t)
 	f.sync(t)

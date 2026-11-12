@@ -353,7 +353,10 @@ var w = slack.window({ floor: "today" });
 var s = state.get("today");
 var valid = !!s && s.v === 1;
 if (w.status === "done") {
-  if (!valid || s.day !== w.day) {
+  // A reset cursor (the messages table lost its newest rows) re-reads
+  // everything since local midnight: the day starts over, so nothing is
+  // counted twice.
+  if (!valid || s.day !== w.day || w.cursor_reset) {
     s = freshDay(w.day);
   }
   s.missed_earlier = (s.missed_earlier || 0) + w.below_floor;
