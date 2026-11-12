@@ -271,7 +271,8 @@ package enum IdeaQueries {
     }
 
     /// Clear Old Ideas (IDEA-04): drops every listed idea still awaiting a
-    /// verdict, clearing its review flag like every owner action. Runs inside
+    /// verdict (the `fetchAwaitingVerdict` condition, merged rows excluded),
+    /// clearing its review flag like every owner action. Runs inside
     /// the caller's one write transaction; an id the owner or the consolidator
     /// settled since the confirmation read it is left alone. Returns the rows
     /// changed.
@@ -286,6 +287,7 @@ package enum IdeaQueries {
                         updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
                     WHERE id IN (\(placeholders))
                       AND (status = 'proposed' OR needs_review = 1) AND \(reviewKindCond)
+                      AND status != 'merged'
                     """,
                 arguments: StatementArguments(chunk)
             )

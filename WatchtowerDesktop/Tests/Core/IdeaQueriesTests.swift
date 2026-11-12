@@ -862,6 +862,9 @@ final class IdeaQueriesTests: XCTestCase {
                                             reviewReason: "brought up again",
                                             updatedAt: "2026-01-01T00:00:00Z"),
                 try TestDatabase.insertIdea(db, title: "Not now", status: "not_now",
+                                            updatedAt: "2026-01-01T00:00:00Z"),
+                try TestDatabase.insertIdea(db, title: "Flagged merged", status: "merged",
+                                            needsReview: true, reviewReason: "brought up again",
                                             updatedAt: "2026-01-01T00:00:00Z")
             ]
         }
