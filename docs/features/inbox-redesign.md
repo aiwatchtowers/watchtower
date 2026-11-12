@@ -150,3 +150,32 @@ The rule: a reader that treats a row as something that happened to the owner ski
 - The sent catch-up is one pass per cycle with no per-pass cap and no resume: a pass cut by a cycle cancel restarts and re-fetches. A one-time cost, like `FetchRange`.
 - Sent rows also feed the ideas email pre-digests (`ListGmailThreadsForExtract`), so ideas mining spends more AI on mail (owner decision 8: the owner's words are evidence).
 - Installed copies of the "New mail summary" template made before this release still sum up sent mail: they are confirmed by hash (AUTO-06) and are not upgraded. Reinstall from the gallery to get the skip.
+
+## Phase 5 — Slack today
+
+Board #1076, asks #634/#638/#653 (2026-11-11). Plan `docs/superpowers/plans/2026-11-11-inbox-redesign-phase-5-slack-today.md`. The built-in `slack-today` sums up today's Slack messages (member channels, 1:1 DMs and group DMs, except those muted for AI) into one living artifact; the Go side — the raw window `slack.window`, the gate, the recipe, its state v1 and the v1 limits — is in [built-in-automations.md](built-in-automations.md#slack-today-inbox-redesign-phase-5-2026-11-11). The Desktop draws the row and the pane from the built-in's state, never from the card's text, so a quiet message never marks the card unread (call 5 of the plan).
+
+### Row
+
+- `SlackTodayQueries.read` (the built-in's automation id and `SlackTodaySummary` of its state) rides in the Inbox's one read (`InboxFolderMenuSnapshot.slackToday`); `InboxFolderEntries.isSlackToday(card, snapshot)` picks the artifact by its automation id.
+- `InboxRootSections.build(…, slackTodayAutomationID:)` puts it in **Today** right after the Morning brief, whatever its `changed_at`. Its unread card counts in the root's rail count as any other artifact; never in the badge.
+- `SlackTodayRow.content`: kind `slackToday` (tile `number`, the accent), title "Slack today"; today's state: the top two lines (label rank, then newest) as `#<channel> — <text>`, else "Nothing for you yet today"; meta "Built in · today · N messages"; pill = conversations with news, `batch` tone. Another day's state or none: "Nothing yet today" under "Built in". `#` only for channels (`SlackTodaySummary.heading`, the recipe's `heading` twin).
+
+### Pane
+
+- `SlackTodayPane` (via `InboxReadingPane.slackToday(_:)`): `InboxPaneHeader` with subtitle "Today · N messages in K channels · M with news for you" (`SlackTodayPaneText.subtitle`; "Nothing yet today" for another day), **Mark All Seen**, **Run Now** (when the ⋯ offers it), the ⋯ and `?`; then the card drawn without its title row.
+- Stale note "This is yesterday's list. Today's starts after the next sync." only when the state is another day's **and** the card was written before local midnight; a card written today over an older state is today's empty card (a skipped window after midnight writes no state).
+- Under the card, from today's state only: the folded line "N channels with nothing for you · M messages" (`quietLine`, folded ones counted); open, the quiet conversations busiest first as "#name · N messages", then "and N more channels" for `quiet_rest`.
+
+### Mark All Seen
+
+`ActionStripViewModel.markOutputSeen(id:)` writes `read_at` at the content hash the list drew (`markOutputOpened`), then re-reads; never optimistic, so a card rewritten under the view stays unread and the read shows the new version. The pane's button is enabled while the drawn version is unread; the row's context menu starts with **Mark All Seen** then. Opening the card marks it read as before; the button is for a card that turned unread again while open.
+
+### Shots
+
+`inbox-r-slack-today-row`, `-pane`, `-stale`, `-quiet-open` (`DesignShotFixtures+InboxRedesignSlackToday.swift`).
+
+### v1 limits
+
+- The per-conversation counts, the header numbers and the quiet line come from the state, so the phone (sub-project F) will not show them from the card alone.
+- The pane shows no per-channel "N new" in the headings (the mockup does): with that count on the card every quiet message would mark the card unread.
