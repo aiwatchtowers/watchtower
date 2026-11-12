@@ -3,7 +3,6 @@ package cmd
 import (
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"sync/atomic"
@@ -33,34 +32,6 @@ func writeTaggedPIDFile(t *testing.T, path string, pid int, startUnix int64) {
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
 }
 
-// collectHelperOutput starts the single goroutine that both collects a
-// ready-consumed helper's remaining stdout (for a test that needs to
-// inspect it, e.g. checking for a "signalled" marker) and performs cmd.Wait
-// exactly once. t.Cleanup kills the process and waits on that SAME result
-// channel — never a second, concurrent Wait — so a test failure anywhere
-// after this call still reaps the helper.
-func collectHelperOutput(t *testing.T, cmd *exec.Cmd, lines <-chan string) (output <-chan []string, done <-chan error) {
-	t.Helper()
-	out := make(chan []string, 1)
-	fin := make(chan error, 1)
-	go func() {
-		var got []string
-		for line := range lines {
-			got = append(got, line)
-		}
-		out <- got
-		fin <- cmd.Wait()
-	}()
-	t.Cleanup(func() {
-		_ = cmd.Process.Kill()
-		select {
-		case <-fin:
-		case <-time.After(2 * time.Second):
-		}
-	})
-	return out, fin
-}
-
 // TestRunSyncStop_RefusesWhenIdentityUnconfirmed pins the N2 requirement:
 // runSyncStop's initial resolve, when a real helper's identity cannot be
 // verified (daemon.ErrIdentityUnconfirmed via the real
@@ -70,11 +41,9 @@ func collectHelperOutput(t *testing.T, cmd *exec.Cmd, lines <-chan string) (outp
 func TestRunSyncStop_RefusesWhenIdentityUnconfirmed(t *testing.T) {
 	cfg, pidPath := syncStopTestConfig(t)
 
-	helper, lines := startSyncStopDelayedHelper(t)
-	waitForSyncStopHelperReady(t, lines)
-	output, done := collectHelperOutput(t, helper, lines)
-
-	writeTaggedPIDFile(t, pidPath, helper.Process.Pid, time.Now().Unix())
+	helper := startDelayedHelper(t)
+	writeTaggedPIDFile(t, pidPath, helper.pid(), time.Now().Unix())
+	rec := recordStop(t, helper)
 
 	restore := daemon.SetIdentityReaderForTest(func(pid int) (daemon.ProcessIdentity, error) {
 		return daemon.ProcessIdentity{}, errors.New("simulated identity read failure")
@@ -84,23 +53,19 @@ func TestRunSyncStop_RefusesWhenIdentityUnconfirmed(t *testing.T) {
 	err := runSyncStop(cfg, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cannot confirm")
-	assert.Contains(t, err.Error(), strconv.Itoa(helper.Process.Pid))
+	assert.Contains(t, err.Error(), strconv.Itoa(helper.pid()))
 
 	data, statErr := os.ReadFile(pidPath)
 	require.NoError(t, statErr, "an unconfirmed identity must not remove the pid file")
-	assert.Contains(t, string(data), strconv.Itoa(helper.Process.Pid))
+	assert.Contains(t, string(data), strconv.Itoa(helper.pid()))
 
-	// The delayed helper prints "signalled" immediately on SIGTERM receipt
-	// — its absence is a positive proof no signal was ever sent, not an
-	// inference from liveness.
-	_ = helper.Process.Kill()
-	select {
-	case got := <-output:
-		assert.NotContains(t, got, "signalled", "runSyncStop must refuse before ever sending a signal")
-	case <-time.After(2 * time.Second):
-		t.Fatal("helper stdout was never fully drained")
+	assert.Empty(t, rec.sent(), "runSyncStop must refuse before ever sending a signal")
+	// The delayed helper prints "signalled" on SIGTERM receipt, so a signal
+	// sent around the seam may show too.
+	_ = helper.cmd.Process.Kill()
+	for line := range helper.events {
+		assert.NotEqual(t, "signalled", line, "the helper was signalled")
 	}
-	<-done
 }
 
 // TestRunSyncNow_RefusesWhenIdentityUnconfirmed pins the same requirement
@@ -112,8 +77,8 @@ func TestRunSyncStop_RefusesWhenIdentityUnconfirmed(t *testing.T) {
 func TestRunSyncNow_RefusesWhenIdentityUnconfirmed(t *testing.T) {
 	cfg, pidPath := syncStopTestConfig(t)
 
-	helper, done := startReadyHelper(t, startSyncStopHelper)
-	writeTaggedPIDFile(t, pidPath, helper.Process.Pid, time.Now().Unix())
+	helper := startStuckHelper(t)
+	writeTaggedPIDFile(t, pidPath, helper.pid(), time.Now().Unix())
 
 	restore := daemon.SetIdentityReaderForTest(func(pid int) (daemon.ProcessIdentity, error) {
 		return daemon.ProcessIdentity{}, errors.New("simulated identity read failure")
@@ -126,10 +91,9 @@ func TestRunSyncNow_RefusesWhenIdentityUnconfirmed(t *testing.T) {
 
 	data, statErr := os.ReadFile(pidPath)
 	require.NoError(t, statErr, "an unconfirmed identity must not remove the pid file")
-	assert.Contains(t, string(data), strconv.Itoa(helper.Process.Pid))
+	assert.Contains(t, string(data), strconv.Itoa(helper.pid()))
 
-	assert.NoError(t, syscall.Kill(helper.Process.Pid, 0), "helper must not have been signalled (SIGUSR1's default action would have killed it)")
-	_ = done
+	assert.NoError(t, syscall.Kill(helper.pid(), 0), "helper must not have been signalled (SIGUSR1's default action would have killed it)")
 }
 
 // TestForceStopSync_RefusesWhenIdentityUnconfirmed pins the same
@@ -145,13 +109,13 @@ func TestRunSyncNow_RefusesWhenIdentityUnconfirmed(t *testing.T) {
 // call-counting technique to prove escalation stopped at the FIRST
 // re-check (no third read, which would precede SIGKILL).
 func TestForceStopSync_RefusesWhenIdentityUnconfirmed(t *testing.T) {
-	setSyncStopGraces(t, 100*time.Millisecond, 100*time.Millisecond, 10*time.Millisecond)
 	cfg, pidPath := syncStopTestConfig(t)
 
-	helper, done := startReadyHelper(t, startSyncStopHelper)
+	helper := startStuckHelper(t)
+	rec := recordStop(t, helper)
 
 	writeTime := time.Now()
-	writeTaggedPIDFile(t, pidPath, helper.Process.Pid, writeTime.Unix())
+	writeTaggedPIDFile(t, pidPath, helper.pid(), writeTime.Unix())
 
 	var reads atomic.Int32
 	restore := daemon.SetIdentityReaderForTest(func(pid int) (daemon.ProcessIdentity, error) {
@@ -171,8 +135,8 @@ func TestForceStopSync_RefusesWhenIdentityUnconfirmed(t *testing.T) {
 	assert.Equal(t, int32(2), reads.Load(),
 		"expected exactly two identity reads: the initial resolve, then forceStopSync's one re-check before the second SIGTERM — no third read, which would precede SIGKILL")
 
-	assert.NoError(t, syscall.Kill(helper.Process.Pid, 0), "helper should still be running: it only ever swallows signals")
-	_ = done
+	assert.Equal(t, []sentSignal{{helper.pid(), syscall.SIGTERM}}, rec.sent(), "only the first SIGTERM, before the failed re-check")
+	assert.NoError(t, syscall.Kill(helper.pid(), 0), "helper should still be running: it only ever swallows signals")
 }
 
 // TestRunSyncStop_TaggedFormatConfirmedSameSucceeds is the N2 "one cmd test
@@ -183,13 +147,13 @@ func TestForceStopSync_RefusesWhenIdentityUnconfirmed(t *testing.T) {
 // legacy-format tests elsewhere in this package — signal delivered, helper
 // exits, pid file removed.
 func TestRunSyncStop_TaggedFormatConfirmedSameSucceeds(t *testing.T) {
-	setSyncStopGraces(t, 2*time.Second, 2*time.Second, 20*time.Millisecond)
 	cfg, pidPath := syncStopTestConfig(t)
 
-	helper, done := startReadyHelper(t, startSyncStopDelayedHelper)
+	helper := startDelayedHelper(t)
+	recordStop(t, helper)
 
 	writeTime := time.Now()
-	writeTaggedPIDFile(t, pidPath, helper.Process.Pid, writeTime.Unix())
+	writeTaggedPIDFile(t, pidPath, helper.pid(), writeTime.Unix())
 
 	restore := daemon.SetIdentityReaderForTest(func(pid int) (daemon.ProcessIdentity, error) {
 		return daemon.ProcessIdentity{StartTime: writeTime, Comm: "watchtower"}, nil
@@ -206,12 +170,8 @@ func TestRunSyncStop_TaggedFormatConfirmedSameSucceeds(t *testing.T) {
 	_, statErr := os.Stat(pidPath)
 	assert.True(t, os.IsNotExist(statErr), "pid file should be removed once the daemon is confirmed dead")
 
-	select {
-	case waitErr := <-done:
-		assert.NoError(t, waitErr, "the delayed helper exits cleanly on its own")
-	case <-time.After(2 * time.Second):
-		t.Fatal("helper never exited")
-	}
+	<-helper.done
+	assert.NoError(t, helper.err, "the delayed helper exits cleanly on its own")
 }
 
 // TestRunSyncNow_NoDaemonFails pins that `sync --now` without a running

@@ -8,7 +8,9 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -41,15 +43,23 @@ func runPermissionWait(t *testing.T, workbenchID int64, stdin string) (stdout, s
 	rootCmd.SetIn(strings.NewReader(stdin))
 	t.Cleanup(func() { rootCmd.SetIn(nil) })
 	out, errOut, err := runWorkbench(t, "permission-wait", "--workbench", strconv.FormatInt(workbenchID, 10))
+	permissionWaitsEnded.Add(1)
 	require.NoError(t, err, "the hook always exits 0")
 	return out, errOut
 }
 
-// pendingPermissionID waits (bounded) for the hook's pending row of session
-// row and returns its id.
-func pendingPermissionID(database *db.DB, row int64) (int64, error) {
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
+// permissionWaitsEnded counts the hooks runPermissionWait saw return.
+var permissionWaitsEnded atomic.Int64
+
+// pendingPermissionID polls for the hook's pending row of session row and
+// returns its id, or an error once the hook running beside it returned
+// with no pending row: the hook's own end, not a clock, ends the wait.
+//
+// ended is permissionWaitsEnded read before the hook started, by the
+// caller, before it starts the goroutine that polls.
+func pendingPermissionID(database *db.DB, row, ended int64) (int64, error) {
+	for {
+		hookEnded := permissionWaitsEnded.Load() != ended
 		var id int64
 		err := database.QueryRow(`SELECT id FROM permission_requests
 			WHERE terminal_session_id = ? AND status = 'pending'`, row).Scan(&id)
@@ -59,9 +69,11 @@ func pendingPermissionID(database *db.DB, row int64) (int64, error) {
 		if !errors.Is(err, sql.ErrNoRows) {
 			return 0, err
 		}
+		if hookEnded {
+			return 0, errors.New("the hook ended with no pending permission request")
+		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	return 0, errors.New("no pending permission request appeared")
 }
 
 func permissionRequestCount(t *testing.T, database *db.DB) int {
@@ -75,8 +87,9 @@ func permissionRequestCount(t *testing.T, database *db.DB) int {
 // the way the hub's CAS does.
 func answerFromPhone(database *db.DB, row int64, status string) <-chan error {
 	done := make(chan error, 1)
+	ended := permissionWaitsEnded.Load()
 	go func() {
-		id, err := pendingPermissionID(database, row)
+		id, err := pendingPermissionID(database, row, ended)
 		if err == nil {
 			var ok bool
 			ok, err = database.ClosePermissionRequest(id, status, time.Now())
@@ -133,8 +146,9 @@ func TestProj21_PermissionWaitMacWorkchatDenySaysMac(t *testing.T) {
 	stepClock(t)
 	fastPermissionPoll(t)
 	done := make(chan error, 1)
+	ended := permissionWaitsEnded.Load()
 	go func() {
-		id, err := pendingPermissionID(database, row)
+		id, err := pendingPermissionID(database, row, ended)
 		if err == nil {
 			_, err = database.Exec(`UPDATE permission_requests SET status = 'denied', decided_by = 'Mac'
 				WHERE id = ? AND status = 'pending'`, id)
@@ -158,8 +172,9 @@ func TestProj21_PermissionWaitMacAnswerWins(t *testing.T) {
 	stepClock(t)
 	fastPermissionPoll(t)
 	done := make(chan error, 1)
+	ended := permissionWaitsEnded.Load()
 	go func() {
-		_, err := pendingPermissionID(database, row)
+		_, err := pendingPermissionID(database, row, ended)
 		if err == nil {
 			_, err = database.SetTerminalAgentState(row, pid, briefLaunchID, agentStateWorking,
 				time.Now().Add(time.Hour), "", nil, false, db.AgentOrder{})
@@ -185,8 +200,9 @@ func TestPermissionWait_RecordsApprovalAtOnce(t *testing.T) {
 	stepClock(t)
 	fastPermissionPoll(t)
 	done := make(chan error, 1)
+	ended := permissionWaitsEnded.Load()
 	go func() {
-		id, err := pendingPermissionID(database, row)
+		id, err := pendingPermissionID(database, row, ended)
 		if err == nil {
 			if s, sErr := database.GetTerminalSession(row); sErr != nil || s.AgentState.String != agentStateApproval {
 				err = errors.Join(sErr, errors.New("state is not approval while pending"))
@@ -217,8 +233,9 @@ func TestPermissionWait_SessionGoneExitsSilently(t *testing.T) {
 			stepClock(t)
 			fastPermissionPoll(t)
 			done := make(chan error, 1)
+			ended := permissionWaitsEnded.Load()
 			go func() {
-				_, err := pendingPermissionID(database, row)
+				_, err := pendingPermissionID(database, row, ended)
 				if err == nil {
 					_, err = database.Exec(tc.stmt, row)
 				}
@@ -246,12 +263,16 @@ func TestProj21_PermissionWaitNotABoardSessionExitsSilently(t *testing.T) {
 	database, pid, _ := briefSessionFixture(t)
 	unsetTerminalEnv(t)
 
-	start := time.Now()
-	out, errOut := runPermissionWait(t, pid, permissionPayload(briefLaunchID))
+	// On the synctest bubble's clock any wait the hook makes — a poll, a
+	// timer — shows; it must make none.
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Now()
+		out, errOut := runPermissionWait(t, pid, permissionPayload(briefLaunchID))
 
-	assert.Less(t, time.Since(start), 100*time.Millisecond)
-	assert.Empty(t, out)
-	assert.Empty(t, errOut)
+		assert.Zero(t, time.Since(start), "the hook exits at once, without waiting")
+		assert.Empty(t, out)
+		assert.Empty(t, errOut)
+	})
 	assert.Equal(t, 0, permissionRequestCount(t, database))
 }
 
@@ -314,8 +335,9 @@ func TestPermissionWait_CancelExitsSilently(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
+	ended := permissionWaitsEnded.Load()
 	go func() {
-		_, err := pendingPermissionID(database, row)
+		_, err := pendingPermissionID(database, row, ended)
 		cancel()
 		done <- err
 	}()
@@ -436,8 +458,9 @@ func TestProj21_PermissionWaitNewerPromptClosesTheOlder(t *testing.T) {
 		err           error
 	}
 	done := make(chan opened, 1)
+	ended := permissionWaitsEnded.Load()
 	go func() {
-		first, err := pendingPermissionID(database, row)
+		first, err := pendingPermissionID(database, row, ended)
 		var second int64
 		if err == nil {
 			second, err = database.OpenPermissionRequest(row, pid, briefLaunchID, "Bash", "make", false,
@@ -479,8 +502,9 @@ func TestPermissionWait_MacAnswerAtTheSameStampWins(t *testing.T) {
 	stepClock(t)
 	fastPermissionPoll(t)
 	done := make(chan error, 1)
+	ended := permissionWaitsEnded.Load()
 	go func() {
-		_, err := pendingPermissionID(database, row)
+		_, err := pendingPermissionID(database, row, ended)
 		if err == nil {
 			// The state moves on, its stamp left at the request's time.
 			_, err = database.Exec(`UPDATE terminal_sessions SET agent_state = 'working' WHERE id = ?`, row)

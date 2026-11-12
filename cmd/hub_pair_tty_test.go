@@ -118,17 +118,14 @@ func startPairTTY(t *testing.T, cols uint16) *ttyPair {
 	rootCmd.SetArgs([]string{"hub", "pair"})
 	go func() { r.done <- rootCmd.Execute() }()
 	t.Cleanup(func() {
-		if !r.finished {
-			select {
-			case <-r.done:
-			case <-time.After(10 * time.Second):
-				t.Error("hub pair did not return")
-			}
-		}
-		// A prompt that ended without the owner's line (expiry, Ctrl-C) left
-		// its reader blocked on the terminal, which keeps the pty open past
-		// the closes below: one line releases it.
+		// One line ends a prompt still waiting for the owner (a test that
+		// failed early) and releases a reader a prompt that ended without
+		// the owner's line (expiry, Ctrl-C) left blocked on the terminal,
+		// which would keep the pty open past the closes below.
 		_, _ = io.WriteString(ptm, "\n")
+		if !r.finished {
+			<-r.done
+		}
 		_ = tty.Close()
 		_ = ptm.Close()
 		<-copied
@@ -162,12 +159,8 @@ func (r *ttyPair) typeLine(t *testing.T, s string) {
 func (r *ttyPair) wait(t *testing.T) (int, error) {
 	t.Helper()
 	if !r.finished {
-		select {
-		case r.err = <-r.done:
-			r.finished = true
-		case <-time.After(10 * time.Second):
-			t.Fatalf("hub pair did not finish; output:\n%s", r.out.String())
-		}
+		r.err = <-r.done
+		r.finished = true
 	}
 	var ec *exitCodeError
 	switch {
@@ -382,14 +375,10 @@ func TestHubPairTTYAnythingButYesRefuses(t *testing.T) {
 			if c.in != "" {
 				r.typeLine(t, c.in)
 			}
-			select {
-			case req := <-f.confirms:
-				assert.Equal(t, hub.OpConfirm, req.Op)
-				assert.Equal(t, fakePairDevice, req.Device)
-				assert.False(t, req.Confirm)
-			case <-time.After(10 * time.Second):
-				t.Fatal("no confirm sent")
-			}
+			req := <-f.confirms
+			assert.Equal(t, hub.OpConfirm, req.Op)
+			assert.Equal(t, fakePairDevice, req.Device)
+			assert.False(t, req.Confirm)
 			code, err := r.wait(t)
 			assert.Equal(t, 1, code)
 			assert.EqualError(t, err, "Not linked: the code was not confirmed.")
@@ -432,13 +421,9 @@ func TestHubPairCtrlCDuringTheSASSendsNo(t *testing.T) {
 	r := startPairTTY(t, 120)
 	r.waitFor(t, "[y/N] ")
 	r.sigs <- os.Interrupt
-	select {
-	case req := <-f.confirms:
-		assert.False(t, req.Confirm)
-		assert.Equal(t, fakePairDevice, req.Device)
-	case <-time.After(10 * time.Second):
-		t.Fatal("no confirm sent")
-	}
+	req := <-f.confirms
+	assert.False(t, req.Confirm)
+	assert.Equal(t, fakePairDevice, req.Device)
 	code, err := r.wait(t)
 	assert.Equal(t, 130, code)
 	assert.EqualError(t, err, "Cancelled. Not linked.")

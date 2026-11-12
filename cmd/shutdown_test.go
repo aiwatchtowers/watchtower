@@ -7,8 +7,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
+	"sync/atomic"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -80,26 +83,17 @@ func startShutdownHelper(t *testing.T, mode string) (*exec.Cmd, <-chan string) {
 	return helper, lines
 }
 
-// waitForLine reads scanned lines until it sees want or deadline passes —
-// a deadline, not a spin-count, per the project's flake-prone
-// spin-counter-vs-deadline lesson for external-process test waits.
-func waitForLine(t *testing.T, lines <-chan string, want string, deadline time.Duration) {
+// waitForLine reads scanned lines until it sees want. It has no deadline
+// of its own: a helper that never prints want and never exits hangs the
+// run into go test's -timeout.
+func waitForLine(t *testing.T, lines <-chan string, want string) {
 	t.Helper()
-
-	timeout := time.After(deadline)
-	for {
-		select {
-		case line, ok := <-lines:
-			if !ok {
-				t.Fatalf("helper process closed stdout before printing %q", want)
-			}
-			if line == want {
-				return
-			}
-		case <-timeout:
-			t.Fatalf("timed out after %s waiting for helper to print %q", deadline, want)
+	for line := range lines {
+		if line == want {
+			return
 		}
 	}
+	t.Fatalf("helper process closed stdout before printing %q", want)
 }
 
 // TestShutdownContext_SecondSignalTerminates pins the RCA §6b fix: a
@@ -110,14 +104,14 @@ func TestShutdownContext_SecondSignalTerminates(t *testing.T) {
 	helper, lines := startShutdownHelper(t, "block")
 	defer func() { _ = helper.Process.Kill() }() // safety net if an assertion below fails first
 
-	waitForLine(t, lines, "ready", 5*time.Second)
+	waitForLine(t, lines, "ready")
 
 	if err := helper.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatalf("sending first SIGTERM: %v", err)
 	}
 	// The first signal must still cancel ctx normally — the helper's own
 	// business logic (not notifyShutdownContext) is what prints this.
-	waitForLine(t, lines, "cancelled", 2*time.Second)
+	waitForLine(t, lines, "cancelled")
 
 	// Drain the scanner's line channel to completion before calling Wait():
 	// os/exec forbids calling Cmd.Wait while a StdoutPipe reader is still
@@ -141,10 +135,10 @@ func TestShutdownContext_SecondSignalTerminates(t *testing.T) {
 	// SIGTERM sent in that tiny window still lands on the old,
 	// not-yet-unregistered channel and is harmlessly absorbed (matching
 	// production: nothing is lost, a following signal still kills).
-	// Retrying on a short tick until either the deadline or exit — rather
-	// than sending exactly once — asserts the fix's actual guarantee
-	// (a repeat signal eventually kills) without gambling on a fixed sleep.
-	deadline := time.After(2 * time.Second)
+	// Retrying on a short tick until exit — rather than sending exactly
+	// once — asserts the fix's actual guarantee (a repeat signal
+	// eventually kills) without gambling on a fixed sleep. A second signal
+	// that stays swallowed hangs the run into go test's -timeout.
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -156,18 +150,9 @@ func TestShutdownContext_SecondSignalTerminates(t *testing.T) {
 			assertKilledBySIGTERM(t, err)
 			return
 		case <-ticker.C:
-			continue
-		case <-deadline:
-			t.Fatal("helper did not exit despite repeated SIGTERM — the second signal is still being swallowed")
 		}
 	}
-
-	select {
-	case err := <-waitCh:
-		assertKilledBySIGTERM(t, err)
-	case <-time.After(2 * time.Second):
-		t.Fatal("helper process vanished (Signal failed) but Wait never returned")
-	}
+	assertKilledBySIGTERM(t, <-waitCh)
 }
 
 func assertKilledBySIGTERM(t *testing.T, err error) {
@@ -192,13 +177,13 @@ func TestShutdownContext_SingleSignalReturnsNormally(t *testing.T) {
 	helper, lines := startShutdownHelper(t, "cleanup")
 	defer func() { _ = helper.Process.Kill() }() // safety net if an assertion below fails first
 
-	waitForLine(t, lines, "ready", 5*time.Second)
+	waitForLine(t, lines, "ready")
 
 	if err := helper.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatalf("sending SIGTERM: %v", err)
 	}
-	waitForLine(t, lines, "cancelled", 2*time.Second)
-	waitForLine(t, lines, "deferred", 2*time.Second)
+	waitForLine(t, lines, "cancelled")
+	waitForLine(t, lines, "deferred")
 
 	// Drain the scanner's line channel before calling Wait() (see the
 	// comment in TestShutdownContext_SecondSignalTerminates) — the helper
@@ -210,13 +195,8 @@ func TestShutdownContext_SingleSignalReturnsNormally(t *testing.T) {
 		waitCh <- helper.Wait()
 	}()
 
-	select {
-	case err := <-waitCh:
-		if err != nil {
-			t.Fatalf("helper did not exit cleanly after a single signal: %v", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("helper did not return within 2s of the single SIGTERM")
+	if err := <-waitCh; err != nil {
+		t.Fatalf("helper did not exit cleanly after a single signal: %v", err)
 	}
 }
 
@@ -227,27 +207,24 @@ func TestShutdownContext_SingleSignalReturnsNormally(t *testing.T) {
 // `defer cancel()` at ordinary command completion), not "shutdown
 // requested" by an operator signal, so logf must never fire for it.
 func TestNotifyShutdownContext_CallerCancelSuppressesLog(t *testing.T) {
-	logged := make(chan struct{}, 1)
-	logf := func(string, ...any) {
-		select {
-		case logged <- struct{}{}:
-		default:
+	// os/signal starts its process-wide watcher goroutine on the first
+	// Notify; start it here, outside the bubble, so it is not the bubble's.
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, syscall.SIGWINCH)
+	signal.Stop(c)
+
+	synctest.Test(t, func(t *testing.T) {
+		var logged atomic.Int32
+		ctx, cancel := notifyShutdownContext(context.Background(), func(string, ...any) { logged.Add(1) })
+		cancel()
+		<-ctx.Done()
+		// Every goroutine of the bubble has finished or is blocked: the
+		// background goroutine has made its logf decision.
+		synctest.Wait()
+		if n := logged.Load(); n != 0 {
+			t.Fatalf("logf fired %d times for a caller-initiated cancel; stoppedByCaller must suppress it — logf is only for an actual OS signal", n)
 		}
-	}
-
-	ctx, cancel := notifyShutdownContext(context.Background(), logf)
-	cancel()
-	<-ctx.Done()
-
-	select {
-	case <-logged:
-		t.Fatal("logf fired for a caller-initiated cancel; stoppedByCaller must suppress it — logf is only for an actual OS signal")
-	case <-time.After(200 * time.Millisecond):
-		// notifyShutdownContext's background goroutine unblocks the
-		// instant ctx.Done() fires (already true above) and does nothing
-		// else blocking before its logf check, so this window is ample
-		// time for a regression to have logged by now.
-	}
+	})
 }
 
 // cancelAIChildOnSignal gives the command a context derived from its own
@@ -261,9 +238,7 @@ func TestCancelAIChildOnSignal_SetsACancellableContext(t *testing.T) {
 		t.Fatalf("context = %v, want a live one", ctx)
 	}
 	stop()
-	select {
-	case <-ctx.Done():
-	case <-time.After(time.Second):
+	if ctx.Err() == nil {
 		t.Fatal("stop did not cancel the command's context")
 	}
 }

@@ -91,12 +91,12 @@ func TestRoutingIntegrationStrictLeavesDeferredRestartAndRealRecovery(t *testing
 					local := *cfg
 					local.AI.Provider = provider
 					return checkedGenerator(&local)
-				}, providerrouting.GeneratorOptions{Router: router, Timeout: 5 * time.Second})
+				}, providerrouting.GeneratorOptions{Router: router})
 			}
 			sink := &ledgerSink{}
 			llmusage.SetSink(sink)
 			t.Cleanup(func() { llmusage.SetSink(nil) })
-			ctx, cancel := context.WithTimeout(digest.WithSource(context.Background(), "digest.channel_batch"), 10*time.Second)
+			ctx, cancel := context.WithCancel(digest.WithSource(context.Background(), "digest.channel_batch"))
 			defer cancel()
 			database := db.OpenTestDB(t)
 			from := float64(time.Now().Add(-20 * 24 * time.Hour).Unix())
@@ -167,11 +167,7 @@ func TestRoutingIntegrationStrictLeavesDeferredRestartAndRealRecovery(t *testing
 				done <- callErr
 			}()
 			t.Cleanup(func() { cancel(); <-joined })
-			select {
-			case <-gate.entered:
-			case <-ctx.Done():
-				t.Fatal(ctx.Err())
-			}
+			<-gate.entered
 			_, _, _, err = makeGenerator().Generate(ctx, "", "another pending safe batch", "")
 			require.ErrorAs(t, err, &deferred)
 			require.Zero(t, deferred.Attempts, "the competing caller cannot claim the held recovery lease")
