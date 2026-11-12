@@ -131,6 +131,27 @@ final class InboxWaitingSplitTests: XCTestCase {
         }
     }
 
+    /// The older count is the uncapped people count (`PeopleWaitingCounts
+    /// .older`), not the feed's page, which mail can fill.
+    func testWaitingForMeOlderCountIgnoresTheMailCappedFeed() async throws {
+        let pool = try pool()
+        let root = try await pool.write { db -> Int64 in
+            let folders = try InboxFolderFixtures.seed(db)
+            for n in 0..<250 {
+                try self.item(db, 100 + n, trigger: "email_received", created: Self.ago(Self.minute + Double(n)),
+                              sender: "news@example.com")
+            }
+            for n in 0..<3 {
+                try self.item(db, 10 + n, trigger: "mention", created: Self.ago(8 * 24 * 3600 + Double(n)))
+            }
+            return folders.root
+        }
+        let vm = await read(pool, folder: root)
+        let row = try XCTUnwrap(vm.folderList.rows.first { $0.content.kind == .peopleWaiting })
+        XCTAssertEqual(row.content.meta, "3 older")
+        XCTAssertEqual(vm.folderMenu.snapshot.peopleWaiting.older, 3)
+    }
+
     // MARK: - Mail waiting
 
     func testMailWaitingRowAfterFirstRunOnly() async throws {

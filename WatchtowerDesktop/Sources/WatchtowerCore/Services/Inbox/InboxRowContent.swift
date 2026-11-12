@@ -13,7 +13,8 @@ package struct InboxRowPill: Equatable, Sendable {
         case needsYou
         /// Something new to look at (unread tracks).
         case news
-        /// A batch to go through (ideas to judge).
+        /// A batch to go through (ideas to judge); also the neutral tone of a
+        /// count that never waits on the owner (Mail waiting's mail today).
         case batch
     }
 

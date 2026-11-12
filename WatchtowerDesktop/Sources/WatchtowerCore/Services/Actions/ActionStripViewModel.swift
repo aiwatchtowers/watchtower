@@ -185,7 +185,7 @@ package final class ActionStripViewModel {
         _ db: Database, nowUTC: String, disabledFeatures: Set<String> = [], calendar: Calendar = .current
     ) throws -> Int {
         try InboxFolderMenuSnapshot.read(
-            db, nowUTC: nowUTC, disabledFeatures: disabledFeatures, calendar: calendar).badge
+            db, nowUTC: nowUTC, disabledFeatures: disabledFeatures, calendar: calendar, mailSummary: false).badge
     }
 
     /// The counts each folder shows outside its artifacts, by the folder

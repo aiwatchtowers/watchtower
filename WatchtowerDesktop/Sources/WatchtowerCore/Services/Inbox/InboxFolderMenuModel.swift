@@ -34,10 +34,12 @@ package struct InboxFolderMenuSnapshot: Equatable, Sendable {
     package let openActions: Set<Int64>
     /// The `idea-finder` built-in is indexed (`InboxFolderQueries.ideaFinderPresent`).
     package let ideaFinderPresent: Bool
-    /// Open people items from today (`WaitingQueries.peopleCounts` since
-    /// `InboxToday`'s local midnight; `InboxPeopleRule`: mail never counts),
-    /// read or not; 0 while Waiting for me is turned off.
-    package let peopleWaitingToday: Int
+    /// The open people items by section (`WaitingQueries.peopleCounts`,
+    /// uncapped; today since `InboxToday`'s local midnight; `InboxPeopleRule`:
+    /// mail never counts), read or not; zero while Waiting for me is turned off.
+    package let peopleWaiting: PeopleWaitingCounts
+    /// People waiting today: the badge's and Waiting for me's pill term.
+    package var peopleWaitingToday: Int { peopleWaiting.today }
     /// Needs approval's count: its open approvals (`ActionStripViewModel
     /// .approvalCount`), the same terms in the root on a tree without it.
     package let approvalsCount: Int
@@ -60,7 +62,7 @@ package struct InboxFolderMenuSnapshot: Equatable, Sendable {
         approvalArtifacts: [String: AutomationOutputCard] = [:],
         openActions: Set<Int64> = [],
         ideaFinderPresent: Bool = false,
-        peopleWaitingToday: Int = 0,
+        peopleWaiting: PeopleWaitingCounts = .zero,
         approvalsCount: Int = 0
     ) {
         self.tree = tree
@@ -76,7 +78,7 @@ package struct InboxFolderMenuSnapshot: Equatable, Sendable {
         self.approvalArtifacts = approvalArtifacts
         self.openActions = openActions
         self.ideaFinderPresent = ideaFinderPresent
-        self.peopleWaitingToday = peopleWaitingToday
+        self.peopleWaiting = peopleWaiting
         self.approvalsCount = approvalsCount
     }
 
@@ -85,9 +87,15 @@ package struct InboxFolderMenuSnapshot: Equatable, Sendable {
     /// feature ids the owner turned off (attention detection off hides
     /// Waiting for me and its stand-in, `InboxFolderQueries.waitingForMe`).
     /// `calendar` is the zone "today" is in (`InboxToday`); the app passes
-    /// `.autoupdatingCurrent` so a time-zone change moves it.
+    /// `.autoupdatingCurrent` so a time-zone change moves it. `mailSummary`
+    /// false skips Mail waiting's row lines (`mailSummary` stays empty): the
+    /// badge never draws a row.
     package static func read(
-        _ db: Database, nowUTC: String, disabledFeatures: Set<String> = [], calendar: Calendar = .current
+        _ db: Database,
+        nowUTC: String,
+        disabledFeatures: Set<String> = [],
+        calendar: Calendar = .current,
+        mailSummary readsMailSummary: Bool = true
     ) throws -> Self {
         let now = AutomationDates.parse(nowUTC) ?? Date()
         let tree = try InboxFolderQueries.tree(db)
@@ -113,20 +121,20 @@ package struct InboxFolderMenuSnapshot: Equatable, Sendable {
         let refState = try InboxRefState.read(
             db, refs: Array(refs.values.joined()) + approvalRefs, nowUTC: nowUTC)
         let startOfToday = InboxToday.sinceUTC(now: now, calendar: calendar)
-        let peopleWaitingToday = waitingForMe.turnedOff ? 0
-            : try WaitingQueries.peopleCounts(db, nowUTC: nowUTC, startOfTodayUTC: startOfToday).today
+        let peopleWaiting = waitingForMe.turnedOff ? .zero
+            : try WaitingQueries.peopleCounts(db, nowUTC: nowUTC, startOfTodayUTC: startOfToday)
         // Mail waiting's row lines, read only while its card is listed.
         let mailShown = artifacts.values.joined().contains { $0.automationID == mailWaiting.automationID }
-        let mailSummary = mailShown
+        let mailSummary = readsMailSummary && mailShown
             ? try WaitingQueries.mailSenders(db, nowUTC: nowUTC, startOfTodayUTC: startOfToday, limit: 0) : .empty
         let legacy = try ActionStripViewModel.legacyCounts(
             db, nowUTC: nowUTC, today: HomeFeedBuilder.dayString(now, calendar: calendar), tree: tree,
-            peopleWaitingToday: peopleWaitingToday)
+            peopleWaitingToday: peopleWaiting.today)
         // Needs approval's legacy count is its approvals alone; on a tree
         // without the folder they sit in the root's sum, so read them apart.
         let approvalsCount = try tree.approvals.map { legacy[$0.id] ?? 0 }
             ?? ActionStripViewModel.approvalCount(db, nowUTC: nowUTC)
-        // Waiting for me's artifacts list the people `peopleWaitingToday`
+        // Waiting for me's artifacts list the people `peopleWaiting.today`
         // already counts; Mail waiting's never count (mail never does).
         let counts = InboxFolderCounts.counts(
             tree: tree, artifacts: artifacts, refs: refs, refState: refState, legacy: legacy,
@@ -137,7 +145,7 @@ package struct InboxFolderMenuSnapshot: Equatable, Sendable {
                     mailSummary: mailSummary, needsApproval: needsApproval,
                     approvalArtifacts: approvalArtifacts, openActions: openActions,
                     ideaFinderPresent: try InboxFolderQueries.ideaFinderPresent(db),
-                    peopleWaitingToday: peopleWaitingToday, approvalsCount: approvalsCount)
+                    peopleWaiting: peopleWaiting, approvalsCount: approvalsCount)
     }
 
     /// The ids of the actions that wait on the owner; none on a database

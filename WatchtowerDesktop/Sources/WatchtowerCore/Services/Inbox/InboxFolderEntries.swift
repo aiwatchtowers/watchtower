@@ -284,9 +284,11 @@ package enum InboxFolderEntries {
     }
 
     /// Waiting for me's row (its artifact, or the Messages entry standing in
-    /// for it): the newest open people item from today, the older ones'
-    /// count, the people waiting today on the pill. Mail is never one of
-    /// them (`InboxPeopleRule`), though the stand-in's list still lists it.
+    /// for it): the newest open people item from today, the Older section's
+    /// count (7 × 24 h or more), the people waiting today on the pill. The
+    /// counts are the uncapped `PeopleWaitingCounts`: the feed's page is
+    /// capped and mail can fill it. Mail is never one of them
+    /// (`InboxPeopleRule`), though the stand-in's list still lists it.
     private static func peopleWaiting(title: String, _ inputs: Inputs) -> InboxRowContent {
         let messages = inputs.feed.messages
             .filter { InboxPeopleRule.isPeople(trigger: $0.item.triggerType) }
@@ -294,14 +296,15 @@ package enum InboxFolderEntries {
         let today = messages.filter {
             InboxToday.isFromToday(createdAt: $0.stamp, mentionedAt: nil, now: inputs.now, calendar: inputs.calendar)
         }
+        let people = inputs.folders.peopleWaitingToday
         let preview: String
         if let first = today.first {
-            preview = messageLine(first) + (today.count > 1 ? " · and \(today.count - 1) more today" : "")
+            let more = max(people, today.count) - 1
+            preview = messageLine(first) + (more > 0 ? " · and \(more) more today" : "")
         } else {
             preview = messages.first.map(messageLine) ?? "Nothing waits on you"
         }
-        let older = messages.count - today.count
-        let people = inputs.folders.peopleWaitingToday
+        let older = inputs.folders.peopleWaiting.older
         return InboxRowContent(
             kind: .peopleWaiting, title: title, preview: preview, meta: older > 0 ? "\(older) older" : "",
             time: messages.first.map { time($0.stamp, inputs) } ?? "",

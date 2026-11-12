@@ -111,14 +111,15 @@ final class InboxRowContentTests: XCTestCase {
         let waiting = try card(7, automation: 3, title: "Waiting for me")
         let folders = InboxFolderMenuSnapshot(
             tree: .rootOnly, cards: [0: [waiting]],
-            waitingForMe: WaitingForMeState(automationID: 3, messagesStandIn: false), peopleWaitingToday: 2)
+            waitingForMe: WaitingForMeState(automationID: 3, messagesStandIn: false),
+            peopleWaiting: PeopleWaitingCounts(open: 5, today: 2, week: 2, older: 1))
 
         let row = InboxFolderEntries.content(.artifact(waiting), try inputs(feed, folders))
 
         XCTAssertEqual(row.kind, .peopleWaiting)
         XCTAssertEqual(row.title, "Waiting for me")
         XCTAssertEqual(row.preview, "Colleague B in a DM: “Will you approve the budget?” · and 1 more today")
-        XCTAssertEqual(row.meta, "3 older")
+        XCTAssertEqual(row.meta, "1 older", "the Older section (7 × 24 h or more), from the uncapped counts")
         XCTAssertEqual(row.time, "07:50")
         XCTAssertEqual(row.pill, InboxRowPill(count: 2, tone: .needsYou))
         XCTAssertTrue(row.isUnread)
@@ -130,7 +131,8 @@ final class InboxRowContentTests: XCTestCase {
             try message(2, who: "Colleague C", whereText: "#eng", snippet: "Ship it?", at: "2026-11-10T12:00:00Z"),
             try message(3, who: "Colleague D", snippet: "older", at: "2026-11-09T12:00:00Z")
         ])
-        let row = InboxFolderEntries.content(.legacyMessages, try inputs(feed))
+        let row = InboxFolderEntries.content(.legacyMessages, try inputs(feed, InboxFolderMenuSnapshot(
+            tree: .rootOnly, peopleWaiting: PeopleWaitingCounts(open: 4, today: 0, week: 2, older: 2))))
 
         XCTAssertEqual(row.title, "Messages", "the stand-in")
         XCTAssertEqual(row.preview, "Colleague C in #eng: “Ship it?”", "the newest open one, no suffix")
