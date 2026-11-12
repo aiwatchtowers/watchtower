@@ -202,6 +202,10 @@ private struct TerminalSessionPane<NotStarted: View>: View {
             case nil:
                 notStarted().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+            if let session, center.extraHostRuns[session.id] != nil {
+                Divider()
+                OtherHostRunBar { await center.stopLiveHostRuns(of: session.id) }
+            }
         }
     }
 
@@ -232,14 +236,58 @@ private struct HostDisconnectedBar: View {
             if link == .reconnecting {
                 ProgressView().controlSize(.small)
             }
-            Text(link == .reconnecting
-                ? "Disconnected from the session host — reconnecting…"
-                : "Disconnected from the session host. The session may still be running.")
-                .font(.caption).foregroundStyle(.secondary)
+            Text(text)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             Spacer()
             Button("Reconnect", action: reconnect)
                 .buttonStyle(.kitSecondary)
                 .controlSize(.small)
+        }
+        .padding(Spacing.regular)
+    }
+
+    private var text: String {
+        switch link {
+        case .connected, .reconnecting:
+            "Disconnected from the session host — reconnecting…"
+        case let .lost(reason) where reason.isEmpty:
+            "Disconnected from the session host. The session may still be running."
+        case let .lost(reason):
+            "Disconnected from the session host (\(reason)). The session may still be running."
+        }
+    }
+}
+
+/// Under a session the session host runs another live run of (#1086: a
+/// Restart before the fix could launch one beside a lost run): it shares
+/// the session's transcript and folder, so the owner can stop it. Stop
+/// leaves the shown run alone; a failure says why and keeps the bar.
+private struct OtherHostRunBar: View {
+    /// Stops the other runs; the reason when it could not.
+    let stop: () async -> String?
+    @State private var failure: String?
+    @State private var stopping = false
+
+    var body: some View {
+        HStack(spacing: Spacing.regular) {
+            Text(failure.map { "Could not stop the other run: \($0)" }
+                ?? "Another run of this session is still running in the session host.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer()
+            Button("Stop") {
+                stopping = true
+                Task {
+                    failure = await stop()
+                    stopping = false
+                }
+            }
+            .buttonStyle(.kitSecondary)
+            .controlSize(.small)
+            .disabled(stopping)
         }
         .padding(Spacing.regular)
     }

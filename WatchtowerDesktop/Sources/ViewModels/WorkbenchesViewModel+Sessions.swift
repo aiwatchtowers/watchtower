@@ -606,8 +606,12 @@ extension WorkbenchesViewModel {
             )
         }
         resumeFailed.remove(row.id)
-        await activate(row, fresh: false, prompt: nil, placement: placement, ticket: ticket)
-        if checkLaunch { try launchCheck(row) }
+        let refusal = await activate(row, fresh: false, prompt: nil, placement: placement, ticket: ticket)
+        if checkLaunch {
+            // The row may still read as it was before: nothing launched.
+            if let refusal { throw TargetStartError.failed(refusal) }
+            try launchCheck(row)
+        }
         return row
     }
 
@@ -629,6 +633,13 @@ extension WorkbenchesViewModel {
         clearSwitchError(projectID: session.projectID, ticket: ticket)
         // A running process would keep its old id: `start` skips a running row.
         await terminalCenter?.close(sessionID: session.id)
+        // A live run the host still holds for the row would run beside the
+        // fresh one (#1086): it is stopped, or nothing starts.
+        if let reason = await terminalCenter?.stopLiveHostRuns(of: session.id) {
+            reportSwitchError("Could not stop this session's earlier run in the session host, so nothing was started: \(reason)",
+                              projectID: session.projectID, ticket: ticket)
+            return
+        }
         let uuid = Self.newSessionID(for: agent)
         let row: TerminalSession
         do {
@@ -1299,17 +1310,20 @@ extension WorkbenchesViewModel {
     /// and on screen. A background start (`ticket` nil, `.background`) is
     /// never the latest switch: it only starts its session and refreshes the
     /// list. `setup`: the worktree setup command, for a placed row's first
-    /// launch only.
+    /// launch only. Returns why nothing was launched when the session host
+    /// could not say whether the row still runs (#1086), else nil.
+    @discardableResult
     private func activate(
         _ row: TerminalSession, fresh: Bool, prompt: String?, placement: Placement, ticket: Int?, setup: String? = nil
-    ) async {
+    ) async -> String? {
         // A row the host still runs is adopted at launch, never relaunched
         // beside it; a launch also waits for the host to take it.
         await hostReattach?.value
         let isLatest = ticket.map { isLatestSwitch($0, projectID: row.projectID) } ?? false
         let previous = terminalCenter?.focusOrder.last
         if ticket != nil { notYetTitledStreak[row.id] = nil } // the owner is back in it: ask again
-        let launches = fresh ? true : await adoptsNoLiveHostRun(row, isLatest: isLatest, ticket: ticket)
+        let gate: TerminalCenter.LiveHostRun = fresh ? .none : await liveHostRunGate(row, ticket: ticket)
+        let launches = gate == .none
         let restorable = (!launches || refusedAsUnsupported(row)) ? false : (fresh ? true : await restoreWorktree(row))
         if restorable, let center = terminalCenter,
            let plan = await rowToLaunch(row, fresh: fresh, center: center, ticket: ticket) {
@@ -1336,25 +1350,28 @@ extension WorkbenchesViewModel {
         placeInLayout(row, fresh: fresh, placement: placement, ticket: ticket)
         await loadSessions(projectID: row.projectID)
         if isLatest, let previous, previous != row.id { await refreshTitle(sessionID: previous) }
+        if case let .unknown(message) = gate { return message }
+        return nil
     }
 
-    /// Whether a relaunch of `row` may go ahead (#1086): not when the
-    /// session host still holds a live run of the row — the pane lost it
-    /// and read it as ended — which is adopted instead (and focused for the
-    /// latest switch), nor when the host could not say (the error is
-    /// reported; nothing starts beside an agent that may still run).
-    private func adoptsNoLiveHostRun(_ row: TerminalSession, isLatest: Bool, ticket: Int?) async -> Bool {
-        guard let center = terminalCenter else { return true }
+    /// Whether a relaunch of `row` may go ahead (#1086): `.none` when it
+    /// may. Not when the session host still holds a live run of the row —
+    /// the pane lost it and read it as ended — which is adopted instead
+    /// (and focused when its switch is still the latest after the host's
+    /// answer), nor when the host could not say (`.unknown` with the
+    /// message, reported; nothing starts beside an agent that may still run).
+    private func liveHostRunGate(_ row: TerminalSession, ticket: Int?) async -> TerminalCenter.LiveHostRun {
+        guard let center = terminalCenter else { return .none }
         switch await center.adoptLiveHostRun(row) {
         case .none:
-            return true
+            return .none
         case .shown:
-            if isLatest { center.focus(row.id) }
-            return false
+            if let ticket, isLatestSwitch(ticket, projectID: row.projectID) { center.focus(row.id) }
+            return .shown
         case let .unknown(reason):
-            reportStartError("Could not ask the session host whether this session still runs, so nothing was started: \(reason)",
-                             projectID: row.projectID, ticket: ticket)
-            return false
+            let message = "Could not ask the session host whether this session still runs, so nothing was started: \(reason)"
+            reportStartError(message, projectID: row.projectID, ticket: ticket)
+            return .unknown(message)
         }
     }
 

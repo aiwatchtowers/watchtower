@@ -64,9 +64,11 @@ final class HostedTerminalSession: TerminalSessionProcess {
         /// The connection was lost while the run may still be going: the
         /// session retries on its own with a growing pause.
         case reconnecting
-        /// The automatic retries stopped (`reconnectGiveUp`) without the
-        /// host saying the run ended: only the owner's `reconnectNow`.
-        case lost
+        /// The automatic retries stopped without the host saying the run
+        /// ended — `reconnectGiveUp` passed, or the host refused the
+        /// reattach the same way `refusalsBeforeLost` times — with the
+        /// last reason: only the owner's `reconnectNow`.
+        case lost(String)
     }
 
     private(set) var hostLink: HostLink = .connected {
@@ -77,16 +79,43 @@ final class HostedTerminalSession: TerminalSessionProcess {
     var onHostLinkChange: ((HostLink) -> Void)?
     /// Failed reconnects in the current outage: the next one's pause.
     private var failedReconnects = 0
-    /// The pauses taken in the current outage: past `reconnectGiveUp` the
-    /// automatic retries stop.
-    private var reconnectWaited: Duration = .zero
-    /// Why the connection was lost, shown when the host no longer has the run.
+    /// When the current outage began; nil when there was none, or the
+    /// connection then stayed up `stableAfter`. A drop sooner after the
+    /// reattach continues the outage, so a run dropped again and again
+    /// under load is not replayed in a tight loop.
+    private var outageStart: ContinuousClock.Instant?
+    /// When the host last answered Launched or Attached.
+    private var attachedAt: ContinuousClock.Instant?
+    /// The latest reason the run could not be reached, shown when the host
+    /// no longer has the run and on the `.lost` bar.
     private var lostReason = ""
+    /// The host's last refusal of a reattach, and how many times in a row.
+    private var lastRefusal = ""
+    private var refusals = 0
+    /// The launch counter the host last reported for the run (Launched or
+    /// Attached); kept while disconnected, so a Stop still names it.
+    private var heldLaunch: UInt64 = 0
     /// The longest pause between two reconnects.
     static let maxReconnectDelay: Duration = .seconds(10)
-    /// How long the automatic reconnects go on (their pauses summed); after
-    /// it the pane waits for the owner's Reconnect and never reports an exit.
+    /// How long the automatic reconnects go on (wall time from the
+    /// outage's start); after it the pane waits for the owner's Reconnect
+    /// and never reports an exit.
     static let reconnectGiveUp: Duration = .seconds(300)
+    /// How long a reattached connection stays up before a new drop starts
+    /// a new outage with no pause.
+    static let stableAfter: Duration = .seconds(30)
+    /// The same refusal of a reattach this many times in a row stops the
+    /// automatic retries (`.lost` with the host's message).
+    static let refusalsBeforeLost = 3
+    /// How long a disconnected run the app let go of is looked up for its
+    /// end (`settleDisconnected`).
+    static let settleWait: Duration = .seconds(10)
+    /// After a disconnected run was stopped or let go of: the look-ups
+    /// until the host says it ended (tests await it).
+    private(set) var settling: Task<Void, Never>?
+    /// Seams for tests: the clock, and the pauses between reconnects.
+    var now: () -> ContinuousClock.Instant = { .now }
+    var reconnectSleep: (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     /// The connect of the current run (tests await it).
     private(set) var connecting: Task<Void, Never>?
     /// The look-up after a dropped connection (tests await it).
@@ -180,7 +209,9 @@ final class HostedTerminalSession: TerminalSessionProcess {
     private func newRun() {
         recovering?.cancel()
         recovering = nil
+        settling = nil
         hostHeld = false
+        heldLaunch = 0
         endOutage()
     }
 
@@ -198,9 +229,16 @@ final class HostedTerminalSession: TerminalSessionProcess {
     /// Drops the view from its host. A run still going keeps its connection
     /// so its exit is still forgotten in the host; one whose pid the host
     /// has not reported yet (so `TerminalCenter.close` could not signal it)
-    /// is hung up once it does.
+    /// is hung up once it does. A disconnected run (#1086) stops
+    /// reconnecting and is looked up until it ended (`settleDisconnected`).
     func detach() {
         terminal.removeFromSuperview()
+        if !exited, hostHeld, !bound, let key {
+            // Disconnected: no more reconnects; the run is looked up until
+            // it ended, then forgotten.
+            settleDisconnected(key)
+            return
+        }
         if !exited, pid == 0 { hangUpOnBind = true }
     }
 
@@ -259,19 +297,42 @@ final class HostedTerminalSession: TerminalSessionProcess {
         }
     }
 
-    /// Asks the host to stop the current run (`SessionHostClient.stop`);
-    /// its Exit then carries `requested`. False when there is no run the
-    /// host reported, or the host could not take the request: the caller
-    /// signals the process group itself.
+    /// Asks the host to stop the current run (`SessionHostClient.stop`,
+    /// on the control connection: it names the run and its launch, so the
+    /// host checks it is still that run); its Exit then carries
+    /// `requested`. A disconnected run (#1086) is stopped the same way and
+    /// then looked up until it ended (`settleDisconnected`), since no Exit
+    /// comes on a closed connection. False when there is no run the host
+    /// reported, or the host could not take the request: the caller
+    /// signals the process group itself (`signalablePID`).
     func requestStop() async -> Bool {
-        guard client.speaksV2, let key, bound, !exited, launch > 0 else { return false }
+        guard client.speaksV2, let key, hostHeld, !exited, heldLaunch > 0 else { return false }
         do {
-            try await client.stop(row: key.row, run: key.run, launch: launch)
-            return true
+            try await client.stop(row: key.row, run: key.run, launch: heldLaunch)
         } catch {
             Self.logger.error("stop row \(key.row): \(String(describing: error), privacy: .public)")
             return false
         }
+        if !bound, !exited, self.key == key {
+            exitRequested = true
+            settleDisconnected(key)
+        }
+        return true
+    }
+
+    /// The pid the app may signal for the current run: the one the host
+    /// reported on the live connection; for a disconnected run only when
+    /// the host still lists it running with that pid (it may have reaped
+    /// the child and the pid may belong to another process now), else 0 —
+    /// also when the host cannot be asked.
+    func signalablePID() async -> pid_t {
+        guard !exited, pid > 0 else { return 0 }
+        guard hostHeld, !bound, let key else { return pid }
+        let expected = pid
+        guard let sessions = try? await client.list(),
+              let info = sessions.first(where: { $0.row == key.row && $0.run == key.run }),
+              !info.exited, pid_t(info.pid) == expected else { return 0 }
+        return expected
     }
 
     /// How often `waitForExit` looks.
@@ -354,11 +415,15 @@ final class HostedTerminalSession: TerminalSessionProcess {
             guard let info = try? frame.decoded(SessionHostSessionInfo.self) else { return }
             pid = info.exited ? 0 : pid_t(info.pid)
             launch = info.launch
+            heldLaunch = info.launch
             isHostWatched = info.watched
             bound = true
             hostHeld = true
             neverStarted = false
-            endOutage()
+            attachedAt = now()
+            lastRefusal = ""
+            refusals = 0
+            hostLink = .connected
             if hangUpOnBind, pid > 0 {
                 hangUpOnBind = false
                 client.signalGroup(pid, SIGHUP)
@@ -385,8 +450,7 @@ final class HostedTerminalSession: TerminalSessionProcess {
             if bound, message == SessionHostErrorMessage.takenOver {
                 lostToTakeover()
             } else if !bound, hostHeld {
-                // A reattach refused: the host's list says what became of the run.
-                runLost(transport, reason: message)
+                reattachRefused(message, on: transport)
             } else if !bound {
                 // Before the host took the run, an error is the launch or
                 // attach failing: the run is over.
@@ -459,22 +523,44 @@ final class HostedTerminalSession: TerminalSessionProcess {
             return
         }
         lostReason = reason
-        if hostLink == .connected {
-            hostLink = .reconnecting
-        } else {
+        if hostLink != .connected {
             failedReconnects += 1 // a reattach of this outage failed
+        } else if outageStart != nil, let attachedAt, now() - attachedAt < Self.stableAfter {
+            failedReconnects += 1 // dropped again soon after the reattach: the same outage
+        } else {
+            outageStart = now()
+            failedReconnects = 0
         }
+        hostLink = .reconnecting
         lookUp(key)
+    }
+
+    /// The host refused a reattach (an Error before Attached): its list says
+    /// what became of the run. The same refusal `refusalsBeforeLost` times in
+    /// a row stops the retries with that message on the pane.
+    private func reattachRefused(_ message: String, on transport: any SessionHostTransport) {
+        refusals = message == lastRefusal ? refusals + 1 : 1
+        lastRefusal = message
+        guard refusals >= Self.refusalsBeforeLost else {
+            runLost(transport, reason: message)
+            return
+        }
+        Self.logger.error("the session host refused the reattach \(self.refusals) times: \(message, privacy: .public)")
+        closeTransport()
+        lostReason = message
+        hostLink = .lost(message)
     }
 
     /// The owner's Reconnect: a disconnected run is looked up now, and the
     /// automatic retries start over. Nothing while connected, or while a
     /// reattach is under way.
     func reconnectNow() {
-        guard hostLink != .connected, !exited, transport == nil, let key else { return }
+        guard hostLink != .connected, !exited, transport == nil, settling == nil, let key else { return }
         recovering?.cancel()
         failedReconnects = 0
-        reconnectWaited = .zero
+        outageStart = now()
+        lastRefusal = ""
+        refusals = 0
         hostLink = .reconnecting
         lookUp(key)
     }
@@ -489,18 +575,17 @@ final class HostedTerminalSession: TerminalSessionProcess {
 
     /// After the pause for this outage's failures, asks the host — started
     /// again when none answers — for the run. A host that cannot be reached
-    /// or does not answer is retried later; past `reconnectGiveUp` the pane
-    /// stays `.lost` until the owner's Reconnect.
+    /// or does not answer is retried later; `reconnectGiveUp` after the
+    /// outage began the pane stays `.lost` until the owner's Reconnect.
     private func lookUp(_ key: SessionHostAttachRequest) {
-        let delay = Self.reconnectDelay(after: failedReconnects)
-        guard reconnectWaited + delay <= Self.reconnectGiveUp else {
+        if let start = outageStart, now() - start >= Self.reconnectGiveUp {
             Self.logger.error("row \(key.row): the session host did not answer; waiting for Reconnect")
-            hostLink = .lost
+            hostLink = .lost(lostReason)
             return
         }
-        reconnectWaited += delay
-        recovering = Task { [weak self, client, sleep] in
-            if delay > .zero { await sleep(delay) }
+        let delay = Self.reconnectDelay(after: failedReconnects)
+        recovering = Task { [weak self, client, reconnectSleep] in
+            if delay > .zero { await reconnectSleep(delay) }
             guard let self, isRecovering(key) else { return }
             let sessions: [SessionHostSessionInfo]
             do {
@@ -509,6 +594,7 @@ final class HostedTerminalSession: TerminalSessionProcess {
             } catch {
                 guard isRecovering(key) else { return }
                 Self.logger.error("row \(key.row): could not ask the session host: \(String(describing: error), privacy: .public)")
+                lostReason = error.localizedDescription
                 failedReconnects += 1
                 lookUp(key)
                 return
@@ -536,8 +622,48 @@ final class HostedTerminalSession: TerminalSessionProcess {
     /// The outage, if any, is over: connected, counters reset.
     private func endOutage() {
         failedReconnects = 0
-        reconnectWaited = .zero
+        outageStart = nil
+        attachedAt = nil
+        lastRefusal = ""
+        refusals = 0
         hostLink = .connected
+    }
+
+    /// A disconnected run the app stopped or let go of: no more reconnects
+    /// or attaches. The host is asked for it every `exitPollStep` for up to
+    /// `settleWait`: once it lists the run exited the exit is reported and
+    /// the run forgotten in the host (so the next launch does not adopt it
+    /// as a natural exit); a run it no longer lists is over. Past the wait
+    /// the session lets go of it (logged).
+    private func settleDisconnected(_ key: SessionHostAttachRequest) {
+        recovering?.cancel()
+        recovering = nil
+        closeTransport()
+        endOutage()
+        guard settling == nil else { return }
+        settling = Task { [client, sleep] in
+            var waited: Duration = .zero
+            while !exited, self.key == key {
+                if let sessions = try? await client.list(), !exited, self.key == key {
+                    guard let info = sessions.first(where: { $0.row == key.row && $0.run == key.run }) else {
+                        finishRun(code: nil, forget: false)
+                        return
+                    }
+                    if info.exited {
+                        finishRun(code: info.code.map { Int32(clamping: $0) }, forget: true)
+                        return
+                    }
+                }
+                guard waited < Self.settleWait else {
+                    Self.logger.error("row \(key.row): the stopped run did not end in the session host; letting go of it")
+                    exited = true
+                    keepAlive = nil
+                    return
+                }
+                await sleep(Self.exitPollStep)
+                waited += Self.exitPollStep
+            }
+        }
     }
 
     /// Ends the run; the session may be released by the last line.

@@ -49,6 +49,10 @@ protocol TerminalSessionProcess: AnyObject {
     func waitForExit(timeout: Duration) async -> Bool
     /// Tells the host whether a permission dialog is up in the run.
     @discardableResult func sendPromptHint(dialog: Bool) -> Bool
+    /// The pid a close may signal: 0 when the run's pid can no longer be
+    /// trusted (a disconnected hosted run the host does not list running
+    /// with it; #1086).
+    func signalablePID() async -> pid_t
     /// The owner's own input reached the session (a keystroke, a paste),
     /// with its bytes — never `sendInput` or the terminal's replies (focus
     /// and mouse reports). Main thread.
@@ -101,6 +105,7 @@ extension TerminalSessionProcess {
     func requestStop() async -> Bool { false }
     func waitForExit(timeout: Duration) async -> Bool { true }
     func sendPromptHint(dialog: Bool) -> Bool { false }
+    func signalablePID() async -> pid_t { pid }
 
     func setPathLinkHandler(folder: @escaping () -> String, open: @escaping (TerminalPathLinks.Location) -> Void) {}
     func setAskLinkHandler(lookUp: @escaping (Int64) async -> OwnerAsk?, open: @escaping (Int64) -> Void) {}
@@ -162,6 +167,12 @@ final class TerminalCenter {
     /// with Reconnect, and no Restart. The state stays `.running` — the run
     /// is not over until the host says so.
     private(set) var hostLinks: [Int64: HostedTerminalSession.HostLink] = [:]
+    /// Live runs the host holds for a row beside the one the row shows
+    /// (#1086: a Restart before this fix could launch one beside a lost
+    /// run), by row: never signalled by a reattach, counted live
+    /// (`liveIDs`), stopped by the pane's Stop, a close and Start fresh
+    /// (`stopLiveHostRuns`), left running by an update's quit.
+    private(set) var extraHostRuns: [Int64: [SessionHostSessionInfo]] = [:]
     /// Sessions whose last prompt went to the clipboard: the terminal pane
     /// shows the ⌘V hint until the owner dismisses it or the next delivery.
     private(set) var clipboardHints: Set<Int64> = []
@@ -385,7 +396,14 @@ final class TerminalCenter {
     }
 
     var liveIDs: Set<Int64> {
-        Set(states.compactMap { $0.value == .running ? $0.key : nil })
+        Set(states.compactMap { $0.value == .running ? $0.key : nil }).union(extraHostRuns.keys)
+    }
+
+    /// Whether a session host client was begun, answering or not.
+    var hasSessionHostClient: Bool { (sessionHost ?? sessionHostClient) != nil }
+
+    func setExtraHostRuns(_ runs: [SessionHostSessionInfo], row: Int64) {
+        extraHostRuns[row] = runs.isEmpty ? nil : runs
     }
 
     /// The launch's reattach of the session host's runs is done (or there
@@ -1234,7 +1252,8 @@ final class TerminalCenter {
     /// A running run of a row that still exists is never signalled
     /// (#1086): one the row does not show — an older run beside the adopted
     /// one, or one beside the run the row already shows — may be an agent
-    /// still at work, so it is only logged and left to the host. Runs this
+    /// still at work, so it is kept in `extraHostRuns` (replaced by each
+    /// call) for the owner to stop. Runs this
     /// center already holds are left to their session. Safe to call again:
     /// a second call finds its own runs held.
     func reattach(_ listed: [SessionHostSessionInfo], rows existing: [Int64: TerminalSession]) async {
@@ -1245,6 +1264,7 @@ final class TerminalCenter {
                 && (processes[info.row] as? HostedTerminalSession)?.key != SessionHostAttachRequest(row: info.row, run: info.run)
         }
         var strays: [SessionHostSessionInfo] = []
+        var extras: [Int64: [SessionHostSessionInfo]] = [:]
         let running = Dictionary(grouping: unheld.filter { !$0.exited }, by: \.row)
         for (row, runs) in running {
             guard let session = existing[row] else {
@@ -1256,11 +1276,13 @@ final class TerminalCenter {
                 adopt(session, info: newest)
                 newestFirst.removeFirst()
             }
-            for info in newestFirst {
-                NSLog("TerminalCenter: session %lld has another live hosted run %@ (pid %ld): left running",
-                      row, info.run, info.pid)
+            if !newestFirst.isEmpty {
+                NSLog("TerminalCenter: session %lld has %ld other live hosted runs: kept for the owner to stop",
+                      row, newestFirst.count)
+                extras[row] = newestFirst
             }
         }
+        extraHostRuns = extras
         let exited = Dictionary(grouping: unheld.filter(\.exited), by: \.row)
         var shown: [Int64: String] = [:] // row → the exited run attached
         for (row, runs) in exited {
@@ -1289,10 +1311,10 @@ final class TerminalCenter {
     /// to reap the child, so the host accepts its forget.
     static let reapPolls = 10
 
-    /// Stops a hosted run nothing here shows — its row is gone, or another
-    /// run of the row was adopted — the way `close` stops a session, then
-    /// forgets it in the host.
-    private func stopStray(_ info: SessionHostSessionInfo, host: SessionHostClient) async {
+    /// Stops a hosted run nothing here shows — its row is gone, or the
+    /// owner stopped a row's other run (`stopLiveHostRuns`) — the way
+    /// `close` stops a session, then forgets it in the host.
+    func stopStray(_ info: SessionHostSessionInfo, host: SessionHostClient) async {
         let pid = pid_t(info.pid)
         if pid > 0 {
             signaller.signal(pid, SIGHUP)
@@ -1390,38 +1412,38 @@ final class TerminalCenter {
     /// then a kill after `killGrace` while it is still alive. Either way its
     /// exit is not the session's own (no PROJ-18 cleanup).
     func close(sessionID: Int64) async {
+        // A disconnected run's own stop may not reach it: the host's list
+        // is asked again below, like for the row's other runs (#1086).
+        let wasDisconnected = hostLinks[sessionID] != nil
         guard let process = processes.removeValue(forKey: sessionID) else {
+            if extraHostRuns[sessionID] != nil { _ = await stopLiveHostRuns(of: sessionID) }
             forget(sessionID)
             return
         }
-        let pid = process.pid
         if states[sessionID] == .running, process.isHosted, await process.requestStop() {
             // The host stops it; the close returns once the run is gone, so
             // nothing after it (a cleanup plan) runs beside a live agent.
-            if !(await process.waitForExit(timeout: Self.hostStopWait)), pid > 0 {
-                signaller.signal(pid, SIGKILL)
+            if !(await process.waitForExit(timeout: Self.hostStopWait)) {
+                let pid = await process.signalablePID()
+                if pid > 0 { signaller.signal(pid, SIGKILL) }
             }
-        } else if pid > 0, states[sessionID] == .running {
-            signaller.signal(pid, SIGHUP)
-            var waited: Duration = .zero
-            while waited < Self.killGrace, isRunning(sessionID, pid) {
-                await signaller.sleep(Self.pollStep)
-                waited += Self.pollStep
-            }
-            if isRunning(sessionID, pid) { signaller.signal(pid, SIGKILL) }
+        } else if states[sessionID] == .running {
+            await hangUp(process, sessionID: sessionID)
         }
         process.onExit = nil
         process.onOwnerInput = nil
         process.onOwnerFocus = nil
         process.onDeliveryEvent = nil
         process.detach()
+        // The row's other live runs go with it (#1086).
+        if wasDisconnected || extraHostRuns[sessionID] != nil { _ = await stopLiveHostRuns(of: sessionID) }
         forget(sessionID)
     }
 
     /// Closes every matching session at once, so the wait is one grace, not
     /// N — the quit path (all) and project delete (that project's ids).
     func closeAll(where predicate: (Int64) -> Bool = { _ in true }) async {
-        let ids = Set(processes.keys).union(states.keys).union(pendingLaunches.keys).filter(predicate)
+        let ids = Set(processes.keys).union(states.keys).union(pendingLaunches.keys).union(extraHostRuns.keys).filter(predicate)
         await withTaskGroup(of: Void.self) { group in
             for id in ids {
                 group.addTask { @MainActor in await self.close(sessionID: id) }
@@ -1435,6 +1457,8 @@ final class TerminalCenter {
     /// it is never signalled — for the next launch to reattach; any other
     /// process is closed as `closeAll` closes it.
     func detachAll() async {
+        // A row's other live runs keep running too (#1086).
+        extraHostRuns = [:]
         for (id, process) in processes {
             guard let hosted = process as? HostedTerminalSession else { continue }
             processes[id] = nil
@@ -1476,7 +1500,22 @@ final class TerminalCenter {
         pasteHints.remove(sessionID)
         answerHints[sessionID] = nil
         hostLinks[sessionID] = nil
+        extraHostRuns[sessionID] = nil
         focusOrder.removeAll { $0 == sessionID }
+    }
+
+    /// The app's own stop: a hang-up of the pid it may signal, then a kill
+    /// after `killGrace` while it is still alive.
+    private func hangUp(_ process: any TerminalSessionProcess, sessionID: Int64) async {
+        let pid = await process.signalablePID()
+        guard pid > 0 else { return }
+        signaller.signal(pid, SIGHUP)
+        var waited: Duration = .zero
+        while waited < Self.killGrace, isRunning(sessionID, pid) {
+            await signaller.sleep(Self.pollStep)
+            waited += Self.pollStep
+        }
+        if isRunning(sessionID, pid) { signaller.signal(pid, SIGKILL) }
     }
 
     private func isRunning(_ sessionID: Int64, _ pid: pid_t) -> Bool {
