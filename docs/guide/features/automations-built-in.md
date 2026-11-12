@@ -1,6 +1,6 @@
 # Built-in automations
 
-Some of Watchtower's own daily work runs as automations that ship with the app. They sit first in the **Automations** tab under **Built in**, and you can turn them on or off, set their time and change how they work, like your own recipes. There are six: **Morning brief**, **Track my threads**, **Idea finder**, **Reactions**, **Waiting for me** and **Needs approval**.
+Some of Watchtower's own daily work runs as automations that ship with the app. They sit first in the **Automations** tab under **Built in**, and you can turn them on or off, set their time and change how they work, like your own recipes. There are seven: **Morning brief**, **Track my threads**, **Idea finder**, **Reactions**, **Waiting for me**, **Mail waiting** and **Needs approval**.
 
 ## Why use it
 
@@ -41,7 +41,8 @@ The others work the same way:
 - **Track my threads** mines your Slack digests for [tracks](tracks.md). It runs at the first sync after new digests land, and does nothing when there are none. It needs Slack Digests on.
 - **Idea finder** consolidates [ideas and decisions](ideas-and-decisions.md) every few hours (**Every**, 1 to 48, default 6) and skips a run while a past-messages search is mining.
 - **Reactions** turns each Slack reaction from your dictionary into a proposal in the Inbox, one run per reaction. It has no **Run Now**. See [Reactions and tracks](automations-rules.md).
-- **Waiting for me** lists every message that waits on your answer as one list in the Inbox, after every sync, while attention detection is on. It uses no AI; its **Result** reads "One Waiting for me list in your Inbox". **Turn Off** turns attention detection off.
+- **Waiting for me** lists the people in Slack, Jira and Linear who wait on your answer as one list in the Inbox (today, this week and older), after every sync, while attention detection is on. It uses no AI; its **Result** reads "One Waiting for me list in your Inbox". **Turn Off** turns attention detection off.
+- **Mail waiting** runs right after it and groups the mail that waits on you by sender, the busiest first, leaving out senders you muted. It uses no AI; its **Result** reads "One Mail waiting list in your Inbox". It shares Waiting for me's switch: **Turn Off** turns attention detection off.
 - **Needs approval** shows every action that waits for your approval and every reminder that came due, one card each in the **Needs approval** folder, as soon as one changes. It uses no AI; its **Result** reads "One card per approval in your Inbox, in Needs approval", and it can't move to another folder. With it off, approvals still show there in the standard card.
 
 **Where the switches went.** Settings → Features no longer lists Tracks, Ideas or Reaction commands. Its row "Briefing, Day Plan, Tracks, Ideas and Reaction commands" says "These now live in Automations → Built in", with **Open Automations**. **Turn On** and **Turn Off** on a card do what the switch did, and **Turn Off** on Track my threads also pauses your watches.
