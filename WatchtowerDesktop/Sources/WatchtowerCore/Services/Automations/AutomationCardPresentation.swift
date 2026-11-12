@@ -244,7 +244,8 @@ package enum AutomationCardPresentation {
         "ideas.consolidate": "Find ideas and decisions in your messages",
         "reaction.compose": "Turn your reactions into proposals",
         "attention.waiting": "Read the messages waiting on you",
-        "approvals.list": "Read the actions and reminders that wait for you"
+        "approvals.list": "Read the actions and reminders that wait for you",
+        "slack.window": "Read today's messages in your Slack channels"
     ]
 
     /// `tool:`, `mcp:`, `shell:` and `builtin:` entries.

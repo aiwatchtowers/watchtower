@@ -103,6 +103,19 @@ final class AutomationTriggerTextTests: XCTestCase {
         }
     }
 
+    /// Slack today's slot in words (twin: Go `builtin.SlotSlackToday`).
+    func testSlackTodaySlotText() {
+        let spec = #"{"sync":"slack_today"}"#
+        XCTAssertEqual(AutomationTriggerText.describe(kind: "sync", specJSON: spec), "After a sync, at most once an hour")
+        XCTAssertEqual(AutomationTriggerText.sentence(kind: "sync", specJSON: spec), "After a sync, at most once an hour")
+    }
+
+    /// Twin of Go `automations.PrimitiveSlackWindow`.
+    func testSlackWindowPermissionLine() {
+        XCTAssertEqual(AutomationCardPresentation.permissionLine("builtin:slack.window"),
+                       "Read today's messages in your Slack channels")
+    }
+
     /// Twin of Go `automations.BuiltinPrimitiveNames` and `CapabilityForPrimitive`.
     func testC3PermissionLines() {
         XCTAssertEqual(AutomationCardPresentation.permissionLine("builtin:tracks.extract"),
