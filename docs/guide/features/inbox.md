@@ -53,7 +53,7 @@ changed: Proposals and due reminders moved from Needs your decision to their own
 
 **Needs approval** holds every action waiting for you, whatever started it (a reaction, a chat, an automation, a Workbench terminal, a **Reply…**), and every reminder once due. It can't be moved, renamed, hidden or deleted. The built-in **Needs approval** draws one card per approval, with **Approve**, **Reject** and **Edit…**, **Retry** after a failure; **Done** and **Snooze 1h** on a reminder. Nothing outside Watchtower happens before you approve.
 
-The list groups them by kind, oldest first: **Messages**, **Tracks to create**, **Targets**, **Confluence and Jira**, **Reminders**, **Other**, after **Built-in updates** and before **Approved, still running**. Two or more changes of the same kind (tracks, targets, or one Confluence or Jira action) make one row with **Approve All N…**; messages to people, reminders and **Other** are approved one by one.
+The list groups them by kind, oldest first: **Messages**, **Tracks to create**, **Targets**, **Confluence and Jira**, **Reminders**, **Other**, after **Built-in updates** and before **Approved, still running**. Two or more of one kind (new tracks, new targets, target updates, one Confluence or Jira action) make one row with **Approve All N…**; mixed kinds, messages, reminders and **Other** go one by one.
 
 A new approval shows in the standard card until the built-in redraws it; so does every approval while the built-in is off, stopped or failing, under a line that says why.
 
