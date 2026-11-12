@@ -128,13 +128,17 @@ package struct InboxRefState: Equatable, Sendable {
 
     /// One query per kind present in `refs`, over its ids. `nowUTC` is an
     /// RFC 3339 UTC string; `timeZone` reads an idea's date-only snooze (the
-    /// owner's local day, as Not now writes it). A kind whose table is
+    /// owner's local day, as Not now writes it). `peopleCounts` are the
+    /// counts the caller already read in this read (an Older row is shown
+    /// while `older` > 0); nil reads them here. A kind whose table is
     /// missing (an older database) shows nothing; any other error throws.
     package static func read(
-        _ db: Database, refs: [InboxRef], nowUTC: String, timeZone: TimeZone = .current
+        _ db: Database, refs: [InboxRef], nowUTC: String, timeZone: TimeZone = .current,
+        peopleCounts: PeopleWaitingCounts? = nil
     ) throws -> Self {
         let byKind = Dictionary(grouping: refs, by: \.kind)
-        let text = try textRefsShown(db, byKind: byKind, nowUTC: nowUTC, timeZone: timeZone)
+        let text = try textRefsShown(
+            db, byKind: byKind, nowUTC: nowUTC, timeZone: timeZone, peopleCounts: peopleCounts)
         var shown = text.shown
         var waiting: Set<InboxRef> = []
         var messages: [Int64: HomeFeedInboxRow] = [:]
@@ -171,30 +175,28 @@ package struct InboxRefState: Equatable, Sendable {
     /// newest links. A sender ref's key is matched by its
     /// `InboxPeopleRule.senderKey`, so no spelling misses.
     private static func textRefsShown(
-        _ db: Database, byKind: [InboxRef.Kind: [InboxRef]], nowUTC: String, timeZone: TimeZone
+        _ db: Database, byKind: [InboxRef.Kind: [InboxRef]], nowUTC: String, timeZone: TimeZone,
+        peopleCounts: PeopleWaitingCounts?
     ) throws -> (shown: Set<InboxRef>, senderLinks: [InboxRef: String]) {
         var shown: Set<InboxRef> = []
         var senderLinks: [InboxRef: String] = [:]
         if let senders = byKind[.mailSender] {
             let keys = Array(Set(senders.map { InboxPeopleRule.senderKey($0.key) })).sorted()
-            let open = try WaitingQueries.shownSenders(db, keys: keys, nowUTC: nowUTC)
-            var links: [String: String] = [:]
-            for key in keys where open.contains(key) {
-                links[key] = try WaitingQueries.newestPermalink(db, sender: key, nowUTC: nowUTC)
-            }
+            let newest = try WaitingQueries.newestOpenMail(db, keys: keys, nowUTC: nowUTC)
             for ref in senders {
-                let key = InboxPeopleRule.senderKey(ref.key)
-                guard open.contains(key) else { continue }
+                guard let link = newest[InboxPeopleRule.senderKey(ref.key)] else { continue }
                 shown.insert(ref)
-                senderLinks[ref] = links[key]
+                if !link.isEmpty { senderLinks[ref] = link }
             }
         }
         if let older = byKind[.waitingOlder] {
-            var calendar = Calendar(identifier: .gregorian)
-            calendar.timeZone = timeZone
-            let now = AutomationDates.parse(nowUTC) ?? Date()
-            let counts = try WaitingQueries.peopleCounts(
-                db, nowUTC: nowUTC, startOfTodayUTC: InboxToday.sinceUTC(now: now, calendar: calendar))
+            let counts = try peopleCounts ?? {
+                var calendar = Calendar(identifier: .gregorian)
+                calendar.timeZone = timeZone
+                let now = AutomationDates.parse(nowUTC) ?? Date()
+                return try WaitingQueries.peopleCounts(
+                    db, nowUTC: nowUTC, startOfTodayUTC: InboxToday.sinceUTC(now: now, calendar: calendar))
+            }()
             if counts.older > 0 { shown.formUnion(older) }
         }
         return (shown, senderLinks)

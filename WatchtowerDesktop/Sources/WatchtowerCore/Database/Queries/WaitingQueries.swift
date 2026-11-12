@@ -55,17 +55,24 @@ package struct MailWaitingSummary: Equatable, Sendable {
 /// Open = `HomeFeedQueries.openMessageClause`; stamp = MAX(created_at,
 /// mentioned_at); today = stamp at or after `startOfTodayUTC`; older = stamp
 /// at or before now − 7 × 24 h and not today; week = the rest. Times are RFC
-/// 3339 UTC strings. A missing table reads as no items.
+/// 3339 UTC strings; an unparsable `nowUTC` reads as the current time, as
+/// `InboxRefState` and `InboxFolderMenuSnapshot` read it. A missing items
+/// table reads as no items; a missing rules table as no mutes.
 package enum WaitingQueries {
     /// Go's `db.WaitingOlderAfter`.
     package static let olderAfter: TimeInterval = 7 * 24 * 3600
 
-    private static let mailFilter = "\(HomeFeedQueries.openMessageClause) AND \(InboxPeopleRule.mailClause)"
-        + " AND \(InboxPeopleRule.mutedMailClause)"
+    /// The open, unmuted mail. The mute clause only while its table is
+    /// there: without it nothing is muted, and the mail still reads.
+    private static func mailFilter(_ db: Database) throws -> String {
+        let open = "\(HomeFeedQueries.openMessageClause) AND \(InboxPeopleRule.mailClause)"
+        return try db.tableExists("inbox_learned_rules") ? open + " AND \(InboxPeopleRule.mutedMailClause)" : open
+    }
 
     /// Every open people item (no cap) by section, in one read.
     package static func peopleCounts(_ db: Database, nowUTC: String, startOfTodayUTC: String) throws -> PeopleWaitingCounts {
-        let cutoff = AutomationDates.parse(nowUTC).map { AutomationDates.format($0.addingTimeInterval(-olderAfter)) } ?? ""
+        let now = AutomationDates.parse(nowUTC) ?? Date()
+        let cutoff = AutomationDates.format(now.addingTimeInterval(-olderAfter))
         return try missingTableAsEmpty(.zero) {
             guard let row = try Row.fetchOne(db, sql: """
                 SELECT COUNT(*) AS open, COALESCE(SUM(stamp >= ?), 0) AS today,
@@ -87,7 +94,7 @@ package enum WaitingQueries {
         try missingTableAsEmpty(.empty) {
             let rows = try Row.fetchAll(db, sql: """
                 SELECT lower(trim(sender_user_id)) AS address, MAX(created_at, mentioned_at) AS stamp, snippet
-                FROM inbox_items WHERE \(mailFilter)
+                FROM inbox_items WHERE \(try mailFilter(db))
                 ORDER BY stamp DESC, id DESC
                 """, arguments: [nowUTC])
             var senders: [(row: MailSenderRow, newest: String)] = []
@@ -123,29 +130,26 @@ package enum WaitingQueries {
         }
     }
 
-    /// The `keys` that still have open, unmuted mail: Mail waiting's rows
-    /// drawn (a `mail_sender` ref is shown).
-    package static func shownSenders(_ db: Database, keys: [String], nowUTC: String) throws -> Set<String> {
-        guard !keys.isEmpty else { return [] }
-        return try missingTableAsEmpty([]) {
-            try String.fetchSet(db, sql: """
-                SELECT DISTINCT lower(trim(sender_user_id)) FROM inbox_items
-                WHERE \(mailFilter) AND lower(trim(sender_user_id)) IN (\(databaseQuestionMarks(count: keys.count)))
+    /// The `keys` that still have open, unmuted mail (Mail waiting's rows
+    /// drawn: a `mail_sender` ref is shown), each with its newest such
+    /// mail's link ("" when that item has none), in one read.
+    package static func newestOpenMail(_ db: Database, keys: [String], nowUTC: String) throws -> [String: String] {
+        guard !keys.isEmpty else { return [:] }
+        return try missingTableAsEmpty([:]) {
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT address, permalink FROM (
+                  SELECT lower(trim(sender_user_id)) AS address, permalink, ROW_NUMBER() OVER (
+                    PARTITION BY lower(trim(sender_user_id)) ORDER BY MAX(created_at, mentioned_at) DESC, id DESC) AS n
+                  FROM inbox_items
+                  WHERE \(try mailFilter(db)) AND lower(trim(sender_user_id)) IN (\(databaseQuestionMarks(count: keys.count))))
+                WHERE n = 1
                 """, arguments: StatementArguments([nowUTC] + keys))
+            var out: [String: String] = [:]
+            for row in rows {
+                out[row["address"] ?? ""] = row["permalink"] ?? ""
+            }
+            return out
         }
-    }
-
-    /// The link of `sender`'s newest open, unmuted mail; nil when it has none
-    /// or that item has no link.
-    package static func newestPermalink(_ db: Database, sender: String, nowUTC: String) throws -> String? {
-        let link = try missingTableAsEmpty(String?.none) {
-            try String.fetchOne(db, sql: """
-                SELECT permalink FROM inbox_items
-                WHERE \(mailFilter) AND lower(trim(sender_user_id)) = ?
-                ORDER BY MAX(created_at, mentioned_at) DESC, id DESC LIMIT 1
-                """, arguments: [nowUTC, sender])
-        }
-        return link?.isEmpty == false ? link : nil
     }
 
     /// Go's `db.MailSubject`: the snippet before " — " (all of it without one).
@@ -153,10 +157,13 @@ package enum WaitingQueries {
         snippet.range(of: " — ").map { String(snippet[..<$0.lowerBound]) } ?? snippet
     }
 
+    /// `empty` when a table the open clause reads (`inbox_items`, and
+    /// `jira_issues` in its Jira check) is missing; any other error throws.
     private static func missingTableAsEmpty<T>(_ empty: T, _ read: () throws -> T) throws -> T {
         do {
             return try read()
-        } catch let error as DatabaseError where ActionStripViewModel.isMissingTable(error) {
+        } catch let error as DatabaseError where ActionStripViewModel.isMissingTable(error)
+                    && ["inbox_items", "jira_issues"].contains(where: { error.message == "no such table: \($0)" }) {
             return empty
         }
     }

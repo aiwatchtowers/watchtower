@@ -197,26 +197,57 @@ final class WaitingSplitParityTests: XCTestCase {
         XCTAssertEqual(InboxPeopleRule.muteScope(" News@Example.com"), "email:news@example.com")
     }
 
-    func testMissingTablesReadAsZero() throws {
-        try pool.write { db in try db.execute(sql: "DROP TABLE inbox_learned_rules") }
+    func testMissingItemsTableReadsAsZero() throws {
+        try pool.write { db in try db.execute(sql: "DROP TABLE inbox_items") }
         let now = "2026-11-11T08:00:00Z"
         try pool.read { db in
+            XCTAssertEqual(try WaitingQueries.peopleCounts(db, nowUTC: now, startOfTodayUTC: now), .zero)
             XCTAssertEqual(try WaitingQueries.mailSenders(db, nowUTC: now, startOfTodayUTC: now, limit: 10),
                            MailWaitingSummary(open: 0, today: 0, senderCount: 0, topTenShare: 0, senders: []))
-            XCTAssertEqual(try WaitingQueries.shownSenders(db, keys: ["a@example.com"], nowUTC: now), [])
-            XCTAssertNil(try WaitingQueries.newestPermalink(db, sender: "a@example.com", nowUTC: now))
+            XCTAssertEqual(try WaitingQueries.newestOpenMail(db, keys: ["a@example.com"], nowUTC: now), [:])
         }
     }
 
-    func testNewestPermalinkIsTheSendersNewestOpenItems() throws {
+    /// Without the rules table nothing is muted: the mail still reads.
+    func testMissingRulesTableMeansNoMutes() throws {
+        let fx = try fixture()
+        let (now, today) = try seed(fx)
+        let muted = try pool.read { try WaitingQueries.mailSenders($0, nowUTC: now, startOfTodayUTC: today, limit: 200) }
+        try pool.write { db in try db.execute(sql: "DROP TABLE inbox_learned_rules") }
+
+        let unmuted = try pool.read { try WaitingQueries.mailSenders($0, nowUTC: now, startOfTodayUTC: today, limit: 200) }
+
+        XCTAssertGreaterThan(unmuted.open, muted.open, "the fixture's muted sender is back, nothing emptied")
+        XCTAssertTrue(unmuted.senders.contains { $0.address == "news@example.com" })
+        let newest = try pool.read { try WaitingQueries.newestOpenMail($0, keys: ["news@example.com"], nowUTC: now) }
+        XCTAssertNotNil(newest["news@example.com"])
+    }
+
+    /// An unparsable now reads as the current time, as `InboxRefState`
+    /// reads it: Older still counts, never silently zero.
+    func testUnparsableNowReadsAsTheCurrentTime() throws {
+        try pool.write { db in
+            let id = try TestDatabase.insertInboxItem(db, triggerType: "mention")
+            try db.execute(sql: "UPDATE inbox_items SET created_at = '2020-01-01T00:00:00Z', mentioned_at = '' WHERE id = ?",
+                           arguments: [id])
+        }
+        let counts = try pool.read {
+            try WaitingQueries.peopleCounts($0, nowUTC: "not a time", startOfTodayUTC: "9999-01-01T00:00:00Z")
+        }
+        XCTAssertEqual(counts, PeopleWaitingCounts(open: 1, today: 0, week: 0, older: 1))
+    }
+
+    func testNewestOpenMailIsEachSendersNewestOpenItem() throws {
         let fx = try fixture()
         let (now, _) = try seed(fx)
-        try pool.read { db in
-            XCTAssertEqual(try WaitingQueries.newestPermalink(db, sender: "colleague-a@example.com", nowUTC: now),
-                           "https://mail.example.com/m/20")
-            XCTAssertNil(try WaitingQueries.newestPermalink(db, sender: "colleague-b@example.com", nowUTC: now),
-                         "its newest open item has no link")
-            XCTAssertNil(try WaitingQueries.newestPermalink(db, sender: "news@example.com", nowUTC: now), "muted")
+        let newest = try pool.read {
+            try WaitingQueries.newestOpenMail(
+                $0, keys: ["colleague-a@example.com", "colleague-b@example.com", "news@example.com", "x@example.com"],
+                nowUTC: now)
         }
+        XCTAssertEqual(newest["colleague-a@example.com"], "https://mail.example.com/m/20")
+        XCTAssertEqual(newest["colleague-b@example.com"], "", "shown; its newest open item has no link")
+        XCTAssertNil(newest["news@example.com"], "muted")
+        XCTAssertNil(newest["x@example.com"], "no open mail")
     }
 }

@@ -118,11 +118,14 @@ package struct InboxFolderMenuSnapshot: Equatable, Sendable {
         // Needs approval's cards are read too: their `action`/`reminder`
         // rows draw only while the record is open (the row hooks' `isOpen`).
         let approvalRefs = approvalArtifacts.values.flatMap { InboxRef.refs(blocksJSON: $0.blocksJSON) }
-        let refState = try InboxRefState.read(
-            db, refs: Array(refs.values.joined()) + approvalRefs, nowUTC: nowUTC)
         let startOfToday = InboxToday.sinceUTC(now: now, calendar: calendar)
         let peopleWaiting = waitingForMe.turnedOff ? .zero
             : try WaitingQueries.peopleCounts(db, nowUTC: nowUTC, startOfTodayUTC: startOfToday)
+        // Waiting for me's Older row is shown on these counts (turned off,
+        // its card is not listed and nothing reads them).
+        let refState = try InboxRefState.read(
+            db, refs: Array(refs.values.joined()) + approvalRefs, nowUTC: nowUTC, timeZone: calendar.timeZone,
+            peopleCounts: peopleWaiting)
         // Mail waiting's row lines, read only while its card is listed.
         let mailShown = artifacts.values.joined().contains { $0.automationID == mailWaiting.automationID }
         let mailSummary = readsMailSummary && mailShown
