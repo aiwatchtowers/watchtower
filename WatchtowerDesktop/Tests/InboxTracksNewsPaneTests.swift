@@ -72,16 +72,25 @@ final class InboxTracksNewsPaneTests: XCTestCase {
         XCTAssertThrowsError(try five.inspect().find(ViewType.Text.self) { try $0.string().hasSuffix("more with news") })
     }
 
-    func testRowShowsLatestLineCountAndChip() throws {
+    /// The mockup's `trow`: the "N new" count is the chip, the reason is
+    /// muted text beside it.
+    func testRowShowsLatestLineCountChipAndMutedReason() throws {
         let track = card(id: 3, text: "ACME-12 · Release checklist v2", hasUpdates: true, newEvents: 3,
                          summary: "Colleague C added the rollback step.\nMore", attachment: true)
         let sut = pane([track])
         let row = try sut.inspect().find(viewWithAccessibilityIdentifier: "inbox.tracksNews.row.3")
         XCTAssertNoThrow(try row.find(text: "ACME-12 · Release checklist v2"))
         XCTAssertNoThrow(try row.find(text: "Colleague C added the rollback step."))
-        XCTAssertNoThrow(try row.find(text: "3 new"))
-        XCTAssertNoThrow(try row.find(Chip.self))
+        XCTAssertNoThrow(try row.find(Chip.self).find(text: "3 new"))
+        XCTAssertEqual(try row.findAll(Chip.self).count, 1)
         XCTAssertNoThrow(try row.find(text: "attachment"))
+        XCTAssertThrowsError(try row.find(Chip.self).find(text: "attachment"), "the reason is not a chip")
+
+        // A reason without new events: muted text, no chip.
+        let reasonOnly = pane([card(id: 5, hasUpdates: true, attachment: true)])
+        let quietRow = try reasonOnly.inspect().find(viewWithAccessibilityIdentifier: "inbox.tracksNews.row.5")
+        XCTAssertNoThrow(try quietRow.find(text: "attachment"))
+        XCTAssertThrowsError(try quietRow.find(Chip.self))
 
         let plain = pane([card(id: 4, hasUpdates: true)])
         let bare = try plain.inspect().find(viewWithAccessibilityIdentifier: "inbox.tracksNews.row.4")

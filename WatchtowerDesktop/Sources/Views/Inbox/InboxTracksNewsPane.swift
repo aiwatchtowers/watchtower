@@ -3,7 +3,7 @@ import WatchtowerCore
 
 /// Track my threads' reading pane (spec "Track my threads (phase 3)", the
 /// mockup's `threads` pane): the header with **All Threads**, the threads
-/// with news (title, latest line, new count, reason chip), "N more with
+/// with news (title, latest line, new-count chip, muted reason), "N more with
 /// news" past `TrackThreadsSummary.visibleNewsLimit`, then the quiet note
 /// with **Stop Tracking Quiet Ones…** when some quiet threads are old. A
 /// row opens that thread's `InboxTrackPane` (behind `InboxTrackBackBar`).
@@ -89,13 +89,14 @@ struct InboxTracksNewsPane: View {
                     }
                 }
                 Spacer(minLength: Spacing.regular)
+                // The mockup's `trow`: the count is the chip, the reason muted text.
                 if let count = TrackThreadsSummary.newCountText(card) {
-                    Text(count)
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
+                    Chip(text: count, color: .secondary)
                 }
                 if let reason = TrackThreadsSummary.reason(card) {
-                    Chip(text: reason.label, color: .secondary)
+                    Text(reason.label)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
             .kitRow(isSelected: false)
