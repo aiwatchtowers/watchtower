@@ -13,9 +13,14 @@ final class InboxBulkPressModelTests: XCTestCase {
 
     private static let plan = InboxBulkPlan(ids: ["a", "b", "c"], count: 3)
 
-    /// Waits (yielding, no sleeps) until the model reaches a state `done` accepts.
+    /// Waits (yielding, no sleeps) until the model reaches a state `done`
+    /// accepts, failing after 10 s.
     private func waitUntil(_ model: InboxBulkPressModel, _ done: (InboxBulkPressModel.State) -> Bool) async {
-        while !done(model.state) { await Task.yield() }
+        let deadline = Date().addingTimeInterval(10)
+        while !done(model.state) {
+            guard Date() < deadline else { return XCTFail("still \(model.state)") }
+            await Task.yield()
+        }
     }
 
     private func isFinished(_ state: InboxBulkPressModel.State) -> Bool {
@@ -107,7 +112,11 @@ final class InboxBulkPressModelTests: XCTestCase {
         model.begin()
         await waitUntil(model, isConfirming)
         model.confirm()
-        while gate == nil { await Task.yield() }
+        let deadline = Date().addingTimeInterval(10)
+        while gate == nil {
+            guard Date() < deadline else { return XCTFail("the apply never started") }
+            await Task.yield()
+        }
         XCTAssertEqual(model.state, .running)
 
         model.begin()

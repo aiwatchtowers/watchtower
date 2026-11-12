@@ -76,16 +76,26 @@ final class InboxBulkPressButtonTests: XCTestCase {
             model.begin { InboxBulkPlan(ids: [], count: 0) }
         default:
             model.begin { InboxBulkPlan(ids: ["a", "b", "c"], count: 3) }
-            while model.state == .planning { await Task.yield() }
+            let deadline = Date().addingTimeInterval(10)
+            while model.state == .planning {
+                guard Date() < deadline else {
+                    XCTFail("still planning")
+                    return model
+                }
+                await Task.yield()
+            }
             model.confirm { _ in result }
         }
         await waitFinished(model)
         return model
     }
 
+    /// Yields until `model` finishes, failing after 10 s.
     private func waitFinished(_ model: InboxBulkPressModel) async {
+        let deadline = Date().addingTimeInterval(10)
         while true {
             if case .finished = model.state { return }
+            guard Date() < deadline else { return XCTFail("still \(model.state)") }
             await Task.yield()
         }
     }
