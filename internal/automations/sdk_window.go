@@ -3,8 +3,6 @@ package automations
 import (
 	"encoding/json"
 	"fmt"
-	"maps"
-	"slices"
 )
 
 // WindowStateKeyPrefix starts the state keys of the raw window's cursors:
@@ -14,8 +12,9 @@ const WindowStateKeyPrefix = "__window:"
 // windowStateKeys maps each window primitive to its cursor's state key.
 var windowStateKeys = map[string]string{PrimitiveSlackWindow: WindowStateKeyPrefix + "slack"}
 
-// windowFloorToday is the one floor a window call may name.
-const windowFloorToday = "today"
+// WindowFloorToday is the one floor a window call may name; the window
+// primitives (builtin's slack.window) read it from the call's input.
+const WindowFloorToday = "today"
 
 // windowCursorVersion is the cursor value's "v".
 const windowCursorVersion = 1
@@ -68,17 +67,22 @@ func windowFloorOf(name string, raw any) (string, error) {
 		return "", nil
 	}
 	obj, ok := raw.(map[string]any)
-	if !ok || slices.ContainsFunc(slices.Collect(maps.Keys(obj)), func(k string) bool { return k != "floor" }) {
+	if !ok {
 		return "", validationf("%s() takes only {floor}", name)
+	}
+	for k := range obj {
+		if k != "floor" {
+			return "", validationf("%s() takes only {floor}", name)
+		}
 	}
 	floor, has := obj["floor"]
 	if !has {
 		return "", nil
 	}
-	if floor != windowFloorToday {
-		return "", validationf("%s({floor}): floor must be %q", name, windowFloorToday)
+	if floor != WindowFloorToday {
+		return "", validationf("%s({floor}): floor must be %q", name, WindowFloorToday)
 	}
-	return windowFloorToday, nil
+	return WindowFloorToday, nil
 }
 
 // callWindow runs a window primitive (WindowPrimitiveNames) as one tool

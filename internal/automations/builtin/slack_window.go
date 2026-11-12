@@ -10,10 +10,6 @@ import (
 	"watchtower/internal/policy"
 )
 
-// windowFloorToday is the one floor a window call may name
-// (automations' windowFloorOf checks the script's argument).
-const windowFloorToday = "today"
-
 // SlackWindowPrimitives returns slack.window over d: the Slack messages past
 // the call's Cursor (db.ReadSlackWindow, arrival order, cut at its caps) in
 // the calling built-in's WindowScope, as {status: "done", day, owner: {name},
@@ -45,7 +41,7 @@ func SlackWindowPrimitives(d *db.DB, now func() time.Time) map[string]automation
 			q := db.SlackWindowQuery{Scope: entry.WindowScope, AfterRowID: call.Cursor, Now: at}
 			switch call.Floor {
 			case "":
-			case windowFloorToday:
+			case automations.WindowFloorToday:
 				q.Floor = time.Date(at.Year(), at.Month(), at.Day(), 0, 0, 0, 0, time.Local)
 			default:
 				return automations.PrimitiveResult{}, fmt.Errorf("slack.window: unknown floor %q", call.Floor)
