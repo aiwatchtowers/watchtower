@@ -59,11 +59,24 @@ var tracksReadCmd = &cobra.Command{
 	RunE:  runTracksRead,
 }
 
+var (
+	tracksDismissFlagQuietDays int
+	tracksDismissFlagDryRun    bool
+	tracksDismissFlagIDs       string
+	tracksDismissFlagJSON      bool
+)
+
 var tracksDismissCmd = &cobra.Command{
-	Use:   "dismiss <id>",
-	Short: "Dismiss a track (hide from default view)",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runTracksDismiss,
+	Use:   "dismiss (<id> | --quiet-days N --dry-run | --ids ID,…)",
+	Short: "Dismiss a track (hide from default view), or quiet tracks in bulk",
+	Long: `Dismiss one track by id, or stop tracking quiet threads in bulk:
+--quiet-days N --dry-run lists the active tracks with no news and no event
+for N days (last stdout line with --json: {"count":N,"ids":[…]}); --ids
+dismisses each listed track that is still active and writes nothing else
+(--json: {"dismissed":N,"skipped":N,"ids":[…]}; on a write error exit 1 and
+{"dismissed":N,"of":M,"error":"…"}). --ids is refused under an AI agent.`,
+	Args: cobra.RangeArgs(0, 1),
+	RunE: runTracksDismiss,
 }
 
 var tracksRestoreCmd = &cobra.Command{
@@ -152,6 +165,10 @@ func init() {
 	tracksCmd.AddCommand(tracksShowCmd)
 	tracksCmd.AddCommand(tracksReadCmd)
 	tracksCmd.AddCommand(tracksDismissCmd)
+	tracksDismissCmd.Flags().IntVar(&tracksDismissFlagQuietDays, "quiet-days", 0, "with --dry-run: list the tracks quiet for this many days")
+	tracksDismissCmd.Flags().BoolVar(&tracksDismissFlagDryRun, "dry-run", false, "with --quiet-days: list, write nothing")
+	tracksDismissCmd.Flags().StringVar(&tracksDismissFlagIDs, "ids", "", "comma-separated track ids to dismiss when still active")
+	tracksDismissCmd.Flags().BoolVar(&tracksDismissFlagJSON, "json", false, "print the result as JSON")
 	tracksCmd.AddCommand(tracksRestoreCmd)
 	tracksCmd.AddCommand(tracksGenerateCmd)
 	tracksCmd.AddCommand(tracksCreateCmd, tracksWatchCmd, tracksScanCmd,
@@ -603,9 +620,51 @@ func runTracksRead(cmd *cobra.Command, args []string) error {
 }
 
 func runTracksDismiss(cmd *cobra.Command, args []string) error {
-	id, err := strconv.Atoi(args[0])
+	flags := cmd.Flags()
+	bulkIDs, quiet := flags.Changed("ids"), flags.Changed("quiet-days") || flags.Changed("dry-run")
+	switch {
+	case bulkIDs && (len(args) > 0 || quiet):
+		return usageError("--ids takes no <id>, --quiet-days or --dry-run")
+	case bulkIDs:
+		ids, err := parseTrackIDList(tracksDismissFlagIDs)
+		if err != nil {
+			return err
+		}
+		if err := refuseUnderAgent("stop tracking threads in bulk"); err != nil {
+			return err
+		}
+		return dismissTrackIDs(cmd, ids)
+	case quiet:
+		if err := checkQuietDryRunFlags(cmd, args); err != nil {
+			return err
+		}
+		return listQuietTracks(cmd, tracksDismissFlagQuietDays)
+	case len(args) == 0:
+		return usageError("give a track <id>, --quiet-days N --dry-run or --ids ID,…")
+	}
+	return dismissOneTrack(cmd, args[0])
+}
+
+// checkQuietDryRunFlags checks `--quiet-days N --dry-run`: both given, N
+// positive, no <id>.
+func checkQuietDryRunFlags(cmd *cobra.Command, args []string) error {
+	if len(args) > 0 {
+		return usageError("--quiet-days takes no <id>")
+	}
+	if !tracksDismissFlagDryRun || !cmd.Flags().Changed("quiet-days") {
+		return usageError("--quiet-days N needs --dry-run (and --dry-run needs --quiet-days N)")
+	}
+	if tracksDismissFlagQuietDays <= 0 {
+		return usageError("--quiet-days must be a positive number of days")
+	}
+	return nil
+}
+
+// dismissOneTrack is `tracks dismiss <id>`.
+func dismissOneTrack(cmd *cobra.Command, arg string) error {
+	id, err := strconv.Atoi(arg)
 	if err != nil || id <= 0 {
-		return fmt.Errorf("invalid track ID %q: must be a positive integer", args[0])
+		return fmt.Errorf("invalid track ID %q: must be a positive integer", arg)
 	}
 
 	database, err := openTracksDB()
@@ -619,6 +678,97 @@ func runTracksDismiss(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Fprintf(cmd.OutOrStdout(), "Track #%d dismissed\n", id)
+	return nil
+}
+
+// parseTrackIDList parses --ids: comma-separated positive track ids,
+// de-duplicated in order; a usage error when empty or malformed.
+func parseTrackIDList(raw string) ([]int, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, usageError("--ids needs at least one track id")
+	}
+	var ids []int
+	seen := map[int]bool{}
+	for _, part := range strings.Split(raw, ",") {
+		id, err := strconv.Atoi(strings.TrimSpace(part))
+		if err != nil || id <= 0 {
+			return nil, usageError("invalid track id %q in --ids: must be a positive integer", part)
+		}
+		if !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	return ids, nil
+}
+
+// listQuietTracks is the dry run: the active tracks quiet for days days
+// (tracks.QuietTrackIDs). It writes nothing.
+func listQuietTracks(cmd *cobra.Command, days int) error {
+	database, err := openTracksDB()
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+	rows, err := database.ListActiveTrackNewsInputs()
+	if err != nil {
+		return err
+	}
+	ids := tracks.QuietTrackIDs(rows, time.Now(), days)
+	out := cmd.OutOrStdout()
+	if tracksDismissFlagJSON {
+		return json.NewEncoder(out).Encode(struct {
+			Count int   `json:"count"`
+			IDs   []int `json:"ids"`
+		}{len(ids), ids})
+	}
+	fmt.Fprintf(out, "%d quiet tracks", len(ids))
+	if len(ids) > 0 {
+		parts := make([]string, len(ids))
+		for i, id := range ids {
+			parts[i] = strconv.Itoa(id)
+		}
+		fmt.Fprintf(out, ": %s", strings.Join(parts, ", "))
+	}
+	fmt.Fprintln(out)
+	return nil
+}
+
+// dismissTrackIDs is the bulk Stop Tracking (TRACKS-07): each listed track
+// still active gets dismissed_at, nothing else is written; ids are already
+// de-duplicated.
+func dismissTrackIDs(cmd *cobra.Command, ids []int) error {
+	database, err := openTracksDB()
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+	out := cmd.OutOrStdout()
+	dismissed, err := database.DismissActiveTracks(ids)
+	if err != nil {
+		if tracksDismissFlagJSON {
+			if encErr := json.NewEncoder(out).Encode(struct {
+				Dismissed int    `json:"dismissed"`
+				Of        int    `json:"of"`
+				Error     string `json:"error"`
+			}{len(dismissed), len(ids), logredact.Full(err)}); encErr != nil {
+				return encErr
+			}
+		}
+		return &exitCodeError{code: 1, err: err}
+	}
+	if dismissed == nil {
+		dismissed = []int{}
+	}
+	skipped := len(ids) - len(dismissed)
+	if tracksDismissFlagJSON {
+		return json.NewEncoder(out).Encode(struct {
+			Dismissed int   `json:"dismissed"`
+			Skipped   int   `json:"skipped"`
+			IDs       []int `json:"ids"`
+		}{len(dismissed), skipped, dismissed})
+	}
+	fmt.Fprintf(out, "Dismissed %d tracks (%d skipped)\n", len(dismissed), skipped)
 	return nil
 }
 

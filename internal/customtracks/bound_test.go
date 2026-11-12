@@ -210,6 +210,32 @@ func TestDue_BudgetAndDismissed(t *testing.T) {
 	}
 }
 
+// A bound, enabled custom track stopped by the bulk Stop Tracking is never
+// due, so its still-enabled watch recipe's slot run (watchslot.go gates on
+// Due) makes no scan and no model call.
+func TestDue_DismissedBoundTrackIsNeverScanned(t *testing.T) {
+	d, id, _ := newScanFixture(t)
+	if _, err := d.Exec(`UPDATE tracks SET enabled = 1, automation_id = 4242 WHERE id = ?`, id); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	p := New(d, &mockGenerator{}, "", nil)
+	now := time.Now().UTC()
+	if !p.Due(loadTrack(t, d, id), now) {
+		t.Fatal("a bound enabled track is not due before the dismiss")
+	}
+	got, err := d.DismissActiveTracks([]int{id})
+	if err != nil || len(got) != 1 {
+		t.Fatalf("DismissActiveTracks = %v, %v", got, err)
+	}
+	tr := loadTrack(t, d, id)
+	if !tr.Enabled || tr.AutomationID != 4242 {
+		t.Fatalf("the bulk dismiss changed enabled/automation_id: %v/%d", tr.Enabled, tr.AutomationID)
+	}
+	if p.Due(tr, now) {
+		t.Fatal("a dismissed bound track is due")
+	}
+}
+
 func TestScanBound_ExtraAfterWindowEndDropped(t *testing.T) {
 	d, id, _ := newScanFixture(t)
 	mock := &mockGenerator{out: `{"events":[]}`}

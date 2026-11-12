@@ -1,6 +1,10 @@
 package tracks
 
-import "time"
+import (
+	"time"
+
+	"watchtower/internal/db"
+)
 
 // NewsWindow is how long a never-read track counts as news after its last
 // event (inclusive).
@@ -55,4 +59,18 @@ func IsQuiet(in NewsInput, now time.Time, quietDays int) bool {
 	}
 	last := LastEventAt(in.UpdatedAt, in.NewestEventAt)
 	return !last.IsZero() && !last.After(now.Add(-time.Duration(quietDays)*24*time.Hour))
+}
+
+// QuietTrackIDs returns, in rows' order, the ids of the tracks that are quiet
+// for days days (IsQuiet) — what `tracks dismiss --quiet-days N --dry-run`
+// lists.
+func QuietTrackIDs(rows []db.TrackNewsRow, now time.Time, days int) []int {
+	ids := []int{}
+	for _, r := range rows {
+		in := NewsInput{ReadAt: r.ReadAt, HasUpdates: r.HasUpdates, UpdatedAt: r.UpdatedAt, NewestEventAt: r.NewestEventAt}
+		if IsQuiet(in, now, days) {
+			ids = append(ids, r.ID)
+		}
+	}
+	return ids
 }

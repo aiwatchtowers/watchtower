@@ -561,3 +561,113 @@ func TestTracks06_HistoryCascadesOnTrackDelete(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, states, 0, "history cascades when parent track deleted")
 }
+
+func TestListActiveTrackNewsInputs(t *testing.T) {
+	db := openTestDB(t)
+	a, err := db.UpsertTrack(Track{Text: "active, never read", Priority: "low"})
+	require.NoError(t, err)
+	b, err := db.UpsertTrack(Track{Text: "active, read", Priority: "low"})
+	require.NoError(t, err)
+	gone, err := db.UpsertTrack(Track{Text: "dismissed", Priority: "low"})
+	require.NoError(t, err)
+	_, err = db.Exec(`UPDATE tracks SET read_at = '2026-01-02T00:00:00Z', has_updates = 1, updated_at = '2026-01-01T00:00:00Z' WHERE id = ?`, b)
+	require.NoError(t, err)
+	require.NoError(t, db.DismissTrack(int(gone)))
+	for _, at := range []string{"2026-01-03T00:00:00Z", "2026-01-05T00:00:00Z", "2026-01-04T00:00:00Z"} {
+		_, err = db.Exec(`INSERT INTO track_events (track_id, summary, created_at) VALUES (?, 'e', ?)`, b, at)
+		require.NoError(t, err)
+	}
+
+	rows, err := db.ListActiveTrackNewsInputs()
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+	assert.Equal(t, int(a), rows[0].ID)
+	assert.Equal(t, "", rows[0].ReadAt, "NULL read_at reads as empty")
+	assert.Equal(t, "", rows[0].NewestEventAt, "no event reads as empty")
+	assert.False(t, rows[0].HasUpdates)
+	assert.NotEmpty(t, rows[0].UpdatedAt)
+	assert.Equal(t, TrackNewsRow{ID: int(b), ReadAt: "2026-01-02T00:00:00Z", HasUpdates: true,
+		UpdatedAt: "2026-01-01T00:00:00Z", NewestEventAt: "2026-01-05T00:00:00Z"}, rows[1])
+}
+
+// trackRowImage is every column of track id, as text, for a before/after
+// compare.
+func trackRowImage(t *testing.T, db *DB, id int) map[string]string {
+	t.Helper()
+	rows, err := db.Query(`SELECT * FROM tracks WHERE id = ?`, id)
+	require.NoError(t, err)
+	defer rows.Close()
+	cols, err := rows.Columns()
+	require.NoError(t, err)
+	require.True(t, rows.Next(), "track %d not found", id)
+	vals := make([]any, len(cols))
+	ptrs := make([]any, len(cols))
+	for i := range vals {
+		ptrs[i] = &vals[i]
+	}
+	require.NoError(t, rows.Scan(ptrs...))
+	require.NoError(t, rows.Err())
+	img := make(map[string]string, len(cols))
+	for i, c := range cols {
+		img[c] = fmt.Sprintf("%T:%v", vals[i], vals[i])
+	}
+	return img
+}
+
+func TestTracks07_BulkDismissSetsDismissedAtOnly(t *testing.T) {
+	db := openTestDB(t)
+	a, err := db.UpsertTrack(Track{Text: "auto track", Priority: "low"})
+	require.NoError(t, err)
+	_, err = db.Exec(`UPDATE tracks SET read_at = '2026-01-02T00:00:00Z', has_updates = 1 WHERE id = ?`, a)
+	require.NoError(t, err)
+	c, err := db.CreateCustomTrack(Track{AssigneeUserID: "U001", Text: "custom", Instruction: "watch the refund"})
+	require.NoError(t, err)
+	_, err = db.Exec(`UPDATE tracks SET enabled = 1, automation_id = 4242 WHERE id = ?`, c)
+	require.NoError(t, err)
+	d, err := db.UpsertTrack(Track{Text: "already dismissed", Priority: "low"})
+	require.NoError(t, err)
+	_, err = db.Exec(`UPDATE tracks SET dismissed_at = '2026-01-01T00:00:00Z' WHERE id = ?`, d)
+	require.NoError(t, err)
+
+	before := map[int]map[string]string{}
+	for _, id := range []int{int(a), int(c), int(d)} {
+		before[id] = trackRowImage(t, db, id)
+	}
+	var statesBefore int
+	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM track_states`).Scan(&statesBefore))
+
+	got, err := db.DismissActiveTracks([]int{int(a), int(c), int(a), int(d), 9999})
+	require.NoError(t, err)
+	assert.Equal(t, []int{int(a), int(c)}, got)
+
+	for _, id := range []int{int(a), int(c)} {
+		after := trackRowImage(t, db, id)
+		assert.NotEqual(t, before[id]["dismissed_at"], after["dismissed_at"], "track %d dismissed", id)
+		assert.NotEqual(t, "string:", after["dismissed_at"])
+		delete(after, "dismissed_at")
+		want := before[id]
+		delete(want, "dismissed_at")
+		assert.Equal(t, want, after, "track %d: only dismissed_at changes", id)
+	}
+	assert.Equal(t, before[int(d)], trackRowImage(t, db, int(d)), "an already dismissed track keeps its dismissed_at")
+	var statesAfter int
+	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM track_states`).Scan(&statesAfter))
+	assert.Equal(t, statesBefore, statesAfter, "no track_states row added")
+}
+
+func TestDismissActiveTracks_ErrorCommitsNothing(t *testing.T) {
+	db := openTestDB(t)
+	first, err := db.UpsertTrack(Track{Text: "first", Priority: "low"})
+	require.NoError(t, err)
+	second, err := db.UpsertTrack(Track{Text: "second", Priority: "low"})
+	require.NoError(t, err)
+	_, err = db.Exec(fmt.Sprintf(`CREATE TRIGGER fail_dismiss BEFORE UPDATE ON tracks WHEN NEW.id = %d BEGIN SELECT RAISE(ABORT,'boom'); END`, second))
+	require.NoError(t, err)
+
+	got, err := db.DismissActiveTracks([]int{int(first), int(second)})
+	require.Error(t, err)
+	assert.Empty(t, got)
+	tr, err := db.GetTrackByID(int(first))
+	require.NoError(t, err)
+	assert.Equal(t, "", tr.DismissedAt, "nothing is committed")
+}

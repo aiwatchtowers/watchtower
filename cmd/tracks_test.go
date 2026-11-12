@@ -722,3 +722,184 @@ func TestTracksOwnerVerbs_NeedTheDesktopsConfirmation(t *testing.T) {
 	assert.Contains(t, (*reqs)[0].Detail, "watch the launch", "the window shows the recipe Start would write")
 	assert.Contains(t, (*reqs)[1].Detail, "watch the payroll", "the window shows the new instruction")
 }
+
+// clearAgentMarkers blanks every agent marker for the test (the suite may
+// itself run under an agent).
+func clearAgentMarkers(t *testing.T) {
+	t.Helper()
+	for _, m := range agentEnvMarkers {
+		t.Setenv(m, "")
+	}
+}
+
+// seedNewsTrack inserts a track with the given news columns ("" readAt =
+// NULL) and returns its id.
+func seedNewsTrack(t *testing.T, d *db.DB, origin, readAt string, hasUpdates bool, updatedAt, dismissedAt string) int {
+	t.Helper()
+	var read any
+	if readAt != "" {
+		read = readAt
+	}
+	res, err := d.Exec(`INSERT INTO tracks (text, origin, read_at, has_updates, updated_at, dismissed_at)
+		VALUES ('seeded', ?, ?, ?, ?, ?)`, origin, read, hasUpdates, updatedAt, dismissedAt)
+	require.NoError(t, err)
+	id, err := res.LastInsertId()
+	require.NoError(t, err)
+	return int(id)
+}
+
+// dismissedImage is every track's dismissed_at by id.
+func dismissedImage(t *testing.T, d *db.DB) map[int]string {
+	t.Helper()
+	rows, err := d.Query(`SELECT id, dismissed_at FROM tracks`)
+	require.NoError(t, err)
+	defer rows.Close()
+	out := map[int]string{}
+	for rows.Next() {
+		var id int
+		var at string
+		require.NoError(t, rows.Scan(&id, &at))
+		out[id] = at
+	}
+	require.NoError(t, rows.Err())
+	return out
+}
+
+// lastJSONLine decodes stdout's last non-empty line.
+func lastJSONLine(t *testing.T, stdout string) map[string]any {
+	t.Helper()
+	lines := strings.Split(strings.TrimSpace(stdout), "\n")
+	var m map[string]any
+	require.NoError(t, json.Unmarshal([]byte(lines[len(lines)-1]), &m), stdout)
+	return m
+}
+
+func idsOf(ids ...int) []any {
+	out := make([]any, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, float64(id))
+	}
+	return out
+}
+
+func TestTracksDismiss_QuietDryRunListsOnlyQuietActive(t *testing.T) {
+	c := newC3CLI(t)
+	now := time.Now().UTC()
+	at := func(days int) string { return now.Add(-time.Duration(days) * 24 * time.Hour).Format(time.RFC3339) }
+	seedNewsTrack(t, c.d, "auto", at(50), true, at(40), "") // has updates
+	seedNewsTrack(t, c.d, "auto", "", false, at(2), "")     // never read, 2 d
+	quiet := seedNewsTrack(t, c.d, "auto", at(45), false, at(40), "")
+	seedNewsTrack(t, c.d, "auto", at(15), false, at(10), "")    // read, 10 d
+	seedNewsTrack(t, c.d, "auto", at(45), false, at(40), at(1)) // dismissed
+	custom := seedNewsTrack(t, c.d, "custom", at(45), false, at(40), "")
+	seedNewsTrack(t, c.d, "auto", at(45), false, "garbage", "")
+	before := dismissedImage(t, c.d)
+
+	code, stdout, stderr := runCLI(t, "tracks", "dismiss", "--quiet-days", "30", "--dry-run", "--json")
+	require.Equal(t, 0, code, stderr)
+	m := lastJSONLine(t, stdout)
+	wantKeys(t, m, "count", "ids")
+	assert.Equal(t, float64(2), m["count"])
+	assert.Equal(t, idsOf(quiet, custom), m["ids"])
+	assert.Equal(t, before, dismissedImage(t, c.d), "a dry run writes nothing")
+
+	code, stdout, stderr = runCLI(t, "tracks", "dismiss", "--quiet-days", "30", "--dry-run")
+	require.Equal(t, 0, code, stderr)
+	assert.Contains(t, stdout, fmt.Sprintf("2 quiet tracks: %d, %d", quiet, custom))
+}
+
+func TestTracksDismiss_IdsDismissesActiveAndSkipsTheRest(t *testing.T) {
+	clearAgentMarkers(t)
+	c := newC3CLI(t)
+	a := seedNewsTrack(t, c.d, "auto", "", false, "2026-01-01T00:00:00Z", "")
+	b := seedNewsTrack(t, c.d, "custom", "", false, "2026-01-01T00:00:00Z", "")
+	gone := seedNewsTrack(t, c.d, "auto", "", false, "2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z")
+
+	code, stdout, stderr := runCLI(t, "tracks", "dismiss", "--ids", fmt.Sprintf("%d,%d,%d,%d,9999", a, b, a, gone), "--json")
+	require.Equal(t, 0, code, stderr)
+	m := lastJSONLine(t, stdout)
+	wantKeys(t, m, "dismissed", "skipped", "ids")
+	assert.Equal(t, float64(2), m["dismissed"])
+	assert.Equal(t, float64(2), m["skipped"])
+	assert.Equal(t, idsOf(a, b), m["ids"])
+	img := dismissedImage(t, c.d)
+	assert.NotEmpty(t, img[a])
+	assert.NotEmpty(t, img[b])
+	assert.Equal(t, "2026-01-02T00:00:00Z", img[gone])
+
+	c2 := seedNewsTrack(t, c.d, "auto", "", false, "2026-01-01T00:00:00Z", "")
+	code, stdout, stderr = runCLI(t, "tracks", "dismiss", "--ids", fmt.Sprintf("%d,%d", c2, a))
+	require.Equal(t, 0, code, stderr)
+	assert.Contains(t, stdout, "Dismissed 1 tracks (1 skipped)")
+}
+
+func TestTracksDismiss_WriteErrorPrintsPartialEnvelope(t *testing.T) {
+	clearAgentMarkers(t)
+	c := newC3CLI(t)
+	a := seedNewsTrack(t, c.d, "auto", "", false, "2026-01-01T00:00:00Z", "")
+	b := seedNewsTrack(t, c.d, "auto", "", false, "2026-01-01T00:00:00Z", "")
+	_, err := c.d.Exec(fmt.Sprintf(`CREATE TRIGGER fail_dismiss BEFORE UPDATE ON tracks WHEN NEW.id = %d BEGIN SELECT RAISE(ABORT,'boom'); END`, b))
+	require.NoError(t, err)
+
+	code, stdout, _ := runCLI(t, "tracks", "dismiss", "--ids", fmt.Sprintf("%d,%d", a, b), "--json")
+	assert.Equal(t, 1, code)
+	m := lastJSONLine(t, stdout)
+	wantKeys(t, m, "dismissed", "of", "error")
+	assert.Equal(t, float64(0), m["dismissed"])
+	assert.Equal(t, float64(2), m["of"])
+	assert.NotEmpty(t, m["error"])
+	assert.Empty(t, dismissedImage(t, c.d)[a], "nothing is committed")
+}
+
+func TestTracksDismiss_BulkRefusedUnderAgentMarkers(t *testing.T) {
+	c := newC3CLI(t)
+	old := time.Now().UTC().Add(-40 * 24 * time.Hour).Format(time.RFC3339)
+	id := seedNewsTrack(t, c.d, "auto", old, false, old, "")
+	for _, marker := range agentEnvMarkers {
+		t.Run(marker, func(t *testing.T) {
+			clearAgentMarkers(t)
+			t.Setenv(marker, "1")
+			code, _, stderr := runCLI(t, "tracks", "dismiss", "--ids", strconv.Itoa(id), "--json")
+			assert.NotEqual(t, 0, code)
+			assert.Contains(t, stderr, "refusing to stop tracking threads in bulk under an AI agent")
+			assert.Empty(t, dismissedImage(t, c.d)[id], "nothing is written")
+
+			code, stdout, stderr := runCLI(t, "tracks", "dismiss", "--quiet-days", "30", "--dry-run", "--json")
+			require.Equal(t, 0, code, stderr)
+			assert.Equal(t, idsOf(id), lastJSONLine(t, stdout)["ids"])
+		})
+	}
+}
+
+func TestTracksDismiss_FlagValidation(t *testing.T) {
+	clearAgentMarkers(t)
+	c := newC3CLI(t)
+	id := seedNewsTrack(t, c.d, "auto", "", false, "2026-01-01T00:00:00Z", "")
+	sid := strconv.Itoa(id)
+	cases := map[string][]string{
+		"no id and no flag":          {},
+		"id with --ids":              {sid, "--ids", sid},
+		"quiet days without dry run": {"--quiet-days", "30"},
+		"dry run alone":              {"--dry-run"},
+		"zero quiet days":            {"--quiet-days", "0", "--dry-run"},
+		"empty ids":                  {"--ids", ""},
+		"non-numeric id":             {"--ids", "1,x"},
+		"zero id":                    {"--ids", "0"},
+	}
+	for name, args := range cases {
+		t.Run(name, func(t *testing.T) {
+			code, _, stderr := runCLI(t, append([]string{"tracks", "dismiss"}, args...)...)
+			assert.Equal(t, 2, code, stderr)
+			assert.Empty(t, dismissedImage(t, c.d)[id], "nothing is written")
+		})
+	}
+}
+
+func TestTracksDismiss_SingleIDUnchanged(t *testing.T) {
+	c := newC3CLI(t)
+	id := seedNewsTrack(t, c.d, "auto", "", false, "2026-01-01T00:00:00Z", "")
+	code, stdout, stderr := runCLI(t, "tracks", "dismiss", strconv.Itoa(id))
+	require.Equal(t, 0, code, stderr)
+	assert.Contains(t, stdout, fmt.Sprintf("Track #%d dismissed", id))
+	assert.NotEmpty(t, dismissedImage(t, c.d)[id])
+}

@@ -310,6 +310,79 @@ func (db *DB) DismissTrack(id int) error {
 	return nil
 }
 
+// TrackNewsRow is the part of an active track the "with news" and quiet
+// rules read (tracks.NewsInput) plus its id.
+type TrackNewsRow struct {
+	ID            int
+	ReadAt        string // "" = never read
+	HasUpdates    bool
+	UpdatedAt     string
+	NewestEventAt string // newest track_events.created_at; "" = no event
+}
+
+// ListActiveTrackNewsInputs returns every active (not dismissed) track's news
+// inputs, ordered by id.
+func (db *DB) ListActiveTrackNewsInputs() ([]TrackNewsRow, error) {
+	rows, err := db.Query(`SELECT t.id, COALESCE(t.read_at,''), t.has_updates, t.updated_at,
+		COALESCE((SELECT MAX(created_at) FROM track_events e WHERE e.track_id = t.id),'')
+		FROM tracks t WHERE t.dismissed_at = '' ORDER BY t.id`)
+	if err != nil {
+		return nil, fmt.Errorf("listing active track news inputs: %w", err)
+	}
+	defer rows.Close()
+	var out []TrackNewsRow
+	for rows.Next() {
+		var r TrackNewsRow
+		if err := rows.Scan(&r.ID, &r.ReadAt, &r.HasUpdates, &r.UpdatedAt, &r.NewestEventAt); err != nil {
+			return nil, fmt.Errorf("scanning track news input: %w", err)
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("listing active track news inputs: %w", err)
+	}
+	return out, nil
+}
+
+// DismissActiveTracks dismisses each listed track that is still active, in
+// one transaction, and writes nothing else (TRACKS-07's bulk Stop Tracking).
+// Ids are de-duplicated in order; dismissed is the ids that changed. On an
+// error nothing is committed and dismissed is nil.
+func (db *DB) DismissActiveTracks(ids []int) (dismissed []int, err error) {
+	tx, err := db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("dismissing tracks: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	seen := make(map[int]bool, len(ids))
+	for _, id := range ids {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		res, err := tx.Exec(`UPDATE tracks SET dismissed_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+			WHERE id = ? AND dismissed_at = ''`, id)
+		if err != nil {
+			return nil, fmt.Errorf("dismissing track %d: %w", id, err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return nil, fmt.Errorf("dismissing track %d: %w", id, err)
+		}
+		if n == 1 {
+			dismissed = append(dismissed, id)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("dismissing tracks: %w", err)
+	}
+	return dismissed, nil
+}
+
 // RestoreTrack un-dismisses a track.
 func (db *DB) RestoreTrack(id int) error {
 	_, err := db.Exec(`UPDATE tracks SET dismissed_at = '' WHERE id = ?`, id)

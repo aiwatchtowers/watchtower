@@ -6,6 +6,10 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+
+	"watchtower/internal/db"
 )
 
 type trackNewsCase struct {
@@ -117,4 +121,20 @@ func TestLastEventAt_ZeroWhenNeitherParses(t *testing.T) {
 	if got := LastEventAt("2026-11-09T12:00:00Z", "2026-10-01T12:00:00Z"); !got.Equal(want) {
 		t.Errorf("LastEventAt picks the later: got %v, want %v", got, want)
 	}
+}
+
+func TestQuietTrackIDs_KeepsQuietInOrder(t *testing.T) {
+	now := time.Now().UTC()
+	at := func(d time.Duration) string { return now.Add(-d).Format(time.RFC3339) }
+	day := 24 * time.Hour
+	rows := []db.TrackNewsRow{
+		{ID: 1, ReadAt: at(50 * day), UpdatedAt: at(40 * day)},                   // quiet
+		{ID: 2, ReadAt: at(50 * day), UpdatedAt: at(10 * day)},                   // read recently active
+		{ID: 3, HasUpdates: true, ReadAt: at(50 * day), UpdatedAt: at(40 * day)}, // news
+		{ID: 4, ReadAt: at(50 * day), UpdatedAt: "garbage"},                      // unknown last event
+		{ID: 5, ReadAt: at(50 * day), UpdatedAt: at(40 * day), NewestEventAt: at(5 * day)},
+		{ID: 6, UpdatedAt: at(31 * day)}, // never read, old: no news, quiet
+	}
+	assert.Equal(t, []int{1, 6}, QuietTrackIDs(rows, now, QuietDays))
+	assert.Empty(t, QuietTrackIDs(nil, now, QuietDays))
 }
