@@ -54,7 +54,7 @@ Swift only: no migration, no Go source change, no prompt, no phone change. One s
 - One row: `InboxListBuilder.rootDays` lists today's card only (or today's placeholder while the owner is known). Past days live inside it; a past brief is never listed and nothing marks it read for the owner.
 - `InboxBriefDays.history` = the days of the last 30 dates (today included) with a briefing or a plan, newest first; `step(from:_:in:today:)` moves to the next listed date, never past today. The feed's first page (`ActionStripViewModel.dayPage`, 30) holds every card of that window, so History and the Earlier line are complete (`testFirstPageCoversThirtyDays`).
 - View model: `briefDate` (nil = today), `briefDay`, `briefHistoryShown`, `showBriefDay(_:)`, `stepBrief(_:)`, `openBriefHistory()`. Stepping or a History pick is the owner's pick: it marks that day's briefing read through `select(.day(date))`. A `.day(date)` route calls `showBriefDay`; a date with no card opens today's brief.
-- Pane (`InboxDayPane`): `InboxPaneHeader` "Morning brief", subtitle "<EEEE, d MMMM> · written HH:mm", actions: the stepper ‹ `EEE d MMM` › (newer disabled on today, older disabled when nothing is older), **History** (a popover over `InboxBriefHistory`, unread days dotted), **Discuss in Chat**, `?`. Body in the mockup's order (`InboxBriefLayout`): the lead and **Start here** (attention items 0..<3), **Your day** (the plan plus its section; a "N conflicts" chip when the plan has conflicts), **Waiting on you** (the three newest open messages, link to Waiting for me), **Moved overnight** (up to three unread tracks, link to Track my threads), then the other attention items, What happened, Team pulse, Coaching. Waiting on you and Moved overnight draw on today's brief only. `BriefingSectionsView(parts:)` keeps its old order as the default. Make buttons and today's placeholder are unchanged.
+- Pane (`InboxDayPane`): `InboxPaneHeader` "Morning brief", subtitle "<EEEE, d MMMM> · written HH:mm" (local time of the briefing's `created_at`; the day alone with no briefing), actions: the stepper ‹ `EEE d MMM` › (newer disabled on today, older disabled when nothing is older), **History** (a popover over `InboxBriefHistory`, unread days dotted), **Discuss in Chat** (not on the placeholder), `?`. Body in the mockup's order (`InboxBriefLayout`): the lead card (the first attention item's text, else the first your-day item's, so it repeats Start here #1 — the briefing has no separate summary sentence) and **Start here** (attention items 0..<3 with their actions), **Your day** (`InboxDayPlanBlock` plus the your-day items without their own title; a "N conflicts" `Chip` in `Tone.error` when the plan has conflicts, N = overlapping time-block pairs with a floor of 1, since a clash with a calendar event alone has no pair), **Waiting on you** (the three newest open messages as plain rows with no action, then "All in Waiting for me"), **Moved overnight** (up to three unread tracks, newest event first, then "Track my threads"), then **More for today** (attention items from 3 on), What happened, Team pulse, Coaching. Waiting on you and Moved overnight draw on today's brief only, each left out when empty; a link is hidden when its entry is not listed. Waiting on you and Moved overnight draw on today's brief only. `BriefingSectionsView(parts:)` keeps its old order as the default. Make buttons and today's placeholder are unchanged.
 
 ### Needs approval
 
@@ -68,14 +68,14 @@ Swift only: no migration, no Go source change, no prompt, no phone change. One s
 
 ### Phase 1 alone (interim)
 
-Waiting for me still holds people and mail, so "people waiting today" counts every open Waiting for me item from today, mail included; there is no Mail waiting row. Track my threads and Idea finder rows show today's numbers (unread tracks, ideas to judge) in the new layout. Phase 2 narrows the people term; phase 3 changes the tracks and ideas rules.
+Waiting for me still holds people and mail, so "people waiting today" — in the badge, the root count and the row's pill — counts every open Waiting for me item from today, mail included; there is no Mail waiting row. The guide says so as it ships ("people and mail waiting on you since midnight"); phase 2 edits it. Track my threads and Idea finder rows show today's numbers (unread tracks, ideas to judge) in the new layout. Phase 2 narrows the people term; phase 3 changes the tracks and ideas rules.
 
 ### v1 limits
 
 - Search filters the loaded rows only.
 - Track my threads, Idea finder and Messages still open today's legacy lists in the list column.
 - ⌥⌘S is one View-menu item shared with the Workbench's sessions panel.
-- Not built from the mockup: the list's **All / Unread** switch and "updated N min ago", Needs approval's **By kind / Oldest** switch.
+- Not built from the mockup: the list header's **All / Unread** switch and its "updated N min ago" line (rows do print "updated <ago>"), Needs approval's **By kind / Oldest** switch.
 
 ### Inventory
 

@@ -1,6 +1,6 @@
 # Day Plan
 
-The Day Plan turns your calendar, targets and briefing into a schedule for today: time blocks plus a short backlog for whatever fits if time allows. It is the **Your day** section of today's **Morning brief** in the [Inbox](inbox.md), under the brief's lead. It is for people whose day is more than a list of meetings.
+The Day Plan turns your calendar, targets and briefing into a schedule for today: time blocks plus a short backlog for whatever fits if time allows. It is the **Your day** section of today's **Morning brief** in the [Inbox](inbox.md), under **Start here**. It is for people whose day is more than a list of meetings.
 
 ## Why use it
 

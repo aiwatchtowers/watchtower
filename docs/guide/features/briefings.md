@@ -35,7 +35,7 @@ Rules you teach through [Catch Up](catch-up.md) feedback are applied to the brie
 
 The **Morning brief** pane reads top down: the lead line and **Start here** (the first three items that need you), **Your day** with today's plan, **Waiting on you** (the three newest messages for you), **Moved overnight** (up to three tracks with news), then the rest of **Needs you** under **More for today**, **What happened**, **Team pulse** and **Coaching**. **Waiting on you** and **Moved overnight** show on today's brief only.
 
-### When a day card is read
+### When a day's brief is read
 
 Opening a day's brief marks its briefing read, the same mark **I'm caught up** in [Catch Up](catch-up.md) sets. The Inbox lists only today's **Morning brief**; earlier days live inside it, under **‹ ›** and **History** in its header ([read an earlier brief](inbox.md#read-an-earlier-brief)). Nothing marks a past brief read for you, and the sidebar badge never counts a brief.
 
