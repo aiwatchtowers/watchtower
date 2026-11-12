@@ -17,6 +17,7 @@
 - Watchtower code never writes git (COACH-01 kept). `internal/coach` imports no `workbenchgit` and no `os/exec`.
 - Nothing is applied without a press: every new destination goes through `Applier.Accept`.
 - Settings destinations are global (user scope): `~/.claude/settings.json`, `~/.claude.json`. The memory destination is per project: `~/.claude/projects/<slug of the workbench folder>/memory/MEMORY.md`.
+- **Evidence reach matches the action's reach (D3).** A global destination (`claude_plugin_off`, `claude_mcp_server_off`, `claude_connectors_off`) is decided on calls across **every** workbench with agent analytics on (`GlobalSources`, Task 2), is stored with `workbench_id` NULL, has at most one open proposal per `(destination, source_key)` in the whole install, and shows in every workbench's Context block. `repo_claude_md` and `claude_memory_index` stay per workbench.
 - Config files are read for **names only**: plugin ids, server names, env key names. Never values, headers or tokens. They never appear in logs, rows, briefs or the screen (FILES-01, AGENTLOG-01).
 - Protected, never proposed and refused on Accept: MCP servers `watchtower-workbench` and `watchtower`; any skill of the Watchtower pack (`devpack.PackSkillNames`); plugins `superpowers@claude-plugins-official` and `pr-review-toolkit@claude-plugins-official`.
 - Thresholds (C4, tunable consts in `internal/coach/contextrules.go`):
@@ -35,7 +36,7 @@
 ## Review Focus
 
 1. **Claude Code rewrites `settings.json` between the proposal and Accept** (it does this constantly). Accept must still apply when only other keys changed. Pinned in Task 4.
-2. **A plugin used only outside workbenches** (the owner's other projects). The card must say "0 calls in Watchtower sessions" and list the other places it is on, never "unused". Pinned in Task 5 (evidence) and Task 8 (copy).
+2. **A plugin used only outside workbenches** (the owner's other projects). The card must say "0 calls in Watchtower sessions (all workbenches)" and list the other places it is on, never "unused". Pinned in Task 5 (evidence) and Task 8 (copy).
 3. **The same plugin at two scopes.** A plugin installed both user-scope and project-scope elsewhere: turning off the user key must not touch project installs. Pinned in Task 4.
 4. **A session started from Accept is closed or crashes right away.** The card must not stay "working" forever. Pinned in Task 8 (presentation over session state) and Task 6 (30-day window).
 5. **Old transcripts parsed before the bump.** They have no per-source rows. The breakdown says "not measured" for them, never 0, and the proposer never files from unmeasured sessions alone. Pinned in Task 2 and Task 5.
@@ -94,6 +95,7 @@ Depends on: Task 1.
     - `mcp__srv__y` → `srv` / `mcp_server`;
     - a built-in tool name → `builtin`;
     - an unprefixed skill or agent → `user` (`project` when it is in the folder's `.claude/`).
+  - `func GlobalSources(main *db.DB, al *agentlogdb.DB, since, now time.Time) ([]SourceRow, error)`: the same rows summed over every workbench with agent analytics on (tokens = the median across the measured sessions of all of them, calls = the sum). This feeds the global destinations (D3).
   - `func StartTokensMedian(sessions []agentlogdb.AgentReportSession, parts []agentlogdb.AgentContextPart) (tokens int, n int)` — the median main-lane baseline, also used by Task 6.
 
 - [ ] **Step 1: Write failing tests:**
@@ -102,8 +104,9 @@ Depends on: Task 1.
   - `TestSources_CallsJoined`: Skill calls by skill name, Agent calls by `subagent_type`, tool calls by name, summed per group;
   - `TestSources_UnmeasuredSessionsNotZero`: sessions without source rows are excluded and `measured_sessions` counts the others;
   - `TestStartTokensMedian`;
+  - `TestGlobalSources_SumsCallsAcrossWorkbenches`: a plugin with 0 calls in workbench A and 3 in workbench B has `Calls == 3`;
   - `TestAgentsReportJSON_PinnedKeys` gains `context.sources`.
-- [ ] **Step 2: Run** `go test ./internal/agentreport -run 'TestGroupOf|TestSources|TestStartTokens'`. Expect FAIL.
+- [ ] **Step 2: Run** `go test ./internal/agentreport -run 'TestGroupOf|TestSources|TestStartTokens|TestGlobalSources'`. Expect FAIL.
 - [ ] **Step 3: Implement** `sources.go`. Wire `loadBlocks` → `Context(...)`.
 - [ ] **Step 4: Run** `go test ./internal/agentreport ./cmd -run 'TestAgentsReport|TestGroupOf|TestSources|TestStartTokens'`. Expect PASS.
 - [ ] **Step 5: Commit** `feat(agentreport): context sources by plugin, server and connectors`.
@@ -123,13 +126,16 @@ Lane: parallel with Task 1. Use the `add-migration` skill.
     - destination: `claude_plugin_off`, `claude_mcp_server_off`, `claude_connectors_off`, `claude_memory_index`;
     - kind: `restructure`;
     - metric: `start_tokens`;
-    - origin: `context`.
+    - origin: `context`;
+    - verdict: `reverted_outside` (a settings change found undone by someone else, Task 6).
+  - No `pr` column: the PR is read from `workbench_pr_states` by the session's branch (Task 7); the spec's schema is updated to match.
   - New columns: `session_id INTEGER REFERENCES terminal_sessions(id) ON DELETE SET NULL`, `source_key TEXT NOT NULL DEFAULT ''` (the plugin id / server name / `connectors` / `memory`: part of the text key, C5).
   - `db.CoachProposal` gains `SessionID *int64` and `SourceKey string`.
-  - `func (d *DB) InsertContextCoachProposal(p CoachProposal, now time.Time) (int64, error)`: origin `context`, one open per `(destination, source_key, workbench)` (`ErrCoachTextBusy`), a fingerprint conflict returns `0, nil`.
+  - `func (d *DB) InsertContextCoachProposal(p CoachProposal, now time.Time) (int64, error)`: origin `context`. A global destination is stored with `workbench_id` NULL and has one open row per `(destination, source_key)` across the install; `repo_claude_md` / `claude_memory_index` have one open per `(destination, source_key, workbench)`. A second open row → `ErrCoachTextBusy`; a fingerprint conflict returns `0, nil`.
   - `func (d *DB) MarkCoachAcceptedWithSession(id, sessionID int64, baseline *float64, n int, now time.Time) error`: compare-and-set `open → accepted`; a row not open → `ErrCoachStateChanged`.
 - [ ] **Step 1: Write failing tests:**
   - `TestInsertContextCoachProposal_OnePerSource`;
+  - `TestInsertContextCoachProposal_GlobalOncePerInstall` (the same plugin filed from two workbenches → one row, `workbench_id` NULL);
   - `TestInsertContextCoachProposal_FingerprintNoop`;
   - `TestMarkCoachAcceptedWithSession_CAS` (the second call gets `ErrCoachStateChanged`);
   - `TestMigration00188_KeepsRows` (rows and FKs survive the rebuild).
@@ -158,7 +164,8 @@ Depends on: Task 3.
   - Per-key text: `before_text`/`after_text` hold the key's JSON value (`true`/`false`/absent = `""`); for a server, the server's entry JSON (kept 0600 in `<workspace>/coach-undo/<id>.json`, not in the row: the entry may hold secrets; the row holds `"present"`/`""`).
 - [ ] **Step 1: Write failing tests:**
   - `TestPluginOff_AppliesWhenOtherKeysChanged`: write settings, change `permissions` and another plugin, Accept → applied, other keys byte-equal.
-  - `TestPluginOff_StaleWhenOwnKeyChanged` → `ErrStale`, file untouched.
+  - `TestPluginOff_StaleWhenOwnKeyChanged` → `ErrStale`, file untouched, the row is `superseded` (the existing `DecideCoachProposal(open → superseded)` path; the card's copy is in Task 8).
+  - `TestPluginOff_VerifiesAfterWrite`: after the rename Accept re-reads the file; a key that does not read `after` → the write is reported as failed, the row stays open.
   - `TestPluginOff_RollbackRestoresAbsentKey`: the key was absent → Rollback removes it.
   - `TestPluginOff_ProjectInstallsUntouched`: `installed_plugins.json` byte-equal after Accept.
   - `TestConnectorsOff_SetsEnvOnly`.
@@ -167,14 +174,18 @@ Depends on: Task 3.
   - `TestSettings_NotJSONRefused`: a refusal naming the label, not the path.
   - `TestReadClaudeConfig_NamesOnly`: a fixture with a server `headers.Authorization`; no field of `ClaudeConfig` contains the value.
   - `TestCOACH01_ContextNeverTouchesWatchtower`: `IsProtected` covers the list in Global Constraints, and Accept of a hand-inserted protected row is refused.
+  - `TestCOACH01_ProtectedCoversSkillDependencies`: scans `.claude/skills/**/*.md` and the pack's skills (`devpack`) for `mcp__<server>__` names and `<plugin>:<agent>` / `subagent_type` names; every server and plugin they reference must be `IsProtected`. A new skill dependency fails this test instead of drifting from the list.
+  - `TestCOACH01_ConnectorsOffNeverReachesChat` (in `internal/chat`): with a user `settings.json` holding `env.ENABLE_CLAUDEAI_MCP_SERVERS = "false"`, the chat child's argv still carries `--setting-sources project,local` (`claude_backend.go:325`) and its env sets `ENABLE_CLAUDEAI_MCP_SERVERS` explicitly (`claudeai.go:97`).
+  - `TestWeeklySlots_IgnoreContextProposals` (`budget.go`): five open `context` rows leave the weekly pass its 3 slots.
   - Extend `TestCOACH01_DestinationsAreNeverRepoFiles` and `TestCOACH01_HomeDestinationsStayUnderHome` with a third pinned set `contextDestinations` (home, global except `claude_memory_index`, never `textDestinations`). Only add assertions.
-- [ ] **Step 2: Run** `go test ./internal/coach -run 'PluginOff|ConnectorsOff|MCPServerOff|Settings_|ReadClaudeConfig|COACH01'`. Expect FAIL.
+- [ ] **Step 2: Run** `go test ./internal/coach -run 'PluginOff|ConnectorsOff|MCPServerOff|Settings_|ReadClaudeConfig|COACH01|WeeklySlots'` and `go test ./internal/chat -run COACH01`. Expect FAIL.
 - [ ] **Step 3: Implement.**
   - Use the existing `readSettingsFile` + `writeFileAtomic(path, data, mode, expect, existed)`.
   - Re-read, decode to `map[string]json.RawMessage`, compare only the key, set it, re-encode. The comparison against the whole read bytes still guards the write itself. On an atomic-write conflict, re-read and retry once.
   - Server removal edits `~/.claude.json` the same way.
+  - After the rename, re-read and check the own key reads `after` (a concurrent writer that lost our key is caught here; a later rewrite by a running Claude Code is caught by Task 6's check).
   - `claude_memory_index` gets no writer here; Task 7 handles it.
-- [ ] **Step 4: Run** `go test ./internal/coach`. Expect PASS.
+- [ ] **Step 4: Run** `go test ./internal/coach ./internal/chat`. Expect PASS.
 - [ ] **Step 5: Commit** `feat(coach): settings destinations with per-key compare-and-set`.
 
 ### Task 5: Mechanical context proposer
@@ -189,17 +200,21 @@ Depends on: Tasks 2 and 4.
 - Consumes: `agentreport.BuildOverview` (its `Context.Sources`), `GroupOf`, `ReadClaudeConfig`, `IsProtected`, `InsertContextCoachProposal`.
 - Produces:
   - `type ContextEnv struct { DB *db.DB; AgentLog *agentlogdb.DB; Home string; Now func() time.Time; Lang agentreport.Lang }`.
-  - `func ProposeContext(env ContextEnv, workbenchID int64) (written int, err error)`. Rules:
+  - `func ProposeContext(env ContextEnv, workbenchID int64) (written int, err error)`. Rules 1–3 read `GlobalSources` (every workbench), never the one workbench's overview, and file global rows (`workbench_id` NULL); rules 4–5 read this workbench. Rules:
     1. a plugin group with `Calls == 0`, `Tokens >= ctxUnusedMinTokens`, enabled at user scope, not protected → `claude_plugin_off`;
     2. an `mcp_server` group, same rule, server in `UserServers` → `claude_mcp_server_off`;
     3. `claude_ai_connectors` with 0 calls across every connector, env not already `false` → `claude_connectors_off`;
     4. the folder's CLAUDE.md ≥ `ctxClaudeMDMinBytes` with a `## ` section ≥ `ctxClaudeMDSectionMinBytes` → `repo_claude_md`, kind `restructure`, evidence = section sizes;
     5. MEMORY.md ≥ `ctxMemoryIndexMinBytes` → `claude_memory_index`, kind `restructure`.
   - Every proposal: origin `context`, metric `start_tokens`, title and why in `digest.language` (i18n keys `ctx.*` in `internal/coach/i18n.go`).
-  - Evidence: `{kind:"source", ref:"<group> · <tokens> tok · 0 calls in Watchtower sessions in 30 days"}` plus `{kind:"elsewhere", ref:"on in: <project basenames>"}` when project-scope installs exist.
+  - Evidence: `{kind:"source", ref:"<group> · <tokens> tok · 0 calls in Watchtower sessions (all workbenches) in 30 days"}` plus `{kind:"elsewhere", ref:"on in: <project basenames>"}` when project-scope installs exist.
   - Nothing is filed when `measured_sessions < judgeMinSessions`.
+  - A config file that cannot be read or is not JSON files nothing that depends on it: a bad `settings.json` skips rules 1 and 3, a bad `~/.claude.json` skips rule 2; the other rules still run. The run logs the file's label, never its path or content.
 - [ ] **Step 1: Write failing tests** over a fake overview and a fake home:
   - `TestProposeContext_UnusedPlugin`;
+  - `TestProposeContext_UsedInAnotherWorkbenchSkipped` (0 calls here, 2 in another workbench → no proposal);
+  - `TestProposeContext_GlobalFiledOnce` (runs for two workbenches → one row);
+  - `TestProposeContext_UnreadableSettingsFilesNothingForIt` (bad `settings.json` → no plugin/connector rows, the memory row still filed; bad `~/.claude.json` → no server rows);
   - `TestProposeContext_UsedPluginSkipped`;
   - `TestProposeContext_ProtectedSkipped` (superpowers, pr-review-toolkit, watchtower-workbench);
   - `TestProposeContext_ConnectorsOnlyWhenAllUnused`;
@@ -216,7 +231,7 @@ Depends on: Tasks 2 and 4.
 
 ### Task 6: start_tokens metric and merge-based measurement
 
-Depends on: Tasks 2 and 3.
+Depends on: Tasks 2, 3 and 4 (`Reapply` uses the per-key writers).
 
 **Files:**
 - Modify: `internal/coach/metrics.go` (`Metrics.StartTokens`, `Of("start_tokens")`), `internal/coach/judge.go` (`windowStart`: `repo_*` and `claude_memory_index` use `measure_from`), `internal/coach/apply.go:265` (`baseline` for `start_tokens`), `internal/daemon/coach.go` (`coachCommitCheck` → `coachMeasureCheck`)
@@ -226,14 +241,19 @@ Depends on: Tasks 2 and 3.
 - Consumes: `agentreport.StartTokensMedian`; `db.PRStates(workbenchID)` (`workbench_pr_states`, keyed by branch ref); the session's branch from `terminal_session_worktrees`.
 - Produces: `func (d *Daemon) coachMeasureCheck(ctx context.Context, now time.Time) (done bool)`. For each accepted `repo_*` / memory row with `measure_from IS NULL`:
   - with a `session_id`: PR state `merged` → `SetCoachMeasureFrom(id, mergedAt)`; `closed` → `SetCoachVerdict(too_little_data)` with value nil;
-  - without a session (rows accepted before this change): keep today's `coachEditAtHead` rule;
-  - memory: MEMORY.md now ≠ `before_text` → `measure_from = now`.
+  - without a session (rows accepted before this change): keep today's `coachEditAtHead` rule — they have no session and no PR to watch (spec C8 now says so);
+  - memory: MEMORY.md now ≠ `before_text` → `measure_from = now` and `after_text` = the index as read (Rollback compares against it, Task 7).
+  - Settings rows, accepted and without a verdict: if the own key reads `before` again (a running Claude Code wrote back its in-memory copy, or the owner did), set verdict `reverted_outside` instead of measuring it into `no_effect`. The card offers **Turn Off Again** (`Applier.Reapply(id)`: per-key compare-and-set `before → after`, clears the verdict, `measure_from = now`; Task 7 adds the CLI verb).
+  - A PR refresh that fails (no `gh`, no network, auth) is logged at debug level and changes nothing: the row keeps waiting and is retried on the next tick; the 30-day `repoCommitWait` still ends it as `too_little_data`.
 - [ ] **Step 1: Write failing tests:**
   - `TestMeasure_StartTokens`;
   - `TestJudge_StartTokensWorks` (−12 % → works) and `TestJudge_StartTokensNoEffect`;
   - `TestMeasureCheck_MergedPR`, `TestMeasureCheck_ClosedPR`, `TestMeasureCheck_OpenPRWaits`, `TestMeasureCheck_LegacyRowUsesHead`, `TestMeasureCheck_MemoryChanged`;
-  - `TestMeasureCheck_ThirtyDays` (no merge after `repoCommitWait` → `too_little_data`).
-- [ ] **Step 2: Run** `go test ./internal/coach ./internal/daemon -run 'StartTokens|MeasureCheck'`. Expect FAIL.
+  - `TestMeasureCheck_ThirtyDays` (no merge after `repoCommitWait` → `too_little_data`);
+  - `TestMeasureCheck_RefreshErrorKeepsWaiting` (the refresher returns an error → row unchanged, no verdict);
+  - `TestMeasureCheck_SettingsRevertedOutside` (the plugin key reads `true` again → verdict `reverted_outside`);
+  - `TestReapply_TurnsOffAgain` (and a key changed to anything but `before` → `ErrStale`).
+- [ ] **Step 2: Run** `go test ./internal/coach ./internal/daemon -run 'StartTokens|MeasureCheck|Reapply'`. Expect FAIL.
 - [ ] **Step 3: Implement.** The daemon refreshes no PRs itself: it reads `workbench_pr_states`, which the session report keeps fresh. When the cache is older than 1 h for an awaiting row, it calls the same `sessionreport` refresher for that one branch.
 - [ ] **Step 4: Run** the same command. Expect PASS.
 - [ ] **Step 5: Commit** `feat(coach): start_tokens metric, measured from the merge`.
@@ -252,18 +272,23 @@ Depends on: Tasks 3 and 4.
     - what to change: the after text, or for `restructure` the instruction plus the evidence sizes;
     - why, and the expected saving;
     - "work in your own worktree, run the project's pre-PR review, open a PR, do not merge";
-    - for memory: "show the owner the diff with `ask_owner` (kind review) before writing; save the old index to `MEMORY.md.bak-<date>` first".
+    - for memory: "show the owner the diff with `ask_owner` (kind review) before writing; write no backup files into the memory folder — Watchtower keeps the old index".
     Text only, no config values.
-  - `func (a *Applier) AcceptWithSession(id, sessionID int64) error`: refuses non-session destinations, checks the session row exists in the proposal's workbench, then calls `MarkCoachAcceptedWithSession` with the `start_tokens` baseline.
+  - `func (a *Applier) AcceptWithSession(id, sessionID int64) error`: refuses non-session destinations, checks the session row exists in the proposal's workbench, then calls `MarkCoachAcceptedWithSession` with the `start_tokens` baseline. For `claude_memory_index` it first re-reads MEMORY.md and stores it as `before_text` (the copy Rollback restores), so an owner edit between proposal and Accept is not lost.
+  - Rollback of `claude_memory_index` (spec part 2): the Applier itself, no session. Compare-and-set: MEMORY.md must still equal `after_text` (recorded by Task 6 when the session wrote it); then it writes `before_text` back atomically. Index changed since → refused ("the memory index changed since — roll it back by hand"); `after_text` empty (the session never wrote) → refused ("nothing to roll back"). The archive file the agent created is left in place; nothing points to it any more.
+  - `func (a *Applier) Reapply(id int64) error` (body in Task 6) and the CLI `coach reapply <id> --json` (same owner checks as `accept`).
   - `Accept(id, edited)` on a session destination → `refuse("Accept it in Watchtower — it starts a session")`.
   - CLI:
     - `coach brief <id> --json` → `{ok, id, title, prompt}`;
     - `coach accept <id> --session <sid> --json` → `coachAcceptJSON` plus `session_id`;
-    - `coach proposals --json` rows gain `session_id`, `source_key`, `pr` (number from `workbench_pr_states` for the session's branch, null otherwise) and `pr_state`.
-  - Rollback of a session destination → refuse: "Roll it back with a session: Watchtower opens one" (v1). The Desktop offers **Revert…**, which starts a session with `coach brief <id> --revert`.
+    - `coach proposals --json` rows gain `session_id`, `source_key`, `pr` (number from `workbench_pr_states` for the session's branch, null otherwise), `pr_state` and `pr_url`.
+  - Rollback of a `repo_*` destination → refuse: "Roll it back with a session: Watchtower opens one" (v1). The Desktop offers **Revert…**, which starts a session with `coach brief <id> --revert`.
 - [ ] **Step 1: Write failing tests:**
   - `TestBrief_RepoRestructure` (contains the section sizes, "open a PR", "do not merge");
-  - `TestBrief_Memory` (contains `ask_owner`, the backup line);
+  - `TestBrief_Memory` (contains `ask_owner` and "write no backup files");
+  - `TestAcceptWithSession_MemoryRefreshesBefore`;
+  - `TestRollback_MemoryRestoresIndex`, `TestRollback_MemoryChangedSinceRefused`, `TestRollback_MemoryNeverWrittenRefused`;
+  - `cmd`: `TestCoachReapplyJSON`;
   - `TestBrief_NoConfigValues`;
   - `TestBrief_Revert` (the revert brief names the merged PR and asks for a revert PR);
   - `TestAccept_SessionDestinationRefusedWithoutSession`;
@@ -271,7 +296,7 @@ Depends on: Tasks 3 and 4.
   - `TestAcceptWithSession_WrongWorkbench`;
   - `TestAcceptWithSession_Twice` (`state_changed`);
   - `cmd`: `TestCoachBriefJSON_Keys`, `TestCoachAcceptSession_RefusedUnderAgent`, `TestCoachProposalsJSON_NewKeys`.
-- [ ] **Step 2: Run** `go test ./internal/coach ./cmd -run 'Brief|AcceptWithSession|AcceptSession|SessionDestination|CoachProposalsJSON'`. Expect FAIL.
+- [ ] **Step 2: Run** `go test ./internal/coach ./cmd -run 'Brief|AcceptWithSession|AcceptSession|SessionDestination|CoachProposalsJSON|Rollback_Memory|CoachReapply'`. Expect FAIL.
 - [ ] **Step 3: Implement.** `coach brief` is read-only: no `confirmWithOwner`, but still `refuseUnderAgent`. `accept --session` keeps both checks.
 - [ ] **Step 4: Run** the same command. Expect PASS.
 - [ ] **Step 5: Commit** `feat(coach): accept repository and memory changes through a session`.
@@ -285,18 +310,25 @@ Depends on: Tasks 3 and 4.
 Depends on: Tasks 2 and 7 (JSON keys).
 
 **Files:**
-- Modify: `WatchtowerDesktop/Sources/WatchtowerCore/Models/AgentReport.swift` (`AgentContextReport.sources: [AgentSourceGroupRow]?`), `.../Models/Coach.swift` (`sessionID`, `sourceKey`, `pr`, `prState`), `.../Models/CoachPresentation.swift` (labels for the four destinations)
+- Modify: `WatchtowerDesktop/Sources/WatchtowerCore/Models/AgentReport.swift` (`AgentContextReport.sources: [AgentSourceGroupRow]?`), `.../Models/Coach.swift` (`sessionID`, `sourceKey`, `pr`, `prState`, `prURL`), `.../Models/CoachPresentation.swift` (labels for the four destinations)
 - Create: `.../Services/ContextActionsPresentation.swift`
 - Test: `Tests/Core/AgentReportDecodingTests.swift`, `Tests/Core/CoachDecodingTests.swift`, `Tests/Core/ContextActionsPresentationTests.swift`
 
 **Interfaces:**
 - Produces:
   - `struct ContextActionRow { let proposal: CoachProposal; let saving: Int?; let tag: Tag (.settings / .repoPR / .memory); let evidence: String; let verb: Verb (.turnOff / .accept / .archive); let state: State }`.
-  - `State`: `.open`, `.starting`, `.working(sessionID)`, `.prReady(Int)`, `.measuring`, `.endedWithoutChange(sessionID)`, `.notMerged`, `.done(measuredSaving: Int?)`, `.failed(String)`.
-  - `enum ContextActionsPresentation { static func rows(proposals: [CoachProposal], sources: [AgentSourceGroupRow], sessionKinds: [Int64: SessionSwitcherPresentation.State.Kind], now: Date) -> (doThese: [ContextActionRow], done: [ContextActionRow]) }`. Open rows come first, largest saving first. Done rows stay for 14 days after `decidedAt`.
+  - `State`: `.open`, `.starting`, `.working(sessionID)`, `.linkFailed(sessionID)`, `.prReady(pr: Int, url: URL?)`, `.measuring`, `.endedWithoutChange(sessionID)`, `.notMerged`, `.changedSince`, `.revertedOutside`, `.done(beforeTokens: Int, afterTokens: Int?)`, `.failed(String)`.
+    - `.prReady` shows **Open PR** and **Show Diff** (the PR's files page, `url` + `/files`); this is the mockup's diff panel, read from GitHub instead of drawn in the app.
+    - `.done` shows the mockup's "before → after" (`79.6k → 49.4k`), with "before" = the proposal's baseline and "after" = the measured value once the verdict lands (nil → "measuring").
+    - `.changedSince` = a `superseded` context row (14 days, then gone); `.revertedOutside` = verdict `reverted_outside` with **Turn Off Again**.
+  - `enum ContextActionsPresentation { static func rows(proposals: [CoachProposal], workbenchID: Int64, sources: [AgentSourceGroupRow], sessionKinds: [Int64: SessionSwitcherPresentation.State.Kind], linkFailed: [Int64: Int64], now: Date) -> (doThese: [ContextActionRow], done: [ContextActionRow]) }`. Takes this workbench's rows plus the global ones (`workbenchID == 0`). Open rows come first, largest saving first. Done rows stay for 14 days after `decidedAt`.
   - `static func headline(baselineTokens: Int, rows: [ContextActionRow]) -> String`, e.g. "4 changes would cut it to ~42k".
   - Copy (exact):
-    - "0 calls in Watchtower sessions in 30 days";
+    - "0 calls in Watchtower sessions (all workbenches) in 30 days";
+    - "Changed since — nothing was written";
+    - "Turned back on outside Watchtower";
+    - "Takes effect in new sessions";
+    - "Session is running, but Watchtower could not link it";
     - "Also on in: …";
     - "Session ended without a PR";
     - "Session ended without a change";
@@ -308,7 +340,12 @@ Depends on: Tasks 2 and 7 (JSON keys).
   - `testRowsOrderedBySaving`;
   - `testWorkingUntilSessionEnds`;
   - `testEndedWithoutPR` (session kind `.stopped`/`.finished`, no PR);
-  - `testPRReady`;
+  - `testPRReadyHasDiffURL`;
+  - `testDoneShowsBeforeAfter` (and "measuring" before the verdict);
+  - `testSupersededShowsChangedSince`;
+  - `testRevertedOutsideOffersTurnOffAgain`;
+  - `testLinkFailedRow`;
+  - `testGlobalRowsShownInEveryWorkbench`;
   - `testDoneFadesAfter14Days`;
   - `testElsewhereEvidenceLine`;
   - `testHeadline`.
@@ -333,7 +370,9 @@ Depends on: Task 8. Read `docs/review/review-rules.md` "Swift / Desktop conventi
     - runs `coach brief <id> --json`, then `start(title, prompt)`;
     - on nil, the session failed to start: set `decisionFailed[id]` and leave the proposal open;
     - on success, runs `coach accept <id> --session <sid> --json`;
+    - if that call fails after the session started: retry it once; `state_changed` on the retry means another surface accepted it (refresh, no error). Any other failure records `linkFailed[id] = sid`: the row shows "Session is running, but Watchtower could not link it" with **Open Session** and **Retry Link** (the same `accept --session` with the same `sid`), and **Accept** is hidden while the entry exists, so a second session is never started for it. `linkFailed` lives in `CoachCenter` (survives navigation, not an app restart — a v1 limit written in the feature note);
     - `pending` holds the id throughout, so a second press is ignored.
+  - `CoachCenter.reapply(_ id: Int64) async` runs `coach reapply <id> --json`.
   - `CoachCenter.revertThroughSession(_:start:)` uses `coach brief <id> --revert`.
   - `ContextActionsView`: the **Do these** list. Each row shows saving, title, tag chip, evidence, verb button, and in-progress state with **Open Session** / **Open PR** / **Start Again** / **Decline**. Below are the faded done rows with **Undo** (settings) or **Revert…** (session).
   - `ContextSourcesFold`: **What's in it**. Per part, its groups with tokens and calls; built-ins read "can't change"; "not measured" when `measured_sessions == 0`.
@@ -344,10 +383,12 @@ Depends on: Task 8. Read `docs/review/review-rules.md` "Swift / Desktop conventi
   - `testAcceptThroughSessionStartFailureLeavesOpen`;
   - `testDoublePressIgnored`;
   - `testStartBeganThenNavigatedAway` (the state survives);
-  - view tests: the Do-these list renders the four tags; the fold shows "can't change" for built-ins.
+  - `testAcceptFailsAfterStartRecordsLinkFailed` (no second `start` call on a later press; **Retry Link** calls `accept --session` with the same id);
+  - `testAcceptFailsAfterStartStateChangedIsQuiet`;
+  - view tests: the Do-these list renders the three tags (`.settings`, `.repoPR`, `.memory`); the fold shows "can't change" for built-ins.
 - [ ] **Step 2: Run** `make test-swift FILTER='CoachCenterTests|AgentAnalyticsPaneViewTests'`. Expect FAIL.
 - [ ] **Step 3: Implement.** Accept on a session destination from any surface (Analytics, Home row, tuning panel) calls `acceptThroughSession`. Settings destinations keep `coach.accept`.
-- [ ] **Step 4: Run** the tests. Expect PASS. Then run `make desktop-shots DESKTOP_SHOTS=<scratch>` and compare with the mockup: Do these with all four tags, a working repo row, a done row, the open fold.
+- [ ] **Step 4: Run** the tests. Expect PASS. Then run `make desktop-shots DESKTOP_SHOTS=<scratch>` and compare with the mockup: Do these with all three tags, a working repo row, a PR-ready row with Show Diff, a done row, the open fold.
 - [ ] **Step 5: Commit** `feat(desktop): context actions in the Analytics Context block`.
 
 ## Phase 4 — contracts and docs
