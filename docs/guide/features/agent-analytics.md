@@ -94,7 +94,7 @@ text: In a workbench's **Analytics**, pick **Claude Code** or **Codex** in the h
 area: development
 level: power
 kind: tip
-since: next
+since: 0.28.1
 action: nav:projects
 -->
 
