@@ -52,7 +52,7 @@ final class IdeasViewModel {
     /// meant to stay small by daily triage).
     private let registryLimit = 200
 
-    private let dbManager: DatabaseManager
+    let dbManager: DatabaseManager
     /// Every write of this view model, in order (board #670).
     @ObservationIgnored private let writes = SerialWrites()
     /// One pending create or conversion (board #670).
@@ -252,33 +252,37 @@ final class IdeasViewModel {
     /// waits does nothing (nil), so no second target is made.
     @discardableResult
     func convertToTarget(_ idea: Idea) async -> Int? {
-        let converted = await pendingWrites.run("convert:\(idea.id)") { await convert(idea) }
+        let converted = await pendingWrites.run(Self.convertKey(idea.id)) { () -> Int? in
+            switch await convert(idea) {
+            case .success(let targetID):
+                return targetID
+            case .failure(let failure):
+                errorMessage = failure.message
+                return nil
+            }
+        }
         return converted.flatMap { $0 }
     }
 
-    private func convert(_ idea: Idea) async -> Int? {
-        do {
-            let today = Self.dateFormatter.string(from: Date())
-            let newTargetID = try await chained { db -> Int in
-                let targetID = try TargetQueries.create(
-                    db,
-                    text: idea.title,
-                    intent: idea.essence,
-                    level: "day",
-                    periodStart: today,
-                    periodEnd: today,
-                    sourceType: "idea",
-                    sourceID: String(idea.id)
-                )
-                try IdeaQueries.markConverted(db, id: idea.id, targetID: Int64(targetID))
-                return targetID
-            }
-            load()
-            return newTargetID
-        } catch {
-            if error is RowNotFoundError { load() }
-            errorMessage = "Failed to convert idea to target: \(error.localizedDescription)"
-            return nil
+    /// One conversion per idea at a time (`convertToTarget`).
+    static func convertKey(_ id: Int) -> String { "convert:\(id)" }
+
+    /// The conversion's write, its failure's text returned instead of shown.
+    func convert(_ idea: Idea) async -> Result<Int, IdeaWriteFailure> {
+        let today = Self.dateFormatter.string(from: Date())
+        return await attempt("convert idea to target") { db -> Int in
+            let targetID = try TargetQueries.create(
+                db,
+                text: idea.title,
+                intent: idea.essence,
+                level: "day",
+                periodStart: today,
+                periodEnd: today,
+                sourceType: "idea",
+                sourceID: String(idea.id)
+            )
+            try IdeaQueries.markConverted(db, id: idea.id, targetID: Int64(targetID))
+            return targetID
         }
     }
 
@@ -287,15 +291,29 @@ final class IdeasViewModel {
     /// input can gate on it.
     @discardableResult
     private func write(_ label: String, _ body: @escaping @Sendable (Database) throws -> Void) async -> Bool {
-        do {
-            try await chained(body)
-            load()
+        switch await attempt(label, body) {
+        case .success:
             return true
+        case .failure(let failure):
+            errorMessage = failure.message
+            return false
+        }
+    }
+
+    /// One write, then the lists' reload; a failure's text ("Failed to
+    /// <label>: …") is returned, not put in `errorMessage`, so a caller with
+    /// its own error line (the Idea finder card) keeps it to itself.
+    func attempt<T: Sendable>(
+        _ label: String, _ body: @escaping @Sendable (Database) throws -> T
+    ) async -> Result<T, IdeaWriteFailure> {
+        do {
+            let value = try await chained(body)
+            load()
+            return .success(value)
         } catch {
             // A vanished idea leaves the lists instead of failing on every retry.
             if error is RowNotFoundError { load() }
-            errorMessage = "Failed to \(label): \(error.localizedDescription)"
-            return false
+            return .failure(IdeaWriteFailure(message: "Failed to \(label): \(error.localizedDescription)"))
         }
     }
 
@@ -442,6 +460,11 @@ final class IdeasViewModel {
     private func chained<T: Sendable>(_ body: @escaping @Sendable (Database) throws -> T) async throws -> T {
         try await writes.runThrowing { try await self.dbManager.dbPool.write(body) }
     }
+}
+
+/// A failed idea write's text for the owner.
+struct IdeaWriteFailure: Error, Equatable {
+    let message: String
 }
 
 /// Mirrors `backfillEnvelope` in `cmd/ideas.go` — `ideas mine --from`'s final

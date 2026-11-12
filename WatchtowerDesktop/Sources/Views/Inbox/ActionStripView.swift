@@ -1,5 +1,4 @@
 import GRDB
-import os
 import SwiftUI
 import WatchtowerCore
 
@@ -18,8 +17,6 @@ import WatchtowerCore
 /// when the Inbox is on screen, which drives its 30 s poll.
 struct ActionStripView: View {
     @Environment(AppState.self) private var appState
-
-    private static let log = Logger(subsystem: "com.watchtower.desktop", category: "inbox")
 
     var body: some View {
         Group {
@@ -64,8 +61,7 @@ struct ActionStripView: View {
                     onNewArtifact: { appState.newInboxArtifact() },
                     onMakeTaskFromTrack: { await appState.makeTask(fromTrack: $0) },
                     onGoToTarget: { appState.navigateToTarget($0) },
-                    artifactMenu: appState.inboxArtifactMenu,
-                    ideaFacts: ideaFacts
+                    artifactMenu: appState.inboxArtifactMenu
                 )
             } else {
                 ProgressView()
@@ -140,18 +136,6 @@ struct ActionStripView: View {
                 appState.embeddedChatCenter.dropContext(type: IdeaChatSurface.contextType, id: String(id))
             }
         )
-    }
-
-    /// An Idea finder batch card's quotes and source; nil without a
-    /// database or on a failed read (the card leaves them out).
-    private func ideaFacts(_ ideaID: Int) async -> IdeaBatchCardFacts? {
-        guard let pool = appState.databaseManager?.dbPool else { return nil }
-        do {
-            return try await pool.read { db in try IdeaBatchCardFacts.read(db, ideaID: ideaID) }
-        } catch {
-            Self.log.error("idea facts read failed for idea \(ideaID): \(error.localizedDescription, privacy: .public)")
-            return nil
-        }
     }
 
     /// The live dictionary (`reaction_command_map` + `tool_trust`) through
@@ -265,9 +249,6 @@ struct ActionStripActionsView: View {
     /// The artifact ⋯ (reading pane, list rows) and Needs approval's ⋯;
     /// nil (tests, shots) draws neither.
     var artifactMenu: InboxArtifactMenuModel?
-    /// An Idea finder batch card's quotes and source
-    /// (`IdeaBatchCardFacts.read`); nil leaves them out.
-    var ideaFacts: (Int) async -> IdeaBatchCardFacts? = { _ in nil }
 
     /// What the header opened in the reading pane, and the Idea finder's
     /// open row; settable at init so a design shot can open one.
@@ -610,25 +591,34 @@ struct ActionStripActionsView: View {
             let batch = vm.ideaBatch
             IdeaBatchPane(
                 state: batch,
-                isWriting: batch.remaining.first.map {
-                    ideas.pendingWrites.isPending(InboxIdeaPane.writeKey($0.id))
-                } ?? false,
-                errorMessage: ideas.errorMessage,
-                loadFacts: ideaFacts,
-                onPress: { press, idea in
-                    Task {
-                        let landed = await ideas.press(press, on: idea)
-                        await vm.refresh()
-                        if press == .makeTarget, let targetID = landed { onGoToTarget(targetID) }
-                    }
-                },
+                isWriting: batch.remaining.first.map { ideas.isPressing($0.id) } ?? false,
+                failure: vm.ideaBatchFailure,
+                loadFacts: ideas.facts(for:),
+                onPress: { press, idea in await pressIdea(press, idea, ideas: ideas) },
                 onNext: { vm.takeNextIdeaBatch() },
                 onBacklog: { vm.openLegacy(.ideas) },
-                onDismissError: { ideas.errorMessage = nil }
+                onDismissError: { vm.ideaBatchFailure = nil }
             )
         } else {
             pane(nil)
         }
+    }
+
+    /// An Idea finder press, the Inbox re-read under its key; a failure
+    /// stays on the strip's model (it survives leaving the Inbox), a landed
+    /// Make a Target… opens its target.
+    private func pressIdea(_ press: IdeaBatchPress, _ idea: Idea, ideas: IdeasViewModel) async -> IdeaBatchPressOutcome {
+        let outcome = await ideas.press(press, on: idea) { await vm.refresh() }
+        switch outcome {
+        case .landed(let targetID):
+            vm.ideaBatchFailure = nil
+            if let targetID { onGoToTarget(targetID) }
+        case .failed(let message):
+            vm.ideaBatchFailure = IdeaBatchFailure(ideaID: idea.id, press: press, message: message)
+        case .didNotRun:
+            break
+        }
+        return outcome
     }
 
     /// An entry's pane header with the `?` only: its row's tile, title and

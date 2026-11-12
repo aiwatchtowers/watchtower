@@ -190,4 +190,23 @@ package enum IdeaBatchPress: CaseIterable, Equatable {
         case .makeTarget: "Make a Target…"
         }
     }
+
+    /// The key hint's word: "keep", "make a target".
+    package var hintLabel: String {
+        title.lowercased().replacingOccurrences(of: "…", with: "")
+    }
+}
+
+/// The Idea finder card's last failed press: its own text, and the press
+/// **Try Again** sends again.
+package struct IdeaBatchFailure: Equatable {
+    package let ideaID: Int
+    package let press: IdeaBatchPress
+    package let message: String
+
+    package init(ideaID: Int, press: IdeaBatchPress, message: String) {
+        self.ideaID = ideaID
+        self.press = press
+        self.message = message
+    }
 }

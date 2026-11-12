@@ -8,18 +8,21 @@ import WatchtowerCore
 /// list stays one press away through **Backlog · N**.
 ///
 /// The pane writes nothing itself: `onPress` hands the shown idea to the
-/// caller (`IdeasViewModel.press(_:on:)`), and `isWriting` is that idea's
-/// verdict key pending (`InboxIdeaPane.writeKey`). A card takes one press:
-/// a second key or button press on it before the batch re-reads does
-/// nothing, so the next card is judged only by a press after it is shown.
+/// caller (`IdeasViewModel.press(_:on:then:)`), and `isWriting` is that
+/// idea's press pending (`IdeasViewModel.isPressing`). A card takes one
+/// press: a second key or button press on it before the batch re-reads
+/// does nothing, so the next card is judged only by a press after it is
+/// shown. A failed press shows its own text with **Try Again** (the same
+/// press again) while its card is shown.
 struct IdeaBatchPane: View {
     let state: IdeaBatchState
     let isWriting: Bool
-    let errorMessage: String?
-    /// The shown card's quotes and source (`IdeaBatchCardFacts.read`); nil on
-    /// a failed read leaves them out.
+    /// The last failed press (`ActionStripViewModel.ideaBatchFailure`).
+    let failure: IdeaBatchFailure?
+    /// The shown card's quotes and source (`IdeasViewModel.facts(for:)`);
+    /// nil on a failed read leaves them out.
     let loadFacts: (Int) async -> IdeaBatchCardFacts?
-    let onPress: (IdeaBatchPress, Idea) -> Void
+    let onPress: (IdeaBatchPress, Idea) async -> IdeaBatchPressOutcome
     let onNext: () -> Void
     let onBacklog: () -> Void
     let onDismissError: () -> Void
@@ -43,16 +46,16 @@ struct IdeaBatchPane: View {
     init(
         state: IdeaBatchState,
         isWriting: Bool,
-        errorMessage: String?,
+        failure: IdeaBatchFailure?,
         loadFacts: @escaping (Int) async -> IdeaBatchCardFacts?,
-        onPress: @escaping (IdeaBatchPress, Idea) -> Void,
+        onPress: @escaping (IdeaBatchPress, Idea) async -> IdeaBatchPressOutcome,
         onNext: @escaping () -> Void,
         onBacklog: @escaping () -> Void,
         onDismissError: @escaping () -> Void
     ) {
         self.state = state
         self.isWriting = isWriting
-        self.errorMessage = errorMessage
+        self.failure = failure
         self.loadFacts = loadFacts
         self.onPress = onPress
         self.onNext = onNext
@@ -62,11 +65,9 @@ struct IdeaBatchPane: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if let errorMessage {
-                // A dismissed failure leaves the card on screen: it can be pressed again.
-                WriteErrorBanner(message: errorMessage) {
-                    gate.value.release()
-                    onDismissError()
+            if let idea = state.remaining.first, let failure, failure.ideaID == idea.id {
+                WriteErrorBanner(message: failure.message, onClose: onDismissError) {
+                    dispatch(failure.press, idea)
                 }
             }
             InboxCardColumn {
@@ -98,13 +99,6 @@ struct IdeaBatchPane: View {
         .onKeyPress(phases: .down) { handle($0) }
         // Another card is shown: it takes its own press.
         .onChange(of: state.remaining.first?.id) { gate.value.release() }
-        // A failed write leaves the card on screen: it can be pressed again.
-        .onChange(of: errorMessage) { _, message in
-            if message != nil { gate.value.release() }
-        }
-        .onChange(of: isWriting) { wasWriting, writing in
-            if wasWriting, !writing, errorMessage != nil { gate.value.release() }
-        }
     }
 
     // MARK: - Parts
@@ -169,10 +163,9 @@ struct IdeaBatchPane: View {
 
     private var keyHint: some View {
         HStack(spacing: Spacing.medium) {
-            keyHintItem("K", "keep")
-            keyHintItem("D", "drop")
-            keyHintItem("L", "later")
-            keyHintItem("T", "make a target")
+            ForEach(IdeaBatchPress.allCases, id: \.self) { press in
+                keyHintItem(String(press.key).uppercased(), press.hintLabel)
+            }
         }
         .font(.caption)
         .foregroundStyle(.tertiary)
@@ -237,9 +230,15 @@ struct IdeaBatchPane: View {
         return .handled
     }
 
+    /// A press the gate admits; one that failed or did not run leaves the
+    /// card pressable again (a landed one moves on to the next card).
     private func dispatch(_ press: IdeaBatchPress, _ idea: Idea) {
         guard gate.value.admit(idea.id, isWriting: isWriting) else { return }
-        onPress(press, idea)
+        let gate = gate
+        Task {
+            if case .landed = await onPress(press, idea) { return }
+            gate.value.release()
+        }
     }
 
     // MARK: - Texts
@@ -247,7 +246,7 @@ struct IdeaBatchPane: View {
     /// "<kind> · from <source>, <age>"; without mentions "<kind> · <age>",
     /// and without a readable `created_at` the age is left out.
     static func chipText(_ idea: Idea, sourceLabel: String) -> String {
-        let age = TimeFormatting.parseISO(idea.createdAt).map { TimeFormatting.relativeTime(from: $0) }
+        let age = AutomationDates.parse(idea.createdAt).map { TimeFormatting.relativeTime(from: $0) }
         let origin: String
         switch (sourceLabel.isEmpty, age) {
         case (false, let age?): origin = "from \(sourceLabel), \(age)"
@@ -260,7 +259,8 @@ struct IdeaBatchPane: View {
 }
 
 /// One press per shown card: a card that was pressed takes no further press
-/// until another card is shown or its write failed (`release`), and nothing
+/// until another card is shown or its press failed or did not run
+/// (`release`), and nothing
 /// is admitted while a verdict is writing.
 struct IdeaBatchPressGate: Equatable {
     private(set) var pressedID: Int?

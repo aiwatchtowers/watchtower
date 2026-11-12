@@ -771,6 +771,11 @@ package final class ActionStripViewModel {
         batchIDs: [], remaining: [], keptToday: [], backlogCount: 0, olderCount: 0, nextAvailable: 0,
         size: IdeaDailyBatch.defaultSize)
 
+    /// The Idea finder card's last failed press, kept here (AppState-owned)
+    /// so it survives leaving the Inbox; shown only while its idea is the
+    /// card on screen, cleared by the next press and by Dismiss.
+    package var ideaBatchFailure: IdeaBatchFailure?
+
     /// **Next N**: a new batch from the last read's ideas.
     package func takeNextIdeaBatch() {
         ideaBatch = IdeaDailyBatch(defaults: defaults).next(ideas: feed.ideas, now: clock(), calendar: Self.calendar)

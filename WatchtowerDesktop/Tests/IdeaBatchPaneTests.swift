@@ -64,10 +64,18 @@ final class IdeaBatchPaneTests: XCTestCase {
         return state
     }
 
-    private func pane(_ state: IdeaBatchState, isWriting: Bool = false, errorMessage: String? = nil) -> IdeaBatchPane {
-        IdeaBatchPane(state: state, isWriting: isWriting, errorMessage: errorMessage,
-                      loadFacts: { _ in nil }, onPress: { _, _ in }, onNext: {}, onBacklog: {},
-                      onDismissError: {})
+    private func pane(_ state: IdeaBatchState, isWriting: Bool = false,
+                      failure: IdeaBatchFailure? = nil) -> IdeaBatchPane {
+        IdeaBatchPane(state: state, isWriting: isWriting, failure: failure,
+                      loadFacts: { _ in nil }, onPress: { _, _ in .landed(targetID: nil) }, onNext: {},
+                      onBacklog: {}, onDismissError: {})
+    }
+
+    /// Lets the pane's press task finish (bounded).
+    private func settle(until done: () -> Bool) async {
+        for _ in 0..<200 where !done() {
+            await Task.yield()
+        }
     }
 
     private func texts(_ view: some View) throws -> [String] {
@@ -79,21 +87,21 @@ final class IdeaBatchPaneTests: XCTestCase {
     func testKeepWritesActive() async throws {
         let idea = try insert()
         let result = await ideas.press(.keep, on: idea)
-        XCTAssertEqual(result, idea.id)
+        XCTAssertEqual(result, .landed(targetID: nil))
         XCTAssertEqual(try stored(idea.id).status, .active)
     }
 
     func testDropWritesRejectedNotDropped() async throws {
         let idea = try insert()
         let result = await ideas.press(.drop, on: idea)
-        XCTAssertEqual(result, idea.id)
+        XCTAssertEqual(result, .landed(targetID: nil))
         XCTAssertEqual(try stored(idea.id).status, .rejected)
     }
 
     func testLaterWritesNotNowWithoutDate() async throws {
         let idea = try insert()
         let result = await ideas.press(.later, on: idea)
-        XCTAssertEqual(result, idea.id)
+        XCTAssertEqual(result, .landed(targetID: nil))
         let after = try stored(idea.id)
         XCTAssertEqual(after.status, .notNow)
         XCTAssertEqual(after.snoozeUntil, "")
@@ -102,7 +110,7 @@ final class IdeaBatchPaneTests: XCTestCase {
     func testMakeTargetConvertsAndReturnsTheTarget() async throws {
         let idea = try insert()
         let pressed = await ideas.press(.makeTarget, on: idea)
-        let targetID = try XCTUnwrap(pressed)
+        guard case .landed(let targetID?) = pressed else { return XCTFail("\(pressed)") }
         let after = try stored(idea.id)
         XCTAssertEqual(after.status, .converted)
         XCTAssertEqual(after.convertedTargetID, targetID)
@@ -114,7 +122,7 @@ final class IdeaBatchPaneTests: XCTestCase {
         for press in IdeaBatchPress.allCases {
             let idea = try insert(title: "Resurfaced \(press.title)", status: "rejected", needsReview: true)
             let pressed = await ideas.press(press, on: idea)
-            XCTAssertNotNil(pressed, press.title)
+            guard case .landed = pressed else { return XCTFail("\(press.title): \(pressed)") }
             let after = try stored(idea.id)
             XCTAssertFalse(after.needsReview, press.title)
             XCTAssertFalse(after.awaitsVerdict, press.title)
@@ -127,7 +135,8 @@ final class IdeaBatchPaneTests: XCTestCase {
         async let first = ideas.press(.keep, on: idea)
         async let second = ideas.press(.drop, on: idea)
         let results = await [first, second]
-        XCTAssertEqual(results.compactMap { $0 }, [idea.id])
+        XCTAssertEqual(results.filter { $0 == .landed(targetID: nil) }.count, 1)
+        XCTAssertEqual(results.filter { $0 == .didNotRun }.count, 1)
         XCTAssertEqual(try stored(idea.id).status, .active)
 
         // A press while the card's verdict key is held does nothing.
@@ -135,23 +144,69 @@ final class IdeaBatchPaneTests: XCTestCase {
         let nested = await ideas.pendingWrites.run(InboxIdeaPane.writeKey(other.id)) {
             await ideas.press(.drop, on: other)
         }
-        XCTAssertEqual(nested, .some(nil))
+        XCTAssertEqual(nested, .didNotRun)
         XCTAssertEqual(try stored(other.id).status, .proposed)
     }
 
-    func testFailedPressReturnsNilWithError() async throws {
+    /// The Inbox's re-read runs under the verdict key: a press on the card
+    /// still shown from before it (Make a Target… on a stale Backlog row)
+    /// writes nothing, so no second target is made.
+    func testKeyHeldThroughTheReRead() async throws {
+        let idea = try insert()
+        var heldDuringReRead = false
+        var pressDuringReRead: IdeaBatchPressOutcome?
+        let pressed = await ideas.press(.makeTarget, on: idea) {
+            heldDuringReRead = self.ideas.isPressing(idea.id)
+            pressDuringReRead = await self.ideas.press(.makeTarget, on: idea)
+        }
+        guard case .landed(_?) = pressed else { return XCTFail("\(pressed)") }
+        XCTAssertTrue(heldDuringReRead)
+        XCTAssertEqual(pressDuringReRead, .didNotRun)
+        let targets = try await dbManager.dbPool.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM targets WHERE source_type = 'idea'")
+        }
+        XCTAssertEqual(targets, 1)
+        XCTAssertFalse(ideas.isPressing(idea.id))
+    }
+
+    /// Make a Target… while a conversion of the idea started elsewhere (the
+    /// Ideas tab) is pending does not run, and the card counts as writing.
+    func testMakeTargetWhileConvertingElsewhereDoesNotRun() async throws {
+        let idea = try insert()
+        var pressed: IdeaBatchPressOutcome?
+        var writing = false
+        _ = await ideas.pendingWrites.run(IdeasViewModel.convertKey(idea.id)) {
+            writing = ideas.isPressing(idea.id)
+            pressed = await ideas.press(.makeTarget, on: idea)
+        }
+        XCTAssertTrue(writing)
+        XCTAssertEqual(pressed, .didNotRun)
+        XCTAssertEqual(try stored(idea.id).status, .proposed)
+    }
+
+    /// A failed press returns its own text and leaves the Ideas lists'
+    /// `errorMessage` alone; no re-read follows a press that did not run.
+    func testFailedPressReturnsItsOwnText() async throws {
         let idea = try insert()
         try await dbManager.dbPool.write { db in try db.execute(sql: "DELETE FROM ideas WHERE id = ?", arguments: [idea.id]) }
-        let pressed = await ideas.press(.keep, on: idea)
-        XCTAssertNil(pressed)
-        XCTAssertNotNil(ideas.errorMessage)
+        var reReads = 0
+        let pressed = await ideas.press(.keep, on: idea) { reReads += 1 }
+        guard case .failed(let text) = pressed else { return XCTFail("\(pressed)") }
+        XCTAssertTrue(text.hasPrefix("Failed to approve idea"), text)
+        XCTAssertNil(ideas.errorMessage)
+        XCTAssertEqual(reReads, 1)
+
+        _ = await ideas.pendingWrites.run(InboxIdeaPane.writeKey(idea.id)) {
+            _ = await ideas.press(.drop, on: idea) { reReads += 1 }
+        }
+        XCTAssertEqual(reReads, 1)
     }
 
     // MARK: - Press gate
 
     /// The card that was pressed takes no second press until another card is
-    /// shown (or its write failed): K K, or K then D, before the batch
-    /// re-reads, writes one verdict.
+    /// shown (or its press failed or did not run): K K, or K then D, before
+    /// the batch re-reads, writes one verdict.
     func testGateAdmitsOnePressPerShownCard() {
         var gate = IdeaBatchPressGate()
         XCTAssertTrue(gate.admit(1, isWriting: false))
@@ -163,26 +218,76 @@ final class IdeaBatchPaneTests: XCTestCase {
     }
 
     /// The view's own gate: Keep tapped twice on one card hands one press
-    /// out; dismissing the error banner (a failed write) lets the next tap
-    /// through.
-    func testViewTakesOnePressPerCardAndDismissReleasesIt() throws {
+    /// out; a landed press keeps the card closed until another one shows.
+    func testViewTakesOnePressPerCard() async throws {
         let idea = try insert()
         var presses: [IdeaBatchPress] = []
+        let gate = IdeaBatchPressGate.Box()
         var view = IdeaBatchPane(
-            state: state(batchIDs: [idea.id], remaining: [idea]), isWriting: false,
-            errorMessage: "Could not save the verdict", loadFacts: { _ in nil },
-            onPress: { press, _ in presses.append(press) }, onNext: {}, onBacklog: {}, onDismissError: {})
-        view.gateOverride = IdeaBatchPressGate.Box()
+            state: state(batchIDs: [idea.id], remaining: [idea]), isWriting: false, failure: nil,
+            loadFacts: { _ in nil },
+            onPress: { press, _ in presses.append(press); return .landed(targetID: nil) },
+            onNext: {}, onBacklog: {}, onDismissError: {})
+        view.gateOverride = gate
         let inspected = try view.inspect()
 
         try inspected.find(button: "Keep").tap()
         try inspected.find(button: "Keep").tap()
         try inspected.find(button: "Drop").tap()
+        await settle { presses.count == 1 }
+        for _ in 0..<20 { await Task.yield() }
         XCTAssertEqual(presses, [.keep])
+        XCTAssertEqual(gate.value.pressedID, idea.id)
+    }
 
-        try inspected.find(WriteErrorBanner.self).find(ViewType.Button.self).tap()
-        try inspected.find(button: "Keep").tap()
-        XCTAssertEqual(presses, [.keep, .keep])
+    /// A press that failed or did not run leaves the card pressable.
+    func testFailedOrNotRunPressReleasesTheCard() async throws {
+        let idea = try insert()
+        for outcome in [IdeaBatchPressOutcome.failed("Could not save the verdict"), .didNotRun] {
+            var presses: [IdeaBatchPress] = []
+            let gate = IdeaBatchPressGate.Box()
+            var view = IdeaBatchPane(
+                state: state(batchIDs: [idea.id], remaining: [idea]), isWriting: false, failure: nil,
+                loadFacts: { _ in nil },
+                onPress: { press, _ in presses.append(press); return outcome },
+                onNext: {}, onBacklog: {}, onDismissError: {})
+            view.gateOverride = gate
+            let inspected = try view.inspect()
+
+            try inspected.find(button: "Keep").tap()
+            await settle { gate.value.pressedID == nil }
+            XCTAssertNil(gate.value.pressedID, "\(outcome)")
+            try inspected.find(button: "Drop").tap()
+            await settle { presses.count == 2 }
+            XCTAssertEqual(presses, [.keep, .drop], "\(outcome)")
+        }
+    }
+
+    /// The card's own failure shows with **Try Again**, which sends the same
+    /// press again; another card's failure is not shown.
+    func testFailureShowsWithTryAgainResendingThePress() async throws {
+        let idea = try insert()
+        var presses: [IdeaBatchPress] = []
+        var dismissed = false
+        let view = IdeaBatchPane(
+            state: state(batchIDs: [idea.id], remaining: [idea]), isWriting: false,
+            failure: IdeaBatchFailure(ideaID: idea.id, press: .later, message: "Failed to snooze idea: busy"),
+            loadFacts: { _ in nil },
+            onPress: { press, _ in presses.append(press); return .landed(targetID: nil) },
+            onNext: {}, onBacklog: {}, onDismissError: { dismissed = true })
+        let banner = try view.inspect().find(WriteErrorBanner.self)
+        XCTAssertNoThrow(try banner.find(text: "Failed to snooze idea: busy"))
+
+        try banner.find(button: "Try Again").tap()
+        await settle { !presses.isEmpty }
+        XCTAssertEqual(presses, [.later])
+
+        try banner.findAll(ViewType.Button.self).last?.tap()
+        XCTAssertTrue(dismissed)
+
+        let other = pane(state(batchIDs: [idea.id], remaining: [idea]),
+                         failure: IdeaBatchFailure(ideaID: idea.id + 1, press: .keep, message: "Failed"))
+        XCTAssertThrowsError(try other.inspect().find(WriteErrorBanner.self))
     }
 
     // MARK: - View
@@ -244,11 +349,6 @@ final class IdeaBatchPaneTests: XCTestCase {
 
         let none = pane(state(batchIDs: [1], remaining: []))
         XCTAssertFalse(try texts(none).contains("Kept today"))
-    }
-
-    func testErrorShowsInBanner() throws {
-        let view = pane(state(batchIDs: [1], remaining: []), errorMessage: "Failed to approve idea: gone")
-        XCTAssertNoThrow(try view.inspect().find(WriteErrorBanner.self))
     }
 
     func testChipNamesKindSourceAndAge() throws {

@@ -69,7 +69,7 @@ enum InboxRedesignPhase3ShotFixtures {
             try open(scene, vm: vm, manager: manager, seeded: seeded)
             let appState = AppState()
             appState.databaseManager = manager
-            var inbox = ActionStripActionsView(
+            let inbox = ActionStripActionsView(
                 vm: vm, cheatSheetRows: [], feature: .on(lastCheck: nil), isEnabling: false, featureError: nil,
                 onEnable: {}, onOpenSettings: {}, onOpen: { _ in },
                 ideas: IdeasViewModel(dbManager: manager),
@@ -78,9 +78,6 @@ enum InboxRedesignPhase3ShotFixtures {
                 trackControls: RecordingCustomTrackControls(),
                 now: now
             )
-            inbox.ideaFacts = { id in
-                try? await manager.dbPool.read { db in try IdeaBatchCardFacts.read(db, ideaID: id) }
-            }
             return AnyView(inbox
                 .environment(appState)
                 .environment(\.markdownNavScreens, ["home"])
