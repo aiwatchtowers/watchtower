@@ -67,9 +67,13 @@ struct InboxBriefHistoryList: View {
                     .foregroundStyle(.secondary)
             }
             ForEach(days, id: \.date) { day in
-                Button { onPick(day.date) } label: { row(day) }
+                let button = Button { onPick(day.date) } label: { row(day) }
                     .buttonStyle(.plain)
-                    .accessibilityValue(day.isUnread ? "Unread" : "")
+                if day.isUnread {
+                    button.accessibilityValue("Unread")
+                } else {
+                    button
+                }
             }
         }
         .frame(minWidth: ListLayout.dateColumn + ListLayout.markColumn, alignment: .leading)

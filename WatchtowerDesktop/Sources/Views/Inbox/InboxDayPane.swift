@@ -25,6 +25,9 @@ struct InboxBriefControls {
     var onTrackMyThreads: (() -> Void)?
     /// The reaction commands' `?`; nil draws none.
     var onReactionCommands: (() -> Void)?
+    /// The moment and calendar Waiting on you's times are told from.
+    var now = Date()
+    var calendar = Calendar.current
 }
 
 /// The Inbox's Morning brief (spec "One brief row", §6.3, R3, R10, the
@@ -117,10 +120,11 @@ struct InboxDayPane: View {
     // MARK: - The mockup's sections
 
     /// The brief's lead line over **Start here**, its first three attention
-    /// items with their own actions.
+    /// items with their own actions. The lead is drawn only when it does not
+    /// repeat an item drawn below it (`shownLead`).
     @ViewBuilder
     private func leadCard(_ briefing: Briefing) -> some View {
-        let lead = InboxBriefLayout.lead(briefing)
+        let lead = Self.shownLead(briefing)
         if lead != nil || !InboxBriefLayout.startHere(briefing).isEmpty {
             VStack(alignment: .leading, spacing: Spacing.medium) {
                 if let lead {
@@ -137,6 +141,14 @@ struct InboxDayPane: View {
                                      onOpen: onOpenBriefingLink, onMakeTask: onMakeTask)
             }
         }
+    }
+
+    /// `InboxBriefLayout.lead` as its own paragraph, or nil when its text is
+    /// one of the attention or your-day items the pane draws anyway.
+    static func shownLead(_ briefing: Briefing) -> String? {
+        guard let lead = InboxBriefLayout.lead(briefing) else { return nil }
+        let drawn = briefing.parsedAttention.map(\.text) + briefing.parsedYourDay.map(\.text)
+        return drawn.contains(lead) ? nil : lead
     }
 
     /// **Your day**: the plan (with "N conflicts" when it has them) and the
@@ -225,7 +237,7 @@ struct InboxDayPane: View {
                     .lineLimit(2)
             }
             Spacer(minLength: Spacing.regular)
-            Text(InboxRowTime.label(row.stamp, now: Date(), calendar: .current))
+            Text(InboxRowTime.label(row.stamp, now: controls.now, calendar: controls.calendar))
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.tertiary)
         }
@@ -322,10 +334,14 @@ struct InboxDayPane: View {
 
     /// "Wednesday, 11 November · written 08:02" (the briefing's local write
     /// time); the day alone before a briefing exists.
-    static func subtitle(_ card: InboxDayCard) -> String {
+    static func subtitle(_ card: InboxDayCard, timeZone: TimeZone = .current) -> String {
         let day = dayFormatter.date(from: card.date).map(longFormatter.string(from:)) ?? card.date
         guard let written = card.briefing.flatMap({ AutomationDates.parse($0.createdAt) }) else { return day }
-        return "\(day) · written \(timeFormatter.string(from: written))"
+        let time = DateFormatter()
+        time.dateFormat = "HH:mm"
+        time.locale = Locale(identifier: "en_US_POSIX")
+        time.timeZone = timeZone
+        return "\(day) · written \(time.string(from: written))"
     }
 
     /// "Wed 22 Oct" for "2026-10-22"; the raw string when it does not parse.
@@ -337,13 +353,6 @@ struct InboxDayPane: View {
     private static let longFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "EEEE, d MMMM"
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        return formatter
-    }()
-
-    private static let timeFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm"
         formatter.locale = Locale(identifier: "en_US_POSIX")
         return formatter
     }()

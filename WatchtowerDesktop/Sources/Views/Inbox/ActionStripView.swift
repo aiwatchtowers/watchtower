@@ -612,8 +612,6 @@ struct ActionStripActionsView: View {
         let today = HomeFeedBuilder.dayString(now, calendar: calendar)
         let days = vm.feed.days
         let tracksListed = vm.folderEntries.contains(.legacyTracks)
-        // Labeled: with several closures a trailing one would be ambiguous.
-        // swiftlint:disable trailing_closure
         return InboxBriefControls(
             history: InboxBriefDays.history(days, today: today, now: now, calendar: calendar),
             canStepOlder: InboxBriefDays.step(from: card.date, .older, in: days, today: today) != nil,
@@ -624,22 +622,24 @@ struct ActionStripActionsView: View {
             movedOvernight: InboxBriefLayout.movedOvernight(vm.feed.tracks),
             onAllWaiting: waitingForMeEntryID.map(entryOpener),
             onTrackMyThreads: tracksListed ? { openEntry(InboxFolderEntry.legacyTracks.id) } : nil,
-            onReactionCommands: { openAux(.reactionCommands) }
+            onReactionCommands: { openAux(.reactionCommands) },
+            now: now,
+            calendar: calendar
         )
-        // swiftlint:enable trailing_closure
     }
 
-    /// Waiting for me's entry in the folder: its artifact, or the Messages
+    /// Waiting for me's entry in the folder: its artifact, else the Messages
     /// entry standing in for it; nil while the folder lists neither.
     private var waitingForMeEntryID: String? {
-        let automationID = vm.folderMenu.snapshot.waitingForMe.automationID
-        return vm.folderEntries.first { entry in
-            switch entry {
-            case let .artifact(card): automationID != nil && card.automationID == automationID
-            case .legacyMessages: true
-            default: false
-            }
-        }?.id
+        let entries = vm.folderEntries
+        if let automationID = vm.folderMenu.snapshot.waitingForMe.automationID,
+           let artifact = entries.first(where: { entry in
+               if case let .artifact(card) = entry { return card.automationID == automationID }
+               return false
+           }) {
+            return artifact.id
+        }
+        return entries.contains(.legacyMessages) ? InboxFolderEntry.legacyMessages.id : nil
     }
 
     private func entryOpener(_ id: String) -> () -> Void {

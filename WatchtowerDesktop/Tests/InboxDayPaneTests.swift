@@ -129,7 +129,8 @@ final class InboxDayPaneTests: XCTestCase {
         let order = try ["Start here", "Your day", "Standup", "Prepare the ACME-12 review", "Waiting on you",
                          "Moved overnight"].map { try XCTUnwrap(all.firstIndex(of: $0), $0) }
         XCTAssertEqual(order, order.sorted(), "found in \(all)")
-        XCTAssertEqual(all.filter { $0 == "Reply to the release thread" }.count, 2, "the lead, then Start here")
+        XCTAssertEqual(all.filter { $0 == "Reply to the release thread" }.count, 1,
+                       "the lead repeats Start here #1, so it is drawn once")
         XCTAssertFalse(all.contains("Needs you"))
         XCTAssertEqual(all.first, "Morning brief")
         XCTAssertNoThrow(try sut.inspect().find(button: "All in Waiting for me"))
@@ -216,6 +217,46 @@ final class InboxDayPaneTests: XCTestCase {
     func testSubtitleSaysTheDayAndWhenItWasWritten() throws {
         let card = InboxDayCard.placeholder(date: Self.today, stamp: Date())
         XCTAssertEqual(InboxDayPane.subtitle(card), "Thursday, 22 October", "before a briefing, the day alone")
+
+        let briefing = try Briefing(row: Row([
+            "id": 1, "user_id": "u", "date": Self.today, "role": "", "attention": "[]", "your_day": "[]",
+            "what_happened": "[]", "team_pulse": "[]", "coaching": "[]", "model": "", "input_tokens": 0,
+            "output_tokens": 0, "cost_usd": 0.0, "prompt_version": 1, "read_at": nil,
+            "created_at": "2026-10-22T06:02:00Z"
+        ] as [String: (any DatabaseValueConvertible)?]))
+        let written = InboxDayCard(date: Self.today, briefing: briefing, plan: nil, planDone: 0, planTotal: 0,
+                                   stamp: Date())
+        XCTAssertEqual(InboxDayPane.subtitle(written, timeZone: try XCTUnwrap(TimeZone(identifier: "UTC"))),
+                       "Thursday, 22 October · written 06:02")
+        XCTAssertEqual(InboxDayPane.subtitle(written, timeZone: try XCTUnwrap(TimeZone(identifier: "Asia/Tokyo"))),
+                       "Thursday, 22 October · written 15:02", "the write time in the local time zone")
+    }
+
+    /// The lead is the first attention item: Start here draws it, the lead
+    /// paragraph does not repeat it.
+    func testLeadRepeatingStartHereIsDrawnOnce() async throws {
+        try await insertBriefing(date: Self.today)
+        let sut = try await pane(date: Self.today)
+        let briefing = try XCTUnwrap(sut.card.briefing)
+
+        XCTAssertEqual(InboxBriefLayout.lead(briefing), "Reply to the release thread", "the row's preview keeps it")
+        XCTAssertNil(InboxDayPane.shownLead(briefing))
+        XCTAssertEqual(try texts(sut).filter { $0 == "Reply to the release thread" }.count, 1)
+    }
+
+    /// No attention items: the lead falls back to the first your-day item,
+    /// which Your day draws; it is not drawn twice.
+    func testLeadFromYourDayIsDrawnOnce() async throws {
+        try await pool.write { db in
+            try TestDatabase.insertBriefing(db, date: Self.today, yourDay: Self.yourDay)
+        }
+        let sut = try await pane(date: Self.today)
+        let briefing = try XCTUnwrap(sut.card.briefing)
+
+        XCTAssertEqual(InboxBriefLayout.lead(briefing), "Prepare the ACME-12 review")
+        XCTAssertNil(InboxDayPane.shownLead(briefing))
+        XCTAssertEqual(try texts(sut).filter { $0 == "Prepare the ACME-12 review" }.count, 1)
+        XCTAssertThrowsError(try sut.inspect().find(text: "Start here"), "no attention items, no Start here")
     }
 
     func testHeaderButtons() async throws {
