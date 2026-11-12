@@ -147,8 +147,8 @@ final class ActionStripApproveAllTests: XCTestCase {
     }
 
     /// An approved `create_track` whose `tracks start` failed was approved:
-    /// it counts as done, keeps its "not watched yet" warning on its card,
-    /// and the run goes on to the next row.
+    /// it counts as done and the run goes on to the next row; the applied
+    /// row leaves Needs approval, so the Inbox's error line says so.
     func testApprovedTrackNotWatchedCountsAsDone() async throws {
         let pool = try pool()
         let (ids, tracks) = try await pool.write { db -> ([Int64], [Int]) in
@@ -193,6 +193,14 @@ final class ActionStripApproveAllTests: XCTestCase {
         XCTAssertEqual(vm.actionFeed.rowErrors[ids[0]]?.verb, AgentActionFeed.startVerb, "its warning stays")
         XCTAssertEqual(vm.actionFeed.rowErrors[ids[0]]?.message, AgentActionFeed.notWatchedPrefix + refusal)
         XCTAssertNil(vm.actionFeed.rowErrors[ids[1]])
+        XCTAssertEqual(vm.lastError, "Approved, but 1 track is not watched yet: " + refusal)
+    }
+
+    func testNotWatchedLine() {
+        let prefix = AgentActionFeed.notWatchedPrefix
+        XCTAssertNil(ActionStripViewModel.notWatchedLine([]))
+        XCTAssertEqual(ActionStripViewModel.notWatchedLine([prefix + "a", prefix + "b"]),
+                       "Approved, but 2 tracks are not watched yet: a")
     }
 
     /// A row that failed meanwhile and an approve whose state moved (exit 3)
@@ -454,10 +462,46 @@ final class ActionStripApproveAllTests: XCTestCase {
         XCTAssertEqual(ids.count, 2)
     }
 
-    /// Plans, confirms and waits for `model` to finish.
+    /// One approvable row left (no Approve All any more), then another
+    /// arrives: the ids changed, so the old result goes.
+    func testFinishedPressResetsWhenANewRowJoinsOneLeft() async throws {
+        let pool = try pool()
+        let (_, ids) = try await seed(pool, tool: "create_targets", count: 2)
+        let vm = viewModel(pool, runner: FakeCLIRunner(stdout: Self.ok))
+        await vm.refresh()
+        let model = vm.approveAllModel(.targets)
+        try await run(model)
+        guard case .finished = model.state else { return XCTFail("\(model.state)") }
+
+        let otherPool = try DatabasePool(path: pool.path)
+        try await otherPool.write { db in
+            try db.execute(sql: "UPDATE agent_actions SET status = 'rejected' WHERE id = ?", arguments: [ids[0]])
+        }
+        await vm.refresh()
+        XCTAssertEqual(model.state, .idle, "one row left: the ids changed")
+
+        try await run(model) // nothing to approve: finishes at once
+        XCTAssertEqual(model.state, .finished(.done(count: 0, skipped: 0)))
+        await vm.refresh()
+        XCTAssertEqual(model.state, .finished(.done(count: 0, skipped: 0)), "same lone row: kept")
+        try await otherPool.write { db in
+            _ = try TestDatabase.insertAgentAction(
+                db, tool: "create_targets", argsJSON: #"{"title":"Later"}"#, createdAt: "2026-11-06T09:09:00Z")
+        }
+        await vm.refresh()
+        XCTAssertEqual(model.state, .idle, "a new row joined the lone one")
+    }
+
+    /// Plans, confirms (when there is something to confirm) and waits for
+    /// `model` to finish.
     private func run(_ model: InboxBulkPressModel) async throws {
         model.begin()
-        await waitUntil(model) { if case .confirming = $0 { true } else { false } }
+        await waitUntil(model) { state in
+            switch state {
+            case .confirming, .finished: true
+            case .idle, .planning, .running: false
+            }
+        }
         model.confirm()
         await waitUntil(model) { if case .finished = $0 { true } else { false } }
     }

@@ -773,12 +773,30 @@ package final class ActionStripViewModel {
         return InboxBulkPlan(ids: ids.map(String.init), count: ids.count)
     }
 
-    /// `group`'s approvable ids from the last read; nil while it is not listed.
+    /// `group`'s rows **Approve All** could approve from the last read
+    /// (`NeedsApprovalGroups.isBulkApprovable`, without the two-row and
+    /// one-tool rules, so any change is seen); nil while it is not listed.
     private func approvableIDs(_ group: NeedsApprovalGroup) -> [Int64]? {
         guard let items = NeedsApprovalGroups.build(openApprovals).first(where: { $0.0 == group })?.1 else {
             return nil
         }
-        return NeedsApprovalGroups.approveAllIDs(group, items) ?? []
+        return items.compactMap { item in
+            guard case let .action(action) = item.record, NeedsApprovalGroups.isBulkApprovable(action) else {
+                return nil
+            }
+            return action.id
+        }
+    }
+
+    /// The error line after an Approve All run whose approved tracks are not
+    /// all watched (`messages`: their `AgentActionFeed.startVerb` errors);
+    /// nil when every one is.
+    package static func notWatchedLine(_ messages: [String]) -> String? {
+        guard let first = messages.first else { return nil }
+        let reason = first.hasPrefix(AgentActionFeed.notWatchedPrefix)
+            ? String(first.dropFirst(AgentActionFeed.notWatchedPrefix.count)) : first
+        let tracks = messages.count == 1 ? "1 track is" : "\(messages.count) tracks are"
+        return "Approved, but \(tracks) not watched yet: \(reason)"
     }
 
     /// After a read: a finished press whose group now lists other approvable
@@ -801,7 +819,8 @@ package final class ActionStripViewModel {
     /// no longer open or pending (closed or failed meanwhile), no longer
     /// `NeedsApprovalGroups.isBulkApprovable`, or whose approve found its
     /// state moved (exit 3). An approved `create_track` whose `tracks start`
-    /// failed counts as done (its warning stays on its card). The first
+    /// failed counts as done; an applied row leaves Needs approval, so the
+    /// run says so on the Inbox's error line (`notWatchedLine`). The first
     /// failure — a changed row's args
     /// refused by Go included — stops the run and selects that card while
     /// Needs approval is on screen, where its error shows; the rest are left
@@ -811,6 +830,7 @@ package final class ActionStripViewModel {
         var done = 0
         var skipped = 0
         var failure: (row: AgentAction, message: String)?
+        var notWatched: [String] = []
         for text in ids {
             guard let id = Int64(text), let shown = approveAllShownArgs[id],
                   folderMenu.snapshot.openActions.contains(id),
@@ -821,11 +841,14 @@ package final class ActionStripViewModel {
             }
             await actionFeed.approve(id, shownArgs: shown)
             // A `create_track` approved whose track is not watched yet
-            // (`AgentActionFeed.startVerb`) was approved: it counts as done
-            // and keeps its warning on its card.
-            if let error = actionFeed.rowErrors[id], error.verb != AgentActionFeed.startVerb {
-                failure = (row, error.message)
-                break
+            // (`AgentActionFeed.startVerb`) was approved: it counts as done,
+            // and its reason goes to the error line after the run.
+            if let error = actionFeed.rowErrors[id] {
+                guard error.verb == AgentActionFeed.startVerb else {
+                    failure = (row, error.message)
+                    break
+                }
+                notWatched.append(error.message)
             }
             if actionFeed.stateMovedRows.contains(id) {
                 skipped += 1
@@ -835,6 +858,9 @@ package final class ActionStripViewModel {
         }
         await refresh()
         adoptFeedError()
+        if lastError == nil, let line = Self.notWatchedLine(notWatched) {
+            lastError = line
+        }
         for text in ids {
             if let id = Int64(text) { approveAllShownArgs[id] = nil }
         }
