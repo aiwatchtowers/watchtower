@@ -39,11 +39,11 @@ const (
 	// SlackWindowRowOverheadBytes is a row's JSON cost besides its string
 	// values, sized on the primitive's row shape {id, channel_id, channel,
 	// author, at, time, text, thread_id, permalink, by_owner, to_owner, bot}
-	// with generous non-string values: every string empty, the largest int64
-	// id, a 35-byte RFC 3339 "at" (nanoseconds and a zone offset), a 32-byte
-	// "time" and three false booleans encode to 238 bytes, plus 1 for the
-	// array comma; rounded up to 240. A field added to the row shape re-sizes
-	// it (TestSlackWindow_RowOverheadCoversTheRowShape).
+	// with generous non-string values: every other string empty, a 35-byte
+	// RFC 3339 "at" (nanoseconds and a zone offset), a 32-byte "time" and
+	// three false booleans encode to 221 bytes, plus 1 for the array comma;
+	// rounded up to 240. A field added to the row shape re-sizes it
+	// (TestSlackWindow_RowOverheadCoversTheRowShape).
 	SlackWindowRowOverheadBytes = 240
 )
 
@@ -61,6 +61,18 @@ type SlackWindowMessage struct {
 	ChannelID, ChannelName, ChannelType, TS, ThreadTS, UserID, Author, Text, Permalink string
 	At                                                                                 time.Time
 	ByOwner, ToOwner, Bot                                                              bool
+}
+
+// ID is the message's id in the primitive's row shape, "<channel_id>/<ts>".
+func (m SlackWindowMessage) ID() string { return m.ChannelID + "/" + m.TS }
+
+// ThreadID is the id of the thread's parent, "<channel_id>/<thread_ts>", for
+// a reply; "" for a message that is not one (a thread parent included).
+func (m SlackWindowMessage) ThreadID() string {
+	if m.ThreadTS == "" || m.ThreadTS == m.TS {
+		return ""
+	}
+	return m.ChannelID + "/" + m.ThreadTS
 }
 
 // SlackWindow is the result of ReadSlackWindow.
@@ -318,7 +330,7 @@ func cutSlackWindowText(text string) string {
 // primitive's row shape carries, plus SlackWindowRowOverheadBytes.
 func slackWindowMessageBytes(m SlackWindowMessage) int {
 	n := SlackWindowRowOverheadBytes
-	for _, f := range []string{m.ChannelID, m.ChannelName, m.Author, m.Text, m.ThreadTS, m.Permalink} {
+	for _, f := range []string{m.ID(), m.ChannelID, m.ChannelName, m.Author, m.Text, m.ThreadID(), m.Permalink} {
 		n += jsonStringBytes(f)
 	}
 	return n

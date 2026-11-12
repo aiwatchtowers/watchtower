@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math"
 	"strings"
 	"testing"
 	"time"
@@ -287,7 +286,7 @@ func TestSlackWindow_ByteBudgetCutsBeforeLLMLimit(t *testing.T) {
 
 // slackWindowLLMRow is the primitive's row shape as llm() receives it.
 type slackWindowLLMRow struct {
-	ID        int64  `json:"id"`
+	ID        string `json:"id"`
 	ChannelID string `json:"channel_id"`
 	Channel   string `json:"channel"`
 	Author    string `json:"author"`
@@ -312,9 +311,9 @@ func TestSlackWindow_JSONOfEscapedRowsFitsTheBudget(t *testing.T) {
 	rows := make([]slackWindowLLMRow, 0, len(w.Messages))
 	for _, m := range w.Messages {
 		rows = append(rows, slackWindowLLMRow{
-			ID: m.RowID, ChannelID: m.ChannelID, Channel: m.ChannelName, Author: m.Author,
+			ID: m.ID(), ChannelID: m.ChannelID, Channel: m.ChannelName, Author: m.Author,
 			At: m.At.Format(time.RFC3339Nano), Time: m.At.Format("15:04"), Text: m.Text,
-			ThreadID: m.ThreadTS, Permalink: m.Permalink, ByOwner: m.ByOwner, ToOwner: m.ToOwner, Bot: m.Bot,
+			ThreadID: m.ThreadID(), Permalink: m.Permalink, ByOwner: m.ByOwner, ToOwner: m.ToOwner, Bot: m.Bot,
 		})
 	}
 	encoded, err := json.Marshal(rows)
@@ -329,7 +328,7 @@ func TestSlackWindow_JSONOfEscapedRowsFitsTheBudget(t *testing.T) {
 
 func TestSlackWindow_RowOverheadCoversTheRowShape(t *testing.T) {
 	empty, err := json.Marshal(slackWindowLLMRow{
-		ID: math.MaxInt64, At: "2026-11-12T10:00:00.123456789+05:30", Time: strings.Repeat("x", 32),
+		At: "2026-11-12T10:00:00.123456789+05:30", Time: strings.Repeat("x", 32),
 	})
 	require.NoError(t, err)
 	// The row with every string value empty, plus the array comma; the
@@ -546,4 +545,14 @@ func TestLastAutomationRunCreatedAt(t *testing.T) {
 	_, ok, err = d.LastAutomationRunCreatedAt(ctx, id, TriggerSync, RunCancelled)
 	require.NoError(t, err)
 	assert.False(t, ok)
+}
+
+func TestSlackWindowMessage_IDs(t *testing.T) {
+	root := SlackWindowMessage{ChannelID: "1:C0ACME", TS: "1731400000.000100", ThreadTS: "1731400000.000100"}
+	reply := SlackWindowMessage{ChannelID: "1:C0ACME", TS: "1731400100.000200", ThreadTS: "1731400000.000100"}
+	plain := SlackWindowMessage{ChannelID: "1:C0ACME", TS: "1731400200.000300"}
+	assert.Equal(t, "1:C0ACME/1731400000.000100", root.ID())
+	assert.Empty(t, root.ThreadID(), "a thread parent is not a reply")
+	assert.Equal(t, root.ID(), reply.ThreadID(), "a reply's thread id is its parent's id")
+	assert.Empty(t, plain.ThreadID())
 }
