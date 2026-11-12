@@ -23,6 +23,16 @@ final class InboxPaneHeaderTests: XCTestCase {
         XCTAssertEqual(try sut.inspect().find(InboxTile.self).actualView().size, IconSize.listTile)
     }
 
+    /// The header draws the tile it is given, its size and selection kept.
+    func testDrawsTheGivenTile() throws {
+        let tile = InboxTile(kind: .approval, symbol: "checkmark.seal", size: IconSize.listTile + 4, isSelected: true)
+        let sut = InboxPaneHeader(tile: tile, title: "Needs approval", subtitle: "") { EmptyView() }
+        let drawn = try sut.inspect().find(InboxTile.self).actualView()
+        XCTAssertEqual(drawn.size, IconSize.listTile + 4)
+        XCTAssertTrue(drawn.isSelected)
+        XCTAssertEqual(drawn.symbol, "checkmark.seal")
+    }
+
     func testAnEmptySubtitleDrawsNoLine() throws {
         let sut = InboxPaneHeader(tile: InboxTile(kind: .threads), title: "Thread brief", subtitle: "") { EmptyView() }
         XCTAssertEqual(try sut.inspect().findAll(ViewType.Text.self).count, 1)

@@ -96,7 +96,7 @@ enum InboxRedesignShotFixtures {
             let inbox = ActionStripActionsView(
                 vm: vm, cheatSheetRows: [], feature: .on(lastCheck: nil), isEnabling: false, featureError: nil,
                 onEnable: {}, onOpenSettings: {}, onOpen: { _ in },
-                dayPane: { card in
+                dayPane: { card, _ in
                     var pane = InboxDayPane(card: card, today: today, plan: plan, owner: owner,
                                             onCommand: { _ in }, onOpenSource: { _ in })
                     pane.briefing = briefing

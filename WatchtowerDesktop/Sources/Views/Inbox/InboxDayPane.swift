@@ -2,8 +2,8 @@ import SwiftUI
 import WatchtowerCore
 
 /// What the Morning brief's pane reads besides its day (`ActionStripActionsView`
-/// fills it from the view model): the stepper and History, today's Waiting
-/// on you and Moved overnight, their links and the `?`. The defaults (tests,
+/// fills it from the view model): the stepper and History, Waiting on you
+/// and Moved overnight, their links and the `?`. The defaults (tests,
 /// design shots) draw a stepper that goes nowhere and no links.
 struct InboxBriefControls {
     /// `InboxBriefDays.history`, newest first.
@@ -27,7 +27,7 @@ struct InboxBriefControls {
     var onReactionCommands: (() -> Void)?
     /// The moment and calendar Waiting on you's times are told from.
     var now = Date()
-    var calendar = Calendar.current
+    var calendar = Calendar.autoupdatingCurrent
 }
 
 /// The Inbox's Morning brief (spec "One brief row", §6.3, R3, R10, the

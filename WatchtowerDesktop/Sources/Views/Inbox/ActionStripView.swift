@@ -35,7 +35,7 @@ struct ActionStripView: View {
                     onOpen: open,
                     onOpenAutomationRun: { runID in appState.openAutomationRun(runID: runID) },
                     onCardAction: { command in Task { await appState.perform(command) } },
-                    dayPane: { dayPane($0, vm: vm) },
+                    dayPane: { dayPane($0, today: $1, vm: vm) },
                     ideas: appState.ideasViewModel,
                     ideaPane: { ideaPane($0, vm: vm) },
                     onOpenSaveDraft: { appState.openSaveProposalDraft($0) },
@@ -96,8 +96,9 @@ struct ActionStripView: View {
                 set: { appState.actionStripViewModel?.listQuery = $0 })
     }
 
-    /// The Your day card over the AppState-owned plan; nil without a CLI.
-    private func dayPane(_ day: InboxDayCard, vm: ActionStripViewModel) -> InboxDayPane? {
+    /// The Your day card over the AppState-owned plan, `today` told from the
+    /// Inbox's own clock; nil without a CLI.
+    private func dayPane(_ day: InboxDayCard, today: String, vm: ActionStripViewModel) -> InboxDayPane? {
         guard let plan = appState.dayPlanViewModel else { return nil }
         let makeTask: (BriefingTaskSource) async -> String? = { source in
             guard let briefing = day.briefing else { return nil }
@@ -105,8 +106,7 @@ struct ActionStripView: View {
         }
         return InboxDayPane(
             card: day,
-            // Replaced from the Inbox's own clock in `briefPane`.
-            today: HomeFeedBuilder.dayString(Date(), calendar: .autoupdatingCurrent),
+            today: today,
             plan: plan,
             owner: appState.owner,
             onCommand: { command in Task { await appState.perform(command) } },
@@ -201,8 +201,9 @@ struct ActionStripActionsView: View {
     var onOpenAutomationRun: ((Int64) -> Void)?
     /// A press on a card's buttons (`InboxCardCommand`).
     var onCardAction: (InboxCardCommand) -> Void = { _ in }
-    /// The Your day card's pane (`ActionStripView.dayPane`); nil shows its title.
-    var dayPane: ((InboxDayCard) -> InboxDayPane?)?
+    /// The Your day card's pane for a card and today's `yyyy-MM-dd`
+    /// (`ActionStripView.dayPane`); nil shows its title.
+    var dayPane: ((InboxDayCard, String) -> InboxDayPane?)?
     /// The Idea finder's New idea and Find Ideas rows; nil leaves them out.
     var ideas: IdeasViewModel?
     /// The idea card (`ActionStripView.ideaPane`); nil shows its title.
@@ -512,14 +513,7 @@ struct ActionStripActionsView: View {
             ) { openAux(.reactionCommands) }))
                 .task(id: card.automationID) { await artifactMenu?.prepare(card) }
         case let .legacyDay(card)?: pane(.day(vm.briefDay ?? card))
-        case let .brief(action)?:
-            let content = InboxFolderEntries.content(.brief(action), vm.entryInputs)
-            pane(.proposal(action), header: AnyView(InboxPaneHeader(
-                tile: InboxTile(kind: content.kind, symbol: content.symbol), title: content.title,
-                subtitle: content.meta
-            ) {
-                InboxReactionCommandsButton { openAux(.reactionCommands) }
-            }))
+        case let .brief(action)?: pane(.proposal(action), header: helpHeader(entry))
         case let .approval(item)?: pane(Self.listItem(item), header: helpHeader(entry))
         case let .builtinNotice(notice)?: pane(.builtinNotice(notice), header: helpHeader(entry))
         case .legacyTracks?, .legacyIdeas?, .legacyMessages?, nil: pane(nil)
@@ -527,8 +521,8 @@ struct ActionStripActionsView: View {
     }
 
     /// An entry's pane header with the `?` only: its row's tile, title and
-    /// line under it (a root approval or notice, on a tree without Needs
-    /// approval).
+    /// line under it (a thread brief; a root approval or notice, on a tree
+    /// without Needs approval).
     private func helpHeader(_ entry: InboxFolderEntry?) -> AnyView? {
         guard let entry else { return nil }
         let content = InboxFolderEntries.content(entry, vm.entryInputs)
@@ -614,9 +608,7 @@ struct ActionStripActionsView: View {
 
     /// `dayPane` with today told from the Inbox's own clock (`now`).
     private func datedDayPane(_ card: InboxDayCard) -> InboxDayPane? {
-        guard var pane = dayPane?(card) else { return nil }
-        pane.today = HomeFeedBuilder.dayString(now ?? Date(), calendar: .autoupdatingCurrent)
-        return pane
+        dayPane?(card, HomeFeedBuilder.dayString(now ?? Date(), calendar: .autoupdatingCurrent))
     }
 
     private func briefControls(_ card: InboxDayCard) -> InboxBriefControls {

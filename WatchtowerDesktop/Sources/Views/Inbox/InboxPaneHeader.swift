@@ -31,7 +31,7 @@ struct InboxPaneHeader<Actions: View>: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: Spacing.medium) {
-            InboxTile(kind: tile.kind, symbol: tile.symbol, size: IconSize.listTile)
+            tile
             VStack(alignment: .leading, spacing: Spacing.tight) {
                 Text(title)
                     .font(.title3.weight(.semibold))
