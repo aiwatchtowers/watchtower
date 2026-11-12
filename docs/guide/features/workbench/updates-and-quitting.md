@@ -29,7 +29,9 @@ An update, log-out or restart never asks about sessions (only about a running re
 
 **Reset All Data** (Settings → System) always stops them. Sessions run only in the helper. If it is not running, starting a session starts it again; if that fails, the session does not start and its terminal shows **[Watchtower] the session host is not running** (or **[Watchtower] could not reach the session host: …**). Press **Restart** to try again.
 
-If Watchtower loses its connection to the helper while a session runs (for example while your Mac is short of memory), the session keeps running in the helper. Its terminal shows **Disconnected from the session host — reconnecting…** and reconnects on its own; **Reconnect** tries at once. A session is shown as exited only when the helper says it ended, and **Restart** on a session the helper still runs shows that session instead of starting a second agent.
+If Watchtower loses its connection to the helper while a session runs (for example while your Mac is short of memory), the session keeps running in the helper. Its terminal shows **Disconnected from the session host — reconnecting…** and reconnects on its own; **Reconnect** tries at once. A session is shown as exited only when the helper says it ended. Opening a stopped session that the helper still runs shows that session instead of starting a second agent, and **Start fresh** stops it first.
+
+If one session ever has two runs in the helper (an older Watchtower could start one beside a lost session), its terminal shows **Another run of this session is still running in the session host.** Press **Stop** to stop the other run; the one on screen keeps going.
 
 Sessions do not survive a Mac restart or log-out; use **Resume** after one. While Watchtower is closed, sessions send no notices and your phone sees no updates. A session that exited meanwhile shows its last output and reads as exited when you return.
 
@@ -46,8 +48,8 @@ Every Watchtower build on your Mac shares one helper. Two copies open on the sam
 ## When it's empty or wrong
 
 - **[Watchtower] the session host is not running.** The helper is not running and starting it again failed, so the session did not start. Press **Restart**; if it still fails, quit and reopen Watchtower.
-- **Disconnected from the session host. The session may still be running.** Watchtower stopped reconnecting after five minutes without an answer from the helper. Press **Reconnect**; if it keeps failing, quit and reopen Watchtower, which shows the session again if it still runs.
-- **Could not ask the session host whether this session still runs, so nothing was started.** Watchtower could not check for a running copy of the session, so it started none beside it. Press **Restart** again in a moment.
+- **Disconnected from the session host (…). The session may still be running.** Watchtower stopped reconnecting five minutes after the connection was lost, or the helper refused it the same way three times; the reason is in the brackets. Press **Reconnect**; if it keeps failing, quit and reopen Watchtower, which shows the session again if it still runs.
+- **Could not ask the session host whether this session still runs, so nothing was started.** Watchtower could not check for a running copy of the session, so it started none beside it. Open the session again in a moment.
 - **Sessions could not be restarted.** The one-time restart stopped part-way (the reason is under the line). Press **Retry**; sessions already listed resume then, and a reason that says your sessions were not changed means they still run.
 - **The list of sessions to resume could not be read.** Nothing was stopped. **Retry** reads it again. **Set Aside** keeps the file as `session-host-restart.json.corrupt`, and Watchtower asks about the running sessions again.
 - **N sessions wait to resume in a workspace that is no longer here.** Their workspace was removed. **Clear** drops them from the list.
