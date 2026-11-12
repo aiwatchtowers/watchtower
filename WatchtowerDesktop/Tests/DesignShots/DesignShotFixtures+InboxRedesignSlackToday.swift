@@ -10,15 +10,22 @@ import WatchtowerTestSupport
 /// pattern): the root with the Slack today row in Today (another entry
 /// open), Slack today's pane, its pane the next morning (yesterday's list
 /// and note), and the pane alone with the quiet channels' fold open.
-/// Sample data only, at one fixed moment.
+/// Sample data only, at one fixed local time: the moments are built in the
+/// machine's calendar (the Inbox reads `.autoupdatingCurrent`), so the
+/// stale scene is the next morning — and draws its note — in every zone.
 @MainActor
 enum InboxSlackTodayShotFixtures {
     private static var paths: [String] = []
     private static var managers: [DatabaseManager] = []
     private static let defaultsSuite = "InboxSlackTodayShotFixtures"
-    nonisolated static let now = AutomationDates.parse("2026-11-06T10:30:00Z") ?? Date()
+    nonisolated static let now = localTime(day: 6, hour: 10, minute: 30)
     /// The next morning, for the stale scene.
-    nonisolated static let nextMorning = AutomationDates.parse("2026-11-07T07:00:00Z") ?? Date()
+    nonisolated static let nextMorning = localTime(day: 7, hour: 7, minute: 0)
+
+    nonisolated private static func localTime(day: Int, hour: Int, minute: Int) -> Date {
+        Calendar.autoupdatingCurrent.date(from: DateComponents(year: 2026, month: 11, day: day, hour: hour,
+                                                               minute: minute)) ?? Date()
+    }
 
     static func cleanUp() {
         managers = []
@@ -70,10 +77,11 @@ enum InboxSlackTodayShotFixtures {
             XCTAssertEqual(today?.rows.first?.content.kind, .slackToday, "Slack today is in Today")
             let appState = AppState()
             appState.databaseManager = manager
-            let inbox = ActionStripActionsView(
+            var inbox = ActionStripActionsView(
                 vm: vm, cheatSheetRows: [], feature: .on(lastCheck: nil), isEnabling: false, featureError: nil,
                 onEnable: {}, onOpenSettings: {}, onOpen: { _ in }, onRetryBuiltin: { _ in }, now: clock
             )
+            inbox.artifactMenu = artifactMenu(manager.dbPool, vm, seeded.automation)
             return AnyView(inbox
                 .environment(appState)
                 .environment(\.markdownNavScreens, ["home"])
@@ -92,10 +100,37 @@ enum InboxSlackTodayShotFixtures {
             id: 1, automationID: 1, automationName: "Slack today", runID: 4, title: "Slack today", body: "",
             priority: "medium", createdAt: now, readAt: now, blocksJSON: blocksJSON, outputKey: "slack-today",
             contentHash: "h1", writtenAt: now, changedAt: now)
-        let pane = SlackTodayPane(card: card, summary: summary, now: now, calendar: .autoupdatingCurrent, menu: nil,
+        let menu = InboxArtifactMenuState(entries: InboxArtifactMenuContent(isBuiltin: true).entries)
+        let pane = SlackTodayPane(card: card, summary: summary, now: now, calendar: .autoupdatingCurrent, menu: menu,
                                   onMarkAllSeen: {}, onReactionCommands: {}, quietShown: true)
             .drawing(ArtifactCardBody(blocksJSON: blocksJSON, actionsJSON: "[]", text: "", mode: .inbox))
         return AnyView(InboxCardColumn { pane }.detailBackground())
+    }
+
+    /// The Inbox's artifact ⋯ over an Automations tab that knows Slack
+    /// today as a built-in offering Run Now (its `show` answered by a fake
+    /// CLI), read before the shot so the pane draws Run Now and the ⋯.
+    private static func artifactMenu(_ pool: DatabasePool, _ vm: ActionStripViewModel,
+                                     _ automationID: Int64) -> InboxArtifactMenuModel {
+        let slug = SlackTodayQueries.builtinID
+        let show = "{\"id\":\(automationID),\"slug\":\"\(slug)\",\"scope\":\"personal\",\"path\":\"builtin:\(slug)\","
+            + "\"name\":\"Slack today\",\"enabled\":true,\"runnable\":true,\"needs_confirmation\":false,"
+            + "\"recipe_text\":\"\",\"builtin\":{\"id\":\"\(slug)\",\"feature_ids\":[\"\(slug)\"],"
+            + "\"enabled\":true,\"run_now\":true}}"
+        let automations = AutomationsViewModel(
+            dbPool: pool, cli: AutomationsCLI(runner: FakeCLIRunner(stdout: Data(show.utf8))),
+            defaults: UserDefaults(suiteName: defaultsSuite) ?? .standard)
+        automations.refresh()
+        let menu = InboxArtifactMenuModel(folderMenu: vm.folderMenu, hooks: .init(
+            automations: { automations }, setBuiltinEnabled: { _, _ in nil }, openEditor: { _, _ in },
+            openRunHistory: { _ in }, refresh: {}))
+        if let card = vm.folderEntries.lazy.compactMap({ entry -> AutomationOutputCard? in
+            if case let .artifact(card) = entry, card.automationID == automationID { return card }
+            return nil
+        }).first {
+            run("the ⋯", vm) { await menu.prepare(card) }
+        }
+        return menu
     }
 
     /// A read, `step`, one more read — each awaited to its end.
@@ -118,6 +153,7 @@ enum InboxSlackTodayShotFixtures {
     struct Seeded {
         let slack: Int64
         let weekly: Int64
+        let automation: Int64
     }
 
     private static func dayString(_ date: Date) -> String {
@@ -168,12 +204,12 @@ enum InboxSlackTodayShotFixtures {
             body: "Three threads from example.com need an answer this week.",
             createdAt: at(clock, minutesAgo: 2 * 1440), readAt: at(clock, minutesAgo: 2 * 1440 - 30),
             writtenAt: at(clock, minutesAgo: 2 * 1440), changedAt: at(clock, minutesAgo: 2 * 1440))
-        return Seeded(slack: card, weekly: weekly)
+        return Seeded(slack: card, weekly: weekly, automation: slack)
     }
 
     /// 900 messages in 46 conversations (a DM and a group DM among them):
     /// four with news, 42 with nothing for the owner (two of them folded by
-    /// the state): 83 + 813 + 4 messages.
+    /// the state): 80 + 816 + 4 messages, the fold 820 as in the mockup.
     private static func stateJSON(day: String) -> String {
         func line(_ label: String, _ text: String, _ time: String) -> String {
             #"{"label":"\#(label)","text":"\#(text)","at":"\#(day)T\#(time):00Z","link":"https://acme.slack.com/archives/C1/p1"}"#
@@ -182,7 +218,7 @@ enum InboxSlackTodayShotFixtures {
             #""C1":{"name":"acme-release","n":23,"more":0,"lines":["#
                 + line("decided", "The tag goes out Thursday, after QA signs off.", "09:10") + ","
                 + line("asks_you", "Colleague A asks whether Thursday works for your side.", "09:20") + "]}",
-            #""C2":{"name":"acme-infra","n":41,"more":0,"lines":["#
+            #""C2":{"name":"acme-infra","n":38,"more":0,"lines":["#
                 + line("needs_someone", "Colleague D is looking for a reviewer for the DB migration.", "09:30") + ","
                 + line("fyi", "Staging was down 20 min at 09:40; fixed.", "09:45") + "]}",
             #""C3":{"name":"acme-finance","n":7,"more":0,"lines":["#
@@ -191,7 +227,7 @@ enum InboxSlackTodayShotFixtures {
             #""D1":{"name":"@Colleague B","n":30}"#,
             #""G1":{"name":"Colleague B, Colleague C","n":22}"#
         ]
-        let quiet = [("acme-random", 310), ("acme-music", 120), ("acme-watercooler", 96), ("acme-bots", 99)]
+        let quiet = [("acme-random", 313), ("acme-music", 120), ("acme-watercooler", 96), ("acme-bots", 99)]
             + (1...34).map { (String(format: "acme-team-%02d", $0), 4) }
         channels += quiet.enumerated().map { index, channel in #""Q\#(index)":{"name":"\#(channel.0)","n":\#(channel.1)}"# }
         return #"{"today":{"v":1,"day":"\#(day)","messages":900,"missed_yesterday":0,"channels":{"#
