@@ -248,7 +248,8 @@ final class InboxFolderEntriesTests: XCTestCase {
         XCTAssertEqual(vm.folderEntries.map(\.id), ["tracks"])
         XCTAssertNil(vm.folderList.rows.first?.content.pill, "nothing unread")
         await vm.selectEntry("tracks")
-        XCTAssertEqual(vm.legacyList, .tracks)
+        XCTAssertEqual(vm.entrySelection, "tracks")
+        XCTAssertNil(vm.legacyList, "Track my threads shows its own pane (phase 3)")
     }
 
     /// No ideas yet: Idea finder stays while its built-in exists, so New
@@ -266,15 +267,18 @@ final class InboxFolderEntriesTests: XCTestCase {
         XCTAssertEqual(with.folderList.rows.first?.menu.map(\.command), [.findIdeasInPastMessages])
     }
 
-    /// Opening a legacy list entry opens today's list for it; back returns.
+    /// Idea finder's entry shows its own pane (phase 3), not today's list;
+    /// a card route still opens the list, and back returns to the entry.
     func testLegacyListEntryOpensTodaysList() async throws {
         let pool = try pool()
-        try await pool.write { db in
+        let idea = try await pool.write { db in
             try InboxFolderFixtures.seed(db)
-            try TestDatabase.insertIdea(db)
+            return try TestDatabase.insertIdea(db)
         }
         let vm = await read(pool)
         await vm.selectEntry("ideas")
+        XCTAssertNil(vm.legacyList)
+        await vm.open(folder: nil, select: .card(.idea(Int(idea))))
         XCTAssertEqual(vm.legacyList, .ideas)
         XCTAssertFalse(vm.sections.isEmpty, "the Ideas list itself")
         vm.closeLegacy()
@@ -300,8 +304,8 @@ final class InboxFolderEntriesTests: XCTestCase {
         return (vm, pool, ids.card)
     }
 
-    /// The selected artifact leaves and Idea finder is next: its list opens
-    /// as a click on it opens it.
+    /// The selected artifact leaves and Idea finder is next: it is selected
+    /// as a click selects it, on its own pane (phase 3).
     func testSelectionMovingToALegacyEntryOpensItsList() async throws {
         let inbox = try await rootWithArtifact { try TestDatabase.insertIdea($0, updatedAt: "2026-11-06T08:00:00Z") }
         XCTAssertEqual(inbox.vm.folderEntries.map(\.id), ["artifact:\(inbox.card)", "ideas"])
@@ -309,8 +313,7 @@ final class InboxFolderEntriesTests: XCTestCase {
         await inbox.vm.markOutputDone(inbox.card)
 
         XCTAssertEqual(inbox.vm.entrySelection, "ideas")
-        XCTAssertEqual(inbox.vm.legacyList, .ideas, "the pane shows the Ideas list, not \"Select a card\"")
-        XCTAssertFalse(inbox.vm.sections.isEmpty)
+        XCTAssertNil(inbox.vm.legacyList, "Idea finder's own pane, no legacy list")
     }
 
     /// The selected artifact leaves and a day is next: the day is selected
@@ -399,7 +402,7 @@ final class InboxFolderEntriesTests: XCTestCase {
 
         await vm.open(folder: nil, select: .legacy(.tracks))
 
-        XCTAssertEqual(vm.legacyList, .tracks)
+        XCTAssertNil(vm.legacyList, "Track my threads' own pane")
         XCTAssertEqual(vm.entrySelection, "tracks")
         XCTAssertNil(defaults.object(forKey: ActionStripViewModel.folderKey), "not written into inbox.folder")
     }

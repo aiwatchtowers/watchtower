@@ -72,19 +72,32 @@ package enum InboxFolderEntries {
         package var approvalsOn: Bool
         package var now: Date
         package var calendar: Calendar
+        /// Today's idea batch (`ActionStripViewModel.ideaBatch`); nil = the
+        /// first `IdeaDailyBatch.defaultSize` candidates, nothing stored.
+        package var ideaBatch: IdeaBatchState?
 
         package init(
             feed: InboxFeedSnapshot,
             folders: InboxFolderMenuSnapshot,
             approvalsOn: Bool = true,
             now: Date,
-            calendar: Calendar = .current
+            calendar: Calendar = .current,
+            ideaBatch: IdeaBatchState? = nil
         ) {
             self.feed = feed
             self.folders = folders
             self.approvalsOn = approvalsOn
             self.now = now
             self.calendar = calendar
+            self.ideaBatch = ideaBatch
+        }
+
+        /// `ideaBatch`, or the default batch over the feed's ideas.
+        var batch: IdeaBatchState {
+            if let ideaBatch { return ideaBatch }
+            let size = IdeaDailyBatch.defaultSize
+            let ids = IdeaDailyBatch.candidates(feed.ideas, now: now).prefix(size).map(\.id)
+            return IdeaDailyBatch.state(ideas: feed.ideas, batchIDs: ids, now: now, size: size, calendar: calendar)
         }
     }
 
@@ -243,24 +256,21 @@ package enum InboxFolderEntries {
         case let .legacyDay(card):
             return brief(card, inputs)
         case .legacyTracks:
-            let unread = feed.tracks.filter(\.isUnread).sorted { $0.lastEventAt > $1.lastEventAt }
+            // Phase 3: only the threads with news (`TrackThreadsSummary`).
+            let summary = TrackThreadsSummary.build(tracks: feed.tracks, now: now)
             let at = tracksUpdatedAt(feed)
             return InboxRowContent(
-                kind: .threads, title: InboxLegacyList.tracks.title,
-                preview: unread.isEmpty ? "Nothing new in your threads"
-                                        : unread.prefix(2).map(\.track.text).joined(separator: "\n"),
-                meta: at.map { updated($0, now: now) } ?? "", time: at.map { time($0, inputs) } ?? "",
-                pill: pill(unread.count, .news), isUnread: !unread.isEmpty)
+                kind: .threads, title: InboxLegacyList.tracks.title, preview: summary.rowPreview,
+                meta: summary.rowMeta, time: at.map { time($0, inputs) } ?? "",
+                pill: summary.pillCount.flatMap { pill($0, .news) }, isUnread: summary.isUnread)
         case .legacyIdeas:
-            let judge = feed.ideas.filter(\.awaitsVerdict)
-                .sorted { (AutomationDates.parse($0.updatedAt) ?? .distantPast) > (AutomationDates.parse($1.updatedAt) ?? .distantPast) }
+            // Phase 3: today's batch (`IdeaBatchState`).
+            let batch = inputs.batch
             let at = ideasUpdatedAt(feed)
             return InboxRowContent(
-                kind: .ideas, title: InboxLegacyList.ideas.title,
-                preview: judge.first.map { "\(judge.count) \(judge.count == 1 ? "idea" : "ideas") to judge. Top one: “\($0.title)”" }
-                    ?? "No ideas wait for a verdict",
-                meta: at.map { updated($0, now: now) } ?? "", time: at.map { time($0, inputs) } ?? "",
-                pill: pill(judge.count, .batch), isUnread: !judge.isEmpty)
+                kind: .ideas, title: InboxLegacyList.ideas.title, preview: batch.rowPreview, meta: batch.rowMeta,
+                time: at.map { time($0, inputs) } ?? "",
+                pill: batch.pillCount.flatMap { pill($0, .batch) }, isUnread: batch.isUnread)
         case let .brief(action):
             // A result, not something waiting: never unread, never counted.
             return InboxRowContent(

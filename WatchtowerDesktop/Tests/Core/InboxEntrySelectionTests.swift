@@ -325,7 +325,7 @@ final class InboxEntrySelectionTests: XCTestCase {
         let vm = makeVM()
         await vm.refresh()
         await vm.selectEntry(InboxFolderEntry.legacyIdeas.id)
-        XCTAssertEqual(vm.legacyList, .ideas)
+        XCTAssertNil(vm.legacyList, "Idea finder's own pane (phase 3)")
         XCTAssertEqual(defaults.string(forKey: ActionStripViewModel.entryKey(folders.root)), "ideas")
 
         vm.selectFolder(folders.root)

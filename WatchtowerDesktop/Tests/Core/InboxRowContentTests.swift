@@ -182,8 +182,8 @@ final class InboxRowContentTests: XCTestCase {
                 as [String: (any DatabaseValueConvertible)?]))
             return InboxTrackCard(track: row, lastEventAt: try date(stamp), newEventCount: 0)
         }
-        func idea(_ id: Int, _ title: String, status: String, updated: String) -> Idea {
-            Idea(row: Row(["id": id, "title": title, "status": status, "updated_at": updated]))
+        func idea(_ id: Int, _ title: String, status: String, created: String, updated: String) -> Idea {
+            Idea(row: Row(["id": id, "title": title, "status": status, "created_at": created, "updated_at": updated]))
         }
         let feed = InboxFeedSnapshot(
             tracks: [
@@ -193,16 +193,20 @@ final class InboxRowContentTests: XCTestCase {
                 try track(4, "Read one", unread: false, at: "2026-11-11T06:00:00Z")
             ],
             ideas: [
-                idea(1, "A shared glossary", status: "proposed", updated: "2026-11-10T09:00:00Z"),
-                idea(2, "Weekly digest", status: "proposed", updated: "2026-11-11T05:00:00Z"),
-                idea(3, "Kept one", status: "active", updated: "2026-11-11T06:00:00Z")
+                idea(1, "A shared glossary", status: "proposed", created: "2026-11-01T09:00:00Z",
+                     updated: "2026-11-10T09:00:00Z"),
+                idea(2, "Weekly digest", status: "proposed", created: "2026-11-05T09:00:00Z",
+                     updated: "2026-11-11T05:00:00Z"),
+                idea(3, "Kept one", status: "active", created: "2026-11-02T09:00:00Z", updated: "2026-11-11T06:00:00Z"),
+                idea(4, "Long ago", status: "proposed", created: "2026-09-01T09:00:00Z",
+                     updated: "2026-09-01T09:00:00Z")
             ])
 
         let tracks = InboxFolderEntries.content(.legacyTracks, try inputs(feed))
         XCTAssertEqual(tracks.kind, .threads)
         XCTAssertEqual(tracks.title, "Track my threads")
         XCTAssertEqual(tracks.preview, "Budget review\nRelease acme 2.0")
-        XCTAssertEqual(tracks.meta, "updated 2 min ago")
+        XCTAssertEqual(tracks.meta, "1 quiet thread folded")
         XCTAssertEqual(tracks.time, "08:00")
         XCTAssertEqual(tracks.pill, InboxRowPill(count: 3, tone: .news))
         XCTAssertTrue(tracks.isUnread)
@@ -210,17 +214,27 @@ final class InboxRowContentTests: XCTestCase {
         let ideas = InboxFolderEntries.content(.legacyIdeas, try inputs(feed))
         XCTAssertEqual(ideas.kind, .ideas)
         XCTAssertEqual(ideas.title, "Idea finder")
-        XCTAssertEqual(ideas.preview, "2 ideas to judge. Top one: “Weekly digest”")
+        XCTAssertEqual(ideas.preview, "Today’s 2 ideas to judge. Top one: “A shared glossary”.")
+        XCTAssertEqual(ideas.meta, "1 in the backlog · 1 older than 30 days")
         XCTAssertEqual(ideas.pill, InboxRowPill(count: 2, tone: .batch))
         XCTAssertTrue(ideas.isUnread)
 
+        // A stored batch from the view model wins over the default one.
+        var stored = try inputs(feed)
+        stored.ideaBatch = IdeaDailyBatch.state(
+            ideas: feed.ideas, batchIDs: [2], now: try now(), size: 13, calendar: Self.kyiv)
+        let batch = InboxFolderEntries.content(.legacyIdeas, stored)
+        XCTAssertEqual(batch.preview, "Today’s 1 idea to judge. Top one: “Weekly digest”.")
+        XCTAssertEqual(batch.pill, InboxRowPill(count: 1, tone: .batch))
+
         let quiet = InboxFeedSnapshot(tracks: [try track(4, "Read one", unread: false, at: "2026-11-11T06:00:00Z")])
         let noTracks = InboxFolderEntries.content(.legacyTracks, try inputs(quiet))
-        XCTAssertEqual(noTracks.preview, "Nothing new in your threads")
+        XCTAssertEqual(noTracks.preview, "Nothing new in 1 thread")
+        XCTAssertEqual(noTracks.meta, "1 quiet thread folded")
         XCTAssertNil(noTracks.pill)
         XCTAssertFalse(noTracks.isUnread)
         let noIdeas = InboxFolderEntries.content(.legacyIdeas, try inputs(quiet))
-        XCTAssertEqual(noIdeas.preview, "No ideas wait for a verdict")
+        XCTAssertEqual(noIdeas.preview, "Nothing to judge from the last 30 days")
         XCTAssertNil(noIdeas.pill)
         XCTAssertFalse(noIdeas.isUnread)
     }

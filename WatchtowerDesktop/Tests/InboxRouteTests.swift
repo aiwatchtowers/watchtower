@@ -68,6 +68,12 @@ final class InboxRouteTests: XCTestCase {
             Self(list: list, entry: InboxFolderEntry.legacy(list).id, selection: selection)
         }
 
+        /// A root entry with a pane of its own (Track my threads, Idea
+        /// finder, phase 3): selected, no legacy list open.
+        static func pane(_ list: InboxLegacyList) -> Self {
+            Self(entry: InboxFolderEntry.legacy(list).id)
+        }
+
         /// The root's one Morning brief entry (today's) open on `date`
         /// (`showBriefDay`).
         static func day(_ date: String) -> Self {
@@ -114,8 +120,8 @@ final class InboxRouteTests: XCTestCase {
             ("briefings", .card(.day(Self.today)), .day(Self.today)),
             ("dayPlan", .card(.day(Self.today)), .day(Self.today)),
             ("day-plan", .card(.day(Self.today)), .day(Self.today)),
-            ("tracks", .legacy(.tracks), .legacy(.tracks)),
-            ("ideas", .legacy(.ideas), .legacy(.ideas))
+            ("tracks", .legacy(.tracks), .pane(.tracks)),
+            ("ideas", .legacy(.ideas), .pane(.ideas))
         ]
         XCTAssertEqual(InboxRoute.aliasHosts, Set(cases.map(\.0)))
         for (host, route, expected) in cases {
@@ -307,8 +313,8 @@ final class InboxRouteTests: XCTestCase {
         let cases: [(ReadinessFeature, InboxRoute, Landing)] = [
             (.briefing, .card(.day(Self.today)), .day(Self.today)),
             (.dayPlan, .card(.day(Self.today)), .day(Self.today)),
-            (.tracks, .legacy(.tracks), .legacy(.tracks)),
-            (.ideas, .legacy(.ideas), .legacy(.ideas))
+            (.tracks, .legacy(.tracks), .pane(.tracks)),
+            (.ideas, .legacy(.ideas), .pane(.ideas))
         ]
         for (feature, route, expected) in cases {
             XCTAssertEqual(InboxRoute.forFeature(feature, today: Self.today), route)

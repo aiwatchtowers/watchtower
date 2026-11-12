@@ -111,6 +111,8 @@ package final class ActionStripViewModel {
     private let cliRunner: CLIRunnerProtocol?
     private let customTrackControls: any CustomTrackControlling
     private let defaults: UserDefaults
+    /// How the bulk presses find the binary when `cliRunner` is nil.
+    private let findCLI: @MainActor () -> (any CLIRunnerProtocol)?
     /// The moment the list is read and laid out at (Today, Earlier, due
     /// reminders); the design shots fix it.
     private let clock: @Sendable () -> Date
@@ -158,6 +160,7 @@ package final class ActionStripViewModel {
         self.dbPool = dbPool
         self.clock = clock
         self.cliRunner = cliRunner
+        self.findCLI = findCLI
         self.customTrackControls = customTrackControls ?? DirectCustomTrackControls(
             dbPool: dbPool, scanService: TrackScanService(runner: cliRunner ?? InstalledCLIRunner()))
         self.defaults = defaults
@@ -165,6 +168,28 @@ package final class ActionStripViewModel {
         self.actionFeed = AgentActionFeed(dbPool: dbPool, cliRunner: cliRunner, automationsWake: automationsWake)
         self.folderMenu = InboxFolderMenuModel(
             dbPool: dbPool, runner: { cliRunner ?? findCLI() }, clock: clock)
+        // The two bulk presses reach this model through a weak link set
+        // once `self` exists (the `approveAllModel` pattern for a `let`).
+        let link = BulkPressLink()
+        self.quietTracksPress = InboxBulkPressModel(
+            plan: {
+                guard let model = link.model else { throw BulkPressLink.Closed() }
+                return try await model.planQuietTracks()
+            },
+            apply: { ids in
+                guard let model = link.model else { return .failed(BulkPressLink.Closed().localizedDescription) }
+                return await model.stopTrackingQuiet(ids)
+            })
+        self.oldIdeasPress = InboxBulkPressModel(
+            plan: {
+                guard let model = link.model else { throw BulkPressLink.Closed() }
+                return try await model.planOldIdeas()
+            },
+            apply: { ids in
+                guard let model = link.model else { return .failed(BulkPressLink.Closed().localizedDescription) }
+                return await model.clearOldIdeas(ids)
+            })
+        link.model = self
         self.dayChangeObserver = InboxDayChangeObserver(signals: dayChangeSignals) { [weak self] in
             Task { await self?.refresh() }
         }
@@ -310,6 +335,10 @@ package final class ActionStripViewModel {
             let entriesBefore = listedFolder.rows.map(\.id)
             let firstRead = !hasRead
             feed = snapshot.feed
+            ideaBatch = IdeaDailyBatch(defaults: defaults).today(ideas: feed.ideas, now: now, calendar: Self.calendar)
+            if let opened = openedNewsTrackID, !feed.tracks.contains(where: { $0.track.id == opened }) {
+                openedNewsTrackID = nil
+            }
             actionLabels = snapshot.labels
             lastReactionCheck = snapshot.lastCheck
             targetProposals = snapshot.buttons
@@ -359,7 +388,8 @@ package final class ActionStripViewModel {
     package var entryInputs: InboxFolderEntries.Inputs {
         InboxFolderEntries.Inputs(
             feed: feed, folders: folderMenu.snapshot,
-            approvalsOn: !disabledFeatures.contains(Self.approvalsFeatureID), now: clock(), calendar: Self.calendar)
+            approvalsOn: !disabledFeatures.contains(Self.approvalsFeatureID), now: clock(), calendar: Self.calendar,
+            ideaBatch: ideaBatch)
     }
 
     /// The per-viewer key of `railHidden`.
@@ -445,6 +475,7 @@ package final class ActionStripViewModel {
         defaults.set(folderMenu.selectedFolderID, forKey: Self.folderKey)
         legacyList = nil
         selection = nil
+        openedNewsTrackID = nil
         resetBriefDay()
         showDefaultEntry()
         arrival = Task { await ownerArrived() }
@@ -465,6 +496,7 @@ package final class ActionStripViewModel {
     package func selectEntry(_ id: String?) async {
         let key = Self.entryKey(folderMenu.selectedFolderID)
         if let id { defaults.set(id, forKey: key) } else { defaults.removeObject(forKey: key) }
+        openedNewsTrackID = nil
         // A click on the Morning brief opens it on today (`showEntry` keeps
         // the day it shows for a day entry).
         resetBriefDay()
@@ -507,8 +539,9 @@ package final class ActionStripViewModel {
         }
     }
 
-    /// `selectEntry` without its read mark: selects the entry, opens a
-    /// legacy entry's list, and returns the card whose opening `select`
+    /// `selectEntry` without its read mark: selects the entry, opens
+    /// Messages' legacy list (Track my threads and Idea finder show their
+    /// own panes and close any open list), and returns the card whose opening `select`
     /// still has to write (an artifact or a day), else nil. An id that is
     /// no entry (none, a Needs approval group row) shows no card.
     private func showEntry(_ id: String?) -> InboxSelection? {
@@ -518,11 +551,13 @@ package final class ActionStripViewModel {
             return nil
         }
         if case .legacyDay = entry {} else { resetBriefDay() }
-        if let list = entry.legacyList {
-            openLegacy(list)
-            return nil
-        }
         switch entry {
+        case .legacyMessages:
+            openLegacy(.messages)
+            return nil
+        case .legacyTracks, .legacyIdeas:
+            closeLegacy()
+            return nil
         case let .artifact(card):
             selection = .output(card.id)
             return .output(card.id)
@@ -534,7 +569,7 @@ package final class ActionStripViewModel {
             // Its agent-action card; a brief has no read mark to write.
             selection = .proposal(action.id)
             return nil
-        case .legacyTracks, .legacyIdeas, .legacyMessages, .approval, .builtinNotice:
+        case .approval, .builtinNotice:
             selection = nil
             return nil
         }
@@ -702,6 +737,121 @@ package final class ActionStripViewModel {
         // artifact or a day is selected, and no read mark is written — a
         // poll or refresh never marks anything read (STRIP-02).
         _ = showEntry(below ?? before[..<index].last(where: listed.contains))
+    }
+
+    // MARK: - Track my threads and Idea finder (phase 3)
+
+    /// **Stop Tracking Quiet Ones…** on Track my threads' pane: plans with
+    /// `planQuietTracks`, applies with `stopTrackingQuiet`.
+    package let quietTracksPress: InboxBulkPressModel
+    /// **Clear Old Ideas…** on Idea finder's pane: plans with
+    /// `planOldIdeas`, applies with `clearOldIdeas`.
+    package let oldIdeasPress: InboxBulkPressModel
+
+    /// The bulk presses' weak way back to the model.
+    @MainActor
+    private final class BulkPressLink {
+        weak var model: ActionStripViewModel?
+
+        struct Closed: LocalizedError {
+            var errorDescription: String? { "The Inbox is closed." }
+        }
+    }
+
+    /// Track my threads' news and quiet threads, from the last read.
+    package var trackSummary: TrackThreadsSummary {
+        TrackThreadsSummary.build(tracks: feed.tracks, now: clock())
+    }
+
+    /// Today's idea batch (`IdeaDailyBatch`), set by each read; the batch is
+    /// kept in UserDefaults, so the read still writes nothing to the
+    /// database (STRIP-02).
+    package private(set) var ideaBatch = IdeaBatchState(
+        batchIDs: [], remaining: [], keptToday: [], backlogCount: 0, olderCount: 0, nextAvailable: 0,
+        size: IdeaDailyBatch.defaultSize)
+
+    /// **Next N**: a new batch from the last read's ideas.
+    package func takeNextIdeaBatch() {
+        ideaBatch = IdeaDailyBatch(defaults: defaults).next(ideas: feed.ideas, now: clock(), calendar: Self.calendar)
+    }
+
+    /// The news thread open in Track my threads' pane; nil = the news list.
+    /// Reset by a folder or entry pick and a route; cleared by a read once
+    /// the track is no longer active.
+    package private(set) var openedNewsTrackID: Int?
+
+    /// The opened thread's card; nil while it is not among the active tracks.
+    package var openedNewsTrack: InboxTrackCard? {
+        guard let openedNewsTrackID else { return nil }
+        return feed.tracks.first { $0.track.id == openedNewsTrackID }
+    }
+
+    package func openNewsTrack(_ id: Int) {
+        openedNewsTrackID = id
+    }
+
+    package func closeNewsTrack() {
+        openedNewsTrackID = nil
+    }
+
+    private var tracksBulkCLI: TracksBulkCLI {
+        TracksBulkCLI(runner: cliRunner ?? findCLI())
+    }
+
+    /// The threads quiet for `TrackNewsRule.quietDays`, as the CLI's dry run plans them.
+    package func planQuietTracks() async throws -> InboxBulkPlan {
+        try await tracksBulkCLI.planQuiet(days: TrackNewsRule.quietDays)
+    }
+
+    /// Stops tracking `ids` through the CLI, then reads. A failed call (a
+    /// timeout, a lost answer) may have committed before it ended: one read
+    /// of the ids' `dismissed_at` turns it into `.partial` with the CLI's
+    /// text when some did stop, so the owner never reads "failed" for
+    /// threads that stopped.
+    package func stopTrackingQuiet(_ ids: [String]) async -> InboxBulkResult {
+        var result = await tracksBulkCLI.dismiss(ids: ids)
+        if case let .failed(message) = result {
+            let numeric = ids.compactMap(Int64.init)
+            if let stopped = try? await dbPool.read({ try Self.dismissedCount($0, ids: numeric) }), stopped > 0 {
+                result = .partial(done: stopped, of: ids.count, error: message)
+            }
+        }
+        await refresh()
+        return result
+    }
+
+    /// How many of `ids` are dismissed now.
+    nonisolated private static func dismissedCount(_ db: Database, ids: [Int64]) throws -> Int {
+        guard !ids.isEmpty else { return 0 }
+        let list = "[" + ids.map(String.init).joined(separator: ",") + "]"
+        return try Int.fetchOne(db, sql: """
+            SELECT COUNT(*) FROM tracks
+            WHERE dismissed_at != '' AND id IN (SELECT value FROM json_each(?))
+            """, arguments: [list]) ?? 0
+    }
+
+    /// The ideas awaiting a verdict for more than 30 days (one read).
+    package func planOldIdeas() async throws -> InboxBulkPlan {
+        let now = clock()
+        let ids = try await dbPool.read { db in
+            try IdeaQueries.fetchAwaitingVerdict(db).filter { IdeaDailyBatch.isOld($0, now: now) }.map(\.id)
+        }
+        return InboxBulkPlan(ids: ids.map(String.init), count: ids.count)
+    }
+
+    /// Drops `ids` (`IdeaQueries.dropMany`: one judged meanwhile is
+    /// skipped), then reads.
+    package func clearOldIdeas(_ ids: [String]) async -> InboxBulkResult {
+        let numeric = ids.compactMap(Int.init)
+        let result: InboxBulkResult
+        do {
+            let dropped = try await dbPool.write { try IdeaQueries.dropMany($0, ids: numeric) }
+            result = .done(count: dropped, skipped: ids.count - dropped)
+        } catch {
+            result = .failed(error.localizedDescription)
+        }
+        await refresh()
+        return result
     }
 
     // MARK: - Approve All (Needs approval groups)
@@ -980,6 +1130,7 @@ package final class ActionStripViewModel {
         await refresh()
         closeLegacy()
         entrySelection = nil
+        openedNewsTrackID = nil
         resetBriefDay()
         if let folder { folderMenu.select(folderMenu.tree.folder(folder) == nil ? folderMenu.tree.root.id : folder) }
         switch entry {
@@ -987,17 +1138,20 @@ package final class ActionStripViewModel {
             if folder == nil { folderMenu.select(folderMenu.tree.root.id) }
             showDefaultEntry()
         case let .legacy(list):
-            showLegacy(list)
+            // Track my threads and Idea finder are panes of their own.
+            showLegacy(list, openList: list == .messages)
         case let .card(item):
             await openCard(item, keepFolder: folder != nil)
         }
     }
 
-    /// A legacy entry's list over the root, its entry selected.
-    private func showLegacy(_ list: InboxLegacyList) {
+    /// A legacy entry selected in the root, its list opened over it when
+    /// `openList` (a card route; a route to the entry itself opens only
+    /// Messages' list).
+    private func showLegacy(_ list: InboxLegacyList, openList: Bool = true) {
         folderMenu.select(folderMenu.tree.root.id)
         entrySelection = InboxFolderEntry.legacy(list).id
-        openLegacy(list)
+        if openList { openLegacy(list) }
     }
 
     /// The card `item` in the folder or legacy list that lists it
