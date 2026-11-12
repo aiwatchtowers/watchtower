@@ -46,8 +46,6 @@ final class InboxTracksNewsPaneTests: XCTestCase {
         InboxTracksNewsPane(
             summary: TrackThreadsSummary.build(tracks: tracks, now: now),
             quietPress: InboxBulkPressModel(),
-            onPlanQuiet: { InboxBulkPlan(ids: [], count: 0) },
-            onStopQuiet: { _ in .done(count: 0, skipped: 0) },
             onOpenThread: onOpenThread,
             onAllThreads: onAllThreads
         )
@@ -115,18 +113,18 @@ final class InboxTracksNewsPaneTests: XCTestCase {
         XCTAssertEqual(InboxTracksNewsPane.confirmTitle(4), "Stop Tracking 4 Threads")
     }
 
-    /// The press plans with the pane's plan and confirms with its stop.
-    func testStopQuietPressUsesThePanesPlanAndStop() async throws {
+    /// The press runs the model's own plan and apply.
+    func testStopQuietPressUsesTheModelsPlanAndApply() async throws {
         var stopped: [[String]] = []
-        let model = InboxBulkPressModel()
+        let model = InboxBulkPressModel(
+            plan: { InboxBulkPlan(ids: ["9"], count: 1) },
+            apply: { ids in
+                stopped.append(ids)
+                return .done(count: ids.count, skipped: 0)
+            })
         let sut = InboxTracksNewsPane(
             summary: TrackThreadsSummary.build(tracks: [card(id: 9, lastEventDaysAgo: 40)], now: now),
             quietPress: model,
-            onPlanQuiet: { InboxBulkPlan(ids: ["9"], count: 1) },
-            onStopQuiet: { ids in
-                stopped.append(ids)
-                return .done(count: ids.count, skipped: 0)
-            },
             onOpenThread: { _ in },
             onAllThreads: {}
         )

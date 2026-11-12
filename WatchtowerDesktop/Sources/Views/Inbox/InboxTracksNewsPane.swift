@@ -10,6 +10,8 @@ import WatchtowerCore
 /// The reading pane's `InboxCardColumn` scrolls and pads it.
 struct InboxTracksNewsPane: View {
     let summary: TrackThreadsSummary
+    /// Stop Tracking Quiet Ones…: built with its plan and apply by the view
+    /// model (`quietTracksPress`), which keeps a run alive across navigation.
     @ObservedObject var quietPress: InboxBulkPressModel
     let onOpenThread: (Int) -> Void
     let onAllThreads: () -> Void
@@ -19,8 +21,6 @@ struct InboxTracksNewsPane: View {
     init(
         summary: TrackThreadsSummary,
         quietPress: InboxBulkPressModel,
-        onPlanQuiet: @escaping () async throws -> InboxBulkPlan,
-        onStopQuiet: @escaping ([String]) async throws -> InboxBulkResult,
         onOpenThread: @escaping (Int) -> Void,
         onAllThreads: @escaping () -> Void
     ) {
@@ -28,8 +28,6 @@ struct InboxTracksNewsPane: View {
         self.quietPress = quietPress
         self.onOpenThread = onOpenThread
         self.onAllThreads = onAllThreads
-        // The phase 1 button presses the model's stored plan and apply.
-        quietPress.use(plan: onPlanQuiet, apply: onStopQuiet)
     }
 
     var body: some View {

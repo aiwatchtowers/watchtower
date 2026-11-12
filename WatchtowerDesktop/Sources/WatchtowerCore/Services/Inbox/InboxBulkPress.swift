@@ -42,18 +42,6 @@ package final class InboxBulkPressModel: ObservableObject {
         self.apply = apply
     }
 
-    /// Stores the plan and apply that `begin()` and `confirm()` use, without
-    /// starting anything: a view that receives the press's closures (Track
-    /// my threads' Stop Tracking Quiet Ones…) hands them to a model it did
-    /// not create, before `InboxBulkPressButton` presses it.
-    package func use(
-        plan: @escaping () async throws -> InboxBulkPlan,
-        apply: @escaping ([String]) async throws -> InboxBulkResult
-    ) {
-        self.plan = plan
-        self.apply = apply
-    }
-
     /// Plans with `plan`, which is kept as the Try Again plan. Ignored while
     /// a press is under way.
     package func begin(plan: @escaping () async throws -> InboxBulkPlan) {
