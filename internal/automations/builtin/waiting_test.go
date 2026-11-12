@@ -974,3 +974,41 @@ func TestWaitingForMe_OnlyMailOpenShowsEmpty(t *testing.T) {
 		t.Errorf("lists = %+v; want one empty list", card.lists)
 	}
 }
+
+// items holds the 200 newest people rows, so 200 items from today push
+// every week and older row out of it; the sections still come from the
+// counts: This week with one count line, Older with its note row.
+func TestWaitingForMe_SectionsFromCountsPastTheCap(t *testing.T) {
+	f := newFixture(t)
+	f.sync(t)
+	for i := 1; i <= WaitingPeopleLimit; i++ {
+		f.insertItem(t, fmt.Sprintf("1000.%04d", i), "mention", f.clock.Now().Add(-time.Duration(i)*time.Second))
+	}
+	for i := 1; i <= 3; i++ {
+		f.insertItem(t, fmt.Sprintf("2000.%04d", i), "mention", f.clock.Now().Add(-time.Duration(2+i)*24*time.Hour))
+	}
+	for i := 1; i <= 5; i++ {
+		f.insertItem(t, fmt.Sprintf("3000.%04d", i), "mention", f.clock.Now().Add(-time.Duration(8+i)*24*time.Hour))
+	}
+	card := f.runWaiting(t)
+	var titles []string
+	for _, l := range card.lists {
+		titles = append(titles, l.Title)
+	}
+	want := []string{fmt.Sprintf("Today · %d", WaitingPeopleLimit), "This week · 3", "Older · 5"}
+	if !slices.Equal(titles, want) {
+		t.Fatalf("lists %v; want %v", titles, want)
+	}
+	if n := len(card.lists[0].Rows); n != WaitingPeopleLimit {
+		t.Errorf("Today rows = %d; want %d", n, WaitingPeopleLimit)
+	}
+	week := card.lists[1].Rows
+	if len(week) != 1 || week[0].Title != "3 more this week" || week[0].Ref != nil || week[0].Badge != nil {
+		t.Errorf("This week rows = %+v; want one plain count line", week)
+	}
+	older := card.lists[2].Rows
+	if len(older) != 1 || older[0].Title != "5 items are older than 7 days" ||
+		older[0].Ref == nil || older[0].Ref.Kind != blocks.RefWaitingOlder || older[0].Ref.Key != "people" {
+		t.Errorf("Older rows = %+v; want the note row only", older)
+	}
+}

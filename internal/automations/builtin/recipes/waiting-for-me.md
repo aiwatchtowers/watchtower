@@ -61,20 +61,29 @@ function countOf(section, rows) {
   return Math.max(waiting.people[section], rows.length);
 }
 
+// Sections come from the counts, not from the drawn rows: items holds the
+// 200 newest people rows, so a busy Today can push every week and older
+// row out of it while those sections still have items.
 var lists = [];
 var today = rowsIn("today");
 if (today.length) {
   lists.push({ type: "list", title: "Today · " + countOf("today", today), rows: today });
 }
 var week = rowsIn("week");
-if (week.length) {
-  lists.push({ type: "list", title: "This week · " + countOf("week", week), rows: week });
+var weekCount = countOf("week", week);
+if (weekCount > 0) {
+  if (!week.length) {
+    // Counted but not drawn: one plain line so the list is not empty.
+    week = [{ title: weekCount + " more this week" }];
+  }
+  lists.push({ type: "list", title: "This week · " + weekCount, rows: week });
 }
 var older = rowsIn("older");
-if (older.length) {
+var n = countOf("older", older);
+if (n > 0) {
   // The note row carries Mark All Done… for every older item, so it
-  // counts them all; it takes one of the list's 200 rows.
-  var n = countOf("older", older);
+  // counts them all; it takes one of the list's 200 rows. It stands even
+  // when no older row is drawn.
   var note = {
     title: n === 1 ? "1 item is older than 7 days" : n + " items are older than 7 days",
     subtitle: "Nobody has followed up on them.",
