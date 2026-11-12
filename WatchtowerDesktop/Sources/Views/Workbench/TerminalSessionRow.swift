@@ -39,6 +39,31 @@ struct TerminalSessionRow: View {
     private var session: TerminalSession { row.session }
 
     var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.tight) {
+            Text(session.title)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.leading, Spacing.large + Spacing.compact)
+                .contentShape(Rectangle())
+                .simultaneousGesture(TapGesture().onEnded { actions.open(session) })
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAction { actions.open(session) }
+            details
+        }
+        .overlay {
+            if hasCursor {
+                RoundedRectangle(cornerRadius: 5)
+                    .strokeBorder(Color.accentColor, lineWidth: 2)
+                    .padding(-3)
+                    .allowsHitTesting(false)
+            }
+        }
+        .listRowSeparator(.hidden)
+        .contextMenu { contextMenu }
+    }
+
+    private var details: some View {
         HStack(spacing: 4) {
             opener
             if openAsks > 0 {
@@ -63,44 +88,36 @@ struct TerminalSessionRow: View {
                 }
             }
         }
-        .overlay {
-            if hasCursor {
-                RoundedRectangle(cornerRadius: 5)
-                    .strokeBorder(Color.accentColor, lineWidth: 2)
-                    .padding(-3)
-                    .allowsHitTesting(false)
+    }
+
+    @ViewBuilder private var contextMenu: some View {
+        Button("Rename…") { actions.rename(session) }
+        if let projectID = session.projectID, session.kind.isAgent, let setTarget = actions.setTarget {
+            Menu(SessionTargetMenu.title) {
+                SessionTargetMenuItems(
+                    items: SessionTargetMenu.items(roots: actions.targetRoots(projectID), current: session.targetID)
+                ) { setTarget(session, $0) }
             }
         }
-        .listRowSeparator(.hidden)
-        .contextMenu {
-            Button("Rename…") { actions.rename(session) }
-            if let projectID = session.projectID, session.kind.isAgent, let setTarget = actions.setTarget {
-                Menu(SessionTargetMenu.title) {
-                    SessionTargetMenuItems(
-                        items: SessionTargetMenu.items(roots: actions.targetRoots(projectID), current: session.targetID)
-                    ) { setTarget(session, $0) }
-                }
-            }
-            if session.projectID != nil, let cleanUp = actions.cleanUp {
-                Button("Clean Up…") { cleanUp(session) }
-            }
-            // A placed session's folder is its worktree (spec 2026-10-14
-            // §7, D9); shown only while the directory exists.
-            if session.worktreeBranch != nil, FileManager.default.fileExists(atPath: session.folderPath) {
-                Button("Show Worktree in Finder") {
-                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: session.folderPath)])
-                }
-            }
-            if session.projectID != nil, let reviewChanges = actions.reviewChanges {
-                Button("Review Branch") { reviewChanges(session) }
-            }
-            if session.projectID != nil, session.kind.isAgent, let openIn = actions.openIn {
-                Button("Open in Terminal") { openIn(session, false) }
-                Button("Open in Workchat") { openIn(session, true) }
-            }
-            Divider()
-            Button("Delete…", role: .destructive) { actions.delete(session) }
+        if session.projectID != nil, let cleanUp = actions.cleanUp {
+            Button("Clean Up…") { cleanUp(session) }
         }
+        // A placed session's folder is its worktree (spec 2026-10-14
+        // §7, D9); shown only while the directory exists.
+        if session.worktreeBranch != nil, FileManager.default.fileExists(atPath: session.folderPath) {
+            Button("Show Worktree in Finder") {
+                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: session.folderPath)])
+            }
+        }
+        if session.projectID != nil, let reviewChanges = actions.reviewChanges {
+            Button("Review Branch") { reviewChanges(session) }
+        }
+        if session.projectID != nil, session.kind.isAgent, let openIn = actions.openIn {
+            Button("Open in Terminal") { openIn(session, false) }
+            Button("Open in Workchat") { openIn(session, true) }
+        }
+        Divider()
+        Button("Delete…", role: .destructive) { actions.delete(session) }
     }
 
     private var opener: some View {
@@ -110,7 +127,6 @@ struct TerminalSessionRow: View {
                 // The label below reads the state out.
                 .accessibilityHidden(row.showsStateLabel)
             VStack(alignment: .leading, spacing: 1) {
-                Text(session.title).lineLimit(1).truncationMode(.tail)
                 if row.showsStateLabel, let caption = row.caption {
                     SessionStateLabel(state: row.state, caption: caption)
                     if let reportLine {

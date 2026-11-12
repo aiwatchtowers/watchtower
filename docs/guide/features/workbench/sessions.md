@@ -10,6 +10,8 @@ With several sessions running, the terminals say nothing until you open each one
 
 A session runs the agent exactly as your own terminal does: the same login, permissions and project memory. Click a workbench in the left panel to see its sessions; a filled dot means running. Sessions keep running while you switch sessions, workbenches or tabs.
 
+The session name uses the first line's full width. Below it, the terminal or speech-bubble icon shows whether clicking the session opens **Terminal** or **Workchat**; right-click and choose **Open in Terminal** or **Open in Workchat** to change it. The closed-asks count opens past requests without starting the session.
+
 Copying from inside the terminal works as in your own terminal: when Claude Code, vim or tmux copies text, it lands on your clipboard. The terminal does not answer clipboard-read requests hidden in program output, so a file or tool output cannot pull in what you copied. Programs you run can still read it (for example `pbpaste`). Paste with ⌘V.
 
 Updating Watchtower never stops your sessions, and quitting asks you. See [Updates and quitting](updates-and-quitting.md).
