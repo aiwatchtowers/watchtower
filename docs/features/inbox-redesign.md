@@ -1,5 +1,86 @@
 # Inbox redesign
 
+Board #1076 under the inbox builder umbrella #917. Spec `docs/superpowers/specs/2026-11-11-inbox-redesign-design.md` (owner-approved, ask #638; inventory amendments in ask #634), mockup `docs/design/mockups/inbox-redesign/inbox-redesign.html` (sample data), native shots `inbox-r-*` in the DesignShotCatalog. Phase 1 plan `docs/superpowers/plans/2026-11-11-inbox-redesign-phase-1-shell.md`. Builds on [inbox-folders.md](inbox-folders.md) (sub-project B) and [inbox-card-blocks.md](inbox-card-blocks.md) (A). User guide: `docs/guide/features/inbox.md`, `docs/guide/features/briefings.md`, `docs/guide/features/day-plan.md`.
+
+## Phase 1 — the shell (Desktop)
+
+Swift only: no migration, no Go source change, no prompt, no phone change. One shared JSON fixture (`internal/inbox/testdata/from_today.json`) waits for phase 2's Go twin. Pure rules live in WatchtowerCore, state stays on `ActionStripViewModel` (AppState-owned, survives navigation), the views in `Sources/Views/Inbox/` only render. `InboxFolderEntries` stays the single source of entries; sections, rows and groups are built over its output.
+
+### Sidebar
+
+`SidebarDestination.rootItems == [.home, .inbox, .workbench, .automations, .calendar]`: the Inbox takes Targets' place at the root, and Targets moves into FOCUS (`SidebarSection.today.items == [.catchUp, .targets]`) with its own badge (overdue in red, else active).
+
+### Layout
+
+- Three columns in `ActionStripActionsView` for the root, owner folders and Needs approval: the rail (the folder menu), the list (`PaneWidth.inboxListMin` 320 / `inboxListIdeal` 372 / `inboxListMax` 460, Kit `Tokens.swift`) and the reading pane (`PaneWidth.detailMin`, centred at `ReadableColumn.maxLineWidth`, 760). `InboxSplitView` (the legacy lists) uses the same list frame. The error banner stays above all three.
+- Rail collapse: View → **Hide Inbox Folders** / **Show Inbox Folders**, ⌥⌘S, remembered in `UserDefaults` `inbox.railHidden` (default shown). The rail shows "Folders" above the owner folders only when one is drawn (`InboxFolderMenuContent.showsFoldersHeading`); its bottom row is **New Artifact…** plus a `folder.badge.plus` icon (**New Folder**).
+- ⌥⌘S is one View-menu item (`PanelToggleCommands`, `CommandGroup(after: .sidebar)`) titled by `PanelToggleTarget.resolve`: the workbench's sessions panel when a workbench page has the keys, else the Inbox rail while the Inbox is on screen, else disabled. The Workbench menu keeps **Show Sessions Panel / Hide Sessions Panel** without the key equivalent, so no two menu items share it. `KeyboardShortcutCatalog`'s Inbox area lists it.
+- One title: the header row ("Inbox" + `?`) is gone; the window keeps `.navigationTitle("Inbox")` and `.searchable(…, placement: .toolbar, prompt: "Search the Inbox")`. The `?` (reaction cheat sheet, `actionStrip.cheatSheetButton`) sits at the trailing end of every pane header and of Needs approval's header; the empty root keeps its inline cheat sheet.
+- `InboxPaneHeader(tile:title:subtitle:actions:)`: the tile at `IconSize.listTile` (30), title `.title3.weight(.semibold)`, a wrapping `.callout` subtitle, trailing actions that never wrap. An artifact's pane: its tile, title, the card's provenance line, **Run Now** (only when its ⋯ offers it), its ⋯ and `?`, over the card drawn with `showsTitleRow: false`. A thread brief: `?` only.
+
+### The list
+
+- A `ScrollView` of `.kitRow` rows (`InboxFolderContentList`), not a `List`: no system selection highlight, no nil selection written when search hides the selected row. Arrow keys move the selection through the drawn rows; the selected row carries the `.isSelected` accessibility trait.
+- `InboxRootSections.build(entries:folder:waitingForMeAutomationID:now:calendar:)`. Root: **Needs you** (Waiting for me's artifact, the Messages stand-in, thread briefs applied in the last 24 hours, newest first — `build` re-checks the 24 h; on a root-only tree the approvals and notices follow), **Today** (the Morning brief entry, then artifacts changed today, newest first), **Running** (Track my threads, Idea finder, the other artifacts, newest first). Owner folder: **Today** and **Earlier**, each in incoming order. An empty section is left out.
+- The Earlier line (`InboxRootSections.earlierLine`, root only): "Past briefs are inside Morning brief · N this month, M not opened" (", M not opened" dropped at 0), under an "Earlier" heading when the root has no Earlier section; it opens the brief's History (`openBriefHistory()`). "This month" is the last 30 dates including today, so it counts at most 29 past briefs.
+- Rows: `InboxFolderListRow { id, content: InboxRowContent, menu }`, built by `InboxFolderEntries.content(_:_:)`, drawn by `InboxListRow` (tile, unread dot, semibold title, two-line preview, one-line meta, trailing time above the pill; the Idea finder's ⋯ an overlay so the height never changes). `InboxTile` tints: brief `Tone.amber`, people waiting / approvals `Tone.warning`, mail `Tone.success`, threads / Slack / owner artifacts the accent, ideas `Tone.status("purple")`. Pill tones: `needsYou` warning, `news` accent, `batch` neutral. `InboxRowTime.label`: `HH:mm` today, "yesterday", `EEE` for 2–6 days, `d MMM` this year, `d MMM yyyy` before. `InboxRowText.preview` strips markdown markers, caps at 240.
+
+| Entry | kind | preview | meta | pill |
+|---|---|---|---|---|
+| Waiting for me / Messages stand-in | `peopleWaiting` | newest open item from today, `<who> <where>: “<snippet>”` + " · and N more today"; none today → the newest open one; none → "Nothing waits on you" | "N older" | people waiting today, `needsYou` |
+| Morning brief (today) | `brief` | `InboxBriefLayout.lead`; placeholder → "Not written yet" | `EEE d MMM` | none |
+| Track my threads | `threads` | the two newest unread tracks' titles | "updated <ago>" | unread tracks, `news` |
+| Idea finder | `ideas` | "N ideas to judge. Top one: “…”" | "updated <ago>" | ideas awaiting a verdict, `batch` |
+| Thread brief | `threads` | — | "Thread brief" | none, never unread |
+| Owner artifact | `artifact` (its folder's icon) | `InboxRowText.preview(body)` | "Your automation · updated <ago>" (living) / "· run #N" | rows waiting, `needsYou` |
+
+- Search: `ActionStripViewModel.listQuery`, one value for every folder, kept across navigation. `InboxListFilter.apply` matches title + preview, case- and diacritic-insensitive; empty sections drop, the Earlier line hides, and with no row left the list says "No matches for “<query>”". Filtering never clears the selection.
+
+### Counts and badge
+
+- "Today" = since local midnight: an item is from today when `MAX(created_at, mentioned_at)` (empty `mentioned_at` = none) is at or after `Calendar.startOfDay(for: now)`. One rule, `InboxToday` (`sinceUTC(now:calendar:)`, `isFromToday`, `nextMidnight(after:calendar:)`), pinned by `internal/inbox/testdata/from_today.json` (midnight edges, mentioned today, DST days, UTC vs local; read by `InboxTodayTests` and the SQL parity test `InboxPeopleTodayTests`).
+- Terms on `InboxFolderMenuSnapshot`: `approvalsCount` (Needs approval's open approvals: `awaitingOwnerCount` + due reminders + built-in upgrade notices, as before), `peopleWaitingToday` (`InboxQueries.openMessageCount` since midnight; 0 while Waiting for me is turned off), `badge = approvalsCount + peopleWaitingToday`. `ActionStripViewModel.badgeCount` returns it; `InboxFolderCounts.badge` is gone. Mail (from phase 2), tracks, ideas, briefs, thread briefs and every artifact never enter the badge.
+- The root's rail count: people waiting today + 1 while today's brief is unread + the root's other artifacts (`InboxFolderCounts.artifactCount`); Waiting for me's own artifact is `uncounted` (its people are the first term). Owner folders keep their own counts.
+- Midnight: "today" changes with no database write, so `SidebarCountsViewModel` recounts at `nextMidnight + 1 s` and on `NSCalendarDayChanged`, `NSSystemTimeZoneDidChange` and `NSWorkspace.didWakeNotification`, with `Calendar.autoupdatingCurrent`; the Inbox view model refreshes on the same three.
+
+### Selection
+
+- `UserDefaults` `inbox.entry.<folderID>` (`entryKey(_:)`), written only by the owner's click (`selectEntry`).
+- `InboxFolderEntries.defaultEntry(entries:saved:folder:today:)`: the saved entry when listed and not a legacy list; else in the root today's brief (`day:<today>`); else the first non-legacy entry; else nil. It runs on the first read, on a folder pick, on a route with no entry and when the selected brief's day rolled over. A remembered legacy-list entry (Track my threads, Idea finder, Messages) is not restored: the Inbox opens today's brief, so the pane is never empty.
+- Read marks (STRIP-02): a default pick inside `refresh()` writes nothing. The owner's arrival (`ownerArrived()`, from `ActionStripView.onAppear` and `selectFolder`) marks the shown brief or artifact read when unread. A route into the Inbox (Home's link, a notification) writes the read mark of the card it opens, and the arrival yields to an in-flight route. A poll, a refresh and the midnight rollover write nothing.
+
+### Morning brief
+
+- One row: `InboxListBuilder.rootDays` lists today's card only (or today's placeholder while the owner is known). Past days live inside it; a past brief is never listed and nothing marks it read for the owner.
+- `InboxBriefDays.history` = the days of the last 30 dates (today included) with a briefing or a plan, newest first; `step(from:_:in:today:)` moves to the next listed date, never past today. The feed's first page (`ActionStripViewModel.dayPage`, 30) holds every card of that window, so History and the Earlier line are complete (`testFirstPageCoversThirtyDays`).
+- View model: `briefDate` (nil = today), `briefDay`, `briefHistoryShown`, `showBriefDay(_:)`, `stepBrief(_:)`, `openBriefHistory()`. Stepping or a History pick is the owner's pick: it marks that day's briefing read through `select(.day(date))`. A `.day(date)` route calls `showBriefDay`; a date with no card opens today's brief.
+- Pane (`InboxDayPane`): `InboxPaneHeader` "Morning brief", subtitle "<EEEE, d MMMM> · written HH:mm", actions: the stepper ‹ `EEE d MMM` › (newer disabled on today, older disabled when nothing is older), **History** (a popover over `InboxBriefHistory`, unread days dotted), **Discuss in Chat**, `?`. Body in the mockup's order (`InboxBriefLayout`): the lead and **Start here** (attention items 0..<3), **Your day** (the plan plus its section; a "N conflicts" chip when the plan has conflicts), **Waiting on you** (the three newest open messages, link to Waiting for me), **Moved overnight** (up to three unread tracks, link to Track my threads), then the other attention items, What happened, Team pulse, Coaching. Waiting on you and Moved overnight draw on today's brief only. `BriefingSectionsView(parts:)` keeps its old order as the default. Make buttons and today's placeholder are unchanged.
+
+### Needs approval
+
+- `NeedsApprovalGroups.build`: groups Messages (`send_slack_message`, `add_jira_comment`, `add_linear_comment`), Tracks to create, Targets, Confluence and Jira, Reminders, Other (connector calls, Linear writes, `save_automation`, any future tool), ordered by their oldest item, items oldest first; native cards stay above the recipe's cards inside each group (APPROVAL-01 Observable). List sections: "Built-in updates" first, one per group (title + count), "Approved, still running" last.
+- **Approve All N…** is an allowlist (`NeedsApprovalGroups.bulkTools`: `create_track`, `create_target(s)`, `update_target`, `edit_confluence_page`, `connect_jira_board`, `create/update/transition/assign_jira_issue` — none sends text to a person). `approveAllIDs` is non-nil only for Tracks to create, Targets or Confluence and Jira, one tool from the list, at least two pending rows not applied by a chat session. Such a group is one list row (id `group:<raw>`: "Create N tracks", "N target changes", "N Confluence and Jira changes"), which scrolls the stack to its header; the button sits on that header in the stack.
+- `approveAllModel(_:)` (one `InboxBulkPressModel` per group, kept on the view model so a run survives leaving the Inbox) → `approveAll(ids:)`: one refresh, then each id through `AgentActionFeed.approve` with its args pinned; a row closed meanwhile is skipped; the first error stops the run, selects that card and returns `.partial` ("Closed N of M. <error>").
+
+### Shared components for phases 2–3
+
+`InboxToday` (+ fixture), `InboxBulkPlan` / `InboxBulkResult` / `InboxBulkPressModel` / `InboxBulkPressButton` (`.kitSecondary`, a confirmation for N > 0 only, `resultLine`, **Try Again** after a partial or failed run; nothing retries by itself), `InboxListRow` / `InboxRowContent` / `InboxTile`, `InboxRootSections`, `InboxPaneHeader`.
+
+### Phase 1 alone (interim)
+
+Waiting for me still holds people and mail, so "people waiting today" counts every open Waiting for me item from today, mail included; there is no Mail waiting row. Track my threads and Idea finder rows show today's numbers (unread tracks, ideas to judge) in the new layout. Phase 2 narrows the people term; phase 3 changes the tracks and ideas rules.
+
+### v1 limits
+
+- Search filters the loaded rows only.
+- Track my threads, Idea finder and Messages still open today's legacy lists in the list column.
+- ⌥⌘S is one View-menu item shared with the Workbench's sessions panel.
+- Not built from the mockup: the list's **All / Unread** switch and "updated N min ago", Needs approval's **By kind / Oldest** switch.
+
+### Inventory
+
+STRIP badge amendment (`docs/inventory/reaction-commands.md` changelog, approved in ask #634): the badge is approvals + people waiting today; the C1 guard is renamed `InboxFeedQueriesTests::testBadgeCountsApprovalsAndPeopleWaitingToday`, the STRIP-02 guard `testOpeningWritesOnlyReadAt` changes only its badge expectation. APPROVAL-01 note (`docs/inventory/inbox-folders.md` changelog): grouped list and Approve All, no semantic change; supporting `NeedsApprovalGroupsTests`, `ActionStripApproveAllTests::testEveryOpenApprovalStaysListed`.
+
 ## Phase 4 — mail closes on reply (Gmail)
 
 Board #1076, ask #634 (2026-11-11). A Gmail `email_received` item resolves (`User replied`) once the owner replies in its thread, so mail behaves like Slack, Jira, Linear and calendar items (INBOX-02). Sent mail is ordinary mail: the sync stores it like any other message, and each reader of `gmail_messages` decides whether the owner's own rows count.

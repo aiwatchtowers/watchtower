@@ -59,7 +59,7 @@ The **Links** zone has up to four shortcuts, each shown while its tab (for the b
 - **Day plan** shows "2 of 5 done" for today's plan.
 - **Digests** has no status.
 
-**Briefing** and **Day plan** open today's **Your day** card in the [Inbox](inbox.md).
+**Briefing** and **Day plan** open today's **Morning brief** in the [Inbox](inbox.md).
 
 ### Today in numbers
 

@@ -40,8 +40,8 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 
 - [Home](features/home.md) — what needs you right now, setup progress, and how the menu works
 - [Catch Up](features/catch-up.md) — a recap of a stretch of time you were away: what happened and what needs you
-- [Briefings](features/briefings.md) — one morning read of your attention items, day, channels and people, on the Inbox's Your day card
-- [Day Plan](features/day-plan.md) — today as time blocks plus a backlog on the Inbox's Your day card, with calendar conflicts flagged
+- [Briefings](features/briefings.md) — one morning read of your attention items, day, channels and people, in the Inbox's Morning brief
+- [Day Plan](features/day-plan.md) — today as time blocks plus a backlog in the Inbox's Morning brief, with calendar conflicts flagged
 - [Inbox](features/inbox.md) — folders you arrange, Needs approval, Waiting for me with Reply, your day, tracks and ideas, plus Slack reaction commands
 - [Ideas & Decisions](features/ideas-and-decisions.md) — proposals mined from chats, mail, Jira and meetings, for you to triage in the Inbox
 - [Mail](features/mail.md) — what Gmail, Outlook and IMAP mail feeds into Catch Up, briefings, meeting prep and Ideas

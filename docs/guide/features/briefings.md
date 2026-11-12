@@ -1,10 +1,10 @@
 # Briefings
 
-A briefing is one morning read written for you: what needs your attention, what your day holds, what happened in your channels and how your people are doing. It is the lower half of the **Your day** card in the [Inbox](inbox.md), under today's plan. It rolls up the work the other pipelines have already done, so it is quick and cheap to produce.
+A briefing is one morning read written for you: what needs your attention, what your day holds, what happened in your channels and how your people are doing. You read it as today's **Morning brief** in the [Inbox](inbox.md), together with today's plan. It rolls up the work the other pipelines have already done, so it is quick and cheap to produce.
 
 ## Why use it
 
-You sit down at 09:00 with coffee. Instead of opening Slack, mail and Jira in turn, you open the Inbox and read today's **Your day** card: the two threads waiting on you, the tasks due today, yesterday's decision in a channel you don't follow, and a note that a colleague's activity dropped. Each line links to the digest, track, target or person it came from.
+You sit down at 09:00 with coffee. Instead of opening Slack, mail and Jira in turn, you open the Inbox and read today's **Morning brief**: the two threads waiting on you, the tasks due today, yesterday's decision in a channel you don't follow, and a note that a colleague's activity dropped. Each line links to the digest, track, target or person it came from.
 
 ## How it works
 
@@ -31,21 +31,27 @@ Your Jira and Linear issues feed these sections when that tracker is switched on
 
 Rules you teach through [Catch Up](catch-up.md) feedback are applied to the briefing too.
 
+### How the Inbox shows it
+
+The **Morning brief** pane reads top down: the lead line and **Start here** (the first three items that need you), **Your day** with today's plan, **Waiting on you** (the three newest messages for you), **Moved overnight** (up to three tracks with news), then the rest of **Needs you** under **More for today**, **What happened**, **Team pulse** and **Coaching**. **Waiting on you** and **Moved overnight** show on today's brief only.
+
 ### When a day card is read
 
-Opening a day card marks its briefing read, the same mark **I'm caught up** in [Catch Up](catch-up.md) sets. A read day leaves the Inbox's **Morning brief** entries, except today's, which stays until the next day. The sidebar badge counts one while the latest briefing is unread.
+Opening a day's brief marks its briefing read, the same mark **I'm caught up** in [Catch Up](catch-up.md) sets. The Inbox lists only today's **Morning brief**; earlier days live inside it, under **‹ ›** and **History** in its header ([read an earlier brief](inbox.md#read-an-earlier-brief)). Nothing marks a past brief read for you, and the sidebar badge never counts a brief.
 
 ## Using it
 
 <!-- learn
-id: briefings-read
+id: briefings-morning-brief
 title: Read your morning brief
-text: Open the Inbox at the start of the day: today's **Your day** card holds the brief, under today's plan.
+text: Open **Morning brief** in the Inbox at the start of the day: today's brief and plan, with earlier days inside.
 area: planning
 level: basics
 kind: feature
-since: 0.24.0
+since: next
 action: nav:briefings
+replaces: [briefings-read]
+changed: One Morning brief row holds today's brief; past days moved inside it.
 -->
 
 <!-- learn
@@ -70,9 +76,9 @@ since: 0.24.0
 action: nav:automations
 -->
 
-- In the Inbox, the root lists a **Morning brief** entry for today and for every day you haven't read yet. A day you've read leaves the list; a briefing notification and Home's **Briefing** link still open it.
+- In the Inbox, the root lists one **Morning brief**, today's. Press **‹** or **History** in its header for an earlier day; a briefing notification and Home's **Briefing** link open their day too.
 - Click an item to jump to its track, digest, target or person. Items that suggest new work show **Make a Task**, which creates the target and opens it.
-- The card's header has **Discuss in Chat**.
+- The pane's header has **Discuss in Chat**.
 - Change the time with **Time** under **When** on the **Morning brief** card (Automations → **Built in**). To change what the briefing says, use **Edit in Chat** there; see [Built-in automations](automations-built-in.md).
 
 ## When it's empty or wrong

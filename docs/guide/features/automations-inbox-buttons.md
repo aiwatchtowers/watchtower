@@ -120,6 +120,10 @@ Its permissions include `inbox:reply` and its outputs include `inbox`. In the sc
 2. Press **Nudge the owner**. The button changes to **Sent — run #N**.
 3. Follow the run from the card's source line or from the automation's **History**.
 
+### Manage an automation from its card
+
+The **⋯** on a card's header runs the same commands as the Automations tab: **Run Now**, **Edit What It Collects…**, **Edit the Look…**, **Schedule…**, **Move to Folder**, **Turn Off**, **Run History** and **Delete…** (not on a built-in). **New Artifact…** under the menu starts a new automation whose cards go to the selected folder.
+
 ## When it's empty or wrong
 
 - **A Reply button is dimmed with "Needs confirmation".** The recipe isn't confirmed (or changed since you confirmed it). Open the automation, review and confirm it; the button works again.
