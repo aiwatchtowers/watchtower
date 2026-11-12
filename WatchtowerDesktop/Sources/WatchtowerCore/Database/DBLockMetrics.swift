@@ -265,6 +265,26 @@ package enum SQLiteBusyWait {
     }
 }
 
+/// The clock the lock metrics measure with: the busy callback's sleep and
+/// every wait and hold. Real by default; a test injects its own so durations
+/// are whatever the test advances, not wall time.
+package struct DBLockClock: Sendable {
+    /// Monotonic nanoseconds.
+    package var now: @Sendable () -> UInt64
+    /// Blocks the calling (writer) thread for this many milliseconds.
+    package var sleepMS: @Sendable (Int) -> Void
+
+    package init(now: @escaping @Sendable () -> UInt64, sleepMS: @escaping @Sendable (Int) -> Void) {
+        self.now = now
+        self.sleepMS = sleepMS
+    }
+
+    package static let system = Self(
+        now: { DispatchTime.now().uptimeNanoseconds },
+        sleepMS: { usleep(useconds_t($0 * 1000)) }
+    )
+}
+
 /// Wires the lock metrics into a `DatabasePool` configuration.
 package enum DBLockInstrumentation {
     /// The busy budget the Desktop has always used (`PRAGMA busy_timeout = 5000`).
@@ -285,12 +305,13 @@ package enum DBLockInstrumentation {
     package static func install(
         on config: inout Configuration,
         sink: DBLockSink?,
-        busyTimeoutMS: Int = Self.busyTimeoutMS
+        busyTimeoutMS: Int = Self.busyTimeoutMS,
+        clock: DBLockClock = .system
     ) {
         config.busyMode = .callback { tries in
             // Every retry of one wait runs synchronously on the thread that
             // stepped the statement, so a thread-local marks its start.
-            let now = DispatchTime.now().uptimeNanoseconds
+            let now = clock.now()
             let thread = Thread.current.threadDictionary
             if tries == 0 { thread[busyStartKey] = NSNumber(value: now) }
             guard let delay = SQLiteBusyWait.delayMS(tries: tries, timeoutMS: busyTimeoutMS) else {
@@ -301,15 +322,15 @@ package enum DBLockInstrumentation {
                     busyTimeoutMS: Int64(busyTimeoutMS)))
                 return false
             }
-            usleep(useconds_t(delay * 1000))
+            clock.sleepMS(delay)
             return true
         }
         config.prepareDatabase { db in
             if db.configuration.readonly {
                 try db.execute(sql: "PRAGMA busy_timeout = \(busyTimeoutMS)")
             } else if let sink {
-                let tracker = WriteTransactionTracker(sink: sink)
-                db.trace(options: .profile) { tracker.observe($0) }
+                let tracker = WriteTransactionTracker(sink: sink, clock: clock)
+                db.trace(options: [.statement, .profile]) { tracker.observe($0) }
             }
         }
     }
@@ -323,25 +344,41 @@ package enum DBLockInstrumentation {
 /// is measured only from its first write statement, whose duration is the
 /// wait and whose end opens the hold (the trace cannot split that statement's
 /// busy wait from its own write, so all of it counts as wait, never as both);
-/// a deferred transaction that never writes records nothing. Confined to the
-/// writer connection's queue.
+/// a deferred transaction that never writes records nothing. A statement's
+/// duration runs on `clock` from its start event to its profile event: the
+/// only statements measured (a BEGIN, a deferred transaction's first write)
+/// run no other top-level statement in between, and a trigger's start
+/// event (`-- name`) is skipped. Confined to the writer connection's queue.
 final class WriteTransactionTracker {
     static let unknownSite = "desktop:?"
 
     private let sink: DBLockSink
+    private let clock: DBLockClock
+    /// When the latest top-level statement started, on `clock`.
+    private var statementStart: UInt64?
     private var inTransaction = false
     /// When the write lock was taken in the open transaction, if it was.
     private var lockedAt: UInt64?
     private var waitMS: Int64 = 0
     private var table: String?
 
-    init(sink: DBLockSink) {
+    init(sink: DBLockSink, clock: DBLockClock = .system) {
         self.sink = sink
+        self.clock = clock
     }
 
     func observe(_ event: Database.TraceEvent) {
-        guard case let .profile(statement, duration) = event else { return }
-        observe(sql: statement.sql, duration: duration, now: DispatchTime.now().uptimeNanoseconds)
+        switch event {
+        case let .statement(statement):
+            if !statement.sql.hasPrefix("--") { statementStart = clock.now() }
+        case let .profile(statement, sqliteDuration):
+            let now = clock.now()
+            // No start left (a statement nested inside this one took it):
+            // SQLite's own measure of the statement.
+            let duration = statementStart.map { TimeInterval(now &- $0) / 1e9 } ?? sqliteDuration
+            statementStart = nil
+            observe(sql: statement.sql, duration: duration, now: now)
+        }
     }
 
     /// `now` is when the statement finished; `duration` is how long it ran.

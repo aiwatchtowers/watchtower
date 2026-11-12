@@ -225,6 +225,11 @@ final class WorkbenchesViewModel {
     /// The longest a hint plan may run before it is stopped and the slot
     /// freed.
     @ObservationIgnored var cleanupHintTimeLimit: Duration = .seconds(5 * 60)
+    /// The wait for `cleanupHintTimeLimit`; throws once the plan ended first.
+    /// A seam for tests.
+    @ObservationIgnored var cleanupHintLimitSleep: @Sendable (Duration) async throws -> Void = {
+        try await Task.sleep(for: $0)
+    }
     /// The hint's clock (the 7-day re-check). A seam for tests.
     @ObservationIgnored var cleanupHintNow: () -> Date = { Date() }
     /// Where each session's agent works (board #565): the rows' place line
@@ -416,6 +421,11 @@ final class WorkbenchesViewModel {
     nonisolated static let defaultQuitDeleteWait = TimeInterval(DBLockInstrumentation.busyTimeoutMS) / 1000 + 3
     /// `defaultQuitDeleteWait`; a seam for tests.
     @ObservationIgnored var quitDeleteWait: TimeInterval = WorkbenchesViewModel.defaultQuitDeleteWait
+    /// Arms the quit's bound: calls `fire` once `quitDeleteWait` has passed.
+    /// A seam for tests, which fire it by hand.
+    @ObservationIgnored var quitDeleteTimeout: @Sendable (TimeInterval, @escaping @Sendable () -> Void) -> Void = { bound, fire in
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + bound, execute: fire)
+    }
     /// The Undo window's wait. A seam for tests.
     @ObservationIgnored var deleteSleep: (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     /// Runs deferred DELETEs in one write — the only DELETE path of the

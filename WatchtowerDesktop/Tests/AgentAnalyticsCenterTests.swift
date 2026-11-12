@@ -41,6 +41,35 @@ private final class ScriptedAgentsRunner: CLIRunnerProtocol, @unchecked Sendable
     }
 }
 
+/// The center's waits between ticks, parked until the test ends them: a tick
+/// comes when the test says so, never on a clock.
+private final class ManualTicks: @unchecked Sendable {
+    private let lock = NSLock()
+    private var parked: [CheckedContinuation<Void, Never>] = []
+    private var started = 0
+
+    /// Every wait started so far, ended or not.
+    var waits: Int { lock.withLock { started } }
+
+    func sleep(_ duration: Duration) async {
+        await withCheckedContinuation { continuation in
+            lock.withLock {
+                started += 1
+                parked.append(continuation)
+            }
+        }
+    }
+
+    /// Ends every wait parked now: one tick.
+    func tick() {
+        let due = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+            defer { parked = [] }
+            return parked
+        }
+        due.forEach { $0.resume() }
+    }
+}
+
 private struct ScriptedFailure: LocalizedError {
     let errorDescription: String?
 }
@@ -48,16 +77,22 @@ private struct ScriptedFailure: LocalizedError {
 @MainActor
 final class AgentAnalyticsCenterTests: XCTestCase {
     private var centers: [AgentAnalyticsCenter] = []
+    private var ticks: ManualTicks!
+
+    override func setUp() {
+        super.setUp()
+        ticks = ManualTicks()
+    }
 
     override func tearDown() {
         centers.forEach { $0.stop() }
+        ticks.tick() // a stopped loop ends at its next wake
         super.tearDown()
     }
 
-    private func makeCenter(
-        _ runner: ScriptedAgentsRunner, interval: Duration = .seconds(3600)
-    ) -> AgentAnalyticsCenter {
-        let center = AgentAnalyticsCenter(runner: runner, interval: interval)
+    private func makeCenter(_ runner: ScriptedAgentsRunner) -> AgentAnalyticsCenter {
+        let ticks: ManualTicks = self.ticks
+        let center = AgentAnalyticsCenter(runner: runner) { await ticks.sleep($0) }
         centers.append(center)
         return center
     }
@@ -75,20 +110,23 @@ final class AgentAnalyticsCenterTests: XCTestCase {
         }
     }
 
-    private func waitUntil(timeout: TimeInterval = 5, _ condition: @escaping @MainActor () -> Bool) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !condition() {
-            if Date() > deadline {
-                XCTFail("condition not met in \(timeout)s")
-                return
-            }
-            try? await Task.sleep(for: .milliseconds(5))
-        }
+    /// Yields the main actor until `condition` holds. No deadline: the wait
+    /// ends on the runner's and the center's state, never on a clock — a
+    /// wait that never ends is a hang the lane watchdog reports.
+    private func waitUntil(_ condition: @MainActor () -> Bool) async {
+        while !condition() { await Task.yield() }
     }
 
-    private func settle() async {
-        for _ in 0..<20 { await Task.yield() }
-        try? await Task.sleep(for: .milliseconds(30))
+    /// Waits for every run in flight to end, a queued rerun included.
+    private func settle(_ center: AgentAnalyticsCenter) async {
+        while let run = center.inFlightTasks.first { await run.value }
+    }
+
+    /// One tick: the loop's wait ends, and the next wait starts.
+    private func tick() async {
+        let waits = ticks.waits
+        ticks.tick()
+        await waitUntil { self.ticks.waits == waits + 1 }
     }
 
     func testShowRunsOnceAndSchedules() async {
@@ -103,7 +141,8 @@ final class AgentAnalyticsCenterTests: XCTestCase {
         XCTAssertTrue(center.isPolling)
 
         center.show(workbench: 3, period: .month)
-        await settle()
+        XCTAssertTrue(center.inFlightTasks.isEmpty, "the same period again starts no run")
+        await settle(center)
         XCTAssertEqual(runner.invocations.count, 1, "the same period again runs nothing")
     }
 
@@ -122,17 +161,20 @@ final class AgentAnalyticsCenterTests: XCTestCase {
 
     func testTickRunsOnlyWhileTheTabIsOnScreen() async {
         let runner = ScriptedAgentsRunner(Self.byFlags())
-        let center = makeCenter(runner, interval: .milliseconds(20))
+        let center = makeCenter(runner)
         var onScreen = false
         center.isTabOnScreen = { onScreen }
 
         center.show(workbench: 3, period: .week)
-        await waitUntil { runner.invocations.count == 1 }
-        await settle()
+        await waitUntil { runner.invocations.count == 1 && self.ticks.waits == 1 }
+        await settle(center)
+        await tick()
+        XCTAssertTrue(center.inFlightTasks.isEmpty, "the tick started no run")
         XCTAssertEqual(runner.invocations.count, 1, "no tick run while the tab is off screen")
 
         onScreen = true
-        await waitUntil { runner.invocations.count >= 2 }
+        await tick()
+        await waitUntil { runner.invocations.count == 2 }
     }
 
     func testFailureKeepsTheLastValueAndSetsError() async {
@@ -164,26 +206,31 @@ final class AgentAnalyticsCenterTests: XCTestCase {
     /// redrawn every 60 s; a changed report is assigned.
     func testCenterSkipsEqualOverview() async throws {
         let runner = ScriptedAgentsRunner(Self.byFlags())
-        let center = makeCenter(runner, interval: .milliseconds(20))
+        let center = makeCenter(runner)
         var onScreen = false
         center.isTabOnScreen = { onScreen }
         center.show(workbench: 3, period: .week)
-        await waitUntil { center.overviews[3]?.value != nil }
+        await waitUntil { center.overviews[3]?.value != nil && self.ticks.waits == 1 }
+        await settle(center)
 
         var changes = 0
         withObservationTracking { _ = center.overviews } onChange: { changes += 1 }
         let later = Self.overview(["since": "2026-10-01T00:01:00Z", "until": "2026-10-08T00:01:00Z"])
         runner.answer { _ in later }
         onScreen = true
-        await waitUntil { runner.invocations.count >= 3 }
+        await tick()
+        await settle(center)
+        await tick()
+        await settle(center)
         onScreen = false
-        await settle()
+        XCTAssertEqual(runner.invocations.count, 3)
         XCTAssertEqual(changes, 0, "only the stamps moved: nothing is assigned")
         XCTAssertEqual(center.overviews[3]?.value?.until, "2026-10-08T00:00:00Z", "the shown report is kept")
 
         let changed = Self.overview(["old_format_sessions": 7])
         runner.answer { _ in changed }
         onScreen = true
+        await tick()
         await waitUntil { center.overviews[3]?.value?.oldFormatSessions == 7 }
         onScreen = false
         XCTAssertGreaterThan(changes, 0, "a changed report is assigned")
@@ -210,15 +257,16 @@ final class AgentAnalyticsCenterTests: XCTestCase {
 
         center.show(workbench: 3, period: .week)
         await waitUntil { runner.invocations.count == 1 }
+        let first = center.inFlightTasks
         center.show(workbench: 3, period: .month)
         center.show(workbench: 3, period: .day)
-        await settle()
+        XCTAssertEqual(center.inFlightTasks, first, "asking while a run is in flight starts none")
         XCTAssertEqual(runner.invocations.count, 1, "asking while a run is in flight starts none")
 
         runner.release(0)
         await waitUntil { runner.invocations.count == 2 }
         runner.release(1)
-        await settle()
+        await settle(center)
         XCTAssertEqual(runner.invocations.count, 2, "two asks queue one rerun")
         XCTAssertEqual(runner.invocations[1].suffix(2), ["--days", "1"], "the rerun reads the latest period")
     }
@@ -267,7 +315,7 @@ final class AgentAnalyticsCenterTests: XCTestCase {
         await waitUntil { center.overviews[3]?.error == nil }
         XCTAssertFalse(runner.invocations.last?.contains("--agent") ?? true, "Retry asks for All")
         center.show(workbench: 3, period: .week, agent: .all)
-        await settle()
+        await settle(center)
         XCTAssertEqual(runner.invocations.count, 3, "the reset filter is already the one asked for")
     }
 
@@ -284,7 +332,7 @@ final class AgentAnalyticsCenterTests: XCTestCase {
         runner.answer { _ in throw CLIRunnerError.nonZeroExit(code: 1, stderr: "Error: --workbench 3 not found (--agent codex)") }
         center.retry(workbench: 3)
         await waitUntil { runner.invocations.count == 2 }
-        await settle()
+        await settle(center)
         XCTAssertTrue(refused.isEmpty)
     }
 
@@ -309,28 +357,38 @@ final class AgentAnalyticsCenterTests: XCTestCase {
         await waitUntil { runner.invocations.count == 1 }
         center.show(workbench: 3, period: .week, agent: .kind(.codex))
         runner.release(0)
+        // The second run starts only after the first one handled its answer
+        // (`perform`, then `finished` starts the queued rerun): the Claude
+        // answer has been dropped by the time it is invoked.
         await waitUntil { runner.invocations.count == 2 }
-        await settle()
         XCTAssertNil(center.overviews[3]?.value, "the Claude answer is dropped")
         runner.release(1)
         await waitUntil { center.overviews[3]?.value != nil }
-        await settle()
+        await settle(center)
+        // The tracker records on a main-actor hop after the change.
+        await waitUntil { !assigned.isEmpty }
         XCTAssertEqual(center.overviews[3]?.value?.agent, "codex")
         XCTAssertEqual(assigned, ["codex"], "only the Codex overview is ever shown")
     }
 
-    func testHideStopsTheTicks() async {
+    func testHideStopsTheTicks() async throws {
         let runner = ScriptedAgentsRunner(Self.byFlags())
-        let center = makeCenter(runner, interval: .milliseconds(20))
+        let center = makeCenter(runner)
         center.isTabOnScreen = { true }
         center.show(workbench: 3, period: .week)
-        await waitUntil { runner.invocations.count >= 2 }
+        await waitUntil { runner.invocations.count == 1 && self.ticks.waits == 1 }
+        await settle(center)
+        await tick()
+        await waitUntil { runner.invocations.count == 2 }
 
+        let loop = try XCTUnwrap(center.loop)
         center.hide(workbench: 3)
         XCTAssertFalse(center.isPolling)
-        await settle()
+        await settle(center)
         let count = runner.invocations.count
-        try? await Task.sleep(for: .milliseconds(100))
+        ticks.tick()
+        await loop.value // the cancelled loop wakes and ends without a tick
+        XCTAssertTrue(center.inFlightTasks.isEmpty)
         XCTAssertEqual(runner.invocations.count, count)
     }
 
@@ -386,9 +444,10 @@ final class AgentAnalyticsCenterTests: XCTestCase {
         center.show(workbench: 3, period: .week)
         await waitUntil { runner.invocations.count == 1 }
 
+        let runs = center.inFlightTasks
         center.stop()
         runner.release(0)
-        await settle()
+        for run in runs { await run.value } // the cancelled run's late answer has landed
 
         XCTAssertNil(center.overviews[3])
         XCTAssertFalse(center.isPolling)

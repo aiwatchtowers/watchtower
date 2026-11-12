@@ -159,6 +159,10 @@ final class CodeFileBuffer {
         }
     }
 
+    /// The autosave scheduled last, if any (a test seam: awaiting it shows
+    /// whether it saved).
+    var autosaveTask: Task<Void, Never>? { autosave }
+
     func cancelAutosave() {
         autosave?.cancel()
         autosave = nil
