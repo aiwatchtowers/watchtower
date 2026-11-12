@@ -44,7 +44,7 @@ The others work the same way:
 - **Waiting for me** lists every message that waits on your answer as one list in the Inbox, after every sync, while attention detection is on. It uses no AI; its **Result** reads "One Waiting for me list in your Inbox". **Turn Off** turns attention detection off.
 - **Needs approval** shows every action that waits for your approval and every reminder that came due, one card each in the **Needs approval** folder, as soon as one changes. It uses no AI; its **Result** reads "One card per approval in your Inbox, in Needs approval", and it can't move to another folder. With it off, approvals still show there in the standard card.
 
-**Where the switches went.** Settings → Features no longer lists Tracks, Ideas or Reaction commands. Its row "Briefing, Day Plan, Tracks, Ideas and Reaction commands" says "These now live in Automations → Built in", with **Open Automations**. **Turn On** and **Turn Off** on a card do what the switch did, and **Turn Off** on Track my threads also pauses your watches.
+**Where the switches went.** Settings → Features no longer lists Tracks, Ideas, Reaction commands or Slack today. Its row "Briefing, Day Plan, Tracks, Ideas, Reaction commands and Slack today" says "These now live in Automations → Built in", with **Open Automations**. **Turn On** and **Turn Off** on a card do what the switch did, and **Turn Off** on Track my threads also pauses your watches.
 
 ## Using it
 

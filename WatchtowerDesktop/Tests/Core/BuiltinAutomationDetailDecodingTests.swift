@@ -57,6 +57,17 @@ final class BuiltinAutomationDetailDecodingTests: XCTestCase {
         XCTAssertTrue(waiting.runNow)
     }
 
+    /// Phase 5's Slack today golden (Go `builtin.CardInfo`).
+    func testSlackTodayGoldenDecodes() throws {
+        let today = try JSONDecoder().decode(BuiltinAutomationDetail.self, from: Self.golden("show_slack_today"))
+        XCTAssertEqual(today.id, "slack-today")
+        XCTAssertEqual(today.slot, "slack_today")
+        XCTAssertEqual(today.featureIDs, ["slack-today"])
+        XCTAssertEqual(today.parameters, [])
+        XCTAssertEqual(today.defaultFolder, "inbox")
+        XCTAssertTrue(today.runNow)
+    }
+
     /// Inbox builder B's Needs approval golden: no slot, its own feature.
     func testDecodesNeedsApprovalGolden() throws {
         let needs = try JSONDecoder().decode(BuiltinAutomationDetail.self, from: Self.golden("show_needs_approval"))

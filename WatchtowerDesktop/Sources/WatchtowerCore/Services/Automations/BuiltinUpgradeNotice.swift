@@ -24,6 +24,7 @@ package struct BuiltinUpgradeNotice: Equatable, Sendable {
         "track-my-threads": "Track my threads",
         "idea-finder": "Idea finder",
         "reactions": "Reactions",
+        "slack-today": "Slack today",
         // The watch recipes' move: "Couldn't move your watched tracks to Automations".
         "custom-tracks": "your watched tracks"
     ]
