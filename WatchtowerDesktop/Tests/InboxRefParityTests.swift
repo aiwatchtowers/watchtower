@@ -14,7 +14,7 @@ final class InboxRefParityTests: XCTestCase {
                 XCTFail("Kit kind \(ref.kind.rawValue) has no Core twin")
                 return InboxRef(kind: .action, id: 0)
             }
-            return InboxRef(kind: kind, id: ref.id)
+            return kind.hasTextID ? InboxRef(kind: kind, key: ref.key) : InboxRef(kind: kind, id: ref.id)
         }
     }
 
@@ -54,6 +54,38 @@ final class InboxRefParityTests: XCTestCase {
         for json in unreadable {
             XCTAssertNil(kitRefs(json), "the Kit reads it: \(json)")
             XCTAssertEqual(InboxRef.refs(blocksJSON: json), [], json)
+        }
+    }
+
+    /// Mail waiting's sender rows and Waiting for me's Older row carry a
+    /// string id: Core reads them as the Kit does, and refuses what the Kit
+    /// refuses (a number id, an empty string, a string id on an integer kind).
+    func testTextIDRefsReadLikeTheKit() throws {
+        let json = #"{"v":1,"blocks":[{"type":"list","rows":[{"title":"a","ref":{"kind":"mail_sender","id":"a@example.com"}},"#
+            + #"{"title":"b","ref":{"kind":"waiting_older","id":"older"}},{"title":"c","ref":{"kind":"inbox_item","id":7}}]}]}"#
+        let kit = try XCTUnwrap(kitRefs(json))
+        XCTAssertEqual(kit, [InboxRef(kind: .mailSender, key: "a@example.com"),
+                             InboxRef(kind: .waitingOlder, key: "older"), InboxRef(kind: .inboxItem, id: 7)])
+        XCTAssertEqual(InboxRef.refs(blocksJSON: json), kit)
+
+        for bad in [
+            #"{"v":1,"blocks":[{"type":"list","rows":[{"title":"a","ref":{"kind":"mail_sender","id":3}}]}]}"#,
+            #"{"v":1,"blocks":[{"type":"list","rows":[{"title":"a","ref":{"kind":"waiting_older","id":""}}]}]}"#,
+            #"{"v":1,"blocks":[{"type":"list","rows":[{"title":"a","ref":{"kind":"mail_sender"}}]}]}"#,
+            #"{"v":1,"blocks":[{"type":"list","rows":[{"title":"a","ref":{"kind":"inbox_item","id":"7"}}]}]}"#
+        ] {
+            XCTAssertNil(kitRefs(bad), "the Kit reads it: \(bad)")
+            XCTAssertEqual(InboxRef.refs(blocksJSON: bad), [], bad)
+        }
+    }
+
+    /// Every Kit kind has a Core twin with the same raw value and id shape.
+    func testEveryKitKindHasACoreTwin() {
+        let kit: [ArtifactRefKind] = [.inboxItem, .track, .idea, .reminder, .action, .mailSender, .waitingOlder]
+        XCTAssertEqual(kit.count, InboxRef.Kind.allCases.count)
+        for kind in kit {
+            let core = InboxRef.Kind(rawValue: kind.rawValue)
+            XCTAssertEqual(core?.hasTextID, kind.hasTextID, kind.rawValue)
         }
     }
 

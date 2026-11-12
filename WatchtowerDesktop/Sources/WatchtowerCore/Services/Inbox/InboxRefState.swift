@@ -9,14 +9,38 @@ package struct InboxRef: Hashable, Sendable {
     package enum Kind: String, CaseIterable, Sendable {
         case inboxItem = "inbox_item"
         case track, idea, reminder, action
+        /// Mail waiting's sender row: `key` is the sender's
+        /// `InboxPeopleRule.senderKey`.
+        case mailSender = "mail_sender"
+        /// Waiting for me's Older row (one per artifact).
+        case waitingOlder = "waiting_older"
+
+        /// The kind's JSON id is a string (`key`), not an integer: the Kit's
+        /// `ArtifactRefKind.hasTextID`.
+        package var hasTextID: Bool {
+            switch self {
+            case .mailSender, .waitingOlder: true
+            case .inboxItem, .track, .idea, .reminder, .action: false
+            }
+        }
     }
 
     package let kind: Kind
+    /// An integer kind's record id > 0; 0 for a text kind.
     package let id: Int64
+    /// A text kind's non-empty string id; "" for an integer kind.
+    package let key: String
 
     package init(kind: Kind, id: Int64) {
         self.kind = kind
         self.id = id
+        key = ""
+    }
+
+    package init(kind: Kind, key: String) {
+        self.kind = kind
+        id = 0
+        self.key = key
     }
 
     /// Every list row's ref of a stored `blocks_json`, in document order: the
@@ -46,9 +70,16 @@ package struct InboxRef: Hashable, Sendable {
                       let title = row["title"] as? String, !title.isEmpty else { return [] }
                 guard let value = row["ref"], !(value is NSNull) else { continue }
                 guard let ref = value as? [String: Any],
-                      let kind = (ref["kind"] as? String).flatMap(Kind.init(rawValue:)),
-                      let id = integer(ref["id"]), id > 0 else { return [] }
-                out.append(Self(kind: kind, id: id))
+                      let kind = (ref["kind"] as? String).flatMap(Kind.init(rawValue:)) else { return [] }
+                if kind.hasTextID {
+                    // A text kind with a number id is unreadable, as an
+                    // integer kind with a string id is.
+                    guard let key = ref["id"] as? String, !key.isEmpty else { return [] }
+                    out.append(Self(kind: kind, key: key))
+                } else {
+                    guard let id = integer(ref["id"]), id > 0 else { return [] }
+                    out.append(Self(kind: kind, id: id))
+                }
             }
         }
         return out
@@ -90,15 +121,37 @@ package struct InboxRefState: Equatable, Sendable {
     package static func read(
         _ db: Database, refs: [InboxRef], nowUTC: String, timeZone: TimeZone = .current
     ) throws -> Self {
-        let ids = Dictionary(grouping: refs, by: \.kind).mapValues { Array(Set($0.map(\.id))).sorted() }
-        var shown: Set<InboxRef> = []
+        let byKind = Dictionary(grouping: refs, by: \.kind)
+        var shown = try textRefsShown(db, byKind: byKind, nowUTC: nowUTC, timeZone: timeZone)
         var waiting: Set<InboxRef> = []
+        let ids = byKind.filter { !$0.key.hasTextID }.mapValues { Array(Set($0.map(\.id))).sorted() }
         for (kind, kindIDs) in ids {
             let open = try openIDs(db, kind: kind, ids: kindIDs, nowUTC: nowUTC, timeZone: timeZone)
             shown.formUnion(open.shown.map { InboxRef(kind: kind, id: $0) })
             waiting.formUnion(open.waiting.map { InboxRef(kind: kind, id: $0) })
         }
         return Self(shown: shown, waiting: waiting)
+    }
+
+    /// The shown text-id refs; none of them waits.
+    private static func textRefsShown(
+        _ db: Database, byKind: [InboxRef.Kind: [InboxRef]], nowUTC: String, timeZone: TimeZone
+    ) throws -> Set<InboxRef> {
+        var shown: Set<InboxRef> = []
+        if let senders = byKind[.mailSender] {
+            let keys = Array(Set(senders.map(\.key))).sorted()
+            let open = try WaitingQueries.shownSenders(db, keys: keys, nowUTC: nowUTC)
+            shown.formUnion(senders.filter { open.contains($0.key) })
+        }
+        if let older = byKind[.waitingOlder] {
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = timeZone
+            let now = AutomationDates.parse(nowUTC) ?? Date()
+            let counts = try WaitingQueries.peopleCounts(
+                db, nowUTC: nowUTC, startOfTodayUTC: InboxToday.sinceUTC(now: now, calendar: calendar))
+            if counts.older > 0 { shown.formUnion(older) }
+        }
+        return shown
     }
 
     private static func openIDs(
@@ -136,6 +189,9 @@ package struct InboxRefState: Equatable, Sendable {
                 let now = AutomationDates.parse(nowUTC) ?? Date()
                 let shown = ideas.filter { ideaShown($0, now: now, timeZone: timeZone) }
                 return (Set(shown.map { Int64($0.id) }), Set(shown.filter(\.awaitsVerdict).map { Int64($0.id) }))
+            case .mailSender, .waitingOlder:
+                // Read by key in `textRefsShown`.
+                return ([], [])
             }
         } catch let error as DatabaseError where ActionStripViewModel.isMissingTable(error) {
             return ([], [])

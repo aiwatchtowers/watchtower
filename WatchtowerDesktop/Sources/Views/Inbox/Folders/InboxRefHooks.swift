@@ -37,11 +37,10 @@ struct InboxRefHooks {
         onPress: @escaping (InboxRef, InboxRowPress) -> Void = { _, _ in }
     ) -> ArtifactRefHooks {
         ArtifactRefHooks(
-            // A text-id ref (Mail waiting's sender, Waiting for me's older
-            // row) has no Core record: always drawn, no native actions.
-            isOpen: { ref in inboxRef(ref).map(isShown) ?? true },
+            isOpen: { ref in isShown(inboxRef(ref)) },
             nativeActions: { ref, mode in
-                guard let inbox = inboxRef(ref), let content = content(inbox, mode) else { return nil }
+                let inbox = inboxRef(ref)
+                guard let content = content(inbox, mode) else { return nil }
                 return AnyView(InboxRefRowActions(
                     content: content, subject: subject(inbox), workbenches: workbenches, onCommand: onCommand
                 ) { onPress(inbox, $0) })
@@ -50,26 +49,26 @@ struct InboxRefHooks {
             // shown row the read does not list (past a cap, a kind its list
             // leaves out) keeps them, never ending with no buttons.
             nativeKinds: { ref in
-                guard let inbox = inboxRef(ref), let content = content(inbox, .inbox) else { return [] }
+                guard let content = content(inboxRef(ref), .inbox) else { return [] }
                 return nativeKinds(ref.kind, hasReply: content.hasReply)
             },
             nativeFooter: { ref, mode in
-                guard let inbox = inboxRef(ref), let content = content(inbox, mode), content.hasFooter else {
-                    return nil
-                }
+                let inbox = inboxRef(ref)
+                guard let content = content(inbox, mode), content.hasFooter else { return nil }
                 return AnyView(InboxRowActionsFooter(content: content) { onPress(inbox, $0) })
             },
             open: { ref in
                 // An idea row opens its full card (Merge…, Make a Task, Delete…).
-                guard ref.kind == .idea, let inbox = inboxRef(ref) else { return nil }
+                guard ref.kind == .idea else { return nil }
+                let inbox = inboxRef(ref)
                 return { onPress(inbox, .open) }
             }
         )
     }
 
-    /// The Core mirror of a Kit ref (the same raw values); nil for a
-    /// text-id kind, which Core does not mirror.
-    static func inboxRef(_ ref: ArtifactRef) -> InboxRef? {
+    /// The Core mirror of a Kit ref (the same raw values; a text kind's
+    /// `key`, an integer kind's `id`).
+    static func inboxRef(_ ref: ArtifactRef) -> InboxRef {
         let kind: InboxRef.Kind
         switch ref.kind {
         case .inboxItem: kind = .inboxItem
@@ -77,9 +76,10 @@ struct InboxRefHooks {
         case .idea: kind = .idea
         case .reminder: kind = .reminder
         case .action: kind = .action
-        case .mailSender, .waitingOlder: return nil
+        case .mailSender: kind = .mailSender
+        case .waitingOlder: kind = .waitingOlder
         }
-        return InboxRef(kind: kind, id: ref.id)
+        return kind.hasTextID ? InboxRef(kind: kind, key: ref.key) : InboxRef(kind: kind, id: ref.id)
     }
 
     /// The recipe's row actions a native one replaces ("Duplicates"): a
@@ -150,6 +150,9 @@ struct InboxRefHooks {
             let buttons = AgentActionCardView.rowButtons(
                 for: action, sessionHolds: sessionHoldsCall(action), offersRetry: !vm.isSupersededButtonRow(action))
             return .action(summary: AgentActionCardView.rowSummary(for: action), buttons: buttons)
+        case .mailSender, .waitingOlder:
+            // Their buttons come in a later task; none yet.
+            return nil
         }
     }
 
@@ -160,8 +163,9 @@ struct InboxRefHooks {
             if vm.actionFeed.inFlight.contains(ref.id) { return .busy }
             return vm.actionFeed.rowErrors[ref.id].map { .failed(message: $0.message) } ?? .idle
         }
-        if vm.isWriting(ref.selection) { return .busy }
-        return vm.rowErrors[ref.selection].map { .failed(message: $0.message) } ?? .idle
+        guard let selection = ref.selection else { return .idle }
+        if vm.isWriting(selection) { return .busy }
+        return vm.rowErrors[selection].map { .failed(message: $0.message) } ?? .idle
     }
 
     /// What Discuss in Chat and Hand to Agent… carry for a ping.
@@ -255,6 +259,7 @@ struct InboxRowActionHandler {
         case .idea: await idea(press, id: Int(ref.id))
         case .reminder: await reminder(press, id: ref.id)
         case .action: await action(press, id: ref.id)
+        case .mailSender, .waitingOlder: break
         }
     }
 
@@ -290,7 +295,8 @@ struct InboxRowActionHandler {
             await self.action(again, id: ref.id)
             return
         }
-        guard let failed = vm.rowErrors[ref.selection]?.press, failed != .retryFailedPress else { return }
+        guard let selection = ref.selection, let failed = vm.rowErrors[selection]?.press,
+              failed != .retryFailedPress else { return }
         await press(failed, on: ref)
     }
 

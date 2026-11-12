@@ -292,14 +292,16 @@ package struct InboxRowFailure: Equatable, Sendable {
 }
 
 package extension InboxRef {
-    /// The strip's key for this ref's record: its busy flag and row error.
-    var selection: InboxSelection {
+    /// The strip's key for this ref's record: its busy flag and row error;
+    /// nil for a text-id ref, which has no strip record.
+    var selection: InboxSelection? {
         switch kind {
         case .inboxItem: .message(Int(id))
         case .track: .track(Int(id))
         case .idea: .idea(Int(id))
         case .reminder: .reminder(id)
         case .action: .proposal(id)
+        case .mailSender, .waitingOlder: nil
         }
     }
 }
