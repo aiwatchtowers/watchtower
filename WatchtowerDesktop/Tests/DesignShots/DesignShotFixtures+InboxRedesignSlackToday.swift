@@ -110,8 +110,11 @@ enum InboxSlackTodayShotFixtures {
     /// The Inbox's artifact ⋯ over an Automations tab that knows Slack
     /// today as a built-in offering Run Now (its `show` answered by a fake
     /// CLI), read before the shot so the pane draws Run Now and the ⋯.
-    private static func artifactMenu(_ pool: DatabasePool, _ vm: ActionStripViewModel,
-                                     _ automationID: Int64) -> InboxArtifactMenuModel {
+    private static func artifactMenu(
+        _ pool: DatabasePool,
+        _ vm: ActionStripViewModel,
+        _ automationID: Int64
+    ) -> InboxArtifactMenuModel {
         let slug = SlackTodayQueries.builtinID
         let show = "{\"id\":\(automationID),\"slug\":\"\(slug)\",\"scope\":\"personal\",\"path\":\"builtin:\(slug)\","
             + "\"name\":\"Slack today\",\"enabled\":true,\"runnable\":true,\"needs_confirmation\":false,"
