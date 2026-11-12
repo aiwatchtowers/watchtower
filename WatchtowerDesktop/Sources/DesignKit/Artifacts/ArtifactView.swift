@@ -209,27 +209,27 @@ struct ArtifactListView: View {
 
 /// When a list row's actions show (spec "Waiting for me and Mail
 /// waiting": no layout jumps on hover).
-public enum ArtifactRowChrome {
+enum ArtifactRowChrome {
     /// In `.inbox` the actions sit over the row's trailing edge and show
     /// while the pointer or the keyboard is on the row; every other mode
     /// keeps them inline, always shown. A `pinned` row (Waiting for me's
     /// Older note row, whose **Mark All Done…** is its point and which has
     /// no age chip) shows them always.
-    public static func showsActions(
+    static func showsActions(
         isHovered: Bool, isFocused: Bool, mode: ArtifactRenderMode, pinned: Bool = false
     ) -> Bool {
         mode != .inbox || pinned || isHovered || isFocused
     }
 
     /// The row keeps its actions shown (`showsActions`'s `pinned`).
-    public static func pinsActions(_ ref: ArtifactRef?) -> Bool {
+    static func pinsActions(_ ref: ArtifactRef?) -> Bool {
         ref?.kind == .waitingOlder
     }
 
     /// The `.inbox` row's actions overlay.
-    public static let actionsIdentifier = "artifactRow.actions"
+    static let actionsIdentifier = "artifactRow.actions"
     /// The `.inbox` row's age chip at its trailing edge.
-    public static let badgeIdentifier = "artifactRow.badge"
+    static let badgeIdentifier = "artifactRow.badge"
 }
 
 /// An `.inbox` row with a ref carries it as its id, so a keyboard host
