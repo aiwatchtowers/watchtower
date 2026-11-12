@@ -493,7 +493,7 @@ struct ActionStripActionsView: View {
                 isHighPriority: card.priority == "high", menu: menu
             ) { openAux(.reactionCommands) }))
                 .task(id: card.automationID) { await artifactMenu?.prepare(card) }
-        case let .legacyDay(card)?: pane(.day(card))
+        case let .legacyDay(card)?: pane(.day(vm.briefDay ?? card))
         case let .brief(action)?:
             let content = InboxFolderEntries.content(.brief(action), vm.entryInputs)
             pane(.proposal(action), header: AnyView(InboxPaneHeader(
@@ -544,7 +544,7 @@ struct ActionStripActionsView: View {
             workbenches: workbenches,
             artifactPeople: vm.feed.artifactPeople,
             dayCard: { card in
-                if let pane = dayPane?(card) {
+                if let pane = briefPane(card) {
                     pane
                 } else {
                     InboxCardPlaceholder(day: card)
@@ -561,6 +561,62 @@ struct ActionStripActionsView: View {
             .withArtifactMenu(menu)
         if let header { withHooks = withHooks.paneHeader(header) }
         return inApprovals ? withHooks.stackedInApprovals() : withHooks
+    }
+
+    // MARK: - The Morning brief
+
+    /// The Morning brief's pane over `card`, with its stepper, History,
+    /// today's people and threads and their links (`InboxBriefControls`).
+    private func briefPane(_ card: InboxDayCard) -> InboxDayPane? {
+        guard var pane = dayPane?(card) else { return nil }
+        pane.controls = briefControls(card)
+        return pane
+    }
+
+    private func briefControls(_ card: InboxDayCard) -> InboxBriefControls {
+        let now = now ?? Date()
+        let calendar = Calendar.autoupdatingCurrent
+        let today = HomeFeedBuilder.dayString(now, calendar: calendar)
+        let days = vm.feed.days
+        let tracksListed = vm.folderEntries.contains(.legacyTracks)
+        // Labeled: with several closures a trailing one would be ambiguous.
+        // swiftlint:disable trailing_closure
+        return InboxBriefControls(
+            history: InboxBriefDays.history(days, today: today, now: now, calendar: calendar),
+            canStepOlder: InboxBriefDays.step(from: card.date, .older, in: days, today: today) != nil,
+            historyShown: Binding(get: { vm.briefHistoryShown }, set: { vm.briefHistoryShown = $0 }),
+            onStep: { step in Task { await vm.stepBrief(step) } },
+            onPick: { date in Task { await vm.showBriefDay(date) } },
+            waitingOnYou: InboxBriefLayout.waitingOnYou(vm.feed.messages),
+            movedOvernight: InboxBriefLayout.movedOvernight(vm.feed.tracks),
+            onAllWaiting: waitingForMeEntryID.map(entryOpener),
+            onTrackMyThreads: tracksListed ? { openEntry(InboxFolderEntry.legacyTracks.id) } : nil,
+            onReactionCommands: { openAux(.reactionCommands) }
+        )
+        // swiftlint:enable trailing_closure
+    }
+
+    /// Waiting for me's entry in the folder: its artifact, or the Messages
+    /// entry standing in for it; nil while the folder lists neither.
+    private var waitingForMeEntryID: String? {
+        let automationID = vm.folderMenu.snapshot.waitingForMe.automationID
+        return vm.folderEntries.first { entry in
+            switch entry {
+            case let .artifact(card): automationID != nil && card.automationID == automationID
+            case .legacyMessages: true
+            default: false
+            }
+        }?.id
+    }
+
+    private func entryOpener(_ id: String) -> () -> Void {
+        { openEntry(id) }
+    }
+
+    /// A brief link: the owner's click on that entry's row.
+    private func openEntry(_ id: String) {
+        aux = nil
+        Task { await vm.selectEntry(id) }
     }
 
     // MARK: - Native row actions

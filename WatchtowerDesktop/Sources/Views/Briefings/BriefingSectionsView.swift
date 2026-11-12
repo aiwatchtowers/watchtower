@@ -34,15 +34,36 @@ enum BriefingTaskSource: Equatable {
     case coaching(CoachingItem)
 }
 
-/// A briefing's sections — Needs you, Your day, What happened, Team pulse,
-/// Coaching — with their deep links, for the Inbox's Your day card. No
-/// header and no sheet: the card owns the header, and an item's
-/// **Make a Task** creates the target at once (`onMakeTask`, which returns
-/// the failure to show, or nil). A section with nothing in it is not drawn.
+/// One block of a briefing that `BriefingSectionsView` draws.
+enum BriefingPart: Equatable {
+    /// The attention items `from` on, at most `limit` of them (nil = all).
+    case attention(from: Int, limit: Int?)
+    case yourDay, whatHappened, teamPulse, coaching
+
+    /// Every block in the briefing's own order.
+    static let all: [Self] = [.attention(from: 0, limit: nil), .yourDay, .whatHappened, .teamPulse, .coaching]
+
+    /// An attention part's title: all of them are "Needs you"; the Morning
+    /// brief's first ones are "Start here" and the rest "More for today".
+    static func attentionTitle(from: Int, limit: Int?) -> String {
+        if from > 0 { return "More for today" }
+        return limit == nil ? "Needs you" : "Start here"
+    }
+}
+
+/// A briefing's sections — `parts`, by default Needs you, Your day, What
+/// happened, Team pulse, Coaching — with their deep links, for the Inbox's
+/// Morning brief. No header and no sheet: the pane owns the header, and an
+/// item's **Make a Task** creates the target at once (`onMakeTask`, which
+/// returns the failure to show, or nil). A section with nothing in it is not
+/// drawn; `showsTitles` false leaves out the section titles (the pane draws
+/// its own over them).
 struct BriefingSectionsView: View {
     let briefing: Briefing
+    var parts: [BriefingPart] = BriefingPart.all
     var onOpen: (BriefingLink) -> Void = { _ in }
     var onMakeTask: (BriefingTaskSource) async -> String? = { _ in nil }
+    var showsTitles = true
 
     @State private var makingTask = false
     @State private var makeTaskError: String?
@@ -54,13 +75,22 @@ struct BriefingSectionsView: View {
             if let makeTaskError {
                 WriteErrorBanner(message: makeTaskError) { self.makeTaskError = nil }
             }
-            needsYouSection
-            yourDaySection
-            whatHappenedSection
-            teamPulseSection
-            coachingSection
+            ForEach(Array(parts.enumerated()), id: \.offset) { _, part in
+                self.part(part)
+            }
         }
         .task { await loadJiraConfig() }
+    }
+
+    @ViewBuilder
+    private func part(_ part: BriefingPart) -> some View {
+        switch part {
+        case let .attention(from, limit): attentionSection(from: from, limit: limit)
+        case .yourDay: yourDaySection
+        case .whatHappened: whatHappenedSection
+        case .teamPulse: teamPulseSection
+        case .coaching: coachingSection
+        }
     }
 
     /// Jira link badges need the connection and site; both are read off the
@@ -90,10 +120,11 @@ struct BriefingSectionsView: View {
     // MARK: - Needs you
 
     @ViewBuilder
-    private var needsYouSection: some View {
-        let items = briefing.parsedAttention
+    private func attentionSection(from: Int, limit: Int?) -> some View {
+        let rest = briefing.parsedAttention.dropFirst(from)
+        let items = Array(limit.map { rest.prefix($0) } ?? rest)
         if !items.isEmpty {
-            section("Needs you", icon: "exclamationmark.triangle.fill") {
+            section(BriefingPart.attentionTitle(from: from, limit: limit), icon: "exclamationmark.triangle.fill") {
                 ForEach(items) { item in
                     VStack(alignment: .trailing, spacing: Spacing.small) {
                         attentionCard(item)
@@ -276,7 +307,9 @@ struct BriefingSectionsView: View {
         @ViewBuilder content: () -> Content
     ) -> some View {
         VStack(alignment: .leading, spacing: Spacing.regular) {
-            SectionHeader(title: title, systemImage: icon)
+            if showsTitles {
+                SectionHeader(title: title, systemImage: icon)
+            }
             content()
         }
     }

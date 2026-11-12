@@ -300,8 +300,7 @@ package enum InboxFolderEntries {
 
     /// The Morning brief's row: its lead, the day it is for.
     private static func brief(_ card: InboxDayCard, _ inputs: Inputs) -> InboxRowContent {
-        // Task 11 moves the lead to `InboxBriefLayout.lead`.
-        let lead = card.briefing.flatMap { $0.parsedAttention.first?.text ?? $0.parsedYourDay.first?.text }
+        let lead = card.briefing.flatMap(InboxBriefLayout.lead)
         return InboxRowContent(
             kind: .brief, title: "Morning brief", preview: card.isEmpty ? "Not written yet" : lead ?? "",
             meta: dayLabel(card), time: card.isEmpty ? "" : time(card.stamp, inputs), isUnread: card.isUnread)

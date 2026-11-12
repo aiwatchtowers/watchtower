@@ -264,9 +264,9 @@ final class InboxReadingPaneTests: XCTestCase {
 
         XCTAssertNoThrow(try sut.inspect().find(InboxDayPane.self))
         let texts = try sut.inspect().findAll(ViewType.Text.self).compactMap { try? $0.string() }
+        let startHere = try XCTUnwrap(texts.firstIndex(of: "Start here"))
         let item = try XCTUnwrap(texts.firstIndex(of: "Write tests"))
-        let needsYou = try XCTUnwrap(texts.firstIndex(of: "Needs you"))
-        XCTAssertLessThan(item, needsYou, "the plan block comes before Needs you")
+        XCTAssertLessThan(startHere, item, "the Morning brief's order: Start here, then Your day's plan")
     }
 
     func testListRowContentForEveryKind() throws {

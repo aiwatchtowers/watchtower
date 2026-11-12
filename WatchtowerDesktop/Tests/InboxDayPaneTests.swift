@@ -3,12 +3,12 @@ import GRDB
 import SwiftUI
 import ViewInspector
 @testable import WatchtowerDesktop
-import WatchtowerCore
+@testable import WatchtowerCore
 import WatchtowerTestSupport
 
-/// The Inbox's Your day card (spec §6.3, R10): the plan on top, the brief
-/// below; Add and Regenerate with feedback… only on today's card, both
-/// inline rows.
+/// The Inbox's Morning brief (spec "One brief row", §6.3, R10): the
+/// mockup's order under a pane header with the day stepper and History;
+/// Add and Regenerate with feedback… only on today's card, both inline rows.
 @MainActor
 final class InboxDayPaneTests: XCTestCase {
     nonisolated private static let today = "2026-10-22"
@@ -17,6 +17,7 @@ final class InboxDayPaneTests: XCTestCase {
         id: "1:U1", source: .slack, slackUserID: "1:U1", email: "", jiraAccountID: "", displayName: "Me"
     )
     nonisolated private static let attention = #"[{"text":"Reply to the release thread","priority":"high","source_type":"track","source_id":"3"}]"#
+    nonisolated private static let yourDay = #"[{"text":"Prepare the ACME-12 review"}]"#
 
     private var pool: DatabaseQueue!
     private var cli: FakeCLIRunner!
@@ -50,10 +51,26 @@ final class InboxDayPaneTests: XCTestCase {
         }
     }
 
-    private func insertBriefing(date: String) async throws {
+    private func insertBriefing(date: String, yourDay: String = "[]") async throws {
         try await pool.write { db in
-            try TestDatabase.insertBriefing(db, date: date, attention: Self.attention)
+            try TestDatabase.insertBriefing(db, date: date, attention: Self.attention, yourDay: yourDay)
         }
+    }
+
+    /// Today's people and threads for the pane's `controls`.
+    private func controls(onStep: @escaping (InboxBriefDays.Step) -> Void = { _ in }) -> InboxBriefControls {
+        let item = InboxItem(row: Row(["id": 9, "snippet": "Will you approve the budget?"]
+            as [String: (any DatabaseValueConvertible)?]))
+        let track = Track(row: Row(["id": 4, "text": "The tag goes out Thursday"]
+            as [String: (any DatabaseValueConvertible)?]))
+        var controls = InboxBriefControls()
+        controls.canStepOlder = true
+        controls.onStep = onStep
+        controls.waitingOnYou = [HomeFeedInboxRow(item: item, stamp: Date(), who: "Colleague B", whereText: nil)]
+        controls.movedOvernight = [InboxTrackCard(track: track, lastEventAt: Date(), newEventCount: 1)]
+        controls.onAllWaiting = {}
+        controls.onTrackMyThreads = {}
+        return controls
     }
 
     /// The card over what the database holds for `date`, with the view model
@@ -100,16 +117,105 @@ final class InboxDayPaneTests: XCTestCase {
 
     // MARK: - Tests
 
-    func testPlanAboveBriefing() async throws {
+    /// The mockup's order: the lead and Start here, Your day (the plan,
+    /// then the brief's day items), Waiting on you, Moved overnight.
+    func testSectionOrderFollowsTheMockup() async throws {
         try await insertPlan(date: Self.today)
-        try await insertBriefing(date: Self.today)
-        let sut = try await pane(date: Self.today)
+        try await insertBriefing(date: Self.today, yourDay: Self.yourDay)
+        var sut = try await pane(date: Self.today)
+        sut.controls = controls()
 
         let all = try texts(sut)
-        let firstRow = try XCTUnwrap(all.firstIndex(of: "Standup"))
-        let needsYou = try XCTUnwrap(all.firstIndex(of: "Needs you"))
-        XCTAssertLessThan(firstRow, needsYou)
-        XCTAssertNoThrow(try sut.inspect().find(text: "Reply to the release thread"))
+        let order = try ["Start here", "Your day", "Standup", "Prepare the ACME-12 review", "Waiting on you",
+                         "Moved overnight"].map { try XCTUnwrap(all.firstIndex(of: $0), $0) }
+        XCTAssertEqual(order, order.sorted(), "found in \(all)")
+        XCTAssertEqual(all.filter { $0 == "Reply to the release thread" }.count, 2, "the lead, then Start here")
+        XCTAssertFalse(all.contains("Needs you"))
+        XCTAssertEqual(all.first, "Morning brief")
+        XCTAssertNoThrow(try sut.inspect().find(button: "All in Waiting for me"))
+        XCTAssertNoThrow(try sut.inspect().find(button: "Track my threads"))
+    }
+
+    func testHeaderStepperDisablesNewerOnToday() async throws {
+        try await insertBriefing(date: Self.today)
+        try await insertBriefing(date: Self.yesterday)
+        var steps: [InboxBriefDays.Step] = []
+        var todayCard = try await pane(date: Self.today)
+        todayCard.controls = controls { steps.append($0) }
+
+        let newer = try todayCard.inspect().find(viewWithAccessibilityIdentifier: "inbox.brief.newer").button()
+        XCTAssertTrue(newer.isDisabled(), "› is disabled on today")
+        let older = try todayCard.inspect().find(viewWithAccessibilityIdentifier: "inbox.brief.older").button()
+        XCTAssertFalse(older.isDisabled())
+        try older.tap()
+        XCTAssertNoThrow(try todayCard.inspect().find(text: "Thu 22 Oct"), "the stepper's date")
+        XCTAssertNoThrow(try todayCard.inspect().find(button: "History"))
+
+        var pastCard = try await pane(date: Self.yesterday)
+        pastCard.controls = controls { steps.append($0) }
+        try pastCard.inspect().find(viewWithAccessibilityIdentifier: "inbox.brief.newer").button().tap()
+        XCTAssertEqual(steps, [.older, .newer])
+
+        var oldest = try await pane(date: Self.yesterday)
+        oldest.controls.canStepOlder = false
+        let olderOfOldest = try oldest.inspect().find(viewWithAccessibilityIdentifier: "inbox.brief.older").button()
+        XCTAssertTrue(olderOfOldest.isDisabled(), "‹ is disabled with no older day")
+    }
+
+    func testHistoryListsUnreadMarked() throws {
+        func day(_ date: String, readAt: String?) throws -> InboxDayCard {
+            let briefing = try XCTUnwrap(try pool.write { db -> Briefing? in
+                try TestDatabase.insertBriefing(db, date: date, readAt: readAt)
+                return try BriefingQueries.fetchByDate(db, date: date)
+            })
+            return InboxDayCard(date: date, briefing: briefing, plan: nil, planDone: 0, planTotal: 0, stamp: Date())
+        }
+        let days = [try day(Self.today, readAt: nil), try day(Self.yesterday, readAt: "2026-10-21T09:00:00Z")]
+        var picked: [String] = []
+        let sut = InboxBriefHistoryList(days: days, shownDate: Self.today) { picked.append($0) }
+
+        func marked(_ id: String) throws -> Int {
+            try sut.inspect().findAll { try $0.accessibilityIdentifier() == id }.count
+        }
+        XCTAssertEqual(try marked("inbox.brief.history.unread"), 1)
+        XCTAssertEqual(try marked("inbox.brief.history.read"), 1)
+        XCTAssertEqual(try texts(sut), ["Thu 22 Oct", "Wed 21 Oct"], "newest first, the stepper's date label")
+        try sut.inspect().find(button: "Wed 21 Oct").tap()
+        XCTAssertEqual(picked, [Self.yesterday])
+    }
+
+    /// Waiting on you and Moved overnight are today's: a past brief leaves them out.
+    func testPastDayHidesTodayOnlySections() async throws {
+        try await insertBriefing(date: Self.yesterday)
+        var past = try await pane(date: Self.yesterday)
+        past.controls = controls()
+        XCTAssertNoThrow(try past.inspect().find(text: "Start here"))
+        XCTAssertThrowsError(try past.inspect().find(text: "Waiting on you"))
+        XCTAssertThrowsError(try past.inspect().find(text: "Moved overnight"))
+
+        try await insertBriefing(date: Self.today)
+        var today = try await pane(date: Self.today)
+        var empty = controls()
+        empty.waitingOnYou = []
+        empty.movedOvernight = []
+        today.controls = empty
+        XCTAssertThrowsError(try today.inspect().find(text: "Waiting on you"), "left out when empty")
+        XCTAssertThrowsError(try today.inspect().find(text: "Moved overnight"), "left out when empty")
+    }
+
+    func testConflictsChip() async throws {
+        try await insertPlan(date: Self.today, hasConflicts: true)
+        let sut = try await pane(date: Self.today)
+        XCTAssertNoThrow(try sut.inspect().find(text: "1 conflict"))
+
+        try await insertPlan(date: Self.yesterday)
+        let calm = try await pane(date: Self.yesterday)
+        XCTAssertThrowsError(try calm.inspect().find(text: "1 conflict"))
+    }
+
+    func testSubtitleSaysTheDayAndWhenItWasWritten() throws {
+        let card = InboxDayCard.placeholder(date: Self.today, stamp: Date())
+        XCTAssertEqual(InboxDayPane.subtitle(card), "Thursday, 22 October", "before a briefing, the day alone")
     }
 
     func testHeaderButtons() async throws {
@@ -244,13 +350,13 @@ final class InboxDayPaneTests: XCTestCase {
     func testBriefingOnlyCard() async throws {
         try await insertBriefing(date: Self.yesterday)
         let past = try await pane(date: Self.yesterday)
-        XCTAssertNoThrow(try past.inspect().find(text: "Needs you"))
+        XCTAssertNoThrow(try past.inspect().find(text: "Start here"))
         XCTAssertThrowsError(try past.inspect().find(text: "Plan"))
         XCTAssertThrowsError(try past.inspect().find(viewWithAccessibilityLabel: "Add to the plan"))
 
         try await insertBriefing(date: Self.today)
         let noOwner = try await pane(date: Self.today, owner: .unknown)
-        XCTAssertNoThrow(try noOwner.inspect().find(text: "Needs you"))
+        XCTAssertNoThrow(try noOwner.inspect().find(text: "Start here"))
         XCTAssertThrowsError(try noOwner.inspect().find(text: "Plan"))
     }
 
@@ -261,7 +367,7 @@ final class InboxDayPaneTests: XCTestCase {
         let sut = try await pane(date: Self.today)
 
         XCTAssertNoThrow(try sut.inspect().find(button: "Make today's plan"))
-        XCTAssertNoThrow(try sut.inspect().find(text: "Needs you"))
+        XCTAssertNoThrow(try sut.inspect().find(text: "Start here"))
         XCTAssertThrowsError(try sut.inspect().find(viewWithAccessibilityLabel: "Add to the plan"))
         XCTAssertThrowsError(try sut.inspect().find(button: "Regenerate with feedback…"))
     }
@@ -356,10 +462,10 @@ final class InboxDayPaneTests: XCTestCase {
 
         XCTAssertNoThrow(try sut.inspect().find(text: "Plan"))
         XCTAssertNoThrow(try sut.inspect().find(text: "Write tests"))
-        for header in ["Needs you", "What happened", "Team pulse", "Coaching"] {
+        for header in ["Start here", "Needs you", "More for today", "What happened", "Team pulse", "Coaching"] {
             XCTAssertThrowsError(try sut.inspect().find(text: header), header)
         }
-        XCTAssertEqual(try texts(sut).filter { $0 == "Your day" }.count, 1, "the card's title, no briefing section")
+        XCTAssertEqual(try texts(sut).filter { $0 == "Your day" }.count, 1, "the plan's section, no briefing one")
     }
 
     func testBriefingItemOpensItsLink() throws {

@@ -1,10 +1,39 @@
 import SwiftUI
 import WatchtowerCore
 
-/// The Inbox's Your day card (spec §6.3, R3, R10): the day's plan on top,
-/// its briefing below, either half alone when the day has only that one.
-/// Header: **Discuss in Chat** only: in the folder model nothing pins a day
-/// card, so it has no Done (ask #607).
+/// What the Morning brief's pane reads besides its day (`ActionStripActionsView`
+/// fills it from the view model): the stepper and History, today's Waiting
+/// on you and Moved overnight, their links and the `?`. The defaults (tests,
+/// design shots) draw a stepper that goes nowhere and no links.
+struct InboxBriefControls {
+    /// `InboxBriefDays.history`, newest first.
+    var history: [InboxDayCard] = []
+    /// ‹ has a day to go to (`InboxBriefDays.step` is not nil).
+    var canStepOlder = false
+    /// `ActionStripViewModel.briefHistoryShown`.
+    var historyShown: Binding<Bool> = .constant(false)
+    var onStep: (InboxBriefDays.Step) -> Void = { _ in }
+    /// A History pick (`showBriefDay`).
+    var onPick: (String) -> Void = { _ in }
+    /// `InboxBriefLayout.waitingOnYou` of the feed's open messages.
+    var waitingOnYou: [HomeFeedInboxRow] = []
+    /// `InboxBriefLayout.movedOvernight` of the feed's tracks.
+    var movedOvernight: [InboxTrackCard] = []
+    /// "All in Waiting for me": selects that entry; nil = no link.
+    var onAllWaiting: (() -> Void)?
+    /// "Track my threads": opens that entry; nil = no link.
+    var onTrackMyThreads: (() -> Void)?
+    /// The reaction commands' `?`; nil draws none.
+    var onReactionCommands: (() -> Void)?
+}
+
+/// The Inbox's Morning brief (spec "One brief row", §6.3, R3, R10, the
+/// mockup's order): the pane header with the day stepper, **History**,
+/// **Discuss in Chat** and the `?`; then the lead with **Start here** (the
+/// first three attention items), **Your day** (the plan and the brief's
+/// day items), today's **Waiting on you** and **Moved overnight**, and the
+/// rest of the brief (More for today, What happened, Team pulse, Coaching).
+/// In the folder model nothing pins a day card, so it has no Done (ask #607).
 /// Opening the card marks its briefing read (`ActionStripViewModel.select`),
 /// not this view.
 /// Today with nothing yet (the list's placeholder card) says when the brief
@@ -41,6 +70,8 @@ struct InboxDayPane: View {
     /// The briefing and day-plan features are on (`InboxFeedSnapshot`).
     var briefingOn = true
     var dayPlanOn = true
+    /// The stepper, History, today's people and threads (`InboxBriefControls`).
+    var controls = InboxBriefControls()
 
     @State private var openRow: InboxDayPlanRow?
 
@@ -59,28 +90,179 @@ struct InboxDayPane: View {
                     onOpenConnections: onOpenConnections
                 )
             }
-            // The view model holds one date; until it has read this
-            // card's, the plan half waits rather than show another day.
-            // Today with no plan yet still shows it, to make one.
-            if showsPlan {
-                InboxDayPlanBlock(
-                    plan: plan,
-                    isToday: card.date == today,
-                    owner: owner,
-                    openRow: $openRow,
-                    onOpenSource: onOpenSource
-                )
-            }
             if let briefing = card.briefing {
-                BriefingSectionsView(briefing: briefing, onOpen: onOpenBriefingLink, onMakeTask: onMakeTask)
+                leadCard(briefing)
             } else if showsPlan, briefingOn, card.date == today, owner.isKnown, let briefing {
                 InboxDayBriefRow(briefing: briefing) { Task { await makeBrief() } }
+            }
+            yourDay
+            if card.date == today {
+                waitingOnYou
+                movedOvernight
+            }
+            if let briefing = card.briefing {
+                BriefingSectionsView(briefing: briefing,
+                                     parts: [.attention(from: InboxBriefLayout.topCount, limit: nil),
+                                             .whatHappened, .teamPulse, .coaching],
+                                     onOpen: onOpenBriefingLink, onMakeTask: onMakeTask)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .task(id: card.date) {
             openRow = initialRow
             await plan.loadFor(date: card.date)
+        }
+    }
+
+    // MARK: - The mockup's sections
+
+    /// The brief's lead line over **Start here**, its first three attention
+    /// items with their own actions.
+    @ViewBuilder
+    private func leadCard(_ briefing: Briefing) -> some View {
+        let lead = InboxBriefLayout.lead(briefing)
+        if lead != nil || !InboxBriefLayout.startHere(briefing).isEmpty {
+            VStack(alignment: .leading, spacing: Spacing.medium) {
+                if let lead {
+                    Text(lead)
+                        .font(.body)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                        .padding(Spacing.medium)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .card()
+                }
+                BriefingSectionsView(briefing: briefing,
+                                     parts: [.attention(from: 0, limit: InboxBriefLayout.topCount)],
+                                     onOpen: onOpenBriefingLink, onMakeTask: onMakeTask)
+            }
+        }
+    }
+
+    /// **Your day**: the plan (with "N conflicts" when it has them) and the
+    /// brief's day items. The view model holds one date; until it has read
+    /// this card's, the plan waits rather than show another day. Today with
+    /// no plan yet still shows it, to make one.
+    @ViewBuilder
+    private var yourDay: some View {
+        let items = card.briefing?.parsedYourDay ?? []
+        if showsPlan || !items.isEmpty {
+            VStack(alignment: .leading, spacing: Spacing.regular) {
+                HStack(spacing: Spacing.regular) {
+                    SectionHeader(title: "Your day", systemImage: "calendar")
+                    if showsPlan, plan.hasConflicts {
+                        Chip(text: Self.conflictsLabel(plan.timeblocks), color: Tone.error)
+                    }
+                }
+                if showsPlan {
+                    InboxDayPlanBlock(
+                        plan: plan,
+                        isToday: card.date == today,
+                        owner: owner,
+                        openRow: $openRow,
+                        onOpenSource: onOpenSource
+                    )
+                }
+                if let briefing = card.briefing, !items.isEmpty {
+                    BriefingSectionsView(briefing: briefing, parts: [.yourDay], onOpen: onOpenBriefingLink,
+                                         onMakeTask: onMakeTask, showsTitles: false)
+                }
+            }
+        }
+    }
+
+    /// "1 conflict", "3 conflicts": the plan's time blocks that overlap
+    /// another one, at least one (the plan says it has conflicts; a clash
+    /// with a calendar event alone has no block pair to count).
+    static func conflictsLabel(_ timeblocks: [DayPlanItem]) -> String {
+        let count = max(1, overlappingPairs(timeblocks))
+        return count == 1 ? "1 conflict" : "\(count) conflicts"
+    }
+
+    private static func overlappingPairs(_ timeblocks: [DayPlanItem]) -> Int {
+        let spans = timeblocks.compactMap { item -> (Date, Date)? in
+            guard let start = item.startTime, let end = item.endTime, end > start else { return nil }
+            return (start, end)
+        }
+        var pairs = 0
+        for (index, span) in spans.enumerated() {
+            for other in spans.dropFirst(index + 1) where span.0 < other.1 && other.0 < span.1 {
+                pairs += 1
+            }
+        }
+        return pairs
+    }
+
+    /// Today's **Waiting on you**: the three newest open messages, a link to
+    /// Waiting for me; left out when nothing waits.
+    @ViewBuilder
+    private var waitingOnYou: some View {
+        let rows = controls.waitingOnYou
+        if !rows.isEmpty {
+            VStack(alignment: .leading, spacing: Spacing.regular) {
+                sectionHeader("Waiting on you", icon: "person.2", link: "All in Waiting for me",
+                              action: controls.onAllWaiting)
+                VStack(alignment: .leading, spacing: Spacing.regular) {
+                    ForEach(rows, id: \.item.id) { row in
+                        messageRow(row)
+                    }
+                }
+                .padding(Spacing.medium)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .card()
+            }
+        }
+    }
+
+    private func messageRow(_ row: HomeFeedInboxRow) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
+            VStack(alignment: .leading, spacing: Spacing.tight) {
+                Text([row.who, row.whereText].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "))
+                    .font(.callout.weight(.medium))
+                Text(InboxRowText.preview(row.item.snippet))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: Spacing.regular)
+            Text(InboxRowTime.label(row.stamp, now: Date(), calendar: .current))
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.tertiary)
+        }
+    }
+
+    /// Today's **Moved overnight**: up to three threads with news, a link to
+    /// Track my threads; left out when none moved.
+    @ViewBuilder
+    private var movedOvernight: some View {
+        let tracks = controls.movedOvernight
+        if !tracks.isEmpty {
+            VStack(alignment: .leading, spacing: Spacing.regular) {
+                sectionHeader("Moved overnight", icon: "checklist", link: "Track my threads",
+                              action: controls.onTrackMyThreads)
+                VStack(alignment: .leading, spacing: Spacing.regular) {
+                    ForEach(tracks, id: \.track.id) { card in
+                        Text(card.track.text)
+                            .font(.callout)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .padding(Spacing.medium)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .card()
+            }
+        }
+    }
+
+    private func sectionHeader(_ title: String, icon: String, link: String, action: (() -> Void)?) -> some View {
+        HStack(spacing: Spacing.regular) {
+            SectionHeader(title: title, systemImage: icon)
+            Spacer()
+            if let action {
+                Button(link, action: action)
+                    .buttonStyle(.kitQuiet)
+                    .controlSize(.small)
+            }
         }
     }
 
@@ -115,33 +297,35 @@ struct InboxDayPane: View {
         await onMade()
     }
 
+    /// The pane header: the stepper, **History**, **Discuss in Chat** (not
+    /// on today's placeholder, which has nothing to discuss yet) and the `?`.
+    /// The day card has no source link and no Hand to Agent….
     private var header: some View {
-        HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
-            VStack(alignment: .leading, spacing: Spacing.tight) {
-                Text("Your day").font(.headline)
-                Text(Self.dateLabel(card.date)).font(.caption).foregroundStyle(.secondary)
-                if let role = card.briefing?.role, !role.isEmpty {
-                    Text(role).font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            Spacer()
-            // Today's placeholder has nothing to discuss yet.
+        InboxPaneHeader(tile: InboxTile(kind: .brief), title: "Morning brief",
+                        subtitle: Self.subtitle(card)) {
+            InboxBriefStepper(date: card.date, canStepOlder: controls.canStepOlder,
+                              canStepNewer: card.date < today, onStep: controls.onStep)
+            InboxBriefHistoryButton(days: controls.history, shownDate: card.date,
+                                    isShown: controls.historyShown, onPick: controls.onPick)
             if !card.isEmpty {
-                headerActions
+                Button("Discuss in Chat") {
+                    let subject = InboxCardSubject(day: card, items: plan.loadedDate == card.date ? plan.items : [])
+                    onCommand(.chat(subject, message: InboxCardTexts.discussMessage(subject)))
+                }
+                .buttonStyle(.kitQuiet)
+            }
+            if let onReactionCommands = controls.onReactionCommands {
+                InboxReactionCommandsButton(action: onReactionCommands)
             }
         }
     }
 
-    /// Discuss in Chat, trailing in the header. The day card has no source
-    /// link and no Hand to Agent…, so it needs none of `InboxCommonRow`'s
-    /// wrapping row (which stretches to the pane's width).
-    private var headerActions: some View {
-        Button("Discuss in Chat") {
-            let subject = InboxCardSubject(day: card, items: plan.loadedDate == card.date ? plan.items : [])
-            onCommand(.chat(subject, message: InboxCardTexts.discussMessage(subject)))
-        }
-        .buttonStyle(.kitQuiet)
-        .controlSize(.small)
+    /// "Wednesday, 11 November · written 08:02" (the briefing's local write
+    /// time); the day alone before a briefing exists.
+    static func subtitle(_ card: InboxDayCard) -> String {
+        let day = dayFormatter.date(from: card.date).map(longFormatter.string(from:)) ?? card.date
+        guard let written = card.briefing.flatMap({ AutomationDates.parse($0.createdAt) }) else { return day }
+        return "\(day) · written \(timeFormatter.string(from: written))"
     }
 
     /// "Wed 22 Oct" for "2026-10-22"; the raw string when it does not parse.
@@ -149,6 +333,20 @@ struct InboxDayPane: View {
         guard let day = dayFormatter.date(from: date) else { return date }
         return labelFormatter.string(from: day)
     }
+
+    private static let longFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "EEEE, d MMMM"
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        return formatter
+    }()
+
+    private static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm"
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        return formatter
+    }()
 
     private static let dayFormatter: DateFormatter = {
         let formatter = DateFormatter()
