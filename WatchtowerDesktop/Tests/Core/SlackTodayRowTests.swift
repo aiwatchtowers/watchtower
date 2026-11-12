@@ -99,7 +99,12 @@ final class SlackTodayRowTests: XCTestCase {
         // is not yesterday's list, whatever the state's day says.
         XCTAssertNil(SlackTodayPaneText.staleNote(summary: stale, writtenAt: try date("2026-10-23T06:00:00Z"),
                                                   now: now, calendar: utc))
-        XCTAssertNil(SlackTodayPaneText.staleNote(summary: nil, writtenAt: written, now: now, calendar: utc))
+        // An unreadable state (undecodable or another version): the card's
+        // date decides — written yesterday, the note; written today, none.
+        XCTAssertEqual(SlackTodayPaneText.staleNote(summary: nil, writtenAt: written, now: now, calendar: utc),
+                       SlackTodayPaneText.staleNoteText)
+        XCTAssertNil(SlackTodayPaneText.staleNote(summary: nil, writtenAt: try date("2026-10-23T06:00:00Z"),
+                                                  now: now, calendar: utc))
         XCTAssertNil(SlackTodayPaneText.staleNote(summary: try busyDay(day: "2026-10-23"), writtenAt: written,
                                                   now: now, calendar: utc))
     }

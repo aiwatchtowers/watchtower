@@ -46,18 +46,19 @@ package enum SlackTodayPaneText {
             + "\(summary.newsChannels) with news for you"
     }
 
-    /// The note over yesterday's list: the state is another day's and the
-    /// card was last written before today. A card written today over an
-    /// older state is today's empty card (a run after midnight that read
-    /// nothing), not yesterday's list.
+    /// The note over yesterday's list: the card was last written before
+    /// today and the state is another day's — or unreadable (nil: an
+    /// undecodable or unknown-version state), the card's date deciding. A
+    /// card written today over an older state is today's empty card (a run
+    /// after midnight that read nothing), not yesterday's list.
     package static func staleNote(
         summary: SlackTodaySummary?,
         writtenAt: Date,
         now: Date,
         calendar: Calendar
     ) -> String? {
-        guard let summary, !summary.isToday(now: now, calendar: calendar),
-              writtenAt < InboxToday.startOfToday(now: now, calendar: calendar) else { return nil }
+        guard writtenAt < InboxToday.startOfToday(now: now, calendar: calendar) else { return nil }
+        if let summary, summary.isToday(now: now, calendar: calendar) { return nil }
         return staleNoteText
     }
 }
