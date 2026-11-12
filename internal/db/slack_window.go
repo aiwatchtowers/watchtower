@@ -608,31 +608,3 @@ func slackWindowAddressedRows(ctx context.Context, tx *sql.Tx, owner string, row
 	}
 	return out, nil
 }
-
-// LastAutomationRunCreatedAt returns when the newest run of automationID with
-// the given trigger was queued; statuses narrows it (none = any status).
-// ok is false when there is no such run.
-func (db *DB) LastAutomationRunCreatedAt(ctx context.Context, automationID int64, trigger string, statuses ...string) (time.Time, bool, error) {
-	query := `SELECT queued_at FROM automation_runs WHERE automation_id = ? AND trigger = ?`
-	args := []any{automationID, trigger}
-	if len(statuses) > 0 {
-		query += ` AND status IN (` + placeholders(len(statuses)) + `)`
-		for _, s := range statuses {
-			args = append(args, s)
-		}
-	}
-	query += ` ORDER BY queued_at DESC, id DESC LIMIT 1`
-	var queued string
-	err := db.QueryRowContext(ctx, query, args...).Scan(&queued)
-	if errors.Is(err, sql.ErrNoRows) {
-		return time.Time{}, false, nil
-	}
-	if err != nil {
-		return time.Time{}, false, fmt.Errorf("last %s run of automation %d: %w", trigger, automationID, err)
-	}
-	at, err := time.Parse(automationTimeLayout, queued)
-	if err != nil {
-		return time.Time{}, false, fmt.Errorf("last %s run of automation %d: queued_at %q: %w", trigger, automationID, queued, err)
-	}
-	return at, true, nil
-}

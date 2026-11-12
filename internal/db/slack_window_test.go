@@ -567,43 +567,6 @@ func TestSlackWindow_HasMaterialMatchesRead(t *testing.T) {
 	require.Error(t, err, "a zero Now is refused")
 }
 
-func TestLastAutomationRunCreatedAt(t *testing.T) {
-	d := openTestDB(t)
-	ctx := context.Background()
-	id := seedBuiltinRow(t, d, "slack-today", "slack-today", "c1", "a1")
-	other := seedBuiltinRow(t, d, "morning-brief", "morning-brief", "c2", "a2")
-
-	_, ok, err := d.LastAutomationRunCreatedAt(ctx, id, TriggerSync)
-	require.NoError(t, err)
-	assert.False(t, ok, "no runs")
-
-	_, err = d.Exec(`INSERT INTO automation_runs (automation_id, trigger, status, queued_at) VALUES
-		(?, 'sync', 'succeeded', '2026-10-22T08:00:00Z'),
-		(?, 'sync', 'failed', '2026-10-22T09:00:00Z'),
-		(?, 'manual', 'succeeded', '2026-10-22T11:00:00Z'),
-		(?, 'sync', 'succeeded', '2026-10-22T12:00:00Z')`, id, id, id, other)
-	require.NoError(t, err)
-
-	at, ok, err := d.LastAutomationRunCreatedAt(ctx, id, TriggerSync)
-	require.NoError(t, err)
-	require.True(t, ok)
-	assert.Equal(t, time.Date(2026, 10, 22, 9, 0, 0, 0, time.UTC), at, "newest sync run, any status; other triggers and automations ignored")
-
-	at, ok, err = d.LastAutomationRunCreatedAt(ctx, id, TriggerSync, RunSucceeded)
-	require.NoError(t, err)
-	require.True(t, ok)
-	assert.Equal(t, time.Date(2026, 10, 22, 8, 0, 0, 0, time.UTC), at)
-
-	at, ok, err = d.LastAutomationRunCreatedAt(ctx, id, TriggerSync, RunFailed)
-	require.NoError(t, err)
-	require.True(t, ok)
-	assert.Equal(t, time.Date(2026, 10, 22, 9, 0, 0, 0, time.UTC), at)
-
-	_, ok, err = d.LastAutomationRunCreatedAt(ctx, id, TriggerSync, RunCancelled)
-	require.NoError(t, err)
-	assert.False(t, ok)
-}
-
 func TestSlackWindowMessage_IDs(t *testing.T) {
 	root := SlackWindowMessage{ChannelID: "1:C0ACME", TS: "1731400000.000100", ThreadTS: "1731400000.000100"}
 	reply := SlackWindowMessage{ChannelID: "1:C0ACME", TS: "1731400100.000200", ThreadTS: "1731400000.000100"}

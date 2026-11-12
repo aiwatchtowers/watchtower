@@ -239,12 +239,12 @@ func (g slackTodayGate) Due(ctx context.Context, e builtin.Entry, now time.Time)
 // cursor says. timeDue: that failure is old enough, or else the last
 // succeeded run is slackTodayInterval old (none = due).
 func (d *Daemon) slackTodayTiming(ctx context.Context, id int64, now time.Time) (hold, timeDue bool, err error) {
-	ok, hasOK, err := d.db.LastAutomationRunCreatedAt(ctx, id, db.TriggerSync, db.RunSucceeded)
+	ok, hasOK, err := d.db.LastAutomationRunQueuedAt(ctx, id, db.TriggerSync, []string{db.RunSucceeded})
 	if err != nil {
 		return false, false, err
 	}
-	failed, hasFailed, err := d.db.LastAutomationRunCreatedAt(ctx, id, db.TriggerSync,
-		db.RunFailed, db.RunBudgetExceeded, db.RunTimedOut)
+	failed, hasFailed, err := d.db.LastAutomationRunQueuedAt(ctx, id, db.TriggerSync,
+		[]string{db.RunFailed, db.RunBudgetExceeded, db.RunTimedOut})
 	if err != nil {
 		return false, false, err
 	}
