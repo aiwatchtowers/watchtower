@@ -20,6 +20,10 @@ package struct InboxFolderMenuSnapshot: Equatable, Sendable {
     package let refs: [Int64: [InboxRef]]
     package let refState: InboxRefState
     package let waitingForMe: WaitingForMeState
+    package let mailWaiting: MailWaitingState
+    /// The open, unmuted mail by sender (`WaitingQueries.mailSenders`, no
+    /// sender rows): Mail waiting's row lines. Empty while it has no card.
+    package let mailSummary: MailWaitingSummary
     package let needsApproval: NeedsApprovalState
     /// The `needs-approval` built-in's living cards by key (`action:<id>`,
     /// `reminder:<id>`).
@@ -30,9 +34,9 @@ package struct InboxFolderMenuSnapshot: Equatable, Sendable {
     package let openActions: Set<Int64>
     /// The `idea-finder` built-in is indexed (`InboxFolderQueries.ideaFinderPresent`).
     package let ideaFinderPresent: Bool
-    /// Open messages from today (`InboxQueries.openMessageCount` since
-    /// `InboxToday`'s local midnight), read or not; 0 while Waiting for me
-    /// is turned off. Phase 1: every open item from today, mail included.
+    /// Open people items from today (`WaitingQueries.peopleCounts` since
+    /// `InboxToday`'s local midnight; `InboxPeopleRule`: mail never counts),
+    /// read or not; 0 while Waiting for me is turned off.
     package let peopleWaitingToday: Int
     /// Needs approval's count: its open approvals (`ActionStripViewModel
     /// .approvalCount`), the same terms in the root on a tree without it.
@@ -50,6 +54,8 @@ package struct InboxFolderMenuSnapshot: Equatable, Sendable {
         refs: [Int64: [InboxRef]] = [:],
         refState: InboxRefState = InboxRefState(),
         waitingForMe: WaitingForMeState = WaitingForMeState(automationID: nil, messagesStandIn: true),
+        mailWaiting: MailWaitingState = MailWaitingState(automationID: nil, turnedOff: false),
+        mailSummary: MailWaitingSummary = .empty,
         needsApproval: NeedsApprovalState = .absent,
         approvalArtifacts: [String: AutomationOutputCard] = [:],
         openActions: Set<Int64> = [],
@@ -64,6 +70,8 @@ package struct InboxFolderMenuSnapshot: Equatable, Sendable {
         self.refs = refs
         self.refState = refState
         self.waitingForMe = waitingForMe
+        self.mailWaiting = mailWaiting
+        self.mailSummary = mailSummary
         self.needsApproval = needsApproval
         self.approvalArtifacts = approvalArtifacts
         self.openActions = openActions
@@ -83,12 +91,14 @@ package struct InboxFolderMenuSnapshot: Equatable, Sendable {
     ) throws -> Self {
         let now = AutomationDates.parse(nowUTC) ?? Date()
         let tree = try InboxFolderQueries.tree(db)
-        let waitingForMe = try InboxFolderQueries.waitingForMe(
-            db, featureOn: !disabledFeatures.contains(InboxFolderQueries.waitingForMeFeatureID))
+        let attentionOn = !disabledFeatures.contains(InboxFolderQueries.waitingForMeFeatureID)
+        let waitingForMe = try InboxFolderQueries.waitingForMe(db, featureOn: attentionOn)
+        let mailWaiting = try InboxFolderQueries.mailWaiting(db, featureOn: attentionOn)
         let needsApproval = try InboxFolderQueries.needsApproval(db)
         // The stand-in rule (`WaitingForMeState`): a stale Waiting for me
         // list never counts beside the Messages entry it gives way to.
-        var artifacts = waitingForMe.withoutStandInArtifacts(try InboxFolderQueries.artifactsByFolder(db, tree: tree))
+        var artifacts = mailWaiting.withoutTurnedOffArtifacts(
+            waitingForMe.withoutStandInArtifacts(try InboxFolderQueries.artifactsByFolder(db, tree: tree)))
         var approvalArtifacts: [String: AutomationOutputCard] = [:]
         if let approvalsID = needsApproval.automationID {
             for card in artifacts.values.joined() where card.automationID == approvalsID {
@@ -102,10 +112,13 @@ package struct InboxFolderMenuSnapshot: Equatable, Sendable {
         let approvalRefs = approvalArtifacts.values.flatMap { InboxRef.refs(blocksJSON: $0.blocksJSON) }
         let refState = try InboxRefState.read(
             db, refs: Array(refs.values.joined()) + approvalRefs, nowUTC: nowUTC)
-        let peopleWaitingToday = waitingForMe.turnedOff ? 0 : try ActionStripViewModel.zeroIfTableMissing {
-            try InboxQueries.openMessageCount(
-                db, nowUTC: nowUTC, sinceUTC: InboxToday.sinceUTC(now: now, calendar: calendar))
-        }
+        let startOfToday = InboxToday.sinceUTC(now: now, calendar: calendar)
+        let peopleWaitingToday = waitingForMe.turnedOff ? 0
+            : try WaitingQueries.peopleCounts(db, nowUTC: nowUTC, startOfTodayUTC: startOfToday).today
+        // Mail waiting's row lines, read only while its card is listed.
+        let mailShown = artifacts.values.joined().contains { $0.automationID == mailWaiting.automationID }
+        let mailSummary = mailShown
+            ? try WaitingQueries.mailSenders(db, nowUTC: nowUTC, startOfTodayUTC: startOfToday, limit: 0) : .empty
         let legacy = try ActionStripViewModel.legacyCounts(
             db, nowUTC: nowUTC, today: HomeFeedBuilder.dayString(now, calendar: calendar), tree: tree,
             peopleWaitingToday: peopleWaitingToday)
@@ -114,13 +127,14 @@ package struct InboxFolderMenuSnapshot: Equatable, Sendable {
         let approvalsCount = try tree.approvals.map { legacy[$0.id] ?? 0 }
             ?? ActionStripViewModel.approvalCount(db, nowUTC: nowUTC)
         // Waiting for me's artifacts list the people `peopleWaitingToday`
-        // already counts.
+        // already counts; Mail waiting's never count (mail never does).
         let counts = InboxFolderCounts.counts(
             tree: tree, artifacts: artifacts, refs: refs, refState: refState, legacy: legacy,
-            uncounted: Set([waitingForMe.automationID].compactMap { $0 }))
+            uncounted: Set([waitingForMe.automationID, mailWaiting.automationID].compactMap { $0 }))
         let openActions = Set(try openActionIDs(db))
         return Self(tree: tree, counts: counts, artifacts: artifacts.mapValues(\.count), cards: artifacts,
-                    refs: refs, refState: refState, waitingForMe: waitingForMe, needsApproval: needsApproval,
+                    refs: refs, refState: refState, waitingForMe: waitingForMe, mailWaiting: mailWaiting,
+                    mailSummary: mailSummary, needsApproval: needsApproval,
                     approvalArtifacts: approvalArtifacts, openActions: openActions,
                     ideaFinderPresent: try InboxFolderQueries.ideaFinderPresent(db),
                     peopleWaitingToday: peopleWaitingToday, approvalsCount: approvalsCount)

@@ -14,10 +14,12 @@ final class InboxFeedQueriesTests: XCTestCase {
         snooze: String = "",
         archived: String? = nil,
         itemClass: String = "actionable",
-        readAt: String? = nil
+        readAt: String? = nil,
+        trigger: String = "mention"
     ) throws -> Int64 {
         let id = try TestDatabase.insertInboxItem(
-            db, messageTS: "1700000\(String(format: "%04d", n)).000100", status: status, snoozeUntil: snooze,
+            db, messageTS: "1700000\(String(format: "%04d", n)).000100", triggerType: trigger, status: status,
+            snoozeUntil: snooze,
             readAt: readAt, archivedAt: archived, itemClass: itemClass)
         try db.execute(sql: "UPDATE inbox_items SET created_at = ? WHERE id = ?", arguments: [created, id])
         return id
@@ -176,7 +178,8 @@ final class InboxFeedQueriesTests: XCTestCase {
     /// approval's open approvals + people waiting today (open messages whose
     /// `MAX(created_at, mentioned_at)` is from today, read or not). Ideas,
     /// briefings, artifacts in the root or an owner folder and tracks never
-    /// count.
+    /// count. Mail never counts (phase 2): an open `email_received` item
+    /// from today is not a person waiting.
     func testBadgeCountsApprovalsAndPeopleWaitingToday() async throws {
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
@@ -194,6 +197,7 @@ final class InboxFeedQueriesTests: XCTestCase {
                            arguments: [mentioned])
             _ = try self.message(db, 4, created: "2026-10-21T23:59:59Z")
             _ = try self.message(db, 5, created: "2026-10-22T05:00:00Z", readAt: "2026-10-22T07:30:00Z")
+            _ = try self.message(db, 6, created: "2026-10-22T07:30:00Z", trigger: "email_received")
             try TestDatabase.insertIdea(db, kind: "idea", status: "proposed")
             try TestDatabase.insertBriefing(db, date: "2026-10-21")
             try TestDatabase.insertBriefing(db, date: "2026-10-22")
@@ -213,8 +217,9 @@ final class InboxFeedQueriesTests: XCTestCase {
         let utc = try InboxTodayFixture.calendar("UTC")
         let badge = try await pool.read { try ActionStripViewModel.badgeCount($0, nowUTC: self.now, calendar: utc) }
         // 1 proposal + 1 due reminder + 4 people today (2 created today, 1
-        // mentioned today, 1 read today: the term is "waiting", not "unread").
-        XCTAssertEqual(badge, 6, "approvals + people waiting today; ideas, briefings, artifacts and tracks never count")
+        // mentioned today, 1 read today: the term is "waiting", not "unread");
+        // the mail from today is not a person.
+        XCTAssertEqual(badge, 6, "approvals + people waiting today; mail, ideas, briefings, artifacts and tracks never count")
 
         // + a built-in's failed move (C2); a move that is done counts nothing.
         try await pool.write { db in

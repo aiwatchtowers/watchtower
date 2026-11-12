@@ -92,8 +92,9 @@ package enum InboxFolderEntries {
     /// - Needs approval: the built-in upgrade notices, then every open
     ///   approval — native cards above the recipe's cards (spec "mixed").
     /// - The root: Waiting for me pinned first while it has rows that wait
-    ///   on the owner; then, newest first, its artifacts and the legacy
-    ///   entries by their own time (ask #445), and each thread brief applied
+    ///   on the owner, then Mail waiting's artifact; then, newest first, its
+    ///   artifacts and the legacy entries by their own time (ask #445), and
+    ///   each thread brief applied
     ///   in the last 24 hours by its applied time (ask #609); the Messages entry only while
     ///   it stands in for Waiting for me (`WaitingForMeState`). On a tree
     ///   without Needs approval (an older database) the root also holds the
@@ -113,10 +114,13 @@ package enum InboxFolderEntries {
             return artifacts.map(InboxFolderEntry.artifact)
         case .root:
             var pinned: [InboxFolderEntry] = []
+            var mail: [InboxFolderEntry] = []
             var timed: [(at: Date, entry: InboxFolderEntry)] = []
             for card in artifacts {
                 if isWaitingForMe(card, read), waitingCount(card, read) > 0 {
                     pinned.append(.artifact(card))
+                } else if isMailWaiting(card, read) {
+                    mail.append(.artifact(card))
                 } else {
                     timed.append((card.changedAt, .artifact(card)))
                 }
@@ -124,7 +128,7 @@ package enum InboxFolderEntries {
             timed += legacy(inputs)
             timed.sort { $0.at > $1.at }
             let rest = read.tree.approvals == nil ? approvals(inputs) : []
-            return pinned + timed.map(\.entry) + rest
+            return pinned + mail + timed.map(\.entry) + rest
         }
     }
 
@@ -214,6 +218,10 @@ package enum InboxFolderEntries {
         read.waitingForMe.automationID == card.automationID
     }
 
+    private static func isMailWaiting(_ card: AutomationOutputCard, _ read: InboxFolderMenuSnapshot) -> Bool {
+        read.mailWaiting.automationID == card.automationID
+    }
+
     /// The rows of `card` that wait on the owner (the render-time check).
     private static func waitingCount(_ card: AutomationOutputCard, _ read: InboxFolderMenuSnapshot) -> Int {
         (read.refs[card.id] ?? []).filter(read.refState.waits).count
@@ -238,6 +246,8 @@ package enum InboxFolderEntries {
             return peopleWaiting(title: card.title.isEmpty ? card.automationName : card.title, inputs)
         case .legacyMessages:
             return peopleWaiting(title: InboxLegacyList.messages.title, inputs)
+        case let .artifact(card) where isMailWaiting(card, inputs.folders):
+            return mailWaiting(card, inputs)
         case let .artifact(card):
             return artifact(card, inputs)
         case let .legacyDay(card):
@@ -274,10 +284,13 @@ package enum InboxFolderEntries {
     }
 
     /// Waiting for me's row (its artifact, or the Messages entry standing in
-    /// for it): the newest open message from today, the older ones' count,
-    /// the people waiting today on the pill.
+    /// for it): the newest open people item from today, the older ones'
+    /// count, the people waiting today on the pill. Mail is never one of
+    /// them (`InboxPeopleRule`), though the stand-in's list still lists it.
     private static func peopleWaiting(title: String, _ inputs: Inputs) -> InboxRowContent {
-        let messages = inputs.feed.messages.sorted { $0.stamp > $1.stamp }
+        let messages = inputs.feed.messages
+            .filter { InboxPeopleRule.isPeople(trigger: $0.item.triggerType) }
+            .sorted { $0.stamp > $1.stamp }
         let today = messages.filter {
             InboxToday.isFromToday(createdAt: $0.stamp, mentionedAt: nil, now: inputs.now, calendar: inputs.calendar)
         }
@@ -295,11 +308,21 @@ package enum InboxFolderEntries {
             pill: pill(people, .needsYou), isUnread: people > 0)
     }
 
+    /// Mail waiting's row: today's mail and the busiest senders' share
+    /// (`InboxWaitingTexts`), today's mail on a neutral pill. Never unread
+    /// and never counted, whatever its read state or rows.
+    private static func mailWaiting(_ card: AutomationOutputCard, _ inputs: Inputs) -> InboxRowContent {
+        let summary = inputs.folders.mailSummary
+        return InboxRowContent(
+            kind: .mailWaiting, title: card.title.isEmpty ? card.automationName : card.title,
+            preview: InboxWaitingTexts.mailPreview(summary), meta: InboxWaitingTexts.mailMeta(summary),
+            time: time(card.changedAt, inputs), pill: pill(summary.today, .batch))
+    }
+
     /// "Colleague B in a DM: “Will you approve the budget?”".
     private static func messageLine(_ row: HomeFeedInboxRow) -> String {
         let place: String? = switch row.item.triggerType {
         case "dm": "in a DM"
-        case "email_received": "by mail"
         default: row.whereText.map { $0.hasPrefix("#") ? "in \($0)" : $0 }
         }
         let who = [row.who, place].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " ")
