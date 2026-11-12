@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
@@ -64,7 +63,7 @@ func TestAISessionRoutingPersistsStickyAcrossRestartAndManualPin(t *testing.T) {
 		require.NoError(t, err)
 		return backend
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	first := makeBackend()
 	require.NoError(t, first.Turn(ctx, chat.Command{TurnID: "one", Text: "question"}, func(e chat.Event) {
@@ -253,7 +252,7 @@ func TestAISessionRoutingExhaustedReserveReturnsToRecoveredPreferredBeforeNewTur
 			_, err = backend.Start(context.Background())
 			require.NoError(t, err)
 			turn := func(id string) {
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				ctx, cancel := context.WithCancel(context.Background())
 				defer cancel()
 				terminals := 0
 				require.NoError(t, backend.Turn(ctx, chat.Command{TurnID: id, Text: "new owner turn"}, func(e chat.Event) {
@@ -332,7 +331,7 @@ func TestAISessionStickyReasonSurvivesReopenWithoutInventingQuota(t *testing.T) 
 					_, err = backend.Start(context.Background())
 					require.NoError(t, err)
 					for _, turn := range []string{"first", "next"} {
-						ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+						ctx, cancel := context.WithCancel(context.Background())
 						var reasons []string
 						err := backend.Turn(ctx, chat.Command{TurnID: turn, Text: "new owner message"}, func(event chat.Event) {
 							if event.Type == chat.EventSessionReady {

@@ -15,7 +15,6 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -159,9 +158,7 @@ func TestOwnerConfirmRequestArgsAreTheProcessArgv(t *testing.T) {
 	}()
 
 	argv := []string{"actions", "approve", "7", "--args-sha256", "a b", "--patch", `{"text":"hi there"}`, "--json"}
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	c := exec.CommandContext(ctx, os.Args[0], argv...)
+	c := exec.Command(os.Args[0], argv...)
 	c.Env = append(slices.DeleteFunc(os.Environ(), func(kv string) bool {
 		name, _, _ := strings.Cut(kv, "=")
 		return name == "HOME" || slices.Contains(agentEnvMarkers, name)

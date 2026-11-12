@@ -548,9 +548,14 @@ var listServerTools = externalmcp.ListTools
 // oauthLockWait bounds how long a chat launch (or `connections oauth`)
 // waits for another process to finish with a connection's grant: one
 // token-endpoint round trip is capped at 30 s, so this leaves headroom
-// without letting a wedged holder stall the launch indefinitely. A var so
-// tests can shorten it.
-var oauthLockWait = 45 * time.Second
+// without letting a wedged holder stall the launch indefinitely.
+const oauthLockWait = 45 * time.Second
+
+// lockOAuthSecret takes a connection's secret lock for applyOAuthCredentials;
+// a var so a test can see a launch reach the lock.
+var lockOAuthSecret = func(ctx context.Context, store *externalmcp.SecretStore) (func(), error) {
+	return store.Lock(ctx)
+}
 
 // applyOAuthCredentials verifies or refreshes an OAuth connection's grant and
 // puts the resulting bearer token on server. It reports whether the connection
@@ -584,7 +589,7 @@ func applyOAuthCredentials(
 
 	lockCtx, cancel := context.WithTimeout(context.Background(), oauthLockWait)
 	defer cancel()
-	unlock, err := store.Lock(lockCtx)
+	unlock, err := lockOAuthSecret(lockCtx, store)
 	if err != nil {
 		log.Printf("external connection %d (%s): %v", c.ID, c.Name, err)
 		return fail("error", "waiting for the token lock",
