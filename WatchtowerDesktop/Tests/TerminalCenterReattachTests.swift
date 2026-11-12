@@ -872,16 +872,38 @@ final class TerminalCenterReattachTests: XCTestCase {
         let row = try await endedRow()
         alive = [7950]
         control.listed = [SessionHostSessionInfo(row: row.id, run: "run-live", pid: 7950, startedAtMs: 1, exited: false, code: nil)]
+        let projectID = try XCTUnwrap(row.projectID)
         var trackedAtKill: [String]?
+        var knownAtKill = false
         onSignal = { [weak self] pid, sig in
             guard pid == 7950, sig == SIGKILL, let self else { return }
             trackedAtKill = center.extraHostRuns[row.id]?.map(\.run)
+            knownAtKill = center.sessionIDs(ofWorkbench: projectID).contains(row.id)
+                && center.liveAgentIDs.contains(row.id)
         }
 
         await vm.startFresh(row, placement: .inPlace)
 
         XCTAssertEqual(trackedAtKill, ["run-live"])
+        XCTAssertTrue(knownAtKill, "the row stays known to its workbench and the live checks while its run stops")
         XCTAssertNil(center.extraHostRuns[row.id])
         XCTAssertEqual(center.states[row.id], .running, "launched fresh after the stop")
+    }
+
+    /// A row whose only live run is its other run (its close could not stop
+    /// it) still counts for the quit: a plain quit offers Keep Sessions.
+    func testAnOtherRunAloneCountsForTheQuit() async throws {
+        let row = try await rowWithAnotherRun()
+        control.failedLists = 5
+        await center.close(sessionID: row.id)
+        XCTAssertNil(center.process(for: row.id))
+
+        XCTAssertEqual(center.liveHostedCount, 1)
+        let plan = TrayAppDelegate.quitPlan(
+            forUpdate: false, quitReason: nil, recording: false, askDrafts: 0, liveSessions: center.liveHostedCount
+        )
+        XCTAssertFalse(plan.keepsSessions)
+        let prompt = try XCTUnwrap(plan.prompt, "a plain quit asks about the live session")
+        XCTAssertNotNil(prompt.keepSessionsTitle, "Keep Sessions and Quit is offered: \(prompt.buttons)")
     }
 }

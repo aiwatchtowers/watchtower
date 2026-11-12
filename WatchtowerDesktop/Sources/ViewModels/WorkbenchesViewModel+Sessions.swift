@@ -635,7 +635,7 @@ extension WorkbenchesViewModel {
         await terminalCenter?.close(sessionID: session.id)
         // A live run the host still holds for the row would run beside the
         // fresh one (#1086): it is stopped, or nothing starts.
-        if let reason = await terminalCenter?.stopLiveHostRuns(of: session.id) {
+        if let reason = await terminalCenter?.stopLiveHostRuns(of: session.id, session: session) {
             reportSwitchError("Could not stop this session's earlier run in the session host, so nothing was started: \(reason)",
                               projectID: session.projectID, ticket: ticket)
             return

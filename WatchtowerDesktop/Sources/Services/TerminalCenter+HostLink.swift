@@ -49,8 +49,10 @@ extension TerminalCenter {
     /// the grace — then forgets it; the row's other runs stay in
     /// `extraHostRuns` until those stops are done. Returns why it could not,
     /// with the row's other runs kept; nil when nothing live is left beside
-    /// the shown run (or there is no session host client).
-    func stopLiveHostRuns(of id: Int64) async -> String? {
+    /// the shown run (or there is no session host client). `session`: the
+    /// row, for a caller that already let go of it (Start fresh), so it stays
+    /// known to its workbench and the live-agent checks while its runs stop.
+    func stopLiveHostRuns(of id: Int64, session: TerminalSession? = nil) async -> String? {
         switch await liveHostRuns(of: id) {
         case .noClient:
             setExtraHostRuns([], row: id)
@@ -60,7 +62,7 @@ extension TerminalCenter {
             return reason
         case let .listed(host, runs):
             // Tracked while they stop, so a quit meanwhile waits for them.
-            if !runs.isEmpty { setExtraHostRuns(runs, row: id) }
+            if !runs.isEmpty { setExtraHostRuns(runs, row: id, session: session) }
             await withTaskGroup(of: Void.self) { group in
                 for info in runs {
                     group.addTask { @MainActor in await self.stopStray(info, host: host) }

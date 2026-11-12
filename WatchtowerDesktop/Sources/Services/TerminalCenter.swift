@@ -402,13 +402,12 @@ final class TerminalCenter {
     /// Whether a session host client was begun, answering or not.
     var hasSessionHostClient: Bool { (sessionHost ?? sessionHostClient) != nil }
 
-    /// Sets row `row`'s other live runs. Once none is left, a row nothing
-    /// else holds (closed while they could not be stopped) is let go of.
-    func setExtraHostRuns(_ runs: [SessionHostSessionInfo], row: Int64) {
+    /// Sets row `row`'s other live runs, keeping `session` known meanwhile;
+    /// once none is left, a row nothing else holds is let go of.
+    func setExtraHostRuns(_ runs: [SessionHostSessionInfo], row: Int64, session: TerminalSession? = nil) {
         extraHostRuns[row] = runs.isEmpty ? nil : runs
-        if runs.isEmpty, processes[row] == nil, states[row] == nil, pendingLaunches[row] == nil {
-            rows[row] = nil
-        }
+        if !runs.isEmpty, rows[row] == nil, let session { rows[row] = session }
+        if runs.isEmpty, processes[row] == nil, states[row] == nil, pendingLaunches[row] == nil { rows[row] = nil }
     }
 
     /// The launch's reattach of the session host's runs is done (or there
@@ -1487,7 +1486,7 @@ final class TerminalCenter {
 
     /// The live sessions the session host runs — the ones a quit can keep.
     var liveHostedCount: Int {
-        liveIDs.filter { processes[$0]?.isHosted == true }.count
+        liveIDs.filter { processes[$0]?.isHosted == true || extraHostRuns[$0] != nil }.count
     }
 
     /// The rows' run marker is gone from the database
