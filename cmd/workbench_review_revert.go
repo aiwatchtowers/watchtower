@@ -43,6 +43,7 @@ func runWorkbenchReviewRevertHunk(cmd *cobra.Command, _ []string) error {
 	if err != nil || r == nil {
 		return err
 	}
+	defer func() { _ = database.Close() }()
 	defer cancel()
 	if r.Status != "open" {
 		return failReview(cmd, errors.New("the round is not open"))

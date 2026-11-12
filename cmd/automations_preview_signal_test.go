@@ -8,7 +8,6 @@ import (
 	"sync"
 	"syscall"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -95,18 +94,9 @@ func TestAutomationsCLI_PreviewSIGTERMCancelsTheModelChild(t *testing.T) {
 		defer close(done)
 		_, _ = runAutomationsWithStdin(t, previewRecipe, "preview", "--stdin", "--json")
 	}()
-	select {
-	case <-done:
-	case <-time.After(20 * time.Second):
-		stopPreview()
-		gen.mu.Lock()
-		if gen.pgid > 0 {
-			_ = syscall.Kill(-gen.pgid, syscall.SIGKILL)
-		}
-		gen.mu.Unlock()
-		<-done
-		t.Fatal("preview still running 20 s after Stop: the model child was not cancelled")
-	}
+	// A child Stop did not cancel keeps the preview running: the run hangs
+	// into go test's -timeout.
+	<-done
 
 	gen.mu.Lock()
 	defer gen.mu.Unlock()

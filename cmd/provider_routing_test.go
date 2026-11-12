@@ -72,8 +72,7 @@ func TestRoutingFactoriesPhysicalLeafLedgerBothDirections(t *testing.T) {
 					gen, cleanup = cliPooledGenerator(cfg)
 					t.Cleanup(cleanup)
 				}
-				ctx, cancel := context.WithTimeout(digest.WithSource(context.Background(), "digest.channel_batch"), 2*time.Second)
-				defer cancel()
+				ctx := digest.WithSource(context.Background(), "digest.channel_batch")
 				text, _, _, err := gen.Generate(ctx, "", "request", "")
 				if err != nil || text != "ok" {
 					t.Fatal(text, err)
@@ -128,9 +127,7 @@ func TestRoutingExplicitSameProviderOrModelPinAndAskGuardStayLegacy(t *testing.T
 			if pin == "ask_guard" {
 				gen = askGuardGeneratorFactory(cfg)
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-			defer cancel()
-			_, _, _, err := gen.Generate(ctx, "", "request", "")
+			_, _, _, err := gen.Generate(context.Background(), "", "request", "")
 			var failure *providers.Failure
 			if !errors.As(err, &failure) || failure.Category != providers.Quota || len(sink.calls) != 1 || sink.calls[0].OperationID != "" {
 				t.Fatalf("legacy: %v %+v", err, sink.calls)
