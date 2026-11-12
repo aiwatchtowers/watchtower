@@ -58,14 +58,13 @@ struct InboxRefHooks {
             nativeFooter: { ref, mode in
                 let inbox = inboxRef(ref)
                 guard let content = content(inbox, mode) else { return nil }
-                // A finished bulk press's result line and Try Again; the
-                // strip re-reads after every finish, which redraws the row.
-                let model = bulk(inbox).flatMap { model -> InboxBulkPressModel? in
-                    if case .finished = model.state { return model }
-                    return nil
+                // A row with a bulk press observes it: its result line and
+                // Try Again appear the moment it finishes (no read needed).
+                if let model = bulk(inbox) {
+                    return AnyView(InboxRowBulkFooter(content: content, model: model) { onPress(inbox, $0) })
                 }
-                guard content.hasFooter || model != nil else { return nil }
-                return AnyView(InboxRowActionsFooter(content: content, bulk: model) { onPress(inbox, $0) })
+                guard content.hasFooter else { return nil }
+                return AnyView(InboxRowActionsFooter(content: content) { onPress(inbox, $0) })
             },
             open: { ref in
                 // An idea row opens its full card (Merge…, Make a Task, Delete…).
@@ -111,10 +110,16 @@ struct InboxRefHooks {
     func content(_ ref: InboxRef, _ mode: ArtifactRenderMode) -> InboxRowActionsContent? {
         guard let kind = kind(ref) else { return nil }
         let reply = ref.kind == .inboxItem ? vm.replyState(Int(ref.id)) : nil
-        return InboxRowActionsContent(kind: kind, state: state(ref), reply: reply, isPreview: mode == .preview,
-                                      cliMissing: mode != .preview && vm.folderMenu.isCLIMissing,
-                                      writesUnavailable: ref.kind == .idea && !ideasAvailable,
-                                      failedVerb: ref.kind == .action ? vm.actionFeed.rowErrors[ref.id]?.verb : nil)
+        var content = InboxRowActionsContent(
+            kind: kind, state: state(ref), reply: reply, isPreview: mode == .preview,
+            cliMissing: mode != .preview && vm.folderMenu.isCLIMissing,
+            writesUnavailable: ref.kind == .idea && !ideasAvailable,
+            failedVerb: ref.kind == .action ? vm.actionFeed.rowErrors[ref.id]?.verb : nil)
+        if ref.kind == .mailSender {
+            content.senderLink = InboxRowActionsContent.senderLink(
+                vm.folderMenu.snapshot.refState.senderLinks[ref], navScreens: navScreens)
+        }
+        return content
     }
 
     /// Reply on the Messages entry's message card while it stands in for

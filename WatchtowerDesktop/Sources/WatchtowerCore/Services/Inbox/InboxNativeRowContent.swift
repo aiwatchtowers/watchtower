@@ -137,6 +137,8 @@ package struct InboxRowActionsContent: Equatable {
     package var writesUnavailable: Bool
     /// A proposal row's failed verb (`AgentActionFeed.RowError.verb`).
     package var failedVerb: String?
+    /// A sender row's Open link (its tooltip); nil for every other kind.
+    package var senderLink: SenderLink?
 
     package init(
         kind: Kind,
@@ -221,9 +223,27 @@ package struct InboxRowActionsContent: Equatable {
     /// A sender row for `address` (any spelling) whose newest open mail has
     /// `newestPermalink` (`WaitingQueries.newestPermalink`).
     package static func mailSenderKind(address: String, newestPermalink: String?, navScreens: Set<String>) -> Kind {
-        let link = newestPermalink.flatMap { $0.isEmpty ? nil : URL(string: $0) }
-        return .mailSender(address: InboxPeopleRule.senderKey(address),
-                           openEnabled: link.map { InboxCardLinkPolicy.permits($0, navScreens: navScreens) } ?? false)
+        .mailSender(address: InboxPeopleRule.senderKey(address),
+                    openEnabled: senderLink(newestPermalink, navScreens: navScreens) == .opens)
+    }
+
+    /// What a sender row's Open has: no link, a link `InboxCardLinkPolicy`
+    /// refuses, or one it opens. Its `help` says why a disabled Open is off.
+    package enum SenderLink: Equatable, Sendable {
+        case missing, refused, opens
+
+        package var help: String {
+            switch self {
+            case .missing: "This sender's newest mail has no link"
+            case .refused: "This sender's newest mail has a link Watchtower doesn't open"
+            case .opens: "Open this sender's newest mail"
+            }
+        }
+    }
+
+    package static func senderLink(_ permalink: String?, navScreens: Set<String>) -> SenderLink {
+        guard let permalink, !permalink.isEmpty, let url = URL(string: permalink) else { return .missing }
+        return InboxCardLinkPolicy.permits(url, navScreens: navScreens) ? .opens : .refused
     }
 
     /// The footer's **Retry** under a failed press. A proposal's repeats

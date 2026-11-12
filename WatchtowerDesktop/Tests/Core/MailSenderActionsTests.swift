@@ -37,6 +37,16 @@ final class MailSenderActionsTests: XCTestCase {
             .mailSender(address: "a@example.com", openEnabled: false), "refused by InboxCardLinkPolicy")
     }
 
+    /// A disabled Open says why: no link, or a link the policy refuses.
+    func testOpenHelpSaysWhyItIsOff() {
+        XCTAssertEqual(InboxRowActionsContent.senderLink(nil, navScreens: []), .missing)
+        XCTAssertEqual(InboxRowActionsContent.senderLink("", navScreens: []), .missing)
+        XCTAssertEqual(InboxRowActionsContent.senderLink("file:///etc/hosts", navScreens: []), .refused)
+        XCTAssertEqual(InboxRowActionsContent.senderLink("https://mail.example.com/m/1", navScreens: []), .opens)
+        let helps = [InboxRowActionsContent.SenderLink.missing, .refused, .opens].map(\.help)
+        XCTAssertEqual(Set(helps).count, 3, "three different reasons")
+    }
+
     func testOlderRowOffersMarkAllDoneOnly() {
         let content = InboxRowActionsContent(kind: .waitingOlder)
         XCTAssertEqual(content.bulkRowPresses, [.markAllDone])

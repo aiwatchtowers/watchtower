@@ -327,6 +327,7 @@ package final class ActionStripViewModel {
             firstReadError = nil
             rebuildSections()
             resetStaleApproveAll()
+            bulk.resetFinished(shown: Set(snapshot.folders.refState.shown.compactMap(Self.bulkKey)))
             keepSelectionListed(was: before)
             if firstRead {
                 showDefaultEntry()
@@ -715,6 +716,15 @@ package final class ActionStripViewModel {
     @ObservationIgnored package private(set) lazy var bulk = InboxBulkCenter(
         cli: { [weak self] in InboxBulkCLI(runner: self?.pressRunner()) },
         onFinished: { [weak self] in await self?.refresh() })
+
+    /// The bulk press a shown row offers; nil for a row without one.
+    nonisolated private static func bulkKey(_ ref: InboxRef) -> InboxBulkKey? {
+        switch ref.kind {
+        case .mailSender: .sender(ref.key)
+        case .waitingOlder: .olderPeople
+        case .inboxItem, .track, .idea, .reminder, .action: nil
+        }
+    }
 
     /// A failed press on a text-id row (a sender's Mute), by the row's
     /// ref with its key in `InboxPeopleRule.senderKey` form: kept with

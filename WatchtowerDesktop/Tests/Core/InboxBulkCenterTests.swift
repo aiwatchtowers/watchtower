@@ -153,6 +153,29 @@ final class InboxBulkCenterTests: XCTestCase {
         XCTAssertEqual(refreshes, 1, "the row redraws with the result line")
     }
 
+    /// A finished press whose row left the list goes back to idle at the
+    /// next read, so an old "Closed N of M" never comes back with the row.
+    func testFinishedPressOfALeftRowResets() async {
+        let runner = ScriptedRunner([
+            (#"{"resolved":0,"of":0,"error":"database is locked"}"#, 1),
+            (#"{"resolved":0,"of":0,"error":"database is locked"}"#, 1)
+        ])
+        let center = center(runner)
+        let gone = center.model(for: .sender("a@example.com"))
+        let kept = center.model(for: .olderPeople)
+        center.begin(.sender("a@example.com"))
+        center.begin(.olderPeople)
+        await waitUntil(gone, isFinished)
+        await waitUntil(kept, isFinished)
+
+        center.resetFinished(shown: [.olderPeople, .sender(" B@example.com")])
+
+        XCTAssertEqual(gone.state, .idle)
+        XCTAssertEqual(kept.state, .finished(.failed("database is locked")))
+        center.resetFinished(shown: [.sender("A@Example.com")])
+        XCTAssertEqual(kept.state, .idle, "any spelling of a shown sender keeps only that sender")
+    }
+
     func testTryAgainRunsTheDryRunAgain() async {
         let runner = ScriptedRunner([
             (#"{"count":3,"ids":["1","2","3"]}"#, 0),

@@ -1,4 +1,5 @@
 import XCTest
+import ViewInspector
 import GRDB
 @testable import WatchtowerDesktop
 import WatchtowerCore
@@ -432,6 +433,45 @@ final class InboxRowActionsTests: XCTestCase {
     func testSenderAndOlderRowsSuppressOnlyTheRecipesOpen() {
         XCTAssertEqual(InboxRefHooks.nativeKinds(.mailSender), [.open])
         XCTAssertEqual(InboxRefHooks.nativeKinds(.waitingOlder), [])
+    }
+
+    /// I-1: the row's footer follows its bulk press, so a partial apply's
+    /// "Closed N of M" and Try Again appear the moment it finishes, with no
+    /// further read; a full success leaves no line and no Try Again.
+    func testBulkFooterFollowsItsPress() async throws {
+        let model = InboxBulkPressModel()
+        let hooks = InboxRefHooks.make(
+            isShown: { _ in true },
+            content: { _, _ in InboxRowActionsContent(kind: .waitingOlder) },
+            bulk: { _ in model })
+        let footer = try XCTUnwrap(hooks.nativeFooter(ArtifactRef(kind: .waitingOlder, key: "older"), .inbox),
+                                   "drawn while idle, so it can follow the press")
+        XCTAssertThrowsError(try footer.inspect().find(ViewType.Text.self), "idle draws nothing")
+
+        model.begin { InboxBulkPlan(ids: ["1", "2", "3"], count: 3) }
+        await waitUntil { if case .confirming = model.state { true } else { false } }
+        model.confirm { _ in .partial(done: 1, of: 3, error: "database is locked") }
+        await waitUntil { if case .finished = model.state { true } else { false } }
+
+        XCTAssertNoThrow(try footer.inspect().find(text: "Closed 1 of 3. database is locked"))
+        XCTAssertNoThrow(try footer.inspect().find(button: "Try Again"))
+
+        let done = InboxBulkPressModel()
+        done.begin { InboxBulkPlan(ids: ["1"], count: 1) }
+        await waitUntil { if case .confirming = done.state { true } else { false } }
+        done.confirm { _ in .done(count: 1, skipped: 0) }
+        await waitUntil { if case .finished = done.state { true } else { false } }
+        let quiet = InboxRowBulkFooter(content: InboxRowActionsContent(kind: .waitingOlder), model: done)
+        XCTAssertFalse(quiet.drawsAnything)
+        XCTAssertThrowsError(try quiet.inspect().find(ViewType.Text.self))
+    }
+
+    private func waitUntil(_ condition: () -> Bool) async {
+        let deadline = Date().addingTimeInterval(10)
+        while !condition() {
+            guard Date() < deadline else { return XCTFail("timed out") }
+            await Task.yield()
+        }
     }
 
     func testPreviewDrawsDisabled() async throws {

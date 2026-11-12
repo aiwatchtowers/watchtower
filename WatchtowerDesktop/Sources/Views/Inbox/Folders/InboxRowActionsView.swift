@@ -97,7 +97,7 @@ struct InboxRowActionsView: View {
             if case let .mailSender(_, openEnabled) = content.kind {
                 Button("Open") { onPress(.open) }
                     .disabled(!openEnabled)
-                    .help(openEnabled ? "Open this sender's newest mail" : "This sender's newest mail has no link")
+                    .help((content.senderLink ?? (openEnabled ? .opens : .missing)).help)
             }
         case .markAllDone:
             if let bulk {
@@ -256,5 +256,30 @@ struct InboxRowActionsFooter: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+}
+
+/// The footer of a row with a bulk press (a sender or Older row): it
+/// observes the press, so its result line and Try Again appear the moment
+/// it finishes. Nothing is drawn — no empty footer, no spacing — while the
+/// row has no footer of its own and the press has nothing to say (idle,
+/// under way, or a full success).
+struct InboxRowBulkFooter: View {
+    let content: InboxRowActionsContent
+    @ObservedObject var model: InboxBulkPressModel
+    var onPress: (InboxRowPress) -> Void = { _ in }
+
+    var body: some View {
+        if drawsAnything {
+            InboxRowActionsFooter(content: content, bulk: showsResult ? model : nil, onPress: onPress)
+        }
+    }
+
+    var drawsAnything: Bool { content.hasFooter || showsResult }
+
+    /// A finished press with a result line or Try Again.
+    private var showsResult: Bool {
+        guard case let .finished(result) = model.state else { return false }
+        return InboxBulkPressButton.resultLine(result) != nil || InboxBulkPressButton.offersTryAgain(result)
     }
 }

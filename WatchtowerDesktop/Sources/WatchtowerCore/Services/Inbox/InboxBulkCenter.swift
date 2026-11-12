@@ -68,6 +68,17 @@ package final class InboxBulkCenter: ObservableObject {
         model(for: key).begin()
     }
 
+    /// Puts back to idle every finished press whose row the last read no
+    /// longer shows (`shown`, any spelling), so an old result line never
+    /// comes back with a later row (Approve All's `resetStaleApproveAll`).
+    /// A press under way is left alone.
+    package func resetFinished(shown: Set<InboxBulkKey>) {
+        let shown = Set(shown.map(Self.canonical))
+        for (key, model) in models where !shown.contains(key) {
+            model.reset()
+        }
+    }
+
     private func plan(_ key: InboxBulkKey) async throws -> InboxBulkPlan {
         switch key {
         case let .sender(address): try await cli().planSender(address)
