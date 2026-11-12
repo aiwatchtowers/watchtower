@@ -122,7 +122,12 @@ func (h *hubRuntime) retireOldCloudKitZones(ctx context.Context) {
 		r.done = true
 		return
 	}
-	if zones, ok, err := h.st.Meta(metaCloudKitZonesHubID); err != nil || !ok || zones != cur {
+	zones, ok, err := h.st.Meta(metaCloudKitZonesHubID)
+	if err != nil {
+		h.retireFailed("meta", err)
+		return
+	}
+	if !ok || zones != cur {
 		return // the respelling is not recorded yet (its reset still pending)
 	}
 	h.mu.Lock()

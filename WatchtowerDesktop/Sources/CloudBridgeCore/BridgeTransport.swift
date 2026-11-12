@@ -635,7 +635,7 @@ public struct CloudKitBridgeCloud: BridgeCloud {
 
     public func retireZones(hubID old: String) async throws {
         // Never this hub's own zones, whatever the caller checked.
-        guard old != hubID, !old.isEmpty else { throw BridgeCloudFailure.unsupportedZone }
+        guard BridgeService.otherSpelling(old, of: hubID) else { throw BridgeCloudFailure.unsupportedZone }
         let db = try db()
         try await db.deleteZones(HubZones(scope: .private, hubID: old).allZoneIDs)
         try await db.deleteSubscription(PushReceiver.databaseSubscriptionID(hubID: old))

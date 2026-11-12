@@ -9,9 +9,11 @@ import (
 	"testing/synctest"
 	"time"
 
+	"watchtower/internal/hub/identity"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/transport/cloudkit"
+	"watchtower/internal/logcanary"
 	"watchtower/internal/policy/policytest"
 )
 
@@ -152,4 +154,73 @@ func TestZoneRetirementWaitsForTheICloudAccount(t *testing.T) {
 		r.cycles(1)
 		eventually(t, "the retirement once the account is back", func() bool { return len(ck.asked()) == 1 })
 	})
+}
+
+// TestZoneRetirementGatesBackoffAndLogsOnce drives retireOldCloudKitZones
+// on a bare runtime with a test clock: nothing is asked before the
+// respelling mark names the stored spelling; a failure waits out a backoff
+// that doubles (10 min, then 20 min); a failure class is logged once; the
+// mark is written after the bridge answered done, and nothing runs after.
+func TestZoneRetirementGatesBackoffAndLogsOnce(t *testing.T) {
+	logs := logcanary.Capture(t)
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if err := st.SetMeta(state.MetaHubID, adoptedHubID); err != nil {
+		t.Fatal(err)
+	}
+	id, err := identity.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	kr, err := identity.NewKeyring(id, st, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)
+	ck := &retireCK{acctCK: newAcctCK(transport.AccountAvailable)}
+	h := &hubRuntime{sup: &supervisor{o: Options{Clock: func() time.Time { return now }}}, st: st, kr: kr, ck: ck,
+		ckAccount: transport.AccountAvailable}
+	ctx := context.Background()
+	tries := func() int { return ck.count("retire_zones") }
+
+	h.retireOldCloudKitZones(ctx) // no respelling mark yet
+	if err := st.SetMeta(metaCloudKitZonesHubID, strings.ToUpper(adoptedHubID)); err != nil {
+		t.Fatal(err)
+	}
+	h.retireOldCloudKitZones(ctx) // the mark names the old spelling
+	if n := tries(); n != 0 {
+		t.Fatalf("%d retire calls before the respelling was recorded", n)
+	}
+
+	if err := st.SetMeta(metaCloudKitZonesHubID, adoptedHubID); err != nil {
+		t.Fatal(err)
+	}
+	ck.failNext("retire_zones", 2)
+	steps := []struct {
+		advance time.Duration
+		tries   int
+	}{
+		{0, 1},                // fails: next try in 10 min
+		{9 * time.Minute, 1},  // inside the backoff
+		{time.Minute, 2},      // fails again: next try in 20 min
+		{19 * time.Minute, 2}, // inside the doubled backoff
+		{time.Minute, 3},      // done
+		{24 * time.Hour, 3},   // never again
+	}
+	for i, s := range steps {
+		now = now.Add(s.advance)
+		h.retireOldCloudKitZones(ctx)
+		if n := tries(); n != s.tries {
+			t.Fatalf("step %d: %d tries, want %d", i, n, s.tries)
+		}
+	}
+	if v, _, _ := st.Meta(metaCloudKitRetiredHubID); v != strings.ToUpper(adoptedHubID) {
+		t.Fatalf("retired mark %q", v)
+	}
+	if n := strings.Count(logs.String(), "failed (bridge, unavailable)"); n != 1 {
+		t.Fatalf("the failure class was logged %d times, want once:\n%s", n, logs.String())
+	}
 }

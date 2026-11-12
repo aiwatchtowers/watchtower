@@ -360,7 +360,8 @@ final class BridgeContractTests: XCTestCase {
         XCTAssertEqual(subscription.notificationInfo?.shouldSendContentAvailable, true, "a silent push, as CKSyncEngine's was")
         // Nothing in the bridge builds, saves or deletes another subscription. The one deletion is the bridge's
         // own subscription of another spelling of its hub id (RetireZones, #1750): `deleteSubscription` lives in
-        // BridgeTransport.swift only, and every call there names `PushReceiver.databaseSubscriptionID`.
+        // BridgeTransport.swift only, and every call there names the retired spelling's
+        // `PushReceiver.databaseSubscriptionID(hubID: old)`.
         for (file, text) in try Self.bridgeSources() {
             for call in ["AskAlertSubscription.subscription(", "unsubscribeAlerts", "subscribeAlerts", "CKQuerySubscription("] {
                 XCTAssertNil(text.range(of: call), "\(file) calls \(call)")
@@ -375,7 +376,7 @@ final class BridgeContractTests: XCTestCase {
             }
             XCTAssertFalse(calls.isEmpty, "RetireZones deletes the old spelling's subscription")
             for line in calls {
-                XCTAssertTrue(line.contains("PushReceiver.databaseSubscriptionID(hubID:"), "\(file): \(line)")
+                XCTAssertTrue(line.contains("PushReceiver.databaseSubscriptionID(hubID: old)"), "\(file): \(line)")
             }
         }
     }

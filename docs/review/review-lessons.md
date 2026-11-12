@@ -2983,3 +2983,12 @@ Entry format:
 - weak-dimension: 3/7, mildly. Cross-language twin references in doc comments and in the inventory "New guards" list drifted from the real test names within one change. This is the same family as the #1743 "new guard vs supporting" lesson.
 - rule-gap (candidate, dim 7): a test listed under "New guards" in an inventory changelog follows the `Test<Module>NN_`/`testProjNN_` naming and is filed as a guard on the module's own line too. A doc comment that names a twin test names one that exists, which can be checked with grep.
 - outcome: TBD
+
+## 2026-11-12 — fix/1750-stale-uppercase-zones (12f17b321 + an uncommitted doc-comment tweak to `cloudkit.OtherSpelling`: one-time retirement of the uppercase CloudKit zones and bridge db subscription an adopted hub left behind, new bridge op `RetireZones` with Go/Swift/bridgefake "another spelling only" checks; 22 files; panel: prosecutor (7: 3 minor, 4 nit) + codex (0); pr-review-toolkit specialists unavailable; judge verified by reading and ran `internal/hub -run Retire|ZoneRetirement` and `internal/hub/transport/cloudkit/...` green) — verdict: approve
+
+- contested: F1, the `hub_meta` read error folded into the "respelling not recorded yet" return. Rule 9 calls a swallowed error a blocker. Held minor: the same table was read and failure-logged a few lines earlier in the same call, and the deferred action deletes nothing. Still fixed this round, since routing it to `retireFailed` is one line. [9]
+- false-positive (downgraded): F2, the relaxed source-grep guard on `deleteSubscription`. It would accept the own-id subscription, but the behavioural test (`testRetireZonesDeletesExactlyTheOtherSpelling` asserts the exact deleted ids) and `CloudKitBridgeCloud`'s own `old != hubID` refusal both catch that mutation. A grep guard next to a behavioural pin is a nit. [7]
+- miss: none. The destructive-op safety (never the hub's own zones) has three independent refusals: client, bridge service, cloud. Codex and the prosecutor agreed it holds.
+- weak-dimension: 7. Log-once-per-class and backoff doubling/cap are untested, but they only affect logging and timing.
+- rule-gap (candidate, dim 9): *a one-time destructive cleanup keyed off a persisted mark checks every gate read for error, not just for absence. An `err != nil || !ok` fold in front of a gate is the tell.*
+- outcome: TBD

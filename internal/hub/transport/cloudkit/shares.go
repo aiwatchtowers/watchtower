@@ -117,7 +117,7 @@ func (c *Client) RetireZones(ctx context.Context, hubID string) error {
 	return nil
 }
 
-// OtherSpelling: other is hub spelled another way — equal to it ignoring
+// OtherSpelling reports whether other is hub spelled another way: equal to it ignoring
 // ASCII case (A to Z only, no Unicode folding), different byte for byte.
 // The bridge's RetireZones check (BridgeService.otherSpelling) is the same.
 func OtherSpelling(other, hub string) bool {
