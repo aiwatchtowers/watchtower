@@ -13,7 +13,6 @@ final class SidebarCountsViewModelTests: XCTestCase {
         try await super.tearDown()
     }
 
-
     // MARK: - Catch-Up badge
     //
     // The badge is a single "there is a recap waiting for you" dot: one ready,

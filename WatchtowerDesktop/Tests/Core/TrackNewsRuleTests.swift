@@ -130,7 +130,7 @@ final class TrackNewsRuleTests: XCTestCase {
 
     func testFetchInboxCardsFlagsAttachmentOnNewestRef() throws {
         let queue = try TestDatabase.create()
-        let ids = try queue.write { db -> (raw: Int64, namespaced: Int64, older: Int64, link: Int64, junk: Int64) in
+        let ids = try queue.write { db -> (raw: Int64, namespaced: Int64, older: Int64, link: Int64) in
             let older = "1700000000.000100"
             let newest = "1700000500.000200"
             // Raw channel id on the media row.
@@ -149,10 +149,7 @@ final class TrackNewsRuleTests: XCTestCase {
             // A link is not an attachment.
             try insertSlackImage(db, channelID: "C400", ts: newest, kind: "link")
             let link = try TestDatabase.insertTrack(db, text: "Link", sourceRefs: refs([("C400", newest)]))
-            // A junk image (tracking pixel, logo) is not an attachment.
-            try insertSlackImage(db, channelID: "C500", ts: newest, status: "skipped_junk")
-            let junk = try TestDatabase.insertTrack(db, text: "Junk", sourceRefs: refs([("C500", newest)]))
-            return (raw, namespaced, olderOnly, link, junk)
+            return (raw, namespaced, olderOnly, link)
         }
         let cards = try queue.read { try TrackQueries.fetchInboxCards($0) }
         let byID = Dictionary(uniqueKeysWithValues: cards.map { (Int64($0.track.id), $0) })
@@ -160,7 +157,18 @@ final class TrackNewsRuleTests: XCTestCase {
         XCTAssertEqual(byID[ids.namespaced]?.newestRefHasAttachment, true)
         XCTAssertEqual(byID[ids.older]?.newestRefHasAttachment, false)
         XCTAssertEqual(byID[ids.link]?.newestRefHasAttachment, false)
-        XCTAssertEqual(byID[ids.junk]?.newestRefHasAttachment, false)
+    }
+
+    /// A junk image (tracking pixel, logo) on the newest ref is not an attachment.
+    func testFetchInboxCardsIgnoresJunkImageOnNewestRef() throws {
+        let queue = try TestDatabase.create()
+        let junk = try queue.write { db -> Int64 in
+            let newest = "1700000500.000200"
+            try insertSlackImage(db, channelID: "C500", ts: newest, status: "skipped_junk")
+            return try TestDatabase.insertTrack(db, text: "Junk", sourceRefs: refs([("C500", newest)]))
+        }
+        let cards = try queue.read { try TrackQueries.fetchInboxCards($0) }
+        XCTAssertEqual(cards.first { Int64($0.track.id) == junk }?.newestRefHasAttachment, false)
     }
 
     func testFetchInboxCardsFlagsAttachmentOnNewestMailEvent() throws {

@@ -21,7 +21,6 @@ final class NotificationRouteTests: XCTestCase {
         try await super.tearDown()
     }
 
-
     // MARK: - Forwarded responses are navigation-only
 
     /// The load-bearing one: the forwarding bus is unauthenticated, so a "Join + Record"

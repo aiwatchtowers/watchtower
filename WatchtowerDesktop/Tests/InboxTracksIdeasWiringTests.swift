@@ -139,8 +139,8 @@ final class InboxTracksIdeasWiringTests: XCTestCase {
         await vm.selectEntry(InboxFolderEntry.legacyTracks.id)
         vm.openNewsTrack(trackID)
 
-        try view(vm).environment(AppState.isolated()).inspect().find(InboxTrackPane.self)
-            .find(button: "Stop watching").tap()
+        let pane = try view(vm).environment(AppState.isolated()).inspect().find(InboxTrackPane.self)
+        try pane.find(button: "Stop watching").tap()
         let deadline = Date().addingTimeInterval(5)
         while vm.openedNewsTrackID != nil, Date() < deadline {
             try await Task.sleep(for: .milliseconds(10))

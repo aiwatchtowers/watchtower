@@ -64,10 +64,10 @@ struct IdeaBatchPane: View {
         VStack(spacing: 0) {
             if let errorMessage {
                 // A dismissed failure leaves the card on screen: it can be pressed again.
-                WriteErrorBanner(message: errorMessage, onClose: {
+                WriteErrorBanner(message: errorMessage) {
                     gate.value.release()
                     onDismissError()
-                })
+                }
             }
             InboxCardColumn {
                 VStack(alignment: .leading, spacing: Spacing.large) {
