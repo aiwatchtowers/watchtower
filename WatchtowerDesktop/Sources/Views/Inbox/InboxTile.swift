@@ -3,8 +3,8 @@ import WatchtowerCore
 
 /// A row's kind on a soft square (spec "The list"): the kind's symbol in its
 /// tint over the tint at `ChipTint.fillOpacity`. On a selected row the
-/// square is `Fill.card`, so the symbol keeps its colour over the
-/// selection fill.
+/// square keeps that tint, laid over a `Fill.card` plate, so neither the
+/// square nor the symbol takes on the selection fill.
 struct InboxTile: View {
     let kind: InboxRowKind
     /// An owner artifact's folder icon; nil = the kind's own.
@@ -25,11 +25,12 @@ struct InboxTile: View {
             .font(.body)
             .foregroundStyle(tint)
             .frame(width: size, height: size)
-            .background(
-                isSelected ? Fill.card : tint.opacity(ChipTint.fillOpacity),
-                in: RoundedRectangle(cornerRadius: Radius.row, style: .continuous))
+            .background(tint.opacity(ChipTint.fillOpacity), in: Self.shape)
+            .background(isSelected ? Fill.card : Color.clear, in: Self.shape)
             .accessibilityHidden(true)
     }
+
+    private static let shape = RoundedRectangle(cornerRadius: Radius.row, style: .continuous)
 
     /// The kind's tint: the brief amber, waiting and approvals the warning
     /// tone, mail green, threads, Slack and artifacts the accent, ideas purple.
