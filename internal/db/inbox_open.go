@@ -194,7 +194,8 @@ type MailWaiting struct {
 
 // OpenMailSenders groups the open, unmuted mail by MailSenderKey, ordered by
 // open count DESC, newest item DESC, address ASC; Senders is capped at limit,
-// the totals are not.
+// the totals are not. Mail with no sender address ("" after the key rule)
+// groups into one "" sender on purpose — the Desktop's twin does the same.
 func (db *DB) OpenMailSenders(ctx context.Context, now time.Time, limit int) (MailWaiting, error) {
 	clause, _ := waitingKindClause(WaitingMail)
 	rows, err := db.QueryContext(ctx, `SELECT lower(trim(sender_user_id)), MAX(created_at, mentioned_at) AS stamp,
