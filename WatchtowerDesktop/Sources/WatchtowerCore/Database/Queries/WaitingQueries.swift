@@ -163,7 +163,7 @@ package enum WaitingQueries {
         do {
             return try read()
         } catch let error as DatabaseError where ActionStripViewModel.isMissingTable(error)
-                    && ["inbox_items", "jira_issues"].contains(where: { error.message == "no such table: \($0)" }) {
+                    && ["no such table: inbox_items", "no such table: jira_issues"].contains(error.message ?? "") {
             return empty
         }
     }

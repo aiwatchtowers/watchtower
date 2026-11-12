@@ -114,7 +114,9 @@ package struct InboxRefState: Equatable, Sendable {
     package let messages: [Int64: HomeFeedInboxRow]
 
     package init(
-        shown: Set<InboxRef> = [], waiting: Set<InboxRef> = [], senderLinks: [InboxRef: String] = [:],
+        shown: Set<InboxRef> = [],
+        waiting: Set<InboxRef> = [],
+        senderLinks: [InboxRef: String] = [:],
         messages: [Int64: HomeFeedInboxRow] = [:]
     ) {
         self.shown = shown
@@ -133,7 +135,10 @@ package struct InboxRefState: Equatable, Sendable {
     /// while `older` > 0); nil reads them here. A kind whose table is
     /// missing (an older database) shows nothing; any other error throws.
     package static func read(
-        _ db: Database, refs: [InboxRef], nowUTC: String, timeZone: TimeZone = .current,
+        _ db: Database,
+        refs: [InboxRef],
+        nowUTC: String,
+        timeZone: TimeZone = .current,
         peopleCounts: PeopleWaitingCounts? = nil
     ) throws -> Self {
         let byKind = Dictionary(grouping: refs, by: \.kind)
@@ -175,7 +180,10 @@ package struct InboxRefState: Equatable, Sendable {
     /// newest links. A sender ref's key is matched by its
     /// `InboxPeopleRule.senderKey`, so no spelling misses.
     private static func textRefsShown(
-        _ db: Database, byKind: [InboxRef.Kind: [InboxRef]], nowUTC: String, timeZone: TimeZone,
+        _ db: Database,
+        byKind: [InboxRef.Kind: [InboxRef]],
+        nowUTC: String,
+        timeZone: TimeZone,
         peopleCounts: PeopleWaitingCounts?
     ) throws -> (shown: Set<InboxRef>, senderLinks: [InboxRef: String]) {
         var shown: Set<InboxRef> = []
