@@ -129,7 +129,7 @@ final class CoachCenterTests: XCTestCase {
             ["coach", "status", "--workbench", "3", "--days", "7", "--agent", "codex", "--json"]), "\(runner.invocations)")
 
         center.show(workbench: 3, period: .week, agent: .all)
-        await waitUntil { runner.invocations.filter { $0.dropFirst().first == "status" }.count == 2 }
+        await runner.untilCalls { $0.filter { $0.dropFirst().first == "status" }.count == 2 }
         let last = runner.invocations.last { $0.dropFirst().first == "status" }
         XCTAssertEqual(last, ["coach", "status", "--workbench", "3", "--days", "7", "--json"])
     }
