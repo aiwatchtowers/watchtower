@@ -841,6 +841,121 @@ final class IdeaQueriesTests: XCTestCase {
         XCTAssertNil(sources[Int(ideaID)])
     }
 
+    // MARK: - Clear Old Ideas (dropMany / fetchAwaitingVerdict)
+
+    /// IDEA-04: Clear Old Ideas is one owner action over many ideas — it drops
+    /// only those still awaiting a verdict and clears their review flag, like
+    /// every owner action; every other row stays exactly as it was.
+    func testIdeas04_DropManyClearsNeedsReviewAndTouchesOnlyAwaiting() throws {
+        let db = try TestDatabase.create()
+        let ids = try db.write { db -> [Int64] in
+            [
+                try TestDatabase.insertIdea(db, title: "Proposed", status: "proposed",
+                                            updatedAt: "2026-01-01T00:00:00Z"),
+                try TestDatabase.insertIdea(db, title: "Flagged rejected", status: "rejected",
+                                            needsReview: true, reviewReason: "brought up again",
+                                            updatedAt: "2026-01-01T00:00:00Z"),
+                try TestDatabase.insertIdea(db, title: "Active", status: "active",
+                                            updatedAt: "2026-01-01T00:00:00Z"),
+                try TestDatabase.insertIdea(db, kind: "decision", title: "Mined decision",
+                                            status: "active", needsReview: true,
+                                            reviewReason: "brought up again",
+                                            updatedAt: "2026-01-01T00:00:00Z"),
+                try TestDatabase.insertIdea(db, title: "Not now", status: "not_now",
+                                            updatedAt: "2026-01-01T00:00:00Z")
+            ]
+        }
+        let untouched = Array(ids[2...])
+        func rows(_ ids: [Int64]) throws -> [Row] {
+            try db.read { db in
+                try ids.map { try XCTUnwrap(Row.fetchOne(db, sql: "SELECT * FROM ideas WHERE id = ?", arguments: [$0])) }
+            }
+        }
+        let before = try rows(untouched)
+
+        let changed = try db.write { try IdeaQueries.dropMany($0, ids: ids.map { Int($0) }) }
+
+        XCTAssertEqual(changed, 2)
+        for id in ids[0..<2] {
+            let idea = try XCTUnwrap(db.read { try IdeaQueries.fetchOne($0, id: Int(id)) })
+            XCTAssertEqual(idea.statusRaw, "dropped")
+            XCTAssertFalse(idea.needsReview)
+            XCTAssertEqual(idea.reviewReason, "")
+            XCTAssertNotEqual(idea.updatedAt, "2026-01-01T00:00:00Z")
+        }
+        XCTAssertEqual(try rows(untouched), before)
+    }
+
+    func testDropManyEmptyIsZero() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in _ = try TestDatabase.insertIdea(db, status: "proposed") }
+
+        let changed = try db.write { try IdeaQueries.dropMany($0, ids: []) }
+
+        XCTAssertEqual(changed, 0)
+        XCTAssertEqual(try db.read { try IdeaQueries.countForReview($0) }, 1)
+    }
+
+    func testDropManyOverChunkSize() throws {
+        let db = try TestDatabase.create()
+        let ids = try db.write { db in
+            try (0..<1200).map { _ in Int(try TestDatabase.insertIdea(db, status: "proposed")) }
+        }
+
+        let changed = try db.write { try IdeaQueries.dropMany($0, ids: ids) }
+
+        XCTAssertEqual(changed, 1200)
+        XCTAssertEqual(try db.read { try IdeaQueries.countForReview($0) }, 0)
+    }
+
+    func testFetchAwaitingVerdictOldestFirst() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try TestDatabase.insertIdea(db, title: "Newer", status: "proposed", createdAt: "2026-03-01T00:00:00Z")
+            try TestDatabase.insertIdea(db, title: "Oldest", status: "rejected", needsReview: true,
+                                        createdAt: "2026-01-01T00:00:00Z")
+            try TestDatabase.insertIdea(db, title: "Same day, lower id", status: "proposed",
+                                        createdAt: "2026-02-01T00:00:00Z")
+            try TestDatabase.insertIdea(db, title: "Active, settled", status: "active",
+                                        createdAt: "2026-02-01T00:00:00Z")
+            try TestDatabase.insertIdea(db, kind: "decision", title: "Mined decision", status: "active",
+                                        needsReview: true, createdAt: "2025-12-01T00:00:00Z")
+            try TestDatabase.insertIdea(db, kind: "decision", title: "Chat decision", status: "proposed",
+                                        createdAt: "2026-02-01T00:00:00Z", chatBorn: true)
+            try TestDatabase.insertIdea(db, title: "Merged", status: "merged", needsReview: true,
+                                        createdAt: "2025-11-01T00:00:00Z")
+        }
+
+        let ideas = try db.read { try IdeaQueries.fetchAwaitingVerdict($0) }
+
+        XCTAssertEqual(ideas.map(\.title), ["Oldest", "Same day, lower id", "Chat decision", "Newer"])
+    }
+
+    // MARK: - IdeaBatchCardFacts
+
+    func testCardFactsQuoteAndSource() throws {
+        let db = try TestDatabase.create()
+        let long = String(repeating: "x", count: 300)
+        let (ideaID, bareID) = try db.write { db -> (Int64, Int64) in
+            let ideaID = try TestDatabase.insertIdea(db)
+            try TestDatabase.insertIdeaMention(db, ideaID: ideaID, source: "slack", quote: "oldest",
+                                               author: "colleague A", saidAt: "2026-01-01T00:00:00Z")
+            try TestDatabase.insertIdeaMention(db, ideaID: ideaID, source: "gmail", quote: long,
+                                               author: "colleague B", saidAt: "2026-01-02T00:00:00Z")
+            try TestDatabase.insertIdeaMention(db, ideaID: ideaID, source: "imap", quote: "newest",
+                                               author: "colleague C", saidAt: "2026-01-03T00:00:00Z")
+            return (ideaID, try TestDatabase.insertIdea(db, title: "No mentions"))
+        }
+
+        let facts = try db.read { try IdeaBatchCardFacts.read($0, ideaID: Int(ideaID)) }
+        let bare = try db.read { try IdeaBatchCardFacts.read($0, ideaID: Int(bareID)) }
+
+        let cut = String(repeating: "x", count: 200) + "…"
+        XCTAssertEqual(facts.quote, "colleague C: “newest” · colleague B: “\(cut)”")
+        XCTAssertEqual(facts.sourceLabel, "Email")
+        XCTAssertEqual(bare, IdeaBatchCardFacts(quote: "", sourceLabel: ""))
+    }
+
     func testMentionSourcesByIdeaEmptyIDsReturnsEmptyMap() throws {
         let db = try TestDatabase.create()
         let sources = try db.read { try IdeaQueries.mentionSourcesByIdea($0, ids: []) }

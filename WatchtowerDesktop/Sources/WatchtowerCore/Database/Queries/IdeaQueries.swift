@@ -65,6 +65,17 @@ package enum IdeaQueries {
     /// `CountIdeasForReview` (`internal/db/ideas.go`) and `Idea.awaitsVerdict`.
     private static let reviewKindCond = "(kind != 'decision' OR chat_born = 1)"
 
+    /// Every idea awaiting a verdict — the review queue across all kinds,
+    /// merged rows left out — oldest first (`created_at, id`). What Clear Old
+    /// Ideas reads before its confirmation names the count.
+    package static func fetchAwaitingVerdict(_ db: Database) throws -> [Idea] {
+        try Idea.fetchAll(db, sql: """
+            SELECT * FROM ideas
+            WHERE (status = 'proposed' OR needs_review = 1) AND \(reviewKindCond) AND status != 'merged'
+            ORDER BY created_at, id
+            """)
+    }
+
     /// The condition every knowledge reader of the registry adds: a chat-born
     /// item is hidden while it was never approved (proposed, not now,
     /// rejected, dropped). Once approved it stays knowledge through its later
@@ -258,6 +269,33 @@ package enum IdeaQueries {
         )
         try db.requireUpdated("idea", id: id)
     }
+
+    /// Clear Old Ideas (IDEA-04): drops every listed idea still awaiting a
+    /// verdict, clearing its review flag like every owner action. Runs inside
+    /// the caller's one write transaction; an id the owner or the consolidator
+    /// settled since the confirmation read it is left alone. Returns the rows
+    /// changed.
+    package static func dropMany(_ db: Database, ids: [Int]) throws -> Int {
+        var changed = 0
+        for start in stride(from: 0, to: ids.count, by: dropChunkSize) {
+            let chunk = Array(ids[start..<min(start + dropChunkSize, ids.count)])
+            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
+            try db.execute(
+                sql: """
+                    UPDATE ideas SET status = 'dropped', \(clearReviewFlag),
+                        updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                    WHERE id IN (\(placeholders))
+                      AND (status = 'proposed' OR needs_review = 1) AND \(reviewKindCond)
+                    """,
+                arguments: StatementArguments(chunk)
+            )
+            changed += db.changesCount
+        }
+        return changed
+    }
+
+    /// Bound parameters per `dropMany` statement, well under SQLite's limit.
+    private static let dropChunkSize = 500
 
     /// Merges an idea into another: marks it merged with a link back to the
     /// target, then re-parents its mentions onto the target. Either side gone
