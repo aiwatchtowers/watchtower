@@ -29,8 +29,14 @@ package struct InboxEarlierLine: Equatable, Sendable {
     }
 
     /// "Past briefs are inside Morning brief · 5 this month, 2 not opened".
-    package var text: String {
-        let head = "Past briefs are inside Morning brief · \(pastThisMonth) this month"
+    package var text: String { "\(title) · \(counts)" }
+
+    /// The line's first part, drawn on its own line in the list.
+    package var title: String { "Past briefs are inside Morning brief" }
+
+    /// "5 this month, 2 not opened" (", N not opened" only when N > 0).
+    package var counts: String {
+        let head = "\(pastThisMonth) this month"
         return notOpened > 0 ? "\(head), \(notOpened) not opened" : head
     }
 }

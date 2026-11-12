@@ -66,7 +66,9 @@ final class InboxFolderContentListTests: XCTestCase {
         XCTAssertEqual(try list.inspect().findAll(InboxListSectionHeading.self).map { try $0.actualView().title },
                        ["Today", "Earlier"], "the Earlier line sits under its heading")
         let earlier = try list.inspect().find(InboxEarlierLineRow.self)
-        XCTAssertNoThrow(try earlier.find(text: "Past briefs are inside Morning brief · 5 this month, 2 not opened"))
+        // Drawn as two lines so it never clips at the list column's width.
+        XCTAssertNoThrow(try earlier.find(text: "Past briefs are inside Morning brief"))
+        XCTAssertNoThrow(try earlier.find(text: "5 this month, 2 not opened"))
         try earlier.find(ViewType.Button.self).tap()
         XCTAssertEqual(opened, 1)
     }

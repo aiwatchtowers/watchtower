@@ -178,10 +178,20 @@ struct InboxEarlierLineRow: View {
 
     var body: some View {
         Button(action: onPress) {
-            Label(line.text, systemImage: "chevron.right")
-                .font(.caption)
-                .lineLimit(2)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            // Two short lines: the kit's quiet button keeps its ideal size,
+            // so one long line would be clipped by the list column.
+            Label {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(line.title)
+                    Text(line.counts)
+                }
+            } icon: {
+                Image(systemName: "chevron.right")
+            }
+            .font(.caption)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(line.text)
         }
         // Quiet text, not the accent: a way into the brief, not an action.
         .buttonStyle(KitQuietButtonStyle(label: .secondary))
