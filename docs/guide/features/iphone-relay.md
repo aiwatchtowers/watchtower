@@ -57,6 +57,7 @@ The old iPhone says the subscription moved and goes back to iCloud. A subscripti
 - **"Couldn't reach Relay. You weren't charged."** Press **Try Again**.
 - **"Couldn't reach Relay."** after **Restore Purchases**. Press **Try Again**, which restores again.
 - **"You're subscribed. Relay turns on as soon as Watchtower reaches it."** Apple charged you and Relay hasn't heard yet. Relay retries each time you open the app, and **Try Again** does it now. Until then, Settings → **Macs** and the Mac's **Connection** say "Your purchase isn't confirmed yet." The screen offers no second **Subscribe** for that paid period.
+- **The App Store sheet closed as if you cancelled, but Apple charged you.** The purchase goes on: the screen shows **Confirming with Relay…**, then the answer.
 - **"Waiting for approval. Relay turns on when it's approved."** The purchase waits for someone to approve it, such as Ask to Buy.
 - **"Relay couldn't confirm this purchase. Try Restore Purchases."** Press **Restore Purchases**. If it still fails, **Manage Subscription** cancels it at Apple, and you can ask for a refund at [Apple's refund page](https://reportaproblem.apple.com).
 - **"Relay can't take purchases right now. You're not charged again; try again later."** Try later, or use **Manage Subscription** and the refund page above.

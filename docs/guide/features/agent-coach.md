@@ -57,7 +57,7 @@ watchtower coach rollback 12
 watchtower coach run --dry-run
 ```
 
-- `status` shows corrections, hours and cost per task, your share of active time, findings per spec review and comments per diff review, for the last 14 days against the 14 before; `--days N` (1 to 90) picks another length.
+- `status` shows corrections, hours and cost per task, your share of active time, findings per spec review and comments per diff review, for the last 14 days against the 14 before; `--days N` (1 to 90) picks another length, and `--agent claude` or `--agent codex` counts one agent's sessions.
 - `proposals` and `run` show each suggestion's change: removed lines with `-`, added ones with `+`.
 - `accept` applies a suggestion; `accept 12 --stdin` takes your own edited text from standard input instead (empty input is refused). If the text changed since the suggestion was made, it is marked superseded and nothing is written.
 - `rollback` undoes an accepted edit. If you changed the place since, it prints the difference and needs `--force`.
