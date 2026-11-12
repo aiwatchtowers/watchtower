@@ -505,12 +505,13 @@ struct ActionStripActionsView: View {
         switch entry {
         case let .artifact(card)?:
             let menu = artifactMenuState(card)
+            let waiting = waitingPane(card)
             pane(.output(card), menu: menu, header: AnyView(InboxArtifactPaneHeader(
                 content: InboxFolderEntries.content(.artifact(card), vm.entryInputs),
-                subtitle: InboxCardTexts.readingSourceLine(card, now: now ?? Date()),
+                subtitle: waiting?.subtitle ?? InboxCardTexts.readingSourceLine(card, now: now ?? Date()),
                 isHighPriority: card.priority == "high", menu: menu,
-                onOpenRun: onOpenAutomationRun.map { open in { open(card.runID) } }
-            ) { openAux(.reactionCommands) }))
+                onOpenRun: waiting == nil ? onOpenAutomationRun.map { open in { open(card.runID) } } : nil,
+                onReactionCommands: { openAux(.reactionCommands) }, muteSenders: waiting?.muteSenders)))
                 .task(id: card.automationID) { await artifactMenu?.prepare(card) }
         case let .legacyDay(card)?: pane(.day(vm.briefDay ?? card))
         case let .brief(action)?: pane(.proposal(action), header: helpHeader(entry))
@@ -518,6 +519,21 @@ struct ActionStripActionsView: View {
         case let .builtinNotice(notice)?: pane(.builtinNotice(notice), header: helpHeader(entry))
         case .legacyTracks?, .legacyIdeas?, .legacyMessages?, nil: pane(nil)
         }
+    }
+
+    /// Waiting for me's and Mail waiting's pane header lines (their counts
+    /// in place of the provenance line) and Mail waiting's **Mute
+    /// Senders…**; nil for any other artifact.
+    private func waitingPane(_ card: AutomationOutputCard) -> (subtitle: String, muteSenders: MuteSendersButton?)? {
+        let snapshot = vm.folderMenu.snapshot
+        if card.automationID == snapshot.waitingForMe.automationID {
+            return (InboxWaitingTexts.peoplePaneSubtitle(snapshot.peopleWaiting), nil)
+        }
+        guard card.automationID == snapshot.mailWaiting.automationID else { return nil }
+        return (InboxWaitingTexts.mailPaneSubtitle(snapshot.mailSummary), MuteSendersButton(
+            load: { [vm] in try await vm.muteSenderCandidates() },
+            mute: { [vm] in try await vm.writeSenderMute($0) },
+            onFinished: { [vm] in await vm.refresh() }))
     }
 
     /// An entry's pane header with the `?` only: its row's tile, title and

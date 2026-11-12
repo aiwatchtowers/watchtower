@@ -83,6 +83,8 @@ struct InboxArtifactPaneHeader: View {
     var onOpenRun: (() -> Void)?
     /// The `?`; nil draws none.
     let onReactionCommands: (() -> Void)?
+    /// Mail waiting's **Mute Senders…**; nil draws none.
+    var muteSenders: MuteSendersButton?
 
     private var offersRunNow: Bool {
         menu?.entries.contains { $0.command == .runNow } ?? false
@@ -91,6 +93,9 @@ struct InboxArtifactPaneHeader: View {
     var body: some View {
         InboxPaneHeader(tile: InboxTile(kind: content.kind, symbol: content.symbol), title: content.title,
                         subtitle: subtitle) {
+            if let muteSenders {
+                muteSenders
+            }
             if isHighPriority {
                 Chip(text: "High", color: Tone.priority("high"))
             }
