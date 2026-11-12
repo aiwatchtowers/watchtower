@@ -24,6 +24,7 @@ type stFixture struct {
 	*mbFixture
 	id    int64
 	entry builtin.Entry
+	gate  builtin.Gate
 	now   time.Time
 	seq   int
 }
@@ -37,12 +38,12 @@ func newSTFixture(t *testing.T) *stFixture {
 	require.True(t, ok)
 	_, err = f.db.Exec(`INSERT INTO channels (id, name, type, is_member) VALUES ('1:C1', 'release', 'public', 1)`)
 	require.NoError(t, err)
-	return &stFixture{mbFixture: f, id: a.ID, entry: e, now: mbAt(10, 0)}
+	return &stFixture{mbFixture: f, id: a.ID, entry: e, gate: f.d.SlackTodayGate(), now: mbAt(10, 0)}
 }
 
 func (f *stFixture) due(t *testing.T) bool {
 	t.Helper()
-	return f.d.SlackTodayGate().Due(context.Background(), f.entry, f.now)
+	return f.gate.Due(context.Background(), f.entry, f.now)
 }
 
 // message inserts a channel message at.
@@ -138,7 +139,25 @@ func TestSlackTodayGate_DayChangeIsDueWithoutMaterial(t *testing.T) {
 	assert.True(t, f.due(t), "yesterday's state resets after midnight, no new message needed")
 
 	f.rawState(t, `{}`)
-	assert.True(t, f.due(t), "no day yet: the first run makes the card")
+	f.clearRuns(t)
+	assert.True(t, f.due(t), "no day and no run yet: the first run makes the card")
+	f.run(t, db.RunSucceeded, 11*time.Hour)
+	assert.True(t, f.due(t), "no day, the last success before local midnight")
+}
+
+// A state with no "today" value after a success today (a recipe that writes
+// none) is not a day change: the hour and material rule decides, so it does
+// not run every cycle.
+func TestSlackTodayGate_NoTodayValueAfterARunTodayIsNotADayChange(t *testing.T) {
+	f := newSTFixture(t)
+	f.message(t, f.now.Add(-time.Hour))
+	f.rawState(t, fmt.Sprintf(`{%q:{"v":1,"after_rowid":0,"behind":false}}`, automations.SlackWindowStateKey))
+	f.run(t, db.RunSucceeded, 10*time.Minute)
+	assert.False(t, f.due(t), "material, but a success 10 minutes ago and no today value")
+
+	f.clearRuns(t)
+	f.run(t, db.RunSucceeded, 61*time.Minute)
+	assert.True(t, f.due(t), "the hour's rule still applies")
 }
 
 func TestSlackTodayGate_WithinTheHourNotDue(t *testing.T) {
@@ -215,6 +234,22 @@ func TestSlackTodayGate_FailedRunHoldsDayChangeAndBehind(t *testing.T) {
 	}
 }
 
+// A failed run older than 15 minutes with the window behind is retried at
+// once, material or not.
+func TestSlackTodayGate_OldFailedRunWithBehindIsDue(t *testing.T) {
+	f := newSTFixture(t)
+	f.message(t, f.now.Add(-time.Hour))
+	var last int64
+	require.NoError(t, f.db.QueryRow(`SELECT MAX(rowid) FROM messages`).Scan(&last))
+	f.state(t, f.now.Format("2006-01-02"), last, true)
+	f.run(t, db.RunSucceeded, 30*time.Minute)
+	f.run(t, db.RunFailed, 20*time.Minute)
+	assert.True(t, f.due(t), "failed 20 minutes ago, behind, nothing past the cursor")
+	f.clearRuns(t)
+	f.run(t, db.RunFailed, 20*time.Minute)
+	assert.True(t, f.due(t), "failed 20 minutes ago with no success, behind")
+}
+
 func TestSlackTodayGate_NoMaterialNotDue(t *testing.T) {
 	f := newSTFixture(t)
 	f.message(t, f.now.Add(-time.Hour))
@@ -239,6 +274,27 @@ func TestSlackTodayGate_ReadErrorIsDue(t *testing.T) {
 
 	f.rawState(t, fmt.Sprintf(`{"today":{"v":1,"day":%q},"__window:slack":{"v":9}}`, f.now.Format("2006-01-02")))
 	assert.True(t, f.due(t), "an unreadable cursor counts as due")
+}
+
+// A failed read before the failed-run hold counts as due at most once per
+// 15 minutes: no run is written, so the hold would never see it.
+func TestSlackTodayGate_ReadErrorBeforeTheHoldIsDueOncePer15Minutes(t *testing.T) {
+	f := newSTFixture(t)
+	f.message(t, f.now.Add(-time.Hour))
+	f.today(t)
+	f.run(t, db.RunSucceeded, 2*time.Minute)
+	_, err := f.db.Exec(`DROP TABLE automation_runs`)
+	require.NoError(t, err)
+	start := f.now
+
+	assert.True(t, f.due(t), "the first failed read counts as due")
+	assert.Contains(t, f.log.String(), "slack-today: ")
+	f.now = start.Add(14 * time.Minute)
+	assert.False(t, f.due(t), "14 minutes later")
+	f.now = start.Add(15 * time.Minute)
+	assert.True(t, f.due(t), "15 minutes later")
+	f.now = start.Add(16 * time.Minute)
+	assert.False(t, f.due(t), "a minute after that")
 }
 
 // Slack today runs right after Waiting for me in runSync.
