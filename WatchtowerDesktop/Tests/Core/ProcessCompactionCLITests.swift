@@ -24,6 +24,11 @@ final class ProcessCompactionCLITests: XCTestCase {
         if let pid = startedPID, Darwin.kill(pid, 0) == 0 {
             Darwin.kill(pid, SIGKILL)
         }
+        // A background sleep a stub's trap did not end.
+        if let text = try? String(contentsOfFile: sleepPIDFilePath, encoding: .utf8),
+           let pid = pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines)), Darwin.kill(pid, 0) == 0 {
+            Darwin.kill(pid, SIGKILL)
+        }
         if let directory { try? FileManager.default.removeItem(at: directory) }
     }
 
@@ -86,11 +91,15 @@ final class ProcessCompactionCLITests: XCTestCase {
 
     /// SIGTERM reaches the child's handler: the CLI's interrupt path exits 4.
     func testTerminateEndsCompactWithItsTrapStatus() async throws {
-        // `wait` returns at once on a trapped signal; the trap ends the sleep too.
+        // `wait` returns at once on a trapped signal; the trap ends the sleep
+        // too. The sleep holds none of the child's pipes: a sleep the trap
+        // missed must not keep `waitForExit` from seeing the stub's end (it
+        // did on a loaded machine); tearDown kills it by its recorded pid.
         let stub = try makeStub("""
         #!/bin/sh
         trap 'kill $! 2>/dev/null; exit 4' TERM
-        sleep 3600 &
+        sleep 3600 </dev/null >/dev/null 2>&1 &
+        echo $! > "\(sleepPIDFilePath)"
         echo $$ > "\(pidFilePath)"
         wait $!
         """)
@@ -185,6 +194,10 @@ final class ProcessCompactionCLITests: XCTestCase {
 
     private var pidFilePath: String {
         directory?.appendingPathComponent("stub.pid").path ?? "/dev/null"
+    }
+
+    private var sleepPIDFilePath: String {
+        directory?.appendingPathComponent("sleep.pid").path ?? "/dev/null"
     }
 
     private var goFilePath: String {
