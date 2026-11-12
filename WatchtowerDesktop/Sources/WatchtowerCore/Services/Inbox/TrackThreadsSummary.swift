@@ -45,27 +45,28 @@ package struct TrackThreadsSummary: Equatable {
 
     // MARK: - Per track
 
-    /// The newest event's summary, else the newest source ref as
-    /// `<author>: “<text>”`, else the first non-empty line of the context.
+    /// The first non-empty line of the newest event's summary, else of the
+    /// newest source ref as `<author>: “<text>”`, else of the context.
     package static func latestLine(_ card: InboxTrackCard) -> String {
-        if !card.latestEventSummary.isEmpty { return card.latestEventSummary }
+        let summary = firstLine(card.latestEventSummary)
+        if !summary.isEmpty { return summary }
         if let ref = newestRef(card.track) {
-            return "\(ref.author): “\(ref.text)”"
+            let text = firstLine(ref.text)
+            if !text.isEmpty { return "\(ref.author): “\(text)”" }
         }
-        return card.track.context
-            .split(whereSeparator: \.isNewline)
-            .lazy
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .first { !$0.isEmpty } ?? ""
+        return firstLine(card.track.context)
     }
 
     package static func reason(_ card: InboxTrackCard) -> TrackNewsReason? {
         let track = card.track
-        if !track.ballOn.isEmpty, track.ballOn == track.assigneeUserID { return .replyToYou }
+        let rawAssignee = rawID(track.assigneeUserID)
+        if !track.ballOn.isEmpty,
+           track.ballOn == track.assigneeUserID || (!rawAssignee.isEmpty && rawID(track.ballOn) == rawAssignee) {
+            return .replyToYou
+        }
         if track.category == "decision" || track.category == "decision_needed" || !track.decisionSummary.isEmpty {
             return .decision
         }
-        let rawAssignee = track.assigneeUserID.split(separator: ":").last.map(String.init) ?? ""
         if !rawAssignee.isEmpty, let ref = newestRef(track), mentions(ref.text, userID: rawAssignee) {
             return .mention
         }
@@ -124,6 +125,21 @@ package struct TrackThreadsSummary: Equatable {
 
     private static func threads(_ count: Int) -> String {
         count == 1 ? "1 thread" : "\(count) threads"
+    }
+
+    /// The first non-empty line, whitespace-trimmed; "" when there is none.
+    private static func firstLine(_ text: String) -> String {
+        text.split(whereSeparator: \.isNewline)
+            .lazy
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .first { !$0.isEmpty } ?? ""
+    }
+
+    /// The Slack id without its account namespace: the part after the last
+    /// `:` (`acme:U1` → `U1`, `acme:` → "", `U1` → `U1`).
+    private static func rawID(_ id: String) -> String {
+        guard let colon = id.lastIndex(of: ":") else { return id }
+        return String(id[id.index(after: colon)...])
     }
 
     /// The source ref with the highest `ts` (the same pick as `TrackQueries`).
