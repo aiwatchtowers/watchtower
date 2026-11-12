@@ -230,7 +230,7 @@ struct InboxRefHooks {
         let feed = vm.feed
         switch ref.kind {
         case .inboxItem:
-            guard let row = feed.messages.first(where: { Int64($0.item.id) == ref.id }) else { return nil }
+            guard let row = vm.messageRow(Int(ref.id)) else { return nil }
             let link = InboxMessagePane.link(row.item.permalink)
             return .inboxItem(openLabel: link.map { _ in InboxMessagePane.openLabel(row.item.triggerType) },
                               openEnabled: link.map { InboxCardLinkPolicy.permits($0, navScreens: navScreens) } ?? false,
@@ -296,8 +296,7 @@ struct InboxRefHooks {
 
     /// What Discuss in Chat and Hand to Agent… carry for a ping.
     private func subject(_ ref: InboxRef) -> InboxCardSubject? {
-        guard ref.kind == .inboxItem,
-              let row = vm.feed.messages.first(where: { Int64($0.item.id) == ref.id }) else { return nil }
+        guard ref.kind == .inboxItem, let row = vm.messageRow(Int(ref.id)) else { return nil }
         return InboxCardSubject(message: row)
     }
 }
@@ -488,7 +487,7 @@ struct InboxRowActionHandler {
     }
 
     private func message(_ press: InboxRowPress, id: Int) async {
-        guard let row = vm.feed.messages.first(where: { $0.item.id == id }) else { return }
+        guard let row = vm.messageRow(id) else { return }
         let subject = InboxCardSubject(message: row)
         switch press {
         case .open:

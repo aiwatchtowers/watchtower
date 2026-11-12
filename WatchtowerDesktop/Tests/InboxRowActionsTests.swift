@@ -88,6 +88,43 @@ final class InboxRowActionsTests: XCTestCase {
         XCTAssertEqual(content.state, .idle)
     }
 
+    /// Waiting for me lists up to 200 people; the Messages list is the 200
+    /// newest open items, mail included. A person past that cap keeps every
+    /// action: the row reads its own message, never the capped list.
+    func testWaitingForMeRowPastTheMessagesCapKeepsItsActions() async throws {
+        let dm = try await pool.write { db -> Int64 in
+            for n in 0..<InboxQueries.openMessageLimit {
+                try TestDatabase.insertInboxItem(
+                    db, messageTS: "1700001\(String(format: "%03d", n)).000100",
+                    senderUserID: "news@example.com", triggerType: "email_received")
+            }
+            let dm = try TestDatabase.insertInboxItem(
+                db, channelID: "D001", messageTS: "1690000000.000100", triggerType: "dm",
+                permalink: "https://acme.slack.com/archives/D001/p1690000000000100")
+            try db.execute(sql: """
+                UPDATE inbox_items SET created_at = CASE WHEN id = ? THEN '2026-01-01T00:00:00Z'
+                  ELSE '2026-11-01T00:00:00Z' END, mentioned_at = ''
+                """, arguments: [dm])
+            let automation = try TestDatabase.insertAutomation(db, slug: "waiting-for-me", name: "Waiting for me")
+            try db.execute(sql: "UPDATE automations SET origin = 'builtin', builtin_id = 'waiting-for-me' WHERE id = ?",
+                           arguments: [automation])
+            let run = try TestDatabase.insertAutomationRun(db, automationID: automation, status: "succeeded")
+            try TestDatabase.insertAutomationOutput(
+                db, automationID: automation, runID: run,
+                blocksJSON: #"{"v":1,"blocks":[{"type":"list","rows":[{"title":"Colleague A","ref":{"kind":"inbox_item","id":\#(dm)}}]}]}"#,
+                outputKey: "waiting", contentHash: "h")
+            return dm
+        }
+        let vm = await strip()
+        XCTAssertFalse(vm.feed.messages.contains { Int64($0.item.id) == dm }, "the capped list leaves the DM out")
+        let ref = InboxRef(kind: .inboxItem, id: dm)
+        XCTAssertTrue(vm.folderMenu.snapshot.refState.isShown(ref))
+        let content = try XCTUnwrap(hooks(vm).content(ref, .inbox), "the row offers its actions")
+        XCTAssertEqual(content.kind, .inboxItem(openLabel: "Open in Slack", openEnabled: true, canReply: true,
+                                                showsHandToAgent: true))
+        XCTAssertNotNil(vm.messageRow(Int(dm)), "Done, Reply… and Discuss find the same row")
+    }
+
     func testInboxItemWithoutPermalinkHasNoOpen() async throws {
         let id = try await pool.write { db in try TestDatabase.insertInboxItem(db, permalink: "") }
         let vm = await strip()

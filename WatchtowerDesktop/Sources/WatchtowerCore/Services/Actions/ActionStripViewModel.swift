@@ -1449,7 +1449,7 @@ package final class ActionStripViewModel {
     package func proposeReply(_ itemID: Int, text: String, host: String) async {
         let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !body.isEmpty, replyDrafts[itemID] != nil,
-              let item = feed.messages.first(where: { $0.item.id == itemID })?.item,
+              let item = messageRow(itemID)?.item,
               let tool = InboxReplyPolicy.tool(for: item) else { return }
         guard let args = InboxReplyPolicy.args(for: item, text: body, host: host) else {
             // The args could not be encoded (not expected): say so on the draft, never a silent no-op.
@@ -1681,10 +1681,17 @@ package final class ActionStripViewModel {
         }
     }
 
+    /// Open message `id` as the last read has it: the Messages list's row,
+    /// else a shown `inbox_item` ref's (`InboxRefState.messages`: an
+    /// artifact row the list's cap leaves out).
+    package func messageRow(_ id: Int) -> HomeFeedInboxRow? {
+        feed.messages.first { $0.item.id == id } ?? folderMenu.snapshot.refState.messages[Int64(id)]
+    }
+
     /// The last read still lists `item`'s record.
     private func isOpenRecord(_ item: InboxSelection) -> Bool {
         switch item {
-        case let .message(id): feed.messages.contains { $0.item.id == id }
+        case let .message(id): messageRow(id) != nil
         case let .track(id): feed.tracks.contains { $0.track.id == id }
         case let .idea(id): feed.ideas.contains { $0.id == id }
         case let .reminder(id): feed.reminders.contains { $0.id == id }

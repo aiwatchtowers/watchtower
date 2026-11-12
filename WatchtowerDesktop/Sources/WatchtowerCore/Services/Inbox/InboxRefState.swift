@@ -108,11 +108,19 @@ package struct InboxRefState: Equatable, Sendable {
     /// A shown `mail_sender` ref's newest open mail link (its row's Open);
     /// absent when that mail has none.
     package let senderLinks: [InboxRef: String]
+    /// Each shown `inbox_item` ref's open message, by id: a row draws its
+    /// actions from it, never from the Messages list, whose cap (newest
+    /// `InboxQueries.openMessageLimit`, mail included) can leave it out.
+    package let messages: [Int64: HomeFeedInboxRow]
 
-    package init(shown: Set<InboxRef> = [], waiting: Set<InboxRef> = [], senderLinks: [InboxRef: String] = [:]) {
+    package init(
+        shown: Set<InboxRef> = [], waiting: Set<InboxRef> = [], senderLinks: [InboxRef: String] = [:],
+        messages: [Int64: HomeFeedInboxRow] = [:]
+    ) {
         self.shown = shown
         self.waiting = waiting
         self.senderLinks = senderLinks
+        self.messages = messages
     }
 
     package func isShown(_ ref: InboxRef) -> Bool { shown.contains(ref) }
@@ -129,13 +137,34 @@ package struct InboxRefState: Equatable, Sendable {
         let text = try textRefsShown(db, byKind: byKind, nowUTC: nowUTC, timeZone: timeZone)
         var shown = text.shown
         var waiting: Set<InboxRef> = []
+        var messages: [Int64: HomeFeedInboxRow] = [:]
         let ids = byKind.filter { !$0.key.hasTextID }.mapValues { Array(Set($0.map(\.id))).sorted() }
         for (kind, kindIDs) in ids {
+            if kind == .inboxItem {
+                // Shown = waits: `HomeFeedQueries.openMessageClause`, read
+                // with each row's message in the same read.
+                for row in try openMessages(db, ids: kindIDs, nowUTC: nowUTC) {
+                    let id = Int64(row.item.id)
+                    messages[id] = row
+                    shown.insert(InboxRef(kind: kind, id: id))
+                    waiting.insert(InboxRef(kind: kind, id: id))
+                }
+                continue
+            }
             let open = try openIDs(db, kind: kind, ids: kindIDs, nowUTC: nowUTC, timeZone: timeZone)
             shown.formUnion(open.shown.map { InboxRef(kind: kind, id: $0) })
             waiting.formUnion(open.waiting.map { InboxRef(kind: kind, id: $0) })
         }
-        return Self(shown: shown, waiting: waiting, senderLinks: text.senderLinks)
+        return Self(shown: shown, waiting: waiting, senderLinks: text.senderLinks, messages: messages)
+    }
+
+    /// The open messages among `ids`; none on a database without the tables.
+    private static func openMessages(_ db: Database, ids: [Int64], nowUTC: String) throws -> [HomeFeedInboxRow] {
+        do {
+            return try HomeFeedQueries.openMessageRows(db, ids: ids, nowUTC: nowUTC)
+        } catch let error as DatabaseError where ActionStripViewModel.isMissingTable(error) {
+            return []
+        }
     }
 
     /// The shown text-id refs (none of them waits) and the shown senders'
@@ -178,12 +207,9 @@ package struct InboxRefState: Equatable, Sendable {
         let idArguments = StatementArguments(ids)
         do {
             switch kind {
-            case .inboxItem:
-                // Shown = waits: `HomeFeedQueries.openMessageClause` (its one `?` is now).
-                let open = try Int64.fetchSet(db, sql: """
-                    SELECT id FROM inbox_items WHERE id IN (\(marks)) AND \(HomeFeedQueries.openMessageClause)
-                    """, arguments: idArguments + [nowUTC])
-                return (open, open)
+            case .inboxItem, .mailSender, .waitingOlder:
+                // Read with their rows in `read`, by key in `textRefsShown`.
+                return ([], [])
             case .track:
                 // Done is TRACKS-04's read; Stop watching is the dismissal.
                 let open = try Int64.fetchSet(db, sql: """
@@ -206,9 +232,6 @@ package struct InboxRefState: Equatable, Sendable {
                 let now = AutomationDates.parse(nowUTC) ?? Date()
                 let shown = ideas.filter { ideaShown($0, now: now, timeZone: timeZone) }
                 return (Set(shown.map { Int64($0.id) }), Set(shown.filter(\.awaitsVerdict).map { Int64($0.id) }))
-            case .mailSender, .waitingOlder:
-                // Read by key in `textRefsShown`.
-                return ([], [])
             }
         } catch let error as DatabaseError where ActionStripViewModel.isMissingTable(error) {
             return ([], [])
