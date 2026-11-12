@@ -402,8 +402,13 @@ final class TerminalCenter {
     /// Whether a session host client was begun, answering or not.
     var hasSessionHostClient: Bool { (sessionHost ?? sessionHostClient) != nil }
 
+    /// Sets row `row`'s other live runs. Once none is left, a row nothing
+    /// else holds (closed while they could not be stopped) is let go of.
     func setExtraHostRuns(_ runs: [SessionHostSessionInfo], row: Int64) {
         extraHostRuns[row] = runs.isEmpty ? nil : runs
+        if runs.isEmpty, processes[row] == nil, states[row] == nil, pendingLaunches[row] == nil {
+            rows[row] = nil
+        }
     }
 
     /// The launch's reattach of the session host's runs is done (or there
@@ -1282,7 +1287,9 @@ final class TerminalCenter {
                 extras[row] = newestFirst
             }
         }
+        let ended = Set(extraHostRuns.keys).subtracting(extras.keys)
         extraHostRuns = extras
+        for id in ended { setExtraHostRuns([], row: id) }
         let exited = Dictionary(grouping: unheld.filter(\.exited), by: \.row)
         var shown: [Int64: String] = [:] // row → the exited run attached
         for (row, runs) in exited {
@@ -1412,8 +1419,7 @@ final class TerminalCenter {
     /// then a kill after `killGrace` while it is still alive. Either way its
     /// exit is not the session's own (no PROJ-18 cleanup).
     func close(sessionID: Int64) async {
-        // A disconnected run's own stop may not reach it: the host's list
-        // is asked again below, like for the row's other runs (#1086).
+        // A disconnected run's stop may not reach it: the host is asked again below (#1086).
         let wasDisconnected = hostLinks[sessionID] != nil
         guard let process = processes.removeValue(forKey: sessionID) else {
             if extraHostRuns[sessionID] != nil { await stopOtherRuns(of: sessionID) }
@@ -1440,10 +1446,8 @@ final class TerminalCenter {
         forget(sessionID)
     }
 
-    /// A close's stop of the row's other live runs (#1086). One that cannot
-    /// be stopped (the host could not be asked) stays in `extraHostRuns` —
-    /// live, its bar still shown, stopped by a later close or the next
-    /// launch's reattach — and is logged.
+    /// A close's stop of the row's other live runs (#1086); one the host could not be
+    /// asked about stays in `extraHostRuns` (live, its bar shown) and is logged.
     private func stopOtherRuns(of sessionID: Int64) async {
         if let failure = await stopLiveHostRuns(of: sessionID) {
             NSLog("TerminalCenter: session %lld closed, but its other runs could not be stopped: %@", sessionID, failure)
@@ -1468,7 +1472,7 @@ final class TerminalCenter {
     /// process is closed as `closeAll` closes it.
     func detachAll() async {
         // A row's other live runs keep running too (#1086).
-        extraHostRuns = [:]
+        for id in extraHostRuns.keys { setExtraHostRuns([], row: id) }
         for (id, process) in processes {
             guard let hosted = process as? HostedTerminalSession else { continue }
             processes[id] = nil
@@ -1500,7 +1504,8 @@ final class TerminalCenter {
         pendingLaunches[sessionID] = nil
         missingAgent[sessionID] = nil
         states[sessionID] = nil
-        rows[sessionID] = nil
+        // A row with other runs not stopped stays known (workbench delete, live checks).
+        if extraHostRuns[sessionID] == nil { rows[sessionID] = nil }
         startedAt[sessionID] = nil
         runs[sessionID] = nil
         clearPromptDraft(sessionID)
@@ -1510,8 +1515,7 @@ final class TerminalCenter {
         pasteHints.remove(sessionID)
         answerHints[sessionID] = nil
         hostLinks[sessionID] = nil
-        // `extraHostRuns` stays: only a stop that worked, the next
-        // reattach or an update's quit drops a row's other runs.
+        // `extraHostRuns` stays: only a stop that worked, a reattach or an update's quit drops it.
         focusOrder.removeAll { $0 == sessionID }
     }
 

@@ -59,6 +59,8 @@ extension TerminalCenter {
             NSLog("TerminalCenter: could not stop session %lld's other runs: %@", id, reason)
             return reason
         case let .listed(host, runs):
+            // Tracked while they stop, so a quit meanwhile waits for them.
+            if !runs.isEmpty { setExtraHostRuns(runs, row: id) }
             await withTaskGroup(of: Void.self) { group in
                 for info in runs {
                     group.addTask { @MainActor in await self.stopStray(info, host: host) }

@@ -839,4 +839,49 @@ final class TerminalCenterReattachTests: XCTestCase {
         XCTAssertEqual(local.launches.count, 2, "relaunched")
         XCTAssertEqual(center.focusOrder, focusedBefore, "a later switch decides the focus")
     }
+
+    // MARK: #1086 round 3
+
+    /// A session closed while its other run could not be stopped stays
+    /// known: its workbench's delete still reaches that run, and the
+    /// live-agent check counts it until it is stopped.
+    func testAFailedCloseKeepsTheRowForTheWorkbenchDeleteAndTheLiveChecks() async throws {
+        let row = try await rowWithAnotherRun()
+        let projectID = try XCTUnwrap(row.projectID)
+        control.failedLists = 5
+        await center.close(sessionID: row.id)
+        XCTAssertEqual(center.extraHostRuns[row.id]?.map(\.run), ["run-old"])
+
+        XCTAssertEqual(center.sessionIDs(ofWorkbench: projectID), [row.id], "the workbench still holds it")
+        XCTAssertTrue(center.liveAgentIDs.contains(row.id))
+        XCTAssertTrue(center.hasLiveAgentSession(workbenchID: projectID, workTree: row.folderPath))
+
+        // The workbench delete: closeAll over its sessions.
+        control.failedLists = 0
+        let ids = center.sessionIDs(ofWorkbench: projectID)
+        await center.closeAll { ids.contains($0) }
+        XCTAssertTrue(signals.contains { $0 == (7901, SIGHUP) }, "the delete stops the other run")
+        XCTAssertNil(center.extraHostRuns[row.id])
+        XCTAssertTrue(center.sessionIDs(ofWorkbench: projectID).isEmpty, "let go of once stopped")
+        XCTAssertFalse(center.liveAgentIDs.contains(row.id))
+    }
+
+    /// Start fresh tracks the live runs it stops until their kill is done,
+    /// so a quit during the grace still waits for them.
+    func testStartFreshTracksTheRunsItStopsUntilTheyAreDone() async throws {
+        let row = try await endedRow()
+        alive = [7950]
+        control.listed = [SessionHostSessionInfo(row: row.id, run: "run-live", pid: 7950, startedAtMs: 1, exited: false, code: nil)]
+        var trackedAtKill: [String]?
+        onSignal = { [weak self] pid, sig in
+            guard pid == 7950, sig == SIGKILL, let self else { return }
+            trackedAtKill = center.extraHostRuns[row.id]?.map(\.run)
+        }
+
+        await vm.startFresh(row, placement: .inPlace)
+
+        XCTAssertEqual(trackedAtKill, ["run-live"])
+        XCTAssertNil(center.extraHostRuns[row.id])
+        XCTAssertEqual(center.states[row.id], .running, "launched fresh after the stop")
+    }
 }
