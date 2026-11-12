@@ -292,6 +292,13 @@ final class AppState {
     /// so badges are visible the moment the main UI appears.
     private(set) var sidebarCountsViewModel: SidebarCountsViewModel?
 
+    /// Test seam (design shots): the sidebar reads `counts`, loaded by the
+    /// caller over its own database, with no observation started. The app
+    /// never calls it; `initialize()` owns the real one.
+    func useSidebarCounts(_ counts: SidebarCountsViewModel) {
+        sidebarCountsViewModel = counts
+    }
+
     /// Email Accounts ViewModel (multi-account IMAP/Outlook) — persists across
     /// tab switches so an in-flight connect (Outlook OAuth or IMAP add) survives
     /// navigating away from the Settings window. Gmail keeps its own separate

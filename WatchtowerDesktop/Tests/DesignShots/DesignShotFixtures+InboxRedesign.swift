@@ -205,10 +205,32 @@ enum InboxRedesignShotFixtures {
     /// The app sidebar on the Inbox: the Inbox at the root, Targets in FOCUS.
     /// Its badges come from AppState's sidebar counts, which only the app's
     /// launch builds, so the shot draws the rows without them.
+    /// The sidebar over the Inbox's seed, its badge counted from it.
     static func sidebar() -> AnyView {
-        AnyView(SidebarView(selection: .constant(.inbox))
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .environment(AppState()))
+        do {
+            let (manager, path) = try TestDatabase.createDatabaseManager()
+            managers.append(manager)
+            paths.append(path)
+            _ = try manager.dbPool.write { db in try seed(db) }
+            let clock = now
+            // Labeled: a trailing closure would bind to `sleepUntil`.
+            // swiftlint:disable:next trailing_closure
+            let counts = SidebarCountsViewModel(dbPool: manager.dbPool, clock: { clock })
+            let finished = Finished()
+            InboxFolderMenuShotFixtures.spin(until: "the sidebar counts", finished.value) {
+                await counts.loadInitial()
+                finished.value = true
+            }
+            XCTAssertGreaterThan(counts.inboxStripCount, 0, "the Inbox badge has something to show")
+            let appState = AppState()
+            appState.databaseManager = manager
+            appState.useSidebarCounts(counts)
+            return AnyView(SidebarView(selection: .constant(.inbox))
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .environment(appState))
+        } catch {
+            return DesignShotFixtures.failure(error)
+        }
     }
 
     // MARK: - The database
