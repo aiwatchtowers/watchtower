@@ -166,6 +166,13 @@ type ApprovalCardsConfig struct {
 	Enabled bool `mapstructure:"enabled"` // run the needs-approval built-in (default: true)
 }
 
+// SlackTodayConfig controls the Slack today built-in: at most once an hour,
+// today's messages in the owner's Slack channels labelled into one Inbox list
+// (Inbox redesign phase 5). Light AI.
+type SlackTodayConfig struct {
+	Enabled bool `mapstructure:"enabled"` // run the slack-today built-in (default: true)
+}
+
 // PlanUsageConfig controls Claude plan limits — the daemon polls the owner's
 // 5-hour and weekly Claude limits (spec 2026-10-15). No AI, no cost.
 type PlanUsageConfig struct {
@@ -427,6 +434,7 @@ type Config struct {
 	ReactionCommands ReactionCommandsConfig      `mapstructure:"reaction_commands"`
 	PlanUsage        PlanUsageConfig             `mapstructure:"plan_usage"`
 	ApprovalCards    ApprovalCardsConfig         `mapstructure:"approval_cards"`
+	SlackToday       SlackTodayConfig            `mapstructure:"slack_today"`
 	Tracks           TracksConfig                `mapstructure:"tracks"`
 	People           PeopleConfig                `mapstructure:"people"`
 	Calendar         CalendarConfig              `mapstructure:"calendar"`
@@ -530,6 +538,7 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("reaction_commands.interval_hours", DefaultReactionCommandsIntervalHours)
 	v.SetDefault("plan_usage.enabled", DefaultPlanUsageEnabled)
 	v.SetDefault("approval_cards.enabled", DefaultApprovalCardsEnabled)
+	v.SetDefault("slack_today.enabled", DefaultSlackTodayEnabled)
 	v.SetDefault("tracks.enabled", DefaultTracksEnabled)
 	v.SetDefault("people.enabled", DefaultPeopleEnabled)
 	v.SetDefault("targets.next_step.enabled", DefaultTargetsNextStepEnabled)
