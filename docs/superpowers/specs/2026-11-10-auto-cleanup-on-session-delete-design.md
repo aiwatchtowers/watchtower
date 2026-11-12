@@ -58,8 +58,8 @@ Claude Code writes `<projects dir>/<slug>/<uuid>/subagents/agent-<id>.meta.json`
 
 - A linked worktree of the planned repository whose root equals `worktreePath` (symlink-resolved) belongs to the session, when it was born at or after the moment this row acquired the uuid (+1 s, second precision, as `bornReason`).
 - `worktreeBranch` names a branch of the session, under the same birth rule.
-- A missing `subagents` directory, next to the uuid's transcript (`<projects dir>/<slug>/<uuid>.jsonl`), means no subagents. A meta file without those keys, or with a non-absolute path, adopts nothing. A file that exists but cannot be read or parsed fails the plan (the row is marked "not fully cleaned"), so a broken read is never a silent "nothing to clean".
-- **Format drift is visible, not silent.** When a counted uuid's transcript itself is not found (Claude Code moved its projects directory, or pruned an old transcript), the plan carries the note `subagent_records_missing`. The row is still deleted, and the notice adds `Subagent records of “T” were not found — check the Clean Up screen.` A test reads a committed sample of Claude Code's real `meta.json` shape (neutral values, no live data) through the planner, so a change of the key names fails a test instead of the pile coming back.
+- A missing `subagents` directory, or a missing transcript of the uuid (`<projects dir>/<slug>/<uuid>.jsonl`), means no subagents: Claude Code prunes old transcripts, so this is normal and shows nothing. A meta file without those keys, or with a non-absolute path, adopts nothing. A file that exists but cannot be read or parsed fails the plan (the row is marked "not fully cleaned"), so a broken read is never a silent "nothing to clean".
+- **A format change of Claude Code shows, without noise.** Claude Code names a subagent's worktree after the agent: `<repo>/.claude/worktrees/agent-<id>`, branch `worktree-agent-<id>`, record `agent-<id>.meta.json` (checked on real records while writing this). The planner cross-checks the two: a linked worktree of the planned repository whose last folder is `agent-<id>`, born after the uuid was acquired (+1 s), whose `agent-<id>.meta.json` sits in a counted uuid's `subagents` directory but does not name that worktree by `worktreePath` (the keys were renamed, moved or dropped), is not adopted (fail closed) and gives the plan the note `subagent_records_unreadable`. So does a missing projects directory as a whole (`~/.claude/projects`, or under `$CLAUDE_CONFIG_DIR`) while the row has counted uuids. The note fires only on a real mismatch — an old session with a pruned transcript has no such worktree and no note. The row is still deleted, and the notice says it (§3). A test reads a committed sample of the real `meta.json` shape (neutral values, no live data) through the planner, and another renames its keys and expects the note.
 
 ### 2b. The session's Claude scratchpad
 
@@ -97,7 +97,7 @@ The table is one pure function in WatchtowerCore (`SessionAutoCleanupOutcome`). 
 - with kept items: `Cleaned up “T”: removed 2 worktrees (~1.4 GB). Kept 1 branch — unpushed commits.`
 - nothing removed, items kept on purpose: `Cleaned up “T”: kept 2 branches — default branch unknown.`
 - nothing removed and nothing kept on purpose: no notice (the row simply goes).
-- with the `subagent_records_missing` note (§2a), the notice is shown even when nothing was removed, with the line `Subagent records of “T” were not found — check the Clean Up screen.` after the sentence above. An old session whose transcript Claude Code already pruned shows it too; that is expected and still points at the right place.
+- with the `subagent_records_unreadable` note (§2a), the notice is shown even when nothing was removed, with the line `Could not read the subagent records of “T” — check the Clean Up screen.` after the sentence above. It appears only when a subagent worktree exists that its record does not name, or when Claude Code's projects directory is gone, never for a pruned old transcript.
 
 Several deletes in a row join into one notice: `Cleaned up 4 sessions: removed …`.
 
@@ -181,7 +181,7 @@ The states are in the mockup. On implementation, each state is registered in `De
 | Clean: removed, nothing kept | notice |
 | Clean with kept items | notice |
 | Several sessions joined | notice |
-| Subagent records not found (§2a) | notice |
+| Subagent records unreadable (§2a) | notice |
 | Not fully cleaned row (process running / git refused / CLI failed) | finished group |
 | Not fully cleaned row while **Clean Up Again** runs (`Cleaning up…`, actions disabled) | finished group |
 | Narrow panel: the warning line truncates and the actions move into the row's ⋯ menu | finished group |
@@ -202,7 +202,8 @@ There is no empty state: a workbench with no deletes looks as today.
 - Kept-on-purpose items (uncommitted, unpushed, …) do not keep the row; only "could not" items do — approved by the owner — ask #1210.
 - The Delete dialog loses **Delete Only** / **Delete and Clean Up** — approved by the owner — ask #1210.
 - Quit inside the Undo window defers the delete to the next launch instead of deleting — approved by the owner — ask #1210.
-- Guard test replacements in §5 — Swift: owner, ask #1210; Go: owner, ask #1259.
+- Guard test replacements in §5 — Swift: owner, ask #1210; Go: owner, ask #1259 (answered «Да, заменить»).
+- A HEAD-log branch is the session's only when created in the same step that switched to it (§2c) — owner, ask #1259 (answered «Да, строгое правило»).
 - Workbench delete unchanged; remote branches never touched — agent's call, approved with the spec in ask #1213 (a deleted workbench's sessions are not auto-cleaned).
 - `default_branch_unknown` is kept on purpose, not "could not": the row is deleted and the notice names the kept items — owner, ask #1240.
 - Automation session steps filter deleting rows instead of treating them as lookups by id (§4) — approved by the owner in the plan review, asks #1223/#1227.
@@ -210,7 +211,7 @@ There is no empty state: a workbench with no deletes looks as today.
   - The branch checked out in an adopted scratchpad worktree is adopted too. Every branch catch still applies: born after the uuid was acquired, merged or pushed, not checked out elsewhere.
   - A scratchpad lane is adopted only when it was born after this row acquired the uuid. A uuid ever held by a deleted row is treated as shared, using migration 00189 `agent_session_tombstones`, written by a `BEFORE DELETE` trigger on `terminal_sessions`.
   - The deleted row is not "a session in it" of its own worktree unless its terminal is live (§3) — after the final review's blocker.
-  - A HEAD-log branch counts only when created in the same step that switched to it, and not when another worktree also switched to it (§2c) — after the spec review of ask #1249.
+  - A HEAD-log branch also switched to by another worktree is not the session's (§2c) — after the spec review of ask #1249.
   - Source 2c works for every agent kind; only 2a/2b need the Claude session-files capability (§2) — ask #1249 review.
-  - A missing transcript is shown in the notice (`subagent_records_missing`), not treated as "no subagents" in silence (§2a) — ask #1249 review.
+  - Claude Code's format drift is caught by cross-checking `agent-<id>` worktrees against their records, and shown in the notice (`subagent_records_unreadable`); a pruned transcript is normal and silent (§2a) — asks #1249/#1260 review.
   - Migrations are edited in place and renumbered after main's last at merge, with a read-only check of the live install as a gate step; tombstones are never pruned in v1 (§6) — ask #1249 review.
