@@ -225,3 +225,25 @@ func TestResolveOpenInboxItems_CancelledContext(t *testing.T) {
 		t.Errorf("cancelled = %v, %v; want an error and nothing", got, err)
 	}
 }
+
+// A dry run names at most BulkResolveMaxIDs ids, the newest, so its ids
+// always fit one --ids press; the next dry run names the rest.
+func TestOpenPeopleItemIDsOlderThan_CappedAtThePressLimit(t *testing.T) {
+	d := openTestDB(t)
+	const n = BulkResolveMaxIDs + 5
+	// Item i is i seconds older than item 1, all past the Older line.
+	if _, err := d.Exec(`WITH RECURSIVE seq(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM seq WHERE i < ?)
+		INSERT INTO inbox_items (id, channel_id, message_ts, sender_user_id, trigger_type, created_at, updated_at)
+		SELECT i, 'C001', printf('1000.%05d', i), 'U001', 'mention',
+			strftime('%Y-%m-%dT%H:%M:%SZ', '2026-11-01T10:00:00Z', '-' || i || ' seconds'), '2026-11-01T10:00:00Z'
+		FROM seq`, n); err != nil {
+		t.Fatal(err)
+	}
+	got, err := d.OpenPeopleItemIDsOlderThan(context.Background(), bulkNow, WaitingOlderAfter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != BulkResolveMaxIDs || got[0] != 1 || got[len(got)-1] != BulkResolveMaxIDs {
+		t.Fatalf("%d ids, first %d, last %d; want %d newest first", len(got), got[0], got[len(got)-1], BulkResolveMaxIDs)
+	}
+}

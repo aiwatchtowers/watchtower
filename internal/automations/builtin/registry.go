@@ -36,7 +36,8 @@ const (
 )
 
 // RootFolder is the slug of the Inbox's root folder: an automation with no
-// route shows its artifacts there.
+// route shows its artifacts there. It is "inbox", the folder a spec's
+// "DefaultFolder inbox" names (Waiting for me, Mail waiting).
 const RootFolder = "inbox"
 
 // ParamKind is how a card parameter is edited.

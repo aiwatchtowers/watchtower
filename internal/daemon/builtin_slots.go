@@ -103,7 +103,12 @@ type waitingGate struct {
 
 func (g waitingGate) Due(ctx context.Context, _ builtin.Entry, now time.Time) bool {
 	d := g.d
-	seen, shown, _ := d.waitingMarks(g.id)
+	seen, shown, ok := d.waitingMarks(g.id)
+	if !ok {
+		// No marks to compare: run, and say so.
+		d.logger.Printf("%s: no Waiting for me marks for this built-in; it runs every cycle", g.id)
+		return true
+	}
 	*seen = ""
 	if !d.builtinOn(g.id) {
 		return false
@@ -154,7 +159,7 @@ func (d *Daemon) phaseWaitingForMe(ctx context.Context) {
 		if d.builtinOn(id) {
 			active = true
 		} else {
-			d.cancelQueuedBuiltinRuns(id, now)
+			d.cancelQueuedBuiltinRuns(id, now, cancelInactive)
 		}
 	}
 	if !active {
@@ -312,7 +317,7 @@ func (d *Daemon) phaseTrackMyThreads(ctx context.Context, now time.Time) {
 			}
 		}
 	} else {
-		d.cancelQueuedBuiltinRuns(trackMyThreadsID, now)
+		d.cancelQueuedBuiltinRuns(trackMyThreadsID, now, cancelLegacy)
 		d.phaseTracks(ctx)
 	}
 	d.injectTrackContext()
@@ -324,7 +329,7 @@ func (d *Daemon) phaseTrackMyThreads(ctx context.Context, now time.Time) {
 // otherwise the built-in's slot run.
 func (d *Daemon) phaseIdeaFinder(ctx context.Context) {
 	if !d.builtinOn(ideaFinderID) {
-		d.cancelQueuedBuiltinRuns(ideaFinderID, time.Now())
+		d.cancelQueuedBuiltinRuns(ideaFinderID, time.Now(), cancelLegacy)
 		d.phaseIdeas(ctx)
 		return
 	}
