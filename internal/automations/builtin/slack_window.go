@@ -15,8 +15,10 @@ import (
 // the calling built-in's WindowScope, as {status: "done", day, owner: {name},
 // messages: [{id, channel_id, channel, author, at, time, text, thread_id,
 // permalink, by_owner, to_owner, bot}], count, truncated, skipped_older,
-// below_floor}, with NextCursor the next read's cursor (never behind the
-// call's) and Behind when a cap cut the window. Floor "today" starts the
+// below_floor, cursor_reset}, with NextCursor the next read's cursor (never
+// behind the call's unless cursor_reset: the call's cursor was above the
+// newest message row, see db.SlackWindow.CursorReset) and Behind when a cap
+// cut the window. Floor "today" starts the
 // window at local midnight of now. A policy that turns Slack off reads
 // nothing: {status: "skipped", reason: "source_off", day, messages: []}
 // with the call's cursor. It calls no model.
@@ -65,8 +67,9 @@ func SlackWindowPrimitives(d *db.DB, now func() time.Time) map[string]automation
 					"truncated":     w.Truncated,
 					"skipped_older": w.SkippedOlder,
 					"below_floor":   w.BelowFloor,
+					"cursor_reset":  w.CursorReset,
 				},
-				NextCursor: max(w.NextRowID, call.Cursor),
+				NextCursor: w.NextRowID,
 				Behind:     w.Truncated,
 			}, nil
 		},

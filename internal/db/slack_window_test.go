@@ -438,9 +438,12 @@ func TestSlackWindow_FlagsAndAuthor(t *testing.T) {
 	s.msg("1:C0ACME", "1:U0NOTBOT", "not bot", at)
 	s.msg("1:C0ACME", "1:U0UNKNOWN", "unknown", at)
 	s.msg("1:C0ACME", "", "no author", at)
+	ts := s.msg("1:C0ACME", "1:U0NOTBOT", "integration post", at)
+	_, err := s.d.Exec(`UPDATE messages SET subtype = 'bot_message' WHERE ts = ?`, ts)
+	require.NoError(t, err)
 
 	w := s.read(SlackWindowQuery{})
-	require.Len(t, w.Messages, 8)
+	require.Len(t, w.Messages, 9)
 	type flags struct {
 		author       string
 		byOwner, bot bool
@@ -460,8 +463,62 @@ func TestSlackWindow_FlagsAndAuthor(t *testing.T) {
 		{"Forced", false, true},
 		{"Not Bot", false, false},
 		{"Someone", false, false},
-		{"Someone", false, false},
-	}, got)
+		{"Someone", false, true},
+		{"Not Bot", false, true},
+	}, got, "a bot_message subtype or no author is a bot whatever the user row says")
+}
+
+// History and thread syncs store no permalink: the window builds the link
+// from the account's team domain (slack.com's archive link without one), and
+// the byte budget counts it.
+func TestSlackWindow_EmptyPermalinkGetsAFallbackLink(t *testing.T) {
+	s := newWindowSeed(t)
+	ts := s.msg("1:C0ACME", windowOwner, "history", s.now.Add(-time.Hour))
+	_, err := s.d.Exec(`UPDATE messages SET permalink = ''`)
+	require.NoError(t, err)
+	w := s.read(SlackWindowQuery{})
+	require.Len(t, w.Messages, 1)
+	want := "https://acme.slack.com/archives/C0ACME/p" + strings.ReplaceAll(ts, ".", "")
+	assert.Equal(t, want, w.Messages[0].Permalink)
+	assert.GreaterOrEqual(t, slackWindowMessageBytes(w.Messages[0]), SlackWindowRowOverheadBytes+jsonStringBytes(want))
+
+	_, err = s.d.Exec(`UPDATE slack_accounts SET team_domain = ''`)
+	require.NoError(t, err)
+	w = s.read(SlackWindowQuery{})
+	require.Len(t, w.Messages, 1)
+	assert.Equal(t, "https://slack.com/archives/C0ACME/p"+strings.ReplaceAll(ts, ".", ""), w.Messages[0].Permalink)
+}
+
+// messages rowids are reused once the table is emptied (ClearSlackData, an
+// account purge): a cursor above the newest rowid is reset, not kept, so new
+// messages are read.
+func TestSlackWindow_CursorAboveNewestRowIDResets(t *testing.T) {
+	s := newWindowSeed(t)
+	now := time.Date(s.now.Year(), s.now.Month(), s.now.Day(), 10, 0, 0, 0, time.Local)
+	midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
+	s.msg("1:C0ACME", windowOwner, "gone", midnight.Add(time.Hour))
+	_, err := s.d.Exec(`DELETE FROM messages`)
+	require.NoError(t, err)
+	s.msg("1:C0ACME", windowOwner, "before midnight", midnight.Add(-time.Hour))
+	for i := 0; i < 3; i++ {
+		s.msg("1:C0ACME", windowOwner, fmt.Sprintf("new %d", i), midnight.Add(time.Duration(i+1)*time.Hour))
+	}
+	require.Less(t, s.maxRowID(), int64(1000))
+
+	w := s.read(SlackWindowQuery{AfterRowID: 1000, Floor: midnight, Now: now})
+	assert.Equal(t, []string{"new 0", "new 1", "new 2"}, windowTexts(w))
+	assert.True(t, w.CursorReset)
+	assert.Equal(t, s.maxRowID(), w.NextRowID)
+	assert.Equal(t, 0, w.BelowFloor, "a reset cursor counts nothing below the floor")
+	assert.Equal(t, 0, w.SkippedOlder)
+	has, err := s.d.SlackWindowHasMaterial(context.Background(),
+		SlackWindowQuery{Scope: WindowScopeMemberChannels, AfterRowID: 1000, Floor: midnight, Now: now})
+	require.NoError(t, err)
+	assert.True(t, has)
+
+	w = s.read(SlackWindowQuery{AfterRowID: w.NextRowID, Floor: midnight, Now: now})
+	assert.False(t, w.CursorReset, "a cursor at the newest rowid is kept")
+	assert.Empty(t, w.Messages)
 }
 
 func TestSlackWindow_RemovedAccountReadsNothing(t *testing.T) {

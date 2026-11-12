@@ -138,7 +138,7 @@ func TestSlackWindowPrimitive_FieldsShape(t *testing.T) {
 	if res.Status != "done" {
 		t.Fatalf("status %q", res.Status)
 	}
-	for _, k := range []string{"day", "owner", "messages", "count", "truncated", "skipped_older", "below_floor"} {
+	for _, k := range []string{"day", "owner", "messages", "count", "truncated", "skipped_older", "below_floor", "cursor_reset"} {
 		if _, ok := res.Fields[k]; !ok {
 			t.Errorf("Fields has no %q", k)
 		}
@@ -272,11 +272,34 @@ func TestSlackWindowPrimitive_EmptyWindowKeepsCursor(t *testing.T) {
 	s := newSlackSeed(t)
 	now := time.Date(2026, 11, 12, 6, 0, 0, 0, time.UTC)
 	s.msg("1:C0ACME", "1:U0BOB", "read before", "", "", now.Add(-time.Hour))
-	cursor := s.maxRowID() + 50 // past every row (rows deleted since the last read)
+	s.msg("1:C0OTHER", "1:U0BOB", "out of scope", "", "", now.Add(-time.Hour))
+	cursor := s.maxRowID() - 1 // the out-of-scope row is past it
 
 	res := mustWindow(t, s.d, now, automations.PrimitiveCall{Cursor: cursor})
-	if len(windowMessages(t, res)) != 0 || res.NextCursor != cursor {
-		t.Errorf("messages %v NextCursor %d; want none and %d", res.Fields["messages"], res.NextCursor, cursor)
+	if len(windowMessages(t, res)) != 0 || res.NextCursor != s.maxRowID() || res.Fields["cursor_reset"] != false {
+		t.Errorf("messages %v NextCursor %d cursor_reset %v; want none, %d and false",
+			res.Fields["messages"], res.NextCursor, res.Fields["cursor_reset"], s.maxRowID())
+	}
+	res = mustWindow(t, s.d, now, automations.PrimitiveCall{Cursor: s.maxRowID()})
+	if len(windowMessages(t, res)) != 0 || res.NextCursor != s.maxRowID() {
+		t.Errorf("messages %v NextCursor %d; want none and the call's %d", res.Fields["messages"], res.NextCursor, s.maxRowID())
+	}
+}
+
+// A cursor above the newest message row (the table emptied since the last
+// read: rowids are reused) is reset: the window reads as with no cursor and
+// says so.
+func TestSlackWindowPrimitive_CursorAboveNewestRowResets(t *testing.T) {
+	withWindowEntry(t, db.WindowScopeMemberChannels)
+	s := newSlackSeed(t)
+	now := time.Date(2026, 11, 12, 6, 0, 0, 0, time.UTC)
+	s.msg("1:C0ACME", "1:U0BOB", "after the reset", "", "", now.Add(-time.Hour))
+
+	res := mustWindow(t, s.d, now, automations.PrimitiveCall{Cursor: 1000})
+	msgs := windowMessages(t, res)
+	if len(msgs) != 1 || res.Fields["cursor_reset"] != true || res.NextCursor != s.maxRowID() {
+		t.Errorf("messages %v cursor_reset %v NextCursor %d; want one, true and %d",
+			msgs, res.Fields["cursor_reset"], res.NextCursor, s.maxRowID())
 	}
 }
 

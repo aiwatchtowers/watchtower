@@ -80,6 +80,7 @@ type SlackWindow struct {
 	Messages []SlackWindowMessage
 	// NextRowID is the cursor for the next read: the newest messages.rowid
 	// when the window was read to its end, else the last included message's.
+	// It is never below AfterRowID unless CursorReset.
 	NextRowID int64
 	Truncated bool
 	// SkippedOlder counts in-scope rows past the cursor older than
@@ -87,6 +88,11 @@ type SlackWindow struct {
 	// Floor. Both stay 0 without a cursor.
 	SkippedOlder int
 	BelowFloor   int
+	// CursorReset is set when AfterRowID was above the newest
+	// messages.rowid: rowids are reused once the table is emptied (a Slack
+	// disconnect, an account purge), so such a cursor would hide every new
+	// message. The window is then read as with no cursor.
+	CursorReset bool
 }
 
 type slackWindowCaps struct{ messages, textChars, bytes int }
@@ -135,9 +141,28 @@ func slackWindowBounds(q SlackWindowQuery) (age, lower float64, err error) {
 	return float64(ageAt.Unix()), float64(lowerAt.Unix()), nil
 }
 
+// slackWindowQueryer is a *sql.Tx or the *DB itself.
+type slackWindowQueryer interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// slackWindowCursor returns the newest messages.rowid and the cursor to
+// read past: after, or 0 with reset when after is above that rowid (see
+// SlackWindow.CursorReset).
+func slackWindowCursor(ctx context.Context, q slackWindowQueryer, after int64) (maxRowID, cursor int64, reset bool, err error) {
+	if err := q.QueryRowContext(ctx, `SELECT COALESCE(MAX(rowid), 0) FROM messages`).Scan(&maxRowID); err != nil {
+		return 0, 0, false, fmt.Errorf("slack window: newest rowid: %w", err)
+	}
+	if after > maxRowID {
+		return maxRowID, 0, true, nil
+	}
+	return maxRowID, after, false, nil
+}
+
 // SlackWindowHasMaterial reports whether ReadSlackWindow would return at least
-// one message: an in-scope message past the cursor at or after the effective
-// lower bound. It reads no message bodies.
+// one message: an in-scope message past the cursor (none when the cursor is
+// above the newest rowid, as ReadSlackWindow resets it) at or after the
+// effective lower bound. It reads no message bodies.
 func (db *DB) SlackWindowHasMaterial(ctx context.Context, q SlackWindowQuery) (bool, error) {
 	scope, err := slackWindowScopeSQL(q.Scope)
 	if err != nil {
@@ -147,10 +172,19 @@ func (db *DB) SlackWindowHasMaterial(ctx context.Context, q SlackWindowQuery) (b
 	if err != nil {
 		return false, err
 	}
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return false, fmt.Errorf("slack window: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	_, after, _, err := slackWindowCursor(ctx, tx, q.AfterRowID)
+	if err != nil {
+		return false, err
+	}
 	var has bool
-	err = db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 `+slackWindowJoins+`
+	err = tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 `+slackWindowJoins+`
 		WHERE `+slackWindowFilters+`
-		  AND m.ts_unix >= ? AND `+scope+`)`, q.AfterRowID, lower).Scan(&has)
+		  AND m.ts_unix >= ? AND `+scope+`)`, after, lower).Scan(&has)
 	if err != nil {
 		return false, fmt.Errorf("slack window: checking for material: %w", err)
 	}
@@ -167,6 +201,7 @@ func (db *DB) ReadSlackWindow(ctx context.Context, q SlackWindowQuery) (SlackWin
 type slackWindowRow struct {
 	msg        SlackWindowMessage
 	owner      string
+	teamDomain string
 	tsUnix     float64
 	channel    string
 	userName   [3]string // display_name, real_name, name
@@ -188,9 +223,9 @@ func (db *DB) readSlackWindow(ctx context.Context, q SlackWindowQuery, caps slac
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	var maxRowID int64
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(rowid), 0) FROM messages`).Scan(&maxRowID); err != nil {
-		return SlackWindow{}, fmt.Errorf("slack window: newest rowid: %w", err)
+	maxRowID, after, reset, err := slackWindowCursor(ctx, tx, q.AfterRowID)
+	if err != nil {
+		return SlackWindow{}, err
 	}
 	groupNames, err := slackWindowGroupDMNames(ctx, tx)
 	if err != nil {
@@ -201,15 +236,16 @@ func (db *DB) readSlackWindow(ctx context.Context, q SlackWindowQuery, caps slac
 	// with one, every in-scope row past it is streamed and the old ones are
 	// counted (their bodies are not read).
 	scanFrom := lower
-	if q.AfterRowID > 0 {
+	if after > 0 {
 		scanFrom = -math.MaxFloat64
 	}
-	w, owners, err := streamSlackWindow(ctx, tx, scope, q.AfterRowID, scanFrom, age, lower, groupNames, caps)
+	w, owners, err := streamSlackWindow(ctx, tx, scope, after, scanFrom, age, lower, groupNames, caps)
 	if err != nil {
 		return SlackWindow{}, err
 	}
+	w.CursorReset = reset
 	if !w.Truncated {
-		w.NextRowID = max(maxRowID, q.AfterRowID)
+		w.NextRowID = maxRowID // ≥ after: after is never above it
 	}
 	if err := markSlackWindowToOwner(ctx, tx, &w, owners); err != nil {
 		return SlackWindow{}, err
@@ -228,7 +264,9 @@ func streamSlackWindow(ctx context.Context, tx *sql.Tx, scope string, after int6
 	rows, err := tx.QueryContext(ctx, `SELECT m.rowid, m.channel_id, c.name, c.type, m.ts, COALESCE(m.thread_ts, ''),
 		       m.user_id, COALESCE(u.display_name, ''), COALESCE(u.real_name, ''), COALESCE(u.name, ''),
 		       CASE WHEN m.ts_unix >= ? THEN m.text ELSE '' END, m.permalink, m.ts_unix,
-		       sa.current_user_id, COALESCE(u.is_bot_override, u.is_bot, 0),
+		       sa.current_user_id, sa.team_domain,
+		       CASE WHEN m.subtype = 'bot_message' OR m.user_id = '' THEN 1
+		            ELSE COALESCE(u.is_bot_override, u.is_bot, 0) END,
 		       COALESCE(du.display_name, ''), COALESCE(du.real_name, ''), COALESCE(du.name, '')
 		`+slackWindowJoins+`
 		LEFT JOIN users du ON c.type = 'dm' AND du.id = c.dm_user_id
@@ -248,7 +286,7 @@ func streamSlackWindow(ctx context.Context, tx *sql.Tx, scope string, after int6
 		var bot int
 		if err := rows.Scan(&r.msg.RowID, &r.msg.ChannelID, &r.channel, &r.msg.ChannelType, &r.msg.TS, &r.msg.ThreadTS,
 			&r.msg.UserID, &r.userName[0], &r.userName[1], &r.userName[2],
-			&r.msg.Text, &r.msg.Permalink, &r.tsUnix, &r.owner, &bot,
+			&r.msg.Text, &r.msg.Permalink, &r.tsUnix, &r.owner, &r.teamDomain, &bot,
 			&r.dmUserName[0], &r.dmUserName[1], &r.dmUserName[2]); err != nil {
 			return SlackWindow{}, nil, fmt.Errorf("slack window: scanning a message: %w", err)
 		}
@@ -294,6 +332,9 @@ func finishSlackWindowRow(r slackWindowRow, bot bool, groupNames map[string]stri
 	m.ByOwner = r.owner != "" && m.UserID == r.owner
 	m.Bot = bot
 	m.Text = cutSlackWindowText(m.Text)
+	if m.Permalink == "" {
+		m.Permalink = slackWindowFallbackLink(r.teamDomain, m.ChannelID, m.TS)
+	}
 	switch m.ChannelType {
 	case "dm":
 		m.ChannelName = "@" + slackWindowPersonName(r.dmUserName)
@@ -306,6 +347,17 @@ func finishSlackWindowRow(r slackWindowRow, bot bool, groupNames map[string]stri
 		m.ChannelName = "#" + r.channel
 	}
 	return m
+}
+
+// slackWindowFallbackLink is the web link of a message stored without a
+// permalink (history and thread syncs keep none): the account's team domain
+// with the raw channel id and ts, or slack.com's archive link without a domain.
+func slackWindowFallbackLink(domain, channelID, ts string) string {
+	_, raw, _ := strings.Cut(channelID, ":")
+	if domain == "" {
+		return "https://slack.com/archives/" + raw + "/p" + strings.ReplaceAll(ts, ".", "")
+	}
+	return watchtowerslack.GeneratePermalink(domain, raw, ts)
 }
 
 // slackWindowPersonName is display_name, else real_name, else name, else "Someone".
