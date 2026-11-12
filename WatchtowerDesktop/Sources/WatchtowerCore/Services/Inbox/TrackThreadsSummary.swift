@@ -52,7 +52,7 @@ package struct TrackThreadsSummary: Equatable {
         let you = rawID(card.track.assigneeUserID)
         let summary = firstLine(card.latestEventSummary)
         if !summary.isEmpty { return readableSlack(summary, you: you) }
-        if let ref = newestRef(card.track) {
+        if let ref = card.track.newestSourceRef {
             let text = firstLine(ref.text)
             if !text.isEmpty { return "\(ref.author): “\(readableSlack(text, you: you))”" }
         }
@@ -69,7 +69,7 @@ package struct TrackThreadsSummary: Equatable {
         if track.category == "decision" || track.category == "decision_needed" || !track.decisionSummary.isEmpty {
             return .decision
         }
-        if !rawAssignee.isEmpty, let ref = newestRef(track), mentions(ref.text, userID: rawAssignee) {
+        if !rawAssignee.isEmpty, let ref = track.newestSourceRef, mentions(ref.text, userID: rawAssignee) {
             return .mention
         }
         if card.newestRefHasAttachment { return .attachment }
@@ -142,11 +142,6 @@ package struct TrackThreadsSummary: Equatable {
     private static func rawID(_ id: String) -> String {
         guard let colon = id.lastIndex(of: ":") else { return id }
         return String(id[id.index(after: colon)...])
-    }
-
-    /// The source ref with the highest `ts` (the same pick as `TrackQueries`).
-    private static func newestRef(_ track: Track) -> TrackSourceRef? {
-        track.decodedSourceRefs.max { (Double($0.ts) ?? 0) < (Double($1.ts) ?? 0) }
     }
 
     /// Slack markup as plain words: `<@ID|label>` → `@label`, `<@ID>` → `@you`

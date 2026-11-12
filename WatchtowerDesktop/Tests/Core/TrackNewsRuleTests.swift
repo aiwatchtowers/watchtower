@@ -218,4 +218,25 @@ final class TrackNewsRuleTests: XCTestCase {
         XCTAssertEqual(byID[ids.plain]?.newestRefHasAttachment, false)
         XCTAssertEqual(byID[ids.junk]?.newestRefHasAttachment, false)
     }
+
+    /// The chip is a decoration: a failed attachment probe (no `media_items`)
+    /// still returns every card, with no attachment.
+    func testFailedAttachmentProbeStillReturnsTheCards() throws {
+        let queue = try TestDatabase.create()
+        let ids = try queue.write { db -> [Int64] in
+            let newest = "1700000500.000200"
+            try insertSlackImage(db, channelID: "C600", ts: newest)
+            let slack = try TestDatabase.insertTrack(db, text: "Slack", sourceRefs: refs([("C600", newest)]))
+            let mail = try TestDatabase.insertTrack(db, text: "Mail")
+            try db.execute(sql: """
+                INSERT INTO track_events (track_id, summary, source_type, source_id, created_at)
+                VALUES (?, 'mail', 'email', 'm-image', '2026-10-02T00:00:00Z')
+                """, arguments: [mail])
+            try db.execute(sql: "DROP TABLE media_items")
+            return [slack, mail]
+        }
+        let cards = try queue.read { try TrackQueries.fetchInboxCards($0) }
+        XCTAssertEqual(Set(cards.map { Int64($0.track.id) }), Set(ids))
+        XCTAssertTrue(cards.allSatisfy { !$0.newestRefHasAttachment })
+    }
 }

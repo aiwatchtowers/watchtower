@@ -36,56 +36,118 @@ package enum TrackQueries {
             WHERE \(filter)
             ORDER BY \(order)
             """)
-        return try rows.map { row in
-            let track = Track(row: row)
-            let last = TrackNewsRule.lastEventAt(updatedAt: track.updatedAt, newestEventAt: row["last_event_at"])
-            // Only the active list shows the attachment chip.
-            let attachment = try !stopped && (
-                newestSlackRefHasImage(db, track: track)
-                    || mailHasImage(db, sourceID: row["newest_mail_id"])
-            )
-            return InboxTrackCard(
+        let tracks = rows.map(Track.init(row:))
+        // Only the active list shows the attachment chip.
+        let attached = stopped ? [] : attachmentTrackIDs(db, tracks: tracks, newestMailIDs: Dictionary(
+            zip(tracks, rows).compactMap { track, row in
+                (row["newest_mail_id"] as String?).map { (track.id, $0) }
+            }) { first, _ in first })
+        return zip(tracks, rows).map { track, row in
+            InboxTrackCard(
                 track: track,
-                lastEventAt: last,
+                lastEventAt: TrackNewsRule.lastEventAt(updatedAt: track.updatedAt, newestEventAt: row["last_event_at"]),
                 newEventCount: row["new_events"] ?? 0,
                 latestEventSummary: row["latest_event_summary"] ?? "",
-                newestRefHasAttachment: attachment
+                newestRefHasAttachment: attached.contains(track.id)
             )
         }
     }
 
-    /// The track's newest Slack source ref (highest `ts`) carries an image.
-    /// Junk images (`skipped_junk`: tracking pixels, logos) never count.
-    /// The media row's channel may be namespaced (`<account>:<channel>`); the
-    /// lookup goes through `messages` for its `ts_unix` index.
-    private static func newestSlackRefHasImage(_ db: Database, track: Track) throws -> Bool {
-        guard let ref = track.decodedSourceRefs.max(by: { (Double($0.ts) ?? 0) < (Double($1.ts) ?? 0) }),
-              let channel = ref.channelID, !channel.isEmpty else { return false }
-        let seconds = Double(ref.ts.split(separator: ".").first ?? "") ?? 0
-        return try Bool.fetchOne(db, sql: """
-            SELECT EXISTS (
-                SELECT 1 FROM messages msg
-                JOIN media_items m ON m.slack_channel_id = msg.channel_id AND m.slack_ts = msg.ts
-                WHERE msg.ts_unix = :seconds AND msg.ts = :ts
-                  AND (msg.channel_id = :channel OR substr(msg.channel_id, -length(:suffix)) = :suffix)
-                  AND m.parent_kind = 'slack' AND m.kind = 'image' AND m.status != 'skipped_junk')
-            """, arguments: ["seconds": seconds, "ts": ref.ts, "channel": channel, "suffix": ":" + channel]) ?? false
+    // MARK: - Attachment chip
+
+    /// The tracks whose newest item carries a non-junk image (`media_items`
+    /// kind `image`, never `skipped_junk`): the newest Slack source ref, or
+    /// the newest mail event. One batched probe per read; the chip is a
+    /// decoration, so a failed probe is logged (track ids only) and reads
+    /// as no attachment — it never fails or empties the tracks read.
+    private static func attachmentTrackIDs(_ db: Database, tracks: [Track], newestMailIDs: [Int: String]) -> Set<Int> {
+        do {
+            return try slackAttachmentTrackIDs(db, tracks: tracks)
+                .union(mailAttachmentTrackIDs(db, newestMailIDs: newestMailIDs))
+        } catch {
+            let ids = tracks.map { String($0.id) }.joined(separator: ",")
+            let code = (error as? DatabaseError)?.resultCode.rawValue ?? -1
+            InboxLog.logger.error("track attachment probe failed (sqlite \(code)) for tracks \(ids, privacy: .public)")
+            return []
+        }
     }
 
-    /// A mail event's message carries a non-junk image. The watch scan records mail as
-    /// `source_type = 'email'` with `source_id` = the `list_emails` id: the
-    /// Gmail message id, or `<uidvalidity>-<uid>` for IMAP
-    /// (`internal/db/emails_read.go` `imapEmailIDExpr`).
-    private static func mailHasImage(_ db: Database, sourceID: String?) throws -> Bool {
-        guard let sourceID, !sourceID.isEmpty else { return false }
-        return try Bool.fetchOne(db, sql: """
-            SELECT EXISTS (
+    /// Slack: each track's newest source ref, matched through `messages`
+    /// (its `ts_unix` index; the media row's channel may be namespaced
+    /// `<account>:<channel>`) to an image `media_items` row.
+    private static func slackAttachmentTrackIDs(_ db: Database, tracks: [Track]) throws -> Set<Int> {
+        let refs: [[String: Any]] = tracks.compactMap { track in
+            guard let ref = track.newestSourceRef, let channel = ref.channelID, !channel.isEmpty else { return nil }
+            let seconds = Double(ref.ts.split(separator: ".").first ?? "") ?? 0
+            return ["track": track.id, "channel": channel, "suffix": ":" + channel, "ts": ref.ts, "seconds": seconds]
+        }
+        guard !refs.isEmpty else { return [] }
+        return try Set(Int.fetchAll(db, sql: """
+            SELECT DISTINCT json_extract(p.value, '$.track')
+            FROM json_each(?) p
+            CROSS JOIN messages msg
+            WHERE msg.ts_unix = json_extract(p.value, '$.seconds') AND msg.ts = json_extract(p.value, '$.ts')
+              AND (msg.channel_id = json_extract(p.value, '$.channel')
+                   OR substr(msg.channel_id, -length(json_extract(p.value, '$.suffix'))) = json_extract(p.value, '$.suffix'))
+              AND EXISTS (
                 SELECT 1 FROM media_items m
-                WHERE m.kind = 'image' AND m.status != 'skipped_junk' AND (
-                    (m.parent_kind = 'gmail' AND m.gmail_message_id = :id)
-                    OR (m.parent_kind = 'imap'
-                        AND CAST(m.imap_uidvalidity AS TEXT) || '-' || CAST(m.imap_uid AS TEXT) = :id)))
-            """, arguments: ["id": sourceID]) ?? false
+                WHERE m.slack_channel_id = msg.channel_id AND m.slack_ts = msg.ts
+                  AND m.parent_kind = 'slack' AND m.kind = 'image' AND m.status != 'skipped_junk')
+            """, arguments: [json(refs)]))
+    }
+
+    /// Mail: the watch scan records mail as `source_type = 'email'` with
+    /// `source_id` = the `list_emails` id, the Gmail message id or
+    /// `<uidvalidity>-<uid>` for IMAP (`internal/db/emails_read.go`
+    /// `imapEmailIDExpr`). Matched per account so the account-led
+    /// `media_items` indexes serve.
+    private static func mailAttachmentTrackIDs(_ db: Database, newestMailIDs: [Int: String]) throws -> Set<Int> {
+        var gmail: [[String: Any]] = []
+        var imap: [[String: Any]] = []
+        for (trackID, id) in newestMailIDs where !id.isEmpty {
+            if let key = imapKey(id) {
+                imap.append(["track": trackID, "uidvalidity": key.uidvalidity, "uid": key.uid])
+            } else {
+                gmail.append(["track": trackID, "id": id])
+            }
+        }
+        var found: Set<Int> = []
+        if !gmail.isEmpty {
+            found.formUnion(try Int.fetchAll(db, sql: """
+                SELECT DISTINCT json_extract(p.value, '$.track')
+                FROM json_each(?) p
+                CROSS JOIN google_accounts a
+                WHERE EXISTS (
+                    SELECT 1 FROM media_items m
+                    WHERE m.gmail_account_id = a.id AND m.gmail_message_id = json_extract(p.value, '$.id')
+                      AND m.parent_kind = 'gmail' AND m.kind = 'image' AND m.status != 'skipped_junk')
+                """, arguments: [json(gmail)]))
+        }
+        if !imap.isEmpty {
+            found.formUnion(try Int.fetchAll(db, sql: """
+                SELECT DISTINCT json_extract(p.value, '$.track')
+                FROM json_each(?) p
+                CROSS JOIN email_accounts a
+                WHERE EXISTS (
+                    SELECT 1 FROM media_items m
+                    WHERE m.imap_account_id = a.id
+                      AND m.imap_uidvalidity = json_extract(p.value, '$.uidvalidity')
+                      AND m.imap_uid = json_extract(p.value, '$.uid')
+                      AND m.parent_kind = 'imap' AND m.kind = 'image' AND m.status != 'skipped_junk')
+                """, arguments: [json(imap)]))
+        }
+        return found
+    }
+
+    /// `<uidvalidity>-<uid>` as two integers; nil for any other id (Gmail's).
+    private static func imapKey(_ id: String) -> (uidvalidity: Int64, uid: Int64)? {
+        let parts = id.split(separator: "-", omittingEmptySubsequences: false)
+        guard parts.count == 2, let uidvalidity = Int64(parts[0]), let uid = Int64(parts[1]) else { return nil }
+        return (uidvalidity, uid)
+    }
+
+    private static func json(_ value: [[String: Any]]) throws -> String {
+        String(bytes: try JSONSerialization.data(withJSONObject: value), encoding: .utf8) ?? "[]"
     }
 
     /// Those of `ids` that are stopped (`dismissed_at` set) or still active.
