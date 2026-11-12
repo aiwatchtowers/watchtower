@@ -228,7 +228,7 @@ package struct InboxRowActionsContent: Equatable {
     }
 
     /// A sender row for `address` (any spelling) whose newest open mail has
-    /// `newestPermalink` (`WaitingQueries.newestPermalink`).
+    /// `newestPermalink` (`WaitingQueries.newestOpenMail`).
     package static func mailSenderKind(address: String, newestPermalink: String?, navScreens: Set<String>) -> Kind {
         .mailSender(address: InboxPeopleRule.senderKey(address),
                     openEnabled: senderLink(newestPermalink, navScreens: navScreens) == .opens)

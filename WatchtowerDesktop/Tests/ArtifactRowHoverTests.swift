@@ -61,9 +61,11 @@ final class ArtifactRowHoverTests: XCTestCase {
         XCTAssertTrue(ArtifactRowChrome.showsActions(isHovered: false, isFocused: true, mode: .inbox))
         // Waiting for me's Older note row keeps its Mark All Done… shown.
         XCTAssertTrue(ArtifactRowChrome.showsActions(isHovered: false, isFocused: false, mode: .inbox, pinned: true))
-        XCTAssertTrue(ArtifactRowChrome.pinsActions(ArtifactRef(kind: .waitingOlder, key: "people")))
-        XCTAssertFalse(ArtifactRowChrome.pinsActions(ref))
-        XCTAssertFalse(ArtifactRowChrome.pinsActions(nil))
+        // The pin is the host's: the Inbox's hooks pin the Older row, the kit pins nothing.
+        let inbox = InboxRefHooks.make(isShown: { _ in true }, content: { _, _ in nil })
+        XCTAssertTrue(inbox.pinsActions(ArtifactRef(kind: .waitingOlder, key: "people")))
+        XCTAssertFalse(inbox.pinsActions(ref))
+        XCTAssertFalse(ArtifactRefHooks().pinsActions(ArtifactRef(kind: .waitingOlder, key: "people")))
 
         let hidden = try view(focused: nil).inspect()
             .find(viewWithAccessibilityIdentifier: ArtifactRowChrome.actionsIdentifier)
@@ -147,12 +149,33 @@ final class ArtifactRowHoverTests: XCTestCase {
         XCTAssertNoThrow(try asking.find(text: "3 open from this sender"))
         XCTAssertThrowsError(try asking.find(button: "Open"), "the question alone while it asks")
         XCTAssertThrowsError(try asking.find(button: "Mute"), "the question alone while it asks")
+        XCTAssertEqual(hooks.accessibilityActions(senderRef).map(\.name), ["Cancel", "Mark 3 Done"],
+                       "VoiceOver names the question's answers only")
 
         model.cancel()
         let answered = try overlay()
         XCTAssertEqual(try answered.opacity(), 0, "answered: back to hover or focus")
         XCTAssertNoThrow(try answered.find(button: "Mute"), "the usual buttons are back")
         XCTAssertNoThrow(try answered.find(button: "Mark All Done…"))
+        XCTAssertEqual(hooks.accessibilityActions(senderRef).map(\.name), ["Open", "Mark All Done…", "Mute"])
+    }
+
+    /// The drawn buttons and the named actions come from one list: every
+    /// name is a drawn button or a drawn menu's choice, with the same rule.
+    func testNamedActionsAreTheDrawnButtons() throws {
+        var idea = InboxRowActionsContent(kind: .idea(kind: .idea, status: .proposed, awaitsVerdict: true))
+        XCTAssertEqual(InboxRefHooks.accessibilityPresses(idea).map(\.name),
+                       ["Approve", "Make a Task", "Not now 1 week", "Not now 1 month", "Not now No date", "Reject"])
+        let drawn = try InboxRowActionsView(content: idea).inspect()
+        for title in ["Approve", "Make a Task", "Reject"] { XCTAssertNoThrow(try drawn.find(button: title)) }
+        XCTAssertNoThrow(try drawn.find(ViewType.Menu.self))
+        idea.writesUnavailable = true
+        XCTAssertTrue(InboxRefHooks.accessibilityPresses(idea).isEmpty, "every verdict off: none named")
+        XCTAssertTrue(try InboxRowActionsView(content: idea).inspect().find(button: "Approve").isDisabled())
+
+        let track = InboxRowActionsContent(kind: .track(custom: true, linkedTargetID: 4), cliMissing: true)
+        XCTAssertEqual(InboxRefHooks.accessibilityPresses(track).map(\.name),
+                       ["Done", "Go to Target", "Delete…"], "Stop watching runs the missing CLI")
     }
 
     func testPreviewModeUnchanged() throws {

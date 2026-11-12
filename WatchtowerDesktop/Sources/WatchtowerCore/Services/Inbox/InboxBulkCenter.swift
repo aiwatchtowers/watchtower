@@ -11,16 +11,18 @@ package enum InboxBulkKey: Hashable, Sendable {
 }
 
 /// The bulk presses under way or waiting for the owner
-/// (`InboxBulkPressModel.pinsActions`), by canonical key. Observable, so a
-/// row that reads it while drawing redraws when its press starts or ends.
+/// (`InboxBulkPressModel.pinsActions`) with their state, by canonical key.
+/// Observable, so a row that reads it while drawing redraws when its press
+/// starts, asks, runs or ends.
 @MainActor
 @Observable
 package final class InboxBulkPins {
-    package private(set) var keys: Set<InboxBulkKey> = []
+    package private(set) var states: [InboxBulkKey: InboxBulkPressModel.State] = [:]
 
-    fileprivate func set(_ key: InboxBulkKey, pinned: Bool) {
-        guard keys.contains(key) != pinned else { return }
-        if pinned { keys.insert(key) } else { keys.remove(key) }
+    fileprivate func set(_ key: InboxBulkKey, state: InboxBulkPressModel.State) {
+        let pinned = InboxBulkPressModel.pinsActions(state) ? state : nil
+        guard states[key] != pinned else { return }
+        states[key] = pinned
     }
 }
 
@@ -76,16 +78,18 @@ package final class InboxBulkCenter: ObservableObject {
                 return result
             })
         model.onStateChange = { [pins] state in
-            pins.set(key, pinned: InboxBulkPressModel.pinsActions(state))
+            pins.set(key, state: state)
         }
         models[key] = model
         return model
     }
 
     /// `key`'s press is planning, asking or running (any spelling): its row
-    /// keeps its actions shown until the owner answers. Observation-tracked.
+    /// keeps its actions shown until the owner answers. Observation-tracked,
+    /// and so is every state change while pinned (planning → asking →
+    /// running), so a row's named actions follow the question.
     package func isPinned(_ key: InboxBulkKey) -> Bool {
-        pins.keys.contains(Self.canonical(key))
+        pins.states[Self.canonical(key)] != nil
     }
 
     /// Starts `key`'s press: its dry run (ignored while one is under way).

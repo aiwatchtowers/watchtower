@@ -25,142 +25,57 @@ struct InboxRowActionsView: View {
     @ViewBuilder
     private var buttons: some View {
         switch content.kind {
-        case let .inboxItem(openLabel, openEnabled, canReply, showsHandToAgent):
-            if let openLabel {
-                Button(openLabel) { onPress(.open) }
-                    .disabled(!openEnabled)
-            }
-            if canReply {
-                Button("Reply…") { onPress(.reply) }
-                    .disabled(content.reply != nil || content.isOff(.reply))
-            }
-            Button("Done") { onPress(.done) }.disabled(content.isOff(.done))
-            Button("Hide") { onPress(.hide) }.disabled(content.isOff(.hide))
-            Menu("Snooze") {
-                ForEach(InboxMessagePane.snoozeChoices, id: \.duration) { choice in
-                    Button(choice.label) { onPress(.snooze(duration: choice.duration)) }
-                }
-            }
-            .menuStyle(.button)
-            .fixedSize()
-            .disabled(content.isOff(.snooze(duration: "")))
-            if !content.isBusy {
-                more {
-                    Button("Discuss in Chat") { onPress(.discussInChat) }
-                    if showsHandToAgent {
-                        Button("Hand to Agent…") { onPress(.handToAgent) }
-                    }
-                }
-            }
-        case let .track(custom, linkedTargetID):
-            Button("Done") { onPress(.done) }.disabled(content.isOff(.done))
-            if !content.isBusy {
-                more {
-                    Button("Stop watching") { onPress(.stopWatching) }.disabled(content.isOff(.stopWatching))
-                    if !custom {
-                        Button("Make a Task") { onPress(.makeTask) }.disabled(content.isOff(.makeTask))
-                    }
-                    if custom, linkedTargetID != nil {
-                        Button("Go to Target") { onPress(.goToTarget) }
-                    }
-                    if custom {
-                        Button("Delete…") { onPress(.deleteTrack) }
-                    }
-                }
-            }
-        case let .idea(kind, status, awaitsVerdict):
-            ForEach(InboxRowActionsContent.ideaButtons(kind: kind, status: status, awaitsVerdict: awaitsVerdict),
-                    id: \.self) { button in
-                ideaButton(button)
-                    .disabled(content.isOff(button.press))
-            }
-        case .reminder:
-            Button("Done") { onPress(.done) }.disabled(content.isOff(.done))
-            Button("Snooze 1h") { onPress(.snoozeHour) }.disabled(content.isOff(.snoozeHour))
-        case let .action(_, buttons):
-            // The proposal's own summary sits under the row's line, full width (`InboxRowActionsFooter`).
-            ForEach(buttons, id: \.self) { button in
-                actionButton(button)
-                    .disabled(content.isOff(button.press))
-            }
         case .mailSender, .waitingOlder:
             if let bulk {
-                InboxBulkRowButtons(model: bulk, isSender: isSender) { bulkRowButtons }
+                InboxBulkRowButtons(model: bulk, isSender: isSender) { bar }
             } else {
-                bulkRowButtons
+                bar
+            }
+        case .inboxItem, .track, .idea, .reminder, .action:
+            bar
+            let more = all.filter { $0.place == .more }
+            if !content.isBusy, !more.isEmpty {
+                self.more {
+                    ForEach(Array(more.enumerated()), id: \.offset) { _, button in draw(button) }
+                }
             }
         }
     }
+
+    /// Every button the row has (`InboxRowActionsContent.rowButtons`), the
+    /// list VoiceOver names too.
+    private var all: [InboxRowButton] { content.rowButtons(hasBulk: bulk != nil) }
 
     private var isSender: Bool {
         if case .mailSender = content.kind { return true }
         return false
     }
 
-    private var bulkRowButtons: some View {
-        ForEach(Array(content.bulkRowPresses.enumerated()), id: \.offset) { _, press in
-            bulkRowButton(press)
+    private var bar: some View {
+        ForEach(Array(all.filter { $0.place == .bar }.enumerated()), id: \.offset) { _, button in
+            draw(button)
         }
     }
 
     @ViewBuilder
-    private func bulkRowButton(_ press: InboxRowPress) -> some View {
-        switch press {
-        case .open:
-            if case let .mailSender(_, openEnabled) = content.kind {
-                Button("Open") { onPress(.open) }
-                    .disabled(!openEnabled)
-                    .help((content.senderLink ?? (openEnabled ? .opens : .missing)).help)
-            }
-        case .markAllDone:
-            if let bulk {
-                InboxBulkPressButton(
-                    title: "Mark All Done…", confirmTitle: { "Mark \($0) Done" }, model: bulk, style: .inline)
-                    .disabled(content.isOff(.markAllDone))
-            }
-        case .mute:
-            Button("Mute") { onPress(.mute) }
-                .disabled(content.isOff(.mute))
-                .help("Hide this sender from Mail waiting; the mail stays where it is")
-        default:
-            EmptyView()
-        }
-    }
-
-    @ViewBuilder
-    private func actionButton(_ button: InboxRowActionsContent.ActionButton) -> some View {
-        switch button {
-        case .approve: Button("Approve") { onPress(.approve) }
-        case .reject: Button("Reject") { onPress(.reject) }
-        case .edit:
-            Button("Edit…") { onPress(.edit) }
-                .help("Open the full proposal")
-        case .openDraft:
-            Button("Open Draft") { onPress(.openDraft) }
-                .help("Read the whole recipe in the editor and save it there")
-        case .retry: Button("Retry") { onPress(.retry) }
-        case .dismiss:
-            Button("Dismiss") { onPress(.dismiss) }
-                .help(ConnectorCallProposal.dismissNote)
-        }
-    }
-
-    @ViewBuilder
-    private func ideaButton(_ button: InboxRowActionsContent.IdeaButton) -> some View {
-        switch button {
-        case .approve: Button("Approve") { onPress(.approve) }
-        case .makeTask: Button("Make a Task") { onPress(.makeTask) }
-        case .notNow:
-            Menu("Not now") {
-                ForEach(IdeaNotNow.allCases, id: \.label) { choice in
-                    Button(choice.label) { onPress(.notNow(until: choice.until())) }
+    private func draw(_ button: InboxRowButton) -> some View {
+        if button.press == .markAllDone, let bulk {
+            InboxBulkPressButton(
+                title: button.title, confirmTitle: { "Mark \($0) Done" }, model: bulk, style: .inline)
+                .disabled(!button.enabled)
+        } else if !button.choices.isEmpty {
+            Menu(button.title) {
+                ForEach(Array(button.choices.enumerated()), id: \.offset) { _, choice in
+                    Button(choice.title) { onPress(choice.currentPress) }
                 }
             }
             .menuStyle(.button)
             .fixedSize()
-        case .reject: Button("Reject", role: .destructive) { onPress(.reject) }
-        case .activate: Button("Activate") { onPress(.activate) }
-        case .drop: Button("Drop", role: .destructive) { onPress(.drop) }
+            .disabled(!button.enabled)
+        } else {
+            Button(button.title, role: button.destructive ? .destructive : nil) { onPress(button.currentPress) }
+                .disabled(!button.enabled)
+                .help(button.help ?? "")
         }
     }
 
