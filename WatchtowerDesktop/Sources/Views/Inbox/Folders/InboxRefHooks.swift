@@ -71,8 +71,78 @@ struct InboxRefHooks {
                 guard ref.kind == .idea else { return nil }
                 let inbox = inboxRef(ref)
                 return { onPress(inbox, .open) }
+            },
+            accessibilityActions: { ref in
+                let inbox = inboxRef(ref)
+                guard let content = content(inbox, .inbox) else { return [] }
+                return accessibilityPresses(content).map { name, press in
+                    ArtifactAccessibilityAction(name: name) {
+                        // Mark All Done… is its bulk press: the inline confirmation asks.
+                        if press == .markAllDone, let model = bulk(inbox) { model.begin() } else { onPress(inbox, press) }
+                    }
+                }
             }
         )
+    }
+
+    /// The row's enabled native buttons as VoiceOver actions, by their
+    /// labels: hidden until hover or focus, they leave the accessibility
+    /// tree. A menu's choices are actions of their own; Hand to Agent…
+    /// (its picker hangs from the buttons) is left out.
+    static func accessibilityPresses(_ content: InboxRowActionsContent) -> [(name: String, press: InboxRowPress)] {
+        guard !content.isBusy, !content.isPreview else { return [] }
+        let all: [(String, InboxRowPress)]
+        switch content.kind {
+        case let .inboxItem(openLabel, openEnabled, canReply, _):
+            all = (openLabel.map { openEnabled ? [($0, .open)] : [] } ?? [])
+                + (canReply && content.reply == nil ? [("Reply…", .reply)] : [])
+                + [("Done", .done), ("Hide", .hide)]
+                + InboxMessagePane.snoozeChoices.map { ("Snooze \($0.label)", .snooze(duration: $0.duration)) }
+                + [("Discuss in Chat", .discussInChat)]
+        case let .track(custom, linkedTargetID):
+            all = trackPresses(custom: custom, linked: linkedTargetID != nil)
+        case let .idea(kind, status, awaitsVerdict):
+            all = InboxRowActionsContent.ideaButtons(kind: kind, status: status, awaitsVerdict: awaitsVerdict)
+                .flatMap(ideaPresses)
+        case .reminder:
+            all = [("Done", .done), ("Snooze 1h", .snoozeHour)]
+        case let .action(_, buttons):
+            all = buttons.map { (actionName($0), $0.press) }
+        case let .mailSender(_, openEnabled):
+            all = (openEnabled ? [("Open", .open)] : []) + [("Mark All Done…", .markAllDone), ("Mute", .mute)]
+        case .waitingOlder:
+            all = [("Mark All Done…", .markAllDone)]
+        }
+        return all.filter { !content.isOff($0.1) }.map { (name: $0.0, press: $0.1) }
+    }
+
+    private static func trackPresses(custom: Bool, linked: Bool) -> [(String, InboxRowPress)] {
+        [("Done", .done), ("Stop watching", .stopWatching)]
+            + (custom ? [] : [("Make a Task", .makeTask)])
+            + (custom && linked ? [("Go to Target", .goToTarget)] : [])
+            + (custom ? [("Delete…", .deleteTrack)] : [])
+    }
+
+    private static func ideaPresses(_ button: InboxRowActionsContent.IdeaButton) -> [(String, InboxRowPress)] {
+        switch button {
+        case .approve: [("Approve", .approve)]
+        case .makeTask: [("Make a Task", .makeTask)]
+        case .notNow: IdeaNotNow.allCases.map { ("Not now \($0.label)", .notNow(until: $0.until())) }
+        case .reject: [("Reject", .reject)]
+        case .activate: [("Activate", .activate)]
+        case .drop: [("Drop", .drop)]
+        }
+    }
+
+    private static func actionName(_ button: InboxRowActionsContent.ActionButton) -> String {
+        switch button {
+        case .approve: "Approve"
+        case .reject: "Reject"
+        case .edit: "Edit…"
+        case .openDraft: "Open Draft"
+        case .retry: "Retry"
+        case .dismiss: "Dismiss"
+        }
     }
 
     /// The Core mirror of a Kit ref (the same raw values; a text kind's

@@ -24,19 +24,36 @@ public struct ArtifactRefHooks {
     /// A press on the row itself in `.inbox` (an idea opens its full card);
     /// nil leaves the row's own `link`, if any.
     public var open: (ArtifactRef) -> (() -> Void)?
+    /// The native actions as named VoiceOver actions on the row: in
+    /// `.inbox` they show only on hover or focus, and hidden they leave
+    /// the accessibility tree.
+    public var accessibilityActions: (ArtifactRef) -> [ArtifactAccessibilityAction]
 
     public init(
         isOpen: @escaping (ArtifactRef) -> Bool = { _ in true },
         nativeActions: @escaping (ArtifactRef, ArtifactRenderMode) -> AnyView? = { _, _ in nil },
         nativeKinds: @escaping (ArtifactRef) -> Set<ArtifactActionKind> = { _ in [] },
         nativeFooter: @escaping (ArtifactRef, ArtifactRenderMode) -> AnyView? = { _, _ in nil },
-        open: @escaping (ArtifactRef) -> (() -> Void)? = { _ in nil }
+        open: @escaping (ArtifactRef) -> (() -> Void)? = { _ in nil },
+        accessibilityActions: @escaping (ArtifactRef) -> [ArtifactAccessibilityAction] = { _ in [] }
     ) {
         self.isOpen = isOpen
         self.nativeActions = nativeActions
         self.nativeKinds = nativeKinds
         self.nativeFooter = nativeFooter
         self.open = open
+        self.accessibilityActions = accessibilityActions
+    }
+}
+
+/// One named action VoiceOver offers on a row.
+public struct ArtifactAccessibilityAction {
+    public let name: String
+    public let perform: () -> Void
+
+    public init(name: String, perform: @escaping () -> Void) {
+        self.name = name
+        self.perform = perform
     }
 }
 

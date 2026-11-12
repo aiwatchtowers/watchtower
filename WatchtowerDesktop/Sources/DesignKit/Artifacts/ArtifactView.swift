@@ -219,6 +219,22 @@ public enum ArtifactRowChrome {
 
     /// The `.inbox` row's actions overlay.
     public static let actionsIdentifier = "artifactRow.actions"
+    /// The `.inbox` row's age chip at its trailing edge.
+    public static let badgeIdentifier = "artifactRow.badge"
+}
+
+/// An `.inbox` row with a ref carries it as its id, so a keyboard host
+/// scrolls the focused row into view; every other row keeps its identity.
+struct ArtifactRowScrollID: ViewModifier {
+    let ref: ArtifactRef?
+
+    func body(content: Content) -> some View {
+        if let ref {
+            content.id(ref)
+        } else {
+            content
+        }
+    }
 }
 
 struct ArtifactListRowView: View {
@@ -245,8 +261,7 @@ struct ArtifactListRowView: View {
         .controlSize(.small)
         .kitRow(isSelected: mode == .inbox && isFocused)
         .onHover { isHovered = $0 }
-        // A keyboard host scrolls the focused row into view by its ref.
-        .id(row.ref)
+        .modifier(ArtifactRowScrollID(ref: mode == .inbox ? row.ref : nil))
     }
 
     /// The row's own press: the host's for its `ref` in `.inbox`, else its link.
@@ -266,20 +281,33 @@ struct ArtifactListRowView: View {
                 texts(badgeInline: false)
                 Spacer(minLength: Spacing.regular)
                 if let badge = row.badge {
+                    // The actions replace the age chip while they show; it keeps its place.
                     Chip(text: badge.text, color: Tone.artifact(badge.tone))
+                        .opacity(shows && hasActions ? 0 : 1)
+                        .accessibilityIdentifier(ArtifactRowChrome.badgeIdentifier)
                 }
             }
             .overlay(alignment: .trailing) {
                 if hasActions {
-                    // Its own width, over the badge and the line's end: never the row's.
+                    // Its own width, over the badge and the line's end: never
+                    // the row's. Wider than the line, it is cut at the line's
+                    // leading edge (the mask), never drawn past the row.
                     HStack(spacing: Spacing.regular) { actions }
                         .fixedSize()
                         .padding(.leading, Spacing.regular)
-                        .background(Fill.card)
+                        .background(backing)
                         .opacity(shows ? 1 : 0)
                         .allowsHitTesting(shows)
                         .animation(Motion.toggle, value: shows)
                         .accessibilityIdentifier(ArtifactRowChrome.actionsIdentifier)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .mask(Rectangle().padding(.vertical, -Spacing.large))
+                }
+            }
+            // Hidden actions leave the accessibility tree: the row names them.
+            .accessibilityActions {
+                ForEach(Array(accessibleActions.enumerated()), id: \.offset) { _, action in
+                    Button(action.name, action: action.perform)
                 }
             }
         } else {
@@ -317,6 +345,27 @@ struct ArtifactListRowView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+
+    /// Opaque, as the row's plate looks under it: the pane's backdrop with
+    /// the hover or focus fill on top, so nothing shows through.
+    private var backing: some View {
+        ZStack {
+            Surface.detail
+            KitRow.fill(isSelected: isFocused, isHovered: isHovered)
+        }
+    }
+
+    /// The row's actions for VoiceOver in `.inbox`: the recipe's enabled
+    /// ones a native one does not replace, then the host's.
+    private var accessibleActions: [ArtifactAccessibilityAction] {
+        let hidden = row.ref.map(environment.refHooks.nativeKinds) ?? []
+        let recipe = row.actions.enumerated().compactMap { offset, action -> ArtifactAccessibilityAction? in
+            let index = firstIndex + offset
+            guard !hidden.contains(action.kind), environment.isActionEnabled(index) else { return nil }
+            return ArtifactAccessibilityAction(name: action.label) { environment.onAction(index) }
+        }
+        return recipe + (row.ref.map(environment.refHooks.accessibilityActions) ?? [])
     }
 
     private var hasActions: Bool {

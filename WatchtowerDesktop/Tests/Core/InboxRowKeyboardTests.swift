@@ -85,6 +85,26 @@ final class InboxRowKeyboardTests: XCTestCase {
         XCTAssertNil(sender("x"))
     }
 
+    // MARK: - When the rows take keys
+
+    func testNoKeysWhileAReplyComposerIsOpen() {
+        XCTAssertTrue(InboxRowKeymap.takesKeys(hostHasKeyboard: true, replyOpen: false))
+        XCTAssertFalse(InboxRowKeymap.takesKeys(hostHasKeyboard: true, replyOpen: true),
+                       "J, E, S, ⏎ typed into the composer are text")
+        XCTAssertFalse(InboxRowKeymap.takesKeys(hostHasKeyboard: false, replyOpen: false),
+                       "a field in the pane has the keyboard, not the pane")
+    }
+
+    func testComposingReplyIsTheOpenComposerOnly() {
+        var ping = InboxRowActionsContent(
+            kind: .inboxItem(openLabel: nil, openEnabled: false, canReply: true, showsHandToAgent: true))
+        XCTAssertFalse(ping.isComposingReply)
+        ping.reply = .composing(text: "j", error: nil)
+        XCTAssertTrue(ping.isComposingReply)
+        ping.reply = .waiting
+        XCTAssertFalse(ping.isComposingReply, "the waiting caption takes no keys")
+    }
+
     // MARK: - What the row's buttons allow
 
     func testAllowsFollowsTheDrawnButtons() {

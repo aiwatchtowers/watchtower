@@ -61,13 +61,22 @@ struct InboxRowKeyboardHost<Content: View>: View {
         }
     }
 
+    /// A shown row's Reply composer is open.
+    private var replyOpen: Bool {
+        shown.contains { keys.content(InboxRefHooks.inboxRef($0))?.isComposingReply ?? false }
+    }
+
     private var focusedArtifactRef: ArtifactRef? {
         guard let focused = focus.focused else { return nil }
         return shown.first { InboxRefHooks.inboxRef($0) == focused }
     }
 
     private func handle(_ press: KeyPress, _ proxy: ScrollViewProxy) -> KeyPress.Result {
-        guard press.modifiers.isDisjoint(with: [.control, .option]), let ref = focus.focused else { return .ignored }
+        // A key typed into a row's Reply composer (a field in this subtree)
+        // reaches here too: keys are the rows' only while the pane itself
+        // holds the keyboard and no composer is open.
+        guard InboxRowKeymap.takesKeys(hostHasKeyboard: hasKeyboard, replyOpen: replyOpen),
+              press.modifiers.isDisjoint(with: [.control, .option]), let ref = focus.focused else { return .ignored }
         let key = press.key == .return ? InboxRowKeymap.returnKey : press.characters.lowercased()
         let content = keys.content(ref)
         guard let command = InboxRowKeymap.command(
@@ -77,7 +86,7 @@ struct InboxRowKeyboardHost<Content: View>: View {
         case .moveDown, .moveUp:
             focus.move(command == .moveDown ? 1 : -1)
             if let target = focusedArtifactRef {
-                withAnimation(Motion.toggle) { proxy.scrollTo(Optional(target)) }
+                withAnimation(Motion.toggle) { proxy.scrollTo(target) }
             }
             return .handled
         default:

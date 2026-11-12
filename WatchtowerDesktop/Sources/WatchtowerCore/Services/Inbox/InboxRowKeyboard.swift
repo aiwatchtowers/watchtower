@@ -52,6 +52,13 @@ package enum InboxRowKeymap {
         }
     }
 
+    /// Whether the rows take keys at all: only while the pane itself holds
+    /// the keyboard, and never while a row's Reply composer is open (its
+    /// field is in the pane: J, E, S or ⏎ typed there are text).
+    package static func takesKeys(hostHasKeyboard: Bool, replyOpen: Bool) -> Bool {
+        hostHasKeyboard && !replyOpen
+    }
+
     /// Whether the row's native actions would take `command` now, as its
     /// buttons are drawn: nothing while a press runs or in the preview; a
     /// press its button draws disabled (a CLI press without the CLI, Open
@@ -61,7 +68,7 @@ package enum InboxRowKeymap {
         if content.isBusy || content.isPreview { return false }
         switch command {
         case .moveDown, .moveUp: return true
-        case .openSnoozeMenu: return !content.isOff(.snooze(duration: ""))
+        case .openSnoozeMenu: return !content.isSnoozeOff
         case let .press(press):
             if content.isOff(press) { return false }
             switch (content.kind, press) {
@@ -116,5 +123,17 @@ package struct InboxRowFocus: Equatable, Sendable {
             return
         }
         self.focused = newRefs[min(old, newRefs.count - 1)]
+    }
+}
+
+package extension InboxRowActionsContent {
+    /// Snooze ▾ is off as a whole: whether a snooze is off does not depend
+    /// on its duration, so any one stands for the menu.
+    var isSnoozeOff: Bool { isOff(.snooze(duration: "")) }
+
+    /// The row's Reply composer is open (not the "waiting for approval" caption).
+    var isComposingReply: Bool {
+        if case .composing = reply { return true }
+        return false
     }
 }
