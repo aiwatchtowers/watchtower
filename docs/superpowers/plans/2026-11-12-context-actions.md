@@ -242,13 +242,15 @@ Depends on: Tasks 2, 3 and 4 (`Reapply` uses the per-key writers).
 - Produces: `func (d *Daemon) coachMeasureCheck(ctx context.Context, now time.Time) (done bool)`. For each accepted `repo_*` / memory row with `measure_from IS NULL`:
   - with a `session_id`: PR state `merged` → `SetCoachMeasureFrom(id, mergedAt)`; `closed` → `SetCoachVerdict(too_little_data)` with value nil;
   - without a session (rows accepted before this change): keep today's `coachEditAtHead` rule — they have no session and no PR to watch (spec C8 now says so);
-  - memory: MEMORY.md now ≠ `before_text` → `measure_from = now` and `after_text` = the index as read (Rollback compares against it, Task 7).
+  - memory: bound to the cleanup session, not to any change of the file (ordinary Claude Code sessions write MEMORY.md through auto-memory too). Nothing happens while the linked session (`session_id`) is running. Once it has ended: MEMORY.md ≠ `before_text` → `measure_from` = the session's end time and `after_text` = the index as read then (Rollback compares against it, Task 7); MEMORY.md = `before_text` → no `measure_from` (the card's "Session ended without a change"; 30 days → `too_little_data`). v1 limit, written in the feature note: lines that other sessions' auto-memory added *while* the cleanup session ran are part of `after_text`, and a Rollback drops them; the Rollback confirmation says so.
   - Settings rows, accepted and without a verdict: if the own key reads `before` again (a running Claude Code wrote back its in-memory copy, or the owner did), set verdict `reverted_outside` instead of measuring it into `no_effect`. The card offers **Turn Off Again** (`Applier.Reapply(id)`: per-key compare-and-set `before → after`, clears the verdict, `measure_from = now`; Task 7 adds the CLI verb).
   - A PR refresh that fails (no `gh`, no network, auth) is logged at debug level and changes nothing: the row keeps waiting and is retried on the next tick; the 30-day `repoCommitWait` still ends it as `too_little_data`.
 - [ ] **Step 1: Write failing tests:**
   - `TestMeasure_StartTokens`;
   - `TestJudge_StartTokensWorks` (−12 % → works) and `TestJudge_StartTokensNoEffect`;
   - `TestMeasureCheck_MergedPR`, `TestMeasureCheck_ClosedPR`, `TestMeasureCheck_OpenPRWaits`, `TestMeasureCheck_LegacyRowUsesHead`, `TestMeasureCheck_MemoryChanged`;
+  - `TestMeasureCheck_MemoryWaitsForSessionEnd` (MEMORY.md changed by another session while the cleanup session runs → nothing recorded);
+  - `TestMeasureCheck_MemoryUnchangedAtSessionEnd` (no `measure_from`);
   - `TestMeasureCheck_ThirtyDays` (no merge after `repoCommitWait` → `too_little_data`);
   - `TestMeasureCheck_RefreshErrorKeepsWaiting` (the refresher returns an error → row unchanged, no verdict);
   - `TestMeasureCheck_SettingsRevertedOutside` (the plugin key reads `true` again → verdict `reverted_outside`);
@@ -370,7 +372,7 @@ Depends on: Task 8. Read `docs/review/review-rules.md` "Swift / Desktop conventi
     - runs `coach brief <id> --json`, then `start(title, prompt)`;
     - on nil, the session failed to start: set `decisionFailed[id]` and leave the proposal open;
     - on success, runs `coach accept <id> --session <sid> --json`;
-    - if that call fails after the session started: retry it once; `state_changed` on the retry means another surface accepted it (refresh, no error). Any other failure records `linkFailed[id] = sid`: the row shows "Session is running, but Watchtower could not link it" with **Open Session** and **Retry Link** (the same `accept --session` with the same `sid`), and **Accept** is hidden while the entry exists, so a second session is never started for it. `linkFailed` lives in `CoachCenter` (survives navigation, not an app restart — a v1 limit written in the feature note);
+    - if that call fails after the session started: retry it once; `state_changed` on the retry means another surface accepted it (refresh, no error). Any other failure records `linkFailed[id] = sid`: the row shows "Session is running, but Watchtower could not link it" with **Open Session** and **Retry Link** (the same `accept --session` with the same `sid`), and **Accept** is hidden while the entry exists, so a second session is never started for it. `linkFailed` lives in `CoachCenter` and is persisted in `UserDefaults` (`coach.linkFailed`, proposal id → session id), so it survives navigation and an app restart; an entry is dropped when its proposal is no longer open or its session row is gone;
     - `pending` holds the id throughout, so a second press is ignored.
   - `CoachCenter.reapply(_ id: Int64) async` runs `coach reapply <id> --json`.
   - `CoachCenter.revertThroughSession(_:start:)` uses `coach brief <id> --revert`.
@@ -385,6 +387,7 @@ Depends on: Task 8. Read `docs/review/review-rules.md` "Swift / Desktop conventi
   - `testStartBeganThenNavigatedAway` (the state survives);
   - `testAcceptFailsAfterStartRecordsLinkFailed` (no second `start` call on a later press; **Retry Link** calls `accept --session` with the same id);
   - `testAcceptFailsAfterStartStateChangedIsQuiet`;
+  - `testLinkFailedSurvivesRestart` (a new `CoachCenter` over the same defaults still hides **Accept**) and `testLinkFailedDroppedWhenProposalNotOpen`;
   - view tests: the Do-these list renders the three tags (`.settings`, `.repoPR`, `.memory`); the fold shows "can't change" for built-ins.
 - [ ] **Step 2: Run** `make test-swift FILTER='CoachCenterTests|AgentAnalyticsPaneViewTests'`. Expect FAIL.
 - [ ] **Step 3: Implement.** Accept on a session destination from any surface (Analytics, Home row, tuning panel) calls `acceptThroughSession`. Settings destinations keep `coach.accept`.
