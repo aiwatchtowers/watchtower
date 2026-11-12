@@ -606,6 +606,7 @@ enum DesignShotCatalog {
         } + ProviderFallbackShotFixtures.runtimeShots + InboxBuilderAShotFixtures.shots + InboxBuilderBShotFixtures.shots
             + ClosedAsksShotFixtures.shots
             + TuningChatShotFixtures.shots // The tuning chat over the Analytics pane (#1517).
+            + InboxRedesignShotFixtures.shots // The Inbox redesign, phase 1 (#1076).
     }
 }
 
@@ -645,6 +646,7 @@ enum DesignShotFixtures {
         InboxFolderMenuShotFixtures.cleanUp()
         InboxFoldersShotFixtures.cleanUp()
         InboxApprovalsShotFixtures.cleanUp()
+        InboxRedesignShotFixtures.cleanUp()
         TuningChatShotFixtures.cleanUp()
         ProjectPageShotFixtures.cleanUp()
         ClosedAsksShotFixtures.cleanUp()
