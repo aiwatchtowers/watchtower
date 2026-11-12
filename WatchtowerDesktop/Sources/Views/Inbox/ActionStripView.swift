@@ -105,7 +105,8 @@ struct ActionStripView: View {
         }
         return InboxDayPane(
             card: day,
-            today: HomeFeedBuilder.dayString(Date(), calendar: .current),
+            // Replaced from the Inbox's own clock in `briefPane`.
+            today: HomeFeedBuilder.dayString(Date(), calendar: .autoupdatingCurrent),
             plan: plan,
             owner: appState.owner,
             onCommand: { command in Task { await appState.perform(command) } },
@@ -601,8 +602,15 @@ struct ActionStripActionsView: View {
     /// The Morning brief's pane over `card`, with its stepper, History,
     /// today's people and threads and their links (`InboxBriefControls`).
     private func briefPane(_ card: InboxDayCard) -> InboxDayPane? {
-        guard var pane = dayPane?(card) else { return nil }
+        guard var pane = datedDayPane(card) else { return nil }
         pane.controls = briefControls(card)
+        return pane
+    }
+
+    /// `dayPane` with today told from the Inbox's own clock (`now`).
+    private func datedDayPane(_ card: InboxDayCard) -> InboxDayPane? {
+        guard var pane = dayPane?(card) else { return nil }
+        pane.today = HomeFeedBuilder.dayString(now ?? Date(), calendar: .autoupdatingCurrent)
         return pane
     }
 
@@ -790,7 +798,7 @@ struct ActionStripActionsView: View {
             workbenches: workbenches,
             onRetryBuiltin: onRetryBuiltin,
             onCardAction: onCardAction,
-            dayPane: dayPane,
+            dayPane: dayPane.map { _ in { datedDayPane($0) } },
             ideaPane: ideaPane.map { make in
                 { idea in
                     // One prominent action: the open New idea row's Create.
