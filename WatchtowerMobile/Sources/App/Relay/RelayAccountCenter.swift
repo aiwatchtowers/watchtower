@@ -205,6 +205,10 @@ final class RelayAccountCenter {
     @ObservationIgnored private var settledIDs: Set<UInt64> = []
     /// The press `retryAccount()` repeats.
     @ObservationIgnored private var lastPress = Press.buy
+    /// The token of a Buy StoreKit answered as cancelled, until the next press. Apple can still finish that purchase (an
+    /// interrupted one: a sign-in or a dialog after the payment sheet), and its row then comes through `Transaction.updates`
+    /// or the sweep: the press's own, so it is confirmed as the press, past the read and the claim (`lateRow`).
+    @ObservationIgnored private var cancelledBuyToken: UUID?
     /// Only the newest read writes: a slower older answer, or one a control overtook, is dropped.
     @ObservationIgnored private var readGeneration = 0
     /// When the last answered account read was applied: a slot check right after it reads nothing.
@@ -412,6 +416,7 @@ final class RelayAccountCenter {
     func buy() async {
         guard !pressRunning else { return }
         lastPress = .buy
+        cancelledBuyToken = nil
         purchase = .buying
         guard let token = await pressAccountID() else { return }
         do {
@@ -422,6 +427,7 @@ final class RelayAccountCenter {
             case .pending:
                 purchase = .pending
             case .cancelled:
+                cancelledBuyToken = token
                 purchase = product.map(PurchaseState.ready) ?? .idle
             case .unverified:
                 purchase = .refused
@@ -439,6 +445,7 @@ final class RelayAccountCenter {
         guard !pressRunning else { return }
         let prior = purchase
         lastPress = .restore
+        cancelledBuyToken = nil
         purchase = .restoring
         guard await pressAccountID() != nil else { return }
         do {
@@ -479,6 +486,20 @@ final class RelayAccountCenter {
             return
         }
         await confirm(rows, tracksCharge: true)
+    }
+
+    /// The row of a Buy StoreKit called cancelled, come after all (`cancelledBuyToken`). Not while another press runs.
+    private func isLateRow(_ row: RelayTransaction) -> Bool {
+        guard let cancelledBuyToken, !pressRunning, !row.isRenewal, isCurrent(row) else { return false }
+        return row.appAccountToken == cancelledBuyToken
+    }
+
+    /// The cancelled Buy goes on as a press with its late row: **Confirming with Relay…**, then the press's answer.
+    private func confirmLateRow(_ row: RelayTransaction) async {
+        Self.logger.notice("relay account: a cancelled purchase came through after all")
+        cancelledBuyToken = nil
+        purchase = .confirming
+        await confirm([row], tracksCharge: true)
     }
 
     /// The account id for a press, the state written on a failure.
@@ -848,12 +869,18 @@ final class RelayAccountCenter {
 
     /// `Transaction.unfinished` submitted, past the refused ones and those the claim holds back, which stay unfinished and set
     /// no `unconfirmed`. With no answer from the relay nothing is sent, and a charge this phone may send is said as not reached.
-    /// Writes no `purchase` but the settling rule. Returns whether anything was sent.
+    /// Writes no `purchase` but the settling rule and a cancelled Buy's late row (`isLateRow`), which goes as the press.
+    /// Returns whether anything was sent.
     private func sweep(answered: Bool) async -> Bool {
         let rows = await currentRows()
         recomputeUnconfirmed(current: rows)
         var sent = false
         for row in rows {
+            if isLateRow(row) {
+                await confirmLateRow(row)
+                sent = true
+                continue
+            }
             if refusedIDs.contains(row.id) {
                 if row.isRenewal { Self.logger.notice("relay account: refused renewal held until the next launch") }
                 continue
@@ -900,6 +927,10 @@ final class RelayAccountCenter {
             return
         }
         guard isCurrent(transaction), !refusedIDs.contains(transaction.id), !settledIDs.contains(transaction.id) else { return }
+        if isLateRow(transaction) {
+            await confirmLateRow(transaction)
+            return
+        }
         // Ask to Buy approved in the process that pressed Buy: the press's own row, past the read and the claim.
         if purchase == .pending, !transaction.isRenewal, let token = transaction.appAccountToken, await ownAccountID() == token {
             _ = await submit(transaction, byPress: true, tracksCharge: true)

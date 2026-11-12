@@ -703,6 +703,96 @@ final class RelayAccountCenterTests: XCTestCase {
         XCTAssertNil(center.unconfirmed, "no transaction, nothing unconfirmed")
     }
 
+    /// #1747: StoreKit answers a Buy as cancelled, yet Apple finishes it (an interrupted purchase: a sign-in or a dialog
+    /// after the payment sheet) and the row comes through `Transaction.updates`. Before the fix the screen stayed on the
+    /// bare **Subscribe** frame while the row went the automatic way; now the press goes on: Confirming, then its answer.
+    func testACancelledBuyWhoseRowComesThroughUpdatesIsConfirmedAsThePress() async throws {
+        let product = RelayProduct(id: "relay", displayPrice: "$4.99")
+        for answer in ["entitled", "notImplemented", "unreachable"] {
+            let (bed, token) = try await registeredBed()
+            bed.store.productResult = product
+            let center = await started(bed)
+            try await bed.until("the updates task") { bed.store.updatesCalls == 1 }
+            await center.loadProduct()
+            bed.store.purchaseResult = .cancelled
+            await center.buy()
+            XCTAssertEqual(center.purchase, .ready(product), answer)
+
+            let late = bed.row(token: token)
+            bed.store.unfinishedResult = [late]
+            bed.http.hold(late.jws)
+            bed.store.emit(late)
+            try await bed.until("the press confirms (\(answer))") { bed.http.isHolding(late.jws) }
+            XCTAssertEqual(center.purchase, .confirming, answer)
+            XCTAssertEqual(Self.frame(center).primary?.title, "Confirming with Relay…", answer)
+
+            switch answer {
+            case "notImplemented": Refusal.notImplemented.arm(on: bed)
+            case "unreachable": bed.fake.crash()
+            default: break
+            }
+            bed.http.release(late.jws)
+            let expected: Purchase = switch answer {
+            case "notImplemented": .notImplemented
+            case "unreachable": .boughtNotConfirmed
+            default: .done
+            }
+            try await bed.until("the press's answer (\(answer))") { center.purchase == expected }
+            XCTAssertNotNil(Self.frame(center).line, "a frame with the answer, never the bare Subscribe (\(answer))")
+            XCTAssertNotEqual(Self.frame(center).primary?.action, .subscribe, answer)
+            if answer != "unreachable" { XCTAssertEqual(bed.submitted, [late.jws], answer) }
+        }
+    }
+
+    /// The same late row found by the foreground sweep first, on a phone whose claim holds rows back: a press always sends.
+    func testACancelledBuyWhoseRowTheSweepFindsIsConfirmedPastTheClaim() async throws {
+        let (bed, token) = try await registeredBed()
+        bed.defaults.set(false, forKey: RelayAccountCenter.holdsSubscriptionKey)
+        let center = await started(bed)
+        bed.store.purchaseResult = .cancelled
+        await center.buy()
+
+        let late = bed.row(token: token)
+        bed.store.unfinishedResult = [late]
+        await foreground(center, bed)
+
+        XCTAssertEqual(center.purchase, .done)
+        XCTAssertEqual(bed.submitted, [late.jws])
+        XCTAssertEqual(bed.store.finished, [late])
+    }
+
+    /// A real cancel stays a cancel: a renewal, another account's row or a row after the next press is not the press's.
+    func testOnlyTheCancelledBuysOwnRowIsTakenAsThePress() async throws {
+        let product = RelayProduct(id: "relay", displayPrice: "$4.99")
+        let (bed, token) = try await registeredBed()
+        bed.store.productResult = product
+        bed.defaults.set(true, forKey: RelayAccountCenter.holdsSubscriptionKey)
+        let center = await started(bed)
+        try await bed.until("the updates task") { bed.store.updatesCalls == 1 }
+        await center.loadProduct()
+        bed.store.purchaseResult = .cancelled
+        await center.buy()
+
+        let renewal = bed.row(id: 2, original: "2000", token: token, renewal: true)
+        bed.fake.failNext("submitTransaction", with: .invalidTransaction)
+        bed.store.emit(renewal)
+        try await bed.until("the renewal's answer") { center.unconfirmed == .refused }
+        XCTAssertEqual(center.purchase, .ready(product), "a renewal is not the press's row")
+
+        let foreign = bed.row(id: 3, original: "3000", token: UUID())
+        bed.fake.failNext("submitTransaction", with: .invalidTransaction)
+        bed.store.emit(foreign)
+        try await bed.until("the foreign row's submit") { bed.submitted.contains(foreign.jws) }
+        XCTAssertEqual(center.purchase, .ready(product), "another account's row is not the press's")
+    }
+
+    private static func frame(_ center: RelayAccountCenter) -> RelaySubscriptionModel {
+        RelaySubscriptionModel(
+            purchase: center.purchase, unconfirmed: center.unconfirmed, phase: center.phase,
+            config: RelayConfig(origin: nil), product: center.product, updateRequired: center.updateRequired
+        )
+    }
+
     func testAnUnverifiedPurchaseSubmitsNothing() async throws {
         let (bed, _) = try await registeredBed()
         bed.store.purchaseResult = .unverified
