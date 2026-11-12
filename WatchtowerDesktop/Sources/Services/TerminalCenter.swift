@@ -1416,7 +1416,7 @@ final class TerminalCenter {
         // is asked again below, like for the row's other runs (#1086).
         let wasDisconnected = hostLinks[sessionID] != nil
         guard let process = processes.removeValue(forKey: sessionID) else {
-            if extraHostRuns[sessionID] != nil { _ = await stopLiveHostRuns(of: sessionID) }
+            if extraHostRuns[sessionID] != nil { await stopOtherRuns(of: sessionID) }
             forget(sessionID)
             return
         }
@@ -1436,8 +1436,18 @@ final class TerminalCenter {
         process.onDeliveryEvent = nil
         process.detach()
         // The row's other live runs go with it (#1086).
-        if wasDisconnected || extraHostRuns[sessionID] != nil { _ = await stopLiveHostRuns(of: sessionID) }
+        if wasDisconnected || extraHostRuns[sessionID] != nil { await stopOtherRuns(of: sessionID) }
         forget(sessionID)
+    }
+
+    /// A close's stop of the row's other live runs (#1086). One that cannot
+    /// be stopped (the host could not be asked) stays in `extraHostRuns` —
+    /// live, its bar still shown, stopped by a later close or the next
+    /// launch's reattach — and is logged.
+    private func stopOtherRuns(of sessionID: Int64) async {
+        if let failure = await stopLiveHostRuns(of: sessionID) {
+            NSLog("TerminalCenter: session %lld closed, but its other runs could not be stopped: %@", sessionID, failure)
+        }
     }
 
     /// Closes every matching session at once, so the wait is one grace, not
@@ -1500,7 +1510,8 @@ final class TerminalCenter {
         pasteHints.remove(sessionID)
         answerHints[sessionID] = nil
         hostLinks[sessionID] = nil
-        extraHostRuns[sessionID] = nil
+        // `extraHostRuns` stays: only a stop that worked, the next
+        // reattach or an update's quit drops a row's other runs.
         focusOrder.removeAll { $0 == sessionID }
     }
 

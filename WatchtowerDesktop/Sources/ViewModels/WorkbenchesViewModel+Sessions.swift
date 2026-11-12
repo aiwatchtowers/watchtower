@@ -1345,7 +1345,8 @@ extension WorkbenchesViewModel {
             default:
                 resumeStarts[row.id] = nil
             }
-            if isLatest { center.focus(row.id) }
+            // Asked again: a later switch may have begun during the awaits.
+            if let ticket, isLatestSwitch(ticket, projectID: row.projectID) { center.focus(row.id) }
         }
         placeInLayout(row, fresh: fresh, placement: placement, ticket: ticket)
         await loadSessions(projectID: row.projectID)

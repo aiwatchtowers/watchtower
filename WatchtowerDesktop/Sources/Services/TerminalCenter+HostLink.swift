@@ -46,9 +46,10 @@ extension TerminalCenter {
     /// Stops every live run the host holds for row `id` but the one the row
     /// shows running (the pane's Stop under "Another run…", a close, Start
     /// fresh; #1086), each by its pid as just listed — hang-up, kill after
-    /// the grace — then forgets it. Returns why it could not, with the row's
-    /// other runs kept; nil when nothing live is left beside the shown run
-    /// (or there is no session host client).
+    /// the grace — then forgets it; the row's other runs stay in
+    /// `extraHostRuns` until those stops are done. Returns why it could not,
+    /// with the row's other runs kept; nil when nothing live is left beside
+    /// the shown run (or there is no session host client).
     func stopLiveHostRuns(of id: Int64) async -> String? {
         switch await liveHostRuns(of: id) {
         case .noClient:
@@ -58,12 +59,14 @@ extension TerminalCenter {
             NSLog("TerminalCenter: could not stop session %lld's other runs: %@", id, reason)
             return reason
         case let .listed(host, runs):
-            setExtraHostRuns([], row: id)
             await withTaskGroup(of: Void.self) { group in
                 for info in runs {
                     group.addTask { @MainActor in await self.stopStray(info, host: host) }
                 }
             }
+            // Only now: until the kills are done the runs stay tracked, so
+            // a quit meanwhile (`closeAll`) still waits for them.
+            setExtraHostRuns([], row: id)
             return nil
         }
     }
