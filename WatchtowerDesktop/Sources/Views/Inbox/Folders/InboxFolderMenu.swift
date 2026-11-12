@@ -26,8 +26,9 @@ enum InboxFolderMenuAction: Equatable {
 }
 
 /// The Inbox's first column (spec "The Inbox screen" 1): the root and its
-/// count, Needs approval, the owner folders as a disclosure tree with icons
-/// and counts, **+ New Folder** and **+ New Artifact…** at the bottom, and
+/// count, Needs approval, then — under "Folders", once there is one — the
+/// owner folders as a disclosure tree with icons and counts; **New
+/// Artifact…** and the New Folder icon button as one row at the bottom, and
 /// the state lines (reload, CLI unavailable, a refused write). No model and
 /// no CLI: values in, presses out.
 struct InboxFolderMenu: View {
@@ -47,7 +48,11 @@ struct InboxFolderMenu: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: Spacing.tight) {
+                        let headingAbove = firstOwnerRowID
                         ForEach(content.visibleRows) { row in
+                            if row.id == headingAbove {
+                                InboxListSectionHeading(title: "Folders")
+                            }
                             if content.dropIndicator == InboxFolderDrop(targetID: row.id, placement: .before) {
                                 dropLine(depth: row.depth)
                             }
@@ -83,6 +88,12 @@ struct InboxFolderMenu: View {
     }
 
     // MARK: - Rows
+
+    /// The first owner folder drawn: "Folders" goes above it.
+    private var firstOwnerRowID: Int64? {
+        guard content.showsFoldersHeading else { return nil }
+        return content.visibleRows.first { $0.kind == .owner }?.id
+    }
 
     @ViewBuilder
     private func folderRow(_ row: InboxFolderRow) -> some View {
@@ -297,11 +308,15 @@ struct InboxFolderMenu: View {
 
     private var footer: some View {
         VStack(alignment: .leading, spacing: Spacing.tight) {
-            Group {
-                Button { onAction(.newFolder) } label: { Label("New Folder", systemImage: "plus") }
+            HStack(spacing: Spacing.compact) {
                 Button { onAction(.newArtifact) } label: { Label("New Artifact…", systemImage: "plus") }
+                    .buttonStyle(.kitQuiet)
+                Spacer(minLength: 0)
+                Button { onAction(.newFolder) } label: { Image(systemName: "folder.badge.plus") }
+                    .buttonStyle(.kitIcon(isOn: false))
+                    .help("New Folder")
+                    .accessibilityLabel("New Folder")
             }
-            .buttonStyle(.kitQuiet)
             .disabled(content.isReadOnly)
             if let refusal = content.refusal,
                !content.visibleRows.contains(where: { $0.id == refusal.folderID }) {

@@ -71,9 +71,10 @@ package enum KeyboardShortcutCatalog {
         Area("Inbox", [
             Entry("↑ / ↓", "Move between cards"),
             Entry("Esc", "Close the card"),
-            Entry("⌘Return", "Create (new idea)")
+            Entry("⌘Return", "Create (new idea)"),
+            Entry("⌥⌘S", "Show or hide the Inbox folders")
         ]),
-        Area("Workbench", note: "The Workbench menu lists most of these; ⌘1–⌘9 and ⌘[ are in the View menu.", [
+        Area("Workbench", note: "The Workbench menu lists most of these; ⌘1–⌘9, ⌘[ and ⌥⌘S are in the View menu.", [
             Entry("⌘T", "New session"),
             Entry("⌘1–⌘9", "Open session 1–9 of the sessions list"),
             Entry("⌘K", "Go to… (the Files editor keeps ⌘K)"),

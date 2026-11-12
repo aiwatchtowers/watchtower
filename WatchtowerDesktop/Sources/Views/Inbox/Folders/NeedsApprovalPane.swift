@@ -22,6 +22,8 @@ struct NeedsApprovalPane<Card: View>: View {
     var menuWorking = false
     var onNote: () -> Void = {}
     var onMenu: (InboxMenuCommand) -> Void = { _ in }
+    /// The header's `?` (the reaction cheat sheet); nil draws none.
+    var onReactionCommands: (() -> Void)?
     var emptyState: EmptyStateContext = .neutral
     /// The card or group a route or the list opened (a waiting target
     /// button's click, a group row `group:<raw>`): the stack scrolls to the
@@ -56,6 +58,9 @@ struct NeedsApprovalPane<Card: View>: View {
                     if !menu.isEmpty {
                         InboxMoreMenu(entries: menu, help: "More for Needs approval", onCommand: onMenu)
                             .disabled(menuWorking)
+                    }
+                    if let onReactionCommands {
+                        InboxReactionCommandsButton(action: onReactionCommands)
                     }
                 }
                 if let menuError {

@@ -53,6 +53,11 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
     /// A message card's Reply (`messageReply(_:onPress:)`); nil draws none.
     private(set) var messageReplyContent: (HomeFeedInboxRow) -> InboxRowActionsContent? = { _ in nil }
     private(set) var onMessageReplyPress: (Int, InboxRowPress) -> Void = { _, _ in }
+    /// The pane's `InboxPaneHeader` over the card (`paneHeader(_:)`); nil draws none.
+    private(set) var header: AnyView?
+    /// An automation card's own source and title row; off under a pane
+    /// header, which already says both.
+    private var showsTitleRow: Bool { header == nil }
 
     init(
         item: InboxListItem?,
@@ -135,6 +140,14 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
         return pane
     }
 
+    /// This pane with `header` above the card, in the same column; an
+    /// automation card then leaves out its own source and title row.
+    func paneHeader(_ header: AnyView) -> Self {
+        var pane = self
+        pane.header = header
+        return pane
+    }
+
     /// The pane's one readable column (style guide: "one readable column").
     static var readableWidth: CGFloat { InboxCardColumn<EmptyView>.readableWidth }
 
@@ -182,6 +195,13 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
     private func column(@ViewBuilder _ content: () -> some View) -> some View {
         if inApprovals {
             content()
+        } else if let header {
+            InboxCardColumn {
+                VStack(alignment: .leading, spacing: Spacing.page) {
+                    header
+                    content()
+                }
+            }
         } else {
             InboxCardColumn(content: content)
         }
@@ -198,18 +218,20 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
 
     private func output(_ card: AutomationOutputCard) -> some View {
         VStack(alignment: .leading, spacing: Spacing.medium) {
-            source(card)
-            HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
-                Text(card.title.isEmpty ? "Automation output" : card.title)
-                    .font(.title3.weight(.semibold))
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
-                if card.priority == "high" {
-                    Chip(text: "High", color: Tone.priority("high"))
-                }
-                if let artifactMenu, !inApprovals {
-                    Spacer(minLength: Spacing.regular)
-                    InboxArtifactMenuButton(menu: artifactMenu)
+            if showsTitleRow {
+                source(card)
+                HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
+                    Text(card.title.isEmpty ? "Automation output" : card.title)
+                        .font(.title3.weight(.semibold))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                    if card.priority == "high" {
+                        Chip(text: "High", color: Tone.priority("high"))
+                    }
+                    if let artifactMenu, !inApprovals {
+                        Spacer(minLength: Spacing.regular)
+                        InboxArtifactMenuButton(menu: artifactMenu)
+                    }
                 }
             }
             if let error = artifactMenu?.error, !inApprovals {
@@ -346,7 +368,7 @@ where DayCard == InboxCardPlaceholder, TrackCard == InboxCardColumn<InboxCardPla
 
 /// A card in the reading pane's one readable column, scrolling.
 struct InboxCardColumn<Content: View>: View {
-    static var readableWidth: CGFloat { 640 }
+    static var readableWidth: CGFloat { ReadableColumn.maxLineWidth }
 
     let content: Content
 

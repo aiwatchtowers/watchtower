@@ -68,6 +68,7 @@ struct ActionStripView: View {
             }
         }
         .navigationTitle("Inbox")
+        .searchable(text: listQuery, placement: .toolbar, prompt: "Search the Inbox")
         .task {
             await appState.actionStripViewModel?.refresh()
             // The cheat sheet reads the dictionary through this VM, so a
@@ -86,6 +87,13 @@ struct ActionStripView: View {
             Task { await vm.ownerArrived() }
         }
         .onDisappear { appState.actionStripViewModel?.setOnScreen(false) }
+    }
+
+    /// The list's search (`ActionStripViewModel.listQuery`), one query for
+    /// every folder.
+    private var listQuery: Binding<String> {
+        Binding(get: { appState.actionStripViewModel?.listQuery ?? "" },
+                set: { appState.actionStripViewModel?.listQuery = $0 })
     }
 
     /// The Your day card over the AppState-owned plan; nil without a CLI.
@@ -165,14 +173,15 @@ struct ActionStripView: View {
     }
 }
 
-/// The Inbox (inbox builder B): the folder menu, then the selected folder —
-/// its entry list beside the reading pane (the root and owner folders),
-/// Needs approval's one column of cards, or, from a legacy entry of the
-/// root (Track my threads, Idea finder, Messages; ask #445), today's list
-/// for it with its own reading pane (`InboxSplitView`). An empty root says
+/// The Inbox (inbox builder B, three columns since the redesign): the folder
+/// rail (collapsible), then the selected folder — its list beside the
+/// reading pane (the root and owner folders), Needs approval's groups beside
+/// its one column of cards, or, from a legacy entry of the root (Track my
+/// threads, Idea finder, Messages; ask #445), today's list for it with its
+/// own reading pane (`InboxSplitView`). An empty root says
 /// so and keeps the reaction cheat sheet inline while nothing in the Inbox
 /// waits on the owner (B); otherwise the cheat sheet stays one `?` click
-/// away in the reading pane, never among the cards (a card-shaped help
+/// away on the pane header, never among the cards (a card-shaped help
 /// block there would read as something waiting on the owner).
 /// Split out of `ActionStripView` so it takes plain inputs and can be tested
 /// without an `AppState`.
@@ -250,36 +259,24 @@ struct ActionStripActionsView: View {
     /// draws their native card, with its argument editor, in its place.
     @State private var editingActions: Set<Int64> = []
 
-    /// The Inbox's header and the strip's error line above all three
-    /// columns (b-01), then the folder menu and the selected folder.
+    /// The strip's error line above all three columns (b-01), then the
+    /// folder rail (left out while hidden, ⌥⌘S), the selected folder's list
+    /// and its reading pane. The window's title ("Inbox") and its search
+    /// field hold what the header row used to.
     var body: some View {
         VStack(spacing: 0) {
-            header
             if let message = vm.lastError {
                 errorBanner(message)
             }
             HSplitView {
-                InboxFolderMenuColumn(model: vm.folderMenu, onOpenAux: openAux, onCommand: folderMenuCommand,
-                                      onNewArtifact: onNewArtifact, onSelect: selectFolder)
-                    .frame(minWidth: PaneWidth.sideListMin, idealWidth: PaneWidth.sideListIdeal,
-                           maxWidth: PaneWidth.sideListMax, maxHeight: .infinity)
-                inbox
-                    .frame(minWidth: PaneWidth.detailMin, maxWidth: .infinity, maxHeight: .infinity)
-            }
-        }
-    }
-
-    private var inbox: some View {
-        VStack(spacing: 0) {
-            if let list = vm.legacyList {
-                legacyHeader(list)
-                if list == .ideas, let ideas, let ideasRow {
-                    self.ideasRow(ideasRow, ideas: ideas)
-                        .padding(.horizontal, Spacing.medium)
-                        .padding(.bottom, Spacing.regular)
+                if !vm.railHidden {
+                    InboxFolderMenuColumn(model: vm.folderMenu, onOpenAux: openAux, onCommand: folderMenuCommand,
+                                          onNewArtifact: onNewArtifact, onSelect: selectFolder)
+                        .frame(minWidth: PaneWidth.sideListMin, idealWidth: PaneWidth.sideListIdeal,
+                               maxWidth: PaneWidth.sideListMax, maxHeight: .infinity)
                 }
+                content
             }
-            content
         }
         .confirmationDialog(deleteTitle, isPresented: deleteConfirming,
                             presenting: artifactMenu?.pendingDelete) { pending in
@@ -349,28 +346,6 @@ struct ActionStripActionsView: View {
             && vm.folderMenu.snapshot.counts.values.allSatisfy { $0 == 0 }
     }
 
-    /// The Inbox's title and the `?` (reaction commands), above the menu,
-    /// the list and the reading pane.
-    private var header: some View {
-        HStack(spacing: Spacing.regular) {
-            Text("Inbox").font(.headline)
-            Spacer(minLength: 0)
-            if !showsInlineCheatSheet {
-                Button {
-                    openAux(.reactionCommands)
-                } label: {
-                    Image(systemName: "questionmark.circle")
-                }
-                .buttonStyle(.kitIcon(isOn: false))
-                .help("Reaction commands")
-                .accessibilityLabel("Reaction commands")
-                .accessibilityIdentifier("actionStrip.cheatSheetButton")
-            }
-        }
-        .padding(.horizontal, Spacing.medium)
-        .padding(.vertical, Spacing.regular)
-    }
-
     /// A legacy list's way back to the root, its title and the Idea
     /// finder's controls.
     private func legacyHeader(_ list: InboxLegacyList) -> some View {
@@ -388,11 +363,14 @@ struct ActionStripActionsView: View {
                                  row: Binding(get: { ideasRow }, set: openIdeasRow))
             }
             Spacer(minLength: 0)
+            InboxReactionCommandsButton { openAux(.reactionCommands) }
         }
         .padding(.horizontal, Spacing.medium)
         .padding(.vertical, Spacing.regular)
     }
 
+    /// The columns right of the rail: the list and the reading pane, or —
+    /// before the first read, for an empty folder — one column.
     @ViewBuilder
     private var content: some View {
         if !vm.hasRead, let reason = vm.firstReadError {
@@ -405,27 +383,41 @@ struct ActionStripActionsView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .accessibilityIdentifier("inbox.loading")
         } else if let list = vm.legacyList {
-            legacySplit(list)
-        } else if folderKind == .approvals {
-            if let aux {
-                auxPane(aux)
-            } else {
-                approvalsPane
-            }
+            legacyColumn(list)
         } else if vm.folderEntries.isEmpty, aux == nil {
-            folderList
+            // Needs approval's own pane says it is empty, with its note.
+            Group {
+                if folderKind == .approvals { approvalsPane } else { folderList }
+            }
+            .inboxPaneColumn()
         } else {
-            PanelSplit(isPanelShown: true, width: inboxPaneWidth) {
-                folderList
-            } panel: {
+            folderList
+                .inboxListColumn()
+            Group {
                 if let aux {
                     auxPane(aux)
+                } else if folderKind == .approvals {
+                    approvalsPane
                 } else {
                     readingPane(vm.selectedEntry)
                 }
             }
-            .detailBackground()
+            .inboxPaneColumn()
         }
+    }
+
+    /// A legacy list: its way back and title over its own list and pane.
+    private func legacyColumn(_ list: InboxLegacyList) -> some View {
+        VStack(spacing: 0) {
+            legacyHeader(list)
+            if list == .ideas, let ideas, let ideasRow {
+                self.ideasRow(ideasRow, ideas: ideas)
+                    .padding(.horizontal, Spacing.medium)
+                    .padding(.bottom, Spacing.regular)
+            }
+            legacySplit(list)
+        }
+        .inboxPaneColumn()
     }
 
     // MARK: - A folder's list and reading pane
@@ -487,15 +479,29 @@ struct ActionStripActionsView: View {
         openIdeasRow(.findIdeas)
     }
 
-    /// The entry's pane: an artifact (with its ⋯) or a day card in today's reading pane.
+    /// The entry's pane: an artifact under its pane header (with Run Now and
+    /// its ⋯), a thread brief under its own, or a day card in today's
+    /// reading pane.
     @ViewBuilder
     private func readingPane(_ entry: InboxFolderEntry?) -> some View {
         switch entry {
         case let .artifact(card)?:
-            pane(.output(card), menu: artifactMenuState(card))
+            let menu = artifactMenuState(card)
+            pane(.output(card), menu: menu, header: AnyView(InboxArtifactPaneHeader(
+                content: InboxFolderEntries.content(.artifact(card), vm.entryInputs),
+                subtitle: InboxCardTexts.readingSourceLine(card, now: now ?? Date()),
+                isHighPriority: card.priority == "high", menu: menu
+            ) { openAux(.reactionCommands) }))
                 .task(id: card.automationID) { await artifactMenu?.prepare(card) }
         case let .legacyDay(card)?: pane(.day(card))
-        case let .brief(action)?: pane(.proposal(action))
+        case let .brief(action)?:
+            let content = InboxFolderEntries.content(.brief(action), vm.entryInputs)
+            pane(.proposal(action), header: AnyView(InboxPaneHeader(
+                tile: InboxTile(kind: content.kind, symbol: content.symbol), title: content.title,
+                subtitle: content.meta
+            ) {
+                InboxReactionCommandsButton { openAux(.reactionCommands) }
+            }))
         case let .approval(item)?: pane(Self.listItem(item))
         case let .builtinNotice(notice)?: pane(.builtinNotice(notice))
         case .legacyTracks?, .legacyIdeas?, .legacyMessages?, nil: pane(nil)
@@ -515,7 +521,10 @@ struct ActionStripActionsView: View {
     /// The reading pane for `item`; `inApprovals` draws it as one card of
     /// Needs approval's stack (`InboxReadingPane.stackedInApprovals()`).
     private func pane(
-        _ item: InboxListItem?, inApprovals: Bool = false, menu: InboxArtifactMenuState? = nil
+        _ item: InboxListItem?,
+        inApprovals: Bool = false,
+        menu: InboxArtifactMenuState? = nil,
+        header: AnyView? = nil
     ) -> some View {
         let now = now ?? Date()
         let pane = InboxReadingPane(
@@ -546,10 +555,11 @@ struct ActionStripActionsView: View {
         )
         let handler = rowHandler(replyHost: InboxRefHooks.replyHost(item))
         let refHooks = refHooks(handler)
-        let withHooks = pane
+        var withHooks = pane
             .refHooks(refHooks.hooks)
             .messageReply({ refHooks.messageReply($0) }, onPress: Self.messageReplyPress(handler))
             .withArtifactMenu(menu)
+        if let header { withHooks = withHooks.paneHeader(header) }
         return inApprovals ? withHooks.stackedInApprovals() : withHooks
     }
 
@@ -629,12 +639,12 @@ struct ActionStripActionsView: View {
             menuWorking: artifactMenu?.approvalsPressing ?? false,
             onNote: { Task { await vm.pressApprovalsNote(turnOn: onTurnOnApprovals, runHistory: onRunHistory) } },
             onMenu: { command in Task { await artifactMenu?.performApprovals(command) } },
+            onReactionCommands: { openAux(.reactionCommands) },
             emptyState: emptyState,
             scrollTarget: vm.entrySelection,
             approveAllModel: { vm.approveAllModel($0) },
             card: { approvalCard($0) }
         )
-        .detailBackground()
     }
 
     /// One Needs approval card: a native proposal is today's card; a
@@ -722,7 +732,6 @@ struct ActionStripActionsView: View {
     private func auxPane(_ pane: InboxAuxPane) -> some View {
         InboxAuxPaneView(pane: pane, cheatSheet: cheatSheet, learnedRulesDB: learnedRulesDB,
                          profile: profile) { aux = nil }
-            .detailBackground()
     }
 
     /// The reaction cheat sheet with the feature's enable/status line.

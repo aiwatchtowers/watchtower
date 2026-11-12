@@ -46,6 +46,13 @@ final class KeyboardShortcutCatalogTests: XCTestCase {
         }
     }
 
+    /// ⌥⌘S hides and shows the Inbox's folder rail (View menu); the
+    /// Workbench keeps the same chord for its sessions panel.
+    func testInboxRailChordIsListed() throws {
+        let inbox = try XCTUnwrap(KeyboardShortcutCatalog.areas.first { $0.title == "Inbox" })
+        XCTAssertTrue(inbox.entries.contains(KeyboardShortcutCatalog.Entry("⌥⌘S", "Show or hide the Inbox folders")))
+    }
+
     func testMarkdownRendersOneTablePerArea() {
         let markdown = KeyboardShortcutCatalog.markdown
         XCTAssertTrue(markdown.hasPrefix("### Global\n\n| Keys | Action |\n|---|---|\n| **⌘B** | Collapse or expand the menu |"))

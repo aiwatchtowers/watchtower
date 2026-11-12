@@ -90,7 +90,7 @@ final class ActionStripActionsViewTests: XCTestCase {
         XCTAssertTrue(enabled)
     }
 
-    func testNonEmptyStripHidesTheSheetBehindTheHelpButton() async throws {
+    func testNonEmptyStripShowsNoInlineSheet() async throws {
         let pool = try makePool { db in
             try TestDatabase.insertAgentAction(db, tool: "brief_context", status: "pending")
             try TestDatabase.insertReactionCommandMapping(db, emoji: "pushpin", tool: "brief_context")
@@ -100,12 +100,13 @@ final class ActionStripActionsViewTests: XCTestCase {
         let sut = view(vm, rows: await dictionaryRows(pool), feature: .off)
 
         // The negative finds walk only the list and reading pane (the split's
-        // second column, under the Inbox header): the folder menu holds no
-        // cheat sheet, and walking it on every miss made this test take minutes.
-        let inbox = try sut.inspect().vStack().hSplitView(2).vStack(1)
+        // columns after the rail): the folder menu holds no cheat sheet, and
+        // walking it on every miss made this test take minutes.
+        let inbox = try sut.inspect().vStack().hSplitView(1)
         XCTAssertThrowsError(try inbox.find(ReactionCheatSheetView.self), "no inline sheet among real cards")
         XCTAssertThrowsError(try inbox.find(button: "Enable Reaction Commands"))
-        XCTAssertNoThrow(try sut.inspect().find(viewWithAccessibilityIdentifier: "actionStrip.cheatSheetButton"))
+        // The `?` itself sits on the pane headers and Needs approval's
+        // header (`InboxPaneHeaderTests`, `ActionStripFolderPaneTests`).
     }
 
     /// One source of truth: a mapping the owner added in Settings (a custom

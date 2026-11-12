@@ -1,0 +1,101 @@
+import SwiftUI
+import WatchtowerCore
+
+/// The top of a reading pane (spec "The reading pane", mockup `.phead`): the
+/// entry's kind tile, its title and the line under it, the pane's actions on
+/// the trailing end. The subtitle wraps; the actions never do.
+struct InboxPaneHeader<Actions: View>: View {
+    let tile: InboxTile
+    let title: String
+    let subtitle: String
+    let actions: Actions
+
+    init(tile: InboxTile, title: String, subtitle: String, @ViewBuilder actions: () -> Actions) {
+        self.tile = tile
+        self.title = title
+        self.subtitle = subtitle
+        self.actions = actions()
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: Spacing.medium) {
+            InboxTile(kind: tile.kind, symbol: tile.symbol, size: IconSize.listTile)
+            VStack(alignment: .leading, spacing: Spacing.tight) {
+                Text(title)
+                    .font(.title3.weight(.semibold))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                if !subtitle.isEmpty {
+                    Text(subtitle)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            HStack(spacing: Spacing.small) {
+                actions
+            }
+            .controlSize(.small)
+            .fixedSize()
+        }
+    }
+}
+
+/// An automation artifact's pane header: its row's tile and title, the
+/// card's provenance line, then **Run Now** (only when its ⋯ offers it),
+/// the ⋯ and the reaction commands' `?`.
+struct InboxArtifactPaneHeader: View {
+    /// The artifact's list row (`InboxFolderEntries.content`).
+    let content: InboxRowContent
+    /// `InboxCardTexts.readingSourceLine`.
+    let subtitle: String
+    /// A high-priority card keeps its chip.
+    var isHighPriority = false
+    /// Its ⋯; nil (tests, shots) draws neither the ⋯ nor Run Now.
+    let menu: InboxArtifactMenuState?
+    /// The `?`; nil draws none.
+    let onReactionCommands: (() -> Void)?
+
+    private var offersRunNow: Bool {
+        menu?.entries.contains { $0.command == .runNow } ?? false
+    }
+
+    var body: some View {
+        InboxPaneHeader(tile: InboxTile(kind: content.kind, symbol: content.symbol), title: content.title,
+                        subtitle: subtitle) {
+            if isHighPriority {
+                Chip(text: "High", color: Tone.priority("high"))
+            }
+            if let menu {
+                if offersRunNow {
+                    Button("Run Now") { menu.onCommand(.runNow) }
+                        .buttonStyle(.kitSecondary)
+                        .disabled(menu.isDisabled || menu.isWorking)
+                        .accessibilityIdentifier("inbox.paneHeader.runNow")
+                }
+                InboxArtifactMenuButton(menu: menu)
+            }
+            if let onReactionCommands {
+                InboxReactionCommandsButton(action: onReactionCommands)
+            }
+        }
+    }
+}
+
+/// The `?` that opens the reaction cheat sheet in the reading pane: on the
+/// trailing end of every pane header and of Needs approval's.
+struct InboxReactionCommandsButton: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "questionmark.circle")
+        }
+        .buttonStyle(.kitIcon(isOn: false))
+        .help("Reaction commands")
+        .accessibilityLabel("Reaction commands")
+        .accessibilityIdentifier("actionStrip.cheatSheetButton")
+    }
+}

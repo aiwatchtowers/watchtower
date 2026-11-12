@@ -100,6 +100,22 @@ final class ActionStripFolderPaneTests: XCTestCase {
         return fx
     }
 
+    // MARK: - The pane header
+
+    /// An artifact opens under its pane header — tile, title, provenance
+    /// line, `?` — and the card leaves out its own title row (inbox redesign).
+    func testArtifactOpensUnderItsPaneHeader() async throws {
+        let fx = try await fixture(blocks: #"{"v":1,"blocks":[{"type":"text","markdown":"All green"}]}"#)
+        let sut = try view(fx.vm).inspect()
+        let header = try sut.find(InboxArtifactPaneHeader.self)
+        XCTAssertNoThrow(try header.find(text: "Release checklist"))
+        XCTAssertNoThrow(try header.find(text: InboxCardTexts.readingSourceLine(fx.card)))
+        XCTAssertNoThrow(try header.find(viewWithAccessibilityIdentifier: "actionStrip.cheatSheetButton"))
+        // The list row and the header; the card's own title row would be a third.
+        XCTAssertEqual(try sut.findAll(ViewType.Text.self) { try $0.string() == "Release checklist" }.count, 2,
+                       "the card's own title row is hidden under the header")
+    }
+
     // MARK: - The target button
 
     func testPendingTargetProposalShowsWaitingInAFolder() async throws {

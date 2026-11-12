@@ -335,10 +335,10 @@ final class InboxReadingPaneTests: XCTestCase {
         XCTAssertEqual(opened, [.learnedRules, .profile])
     }
 
-    /// The Inbox's header, above the menu, the list and the reading pane
-    /// (b-01): its title and the `?`, which opens the cheat sheet in the
-    /// reading pane; the header has no pop-up and no filter segments.
-    func testHeaderShowsTheTitleAndTheCheatSheetButton() async throws {
+    /// No header row above the rail, the list and the reading pane (inbox
+    /// redesign): "Inbox" is the window's title and the rail's root row
+    /// only, the `?` sits on the pane headers; no pop-up, no filter segments.
+    func testNoHeaderRowAboveTheColumns() async throws {
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
         let suite = "InboxReadingPaneTests.\(UUID().uuidString)"
@@ -353,8 +353,8 @@ final class InboxReadingPaneTests: XCTestCase {
             vm: vm, cheatSheetRows: [], feature: .on(lastCheck: nil), isEnabling: false, featureError: nil,
             onEnable: {}, onOpenSettings: {}, onOpen: { _ in })
 
-        XCTAssertNoThrow(try sut.inspect().find(text: "Inbox"))
-        XCTAssertNoThrow(try sut.inspect().find(viewWithAccessibilityIdentifier: "actionStrip.cheatSheetButton"))
+        XCTAssertEqual(try sut.inspect().findAll(ViewType.Text.self) { try $0.string() == "Inbox" }.count, 1,
+                       "the rail's root row, no title row")
         for gone in ["All", "Day", "Automations"] {
             XCTAssertThrowsError(try sut.inspect().find(button: gone), gone)
         }

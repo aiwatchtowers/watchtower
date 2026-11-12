@@ -161,6 +161,7 @@ package final class ActionStripViewModel {
         self.customTrackControls = customTrackControls ?? DirectCustomTrackControls(
             dbPool: dbPool, scanService: TrackScanService(runner: cliRunner ?? InstalledCLIRunner()))
         self.defaults = defaults
+        self.railHidden = defaults.bool(forKey: Self.railHiddenKey)
         self.actionFeed = AgentActionFeed(dbPool: dbPool, cliRunner: cliRunner, automationsWake: automationsWake)
         self.folderMenu = InboxFolderMenuModel(
             dbPool: dbPool, runner: { cliRunner ?? findCLI() }, clock: clock)
@@ -358,6 +359,15 @@ package final class ActionStripViewModel {
         InboxFolderEntries.Inputs(
             feed: feed, folders: folderMenu.snapshot,
             approvalsOn: !disabledFeatures.contains(Self.approvalsFeatureID), now: clock(), calendar: Self.calendar)
+    }
+
+    /// The per-viewer key of `railHidden`.
+    package static let railHiddenKey = "inbox.railHidden"
+
+    /// The folder rail is collapsed (View → Hide Inbox Folders, ⌥⌘S),
+    /// remembered per viewer (`inbox.railHidden`, default shown).
+    package var railHidden = false {
+        didSet { defaults.set(railHidden, forKey: Self.railHiddenKey) }
     }
 
     /// The list's search: one query for every folder, kept across

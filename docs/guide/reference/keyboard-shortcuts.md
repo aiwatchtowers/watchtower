@@ -119,6 +119,7 @@ After a click on the panel's empty space, a section label or the older header.
 | **↑ / ↓** | Move between cards |
 | **Esc** | Close the card |
 | **⌘Return** | Create (new idea) |
+| **⌥⌘S** | Show or hide the Inbox folders |
 
 ### Workbench
 <!-- learn
@@ -132,7 +133,7 @@ since: 0.24.0
 action: hotkey:waiting-for-you
 -->
 
-The Workbench menu lists most of these; ⌘1–⌘9 and ⌘[ are in the View menu.
+The Workbench menu lists most of these; ⌘1–⌘9, ⌘[ and ⌥⌘S are in the View menu.
 
 | Keys | Action |
 |---|---|

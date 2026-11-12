@@ -101,17 +101,19 @@ struct InboxSplitView<EmptyList: View>: View {
     var body: some View {
         let now = now ?? Date()
         let sections = vm.sections
-        PanelSplit(isPanelShown: true, width: inboxPaneWidth) {
+        HSplitView {
             list(sections, now: now)
-        } panel: {
-            if let aux {
-                InboxAuxPaneView(pane: aux, cheatSheet: cheatSheet, learnedRulesDB: learnedRulesDB,
-                                 profile: profile) { self.aux = nil }
-            } else {
-                pane(sections, now: now)
+                .inboxListColumn()
+            Group {
+                if let aux {
+                    InboxAuxPaneView(pane: aux, cheatSheet: cheatSheet, learnedRulesDB: learnedRulesDB,
+                                     profile: profile) { self.aux = nil }
+                } else {
+                    pane(sections, now: now)
+                }
             }
+            .inboxPaneColumn()
         }
-        .detailBackground()
     }
 
     // MARK: - The list
@@ -293,8 +295,21 @@ struct InboxSplitView<EmptyList: View>: View {
     }
 }
 
-/// The reading pane's width, shared by every `InboxSplitView` and the folder list.
-let inboxPaneWidth = PanelSplitWidth(key: "inbox.readingPaneWidth", range: 420...900, ideal: 560)
+extension View {
+    /// The Inbox's list column (`PaneWidth.inboxList*`), shared by the
+    /// folder list and every `InboxSplitView`.
+    func inboxListColumn() -> some View {
+        frame(minWidth: PaneWidth.inboxListMin, idealWidth: PaneWidth.inboxListIdeal,
+              maxWidth: PaneWidth.inboxListMax, maxHeight: .infinity)
+            .detailBackground()
+    }
+
+    /// The Inbox's reading pane: the rest of the window.
+    func inboxPaneColumn() -> some View {
+        frame(minWidth: PaneWidth.detailMin, maxWidth: .infinity, maxHeight: .infinity)
+            .detailBackground()
+    }
+}
 
 /// The reaction cheat sheet, Learned Rules or Assistant Profile in the
 /// reading pane, under a title with a close button back to the card.

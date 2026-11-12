@@ -226,6 +226,13 @@ package struct InboxFolderMenuContent: Equatable, Sendable {
         collapsing(shownRows)
     }
 
+    /// The rail draws "Folders" above the owner folders: only while at
+    /// least one of them is drawn, else it shows Inbox and Needs approval
+    /// alone.
+    package var showsFoldersHeading: Bool {
+        visibleRows.contains { $0.kind == .owner }
+    }
+
     /// Whether `row` has a child on screen once expanded: a folder whose
     /// children are all hidden (Show Hidden Folders off) has none, so it
     /// draws no chevron. Collapsing does not count — a collapsed folder
