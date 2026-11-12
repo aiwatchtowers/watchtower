@@ -373,21 +373,32 @@ struct ActionStripActionsView: View {
     /// before the first read, for an empty folder — one column.
     @ViewBuilder
     private var content: some View {
-        if !vm.hasRead, let reason = vm.firstReadError {
+        if !vm.hasRead, let aux {
+            auxPane(aux).inboxPaneColumn()
+        } else if !vm.hasRead, let reason = vm.firstReadError {
             // The first read failed: say so, never a spinner that never ends.
-            Self.firstReadFailure(reason) { Task { await vm.refresh() } }
+            withReactionCommands(Self.firstReadFailure(reason) { Task { await vm.refresh() } })
         } else if !vm.hasRead {
             // Nothing read yet: no "empty" or cheat sheet for a moment.
-            ProgressView()
-                .controlSize(.small)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .accessibilityIdentifier("inbox.loading")
+            withReactionCommands(
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .accessibilityIdentifier("inbox.loading"))
         } else if let list = vm.legacyList {
             legacyColumn(list)
         } else if vm.folderEntries.isEmpty, aux == nil {
-            // Needs approval's own pane says it is empty, with its note.
+            // Needs approval's own pane says it is empty, with its note (and
+            // `?`); the empty root shows the cheat sheet inline while nothing
+            // waits, else the `?` sits in the corner.
             Group {
-                if folderKind == .approvals { approvalsPane } else { folderList }
+                if folderKind == .approvals {
+                    approvalsPane
+                } else if showsInlineCheatSheet {
+                    folderList
+                } else {
+                    withReactionCommands(folderList)
+                }
             }
             .inboxPaneColumn()
         } else {
@@ -490,7 +501,8 @@ struct ActionStripActionsView: View {
             pane(.output(card), menu: menu, header: AnyView(InboxArtifactPaneHeader(
                 content: InboxFolderEntries.content(.artifact(card), vm.entryInputs),
                 subtitle: InboxCardTexts.readingSourceLine(card, now: now ?? Date()),
-                isHighPriority: card.priority == "high", menu: menu
+                isHighPriority: card.priority == "high", menu: menu,
+                onOpenRun: onOpenAutomationRun.map { open in { open(card.runID) } }
             ) { openAux(.reactionCommands) }))
                 .task(id: card.automationID) { await artifactMenu?.prepare(card) }
         case let .legacyDay(card)?: pane(.day(vm.briefDay ?? card))
@@ -502,9 +514,30 @@ struct ActionStripActionsView: View {
             ) {
                 InboxReactionCommandsButton { openAux(.reactionCommands) }
             }))
-        case let .approval(item)?: pane(Self.listItem(item))
-        case let .builtinNotice(notice)?: pane(.builtinNotice(notice))
+        case let .approval(item)?: pane(Self.listItem(item), header: helpHeader(entry))
+        case let .builtinNotice(notice)?: pane(.builtinNotice(notice), header: helpHeader(entry))
         case .legacyTracks?, .legacyIdeas?, .legacyMessages?, nil: pane(nil)
+        }
+    }
+
+    /// An entry's pane header with the `?` only: its row's tile, title and
+    /// line under it (a root approval or notice, on a tree without Needs
+    /// approval).
+    private func helpHeader(_ entry: InboxFolderEntry?) -> AnyView? {
+        guard let entry else { return nil }
+        let content = InboxFolderEntries.content(entry, vm.entryInputs)
+        return AnyView(InboxPaneHeader(tile: InboxTile(kind: content.kind, symbol: content.symbol),
+                                       title: content.title, subtitle: content.meta) {
+            InboxReactionCommandsButton { openAux(.reactionCommands) }
+        })
+    }
+
+    /// A one-column state (loading, a failed first read, an empty folder)
+    /// keeps the `?` in its top corner.
+    private func withReactionCommands(_ view: some View) -> some View {
+        view.overlay(alignment: .topTrailing) {
+            InboxReactionCommandsButton { openAux(.reactionCommands) }
+                .padding(Spacing.medium)
         }
     }
 

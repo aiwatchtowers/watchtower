@@ -28,6 +28,24 @@ final class InboxPaneHeaderTests: XCTestCase {
         XCTAssertEqual(try sut.inspect().findAll(ViewType.Text.self).count, 1)
     }
 
+    /// The provenance line opens the run that wrote the card; without a
+    /// handler it stays text.
+    func testArtifactProvenanceOpensItsRun() throws {
+        let content = InboxRowContent(kind: .artifact, title: "Release checklist")
+        var opened: [Int64] = []
+        let runID: Int64 = 4
+        let sut = InboxArtifactPaneHeader(content: content, subtitle: "ϟ Checklist · run #4", menu: nil,
+                                          onOpenRun: { opened.append(runID) }, onReactionCommands: {})
+        let link = try sut.inspect().find(viewWithAccessibilityIdentifier: "inbox.paneHeader.subtitle")
+        XCTAssertNoThrow(try link.find(text: "ϟ Checklist · run #4"))
+        try link.button().tap()
+        XCTAssertEqual(opened, [4])
+
+        let plain = InboxArtifactPaneHeader(content: content, subtitle: "ϟ Checklist · run #4", menu: nil) {}
+        XCTAssertThrowsError(try plain.inspect().find(viewWithAccessibilityIdentifier: "inbox.paneHeader.subtitle"))
+        XCTAssertNoThrow(try plain.inspect().find(text: "ϟ Checklist · run #4"))
+    }
+
     func testArtifactHeaderShowsRunNowOnlyWhenOffered() throws {
         let content = InboxRowContent(kind: .artifact, title: "Release checklist")
         var commands: [InboxMenuCommand] = []

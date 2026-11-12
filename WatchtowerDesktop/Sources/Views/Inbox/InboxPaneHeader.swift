@@ -9,12 +9,24 @@ struct InboxPaneHeader<Actions: View>: View {
     let title: String
     let subtitle: String
     let actions: Actions
+    /// The subtitle as a quiet link (`subtitleAction(help:_:)`); nil = text.
+    private var onSubtitle: (() -> Void)?
+    private var subtitleHelp = ""
 
     init(tile: InboxTile, title: String, subtitle: String, @ViewBuilder actions: () -> Actions) {
         self.tile = tile
         self.title = title
         self.subtitle = subtitle
         self.actions = actions()
+    }
+
+    /// This header with its subtitle drawn as a quiet button (an artifact's
+    /// provenance line opens its run).
+    func subtitleAction(help: String, _ action: (() -> Void)?) -> Self {
+        var header = self
+        header.onSubtitle = action
+        header.subtitleHelp = help
+        return header
     }
 
     var body: some View {
@@ -26,11 +38,23 @@ struct InboxPaneHeader<Actions: View>: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
                 if !subtitle.isEmpty {
-                    Text(subtitle)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .textSelection(.enabled)
+                    if let onSubtitle {
+                        Button(action: onSubtitle) {
+                            Text(subtitle)
+                                .font(.callout)
+                                .multilineTextAlignment(.leading)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .buttonStyle(.kitQuiet)
+                        .help(subtitleHelp)
+                        .accessibilityIdentifier("inbox.paneHeader.subtitle")
+                    } else {
+                        Text(subtitle)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
+                    }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -55,6 +79,8 @@ struct InboxArtifactPaneHeader: View {
     var isHighPriority = false
     /// Its ⋯; nil (tests, shots) draws neither the ⋯ nor Run Now.
     let menu: InboxArtifactMenuState?
+    /// The provenance line's press: the run that wrote the card; nil = text.
+    var onOpenRun: (() -> Void)?
     /// The `?`; nil draws none.
     let onReactionCommands: (() -> Void)?
 
@@ -81,6 +107,7 @@ struct InboxArtifactPaneHeader: View {
                 InboxReactionCommandsButton(action: onReactionCommands)
             }
         }
+        .subtitleAction(help: "Open the automation run", onOpenRun)
     }
 }
 

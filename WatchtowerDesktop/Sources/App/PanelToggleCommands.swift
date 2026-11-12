@@ -15,6 +15,8 @@ struct PanelToggleCommands: Commands {
         PanelToggleTarget.resolve(
             workbenchCanToggle: workbench?.canTogglePanel == true,
             workbenchPanelShown: workbench?.vm.panelVisible == true,
+            // The Workbench page publishes its menu context in its window only.
+            workbenchWindowIsKey: workbench != nil,
             inboxOnScreen: appState.selectedDestination == .inbox && appState.actionStripViewModel != nil,
             inboxRailHidden: appState.actionStripViewModel?.railHidden == true
         )

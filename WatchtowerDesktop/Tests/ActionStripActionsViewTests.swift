@@ -105,8 +105,9 @@ final class ActionStripActionsViewTests: XCTestCase {
         let inbox = try sut.inspect().vStack().hSplitView(1)
         XCTAssertThrowsError(try inbox.find(ReactionCheatSheetView.self), "no inline sheet among real cards")
         XCTAssertThrowsError(try inbox.find(button: "Enable Reaction Commands"))
-        // The `?` itself sits on the pane headers and Needs approval's
-        // header (`InboxPaneHeaderTests`, `ActionStripFolderPaneTests`).
+        // The `?` sits on the opened entry's pane header.
+        await vm.selectEntry(try XCTUnwrap(vm.folderEntries.first?.id))
+        XCTAssertNoThrow(try sut.inspect().find(viewWithAccessibilityIdentifier: "actionStrip.cheatSheetButton"))
     }
 
     /// One source of truth: a mapping the owner added in Settings (a custom

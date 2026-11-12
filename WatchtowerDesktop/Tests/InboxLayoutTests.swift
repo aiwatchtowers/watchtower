@@ -83,6 +83,17 @@ final class InboxLayoutTests: XCTestCase {
         XCTAssertNoThrow(try withFolder.inspect().find(text: "Folders"))
     }
 
+    /// Before the first read the `?` stays in reach, and opens the cheat
+    /// sheet in place of the spinner.
+    func testLoadingKeepsTheReactionCommands() throws {
+        let (pool, path) = try TestDatabase.createPool()
+        paths.append(path)
+        let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
+        let sut = view(vm)
+        XCTAssertNoThrow(try sut.inspect().find(viewWithAccessibilityIdentifier: "inbox.loading"))
+        XCTAssertNoThrow(try sut.inspect().find(viewWithAccessibilityIdentifier: "actionStrip.cheatSheetButton"))
+    }
+
     func testReadingColumnIsTheReadableWidth() {
         XCTAssertEqual(InboxCardColumn<EmptyView>.readableWidth, ReadableColumn.maxLineWidth)
     }
