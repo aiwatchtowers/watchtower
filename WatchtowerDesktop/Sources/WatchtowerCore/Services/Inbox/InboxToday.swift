@@ -2,8 +2,9 @@ import Foundation
 
 /// The Inbox "from today" rule: an item is from today when the later of its
 /// creation and its last mention falls at or after the first instant of
-/// today's local date in `calendar`'s zone. Go twin: `db.IsFromToday`, over
-/// the shared fixture `internal/inbox/testdata/from_today.json`.
+/// today's local date in `calendar`'s zone. Go twin (phase 2,
+/// `db.IsFromToday`), over the shared fixture
+/// `internal/inbox/testdata/from_today.json`.
 package enum InboxToday {
     /// Local midnight of `now`'s date, or the first instant after a DST gap
     /// that swallows midnight.

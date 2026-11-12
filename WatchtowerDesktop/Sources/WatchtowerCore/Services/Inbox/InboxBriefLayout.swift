@@ -19,13 +19,14 @@ package enum InboxBriefLayout {
         Array(briefing.parsedAttention.prefix(topCount))
     }
 
-    /// Waiting on you: the three newest open messages (the feed reads only
-    /// open ones).
+    /// **Waiting on you**'s rows: the newest three open messages (the feed
+    /// reads only open ones), whatever day they came.
     package static func waitingOnYou(_ messages: [HomeFeedInboxRow]) -> [HomeFeedInboxRow] {
         Array(messages.sorted { $0.stamp > $1.stamp }.prefix(topCount))
     }
 
-    /// Moved overnight: up to three tracks with news, newest event first.
+    /// **Moved overnight**'s rows: up to three unread tracks, newest event
+    /// first, whenever that event was.
     package static func movedOvernight(_ tracks: [InboxTrackCard]) -> [InboxTrackCard] {
         Array(tracks.filter(\.isUnread).sorted { $0.lastEventAt > $1.lastEventAt }.prefix(topCount))
     }
