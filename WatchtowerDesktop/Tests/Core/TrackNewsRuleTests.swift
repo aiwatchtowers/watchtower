@@ -113,12 +113,14 @@ final class TrackNewsRuleTests: XCTestCase {
         XCTAssertEqual(byID[idle]?.latestEventSummary, "")
     }
 
-    private func insertSlackImage(_ db: Database, channelID: String, ts: String, kind: String = "image") throws {
+    private func insertSlackImage(
+        _ db: Database, channelID: String, ts: String, kind: String = "image", status: String = "ok"
+    ) throws {
         try TestDatabase.insertMessage(db, channelID: channelID, ts: ts)
         try db.execute(sql: """
-            INSERT INTO media_items (kind, parent_kind, parent_key, slack_channel_id, slack_ts, locator, scope, content_at)
-            VALUES (?, 'slack', ?, ?, ?, 'F1', 'slack:1', '2026-10-20T00:00:00Z')
-            """, arguments: [kind, "slack:\(channelID):\(ts)", channelID, ts])
+            INSERT INTO media_items (kind, parent_kind, parent_key, slack_channel_id, slack_ts, locator, scope, content_at, status)
+            VALUES (?, 'slack', ?, ?, ?, 'F1', 'slack:1', '2026-10-20T00:00:00Z', ?)
+            """, arguments: [kind, "slack:\(channelID):\(ts)", channelID, ts, status])
     }
 
     private func refs(_ pairs: [(channel: String, ts: String)]) -> String {
@@ -128,7 +130,7 @@ final class TrackNewsRuleTests: XCTestCase {
 
     func testFetchInboxCardsFlagsAttachmentOnNewestRef() throws {
         let queue = try TestDatabase.create()
-        let ids = try queue.write { db -> (raw: Int64, namespaced: Int64, older: Int64, link: Int64) in
+        let ids = try queue.write { db -> (raw: Int64, namespaced: Int64, older: Int64, link: Int64, junk: Int64) in
             let older = "1700000000.000100"
             let newest = "1700000500.000200"
             // Raw channel id on the media row.
@@ -147,7 +149,10 @@ final class TrackNewsRuleTests: XCTestCase {
             // A link is not an attachment.
             try insertSlackImage(db, channelID: "C400", ts: newest, kind: "link")
             let link = try TestDatabase.insertTrack(db, text: "Link", sourceRefs: refs([("C400", newest)]))
-            return (raw, namespaced, olderOnly, link)
+            // A junk image (tracking pixel, logo) is not an attachment.
+            try insertSlackImage(db, channelID: "C500", ts: newest, status: "skipped_junk")
+            let junk = try TestDatabase.insertTrack(db, text: "Junk", sourceRefs: refs([("C500", newest)]))
+            return (raw, namespaced, olderOnly, link, junk)
         }
         let cards = try queue.read { try TrackQueries.fetchInboxCards($0) }
         let byID = Dictionary(uniqueKeysWithValues: cards.map { (Int64($0.track.id), $0) })
@@ -155,19 +160,25 @@ final class TrackNewsRuleTests: XCTestCase {
         XCTAssertEqual(byID[ids.namespaced]?.newestRefHasAttachment, true)
         XCTAssertEqual(byID[ids.older]?.newestRefHasAttachment, false)
         XCTAssertEqual(byID[ids.link]?.newestRefHasAttachment, false)
+        XCTAssertEqual(byID[ids.junk]?.newestRefHasAttachment, false)
     }
 
     func testFetchInboxCardsFlagsAttachmentOnNewestMailEvent() throws {
         let queue = try TestDatabase.create()
-        let ids = try queue.write { db -> (gmail: Int64, imap: Int64, plain: Int64) in
+        let ids = try queue.write { db -> (gmail: Int64, imap: Int64, plain: Int64, junk: Int64) in
             let google = try TestDatabase.insertGoogleAccount(db, email: "me@example.com", gmailEnabled: true)
-            for id in ["m-image", "m-plain"] {
+            for id in ["m-image", "m-plain", "m-junk"] {
                 try db.execute(sql: "INSERT INTO gmail_messages (account_id, id) VALUES (?, ?)", arguments: [google, id])
             }
             try db.execute(sql: """
                 INSERT INTO media_items (kind, parent_kind, parent_key, gmail_account_id, gmail_message_id, locator, scope, content_at)
                 VALUES ('image', 'gmail', ?, ?, 'm-image', 'a1', 'gmail:1', '2026-10-20T00:00:00Z')
                 """, arguments: ["gmail:\(google):m-image", google])
+            // A junk image (tracking pixel, signature logo) is not an attachment.
+            try db.execute(sql: """
+                INSERT INTO media_items (kind, parent_kind, parent_key, gmail_account_id, gmail_message_id, locator, scope, content_at, status)
+                VALUES ('image', 'gmail', ?, ?, 'm-junk', 'a1', 'gmail:1', '2026-10-20T00:00:00Z', 'skipped_junk')
+                """, arguments: ["gmail:\(google):m-junk", google])
             let imapAccount = try TestDatabase.insertEmailAccount(db)
             try db.execute(sql: "INSERT INTO imap_messages (account_id, uidvalidity, uid) VALUES (?, 7, 42)",
                            arguments: [imapAccount])
@@ -189,12 +200,14 @@ final class TrackNewsRuleTests: XCTestCase {
             }
             return (try track("Gmail", newestMailID: "m-image"),
                     try track("IMAP", newestMailID: "7-42"),
-                    try track("Plain", newestMailID: "m-plain"))
+                    try track("Plain", newestMailID: "m-plain"),
+                    try track("Junk", newestMailID: "m-junk"))
         }
         let cards = try queue.read { try TrackQueries.fetchInboxCards($0) }
         let byID = Dictionary(uniqueKeysWithValues: cards.map { (Int64($0.track.id), $0) })
         XCTAssertEqual(byID[ids.gmail]?.newestRefHasAttachment, true)
         XCTAssertEqual(byID[ids.imap]?.newestRefHasAttachment, true)
         XCTAssertEqual(byID[ids.plain]?.newestRefHasAttachment, false)
+        XCTAssertEqual(byID[ids.junk]?.newestRefHasAttachment, false)
     }
 }

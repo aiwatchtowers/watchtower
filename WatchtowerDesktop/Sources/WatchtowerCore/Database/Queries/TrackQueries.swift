@@ -55,6 +55,7 @@ package enum TrackQueries {
     }
 
     /// The track's newest Slack source ref (highest `ts`) carries an image.
+    /// Junk images (`skipped_junk`: tracking pixels, logos) never count.
     /// The media row's channel may be namespaced (`<account>:<channel>`); the
     /// lookup goes through `messages` for its `ts_unix` index.
     private static func newestSlackRefHasImage(_ db: Database, track: Track) throws -> Bool {
@@ -67,11 +68,11 @@ package enum TrackQueries {
                 JOIN media_items m ON m.slack_channel_id = msg.channel_id AND m.slack_ts = msg.ts
                 WHERE msg.ts_unix = :seconds AND msg.ts = :ts
                   AND (msg.channel_id = :channel OR substr(msg.channel_id, -length(:suffix)) = :suffix)
-                  AND m.parent_kind = 'slack' AND m.kind = 'image')
+                  AND m.parent_kind = 'slack' AND m.kind = 'image' AND m.status != 'skipped_junk')
             """, arguments: ["seconds": seconds, "ts": ref.ts, "channel": channel, "suffix": ":" + channel]) ?? false
     }
 
-    /// A mail event's message carries an image. The watch scan records mail as
+    /// A mail event's message carries a non-junk image. The watch scan records mail as
     /// `source_type = 'email'` with `source_id` = the `list_emails` id: the
     /// Gmail message id, or `<uidvalidity>-<uid>` for IMAP
     /// (`internal/db/emails_read.go` `imapEmailIDExpr`).
@@ -80,7 +81,7 @@ package enum TrackQueries {
         return try Bool.fetchOne(db, sql: """
             SELECT EXISTS (
                 SELECT 1 FROM media_items m
-                WHERE m.kind = 'image' AND (
+                WHERE m.kind = 'image' AND m.status != 'skipped_junk' AND (
                     (m.parent_kind = 'gmail' AND m.gmail_message_id = :id)
                     OR (m.parent_kind = 'imap'
                         AND CAST(m.imap_uidvalidity AS TEXT) || '-' || CAST(m.imap_uid AS TEXT) = :id)))
