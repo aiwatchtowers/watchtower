@@ -304,10 +304,13 @@ extension View {
             .detailBackground()
     }
 
-    /// The Inbox's reading pane: the rest of the window.
+    /// The Inbox's reading pane: the rest of the window. Its layout
+    /// priority keeps the split from giving the rail or the list more than
+    /// their ideal width.
     func inboxPaneColumn() -> some View {
         frame(minWidth: PaneWidth.detailMin, maxWidth: .infinity, maxHeight: .infinity)
             .detailBackground()
+            .layoutPriority(1)
     }
 }
 

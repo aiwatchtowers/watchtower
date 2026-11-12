@@ -50,6 +50,17 @@ final class InboxLayoutTests: XCTestCase {
         XCTAssertNoThrow(try view(shown).inspect().find(InboxFolderMenuColumn.self))
     }
 
+    /// The rail is a column of the one split, resizable in the kit's
+    /// side-list range (the pane's layout priority keeps it at the ideal).
+    func testRailIsAResizableColumnOfTheSplit() async throws {
+        let vm = try await stripVM(railHidden: false)
+        let rail = try view(vm).inspect().vStack().hSplitView(1).find(InboxFolderMenuColumn.self)
+        let frame = try rail.flexFrame()
+        XCTAssertEqual(frame.minWidth, PaneWidth.sideListMin)
+        XCTAssertEqual(frame.idealWidth, PaneWidth.sideListIdeal)
+        XCTAssertEqual(frame.maxWidth, PaneWidth.sideListMax)
+    }
+
     /// Toggling writes the per-viewer default the next launch reads.
     func testRailHiddenIsRemembered() async throws {
         let vm = try await stripVM(railHidden: false)

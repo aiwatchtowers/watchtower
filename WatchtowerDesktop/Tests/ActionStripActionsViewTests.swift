@@ -102,7 +102,7 @@ final class ActionStripActionsViewTests: XCTestCase {
         // The negative finds walk only the list and reading pane (the split's
         // columns after the rail): the folder menu holds no cheat sheet, and
         // walking it on every miss made this test take minutes.
-        let inbox = try sut.inspect().vStack().hSplitView(1)
+        let inbox = try sut.inspect().vStack().hSplitView(1).group(1)
         XCTAssertThrowsError(try inbox.find(ReactionCheatSheetView.self), "no inline sheet among real cards")
         XCTAssertThrowsError(try inbox.find(button: "Enable Reaction Commands"))
         // The `?` sits on the opened entry's pane header.

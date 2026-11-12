@@ -269,21 +269,19 @@ struct ActionStripActionsView: View {
             if let message = vm.lastError {
                 errorBanner(message)
             }
-            // The rail is pinned at the kit's side-list width, outside the
-            // split: inside it the split handed the rail its maximum and
-            // squeezed the reading pane. The list keeps its own range
-            // (`inboxListColumn`) and the pane takes the rest.
-            HStack(spacing: 0) {
+            // One split: the rail and the list each keep their kit range and
+            // the reading pane (`inboxPaneColumn`, layout priority 1) takes
+            // the rest, so the split never hands the rail its maximum.
+            HSplitView {
                 if !vm.railHidden {
                     InboxFolderMenuColumn(model: vm.folderMenu, onOpenAux: openAux, onCommand: folderMenuCommand,
                                           onNewArtifact: onNewArtifact, onSelect: selectFolder)
-                        .frame(width: PaneWidth.sideListIdeal)
-                        .frame(maxHeight: .infinity)
-                    Divider()
+                        .frame(minWidth: PaneWidth.sideListMin, idealWidth: PaneWidth.sideListIdeal,
+                               maxWidth: PaneWidth.sideListMax, maxHeight: .infinity)
                 }
-                HSplitView {
-                    content
-                }
+                // Grouped so a test can walk the columns right of the rail;
+                // the split still lays out each column on its own.
+                Group { content }
             }
         }
         .confirmationDialog(deleteTitle, isPresented: deleteConfirming,
