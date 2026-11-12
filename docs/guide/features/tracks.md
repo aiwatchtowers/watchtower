@@ -16,6 +16,8 @@ Scrolling channels to find "what was I asked to do?" is the cost this removes. A
 
 **Ownership says whose it is.** **Mine** is on you, **Delegated** is owned by one of your reports and you follow it, **Watching** is something you monitor and is limited to high priority. Priority, category (task, approval, decision needed, code review and so on) and an optional due date come from the AI; you can change the priority from the badge.
 
+**Track my threads lists only threads with news.** A thread has news when something new landed on it since you read it, or when you never opened it and it moved in the last 3 days. Each row shows its newest line, how many updates are new and why it matters: **reply to you**, **decision**, **mention** or **attachment**. The rest fold into one quiet line.
+
 **Read state follows Slack.** When you have read the source messages in Slack, the daemon marks the track read for you. In the Inbox, opening a track changes nothing; **Done** marks it read, with its linked digests and its events. Something new on it brings it back as unread.
 
 **Custom tracks are watches.** You describe a topic and the assistant writes a small automation, a watch, with an instruction and a name. At every sync it scans new channel digests, auto tracks and Inbox items for the instruction, and matches become timeline events on the track's card. A watch that fails three scans in a UTC day waits until the next day. Track my threads turning off stops the watches too. Custom tracks you had before this update became watches when Watchtower first started after the update; ones you had stopped stay stopped.
@@ -48,6 +50,17 @@ action: nav:tracks
 -->
 
 <!-- learn
+id: tracks-stop-quiet
+title: Stop tracking quiet threads
+text: Press **Stop Tracking Quiet Ones…** in **Track my threads** to stop every thread quiet for over 30 days.
+area: communication
+level: next
+kind: tip
+since: next
+action: nav:inbox
+-->
+
+<!-- learn
 id: tracks-chat-cleanup
 title: Clean up old tracks from the chat
 text: Ask Chats to dismiss a set of tracks; it proposes the exact set and waits for your **Approve**.
@@ -58,12 +71,13 @@ since: 0.24.0
 action: chat:Dismiss every auto track older than a month
 -->
 
-1. Open the Inbox and pick **Track my threads**: every track you follow, updated ones first, with a dot on the unread ones.
-2. Click a track for its context, blocking, sub-items, participants, **Key Messages** (open in Slack), **Related Digests**, linked targets and Jira issues. **Open chat** at the bottom unfolds a chat about this track. The priority badge changes its priority.
+1. Open the Inbox and pick **Track my threads**: the threads with news for you, newest first. **N more with news** shows past the first five; **All Threads** lists every track you follow.
+2. Click a thread for its context, blocking, sub-items, participants, **Key Messages** (open in Slack), **Related Digests**, linked targets and Jira issues. **Open chat** at the bottom unfolds a chat about this track. The priority badge changes its priority; **‹ Track my threads** goes back.
 3. Press **Done** when you have read it. **Open in Slack**, **Discuss in Chat** and **Hand to Agent…** sit beside it.
 4. The **⋯** menu has **Stop watching**, which takes the track off the list. A mined track adds **Make a Task**, which creates a [target](targets.md) and opens it; a custom track adds **Go to Target** when it is linked to one, and **Delete…**, which asks inline.
-5. Stopped tracks fold into **Stopped · N** at the end of Track my threads; **Show** lists them and **Restore** on a card brings it back.
-6. To clean up many at once, ask [Chats](ai-chat.md), for example "dismiss every auto track older than a month". It proposes the exact set and waits for your **Approve**.
+5. Stopped tracks fold into **Stopped · N** at the end of **All Threads**; **Show** lists them and **Restore** on a card brings it back.
+6. When threads have been quiet for over 30 days, the quiet line offers **Stop Tracking Quiet Ones…**; confirm **Stop Tracking N Threads** to stop them all. A stopped custom track scans nothing until **Restore**.
+7. To clean up many at once, ask [Chats](ai-chat.md), for example "dismiss every auto track older than a month". It proposes the exact set and waits for your **Approve**.
 
 ### Custom tracks on the card
 

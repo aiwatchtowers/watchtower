@@ -61,7 +61,8 @@ struct ActionStripView: View {
                     onNewArtifact: { appState.newInboxArtifact() },
                     onMakeTaskFromTrack: { await appState.makeTask(fromTrack: $0) },
                     onGoToTarget: { appState.navigateToTarget($0) },
-                    artifactMenu: appState.inboxArtifactMenu
+                    artifactMenu: appState.inboxArtifactMenu,
+                    ideaFacts: ideaFacts
                 )
             } else {
                 ProgressView()
@@ -136,6 +137,13 @@ struct ActionStripView: View {
                 appState.embeddedChatCenter.dropContext(type: IdeaChatSurface.contextType, id: String(id))
             }
         )
+    }
+
+    /// An Idea finder batch card's quotes and source; nil without a
+    /// database or on a failed read (the card leaves them out).
+    private func ideaFacts(_ ideaID: Int) async -> IdeaBatchCardFacts? {
+        guard let pool = appState.databaseManager?.dbPool else { return nil }
+        return try? await pool.read { db in try IdeaBatchCardFacts.read(db, ideaID: ideaID) }
     }
 
     /// The live dictionary (`reaction_command_map` + `tool_trust`) through
@@ -249,6 +257,9 @@ struct ActionStripActionsView: View {
     /// The artifact ⋯ (reading pane, list rows) and Needs approval's ⋯;
     /// nil (tests, shots) draws neither.
     var artifactMenu: InboxArtifactMenuModel?
+    /// An Idea finder batch card's quotes and source
+    /// (`IdeaBatchCardFacts.read`); nil leaves them out.
+    var ideaFacts: (Int) async -> IdeaBatchCardFacts? = { _ in nil }
 
     /// What the header opened in the reading pane, and the Idea finder's
     /// open row; settable at init so a design shot can open one.
@@ -370,10 +381,22 @@ struct ActionStripActionsView: View {
                                  row: Binding(get: { ideasRow }, set: openIdeasRow))
             }
             Spacer(minLength: 0)
+            if list == .ideas, vm.ideaBatch.olderCount > 0 {
+                InboxBulkPressButton(title: "Clear Old Ideas…", confirmTitle: Self.clearOldIdeasTitle,
+                                     model: vm.oldIdeasPress)
+                    .controlSize(.small)
+                    .fixedSize()
+            }
             InboxReactionCommandsButton { openAux(.reactionCommands) }
         }
         .padding(.horizontal, Spacing.medium)
         .padding(.vertical, Spacing.regular)
+    }
+
+    /// **Clear Old Ideas…**'s confirmation title and button: "Clear 1 Old
+    /// Idea", "Clear 4 Old Ideas".
+    static func clearOldIdeasTitle(_ count: Int) -> String {
+        count == 1 ? "Clear 1 Old Idea" : "Clear \(count) Old Ideas"
     }
 
     /// The columns right of the rail: the list and the reading pane, or —
@@ -516,7 +539,89 @@ struct ActionStripActionsView: View {
         case let .brief(action)?: pane(.proposal(action), header: helpHeader(entry))
         case let .approval(item)?: pane(Self.listItem(item), header: helpHeader(entry))
         case let .builtinNotice(notice)?: pane(.builtinNotice(notice), header: helpHeader(entry))
-        case .legacyTracks?, .legacyIdeas?, .legacyMessages?, nil: pane(nil)
+        case .legacyTracks?: tracksPane
+        case .legacyIdeas?: ideasPane
+        case .legacyMessages?, nil: pane(nil)
+        }
+    }
+
+    // MARK: - Track my threads and Idea finder
+
+    /// Track my threads' news list, or the thread opened from it under its
+    /// back bar. **All Threads** opens the whole list (its Stopped fold
+    /// keeps Restore).
+    @ViewBuilder
+    private var tracksPane: some View {
+        if let card = vm.openedNewsTrack {
+            VStack(alignment: .leading, spacing: 0) {
+                InboxTrackBackBar { vm.closeNewsTrack() }
+                    .padding(.horizontal, Spacing.medium)
+                    .padding(.top, Spacing.regular)
+                newsTrackPane(card)
+            }
+        } else {
+            InboxCardColumn {
+                InboxTracksNewsPane(summary: vm.trackSummary, quietPress: vm.quietTracksPress,
+                                    onOpenThread: { vm.openNewsTrack($0) },
+                                    onAllThreads: { vm.openLegacy(.tracks) })
+            }
+        }
+    }
+
+    /// The opened thread's card; Done and Stop watching go back to the news
+    /// list once written (a failed write keeps the card, its error shown).
+    @ViewBuilder
+    private func newsTrackPane(_ card: InboxTrackCard) -> some View {
+        if let tracks, let trackControls {
+            InboxTrackPane(
+                card: card, tracks: tracks, controls: trackControls,
+                isWriting: vm.isWriting(.track(card.track.id)),
+                onDone: {
+                    Task {
+                        await vm.markTrackDone(card.track.id)
+                        if vm.lastError == nil { vm.closeNewsTrack() }
+                    }
+                },
+                onStopWatching: {
+                    Task {
+                        await vm.stopWatching(card.track)
+                        if vm.lastError == nil { vm.closeNewsTrack() }
+                    }
+                },
+                onRestore: { Task { await vm.restoreTrack(card.track) } },
+                onCommand: onCardAction, workbenches: workbenches
+            )
+        } else {
+            InboxCardColumn { InboxCardPlaceholder(track: card, now: now ?? Date()) }
+        }
+    }
+
+    /// Idea finder's batch, one card at a time; nil ideas (no view model
+    /// yet) shows the empty pane.
+    @ViewBuilder
+    private var ideasPane: some View {
+        if let ideas {
+            let batch = vm.ideaBatch
+            IdeaBatchPane(
+                state: batch,
+                isWriting: batch.remaining.first.map {
+                    ideas.pendingWrites.isPending(InboxIdeaPane.writeKey($0.id))
+                } ?? false,
+                errorMessage: ideas.errorMessage,
+                loadFacts: ideaFacts,
+                onPress: { press, idea in
+                    Task {
+                        let landed = await ideas.press(press, on: idea)
+                        await vm.refresh()
+                        if press == .makeTarget, let targetID = landed { onGoToTarget(targetID) }
+                    }
+                },
+                onNext: { vm.takeNextIdeaBatch() },
+                onBacklog: { vm.openLegacy(.ideas) },
+                onDismissError: { ideas.errorMessage = nil }
+            )
+        } else {
+            pane(nil)
         }
     }
 

@@ -74,7 +74,7 @@ Waiting for me still holds people and mail, so "people waiting today" — in the
 
 - Search filters the loaded rows of the folder list only: not the legacy lists (Track my threads, Idea finder, Messages) and not Needs approval's stack.
 - A manual wall-clock change (no midnight, wake, day or time-zone signal) is picked up at the next such signal.
-- Track my threads, Idea finder and Messages still open today's legacy lists in the list column.
+- Messages still opens today's legacy list in the list column (Track my threads and Idea finder open their own panes since phase 3).
 - ⌥⌘S is one View-menu item shared with the Workbench's sessions panel.
 - The reading pane's width is no longer remembered across launches (the old `inbox.readingPaneWidth`); the rail and the list open at their ideal widths.
 - Not built from the mockup: the list header's **All / Unread** switch and its "updated N min ago" line (rows do print "updated <ago>"), Needs approval's **By kind / Oldest** switch.
@@ -82,6 +82,38 @@ Waiting for me still holds people and mail, so "people waiting today" — in the
 ### Inventory
 
 STRIP badge amendment (`docs/inventory/reaction-commands.md` changelog, approved in ask #634): the badge is approvals + people waiting today; the C1 guard is renamed `InboxFeedQueriesTests::testBadgeCountsApprovalsAndPeopleWaitingToday`, the STRIP-02 guard `testOpeningWritesOnlyReadAt` changes only its badge expectation. APPROVAL-01 note (`docs/inventory/inbox-folders.md` changelog): grouped list and Approve All, no semantic change; supporting `NeedsApprovalGroupsTests`, `ActionStripApproveAllTests::testEveryOpenApprovalStaysListed`.
+
+## Phase 3 — Track my threads and Idea finder
+
+Board #1076, spec sections "Track my threads (phase 3)" and "Idea finder (phase 3)" (ask #638). Plan `docs/superpowers/plans/2026-11-11-inbox-redesign-phase-3-tracks-ideas.md`. The root's two entries no longer open legacy lists: `ActionStripActionsView.readingPane` draws `InboxTracksNewsPane` for `.legacyTracks` and `IdeaBatchPane` for `.legacyIdeas` over their producers' own rows. Selecting either entry writes nothing (STRIP-02). No migration.
+
+### The "with news" rule and its twins
+
+A track has news when `has_updates` is set, or when it was never read (`read_at` NULL or "") and its last event — the later of `updated_at` and its newest `track_events.created_at` — is within 72 h of now (inclusive; a future event counts; an unknown last event is never news). Quiet = no news and the last event at or before now − 30 × 24 h. Go `internal/tracks/news.go` (`HasNews`, `IsQuiet`, `QuietTrackIDs`) and Swift `TrackNewsRule` read the same cases from `internal/tracks/testdata/track_news.json` (`TrackNewsRuleTests`). `TrackThreadsSummary` builds the row (pill = news count, preview = the first two news lines, meta "N quiet threads folded") and the pane: news newest first, five shown then "N more with news", the reason chip in precedence order **reply to you** (`ball_on` = the assignee, raw ids compared) > **decision** > **mention** (Slack mention markup of the assignee in the newest source ref) > **attachment** (a `media_items` image on the newest Slack ref, or on the newest mail event), the quiet note.
+
+A row opens the thread in place (`openNewsTrack`) under `InboxTrackBackBar`, over the same `InboxTrackPane`; Done and Stop watching go back to the list once written; a read that no longer lists the track closes it. **All Threads** opens the old list (`openLegacy(.tracks)`), which keeps the Stopped fold and Restore.
+
+### Stop Tracking Quiet Ones…
+
+`quietTracksPress` (`InboxBulkPressModel`, on the view model so a run survives navigation) plans with `watchtower tracks dismiss --quiet-days 30 --dry-run --json` (last stdout line `{"count":N,"ids":[…]}`) and applies with `tracks dismiss --ids ID,… --json` (`{"dismissed":N,"skipped":N,"ids":[…]}`; on a write error exit 1 and `{"dismissed":N,"of":M,"error":"…"}`) through `TracksBulkCLI`. `--quiet-days` requires `--dry-run`; `--ids` writes only `dismissed_at` on each listed track still active and is refused under an agent marker. A failed call re-reads the ids' `dismissed_at` and reports `.partial` when some did stop. TRACKS-07 note in `docs/inventory/tracks.md`.
+
+### The daily idea batch
+
+`IdeaDailyBatch` (WatchtowerCore): candidates are ideas awaiting a verdict created within the last 30 × 24 h, oldest `created_at` first; the batch is the first `ideas.dailyBatch` (default 13, a missing or < 1 value is 13) of them, fixed per local day in UserDefaults `ideas.batch.date` + `ideas.batch.ids`. **Next N** (`takeNextIdeaBatch`) replaces it with the first N candidates now. `IdeaBatchState` gives the row (pill = still to judge, preview, meta "N in the backlog · N older than 30 days"), the pane's progress and "Kept today" (`active` since local midnight, decisions only when chat-born).
+
+`IdeaBatchPane` shows one card (chip with kind, source and date, title, essence, the two newest quotes through `IdeaBatchCardFacts.read`), keys K / D / L / T, and writes through `IdeasViewModel.press(_:on:)` under the idea's verdict key (`InboxIdeaPane.writeKey`), so one card takes one verdict: **Keep** → `active`, **Drop** → `rejected`, **Later** → `not_now` with no date, **Make a Target…** → the converted target, which the Inbox opens. Each clears the review flag (IDEA-04). The caller re-reads after every press. **Backlog · N** opens the old ideas list.
+
+### Clear Old Ideas…
+
+On the Backlog's header while `olderCount > 0`: `oldIdeasPress` plans by reading the ideas awaiting a verdict whose `created_at` is older than 30 days, confirms "Clear N Old Ideas" ("Clear 1 Old Idea"), and applies `IdeaQueries.dropMany(ids:)` in one GRDB write: `dropped` with the review flag cleared, only on ids still awaiting a verdict (the rest count as skipped). `dropped` keeps them apart from the owner's **Later**; **Activate** brings one back and a new mention resurfaces it. IDEA-04 note in `docs/inventory/ideas.md`.
+
+### v1 limits
+
+- A bulk-stopped custom track keeps its watch recipe enabled: per the approved TRACKS-07 note the bulk write is `dismissed_at` only. The slot's `Due` gate skips a dismissed track, so the recipe runs no scan and no model call, and Restore resumes it.
+- The batch is per Mac in UserDefaults, like `inbox.folder`: each Mac has its own database; the phone is out of scope.
+- `ideas.dailyBatch` has no setting in the app.
+- The news row's latest line prints a Slack source ref's text as stored, mention markup included.
+- Not in the mockup, kept for the owner's look: the back bar over a thread (`inbox-r-threads-detail`), **All Threads** (`inbox-r-threads`), **Clear Old Ideas…** (`inbox-r-ideas-backlog`).
 
 ## Phase 4 — mail closes on reply (Gmail)
 

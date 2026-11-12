@@ -28,14 +28,14 @@ An automation's cards go to its folder, the root unless you moved it; **Move to 
 
 ### What the root holds
 
-The root sorts its rows by urgency. Each row shows a coloured tile for its kind, its first real line, the time and a count of what needs you.
+The root sorts its rows by urgency. Each row shows a tile for its kind, its first line, the time and a count of what needs you.
 
 - **Needs you**: **Waiting for me** (people waiting today; older ones as a grey line), **Messages** in its place before it has run or after a failed run, and each **Thread brief** a reaction made, for 24 hours.
 - **Today**: **Morning brief**, today's only, then cards your automations changed today.
-- **Running**: **Track my threads** ([tracks](tracks.md)), **Idea finder** ([ideas](ideas-and-decisions.md)), then older cards.
+- **Running**: **Track my threads**, the threads with news for you ([tracks](tracks.md)), **Idea finder**, today's ideas to judge ([ideas](ideas-and-decisions.md)), then older cards.
 - **Earlier**: one line counting the past briefs; click it for **History**.
 
-Your own folders have **Today** and **Earlier**. **Search the Inbox** in the toolbar filters the folder's list by title and first line.
+Your own folders have **Today** and **Earlier**. **Search the Inbox** filters the folder's list by title and first line.
 
 ### Needs approval
 <!-- learn
@@ -128,7 +128,7 @@ since: 0.24.0
 action: nav:inbox
 -->
 
-A row in **Waiting for me** has **Open in Slack** (or Mail, Jira, Linear), **Reply…**, **Done**, **Hide**, **Snooze** (**Tomorrow**, **In 3 days**, **Next week**), **Discuss in Chat** and **Hand to Agent…**. Track and idea rows have the buttons [Tracks](tracks.md) and [Ideas](ideas-and-decisions.md) describe. A failed press leaves the row with the error and **Retry**. The list re-reads every 30 seconds.
+A row in **Waiting for me** has **Open in Slack** (or Mail, Jira, Linear), **Reply…**, **Done**, **Hide**, **Snooze** (**Tomorrow**, **In 3 days**, **Next week**), **Discuss in Chat** and **Hand to Agent…**. **Track my threads** and **Idea finder** open their own panes. A failed press leaves the row with the error and **Retry**. The list re-reads every 30 seconds.
 
 ### Reply to a message
 <!-- learn

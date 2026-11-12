@@ -607,6 +607,7 @@ enum DesignShotCatalog {
             + ClosedAsksShotFixtures.shots
             + TuningChatShotFixtures.shots // The tuning chat over the Analytics pane (#1517).
             + InboxRedesignShotFixtures.shots // The Inbox redesign, phase 1 (#1076).
+            + InboxRedesignPhase3ShotFixtures.shots // Phase 3: Track my threads and Idea finder (#1076).
     }
 }
 
@@ -647,6 +648,7 @@ enum DesignShotFixtures {
         InboxFoldersShotFixtures.cleanUp()
         InboxApprovalsShotFixtures.cleanUp()
         InboxRedesignShotFixtures.cleanUp()
+        InboxRedesignPhase3ShotFixtures.cleanUp()
         TuningChatShotFixtures.cleanUp()
         ProjectPageShotFixtures.cleanUp()
         ClosedAsksShotFixtures.cleanUp()

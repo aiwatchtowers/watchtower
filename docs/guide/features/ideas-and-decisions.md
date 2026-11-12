@@ -4,7 +4,7 @@ Ideas collects proposals that were floated in Slack threads, meetings, AI chats,
 
 ## Why use it
 
-Someone says "we could cache this per tenant" in a thread, and it is buried by lunch. A day later it sits in the Inbox's **Idea finder** under **Needs your decision** with the quote, the author and a link back to the thread. You approve it, and a month later a second person raises it again and the new mention lands on the same entry instead of creating a duplicate.
+Someone says "we could cache this per tenant" in a thread, and it is buried by lunch. A day later it comes up in the Inbox's **Idea finder** with the quote and its author. You press **Keep**, and a month later a second person raises it again and the new mention lands on the same entry instead of creating a duplicate.
 
 ## How it works
 
@@ -32,20 +32,28 @@ A mention of something you rejected, dropped or put on **Not now** brings it bac
 
 ## Using it
 
-### Review what was found
+### Judge today's batch
 
 <!-- learn
-id: ideas-review-finder
-title: Judge the ideas it found
-text: Open **Idea finder** in the Inbox and **Approve**, **Reject** or **Make a Task** from floated ideas.
+id: ideas-daily-batch
+title: Judge today's ideas one by one
+text: Open **Idea finder** in the Inbox and press **Keep**, **Drop** or **Later** on each of today's 13 ideas.
 area: planning
 level: basics
 kind: feature
-since: 0.28.0
-action: nav:ideas
-replaces: [ideas-review]
-changed: Ideas moved from the Inbox's Ideas filter to its Idea finder entry.
+since: next
+action: nav:inbox
+replaces: [ideas-review-finder]
+changed: Idea finder hands out a daily batch, one card at a time, instead of the whole list.
 -->
+
+**Idea finder** hands you 13 ideas a day, one card at a time with its quotes and source: the oldest of those from the last 30 days still waiting for a verdict. The batch stays the same all day on this Mac.
+
+1. Press **Keep** (K) to make it active, **Drop** (D) to reject it, **Later** (L) to park it with no date, or **Make a Target…** (T) to turn it into a target and open it.
+2. The bar shows how many you judged; **Kept today** lists what you kept.
+3. When the batch is done, **Next 13** hands out more.
+
+### Review what was found
 
 <!-- learn
 id: ideas-not-now
@@ -69,13 +77,14 @@ since: 0.24.0
 action: nav:ideas
 -->
 
-Open the Inbox's **Idea finder**. Ideas and notes waiting for your verdict (and decisions found only in chats), fresh ones and ones brought up again, sit under **Needs your decision** there. It also lists the rest of the registry, newest update first, each row labelled like "Idea · active" or "Decision · superseded", with "· Chat" added for one found in a chat; only merged items are left out.
+**Backlog · N** on **Idea finder** opens the whole registry. Ideas and notes waiting for your verdict (and decisions found only in chats) sit under **Needs your decision**, then the rest, newest update first, each row labelled like "Idea · active" or "Decision · superseded", with "· Chat" added for one found in a chat; only merged items are left out.
 
 Click one to see its essence, a thumbs-up and thumbs-down, and every mention with a link back to Slack, the transcript, the mail thread, the Jira issue or the chat (**Open in Chat**; "Chat deleted" once it is gone). The buttons depend on its kind and status:
 
 - **Approve** or **Reject** an item waiting for a verdict. An idea also offers **Make a Task** and **Not now**.
 - **Not now** parks an idea for **1 week**, **1 month** or **No date**. The date is only a note: nothing brings it back on that day, only a new mention does. **Activate** returns it.
 - **Make a Task** turns an idea into a target and opens it. **Drop** closes it.
+- **Clear Old Ideas…** in the Backlog's header drops every idea waiting over 30 days, after **Clear N Old Ideas**. Unlike **Later**, they stay apart from what you parked; **Activate** returns one.
 - **Merge…** folds duplicates together; "Looks similar to #N" offers a suggested one.
 - A decision shows its status, with **Supersede** and **Reverse** while active (**Reverse** asks inline first), or **Activate** when it was rejected, dropped or put off.
 - The trash button deletes the item for good, after an inline **Delete**, together with its mentions, its chat and anything merged into it.
@@ -126,7 +135,7 @@ Running the same or an overlapping range again never creates duplicates, and dec
 
 ## When it's empty or wrong
 
-An empty **Idea finder** says "No ideas yet" and "Ideas and decisions picked up from conversations, every ~6 h", with a status line.
+**"Nothing left to judge from the last 30 days"** means today's batch is done and no newer idea waits; older ones are in **Backlog · N**. An empty Backlog says "No ideas yet" and "Ideas and decisions picked up from conversations, every ~6 h", with a status line.
 
 - **Off — Turn on.** Click **Turn on**, or **Turn On** on the Idea finder card.
 - **Connect Slack to get this.** The status line follows Slack, even though mail, Jira and meetings also feed it. Connect Slack, or use **Find Ideas in Past Messages…** over a range.
