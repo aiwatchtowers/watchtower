@@ -186,21 +186,29 @@ final class IdeaDailyBatchTests: XCTestCase {
         XCTAssertEqual(state.judgedCount, 1)
     }
 
+    /// Kept today = the ideas handed out today, across every Next, that are
+    /// now active: an active idea outside today's batches is absent even
+    /// when its `updated_at` is today (a new mention bumps it), and
+    /// yesterday's batches do not count.
     func testKeptTodaySpansBatchesAndExcludesYesterday() {
         let batch = IdeaDailyBatch(defaults: defaults)
-        var ideas = fresh(30)
+        // Yesterday's batch, one of it kept yesterday.
+        var ideas = fresh(40)
+        _ = batch.today(ideas: ideas, now: now.addingTimeInterval(-86400), calendar: calendar)
+        ideas = judged(ideas, ids: [1], status: "active", updatedAt: stamp(daysAgo: 1))
+        ideas = judged(ideas, ids: Set(2...13), status: "rejected", updatedAt: stamp(daysAgo: 1))
+
         _ = batch.today(ideas: ideas, now: now, calendar: calendar)
-        ideas = judged(ideas, ids: [1], status: "active", updatedAt: stamp(daysAgo: 0, hours: 3))
-        ideas = judged(ideas, ids: Set(2...13), status: "rejected", updatedAt: stamp(daysAgo: 0, hours: 3))
+        ideas = judged(ideas, ids: [14], status: "active", updatedAt: stamp(daysAgo: 0, hours: 3))
+        ideas = judged(ideas, ids: Set(15...26), status: "rejected", updatedAt: stamp(daysAgo: 0, hours: 3))
         _ = batch.next(ideas: ideas, now: now, calendar: calendar)
-        ideas = judged(ideas, ids: [14], status: "active", updatedAt: stamp(daysAgo: 0, hours: 1))
-        // Kept yesterday (Kyiv 2026-11-11 23:00 = 21:00Z), and a kept non-chat-born decision.
-        ideas.append(idea(50, daysAgo: 4, status: "active", updatedAt: "2026-11-11T21:00:00Z"))
-        ideas.append(idea(51, daysAgo: 4, kind: "decision", status: "active", updatedAt: stamp(daysAgo: 0)))
-        ideas.append(idea(52, daysAgo: 4, kind: "decision", status: "active", chatBorn: true,
-                          updatedAt: "2026-11-11T22:00:00Z")) // Kyiv midnight: today
+        ideas = judged(ideas, ids: [27], status: "active", updatedAt: stamp(daysAgo: 0, hours: 1))
+        // Active and touched today, never in today's batches.
+        ideas.append(idea(50, daysAgo: 4, status: "active", updatedAt: stamp(daysAgo: 0)))
+        ideas = judged(ideas, ids: [1], status: "active", updatedAt: stamp(daysAgo: 0))
         let state = batch.today(ideas: ideas, now: now, calendar: calendar)
-        XCTAssertEqual(state.keptToday.map(\.id), [14, 1, 52])
+        XCTAssertEqual(state.keptToday.map(\.id), [27, 14])
+        XCTAssertEqual(defaults.array(forKey: IdeaDailyBatch.dayIDsKey) as? [Int], Array(14...39))
     }
 
     func testBacklogAndOlderCounts() {

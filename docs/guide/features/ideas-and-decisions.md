@@ -50,7 +50,7 @@ changed: Idea finder hands out a daily batch, one card at a time, instead of the
 **Idea finder** hands you 13 ideas a day, one card at a time with its quotes and source: the oldest of those from the last 30 days still waiting for a verdict. The batch stays the same all day on this Mac.
 
 1. Press **Keep** (K) to make it active, **Drop** (D) to reject it, **Later** (L) to park it with no date, or **Make a Target…** (T) to turn it into a target and open it.
-2. The bar shows how many you judged; **Kept today** lists what you kept.
+2. The bar shows how many you judged; **Kept today** lists the ideas from today's batches you kept.
 3. When the batch is done, **Next 13** hands out more.
 
 ### Review what was found

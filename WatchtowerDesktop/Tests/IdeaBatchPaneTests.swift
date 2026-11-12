@@ -64,8 +64,11 @@ final class IdeaBatchPaneTests: XCTestCase {
         return state
     }
 
-    private func pane(_ state: IdeaBatchState, isWriting: Bool = false,
-                      failure: IdeaBatchFailure? = nil) -> IdeaBatchPane {
+    private func pane(
+        _ state: IdeaBatchState,
+        isWriting: Bool = false,
+        failure: IdeaBatchFailure? = nil
+    ) -> IdeaBatchPane {
         IdeaBatchPane(state: state, isWriting: isWriting, failure: failure,
                       loadFacts: { _ in nil }, onPress: { _, _ in .landed(targetID: nil) }, onNext: {},
                       onBacklog: {}, onDismissError: {})
