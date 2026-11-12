@@ -72,7 +72,7 @@ action: chat:Dismiss every auto track older than a month
 -->
 
 1. Open the Inbox and pick **Track my threads**: the threads with news for you, newest first. **N more with news** shows past the first five; **All Threads** lists every track you follow.
-2. Click a thread for its context, blocking, sub-items, participants, **Key Messages** (open in Slack), **Related Digests**, linked targets and Jira issues. **Open chat** at the bottom unfolds a chat about this track. The priority badge changes its priority; **‹ Track my threads** goes back.
+2. Click a thread for its context, blocking, sub-items, participants, **Key Messages** (open in Slack), **Related Digests**, linked targets and Jira issues. **Open chat** at the bottom unfolds a chat about this track. The priority badge changes its priority; **Track my threads** at the top of the thread goes back.
 3. Press **Done** when you have read it. **Open in Slack**, **Discuss in Chat** and **Hand to Agent…** sit beside it.
 4. The **⋯** menu has **Stop watching**, which takes the track off the list. A mined track adds **Make a Task**, which creates a [target](targets.md) and opens it; a custom track adds **Go to Target** when it is linked to one, and **Delete…**, which asks inline.
 5. Stopped tracks fold into **Stopped · N** at the end of **All Threads**; **Show** lists them and **Restore** on a card brings it back.
