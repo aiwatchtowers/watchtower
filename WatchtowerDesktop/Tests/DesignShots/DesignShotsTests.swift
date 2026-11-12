@@ -45,6 +45,11 @@ final class DesignShotsTests: XCTestCase {
         try renderShots(InboxRedesignShotFixtures.shots)
     }
 
+    /// The Inbox redesign's phase 2 shots alone (Waiting for me and Mail waiting, #1076).
+    func testInboxRedesignWaitingShotsRender() throws {
+        try renderShots(InboxRedesignWaitingShotFixtures.shots)
+    }
+
     func testReviewerShotsRender() throws {
         try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("branch-review-reviewer") })
     }

@@ -33,7 +33,7 @@ Rules you teach through [Catch Up](catch-up.md) feedback are applied to the brie
 
 ### How the Inbox shows it
 
-The **Morning brief** pane reads top down: the lead line and **Start here** (the first three items that need you), **Your day** with today's plan, **Waiting on you** (the three newest messages for you), **Moved overnight** (up to three tracks with news), then the rest of **Needs you** under **More for today**, **What happened**, **Team pulse** and **Coaching**. **Waiting on you** and **Moved overnight** show on today's brief only.
+The **Morning brief** pane reads top down: the lead line and **Start here** (the first three items that need you), **Your day** with today's plan, **Waiting on you** (the three newest messages from people), **Moved overnight** (up to three tracks with news), then the rest of **Needs you** under **More for today**, **What happened**, **Team pulse** and **Coaching**. **Waiting on you** and **Moved overnight** show on today's brief only.
 
 ### When a day's brief is read
 

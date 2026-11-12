@@ -35,7 +35,7 @@ The root sorts its rows by urgency; each shows its first real line, the time and
 - **Running**: **Track my threads** ([tracks](tracks.md)), **Idea finder** ([ideas](ideas-and-decisions.md)), then older cards.
 - **Earlier**: one line counting the past briefs; click it for **History**.
 
-Your own folders have **Today** and **Earlier**. **Search the Inbox** in the toolbar filters the folder's list by title and first line.
+Your own folders have **Today** and **Earlier**. **Search the Inbox** in the toolbar filters the list by title and first line.
 
 ### Needs approval
 <!-- learn
@@ -53,7 +53,7 @@ changed: Proposals and due reminders moved from Needs your decision to their own
 
 **Needs approval** holds every action waiting for you, whatever started it (a reaction, a chat, an automation, a **Reply…**), and every reminder once due. It can't be moved, renamed, hidden or deleted. Each approval is one card with **Approve**, **Reject** and **Edit…** (**Retry** after a failure; **Done** and **Snooze 1h** on a reminder). Nothing outside Watchtower happens before you approve.
 
-The list groups them by kind, oldest first: **Messages**, **Tracks to create**, **Targets**, **Confluence and Jira**, **Reminders**, **Other**. Two or more tracks, targets or one Confluence or Jira action make one row with **Approve All N…**. While the built-in is off or failing, approvals show in the standard card.
+The list groups them by kind, oldest first: **Messages**, **Tracks to create**, **Targets**, **Confluence and Jira**, **Reminders**, **Other**. Two or more tracks, targets or one Confluence or Jira action make one row with **Approve All N…**. While the built-in is off, stopped or failing, approvals show in the standard card.
 
 ### Waiting for me
 <!-- learn
