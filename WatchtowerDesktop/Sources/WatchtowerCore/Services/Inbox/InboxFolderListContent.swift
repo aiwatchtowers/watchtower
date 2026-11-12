@@ -73,6 +73,20 @@ package struct InboxFolderListContent: Equatable, Sendable {
         self.query = query
     }
 
+    /// The drawn row `step` rows from the selection (↑ = -1, ↓ = +1),
+    /// sections in order; with no selection drawn, ↓ picks the first row
+    /// and ↑ the last. Nil past either end or with no rows: the key does
+    /// nothing.
+    package func neighbour(_ step: Int) -> String? {
+        let ids = rows.map(\.id)
+        guard !ids.isEmpty, step != 0 else { return nil }
+        guard let selection, let index = ids.firstIndex(of: selection) else {
+            return step > 0 ? ids.first : ids.last
+        }
+        let next = index + step
+        return ids.indices.contains(next) ? ids[next] : nil
+    }
+
     /// A search is on and nothing matches it: "No matches for …" in place
     /// of the folder's empty state.
     package var hasNoMatches: Bool {

@@ -24,6 +24,8 @@ struct InboxFolderContentList<EmptyExtra: View>: View {
     /// The empty state's readiness line and actions.
     var emptyState: EmptyStateContext = .neutral
     let emptyExtra: EmptyExtra
+    /// The list takes the keys after a click on a row.
+    @FocusState private var listFocused: Bool
 
     init(
         content: InboxFolderListContent,
@@ -69,31 +71,63 @@ struct InboxFolderContentList<EmptyExtra: View>: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    /// A List, as today's Inbox list (`InboxSplitView`): arrow keys move the
-    /// selection and VoiceOver reads the rows as a list. Each heading is a
-    /// plain row of its Section that cannot be selected, not a Section
-    /// header: a plain List pins its header and draws a hairline under it.
+    /// A scroll of `.kitRow` rows, as the folder rail (`InboxFolderMenu`),
+    /// not a `List(selection:)`: a List paints its own selection under the
+    /// row's plate, and its binding writes nil when a search hides the
+    /// selected row, which would forget the owner's pick. Only a click,
+    /// ↑/↓ (`InboxFolderListContent.neighbour`) and Escape select. Each
+    /// heading is a plain line above its rows; the Earlier line comes last,
+    /// under an "Earlier" heading when no section of that name is drawn.
     private var list: some View {
-        List(selection: Binding(get: { content.selection }, set: { onSelect($0) })) {
-            ForEach(content.sections) { section in
-                Section {
-                    InboxListSectionHeading(title: section.title, count: section.count)
-                        .inboxListLine()
-                    ForEach(section.rows) { row in
-                        InboxListRow(content: row.content, isSelected: row.id == content.selection, menu: row.menu,
-                                     contextEntries: contextMenu(row)) { onMenu(row.id, $0) }
-                            .tag(Optional(row.id))
-                            .inboxListLine(selectable: true)
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: Spacing.tight) {
+                    ForEach(content.sections) { section in
+                        InboxListSectionHeading(title: section.title, count: section.count)
+                        ForEach(section.rows) { row in
+                            listRow(row).id(row.id)
+                        }
+                    }
+                    if let earlier = content.earlierLine {
+                        if !content.sections.contains(where: { $0.id == InboxRootSection.earlier.rawValue }) {
+                            InboxListSectionHeading(title: InboxRootSection.earlier.title)
+                        }
+                        InboxEarlierLineRow(line: earlier, onPress: onEarlier)
                     }
                 }
+                .padding(.horizontal, Spacing.small)
+                .padding(.bottom, Spacing.large)
             }
-            if let earlier = content.earlierLine {
-                InboxEarlierLineRow(line: earlier, onPress: onEarlier)
-                    .inboxListLine()
-            }
+            .focusable()
+            .focusEffectDisabled()
+            .focused($listFocused)
+            .onKeyPress(.upArrow) { move(-1, proxy) }
+            .onKeyPress(.downArrow) { move(1, proxy) }
+            .onExitCommand { onSelect(nil) }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("inbox.list")
         }
-        .clearPlainList()
-        .onExitCommand { onSelect(nil) }
+    }
+
+    private func listRow(_ row: InboxFolderListRow) -> some View {
+        let selected = row.id == content.selection
+        return InboxListRow(content: row.content, isSelected: selected, menu: row.menu,
+                            contextEntries: contextMenu(row)) { onMenu(row.id, $0) }
+            .contentShape(Rectangle())
+            .onTapGesture {
+                listFocused = true
+                onSelect(row.id)
+            }
+            .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+            .accessibilityAction { onSelect(row.id) }
+    }
+
+    /// ↑/↓: the drawn row `step` away from the selection, scrolled into view.
+    private func move(_ step: Int, _ proxy: ScrollViewProxy) -> KeyPress.Result {
+        guard let next = content.neighbour(step) else { return .ignored }
+        onSelect(next)
+        withAnimation(Motion.toggle) { proxy.scrollTo(next) }
+        return .handled
     }
 }
 
@@ -169,19 +203,6 @@ struct InboxNoMatchesLine: View {
             .padding(.top, Spacing.wide)
             .padding(.horizontal, Spacing.large)
             .accessibilityIdentifier("inbox.noMatches")
-    }
-}
-
-private extension View {
-    /// A line of the list: no separator, no stock background, `Spacing.tight`
-    /// below a row; a heading or the Earlier line is never selected.
-    @ViewBuilder
-    func inboxListLine(selectable: Bool = false) -> some View {
-        let line = listRowInsets(EdgeInsets(top: 0, leading: Spacing.small, bottom: Spacing.tight,
-                                            trailing: Spacing.small))
-            .listRowSeparator(.hidden)
-            .listRowBackground(Color.clear)
-        if selectable { line } else { line.selectionDisabled() }
     }
 }
 

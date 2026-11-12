@@ -213,4 +213,29 @@ final class NeedsApprovalGroupsTests: XCTestCase {
         XCTAssertEqual(stack[3].entries.map(\.id), ["approval:action:6"])
         XCTAssertEqual(NeedsApprovalGroups.stack([], openActions: []), [])
     }
+
+    /// APPROVAL-01: a new approval shows at once above the recipe's cards —
+    /// inside a group too, in the stack and in the list alike; the group's
+    /// own place stays its oldest item's.
+    func testNativeCardsComeFirstInsideAGroup() {
+        let recipeCard = AutomationOutputCard(id: 9, automationID: 2, automationName: "Needs approval", runID: 3,
+                                              title: "Send", body: "", priority: "medium", createdAt: Self.now)
+        func withRecipe(_ item: NeedsApprovalItem) -> NeedsApprovalItem {
+            NeedsApprovalItem(item.record, recipe: recipeCard)
+        }
+        let olderRecipe = withRecipe(Self.action(1, tool: "send_slack_message", created: "2026-11-06T08:00:00Z"))
+        let newerNative = Self.action(2, tool: "send_slack_message", created: "2026-11-06T09:30:00Z")
+        let reminder = Self.reminder(3, created: "2026-11-06T08:30:00Z")
+        let groups = NeedsApprovalGroups.build([newerNative, reminder, olderRecipe])
+        XCTAssertEqual(groups.map(\.0), [.messages, .reminders], "groups keep their oldest-first order")
+        XCTAssertEqual(groups.first?.1.map(\.key), ["action:2", "action:1"], "native above the recipe's")
+
+        let entries = [olderRecipe, newerNative].map(InboxFolderEntry.approval)
+        XCTAssertEqual(NeedsApprovalGroups.stack(entries, openActions: [1, 2]).first?.entries.map(\.id),
+                       ["approval:action:2", "approval:action:1"])
+        let list = NeedsApprovalGroups.sections(entries, openActions: [1, 2], now: Self.now, calendar: Self.utc) {
+            InboxFolderListRow(id: $0.id, content: InboxRowContent(kind: .approval, title: $0.id))
+        }
+        XCTAssertEqual(list.first?.rows.map(\.id), ["approval:action:2", "approval:action:1"])
+    }
 }

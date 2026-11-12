@@ -85,8 +85,11 @@ package enum NeedsApprovalGroups {
     package static let noticesSectionID = "notices"
     package static let inFlightSectionID = "inFlight"
 
-    /// `items` by group: groups ordered by their oldest item, items oldest
-    /// first (`NeedsApprovalItem`'s listed order); an empty group is left out.
+    /// `items` by group: groups ordered by their oldest item; inside a
+    /// group the native cards (no recipe card) come first, then the
+    /// recipe's, each oldest first (`NeedsApprovalItem`'s listed order), so
+    /// a new approval shows at once above the recipe's cards (APPROVAL-01);
+    /// an empty group is left out.
     package static func build(_ items: [NeedsApprovalItem]) -> [(NeedsApprovalGroup, [NeedsApprovalItem])] {
         var groups: [(NeedsApprovalGroup, [NeedsApprovalItem])] = []
         for item in items.sorted(by: { $0.listedBefore($1) }) {
@@ -97,7 +100,9 @@ package enum NeedsApprovalGroups {
                 groups.append((group, [item]))
             }
         }
-        return groups
+        return groups.map { group, items in
+            (group, items.filter { $0.recipe == nil } + items.filter { $0.recipe != nil })
+        }
     }
 
     /// The ids **Approve All** approves, or nil when the group offers none:
@@ -231,7 +236,7 @@ package enum NeedsApprovalGroups {
         case .confluenceJira: "\(count) Confluence and Jira changes"
         case .messages, .reminders, .other: "\(count) \(group.title)"
         }
-        let oldest = items.first
+        let oldest = items.min { $0.listedBefore($1) }
         let preview = oldest.map { "\(itemTitle($0)) · and \(count - 1) more" } ?? ""
         var meta = ""
         if case let .action(action)? = oldest?.record { meta = InboxApprovalText.meta(action) }
