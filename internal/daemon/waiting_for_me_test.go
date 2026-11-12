@@ -332,3 +332,14 @@ func TestPhaseWaitingForMe_NeitherActiveCancelsBoth(t *testing.T) {
 		assert.Equal(t, db.RunCancelled, runs[0].Status)
 	}
 }
+
+// A gate over an id the slot keeps no marks for is due, with a log line,
+// and never dereferences a nil mark.
+func TestWaitingGate_UnknownIDIsDue(t *testing.T) {
+	f := newMBFixture(t, nil)
+	var logBuf bytes.Buffer
+	f.d.SetLogger(log.New(&logBuf, "", 0))
+	g := waitingGate{d: f.d, id: "not-a-waiting-builtin", kind: db.WaitingPeople}
+	assert.True(t, g.Due(context.Background(), builtin.Entry{}, f.clock.Now()))
+	assert.Contains(t, logBuf.String(), "not-a-waiting-builtin: no Waiting for me marks")
+}
