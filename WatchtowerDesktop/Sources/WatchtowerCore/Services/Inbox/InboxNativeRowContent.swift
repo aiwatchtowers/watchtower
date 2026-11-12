@@ -63,6 +63,13 @@ package struct InboxRowActionsContent: Equatable {
         /// row says (A's contract item 3), and the buttons its native card
         /// offers today (`AgentActionCardView.rowButtons`).
         case action(summary: String, buttons: [ActionButton])
+        /// A Mail waiting sender row (`address` = its
+        /// `InboxPeopleRule.senderKey`): Open (the newest mail's link,
+        /// disabled without one or when `InboxCardLinkPolicy` refuses it),
+        /// Mark All Done…, Mute.
+        case mailSender(address: String, openEnabled: Bool)
+        /// Waiting for me's Older note row: Mark All Done….
+        case waitingOlder
     }
 
     /// One of a proposal row's buttons. **Edit…** and **Open Draft** open
@@ -179,6 +186,7 @@ package struct InboxRowActionsContent: Equatable {
         case let .action(_, buttons): buttons.contains { usesCLI($0.press) }
         case let .track(custom, _): custom
         case .idea, .reminder: false
+        case .mailSender, .waitingOlder: true
         }
     }
 
@@ -195,7 +203,27 @@ package struct InboxRowActionsContent: Equatable {
         case .inboxItem, .action: return true
         case let .track(custom, _): return custom && (press == .stopWatching || press == .retryFailedPress)
         case .idea, .reminder: return false
+        case .mailSender, .waitingOlder: return press == .markAllDone
         }
+    }
+
+    /// A sender or Older row's presses, in the order drawn; empty for every
+    /// other kind (drawn by their own cases). Mark All Done… is a bulk
+    /// press (`InboxBulkCenter`), never one of the row's own writes.
+    package var bulkRowPresses: [InboxRowPress] {
+        switch kind {
+        case .mailSender: [.open, .markAllDone, .mute]
+        case .waitingOlder: [.markAllDone]
+        case .inboxItem, .track, .idea, .reminder, .action: []
+        }
+    }
+
+    /// A sender row for `address` (any spelling) whose newest open mail has
+    /// `newestPermalink` (`WaitingQueries.newestPermalink`).
+    package static func mailSenderKind(address: String, newestPermalink: String?, navScreens: Set<String>) -> Kind {
+        let link = newestPermalink.flatMap { $0.isEmpty ? nil : URL(string: $0) }
+        return .mailSender(address: InboxPeopleRule.senderKey(address),
+                           openEnabled: link.map { InboxCardLinkPolicy.permits($0, navScreens: navScreens) } ?? false)
     }
 
     /// The footer's **Retry** under a failed press. A proposal's repeats
@@ -261,6 +289,8 @@ package enum InboxRowPress: Equatable, Sendable {
     case stopWatching, makeTask, goToTarget, deleteTrack
     case approve, reject, edit, openDraft, retry, dismiss, notNow(until: String), activate, drop
     case snoozeHour
+    /// **Mark All Done…** on a sender or Older row; **Mute** on a sender row.
+    case markAllDone, mute
     /// **Retry** under a failed press: repeats it.
     case retryFailedPress
     case replyChanged(String), proposeReply, cancelReply
@@ -274,7 +304,7 @@ package extension InboxRowPress {
         case .open, .discussInChat, .handToAgent, .goToTarget, .deleteTrack, .edit, .openDraft,
              .replyChanged, .cancelReply: false
         case .reply, .done, .hide, .snooze, .stopWatching, .makeTask, .approve, .reject, .retry, .dismiss,
-             .notNow, .activate, .drop, .snoozeHour, .retryFailedPress, .proposeReply: true
+             .notNow, .activate, .drop, .snoozeHour, .retryFailedPress, .proposeReply, .markAllDone, .mute: true
         }
     }
 }

@@ -141,14 +141,15 @@ enum InboxBuilderBShotFixtures {
 
         /// The ref of the kind the native actions are for.
         func ref(_ id: Int64) -> ArtifactRef {
-            let kind: ArtifactRefKind = switch actions.kind {
-            case .inboxItem: .inboxItem
-            case .track: .track
-            case .idea: .idea
-            case .reminder: .reminder
-            case .action: .action
+            switch actions.kind {
+            case .inboxItem: ArtifactRef(kind: .inboxItem, id: id)
+            case .track: ArtifactRef(kind: .track, id: id)
+            case .idea: ArtifactRef(kind: .idea, id: id)
+            case .reminder: ArtifactRef(kind: .reminder, id: id)
+            case .action: ArtifactRef(kind: .action, id: id)
+            case let .mailSender(address, _): ArtifactRef(kind: .mailSender, key: address)
+            case .waitingOlder: ArtifactRef(kind: .waitingOlder, key: "older")
             }
-            return ArtifactRef(kind: kind, id: id)
         }
     }
 

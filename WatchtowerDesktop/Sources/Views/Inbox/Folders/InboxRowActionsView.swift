@@ -5,6 +5,8 @@ import WatchtowerCore
 /// `ArtifactRefHooks.nativeActions` (`InboxRefHooks`).
 struct InboxRowActionsView: View {
     let content: InboxRowActionsContent
+    /// A sender or Older row's **Mark All Done…** press (`InboxBulkCenter`).
+    var bulk: InboxBulkPressModel?
     var onPress: (InboxRowPress) -> Void = { _ in }
 
     var body: some View {
@@ -81,6 +83,34 @@ struct InboxRowActionsView: View {
                 actionButton(button)
                     .disabled(content.isOff(button.press))
             }
+        case .mailSender, .waitingOlder:
+            ForEach(Array(content.bulkRowPresses.enumerated()), id: \.offset) { _, press in
+                bulkRowButton(press)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func bulkRowButton(_ press: InboxRowPress) -> some View {
+        switch press {
+        case .open:
+            if case let .mailSender(_, openEnabled) = content.kind {
+                Button("Open") { onPress(.open) }
+                    .disabled(!openEnabled)
+                    .help(openEnabled ? "Open this sender's newest mail" : "This sender's newest mail has no link")
+            }
+        case .markAllDone:
+            if let bulk {
+                InboxBulkPressButton(
+                    title: "Mark All Done…", confirmTitle: { "Mark \($0) Done" }, model: bulk, style: .inline)
+                    .disabled(content.isOff(.markAllDone))
+            }
+        case .mute:
+            Button("Mute") { onPress(.mute) }
+                .disabled(content.isOff(.mute))
+                .help("Hide this sender from Mail waiting; the mail stays where it is")
+        default:
+            EmptyView()
         }
     }
 
@@ -138,6 +168,8 @@ struct InboxRowActionsView: View {
 /// "Reply waiting for approval". Nothing for an idle row without these.
 struct InboxRowActionsFooter: View {
     let content: InboxRowActionsContent
+    /// A sender or Older row's bulk press: its result line and Try Again.
+    var bulk: InboxBulkPressModel?
     var onPress: (InboxRowPress) -> Void = { _ in }
 
     /// The composer's field has the keyboard: only then does ⌘↩ propose,
@@ -186,6 +218,9 @@ struct InboxRowActionsFooter: View {
                     .foregroundStyle(.secondary)
             case nil:
                 EmptyView()
+            }
+            if let bulk {
+                InboxBulkPressResult(model: bulk)
             }
         }
         .controlSize(.small)

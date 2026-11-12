@@ -163,12 +163,18 @@ struct ArtifactListView: View {
     let firstIndex: Int
     let mode: ArtifactRenderMode
     @Environment(\.artifactEnvironment) private var environment
+    /// Waiting for me's Older rows are open (`foldsOlder`); folded by
+    /// default, per artifact for as long as its card is on screen.
+    @State private var olderOpen = false
 
     var body: some View {
         let offsets = list.rowActionOffsets(start: firstIndex)
         let shown = list.rows.indices.filter { index in
             list.rows[index].ref.map(environment.refHooks.isOpen) ?? true
         }
+        let folds = foldsOlder && shown.first == 0
+        let older = folds ? shown.count - 1 : 0
+        let drawn = folds && !olderOpen ? [0] : shown
         VStack(alignment: .leading, spacing: Spacing.tight) {
             if let title = list.title { ArtifactBlockTitle(text: title).padding(.horizontal, Spacing.regular) }
             if shown.isEmpty {
@@ -178,12 +184,25 @@ struct ArtifactListView: View {
                     .padding(.horizontal, Spacing.regular)
                     .padding(.vertical, Spacing.compact)
             }
-            ForEach(shown, id: \.self) { index in
+            ForEach(drawn, id: \.self) { index in
                 ArtifactListRowView(row: list.rows[index], firstIndex: offsets[index], mode: mode)
+                if folds, index == 0, older > 0 {
+                    Button(olderOpen ? "Hide" : "Show \(older) older") { olderOpen.toggle() }
+                        .buttonStyle(.kitQuiet)
+                        .controlSize(.small)
+                        .padding(.horizontal, Spacing.regular)
+                }
             }
         }
         // The rows' hover plates sit flush with the card's other blocks.
         .padding(.horizontal, -Spacing.regular)
+    }
+
+    /// In the Inbox, a list led by Waiting for me's Older note row (ref
+    /// `waiting_older`) draws that row and folds the rows after it behind
+    /// **Show <n> older**. The Look preview and every other list show all rows.
+    private var foldsOlder: Bool {
+        mode == .inbox && list.rows.first?.ref?.kind == .waitingOlder
     }
 }
 

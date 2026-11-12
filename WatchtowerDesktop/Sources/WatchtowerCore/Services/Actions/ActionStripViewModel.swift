@@ -109,6 +109,8 @@ package final class ActionStripViewModel {
     private let dbPool: DatabasePool
     /// nil = the installed CLI, found at press time.
     private let cliRunner: CLIRunnerProtocol?
+    /// The runner a bulk press uses: `cliRunner`, else the CLI found at press time.
+    @ObservationIgnored private let pressRunner: @MainActor () -> (any CLIRunnerProtocol)?
     private let customTrackControls: any CustomTrackControlling
     private let defaults: UserDefaults
     /// The moment the list is read and laid out at (Today, Earlier, due
@@ -158,6 +160,7 @@ package final class ActionStripViewModel {
         self.dbPool = dbPool
         self.clock = clock
         self.cliRunner = cliRunner
+        self.pressRunner = { cliRunner ?? findCLI() }
         self.customTrackControls = customTrackControls ?? DirectCustomTrackControls(
             dbPool: dbPool, scanService: TrackScanService(runner: cliRunner ?? InstalledCLIRunner()))
         self.defaults = defaults
@@ -702,6 +705,49 @@ package final class ActionStripViewModel {
         // artifact or a day is selected, and no read mark is written — a
         // poll or refresh never marks anything read (STRIP-02).
         _ = showEntry(below ?? before[..<index].last(where: listed.contains))
+    }
+
+    // MARK: - Mark All Done… and Mute (sender and Older rows)
+
+    /// The **Mark All Done…** presses of Mail waiting's sender rows and
+    /// Waiting for me's Older row, here (AppState-owned) so a press under
+    /// way survives leaving the Inbox; each result re-reads the list.
+    @ObservationIgnored package private(set) lazy var bulk = InboxBulkCenter(
+        cli: { [weak self] in InboxBulkCLI(runner: self?.pressRunner()) },
+        onFinished: { [weak self] in await self?.refresh() })
+
+    /// A failed press on a text-id row (a sender's Mute), by the row's
+    /// ref with its key in `InboxPeopleRule.senderKey` form: kept with
+    /// **Retry** until the next press on it or until the row leaves.
+    package private(set) var textRowErrors: [InboxRef: InboxRowFailure] = [:]
+    /// The senders whose Mute is being written.
+    package private(set) var mutingSenders: Set<String> = []
+
+    /// A Mute on `address` (any spelling) is being written.
+    package func isMuting(_ address: String) -> Bool {
+        mutingSenders.contains(InboxPeopleRule.senderKey(address))
+    }
+
+    /// **Mute** on a Mail waiting row (INBOX-05): one user rule
+    /// `source_mute` / `email:<address>` through the Desktop's rules writer,
+    /// then a re-read; the sender leaves Mail waiting only, no
+    /// `inbox_items` row changes. A failure stays on the row with Retry.
+    /// A second press while one is written is dropped.
+    package func muteSender(_ address: String) async {
+        let key = InboxPeopleRule.senderKey(address)
+        let ref = InboxRef(kind: .mailSender, key: key)
+        guard !mutingSenders.contains(key) else { return }
+        mutingSenders.insert(key)
+        defer { mutingSenders.remove(key) }
+        textRowErrors[ref] = nil
+        do {
+            try await InboxLearnedRulesQueries(dbPool: dbPool).upsertManual(
+                ruleType: "source_mute", scopeKey: InboxPeopleRule.muteScope(key), weight: -1.0)
+        } catch {
+            textRowErrors[ref] = InboxRowFailure(message: error.localizedDescription, press: .mute)
+            return
+        }
+        await refresh()
     }
 
     // MARK: - Approve All (Needs approval groups)
@@ -1586,6 +1632,12 @@ package final class ActionStripViewModel {
     private func dropLeftRowErrors() {
         if !rowErrors.isEmpty {
             rowErrors = rowErrors.filter { item, _ in isOpenRecord(item) }
+        }
+        if !textRowErrors.isEmpty {
+            let refState = folderMenu.snapshot.refState
+            textRowErrors = textRowErrors.filter { ref, _ in
+                refState.shown.contains { $0.kind == ref.kind && InboxPeopleRule.senderKey($0.key) == ref.key }
+            }
         }
         if !replyDrafts.isEmpty {
             // A draft whose reply now waits in Needs approval goes too (a

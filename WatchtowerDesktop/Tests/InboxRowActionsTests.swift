@@ -427,6 +427,13 @@ final class InboxRowActionsTests: XCTestCase {
         XCTAssertEqual(InboxRefHooks.nativeKinds(.action), [])
     }
 
+    /// A sender row's Open replaces the recipe's link; the Older note row
+    /// keeps whatever the recipe draws.
+    func testSenderAndOlderRowsSuppressOnlyTheRecipesOpen() {
+        XCTAssertEqual(InboxRefHooks.nativeKinds(.mailSender), [.open])
+        XCTAssertEqual(InboxRefHooks.nativeKinds(.waitingOlder), [])
+    }
+
     func testPreviewDrawsDisabled() async throws {
         let id = try insertReminder()
         let vm = await strip()

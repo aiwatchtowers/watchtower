@@ -105,10 +105,14 @@ package struct InboxRef: Hashable, Sendable {
 package struct InboxRefState: Equatable, Sendable {
     package let shown: Set<InboxRef>
     package let waiting: Set<InboxRef>
+    /// A shown `mail_sender` ref's newest open mail link (its row's Open);
+    /// absent when that mail has none.
+    package let senderLinks: [InboxRef: String]
 
-    package init(shown: Set<InboxRef> = [], waiting: Set<InboxRef> = []) {
+    package init(shown: Set<InboxRef> = [], waiting: Set<InboxRef> = [], senderLinks: [InboxRef: String] = [:]) {
         self.shown = shown
         self.waiting = waiting
+        self.senderLinks = senderLinks
     }
 
     package func isShown(_ ref: InboxRef) -> Bool { shown.contains(ref) }
@@ -122,7 +126,8 @@ package struct InboxRefState: Equatable, Sendable {
         _ db: Database, refs: [InboxRef], nowUTC: String, timeZone: TimeZone = .current
     ) throws -> Self {
         let byKind = Dictionary(grouping: refs, by: \.kind)
-        var shown = try textRefsShown(db, byKind: byKind, nowUTC: nowUTC, timeZone: timeZone)
+        let text = try textRefsShown(db, byKind: byKind, nowUTC: nowUTC, timeZone: timeZone)
+        var shown = text.shown
         var waiting: Set<InboxRef> = []
         let ids = byKind.filter { !$0.key.hasTextID }.mapValues { Array(Set($0.map(\.id))).sorted() }
         for (kind, kindIDs) in ids {
@@ -130,18 +135,30 @@ package struct InboxRefState: Equatable, Sendable {
             shown.formUnion(open.shown.map { InboxRef(kind: kind, id: $0) })
             waiting.formUnion(open.waiting.map { InboxRef(kind: kind, id: $0) })
         }
-        return Self(shown: shown, waiting: waiting)
+        return Self(shown: shown, waiting: waiting, senderLinks: text.senderLinks)
     }
 
-    /// The shown text-id refs; none of them waits.
+    /// The shown text-id refs (none of them waits) and the shown senders'
+    /// newest links. A sender ref's key is matched by its
+    /// `InboxPeopleRule.senderKey`, so no spelling misses.
     private static func textRefsShown(
         _ db: Database, byKind: [InboxRef.Kind: [InboxRef]], nowUTC: String, timeZone: TimeZone
-    ) throws -> Set<InboxRef> {
+    ) throws -> (shown: Set<InboxRef>, senderLinks: [InboxRef: String]) {
         var shown: Set<InboxRef> = []
+        var senderLinks: [InboxRef: String] = [:]
         if let senders = byKind[.mailSender] {
-            let keys = Array(Set(senders.map(\.key))).sorted()
+            let keys = Array(Set(senders.map { InboxPeopleRule.senderKey($0.key) })).sorted()
             let open = try WaitingQueries.shownSenders(db, keys: keys, nowUTC: nowUTC)
-            shown.formUnion(senders.filter { open.contains($0.key) })
+            var links: [String: String] = [:]
+            for key in keys where open.contains(key) {
+                links[key] = try WaitingQueries.newestPermalink(db, sender: key, nowUTC: nowUTC)
+            }
+            for ref in senders {
+                let key = InboxPeopleRule.senderKey(ref.key)
+                guard open.contains(key) else { continue }
+                shown.insert(ref)
+                senderLinks[ref] = links[key]
+            }
         }
         if let older = byKind[.waitingOlder] {
             var calendar = Calendar(identifier: .gregorian)
@@ -151,7 +168,7 @@ package struct InboxRefState: Equatable, Sendable {
                 db, nowUTC: nowUTC, startOfTodayUTC: InboxToday.sinceUTC(now: now, calendar: calendar))
             if counts.older > 0 { shown.formUnion(older) }
         }
-        return shown
+        return (shown, senderLinks)
     }
 
     private static func openIDs(

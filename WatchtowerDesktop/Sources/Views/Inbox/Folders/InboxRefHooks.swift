@@ -22,7 +22,8 @@ struct InboxRefHooks {
     var hooks: ArtifactRefHooks {
         Self.make(
             isShown: { vm.folderMenu.snapshot.refState.isShown($0) },
-            content: content, subject: subject, workbenches: workbenches, onCommand: onCommand, onPress: onPress)
+            content: content, subject: subject, bulk: bulkModel, workbenches: workbenches, onCommand: onCommand,
+            onPress: onPress)
     }
 
     /// The hooks over `content` (nil: no native actions): the buttons at the
@@ -32,6 +33,7 @@ struct InboxRefHooks {
         isShown: @escaping (InboxRef) -> Bool,
         content: @escaping (InboxRef, ArtifactRenderMode) -> InboxRowActionsContent?,
         subject: @escaping (InboxRef) -> InboxCardSubject? = { _ in nil },
+        bulk: @escaping (InboxRef) -> InboxBulkPressModel? = { _ in nil },
         workbenches: [Workbench] = [],
         onCommand: @escaping (InboxCardCommand) -> Void = { _ in },
         onPress: @escaping (InboxRef, InboxRowPress) -> Void = { _, _ in }
@@ -42,7 +44,8 @@ struct InboxRefHooks {
                 let inbox = inboxRef(ref)
                 guard let content = content(inbox, mode) else { return nil }
                 return AnyView(InboxRefRowActions(
-                    content: content, subject: subject(inbox), workbenches: workbenches, onCommand: onCommand
+                    content: content, subject: subject(inbox), bulk: bulk(inbox), workbenches: workbenches,
+                    onCommand: onCommand
                 ) { onPress(inbox, $0) })
             },
             // The recipe's own buttons step aside only for native ones: a
@@ -54,8 +57,15 @@ struct InboxRefHooks {
             },
             nativeFooter: { ref, mode in
                 let inbox = inboxRef(ref)
-                guard let content = content(inbox, mode), content.hasFooter else { return nil }
-                return AnyView(InboxRowActionsFooter(content: content) { onPress(inbox, $0) })
+                guard let content = content(inbox, mode) else { return nil }
+                // A finished bulk press's result line and Try Again; the
+                // strip re-reads after every finish, which redraws the row.
+                let model = bulk(inbox).flatMap { model -> InboxBulkPressModel? in
+                    if case .finished = model.state { return model }
+                    return nil
+                }
+                guard content.hasFooter || model != nil else { return nil }
+                return AnyView(InboxRowActionsFooter(content: content, bulk: model) { onPress(inbox, $0) })
             },
             open: { ref in
                 // An idea row opens its full card (Merge…, Make a Task, Delete…).
@@ -91,8 +101,8 @@ struct InboxRefHooks {
         switch kind {
         case .inboxItem: hasReply ? [.open, .chat, .agent, .reply] : [.open, .chat, .agent]
         case .track, .idea: [.target]
-        case .reminder: [.open]
-        case .action, .mailSender, .waitingOlder: []
+        case .reminder, .mailSender: [.open]
+        case .action, .waitingOlder: []
         }
     }
 
@@ -150,9 +160,22 @@ struct InboxRefHooks {
             let buttons = AgentActionCardView.rowButtons(
                 for: action, sessionHolds: sessionHoldsCall(action), offersRetry: !vm.isSupersededButtonRow(action))
             return .action(summary: AgentActionCardView.rowSummary(for: action), buttons: buttons)
-        case .mailSender, .waitingOlder:
-            // Their buttons come in a later task; none yet.
-            return nil
+        case .mailSender:
+            let refState = vm.folderMenu.snapshot.refState
+            guard refState.isShown(ref) else { return nil }
+            return InboxRowActionsContent.mailSenderKind(
+                address: ref.key, newestPermalink: refState.senderLinks[ref], navScreens: navScreens)
+        case .waitingOlder:
+            return vm.folderMenu.snapshot.refState.isShown(ref) ? .waitingOlder : nil
+        }
+    }
+
+    /// The **Mark All Done…** press of a sender or Older row; nil for every other kind.
+    func bulkModel(_ ref: InboxRef) -> InboxBulkPressModel? {
+        switch ref.kind {
+        case .mailSender: vm.bulk.model(for: .sender(ref.key))
+        case .waitingOlder: vm.bulk.model(for: .olderPeople)
+        case .inboxItem, .track, .idea, .reminder, .action: nil
         }
     }
 
@@ -162,6 +185,11 @@ struct InboxRefHooks {
         if ref.kind == .action {
             if vm.actionFeed.inFlight.contains(ref.id) { return .busy }
             return vm.actionFeed.rowErrors[ref.id].map { .failed(message: $0.message) } ?? .idle
+        }
+        if ref.kind == .mailSender {
+            if vm.isMuting(ref.key) { return .busy }
+            let key = InboxRef(kind: .mailSender, key: InboxPeopleRule.senderKey(ref.key))
+            return vm.textRowErrors[key].map { .failed(message: $0.message) } ?? .idle
         }
         guard let selection = ref.selection else { return .idle }
         if vm.isWriting(selection) { return .busy }
@@ -182,6 +210,7 @@ struct InboxRefHooks {
 struct InboxRefRowActions: View {
     let content: InboxRowActionsContent
     let subject: InboxCardSubject?
+    var bulk: InboxBulkPressModel?
     let workbenches: [Workbench]
     let onCommand: (InboxCardCommand) -> Void
     let onPress: (InboxRowPress) -> Void
@@ -189,7 +218,7 @@ struct InboxRefRowActions: View {
     @State private var picking = false
 
     var body: some View {
-        InboxRowActionsView(content: content) { press in
+        InboxRowActionsView(content: content, bulk: bulk) { press in
             if press == .handToAgent, let subject {
                 handToAgent(subject)
             } else {
@@ -259,7 +288,8 @@ struct InboxRowActionHandler {
         case .idea: await idea(press, id: Int(ref.id))
         case .reminder: await reminder(press, id: ref.id)
         case .action: await action(press, id: ref.id)
-        case .mailSender, .waitingOlder: break
+        case .mailSender: await sender(press, address: ref.key)
+        case .waitingOlder: break // Mark All Done… is its bulk press (`InboxBulkCenter`).
         }
     }
 
@@ -295,9 +325,30 @@ struct InboxRowActionHandler {
             await self.action(again, id: ref.id)
             return
         }
+        if ref.kind == .mailSender {
+            let key = InboxRef(kind: .mailSender, key: InboxPeopleRule.senderKey(ref.key))
+            guard let failed = vm.textRowErrors[key]?.press, failed != .retryFailedPress else { return }
+            await press(failed, on: ref)
+            return
+        }
         guard let selection = ref.selection, let failed = vm.rowErrors[selection]?.press,
               failed != .retryFailedPress else { return }
         await press(failed, on: ref)
+    }
+
+    /// A sender row's Open (its newest open mail's link, as the last read
+    /// has it, through `InboxCardLinkPolicy`) and Mute.
+    private func sender(_ press: InboxRowPress, address: String) async {
+        switch press {
+        case .open:
+            let ref = InboxRef(kind: .mailSender, key: address)
+            if let link = vm.folderMenu.snapshot.refState.senderLinks[ref].flatMap(InboxMessagePane.link),
+               InboxCardLinkPolicy.permits(link, navScreens: navScreens) {
+                onCommand(.openLink(link))
+            }
+        case .mute: await vm.muteSender(address)
+        default: break
+        }
     }
 
     private func message(_ press: InboxRowPress, id: Int) async {

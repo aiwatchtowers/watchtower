@@ -7,18 +7,59 @@ import WatchtowerCore
 /// `title` draws no button — only a press already under way or finished
 /// (its spinner, its result line and Try Again), so a result outlives the
 /// moment its group stops offering the press.
+///
+/// `.inline` (a row's trailing buttons): the confirmation is the row's own
+/// **Cancel** and prominent "Mark N Done" in place of the button, and the
+/// result line is the row's footer (`InboxBulkPressResult`), so the
+/// trailing edge never grows a line of text.
 struct InboxBulkPressButton: View {
+    enum Style { case header, inline }
+
     let title: String?
     let confirmTitle: (Int) -> String
+    let style: Style
     @ObservedObject var model: InboxBulkPressModel
 
-    init(title: String?, confirmTitle: @escaping (Int) -> String, model: InboxBulkPressModel) {
+    init(title: String?, confirmTitle: @escaping (Int) -> String, model: InboxBulkPressModel, style: Style = .header) {
         self.title = title
         self.confirmTitle = confirmTitle
         self.model = model
+        self.style = style
     }
 
     var body: some View {
+        switch style {
+        case .header: header
+        case .inline: inline
+        }
+    }
+
+    @ViewBuilder
+    private var inline: some View {
+        if let pending {
+            HStack(spacing: Spacing.compact) {
+                Button("Cancel") { model.cancel() }
+                    .buttonStyle(.kitSecondary)
+                Button(confirmTitle(pending.count)) { model.confirm() }
+                    .buttonStyle(.kitPrimary)
+            }
+        } else if let title {
+            Button {
+                model.begin()
+            } label: {
+                HStack(spacing: Spacing.compact) {
+                    if isBusy {
+                        ProgressView().controlSize(.small)
+                    }
+                    Text(title)
+                }
+            }
+            .buttonStyle(.kitSecondary)
+            .disabled(isBusy)
+        }
+    }
+
+    private var header: some View {
         VStack(alignment: .leading, spacing: Spacing.small) {
             if let title {
                 Button {
@@ -36,19 +77,7 @@ struct InboxBulkPressButton: View {
             } else if isBusy {
                 ProgressView().controlSize(.small)
             }
-            if case .finished(let result) = model.state {
-                if let line = Self.resultLine(result) {
-                    Text(line)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                if Self.offersTryAgain(result) {
-                    Button("Try Again") { model.begin() }
-                        .buttonStyle(.kitQuiet)
-                        .controlSize(.small)
-                }
-            }
+            InboxBulkPressResult(model: model)
         }
         .confirmationDialog(
             confirmTitle(pending?.count ?? 0),
@@ -79,7 +108,7 @@ struct InboxBulkPressButton: View {
         return nil
     }
 
-    private static func offersTryAgain(_ result: InboxBulkResult) -> Bool {
+    static func offersTryAgain(_ result: InboxBulkResult) -> Bool {
         switch result {
         case .partial, .failed: true
         case .done: false
@@ -100,6 +129,28 @@ struct InboxBulkPressButton: View {
             "Closed \(done) of \(total). \(error)"
         case .failed(let error):
             error
+        }
+    }
+}
+
+/// A finished bulk press's result line and, after a partial or failed
+/// apply, **Try Again** (a new dry run); nothing otherwise.
+struct InboxBulkPressResult: View {
+    @ObservedObject var model: InboxBulkPressModel
+
+    var body: some View {
+        if case .finished(let result) = model.state {
+            if let line = InboxBulkPressButton.resultLine(result) {
+                Text(line)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if InboxBulkPressButton.offersTryAgain(result) {
+                Button("Try Again") { model.begin() }
+                    .buttonStyle(.kitQuiet)
+                    .controlSize(.small)
+            }
         }
     }
 }
