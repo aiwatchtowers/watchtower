@@ -14,6 +14,9 @@ final class CloudKitTransportPushFetchTests: XCTestCase {
     private var shared: CloudDatabaseScope { .shared(ownerName: owner) }
     private var suiteName = ""
     private var defaults: UserDefaults!
+    /// Grace and end-wait timers that reached the transport's sleeper: the
+    /// timer starts only after its waiter is registered (actor-isolated).
+    private let timerStarts = Arrivals()
 
     override func setUpWithError() throws {
         suiteName = "push-fetch-tests-\(UUID().uuidString)"
@@ -32,25 +35,29 @@ final class CloudKitTransportPushFetchTests: XCTestCase {
         energy: EnergyCounter? = nil
     ) async throws -> CloudKitTransport {
         await CloudKitTransport.testing(
-            store: try .inMemory(), scope: shared, engine: engine, clock: clock, sleep: sleep, energy: energy
+            store: try .inMemory(), scope: shared, engine: engine, clock: clock, sleep: counted(sleep), energy: energy
         )
     }
 
-    /// Waits (bounded) until `count` push fetches wait on the engine's run.
-    private func waitForWaiters(_ transport: CloudKitTransport, count: Int = 1) async throws {
-        try await eventually { await transport.engineRunWaiterCount >= count }
-        let waiting = await transport.engineRunWaiterCount
-        XCTAssertEqual(waiting, count, "the push fetch never waited on the engine's run")
+    /// `sleep`, telling `timerStarts` first.
+    private func counted(_ sleep: (@Sendable (TimeInterval) async -> Void)?) -> (@Sendable (TimeInterval) async -> Void)? {
+        sleep.map(counted)
     }
 
-    /// Waits (bounded, 5 s of wall clock) until `condition` holds.
-    private func eventually(_ condition: () async -> Bool) async throws {
-        let deadline = Date().addingTimeInterval(5)
-        while !(await condition()), Date() < deadline {
-            try await Task.sleep(nanoseconds: 10_000_000)
+    private func counted(_ sleep: @escaping @Sendable (TimeInterval) async -> Void) -> @Sendable (TimeInterval) async -> Void {
+        let starts = timerStarts
+        return { seconds in
+            await starts.arrive()
+            await sleep(seconds)
         }
-        let met = await condition()
-        XCTAssertTrue(met, "condition not met in time")
+    }
+
+    /// Waits until `count` push fetches wait on the engine's run: each wait's
+    /// timer reaches the sleeper only once its waiter is registered.
+    private func waitForWaiters(_ transport: CloudKitTransport, count: Int = 1) async {
+        await timerStarts.until(count)
+        let waiting = await transport.engineRunWaiterCount
+        XCTAssertEqual(waiting, count, "the push fetch never waited on the engine's run")
     }
 
     func testWithoutAnEngineRunAPushFetchesThroughTheEngineWithoutTheZonePoll() async throws {
@@ -94,7 +101,7 @@ final class CloudKitTransportPushFetchTests: XCTestCase {
         await transport.engineWillFetch()
 
         let push = Task { try await transport.fetchForPush(since: pushedAt, grace: 2) }
-        try await waitForWaiters(transport)
+        await waitForWaiters(transport)
         XCTAssertEqual(engine.fetchCount, 0)
         await transport.engineDidFetch()
         try await push.value
@@ -113,7 +120,7 @@ final class CloudKitTransportPushFetchTests: XCTestCase {
         let pushedAt = clock.now
 
         let push = Task { try await transport.fetchForPush(since: pushedAt, grace: 2) }
-        try await waitForWaiters(transport)
+        await waitForWaiters(transport)
         await transport.engineWillFetch()
         await transport.engineDidFetch()
         try await push.value
@@ -157,12 +164,14 @@ final class CloudKitTransportPushFetchTests: XCTestCase {
         let clock = TestClock()
         let gate = Gate()
         let transport = try await phone(engine: engine, clock: clock) { _ in await gate.wait() }
+        let joined = Arrivals()
+        await transport.observePushFetchJoins { Task { await joined.arrive() } }
         let pushedAt = clock.now
 
         let first = Task { try await transport.fetchForPush(since: pushedAt, grace: 2) }
-        try await waitForWaiters(transport)
+        await waitForWaiters(transport)
         let second = Task { try await transport.fetchForPush(since: pushedAt, grace: 2) }
-        try await eventually { await transport.pushFetchJoins >= 1 }
+        await joined.until(1)
         let joins = await transport.pushFetchJoins
         XCTAssertEqual(joins, 1, "the second push never joined the first")
         await gate.open()
@@ -179,7 +188,7 @@ final class CloudKitTransportPushFetchTests: XCTestCase {
         let transport = try await phone(engine: engine, clock: clock) { _ in await gate.wait() }
 
         let push = Task { try await transport.fetchForPush(since: clock.now, grace: 2) }
-        try await waitForWaiters(transport)
+        await waitForWaiters(transport)
         // The grace's sleeper never ends here: the pull must not wait on it.
         try await transport.pull()
         try await push.value
@@ -193,14 +202,19 @@ final class CloudKitTransportPushFetchTests: XCTestCase {
         let engine = FakeSyncEngine()
         let clock = TestClock()
         let fetchGate = Gate()
+        let fetched = Arrivals()
         let transport = try await phone(engine: engine, clock: clock)
-        engine.onNextFetch { await fetchGate.wait() }
+        engine.onNextFetch {
+            await fetched.arrive()
+            await fetchGate.wait()
+        }
         let pushedAt = clock.now
         clock.advance(10)
 
         // The grace has passed: the push fetches at once, held in the engine.
         let push = Task { try await transport.fetchForPush(since: pushedAt, grace: 2) }
-        try await eventually { engine.fetchCount >= 1 }
+        await fetched.until(1)
+        XCTAssertEqual(engine.fetchCount, 1)
         let pull = Task { try await transport.pull() }
         await fetchGate.open()
         try await push.value
@@ -215,16 +229,18 @@ final class CloudKitTransportPushFetchTests: XCTestCase {
         let clock = TestClock()
         let sleepGate = Gate()
         let requested = Collector<TimeInterval>()
+        let recorded = Arrivals()
         let transport = try await phone(engine: engine, clock: clock) { seconds in
             requested.append(seconds)
+            await recorded.arrive()
             await sleepGate.wait()
         }
         let pushedAt = clock.now
         await transport.engineWillFetch()
 
         let push = Task { try await transport.fetchForPush(since: pushedAt, grace: 2) }
-        try await waitForWaiters(transport)
-        try await eventually { !requested.values.isEmpty }
+        await waitForWaiters(transport)
+        await recorded.until(1)
         XCTAssertEqual(requested.values, [CloudKitTransport.engineRunEndWait(grace: 2)])
         XCTAssertEqual(CloudKitTransport.engineRunEndWait(grace: 2), 30)
         // The end wait's bound passes with no didFetchChanges.
@@ -255,18 +271,20 @@ final class CloudKitTransportPushFetchTests: XCTestCase {
         let engine = FakeSyncEngine()
         let clock = TestClock()
         let timers = Collector<Bool>()
-        let transport = try await phone(engine: engine, clock: clock) { seconds in
-            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+        let ended = Arrivals()
+        let transport = try await phone(engine: engine, clock: clock) { _ in
+            await untilCancelled()
             timers.append(Task.isCancelled)
+            await ended.arrive()
         }
         let pushedAt = clock.now
 
         let push = Task { try await transport.fetchForPush(since: pushedAt, grace: 2) }
-        try await waitForWaiters(transport)
+        await waitForWaiters(transport)
         await transport.engineWillFetch()
         await transport.engineDidFetch()
         try await push.value
-        try await eventually { !timers.values.isEmpty }
+        await ended.until(1)
 
         XCTAssertFalse(timers.values.isEmpty)
         XCTAssertFalse(timers.values.contains(false), "every wait's timer is cancelled once its wait ended")
@@ -280,7 +298,7 @@ final class CloudKitTransportPushFetchTests: XCTestCase {
         let transport = try await phone(engine: engine, clock: clock) { _ in await gate.wait() }
 
         let push = Task { try await transport.fetchForPush(since: clock.now, grace: 2) }
-        try await waitForWaiters(transport)
+        await waitForWaiters(transport)
         await transport.stop()
         try await push.value
         await gate.open()
@@ -294,9 +312,7 @@ final class CloudKitTransportPushFetchTests: XCTestCase {
         let engine = FakeSyncEngine(fetchErrors: [CKError(.requestRateLimited, userInfo: [CKErrorRetryAfterKey: 30.0])])
         let clock = TestClock()
         // A sleeper that outlasts the test keeps the throttle window open.
-        let transport = try await phone(engine: engine, clock: clock) {
-            try? await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000))
-        }
+        let transport = try await phone(engine: engine, clock: clock) { _ in await untilCancelled() }
         addTeardownBlock { await transport.retryTask?.cancel() }
         try await transport.pull()
         XCTAssertEqual(engine.fetchCount, 1)
@@ -334,7 +350,7 @@ final class CloudKitTransportPushFetchTests: XCTestCase {
         let transport = try await phone(engine: engine, clock: clock) { _ in await gate.wait() }
 
         let push = Task { try await transport.fetchForPush(since: clock.now, grace: 2) }
-        try await waitForWaiters(transport)
+        await waitForWaiters(transport)
         await transport.handleFetchEventError(CKError(.zoneNotFound), zoneID: HubZones.test(shared).zoneID(for: .data))
         try await push.value
         await gate.open()
@@ -363,12 +379,12 @@ final class CloudKitTransportPushFetchTests: XCTestCase {
                 }
             },
             now: { clock.now },
-            sleep: { _ in await gate.wait() }
+            sleep: counted { _ in await gate.wait() }
         )
         await transport.start()
 
         let push = Task { try await transport.fetchForPush(since: clock.now, grace: 2) }
-        try await waitForWaiters(transport)
+        await waitForWaiters(transport)
         await transport.resetForAccountChange()
         try await push.value
         await gate.open()

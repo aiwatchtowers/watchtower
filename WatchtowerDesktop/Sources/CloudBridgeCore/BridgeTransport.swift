@@ -131,6 +131,10 @@ public protocol BridgeCloud: Sendable {
     func downloadAsset(zone: String, name: String, to dst: URL) async throws
     /// The Mac's iCloud user record name; "" while the account has no user.
     func ownerUser() async throws -> String
+    /// Deletes the zones `DataZone-<hubID>` / `RelayZone-<hubID>` and the bridge's database subscription named
+    /// with `hubID`, exactly as spelled (zone names are case-sensitive); ones already gone are done. The caller
+    /// passes another spelling of the hub's id only (`BridgeService`'s check, #1750).
+    func retireZones(hubID: String) async throws
 }
 
 /// The protocol's class word for an error a CloudKit call threw.
@@ -219,6 +223,10 @@ public protocol BridgeDatabase: Sendable {
     func saveZones(_ ids: [CKRecordZone.ID]) async throws
     /// `CKContainer.userRecordID().recordName`; nil when there is no signed-in account.
     func ownerUserRecordName() async throws -> String?
+    /// Deletes the zones; a zone already gone is done.
+    func deleteZones(_ ids: [CKRecordZone.ID]) async throws
+    /// Deletes the subscription; one already gone is done.
+    func deleteSubscription(_ id: CKSubscription.ID) async throws
 }
 
 /// The live seam: the container's private database.
@@ -296,6 +304,32 @@ public struct LiveBridgeDatabase: BridgeDatabase {
         } catch let error as CKError where error.code == .notAuthenticated {
             return nil
         }
+    }
+
+    public func deleteZones(_ ids: [CKRecordZone.ID]) async throws {
+        let results: [CKRecordZone.ID: Result<Void, any Error>]
+        do {
+            results = try await db.modifyRecordZones(saving: [], deleting: ids).deleteResults
+        } catch where Self.isGone(error) {
+            return
+        }
+        for (_, result) in results {
+            if case .failure(let error) = result, !Self.isGone(error) { throw error }
+        }
+    }
+
+    public func deleteSubscription(_ id: CKSubscription.ID) async throws {
+        do {
+            _ = try await db.deleteSubscription(withID: id)
+        } catch where Self.isGone(error) {
+            // Already gone: what was asked for.
+        }
+    }
+
+    /// A zone or subscription that is not there (any more).
+    public static func isGone(_ error: any Error) -> Bool {
+        guard let ck = error as? CKError else { return false }
+        return ck.code == .zoneNotFound || ck.code == .userDeletedZone || ck.code == .unknownItem
     }
 }
 
@@ -597,6 +631,14 @@ public struct CloudKitBridgeCloud: BridgeCloud {
         }
         try FileManager.default.copyItem(at: url, to: dst)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: dst.path)
+    }
+
+    public func retireZones(hubID old: String) async throws {
+        // Never this hub's own zones, whatever the caller checked.
+        guard BridgeService.otherSpelling(old, of: hubID) else { throw BridgeCloudFailure.unsupportedZone }
+        let db = try db()
+        try await db.deleteZones(HubZones(scope: .private, hubID: old).allZoneIDs)
+        try await db.deleteSubscription(PushReceiver.databaseSubscriptionID(hubID: old))
     }
 
     public func ownerUser() async throws -> String {

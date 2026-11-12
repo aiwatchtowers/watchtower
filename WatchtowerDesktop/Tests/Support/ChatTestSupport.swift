@@ -13,16 +13,12 @@ package final class ChatTestClock: @unchecked Sendable {
     }
 }
 
-/// Polls `condition` on the main actor until it holds or `timeout` passes (a
-/// deadline, not a spin count). Returns the final verdict so the caller
-/// asserts it: `XCTAssertTrue(await waitForCondition { … })`.
+/// Waits on the main actor until `condition` holds — re-checked once per main-actor turn, no clock and no
+/// deadline (`untilTurn`; a hang is the lane watchdog's to report). Always returns true, so the existing
+/// `XCTAssertTrue(await waitForCondition { … })` call sites read the same.
 @MainActor
-package func waitForCondition(timeout: Duration = .seconds(5), _ condition: () -> Bool) async -> Bool {
-    let start = ContinuousClock.now
-    while ContinuousClock.now - start < timeout {
-        if condition() { return true }
-        await Task.yield()
-        try? await Task.sleep(for: .milliseconds(2))
-    }
-    return condition()
+@discardableResult
+package func waitForCondition(_ condition: () -> Bool) async -> Bool {
+    await untilTurn(condition)
+    return true
 }

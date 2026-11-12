@@ -7,6 +7,7 @@ import WatchtowerTestSupport
 /// gate until the test opens it.
 private final class RecordingRunner: CLIRunnerProtocol, @unchecked Sendable {
     private let lock = NSLock()
+    private let signal = StateSignal()
     private var recorded: [[String]] = []
     private var onRun: (@Sendable () throws -> Void)?
     private var holds = false
@@ -15,6 +16,11 @@ private final class RecordingRunner: CLIRunnerProtocol, @unchecked Sendable {
 
     var invocations: [[String]] { lock.withLock { recorded } }
     var isHolding: Bool { lock.withLock { gate != nil } }
+    /// Returns once `condition` holds over this runner's state — its own
+    /// signal (a held call reaching the gate calls `signal.changed()`), no clock.
+    func until(_ condition: @escaping @Sendable (RecordingRunner) -> Bool) async {
+        await signal.until { [self] in condition(self) }
+    }
 
     func whenRun(_ body: @escaping @Sendable () throws -> Void) { lock.withLock { onRun = body } }
     func holdRun() { lock.withLock { holds = true } }
@@ -40,6 +46,7 @@ private final class RecordingRunner: CLIRunnerProtocol, @unchecked Sendable {
                     gate = continuation
                     return false
                 }
+                signal.changed()
                 if resumeNow { continuation.resume() }
             }
         }
@@ -88,18 +95,6 @@ final class WorkbenchHeaderAutomationButtonsTests: XCTestCase {
         try TestDatabase.insertAutomation(db, slug: slug, name: slug.capitalized, triggerKind: "button",
                                           triggerSpec: #"{"button":{"label":"Deploy","confirm":false}}"#,
                                           workbenchID: workbench)
-    }
-
-    private func waitUntil(timeout: TimeInterval = 5, _ condition: @MainActor () -> Bool) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !condition() {
-            if Date() > deadline {
-                XCTFail("timed out")
-                return
-            }
-            await Task.yield()
-            try? await Task.sleep(for: .milliseconds(5))
-        }
     }
 
     // MARK: - Pure model
@@ -245,7 +240,7 @@ final class WorkbenchHeaderAutomationButtonsTests: XCTestCase {
         let b = try XCTUnwrap(vm.headerButtons(projectID: p).first)
 
         let task = Task { await Model.perform(Model.action(for: b), on: b, vm: vm) { _, _ in } }
-        await waitUntil { self.runner.isHolding }
+        await runner.until { $0.isHolding }
         XCTAssertTrue(Model.isSpinning(b, busy: vm.busy[id] != nil))
 
         // Leaving the workbench drops the header view; the view model stays.

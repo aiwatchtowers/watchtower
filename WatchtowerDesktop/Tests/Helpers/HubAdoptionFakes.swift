@@ -3,6 +3,7 @@ import Foundation
 @testable import WatchtowerDesktop
 import WatchtowerCore
 import WatchtowerSync
+import WatchtowerTestSupport
 
 /// The order of everything the hand-over did, across its seams.
 final class AdoptionLog: @unchecked Sendable {
@@ -62,7 +63,7 @@ final class FakeAdoptHub: HubAdoptRunning, @unchecked Sendable {
         calls.append(Call(args: args, stdin: stdin))
         log.append("cli:\(verb)")
         if hangOn.contains(verb) {
-            try? await Task.sleep(for: .seconds(3600))
+            await parkUntilCancelled() // a stuck child: returns only once its task is cancelled, no clock
             if Task.isCancelled { cancelled.append(verb) }
             return HubAdoptOutput(stdout: Data(), exitCode: -1)
         }

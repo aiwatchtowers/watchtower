@@ -308,7 +308,7 @@ final class ReplicaTests: XCTestCase {
 
         let record = try dataRecord(kind: .target, id: "1", payload: try RowPayloadCoder.payload(from: targetRow(id: 1, text: "observed")))
         try store.apply(CloudChangeBatch(changed: [record], deletedRecordNames: [], newToken: CloudChangeToken(value: 1)))
-        wait(for: [observed], timeout: 5)
+        wait(for: [observed])
     }
 
     // MARK: - Compaction
@@ -468,10 +468,17 @@ final class ReplicaTests: XCTestCase {
         private let inner = InMemoryCloudTransport()
         private(set) var changesCalls = 0
         private var waiters: [CheckedContinuation<Void, Never>] = []
+        /// Told on every `changes` entry (a second one means the cycles did not coalesce).
+        private var onChanges: @Sendable () -> Void = {}
+
+        func observeChanges(_ observer: @escaping @Sendable () -> Void) { onChanges = observer }
 
         func seed(_ records: [CloudRecord]) async throws { try await inner.save(records) }
 
+        private var isOpen = false
+
         func openGate() {
+            isOpen = true
             for waiter in waiters { waiter.resume() }
             waiters.removeAll()
         }
@@ -483,10 +490,14 @@ final class ReplicaTests: XCTestCase {
 
         func changes(in zone: CloudZoneID, since token: CloudChangeToken?) async throws -> CloudChangeBatch {
             changesCalls += 1
-            await withCheckedContinuation { waiters.append($0) }
+            onChanges()
+            if !isOpen { await withCheckedContinuation { waiters.append($0) } }
             return try await inner.changes(in: zone, since: token)
         }
     }
+
+    /// What a coalescing test sees while both calls start.
+    private enum CycleStep { case joined, changes }
 
     func testConcurrentHydrateOnceCoalescesIntoOneCycle() async throws {
         let transport = GatedTransport()
@@ -495,11 +506,20 @@ final class ReplicaTests: XCTestCase {
         ])
         let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         let hydrator = ReplicaHydrator(transport: transport, store: store)
+        let (steps, step) = AsyncStream.makeStream(of: CycleStep.self)
+        await hydrator.observeJoins { step.yield(.joined) }
+        await transport.observeChanges { step.yield(.changes) }
 
         async let first = hydrator.hydrateOnce()
         async let second = hydrator.hydrateOnce()
-        // Let both calls enter and the first suspend inside changes().
-        try await Task.sleep(for: .milliseconds(50))
+        // The gate opens once one call joined the other's running cycle, or (coalescing broken) once both cycles
+        // reached `changes`: either way the assertions below run instead of the test hanging.
+        var changesSeen = 0
+        for await seen in steps {
+            if seen == .joined { break }
+            changesSeen += 1
+            if changesSeen == 2 { break }
+        }
         await transport.openGate()
 
         let (a, b) = try await (first, second)
@@ -540,7 +560,7 @@ final class ReplicaTests: XCTestCase {
         let hydrator = ReplicaHydrator(transport: transport, store: store)
         _ = try await hydrator.hydrateOnce()
 
-        await fulfillment(of: [observed], timeout: 5)
+        await fulfillment(of: [observed])
         XCTAssertEqual(try store.fetchAll(ProbeRow.self, kind: .target).first?.text, "on disk")
     }
 
@@ -579,7 +599,7 @@ final class ReplicaTests: XCTestCase {
         try store.apply(CloudChangeBatch(changed: [record], deletedRecordNames: [], newToken: CloudChangeToken(value: 1)))
         try store.indexPending()
 
-        await fulfillment(of: [observed], timeout: 5)
+        await fulfillment(of: [observed])
     }
 
     // MARK: - Compaction failure is non-fatal
@@ -737,13 +757,12 @@ final class ReplicaTests: XCTestCase {
             dataRecord(kind: .target, id: "1", payload: try RowPayloadCoder.payload(from: targetRow(id: 1, text: "looped")))
         ])
         let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
-        let hydrator = ReplicaHydrator(transport: transport, store: store)
+        let (applied, didApply) = AsyncStream.makeStream(of: Void.self)
+        let onApplied: @Sendable ([AppliedSliceRecord]) -> Void = { _ in didApply.yield() }
+        let hydrator = ReplicaHydrator(transport: transport, store: store, onRecordsApplied: onApplied)
 
         await hydrator.start(interval: .milliseconds(10))
-        let deadline = Date().addingTimeInterval(5)
-        while try store.fetchAll(ProbeRow.self, kind: .target).isEmpty, Date() < deadline {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        for await _ in applied { break }
         await hydrator.stop()
         XCTAssertEqual(try store.fetchAll(ProbeRow.self, kind: .target).count, 1)
     }

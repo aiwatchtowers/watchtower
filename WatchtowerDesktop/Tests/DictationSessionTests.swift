@@ -20,15 +20,10 @@ final class DictationSessionTests: XCTestCase {
         return config
     }
 
-    /// The `MeetingRecorderTestCase.waitUntil` shape, local because this
-    /// suite is not a subclass: yields the main actor until `condition`
-    /// holds, failing instead of hanging.
+    /// Yields the main actor until `condition` holds — no deadline (a wait
+    /// that never ends is the lane watchdog's to report).
     private func waitUntil(_ what: String, _ condition: @escaping () -> Bool) async {
-        for _ in 0..<400 {
-            if condition() { return }
-            await Task.yield()
-        }
-        XCTFail("timed out waiting for \(what)")
+        while !condition() { await Task.yield() }
     }
 
     func testAccumulatesFullTextUpdatesAndReturnsFinalText() async throws {

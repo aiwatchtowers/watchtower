@@ -130,6 +130,8 @@ public actor RelayFeed {
     /// The currently-running cycle, if any. Concurrent `pollOnce` callers
     /// await this instead of starting their own — see `pollOnce`.
     private var inFlight: Task<Int, Error>?
+    /// Told when a caller joins the running cycle instead of starting one; tests replace it.
+    private var onJoin: @Sendable () -> Void = {}
     /// No fetch until `resumeIfParked()`: the feed waited its cap for a keybox, or has no key source (relay client
     /// Phase 5). In memory only, so a launch reads again.
     private var parked = false
@@ -176,6 +178,8 @@ public actor RelayFeed {
 
     // MARK: - One cycle
 
+    func observeJoins(_ onJoin: @escaping @Sendable () -> Void) { self.onJoin = onJoin }
+
     /// One relay cycle: optional engine pull, read relay-zone changes since
     /// the persisted relay token, route every record, persist the new token.
     /// Returns how many desktop echoes were routed.
@@ -189,6 +193,7 @@ public actor RelayFeed {
     @discardableResult
     public func pollOnce() async throws -> Int {
         if let inFlight {
+            onJoin()
             return try await inFlight.value
         }
         let task = Task { try await self.performPoll() }

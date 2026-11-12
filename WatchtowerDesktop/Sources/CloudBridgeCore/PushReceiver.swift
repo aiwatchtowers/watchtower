@@ -21,8 +21,9 @@ final class BridgeEventRelay: @unchecked Sendable {
 /// Silent pushes to the bridge become `Event{pull_now}` for the hub (Go hub spec §6.2), which then reads its
 /// mailboxes at once. The Swift hub got its silent pushes from CKSyncEngine's own database subscription
 /// (`TrayAppDelegate.application(_:didReceiveRemoteNotification:)` → `wakeRelay`); the bridge, with no engine,
-/// saves one database subscription of its own (`databaseSubscriptionID`) once the hub said Hello. It never
-/// saves or deletes any other subscription: the ask-alert query subscription on `sig-` records
+/// saves one database subscription of its own (`databaseSubscriptionID`) once the hub said Hello. The only
+/// other one it deletes is its own of another spelling of that hub id (`RetireZones`, #1750). It never saves
+/// or deletes any other subscription: the ask-alert query subscription on `sig-` records
 /// (`AskAlertSubscription`, `ask-alert-<hub_id>`) belongs to the phone, which registers it for its
 /// notification extension. Signals reach the bridge as ordinary saves and deletes.
 public final class PushReceiver: @unchecked Sendable {

@@ -98,9 +98,7 @@ final class LinkingRotationTests: XCTestCase {
         host.keyboxKeys = epoch2Keys()
         host.parksMerge = true
         let merge = Task { await model.reconcileKeyboxKeys(hubID: acme) }
-        while host.mergeCalls == 0 {
-            try await Task.sleep(for: .milliseconds(5))
-        }
+        try await poll { self.host.mergeCalls == 1 }
 
         await model.unlink(acme)
         host.parksMerge = false

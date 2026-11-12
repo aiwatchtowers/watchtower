@@ -15,20 +15,15 @@ final class RecordingActionsCenterTests: XCTestCase {
 
     private func makeCenter(
         noticeLifetime: Duration = .seconds(60),
-        sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+        sleep: @escaping @Sendable (Duration) async -> Void = { _ in try? await parkUntilTaskCancelled() }
     ) -> RecordingActionsCenter {
         RecordingActionsCenter(noticeLifetime: noticeLifetime, sleep: sleep) { [weak self] in self?.copied.append($0) }
     }
 
-    private func waitUntil(timeout: TimeInterval = 5, _ condition: @escaping @MainActor () -> Bool) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !condition() {
-            if Date() > deadline {
-                XCTFail("condition not met in \(timeout)s")
-                return
-            }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
+    /// Waits until `condition` holds, re-checking on every change of the
+    /// center's observable state it reads — no deadline.
+    private func waitUntil(_ condition: @escaping @MainActor () -> Bool) async {
+        await untilObserved(condition)
     }
 
     private func tempURL(_ name: String) throws -> URL {
@@ -171,7 +166,7 @@ final class RecordingActionsCenterTests: XCTestCase {
                           readPrivate: { false }, onChanged: { _ in
             XCTFail("a second change of the same recording while one runs is ignored")
         })
-        await fulfillment(of: [done], timeout: 5)
+        await fulfillment(of: [done])
         await waitUntil { !center.changingPrivate.contains(5) }
 
         XCTAssertEqual(reported, [true])
@@ -206,7 +201,7 @@ final class RecordingActionsCenterTests: XCTestCase {
             reported.append($0)
             done.fulfill()
         })
-        await fulfillment(of: [done], timeout: 5)
+        await fulfillment(of: [done])
         await waitUntil { !center.changingPrivate.contains(5) }
 
         XCTAssertEqual(reported, [true])
@@ -255,7 +250,7 @@ final class RecordingActionsCenterTests: XCTestCase {
             reported.append($0)
             done.fulfill()
         })
-        await fulfillment(of: [done], timeout: 5)
+        await fulfillment(of: [done])
         await waitUntil { !center.changingPrivate.contains(5) }
 
         XCTAssertEqual(reported, [true])

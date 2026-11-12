@@ -34,16 +34,6 @@ final class CatchUpViewModelTests: XCTestCase {
         return Int(db.lastInsertedRowID)
     }
 
-    /// Pumps the run loop so the VM's ValueObservation Task can deliver its first value.
-    private func waitFor(
-        _ predicate: @escaping () -> Bool, timeout: TimeInterval = 2.0
-    ) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !predicate(), Date() < deadline {
-            try? await Task.sleep(nanoseconds: 20_000_000)
-        }
-    }
-
     // MARK: - Window choice → CLI arguments
 
     func testWindowChoiceCLIArguments() {
@@ -84,7 +74,7 @@ final class CatchUpViewModelTests: XCTestCase {
         vm.startObserving()
 
         // The selection lands a tick after the recaps.
-        await waitFor { vm.recaps.count == 2 && vm.selected != nil }
+        await untilObserved { vm.recaps.count == 2 && vm.selected != nil }
         XCTAssertEqual(vm.recaps.count, 2)
         XCTAssertEqual(vm.selected?.id, newest, "the newest recap is selected by default")
     }
@@ -117,13 +107,14 @@ final class CatchUpViewModelTests: XCTestCase {
         let vm = CatchUpViewModel(dbPool: pool, now: { clock.now }, sleep: { await held.sleep($0) })
         vm.startObserving()
         // The selection lands a tick after the recaps (and the recheck's request).
-        await waitFor { vm.recaps.count == 1 && vm.selected != nil && !held.requests.isEmpty }
+        await untilObserved { vm.recaps.count == 1 && vm.selected != nil }
+        await held.untilAsked(1)
         XCTAssertEqual(vm.selected?.isBuilding, true, "still inside the threshold on first load")
         XCTAssertEqual(held.requests.last, .seconds(2), "the recheck waits until one second past the threshold")
 
         clock.now = due.addingTimeInterval(1)
         held.releaseAll()
-        await waitFor { vm.selected?.isFailed == true }
+        await untilObserved { vm.selected?.isFailed == true }
         XCTAssertEqual(vm.selected?.isFailed, true, "re-read past the threshold, no DB write needed")
         XCTAssertEqual(vm.selected?.error, CatchUpRecap.staleBuildingError)
     }
@@ -153,7 +144,7 @@ final class CatchUpViewModelTests: XCTestCase {
         defer { held.releaseAll() }
         let vm = CatchUpViewModel(dbPool: pool, now: { clock.now }, sleep: { await held.sleep($0) })
         vm.startObserving()
-        await waitFor { vm.selected != nil }
+        await untilObserved { vm.selected != nil }
         XCTAssertEqual(vm.selected?.isFailed, true, "the observation reads the injected clock")
         XCTAssertEqual(vm.selected?.error, CatchUpRecap.staleBuildingError)
         XCTAssertTrue(held.requests.isEmpty, "a failed row needs no recheck")
@@ -351,7 +342,7 @@ final class CatchUpViewModelTests: XCTestCase {
 
         let vm = CatchUpViewModel(dbPool: pool)
         vm.startObserving()
-        await waitFor { vm.selected != nil }
+        await untilObserved { vm.selected != nil }
 
         await vm.acknowledge()
 
@@ -379,7 +370,7 @@ final class CatchUpViewModelTests: XCTestCase {
         let notified = NotificationCounter()
         vm.onRecapsChanged = { await notified.record() }
         vm.startObserving()
-        await waitFor { vm.selected != nil }
+        await untilObserved { vm.selected != nil }
 
         await vm.acknowledge()
 
@@ -404,7 +395,7 @@ final class CatchUpViewModelTests: XCTestCase {
 
         let vm = CatchUpViewModel(dbPool: pool)
         vm.startObserving()
-        await waitFor { vm.selected != nil }
+        await untilObserved { vm.selected != nil }
         XCTAssertNil(vm.autoWindowStart, "nothing acknowledged yet — the caption has no start")
 
         await vm.acknowledge()
@@ -433,15 +424,32 @@ private final class HeldSleep: @unchecked Sendable {
     private let lock = NSLock()
     private var asked: [Duration] = []
     private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var askWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
 
     var requests: [Duration] { lock.withLock { asked } }
 
     func sleep(_ duration: Duration) async {
         await withCheckedContinuation { continuation in
-            lock.withLock {
+            let ready = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
                 asked.append(duration)
                 waiters.append(continuation)
+                let ready = askWaiters.filter { $0.count <= asked.count }.map(\.continuation)
+                askWaiters.removeAll { $0.count <= asked.count }
+                return ready
             }
+            ready.forEach { $0.resume() }
+        }
+    }
+
+    /// Returns once `count` sleeps were asked for.
+    func untilAsked(_ count: Int) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let now = lock.withLock { () -> Bool in
+                if asked.count >= count { return true }
+                askWaiters.append((count, continuation))
+                return false
+            }
+            if now { continuation.resume() }
         }
     }
 

@@ -31,7 +31,7 @@ action: nav:projects
 
 You turn analytics on per workbench. Watchtower then reads the transcript files Claude Code keeps under `~/.claude/projects/`, picks the ones that belong to the workbench folder (or one of its git worktrees, including worktrees that cleanup has removed) and stores one row per API call, tool call, skill and error in the local database. It copies no prompt or reply text, only counts and a pointer back to the file.
 
-Each API call counts once, even when a resumed or forked session replays it. The earliest session owns a replayed call.
+Each API call counts once, even when a resumed or forked session replays it; the earliest session owns it.
 
 Cost is computed when a call is stored, from a built-in price table. A model the table does not know costs 0; the totals show how many calls had **no price**.
 
@@ -58,7 +58,7 @@ watchtower agents disable --workbench 3
 - `enable` turns it on and nudges the daemon to start loading the folder's history. With no daemon running it says so; the history loads once the daemon starts.
 - `scan` reads new lines on demand and reports `unknown_records` and `failed_files`.
 - `stats` prints totals and a per-session breakdown: tokens, `cost_usd`, `tools` and `outcomes` (separate keys), skills and owner turns.
-- `report` prints the time, cost, task, context, skills, trouble and hint breakdown the **Analytics** view shows (`--json` for scripts; `--session <uuid>` for one session).
+- `report` prints the time, cost, task, context, skills, trouble and hint breakdown the **Analytics** view shows (`--json` for scripts; `--session <uuid>` for one session; `--agent claude` or `--agent codex` for one agent's sessions).
 - `disable` stops reading.
 
 Find a workbench's number with `watchtower workbench list`, or use the id in its board.
@@ -87,7 +87,18 @@ since: 0.24.0
 action: nav:projects
 -->
 
-The header has **All**, **Claude Code** and **Codex** (when both agents have sessions), the period (**1 day**, **7 days** or **30 days**) and **Tune**. Above the statistics sit the coach's sections: **How it's going**, **Proposed edits** and **Accepted edits** (see [Agent coach](agent-coach.md)). Under **Statistics** the view starts with the totals, then **The main thing**: the hint that would save the most, in your assistant's language, with a button. The buttons are **Copy Allow Rules** (for `.claude/settings.json`), **Open Session**, **Open Waiting for You** and **Open `<path>`**, named after the file it opens.
+<!-- learn
+id: agent-analytics-agent-filter
+title: Compare Claude Code and Codex
+text: In a workbench's **Analytics**, pick **Claude Code** or **Codex** in the header to see one agent's cost and trouble.
+area: development
+level: power
+kind: tip
+since: next
+action: nav:projects
+-->
+
+The header has **All**, **Claude Code** and **Codex** (when both agents have sessions; the pick also applies to **How it's going**), the period (**1 day**, **7 days** or **30 days**) and **Tune**. Above the statistics sit the coach's sections: **How it's going**, **Proposed edits** and **Accepted edits** (see [Agent coach](agent-coach.md)). Under **Statistics** the view starts with the totals, then **The main thing**: the hint that would save the most, in your assistant's language, with a button. The buttons are **Copy Allow Rules** (for `.claude/settings.json`), **Open Session**, **Open Waiting for You** and **Open `<path>`**, named after the file it opens.
 
 - **Context** starts with a sentence saying what matters, then shows what a session carries before your first message (instructions, skills, tools, hooks) and what grew it afterwards: which tools and files, files read three or more times without an edit, compactions, and the size of your `CLAUDE.md` and rules.
 - **Skills** (with its own sentence) shows which skills ran and how, and which listed skills never did. Once five sessions over a week were measured, never-used skills are suggested for removal because each one's listing costs tokens in every session.

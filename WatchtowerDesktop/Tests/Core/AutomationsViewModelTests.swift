@@ -1,5 +1,6 @@
 import XCTest
 import GRDB
+import Observation
 @testable import WatchtowerCore
 import WatchtowerTestSupport
 
@@ -14,6 +15,7 @@ private final class ScriptedRunner: CLIRunnerProtocol, @unchecked Sendable {
     private var heldSubcommand: String?
     private var gate: CheckedContinuation<Void, Never>?
     private var gateOpened = false
+    private var holdWaiters: [CheckedContinuation<Void, Never>] = []
 
     var invocations: [[String]] {
         lock.withLock { recorded }
@@ -22,6 +24,19 @@ private final class ScriptedRunner: CLIRunnerProtocol, @unchecked Sendable {
     /// True once a held call is waiting at the gate.
     var isHolding: Bool {
         lock.withLock { gate != nil }
+    }
+
+    /// Returns once a held call is waiting at the gate — the call's own
+    /// signal, no clock.
+    func untilHolding() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let holding = lock.withLock {
+                if gate != nil { return true }
+                holdWaiters.append(continuation)
+                return false
+            }
+            if holding { continuation.resume() }
+        }
     }
 
     func on(_ subcommand: String, _ handler: @escaping Handler) {
@@ -55,11 +70,13 @@ private final class ScriptedRunner: CLIRunnerProtocol, @unchecked Sendable {
         }
         if held {
             await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                let resumeNow = lock.withLock {
-                    if gateOpened { return true }
+                let (resumeNow, waiters) = lock.withLock {
+                    if gateOpened { return (true, [CheckedContinuation<Void, Never>]()) }
                     gate = continuation
-                    return false
+                    defer { holdWaiters = [] }
+                    return (false, holdWaiters)
                 }
+                waiters.forEach { $0.resume() }
                 if resumeNow { continuation.resume() }
             }
         }
@@ -68,11 +85,13 @@ private final class ScriptedRunner: CLIRunnerProtocol, @unchecked Sendable {
 }
 
 /// An injected `sleep` that records each interval and waits until the test
-/// lets the poll go on (or the poll task is cancelled).
+/// lets the poll go on (or the poll task is cancelled). Observable, so a test
+/// waits for the next interval with `untilObserved`.
 @MainActor
+@Observable
 private final class SteppedSleep {
     private(set) var intervals: [Duration] = []
-    private var waiters: [Int: CheckedContinuation<Void, Never>] = [:]
+    @ObservationIgnored private var waiters: [Int: CheckedContinuation<Void, Never>] = [:]
 
     func sleep(_ interval: Duration) async {
         intervals.append(interval)
@@ -158,18 +177,6 @@ final class AutomationsViewModelTests: XCTestCase {
         let now = self.now
         return AutomationsViewModel(dbPool: pool, cli: AutomationsCLI(runner: runner), defaults: defaults,
                                     now: { now }, sleep: sleep)
-    }
-
-    private func waitUntil(timeout: TimeInterval = 5, _ condition: @MainActor () -> Bool) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !condition() {
-            if Date() > deadline {
-                XCTFail("timed out")
-                return
-            }
-            await Task.yield()
-            try? await Task.sleep(for: .milliseconds(5))
-        }
     }
 
     nonisolated private static func json(_ text: String) -> Data { Data(text.utf8) }
@@ -591,7 +598,7 @@ final class AutomationsViewModelTests: XCTestCase {
         runner.hold("run")
         let vm = makeViewModel()
         let task = Task { await vm.runNow(id) }
-        await waitUntil { self.runner.isHolding }
+        await runner.untilHolding()
         XCTAssertEqual(vm.busy[id], .running)
         await vm.runNow(id) // a second click while busy calls nothing
         XCTAssertEqual(runner.invocations.count, 1)
@@ -616,7 +623,7 @@ final class AutomationsViewModelTests: XCTestCase {
         vm.select(id)
 
         let task = Task { await vm.runNow(id) }
-        await waitUntil { self.runner.isHolding }
+        await runner.untilHolding()
         XCTAssertEqual(vm.busy[id], .running)
 
         vm.setTabVisible(false)
@@ -727,7 +734,7 @@ final class AutomationsViewModelTests: XCTestCase {
         vm.select(id)
 
         let task = Task { await vm.dryRun(id) }
-        await waitUntil { self.runner.isHolding }
+        await runner.untilHolding()
         XCTAssertEqual(vm.dryRuns[id], .running)
         XCTAssertEqual(vm.busy[id], .dryRunning)
 
@@ -866,7 +873,7 @@ final class AutomationsViewModelTests: XCTestCase {
         let vm = makeViewModel()
         vm.refresh()
         let task = Task { await vm.cancel(runID: runID) }
-        await waitUntil { self.runner.isHolding }
+        await runner.untilHolding()
         XCTAssertEqual(vm.busy[id], .cancelling)
         runner.release()
         await task.value
@@ -886,14 +893,14 @@ final class AutomationsViewModelTests: XCTestCase {
         vm.start()
         defer { vm.stop() }
 
-        await waitUntil { sleeper.intervals.count == 1 }
+        await untilObserved { sleeper.intervals.count == 1 }
         XCTAssertEqual(sleeper.intervals, [.seconds(2)], "a running run polls fast")
 
         try await pool.write { db in
             try db.execute(sql: "UPDATE automation_runs SET status = 'succeeded' WHERE id = ?", arguments: [runID])
         }
         sleeper.wake()
-        await waitUntil { sleeper.intervals.count == 2 }
+        await untilObserved { sleeper.intervals.count == 2 }
         XCTAssertEqual(sleeper.intervals.last, .seconds(60), "the run ended and the tab is hidden: badge cadence")
         XCTAssertNil(vm.items.first?.activeRun)
     }
@@ -904,11 +911,11 @@ final class AutomationsViewModelTests: XCTestCase {
         let vm = makeViewModel { await sleeper.sleep($0) }
         vm.start()
         defer { vm.stop() }
-        await waitUntil { sleeper.intervals.count == 1 }
+        await untilObserved { sleeper.intervals.count == 1 }
         XCTAssertEqual(sleeper.intervals, [.seconds(60)])
 
         vm.setTabVisible(true)
-        await waitUntil { sleeper.intervals.count == 2 }
+        await untilObserved { sleeper.intervals.count == 2 }
         XCTAssertEqual(sleeper.intervals.last, .seconds(10))
     }
 
@@ -943,12 +950,12 @@ final class AutomationsViewModelTests: XCTestCase {
 
         vm.start()
         defer { vm.stop() }
-        await waitUntil { sleeper.intervals.count == 1 }
+        await untilObserved { sleeper.intervals.count == 1 }
         XCTAssertEqual(sleeper.intervals, [.seconds(2)], "a watched run polls fast with the tab hidden")
         XCTAssertEqual(notifier.runIDs, [])
 
         sleeper.wake()
-        await waitUntil { sleeper.intervals.count == 2 }
+        await untilObserved { sleeper.intervals.count == 2 }
         XCTAssertEqual(notifier.runIDs, [runID], "the tick checked the watched run")
         XCTAssertFalse(center.hasWatchedRuns)
         XCTAssertEqual(sleeper.intervals.last, .seconds(60), "nothing watched, tab hidden: badge cadence")
@@ -965,7 +972,7 @@ extension AutomationsViewModelTests {
         runner.hold("run")
         let vm = makeViewModel()
         let first = Task { await vm.runNow(id) }
-        await waitUntil { self.runner.isHolding }
+        await runner.untilHolding()
         let second = await vm.runNow(id)
         XCTAssertEqual(second, .busy)
         XCTAssertNil(vm.lastError, "busy is not a failure")
@@ -980,7 +987,7 @@ extension AutomationsViewModelTests {
         runner.hold("delete")
         let vm = makeViewModel()
         let first = Task { await vm.delete(id) }
-        await waitUntil { self.runner.isHolding }
+        await runner.untilHolding()
         let second = await vm.delete(id)
         XCTAssertEqual(second, .busy)
         runner.release()

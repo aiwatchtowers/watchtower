@@ -73,6 +73,8 @@ extension AppState {
         let daemon = daemonControl
         let bound = daemonStartWaitBound
         let interval = daemonStartPollInterval
+        let now = daemonStartWaitNow
+        let sleep = daemonStartWaitSleep
         enqueueDaemonStart { [weak self] in
             defer { self?.isStartingDaemon = false }
             // Queued before the compaction step, run during it.
@@ -94,7 +96,7 @@ extension AppState {
                 daemonStartFailure = Self.daemonStartFailureText(daemonManager.errorMessage)
                 return
             }
-            let up = await Self.waitUntilRunning(daemon, bound: bound, interval: interval)
+            let up = await Self.waitUntilRunning(daemon, bound: bound, interval: interval, now: now, sleep: sleep)
             if up {
                 self?.daemonStartQueue.succeeded()
             } else {
@@ -104,13 +106,16 @@ extension AppState {
     }
 
     private static func waitUntilRunning(
-        _ daemon: any DaemonControl, bound: Duration, interval: Duration
+        _ daemon: any DaemonControl,
+        bound: Duration,
+        interval: Duration,
+        now: () -> ContinuousClock.Instant,
+        sleep: (Duration) async -> Void
     ) async -> Bool {
-        let clock = ContinuousClock()
-        let deadline = clock.now + bound
+        let deadline = now() + bound
         while !daemon.daemonIsRunning() {
-            guard clock.now < deadline else { return false }
-            try? await Task.sleep(for: interval)
+            guard now() < deadline else { return false }
+            await sleep(interval)
         }
         return true
     }

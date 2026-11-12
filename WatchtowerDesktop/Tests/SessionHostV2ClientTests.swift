@@ -87,7 +87,7 @@ final class SessionHostV2ClientTests: XCTestCase {
     }
 
     private func waitUntil(_ condition: () -> Bool) async {
-        for _ in 0..<500 where !condition() { await Task.yield() }
+        while !condition() { await Task.yield() }
     }
 
     /// The transport a delivery opened, once its Deliver went out.

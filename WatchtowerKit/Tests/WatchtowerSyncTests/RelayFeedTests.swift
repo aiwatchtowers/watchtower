@@ -487,10 +487,17 @@ final class RelayFeedTests: XCTestCase {
         private let inner = InMemoryCloudTransport()
         private(set) var changesCalls = 0
         private var waiters: [CheckedContinuation<Void, Never>] = []
+        /// Told on every `changes` entry (a second one means the cycles did not coalesce).
+        private var onChanges: @Sendable () -> Void = {}
+
+        func observeChanges(_ observer: @escaping @Sendable () -> Void) { onChanges = observer }
 
         func seed(_ records: [CloudRecord]) async throws { try await inner.save(records) }
 
+        private var isOpen = false
+
         func openGate() {
+            isOpen = true
             for waiter in waiters { waiter.resume() }
             waiters.removeAll()
         }
@@ -502,10 +509,14 @@ final class RelayFeedTests: XCTestCase {
 
         func changes(in zone: CloudZoneID, since token: CloudChangeToken?) async throws -> CloudChangeBatch {
             changesCalls += 1
-            await withCheckedContinuation { waiters.append($0) }
+            onChanges()
+            if !isOpen { await withCheckedContinuation { waiters.append($0) } }
             return try await inner.changes(in: zone, since: token)
         }
     }
+
+    /// What a coalescing test sees while both calls start.
+    private enum CycleStep { case joined, changes }
 
     func testConcurrentPollOnceCoalescesIntoOneCycle() async throws {
         let transport = GatedTransport()
@@ -514,11 +525,20 @@ final class RelayFeedTests: XCTestCase {
                         modifiedAt: base, payload: Data("{}".utf8))
         ])
         let feed = try makeFixtures(inner: transport).feed
+        let (steps, step) = AsyncStream.makeStream(of: CycleStep.self)
+        await feed.observeJoins { step.yield(.joined) }
+        await transport.observeChanges { step.yield(.changes) }
 
         async let first = feed.pollOnce()
         async let second = feed.pollOnce()
-        // Let both calls enter and the first suspend inside changes().
-        try await Task.sleep(for: .milliseconds(50))
+        // The gate opens once one call joined the other's running cycle, or (coalescing broken) once both cycles
+        // reached `changes`: either way the assertions below run instead of the test hanging.
+        var changesSeen = 0
+        for await seen in steps {
+            if seen == .joined { break }
+            changesSeen += 1
+            if changesSeen == 2 { break }
+        }
         await transport.openGate()
 
         let (a, b) = try await (first, second)
@@ -553,7 +573,7 @@ final class RelayFeedTests: XCTestCase {
 
         _ = try await feed.pollOnce()
 
-        await fulfillment(of: [fired], timeout: 5)
+        await fulfillment(of: [fired])
         // The hook exists to trigger re-hydration (Task 6); it must observe
         // the already-persisted token, never a pre-batch one.
         XCTAssertEqual(tokenAtFire.withLock { $0 }, 2)
@@ -579,7 +599,7 @@ final class RelayFeedTests: XCTestCase {
         try await f.hub.save([try echoRecord(action, status: .applied)])
         _ = try await f.feed.pollOnce()
 
-        await fulfillment(of: [fired], timeout: 5)
+        await fulfillment(of: [fired])
         XCTAssertEqual(hookCalls.withLock { $0 }, 1)
     }
 
@@ -604,7 +624,7 @@ final class RelayFeedTests: XCTestCase {
         let result = try await f.feed.pollOnce()
 
         XCTAssertEqual(result, 2)
-        await fulfillment(of: [fired], timeout: 5)
+        await fulfillment(of: [fired])
         XCTAssertEqual(hookCalls.withLock { $0 }, 1)
     }
 
@@ -650,6 +670,6 @@ final class RelayFeedTests: XCTestCase {
         XCTAssertEqual(try f.store.relayToken(), CloudChangeToken(value: 3))
 
         await gate.open()
-        await fulfillment(of: [finished], timeout: 5)
+        await fulfillment(of: [finished])
     }
 }

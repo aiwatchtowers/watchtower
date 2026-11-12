@@ -1,6 +1,7 @@
 import XCTest
 @testable import WatchtowerDesktop
 import WatchtowerCore
+import WatchtowerTestSupport
 
 /// A scripted `SessionCleanupStreaming` double: each call is a `Run` whose
 /// stdout lines and exit the test feeds by hand. `stop` is only recorded —
@@ -181,20 +182,67 @@ enum CleanupStreamFixture {
     }
 }
 
+/// Waits until `condition` holds, yielding the main actor between checks.
+/// No deadline: the wait ends on the state, never on a clock; a wait that
+/// never ends is a hang the lane watchdog reports. Prefer `untilObserved`
+/// for `@Observable` state and a fake's own signal for its counters.
 @MainActor
 func waitUntil(
     _ what: String = "condition",
-    timeout: Duration = .seconds(3),
     file: StaticString = #filePath,
     line: UInt = #line,
     _ condition: @MainActor () -> Bool
 ) async {
-    let deadline = ContinuousClock.now + timeout
-    while !condition() {
-        guard ContinuousClock.now < deadline else {
-            return XCTFail("timed out waiting for \(what)", file: file, line: line)
+    while !condition() { await Task.yield() }
+}
+
+/// Counts events a fake sees and lets a test await the n-th one — no
+/// polling, no deadline.
+final class CallSignal: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    private var waiters: [(target: Int, continuation: CheckedContinuation<Void, Never>)] = []
+
+    var value: Int { lock.withLock { count } }
+
+    func hit() {
+        let ready: [CheckedContinuation<Void, Never>] = lock.withLock {
+            count += 1
+            let due = waiters.filter { $0.target <= count }.map(\.continuation)
+            waiters.removeAll { $0.target <= count }
+            return due
         }
-        try? await Task.sleep(for: .milliseconds(5))
+        ready.forEach { $0.resume() }
+    }
+
+    /// Returns once `hit()` was called at least `target` times.
+    func until(_ target: Int) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let now: Bool = lock.withLock {
+                if count >= target { return true }
+                waiters.append((target, continuation))
+                return false
+            }
+            if now { continuation.resume() }
+        }
+    }
+}
+
+/// A runner that signals each finished call of the runner it wraps.
+final class SignalingRunner: CLIRunnerProtocol, @unchecked Sendable {
+    let inner: any CLIRunnerProtocol
+    let calls = CallSignal()
+
+    init(_ inner: any CLIRunnerProtocol) { self.inner = inner }
+
+    func run(args: [String]) async throws -> Data {
+        defer { calls.hit() }
+        return try await inner.run(args: args)
+    }
+
+    func run(args: [String], stdin: Data) async throws -> Data {
+        defer { calls.hit() }
+        return try await inner.run(args: args, stdin: stdin)
     }
 }
 
@@ -215,6 +263,10 @@ final class RepliedCleanupStreamer: SessionCleanupStreaming, @unchecked Sendable
     private var replies: [Result<Data, Error>]
     private var held: [CheckedContinuation<Void, Never>] = []
     private var tornDown = false
+    /// Runs started so far, and how many of them `release()` let go — a run
+    /// released before its answer reached the hold does not hold at all.
+    private var started = 0
+    private var released = 0
 
     init(replies: [Result<Data, Error>]) {
         self.replies = replies
@@ -229,6 +281,7 @@ final class RepliedCleanupStreamer: SessionCleanupStreaming, @unchecked Sendable
 
     func release() {
         let waiting: [CheckedContinuation<Void, Never>] = lock.withLock {
+            released = started
             defer { held = [] }
             return held
         }
@@ -238,16 +291,17 @@ final class RepliedCleanupStreamer: SessionCleanupStreaming, @unchecked Sendable
     func streamCleanup(args: [String], environment: [String: String]) throws -> SessionCleanupStream {
         let stream = try scripted.streamCleanup(args: args, environment: environment)
         guard let run = scripted.runs.last else { return stream }
-        let (reply, holds) = lock.withLock { () -> (Result<Data, Error>, Bool) in
+        let (reply, holds, index) = lock.withLock { () -> (Result<Data, Error>, Bool, Int) in
             let next = replies.count > 1 ? replies.removeFirst() : replies.first ?? .success(Data("{}".utf8))
-            return (next, holdsCalls)
+            started += 1
+            return (next, holdsCalls, started)
         }
         onCall?(run)
         Task.detached { [self] in
             if holds {
                 await withCheckedContinuation { continuation in
                     let resume: Bool = lock.withLock {
-                        if tornDown { return true }
+                        if tornDown || index <= released { return true }
                         held.append(continuation)
                         return false
                     }

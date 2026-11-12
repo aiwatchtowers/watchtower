@@ -673,7 +673,7 @@ final class RelayLinkingTests: XCTestCase {
         XCTAssertEqual(pending.deadline, Date(timeIntervalSince1970: TimeInterval(payload.exp) + LinkingViewModel.expiryGrace))
         XCTAssertEqual(pending.relaySlot, "slot-1")
         flow.cancel()
-        try await flow.value(within: 60, "flow")
+        await flow.value
     }
 
     // MARK: - After the owner confirmed: the live flow
@@ -1189,6 +1189,7 @@ final class RelayLinkingTests: XCTestCase {
         let model = makeModel()
         let unlink = Task { await model.unlink(otherHub) }
         await waitUntil { self.host.slotRemovals == [self.otherMac.deviceID] }
+        await waitUntil { self.clock.parks == 1 } // in the pause
         XCTAssertEqual(relay.count("removeSlot"), 0, "still in the pause")
 
         clock.parked = false
@@ -1209,6 +1210,7 @@ final class RelayLinkingTests: XCTestCase {
         let model = makeModel()
         let unlink = Task { await model.unlink(otherHub) }
         await waitUntil { !self.host.slotRemovals.isEmpty }
+        await waitUntil { self.clock.parks == 1 } // in the pause
 
         unlink.cancel()
         await unlink.value
@@ -1254,6 +1256,7 @@ final class RelayLinkingTests: XCTestCase {
         let model = makeModel()
         let unlink = Task { await model.unlink(otherHub) }
         await waitUntil { !self.host.slotRemovals.isEmpty }
+        await waitUntil { self.clock.parks == 1 } // in the pause
 
         seedRelayRow(otherHub, macName: "Work Mac", relayMac: otherMac)
         unlink.cancel()
@@ -1304,11 +1307,11 @@ final class RelayLinkingTests: XCTestCase {
         XCTAssertTrue(relay.slots.isEmpty)
     }
 
+    /// Yields until `condition` holds; no wall-clock cap (a hang runs until the CI step's timeout).
     private func waitUntil(_ condition: @escaping @MainActor () -> Bool) async {
-        for _ in 0..<2000 where !condition() {
-            try? await Task.sleep(for: .milliseconds(5))
+        while !condition() {
+            await Task.yield()
         }
-        XCTAssertTrue(condition(), "timed out")
     }
 
     func testCancelBothFailKeepsTheSlotRemovalForLaunch() async throws {
@@ -1386,7 +1389,7 @@ final class RelayLinkingTests: XCTestCase {
         try await poll { model.phase == .waiting(macName: "build-box") }
         host.slotRemovals = [mac.deviceID]
         flow.cancel()
-        try await flow.value(within: 60, "flow")
+        await flow.value
         await makeModel().retrySlotRemovals()
         XCTAssertTrue(host.slotRemovals.isEmpty)
         XCTAssertEqual(relay.count("removeSlot"), 0, "the pending link names the Mac")
@@ -1462,8 +1465,8 @@ final class RelayLinkingTests: XCTestCase {
         try await poll({ !model.resumer.isLive(hub) }, "the cancel never fenced the attempt")
         XCTAssertFalse(relay.ops.contains { $0.hasPrefix("removeSlot") }, "the cancel waits for the running attempt")
         relay.release("promote")
-        let freed = try await cancel.value(within: 60, "cancel")
-        try await resume.value(within: 60, "resume")
+        let freed = await cancel.value
+        await resume.value
 
         XCTAssertTrue(freed)
         XCTAssertEqual(relay.ops.filter { $0.hasPrefix("promote") || $0.hasPrefix("removeSlot") },
@@ -1489,8 +1492,8 @@ final class RelayLinkingTests: XCTestCase {
         let removal = Task { await model.removeFromSlots(self.mac.deviceID) }
         try await poll({ !model.resumer.isLive(hub) }, "the removal never fenced the attempt")
         host.parksPrepare = false
-        try await removal.value(within: 60, "removal")
-        try await resume.value(within: 60, "resume")
+        await removal.value
+        await resume.value
 
         XCTAssertTrue(host.linkedCalls.isEmpty, "linked never ran after the cancel")
         XCTAssertNil(host.row(hub))

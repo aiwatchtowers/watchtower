@@ -240,7 +240,7 @@ final class AlertSubscriptionTests: XCTestCase {
             keys: try TestHub.keys(TestHub.home),
             defaults: try makeDefaults(),
             recordingsDirectory: try makeRecordingsDirectory(),
-            sleep: { _ in try await Task.sleep(for: .seconds(86_400)) } // swiftlint:disable:this trailing_closure
+            sleep: { _ in try await sleepUntilCancelled() } // swiftlint:disable:this trailing_closure
         )
         addTeardownBlock { @MainActor in session.stop() }
         bed.root.env.add(session)
@@ -332,30 +332,21 @@ final class AlertSubscriptionTests: XCTestCase {
         let device = try XCTUnwrap(session.linkedDevice)
         let record = try XCTUnwrap(bed.root.linkedHubs().first { $0.hubID == bed.hubID }?.link)
         session.deviceSettings.workAlerts = false
-        var sendStarted = false
-        var released = false
+        let started = AsyncStream.makeStream(of: Void.self)
+        let release = AsyncStream.makeStream(of: Void.self)
         bed.root.sendLinkedQueue = { _ in
-            sendStarted = true
-            while !released {
-                try? await Task.sleep(for: .milliseconds(5))
-            }
+            started.continuation.yield()
+            // Blocked until the test lets it go, after `linked` returned (a `linked` that waited on it hangs here).
+            for await _ in release.stream { break }
         }
+        addTeardownBlock { release.continuation.finish() }
 
-        var returned = false
-        let link = Task {
-            try await bed.root.linked(record, device: device)
-            returned = true
-        }
-        for _ in 0..<600 where !returned || !sendStarted {
-            try await Task.sleep(for: .milliseconds(5))
-        }
-        XCTAssertTrue(sendStarted, "the send still runs")
-        XCTAssertTrue(returned, "linked waited on the blocked send")
+        try await bed.root.linked(record, device: device)
         let written = try await deviceRecords(bed)
         XCTAssertEqual(written.last?.workAlertsOff, true, "saved before it returned")
+        for await _ in started.stream { break } // the send still runs
 
-        released = true
-        try await link.value
+        release.continuation.yield()
     }
 
     func testALinkWithTheSwitchOnWritesNoRecord() async throws {

@@ -100,6 +100,45 @@ func (c *Client) OwnerUser(ctx context.Context) (string, error) {
 	return u.GetUserRecordName(), nil
 }
 
+// RetireZones deletes, through the bridge, the CloudKit zones
+// DataZone-/RelayZone-<hubID> and the bridge's database subscription named
+// with hubID: another spelling of this client's hub id (equal to it ignoring
+// ASCII case, different byte for byte — the uppercase form builds up to
+// v0.28.0 named an adopted hub's zones with, #1750). Any other hubID is
+// refused before any I/O, so the hub's own zones are never asked for; the
+// bridge checks the same. Zones or a subscription already gone are done.
+func (c *Client) RetireZones(ctx context.Context, hubID string) error {
+	if !OtherSpelling(hubID, c.c.HubID) {
+		return fmt.Errorf("cloudkit: retire zones: not another spelling of the hub id: %w", transport.ErrUnsupportedZone)
+	}
+	if err := c.done0(ctx, &bridgepb.Request{Op: &bridgepb.Request_RetireZones{RetireZones: &bridgepb.RetireZones{HubId: hubID}}}, false); err != nil {
+		return fmt.Errorf("cloudkit: retire zones: %w", err)
+	}
+	return nil
+}
+
+// OtherSpelling reports whether other is hub spelled another way: equal to it ignoring
+// ASCII case (A to Z only, no Unicode folding), different byte for byte.
+// The bridge's RetireZones check (BridgeService.otherSpelling) is the same.
+func OtherSpelling(other, hub string) bool {
+	if other == hub || len(other) != len(hub) {
+		return false
+	}
+	for i := 0; i < len(hub); i++ {
+		if asciiLower(other[i]) != asciiLower(hub[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func asciiLower(b byte) byte {
+	if 'A' <= b && b <= 'Z' {
+		return b + 'a' - 'A'
+	}
+	return b
+}
+
 // done0 sends req and expects Done.
 func (c *Client) done0(ctx context.Context, req *bridgepb.Request, mailbox bool) error {
 	resp, err := c.do(ctx, req, mailbox)

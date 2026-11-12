@@ -43,6 +43,8 @@ extension CloudKitTransport {
         try await task.value
     }
 
+    func observePushFetchJoins(_ observer: @escaping @Sendable () -> Void) { onPushFetchJoin = observer }
+
     /// How long a push fetch waits for a running own engine run to end
     /// before fetching itself: a run that never reports its end must not
     /// stall the push (and the caller's completion) for good.

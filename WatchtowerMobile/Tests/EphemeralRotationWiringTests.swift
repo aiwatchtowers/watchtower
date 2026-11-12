@@ -328,7 +328,7 @@ final class EphemeralRotationWiringTests: XCTestCase {
         let id = try await stuckRecording(session)
 
         await merge(bed, keybox(epoch: 2))
-        try await session.uploadKick?.value(within: 60, "session.uploadKick")
+        await session.uploadKick?.value
 
         let row = try XCTUnwrap(try session.store.phoneRecording(id: id))
         XCTAssertFalse(row.isUploadStuck, "re-armed and sent again")
@@ -343,7 +343,7 @@ final class EphemeralRotationWiringTests: XCTestCase {
         let id = try await stuckRecording(session)
 
         await merge(bed, keybox(epoch: 2))
-        try await session.uploadKick?.value(within: 60, "session.uploadKick")
+        await session.uploadKick?.value
 
         XCTAssertEqual(try session.store.phoneRecording(id: id)?.isUploadStuck, true, "still waits for the owner")
     }
@@ -403,7 +403,7 @@ final class EphemeralRotationWiringTests: XCTestCase {
         let sealed = try XCTUnwrap(batch.changed.first)
         try await bed.macSaveSealed(sealed, zone: "data/\(bed.mac.deviceID)")
         try await bed.fetch(session)
-        try await bed.root.linkChecks[hubID]?.value(within: 60, "linkChecks")
+        await bed.root.linkChecks[hubID]?.value
 
         XCTAssertEqual(try bed.row(), row, "the link row unchanged")
         XCTAssertEqual(bed.root.linking.links.first?.state, .linked)
@@ -460,7 +460,7 @@ final class EphemeralRotationWiringTests: XCTestCase {
 
     /// The ack the merge queued, written.
     private func settle(_ session: HubSession) async throws {
-        try await session.epochAckWork?.value(within: 60, "session.epochAckWork")
+        await session.epochAckWork?.value
         await session.outbox.drain()
     }
 

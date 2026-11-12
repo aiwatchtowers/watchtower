@@ -37,15 +37,8 @@ final class TargetAssistantCenterTests: XCTestCase {
         }
     }
 
-    private func waitForIdle(_ container: TargetAssistantViewModel, timeout: TimeInterval = 5) async throws {
-        let deadline = Date().addingTimeInterval(timeout)
-        while container.isAnyWorking {
-            if Date() > deadline {
-                XCTFail("container stayed busy for \(timeout)s")
-                return
-            }
-            try await Task.sleep(nanoseconds: 5_000_000)
-        }
+    private func waitForIdle(_ container: TargetAssistantViewModel) async throws {
+        await untilObserved { !container.isAnyWorking }
     }
 
     func testReturnsTheSameContainerForTheSameTarget() throws {

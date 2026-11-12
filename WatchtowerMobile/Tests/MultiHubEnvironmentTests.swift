@@ -63,7 +63,7 @@ final class MultiHubEnvironmentTests: XCTestCase {
         }
         let sleep: @Sendable (Duration) async throws -> Void = { [weak self] duration in
             await MainActor.run { self?.sleeps[hubID, default: []].append(duration) }
-            try await Task.sleep(for: .seconds(3600))
+            try await sleepUntilCancelled()
         }
         let session = try HubSession(
             transport: transport,
@@ -276,7 +276,7 @@ final class MultiHubEnvironmentTests: XCTestCase {
         PushCompletion.serve(
             env, arrivedAt: Date(), inForeground: false, scope: nil,
             startWork: BackgroundWork.starter(runner: tasks, suspension: DatabaseSuspension { _ in }) { true },
-            sleep: { _ in try await Task.sleep(for: .seconds(86_400)) },
+            sleep: { _ in try await sleepUntilCancelled() },
             completion: { completions.append($0) }
         )
 

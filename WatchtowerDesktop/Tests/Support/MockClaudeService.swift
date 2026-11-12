@@ -11,6 +11,7 @@ package final class MockClaudeService: AIServiceProtocol, @unchecked Sendable {
     private var _parked: [AsyncThrowingStream<StreamEvent, Error>.Continuation] = []
     private var _gateOpen = false
     private let lock = NSLock()
+    private let signal = StateSignal()
     private var _callIndex = 0
     private var callIndex: Int {
         get { lock.withLock { _callIndex } }
@@ -96,6 +97,12 @@ package final class MockClaudeService: AIServiceProtocol, @unchecked Sendable {
         self.error = error
     }
 
+    /// Returns once at least `count` streams have been asked for — the mock's
+    /// own signal, no clock.
+    package func untilCalls(_ count: Int) async {
+        await signal.until { [self] in prompts.count >= count }
+    }
+
     /// Finish every stream parked on the release gate, and let any later stream
     /// run straight through.
     package func release() {
@@ -124,6 +131,7 @@ package final class MockClaudeService: AIServiceProtocol, @unchecked Sendable {
             _systemPrompts.append(systemPrompt)
             _toolModes.append(toolMode)
         }
+        signal.changed()
         let eventsToUse: [StreamEvent]
         if !eventSequence.isEmpty {
             let idx = callIndex

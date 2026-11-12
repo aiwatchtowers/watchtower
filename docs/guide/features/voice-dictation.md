@@ -50,7 +50,7 @@ action: hotkey:settings
 
 **Settings → Meetings → Dictation model** picks the engine, separately from the meeting engine: **Apple (realtime)** on macOS 26 and later (the default there, nothing to download), or **Whisper large-v3 turbo**, **Whisper small (fast)** or **Whisper base (fastest)**. On older macOS the default is Whisper small.
 
-A Whisper model downloads at the first dictation. The mic is already listening meanwhile, so nothing you say is lost, and the capsule reads "Downloading model… N%".
+A Whisper model downloads at the first dictation. The mic is already listening meanwhile, so nothing you say is lost, and the capsule reads "Downloading model… N%". After that it loads from your Mac, even when the download site is unreachable.
 
 A failed download ends the dictation with the reason, and **Retry** on the pill continues it.
 

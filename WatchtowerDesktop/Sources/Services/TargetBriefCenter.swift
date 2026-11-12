@@ -83,6 +83,10 @@ final class TargetBriefCenter {
     /// precedent).
     var task: Task<Void, Never>?
 
+    /// The watcher's pause between two looks at `isStreaming`. A seam: tests
+    /// pass a turn (`Task.yield`) so nothing in them waits on a clock.
+    @ObservationIgnored var watchPause: () async -> Void = { try? await Task.sleep(nanoseconds: 50_000_000) }
+
     /// Factory for the target chat VM — wired by AppState once the DB pool
     /// opens (centers are constructed before the DB). nil (no DB yet) fails
     /// the brief cleanly; the target row itself already exists (mechanical
@@ -266,7 +270,7 @@ final class TargetBriefCenter {
     /// + execute-mode auto-apply), then settle the job and drain.
     private func watch(_ jobID: BriefJob.ID, chatVM: TargetChatViewModel) async {
         while chatVM.isStreaming, !Task.isCancelled {
-            try? await Task.sleep(nanoseconds: 50_000_000)
+            await watchPause()
         }
         // A cancelled watcher still settles its job and drains, so it can
         // never strand the queue — but it stops its stream first, or the

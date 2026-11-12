@@ -47,17 +47,6 @@ final class WorkbenchSessionReportLineTests: XCTestCase {
         try await pool.write { try TestDatabase.insertWorkbench($0) }
     }
 
-    private func waitUntil(timeout: TimeInterval = 5, _ condition: @escaping @MainActor () -> Bool) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !condition() {
-            if Date() > deadline {
-                XCTFail("condition not met in \(timeout)s")
-                return
-            }
-            try? await Task.sleep(for: .milliseconds(5))
-        }
-    }
-
     // MARK: - The line
 
     func testTheLineIsTheSummaryCaption() {
@@ -93,13 +82,13 @@ final class WorkbenchSessionReportLineTests: XCTestCase {
         XCTAssertNil(vm.reportLine(sessionID: 7, projectID: 3))
 
         center.refresh(workbench: 3)
-        await waitUntil { center.summaries[3]?.value != nil }
+        await untilObserved { center.summaries[3]?.value != nil }
         XCTAssertEqual(vm.reportLine(sessionID: 7, projectID: 3), "#314 · 14/15 · PR #147 open")
         XCTAssertNil(vm.reportLine(sessionID: 7, projectID: 4), "another workbench's summary")
 
         runner.shouldThrow = ScriptedFailure(errorDescription: "watchtower exited with error: busy")
         center.refresh(workbench: 3)
-        await waitUntil { center.summaries[3]?.isStale == true }
+        await untilObserved { center.summaries[3]?.isStale == true }
         XCTAssertEqual(vm.reportLine(sessionID: 7, projectID: 3), "#314 · 14/15 · PR #147 open · stale")
     }
 
@@ -122,11 +111,11 @@ final class WorkbenchSessionReportLineTests: XCTestCase {
         let vm = WorkbenchesViewModel(dbPool: pool, cli: nil, defaults: defaults)
         vm.sessionReports = center
         center.refresh(workbench: 3)
-        await waitUntil { center.summaries[3]?.value != nil }
+        await untilObserved { center.summaries[3]?.value != nil }
         XCTAssertEqual(vm.reportProgress(sessionID: 7, projectID: 3), 0.75)
         runner.shouldThrow = ScriptedFailure(errorDescription: "watchtower exited with error: busy")
         center.refresh(workbench: 3)
-        await waitUntil { center.summaries[3]?.isStale == true }
+        await untilObserved { center.summaries[3]?.isStale == true }
         XCTAssertEqual(vm.reportProgress(sessionID: 7, projectID: 3), 0.75, "stale: the last value")
     }
 

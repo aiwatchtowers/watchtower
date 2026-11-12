@@ -180,6 +180,9 @@ type hubRuntime struct {
 	// Worker goroutine only (icloud.go).
 	ckResetPending bool
 	ckResetAccount bool
+	// ckRetire: the retirement of the uppercase CloudKit zones (zone_spelling.go;
+	// worker goroutine only).
+	ckRetire zoneRetirement
 
 	// push is the work-alert pusher (nil without a relay that sends them).
 	push *alerts.Pusher
@@ -1132,6 +1135,7 @@ func (h *hubRuntime) watchZones(ctx context.Context, zw zoneWatcher) {
 func (h *hubRuntime) housekeeping(ctx context.Context) {
 	h.retryCloudKitReset(ctx)
 	h.refreshCloudKitAccount(ctx)
+	h.retireOldCloudKitZones(ctx)
 	h.savePhoneContact()
 	if err := h.center.Sweep(); err != nil {
 		log.Printf("hub: link sweep failed (%s)", errClass(err))

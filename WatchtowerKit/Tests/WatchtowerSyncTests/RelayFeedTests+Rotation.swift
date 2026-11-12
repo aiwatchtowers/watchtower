@@ -240,13 +240,30 @@ extension RelayFeedTests {
     private final class BlockingCheck: @unchecked Sendable {
         private let lock = NSLock()
         private var reached = false
+        private var reachedWaiter: CheckedContinuation<Void, Never>?
         private let release = DispatchSemaphore(value: 0)
-        var hasReached: Bool { lock.withLock { reached } }
 
         func check() -> Bool {
-            lock.withLock { reached = true }
-            _ = release.wait(timeout: .now() + 10)
+            let waiter = lock.withLock {
+                reached = true
+                defer { reachedWaiter = nil }
+                return reachedWaiter
+            }
+            waiter?.resume()
+            release.wait()
             return true
+        }
+
+        /// Returns once the feed reached the check.
+        func untilReached() async {
+            await withCheckedContinuation { (waiter: CheckedContinuation<Void, Never>) in
+                let now = lock.withLock {
+                    if reached { return true }
+                    reachedWaiter = waiter
+                    return false
+                }
+                if now { waiter.resume() }
+            }
         }
 
         func open() { release.signal() }
@@ -264,7 +281,7 @@ extension RelayFeedTests {
         r.rig.phone.setWaitsForKeybox { blocking.check() }
 
         let running = Task { _ = try? await r.rig.feed.pollOnce() }
-        while !blocking.hasReached { await Task.yield() }
+        await blocking.untilReached()
         let resume = Task { await r.rig.feed.resumeIfParked() }
         await Task.yield()
         blocking.open()

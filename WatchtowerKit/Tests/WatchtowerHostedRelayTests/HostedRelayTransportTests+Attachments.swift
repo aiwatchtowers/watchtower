@@ -77,7 +77,7 @@ extension HostedRelayTransportTests {
         await eventually { intercepting.holding }
         let rewrite = try await macSave(mac, dataZone(mac), "report")
         intercepting.release()
-        try await pull.value(within: 60, "pull")
+        try await pull.value
 
         let first = try buffered(store, .data)
         XCTAssertEqual(first.changed.map(\.recordName), ["report", "other"])
@@ -125,7 +125,7 @@ extension HostedRelayTransportTests {
         await eventually { intercepting.holding }
         try await macSave(mac, dataZone(mac), "report")
         intercepting.release()
-        try await pull.value(within: 60, "pull")
+        try await pull.value
         let event = try XCTUnwrap(try buffered(store, .data).changed.first)
         XCTAssertEqual(event.recordName, "report")
         XCTAssertNil(event.assetFileURL)
