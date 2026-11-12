@@ -7,16 +7,15 @@ final class IdeaDailyBatchTests: XCTestCase {
     private var suite = ""
     private var defaults: UserDefaults!
 
-    /// Injected clock and zone: every date below is relative to `now`.
-    private let now = AutomationDates.parse("2026-11-12T10:00:00Z") ?? Date()
-    private var calendar: Calendar = {
-        var cal = Calendar(identifier: .gregorian)
-        cal.timeZone = TimeZone(identifier: "Europe/Kyiv") ?? .current
-        return cal
-    }()
+    /// Injected clock and zone: every date below is relative to `now`. Both
+    /// are fixed in `setUpWithError` and never fall back to the wall clock.
+    private var now: Date!
+    private var calendar = Calendar(identifier: .gregorian)
 
-    override func setUp() {
-        super.setUp()
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        now = try XCTUnwrap(AutomationDates.parse("2026-11-12T10:00:00Z"))
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "Europe/Kyiv"))
         suite = "IdeaDailyBatchTests.\(UUID().uuidString)"
         defaults = UserDefaults(suiteName: suite)
     }
