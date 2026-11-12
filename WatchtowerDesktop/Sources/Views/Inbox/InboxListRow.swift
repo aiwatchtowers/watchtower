@@ -1,169 +1,134 @@
 import SwiftUI
 import WatchtowerCore
 
-/// One row of the Inbox list (spec B1): an unread dot, the title on one
-/// line with a High chip, the source line and a one-line preview. A day
-/// whose plan has conflicts carries a red dot after its title (the old
-/// sidebar Day Plan dot, G4).
+/// One row of the Inbox list (spec "The list", mockup): the kind's tile,
+/// the title with the unread dot before it, the first real line of content
+/// under it, a quiet meta line, and on the right the time above the count.
+/// A row with a ⋯ of its own (the Idea finder) shows it over its trailing
+/// edge on hover or focus, by opacity, so the row never changes height.
 struct InboxListRow: View {
-    let item: InboxListItem
-    /// A proposal's "⚙ <automation> · run #<n>" when an automation run made it.
-    var proposalLabel: String?
-    let now: Date
+    let content: InboxRowContent
+    let isSelected: Bool
+    /// The row's own ⋯ (and context menu); empty draws none.
+    var menu: [InboxMenuEntry] = []
+    /// The context menu when the row has no ⋯ of its own (an artifact's ⋯).
+    var contextEntries: [InboxMenuEntry] = []
+    /// A press in the row's ⋯ or its context menu.
+    var onMenu: (InboxMenuCommand) -> Void = { _ in }
+
+    @State private var isHovered = false
+    @FocusState private var menuFocused: Bool
+
+    init(
+        content: InboxRowContent,
+        isSelected: Bool,
+        menu: [InboxMenuEntry] = [],
+        contextEntries: [InboxMenuEntry] = [],
+        onMenu: @escaping (InboxMenuCommand) -> Void = { _ in }
+    ) {
+        self.content = content
+        self.isSelected = isSelected
+        self.menu = menu
+        self.contextEntries = contextEntries
+        self.onMenu = onMenu
+    }
+
+    /// The ⋯ is on screen: under the pointer, focused, or on the selected row.
+    private var showsMenu: Bool { !menu.isEmpty && (isHovered || menuFocused || isSelected) }
 
     var body: some View {
-        let content = Self.content(item, proposalLabel: proposalLabel, now: now)
-        HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
-            Circle()
-                .fill(content.unread ? Color.accentColor : .clear)
-                .frame(width: Self.dotSize, height: Self.dotSize)
-                .accessibilityHidden(!content.unread)
-                .accessibilityLabel("Unread")
+        HStack(alignment: .top, spacing: Spacing.cozy) {
+            InboxTile(kind: content.kind, symbol: content.symbol, isSelected: isSelected)
             VStack(alignment: .leading, spacing: Spacing.tight) {
-                HStack(spacing: Spacing.compact) {
-                    Text(content.title)
-                        .font(.callout.weight(content.unread ? .semibold : .regular))
-                        .lineLimit(1)
-                    if content.high {
-                        Chip(text: "High", color: Tone.priority("high"))
-                    }
-                    if content.conflicts {
+                HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
+                    if content.isUnread {
                         Circle()
-                            .fill(Tone.error)
-                            .frame(width: Self.dotSize, height: Self.dotSize)
-                            .help("The plan has conflicts")
-                            .accessibilityLabel("The plan has conflicts")
+                            .fill(Color.accentColor)
+                            .frame(width: IconSize.stateDot, height: IconSize.stateDot)
+                            .accessibilityIdentifier("inbox.row.unread")
                     }
+                    Text(content.title)
+                        .font(.body.weight(.semibold))
+                        .lineLimit(1)
                 }
-                Text(content.source)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
                 if !content.preview.isEmpty {
                     Text(content.preview)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+                if !content.meta.isEmpty {
+                    Text(content.meta)
                         .font(.caption)
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)
                 }
             }
+            Spacer(minLength: Spacing.small)
+            VStack(alignment: .trailing, spacing: Spacing.compact) {
+                if !content.time.isEmpty {
+                    Text(content.time)
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        // The ⋯ takes the time's place while it shows.
+                        .opacity(showsMenu ? 0 : 1)
+                }
+                if let pill = content.pill {
+                    InboxRowPillView(pill: pill)
+                }
+            }
         }
-        .padding(.vertical, Spacing.small)
-    }
-
-    private static let dotSize: CGFloat = 7
-
-    struct Content: Equatable {
-        let unread: Bool
-        let title: String
-        let high: Bool
-        let source: String
-        let preview: String
-        /// A day card whose plan has conflicts (`day_plans.has_conflicts`).
-        var conflicts = false
-    }
-
-    /// The row's words. A proposal is "unread" while it waits on the owner.
-    static func content(_ item: InboxListItem, proposalLabel: String?, now: Date) -> Content {
-        switch item {
-        case .output(let card):
-            return Content(unread: card.isUnread, title: card.title.isEmpty ? "Automation output" : card.title,
-                           high: card.priority == "high", source: InboxCardTexts.sourceLine(card, now: now),
-                           preview: InboxCardTexts.preview(card.body))
-        case .reminder(let reminder):
-            return Content(unread: false, title: reminder.note.isEmpty ? "Reminder" : reminder.note, high: false,
-                           source: reminderSource(reminder, now: now), preview: "")
-        case .proposal(let action):
-            let title = action.tool == SaveAutomationCardModel.tool
-                ? SaveAutomationCardModel(action: action).title
-                : AgentActionCardView.title(for: action)
-            let prefix = proposalLabel ?? "Assistant proposal"
-            let source = AutomationDates.parse(action.createdAt)
-                .map { InboxCardTexts.stamped(prefix, at: $0, now: now) } ?? prefix
-            return Content(unread: action.isPending, title: title, high: false, source: source,
-                           preview: action.reason)
-        case .day(let card):
-            return Content(unread: card.isUnread, title: dayTitle(card), high: false, source: daySource(card),
-                           preview: dayPreview(card), conflicts: card.plan?.hasConflicts == true)
-        case .track(let card):
-            return Content(unread: card.isUnread, title: card.track.text, high: card.track.priority == "high",
-                           source: InboxCardTexts.stamped("Track", at: card.lastEventAt, now: now),
-                           preview: card.newEventCount > 0 ? "\(card.newEventCount) new" : "")
-        case .idea(let idea):
-            return Content(unread: idea.awaitsVerdict, title: idea.title, high: false, source: ideaSource(idea),
-                           preview: idea.essence)
-        case .message(let row):
-            return Content(unread: row.item.isUnread, title: messageTitle(row), high: row.item.priority == "high",
-                           source: messageSource(row, now: now), preview: row.item.whyMatters)
-        case .builtinNotice(let notice):
-            return Content(unread: true, title: notice.title, high: false, source: builtinNoticeSource,
-                           preview: notice.error)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Self.accessibilityLabel(content))
+        .accessibilityValue(content.isUnread ? "Unread" : "")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .overlay(alignment: .topTrailing) {
+            if !menu.isEmpty {
+                InboxMoreMenu(entries: menu, help: "More for \(content.title)", onCommand: onMenu)
+                    .focused($menuFocused)
+                    .opacity(showsMenu ? 1 : 0)
+            }
+        }
+        .kitRow(isSelected: isSelected)
+        .onHover { isHovered = $0 }
+        .contextMenu {
+            let entries = menu.isEmpty ? contextEntries : menu
+            if !entries.isEmpty { InboxMenuItems(entries: entries, onCommand: onMenu) }
         }
     }
 
-    /// A built-in's failed move to Automations: where it is fixed.
-    static let builtinNoticeSource = "Automations · Built in"
+    /// VoiceOver's one element: "title, preview, N" (the parts it has).
+    static func accessibilityLabel(_ content: InboxRowContent) -> String {
+        var parts = [content.title]
+        if !content.preview.isEmpty { parts.append(content.preview) }
+        if let pill = content.pill { parts.append("\(pill.count)") }
+        return parts.joined(separator: ", ")
+    }
+}
 
-    /// The day card: its briefing, or the plan alone; today's placeholder
-    /// before either exists.
-    static func dayTitle(_ card: InboxDayCard) -> String {
-        if card.briefing != nil { return "Morning brief" }
-        return card.plan != nil ? "Day plan" : "Nothing ready yet"
+/// A row's count: waits on the owner in the warning tone, news in the
+/// accent, a batch to go through quiet on the card fill.
+struct InboxRowPillView: View {
+    let pill: InboxRowPill
+
+    var body: some View {
+        Text("\(pill.count)")
+            .font(.caption2.weight(.semibold).monospacedDigit())
+            .foregroundStyle(pill.tone == .batch ? Color.secondary : Color.white)
+            .lineLimit(1)
+            .fixedSize()
+            .padding(.horizontal, Spacing.compact)
+            .padding(.vertical, Spacing.tight)
+            .background(Self.fill(pill.tone), in: Capsule())
+            .accessibilityIdentifier("inbox.row.pill")
     }
 
-    /// "Your day · Wed 22 Oct".
-    static func daySource(_ card: InboxDayCard) -> String {
-        guard let date = dayParser.date(from: card.date) else { return "Your day · \(card.date)" }
-        return "Your day · \(dayFormatter.string(from: date))"
-    }
-
-    private static let dayParser: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter
-    }()
-
-    private static let dayFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "EEE d MMM"
-        return formatter
-    }()
-
-    private static func dayPreview(_ card: InboxDayCard) -> String {
-        card.plan == nil ? "" : "Plan: \(card.planDone) of \(card.planTotal) done"
-    }
-
-    /// "Idea · proposed", "Decision · not now"; one born in a chat says so:
-    /// "Decision · proposed · Chat".
-    static func ideaSource(_ idea: Idea) -> String {
-        let line = "\(idea.kind.rawValue.capitalized) · \(idea.statusRaw.replacingOccurrences(of: "_", with: " "))"
-        return idea.chatBorn ? "\(line) · \(IdeaMention.Source.chat.label)" : line
-    }
-
-    /// A channel item that folded several messages says how many; any other
-    /// its text.
-    static func messageTitle(_ row: HomeFeedInboxRow) -> String {
-        if row.item.isAccumulated { return row.item.mentionCountTitle }
-        var text = row.item.snippet
-        // A mail's snippet is "<subject> — <text>" and the source line already
-        // names the subject (`HomeFeedQueries.whereText`).
-        if row.item.triggerType == "email_received", let range = text.range(of: " — ") {
-            text = String(text[range.upperBound...])
+    static func fill(_ tone: InboxRowPill.Tone) -> Color {
+        switch tone {
+        case .needsYou: Tone.warning
+        case .news: Color.accentColor
+        case .batch: Fill.card
         }
-        let line = text.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
-        return line.isEmpty ? "Message" : line
-    }
-
-    /// "<who> · #eng · 09:12" (its day when not today).
-    static func messageSource(_ row: HomeFeedInboxRow, now: Date) -> String {
-        let prefix = [row.who, row.whereText ?? ""].filter { !$0.isEmpty }.joined(separator: " · ")
-        return InboxCardTexts.stamped(prefix.isEmpty ? "Message" : prefix, at: row.stamp, now: now)
-    }
-
-    /// "Reminder · 14:00" (its due time).
-    static func reminderSource(_ reminder: Reminder, now: Date) -> String {
-        AutomationDates.parse(reminder.remindAt)
-            .map { InboxCardTexts.stamped("Reminder", at: $0, now: now) } ?? "Reminder"
     }
 }

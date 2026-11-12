@@ -1,11 +1,13 @@
 import SwiftUI
 import WatchtowerCore
 
-/// The Inbox's second column: the selected folder's entries, newest change
-/// first, with unread dots and the "updated …" lines, or the folder's empty
-/// state (`EmptyStateCopyTable`'s `inbox`, `inboxFolder`, `inboxApprovals`)
-/// with what the caller keeps under it (`emptyExtra`: the empty root's
-/// OWNER-02 line and reaction cheat sheet).
+/// The Inbox's second column (spec "The list"): the selected folder's
+/// sections by urgency, each under a small caps heading (a Needs approval
+/// group with its count), the root's Earlier line as a last quiet row; or,
+/// with no rows, the folder's empty state (`EmptyStateCopyTable`'s `inbox`,
+/// `inboxFolder`, `inboxApprovals`) with what the caller keeps under it
+/// (`emptyExtra`: the empty root's OWNER-02 line and reaction cheat sheet),
+/// or "No matches for …" while a search finds nothing.
 struct InboxFolderContentList<EmptyExtra: View>: View {
     let content: InboxFolderListContent
     /// A row picked by click or the arrow keys; nil when Escape clears it.
@@ -17,6 +19,8 @@ struct InboxFolderContentList<EmptyExtra: View>: View {
     var onMenu: (String, InboxMenuCommand) -> Void = { _, _ in }
     /// An artifact row's context menu: its artifact ⋯ (spec "Menus").
     var contextMenu: (InboxFolderListRow) -> [InboxMenuEntry] = { _ in [] }
+    /// The Earlier line's press: the Morning brief with its History open.
+    var onEarlier: () -> Void = {}
     /// The empty state's readiness line and actions.
     var emptyState: EmptyStateContext = .neutral
     let emptyExtra: EmptyExtra
@@ -27,6 +31,7 @@ struct InboxFolderContentList<EmptyExtra: View>: View {
         onNewArtifact: @escaping () -> Void = {},
         onMenu: @escaping (String, InboxMenuCommand) -> Void = { _, _ in },
         contextMenu: @escaping (InboxFolderListRow) -> [InboxMenuEntry] = { _ in [] },
+        onEarlier: @escaping () -> Void = {},
         emptyState: EmptyStateContext = .neutral,
         @ViewBuilder emptyExtra: () -> EmptyExtra
     ) {
@@ -35,6 +40,7 @@ struct InboxFolderContentList<EmptyExtra: View>: View {
         self.onNewArtifact = onNewArtifact
         self.onMenu = onMenu
         self.contextMenu = contextMenu
+        self.onEarlier = onEarlier
         self.emptyState = emptyState
         self.emptyExtra = emptyExtra()
     }
@@ -44,7 +50,9 @@ struct InboxFolderContentList<EmptyExtra: View>: View {
             if let readError = content.readError {
                 InboxReadErrorLine(message: readError)
             }
-            if content.rows.isEmpty {
+            if content.hasNoMatches {
+                InboxNoMatchesLine(query: content.query)
+            } else if content.rows.isEmpty {
                 ScrollView {
                     TabEmptyState(copyKey: content.emptyCopyKey, folderTitle: content.folderTitle, context: emptyState,
                                   onTabAction: onNewArtifact) {
@@ -55,25 +63,37 @@ struct InboxFolderContentList<EmptyExtra: View>: View {
                 }
                 .accessibilityIdentifier("inbox.emptyFolder")
             } else {
-                // A List, as today's Inbox list (`InboxSplitView`): arrow keys
-                // move the selection and VoiceOver reads the rows as a list.
-                List(selection: Binding(get: { content.selection }, set: { onSelect($0) })) {
-                    Text(content.folderTitle)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .selectionDisabled()
-                        .listRowSeparator(.hidden)
-                    ForEach(content.rows) { row in
-                        InboxFolderListRowView(row: row, contextEntries: contextMenu(row)) { onMenu(row.id, $0) }
-                            .tag(Optional(row.id))
-                            .listRowSeparator(.hidden)
-                    }
-                }
-                .clearPlainList()
-                .onExitCommand { onSelect(nil) }
+                list
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    /// A List, as today's Inbox list (`InboxSplitView`): arrow keys move the
+    /// selection and VoiceOver reads the rows as a list. Each heading is a
+    /// plain row of its Section that cannot be selected, not a Section
+    /// header: a plain List pins its header and draws a hairline under it.
+    private var list: some View {
+        List(selection: Binding(get: { content.selection }, set: { onSelect($0) })) {
+            ForEach(content.sections) { section in
+                Section {
+                    InboxListSectionHeading(title: section.title, count: section.count)
+                        .inboxListLine()
+                    ForEach(section.rows) { row in
+                        InboxListRow(content: row.content, isSelected: row.id == content.selection, menu: row.menu,
+                                     contextEntries: contextMenu(row)) { onMenu(row.id, $0) }
+                            .tag(Optional(row.id))
+                            .inboxListLine(selectable: true)
+                    }
+                }
+            }
+            if let earlier = content.earlierLine {
+                InboxEarlierLineRow(line: earlier, onPress: onEarlier)
+                    .inboxListLine()
+            }
+        }
+        .clearPlainList()
+        .onExitCommand { onSelect(nil) }
     }
 }
 
@@ -83,59 +103,85 @@ extension InboxFolderContentList where EmptyExtra == EmptyView {
         onSelect: @escaping (String?) -> Void = { _ in },
         onNewArtifact: @escaping () -> Void = {},
         onMenu: @escaping (String, InboxMenuCommand) -> Void = { _, _ in },
+        onEarlier: @escaping () -> Void = {},
         emptyState: EmptyStateContext = .neutral
     ) {
         self.init(content: content, onSelect: onSelect, onNewArtifact: onNewArtifact, onMenu: onMenu,
-                  emptyState: emptyState) { EmptyView() }
+                  onEarlier: onEarlier, emptyState: emptyState) { EmptyView() }
     }
 }
 
-/// One list row: the unread dot, the title with its summary, the "updated …"
-/// line under it.
-struct InboxFolderListRowView: View {
-    let row: InboxFolderListRow
-    /// The context menu when the row has no ⋯ of its own (an artifact's ⋯).
-    var contextEntries: [InboxMenuEntry] = []
-    /// A press in the row's own ⋯ (`row.menu`) or its context menu.
-    var onMenu: (InboxMenuCommand) -> Void = { _ in }
+/// A section's heading in the list: its title in small caps, a Needs
+/// approval group's count on the right (mockup `.lsec`).
+struct InboxListSectionHeading: View {
+    let title: String
+    var count: Int?
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
-            Circle()
-                .fill(row.content.isUnread ? Color.accentColor : .clear)
-                .frame(width: IconSize.stateDot, height: IconSize.stateDot)
-                .accessibilityHidden(!row.content.isUnread)
-                .accessibilityLabel("Unread")
-            VStack(alignment: .leading, spacing: Spacing.tight) {
-                HStack(alignment: .firstTextBaseline, spacing: Spacing.small) {
-                    Text(row.content.title)
-                        .font(.callout.weight(row.content.isUnread ? .semibold : .regular))
-                        .lineLimit(1)
-                    if let pill = row.content.pill {
-                        Text("· \(pill.count)")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                }
-                if !row.content.meta.isEmpty {
-                    Text(row.content.meta)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-            }
-            if !row.menu.isEmpty {
-                Spacer(minLength: Spacing.small)
-                InboxMoreMenu(entries: row.menu, help: "More for \(row.content.title)", onCommand: onMenu)
+        HStack(alignment: .firstTextBaseline, spacing: Spacing.small) {
+            Text(title)
+                .textCase(.uppercase)
+                .tracking(Tracking.caps)
+            Spacer(minLength: Spacing.small)
+            if let count {
+                Text("\(count)").monospacedDigit()
             }
         }
-        .padding(.vertical, Spacing.small)
-        .accessibilityElement(children: row.menu.isEmpty ? .combine : .contain)
-        .contextMenu {
-            let entries = row.menu.isEmpty ? contextEntries : row.menu
-            if !entries.isEmpty { InboxMenuItems(entries: entries, onCommand: onMenu) }
+        .font(.caption2.weight(.semibold))
+        .foregroundStyle(.tertiary)
+        .padding(.top, Spacing.medium)
+        .padding(.horizontal, Spacing.regular)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isHeader)
+    }
+}
+
+/// The root's last row: where the past briefs went, a press opens the
+/// Morning brief with its History.
+struct InboxEarlierLineRow: View {
+    let line: InboxEarlierLine
+    let onPress: () -> Void
+
+    var body: some View {
+        Button(action: onPress) {
+            Label(line.text, systemImage: "chevron.right")
+                .font(.caption)
+                .lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
+        // Quiet text, not the accent: a way into the brief, not an action.
+        .buttonStyle(KitQuietButtonStyle(label: .secondary))
+        .padding(.top, Spacing.medium)
+        .help("Open the Morning brief's History")
+        .accessibilityIdentifier("inbox.earlierLine")
+    }
+}
+
+/// A search that finds nothing in the folder.
+struct InboxNoMatchesLine: View {
+    let query: String
+
+    var body: some View {
+        Text("No matches for “\(InboxListFilter.trimmed(query))”")
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity)
+            .padding(.top, Spacing.wide)
+            .padding(.horizontal, Spacing.large)
+            .accessibilityIdentifier("inbox.noMatches")
+    }
+}
+
+private extension View {
+    /// A line of the list: no separator, no stock background, `Spacing.tight`
+    /// below a row; a heading or the Earlier line is never selected.
+    @ViewBuilder
+    func inboxListLine(selectable: Bool = false) -> some View {
+        let line = listRowInsets(EdgeInsets(top: 0, leading: Spacing.small, bottom: Spacing.tight,
+                                            trailing: Spacing.small))
+            .listRowSeparator(.hidden)
+            .listRowBackground(Color.clear)
+        if selectable { line } else { line.selectionDisabled() }
     }
 }
 

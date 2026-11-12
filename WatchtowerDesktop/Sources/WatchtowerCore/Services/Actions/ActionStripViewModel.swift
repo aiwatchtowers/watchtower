@@ -306,7 +306,7 @@ package final class ActionStripViewModel {
                 )
             }
             let before = sections
-            let entriesBefore = folderList.rows.map(\.id)
+            let entriesBefore = listedFolder.rows.map(\.id)
             let firstRead = !hasRead
             feed = snapshot.feed
             actionLabels = snapshot.labels
@@ -360,10 +360,29 @@ package final class ActionStripViewModel {
             approvalsOn: !disabledFeatures.contains(Self.approvalsFeatureID), now: clock())
     }
 
-    /// The selected folder's list column: the root's and an owner folder's
-    /// sections (`InboxRootSections`), the root's Earlier line, Needs
-    /// approval's groups (`NeedsApprovalGroups.sections`).
+    /// The list's search: one query for every folder, kept across
+    /// navigation (this model is AppState-owned). Filtering never touches
+    /// the selection.
+    package var listQuery = ""
+
+    /// The selected folder's list column as drawn: `listedFolder` filtered
+    /// by `listQuery` (`InboxListFilter`), the Earlier line hidden while a
+    /// search is on.
     package var folderList: InboxFolderListContent {
+        var list = listedFolder
+        guard !InboxListFilter.trimmed(listQuery).isEmpty else { return list }
+        list.sections = InboxListFilter.apply(list.sections, query: listQuery)
+        list.earlierLine = nil
+        list.query = listQuery
+        return list
+    }
+
+    /// The selected folder's whole list, no search applied: the root's and
+    /// an owner folder's sections (`InboxRootSections`), the root's Earlier
+    /// line, Needs approval's groups (`NeedsApprovalGroups.sections`). What
+    /// keeps the selection listed (`keepEntryListed`) reads, so a search
+    /// that hides the selected row never moves the selection.
+    private var listedFolder: InboxFolderListContent {
         let folder = folderMenu.tree.folder(folderMenu.selectedFolderID) ?? folderMenu.tree.root
         let inputs = entryInputs
         let sections: [InboxListSection]
@@ -590,15 +609,15 @@ package final class ActionStripViewModel {
     }
 
     /// The selected entry left the folder (done elsewhere, auto-resolved,
-    /// closed): the next row of the old list as drawn (`folderList.rows`,
-    /// sections in order) still listed, else the one above it, else none —
+    /// closed): the next row of the old list (`listedFolder.rows`,
+    /// sections in order, before any search) still listed, else the one above it, else none —
     /// as `keepSelectionListed` does for cards. A selected Needs approval
     /// group row stays while its group is listed. The Morning brief of a
     /// day that rolled over moves to today's. Nothing is re-selected
     /// once the owner cleared the selection.
     private func keepEntryListed(was before: [String]) {
         guard let current = entrySelection else { return }
-        let drawn = folderList.rows.map(\.id)
+        let drawn = listedFolder.rows.map(\.id)
         let entries = folderEntries.map(\.id)
         guard !drawn.contains(current), !entries.contains(current) else { return }
         let brief = "day:\(today)"

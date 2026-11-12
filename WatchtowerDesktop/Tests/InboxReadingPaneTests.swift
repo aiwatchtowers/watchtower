@@ -271,8 +271,8 @@ final class InboxReadingPaneTests: XCTestCase {
 
     func testListRowContentForEveryKind() throws {
         let now = try local(10, 30)
-        func content(_ item: InboxListItem) -> InboxListRow.Content {
-            InboxListRow.content(item, proposalLabel: nil, now: now)
+        func content(_ item: InboxListItem) -> InboxLegacyListRow.Content {
+            InboxLegacyListRow.content(item, proposalLabel: nil, now: now)
         }
         XCTAssertEqual(content(.day(try dayCard())),
                        .init(unread: true, title: "Morning brief", high: false, source: "Your day · Wed 22 Oct",
@@ -298,11 +298,11 @@ final class InboxReadingPaneTests: XCTestCase {
     /// day's plan has conflicts.
     func testDayRowMarksAPlanWithConflicts() throws {
         let now = try local(10, 30)
-        func row(conflicts: Bool) -> InboxListRow.Content {
+        func row(conflicts: Bool) -> InboxLegacyListRow.Content {
             let card = InboxDayCard(date: "2025-10-22", briefing: nil,
                                     plan: .stub(planDate: "2025-10-22", hasConflicts: conflicts),
                                     planDone: 0, planTotal: 2, stamp: now)
-            return InboxListRow.content(.day(card), proposalLabel: nil, now: now)
+            return InboxLegacyListRow.content(.day(card), proposalLabel: nil, now: now)
         }
         XCTAssertTrue(row(conflicts: true).conflicts)
         XCTAssertFalse(row(conflicts: false).conflicts)
@@ -310,9 +310,9 @@ final class InboxReadingPaneTests: XCTestCase {
         let card = InboxDayCard(date: "2025-10-22", briefing: nil,
                                 plan: .stub(planDate: "2025-10-22", hasConflicts: true),
                                 planDone: 0, planTotal: 2, stamp: now)
-        let marked = InboxListRow(item: .day(card), now: now)
+        let marked = InboxLegacyListRow(item: .day(card), now: now)
         XCTAssertNoThrow(try marked.inspect().find(viewWithAccessibilityLabel: "The plan has conflicts"))
-        let plain = InboxListRow(item: .day(try dayCard()), now: now)
+        let plain = InboxLegacyListRow(item: .day(try dayCard()), now: now)
         XCTAssertThrowsError(try plain.inspect().find(viewWithAccessibilityLabel: "The plan has conflicts"))
     }
 

@@ -133,7 +133,7 @@ struct InboxSplitView<EmptyList: View>: View {
                         .selectionDisabled()
                         .listRowSeparator(.hidden)
                     ForEach(section.items) { item in
-                        InboxListRow(item: item, now: now)
+                        InboxLegacyListRow(item: item, now: now)
                             .tag(Optional(item.id))
                             .listRowSeparator(.hidden)
                     }

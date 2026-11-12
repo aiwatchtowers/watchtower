@@ -349,12 +349,11 @@ enum InboxBuilderBShotFixtures {
             },
             DesignShot(name: "inbox-b-idea-finder-menu", size: NSSize(width: 620, height: 0)) {
                 AnyView(HStack(alignment: .top, spacing: Spacing.large) {
-                    InboxFolderListRowView(row: InboxFolderListRow(
-                        id: "ideas", content: InboxRowContent(
+                    InboxListRow(
+                        content: InboxRowContent(
                             kind: .ideas, title: "Idea finder", meta: "updated 3 h ago",
                             pill: InboxRowPill(count: 1, tone: .batch)),
-                        menu: InboxFolderEntry.legacyIdeas.menuEntries))
-                        .kitRow(isSelected: true)
+                        isSelected: true, menu: InboxFolderEntry.legacyIdeas.menuEntries)
                         .frame(width: 280)
                     menuPanel("Idea finder ⋯", InboxFolderEntry.legacyIdeas.menuEntries)
                 }

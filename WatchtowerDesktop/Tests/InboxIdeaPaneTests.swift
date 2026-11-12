@@ -183,9 +183,9 @@ final class InboxIdeaPaneTests: XCTestCase {
         XCTAssertFalse(decided.contains("Approve"))
 
         // The list row names the chat as its source.
-        XCTAssertEqual(InboxListRow.ideaSource(proposed), "Decision · proposed · Chat")
+        XCTAssertEqual(InboxLegacyListRow.ideaSource(proposed), "Decision · proposed · Chat")
         let mined = try insert(kind: "decision", title: "Ship on Thursdays", status: "active")
-        XCTAssertEqual(InboxListRow.ideaSource(mined), "Decision · active")
+        XCTAssertEqual(InboxLegacyListRow.ideaSource(mined), "Decision · active")
     }
 
     /// G4: the decision card keeps what the Ideas screen's pane gave a

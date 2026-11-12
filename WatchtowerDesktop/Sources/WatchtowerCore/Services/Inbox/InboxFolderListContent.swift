@@ -51,6 +51,9 @@ package struct InboxFolderListContent: Equatable, Sendable {
     /// A failed folder read: the previous list stays under today's strip
     /// error line.
     package var readError: String?
+    /// The list's search (`InboxListFilter`) the sections are filtered by;
+    /// empty = none.
+    package var query: String
 
     package init(
         folderKind: InboxFolderKind,
@@ -58,7 +61,8 @@ package struct InboxFolderListContent: Equatable, Sendable {
         sections: [InboxListSection] = [],
         earlierLine: InboxEarlierLine? = nil,
         selection: String? = nil,
-        readError: String? = nil
+        readError: String? = nil,
+        query: String = ""
     ) {
         self.folderKind = folderKind
         self.folderTitle = folderTitle
@@ -66,6 +70,13 @@ package struct InboxFolderListContent: Equatable, Sendable {
         self.earlierLine = earlierLine
         self.selection = selection
         self.readError = readError
+        self.query = query
+    }
+
+    /// A search is on and nothing matches it: "No matches for …" in place
+    /// of the folder's empty state.
+    package var hasNoMatches: Bool {
+        rows.isEmpty && !InboxListFilter.trimmed(query).isEmpty
     }
 
     /// Every row, sections in order.

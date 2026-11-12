@@ -41,10 +41,11 @@ final class InboxLegacyEntryMenuTests: XCTestCase {
                                        menu: InboxFolderEntry.legacyIdeas.menuEntries)
         let tracks = InboxFolderListRow(id: "tracks", content: InboxRowContent(kind: .threads, title: "Track my threads"))
         var pressed: InboxMenuCommand?
-        let row = InboxFolderListRowView(row: ideas) { pressed = $0 }
+        let row = InboxListRow(content: ideas.content, isSelected: false, menu: ideas.menu) { pressed = $0 }
         XCTAssertNoThrow(try row.inspect().find(InboxMoreMenu.self))
         try row.inspect().find(InboxMoreMenu.self).actualView().onCommand(Self.command)
         XCTAssertEqual(pressed, Self.command)
-        XCTAssertThrowsError(try InboxFolderListRowView(row: tracks).inspect().find(InboxMoreMenu.self))
+        XCTAssertThrowsError(try InboxListRow(content: tracks.content, isSelected: false, menu: tracks.menu)
+            .inspect().find(InboxMoreMenu.self))
     }
 }

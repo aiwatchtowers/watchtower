@@ -257,7 +257,7 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
     /// **Retry**; the card leaves once a read finds the move done.
     private func builtinNotice(_ notice: BuiltinUpgradeNotice) -> some View {
         VStack(alignment: .leading, spacing: Spacing.medium) {
-            Text(InboxListRow.builtinNoticeSource)
+            Text(InboxLegacyListRow.builtinNoticeSource)
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Text(notice.title)
@@ -288,7 +288,7 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
 
     private func reminder(_ reminder: Reminder) -> some View {
         VStack(alignment: .leading, spacing: Spacing.medium) {
-            Text(InboxListRow.reminderSource(reminder, now: now))
+            Text(InboxLegacyListRow.reminderSource(reminder, now: now))
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Text(reminder.note.isEmpty ? "Reminder" : reminder.note)
@@ -371,19 +371,19 @@ struct InboxCardPlaceholder: View {
     let source: String
 
     init(day: InboxDayCard) {
-        title = InboxListRow.dayTitle(day)
-        source = InboxListRow.daySource(day)
+        title = InboxLegacyListRow.dayTitle(day)
+        source = InboxLegacyListRow.daySource(day)
     }
 
     init(track: InboxTrackCard, now: Date) {
-        let content = InboxListRow.content(.track(track), proposalLabel: nil, now: now)
+        let content = InboxLegacyListRow.content(.track(track), proposalLabel: nil, now: now)
         title = content.title
         source = content.source
     }
 
     init(idea: Idea) {
         title = idea.title
-        source = InboxListRow.ideaSource(idea)
+        source = InboxLegacyListRow.ideaSource(idea)
     }
 
     var body: some View {

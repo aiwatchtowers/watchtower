@@ -442,6 +442,10 @@ struct ActionStripActionsView: View {
             onNewArtifact: onNewArtifact,
             onMenu: entryMenu,
             contextMenu: rowContextMenu,
+            onEarlier: {
+                aux = nil
+                vm.openBriefHistory()
+            },
             emptyState: emptyState,
             emptyExtra: { rootEmptyExtra }
         )
@@ -616,11 +620,8 @@ struct ActionStripActionsView: View {
     // MARK: - Needs approval
 
     private var approvalsPane: some View {
-        let entries = vm.folderEntries
-        // Labeled: with several closures a trailing one would be ambiguous.
-        // swiftlint:disable trailing_closure
-        return NeedsApprovalPane(
-            count: entries.count,
+        NeedsApprovalPane(
+            sections: NeedsApprovalGroups.stack(vm.folderEntries, openActions: vm.folderMenu.snapshot.openActions),
             note: vm.approvalsNoteContent,
             menu: artifactMenu == nil ? []
                 : InboxArtifactMenuContent.approvalsEntries(isEnabled: vm.folderMenu.approvalsEnabled),
@@ -630,13 +631,9 @@ struct ActionStripActionsView: View {
             onMenu: { command in Task { await artifactMenu?.performApprovals(command) } },
             emptyState: emptyState,
             scrollTarget: vm.entrySelection,
-            cards: {
-                ForEach(entries) { entry in
-                    approvalCard(entry).id(entry.id)
-                }
-            }
+            approveAllModel: { vm.approveAllModel($0) },
+            card: { approvalCard($0) }
         )
-        // swiftlint:enable trailing_closure
         .detailBackground()
     }
 

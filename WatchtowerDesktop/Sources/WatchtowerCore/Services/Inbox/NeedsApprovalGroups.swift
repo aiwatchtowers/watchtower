@@ -44,6 +44,29 @@ package enum NeedsApprovalListRow: Equatable, Sendable {
     case group(NeedsApprovalGroup, [NeedsApprovalItem])
 }
 
+/// One block of Needs approval's stack: a header and its cards' entries.
+package struct NeedsApprovalStackSection: Identifiable, Equatable, Sendable {
+    /// The header's scroll anchor: a group's list row id (`rowID`), else
+    /// the list section's id.
+    package let id: String
+    package let title: String
+    /// Nil for the notices and the in-flight rows.
+    package let group: NeedsApprovalGroup?
+    package let entries: [InboxFolderEntry]
+    /// What **Approve All** approves (`approveAllIDs`); nil offers none.
+    package let approveAllIDs: [Int64]?
+
+    package init(
+        id: String, title: String, group: NeedsApprovalGroup?, entries: [InboxFolderEntry], approveAllIDs: [Int64]?
+    ) {
+        self.id = id
+        self.title = title
+        self.group = group
+        self.entries = entries
+        self.approveAllIDs = approveAllIDs
+    }
+}
+
 /// Needs approval's groups and **Approve All N…**. Pure.
 package enum NeedsApprovalGroups {
     /// The tools **Approve All** may approve together: an allowlist, never a
@@ -112,17 +135,11 @@ package enum NeedsApprovalGroups {
         return openActions.contains(action.id)
     }
 
-    /// Needs approval's list sections from its entries: "Built-in updates"
-    /// (the notices) first, one section per group holding its `listRows`
-    /// (titled by the group, `count` = its approvals), then "Approved, still
-    /// running" (in-flight rows). `row` draws an entry's own row.
-    package static func sections(
-        _ entries: [InboxFolderEntry],
-        openActions: Set<Int64>,
-        now: Date,
-        calendar: Calendar,
-        row: (InboxFolderEntry) -> InboxFolderListRow
-    ) -> [InboxListSection] {
+    /// Needs approval's entries split for its list and its stack: the
+    /// notices, the open approvals, the in-flight rows.
+    private static func split(
+        _ entries: [InboxFolderEntry], openActions: Set<Int64>
+    ) -> (notices: [InboxFolderEntry], open: [NeedsApprovalItem], inFlight: [InboxFolderEntry]) {
         var notices: [InboxFolderEntry] = []
         var open: [NeedsApprovalItem] = []
         var inFlight: [InboxFolderEntry] = []
@@ -138,6 +155,21 @@ package enum NeedsApprovalGroups {
                 continue
             }
         }
+        return (notices, open, inFlight)
+    }
+
+    /// Needs approval's list sections from its entries: "Built-in updates"
+    /// (the notices) first, one section per group holding its `listRows`
+    /// (titled by the group, `count` = its approvals), then "Approved, still
+    /// running" (in-flight rows). `row` draws an entry's own row.
+    package static func sections(
+        _ entries: [InboxFolderEntry],
+        openActions: Set<Int64>,
+        now: Date,
+        calendar: Calendar,
+        row: (InboxFolderEntry) -> InboxFolderListRow
+    ) -> [InboxListSection] {
+        let (notices, open, inFlight) = split(entries, openActions: openActions)
         var out: [InboxListSection] = []
         if !notices.isEmpty {
             out.append(InboxListSection(id: noticesSectionID, title: "Built-in updates", rows: notices.map(row)))
@@ -157,6 +189,29 @@ package enum NeedsApprovalGroups {
         if !inFlight.isEmpty {
             out.append(InboxListSection(
                 id: inFlightSectionID, title: "Approved, still running", rows: inFlight.map(row)))
+        }
+        return out
+    }
+
+    /// Needs approval's stack of cards in the list's order: the notices,
+    /// each group under its header (anchored at the group row's id, with
+    /// its **Approve All** ids), the in-flight rows.
+    package static func stack(_ entries: [InboxFolderEntry], openActions: Set<Int64>) -> [NeedsApprovalStackSection] {
+        let (notices, open, inFlight) = split(entries, openActions: openActions)
+        var out: [NeedsApprovalStackSection] = []
+        if !notices.isEmpty {
+            out.append(NeedsApprovalStackSection(
+                id: noticesSectionID, title: "Built-in updates", group: nil, entries: notices, approveAllIDs: nil))
+        }
+        for (group, items) in build(open) {
+            out.append(NeedsApprovalStackSection(
+                id: rowID(group), title: group.title, group: group, entries: items.map(InboxFolderEntry.approval),
+                approveAllIDs: approveAllIDs(group, items)))
+        }
+        if !inFlight.isEmpty {
+            out.append(NeedsApprovalStackSection(
+                id: inFlightSectionID, title: "Approved, still running", group: nil, entries: inFlight,
+                approveAllIDs: nil))
         }
         return out
     }

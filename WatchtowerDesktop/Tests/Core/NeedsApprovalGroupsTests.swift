@@ -194,4 +194,23 @@ final class NeedsApprovalGroupsTests: XCTestCase {
         XCTAssertEqual(AgentAction.argsDecodes.count, decodes, "no decode while the args stay the same")
         XCTAssertEqual(InboxApprovalText.preview(edited), "“two”")
     }
+
+    /// The stack follows the list: notices, each group under its header
+    /// (anchored at the group row's id, with its Approve All ids), then the
+    /// in-flight rows.
+    func testStackFollowsTheList() {
+        let notice = InboxFolderEntry.builtinNotice(
+            BuiltinUpgradeNotice(builtinID: "morning-brief", error: "", updatedAt: Self.now))
+        let entries: [InboxFolderEntry] = [notice]
+            + Self.many("create_track", 2).map(InboxFolderEntry.approval)
+            + [.approval(Self.action(5, tool: "send_slack_message")), .approval(Self.action(6, tool: "create_target"))]
+        let stack = NeedsApprovalGroups.stack(entries, openActions: [1, 2, 5])
+        XCTAssertEqual(stack.map(\.id), ["notices", "group:tracksToCreate", "group:messages", "inFlight"])
+        XCTAssertEqual(stack.map(\.group), [nil, .tracksToCreate, .messages, nil])
+        XCTAssertEqual(stack.map(\.title), ["Built-in updates", "Tracks to create", "Messages", "Approved, still running"])
+        XCTAssertEqual(stack[1].approveAllIDs, [1, 2])
+        XCTAssertNil(stack[2].approveAllIDs)
+        XCTAssertEqual(stack[3].entries.map(\.id), ["approval:action:6"])
+        XCTAssertEqual(NeedsApprovalGroups.stack([], openActions: []), [])
+    }
 }
