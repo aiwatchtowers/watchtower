@@ -52,8 +52,10 @@ package enum InboxRootSections {
     ///   stand-in, the thread briefs applied in the last 24 hours (newest
     ///   first; an older one is dropped), then, on a tree without Needs
     ///   approval, the approvals and notices. **Today** — the Morning
-    ///   brief, then the artifacts changed today (`InboxToday`), newest
-    ///   first. **Running** — Track my threads, Idea finder, then the other
+    ///   brief, Slack today's artifact (`slackTodayAutomationID`, there
+    ///   whatever day it was written: its pane says when it is yesterday's),
+    ///   then the artifacts changed today (`InboxToday`), newest first.
+    ///   **Running** — Track my threads, Idea finder, then the other
     ///   artifacts, newest first. Earlier is never a root section (the
     ///   Earlier line stands for it).
     /// - An owner folder: **Today** (changed today) and **Earlier**, each
@@ -63,6 +65,7 @@ package enum InboxRootSections {
         entries: [InboxFolderEntry],
         folder: InboxFolderKind,
         waitingForMeAutomationID: Int64?,
+        slackTodayAutomationID: Int64? = nil,
         now: Date,
         calendar: Calendar
     ) -> [(InboxRootSection, [InboxFolderEntry])] {
@@ -84,6 +87,7 @@ package enum InboxRootSections {
             var briefs: [(at: Date, entry: InboxFolderEntry)] = []
             var approvals: [InboxFolderEntry] = []
             var day: [InboxFolderEntry] = []
+            var slackToday: [InboxFolderEntry] = []
             var today: [(at: Date, entry: InboxFolderEntry)] = []
             var tracks: [InboxFolderEntry] = []
             var ideas: [InboxFolderEntry] = []
@@ -93,6 +97,8 @@ package enum InboxRootSections {
                 case let .artifact(card):
                     if waitingForMeAutomationID == card.automationID {
                         waiting.append(entry)
+                    } else if slackTodayAutomationID == card.automationID {
+                        slackToday.append(entry)
                     } else if isToday(card.changedAt) {
                         today.append((card.changedAt, entry))
                     } else {
@@ -117,7 +123,7 @@ package enum InboxRootSections {
             }
             return listed([
                 (.needsYou, waiting + standIn + newestFirst(briefs) + approvals),
-                (.today, day + newestFirst(today)),
+                (.today, day + slackToday + newestFirst(today)),
                 (.running, tracks + ideas + newestFirst(running))
             ])
         }

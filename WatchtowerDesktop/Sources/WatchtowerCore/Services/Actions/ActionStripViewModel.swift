@@ -405,6 +405,7 @@ package final class ActionStripViewModel {
             let grouped = InboxRootSections.build(
                 entries: folderEntries, folder: folder.kind,
                 waitingForMeAutomationID: folderMenu.snapshot.waitingForMe.automationID,
+                slackTodayAutomationID: folderMenu.snapshot.slackToday?.automationID,
                 now: inputs.now, calendar: inputs.calendar)
             sections = grouped.map { section, entries in
                 InboxListSection(id: section.rawValue, title: section.title,
@@ -1437,6 +1438,25 @@ package final class ActionStripViewModel {
         let now = Date()
         let hash = drawnHash(id)
         await guardedWrite(.output(id)) { try AutomationQueries.dismissOutput($0, id: id, contentHash: hash, now: now) }
+    }
+
+    /// Mark All Seen on Slack today's pane and row: `read_at` at the version
+    /// drawn (`markOutputOpened`), then a read either way. Never optimistic:
+    /// a card rewritten under the view (its hash moved) stays unread and the
+    /// read shows the new version. The card stays listed and selected.
+    package func markOutputSeen(id: Int64) async {
+        let now = Date()
+        let hash = drawnHash(id)
+        let pool = dbPool
+        await pendingWrites.run(CardKey.card(.output(id))) {
+            lastError = nil
+            do {
+                _ = try await pool.write { try AutomationQueries.markOutputOpened($0, id: id, contentHash: hash, now: now) }
+                await refresh()
+            } catch {
+                lastError = error.localizedDescription
+            }
+        }
     }
 
     /// The content hash of output `id` as the list drew it; `""` (a row from

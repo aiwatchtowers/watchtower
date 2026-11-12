@@ -45,6 +45,11 @@ final class DesignShotsTests: XCTestCase {
         try renderShots(InboxRedesignShotFixtures.shots)
     }
 
+    /// The Inbox redesign's phase 5 shots alone (`inbox-r-slack-today-*`, #1076).
+    func testInboxSlackTodayShotsRender() throws {
+        try renderShots(InboxSlackTodayShotFixtures.shots)
+    }
+
     func testReviewerShotsRender() throws {
         try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("branch-review-reviewer") })
     }

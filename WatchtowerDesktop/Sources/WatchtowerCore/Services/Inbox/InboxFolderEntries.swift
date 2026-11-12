@@ -214,6 +214,11 @@ package enum InboxFolderEntries {
         read.waitingForMe.automationID == card.automationID
     }
 
+    /// `card` is the `slack-today` built-in's: its row draws from the state.
+    package static func isSlackToday(_ card: AutomationOutputCard, _ read: InboxFolderMenuSnapshot) -> Bool {
+        read.slackToday?.automationID == card.automationID
+    }
+
     /// The rows of `card` that wait on the owner (the render-time check).
     private static func waitingCount(_ card: AutomationOutputCard, _ read: InboxFolderMenuSnapshot) -> Int {
         (read.refs[card.id] ?? []).filter(read.refState.waits).count
@@ -238,6 +243,10 @@ package enum InboxFolderEntries {
             return peopleWaiting(title: card.title.isEmpty ? card.automationName : card.title, inputs)
         case .legacyMessages:
             return peopleWaiting(title: InboxLegacyList.messages.title, inputs)
+        case let .artifact(card) where isSlackToday(card, inputs.folders):
+            return SlackTodayRow.content(
+                summary: inputs.folders.slackToday?.summary, isUnread: card.isUnread, changedAt: card.changedAt,
+                now: now, calendar: inputs.calendar)
         case let .artifact(card):
             return artifact(card, inputs)
         case let .legacyDay(card):
