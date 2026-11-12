@@ -117,9 +117,11 @@ final class HostedTerminalSessionTests: XCTestCase {
         return (session, transport)
     }
 
-    private func launched(_ transport: FakeSessionHostTransport, session: HostedTerminalSession, pid: Int = 5150) throws {
+    private func launched(_ transport: FakeSessionHostTransport, session: HostedTerminalSession, pid: Int = 5150, launch: UInt64 = 0) throws {
         let key = try XCTUnwrap(session.key)
-        transport.push(.json(.launched, SessionHostSessionInfo(row: key.row, run: key.run, pid: pid, startedAtMs: 1, exited: false, code: nil)))
+        transport.push(.json(.launched, SessionHostSessionInfo(
+            row: key.row, run: key.run, pid: pid, startedAtMs: 1, exited: false, code: nil, launch: launch
+        )))
     }
 
     private func terminalView(_ session: HostedTerminalSession) throws -> PalettedTerminalView {
@@ -186,6 +188,30 @@ final class HostedTerminalSessionTests: XCTestCase {
         let (session, transport) = try await startedSession()
         session.sendInput([UInt8](repeating: 0x61, count: SessionHostFrame.maxPayload + 10))
         XCTAssertEqual(transport.sent(.input).map(\.payload.count), [SessionHostFrame.maxPayload, 10])
+    }
+
+    /// Before the host reported the launch, the app's input goes as plain
+    /// `input`: an `inputTo` refused then would read as the launch failing.
+    func testAppInputBeforeTheLaunchIsReportedGoesAsInput() async throws {
+        let (session, transport) = try await startedSession()
+        session.sendInput([0x1B])
+        XCTAssertEqual(transport.sent(.input).map(\.payload), [[0x1B]])
+        XCTAssertTrue(transport.sent(.inputTo).isEmpty)
+    }
+
+    /// A large `inputTo` is split so each frame, base64 and JSON included,
+    /// stays within the host's limit; the bytes arrive whole and in order.
+    func testInputToOverTheFrameLimitIsSplit() async throws {
+        let (session, transport) = try await startedSession()
+        try launched(transport, session: session, launch: 2)
+        let bytes = (0..<(HostedTerminalSession.inputToChunk + 10)).map { UInt8(truncatingIfNeeded: $0) }
+        session.sendInput(bytes)
+        let frames = transport.sent(.inputTo)
+        XCTAssertEqual(frames.count, 2)
+        XCTAssertTrue(frames.allSatisfy { $0.payload.count <= SessionHostFrame.maxPayload })
+        let sent = try frames.flatMap { try Array($0.decoded(SessionHostInputTo.self).data) }
+        XCTAssertEqual(sent, bytes)
+        XCTAssertTrue(transport.sent(.input).isEmpty)
     }
 
     func testAResizeGoesToTheHost() async throws {

@@ -529,6 +529,58 @@ func TestWithoutHoldIfPromptTextALineBesideTheDraftIsTyped(t *testing.T) {
 	}
 }
 
+// #1743: the Desktop pane sends its terminal's own replies (a window focus
+// change's ESC[O / ESC[I, a device-attributes answer) and the app's own bytes
+// as InputTo on its attached connection, so they never read as the owner's
+// draft and an answer's Return still goes. Sent as Input they would hold it.
+func TestProj12_TerminalRepliesAsInputToKeepTheAnswersReturn(t *testing.T) {
+	st := newStub(t, Options{}, "claude", rawEchoAgent)
+	cl := st.hub()
+	replies := []byte("\x1b[O\x1b[I\x1b[?1;2c")
+	st.desktop.send(InputTo, InputToReq{Row: 1, Run: "r1", Launch: st.info.Launch, Data: replies})
+	st.desktop.expectNoError()
+	wantBytes(t, st.written(), replies, "the replies")
+	out := st.deliver(cl, st.req("Ask #7 answered"), nil)
+	wantOutcome(t, out, OutcomeSubmitted, "")
+	wantBytes(t, st.written(), cat(paste("Ask #7 answered"), []byte{0x0D}), "the answer and its Return")
+
+	// The same bytes as the pane's Input are the owner's keys: a draft.
+	st.desktop.typeChunks(replies)
+	wantBytes(t, st.written(), replies, "the replies as Input")
+	wantOutcome(t, st.deliver(cl, st.req("next"), noCheck(t)), OutcomeTyped, TypedBesideText)
+}
+
+// #1748 (asks #1256, #1261): the owner's Shift+Tab (a mode switch) puts no
+// text into the prompt, so the next answer still gets its own Return — after
+// the key and when it comes during the answer's pause. Esc and Ctrl+C stay
+// drafts: Claude Code's cancel moves a queued follow-up message back into
+// the prompt, and an answer's Return must not submit it with the answer.
+func TestProj12_ShiftTabKeepsTheAnswersReturn(t *testing.T) {
+	st := newStub(t, Options{}, "claude", rawEchoAgent)
+	cl := st.hub()
+	st.desktop.typeChunks([]byte("\x1b[Z"))
+	wantBytes(t, st.written(), []byte("\x1b[Z"), "Shift+Tab")
+	wantOutcome(t, st.deliver(cl, st.req("Ask #7 answered"), nil), OutcomeSubmitted, "")
+	wantBytes(t, st.written(), cat(paste("Ask #7 answered"), []byte{0x0D}), "the answer and its Return")
+
+	st.desktop.typeChunks([]byte("half"), []byte("\x1b[Z"))
+	wantBytes(t, st.written(), []byte("half\x1b[Z"), "a draft, then Shift+Tab")
+	wantOutcome(t, st.deliver(cl, st.req("next"), noCheck(t)), OutcomeTyped, TypedBesideText)
+
+	var hook pauseHook
+	ps := newStub(t, hook.opts(), "claude", rawEchoAgent)
+	hook.during = func() { ps.desktop.typeChunks([]byte("\x1b[Z")) }
+	wantOutcome(t, ps.deliver(ps.hub(), ps.req("x"), okCheck), OutcomeSubmitted, "")
+	wantBytes(t, ps.written(), cat(paste("x"), []byte("\x1b[Z"), []byte{0x0D}), "the line, Shift+Tab, our Return")
+
+	for _, key := range [][]byte{{0x1B}, {0x03}} {
+		ks := newStub(t, Options{}, "claude", rawEchoAgent)
+		ks.desktop.typeChunks(key)
+		wantBytes(t, ks.written(), key, "the key")
+		wantOutcome(t, ks.deliver(ks.hub(), ks.req("Ask #7 answered"), noCheck(t)), OutcomeTyped, TypedBesideText)
+	}
+}
+
 // Review Focus 2: the requesting connection never answers the re-check.
 // No Return follows, the pending Return clears, and the line counts as left
 // typed for the next delivery.

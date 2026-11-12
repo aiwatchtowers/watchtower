@@ -42,7 +42,8 @@ func ProfileFor(agent string) Profile {
 // (Option+Return), does not end in the profile's Newline, and whose last
 // printable input before it — in this chunk or earlier ones
 // (backslashBefore), escape sequences and paste brackets skipped — is not
-// `\` (`\` then Return is a line break). Anything else is a draft. When
+// `\` (`\` then Return is a line break). Anything else is a draft, but for
+// Shift+Tab (IsShiftTab), which leaves the prompt as it was. When
 // unsure the input counts as a draft, which costs the owner a Return of
 // their own, never a line submitted with theirs. Twin of
 // TerminalCenter.isSubmit.
@@ -58,6 +59,21 @@ func IsSubmit(b []byte, backslashBefore bool, p Profile) bool {
 		return false
 	}
 	return !EndsAfterBackslash(body, backslashBefore)
+}
+
+// IsShiftTab reports whether the owner's input is exactly Shift+Tab
+// (`ESC [ Z`, the whole chunk). Claude Code and Codex read it as a mode
+// switch, which neither puts text into the prompt nor takes any out, so the
+// draft state stays as it was (#1748) — during a line's pause too, since
+// the line stays whole. Esc and Ctrl+C are deliberately not exempt (asks
+// #1256, #1261): Claude Code's cancel moves a queued follow-up message back
+// into the prompt, so after them the prompt may hold the owner's text and
+// an answer's Return would submit it with theirs. Every other key — cursor
+// keys too (Up recalls history) — stays a draft by IsSubmit's rule. Under
+// an extended keyboard protocol (kitty `CSI u`) Shift+Tab still reads as a
+// draft, which fails safe. Twin of TerminalCenter.isShiftTab.
+func IsShiftTab(b []byte) bool {
+	return string(b) == "\x1b[Z"
 }
 
 // EndsAfterBackslash reports whether, after b, the last printable input is

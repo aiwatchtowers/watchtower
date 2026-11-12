@@ -88,6 +88,10 @@ var aiQueryCmd = &cobra.Command{
 var aiModelsFlagJSON bool
 var aiTestCLIPath string
 
+// aiTestFlagJSON is accepted because the Desktop's onboarding sends it
+// (`ai test --json`); the output is one JSON object either way.
+var aiTestFlagJSON bool
+
 // aiWhichFlagJSON is accepted for the documented spelling; the output is one
 // JSON line either way.
 var aiWhichFlagJSON bool
@@ -146,6 +150,7 @@ func init() {
 	aiModelsCmd.Flags().BoolVar(&aiModelsFlagJSON, "json", false, "output JSON")
 	aiTestCmd.Flags().StringVar(&aiFlagModel, "model", "", "override AI model")
 	aiTestCmd.Flags().StringVar(&aiTestCLIPath, "cli-path", "", "test this CLI path without saving it")
+	aiTestCmd.Flags().BoolVar(&aiTestFlagJSON, "json", false, "output JSON (always on)")
 
 	aiQueryCmd.Flags().StringVar(&aiFlagModel, "model", "", "override AI model")
 	// Ignored since #604 G11 (no Claude session is stored); kept so an

@@ -464,6 +464,45 @@ final class SessionHostV2ClientTests: XCTestCase {
         XCTAssertEqual(shellLaunch.agent, "")
     }
 
+    // MARK: - Input that is not the owner's (#1743)
+
+    /// The app's input (the Interrupt's Esc) and the terminal's own replies
+    /// (a device-attributes answer; focus reports go the same way) go as
+    /// `inputTo` naming the run, so the host never counts them as the
+    /// owner's draft and an ask's answer still gets its Return. The owner's
+    /// keystrokes stay `input`, on the same connection.
+    func testInputThatIsNotTheOwnersGoesAsInputTo() async throws {
+        let (center, s, hosted, transport) = try await hostedSession()
+        let key = try XCTUnwrap(hosted.key)
+        let view = try XCTUnwrap(hosted.view as? PalettedTerminalView)
+
+        XCTAssertTrue(center.sendInterrupt(sessionID: s.id))
+        transport.push(SessionHostFrame(type: .output, payload: Array("\u{1b}[c".utf8)))
+        view.send(source: view, data: Array("y".utf8)[...])
+
+        let inputTo = try transport.sent(.inputTo).map { try $0.decoded(SessionHostInputTo.self) }
+        XCTAssertEqual(inputTo.count, 2)
+        XCTAssertEqual(inputTo.first, SessionHostInputTo(row: key.row, run: key.run, launch: 3, data: Data([0x1B])))
+        XCTAssertTrue(inputTo.allSatisfy { $0.row == s.id && $0.run == key.run && $0.launch == 3 })
+        XCTAssertTrue(inputTo.last?.data.starts(with: Array("\u{1b}[?".utf8)) == true, "the DA reply")
+        XCTAssertEqual(transport.sent(.input).map(\.payload), [Array("y".utf8)], "only the owner's key is input")
+    }
+
+    /// The bug's own trigger: with focus reporting on (DECSET 1004, as
+    /// Claude Code sets it) a window focus change's reports go as `inputTo`.
+    func testFocusReportsGoAsInputTo() async throws {
+        let (_, _, hosted, transport) = try await hostedSession()
+        let view = try XCTUnwrap(hosted.view as? PalettedTerminalView)
+        transport.push(SessionHostFrame(type: .output, payload: Array("\u{1b}[?1004h".utf8)))
+
+        view.getTerminal().setTerminalFocus(false)
+        view.getTerminal().setTerminalFocus(true)
+
+        let sent = try transport.sent(.inputTo).flatMap { try Array($0.decoded(SessionHostInputTo.self).data) }
+        XCTAssertTrue(String(bytes: sent, encoding: .utf8)?.hasSuffix("\u{1b}[O\u{1b}[I") == true, "the focus-out and focus-in reports")
+        XCTAssertTrue(transport.sent(.input).isEmpty, "no report reads as the owner's typing")
+    }
+
     /// The dialog hint goes on the pane's own (bound) connection.
     func testPromptHintsGoToTheRunsHost() async throws {
         let (center, s, hosted, transport) = try await hostedSession()
