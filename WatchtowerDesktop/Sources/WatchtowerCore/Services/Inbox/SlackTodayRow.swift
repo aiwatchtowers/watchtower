@@ -7,18 +7,19 @@ import Foundation
 package enum SlackTodayRow {
     package static let title = "Slack today"
 
-    /// Today: the top lines as `#<channel> — <text>`, one per line; nil
-    /// summary or another day's: "Nothing yet today" under "Built in".
+    /// Today: the top lines as `#<channel> — <text>`, one per line; no
+    /// state or another day's: "Nothing yet today" under "Built in"; an
+    /// unreadable state: "Today's numbers can't be read" under "Built in".
     package static func content(
-        summary: SlackTodaySummary?,
+        state: SlackTodayState,
         isUnread: Bool,
         changedAt: Date,
         now: Date,
         calendar: Calendar
     ) -> InboxRowContent {
         let time = InboxRowTime.label(changedAt, now: now, calendar: calendar)
-        guard let summary, summary.isToday(now: now, calendar: calendar) else {
-            return InboxRowContent(kind: .slackToday, title: title, preview: SlackTodayPaneText.nothingYet,
+        guard let summary = state.summary, summary.isToday(now: now, calendar: calendar) else {
+            return InboxRowContent(kind: .slackToday, title: title, preview: SlackTodayPaneText.notToday(state),
                                    meta: "Built in", time: time, isUnread: isUnread)
         }
         let lines = summary.topLines.map { "\(SlackTodaySummary.heading($0.channel)) — \($0.text)" }
@@ -35,30 +36,40 @@ package enum SlackTodayRow {
 /// Slack today's reading pane texts. Pure.
 package enum SlackTodayPaneText {
     package static let nothingYet = "Nothing yet today"
+    package static let unreadable = "Today's numbers can't be read"
     package static let staleNoteText = "This is yesterday's list. Today's starts after the next sync."
 
-    /// "Today · 900 messages in 46 conversations · 4 with news for you"; nil
-    /// summary or another day's: "Nothing yet today".
-    package static func subtitle(summary: SlackTodaySummary?, now: Date, calendar: Calendar) -> String {
-        guard let summary, summary.isToday(now: now, calendar: calendar) else { return nothingYet }
+    /// The line for a state with no numbers for today: "Today's numbers
+    /// can't be read" when unreadable, else "Nothing yet today".
+    package static func notToday(_ state: SlackTodayState) -> String {
+        state == .unreadable ? unreadable : nothingYet
+    }
+
+    /// "Today · 900 messages in 46 conversations · 4 with news for you"; no
+    /// state or another day's: "Nothing yet today"; unreadable: "Today's
+    /// numbers can't be read".
+    package static func subtitle(state: SlackTodayState, now: Date, calendar: Calendar) -> String {
+        guard let summary = state.summary, summary.isToday(now: now, calendar: calendar) else {
+            return notToday(state)
+        }
         return "Today · \(SlackTodaySummary.plural(summary.messages, "message", "messages")) in "
             + "\(SlackTodaySummary.plural(summary.channels, "conversation", "conversations")) · "
             + "\(summary.newsChannels) with news for you"
     }
 
     /// The note over yesterday's list: the card was last written before
-    /// today and the state is another day's — or unreadable (nil: an
-    /// undecodable or unknown-version state), the card's date deciding. A
-    /// card written today over an older state is today's empty card (a run
-    /// after midnight that read nothing), not yesterday's list.
+    /// today and the state is another day's, none or unreadable — the
+    /// card's date deciding. A card written today over an older state is
+    /// today's empty card (a run after midnight that read nothing), not
+    /// yesterday's list.
     package static func staleNote(
-        summary: SlackTodaySummary?,
+        state: SlackTodayState,
         writtenAt: Date,
         now: Date,
         calendar: Calendar
     ) -> String? {
         guard writtenAt < InboxToday.startOfToday(now: now, calendar: calendar) else { return nil }
-        if let summary, summary.isToday(now: now, calendar: calendar) { return nil }
+        if let summary = state.summary, summary.isToday(now: now, calendar: calendar) { return nil }
         return staleNoteText
     }
 }

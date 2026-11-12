@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Slack today's numbers for its list row and reading pane (inbox redesign
 /// phase 5), read from the built-in's state: the `"today"` value the recipe
@@ -35,9 +36,9 @@ package struct SlackTodaySummary: Equatable, Sendable {
     /// The state's local date, `yyyy-MM-dd`.
     package let day: String
     package let messages: Int
-    /// Channels with any message: the entries plus the folded quiet ones.
-    /// Approximate on extreme days: a channel folded twice counts twice
-    /// (the recipe's v1 limit).
+    /// Channels with any message: the entries plus the folded quiet and
+    /// more-only ones. Approximate on extreme days: a channel folded twice
+    /// counts twice (the recipe's v1 limit).
     package let channels: Int
     /// Channels with at least one line or lines taken out (`more > 0`),
     /// the folded more-only ones included.
@@ -69,16 +70,6 @@ package struct SlackTodaySummary: Equatable, Sendable {
         self.quiet = quiet
         self.quietRestChannels = quietRestChannels
         self.quietRestMessages = quietRestMessages
-    }
-
-    /// The summary of `automation_state.state_json`; nil when it has no
-    /// `"today"`, its `v` is not 1, or it cannot be decoded.
-    package static func decode(stateJSON: String) -> Self? {
-        let data = Data(stateJSON.utf8)
-        let decoder = JSONDecoder()
-        guard let version = try? decoder.decode(StateJSON<VersionJSON>.self, from: data).today?.version, version == 1,
-              let today = try? decoder.decode(StateJSON<TodayJSON>.self, from: data).today else { return nil }
-        return Self(today)
     }
 
     /// The state is for `now`'s local date in `calendar`'s zone.
@@ -116,7 +107,7 @@ package struct SlackTodaySummary: Equatable, Sendable {
 
     // MARK: - Decoding
 
-    private init(_ today: TodayJSON) {
+    fileprivate init(_ today: TodayJSON) {
         var lines: [(rank: Int, at: Date, line: Line)] = []
         var quiet: [QuietChannel] = []
         var news = 0
@@ -133,11 +124,12 @@ package struct SlackTodaySummary: Equatable, Sendable {
             }
         }
         let quietRest = today.quietRest ?? QuietRestJSON(channels: 0, messages: 0)
+        let moreRest = today.moreRest?.channels ?? 0
         self.init(
             day: today.day,
             messages: today.messages,
-            channels: today.channels.count + quietRest.channels,
-            newsChannels: news + (today.moreRest?.channels ?? 0),
+            channels: today.channels.count + quietRest.channels + moreRest,
+            newsChannels: news + moreRest,
             topLines: Array(lines.sorted(by: Self.lineOrder).prefix(2).map(\.line)),
             quiet: quiet.sorted { $0.messages != $1.messages ? $0.messages > $1.messages : $0.name < $1.name },
             quietRestChannels: quietRest.channels,
@@ -159,17 +151,14 @@ package struct SlackTodaySummary: Equatable, Sendable {
     /// The recipe's `RANK`: what the card shows first.
     private static let rank = ["fyi": 0, "decided": 1, "needs_someone": 2, "asks_you": 3]
 
-    private struct StateJSON<Today: Decodable>: Decodable {
-        let today: Today?
+    /// `automation_state.state_json`: its `"today"`, decoded in one pass.
+    fileprivate struct StateJSON: Decodable {
+        let today: TodayJSON?
     }
 
-    private struct VersionJSON: Decodable {
-        let version: Int
-
-        enum CodingKeys: String, CodingKey { case version = "v" }
-    }
-
-    private struct TodayJSON: Decodable {
+    /// The `"today"` value; its `v` is read first, so another version is
+    /// refused before the rest of its shape is looked at.
+    fileprivate struct TodayJSON: Decodable {
         let day: String
         let messages: Int
         let channels: [String: ChannelJSON]
@@ -177,11 +166,22 @@ package struct SlackTodaySummary: Equatable, Sendable {
         let moreRest: MoreRestJSON?
 
         enum CodingKeys: String, CodingKey {
-            case day, messages, channels, quietRest = "quiet_rest", moreRest = "more_rest"
+            case version = "v", day, messages, channels, quietRest = "quiet_rest", moreRest = "more_rest"
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            let version = try container.decode(Int.self, forKey: .version)
+            guard version == 1 else { throw SlackTodayState.UnsupportedVersion(version: version) }
+            day = try container.decode(String.self, forKey: .day)
+            messages = try container.decode(Int.self, forKey: .messages)
+            channels = try container.decode([String: ChannelJSON].self, forKey: .channels)
+            quietRest = try container.decodeIfPresent(QuietRestJSON.self, forKey: .quietRest)
+            moreRest = try container.decodeIfPresent(MoreRestJSON.self, forKey: .moreRest)
         }
     }
 
-    private struct ChannelJSON: Decodable {
+    fileprivate struct ChannelJSON: Decodable {
         let name: String
         let count: Int
         let more: Int?
@@ -190,7 +190,7 @@ package struct SlackTodaySummary: Equatable, Sendable {
         enum CodingKeys: String, CodingKey { case name, count = "n", more, lines }
     }
 
-    private struct LineJSON: Decodable {
+    fileprivate struct LineJSON: Decodable {
         let label: String
         let text: String
         let time: String
@@ -198,12 +198,68 @@ package struct SlackTodaySummary: Equatable, Sendable {
         enum CodingKeys: String, CodingKey { case label, text, time = "at" }
     }
 
-    private struct QuietRestJSON: Decodable {
+    fileprivate struct QuietRestJSON: Decodable {
         let channels: Int
         let messages: Int
     }
 
-    private struct MoreRestJSON: Decodable {
+    fileprivate struct MoreRestJSON: Decodable {
         let channels: Int
+    }
+}
+
+/// Slack today's state as the Inbox reads it: none yet, today's summary
+/// (`read`, which may be another day's), or a `"today"` this version cannot
+/// read — another `v`, or a value that does not decode. Unreadable is never
+/// folded into none: the row and pane say the numbers can't be read.
+package enum SlackTodayState: Equatable, Sendable {
+    /// No state, or a state without `"today"`.
+    case none
+    case read(SlackTodaySummary)
+    /// A state this version cannot read.
+    case unreadable
+
+    /// The summary when read; nil when none or unreadable.
+    package var summary: SlackTodaySummary? {
+        if case let .read(summary) = self { return summary }
+        return nil
+    }
+
+    /// The state of `automation_state.state_json`, decoded once. An
+    /// unreadable state is logged once per content (its reason and coding
+    /// path keys only, never its text).
+    package static func decode(stateJSON: String) -> Self {
+        do {
+            let state = try JSONDecoder().decode(SlackTodaySummary.StateJSON.self, from: Data(stateJSON.utf8))
+            guard let today = state.today else { return .none }
+            return .read(SlackTodaySummary(today))
+        } catch {
+            logOnce(stateJSON, error)
+            return .unreadable
+        }
+    }
+
+    /// `"today"`'s `v` is not 1.
+    struct UnsupportedVersion: Error {
+        let version: Int
+    }
+
+    private static let log = Logger(subsystem: "com.watchtower.desktop", category: "slack-today")
+    /// The contents already logged in this process (their hashes).
+    private static let logged = OSAllocatedUnfairLock<Set<Int>>(initialState: [])
+
+    private static func logOnce(_ stateJSON: String, _ error: Error) {
+        let isNew = logged.withLock { $0.insert(stateJSON.hashValue).inserted }
+        guard isNew else { return }
+        switch error {
+        case let unsupported as UnsupportedVersion:
+            log.error("slack-today state unreadable: version \(unsupported.version, privacy: .public)")
+        case let DecodingError.dataCorrupted(context), let DecodingError.keyNotFound(_, context),
+             let DecodingError.typeMismatch(_, context), let DecodingError.valueNotFound(_, context):
+            let path = context.codingPath.map(\.stringValue).joined(separator: ".")
+            log.error("slack-today state unreadable: decode failed at \(path, privacy: .private)")
+        default:
+            log.error("slack-today state unreadable: decode failed")
+        }
     }
 }

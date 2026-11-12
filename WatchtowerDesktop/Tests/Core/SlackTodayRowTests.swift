@@ -27,7 +27,7 @@ final class SlackTodayRowTests: XCTestCase {
         let line = { (label: String, text: String, at: String) in
             #"{"label":"\#(label)","text":"\#(text)","at":"2026-10-22T\#(at):00Z","link":"https://example.com/l"}"#
         }
-        return try XCTUnwrap(SlackTodaySummary.decode(stateJSON: SlackTodaySummaryTests.state(channels: [
+        return try XCTUnwrap(SlackTodaySummaryTests.decoded(SlackTodaySummaryTests.state(channels: [
             #""C1":{"name":"acme-release","n":23,"more":0,"lines":["# + line("decided", "The tag goes out Thursday.", "09:10")
                 + "]}",
             #""C2":{"name":"acme-infra","n":41,"more":0,"lines":["#
@@ -43,7 +43,7 @@ final class SlackTodayRowTests: XCTestCase {
 
     func testRowToday() throws {
         let now = try date("2026-10-22T10:30:00Z")
-        let row = SlackTodayRow.content(summary: try busyDay(), isUnread: true,
+        let row = SlackTodayRow.content(state: .read(try busyDay()), isUnread: true,
                                         changedAt: try date("2026-10-22T10:20:00Z"), now: now, calendar: utc)
         XCTAssertEqual(row.kind, .slackToday)
         XCTAssertEqual(row.title, "Slack today")
@@ -57,11 +57,11 @@ final class SlackTodayRowTests: XCTestCase {
 
     /// A DM's line keeps its `@name`, never `#@name`.
     func testRowDrawsADirectMessageWithoutHash() throws {
-        let summary = try XCTUnwrap(SlackTodaySummary.decode(stateJSON: SlackTodaySummaryTests.state(channels: [
+        let summary = try XCTUnwrap(SlackTodaySummaryTests.decoded(SlackTodaySummaryTests.state(channels: [
             #""D1":{"name":"@Colleague A","n":1,"more":0,"lines":[{"label":"asks_you","text":"Can you sign off?","#
                 + #""at":"2026-10-22T09:00:00Z","link":""}]}"#
         ], messages: 1)))
-        let row = SlackTodayRow.content(summary: summary, isUnread: false, changedAt: try date("2026-10-22T09:05:00Z"),
+        let row = SlackTodayRow.content(state: .read(summary), isUnread: false, changedAt: try date("2026-10-22T09:05:00Z"),
                                         now: try date("2026-10-22T10:00:00Z"), calendar: utc)
         XCTAssertEqual(row.preview, "@Colleague A — Can you sign off?")
         XCTAssertEqual(row.meta, "Built in · today · 1 message")
@@ -69,56 +69,72 @@ final class SlackTodayRowTests: XCTestCase {
     }
 
     func testRowNoNewsHasNoPill() throws {
-        let summary = try XCTUnwrap(SlackTodaySummary.decode(stateJSON: SlackTodaySummaryTests.state(channels: [
+        let summary = try XCTUnwrap(SlackTodaySummaryTests.decoded(SlackTodaySummaryTests.state(channels: [
             #""C5":{"name":"acme-random","n":12}"#
         ], messages: 12)))
-        let row = SlackTodayRow.content(summary: summary, isUnread: false, changedAt: try date("2026-10-22T09:05:00Z"),
+        let row = SlackTodayRow.content(state: .read(summary), isUnread: false, changedAt: try date("2026-10-22T09:05:00Z"),
                                         now: try date("2026-10-22T10:00:00Z"), calendar: utc)
         XCTAssertNil(row.pill)
         XCTAssertEqual(row.preview, "Nothing for you yet today")
         XCTAssertEqual(row.meta, "Built in · today · 12 messages")
     }
 
+    /// An unreadable state: the row says the numbers can't be read under
+    /// "Built in", never "Nothing yet today", and no pill.
+    func testRowUnreadableState() throws {
+        let row = SlackTodayRow.content(state: .unreadable, isUnread: false,
+                                        changedAt: try date("2026-10-22T09:05:00Z"),
+                                        now: try date("2026-10-22T10:00:00Z"), calendar: utc)
+        XCTAssertEqual(row.preview, "Today's numbers can't be read")
+        XCTAssertEqual(row.meta, "Built in")
+        XCTAssertNil(row.pill)
+        XCTAssertEqual(SlackTodayPaneText.subtitle(state: .unreadable, now: try date("2026-10-22T10:00:00Z"),
+                                                   calendar: utc), "Today's numbers can't be read")
+    }
+
     func testStaleDayShowsYesterdayNote() throws {
         let now = try date("2026-10-23T07:00:00Z")
         let stale = try busyDay()
         let written = try date("2026-10-22T21:00:00Z")
-        let row = SlackTodayRow.content(summary: stale, isUnread: false, changedAt: written, now: now, calendar: utc)
+        let row = SlackTodayRow.content(state: .read(stale), isUnread: false, changedAt: written, now: now, calendar: utc)
         XCTAssertEqual(row.preview, "Nothing yet today")
         XCTAssertEqual(row.meta, "Built in")
         XCTAssertNil(row.pill)
         XCTAssertEqual(row.time, "yesterday")
-        let none = SlackTodayRow.content(summary: nil, isUnread: false, changedAt: written, now: now, calendar: utc)
+        let none = SlackTodayRow.content(state: .none, isUnread: false, changedAt: written, now: now, calendar: utc)
         XCTAssertEqual(none.preview, "Nothing yet today")
         XCTAssertEqual(none.meta, "Built in")
 
-        XCTAssertEqual(SlackTodayPaneText.subtitle(summary: stale, now: now, calendar: utc), "Nothing yet today")
-        XCTAssertEqual(SlackTodayPaneText.staleNote(summary: stale, writtenAt: written, now: now, calendar: utc),
+        XCTAssertEqual(SlackTodayPaneText.subtitle(state: .read(stale), now: now, calendar: utc), "Nothing yet today")
+        XCTAssertEqual(SlackTodayPaneText.staleNote(state: .read(stale), writtenAt: written, now: now, calendar: utc),
                        "This is yesterday's list. Today's starts after the next sync.")
         // Today's card (a run after midnight that wrote today's empty card)
         // is not yesterday's list, whatever the state's day says.
-        XCTAssertNil(SlackTodayPaneText.staleNote(summary: stale, writtenAt: try date("2026-10-23T06:00:00Z"),
+        XCTAssertNil(SlackTodayPaneText.staleNote(state: .read(stale), writtenAt: try date("2026-10-23T06:00:00Z"),
                                                   now: now, calendar: utc))
-        // An unreadable state (undecodable or another version): the card's
-        // date decides — written yesterday, the note; written today, none.
-        XCTAssertEqual(SlackTodayPaneText.staleNote(summary: nil, writtenAt: written, now: now, calendar: utc),
-                       SlackTodayPaneText.staleNoteText)
-        XCTAssertNil(SlackTodayPaneText.staleNote(summary: nil, writtenAt: try date("2026-10-23T06:00:00Z"),
-                                                  now: now, calendar: utc))
-        XCTAssertNil(SlackTodayPaneText.staleNote(summary: try busyDay(day: "2026-10-23"), writtenAt: written,
+        // No state or an unreadable one (undecodable or another version):
+        // the card's date decides — written yesterday, the note; written
+        // today, none.
+        for state in [SlackTodayState.none, .unreadable] {
+            XCTAssertEqual(SlackTodayPaneText.staleNote(state: state, writtenAt: written, now: now, calendar: utc),
+                           SlackTodayPaneText.staleNoteText)
+            XCTAssertNil(SlackTodayPaneText.staleNote(state: state, writtenAt: try date("2026-10-23T06:00:00Z"),
+                                                      now: now, calendar: utc))
+        }
+        XCTAssertNil(SlackTodayPaneText.staleNote(state: .read(try busyDay(day: "2026-10-23")), writtenAt: written,
                                                   now: now, calendar: utc))
     }
 
     func testHeaderSubtitleSingulars() throws {
         let now = try date("2026-10-22T10:00:00Z")
-        XCTAssertEqual(SlackTodayPaneText.subtitle(summary: try busyDay(), now: now, calendar: utc),
+        XCTAssertEqual(SlackTodayPaneText.subtitle(state: .read(try busyDay()), now: now, calendar: utc),
                        "Today · 900 messages in 6 conversations · 4 with news for you")
-        let one = try XCTUnwrap(SlackTodaySummary.decode(stateJSON: SlackTodaySummaryTests.state(channels: [
+        let one = try XCTUnwrap(SlackTodaySummaryTests.decoded(SlackTodaySummaryTests.state(channels: [
             #""C1":{"name":"acme-ops","n":1,"more":1,"link":"https://example.com/o"}"#
         ], messages: 1)))
-        XCTAssertEqual(SlackTodayPaneText.subtitle(summary: one, now: now, calendar: utc),
+        XCTAssertEqual(SlackTodayPaneText.subtitle(state: .read(one), now: now, calendar: utc),
                        "Today · 1 message in 1 conversation · 1 with news for you")
-        XCTAssertEqual(SlackTodayPaneText.subtitle(summary: nil, now: now, calendar: utc), "Nothing yet today")
+        XCTAssertEqual(SlackTodayPaneText.subtitle(state: .none, now: now, calendar: utc), "Nothing yet today")
     }
 
     func testSlackTodayEntryIsInTodaySection() throws {
@@ -166,13 +182,13 @@ final class SlackTodayRowTests: XCTestCase {
 
     func testQueriesReadTheBuiltinsState() async throws {
         let pool = try pool()
-        let none = try await pool.read { try SlackTodayQueries.summary($0) }
+        let none = try await pool.read { try SlackTodayQueries.read($0) }
         XCTAssertNil(none, "no built-in row")
         let state = try SlackTodaySummaryTests.goldenStateJSON()
         let ids = try await pool.write { try self.seedSlackToday($0, stateJSON: state) }
         let read = try await pool.read { try SlackTodayQueries.read($0) }
         XCTAssertEqual(read?.automationID, ids.automation)
-        XCTAssertEqual(read?.summary, try SlackTodaySummaryTests.golden())
+        XCTAssertEqual(read?.state, .read(try SlackTodaySummaryTests.golden()))
         let snapshot = try await pool.read {
             try InboxFolderMenuSnapshot.read($0, nowUTC: "2026-10-22T10:00:00Z", calendar: self.utc)
         }
@@ -181,7 +197,14 @@ final class SlackTodayRowTests: XCTestCase {
         try await pool.write { try $0.execute(sql: "DELETE FROM automation_state") }
         let noState = try await pool.read { try SlackTodayQueries.read($0) }
         XCTAssertEqual(noState?.automationID, ids.automation)
-        XCTAssertNil(noState?.summary, "no state yet")
+        XCTAssertEqual(noState?.state, SlackTodayState.none, "no state yet")
+
+        try await pool.write {
+            try $0.execute(sql: "INSERT INTO automation_state (automation_id, state_json) VALUES (?, ?)",
+                           arguments: [ids.automation, #"{"today":{"v":2}}"#])
+        }
+        let unreadable = try await pool.read { try SlackTodayQueries.read($0) }
+        XCTAssertEqual(unreadable?.state, .unreadable, "a state this version cannot read is not none")
     }
 
     /// The root lists the built-in's card as the Slack today row, from the state.

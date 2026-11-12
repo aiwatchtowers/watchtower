@@ -8,15 +8,15 @@ package enum SlackTodayQueries {
     /// The built-in's id (`builtin.Entry`, Go).
     package static let builtinID = "slack-today"
 
-    /// The built-in's row and its state's summary; nil summary = no state
-    /// yet, or one this version cannot read.
+    /// The built-in's row and its state: none yet, read, or one this
+    /// version cannot read.
     package struct Read: Equatable, Sendable {
         package let automationID: Int64
-        package let summary: SlackTodaySummary?
+        package let state: SlackTodayState
 
-        package init(automationID: Int64, summary: SlackTodaySummary?) {
+        package init(automationID: Int64, state: SlackTodayState) {
             self.automationID = automationID
-            self.summary = summary
+            self.state = state
         }
     }
 
@@ -30,14 +30,9 @@ package enum SlackTodayQueries {
                 WHERE a.builtin_id = ?
                 """, arguments: [builtinID]) else { return nil }
             let state: String? = row["state_json"]
-            return Read(automationID: row["id"], summary: state.flatMap(SlackTodaySummary.decode(stateJSON:)))
+            return Read(automationID: row["id"], state: state.map(SlackTodayState.decode(stateJSON:)) ?? .none)
         } catch let error as DatabaseError where ActionStripViewModel.isMissingTable(error) {
             return nil
         }
-    }
-
-    /// The summary alone; nil without the built-in's row or its state.
-    package static func summary(_ db: Database) throws -> SlackTodaySummary? {
-        try read(db)?.summary
     }
 }

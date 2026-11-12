@@ -513,7 +513,7 @@ struct ActionStripActionsView: View {
         case let .artifact(card)? where InboxFolderEntries.isSlackToday(card, vm.folderMenu.snapshot):
             let menu = artifactMenuState(card)
             pane(.output(card), menu: menu, slackToday: SlackTodayPane(
-                card: card, summary: vm.folderMenu.snapshot.slackToday?.summary, now: now ?? Date(),
+                card: card, state: vm.folderMenu.snapshot.slackToday?.state ?? .none, now: now ?? Date(),
                 calendar: .autoupdatingCurrent, menu: menu,
                 onMarkAllSeen: { Task { await vm.markOutputSeen(id: card.id) } },
                 onReactionCommands: { openAux(.reactionCommands) }))

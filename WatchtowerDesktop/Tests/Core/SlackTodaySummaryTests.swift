@@ -22,8 +22,13 @@ final class SlackTodaySummaryTests: XCTestCase {
         return #"{"today":"# + today + "}"
     }
 
+    /// `stateJSON`'s summary when it reads; nil when none or unreadable.
+    static func decoded(_ stateJSON: String) -> SlackTodaySummary? {
+        SlackTodayState.decode(stateJSON: stateJSON).summary
+    }
+
     static func golden() throws -> SlackTodaySummary {
-        try XCTUnwrap(SlackTodaySummary.decode(stateJSON: goldenStateJSON()))
+        try XCTUnwrap(Self.decoded(goldenStateJSON()))
     }
 
     func testDecodesGoldenState() throws {
@@ -40,15 +45,26 @@ final class SlackTodaySummaryTests: XCTestCase {
         ])
     }
 
-    func testUnknownVersionIsNil() {
-        let today = #""day":"2026-10-22","messages":1,"missed_yesterday":0,"channels":{},"#
+    /// Three states: no `"today"` is none; another `v` or a `"today"` that
+    /// does not decode is unreadable, never none.
+    func testStateIsNoneReadOrUnreadable() {
+        let today = #""day":"2026-10-22","messages":1,"missed_earlier":0,"skipped_older":0,"channels":{},"#
             + #""quiet_rest":{"channels":0,"messages":0},"more_rest":{"channels":0,"lines":0}"#
-        XCTAssertNil(SlackTodaySummary.decode(stateJSON: #"{"today":{"v":2,"# + today + "}}"))
-        XCTAssertNil(SlackTodaySummary.decode(stateJSON: #"{"other":{"v":1,"# + today + "}}"))
-        XCTAssertNil(SlackTodaySummary.decode(stateJSON: "{}"))
-        XCTAssertNil(SlackTodaySummary.decode(stateJSON: "{not json"))
-        XCTAssertNil(SlackTodaySummary.decode(stateJSON: ""))
-        XCTAssertNotNil(SlackTodaySummary.decode(stateJSON: #"{"today":{"v":1,"# + today + "}}"))
+        XCTAssertEqual(SlackTodayState.decode(stateJSON: #"{"today":{"v":2,"# + today + "}}"), .unreadable)
+        XCTAssertEqual(SlackTodayState.decode(stateJSON: #"{"today":{"v":2}}"#), .unreadable,
+                       "another version is refused before its shape is read")
+        XCTAssertEqual(SlackTodayState.decode(stateJSON: #"{"today":{"v":1,"day":"2026-10-22"}}"#), .unreadable)
+        XCTAssertEqual(SlackTodayState.decode(stateJSON: #"{"today":{"day":"2026-10-22"}}"#), .unreadable)
+        XCTAssertEqual(SlackTodayState.decode(stateJSON: #"{"today":"x"}"#), .unreadable)
+        XCTAssertEqual(SlackTodayState.decode(stateJSON: "{not json"), .unreadable)
+        XCTAssertEqual(SlackTodayState.decode(stateJSON: ""), .unreadable)
+        XCTAssertEqual(SlackTodayState.decode(stateJSON: #"{"other":{"v":1,"# + today + "}}"), .none)
+        XCTAssertEqual(SlackTodayState.decode(stateJSON: "{}"), .none)
+        XCTAssertEqual(SlackTodayState.decode(stateJSON: #"{"today":null}"#), .none)
+        let read = SlackTodayState.decode(stateJSON: #"{"today":{"v":1,"# + today + "}}")
+        XCTAssertEqual(read.summary?.day, "2026-10-22")
+        XCTAssertNil(SlackTodayState.unreadable.summary)
+        XCTAssertNil(SlackTodayState.none.summary)
     }
 
     func testQuietChannelsFold() throws {
@@ -62,7 +78,7 @@ final class SlackTodaySummaryTests: XCTestCase {
         XCTAssertEqual(summary.quietLine, "202 conversations with nothing for you · 203 messages")
         XCTAssertEqual(summary.quietMoreLine, "and 2 more conversations")
 
-        let hand = try XCTUnwrap(SlackTodaySummary.decode(stateJSON: Self.state(channels: [
+        let hand = try XCTUnwrap(Self.decoded(Self.state(channels: [
             #""C1":{"name":"acme-ops","n":800}"#,
             #""C2":{"name":"acme-infra","n":41,"more":3,"link":"https://example.com/a"}"#,
             #""C3":{"name":"acme-lab","n":5,"more":2,"lines":[]}"#,
@@ -76,32 +92,33 @@ final class SlackTodaySummaryTests: XCTestCase {
         XCTAssertEqual(hand.channels, 45)
         XCTAssertEqual(hand.topLines, [])
 
-        let none = try XCTUnwrap(SlackTodaySummary.decode(stateJSON: Self.state(channels: [
+        let none = try XCTUnwrap(Self.decoded(Self.state(channels: [
             #""C2":{"name":"acme-infra","n":41,"more":3,"link":"https://example.com/a"}"#
         ])))
         XCTAssertEqual(none.quiet, [])
         XCTAssertNil(none.quietLine)
         XCTAssertNil(none.quietMoreLine)
 
-        let one = try XCTUnwrap(SlackTodaySummary.decode(stateJSON: Self.state(channels: [
+        let one = try XCTUnwrap(Self.decoded(Self.state(channels: [
             #""C1":{"name":"acme-ops","n":1}"#
         ], quietRest: (1, 4))))
         XCTAssertEqual(one.quietLine, "2 conversations with nothing for you · 5 messages")
         XCTAssertEqual(one.quietMoreLine, "and 1 more conversation")
-        let single = try XCTUnwrap(SlackTodaySummary.decode(stateJSON: Self.state(channels: [
+        let single = try XCTUnwrap(Self.decoded(Self.state(channels: [
             #""C1":{"name":"acme-ops","n":1}"#
         ])))
         XCTAssertEqual(single.quietLine, "1 conversation with nothing for you · 1 message")
         XCTAssertNil(single.quietMoreLine)
     }
 
-    /// more_rest's channels count as news; its lines never become top lines.
+    /// more_rest's channels count as news and as conversations with
+    /// messages; its lines never become top lines.
     func testMoreRestCountsAsNews() throws {
-        let summary = try XCTUnwrap(SlackTodaySummary.decode(stateJSON: Self.state(channels: [
+        let summary = try XCTUnwrap(Self.decoded(Self.state(channels: [
             #""C1":{"name":"acme-ops","n":3,"more":0,"lines":[{"label":"fyi","text":"Deploy done.","at":"2026-10-22T09:00:00Z","link":""}]}"#
         ], moreRest: (5, 9))))
         XCTAssertEqual(summary.newsChannels, 6)
-        XCTAssertEqual(summary.channels, 1)
+        XCTAssertEqual(summary.channels, 6, "the entry plus the five folded more-only conversations")
         XCTAssertEqual(summary.topLines, [.init(channel: "acme-ops", text: "Deploy done.")])
     }
 
@@ -110,7 +127,7 @@ final class SlackTodaySummaryTests: XCTestCase {
         let line = { (label: String, text: String, at: String) in
             #"{"label":"\#(label)","text":"\#(text)","at":"2026-10-22T\#(at):00Z","link":"https://example.com/x"}"#
         }
-        let summary = try XCTUnwrap(SlackTodaySummary.decode(stateJSON: Self.state(channels: [
+        let summary = try XCTUnwrap(Self.decoded(Self.state(channels: [
             #""C1":{"name":"acme-a","n":3,"more":0,"lines":["# + line("fyi", "A fyi", "09:00") + ","
                 + line("decided", "A decided", "08:00") + "]}",
             #""C2":{"name":"acme-b","n":3,"more":0,"lines":["# + line("decided", "B decided", "08:30") + ","
@@ -150,7 +167,7 @@ final class SlackTodaySummaryTests: XCTestCase {
         quietRest: (Int, Int) = (0, 0),
         moreRest: (Int, Int) = (0, 0)
     ) -> String {
-        #"{"today":{"v":1,"day":"\#(day)","messages":\#(messages),"missed_yesterday":0,"channels":{"#
+        #"{"today":{"v":1,"day":"\#(day)","messages":\#(messages),"missed_earlier":0,"skipped_older":0,"channels":{"#
             + channels.joined(separator: ",")
             + #"},"quiet_rest":{"channels":\#(quietRest.0),"messages":\#(quietRest.1)},"#
             + #""more_rest":{"channels":\#(moreRest.0),"lines":\#(moreRest.1)}}}"#

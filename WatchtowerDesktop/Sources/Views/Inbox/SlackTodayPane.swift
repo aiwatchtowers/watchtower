@@ -10,7 +10,7 @@ import WatchtowerCore
 /// never marks the card unread.
 struct SlackTodayPane: View {
     let card: AutomationOutputCard
-    let summary: SlackTodaySummary?
+    let state: SlackTodayState
     let now: Date
     let calendar: Calendar
     /// The artifact's ⋯; nil (tests, shots) draws neither it nor Run Now.
@@ -25,7 +25,7 @@ struct SlackTodayPane: View {
 
     init(
         card: AutomationOutputCard,
-        summary: SlackTodaySummary?,
+        state: SlackTodayState,
         now: Date,
         calendar: Calendar,
         menu: InboxArtifactMenuState?,
@@ -34,7 +34,7 @@ struct SlackTodayPane: View {
         quietShown: Bool = false
     ) {
         self.card = card
-        self.summary = summary
+        self.state = state
         self.now = now
         self.calendar = calendar
         self.menu = menu
@@ -50,20 +50,16 @@ struct SlackTodayPane: View {
         return pane
     }
 
-    private var offersRunNow: Bool {
-        menu?.entries.contains { $0.command == .runNow } ?? false
-    }
-
     /// Today's summary only: yesterday's quiet channels are not today's.
     private var today: SlackTodaySummary? {
-        guard let summary, summary.isToday(now: now, calendar: calendar) else { return nil }
+        guard let summary = state.summary, summary.isToday(now: now, calendar: calendar) else { return nil }
         return summary
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.page) {
             header
-            if let note = SlackTodayPaneText.staleNote(summary: summary, writtenAt: card.writtenAt, now: now,
+            if let note = SlackTodayPaneText.staleNote(state: state, writtenAt: card.writtenAt, now: now,
                                                        calendar: calendar) {
                 Text(note)
                     .font(.callout)
@@ -78,27 +74,20 @@ struct SlackTodayPane: View {
         }
     }
 
+    /// The artifact header (Run Now, the ⋯, the `?`) with the state's line
+    /// under the title and **Mark All Seen** first.
     private var header: some View {
-        InboxPaneHeader(tile: InboxTile(kind: .slackToday), title: SlackTodayRow.title,
-                        subtitle: SlackTodayPaneText.subtitle(summary: summary, now: now, calendar: calendar)) {
+        InboxArtifactPaneHeader(
+            content: InboxRowContent(kind: .slackToday, title: SlackTodayRow.title),
+            subtitle: SlackTodayPaneText.subtitle(state: state, now: now, calendar: calendar),
+            menu: menu, onReactionCommands: onReactionCommands
+        )
+        .leadingAction(
             Button("Mark All Seen", action: onMarkAllSeen)
                 .buttonStyle(.kitSecondary)
                 .disabled(!card.isUnread)
                 .help("Mark this list seen; a new line makes it unread again")
-                .accessibilityIdentifier("slackToday.markAllSeen")
-            if let menu {
-                if offersRunNow {
-                    Button("Run Now") { menu.onCommand(.runNow) }
-                        .buttonStyle(.kitSecondary)
-                        .disabled(menu.isDisabled || menu.isWorking)
-                        .accessibilityIdentifier("inbox.paneHeader.runNow")
-                }
-                InboxArtifactMenuButton(menu: menu)
-            }
-            if let onReactionCommands {
-                InboxReactionCommandsButton(action: onReactionCommands)
-            }
-        }
+                .accessibilityIdentifier("slackToday.markAllSeen"))
     }
 
     /// "N conversations with nothing for you · M messages", folded by default;
@@ -123,6 +112,7 @@ struct SlackTodayPane: View {
             .accessibilityIdentifier("slackToday.quietLine")
             if quietShown {
                 VStack(alignment: .leading, spacing: Spacing.tight) {
+                    // By offset: names are not unique (two DMs can share a display name).
                     ForEach(Array(today.quiet.enumerated()), id: \.offset) { _, channel in
                         Text("\(SlackTodaySummary.heading(channel.name)) · "
                             + SlackTodaySummary.plural(channel.messages, "message", "messages"))

@@ -93,7 +93,8 @@ enum InboxSlackTodayShotFixtures {
 
     /// The pane alone, its card's blocks drawn, the quiet fold open.
     static func quietOpen() -> AnyView {
-        guard let summary = SlackTodaySummary.decode(stateJSON: stateJSON(day: dayString(now))) else {
+        let state = SlackTodayState.decode(stateJSON: stateJSON(day: dayString(now)))
+        guard state.summary != nil else {
             return DesignShotFixtures.failure(FixtureError.badState)
         }
         let card = AutomationOutputCard(
@@ -101,7 +102,7 @@ enum InboxSlackTodayShotFixtures {
             priority: "medium", createdAt: now, readAt: now, blocksJSON: blocksJSON, outputKey: "slack-today",
             contentHash: "h1", writtenAt: now, changedAt: now)
         let menu = InboxArtifactMenuState(entries: InboxArtifactMenuContent(isBuiltin: true).entries)
-        let pane = SlackTodayPane(card: card, summary: summary, now: now, calendar: .autoupdatingCurrent, menu: menu,
+        let pane = SlackTodayPane(card: card, state: state, now: now, calendar: .autoupdatingCurrent, menu: menu,
                                   onMarkAllSeen: {}, onReactionCommands: {}, quietShown: true)
             .drawing(ArtifactCardBody(blocksJSON: blocksJSON, actionsJSON: "[]", text: "", mode: .inbox))
         return AnyView(InboxCardColumn { pane }.detailBackground())
@@ -233,7 +234,7 @@ enum InboxSlackTodayShotFixtures {
         let quiet = [("acme-random", 313), ("acme-music", 120), ("acme-watercooler", 96), ("acme-bots", 99)]
             + (1...34).map { (String(format: "acme-team-%02d", $0), 4) }
         channels += quiet.enumerated().map { index, channel in #""Q\#(index)":{"name":"\#(channel.0)","n":\#(channel.1)}"# }
-        return #"{"today":{"v":1,"day":"\#(day)","messages":900,"missed_yesterday":0,"channels":{"#
+        return #"{"today":{"v":1,"day":"\#(day)","messages":900,"missed_earlier":0,"skipped_older":0,"channels":{"#
             + channels.joined(separator: ",")
             + #"},"quiet_rest":{"channels":2,"messages":4},"more_rest":{"channels":0,"lines":0}}}"#
     }

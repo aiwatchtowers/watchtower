@@ -359,7 +359,7 @@ enum InboxRedesignShotFixtures {
         func line(_ label: String, _ text: String, _ time: String) -> String {
             #"{"label":"\#(label)","text":"\#(text)","at":"\#(today)T\#(time):00Z","link":"https://acme.slack.com/archives/C1/p1"}"#
         }
-        return #"{"today":{"v":1,"day":"\#(today)","messages":160,"missed_yesterday":0,"channels":{"#
+        return #"{"today":{"v":1,"day":"\#(today)","messages":160,"missed_earlier":0,"skipped_older":0,"channels":{"#
             + #""C1":{"name":"acme-release","n":24,"lines":["#
             + line("asks_you", "Colleague A asks whether Thursday works for your side.", "09:20") + ","
             + line("decided", "The tag goes out Thursday, after QA signs off.", "09:10") + "]},"

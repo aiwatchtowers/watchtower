@@ -245,7 +245,7 @@ package enum InboxFolderEntries {
             return peopleWaiting(title: InboxLegacyList.messages.title, inputs)
         case let .artifact(card) where isSlackToday(card, inputs.folders):
             return SlackTodayRow.content(
-                summary: inputs.folders.slackToday?.summary, isUnread: card.isUnread, changedAt: card.changedAt,
+                state: inputs.folders.slackToday?.state ?? .none, isUnread: card.isUnread, changedAt: card.changedAt,
                 now: now, calendar: inputs.calendar)
         case let .artifact(card):
             return artifact(card, inputs)
