@@ -230,8 +230,9 @@ final class SessionAgentStateCenterTests: XCTestCase {
         }
         let center = SessionAgentStateCenter(
             dbPool: pool, terminalCenter: terminals, notifier: notifier, defaults: defaults,
-            notificationCenter: activations, read: reader, clock: clock, probeRunner: probeRunner, sleep: ticks.sleep
+            notificationCenter: activations, read: reader, clock: clock, probeRunner: probeRunner
         )
+        center.sleep = ticks.sleep
         center.isAppActive = { [weak self] in self?.appActive ?? true }
         centers.append(center)
         return center

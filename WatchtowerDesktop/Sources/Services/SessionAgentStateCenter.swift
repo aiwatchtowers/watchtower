@@ -99,7 +99,7 @@ final class SessionAgentStateCenter {
     /// How the loop waits between reads (tests: a clock they tick by hand;
     /// settable for a center `AppState.initWorkbenches` builds). Read when
     /// the loop starts.
-    @ObservationIgnored var sleep: @Sendable (Duration) async -> Void
+    @ObservationIgnored var sleep: @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
 
     init(
         dbPool: DatabasePool,
@@ -110,10 +110,8 @@ final class SessionAgentStateCenter {
         notificationCenter: NotificationCenter = .default,
         read: Reader? = nil,
         clock: @escaping @Sendable () -> Date = { Date() },
-        probeRunner: (any CLIRunnerProtocol)? = nil,
-        sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+        probeRunner: (any CLIRunnerProtocol)? = nil
     ) {
-        self.sleep = sleep
         self.terminalCenter = terminalCenter
         self.interval = interval
         self.notifier = notifier

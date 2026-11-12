@@ -264,8 +264,8 @@ final class WorkbenchSwitcherTests: XCTestCase {
                     row(waiting, a, "waiting"), row(other, b, "working")]
         let agentStates = SessionAgentStateCenter(
             dbPool: pool, terminalCenter: center, interval: .seconds(3600), notifier: RecordingSessionNotifier(),
-            defaults: defaults, notificationCenter: NotificationCenter(), read: { _ in rows }
-        )
+            defaults: defaults, notificationCenter: NotificationCenter()
+        ) { _ in rows }
         defer { agentStates.stop() }
         let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: FakeCLIRunner()), defaults: defaults,
                                       terminalCenter: center, agentStates: agentStates)

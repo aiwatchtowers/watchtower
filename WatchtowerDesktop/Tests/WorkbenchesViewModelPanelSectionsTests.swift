@@ -45,9 +45,8 @@ final class WorkbenchesViewModelPanelSectionsTests: XCTestCase {
         self.rows = rows
         agentStates = SessionAgentStateCenter(
             dbPool: pool, terminalCenter: center, interval: .seconds(3600),
-            notifier: RecordingSessionNotifier(), defaults: defaults, notificationCenter: NotificationCenter(),
-            read: { _ in rows.value }
-        )
+            notifier: RecordingSessionNotifier(), defaults: defaults, notificationCenter: NotificationCenter()
+        ) { _ in rows.value }
         projectID = try await workbench("acme")
     }
 
