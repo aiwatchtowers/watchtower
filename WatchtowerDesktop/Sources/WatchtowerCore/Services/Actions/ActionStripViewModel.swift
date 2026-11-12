@@ -1447,15 +1447,8 @@ package final class ActionStripViewModel {
     package func markOutputSeen(id: Int64) async {
         let now = Date()
         let hash = drawnHash(id)
-        let pool = dbPool
-        await pendingWrites.run(CardKey.card(.output(id))) {
-            lastError = nil
-            do {
-                _ = try await pool.write { try AutomationQueries.markOutputOpened($0, id: id, contentHash: hash, now: now) }
-                await refresh()
-            } catch {
-                lastError = error.localizedDescription
-            }
+        await guardedWrite(.output(id), deselecting: false) {
+            try AutomationQueries.markOutputOpened($0, id: id, contentHash: hash, now: now)
         }
     }
 
@@ -1466,14 +1459,19 @@ package final class ActionStripViewModel {
     }
 
     /// A read-state write that may change nothing: the card is deselected
-    /// only when its row changed; either way the list is read again, so a
-    /// card rewritten meanwhile shows as the database has it.
-    private func guardedWrite(_ item: InboxSelection, _ change: @escaping @Sendable (Database) throws -> Bool) async {
+    /// only when its row changed (and `deselecting`; Mark All Seen keeps
+    /// it selected); either way the list is read again, so a card
+    /// rewritten meanwhile shows as the database has it.
+    private func guardedWrite(
+        _ item: InboxSelection,
+        deselecting: Bool = true,
+        _ change: @escaping @Sendable (Database) throws -> Bool
+    ) async {
         let pool = dbPool
         await pendingWrites.run(CardKey.card(item)) {
             lastError = nil
             do {
-                if try await pool.write(change) { deselect(item) }
+                if try await pool.write(change), deselecting { deselect(item) }
                 await refresh()
             } catch {
                 lastError = error.localizedDescription
