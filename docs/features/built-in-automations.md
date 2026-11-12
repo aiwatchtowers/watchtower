@@ -256,7 +256,7 @@ The built-in `slack-today` (`recipes/slack-today.md`, board #1076, asks #634/#63
   - "Addressed to you" is decided when a message is read: a thread you join later, or an attention reaction placed later, can leave the earlier line in Slack today while Waiting for me also lists it, until the day resets.
   - A physically deleted newest message can let one new message reuse its `rowid` and be missed (purge only).
   - A failed run is retried after 15 minutes; nothing is lost, as the cursor did not move.
-  - New lines in a conversation ranked 19th or lower (past the 18 drawn) leave the card as it was, so it stays read; that conversation is only named in the "more conversations with news" line.
+  - New lines in a conversation ranked 19th or lower (past the 18 drawn) leave the card as it was, so it stays read; that conversation is only counted in the "N more conversations with news" line, and named there only when it is among the first 10 past the 18 drawn (`NAMED_CHANNELS`); the rest are a trailing "…".
   - `quiet_rest` and `more_rest` can count a re-folded conversation twice (a folded entry is forgotten; its later messages start a new entry); the day's message total stays exact.
   - A "N more lines" row can lose its link when a later run's caps take out the lines that carried it.
   - The per-conversation counts and the "conversations with nothing for you" line are drawn by the Desktop pane from the state, so the phone (sub-project F) will not show them from the card alone.
