@@ -109,6 +109,15 @@ actor FakeBridgeCloud: BridgeCloud {
         guard let data = assets[zone + "/" + name] else { throw BridgeCloudFailure.badRequest }
         try data.write(to: dst)
     }
+
+    /// The hub ids `retireZones` was asked for, in order.
+    private(set) var retired: [String] = []
+
+    func retireZones(hubID: String) async throws {
+        retired.append(hubID)
+        zones["DataZone-\(hubID)"] = nil
+        zones["RelayZone-\(hubID)"] = nil
+    }
 }
 
 final class FakeShares: BridgeShareProviding, @unchecked Sendable {

@@ -113,6 +113,7 @@ type Request struct {
 	//	*Request_Participants
 	//	*Request_RemoveParticipants
 	//	*Request_OwnerUser
+	//	*Request_RetireZones
 	Op            isRequest_Op `protobuf_oneof:"op"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -261,6 +262,15 @@ func (x *Request) GetOwnerUser() *OwnerUser {
 	return nil
 }
 
+func (x *Request) GetRetireZones() *RetireZones {
+	if x != nil {
+		if x, ok := x.Op.(*Request_RetireZones); ok {
+			return x.RetireZones
+		}
+	}
+	return nil
+}
+
 type isRequest_Op interface {
 	isRequest_Op()
 }
@@ -309,6 +319,10 @@ type Request_OwnerUser struct {
 	OwnerUser *OwnerUser `protobuf:"bytes,12,opt,name=owner_user,json=ownerUser,proto3,oneof"`
 }
 
+type Request_RetireZones struct {
+	RetireZones *RetireZones `protobuf:"bytes,13,opt,name=retire_zones,json=retireZones,proto3,oneof"`
+}
+
 func (*Request_Hello) isRequest_Op() {}
 
 func (*Request_Save) isRequest_Op() {}
@@ -330,6 +344,8 @@ func (*Request_Participants) isRequest_Op() {}
 func (*Request_RemoveParticipants) isRequest_Op() {}
 
 func (*Request_OwnerUser) isRequest_Op() {}
+
+func (*Request_RetireZones) isRequest_Op() {}
 
 // Hello opens a connection; the answer is HelloOk.
 type Hello struct {
@@ -1001,6 +1017,61 @@ func (*OwnerUser) Descriptor() ([]byte, []int) {
 	return file_bridge_proto_rawDescGZIP(), []int{13}
 }
 
+// RetireZones deletes the CloudKit zones DataZone-<hub_id> and
+// RelayZone-<hub_id> and the bridge's database subscription
+// watchtower-bridge-db-<hub_id> that another spelling of the helloed hub_id
+// names: hub_id must equal the helloed one ignoring ASCII case and differ
+// from it byte for byte (an adopted hub's uppercase spelling, which builds
+// up to v0.28.0 named its zones with, #1750); anything else is refused
+// (bad_request) before CloudKit is called, so the helloed hub's own zones
+// can never be deleted. Zone names are used exactly as given, never
+// re-cased. A zone or the subscription already gone counts as deleted. The
+// bridge also forgets its tags and cursors of the two zones. It answers
+// Done.
+type RetireZones struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	HubId         string                 `protobuf:"bytes,1,opt,name=hub_id,json=hubId,proto3" json:"hub_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RetireZones) Reset() {
+	*x = RetireZones{}
+	mi := &file_bridge_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RetireZones) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RetireZones) ProtoMessage() {}
+
+func (x *RetireZones) ProtoReflect() protoreflect.Message {
+	mi := &file_bridge_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RetireZones.ProtoReflect.Descriptor instead.
+func (*RetireZones) Descriptor() ([]byte, []int) {
+	return file_bridge_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *RetireZones) GetHubId() string {
+	if x != nil {
+		return x.HubId
+	}
+	return ""
+}
+
 // RemoveParticipants answers Done.
 type RemoveParticipants struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
@@ -1012,7 +1083,7 @@ type RemoveParticipants struct {
 
 func (x *RemoveParticipants) Reset() {
 	*x = RemoveParticipants{}
-	mi := &file_bridge_proto_msgTypes[14]
+	mi := &file_bridge_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1024,7 +1095,7 @@ func (x *RemoveParticipants) String() string {
 func (*RemoveParticipants) ProtoMessage() {}
 
 func (x *RemoveParticipants) ProtoReflect() protoreflect.Message {
-	mi := &file_bridge_proto_msgTypes[14]
+	mi := &file_bridge_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1037,7 +1108,7 @@ func (x *RemoveParticipants) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveParticipants.ProtoReflect.Descriptor instead.
 func (*RemoveParticipants) Descriptor() ([]byte, []int) {
-	return file_bridge_proto_rawDescGZIP(), []int{14}
+	return file_bridge_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *RemoveParticipants) GetZone() string {
@@ -1077,7 +1148,7 @@ type Response struct {
 
 func (x *Response) Reset() {
 	*x = Response{}
-	mi := &file_bridge_proto_msgTypes[15]
+	mi := &file_bridge_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1089,7 +1160,7 @@ func (x *Response) String() string {
 func (*Response) ProtoMessage() {}
 
 func (x *Response) ProtoReflect() protoreflect.Message {
-	mi := &file_bridge_proto_msgTypes[15]
+	mi := &file_bridge_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1102,7 +1173,7 @@ func (x *Response) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Response.ProtoReflect.Descriptor instead.
 func (*Response) Descriptor() ([]byte, []int) {
-	return file_bridge_proto_rawDescGZIP(), []int{15}
+	return file_bridge_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *Response) GetId() uint64 {
@@ -1284,7 +1355,7 @@ type HelloOk struct {
 
 func (x *HelloOk) Reset() {
 	*x = HelloOk{}
-	mi := &file_bridge_proto_msgTypes[16]
+	mi := &file_bridge_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1296,7 +1367,7 @@ func (x *HelloOk) String() string {
 func (*HelloOk) ProtoMessage() {}
 
 func (x *HelloOk) ProtoReflect() protoreflect.Message {
-	mi := &file_bridge_proto_msgTypes[16]
+	mi := &file_bridge_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1309,7 +1380,7 @@ func (x *HelloOk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HelloOk.ProtoReflect.Descriptor instead.
 func (*HelloOk) Descriptor() ([]byte, []int) {
-	return file_bridge_proto_rawDescGZIP(), []int{16}
+	return file_bridge_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *HelloOk) GetVersion() uint32 {
@@ -1346,7 +1417,7 @@ type Record struct {
 
 func (x *Record) Reset() {
 	*x = Record{}
-	mi := &file_bridge_proto_msgTypes[17]
+	mi := &file_bridge_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1358,7 +1429,7 @@ func (x *Record) String() string {
 func (*Record) ProtoMessage() {}
 
 func (x *Record) ProtoReflect() protoreflect.Message {
-	mi := &file_bridge_proto_msgTypes[17]
+	mi := &file_bridge_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1371,7 +1442,7 @@ func (x *Record) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Record.ProtoReflect.Descriptor instead.
 func (*Record) Descriptor() ([]byte, []int) {
-	return file_bridge_proto_rawDescGZIP(), []int{17}
+	return file_bridge_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *Record) GetName() string {
@@ -1431,7 +1502,7 @@ type Outcome struct {
 
 func (x *Outcome) Reset() {
 	*x = Outcome{}
-	mi := &file_bridge_proto_msgTypes[18]
+	mi := &file_bridge_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1443,7 +1514,7 @@ func (x *Outcome) String() string {
 func (*Outcome) ProtoMessage() {}
 
 func (x *Outcome) ProtoReflect() protoreflect.Message {
-	mi := &file_bridge_proto_msgTypes[18]
+	mi := &file_bridge_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1456,7 +1527,7 @@ func (x *Outcome) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Outcome.ProtoReflect.Descriptor instead.
 func (*Outcome) Descriptor() ([]byte, []int) {
-	return file_bridge_proto_rawDescGZIP(), []int{18}
+	return file_bridge_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *Outcome) GetSaved() bool {
@@ -1496,7 +1567,7 @@ type Outcomes struct {
 
 func (x *Outcomes) Reset() {
 	*x = Outcomes{}
-	mi := &file_bridge_proto_msgTypes[19]
+	mi := &file_bridge_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1508,7 +1579,7 @@ func (x *Outcomes) String() string {
 func (*Outcomes) ProtoMessage() {}
 
 func (x *Outcomes) ProtoReflect() protoreflect.Message {
-	mi := &file_bridge_proto_msgTypes[19]
+	mi := &file_bridge_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1521,7 +1592,7 @@ func (x *Outcomes) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Outcomes.ProtoReflect.Descriptor instead.
 func (*Outcomes) Descriptor() ([]byte, []int) {
-	return file_bridge_proto_rawDescGZIP(), []int{19}
+	return file_bridge_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *Outcomes) GetItems() []*Outcome {
@@ -1546,7 +1617,7 @@ type Batch struct {
 
 func (x *Batch) Reset() {
 	*x = Batch{}
-	mi := &file_bridge_proto_msgTypes[20]
+	mi := &file_bridge_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1558,7 +1629,7 @@ func (x *Batch) String() string {
 func (*Batch) ProtoMessage() {}
 
 func (x *Batch) ProtoReflect() protoreflect.Message {
-	mi := &file_bridge_proto_msgTypes[20]
+	mi := &file_bridge_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1571,7 +1642,7 @@ func (x *Batch) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Batch.ProtoReflect.Descriptor instead.
 func (*Batch) Descriptor() ([]byte, []int) {
-	return file_bridge_proto_rawDescGZIP(), []int{20}
+	return file_bridge_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *Batch) GetChanged() []*Record {
@@ -1617,7 +1688,7 @@ type Done struct {
 
 func (x *Done) Reset() {
 	*x = Done{}
-	mi := &file_bridge_proto_msgTypes[21]
+	mi := &file_bridge_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1629,7 +1700,7 @@ func (x *Done) String() string {
 func (*Done) ProtoMessage() {}
 
 func (x *Done) ProtoReflect() protoreflect.Message {
-	mi := &file_bridge_proto_msgTypes[21]
+	mi := &file_bridge_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1642,7 +1713,7 @@ func (x *Done) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Done.ProtoReflect.Descriptor instead.
 func (*Done) Descriptor() ([]byte, []int) {
-	return file_bridge_proto_rawDescGZIP(), []int{21}
+	return file_bridge_proto_rawDescGZIP(), []int{22}
 }
 
 // OwnerUserInfo.user_record_name: "" when the account has no user yet.
@@ -1655,7 +1726,7 @@ type OwnerUserInfo struct {
 
 func (x *OwnerUserInfo) Reset() {
 	*x = OwnerUserInfo{}
-	mi := &file_bridge_proto_msgTypes[22]
+	mi := &file_bridge_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1667,7 +1738,7 @@ func (x *OwnerUserInfo) String() string {
 func (*OwnerUserInfo) ProtoMessage() {}
 
 func (x *OwnerUserInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_bridge_proto_msgTypes[22]
+	mi := &file_bridge_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1680,7 +1751,7 @@ func (x *OwnerUserInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OwnerUserInfo.ProtoReflect.Descriptor instead.
 func (*OwnerUserInfo) Descriptor() ([]byte, []int) {
-	return file_bridge_proto_rawDescGZIP(), []int{22}
+	return file_bridge_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *OwnerUserInfo) GetUserRecordName() string {
@@ -1701,7 +1772,7 @@ type Account struct {
 
 func (x *Account) Reset() {
 	*x = Account{}
-	mi := &file_bridge_proto_msgTypes[23]
+	mi := &file_bridge_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1713,7 +1784,7 @@ func (x *Account) String() string {
 func (*Account) ProtoMessage() {}
 
 func (x *Account) ProtoReflect() protoreflect.Message {
-	mi := &file_bridge_proto_msgTypes[23]
+	mi := &file_bridge_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1726,7 +1797,7 @@ func (x *Account) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Account.ProtoReflect.Descriptor instead.
 func (*Account) Descriptor() ([]byte, []int) {
-	return file_bridge_proto_rawDescGZIP(), []int{23}
+	return file_bridge_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *Account) GetStatus() string {
@@ -1746,7 +1817,7 @@ type SharesInfo struct {
 
 func (x *SharesInfo) Reset() {
 	*x = SharesInfo{}
-	mi := &file_bridge_proto_msgTypes[24]
+	mi := &file_bridge_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1758,7 +1829,7 @@ func (x *SharesInfo) String() string {
 func (*SharesInfo) ProtoMessage() {}
 
 func (x *SharesInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_bridge_proto_msgTypes[24]
+	mi := &file_bridge_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1771,7 +1842,7 @@ func (x *SharesInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SharesInfo.ProtoReflect.Descriptor instead.
 func (*SharesInfo) Descriptor() ([]byte, []int) {
-	return file_bridge_proto_rawDescGZIP(), []int{24}
+	return file_bridge_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *SharesInfo) GetDataUrl() string {
@@ -1798,7 +1869,7 @@ type Participant struct {
 
 func (x *Participant) Reset() {
 	*x = Participant{}
-	mi := &file_bridge_proto_msgTypes[25]
+	mi := &file_bridge_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1810,7 +1881,7 @@ func (x *Participant) String() string {
 func (*Participant) ProtoMessage() {}
 
 func (x *Participant) ProtoReflect() protoreflect.Message {
-	mi := &file_bridge_proto_msgTypes[25]
+	mi := &file_bridge_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1823,7 +1894,7 @@ func (x *Participant) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Participant.ProtoReflect.Descriptor instead.
 func (*Participant) Descriptor() ([]byte, []int) {
-	return file_bridge_proto_rawDescGZIP(), []int{25}
+	return file_bridge_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *Participant) GetUserRecordName() string {
@@ -1849,7 +1920,7 @@ type ParticipantList struct {
 
 func (x *ParticipantList) Reset() {
 	*x = ParticipantList{}
-	mi := &file_bridge_proto_msgTypes[26]
+	mi := &file_bridge_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1861,7 +1932,7 @@ func (x *ParticipantList) String() string {
 func (*ParticipantList) ProtoMessage() {}
 
 func (x *ParticipantList) ProtoReflect() protoreflect.Message {
-	mi := &file_bridge_proto_msgTypes[26]
+	mi := &file_bridge_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1874,7 +1945,7 @@ func (x *ParticipantList) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ParticipantList.ProtoReflect.Descriptor instead.
 func (*ParticipantList) Descriptor() ([]byte, []int) {
-	return file_bridge_proto_rawDescGZIP(), []int{26}
+	return file_bridge_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *ParticipantList) GetItems() []*Participant {
@@ -1896,7 +1967,7 @@ type Failure struct {
 
 func (x *Failure) Reset() {
 	*x = Failure{}
-	mi := &file_bridge_proto_msgTypes[27]
+	mi := &file_bridge_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1908,7 +1979,7 @@ func (x *Failure) String() string {
 func (*Failure) ProtoMessage() {}
 
 func (x *Failure) ProtoReflect() protoreflect.Message {
-	mi := &file_bridge_proto_msgTypes[27]
+	mi := &file_bridge_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1921,7 +1992,7 @@ func (x *Failure) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Failure.ProtoReflect.Descriptor instead.
 func (*Failure) Descriptor() ([]byte, []int) {
-	return file_bridge_proto_rawDescGZIP(), []int{27}
+	return file_bridge_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *Failure) GetClass() string {
@@ -1952,7 +2023,7 @@ type Event struct {
 
 func (x *Event) Reset() {
 	*x = Event{}
-	mi := &file_bridge_proto_msgTypes[28]
+	mi := &file_bridge_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1964,7 +2035,7 @@ func (x *Event) String() string {
 func (*Event) ProtoMessage() {}
 
 func (x *Event) ProtoReflect() protoreflect.Message {
-	mi := &file_bridge_proto_msgTypes[28]
+	mi := &file_bridge_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1977,7 +2048,7 @@ func (x *Event) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Event.ProtoReflect.Descriptor instead.
 func (*Event) Descriptor() ([]byte, []int) {
-	return file_bridge_proto_rawDescGZIP(), []int{28}
+	return file_bridge_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *Event) GetZone() string {
@@ -2019,7 +2090,7 @@ var File_bridge_proto protoreflect.FileDescriptor
 
 const file_bridge_proto_rawDesc = "" +
 	"\n" +
-	"\fbridge.proto\x12\x14watchtower.bridge.v1\"\x88\x06\n" +
+	"\fbridge.proto\x12\x14watchtower.bridge.v1\"\xd0\x06\n" +
 	"\aRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x123\n" +
 	"\x05hello\x18\x02 \x01(\v2\x1b.watchtower.bridge.v1.HelloH\x00R\x05hello\x120\n" +
@@ -2034,7 +2105,8 @@ const file_bridge_proto_rawDesc = "" +
 	" \x01(\v2\".watchtower.bridge.v1.ParticipantsH\x00R\fparticipants\x12[\n" +
 	"\x13remove_participants\x18\v \x01(\v2(.watchtower.bridge.v1.RemoveParticipantsH\x00R\x12removeParticipants\x12@\n" +
 	"\n" +
-	"owner_user\x18\f \x01(\v2\x1f.watchtower.bridge.v1.OwnerUserH\x00R\townerUserB\x04\n" +
+	"owner_user\x18\f \x01(\v2\x1f.watchtower.bridge.v1.OwnerUserH\x00R\townerUser\x12F\n" +
+	"\fretire_zones\x18\r \x01(\v2!.watchtower.bridge.v1.RetireZonesH\x00R\vretireZonesB\x04\n" +
 	"\x02op\"8\n" +
 	"\x05Hello\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\rR\aversion\x12\x15\n" +
@@ -2077,7 +2149,9 @@ const file_bridge_proto_rawDesc = "" +
 	"\x04open\x18\x01 \x01(\bR\x04open\"\"\n" +
 	"\fParticipants\x12\x12\n" +
 	"\x04zone\x18\x01 \x01(\tR\x04zone\"\v\n" +
-	"\tOwnerUser\"T\n" +
+	"\tOwnerUser\"$\n" +
+	"\vRetireZones\x12\x15\n" +
+	"\x06hub_id\x18\x01 \x01(\tR\x05hubId\"T\n" +
 	"\x12RemoveParticipants\x12\x12\n" +
 	"\x04zone\x18\x01 \x01(\tR\x04zone\x12*\n" +
 	"\x11user_record_names\x18\x02 \x03(\tR\x0fuserRecordNames\"\xfa\x04\n" +
@@ -2167,7 +2241,7 @@ func file_bridge_proto_rawDescGZIP() []byte {
 }
 
 var file_bridge_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_bridge_proto_msgTypes = make([]protoimpl.MessageInfo, 29)
+var file_bridge_proto_msgTypes = make([]protoimpl.MessageInfo, 30)
 var file_bridge_proto_goTypes = []any{
 	(ExpectMode)(0),            // 0: watchtower.bridge.v1.ExpectMode
 	(*Request)(nil),            // 1: watchtower.bridge.v1.Request
@@ -2184,21 +2258,22 @@ var file_bridge_proto_goTypes = []any{
 	(*SetPublicLink)(nil),      // 12: watchtower.bridge.v1.SetPublicLink
 	(*Participants)(nil),       // 13: watchtower.bridge.v1.Participants
 	(*OwnerUser)(nil),          // 14: watchtower.bridge.v1.OwnerUser
-	(*RemoveParticipants)(nil), // 15: watchtower.bridge.v1.RemoveParticipants
-	(*Response)(nil),           // 16: watchtower.bridge.v1.Response
-	(*HelloOk)(nil),            // 17: watchtower.bridge.v1.HelloOk
-	(*Record)(nil),             // 18: watchtower.bridge.v1.Record
-	(*Outcome)(nil),            // 19: watchtower.bridge.v1.Outcome
-	(*Outcomes)(nil),           // 20: watchtower.bridge.v1.Outcomes
-	(*Batch)(nil),              // 21: watchtower.bridge.v1.Batch
-	(*Done)(nil),               // 22: watchtower.bridge.v1.Done
-	(*OwnerUserInfo)(nil),      // 23: watchtower.bridge.v1.OwnerUserInfo
-	(*Account)(nil),            // 24: watchtower.bridge.v1.Account
-	(*SharesInfo)(nil),         // 25: watchtower.bridge.v1.SharesInfo
-	(*Participant)(nil),        // 26: watchtower.bridge.v1.Participant
-	(*ParticipantList)(nil),    // 27: watchtower.bridge.v1.ParticipantList
-	(*Failure)(nil),            // 28: watchtower.bridge.v1.Failure
-	(*Event)(nil),              // 29: watchtower.bridge.v1.Event
+	(*RetireZones)(nil),        // 15: watchtower.bridge.v1.RetireZones
+	(*RemoveParticipants)(nil), // 16: watchtower.bridge.v1.RemoveParticipants
+	(*Response)(nil),           // 17: watchtower.bridge.v1.Response
+	(*HelloOk)(nil),            // 18: watchtower.bridge.v1.HelloOk
+	(*Record)(nil),             // 19: watchtower.bridge.v1.Record
+	(*Outcome)(nil),            // 20: watchtower.bridge.v1.Outcome
+	(*Outcomes)(nil),           // 21: watchtower.bridge.v1.Outcomes
+	(*Batch)(nil),              // 22: watchtower.bridge.v1.Batch
+	(*Done)(nil),               // 23: watchtower.bridge.v1.Done
+	(*OwnerUserInfo)(nil),      // 24: watchtower.bridge.v1.OwnerUserInfo
+	(*Account)(nil),            // 25: watchtower.bridge.v1.Account
+	(*SharesInfo)(nil),         // 26: watchtower.bridge.v1.SharesInfo
+	(*Participant)(nil),        // 27: watchtower.bridge.v1.Participant
+	(*ParticipantList)(nil),    // 28: watchtower.bridge.v1.ParticipantList
+	(*Failure)(nil),            // 29: watchtower.bridge.v1.Failure
+	(*Event)(nil),              // 30: watchtower.bridge.v1.Event
 }
 var file_bridge_proto_depIdxs = []int32{
 	2,  // 0: watchtower.bridge.v1.Request.hello:type_name -> watchtower.bridge.v1.Hello
@@ -2210,32 +2285,33 @@ var file_bridge_proto_depIdxs = []int32{
 	11, // 6: watchtower.bridge.v1.Request.ensure_shares:type_name -> watchtower.bridge.v1.EnsureShares
 	12, // 7: watchtower.bridge.v1.Request.set_public_link:type_name -> watchtower.bridge.v1.SetPublicLink
 	13, // 8: watchtower.bridge.v1.Request.participants:type_name -> watchtower.bridge.v1.Participants
-	15, // 9: watchtower.bridge.v1.Request.remove_participants:type_name -> watchtower.bridge.v1.RemoveParticipants
+	16, // 9: watchtower.bridge.v1.Request.remove_participants:type_name -> watchtower.bridge.v1.RemoveParticipants
 	14, // 10: watchtower.bridge.v1.Request.owner_user:type_name -> watchtower.bridge.v1.OwnerUser
-	0,  // 11: watchtower.bridge.v1.Expect.mode:type_name -> watchtower.bridge.v1.ExpectMode
-	3,  // 12: watchtower.bridge.v1.SaveItem.expect:type_name -> watchtower.bridge.v1.Expect
-	4,  // 13: watchtower.bridge.v1.Save.items:type_name -> watchtower.bridge.v1.SaveItem
-	3,  // 14: watchtower.bridge.v1.DeleteItem.expect:type_name -> watchtower.bridge.v1.Expect
-	6,  // 15: watchtower.bridge.v1.Delete.items:type_name -> watchtower.bridge.v1.DeleteItem
-	17, // 16: watchtower.bridge.v1.Response.hello:type_name -> watchtower.bridge.v1.HelloOk
-	20, // 17: watchtower.bridge.v1.Response.outcomes:type_name -> watchtower.bridge.v1.Outcomes
-	21, // 18: watchtower.bridge.v1.Response.batch:type_name -> watchtower.bridge.v1.Batch
-	22, // 19: watchtower.bridge.v1.Response.done:type_name -> watchtower.bridge.v1.Done
-	24, // 20: watchtower.bridge.v1.Response.account:type_name -> watchtower.bridge.v1.Account
-	25, // 21: watchtower.bridge.v1.Response.shares:type_name -> watchtower.bridge.v1.SharesInfo
-	27, // 22: watchtower.bridge.v1.Response.participants:type_name -> watchtower.bridge.v1.ParticipantList
-	28, // 23: watchtower.bridge.v1.Response.failure:type_name -> watchtower.bridge.v1.Failure
-	29, // 24: watchtower.bridge.v1.Response.event:type_name -> watchtower.bridge.v1.Event
-	23, // 25: watchtower.bridge.v1.Response.owner_user:type_name -> watchtower.bridge.v1.OwnerUserInfo
-	18, // 26: watchtower.bridge.v1.Outcome.conflict:type_name -> watchtower.bridge.v1.Record
-	19, // 27: watchtower.bridge.v1.Outcomes.items:type_name -> watchtower.bridge.v1.Outcome
-	18, // 28: watchtower.bridge.v1.Batch.changed:type_name -> watchtower.bridge.v1.Record
-	26, // 29: watchtower.bridge.v1.ParticipantList.items:type_name -> watchtower.bridge.v1.Participant
-	30, // [30:30] is the sub-list for method output_type
-	30, // [30:30] is the sub-list for method input_type
-	30, // [30:30] is the sub-list for extension type_name
-	30, // [30:30] is the sub-list for extension extendee
-	0,  // [0:30] is the sub-list for field type_name
+	15, // 11: watchtower.bridge.v1.Request.retire_zones:type_name -> watchtower.bridge.v1.RetireZones
+	0,  // 12: watchtower.bridge.v1.Expect.mode:type_name -> watchtower.bridge.v1.ExpectMode
+	3,  // 13: watchtower.bridge.v1.SaveItem.expect:type_name -> watchtower.bridge.v1.Expect
+	4,  // 14: watchtower.bridge.v1.Save.items:type_name -> watchtower.bridge.v1.SaveItem
+	3,  // 15: watchtower.bridge.v1.DeleteItem.expect:type_name -> watchtower.bridge.v1.Expect
+	6,  // 16: watchtower.bridge.v1.Delete.items:type_name -> watchtower.bridge.v1.DeleteItem
+	18, // 17: watchtower.bridge.v1.Response.hello:type_name -> watchtower.bridge.v1.HelloOk
+	21, // 18: watchtower.bridge.v1.Response.outcomes:type_name -> watchtower.bridge.v1.Outcomes
+	22, // 19: watchtower.bridge.v1.Response.batch:type_name -> watchtower.bridge.v1.Batch
+	23, // 20: watchtower.bridge.v1.Response.done:type_name -> watchtower.bridge.v1.Done
+	25, // 21: watchtower.bridge.v1.Response.account:type_name -> watchtower.bridge.v1.Account
+	26, // 22: watchtower.bridge.v1.Response.shares:type_name -> watchtower.bridge.v1.SharesInfo
+	28, // 23: watchtower.bridge.v1.Response.participants:type_name -> watchtower.bridge.v1.ParticipantList
+	29, // 24: watchtower.bridge.v1.Response.failure:type_name -> watchtower.bridge.v1.Failure
+	30, // 25: watchtower.bridge.v1.Response.event:type_name -> watchtower.bridge.v1.Event
+	24, // 26: watchtower.bridge.v1.Response.owner_user:type_name -> watchtower.bridge.v1.OwnerUserInfo
+	19, // 27: watchtower.bridge.v1.Outcome.conflict:type_name -> watchtower.bridge.v1.Record
+	20, // 28: watchtower.bridge.v1.Outcomes.items:type_name -> watchtower.bridge.v1.Outcome
+	19, // 29: watchtower.bridge.v1.Batch.changed:type_name -> watchtower.bridge.v1.Record
+	27, // 30: watchtower.bridge.v1.ParticipantList.items:type_name -> watchtower.bridge.v1.Participant
+	31, // [31:31] is the sub-list for method output_type
+	31, // [31:31] is the sub-list for method input_type
+	31, // [31:31] is the sub-list for extension type_name
+	31, // [31:31] is the sub-list for extension extendee
+	0,  // [0:31] is the sub-list for field type_name
 }
 
 func init() { file_bridge_proto_init() }
@@ -2255,8 +2331,9 @@ func file_bridge_proto_init() {
 		(*Request_Participants)(nil),
 		(*Request_RemoveParticipants)(nil),
 		(*Request_OwnerUser)(nil),
+		(*Request_RetireZones)(nil),
 	}
-	file_bridge_proto_msgTypes[15].OneofWrappers = []any{
+	file_bridge_proto_msgTypes[16].OneofWrappers = []any{
 		(*Response_Hello)(nil),
 		(*Response_Outcomes)(nil),
 		(*Response_Batch)(nil),
@@ -2274,7 +2351,7 @@ func file_bridge_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_bridge_proto_rawDesc), len(file_bridge_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   29,
+			NumMessages:   30,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
