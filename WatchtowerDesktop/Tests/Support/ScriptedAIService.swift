@@ -21,6 +21,7 @@ package final class ScriptedAIService: AIServiceProtocol, @unchecked Sendable {
     }
 
     private let lock = NSLock()
+    private let signal = StateSignal()
     private var _calls: [Call] = []
     private var _continuations: [AsyncThrowingStream<StreamEvent, Error>.Continuation] = []
     private var _terminated: [Bool] = []
@@ -28,6 +29,12 @@ package final class ScriptedAIService: AIServiceProtocol, @unchecked Sendable {
     package init() {}
 
     package var calls: [Call] { lock.withLock { _calls } }
+
+    /// Returns once at least `count` streams have been asked for — the
+    /// service's own signal, no clock.
+    package func untilCalls(_ count: Int) async {
+        await signal.until { [self] in calls.count >= count }
+    }
     /// Whether each call's stream was torn down by its consumer (Stop).
     package var terminated: [Bool] { lock.withLock { _terminated } }
 
@@ -71,6 +78,7 @@ package final class ScriptedAIService: AIServiceProtocol, @unchecked Sendable {
             _terminated.append(false)
             return _continuations.count - 1
         }
+        signal.changed()
         continuation.onTermination = { [weak self] reason in
             if case .cancelled = reason { self?.lock.withLock { self?._terminated[index] = true } }
         }

@@ -706,10 +706,10 @@ final class WorkbenchSessionDeleteTests: XCTestCase {
         try await storeCleanupResult(CleanupFixture.appliedWithError, at: "2026-10-12T09:00:00Z", sessionID: row.id)
         let watch = Task { await vm.observeCleanupRecord(sessionID: row.id) }
         defer { watch.cancel() }
-        try await waitUntil { vm.cleanupRecords[row.id]?.at == "2026-10-12T09:00:00Z" }
+        await untilObserved { vm.cleanupRecords[row.id]?.at == "2026-10-12T09:00:00Z" }
 
         try await storeCleanupResult(CleanupFixture.applied, at: "2026-10-12T10:00:00Z", sessionID: row.id)
-        try await waitUntil { vm.cleanupRecords[row.id]?.at == "2026-10-12T10:00:00Z" }
+        await untilObserved { vm.cleanupRecords[row.id]?.at == "2026-10-12T10:00:00Z" }
 
         XCTAssertEqual(vm.cleanupReportLine(sessionID: row.id), "1 worktree, 1 branch removed (~2.0 GB)")
         watch.cancel()
@@ -723,13 +723,5 @@ final class WorkbenchSessionDeleteTests: XCTestCase {
                 arguments: [String(bytes: json, encoding: .utf8), at, sessionID]
             )
         }
-    }
-
-    /// Waits up to 2 s for `condition`; fails the test past that.
-    private func waitUntil(_ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
-        for _ in 0..<200 where !condition() {
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        XCTAssertTrue(condition(), "timed out", file: file, line: line)
     }
 }

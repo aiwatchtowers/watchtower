@@ -138,7 +138,7 @@ final class HostedTerminalSessionTests: XCTestCase {
     }
 
     private func waitUntil(_ condition: () -> Bool) async {
-        for _ in 0..<200 where !condition() { await Task.yield() }
+        while !condition() { await Task.yield() }
     }
 
     func testStartSendsLaunchWithRowEnvAndSize() async throws {

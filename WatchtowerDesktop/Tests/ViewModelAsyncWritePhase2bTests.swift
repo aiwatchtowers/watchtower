@@ -56,7 +56,7 @@ final class ViewModelAsyncWritePhase2bTests: XCTestCase {
         let writing = Task { await vm.updateStatus(target, to: "done") }
         let pending = await eventually { vm.isWriting }
         XCTAssertTrue(pending, "the write is under way, waiting for the writer")
-        let responsive: Void? = await boundedValue(Task { () }, timeout: .seconds(1))
+        let responsive: Void? = await boundedValue(Task { () })
         XCTAssertNotNil(responsive, "the main actor is free while the write waits")
         XCTAssertEqual(vm.allTargets.first { $0.id == target.id }?.status, "todo")
 

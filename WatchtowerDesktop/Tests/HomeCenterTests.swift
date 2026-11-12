@@ -51,57 +51,29 @@ final class HomeCenterTests: XCTestCase {
         readiness: ReadinessCenter? = nil,
         environment: FakeHomeEnvironment? = nil,
         defaults: UserDefaults,
-        tickInterval: Duration = .seconds(30)
+        ticks: HandOpenedSleeps = HandOpenedSleeps()
     ) -> HomeCenter {
-        HomeCenter(readiness: readiness ?? ReadinessCenter(environment: FakeReadinessEnvironment()),
-                   environment: environment ?? FakeHomeEnvironment(),
-                   store: GettingReadyStore(defaults: defaults), performer: FakeHomeFeedPerformer(),
-                   tickInterval: tickInterval)
+        let center = HomeCenter(readiness: readiness ?? ReadinessCenter(environment: FakeReadinessEnvironment()),
+                                environment: environment ?? FakeHomeEnvironment(),
+                                store: GettingReadyStore(defaults: defaults), performer: FakeHomeFeedPerformer())
+        center.tickSleep = { _ in await ticks.sleep() }
+        return center
     }
 
-    /// Waits (bounded) until `condition` holds for the center's snapshot,
-    /// re-checking on every change of it — no sleeping.
-    private func waitUntil(
-        _ center: HomeCenter,
-        timeout: TimeInterval = 5,
-        _ condition: @escaping (HomeSnapshot?) -> Bool
-    ) async {
-        let met = expectation(description: "snapshot condition")
-        func check() {
-            if condition(center.snapshot) {
-                met.fulfill()
-                return
-            }
-            withObservationTracking { _ = center.snapshot } onChange: {
-                Task { @MainActor in check() }
-            }
-        }
-        check()
-        await fulfillment(of: [met], timeout: timeout)
+    /// Waits until `condition` holds for the center's snapshot, re-checking
+    /// on every change of it — no sleeping, no deadline.
+    private func waitUntil(_ center: HomeCenter, _ condition: @escaping (HomeSnapshot?) -> Bool) async {
+        await untilObserved { condition(center.snapshot) }
     }
 
-    /// Waits (bounded) until `condition` holds for the center, re-checking on
-    /// every change of its snapshot or numbers read count.
-    private func waitUntilCenter(
-        _ center: HomeCenter,
-        timeout: TimeInterval = 5,
-        _ condition: @escaping (HomeCenter) -> Bool
-    ) async {
-        let met = expectation(description: "center condition")
-        func check() {
-            if condition(center) {
-                met.fulfill()
-                return
-            }
-            withObservationTracking {
-                _ = center.snapshot
-                _ = center.numbersReads
-            } onChange: {
-                Task { @MainActor in check() }
-            }
+    /// Waits until `condition` holds for the center, re-checking on every
+    /// change of its snapshot or numbers read count.
+    private func waitUntilCenter(_ center: HomeCenter, _ condition: @escaping (HomeCenter) -> Bool) async {
+        await untilObserved {
+            _ = center.snapshot
+            _ = center.numbersReads
+            return condition(center)
         }
-        check()
-        await fulfillment(of: [met], timeout: timeout)
     }
 
     private func session(
@@ -269,6 +241,8 @@ final class HomeCenterTests: XCTestCase {
     func testStaleDecideLeavesTheNoteOnTheCenter() async throws {
         let appState = AppState.isolated()
         appState.homeEnvironmentOverride = FakeHomeEnvironment()
+        let noteClock = HandOpenedSleeps()
+        appState.homeCenter.coachNoteSleep = { _ in await noteClock.sleep() }
         appState.homeCenter.beginReading(pool: try makePool())
         defer { appState.homeCenter.endReading() }
         await waitUntil(appState.homeCenter) { $0 != nil }
@@ -280,8 +254,9 @@ final class HomeCenterTests: XCTestCase {
         XCTAssertEqual(appState.homeCenter.coachNote, "That proposal changed — showing the next one")
         appState.homeCenter.showCoachNote("short", seconds: 0.05)
         XCTAssertEqual(appState.homeCenter.coachNote, "short", "a newer note replaces it")
-        let deadline = Date().addingTimeInterval(2)
-        while appState.homeCenter.coachNote != nil, Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        await noteClock.untilCancelled()
+        noteClock.open()
+        await untilObserved { appState.homeCenter.coachNote == nil }
         XCTAssertNil(appState.homeCenter.coachNote)
     }
 
@@ -303,7 +278,8 @@ final class HomeCenterTests: XCTestCase {
 
     func testTickPicksUpWritesTheObservationMisses() async throws {
         let pool = try makePool()
-        let center = makeCenter(defaults: try makeDefaults(), tickInterval: .milliseconds(50))
+        let ticks = HandOpenedSleeps()
+        let center = makeCenter(defaults: try makeDefaults(), ticks: ticks)
         center.beginReading(pool: pool)
         defer { center.endReading() }
         await waitUntil(center) { $0 != nil }
@@ -314,6 +290,7 @@ final class HomeCenterTests: XCTestCase {
             try TestDatabase.insertOwnerAsk(db, projectID: workbench)
         }
         try daemonPool.close()
+        ticks.open()
         await waitUntil(center) { $0?.workbench.first?.asks.count == 1 }
     }
 
@@ -423,10 +400,14 @@ final class HomeCenterTests: XCTestCase {
 
     /// The tick re-reads the numbers too (the daemon writes from another process).
     func testTickRereadsNumbers() async throws {
-        let center = makeCenter(defaults: try makeDefaults(), tickInterval: .milliseconds(50))
+        let ticks = HandOpenedSleeps()
+        let center = makeCenter(defaults: try makeDefaults(), ticks: ticks)
         center.beginReading(pool: try makePool())
         defer { center.endReading() }
-        await waitUntilCenter(center) { $0.numbersReads > 2 }
+        await waitUntilCenter(center) { $0.snapshot?.numbers != nil && $0.numbersReads > 0 }
+        let reads = center.numbersReads
+        ticks.open(2)
+        await waitUntilCenter(center) { $0.numbersReads >= reads + 2 }
     }
 
     func testHideGettingReadyPersists() async throws {
@@ -518,9 +499,11 @@ final class HomeCenterTests: XCTestCase {
     func testFirstPoolFailurePublishesAllFailed() async throws {
         let pool = try makePool()
         try pool.close()
-        let center = makeCenter(defaults: try makeDefaults(), tickInterval: .milliseconds(50))
+        let ticks = HandOpenedSleeps()
+        let center = makeCenter(defaults: try makeDefaults(), ticks: ticks)
         center.beginReading(pool: pool)
         defer { center.endReading() }
+        ticks.open()
         await waitUntil(center) { $0?.numbers != nil }
         XCTAssertEqual(center.snapshot?.workbenchFailed, true)
         XCTAssertEqual(center.snapshot?.linksFailed, true)
@@ -532,22 +515,26 @@ final class HomeCenterTests: XCTestCase {
     /// never shown as current.
     func testPoolFailureAfterGoodReadIsSaid() async throws {
         let pool = try makePool()
-        let center = makeCenter(defaults: try makeDefaults(), tickInterval: .milliseconds(50))
+        let ticks = HandOpenedSleeps()
+        let center = makeCenter(defaults: try makeDefaults(), ticks: ticks)
         center.beginReading(pool: pool)
         defer { center.endReading() }
         await waitUntil(center) { $0?.workbenchFailed == false && $0?.numbers?.failed.isEmpty == true }
 
         try pool.close()
+        ticks.open()
         await waitUntil(center) { $0?.workbenchFailed == true && $0?.linksFailed == true }
         await waitUntil(center) { $0?.numbers?.failed == HomeNumbers.fieldNames }
     }
 
     func testStopCancelsObservationAndTick() async throws {
         let pool = try makePool()
-        let center = makeCenter(defaults: try makeDefaults(), tickInterval: .milliseconds(50))
+        let ticks = HandOpenedSleeps()
+        let center = makeCenter(defaults: try makeDefaults(), ticks: ticks)
         center.beginReading(pool: pool)
         await waitUntil(center) { $0 != nil }
         center.endReading()
+        await ticks.untilCancelled()
         let reads = center.todayReads
 
         try insertTargetDueToday(pool)

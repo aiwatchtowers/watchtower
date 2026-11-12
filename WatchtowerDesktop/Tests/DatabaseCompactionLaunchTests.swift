@@ -26,7 +26,7 @@ final class DatabaseCompactionLaunchTests: XCTestCase {
     func testLaunchOrderMigrateCompactOpen() async {
         let due = makeAppState(due: true)
         let launch = Task { await due.appState.migrateCompactOpen() }
-        await until { due.appState.databaseCompactionInProgress && self.calls.items.contains("startCompact") }
+        await untilTurn { due.appState.databaseCompactionInProgress && self.calls.items.contains("startCompact") }
         child.exit(status: 0, stdout: #"{"compacted":true,"reason":"migration:134"}"#)
         _ = await launch.value
         XCTAssertEqual(calls.items, ["migrate", "check", "stopDaemon", "startCompact", "open"])
@@ -51,7 +51,7 @@ final class DatabaseCompactionLaunchTests: XCTestCase {
         let appState = made.appState
         let daemon = made.daemon
         let launch = Task { await appState.migrateCompactOpen() }
-        await until { appState.databaseCompactionInProgress && self.calls.items.contains("startCompact") }
+        await untilTurn { appState.databaseCompactionInProgress && self.calls.items.contains("startCompact") }
 
         appState.ensureDaemonRunning()
         appState.bringUpDaemonInBackground(startOnly: false)
@@ -83,27 +83,27 @@ final class DatabaseCompactionLaunchTests: XCTestCase {
         let daemon = made.daemon
         let blocker = LaunchFakeSleeper()
         appState.enqueueDaemonStart { await blocker.sleep() }
-        await until { blocker.pendingCount == 1 }
+        await untilTurn { blocker.pendingCount == 1 }
 
         appState.ensureDaemonRunning()
         appState.bringUpDaemonInBackground(startOnly: false)
         appState.startDaemonFromBanner()
         let beforeRestart = appState.daemonStartChain
         let restart = Task { try await appState.restartOnChain(daemon) }
-        await until { appState.daemonStartChain != beforeRestart }
+        await untilTurn { appState.daemonStartChain != beforeRestart }
         let beforeDisconnect = appState.daemonStartChain
         let disconnect = Task {
             await appState.disconnectSlackOnQueue(stop: {}, disconnect: { true }, start: { self.calls.append("slackStart") })
         }
-        await until { appState.daemonStartChain != beforeDisconnect }
+        await untilTurn { appState.daemonStartChain != beforeDisconnect }
         XCTAssertTrue(appState.isStartingDaemon, "the banner Start is queued, not refused")
 
         // The step's daemon stop queues behind the blocker and the starts.
         let launch = Task { await appState.migrateCompactOpen() }
-        await until { self.calls.items.contains("check") && appState.databaseCompactionInProgress }
+        await untilTurn { self.calls.items.contains("check") && appState.databaseCompactionInProgress }
         XCTAssertFalse(calls.items.contains("stopDaemon"), "the stop waits for the start already running")
         blocker.releaseAll()
-        await until { self.calls.items.contains("startCompact") }
+        await untilTurn { self.calls.items.contains("startCompact") }
         XCTAssertEqual(calls.items, ["migrate", "check", "stopDaemon", "startCompact"])
         try await restart.value
         let disconnected = await disconnect.value
@@ -127,13 +127,13 @@ final class DatabaseCompactionLaunchTests: XCTestCase {
         let made = makeAppState(due: true, migrateGate: migrateGate)
         let appState = made.appState
         let launch = Task { await appState.migrateCompactOpen() }
-        await until { self.calls.items.contains("migrate") }
+        await untilTurn { self.calls.items.contains("migrate") }
         XCTAssertTrue(appState.daemonStartBlocked("test"))
 
         try await appState.restartOnChain(made.daemon)
         appState.bringUpDaemonInBackground(startOnly: false)
         migrateGate.signal()
-        await until { appState.databaseCompactionInProgress && self.calls.items.contains("startCompact") }
+        await untilTurn { appState.databaseCompactionInProgress && self.calls.items.contains("startCompact") }
         await appState.daemonStartChain?.value
         XCTAssertEqual(made.daemon.restarts, 0)
         XCTAssertEqual(made.daemon.starts, 0)
@@ -183,7 +183,7 @@ final class DatabaseCompactionLaunchTests: XCTestCase {
         made.daemon.running = true
         made.appState.onboarding.goTo(.complete)
         let launch = Task { await made.appState.migrateCompactOpen() }
-        await until { self.calls.items.contains("migrate") }
+        await untilTurn { self.calls.items.contains("migrate") }
         try await made.appState.restartOnChain(made.daemon)
         XCTAssertEqual(made.daemon.restarts, 0)
 
@@ -219,7 +219,7 @@ final class DatabaseCompactionLaunchTests: XCTestCase {
         let made = makeAppState(due: true)
         let appState = made.appState
         let launch = Task { await appState.migrateCompactOpen() }
-        await until { appState.databaseCompactionInProgress && self.calls.items.contains("startCompact") }
+        await untilTurn { appState.databaseCompactionInProgress && self.calls.items.contains("startCompact") }
 
         await TrayAppDelegate.stopDaemonForQuit(appState) { self.calls.append("quitStopDaemon") }
         XCTAssertEqual(child.terminateCount, 1)
@@ -260,7 +260,7 @@ final class DatabaseCompactionLaunchTests: XCTestCase {
         let made = makeAppState(due: true, dbBytes: 2_000_000_000)
         let step = made.appState.databaseCompaction
         let launch = Task { await made.appState.migrateCompactOpen() }
-        await until { self.sleeper.pendingCount == 1 }
+        await untilTurn { self.sleeper.pendingCount == 1 }
 
         let splash = SplashView(compaction: step)
         let line = DatabaseCompactionStep.progressLine(dbBytes: 2_000_000_000, elapsedSeconds: 0)
@@ -270,7 +270,7 @@ final class DatabaseCompactionLaunchTests: XCTestCase {
 
         for elapsed in 1...15 {
             sleeper.releaseOne()
-            await until { step.elapsedSeconds == elapsed && self.sleeper.pendingCount == 1 }
+            await untilTurn { step.elapsedSeconds == elapsed && self.sleeper.pendingCount == 1 }
         }
         try splash.inspect().find(button: "Skip for now").tap()
         XCTAssertEqual(child.terminateCount, 1)
@@ -287,20 +287,20 @@ final class DatabaseCompactionLaunchTests: XCTestCase {
         let made = makeAppState(due: true, dbBytes: 2_000_000_000, ftsRebuildPending: true)
         let step = made.appState.databaseCompaction
         let launch = Task { await made.appState.migrateCompactOpen() }
-        await until { self.sleeper.pendingCount == 1 }
+        await untilTurn { self.sleeper.pendingCount == 1 }
 
         let splash = SplashView(compaction: step)
         XCTAssertNoThrow(try splash.inspect().find(text: "Updating search index — 0:00"))
         XCTAssertNoThrow(try splash.inspect().find(text: "This happens rarely, usually after an update."))
         for elapsed in 1...15 {
             sleeper.releaseOne()
-            await until { step.elapsedSeconds == elapsed && self.sleeper.pendingCount == 1 }
+            await untilTurn { step.elapsedSeconds == elapsed && self.sleeper.pendingCount == 1 }
         }
         XCTAssertNoThrow(try splash.inspect().find(text: "Updating search index — 0:15"))
         XCTAssertNoThrow(try splash.inspect().find(button: "Skip for now"))
 
         child.onPhase?(.compact)
-        await until { step.phase == .compacting(dbBytes: 2_000_000_000) }
+        await untilTurn { step.phase == .compacting(dbBytes: 2_000_000_000) }
         let line = DatabaseCompactionStep.progressLine(dbBytes: 2_000_000_000, elapsedSeconds: 0)
         XCTAssertNoThrow(try splash.inspect().find(text: line))
         XCTAssertNoThrow(try splash.inspect().find(button: "Skip for now"))
@@ -325,7 +325,7 @@ final class DatabaseCompactionLaunchTests: XCTestCase {
     /// open throws; a due step's child exits 0.
     private func launchThroughOpenFailure(_ appState: AppState) async {
         let launch = Task { await appState.migrateCompactOpen() }
-        await until { appState.databaseCompaction.phase == .finished || self.calls.items.contains("startCompact") }
+        await untilTurn { appState.databaseCompaction.phase == .finished || self.calls.items.contains("startCompact") }
         child.exit(status: 0)
         guard case .failure(let error) = await launch.value else {
             return XCTFail("the fake open throws")
@@ -368,16 +368,6 @@ final class DatabaseCompactionLaunchTests: XCTestCase {
         appState.daemonStartWaitBound = .milliseconds(50)
         appState.daemonStartPollInterval = .milliseconds(5)
         return (appState, daemon)
-    }
-
-    /// Yields the main actor until `condition` holds; fails after a bounded
-    /// number of turns rather than hanging.
-    private func until(_ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async {
-        for _ in 0..<10_000 {
-            if condition() { return }
-            await Task.yield()
-        }
-        XCTFail("condition never held", file: file, line: line)
     }
 }
 

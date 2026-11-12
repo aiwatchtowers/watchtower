@@ -127,6 +127,10 @@ final class DigestViewModel {
     private let dbManager: DatabaseManager
     /// Every write of this view model, in order (board #670).
     @ObservationIgnored private let writes = SerialWrites()
+    /// The `stream_digests` observation delivered its baseline: a write from
+    /// now on surfaces in the feed (tests wait on it); false again after
+    /// `stopObserving()`.
+    private(set) var streamsObserved = false
     private var observationTask: Task<Void, Never>?
     private var streamsObservationTask: Task<Void, Never>?
     private var decisionsObservationTask: Task<Void, Never>?
@@ -167,8 +171,16 @@ final class DigestViewModel {
                 try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM stream_digests") ?? 0
             }
             do {
-                for try await _ in observation.values(in: dbPool).dropFirst() {
+                var baseline = true
+                for try await _ in observation.values(in: dbPool) {
                     guard !Task.isCancelled else { break }
+                    // The first value is the baseline (`load()` read it); from
+                    // here on every change of the table reaches the feed.
+                    if baseline {
+                        baseline = false
+                        self?.streamsObserved = true
+                        continue
+                    }
                     self?.reloadStreams()
                 }
             } catch {}
@@ -200,6 +212,7 @@ final class DigestViewModel {
         observationTask = nil
         streamsObservationTask?.cancel()
         streamsObservationTask = nil
+        streamsObserved = false
         decisionsObservationTask?.cancel()
         decisionsObservationTask = nil
         decisionsPollTask?.cancel()

@@ -80,7 +80,10 @@ final class CodeFileBuffer {
     /// Told when a save finds the buffer's worktree folder gone (the
     /// buffer has locked itself): the center marks the root removed.
     @ObservationIgnored var onWorktreeMissing: (() -> Void)?
-    @ObservationIgnored private var autosave: Task<Void, Never>?
+    /// The pending autosave; internal so tests await it.
+    @ObservationIgnored private(set) var autosave: Task<Void, Never>?
+    /// The autosave's pause; tests open it by hand.
+    @ObservationIgnored var autosaveSleep: (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     @ObservationIgnored private let autosaveDelay: Duration
     /// The linked worktree the file lives in, nil for the workbench folder:
     /// every write first checks it still exists, so a worktree removed
@@ -148,8 +151,9 @@ final class CodeFileBuffer {
         autosave?.cancel()
         guard isDirty, problem == nil, !writesLocked else { return }
         let delay = autosaveDelay
+        let sleep = autosaveSleep
         autosave = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: delay)
+            await sleep(delay)
             guard !Task.isCancelled else { return }
             self?.saveNow()
         }
