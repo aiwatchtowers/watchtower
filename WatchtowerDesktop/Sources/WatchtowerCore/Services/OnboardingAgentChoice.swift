@@ -386,7 +386,7 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
         case .failed(let message):
             return Setup(
                 agent: agent,
-                title: "\(agent.productName) didn’t answer",
+                title: "Couldn’t check \(agent.productName)",
                 steps: [],
                 detail: message,
                 showsManualPath: true,
@@ -474,6 +474,10 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
         switch code {
         case "transport", "timeout":
             return "Couldn’t reach \(agent.productName)’s service. Check the network or VPN, then check again."
+        case "launch", "cli":
+            // Watchtower's CLI failed, not the agent: never blame the agent.
+            let tail = error.flatMap { $0.isEmpty ? nil : " (\($0))" } ?? ""
+            return "Watchtower couldn’t run the check\(tail). Update or reinstall Watchtower, then check again."
         case "invalid_output":
             // Go's text names Codex even for Claude: always our own words.
             return "\(agent.productName) answered but ignored Watchtower’s instructions. Update it and check again."

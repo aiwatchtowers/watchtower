@@ -137,7 +137,9 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
             return OnboardingAgentTestResult(ok: false, errorCode: "launch", error: output.stderr)
         }
         guard let json = try? JSONSerialization.jsonObject(with: Data(output.stdout.utf8)) as? [String: Any] else {
-            return OnboardingAgentTestResult(ok: false, errorCode: nil, error: CLILog.detail(output.stderr))
+            // No JSON object: Watchtower's own CLI refused or crashed before
+            // it reached the agent (v0.28.0: `unknown flag: --json`).
+            return OnboardingAgentTestResult(ok: false, errorCode: "cli", error: CLILog.detail(output.stderr))
         }
         let ok = json["ok"] as? Bool ?? false
         return OnboardingAgentTestResult(

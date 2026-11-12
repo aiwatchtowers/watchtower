@@ -1221,7 +1221,7 @@ final class HubSession {
                 try SettingsSnapshot.decode(HeartbeatPayload.self, recordName: HeartbeatPayload.recordName, store: store, from: db)
             }
         } catch {
-            Self.logger.error("heartbeat read failed: \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("heartbeat read failed: \(String(describing: error), privacy: .public)")
         }
     }
 
@@ -1502,7 +1502,7 @@ final class HubSession {
             // The hub takes an ack at or below its epoch as a no-op: from here on its acked epoch matches this phone's.
             acknowledgeNewestEpoch()
         } catch {
-            Self.logger.notice("ordered-actions grant check skipped: \(error.localizedDescription, privacy: .public)")
+            Self.logger.notice("ordered-actions grant check skipped: \(String(describing: error), privacy: .public)")
         }
     }
 

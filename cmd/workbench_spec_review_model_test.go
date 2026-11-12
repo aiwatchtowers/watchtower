@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 	"watchtower/internal/config"
 	"watchtower/internal/specreview"
 
@@ -175,9 +174,7 @@ echo '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
 	}
 	selected, model, err := specReviewSessionConfig(context.Background(), database, askID, original)
 	require.NoError(t, err)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	answer, codeRead, err := specReviewAgentFactory(selected, model).Review(ctx, repo, "fixture instructions", "Review the fixture")
+	answer, codeRead, err := specReviewAgentFactory(selected, model).Review(context.Background(), repo, "fixture instructions", "Review the fixture")
 	require.NoError(t, err)
 	require.True(t, codeRead)
 	require.Equal(t, "session-model-chosen", answer)

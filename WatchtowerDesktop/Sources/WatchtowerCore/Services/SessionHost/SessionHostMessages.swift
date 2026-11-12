@@ -357,6 +357,24 @@ package struct SessionHostDeliveryEvent: Codable, Equatable, Sendable {
     }
 }
 
+/// Go `InputToReq`: bytes written to a run's PTY that are not the owner's
+/// typing (the terminal's own replies, the app's input), so the host never
+/// counts them as a draft in the prompt (PROJ-12). `data` is base64 in the
+/// JSON, as Go encodes `[]byte` and `JSONEncoder` encodes `Data`.
+package struct SessionHostInputTo: Codable, Equatable, Sendable {
+    package let row: Int64
+    package let run: String
+    package let launch: UInt64
+    package let data: Data
+
+    package init(row: Int64, run: String, launch: UInt64, data: Data) {
+        self.row = row
+        self.run = run
+        self.launch = launch
+        self.data = data
+    }
+}
+
 /// Go `PromptHintMsg`: whether a permission dialog is up in the session (the
 /// app reads the hook states; the host cannot).
 package struct SessionHostPromptHint: Codable, Equatable, Sendable {

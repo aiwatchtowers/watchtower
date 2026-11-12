@@ -98,7 +98,7 @@ final class TerminalClipboardReadGuardTests: XCTestCase {
     func testOtherRepliesStillReachTheProcess() {
         let terminal = makeTerminal()
         var sent: [UInt8] = []
-        terminal.hostInput = { sent.append(contentsOf: $0) }
+        terminal.hostInput = { bytes, _ in sent.append(contentsOf: bytes) }
         terminal.feed(byteArray: Array("\u{1B}[c".utf8)[...])
         XCTAssertTrue((String(bytes: sent, encoding: .utf8) ?? "").hasPrefix("\u{1B}[?"), "DA reply forwarded")
     }
