@@ -4,13 +4,19 @@ import ViewInspector
 @testable import DesignKit
 @testable import WatchtowerDesktop
 
-/// Waiting for me's Older list: its note row (ref `waiting_older`) stays,
-/// the older rows under it fold behind **Show <n> older**. No other list folds.
+/// Waiting for me's Older list: its note row (ref `waiting_older`, folded
+/// after by the Inbox's hooks) stays, the older rows under it fold behind
+/// **Show <n> older**. No other list folds, and the kit folds nothing by itself.
 @MainActor
 final class ArtifactListFoldTests: XCTestCase {
-    private func view(_ rows: [ArtifactListRow], mode: ArtifactRenderMode = .inbox) -> some View {
-        ArtifactListView(list: ArtifactBlock.List(title: "Older", rows: rows), firstIndex: 0, mode: mode)
-            .environment(\.artifactEnvironment, ArtifactEnvironment())
+    private func view(
+        _ rows: [ArtifactListRow],
+        mode: ArtifactRenderMode = .inbox,
+        hooks: ArtifactRefHooks? = nil
+    ) -> some View {
+        let hooks = hooks ?? InboxRefHooks.make(isShown: { _ in true }, content: { _, _ in nil })
+        return ArtifactListView(list: ArtifactBlock.List(title: "Older", rows: rows), firstIndex: 0, mode: mode)
+            .environment(\.artifactEnvironment, ArtifactEnvironment(refHooks: hooks))
     }
 
     private let olderRows = [
@@ -42,5 +48,10 @@ final class ArtifactListFoldTests: XCTestCase {
         let preview = try view(olderRows, mode: .preview).inspect()
         XCTAssertNoThrow(try preview.find(text: "ACME-12 assigned to you"))
         XCTAssertThrowsError(try preview.find(button: "Show 2 older"))
+
+        // Without the host's hook the kit folds nothing.
+        let plain = try view(olderRows, hooks: ArtifactRefHooks()).inspect()
+        XCTAssertNoThrow(try plain.find(text: "ACME-12 assigned to you"))
+        XCTAssertThrowsError(try plain.find(button: "Show 2 older"))
     }
 }

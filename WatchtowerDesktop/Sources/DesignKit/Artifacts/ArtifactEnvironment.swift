@@ -32,6 +32,9 @@ public struct ArtifactRefHooks {
     /// focus (a bulk press asking or running). Read while the row draws, so
     /// an Observation-tracked answer redraws the row when it changes.
     public var pinsActions: (ArtifactRef) -> Bool
+    /// True on a list's first row folds the rows after it in `.inbox`
+    /// behind **Show <n> older** (the row itself stays); other rows ignore it.
+    public var foldsRowsAfter: (ArtifactRef) -> Bool
 
     public init(
         isOpen: @escaping (ArtifactRef) -> Bool = { _ in true },
@@ -40,7 +43,8 @@ public struct ArtifactRefHooks {
         nativeFooter: @escaping (ArtifactRef, ArtifactRenderMode) -> AnyView? = { _, _ in nil },
         open: @escaping (ArtifactRef) -> (() -> Void)? = { _ in nil },
         accessibilityActions: @escaping (ArtifactRef) -> [ArtifactAccessibilityAction] = { _ in [] },
-        pinsActions: @escaping (ArtifactRef) -> Bool = { _ in false }
+        pinsActions: @escaping (ArtifactRef) -> Bool = { _ in false },
+        foldsRowsAfter: @escaping (ArtifactRef) -> Bool = { _ in false }
     ) {
         self.isOpen = isOpen
         self.nativeActions = nativeActions
@@ -49,6 +53,7 @@ public struct ArtifactRefHooks {
         self.open = open
         self.accessibilityActions = accessibilityActions
         self.pinsActions = pinsActions
+        self.foldsRowsAfter = foldsRowsAfter
     }
 }
 

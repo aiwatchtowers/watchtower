@@ -163,8 +163,8 @@ struct ArtifactListView: View {
     let firstIndex: Int
     let mode: ArtifactRenderMode
     @Environment(\.artifactEnvironment) private var environment
-    /// Waiting for me's Older rows are open (`foldsOlder`); folded by
-    /// default, per artifact for as long as its card is on screen.
+    /// The folded rows are open (`foldsOlder`); folded by default, per
+    /// artifact for as long as its card is on screen.
     @State private var olderOpen = false
 
     var body: some View {
@@ -199,11 +199,12 @@ struct ArtifactListView: View {
         .preference(key: ArtifactShownRefsKey.self, value: drawn.compactMap { list.rows[$0].ref })
     }
 
-    /// In the Inbox, a list led by Waiting for me's Older note row (ref
-    /// `waiting_older`) draws that row and folds the rows after it behind
-    /// **Show <n> older**. The Look preview and every other list show all rows.
+    /// In the Inbox, a list whose first row the host folds after
+    /// (`ArtifactRefHooks.foldsRowsAfter`) draws that row and folds the
+    /// rows after it behind **Show <n> older**. The Look preview and every
+    /// other list show all rows.
     private var foldsOlder: Bool {
-        mode == .inbox && list.rows.first?.ref?.kind == .waitingOlder
+        mode == .inbox && (list.rows.first?.ref.map(environment.refHooks.foldsRowsAfter) ?? false)
     }
 }
 
@@ -212,18 +213,12 @@ struct ArtifactListView: View {
 enum ArtifactRowChrome {
     /// In `.inbox` the actions sit over the row's trailing edge and show
     /// while the pointer or the keyboard is on the row; every other mode
-    /// keeps them inline, always shown. A `pinned` row (Waiting for me's
-    /// Older note row, whose **Mark All Done…** is its point and which has
-    /// no age chip) shows them always.
+    /// keeps them inline, always shown. A `pinned` row (the host's
+    /// `ArtifactRefHooks.pinsActions`) shows them always.
     static func showsActions(
         isHovered: Bool, isFocused: Bool, mode: ArtifactRenderMode, pinned: Bool = false
     ) -> Bool {
         mode != .inbox || pinned || isHovered || isFocused
-    }
-
-    /// The row keeps its actions shown (`showsActions`'s `pinned`).
-    static func pinsActions(_ ref: ArtifactRef?) -> Bool {
-        ref?.kind == .waitingOlder
     }
 
     /// The `.inbox` row's actions overlay.
@@ -257,10 +252,9 @@ struct ArtifactListRowView: View {
         row.ref != nil && row.ref == environment.focusedRef
     }
 
-    /// The row keeps its actions shown: Waiting for me's Older note row, or
-    /// the host's pin (a bulk press asking or running).
+    /// The row keeps its actions shown: the host's pin.
     private var isPinned: Bool {
-        ArtifactRowChrome.pinsActions(row.ref) || (row.ref.map(environment.refHooks.pinsActions) ?? false)
+        row.ref.map(environment.refHooks.pinsActions) ?? false
     }
 
     var body: some View {
