@@ -1295,68 +1295,73 @@ final class TerminalCenterTests: XCTestCase {
         XCTAssertEqual(afterText, .submitted, "a backslash followed by text no longer escapes the Return")
     }
 
-    /// PROJ-12 (#1748, ask #1256): the owner's Esc (interrupting the agent),
-    /// Shift+Tab (Claude Code's mode cycle) or Ctrl+C typed no text, so the
-    /// next answer still gets its own Return; a draft or a line left typed
-    /// before the key still holds it; after `\` the Return stays a line
-    /// break; during a line's pause the key is no owner Return and leaves
-    /// the line typed (Ctrl+C or Esc Esc may have cleared it). Esc then a
-    /// byte (Option+key) and the cursor keys stay drafts. Twin of Go
-    /// `TestProj12_NonTextKeysKeepTheDraftState` /
-    /// `TestProj12_NonTextKeysKeepTheAnswersReturn`.
-    func testProj12_NonTextKeysKeepTheAnswersReturn() async throws {
-        let keys: [(String, [UInt8])] = [("Esc", [0x1B]), ("Shift+Tab", [0x1B, 0x5B, 0x5A]), ("Ctrl+C", [0x03])]
-        for (name, key) in keys {
-            XCTAssertTrue(TerminalCenter.isNonTextKey(key), name)
-            sessions = []
-            let center = makeCenter(v1Host: true)
-            let s = try row()
-            center.start(s, fresh: true)
+    /// PROJ-12 (#1748, asks #1256, #1261): the owner's Shift+Tab (a mode
+    /// switch) typed no text, so the next answer still gets its own Return;
+    /// a draft or a line left typed before it still holds it; after `\` the
+    /// Return stays a line break; during a line's pause the line stays whole
+    /// and gets our Return. Twin of Go `TestProj12_ShiftTabKeepsTheDraftState`
+    /// / `TestProj12_ShiftTabKeepsTheAnswersReturn`.
+    func testProj12_ShiftTabKeepsTheAnswersReturn() async throws {
+        let key: [UInt8] = [0x1B, 0x5B, 0x5A]
+        XCTAssertTrue(TerminalCenter.isShiftTab(key))
+        let center = makeCenter(v1Host: true)
+        let s = try row()
+        center.start(s, fresh: true)
 
-            sessions[0].onOwnerInput?(key)
-            XCTAssertFalse(center.promptHoldsText(s.id), "\(name) alone left a draft")
-            let alone = await center.deliver("x", sessionID: s.id) { true }
-            XCTAssertEqual(alone, .submitted, "\(name) alone")
-            XCTAssertEqual(sessions[0].inputs.last, [0x0D], "\(name): the answer's Return")
+        sessions[0].onOwnerInput?(key)
+        XCTAssertFalse(center.promptHoldsText(s.id), "Shift+Tab alone left a draft")
+        let alone = await center.deliver("x", sessionID: s.id) { true }
+        XCTAssertEqual(alone, .submitted, "Shift+Tab alone")
+        XCTAssertEqual(sessions[0].inputs.last, [0x0D], "the answer's Return")
 
-            sessions[0].onOwnerInput?(Array("half".utf8))
-            sessions[0].onOwnerInput?(key)
-            let overDraft = await center.deliver("y", sessionID: s.id) { true }
-            XCTAssertEqual(overDraft, .pasted, "\(name) cleared the owner's draft")
-            sessions[0].onOwnerInput?(key)
-            let overLeftTyped = await center.deliver("z", sessionID: s.id) { true }
-            XCTAssertEqual(overLeftTyped, .pasted, "\(name) cleared a line left typed")
-            sessions[0].onOwnerInput?([0x0D])
+        sessions[0].onOwnerInput?(Array("half".utf8))
+        sessions[0].onOwnerInput?(key)
+        let overDraft = await center.deliver("y", sessionID: s.id) { true }
+        XCTAssertEqual(overDraft, .pasted, "Shift+Tab cleared the owner's draft")
+        sessions[0].onOwnerInput?(key)
+        let overLeftTyped = await center.deliver("z", sessionID: s.id) { true }
+        XCTAssertEqual(overLeftTyped, .pasted, "Shift+Tab cleared a line left typed")
+        sessions[0].onOwnerInput?([0x0D])
 
-            sessions[0].onOwnerInput?(Array("a\\".utf8))
-            sessions[0].onOwnerInput?(key)
-            sessions[0].onOwnerInput?([0x0D])
-            XCTAssertTrue(center.promptHoldsText(s.id), "`\\`, \(name), Return read as a submit")
-            sessions[0].onOwnerInput?(Array("b\r".utf8))
+        sessions[0].onOwnerInput?(Array("a\\".utf8))
+        sessions[0].onOwnerInput?(key)
+        sessions[0].onOwnerInput?([0x0D])
+        XCTAssertTrue(center.promptHoldsText(s.id), "`\\`, Shift+Tab, Return read as a submit")
+        sessions[0].onOwnerInput?(Array("b\r".utf8))
 
-            onSleep = { [weak self] in self?.sessions[0].onOwnerInput?(key) }
-            let before = sessions[0].inputs.count
-            let duringPause = await center.deliver("w", sessionID: s.id) { true }
-            onSleep = nil
-            XCTAssertEqual(duringPause, .pasted, "\(name) during the pause")
-            XCTAssertEqual(Array(sessions[0].inputs.dropFirst(before)), [bracketedPasteBytes("w")], "\(name): no Return of ours")
-        }
+        onSleep = { [weak self] in self?.sessions[0].onOwnerInput?(key) }
+        let before = sessions[0].inputs.count
+        let duringPause = await center.deliver("w", sessionID: s.id) { true }
+        onSleep = nil
+        XCTAssertEqual(duringPause, .submitted, "Shift+Tab during the pause")
+        XCTAssertEqual(Array(sessions[0].inputs.dropFirst(before)), [bracketedPasteBytes("w"), [0x0D]], "the line and our Return")
+    }
 
+    /// PROJ-12 (#1748, asks #1256, #1261): Esc and Ctrl+C stay drafts.
+    /// Claude Code's cancel moves a queued follow-up message back into the
+    /// prompt, so after either key an answer's Return could submit the
+    /// owner's text with it: the answer is left typed. Option+key, cursor
+    /// keys and Shift+Tab followed by text stay drafts too. Twin of Go
+    /// `TestProj12_EscAndCtrlCStayDrafts`.
+    func testProj12_EscAndCtrlCStayDrafts() async throws {
         let drafts: [(String, [UInt8])] = [
+            ("Esc (pops a queued message into the prompt)", [0x1B]),
+            ("Ctrl+C (pops a queued message into the prompt)", [0x03]),
             ("Option+a (ESC a)", Array("\u{1B}a".utf8)),
             ("Up arrow", Array("\u{1B}[A".utf8)),
             ("Esc Esc in one chunk", [0x1B, 0x1B]),
-            ("Ctrl+C after text", Array("a".utf8) + [0x03]),
             ("Shift+Tab, then text", Array("\u{1B}[Za".utf8))
         ]
         for (name, bytes) in drafts {
-            XCTAssertFalse(TerminalCenter.isNonTextKey(bytes), name)
+            XCTAssertFalse(TerminalCenter.isShiftTab(bytes), name)
             sessions = []
             let center = makeCenter(v1Host: true)
             let s = try row()
             center.start(s, fresh: true)
             sessions[0].onOwnerInput?(bytes)
             XCTAssertTrue(center.promptHoldsText(s.id), "\(name) left no draft")
+            let answer = await center.deliver("x", sessionID: s.id) { true }
+            XCTAssertEqual(answer, .pasted, "\(name): the answer's Return")
         }
     }
 

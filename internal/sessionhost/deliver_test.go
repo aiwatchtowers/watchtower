@@ -550,29 +550,35 @@ func TestProj12_TerminalRepliesAsInputToKeepTheAnswersReturn(t *testing.T) {
 	wantOutcome(t, st.deliver(cl, st.req("next"), noCheck(t)), OutcomeTyped, TypedBesideText)
 }
 
-// #1748 (ask #1256): the owner's Esc (interrupting the agent), Shift+Tab
-// (Claude Code's mode cycle) or Ctrl+C typed no text, so the next answer
-// still gets its own Return; a draft typed before the key still holds it.
-func TestProj12_NonTextKeysKeepTheAnswersReturn(t *testing.T) {
+// #1748 (asks #1256, #1261): the owner's Shift+Tab (a mode switch) puts no
+// text into the prompt, so the next answer still gets its own Return — after
+// the key and when it comes during the answer's pause. Esc and Ctrl+C stay
+// drafts: Claude Code's cancel moves a queued follow-up message back into
+// the prompt, and an answer's Return must not submit it with the answer.
+func TestProj12_ShiftTabKeepsTheAnswersReturn(t *testing.T) {
 	st := newStub(t, Options{}, "claude", rawEchoAgent)
 	cl := st.hub()
-	keys := []byte("\x1b\x1b[Z\x03")
-	st.desktop.typeChunks([]byte{0x1B}, []byte("\x1b[Z"), []byte{0x03})
-	wantBytes(t, st.written(), keys, "the keys")
+	st.desktop.typeChunks([]byte("\x1b[Z"))
+	wantBytes(t, st.written(), []byte("\x1b[Z"), "Shift+Tab")
 	wantOutcome(t, st.deliver(cl, st.req("Ask #7 answered"), nil), OutcomeSubmitted, "")
 	wantBytes(t, st.written(), cat(paste("Ask #7 answered"), []byte{0x0D}), "the answer and its Return")
 
-	st.desktop.typeChunks([]byte("half"), []byte{0x1B})
-	wantBytes(t, st.written(), []byte("half\x1b"), "a draft, then Esc")
+	st.desktop.typeChunks([]byte("half"), []byte("\x1b[Z"))
+	wantBytes(t, st.written(), []byte("half\x1b[Z"), "a draft, then Shift+Tab")
 	wantOutcome(t, st.deliver(cl, st.req("next"), noCheck(t)), OutcomeTyped, TypedBesideText)
 
-	// During the pause the key may have cleared the line itself (Ctrl+C,
-	// a double Esc): no Return of ours into what is left.
 	var hook pauseHook
 	ps := newStub(t, hook.opts(), "claude", rawEchoAgent)
-	hook.during = func() { ps.desktop.typeChunks([]byte{0x03}) }
-	wantOutcome(t, ps.deliver(ps.hub(), ps.req("x"), okCheck), OutcomeTyped, TypedTextDuringPause)
-	wantBytes(t, ps.written(), cat(paste("x"), []byte{0x03}), "no Return of ours")
+	hook.during = func() { ps.desktop.typeChunks([]byte("\x1b[Z")) }
+	wantOutcome(t, ps.deliver(ps.hub(), ps.req("x"), okCheck), OutcomeSubmitted, "")
+	wantBytes(t, ps.written(), cat(paste("x"), []byte("\x1b[Z"), []byte{0x0D}), "the line, Shift+Tab, our Return")
+
+	for _, key := range [][]byte{{0x1B}, {0x03}} {
+		ks := newStub(t, Options{}, "claude", rawEchoAgent)
+		ks.desktop.typeChunks(key)
+		wantBytes(t, ks.written(), key, "the key")
+		wantOutcome(t, ks.deliver(ks.hub(), ks.req("Ask #7 answered"), noCheck(t)), OutcomeTyped, TypedBesideText)
+	}
 }
 
 // Review Focus 2: the requesting connection never answers the re-check.

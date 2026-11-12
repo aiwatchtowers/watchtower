@@ -43,7 +43,7 @@ func ProfileFor(agent string) Profile {
 // printable input before it — in this chunk or earlier ones
 // (backslashBefore), escape sequences and paste brackets skipped — is not
 // `\` (`\` then Return is a line break). Anything else is a draft, but for
-// the three keys IsNonTextKey names, which leave the prompt as it was. When
+// Shift+Tab (IsShiftTab), which leaves the prompt as it was. When
 // unsure the input counts as a draft, which costs the owner a Return of
 // their own, never a line submitted with theirs. Twin of
 // TerminalCenter.isSubmit.
@@ -61,22 +61,19 @@ func IsSubmit(b []byte, backslashBefore bool, p Profile) bool {
 	return !EndsAfterBackslash(body, backslashBefore)
 }
 
-// IsNonTextKey reports whether the owner's input is exactly one key that
-// never puts text into the agent's prompt: a lone Esc (`ESC`, the whole
-// chunk — ESC then a byte is Option+key), Shift+Tab (`ESC [ Z`) or Ctrl+C
-// (`0x03`). Claude Code and Codex read them as interrupt, mode cycle and
-// clear/quit; at most they empty the prompt, so leaving the draft state as
-// it was errs to a draft, never to a Return submitted with the owner's
-// text. Every other key — cursor keys too (Up recalls history) — stays a
-// draft by IsSubmit's rule. Only these legacy encodings count: under an
-// extended keyboard protocol (kitty `CSI u`) the same keys still read as a
-// draft, which fails safe. Twin of TerminalCenter.isNonTextKey.
-func IsNonTextKey(b []byte) bool {
-	switch string(b) {
-	case "\x1b", "\x1b[Z", "\x03":
-		return true
-	}
-	return false
+// IsShiftTab reports whether the owner's input is exactly Shift+Tab
+// (`ESC [ Z`, the whole chunk). Claude Code and Codex read it as a mode
+// switch, which neither puts text into the prompt nor takes any out, so the
+// draft state stays as it was (#1748) — during a line's pause too, since
+// the line stays whole. Esc and Ctrl+C are deliberately not exempt (asks
+// #1256, #1261): Claude Code's cancel moves a queued follow-up message back
+// into the prompt, so after them the prompt may hold the owner's text and
+// an answer's Return would submit it with theirs. Every other key — cursor
+// keys too (Up recalls history) — stays a draft by IsSubmit's rule. Under
+// an extended keyboard protocol (kitty `CSI u`) Shift+Tab still reads as a
+// draft, which fails safe. Twin of TerminalCenter.isShiftTab.
+func IsShiftTab(b []byte) bool {
+	return string(b) == "\x1b[Z"
 }
 
 // EndsAfterBackslash reports whether, after b, the last printable input is
