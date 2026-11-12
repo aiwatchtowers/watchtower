@@ -264,6 +264,45 @@ func TestSlackWindowCall_FailureStagesNoCursor(t *testing.T) {
 	}
 }
 
+// An unreadable or foreign-version cursor never fails the call for good: it
+// is read as no cursor, one log step names the key and the version, and the
+// done call's cursor replaces it.
+func TestSlackWindowCall_CorruptCursorResets(t *testing.T) {
+	for _, tc := range []struct{ value, problem string }{
+		{`{"v":9,"after_rowid":5}`, "version 9"},
+		{`"x"`, "not a v1 cursor"},
+		{`{"v":1,"after_rowid":-1}`, "not a v1 cursor"},
+	} {
+		t.Run(tc.problem+" "+tc.value, func(t *testing.T) {
+			w := &windowFake{next: windowAt(12, false)}
+			f := windowFixture(t, w)
+			a := f.seedWindow(t, `return slack.window().status;`)
+			if _, err := f.d.Exec(`INSERT INTO automation_state (automation_id, state_json) VALUES (?, ?)`,
+				a.ID, `{"`+automations.SlackWindowStateKey+`":`+tc.value+`}`); err != nil {
+				t.Fatal(err)
+			}
+			r := f.runBuiltin(t, a, db.TriggerSync, "")
+			if r.Status != db.RunSucceeded || r.Summary != "done" {
+				t.Fatalf("run = %s %q (%s)", r.Status, r.Summary, r.Error)
+			}
+			if c := w.call(t, 0); c.Cursor != 0 {
+				t.Errorf("Cursor = %d; want 0 (no cursor)", c.Cursor)
+			}
+			if after, behind := f.windowCursor(t, a); after != 12 || behind {
+				t.Errorf("committed cursor %d behind %v; want 12 false", after, behind)
+			}
+			steps := f.steps(t, r.ID)
+			if len(steps) != 2 || steps[1].Kind != automations.StepKindLog {
+				t.Fatalf("steps = %+v; want the tool step and one log step", steps)
+			}
+			want := `warning: slack.window: the cursor "__window:slack" was unreadable (` + tc.problem + `); read with no cursor`
+			if steps[1].ArgsJSON != want {
+				t.Errorf("log = %s; want %s", steps[1].ArgsJSON, want)
+			}
+		})
+	}
+}
+
 func TestStateSet_ReservedWindowKeyRefused(t *testing.T) {
 	f := newExFixture(t, exOpts{})
 	a := f.seed(t, "plain", `try { state.set("__window:slack", {v: 1, after_rowid: 1}); return "set"; } catch (e) { return e.name + ": " + e.message; }`, false)

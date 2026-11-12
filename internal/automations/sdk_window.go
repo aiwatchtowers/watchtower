@@ -64,6 +64,18 @@ func decodeWindowCursor(key string, raw json.RawMessage) (int64, bool, error) {
 	return c.AfterRowID, c.Behind, nil
 }
 
+// windowCursorProblem names why raw is not a v1 window cursor, without its
+// content: "version N" for a foreign version, else "not a v1 cursor".
+func windowCursorProblem(raw json.RawMessage) string {
+	var v struct {
+		V *int `json:"v"`
+	}
+	if json.Unmarshal(raw, &v) == nil && v.V != nil && *v.V != windowCursorVersion {
+		return fmt.Sprintf("version %d", *v.V)
+	}
+	return "not a v1 cursor"
+}
+
 // windowFloorOf reads a window call's one optional argument: none, {} or
 // {floor: "today"}.
 func windowFloorOf(name string, raw any) (string, error) {
@@ -96,7 +108,10 @@ func windowFloorOf(name string, raw any) (string, error) {
 // second call reads past the first). A done result stages the next cursor
 // in the buffer, committed only with a succeeded run (AUTO-04); a dry run
 // never commits. An error, or a status other than done/skipped, fails the
-// call as PrimitiveFailed and stages nothing.
+// call as PrimitiveFailed and stages nothing. A cursor value that is not a
+// v1 cursor (undecodable, a foreign version) is read as no cursor and
+// replaced by the done call's; a log step after the call names the key and
+// the version only.
 //
 // The call is not CallBuffered: a resumed run's replay answers it from
 // its log without staging the cursor again, so the next run re-reads that
@@ -110,7 +125,8 @@ func (s *builtinSDK) callWindow(env *Env, name string, raw any, argErr error) (a
 	if floor != "" {
 		args["floor"] = floor
 	}
-	return env.Call(StepKindTool, name, args, func(step *Step) (any, error) {
+	var badCursor string
+	out, err := env.Call(StepKindTool, name, args, func(step *Step) (any, error) {
 		m, err := manifestOf(env)
 		if err != nil {
 			return nil, err
@@ -134,7 +150,7 @@ func (s *builtinSDK) callWindow(env *Env, name string, raw any, argErr error) (a
 		var after int64
 		if raw, ok := env.Buffer.getRaw(key); ok {
 			if after, _, err = decodeWindowCursor(key, raw); err != nil {
-				return nil, err
+				after, badCursor = 0, windowCursorProblem(raw)
 			}
 		}
 		res, err := fn(env.Ctx, PrimitiveCall{Name: name, BuiltinID: builtinIDOf(env), Trigger: env.Trigger,
@@ -153,4 +169,12 @@ func (s *builtinSDK) callWindow(env *Env, name string, raw any, argErr error) (a
 		}
 		return primitiveOutcome(step, res), nil
 	})
+	if err != nil || badCursor == "" || env.Journal.CountKind(StepKindLog) >= MaxLogCalls {
+		return out, err
+	}
+	msg := fmt.Sprintf("warning: %s: the cursor %q was unreadable (%s); read with no cursor", name, windowStateKeys[name], badCursor)
+	if _, err := env.Call(StepKindLog, "log", msg, func(*Step) (any, error) { return nil, nil }); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
