@@ -221,10 +221,12 @@ final class InboxEntrySelectionTests: XCTestCase {
         await vm.refresh()
         await vm.selectEntry("artifact:\(picks.root[1])")
         vm.selectFolder(picks.owner)
+        await vm.arrival?.value
         XCTAssertEqual(vm.entrySelection, "artifact:\(picks.inOwner[0])", "nothing picked there yet: the first")
         await vm.selectEntry("artifact:\(picks.inOwner[1])")
 
         vm.selectFolder(picks.folders.root)
+        await vm.arrival?.value
         XCTAssertEqual(vm.entrySelection, "artifact:\(picks.root[1])")
         XCTAssertEqual(vm.selection, .output(picks.root[1]))
         vm.selectFolder(picks.owner)
@@ -245,8 +247,8 @@ final class InboxEntrySelectionTests: XCTestCase {
         await vm.refresh()
         await vm.selectEntry("artifact:\(picks.root[0])")
         vm.selectFolder(picks.owner)
-        await vm.selectEntry("artifact:\(picks.inOwner[1])")
         await vm.arrival?.value
+        await vm.selectEntry("artifact:\(picks.inOwner[1])")
         try await pool.write { db in
             try db.execute(sql: "DELETE FROM automation_outputs WHERE id IN (?, ?)",
                            arguments: [picks.root[0], picks.inOwner[1]])
@@ -255,9 +257,28 @@ final class InboxEntrySelectionTests: XCTestCase {
 
         vm.selectFolder(picks.folders.root)
         XCTAssertEqual(vm.entrySelection, "day:\(today)", "the root: today's brief")
-        vm.selectFolder(picks.owner)
-        XCTAssertEqual(vm.entrySelection, "artifact:\(picks.inOwner[0])", "an owner folder: its first entry")
         await vm.arrival?.value
+        vm.selectFolder(picks.owner)
+        await vm.arrival?.value
+        XCTAssertEqual(vm.entrySelection, "artifact:\(picks.inOwner[0])", "an owner folder: its first entry")
+
+        // The saved artifact's automation moved to the owner folder: the
+        // root no longer lists it, so the root opens on today's brief.
+        vm.selectFolder(picks.folders.root)
+        await vm.arrival?.value
+        await vm.selectEntry("artifact:\(picks.root[1])")
+        try await pool.write { db in
+            let automation = try XCTUnwrap(try Int64.fetchOne(
+                db, sql: "SELECT automation_id FROM automation_outputs WHERE id = ?", arguments: [picks.root[1]]))
+            try InboxFolderFixtures.route(db, automation: automation, folder: picks.owner)
+        }
+        await vm.refresh()
+        vm.selectFolder(picks.owner)
+        await vm.arrival?.value
+        XCTAssertTrue(vm.folderEntries.contains { $0.id == "artifact:\(picks.root[1])" }, "it lists in its new folder")
+        vm.selectFolder(picks.folders.root)
+        await vm.arrival?.value
+        XCTAssertEqual(vm.entrySelection, "day:\(today)", "moved away: today's brief")
     }
 
     func testRestoreNeverOpensALegacyList() async throws {
@@ -293,6 +314,63 @@ final class InboxEntrySelectionTests: XCTestCase {
 
         XCTAssertNil(vm.entrySelection)
         XCTAssertNil(vm.selection)
+    }
+
+    // MARK: - Routes
+
+    private func outputReadAt(_ id: Int64) async throws -> String? {
+        try await pool.read { db in
+            try String.fetchOne(db, sql: "SELECT read_at FROM automation_outputs WHERE id = ?", arguments: [id])
+        }
+    }
+
+    /// A route into the Inbox shows its own card: the owner's arrival
+    /// (the view's onAppear) never marks the card shown before it, in any
+    /// order the two can run in (STRIP-02).
+    func testArrivalYieldsToARoute() async throws {
+        let picks = try await seedPicks()
+        let vm = makeVM()
+        await vm.refresh()
+        XCTAssertEqual(vm.entrySelection, "day:\(today)", "today's unread brief is on screen")
+
+        // AppState begins the route before the Inbox shows; the arrival follows.
+        vm.beginRoute()
+        await vm.ownerArrived()
+        await vm.open(folder: nil, select: .card(.output(picks.root[0])))
+        XCTAssertEqual(vm.selection, .output(picks.root[0]))
+        var brief = try await readAt(today)
+        XCTAssertNil(brief, "the arrival yielded to the route")
+        let first = try await outputReadAt(picks.root[0])
+        XCTAssertNotNil(first, "the route's card is the one opened")
+
+        // Before the first read: the arrival waits for it while a route
+        // starts, whichever of the two runs first.
+        try await pool.write { db in
+            try db.execute(sql: "UPDATE automation_outputs SET read_at = NULL")
+        }
+        let fresh = makeVM()
+        async let waiting: Void = fresh.ownerArrived()
+        async let started: Void = fresh.open(folder: nil, select: .card(.output(picks.root[0])))
+        _ = await (waiting, started)
+        brief = try await readAt(today)
+        XCTAssertNil(brief)
+        let third = try await outputReadAt(picks.root[0])
+        XCTAssertNotNil(third)
+        let other = try await outputReadAt(picks.root[1])
+        XCTAssertNil(other)
+    }
+
+    func testOpenBriefHistoryWithoutABriefOpensNothing() async throws {
+        // No owner and nothing written: the root lists no Morning brief.
+        try await pool.write { db in _ = try InboxFolderFixtures.seed(db) }
+        let vm = makeVM()
+        await vm.refresh()
+        XCTAssertFalse(vm.folderEntries.contains { $0.id == "day:\(today)" }, "no Morning brief listed")
+
+        vm.openBriefHistory()
+
+        XCTAssertNil(vm.entrySelection)
+        XCTAssertFalse(vm.briefHistoryShown)
     }
 
     // MARK: - The brief's day

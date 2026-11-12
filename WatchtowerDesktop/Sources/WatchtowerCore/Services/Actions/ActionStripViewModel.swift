@@ -302,7 +302,7 @@ package final class ActionStripViewModel {
                     labels: Self.labels(for: feed.proposals, runLabels: runLabels),
                     lastCheck: try PipelineRunQueries.lastSuccessfulFinish(db, pipeline: "reaction-commands"),
                     folders: try InboxFolderMenuSnapshot.read(
-                        db, nowUTC: nowUTC, disabledFeatures: disabledFeatures, calendar: .autoupdatingCurrent)
+                        db, nowUTC: nowUTC, disabledFeatures: disabledFeatures, calendar: Self.calendar)
                 )
             }
             let before = sections
@@ -357,7 +357,7 @@ package final class ActionStripViewModel {
     package var entryInputs: InboxFolderEntries.Inputs {
         InboxFolderEntries.Inputs(
             feed: feed, folders: folderMenu.snapshot,
-            approvalsOn: !disabledFeatures.contains(Self.approvalsFeatureID), now: clock())
+            approvalsOn: !disabledFeatures.contains(Self.approvalsFeatureID), now: clock(), calendar: Self.calendar)
     }
 
     /// The list's search: one query for every folder, kept across
@@ -475,11 +475,17 @@ package final class ActionStripViewModel {
     /// folder: a gesture, so the Morning brief day or the unread artifact
     /// the default pick put on screen is marked read now ("a brief is read
     /// once opened"), through `select`. Waits for the first read. A poll, a
-    /// refresh or the midnight rollover never calls this (STRIP-02).
+    /// refresh or the midnight rollover never calls this (STRIP-02). It
+    /// yields to a route (`beginRoute`, `open`): one pending, running or
+    /// started while it waits marks nothing, since the card on screen is
+    /// the route's, whose own opening writes its mark.
     package func ownerArrived() async {
+        let generation = routeGeneration
+        guard !routePending else { return }
         if !hasRead {
             if let running = refreshTask { await running.value } else { await refresh() }
         }
+        guard !routePending, routeGeneration == generation else { return }
         switch selectedEntry {
         case let .legacyDay(card)?:
             await select(.day(briefDate ?? card.date))
@@ -532,6 +538,22 @@ package final class ActionStripViewModel {
         selection = nil
     }
 
+    // MARK: - Routes
+
+    /// A route into the Inbox is on its way (`beginRoute`) or running
+    /// (`open`): the owner's arrival yields to it.
+    private var routePending = false
+    /// Bumped by each route, so an arrival that waited sees one started.
+    private var routeGeneration = 0
+
+    /// A route into the Inbox starts (AppState, before it shows the Inbox,
+    /// so the view's arrival sees it): the arrival marks nothing until
+    /// `open` has opened the route's card. Ended by `open`.
+    package func beginRoute() {
+        routePending = true
+        routeGeneration += 1
+    }
+
     // MARK: - The Morning brief's day
 
     /// The day the Morning brief shows; nil = today.
@@ -545,7 +567,7 @@ package final class ActionStripViewModel {
     package var briefDay: InboxDayCard? {
         guard let briefDate else {
             let now = clock()
-            return InboxListBuilder.rootDays(feed, today: today, now: now, calendar: .current).first
+            return InboxListBuilder.rootDays(feed, today: today, now: now, calendar: Self.calendar).first
         }
         return feed.days.first { $0.date == briefDate }
     }
@@ -560,12 +582,13 @@ package final class ActionStripViewModel {
         let held = feed.days.contains { $0.date == date && !$0.isEmpty }
         closeLegacy()
         folderMenu.select(folderMenu.tree.root.id)
-        guard showEntry("day:\(today)") != nil else {
-            entrySelection = nil
-            return
-        }
         briefDate = held && date < today ? date : nil
         briefHistoryShown = false
+        guard showEntry("day:\(today)") != nil else {
+            entrySelection = nil
+            briefDate = nil
+            return
+        }
         await select(.day(briefDate ?? today))
     }
 
@@ -579,21 +602,30 @@ package final class ActionStripViewModel {
     }
 
     /// The Earlier line: the root's Morning brief with its History open.
+    /// Nothing opens while the root lists no Morning brief.
     package func openBriefHistory() {
         let brief = "day:\(today)"
         if folderMenu.selectedFolderID != folderMenu.tree.root.id || entrySelection != brief {
             closeLegacy()
             folderMenu.select(folderMenu.tree.root.id)
             briefDate = nil
-            _ = showEntry(brief)
+            guard showEntry(brief) != nil else {
+                entrySelection = nil
+                briefHistoryShown = false
+                return
+            }
         }
-        briefHistoryShown = entrySelection == brief
+        briefHistoryShown = true
     }
 
     /// "yyyy-MM-dd" of the clock's now.
     private var today: String {
-        HomeFeedBuilder.dayString(clock(), calendar: .current)
+        HomeFeedBuilder.dayString(clock(), calendar: Self.calendar)
     }
+
+    /// The one calendar the Inbox's days follow (the read's too): the
+    /// system's, following a time-zone change.
+    nonisolated private static let calendar = Calendar.autoupdatingCurrent
 
     /// The first read: the folder the owner last picked, or the root when
     /// it no longer exists (or none was saved).
@@ -799,6 +831,8 @@ package final class ActionStripViewModel {
     /// route's folder is not remembered (`inbox.folder` keeps the owner's
     /// own pick).
     package func open(folder: Int64?, select entry: InboxRoute.Entry?) async {
+        beginRoute()
+        defer { routePending = false }
         await refresh()
         closeLegacy()
         entrySelection = nil
@@ -915,7 +949,7 @@ package final class ActionStripViewModel {
         case let .reminder(id): feed.reminders.contains { $0.id == id }
         case let .builtinNotice(id): feed.builtinNotices.contains { $0.builtinID == id }
         case let .day(date):
-            date == HomeFeedBuilder.dayString(clock(), calendar: .current) || feed.days.contains { $0.date == date }
+            date == today || feed.days.contains { $0.date == date }
         case let .track(id): (feed.tracks + feed.stoppedTracks).contains { $0.track.id == id }
         case let .idea(id): feed.ideas.contains { $0.id == id }
         case let .message(id): feed.messages.contains { $0.item.id == id }

@@ -244,6 +244,34 @@ final class InboxRouteTests: XCTestCase {
         XCTAssertNil(marks[1], "today's is not")
     }
 
+    /// A route shows the Inbox before its read: the view's arrival
+    /// (onAppear) yields to it, so the brief left on screen from the last
+    /// visit is not marked read — only the route's card is (STRIP-02).
+    func testRouteIntoTheInboxMarksOnlyItsCard() async throws {
+        let output = try await manager.dbPool.write { db -> Int64 in
+            try TestDatabase.insertBriefing(db, date: Self.today)
+            let automation = try TestDatabase.insertAutomation(db)
+            let run = try TestDatabase.insertAutomationRun(db, automationID: automation)
+            return try TestDatabase.insertAutomationOutput(db, automationID: automation, runID: run)
+        }
+        let state = appState()
+        let vm = try XCTUnwrap(state.actionStripViewModel)
+        await vm.refresh()
+        XCTAssertEqual(vm.entrySelection, "day:\(Self.today)")
+
+        let route = state.openInbox(.card(.output(output)))
+        await vm.ownerArrived()
+        await route?.value
+
+        XCTAssertEqual(vm.selection, .output(output))
+        let marks = try await manager.dbPool.read { db in
+            (try String.fetchOne(db, sql: "SELECT read_at FROM briefings"),
+             try String.fetchOne(db, sql: "SELECT read_at FROM automation_outputs WHERE id = ?", arguments: [output]))
+        }
+        XCTAssertNil(marks.0, "the brief from before the route stays unread")
+        XCTAssertNotNil(marks.1, "the route's card is opened")
+    }
+
     // MARK: - Home
 
     func testHomeBriefLinkOpensTheDayCard() async throws {

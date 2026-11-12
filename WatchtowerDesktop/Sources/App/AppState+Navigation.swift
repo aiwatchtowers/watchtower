@@ -24,6 +24,8 @@ extension AppState {
     /// Inbox's view model exists.
     @discardableResult
     func openInbox(_ route: InboxRoute) -> Task<Void, Never>? {
+        // Before the Inbox shows: its arrival yields to the route.
+        actionStripViewModel?.beginRoute()
         selectedDestination = .inbox
         guard let inbox = actionStripViewModel else { return nil }
         return Task { await inbox.open(folder: route.folderID, select: route.entry) }
@@ -34,6 +36,7 @@ extension AppState {
     /// fresh read of the menu.
     @discardableResult
     func openBuiltinInInbox(automationID: Int64, defaultFolder: String) -> Task<Void, Never>? {
+        actionStripViewModel?.beginRoute()
         selectedDestination = .inbox
         guard let inbox = actionStripViewModel else { return nil }
         return Task {
@@ -64,6 +67,7 @@ extension AppState {
     /// opens; a briefing that is gone (or no database) opens today's card.
     @discardableResult
     func navigateToBriefing(_ briefingID: Int) -> Task<Void, Never>? {
+        actionStripViewModel?.beginRoute()
         selectedDestination = .inbox
         let pool = databaseManager?.dbPool
         return Task {
