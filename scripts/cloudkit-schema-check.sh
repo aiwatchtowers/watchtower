@@ -13,6 +13,17 @@
 # signal, mobile E2E spec §2.8), even when Development lacks it too: run a
 # Development build of the Mac hub first so Development defines it, then deploy.
 #
+# Query subscriptions have a schema piece too, a subscription type, that
+# cktool's export does not show: Production refuses to save a query
+# subscription whose type it was never given ("attempting to create a
+# subscription in a production container", CKError 12, #1749), and only a
+# Development run that saves the subscription creates the type there. The
+# script cannot read it, so it asks the owner instead: it fails until the stamp
+# file (CLOUDKIT_SUBSCRIPTION_STAMP) holds SUBSCRIPTION_TYPES exactly, which the
+# owner writes after deploying them (make cloudkit-subscriptions-deployed). A
+# new or changed query subscription changes SUBSCRIPTION_TYPES (a Kit test,
+# AskAlertSubscriptionTests, pins it to the code), so it asks again.
+#
 # Needs a CloudKit management token saved once in an interactive terminal:
 #   xcrun cktool save-token --type management
 # The team comes from CLOUDKIT_TEAM_ID, else DEVELOPMENT_TEAM in the
@@ -23,6 +34,16 @@ PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CONTAINER_ID="${CLOUDKIT_CONTAINER_ID:-iCloud.com.aiwatchtowers.watchtower}"
 CONSOLE_URL="https://icloud.developer.apple.com/dashboard/"
 REQUIRED_TYPES="WatchtowerEnvelope WatchtowerSignal"
+# One line per query subscription the apps save: <record type> query <fires on> <predicate>.
+SUBSCRIPTION_TYPES="WatchtowerSignal query create TRUEPREDICATE"
+SUBSCRIPTION_STAMP="${CLOUDKIT_SUBSCRIPTION_STAMP:-$HOME/.config/watchtower/cloudkit-subscription-types}"
+
+if [ "${1:-}" = "--subscriptions-deployed" ]; then
+    mkdir -p "$(dirname "$SUBSCRIPTION_STAMP")"
+    printf '%s\n' "$SUBSCRIPTION_TYPES" >"$SUBSCRIPTION_STAMP"
+    echo "Recorded the deployed CloudKit subscription types in $SUBSCRIPTION_STAMP."
+    exit 0
+fi
 
 TEAM_ID="${CLOUDKIT_TEAM_ID:-}"
 if [ -z "$TEAM_ID" ] && [ -f "$PROJECT_ROOT/WatchtowerMobile/Signing.xcconfig" ]; then
@@ -85,10 +106,23 @@ for type in $REQUIRED_TYPES; do
     fi
 done
 
+if [ "$(cat "$SUBSCRIPTION_STAMP" 2>/dev/null)" != "$SUBSCRIPTION_TYPES" ]; then
+    echo "error: CloudKit Production may lack these query subscription types (cktool cannot show them):" >&2
+    printf '%s\n' "$SUBSCRIPTION_TYPES" | sed 's/^/  /' >&2
+    echo "  1. Run a Development phone (Xcode) linked to a Development Mac with When work stops on, so it saves them." >&2
+    echo "  2. $CONSOLE_URL -> CloudKit Database -> $CONTAINER_ID -> Deploy Schema Changes (also when it lists nothing)." >&2
+    echo "  3. make cloudkit-subscriptions-deployed" >&2
+    STAMP_MISSING=1
+fi
+
 if [ -n "$MISSING" ]; then
     echo "error: CloudKit Production lacks schema that Development has:" >&2
     printf '%s\n' "$MISSING" | sed 's/^/  /' >&2
     echo "Deploy it: $CONSOLE_URL -> CloudKit Database -> $CONTAINER_ID -> Deploy Schema Changes." >&2
+    echo "Skip once with SKIP_CLOUDKIT_CHECK=1." >&2
+    exit 1
+fi
+if [ -n "${STAMP_MISSING:-}" ]; then
     echo "Skip once with SKIP_CLOUDKIT_CHECK=1." >&2
     exit 1
 fi

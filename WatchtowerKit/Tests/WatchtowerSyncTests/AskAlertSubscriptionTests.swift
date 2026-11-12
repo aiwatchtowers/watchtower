@@ -22,6 +22,20 @@ final class AskAlertSubscriptionTests: XCTestCase {
         XCTAssertEqual(info.alertBody, "A session is waiting")
     }
 
+    /// #1749: Production refuses a query subscription whose subscription type was never deployed, and cktool cannot
+    /// show those types, so `make cloudkit-check` asks the owner to confirm the deployed list. A changed shape here
+    /// must change that list (and get deployed again).
+    func testTheCloudKitCheckListsThisSubscriptionType() throws {
+        let subscription = try XCTUnwrap(AskAlertSubscription.subscription(for: .private, hubID: hubID))
+        XCTAssertEqual(subscription.querySubscriptionOptions, [.firesOnRecordCreation], "the list says `create`")
+        let shape = "\(subscription.recordType ?? "") query create \(subscription.predicate.predicateFormat)"
+        // <repo>/WatchtowerKit/Tests/WatchtowerSyncTests/<this file>
+        let repo = (0..<4).reduce(URL(fileURLWithPath: #filePath)) { url, _ in url.deletingLastPathComponent() }
+        let script = repo.appendingPathComponent("scripts/cloudkit-schema-check.sh")
+        let text = try String(contentsOf: script, encoding: .utf8)
+        XCTAssertTrue(text.contains("SUBSCRIPTION_TYPES=\"\(shape)\""), "scripts/cloudkit-schema-check.sh lists \(shape)")
+    }
+
     func testSharedScopeGetsNoQuerySubscription() {
         XCTAssertNil(AskAlertSubscription.subscription(for: .shared(ownerName: "_owner"), hubID: hubID))
     }
