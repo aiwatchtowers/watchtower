@@ -210,9 +210,6 @@ func (r *vouchRig) link() linkedPhone {
 	eventually(t, "the hub up, not vouched", func() bool { return r.rec.last().Reason == ReasonNotVouched })
 	c := r.dial()
 	t.Cleanup(func() { _ = c.Close() })
-	if err := c.Send(ControlRequest{Op: OpPair}); err != nil {
-		t.Fatal(err)
-	}
 	next := func(event string) ControlAnswer {
 		t.Helper()
 		for {
@@ -228,7 +225,8 @@ func (r *vouchRig) link() linkedPhone {
 			}
 		}
 	}
-	lp, err := wire.ParseLinkURL(next(link.EventQR).URL)
+	qr := pairStep(t, c, ControlRequest{Op: OpPair}, link.EventQR, link.EventWaiting)[link.EventQR]
+	lp, err := wire.ParseLinkURL(qr.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,10 +259,7 @@ func (r *vouchRig) link() linkedPhone {
 	if _, err := phone.SAS(*awaiting.Grant.ConfirmNonce); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.Send(ControlRequest{Op: OpConfirm, Device: phone.ID().String(), Confirm: true}); err != nil {
-		t.Fatal(err)
-	}
-	next(link.EventLinked)
+	pairStep(t, c, ControlRequest{Op: OpConfirm, Device: phone.ID().String(), Confirm: true}, link.EventLinked)
 	eventually(t, "the keys in the pair zone", func() bool {
 		kb, ok, err := phone.ReadKeybox(pair)
 		return err == nil && ok && kb.Keys != nil
