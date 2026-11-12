@@ -108,6 +108,10 @@ type todayState struct {
 	Messages        int                     `json:"messages"`
 	MissedYesterday int                     `json:"missed_yesterday"`
 	Channels        map[string]todayChannel `json:"channels"`
+	QuietRest       struct {
+		Channels int `json:"channels"`
+		Messages int `json:"messages"`
+	} `json:"quiet_rest"`
 }
 
 type todayChannel struct {
@@ -317,10 +321,19 @@ func TestSlackToday_GroupsLinesByChannel(t *testing.T) {
 	}
 }
 
+// The golden holds news channels, compact quiet ones and a non-zero
+// quiet_rest: the fixture plus 201 quiet channels of one message each, so
+// two of them (the last by name) are folded.
 func TestSlackToday_StateGolden(t *testing.T) {
 	f := newFixture(t)
 	f.sync(t)
-	f.stOK(t, slackTodayWindow(t, ""))
+	w := slackTodayWindow(t, "")
+	rows := w.Fields["messages"].([]any)
+	for _, m := range quietMsgs(201, func(int) int { return 1 }) {
+		rows = append(rows, m.row())
+	}
+	w.Fields["messages"] = rows
+	f.stOK(t, w)
 	var got bytes.Buffer
 	if err := json.Indent(&got, f.stRawState(t)["today"], "", "  "); err != nil {
 		t.Fatal(err)
@@ -615,41 +628,111 @@ func TestSlackToday_EmptyDay(t *testing.T) {
 	}
 }
 
-// A heavy day — 400 channels with news, 90 lines of 160 Cyrillic
-// characters — stays under the state cap.
+// quietChan is quiet channel i's id (not Slack-id-shaped, for leak-check).
+func quietChan(i int) string { return fmt.Sprintf("CQ%04d", i) }
+
+// quietMsgs is n messages addressed to the owner (so never sent to the
+// model), in n channels "acme-quiet-NNNN", count(i) messages in channel i.
+func quietMsgs(n int, count func(int) int) []stMsg {
+	var msgs []stMsg
+	for i := range n {
+		for j := range count(i) {
+			msgs = append(msgs, stMsg{quietChan(i), fmt.Sprintf("acme-quiet-%04d", i),
+				fmt.Sprintf("1792640000.%06d", i*100+j), "x", testStart.Add(-time.Duration(i) * time.Second), true})
+		}
+	}
+	return msgs
+}
+
+// A heavy day — 400 or 2000 channels, 90 of them with one line of 160
+// Cyrillic characters each — stays under the state cap, read in windows of
+// at most 500 messages.
 func TestSlackToday_HeavyDayStateUnderLimit(t *testing.T) {
+	for _, channels := range []int{400, 2000} {
+		t.Run(fmt.Sprint(channels), func(t *testing.T) {
+			f := newFixture(t)
+			f.sync(t)
+			text := strings.Repeat("Ж", 200)
+			msgs := quietMsgs(channels-90, func(int) int { return 1 })
+			var lines []stLine
+			for i := range 90 {
+				m := stMsg{fmt.Sprintf("D%010d", i), fmt.Sprintf("acme-team-%03d-room", i), fmt.Sprintf("1792650000.%06d", i), "x",
+					testStart.Add(-time.Duration(i) * time.Second), false}
+				msgs = append(msgs, m)
+				lines = append(lines, stLine{IDs: []string{m.id()}, Label: "needs_someone", Text: text})
+			}
+			// A real window holds at most 500 messages: the day comes in runs
+			// of 500, the lines in the last.
+			for start := 0; start < len(msgs); start += db.SlackWindowMaxMessages {
+				f.stOK(t, stWindow("2026-10-22", 0, msgs[start:min(start+db.SlackWindowMaxMessages, len(msgs))]...), stReply(t, lines...))
+			}
+			raw, err := f.d.GetAutomationState(f.rowOf(t, SlackTodayID).ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("heavy-day state, %d channels: %d bytes (limit %d)", channels, len(raw), automations.MaxStateBytes)
+			if len(raw) > automations.MaxStateBytes {
+				t.Errorf("state is %d bytes; the limit is %d", len(raw), automations.MaxStateBytes)
+			}
+			s := f.stState(t)
+			kept, news := len(s.Channels), 0
+			for _, c := range s.Channels {
+				if len(c.Lines) > 0 {
+					news++
+				}
+				for _, l := range c.Lines {
+					if n := utf8.RuneCountInString(l.Text); n != 160 {
+						t.Fatalf("line of %d characters; want cut to 160", n)
+					}
+				}
+			}
+			wantQuiet := min(channels-90, QuietKeepForTest)
+			if news != 90 || kept != 90+wantQuiet || s.QuietRest.Channels != channels-90-wantQuiet ||
+				s.Messages != channels {
+				t.Errorf("news %d kept %d quiet_rest %+v messages %d", news, kept, s.QuietRest, s.Messages)
+			}
+		})
+	}
+}
+
+// QuietKeepForTest is the recipe's QUIET_KEEP.
+const QuietKeepForTest = 200
+
+// 250 quiet channels: the 200 busiest are kept, compact; the other 50 are
+// folded into quiet_rest with their messages.
+func TestSlackToday_QuietChannelsFoldPast200(t *testing.T) {
 	f := newFixture(t)
 	f.sync(t)
-	text := strings.Repeat("Ж", 200)
-	var msgs []stMsg
-	var lines []stLine
-	for i := range 400 {
-		m := stMsg{fmt.Sprintf("C%010d", i), fmt.Sprintf("acme-team-%03d-room", i), fmt.Sprintf("1792650000.%06d", i), "x",
-			testStart.Add(-time.Duration(i) * time.Second), false}
-		msgs = append(msgs, m)
-		if i < 90 {
-			lines = append(lines, stLine{IDs: []string{m.id()}, Label: "needs_someone", Text: text})
+	count := func(i int) int { return 1 + (250-i)/50 } // channel 0 busiest: 6, …, channels 200–249: 1
+	f.stOK(t, stWindow("2026-10-22", 0, quietMsgs(250, count)...))
+	s := f.stState(t)
+	folded := 0
+	for i := 200; i < 250; i++ {
+		folded += count(i)
+	}
+	if len(s.Channels) != 200 || s.QuietRest.Channels != 50 || s.QuietRest.Messages != folded {
+		t.Errorf("%d kept, quiet_rest %+v; want 200 and {50 %d}", len(s.Channels), s.QuietRest, folded)
+	}
+	for i := range 200 {
+		if _, ok := s.Channels["1:"+quietChan(i)]; !ok {
+			t.Fatalf("channel %d (of the 200 busiest) was folded", i)
 		}
 	}
-	f.stOK(t, stWindow("2026-10-22", 0, msgs...), stReply(t, lines...))
-	raw, err := f.d.GetAutomationState(f.rowOf(t, SlackTodayID).ID)
-	if err != nil {
+	var raw map[string]map[string]json.RawMessage
+	if err := json.Unmarshal(f.stRawState(t)["today"], &struct {
+		Channels *map[string]map[string]json.RawMessage `json:"channels"`
+	}{&raw}); err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("heavy-day state: %d bytes (limit %d)", len(raw), automations.MaxStateBytes)
-	if len(raw) > automations.MaxStateBytes {
-		t.Errorf("state is %d bytes; the limit is %d", len(raw), automations.MaxStateBytes)
-	}
-	s := f.stState(t)
-	if len(s.Channels) != 400 {
-		t.Errorf("%d channels", len(s.Channels))
-	}
-	for _, c := range s.Channels {
-		for _, l := range c.Lines {
-			if n := utf8.RuneCountInString(l.Text); n != 160 {
-				t.Fatalf("line of %d characters; want cut to 160", n)
-			}
+	for id, c := range raw {
+		if len(c) != 2 || c["name"] == nil || c["n"] == nil {
+			t.Fatalf("quiet channel %s = %v; want only name and n", id, c)
 		}
+	}
+	// A second run adds to quiet_rest.messages only through a new fold.
+	f.stOK(t, stWindow("2026-10-22", 0, quietMsgs(1, func(int) int { return 1 })...))
+	if s2 := f.stState(t); s2.Channels["1:"+quietChan(0)].N != 7 || s2.QuietRest != s.QuietRest {
+		t.Errorf("second run: busiest n %d, quiet_rest %+v", s2.Channels["1:"+quietChan(0)].N, s2.QuietRest)
 	}
 }
 

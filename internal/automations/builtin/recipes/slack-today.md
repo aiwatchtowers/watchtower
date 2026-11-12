@@ -32,6 +32,13 @@ var SHOWN_CHANNELS = 18;
 var NAMED_CHANNELS = 10;
 var LINE_CHARS = 160;
 var TITLE_CHARS = 200;
+// A quiet channel (no lines, nothing taken out) is stored as {name, n}; the
+// QUIET_KEEP busiest are kept one by one, the rest folded into quiet_rest
+// {channels, messages}, so a day in thousands of channels fits the state.
+// v1 limit: a folded channel is forgotten — its later messages start a new
+// entry counted from that run, and if it is folded again it counts again in
+// quiet_rest.channels (quiet_rest.messages and the day's messages stay exact).
+var QUIET_KEEP = 200;
 var SCHEMA = {
   type: "object",
   required: ["lines"],
@@ -86,7 +93,33 @@ function plural(n, one, many) {
 }
 
 function freshDay(day) {
-  return { v: 1, day: day, messages: 0, missed_yesterday: 0, channels: {} };
+  return { v: 1, day: day, messages: 0, missed_yesterday: 0, channels: {}, quiet_rest: { channels: 0, messages: 0 } };
+}
+
+function isNews(c) {
+  return (c.lines && c.lines.length > 0) || c.more > 0;
+}
+
+// foldQuiet stores the quiet channels compact and folds those past the
+// QUIET_KEEP busiest (n desc, then name) into quiet_rest.
+function foldQuiet(s) {
+  var quiet = [];
+  Object.keys(s.channels).forEach(function (id) {
+    var c = s.channels[id];
+    if (!isNews(c)) {
+      s.channels[id] = { name: c.name, n: c.n };
+      quiet.push(id);
+    }
+  });
+  quiet.sort(function (a, b) {
+    var ca = s.channels[a], cb = s.channels[b];
+    return cb.n - ca.n || compare(ca.name, cb.name) || compare(a, b);
+  });
+  quiet.slice(QUIET_KEEP).forEach(function (id) {
+    s.quiet_rest.channels += 1;
+    s.quiet_rest.messages += s.channels[id].n;
+    delete s.channels[id];
+  });
 }
 
 // addLine keeps a reply line whose ids are all in the input, in its first
@@ -143,7 +176,7 @@ function blocksOf(s) {
   var news = [];
   Object.keys(s.channels).forEach(function (id) {
     var c = s.channels[id];
-    if (c.lines.length > 0 || c.more > 0) {
+    if (isNews(c)) {
       news.push({ id: id, c: c });
     }
   });
@@ -204,6 +237,12 @@ if (w.status === "done") {
     s = freshDay(w.day);
   }
   s.missed_yesterday += w.below_floor;
+  // In memory every channel has lines and more; foldQuiet compacts them.
+  Object.keys(s.channels).forEach(function (id) {
+    var c = s.channels[id];
+    c.lines = c.lines || [];
+    c.more = c.more || 0;
+  });
   var byId = {};
   var input = [];
   w.messages.forEach(function (m) {
@@ -226,6 +265,7 @@ if (w.status === "done") {
     reply.lines.forEach(function (line) { addLine(s, byId, line); });
     capLines(s);
   }
+  foldQuiet(s);
   state.set("today", s);
 } else if (!valid) {
   // The window was skipped (Slack off by policy) before any day: an empty
