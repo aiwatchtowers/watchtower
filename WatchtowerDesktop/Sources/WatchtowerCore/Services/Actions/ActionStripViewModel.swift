@@ -753,13 +753,35 @@ package final class ActionStripViewModel {
         defer { mutingSenders.remove(key) }
         textRowErrors[ref] = nil
         do {
-            try await InboxLearnedRulesQueries(dbPool: dbPool).upsertManual(
-                ruleType: "source_mute", scopeKey: InboxPeopleRule.muteScope(key), weight: -1.0)
+            try await writeSenderMute(key)
         } catch {
             textRowErrors[ref] = InboxRowFailure(message: error.localizedDescription, press: .mute)
             return
         }
         await refresh()
+    }
+
+    /// The one writer of a sender's mute (INBOX-05): a user rule
+    /// `source_mute` / `email:<address>` through the Desktop's rules writer.
+    /// Throws when it could not be written; no re-read (the caller re-reads
+    /// once its presses are done). **Mute** and **Mute Senders…** both
+    /// write through it.
+    package func writeSenderMute(_ address: String) async throws {
+        try await InboxLearnedRulesQueries(dbPool: dbPool).upsertManual(
+            ruleType: "source_mute", scopeKey: InboxPeopleRule.muteScope(InboxPeopleRule.senderKey(address)),
+            weight: -1.0)
+    }
+
+    /// The busiest unmuted senders of Mail waiting, for **Mute Senders…**:
+    /// one more than its cap, so a sender without an address can be dropped.
+    package func muteSenderCandidates() async throws -> [MailSenderRow] {
+        let now = clock()
+        let nowUTC = AutomationDates.format(now)
+        let startOfToday = InboxToday.sinceUTC(now: now, calendar: Self.calendar)
+        return try await dbPool.read { db in
+            try WaitingQueries.mailSenders(
+                db, nowUTC: nowUTC, startOfTodayUTC: startOfToday, limit: MuteSendersModel.limit + 1).senders
+        }
     }
 
     // MARK: - Approve All (Needs approval groups)
