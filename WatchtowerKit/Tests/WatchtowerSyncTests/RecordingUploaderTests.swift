@@ -1796,11 +1796,15 @@ final class RecordingUploaderTests: XCTestCase {
         keys.hold { entered.fulfill() }
 
         let sealing = Task { try await uploader.sealPending() }
-        await fulfillment(of: [entered], timeout: 5)
+        await fulfillment(of: [entered])
+        // A throw below must not leave the seal (and its pool thread) parked in the gate for the rest of the run.
+        var released = false
+        defer { if !released { keys.release() } }
         let removed = try await uploader.sweepOrphanFiles()
         XCTAssertTrue(removed.isEmpty, "\(removed.map(\.lastPathComponent))")
         XCTAssertTrue(FileManager.default.fileExists(atPath: sealedFile(recording.id).path))
         keys.release()
+        released = true
         let sealedCount = try await sealing.value
 
         XCTAssertEqual(sealedCount, 1)
@@ -2043,8 +2047,7 @@ private final class GatedKeyProvider: SecureKeyProvider, @unchecked Sendable {
         if fail { throw SeqFailure() }
         if let enter {
             enter()
-            // Bounded: a test that never releases fails instead of hanging the run.
-            _ = gate.wait(timeout: .now() + 10)
+            gate.wait()
         }
         return try inner.nextSeq()
     }

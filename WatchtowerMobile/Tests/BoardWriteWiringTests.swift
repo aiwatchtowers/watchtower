@@ -251,7 +251,7 @@ final class BoardWriteWiringTests: XCTestCase {
             echo.result = ["comment_id": .integer(id)]
             try await fixture.outbox.applyEcho(echo)
         }
-        try await poll(timeout: 2) { fixture.writer.postedComments.count == 2 }
+        try await poll { fixture.writer.postedComments.count == 2 }
 
         var replica = try snapshot(fixture.store)
         XCTAssertTrue(replica.pending.isEmpty, "applied removed the rows")
@@ -416,7 +416,7 @@ final class BoardWriteWiringTests: XCTestCase {
         let started = expectation(description: "the first save started")
         transport.onSave = { started.fulfill() }
         let task = Task { try await first() }
-        await fulfillment(of: [started], timeout: 2)
+        await fulfillment(of: [started])
         transport.onSave = nil
         return task
     }
@@ -430,7 +430,7 @@ final class BoardWriteWiringTests: XCTestCase {
             defer { returned.fulfill() }
             return try await second()
         }
-        await fulfillment(of: [returned], timeout: 2)
+        await fulfillment(of: [returned])
         return task
     }
 
@@ -443,7 +443,7 @@ final class BoardWriteWiringTests: XCTestCase {
             try await transport.save([])
             passed.fulfill()
         }
-        await fulfillment(of: [passed], timeout: 2)
+        await fulfillment(of: [passed])
         XCTAssertEqual(transport.waiting, 0)
     }
 

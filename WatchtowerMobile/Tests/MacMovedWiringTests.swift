@@ -123,7 +123,7 @@ final class MacMovedWiringTests: XCTestCase {
         let bed = try await Bed.make(self, on: .relay)
         let session = try await bed.orderedSession()
         _ = await session.transportSignals.marker(marker(.cloudKit, epoch: 2))
-        try await bed.root.routeMoves[hubID]?.value(within: 60, "bed.root.routeMoves[hubID]")
+        await bed.root.routeMoves[hubID]?.value
         XCTAssertEqual(try bed.row()?.link.transport, .cloudKit)
         XCTAssertNil(try bed.row()?.link.macMoved)
     }

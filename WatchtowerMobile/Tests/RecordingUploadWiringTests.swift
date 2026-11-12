@@ -390,7 +390,11 @@ final class RecordingUploadWiringTests: XCTestCase {
         XCTAssertTrue(uploads.isEmpty, "a background launch uploads nothing")
 
         env.setActive(true)
-        try await poll({ (try? env.store.phoneRecordings().allSatisfy { $0.state == .uploading }) == true }, "no pass on activation")
+        let pass = try XCTUnwrap(env.uploadRetryPass, "no pass on activation")
+        await pass.value
+        let states = try env.store.phoneRecordings().map(\.state)
+        XCTAssertEqual(states.count, 2)
+        XCTAssertTrue(states.allSatisfy { $0 == .uploading })
         uploads = try await relayUploads(in: transport)
         XCTAssertEqual(Set(uploads.map(\.id)), Set(ids))
     }

@@ -1717,7 +1717,7 @@ final class LinkingViewModelTests: XCTestCase {
         let flow = Task { await model.open(payload.url()) }
         try await poll { model.phase == .waiting(macName: "Acme Mac") && fetches.events.count >= 2 }
         // The wait's first fetch answered; it is parked on the clock now.
-        try await Task.sleep(for: .milliseconds(100))
+        try await poll { self.clock.parks == 1 }
 
         XCTAssertNil(model.linkCode)
         XCTAssertFalse(model.macSeesPhone)

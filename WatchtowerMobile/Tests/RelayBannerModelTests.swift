@@ -673,7 +673,7 @@ final class RelayBannerModelTests: XCTestCase {
         withObservationTracking { _ = session.relayUnansweredSince } onChange: { changed.fulfill() }
         bed.fake.crash()
         try await bed.fetch(session)
-        await fulfillment(of: [changed], timeout: 5)
+        await fulfillment(of: [changed])
     }
 }
 

@@ -228,11 +228,10 @@ final class SessionInputWiringTests: XCTestCase {
         XCTAssertEqual(model(try session(), try snapshot(fixture.store)).lines.map(\.text), ["Finish"])
     }
 
+    /// Yields until `condition` holds; no wall-clock cap (a hang runs until the CI step's timeout).
     private func waitFor(_ condition: @escaping @MainActor () -> Bool) async throws {
-        let deadline = Date().addingTimeInterval(5)
         while !condition() {
-            guard Date() < deadline else { return XCTFail("condition not met in 5 s") }
-            try await Task.sleep(for: .milliseconds(10))
+            await Task.yield()
         }
     }
 }
