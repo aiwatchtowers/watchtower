@@ -22,8 +22,8 @@ const windowFloorToday = "today"
 // below_floor}, with NextCursor the next read's cursor (never behind the
 // call's) and Behind when a cap cut the window. Floor "today" starts the
 // window at local midnight of now. A policy that turns Slack off reads
-// nothing: {status: "skipped", reason: "source_off", messages: []} with the
-// call's cursor. It calls no model.
+// nothing: {status: "skipped", reason: "source_off", day, messages: []}
+// with the call's cursor. It calls no model.
 func SlackWindowPrimitives(d *db.DB, now func() time.Time) map[string]automations.PrimitiveFunc {
 	return map[string]automations.PrimitiveFunc{
 		automations.PrimitiveSlackWindow: func(ctx context.Context, call automations.PrimitiveCall) (automations.PrimitiveResult, error) {
@@ -37,11 +37,11 @@ func SlackWindowPrimitives(d *db.DB, now func() time.Time) map[string]automation
 			if entry.WindowScope == "" {
 				return automations.PrimitiveResult{}, fmt.Errorf("slack.window: built-in %q declares no window scope", call.BuiltinID)
 			}
+			at := now().In(time.Local)
 			if !policy.SourceAllowed("slack") {
 				return automations.PrimitiveResult{Status: "skipped", NextCursor: call.Cursor,
-					Fields: map[string]any{"reason": "source_off", "messages": []any{}}}, nil
+					Fields: map[string]any{"reason": "source_off", "day": at.Format("2006-01-02"), "messages": []any{}}}, nil
 			}
-			at := now().In(time.Local)
 			q := db.SlackWindowQuery{Scope: entry.WindowScope, AfterRowID: call.Cursor, Now: at}
 			switch call.Floor {
 			case "":

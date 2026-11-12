@@ -112,6 +112,10 @@ type todayState struct {
 		Channels int `json:"channels"`
 		Messages int `json:"messages"`
 	} `json:"quiet_rest"`
+	MoreRest struct {
+		Channels int `json:"channels"`
+		Lines    int `json:"lines"`
+	} `json:"more_rest"`
 }
 
 type todayChannel struct {
@@ -119,6 +123,7 @@ type todayChannel struct {
 	N     int         `json:"n"`
 	More  int         `json:"more"`
 	Lines []todayLine `json:"lines"`
+	Link  string      `json:"link"`
 }
 
 type todayLine struct {
@@ -816,7 +821,8 @@ func TestSlackToday_FailedLLMKeepsCursorAndArtifact(t *testing.T) {
 }
 
 func TestSlackToday_SkippedPrimitiveWritesNothingNew(t *testing.T) {
-	skipped := automations.PrimitiveResult{Status: "skipped", Fields: map[string]any{"reason": "source_off", "messages": []any{}}}
+	skipped := automations.PrimitiveResult{Status: "skipped",
+		Fields: map[string]any{"reason": "source_off", "day": "2026-10-22", "messages": []any{}}}
 	t.Run("after a run", func(t *testing.T) {
 		f := newFixture(t)
 		f.sync(t)
@@ -842,6 +848,21 @@ func TestSlackToday_SkippedPrimitiveWritesNothingNew(t *testing.T) {
 		}
 		if got := cardText(f.stCard(t).doc); !slices.Equal(got, []string{`list "" empty "Nothing for you in your channels yet today": `}) {
 			t.Errorf("card = %v", got)
+		}
+	})
+	t.Run("after midnight", func(t *testing.T) {
+		f := newFixture(t)
+		f.sync(t)
+		yesterday := slackTodayWindow(t, "")
+		yesterday.Fields["day"] = "2026-10-21"
+		f.stOK(t, yesterday)
+		state := f.stRawState(t)["today"]
+		f.stOK(t, skipped)
+		if after := f.stRawState(t)["today"]; !bytes.Equal(after, state) || f.gen.CallCount() != 1 {
+			t.Errorf("today: %s → %s, %d calls; want yesterday's state kept, no new call", state, after, f.gen.CallCount())
+		}
+		if got := cardText(f.stCard(t).doc); !slices.Equal(got, []string{`list "" empty "Nothing for you in your channels yet today": `}) {
+			t.Errorf("card = %v; want today's empty card, not yesterday's lines", got)
 		}
 	})
 }
@@ -911,4 +932,187 @@ func TestCardGolden_SlackToday(t *testing.T) {
 	f.sync(t)
 	e, _ := Lookup(SlackTodayID)
 	checkCardGolden(t, f, e)
+}
+
+// Realistic permalinks: a message's, and a thread reply's (the longest form).
+func messageLink(ch, ts string) string {
+	return "https://acme-corporation.slack.com/archives/" + ch + "/p" + strings.ReplaceAll(ts, ".", "")
+}
+
+func threadLink(ch, ts string) string {
+	return messageLink(ch, ts) + "?thread_ts=" + ts + "&cid=" + ch
+}
+
+// withLinks sets every row's permalink of w to link(channel, ts).
+func withLinks(w automations.PrimitiveResult, link func(ch, ts string) string) automations.PrimitiveResult {
+	for _, r := range w.Fields["messages"].([]any) {
+		m := r.(map[string]any)
+		ch := strings.TrimPrefix(m["channel_id"].(string), "1:")
+		_, ts, _ := strings.Cut(m["id"].(string), "/")
+		m["permalink"] = link(ch, ts)
+	}
+	return w
+}
+
+// stateBudget is the recipe's STATE_BUDGET.
+const stateBudget = 64*1024 - 1024
+
+// worstDay is one window holding the kept worst case: 90 asks_you lines of
+// text in 90 channels, extra fyi lines in extra
+// channels (all taken out by the day cap, so each channel is more-only),
+// and 300 quiet channels.
+func worstDay(extra int, text string) (automations.PrimitiveResult, string) {
+	var msgs []stMsg
+	var lines []stLine
+	for i := range 90 + extra {
+		m := stMsg{fmt.Sprintf("CN%04d", i), fmt.Sprintf("acme-news-%04d-room", i), fmt.Sprintf("1792650000.%06d", i), "x",
+			testStart.Add(-time.Duration(i) * time.Second), false}
+		msgs = append(msgs, m)
+		label := "asks_you"
+		if i >= 90 {
+			label = "fyi"
+		}
+		lines = append(lines, stLine{IDs: []string{m.id()}, Label: label, Text: text})
+	}
+	msgs = append(msgs, quietMsgs(300, func(int) int { return 1 })...)
+	data, _ := json.Marshal(map[string]any{"lines": lines})
+	return stWindow("2026-10-22", 0, msgs...), string(data)
+}
+
+// lineAccount is kept lines + every channel's more + more_rest.lines.
+func lineAccount(s todayState) int {
+	n := s.MoreRest.Lines
+	for _, c := range s.Channels {
+		n += len(c.Lines) + c.More
+	}
+	return n
+}
+
+// MORE_KEEP is sized so the kept worst case — 90 lines, 200 quiet channels
+// and 20 more-only ones, with message permalinks — fits STATE_BUDGET
+// before the byte guard has to fold anything.
+func TestSlackToday_MoreKeepFitsTheBudget(t *testing.T) {
+	f := newFixture(t)
+	f.sync(t)
+	w, reply := worstDay(30, strings.Repeat("Ж", 200))
+	f.stOK(t, withLinks(w, messageLink), reply)
+	raw, err := f.d.GetAutomationState(f.rowOf(t, SlackTodayID).ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("kept worst case: %d bytes (budget %d, limit %d)", len(raw), stateBudget, automations.MaxStateBytes)
+	s := f.stState(t)
+	var lines, quiet, moreOnly int
+	for _, c := range s.Channels {
+		switch {
+		case len(c.Lines) > 0:
+			lines += len(c.Lines)
+		case c.More > 0:
+			moreOnly++
+		default:
+			quiet++
+		}
+	}
+	if len(raw) > stateBudget || lines != 90 || quiet != 200 || moreOnly != 20 ||
+		s.MoreRest.Channels != 10 || s.MoreRest.Lines != 10 || s.QuietRest.Channels != 100 {
+		t.Errorf("%d bytes, %d lines, %d quiet, %d more-only, more_rest %+v quiet_rest %+v; want ≤ %d, 90, 200, 20, {10 10}, 100 folded",
+			len(raw), lines, quiet, moreOnly, s.MoreRest, s.QuietRest, stateBudget)
+	}
+}
+
+// Thread-reply permalinks and lines of characters Go stores escaped (< > &
+// take 6 bytes each) pass the budget: the byte guard folds quiet channels,
+// then more-only ones, then takes out lines, and no line is lost from the
+// count.
+func TestSlackToday_ByteGuardFoldsWithLongLinks(t *testing.T) {
+	f := newFixture(t)
+	f.sync(t)
+	w, reply := worstDay(30, strings.Repeat("<Ж>&", 50))
+	f.stOK(t, withLinks(w, threadLink), reply)
+	raw, err := f.d.GetAutomationState(f.rowOf(t, SlackTodayID).ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := f.stState(t)
+	t.Logf("long links: %d bytes, quiet_rest %+v, more_rest %+v", len(raw), s.QuietRest, s.MoreRest)
+	kept := 0
+	for _, c := range s.Channels {
+		kept += len(c.Lines)
+	}
+	if len(raw) > stateBudget || lineAccount(s) != 120 || s.QuietRest.Channels != 300 || s.MoreRest.Channels != 30 || kept >= 90 {
+		t.Errorf("%d bytes, %d lines accounted (%d kept), quiet_rest %+v, more_rest %+v; want ≤ %d, 120, every quiet and more-only channel folded, lines taken out",
+			len(raw), lineAccount(s), kept, s.QuietRest, s.MoreRest, stateBudget)
+	}
+}
+
+// 400 channels each given one line in one window: 90 lines kept, the 310
+// taken out counted in more or more_rest, the state under the cap and the
+// card naming the folded ones.
+func TestSlackToday_ManyLabelledChannels(t *testing.T) {
+	f := newFixture(t)
+	f.sync(t)
+	text := strings.Repeat("Ж", 200)
+	var msgs []stMsg
+	var lines []stLine
+	for i := range 400 {
+		m := stMsg{fmt.Sprintf("CN%04d", i), fmt.Sprintf("acme-news-%04d-room", i), fmt.Sprintf("1792650000.%06d", i), "x",
+			testStart.Add(-time.Duration(i) * time.Second), false}
+		msgs = append(msgs, m)
+		lines = append(lines, stLine{IDs: []string{m.id()}, Label: "fyi", Text: text})
+	}
+	f.stOK(t, withLinks(stWindow("2026-10-22", 0, msgs...), threadLink), stReply(t, lines...))
+	raw, err := f.d.GetAutomationState(f.rowOf(t, SlackTodayID).ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := f.stState(t)
+	t.Logf("400 labelled channels: %d bytes, more_rest %+v", len(raw), s.MoreRest)
+	if len(raw) > automations.MaxStateBytes || lineAccount(s) != 400 || s.MoreRest.Channels == 0 {
+		t.Errorf("%d bytes, %d lines accounted, more_rest %+v", len(raw), lineAccount(s), s.MoreRest)
+	}
+	doc := f.stCard(t).doc
+	want := fmt.Sprintf("text %d more lines in %d other channels.", s.MoreRest.Lines, s.MoreRest.Channels)
+	if got := cardText(doc); len(doc.Blocks) > 39 || !slices.Contains(got, want) {
+		t.Errorf("%d blocks %v; want at most 39 with %q", len(doc.Blocks), got, want)
+	}
+}
+
+// A channel whose only line the day cap took out keeps {name, n, more,
+// link}; its card row and Open in Slack use that link.
+func TestSlackToday_MoreOnlyChannelKeepsLink(t *testing.T) {
+	f := newFixture(t)
+	f.sync(t)
+	var msgs []stMsg
+	var lines []stLine
+	for i := range 90 {
+		m := stMsg{fmt.Sprintf("CN%04d", i/6), fmt.Sprintf("acme-news-%02d", i/6), fmt.Sprintf("1792650000.%06d", i), "x",
+			testStart.Add(-time.Duration(i) * time.Second), false}
+		msgs = append(msgs, m)
+		lines = append(lines, stLine{IDs: []string{m.id()}, Label: "asks_you", Text: fmt.Sprintf("line %d", i)})
+	}
+	b := stMsg{"CB0001", "acme-bits", "1792651000.000001", "x", testStart.Add(-time.Hour), false}
+	b2 := stMsg{"CB0001", "acme-bits", "1792651000.000002", "x", testStart.Add(-time.Minute), true}
+	msgs = append(msgs, b, b2)
+	lines = append(lines, stLine{IDs: []string{b.id()}, Label: "fyi", Text: "A bit of news."})
+	f.stOK(t, stWindow("2026-10-22", 0, msgs...), stReply(t, lines...))
+	var raw map[string]map[string]json.RawMessage
+	if err := json.Unmarshal(f.stRawState(t)["today"], &struct {
+		Channels *map[string]map[string]json.RawMessage `json:"channels"`
+	}{&raw}); err != nil {
+		t.Fatal(err)
+	}
+	link := b2.row()["permalink"].(string)
+	entry := raw["1:CB0001"]
+	if len(entry) != 4 || string(entry["more"]) != "1" || string(entry["link"]) != `"`+link+`"` || string(entry["n"]) != "2" {
+		t.Errorf("acme-bits = %v; want {name, n 2, more 1, link of its newest message}", entry)
+	}
+	if _, has := raw["1:CN0000"]["link"]; has {
+		t.Error("a channel with linked lines stores its own link too")
+	}
+	got := cardText(f.stCard(t).doc)
+	want := []string{`list "#acme-bits" empty "Nothing here": 1 more line — open the channel to read it <` + link + `>`,
+		"link Open in Slack <" + link + ">"}
+	if len(got) != 32 || !slices.Equal(got[30:], want) {
+		t.Errorf("%d blocks, last %v; want 15 news channels then %v", len(got), got[max(len(got)-2, 0):], want)
+	}
 }

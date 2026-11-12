@@ -255,8 +255,9 @@ func TestSlackWindowPrimitive_PolicyOffSkipsAndKeepsCursor(t *testing.T) {
 	s.msg("1:C0ACME", "1:U0BOB", "hidden", "", "", now.Add(-time.Hour))
 
 	res := mustWindow(t, s.d, now, automations.PrimitiveCall{Cursor: 7})
-	if res.Status != "skipped" || res.Fields["reason"] != "source_off" {
-		t.Fatalf("status %q fields %v", res.Status, res.Fields)
+	if res.Status != "skipped" || res.Fields["reason"] != "source_off" ||
+		res.Fields["day"] != now.In(time.Local).Format("2006-01-02") || len(res.Fields) != 3 {
+		t.Fatalf("status %q fields %v; want reason, day and messages", res.Status, res.Fields)
 	}
 	if msgs := windowMessages(t, res); len(msgs) != 0 {
 		t.Errorf("messages %v", msgs)
