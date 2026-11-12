@@ -11,8 +11,6 @@ import (
 	"watchtower/internal/db"
 )
 
-const slackWindowKey = automations.WindowStateKeyPrefix + "slack"
-
 // windowFake is a slack.window primitive that records its calls and answers
 // through next (the call → its result).
 type windowFake struct {
@@ -64,7 +62,7 @@ func (f *exFixture) windowCursor(t *testing.T, a db.Automation) (int64, bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	after, behind, err := automations.WindowCursorOf(state, slackWindowKey)
+	after, behind, err := automations.WindowCursorOf(state, automations.SlackWindowStateKey)
 	if err != nil {
 		t.Fatalf("WindowCursorOf(%s): %v", state, err)
 	}
@@ -110,12 +108,12 @@ func TestAuto04_RawWindowCursorOnlyOnSuccess(t *testing.T) {
 
 func TestWindowCursorOf(t *testing.T) {
 	for _, state := range []string{"", "{}", "null", `{"other":1}`} {
-		after, behind, err := automations.WindowCursorOf(json.RawMessage(state), slackWindowKey)
+		after, behind, err := automations.WindowCursorOf(json.RawMessage(state), automations.SlackWindowStateKey)
 		if after != 0 || behind || err != nil {
 			t.Errorf("%q: %d %v %v; want 0 false nil", state, after, behind, err)
 		}
 	}
-	after, behind, err := automations.WindowCursorOf(json.RawMessage(`{"__window:slack":{"v":1,"after_rowid":9,"behind":true}}`), slackWindowKey)
+	after, behind, err := automations.WindowCursorOf(json.RawMessage(`{"__window:slack":{"v":1,"after_rowid":9,"behind":true}}`), automations.SlackWindowStateKey)
 	if after != 9 || !behind || err != nil {
 		t.Errorf("v1: %d %v %v; want 9 true nil", after, behind, err)
 	}
@@ -127,7 +125,7 @@ func TestWindowCursorOf(t *testing.T) {
 		`{"__window:slack":`,
 		`[1]`,
 	} {
-		if _, _, err := automations.WindowCursorOf(json.RawMessage(state), slackWindowKey); err == nil {
+		if _, _, err := automations.WindowCursorOf(json.RawMessage(state), automations.SlackWindowStateKey); err == nil {
 			t.Errorf("%s: want an error", state)
 		}
 	}

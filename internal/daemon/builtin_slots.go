@@ -144,9 +144,6 @@ const (
 	slackTodayRetryAfter = 15 * time.Minute
 )
 
-// slackTodayCursorKey is slack.window's cursor key in the automation's state.
-const slackTodayCursorKey = automations.WindowStateKeyPrefix + "slack"
-
 // SlackTodayPrimitives is slack.window over the daemon's database.
 func (d *Daemon) SlackTodayPrimitives() map[string]automations.PrimitiveFunc {
 	return builtin.SlackWindowPrimitives(d.db, time.Now)
@@ -209,7 +206,7 @@ func (g slackTodayGate) Due(ctx context.Context, e builtin.Entry, now time.Time)
 	if day != local.Format("2006-01-02") {
 		return true
 	}
-	after, behind, err := automations.WindowCursorOf(state, slackTodayCursorKey)
+	after, behind, err := automations.WindowCursorOf(state, automations.SlackWindowStateKey)
 	if err != nil {
 		d.logger.Printf("slack-today: automation %d's state: %v", a.ID, err)
 		return true

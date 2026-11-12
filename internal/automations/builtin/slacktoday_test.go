@@ -810,7 +810,7 @@ func TestSlackToday_FailedLLMKeepsCursorAndArtifact(t *testing.T) {
 		t.Fatalf("run = %s (%s); want failed", run.Status, run.Error)
 	}
 	stateAfter := f.stRawState(t)
-	for _, k := range []string{"today", automations.WindowStateKeyPrefix + "slack"} {
+	for _, k := range []string{"today", automations.SlackWindowStateKey} {
 		if !bytes.Equal(stateAfter[k], stateBefore[k]) {
 			t.Errorf("state %q: %s → %s; want unchanged", k, stateBefore[k], stateAfter[k])
 		}

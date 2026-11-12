@@ -9,8 +9,12 @@ import (
 // the SDK writes them (callWindow), a script never does (stateSet).
 const WindowStateKeyPrefix = "__window:"
 
+// SlackWindowStateKey is slack.window's cursor key in the calling
+// automation's state.
+const SlackWindowStateKey = WindowStateKeyPrefix + "slack"
+
 // windowStateKeys maps each window primitive to its cursor's state key.
-var windowStateKeys = map[string]string{PrimitiveSlackWindow: WindowStateKeyPrefix + "slack"}
+var windowStateKeys = map[string]string{PrimitiveSlackWindow: SlackWindowStateKey}
 
 // WindowFloorToday is the one floor a window call may name; the window
 // primitives (builtin's slack.window) read it from the call's input.
