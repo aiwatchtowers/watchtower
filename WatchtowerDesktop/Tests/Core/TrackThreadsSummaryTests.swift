@@ -160,6 +160,28 @@ final class TrackThreadsSummaryTests: XCTestCase {
         XCTAssertEqual(TrackThreadsSummary.latestLine(try card(id: 3, refs: multiline)), "Colleague A: “First”")
     }
 
+    func testLatestLineRendersSlackMarkup() throws {
+        func line(_ text: String, assignee: String = "acme:U1") throws -> String {
+            TrackThreadsSummary.latestLine(
+                try card(id: 1, assignee: assignee, refs: [("1700000001.0", "Colleague A", text)]))
+        }
+        XCTAssertEqual(try line("<@U1> can you check?"), "Colleague A: “@you can you check?”")
+        XCTAssertEqual(try line("cc <@U2>"), "Colleague A: “cc @someone”")
+        XCTAssertEqual(try line("cc <@U2|colleague-b>"), "Colleague A: “cc @colleague-b”")
+        XCTAssertEqual(try line("<@U1|owner> ok"), "Colleague A: “@owner ok”")
+        // No raw assignee: a bare mention is never "you".
+        XCTAssertEqual(try line("<@U1> hi", assignee: "acme:"), "Colleague A: “@someone hi”")
+        XCTAssertEqual(try line("see <https://example.com/doc|the doc>"), "Colleague A: “see the doc”")
+        XCTAssertEqual(try line("see <https://example.com/doc>"), "Colleague A: “see https://example.com/doc”")
+        XCTAssertEqual(try line("in <#C1|general>"), "Colleague A: “in #general”")
+        // The event summary goes through the same rendering.
+        XCTAssertEqual(
+            TrackThreadsSummary.latestLine(try card(id: 2, summary: "<@U1> asked for a date")),
+            "@you asked for a date")
+        // Unknown markup and stray brackets stay as they are.
+        XCTAssertEqual(try line("<!here> a < b > c"), "Colleague A: “<!here> a < b > c”")
+    }
+
     func testNewCountText() throws {
         XCTAssertEqual(TrackThreadsSummary.newCountText(try card(id: 1, newEvents: 3)), "3 new")
         XCTAssertNil(TrackThreadsSummary.newCountText(try card(id: 1)))

@@ -46,15 +46,17 @@ package struct TrackThreadsSummary: Equatable {
     // MARK: - Per track
 
     /// The first non-empty line of the newest event's summary, else of the
-    /// newest source ref as `<author>: “<text>”`, else of the context.
+    /// newest source ref as `<author>: “<text>”`, else of the context, with
+    /// Slack markup made readable (`readableSlack`).
     package static func latestLine(_ card: InboxTrackCard) -> String {
+        let you = rawID(card.track.assigneeUserID)
         let summary = firstLine(card.latestEventSummary)
-        if !summary.isEmpty { return summary }
+        if !summary.isEmpty { return readableSlack(summary, you: you) }
         if let ref = newestRef(card.track) {
             let text = firstLine(ref.text)
-            if !text.isEmpty { return "\(ref.author): “\(text)”" }
+            if !text.isEmpty { return "\(ref.author): “\(readableSlack(text, you: you))”" }
         }
-        return firstLine(card.track.context)
+        return readableSlack(firstLine(card.track.context), you: you)
     }
 
     package static func reason(_ card: InboxTrackCard) -> TrackNewsReason? {
@@ -145,6 +147,47 @@ package struct TrackThreadsSummary: Equatable {
     /// The source ref with the highest `ts` (the same pick as `TrackQueries`).
     private static func newestRef(_ track: Track) -> TrackSourceRef? {
         track.decodedSourceRefs.max { (Double($0.ts) ?? 0) < (Double($1.ts) ?? 0) }
+    }
+
+    /// Slack markup as plain words: `<@ID|label>` → `@label`, `<@ID>` → `@you`
+    /// when ID is `you` (the raw assignee id) else `@someone`, `<#ID|label>` →
+    /// `#label`, `<url|label>` → `label`, `<url>` → url. Anything else stays.
+    /// (The app's `SlackTextParser` lives outside WatchtowerCore.)
+    private static func readableSlack(_ text: String, you: String) -> String {
+        guard text.contains("<") else { return text }
+        var out = ""
+        var rest = Substring(text)
+        while let open = rest.firstIndex(of: "<") {
+            out += rest[..<open]
+            let inner = rest[rest.index(after: open)...]
+            guard let close = inner.firstIndex(of: ">"), !inner[..<close].contains("<") else {
+                out += "<"
+                rest = inner
+                continue
+            }
+            let body = inner[..<close]
+            out += readableToken(body, you: you) ?? "<\(body)>"
+            rest = inner[inner.index(after: close)...]
+        }
+        return out + rest
+    }
+
+    private static func readableToken(_ body: Substring, you: String) -> String? {
+        let parts = body.split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false)
+        let target = parts[0]
+        let label = parts.count > 1 ? String(parts[1]) : ""
+        if target.hasPrefix("@") {
+            if !label.isEmpty { return "@" + label }
+            let id = rawID(String(target.dropFirst()))
+            return !you.isEmpty && id == you ? "@you" : "@someone"
+        }
+        if target.hasPrefix("#") {
+            return label.isEmpty ? nil : "#" + label
+        }
+        if target.contains("://") || target.hasPrefix("mailto:") {
+            return label.isEmpty ? String(target) : label
+        }
+        return nil
     }
 
     /// Slack mention markup for `userID`: `<@U1>` or `<@U1|name>`.
