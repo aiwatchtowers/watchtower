@@ -127,6 +127,10 @@ package final class ActionStripViewModel {
     /// The folder the owner last picked in the menu, remembered per viewer;
     /// one that no longer exists opens the root.
     package static let folderKey = "inbox.folder"
+    /// The dates one page of the read takes. The Morning brief's History
+    /// and the root's Earlier line rely on the first page holding every
+    /// card of the last 30 dates (`InboxBriefDays.window`): lowering this
+    /// below 30 breaks them.
     package static let dayPage = 30
     /// The safety-net poll while on screen (board #731): daemon and CLI
     /// writes come from other processes, which GRDB observation cannot see.
@@ -302,7 +306,8 @@ package final class ActionStripViewModel {
                 )
             }
             let before = sections
-            let entriesBefore = folderEntries.map(\.id)
+            let entriesBefore = folderList.rows.map(\.id)
+            let firstRead = !hasRead
             feed = snapshot.feed
             actionLabels = snapshot.labels
             lastReactionCheck = snapshot.lastCheck
@@ -318,7 +323,11 @@ package final class ActionStripViewModel {
             firstReadError = nil
             rebuildSections()
             keepSelectionListed(was: before)
-            keepEntryListed(was: entriesBefore)
+            if firstRead {
+                showDefaultEntry()
+            } else {
+                keepEntryListed(was: entriesBefore)
+            }
         } catch {
             // The previous feed, tree and entries stay under the error line.
             lastError = error.localizedDescription
@@ -396,29 +405,86 @@ package final class ActionStripViewModel {
         return folderEntries.first { $0.id == entrySelection }
     }
 
-    /// The menu picked a folder: its list, nothing selected yet. The pick
-    /// is remembered (`inbox.folder`); a route's folder never is.
+    /// The menu picked a folder: its list with its default entry
+    /// (`defaultEntry`: the owner's last pick there, today's brief in the
+    /// root, else the first entry). The pick is remembered
+    /// (`inbox.folder`); a route's folder never is. Picking a folder is
+    /// the owner's arrival there (`ownerArrived`, awaitable as `arrival`).
     package func selectFolder(_ id: Int64) {
         folderMenu.select(id)
         defaults.set(folderMenu.selectedFolderID, forKey: Self.folderKey)
-        entrySelection = nil
         legacyList = nil
         selection = nil
+        briefDate = nil
+        briefHistoryShown = false
+        showDefaultEntry()
+        arrival = Task { await ownerArrived() }
     }
 
-    /// Opens an entry: an artifact or a day writes its read mark on opening
-    /// (`select`); a legacy list opens today's list for it.
+    /// The `ownerArrived` a folder pick started — held so tests can await it.
+    package private(set) var arrival: Task<Void, Never>?
+
+    /// The per-viewer key of the entry the owner last opened in `folderID`.
+    package static func entryKey(_ folderID: Int64) -> String {
+        "inbox.entry.\(folderID)"
+    }
+
+    /// Opens an entry (the owner's click): remembered for its folder
+    /// (`entryKey`); an artifact or a day writes its read mark on opening
+    /// (`select`); a legacy list opens today's list for it. The Morning
+    /// brief opens on today.
     package func selectEntry(_ id: String?) async {
+        let key = Self.entryKey(folderMenu.selectedFolderID)
+        if let id { defaults.set(id, forKey: key) } else { defaults.removeObject(forKey: key) }
+        briefDate = nil
+        briefHistoryShown = false
         guard let opening = showEntry(id) else { return }
         await select(opening)
     }
 
+    /// The selected folder's default entry (`InboxFolderEntries.defaultEntry`),
+    /// shown without a read mark (STRIP-02: a read writes nothing).
+    private func showDefaultEntry() {
+        let tree = folderMenu.tree
+        let folder = tree.folder(folderMenu.selectedFolderID) ?? tree.root
+        _ = showEntry(InboxFolderEntries.defaultEntry(
+            entries: folderEntries, saved: defaults.string(forKey: Self.entryKey(folder.id)),
+            folder: folder.kind, today: today))
+    }
+
+    /// The owner opened the Inbox (`ActionStripView.onAppear`) or picked a
+    /// folder: a gesture, so the Morning brief day or the unread artifact
+    /// the default pick put on screen is marked read now ("a brief is read
+    /// once opened"), through `select`. Waits for the first read. A poll, a
+    /// refresh or the midnight rollover never calls this (STRIP-02).
+    package func ownerArrived() async {
+        if !hasRead {
+            if let running = refreshTask { await running.value } else { await refresh() }
+        }
+        switch selectedEntry {
+        case let .legacyDay(card)?:
+            await select(.day(briefDate ?? card.date))
+        case let .artifact(card)?:
+            await select(.output(card.id))
+        default:
+            return
+        }
+    }
+
     /// `selectEntry` without its read mark: selects the entry, opens a
     /// legacy entry's list, and returns the card whose opening `select`
-    /// still has to write (an artifact or a day), else nil.
+    /// still has to write (an artifact or a day), else nil. An id that is
+    /// no entry (none, a Needs approval group row) shows no card.
     private func showEntry(_ id: String?) -> InboxSelection? {
         entrySelection = id
-        guard let entry = selectedEntry else { return nil }
+        guard let entry = selectedEntry else {
+            selection = nil
+            return nil
+        }
+        if case .legacyDay = entry {} else {
+            briefDate = nil
+            briefHistoryShown = false
+        }
         if let list = entry.legacyList {
             openLegacy(list)
             return nil
@@ -428,8 +494,9 @@ package final class ActionStripViewModel {
             selection = .output(card.id)
             return .output(card.id)
         case let .legacyDay(card):
-            selection = .day(card.date)
-            return .day(card.date)
+            let date = briefDate ?? card.date
+            selection = .day(date)
+            return .day(date)
         case let .brief(action):
             // Its agent-action card; a brief has no read mark to write.
             selection = .proposal(action.id)
@@ -446,6 +513,69 @@ package final class ActionStripViewModel {
         selection = nil
     }
 
+    // MARK: - The Morning brief's day
+
+    /// The day the Morning brief shows; nil = today.
+    package private(set) var briefDate: String?
+
+    /// The brief's History popover is open.
+    package var briefHistoryShown = false
+
+    /// The card the Morning brief shows: `briefDate`'s, or for today the
+    /// root entry's card (its placeholder before anything is written).
+    package var briefDay: InboxDayCard? {
+        guard let briefDate else {
+            let now = clock()
+            return InboxListBuilder.rootDays(feed, today: today, now: now, calendar: .current).first
+        }
+        return feed.days.first { $0.date == briefDate }
+    }
+
+    /// The owner picked `date` (History, the stepper, a route to a day):
+    /// the root's Morning brief entry opens on that day and its briefing
+    /// is marked read when unread (`select`). A date with neither a
+    /// briefing nor a plan in the read opens today. Nothing is selected
+    /// while the root lists no Morning brief.
+    package func showBriefDay(_ date: String) async {
+        let today = today
+        let held = feed.days.contains { $0.date == date && !$0.isEmpty }
+        closeLegacy()
+        folderMenu.select(folderMenu.tree.root.id)
+        guard showEntry("day:\(today)") != nil else {
+            entrySelection = nil
+            return
+        }
+        briefDate = held && date < today ? date : nil
+        briefHistoryShown = false
+        await select(.day(briefDate ?? today))
+    }
+
+    /// The stepper's ‹ (older) or › (newer): the next day with a brief or
+    /// a plan (`InboxBriefDays.step`); nothing past the ends.
+    package func stepBrief(_ step: InboxBriefDays.Step) async {
+        guard let next = InboxBriefDays.step(from: briefDate ?? today, step, in: feed.days, today: today) else {
+            return
+        }
+        await showBriefDay(next)
+    }
+
+    /// The Earlier line: the root's Morning brief with its History open.
+    package func openBriefHistory() {
+        let brief = "day:\(today)"
+        if folderMenu.selectedFolderID != folderMenu.tree.root.id || entrySelection != brief {
+            closeLegacy()
+            folderMenu.select(folderMenu.tree.root.id)
+            briefDate = nil
+            _ = showEntry(brief)
+        }
+        briefHistoryShown = entrySelection == brief
+    }
+
+    /// "yyyy-MM-dd" of the clock's now.
+    private var today: String {
+        HomeFeedBuilder.dayString(clock(), calendar: .current)
+    }
+
     /// The first read: the folder the owner last picked, or the root when
     /// it no longer exists (or none was saved).
     private func restoreSavedFolder() {
@@ -460,16 +590,28 @@ package final class ActionStripViewModel {
     }
 
     /// The selected entry left the folder (done elsewhere, auto-resolved,
-    /// closed): the next entry of the old list still listed, else the one
-    /// above it, else none — as `keepSelectionListed` does for cards.
+    /// closed): the next row of the old list as drawn (`folderList.rows`,
+    /// sections in order) still listed, else the one above it, else none —
+    /// as `keepSelectionListed` does for cards. A selected Needs approval
+    /// group row stays while its group is listed. The Morning brief of a
+    /// day that rolled over moves to today's. Nothing is re-selected
+    /// once the owner cleared the selection.
     private func keepEntryListed(was before: [String]) {
         guard let current = entrySelection else { return }
-        let listed = folderEntries.map(\.id)
-        guard !listed.contains(current) else { return }
-        guard let index = before.firstIndex(of: current) else {
-            entrySelection = nil
+        let drawn = folderList.rows.map(\.id)
+        let entries = folderEntries.map(\.id)
+        guard !drawn.contains(current), !entries.contains(current) else { return }
+        let brief = "day:\(today)"
+        if current.hasPrefix("day:"), entries.contains(brief) {
+            _ = showEntry(brief)
             return
         }
+        guard let index = before.firstIndex(of: current) else {
+            entrySelection = nil
+            selection = nil
+            return
+        }
+        let listed = Set(drawn)
         let below = before[(index + 1)...].first(where: listed.contains)
         // A click's path without its write: a legacy entry's list opens, an
         // artifact or a day is selected, and no read mark is written — a
@@ -625,24 +767,29 @@ package final class ActionStripViewModel {
     ///   threads, Idea finder, Messages) over the root with its card
     ///   selected when listed: a stopped track opens the Stopped fold, a
     ///   merged idea the idea it was merged into.
-    /// - A day opens the root's Morning brief entry (today's) with that
-    ///   day's card; a day past the loaded pages reads older pages until it
-    ///   is there.
+    /// - A day opens the root's Morning brief on that day (`showBriefDay`);
+    ///   a day past the loaded pages reads older pages until it is there.
     /// - A thread brief applied in the last 24 hours opens its root entry.
     /// - An automation card opens the folder that lists it; a proposal, a
     ///   reminder, a notice or one of Needs approval's cards opens Needs
     ///   approval.
-    /// Anything not listed selects nothing, so the pane never opens on a
-    /// card the next refresh would drop. The route's folder is not
-    /// remembered (`inbox.folder` keeps the owner's own pick).
+    /// - No entry opens the folder's default entry (`defaultEntry`), with
+    ///   no read mark.
+    /// A card that is not listed opens its folder with nothing selected,
+    /// so the pane never opens on a card the next refresh would drop. The
+    /// route's folder is not remembered (`inbox.folder` keeps the owner's
+    /// own pick).
     package func open(folder: Int64?, select entry: InboxRoute.Entry?) async {
         await refresh()
         closeLegacy()
         entrySelection = nil
+        briefDate = nil
+        briefHistoryShown = false
         if let folder { folderMenu.select(folderMenu.tree.folder(folder) == nil ? folderMenu.tree.root.id : folder) }
         switch entry {
         case nil:
             if folder == nil { folderMenu.select(folderMenu.tree.root.id) }
+            showDefaultEntry()
         case let .legacy(list):
             showLegacy(list)
         case let .card(item):
@@ -688,15 +835,7 @@ package final class ActionStripViewModel {
                 await showOlderDays().value
                 if feed.days.count == before { break }
             }
-            // The root lists today's Morning brief only: a day found opens
-            // under it, its read mark written as before (Task 8's
-            // `showBriefDay` takes this over).
-            guard feedHolds(item) else {
-                show(tree.root.id, nil)
-                return
-            }
-            show(tree.root.id, "day:\(HomeFeedBuilder.dayString(clock(), calendar: .current))")
-            await select(item)
+            await showBriefDay(date)
         case .output(let id):
             if folderMenu.snapshot.approvalArtifacts.values.contains(where: { $0.id == id }) {
                 show((tree.approvals ?? tree.root).id, nil)

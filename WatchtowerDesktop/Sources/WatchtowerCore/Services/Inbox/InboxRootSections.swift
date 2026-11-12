@@ -40,8 +40,6 @@ package struct InboxEarlierLine: Equatable, Sendable {
 package enum InboxRootSections {
     /// How long a thread brief stays in Needs you (ask #609).
     package static let briefWindow: TimeInterval = 24 * 3600
-    /// How far back the Earlier line counts past briefs.
-    package static let earlierDays = 30
 
     /// `folder`'s sections in order; a section with no entries is left out.
     /// - Root: **Needs you** — Waiting for me's artifact, the Messages
@@ -120,18 +118,17 @@ package enum InboxRootSections {
     }
 
     /// The root's Earlier line from the read's day cards, or nil when no
-    /// past day of the last `earlierDays` has a brief or a plan. `today` is
-    /// the "yyyy-MM-dd" of `now`.
+    /// past day of the Morning brief's History (`InboxBriefDays.history`:
+    /// the last 30 dates, today included) has a brief or a plan. `today`
+    /// is the "yyyy-MM-dd" of `now`.
     package static func earlierLine(
         days: [InboxDayCard],
         today: String,
         now: Date,
         calendar: Calendar
     ) -> InboxEarlierLine? {
-        let start = InboxToday.startOfToday(now: now, calendar: calendar)
-        let floor = calendar.date(byAdding: .day, value: -earlierDays, to: start) ?? start
-        let first = HomeFeedBuilder.dayString(floor, calendar: calendar)
-        let past = days.filter { $0.date < today && $0.date >= first && !$0.isEmpty }
+        let past = InboxBriefDays.history(days, today: today, now: now, calendar: calendar)
+            .filter { $0.date < today }
         guard !past.isEmpty else { return nil }
         return InboxEarlierLine(pastThisMonth: past.count, notOpened: past.filter(\.isUnread).count)
     }

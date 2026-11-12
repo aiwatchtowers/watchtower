@@ -147,8 +147,9 @@ final class InboxRootSectionsTests: XCTestCase {
             try day("2026-11-09", read: true),
             try day("2026-11-01", read: false),
             try day("2026-10-20", read: true),
-            try day("2026-10-12", read: true),
-            try day("2026-10-11", read: false)
+            // The window's oldest date: 30 dates, today included.
+            try day("2026-10-13", read: true),
+            try day("2026-10-12", read: false)
         ]
         let line = try XCTUnwrap(try earlierLine(days))
         XCTAssertEqual(line, InboxEarlierLine(pastThisMonth: 5, notOpened: 2))
@@ -156,7 +157,7 @@ final class InboxRootSectionsTests: XCTestCase {
     }
 
     func testEarlierLineWithoutUnread() throws {
-        let days = try ["2026-11-10", "2026-11-09", "2026-11-01", "2026-10-20", "2026-10-12"].map {
+        let days = try ["2026-11-10", "2026-11-09", "2026-11-01", "2026-10-20", "2026-10-13"].map {
             try day($0, read: true)
         }
         XCTAssertEqual(try earlierLine(days)?.text, "Past briefs are inside Morning brief · 5 this month")
@@ -166,6 +167,7 @@ final class InboxRootSectionsTests: XCTestCase {
         XCTAssertNil(try earlierLine([]))
         XCTAssertNil(try earlierLine([try day(Self.today, read: false)]), "today's is not a past brief")
         XCTAssertNil(try earlierLine([try day("2026-10-01", read: false)]), "older than 30 days")
+        XCTAssertNil(try earlierLine([try day("2026-10-12", read: false)]), "the 31st date back")
         XCTAssertNil(try earlierLine([.placeholder(date: "2026-11-10", stamp: try now())]), "nothing written")
     }
 }

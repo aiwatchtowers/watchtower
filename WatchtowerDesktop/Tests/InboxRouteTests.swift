@@ -54,29 +54,35 @@ final class InboxRouteTests: XCTestCase {
     }
 
     /// Where a route left the Inbox: its folder (nil = the root), the open
-    /// legacy list, the selected entry and the open card.
+    /// legacy list, the selected entry, the open card and the Morning
+    /// brief's day (nil = today).
     private struct Landing: Equatable {
         var folder: Int64?
         var list: InboxLegacyList?
         var entry: String?
         var selection: InboxSelection?
+        var briefDate: String?
 
         static func legacy(_ list: InboxLegacyList, _ selection: InboxSelection? = nil) -> Self {
             Self(list: list, entry: InboxFolderEntry.legacy(list).id, selection: selection)
         }
 
-        /// The root's one Morning brief entry (today's) with `date`'s card
-        /// open (Task 8's `showBriefDay` rewrites these expectations).
+        /// The root's one Morning brief entry (today's) open on `date`
+        /// (`showBriefDay`).
         static func day(_ date: String) -> Self {
-            Self(entry: "day:\(InboxRouteTests.today)", selection: .day(date))
+            Self(entry: "day:\(InboxRouteTests.today)", selection: .day(date),
+                 briefDate: date == InboxRouteTests.today ? nil : date)
         }
+
+        /// The root with its default entry: today's Morning brief.
+        static let root = day(InboxRouteTests.today)
     }
 
     private func landing(_ state: AppState) -> Landing? {
         guard let vm = state.actionStripViewModel else { return nil }
         let folder = vm.folderMenu.selectedFolderID
         return Landing(folder: folder == vm.folderMenu.tree.root.id ? nil : folder, list: vm.legacyList,
-                       entry: vm.entrySelection, selection: vm.selection)
+                       entry: vm.entrySelection, selection: vm.selection, briefDate: vm.briefDate)
     }
 
     private func assertLanding(
@@ -212,6 +218,32 @@ final class InboxRouteTests: XCTestCase {
         assertLanding(state, .day(Self.today), "a vanished briefing opens today")
     }
 
+    /// A route to a day (Home's link, a notification) opens the root's
+    /// one Morning brief on that day and marks that day's briefing read
+    /// (the owner's pick); today's stays unread.
+    func testDayRouteOpensTheBriefOnThatDay() async throws {
+        let date = "2026-10-21"
+        let (pastID, todayID) = try await manager.dbPool.write { db -> (Int, Int) in
+            try TestDatabase.insertBriefing(db, date: date)
+            let past = Int(db.lastInsertedRowID)
+            try TestDatabase.insertBriefing(db, date: Self.today)
+            return (past, Int(db.lastInsertedRowID))
+        }
+        let state = appState()
+        await state.navigateToBriefing(pastID)?.value
+
+        assertLanding(state, .day(date), "the brief on its day")
+        let vm = try XCTUnwrap(state.actionStripViewModel)
+        XCTAssertEqual(vm.briefDay?.date, date)
+        let marks = try await manager.dbPool.read { db in
+            try [pastID, todayID].map {
+                try String.fetchOne(db, sql: "SELECT read_at FROM briefings WHERE id = ?", arguments: [$0])
+            }
+        }
+        XCTAssertNotNil(marks[0], "that day's briefing is opened")
+        XCTAssertNil(marks[1], "today's is not")
+    }
+
     // MARK: - Home
 
     func testHomeBriefLinkOpensTheDayCard() async throws {
@@ -295,7 +327,7 @@ final class InboxRouteTests: XCTestCase {
         assertLanding(state, Landing(folder: ids.owner), "a folder that exists")
 
         await state.openInbox(InboxRoute(folderID: 9_999))?.value
-        assertLanding(state, Landing(), "a deleted folder opens the root")
+        assertLanding(state, .root, "a deleted folder opens the root on today's brief")
     }
 
     /// The menu's pick is remembered in `inbox.folder` and opens again in a
@@ -324,17 +356,17 @@ final class InboxRouteTests: XCTestCase {
         stale.databaseManager = manager
         stale.initActionStrip(dbPool: manager.dbPool)
         await stale.actionStripViewModel?.refresh()
-        XCTAssertEqual(landing(stale), Landing(), "a deleted folder opens the root")
+        XCTAssertEqual(landing(stale), .root, "a deleted folder opens the root")
     }
 
     /// A value the filter bar left in `inbox.filter` is never read: the
-    /// Inbox opens on the root with no legacy list.
+    /// Inbox opens on the root's brief with no legacy list.
     func testOldInboxFilterValueOpensTheRoot() async throws {
         UserDefaults.standard.set("tracks", forKey: Self.oldFilterKey)
         let state = appState()
         let vm = try XCTUnwrap(state.actionStripViewModel)
         await vm.refresh()
-        XCTAssertEqual(landing(state), Landing())
+        XCTAssertEqual(landing(state), .root)
         XCTAssertTrue(vm.sections.isEmpty)
     }
 
@@ -355,6 +387,6 @@ final class InboxRouteTests: XCTestCase {
         assertLanding(state, Landing(folder: ids.owner), "the route the owner set")
 
         await state.openBuiltinInInbox(automationID: automation + 1, defaultFolder: "inbox")?.value
-        assertLanding(state, Landing(), "the root")
+        assertLanding(state, .root, "the root")
     }
 }

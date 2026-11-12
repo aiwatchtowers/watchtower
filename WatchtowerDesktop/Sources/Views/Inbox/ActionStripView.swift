@@ -79,7 +79,12 @@ struct ActionStripView: View {
         .onChange(of: appState.featureVisibility.disabledFeatureIDs, initial: true) { _, ids in
             appState.actionStripViewModel?.disabledFeatures = ids
         }
-        .onAppear { appState.actionStripViewModel?.setOnScreen(true) }
+        .onAppear {
+            guard let vm = appState.actionStripViewModel else { return }
+            vm.setOnScreen(true)
+            // The owner opened the Inbox: the brief or artifact shown is read.
+            Task { await vm.ownerArrived() }
+        }
         .onDisappear { appState.actionStripViewModel?.setOnScreen(false) }
     }
 

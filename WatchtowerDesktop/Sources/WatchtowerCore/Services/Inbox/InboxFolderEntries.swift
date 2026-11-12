@@ -124,6 +124,25 @@ package enum InboxFolderEntries {
         }
     }
 
+    /// The entry a folder opens on (spec "Selection"): `saved` (the owner's
+    /// last pick there, `ActionStripViewModel.entryKey`) while it is listed
+    /// and is not a legacy list; else, in the root, today's Morning brief
+    /// (`"day:<today>"`) while it is listed; else the first entry that is
+    /// not a legacy list; else nil. A legacy list (Track my threads, Idea
+    /// finder, Messages) is never opened by default.
+    package static func defaultEntry(
+        entries: [InboxFolderEntry],
+        saved: String?,
+        folder: InboxFolderKind,
+        today: String
+    ) -> String? {
+        let openable = entries.filter { $0.legacyList == nil }.map(\.id)
+        if let saved, openable.contains(saved) { return saved }
+        let brief = "day:\(today)"
+        if folder == .root, openable.contains(brief) { return brief }
+        return openable.first
+    }
+
     /// Needs approval's entries: notices first, then the native cards, then
     /// the recipe's cards, then the approved rows still in flight. The
     /// approvals open in this read are the strip's actions that wait on the
