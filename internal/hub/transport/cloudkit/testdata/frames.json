@@ -188,6 +188,17 @@
       "hex": "080d6200"
     },
     {
+      "name": "retire_zones",
+      "message": "Request",
+      "json": {
+        "id": "14",
+        "retire_zones": {
+          "hub_id": "8c1d2e3f-0000-4000-8000-00000000acme"
+        }
+      },
+      "hex": "080e6a260a2438633164326533662d303030302d343030302d383030302d303030303030303061636d65"
+    },
+    {
       "name": "hello_ok",
       "message": "Response",
       "json": {

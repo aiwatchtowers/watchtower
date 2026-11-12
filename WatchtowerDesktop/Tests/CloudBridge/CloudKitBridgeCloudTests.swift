@@ -197,6 +197,40 @@ final class CloudKitBridgeCloudTests: XCTestCase {
         XCTAssertEqual(bridgeFailureClass(CKError(.permissionFailure)), "forbidden")
         XCTAssertEqual(bridgeFailureClass(CKError(.networkFailure)), "unavailable")
     }
+
+    /// #1750: retiring another spelling deletes exactly the zones and the subscription named with it — zone
+    /// names are case-sensitive, so the records of the hub's own (lowercase) zones stay — and never the hub's own.
+    func testRetireZonesDeletesExactlyTheOtherSpelling() async throws {
+        let lower = "0a1b2c3d-4e5f-4a6b-8c7d-8e9fa0b1c2d3"
+        let upper = lower.uppercased()
+        let cloud = CloudKitBridgeCloud(hubID: lower, database: db) { true }
+        for zone in ["DataZone-\(lower)", "RelayZone-\(lower)", "DataZone-\(upper)", "RelayZone-\(upper)"] {
+            db.put(name: "k1", zone: zoneID(zone), payload: env, tag: "t-1")
+        }
+
+        try await cloud.retireZones(hubID: upper)
+        XCTAssertEqual(db.deletedZones.map(\.zoneName), ["DataZone-\(upper)", "RelayZone-\(upper)"])
+        XCTAssertEqual(db.deletedSubscriptions, ["watchtower-bridge-db-\(upper)"])
+        XCTAssertNotNil(db.record(name: "k1", zone: zoneID("DataZone-\(lower)")), "the lowercase data zone keeps its records")
+        XCTAssertNotNil(db.record(name: "k1", zone: zoneID("RelayZone-\(lower)")), "the lowercase relay zone keeps its records")
+        XCTAssertNil(db.record(name: "k1", zone: zoneID("DataZone-\(upper)")))
+
+        do {
+            try await cloud.retireZones(hubID: lower)
+            XCTFail("retired the hub's own zones")
+        } catch {
+            XCTAssertEqual(bridgeFailureClass(error), "unsupported_zone")
+        }
+        XCTAssertEqual(db.deletedZones.count, 2, "the hub's own zones were never asked for")
+    }
+
+    func testAZoneOrSubscriptionAlreadyGoneIsDone() {
+        for code in [CKError.Code.zoneNotFound, .userDeletedZone, .unknownItem] {
+            XCTAssertTrue(LiveBridgeDatabase.isGone(CKError(code)), "\(code)")
+        }
+        XCTAssertFalse(LiveBridgeDatabase.isGone(CKError(.networkFailure)))
+        XCTAssertFalse(LiveBridgeDatabase.isGone(CKError(.notAuthenticated)))
+    }
 }
 
 /// An in-memory private database: records with change tags, `.ifServerRecordUnchanged` against the save's
@@ -379,6 +413,26 @@ final class FakeDatabase: BridgeDatabase, @unchecked Sendable {
             _calls += 1
             _createdZones += ids
             _zonesMissing = false
+        }
+    }
+
+    private var _deletedZones: [CKRecordZone.ID] = []
+    private var _deletedSubscriptions: [CKSubscription.ID] = []
+    var deletedZones: [CKRecordZone.ID] { lock.withLock { _deletedZones } }
+    var deletedSubscriptions: [CKSubscription.ID] { lock.withLock { _deletedSubscriptions } }
+
+    func deleteZones(_ ids: [CKRecordZone.ID]) async throws {
+        lock.withLock {
+            _calls += 1
+            _deletedZones += ids
+            store = store.filter { !ids.contains($0.key.zoneID) }
+        }
+    }
+
+    func deleteSubscription(_ id: CKSubscription.ID) async throws {
+        lock.withLock {
+            _calls += 1
+            _deletedSubscriptions.append(id)
         }
     }
 }

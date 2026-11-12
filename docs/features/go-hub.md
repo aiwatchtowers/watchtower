@@ -412,10 +412,23 @@ decisions asks #843, #851, #956; the plan's Global Constraints are the contract)
   two new, empty zones its phones never read and read a mailbox no phone wrote: no phone action arrived and phones
   kept the Swift hub's last grant. At start the hub compares `hub_meta.cloudkit_zones_hub_id` (absent = the uppercase
   form) with the stored spelling; when they differ it runs the account-change reset once (published state forgotten,
-  CloudKit's mailbox read again from the start, the exactly-once ledger answering repeats) and records the mark. v1
-  limits: the uppercase zones a v0.28.0 hub created, and its bridge's `watchtower-bridge-db-<UPPERCASE>` database
-  subscription (one extra silent push per private-database change), stay in the owner's iCloud; a phone that linked
-  to an adopted hub while it ran v0.28.0 got an uppercase code, lives in those zones and needs to link again.
+  CloudKit's mailbox read again from the start, the exactly-once ledger answering repeats) and records the mark.
+  **The uppercase zones are deleted once** (#1750): after that mark, while the iCloud account is available,
+  housekeeping (`retireOldCloudKitZones`) sends the bridge `RetireZones{hub_id: <UPPERCASE>}`, which deletes
+  `DataZone-`/`RelayZone-<UPPERCASE>` and the bridge's `watchtower-bridge-db-<UPPERCASE>` database subscription
+  (the extra silent push per private-database change ends) and forgets its tags and cursors of those zones; zones or
+  a subscription already gone count as done. Only another spelling of the hub's id can be named: the Go client
+  (`cloudkit.OtherSpelling`) and the bridge (`BridgeService.otherSpelling`) both refuse the stored spelling itself or
+  any id that differs other than by ASCII case, before CloudKit is called, and zone names are used exactly as given
+  (CloudKit compares them case-sensitively), so the phones' lowercase zones are never touched. A Go-made hub (stored
+  uppercase) has nothing to retire and never asks. `hub_meta.cloudkit_retired_zones_hub_id` records the deletion only
+  after the bridge answered done; a failure (bridge down, an older bridge that answers `bad_request`, iCloud
+  unavailable) never holds the hub, is logged once per class and run, and is retried after a backoff (10 min doubling
+  to 12 h, and at every start). Writers of those zones: only builds up to v0.28.0 (this Mac, before the update) and a
+  phone that linked to an adopted hub while it ran v0.28.0 — it got an uppercase code and lives in those zones; the
+  deletion wins over such a phone for good (its writes then fail with the zone gone) and it must link again, which it
+  already needed. v1 limits: an iCloud account change before the deletion leaves the uppercase zones in the old
+  account (the deletion then runs in the new one, finds nothing and is recorded).
 - **Transport switch.** Only a person switches: a paying phone's `transport_switch`, or `entitlement_expired`. A switch
   toward the relay waits at least 5 minutes after the previous one; a switch toward CloudKit is immediate. Every
   accepted switch rotates the keyring. A notice is left in the transport being left (decision 1), and old keys are
