@@ -269,14 +269,21 @@ struct ActionStripActionsView: View {
             if let message = vm.lastError {
                 errorBanner(message)
             }
-            HSplitView {
+            // The rail is pinned at the kit's side-list width, outside the
+            // split: inside it the split handed the rail its maximum and
+            // squeezed the reading pane. The list keeps its own range
+            // (`inboxListColumn`) and the pane takes the rest.
+            HStack(spacing: 0) {
                 if !vm.railHidden {
                     InboxFolderMenuColumn(model: vm.folderMenu, onOpenAux: openAux, onCommand: folderMenuCommand,
                                           onNewArtifact: onNewArtifact, onSelect: selectFolder)
-                        .frame(minWidth: PaneWidth.sideListMin, idealWidth: PaneWidth.sideListIdeal,
-                               maxWidth: PaneWidth.sideListMax, maxHeight: .infinity)
+                        .frame(width: PaneWidth.sideListIdeal)
+                        .frame(maxHeight: .infinity)
+                    Divider()
                 }
-                content
+                HSplitView {
+                    content
+                }
             }
         }
         .confirmationDialog(deleteTitle, isPresented: deleteConfirming,
