@@ -113,6 +113,8 @@ final class AlertSubscriptionRegistrar {
                     not sent again until the next launch or toggle
                     """)
             } else {
+                // Whatever CloudKit holds now is unknown, an earlier refusal included: the next call sends again.
+                applied = .unknown
                 Self.logger.error("alert subscription \(what, privacy: .public) failed: \(detail, privacy: .public)")
             }
         }

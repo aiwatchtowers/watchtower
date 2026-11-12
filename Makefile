@@ -291,8 +291,10 @@ mobile-archive:
 # with destination=upload; the key (Admin role) also lets xcodebuild mint the
 # certificates and profiles the archive and the App Store export need.
 # Fails when CloudKit Production lacks record types or fields Development has
-# (deployed only by hand in the CloudKit Console; cktool cannot). Needs a
-# management token saved once: xcrun cktool save-token --type management.
+# (deployed only by hand in the CloudKit Console; cktool cannot), and until
+# the owner records the query subscription types as deployed
+# (make cloudkit-subscriptions-deployed; cktool cannot read them, #1749).
+# Needs a management token saved once: xcrun cktool save-token --type management.
 cloudkit-check:
 	bash scripts/cloudkit-schema-check.sh
 

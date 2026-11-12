@@ -36,7 +36,7 @@ CONSOLE_URL="https://icloud.developer.apple.com/dashboard/"
 REQUIRED_TYPES="WatchtowerEnvelope WatchtowerSignal"
 # One line per query subscription the apps save: <record type> query <fires on> <predicate>.
 SUBSCRIPTION_TYPES="WatchtowerSignal query create TRUEPREDICATE"
-SUBSCRIPTION_STAMP="${CLOUDKIT_SUBSCRIPTION_STAMP:-$HOME/.config/watchtower/cloudkit-subscription-types}"
+SUBSCRIPTION_STAMP="${CLOUDKIT_SUBSCRIPTION_STAMP:-$HOME/.config/watchtower/cloudkit-subscription-types.$CONTAINER_ID}"
 
 if [ "${1:-}" = "--subscriptions-deployed" ]; then
     mkdir -p "$(dirname "$SUBSCRIPTION_STAMP")"

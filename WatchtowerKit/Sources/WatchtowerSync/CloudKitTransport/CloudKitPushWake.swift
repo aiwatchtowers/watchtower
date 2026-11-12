@@ -106,8 +106,9 @@ public struct CloudKitPushWake: PushWake {
     static let serverMessageCap = 200
 
     /// `errorCode` plus CloudKit's server message when it sent one (`ServerErrorDescription`: the server's reason,
-    /// such as "attempting to create a subscription in a production container"; never key or payload bytes), cut at
-    /// `serverMessageCap` characters. nil for an error that is not a `CKError`.
+    /// such as "attempting to create a subscription in a production container"; it may name a record or subscription
+    /// id, while key and payload bytes stay on this side), cut at `serverMessageCap` characters. nil for an error that
+    /// is not a `CKError`.
     public static func errorDetail(_ error: any Error) -> String? {
         guard let code = errorCode(error) else { return nil }
         guard let message = (error as? CKError)?.userInfo["ServerErrorDescription"] as? String, !message.isEmpty

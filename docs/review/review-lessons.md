@@ -2983,3 +2983,12 @@ Entry format:
 - weak-dimension: 3/7, mildly. Cross-language twin references in doc comments and in the inventory "New guards" list drifted from the real test names within one change. This is the same family as the #1743 "new guard vs supporting" lesson.
 - rule-gap (candidate, dim 7): a test listed under "New guards" in an inventory changelog follows the `Test<Module>NN_`/`testProjNN_` naming and is filed as a guard on the module's own line too. A doc comment that names a twin test names one that exists, which can be checked with grep.
 - outcome: TBD
+
+## 2026-11-12 — fix/1749-alert-subscription (PR #840, 799621622: log CloudKit's server message, hold a permanent subscription refusal until the next launch or toggle, `cloudkit-check` asks for an owner stamp of the deployed subscription types, a Kit test pins the list; 9 files; panel: prosecutor (5: 2 minor, 3 nit) + codex (1 P2); pr-review-toolkit specialists unavailable; judge verified by reading the diff, the registrar, `CloudKitPushWake` and release.md, no runs) — verdict: changes-needed
+
+- contested: codex P2, a refused save followed by a toggle off whose delete fails with a transient error leaves `applied = .refused(true)`, so toggling back on is suppressed. Upheld as major (dim 6): the doc and the log line promise recovery on a "toggle to the other state and back", and the delete of a subscription that was never saved may well fail with a non-permanent code (unknownItem) every time, which would make the documented recovery path a dead end. The new toggle test cannot see it because `FlakySaver.delete` always succeeds. [6/7]
+- false-positive: none dismissed. F2 (release.md not naming the stamp) kept as minor rather than major, because the script's own error prints the three steps, but the owner's machine has no stamp today, so the next TestFlight run stops. [5]
+- miss: the registrar state-machine hole was caught only by codex. The prosecutor looked at the script and logs but did not walk the off→on transitions of the new `refused` state. [6]
+- weak-dimension: 7. A test fake whose failure mode is "first call only, save only" proved the happy toggle and hid the delete-fails branch.
+- rule-gap (candidate, dim 6/7): *a new "do not retry" state in a retry state machine lists every transition out of it, including the case where the opposite request fails, and has a test where the opposite request fails.*
+- outcome: TBD

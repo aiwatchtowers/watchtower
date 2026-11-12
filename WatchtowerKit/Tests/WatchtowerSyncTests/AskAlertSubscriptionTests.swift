@@ -33,7 +33,10 @@ final class AskAlertSubscriptionTests: XCTestCase {
         let repo = (0..<4).reduce(URL(fileURLWithPath: #filePath)) { url, _ in url.deletingLastPathComponent() }
         let script = repo.appendingPathComponent("scripts/cloudkit-schema-check.sh")
         let text = try String(contentsOf: script, encoding: .utf8)
-        XCTAssertTrue(text.contains("SUBSCRIPTION_TYPES=\"\(shape)\""), "scripts/cloudkit-schema-check.sh lists \(shape)")
+        let start = try XCTUnwrap(text.range(of: "SUBSCRIPTION_TYPES=\""), "the script sets SUBSCRIPTION_TYPES")
+        let end = try XCTUnwrap(text[start.upperBound...].firstIndex(of: "\""))
+        let listed = text[start.upperBound..<end].split(separator: "\n").map(String.init)
+        XCTAssertEqual(listed, [shape], "scripts/cloudkit-schema-check.sh lists exactly the subscriptions the apps save")
     }
 
     func testSharedScopeGetsNoQuerySubscription() {
