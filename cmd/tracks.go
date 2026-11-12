@@ -73,8 +73,9 @@ var tracksDismissCmd = &cobra.Command{
 --quiet-days N --dry-run lists the active tracks with no news and no event
 for N days (last stdout line with --json: {"count":N,"ids":[…]}); --ids
 dismisses each listed track that is still active and writes nothing else
-(--json: {"dismissed":N,"skipped":N,"ids":[…]}; on a write error exit 1 and
-{"dismissed":N,"of":M,"error":"…"}). --ids is refused under an AI agent.`,
+(--json: {"dismissed":N,"skipped":N,"ids":[…]}). The apply is all or
+nothing: on a write error nothing is dismissed, exit 1 and
+{"dismissed":0,"of":M,"error":"…"}. --ids is refused under an AI agent.`,
 	Args: cobra.RangeArgs(0, 1),
 	RunE: runTracksDismiss,
 }
@@ -739,7 +740,8 @@ func listQuietTracks(cmd *cobra.Command, days int) error {
 
 // dismissTrackIDs is the bulk Stop Tracking (TRACKS-07): each listed track
 // still active gets dismissed_at, nothing else is written; ids are already
-// de-duplicated.
+// de-duplicated (parseTrackIDList), so skipped counts distinct ids. One
+// transaction: on an error nothing was dismissed and the envelope says 0.
 func dismissTrackIDs(cmd *cobra.Command, ids []int) error {
 	database, err := openTracksDB()
 	if err != nil {
@@ -754,7 +756,7 @@ func dismissTrackIDs(cmd *cobra.Command, ids []int) error {
 				Dismissed int    `json:"dismissed"`
 				Of        int    `json:"of"`
 				Error     string `json:"error"`
-			}{len(dismissed), len(ids), logredact.Full(err)}); encErr != nil {
+			}{0, len(ids), logredact.Full(err)}); encErr != nil {
 				return encErr
 			}
 		}

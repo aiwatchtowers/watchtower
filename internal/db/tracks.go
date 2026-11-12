@@ -346,8 +346,9 @@ func (db *DB) ListActiveTrackNewsInputs() ([]TrackNewsRow, error) {
 
 // DismissActiveTracks dismisses each listed track that is still active, in
 // one transaction, and writes nothing else (TRACKS-07's bulk Stop Tracking).
-// Ids are de-duplicated in order; dismissed is the ids that changed. On an
-// error nothing is committed and dismissed is nil.
+// dismissed is the ids that changed, in order; a repeated id changes nothing
+// the second time (it is no longer active). On an error nothing is committed
+// and dismissed is nil.
 func (db *DB) DismissActiveTracks(ids []int) (dismissed []int, err error) {
 	tx, err := db.Begin()
 	if err != nil {
@@ -358,12 +359,7 @@ func (db *DB) DismissActiveTracks(ids []int) (dismissed []int, err error) {
 			_ = tx.Rollback()
 		}
 	}()
-	seen := make(map[int]bool, len(ids))
 	for _, id := range ids {
-		if seen[id] {
-			continue
-		}
-		seen[id] = true
 		res, err := tx.Exec(`UPDATE tracks SET dismissed_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
 			WHERE id = ? AND dismissed_at = ''`, id)
 		if err != nil {
