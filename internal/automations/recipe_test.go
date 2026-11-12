@@ -951,3 +951,58 @@ func TestRecipe_ApprovalTriggerRefusesWhere(t *testing.T) {
 		t.Errorf("want the where refusal, got %v", err)
 	}
 }
+
+// TestAuto01_RawWindowBuiltinOnly: builtin:slack.window is a built-in-only
+// capability: a Personal recipe naming it is refused, a built-in parses.
+func TestAuto01_RawWindowBuiltinOnly(t *testing.T) {
+	data := syncRecipe("morning_brief", "builtin:"+PrimitiveSlackWindow)
+	_, err := ParseRecipe("ok", data, Scope{Kind: ScopePersonal})
+	var pe *ParseError
+	if !errors.As(err, &pe) || !strings.Contains(err.Error(), `"builtin:slack.window" is allowed only in a built-in automation`) {
+		t.Fatalf("Personal recipe: err = %v; want a ParseError refusing builtin:slack.window", err)
+	}
+	if r := mustParse(t, data, builtinScope); r.Concurrency != 1 {
+		t.Errorf("built-in: concurrency = %d; want 1", r.Concurrency)
+	}
+}
+
+// TestAuto05_RawWindowNeedsConcurrencyOne: a recipe holding the raw window
+// runs one at a time; any other concurrency is a parse error on its line.
+func TestAuto05_RawWindowNeedsConcurrencyOne(t *testing.T) {
+	recipe := func(extra string) []byte {
+		return recipeWith("name: Slack today\ntrigger:\n  sync: morning_brief\npermissions: [builtin:slack.window]\n"+extra, "log(1);\n")
+	}
+	_, err := ParseRecipe("ok", recipe("concurrency: 2\n"), builtinScope)
+	var pe *ParseError
+	if !errors.As(err, &pe) {
+		t.Fatalf("concurrency 2: err = %v, want *ParseError", err)
+	}
+	want := "concurrency: an automation with the raw window runs one at a time; set concurrency: 1"
+	if pe.Msg != want || pe.Line != 6 {
+		t.Errorf("concurrency 2: line %d %q, want line 6 %q", pe.Line, pe.Msg, want)
+	}
+	for _, extra := range []string{"", "concurrency: 1\n"} {
+		if r := mustParse(t, recipe(extra), builtinScope); r.Concurrency != 1 {
+			t.Errorf("%q: concurrency = %d", extra, r.Concurrency)
+		}
+	}
+}
+
+// serialRunReasons names the raw window only when the manifest holds it.
+func TestSerialRunReasons_RawWindow(t *testing.T) {
+	with := mustParse(t, syncRecipe("morning_brief", "builtin:"+PrimitiveSlackWindow), builtinScope)
+	without := mustParse(t, syncRecipe("morning_brief", "builtin:brief.compose"), builtinScope)
+	manifest := func(r *Recipe) *Manifest {
+		m, err := ParseManifest(r.Permissions, r.Outputs, r.Scope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	if got := serialRunReasons(with, manifest(with)); !reflect.DeepEqual(got, []string{"the raw window"}) {
+		t.Errorf("with the window: %q", got)
+	}
+	if got := serialRunReasons(without, manifest(without)); len(got) != 0 {
+		t.Errorf("without the window: %q", got)
+	}
+}

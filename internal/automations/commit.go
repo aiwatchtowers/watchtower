@@ -61,6 +61,14 @@ func (b *CommitBuffer) Get(key string) (any, bool) {
 	return v, true
 }
 
+// getRaw returns key's value as stored (committed or set by this run).
+func (b *CommitBuffer) getRaw(key string) (json.RawMessage, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	raw, ok := b.state[key]
+	return raw, ok
+}
+
 // Set buffers key = v. A value JSON cannot represent (a function, NaN,
 // Infinity, a cycle, a BigInt) is a ValidationError; a state that would
 // serialise beyond MaxStateBytes is StateTooLarge. Neither buffers anything.

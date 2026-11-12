@@ -405,7 +405,7 @@ func applyArtifacts(f map[string]*yaml.Node, r *Recipe, m *Manifest) error {
 			return &ParseError{Line: fileLine(n), Msg: "artifacts: living needs outputs: [inbox]"}
 		}
 	}
-	reasons := serialRunReasons(r)
+	reasons := serialRunReasons(r, m)
 	if len(reasons) == 0 || r.Concurrency == 1 {
 		return nil
 	}
@@ -415,11 +415,15 @@ func applyArtifacts(f map[string]*yaml.Node, r *Recipe, m *Manifest) error {
 
 // serialRunReasons lists why r must run one at a time (concurrency: 1), as
 // the words after "an automation with". It is the one place a new reason is
-// added (sub-project C's raw-window reader joins here).
-func serialRunReasons(r *Recipe) []string {
+// added. m is r's manifest: a window primitive's cursor lives in the state,
+// so two runs at once would read the same window.
+func serialRunReasons(r *Recipe, m *Manifest) []string {
 	var out []string
 	if r.Artifacts == ArtifactsLiving {
 		out = append(out, "living artifacts")
+	}
+	if slices.ContainsFunc(WindowPrimitiveNames, func(name string) bool { return m.has(CapabilityForPrimitive(name)) }) {
+		out = append(out, "the raw window")
 	}
 	return out
 }
