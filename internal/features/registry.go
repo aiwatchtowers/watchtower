@@ -318,10 +318,10 @@ var registry = []Feature{
 		// midnight, so turning it on reads at most today.
 		ID:          "slack-today",
 		Title:       "Slack today",
-		Description: "Once an hour at most, reads today's messages in every Slack channel you are a member of (except channels muted for AI) and lists what was decided, what asks you, what needs someone and what is just news, by channel. Light AI use.",
-		Tagline:     "What happened in your channels today",
+		Description: "Once an hour at most, reads today's messages in your Slack channels and DMs (except channels muted for AI) and lists what was decided, what asks you, what needs someone and what is just news, by conversation. Light AI use.",
+		Tagline:     "What happened in your Slack today",
 		Benefits: []string{
-			"Today's channels in one place, by channel",
+			"Today's channels and DMs in one place",
 			"Each line marked decided, asks you, needs someone or fyi",
 			"Reads Slack directly — no digests needed",
 		},

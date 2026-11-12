@@ -11,10 +11,10 @@
   },
   "when": "After a sync, at most once an hour",
   "reads": [
-    "Today's messages in the Slack channels you are a member of, except channels muted for AI"
+    "Today's messages in your Slack channels and DMs, except channels muted for AI"
   ],
   "does": [
-    "Reads the new messages in your channels since its last run, today only",
+    "Reads the new messages in your channels and DMs since its last run, today only",
     "Marks each line decided, asks you, needs someone or fyi, and leaves out what is addressed to you personally",
     "Keeps one Slack today list in your Inbox, updated at most once an hour"
   ],

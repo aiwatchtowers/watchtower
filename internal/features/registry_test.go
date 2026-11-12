@@ -231,10 +231,10 @@ func TestRegistry_SlackToday(t *testing.T) {
 	assert.Equal(t, "slack_today.enabled", f.ConfigKey)
 	assert.Equal(t, CostLight, f.Cost)
 	assert.Equal(t, "bubble.left.and.text.bubble.right", f.Icon)
-	assert.Equal(t, "Once an hour at most, reads today's messages in every Slack channel you are a member of (except channels muted for AI) and lists what was decided, what asks you, what needs someone and what is just news, by channel. Light AI use.", f.Description)
-	assert.Equal(t, "What happened in your channels today", f.Tagline)
+	assert.Equal(t, "Once an hour at most, reads today's messages in your Slack channels and DMs (except channels muted for AI) and lists what was decided, what asks you, what needs someone and what is just news, by conversation. Light AI use.", f.Description)
+	assert.Equal(t, "What happened in your Slack today", f.Tagline)
 	assert.Equal(t, []string{
-		"Today's channels in one place, by channel",
+		"Today's channels and DMs in one place",
 		"Each line marked decided, asks you, needs someone or fyi",
 		"Reads Slack directly — no digests needed",
 	}, f.Benefits)

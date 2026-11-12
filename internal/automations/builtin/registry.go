@@ -228,9 +228,9 @@ var registry = []Entry{
 		Primitives:  []string{automations.PrimitiveSlackWindow},
 		WindowScope: db.WindowScopeMemberChannels,
 		Prompts:     []PromptRef{{Name: "label", PromptID: prompts.InboxSlackToday}},
-		Reads:       []string{"Today's messages in the Slack channels you are a member of, except channels muted for AI"},
+		Reads:       []string{"Today's messages in your Slack channels and DMs, except channels muted for AI"},
 		Does: []string{
-			"Reads the new messages in your channels since its last run, today only",
+			"Reads the new messages in your channels and DMs since its last run, today only",
 			"Marks each line decided, asks you, needs someone or fyi, and leaves out what is addressed to you personally",
 			"Keeps one Slack today list in your Inbox, updated at most once an hour",
 		},

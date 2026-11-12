@@ -113,7 +113,7 @@ final class AutomationTriggerTextTests: XCTestCase {
     /// Twin of Go `automations.PrimitiveSlackWindow`.
     func testSlackWindowPermissionLine() {
         XCTAssertEqual(AutomationCardPresentation.permissionLine("builtin:slack.window"),
-                       "Read today's messages in your Slack channels")
+                       "Read today's messages in your Slack channels and DMs")
     }
 
     /// Twin of Go `automations.BuiltinPrimitiveNames` and `CapabilityForPrimitive`.
