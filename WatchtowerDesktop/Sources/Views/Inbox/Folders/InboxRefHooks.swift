@@ -44,7 +44,7 @@ struct InboxRefHooks {
                 let inbox = inboxRef(ref)
                 guard let content = content(inbox, mode) else { return nil }
                 return AnyView(InboxRefRowActions(
-                    content: content, subject: subject(inbox), bulk: bulk(inbox), workbenches: workbenches,
+                    ref: inbox, content: content, subject: subject(inbox), bulk: bulk(inbox), workbenches: workbenches,
                     onCommand: onCommand
                 ) { onPress(inbox, $0) })
             },
@@ -211,8 +211,11 @@ struct InboxRefHooks {
 
 /// A row's native buttons with the Hand to Agent… picker anchored to them
 /// (`InboxCommonRow`'s rule: the card's own workbench, else the picker,
-/// else the press as it is and `AppState.perform` says why).
+/// else the press as it is and `AppState.perform` says why). A key on the
+/// focused row (`InboxRowKeyRequest`) opens the picker or the Snooze
+/// choices here, where the mouse would.
 struct InboxRefRowActions: View {
+    let ref: InboxRef
     let content: InboxRowActionsContent
     let subject: InboxCardSubject?
     var bulk: InboxBulkPressModel?
@@ -220,7 +223,14 @@ struct InboxRefRowActions: View {
     let onCommand: (InboxCardCommand) -> Void
     let onPress: (InboxRowPress) -> Void
 
-    @State private var picking = false
+    /// What hangs from the buttons: the workbench picker, or S's Snooze choices.
+    enum Panel: Identifiable {
+        case workbenchPicker, snooze
+        var id: Self { self }
+    }
+
+    @State private var panel: Panel?
+    @Environment(\.inboxRowKeyRequest) private var keyRequest
 
     var body: some View {
         InboxRowActionsView(content: content, bulk: bulk) { press in
@@ -230,22 +240,50 @@ struct InboxRefRowActions: View {
                 onPress(press)
             }
         }
-        .popover(isPresented: $picking, arrowEdge: .bottom) {
-            if let subject {
-                InboxWorkbenchPicker(workbenches: workbenches) { id in
-                    picking = false
-                    onCommand(.agent(subject, task: InboxCardTexts.handToAgentTask(subject), workbench: .id(id)))
+        .popover(item: $panel, arrowEdge: .bottom) { panel in
+            switch panel {
+            case .workbenchPicker:
+                if let subject {
+                    InboxWorkbenchPicker(workbenches: workbenches) { id in
+                        self.panel = nil
+                        onCommand(.agent(subject, task: InboxCardTexts.handToAgentTask(subject), workbench: .id(id)))
+                    }
+                    .popoverSurface()
                 }
-                .popoverSurface()
+            case .snooze:
+                snoozeChoices.popoverSurface()
             }
         }
+        .onChange(of: keyRequest) { _, request in
+            guard let request, request.ref == ref else { return }
+            switch request.kind {
+            case .snoozeMenu: panel = .snooze
+            case .handToAgent:
+                if let subject { handToAgent(subject) } else { onPress(.handToAgent) }
+            }
+        }
+    }
+
+    /// The Snooze ▾ menu's choices, for S: the owner picks one as with the mouse.
+    private var snoozeChoices: some View {
+        VStack(alignment: .leading, spacing: Spacing.compact) {
+            ForEach(InboxMessagePane.snoozeChoices, id: \.duration) { choice in
+                Button(choice.label) {
+                    panel = nil
+                    onPress(.snooze(duration: choice.duration))
+                }
+                .buttonStyle(.kitQuiet)
+            }
+        }
+        .controlSize(.small)
+        .accessibilityIdentifier("inboxRow.snoozeChoices")
     }
 
     private func handToAgent(_ subject: InboxCardSubject) {
         let task = InboxCardTexts.handToAgentTask(subject)
         switch InboxAgentHandoff.workbench(for: nil, cardWorkbenchID: subject.workbenchID, workbenches: workbenches) {
         case .workbench(let id): onCommand(.agent(subject, task: task, workbench: .id(id)))
-        case .pick where !workbenches.isEmpty: picking = true
+        case .pick where !workbenches.isEmpty: panel = .workbenchPicker
         case .pick: onCommand(.agent(subject, task: task, workbench: nil))
         }
     }

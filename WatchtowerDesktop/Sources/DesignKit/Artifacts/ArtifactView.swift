@@ -196,6 +196,7 @@ struct ArtifactListView: View {
         }
         // The rows' hover plates sit flush with the card's other blocks.
         .padding(.horizontal, -Spacing.regular)
+        .preference(key: ArtifactShownRefsKey.self, value: drawn.compactMap { list.rows[$0].ref })
     }
 
     /// In the Inbox, a list led by Waiting for me's Older note row (ref
@@ -206,11 +207,30 @@ struct ArtifactListView: View {
     }
 }
 
+/// When a list row's actions show (spec "Waiting for me and Mail
+/// waiting": no layout jumps on hover).
+public enum ArtifactRowChrome {
+    /// In `.inbox` the actions sit over the row's trailing edge and show
+    /// while the pointer or the keyboard is on the row; every other mode
+    /// keeps them inline, always shown.
+    public static func showsActions(isHovered: Bool, isFocused: Bool, mode: ArtifactRenderMode) -> Bool {
+        mode != .inbox || isHovered || isFocused
+    }
+
+    /// The `.inbox` row's actions overlay.
+    public static let actionsIdentifier = "artifactRow.actions"
+}
+
 struct ArtifactListRowView: View {
     let row: ArtifactListRow
     let firstIndex: Int
     let mode: ArtifactRenderMode
     @Environment(\.artifactEnvironment) private var environment
+    @State private var isHovered = false
+
+    private var isFocused: Bool {
+        row.ref != nil && row.ref == environment.focusedRef
+    }
 
     var body: some View {
         let footer = row.ref.flatMap { environment.refHooks.nativeFooter($0, mode) }
@@ -223,7 +243,10 @@ struct ArtifactListRowView: View {
             }
         }
         .controlSize(.small)
-        .kitRow(isSelected: false)
+        .kitRow(isSelected: mode == .inbox && isFocused)
+        .onHover { isHovered = $0 }
+        // A keyboard host scrolls the focused row into view by its ref.
+        .id(row.ref)
     }
 
     /// The row's own press: the host's for its `ref` in `.inbox`, else its link.
@@ -232,39 +255,86 @@ struct ArtifactListRowView: View {
         return ArtifactLinkTap(link: open == nil ? row.link : nil, press: open)
     }
 
-    private var line: some View {
+    /// In `.inbox` the badge sits at the trailing edge and the actions over
+    /// it, on a card backing, so they never take layout space; the preview
+    /// keeps the badge by the title and the actions inline.
+    @ViewBuilder private var line: some View {
+        if mode == .inbox {
+            let shows = ArtifactRowChrome.showsActions(isHovered: isHovered, isFocused: isFocused, mode: mode)
+            HStack(alignment: .center, spacing: Spacing.regular) {
+                dot
+                texts(badgeInline: false)
+                Spacer(minLength: Spacing.regular)
+                if let badge = row.badge {
+                    Chip(text: badge.text, color: Tone.artifact(badge.tone))
+                }
+            }
+            .overlay(alignment: .trailing) {
+                if hasActions {
+                    // Its own width, over the badge and the line's end: never the row's.
+                    HStack(spacing: Spacing.regular) { actions }
+                        .fixedSize()
+                        .padding(.leading, Spacing.regular)
+                        .background(Fill.card)
+                        .opacity(shows ? 1 : 0)
+                        .allowsHitTesting(shows)
+                        .animation(Motion.toggle, value: shows)
+                        .accessibilityIdentifier(ArtifactRowChrome.actionsIdentifier)
+                }
+            }
+        } else {
+            HStack(alignment: .center, spacing: Spacing.regular) {
+                dot
+                texts(badgeInline: true)
+                Spacer(minLength: Spacing.regular)
+                actions
+            }
+        }
+    }
+
+    @ViewBuilder private var dot: some View {
+        if let tone = row.tone {
+            Circle()
+                .fill(Tone.artifact(tone))
+                .frame(width: IconSize.stateDot, height: IconSize.stateDot)
+        }
+    }
+
+    private func texts(badgeInline: Bool) -> some View {
+        VStack(alignment: .leading, spacing: Spacing.tight) {
+            HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
+                Text(row.title)
+                    .font(.callout.weight(.medium))
+                    .fixedSize(horizontal: false, vertical: true)
+                if badgeInline, let badge = row.badge {
+                    Chip(text: badge.text, color: Tone.artifact(badge.tone))
+                }
+            }
+            if let subtitle = row.subtitle {
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var hasActions: Bool {
         let hidden = row.ref.map(environment.refHooks.nativeKinds) ?? []
-        return HStack(alignment: .center, spacing: Spacing.regular) {
-            if let tone = row.tone {
-                Circle()
-                    .fill(Tone.artifact(tone))
-                    .frame(width: IconSize.stateDot, height: IconSize.stateDot)
+        return row.actions.contains { !hidden.contains($0.kind) }
+            || row.ref.flatMap { environment.refHooks.nativeActions($0, mode) } != nil
+    }
+
+    /// The recipe's row actions a native one does not replace, then the native ones.
+    @ViewBuilder private var actions: some View {
+        let hidden = row.ref.map(environment.refHooks.nativeKinds) ?? []
+        ForEach(Array(row.actions.enumerated()), id: \.offset) { offset, action in
+            if !hidden.contains(action.kind) {
+                ArtifactActionButton(action: action, index: firstIndex + offset, mode: mode, prominent: false)
             }
-            VStack(alignment: .leading, spacing: Spacing.tight) {
-                HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
-                    Text(row.title)
-                        .font(.callout.weight(.medium))
-                        .fixedSize(horizontal: false, vertical: true)
-                    if let badge = row.badge {
-                        Chip(text: badge.text, color: Tone.artifact(badge.tone))
-                    }
-                }
-                if let subtitle = row.subtitle {
-                    Text(subtitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            Spacer(minLength: Spacing.regular)
-            ForEach(Array(row.actions.enumerated()), id: \.offset) { offset, action in
-                if !hidden.contains(action.kind) {
-                    ArtifactActionButton(action: action, index: firstIndex + offset, mode: mode, prominent: false)
-                }
-            }
-            if let ref = row.ref, let native = environment.refHooks.nativeActions(ref, mode) {
-                native
-            }
+        }
+        if let ref = row.ref, let native = environment.refHooks.nativeActions(ref, mode) {
+            native
         }
     }
 }

@@ -61,6 +61,9 @@ public struct ArtifactEnvironment {
     /// now: the host disables a Reply already sent, a link its rules refuse,
     /// a press while one is under way, a kind it does not press yet.
     public var isActionEnabled: (Int) -> Bool
+    /// The list row the keyboard is on (Waiting for me, Mail waiting): in
+    /// `.inbox` its actions show as on hover. Nil: no row has it.
+    public var focusedRef: ArtifactRef?
 
     public init(
         markdown: @escaping (String) -> AnyView = Self.inlineMarkdown,
@@ -68,7 +71,8 @@ public struct ArtifactEnvironment {
         onAction: @escaping (Int) -> Void = { _ in },
         refHooks: ArtifactRefHooks = ArtifactRefHooks(),
         targetButtonState: @escaping (Int) -> ArtifactTargetButtonState = { _ in .idle },
-        isActionEnabled: @escaping (Int) -> Bool = { _ in true }
+        isActionEnabled: @escaping (Int) -> Bool = { _ in true },
+        focusedRef: ArtifactRef? = nil
     ) {
         self.markdown = markdown
         self.avatar = avatar
@@ -76,6 +80,7 @@ public struct ArtifactEnvironment {
         self.refHooks = refHooks
         self.targetButtonState = targetButtonState
         self.isActionEnabled = isActionEnabled
+        self.focusedRef = focusedRef
     }
 
     /// Inline-only markdown; text that does not parse shows as written.
@@ -83,6 +88,17 @@ public struct ArtifactEnvironment {
         let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
         let attributed = (try? AttributedString(markdown: text, options: options)) ?? AttributedString(text)
         return AnyView(Text(attributed).fixedSize(horizontal: false, vertical: true))
+    }
+}
+
+/// The refs of the list rows a card draws, in document order: rows its
+/// host hides and rows folded behind **Show <n> older** are left out. A
+/// keyboard host reads it to move its focus over what is on screen.
+public struct ArtifactShownRefsKey: PreferenceKey {
+    public static let defaultValue: [ArtifactRef] = []
+
+    public static func reduce(value: inout [ArtifactRef], nextValue: () -> [ArtifactRef]) {
+        value.append(contentsOf: nextValue())
     }
 }
 

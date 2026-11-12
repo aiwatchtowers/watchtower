@@ -592,6 +592,7 @@ struct ActionStripActionsView: View {
             .refHooks(refHooks.hooks)
             .messageReply({ refHooks.messageReply($0) }, onPress: Self.messageReplyPress(handler))
             .withArtifactMenu(menu)
+            .rowKeyboard(inApprovals ? nil : rowKeys(item, refHooks: refHooks, handler: handler))
         if let header { withHooks = withHooks.paneHeader(header) }
         return inApprovals ? withHooks.stackedInApprovals() : withHooks
     }
@@ -668,6 +669,24 @@ struct ActionStripActionsView: View {
                       onCommand: onCardAction,
                       onPress: { ref, press in Self.dispatch(press, on: ref, handler) })
         // swiftlint:enable trailing_closure
+    }
+
+    /// The keys on Waiting for me's and Mail waiting's rows; nil for every
+    /// other card. A press goes where its button sends it; E on a sender
+    /// opens its Mark All Done… confirmation.
+    private func rowKeys(
+        _ item: InboxListItem?, refHooks: InboxRefHooks, handler: InboxRowActionHandler
+    ) -> InboxRowKeys? {
+        guard case let .output(card)? = item else { return nil }
+        let snapshot = vm.folderMenu.snapshot
+        let builtins = [snapshot.waitingForMe.automationID, snapshot.mailWaiting.automationID].compactMap { $0 }
+        guard builtins.contains(card.automationID) else { return nil }
+        let bulk = vm.bulk
+        return InboxRowKeys(
+            content: { refHooks.content($0, .inbox) },
+            press: { ref, press in Self.dispatch(press, on: ref, handler) },
+            beginBulk: { bulk.begin($0) }
+        )
     }
 
     /// A message card's Reply presses, by `inbox_items` id.
