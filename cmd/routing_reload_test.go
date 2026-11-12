@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"watchtower/internal/automations"
@@ -61,7 +62,7 @@ func TestRoutingReloadLogicalJobsAndSDKKeepSnapshot(t *testing.T) {
 	r := testDaemonRouting(t)
 	blocked := &reloadGenerator{provider: "claude", started: make(chan struct{}), release: make(chan struct{})}
 	r.current.Load().gen = blocked // before any job starts
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	syncCtx, fetchCtx := r.bindSync(ctx, ctx)
 	database := db.OpenTestDB(t)
@@ -72,11 +73,7 @@ func TestRoutingReloadLogicalJobsAndSDKKeepSnapshot(t *testing.T) {
 	require.NoError(t, err)
 	done := make(chan error, 1)
 	go func() { _, err := exec.ExecuteInline(ctx, id); done <- err }()
-	select {
-	case <-blocked.started:
-	case <-ctx.Done():
-		t.Fatal("old SDK did not start")
-	}
+	<-blocked.started
 	next := reloadConfig("codex")
 	next.AI.ContextBudget, next.AI.Workers = 32000, 1
 	r.publish(next)
@@ -250,7 +247,14 @@ func (a *routingTestAgent) Run(context.Context, automations.AgentRequest) (autom
 	return automations.AgentResult{Text: "new"}, nil
 }
 
+// It runs in a synctest bubble, so the first call's admission wait runs out
+// its deadline on the bubble's clock, and the second call's deadline is
+// never what decides it.
 func TestRoutingReloadAgentSharesOldWorkerAndDeadline(t *testing.T) {
+	synctest.Test(t, testRoutingReloadAgentSharesOldWorkerAndDeadline)
+}
+
+func testRoutingReloadAgentSharesOldWorkerAndDeadline(t *testing.T) {
 	r := testDaemonRouting(t)
 	worker, err := r.pool.Acquire(context.Background())
 	require.NoError(t, err)
