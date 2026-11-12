@@ -26,20 +26,27 @@ final class ArtifactPrinter: NSObject {
     /// Finishes the job when the page never finishes loading.
     private var loadTimeout: Task<Void, Never>?
     private let loadTimeoutDuration: Duration
+    /// How the load timeout waits (tests: a wait they end by hand).
+    private let sleep: @Sendable (Duration) async -> Void
 
-    /// `coordinator` and `loadTimeout` are for tests (a load that never
-    /// finishes, a short timeout).
+    /// `coordinator` and `sleep` are for tests (a load that never finishes,
+    /// a timeout that passes when the test says so).
     init(
         title: String,
         coordinator: SandboxedHTMLView.Coordinator? = nil,
         loadTimeout: Duration = .seconds(15),
+        sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) },
         onError: @escaping (String) -> Void
     ) {
         self.title = title
         self.coordinator = coordinator ?? SandboxedHTMLView.Coordinator()
         self.loadTimeoutDuration = loadTimeout
+        self.sleep = sleep
         self.onError = onError
     }
+
+    /// The load-timeout task, kept after the job ends so a test can await it.
+    var loadTimeoutTask: Task<Void, Never>? { loadTimeout }
 
     /// Opens the print panel on `window` for `draft`; nothing happens for an
     /// artifact that cannot be printed (`ArtifactPrint.canPrint`).
@@ -80,8 +87,8 @@ final class ArtifactPrinter: NSObject {
             self.finish(error: "Print failed: \(message)")
         }
         coordinator.show(content, token: 0)
-        loadTimeout = Task { [weak self, loadTimeoutDuration] in
-            try? await Task.sleep(for: loadTimeoutDuration)
+        loadTimeout = Task { [weak self, loadTimeoutDuration, sleep] in
+            await sleep(loadTimeoutDuration)
             guard !Task.isCancelled, let self, !self.started else { return }
             self.finish(error: "Print failed: the page did not finish loading.")
         }
@@ -122,7 +129,6 @@ final class ArtifactPrinter: NSObject {
             onError(error)
         }
         loadTimeout?.cancel()
-        loadTimeout = nil
         coordinator.cancel()
         coordinator.onLoaded = nil
         coordinator.onFailed = nil

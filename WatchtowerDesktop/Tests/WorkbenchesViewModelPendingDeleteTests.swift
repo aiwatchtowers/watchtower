@@ -63,6 +63,55 @@ private struct WriteRefused: LocalizedError {
     var errorDescription: String? { "database is locked" }
 }
 
+/// Bounds the quit armed, from the seam's thread.
+private final class LockedBounds: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [TimeInterval] = []
+
+    var values: [TimeInterval] {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
+    }
+
+    func append(_ bound: TimeInterval) {
+        lock.lock()
+        stored.append(bound)
+        lock.unlock()
+    }
+}
+
+/// A delete write held until the test opens it — the slow write, off the
+/// main actor (the commit seam runs there). Once opened, later waits return
+/// at once.
+private final class WriteGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isOpen = false
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            lock.lock()
+            if isOpen {
+                lock.unlock()
+                continuation.resume()
+                return
+            }
+            waiting.append(continuation)
+            lock.unlock()
+        }
+    }
+
+    func open() {
+        lock.lock()
+        isOpen = true
+        let resumed = waiting
+        waiting = []
+        lock.unlock()
+        resumed.forEach { $0.resume() }
+    }
+}
+
 /// The deferred session delete with its batched Undo (board #480, PROJ-17,
 /// spec 2026-10-12-sessions-panel-design §4.2–§4.3). No subprocess is
 /// spawned: the terminal center runs fake processes.
@@ -516,19 +565,27 @@ final class WorkbenchesViewModelPendingDeleteTests: XCTestCase {
         let p = try await workbench()
         let row = try await insertSession(p)
         let vm = makeVM()
+        let write = WriteGate()
+        defer { write.open() }
         let (started, didStart) = AsyncStream<Void>.makeStream()
         vm.commitSessionDeletes = { [pool] ids in
             didStart.yield()
-            try await Task.sleep(for: .milliseconds(300))
+            await write.wait()
             try await pool?.write { db in for id in ids { try TerminalSessionQueries.delete(db, id: id) } }
         }
+        let (armed, arm) = AsyncStream<TimeInterval>.makeStream()
+        vm.quitDeleteTimeout = { bound, _ in arm.yield(bound) } // the bound never runs out
         await vm.reload()
         await vm.delete(row)
         gate.open()
         var iterator = started.makeAsyncIterator()
         _ = await iterator.next()
 
-        let finished = await vm.commitPendingDeletesForQuit()
+        let quit = Task { await vm.commitPendingDeletesForQuit() }
+        var armedIterator = armed.makeAsyncIterator()
+        _ = await armedIterator.next() // the quit is waiting; the write is still held
+        write.open()
+        let finished = await quit.value
 
         XCTAssertTrue(finished)
         let gone = try await stored(row.id)
@@ -551,14 +608,19 @@ final class WorkbenchesViewModelPendingDeleteTests: XCTestCase {
             throw WriteRefused()
         }
         vm.quitDeleteWait = 0.2
+        let armedBounds = LockedBounds()
+        // The bound runs out the moment it is armed; the write never ends.
+        vm.quitDeleteTimeout = { bound, fire in
+            armedBounds.append(bound)
+            fire()
+        }
         await vm.reload()
         await vm.delete(row)
 
-        let start = Date()
         let finished = await vm.commitPendingDeletesForQuit()
 
         XCTAssertFalse(finished, "timed out")
-        XCTAssertLessThan(Date().timeIntervalSince(start), 1.5, "bounded by quitDeleteWait")
+        XCTAssertEqual(armedBounds.values, [0.2], "bounded by quitDeleteWait, armed once")
         XCTAssertTrue(vm.pendingDeletes.batch.isEmpty)
         let kept = try await stored(row.id)
         XCTAssertNotNil(kept, "listed again next launch")
@@ -578,14 +640,26 @@ final class WorkbenchesViewModelPendingDeleteTests: XCTestCase {
         let p = try await workbench()
         let row = try await insertSession(p)
         let vm = makeVM()
+        let write = WriteGate()
+        defer { write.open() }
         vm.commitSessionDeletes = { [pool] ids in
-            try await Task.sleep(for: .milliseconds(2300))
+            await write.wait()
             try await pool?.write { db in for id in ids { try TerminalSessionQueries.delete(db, id: id) } }
         }
+        let (armed, arm) = AsyncStream<TimeInterval>.makeStream()
+        vm.quitDeleteTimeout = { bound, _ in arm.yield(bound) } // the bound never runs out
         await vm.reload()
         await vm.delete(row)
 
-        let finished = await vm.commitPendingDeletesForQuit()
+        let quit = Task { await vm.commitPendingDeletesForQuit() }
+        var armedIterator = armed.makeAsyncIterator()
+        let bound = await armedIterator.next()
+        // The quit waits under the default bound, longer than the old 2 s
+        // wait; the write lands while it waits.
+        XCTAssertEqual(bound, WorkbenchesViewModel.defaultQuitDeleteWait)
+        XCTAssertGreaterThan(bound ?? 0, 2)
+        write.open()
+        let finished = await quit.value
 
         XCTAssertTrue(finished)
         let gone = try await stored(row.id)
@@ -599,12 +673,16 @@ final class WorkbenchesViewModelPendingDeleteTests: XCTestCase {
         let first = try await insertSession(p, title: "Session A")
         let second = try await insertSession(p, title: "Session B")
         let vm = makeVM()
+        let write = WriteGate()
+        defer { write.open() }
         let (started, didStart) = AsyncStream<Void>.makeStream()
         vm.commitSessionDeletes = { [pool] ids in
             didStart.yield()
-            try await Task.sleep(for: .milliseconds(300))
+            await write.wait()
             try await pool?.write { db in for id in ids { try TerminalSessionQueries.delete(db, id: id) } }
         }
+        let (armed, arm) = AsyncStream<TimeInterval>.makeStream()
+        vm.quitDeleteTimeout = { bound, _ in arm.yield(bound) } // the bound never runs out
         await vm.reload()
         vm.selectedWorkbenchID = p
         await vm.loadSessions(projectID: p)
@@ -614,7 +692,11 @@ final class WorkbenchesViewModelPendingDeleteTests: XCTestCase {
         _ = await iterator.next() // the timer's commit of `first` is in flight
         await vm.delete(second)
 
-        let finished = await vm.commitPendingDeletesForQuit()
+        let quit = Task { await vm.commitPendingDeletesForQuit() }
+        var armedIterator = armed.makeAsyncIterator()
+        _ = await armedIterator.next() // both writes are held while the quit waits
+        write.open()
+        let finished = await quit.value
 
         XCTAssertTrue(finished)
         for id in [first.id, second.id] {
