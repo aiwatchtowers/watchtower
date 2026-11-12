@@ -643,6 +643,9 @@ func TestCloudKitConfirmAndRemoveNeverWaitOnTheBridge(t *testing.T) {
 		}
 		c2 := h.rig.dial()
 		defer func() { _ = c2.Close() }()
+		// Up to the answer only: its latency is what is timed. At most the
+		// linked event is left, one writer alone on the pipe (durably
+		// blocked), and h.c is not read again.
 		answered("confirm", func() ControlAnswer {
 			if err := h.c.Send(ControlRequest{Op: OpConfirm, Device: phone.ID().String(), Confirm: true}); err != nil {
 				t.Fatal(err)
