@@ -899,7 +899,7 @@ final class IdeaQueriesTests: XCTestCase {
         XCTAssertEqual(try db.read { try IdeaQueries.countForReview($0) }, 1)
     }
 
-    func testDropManyOverChunkSize() throws {
+    func testDropManyLargeList() throws {
         let db = try TestDatabase.create()
         let ids = try db.write { db in
             try (0..<1200).map { _ in Int(try TestDatabase.insertIdea(db, status: "proposed")) }

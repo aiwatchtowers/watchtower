@@ -277,27 +277,20 @@ package enum IdeaQueries {
     /// settled since the confirmation read it is left alone. Returns the rows
     /// changed.
     package static func dropMany(_ db: Database, ids: [Int]) throws -> Int {
-        var changed = 0
-        for start in stride(from: 0, to: ids.count, by: dropChunkSize) {
-            let chunk = Array(ids[start..<min(start + dropChunkSize, ids.count)])
-            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
-            try db.execute(
-                sql: """
-                    UPDATE ideas SET status = 'dropped', \(clearReviewFlag),
-                        updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-                    WHERE id IN (\(placeholders))
-                      AND (status = 'proposed' OR needs_review = 1) AND \(reviewKindCond)
-                      AND status != 'merged'
-                    """,
-                arguments: StatementArguments(chunk)
-            )
-            changed += db.changesCount
-        }
-        return changed
+        guard !ids.isEmpty else { return 0 }
+        let list = "[" + ids.map(String.init).joined(separator: ",") + "]"
+        try db.execute(
+            sql: """
+                UPDATE ideas SET status = 'dropped', \(clearReviewFlag),
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                WHERE id IN (SELECT value FROM json_each(?))
+                  AND (status = 'proposed' OR needs_review = 1) AND \(reviewKindCond)
+                  AND status != 'merged'
+                """,
+            arguments: [list]
+        )
+        return db.changesCount
     }
-
-    /// Bound parameters per `dropMany` statement, well under SQLite's limit.
-    private static let dropChunkSize = 500
 
     /// Merges an idea into another: marks it merged with a link back to the
     /// target, then re-parents its mentions onto the target. Either side gone
