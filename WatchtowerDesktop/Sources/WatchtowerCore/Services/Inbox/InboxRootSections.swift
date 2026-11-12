@@ -49,7 +49,7 @@ package enum InboxRootSections {
 
     /// `folder`'s sections in order; a section with no entries is left out.
     /// - Root: **Needs you** — Waiting for me's artifact, the Messages
-    ///   stand-in, the thread briefs applied in the last 24 hours (newest
+    ///   stand-in, Mail waiting's artifact, the thread briefs applied in the last 24 hours (newest
     ///   first; an older one is dropped), then, on a tree without Needs
     ///   approval, the approvals and notices. **Today** — the Morning
     ///   brief, then the artifacts changed today (`InboxToday`), newest
@@ -63,6 +63,7 @@ package enum InboxRootSections {
         entries: [InboxFolderEntry],
         folder: InboxFolderKind,
         waitingForMeAutomationID: Int64?,
+        mailWaitingAutomationID: Int64? = nil,
         now: Date,
         calendar: Calendar
     ) -> [(InboxRootSection, [InboxFolderEntry])] {
@@ -81,6 +82,7 @@ package enum InboxRootSections {
         case .root:
             var waiting: [InboxFolderEntry] = []
             var standIn: [InboxFolderEntry] = []
+            var mail: [InboxFolderEntry] = []
             var briefs: [(at: Date, entry: InboxFolderEntry)] = []
             var approvals: [InboxFolderEntry] = []
             var day: [InboxFolderEntry] = []
@@ -93,6 +95,8 @@ package enum InboxRootSections {
                 case let .artifact(card):
                     if waitingForMeAutomationID == card.automationID {
                         waiting.append(entry)
+                    } else if mailWaitingAutomationID == card.automationID {
+                        mail.append(entry)
                     } else if isToday(card.changedAt) {
                         today.append((card.changedAt, entry))
                     } else {
@@ -116,7 +120,7 @@ package enum InboxRootSections {
                 }
             }
             return listed([
-                (.needsYou, waiting + standIn + newestFirst(briefs) + approvals),
+                (.needsYou, waiting + standIn + mail + newestFirst(briefs) + approvals),
                 (.today, day + newestFirst(today)),
                 (.running, tracks + ideas + newestFirst(running))
             ])

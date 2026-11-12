@@ -12,7 +12,8 @@ package enum InboxFolderCounts {
     /// - An artifact with row refs counts its rows that wait on the owner
     ///   (`refState`), whatever its read state.
     /// - An artifact of an automation in `uncounted` counts nothing: Waiting
-    ///   for me's, whose people `legacy` already counts as people today.
+    ///   for me's, whose people `legacy` already counts as people today, and
+    ///   Mail waiting's, read or not, with rows or none (mail never counts).
     /// - `legacy` adds the counts the folder shows outside artifacts: people
     ///   waiting today and today's unread brief in the root; proposals, due
     ///   reminders and notices in Needs approval.

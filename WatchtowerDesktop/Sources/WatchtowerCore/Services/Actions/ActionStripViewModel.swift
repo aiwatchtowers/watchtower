@@ -176,7 +176,8 @@ package final class ActionStripViewModel {
     /// The Inbox sidebar badge (spec "Counts", STRIP badge amendment, ask
     /// #634): Needs approval's open approvals (proposals awaiting the owner,
     /// due reminders, built-in upgrade notices) + people waiting today (open
-    /// messages whose `MAX(created_at, mentioned_at)` is at or after local
+    /// people items, `InboxPeopleRule` — mail never counts — whose
+    /// `MAX(created_at, mentioned_at)` is at or after local
     /// midnight in `calendar`, `InboxToday`; 0 while Waiting for me is turned
     /// off). Ideas, briefings, Messages' unread count and every automation
     /// artifact, root or owner folder, stay out of it. One read, writing
@@ -187,7 +188,7 @@ package final class ActionStripViewModel {
         _ db: Database, nowUTC: String, disabledFeatures: Set<String> = [], calendar: Calendar = .current
     ) throws -> Int {
         try InboxFolderMenuSnapshot.read(
-            db, nowUTC: nowUTC, disabledFeatures: disabledFeatures, calendar: calendar).badge
+            db, nowUTC: nowUTC, disabledFeatures: disabledFeatures, calendar: calendar, mailSummary: false).badge
     }
 
     /// The counts each folder shows outside its artifacts, by the folder
@@ -409,6 +410,7 @@ package final class ActionStripViewModel {
             let grouped = InboxRootSections.build(
                 entries: folderEntries, folder: folder.kind,
                 waitingForMeAutomationID: folderMenu.snapshot.waitingForMe.automationID,
+                mailWaitingAutomationID: folderMenu.snapshot.mailWaiting.automationID,
                 now: inputs.now, calendar: inputs.calendar)
             sections = grouped.map { section, entries in
                 InboxListSection(id: section.rawValue, title: section.title,
