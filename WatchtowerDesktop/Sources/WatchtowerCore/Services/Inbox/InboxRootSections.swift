@@ -65,7 +65,7 @@ package enum InboxRootSections {
         entries: [InboxFolderEntry],
         folder: InboxFolderKind,
         waitingForMeAutomationID: Int64?,
-        slackTodayAutomationID: Int64? = nil,
+        slackTodayAutomationID: Int64?,
         now: Date,
         calendar: Calendar
     ) -> [(InboxRootSection, [InboxFolderEntry])] {
