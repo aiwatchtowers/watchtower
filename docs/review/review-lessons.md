@@ -3045,3 +3045,13 @@ Entry format:
 - weak-dimension: 7. A test fake whose failure mode is "first call only, save only" proved the happy toggle and hid the delete-fails branch.
 - rule-gap (candidate, dim 6/7): *a new "do not retry" state in a retry state machine lists every transition out of it, including the case where the opposite request fails, and has a test where the opposite request fails.*
 - outcome: TBD
+
+## 2026-11-13 — fix/1756-hub-test-hangs (6c549de76 + uncommitted round-1 edits: publisher records/forgets slice_state under `context.WithoutCancel` after a Save/Delete went out, `refreshGate` stamps relay admission from the one account-state snapshot it opens on (`vouchState`), `synctest.Wait` in `pauseNow`; 5 files; panel: prosecutor (6) + codex (0); pr-review-toolkit specialists unavailable; judge verified by reading and ran go vet plus the new and affected hub/slices tests green) — verdict: approve
+
+- contested: F1, the orphan ask-alert record when a stop lands between the record Save and its signal Save. Deferred as minor, not major. Recording the hash with the signal unwritten would mark the alert published, and it would never buzz. Writing the signal under WithoutCancel would send network writes after a stop. Every stop before the branch left the same orphan, so this is not a regression; it is a follow-up target. [6/9]
+- contested: F3/F4, two definitions of "vouched". The orchestrator settled it well: `vouched()` keeps `a.Vouched()`, only `refreshGate` reads the snapshot, and the doc comment names the equivalence the relay transport guarantees. [9]
+- false-positive: F6 (the bare `hubRuntime` in the new vouch test "passes only because applyGate exits early"). A minimal rig is a legitimate choice, and a missing dependency would panic, not false-green. Nit at most. [7]
+- miss: none late. Codex found nothing, and the prosecutor's findings were all residuals or polish. The fix is small and targeted.
+- weak-dimension: none notable. The WithoutCancel change is only safe because the tx is local SQLite. The new comment says so implicitly, by naming which writes stay network-bound.
+- rule-gap (candidate, dim 9): *bookkeeping for a remote write that already went out runs under `context.WithoutCancel` (local tx only), and a further network step between the write and its bookkeeping is called out as a residual in the comment, not hidden.*
+- outcome: TBD

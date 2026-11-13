@@ -244,12 +244,17 @@ func (h *hubRuntime) phoneEpoch(device string) (uint32, error) {
 
 // followAccount stamps the phones st lists and follows the vouch state.
 func (h *hubRuntime) followAccount(st *relayv1.AccountState) {
+	h.markAdmitted(phoneIDs(st))
+	h.refreshGate()
+}
+
+// phoneIDs lists the relay device ids of the phones st holds the hub for.
+func phoneIDs(st *relayv1.AccountState) []string {
 	ids := make([]string, 0, len(st.GetPhones()))
 	for _, p := range st.GetPhones() {
 		ids = append(ids, p.GetPhoneDeviceId())
 	}
-	h.markAdmitted(ids)
-	h.refreshGate()
+	return ids
 }
 
 // markAdmitted stamps relay_admitted_at on the linked phones the relay
@@ -278,11 +283,23 @@ func (h *hubRuntime) vouched() bool {
 	return true
 }
 
+// vouchState is vouched and the account state it was read from (nil for a
+// transport without the notion), from one copy of the state: the relay
+// transport's Vouched is "the last account state lists a phone", so the
+// phones the gate opens on are the phones it stamps.
+func (h *hubRuntime) vouchState() (bool, *relayv1.AccountState) {
+	if a, ok := h.tr.(relayAdmission); ok {
+		st := a.LastAccountState()
+		return len(st.GetPhones()) > 0, st
+	}
+	return true, nil
+}
+
 // refreshGate follows the transport's vouch state: an unvouched hub writes
 // nothing but its pairing zones, so its publisher and processor hold.
 func (h *hubRuntime) refreshGate() {
 	h.mu.Lock()
-	v := h.vouched() // under mu: concurrent callers set unvouched in read order
+	v, st := h.vouchState() // under mu: concurrent callers set unvouched in read order
 	was := h.unvouched
 	h.unvouched = !v
 	changed := was != h.unvouched
@@ -291,6 +308,11 @@ func (h *hubRuntime) refreshGate() {
 		return
 	}
 	if v {
+		// The gate opens on the transport's state, which may be newer than
+		// the answer its caller followed (a SLOT_ADDED read landing while a
+		// cached answer was followed): the phones it lists are stamped too,
+		// so a revoke after this opening reads vouch_revoked.
+		h.markAdmitted(phoneIDs(st))
 		log.Printf("hub: vouched on the relay (in a phone's slot)")
 		h.kick(h.linkKick)
 		h.recheckPaying()
