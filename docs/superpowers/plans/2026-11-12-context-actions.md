@@ -285,6 +285,9 @@ Depends on: Tasks 3 and 4.
     Text only, no config values.
   - `func (a *Applier) AcceptWithSession(id, sessionID int64) error`: refuses non-session destinations, checks the session row exists in the proposal's workbench, then calls `MarkCoachAcceptedWithSession` with the `start_tokens` baseline, copying the session's branch into `session_branch` in the same compare-and-set when `terminal_session_worktrees` already has one (Task 6 fills it later otherwise). For `claude_memory_index` it first re-reads MEMORY.md and stores it as `before_text` (the copy Rollback restores), so an owner edit between proposal and Accept is not lost.
   - Rollback of `claude_memory_index` (spec part 2): the Applier itself, no session. Compare-and-set: MEMORY.md must still equal `after_text` (recorded by Task 6 when the session wrote it); then it writes `before_text` back atomically. Index changed since → refused ("the memory index changed since — roll it back by hand"); `after_text` empty (the session never wrote) → refused ("nothing to roll back"). The archive file the agent created is left in place; nothing points to it any more.
+  - Accepted session rows that ended with nothing to measure (no `measure_from`, no open or merged PR) cannot use Decline (`open → declined` only) or a fresh Accept (`open → accepted` only). Two verbs cover them:
+    - `func (a *Applier) Dismiss(id int64) error`: compare-and-set on `status = 'accepted' AND via_session = 1 AND measure_from IS NULL AND verdict = ''` → verdict `too_little_data`, value nil; anything else → `ErrCoachStateChanged`. CLI `coach dismiss <id> --json`.
+    - `func (a *Applier) Restart(id, sessionID int64) error`: same guard plus no PR for `session_branch` → `session_id` = the new session, `session_branch` cleared (re-copied as in Accept). CLI `coach accept <id> --session <sid> --restart --json`.
   - `func (a *Applier) Reapply(id int64) error` (body in Task 6) and the CLI `coach reapply <id> --json` (same owner checks as `accept`).
   - `Accept(id, edited)` on a session destination → `refuse("Accept it in Watchtower — it starts a session")`.
   - CLI:
@@ -297,7 +300,8 @@ Depends on: Tasks 3 and 4.
   - `TestBrief_Memory` (contains `ask_owner` and "write no backup files");
   - `TestAcceptWithSession_MemoryRefreshesBefore`;
   - `TestRollback_MemoryRestoresIndex`, `TestRollback_MemoryChangedSinceRefused`, `TestRollback_MemoryNeverWrittenRefused`;
-  - `cmd`: `TestCoachReapplyJSON`;
+  - `cmd`: `TestCoachReapplyJSON`, `TestCoachDismissJSON`;
+  - `TestDismiss_AcceptedWithoutMeasure` (→ `too_little_data`), `TestDismiss_MeasuredRefused`, `TestRestart_ReplacesSession`, `TestRestart_RefusedWithPR`;
   - `TestBrief_NoConfigValues`;
   - `TestBrief_Revert` (the revert brief names the merged PR and asks for a revert PR);
   - `TestAccept_SessionDestinationRefusedWithoutSession`;
@@ -305,7 +309,7 @@ Depends on: Tasks 3 and 4.
   - `TestAcceptWithSession_WrongWorkbench`;
   - `TestAcceptWithSession_Twice` (`state_changed`);
   - `cmd`: `TestCoachBriefJSON_Keys`, `TestCoachAcceptSession_RefusedUnderAgent`, `TestCoachProposalsJSON_NewKeys`, `TestCoachProposalsJSON_PRFoundAfterSessionDeleted` (session row deleted, `session_branch` set, PR open → `pr` and `pr_state` filled).
-- [ ] **Step 2: Run** `go test ./internal/coach ./cmd -run 'Brief|AcceptWithSession|AcceptSession|SessionDestination|CoachProposalsJSON|Rollback_Memory|CoachReapply'`. Expect FAIL.
+- [ ] **Step 2: Run** `go test ./internal/coach ./cmd -run 'Brief|AcceptWithSession|AcceptSession|SessionDestination|CoachProposalsJSON|Rollback_Memory|CoachReapply|CoachDismiss|Dismiss_|Restart_'`. Expect FAIL.
 - [ ] **Step 3: Implement.** `coach brief` is read-only: no `confirmWithOwner`, but still `refuseUnderAgent`. `accept --session` keeps both checks.
 - [ ] **Step 4: Run** the same command. Expect PASS.
 - [ ] **Step 5: Commit** `feat(coach): accept repository and memory changes through a session`.
@@ -329,7 +333,7 @@ Depends on: Tasks 2 and 7 (JSON keys).
   - `State`: `.open`, `.starting`, `.working(sessionID)`, `.linkFailed(sessionID)`, `.sessionGone`, `.prReady(pr: Int, url: URL?)`, `.measuring`, `.endedWithoutChange(sessionID)`, `.notMerged`, `.changedSince`, `.revertedOutside`, `.done(beforeTokens: Int, afterTokens: Int?)`, `.failed(String)`.
     - `.prReady` shows **Open PR** and **Show Diff** (the PR's files page, `url` + `/files`); this is the mockup's diff panel, read from GitHub instead of drawn in the app.
     - `.done` shows the mockup's "before → after" (`79.6k → 49.4k`), with "before" = the proposal's baseline and "after" = the measured value once the verdict lands (nil → "measuring").
-    - `.sessionGone` = `viaSession`, no session row, empty `sessionBranch`, no PR: "Session was removed — its PR can't be traced" with **Decline** only. No **Start Again** (an untraced PR may exist; a second session could open a duplicate); after 30 days the verdict is `too_little_data`.
+    - `.sessionGone` = `viaSession`, no session row, empty `sessionBranch`, no PR: "Session was removed — its PR can't be traced" with **Dismiss** only (`coach dismiss`). No **Start Again** (an untraced PR may exist; a second session could open a duplicate); after 30 days the verdict is `too_little_data`.
     - `.changedSince` = a `superseded` context row (14 days, then gone); `.revertedOutside` = verdict `reverted_outside` with **Turn Off Again**.
   - `enum ContextActionsPresentation { static func rows(proposals: [CoachProposal], workbenchID: Int64, sources: [AgentSourceGroupRow], sessionKinds: [Int64: SessionSwitcherPresentation.State.Kind], linkFailed: [Int64: Int64], now: Date) -> (doThese: [ContextActionRow], done: [ContextActionRow]) }`. Takes this workbench's rows plus the global ones (`workbenchID == 0`). Open rows come first, largest saving first. Done rows stay for 14 days after `decidedAt`.
   - `static func headline(baselineTokens: Int, rows: [ContextActionRow]) -> String`, e.g. "4 changes would cut it to ~42k".
@@ -351,7 +355,8 @@ Depends on: Tasks 2 and 7 (JSON keys).
   - `testRowsOrderedBySaving`;
   - `testWorkingUntilSessionEnds`;
   - `testEndedWithoutPR` (session kind `.stopped`/`.finished`, no PR);
-  - `testSessionGoneWithoutBranchOffersDeclineOnly` (no **Start Again**);
+  - `testSessionGoneWithoutBranchOffersDismissOnly` (no **Start Again**);
+  - `testEndedWithoutPROffersStartAgainAndDismiss` (never **Decline** on an accepted row);
   - `testSessionRowGoneWithPRIsPRReady` (`viaSession`, `sessionID` nil, `pr` set → `.prReady`, never `.endedWithoutChange` and no **Start Again**); the presentation decides from `viaSession` + `pr`/`prState` first and uses the session kind only while the session row exists;
   - `testPRReadyHasDiffURL`;
   - `testDoneShowsBeforeAfter` (and "measuring" before the verdict);
@@ -387,7 +392,7 @@ Depends on: Task 8. Read `docs/review/review-rules.md` "Swift / Desktop conventi
     - `pending` holds the id throughout, so a second press is ignored.
   - `CoachCenter.reapply(_ id: Int64) async` runs `coach reapply <id> --json`.
   - `CoachCenter.revertThroughSession(_:start:)` uses `coach brief <id> --revert`.
-  - `ContextActionsView`: the **Do these** list. Each row shows saving, title, tag chip, evidence, verb button, and in-progress state with **Open Session** / **Open PR** / **Start Again** / **Decline**. Below are the faded done rows with **Undo** (settings) or **Revert…** (session).
+  - `ContextActionsView`: the **Do these** list. Each row shows saving, title, tag chip, evidence, verb button, and in-progress state with **Open Session** / **Open PR** / **Start Again** / **Dismiss**. **Decline** appears only on open rows; **Start Again** calls `CoachCenter.restartThroughSession` (`coach brief`, start, `coach accept --session --restart`), **Dismiss** calls `coach dismiss`. Below are the faded done rows with **Undo** (settings) or **Revert…** (session).
   - `ContextSourcesFold`: **What's in it**. Per part, its groups with tokens and calls; built-ins read "can't change"; "not measured" when `measured_sessions == 0`.
   - The lead line uses `headline`.
   - The state lives in `CoachCenter` on `AppState` and survives navigation.
@@ -398,6 +403,7 @@ Depends on: Task 8. Read `docs/review/review-rules.md` "Swift / Desktop conventi
   - `testStartBeganThenNavigatedAway` (the state survives);
   - `testAcceptFailsAfterStartRecordsLinkFailed` (no second `start` call on a later press; **Retry Link** calls `accept --session` with the same id);
   - `testAcceptFailsAfterStartStateChangedIsQuiet`;
+  - `testDismissSessionGoneCallsDismiss` and `testStartAgainUsesRestart` (CLI argv);
   - `testLinkFailedSurvivesRestart` (a new `CoachCenter` over the same defaults still hides **Accept**) and `testLinkFailedDroppedWhenProposalNotOpen`;
   - view tests: the Do-these list renders the three tags (`.settings`, `.repoPR`, `.memory`); the fold shows "can't change" for built-ins.
 - [ ] **Step 2: Run** `make test-swift FILTER='CoachCenterTests|AgentAnalyticsPaneViewTests'`. Expect FAIL.
