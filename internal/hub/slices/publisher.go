@@ -826,9 +826,11 @@ func (p *Publisher) saveChanged(ctx context.Context, k Kind, epoch uint32, saves
 		return false, nil
 	}
 	at := p.clock()
-	// Recorded even when ctx ended after the Save: a record in the zone
-	// that slice_state does not name is out of reach of every later delete
-	// (deleteGone, the policy wipe of a stopped hub).
+	// Recorded even when ctx ended after the Save (and its signals): a
+	// record in the zone that slice_state does not name is out of reach of
+	// every later delete (deleteGone, the policy wipe of a stopped hub).
+	// A stop during a write, or between an alert and its signal, still
+	// leaves the outcome unknown and nothing recorded.
 	err = p.c.Store.WithTx(context.WithoutCancel(ctx), func(tx *sql.Tx) error {
 		now, err := latestEpoch(state.EpochsTx(tx))
 		if err != nil {

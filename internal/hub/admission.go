@@ -277,13 +277,16 @@ func (h *hubRuntime) markAdmitted(relayIDs []string) {
 // vouched: the relay opens the hub's data zone and mailboxes to it (a
 // transport without the notion always does).
 func (h *hubRuntime) vouched() bool {
-	v, _ := h.vouchState()
-	return v
+	if a, ok := h.tr.(relayAdmission); ok {
+		return a.Vouched()
+	}
+	return true
 }
 
 // vouchState is vouched and the account state it was read from (nil for a
-// transport without the notion): Vouched is "the last account state lists
-// a phone", read here from one copy of it.
+// transport without the notion), from one copy of the state: the relay
+// transport's Vouched is "the last account state lists a phone", so the
+// phones the gate opens on are the phones it stamps.
 func (h *hubRuntime) vouchState() (bool, *relayv1.AccountState) {
 	if a, ok := h.tr.(relayAdmission); ok {
 		st := a.LastAccountState()
