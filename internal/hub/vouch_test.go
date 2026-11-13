@@ -15,6 +15,7 @@ import (
 	"watchtower/internal/hub/relaytest"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
+	"watchtower/internal/hub/transport/memfake"
 	"watchtower/internal/hub/transport/relay/client"
 	"watchtower/internal/hub/transport/relay/relayv1"
 	"watchtower/internal/hub/wire"
@@ -655,6 +656,44 @@ func TestPublisherNotVouchedClosesTheGateAtOnce(t *testing.T) {
 		// refused, and the gate closes again without a new account read.
 		r.waitAfterSlot(ReasonVouchRevoked)
 	})
+}
+
+// slotFake is a relay transport whose last account state the test sets.
+type slotFake struct {
+	*memfake.Fake
+	st *relayv1.AccountState
+}
+
+func (f slotFake) Vouched() bool                           { return len(f.st.GetPhones()) > 0 }
+func (f slotFake) Admitted() bool                          { return f.Vouched() }
+func (f slotFake) LastAccountState() *relayv1.AccountState { return f.st }
+
+// TestGateOpeningStampsTheStateItOpenedOn: a caller follows an older answer
+// (the reader's cached one, no phone) while a SLOT_ADDED read has already
+// put the phone in the transport's state. The gate opens on that state, so
+// the phone it lists is stamped there: a HUB_NOT_VOUCHED right after (before
+// SLOT_ADDED's own handling, which then sees the forgotten state) reads
+// vouch_revoked, not not_vouched (the CI hang of
+// TestPublisherNotVouchedClosesTheGateAtOnce, #1756).
+func TestGateOpeningStampsTheStateItOpenedOn(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	linkTestPhone(t, st, runtimePhone)
+	slotted := &relayv1.AccountState{Phones: []*relayv1.SlotHolder{{PhoneDeviceId: runtimePhone}}}
+	h := &hubRuntime{sup: &supervisor{o: Options{Clock: time.Now}}, st: st,
+		tr: slotFake{Fake: memfake.New(transport.KindRelay, time.Now), st: slotted}, unvouched: true}
+
+	h.followAccount(&relayv1.AccountState{}) // the cached answer from before the slot
+
+	if h.isUnvouched() {
+		t.Fatal("the gate stayed closed on a state that lists a phone")
+	}
+	if got := h.vouchReason(); got != ReasonVouchRevoked {
+		t.Fatalf("vouchReason after the opening = %q, want %q", got, ReasonVouchRevoked)
+	}
 }
 
 func TestNotVouchedHasItsClassAndStartReason(t *testing.T) {
