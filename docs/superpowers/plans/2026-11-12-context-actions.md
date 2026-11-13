@@ -130,7 +130,7 @@ Lane: parallel with Task 1. Use the `add-migration` skill.
     - verdict: `reverted_outside` (a settings change found undone by someone else, Task 6).
   - No `pr` column: the PR is read from `workbench_pr_states` by the session's branch (Task 7); the spec's schema is updated to match.
   - New columns: `session_id INTEGER REFERENCES terminal_sessions(id) ON DELETE SET NULL`, `source_key TEXT NOT NULL DEFAULT ''` (the plugin id / server name / `connectors` / `memory`: part of the text key, C5), `via_session INTEGER NOT NULL DEFAULT 0` (set by `MarkCoachAcceptedWithSession`; it, not `session_id`, tells a session-accepted row from a legacy one, because the Desktop deletes `terminal_sessions` rows and `session_id` then becomes NULL), `session_branch TEXT NOT NULL DEFAULT ''` (the session's branch, copied onto the row by Task 6 while the session row still exists, so the PR can still be found after the session row is gone).
-  - `db.CoachProposal` gains `SessionID *int64` and `SourceKey string`.
+  - `db.CoachProposal` gains `SessionID *int64`, `SourceKey string`, `ViaSession bool` and `SessionBranch string`.
   - `func (d *DB) InsertContextCoachProposal(p CoachProposal, now time.Time) (int64, error)`: origin `context`. A global destination is stored with `workbench_id` NULL and has one open row per `(destination, source_key)` across the install; `repo_claude_md` / `claude_memory_index` have one open per `(destination, source_key, workbench)`. A second open row → `ErrCoachTextBusy`; a fingerprint conflict returns `0, nil`.
   - `func (d *DB) MarkCoachAcceptedWithSession(id, sessionID int64, baseline *float64, n int, now time.Time) error`: compare-and-set `open → accepted`; a row not open → `ErrCoachStateChanged`.
 - [ ] **Step 1: Write failing tests:**
@@ -290,7 +290,7 @@ Depends on: Tasks 3 and 4.
   - CLI:
     - `coach brief <id> --json` → `{ok, id, title, prompt}`;
     - `coach accept <id> --session <sid> --json` → `coachAcceptJSON` plus `session_id`;
-    - `coach proposals --json` rows gain `session_id`, `source_key`, `pr` (number from `workbench_pr_states` for the session's branch, null otherwise), `pr_state` and `pr_url`.
+    - `coach proposals --json` rows gain `session_id`, `source_key`, `via_session`, `session_branch`, `pr`, `pr_state` and `pr_url`. The PR is looked up in `workbench_pr_states` by `session_branch`, falling back to the live session's branch while `session_branch` is still empty; null when neither gives one. A deleted session row therefore never hides an existing PR.
   - Rollback of a `repo_*` destination → refuse: "Roll it back with a session: Watchtower opens one" (v1). The Desktop offers **Revert…**, which starts a session with `coach brief <id> --revert`.
 - [ ] **Step 1: Write failing tests:**
   - `TestBrief_RepoRestructure` (contains the section sizes, "open a PR", "do not merge");
@@ -304,7 +304,7 @@ Depends on: Tasks 3 and 4.
   - `TestAcceptWithSession_Marks`;
   - `TestAcceptWithSession_WrongWorkbench`;
   - `TestAcceptWithSession_Twice` (`state_changed`);
-  - `cmd`: `TestCoachBriefJSON_Keys`, `TestCoachAcceptSession_RefusedUnderAgent`, `TestCoachProposalsJSON_NewKeys`.
+  - `cmd`: `TestCoachBriefJSON_Keys`, `TestCoachAcceptSession_RefusedUnderAgent`, `TestCoachProposalsJSON_NewKeys`, `TestCoachProposalsJSON_PRFoundAfterSessionDeleted` (session row deleted, `session_branch` set, PR open → `pr` and `pr_state` filled).
 - [ ] **Step 2: Run** `go test ./internal/coach ./cmd -run 'Brief|AcceptWithSession|AcceptSession|SessionDestination|CoachProposalsJSON|Rollback_Memory|CoachReapply'`. Expect FAIL.
 - [ ] **Step 3: Implement.** `coach brief` is read-only: no `confirmWithOwner`, but still `refuseUnderAgent`. `accept --session` keeps both checks.
 - [ ] **Step 4: Run** the same command. Expect PASS.
@@ -319,7 +319,7 @@ Depends on: Tasks 3 and 4.
 Depends on: Tasks 2 and 7 (JSON keys).
 
 **Files:**
-- Modify: `WatchtowerDesktop/Sources/WatchtowerCore/Models/AgentReport.swift` (`AgentContextReport.sources: [AgentSourceGroupRow]?`), `.../Models/Coach.swift` (`sessionID`, `sourceKey`, `pr`, `prState`, `prURL`), `.../Models/CoachPresentation.swift` (labels for the four destinations)
+- Modify: `WatchtowerDesktop/Sources/WatchtowerCore/Models/AgentReport.swift` (`AgentContextReport.sources: [AgentSourceGroupRow]?`), `.../Models/Coach.swift` (`sessionID`, `sourceKey`, `viaSession`, `sessionBranch`, `pr`, `prState`, `prURL`), `.../Models/CoachPresentation.swift` (labels for the four destinations)
 - Create: `.../Services/ContextActionsPresentation.swift`
 - Test: `Tests/Core/AgentReportDecodingTests.swift`, `Tests/Core/CoachDecodingTests.swift`, `Tests/Core/ContextActionsPresentationTests.swift`
 
@@ -349,6 +349,7 @@ Depends on: Tasks 2 and 7 (JSON keys).
   - `testRowsOrderedBySaving`;
   - `testWorkingUntilSessionEnds`;
   - `testEndedWithoutPR` (session kind `.stopped`/`.finished`, no PR);
+  - `testSessionRowGoneWithPRIsPRReady` (`viaSession`, `sessionID` nil, `pr` set → `.prReady`, never `.endedWithoutChange` and no **Start Again**); the presentation decides from `viaSession` + `pr`/`prState` first and uses the session kind only while the session row exists;
   - `testPRReadyHasDiffURL`;
   - `testDoneShowsBeforeAfter` (and "measuring" before the verdict);
   - `testSupersededShowsChangedSince`;
