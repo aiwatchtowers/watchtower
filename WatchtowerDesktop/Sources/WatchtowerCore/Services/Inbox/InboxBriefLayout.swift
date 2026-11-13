@@ -19,10 +19,12 @@ package enum InboxBriefLayout {
         Array(briefing.parsedAttention.prefix(topCount))
     }
 
-    /// **Waiting on you**'s rows: the newest three open messages (the feed
-    /// reads only open ones), whatever day they came.
+    /// **Waiting on you**'s rows: the newest three open people messages
+    /// (the feed reads only open ones), whatever day they came. Mail is
+    /// Mail waiting's, as in Waiting for me (`InboxPeopleRule`).
     package static func waitingOnYou(_ messages: [HomeFeedInboxRow]) -> [HomeFeedInboxRow] {
-        Array(messages.sorted { $0.stamp > $1.stamp }.prefix(topCount))
+        let people = messages.filter { InboxPeopleRule.isPeople(trigger: $0.item.triggerType) }
+        return Array(people.sorted { $0.stamp > $1.stamp }.prefix(topCount))
     }
 
     /// **Moved overnight**'s rows: up to three unread tracks, newest event

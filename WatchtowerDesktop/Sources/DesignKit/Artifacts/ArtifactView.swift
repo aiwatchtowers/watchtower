@@ -163,12 +163,18 @@ struct ArtifactListView: View {
     let firstIndex: Int
     let mode: ArtifactRenderMode
     @Environment(\.artifactEnvironment) private var environment
+    /// The folded rows are open (`foldsOlder`); folded by default, per
+    /// artifact for as long as its card is on screen.
+    @State private var olderOpen = false
 
     var body: some View {
         let offsets = list.rowActionOffsets(start: firstIndex)
         let shown = list.rows.indices.filter { index in
             list.rows[index].ref.map(environment.refHooks.isOpen) ?? true
         }
+        let folds = foldsOlder && shown.first == 0
+        let older = folds ? shown.count - 1 : 0
+        let drawn = folds && !olderOpen ? [0] : shown
         VStack(alignment: .leading, spacing: Spacing.tight) {
             if let title = list.title { ArtifactBlockTitle(text: title).padding(.horizontal, Spacing.regular) }
             if shown.isEmpty {
@@ -178,12 +184,60 @@ struct ArtifactListView: View {
                     .padding(.horizontal, Spacing.regular)
                     .padding(.vertical, Spacing.compact)
             }
-            ForEach(shown, id: \.self) { index in
+            ForEach(drawn, id: \.self) { index in
                 ArtifactListRowView(row: list.rows[index], firstIndex: offsets[index], mode: mode)
+                if folds, index == 0, older > 0 {
+                    Button(olderOpen ? "Hide" : "Show \(older) older") { olderOpen.toggle() }
+                        .buttonStyle(.kitQuiet)
+                        .controlSize(.small)
+                        .padding(.horizontal, Spacing.regular)
+                }
             }
         }
         // The rows' hover plates sit flush with the card's other blocks.
         .padding(.horizontal, -Spacing.regular)
+        .preference(key: ArtifactShownRefsKey.self, value: drawn.compactMap { list.rows[$0].ref })
+    }
+
+    /// In the Inbox, a list whose first row the host folds after
+    /// (`ArtifactRefHooks.foldsRowsAfter`) draws that row and folds the
+    /// rows after it behind **Show <n> older**. The Look preview and every
+    /// other list show all rows.
+    private var foldsOlder: Bool {
+        mode == .inbox && (list.rows.first?.ref.map(environment.refHooks.foldsRowsAfter) ?? false)
+    }
+}
+
+/// When a list row's actions show (spec "Waiting for me and Mail
+/// waiting": no layout jumps on hover).
+enum ArtifactRowChrome {
+    /// In `.inbox` the actions sit over the row's trailing edge and show
+    /// while the pointer or the keyboard is on the row; every other mode
+    /// keeps them inline, always shown. A `pinned` row (the host's
+    /// `ArtifactRefHooks.pinsActions`) shows them always.
+    static func showsActions(
+        isHovered: Bool, isFocused: Bool, mode: ArtifactRenderMode, pinned: Bool = false
+    ) -> Bool {
+        mode != .inbox || pinned || isHovered || isFocused
+    }
+
+    /// The `.inbox` row's actions overlay.
+    static let actionsIdentifier = "artifactRow.actions"
+    /// The `.inbox` row's age chip at its trailing edge.
+    static let badgeIdentifier = "artifactRow.badge"
+}
+
+/// An `.inbox` row with a ref carries it as its id, so a keyboard host
+/// scrolls the focused row into view; every other row keeps its identity.
+struct ArtifactRowScrollID: ViewModifier {
+    let ref: ArtifactRef?
+
+    func body(content: Content) -> some View {
+        if let ref {
+            content.id(ref)
+        } else {
+            content
+        }
     }
 }
 
@@ -192,6 +246,16 @@ struct ArtifactListRowView: View {
     let firstIndex: Int
     let mode: ArtifactRenderMode
     @Environment(\.artifactEnvironment) private var environment
+    @State private var isHovered = false
+
+    private var isFocused: Bool {
+        row.ref != nil && row.ref == environment.focusedRef
+    }
+
+    /// The row keeps its actions shown: the host's pin.
+    private var isPinned: Bool {
+        row.ref.map(environment.refHooks.pinsActions) ?? false
+    }
 
     var body: some View {
         let footer = row.ref.flatMap { environment.refHooks.nativeFooter($0, mode) }
@@ -204,7 +268,9 @@ struct ArtifactListRowView: View {
             }
         }
         .controlSize(.small)
-        .kitRow(isSelected: false)
+        .kitRow(isSelected: mode == .inbox && isFocused)
+        .onHover { isHovered = $0 }
+        .modifier(ArtifactRowScrollID(ref: mode == .inbox ? row.ref : nil))
     }
 
     /// The row's own press: the host's for its `ref` in `.inbox`, else its link.
@@ -213,39 +279,121 @@ struct ArtifactListRowView: View {
         return ArtifactLinkTap(link: open == nil ? row.link : nil, press: open)
     }
 
-    private var line: some View {
+    /// In `.inbox` the badge sits at the trailing edge and the actions over
+    /// it, on a card backing, so they never take layout space; the preview
+    /// keeps the badge by the title and the actions inline.
+    @ViewBuilder private var line: some View {
+        if mode == .inbox {
+            let shows = ArtifactRowChrome.showsActions(
+                isHovered: isHovered, isFocused: isFocused, mode: mode, pinned: isPinned)
+            HStack(alignment: .center, spacing: Spacing.regular) {
+                dot
+                texts(badgeInline: false)
+                Spacer(minLength: Spacing.regular)
+                if let badge = row.badge {
+                    // The actions replace the age chip while they show; it keeps its place.
+                    Chip(text: badge.text, color: Tone.artifact(badge.tone))
+                        .opacity(shows && hasActions ? 0 : 1)
+                        .accessibilityIdentifier(ArtifactRowChrome.badgeIdentifier)
+                }
+            }
+            .overlay(alignment: .trailing) {
+                if hasActions {
+                    // Its own width, over the badge and the line's end: never
+                    // the row's. Wider than the line, it is cut at the line's
+                    // leading edge (the mask), never drawn past the row.
+                    HStack(spacing: Spacing.regular) { actions }
+                        .fixedSize()
+                        .padding(.leading, Spacing.regular)
+                        .background(backing)
+                        .opacity(shows ? 1 : 0)
+                        .allowsHitTesting(shows)
+                        .animation(Motion.toggle, value: shows)
+                        .accessibilityIdentifier(ArtifactRowChrome.actionsIdentifier)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .mask(Rectangle().padding(.vertical, -Spacing.large))
+                }
+            }
+            // Hidden actions leave the accessibility tree: the row names them.
+            .accessibilityActions {
+                ForEach(Array(accessibleActions.enumerated()), id: \.offset) { _, action in
+                    Button(action.name, action: action.perform)
+                }
+            }
+        } else {
+            HStack(alignment: .center, spacing: Spacing.regular) {
+                dot
+                texts(badgeInline: true)
+                Spacer(minLength: Spacing.regular)
+                actions
+            }
+        }
+    }
+
+    @ViewBuilder private var dot: some View {
+        if let tone = row.tone {
+            Circle()
+                .fill(Tone.artifact(tone))
+                .frame(width: IconSize.stateDot, height: IconSize.stateDot)
+        }
+    }
+
+    private func texts(badgeInline: Bool) -> some View {
+        VStack(alignment: .leading, spacing: Spacing.tight) {
+            HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
+                Text(row.title)
+                    .font(.callout.weight(.medium))
+                    .fixedSize(horizontal: false, vertical: true)
+                if badgeInline, let badge = row.badge {
+                    Chip(text: badge.text, color: Tone.artifact(badge.tone))
+                }
+            }
+            if let subtitle = row.subtitle {
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    /// Opaque, as the row's plate looks under it: the pane's backdrop with
+    /// the hover or focus fill on top, so nothing shows through.
+    private var backing: some View {
+        ZStack {
+            Surface.detail
+            KitRow.fill(isSelected: isFocused, isHovered: isHovered)
+        }
+    }
+
+    /// The row's actions for VoiceOver in `.inbox`: the recipe's enabled
+    /// ones a native one does not replace, then the host's.
+    private var accessibleActions: [ArtifactAccessibilityAction] {
         let hidden = row.ref.map(environment.refHooks.nativeKinds) ?? []
-        return HStack(alignment: .center, spacing: Spacing.regular) {
-            if let tone = row.tone {
-                Circle()
-                    .fill(Tone.artifact(tone))
-                    .frame(width: IconSize.stateDot, height: IconSize.stateDot)
+        let recipe = row.actions.enumerated().compactMap { offset, action -> ArtifactAccessibilityAction? in
+            let index = firstIndex + offset
+            guard !hidden.contains(action.kind), environment.isActionEnabled(index) else { return nil }
+            return ArtifactAccessibilityAction(name: action.label) { environment.onAction(index) }
+        }
+        return recipe + (row.ref.map(environment.refHooks.accessibilityActions) ?? [])
+    }
+
+    private var hasActions: Bool {
+        let hidden = row.ref.map(environment.refHooks.nativeKinds) ?? []
+        return row.actions.contains { !hidden.contains($0.kind) }
+            || row.ref.flatMap { environment.refHooks.nativeActions($0, mode) } != nil
+    }
+
+    /// The recipe's row actions a native one does not replace, then the native ones.
+    @ViewBuilder private var actions: some View {
+        let hidden = row.ref.map(environment.refHooks.nativeKinds) ?? []
+        ForEach(Array(row.actions.enumerated()), id: \.offset) { offset, action in
+            if !hidden.contains(action.kind) {
+                ArtifactActionButton(action: action, index: firstIndex + offset, mode: mode, prominent: false)
             }
-            VStack(alignment: .leading, spacing: Spacing.tight) {
-                HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
-                    Text(row.title)
-                        .font(.callout.weight(.medium))
-                        .fixedSize(horizontal: false, vertical: true)
-                    if let badge = row.badge {
-                        Chip(text: badge.text, color: Tone.artifact(badge.tone))
-                    }
-                }
-                if let subtitle = row.subtitle {
-                    Text(subtitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            Spacer(minLength: Spacing.regular)
-            ForEach(Array(row.actions.enumerated()), id: \.offset) { offset, action in
-                if !hidden.contains(action.kind) {
-                    ArtifactActionButton(action: action, index: firstIndex + offset, mode: mode, prominent: false)
-                }
-            }
-            if let ref = row.ref, let native = environment.refHooks.nativeActions(ref, mode) {
-                native
-            }
+        }
+        if let ref = row.ref, let native = environment.refHooks.nativeActions(ref, mode) {
+            native
         }
     }
 }

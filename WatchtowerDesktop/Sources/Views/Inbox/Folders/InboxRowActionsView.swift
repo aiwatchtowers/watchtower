@@ -5,6 +5,8 @@ import WatchtowerCore
 /// `ArtifactRefHooks.nativeActions` (`InboxRefHooks`).
 struct InboxRowActionsView: View {
     let content: InboxRowActionsContent
+    /// A sender or Older row's **Mark All Done…** press (`InboxBulkCenter`).
+    var bulk: InboxBulkPressModel?
     var onPress: (InboxRowPress) -> Void = { _ in }
 
     var body: some View {
@@ -23,101 +25,57 @@ struct InboxRowActionsView: View {
     @ViewBuilder
     private var buttons: some View {
         switch content.kind {
-        case let .inboxItem(openLabel, openEnabled, canReply, showsHandToAgent):
-            if let openLabel {
-                Button(openLabel) { onPress(.open) }
-                    .disabled(!openEnabled)
+        case .mailSender, .waitingOlder:
+            if let bulk {
+                InboxBulkRowButtons(model: bulk, isSender: isSender) { bar }
+            } else {
+                bar
             }
-            if canReply {
-                Button("Reply…") { onPress(.reply) }
-                    .disabled(content.reply != nil || content.isOff(.reply))
-            }
-            Button("Done") { onPress(.done) }.disabled(content.isOff(.done))
-            Button("Hide") { onPress(.hide) }.disabled(content.isOff(.hide))
-            Menu("Snooze") {
-                ForEach(InboxMessagePane.snoozeChoices, id: \.duration) { choice in
-                    Button(choice.label) { onPress(.snooze(duration: choice.duration)) }
+        case .inboxItem, .track, .idea, .reminder, .action:
+            bar
+            let more = all.filter { $0.place == .more }
+            if !content.isBusy, !more.isEmpty {
+                self.more {
+                    ForEach(Array(more.enumerated()), id: \.offset) { _, button in draw(button) }
                 }
-            }
-            .menuStyle(.button)
-            .fixedSize()
-            .disabled(content.isOff(.snooze(duration: "")))
-            if !content.isBusy {
-                more {
-                    Button("Discuss in Chat") { onPress(.discussInChat) }
-                    if showsHandToAgent {
-                        Button("Hand to Agent…") { onPress(.handToAgent) }
-                    }
-                }
-            }
-        case let .track(custom, linkedTargetID):
-            Button("Done") { onPress(.done) }.disabled(content.isOff(.done))
-            if !content.isBusy {
-                more {
-                    Button("Stop watching") { onPress(.stopWatching) }.disabled(content.isOff(.stopWatching))
-                    if !custom {
-                        Button("Make a Task") { onPress(.makeTask) }.disabled(content.isOff(.makeTask))
-                    }
-                    if custom, linkedTargetID != nil {
-                        Button("Go to Target") { onPress(.goToTarget) }
-                    }
-                    if custom {
-                        Button("Delete…") { onPress(.deleteTrack) }
-                    }
-                }
-            }
-        case let .idea(kind, status, awaitsVerdict):
-            ForEach(InboxRowActionsContent.ideaButtons(kind: kind, status: status, awaitsVerdict: awaitsVerdict),
-                    id: \.self) { button in
-                ideaButton(button)
-                    .disabled(content.isOff(button.press))
-            }
-        case .reminder:
-            Button("Done") { onPress(.done) }.disabled(content.isOff(.done))
-            Button("Snooze 1h") { onPress(.snoozeHour) }.disabled(content.isOff(.snoozeHour))
-        case let .action(_, buttons):
-            // The proposal's own summary sits under the row's line, full width (`InboxRowActionsFooter`).
-            ForEach(buttons, id: \.self) { button in
-                actionButton(button)
-                    .disabled(content.isOff(button.press))
             }
         }
     }
 
-    @ViewBuilder
-    private func actionButton(_ button: InboxRowActionsContent.ActionButton) -> some View {
-        switch button {
-        case .approve: Button("Approve") { onPress(.approve) }
-        case .reject: Button("Reject") { onPress(.reject) }
-        case .edit:
-            Button("Edit…") { onPress(.edit) }
-                .help("Open the full proposal")
-        case .openDraft:
-            Button("Open Draft") { onPress(.openDraft) }
-                .help("Read the whole recipe in the editor and save it there")
-        case .retry: Button("Retry") { onPress(.retry) }
-        case .dismiss:
-            Button("Dismiss") { onPress(.dismiss) }
-                .help(ConnectorCallProposal.dismissNote)
+    /// Every button the row has (`InboxRowActionsContent.rowButtons`), the
+    /// list VoiceOver names too.
+    private var all: [InboxRowButton] { content.rowButtons(hasBulk: bulk != nil) }
+
+    private var isSender: Bool {
+        if case .mailSender = content.kind { return true }
+        return false
+    }
+
+    private var bar: some View {
+        ForEach(Array(all.filter { $0.place == .bar }.enumerated()), id: \.offset) { _, button in
+            draw(button)
         }
     }
 
     @ViewBuilder
-    private func ideaButton(_ button: InboxRowActionsContent.IdeaButton) -> some View {
-        switch button {
-        case .approve: Button("Approve") { onPress(.approve) }
-        case .makeTask: Button("Make a Task") { onPress(.makeTask) }
-        case .notNow:
-            Menu("Not now") {
-                ForEach(IdeaNotNow.allCases, id: \.label) { choice in
-                    Button(choice.label) { onPress(.notNow(until: choice.until())) }
+    private func draw(_ button: InboxRowButton) -> some View {
+        if button.press == .markAllDone, let bulk {
+            InboxBulkPressButton(
+                title: button.title, confirmTitle: { "Mark \($0) Done" }, model: bulk, style: .inline)
+                .disabled(!button.enabled)
+        } else if !button.choices.isEmpty {
+            Menu(button.title) {
+                ForEach(Array(button.choices.enumerated()), id: \.offset) { _, choice in
+                    Button(choice.title) { onPress(choice.currentPress) }
                 }
             }
             .menuStyle(.button)
             .fixedSize()
-        case .reject: Button("Reject", role: .destructive) { onPress(.reject) }
-        case .activate: Button("Activate") { onPress(.activate) }
-        case .drop: Button("Drop", role: .destructive) { onPress(.drop) }
+            .disabled(!button.enabled)
+        } else {
+            Button(button.title, role: button.destructive ? .destructive : nil) { onPress(button.currentPress) }
+                .disabled(!button.enabled)
+                .help(button.help ?? "")
         }
     }
 
@@ -132,12 +90,40 @@ struct InboxRowActionsView: View {
     }
 }
 
+/// A sender or Older row's buttons, observing its **Mark All Done…** press:
+/// while it asks, the row shows only the question — a sender's "<N> open
+/// from this sender", then **Cancel** and the prominent "Mark N Done" (no
+/// Open or Mute meanwhile, as the approved mockup) — and its usual buttons
+/// (`idle`) otherwise.
+struct InboxBulkRowButtons<Idle: View>: View {
+    @ObservedObject var model: InboxBulkPressModel
+    let isSender: Bool
+    @ViewBuilder let idle: () -> Idle
+
+    var body: some View {
+        if case let .confirming(plan) = model.state {
+            if isSender {
+                Text("\(plan.count) open from this sender")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            InboxBulkPressButton(
+                title: "Mark All Done…", confirmTitle: { "Mark \($0) Done" }, model: model, style: .inline)
+        } else {
+            idle()
+        }
+    }
+}
+
 /// What sits under a row with a `ref`: a proposal's own summary, the
 /// missing-CLI line on a row with a press that needs the CLI, a failed
 /// press's error with **Retry**, the Reply composer (or its refusal), or
 /// "Reply waiting for approval". Nothing for an idle row without these.
 struct InboxRowActionsFooter: View {
     let content: InboxRowActionsContent
+    /// A sender or Older row's bulk press: its result line and Try Again.
+    var bulk: InboxBulkPressModel?
     var onPress: (InboxRowPress) -> Void = { _ in }
 
     /// The composer's field has the keyboard: only then does ⌘↩ propose,
@@ -187,6 +173,9 @@ struct InboxRowActionsFooter: View {
             case nil:
                 EmptyView()
             }
+            if let bulk {
+                InboxBulkPressResult(model: bulk, inline: true)
+            }
         }
         .controlSize(.small)
     }
@@ -221,5 +210,30 @@ struct InboxRowActionsFooter: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+}
+
+/// The footer of a row with a bulk press (a sender or Older row): it
+/// observes the press, so its result line and Try Again appear the moment
+/// it finishes. Nothing is drawn — no empty footer, no spacing — while the
+/// row has no footer of its own and the press has nothing to say (idle,
+/// under way, or a full success).
+struct InboxRowBulkFooter: View {
+    let content: InboxRowActionsContent
+    @ObservedObject var model: InboxBulkPressModel
+    var onPress: (InboxRowPress) -> Void = { _ in }
+
+    var body: some View {
+        if drawsAnything {
+            InboxRowActionsFooter(content: content, bulk: showsResult ? model : nil, onPress: onPress)
+        }
+    }
+
+    var drawsAnything: Bool { content.hasFooter || showsResult }
+
+    /// A finished press with a result line or Try Again.
+    private var showsResult: Bool {
+        guard case let .finished(result) = model.state else { return false }
+        return InboxBulkPressButton.resultLine(result) != nil || InboxBulkPressButton.offersTryAgain(result)
     }
 }

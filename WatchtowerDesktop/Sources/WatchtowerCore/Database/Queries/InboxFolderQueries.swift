@@ -266,6 +266,30 @@ package enum InboxFolderQueries {
     /// Its feature (`builtin.Entry.FeatureIDs`, Go): attention detection.
     package static let waitingForMeFeatureID = "secretary-inbox"
 
+    /// The `mail-waiting` built-in as the root's composition needs it.
+    /// Turned off by Waiting for me's rule: `featureOn` false, or `enabled`
+    /// 0 with no `disabled_reason`; its cards are then left out. There is no
+    /// stand-in: its row exists only once its artifact does (its first
+    /// successful run), and a card a stopped built-in left stays.
+    package static func mailWaiting(_ db: Database, featureOn: Bool = true) throws -> MailWaitingState {
+        do {
+            guard let row = try Row.fetchOne(
+                db, sql: "SELECT id, enabled, disabled_reason FROM automations WHERE builtin_id = ?",
+                arguments: [mailWaitingBuiltinID]) else {
+                return MailWaitingState(automationID: nil, turnedOff: !featureOn)
+            }
+            let enabled: Bool = row["enabled"] ?? true
+            let stopped = !((row["disabled_reason"] as String?) ?? "").isEmpty
+            return MailWaitingState(automationID: row["id"], turnedOff: !featureOn || (!enabled && !stopped))
+        } catch let error as DatabaseError where ActionStripViewModel.isMissingTable(error) {
+            return MailWaitingState(automationID: nil, turnedOff: !featureOn)
+        }
+    }
+
+    /// The `mail-waiting` built-in's id (`builtin.Entry`, Go). Its feature is
+    /// Waiting for me's (`waitingForMeFeatureID`).
+    package static let mailWaitingBuiltinID = "mail-waiting"
+
     /// The `idea-finder` built-in is indexed: Idea finder stays in the root
     /// with no ideas yet (its New idea and Find Ideas in Past Messages…).
     package static func ideaFinderPresent(_ db: Database) throws -> Bool {
@@ -312,6 +336,29 @@ package struct WaitingForMeState: Equatable, Sendable {
         _ artifacts: [Int64: [AutomationOutputCard]]
     ) -> [Int64: [AutomationOutputCard]] {
         guard messagesStandIn || turnedOff, let automationID else { return artifacts }
+        return artifacts.mapValues { $0.filter { $0.automationID != automationID } }
+    }
+}
+
+/// The `mail-waiting` built-in's place in the root (spec "Waiting for me and
+/// Mail waiting"): its artifact is the Mail waiting row, never counted.
+package struct MailWaitingState: Equatable, Sendable {
+    /// The built-in's automation row; nil before it is indexed.
+    package let automationID: Int64?
+    /// Attention detection off, or the owner turned the built-in off: its
+    /// cards are neither shown nor read.
+    package let turnedOff: Bool
+
+    package init(automationID: Int64?, turnedOff: Bool) {
+        self.automationID = automationID
+        self.turnedOff = turnedOff
+    }
+
+    /// `artifacts` without the built-in's cards while it is turned off.
+    package func withoutTurnedOffArtifacts(
+        _ artifacts: [Int64: [AutomationOutputCard]]
+    ) -> [Int64: [AutomationOutputCard]] {
+        guard turnedOff, let automationID else { return artifacts }
         return artifacts.mapValues { $0.filter { $0.automationID != automationID } }
     }
 }

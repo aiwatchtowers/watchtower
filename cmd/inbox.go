@@ -56,10 +56,14 @@ var inboxShowCmd = &cobra.Command{
 }
 
 var inboxResolveCmd = &cobra.Command{
-	Use:   "resolve <id>",
-	Short: "Mark an inbox item as resolved",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runInboxResolve,
+	Use:   "resolve <id> | --dry-run (--sender <addr> --trigger email_received | --older-than <n>d --people) | --ids <a,b,c>",
+	Short: "Mark an inbox item, or items in bulk, as resolved",
+	Long: `Marks one inbox item as resolved, or the owner marks items done in bulk:
+a --dry-run names the open items a filter matches, and --ids resolves exactly
+the ids it named that are still open. The bulk forms are refused under an AI
+agent.`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: runInboxResolve,
 }
 
 var inboxDismissCmd = &cobra.Command{
@@ -105,6 +109,14 @@ func init() {
 	inboxCmd.Flags().BoolVar(&inboxFlagAll, "all", false, "include resolved and dismissed items")
 	inboxCmd.Flags().BoolVar(&inboxFlagIncludeArchived, "include-archived", false, "include archived items (auto-archived pending items are hidden by default)")
 	inboxCmd.Flags().BoolVar(&inboxFlagJSON, "json", false, "output as JSON")
+	rf := inboxResolveCmd.Flags()
+	rf.BoolVar(&inboxResolveFlags.dryRun, "dry-run", false, "name the open items a filter matches; write nothing")
+	rf.StringVar(&inboxResolveFlags.sender, "sender", "", "with --dry-run: open mail from this address (any spelling)")
+	rf.StringVar(&inboxResolveFlags.trigger, "trigger", "", "with --sender: email_received (the only value)")
+	rf.StringVar(&inboxResolveFlags.olderThan, "older-than", "", "with --dry-run --people: items at least <n>d old (1-365)")
+	rf.BoolVar(&inboxResolveFlags.people, "people", false, "with --older-than: open people items (every trigger but email_received)")
+	rf.StringVar(&inboxResolveFlags.ids, "ids", "", fmt.Sprintf("resolve these open items: comma-separated ids, at most %d", inboxResolveMaxIDs))
+	rf.BoolVar(&inboxResolveFlags.json, "json", false, "print the result as one JSON line")
 	inboxGenerateCmd.Flags().BoolVar(&inboxGenFlagProgressJSON, "progress-json", false, "output progress as JSON lines")
 	inboxBackfillMentionsCmd.Flags().StringVar(&inboxBackfillMentionsFlagSince, "since", "", "recover mentions after this date (YYYY-MM-DD, parsed as UTC midnight; that instant itself is excluded); required")
 	inboxBackfillMentionsCmd.Flags().BoolVar(&inboxBackfillMentionsFlagDryRun, "dry-run", false, "report what would be recovered without creating any inbox items")
@@ -242,6 +254,12 @@ func runInboxShow(cmd *cobra.Command, args []string) error {
 }
 
 func runInboxResolve(cmd *cobra.Command, args []string) error {
+	if inboxResolveBulk(cmd) {
+		return runInboxResolveBulk(cmd, args)
+	}
+	if len(args) == 0 {
+		return fmt.Errorf("give an inbox item id, or --dry-run with a filter, or --ids")
+	}
 	id, err := strconv.Atoi(args[0])
 	if err != nil || id <= 0 {
 		return fmt.Errorf("invalid inbox item ID %q: must be a positive integer", args[0])
@@ -259,6 +277,209 @@ func runInboxResolve(cmd *cobra.Command, args []string) error {
 
 	fmt.Fprintf(cmd.OutOrStdout(), "Inbox item #%d resolved\n", id)
 	return nil
+}
+
+// inboxResolveFlags are the bulk flags of `inbox resolve`.
+var inboxResolveFlags struct {
+	dryRun, people, json       bool
+	sender, trigger, olderThan string
+	ids                        string
+}
+
+// inboxResolveMaxIDs caps the distinct ids one --ids press resolves: the
+// dry run's own cap, so a dry run's ids always fit a press.
+const inboxResolveMaxIDs = db.BulkResolveMaxIDs
+
+// inboxResolveBulk reports whether any bulk flag was given.
+func inboxResolveBulk(cmd *cobra.Command) bool {
+	for _, name := range []string{"dry-run", "sender", "trigger", "older-than", "people", "ids", "json"} {
+		if cmd.Flags().Changed(name) {
+			return true
+		}
+	}
+	return false
+}
+
+// runInboxResolveBulk runs a bulk form of `inbox resolve`: the owner's
+// --dry-run names the open items a filter matches, and --ids resolves
+// exactly those still open, so a press never closes more than its dry run
+// named. Refused under an AI agent (AGENT-07). With --json the last stdout
+// line is the result; on any failure it is {"resolved","of","error"}.
+func runInboxResolveBulk(cmd *cobra.Command, args []string) error {
+	resolved, of, err := inboxResolveBulkRun(cmd, args)
+	if err == nil {
+		return nil
+	}
+	if inboxResolveFlags.json {
+		line, _ := json.Marshal(struct {
+			Resolved int    `json:"resolved"`
+			Of       int    `json:"of"`
+			Error    string `json:"error"`
+		}{resolved, of, err.Error()})
+		fmt.Fprintln(cmd.OutOrStdout(), string(line))
+		return err
+	}
+	if resolved > 0 {
+		return fmt.Errorf("closed %d of %d: %w", resolved, of, err)
+	}
+	return err
+}
+
+// inboxResolveBulkRun returns how many items it resolved of how many
+// distinct ids were asked (0/0 before any write) and the error, if any.
+func inboxResolveBulkRun(cmd *cobra.Command, args []string) (int, int, error) {
+	if err := refuseUnderAgent("resolve inbox items in bulk"); err != nil {
+		return 0, 0, err
+	}
+	f := inboxResolveFlags
+	changed := cmd.Flags().Changed
+	if len(args) > 0 {
+		return 0, 0, fmt.Errorf("an inbox item id takes no flags: resolve one id, or use --dry-run / --ids")
+	}
+	if changed("ids") {
+		if f.dryRun || changed("sender") || changed("trigger") || changed("older-than") || f.people {
+			return 0, 0, fmt.Errorf("--ids takes no --dry-run and no filter: it resolves the ids a dry run named")
+		}
+		ids, err := parseInboxResolveIDs(f.ids)
+		if err != nil {
+			return 0, 0, err
+		}
+		return inboxResolveIDs(cmd, ids)
+	}
+	if !f.dryRun {
+		return 0, 0, fmt.Errorf("a filter needs --dry-run; resolve the ids it names with --ids")
+	}
+	query, err := inboxResolveFilter(cmd)
+	if err != nil {
+		return 0, 0, err
+	}
+	database, err := openDBFromConfig()
+	if err != nil {
+		return 0, 0, err
+	}
+	defer database.Close()
+	ids, err := query(database)
+	if err != nil {
+		return 0, 0, err
+	}
+	out := cmd.OutOrStdout()
+	if !f.json {
+		fmt.Fprintf(out, "%d items match\n", len(ids))
+		return 0, 0, nil
+	}
+	line, err := json.Marshal(struct {
+		Count int      `json:"count"`
+		IDs   []string `json:"ids"`
+	}{len(ids), decimalIDs(ids)})
+	if err != nil {
+		return 0, 0, err
+	}
+	fmt.Fprintln(out, string(line))
+	return 0, 0, nil
+}
+
+// inboxResolveFilter checks the dry run's one filter and returns its read:
+// --sender X --trigger email_received, or --older-than Nd --people.
+func inboxResolveFilter(cmd *cobra.Command) (func(*db.DB) ([]int64, error), error) {
+	f := inboxResolveFlags
+	changed := cmd.Flags().Changed
+	mail := changed("sender") || changed("trigger")
+	people := changed("older-than") || f.people
+	switch {
+	case mail && people:
+		return nil, fmt.Errorf("give one filter: --sender with --trigger, or --older-than with --people")
+	case mail:
+		address := db.MailSenderKey(f.sender)
+		if address == "" {
+			return nil, fmt.Errorf("--sender needs an address")
+		}
+		if f.trigger != "email_received" {
+			return nil, fmt.Errorf("--sender needs --trigger email_received (the only value)")
+		}
+		return func(d *db.DB) ([]int64, error) {
+			return d.OpenMailItemIDsFrom(cmd.Context(), time.Now(), address)
+		}, nil
+	case people:
+		days, err := parseOlderThanDays(f.olderThan)
+		if err != nil {
+			return nil, err
+		}
+		if !f.people {
+			return nil, fmt.Errorf("--older-than needs --people")
+		}
+		return func(d *db.DB) ([]int64, error) {
+			return d.OpenPeopleItemIDsOlderThan(cmd.Context(), time.Now(), time.Duration(days)*24*time.Hour)
+		}, nil
+	}
+	return nil, fmt.Errorf("--dry-run needs a filter: --sender with --trigger, or --older-than with --people")
+}
+
+// parseOlderThanDays reads --older-than: <n>d with n from 1 to 365.
+func parseOlderThanDays(s string) (int, error) {
+	n, err := strconv.Atoi(strings.TrimSuffix(s, "d"))
+	if !strings.HasSuffix(s, "d") || err != nil || n < 1 || n > 365 || strconv.Itoa(n)+"d" != s {
+		return 0, fmt.Errorf("--older-than %q: want <n>d with n from 1 to 365", s)
+	}
+	return n, nil
+}
+
+// parseInboxResolveIDs reads --ids: positive integers, duplicates dropped,
+// at most inboxResolveMaxIDs distinct.
+func parseInboxResolveIDs(s string) ([]int64, error) {
+	var ids []int64
+	seen := map[int64]bool{}
+	for part := range strings.SplitSeq(s, ",") {
+		id, err := strconv.ParseInt(part, 10, 64)
+		if err != nil || id <= 0 {
+			return nil, fmt.Errorf("--ids %q: each id must be a positive integer", part)
+		}
+		if !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) > inboxResolveMaxIDs {
+		return nil, fmt.Errorf("--ids names %d items: at most %d", len(ids), inboxResolveMaxIDs)
+	}
+	return ids, nil
+}
+
+// inboxResolveIDs resolves the items among ids that are still open now.
+func inboxResolveIDs(cmd *cobra.Command, ids []int64) (int, int, error) {
+	database, err := openDBFromConfig()
+	if err != nil {
+		return 0, len(ids), err
+	}
+	defer database.Close()
+	resolved, err := database.ResolveOpenInboxItems(cmd.Context(), time.Now(), ids, db.BulkResolveReason)
+	if err != nil {
+		return len(resolved), len(ids), err
+	}
+	out := cmd.OutOrStdout()
+	skipped := len(ids) - len(resolved)
+	if !inboxResolveFlags.json {
+		fmt.Fprintf(out, "Resolved %d, skipped %d\n", len(resolved), skipped)
+		return len(resolved), len(ids), nil
+	}
+	line, err := json.Marshal(struct {
+		Resolved int      `json:"resolved"`
+		Skipped  int      `json:"skipped"`
+		IDs      []string `json:"ids"`
+	}{len(resolved), skipped, decimalIDs(resolved)})
+	if err != nil {
+		return len(resolved), len(ids), err
+	}
+	fmt.Fprintln(out, string(line))
+	return len(resolved), len(ids), nil
+}
+
+// decimalIDs spells ids as decimal strings, never null.
+func decimalIDs(ids []int64) []string {
+	out := make([]string, len(ids))
+	for i, id := range ids {
+		out[i] = strconv.FormatInt(id, 10)
+	}
+	return out
 }
 
 func runInboxDismiss(cmd *cobra.Command, args []string) error {

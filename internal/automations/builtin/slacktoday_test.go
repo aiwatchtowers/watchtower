@@ -1019,8 +1019,10 @@ func TestRegistry_SlackTodayEntry(t *testing.T) {
 		t.Errorf("card copy = %+v / %+v / %+v / %q", e.Reads, e.Does, e.Sends, e.When(nil))
 	}
 	ids := allIDs()
-	if i := slices.Index(ids, SlackTodayID); i < 1 || ids[i-1] != waitingID {
-		t.Errorf("card order = %v; want slack-today right after waiting-for-me", ids)
+	// After the waiting_for_me slot's two built-ins (Waiting for me, then
+	// Mail waiting), as its slot runs right after theirs.
+	if i := slices.Index(ids, SlackTodayID); i < 2 || ids[i-2] != waitingID || ids[i-1] != MailWaitingID {
+		t.Errorf("card order = %v; want slack-today right after waiting-for-me and mail-waiting", ids)
 	}
 	if !slices.Contains(automations.SyncSlots, string(SlotSlackToday)) {
 		t.Errorf("SyncSlots = %v", automations.SyncSlots)

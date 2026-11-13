@@ -24,19 +24,47 @@ public struct ArtifactRefHooks {
     /// A press on the row itself in `.inbox` (an idea opens its full card);
     /// nil leaves the row's own `link`, if any.
     public var open: (ArtifactRef) -> (() -> Void)?
+    /// The native actions as named VoiceOver actions on the row: in
+    /// `.inbox` they show only on hover or focus, and hidden they leave
+    /// the accessibility tree.
+    public var accessibilityActions: (ArtifactRef) -> [ArtifactAccessibilityAction]
+    /// True keeps the row's actions shown in `.inbox` without hover or
+    /// focus (a bulk press asking or running). Read while the row draws, so
+    /// an Observation-tracked answer redraws the row when it changes.
+    public var pinsActions: (ArtifactRef) -> Bool
+    /// True on a list's first row folds the rows after it in `.inbox`
+    /// behind **Show <n> older** (the row itself stays); other rows ignore it.
+    public var foldsRowsAfter: (ArtifactRef) -> Bool
 
     public init(
         isOpen: @escaping (ArtifactRef) -> Bool = { _ in true },
         nativeActions: @escaping (ArtifactRef, ArtifactRenderMode) -> AnyView? = { _, _ in nil },
         nativeKinds: @escaping (ArtifactRef) -> Set<ArtifactActionKind> = { _ in [] },
         nativeFooter: @escaping (ArtifactRef, ArtifactRenderMode) -> AnyView? = { _, _ in nil },
-        open: @escaping (ArtifactRef) -> (() -> Void)? = { _ in nil }
+        open: @escaping (ArtifactRef) -> (() -> Void)? = { _ in nil },
+        accessibilityActions: @escaping (ArtifactRef) -> [ArtifactAccessibilityAction] = { _ in [] },
+        pinsActions: @escaping (ArtifactRef) -> Bool = { _ in false },
+        foldsRowsAfter: @escaping (ArtifactRef) -> Bool = { _ in false }
     ) {
         self.isOpen = isOpen
         self.nativeActions = nativeActions
         self.nativeKinds = nativeKinds
         self.nativeFooter = nativeFooter
         self.open = open
+        self.accessibilityActions = accessibilityActions
+        self.pinsActions = pinsActions
+        self.foldsRowsAfter = foldsRowsAfter
+    }
+}
+
+/// One named action VoiceOver offers on a row.
+public struct ArtifactAccessibilityAction {
+    public let name: String
+    public let perform: () -> Void
+
+    public init(name: String, perform: @escaping () -> Void) {
+        self.name = name
+        self.perform = perform
     }
 }
 
@@ -61,6 +89,9 @@ public struct ArtifactEnvironment {
     /// now: the host disables a Reply already sent, a link its rules refuse,
     /// a press while one is under way, a kind it does not press yet.
     public var isActionEnabled: (Int) -> Bool
+    /// The list row the keyboard is on (Waiting for me, Mail waiting): in
+    /// `.inbox` its actions show as on hover. Nil: no row has it.
+    public var focusedRef: ArtifactRef?
 
     public init(
         markdown: @escaping (String) -> AnyView = Self.inlineMarkdown,
@@ -68,7 +99,8 @@ public struct ArtifactEnvironment {
         onAction: @escaping (Int) -> Void = { _ in },
         refHooks: ArtifactRefHooks = ArtifactRefHooks(),
         targetButtonState: @escaping (Int) -> ArtifactTargetButtonState = { _ in .idle },
-        isActionEnabled: @escaping (Int) -> Bool = { _ in true }
+        isActionEnabled: @escaping (Int) -> Bool = { _ in true },
+        focusedRef: ArtifactRef? = nil
     ) {
         self.markdown = markdown
         self.avatar = avatar
@@ -76,6 +108,7 @@ public struct ArtifactEnvironment {
         self.refHooks = refHooks
         self.targetButtonState = targetButtonState
         self.isActionEnabled = isActionEnabled
+        self.focusedRef = focusedRef
     }
 
     /// Inline-only markdown; text that does not parse shows as written.
@@ -83,6 +116,17 @@ public struct ArtifactEnvironment {
         let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
         let attributed = (try? AttributedString(markdown: text, options: options)) ?? AttributedString(text)
         return AnyView(Text(attributed).fixedSize(horizontal: false, vertical: true))
+    }
+}
+
+/// The refs of the list rows a card draws, in document order: rows its
+/// host hides and rows folded behind **Show <n> older** are left out. A
+/// keyboard host reads it to move its focus over what is on screen.
+public struct ArtifactShownRefsKey: PreferenceKey {
+    public static let defaultValue: [ArtifactRef] = []
+
+    public static func reduce(value: inout [ArtifactRef], nextValue: () -> [ArtifactRef]) {
+        value.append(contentsOf: nextValue())
     }
 }
 

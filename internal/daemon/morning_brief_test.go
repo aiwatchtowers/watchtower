@@ -144,7 +144,7 @@ func wireTestBuiltins(t *testing.T, d *Daemon, database *db.DB, cfg *config.Conf
 	exec := automations.NewExecutor(database, b, automations.ExecutorOptions{Logger: log.New(io.Discard, "", 0)})
 	gates := map[string]builtin.Gate{morningBriefID: d.MorningBriefGate(),
 		trackMyThreadsID: d.TrackMyThreadsGate(), ideaFinderID: d.IdeaFinderGate(), waitingForMeID: d.WaitingForMeGate(),
-		slackTodayID: d.SlackTodayGate()}
+		mailWaitingID: d.MailWaitingGate(), slackTodayID: d.SlackTodayGate()}
 	r := builtin.NewRunner(database, exec, gates, cfg, clock, d.logger)
 	_, err := builtin.Sync(context.Background(), database, cfg.WorkspaceDir(), cfg, clock.Now())
 	require.NoError(t, err)

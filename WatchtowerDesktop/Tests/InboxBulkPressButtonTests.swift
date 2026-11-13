@@ -31,7 +31,9 @@ final class InboxBulkPressButtonTests: XCTestCase {
             (.done(count: 0, skipped: 0), false),
             (.done(count: 3, skipped: 1), false),
             (.partial(done: 1, of: 3, error: "card 2 is gone"), true),
-            (.failed("database is locked"), true)
+            (.failed("database is locked"), true),
+            // The write ran, its answer unreadable: said, never offered again.
+            (.unconfirmed(InboxBulkCLI.unreadAnswerMessage), false)
         ]
         for (result, offered) in cases {
             let model = await finishedModel(result)
@@ -65,6 +67,25 @@ final class InboxBulkPressButtonTests: XCTestCase {
         let idle = InboxBulkPressButton(title: nil, confirmTitle: { "Approve \($0)" }, model: InboxBulkPressModel())
         XCTAssertThrowsError(try idle.inspect().find(ViewType.Button.self))
         XCTAssertThrowsError(try idle.inspect().find(ViewType.Text.self))
+    }
+
+    /// A row's footer (the approved mockup): a partial or failed line in
+    /// the error tone with Try Again beside it, on one line; a success line
+    /// stays secondary with no Try Again.
+    func testInlineResultPutsTryAgainBesideTheError() async throws {
+        let partial = InboxBulkResult.partial(done: 12, of: 46, error: "database is locked")
+        let line = try XCTUnwrap(InboxBulkPressButton.resultLine(partial))
+        let failed = InboxBulkPressResult(model: await finishedModel(partial), inline: true)
+        let row = try failed.inspect().find(ViewType.HStack.self)
+        XCTAssertNoThrow(try row.find(text: line))
+        XCTAssertNoThrow(try row.find(button: "Try Again"))
+        XCTAssertEqual(try row.find(text: line).attributes().foregroundColor(), Tone.error)
+
+        let done = InboxBulkResult.done(count: 4, skipped: 2)
+        let success = InboxBulkPressResult(model: await finishedModel(done), inline: true)
+        let text = try success.inspect().find(text: try XCTUnwrap(InboxBulkPressButton.resultLine(done)))
+        XCTAssertNotEqual(try? text.attributes().foregroundColor(), Tone.error)
+        XCTAssertThrowsError(try success.inspect().find(button: "Try Again"))
     }
 
     func testTryAgainCallsTheStoredPlan() async throws {

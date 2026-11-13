@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import WatchtowerDesktop
+import WatchtowerCore
 import WatchtowerTestSupport
 
 final class InboxLearnedRulesViewModelTests: XCTestCase {
@@ -86,6 +87,70 @@ final class InboxLearnedRulesViewModelTests: XCTestCase {
         // ViewModel should reflect the new mute
         XCTAssertEqual(vm.mutes.count, 1)
         XCTAssertEqual(vm.mutes[0].scopeKey, "sender:U9")
+    }
+
+    // MARK: - Mute on a Mail waiting row
+
+    @MainActor
+    func test_INBOX_05_mute_sender_writes_one_user_rule() async throws {
+        // BEHAVIOR INBOX-05 — see docs/inventory/inbox-pulse.md
+        // Mute on a Mail waiting sender row writes one user rule through the
+        // Desktop's rules writer and never changes an inbox_items row.
+        // Do not weaken or remove without explicit owner approval.
+        try await pool.write { db in
+            _ = try TestDatabase.insertInboxItem(
+                db, messageTS: "1700000000.000100", senderUserID: "bob@example.com", triggerType: "email_received",
+                snippet: "Weekly digest — open it")
+            _ = try TestDatabase.insertInboxItem(
+                db, messageTS: "1700000000.000200", senderUserID: "Bob@Example.com ", triggerType: "email_received")
+            _ = try TestDatabase.insertInboxItem(db, messageTS: "1700000000.000300", senderUserID: "U002")
+        }
+        let itemsBefore = try await pool.read { db in
+            try Row.fetchAll(db, sql: "SELECT * FROM inbox_items ORDER BY id")
+        }
+        let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner(), dayChangeSignals: [])
+
+        await vm.muteSender(" Bob@Example.com")
+
+        let rules = try await pool.read { db in
+            try Row.fetchAll(db, sql: "SELECT rule_type, scope_key, source, weight FROM inbox_learned_rules")
+        }
+        XCTAssertEqual(rules.count, 1)
+        XCTAssertEqual(rules.first?["rule_type"] as String?, "source_mute")
+        XCTAssertEqual(rules.first?["scope_key"] as String?, "email:bob@example.com")
+        XCTAssertEqual(rules.first?["source"] as String?, "user_rule")
+        XCTAssertEqual(rules.first?["weight"] as Double?, -1.0)
+        let itemsAfter = try await pool.read { db in
+            try Row.fetchAll(db, sql: "SELECT * FROM inbox_items ORDER BY id")
+        }
+        XCTAssertEqual(itemsAfter, itemsBefore, "no inbox_items column changes")
+        XCTAssertTrue(vm.textRowErrors.isEmpty)
+
+        // The same sender again, spelled another way: still one rule.
+        await vm.muteSender("bob@example.com")
+        let count = try await pool.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM inbox_learned_rules") ?? 0
+        }
+        XCTAssertEqual(count, 1)
+    }
+
+    /// A Mute that cannot be stored stays on its row with Retry.
+    @MainActor
+    func testAFailedMuteStaysOnItsRowWithRetry() async throws {
+        try await pool.write { db in
+            try db.execute(sql: """
+                CREATE TRIGGER fail_rule BEFORE INSERT ON inbox_learned_rules
+                BEGIN SELECT RAISE(ABORT, 'disk full'); END
+                """)
+        }
+        let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner(), dayChangeSignals: [])
+
+        await vm.muteSender("Bob@Example.com")
+
+        let failure = vm.textRowErrors[InboxRef(kind: .mailSender, key: "bob@example.com")]
+        XCTAssertEqual(failure?.press, .mute)
+        XCTAssertTrue(failure?.message.contains("disk full") == true, failure?.message ?? "nil")
+        XCTAssertFalse(vm.isMuting("bob@example.com"))
     }
 
     // MARK: - testRemoveRule

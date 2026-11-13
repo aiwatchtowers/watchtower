@@ -331,6 +331,51 @@
       "content_hash": "e1ab0cb2bf885c75de84ded42836df276de2dc2176d82a88d9dfc270b11b7d77"
     },
     {
+      "name": "built-in text refs",
+      "built_in": true,
+      "input": {
+        "title": "Mail waiting",
+        "blocks": [
+          {
+            "type": "list",
+            "rows": [
+              {
+                "title": "billing@example.com",
+                "subtitle": "Invoice 42",
+                "badge": {
+                  "text": "3"
+                },
+                "ref": {
+                  "kind": "mail_sender",
+                  "id": "billing@example.com"
+                }
+              },
+              {
+                "title": "Older",
+                "ref": {
+                  "kind": "waiting_older",
+                  "id": "people"
+                }
+              },
+              {
+                "title": "Deploy plan",
+                "ref": {
+                  "kind": "inbox_item",
+                  "id": 12
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "card_actions": "[]",
+      "canonical": "{\"v\":1,\"blocks\":[{\"type\":\"list\",\"rows\":[{\"title\":\"billing@example.com\",\"subtitle\":\"Invoice 42\",\"badge\":{\"text\":\"3\"},\"actions\":[],\"ref\":{\"kind\":\"mail_sender\",\"id\":\"billing@example.com\"}},{\"title\":\"Older\",\"actions\":[],\"ref\":{\"kind\":\"waiting_older\",\"id\":\"people\"}},{\"title\":\"Deploy plan\",\"actions\":[],\"ref\":{\"kind\":\"inbox_item\",\"id\":12}}],\"empty\":\"Nothing here\"}]}",
+      "plain_text": "- billing@example.com — Invoice 42 [3]\n- Older\n- Deploy plan",
+      "actions": [],
+      "action_hashes": [],
+      "content_hash": "d0ea8c4bdb3e6947894bb88a80987409f690d96980243ea7c35225f6929b162e"
+    },
+    {
       "name": "target without intent or parent",
       "built_in": false,
       "input": {
@@ -842,7 +887,7 @@
           }
         ]
       },
-      "error": "output.inbox(): blocks[0].rows[0].ref.kind must be one of inbox_item, track, idea, reminder, action"
+      "error": "output.inbox(): blocks[0].rows[0].ref.kind must be one of inbox_item, track, idea, reminder, action, mail_sender, waiting_older"
     },
     {
       "name": "ref id zero",
@@ -3746,6 +3791,204 @@
         ]
       },
       "error": "output.inbox(): blocks[0].rows[0].actions[0] has more than one of open, chat, agent, reply, target"
+    },
+    {
+      "name": "mail_sender ref from a personal recipe",
+      "built_in": false,
+      "input": {
+        "title": "Mail waiting",
+        "blocks": [
+          {
+            "type": "list",
+            "rows": [
+              {
+                "title": "c",
+                "ref": {
+                  "kind": "mail_sender",
+                  "id": "a@example.com"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "error": "output.inbox(): blocks[0].rows[0].ref: a mail_sender ref is only for built-in automations"
+    },
+    {
+      "name": "waiting_older ref from a personal recipe",
+      "built_in": false,
+      "input": {
+        "title": "Mail waiting",
+        "blocks": [
+          {
+            "type": "list",
+            "rows": [
+              {
+                "title": "c",
+                "ref": {
+                  "kind": "waiting_older",
+                  "id": "people"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "error": "output.inbox(): blocks[0].rows[0].ref: a waiting_older ref is only for built-in automations"
+    },
+    {
+      "name": "mail_sender id with an upper-case letter",
+      "built_in": true,
+      "input": {
+        "title": "Mail waiting",
+        "blocks": [
+          {
+            "type": "list",
+            "rows": [
+              {
+                "title": "c",
+                "ref": {
+                  "kind": "mail_sender",
+                  "id": "A@example.com"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "error": "output.inbox(): blocks[0].rows[0].ref.id must be a sender address"
+    },
+    {
+      "name": "mail_sender id with a space",
+      "built_in": true,
+      "input": {
+        "title": "Mail waiting",
+        "blocks": [
+          {
+            "type": "list",
+            "rows": [
+              {
+                "title": "c",
+                "ref": {
+                  "kind": "mail_sender",
+                  "id": "a example.com"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "error": "output.inbox(): blocks[0].rows[0].ref.id must be a sender address"
+    },
+    {
+      "name": "mail_sender id with an ampersand",
+      "built_in": true,
+      "input": {
+        "title": "Mail waiting",
+        "blocks": [
+          {
+            "type": "list",
+            "rows": [
+              {
+                "title": "c",
+                "ref": {
+                  "kind": "mail_sender",
+                  "id": "a&b@example.com"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "error": "output.inbox(): blocks[0].rows[0].ref.id must be a sender address"
+    },
+    {
+      "name": "mail_sender id empty",
+      "built_in": true,
+      "input": {
+        "title": "Mail waiting",
+        "blocks": [
+          {
+            "type": "list",
+            "rows": [
+              {
+                "title": "c",
+                "ref": {
+                  "kind": "mail_sender",
+                  "id": ""
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "error": "output.inbox(): blocks[0].rows[0].ref.id must be a sender address"
+    },
+    {
+      "name": "mail_sender id a number",
+      "built_in": true,
+      "input": {
+        "title": "Mail waiting",
+        "blocks": [
+          {
+            "type": "list",
+            "rows": [
+              {
+                "title": "c",
+                "ref": {
+                  "kind": "mail_sender",
+                  "id": 7
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "error": "output.inbox(): blocks[0].rows[0].ref.id must be a sender address"
+    },
+    {
+      "name": "waiting_older id other than people",
+      "built_in": true,
+      "input": {
+        "title": "Mail waiting",
+        "blocks": [
+          {
+            "type": "list",
+            "rows": [
+              {
+                "title": "c",
+                "ref": {
+                  "kind": "waiting_older",
+                  "id": "mail"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "error": "output.inbox(): blocks[0].rows[0].ref.id must be \"people\""
+    },
+    {
+      "name": "integer ref kind with a string id",
+      "built_in": true,
+      "input": {
+        "title": "Mail waiting",
+        "blocks": [
+          {
+            "type": "list",
+            "rows": [
+              {
+                "title": "c",
+                "ref": {
+                  "kind": "track",
+                  "id": "4"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "error": "output.inbox(): blocks[0].rows[0].ref.id must be a positive integer"
     }
   ],
   "unsupported": [

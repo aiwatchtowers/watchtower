@@ -179,6 +179,17 @@ func TestRegistry_LookupAndAtSlot(t *testing.T) {
 	}
 }
 
+// Mail waiting shares Waiting for me's slot and runs right after it.
+func TestRegistry_MailWaitingRunsRightAfterWaitingForMe(t *testing.T) {
+	var ids []string
+	for _, e := range AtSlot(SlotWaitingForMe) {
+		ids = append(ids, e.ID)
+	}
+	if !slices.Equal(ids, []string{"waiting-for-me", MailWaitingID}) {
+		t.Errorf("AtSlot(waiting_for_me) = %v; want [waiting-for-me mail-waiting]", ids)
+	}
+}
+
 func TestRegistry_ShowJSONGolden(t *testing.T) {
 	f := newFixture(t)
 	f.sync(t)

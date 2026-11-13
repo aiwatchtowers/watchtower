@@ -45,6 +45,11 @@ final class DesignShotsTests: XCTestCase {
         try renderShots(InboxRedesignShotFixtures.shots)
     }
 
+    /// The Inbox redesign's phase 2 shots alone (Waiting for me and Mail waiting, #1076).
+    func testInboxRedesignWaitingShotsRender() throws {
+        try renderShots(InboxRedesignWaitingShotFixtures.shots)
+    }
+
     /// The Inbox redesign's phase 3 shots alone (Track my threads and Idea finder).
     func testInboxRedesignPhase3ShotsRender() throws {
         try renderShots(InboxRedesignPhase3ShotFixtures.shots)

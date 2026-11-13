@@ -38,7 +38,8 @@ const (
 )
 
 // RootFolder is the slug of the Inbox's root folder: an automation with no
-// route shows its artifacts there.
+// route shows its artifacts there. It is "inbox", the folder a spec's
+// "DefaultFolder inbox" names (Waiting for me, Mail waiting).
 const RootFolder = "inbox"
 
 // ParamKind is how a card parameter is edited.
@@ -208,13 +209,32 @@ var registry = []Entry{
 		Recipe:     mustRecipe("waiting-for-me"),
 		FeatureIDs: []string{"secretary-inbox"},
 		Primitives: []string{automations.PrimitiveAttentionWaiting},
-		Reads:      []string{"The mentions, messages, tickets and mail attention detection found"},
+		Reads:      []string{"The mentions, messages and tickets attention detection found"},
 		Does: []string{
-			"Lists everything that still waits on your answer, newest first",
+			"Lists the people waiting on your answer in Slack, Jira and Linear: today, this week and older",
 			"Updates the list after every sync; an item leaves when you answer it in the source, mark it done or snooze it",
+			"Mail is in Mail waiting",
 			"Uses no AI",
 		},
 		Sends:         []string{"One Waiting for me list in your Inbox"},
+		DefaultFolder: RootFolder,
+		When:          func(*config.Config) string { return "After every sync, while attention detection is on" },
+		RunNow:        true,
+	},
+	{
+		ID:         MailWaitingID,
+		Name:       "Mail waiting",
+		Slot:       SlotWaitingForMe, // right after Waiting for me
+		Recipe:     mustRecipe(MailWaitingID),
+		FeatureIDs: []string{"secretary-inbox"},
+		Primitives: []string{automations.PrimitiveAttentionWaiting},
+		Reads:      []string{"The mail attention detection found"},
+		Does: []string{
+			"Groups the mail that waits on you by sender, the busiest first",
+			"Updates the list after every sync; muted senders are left out",
+			"Uses no AI",
+		},
+		Sends:         []string{"One Mail waiting list in your Inbox"},
 		DefaultFolder: RootFolder,
 		When:          func(*config.Config) string { return "After every sync, while attention detection is on" },
 		RunNow:        true,

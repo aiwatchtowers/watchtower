@@ -49,7 +49,7 @@ package enum InboxRootSections {
 
     /// `folder`'s sections in order; a section with no entries is left out.
     /// - Root: **Needs you** — Waiting for me's artifact, the Messages
-    ///   stand-in, the thread briefs applied in the last 24 hours (newest
+    ///   stand-in, Mail waiting's artifact, the thread briefs applied in the last 24 hours (newest
     ///   first; an older one is dropped), then, on a tree without Needs
     ///   approval, the approvals and notices. **Today** — the Morning
     ///   brief, Slack today's artifact (`slackTodayAutomationID`, there
@@ -65,6 +65,7 @@ package enum InboxRootSections {
         entries: [InboxFolderEntry],
         folder: InboxFolderKind,
         waitingForMeAutomationID: Int64?,
+        mailWaitingAutomationID: Int64?,
         slackTodayAutomationID: Int64?,
         now: Date,
         calendar: Calendar
@@ -82,51 +83,69 @@ package enum InboxRootSections {
             }
             return listed([(.today, entries.filter(changedToday)), (.earlier, entries.filter { !changedToday($0) })])
         case .root:
-            var waiting: [InboxFolderEntry] = []
-            var standIn: [InboxFolderEntry] = []
-            var briefs: [(at: Date, entry: InboxFolderEntry)] = []
-            var approvals: [InboxFolderEntry] = []
-            var day: [InboxFolderEntry] = []
-            var slackToday: [InboxFolderEntry] = []
-            var today: [(at: Date, entry: InboxFolderEntry)] = []
-            var tracks: [InboxFolderEntry] = []
-            var ideas: [InboxFolderEntry] = []
-            var running: [(at: Date, entry: InboxFolderEntry)] = []
-            for entry in entries {
-                switch entry {
-                case let .artifact(card):
-                    if waitingForMeAutomationID == card.automationID {
-                        waiting.append(entry)
-                    } else if slackTodayAutomationID == card.automationID {
-                        slackToday.append(entry)
-                    } else if isToday(card.changedAt) {
-                        today.append((card.changedAt, entry))
-                    } else {
-                        running.append((card.changedAt, entry))
-                    }
-                case .legacyMessages:
-                    standIn.append(entry)
-                case let .brief(action):
-                    // Re-checked here: Needs you never grows with old briefs.
-                    if let at = AutomationDates.parse(action.appliedAt), now.timeIntervalSince(at) <= briefWindow {
-                        briefs.append((at, entry))
-                    }
-                case .approval, .builtinNotice:
-                    approvals.append(entry)
-                case .legacyDay:
-                    day.append(entry)
-                case .legacyTracks:
-                    tracks.append(entry)
-                case .legacyIdeas:
-                    ideas.append(entry)
-                }
-            }
-            return listed([
-                (.needsYou, waiting + standIn + newestFirst(briefs) + approvals),
-                (.today, day + slackToday + newestFirst(today)),
-                (.running, tracks + ideas + newestFirst(running))
-            ])
+            return rootSections(
+                entries, waitingForMeAutomationID: waitingForMeAutomationID,
+                mailWaitingAutomationID: mailWaitingAutomationID, slackTodayAutomationID: slackTodayAutomationID,
+                now: now, isToday: isToday)
         }
+    }
+
+    /// The root's sections (`build`).
+    private static func rootSections(
+        _ entries: [InboxFolderEntry],
+        waitingForMeAutomationID: Int64?,
+        mailWaitingAutomationID: Int64?,
+        slackTodayAutomationID: Int64?,
+        now: Date,
+        isToday: (Date) -> Bool
+    ) -> [(InboxRootSection, [InboxFolderEntry])] {
+        var waiting: [InboxFolderEntry] = []
+        var standIn: [InboxFolderEntry] = []
+        var mail: [InboxFolderEntry] = []
+        var briefs: [(at: Date, entry: InboxFolderEntry)] = []
+        var approvals: [InboxFolderEntry] = []
+        var day: [InboxFolderEntry] = []
+        var slackToday: [InboxFolderEntry] = []
+        var today: [(at: Date, entry: InboxFolderEntry)] = []
+        var tracks: [InboxFolderEntry] = []
+        var ideas: [InboxFolderEntry] = []
+        var running: [(at: Date, entry: InboxFolderEntry)] = []
+        for entry in entries {
+            switch entry {
+            case let .artifact(card):
+                if waitingForMeAutomationID == card.automationID {
+                    waiting.append(entry)
+                } else if mailWaitingAutomationID == card.automationID {
+                    mail.append(entry)
+                } else if slackTodayAutomationID == card.automationID {
+                    slackToday.append(entry)
+                } else if isToday(card.changedAt) {
+                    today.append((card.changedAt, entry))
+                } else {
+                    running.append((card.changedAt, entry))
+                }
+            case .legacyMessages:
+                standIn.append(entry)
+            case let .brief(action):
+                // Re-checked here: Needs you never grows with old briefs.
+                if let at = AutomationDates.parse(action.appliedAt), now.timeIntervalSince(at) <= briefWindow {
+                    briefs.append((at, entry))
+                }
+            case .approval, .builtinNotice:
+                approvals.append(entry)
+            case .legacyDay:
+                day.append(entry)
+            case .legacyTracks:
+                tracks.append(entry)
+            case .legacyIdeas:
+                ideas.append(entry)
+            }
+        }
+        return listed([
+            (.needsYou, waiting + standIn + mail + newestFirst(briefs) + approvals),
+            (.today, day + slackToday + newestFirst(today)),
+            (.running, tracks + ideas + newestFirst(running))
+        ])
     }
 
     /// The root's Earlier line from the read's day cards, or nil when no

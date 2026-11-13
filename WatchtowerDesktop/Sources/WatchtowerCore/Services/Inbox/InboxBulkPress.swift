@@ -18,6 +18,8 @@ package enum InboxBulkResult: Equatable, Sendable {
     /// The apply stopped part-way with `error`.
     case partial(done: Int, of: Int, error: String)
     case failed(String)
+    /// The write ran but its outcome could not be read: said, never retried.
+    case unconfirmed(String)
 }
 
 /// One bulk press of the Inbox (Approve All, Close All…): plan → confirm →
@@ -29,7 +31,12 @@ package final class InboxBulkPressModel: ObservableObject {
         case idle, planning, confirming(InboxBulkPlan), running, finished(InboxBulkResult)
     }
 
-    @Published package private(set) var state: State = .idle
+    @Published package private(set) var state: State = .idle {
+        didSet { onStateChange?(state) }
+    }
+
+    /// Called after every state change (`InboxBulkCenter` keeps its pins with it).
+    package var onStateChange: ((State) -> Void)?
 
     private var plan: (() async throws -> InboxBulkPlan)?
     private var apply: (([String]) async throws -> InboxBulkResult)?
@@ -108,6 +115,16 @@ package final class InboxBulkPressModel: ObservableObject {
     package func cancel() {
         guard case .confirming = state else { return }
         state = .idle
+    }
+
+    /// The press is under way or waits for the owner: planning, asking or
+    /// running. A row keeps its actions shown meanwhile, so the confirmation
+    /// stays on screen until the owner answers.
+    package static func pinsActions(_ state: State) -> Bool {
+        switch state {
+        case .planning, .confirming, .running: true
+        case .idle, .finished: false
+        }
     }
 
     private var canBegin: Bool {

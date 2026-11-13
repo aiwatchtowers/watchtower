@@ -18,8 +18,8 @@ final class InboxBriefLayoutTests: XCTestCase {
         ] as [String: (any DatabaseValueConvertible)?]))
     }
 
-    private func message(_ id: Int, minutesAgo: Double) -> HomeFeedInboxRow {
-        let item = InboxItem(row: Row(["id": id, "snippet": "Message \(id)"]
+    private func message(_ id: Int, minutesAgo: Double, trigger: String = "mention") -> HomeFeedInboxRow {
+        let item = InboxItem(row: Row(["id": id, "snippet": "Message \(id)", "trigger_type": trigger]
             as [String: (any DatabaseValueConvertible)?]))
         return HomeFeedInboxRow(item: item, stamp: Date(timeIntervalSince1970: 1_000_000 - minutesAgo * 60),
                                 who: "Colleague \(id)", whereText: "#acme")
@@ -54,6 +54,12 @@ final class InboxBriefLayoutTests: XCTestCase {
                     message(4, minutesAgo: 10)]
         XCTAssertEqual(InboxBriefLayout.waitingOnYou(rows).map(\.item.id), [2, 4, 1])
         XCTAssertEqual(InboxBriefLayout.waitingOnYou([]).count, 0)
+    }
+
+    func testWaitingOnYouLeavesMailOut() {
+        let rows = [message(1, minutesAgo: 30), message(2, minutesAgo: 5, trigger: "email_received"),
+                    message(3, minutesAgo: 90, trigger: "linear_assigned")]
+        XCTAssertEqual(InboxBriefLayout.waitingOnYou(rows).map(\.item.id), [1, 3], "mail is Mail waiting's")
     }
 
     func testMovedOvernightUnreadOnly() {

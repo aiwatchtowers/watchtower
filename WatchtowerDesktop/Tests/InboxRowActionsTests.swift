@@ -1,4 +1,5 @@
 import XCTest
+import ViewInspector
 import GRDB
 @testable import WatchtowerDesktop
 import WatchtowerCore
@@ -86,6 +87,43 @@ final class InboxRowActionsTests: XCTestCase {
         XCTAssertEqual(content.kind, .inboxItem(openLabel: "Open in Slack", openEnabled: true, canReply: true,
                                                 showsHandToAgent: true))
         XCTAssertEqual(content.state, .idle)
+    }
+
+    /// Waiting for me lists up to 200 people; the Messages list is the 200
+    /// newest open items, mail included. A person past that cap keeps every
+    /// action: the row reads its own message, never the capped list.
+    func testWaitingForMeRowPastTheMessagesCapKeepsItsActions() async throws {
+        let dm = try await pool.write { db -> Int64 in
+            for n in 0..<InboxQueries.openMessageLimit {
+                try TestDatabase.insertInboxItem(
+                    db, messageTS: "1700001\(String(format: "%03d", n)).000100",
+                    senderUserID: "news@example.com", triggerType: "email_received")
+            }
+            let dm = try TestDatabase.insertInboxItem(
+                db, channelID: "D001", messageTS: "1690000000.000100", triggerType: "dm",
+                permalink: "https://acme.slack.com/archives/D001/p1690000000000100")
+            try db.execute(sql: """
+                UPDATE inbox_items SET created_at = CASE WHEN id = ? THEN '2026-01-01T00:00:00Z'
+                  ELSE '2026-11-01T00:00:00Z' END, mentioned_at = ''
+                """, arguments: [dm])
+            let automation = try TestDatabase.insertAutomation(db, slug: "waiting-for-me", name: "Waiting for me")
+            try db.execute(sql: "UPDATE automations SET origin = 'builtin', builtin_id = 'waiting-for-me' WHERE id = ?",
+                           arguments: [automation])
+            let run = try TestDatabase.insertAutomationRun(db, automationID: automation, status: "succeeded")
+            try TestDatabase.insertAutomationOutput(
+                db, automationID: automation, runID: run,
+                blocksJSON: #"{"v":1,"blocks":[{"type":"list","rows":[{"title":"Colleague A","ref":{"kind":"inbox_item","id":\#(dm)}}]}]}"#,
+                outputKey: "waiting", contentHash: "h")
+            return dm
+        }
+        let vm = await strip()
+        XCTAssertFalse(vm.feed.messages.contains { Int64($0.item.id) == dm }, "the capped list leaves the DM out")
+        let ref = InboxRef(kind: .inboxItem, id: dm)
+        XCTAssertTrue(vm.folderMenu.snapshot.refState.isShown(ref))
+        let content = try XCTUnwrap(hooks(vm).content(ref, .inbox), "the row offers its actions")
+        XCTAssertEqual(content.kind, .inboxItem(openLabel: "Open in Slack", openEnabled: true, canReply: true,
+                                                showsHandToAgent: true))
+        XCTAssertNotNil(vm.messageRow(Int(dm)), "Done, Reply… and Discuss find the same row")
     }
 
     func testInboxItemWithoutPermalinkHasNoOpen() async throws {
@@ -426,6 +464,52 @@ final class InboxRowActionsTests: XCTestCase {
         XCTAssertEqual(InboxRefHooks.nativeKinds(.idea), [.target])
         XCTAssertEqual(InboxRefHooks.nativeKinds(.reminder), [.open])
         XCTAssertEqual(InboxRefHooks.nativeKinds(.action), [])
+    }
+
+    /// A sender row's Open replaces the recipe's link; the Older note row
+    /// keeps whatever the recipe draws.
+    func testSenderAndOlderRowsSuppressOnlyTheRecipesOpen() {
+        XCTAssertEqual(InboxRefHooks.nativeKinds(.mailSender), [.open])
+        XCTAssertEqual(InboxRefHooks.nativeKinds(.waitingOlder), [])
+    }
+
+    /// I-1: the row's footer follows its bulk press, so a partial apply's
+    /// "Closed N of M" and Try Again appear the moment it finishes, with no
+    /// further read; a full success leaves no line and no Try Again.
+    func testBulkFooterFollowsItsPress() async throws {
+        let model = InboxBulkPressModel()
+        let hooks = InboxRefHooks.make(
+            isShown: { _ in true },
+            content: { _, _ in InboxRowActionsContent(kind: .waitingOlder) },
+            bulk: { _ in model })
+        let footer = try XCTUnwrap(hooks.nativeFooter(ArtifactRef(kind: .waitingOlder, key: "older"), .inbox),
+                                   "drawn while idle, so it can follow the press")
+        XCTAssertThrowsError(try footer.inspect().find(ViewType.Text.self), "idle draws nothing")
+
+        model.begin { InboxBulkPlan(ids: ["1", "2", "3"], count: 3) }
+        await waitUntil { if case .confirming = model.state { true } else { false } }
+        model.confirm { _ in .partial(done: 1, of: 3, error: "database is locked") }
+        await waitUntil { if case .finished = model.state { true } else { false } }
+
+        XCTAssertNoThrow(try footer.inspect().find(text: "Closed 1 of 3. database is locked"))
+        XCTAssertNoThrow(try footer.inspect().find(button: "Try Again"))
+
+        let done = InboxBulkPressModel()
+        done.begin { InboxBulkPlan(ids: ["1"], count: 1) }
+        await waitUntil { if case .confirming = done.state { true } else { false } }
+        done.confirm { _ in .done(count: 1, skipped: 0) }
+        await waitUntil { if case .finished = done.state { true } else { false } }
+        let quiet = InboxRowBulkFooter(content: InboxRowActionsContent(kind: .waitingOlder), model: done)
+        XCTAssertFalse(quiet.drawsAnything)
+        XCTAssertThrowsError(try quiet.inspect().find(ViewType.Text.self))
+    }
+
+    private func waitUntil(_ condition: () -> Bool) async {
+        let deadline = Date().addingTimeInterval(10)
+        while !condition() {
+            guard Date() < deadline else { return XCTFail("timed out") }
+            await Task.yield()
+        }
     }
 
     func testPreviewDrawsDisabled() async throws {

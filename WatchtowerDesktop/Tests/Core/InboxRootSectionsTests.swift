@@ -46,7 +46,7 @@ final class InboxRootSectionsTests: XCTestCase {
         _ entries: [InboxFolderEntry], folder: InboxFolderKind = .root
     ) throws -> [(InboxRootSection, [String])] {
         let sections = InboxRootSections.build(
-            entries: entries, folder: folder, waitingForMeAutomationID: 3, slackTodayAutomationID: nil,
+            entries: entries, folder: folder, waitingForMeAutomationID: 3, mailWaitingAutomationID: nil, slackTodayAutomationID: nil,
             now: try now(), calendar: Self.kyiv)
         return sections.map { ($0.0, $0.1.map(\.id)) }
     }

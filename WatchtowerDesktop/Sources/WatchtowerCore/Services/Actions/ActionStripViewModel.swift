@@ -109,10 +109,10 @@ package final class ActionStripViewModel {
     private let dbPool: DatabasePool
     /// nil = the installed CLI, found at press time.
     private let cliRunner: CLIRunnerProtocol?
+    /// The runner a bulk press uses: `cliRunner`, else the CLI found at press time.
+    @ObservationIgnored private let pressRunner: @MainActor () -> (any CLIRunnerProtocol)?
     private let customTrackControls: any CustomTrackControlling
     private let defaults: UserDefaults
-    /// How the bulk presses find the binary when `cliRunner` is nil.
-    private let findCLI: @MainActor () -> (any CLIRunnerProtocol)?
     /// The moment the list is read and laid out at (Today, Earlier, due
     /// reminders); the design shots fix it.
     private let clock: @Sendable () -> Date
@@ -160,7 +160,7 @@ package final class ActionStripViewModel {
         self.dbPool = dbPool
         self.clock = clock
         self.cliRunner = cliRunner
-        self.findCLI = findCLI
+        self.pressRunner = { cliRunner ?? findCLI() }
         self.customTrackControls = customTrackControls ?? DirectCustomTrackControls(
             dbPool: dbPool, scanService: TrackScanService(runner: cliRunner ?? InstalledCLIRunner()))
         self.defaults = defaults
@@ -176,7 +176,8 @@ package final class ActionStripViewModel {
     /// The Inbox sidebar badge (spec "Counts", STRIP badge amendment, ask
     /// #634): Needs approval's open approvals (proposals awaiting the owner,
     /// due reminders, built-in upgrade notices) + people waiting today (open
-    /// messages whose `MAX(created_at, mentioned_at)` is at or after local
+    /// people items, `InboxPeopleRule` — mail never counts — whose
+    /// `MAX(created_at, mentioned_at)` is at or after local
     /// midnight in `calendar`, `InboxToday`; 0 while Waiting for me is turned
     /// off). Ideas, briefings, Messages' unread count and every automation
     /// artifact, root or owner folder, stay out of it. One read, writing
@@ -187,7 +188,7 @@ package final class ActionStripViewModel {
         _ db: Database, nowUTC: String, disabledFeatures: Set<String> = [], calendar: Calendar = .current
     ) throws -> Int {
         try InboxFolderMenuSnapshot.read(
-            db, nowUTC: nowUTC, disabledFeatures: disabledFeatures, calendar: calendar).badge
+            db, nowUTC: nowUTC, disabledFeatures: disabledFeatures, calendar: calendar, mailSummary: false).badge
     }
 
     /// The counts each folder shows outside its artifacts, by the folder
@@ -331,6 +332,7 @@ package final class ActionStripViewModel {
             firstReadError = nil
             rebuildSections()
             resetStaleApproveAll()
+            bulk.resetFinished(shown: Set(snapshot.folders.refState.shown.compactMap(Self.bulkKey)))
             keepSelectionListed(was: before)
             if firstRead {
                 showDefaultEntry()
@@ -413,6 +415,7 @@ package final class ActionStripViewModel {
             let grouped = InboxRootSections.build(
                 entries: folderEntries, folder: folder.kind,
                 waitingForMeAutomationID: folderMenu.snapshot.waitingForMe.automationID,
+                mailWaitingAutomationID: folderMenu.snapshot.mailWaiting.automationID,
                 slackTodayAutomationID: folderMenu.snapshot.slackToday?.automationID,
                 now: inputs.now, calendar: inputs.calendar)
             sections = grouped.map { section, entries in
@@ -808,7 +811,7 @@ package final class ActionStripViewModel {
     }
 
     private var tracksBulkCLI: TracksBulkCLI {
-        TracksBulkCLI(runner: cliRunner ?? findCLI())
+        TracksBulkCLI(runner: pressRunner())
     }
 
     /// The threads quiet for `TrackNewsRule.quietDays`, as the CLI's dry run plans them.
@@ -882,6 +885,81 @@ package final class ActionStripViewModel {
         }
         await refresh()
         return result
+    }
+
+    // MARK: - Mark All Done… and Mute (sender and Older rows)
+
+    /// The **Mark All Done…** presses of Mail waiting's sender rows and
+    /// Waiting for me's Older row, here (AppState-owned) so a press under
+    /// way survives leaving the Inbox; each result re-reads the list.
+    @ObservationIgnored package private(set) lazy var bulk = InboxBulkCenter(
+        cli: { [weak self] in InboxBulkCLI(runner: self?.pressRunner()) },
+        onFinished: { [weak self] in await self?.refresh() })
+
+    /// The bulk press a shown row offers; nil for a row without one. The
+    /// one ref → key mapping (the row hooks' pin and press use it too).
+    nonisolated package static func bulkKey(_ ref: InboxRef) -> InboxBulkKey? {
+        switch ref.kind {
+        case .mailSender: .sender(ref.key)
+        case .waitingOlder: .olderPeople
+        case .inboxItem, .track, .idea, .reminder, .action: nil
+        }
+    }
+
+    /// A failed press on a text-id row (a sender's Mute), by the row's
+    /// ref with its key in `InboxPeopleRule.senderKey` form: kept with
+    /// **Retry** until the next press on it or until the row leaves.
+    package private(set) var textRowErrors: [InboxRef: InboxRowFailure] = [:]
+    /// The senders whose Mute is being written.
+    package private(set) var mutingSenders: Set<String> = []
+
+    /// A Mute on `address` (any spelling) is being written.
+    package func isMuting(_ address: String) -> Bool {
+        mutingSenders.contains(InboxPeopleRule.senderKey(address))
+    }
+
+    /// **Mute** on a Mail waiting row (INBOX-05): one user rule
+    /// `source_mute` / `email:<address>` through the Desktop's rules writer,
+    /// then a re-read; the sender leaves Mail waiting only, no
+    /// `inbox_items` row changes. A failure stays on the row with Retry.
+    /// A second press while one is written is dropped.
+    package func muteSender(_ address: String) async {
+        let key = InboxPeopleRule.senderKey(address)
+        let ref = InboxRef(kind: .mailSender, key: key)
+        guard !mutingSenders.contains(key) else { return }
+        mutingSenders.insert(key)
+        defer { mutingSenders.remove(key) }
+        textRowErrors[ref] = nil
+        do {
+            try await writeSenderMute(key)
+        } catch {
+            textRowErrors[ref] = InboxRowFailure(message: error.localizedDescription, press: .mute)
+            return
+        }
+        await refresh()
+    }
+
+    /// The one writer of a sender's mute (INBOX-05): a user rule
+    /// `source_mute` / `email:<address>` through the Desktop's rules writer.
+    /// Throws when it could not be written; no re-read (the caller re-reads
+    /// once its presses are done). **Mute** and **Mute Senders…** both
+    /// write through it.
+    package func writeSenderMute(_ address: String) async throws {
+        try await InboxLearnedRulesQueries(dbPool: dbPool).upsertManual(
+            ruleType: "source_mute", scopeKey: InboxPeopleRule.muteScope(address),
+            weight: -1.0)
+    }
+
+    /// The busiest unmuted senders of Mail waiting, for **Mute Senders…**:
+    /// one more than its cap, so a sender without an address can be dropped.
+    package func muteSenderCandidates() async throws -> [MailSenderRow] {
+        let now = clock()
+        let nowUTC = AutomationDates.format(now)
+        let startOfToday = InboxToday.sinceUTC(now: now, calendar: Self.calendar)
+        return try await dbPool.read { db in
+            try WaitingQueries.mailSenders(
+                db, nowUTC: nowUTC, startOfTodayUTC: startOfToday, limit: MuteSendersModel.limit + 1).senders
+        }
     }
 
     // MARK: - Approve All (Needs approval groups)
@@ -1561,7 +1639,7 @@ package final class ActionStripViewModel {
     package func proposeReply(_ itemID: Int, text: String, host: String) async {
         let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !body.isEmpty, replyDrafts[itemID] != nil,
-              let item = feed.messages.first(where: { $0.item.id == itemID })?.item,
+              let item = messageRow(itemID)?.item,
               let tool = InboxReplyPolicy.tool(for: item) else { return }
         guard let args = InboxReplyPolicy.args(for: item, text: body, host: host) else {
             // The args could not be encoded (not expected): say so on the draft, never a silent no-op.
@@ -1796,6 +1874,12 @@ package final class ActionStripViewModel {
         if !rowErrors.isEmpty {
             rowErrors = rowErrors.filter { item, _ in isOpenRecord(item) }
         }
+        if !textRowErrors.isEmpty {
+            let refState = folderMenu.snapshot.refState
+            textRowErrors = textRowErrors.filter { ref, _ in
+                refState.shown.contains { $0.kind == ref.kind && InboxPeopleRule.senderKey($0.key) == ref.key }
+            }
+        }
         if !replyDrafts.isEmpty {
             // A draft whose reply now waits in Needs approval goes too (a
             // propose that timed out may have landed): it never comes back
@@ -1804,10 +1888,17 @@ package final class ActionStripViewModel {
         }
     }
 
+    /// Open message `id` as the last read has it: the Messages list's row,
+    /// else a shown `inbox_item` ref's (`InboxRefState.messages`: an
+    /// artifact row the list's cap leaves out).
+    package func messageRow(_ id: Int) -> HomeFeedInboxRow? {
+        feed.messages.first { $0.item.id == id } ?? folderMenu.snapshot.refState.messages[Int64(id)]
+    }
+
     /// The last read still lists `item`'s record.
     private func isOpenRecord(_ item: InboxSelection) -> Bool {
         switch item {
-        case let .message(id): feed.messages.contains { $0.item.id == id }
+        case let .message(id): messageRow(id) != nil
         case let .track(id): feed.tracks.contains { $0.track.id == id }
         case let .idea(id): feed.ideas.contains { $0.id == id }
         case let .reminder(id): feed.reminders.contains { $0.id == id }

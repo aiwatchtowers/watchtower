@@ -147,6 +147,47 @@ final class InboxRefStateTests: XCTestCase {
         XCTAssertEqual(try state([]), InboxRefState())
     }
 
+    // MARK: - Text-id refs
+
+    func testMailSenderShownWhileOpenAndUnmutedNeverWaits() throws {
+        try pool.write { db in
+            try TestDatabase.insertInboxItem(db, messageTS: "1", senderUserID: " Open@Example.com", triggerType: "email_received")
+            try TestDatabase.insertInboxItem(db, messageTS: "2", senderUserID: "done@example.com",
+                                             triggerType: "email_received", status: "resolved")
+            try TestDatabase.insertInboxItem(db, messageTS: "3", senderUserID: "muted@example.com", triggerType: "email_received")
+            try TestDatabase.insertInboxItem(db, messageTS: "4", senderUserID: "person@example.com", triggerType: "dm")
+            try TestDatabase.insertLearnedRule(db, scopeKey: InboxPeopleRule.muteScope("Muted@Example.com"), source: "user_rule")
+        }
+        let refs = ["open@example.com", "done@example.com", "muted@example.com", "person@example.com", "gone@example.com"]
+            .map { InboxRef(kind: .mailSender, key: $0) }
+
+        let s = try state(refs)
+
+        XCTAssertEqual(refs.map(s.isShown), [true, false, false, false, false],
+                       "open mail; only resolved mail; muted; people, not mail; no mail at all")
+        XCTAssertEqual(s.waiting, [], "a sender row never counts")
+    }
+
+    func testWaitingOlderShownOnlyWithOlderPeople() throws {
+        let older = InboxRef(kind: .waitingOlder, key: "older")
+        let id = try pool.write { db -> Int64 in
+            try TestDatabase.insertInboxItem(db, messageTS: "1", senderUserID: "a@example.com", triggerType: "email_received")
+            let person = try TestDatabase.insertInboxItem(db, messageTS: "2", triggerType: "mention")
+            // Old mail never makes the people's Older row.
+            try db.execute(sql: "UPDATE inbox_items SET created_at = '2026-10-01T00:00:00Z', mentioned_at = ''")
+            try db.execute(sql: "UPDATE inbox_items SET created_at = '2026-10-09T12:00:01Z' WHERE id = ?", arguments: [person])
+            return person
+        }
+        XCTAssertFalse(try state([older]).isShown(older), "one second younger than 7 x 24 h is This week")
+
+        try pool.write { db in
+            try db.execute(sql: "UPDATE inbox_items SET created_at = '2026-10-09T12:00:00Z' WHERE id = ?", arguments: [id])
+        }
+        let s = try state([older])
+        XCTAssertTrue(s.isShown(older), "exactly 7 x 24 h old is Older")
+        XCTAssertFalse(s.waits(older), "the Older row never counts")
+    }
+
     // MARK: - Refs of a stored document
 
     func testRefsInDocumentOrder() {
@@ -168,5 +209,17 @@ final class InboxRefStateTests: XCTestCase {
                        "an id of 0")
         XCTAssertEqual(InboxRef.refs(blocksJSON: #"{"v":1,"blocks":[{"type":"list","rows":[{"title":"a","ref":{"kind":"track","id":true}}]}]}"#), [],
                        "a bool is not an id")
+    }
+
+    func testTextIDRefsCarryTheirKey() {
+        let json = #"{"v":1,"blocks":[{"type":"list","rows":[{"title":"a","ref":{"kind":"mail_sender","id":"a@example.com"}},"#
+            + #"{"title":"b","ref":{"kind":"waiting_older","id":"older"}},{"title":"c","ref":{"kind":"track","id":4}}]}]}"#
+        XCTAssertEqual(InboxRef.refs(blocksJSON: json), [
+            InboxRef(kind: .mailSender, key: "a@example.com"), InboxRef(kind: .waitingOlder, key: "older"), ref(.track, 4)
+        ])
+        let row = { (ref: String) in #"{"v":1,"blocks":[{"type":"list","rows":[{"title":"a","ref":"# + ref + "}]}]}" }
+        XCTAssertEqual(InboxRef.refs(blocksJSON: row(#"{"kind":"mail_sender","id":3}"#)), [], "a text kind with a number id")
+        XCTAssertEqual(InboxRef.refs(blocksJSON: row(#"{"kind":"mail_sender","id":""}"#)), [], "an empty text id")
+        XCTAssertEqual(InboxRef.refs(blocksJSON: row(#"{"kind":"track","id":"4"}"#)), [], "an integer kind with a string id")
     }
 }

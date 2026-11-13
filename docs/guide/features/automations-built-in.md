@@ -1,6 +1,6 @@
 # Built-in automations
 
-Some of Watchtower's own daily work runs as automations that ship with the app. They sit first in the **Automations** tab under **Built in**, and you can turn them on or off, set their time and change how they work, like your own recipes. There are seven: **Morning brief**, **Track my threads**, **Idea finder**, **Reactions**, **Waiting for me**, **Needs approval** and **Slack today**.
+Some of Watchtower's own daily work runs as automations that ship with the app. They sit first in the **Automations** tab under **Built in**, and you can turn them on or off, set their time and change how they work, like your own recipes. There are eight: **Morning brief**, **Track my threads**, **Idea finder**, **Reactions**, **Waiting for me**, **Mail waiting**, **Needs approval** and **Slack today**.
 
 ## Why use it
 
@@ -41,7 +41,8 @@ The others work the same way:
 - **Track my threads** mines your Slack digests for [tracks](tracks.md). It runs at the first sync after new digests land, and does nothing when there are none. It needs Slack Digests on.
 - **Idea finder** consolidates [ideas and decisions](ideas-and-decisions.md) every few hours (**Every**, 1 to 48, default 6) and skips a run while a past-messages search is mining.
 - **Reactions** turns each Slack reaction from your dictionary into a proposal in the Inbox, one run per reaction. It has no **Run Now**. See [Reactions and tracks](automations-rules.md).
-- **Waiting for me** lists every message that waits on your answer as one list in the Inbox, after every sync, while attention detection is on. It uses no AI; its **Result** reads "One Waiting for me list in your Inbox". **Turn Off** turns attention detection off.
+- **Waiting for me** lists the people in Slack, Jira and Linear who wait on your answer as one list in the Inbox (today, this week and older), after every sync, while attention detection is on. It uses no AI; its **Result** reads "One Waiting for me list in your Inbox". **Turn Off** turns attention detection off.
+- **Mail waiting** runs right after it and groups the mail that waits on you by sender, the busiest first, leaving out senders you muted. It uses no AI; its **Result** reads "One Mail waiting list in your Inbox". It shares Waiting for me's switch: **Turn Off** turns attention detection off.
 - **Needs approval** shows every action that waits for your approval and every reminder that came due, one card each in the **Needs approval** folder, as soon as one changes. It uses no AI; its **Result** reads "One card per approval in your Inbox, in Needs approval", and it can't move to another folder. With it off, approvals still show there in the standard card.
 - **Slack today** sums up today's messages in your Slack channels, 1:1 DMs and group DMs as one list in the [Inbox](inbox.md#slack-today), each line marked **asks you**, **needs someone**, **decided** or **fyi**. It runs after a sync at most once an hour, reads only what came since its last run, and starts a new list after midnight; a failed run is retried after 15 minutes. Channels and people muted for AI are skipped, and messages aimed at you stay in **Waiting for me** instead. Light AI use, only once Slack is connected; **Turn Off** stops it.
 

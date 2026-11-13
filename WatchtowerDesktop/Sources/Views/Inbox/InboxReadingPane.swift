@@ -53,6 +53,8 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
     /// A message card's Reply (`messageReply(_:onPress:)`); nil draws none.
     private(set) var messageReplyContent: (HomeFeedInboxRow) -> InboxRowActionsContent? = { _ in nil }
     private(set) var onMessageReplyPress: (Int, InboxRowPress) -> Void = { _, _ in }
+    /// The keys on an artifact's rows (`rowKeyboard(_:)`); nil: none.
+    private(set) var rowKeys: InboxRowKeys?
     /// The pane's `InboxPaneHeader` over the card (`paneHeader(_:)`); nil draws none.
     private(set) var header: AnyView?
     /// Slack today's pane around the automation card (`slackToday(_:)`):
@@ -132,6 +134,15 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
     func refHooks(_ hooks: ArtifactRefHooks) -> Self {
         var pane = self
         pane.rowHooks = hooks
+        return pane
+    }
+
+    /// This pane with `keys` on the rows of the artifact it shows: J/K
+    /// move a focused row, the other keys press its actions (Waiting for
+    /// me and Mail waiting; nil: none).
+    func rowKeyboard(_ keys: InboxRowKeys?) -> Self {
+        var pane = self
+        pane.rowKeys = keys
         return pane
     }
 
@@ -267,12 +278,29 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
                                  showsDoneDismiss: !inApprovals)
                     .padding(.top, Spacing.small)
             case let .artifact(result, cardActions):
-                InboxArtifactCard(card: card, result: result, cardActions: cardActions, people: artifactPeople,
-                                  navScreens: navScreens, isWriting: isWriting, onCommand: onCommand,
-                                  onDone: onDone, onDismiss: onDismiss, workbenches: workbenches, targets: targets,
-                                  showsDoneDismiss: !inApprovals, refHooks: rowHooks)
+                if let rowKeys {
+                    InboxRowKeyboardHost(keys: rowKeys) { focused in
+                        artifactCard(card, result: result, cardActions: cardActions, focusedRef: focused)
+                    }
+                    // Another card starts with its own first row.
+                    .id(card.id)
+                } else {
+                    artifactCard(card, result: result, cardActions: cardActions, focusedRef: nil)
+                }
             }
         }
+    }
+
+    private func artifactCard(
+        _ card: AutomationOutputCard,
+        result: ArtifactDecodeResult,
+        cardActions: [ArtifactAction],
+        focusedRef: ArtifactRef?
+    ) -> InboxArtifactCard {
+        InboxArtifactCard(card: card, result: result, cardActions: cardActions, people: artifactPeople,
+                          navScreens: navScreens, isWriting: isWriting, onCommand: onCommand,
+                          onDone: onDone, onDismiss: onDismiss, workbenches: workbenches, targets: targets,
+                          showsDoneDismiss: !inApprovals, refHooks: rowHooks, focusedRef: focusedRef)
     }
 
     @ViewBuilder

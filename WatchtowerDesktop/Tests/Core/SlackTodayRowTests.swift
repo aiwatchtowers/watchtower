@@ -148,7 +148,7 @@ final class SlackTodayRowTests: XCTestCase {
             id: 6, automationID: 10, automationName: "Weekly", runID: 1, title: "Weekly", body: "",
             priority: "", createdAt: try date("2026-10-22T21:00:00Z"), changedAt: try date("2026-10-22T21:00:00Z"))
         let sections = InboxRootSections.build(
-            entries: [.artifact(other), .artifact(card)], folder: .root, waitingForMeAutomationID: nil,
+            entries: [.artifact(other), .artifact(card)], folder: .root, waitingForMeAutomationID: nil, mailWaitingAutomationID: nil,
             slackTodayAutomationID: 9, now: now, calendar: utc)
         XCTAssertEqual(sections.map(\.0), [.today, .running])
         XCTAssertEqual(sections.first?.1.map(\.id), ["artifact:5"])

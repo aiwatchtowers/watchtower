@@ -103,3 +103,213 @@ func TestOpenInboxItems_ReadErrorIsAnError(t *testing.T) {
 		t.Fatalf("OpenInboxItems = %v, nil; want an error", got)
 	}
 }
+
+// waitingSplitFixture is the people/mail fixture the Desktop's parity test
+// reads too.
+const waitingSplitFixture = "../inbox/testdata/waiting_split.json"
+
+// The people/mail split, the people counts by section, the mail senders and
+// the mute agree with the shared fixture.
+func TestWaitingSplit_SharedFixture(t *testing.T) {
+	d := openTestDB(t)
+	fx := SeedTestWaitingSplitFixture(t, d, waitingSplitFixture)
+	ctx := context.Background()
+	want := fx.Expected
+
+	triggers := fixtureTriggers(t, d)
+	if len(want.Kinds) != len(triggers) {
+		t.Fatalf("fixture names %d kinds for %d items", len(want.Kinds), len(triggers))
+	}
+	for id, kind := range want.Kinds {
+		if got := WaitingKindOf(triggers[id]); got != kind {
+			t.Errorf("WaitingKindOf(item %d, %s) = %s, want %s", id, triggers[id], got, kind)
+		}
+	}
+
+	people, err := d.OpenPeopleCounts(ctx, fx.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wantP := (PeopleWaitingCounts{want.People.Open, want.People.Today, want.People.Week, want.People.Older}); people != wantP {
+		t.Errorf("OpenPeopleCounts = %+v, want %+v", people, wantP)
+	}
+
+	peopleItems, err := d.OpenInboxItemsOfKind(ctx, fx.Now, WaitingPeople, 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var older []int64
+	for _, it := range peopleItems {
+		if WaitingKindOf(it.TriggerType) != WaitingPeople {
+			t.Errorf("people read returned item %d (%s)", it.ID, it.TriggerType)
+		}
+		if WaitingSectionOf(parseFixtureStamp(t, it.At), fx.Now) == SectionOlder {
+			older = append(older, int64(it.ID))
+		}
+	}
+	if len(peopleItems) != want.People.Open {
+		t.Errorf("%d people items, want %d", len(peopleItems), want.People.Open)
+	}
+	if !slices.Equal(older, want.OlderPeopleIDs) {
+		t.Errorf("older people ids = %v, want %v", older, want.OlderPeopleIDs)
+	}
+
+	mail, err := d.OpenMailSenders(ctx, fx.Now, 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mail.Open != want.Mail.Open || mail.Today != want.Mail.Today ||
+		mail.SenderCount != want.Mail.SenderCount || mail.TopTenShare != want.Mail.TopTenShare {
+		t.Errorf("OpenMailSenders totals = open %d today %d senders %d share %d, want %+v",
+			mail.Open, mail.Today, mail.SenderCount, mail.TopTenShare, want.Mail)
+	}
+	if len(mail.Senders) != len(want.Senders) {
+		t.Fatalf("senders = %+v, want %+v", mail.Senders, want.Senders)
+	}
+	for i, s := range mail.Senders {
+		w := want.Senders[i]
+		if s.Address != w.Address || s.Open != w.Open || s.Today != w.Today || s.Subject != w.Subject {
+			t.Errorf("sender %d = %q open %d today %d subject %q, want %+v", i, s.Address, s.Open, s.Today, s.Subject, w)
+		}
+	}
+
+	mailItems, err := d.OpenInboxItemsOfKind(ctx, fx.Now, WaitingMail, 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotIDs := map[string][]int64{}
+	for _, it := range mailItems {
+		if it.TriggerType != "email_received" {
+			t.Errorf("mail read returned item %d (%s)", it.ID, it.TriggerType)
+		}
+		key := MailSenderKey(it.SenderUserID)
+		gotIDs[key] = append(gotIDs[key], int64(it.ID))
+	}
+	if len(gotIDs) != len(want.SenderIDs) {
+		t.Errorf("mail senders read = %v, want %v", gotIDs, want.SenderIDs)
+	}
+	for addr, ids := range want.SenderIDs {
+		if !slices.Equal(gotIDs[addr], ids) {
+			t.Errorf("sender %q ids = %v, want %v", addr, gotIDs[addr], ids)
+		}
+	}
+	for addr := range gotIDs {
+		if addr == "news@example.com" {
+			t.Errorf("a muted sender's mail was read: %v", gotIDs[addr])
+		}
+	}
+	// The newest item of the first sender gives its time and link.
+	if s := mail.Senders[0]; s.At != "2026-11-11T07:00:00Z" || s.Permalink != "https://mail.example.com/m/20" {
+		t.Errorf("first sender at %q link %q; want its newest item's", s.At, s.Permalink)
+	}
+}
+
+// fixtureTriggers maps every seeded item id to its trigger.
+func fixtureTriggers(t *testing.T, d *DB) map[int64]string {
+	t.Helper()
+	rows, err := d.Query(`SELECT id, trigger_type FROM inbox_items`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	triggers := map[int64]string{}
+	for rows.Next() {
+		var id int64
+		var trig string
+		if err := rows.Scan(&id, &trig); err != nil {
+			t.Fatal(err)
+		}
+		triggers[id] = trig
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return triggers
+}
+
+func parseFixtureStamp(t *testing.T, s string) time.Time {
+	t.Helper()
+	if s == "" {
+		return time.Time{}
+	}
+	at, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		t.Fatalf("stamp %q: %v", s, err)
+	}
+	return at
+}
+
+// Each kind is capped on its own, newest first; the sender view keeps its
+// totals over every sender while listing at most limit of them.
+func TestOpenInboxItemsOfKind_CapsEachKindSeparately(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	now := time.Date(2026, 11, 11, 8, 0, 0, 0, time.UTC)
+	for i := 1; i <= 250; i++ {
+		at := now.Add(-time.Duration(i) * time.Minute).Format(time.RFC3339)
+		if _, err := d.Exec(`INSERT INTO inbox_items (channel_id, message_ts, sender_user_id, trigger_type, created_at)
+			VALUES ('C001', ?, 'U001', 'mention', ?)`, fmt.Sprintf("p.%04d", i), at); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := d.Exec(`INSERT INTO inbox_items (channel_id, message_ts, sender_user_id, trigger_type, snippet, created_at)
+			VALUES (?, ?, ?, 'email_received', 'Hi', ?)`, fmt.Sprintf("mail-%04d", i), fmt.Sprintf("m.%04d", i),
+			fmt.Sprintf("sender-%04d@example.com", i), at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, c := range []struct {
+		kind  WaitingKind
+		first string
+	}{{WaitingPeople, "p.0001"}, {WaitingMail, "m.0001"}} {
+		got, err := d.OpenInboxItemsOfKind(ctx, now, c.kind, 200)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 200 {
+			t.Fatalf("%s: %d items, want 200", c.kind, len(got))
+		}
+		if got[0].MessageTS != c.first {
+			t.Errorf("%s: first = %s, want %s", c.kind, got[0].MessageTS, c.first)
+		}
+		for i := 1; i < len(got); i++ {
+			if got[i].At > got[i-1].At {
+				t.Fatalf("%s: not newest first at %d", c.kind, i)
+			}
+		}
+	}
+	mail, err := d.OpenMailSenders(ctx, now, 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Ten of 250 one-item senders: (100·10 + 125) / 250 = 4.
+	if len(mail.Senders) != 200 || mail.SenderCount != 250 || mail.Open != 250 || mail.TopTenShare != 4 {
+		t.Errorf("sender view = %d listed, %d senders, %d open, share %d; want 200, 250, 250, 4",
+			len(mail.Senders), mail.SenderCount, mail.Open, mail.TopTenShare)
+	}
+}
+
+// One spelling rule for a sender: ASCII letters lowered, spaces trimmed,
+// non-ASCII letters unchanged — SQLite's lower(trim(x)).
+func TestMailSenderKey(t *testing.T) {
+	cases := map[string]string{
+		" Bob@Example.COM":  "bob@example.com",
+		"bob@example.com  ": "bob@example.com",
+		"JOSÉ@Example.com":  "josÉ@example.com",
+		"Ärger@Example.com": "Ärger@example.com",
+		"\tTab@Example.com": "\ttab@example.com",
+		"":                  "",
+	}
+	d := openTestDB(t)
+	for raw, want := range cases {
+		if got := MailSenderKey(raw); got != want {
+			t.Errorf("MailSenderKey(%q) = %q, want %q", raw, got, want)
+		}
+		var sqlKey string
+		if err := d.QueryRow(`SELECT lower(trim(?))`, raw).Scan(&sqlKey); err != nil {
+			t.Fatal(err)
+		}
+		if sqlKey != want {
+			t.Errorf("SQLite lower(trim(%q)) = %q, want %q", raw, sqlKey, want)
+		}
+	}
+}

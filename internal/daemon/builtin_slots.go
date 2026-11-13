@@ -24,6 +24,7 @@ const (
 	customTracksID   = "custom-tracks"
 	reactionsID      = "reactions"
 	waitingForMeID   = "waiting-for-me"
+	mailWaitingID    = builtin.MailWaitingID
 	slackTodayID     = builtin.SlackTodayID
 )
 
@@ -76,24 +77,50 @@ func (d *Daemon) WaitingForMePrimitives() map[string]automations.PrimitiveFunc {
 }
 
 // WaitingForMeGate is Waiting for me's sync gate: due when what it would
-// show differs from what its last succeeded run showed — the open items as
-// their rows read by the shipped recipe (builtin.WaitingFingerprint) with
-// the recipe's hashes. A quiet cycle writes no run. An owner's copy runs
+// show differs from what its last succeeded run showed — the open people
+// items as the shipped recipe reads them (builtin.WaitingFingerprint over
+// db.WaitingPeople; mail is Mail waiting's) with the recipe's hashes. A
+// quiet cycle writes no run. An owner's copy runs
 // every cycle: it may show what the fingerprint does not cover. A failed read is
 // due (the run reports it); a daemon start knows no fingerprint, so its
 // first cycle runs. Attention detection off skips the built-in before the
 // gate is asked (its feature, FEAT-01), and a queued Run Now runs without
-// asking it.
-func (d *Daemon) WaitingForMeGate() builtin.Gate { return waitingForMeGate{d: d} }
+// asking it. A built-in that is not active is never due.
+func (d *Daemon) WaitingForMeGate() builtin.Gate {
+	return waitingGate{d: d, id: waitingForMeID, kind: db.WaitingPeople}
+}
 
-type waitingForMeGate struct{ d *Daemon }
+// MailWaitingGate is Mail waiting's sync gate: Waiting for me's rules over
+// the mail senders and counts (builtin.WaitingFingerprint over
+// db.WaitingMail), so a new sender, a changed count or a mute runs it, and
+// a new people item does not. It keeps its own seen/shown marks.
+func (d *Daemon) MailWaitingGate() builtin.Gate {
+	return waitingGate{d: d, id: mailWaitingID, kind: db.WaitingMail}
+}
 
-func (g waitingForMeGate) Due(ctx context.Context, _ builtin.Entry, now time.Time) bool {
+// waitingGate is the gate of the built-in id at the Waiting for me slot,
+// over its fingerprint kind.
+type waitingGate struct {
+	d    *Daemon
+	id   string
+	kind db.WaitingKind
+}
+
+func (g waitingGate) Due(ctx context.Context, _ builtin.Entry, now time.Time) bool {
 	d := g.d
-	d.waitingSeen = ""
-	a, err := d.db.GetBuiltinAutomation(waitingForMeID)
+	seen, shown, ok := d.waitingMarks(g.id)
+	if !ok {
+		// No marks to compare: run, and say so.
+		d.logger.Printf("%s: no Waiting for me marks for this built-in; it runs every cycle", g.id)
+		return true
+	}
+	*seen = ""
+	if !d.builtinOn(g.id) {
+		return false
+	}
+	a, err := d.db.GetBuiltinAutomation(g.id)
 	if err != nil {
-		d.logger.Printf("waiting-for-me: reading its row: %v", err)
+		d.logger.Printf("%s: reading its row: %v", g.id, err)
 		return true
 	}
 	if a.Overridden {
@@ -101,38 +128,60 @@ func (g waitingForMeGate) Due(ctx context.Context, _ builtin.Entry, now time.Tim
 		// (other reads, other fields): it runs every cycle.
 		return true
 	}
-	fp, err := builtin.WaitingFingerprint(ctx, d.db, now)
+	fp, err := builtin.WaitingFingerprint(ctx, d.db, now, g.kind)
 	if err != nil {
-		d.logger.Printf("waiting-for-me: reading the open items: %v", err)
+		d.logger.Printf("%s: reading the open items: %v", g.id, err)
 		return true
 	}
-	d.waitingSeen = fp + "/" + a.ContentHash + "/" + a.ConfirmedHash
-	return d.waitingSeen != d.waitingShown
+	*seen = fp + "/" + a.ContentHash + "/" + a.ConfirmedHash
+	return *seen != *shown
 }
 
-// phaseWaitingForMe is Waiting for me's slot, right after phaseInbox: the
-// built-in rewrites its one living artifact from the open attention items
-// when its gate finds a change. A succeeded slot run records what the gate
-// read as shown; any failed run (a Run Now included) forgets what was
-// shown, so the next cycle runs again. It
-// has no legacy phase: until it is active its queued Run Now is cancelled
-// (only the slot would take it).
+// waitingMarks is the seen/shown marks of the Waiting for me slot's
+// built-in id; ok false for any other id.
+func (d *Daemon) waitingMarks(id string) (seen, shown *string, ok bool) {
+	switch id {
+	case waitingForMeID:
+		return &d.waitingSeen, &d.waitingShown, true
+	case mailWaitingID:
+		return &d.mailSeen, &d.mailShown, true
+	}
+	return nil, nil, false
+}
+
+// phaseWaitingForMe is the Waiting for me slot, right after phaseInbox:
+// Waiting for me, then Mail waiting, each rewrites its one living artifact
+// from the open attention items when its gate finds a change. A succeeded
+// slot run records what its gate read as shown; any failed run (a Run Now
+// included) forgets what was shown, so the next cycle runs it again. Neither
+// has a legacy phase: until one is active its queued Run Now is cancelled
+// (only the slot would take it) and its gate is never due; the slot is
+// skipped while neither is active.
 func (d *Daemon) phaseWaitingForMe(ctx context.Context) {
-	if !d.builtinOn(waitingForMeID) {
-		d.cancelQueuedBuiltinRuns(waitingForMeID, time.Now())
+	now := time.Now()
+	active := false
+	for _, id := range []string{waitingForMeID, mailWaitingID} {
+		if d.builtinOn(id) {
+			active = true
+		} else {
+			d.cancelQueuedBuiltinRuns(id, now, cancelInactive)
+		}
+	}
+	if !active {
 		return
 	}
 	d.ensureBuiltinsSwept()
-	d.waitingSeen = ""
+	d.waitingSeen, d.mailSeen = "", ""
 	for _, o := range d.builtins.RunSlot(ctx, builtin.SlotWaitingForMe) {
+		seen, shown, ok := d.waitingMarks(o.BuiltinID)
 		switch {
-		case o.BuiltinID != waitingForMeID:
+		case !ok:
 		case slotRunFailed(o):
 			// Any failed run — a Run Now too, which the gate never saw —
 			// leaves the artifact behind: the next cycle runs again.
-			d.waitingShown = ""
-		case o.RunID != 0 && o.Status == db.RunSucceeded && d.waitingSeen != "":
-			d.waitingShown = d.waitingSeen
+			*shown = ""
+		case o.RunID != 0 && o.Status == db.RunSucceeded && *seen != "":
+			*shown = *seen
 		}
 	}
 }
@@ -329,7 +378,7 @@ func slackTodayDay(state json.RawMessage) (day string, has bool, err error) {
 // is skipped by the runner before any read (FEAT-01).
 func (d *Daemon) phaseSlackToday(ctx context.Context) {
 	if !d.builtinOn(slackTodayID) {
-		d.cancelQueuedBuiltinRuns(slackTodayID, time.Now())
+		d.cancelQueuedBuiltinRuns(slackTodayID, time.Now(), cancelInactive)
 		return
 	}
 	d.ensureBuiltinsSwept()
@@ -472,7 +521,7 @@ func (d *Daemon) phaseTrackMyThreads(ctx context.Context, now time.Time) {
 			}
 		}
 	} else {
-		d.cancelQueuedBuiltinRuns(trackMyThreadsID, now)
+		d.cancelQueuedBuiltinRuns(trackMyThreadsID, now, cancelLegacy)
 		d.phaseTracks(ctx)
 	}
 	d.injectTrackContext()
@@ -484,7 +533,7 @@ func (d *Daemon) phaseTrackMyThreads(ctx context.Context, now time.Time) {
 // otherwise the built-in's slot run.
 func (d *Daemon) phaseIdeaFinder(ctx context.Context) {
 	if !d.builtinOn(ideaFinderID) {
-		d.cancelQueuedBuiltinRuns(ideaFinderID, time.Now())
+		d.cancelQueuedBuiltinRuns(ideaFinderID, time.Now(), cancelLegacy)
 		d.phaseIdeas(ctx)
 		return
 	}

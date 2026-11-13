@@ -165,6 +165,28 @@ svg{display:block}
 .qs ol{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:6px;color:var(--fg2)}
 .qs b{color:var(--fg)}
 button:focus-visible,.item:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+
+/* phase 2 panels: mockup state bar, Mute Senders popover, bulk confirmation and its failure line */
+.statebar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;color:var(--fg3);font-size:11.5px;padding:6px 10px;border-radius:8px;border:.5px dashed var(--hair)}
+.statebar .seg b{cursor:pointer}
+.anchor{position:relative}
+.popover{position:absolute;top:30px;right:0;width:360px;background:var(--win);border:.5px solid var(--hair);border-radius:10px;
+  box-shadow:0 14px 44px rgba(0,0,0,.35);padding:12px;z-index:5;display:flex;flex-direction:column;gap:8px;text-align:left}
+.popover::before{content:"";position:absolute;top:-6px;right:28px;width:10px;height:10px;background:var(--win);
+  border-left:.5px solid var(--hair);border-top:.5px solid var(--hair);transform:rotate(45deg)}
+.popover h4{margin:0;font-size:13px;font-weight:650}
+.popover .mt{line-height:1.35}
+.prows{display:flex;flex-direction:column;gap:1px}
+.prow{display:grid;grid-template-columns:18px 1fr auto;gap:8px;align-items:center;padding:5px 6px;border-radius:6px;cursor:pointer;font-weight:400}
+.prow:hover{background:var(--hover)}
+.prow input{margin:0;accent-color:var(--accent)}
+.prow span.a{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.prow span.n{color:var(--fg3);font-size:11.5px;font-variant-numeric:tabular-nums}
+.pfoot{display:flex;align-items:center;gap:8px;justify-content:flex-end;padding-top:4px;border-top:.5px solid var(--hair)}
+.kbtn[disabled]{opacity:.4;cursor:default}
+.wrow.confirming .hover-acts{opacity:1;pointer-events:auto}
+.wrow.confirming .age{opacity:0}
+.errline{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:6px;color:var(--bad);font-size:12px}
 </style>
 
 <svg width="0" height="0" style="position:absolute">
@@ -228,6 +250,15 @@ button:focus-visible,.item:focus-visible{outline:2px solid var(--accent);outline
  </section>
 
  <section>
+  <div class="sh" style="font-size:11.5px">Phase 2 panels — open Mail waiting or Waiting for me, then use the dashed “Mockup state” bar</div>
+  <div class="notes">
+   <div class="note"><h3>Mute Senders…</h3><div class="was">Was: a button on the share line.</div><p class="now">In the Mail waiting pane header. A popover with the ten busiest senders, a checkbox each, none ticked when it opens; one prominent button: “Mute Senders” (disabled) · “Mute 1 Sender” · “Mute N Senders”. Muting hides the sender from Mail waiting only.</p></div>
+   <div class="note"><h3>Mark All Done… asks once, with the count</h3><div class="was">Was: one press closed everything.</div><p class="now">The press runs a dry run first; the row then shows “Mark 46 Done” (prominent) and Cancel. A press never closes more than the dry run named. The Older note row in Waiting for me has the same shape (“Mark 25 Done”).</p></div>
+   <div class="note"><h3>A failure says how far it got</h3><div class="was">Was: no failure state.</div><p class="now">“Closed 12 of 46. &lt;error&gt;” under the button with Try Again. The rows are left as they were until the next refresh.</p></div>
+  </div>
+ </section>
+
+ <section>
   <div class="sh" style="font-size:11.5px">App sidebar</div>
   <div class="notes"><div class="note"><h3>Inbox goes to the top level</h3><div class="was">Now: Home, Targets, Workbench, Automations, Calendar · FOCUS: Catch Up, Inbox.</div><p class="now">Then: Home, Inbox, Workbench, Automations, Calendar · FOCUS: Catch Up, Targets. Inbox takes Targets' place and keeps its badge; Targets moves into FOCUS.</p></div></div>
  </section>
@@ -278,6 +309,10 @@ function item(key,cls,ic,title,unread,prev,meta,time,right){
 
 const tools = (extra='') => `${extra}<button class="iconbtn" title="More">${I('more')}</button><button class="iconbtn" title="Reaction commands and shortcuts">${I('help')}</button>`;
 
+const STATES = [['mail','Mail waiting'],['mailMute','Mute Senders… open'],['mailConfirm','Mark All Done… confirm'],['mailFailed','Bulk failure'],['wait','Waiting for me'],['waitConfirm','Older: confirm'],['waitFailed','Older: failure']];
+const SENDERS = [['notifications@example.com',46,3,'automated'],['jira@example.com',21,2,'automated'],['calendar@example.com',12,1,'automated'],
+ ['builds@acme.example.com',9,0,'automated'],['billing@example.com',8,1,'automated'],['newsletter@example.com',7,0,'automated'],
+ ['colleague-h@example.com',6,2,'person'],['alerts@acme.example.com',5,0,'automated'],['vendor@example.com',3,1,'person'],['qa@example.com',3,0,'person']];
 const PANE = {
  brief: { tools: tools(`<span class="stepper"><button aria-label="Previous day">‹</button><span>Wed 11 Nov</span><button aria-label="Next day" disabled style="opacity:.35">›</button></span><button class="kbtn">History ▾</button>`), html: `
   <div class="phead">${T('t-sun','sun')}<div><h2>Morning brief</h2><div class="sub">Wednesday, 11 November · written 08:02 from Slack, mail, Jira and your calendar</div></div></div>
@@ -307,18 +342,7 @@ const PANE = {
     <div>ACME-44 reopened by Colleague G — the login fix broke SSO on staging. <span class="mt">· Jira</span></div>
    </div></div>
   <div class="foot"><span>Read 1 min</span><span>·</span><span>Built in: Morning brief</span><span>·</span><a class="kbtn quiet" style="height:auto">Edit the Look…</a></div>`},
- wait: { tools: tools(`<button class="kbtn">Select</button>`), html: `
-  <div class="phead">${T('t-wait','wait')}<div><h2>Waiting for me</h2><div class="sub">People in Slack and Jira · 12 new today · 14 older · updated 6 min ago · mail is in Mail waiting</div></div></div>
-  <div><div class="sh"><span>Today · 12</span></div><div class="rows">
-    ${wrow('slack','S','Colleague B','in a DM','Will you approve the budget?','26 h',true,true)}
-    ${wrow('slack','S','Colleague A','in #acme-release','Can you check the checklist before the tag?','3 h',false)}
-    ${wrow('jira','J','ACME-12','assigned to you','Release checklist v2 — ready for review','2 d',true)}
-    ${wrow('lin','L','ENG-210','mentioned you','“@you can we drop the old export?”','1 h',false)}
-    ${wrow('slack','S','Colleague D','in #acme-infra','Who reviews the migration?','40 min',false)}
-  </div></div>
-  <div><div class="sh"><span>This week · 40</span><a>Show</a></div></div>
-  <div class="bulk"><span>25 items are older than 7 days. Nobody has followed up on most of them.</span><button class="kbtn">Mark All Done…</button></div>
-  <div class="kbd"><span><kbd>J</kbd><kbd>K</kbd>move</span><span><kbd>E</kbd>done</span><span><kbd>R</kbd>reply</span><span><kbd>S</kbd>snooze</span><span><kbd>⏎</kbd>open in Slack</span><span><kbd>⌘K</kbd>hand to agent</span></div>`},
+ wait: { tools: tools(`<button class="kbtn">Select</button>`), html: waitPane('') },
  threads: { tools: tools(), html: `
   <div class="phead">${T('t-thr','thr')}<div><h2>Track my threads</h2><div class="sub">6 threads with news for you · 240 quiet · scanned after every sync</div></div></div>
   <div><div class="sh"><span>With news for you · 6</span></div><div class="rows">
@@ -387,18 +411,12 @@ const PANE = {
    <div>The tag date moved to Thursday, after QA. <span class="mt">· Colleague A</span></div>
    <div>The rollback step is now part of the checklist. <span class="mt">· Colleague C</span></div>
   </div>`},
- mail: { tools: tools(), html: `
-  <div class="phead">${T('t-mail','mail')}<div><h2>Mail waiting</h2><div class="sub">120 open · 8 new today · grouped by sender, the busiest first</div></div></div>
-  <div class="bulk"><span>10 senders send 70% of this mail. Most of it is notifications that nobody answers.</span><button class="kbtn">Mute Senders…</button></div>
-  <div class="rows">
-   ${srow('notifications@example.com','46 open · 3 today','automated')}
-   ${srow('jira@example.com','21 open · 2 today','automated')}
-   ${srow('calendar@example.com','12 open · 1 today','automated')}
-   ${srow('colleague-h@example.com','6 open · 2 today','person')}
-   ${srow('vendor@example.com','3 open · 1 today','person')}
-   <div class="foldline">${I('chev')}30 more senders</div>
-  </div>
-  <div class="kbd"><span><kbd>⏎</kbd>open the sender’s mail</span><span><kbd>E</kbd>mark the sender’s mail done</span><span><kbd>M</kbd>mute the sender</span></div>`},
+ mail: { tools: tools(), html: mailPane({}) },
+ mailMute: { tools: tools(), html: mailPane({mute:true}) },
+ mailConfirm: { tools: tools(), html: mailPane({first:'confirm'}) },
+ mailFailed: { tools: tools(), html: mailPane({first:'failed'}) },
+ waitConfirm: { tools: tools(`<button class="kbtn">Select</button>`), html: waitPane('confirm') },
+ waitFailed: { tools: tools(`<button class="kbtn">Select</button>`), html: waitPane('failed') },
  appr: { tools: tools(), html: approval('Reply to Colleague D','#acme-release · proposed from Waiting for me at 09:12','Tag goes out Thursday, checklist is green. Ping me if QA finds anything.') },
  appr2:{ tools: tools(), html: approval('Comment on ACME-31','Jira · proposed by a workbench session at 08:55','Reproduced on staging, fix is in the session branch. Will open the PR after the review.') },
  appr3:{ tools: tools(), html: `
@@ -407,6 +425,49 @@ const PANE = {
  appr4:{ tools: tools(), html: `<div class="phead">${T('t-appr','check')}<div><h2>Create 19 targets</h2><div class="sub">From the spec “Billing export”</div></div><div class="acts"><button class="kbtn">Decline</button><button class="kbtn primary">Approve</button></div></div>`},
  appr5:{ tools: tools(), html: `<div class="phead">${T('t-appr','check')}<div><h2>Send the budget numbers</h2><div class="sub">Reminder · due today 17:00</div></div><div class="acts"><button class="kbtn">Snooze ▾</button><button class="kbtn primary">Done</button></div></div>`}
 };
+function statebar(on){
+ return `<div class="statebar"><span>Mockup state (phase 2 panels):</span><span class="seg">${STATES.map(([k,t])=>`<b data-go="${k}"${k===on?' class="on"':''}>${t}</b>`).join('')}</span></div>`}
+function mutePopover(){
+ const ticked=3;
+ return `<div class="popover" role="dialog" aria-label="Mute Senders">
+  <h4>Mute senders</h4>
+  <div class="mt">The ten busiest senders in Mail waiting. A muted sender leaves Mail waiting only; its mail stays where it is.</div>
+  <div class="prows">${SENDERS.map(([a,n],i)=>`<label class="prow"><input type="checkbox"${i<ticked?' checked':''}><span class="a">${a}</span><span class="n">${n} open</span></label>`).join('')}</div>
+  <div class="pfoot"><button class="kbtn primary">Mute ${ticked} Senders</button></div>
+  <div class="mt">Opens with none ticked: the button reads <button class="kbtn primary" disabled style="height:20px;font-size:11px">Mute Senders</button> and is disabled. One ticked: “Mute 1 Sender”. On a failure part-way: “Muted N of M. &lt;error&gt;” under the button.</div>
+ </div>`}
+function mailPane({mute,first}){
+ const on = mute?'mailMute':first==='confirm'?'mailConfirm':first==='failed'?'mailFailed':'mail';
+ return `
+  ${statebar(on)}
+  <div class="phead">${T('t-mail','mail')}<div><h2>Mail waiting</h2><div class="sub">120 open · 8 new today · grouped by sender, the busiest first</div></div>
+   <div class="acts"><span class="anchor"><button class="kbtn"${mute?' style="background:var(--on)"':''}>Mute Senders…</button>${mute?mutePopover():''}</span></div></div>
+  <div class="bulk"><span>10 senders send 70% of this mail. Most of it is notifications that nobody answers.</span></div>
+  <div class="rows">
+   ${SENDERS.slice(0,5).map(([a,n,t,k],i)=>srow(a,`${n} open · ${t} today`,k,i===0?first:'')).join('')}
+   <div class="foldline">${I('chev')}30 more senders</div>
+  </div>
+  <div class="kbd"><span><kbd>⏎</kbd>open the sender’s mail</span><span><kbd>E</kbd>mark the sender’s mail done</span><span><kbd>M</kbd>mute the sender</span></div>`}
+function waitPane(state){
+ const older = state==='confirm'
+  ? `<div class="bulk"><span>Mark the 25 items older than 7 days done? Only these 25 close.</span><span style="display:flex;gap:6px"><button class="kbtn">Cancel</button><button class="kbtn primary">Mark 25 Done</button></span></div>`
+  : state==='failed'
+  ? `<div class="bulk" style="flex-direction:column;align-items:stretch;gap:4px"><div style="display:flex;justify-content:space-between;align-items:center;gap:12px"><span>25 items are older than 7 days. Nobody has followed up on most of them.</span><button class="kbtn">Mark All Done…</button></div>
+     <div class="errline">Closed 9 of 25. The database was busy, nothing else was changed. <button class="kbtn">Try Again</button></div></div>`
+  : `<div class="bulk"><span>25 items are older than 7 days. Nobody has followed up on most of them.</span><button class="kbtn">Mark All Done…</button></div>`;
+ return `
+  ${statebar(state==='confirm'?'waitConfirm':state==='failed'?'waitFailed':'wait')}
+  <div class="phead">${T('t-wait','wait')}<div><h2>Waiting for me</h2><div class="sub">People in Slack and Jira · 12 new today · 14 older · updated 6 min ago · mail is in Mail waiting</div></div></div>
+  <div><div class="sh"><span>Today · 12</span></div><div class="rows">
+    ${wrow('slack','S','Colleague B','in a DM','Will you approve the budget?','26 h',true,true)}
+    ${wrow('slack','S','Colleague A','in #acme-release','Can you check the checklist before the tag?','3 h',false)}
+    ${wrow('jira','J','ACME-12','assigned to you','Release checklist v2 — ready for review','2 d',true)}
+    ${wrow('lin','L','ENG-210','mentioned you','“@you can we drop the old export?”','1 h',false)}
+    ${wrow('slack','S','Colleague D','in #acme-infra','Who reviews the migration?','40 min',false)}
+  </div></div>
+  <div><div class="sh"><span>This week · 40</span><a>Show</a></div></div>
+  ${older}
+  <div class="kbd"><span><kbd>J</kbd><kbd>K</kbd>move</span><span><kbd>E</kbd>done</span><span><kbd>R</kbd>reply</span><span><kbd>S</kbd>snooze</span><span><kbd>⏎</kbd>open in Slack</span><span><kbd>⌘K</kbd>hand to agent</span></div>`}
 function approval(title,sub,text){return `
   <div class="phead">${T('t-appr','check')}<div><h2>${title}</h2><div class="sub">${sub}</div></div><div class="acts"><button class="kbtn">Decline</button><button class="kbtn">Edit…</button><button class="kbtn primary">Approve and Send</button></div></div>
   <div class="card"><div class="mt" style="margin-bottom:6px">Message</div><p class="lead">${text}</p></div>
@@ -415,10 +476,16 @@ function wrow(src,letter,who,where,text,age,old,focus){
  return `<div class="wrow${focus?' focus-row':''}"><div class="src s-${src}">${letter}</div><div style="min-width:0"><div><span class="who">${who}</span> <span class="where">${where}</span></div><q>${text}</q>
   <div class="hover-acts"><button class="kbtn">Reply…</button><button class="kbtn">Done</button><button class="kbtn">Snooze ▾</button><button class="kbtn quiet">Open</button></div></div>
   <div class="age"><span class="chip ${old?'c-warn':'c-n'}">${age}</span></div></div>`}
-function srow(who,line,kind){
- return `<div class="wrow"><div class="src s-mail">@</div><div style="min-width:0"><div><span class="who">${who}</span> <span class="where">${kind}</span></div><q style="quotes:none">${line}</q>
-  <div class="hover-acts"><button class="kbtn">Open</button><button class="kbtn">Mark All Done</button><button class="kbtn">Mute</button></div></div>
-  <div class="age"><span class="chip c-n">${line.split(' ')[0]}</span></div></div>`}
+function srow(who,line,kind,state){
+ const n=line.split(' ')[0];
+ const acts = state==='confirm'
+  ? `<span class="mt" style="align-self:center">${n} open from this sender</span><button class="kbtn">Cancel</button><button class="kbtn primary">Mark ${n} Done</button>`
+  : `<button class="kbtn">Open</button><button class="kbtn">Mark All Done…</button><button class="kbtn">Mute</button>`;
+ const err = state==='failed'
+  ? `<div class="errline">Closed 12 of ${n}. The database was busy, nothing else was changed. <button class="kbtn">Try Again</button></div>` : '';
+ return `<div class="wrow${state==='confirm'?' confirming':''}"><div class="src s-mail">@</div><div style="min-width:0"><div><span class="who">${who}</span> <span class="where">${kind}</span></div><q style="quotes:none">${line}</q>${err}
+  <div class="hover-acts">${acts}</div></div>
+  <div class="age"><span class="chip c-n">${n}</span></div></div>`}
 function trow(title,line,badge,tag){
  return `<div class="wrow"><div class="src" style="background:var(--card);color:var(--fg2)">${I('thr').replace('class="ic"','class="ic" style="width:12px;height:12px"')}</div><div style="min-width:0"><div class="who">${title}</div><q style="quotes:none">${line}</q></div><div class="age">${badge?`<span class="chip c-n">${badge}</span>`:''}${tag?`<span class="mt">${tag}</span>`:''}</div></div>`}
 
@@ -427,7 +494,8 @@ const firstKey={inbox:'brief',approvals:'appr',folder:'blockers'};
 function openPane(key){
  const p=PANE[key]; if(!p) return;
  paneEl.innerHTML=`<div class="col">${p.html}</div>`; toolsEl.innerHTML=p.tools; paneEl.scrollTop=0;
- listEl.querySelectorAll('.item').forEach(b=>b.classList.toggle('on',b.dataset.key===key));
+ const base=/^mail/.test(key)?'mail':/^wait/.test(key)?'wait':key;
+ listEl.querySelectorAll('.item').forEach(b=>b.classList.toggle('on',b.dataset.key===base));
  paneEl.querySelectorAll('[data-go]').forEach(a=>a.addEventListener('click',()=>openPane(a.dataset.go)));
 }
 function openScope(scope){
