@@ -3037,3 +3037,12 @@ Entry format:
 - weak-dimension: 7. Log-once-per-class and backoff doubling/cap are untested, but they only affect logging and timing.
 - rule-gap (candidate, dim 9): *a one-time destructive cleanup keyed off a persisted mark checks every gate read for error, not just for absence. An `err != nil || !ok` fold in front of a gate is the tell.*
 - outcome: TBD
+
+## 2026-11-12 — session-163 (b820de0ff: full-width session titles; panel: prosecutor + codex + all three pr-review-toolkit specialists; judge verified source, no runtime accessibility reproduction) — verdict: changes-needed
+
+- contested: the separated title's accessibility impact was minor in the prosecutor lane and major in codex/general review. Held major: the named open control lacks selection and Delete, while the metadata control carrying them lacks the session name. One logical row now declares two different open controls. [8]
+- false-positive: none. No extra test was required solely for this reversible layout change; the existing screenshots cover the normal and narrow layout, with no closed-asks example. [7]
+- miss: none late. Three lanes independently found the same split; the test analyzer corroborated the coverage concern rather than adding a separate defect. [8]
+- weak-dimension: 8. Moving text between visual containers also moves its accessibility identity, even when both containers call the same open action.
+- rule-gap (candidate, dim 8): *when a row's label moves outside its combined accessibility element, retain one named open control with its selection trait and custom actions; keep independently actionable sibling controls outside that replacement. Check the accessibility tree as well as the screenshot.*
+- outcome: TBD
