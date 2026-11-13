@@ -47,8 +47,8 @@ struct TerminalSessionRow: View {
                 .padding(.leading, Spacing.large + Spacing.compact)
                 .contentShape(Rectangle())
                 .simultaneousGesture(TapGesture().onEnded { actions.open(session) })
-                .accessibilityAddTraits(.isButton)
-                .accessibilityAction { actions.open(session) }
+                .accessibilityRepresentation { accessibleOpener }
+                .help(row.state.live ? session.title : "Not running — click to start")
             details
         }
         .overlay {
@@ -66,6 +66,7 @@ struct TerminalSessionRow: View {
     private var details: some View {
         HStack(spacing: 4) {
             opener
+                .accessibilityHidden(true)
             if openAsks > 0 {
                 Text("\(openAsks)")
                     .font(.caption2.weight(.semibold))
@@ -175,13 +176,22 @@ struct TerminalSessionRow: View {
         }
         .contentShape(Rectangle())
         .simultaneousGesture(TapGesture().onEnded { actions.open(session) })
+        .help(row.state.live ? session.title : "Not running — click to start")
+    }
+
+    /// VoiceOver gets one named session control while the visible title
+    /// and details open independently of the closed-asks button.
+    private var accessibleOpener: some View {
+        VStack(alignment: .leading) {
+            Text(session.title)
+            opener
+        }
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(hasCursor ? [.isButton, .isSelected] : .isButton)
         .accessibilityAction { actions.open(session) }
         .accessibilityActions {
             if let quickDelete { Button("Delete session", action: quickDelete) }
         }
-        .help(row.state.live ? session.title : "Not running — click to start")
     }
 }
 
