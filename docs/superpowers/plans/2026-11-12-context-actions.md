@@ -283,7 +283,7 @@ Depends on: Tasks 3 and 4.
     - "work in your own worktree, run the project's pre-PR review, open a PR, do not merge";
     - for memory: "show the owner the diff with `ask_owner` (kind review) before writing; write no backup files into the memory folder — Watchtower keeps the old index".
     Text only, no config values.
-  - `func (a *Applier) AcceptWithSession(id, sessionID int64) error`: refuses non-session destinations, checks the session row exists in the proposal's workbench, then calls `MarkCoachAcceptedWithSession` with the `start_tokens` baseline. For `claude_memory_index` it first re-reads MEMORY.md and stores it as `before_text` (the copy Rollback restores), so an owner edit between proposal and Accept is not lost.
+  - `func (a *Applier) AcceptWithSession(id, sessionID int64) error`: refuses non-session destinations, checks the session row exists in the proposal's workbench, then calls `MarkCoachAcceptedWithSession` with the `start_tokens` baseline, copying the session's branch into `session_branch` in the same compare-and-set when `terminal_session_worktrees` already has one (Task 6 fills it later otherwise). For `claude_memory_index` it first re-reads MEMORY.md and stores it as `before_text` (the copy Rollback restores), so an owner edit between proposal and Accept is not lost.
   - Rollback of `claude_memory_index` (spec part 2): the Applier itself, no session. Compare-and-set: MEMORY.md must still equal `after_text` (recorded by Task 6 when the session wrote it); then it writes `before_text` back atomically. Index changed since → refused ("the memory index changed since — roll it back by hand"); `after_text` empty (the session never wrote) → refused ("nothing to roll back"). The archive file the agent created is left in place; nothing points to it any more.
   - `func (a *Applier) Reapply(id int64) error` (body in Task 6) and the CLI `coach reapply <id> --json` (same owner checks as `accept`).
   - `Accept(id, edited)` on a session destination → `refuse("Accept it in Watchtower — it starts a session")`.
@@ -301,7 +301,7 @@ Depends on: Tasks 3 and 4.
   - `TestBrief_NoConfigValues`;
   - `TestBrief_Revert` (the revert brief names the merged PR and asks for a revert PR);
   - `TestAccept_SessionDestinationRefusedWithoutSession`;
-  - `TestAcceptWithSession_Marks`;
+  - `TestAcceptWithSession_Marks` (and `session_branch` set when the session already has a worktree branch);
   - `TestAcceptWithSession_WrongWorkbench`;
   - `TestAcceptWithSession_Twice` (`state_changed`);
   - `cmd`: `TestCoachBriefJSON_Keys`, `TestCoachAcceptSession_RefusedUnderAgent`, `TestCoachProposalsJSON_NewKeys`, `TestCoachProposalsJSON_PRFoundAfterSessionDeleted` (session row deleted, `session_branch` set, PR open → `pr` and `pr_state` filled).
@@ -326,9 +326,10 @@ Depends on: Tasks 2 and 7 (JSON keys).
 **Interfaces:**
 - Produces:
   - `struct ContextActionRow { let proposal: CoachProposal; let saving: Int?; let tag: Tag (.settings / .repoPR / .memory); let evidence: String; let verb: Verb (.turnOff / .accept / .archive); let state: State }`.
-  - `State`: `.open`, `.starting`, `.working(sessionID)`, `.linkFailed(sessionID)`, `.prReady(pr: Int, url: URL?)`, `.measuring`, `.endedWithoutChange(sessionID)`, `.notMerged`, `.changedSince`, `.revertedOutside`, `.done(beforeTokens: Int, afterTokens: Int?)`, `.failed(String)`.
+  - `State`: `.open`, `.starting`, `.working(sessionID)`, `.linkFailed(sessionID)`, `.sessionGone`, `.prReady(pr: Int, url: URL?)`, `.measuring`, `.endedWithoutChange(sessionID)`, `.notMerged`, `.changedSince`, `.revertedOutside`, `.done(beforeTokens: Int, afterTokens: Int?)`, `.failed(String)`.
     - `.prReady` shows **Open PR** and **Show Diff** (the PR's files page, `url` + `/files`); this is the mockup's diff panel, read from GitHub instead of drawn in the app.
     - `.done` shows the mockup's "before → after" (`79.6k → 49.4k`), with "before" = the proposal's baseline and "after" = the measured value once the verdict lands (nil → "measuring").
+    - `.sessionGone` = `viaSession`, no session row, empty `sessionBranch`, no PR: "Session was removed — its PR can't be traced" with **Decline** only. No **Start Again** (an untraced PR may exist; a second session could open a duplicate); after 30 days the verdict is `too_little_data`.
     - `.changedSince` = a `superseded` context row (14 days, then gone); `.revertedOutside` = verdict `reverted_outside` with **Turn Off Again**.
   - `enum ContextActionsPresentation { static func rows(proposals: [CoachProposal], workbenchID: Int64, sources: [AgentSourceGroupRow], sessionKinds: [Int64: SessionSwitcherPresentation.State.Kind], linkFailed: [Int64: Int64], now: Date) -> (doThese: [ContextActionRow], done: [ContextActionRow]) }`. Takes this workbench's rows plus the global ones (`workbenchID == 0`). Open rows come first, largest saving first. Done rows stay for 14 days after `decidedAt`.
   - `static func headline(baselineTokens: Int, rows: [ContextActionRow]) -> String`, e.g. "4 changes would cut it to ~42k".
@@ -340,6 +341,7 @@ Depends on: Tasks 2 and 7 (JSON keys).
     - "Session is running, but Watchtower could not link it";
     - "Also on in: …";
     - "Session ended without a PR";
+    - "Session was removed — its PR can't be traced";
     - "Session ended without a change";
     - "Not merged";
     - "Saved %@ on %d starts";
@@ -349,6 +351,7 @@ Depends on: Tasks 2 and 7 (JSON keys).
   - `testRowsOrderedBySaving`;
   - `testWorkingUntilSessionEnds`;
   - `testEndedWithoutPR` (session kind `.stopped`/`.finished`, no PR);
+  - `testSessionGoneWithoutBranchOffersDeclineOnly` (no **Start Again**);
   - `testSessionRowGoneWithPRIsPRReady` (`viaSession`, `sessionID` nil, `pr` set → `.prReady`, never `.endedWithoutChange` and no **Start Again**); the presentation decides from `viaSession` + `pr`/`prState` first and uses the session kind only while the session row exists;
   - `testPRReadyHasDiffURL`;
   - `testDoneShowsBeforeAfter` (and "measuring" before the verdict);
