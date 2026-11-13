@@ -59,12 +59,51 @@ final class AlertSubscriptionTests: XCTestCase {
     private final class FlakySaver: SubscriptionSaving, @unchecked Sendable {
         private let lock = NSLock()
         private var count = 0
+        private let error: CKError
+        private let deleteError: CKError?
         var attempts: Int { lock.withLock { count } }
+        init(error: CKError = CKError(.networkUnavailable), deleteError: CKError? = nil) {
+            self.error = error
+            self.deleteError = deleteError
+        }
         func save(_ subscription: CKSubscription) async throws {
             let n = lock.withLock { count += 1; return count }
-            if n == 1 { throw CKError(.networkUnavailable) }
+            if n == 1 { throw error }
         }
-        func delete(id: CKSubscription.ID) async throws {}
+        func delete(id: CKSubscription.ID) async throws {
+            if let deleteError { throw deleteError }
+        }
+    }
+
+    /// #1749: Production refused the save with invalidArguments on every foreground (170 tries in two hours).
+    private static let productionRefusal = CKError(.invalidArguments, userInfo: [
+        "ServerErrorDescription": "attempting to create a subscription in a production container"
+    ])
+
+    func testAPermanentRefusalIsNotResentByTheNextCall() async {
+        let refusing = FlakySaver(error: Self.productionRefusal)
+        let registrar = AlertSubscriptionRegistrar(hubID: hubID, route: .cloudKit(.private), wake: CloudKitPushWake(saver: refusing))
+        await registrar.apply(enabled: true)
+        await registrar.apply(enabled: true)
+        XCTAssertEqual(refusing.attempts, 1, "a foreground return does not resend a refused save")
+    }
+
+    func testAToggleRetriesAfterAPermanentRefusal() async {
+        let refusing = FlakySaver(error: Self.productionRefusal)
+        let registrar = AlertSubscriptionRegistrar(hubID: hubID, route: .cloudKit(.private), wake: CloudKitPushWake(saver: refusing))
+        await registrar.apply(enabled: true)
+        await registrar.apply(enabled: false)
+        await registrar.apply(enabled: true)
+        XCTAssertEqual(refusing.attempts, 2, "switching off and on again tries once more")
+    }
+
+    func testAToggleRetriesAfterAPermanentRefusalEvenWhenTheDeleteFailed() async {
+        let refusing = FlakySaver(error: Self.productionRefusal, deleteError: CKError(.networkUnavailable))
+        let registrar = AlertSubscriptionRegistrar(hubID: hubID, route: .cloudKit(.private), wake: CloudKitPushWake(saver: refusing))
+        await registrar.apply(enabled: true)
+        await registrar.apply(enabled: false)
+        await registrar.apply(enabled: true)
+        XCTAssertEqual(refusing.attempts, 2, "a failed delete in between does not keep the old refusal")
     }
 
     func testOldNewAsksValueCarriesOver() throws {
