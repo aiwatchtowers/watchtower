@@ -3056,6 +3056,13 @@ Entry format:
 - rule-gap (candidate, dim 9): *bookkeeping for a remote write that already went out runs under `context.WithoutCancel` (local tx only), and a further network step between the write and its bookkeeping is called out as a residual in the comment, not hidden.*
 - outcome: TBD
 
+## 2026-11-13 — fix/relay-save-chunks (edd968fc8: relay Save split into ≤ 960 KiB requests with RECORD_TOO_LARGE halving and kept outcomes after a mid-way failure, publisher Cycle continues past a failed kind with per-kind backoff, admission resubscribes refused zones, iPhone notification completions on the main thread; 18 files +1318/−147; panel: prosecutor (8) + codex (1); pr-review-toolkit specialists unavailable; judge verified by reading the diff, main's relay Save, the CloudKit client and actions.writeQueued, no runs) — verdict: changes-needed
+
+- contested: whether "keep the saved outcomes, refuse the rest per item, return nil" is safe for the callers — it is not: both Save callers (publisher.saveChanged, actions.writeQueued) read a per-item Refused as a final per-record answer (skip / ControlFailed + attempts), not "retry the batch". Main's relay Save had one request, so a transient failure was always a whole-call error; the regression is real (checked against origin/main). [6]
+- false-positive: none dismissed; F5 (lone too-large sets `answered`) and F6 (control rows marked per item) are not separate defects but consequences of the same partial-success contract — one fix removes them. [8]
+- miss: the new `transport.Transport.Save` doc promised a contract the other implementation (CloudKit client returns (nil, err) after earlier frames) does not keep; only the prosecutor checked the second implementation. [8]
+- weak-dimension: 7 — the publisher tests faked only whole-call refusals, never the (outcomes, nil) shape the changed transport now returns, so the caller-side regression was invisible to the suite.
+- rule-gap: a change to the semantics of a multi-implementation interface method (here "error vs per-item refusal" of Save) must audit every caller's handling of the new shape and every other implementation against the new doc, with a caller-level test of the new shape. Candidate for §8.
 
 ## 2026-11-13 — Codex plan-usage runtime PATH (6b228031e) — verdict: changes-needed
 

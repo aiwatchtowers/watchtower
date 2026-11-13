@@ -270,8 +270,17 @@ func (h *hubRuntime) markAdmitted(relayIDs []string) {
 	}
 	if n > 0 {
 		log.Printf("hub: the relay admitted the hub for %d linked phone(s)", n)
+		h.retryZonesNow()
 		h.sup.poke()
 	}
+}
+
+// retryZonesNow follows the relay admitting the hub for a phone: the zones
+// it refused (that phone's mailbox above all) are subscribed by a link
+// upkeep now, not at their backoff (watchZones). Safe from any goroutine.
+func (h *hubRuntime) retryZonesNow() {
+	h.zonesDue.Store(true)
+	h.kick(h.linkKick)
 }
 
 // vouched: the relay opens the hub's data zone and mailboxes to it (a
@@ -391,7 +400,7 @@ func (h *hubRuntime) onSlotAdded() {
 		}
 		h.followAccount(st)
 	}
-	h.kick(h.linkKick)
+	h.retryZonesNow()
 	h.recheckPaying()
 }
 

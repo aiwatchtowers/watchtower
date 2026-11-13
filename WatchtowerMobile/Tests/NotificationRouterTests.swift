@@ -61,6 +61,69 @@ final class NotificationRouterTests: XCTestCase {
         }
     }
 
+    // MARK: - The tap (completion on the main thread)
+
+    func testOnlyTheDefaultActionOfAWorkAlertIsATap() {
+        let alert = info("ask", ask: "109")
+        XCTAssertEqual(
+            AlertDestination.tapped(actionIdentifier: UNNotificationDefaultActionIdentifier, userInfo: alert),
+            .ask(hubID: "hub-a", askID: 109))
+        XCTAssertNil(AlertDestination.tapped(actionIdentifier: UNNotificationDismissActionIdentifier, userInfo: alert))
+        XCTAssertNil(AlertDestination.tapped(actionIdentifier: UNNotificationDefaultActionIdentifier, userInfo: [:]))
+    }
+
+    /// A tap delivered off the main thread (as an async delegate method's thunk did, aborting the app) opens its
+    /// screen, then completes once, on the main thread.
+    func testATapOffTheMainThreadOpensItsScreenThenCompletesOnTheMainThread() async {
+        let navigation = AppNavigation()
+        let events = TapEvents()
+        let completed = expectation(description: "completion")
+        let destination = AlertDestination.tapped(
+            actionIdentifier: UNNotificationDefaultActionIdentifier, userInfo: info("session_stopped", session: "11"))
+        DispatchQueue.global().async {
+            XCTAssertFalse(Thread.isMainThread)
+            AppDelegate.receiveTap(
+                destination,
+                open: { navigation.show($0); events.log.append("open") },
+                completion: {
+                    XCTAssertTrue(Thread.isMainThread, "UIKit asserts its completion runs on the main thread")
+                    MainActor.assumeIsolated { events.log.append("completion") }
+                    completed.fulfill()
+                }
+            )
+        }
+        await fulfillment(of: [completed], timeout: 10)
+        XCTAssertEqual(events.log, ["open", "completion"], "the completion comes after the screen opened, once")
+        XCTAssertEqual(navigation.tab, .workbench)
+        XCTAssertEqual(navigation.alertOnScreen, .session(hubID: "hub-a", sessionID: 11))
+    }
+
+    /// A notification that is not a work alert's tap opens nothing and still completes once, on the main thread.
+    func testANonAlertTapCompletesOnTheMainThreadAndOpensNothing() async {
+        let events = TapEvents()
+        let completed = expectation(description: "completion")
+        DispatchQueue.global().async {
+            AppDelegate.receiveTap(
+                nil,
+                open: { _ in events.log.append("open") },
+                completion: {
+                    XCTAssertTrue(Thread.isMainThread)
+                    MainActor.assumeIsolated { events.log.append("completion") }
+                    completed.fulfill()
+                }
+            )
+        }
+        await fulfillment(of: [completed], timeout: 10)
+        XCTAssertEqual(events.log, ["completion"])
+    }
+
+    /// On the main thread the work runs at once, before `run` returns.
+    func testMainThreadRunIsSynchronousOnTheMainThread() {
+        let events = TapEvents()
+        MainThread.run { events.log.append("ran") }
+        XCTAssertEqual(events.log, ["ran"])
+    }
+
     // MARK: - Navigation and foreground presentation
 
     func testShowingADestinationSelectsTheWorkbenchTabAndPushesItsRoute() {
@@ -315,4 +378,10 @@ final class NotificationRouterTests: XCTestCase {
         for _ in 0..<20 { await Task.yield() }
         XCTAssertEqual(removed, ["settled"], "an ask and a stop that arrived in this fetch keep their alerts")
     }
+}
+
+/// What a tap's seams did, in order.
+@MainActor
+private final class TapEvents {
+    var log: [String] = []
 }

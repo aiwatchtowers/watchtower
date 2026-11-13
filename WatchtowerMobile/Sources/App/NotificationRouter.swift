@@ -26,6 +26,12 @@ enum AlertDestination: Equatable {
         return (userInfo[Key.session] as? String).flatMap { Int64($0) }.map { .session(hubID: hubID, sessionID: $0) }
     }
 
+    /// A tap's destination: only the default action (the tap itself) of a work alert opens a screen.
+    static func tapped(actionIdentifier: String, userInfo: [AnyHashable: Any]) -> Self? {
+        guard actionIdentifier == UNNotificationDefaultActionIdentifier else { return nil }
+        return destination(userInfo: userInfo)
+    }
+
     /// A banner and sound while the app is open, nothing when the alert's own screen is the one on top.
     static func foregroundOptions(for destination: Self?, onScreen: Self?) -> UNNotificationPresentationOptions {
         if let onScreen, destination == onScreen { return [] }
