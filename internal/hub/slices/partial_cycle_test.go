@@ -222,3 +222,183 @@ func TestRetryWaitHubQuotaIsNotPermanent(t *testing.T) {
 		t.Fatalf("hub_quota backoff tops out at %v, want %v", d, RetryMax)
 	}
 }
+
+// A kind the cycle never tried backs off by what stopped the cycle, not by
+// an earlier kind's permanent class: after owner_ask's record_too_large and
+// target's unavailable, workbench caps at RetryMax, not RetryPermanentMax.
+// An epoch abort leaves the untried kinds on the plain backoff.
+func TestUntriedKindsBackOffByTheCycleStop(t *testing.T) {
+	r := newRig(t, transport.KindRelay)
+	tr := &refusingTransport{Fake: r.tr, refuse: map[string]error{
+		r.wireName("owner_ask-1"): transport.ErrRecordTooLarge,
+		r.wireName("target-1"):    transport.ErrUnavailable,
+	}}
+	ask, target, workbench := &fakeSource{kind: "owner_ask"}, &fakeSource{kind: "target"}, &fakeSource{kind: "workbench"}
+	ask.set(item("1", `{"id":1}`))
+	target.set(item("1", `{"id":1}`))
+	workbench.set(item("1", `{"id":1}`))
+	rep, err := r.publisherWith(Config{Transport: tr}, ask, target, workbench).Cycle(context.Background(), nil)
+	if !errors.Is(err, transport.ErrRecordTooLarge) || !slices.Equal(rep.Unfinished, []Kind{"owner_ask", "target", "workbench"}) {
+		t.Fatalf("Cycle = %+v %v", rep, err)
+	}
+	kerr := rep.retryErr("workbench", err)
+	if !errors.Is(kerr, transport.ErrUnavailable) || errors.Is(kerr, transport.ErrRecordTooLarge) {
+		t.Fatalf("workbench backs off by %v, want the stop's unavailable", kerr)
+	}
+	var backoff time.Duration
+	for range 10 {
+		retryWait(kerr, &backoff)
+	}
+	if backoff != RetryMax {
+		t.Fatalf("workbench backoff %v, want the %v cap", backoff, RetryMax)
+	}
+	if e := rep.retryErr("owner_ask", err); !errors.Is(e, transport.ErrRecordTooLarge) {
+		t.Fatalf("owner_ask backs off by %v", e)
+	}
+	aborted := CycleReport{Aborted: true, Errors: map[Kind]error{"owner_ask": transport.ErrRecordTooLarge}}
+	if e := aborted.retryErr("target", transport.ErrRecordTooLarge); e != nil {
+		t.Fatalf("after an epoch abort target backs off by %v, want the plain backoff", e)
+	}
+}
+
+// kindSwitchTransport is the fake with a Kind the test changes, as the
+// switcher's front changes its active transport.
+type kindSwitchTransport struct {
+	*memfake.Fake
+	mu   sync.Mutex
+	kind transport.Kind
+}
+
+func (t *kindSwitchTransport) Kind() transport.Kind {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.kind
+}
+
+func (t *kindSwitchTransport) switchTo(k transport.Kind) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.kind = k
+}
+
+// A resume after a transport switch drops the retries of the old one: a
+// kind backed off there is read at once by the resume's full diff, and its
+// next failure starts the backoff over (RetryFirst, not the doubled wait).
+func TestResumeAfterASwitchDropsTheOldTransportsRetries(t *testing.T) {
+	r := newRig(t, transport.KindRelay)
+	tr := &kindSwitchTransport{Fake: r.tr, kind: transport.KindRelay}
+	held, other := &fakeSource{kind: "target"}, &fakeSource{kind: "workbench"}
+	held.set(item("1", `{"v":0}`))
+	other.set(item("1", `{"v":0}`))
+	ft := newFakeTime()
+	p := r.publisherWith(Config{Clock: ft.Now, Transport: tr}, held, other)
+	p.mono, p.timer = ft.Now, ft.Timer
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- p.Run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		if err := <-done; !errors.Is(err, context.Canceled) {
+			t.Errorf("Run = %v", err)
+		}
+	})
+	ru := &runner{t: t, ft: ft, p: p}
+	ru.settle(0)
+	ru.step(RelaySpacing)
+	r.tr.FailNext("save", transport.ErrUnavailable)
+	r.tr.FailNext("save", transport.ErrUnavailable)
+	held.set(item("1", `{"v":1}`))
+	ru.publishNow("target") // fails: retried in 1 s
+	ru.step(RetryFirst)     // fails again: held for 2 s
+	if n := len(held.readTimes()); n != 3 {
+		t.Fatalf("held kind read %d times before the switch, want 3", n)
+	}
+	p.Pause()
+	tr.switchTo(transport.KindCloudKit)
+	r.tr.FailNext("save", transport.ErrUnavailable)
+	n := ft.armedCount()
+	p.Resume()
+	ru.settle(n)
+	if n := len(held.readTimes()); n != 4 {
+		t.Fatalf("Resume after a switch read the held kind %d times, want 4", n)
+	}
+	ru.step(RetryFirst - time.Millisecond)
+	if n := len(held.readTimes()); n != 4 {
+		t.Fatalf("held kind read %d times inside the fresh backoff", n)
+	}
+	ru.step(time.Millisecond)
+	if _, ok := r.live()[r.wireName("target-1")]; !ok {
+		t.Fatal("held kind not saved at its fresh RetryFirst retry")
+	}
+}
+
+// partialSaveTransport saves the first half of the next batch it is armed
+// for and then fails the call, as the relay transport does when a later
+// request fails.
+type partialSaveTransport struct {
+	*memfake.Fake
+	mu    sync.Mutex
+	armed bool
+}
+
+func (t *partialSaveTransport) Save(ctx context.Context, items []transport.SaveItem) ([]transport.Outcome, error) {
+	t.mu.Lock()
+	armed := t.armed
+	t.armed = false
+	t.mu.Unlock()
+	if !armed || len(items) < 2 {
+		return t.Fake.Save(ctx, items)
+	}
+	if _, err := t.Fake.Save(ctx, items[:len(items)/2]); err != nil {
+		return nil, err
+	}
+	return nil, transport.ErrUnavailable
+}
+
+// A Save that saves part of the batch and then fails leaves the kind
+// unfinished, reports the error and records no hash; the next cycle saves
+// the whole batch again and records it.
+func TestPartlySavedThenFailedKindIsRetried(t *testing.T) {
+	r := newRig(t, transport.KindRelay)
+	tr := &partialSaveTransport{Fake: r.tr, armed: true}
+	target := &fakeSource{kind: "target"}
+	target.set(item("1", `{"id":1}`), item("2", `{"id":2}`), item("3", `{"id":3}`), item("4", `{"id":4}`))
+	ft := newFakeTime()
+	seen := make(chan error, 4)
+	p := r.publisherWith(Config{Clock: ft.Now, Transport: tr, OnError: func(err error) { seen <- err }}, target)
+	p.mono, p.timer = ft.Now, ft.Timer
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- p.Run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		if err := <-done; !errors.Is(err, context.Canceled) {
+			t.Errorf("Run = %v", err)
+		}
+	})
+	ru := &runner{t: t, ft: ft, p: p}
+	ru.settle(0) // the start cycle: half saved, then the failure
+	if err := <-seen; !errors.Is(err, transport.ErrUnavailable) {
+		t.Fatalf("OnError got %v", err)
+	}
+	live := r.live()
+	if _, ok := live[r.wireName("target-1")]; !ok {
+		t.Fatal("the first half not in the zone")
+	}
+	if _, ok := live[r.wireName("target-4")]; ok {
+		t.Fatal("the second half in the zone after the failure")
+	}
+	if hashes, _ := r.st.SliceHashes("target"); len(hashes) != 0 {
+		t.Fatalf("hashes recorded for a failed save: %v", hashes)
+	}
+	ru.step(RetryFirst)
+	live = r.live()
+	for i := 1; i <= 4; i++ {
+		if _, ok := live[r.wireName(fmt.Sprintf("target-%d", i))]; !ok {
+			t.Fatalf("target-%d not saved by the retry", i)
+		}
+	}
+	if hashes, _ := r.st.SliceHashes("target"); len(hashes) != 4 {
+		t.Fatalf("%d hashes after the retry, want 4", len(hashes))
+	}
+}

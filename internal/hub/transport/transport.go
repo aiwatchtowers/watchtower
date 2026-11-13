@@ -174,9 +174,10 @@ type Transport interface {
 	// call with secure.ErrUnsealed, before any I/O, when any item's Record
 	// did not come from the Sealer. Outcomes follow the items' order. A
 	// transport may send the items in several requests: an error then means
-	// nothing went through; a failure after a request went through keeps
-	// the outcomes so far and refuses every item not yet answered with that
-	// failure (Outcome.Refused), so a caller saves those again later.
+	// some earlier requests may already have saved their items, and the
+	// caller saves the whole batch again later (saves are idempotent
+	// re-writes; a conditional item that already landed comes back as a
+	// conflict on the caller's own record).
 	Save(ctx context.Context, items []SaveItem) ([]Outcome, error)
 	// Delete removes records of zone by wire name; outcomes follow the items.
 	Delete(ctx context.Context, zone string, items []DeleteItem) ([]Outcome, error)

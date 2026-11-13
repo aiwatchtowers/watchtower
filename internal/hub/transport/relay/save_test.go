@@ -152,9 +152,10 @@ func TestRelayTransport_SaveConflictInALaterRequest(t *testing.T) {
 	}
 }
 
-// A failure after a request went through keeps its outcomes and refuses the
-// rest with the failure's class; the refused request's zones are re-read.
-func TestRelayTransport_SaveFailureMidWayKeepsEarlierOutcomes(t *testing.T) {
+// A failure after a request went through fails the whole call, as the
+// CloudKit client does: the first request's items are in the zone (the caller
+// saves the whole batch again); the refused request's zones are re-read.
+func TestRelayTransport_SaveFailureMidWayFailsTheCall(t *testing.T) {
 	h := newHarness(t)
 	h.threePerRequest(t, h.tr)
 	seen := map[string][]error{}
@@ -166,24 +167,36 @@ func TestRelayTransport_SaveFailureMidWayKeepsEarlierOutcomes(t *testing.T) {
 	}
 	items := append(h.items(t, 1, 3), transport.SaveItem{Record: boxed}, transport.SaveItem{Record: h.seal(t, "target-5", `{}`)})
 	h.relay.FailNextSaveIn(box, relayv1.ErrorCode_ERROR_CODE_HUB_QUOTA_EXCEEDED)
-	out, err := h.tr.Save(t.Context(), items)
-	if err != nil {
-		t.Fatalf("save: %v", err)
-	}
-	for i, o := range out {
-		if i < 3 && !o.Saved || i >= 3 && (o.Saved || !errors.Is(o.Refused, transport.ErrHubQuota)) {
-			t.Fatalf("outcome %d: %+v", i, o)
-		}
+	if out, err := h.tr.Save(t.Context(), items); !errors.Is(err, transport.ErrHubQuota) || out != nil {
+		t.Fatalf("save: %v, %+v", err, out)
 	}
 	if got := saveSizes(h); len(got) != 2 || got[0] != 3 || got[1] != 2 {
 		t.Fatalf("save requests: %v", got)
 	}
+	assertSavedNames(t, h, items[:3])
 	waitZoneEvent(t, h.tr, box)
 	if b := seen[box]; len(b) != 1 || !errors.Is(b[0], transport.ErrHubQuota) {
 		t.Fatalf("observed %s: %v", box, b)
 	}
-	if d := seen[h.data]; len(d) != 4 || d[0] != nil || d[2] != nil || !errors.Is(d[3], transport.ErrHubQuota) {
+	if d := seen[h.data]; len(d) != 1 || !errors.Is(d[0], transport.ErrHubQuota) {
 		t.Fatalf("observed data: %v", d)
+	}
+}
+
+// assertSavedNames checks that h's data zone holds exactly want's records.
+func assertSavedNames(t *testing.T, h *harness, want []transport.SaveItem) {
+	t.Helper()
+	b, err := h.tr.Changes(t.Context(), h.data, 0)
+	if err != nil {
+		t.Fatalf("changes: %v", err)
+	}
+	if len(b.Changed) != len(want) {
+		t.Fatalf("zone holds %d records, want %d", len(b.Changed), len(want))
+	}
+	for i, st := range b.Changed {
+		if st.Name != want[i].Record.WireName() {
+			t.Fatalf("record %d: %s, want %s", i, st.Name, want[i].Record.WireName())
+		}
 	}
 }
 
@@ -268,9 +281,9 @@ func (a *secondSave) RoundTrip(r *http.Request) (*http.Response, error) {
 }
 
 // The host closing (ctx ends) or the connection dropping during the second
-// request keeps the first one's outcomes and refuses the rest; a restart
-// leaves the same state as a dropped connection (what was saved is in the
-// zone, the rest is saved again by the next call).
+// request fails the whole call; the first request's items are in the zone
+// and the next call saves the whole batch again (a restart leaves the same
+// state).
 func TestRelayTransport_SaveInterruptedMidWay(t *testing.T) {
 	for name, tc := range map[string]struct {
 		drop bool
@@ -291,15 +304,11 @@ func TestRelayTransport_SaveInterruptedMidWay(t *testing.T) {
 			})
 			t.Cleanup(func() { _ = tr.Close() })
 			h.threePerRequest(t, tr)
-			out, err := tr.Save(ctx, h.items(t, 1, 5))
-			if err != nil {
-				t.Fatalf("save: %v", err)
+			items := h.items(t, 1, 5)
+			if out, err := tr.Save(ctx, items); !errors.Is(err, tc.want) || out != nil {
+				t.Fatalf("save: %v, %+v", err, out)
 			}
-			for i, o := range out {
-				if i < 3 && !o.Saved || i >= 3 && (o.Saved || !errors.Is(o.Refused, tc.want)) {
-					t.Fatalf("outcome %d: %+v", i, o)
-				}
-			}
+			assertSavedNames(t, h, items[:3])
 		})
 	}
 }

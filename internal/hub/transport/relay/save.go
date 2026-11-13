@@ -61,15 +61,16 @@ type saveWire struct {
 // attachment over the relay's limit refuses that item alone), then the
 // records are saved with their attachment ids. A request the relay still
 // refuses RECORD_TOO_LARGE as a whole is halved and each half sent in its
-// place; a record refused so alone gets that refusal. Any other failure —
-// the relay's answer (a quota), a dropped connection or an unreachable
-// relay, ctx ending because the host stops — fails the whole call when no
-// request went through yet; after one did, the outcomes so far are kept and
-// every item not answered yet is refused with that error (the caller saves
-// them again later). A restart mid-way is the same as a dropped connection:
-// what was saved is in the zones, the rest is saved again by the next call.
-// A refused save request also emits a zone event per zone in it: the relay
-// may have written part of it.
+// place; a record refused so alone gets that refusal. Any other failure — the
+// relay's answer (a quota), a dropped connection or an unreachable relay, ctx
+// ending because the host stops — fails the whole call, as the CloudKit
+// client does: earlier requests may already have saved their items, and the
+// caller saves the whole batch again (a save is an idempotent re-write; a
+// conditional row that already landed comes back as a conflict on the hub's
+// own envelope). A
+// restart mid-way leaves the same state. A refused save request also emits a
+// zone event per zone in it and re-reads those zones: the relay may have
+// written part of it.
 func (t *Transport) Save(ctx context.Context, items []transport.SaveItem) ([]transport.Outcome, error) {
 	assets := make([]*os.File, len(items))
 	defer func() {
@@ -124,13 +125,16 @@ func (t *Transport) Save(ctx context.Context, items []transport.SaveItem) ([]tra
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if err := t.saveChunks(ctx, chunks, assets, out); err != nil {
-		return nil, err
-	}
+	err := t.saveChunks(ctx, chunks, assets, out)
+	// Items saved before a failure are noted as the hub's own all the same,
+	// so their change events are not taken for another device's.
 	for i, it := range items {
 		if out[i].Saved {
 			t.noteOwn(it.Record.Zone(), out[i].RecordSeq)
 		}
+	}
+	if err != nil {
+		return nil, err
 	}
 	if f := t.observed(); f != nil {
 		for i, it := range items {
@@ -145,11 +149,10 @@ func (t *Transport) Save(ctx context.Context, items []transport.SaveItem) ([]tra
 	return out, nil
 }
 
-// saveChunks sends chunks in order and fills out, with Save's halving and
-// partial-failure rules. Its error fails the whole call: nothing went
-// through before it.
+// saveChunks sends chunks in order and fills out, with Save's halving rule.
+// Any failure other than RECORD_TOO_LARGE fails the whole call; requests sent
+// before it may have saved their items (out shows which).
 func (t *Transport) saveChunks(ctx context.Context, chunks [][]saveWire, assets []*os.File, out []transport.Outcome) error {
-	answered := false
 	for len(chunks) > 0 {
 		c := chunks[0]
 		chunks = chunks[1:]
@@ -159,14 +162,12 @@ func (t *Transport) saveChunks(ctx context.Context, chunks [][]saveWire, assets 
 		}
 		switch {
 		case err == nil:
-			answered = true
 		case errors.Is(err, transport.ErrRecordTooLarge) && len(c) > 1:
 			h := len(c) / 2
 			chunks = append([][]saveWire{c[:h], c[h:]}, chunks...)
 		case errors.Is(err, transport.ErrRecordTooLarge):
 			out[c[0].item] = transport.Outcome{Refused: fmt.Errorf("relay: save: %w", err)}
-			answered = true
-		case !answered:
+		default:
 			if f := t.observed(); f != nil {
 				// A whole-call refusal names every zone of the refused
 				// request; the hub's mailbox writes save one mailbox's
@@ -177,16 +178,6 @@ func (t *Transport) saveChunks(ctx context.Context, chunks [][]saveWire, assets 
 				}
 			}
 			return fmt.Errorf("relay: save: %w", err)
-		default:
-			refusal := fmt.Errorf("relay: save: %w", err)
-			for _, rest := range append([][]saveWire{c}, chunks...) {
-				for _, s := range rest {
-					if out[s.item].Refused == nil {
-						out[s.item] = transport.Outcome{Refused: refusal}
-					}
-				}
-			}
-			return nil
 		}
 	}
 	return nil

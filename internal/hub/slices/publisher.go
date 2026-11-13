@@ -138,7 +138,9 @@ type SaveLatency interface {
 // the transport or the zone refused — or ctx ended: then they are left too), the kinds left by an abort, or
 // every kind asked for when the link state could not be read; Run retries
 // them. Errors holds each failed kind's error (nil when none failed), so
-// Run backs each kind off by its own failure.
+// Run backs each kind off by its own failure; Stop is the failure that ended
+// the cycle early (cycle-wide, or ctx), by which Run backs off the kinds the
+// cycle never tried. An epoch abort leaves Stop nil.
 type CycleReport struct {
 	Saved, Deleted int
 	Skipped        []string
@@ -147,6 +149,7 @@ type CycleReport struct {
 	Aborted        bool
 	Unfinished     []Kind
 	Errors         map[Kind]error
+	Stop           error
 }
 
 // Publisher is the slice publisher. PublishSoon is safe from any goroutine;
@@ -316,7 +319,9 @@ func (p *Publisher) PauseFor(reason string) {
 }
 
 // ResumeFor releases reason's hold; the last release resumes with one full
-// diff. Releasing a reason that holds nothing does nothing.
+// diff. When the transport changed while paused (a switch), every retry
+// backoff is dropped: a kind that failed on the old transport goes at once
+// (spacing holds stay). Releasing a reason that holds nothing does nothing.
 func (p *Publisher) ResumeFor(reason string) {
 	p.mu.Lock()
 	if !p.holds[reason] {
@@ -446,6 +451,25 @@ func retryWait(err error, backoff *time.Duration) time.Duration {
 	return *backoff
 }
 
+// retryErr is the failure unfinished kind k backs off by, err being the
+// cycle's error: its own failure; for a kind the cycle never tried, what
+// stopped it (not every kind's joined errors: an earlier kind's
+// record_too_large is not its class); nil (the plain backoff) for a failed
+// source or an epoch abort.
+func (rep CycleReport) retryErr(k Kind, err error) error {
+	switch e, ok := rep.Errors[k]; {
+	case ok:
+		return e
+	case slices.Contains(rep.Failed, k):
+		return nil
+	case rep.Stop != nil:
+		return rep.Stop
+	case rep.Aborted:
+		return nil
+	}
+	return err // the link state could not be read
+}
+
 // cycleWide: err refuses the transport or the data zone as a whole, so a
 // cycle stops at it instead of trying every later kind.
 func cycleWide(err error) bool {
@@ -478,6 +502,8 @@ func permanentFailure(err error) bool {
 func (p *Publisher) Run(ctx context.Context) error {
 	held := map[Kind]time.Time{}        // monotonic time each deferred or retried kind may go
 	backoff := map[Kind]time.Duration{} // each failing kind's own backoff
+	retrying := map[Kind]bool{}         // kinds whose held time is a retry, not their spacing
+	var retryOn transport.Kind          // the transport the retries above failed on
 	nextFull := p.mono()
 	for {
 		now := p.mono()
@@ -498,6 +524,18 @@ func (p *Publisher) Run(ctx context.Context) error {
 		}
 		if resumed {
 			nextFull = now
+			// After a transport switch a kind backed off on the old
+			// transport is tried on the new one at once; spacing holds stay
+			// (they guard the phone, not the transport). A resume on the
+			// same transport keeps its retries (the relay's retry_after_s).
+			if k := p.transportKind(); k != retryOn {
+				for k := range retrying {
+					delete(held, k)
+				}
+				clear(retrying)
+				clear(backoff)
+				retryOn = k
+			}
 		}
 		var (
 			kinds []Kind
@@ -537,8 +575,10 @@ func (p *Publisher) Run(ctx context.Context) error {
 			}
 			after := p.mono()
 			clockNow := p.clock()
+			retryOn = p.transportKind()
 			for k, at := range rep.Deferred {
 				held[k] = after.Add(max(0, at.Sub(clockNow)))
+				delete(retrying, k)
 			}
 			tried := kinds
 			if tried == nil {
@@ -550,17 +590,12 @@ func (p *Publisher) Run(ctx context.Context) error {
 				}
 			}
 			for _, k := range rep.Unfinished {
-				kerr := err
-				if e, ok := rep.Errors[k]; ok {
-					kerr = e
-				} else if slices.Contains(rep.Failed, k) {
-					kerr = nil // its source failed: the plain backoff, not another kind's class
-				}
 				b := backoff[k]
-				wait := retryWait(kerr, &b)
+				wait := retryWait(rep.retryErr(k, err), &b)
 				backoff[k] = b
 				if at, ok := held[k]; !ok || at.Before(after.Add(wait)) {
 					held[k] = after.Add(wait)
+					retrying[k] = true
 				}
 			}
 			continue
@@ -699,6 +734,7 @@ func (p *Publisher) Cycle(ctx context.Context, kinds []Kind) (CycleReport, error
 		errs = append(errs, err)
 		if ctx.Err() != nil || cycleWide(err) {
 			rep.Unfinished = append(rep.Unfinished, todo[i+1:]...)
+			rep.Stop = err
 			p.notePublished(tried, published)
 			return rep, errors.Join(errs...)
 		}
@@ -727,6 +763,15 @@ func (p *Publisher) notePublished(tried, published int) {
 	p.mu.Lock()
 	p.lastPublish = at
 	p.mu.Unlock()
+}
+
+// transportKind is the kind of the transport writes go to now ("" without
+// one).
+func (p *Publisher) transportKind() transport.Kind {
+	if p.c.Transport == nil {
+		return ""
+	}
+	return p.c.Transport.Kind()
 }
 
 // sourceKinds is every kind with a source, in publish order.
