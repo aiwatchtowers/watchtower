@@ -340,7 +340,9 @@ rulings asks #827, #881, #883). The hub leaves the test workspace for real data 
   and each half sent again; a record refused alone gets `record_too_large`. Any other failure — the relay's answer,
   a dropped connection, the host stopping (ctx) — fails the whole call at any point, as the CloudKit client does:
   items of the requests that went through before it may already be in the zone, and the next try re-sends the whole
-  batch (a restart leaves the same state). Conflict indexes are per request
+  batch (a restart leaves the same state). v1 limit, shared with CloudKit: the publisher records none of a failed
+  call's items, so an item removed (or publishing turned off) before the retry leaves its saved record in the zone
+  until the zone is recreated (no sweep lists a zone). Conflict indexes are per request
   and mapped back to the items; a refused request re-reads its zones. `relaytest` enforces the same two limits
   (`MaxRecordBytes`, `MaxBodyBytes`).
 - **Zone subscriptions** (`watchZones`, link upkeep): a zone the relay refuses (FORBIDDEN: no phone holds the hub
