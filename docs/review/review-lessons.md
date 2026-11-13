@@ -3063,4 +3063,13 @@ Entry format:
 - miss: the new `transport.Transport.Save` doc promised a contract the other implementation (CloudKit client returns (nil, err) after earlier frames) does not keep; only the prosecutor checked the second implementation. [8]
 - weak-dimension: 7 — the publisher tests faked only whole-call refusals, never the (outcomes, nil) shape the changed transport now returns, so the caller-side regression was invisible to the suite.
 - rule-gap: a change to the semantics of a multi-implementation interface method (here "error vs per-item refusal" of Save) must audit every caller's handling of the new shape and every other implementation against the new doc, with a caller-level test of the new shape. Candidate for §8.
+
+## 2026-11-13 — Codex plan-usage runtime PATH (6b228031e) — verdict: changes-needed
+
+- contested: Reusing an existing PATH resolver can introduce a new cancellation regression when an explicit executable previously bypassed its login-shell subprocess. The provider budget cannot bound a context-free subprocess invoked before the bounded reader. [6/8]
+- false-positive: Environment preservation is not itself broken: appending the PATH override retains unrelated variables. The defect is a test subprocess retaining an inherited config-path override while relying on a synthetic HOME. [7]
+- miss: The helper-process TestMain shortcut skips the normal config reset; package-initialization defaults still honor inherited configuration. Two specialist lanes independently identified the same isolation hole. [7]
+- weak-dimension: 7. A realistic fake CLI is insufficient if an inherited config override can select another executable before the fixture is used.
+- rule-gap (candidate, dim 7): A re-executed test binary pins every environment-based configuration selector to its fixture, including selectors evaluated during package initialization.
+- rule-gap (candidate, dim 6/8): Reusing discovery code under a bounded operation requires checking its subprocess lifetime; pure known-directory enrichment avoids adding an unbounded shell step to an explicit-path flow.
 - outcome: TBD

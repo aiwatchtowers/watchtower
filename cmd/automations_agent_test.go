@@ -268,10 +268,11 @@ func newClaudeStub(t *testing.T, reply string) *claudeStub {
 		"if [ -f '" + dir + "/wait' ]; then while [ ! -f '" + dir + "/release' ]; do sleep 0.01; done; fi\n" +
 		"if [ -f '" + dir + "/sleep' ]; then trap '' INT; exec sleep 30; fi\n" +
 		"if [ -f '" + dir + "/fail' ]; then exit 1; fi\n" +
-		// A codex run in its own home: the run's rollout, written before
-		// the stream, and what the home held then.
+		// Capture the home before publishing turns: the watchdog may cancel
+		// the process as soon as the rollout reaches its cap.
 		"if [ -f '" + dir + "/rollout' ]; then r=\"$CODEX_HOME/sessions/2026/01/01\"; mkdir -p \"$r\"; " +
-		"cp '" + dir + "/rollout' \"$r/rollout-2026-01-01T00-00-00-x.jsonl\"; ls -R \"$CODEX_HOME\" > '" + dir + "/home-ls'; fi\n" +
+		": > \"$r/rollout-2026-01-01T00-00-00-x.jsonl\"; ls -R \"$CODEX_HOME\" > '" + dir + "/home-ls'; " +
+		"cp '" + dir + "/rollout' \"$r/rollout-2026-01-01T00-00-00-x.jsonl\"; fi\n" +
 		"cat '" + dir + "/reply'\n" +
 		"if [ -f '" + dir + "/hold' ]; then exec sleep 30; fi\n"
 	require.NoError(t, os.WriteFile(s.path, []byte(script), 0o700))
