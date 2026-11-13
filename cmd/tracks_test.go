@@ -765,15 +765,6 @@ func dismissedImage(t *testing.T, d *db.DB) map[int]string {
 	return out
 }
 
-// lastJSONLine decodes stdout's last non-empty line.
-func lastJSONLine(t *testing.T, stdout string) map[string]any {
-	t.Helper()
-	lines := strings.Split(strings.TrimSpace(stdout), "\n")
-	var m map[string]any
-	require.NoError(t, json.Unmarshal([]byte(lines[len(lines)-1]), &m), stdout)
-	return m
-}
-
 func idsOf(ids ...int) []any {
 	out := make([]any, 0, len(ids))
 	for _, id := range ids {
