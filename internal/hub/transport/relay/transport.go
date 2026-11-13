@@ -120,6 +120,9 @@ type Transport struct {
 	// at most ownCap): PullEvent skips them without a read.
 	own map[string][]uint64
 	wg  sync.WaitGroup
+	// recordCap and requestBudget are maxRecordBytes and saveRequestBudget
+	// (a test lowers them).
+	recordCap, requestBudget int
 }
 
 // ownCap bounds the own-write seqs kept per zone (a zone the hub writes but
@@ -151,6 +154,7 @@ func New(c *client.Client, o Options) *Transport {
 	hc.CheckRedirect = checkRedirect
 	return &Transport{
 		c: c, o: o, http: hc, events: make(chan transport.Event, eventBuffer), done: make(chan struct{}),
+		recordCap: maxRecordBytes, requestBudget: saveRequestBudget,
 	}
 }
 
@@ -524,104 +528,6 @@ func wireExpect(item *relayv1.SaveItem, e transport.Expect) error {
 		return fmt.Errorf("relay: unknown expect mode %d", e.Mode)
 	}
 	return nil
-}
-
-// Save implements transport.Transport. Before any I/O it refuses the whole
-// call with secure.ErrUnsealed when a record did not come from the Sealer or
-// carries an asset file outside Options.AssetDir. An asset in a pairing zone
-// is refused per item with transport.ErrForbidden (the relay allows none
-// there). Each other asset is uploaded first (create_upload, then a PUT of the
-// sealed file to the opaque URL), then the records are saved with their
-// attachment ids. A refused save also emits a zone event per zone in it.
-func (t *Transport) Save(ctx context.Context, items []transport.SaveItem) ([]transport.Outcome, error) {
-	assets := make([]*os.File, len(items))
-	defer func() {
-		for _, f := range assets {
-			if f != nil {
-				_ = f.Close()
-			}
-		}
-	}()
-	out := make([]transport.Outcome, len(items))
-	wire := make([]*relayv1.SaveItem, 0, len(items))
-	index := make([]int, 0, len(items)) // wire position → item index
-	for i, it := range items {
-		r := it.Record
-		if !r.Sealed() {
-			return nil, fmt.Errorf("relay: save item %d: %w", i, secure.ErrUnsealed)
-		}
-		w := &relayv1.SaveItem{Record: &relayv1.Record{
-			Zone: r.Zone(), Name: r.WireName(), Envelope: r.Envelope(), ClientModifiedAtMs: t.o.Clock().UnixMilli(),
-		}}
-		if err := wireExpect(w, it.Expect); err != nil {
-			return nil, fmt.Errorf("relay: save item %d: %w", i, err)
-		}
-		if p := r.AssetPath(); p != "" {
-			if isPairZone(r.Zone()) {
-				out[i] = transport.Outcome{Refused: fmt.Errorf("relay: attachment in a pairing zone: %w", transport.ErrForbidden)}
-				continue
-			}
-			f, err := t.openAsset(p)
-			if err != nil {
-				return nil, fmt.Errorf("relay: save item %d: %w", i, err)
-			}
-			assets[i] = f
-		}
-		wire = append(wire, w)
-		index = append(index, i)
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if len(wire) == 0 {
-		return out, nil
-	}
-	for k, w := range wire {
-		if f := assets[index[k]]; f != nil {
-			id, err := t.upload(ctx, w.GetRecord().GetZone(), f)
-			if err != nil {
-				return nil, fmt.Errorf("relay: save item %d: upload: %w", index[k], err)
-			}
-			w.Record.AttachmentId = id
-		}
-	}
-	resp, err := t.do(ctx, &relayv1.Request{Op: &relayv1.Request_Save{Save: &relayv1.Save{Items: wire}}})
-	if err != nil {
-		zones := make([]string, len(wire))
-		for k, w := range wire {
-			zones[k] = w.GetRecord().GetZone()
-		}
-		t.rereadZones(zones)
-		if f := t.observed(); f != nil {
-			// A whole-call refusal names every zone of the batch; the hub's
-			// mailbox writes save one mailbox's queue per call
-			// (actions/control.go), so a mailbox quota is never put on another
-			// phone's mailbox.
-			for _, z := range zones {
-				f(z, err)
-			}
-		}
-		return nil, fmt.Errorf("relay: save: %w", err)
-	}
-	if err := saveOutcomes(resp.GetSave(), index, out); err != nil {
-		return nil, fmt.Errorf("relay: save: %w", err)
-	}
-	for i, it := range items {
-		if out[i].Saved {
-			t.noteOwn(it.Record.Zone(), out[i].RecordSeq)
-		}
-	}
-	if f := t.observed(); f != nil {
-		for i, it := range items {
-			switch o := out[i]; {
-			case o.Saved:
-				f(it.Record.Zone(), nil)
-			case o.Refused != nil:
-				f(it.Record.Zone(), o.Refused)
-			}
-		}
-	}
-	return out, nil
 }
 
 // saveOutcomes fills out from a save answer: saved records in request order,

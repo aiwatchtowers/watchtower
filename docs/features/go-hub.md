@@ -331,6 +331,18 @@ rulings asks #827, #881, #883). The hub leaves the test workspace for real data 
   without `relay_admitted_at`, `relay` with it. `hubtest.Phone.VouchLink` (the copied client's `VouchHub`: VOUCH challenge, then
   `vouch_hub` with no attestation) and `relaytest`'s vouch model (gate incl. open sockets, the relay's refusal order,
   10-minute pending vouch consumed by `promote_pairing`/`add_slot`, best-effort `SLOT_ADDED`, `RemoveSlot`).
+- **Relay saves in requests under the relay's cap** (#1760; `relay.Transport.Save`, `transport/relay/save.go`). The
+  relay refuses a record over 1 MiB and an op body over 1 MiB + 64 KiB as a whole (`RECORD_TOO_LARGE`), and the
+  publisher saves a whole kind per call (a thousand-target board failed every cycle). `Save` packs the items, in
+  order, into requests of at most `saveRequestBudget` (960 KiB estimated, 128 KiB under the cap); an envelope over
+  1 MiB is refused alone (`record_too_large`) and never sent; per request the assets are uploaded first (an
+  attachment over the limit refuses its item alone). A request the relay still refuses `RECORD_TOO_LARGE` is halved
+  and each half sent again; a record refused alone gets `record_too_large`. Any other failure — the relay's answer,
+  a dropped connection, the host stopping (ctx) — fails the whole call when nothing went through yet; after a request
+  went through, the outcomes so far are kept and every item not answered is refused with that class (a restart leaves
+  the same state: what was saved is in the zone, the rest goes again next cycle). Conflict indexes are per request
+  and mapped back to the items; a refused request re-reads its zones. `relaytest` enforces the same two limits
+  (`MaxRecordBytes`, `MaxBodyBytes`).
 - **Session host under a service manager** (PROJ-20 amended for Linux, ask #827): socket dir `/run/user/<uid>` or
   `<data root>/.run` (see Linux behaviour); on Linux `sessionhost.Ensure` always starts the host as the transient unit
   `watchtower-session-host` (`systemd-run --user --collect --quiet --property=UMask=0077`, `--setenv` of `PATH` and the
