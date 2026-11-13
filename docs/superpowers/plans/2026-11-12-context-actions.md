@@ -287,7 +287,7 @@ Depends on: Tasks 3 and 4.
   - Rollback of `claude_memory_index` (spec part 2): the Applier itself, no session. Compare-and-set: MEMORY.md must still equal `after_text` (recorded by Task 6 when the session wrote it); then it writes `before_text` back atomically. Index changed since → refused ("the memory index changed since — roll it back by hand"); `after_text` empty (the session never wrote) → refused ("nothing to roll back"). The archive file the agent created is left in place; nothing points to it any more.
   - Accepted session rows that ended with nothing to measure (no `measure_from`, no open or merged PR) cannot use Decline (`open → declined` only) or a fresh Accept (`open → accepted` only). Two verbs cover them:
     - `func (a *Applier) Dismiss(id int64) error`: compare-and-set on `status = 'accepted' AND via_session = 1 AND measure_from IS NULL AND verdict = ''` → verdict `too_little_data`, value nil; anything else → `ErrCoachStateChanged`. CLI `coach dismiss <id> --json`.
-    - `func (a *Applier) Restart(id, sessionID int64) error`: same guard plus no PR for `session_branch` → `session_id` = the new session, `session_branch` cleared (re-copied as in Accept). CLI `coach accept <id> --session <sid> --restart --json`.
+    - `func (a *Applier) Restart(id, sessionID int64) error`: same guard plus no PR for `session_branch` → everything `AcceptWithSession` does except the status flip, in one compare-and-set: `session_id` = the new session, `session_branch` cleared then re-copied as in Accept, `decided_at = now` (the 30-day `repoCommitWait` restarts with the new session), the `start_tokens` baseline re-taken for the 14 days before now, and for `claude_memory_index` MEMORY.md re-read into `before_text` (lines auto-memory added between the two sessions are kept by a later Rollback). CLI `coach accept <id> --session <sid> --restart --json`.
   - `func (a *Applier) Reapply(id int64) error` (body in Task 6) and the CLI `coach reapply <id> --json` (same owner checks as `accept`).
   - `Accept(id, edited)` on a session destination → `refuse("Accept it in Watchtower — it starts a session")`.
   - CLI:
@@ -301,7 +301,7 @@ Depends on: Tasks 3 and 4.
   - `TestAcceptWithSession_MemoryRefreshesBefore`;
   - `TestRollback_MemoryRestoresIndex`, `TestRollback_MemoryChangedSinceRefused`, `TestRollback_MemoryNeverWrittenRefused`;
   - `cmd`: `TestCoachReapplyJSON`, `TestCoachDismissJSON`;
-  - `TestDismiss_AcceptedWithoutMeasure` (→ `too_little_data`), `TestDismiss_MeasuredRefused`, `TestRestart_ReplacesSession`, `TestRestart_RefusedWithPR`;
+  - `TestDismiss_AcceptedWithoutMeasure` (→ `too_little_data`), `TestDismiss_MeasuredRefused`, `TestRestart_ReplacesSession`, `TestRestart_RefusedWithPR`, `TestRestart_ResetsWindow` (restart on day 28 → no `too_little_data` on day 31), `TestRestart_MemoryRefreshesBefore`;
   - `TestBrief_NoConfigValues`;
   - `TestBrief_Revert` (the revert brief names the merged PR and asks for a revert PR);
   - `TestAccept_SessionDestinationRefusedWithoutSession`;
