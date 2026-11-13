@@ -86,7 +86,7 @@ var capabilitySpecs = map[string]capabilitySpec{
 
 // BuiltinPrimitiveNames are the engine primitives a builtin: entry may name.
 var BuiltinPrimitiveNames = []string{"brief.compose", "plan.compose", "tracks.extract", "ideas.consolidate", "reaction.compose",
-	PrimitiveAttentionWaiting, PrimitiveApprovalsList}
+	PrimitiveAttentionWaiting, PrimitiveApprovalsList, PrimitiveSlackWindow}
 
 // PrimitiveAttentionWaiting is Waiting for me's read of the open attention
 // items (Inbox builder B).
@@ -101,6 +101,17 @@ const PrimitiveApprovalsList = "approvals.list"
 // outside the run's meter (sdk_builtin.go callRead). A dry run calls them
 // too, as it calls a read tool.
 var ReadPrimitiveNames = []string{PrimitiveAttentionWaiting, PrimitiveApprovalsList}
+
+// PrimitiveSlackWindow is Slack today's read of the raw Slack window: the
+// messages past the automation's cursor (sdk_window.go).
+const PrimitiveSlackWindow = "slack.window"
+
+// WindowPrimitiveNames are the built-in primitives that read a raw window
+// past a cursor the SDK keeps in the automation's state
+// (WindowStateKeyPrefix). They are journalled as a tool step outside the
+// meter, as a read primitive is, and are not in ReadPrimitiveNames: they
+// take {floor} and stage the next cursor (sdk_window.go callWindow).
+var WindowPrimitiveNames = []string{PrimitiveSlackWindow}
 
 // PrimitiveCapability maps a primitive to its capability entry when that is
 // not builtin:<name>.

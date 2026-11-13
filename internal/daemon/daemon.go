@@ -743,6 +743,7 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 	}
 	d.phaseInbox(ctx)
 	d.phaseWaitingForMe(ctx)
+	d.phaseSlackToday(ctx)
 	d.phaseStreamDigests(ctx)
 	d.phaseIdeaFinder(ctx)
 	d.phaseMemory(ctx)

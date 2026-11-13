@@ -41,11 +41,12 @@ const (
 )
 
 // ReadPrimitives are the built-ins' read primitives
-// (automations.ReadPrimitiveNames) over d: what every executor and dry run
-// carries, since a dry run calls them.
+// (automations.ReadPrimitiveNames and automations.WindowPrimitiveNames) over
+// d: what every executor and dry run carries, since a dry run calls them.
 func ReadPrimitives(d *db.DB, now func() time.Time) map[string]automations.PrimitiveFunc {
 	out := WaitingPrimitives(d, now)
 	maps.Copy(out, ApprovalsPrimitives(d, now))
+	maps.Copy(out, SlackWindowPrimitives(d, now))
 	return out
 }
 

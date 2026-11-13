@@ -22,7 +22,7 @@ replaces: [inbox-filters]
 changed: The filters above the list are gone; folders you arrange replace them.
 -->
 
-The Inbox has three columns: the folder menu, the selected folder's list, and the reading pane. **⌥⌘S** (View → **Hide Inbox Folders**) folds the menu. The menu starts with the root, **Inbox**, then **Needs approval**, then your folders as a tree under **Folders**, each with an icon and its own count. The Inbox opens on today's brief, or on the card you last opened in that folder.
+The Inbox has three columns: the folder menu, the selected folder's list, and the reading pane. **⌥⌘S** (View → **Hide Inbox Folders**) folds the menu. The menu starts with the root, **Inbox**, then **Needs approval**, then your folders as a tree under **Folders**, each with its own count. The Inbox opens on today's brief, or on the card you last opened in that folder.
 
 An automation's cards go to its folder, the root unless you moved it; **Move to Folder** moves its earlier cards too, and a recipe can name a folder for one card ([which folder a card goes to](automations-inbox-buttons.md#which-folder-a-card-goes-to)). Folders nest 3 deep, up to 100, titles up to 60 characters.
 
@@ -31,7 +31,7 @@ An automation's cards go to its folder, the root unless you moved it; **Move to 
 The root sorts its rows by urgency. Each row shows a tile for its kind, its first line, the time and a count of what needs you.
 
 - **Needs you**: **Waiting for me** (people waiting today; older ones as a grey line), **Messages** in its place before it has run or after a failed run, and each **Thread brief** a reaction made, for 24 hours.
-- **Today**: **Morning brief**, today's only, then cards your automations changed today.
+- **Today**: today's **Morning brief**, **Slack today**, then cards your automations changed today.
 - **Running**: **Track my threads**, the threads with news for you ([tracks](tracks.md)), **Idea finder**, today's ideas to judge ([ideas](ideas-and-decisions.md)), then older cards.
 - **Earlier**: one line counting the past briefs; click it for **History**.
 
@@ -51,11 +51,9 @@ replaces: [inbox-proposals]
 changed: Proposals and due reminders moved from Needs your decision to their own folder.
 -->
 
-**Needs approval** holds every action waiting for you, whatever started it (a reaction, a chat, an automation, a Workbench terminal, a **Reply…**), and every reminder once due. It can't be moved, renamed, hidden or deleted. The built-in **Needs approval** draws one card per approval, with **Approve**, **Reject** and **Edit…**, **Retry** after a failure; **Done** and **Snooze 1h** on a reminder. Nothing outside Watchtower happens before you approve.
+**Needs approval** holds every action waiting for you, whatever started it, and every reminder once due. It can't be moved, renamed, hidden or deleted. The built-in **Needs approval** draws one card per approval, with **Approve**, **Reject** and **Edit…**, **Retry** after a failure; **Done** and **Snooze 1h** on a reminder. Nothing outside Watchtower happens before you approve.
 
-The list groups them by kind, oldest first: **Messages**, **Tracks to create**, **Targets**, **Confluence and Jira**, **Reminders**, **Other**, after **Built-in updates** and before **Approved, still running**. Two or more of one kind (new tracks, new targets, target updates, one Confluence or Jira action) make one row with **Approve All N…**; mixed kinds, messages, reminders and **Other** go one by one.
-
-A new approval shows in the standard card until the built-in redraws it; so does every approval while the built-in is off, stopped or failing, under a line that says why.
+The list groups them by kind, oldest first: **Messages**, **Tracks to create**, **Targets**, **Confluence and Jira**, **Reminders**, **Other**, after **Built-in updates** and before **Approved, still running**. Two or more tracks, targets or Confluence and Jira changes of one kind make one row with **Approve All N…**; the rest go one by one.
 
 ### Waiting for me
 <!-- learn
@@ -72,6 +70,21 @@ changed: The Messages filter became the Waiting for me list in the Inbox.
 -->
 
 **Attention detection** finds the mentions, DMs, thread replies, Jira and Linear issues assigned to you or mentioning you, and mail to you. The built-in **Waiting for me** turns them into one list after every sync, newest first, up to 200, with each item's age, flagged once it passes a day. An item leaves when you answer in the source (Gmail mail too; Outlook and IMAP mail archives on its own), or press **Done**, **Hide** or **Snooze**. Detection makes no AI calls.
+
+### Slack today
+<!-- learn
+id: inbox-slack-today
+title: Catch up on today's Slack
+text: Open **Slack today** in the Inbox for what was decided, asks you or needs someone in your channels and DMs today.
+area: communication
+level: basics
+kind: feature
+since: next
+requires: source:slack
+action: nav:inbox
+-->
+
+**Slack today** sums up today's messages in your channels and DMs, one list per conversation, each line marked **asks you**, **needs someone**, **decided** or **fyi**. It turns unread only when a line changes, not on every message; **Mark All Seen** marks it read ([how it runs](automations-built-in.md#how-it-works)).
 
 ### What the badge counts
 
@@ -174,7 +187,7 @@ action: nav:inbox
 -->
 
 1. In **Needs approval**, click a group row such as "Create 3 tracks".
-2. Press **Approve All 3…** on its header and confirm. Each is approved in turn, as its card shows.
+2. Press **Approve All 3…** on its header and confirm. Each is approved in turn.
 3. A failure stops the run on that card ("Closed 1 of 3. …"); **Try Again** runs what is left.
 
 ### Arrange your folders
@@ -209,7 +222,7 @@ The root's **⋯** opens these in the reading pane, and **?** in a pane's header
 - **"Your Inbox is empty".** Nothing landed in the root yet; **New Artifact…** makes an automation.
 - **"Nothing in Release yet".** No automation writes to that folder; use **Move to Folder** on a card.
 - **"Showing approvals in the standard card — …".** The built-in Needs approval is off, was stopped, or its last run failed. **Turn On** or **Run History**; nothing waits unseen meanwhile.
-- **"The menu changed — reloaded. Drag again if needed."** Another change landed first; nothing moved. Try again.
+- **"The menu changed — reloaded. Drag again if needed."** Another change landed first; nothing moved.
 - **"The watchtower CLI isn't available".** Menu edits and presses that run it are off; reading still works.
 - **A message you answered is still listed.** It leaves at the next sync after the answer reaches Watchtower.
 - **"Connect Slack, Google, Jira, Linear or an email account so Watchtower knows who you are".** Without it, attention detection and the brief never run. Click **Open Connections**.

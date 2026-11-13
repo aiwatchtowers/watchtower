@@ -76,6 +76,9 @@ const (
 	// Needs approval's cards (Inbox builder B): on — no AI, no cost.
 	DefaultApprovalCardsEnabled = true
 
+	// Slack today (Inbox redesign phase 5): on — light AI, at most once an hour.
+	DefaultSlackTodayEnabled = true
+
 	// Tracks and people pipelines
 	DefaultTracksEnabled          = true
 	DefaultPeopleEnabled          = true

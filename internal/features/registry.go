@@ -313,6 +313,23 @@ var registry = []Feature{
 		Cost:      CostNone,
 		Enabled:   func(cfg *config.Config) bool { return cfg.ApprovalCards.Enabled },
 	},
+	{
+		// No fast-forward hook: the window is floored at today's local
+		// midnight, so turning it on reads at most today.
+		ID:          "slack-today",
+		Title:       "Slack today",
+		Description: "Once an hour at most, reads today's messages in your Slack channels and DMs (except channels muted for AI) and lists what was decided, what asks you, what needs someone and what is just news, by conversation. Light AI use.",
+		Tagline:     "What happened in your Slack today",
+		Benefits: []string{
+			"Today's channels and DMs in one place",
+			"Each line marked decided, asks you, needs someone or fyi",
+			"Reads Slack directly — no digests needed",
+		},
+		Icon:      "bubble.left.and.text.bubble.right",
+		ConfigKey: "slack_today.enabled",
+		Cost:      CostLight,
+		Enabled:   func(cfg *config.Config) bool { return cfg.SlackToday.Enabled },
+	},
 }
 
 // memorySubToggles surfaces memory's existing semantic/sources/surfaces

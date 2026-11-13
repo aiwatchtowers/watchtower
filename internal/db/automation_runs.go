@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -1571,4 +1572,32 @@ func scanAutomationOutput(rows *sql.Rows, extra ...any) (AutomationOutput, error
 		return o, fmt.Errorf("automation output %d: %w", o.ID, err)
 	}
 	return o, nil
+}
+
+// LastAutomationRunQueuedAt returns when the newest run of automationID with
+// the given trigger and one of statuses (at least one) was queued. ok is
+// false when there is no such run.
+func (db *DB) LastAutomationRunQueuedAt(ctx context.Context, automationID int64, trigger string, statuses []string) (time.Time, bool, error) {
+	if len(statuses) == 0 {
+		return time.Time{}, false, errors.New("last automation run: no status given")
+	}
+	args := []any{automationID, trigger}
+	for _, s := range statuses {
+		args = append(args, s)
+	}
+	var queued string
+	err := db.QueryRowContext(ctx, `SELECT queued_at FROM automation_runs
+		WHERE automation_id = ? AND trigger = ? AND status IN (`+placeholders(len(statuses))+`)
+		ORDER BY queued_at DESC, id DESC LIMIT 1`, args...).Scan(&queued)
+	if errors.Is(err, sql.ErrNoRows) {
+		return time.Time{}, false, nil
+	}
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("last %s run of automation %d: %w", trigger, automationID, err)
+	}
+	at, err := time.Parse(automationTimeLayout, queued)
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("last %s run of automation %d: queued_at %q: %w", trigger, automationID, queued, err)
+	}
+	return at, true, nil
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 
+	"watchtower/internal/automations/builtin"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
@@ -132,8 +133,12 @@ func runPromptsShow(cmd *cobra.Command, args []string) error {
 	if version > 0 {
 		versionStr = fmt.Sprintf("v%d (customized)", version)
 	}
-	if _, moved := prompts.MovedToBuiltin[id]; moved {
-		fmt.Fprintln(out, "Used by the Morning brief built-in — change it in Automations → Built in.")
+	if builtinID, moved := prompts.MovedToBuiltin[id]; moved {
+		name := builtinID
+		if entry, ok := builtin.Lookup(builtinID); ok {
+			name = entry.Name
+		}
+		fmt.Fprintf(out, "Used by the %s built-in — change it in Automations → Built in.\n", name)
 	}
 	fmt.Fprintf(out, "Prompt: %s\n", id)
 	fmt.Fprintf(out, "Description: %s\n", desc)
