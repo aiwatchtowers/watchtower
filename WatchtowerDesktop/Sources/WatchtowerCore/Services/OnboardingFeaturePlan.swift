@@ -47,10 +47,14 @@ package enum OnboardingFeaturePlan {
     /// Toggleable features onboarding deliberately leaves at whatever state
     /// they have: Confluence in search does nothing until a space is picked
     /// in Settings; Claude plan limits and Needs approval's cards cost nothing
-    /// and need no goal. Every non-core registry id is either managed or listed
-    /// here — `OnboardingFeaturePlanTests` checks it against
+    /// and need no goal; Slack today stays at its default (on) whatever goals
+    /// are picked — no goal names it and it runs only once Slack is connected.
+    /// Every non-core registry id is either managed or listed here —
+    /// `OnboardingFeaturePlanTests` checks it against
     /// `internal/features/registry.go`, so a new feature must be classified.
-    package static let unmanagedFeatureIDs: Set<String> = ["knowledge-connectors", "claude-plan-limits", "approval-cards"]
+    package static let unmanagedFeatureIDs: Set<String> = [
+        "knowledge-connectors", "claude-plan-limits", "approval-cards", "slack-today"
+    ]
 
     /// Every feature whose state onboarding decides. Anything outside it
     /// (core entries, `unmanagedFeatureIDs`) keeps whatever state it has.

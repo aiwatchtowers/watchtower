@@ -335,6 +335,13 @@ func TestFastForward_NoHookIsNil(t *testing.T) {
 	require.NoError(t, FastForward("briefing", database, now, Deps{}))
 	assertNoWatermarksWritten(t)
 
+	// Slack today has no hook: its window is floored at today's midnight, so
+	// turning it on reads at most today (Inbox redesign phase 5).
+	_, ok := ByID("slack-today")
+	require.True(t, ok, "slack-today missing from the registry")
+	require.NoError(t, FastForward("slack-today", database, now, Deps{}))
+	assertNoWatermarksWritten(t)
+
 	// Every other registry id without one of the four real hooks: same
 	// contract, not just the one the brief names.
 	hookIDs := map[string]bool{

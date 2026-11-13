@@ -433,7 +433,7 @@ func (db *DB) FindPendingMentions(accountID int64, currentUserID string, sinceTS
 	prefix := strconv.FormatInt(accountID, 10)
 	rows, err := db.Query(`SELECT m.channel_id, m.ts, COALESCE(m.thread_ts, ''), m.user_id, m.text, m.permalink, m.ts_unix
 		FROM messages m
-		WHERE (m.text LIKE ? OR m.text LIKE ?)
+		WHERE `+ownerMentionSQL("m.text")+`
 		AND m.channel_id LIKE ? || ':%'
 		AND m.user_id != ?
 		AND m.user_id != ''
@@ -509,20 +509,12 @@ func (db *DB) FindThreadRepliesToUser(accountID int64, currentUserID string, sin
 	prefix := strconv.FormatInt(accountID, 10)
 	rows, err := db.Query(`SELECT m.channel_id, m.ts, COALESCE(m.thread_ts, ''), m.user_id, m.text, m.permalink, m.ts_unix
 		FROM messages m
-		WHERE m.thread_ts != ''
-		  AND m.thread_ts != m.ts
-		  AND m.channel_id LIKE ? || ':%'
+		WHERE m.channel_id LIKE ? || ':%'
 		  AND m.user_id != ?
 		  AND m.user_id != ''
 		  AND m.ts_unix > ?
 		  AND m.is_deleted = 0
-		  AND EXISTS (
-		      SELECT 1 FROM messages participant
-		      WHERE participant.channel_id = m.channel_id
-		        AND participant.thread_ts = m.thread_ts
-		        AND participant.user_id = ?
-		        AND participant.ts != m.ts
-		  )
+		  AND `+ownerThreadReplySQL("m")+`
 		  AND NOT EXISTS (
 		      SELECT 1 FROM inbox_items ii
 		      WHERE ii.channel_id = m.channel_id AND ii.message_ts = m.ts
@@ -548,20 +540,19 @@ func (db *DB) FindThreadRepliesToUser(accountID int64, currentUserID string, sin
 }
 
 // FindReactionRequests finds messages posted by currentUserID where someone else added
-// a question/attention reaction (question, eyes, exclamation, warning, etc.).
+// one of AttentionReactionEmoji (question, eyes, exclamation, warning, etc.).
 // accountID scopes the search to that account's own channels (m.channel_id LIKE '<accountID>:%')
 // — by channel, not by author, since a channel belongs to exactly one account.
 func (db *DB) FindReactionRequests(accountID int64, currentUserID string, sinceTS float64) ([]InboxCandidate, error) {
 	prefix := strconv.FormatInt(accountID, 10)
+	// One row per message (messages' key is channel_id+ts); the reactor named
+	// is the lowest user id among the attention reactions by others.
 	rows, err := db.Query(`SELECT m.channel_id, m.ts, COALESCE(m.thread_ts, ''),
-		   MIN(r.user_id) as reactor_id,
+		   (SELECT MIN(r.user_id) FROM reactions r WHERE `+attentionReactionMatchSQL("r", "m")+`) AS reactor_id,
 		   m.text, m.permalink, m.ts_unix
 		FROM messages m
-		JOIN reactions r ON r.channel_id = m.channel_id AND r.message_ts = m.ts
-		WHERE m.user_id = ?
+		WHERE `+ownerReactionRequestSQL("m")+`
 		  AND m.channel_id LIKE ? || ':%'
-		  AND r.user_id != ?
-		  AND r.emoji IN ('question', 'grey_question', 'eyes', 'bangbang', 'exclamation', 'heavy_exclamation_mark', 'warning', 'red_circle', 'rotating_light', 'sos')
 		  AND m.ts_unix > ?
 		  AND m.is_deleted = 0
 		  AND NOT EXISTS (
@@ -569,9 +560,8 @@ func (db *DB) FindReactionRequests(accountID int64, currentUserID string, sinceT
 		      WHERE ii.channel_id = m.channel_id AND ii.message_ts = m.ts
 		  )
 		  AND `+notListedInMentions+`
-		GROUP BY m.channel_id, m.ts
 		ORDER BY m.ts_unix DESC`,
-		currentUserID, prefix, currentUserID, sinceTS)
+		currentUserID, currentUserID, currentUserID, prefix, sinceTS)
 	if err != nil {
 		return nil, fmt.Errorf("finding reaction requests: %w", err)
 	}

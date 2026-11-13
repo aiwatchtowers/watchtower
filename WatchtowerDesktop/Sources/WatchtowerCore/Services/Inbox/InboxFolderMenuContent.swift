@@ -287,6 +287,8 @@ package enum InboxMenuCommand: Hashable, Sendable {
     case learnedRules, assistantProfile, showHiddenFolders, hideHiddenFolders, newFolder
     // The Idea finder legacy entry's ⋯.
     case findIdeasInPastMessages
+    // Slack today's row context menu (and its pane header's button).
+    case markAllSeen
 
     /// A press that only opens or shows something: it stays available while
     /// the menu is read-only (the CLI is missing, a move runs).

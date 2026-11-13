@@ -1,6 +1,6 @@
 # Built-in automations
 
-Some of Watchtower's own daily work runs as automations that ship with the app. They sit first in the **Automations** tab under **Built in**, and you can turn them on or off, set their time and change how they work, like your own recipes. There are seven: **Morning brief**, **Track my threads**, **Idea finder**, **Reactions**, **Waiting for me**, **Mail waiting** and **Needs approval**.
+Some of Watchtower's own daily work runs as automations that ship with the app. They sit first in the **Automations** tab under **Built in**, and you can turn them on or off, set their time and change how they work, like your own recipes. There are eight: **Morning brief**, **Track my threads**, **Idea finder**, **Reactions**, **Waiting for me**, **Mail waiting**, **Needs approval** and **Slack today**.
 
 ## Why use it
 
@@ -44,8 +44,9 @@ The others work the same way:
 - **Waiting for me** lists the people in Slack, Jira and Linear who wait on your answer as one list in the Inbox (today, this week and older), after every sync, while attention detection is on. It uses no AI; its **Result** reads "One Waiting for me list in your Inbox". **Turn Off** turns attention detection off.
 - **Mail waiting** runs right after it and groups the mail that waits on you by sender, the busiest first, leaving out senders you muted. It uses no AI; its **Result** reads "One Mail waiting list in your Inbox". It shares Waiting for me's switch: **Turn Off** turns attention detection off.
 - **Needs approval** shows every action that waits for your approval and every reminder that came due, one card each in the **Needs approval** folder, as soon as one changes. It uses no AI; its **Result** reads "One card per approval in your Inbox, in Needs approval", and it can't move to another folder. With it off, approvals still show there in the standard card.
+- **Slack today** sums up today's messages in your Slack channels, 1:1 DMs and group DMs as one list in the [Inbox](inbox.md#slack-today), each line marked **asks you**, **needs someone**, **decided** or **fyi**. It runs after a sync at most once an hour, reads only what came since its last run, and starts a new list after midnight; a failed run is retried after 15 minutes. Channels and people muted for AI are skipped, and messages aimed at you stay in **Waiting for me** instead. Light AI use, only once Slack is connected; **Turn Off** stops it.
 
-**Where the switches went.** Settings → Features no longer lists Tracks, Ideas or Reaction commands. Its row "Briefing, Day Plan, Tracks, Ideas and Reaction commands" says "These now live in Automations → Built in", with **Open Automations**. **Turn On** and **Turn Off** on a card do what the switch did, and **Turn Off** on Track my threads also pauses your watches.
+**Where the switches went.** Settings → Features no longer lists Tracks, Ideas, Reaction commands or Slack today. Its row "Briefing, Day Plan, Tracks, Ideas, Reaction commands and Slack today" says "These now live in Automations → Built in", with **Open Automations**. **Turn On** and **Turn Off** on a card do what the switch did, and **Turn Off** on Track my threads also pauses your watches.
 
 ## Using it
 

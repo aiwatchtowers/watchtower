@@ -322,14 +322,20 @@ enum InboxRedesignShotFixtures {
         }
     }
 
-    /// Today's Slack artifact, an older weekly roundup, two tracks, one idea.
+    /// Slack today's built-in with a small state of today and its living
+    /// card, an older weekly roundup, two tracks, one idea.
     private static func seedRunning(_ db: Database) throws {
-        let slack = try TestDatabase.insertAutomation(db, slug: "slack-today", name: "Slack today")
+        let slack = try TestDatabase.insertAutomation(db, slug: SlackTodayQueries.builtinID, name: "Slack today")
+        try db.execute(sql: "UPDATE automations SET origin = 'builtin', builtin_id = ?, path = ? WHERE id = ?",
+                       arguments: [SlackTodayQueries.builtinID, "builtin:\(SlackTodayQueries.builtinID)", slack])
         let slackRun = try TestDatabase.insertAutomationRun(db, automationID: slack)
+        try db.execute(sql: "INSERT INTO automation_state (automation_id, state_json, run_id) VALUES (?, ?, ?)",
+                       arguments: [slack, slackTodayState, slackRun])
         try TestDatabase.insertAutomationOutput(
             db, automationID: slack, runID: slackRun, title: "Slack today",
-            body: "Five threads moved in #acme-release; colleague A asked twice about the checklist.",
-            createdAt: at(minutesAgo: 40), writtenAt: at(minutesAgo: 40), changedAt: at(minutesAgo: 40))
+            body: "#acme-release: colleague A asks whether Thursday works for your side.",
+            createdAt: at(minutesAgo: 40), blocksJSON: slackTodayBlocks, outputKey: "slack-today",
+            contentHash: "h1", writtenAt: at(minutesAgo: 40), changedAt: at(minutesAgo: 40))
         let weekly = try TestDatabase.insertAutomation(db, slug: "weekly-mail", name: "Weekly mail roundup")
         let weeklyRun = try TestDatabase.insertAutomationRun(db, automationID: weekly)
         try TestDatabase.insertAutomationOutput(
@@ -346,6 +352,35 @@ enum InboxRedesignShotFixtures {
         try TestDatabase.insertIdea(db, title: "Move the release checklist into the repo",
                                     updatedAt: at(minutesAgo: 180))
     }
+
+    /// Slack today's state: 160 messages in 7 conversations, two with news.
+    private static var slackTodayState: String {
+        let today = day(daysAgo: 0)
+        func line(_ label: String, _ text: String, _ time: String) -> String {
+            #"{"label":"\#(label)","text":"\#(text)","at":"\#(today)T\#(time):00Z","link":"https://acme.slack.com/archives/C1/p1"}"#
+        }
+        return #"{"today":{"v":1,"day":"\#(today)","messages":160,"missed_earlier":0,"skipped_older":0,"channels":{"#
+            + #""C1":{"name":"acme-release","n":24,"lines":["#
+            + line("asks_you", "Colleague A asks whether Thursday works for your side.", "09:20") + ","
+            + line("decided", "The tag goes out Thursday, after QA signs off.", "09:10") + "]},"
+            + #""C2":{"name":"acme-infra","n":31,"lines":["#
+            + line("needs_someone", "Colleague D is looking for a reviewer for the DB migration.", "09:30") + "]},"
+            + #""C3":{"name":"acme-random","n":60},"C4":{"name":"acme-music","n":20},"#
+            + #""D1":{"name":"@Colleague B","n":12},"C5":{"name":"acme-bots","n":9},"C6":{"name":"acme-team-01","n":4}"#
+            + #"},"quiet_rest":{"channels":0,"messages":0},"more_rest":{"channels":0,"lines":0}}}"#
+    }
+
+    /// The card the recipe draws from that state.
+    private static let slackTodayBlocks: String = {
+        func row(_ title: String, _ text: String, _ tone: String) -> String {
+            #"{"title":"\#(title)","badge":{"text":"\#(text)","tone":"\#(tone)"},"link":"https://acme.slack.com/archives/C1/p1"}"#
+        }
+        return ##"{"v":1,"blocks":[{"type":"list","title":"#acme-release","rows":["##
+            + row("Colleague A asks whether Thursday works for your side.", "asks you", "warning") + ","
+            + row("The tag goes out Thursday, after QA signs off.", "decided", "success") + "]},"
+            + ##"{"type":"list","title":"#acme-infra","rows":["##
+            + row("Colleague D is looking for a reviewer for the DB migration.", "needs someone", "info") + "]}]}"
+    }()
 
     /// Three Slack messages (one row each) and three tracks to create (one
     /// group row with **Approve All 3…**).

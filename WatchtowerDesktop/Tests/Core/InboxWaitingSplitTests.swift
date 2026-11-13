@@ -210,7 +210,7 @@ final class InboxWaitingSplitTests: XCTestCase {
         for (waiting, expected) in [(card(7, 3), "artifact:7"), (.legacyMessages, "messages")] {
             let sections = InboxRootSections.build(
                 entries: [brief, card(8, 4), waiting], folder: .root, waitingForMeAutomationID: 3,
-                mailWaitingAutomationID: 4, now: now, calendar: try InboxTodayFixture.calendar("UTC"))
+                mailWaitingAutomationID: 4, slackTodayAutomationID: nil, now: now, calendar: try InboxTodayFixture.calendar("UTC"))
             XCTAssertEqual(sections.first?.0, .needsYou)
             XCTAssertEqual(sections.first?.1.map(\.id), [expected, "artifact:8", "brief:1"])
         }

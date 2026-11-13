@@ -66,6 +66,7 @@ const (
 	CoachPropose               = "coach.propose"
 	MediaDescribe              = "media.describe"
 	MediaSummarizeLink         = "media.summarize_link"
+	InboxSlackToday            = "inbox.slack_today"
 )
 
 // Store loads, caches, and persists prompt templates.

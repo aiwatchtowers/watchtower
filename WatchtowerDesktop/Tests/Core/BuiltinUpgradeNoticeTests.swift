@@ -43,6 +43,11 @@ final class BuiltinUpgradeNoticeTests: XCTestCase {
         XCTAssertEqual(BuiltinUpgradeNotice.name(for: "acme-new"), "acme-new")
     }
 
+    /// Twin of Go `builtin.Entry.Name` for phase 5's Slack today.
+    func testNoticeNameForSlackToday() {
+        XCTAssertEqual(BuiltinUpgradeNotice.name(for: "slack-today"), "Slack today")
+    }
+
     func testUpgradeNoticeOnASchemaWithoutTheTable() throws {
         let queue = try TestDatabase.create()
         try queue.write { db in

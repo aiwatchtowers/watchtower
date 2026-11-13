@@ -43,6 +43,9 @@ package struct InboxFolderMenuSnapshot: Equatable, Sendable {
     /// Needs approval's count: its open approvals (`ActionStripViewModel
     /// .approvalCount`), the same terms in the root on a tree without it.
     package let approvalsCount: Int
+    /// The `slack-today` built-in and its state's summary
+    /// (`SlackTodayQueries.read`): its row and pane draw from the state.
+    package let slackToday: SlackTodayQueries.Read?
 
     /// The sidebar's Inbox badge (spec "Counts"): Needs approval + people
     /// waiting today. No folder's artifacts reach it.
@@ -63,7 +66,8 @@ package struct InboxFolderMenuSnapshot: Equatable, Sendable {
         openActions: Set<Int64> = [],
         ideaFinderPresent: Bool = false,
         peopleWaiting: PeopleWaitingCounts = .zero,
-        approvalsCount: Int = 0
+        approvalsCount: Int = 0,
+        slackToday: SlackTodayQueries.Read? = nil
     ) {
         self.tree = tree
         self.counts = counts
@@ -80,6 +84,7 @@ package struct InboxFolderMenuSnapshot: Equatable, Sendable {
         self.ideaFinderPresent = ideaFinderPresent
         self.peopleWaiting = peopleWaiting
         self.approvalsCount = approvalsCount
+        self.slackToday = slackToday
     }
 
     /// One read, nothing written. Each source tolerates a schema that
@@ -148,7 +153,8 @@ package struct InboxFolderMenuSnapshot: Equatable, Sendable {
                     mailSummary: mailSummary, needsApproval: needsApproval,
                     approvalArtifacts: approvalArtifacts, openActions: openActions,
                     ideaFinderPresent: try InboxFolderQueries.ideaFinderPresent(db),
-                    peopleWaiting: peopleWaiting, approvalsCount: approvalsCount)
+                    peopleWaiting: peopleWaiting, approvalsCount: approvalsCount,
+                    slackToday: try SlackTodayQueries.read(db))
     }
 
     /// The ids of the actions that wait on the owner; none on a database

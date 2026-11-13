@@ -1018,7 +1018,7 @@ extension FeatureManagerServiceTests {
 
         #expect(FeatureManagerSection.listed(service.features).map(\.id) == ["slack-digests", "memory"])
         #expect(FeatureManagerSection.listed(service.features, parent: "slack-digests").map(\.id) == ["stream-digests"])
-        #expect(BuiltinFeaturesPointer.title == "Briefing, Day Plan, Tracks, Ideas and Reaction commands")
+        #expect(BuiltinFeaturesPointer.title == "Briefing, Day Plan, Tracks, Ideas, Reaction commands and Slack today")
         // The ideas interval moved to Idea finder's card: no Ideas tuning section left.
         let settings = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -1026,5 +1026,20 @@ extension FeatureManagerServiceTests {
             .appendingPathComponent("Sources/Views/Settings/FeaturesSettings.swift")
         let source = try String(contentsOf: settings, encoding: .utf8)
         #expect(!source.contains("ideasMineIntervalHours"))
+    }
+
+    @Test("Settings → Features hides Slack today: its switch is the built-in card's")
+    func testSlackTodayNotListedInFeatures() async throws {
+        let row = { (id: String) in
+            """
+            {"id":"\(id)","title":"\(id)","description":"","tagline":"","benefits":[],"icon":"","state":"enabled",
+             "core":false,"parent":"","config_key":"\(id).enabled","cost":"light","feeds_into":[],"sub_toggles":[]}
+            """
+        }
+        let json = #"{"features":["# + ["slack-digests", "slack-today"].map(row).joined(separator: ",") + "]}"
+        let (service, _) = Self.makeService(stdout: json)
+        await service.load()
+        #expect(service.features.count == 2)
+        #expect(FeatureManagerSection.listed(service.features).map(\.id) == ["slack-digests"])
     }
 }

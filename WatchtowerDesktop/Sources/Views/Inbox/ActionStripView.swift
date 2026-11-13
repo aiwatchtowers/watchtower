@@ -335,11 +335,14 @@ struct ActionStripActionsView: View {
         return nil
     }
 
-    /// An artifact row's context menu: its ⋯.
+    /// An artifact row's context menu: its ⋯; Slack today's starts with
+    /// **Mark All Seen** while the drawn version is unread.
     private func rowContextMenu(_ row: InboxFolderListRow) -> [InboxMenuEntry] {
-        guard row.isArtifact, let artifactMenu, let card = artifactCard(row.id),
-              !artifactMenu.isDisabled(card) else { return [] }
-        return artifactMenu.content(for: card).entries
+        guard row.isArtifact, let card = artifactCard(row.id) else { return [] }
+        let seen = InboxFolderEntries.isSlackToday(card, vm.folderMenu.snapshot) && card.isUnread
+            ? [InboxMenuEntry(title: "Mark All Seen", command: .markAllSeen)] : []
+        guard let artifactMenu, !artifactMenu.isDisabled(card) else { return seen }
+        return seen + artifactMenu.content(for: card).entries
     }
 
     private var folderKind: InboxFolderKind {
@@ -488,6 +491,10 @@ struct ActionStripActionsView: View {
     /// A legacy entry's own ⋯ (the Idea finder's Find Ideas in Past
     /// Messages…), or an artifact row's context menu.
     private func entryMenu(_ entryID: String, _ command: InboxMenuCommand) {
+        if command == .markAllSeen, let card = artifactCard(entryID) {
+            Task { await vm.markOutputSeen(id: card.id) }
+            return
+        }
         if let card = artifactCard(entryID), let artifactMenu {
             Task { await artifactMenu.perform(command, on: card) }
             return
@@ -503,6 +510,14 @@ struct ActionStripActionsView: View {
     @ViewBuilder
     private func readingPane(_ entry: InboxFolderEntry?) -> some View {
         switch entry {
+        case let .artifact(card)? where InboxFolderEntries.isSlackToday(card, vm.folderMenu.snapshot):
+            let menu = artifactMenuState(card)
+            pane(.output(card), menu: menu, slackToday: SlackTodayPane(
+                card: card, state: vm.folderMenu.snapshot.slackToday?.state ?? .none, now: now ?? Date(),
+                calendar: .autoupdatingCurrent, menu: menu,
+                onMarkAllSeen: { Task { await vm.markOutputSeen(id: card.id) } },
+                onReactionCommands: { openAux(.reactionCommands) }))
+                .task(id: card.automationID) { await artifactMenu?.prepare(card) }
         case let .artifact(card)?:
             let menu = artifactMenuState(card)
             let waiting = waitingPane(card)
@@ -573,7 +588,8 @@ struct ActionStripActionsView: View {
         _ item: InboxListItem?,
         inApprovals: Bool = false,
         menu: InboxArtifactMenuState? = nil,
-        header: AnyView? = nil
+        header: AnyView? = nil,
+        slackToday: SlackTodayPane? = nil
     ) -> some View {
         let now = now ?? Date()
         let pane = InboxReadingPane(
@@ -609,6 +625,7 @@ struct ActionStripActionsView: View {
             .messageReply({ refHooks.messageReply($0) }, onPress: Self.messageReplyPress(handler))
             .withArtifactMenu(menu)
             .rowKeyboard(inApprovals ? nil : rowKeys(item, refHooks: refHooks, handler: handler))
+            .slackToday(slackToday)
         if let header { withHooks = withHooks.paneHeader(header) }
         return inApprovals ? withHooks.stackedInApprovals() : withHooks
     }

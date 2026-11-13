@@ -2,6 +2,9 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	gosync "sync"
 	"time"
 
 	"watchtower/internal/automations"
@@ -9,6 +12,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/ideas"
+	"watchtower/internal/policy"
 	"watchtower/internal/reactioncmd"
 )
 
@@ -21,6 +25,7 @@ const (
 	reactionsID      = "reactions"
 	waitingForMeID   = "waiting-for-me"
 	mailWaitingID    = builtin.MailWaitingID
+	slackTodayID     = builtin.SlackTodayID
 )
 
 // TrackMyThreadsPrimitives is tracks.extract over the daemon's tracks
@@ -179,6 +184,205 @@ func (d *Daemon) phaseWaitingForMe(ctx context.Context) {
 			*shown = *seen
 		}
 	}
+}
+
+// Slack today's gate timings: a succeeded sync run is followed by the next
+// one an hour later at the earliest; a failed one is retried 15 minutes
+// after it.
+const (
+	slackTodayInterval   = 60 * time.Minute
+	slackTodayRetryAfter = 15 * time.Minute
+)
+
+// SlackTodayPrimitives is slack.window over the daemon's database.
+func (d *Daemon) SlackTodayPrimitives() map[string]automations.PrimitiveFunc {
+	return builtin.SlackWindowPrimitives(d.db, time.Now)
+}
+
+// SlackTodayGate is Slack today's sync gate. Not due with no enabled Slack
+// account (removed and purged ones left out) or with Slack off by policy,
+// nor within 15 minutes of a failed sync run newer than the last succeeded
+// one, whatever the day or the cursor says (a failing run is not retried
+// every cycle). Then due without waiting for the hour when the committed
+// state's day is not today's local date (the card resets after midnight,
+// new messages or not) — only when the state has a "today" value, or when
+// the last succeeded sync run was queued before local midnight (none counts
+// as before), so a recipe that writes no "today" is not run every cycle —
+// or when its window cursor is behind (the last window was cut by a cap).
+// Otherwise due when that failure is 15 minutes old, else when the last
+// succeeded sync run is an hour old (none = due) — and only with material:
+// an in-scope message past the cursor since local midnight. A failed read is
+// logged and counts as due (the run reports it); a failed read before the
+// failed-run hold (the accounts, the row, the state, the run times) counts
+// as due at most once per slackTodayRetryAfter, as the hold would not see a
+// run that never started. An owner's edited copy is read with the shipped
+// state shape (a bad shape logs and counts as due). Slack today off skips
+// the built-in before the gate is asked (FEAT-01), and a queued Run Now
+// runs without asking it.
+func (d *Daemon) SlackTodayGate() builtin.Gate { return &slackTodayGate{d: d} }
+
+type slackTodayGate struct {
+	d *Daemon
+	// mu guards lastErrDue: when a failed read before the hold last
+	// counted as due (in memory: a restart may count once more).
+	mu         gosync.Mutex
+	lastErrDue time.Time
+}
+
+// errDue logs a failed read before the hold and reports whether it counts
+// as due: once per slackTodayRetryAfter.
+func (g *slackTodayGate) errDue(now time.Time, format string, args ...any) bool {
+	g.d.logger.Printf("slack-today: "+format, args...)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if !g.lastErrDue.IsZero() && now.Sub(g.lastErrDue) < slackTodayRetryAfter {
+		return false
+	}
+	g.lastErrDue = now
+	return true
+}
+
+func (g *slackTodayGate) Due(ctx context.Context, e builtin.Entry, now time.Time) bool {
+	d := g.d
+	if !policy.SourceAllowed("slack") {
+		return false
+	}
+	switch on, err := d.slackAccountEnabled(); {
+	case err != nil:
+		return g.errDue(now, "listing the Slack accounts: %v", err)
+	case !on:
+		return false
+	}
+	a, err := d.db.GetBuiltinAutomation(slackTodayID)
+	if err != nil {
+		return g.errDue(now, "reading its row: %v", err)
+	}
+	state, err := d.db.GetAutomationState(a.ID)
+	if err != nil {
+		return g.errDue(now, "reading automation %d's state: %v", a.ID, err)
+	}
+	t, err := d.slackTodayTiming(ctx, a.ID, now)
+	if err != nil {
+		return g.errDue(now, "automation %d's last runs: %v", a.ID, err)
+	}
+	if t.hold {
+		return false
+	}
+	local := now.In(time.Local)
+	midnight := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, time.Local)
+	day, hasDay, err := slackTodayDay(state)
+	if err != nil {
+		d.logger.Printf("slack-today: automation %d's state: %v", a.ID, err)
+		return true
+	}
+	if day != local.Format("2006-01-02") && (hasDay || !t.hasOK || t.lastOK.Before(midnight)) {
+		return true
+	}
+	after, behind, err := automations.WindowCursorOf(state, automations.SlackWindowStateKey)
+	if err != nil {
+		d.logger.Printf("slack-today: automation %d's state: %v", a.ID, err)
+		return true
+	}
+	if behind {
+		return true
+	}
+	if !t.timeDue {
+		return false
+	}
+	has, err := d.db.SlackWindowHasMaterial(ctx, db.SlackWindowQuery{
+		Scope:      e.WindowScope,
+		AfterRowID: after,
+		Floor:      midnight,
+		Now:        local,
+	})
+	if err != nil {
+		d.logger.Printf("slack-today: checking automation %d's window for new messages: %v", a.ID, err)
+		return true
+	}
+	return has
+}
+
+// slackTodayTimes is the gate's timing rule over the built-in's sync runs.
+// hold: a failed run newer than the last succeeded one (or with none) is
+// less than slackTodayRetryAfter old — not due, whatever the day or the
+// cursor says. timeDue: that failure is old enough, or else the last
+// succeeded run is slackTodayInterval old (none = due). lastOK is when the
+// last succeeded run was queued (hasOK false: none).
+type slackTodayTimes struct {
+	hold, timeDue, hasOK bool
+	lastOK               time.Time
+}
+
+func (d *Daemon) slackTodayTiming(ctx context.Context, id int64, now time.Time) (slackTodayTimes, error) {
+	ok, hasOK, err := d.db.LastAutomationRunQueuedAt(ctx, id, db.TriggerSync, []string{db.RunSucceeded})
+	if err != nil {
+		return slackTodayTimes{}, err
+	}
+	failed, hasFailed, err := d.db.LastAutomationRunQueuedAt(ctx, id, db.TriggerSync,
+		[]string{db.RunFailed, db.RunBudgetExceeded, db.RunTimedOut})
+	if err != nil {
+		return slackTodayTimes{}, err
+	}
+	t := slackTodayTimes{hasOK: hasOK, lastOK: ok}
+	if hasFailed && (!hasOK || failed.After(ok)) {
+		retry := now.Sub(failed) >= slackTodayRetryAfter
+		t.hold, t.timeDue = !retry, retry
+		return t, nil
+	}
+	t.timeDue = !hasOK || now.Sub(ok) >= slackTodayInterval
+	return t, nil
+}
+
+// slackAccountEnabled reports whether a Slack account is enabled and
+// neither removed nor purged.
+func (d *Daemon) slackAccountEnabled() (bool, error) {
+	accts, err := d.db.ListSlackAccounts()
+	if err != nil {
+		return false, err
+	}
+	for _, a := range accts {
+		if a.Enabled && a.Status != "removed" && a.Status != "purged" {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// slackTodayDay is the day of the recipe's committed "today" state; has is
+// false when the state has no "today" value yet.
+func slackTodayDay(state json.RawMessage) (day string, has bool, err error) {
+	if len(state) == 0 {
+		return "", false, nil
+	}
+	var all map[string]json.RawMessage
+	if err := json.Unmarshal(state, &all); err != nil {
+		return "", false, fmt.Errorf("decoding the state: %w", err)
+	}
+	raw, ok := all["today"]
+	if !ok || string(raw) == "null" {
+		return "", false, nil
+	}
+	var today struct {
+		Day string `json:"day"`
+	}
+	if err := json.Unmarshal(raw, &today); err != nil {
+		return "", false, fmt.Errorf("decoding its today key: %w", err)
+	}
+	return today.Day, true, nil
+}
+
+// phaseSlackToday is Slack today's slot, right after phaseWaitingForMe: the
+// built-in labels today's new channel messages into its one living artifact
+// when its gate says so. It has no legacy phase: until it is active its
+// queued Run Now is cancelled (only the slot would take it). Slack today off
+// is skipped by the runner before any read (FEAT-01).
+func (d *Daemon) phaseSlackToday(ctx context.Context) {
+	if !d.builtinOn(slackTodayID) {
+		d.cancelQueuedBuiltinRuns(slackTodayID, time.Now(), cancelInactive)
+		return
+	}
+	d.ensureBuiltinsSwept()
+	d.builtins.RunSlot(ctx, builtin.SlotSlackToday)
 }
 
 // TrackMyThreadsGate is Track my threads' sync gate: tracks and digests on, a

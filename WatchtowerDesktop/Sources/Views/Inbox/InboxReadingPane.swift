@@ -57,9 +57,12 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
     private(set) var rowKeys: InboxRowKeys?
     /// The pane's `InboxPaneHeader` over the card (`paneHeader(_:)`); nil draws none.
     private(set) var header: AnyView?
+    /// Slack today's pane around the automation card (`slackToday(_:)`):
+    /// its own header, yesterday's note and the quiet channels' fold.
+    private(set) var slackTodayPane: SlackTodayPane?
     /// An automation card's own source and title row; off under a pane
-    /// header, which already says both.
-    private var showsTitleRow: Bool { header == nil }
+    /// header (Slack today's included), which already says both.
+    private var showsTitleRow: Bool { header == nil && slackTodayPane == nil }
 
     init(
         item: InboxListItem?,
@@ -159,13 +162,25 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
         return pane
     }
 
+    /// This pane with an automation card drawn inside Slack today's pane
+    /// (`pane`); nil draws the card as any other.
+    func slackToday(_ pane: SlackTodayPane?) -> Self {
+        var reading = self
+        reading.slackTodayPane = pane
+        return reading
+    }
+
     /// The pane's one readable column (style guide: "one readable column").
     static var readableWidth: CGFloat { InboxCardColumn<EmptyView>.readableWidth }
 
     var body: some View {
         switch item {
         case .output(let card):
-            column { output(card) }
+            if let slackTodayPane {
+                column { slackTodayPane.drawing(output(card)) }
+            } else {
+                column { output(card) }
+            }
         case .reminder(let reminder):
             column { self.reminder(reminder) }
         case .proposal(let action):

@@ -4,7 +4,7 @@ The Inbox holds everything that waits on you, in folders you arrange. **Needs ap
 
 ## Why use it
 
-You open the Inbox at 09:00. **Needs approval** shows the draft Jira issue your :ticket: reaction asked for. **Waiting for me** lists two pings: **Reply…** to one, **Done** on the other. One newsletter holds 40 of your 60 open mails; **Mark All Done…** in **Mail waiting** clears them.
+**Needs approval** shows the draft Jira issue your :ticket: reaction asked for. **Waiting for me** lists two pings: **Reply…** to one, **Done** on the other. One newsletter holds 40 of your 60 open mails; **Mark All Done…** in **Mail waiting** clears them.
 
 ## How it works
 
@@ -22,20 +22,20 @@ replaces: [inbox-filters]
 changed: The filters above the list are gone; folders you arrange replace them.
 -->
 
-The Inbox has three columns: the folder menu, the folder's list and the reading pane; **⌥⌘S** (View → **Hide Inbox Folders**) folds the menu. The menu lists the root, **Inbox**, then **Needs approval**, then your folders as a tree under **Folders**, each with its own count. The Inbox opens on today's brief, or on the card you last opened in that folder.
+Three columns: the folder menu (**⌥⌘S**, View → **Hide Inbox Folders**, folds it), the folder's list and the reading pane. The menu lists the root, **Inbox**, **Needs approval**, then your folders as a tree under **Folders**, each with its own count. It opens on today's brief, or on the card you last opened in that folder.
 
 An automation's cards go to its folder, the root unless you moved it; **Move to Folder** moves its earlier cards too, and a recipe can name a folder for one card ([which folder a card goes to](automations-inbox-buttons.md#which-folder-a-card-goes-to)).
 
 ### What the root holds
 
-The root sorts its rows by urgency; each shows its first real line, the time and a count of what needs you.
+Root rows sort by urgency, each with its first line, time and a count of what needs you.
 
 - **Needs you**: **Waiting for me** (people waiting today; older ones as a grey line), **Messages** in its place before it has run or after a failed run, **Mail waiting** once it has run, and each **Thread brief** a reaction made, for 24 hours.
-- **Today**: **Morning brief**, today's only, then cards your automations changed today.
+- **Today**: today's **Morning brief**, **Slack today**, then cards your automations changed today.
 - **Running**: **Track my threads** ([tracks](tracks.md)), **Idea finder** ([ideas](ideas-and-decisions.md)), then older cards.
 - **Earlier**: one line counting the past briefs; click it for **History**.
 
-Your own folders have **Today** and **Earlier**. **Search the Inbox** in the toolbar filters the list by title and first line.
+Your own folders have **Today** and **Earlier**. **Search the Inbox** filters the list by title and first line.
 
 ### Needs approval
 <!-- learn
@@ -51,7 +51,7 @@ replaces: [inbox-proposals]
 changed: Proposals and due reminders moved from Needs your decision to their own folder.
 -->
 
-**Needs approval** holds every action waiting for you, whatever started it (a reaction, a chat, an automation, a **Reply…**), and every reminder once due. It can't be moved, renamed, hidden or deleted. Each approval is one card with **Approve**, **Reject** and **Edit…** (**Retry** after a failure; **Done** and **Snooze 1h** on a reminder). Nothing outside Watchtower happens before you approve.
+**Needs approval** holds every action waiting for you, whatever started it, and every reminder once due. It can't be moved, renamed, hidden or deleted. Each approval is one card with **Approve**, **Reject** and **Edit…** (**Retry** after a failure; **Done** and **Snooze 1h** on a reminder). Nothing outside Watchtower happens before you approve.
 
 The list groups them by kind, oldest first: **Messages**, **Tracks to create**, **Targets**, **Confluence and Jira**, **Reminders**, **Other**. Two or more tracks, targets or one Confluence or Jira action make one row with **Approve All N…**. While the built-in is off, stopped or failing, approvals show in the standard card.
 
@@ -69,7 +69,7 @@ replaces: [inbox-messages]
 changed: The Messages filter became the Waiting for me list in the Inbox.
 -->
 
-**Attention detection** finds Slack mentions, DMs and thread replies, and Jira and Linear issues assigned to you or mentioning you. The built-in **Waiting for me** lists these people after every sync under **Today**, **This week** and **Older** (7 days or more, folded), newest first, up to 200, each with its age, flagged past a day. An item leaves when you answer in the source or press **Done**, **Hide** or **Snooze**; nothing old leaves on its own. Your own edited copy of Waiting for me lists people only too. No AI calls.
+**Attention detection** finds Slack mentions, DMs and thread replies, and Jira and Linear issues assigned to you or mentioning you. The built-in **Waiting for me** lists these people after every sync under **Today**, **This week** and **Older** (7 days or more, folded), newest first, up to 200, each with its age, flagged past a day. An item leaves when you answer in the source or press **Done**, **Hide** or **Snooze**; nothing old leaves on its own. An edited copy lists people only too. No AI calls.
 
 ### Mail waiting
 <!-- learn
@@ -83,11 +83,26 @@ since: next
 action: nav:inbox
 -->
 
-The built-in **Mail waiting** lists your open mail after every sync, one row per sender, the busiest first: how many are open, how many came today and the newest subject. Its first line says how much comes from the top ten senders. Gmail mail leaves once you reply; Outlook and IMAP mail archives on its own. No AI calls.
+The built-in **Mail waiting** lists your open mail after every sync, one row per sender, the busiest first: how many are open, how many came today and the newest subject. Its first line gives the top ten senders' share. Gmail mail leaves once you reply; Outlook and IMAP mail archives on its own. No AI calls.
+
+### Slack today
+<!-- learn
+id: inbox-slack-today
+title: Catch up on today's Slack
+text: Open **Slack today** in the Inbox for what was decided, asks you or needs someone in your channels and DMs today.
+area: communication
+level: basics
+kind: feature
+since: next
+requires: source:slack
+action: nav:inbox
+-->
+
+**Slack today** sums up today's messages in your channels and DMs, one list per conversation, each line marked **asks you**, **needs someone**, **decided** or **fyi**. It turns unread only when a line changes; **Mark All Seen** marks it read ([how it runs](automations-built-in.md#how-it-works)).
 
 ### What the badge counts
 
-The sidebar badge counts what you can clear today: open approvals in **Needs approval** plus people waiting on you since midnight. Mail, tracks, ideas, briefs and automation cards never count. In the menu, **Inbox** counts who waits today, today's unread brief and its other unread cards; each folder counts its own.
+The sidebar badge counts open approvals plus people waiting on you since midnight. Mail, tracks, ideas, briefs and automation cards never count. In the menu, **Inbox** counts who waits today, today's unread brief and its other unread cards; each folder counts its own.
 
 ### Reaction commands
 <!-- learn
@@ -140,16 +155,16 @@ since: 0.24.0
 action: nav:inbox
 -->
 
-Point at a row in **Waiting for me** for its buttons: **Open in Slack** (or Jira, Linear), **Reply…**, **Done**, **Hide**, **Snooze** (**Tomorrow**, **In 3 days**, **Next week**), **Discuss in Chat** and **Hand to Agent…**. On **Older**'s first row, **Mark All Done…** names the count and closes those items only after you confirm. A failed press leaves the row with the error and **Retry**.
+Point at a row in **Waiting for me** for its buttons: **Open in Slack** (or Jira, Linear), **Reply…**, **Done**, **Hide**, **Snooze** (**Tomorrow**, **In 3 days**, **Next week**), **Discuss in Chat** and **Hand to Agent…**. On **Older**'s first row, **Mark All Done…** closes those items after you confirm the count. A failed press leaves the row with the error and **Retry**.
 
 Keys on the focused row: **J** / **K** move, **E** done, **R** reply, **S** snooze, **⏎** open, **⌘K** hand to an agent; on a sender, **⏎** open, **E** mark all done, **M** mute.
 
 ### Clear mail by sender
 
 1. In **Mail waiting**, point at a sender: **Open** opens their newest mail.
-2. **Mark All Done…** asks first ("Mark 46 Done") and closes exactly those; the row goes at once. A failure says "Closed N of M." with **Try Again**.
+2. **Mark All Done…** asks first ("Mark 46 Done") and closes exactly those. A failure says "Closed N of M." with **Try Again**.
 3. **Mute** hides a sender from Mail waiting; the mail stays. **Mute Senders…** in the header lists the ten busiest: tick some, press **Mute N Senders**.
-4. To unmute, delete the rule under **Mutes** in **Learned Rules** (the root's **⋯**).
+4. To unmute, delete its rule under **Mutes** in **Learned Rules**.
 
 ### Reply to a message
 <!-- learn
@@ -179,7 +194,7 @@ since: next
 action: nav:inbox
 -->
 
-In **Morning brief**, press **‹** for the day before and **›** to come back, or **History** for the last 30 days; unread days carry a dot. The day you open is marked read; nothing marks a past brief read for you.
+In **Morning brief**, press **‹** for the day before and **›** to come back, or **History** for the last 30 days; unread days carry a dot. Only the day you open is marked read.
 
 ### Approve a group at once
 <!-- learn
@@ -221,7 +236,7 @@ The root's **⋯** opens **Learned Rules** (**Mutes** and **Boosts** for a sende
 ## When it's empty or wrong
 
 - **"Showing approvals in the standard card — …".** The built-in Needs approval is off, was stopped, or its last run failed. **Turn On** or **Run History**; nothing waits unseen meanwhile.
-- **"The menu changed — reloaded. Drag again if needed."** Another change landed first; nothing moved. Try again.
+- **"The menu changed — reloaded. Drag again if needed."** Another change landed first; nothing moved.
 - **"The watchtower CLI isn't available".** Menu edits and presses that run it are off; reading still works.
 - **A message you answered is still listed.** It leaves at the next sync after the answer reaches Watchtower.
 - **"Connect Slack, Google, Jira, Linear or an email account so Watchtower knows who you are".** Without it, attention detection and the brief never run. Click **Open Connections**.

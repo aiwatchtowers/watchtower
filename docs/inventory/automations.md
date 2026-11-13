@@ -33,7 +33,11 @@ of these entries; decisions §20, §20.1).
 `internal/db/automation_builtins.go`, `internal/db/migrations/00150_builtin_automations.sql`,
 `internal/automations/sdk_builtin.go` and `internal/automations/builtin/` (`registry.go`,
 `recipes/morning-brief.md`, `sync.go`, `runner.go`, `ownercopy.go`, `card.go`; built-in
-automations, C2)
+automations, C2),
+`internal/db/slack_window.go`, `internal/automations/sdk_window.go`,
+`internal/automations/builtin/slack_window.go`,
+`internal/automations/builtin/recipes/slack-today.md` (the raw window `slack.window` and the
+Slack today built-in, Inbox redesign phase 5)
 **Last full audit:** 2026-10-16 (Automations P3)
 
 Phases: P1 (core), P2 (writes), P3 (authoring + Desktop), P4 (events), P5
@@ -70,6 +74,8 @@ returns with that project's issues, linked issues of other projects included
 (owner ruling, ask #287). An uncaught `PermissionDenied` ends the run
 `failed`/`permission`.
 
+Amended 2026-11-11 (Inbox redesign phase 5, board #1076, owner approved in asks #634/#638): The raw window primitive `slack.window` is admitted only by `builtin:slack.window`, a built-in-only capability; a Personal or workbench recipe naming it is a parse error. Its cursor key `__window:slack` in the automation's state is written only by the SDK; `state.set` of a `__window:` key is refused.
+
 **Why locked:** The owner confirms one manifest; everything the script can do
 must follow from that text alone. A second source of permission (a trust
 switch, a default, a lenient scope match) would let a recipe do what the
@@ -85,6 +91,7 @@ owner never read.
 - `internal/automations/manifest_scope_test.go` — `TestManifest_JiraProjectGrantCoversLinkedData`, `TestManifest_CaseVariantScopeArgRefused`, `TestManifest_NilDBDeniedNotPanic`
 - `cmd/automations_registry_test.go` — `TestToolCapabilities_CoversEveryAutomationTool` (every tool visible on `automation` has a capability entry or is deliberately `tool:`-only)
 - `internal/automations/executor_test.go` — `TestExecutor_UncaughtPermissionDeniedFailsWithPermissionKind` (the run-level mapping)
+- `internal/automations/recipe_test.go` — `TestAuto01_RawWindowBuiltinOnly`; `internal/automations/sdk_window_test.go` — `TestStateSet_ReservedWindowKeyRefused` (the raw window, Inbox redesign phase 5)
 
 **Locked since:** 2026-10-14
 
@@ -214,6 +221,8 @@ wins — so a commit never writes and removes one key, and the outputs cap
 counts each kept output once; a resumed run's replay rebuilds the same
 buffer.
 
+Amended 2026-11-11 (Inbox redesign phase 5, board #1076, owner approved in asks #634/#638): The raw window's cursor lives in the automation's state and is staged by the SDK after a `done` window read; it is committed only with a `succeeded` run, so a failed, cancelled or interrupted run leaves it and the next run reads the same messages.
+
 **Why locked:** A run that dies halfway must be safe to rerun; a half-written
 cursor in `state` would silently skip or repeat work.
 
@@ -226,6 +235,7 @@ cursor in `state` would silently skip or repeat work.
 - `internal/automations/sdk_output_p2_test.go` — `TestOutput_BriefingBufferedAndCommittedOnSuccess` (P2: `output.briefing` is buffered like `report` and committed only with `succeeded`)
 - `internal/automations/run_limits_test.go` — `TestAuto04_JournalErrorAfterSuccessStillCommits` (board #562)
 - `internal/automations/inbox_folder_field_test.go` — `TestAuto04_FailedRunWritesNoFolder` (Inbox builder B: a failed run writes no `folder_id`, no artifact and no missing-folder journal line)
+- `internal/automations/sdk_window_test.go` — `TestAuto04_RawWindowCursorOnlyOnSuccess` (Inbox redesign phase 5: the raw window's cursor)
 
 **Locked since:** 2026-10-14
 
@@ -252,8 +262,10 @@ ask #961) must declare `concurrency: 1`: the parser refuses any other value
 concurrency: 1"), so two runs never upsert one key at once. The serial-run
 reasons live in one function, `automations.serialRunReasons`.
 
+Amended 2026-11-11 (Inbox redesign phase 5, board #1076, owner approved in asks #634/#638): A recipe that reads the raw window runs with `concurrency: 1` (`serialRunReasons`: 'the raw window').
+
 **Test guards:**
-- `internal/automations/recipe_test.go` — `TestAuto05_LivingArtifactsNeedConcurrencyOne`
+- `internal/automations/recipe_test.go` — `TestAuto05_LivingArtifactsNeedConcurrencyOne`, `TestAuto05_RawWindowNeedsConcurrencyOne` (the raw window, Inbox redesign phase 5)
 - `internal/db/automation_runs_test.go` — `TestAuto05_OneActiveRunPerAutomation`, `TestAuto05_ConcurrencyN`, `TestAuto05_ConcurrentClaimsOneWinner` (8 goroutines on a file DB), `TestClaimWithin_HonoursTheGlobalRunningBound`, `TestResumeIfSlot_WaitsForAFreeRunningSlot`
 - `internal/automations/executor_test.go` — `TestAuto05_OneActiveRunPerAutomation`, `TestExecutor_MaxConcurrentRuns`, `TestExecutor_ReadyWaitsGetFreedSlotsBeforeQueuedRuns`, `TestWaiter_ResumeWaitsForAFreeSlot`
 
@@ -751,6 +763,7 @@ turn a recipe into arbitrary code execution.
 
 ## Changelog
 
+- 2026-11-12 (Inbox redesign phase 5, board #1076, **owner approved in asks #634 and #638**): the raw window primitive `slack.window` and the new built-in `slack-today`. **AUTO-01 amended:** `slack.window` is admitted only by the built-in-only capability `builtin:slack.window` (a Personal or workbench recipe naming it is a parse error), and its cursor key `__window:slack` is written only by the SDK (`state.set` of a `__window:` key is refused). **AUTO-04 amended:** the window's cursor is staged by the SDK after a `done` window read and committed only with a `succeeded` run. **AUTO-05 amended:** a recipe that reads the raw window needs `concurrency: 1` (`serialRunReasons`: 'the raw window'). Guards added: `TestAuto01_RawWindowBuiltinOnly`, `TestStateSet_ReservedWindowKeyRefused`, `TestAuto04_RawWindowCursorOnlyOnSuccess`, `TestAuto05_RawWindowNeedsConcurrencyOne`. Module list gains `internal/db/slack_window.go`, `internal/automations/sdk_window.go`, `internal/automations/builtin/slack_window.go`, `internal/automations/builtin/recipes/slack-today.md`. No existing contract sentence weakened and no guard relaxed.
 - 2026-11-08 (Inbox builder A Task 16, board #1400, sub-project A complete; asks #961, #445, #451, #486): docs only — the sub-project's summary. Blocks (`internal/automations/blocks`, the shared fixture), `output.inbox` `blocks`/`key`, the `folder` hook, `output.remove`, `artifacts: feed|living`, migration 00182 and the living upsert, the flattened press address with `--content-hash`, the `target` action kind and its Task button, the owner preview CLI and the editor's Look step changed AUTO-02, AUTO-04, AUTO-05, AUTO-06 and AUTO-12 as the per-task lines below record; AGENT-05 is in `agent-actions.md`. Feature note `docs/features/inbox-card-blocks.md`, guide `docs/guide/features/automations-card-look.md`. No contract text changed and no guard touched in this entry.
 - 2026-11-06 (Inbox builder B Task 8, board #1400, **covered by ask #961**; spec `2026-11-03-inbox-builder-b-folders-menu-design.md` "Needs approval"): **the built-in `needs-approval`** — `trigger: {event: approval}`, `concurrency: 1`, `artifacts: living`, `outputs: [inbox]`, the one capability `builtin:approvals.list` (AUTO-01: in its manifest), no `llm()`; feature `approval-cards` (config `approval_cards.enabled`, default on), default folder `needs-approval` (route seeded by `builtin.Sync`). It runs on the main executor's poll after the approval trigger's wake (`RunsAtSlot` false), never at a slot. **Read primitives:** `automations.ReadPrimitiveNames` gains `approvals.list` (a tool step outside the meter, called in dry runs too; `builtin.ReadPrimitives` carries it into every executor and dry run). `approvals.list` reads `db.ReadApprovalsView` — the same open clauses, order (created_at, actions before reminders, id) and `MaxOutputsPerRun` cap as the sweep's `ApprovalDriftOf` — and returns the keys of every artifact whose approval is closed or gone, which the recipe removes, so a succeeded run leaves the sweep no drift. **AUTO-04 holds:** a failed read fails the run and leaves every earlier card byte-identical (`TestNeedsApproval_PrimitiveErrorFailsRunKeepsArtifacts`). **AUTO-06 holds:** the shipped bytes are confirmed by `ConfirmShippedBuiltin`; an owner copy needs the owner, and the built-in indexer now checks each entry's own trigger (`builtin.Entry.Trigger`: `sync: <slot>`, or `event: approval` without `where` for an entry with no slot) — any other trigger in the copy is the row's parse error (`TestNeedsApproval_CopyMustKeepTheApprovalTrigger`). `features disable` turns off at once the row of every built-in whose features are now all off, so `Fire` queues nothing before the daemon's next built-in sync (`TestFeaturesDisable_ApprovalCardsTurnsTheBuiltinOffAtOnce`, `TestNeedsApproval_FeatureOffQueuesNothing`). Tests also: `TestApprovalsList_FixtureOpenSet`, `TestApprovalsList_ItemFields`, `TestNeedsApproval_ClosedApprovalLeavesOthersUnchanged`, `TestNeedsApproval_51OpenWritesThe50Oldest`, `TestBuiltinSDK_ApprovalsListIsAReadStep`. No guard relaxed.
 - 2026-11-06 (Inbox builder B Task 7, board #1400, **owner approved in ask #961**; spec `2026-11-03-inbox-builder-b-folders-menu-design.md` "The `approval` trigger"): **AUTO-09 holds for a new trigger** — `approval` is an event type (`automations.ApprovalEvent`, no `where` fields, built-in only through `approvalTriggerAllowed`; runs are `trigger='event'`, so no CHECK change). Every approval writer in `internal/db` (`InsertAgentAction`, `InsertInboxButtonProposal`, `TransitionAgentAction`, `DismissAgentAction`, `ApproveAgentActionWithArgs`, `InsertReminder`, `MarkReminderDone`, `SnoozeReminder`) calls the handle's approval hook (`db.SetApprovalHook`) with `action:<id>` / `reminder:<id>` after a statement that changed a row that is or was an open approval (an action inserted pending, a transition from or to pending/failed, a dismiss, an approve with edits, every reminder write), outside any transaction; `Fire` skips an action whose row can never be an approval (`db.ActionCanBeApproval`: a workbench audit row, the inbox surface's one-press `apply_track_action` row — review fix, guards `TestApprovalHook_DirectApplyQueuesNoRun`, `TestApprovalHook_OnePressInboxToolQueuesNoRun`, `TestApprovalHook_InboxTargetButtonQueuesARun` (a card's target button waits for Approve, so it is an approval — STRIP-01 narrowing), `TestApprovalHook_RealApprovalQueuesARun`, `TestApprovalHook_SkipsTransitionsNeverOpen`); the hook is `builtin.Fire`, which **only queues** a `needs-approval` event run (`db.EnqueueAutomationRun`, or `MergeQueuedAutomationRunEvents` into the queued one: ≤ 100 events + `truncated`, the refs in its `cycles`, so a repeated ref is a no-op) and wakes — the daemon's in-process executor (`Daemon.installApprovalHook` at `Run`), elsewhere SIGUSR2 (`installApprovalHook` in `buildToolRegistry`, the one registry builder every approval write passes); a built-in not indexed, not runnable or stopped (AUTO-08) queues nothing; an enqueue or wake failure is logged (`approval hook: <ref>: …`, ids only) and never changes the writer's result. The hidden `inbox approvals changed --ref <kind>:<id>` (the Desktop's call after a reminder write) is the same `Fire`. The daemon's `phaseApprovalSweep` (after `phaseUnsnooze`) only reads (`db.ApprovalDriftOf`, a read-only transaction) and fires once (`ref: sweep`) when an open approval has no artifact written at or after its last change, a reminder came due, or an artifact's approval is closed. AUTO-05 holds (one queued run takes a burst). Guards added (listed under AUTO-09) plus `TestApprovalFire_EnqueueErrorLoggedAndSwallowed`, `TestApprovalFire_ClaimedRunGetsANewOne`, `TestApprovalHook_EveryWriterNotifies` (with a source scan of `internal/db`), `TestApprovalHook_NeverCalledInsideTransaction`, `TestApprovalHook_WakeErrorLogged`, `TestApprovalSweep_ReadErrorLoggedCycleContinues`, `TestDaemon_ApprovalSweepAfterUnsnooze`, `TestRecipe_ApprovalTriggerBuiltinOnly`, `TestRecipe_ApprovalTriggerRefusesWhere`; `TestExecutor_PollClaimsEventBuiltinRuns` gains an approval event run (the non-slot trigger branch). `TestRecipe_TriggerExactlyOne`'s accepted-event loop skips `approval` (it has no where field to sample; its own tests above). No guard relaxed.

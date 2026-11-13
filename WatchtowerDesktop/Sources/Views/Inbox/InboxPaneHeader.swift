@@ -68,8 +68,9 @@ struct InboxPaneHeader<Actions: View>: View {
 }
 
 /// An automation artifact's pane header: its row's tile and title, the
-/// card's provenance line, then **Run Now** (only when its ⋯ offers it),
-/// the ⋯ and the reaction commands' `?`.
+/// card's provenance line, then the pane's own button (`leadingAction`,
+/// Slack today's **Mark All Seen**), **Run Now** (only when its ⋯ offers
+/// it), the ⋯ and the reaction commands' `?`.
 struct InboxArtifactPaneHeader: View {
     /// The artifact's list row (`InboxFolderEntries.content`).
     let content: InboxRowContent
@@ -85,9 +86,18 @@ struct InboxArtifactPaneHeader: View {
     let onReactionCommands: (() -> Void)?
     /// Mail waiting's **Mute Senders…**; nil draws none.
     var muteSenders: MuteSendersButton?
+    /// A pane's own button before Run Now (`leadingAction(_:)`); nil = none.
+    private var leading: AnyView?
 
     private var offersRunNow: Bool {
         menu?.entries.contains { $0.command == .runNow } ?? false
+    }
+
+    /// This header with `button` before Run Now, the ⋯ and the `?`.
+    func leadingAction(_ button: some View) -> Self {
+        var header = self
+        header.leading = AnyView(button)
+        return header
     }
 
     var body: some View {
@@ -98,6 +108,9 @@ struct InboxArtifactPaneHeader: View {
             }
             if isHighPriority {
                 Chip(text: "High", color: Tone.priority("high"))
+            }
+            if let leading {
+                leading
             }
             if let menu {
                 if offersRunNow {

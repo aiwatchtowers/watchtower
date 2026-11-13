@@ -197,6 +197,8 @@ echo '{"type":"turn.completed"}'
 		{"untagged uses strong", context.Background(), "model:big-model"},
 		{"light source uses light", digest.WithSource(context.Background(), "digest.period"), "model:mini-model"},
 		{"strong source uses strong", digest.WithSource(context.Background(), "digest.channel"), "model:big-model"},
+		// An automation's light llm() call (the Slack today built-in's prompt).
+		{"automation llm uses light", digest.WithSource(context.Background(), "automation.llm"), "model:mini-model"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

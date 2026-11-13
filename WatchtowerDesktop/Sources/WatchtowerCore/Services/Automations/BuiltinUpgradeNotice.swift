@@ -25,6 +25,7 @@ package struct BuiltinUpgradeNotice: Equatable, Sendable {
         "idea-finder": "Idea finder",
         "reactions": "Reactions",
         "mail-waiting": "Mail waiting",
+        "slack-today": "Slack today",
         // The watch recipes' move: "Couldn't move your watched tracks to Automations".
         "custom-tracks": "your watched tracks"
     ]

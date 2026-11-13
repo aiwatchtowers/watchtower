@@ -608,6 +608,7 @@ enum DesignShotCatalog {
             + TuningChatShotFixtures.shots // The tuning chat over the Analytics pane (#1517).
             + InboxRedesignShotFixtures.shots // The Inbox redesign, phase 1 (#1076).
             + InboxRedesignWaitingShotFixtures.shots // The Inbox redesign, phase 2 (#1076).
+            + InboxSlackTodayShotFixtures.shots // The Inbox redesign, phase 5: Slack today (#1076).
     }
 }
 
@@ -649,6 +650,7 @@ enum DesignShotFixtures {
         InboxApprovalsShotFixtures.cleanUp()
         InboxRedesignShotFixtures.cleanUp()
         InboxRedesignWaitingShotFixtures.cleanUp()
+        InboxSlackTodayShotFixtures.cleanUp()
         TuningChatShotFixtures.cleanUp()
         ProjectPageShotFixtures.cleanUp()
         ClosedAsksShotFixtures.cleanUp()
