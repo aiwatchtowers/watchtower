@@ -169,6 +169,26 @@ final class InboxBulkPressModelTests: XCTestCase {
         XCTAssertEqual(model.state, .confirming(Self.plan))
     }
 
+    /// Every state but idle keeps the control on screen: through Try Again's
+    /// planning and confirmation too, so a confirmation is never orphaned.
+    func testHoldsResultInEveryStateButIdle() async {
+        var planCalls = 0
+        let model = InboxBulkPressModel(plan: {
+            planCalls += 1
+            if planCalls == 1 { throw Boom(message: "database is locked") }
+            return Self.plan
+        }, apply: { _ in .done(count: 3, skipped: 0) })
+        XCTAssertFalse(model.holdsResult)
+        model.begin()
+        await waitUntil(model, isFinished)
+        XCTAssertTrue(model.holdsResult)
+        model.begin()
+        await waitUntil(model, isConfirming)
+        XCTAssertTrue(model.holdsResult)
+        model.cancel()
+        XCTAssertFalse(model.holdsResult)
+    }
+
     func testConfirmOutsideConfirmingIsIgnored() async {
         var applyCalls = 0
         let apply: ([String]) async throws -> InboxBulkResult = { ids in

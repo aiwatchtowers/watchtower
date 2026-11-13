@@ -195,7 +195,7 @@ final class InboxTracksIdeasWiringTests: XCTestCase {
 
         vm.oldIdeasPress.begin()
         let deadline = Date().addingTimeInterval(10)
-        while !vm.oldIdeasPress.holdsResult, Date() < deadline {
+        while !Self.isFinished(vm.oldIdeasPress.state), Date() < deadline {
             await Task.yield()
         }
         let sut = try view(vm).environment(AppState.isolated()).inspect()
@@ -205,6 +205,57 @@ final class InboxTracksIdeasWiringTests: XCTestCase {
         try sut.find(InboxBulkPressButton.self).callOnDisappear()
         XCTAssertEqual(vm.oldIdeasPress.state, .idle)
         XCTAssertThrowsError(try view(vm).environment(AppState.isolated()).inspect().find(InboxBulkPressButton.self))
+    }
+
+    /// Try Again on a result shown without old ideas keeps the confirmation
+    /// reachable; Cancel works; a result that finished while the owner was
+    /// away is reset when the press appears.
+    func testClearOldIdeasTryAgainKeepsTheConfirmation() async throws {
+        try seedIdeas(daysAgo: [1, 45])
+        let vm = await makeVM()
+        vm.openLegacy(.ideas)
+        // A failed run, then the old idea is gone.
+        var planCalls = 0
+        vm.oldIdeasPress.begin {
+            planCalls += 1
+            if planCalls == 1 { throw CancellationError() }
+            return try await vm.planOldIdeas()
+        }
+        await waitUntil { if case .finished(.failed) = vm.oldIdeasPress.state { true } else { false } }
+        try await manager.dbPool.write { db in
+            try db.execute(sql: "UPDATE ideas SET created_at = ?", arguments: [Self.stamp(daysAgo: 1)])
+        }
+        await vm.refresh()
+        XCTAssertEqual(vm.ideaBatch.olderCount, 0)
+        // Try Again with a plan that finds one again.
+        try await manager.dbPool.write { db in
+            try db.execute(sql: "UPDATE ideas SET created_at = ? WHERE title = 'Idea 1 for acme'",
+                           arguments: [Self.stamp(daysAgo: 45)])
+        }
+        let sut = try view(vm).environment(AppState.isolated()).inspect()
+        try sut.find(InboxBulkPressButton.self).find(button: "Try Again").tap()
+        await waitUntil { if case .confirming = vm.oldIdeasPress.state { true } else { false } }
+        let press = try view(vm).environment(AppState.isolated()).inspect().find(InboxBulkPressButton.self)
+        try press.vStack().confirmationDialog().find(button: "Cancel").tap()
+        XCTAssertEqual(vm.oldIdeasPress.state, .idle)
+
+        vm.oldIdeasPress.begin { InboxBulkPlan(ids: [], count: 0) }
+        await waitUntil { if case .finished = vm.oldIdeasPress.state { true } else { false } }
+        try view(vm).environment(AppState.isolated()).inspect().find(InboxBulkPressButton.self).callOnAppear()
+        XCTAssertEqual(vm.oldIdeasPress.state, .idle)
+    }
+
+    private static func isFinished(_ state: InboxBulkPressModel.State) -> Bool {
+        if case .finished = state { return true }
+        return false
+    }
+
+    private func waitUntil(_ done: () -> Bool) async {
+        let deadline = Date().addingTimeInterval(10)
+        while !done(), Date() < deadline {
+            await Task.yield()
+        }
+        XCTAssertTrue(done(), "timed out")
     }
 
     func testClearOldIdeasConfirmTitle() {

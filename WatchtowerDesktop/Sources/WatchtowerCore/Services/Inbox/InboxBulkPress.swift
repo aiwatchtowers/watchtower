@@ -97,13 +97,11 @@ package final class InboxBulkPressModel: ObservableObject {
         state = .idle
     }
 
-    /// Running or finished: its spinner or result line stays on screen even
-    /// once its group no longer offers the press.
+    /// Anything but idle: its spinner, confirmation or result line stays on
+    /// screen even once its group no longer offers the press, so Try Again
+    /// keeps a confirmation the owner can answer.
     package var holdsResult: Bool {
-        switch state {
-        case .running, .finished: true
-        case .idle, .planning, .confirming: false
-        }
+        state != .idle
     }
 
     /// The owner said no: back to idle. Only while confirming.

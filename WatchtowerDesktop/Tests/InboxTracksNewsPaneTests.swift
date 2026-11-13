@@ -173,6 +173,45 @@ final class InboxTracksNewsPaneTests: XCTestCase {
         XCTAssertEqual(model.state, .idle)
     }
 
+    /// A failed result shown after the quiet threads went away: Try Again
+    /// keeps the control and its confirmation reachable, and Cancel works.
+    func testTryAgainKeepsTheConfirmationWithoutQuietThreads() async throws {
+        var planCalls = 0
+        let model = InboxBulkPressModel(
+            plan: {
+                planCalls += 1
+                if planCalls == 1 { throw TestError() }
+                return InboxBulkPlan(ids: ["9"], count: 1)
+            },
+            apply: { _ in .done(count: 1, skipped: 0) })
+        model.begin()
+        await waitUntil { if case .finished = model.state { true } else { false } }
+        let sut = InboxTracksNewsPane(summary: TrackThreadsSummary.build(tracks: [card(id: 1, hasUpdates: true)], now: now),
+                                      quietPress: model, onOpenThread: { _ in }, onAllThreads: {})
+
+        try sut.inspect().find(button: "Try Again").tap()
+        await waitUntil { if case .confirming = model.state { true } else { false } }
+        let button = try sut.inspect().find(InboxBulkPressButton.self)
+        try button.vStack().confirmationDialog().find(button: "Cancel").tap()
+        XCTAssertEqual(model.state, .idle)
+    }
+
+    /// A press that finished while the owner was away is not shown when the
+    /// pane comes back.
+    func testResultFinishedWhileAwayIsResetOnAppear() async throws {
+        let model = InboxBulkPressModel { InboxBulkPlan(ids: [], count: 0) }
+        model.begin()
+        await waitUntil { if case .finished = model.state { true } else { false } }
+        let sut = InboxTracksNewsPane(summary: TrackThreadsSummary.build(tracks: [], now: now),
+                                      quietPress: model, onOpenThread: { _ in }, onAllThreads: {})
+        try sut.inspect().vStack().callOnAppear()
+        XCTAssertEqual(model.state, .idle)
+    }
+
+    private struct TestError: LocalizedError {
+        var errorDescription: String? { "database is locked" }
+    }
+
     func testOpeningARowCallsOnOpenThreadWithItsID() throws {
         var opened: [Int] = []
         var allThreads = 0

@@ -49,7 +49,9 @@ struct InboxTracksNewsPane: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        // A days-old result never comes back with the pane.
+        // A days-old result never comes back with the pane, nor one that
+        // finished while the owner was away.
+        .onAppear { quietPress.reset() }
         .onDisappear { quietPress.reset() }
     }
 

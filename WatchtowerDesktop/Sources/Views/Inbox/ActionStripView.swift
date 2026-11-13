@@ -370,13 +370,15 @@ struct ActionStripActionsView: View {
                                  row: Binding(get: { ideasRow }, set: openIdeasRow))
             }
             Spacer(minLength: 0)
-            // The result stays once no old idea is left, until the owner
-            // leaves the Backlog.
+            // The press (its confirmation, its result) stays once no old
+            // idea is left, until the owner leaves the Backlog; a result
+            // that finished while the owner was away is not shown.
             if list == .ideas, vm.ideaBatch.olderCount > 0 || vm.oldIdeasPress.holdsResult {
                 InboxBulkPressButton(title: vm.ideaBatch.olderCount > 0 ? "Clear Old Ideas…" : nil,
                                      confirmTitle: Self.clearOldIdeasTitle, model: vm.oldIdeasPress)
                     .controlSize(.small)
                     .fixedSize()
+                    .onAppear { vm.oldIdeasPress.reset() }
                     .onDisappear { vm.oldIdeasPress.reset() }
             }
             InboxReactionCommandsButton { openAux(.reactionCommands) }
