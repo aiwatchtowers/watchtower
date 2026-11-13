@@ -3055,3 +3055,14 @@ Entry format:
 - weak-dimension: none notable. The WithoutCancel change is only safe because the tx is local SQLite. The new comment says so implicitly, by naming which writes stay network-bound.
 - rule-gap (candidate, dim 9): *bookkeeping for a remote write that already went out runs under `context.WithoutCancel` (local tx only), and a further network step between the write and its bookkeeping is called out as a residual in the comment, not hidden.*
 - outcome: TBD
+
+
+## 2026-11-13 — Codex plan-usage runtime PATH (6b228031e) — verdict: changes-needed
+
+- contested: Reusing an existing PATH resolver can introduce a new cancellation regression when an explicit executable previously bypassed its login-shell subprocess. The provider budget cannot bound a context-free subprocess invoked before the bounded reader. [6/8]
+- false-positive: Environment preservation is not itself broken: appending the PATH override retains unrelated variables. The defect is a test subprocess retaining an inherited config-path override while relying on a synthetic HOME. [7]
+- miss: The helper-process TestMain shortcut skips the normal config reset; package-initialization defaults still honor inherited configuration. Two specialist lanes independently identified the same isolation hole. [7]
+- weak-dimension: 7. A realistic fake CLI is insufficient if an inherited config override can select another executable before the fixture is used.
+- rule-gap (candidate, dim 7): A re-executed test binary pins every environment-based configuration selector to its fixture, including selectors evaluated during package initialization.
+- rule-gap (candidate, dim 6/8): Reusing discovery code under a bounded operation requires checking its subprocess lifetime; pure known-directory enrichment avoids adding an unbounded shell step to an explicit-path flow.
+- outcome: TBD
