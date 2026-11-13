@@ -50,6 +50,11 @@ func FindBinary(override string) string {
 	return cachedBinary
 }
 
+// RuntimePATH adds known version-manager and system tool directories to the
+// inherited PATH without running a login shell. This keeps an explicit CLI
+// path independent of shell startup when only its runtime needs discovery.
+func RuntimePATH() string { return enrichPATH(os.Getenv("PATH")) }
+
 // RichPATH returns a PATH that includes common tool locations so that
 // subprocess invocations can find node, npx, etc. even from a macOS .app bundle.
 // It combines the login shell PATH with well-known tool directories (nvm, volta,

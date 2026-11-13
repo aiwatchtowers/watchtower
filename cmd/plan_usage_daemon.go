@@ -46,8 +46,9 @@ func newPlanProviders(database *db.DB, cfg *config.Config, logger *log.Logger) p
 			return codex.UsageSnapshot{}, &planusage.OperationError{Code: "storage", Cause: err}
 		}
 		// App/daemon launches have a minimal PATH; npm's Codex entry point
-		// also needs the version manager's node, as normal Codex calls do.
-		env := append(os.Environ(), "PATH="+codex.RichPATH())
+		// also needs the version manager's node. Runtime discovery must not
+		// add a login-shell dependency to an explicitly configured CLI path.
+		env := append(os.Environ(), "PATH="+codex.RuntimePATH())
 		return codex.ReadUsage(ctx, codex.FindBinary(latest.CodexPath), env, codex.OwnerHome())
 	}}
 	return planusage.Providers{

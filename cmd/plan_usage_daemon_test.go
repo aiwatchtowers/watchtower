@@ -14,8 +14,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Run the production provider in a fresh process: Codex's login-shell PATH is
-// cached, so changing it in the test runner would affect unrelated tests.
+// Run the production provider in a fresh process to exercise startup resolution
+// of HOME, PATH and the configuration flag.
 func TestPlanProviders_CodexRuntimePATH(t *testing.T) {
 	if os.Getenv("WT_PLAN_USAGE_PATH_HELPER") == "1" {
 		cfg, err := config.Load(flagConfig)
@@ -40,7 +40,7 @@ func TestPlanProviders_CodexRuntimePATH(t *testing.T) {
 	}
 
 	home := t.TempDir()
-	binDir := filepath.Join(home, "runtime")
+	binDir := filepath.Join(home, ".nvm", "versions", "node", "v99.0.0", "bin")
 	require.NoError(t, os.MkdirAll(binDir, 0700))
 	// The CLI needs an interpreter outside the app's minimal PATH, as an
 	// npm-installed Codex needs node from nvm/volta/fnm.
@@ -57,18 +57,22 @@ done
 `
 	require.NoError(t, os.WriteFile(filepath.Join(binDir, "wt-test-node"), []byte(runtime), 0700))
 	loginShell := filepath.Join(home, "login-shell")
-	require.NoError(t, os.WriteFile(loginShell, []byte("#!/bin/sh\nprintf '%s\\n' \"$WT_PLAN_USAGE_RUNTIME_PATH\"\n"), 0700))
+	shellCall := filepath.Join(home, "shell-called")
+	// An explicit CLI path must never run shell startup, which may hang.
+	require.NoError(t, os.WriteFile(loginShell, []byte("#!/bin/sh\nprintf called > \"$WT_PLAN_USAGE_SHELL_CALL\"\nexit 1\n"), 0700))
 	configDir := filepath.Join(home, ".config", "watchtower")
 	require.NoError(t, os.MkdirAll(configDir, 0700))
 	configPath := filepath.Join(configDir, "config.yaml")
 	require.NoError(t, os.WriteFile(configPath, []byte("active_workspace: test\ncodex_path: "+cli+"\nplan_usage:\n  enabled: true\n"), 0600))
+	// A caller's override must not escape the fake CLI/config fixture.
+	t.Setenv("WATCHTOWER_CONFIG_PATH", filepath.Join(home, "external-config.yaml"))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	child := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestPlanProviders_CodexRuntimePATH$")
 	child.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS=1", "WT_PLAN_USAGE_PATH_HELPER=1",
 		"HOME="+home, "CODEX_HOME="+filepath.Join(home, ".codex"), "SHELL="+loginShell,
-		"PATH=/usr/bin:/bin", "WT_PLAN_USAGE_RUNTIME_PATH="+binDir+":/usr/bin:/bin")
+		"WATCHTOWER_CONFIG_PATH="+configPath, "PATH=/usr/bin:/bin", "WT_PLAN_USAGE_SHELL_CALL="+shellCall)
 	child.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	child.Cancel = func() error { return syscall.Kill(-child.Process.Pid, syscall.SIGKILL) }
 	t.Cleanup(func() {
@@ -78,4 +82,6 @@ done
 	})
 	output, err := child.CombinedOutput()
 	require.NoError(t, err, "%s", output)
+	_, shellErr := os.Stat(shellCall)
+	require.ErrorIs(t, shellErr, os.ErrNotExist, "quota refresh invoked shell startup")
 }
