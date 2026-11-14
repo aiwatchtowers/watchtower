@@ -55,6 +55,9 @@ type Client struct {
 	runHome string
 	// webSearch: the run searches the web (SetWebSearch); off otherwise.
 	webSearch bool
+	// appsOverrides, when set (SetChatApps), keeps the apps feature on for
+	// the run, limited by these -c pairs.
+	appsOverrides []string
 	// images are the next run's --image paths (SetImages), taken by it.
 	imagesMu sync.Mutex
 	images   []string
@@ -260,7 +263,11 @@ func (c *Client) execArgs() []string {
 		off = append([]string{"shell_tool"}, toolRunFeatures...)
 		sandbox = []string{"-c", "features.shell_tool=true", "--sandbox", "read-only"}
 	}
+	if len(c.appsOverrides) > 0 {
+		off = append(slices.Clone(off), "apps") // the chat keeps apps, read-only (SetChatApps)
+	}
 	args := append(append(prefix, featuresOff(off)...), sandbox...)
+	args = append(args, c.appsOverrides...)
 	return append(args, "-c", c.webSearchArg())
 }
 

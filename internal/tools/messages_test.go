@@ -69,3 +69,59 @@ func TestListMessages_UnknownPersonErrors(t *testing.T) {
 	var verr *ValidationError
 	require.ErrorAs(t, err, &verr)
 }
+
+type coverageEnvelope struct {
+	Messages []json.RawMessage `json:"messages"`
+	Coverage struct {
+		Scope          string `json:"scope"`
+		SyncedThrough  string `json:"synced_through"`
+		BackfillFrom   string `json:"backfill_from"`
+		ChannelInScope *bool  `json:"channel_in_scope"`
+	} `json:"coverage"`
+}
+
+func TestListMessages_BareArrayOffMainSurface(t *testing.T) {
+	d := seedMessagesDB(t)
+	for _, surface := range []string{"", AutomationSurface, "target"} {
+		out, err := messagesRegistry(t, d).CallRead(context.Background(), "list_messages", json.RawMessage(`{"person":"Петренко"}`), Binding{Surface: surface})
+		require.NoError(t, err, surface)
+		b, err := json.Marshal(out)
+		require.NoError(t, err)
+		var arr []json.RawMessage
+		require.NoError(t, json.Unmarshal(b, &arr), "surface %q keeps the bare array", surface)
+		assert.Len(t, arr, 2)
+	}
+}
+
+func callMain(t *testing.T, reg *Registry, name, args string) string {
+	t.Helper()
+	data, err := reg.CallRead(context.Background(), name, json.RawMessage(args), Binding{Surface: "main"})
+	require.NoError(t, err)
+	b, err := json.Marshal(data)
+	require.NoError(t, err)
+	return string(b)
+}
+
+func TestListMessages_Coverage(t *testing.T) {
+	d := seedMessagesDB(t)
+	var got coverageEnvelope
+	require.NoError(t, json.Unmarshal([]byte(callMain(t, messagesRegistry(t, d), "list_messages", `{"person":"Петренко"}`)), &got))
+	assert.Len(t, got.Messages, 2)
+	assert.Equal(t, "none", got.Coverage.Scope, "no Slack account yet")
+	assert.Nil(t, got.Coverage.ChannelInScope, "no channel argument")
+
+	_, err := d.CreateSlackAccount(db.SlackAccount{TeamID: "T1", Status: "ok", Enabled: true})
+	require.NoError(t, err)
+	require.NoError(t, d.UpsertChannel(db.Channel{ID: "1:C1", Name: "ops", Type: "public", IsMember: false}))
+	got = coverageEnvelope{}
+	require.NoError(t, json.Unmarshal([]byte(callMain(t, messagesRegistry(t, d), "list_messages", `{"channel":"ops"}`)), &got))
+	assert.Equal(t, "own", got.Coverage.Scope)
+	require.NotNil(t, got.Coverage.ChannelInScope)
+	assert.False(t, *got.Coverage.ChannelInScope, "the owner is not a member of #ops")
+
+	require.NoError(t, d.UpsertChannel(db.Channel{ID: "1:C1", Name: "ops", Type: "public", IsMember: true}))
+	got = coverageEnvelope{}
+	require.NoError(t, json.Unmarshal([]byte(callMain(t, messagesRegistry(t, d), "list_messages", `{"channel":"ops"}`)), &got))
+	require.NotNil(t, got.Coverage.ChannelInScope)
+	assert.True(t, *got.Coverage.ChannelInScope)
+}

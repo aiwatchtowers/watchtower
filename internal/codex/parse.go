@@ -97,6 +97,10 @@ func (t *CodexUsage) tokens() llmusage.Tokens {
 	return llmusage.Tokens{Input: int64(fresh), CacheRead: int64(t.InputTokens - fresh), Output: int64(t.OutputTokens)}
 }
 
+// Tokens is the usage as a ledger block (tokens), for a leaf outside this
+// package that reads codex's JSONL itself (the Slack Live probe).
+func (t *CodexUsage) Tokens() llmusage.Tokens { return t.tokens() }
+
 // add sums u into the receiver.
 func (t *CodexUsage) add(u *CodexUsage) {
 	t.InputTokens += u.InputTokens
