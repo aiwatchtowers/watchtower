@@ -534,3 +534,19 @@ func TestProposeContext_WorkbenchErrorDoesNotStopOthers(t *testing.T) {
 	assert.Error(t, err, "the missing workbench is reported")
 	assert.Equal(t, 2, n, "the global row and this workbench's memory row are still filed")
 }
+
+// A pass stops between workbenches once ctx is cancelled.
+func TestPreviewContext_StopsBetweenWorkbenches(t *testing.T) {
+	f := newCtxFixture(t)
+	other, _ := f.d.workbench(t, "beta", 0)
+	ctx, cancel := context.WithCancel(context.Background())
+	var seen []int64
+	contextMeasuredSessions = func(_ *agentlogdb.DB, wb int64, _, _ time.Time) (int, error) {
+		seen = append(seen, wb)
+		cancel()
+		return 0, nil
+	}
+	_, err := PreviewContext(ctx, f.env(), []int64{f.wb, other})
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, []int64{f.wb}, seen)
+}
