@@ -241,6 +241,9 @@ type Daemon struct {
 	heartbeatErrLogged atomic.Bool // one-shot latch for sync_progress.json write failures
 	agentLogSkipLogged atomic.Bool // one-shot latch for the analytics phase's nil-agentlog.db skip line
 	agentLogMoveLogged atomic.Bool // one-shot latch for the analytics phase's failed-move line
+	// coachContextFresh is set when an agent analytics import wrote events:
+	// the next coach phase runs the context proposer (coachContext).
+	coachContextFresh atomic.Bool
 	// searchRebuildDiskLogged latches the search fill's not-enough-disk line:
 	// logged once while the disk stays short, again after a cycle found room.
 	searchRebuildDiskLogged atomic.Bool

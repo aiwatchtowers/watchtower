@@ -7,9 +7,21 @@ import (
 	"watchtower/internal/devpack"
 )
 
-// The context proposer's thresholds (spec C4: the least start weight, the
-// 30-day window, the CLAUDE.md and memory index sizes) join this file with
-// the proposer that reads them; an unused constant fails the lint.
+// The context proposer's thresholds (spec C4), tunable constants rather than
+// settings.
+const (
+	// ctxUnusedMinTokens is the least start weight of a source worth a
+	// proposal.
+	ctxUnusedMinTokens = 500
+	// ctxWindowDays is the window a source's calls are counted in.
+	ctxWindowDays = 30
+	// ctxClaudeMDMinBytes is the CLAUDE.md size a restructure starts at,
+	// with a "## " section of at least ctxClaudeMDSectionMinBytes.
+	ctxClaudeMDMinBytes        = 20 * 1024
+	ctxClaudeMDSectionMinBytes = 8 * 1024
+	// ctxMemoryIndexMinBytes is the memory index size a cleanup starts at.
+	ctxMemoryIndexMinBytes = 8 * 1024
+)
 
 var (
 	// protectedServers are Watchtower's own MCP servers: the workbench

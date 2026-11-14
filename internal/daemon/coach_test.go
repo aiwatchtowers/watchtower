@@ -327,3 +327,121 @@ func TestCoachGeneratorUsesJobSnapshotAndSharedAdmission(t *testing.T) {
 		require.Equal(t, 1, leaf.calls)
 	})
 }
+
+// stubCoachContext records the context proposer's runs (workbench ids, and
+// whether the coach lock was held) under a temp home.
+func stubCoachContext(t *testing.T, d *Daemon) *[]int64 {
+	t.Helper()
+	var ids []int64
+	oc, oh := runCoachContext, coachHomeDir
+	home := t.TempDir()
+	coachHomeDir = func() (string, error) { return home, nil }
+	runCoachContext = func(env coach.ContextEnv, wb int64) (int, error) {
+		assert.Equal(t, home, env.Home)
+		_, free, err := fsutil.TryLockFile(coach.LockPath(d.config.WorkspaceDir()))
+		require.NoError(t, err)
+		assert.False(t, free, "the context proposer runs under the coach lock")
+		ids = append(ids, wb)
+		return 1, nil
+	}
+	t.Cleanup(func() { runCoachContext, coachHomeDir = oc, oh })
+	return &ids
+}
+
+func analyticsWorkbench(t *testing.T, database *db.DB, name string) int64 {
+	t.Helper()
+	wb, err := database.CreateWorkbench(name, t.TempDir())
+	require.NoError(t, err)
+	require.NoError(t, database.SetWorkbenchAgentAnalytics(wb, true))
+	return wb
+}
+
+func TestPhaseCoach_ContextAfterFreshImport(t *testing.T) {
+	d, database := coachDaemon(t)
+	c := stubCoach(t, nil)
+	ran := stubCoachContext(t, d)
+	wb := analyticsWorkbench(t, database, "acme")
+	_, err := database.CreateWorkbench("off", t.TempDir()) // analytics off: never proposed for
+	require.NoError(t, err)
+	d.lastCoach = time.Now() // the weekly pass is not due
+
+	d.phaseCoach(context.Background())
+	assert.Empty(t, *ran, "no fresh import, no run")
+
+	d.coachContextFresh.Store(true)
+	d.phaseCoach(context.Background())
+	assert.Equal(t, []int64{wb}, *ran)
+	assert.False(t, d.coachContextFresh.Load(), "the flag is cleared")
+	assert.Equal(t, coachCalls{}, *c, "no judging and no model call")
+	assert.Empty(t, pipelineRunNames(t, database), "the weekly run is not recorded")
+
+	d.phaseCoach(context.Background())
+	assert.Len(t, *ran, 1, "one run per fresh import")
+}
+
+func TestPhaseCoach_ContextInWeeklyPassAfterJudging(t *testing.T) {
+	d, database := coachDaemon(t)
+	var order []string
+	oj, op := runCoachJudge, runCoachProposer
+	t.Cleanup(func() { runCoachJudge, runCoachProposer = oj, op })
+	runCoachJudge = func(*db.DB, *agentlogdb.DB, time.Time) (int, int, error) {
+		order = append(order, "judge")
+		return 0, 0, nil
+	}
+	runCoachProposer = func(context.Context, *coach.Proposer, coach.Inputs) (int, *digest.Usage, error) {
+		order = append(order, "propose")
+		return 0, nil, nil
+	}
+	ran := stubCoachContext(t, d)
+	inner := runCoachContext
+	runCoachContext = func(env coach.ContextEnv, wb int64) (int, error) {
+		order = append(order, "context")
+		return inner(env, wb)
+	}
+	analyticsWorkbench(t, database, "acme")
+	analyticsWorkbench(t, database, "beta")
+	d.coachContextFresh.Store(true)
+
+	d.phaseCoach(context.Background())
+	assert.Equal(t, []string{"judge", "context", "context", "propose"}, order)
+	assert.Len(t, *ran, 2)
+	assert.False(t, d.coachContextFresh.Load())
+}
+
+func TestPhaseCoach_ContextSkipsWhenLocked(t *testing.T) {
+	d, database := coachDaemon(t)
+	stubCoach(t, nil)
+	ran := stubCoachContext(t, d)
+	analyticsWorkbench(t, database, "acme")
+	d.lastCoach = time.Now()
+	d.coachContextFresh.Store(true)
+	unlock, ok, err := fsutil.TryLockFile(coach.LockPath(d.config.WorkspaceDir()))
+	require.NoError(t, err)
+	require.True(t, ok)
+	defer unlock()
+
+	d.phaseCoach(context.Background())
+	assert.Empty(t, *ran)
+	assert.True(t, d.coachContextFresh.Load(), "kept for the next cycle")
+}
+
+func TestPhaseCoach_ContextErrorDoesNotStopOthers(t *testing.T) {
+	d, database := coachDaemon(t)
+	stubCoach(t, nil)
+	stubCoachContext(t, d)
+	a := analyticsWorkbench(t, database, "acme")
+	b := analyticsWorkbench(t, database, "beta")
+	var ran []int64
+	runCoachContext = func(_ coach.ContextEnv, wb int64) (int, error) {
+		ran = append(ran, wb)
+		if wb == a {
+			return 0, errors.New("boom")
+		}
+		return 0, nil
+	}
+	d.lastCoach = time.Now()
+	d.coachContextFresh.Store(true)
+
+	d.phaseCoach(context.Background())
+	assert.ElementsMatch(t, []int64{a, b}, ran)
+}

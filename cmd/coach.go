@@ -683,6 +683,7 @@ func runCoachNow(cmd *cobra.Command, e *coachEnv) (any, error) {
 		}
 		res.Judged, res.Cuts = judged, cuts
 	}
+	ctxProps, ctxWritten := coachProposeContext(cmd, e, now, coachFlagDryRun)
 	in, err := coach.Collect(ctx, e.db, e.al, instructions.NewFeedReader(ctx, e.db, coachSessionDirs()), now)
 	if err != nil {
 		return nil, fmt.Errorf("collecting signals: %w", err)
@@ -694,14 +695,14 @@ func runCoachNow(cmd *cobra.Command, e *coachEnv) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		res.Proposals = proposalsOf(props).Proposals
+		res.Proposals = proposalsOf(append(props, ctxProps...)).Proposals
 		return res, nil
 	}
 	n, _, err := p.Run(ctx, in)
 	if err != nil {
 		return nil, err
 	}
-	res.Written = n
+	res.Written = n + ctxWritten
 	open, err := e.db.ListCoachProposals("open")
 	if err != nil {
 		return nil, err
