@@ -163,7 +163,7 @@ func TestValidate_WiderFindSameFingerprint(t *testing.T) {
 }
 
 func TestFingerprint_PartsCannotBeConfused(t *testing.T) {
-	k := keyOf(DestSession, 0, "", "")
+	k := keyOf(DestSession, 0, "", "", "")
 	// Removing " a b" and turning "a" into "b" normalise to the same words;
 	// their fingerprints must still differ.
 	cut, ok := fingerprint(k, "keep a b", "keep")
@@ -375,30 +375,30 @@ func TestPropose_AddedOrDismissedSuggestionTextBlocked(t *testing.T) {
 }
 
 func TestKeyOf_SkillSeparatesSkillDestinations(t *testing.T) {
-	assert.NotEqual(t, keyOf(DestClaudeSkillUser, 0, "", "a"), keyOf(DestClaudeSkillUser, 0, "", "b"))
-	assert.Equal(t, keyOf(DestClaudeSkillUser, 0, "", "a"), keyOf(DestClaudeSkillUser, 0, "", "a"))
-	assert.Equal(t, keyOf(DestSession, 0, "", "a"), keyOf(DestSession, 0, "", ""), "skill only for skill destinations")
-	assert.Equal(t, keyOf(DestPromptAdd, 0, "p", "a"), keyOf(DestPromptAdd, 0, "p", ""))
-	assert.Equal(t, int64(0), keyOf(DestPackOverlay, 7, "", "x").wb, "a pack overlay is global")
-	assert.Equal(t, "x", keyOf(DestPackOverlay, 7, "", "x").skill)
-	assert.Equal(t, "", keyOf(DestCodexSkillUser, 0, "p", "x").prompt, "prompt only for prompt additions")
+	assert.NotEqual(t, keyOf(DestClaudeSkillUser, 0, "", "a", ""), keyOf(DestClaudeSkillUser, 0, "", "b", ""))
+	assert.Equal(t, keyOf(DestClaudeSkillUser, 0, "", "a", ""), keyOf(DestClaudeSkillUser, 0, "", "a", ""))
+	assert.Equal(t, keyOf(DestSession, 0, "", "a", ""), keyOf(DestSession, 0, "", "", ""), "skill only for skill destinations")
+	assert.Equal(t, keyOf(DestPromptAdd, 0, "p", "a", ""), keyOf(DestPromptAdd, 0, "p", "", ""))
+	assert.Equal(t, int64(0), keyOf(DestPackOverlay, 7, "", "x", "").wb, "a pack overlay is global")
+	assert.Equal(t, "x", keyOf(DestPackOverlay, 7, "", "x", "").skill)
+	assert.Equal(t, "", keyOf(DestCodexSkillUser, 0, "p", "x", "").prompt, "prompt only for prompt additions")
 	for _, d := range []string{DestClaudeSkillUser, DestCodexSkillUser, DestPackOverlay, DestCodexAgentsMDUser, DestCodexRulesAllow} {
-		assert.Equal(t, int64(0), keyOf(d, 5, "", "").wb, d)
+		assert.Equal(t, int64(0), keyOf(d, 5, "", "", "").wb, d)
 	}
 }
 
 func TestFingerprint_ExistingFormatUnchanged(t *testing.T) {
-	fp, ok := fingerprint(keyOf(DestSession, 3, "", ""), "a", "a\nKeep it short.")
+	fp, ok := fingerprint(keyOf(DestSession, 3, "", "", ""), "a", "a\nKeep it short.")
 	require.True(t, ok)
 	assert.Equal(t, "session|3|||keep it short", fp, "stored fingerprints must keep matching")
-	fp, ok = fingerprint(keyOf(DestPromptAdd, 3, "p.x", ""), "a", "a\nKeep it short.")
+	fp, ok = fingerprint(keyOf(DestPromptAdd, 3, "p.x", "", ""), "a", "a\nKeep it short.")
 	require.True(t, ok)
 	assert.Equal(t, "prompt_addition|0|p.x||keep it short", fp)
 
-	fp, ok = fingerprint(keyOf(DestClaudeSkillUser, 0, "", "review-pr"), "a", "a\nKeep it short.")
+	fp, ok = fingerprint(keyOf(DestClaudeSkillUser, 0, "", "review-pr", ""), "a", "a\nKeep it short.")
 	require.True(t, ok)
 	assert.Contains(t, fp, "|0|review-pr|")
-	other, _ := fingerprint(keyOf(DestClaudeSkillUser, 0, "", "spec"), "a", "a\nKeep it short.")
+	other, _ := fingerprint(keyOf(DestClaudeSkillUser, 0, "", "spec", ""), "a", "a\nKeep it short.")
 	assert.NotEqual(t, fp, other, "the same edit to two skills is two edits")
 }
 

@@ -83,7 +83,7 @@ func ValidateChatProposal(ctx context.Context, d *db.DB, e ChatEdit, env Env) (d
 			return db.CoachProposal{}, err
 		}
 	}
-	key := keyOf(dest, e.WorkbenchID, e.PromptID, e.Skill)
+	key := keyOf(dest, e.WorkbenchID, e.PromptID, e.Skill, "")
 	cur, err := ReadText(d, env, key.dest, key.wb, key.prompt, key.skill)
 	if err != nil {
 		return db.CoachProposal{}, readRefusal(err, key.skill)
@@ -116,7 +116,7 @@ func ValidateChatProposal(ctx context.Context, d *db.DB, e ChatEdit, env Env) (d
 		return db.CoachProposal{}, err
 	}
 	for _, p := range open {
-		if keyOf(p.Destination, p.WorkbenchID, p.PromptID, p.Skill) == key {
+		if keyOf(p.Destination, p.WorkbenchID, p.PromptID, p.Skill, p.SourceKey) == key {
 			return db.CoachProposal{}, refuse("proposal #%d is already open for this text — decide it first", p.ID)
 		}
 	}

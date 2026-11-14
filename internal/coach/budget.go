@@ -15,7 +15,8 @@ func LockPath(workspaceDir string) string { return filepath.Join(workspaceDir, "
 // BudgetOf is the most runes a text of the given destination may hold after
 // an edit; before is the destination's current text (CLAUDE.md, AGENTS.md
 // and the user skills scale with it). 0 means the destination is not a text
-// with a budget (the allow lists). The one definition: Validate and the CLI both read it.
+// with a budget (the allow lists, and the context destinations: a settings
+// key or a session's restructure). The one definition: Validate and the CLI both read it.
 func BudgetOf(destination, before string) int {
 	switch destination {
 	case DestSession, DestProcedure, DestChat:

@@ -116,7 +116,9 @@ func (m Metrics) Of(metric string) Value {
 // target procedure (both agents' briefs, update_target), the skill pack
 // overlay and the workbench's workflow.md — on every session (owner, ask
 // #1196); every other destination on Claude sessions. The chat instructions
-// stay on Claude: they reach the AI chats, not an agent session.
+// stay on Claude: they reach the AI chats, not an agent session. The context
+// destinations (Claude Code's plugins, servers, connectors and memory index)
+// are Claude's too.
 func AgentFor(destination string) string {
 	switch destination {
 	case DestCodexSkillUser, DestCodexAgentsMDUser, DestCodexRulesAllow, DestRepoAgentsMD, DestRepoCodexSkill:

@@ -150,8 +150,12 @@ type coachEnv struct {
 
 func (e *coachEnv) applier() *coach.Applier {
 	home, _ := coachHome() // empty: only a settings.json destination fails, with its own error
-	return &coach.Applier{DB: e.db, AgentLog: e.al, Home: home, CodexHome: coach.CodexHomeFromEnv(),
+	a := &coach.Applier{DB: e.db, AgentLog: e.al, Home: home, CodexHome: coach.CodexHomeFromEnv(),
 		RepoState: coachRepoState(), RepoBranch: coachRepoBranch()}
+	if e.cfg != nil {
+		a.WorkspaceDir = e.cfg.WorkspaceDir() // a removed MCP server's saved entry (coach-undo)
+	}
+	return a
 }
 
 // coachRepoState is the coach's reader of one workbench repository file's git

@@ -50,6 +50,14 @@ type Applier struct {
 	// refuses every Accept of a repository file.
 	RepoState  func(folder, rel string) (RepoFileState, error)
 	RepoBranch func(folder string) (string, error)
+	// WorkspaceDir is Watchtower's workspace: a removed MCP server's entry is
+	// kept for Rollback in <WorkspaceDir>/coach-undo/<id>.json. "" refuses
+	// the claude_mcp_server_off Accept.
+	WorkspaceDir string
+
+	// afterSettingsWrite, when set, runs right after a settings key's rename
+	// and before its re-read (a test seam for a concurrent writer).
+	afterSettingsWrite func()
 }
 
 // env is where a's file destinations live.
@@ -112,6 +120,9 @@ func (a *Applier) accept(p db.CoachProposal, edited string) (string, error) {
 	id := p.ID
 	if p.Status != "open" {
 		return "", fmt.Errorf("coach proposal %d is %s, not open: %w", id, p.Status, db.ErrCoachStateChanged)
+	}
+	if contextDestinations[p.Destination] && IsProtected(p.Destination, p.SourceKey) {
+		return "", fmt.Errorf("coach proposal %d (%s): %w", id, p.Destination, errProtected)
 	}
 	now := a.now()
 	// The slow measure runs first so the read and the write stay adjacent.
@@ -368,6 +379,10 @@ func (a *Applier) readCurrent(p db.CoachProposal) (CurrentText, error) {
 		t.Budget = BudgetOf(p.Destination, t.Text)
 	case DestRepoClaudeMD, DestRepoAgentsMD, DestRepoClaudeSkill, DestRepoCodexSkill, DestRepoWorkflow:
 		return a.readRepo(p, t)
+	case DestPluginOff, DestMCPServerOff, DestConnectorsOff:
+		return a.readSettingsKey(p, t)
+	case DestMemoryIndex:
+		return CurrentText{}, errNotSupported
 	default:
 		return CurrentText{}, errors.New("unknown destination")
 	}
@@ -421,6 +436,8 @@ func (a *Applier) writeDestination(p db.CoachProposal, cur CurrentText, after st
 		return a.writeUserFile(p, cur, after)
 	case DestRepoClaudeMD, DestRepoAgentsMD, DestRepoClaudeSkill, DestRepoCodexSkill, DestRepoWorkflow:
 		return a.writeRepoFile(p, cur, after)
+	case DestPluginOff, DestMCPServerOff, DestConnectorsOff:
+		return a.writeSettingsKey(p, cur, after)
 	}
 	return written{}, errNotSupported
 }
@@ -577,6 +594,8 @@ func (a *Applier) restoreDestination(p db.CoachProposal, cur CurrentText, now ti
 		return nil
 	case DestRepoClaudeMD, DestRepoAgentsMD, DestRepoClaudeSkill, DestRepoCodexSkill, DestRepoWorkflow:
 		return a.restoreRepoFile(p, cur)
+	case DestPluginOff, DestMCPServerOff, DestConnectorsOff:
+		return a.restoreSettingsKey(p, cur)
 	}
 	return errNotSupported
 }

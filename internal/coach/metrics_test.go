@@ -265,6 +265,7 @@ func TestAgentFor(t *testing.T) {
 		"codex_skill_user": "codex", "codex_agents_md_user": "codex", "codex_rules_allow": "codex",
 		"repo_agents_md": "codex", "repo_codex_skill": "codex",
 		"pack_overlay": agentreport.AgentAll, "repo_workflow": agentreport.AgentAll,
+		DestPluginOff: "claude", DestMCPServerOff: "claude", DestConnectorsOff: "claude", DestMemoryIndex: "claude",
 	} {
 		assert.Equal(t, want, AgentFor(dest), dest)
 	}

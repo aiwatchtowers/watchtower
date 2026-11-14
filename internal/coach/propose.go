@@ -48,7 +48,13 @@ var (
 	// globalDestinations have no per-workbench text.
 	globalDestinations = map[string]bool{DestChat: true, DestPromptAdd: true, DestSettingsAllow: true,
 		DestClaudeMDUser: true, DestClaudeSkillUser: true, DestCodexSkillUser: true, DestPackOverlay: true,
-		DestCodexAgentsMDUser: true, DestCodexRulesAllow: true}
+		DestCodexAgentsMDUser: true, DestCodexRulesAllow: true,
+		DestPluginOff: true, DestMCPServerOff: true, DestConnectorsOff: true}
+	// contextDestinations are the mechanical proposer's (origin 'context'):
+	// the three settings keys (global, user scope) and the memory index (per
+	// workbench). Their text key includes the proposal's source.
+	contextDestinations = map[string]bool{DestPluginOff: true, DestMCPServerOff: true, DestConnectorsOff: true,
+		DestMemoryIndex: true}
 	// repoDestinations are the workbench repository files (spec §4.3a): a
 	// tuning chat may name them too, but they are per workbench and kept apart
 	// from chatDestinations, the owner's home and Watchtower texts.
@@ -202,11 +208,15 @@ type textKey struct {
 	wb     int64
 	prompt string
 	skill  string
+	source string
 }
 
 // keyOf normalises a destination's identity: wb only for per-workbench texts,
-// prompt only for prompt additions, skill only for skill destinations.
-func keyOf(dest string, wb int64, prompt, skill string) textKey {
+// prompt only for prompt additions, skill only for skill destinations, source
+// (coach_proposals.source_key) only for the context destinations — one
+// settings key per plugin or server (C5); a repo_claude_md context row keeps
+// the file's key, shared with the chat's proposals.
+func keyOf(dest string, wb int64, prompt, skill, source string) textKey {
 	if globalDestinations[dest] {
 		wb = 0
 	}
@@ -216,15 +226,19 @@ func keyOf(dest string, wb int64, prompt, skill string) textKey {
 	if !skillDestinations[dest] {
 		skill = ""
 	}
-	return textKey{dest, wb, prompt, skill}
+	if !contextDestinations[dest] {
+		source = ""
+	}
+	return textKey{dest, wb, prompt, skill, source}
 }
 
-// weeklyOpen counts the open proposals that hold a weekly slot: a chat
-// proposal takes none (it still blocks its own text through keyOf).
+// weeklyOpen counts the open proposals that hold a weekly slot: a chat or a
+// context proposal takes none (C1; it still blocks its own text through
+// keyOf).
 func weeklyOpen(open []db.CoachProposal) int {
 	n := 0
 	for _, p := range open {
-		if p.Origin != "chat" {
+		if p.Origin != "chat" && p.Origin != "context" {
 			n++
 		}
 	}
@@ -263,7 +277,7 @@ func Validate(raw string, in Inputs) ([]db.CoachProposal, error) {
 	}
 	texts := map[textKey]CurrentText{}
 	for _, t := range in.Texts {
-		texts[keyOf(t.Destination, t.WorkbenchID, t.PromptID, t.Skill)] = t
+		texts[keyOf(t.Destination, t.WorkbenchID, t.PromptID, t.Skill, "")] = t
 	}
 	known := map[string]bool{}
 	busy := map[textKey]bool{}
@@ -273,7 +287,7 @@ func Validate(raw string, in Inputs) ([]db.CoachProposal, error) {
 		}
 	}
 	for _, p := range in.Open {
-		busy[keyOf(p.Destination, p.WorkbenchID, p.PromptID, p.Skill)] = true
+		busy[keyOf(p.Destination, p.WorkbenchID, p.PromptID, p.Skill, p.SourceKey)] = true
 	}
 
 	var out []db.CoachProposal
@@ -288,7 +302,7 @@ func Validate(raw string, in Inputs) ([]db.CoachProposal, error) {
 			!textDestinations[m.Destination] {
 			continue
 		}
-		key := keyOf(m.Destination, m.WorkbenchID, m.PromptID, "")
+		key := keyOf(m.Destination, m.WorkbenchID, m.PromptID, "", "")
 		t, ok := texts[key]
 		if !ok || busy[key] {
 			continue
@@ -520,6 +534,13 @@ func ValidateAfter(t CurrentText, after string) error {
 		return nil
 	case DestCodexRulesAllow:
 		return validateCodexRules(t.Text, after)
+	case DestPluginOff, DestMCPServerOff, DestConnectorsOff:
+		// One key, one change: the plugin or the connectors off, the server
+		// removed. An owner's own text is never written into the config.
+		if after != settingsKeyAfter(t.Destination) {
+			return errors.New("this setting can only be turned off")
+		}
+		return nil
 	case DestPackOverlay:
 		if !slices.Contains(devpack.PackSkillNames(), t.Skill) {
 			return fmt.Errorf("%s is not a Watchtower pack skill", t.Skill)
