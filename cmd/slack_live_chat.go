@@ -66,12 +66,15 @@ type slackLiveWatcher struct {
 	classify   func(provider, text string, connected, readOK bool) (status, class string)
 	startProbe func(provider string)
 
-	mu       sync.Mutex
-	wg       sync.WaitGroup
-	closed   bool
-	provider string
-	calls    map[string]string // tool id → tool name
-	probed   bool
+	mu     sync.Mutex
+	wg     sync.WaitGroup
+	closed bool
+	// Test seams: beforeWrite runs in the status goroutine ahead of the
+	// write, afterWrite once it is done.
+	beforeWrite, afterWrite func(chat.Event)
+	provider                string
+	calls                   map[string]string // tool id → tool name
+	probed                  bool
 }
 
 func newSlackLiveWatcher(database *db.DB, provider string) *slackLiveWatcher {
@@ -172,6 +175,12 @@ func (w *slackLiveWatcher) maybeProbe(provider string) {
 // writeStatus records the outcome of one connector call on the provider's
 // newest row's key (so a probe's connector id stays with it).
 func (w *slackLiveWatcher) writeStatus(provider string, e chat.Event, at time.Time) {
+	if w.beforeWrite != nil {
+		w.beforeWrite(e)
+	}
+	if w.afterWrite != nil {
+		defer w.afterWrite(e)
+	}
 	if w.database == nil || w.classify == nil || e.OK == nil {
 		return
 	}

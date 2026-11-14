@@ -129,18 +129,39 @@ func TestSlackLiveWatcher_NoWorkAfterWait(t *testing.T) {
 
 func TestSlackLiveWatcher_StatusTimeIsEventTime(t *testing.T) {
 	d := db.OpenTestDB(t)
-	t0 := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
-	w, _ := slackWatcher(t, d, t0)
-	bad := false
+	t1 := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
+	t2 := t1.Add(time.Hour)
+	w, _ := slackWatcher(t, d, t1)
+
+	// The failure's write is held until the newer ok has been written.
+	release := make(chan struct{})
+	okDone := make(chan struct{})
+	w.beforeWrite = func(e chat.Event) {
+		if !*e.OK {
+			<-release
+		}
+	}
+	w.afterWrite = func(e chat.Event) {
+		if *e.OK {
+			close(okDone)
+		}
+	}
+	bad, good := false, true
 	w.Observe(chat.Event{Type: chat.EventToolStart, ID: "1", Name: "claude_ai_Slack:slack_read_channel"})
-	w.Observe(chat.Event{Type: chat.EventToolEnd, ID: "1", OK: &bad, Summary: "boom"})
-	w.wg.Wait()
-	w.now = func() time.Time { return t0.Add(time.Hour) }
-	toolCall(w, "2", "claude_ai_Slack:slack_read_channel", true, "ok")
+	w.Observe(chat.Event{Type: chat.EventToolEnd, ID: "1", OK: &bad, Summary: "boom"}) // event time t1
+	w.now = func() time.Time { return t2 }
+	w.Observe(chat.Event{Type: chat.EventToolStart, ID: "2", Name: "claude_ai_Slack:slack_read_channel"})
+	w.Observe(chat.Event{Type: chat.EventToolEnd, ID: "2", OK: &good}) // event time t2
+	<-okDone
+	w.now = func() time.Time { return t2.Add(time.Hour) } // the clock has moved on when the failure is written
+	close(release)
+	w.Wait()
+
 	rows, err := d.ListSlackLiveStatus()
 	require.NoError(t, err)
 	require.Len(t, rows, 1)
-	assert.Equal(t, "ok", rows[0].Status, "the older failure cannot overwrite the newer ok")
+	assert.Equal(t, "ok", rows[0].Status, "the older failure, written last, cannot overwrite the newer ok")
+	assert.True(t, t2.Equal(rows[0].CheckedAt))
 }
 
 func TestChatLive_StatusWrittenOnUse(t *testing.T) {
