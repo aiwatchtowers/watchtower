@@ -29,6 +29,11 @@ const (
 // parserVersionFor is the parser version a file row of agent must carry to
 // count as read by this build. Every comparison with or stamp of a stored
 // file's version goes through it (TestParserVersionComparedOnlyThroughHelper).
+//
+// The two versions are equal today, so it returns one value; it keeps the
+// per-agent dispatch so a bump of either reparses only that agent's files.
+//
+//nolint:unparam // equal versions today; the dispatch is what a future one-agent bump needs
 func parserVersionFor(agent string) int {
 	if agent == AgentCodex {
 		return CodexParserVersion
