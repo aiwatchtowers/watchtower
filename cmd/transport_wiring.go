@@ -11,10 +11,13 @@ import (
 	"watchtower/internal/agentloop"
 	"watchtower/internal/ai"
 	"watchtower/internal/chat"
+	"watchtower/internal/claude"
 	"watchtower/internal/codex"
 	"watchtower/internal/config"
+	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/providers"
+	"watchtower/internal/slacklive"
 	"watchtower/internal/specreview"
 	"watchtower/internal/tools"
 )
@@ -34,14 +37,36 @@ type transportWiring struct {
 	// with its cleanup; nil = no CLI child (agent() runs the runtime-B
 	// loop in process).
 	newAgentClient func(agentClientWiring) (ai.Provider, func(), error)
+	// slackLive is the transport's Slack Live half (#1709); nil = the
+	// transport reaches no Slack connector of the owner's.
+	slackLive *slackLiveWiring
 }
+
+// slackLiveWiring is a transport's Slack Live half: how `slack live probe`
+// checks its own Slack connector (the probe, the CLI it runs and that CLI's
+// PATH), and whether a main chat on it may use the connector (chat).
+type slackLiveWiring struct {
+	probe  slacklive.Probe
+	binary func() string
+	path   func() string
+	chat   func(slackLiveChatInput) slackLiveChat
+}
+
+var (
+	claudeSlackLiveWiring = &slackLiveWiring{probe: slacklive.ProbeClaude,
+		binary: func() string { return claude.FindBinary("") }, path: claude.RichPATH,
+		chat: claudeSlackLiveChat}
+	codexSlackLiveWiring = &slackLiveWiring{probe: slacklive.ProbeCodex,
+		binary: func() string { return codex.FindBinary("") }, path: codex.RichPATH,
+		chat: codexSlackLiveChat}
+)
 
 // wirings is every registry provider's cmd wiring, by id. It covers the
 // registry exactly (TestLLMTRANSPORT01_WiringCoversRegistry), so wiringFor
 // never meets a registered provider it cannot wire.
 var wirings = map[string]transportWiring{
-	"claude": {newChatBackend: newClaudeChatBackend, newAgentClient: newClaudeAgentClient},
-	"codex":  {newChatBackend: newCodexChatBackend, newAgentClient: newCodexAgentClient},
+	"claude": {newChatBackend: newClaudeChatBackend, newAgentClient: newClaudeAgentClient, slackLive: claudeSlackLiveWiring},
+	"codex":  {newChatBackend: newCodexChatBackend, newAgentClient: newCodexAgentClient, slackLive: codexSlackLiveWiring},
 	"ollama": {newChatBackend: newRuntimeBChatBackend},
 }
 
@@ -56,6 +81,26 @@ func wiringFor(id string) transportWiring {
 		panic("transport wiring: no constructors for provider " + p)
 	}
 	return w
+}
+
+// slackLiveFor is provider id's Slack Live wiring, exactly by id (no
+// default-provider fallback: a probe must run the transport the owner
+// named); false when the id is unknown or its transport has none.
+func slackLiveFor(id string) (*slackLiveWiring, bool) {
+	w, ok := wirings[id]
+	return w.slackLive, ok && w.slackLive != nil
+}
+
+// slackLiveProviders is every provider id with a Slack Live wiring, sorted.
+func slackLiveProviders() []string {
+	var ids []string
+	for id, w := range wirings {
+		if w.slackLive != nil {
+			ids = append(ids, id)
+		}
+	}
+	slices.Sort(ids)
+	return ids
 }
 
 // quickConnectionEnv is the environment a provider's child carries the
@@ -120,6 +165,11 @@ func codexSessionClient(w sessionWiring) *codex.Client {
 	c.SetExternalMCPLoader(func() []ai.ExternalMCPServer {
 		return loadExternalMCPServersFrom(w.cfg, w.database, os.Environ()) // the codex child's environment
 	})
+	// Live Slack: the chat alone keeps codex apps on, read-only, for a ChatGPT
+	// login whose probe found the Slack app (codexSlackConnector).
+	if len(w.codexSlack) > 0 {
+		c.SetChatApps(w.codexSlack)
+	}
 	// CHAT-04 (spec §9): the client always routes the system prompt and
 	// replayed history through stdin, never this process's argv.
 	return c
@@ -162,6 +212,11 @@ type agentClientWiring struct {
 	mcpArgs []string
 	env     []string // the child's whole environment (automationAgentEnv)
 	tools   []string // the effective watchtower tools
+	// live is set on a slack:live run only (#1709): Claude moves to the
+	// stream-json launch, Codex gets the read-only Slack app allow-list.
+	// Without it every argv is today's, byte-for-byte.
+	live     *agentSlackLive
+	database *db.DB
 }
 
 // newClaudeAgentClient narrows --allowedTools to the effective set plus
@@ -172,6 +227,10 @@ func newClaudeAgentClient(a agentClientWiring) (ai.Provider, func(), error) {
 	c.SetWatchtowerTools(append(slices.Clone(a.tools), "get_action"))
 	c.SetMaxTurns(automationAgentMaxTurns)
 	c.SetChildEnv(a.env)
+	if a.live != nil {
+		c.SetStreamJSONInput(true)
+		c.SetStreamJSONHooks(a.live.claudeHooks())
+	}
 	return c, func() {}, nil
 }
 
@@ -191,6 +250,14 @@ func newCodexAgentClient(a agentClientWiring) (ai.Provider, func(), error) {
 	c.SetRunHome(home)
 	c.SetServersFromHome()
 	c.SetMaxTurns(automationAgentMaxTurns)
+	if a.live != nil {
+		// The run's own home is the one codex loads; its auth.json links
+		// the owner's, so a ChatGPT login reaches the apps.
+		if apps := codexAgentSlackApps(a.database, home); apps != nil {
+			c.SetChatApps(apps)
+			c.SetToolCallObserver(a.live.observeCodex)
+		}
+	}
 	return c, removeHome, nil
 }
 

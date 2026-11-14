@@ -359,6 +359,11 @@ func applyFields(f map[string]*yaml.Node, r *Recipe) error {
 	if m.has(entryTrackScan) && (r.Trigger.Kind != TriggerSync || r.Trigger.Sync != slotCustomTracks) {
 		return &ParseError{Line: fileLine(f["trigger"]), Msg: entryTrackScan + " needs trigger: {sync: " + slotCustomTracks + "}"}
 	}
+	if m.SlackLive() && r.Trigger.Kind == TriggerSchedule {
+		if err = checkLiveCadence(r.Trigger.Schedule); err != nil {
+			return &ParseError{Line: fileLine(f["trigger"]), Msg: err.Error()}
+		}
+	}
 	if r.Trigger.Kind == TriggerSync {
 		if err = syncTriggerAllowed(r.Scope, r.Trigger.Sync, m); err != nil {
 			return &ParseError{Line: fileLine(f["trigger"]), Msg: err.Error()}
