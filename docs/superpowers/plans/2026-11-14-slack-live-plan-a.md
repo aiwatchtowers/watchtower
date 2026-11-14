@@ -75,9 +75,9 @@ ALTER TABLE automation_runs ADD COLUMN live_slack INTEGER NOT NULL DEFAULT 0;
 ```
 
 - [ ] **Step 1: Fixture** `internal/slackmode/testdata/slack_mode_cases.json`: cases `{full, live:[…], want}` covering: full+ok→full, full+[]→full, !full+[ok]→live, !full+[not_connected]→off, !full+[not_connected,ok]→live, !full+[]→off.
-- [ ] **Step 2: Failing tests** — Go `TestSlackMode_SharedFixture` reads the fixture and asserts `Derive`; Swift `SlackModeFixtureTests.testFixtureMatchesGo` resolves the fixture like `ManagedPolicyTests.swift:15` (`#filePath` up to the repo root). `TestUpsertSlackLiveStatus_NewestWins`: write `ok@10:00`, then `not_connected@09:00` → still `ok`; then `unavailable@11:00` → `unavailable`.
+- [ ] **Step 2: Failing tests** — Go `TestSlackMode_SharedFixture` reads the fixture and asserts `Derive`; Swift `SlackModeFixtureTests.testFixtureMatchesGo` resolves the fixture like `ManagedPolicyTests.swift:15` (`#filePath` up to the repo root). `TestUpsertSlackLiveStatus_NewestWins`: write `ok@10:00`, then `not_connected@09:00` → still `ok`; then `unavailable@11:00` → `unavailable`. `TestUpsertSlackLiveStatus_KeepsConnectorID`: probe writes `ok, connector_id=X@10:00`; a use-write `ok, connector_id=''@11:00` → row still has `X`.
 - [ ] **Step 3: Run, expect FAIL** — `go test ./internal/slackmode ./internal/db -run 'SlackMode|SlackLiveStatus'`; `make test-swift FILTER=SlackModeFixtureTests`.
-- [ ] **Step 4: Implement** migration, schema mirror, the SLACKMODE-01 inventory entry, accessors (upsert = `INSERT … ON CONFLICT(team_id,provider) DO UPDATE … WHERE excluded.checked_at > slack_live_status.checked_at`), `Derive`, Swift twin; add table to `expectedTables`; regenerate goldens.
+- [ ] **Step 4: Implement** migration, schema mirror, the SLACKMODE-01 inventory entry, accessors (upsert = `INSERT … ON CONFLICT(team_id,provider) DO UPDATE SET status=excluded.status, error_class=excluded.error_class, checked_at=excluded.checked_at, connector_id=COALESCE(NULLIF(excluded.connector_id,''), slack_live_status.connector_id) WHERE excluded.checked_at > slack_live_status.checked_at` — an empty `connector_id` never erases a known one), `Derive`, Swift twin; add table to `expectedTables`; regenerate goldens.
 - [ ] **Step 5: Run, expect PASS** — same commands plus `go test ./internal/db -run 'TestAllTablesExist|TestSchemaGolden|TestDesktopTestSchema'`.
 - [ ] **Step 6: Commit** `feat(slack): Full/Live mode model and slack_live_status (#1763)`.
 
@@ -92,7 +92,7 @@ ALTER TABLE automation_runs ADD COLUMN live_slack INTEGER NOT NULL DEFAULT 0;
 - Consumes: Task 1 `UpsertSlackLiveStatus`.
 - Reuses: `chat.mcpStatusRequestLine` / `parseMCPStatusResponse` (`internal/chat/controlproto.go:209/247`) — export thin wrappers `chat.MCPStatusRequest(id string) string` and `chat.ParseMCPStatus(line, id string) ([]MCPServerStatus, bool)` if unexported.
 - Produces:
-  - `type Result struct { Provider string; Teams []string; Status, ErrorClass string }`
+  - `type Result struct { Provider string; Teams []string; Status, ErrorClass, ConnectorID string }` — Codex: `ConnectorID` is the app/server id carried by the successful `slack_list_workspaces` call item in `exec --json` (the `server` field of the MCP tool call item); Claude: ''.
   - `func ProbeClaude(ctx context.Context, claudeBin string, env []string) Result`
   - `func ProbeCodex(ctx context.Context, codexBin string, env []string) Result`
   - `func Classify(provider string, stderrOrToolError string, connected bool, readOK bool) (status, errorClass string)`
@@ -107,7 +107,8 @@ Behaviour:
 - The child runs in its own process group; `t.Cleanup` and context cancel kill the group and wait.
 - On cancel / kill: no row written.
 
-- [ ] **Step 1: Failing tests** with fake CLI stubs (shell scripts in `testdata/` emitting canned stream-json / exec JSON): `TestLiveProbe_Classifies` (table: connected+read ok → `ok`; tools listed but `Unknown tool` → `not_connected`; admin text → `needs_admin`; 429 → `unavailable`; apiKeySource `ANTHROPIC_API_KEY` → `not_connected`), `TestLiveProbe_KilledLeavesNoRow` (cancel the context while the stub sleeps; assert no row and the stub's pid is gone), `TestLiveProbe_ClaudeDeniesOtherTools` (stub requests `slack_send_message` → probe answers deny).
+- Writers of `connector_id`: only the probe; the status-on-use writes (chat Task 3, automations Task 5) pass '' and so keep it.
+- [ ] **Step 1: Failing tests** with fake CLI stubs (plus `TestLiveProbe_CodexConnectorID`: the stub's call item carries `server: "connector_slack_x"` → `Result.ConnectorID == "connector_slack_x"`) (shell scripts in `testdata/` emitting canned stream-json / exec JSON): `TestLiveProbe_Classifies` (table: connected+read ok → `ok`; tools listed but `Unknown tool` → `not_connected`; admin text → `needs_admin`; 429 → `unavailable`; apiKeySource `ANTHROPIC_API_KEY` → `not_connected`), `TestLiveProbe_KilledLeavesNoRow` (cancel the context while the stub sleeps; assert no row and the stub's pid is gone), `TestLiveProbe_ClaudeDeniesOtherTools` (stub requests `slack_send_message` → probe answers deny).
 - [ ] **Step 2: Run, expect FAIL** — `go test ./internal/slacklive`.
 - Swift tests: `testRefreshIfStaleSkipsWhileRunning`, `testCheckAgainPassesNoIfOlder` (fake `CLIRunnerProtocol`).
 - [ ] **Step 3: Implement** probe + classify + CLI + `SlackLiveStatusCenter`; CLI writes one `UpsertSlackLiveStatus` per covered team (or `team_id=''`).
