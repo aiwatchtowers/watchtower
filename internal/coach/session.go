@@ -201,13 +201,13 @@ func (a *Applier) Reapply(id int64) error {
 // accepted through a session is reverted by another session (the Desktop's
 // Revert…, RevertBrief), never here. The memory index gets the copy read at
 // Accept back, only while it still holds what the session wrote (after_text,
-// recorded when the session ended): not written yet, or changed since, is
-// refused even with force. The archive file the session made stays.
+// recorded when the session ended): not written yet, ended without a change
+// (after_text = before_text), or changed since, is refused even with force. The archive file the session made stays.
 func (a *Applier) rollbackSession(p db.CoachProposal) error {
 	if p.Destination != DestMemoryIndex {
 		return errRollbackBySession
 	}
-	if p.AfterText == "" {
+	if p.AfterText == "" || p.AfterText == p.BeforeText { // not decided, or ended without a change
 		return errMemoryNotWritten
 	}
 	u, err := a.memoryIndex(p)

@@ -553,8 +553,11 @@ func (l CoachSessionLink) before() any {
 // ErrCoachSessionNotFound; a proposal no longer open ErrCoachStateChanged.
 func (db *DB) AcceptCoachThroughSession(id int64, l CoachSessionLink, now time.Time) error {
 	return db.linkCoachSession(l, func(tx *sql.Tx, branch string) error {
+		// A memory row's after_text is the daemon's decision on the session
+		// (C10): empty until the session has ended.
 		res, err := tx.Exec(`UPDATE coach_proposals SET status = 'accepted', decided_at = ?, session_id = ?,
-			via_session = 1, session_branch = ?, before_text = COALESCE(?, before_text), baseline = ?, baseline_n = ?
+			via_session = 1, session_branch = ?, before_text = COALESCE(?, before_text), baseline = ?, baseline_n = ?,
+			after_text = CASE WHEN destination = 'claude_memory_index' THEN '' ELSE after_text END
 			WHERE id = ? AND status = 'open'`,
 			coachStamp(now), l.SessionID, branch, l.before(), l.baseline(), l.N, id)
 		return coachCAS(res, err, "accepting coach proposal through a session")
@@ -597,8 +600,11 @@ func (db *DB) RestartCoachSession(id int64, l CoachSessionLink, now time.Time) e
 				return ErrCoachSessionHasPR
 			}
 		}
+		// A memory row's after_text is the old session's decision: the new
+		// session is decided afresh.
 		res, err := tx.Exec(`UPDATE coach_proposals SET session_id = ?, session_branch = ?, decided_at = ?,
-			before_text = COALESCE(?, before_text), baseline = ?, baseline_n = ?
+			before_text = COALESCE(?, before_text), baseline = ?, baseline_n = ?,
+			after_text = CASE WHEN destination = 'claude_memory_index' THEN '' ELSE after_text END
 			WHERE id = ? AND `+coachSessionGuard,
 			l.SessionID, branch, coachStamp(now), l.before(), l.baseline(), l.N, id)
 		return coachCAS(res, err, "restarting coach proposal")
@@ -646,16 +652,37 @@ func (db *DB) SetCoachMeasureFrom(id int64, at time.Time) (bool, error) {
 // changed the index: measure_from = at (the session's end) and after_text =
 // the index as read then (what Rollback compares against). A
 // compare-and-set like SetCoachMeasureFrom: false (no error) when the row
-// is measured, judged or no longer accepted.
+// is measured, judged, already decided (after_text set) or no longer
+// accepted.
 func (db *DB) SetCoachMemoryMeasured(id int64, at time.Time, after string) (bool, error) {
 	res, err := db.Exec(`UPDATE coach_proposals SET measure_from = ?, after_text = ?
-		WHERE id = ? AND status = 'accepted' AND measure_from IS NULL AND verdict = ''`, coachStamp(at), after, id)
+		WHERE id = ? AND status = 'accepted' AND measure_from IS NULL AND verdict = '' AND after_text = ''`,
+		coachStamp(at), after, id)
 	if err != nil {
 		return false, fmt.Errorf("setting coach memory measure_from: %w", err)
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
 		return false, fmt.Errorf("setting coach memory measure_from: %w", err)
+	}
+	return n > 0, nil
+}
+
+// SetCoachMemoryUnchanged records that an accepted memory cleanup's session
+// ended without a change of its own: after_text = before_text, measure_from
+// stays NULL, so the row is never looked at again until a Restart. The same
+// compare-and-set as SetCoachMemoryMeasured: false (no error) when the row
+// is already decided, measured, judged or no longer accepted.
+func (db *DB) SetCoachMemoryUnchanged(id int64) (bool, error) {
+	res, err := db.Exec(`UPDATE coach_proposals SET after_text = before_text
+		WHERE id = ? AND status = 'accepted' AND destination = 'claude_memory_index'
+		AND measure_from IS NULL AND verdict = '' AND after_text = ''`, id)
+	if err != nil {
+		return false, fmt.Errorf("recording coach memory unchanged: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("recording coach memory unchanged: %w", err)
 	}
 	return n > 0, nil
 }

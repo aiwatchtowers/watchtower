@@ -946,3 +946,42 @@ func TestSetCoachVerdictN(t *testing.T) {
 	require.NoError(t, d.DecideCoachProposal(id, "accepted", "rolled_back", now))
 	require.ErrorIs(t, d.SetCoachVerdictN(id, "works", &v, 5, now), ErrCoachStateChanged)
 }
+
+// SetCoachMemoryUnchanged decides an accepted memory row once (after_text =
+// before_text); a decided row takes neither decision again, and a Restart
+// clears it for the new session.
+func TestSetCoachMemoryUnchanged(t *testing.T) {
+	d := openTestDB(t)
+	now := time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)
+	wb := newTestWorkbench(t, d)
+	sess := newTestSession(t, d, wb)
+	id := acceptedThroughSession(t, d, "fp1", "claude_memory_index", wb, sess, now)
+	_, err := d.Exec(`UPDATE coach_proposals SET before_text = ? WHERE id = ?`, "- a\n- b\n", id)
+	require.NoError(t, err)
+
+	ok, err := d.SetCoachMemoryUnchanged(id)
+	require.NoError(t, err)
+	require.True(t, ok)
+	got, err := d.GetCoachProposal(id)
+	require.NoError(t, err)
+	assert.Equal(t, "- a\n- b\n", got.AfterText)
+	assert.True(t, got.MeasureFrom.IsZero())
+
+	ok, err = d.SetCoachMemoryUnchanged(id)
+	require.NoError(t, err)
+	assert.False(t, ok)
+	ok, err = d.SetCoachMemoryMeasured(id, now, "- a\n")
+	require.NoError(t, err)
+	assert.False(t, ok, "decided: never measured later")
+
+	fresh := newTestSession(t, d, wb)
+	require.NoError(t, d.RestartCoachSession(id, CoachSessionLink{SessionID: fresh, WorkbenchID: wb}, now))
+	got, err = d.GetCoachProposal(id)
+	require.NoError(t, err)
+	assert.Empty(t, got.AfterText, "a new session is decided afresh")
+
+	repo := acceptedThroughSession(t, d, "fp2", "repo_claude_md", wb, sess, now)
+	ok, err = d.SetCoachMemoryUnchanged(repo)
+	require.NoError(t, err)
+	assert.False(t, ok, "memory rows only")
+}

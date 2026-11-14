@@ -237,6 +237,20 @@ func TestRollback_MemoryNeverWrittenRefused(t *testing.T) {
 	assert.Equal(t, "accepted", proposal(t, d, id).Status)
 }
 
+// A session that ended without a change is recorded as after_text =
+// before_text: nothing to roll back, even with force.
+func TestRollback_MemoryEndedWithoutChangeRefused(t *testing.T) {
+	d := openDBs(t)
+	home := ctxHome(t)
+	id, path, a := acceptedMemory(t, d, home, memIndex)
+
+	_, err := a.Rollback(id, true)
+	require.ErrorIs(t, err, ErrRefused)
+	assert.Contains(t, err.Error(), "nothing to roll back")
+	assert.Equal(t, memIndex, string(readHomeFile(t, path)))
+	assert.Equal(t, "accepted", proposal(t, d, id).Status)
+}
+
 // A repository change accepted through a session is rolled back by a revert
 // session, never by Watchtower writing the file.
 func TestRollback_RepoViaSessionRefused(t *testing.T) {

@@ -296,6 +296,7 @@ func TestMeasureCheck_MemoryUnchangedAtSessionEnd(t *testing.T) {
 	p := getProposal(t, database, id)
 	assert.True(t, p.MeasureFrom.IsZero())
 	assert.Empty(t, p.Verdict)
+	assert.Equal(t, measureMemBefore, p.AfterText, "decided once: ended without a change")
 
 	writeMemory(t, path, measureMemBefore+"- [Gamma](gamma.md) — new\n", now.Add(-time.Minute))
 	d.coachMeasureCheck(context.Background(), now)
@@ -486,4 +487,47 @@ func TestMeasureCheck_MemoryRecentlyActiveNotEnded(t *testing.T) {
 	p := getProposal(t, database, id)
 	assert.True(t, p.MeasureFrom.IsZero())
 	assert.Empty(t, p.AfterText)
+}
+
+// The session row is gone and the index is unchanged at the first check
+// that sees it: recorded once as ended without a change; a later write by
+// another session's auto-memory is never stamped as the cleanup.
+func TestMeasureCheck_MemorySessionRowDeletedUnchangedDecidedOnce(t *testing.T) {
+	d, database := coachDaemon(t)
+	home, err := os.UserHomeDir()
+	require.NoError(t, err)
+	now := measureNow()
+	wb, folder := measureWorkbench(t, database)
+	sess := measureSession(t, database, wb, "")
+	id, path := memoryViaSession(t, database, home, wb, folder, sess, now.Add(-3*time.Hour))
+	deleteSession(t, database, sess)
+
+	d.coachMeasureCheck(context.Background(), now)
+	p := getProposal(t, database, id)
+	assert.True(t, p.MeasureFrom.IsZero())
+	assert.Equal(t, measureMemBefore, p.AfterText, "ended without a change, decided")
+
+	next := now.Add(24 * time.Hour)
+	writeMemory(t, path, measureMemBefore+"- [Gamma](gamma.md) — auto-memory\n", next.Add(-time.Hour))
+	d.coachMeasureCheck(context.Background(), next)
+	p = getProposal(t, database, id)
+	assert.True(t, p.MeasureFrom.IsZero(), "a later write is not the cleanup's")
+	assert.Equal(t, measureMemBefore, p.AfterText)
+	assert.Empty(t, p.Verdict)
+}
+
+// A merge time before the Accept (a reused branch name's older PR) never
+// starts the window before the change: measured from the Accept.
+func TestMeasureCheck_MergeBeforeAcceptClamped(t *testing.T) {
+	d, database := coachDaemon(t)
+	stubRefresh(t, &refreshStub{})
+	now := measureNow()
+	decided := now.Add(-72 * time.Hour)
+	wb, _ := measureWorkbench(t, database)
+	sess := measureSession(t, database, wb, "wt/a")
+	id := repoViaSession(t, database, wb, sess, decided)
+	prState(t, database, wb, "wt/a", "merged", decided.Add(-24*time.Hour).Format(time.RFC3339), now)
+
+	d.coachMeasureCheck(context.Background(), now)
+	assert.True(t, getProposal(t, database, id).MeasureFrom.Equal(decided))
 }

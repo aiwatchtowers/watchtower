@@ -278,9 +278,10 @@ func (d *Daemon) coachGenerator(ctx context.Context) digest.Generator {
 //     when older than coachPRFreshFor): merged → measure_from = the merge
 //     time; closed unmerged → too_little_data; no branch (the session row was
 //     deleted first) never falls back to the HEAD rule;
-//   - a memory cleanup: nothing while its session runs; once it has ended —
-//     finished, idle for coachSessionIdleEnds (ended at its last activity),
-//     or its row is gone (ended now) — an index that differs from before_text
+//   - a memory cleanup, decided once: nothing while its session runs; at
+//     the first check that sees it ended — finished, idle for
+//     coachSessionIdleEnds (ended at its last activity), or its row gone
+//     (ended now) — an index that differs from before_text
 //     and was last written by then records measure_from = the end and
 //     after_text = the index (Rollback compares against it);
 //   - a repository edit accepted before sessions (via_session = 0) keeps the
@@ -366,6 +367,9 @@ func (d *Daemon) coachMergeCheck(ctx context.Context, p db.CoachProposal, now ti
 			if err != nil { // git saw the merge, gh did not say when
 				at = now
 			}
+			if at.Before(p.DecidedAt) { // a reused branch name's older merge
+				at = p.DecidedAt
+			}
 			return d.coachSetMeasureFrom(p, at)
 		case pr.State == "closed":
 			d.coachTooLittleData(p, now, "PR closed unmerged")
@@ -427,10 +431,19 @@ func (d *Daemon) coachBranchPR(ctx context.Context, p db.CoachProposal, branch s
 	return row, cached
 }
 
-// coachMemoryCheck records a memory cleanup once its session has ended
-// (C10): the index as the session left it, measured from its end. A change
-// written after the end is another session's auto-memory, not the cleanup.
+// coachMemoryCheck decides a memory cleanup once, at the first check that
+// sees its session ended (C10): an index that differs from before_text and
+// was written no later than the end (coachMemoryWriteSlack) is the
+// session's — measured from the end, after_text = that index; anything
+// else (unchanged, or written only after the end by another session's
+// auto-memory) is recorded as ended without a change (after_text =
+// before_text, no measure_from). A row already decided (after_text set) is
+// never looked at again: a later write is never the cleanup's. Only a
+// Restart (a new session) clears the decision.
 func (d *Daemon) coachMemoryCheck(a *coach.Applier, p db.CoachProposal, now time.Time) bool {
+	if p.AfterText != "" { // decided: ended without a change
+		return d.coachMemoryWait(p, now)
+	}
 	ended := now // a session row deleted: ended when first seen gone
 	if p.SessionID != nil {
 		found, at, err := d.db.CoachSessionEnd(*p.SessionID, now, coachSessionIdleEnds)
@@ -454,6 +467,10 @@ func (d *Daemon) coachMemoryCheck(a *coach.Applier, p db.CoachProposal, now time
 		return false
 	}
 	if text == p.BeforeText || modified.After(ended.Add(coachMemoryWriteSlack)) {
+		if _, err := d.db.SetCoachMemoryUnchanged(p.ID); err != nil {
+			d.logger.Printf("coach: measure check: proposal %d: %v", p.ID, err)
+			return false
+		}
 		return d.coachMemoryWait(p, now)
 	}
 	set, err := d.db.SetCoachMemoryMeasured(p.ID, ended, text)
