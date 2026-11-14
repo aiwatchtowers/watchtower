@@ -33,7 +33,7 @@ The [tuning chat](tuning-chat.md) files proposals too, and they can also edit yo
 
 The **Context** block's **Do these** list holds a third kind: mechanical suggestions that make every session start smaller, such as turning off an unused plugin. See [Context actions](context-actions.md).
 
-Accepting a change to a repository file starts a Claude Code session in the workbench. It makes the change in its own worktree, runs your project's review and opens a pull request for you to merge; Watchtower itself never writes the file or runs git.
+Accepting a change to a repository file starts a Claude Code session in the workbench. It makes the change in its own worktree, runs your project's review and opens a pull request for you to merge; Watchtower itself writes no file in the repository and runs no git command that changes anything: no commits, no pushes.
 
 After you accept, the coach waits 14 days and compares the measure it targeted with the 14 days before. The verdict is **works**, **no effect** or **too little data**. It shows what changed since the edit, not that the edit caused it. A no-effect edit gets a suggestion to remove it.
 

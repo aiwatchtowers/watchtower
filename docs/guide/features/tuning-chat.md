@@ -33,7 +33,9 @@ Chat proposals do not count toward the weekly pass's three open suggestions, and
 
 The chat can also edit five files in the workbench's own folder, never in a session's worktree: `CLAUDE.md`, `AGENTS.md`, `.claude/skills/<name>/SKILL.md`, `.agents/skills/<name>/SKILL.md` and `.watchtower/workflow.md`. Only `CLAUDE.md` and `AGENTS.md` may be created; the others must exist.
 
-**Accept** starts a Claude Code session in the workbench with the edit as its brief. The session makes the change in its own worktree, runs your project's review and opens a pull request; you merge it. Watchtower itself writes no file and runs no git command that changes anything. The 14-day verdict starts once the pull request is merged, because new sessions start from the merged code; a pull request closed or not merged within 30 days is not measured.
+**Accept** starts a Claude Code session in the workbench with the edit as its brief. The session makes the change in its own worktree, runs your project's review and opens a pull request; you merge it. Watchtower itself writes no file and runs no git command that changes anything.
+
+The 14-day verdict starts once the pull request is merged, because new sessions start from the merged code. A pull request closed or not merged within 30 days is not measured.
 
 ## Using it
 

@@ -1,6 +1,6 @@
 # Context actions
 
-Context actions are the **Do these** list in a workbench's **Analytics** → **Context** block. Each row is one ready change that makes every Claude Code session start smaller. It is for the person who saw the start bar and wants to know what to cut. Nothing changes until you press the row's button.
+Context actions are the **Do these** list in a workbench's **Analytics** → **Context** block: ready changes that make every Claude Code session start smaller. They are for the person who saw the start bar and wants to know what to cut, and nothing changes until you press a row's button.
 
 ## Why use it
 <!-- learn
@@ -21,8 +21,8 @@ Every session and subagent starts by loading the same things: `CLAUDE.md`, the m
 Watchtower finds the changes on its own, with no AI call: after the daemon loads new session history, in the weekly coach pass, and on **Run Now**. A change is proposed only when the numbers back it:
 
 - a plugin, an MCP server you added yourself, or the claude.ai connectors as a whole, weighing 500 tokens or more at start with 0 calls in 30 days;
-- a `CLAUDE.md` over 20 KB with a `##` section of 8 KB or more;
-- a memory index (`MEMORY.md`) over 8 KB.
+- a `CLAUDE.md` of 20 KB or more with a `##` section of 8 KB or more;
+- a memory index (`MEMORY.md`) of 8 KB or more.
 
 Each needs five measured sessions. Calls are counted only in Watchtower workbench sessions with Analytics on, across all your workbenches. A row that says "0 calls" therefore means "0 calls in Watchtower sessions", and **Also on in:** lists other projects where the source is on.
 
@@ -39,12 +39,14 @@ Accepting any repository suggestion of the [agent coach](agent-coach.md) or the 
 ## Using it
 
 1. Open a workbench's **Analytics** (it must be on) and find **Do these** under the **At session start** bar. The biggest saving is first, and the block's sentence ends with **N changes would cut it to ~X**.
-2. Read a row's evidence line. A `CLAUDE.md` row shows an estimate like **−~18.5k**, because a session decides what moves.
+2. Read a row's evidence line and its saving, such as **−4.1k**, or **−~18.5k** for a `CLAUDE.md` estimate.
 3. Press **Turn Off**, **Accept** or **Archive**. **Decline** asks once and is for good.
 4. Follow a session row: **Starting a session…**, **Session working** with **Open Session**, **PR #N ready** with **Open PR** and **Show Diff**, then **Merged · measuring**. **Revert…** on a merged row asks first, then starts a session that opens a revert pull request (**Revert session #N**).
 5. Open **What's in it** under the list to see each bar split into its sources: tokens at start and calls. Built-in tools say **can't change**.
 
-Measuring starts when a setting is applied, a pull request is merged, or the memory session ends. Session starts in the next 14 days are compared with the 14 days before. The row then reads **Saved 6.1k on 12 starts**, or **No measurable saving**. Done rows stay faded for 14 days, then live in **Accepted edits**.
+A `CLAUDE.md` saving is an estimate, because the session decides what moves. Measuring starts when a setting is applied, a pull request is merged, or the memory session ends.
+
+Session starts in the next 14 days are compared with the 14 days before, and the row then reads **Saved 6.1k on 12 starts** or **No measurable saving**. Done rows stay faded for 14 days, then live in **Accepted edits**.
 
 ## When it's empty or wrong
 
