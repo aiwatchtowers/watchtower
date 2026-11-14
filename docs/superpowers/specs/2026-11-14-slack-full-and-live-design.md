@@ -24,11 +24,11 @@ Out of scope here: the screens (a separate spec with DesignShotCatalog mockups f
 | D3 | Full syncs only the user's own scope (DMs, group DMs, channels the user is a member of); other public channels are reached through Live | ask #1294 |
 | D4 | Entry into Full: a Slack bot that hands out the connect link, plus an MDM key | ask #1294 |
 | D5 | No company hub, nothing hosted that carries Slack data | comment #868 |
-| D6 | No index, summary store or memory fed from Live answers; only the chat transcript and what the owner explicitly keeps | agent (comment #870), to be confirmed in a separate ask |
+| D6 | Strict: of Live answers only the chat transcript (and an automation run's own output) is kept — no index, memory, ideas or Knowledge, not even on the owner's press | ask #1296 (comment #870) |
 | D7 | The bot needs no server: the admin's Watchtower publishes the bot's Home tab to every member | ask #1295 |
 | D8 | The connect link is an OAuth link to the workspace app that lands on localhost; no page of ours on the web | ask #1295 |
 | D9 | The admin creates the app with one paste: a Slack app configuration token | ask #1295 |
-| D10 | Turns that used Live are kept out of ideas mining, instruction/coach mining and Add to Knowledge | agent, to be confirmed |
+| D10 | Turns that used Live are marked and every consumer that makes chat text lasting skips them | ask #1296 |
 | D11 | Accounts on the retired shared app keep working until Slack stops them; the app offers Full or Live; synced data follows the purge rules | ask #1295 |
 
 ## 1. The model
@@ -76,13 +76,14 @@ What leaves the local copy: public channels the user is not a member of. Channel
 - **Claude chat** already loads claude.ai connectors (`docs/features/chat-claude-ai-tools.md`). New: the Slack connector's tools enter `connectorpolicy` explicitly — read tools free, `slack_send_message`, `slack_schedule_message`, `slack_send_message_draft`, `slack_update_canvas`, `slack_create_canvas`, `slack_add_reaction` → Approve (CHAT-02/CHAT-05 unchanged, the table grows).
 - **Codex chat**: apps enabled for the chat's `codex` launch when the owner signed in with ChatGPT (`features.apps`), the same policy table.
 - **The rule in the system prompt** (one paragraph, Go-owned, both providers): answer Slack questions from the local tools first; each local Slack tool result carries a `coverage` line (`scope: own|none`, `synced_through`, `backfill_from`, `channel_in_scope`); for anything outside it use the connector, and say which part came from Live.
-- **What is stored:** the chat transcript as today. Turns whose tool calls hit a Slack connector are marked `live_slack = 1` on `chat_messages` (migration). Consumers that turn chat text into something lasting skip marked turns: ideas mining from chats (`ideas_chat_floor`), the coach's chat-turn import, Add to Knowledge for an artifact of a marked turn (button disabled with the reason). Guard test `TestLIVE01_MarkedTurnsStayOutOfStores` lists every reader of `chat_messages` and fails on a new one that does not check the mark.
+- **What is stored:** the chat transcript as today. Turns whose tool calls hit a Slack connector are marked `live_slack = 1` on `chat_messages` (migration). Consumers that turn chat text into something lasting skip marked turns (D6, strict): ideas mining from chats (`ideas_chat_floor`), memory ingestion from chats, the coach's chat-turn import, Add to Knowledge for an artifact of a marked turn (button disabled with the reason "built on Live Slack answers, which are not kept"), and `remember:` lines sent in a marked turn are stored only as the owner's own words, never with quoted connector text. Guard test `TestLIVE01_MarkedTurnsStayOutOfStores` lists every reader of `chat_messages` and fails on a new one that does not check the mark.
 
 ## 4. Live in automations
 
 - `agent()` runs on the Claude provider move to the stream-json launch and wait for the connector the same way as the probe (≤ 15 s). Codex runs pass apps on.
 - A recipe declares `slack:live` in its manifest to get the Slack connector's read tools (AUTO-01: the manifest stays the only source of permissions). Write tools stay proposals (AUTO-02).
 - `slack.*` events and reaction triggers need Full; saving a recipe that needs them on a Live-only workspace is refused with the reason.
+- Storage (D6): a run's own output (`output.inbox`/`report`/`slack`) is that run's transcript and is kept like any run output; it is marked `live_slack` and nothing reads it into ideas, memory, the knowledge index or the briefing's FROM YOUR AUTOMATIONS block.
 - Pace: a recipe with `slack:live` may run at most hourly (subscription "ordinary individual use", RTS ≈ 10 calls/min per user plus a daily cap). The validator refuses a tighter schedule.
 
 ## 5. Entry into Full
