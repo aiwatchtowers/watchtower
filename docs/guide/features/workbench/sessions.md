@@ -1,6 +1,6 @@
 # Sessions
 
-A session is one Claude Code or Codex conversation running in an embedded terminal in the workbench folder. You use this page to read a session's state at a glance, and to start, resume and clear sessions.
+A session is a Claude Code or Codex conversation running in the workbench folder.
 
 ## Why use it
 
@@ -9,6 +9,8 @@ With several sessions running, the terminals say nothing until you open each one
 ## How it works
 
 A session runs the agent exactly as your own terminal does: the same login, permissions and project memory. Click a workbench in the left panel to see its sessions; a filled dot means running. Sessions keep running while you switch sessions, workbenches or tabs.
+
+The terminal or speech-bubble icon shows whether the session opens in **Terminal** or **Workchat**.
 
 Copying from inside the terminal works as in your own terminal: when Claude Code, vim or tmux copies text, it lands on your clipboard. The terminal does not answer clipboard-read requests hidden in program output, so a file or tool output cannot pull in what you copied. Programs you run can still read it (for example `pbpaste`). Paste with ⌘V.
 
