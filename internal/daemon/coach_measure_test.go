@@ -451,7 +451,7 @@ func idleSession(t *testing.T, database *db.DB, sess int64, lastActive time.Time
 
 // A cleanup session never finish_session'ed but idle for an hour or more
 // counts as ended at its last activity.
-func TestMeasureCheck_MemoryIdleSessionEnded(t *testing.T) {
+func TestMeasureCheck_MemoryIdleSessionCountsAsEnded(t *testing.T) {
 	d, database := coachDaemon(t)
 	home, err := os.UserHomeDir()
 	require.NoError(t, err)
@@ -469,8 +469,8 @@ func TestMeasureCheck_MemoryIdleSessionEnded(t *testing.T) {
 	assert.Equal(t, measureMemAfter, p.AfterText)
 }
 
-// Idle under an hour is still running: nothing is recorded.
-func TestMeasureCheck_MemoryIdleUnderAnHourWaits(t *testing.T) {
+// Idle for 20 minutes is still running: nothing is recorded.
+func TestMeasureCheck_MemoryRecentlyActiveNotEnded(t *testing.T) {
 	d, database := coachDaemon(t)
 	home, err := os.UserHomeDir()
 	require.NoError(t, err)
@@ -478,7 +478,7 @@ func TestMeasureCheck_MemoryIdleUnderAnHourWaits(t *testing.T) {
 	wb, folder := measureWorkbench(t, database)
 	sess := measureSession(t, database, wb, "")
 	id, path := memoryViaSession(t, database, home, wb, folder, sess, now.Add(-5*time.Hour))
-	last := now.Add(-50 * time.Minute)
+	last := now.Add(-20 * time.Minute)
 	writeMemory(t, path, measureMemAfter, last.Add(-time.Minute))
 	idleSession(t, database, sess, last)
 
