@@ -309,12 +309,17 @@ func (d *Daemon) coachMeasureCheck(ctx context.Context, now time.Time) (done boo
 		if ctx.Err() != nil {
 			return false
 		}
-		if p.Verdict != "" {
+		settings := coach.IsSettingsDestination(p.Destination)
+		// A settings row's too_little_data is provisional (the judge
+		// re-judges it until judgeGiveUp): a key turned back on meanwhile
+		// is still reverted_outside, never graded on a change that no
+		// longer applies.
+		if p.Verdict != "" && !(settings && p.Verdict == "too_little_data") {
 			continue
 		}
 		var set bool
 		switch {
-		case coach.IsSettingsDestination(p.Destination):
+		case settings:
 			d.coachRevertedCheck(a, p, now)
 		case !p.MeasureFrom.IsZero():
 		case p.Destination == coach.DestMemoryIndex:

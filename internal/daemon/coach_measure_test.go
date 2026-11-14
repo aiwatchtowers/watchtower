@@ -442,6 +442,34 @@ func TestMeasureCheck_SettingsRevertedOutside(t *testing.T) {
 	assert.Empty(t, getProposal(t, database, off).Verdict, "still off: measured as usual")
 }
 
+// A settings row the judge left at a provisional too_little_data is still
+// checked: the key back on reads reverted_outside, not a later no_effect.
+// Any other verdict is final and never looked at again.
+func TestMeasureCheck_SettingsRevertedAfterTooLittleData(t *testing.T) {
+	d, database := coachDaemon(t)
+	home, err := os.UserHomeDir()
+	require.NoError(t, err)
+	settings := filepath.Join(home, ".claude", "settings.json")
+	require.NoError(t, os.MkdirAll(filepath.Dir(settings), 0o700))
+	now := measureNow()
+	accepted := func(source, verdict string) int64 {
+		id, err := database.InsertContextCoachProposal(db.CoachProposal{Fingerprint: "plugin-" + source, Kind: "cut",
+			Destination: coach.DestPluginOff, SourceKey: source, Title: "Turn off", Why: "Unused.",
+			Metric: "start_tokens", BeforeText: "true", AfterText: "false"}, now)
+		require.NoError(t, err)
+		require.NoError(t, database.MarkCoachAccepted(id, "false", "", nil, 0, now.Add(-20*24*time.Hour)))
+		require.NoError(t, database.SetCoachVerdict(id, verdict, nil, now.Add(-time.Hour)))
+		return id
+	}
+	provisional, final := accepted("alpha@example-market", "too_little_data"), accepted("beta@example-market", "works")
+	require.NoError(t, os.WriteFile(settings,
+		[]byte(`{"enabledPlugins":{"alpha@example-market":true,"beta@example-market":true}}`), 0o600))
+
+	d.coachMeasureCheck(context.Background(), now)
+	assert.Equal(t, "reverted_outside", getProposal(t, database, provisional).Verdict)
+	assert.Equal(t, "works", getProposal(t, database, final).Verdict, "a final verdict is not re-checked")
+}
+
 // idleSession marks sess's agent as waiting since lastActive.
 func idleSession(t *testing.T, database *db.DB, sess int64, lastActive time.Time) {
 	t.Helper()
