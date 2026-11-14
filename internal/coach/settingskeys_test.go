@@ -427,3 +427,50 @@ func TestKeyOf_SourceKey(t *testing.T) {
 		"a repository file's key has no source")
 	assert.Equal(t, keyOf(DestSession, 0, "", "", ""), keyOf(DestSession, 0, "", "", "x"))
 }
+
+// A write that loses the race to another writer (the file changed between
+// the read and the rename) re-reads and tries once more: an unrelated change
+// is kept, a change of the own key is errKeyChanged with nothing written.
+func TestSettingsKey_RetriesOnceOnWriteConflict(t *testing.T) {
+	home := ctxHome(t)
+	path := claudeSettingsPath(home)
+	k := settingsKey{kind: settingsKind, path: path, outer: "enabledPlugins", inner: "alpha@example-market",
+		invalid: errSettingsNotObject}
+
+	writeHomeFile(t, path, ctxSettings)
+	calls := 0
+	other := `{"enabledPlugins":{"alpha@example-market":true},"theme":"dark"}`
+	require.NoError(t, k.set("true", json.RawMessage("false"), func(json.RawMessage) error {
+		if calls++; calls == 1 {
+			writeHomeFile(t, path, other)
+		}
+		return nil
+	}, nil))
+	assert.Equal(t, 2, calls, "one retry")
+	got := topKeys(t, readHomeFile(t, path))
+	assert.Equal(t, `{"alpha@example-market":false}`, got["enabledPlugins"])
+	assert.Equal(t, `"dark"`, got["theme"], "the other writer's change is kept")
+
+	writeHomeFile(t, path, ctxSettings)
+	own := `{"enabledPlugins":{"alpha@example-market":false}}`
+	calls = 0
+	err := k.set("true", json.RawMessage("false"), func(json.RawMessage) error {
+		if calls++; calls == 1 {
+			writeHomeFile(t, path, own)
+		}
+		return nil
+	}, nil)
+	require.ErrorIs(t, err, errKeyChanged)
+	assert.Equal(t, own, string(readHomeFile(t, path)))
+
+	// Two conflicts in a row: the second is reported, nothing more is tried.
+	writeHomeFile(t, path, ctxSettings)
+	calls = 0
+	err = k.set("true", json.RawMessage("false"), func(json.RawMessage) error {
+		calls++
+		writeHomeFile(t, path, fmt.Sprintf(`{"enabledPlugins":{"alpha@example-market":true},"n":%d}`, calls))
+		return nil
+	}, nil)
+	require.ErrorIs(t, err, errSettingsChanged)
+	assert.Equal(t, 2, calls)
+}
