@@ -474,3 +474,53 @@ func TestSettingsKey_RetriesOnceOnWriteConflict(t *testing.T) {
 	require.ErrorIs(t, err, errSettingsChanged)
 	assert.Equal(t, 2, calls)
 }
+
+// When the status write fails after a settings key was written (Decline
+// from Home racing Accept from Analytics), the key is set back: to its
+// before-value, or absent when it was absent; every other key keeps its
+// value, and a server's undo file is removed. The row stays declined.
+func TestSettingsKey_StatusWriteFailsRestoresKey(t *testing.T) {
+	cases := []struct {
+		name, dest, source, before, after string
+		path                              func(home string) string
+		start                             string
+		outer, inner                      string
+	}{
+		{"plugin", DestPluginOff, "alpha@example-market", "true", "false", claudeSettingsPath, ctxSettings,
+			"enabledPlugins", "alpha@example-market"},
+		{"mcp server", DestMCPServerOff, "alpha-docs", "present", "", claudeJSONPath, ctxClaudeJSON,
+			"mcpServers", "alpha-docs"},
+		{"connectors absent", DestConnectorsOff, "connectors", "", `"false"`, claudeSettingsPath,
+			`{"enabledPlugins":{"alpha@example-market":true},"env":{"OTHER_FLAG":"1"},"model":"opus"}` + "\n",
+			"env", connectorsEnvKey},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := openDBs(t)
+			home := ctxHome(t)
+			path := tc.path(home)
+			writeHomeFile(t, path, tc.start)
+			id := proposeCtx(t, d, tc.dest, tc.source, tc.before, tc.after)
+			a := ctxApplier(t, d, home)
+			a.afterSettingsWrite = func() {
+				require.NoError(t, d.DecideCoachProposal(id, "open", "declined", applyNow))
+			}
+
+			err := a.acceptErr(id, "")
+			require.ErrorIs(t, err, db.ErrCoachStateChanged)
+			assert.Equal(t, "declined", proposal(t, d, id).Status)
+
+			got, want := topKeys(t, readHomeFile(t, path)), topKeys(t, []byte(tc.start))
+			assert.Equal(t, want, got, "the key is back and every other key equal")
+			inner := topKeys(t, []byte(got[tc.outer]))
+			if tc.before == "" {
+				assert.NotContains(t, inner, tc.inner, "absent before: absent again")
+			} else {
+				assert.Contains(t, inner, tc.inner)
+			}
+			undo := filepath.Join(a.WorkspaceDir, "coach-undo", fmt.Sprintf("%d.json", id))
+			_, err = os.Stat(undo)
+			assert.ErrorIs(t, err, os.ErrNotExist, "no undo file is left behind")
+		})
+	}
+}
