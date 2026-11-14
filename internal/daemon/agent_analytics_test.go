@@ -242,3 +242,17 @@ func TestPhaseAgentAnalytics_LogsCodexUsageMismatch(t *testing.T) {
 		}
 	}
 }
+
+// An import that wrote events flags the coach phase's context proposer; a
+// cycle with nothing new does not.
+func TestPhaseAgentAnalytics_FreshImportFlagsCoachContext(t *testing.T) {
+	d, database := newAgentAnalyticsTestDaemon(t)
+	enableAgentAnalyticsWorkbench(t, database)
+
+	d.phaseAgentAnalytics(context.Background())
+	assert.True(t, d.coachContextFresh.Load())
+
+	d.coachContextFresh.Store(false)
+	d.phaseAgentAnalytics(context.Background())
+	assert.False(t, d.coachContextFresh.Load(), "no new events, no flag")
+}

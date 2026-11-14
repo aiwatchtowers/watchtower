@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"watchtower/internal/agentlog"
+	"watchtower/internal/agentreport"
 	"watchtower/internal/coach"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
@@ -88,6 +89,9 @@ var (
 	runCoachProposer = func(ctx context.Context, p *coach.Proposer, in coach.Inputs) (int, *digest.Usage, error) {
 		return p.Run(ctx, in)
 	}
+	runCoachContext = coach.ProposeContext
+	// coachHomeDir is the home ~/.claude and ~/.claude.json live in.
+	coachHomeDir = os.UserHomeDir
 )
 
 func (d *Daemon) lastCoachPath() string {
@@ -148,7 +152,9 @@ func (d *Daemon) markCoachFailed(now time.Time) {
 // instead and is retried a day later, not every cycle; a cycle cancelled
 // mid-run writes neither and the next cycle runs again; a judging error alone
 // does not hold the week. No plan-limit gate (ask #655). Logs carry counts,
-// never text.
+// never text. The mechanical context proposer (coachContext) runs in the
+// weekly pass after judging, and on its own, under the same lock, in the
+// first cycle after an analytics import wrote events.
 func (d *Daemon) phaseCoach(ctx context.Context) {
 	if d.db == nil || ctx.Err() != nil {
 		return
@@ -159,10 +165,9 @@ func (d *Daemon) phaseCoach(ctx context.Context) {
 			d.lastCoachCommits = now
 		}
 	}
-	if !d.lastCoach.IsZero() && now.Sub(d.lastCoach) < coachInterval {
-		return
-	}
-	if !d.lastCoachFailed.IsZero() && now.Sub(d.lastCoachFailed) < coachRetryAfter {
+	weekly := (d.lastCoach.IsZero() || now.Sub(d.lastCoach) >= coachInterval) &&
+		(d.lastCoachFailed.IsZero() || now.Sub(d.lastCoachFailed) >= coachRetryAfter)
+	if !weekly && !d.coachContextFresh.Load() {
 		return
 	}
 	// The same lock `coach run` holds: a pass already running (the owner's
@@ -177,6 +182,10 @@ func (d *Daemon) phaseCoach(ctx context.Context) {
 		return
 	}
 	defer unlock()
+	if !weekly { // only fresh analytics facts: the context proposer alone
+		d.coachContext(ctx, now)
+		return
+	}
 	d.trackedPipelineRun("coach", func() pipelineRunStats {
 		if n, err := runCoachImport(d.db, d.config.Digest.Language, now); err != nil {
 			d.logger.Printf("coach: folding instruction suggestions: %v", err)
@@ -190,6 +199,7 @@ func (d *Daemon) phaseCoach(ctx context.Context) {
 		} else {
 			d.logger.Printf("coach: %d judged, %d cut", judged, cuts)
 		}
+		d.coachContext(ctx, now)
 		in, err := coach.Collect(ctx, d.db, d.agentLog, instructions.NewFeedReader(ctx, d.db, coachSessionDirs()), now)
 		if err != nil {
 			if ctx.Err() == nil {
@@ -295,4 +305,44 @@ func (d *Daemon) coachEditAtHead(ctx context.Context, p db.CoachProposal) (seen 
 		return false, "not readable at HEAD (not a git work tree, or git failed)"
 	}
 	return ok && text == p.AfterText, ""
+}
+
+// coachContext runs one pass of the mechanical context proposer over the
+// workbenches with agent analytics on (the caller holds coach.lock): the
+// install-wide rules once, the per-workbench ones for each. The fresh-import
+// flag is cleared first, so an import landing meanwhile runs it again next
+// cycle; a cancelled pass sets it again. Errors are logged; a line is logged
+// only when something was written. Logs carry ids, counts, labels and source
+// names, never a path or a config value.
+func (d *Daemon) coachContext(ctx context.Context, now time.Time) {
+	d.coachContextFresh.Store(false)
+	if d.agentLog == nil {
+		return
+	}
+	ids, err := d.db.AgentAnalyticsWorkbenchIDs()
+	if err != nil {
+		d.logger.Printf("coach: context: listing workbenches: %v", err)
+		return
+	}
+	if len(ids) == 0 {
+		return
+	}
+	home, err := coachHomeDir()
+	if err != nil {
+		d.logger.Printf("coach: context: no home folder, skipped")
+		return
+	}
+	env := coach.ContextEnv{DB: d.db, AgentLog: d.agentLog, Home: home, Now: func() time.Time { return now },
+		Lang: agentreport.LangOf(d.config.Digest.Language), Logger: d.logger}
+	n, err := runCoachContext(ctx, env, ids)
+	if ctx.Err() != nil {
+		d.coachContextFresh.Store(true) // not done: the next cycle runs it
+		return
+	}
+	if err != nil {
+		d.logger.Printf("coach: context: %v", err)
+	}
+	if n > 0 {
+		d.logger.Printf("coach: context: %d proposal(s) written", n)
+	}
 }

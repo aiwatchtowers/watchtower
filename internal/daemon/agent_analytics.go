@@ -87,6 +87,9 @@ func (d *Daemon) phaseAgentAnalytics(ctx context.Context) {
 				d.logger.Printf("agent analytics: workbench %d: cycle budget reached, continuing next cycle", id)
 			}
 		}
+		if items > 0 { // fresh facts: the coach phase re-runs the context proposer
+			d.coachContextFresh.Store(true)
+		}
 		return pipelineRunStats{items: items, err: errors.Join(errs...)}
 	})
 }

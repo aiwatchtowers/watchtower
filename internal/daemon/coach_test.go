@@ -327,3 +327,125 @@ func TestCoachGeneratorUsesJobSnapshotAndSharedAdmission(t *testing.T) {
 		require.Equal(t, 1, leaf.calls)
 	})
 }
+
+// stubCoachContext records the context proposer's passes (the workbench ids
+// of each, and whether the coach lock was held) under a temp home.
+func stubCoachContext(t *testing.T, d *Daemon) *[][]int64 {
+	t.Helper()
+	var passes [][]int64
+	oc, oh := runCoachContext, coachHomeDir
+	home := t.TempDir()
+	coachHomeDir = func() (string, error) { return home, nil }
+	runCoachContext = func(_ context.Context, env coach.ContextEnv, ids []int64) (int, error) {
+		assert.Equal(t, home, env.Home)
+		_, free, err := fsutil.TryLockFile(coach.LockPath(d.config.WorkspaceDir()))
+		require.NoError(t, err)
+		assert.False(t, free, "the context proposer runs under the coach lock")
+		passes = append(passes, ids)
+		return 1, nil
+	}
+	t.Cleanup(func() { runCoachContext, coachHomeDir = oc, oh })
+	return &passes
+}
+
+func analyticsWorkbench(t *testing.T, database *db.DB, name string) int64 {
+	t.Helper()
+	wb, err := database.CreateWorkbench(name, t.TempDir())
+	require.NoError(t, err)
+	require.NoError(t, database.SetWorkbenchAgentAnalytics(wb, true))
+	return wb
+}
+
+func TestPhaseCoach_ContextAfterFreshImport(t *testing.T) {
+	d, database := coachDaemon(t)
+	c := stubCoach(t, nil)
+	passes := stubCoachContext(t, d)
+	a := analyticsWorkbench(t, database, "acme")
+	b := analyticsWorkbench(t, database, "beta")
+	_, err := database.CreateWorkbench("off", t.TempDir()) // analytics off: never proposed for
+	require.NoError(t, err)
+	d.lastCoach = time.Now() // the weekly pass is not due
+
+	d.phaseCoach(context.Background())
+	assert.Empty(t, *passes, "no fresh import, no run")
+
+	d.coachContextFresh.Store(true)
+	d.phaseCoach(context.Background())
+	require.Len(t, *passes, 1, "one pass for every workbench")
+	assert.ElementsMatch(t, []int64{a, b}, (*passes)[0])
+	assert.False(t, d.coachContextFresh.Load(), "the flag is cleared")
+	assert.Equal(t, coachCalls{}, *c, "no judging and no model call")
+	assert.Empty(t, pipelineRunNames(t, database), "the weekly run is not recorded")
+
+	d.phaseCoach(context.Background())
+	assert.Len(t, *passes, 1, "one run per fresh import")
+}
+
+func TestPhaseCoach_ContextInWeeklyPassAfterJudging(t *testing.T) {
+	d, database := coachDaemon(t)
+	var order []string
+	oj, op := runCoachJudge, runCoachProposer
+	t.Cleanup(func() { runCoachJudge, runCoachProposer = oj, op })
+	runCoachJudge = func(*db.DB, *agentlogdb.DB, time.Time) (int, int, error) {
+		order = append(order, "judge")
+		return 0, 0, nil
+	}
+	runCoachProposer = func(context.Context, *coach.Proposer, coach.Inputs) (int, *digest.Usage, error) {
+		order = append(order, "propose")
+		return 0, nil, nil
+	}
+	passes := stubCoachContext(t, d)
+	inner := runCoachContext
+	runCoachContext = func(ctx context.Context, env coach.ContextEnv, ids []int64) (int, error) {
+		order = append(order, "context")
+		return inner(ctx, env, ids)
+	}
+	analyticsWorkbench(t, database, "acme")
+	analyticsWorkbench(t, database, "beta")
+	d.coachContextFresh.Store(true)
+
+	d.phaseCoach(context.Background())
+	assert.Equal(t, []string{"judge", "context", "propose"}, order)
+	require.Len(t, *passes, 1)
+	assert.Len(t, (*passes)[0], 2)
+	assert.False(t, d.coachContextFresh.Load())
+}
+
+func TestPhaseCoach_ContextSkipsWhenLocked(t *testing.T) {
+	d, database := coachDaemon(t)
+	stubCoach(t, nil)
+	passes := stubCoachContext(t, d)
+	analyticsWorkbench(t, database, "acme")
+	d.lastCoach = time.Now()
+	d.coachContextFresh.Store(true)
+	unlock, ok, err := fsutil.TryLockFile(coach.LockPath(d.config.WorkspaceDir()))
+	require.NoError(t, err)
+	require.True(t, ok)
+	defer unlock()
+
+	d.phaseCoach(context.Background())
+	assert.Empty(t, *passes)
+	assert.True(t, d.coachContextFresh.Load(), "kept for the next cycle")
+}
+
+// A pass cut short by shutdown is run again next cycle; an error is logged
+// and the flag stays cleared.
+func TestPhaseCoach_ContextCancelledRunsAgain(t *testing.T) {
+	d, database := coachDaemon(t)
+	stubCoach(t, nil)
+	stubCoachContext(t, d)
+	analyticsWorkbench(t, database, "acme")
+	d.lastCoach = time.Now()
+	ctx, cancel := context.WithCancel(context.Background())
+	runCoachContext = func(ctx context.Context, _ coach.ContextEnv, _ []int64) (int, error) {
+		cancel()
+		return 0, ctx.Err()
+	}
+	d.coachContextFresh.Store(true)
+	d.phaseCoach(ctx)
+	assert.True(t, d.coachContextFresh.Load(), "a cancelled pass runs again")
+
+	runCoachContext = func(context.Context, coach.ContextEnv, []int64) (int, error) { return 0, errors.New("boom") }
+	d.phaseCoach(context.Background())
+	assert.False(t, d.coachContextFresh.Load(), "an error is not retried every cycle")
+}

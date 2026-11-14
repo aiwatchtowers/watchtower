@@ -270,3 +270,25 @@ func TestGlobalSources_SumsCallsAcrossWorkbenches(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []ContextSourceRow{}, later, "outside the window: nothing")
 }
+
+// MeasuredSessions is the overview's Context.FactsSessions without the report.
+func TestMeasuredSessions_MatchesOverview(t *testing.T) {
+	d, a := buildDB(t)
+	b, err := d.CreateWorkbench("b", t.TempDir())
+	require.NoError(t, err)
+	putSourcesSession(t, d, a, "s1", nil, "acme:review", 0)
+	putSourcesSession(t, d, a, "s2", nil, "acme:review", 1)
+	putSourcesSession(t, d, b, "s3", nil, "acme:review", 0)
+
+	since, now := t0.Add(-24*time.Hour), t0.Add(24*time.Hour)
+	ov, err := BuildOverview(d.DB, d.al, a, since, now, English, AgentAll)
+	require.NoError(t, err)
+	n, err := MeasuredSessions(d.al, a, since, now)
+	require.NoError(t, err)
+	assert.Equal(t, 2, n)
+	assert.Equal(t, ov.Context.FactsSessions, n)
+
+	n, err = MeasuredSessions(d.al, a, now, now.Add(time.Hour))
+	require.NoError(t, err)
+	assert.Zero(t, n, "outside the window")
+}

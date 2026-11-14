@@ -79,7 +79,7 @@ func GroupOf(kind, name string) (group, groupKind string) {
 		server, _, _ := strings.Cut(rest, "__")
 		return serverGroup(server)
 	case "mcp_instructions":
-		return serverGroup(mcpServerID(name))
+		return serverGroup(MCPServerID(name))
 	case "skill", "agent":
 		if plugin, _, ok := strings.Cut(name, ":"); ok && plugin != "" {
 			return plugin, GroupPlugin
@@ -99,10 +99,11 @@ func serverGroup(server string) (string, string) {
 	return server, GroupMCPServer
 }
 
-// mcpServerID is a server display name in its tool-id form: every character
-// other than a letter, digit, '_' or '-' becomes '_' ("claude.ai Example" →
-// "claude_ai_Example"), as Claude Code names the server's tools.
-func mcpServerID(display string) string {
+// MCPServerID is a server name in its tool-id form: every character other
+// than a letter, digit, '_' or '-' becomes '_' ("claude.ai Example" →
+// "claude_ai_Example"), as Claude Code names the server's tools. A plugin's
+// server is "plugin_" + MCPServerID(plugin) + "_" + its server's id.
+func MCPServerID(display string) string {
 	return strings.Map(func(r rune) rune {
 		if r == '_' || r == '-' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' {
 			return r
@@ -340,6 +341,24 @@ func GlobalSources(main *db.DB, al *agentlogdb.DB, since, now time.Time) ([]Cont
 		acc.add(sessions, eventsByUUID(evs), parts, sources, wb.FolderPath)
 	}
 	return acc.result(), nil
+}
+
+// MeasuredSessions is the number of the workbench's sessions in the period
+// (as BuildOverview takes since and now) whose start context was measured:
+// its overview's Context.FactsSessions, without building the report. al is
+// only read.
+func MeasuredSessions(al *agentlogdb.DB, workbenchID int64, since, now time.Time) (int, error) {
+	sessions, err := periodSessions(al, workbenchID, since, now)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, s := range sessions {
+		if contextMeasured(s) {
+			n++
+		}
+	}
+	return n, nil
 }
 
 // loadSources reads the baseline parts and the per-source weights of the
