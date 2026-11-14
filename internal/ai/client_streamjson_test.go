@@ -2,10 +2,15 @@ package ai
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -97,4 +102,34 @@ func TestAIClient_StreamJSONWaitErrorEndsRun(t *testing.T) {
 	}})
 	_, _, err := c.QuerySync(t.Context(), "sys", "msg", "")
 	require.ErrorIs(t, err, assert.AnError)
+}
+
+// A child that stays alive after its result is cancelled after the drain
+// grace; the answer still counts.
+func TestAIClient_StreamJSONDrainIsBounded(t *testing.T) {
+	dir := t.TempDir()
+	bin := writeMockClaude(t, `echo $$ > '`+dir+`/pid'
+read -r msg
+echo '{"type":"result","subtype":"success","is_error":false,"result":"done","usage":{"input_tokens":1,"output_tokens":1}}'
+exec sleep 30
+`)
+	t.Cleanup(func() {
+		if data, err := os.ReadFile(filepath.Join(dir, "pid")); err == nil {
+			if pid, _ := strconv.Atoi(strings.TrimSpace(string(data))); pid > 0 {
+				_ = syscall.Kill(-pid, syscall.SIGKILL)
+			}
+		}
+	})
+	oldGrace, oldKill := streamDrainGrace, groupKillGrace
+	streamDrainGrace, groupKillGrace = time.Millisecond, time.Millisecond
+	t.Cleanup(func() { streamDrainGrace, groupKillGrace = oldGrace, oldKill })
+	c := NewClient("m", "", bin)
+	c.SetStreamJSONInput(true)
+	text, _, err := c.QuerySync(t.Context(), "sys", "msg", "")
+	require.NoError(t, err)
+	assert.Equal(t, "done", text)
+	data, err := os.ReadFile(filepath.Join(dir, "pid"))
+	require.NoError(t, err)
+	pid, _ := strconv.Atoi(strings.TrimSpace(string(data)))
+	assert.ErrorIs(t, syscall.Kill(-pid, 0), syscall.ESRCH, "the child's group is gone")
 }

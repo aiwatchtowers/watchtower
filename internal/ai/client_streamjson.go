@@ -18,6 +18,10 @@ import (
 	"watchtower/internal/streamline"
 )
 
+// streamDrainGrace bounds how long a stream-json child may keep its output
+// open after its result event and the end of its input; a var for tests.
+var streamDrainGrace = 5 * time.Second
+
 // StreamJSONHooks drive a stream-json run (SetStreamJSONInput). The caller
 // owns the protocol answers, so this package needs no chat or connector code.
 type StreamJSONHooks struct {
@@ -202,8 +206,18 @@ func (c *Client) queryStreamJSON(ctx context.Context, systemPrompt, userMessage 
 		result = c.handleStreamLine(line, names, write)
 	}
 	closeInput()
-	for range lines { // drain to EOF so Wait never races the reader
+	// Drain to EOF so Wait never races the reader; a child that does not
+	// end within streamDrainGrace of its result is cancelled (its group
+	// interrupted, then killed), which ends the output.
+	grace := time.NewTimer(streamDrainGrace)
+	for open := true; open; {
+		select {
+		case _, open = <-lines:
+		case <-grace.C:
+			cancelRun()
+		}
 	}
+	grace.Stop()
 	close(done)
 	waitErr := cmd.Wait()
 	readWG.Wait()

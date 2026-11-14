@@ -347,6 +347,10 @@ func ParseManifest(entries []string, outputs []string, scope Scope) (*Manifest, 
 			return nil, &ManifestError{Field: "permissions", Index: i,
 				Msg: fmt.Sprintf("%q is allowed only in a built-in automation", e)}
 		}
+		if scope.IsBuiltin() && p.String() == EntrySlackLive {
+			return nil, &ManifestError{Field: "permissions", Index: i,
+				Msg: fmt.Sprintf("%q is not allowed in a built-in automation: its runs are not held to Live Slack's once an hour", e)}
+		}
 		if (scope.Kind != ScopePersonal || scope.IsBuiltin()) && capabilitySpecs[p.Capability].personalOnly {
 			return nil, &ManifestError{Field: "permissions", Index: i,
 				Msg: fmt.Sprintf("%q is allowed only in a personal automation", e)}

@@ -70,11 +70,10 @@ func OnAbandonedRunEnd(f func()) (remove func()) {
 	return func() { abandonedRunEnded.Store(nil) }
 }
 
-// SetLiveCadenceClock pins the slack:live schedule check's zone and clock
-// for the test.
-func SetLiveCadenceClock(t interface{ Cleanup(func()) }, zone *time.Location, now time.Time) {
-	oldZone, oldNow := liveCadenceZone, liveCadenceNow
+// SetLiveCadenceZone pins the slack:live schedule check's zone for the
+// test.
+func SetLiveCadenceZone(t interface{ Cleanup(func()) }, zone *time.Location) {
+	old := liveCadenceZone
 	liveCadenceZone = func() *time.Location { return zone }
-	liveCadenceNow = func() time.Time { return now }
-	t.Cleanup(func() { liveCadenceZone, liveCadenceNow = oldZone, oldNow })
+	t.Cleanup(func() { liveCadenceZone = old })
 }
