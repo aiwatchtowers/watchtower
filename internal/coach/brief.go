@@ -19,7 +19,9 @@ var briefMsgs = map[string][2]string{
 	"what":     {"What to change:", "Что изменить:"},
 	"replace":  {"Make %s read exactly as below (the whole file):", "Сделай так, чтобы %s был ровно таким (весь файл):"},
 	"measured": {"Measured:", "Замеры:"},
-	"why":      {"Why: %s", "Зачем: %s"},
+	"measured.saving_tokens": {"Expected saving: ~%s tokens per session start",
+		"Ожидаемая экономия: ~%s токенов на старте каждой сессии"},
+	"why": {"Why: %s", "Зачем: %s"},
 	"saving.start_tokens": {"Expected saving: a smaller start context for every session — the sizes above are what goes.",
 		"Ожидаемая экономия: меньше стартовый контекст каждой сессии — уходит то, что измерено выше."},
 	"saving.other": {"Expected effect: the %s metric goes down; Watchtower measures it after the change.",
@@ -90,6 +92,10 @@ func Brief(p db.CoachProposal, lang agentreport.Lang) (title, prompt string) {
 		line("")
 		line(briefMsg(lang, "measured"))
 		for _, e := range p.Evidence {
+			if e.Kind == "saving_tokens" {
+				line("- " + briefMsg(lang, "measured.saving_tokens", e.Ref))
+				continue
+			}
 			line("- " + e.Ref)
 		}
 	}

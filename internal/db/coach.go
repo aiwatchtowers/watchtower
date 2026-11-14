@@ -28,7 +28,9 @@ var ErrCoachTextBusy = errors.New("another proposal is open for this text")
 
 // CoachEvidence is one source a proposal rests on. Kind is
 // ask|session|chat|review_round|hint|suggestion (a folded instruction
-// suggestion, ref sg:<id>).
+// suggestion, ref sg:<id>), or for a context proposal (coach.ProposeContext)
+// source|elsewhere|file|section|saving_tokens (the decimal tokens the big
+// CLAUDE.md sections take, repo_claude_md only).
 type CoachEvidence struct {
 	Kind string `json:"kind"`
 	Ref  string `json:"ref"`

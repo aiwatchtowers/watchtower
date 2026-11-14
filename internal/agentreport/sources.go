@@ -299,7 +299,7 @@ func StartTokensMedian(sessions []agentlogdb.AgentReportSession, parts []agentlo
 		}
 		for _, lp := range lps {
 			if lp.agent == "" && lp.bytes > 0 {
-				totals = append(totals, int64(math.Round(float64(lp.bytes)/defaultBytesPerToken)))
+				totals = append(totals, TokensOfBytes(lp.bytes))
 			}
 		}
 	}
