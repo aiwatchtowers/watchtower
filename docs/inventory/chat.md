@@ -263,6 +263,45 @@ child is never started without it.
 `testChat05PublishedLinkCardOnlyOpensOrCopies`
 (`WatchtowerDesktop/Tests/Core/ArtifactChat05ScanTests.swift`)
 
+## LIVE-01 — Live Slack answers stay out of lasting stores
+
+**Status:** Enforced
+
+**Observable:** A conversation whose turn called the Live Slack connector (Claude's
+`mcp__claude_ai_Slack__*` tools, or Codex's Slack app, stored as
+`mcp__codex_apps__slack.<tool>`) is marked: `chat_conversations.live_slack_since` is the
+`chat_messages.id` of that turn's assistant message, set once and never moved. That turn's
+answer and every later message of the conversation (even a turn with no Slack step) feed no
+store that makes chat text lasting (the owner's prompt of the Live turn precedes the mark and
+is the owner's own words, so it stays readable): not ideas (`ListChatTurnsForIdeas`), not memory
+(`ListOwnerChatTurns`, `OwnerChatTurnExists`), not the instruction miner or the agent
+coach (`ListOwnerChatTurnsSince`), not a target's next step (`ListRecentChatTurns`), not
+knowledge (the `chat_artifact` source skips the whole conversation, and Add to Knowledge is
+refused with "Built on Live Slack answers, which are not kept"). Turns before the mark stay
+readable. In a marked conversation `instructions remember` stores a line only when it
+appears verbatim in the owner's own message.
+
+**Mechanism:** the Swift turn store (the only writer of chat rows) marks the conversation
+when a Slack step starts (`ChatTurnStore.stepStarted`, `LiveSlackMark.markIfSlackStep`: a Live
+turn's partial text is saved while it runs and a crash never finalizes) and again in
+`finalizeTurn`'s transaction as a backstop (`markIfUsed`); whichever comes first wins. Embedded
+chats never carry Slack connectors (main surface only). Go readers apply `db.ChatNotLiveSlack` (`c.live_slack_since IS NULL OR m.id <
+c.live_slack_since`); `ChatArtifactQueries.keep` throws `ChatArtifactKeepError.liveSlack`.
+
+**Why locked:** A Live answer is the owner's live Slack data fetched through a third-party
+connector; Watchtower's compliance position is that it is shown and never stored or mined.
+
+**Test guards:** `TestLIVE01_MarkedTurnsStayOutOfStores`, `TestLIVE01_LaterTurnsMarked`,
+`TestLIVE01_LiveSlackOwnerLineOK`, `TestLIVE01_ReaderList` (`internal/db/live01_test.go`: a
+new non-test function in `internal/` that mentions the chat tables must join
+`liveCheckedReaders` or `displayOnlyReaders`); `TestLIVE01_KeptArtifactSkipped`
+(`internal/kb/source_chat_artifact_test.go`); `LiveSlack01GuardTests`
+(`WatchtowerDesktop/Tests/Core/LiveSlack01GuardTests.swift`: the finalize mark for both
+providers, no mark without a Slack step, the first mark kept, keep refused, the panel's
+reason, and `testReaderList` over the Swift sources, which is file-level: a Swift file that mentions a chat table must be listed as checked or display-only), `testStepStartMarksWithoutFinalize`; `TestInstructionsRemember_LiveSlackRefusesText` (`cmd/instructions_test.go`, the `not_owner_text` refusal).
+
+**Locked since:** 2026-11-14
+
 ## Changelog
 
 - 2026-11-11 (tests without wall clock, board #1730): no Observable changed. The `internal/chat` warm-claude tests run an in-process twin of `testdata/fake_claude.sh` (`fakeCLI`, `fake_claude_test.go`) behind the `ClaudeOptions.start` seam, inside `testing/synctest`: every grace, poll and "nothing happened" check is virtual time, and each test fails if a fake child is still running after its teardown. The process wiring keeps real-process tests that wait on process events only and fail if any stub process outlives the test (one `pgrep` look after teardown): `TestChat03_CloseReapsStubbornChild` (the leader is reaped by `Close`; the grandchild sleeps a day, reports its pid over a FIFO and its exit is awaited by pid (kqueue `NOTE_EXIT`; a pidfd on Linux) — only the group kill can end it; no pid polling), `TestChat03_CloseUnblocksAStuckWrite` (a real full pipe), `TestChat04_ClaudeArgvCarriesNoContent` and `TestClaudeBackend_RespawnReadsPromptPipesAgain` (the prompt and the config read from the inherited pipes, first spawn and respawn) and `TestClaudeBackend_StdinEOFEndsSessionAndSweepsGroup` (the group sweep); the real-sandbox halves of `TestChat05_ClaudeAIChildNeverTouchesTCCGuardedFolders` stay real. Moved to the in-process model: `TestChat03_CloseWhileWaitingForApprovalRejectsAndReaps` now checks that `Close` ended the fake child (the real reaping of a child and its group is `TestChat03_CloseReapsStubbornChild`'s), and `TestChat05_DeadSessionNeverRunsAnApprovedCall` kills the fake child instead of signalling a pid. The stdin write lock is a one-slot channel instead of a `sync.Mutex` (mutual exclusion and lock order unchanged; a zero `claudeProc` needs it made), so a writer queued behind a stuck write is durably blocked.
@@ -301,3 +340,4 @@ child is never started without it.
 - 2026-10-25 (board #608, approved 2026-10-25, asks #569 and #572): CHAT-02/03 note — the claude.ai tools off reason `policy` and the per-turn provider check; no guard relaxed.
 - 2026-11-08 (board #1025 phase 3): strengthening, no guard relaxed. Branch review's reviewer threads (`chat_conversations.context_type = 'review_reviewer'`) quote the folder's code as code questions do, so `db.ListChatTurnsForIdeas` and the `chat_artifact` knowledge source leave them out next to `code_question` (`TestListChatTurnsForIdeas`, `TestChatArtifactSource_SkipsCodeQuestionChats`), and the Desktop saves no knowledge prefix typed there. The surface is draft-only (`ReviewerSurfaceTests`).
 - 2026-11-10 (board #1517, tuning chat, spec `docs/superpowers/specs/2026-11-03-tuning-chat-design.md` D63, ask #1164): the code-question guard also requires `analytics_tuning` in both chat-history readers and a third behavioural test (`tuningTest` in `TestCodeQuestionGuard_NoGoToolReadsChatHistory`): `db.ListChatTurnsForIdeas` and the `chat_artifact` knowledge source leave tuning conversations out next to `code_question` (`internal/db/chat_knowledge_test.go::TestListChatTurnsForIdeas_SkipsTuningChats`, `internal/kb/source_chat_artifact_test.go::TestChatArtifactSource_SkipsTuningChats`). No CHAT-01 amendment (the removed-conversation rule of ask #1057 left with D61/D62). Strengthening only, no guard relaxed.
+- 2026-11-14 (Slack Live, #1709, board #1764): new contract **LIVE-01**. `chat_conversations.live_slack_since` (migration 00188) marks the first turn that used the Live Slack connector; ideas, memory, the instruction miner, the next step and the knowledge index skip it and every later turn; Add to Knowledge is refused. No existing CHAT guard changed.
