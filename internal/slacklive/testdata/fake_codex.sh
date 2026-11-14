@@ -17,4 +17,4 @@ case "$SCENARIO" in
   fail) echo '{"type":"item.completed","item":{"type":"mcp_tool_call","server":"codex_apps","tool":"slack.slack_list_workspaces","status":"failed","error":{"message":"Unknown tool"}}}' ;;
   hang) [ -n "$READY" ] && echo ready > "$READY"; sleep 60 ;;
 esac
-echo '{"type":"turn.completed"}'
+echo '{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5}}'

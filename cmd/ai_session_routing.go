@@ -11,7 +11,6 @@ import (
 
 	"watchtower/internal/ai"
 	"watchtower/internal/chat"
-	"watchtower/internal/codex"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
@@ -163,25 +162,11 @@ func buildSessionActual(ctx context.Context, cmd *cobra.Command, cfg *config.Con
 	claudeAI := resolveClaudeAI(&actual, aiSessionFlagSurface, conv.ID, os.Environ(), cmd.ErrOrStderr())
 	writeUnavailableConnectors(dbPath, claudeAI, cmd.ErrOrStderr())
 	opts := sessionPromptOptions(&actual, aiSessionFlagSurface, projectID, time.Now(), claudeAI.prompt)
-	slackRows, _ := database.ListSlackLiveStatus() // a read failure = no Live promise
 	var codexSlack []string
-	switch p {
-	case "claude":
-		slackOff := chat.DisabledConnectorTokens(actual.AI.ClaudeAI.DisabledConnectors)["claude_ai_Slack"]
-		opts.SlackLive = aiSessionFlagSurface == "main" && claudeAI.mode.On && claudeSlackLive(slackRows, claudeAI.mode.Connectors, slackOff)
-	case "codex":
-		if aiSessionFlagSurface != "main" {
-			break
-		}
-		if id := codexSlackConnector(slackRows, codex.OwnerHome()); id != "" {
-			ov, err := codexSlackOverrides(id)
-			if err != nil { // fail closed: no apps, no promise
-				fmt.Fprintf(cmd.ErrOrStderr(), "Live Slack on Codex is off: %v\n", err)
-			} else {
-				codexSlack = ov
-			}
-		}
-		opts.SlackLive = len(codexSlack) > 0
+	if live, ok := slackLiveFor(p); ok && aiSessionFlagSurface == "main" {
+		slackRows, _ := database.ListSlackLiveStatus() // a read failure = no Live promise
+		got := live.chat(slackLiveChatInput{rows: slackRows, cfg: &actual, claudeAI: claudeAI, warn: cmd.ErrOrStderr()})
+		opts.SlackLive, codexSlack = got.live, got.codexSlack
 	}
 	prompt, err := chat.BuildSystemPrompt(ctx, database, &actual, opts)
 	if err != nil {

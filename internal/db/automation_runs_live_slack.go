@@ -22,25 +22,30 @@ func (db *DB) MarkAutomationRunLiveSlack(runID int64) error {
 	return nil
 }
 
-// LastLiveSlackRunStart is the newest started_at of automationID's runs other
-// than exceptRunID, whatever their trigger or live flag (the hourly limit of
-// a slack:live recipe, D15). A run ended by the limit never started, so it
-// never counts. ErrAutomationRunNotFound when no run of it ever started.
-func (db *DB) LastLiveSlackRunStart(automationID, exceptRunID int64) (time.Time, error) {
-	var last sql.NullString
-	err := db.QueryRow(`SELECT MAX(started_at) FROM automation_runs
-		WHERE automation_id = ? AND id <> ? AND started_at IS NOT NULL`, automationID, exceptRunID).Scan(&last)
+// LastLiveSlackRunStart is the newest started run of automationID other
+// than exceptRunID, whatever its trigger or live flag (the hourly limit of a
+// slack:live recipe, D15): its started_at and its scheduled_for (nil when it
+// had none). A run ended by the limit never started, so it never counts.
+// ErrAutomationRunNotFound when no run of it ever started.
+func (db *DB) LastLiveSlackRunStart(automationID, exceptRunID int64) (started time.Time, scheduledFor *time.Time, err error) {
+	var startedAt string
+	var sched sql.NullString
+	err = db.QueryRow(`SELECT started_at, scheduled_for FROM automation_runs
+		WHERE automation_id = ? AND id <> ? AND started_at IS NOT NULL
+		ORDER BY started_at DESC, id DESC LIMIT 1`, automationID, exceptRunID).Scan(&startedAt, &sched)
+	if errors.Is(err, sql.ErrNoRows) {
+		return time.Time{}, nil, fmt.Errorf("automation %d: no started run: %w", automationID, ErrAutomationRunNotFound)
+	}
 	if err != nil {
-		return time.Time{}, fmt.Errorf("reading the last run start of automation %d: %w", automationID, err)
+		return time.Time{}, nil, fmt.Errorf("reading the last run start of automation %d: %w", automationID, err)
 	}
-	if !last.Valid {
-		return time.Time{}, fmt.Errorf("automation %d: no started run: %w", automationID, ErrAutomationRunNotFound)
+	if started, err = time.Parse(automationTimeLayout, startedAt); err != nil {
+		return time.Time{}, nil, fmt.Errorf("automation %d started_at %q: %w", automationID, startedAt, err)
 	}
-	t, err := time.Parse(automationTimeLayout, last.String)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("automation %d started_at %q: %w", automationID, last.String, err)
+	if scheduledFor, err = parseAutomationTime(sched, "scheduled_for"); err != nil {
+		return time.Time{}, nil, err
 	}
-	return t, nil
+	return started, scheduledFor, nil
 }
 
 // LimitQueuedLiveSlackRun ends queued run runID unstarted, as cancelled with

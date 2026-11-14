@@ -137,12 +137,12 @@ func codexExecArgs(apps, mcp []string) []string {
 // turn completes or the child closes its output. It returns the child's
 // stderr.
 func runCodex(ctx context.Context, bin string, args, env []string, prompt string, handle func(codexEvent)) (stderr string, err error) {
-	c, err := startChild(ctx, bin, args, env, nil)
+	c, err := startChild(ctx, bin, args, env, nil, newMeter("codex", codexUsageLine))
 	if err != nil {
 		return "", err
 	}
 	defer c.stop()
-	_ = c.write(prompt)
+	_ = c.ask(prompt, prompt)
 	_ = c.stdin.Close()
 	for {
 		select {

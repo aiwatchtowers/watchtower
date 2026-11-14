@@ -2,30 +2,22 @@ package slacklive
 
 import (
 	"context"
-	"fmt"
 	"slices"
 	"time"
 
 	"watchtower/internal/db"
 )
 
-// Check probes provider ("claude" or "codex") with bin and env, then records
-// the verdict: one slack_live_status row per covered team. A cancelled ctx
-// returns its error and writes nothing.
+// Check runs probe with bin and env, then records the verdict under the
+// probe's provider: one slack_live_status row per covered team. A cancelled
+// ctx returns its error and writes nothing.
 //
 // A verdict that names its teams (an ok probe that saw them) is written for
 // those; any other verdict (including every failure) is written for team ”
 // and for every connected Slack account, so a stale ok never outlives it.
-func Check(ctx context.Context, d *db.DB, provider, bin string, env []string, now time.Time) (Result, error) {
-	var r Result
-	switch provider {
-	case "claude":
-		r = ProbeClaude(ctx, bin, env)
-	case "codex":
-		r = ProbeCodex(ctx, bin, env)
-	default:
-		return Result{}, fmt.Errorf("unknown provider %q", provider)
-	}
+func Check(ctx context.Context, d *db.DB, probe Probe, bin string, env []string, now time.Time) (Result, error) {
+	r := probe(ctx, bin, env)
+	provider := r.Provider
 	if err := ctx.Err(); err != nil {
 		return Result{}, err
 	}
@@ -35,14 +27,13 @@ func Check(ctx context.Context, d *db.DB, provider, bin string, env []string, no
 	}
 	var teams, absent []string
 	if r.Status == StatusOK {
-		for _, t := range r.Teams {
-			if provider == "claude" { // a permalink label, matched to its account
-				t = teamIDForDomain(accounts, t)
-			}
-			if t != "" {
+		teams = append(teams, r.Teams...)
+		for _, domain := range r.TeamDomains { // a permalink label, matched to its account
+			if t := teamIDForDomain(accounts, domain); t != "" {
 				teams = append(teams, t)
 			}
 		}
+		teams = slices.DeleteFunc(teams, func(t string) bool { return t == "" })
 		// A connected account that the provider did not list cannot be read
 		// through it: record that, so an earlier ok for it does not linger.
 		if len(teams) > 0 {
@@ -60,7 +51,7 @@ func Check(ctx context.Context, d *db.DB, provider, bin string, env []string, no
 		}
 	}
 	teams = append(teams, "")
-	r.Teams = dedupe(teams)
+	r.Teams, r.TeamDomains = dedupe(teams), nil
 	for _, t := range r.Teams {
 		if err := d.UpsertSlackLiveStatus(db.SlackLiveStatus{TeamID: t, Provider: provider,
 			Status: r.Status, ErrorClass: r.ErrorClass, ConnectorID: r.ConnectorID, CheckedAt: now}); err != nil {

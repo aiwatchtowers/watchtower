@@ -43,7 +43,6 @@ func liveSchedule(cron string) []byte {
 }
 
 func TestSlackLiveSchedule_MinimumHourly(t *testing.T) {
-	now := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
 	kyiv, err := time.LoadLocation("Europe/Kyiv")
 	if err != nil {
 		t.Skipf("zone database: %v", err)
@@ -58,16 +57,24 @@ func TestSlackLiveSchedule_MinimumHourly(t *testing.T) {
 		ok   bool
 	}{
 		{"*/30 * * * *", time.UTC, false},
+		{"*/30 * 1 1 *", time.UTC, false}, // only on 1 January, still twice an hour
 		{"0 * * * *", time.UTC, true},
+		{"59 * * * *", time.UTC, true},
+		{"0,59 * * * *", time.UTC, false},
 		{"0 */2 * * *", time.UTC, true},
 		{"15,45 9 * * *", time.UTC, false},
-		{"0 * * * *", kyiv, true},       // both fall-back passes are an hour apart
-		{"30 2 * * *", kyiv, true},      // across both DST changes
-		{"30 1,2 * * *", berlin, false}, // 02:30 is skipped to 03:00 on spring-forward day: 30 min
-		{"0 1,3 * * *", berlin, true},   // two wall hours, never less than one real hour
+		{"0 23,0 * * *", time.UTC, true},   // 23:00 then 00:00 the next day: an hour
+		{"30 0,23 * * 1", time.UTC, true},  // 23:30 then 00:30: an hour
+		{"0,50 0 * * *", time.UTC, false},  // inside one hour
+		{"0 0,1,23 * * *", time.UTC, true}, // 23:00 → 00:00 → 01:00
+		{"0 * * * *", kyiv, true},          // both fall-back passes are an hour apart
+		{"30 2 * * *", kyiv, true},         // across both DST changes
+		{"30 1,2 * * *", berlin, false},    // 02:30 skipped to 03:00 on spring-forward day: 30 min
+		{"0 1,3 * * *", berlin, true},      // two wall hours, never less than one real hour
+		{"30 1,2 * * *", time.UTC, true},   // the same schedule without a clock change
 	}
 	for _, c := range cases {
-		SetLiveCadenceClock(t, c.zone, now)
+		SetLiveCadenceZone(t, c.zone)
 		_, err := ParseRecipe("live", liveSchedule(c.cron), personalScope)
 		if c.ok && err != nil {
 			t.Errorf("%q in %s: %v; want accepted", c.cron, c.zone, err)
@@ -77,9 +84,16 @@ func TestSlackLiveSchedule_MinimumHourly(t *testing.T) {
 		}
 	}
 	// Without slack:live the same schedule is fine.
-	SetLiveCadenceClock(t, time.UTC, now)
+	SetLiveCadenceZone(t, time.UTC)
 	if _, err := ParseRecipe("x", recipeWith("name: X\ntrigger:\n  schedule: \"*/30 * * * *\"\n", "x\n"), personalScope); err != nil {
 		t.Fatalf("a recipe without slack:live keeps its schedule: %v", err)
+	}
+}
+
+func TestManifest_SlackLiveRefusedInBuiltin(t *testing.T) {
+	_, err := ParseManifest([]string{"slack:live"}, nil, Scope{Kind: ScopePersonal, BuiltinID: "morning-brief"})
+	if err == nil || !strings.Contains(err.Error(), "not allowed in a built-in automation") {
+		t.Fatalf("slack:live in a built-in: err = %v; want refused", err)
 	}
 }
 
