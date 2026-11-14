@@ -79,3 +79,61 @@ enabled = true
 		assert.Error(t, err)
 	})
 }
+
+func TestReadOnlyAppOverrides_RefusesUnsafeKeys(t *testing.T) {
+	_, err := overrides(t, "[apps.\"a.b\"]\nenabled = true\n", "app_a", "list")
+	assert.Error(t, err, "a quoted config key with a dot")
+	_, err = overrides(t, "[apps.app_a.tools.\"x y\"]\nenabled = true\n", "app_a", "list")
+	assert.Error(t, err, "a quoted tool key")
+	_, err = overrides(t, "\x00", "app.a", "list")
+	assert.Error(t, err, "the connector id")
+	_, err = overrides(t, "\x00", "app_a", "li=st")
+	assert.Error(t, err, "a listed tool")
+	_, err = WarmUpAppOverrides(writeConfig(t, "[apps.\"a.b\"]\nenabled = true\n"))
+	assert.Error(t, err)
+}
+
+func writeConfig(t *testing.T, config string) string {
+	t.Helper()
+	home := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(home, "config.toml"), []byte(config), 0o600))
+	return home
+}
+
+func TestWarmUpAppOverrides(t *testing.T) {
+	args, err := WarmUpAppOverrides(t.TempDir())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"features.apps=true", "apps._default.default_tools_enabled=false"}, kvs(args))
+
+	args, err = WarmUpAppOverrides(writeConfig(t, `
+[apps.app_a]
+default_tools_enabled = true
+[apps.app_a.tools.send]
+enabled = true
+[apps.app_b]
+enabled = true
+[apps._default]
+enabled = true
+`))
+	require.NoError(t, err)
+	assert.Equal(t, []string{
+		"features.apps=true", "apps._default.default_tools_enabled=false",
+		"apps.app_a.default_tools_enabled=false", "apps.app_a.tools.send.enabled=false",
+		"apps.app_b.default_tools_enabled=false",
+	}, kvs(args))
+	assert.NotContains(t, kvs(args), "apps._default.enabled=false")
+
+	_, err = WarmUpAppOverrides(writeConfig(t, "[apps\nbroken"))
+	assert.Error(t, err)
+}
+
+func TestNoMCPServerArgs(t *testing.T) {
+	home := writeConfig(t, "[mcp_servers.mine]\ncommand = \"x\"\n")
+	args, err := NoMCPServerArgs(home, t.TempDir())
+	require.NoError(t, err)
+	require.Len(t, args, 2)
+	assert.Equal(t, "-c", args[0])
+	assert.Contains(t, args[1], `"mine"={enabled=false}`)
+	_, err = NoMCPServerArgs(writeConfig(t, "[mcp_servers\nbroken"), t.TempDir())
+	assert.Error(t, err)
+}

@@ -247,7 +247,7 @@ func TestLiveProbe_CodexWarmupFillsCacheThenReadOnlyRun(t *testing.T) {
 	home := codexHomeWith(t, "chatgpt", false)
 	// The owner's config tries to enable a write tool and another app.
 	require.NoError(t, os.WriteFile(filepath.Join(home, "config.toml"), []byte(
-		"[apps.asdk_app_test.tools.slack_send_message]\nenabled = true\n[apps.asdk_app_other]\nenabled = true\n"), 0o600))
+		"[apps.asdk_app_test]\ndefault_tools_enabled = true\n[apps.asdk_app_test.tools.slack_send_message]\nenabled = true\n[apps.asdk_app_other]\nenabled = true\n[mcp_servers.mine]\ncommand = \"x\"\n"), 0o600))
 	fixture, err := filepath.Abs(filepath.Join("testdata", "codex_apps_tools.json"))
 	require.NoError(t, err)
 	argsFile := filepath.Join(t.TempDir(), "args")
@@ -260,6 +260,13 @@ func TestLiveProbe_CodexWarmupFillsCacheThenReadOnlyRun(t *testing.T) {
 	runs := strings.Split(strings.TrimSpace(string(b)), "\n")
 	require.Len(t, runs, 2)
 	assert.NotContains(t, runs[0], "slack_list_workspaces")
+	for _, want := range []string{"features.apps=true", "apps._default.default_tools_enabled=false",
+		"apps.asdk_app_test.default_tools_enabled=false", "apps.asdk_app_test.tools.slack_send_message.enabled=false"} {
+		assert.Contains(t, runs[0], want, "warm-up")
+	}
+	for _, run := range runs {
+		assert.Contains(t, run, `"mine"={enabled=false}`, "the owner's MCP servers are off in every run")
+	}
 	for _, want := range []string{"features.apps=true", "apps._default.enabled=false",
 		"apps.asdk_app_test.tools.slack_list_workspaces.enabled=true",
 		"apps.asdk_app_test.tools.slack_send_message.enabled=false", "apps.asdk_app_other.enabled=false"} {
