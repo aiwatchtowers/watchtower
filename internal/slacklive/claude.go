@@ -144,14 +144,31 @@ var claudeWriteTools = []string{"slack_send_message", "slack_schedule_message",
 // claudeArgs is the chat's claude.ai-mode shape (no --strict-mcp-config, the
 // connectors load) with user settings skipped and the write tools disallowed.
 func claudeArgs() []string {
-	disallowed := make([]string, len(claudeWriteTools))
-	for i, t := range claudeWriteTools {
-		disallowed[i] = "mcp__claude_ai_Slack__" + t
-	}
+	disallowed := ClaudeDisallowedWrites()
 	return []string{"-p", "--input-format", "stream-json", "--output-format", "stream-json",
 		"--verbose", "--no-session-persistence", "--setting-sources", "project,local",
 		"--permission-prompt-tool", "stdio", "--disallowedTools", strings.Join(disallowed, ",")}
 }
+
+// ClaudeConnectorPrefix is the claude.ai Slack connector's tool prefix as
+// the CLI names its tools (mcp__claude_ai_Slack__<name>).
+const ClaudeConnectorPrefix = "mcp__claude_ai_Slack__"
+
+// ClaudeDisallowedWrites is the --disallowedTools list of the connector's
+// write tools, as the probe passes it (an automation agent() child on Live
+// passes the same).
+func ClaudeDisallowedWrites() []string {
+	out := make([]string, len(claudeWriteTools))
+	for i, t := range claudeWriteTools {
+		out[i] = ClaudeConnectorPrefix + t
+	}
+	return out
+}
+
+// ControlErrorFor answers a control_request of any subtype but
+// can_use_tool with an error, so the CLI never waits on it; "" for any other
+// line.
+func ControlErrorFor(line string) string { return controlErrorFor(line) }
 
 // controlErrorFor answers a control_request the probe does not serve (any
 // subtype but can_use_tool) so the CLI never waits on it; "" for other lines.

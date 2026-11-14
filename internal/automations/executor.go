@@ -338,6 +338,9 @@ func (p *poll) consider(r db.AutomationRun) error {
 	if p.free <= 0 {
 		return nil
 	}
+	if limited, err := p.e.limitLiveSlack(r.ID, a, p.now); err != nil || limited {
+		return err
+	}
 	claimed, err := p.e.claim(r.ID, a, p.now, p.e.maxConcurrent)
 	if err != nil || !claimed {
 		return err // not claimed: another executor won, or the automation is at its concurrency
@@ -466,6 +469,11 @@ func (e *Executor) ExecuteInlinePinned(ctx context.Context, runID int64, approva
 		}
 		return e.db.GetAutomationRun(runID)
 	}
+	if limited, err := e.limitLiveSlack(runID, a, now); err != nil {
+		return nil, fmt.Errorf("automation run %d: %w", runID, err)
+	} else if limited {
+		return e.db.GetAutomationRun(runID)
+	}
 	claimed, err := e.claim(runID, a, now, 0)
 	if err != nil {
 		return nil, fmt.Errorf("automation run %d: %w", runID, err)
@@ -475,6 +483,22 @@ func (e *Executor) ExecuteInlinePinned(ctx context.Context, runID int64, approva
 	}
 	e.runClaimed(ctx, runID, a, claimKind{inline: true})
 	return e.db.GetAutomationRun(runID)
+}
+
+// limitLiveSlack ends queued run runID of a slack:live recipe unstarted
+// (cancelled, not_runnable, LiveSlackLimitedError) when it would start less
+// than an hour after the recipe's previous run (D15; every trigger, dry
+// runs included) and reports whether it did. A run claimed or ended
+// meanwhile is left to its owner (limited, no error).
+func (e *Executor) limitLiveSlack(runID int64, a *db.Automation, now time.Time) (bool, error) {
+	limited, err := liveSlackLimited(e.db, a, runID, now)
+	if err != nil || !limited {
+		return false, err
+	}
+	if err := e.db.LimitQueuedLiveSlackRun(runID, LiveSlackLimitedError, now); err != nil && !errors.Is(err, db.ErrRunNotQueued) {
+		return false, err
+	}
+	return true, nil
 }
 
 // ExecuteBuiltinInline claims a slot automation's run runID and executes it

@@ -13,6 +13,7 @@ import (
 	"watchtower/internal/chat"
 	"watchtower/internal/codex"
 	"watchtower/internal/config"
+	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/providers"
 	"watchtower/internal/specreview"
@@ -167,6 +168,11 @@ type agentClientWiring struct {
 	mcpArgs []string
 	env     []string // the child's whole environment (automationAgentEnv)
 	tools   []string // the effective watchtower tools
+	// live is set on a slack:live run only (#1709): Claude moves to the
+	// stream-json launch, Codex gets the read-only Slack app allow-list.
+	// Without it every argv is today's, byte-for-byte.
+	live     *agentSlackLive
+	database *db.DB
 }
 
 // newClaudeAgentClient narrows --allowedTools to the effective set plus
@@ -177,6 +183,10 @@ func newClaudeAgentClient(a agentClientWiring) (ai.Provider, func(), error) {
 	c.SetWatchtowerTools(append(slices.Clone(a.tools), "get_action"))
 	c.SetMaxTurns(automationAgentMaxTurns)
 	c.SetChildEnv(a.env)
+	if a.live != nil {
+		c.SetStreamJSONInput(true)
+		c.SetStreamJSONHooks(a.live.claudeHooks())
+	}
 	return c, func() {}, nil
 }
 
@@ -196,6 +206,14 @@ func newCodexAgentClient(a agentClientWiring) (ai.Provider, func(), error) {
 	c.SetRunHome(home)
 	c.SetServersFromHome()
 	c.SetMaxTurns(automationAgentMaxTurns)
+	if a.live != nil {
+		// The run's own home is the one codex loads; its auth.json links
+		// the owner's, so a ChatGPT login reaches the apps.
+		if apps := codexAgentSlackApps(a.database, home); apps != nil {
+			c.SetChatApps(apps)
+			c.SetToolCallObserver(a.live.observeCodex)
+		}
+	}
 	return c, removeHome, nil
 }
 

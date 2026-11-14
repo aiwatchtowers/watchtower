@@ -76,6 +76,10 @@ type AgentRequest struct {
 	Manifest        *Manifest
 	BeforeModelCall func() error
 	AfterModelCall  func(in, out int)
+	// SlackLive is the manifest's slack:live: the runner may let the agent
+	// read Slack through the owner's own connector (Claude's claude.ai
+	// Slack, Codex's Slack app), read tools only (#1709 spec §4).
+	SlackLive bool
 }
 
 // AgentResult is what an agent() runner returns. The tokens are the call's
@@ -86,6 +90,13 @@ type AgentResult struct {
 	InputTokens, OutputTokens int64
 	Estimated                 bool
 	ReportedCostUSD           *float64
+	// UsedSlackLive: the agent called a Slack connector read tool (the run
+	// is marked live_slack, D14).
+	UsedSlackLive bool
+	// SlackLiveDenied names the Slack connector write tools the agent tried
+	// and the runner denied (Live is read-only in automations); the agent
+	// step's summary lists them.
+	SlackLiveDenied []string
 }
 
 // AgentRunner runs agent() calls; Name ("claude", "codex", "runtime-b") is

@@ -163,13 +163,21 @@ func (w *slackLiveWatcher) writeStatus(provider string, e chat.Event) {
 	if w.database == nil || w.classify == nil || e.OK == nil {
 		return
 	}
-	ok := *e.OK
-	status, class := w.classify(provider, e.Summary, true, ok) // the tool ran, so the connector is present
-	row := db.SlackLiveStatus{Provider: provider, Status: status, ErrorClass: class, CheckedAt: w.now()}
-	if rows, err := w.database.ListSlackLiveStatus(); err == nil {
+	recordSlackLiveUse(w.database, w.classify, provider, e.Summary, *e.OK, w.now())
+}
+
+// recordSlackLiveUse writes the status one connector call shows (the tool
+// ran, so the connector is present) on the provider's newest row's key, so
+// a probe's team and connector id stay with it. Shared by the chat and the
+// automation agent() child (#1709 spec §1 "Freshness").
+func recordSlackLiveUse(database *db.DB, classify func(provider, text string, connected, readOK bool) (string, string),
+	provider, text string, ok bool, now time.Time) {
+	status, class := classify(provider, text, true, ok)
+	row := db.SlackLiveStatus{Provider: provider, Status: status, ErrorClass: class, CheckedAt: now}
+	if rows, err := database.ListSlackLiveStatus(); err == nil {
 		if r, found := newestSlackLive(rows, provider); found {
 			row.TeamID = r.TeamID
 		}
 	}
-	_ = w.database.UpsertSlackLiveStatus(row)
+	_ = database.UpsertSlackLiveStatus(row)
 }
