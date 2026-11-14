@@ -63,6 +63,9 @@ func WaitConnected(ctx context.Context, lines <-chan string, write func(string) 
 				}
 				servers, ok := chat.ParseMCPStatus(line, id)
 				if !ok {
+					if reply := controlErrorFor(line); reply != "" {
+						_ = write(reply)
+					}
 					continue
 				}
 				for _, s := range servers {
@@ -133,6 +136,36 @@ var slackHost = regexp.MustCompile(`https?://([a-z0-9][a-z0-9-]*)\.slack\.com`)
 
 const claudeProbePrompt = `Call the slack_search_channels tool exactly once with query "a" and limit 1, then reply with the single word done. Do not call any other tool.`
 
+// claudeWriteTools are the connector's write tools, refused twice: the argv
+// disallows them and the permission gate denies anything but the one search.
+var claudeWriteTools = []string{"slack_send_message", "slack_schedule_message",
+	"slack_send_message_draft", "slack_create_canvas", "slack_update_canvas", "slack_add_reaction"}
+
+// claudeArgs is the chat's claude.ai-mode shape (no --strict-mcp-config, the
+// connectors load) with user settings skipped and the write tools disallowed.
+func claudeArgs() []string {
+	disallowed := make([]string, len(claudeWriteTools))
+	for i, t := range claudeWriteTools {
+		disallowed[i] = "mcp__claude_ai_Slack__" + t
+	}
+	return []string{"-p", "--input-format", "stream-json", "--output-format", "stream-json",
+		"--verbose", "--no-session-persistence", "--setting-sources", "project,local",
+		"--permission-prompt-tool", "stdio", "--disallowedTools", strings.Join(disallowed, ",")}
+}
+
+// controlErrorFor answers a control_request the probe does not serve (any
+// subtype but can_use_tool) so the CLI never waits on it; "" for other lines.
+func controlErrorFor(line string) string {
+	var ev streamEvent
+	if json.Unmarshal([]byte(line), &ev) != nil || ev.Type != "control_request" ||
+		ev.RequestID == "" || ev.Request.Subtype == "can_use_tool" {
+		return ""
+	}
+	b, _ := json.Marshal(map[string]any{"type": "control_response", "response": map[string]string{
+		"subtype": "error", "request_id": ev.RequestID, "error": "not supported by the Slack Live probe"}})
+	return string(b)
+}
+
 // ProbeClaude runs the real read call through the claude.ai Slack connector.
 // A cancelled ctx returns a zero-status Result: the caller writes nothing.
 func ProbeClaude(ctx context.Context, claudeBin string, env []string) Result {
@@ -147,9 +180,7 @@ func ProbeClaude(ctx context.Context, claudeBin string, env []string) Result {
 			apiKey.Store(ev.APIKeySrc)
 		}
 	}
-	c, err := startChild(pctx, claudeBin, []string{"-p", "--input-format", "stream-json",
-		"--output-format", "stream-json", "--verbose", "--no-session-persistence",
-		"--permission-prompt-tool", "stdio"}, env, observe)
+	c, err := startChild(pctx, claudeBin, claudeArgs(), env, observe)
 	if err != nil {
 		res.Status, res.ErrorClass = StatusNotConnected, "cli_missing"
 		return res
@@ -169,8 +200,7 @@ func ProbeClaude(ctx context.Context, claudeBin string, env []string) Result {
 		if src, _ := apiKey.Load().(string); !readOK && src != "" && src != "none" {
 			text.WriteString(" " + SentinelAPIKeyLogin)
 		}
-		text.WriteString(" " + c.stderr.String())
-		res.Status, res.ErrorClass = Classify("claude", text.String(), connected, readOK)
+		res.Status, res.ErrorClass = classify(text.String(), c.stderr.String(), connected, readOK)
 		return res
 	}
 
@@ -199,6 +229,10 @@ func ProbeClaude(ctx context.Context, claudeBin string, env []string) Result {
 			}
 			switch ev.Type {
 			case "control_request":
+				if reply := controlErrorFor(line); reply != "" {
+					_ = c.write(reply)
+					continue
+				}
 				if ev.Request.Subtype != "can_use_tool" || ev.RequestID == "" {
 					continue
 				}

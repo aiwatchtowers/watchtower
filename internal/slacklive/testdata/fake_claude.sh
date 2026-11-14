@@ -1,5 +1,5 @@
 #!/bin/sh
-# Fake claude stream-json child. SCENARIO: ok unknown admin rate absent apikey deny hang.
+# Fake claude stream-json child. SCENARIO: ok unknown admin rate plan timeout absent apikey deny hang.
 # PIDFILE: where to write the pid. RECORD: file collecting the host's answer to a can_use_tool.
 [ -n "$PIDFILE" ] && echo $$ > "$PIDFILE"
 echo '{"type":"system","subtype":"init","apiKeySource":"'"${API_KEY_SRC:-none}"'"}'
@@ -22,6 +22,10 @@ while IFS= read -r line; do
           IFS= read -r resp; echo "$resp" >> "$RECORD"
           echo '{"type":"result","is_error":false,"result":"done"}'; exit 0 ;;
         *)
+          if [ -n "$EXTRA_CONTROL" ]; then
+            echo '{"type":"control_request","request_id":"hook-1","request":{"subtype":"hook_callback"}}'
+            IFS= read -r resp; echo "$resp" >> "$RECORD"
+          fi
           tool_use "$SEARCH"; can_use "$SEARCH"
           IFS= read -r resp; [ -n "$RECORD" ] && echo "$resp" >> "$RECORD"
           case "$SCENARIO" in
@@ -29,6 +33,8 @@ while IFS= read -r line; do
             unknown) tool_result true 'Unknown tool: slack_search_channels' ;;
             admin) tool_result true 'An admin must approve this app first' ;;
             rate) tool_result true 'HTTP 429 Too Many Requests' ;;
+            plan) tool_result true 'This tool is not available on your plan' ;;
+            timeout) tool_result true 'request timed out' ;;
           esac
           echo '{"type":"result","is_error":false,"result":"done"}'; exit 0 ;;
       esac ;;

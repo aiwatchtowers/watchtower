@@ -40,11 +40,20 @@ var ReadTools = []string{
 // concatenated tool error / stderr / result error text; connected says the
 // Slack connector was present; readOK says a real read call succeeded.
 func Classify(provider, text string, connected, readOK bool) (status, errorClass string) {
+	return classify(text, "", connected, readOK)
+}
+
+// classify is Classify with the evidence split: toolText is what the tool
+// call or the run's result reported, stderr is the child's raw stderr. Plan
+// and unknown-tool wording is matched in toolText only, since a CLI's stderr
+// is noisy and mentions plans and upgrades for unrelated reasons.
+func classify(toolText, stderr string, connected, readOK bool) (status, errorClass string) {
 	if connected && readOK {
 		return StatusOK, ""
 	}
-	t := strings.ToLower(text)
-	has := func(subs ...string) bool {
+	tool := strings.ToLower(toolText)
+	all := tool + " " + strings.ToLower(stderr)
+	has := func(t string, subs ...string) bool {
 		for _, s := range subs {
 			if strings.Contains(t, s) {
 				return true
@@ -53,17 +62,18 @@ func Classify(provider, text string, connected, readOK bool) (status, errorClass
 		return false
 	}
 	switch {
-	case has(SentinelAPIKeyLogin):
+	case has(all, SentinelAPIKeyLogin):
 		return StatusNotConnected, "api_key_login"
-	case has("admin") && has("approv"):
+	case has(all, "admin") && has(all, "approv"):
 		return StatusNeedsAdmin, "admin_approval"
-	case has("429", "rate limit", "rate_limit", "ratelimit", "too many requests"):
+	case has(all, "429", "rate limit", "rate_limit", "ratelimit", "too many requests"):
 		return StatusUnavailable, "rate_limited"
-	case has("timeout", "timed out", "deadline exceeded"):
+	case has(all, "timeout", "timed out", "deadline exceeded"):
 		return StatusUnavailable, "timeout"
-	case has("your plan", "paid plan", "upgrade", "not available on"):
+	case has(tool, "not available on your plan", "your plan does not", "paid plan",
+		"upgrade your plan", "upgrade to a"):
 		return StatusNoPlan, "plan"
-	case has("unknown tool"):
+	case has(tool, "unknown tool"):
 		return StatusNotConnected, "not_authorized"
 	case !connected:
 		return StatusNotConnected, "no_connector"

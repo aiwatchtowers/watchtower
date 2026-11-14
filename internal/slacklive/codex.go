@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"watchtower/internal/codex"
 )
 
 const codexListTool = "slack_list_workspaces"
@@ -14,6 +16,8 @@ const codexListTool = "slack_list_workspaces"
 const codexProbePrompt = `Call the slack_list_workspaces tool exactly once, then reply with the single word done. Do not call any other tool.`
 
 var teamIDPattern = regexp.MustCompile(`\bT[A-Z0-9]{7,}\b`)
+
+func hasDigit(s string) bool { return strings.ContainsAny(s, "0123456789") }
 
 // codexHome is the CODEX_HOME the child will see: from env, else the
 // process's, else ~/.codex.
@@ -30,9 +34,9 @@ func codexHome(env []string) string {
 	return filepath.Join(home, ".codex")
 }
 
-// codexAPIKeyLogin reports a present auth.json whose login is not a ChatGPT
+// codexAPIKeyLogin reports a present auth.json whose auth_mode is set and not a ChatGPT
 // account (an API key never has the account's apps). A missing or unreadable
-// file is not a verdict: the call itself decides.
+// file, or one with no auth_mode, is not a verdict: the call itself decides.
 func codexAPIKeyLogin(home string) bool {
 	b, err := os.ReadFile(filepath.Join(home, "auth.json"))
 	if err != nil {
@@ -44,7 +48,7 @@ func codexAPIKeyLogin(home string) bool {
 	if json.Unmarshal(b, &a) != nil {
 		return false
 	}
-	return a.AuthMode != "chatgpt"
+	return a.AuthMode != "" && a.AuthMode != "chatgpt"
 }
 
 // slackConnectorID reads the Slack app's connector id from Codex's own apps
@@ -96,7 +100,13 @@ func workspaceTeamIDs(result json.RawMessage) []string {
 		}
 		return ids
 	}
-	return teamIDPattern.FindAllString(string(result), -1)
+	var ids []string
+	for _, id := range teamIDPattern.FindAllString(string(result), -1) {
+		if hasDigit(id) {
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }
 
 type codexEvent struct {
@@ -112,8 +122,52 @@ type codexEvent struct {
 	} `json:"item"`
 }
 
-// ProbeCodex runs the real read call through the Codex Slack app. A
-// cancelled ctx returns a zero-status Result.
+const codexWarmupPrompt = `Reply with the single word ok. Do not call any tool.`
+
+// codexExecArgs is the exec shape every probe run uses; apps is the app
+// section: the read-only allow-list, or the warm-up's "no tool callable".
+func codexExecArgs(apps []string) []string {
+	args := []string{"exec", "--json", "--ephemeral", "--skip-git-repo-check",
+		"-c", "approval_policy=never", "-c", "sandbox_mode=read-only"}
+	return append(append(args, apps...), "-")
+}
+
+// runCodex runs one exec with prompt on stdin until handle says stop, the
+// turn completes or the child closes its output. It returns the child's
+// stderr.
+func runCodex(ctx context.Context, bin string, args, env []string, prompt string, handle func(codexEvent)) (stderr string, err error) {
+	c, err := startChild(ctx, bin, args, env, nil)
+	if err != nil {
+		return "", err
+	}
+	defer c.stop()
+	_ = c.write(prompt)
+	_ = c.stdin.Close()
+	for {
+		select {
+		case <-ctx.Done():
+			return c.stderr.String(), nil
+		case line, ok := <-c.lines:
+			if !ok {
+				return c.stderr.String(), nil
+			}
+			var ev codexEvent
+			if json.Unmarshal([]byte(line), &ev) != nil {
+				continue
+			}
+			handle(ev)
+			if ev.Type == "turn.completed" {
+				return c.stderr.String(), nil
+			}
+		}
+	}
+}
+
+// ProbeCodex runs the real read call through the Codex Slack app, with only
+// slack_list_workspaces callable. The app's connector id comes from Codex's
+// own cache; when it is not cached yet one warm-up run (no tool callable)
+// fills it, and a still-missing id fails closed. A cancelled ctx returns a
+// zero-status Result.
 func ProbeCodex(ctx context.Context, codexBin string, env []string) Result {
 	res := Result{Provider: "codex"}
 	home := codexHome(env)
@@ -123,68 +177,80 @@ func ProbeCodex(ctx context.Context, codexBin string, env []string) Result {
 	}
 	pctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
-	c, err := startChild(pctx, codexBin, []string{"exec", "--json", "--ephemeral", "--skip-git-repo-check",
-		"-c", "approval_policy=never", "-c", "sandbox_mode=read-only", "-c", "features.apps=true", "-"}, env, nil)
+	cancelled := func() bool { return ctx.Err() != nil }
+	failed := func(stderr, tool string, connected, readOK bool) Result {
+		if pctx.Err() != nil {
+			tool += " timeout"
+		}
+		res.Status, res.ErrorClass = classify(tool, stderr, connected, readOK)
+		return res
+	}
+
+	id := slackConnectorID(home)
+	if id == "" {
+		warm := codexExecArgs([]string{"-c", "features.apps=true", "-c", "apps._default.default_tools_enabled=false"})
+		var tool strings.Builder
+		stderr, err := runCodex(pctx, codexBin, warm, env, codexWarmupPrompt, func(ev codexEvent) {
+			if ev.Type == "error" {
+				tool.WriteString(" " + ev.Message)
+			}
+		})
+		if cancelled() {
+			return Result{Provider: "codex"}
+		}
+		if err != nil {
+			res.Status, res.ErrorClass = StatusNotConnected, "cli_missing"
+			return res
+		}
+		if id = slackConnectorID(home); id == "" {
+			if pctx.Err() != nil {
+				return failed(stderr, tool.String(), false, false)
+			}
+			res.Status, res.ErrorClass = StatusNotConnected, "connector_id_unknown"
+			return res
+		}
+	}
+	apps, err := codex.ReadOnlyAppOverrides(home, id, []string{codexListTool})
+	if err != nil {
+		res.Status, res.ErrorClass = StatusUnavailable, "config_unreadable"
+		return res
+	}
+
+	connected, readOK := false, false
+	var tool strings.Builder
+	seen := map[string]bool{}
+	stderr, err := runCodex(pctx, codexBin, codexExecArgs(apps), env, codexProbePrompt, func(ev codexEvent) {
+		switch {
+		case ev.Type == "item.completed" && ev.Item.Type == "mcp_tool_call" &&
+			strings.HasSuffix(ev.Item.Tool, codexListTool):
+			connected = true
+			if ev.Item.Status == "completed" {
+				readOK = true
+				for _, tid := range workspaceTeamIDs(ev.Item.Result) {
+					if !seen[tid] {
+						seen[tid] = true
+						res.Teams = append(res.Teams, tid)
+					}
+				}
+			} else {
+				tool.WriteString(" " + string(ev.Item.Error) + " " + string(ev.Item.Result))
+			}
+		case ev.Type == "error":
+			tool.WriteString(" " + ev.Message)
+		case ev.Type == "turn.failed":
+			tool.WriteString(" " + string(ev.Error))
+		}
+	})
+	if cancelled() {
+		return Result{Provider: "codex"}
+	}
 	if err != nil {
 		res.Status, res.ErrorClass = StatusNotConnected, "cli_missing"
 		return res
 	}
-	defer c.stop()
-	_ = c.write(codexProbePrompt)
-	_ = c.stdin.Close()
-
-	connected, readOK := false, false
-	var text strings.Builder
-	seen := map[string]bool{}
-loop:
-	for {
-		select {
-		case <-pctx.Done():
-			break loop
-		case line, ok := <-c.lines:
-			if !ok {
-				break loop
-			}
-			var ev codexEvent
-			if json.Unmarshal([]byte(line), &ev) != nil {
-				continue
-			}
-			switch {
-			case ev.Type == "item.completed" && ev.Item.Type == "mcp_tool_call" &&
-				strings.HasSuffix(ev.Item.Tool, codexListTool):
-				connected = true
-				if ev.Item.Status == "completed" {
-					readOK = true
-					for _, id := range workspaceTeamIDs(ev.Item.Result) {
-						if !seen[id] {
-							seen[id] = true
-							res.Teams = append(res.Teams, id)
-						}
-					}
-				} else {
-					text.WriteString(" " + string(ev.Item.Error) + " " + string(ev.Item.Result))
-				}
-			case ev.Type == "error":
-				text.WriteString(" " + ev.Message)
-			case ev.Type == "turn.failed":
-				text.WriteString(" " + string(ev.Error))
-			case ev.Type == "turn.completed":
-				break loop
-			}
-		}
-	}
-	if ctx.Err() != nil {
-		return Result{Provider: "codex"}
-	}
-	if pctx.Err() != nil {
-		text.WriteString(" timeout")
-	}
-	text.WriteString(" " + c.stderr.String())
-	res.Status, res.ErrorClass = Classify("codex", text.String(), connected, readOK)
+	res = failed(stderr, tool.String(), connected, readOK)
 	if res.Status == StatusOK {
-		if res.ConnectorID = slackConnectorID(home); res.ConnectorID == "" {
-			res.Status, res.ErrorClass = StatusNotConnected, "connector_id_unknown"
-		}
+		res.ConnectorID = id
 	}
 	return res
 }
