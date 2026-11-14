@@ -422,22 +422,25 @@ done
 # metallib in Contents/MacOS is NOT an option: codesign --strict treats it as an
 # unsigned subcomponent and verification fails.
 echo "==> Building MLX metallib..."
-# speech-swift's script passes no Metal language version, so the compiler picks
-# its own default; Xcode 27.2's Metal Toolchain (32023.922) defaults to a version
-# that rejects MLX's steel kernels. Metal 3.2 compiles every kernel (fence.metal
-# needs 3.2, so 3.1 does not) and is what earlier toolchains produced. We run a
-# copy of the script with -std=metal3.2 added, and stop if its line has moved.
+# speech-swift's script passes no deployment target, so the Metal compiler builds
+# for the SDK's own macOS (v0.28.1's metallib says macosx26.4); Xcode 27.2's Metal
+# Toolchain (32023.922) then rejects MLX's steel kernels. MLX's own CMake passes
+# -mmacosx-version-min. macOS 15 (Metal 3.2) is the lowest that compiles every
+# kernel: fence.metal needs Metal 3.2, so the app's macOS 14 floor does not. We run
+# a copy of the script with the flag added, and stop if its line has moved.
 METALLIB_SCRIPT="$(mktemp "${TMPDIR:-/tmp}/build_mlx_metallib.XXXXXX")"
 sed 's/^\([[:space:]]*\)-fno-fast-math$/\1-fno-fast-math\
-\1-std=metal3.2/' "$DESKTOP_DIR/.build/checkouts/speech-swift/scripts/build_mlx_metallib.sh" > "$METALLIB_SCRIPT"
-if ! grep -q -- '-std=metal3.2' "$METALLIB_SCRIPT"; then
-    echo "error: speech-swift's build_mlx_metallib.sh changed; could not pin the Metal language version" >&2
+\1-mmacosx-version-min=15.0/' "$DESKTOP_DIR/.build/checkouts/speech-swift/scripts/build_mlx_metallib.sh" > "$METALLIB_SCRIPT"
+if ! grep -q -- '^[[:space:]]*-mmacosx-version-min=15.0$' "$METALLIB_SCRIPT"; then
+    echo "error: speech-swift's build_mlx_metallib.sh changed; could not add the Metal deployment target" >&2
     rm -f "$METALLIB_SCRIPT"
     exit 1
 fi
 # BUILD_DIR here is scoped to the child script only (speech-swift's script reads it); the outer $BUILD_DIR is untouched.
-BUILD_DIR="$DESKTOP_DIR/.build" bash "$METALLIB_SCRIPT" release
+METALLIB_RC=0
+BUILD_DIR="$DESKTOP_DIR/.build" bash "$METALLIB_SCRIPT" release || METALLIB_RC=$?
 rm -f "$METALLIB_SCRIPT"
+[ "$METALLIB_RC" -eq 0 ] || exit "$METALLIB_RC"
 MLX_BUNDLE="$APP_BUNDLE/Contents/Resources/mlx-swift_Cmlx.bundle"
 mkdir -p "$MLX_BUNDLE"
 cp "$DESKTOP_DIR/.build/release/mlx.metallib" "$MLX_BUNDLE/default.metallib"
