@@ -302,8 +302,12 @@ func (d *Daemon) coachMeasureCheck(ctx context.Context, now time.Time) (done boo
 		d.logger.Printf("coach: measure check: %v", err)
 		return false
 	}
-	home, _ := coachHomeDir() // "": settings and memory rows are skipped today
-	a := &coach.Applier{DB: d.db, Home: home, Now: func() time.Time { return now }}
+	home, herr := coachHomeDir()
+	if herr != nil { // "": settings and memory rows are skipped today
+		home = ""
+		d.logger.Printf("coach: measure check: no home folder, settings and memory rows skipped today")
+	}
+	a := &coach.Applier{DB: d.db, Home: home, Now: func() time.Time { return now }, Logf: d.logger.Printf}
 	measured := 0
 	for _, p := range ps {
 		if ctx.Err() != nil {
@@ -367,13 +371,13 @@ func (d *Daemon) coachMergeCheck(ctx context.Context, p db.CoachProposal, now ti
 	if branch != "" {
 		switch pr, ok := d.coachBranchPR(ctx, p, branch, now); {
 		case !ok:
+		case pr.MergedBefore(p.DecidedAt):
+			// A reused branch name's older merge: not this session's PR,
+			// the row keeps waiting for its own.
 		case pr.State == "merged":
 			at, err := time.Parse(time.RFC3339, pr.MergedAt)
 			if err != nil { // git saw the merge, gh did not say when
 				at = now
-			}
-			if at.Before(p.DecidedAt) { // a reused branch name's older merge
-				at = p.DecidedAt
 			}
 			return d.coachSetMeasureFrom(p, at)
 		case pr.State == "closed":
@@ -486,13 +490,13 @@ func (d *Daemon) coachMemoryCheck(a *coach.Applier, p db.CoachProposal, now time
 		return false
 	}
 	if text == p.BeforeText || modified.After(ended.Add(coachMemoryWriteSlack)) {
-		if _, err := d.db.SetCoachMemoryUnchanged(p.ID); err != nil {
+		if _, err := d.db.SetCoachMemoryUnchanged(p.ID, p.SessionID); err != nil {
 			d.logger.Printf("coach: measure check: proposal %d: %v", p.ID, err)
 			return false
 		}
 		return d.coachMemoryWait(p, now)
 	}
-	set, err := d.db.SetCoachMemoryMeasured(p.ID, ended, text)
+	set, err := d.db.SetCoachMemoryMeasured(p.ID, p.SessionID, ended, text)
 	if err != nil {
 		d.logger.Printf("coach: measure check: proposal %d: %v", p.ID, err)
 		return false

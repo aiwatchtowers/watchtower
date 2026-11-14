@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -481,6 +482,38 @@ func TestMeasureCheck_SettingsRevertedOutside(t *testing.T) {
 	assert.Empty(t, getProposal(t, database, off).Verdict, "still off: measured as usual")
 }
 
+// reverted_outside for every settings key: an MCP server re-added (any
+// entry), the connectors switch on in another form than before_text; a
+// plugin key gone from enabledPlugins (uninstalled) is not turned back on.
+func TestMeasureCheck_MCPServerAndConnectorsRevertedOutside(t *testing.T) {
+	d, database := coachDaemon(t)
+	home, err := os.UserHomeDir()
+	require.NoError(t, err)
+	settings := filepath.Join(home, ".claude", "settings.json")
+	require.NoError(t, os.MkdirAll(filepath.Dir(settings), 0o700))
+	now := measureNow()
+	accepted := func(dest, source, before, after string) int64 {
+		id, err := database.InsertContextCoachProposal(db.CoachProposal{Fingerprint: dest + "-" + source, Kind: "cut",
+			Destination: dest, SourceKey: source, Title: "Turn off", Why: "Unused.",
+			Metric: "start_tokens", BeforeText: before, AfterText: after}, now)
+		require.NoError(t, err)
+		require.NoError(t, database.MarkCoachAccepted(id, after, "", nil, 0, now.Add(-time.Hour)))
+		return id
+	}
+	server := accepted(coach.DestMCPServerOff, "example-server", "present", "")
+	connectors := accepted(coach.DestConnectorsOff, "connectors", "", `"false"`)
+	gone := accepted(coach.DestPluginOff, "alpha@example-market", "true", "false")
+	require.NoError(t, os.WriteFile(filepath.Join(home, ".claude.json"),
+		[]byte(`{"mcpServers":{"example-server":{"command":"example-mcp","args":["--v2"]}}}`), 0o600))
+	require.NoError(t, os.WriteFile(settings,
+		[]byte(`{"enabledPlugins":{"beta@example-market":true},"env":{"ENABLE_CLAUDEAI_MCP_SERVERS":"true"}}`), 0o600))
+
+	d.coachMeasureCheck(context.Background(), now)
+	assert.Equal(t, "reverted_outside", getProposal(t, database, server).Verdict)
+	assert.Equal(t, "reverted_outside", getProposal(t, database, connectors).Verdict)
+	assert.Empty(t, getProposal(t, database, gone).Verdict, "an uninstalled plugin is not turned back on")
+}
+
 // A settings row the judge left at a provisional too_little_data is still
 // checked: the key back on reads reverted_outside, not a later no_effect.
 // Any other verdict is final and never looked at again.
@@ -507,6 +540,28 @@ func TestMeasureCheck_SettingsRevertedAfterTooLittleData(t *testing.T) {
 	d.coachMeasureCheck(context.Background(), now)
 	assert.Equal(t, "reverted_outside", getProposal(t, database, provisional).Verdict)
 	assert.Equal(t, "works", getProposal(t, database, final).Verdict, "a final verdict is not re-checked")
+}
+
+// No home folder: settings and memory rows wait for the next check, and
+// the skip is said once in the log.
+func TestMeasureCheck_NoHomeLogsOnce(t *testing.T) {
+	d, database := coachDaemon(t)
+	var logs bytes.Buffer
+	d.logger.SetOutput(&logs)
+	prev := coachHomeDir
+	coachHomeDir = func() (string, error) { return "", errors.New("no home") }
+	t.Cleanup(func() { coachHomeDir = prev })
+	now := measureNow()
+	for _, source := range []string{"alpha@example-market", "beta@example-market"} {
+		id, err := database.InsertContextCoachProposal(db.CoachProposal{Fingerprint: "plugin-" + source, Kind: "cut",
+			Destination: coach.DestPluginOff, SourceKey: source, Title: "Turn off", Why: "Unused.",
+			Metric: "start_tokens", BeforeText: "true", AfterText: "false"}, now)
+		require.NoError(t, err)
+		require.NoError(t, database.MarkCoachAccepted(id, "false", "", nil, 0, now.Add(-time.Hour)))
+	}
+
+	require.True(t, d.coachMeasureCheck(context.Background(), now))
+	assert.Equal(t, 1, strings.Count(logs.String(), "no home folder"))
 }
 
 // idleSession marks sess's agent as waiting since lastActive.
@@ -619,9 +674,10 @@ func TestMeasureCheck_MemorySessionRowDeletedUnchangedDecidedOnce(t *testing.T) 
 	assert.Empty(t, p.Verdict)
 }
 
-// A merge time before the Accept (a reused branch name's older PR) never
-// starts the window before the change: measured from the Accept.
-func TestMeasureCheck_MergeBeforeAcceptClamped(t *testing.T) {
+// A merge before the Accept is an older PR on a reused branch name, not
+// this session's: nothing is measured and the row keeps waiting; a merge
+// at or after the Accept is measured from its time.
+func TestMeasureCheck_MergeBeforeAcceptIsNotThisSessionsPR(t *testing.T) {
 	d, database := coachDaemon(t)
 	stubRefresh(t, &refreshStub{})
 	now := measureNow()
@@ -632,5 +688,12 @@ func TestMeasureCheck_MergeBeforeAcceptClamped(t *testing.T) {
 	prState(t, database, wb, "wt/a", "merged", decided.Add(-24*time.Hour).Format(time.RFC3339), now)
 
 	d.coachMeasureCheck(context.Background(), now)
-	assert.True(t, getProposal(t, database, id).MeasureFrom.Equal(decided))
+	p := getProposal(t, database, id)
+	assert.True(t, p.MeasureFrom.IsZero(), "an older merge is not this change's")
+	assert.Empty(t, p.Verdict)
+
+	merged := decided.Add(time.Hour)
+	prState(t, database, wb, "wt/a", "merged", merged.Format(time.RFC3339), now)
+	d.coachMeasureCheck(context.Background(), now)
+	assert.True(t, getProposal(t, database, id).MeasureFrom.Equal(merged))
 }

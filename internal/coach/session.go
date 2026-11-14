@@ -163,10 +163,12 @@ func (a *Applier) Dismiss(id int64) error {
 
 // Reapply turns a settings change off again after someone turned it back on
 // outside Watchtower (verdict reverted_outside): a per-key compare-and-set
-// from the proposal's before-text to its after-text, then the verdict is
-// cleared and the window measures from now. A key holding anything else is
-// ErrStale with nothing written; a row that is not accepted with that
-// verdict is db.ErrCoachStateChanged.
+// from the key's current text — whatever form of "on" it reads
+// (settingsBackOn) — to the proposal's after-text, then the verdict is
+// cleared and the window measures from now. A server's entry as it reads
+// now is saved for Rollback. A key that no longer reads on, or changes
+// between the read and the write, is ErrStale with nothing written; a row
+// that is not accepted with that verdict is db.ErrCoachStateChanged.
 func (a *Applier) Reapply(id int64) error {
 	p, err := a.DB.GetCoachProposal(id)
 	if err != nil {
@@ -183,7 +185,14 @@ func (a *Applier) Reapply(id int64) error {
 	if IsProtected(p.Destination, p.SourceKey) {
 		return fmt.Errorf("coach proposal %d (%s): %w", id, p.Destination, errProtected)
 	}
-	w, err := a.writeSettingsKey(p, CurrentText{Text: p.BeforeText}, p.AfterText)
+	cur, err := a.readSettingsKey(p, CurrentText{})
+	if err != nil {
+		return fmt.Errorf("coach proposal %d (%s): %w", id, p.Destination, err)
+	}
+	if !settingsBackOn(p.Destination, cur.Text) {
+		return fmt.Errorf("coach proposal %d (%s): %w", id, p.Destination, ErrStale)
+	}
+	w, err := a.writeSettingsKey(p, cur, p.AfterText)
 	if err != nil {
 		return fmt.Errorf("coach proposal %d (%s): %w", id, p.Destination, err)
 	}

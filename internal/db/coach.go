@@ -468,9 +468,81 @@ func (db *DB) SetCoachSessionBranch(id int64, branch string) error {
 // that is not a session of the proposal's workbench (or no longer exists).
 var ErrCoachSessionNotFound = errors.New("no such session in this workbench")
 
-// ErrCoachSessionHasPR refuses a Restart while the accepted row's session
-// branch has an open or merged PR: that PR is followed, not started again.
-var ErrCoachSessionHasPR = errors.New("the session opened a PR: follow it instead of starting again")
+// ErrCoachSessionHasPR refuses a Restart or a Dismiss while the accepted
+// row's session branch has an open or merged PR: that PR is followed, not
+// started again or closed unmeasured.
+var ErrCoachSessionHasPR = errors.New("the session opened a PR: follow it instead")
+
+// MergedBefore reports whether s is a merge that happened before t (a
+// proposal's decided_at): an older PR on a reused branch name, never the
+// change accepted at t. A merge without a time is not before anything.
+func (s PRState) MergedBefore(t time.Time) bool {
+	if s.State != "merged" || s.MergedAt == "" {
+		return false
+	}
+	at, err := time.Parse(time.RFC3339, s.MergedAt)
+	return err == nil && at.Before(t)
+}
+
+// coachBranchHasPR reports whether branch in workbench wb has an open PR, or
+// one merged at or after decided (a merge before decided is an older PR on
+// a reused branch name: not this session's).
+func coachBranchHasPR(tx *sql.Tx, wb sql.NullInt64, branch string, decided time.Time) (bool, error) {
+	rows, err := tx.Query(`SELECT state, merged_at FROM workbench_pr_states WHERE project_id = ? AND ref = ?
+		AND pr_number IS NOT NULL AND state IN ('open','merged')`, wb, "branch:"+branch)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var s PRState
+		if err := rows.Scan(&s.State, &s.MergedAt); err != nil {
+			return false, err
+		}
+		if !s.MergedBefore(decided) {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
+// coachGuardedSession reads an accepted session row inside coachSessionGuard
+// (else ErrCoachStateChanged) and refuses it with ErrCoachSessionHasPR while
+// its branch — session_branch, or the session's live branch while that is
+// still empty — has this session's PR (coachBranchHasPR).
+func coachGuardedSession(tx *sql.Tx, id int64, verb string) error {
+	var wb sql.NullInt64
+	var branch, decided string
+	var session sql.NullInt64
+	err := tx.QueryRow(`SELECT workbench_id, session_branch, session_id, COALESCE(decided_at, '') FROM coach_proposals
+		WHERE id = ? AND `+coachSessionGuard, id).Scan(&wb, &branch, &session, &decided)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrCoachStateChanged
+	}
+	if err != nil {
+		return fmt.Errorf("%s coach proposal: %w", verb, err)
+	}
+	if branch == "" && session.Valid {
+		if branch, err = coachSessionBranch(tx, session.Int64); err != nil {
+			return err
+		}
+	}
+	if branch == "" {
+		return nil
+	}
+	at, err := parseCoachStamp(decided)
+	if err != nil {
+		return fmt.Errorf("%s coach proposal: %w", verb, err)
+	}
+	has, err := coachBranchHasPR(tx, wb, branch, at)
+	if err != nil {
+		return fmt.Errorf("%s coach proposal: %w", verb, err)
+	}
+	if has {
+		return ErrCoachSessionHasPR
+	}
+	return nil
+}
 
 // CoachSessionLink is what an Accept or a Restart through a workbench
 // session records: the session (it must be a row of WorkbenchID), the index
@@ -576,36 +648,13 @@ func (db *DB) AcceptCoachThroughSession(id int64, l CoachSessionLink, now time.T
 // branch (cleared, then the new session's when it has one), decided_at (the
 // wait for a merge restarts), baseline and, when l.Before is set,
 // before_text, in one compare-and-set. While the row's branch — session_branch,
-// or the old session's live branch when that is still empty — has an open or
-// merged PR it is ErrCoachSessionHasPR; a row outside the guard
-// ErrCoachStateChanged.
+// or the old session's live branch when that is still empty — has an open PR
+// or one merged since the Accept it is ErrCoachSessionHasPR; a row outside
+// the guard ErrCoachStateChanged.
 func (db *DB) RestartCoachSession(id int64, l CoachSessionLink, now time.Time) error {
 	return db.linkCoachSession(l, func(tx *sql.Tx, branch string) error {
-		var wb sql.NullInt64
-		var oldBranch string
-		var oldSession sql.NullInt64
-		err := tx.QueryRow(`SELECT workbench_id, session_branch, session_id FROM coach_proposals WHERE id = ? AND `+
-			coachSessionGuard, id).Scan(&wb, &oldBranch, &oldSession)
-		if errors.Is(err, sql.ErrNoRows) {
-			return ErrCoachStateChanged
-		}
-		if err != nil {
-			return fmt.Errorf("restarting coach proposal: %w", err)
-		}
-		if oldBranch == "" && oldSession.Valid {
-			if oldBranch, err = coachSessionBranch(tx, oldSession.Int64); err != nil {
-				return err
-			}
-		}
-		if oldBranch != "" {
-			var n int
-			if err := tx.QueryRow(`SELECT COUNT(*) FROM workbench_pr_states WHERE project_id = ? AND ref = ?
-				AND pr_number IS NOT NULL AND state IN ('open','merged')`, wb, "branch:"+oldBranch).Scan(&n); err != nil {
-				return fmt.Errorf("restarting coach proposal: %w", err)
-			}
-			if n > 0 {
-				return ErrCoachSessionHasPR
-			}
+		if err := coachGuardedSession(tx, id, "restarting"); err != nil {
+			return err
 		}
 		// A memory row's after_text is the old session's decision: the new
 		// session is decided afresh.
@@ -619,12 +668,20 @@ func (db *DB) RestartCoachSession(id int64, l CoachSessionLink, now time.Time) e
 }
 
 // DismissCoachSession closes an accepted session row that has nothing to
-// measure (coachSessionGuard) now: verdict too_little_data, no value. Any
-// other row is ErrCoachStateChanged.
+// measure (coachSessionGuard) now: verdict too_little_data, no value. While
+// its branch has this session's PR (the same check as Restart; the Desktop
+// reads a PR cache refreshed at most hourly) it is ErrCoachSessionHasPR, so
+// a PR opened at the end is never closed unmeasured. Any other row is
+// ErrCoachStateChanged.
 func (db *DB) DismissCoachSession(id int64, now time.Time) error {
-	res, err := db.Exec(`UPDATE coach_proposals SET verdict = 'too_little_data', verdict_value = NULL, verdict_at = ?
-		WHERE id = ? AND `+coachSessionGuard, coachStamp(now), id)
-	return coachCAS(res, err, "dismissing coach proposal")
+	return db.WithTx(func(tx *sql.Tx) error {
+		if err := coachGuardedSession(tx, id, "dismissing"); err != nil {
+			return err
+		}
+		res, err := tx.Exec(`UPDATE coach_proposals SET verdict = 'too_little_data', verdict_value = NULL, verdict_at = ?
+			WHERE id = ? AND `+coachSessionGuard, coachStamp(now), id)
+		return coachCAS(res, err, "dismissing coach proposal")
+	})
 }
 
 // ReapplyCoachProposal records a settings change turned off again after
@@ -659,12 +716,15 @@ func (db *DB) SetCoachMeasureFrom(id int64, at time.Time) (bool, error) {
 // changed the index: measure_from = at (the session's end) and after_text =
 // the index as read then (what Rollback compares against). A
 // compare-and-set like SetCoachMeasureFrom: false (no error) when the row
-// is measured, judged, already decided (after_text set) or no longer
-// accepted.
-func (db *DB) SetCoachMemoryMeasured(id int64, at time.Time, after string) (bool, error) {
+// is measured, judged, already decided (after_text set), no longer
+// accepted, or moved to another session than session (the one the caller
+// read; nil when the row had none) — a Restart between the read and this
+// write never gets the old session's end.
+func (db *DB) SetCoachMemoryMeasured(id int64, session *int64, at time.Time, after string) (bool, error) {
 	res, err := db.Exec(`UPDATE coach_proposals SET measure_from = ?, after_text = ?
-		WHERE id = ? AND status = 'accepted' AND measure_from IS NULL AND verdict = '' AND after_text = ''`,
-		coachStamp(at), after, id)
+		WHERE id = ? AND status = 'accepted' AND measure_from IS NULL AND verdict = '' AND after_text = ''
+		AND session_id IS ?`,
+		coachStamp(at), after, id, coachSessionArg(session))
 	if err != nil {
 		return false, fmt.Errorf("setting coach memory measure_from: %w", err)
 	}
@@ -679,11 +739,12 @@ func (db *DB) SetCoachMemoryMeasured(id int64, at time.Time, after string) (bool
 // ended without a change of its own: after_text = before_text, measure_from
 // stays NULL, so the row is never looked at again until a Restart. The same
 // compare-and-set as SetCoachMemoryMeasured: false (no error) when the row
-// is already decided, measured, judged or no longer accepted.
-func (db *DB) SetCoachMemoryUnchanged(id int64) (bool, error) {
+// is already decided, measured, judged, no longer accepted or moved to
+// another session than session.
+func (db *DB) SetCoachMemoryUnchanged(id int64, session *int64) (bool, error) {
 	res, err := db.Exec(`UPDATE coach_proposals SET after_text = before_text
 		WHERE id = ? AND status = 'accepted' AND destination = 'claude_memory_index'
-		AND measure_from IS NULL AND verdict = '' AND after_text = ''`, id)
+		AND measure_from IS NULL AND verdict = '' AND after_text = '' AND session_id IS ?`, id, coachSessionArg(session))
 	if err != nil {
 		return false, fmt.Errorf("recording coach memory unchanged: %w", err)
 	}
@@ -692,6 +753,14 @@ func (db *DB) SetCoachMemoryUnchanged(id int64) (bool, error) {
 		return false, fmt.Errorf("recording coach memory unchanged: %w", err)
 	}
 	return n > 0, nil
+}
+
+// coachSessionArg is a nullable session id as a query argument.
+func coachSessionArg(session *int64) any {
+	if session == nil {
+		return nil
+	}
+	return *session
 }
 
 // CoachSessionEnd reads workbench session sessionID: found is false when the

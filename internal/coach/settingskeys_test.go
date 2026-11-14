@@ -312,6 +312,44 @@ func TestMCPServerOff_RollbackRefusedWithoutUndoFile(t *testing.T) {
 	assert.Equal(t, "accepted", proposal(t, d, id).Status)
 }
 
+// A saved entry that is there but corrupt is refused with its own reason,
+// distinct from one that is gone; nothing is written.
+func TestMCPServerOff_RollbackRefusedWithCorruptUndoFile(t *testing.T) {
+	d := openDBs(t)
+	home := ctxHome(t)
+	path := claudeJSONPath(home)
+	writeHomeFile(t, path, ctxClaudeJSON)
+	id := proposeCtx(t, d, DestMCPServerOff, "alpha-docs", "present", "")
+	a := ctxApplier(t, d, home)
+	require.NoError(t, a.acceptErr(id, ""))
+	writeHomeFile(t, filepath.Join(a.WorkspaceDir, "coach-undo", fmt.Sprintf("%d.json", id)), "{not json")
+	before := readHomeFile(t, path)
+
+	_, err := a.Rollback(id, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "saved settings for this server can't be read")
+	assert.NotContains(t, err.Error(), "are gone")
+	assert.Equal(t, before, readHomeFile(t, path), "nothing is written")
+	assert.Equal(t, "accepted", proposal(t, d, id).Status)
+}
+
+// A saved entry that cannot be removed is logged by the proposal id only:
+// never its path.
+func TestRemoveUndo_FailureLoggedByIDOnly(t *testing.T) {
+	var lines []string
+	a := &Applier{Logf: func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }}
+	dir := filepath.Join(t.TempDir(), "coach-undo", "7.json")
+	writeHomeFile(t, filepath.Join(dir, "child"), "x") // a non-empty folder: Remove fails
+	a.removeUndo(7, dir)
+	require.Len(t, lines, 1)
+	assert.Contains(t, lines[0], "proposal 7")
+	assert.NotContains(t, lines[0], dir)
+
+	lines = nil
+	a.removeUndo(8, filepath.Join(t.TempDir(), "missing.json"))
+	assert.Empty(t, lines, "already gone: nothing to say")
+}
+
 func TestMCPServerOff_NoWorkspaceRefused(t *testing.T) {
 	d := openDBs(t)
 	home := ctxHome(t)

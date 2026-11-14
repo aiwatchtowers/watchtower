@@ -76,9 +76,9 @@ func (e ContextEnv) now() time.Time {
 
 // ProposeContext is one pass of the context proposer over the workbenches
 // with agent analytics on (workbenchIDs): it files what PreviewContext finds
-// and counts the new rows. A workbench's error does not stop the others: the
-// proposals found are filed and the errors are returned joined. A cancelled
-// ctx files nothing.
+// and counts the new rows. Neither a workbench's error nor a failed insert
+// stops the others: the proposals found are filed and the errors are
+// returned joined. A cancelled ctx files nothing.
 func ProposeContext(ctx context.Context, env ContextEnv, workbenchIDs []int64) (written int, err error) {
 	props, err := PreviewContext(ctx, env, workbenchIDs)
 	if ctx.Err() != nil {
@@ -91,7 +91,8 @@ func ProposeContext(ctx context.Context, env ContextEnv, workbenchIDs []int64) (
 			continue
 		}
 		if ierr != nil {
-			return written, errors.Join(err, ierr)
+			err = errors.Join(err, ierr)
+			continue
 		}
 		if id != 0 {
 			written++

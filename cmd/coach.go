@@ -562,7 +562,8 @@ func coachSessionPR(d *db.DB, p db.CoachProposal, states map[int64]map[string]db
 		states[p.WorkbenchID] = wb
 	}
 	s, ok := wb["branch:"+branch]
-	if !ok || !s.PRNumber.Valid {
+	// A merge before the Accept is an older PR on a reused branch name.
+	if !ok || !s.PRNumber.Valid || s.MergedBefore(p.DecidedAt) {
 		return nil, nil
 	}
 	return &s, nil

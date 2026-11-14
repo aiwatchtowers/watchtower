@@ -2,6 +2,7 @@ package coach
 
 import (
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -368,7 +369,7 @@ func TestRestart_MemoryRefreshesBefore(t *testing.T) {
 	a := ctxApplier(t, d, home)
 	require.NoError(t, a.AcceptWithSession(id, coachSession(t, d, wb)))
 
-	ok, err := d.SetCoachMemoryUnchanged(id) // the daemon decided: ended without a change
+	ok, err := d.SetCoachMemoryUnchanged(id, proposal(t, d, id).SessionID) // the daemon decided: ended without a change
 	require.NoError(t, err)
 	require.True(t, ok)
 
@@ -409,7 +410,7 @@ func TestDismiss_MemoryUndecidedRefused(t *testing.T) {
 
 	require.ErrorIs(t, a.Dismiss(id), db.ErrCoachStateChanged)
 	assert.Empty(t, proposal(t, d, id).Verdict)
-	ok, err := d.SetCoachMemoryUnchanged(id)
+	ok, err := d.SetCoachMemoryUnchanged(id, proposal(t, d, id).SessionID)
 	require.NoError(t, err)
 	require.True(t, ok)
 	require.NoError(t, a.Dismiss(id), "decided unchanged: Dismiss closes it")
@@ -462,4 +463,75 @@ func TestReapply_StaleKeyRefused(t *testing.T) {
 	p := proposal(t, d, id)
 	assert.Equal(t, "reverted_outside", p.Verdict)
 	assert.True(t, p.MeasureFrom.IsZero())
+}
+
+// "Back on" is defined per destination: a plugin at true only (a key gone
+// from enabledPlugins — the plugin uninstalled — is not back on), the
+// connectors switch at anything but "false"/"0" (absent = on by default),
+// a server whenever present.
+func TestSettingsBackOn_PerDestination(t *testing.T) {
+	for _, tc := range []struct {
+		dest, text string
+		on         bool
+	}{
+		{DestPluginOff, "true", true}, {DestPluginOff, "false", false}, {DestPluginOff, "", false},
+		{DestConnectorsOff, "", true}, {DestConnectorsOff, `"true"`, true}, {DestConnectorsOff, `"1"`, true},
+		{DestConnectorsOff, `"false"`, false}, {DestConnectorsOff, `"0"`, false},
+		{DestMCPServerOff, "present", true}, {DestMCPServerOff, "", false},
+	} {
+		assert.Equal(t, tc.on, settingsBackOn(tc.dest, tc.text), "%s %q", tc.dest, tc.text)
+	}
+}
+
+// A server re-added outside Watchtower, with a different entry, reads back
+// on; Turn Off Again removes it and saves the entry as it is now, so Undo
+// puts back the latest one.
+func TestReapply_MCPServerSavesTheNewEntry(t *testing.T) {
+	d := openDBs(t)
+	home := ctxHome(t)
+	path := claudeJSONPath(home)
+	writeHomeFile(t, path, ctxClaudeJSON)
+	id := proposeCtx(t, d, DestMCPServerOff, "alpha-docs", "present", "")
+	a := ctxApplier(t, d, home)
+	require.NoError(t, a.acceptErr(id, ""))
+
+	readded := `{"mcpServers":{"alpha-docs":{"type":"http","url":"https://mcp.example.com/v2"},` +
+		`"beta-files":{"command":"beta-mcp","args":["--stdio"]}},"numStartups":6}`
+	writeHomeFile(t, path, readded)
+	back, err := a.SettingsReverted(proposal(t, d, id))
+	require.NoError(t, err)
+	require.True(t, back)
+	require.NoError(t, d.SetCoachVerdict(id, "reverted_outside", nil, applyNow))
+
+	require.NoError(t, a.Reapply(id))
+	assert.NotContains(t, topKeys(t, []byte(topKeys(t, readHomeFile(t, path))["mcpServers"])), "alpha-docs")
+	_, err = a.Rollback(id, false)
+	require.NoError(t, err)
+	assert.Equal(t, topKeys(t, []byte(topKeys(t, []byte(readded))["mcpServers"])),
+		topKeys(t, []byte(topKeys(t, readHomeFile(t, path))["mcpServers"])), "the re-added entry is back")
+	_, err = os.Stat(filepath.Join(a.WorkspaceDir, "coach-undo", fmt.Sprintf("%d.json", id)))
+	assert.ErrorIs(t, err, os.ErrNotExist)
+}
+
+// The connectors switch turned back on in another form than before_text
+// (absent before, "true" now) reads back on, and Turn Off Again sets it
+// from what it reads now.
+func TestReapply_ConnectorsFromAnyOnForm(t *testing.T) {
+	d := openDBs(t)
+	home := ctxHome(t)
+	path := claudeSettingsPath(home)
+	writeHomeFile(t, path, `{"env":{"OTHER_FLAG":"1"},"model":"opus"}`)
+	id := proposeCtx(t, d, DestConnectorsOff, "connectors", "", `"false"`)
+	a := ctxApplier(t, d, home)
+	require.NoError(t, a.acceptErr(id, ""))
+
+	writeHomeFile(t, path, `{"env":{"ENABLE_CLAUDEAI_MCP_SERVERS":"true","OTHER_FLAG":"1"},"model":"opus"}`)
+	back, err := a.SettingsReverted(proposal(t, d, id))
+	require.NoError(t, err)
+	require.True(t, back, `"true" is on though before_text was absent`)
+	require.NoError(t, d.SetCoachVerdict(id, "reverted_outside", nil, applyNow))
+
+	require.NoError(t, a.Reapply(id))
+	assert.Equal(t, `{"ENABLE_CLAUDEAI_MCP_SERVERS":"false","OTHER_FLAG":"1"}`, topKeys(t, readHomeFile(t, path))["env"])
+	assert.Empty(t, proposal(t, d, id).Verdict)
 }

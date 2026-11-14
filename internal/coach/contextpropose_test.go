@@ -228,6 +228,25 @@ func TestProposeContext_UnreadableSettingsFilesNothingForIt(t *testing.T) {
 	})
 }
 
+// A failed insert does not stop the pass: the other proposals are filed and
+// the error is returned.
+func TestProposeContext_InsertErrorKeepsFiling(t *testing.T) {
+	f := newCtxFixture(t)
+	f.global = unusedEverything()
+	_, err := f.d.DB.Exec(`CREATE TRIGGER fail_plugin BEFORE INSERT ON coach_proposals
+		WHEN NEW.destination = 'claude_plugin_off' BEGIN SELECT RAISE(ABORT, 'insert refused'); END`)
+	require.NoError(t, err)
+
+	n, err := ProposeContext(context.Background(), f.env(), []int64{f.wb})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "insert refused")
+	ps := f.rows(t)
+	assert.Empty(t, onlyDest(ps, DestPluginOff))
+	assert.Len(t, onlyDest(ps, DestMCPServerOff), 1, "filed after the failed insert")
+	assert.Len(t, onlyDest(ps, DestConnectorsOff), 1)
+	assert.Equal(t, 2, n)
+}
+
 func TestProposeContext_UsedPluginSkipped(t *testing.T) {
 	f := newCtxFixture(t)
 	f.global = []agentreport.ContextSourceRow{

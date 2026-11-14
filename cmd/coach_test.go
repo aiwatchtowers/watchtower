@@ -1299,6 +1299,24 @@ func acceptedWithPR(t *testing.T, d *db.DB) (int64, int64) {
 	return id, wb
 }
 
+// A PR merged before the Accept is an older PR on a reused branch name:
+// the listing shows no PR for the row.
+func TestCoachProposalsJSON_MergeBeforeAcceptIsNotThisSessionsPR(t *testing.T) {
+	d := coachSetup(t)
+	id, wb := acceptedWithPR(t, d)
+	p, err := d.GetCoachProposal(id)
+	require.NoError(t, err)
+	require.NoError(t, d.UpsertPRState(db.PRState{WorkbenchID: wb, Ref: "branch:wt/slim", State: "merged",
+		PRNumber: sql.NullInt64{Int64: 12, Valid: true}, MergedAt: p.DecidedAt.Add(-time.Hour).Format(time.RFC3339),
+		CheckedAt: "2026-11-13T09:00:00Z"}))
+
+	out, err := runCoach(t, "", "proposals", "--status", "accepted", "--json")
+	require.NoError(t, err)
+	row := coachFirstProposal(t, out)
+	assert.Equal(t, "null", string(row["pr"]))
+	assert.Equal(t, "null", string(row["pr_state"]))
+}
+
 func coachAgentLog(t *testing.T) *agentlogdb.DB {
 	t.Helper()
 	cfg, err := workspaceConfigFromFlags()

@@ -24,9 +24,9 @@ func IsSettingsDestination(destination string) bool {
 }
 
 // SettingsReverted reports whether accepted settings proposal p's own key
-// reads its before-text again (someone turned it back on outside
-// Watchtower). Other keys of the file never matter. An unreadable file is
-// an error that names the file's label, never a path or a value.
+// reads "on" again (someone turned it back on outside Watchtower,
+// settingsBackOn). Other keys of the file never matter. An unreadable file
+// is an error that names the file's label, never a path or a value.
 func (a *Applier) SettingsReverted(p db.CoachProposal) (bool, error) {
 	k, err := a.settingsKeyOf(p)
 	if err != nil {
@@ -36,7 +36,29 @@ func (a *Applier) SettingsReverted(p db.CoachProposal) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return k.textOf(f.value) == p.BeforeText, nil
+	return settingsBackOn(p.Destination, k.textOf(f.value)), nil
+}
+
+// settingsBackOn is whether a settings key's text (compact JSON, "" when
+// absent, "present" for a server) reads "on", in any form Claude Code takes
+// as on: a plugin only at true (a key that disappeared from enabledPlugins
+// — the plugin uninstalled — is not turned back on); the connectors switch
+// at anything but "false" or "0", absent included (on by default); a
+// server whenever it is present.
+func settingsBackOn(dest, text string) bool {
+	switch dest {
+	case DestPluginOff:
+		return text == "true"
+	case DestConnectorsOff:
+		switch text {
+		case `"false"`, `"0"`, "false", "0":
+			return false
+		}
+		return true
+	case DestMCPServerOff:
+		return text == "present"
+	}
+	return false
 }
 
 // MemoryIndexNow reads memory proposal p's MEMORY.md (its workbench folder's

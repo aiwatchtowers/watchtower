@@ -31,9 +31,12 @@ var (
 	// written — another program wrote the file at the same moment.
 	errKeyNotHeld = errors.New("the setting did not hold: another program wrote the file at the same time")
 	// errUndoGone refuses a server's Rollback without its saved entry.
-	errUndoGone    = errors.New("saved settings for this server are gone")
-	errNoSource    = errors.New("this proposal names no plugin or server")
-	errNoWorkspace = errors.New("no workspace folder to keep the server's settings in")
+	errUndoGone = errors.New("saved settings for this server are gone")
+	// errUndoUnreadable refuses a server's Rollback whose saved entry is
+	// there but not a JSON object (corrupt): distinct from gone.
+	errUndoUnreadable = errors.New("saved settings for this server can't be read")
+	errNoSource       = errors.New("this proposal names no plugin or server")
+	errNoWorkspace    = errors.New("no workspace folder to keep the server's settings in")
 	// errKeyChanged: the key no longer holds the value it is set from.
 	errKeyChanged = errors.New("the setting changed since it was read")
 )
@@ -275,7 +278,7 @@ func (a *Applier) writeSettingsKey(p db.CoachProposal, cur CurrentText, after st
 		if undoPath != "" && !a.serverGone(k) {
 			// The server is still there (refused, or put back by another
 			// writer): its saved copy is not needed.
-			_ = os.Remove(undoPath)
+			a.removeUndo(p.ID, undoPath)
 		}
 		if errors.Is(err, errKeyChanged) {
 			return written{}, ErrStale
@@ -287,10 +290,19 @@ func (a *Applier) writeSettingsKey(p db.CoachProposal, cur CurrentText, after st
 			return err
 		}
 		if undoPath != "" {
-			_ = os.Remove(undoPath)
+			a.removeUndo(p.ID, undoPath)
 		}
 		return nil
 	}}, nil
+}
+
+// removeUndo removes proposal id's saved server entry (it may hold
+// secrets). A failed removal is logged by the proposal id only — never the
+// path or the error, which names it — and changes nothing else.
+func (a *Applier) removeUndo(id int64, path string) {
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		a.logf("coach: proposal %d: the saved server settings could not be removed", id)
+	}
 }
 
 // serverGone is whether a server key reads absent now; a failed read counts
@@ -324,7 +336,7 @@ func (a *Applier) restoreSettingsKey(p db.CoachProposal, cur CurrentText) error 
 			return settingsErr("reading the server's saved settings", err)
 		}
 		if !isJSON(b, '{') || !json.Valid(b) {
-			return errUndoGone
+			return errUndoUnreadable
 		}
 		value = b
 	} else if p.BeforeText != "" {
@@ -337,7 +349,7 @@ func (a *Applier) restoreSettingsKey(p db.CoachProposal, cur CurrentText) error 
 		return err
 	}
 	if undoPath != "" {
-		_ = os.Remove(undoPath)
+		a.removeUndo(p.ID, undoPath)
 	}
 	return nil
 }
