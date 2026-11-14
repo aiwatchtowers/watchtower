@@ -239,7 +239,9 @@ final class CoachCenter {
         }
     }
 
-    /// The pane found `session`'s row gone: a revert entry naming it goes.
+    /// Drops the revert entry if it still names `session`: the pane found
+    /// that session's row gone, or Revert… is pressed again after it ended
+    /// (`.revertEnded`).
     func forgetRevert(_ id: Int64, session: Int64) {
         if revertSessions[id] == session { setRevert(id, nil) }
     }

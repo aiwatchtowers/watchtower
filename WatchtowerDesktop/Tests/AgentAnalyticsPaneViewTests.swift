@@ -1278,4 +1278,23 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
         XCTAssertEqual(performed, [.undo], "a settings Undo runs at once")
         XCTAssertTrue(ContextActionButtons.memoryUndoMessage.contains("other sessions' auto-memory added"))
     }
+
+    /// Spec C10: without the pane's inputs a session memory row offers no
+    /// plain Roll Back (its Undo, with the confirmation, comes with them).
+    func testAcceptedLogHidesRollBackOfASessionMemoryRow() throws {
+        let memory = Self.contextProposal(9, destination: "claude_memory_index", status: "accepted", workbench: 3,
+                                          extra: #","session_id":41,"via_session":true,"measure_from":"2026-11-11T09:00:00Z""#)
+        let json = #"{"ok":true,"proposals":["# + memory + "]}"
+        let proposal = try XCTUnwrap(JSONDecoder().decode(CoachProposalList.self, from: Data(json.utf8)).proposals.first)
+        XCTAssertFalse(CoachAcceptedLogView.offersRollBack(proposal))
+        let coach = CoachCenter(runner: CoachFixtureRunner(), interval: .seconds(3600))
+        defer { coach.stop() }
+        let log = CoachAcceptedLogView(accepted: [proposal], open: [], coach: coach) { _ in }
+        XCTAssertFalse(try buttonLabels(log).contains("Roll Back"))
+        let withInputs = CoachAcceptedLogView(
+            accepted: [proposal], open: [], coach: coach, onRollback: { _ in },
+            sessionRow: { ContextActionsPresentation.row(of: $0, sessionKinds: [:], linkFailed: [:]) }
+        )
+        XCTAssertTrue(try buttonLabels(withInputs).contains("Undo"), "the confirming Undo comes with the inputs")
+    }
 }

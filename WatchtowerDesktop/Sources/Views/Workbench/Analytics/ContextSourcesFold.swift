@@ -50,8 +50,6 @@ struct ContextSourcesFold: View {
         .font(.callout)
     }
 
-    /// The parts, heaviest first, each with its groups heaviest first (a
-    /// part no session measured last).
     /// Every part of the bar and every part with sources, heaviest first (a
     /// part nothing measured last). A part without sources (instructions,
     /// system) is its title alone, with the bar's total.

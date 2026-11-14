@@ -44,11 +44,13 @@ struct CoachAcceptedLogView: View {
         }
     }
 
-    /// Roll Back stays for settings rows, the memory index and repository
-    /// rows accepted before sessions; a repository row a session carried out
-    /// is reverted by a session.
+    /// The plain Roll Back stays for settings rows and repository rows
+    /// accepted before sessions. A row a session carried out never gets it:
+    /// a repository change is reverted by a session (Revert…), and the
+    /// memory index's Undo must confirm first (spec C10) — both come from
+    /// the session row's own buttons once the pane's inputs exist.
     static func offersRollBack(_ p: CoachProposal) -> Bool {
-        p.status == "accepted" && !(p.viaSession && p.acceptStartsSession && p.destination != "claude_memory_index")
+        p.status == "accepted" && !(p.viaSession && p.acceptStartsSession)
     }
 
     private func row(_ p: CoachProposal) -> some View {
