@@ -57,7 +57,7 @@ struct ContextActionsView: View {
 
     static let startingLine = "Starting a session…"
 
-    /// "−30.2k"; a done row "✓ −6.1k" (or "✓"); "" without a saving.
+    /// "−25.4k"; a done row "✓ −6.0k" (or "✓"); "" without a saving.
     static func savingLabel(_ row: ContextActionRow) -> String {
         let saving = row.savingText ?? ""
         guard isDone(row.state) else { return saving }

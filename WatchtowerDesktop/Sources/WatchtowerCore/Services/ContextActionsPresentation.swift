@@ -96,7 +96,7 @@ package struct ContextActionRow: Equatable, Identifiable, Sendable {
 
     package var id: Int64 { proposal.id }
 
-    /// "−30.2k"; a repository row's estimate (its `saving_tokens`
+    /// "−25.4k"; a repository row's estimate (its `saving_tokens`
     /// evidence) "−~3.5k" (minus, then about); nil without a saving.
     package var savingText: String? {
         saving.map { (tag == .repoPR ? "−~" : "−") + ContextActionsPresentation.tokens($0) }
@@ -166,7 +166,7 @@ package struct ContextActionRow: Equatable, Identifiable, Sendable {
         }
     }
 
-    /// "79.6k → 49.4k", "79.6k → measuring" (before the verdict); nil
+    /// "60.0k → 40.0k", "60.0k → measuring" (before the verdict); nil
     /// unless done with a baseline, and nil for a finished verdict that
     /// measured no saving (no_effect, too_little_data): its line says so.
     package var beforeAfter: String? {
@@ -273,7 +273,7 @@ package enum ContextActionsPresentation {
         return (doThese, done.map(\.row))
     }
 
-    /// "4 changes would cut it to ~42k": the open rows with a known saving
+    /// "4 changes would cut it to ~32k": the open rows with a known saving
     /// against the start context; "" when none has one.
     package static func headline(baselineTokens: Int, rows: [ContextActionRow]) -> String {
         let savings = rows.filter(\.isOpen).compactMap(\.saving).filter { $0 > 0 }
@@ -284,12 +284,12 @@ package enum ContextActionsPresentation {
         return "\(savings.count) \(noun) would cut it to ~\(target)"
     }
 
-    /// "Saved 30.2k on 12 starts".
+    /// "Saved 6.0k on 10 starts".
     package static func savedLine(tokens: Int, starts: Int) -> String {
         String(format: Copy.saved, Self.tokens(tokens), starts)
     }
 
-    /// "512", "30.2k", "42k": one decimal, dropped when it is 0.
+    /// "512", "25.4k", "42k": one decimal, dropped when it is 0.
     package static func tokens(_ n: Int) -> String {
         guard n >= 1000 else { return "\(n)" }
         let text = String(format: "%.1f", Double(n) / 1000)

@@ -50,27 +50,27 @@ enum ContextActionsShotFixtures {
         return coach
     }
 
-    /// The report's Context with a 79.6k start and its sources.
+    /// The report's Context with a 60.0k start and its sources.
     private static func context() throws -> AgentContextReport {
         let json = """
-        {"lead":"Every session starts with 79.6k tokens; tool schemas are 27%, the skill list 13%.",
-         "facts_sessions":14,
-         "baseline":{"tokens":79600,"parts":[
-           {"part":"instructions","tokens":30200,"share":0.38},{"part":"tools","tokens":21100,"share":0.27},
-           {"part":"skills","tokens":10200,"share":0.13},{"part":"agents","tokens":5000,"share":0.06},
-           {"part":"mcp","tokens":4100,"share":0.05},{"part":"system","tokens":9000,"share":0.11}]},
+        {"lead":"Every session starts with 60.0k tokens; tool schemas are 33%, the skill list 13%.",
+         "facts_sessions":10,
+         "baseline":{"tokens":60000,"parts":[
+           {"part":"instructions","tokens":25000,"share":0.42},{"part":"tools","tokens":20000,"share":0.33},
+           {"part":"skills","tokens":8000,"share":0.13},{"part":"agents","tokens":3000,"share":0.05},
+           {"part":"mcp","tokens":2000,"share":0.03},{"part":"system","tokens":2000,"share":0.03}]},
          "sources":[
-           {"part":"tools","group":"acme-board","group_kind":"mcp_server","tokens":9800,"calls":4137,"measured_sessions":14},
-           {"part":"tools","group":"","group_kind":"builtin","tokens":7400,"calls":2210,"measured_sessions":14},
-           {"part":"tools","group":"claude.ai","group_kind":"claude_ai_connectors","tokens":2000,"calls":0,"measured_sessions":14},
-           {"part":"tools","group":"example-server","group_kind":"mcp_server","tokens":1900,"calls":0,"measured_sessions":14},
-           {"part":"skills","group":"acme-skills","group_kind":"plugin","tokens":2600,"calls":58,"measured_sessions":14},
-           {"part":"skills","group":"acme-tools","group_kind":"plugin","tokens":1400,"calls":0,"measured_sessions":14},
-           {"part":"skills","group":"","group_kind":"user","tokens":600,"calls":3,"measured_sessions":14},
-           {"part":"agents","group":"acme-tools","group_kind":"plugin","tokens":2700,"calls":0,"measured_sessions":14},
-           {"part":"agents","group":"","group_kind":"builtin","tokens":0,"calls":9,"measured_sessions":0},
-           {"part":"mcp","group":"acme-board","group_kind":"mcp_server","tokens":3000,"calls":0,"measured_sessions":14},
-           {"part":"mcp","group":"claude.ai","group_kind":"claude_ai_connectors","tokens":600,"calls":0,"measured_sessions":14}]}
+           {"part":"tools","group":"acme-board","group_kind":"mcp_server","tokens":10000,"calls":1000,"measured_sessions":10},
+           {"part":"tools","group":"","group_kind":"builtin","tokens":6000,"calls":2000,"measured_sessions":10},
+           {"part":"tools","group":"claude.ai","group_kind":"claude_ai_connectors","tokens":2000,"calls":0,"measured_sessions":10},
+           {"part":"tools","group":"example-server","group_kind":"mcp_server","tokens":2000,"calls":0,"measured_sessions":10},
+           {"part":"skills","group":"acme-skills","group_kind":"plugin","tokens":2500,"calls":50,"measured_sessions":10},
+           {"part":"skills","group":"acme-tools","group_kind":"plugin","tokens":1500,"calls":0,"measured_sessions":10},
+           {"part":"skills","group":"","group_kind":"user","tokens":500,"calls":5,"measured_sessions":10},
+           {"part":"agents","group":"acme-tools","group_kind":"plugin","tokens":2000,"calls":0,"measured_sessions":10},
+           {"part":"agents","group":"","group_kind":"builtin","tokens":0,"calls":10,"measured_sessions":0},
+           {"part":"mcp","group":"acme-board","group_kind":"mcp_server","tokens":1500,"calls":0,"measured_sessions":10},
+           {"part":"mcp","group":"claude.ai","group_kind":"claude_ai_connectors","tokens":500,"calls":0,"measured_sessions":10}]}
         """
         return try JSONDecoder().decode(AgentContextReport.self, from: Data(json.utf8))
     }
@@ -94,7 +94,7 @@ enum ContextActionsShotFixtures {
             return """
             {"id":\(id),"title":"\(title)","why":"w","destination":"\(destination)","workbench_id":\(workbench),\
             "prompt_id":"","kind":"cut","metric":"start_tokens","before":"","after":"","evidence":\(evidence),\
-            "sources":6,"status":"\(status)","created_at":"\(stamp(3))","decided_at":\(decided),"baseline":79600,\
+            "sources":6,"status":"\(status)","created_at":"\(stamp(3))","decided_at":\(decided),"baseline":60000,\
             "verdict":"\(verdict)","verdict_value":\(verdictValue),"verdict_at":\(verdictAt),"reverts_id":0,\
             "budget":0,"origin":"context","source_key":"\(source)"\(extra)}
             """
@@ -103,7 +103,7 @@ enum ContextActionsShotFixtures {
 
     /// Go's evidence for a CLAUDE.md move: the file, the section, and the
     /// estimate (`round(section bytes / 2.6)`). The file (60 KB ≈ 23.6k
-    /// tokens) fits inside the bar's "CLAUDE.md & rules" part (30.2k); its
+    /// tokens) fits inside the bar's "CLAUDE.md & rules" part (25.0k); its
     /// three sections (30 + 9 + 8 KB) fit inside the file.
     private static func claudeMD(section: String, saving: Int) -> String {
         #"[{"kind":"file","ref":"CLAUDE.md · 60.0 KB"},{"kind":"section","ref":""# + section
@@ -120,7 +120,7 @@ enum ContextActionsShotFixtures {
             Row(id: 12, title: "Turn off claude.ai connectors in Claude Code", destination: "claude_connectors_off",
                 workbench: 0, source: "claude.ai"),
             Row(id: 13, title: "Archive shipped-feature lines in memory", destination: "claude_memory_index",
-                evidence: #"[{"kind":"file","ref":"MEMORY.md · 19.0 KB"}]"#),
+                evidence: #"[{"kind":"file","ref":"MEMORY.md · 20.0 KB"}]"#),
             Row(id: 17, title: "Move the setup section out of CLAUDE.md", destination: "repo_claude_md",
                 evidence: Self.claudeMD(section: "Setup · 9.0 KB", saving: 3545)),
             Row(id: 14, title: "Move feature summaries out of CLAUDE.md", destination: "repo_claude_md",
@@ -134,7 +134,7 @@ enum ContextActionsShotFixtures {
                 workbench: 0, status: "accepted", source: "example-server", decidedDaysAgo: 0),
             Row(id: 19, title: "Turn off the sample-helper plugin", destination: "claude_plugin_off", workbench: 0,
                 status: "accepted", source: "sample-helper@example-market", decidedDaysAgo: 15, verdict: "works",
-                verdictValue: "73500", extra: #","verdict_sessions":12"#)
+                verdictValue: "54000", extra: #","verdict_sessions":10"#)
         ]
         return #"{"ok":true,"proposals":["# + rows.map { $0.json(stamp) }.joined(separator: ",") + "]}"
     }

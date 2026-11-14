@@ -1066,7 +1066,7 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
         {"id":\(id),"title":"Proposal \(id)","why":"w","destination":"\(destination)","workbench_id":\(workbench),\
         "prompt_id":"","kind":"cut","metric":"start_tokens","before":"true","after":"false","evidence":[],\
         "sources":6,"status":"\(status)","created_at":"2026-11-01T09:00:00Z","decided_at":"2026-11-10T09:00:00Z",\
-        "baseline":79600,"verdict":"","verdict_value":null,"verdict_at":null,"reverts_id":0,"budget":0,\
+        "baseline":60000,"verdict":"","verdict_value":null,"verdict_at":null,"reverts_id":0,"budget":0,\
         "origin":"context","source_key":"acme-tools@example-market"\(extra)}
         """
     }
@@ -1135,7 +1135,7 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
         XCTAssertTrue(all.contains("PR #13 ready"))
         XCTAssertTrue(all.contains("Session working"))
         XCTAssertTrue(all.contains("Merged · measuring"))
-        XCTAssertTrue(all.contains("79.6k → measuring"), "the settings row's before → after")
+        XCTAssertTrue(all.contains("60.0k → measuring"), "the settings row's before → after")
     }
 
     func testContextRowShowsItsError() throws {
@@ -1159,12 +1159,12 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
         let list = try JSONDecoder().decode(CoachProposalList.self, from: Data(json.utf8))
         let rows = ContextActionsPresentation.rows(proposals: list.proposals, workbenchID: 3, sources: sources,
                                                    sessionKinds: [:], linkFailed: [:], now: Date())
-        XCTAssertEqual(AgentAnalyticsContextView.lead("Every session starts with 79.6k tokens.", baseline: 79600,
+        XCTAssertEqual(AgentAnalyticsContextView.lead("Every session starts with 60.0k tokens.", baseline: 60000,
                                                       rows: rows.doThese),
-                       "Every session starts with 79.6k tokens. 1 change would cut it to ~50k.")
-        XCTAssertEqual(AgentAnalyticsContextView.lead("Every session starts with 79.6k tokens.", baseline: 79600,
+                       "Every session starts with 60.0k tokens. 1 change would cut it to ~30k.")
+        XCTAssertEqual(AgentAnalyticsContextView.lead("Every session starts with 60.0k tokens.", baseline: 60000,
                                                       rows: []),
-                       "Every session starts with 79.6k tokens.")
+                       "Every session starts with 60.0k tokens.")
     }
 
     func testSourcesFoldShowsCantChangeForBuiltins() throws {
@@ -1250,11 +1250,11 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
          {"part":"mcp","group":"claude.ai","group_kind":"claude_ai_connectors","tokens":1100,"calls":0,"measured_sessions":4}]
         """.utf8))
         let bar = try JSONDecoder().decode([AgentPartShare].self, from: Data("""
-        [{"part":"instructions","tokens":30200,"share":0.6},{"part":"mcp","tokens":4100,"share":0.08},
+        [{"part":"instructions","tokens":25400,"share":0.6},{"part":"mcp","tokens":4100,"share":0.08},
          {"part":"system","tokens":9000,"share":0.18}]
         """.utf8))
         let parts = ContextSourcesFold.parts(sources, baseline: bar)
-        XCTAssertEqual(parts.map(\.title), ["CLAUDE.md & rules · 30.2k", "System prompt · 9k", "MCP instructions · 4.1k"])
+        XCTAssertEqual(parts.map(\.title), ["CLAUDE.md & rules · 25.4k", "System prompt · 9k", "MCP instructions · 4.1k"])
         XCTAssertEqual(parts[0].rows, [], "no sources: the title alone")
         XCTAssertEqual(parts[2].rows.map(\.name), ["example-server", "claude.ai connectors"])
         XCTAssertEqual(parts[2].rows.map(\.detail), ["3k", "1.1k"], "instructions are never called")
