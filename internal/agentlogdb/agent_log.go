@@ -115,14 +115,15 @@ type AgentLogBatch struct {
 	// a spawn whose call was never stored writes nothing).
 	Spawns []AgentSpawn
 	// Reread: the batch is the first slice of a stored Claude file read
-	// again from offset 0 (a parser bump, a shrunk file). Its sessions'
-	// per-source rows of RereadLane (the file's agent id; "" = the main
-	// transcript, which also owns the skill listing) are cleared before the
-	// batch's rows land, so a reparse replaces them instead of keeping the
-	// MAX of an older parser's measure. A later slice, and any incremental
-	// read, grows them by MAX.
-	Reread     bool
-	RereadLane string
+	// again from offset 0 (a parser bump, a shrunk file). The per-source
+	// rows of the file's own session (RereadSession) in its lane
+	// (RereadLane, the file's agent id; "" = the main transcript, which
+	// also owns the skill listing) are cleared before the batch's rows
+	// land, so a reparse replaces them instead of keeping the MAX of an
+	// older parser's measure. A later slice, and any incremental read,
+	// grows them by MAX.
+	Reread                    bool
+	RereadSession, RereadLane string
 }
 
 // AgentSpawn links a stored tool row (Key) to the sub-agent it spawned.
@@ -349,28 +350,19 @@ func (d *DB) ApplyAgentLogBatch(b AgentLogBatch) (bool, error) {
 var errCASLost = errors.New("agent log offset moved by another writer")
 
 // clearRereadSources deletes the per-source rows a reread batch rebuilds:
-// the context sources of its lane and, for the main transcript, the skill
-// listing, of the batch's sessions and of every session stored from the
-// file (a session the first slice has not reached yet).
+// the file's own session's context sources of its lane and, for the main
+// transcript, that session's skill listing. Another session whose records
+// the file carries (a resumed or replayed copy) keeps its rows: its own
+// file rebuilds them, and MAX keeps the copy's lossless.
 func clearRereadSources(tx *sql.Tx, b AgentLogBatch) error {
-	ids := make([]string, 0, len(b.Sessions))
-	for _, s := range b.Sessions {
-		ids = append(ids, s.SessionUUID)
-	}
-	idsJSON, err := json.Marshal(ids)
-	if err != nil {
-		return fmt.Errorf("encoding reread sessions: %w", err)
-	}
-	const sessions = `session_uuid IN (SELECT value FROM json_each(?)
-		UNION SELECT session_uuid FROM agent_log_sessions WHERE source_path = ?)`
-	if _, err := tx.Exec(`DELETE FROM agent_log_context_sources WHERE agent_id = ? AND `+sessions,
-		b.RereadLane, string(idsJSON), b.File.Path); err != nil {
+	if _, err := tx.Exec(`DELETE FROM agent_log_context_sources WHERE session_uuid = ? AND agent_id = ?`,
+		b.RereadSession, b.RereadLane); err != nil {
 		return fmt.Errorf("clearing reread context sources: %w", err)
 	}
 	if b.RereadLane != "" {
 		return nil
 	}
-	if _, err := tx.Exec(`DELETE FROM agent_log_skill_listing WHERE `+sessions, string(idsJSON), b.File.Path); err != nil {
+	if _, err := tx.Exec(`DELETE FROM agent_log_skill_listing WHERE session_uuid = ?`, b.RereadSession); err != nil {
 		return fmt.Errorf("clearing reread skill listing: %w", err)
 	}
 	return nil

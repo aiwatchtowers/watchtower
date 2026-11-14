@@ -528,8 +528,11 @@ func storeSlice(st store, tf TranscriptFile, wb *db.Workbench, pr *ParseResult, 
 	if tf.Agent == AgentCodex && tf.Subagent {
 		b.Lane = tf.AgentID
 	}
-	if tf.Agent != AgentCodex && start == 0 && expect >= 0 { // a stored file read again from 0
-		b.Reread, b.RereadLane = true, tf.AgentID
+	// A stored file read again from 0 rebuilds its own session's lane. A
+	// sub-agent file without an agent id (agent-.jsonl) has no lane of its
+	// own: rereading it must not clear the parent's main lane.
+	if tf.Agent != AgentCodex && start == 0 && expect >= 0 && tf.SessionUUID != "" && (!tf.Subagent || tf.AgentID != "") {
+		b.Reread, b.RereadSession, b.RereadLane = true, tf.SessionUUID, tf.AgentID
 	}
 	applied, err := st.al.ApplyAgentLogBatch(b)
 	if err != nil {

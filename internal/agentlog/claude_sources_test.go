@@ -195,3 +195,60 @@ func TestParse_ReparseReplacesV4SkillBytes(t *testing.T) {
 	}
 	assert.Equal(t, map[string]int64{"skill/a": want["a"], "skill/bb": want["bb"]}, got)
 }
+
+// storedSourceRows is session s's per-source and skill listing rows as
+// "<agent>/<kind>/<name>" and "listing/<skill>" → bytes.
+func storedSourceRows(t *testing.T, f *fixture, s string) map[string]int64 {
+	t.Helper()
+	got := map[string]int64{}
+	sources, err := f.al.AgentReportContextSources([]string{s})
+	require.NoError(t, err)
+	for _, c := range sources {
+		got[c.AgentID+"/"+c.Kind+"/"+c.Name] = c.Bytes
+	}
+	listed, err := f.al.AgentReportSkillListing([]string{s})
+	require.NoError(t, err)
+	for _, k := range listed {
+		got["listing/"+k.Skill] = k.Bytes
+	}
+	return got
+}
+
+func skillListingLine(t *testing.T, f *fixture, sid string) string {
+	t.Helper()
+	content := "- a: x\n"
+	return line(t, map[string]any{"type": "attachment", "sessionId": sid, "cwd": f.folder, "attachment": map[string]any{
+		"type": "skill_listing", "names": []string{"a"}, "content": content}, "rendered": []map[string]any{{"content": content}}})
+}
+
+// Rereading a transcript that carries another session's records (a
+// resumed or replayed copy) leaves that session's rows alone.
+func TestParse_RereadKeepsOtherSessionsRows(t *testing.T) {
+	f := newFixture(t)
+	f.write(f.folder, "s1.jsonl", skillListingLine(t, f, "s1")+call(t, "s1", f.folder, "u1", "m1", "r1", 5))
+	b := f.write(f.folder, "s2.jsonl", call(t, "s1", f.folder, "u1", "m1", "r1", 5)+call(t, "s2", f.folder, "u2", "m2", "r2", 5))
+	f.scan()
+	want := map[string]int64{"/skill/a": int64(len("- a: x")), "listing/a": int64(len("- a: x"))}
+	require.Equal(t, want, storedSourceRows(t, f, "s1"))
+
+	_, err := f.al.Exec(`UPDATE agent_log_files SET parser_version = 4 WHERE path = ?`, b)
+	require.NoError(t, err)
+	require.Equal(t, 1, f.scan().FilesScanned, "only s2.jsonl is reread")
+	assert.Equal(t, want, storedSourceRows(t, f, "s1"))
+}
+
+// A sub-agent transcript without an agent id (agent-.jsonl) has no lane of
+// its own: its reread never clears the parent's main lane.
+func TestParse_RereadOfAgentIDLessSubagentKeepsMainLane(t *testing.T) {
+	f := newFixture(t)
+	f.write(f.folder, "s1.jsonl", skillListingLine(t, f, "s1")+call(t, "s1", f.folder, "u1", "m1", "r1", 5))
+	sub := f.write(f.folder, "s1/subagents/agent-.jsonl", call(t, "s1", f.folder, "u9", "m9", "r9", 5))
+	f.scan()
+	want := map[string]int64{"/skill/a": int64(len("- a: x")), "listing/a": int64(len("- a: x"))}
+	require.Equal(t, want, storedSourceRows(t, f, "s1"))
+
+	_, err := f.al.Exec(`UPDATE agent_log_files SET parser_version = 4 WHERE path = ?`, sub)
+	require.NoError(t, err)
+	require.Equal(t, 1, f.scan().FilesScanned, "only the sub-agent file is reread")
+	assert.Equal(t, want, storedSourceRows(t, f, "s1"))
+}

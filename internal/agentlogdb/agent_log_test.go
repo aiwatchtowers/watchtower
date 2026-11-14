@@ -578,7 +578,7 @@ func TestApplyAgentLogBatch_RereadReplacesSources(t *testing.T) {
 		t.Helper()
 		ok, err := d.ApplyAgentLogBatch(AgentLogBatch{File: AgentLogFile{Path: "/x/a.jsonl", Agent: "claude", ReadOffset: offset},
 			ExpectOffset: expect, Sessions: []AgentLogSession{agentSession("s1", "2026-10-01T10:00:00Z", testWorkbenchID)},
-			ContextSources: src, SkillListing: listing, Reread: reread, RereadLane: lane})
+			ContextSources: src, SkillListing: listing, Reread: reread, RereadSession: "s1", RereadLane: lane})
 		require.NoError(t, err)
 		require.True(t, ok)
 	}
