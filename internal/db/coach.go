@@ -62,6 +62,16 @@ type CoachProposal struct {
 	// saw a repo_* edit at the folder's HEAD (zero = not yet, or not repo_*).
 	WrittenBranch string
 	MeasureFrom   time.Time
+	// SessionID is the session a repo or memory Accept started (nil before,
+	// and after the Desktop deletes that session row); ViaSession tells a
+	// session-accepted row from a legacy one and survives that delete;
+	// SessionBranch is the session's branch, copied while the session row
+	// exists. SourceKey is a context proposal's source (plugin id, server
+	// name, "connectors" or "memory"), part of its text key.
+	SessionID     *int64
+	SourceKey     string
+	ViaSession    bool
+	SessionBranch string
 }
 
 // PromptAddition is an owner-accepted addition to a Watchtower prompt.
@@ -90,17 +100,18 @@ func parseCoachStamp(s string) (time.Time, error) {
 const coachCols = `id, fingerprint, kind, destination, COALESCE(workbench_id, 0), prompt_id, title, why, metric,
 	before_text, after_text, evidence, sources, status, COALESCE(reverts_id, 0), created_at, decided_at,
 	baseline, baseline_n, verdict, verdict_value, verdict_at, origin, skill, conversation_id,
-	written_branch, COALESCE(measure_from, '')`
+	written_branch, COALESCE(measure_from, ''), session_id, source_key, via_session, session_branch`
 
 func scanCoachProposal(row interface{ Scan(...any) error }) (CoachProposal, error) {
 	var p CoachProposal
 	var evidence, created, decided, verdictAt, measureFrom string
 	var baseline, verdictValue sql.NullFloat64
-	var conv sql.NullInt64
+	var conv, session sql.NullInt64
 	if err := row.Scan(&p.ID, &p.Fingerprint, &p.Kind, &p.Destination, &p.WorkbenchID, &p.PromptID, &p.Title,
 		&p.Why, &p.Metric, &p.BeforeText, &p.AfterText, &evidence, &p.Sources, &p.Status, &p.RevertsID,
 		&created, &decided, &baseline, &p.BaselineN, &p.Verdict, &verdictValue, &verdictAt,
-		&p.Origin, &p.Skill, &conv, &p.WrittenBranch, &measureFrom); err != nil {
+		&p.Origin, &p.Skill, &conv, &p.WrittenBranch, &measureFrom,
+		&session, &p.SourceKey, &p.ViaSession, &p.SessionBranch); err != nil {
 		return CoachProposal{}, fmt.Errorf("scanning coach proposal: %w", err)
 	}
 	if err := json.Unmarshal([]byte(evidence), &p.Evidence); err != nil {
@@ -130,6 +141,10 @@ func scanCoachProposal(row interface{ Scan(...any) error }) (CoachProposal, erro
 	if conv.Valid {
 		v := conv.Int64
 		p.ConversationID = &v
+	}
+	if session.Valid {
+		v := session.Int64
+		p.SessionID = &v
 	}
 	return p, nil
 }
@@ -163,12 +178,12 @@ func insertCoachProposal(x interface {
 	}
 	res, err := x.Exec(`INSERT INTO coach_proposals (fingerprint, kind, destination, workbench_id, prompt_id,
 		title, why, metric, before_text, after_text, evidence, sources, reverts_id, created_at,
-		origin, skill, conversation_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		origin, skill, conversation_id, source_key)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(fingerprint) DO NOTHING`,
 		p.Fingerprint, p.Kind, p.Destination, workbench, p.PromptID, p.Title, p.Why, p.Metric,
 		p.BeforeText, p.AfterText, string(evidence), p.Sources, reverts, coachStamp(now),
-		origin, p.Skill, conv)
+		origin, p.Skill, conv, p.SourceKey)
 	if err != nil {
 		return 0, fmt.Errorf("inserting coach proposal: %w", err)
 	}
@@ -241,6 +256,63 @@ func (db *DB) InsertChatCoachProposal(p CoachProposal, convID *int64, now time.T
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("inserting chat coach proposal: %w", err)
+	}
+	return id, nil
+}
+
+// coachGlobalContextDestinations are the context destinations that act on the
+// owner's user-scope Claude Code settings: stored without a workbench, one
+// open proposal per source in the whole install (spec D3/C9).
+var coachGlobalContextDestinations = map[string]bool{
+	"claude_plugin_off":     true,
+	"claude_mcp_server_off": true,
+	"claude_connectors_off": true,
+}
+
+// InsertContextCoachProposal files p as an open context proposal (origin
+// context) in one short write transaction. A global destination
+// (claude_plugin_off, claude_mcp_server_off, claude_connectors_off) is stored
+// with workbench_id NULL whatever p.WorkbenchID says, and holds one open
+// proposal per (destination, source_key) across the install; every other
+// destination (repo_claude_md, claude_memory_index) holds one open per
+// (destination, source_key, workbench). A second open proposal for the same
+// key is refused with ErrCoachTextBusy ("<err>: #<open id>"). A fingerprint
+// that already exists returns 0, nil before the busy check, so a retry of the
+// open proposal itself is not busy.
+func (db *DB) InsertContextCoachProposal(p CoachProposal, now time.Time) (int64, error) {
+	p.Origin = "context"
+	if coachGlobalContextDestinations[p.Destination] {
+		p.WorkbenchID = 0
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("inserting context coach proposal: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var exists int
+	err = tx.QueryRow(`SELECT 1 FROM coach_proposals WHERE fingerprint = ?`, p.Fingerprint).Scan(&exists)
+	switch {
+	case err == nil:
+		return 0, nil
+	case !errors.Is(err, sql.ErrNoRows):
+		return 0, fmt.Errorf("checking coach fingerprint: %w", err)
+	}
+	var open int64
+	err = tx.QueryRow(`SELECT id FROM coach_proposals WHERE status = 'open' AND destination = ?
+		AND source_key = ? AND COALESCE(workbench_id, 0) = ? LIMIT 1`,
+		p.Destination, p.SourceKey, p.WorkbenchID).Scan(&open)
+	switch {
+	case err == nil:
+		return 0, fmt.Errorf("%w: #%d", ErrCoachTextBusy, open)
+	case !errors.Is(err, sql.ErrNoRows):
+		return 0, fmt.Errorf("checking open coach proposals: %w", err)
+	}
+	id, err := insertCoachProposal(tx, p, now)
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("inserting context coach proposal: %w", err)
 	}
 	return id, nil
 }
@@ -373,6 +445,33 @@ func (db *DB) MarkCoachAccepted(id int64, after, branch string, baseline *float6
 		written_branch = ?, baseline = ?, baseline_n = ? WHERE id = ? AND status = 'open'`,
 		coachStamp(now), after, branch, b, n, id)
 	return coachCAS(res, err, "accepting coach proposal")
+}
+
+// MarkCoachAcceptedWithSession accepts an open proposal through the workbench
+// session sessionID: in one compare-and-set on open it stores accepted, the
+// session (via_session = 1, which outlives the session row) and the metric
+// baseline with its number of observations (nil = NULL). A proposal no longer
+// open is refused with ErrCoachStateChanged.
+func (db *DB) MarkCoachAcceptedWithSession(id, sessionID int64, baseline *float64, n int, now time.Time) error {
+	var b any
+	if baseline != nil {
+		b = *baseline
+	}
+	res, err := db.Exec(`UPDATE coach_proposals SET status = 'accepted', decided_at = ?, session_id = ?,
+		via_session = 1, baseline = ?, baseline_n = ? WHERE id = ? AND status = 'open'`,
+		coachStamp(now), sessionID, b, n, id)
+	return coachCAS(res, err, "accepting coach proposal with session")
+}
+
+// SetCoachSessionBranch copies the session's branch onto proposal id, only
+// while its session_branch is still empty: a later call (or one for a missing
+// id) changes nothing and is not an error.
+func (db *DB) SetCoachSessionBranch(id int64, branch string) error {
+	if _, err := db.Exec(`UPDATE coach_proposals SET session_branch = ? WHERE id = ? AND session_branch = ''`,
+		branch, id); err != nil {
+		return fmt.Errorf("setting coach session branch: %w", err)
+	}
+	return nil
 }
 
 // SetCoachMeasureFrom starts the verdict window of an accepted repo_* edit:

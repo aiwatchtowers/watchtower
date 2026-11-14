@@ -2,6 +2,9 @@
 index	coach_proposals_conversation
 CREATE INDEX coach_proposals_conversation ON coach_proposals(conversation_id)
 
+index	coach_proposals_session
+CREATE INDEX coach_proposals_session ON coach_proposals(session_id)
+
 index	idx_account_purges_open
 CREATE UNIQUE INDEX idx_account_purges_open
 ON account_purges(source, account_id) WHERE state IN ('scheduled','running')
@@ -1198,15 +1201,16 @@ table	coach_proposals
 CREATE TABLE "coach_proposals" (
 id INTEGER PRIMARY KEY,
 fingerprint TEXT NOT NULL UNIQUE,
-kind TEXT NOT NULL CHECK (kind IN ('add','cut','replace')),
+kind TEXT NOT NULL CHECK (kind IN ('add','cut','replace','restructure')),
 destination TEXT NOT NULL CHECK (destination IN ('session','procedure','chat','prompt_addition','claude_settings_allow','claude_md_user',
 'claude_skill_user','codex_skill_user','pack_overlay','codex_agents_md_user','codex_rules_allow',
-'repo_claude_md','repo_agents_md','repo_claude_skill','repo_codex_skill','repo_workflow')),
+'repo_claude_md','repo_agents_md','repo_claude_skill','repo_codex_skill','repo_workflow',
+'claude_plugin_off','claude_mcp_server_off','claude_connectors_off','claude_memory_index')),
 workbench_id INTEGER REFERENCES projects(id) ON DELETE CASCADE, -- NULL = global
 prompt_id TEXT NOT NULL DEFAULT '',
 title TEXT NOT NULL,
 why TEXT NOT NULL,
-metric TEXT NOT NULL CHECK (metric IN ('corrections','task_cost','owner_loop','review_findings')),
+metric TEXT NOT NULL CHECK (metric IN ('corrections','task_cost','owner_loop','review_findings','start_tokens')),
 before_text TEXT NOT NULL DEFAULT '', -- the whole destination text before
 after_text TEXT NOT NULL DEFAULT '', -- the whole destination text after
 evidence TEXT NOT NULL DEFAULT '[]', -- JSON [{kind,ref}]
@@ -1217,14 +1221,18 @@ created_at TEXT NOT NULL,
 decided_at TEXT NOT NULL DEFAULT '',
 baseline REAL,
 baseline_n INTEGER NOT NULL DEFAULT 0,
-verdict TEXT NOT NULL DEFAULT '' CHECK (verdict IN ('','works','no_effect','too_little_data')),
+verdict TEXT NOT NULL DEFAULT '' CHECK (verdict IN ('','works','no_effect','too_little_data','reverted_outside')),
 verdict_value REAL,
 verdict_at TEXT NOT NULL DEFAULT '',
-origin TEXT NOT NULL DEFAULT 'weekly' CHECK (origin IN ('weekly','chat')),
+origin TEXT NOT NULL DEFAULT 'weekly' CHECK (origin IN ('weekly','chat','context')),
 skill TEXT NOT NULL DEFAULT '',
 conversation_id INTEGER REFERENCES chat_conversations(id) ON DELETE SET NULL,
 written_branch TEXT NOT NULL DEFAULT '',
-measure_from TEXT
+measure_from TEXT,
+session_id INTEGER REFERENCES terminal_sessions(id) ON DELETE SET NULL,
+source_key TEXT NOT NULL DEFAULT '',
+via_session INTEGER NOT NULL DEFAULT 0,
+session_branch TEXT NOT NULL DEFAULT ''
 )
 
 table	codex_plan_usage_samples
@@ -4773,6 +4781,10 @@ GROUP BY up.ancestor
 24	conversation_id	INTEGER	notnull=0	dflt=NULL	pk=0
 25	written_branch	TEXT	notnull=1	dflt=''	pk=0
 26	measure_from	TEXT	notnull=0	dflt=NULL	pk=0
+27	session_id	INTEGER	notnull=0	dflt=NULL	pk=0
+28	source_key	TEXT	notnull=1	dflt=''	pk=0
+29	via_session	INTEGER	notnull=1	dflt=0	pk=0
+30	session_branch	TEXT	notnull=1	dflt=''	pk=0
 
 ## codex_plan_usage_samples
 0	scope	TEXT	notnull=1	dflt=NULL	pk=1
