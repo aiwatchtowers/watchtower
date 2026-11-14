@@ -73,9 +73,9 @@ func slackWatcher(t *testing.T, database *db.DB, now time.Time) (*slackLiveWatch
 
 func toolCall(w *slackLiveWatcher, id, name string, ok bool, summary string) {
 	w.Observe(chat.Event{Type: chat.EventToolStart, ID: id, Name: name})
-	w.Wait()
+	w.wg.Wait()
 	w.Observe(chat.Event{Type: chat.EventToolEnd, ID: id, OK: &ok, Summary: summary})
-	w.Wait()
+	w.wg.Wait()
 }
 
 func TestAISession_ProbeOnFirstSlackToolOnly(t *testing.T) {
@@ -109,6 +109,38 @@ func TestAISession_ProbeMatchesRenamedServer(t *testing.T) {
 	w, probes := slackWatcher(t, d, time.Now())
 	toolCall(w, "1", "watchtower-app:list_messages", true, "")
 	assert.Len(t, *probes, 1)
+}
+
+func TestSlackLiveWatcher_NoWorkAfterWait(t *testing.T) {
+	d := db.OpenTestDB(t)
+	w, probes := slackWatcher(t, d, time.Now())
+	w.Wait()
+	ok := true
+	w.Observe(chat.Event{Type: chat.EventToolStart, ID: "1", Name: "list_messages"})
+	w.Observe(chat.Event{Type: chat.EventToolEnd, ID: "1", OK: &ok})
+	w.Observe(chat.Event{Type: chat.EventToolStart, ID: "2", Name: "claude_ai_Slack:slack_read_channel"})
+	w.Observe(chat.Event{Type: chat.EventToolEnd, ID: "2", OK: &ok})
+	w.Wait()
+	assert.Empty(t, *probes)
+	rows, err := d.ListSlackLiveStatus()
+	require.NoError(t, err)
+	assert.Empty(t, rows)
+}
+
+func TestSlackLiveWatcher_StatusTimeIsEventTime(t *testing.T) {
+	d := db.OpenTestDB(t)
+	t0 := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
+	w, _ := slackWatcher(t, d, t0)
+	bad := false
+	w.Observe(chat.Event{Type: chat.EventToolStart, ID: "1", Name: "claude_ai_Slack:slack_read_channel"})
+	w.Observe(chat.Event{Type: chat.EventToolEnd, ID: "1", OK: &bad, Summary: "boom"})
+	w.wg.Wait()
+	w.now = func() time.Time { return t0.Add(time.Hour) }
+	toolCall(w, "2", "claude_ai_Slack:slack_read_channel", true, "ok")
+	rows, err := d.ListSlackLiveStatus()
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, "ok", rows[0].Status, "the older failure cannot overwrite the newer ok")
 }
 
 func TestChatLive_StatusWrittenOnUse(t *testing.T) {

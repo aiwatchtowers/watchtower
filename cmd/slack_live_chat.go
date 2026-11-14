@@ -68,6 +68,7 @@ type slackLiveWatcher struct {
 
 	mu       sync.Mutex
 	wg       sync.WaitGroup
+	closed   bool
 	provider string
 	calls    map[string]string // tool id → tool name
 	probed   bool
@@ -125,14 +126,18 @@ func (w *slackLiveWatcher) Observe(e chat.Event) {
 		name := w.calls[e.ID]
 		delete(w.calls, e.ID)
 		if isSlackConnectorTool(name) {
-			provider := w.provider
-			w.run(func() { w.writeStatus(provider, e) })
+			provider, at := w.provider, w.now() // the event's time, not the write's
+			w.run(func() { w.writeStatus(provider, e, at) })
 		}
 	}
 }
 
 // run starts fn in a goroutine Wait will join.
+// Called with mu held; after Wait it schedules nothing.
 func (w *slackLiveWatcher) run(fn func()) {
+	if w.closed {
+		return
+	}
 	w.wg.Add(1)
 	go func() {
 		defer w.wg.Done()
@@ -141,7 +146,14 @@ func (w *slackLiveWatcher) run(fn func()) {
 }
 
 // Wait joins the watcher's goroutines (session end, tests).
-func (w *slackLiveWatcher) Wait() { w.wg.Wait() }
+// After it returns the watcher schedules nothing more (no database use once
+// the session closes it).
+func (w *slackLiveWatcher) Wait() {
+	w.mu.Lock()
+	w.closed = true
+	w.mu.Unlock()
+	w.wg.Wait()
+}
 
 func (w *slackLiveWatcher) maybeProbe(provider string) {
 	if w.startProbe == nil || w.database == nil {
@@ -159,13 +171,13 @@ func (w *slackLiveWatcher) maybeProbe(provider string) {
 
 // writeStatus records the outcome of one connector call on the provider's
 // newest row's key (so a probe's connector id stays with it).
-func (w *slackLiveWatcher) writeStatus(provider string, e chat.Event) {
+func (w *slackLiveWatcher) writeStatus(provider string, e chat.Event, at time.Time) {
 	if w.database == nil || w.classify == nil || e.OK == nil {
 		return
 	}
 	ok := *e.OK
 	status, class := w.classify(provider, e.Summary, true, ok) // the tool ran, so the connector is present
-	row := db.SlackLiveStatus{Provider: provider, Status: status, ErrorClass: class, CheckedAt: w.now()}
+	row := db.SlackLiveStatus{Provider: provider, Status: status, ErrorClass: class, CheckedAt: at}
 	if rows, err := w.database.ListSlackLiveStatus(); err == nil {
 		if r, found := newestSlackLive(rows, provider); found {
 			row.TeamID = r.TeamID
