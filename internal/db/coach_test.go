@@ -836,3 +836,152 @@ func TestCoachSessionBranch(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, b)
 }
+
+// SetCoachMemoryMeasured records the cleanup session's end and the index it
+// left in one compare-and-set; a second call, a judged or a rolled-back row
+// changes nothing.
+func TestSetCoachMemoryMeasured(t *testing.T) {
+	d := openTestDB(t)
+	now := time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)
+	wb := newTestWorkbench(t, d)
+	sess := newTestSession(t, d, wb)
+	id := acceptedThroughSession(t, d, "fp1", "claude_memory_index", wb, sess, now)
+
+	ok, err := d.SetCoachMemoryMeasured(id, now.Add(time.Hour), "- slim\n")
+	require.NoError(t, err)
+	require.True(t, ok)
+	got, err := d.GetCoachProposal(id)
+	require.NoError(t, err)
+	assert.True(t, got.MeasureFrom.Equal(now.Add(time.Hour)))
+	assert.Equal(t, "- slim\n", got.AfterText)
+
+	ok, err = d.SetCoachMemoryMeasured(id, now.Add(2*time.Hour), "- other\n")
+	require.NoError(t, err)
+	assert.False(t, ok, "already measured")
+	got, err = d.GetCoachProposal(id)
+	require.NoError(t, err)
+	assert.Equal(t, "- slim\n", got.AfterText)
+
+	judged := acceptedThroughSession(t, d, "fp2", "claude_memory_index", wb, sess, now)
+	require.NoError(t, d.DismissCoachSession(judged, now))
+	ok, err = d.SetCoachMemoryMeasured(judged, now, "- x\n")
+	require.NoError(t, err)
+	assert.False(t, ok)
+}
+
+// CoachSessionEnd: a working session, a finished one (its finish time), an
+// idle one (waiting or never reported) past idleAfter (its last activity),
+// an idle one under it, and a missing row.
+func TestCoachSessionEnd(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	now := time.Date(2026, 11, 12, 12, 0, 0, 0, time.UTC)
+	session := func(state any, lastActive time.Time) int64 {
+		id := newTestSession(t, d, wb)
+		_, err := d.Exec(`UPDATE terminal_sessions SET agent_state = ?, last_active_at = ? WHERE id = ?`,
+			state, lastActive.Format("2006-01-02T15:04:05Z"), id)
+		require.NoError(t, err)
+		return id
+	}
+	end := func(id int64) (bool, time.Time) {
+		found, ended, err := d.CoachSessionEnd(id, now, time.Hour)
+		require.NoError(t, err)
+		return found, ended
+	}
+
+	working := session("working", now.Add(-5*time.Hour))
+	found, ended := end(working)
+	assert.True(t, found)
+	assert.True(t, ended.IsZero(), "working: running however old")
+	approval := session("approval", now.Add(-5*time.Hour))
+	_, ended = end(approval)
+	assert.True(t, ended.IsZero(), "waiting for an approval: running")
+
+	at := time.Date(2026, 11, 12, 9, 30, 0, 0, time.UTC)
+	require.NoError(t, d.FinishTerminalSession(working, "done", at))
+	_, ended = end(working)
+	assert.True(t, ended.Equal(at), "finished: its finish time")
+
+	idle := session("waiting", now.Add(-2*time.Hour))
+	_, ended = end(idle)
+	assert.True(t, ended.Equal(now.Add(-2*time.Hour)), "idle an hour or more: ended at its last activity")
+	never := session(nil, now.Add(-time.Hour))
+	_, ended = end(never)
+	assert.True(t, ended.Equal(now.Add(-time.Hour)), "never reported, idle exactly an hour: ended")
+	recent := session("waiting", now.Add(-59*time.Minute))
+	_, ended = end(recent)
+	assert.True(t, ended.IsZero(), "idle under an hour: still running")
+
+	found, _ = end(working + 100)
+	assert.False(t, found)
+}
+
+// SetCoachVerdictN stores the sessions behind a verdict; SetCoachVerdict
+// stores 0; Reapply clears it with the verdict.
+func TestSetCoachVerdictN(t *testing.T) {
+	d := openTestDB(t)
+	now := time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)
+	id, err := d.InsertContextCoachProposal(contextFixture("fp1", "claude_plugin_off", "alpha@market"), now)
+	require.NoError(t, err)
+	require.NoError(t, d.MarkCoachAccepted(id, "false", "", nil, 0, now))
+
+	v := 1760.0
+	require.NoError(t, d.SetCoachVerdictN(id, "works", &v, 12, now))
+	got, err := d.GetCoachProposal(id)
+	require.NoError(t, err)
+	assert.Equal(t, "works", got.Verdict)
+	assert.Equal(t, 12, got.VerdictN)
+
+	require.NoError(t, d.SetCoachVerdict(id, "reverted_outside", nil, now))
+	got, err = d.GetCoachProposal(id)
+	require.NoError(t, err)
+	assert.Zero(t, got.VerdictN, "a verdict that measured nothing has no sessions")
+
+	require.NoError(t, d.SetCoachVerdictN(id, "reverted_outside", nil, 3, now))
+	require.NoError(t, d.ReapplyCoachProposal(id, now.Add(time.Hour)))
+	got, err = d.GetCoachProposal(id)
+	require.NoError(t, err)
+	assert.Zero(t, got.VerdictN, "cleared with the verdict")
+
+	require.NoError(t, d.DecideCoachProposal(id, "accepted", "rolled_back", now))
+	require.ErrorIs(t, d.SetCoachVerdictN(id, "works", &v, 5, now), ErrCoachStateChanged)
+}
+
+// SetCoachMemoryUnchanged decides an accepted memory row once (after_text =
+// before_text); a decided row takes neither decision again, and a Restart
+// clears it for the new session.
+func TestSetCoachMemoryUnchanged(t *testing.T) {
+	d := openTestDB(t)
+	now := time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)
+	wb := newTestWorkbench(t, d)
+	sess := newTestSession(t, d, wb)
+	id := acceptedThroughSession(t, d, "fp1", "claude_memory_index", wb, sess, now)
+	_, err := d.Exec(`UPDATE coach_proposals SET before_text = ? WHERE id = ?`, "- a\n- b\n", id)
+	require.NoError(t, err)
+
+	ok, err := d.SetCoachMemoryUnchanged(id)
+	require.NoError(t, err)
+	require.True(t, ok)
+	got, err := d.GetCoachProposal(id)
+	require.NoError(t, err)
+	assert.Equal(t, "- a\n- b\n", got.AfterText)
+	assert.True(t, got.MeasureFrom.IsZero())
+
+	ok, err = d.SetCoachMemoryUnchanged(id)
+	require.NoError(t, err)
+	assert.False(t, ok)
+	ok, err = d.SetCoachMemoryMeasured(id, now, "- a\n")
+	require.NoError(t, err)
+	assert.False(t, ok, "decided: never measured later")
+
+	fresh := newTestSession(t, d, wb)
+	require.NoError(t, d.RestartCoachSession(id, CoachSessionLink{SessionID: fresh, WorkbenchID: wb}, now))
+	got, err = d.GetCoachProposal(id)
+	require.NoError(t, err)
+	assert.Empty(t, got.AfterText, "a new session is decided afresh")
+
+	repo := acceptedThroughSession(t, d, "fp2", "repo_claude_md", wb, sess, now)
+	ok, err = d.SetCoachMemoryUnchanged(repo)
+	require.NoError(t, err)
+	assert.False(t, ok, "memory rows only")
+}

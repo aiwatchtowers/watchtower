@@ -55,6 +55,7 @@ func TestJudge_Works(t *testing.T) {
 	assert.Equal(t, "works", p.Verdict)
 	require.NotNil(t, p.VerdictValue)
 	assert.InDelta(t, 5.0, *p.VerdictValue, 1e-9)
+	assert.Equal(t, 5, p.VerdictN, "the period's sessions, for every metric")
 	open, err := d.ListCoachProposals("open")
 	require.NoError(t, err)
 	assert.Empty(t, open)
@@ -558,4 +559,81 @@ func TestJudge_RepoCommittedAfter30Days(t *testing.T) {
 	assert.Equal(t, "too_little_data", proposal(t, d, id).Verdict)
 	runJudge(t, d, late.Add(15*24*time.Hour))
 	assert.Equal(t, late.Add(time.Hour), proposal(t, d, id).VerdictAt.UTC(), "final: never measured")
+}
+
+// startTokensFixture is an accepted plugin-off proposal (global, start_tokens,
+// baseline 2000 tokens) decided at judgeDecided and `sessions` measured
+// sessions after it whose main lane starts at mainBytes.
+func startTokensFixture(t *testing.T, sessions int, mainBytes int64) (dbs, int64) {
+	t.Helper()
+	d := openDBs(t)
+	wb, _ := d.workbench(t, "a", 0)
+	for i := range sessions {
+		d.startSession(t, wb, fmt.Sprintf("st%d", i), judgeDecided.Add(time.Duration(i+1)*time.Hour), mainBytes)
+	}
+	id, err := d.InsertContextCoachProposal(db.CoachProposal{Fingerprint: "plugin|alpha", Kind: "cut",
+		Destination: DestPluginOff, SourceKey: "alpha@example-market", Title: "Turn off alpha", Why: "Unused.",
+		Metric: "start_tokens", BeforeText: "true", AfterText: "false"}, t0)
+	require.NoError(t, err)
+	require.NoError(t, d.MarkCoachAccepted(id, "false", "", fl(2000), 5, judgeDecided))
+	return d, id
+}
+
+func TestJudge_StartTokensWorks(t *testing.T) {
+	d, id := startTokensFixture(t, 5, 4576) // 1760 tokens: 12 % below 2000
+	j, c := runJudge(t, d, judgeDecided.Add(15*24*time.Hour))
+	assert.Equal(t, 1, j)
+	assert.Zero(t, c)
+	p := proposal(t, d, id)
+	assert.Equal(t, "works", p.Verdict)
+	require.NotNil(t, p.VerdictValue)
+	assert.InDelta(t, 1760.0, *p.VerdictValue, 1e-9)
+	assert.Equal(t, 5, p.VerdictN, "the measured starts behind the verdict")
+}
+
+func TestJudge_StartTokensNoEffect(t *testing.T) {
+	d, id := startTokensFixture(t, 5, 4940) // 1900 tokens: only 5 % below
+	home := ctxHome(t)
+	writeHomeFile(t, filepath.Join(home, ".claude", "settings.json"), `{"enabledPlugins":{"alpha@example-market":false}}`)
+	j, c, err := judge(d.DB, d.al, home, judgeDecided.Add(15*24*time.Hour))
+	require.NoError(t, err)
+	assert.Equal(t, 1, j)
+	assert.Zero(t, c, "no cut for a settings key: Accept only ever turns it off")
+	assert.Equal(t, "no_effect", proposal(t, d, id).Verdict)
+	open, err := d.ListCoachProposals("open")
+	require.NoError(t, err)
+	assert.Empty(t, open)
+
+	d, id = startTokensFixture(t, 4, 2600) // 1000 tokens, but 4 sessions
+	j, _ = runJudge(t, d, judgeDecided.Add(15*24*time.Hour))
+	assert.Zero(t, j)
+	p := proposal(t, d, id)
+	assert.Equal(t, "too_little_data", p.Verdict)
+	assert.Equal(t, 4, p.VerdictN, "too few, and how few")
+}
+
+// The memory index is measured from measure_from (the cleanup session's
+// end), not from the Accept; none within repoCommitWait is too_little_data.
+func TestJudge_StartTokensMemoryFromMeasureFrom(t *testing.T) {
+	d := openDBs(t)
+	wb, _ := d.workbench(t, "a", 0)
+	for i := range 5 {
+		d.startSession(t, wb, fmt.Sprintf("m%d", i), judgeDecided.Add(time.Duration(i+1)*time.Hour), 2600)
+	}
+	id, err := d.InsertContextCoachProposal(db.CoachProposal{Fingerprint: "mem|a", Kind: "restructure",
+		Destination: DestMemoryIndex, WorkbenchID: wb, SourceKey: "memory", Title: "Archive", Why: "Big.",
+		Metric: "start_tokens", BeforeText: "# Memory\n"}, t0)
+	require.NoError(t, err)
+	require.NoError(t, d.MarkCoachAccepted(id, "", "", fl(2000), 5, judgeDecided))
+
+	j, _ := runJudge(t, d, judgeDecided.Add(15*24*time.Hour))
+	assert.Zero(t, j, "no measure_from yet: nothing to measure")
+	assert.Empty(t, proposal(t, d, id).Verdict)
+
+	set, err := d.SetCoachMeasureFrom(id, judgeDecided)
+	require.NoError(t, err)
+	require.True(t, set)
+	j, _ = runJudge(t, d, judgeDecided.Add(15*24*time.Hour))
+	assert.Equal(t, 1, j)
+	assert.Equal(t, "works", proposal(t, d, id).Verdict)
 }

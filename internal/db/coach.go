@@ -55,8 +55,12 @@ type CoachProposal struct {
 	Verdict                                             string
 	VerdictValue                                        *float64
 	VerdictAt                                           time.Time
-	Origin, Skill                                       string
-	ConversationID                                      *int64
+	// VerdictN is how many sessions the verdict was measured on (the
+	// measured starts for start_tokens); 0 when none were, or for a verdict
+	// that measured nothing (too_little_data by waiting, reverted_outside).
+	VerdictN       int
+	Origin, Skill  string
+	ConversationID *int64
 	// WrittenBranch is the branch a repo_* Accept wrote on ("" otherwise, or
 	// when the branch could not be read); MeasureFrom is when the daemon first
 	// saw a repo_* edit at the folder's HEAD (zero = not yet, or not repo_*).
@@ -100,7 +104,7 @@ func parseCoachStamp(s string) (time.Time, error) {
 const coachCols = `id, fingerprint, kind, destination, COALESCE(workbench_id, 0), prompt_id, title, why, metric,
 	before_text, after_text, evidence, sources, status, COALESCE(reverts_id, 0), created_at, decided_at,
 	baseline, baseline_n, verdict, verdict_value, verdict_at, origin, skill, conversation_id,
-	written_branch, COALESCE(measure_from, ''), session_id, source_key, via_session, session_branch`
+	written_branch, COALESCE(measure_from, ''), session_id, source_key, via_session, session_branch, verdict_n`
 
 func scanCoachProposal(row interface{ Scan(...any) error }) (CoachProposal, error) {
 	var p CoachProposal
@@ -111,7 +115,7 @@ func scanCoachProposal(row interface{ Scan(...any) error }) (CoachProposal, erro
 		&p.Why, &p.Metric, &p.BeforeText, &p.AfterText, &evidence, &p.Sources, &p.Status, &p.RevertsID,
 		&created, &decided, &baseline, &p.BaselineN, &p.Verdict, &verdictValue, &verdictAt,
 		&p.Origin, &p.Skill, &conv, &p.WrittenBranch, &measureFrom,
-		&session, &p.SourceKey, &p.ViaSession, &p.SessionBranch); err != nil {
+		&session, &p.SourceKey, &p.ViaSession, &p.SessionBranch, &p.VerdictN); err != nil {
 		return CoachProposal{}, fmt.Errorf("scanning coach proposal: %w", err)
 	}
 	if err := json.Unmarshal([]byte(evidence), &p.Evidence); err != nil {
@@ -549,8 +553,11 @@ func (l CoachSessionLink) before() any {
 // ErrCoachSessionNotFound; a proposal no longer open ErrCoachStateChanged.
 func (db *DB) AcceptCoachThroughSession(id int64, l CoachSessionLink, now time.Time) error {
 	return db.linkCoachSession(l, func(tx *sql.Tx, branch string) error {
+		// A memory row's after_text is the daemon's decision on the session
+		// (C10): empty until the session has ended.
 		res, err := tx.Exec(`UPDATE coach_proposals SET status = 'accepted', decided_at = ?, session_id = ?,
-			via_session = 1, session_branch = ?, before_text = COALESCE(?, before_text), baseline = ?, baseline_n = ?
+			via_session = 1, session_branch = ?, before_text = COALESCE(?, before_text), baseline = ?, baseline_n = ?,
+			after_text = CASE WHEN destination = 'claude_memory_index' THEN '' ELSE after_text END
 			WHERE id = ? AND status = 'open'`,
 			coachStamp(now), l.SessionID, branch, l.before(), l.baseline(), l.N, id)
 		return coachCAS(res, err, "accepting coach proposal through a session")
@@ -593,8 +600,11 @@ func (db *DB) RestartCoachSession(id int64, l CoachSessionLink, now time.Time) e
 				return ErrCoachSessionHasPR
 			}
 		}
+		// A memory row's after_text is the old session's decision: the new
+		// session is decided afresh.
 		res, err := tx.Exec(`UPDATE coach_proposals SET session_id = ?, session_branch = ?, decided_at = ?,
-			before_text = COALESCE(?, before_text), baseline = ?, baseline_n = ?
+			before_text = COALESCE(?, before_text), baseline = ?, baseline_n = ?,
+			after_text = CASE WHEN destination = 'claude_memory_index' THEN '' ELSE after_text END
 			WHERE id = ? AND `+coachSessionGuard,
 			l.SessionID, branch, coachStamp(now), l.before(), l.baseline(), l.N, id)
 		return coachCAS(res, err, "restarting coach proposal")
@@ -615,7 +625,7 @@ func (db *DB) DismissCoachSession(id int64, now time.Time) error {
 // loses its verdict and measures from now. Any other row is
 // ErrCoachStateChanged.
 func (db *DB) ReapplyCoachProposal(id int64, now time.Time) error {
-	res, err := db.Exec(`UPDATE coach_proposals SET verdict = '', verdict_value = NULL, verdict_at = '',
+	res, err := db.Exec(`UPDATE coach_proposals SET verdict = '', verdict_value = NULL, verdict_at = '', verdict_n = 0,
 		measure_from = ? WHERE id = ? AND status = 'accepted' AND verdict = 'reverted_outside'`, coachStamp(now), id)
 	return coachCAS(res, err, "reapplying coach proposal")
 }
@@ -638,6 +648,83 @@ func (db *DB) SetCoachMeasureFrom(id int64, at time.Time) (bool, error) {
 	return n > 0, nil
 }
 
+// SetCoachMemoryMeasured records the end of an accepted memory cleanup that
+// changed the index: measure_from = at (the session's end) and after_text =
+// the index as read then (what Rollback compares against). A
+// compare-and-set like SetCoachMeasureFrom: false (no error) when the row
+// is measured, judged, already decided (after_text set) or no longer
+// accepted.
+func (db *DB) SetCoachMemoryMeasured(id int64, at time.Time, after string) (bool, error) {
+	res, err := db.Exec(`UPDATE coach_proposals SET measure_from = ?, after_text = ?
+		WHERE id = ? AND status = 'accepted' AND measure_from IS NULL AND verdict = '' AND after_text = ''`,
+		coachStamp(at), after, id)
+	if err != nil {
+		return false, fmt.Errorf("setting coach memory measure_from: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("setting coach memory measure_from: %w", err)
+	}
+	return n > 0, nil
+}
+
+// SetCoachMemoryUnchanged records that an accepted memory cleanup's session
+// ended without a change of its own: after_text = before_text, measure_from
+// stays NULL, so the row is never looked at again until a Restart. The same
+// compare-and-set as SetCoachMemoryMeasured: false (no error) when the row
+// is already decided, measured, judged or no longer accepted.
+func (db *DB) SetCoachMemoryUnchanged(id int64) (bool, error) {
+	res, err := db.Exec(`UPDATE coach_proposals SET after_text = before_text
+		WHERE id = ? AND status = 'accepted' AND destination = 'claude_memory_index'
+		AND measure_from IS NULL AND verdict = '' AND after_text = ''`, id)
+	if err != nil {
+		return false, fmt.Errorf("recording coach memory unchanged: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("recording coach memory unchanged: %w", err)
+	}
+	return n > 0, nil
+}
+
+// CoachSessionEnd reads workbench session sessionID: found is false when the
+// row is gone. ended is when it ended, zero while it still counts as
+// running. It has ended when finish_session stamped finished_at (that
+// time), or when its agent is idle — agent_state 'waiting' or never
+// reported — and last_active_at is at least idleAfter before now (then
+// last_active_at). A last_active_at that does not parse never counts as idle.
+func (db *DB) CoachSessionEnd(sessionID int64, now time.Time, idleAfter time.Duration) (found bool, ended time.Time, err error) {
+	var fin, state sql.NullString
+	var lastActive string
+	err = db.QueryRow(`SELECT finished_at, agent_state, last_active_at FROM terminal_sessions WHERE id = ?`,
+		sessionID).Scan(&fin, &state, &lastActive)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, time.Time{}, nil
+	}
+	if err != nil {
+		return false, time.Time{}, fmt.Errorf("reading session %d: %w", sessionID, err)
+	}
+	if fin.Valid && fin.String != "" {
+		ended, err = time.Parse(time.RFC3339Nano, fin.String)
+		if err != nil {
+			return false, time.Time{}, fmt.Errorf("reading session %d finish time: %w", sessionID, err)
+		}
+		return true, ended, nil
+	}
+	if state.Valid && state.String != "waiting" {
+		return true, time.Time{}, nil // working or waiting for an approval
+	}
+	if last, ok := parseLastActive(lastActive); ok && now.Sub(last) >= idleAfter {
+		return true, last, nil
+	}
+	return true, time.Time{}, nil // active lately, or unreadable: never idle
+}
+
+func parseLastActive(s string) (time.Time, bool) {
+	t, err := time.Parse(time.RFC3339Nano, s)
+	return t, err == nil
+}
+
 // ListRepoProposalsAwaitingCommit returns the accepted workbench repository
 // edits whose commit has not been seen yet (measure_from NULL) and that have
 // no verdict (30 days without the commit is a final too_little_data), oldest
@@ -648,16 +735,22 @@ func (db *DB) ListRepoProposalsAwaitingCommit() ([]CoachProposal, error) {
 		AND measure_from IS NULL AND verdict = '' ORDER BY id`)
 }
 
-// SetCoachVerdict stores the outcome verdict of an accepted proposal, only
-// while it is still accepted (a rolled-back one keeps no verdict); otherwise
-// ErrCoachStateChanged.
+// SetCoachVerdict stores the outcome verdict of an accepted proposal measured
+// on no sessions (SetCoachVerdictN with n = 0).
 func (db *DB) SetCoachVerdict(id int64, verdict string, value *float64, now time.Time) error {
+	return db.SetCoachVerdictN(id, verdict, value, 0, now)
+}
+
+// SetCoachVerdictN stores the outcome verdict of an accepted proposal and the
+// n sessions it was measured on (verdict_n), only while it is still accepted
+// (a rolled-back one keeps no verdict); otherwise ErrCoachStateChanged.
+func (db *DB) SetCoachVerdictN(id int64, verdict string, value *float64, n int, now time.Time) error {
 	var v any
 	if value != nil {
 		v = *value
 	}
-	res, err := db.Exec(`UPDATE coach_proposals SET verdict = ?, verdict_value = ?, verdict_at = ?
-		WHERE id = ? AND status = 'accepted'`, verdict, v, coachStamp(now), id)
+	res, err := db.Exec(`UPDATE coach_proposals SET verdict = ?, verdict_value = ?, verdict_at = ?, verdict_n = ?
+		WHERE id = ? AND status = 'accepted'`, verdict, v, coachStamp(now), n, id)
 	return coachCAS(res, err, "setting coach verdict")
 }
 

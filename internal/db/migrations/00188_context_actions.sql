@@ -11,8 +11,10 @@
 -- started; NULL once the Desktop deletes that session row), source_key (the
 -- plugin id, server name, 'connectors' or 'memory': part of the text key),
 -- via_session (the row was accepted through a session; survives the session
--- row's delete) and session_branch (the session's branch, copied while the
--- session row exists, to find its PR in workbench_pr_states later).
+-- row's delete), session_branch (the session's branch, copied while the
+-- session row exists, to find its PR in workbench_pr_states later) and
+-- verdict_n (the sessions behind the verdict; 0 for the copied rows, which
+-- never stored it).
 --
 -- SQLite cannot change a CHECK in place: coach_proposals is rebuilt with every
 -- row and its id, as in 00187. It is the parent of prompt_additions,
@@ -52,6 +54,7 @@ CREATE TABLE coach_proposals_new (
     verdict       TEXT NOT NULL DEFAULT '' CHECK (verdict IN ('','works','no_effect','too_little_data','reverted_outside')),
     verdict_value REAL,
     verdict_at    TEXT NOT NULL DEFAULT '',
+    verdict_n     INTEGER NOT NULL DEFAULT 0,
     origin          TEXT NOT NULL DEFAULT 'weekly' CHECK (origin IN ('weekly','chat','context')),
     skill           TEXT NOT NULL DEFAULT '',
     conversation_id INTEGER REFERENCES chat_conversations(id) ON DELETE SET NULL,

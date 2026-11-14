@@ -16,15 +16,16 @@ import (
 // (no tasks, no active time, no reviews): V is then 0 and means nothing. N is
 // how many units the value averages over: tasks for Corrections, TaskHours and
 // TaskCostUSD, sessions for OwnerLoop, reviews for SpecFindings, review rounds
-// for ReviewComments.
+// for ReviewComments, measured main lanes for StartTokens.
 type Value struct {
 	V     float64
 	N     int
 	Known bool
 }
 
-// Metrics are the four coach metrics (plus the two review counts) over one
-// period. Sessions is how many agent sessions the period covers.
+// Metrics are the four coach metrics (plus the two review counts and the
+// start context) over one period. Sessions is how many agent sessions the
+// period covers.
 type Metrics struct {
 	Corrections    Value // interrupts + rejected calls per task
 	TaskHours      Value // agent hours per task
@@ -32,7 +33,11 @@ type Metrics struct {
 	OwnerLoop      Value // share of active time the owner was the one working
 	SpecFindings   Value // findings per first-round spec review
 	ReviewComments Value // comments per first-round diff review
-	Sessions       int
+	// StartTokens is the median main-lane start context of the measured
+	// sessions (agentreport.StartTokens: bytes at one fixed ratio, not the
+	// report's per-session Baseline.Tokens).
+	StartTokens Value
+	Sessions    int
 }
 
 func ratio(num, den float64, n int) Value {
@@ -49,8 +54,8 @@ func ratio(num, den float64, n int) Value {
 // the spec-review and review-comment counts cover every workbench. Sessions
 // that start at or after until are left out. agent keeps one agent's sessions
 // (agentreport.AgentAll, "claude" or "codex"; see AgentFor): it filters the
-// four agent metrics only, the spec-review and review-comment counts belong to
-// no agent.
+// four agent metrics and the start context only, the spec-review and
+// review-comment counts belong to no agent.
 func Measure(main *db.DB, al *agentlogdb.DB, workbenchID int64, since, until time.Time, agent string) (Metrics, error) {
 	ids := []int64{workbenchID}
 	if workbenchID == 0 {
@@ -79,6 +84,13 @@ func Measure(main *db.DB, al *agentlogdb.DB, workbenchID int64, since, until tim
 	m.TaskHours = ratio(agentMS/3.6e6, float64(tasks), tasks)
 	m.TaskCostUSD = ratio(costUSD, float64(tasks), tasks)
 	m.OwnerLoop = ratio(ownerMS, activeMS, m.Sessions)
+	tokens, lanes, err := agentreport.StartTokens(al, ids, since, until, agent)
+	if err != nil {
+		return Metrics{}, fmt.Errorf("measuring the start context: %w", err)
+	}
+	if lanes > 0 {
+		m.StartTokens = Value{V: float64(tokens), N: lanes, Known: true}
+	}
 
 	sum, n, err := main.FirstRoundSpecFindings(workbenchID, since, until)
 	if err != nil {
@@ -105,6 +117,8 @@ func (m Metrics) Of(metric string) Value {
 		return m.OwnerLoop
 	case "review_findings":
 		return m.SpecFindings
+	case "start_tokens":
+		return m.StartTokens
 	}
 	return Value{}
 }

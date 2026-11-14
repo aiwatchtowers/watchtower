@@ -410,7 +410,11 @@ type coachProposalJSON struct {
 	Verdict      string              `json:"verdict"`
 	VerdictValue *float64            `json:"verdict_value"`
 	VerdictAt    *string             `json:"verdict_at"`
-	RevertsID    int64               `json:"reverts_id"`
+	// VerdictSessions is how many sessions the verdict was measured on (the
+	// measured starts for start_tokens); 0 without a verdict, or for one that
+	// measured nothing.
+	VerdictSessions int   `json:"verdict_sessions"`
+	RevertsID       int64 `json:"reverts_id"`
 	// Budget is the destination's rune budget (0: none), the same number Validate uses.
 	Budget int `json:"budget"`
 	// Origin is "weekly" (the coach run) or "chat" (the tuning chat).
@@ -471,7 +475,7 @@ func proposalJSON(p db.CoachProposal) coachProposalJSON {
 		Before: p.BeforeText, After: p.AfterText, Evidence: ev, Sources: p.Sources, Status: p.Status,
 		CreatedAt: p.CreatedAt.UTC().Format(time.RFC3339), DecidedAt: stampPtr(p.DecidedAt),
 		Baseline: p.Baseline, Verdict: p.Verdict, VerdictValue: p.VerdictValue, VerdictAt: stampPtr(p.VerdictAt),
-		RevertsID: p.RevertsID, Budget: coach.BudgetOf(p.Destination, p.BeforeText),
+		VerdictSessions: p.VerdictN, RevertsID: p.RevertsID, Budget: coach.BudgetOf(p.Destination, p.BeforeText),
 		Origin: p.Origin, Skill: p.Skill, ConversationID: p.ConversationID,
 		WrittenBranch: p.WrittenBranch, MeasureFrom: stampPtr(p.MeasureFrom),
 		SessionID: p.SessionID, SourceKey: p.SourceKey, ViaSession: p.ViaSession, SessionBranch: p.SessionBranch}

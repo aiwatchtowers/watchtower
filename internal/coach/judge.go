@@ -24,8 +24,10 @@ const (
 	// counts as "works".
 	judgeImprovement = 0.10
 	// repoCommitWait is how long an accepted workbench repository edit may
-	// wait for the owner's commit: past it, still unseen at the folder's HEAD,
-	// its verdict is a final too_little_data (spec §4.3a, D68).
+	// wait for its measure_from — the owner's commit (a legacy row), the
+	// session's PR seen merged, or the memory cleanup session's end: past
+	// it, still unset, its verdict is a final too_little_data (spec §4.3a,
+	// D68; spec 2026-11-12 C8).
 	repoCommitWait = 30 * 24 * time.Hour
 )
 
@@ -33,10 +35,13 @@ const (
 // the Accept with the baseline taken then. It shows correlation, not
 // causation: other changes land in the same weeks. A proposal decided at least
 // judgeAfter ago with no verdict, or with too_little_data (until judgeGiveUp),
-// is measured over [decided_at, now) — for a workbench repository file over
-// [measure_from, now), from when the daemon first saw the edit committed
-// (windowStart; not committed within repoCommitWait: a final too_little_data
-// at the first weekly pass after it): under judgeMinSessions sessions, no
+// is measured over [decided_at, now) — for a workbench repository file or
+// the memory index over [measure_from, now), from when the daemon saw the
+// change land: committed (a legacy row), merged, or the cleanup session's
+// end (windowStart; not landed within repoCommitWait: a final
+// too_little_data at the first weekly pass after it): under
+// judgeMinSessions sessions (for start_tokens also under judgeMinSessions
+// measured ones), no
 // baseline or no value is too_little_data; a value at least judgeImprovement
 // below the baseline is works; anything else is no_effect. A no_effect edit
 // gets one mechanical cut proposal (no model call) when a slot is free. judged
@@ -76,7 +81,7 @@ func judge(d *db.DB, al *agentlogdb.DB, home string, now time.Time) (judged, cut
 	}
 	var errs []error
 	for _, p := range accepted {
-		if IsRepoDestination(p.Destination) && !committedInTime(p) {
+		if measuredFromEvent(p.Destination) && !committedInTime(p) {
 			// Not committed yet: no window to measure. Past repoCommitWait
 			// it never will be (the daily commit check skips a judged row);
 			// a commit first seen after it counts as never committed.
@@ -99,12 +104,12 @@ func judge(d *db.DB, al *agentlogdb.DB, home string, now time.Time) (judged, cut
 		if p.Verdict == "too_little_data" && !p.VerdictAt.Before(start.Add(judgeGiveUp)) {
 			continue // final
 		}
-		verdict, value, err := verdictOf(d, al, p, now)
+		verdict, value, n, err := verdictOf(d, al, p, now)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("judging coach proposal %d: %w", p.ID, err))
 			continue
 		}
-		if err := d.SetCoachVerdict(p.ID, verdict, value, now); err != nil {
+		if err := d.SetCoachVerdictN(p.ID, verdict, value, n, now); err != nil {
 			if !errors.Is(err, db.ErrCoachStateChanged) { // rolled back meanwhile
 				errs = append(errs, fmt.Errorf("judging coach proposal %d: %w", p.ID, err))
 			}
@@ -128,36 +133,58 @@ func judge(d *db.DB, al *agentlogdb.DB, home string, now time.Time) (judged, cut
 	return judged, cuts, errors.Join(errs...)
 }
 
+// measuredFromEvent: dest's verdict window starts at measure_from, set by
+// the daemon when the change lands (a repository file's commit or merge,
+// the memory cleanup session's end), never at the Accept.
+func measuredFromEvent(dest string) bool {
+	return IsRepoDestination(dest) || dest == DestMemoryIndex
+}
+
 // windowStart is where p's verdict window starts: measure_from for a
-// workbench repository file (zero until its commit is seen), the Accept for
-// every other destination.
+// workbench repository file or the memory index (zero until it lands), the
+// Accept for every other destination — or measure_from when a settings
+// change was turned off again (Reapply) after being turned back on.
 func windowStart(p db.CoachProposal) time.Time {
-	if IsRepoDestination(p.Destination) {
+	if measuredFromEvent(p.Destination) || !p.MeasureFrom.IsZero() {
 		return p.MeasureFrom
 	}
 	return p.DecidedAt
 }
 
-// committedInTime: p's commit was seen at most repoCommitWait after the
-// Accept (a repository edit only).
+// committedInTime: p's change was seen landing at most repoCommitWait after
+// the Accept (a destination measuredFromEvent only).
 func committedInTime(p db.CoachProposal) bool {
 	return !p.MeasureFrom.IsZero() && p.MeasureFrom.Sub(p.DecidedAt) <= repoCommitWait
 }
 
-// verdictOf measures p's period and names the verdict and the measured value.
-func verdictOf(d *db.DB, al *agentlogdb.DB, p db.CoachProposal, now time.Time) (string, *float64, error) {
+// MeasureWaitOver reports whether p, accepted at DecidedAt, has waited
+// repoCommitWait for its measure_from by now (the daemon's measure check then closes it as
+// too_little_data, as the judge does).
+func MeasureWaitOver(p db.CoachProposal, now time.Time) bool {
+	return now.Sub(p.DecidedAt) >= repoCommitWait
+}
+
+// verdictOf measures p's period and names the verdict, the measured value
+// and the sessions behind it: the period's sessions, or for start_tokens the
+// measured starts (a session parsed before the context facts has no start to
+// compare, so it neither counts toward judgeMinSessions nor toward n).
+func verdictOf(d *db.DB, al *agentlogdb.DB, p db.CoachProposal, now time.Time) (string, *float64, int, error) {
 	m, err := Measure(d, al, p.WorkbenchID, windowStart(p), now, AgentFor(p.Destination))
 	if err != nil {
-		return "", nil, err
+		return "", nil, 0, err
 	}
 	v := m.Of(p.Metric)
-	if m.Sessions < judgeMinSessions || p.Baseline == nil || *p.Baseline <= 0 || !v.Known {
-		return "too_little_data", nil, nil
+	n := m.Sessions
+	if p.Metric == "start_tokens" {
+		n = v.N
+	}
+	if m.Sessions < judgeMinSessions || n < judgeMinSessions || p.Baseline == nil || *p.Baseline <= 0 || !v.Known {
+		return "too_little_data", nil, n, nil
 	}
 	if v.V <= *p.Baseline*(1-judgeImprovement) {
-		return "works", &v.V, nil
+		return "works", &v.V, n, nil
 	}
-	return "no_effect", &v.V, nil
+	return "no_effect", &v.V, n, nil
 }
 
 // writeCut stores the removal of a no_effect edit as an open proposal: the

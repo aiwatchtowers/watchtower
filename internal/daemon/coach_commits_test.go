@@ -68,21 +68,21 @@ func TestRepoMeasureFrom_SetOnceAtCommit(t *testing.T) {
 	folder, id := acceptedRepoEdit(t, database)
 	now := time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)
 
-	d.coachCommitCheck(context.Background(), now)
+	d.coachMeasureCheck(context.Background(), now)
 	assert.True(t, measureFrom(t, database, id).IsZero(), "written, not committed")
 
 	commitGit(t, folder, "commit", "-q", "-am", "owner commits")
-	d.coachCommitCheck(context.Background(), now)
+	d.coachMeasureCheck(context.Background(), now)
 	assert.Equal(t, now, measureFrom(t, database, id).UTC())
 
-	d.coachCommitCheck(context.Background(), now.Add(24*time.Hour))
+	d.coachMeasureCheck(context.Background(), now.Add(24*time.Hour))
 	assert.Equal(t, now, measureFrom(t, database, id).UTC(), "a second pass changes nothing")
 
 	// A changed text committed instead: never measured.
 	folder2, id2 := acceptedRepoEdit(t, database)
 	require.NoError(t, os.WriteFile(filepath.Join(folder2, "CLAUDE.md"), []byte("Run lint, then tests.\n"), 0o644))
 	commitGit(t, folder2, "commit", "-q", "-am", "owner commits another text")
-	d.coachCommitCheck(context.Background(), now)
+	d.coachMeasureCheck(context.Background(), now)
 	assert.True(t, measureFrom(t, database, id2).IsZero())
 }
 
@@ -114,7 +114,7 @@ func TestRepoMeasureFrom_RolledBackSkipped(t *testing.T) {
 		return prev(ctx, folder, rel)
 	}
 	t.Cleanup(func() { coachFileAtHead = prev })
-	d.coachCommitCheck(context.Background(), time.Now())
+	d.coachMeasureCheck(context.Background(), time.Now())
 	assert.Zero(t, calls, "a rolled-back edit is not read")
 	assert.True(t, measureFrom(t, database, id).IsZero())
 }
@@ -130,7 +130,7 @@ func TestRepoMeasureFrom_FolderGoneSkipped(t *testing.T) {
 	commitGit(t, ok, "commit", "-q", "-am", "owner commits")
 	require.NoError(t, os.RemoveAll(gone))
 
-	d.coachCommitCheck(context.Background(), time.Now())
+	d.coachMeasureCheck(context.Background(), time.Now())
 	assert.True(t, measureFrom(t, database, idGone).IsZero())
 	assert.True(t, measureFrom(t, database, idPlain).IsZero())
 	assert.False(t, measureFrom(t, database, idOK).IsZero(), "one skipped row does not stop the others")
@@ -151,7 +151,7 @@ func TestRepoMeasureFrom_CancelledCheckRetriedNextCycle(t *testing.T) {
 	d.lastCoach = time.Now()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	assert.False(t, d.coachCommitCheck(ctx, time.Now()))
+	assert.False(t, d.coachMeasureCheck(ctx, time.Now()))
 	assert.True(t, measureFrom(t, database, id).IsZero())
 
 	d.phaseCoach(context.Background())

@@ -306,6 +306,47 @@ func StartTokensMedian(sessions []agentlogdb.AgentReportSession, parts []agentlo
 	return int(median(totals)), len(totals)
 }
 
+// StartTokens is StartTokensMedian over the sessions of agent (AgentAll or
+// "" = every agent) of the workbenches ids that started in [since, now)
+// (zero since = no lower bound), their lanes pooled into one median. Unlike
+// the event metrics, a session that started before since and ran on past it
+// is left out: its start context was fixed before the period began. al is
+// only read.
+func StartTokens(al *agentlogdb.DB, ids []int64, since, now time.Time, agent string) (tokens, n int, err error) {
+	var sessions []agentlogdb.AgentReportSession
+	for _, id := range ids {
+		ss, err := periodSessions(al, id, since, now)
+		if err != nil {
+			return 0, 0, err
+		}
+		for _, s := range ss {
+			if (agent == "" || agent == AgentAll || s.Agent == agent) && startedIn(s, since, now) {
+				sessions = append(sessions, s)
+			}
+		}
+	}
+	facts := factsUUIDs(sessions)
+	if len(facts) == 0 {
+		return 0, 0, nil
+	}
+	parts, err := al.AgentReportContextParts(facts)
+	if err != nil {
+		return 0, 0, err
+	}
+	tokens, n = StartTokensMedian(sessions, parts)
+	return tokens, n, nil
+}
+
+// startedIn: s started at or after since (zero = no bound) and before now;
+// a start time that does not parse is left out.
+func startedIn(s agentlogdb.AgentReportSession, since, now time.Time) bool {
+	at, err := time.Parse(time.RFC3339Nano, s.StartedAt)
+	if err != nil {
+		return false
+	}
+	return (since.IsZero() || !at.Before(since)) && at.Before(now)
+}
+
 // GlobalSources is the Sources rows of every workbench with agent analytics
 // on, over the sessions that started or ended at or after since (zero = all)
 // and started up to now: tokens are the median over the measured sessions of

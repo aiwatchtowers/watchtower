@@ -297,3 +297,82 @@ func TestMeasure_AgentFilter(t *testing.T) {
 	_, err := Measure(d.DB, d.al, wb, time.Time{}, t0.Add(time.Hour), "gemini")
 	assert.ErrorIs(t, err, agentreport.ErrUnknownAgent)
 }
+
+// startSession stores one Claude session of wb started at `at` whose main
+// lane's start context is mainBytes (a subagent lane of 99 999 bytes beside
+// it never counts).
+func (d dbs) startSession(t *testing.T, wb int64, uuid string, at time.Time, mainBytes int64) {
+	t.Helper()
+	d.startSessionUntil(t, wb, uuid, at, at.Add(time.Minute), mainBytes)
+}
+
+// startSessionUntil is startSession for a session that ends at end.
+func (d dbs) startSessionUntil(t *testing.T, wb int64, uuid string, at, end time.Time, mainBytes int64) {
+	t.Helper()
+	path := "/tmp/x/" + uuid + ".jsonl"
+	ts := at.Format(tsLayout)
+	_, err := d.al.ApplyAgentLogBatch(agentlogdb.AgentLogBatch{
+		File: agentlogdb.AgentLogFile{Path: path, Agent: "claude", ReadOffset: 10, ParserVersion: 5}, ExpectOffset: -1,
+		Sessions: []agentlogdb.AgentLogSession{{SessionUUID: uuid, Agent: "claude", ProjectID: &wb, FolderPath: "/w", HomeCWD: "/w",
+			SourcePath: path, StartedAt: ts, EndedAt: end.Format(tsLayout), Model: "claude-opus-5-5"}},
+		Events: []agentlogdb.AgentLogEvent{{Key: uuid + ":0", SessionUUID: uuid, Kind: "api_call", Name: "claude-opus-5-5",
+			InputTokens: 10, OutputTokens: 5, TS: ts, SrcPath: path}},
+		ContextParts: []agentlogdb.AgentContextPart{
+			{SessionUUID: uuid, Part: "instructions", Bytes: mainBytes / 2},
+			{SessionUUID: uuid, Part: "tools", Bytes: mainBytes - mainBytes/2},
+			{SessionUUID: uuid, AgentID: "sub1", Part: "tools", Bytes: 99999},
+		},
+	})
+	require.NoError(t, err)
+}
+
+// start_tokens is the median main-lane start context (bytes at 2.6 per
+// token) of the period's measured sessions, n the lanes behind it.
+func TestMeasure_StartTokens(t *testing.T) {
+	d := openDBs(t)
+	wb, _ := d.workbench(t, "a", 0)
+	d.startSession(t, wb, "s1", t0, 2600)  // 1000 tokens
+	d.startSession(t, wb, "s2", t0, 5200)  // 2000
+	d.startSession(t, wb, "s3", t0, 13000) // 5000
+	d.startSession(t, wb, "late", t0.Add(48*time.Hour), 26000)
+	d.sessionOf(t, "codex", wb, "cx", nil, 0, 0) // no parts: not measured
+
+	m, err := Measure(d.DB, d.al, wb, t0.Add(-time.Hour), t0.Add(time.Hour), "claude")
+	require.NoError(t, err)
+	assert.Equal(t, Value{V: 2000, N: 3, Known: true}, m.StartTokens)
+	assert.Equal(t, m.StartTokens, m.Of("start_tokens"))
+
+	// Every workbench with analytics on pools its lanes into one median.
+	wb2, _ := d.workbench(t, "b", 0)
+	d.startSession(t, wb2, "b1", t0, 7800) // 3000
+	m, err = Measure(d.DB, d.al, 0, t0.Add(-time.Hour), t0.Add(time.Hour), "claude")
+	require.NoError(t, err)
+	assert.Equal(t, Value{V: 2500, N: 4, Known: true}, m.StartTokens)
+
+	// No measured session: not known.
+	m, err = Measure(d.DB, d.al, wb, t0.Add(100*time.Hour), t0.Add(200*time.Hour), "claude")
+	require.NoError(t, err)
+	assert.False(t, m.StartTokens.Known)
+}
+
+// A session's start context is fixed when it starts: one that started before
+// the period and ran on into it is not counted (spec C3: the sessions after
+// the change), though the event metrics still see it.
+func TestMeasure_StartTokensOnlySessionsStartedInThePeriod(t *testing.T) {
+	d := openDBs(t)
+	wb, _ := d.workbench(t, "a", 0)
+	since := t0
+	d.startSessionUntil(t, wb, "old", since.Add(-time.Hour), since.Add(3*time.Hour), 26000) // 10000 tokens, old start
+	d.startSession(t, wb, "new1", since.Add(time.Hour), 2600)
+	d.startSession(t, wb, "new2", since.Add(2*time.Hour), 2600)
+
+	m, err := Measure(d.DB, d.al, wb, since, since.Add(10*time.Hour), "claude")
+	require.NoError(t, err)
+	assert.Equal(t, 3, m.Sessions, "the event metrics still see the old session")
+	assert.Equal(t, Value{V: 1000, N: 2, Known: true}, m.StartTokens, "its start context does not count")
+
+	// The before window ends at the change: a session started after it is out.
+	m, err = Measure(d.DB, d.al, wb, since.Add(-2*time.Hour), since.Add(30*time.Minute), "claude")
+	require.NoError(t, err)
+	assert.Equal(t, Value{V: 10000, N: 1, Known: true}, m.StartTokens)
+}
