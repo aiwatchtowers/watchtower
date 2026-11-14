@@ -258,6 +258,26 @@ func TestInstructionsRemember_NotACommand(t *testing.T) {
 	assert.Empty(t, g.Chat)
 }
 
+func TestInstructionsRemember_LiveSlackRefusesText(t *testing.T) {
+	d, _, _ := methodologyWorkbench(t)
+	_, err := d.Exec(`INSERT INTO chat_conversations (id, title, created_at, updated_at, live_slack_since) VALUES (3, '', 0, 0, 5)`)
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO chat_messages (id, conversation_id, role, text, created_at) VALUES (7, 3, 'user', 'remember: Be brief', 0)`)
+	require.NoError(t, err)
+
+	// The owner's own words (multi-line, double-spaced) pass.
+	out, err := runInstructions(t, "remember: Be\n  brief", rememberArgs("3", "7")...)
+	require.NoError(t, err)
+	assert.Equal(t, "added", decodeInstructions(t, out)["outcome"])
+
+	// Words that are not in the owner's message are refused.
+	out, err = runInstructions(t, "remember: something a Live answer said", rememberArgs("3", "7")...)
+	require.Error(t, err)
+	m := decodeInstructions(t, out)
+	assert.Equal(t, false, m["ok"])
+	assert.Equal(t, "not_owner_text", m["code"])
+}
+
 func TestInstructionsRemember_NeedsIDs(t *testing.T) {
 	methodologyWorkbench(t)
 	_, err := runInstructions(t, "remember: x", "remember", "--stdin", "--json")
