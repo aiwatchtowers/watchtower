@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -22,6 +23,7 @@ import (
 	"watchtower/internal/providers"
 	"watchtower/internal/providers/transport"
 	"watchtower/internal/sessionfeed"
+	"watchtower/internal/sessionreport"
 	"watchtower/internal/workbenchgit"
 )
 
@@ -30,10 +32,17 @@ import (
 const (
 	coachInterval   = 7 * 24 * time.Hour
 	coachRetryAfter = 24 * time.Hour
-	// coachCommitsEvery is the gap between two commit checks of the accepted
-	// workbench repository edits; coachHeadReadBudget caps one git read.
+	// coachCommitsEvery is the gap between two measure checks of the
+	// accepted changes (coachMeasureCheck); coachHeadReadBudget caps one git
+	// read.
 	coachCommitsEvery   = 24 * time.Hour
 	coachHeadReadBudget = 15 * time.Second
+	// coachPRFreshFor: a cached PR state older than this is refreshed for the
+	// awaiting branch before the measure check reads it.
+	coachPRFreshFor = time.Hour
+	// coachMemoryWriteSlack: an index written this long after its cleanup
+	// session's recorded end still counts as the session's write.
+	coachMemoryWriteSlack = 2 * time.Minute
 )
 
 // coachGeneratorFactory is the seam tests override. The coach prompt carries
@@ -90,6 +99,18 @@ var (
 		return p.Run(ctx, in)
 	}
 	runCoachContext = coach.ProposeContext
+	// coachRefreshPR refreshes the session report's PR cache for one branch
+	// of a workbench (gh and git; never inside a write transaction): an
+	// incomplete refresh (no gh, no network, auth, the budget) is an error
+	// and the measure check retries at its next run.
+	coachRefreshPR = func(ctx context.Context, database *db.DB, workbenchID int64, branch string) error {
+		res := sessionreport.Refresh(ctx, database, workbenchID, []string{"branch:" + branch},
+			sessionreport.RefreshOptions{Network: true})
+		if res.Note != "" {
+			return errors.New(res.Note)
+		}
+		return nil
+	}
 	// coachHomeDir is the home ~/.claude and ~/.claude.json live in.
 	coachHomeDir = os.UserHomeDir
 )
@@ -140,8 +161,9 @@ func (d *Daemon) markCoachFailed(now time.Time) {
 	}
 }
 
-// phaseCoach checks the accepted workbench repository edits for their commit
-// once a day (coachCommitCheck), and runs the agent coach once a week: fold
+// phaseCoach runs the measure check of the accepted changes once a day
+// (coachMeasureCheck: commits, merges, memory cleanups, settings turned back
+// on), and runs the agent coach once a week: fold
 // the old instruction suggestions in (once ever, ImportSuggestions), judge the accepted proposals
 // that are old enough, collect the signals, ask for new proposals. The fold
 // runs under the lock, before proposing, so it and `coach run` never race on
@@ -161,7 +183,7 @@ func (d *Daemon) phaseCoach(ctx context.Context) {
 	}
 	now := time.Now()
 	if d.lastCoachCommits.IsZero() || now.Sub(d.lastCoachCommits) >= coachCommitsEvery {
-		if d.coachCommitCheck(ctx, now) {
+		if d.coachMeasureCheck(ctx, now) {
 			d.lastCoachCommits = now
 		}
 	}
@@ -240,48 +262,244 @@ func (d *Daemon) coachGenerator(ctx context.Context) digest.Generator {
 	return gen
 }
 
-// coachCommitCheck starts the verdict window of each accepted workbench
-// repository edit the owner has committed (spec §4.3a, D68): the first time
-// the file at the workbench folder's HEAD equals the accepted text,
-// measure_from = now, by a compare-and-set on measure_from IS NULL (a second
-// pass is a no-op). A folder that is gone, is not a git work tree any more,
-// or cannot be read skips the row that day; the judge's 30-day rule ends a
-// row never committed. Git is read outside any write transaction; each
-// SetCoachMeasureFrom is its own short write. Logs carry ids, never a path.
-// done is false when the list failed or the cycle was cancelled: the check
-// is tried again next cycle, not a day later.
-func (d *Daemon) coachCommitCheck(ctx context.Context, now time.Time) (done bool) {
-	ps, err := d.db.ListRepoProposalsAwaitingCommit()
+// coachMeasureCheck starts the verdict window of the accepted changes that
+// are measured from an event, not from the Accept (spec §4.3a, D68; spec
+// 2026-11-12 C3, C8, C10), and catches a settings change undone outside
+// Watchtower. For each accepted row without a verdict:
+//   - a settings key (plugin, server, connectors) that reads its before-text
+//     again gets the verdict reverted_outside (the card offers Turn Off Again,
+//     coach reapply) instead of being measured into no_effect;
+//   - a repository change accepted through a session: its session's branch is
+//     copied while the session row has one, then its PR is read from the
+//     session report's cache (workbench_pr_states, refreshed for that branch
+//     when older than coachPRFreshFor): merged → measure_from = the merge
+//     time; closed unmerged → too_little_data; no branch (the session row was
+//     deleted first) never falls back to the HEAD rule;
+//   - a memory cleanup: nothing while its session runs; once it has finished
+//     (or its row is gone: ended now) an index that differs from before_text
+//     and was last written by then records measure_from = the end and
+//     after_text = the index (Rollback compares against it);
+//   - a repository edit accepted before sessions (via_session = 0) keeps the
+//     HEAD rule (coachEditAtHead): measure_from = now the first time the file
+//     at the folder's HEAD equals the accepted text.
+//
+// A session row still without measure_from repoCommitWait after the Accept
+// ends as too_little_data (the judge applies the same rule weekly). Every
+// write is a compare-and-set (a second pass is a no-op), its own short
+// write; git, gh and file reads run outside any write transaction. A row
+// that cannot be read today (a folder gone, a failed refresh, an unreadable
+// file) is skipped and tried at the next check. Logs carry ids, never a
+// path, a branch or a value. done is false when the list failed or the cycle
+// was cancelled: the check is tried again next cycle, not a day later.
+func (d *Daemon) coachMeasureCheck(ctx context.Context, now time.Time) (done bool) {
+	ps, err := d.db.ListCoachProposals("accepted")
 	if err != nil {
-		d.logger.Printf("coach: commit check: %v", err)
+		d.logger.Printf("coach: measure check: %v", err)
 		return false
 	}
-	committed := 0
+	home, _ := coachHomeDir() // "": settings and memory rows are skipped today
+	a := &coach.Applier{DB: d.db, Home: home, Now: func() time.Time { return now }}
+	measured := 0
 	for _, p := range ps {
 		if ctx.Err() != nil {
 			return false
 		}
-		seen, why := d.coachEditAtHead(ctx, p)
-		if why != "" {
-			d.logger.Printf("coach: commit check: proposal %d (workbench %d) skipped today: %s", p.ID, p.WorkbenchID, why)
+		if p.Verdict != "" {
 			continue
 		}
-		if !seen {
-			continue
-		}
-		set, err := d.db.SetCoachMeasureFrom(p.ID, now)
-		if err != nil {
-			d.logger.Printf("coach: commit check: proposal %d: %v", p.ID, err)
-			continue
+		var set bool
+		switch {
+		case coach.IsSettingsDestination(p.Destination):
+			d.coachRevertedCheck(a, p, now)
+		case !p.MeasureFrom.IsZero():
+		case p.Destination == coach.DestMemoryIndex:
+			set = d.coachMemoryCheck(a, p, now)
+		case coach.IsRepoDestination(p.Destination) && p.ViaSession:
+			set = d.coachMergeCheck(ctx, p, now)
+		case coach.IsRepoDestination(p.Destination):
+			set = d.coachHeadCheck(ctx, p, now)
 		}
 		if set {
-			committed++
+			measured++
 		}
 	}
-	if committed > 0 {
-		d.logger.Printf("coach: commit check: %d repository edit(s) committed, measured from now", committed)
+	if measured > 0 {
+		d.logger.Printf("coach: measure check: %d change(s) landed, measured from now on", measured)
 	}
 	return true
+}
+
+// coachHeadCheck is the legacy rule of a repository edit accepted before
+// sessions: measure_from = now once the file at the folder's HEAD holds the
+// accepted text.
+func (d *Daemon) coachHeadCheck(ctx context.Context, p db.CoachProposal, now time.Time) bool {
+	seen, why := d.coachEditAtHead(ctx, p)
+	if why != "" {
+		d.logger.Printf("coach: measure check: proposal %d (workbench %d) skipped today: %s", p.ID, p.WorkbenchID, why)
+		return false
+	}
+	return seen && d.coachSetMeasureFrom(p, now)
+}
+
+func (d *Daemon) coachSetMeasureFrom(p db.CoachProposal, at time.Time) bool {
+	set, err := d.db.SetCoachMeasureFrom(p.ID, at)
+	if err != nil {
+		d.logger.Printf("coach: measure check: proposal %d: %v", p.ID, err)
+		return false
+	}
+	return set
+}
+
+// coachMergeCheck follows the PR of a repository change accepted through a
+// session (C8).
+func (d *Daemon) coachMergeCheck(ctx context.Context, p db.CoachProposal, now time.Time) bool {
+	branch := d.coachProposalBranch(p)
+	if branch != "" {
+		switch pr, ok := d.coachBranchPR(ctx, p, branch, now); {
+		case !ok:
+		case pr.State == "merged":
+			at, err := time.Parse(time.RFC3339, pr.MergedAt)
+			if err != nil { // git saw the merge, gh did not say when
+				at = now
+			}
+			return d.coachSetMeasureFrom(p, at)
+		case pr.State == "closed":
+			d.coachTooLittleData(p, now, "PR closed unmerged")
+			return false
+		}
+	}
+	if coach.MeasureWaitOver(p, now) {
+		d.coachTooLittleData(p, now, "not merged in time")
+	}
+	return false
+}
+
+// coachProposalBranch is p's session branch: the copied one, else the live
+// session's (copied onto the row now), "" when there is none yet.
+func (d *Daemon) coachProposalBranch(p db.CoachProposal) string {
+	if p.SessionBranch != "" || p.SessionID == nil {
+		return p.SessionBranch
+	}
+	branch, err := d.db.CoachSessionBranch(*p.SessionID)
+	if err != nil {
+		d.logger.Printf("coach: measure check: proposal %d: %v", p.ID, err)
+		return ""
+	}
+	if branch == "" {
+		return ""
+	}
+	if err := d.db.SetCoachSessionBranch(p.ID, branch); err != nil {
+		d.logger.Printf("coach: measure check: proposal %d: %v", p.ID, err)
+	}
+	return branch
+}
+
+// coachBranchPR is branch's cached PR state in p's workbench, refreshed
+// first (that branch only, through the session report's refresher) when the
+// cache row is missing or older than coachPRFreshFor. ok is false when the
+// state could not be read: a failed refresh is logged and the row waits.
+func (d *Daemon) coachBranchPR(ctx context.Context, p db.CoachProposal, branch string, now time.Time) (db.PRState, bool) {
+	ref := "branch:" + branch
+	states, err := d.db.PRStates(p.WorkbenchID)
+	if err != nil {
+		d.logger.Printf("coach: measure check: proposal %d: PR states not readable", p.ID)
+		return db.PRState{}, false
+	}
+	row, cached := states[ref]
+	checked, perr := time.Parse(time.RFC3339, row.CheckedAt)
+	if cached && perr == nil && now.Sub(checked) < coachPRFreshFor {
+		return row, true
+	}
+	if err := coachRefreshPR(ctx, d.db, p.WorkbenchID, branch); err != nil {
+		d.logger.Printf("coach: measure check: proposal %d (workbench %d): PR state not refreshed, retried next check",
+			p.ID, p.WorkbenchID)
+		return db.PRState{}, false
+	}
+	if states, err = d.db.PRStates(p.WorkbenchID); err != nil {
+		d.logger.Printf("coach: measure check: proposal %d: PR states not readable", p.ID)
+		return db.PRState{}, false
+	}
+	row, cached = states[ref]
+	return row, cached
+}
+
+// coachMemoryCheck records a memory cleanup once its session has ended
+// (C10): the index as the session left it, measured from its end. A change
+// written after the end is another session's auto-memory, not the cleanup.
+func (d *Daemon) coachMemoryCheck(a *coach.Applier, p db.CoachProposal, now time.Time) bool {
+	ended := now // a session row deleted: ended when first seen gone
+	if p.SessionID != nil {
+		found, at, err := d.db.CoachSessionEnd(*p.SessionID)
+		if err != nil {
+			d.logger.Printf("coach: measure check: proposal %d: %v", p.ID, err)
+			return false
+		}
+		if found && at.IsZero() {
+			return d.coachMemoryWait(p, now) // still running
+		}
+		if found {
+			ended = at
+		}
+	}
+	if a.Home == "" {
+		return false
+	}
+	text, modified, err := a.MemoryIndexNow(p)
+	if err != nil {
+		d.logger.Printf("coach: measure check: proposal %d (workbench %d) skipped today: %v", p.ID, p.WorkbenchID, err)
+		return false
+	}
+	if text == p.BeforeText || modified.After(ended.Add(coachMemoryWriteSlack)) {
+		return d.coachMemoryWait(p, now)
+	}
+	set, err := d.db.SetCoachMemoryMeasured(p.ID, ended, text)
+	if err != nil {
+		d.logger.Printf("coach: measure check: proposal %d: %v", p.ID, err)
+		return false
+	}
+	return set
+}
+
+// coachMemoryWait leaves a memory row waiting; past repoCommitWait it ends
+// as too_little_data.
+func (d *Daemon) coachMemoryWait(p db.CoachProposal, now time.Time) bool {
+	if coach.MeasureWaitOver(p, now) {
+		d.coachTooLittleData(p, now, "the session left the index unchanged")
+	}
+	return false
+}
+
+func (d *Daemon) coachTooLittleData(p db.CoachProposal, now time.Time, why string) {
+	if err := d.db.SetCoachVerdict(p.ID, "too_little_data", nil, now); err != nil {
+		if !errors.Is(err, db.ErrCoachStateChanged) {
+			d.logger.Printf("coach: measure check: proposal %d: %v", p.ID, err)
+		}
+		return
+	}
+	d.logger.Printf("coach: measure check: proposal %d: too little data (%s)", p.ID, why)
+}
+
+// coachRevertedCheck gives an accepted settings change whose key reads its
+// before-text again the verdict reverted_outside.
+func (d *Daemon) coachRevertedCheck(a *coach.Applier, p db.CoachProposal, now time.Time) {
+	if a.Home == "" {
+		return
+	}
+	back, err := a.SettingsReverted(p)
+	if err != nil {
+		d.logger.Printf("coach: measure check: proposal %d skipped today: %v", p.ID, err)
+		return
+	}
+	if !back {
+		return
+	}
+	if err := d.db.SetCoachVerdict(p.ID, "reverted_outside", nil, now); err != nil {
+		if !errors.Is(err, db.ErrCoachStateChanged) {
+			d.logger.Printf("coach: measure check: proposal %d: %v", p.ID, err)
+		}
+		return
+	}
+	d.logger.Printf("coach: measure check: proposal %d turned back on outside Watchtower", p.ID)
 }
 
 // coachEditAtHead reports whether p's file at its workbench folder's HEAD

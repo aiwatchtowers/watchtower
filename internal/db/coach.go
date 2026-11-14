@@ -638,6 +638,45 @@ func (db *DB) SetCoachMeasureFrom(id int64, at time.Time) (bool, error) {
 	return n > 0, nil
 }
 
+// SetCoachMemoryMeasured records the end of an accepted memory cleanup that
+// changed the index: measure_from = at (the session's end) and after_text =
+// the index as read then (what Rollback compares against). A
+// compare-and-set like SetCoachMeasureFrom: false (no error) when the row
+// is measured, judged or no longer accepted.
+func (db *DB) SetCoachMemoryMeasured(id int64, at time.Time, after string) (bool, error) {
+	res, err := db.Exec(`UPDATE coach_proposals SET measure_from = ?, after_text = ?
+		WHERE id = ? AND status = 'accepted' AND measure_from IS NULL AND verdict = ''`, coachStamp(at), after, id)
+	if err != nil {
+		return false, fmt.Errorf("setting coach memory measure_from: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("setting coach memory measure_from: %w", err)
+	}
+	return n > 0, nil
+}
+
+// CoachSessionEnd reads workbench session sessionID: found is false when the
+// row is gone; ended is its finish time (finish_session), zero while it runs.
+func (db *DB) CoachSessionEnd(sessionID int64) (found bool, ended time.Time, err error) {
+	var fin sql.NullString
+	err = db.QueryRow(`SELECT finished_at FROM terminal_sessions WHERE id = ?`, sessionID).Scan(&fin)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, time.Time{}, nil
+	}
+	if err != nil {
+		return false, time.Time{}, fmt.Errorf("reading session %d: %w", sessionID, err)
+	}
+	if !fin.Valid || fin.String == "" {
+		return true, time.Time{}, nil
+	}
+	ended, err = time.Parse(time.RFC3339Nano, fin.String)
+	if err != nil {
+		return false, time.Time{}, fmt.Errorf("reading session %d finish time: %w", sessionID, err)
+	}
+	return true, ended, nil
+}
+
 // ListRepoProposalsAwaitingCommit returns the accepted workbench repository
 // edits whose commit has not been seen yet (measure_from NULL) and that have
 // no verdict (30 days without the commit is a final too_little_data), oldest

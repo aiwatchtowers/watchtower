@@ -306,6 +306,34 @@ func StartTokensMedian(sessions []agentlogdb.AgentReportSession, parts []agentlo
 	return int(median(totals)), len(totals)
 }
 
+// StartTokens is StartTokensMedian over the sessions of agent (AgentAll or
+// "" = every agent) of the workbenches ids in the period (as BuildOverview
+// takes since and now), their lanes pooled into one median. al is only read.
+func StartTokens(al *agentlogdb.DB, ids []int64, since, now time.Time, agent string) (tokens, n int, err error) {
+	var sessions []agentlogdb.AgentReportSession
+	for _, id := range ids {
+		ss, err := periodSessions(al, id, since, now)
+		if err != nil {
+			return 0, 0, err
+		}
+		for _, s := range ss {
+			if agent == "" || agent == AgentAll || s.Agent == agent {
+				sessions = append(sessions, s)
+			}
+		}
+	}
+	facts := factsUUIDs(sessions)
+	if len(facts) == 0 {
+		return 0, 0, nil
+	}
+	parts, err := al.AgentReportContextParts(facts)
+	if err != nil {
+		return 0, 0, err
+	}
+	tokens, n = StartTokensMedian(sessions, parts)
+	return tokens, n, nil
+}
+
 // GlobalSources is the Sources rows of every workbench with agent analytics
 // on, over the sessions that started or ended at or after since (zero = all)
 // and started up to now: tokens are the median over the measured sessions of

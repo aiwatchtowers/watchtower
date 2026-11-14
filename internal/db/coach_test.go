@@ -836,3 +836,59 @@ func TestCoachSessionBranch(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, b)
 }
+
+// SetCoachMemoryMeasured records the cleanup session's end and the index it
+// left in one compare-and-set; a second call, a judged or a rolled-back row
+// changes nothing.
+func TestSetCoachMemoryMeasured(t *testing.T) {
+	d := openTestDB(t)
+	now := time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)
+	wb := newTestWorkbench(t, d)
+	sess := newTestSession(t, d, wb)
+	id := acceptedThroughSession(t, d, "fp1", "claude_memory_index", wb, sess, now)
+
+	ok, err := d.SetCoachMemoryMeasured(id, now.Add(time.Hour), "- slim\n")
+	require.NoError(t, err)
+	require.True(t, ok)
+	got, err := d.GetCoachProposal(id)
+	require.NoError(t, err)
+	assert.True(t, got.MeasureFrom.Equal(now.Add(time.Hour)))
+	assert.Equal(t, "- slim\n", got.AfterText)
+
+	ok, err = d.SetCoachMemoryMeasured(id, now.Add(2*time.Hour), "- other\n")
+	require.NoError(t, err)
+	assert.False(t, ok, "already measured")
+	got, err = d.GetCoachProposal(id)
+	require.NoError(t, err)
+	assert.Equal(t, "- slim\n", got.AfterText)
+
+	judged := acceptedThroughSession(t, d, "fp2", "claude_memory_index", wb, sess, now)
+	require.NoError(t, d.DismissCoachSession(judged, now))
+	ok, err = d.SetCoachMemoryMeasured(judged, now, "- x\n")
+	require.NoError(t, err)
+	assert.False(t, ok)
+}
+
+// CoachSessionEnd: a running session, a finished one (its finish time) and
+// a missing row.
+func TestCoachSessionEnd(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	sess := newTestSession(t, d, wb)
+
+	found, ended, err := d.CoachSessionEnd(sess)
+	require.NoError(t, err)
+	assert.True(t, found)
+	assert.True(t, ended.IsZero(), "still running")
+
+	at := time.Date(2026, 11, 12, 9, 30, 0, 0, time.UTC)
+	require.NoError(t, d.FinishTerminalSession(sess, "done", at))
+	found, ended, err = d.CoachSessionEnd(sess)
+	require.NoError(t, err)
+	assert.True(t, found)
+	assert.True(t, ended.Equal(at))
+
+	found, _, err = d.CoachSessionEnd(sess + 100)
+	require.NoError(t, err)
+	assert.False(t, found)
+}
