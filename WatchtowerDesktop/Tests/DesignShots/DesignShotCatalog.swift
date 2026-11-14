@@ -485,6 +485,10 @@ enum DesignShotCatalog {
             DesignShot(name: "analytics-coach", size: NSSize(width: 900, height: 1700)) {
                 CoachShotFixtures.screen(.sections)
             },
+            // The Context block's ready actions (context actions, spec 2026-11-12 part 4).
+            DesignShot(name: "analytics-context-actions", size: NSSize(width: 900, height: 1250)) {
+                ContextActionsShotFixtures.block()
+            },
             DesignShot(name: "analytics-statistics", size: NSSize(width: 900, height: 1340)) {
                 StatisticsShotFixtures.screen()
             },
@@ -642,6 +646,7 @@ enum DesignShotFixtures {
         CleanupShotFixtures.cleanUp()
         AgentSettingsShotFixtures.cleanUp()
         CoachShotFixtures.cleanUp()
+        ContextActionsShotFixtures.cleanUp()
         InboxFolderMenuShotFixtures.cleanUp()
         InboxFoldersShotFixtures.cleanUp()
         InboxApprovalsShotFixtures.cleanUp()

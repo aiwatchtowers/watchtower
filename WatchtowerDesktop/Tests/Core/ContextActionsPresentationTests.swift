@@ -294,6 +294,60 @@ final class ContextActionsPresentationTests: XCTestCase {
         XCTAssertEqual(closed.actions, [])
     }
 
+    /// Task 9 fix round: a CLAUDE.md move carries the proposer's estimate
+    /// (`saving_tokens` evidence): shown as "−~18.5k", counted in the
+    /// headline, kept out of the evidence line. The memory index has none.
+    func testRepoSavingEstimateFromEvidence() throws {
+        let estimate = CoachEvidence(kind: "saving_tokens", ref: "18500")
+        let size = CoachEvidence(kind: "file", ref: "Feature Notes is 74 of 88 KB")
+        let repo = proposal(7, destination: "repo_claude_md", workbench: 3, source: "", evidence: [size, estimate])
+        let memory = proposal(8, destination: "claude_memory_index", workbench: 3, source: "", evidence: [estimate])
+        let out = rows([repo, memory])
+        let byID = Dictionary(uniqueKeysWithValues: out.doThese.map { ($0.id, $0) })
+        XCTAssertEqual(byID[7]?.saving, 18500)
+        XCTAssertEqual(byID[7]?.savingText, "−~18.5k", "minus, then about")
+        XCTAssertEqual(byID[7]?.evidence, "Feature Notes is 74 of 88 KB")
+        XCTAssertNil(byID[8]?.saving)
+        XCTAssertEqual(out.doThese.first?.id, 7, "largest saving first")
+        XCTAssertEqual(ContextActionsPresentation.headline(baselineTokens: 79600, rows: out.doThese),
+                       "1 change would cut it to ~61k")
+    }
+
+    /// Task 9 fix round 2: a revert session that ended (the same ended
+    /// kinds) with no revert PR offers Revert… again, its session still
+    /// openable; while it runs, or before it is live, the row stays reverting.
+    func testEndedRevertSessionOffersRevertAgain() throws {
+        let merged = repoRow(pr: 17, prState: "merged")
+        func state(_ kinds: [Int64: SessionSwitcherPresentation.State.Kind], starting: Set<Int64> = []) throws -> Row {
+            try XCTUnwrap(ContextActionsPresentation.row(of: merged, sessionKinds: kinds, linkFailed: [:],
+                                                         starting: starting, revertSessions: [50: 44]))
+        }
+        for kind in [SessionSwitcherPresentation.State.Kind.stopped, .finished, .failed, .notStarted] {
+            let ended = try state([44: kind])
+            XCTAssertEqual(ended.state, .revertEnded(44), "\(kind)")
+            XCTAssertEqual(ended.actions, [.openSession, .revert])
+            XCTAssertEqual(ended.stateLine, "Revert session ended without a PR")
+        }
+        XCTAssertEqual(try state([44: .working]).state, .reverting(44))
+        XCTAssertEqual(try state([44: .notStarted], starting: [50]).state, .reverting(44), "not live yet")
+        XCTAssertEqual(try state([:]).state, .reverting(44), "an unknown row is pruned elsewhere, never offered again")
+    }
+
+    /// Task 9: a merged repository change is reverted through a session
+    /// (**Revert…**); a written memory index is rolled back from its stored
+    /// copy (**Undo**); an unmerged or unwritten one offers neither.
+    func testMergedRepoRowRevertsAndWrittenMemoryUndoes() throws {
+        let merged = try only(repoRow(pr: 17, prState: "merged"))
+        XCTAssertEqual(merged.actions, [.revert])
+        XCTAssertEqual(ContextActionRow.Action.revert.title, "Revert…")
+        var memory = repoRow(destination: "claude_memory_index")
+        memory.measureFrom = stamp(daysAgo: 1)
+        let written = try only(memory)
+        XCTAssertEqual(written.state, .measuring)
+        XCTAssertEqual(written.actions, [.undo])
+        XCTAssertEqual(try only(repoRow(pr: 17, prState: "closed")).actions, [])
+    }
+
     func testLinkFailedRow() throws {
         let row = try only(proposal(7, destination: "repo_claude_md", workbench: 3, source: ""), linkFailed: [7: 41])
         XCTAssertEqual(row.state, .linkFailed(41))
@@ -348,13 +402,14 @@ final class ContextActionsPresentationTests: XCTestCase {
         XCTAssertNil(dismissed.beforeAfter)
         XCTAssertEqual(dismissed.stateLine, "No measurable saving")
 
-        // A repository row measured after its merge ends the same way, with no Undo.
+        // A repository row measured after its merge ends the same way: no
+        // Undo, Revert… (a session's revert PR) instead.
         var repo = repoRow(pr: 17, prState: "merged")
         repo.measureFrom = stamp(daysAgo: 15)
         let repoDone = try only(CoachProposal(copying: repo, verdict: "works", verdictValue: 49400,
                                               verdictAt: stamp(daysAgo: 1)))
         XCTAssertEqual(repoDone.state, .done(beforeTokens: 79600, afterTokens: 49400))
-        XCTAssertEqual(repoDone.actions, [])
+        XCTAssertEqual(repoDone.actions, [.revert])
     }
 
     func testSavedLine() throws {

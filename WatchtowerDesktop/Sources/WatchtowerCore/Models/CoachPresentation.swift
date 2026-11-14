@@ -87,6 +87,16 @@ extension CoachProposal {
         }
     }
 
+    /// Go's `coach.IsSessionDestination`: a repository file or the memory
+    /// index is changed by a workbench session that Accept starts
+    /// (`CoachCenter.acceptThroughSession`), never by `coach accept` alone.
+    package var acceptStartsSession: Bool { Self.sessionDestinations.contains(destination) }
+
+    static let sessionDestinations: Set = [
+        "repo_claude_md", "repo_agents_md", "repo_claude_skill", "repo_codex_skill", "repo_workflow",
+        "claude_memory_index"
+    ]
+
     package var diffLines: [CoachDiffLine] {
         Self.lineDiff(before.isEmpty ? [] : before.components(separatedBy: "\n"),
                       after.isEmpty ? [] : after.components(separatedBy: "\n"))

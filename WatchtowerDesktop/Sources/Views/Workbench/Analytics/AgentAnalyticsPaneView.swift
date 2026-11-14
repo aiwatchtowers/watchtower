@@ -61,11 +61,21 @@ struct AgentAnalyticsPaneView: View {
                     workbench: project.id,
                     openAsk: { id in Task { await vm.showAsk(id, projectID: project.id) } },
                     openTerminalSession: { id in Task { await vm.showSession(id: id) } },
-                    scrollRequest: scrollRequest
+                    scrollRequest: scrollRequest,
+                    contextActions: contextActions,
+                    startSession: startCoachSession
                 )
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .task(id: project.id) {
+            // The Do these rows follow the workbench's sessions and PRs.
+            if vm.terminalSessions[project.id] == nil { _ = await vm.loadSessions(projectID: project.id) }
+            await vm.loadGitHubRepository(project: project)
+        }
+        .task(id: LinkCheck(links: vm.coach?.linkFailed ?? [:], sessions: vm.terminalSessions[project.id]?.map(\.id))) {
+            await vm.forgetGoneCoachLinks()
+        }
         .onAppear {
             center?.show(workbench: project.id, period: period.wrappedValue, agent: agent.wrappedValue)
             syncCoach()
@@ -136,8 +146,29 @@ struct AgentAnalyticsPaneView: View {
         CoachActions(
             openAsk: { id in Task { await vm.showAsk(id, projectID: project.id) } },
             openTerminalSession: { id in Task { await vm.showSession(id: id) } },
-            scrollToStatistics: { vm.showAnalyticsSection(AgentAnalyticsOverviewView.statisticsID, projectID: project.id) }
+            scrollToStatistics: { vm.showAnalyticsSection(AgentAnalyticsOverviewView.statisticsID, projectID: project.id) },
+            startSession: startCoachSession
         )
+    }
+
+    private var startCoachSession: (Int64, String, String) async -> Int64? {
+        { [vm] workbench, title, prompt in await vm.startCoachSession(workbench: workbench, title: title, prompt: prompt) }
+    }
+
+    /// The Context block's Do these list; nil until the workbench's
+    /// sessions were read (a row would otherwise read its session as gone).
+    private var contextActions: ContextActionsInputs? {
+        guard let coach = vm.coach, let kinds = vm.coachSessionKinds(projectID: project.id) else { return nil }
+        return ContextActionsInputs(
+            coach: coach, workbench: project.id, sessionKinds: kinds, liveSessions: vm.terminalCenter?.liveIDs ?? [],
+            repository: vm.gitHubRepositories[project.id].flatMap { $0 }, startSession: startCoachSession
+        ) { id in Task { await vm.showSession(id: id) } }
+    }
+
+    /// What re-checks the link entries: an entry added, or a session row gone.
+    private struct LinkCheck: Equatable {
+        let links: [Int64: Int64]
+        let sessions: [Int64]?
     }
 
     private var scrollRequest: Binding<String?> {

@@ -1055,4 +1055,246 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
         XCTAssertEqual(target("chat", "c9"), .text("chat"))
         XCTAssertEqual(target("suggestion", "sg:2"), .text("suggestion"))
     }
+
+    // MARK: - Context actions (spec 2026-11-12 part 4)
+
+    /// A context proposal as `coach proposals --json` prints it.
+    private static func contextProposal(
+        _ id: Int64, destination: String, status: String = "open", workbench: Int64 = 0, extra: String = ""
+    ) -> String {
+        """
+        {"id":\(id),"title":"Proposal \(id)","why":"w","destination":"\(destination)","workbench_id":\(workbench),\
+        "prompt_id":"","kind":"cut","metric":"start_tokens","before":"true","after":"false","evidence":[],\
+        "sources":6,"status":"\(status)","created_at":"2026-11-01T09:00:00Z","decided_at":"2026-11-10T09:00:00Z",\
+        "baseline":79600,"verdict":"","verdict_value":null,"verdict_at":null,"reverts_id":0,"budget":0,\
+        "origin":"context","source_key":"acme-tools@example-market"\(extra)}
+        """
+    }
+
+    private static func contextRows(_ items: [String], kinds: [Int64: SessionSwitcherPresentation.State.Kind] = [:])
+        throws -> (doThese: [ContextActionRow], done: [ContextActionRow]) {
+        let json = #"{"ok":true,"proposals":["# + items.joined(separator: ",") + "]}"
+        let list = try JSONDecoder().decode(CoachProposalList.self, from: Data(json.utf8))
+        return ContextActionsPresentation.rows(proposals: list.proposals, workbenchID: 3, sources: [],
+                                               sessionKinds: kinds, linkFailed: [:], now: Date())
+    }
+
+    private func buttonLabels(_ view: some View) throws -> [String] {
+        try view.inspect().findAll(ViewType.Button.self).map { try $0.labelView().text().string() }
+    }
+
+    func testDoTheseListRendersTheThreeTags() throws {
+        let rows = try Self.contextRows([
+            Self.contextProposal(1, destination: "claude_plugin_off"),
+            Self.contextProposal(2, destination: "repo_claude_md", workbench: 3),
+            Self.contextProposal(3, destination: "claude_memory_index", workbench: 3)
+        ])
+        XCTAssertEqual(Set(rows.doThese.map(\.tag)), [.settings, .repoPR, .memory])
+        let view = ContextActionsView(doThese: rows.doThese, done: rows.done) { _, _ in }
+        let all = try texts(view)
+        XCTAssertTrue(all.contains("Do these"))
+        for tag in ["your settings", "repo · PR", "your memory"] {
+            XCTAssertTrue(all.contains(tag), "the \(tag) chip")
+        }
+        let buttons = try buttonLabels(view)
+        for verb in ["Turn Off", "Accept", "Archive", "Decline"] {
+            XCTAssertTrue(buttons.contains(verb), verb)
+        }
+        XCTAssertFalse(buttons.contains("Undo"))
+    }
+
+    func testContextRowPressPerformsItsAction() throws {
+        let rows = try Self.contextRows([Self.contextProposal(1, destination: "claude_plugin_off")])
+        var performed: [(ContextActionRow.Action, Int64)] = []
+        let view = ContextActionsView(doThese: rows.doThese, done: rows.done) { performed.append(($0, $1.id)) }
+        try view.inspect().find(button: "Turn Off").tap()
+        XCTAssertEqual(performed.map(\.0), [.turnOff])
+        XCTAssertEqual(performed.map(\.1), [1])
+    }
+
+    func testContextRowsInProgressAndDone() throws {
+        let merged = #","session_id":41,"via_session":true,"session_branch":"wt/slim","pr":12,"pr_state":"merged","# +
+            #""pr_url":"https://github.com/acme/app/pull/12""#
+        let ready = #","session_id":42,"via_session":true,"session_branch":"wt/b","pr":13,"pr_state":"open","# +
+            #""pr_url":"https://github.com/acme/app/pull/13""#
+        let working = #","session_id":43,"via_session":true,"session_branch":"wt/c""#
+        let rows = try Self.contextRows([
+            Self.contextProposal(4, destination: "claude_mcp_server_off", status: "accepted"),
+            Self.contextProposal(5, destination: "repo_claude_md", status: "accepted", workbench: 3, extra: merged),
+            Self.contextProposal(6, destination: "repo_agents_md", status: "accepted", workbench: 3, extra: ready),
+            Self.contextProposal(7, destination: "repo_claude_md", status: "accepted", workbench: 3, extra: working)
+        ], kinds: [43: .working])
+        XCTAssertEqual(rows.doThese.map(\.id), [6, 7])
+        XCTAssertEqual(Set(rows.done.map(\.id)), [4, 5])
+        let view = ContextActionsView(doThese: rows.doThese, done: rows.done) { _, _ in }
+        let buttons = try buttonLabels(view)
+        for label in ["Open PR", "Show Diff", "Open Session", "Undo", "Revert…"] {
+            XCTAssertTrue(buttons.contains(label), label)
+        }
+        let all = try texts(view)
+        XCTAssertTrue(all.contains("PR #13 ready"))
+        XCTAssertTrue(all.contains("Session working"))
+        XCTAssertTrue(all.contains("Merged · measuring"))
+        XCTAssertTrue(all.contains("79.6k → measuring"), "the settings row's before → after")
+    }
+
+    func testContextRowShowsItsError() throws {
+        let rows = try Self.contextRows([
+            Self.contextProposal(2, destination: "repo_claude_md", status: "accepted", workbench: 3,
+                                 extra: #","session_id":41,"via_session":true,"session_branch":"wt/a""#)
+        ], kinds: [41: .stopped])
+        let view = ContextActionsView(doThese: rows.doThese, done: rows.done, errors: [2: "boom"]) { _, _ in }
+        let all = try texts(view)
+        XCTAssertTrue(all.contains("boom"))
+        XCTAssertTrue(all.contains("Session ended without a PR"))
+        XCTAssertTrue(try buttonLabels(view).contains("Start Again"))
+        XCTAssertFalse(try buttonLabels(view).contains("Decline"), "Decline only on open rows")
+    }
+
+    func testContextLeadAddsTheHeadline() throws {
+        let sources = try JSONDecoder().decode([AgentSourceGroupRow].self, from: Data("""
+        [{"part":"skills","group":"acme-tools","group_kind":"plugin","tokens":30000,"calls":0,"measured_sessions":4}]
+        """.utf8))
+        let json = #"{"ok":true,"proposals":["# + Self.contextProposal(1, destination: "claude_plugin_off") + "]}"
+        let list = try JSONDecoder().decode(CoachProposalList.self, from: Data(json.utf8))
+        let rows = ContextActionsPresentation.rows(proposals: list.proposals, workbenchID: 3, sources: sources,
+                                                   sessionKinds: [:], linkFailed: [:], now: Date())
+        XCTAssertEqual(AgentAnalyticsContextView.lead("Every session starts with 79.6k tokens.", baseline: 79600,
+                                                      rows: rows.doThese),
+                       "Every session starts with 79.6k tokens. 1 change would cut it to ~50k.")
+        XCTAssertEqual(AgentAnalyticsContextView.lead("Every session starts with 79.6k tokens.", baseline: 79600,
+                                                      rows: []),
+                       "Every session starts with 79.6k tokens.")
+    }
+
+    func testSourcesFoldShowsCantChangeForBuiltins() throws {
+        let sources = try JSONDecoder().decode([AgentSourceGroupRow].self, from: Data("""
+        [{"part":"tools","group":"","group_kind":"builtin","tokens":7400,"calls":120,"measured_sessions":4},
+         {"part":"tools","group":"example-server","group_kind":"mcp_server","tokens":1900,"calls":0,"measured_sessions":4},
+         {"part":"tools","group":"claude.ai","group_kind":"claude_ai_connectors","tokens":2000,"calls":0,"measured_sessions":4},
+         {"part":"skills","group":"acme","group_kind":"plugin","tokens":0,"calls":3,"measured_sessions":0}]
+        """.utf8))
+        let parts = ContextSourcesFold.parts(sources)
+        XCTAssertEqual(parts.map(\.title), ["Tool schemas · 11.3k", "Skill list · not measured"])
+        XCTAssertEqual(parts.first?.rows.map(\.name), ["Built-in", "claude.ai connectors", "example-server"])
+        XCTAssertEqual(parts.first?.rows.map(\.detail), ["7.4k · can't change", "2k · 0 calls", "1.9k · 0 calls"])
+        XCTAssertEqual(parts.last?.rows.map(\.detail), ["not measured · 3 uses"])
+        let all = try texts(ContextSourcesFold(sources: sources, isExpanded: true))
+        XCTAssertTrue(all.contains("What's in it"))
+        XCTAssertTrue(all.contains("7.4k · can't change"))
+        XCTAssertTrue(all.contains("not measured · 3 uses"))
+    }
+
+    // MARK: - Context actions, fix round 1
+
+    func testAcceptedLogFollowsAWeeklyRepoRowThroughItsSession() throws {
+        let weekly = Self.contextProposal(30, destination: "repo_claude_md", status: "accepted", workbench: 3,
+                                          extra: #","session_id":43,"via_session":true,"session_branch":"wt/w""#)
+            .replacingOccurrences(of: #""origin":"context""#, with: #""origin":"weekly""#)
+        let legacy = Self.contextProposal(31, destination: "repo_claude_md", status: "accepted", workbench: 3)
+            .replacingOccurrences(of: #""origin":"context""#, with: #""origin":"weekly""#)
+        let json = #"{"ok":true,"proposals":["# + weekly + "," + legacy + "]}"
+        let list = try JSONDecoder().decode(CoachProposalList.self, from: Data(json.utf8))
+        let coach = CoachCenter(runner: CoachFixtureRunner(), interval: .seconds(3600))
+        defer { coach.stop() }
+        func view(followed: Bool) -> CoachAcceptedLogView {
+            CoachAcceptedLogView(accepted: [list.proposals[0]], open: [], coach: coach, onRollback: { _ in },
+                                 sessionRow: { p in
+                                     guard followed, p.viaSession else { return nil }
+                                     return ContextActionsPresentation.row(of: p, sessionKinds: [43: .working],
+                                                                           linkFailed: [:])
+                                 })
+        }
+        let all = try texts(view(followed: true))
+        XCTAssertTrue(all.contains("Session working"), "the progress line")
+        let buttons = try buttonLabels(view(followed: true))
+        XCTAssertTrue(buttons.contains("Open Session"))
+        XCTAssertFalse(buttons.contains("Roll Back"), "Go refuses Roll Back of a session repo row")
+        XCTAssertFalse(try buttonLabels(view(followed: false)).contains("Roll Back"), "not even without the inputs")
+        XCTAssertFalse(CoachAcceptedLogView.offersRollBack(list.proposals[0]))
+        XCTAssertTrue(CoachAcceptedLogView.offersRollBack(list.proposals[1]), "a legacy repo row keeps Roll Back")
+    }
+
+    func testRevertingRowShowsItsSession() throws {
+        let rows = try Self.contextRows([
+            Self.contextProposal(5, destination: "repo_claude_md", status: "accepted", workbench: 3,
+                                 extra: #","session_id":41,"via_session":true,"pr":12,"pr_state":"merged""#)
+        ])
+        let row = try XCTUnwrap(rows.done.first)
+        XCTAssertEqual(row.actions, [.revert])
+        let reverting = try XCTUnwrap(ContextActionsPresentation.row(
+            of: row.proposal, sessionKinds: [:], linkFailed: [:], revertSessions: [5: 44]))
+        XCTAssertEqual(ContextActionsView.progressLine(reverting), "Revert session #44")
+        XCTAssertEqual(reverting.actions, [.openSession])
+        XCTAssertEqual(ContextActionsInputs.session(of: reverting), 44)
+    }
+
+    func testSourcesFoldTitleIsTheBarsPart() throws {
+        let sources = try JSONDecoder().decode([AgentSourceGroupRow].self, from: Data("""
+        [{"part":"skills","group":"acme","group_kind":"plugin","tokens":2600,"calls":5,"measured_sessions":4}]
+        """.utf8))
+        let bar = try JSONDecoder().decode([AgentPartShare].self, from: Data("""
+        [{"part":"skills","tokens":10200,"share":0.13}]
+        """.utf8))
+        let part = try XCTUnwrap(ContextSourcesFold.parts(sources, baseline: bar).first)
+        XCTAssertEqual(part.title, "Skill list · 10.2k")
+        XCTAssertEqual(part.rows.map(\.name), ["acme", "Not split by source"])
+        XCTAssertEqual(part.rows.last?.detail, "7.6k")
+    }
+
+    /// The mcp part (server instructions) shows its groups by weight alone;
+    /// a bar part with no sources (instructions, system) is its title alone.
+    func testSourcesFoldShowsMCPAndSourcelessParts() throws {
+        let sources = try JSONDecoder().decode([AgentSourceGroupRow].self, from: Data("""
+        [{"part":"mcp","group":"example-server","group_kind":"mcp_server","tokens":3000,"calls":0,"measured_sessions":4},
+         {"part":"mcp","group":"claude.ai","group_kind":"claude_ai_connectors","tokens":1100,"calls":0,"measured_sessions":4}]
+        """.utf8))
+        let bar = try JSONDecoder().decode([AgentPartShare].self, from: Data("""
+        [{"part":"instructions","tokens":30200,"share":0.6},{"part":"mcp","tokens":4100,"share":0.08},
+         {"part":"system","tokens":9000,"share":0.18}]
+        """.utf8))
+        let parts = ContextSourcesFold.parts(sources, baseline: bar)
+        XCTAssertEqual(parts.map(\.title), ["CLAUDE.md & rules · 30.2k", "System prompt · 9k", "MCP instructions · 4.1k"])
+        XCTAssertEqual(parts[0].rows, [], "no sources: the title alone")
+        XCTAssertEqual(parts[2].rows.map(\.name), ["example-server", "claude.ai connectors"])
+        XCTAssertEqual(parts[2].rows.map(\.detail), ["3k", "1.1k"], "instructions are never called")
+    }
+
+    /// Spec C10: a memory Undo asks first (lines added meanwhile are
+    /// dropped); a settings Undo runs at once.
+    func testMemoryUndoAsksFirstSettingsUndoDoesNot() throws {
+        let memory = try Self.contextRows([
+            Self.contextProposal(9, destination: "claude_memory_index", status: "accepted", workbench: 3,
+                                 extra: #","session_id":41,"via_session":true,"measure_from":"2026-11-11T09:00:00Z""#)
+        ]).done.first
+        let settings = try Self.contextRows([Self.contextProposal(4, destination: "claude_mcp_server_off", status: "accepted")])
+            .done.first
+        var performed: [ContextActionRow.Action] = []
+        let memoryButtons = ContextActionButtons(row: try XCTUnwrap(memory)) { action, _ in performed.append(action) }
+        try memoryButtons.inspect().find(button: "Undo").tap()
+        XCTAssertEqual(performed, [], "the memory Undo opens its confirmation, it does not run")
+        let settingsButtons = ContextActionButtons(row: try XCTUnwrap(settings)) { action, _ in performed.append(action) }
+        try settingsButtons.inspect().find(button: "Undo").tap()
+        XCTAssertEqual(performed, [.undo], "a settings Undo runs at once")
+        XCTAssertTrue(ContextActionButtons.memoryUndoMessage.contains("other sessions' auto-memory added"))
+    }
+
+    /// Spec C10: without the pane's inputs a session memory row offers no
+    /// plain Roll Back (its Undo, with the confirmation, comes with them).
+    func testAcceptedLogHidesRollBackOfASessionMemoryRow() throws {
+        let memory = Self.contextProposal(9, destination: "claude_memory_index", status: "accepted", workbench: 3,
+                                          extra: #","session_id":41,"via_session":true,"measure_from":"2026-11-11T09:00:00Z""#)
+        let json = #"{"ok":true,"proposals":["# + memory + "]}"
+        let proposal = try XCTUnwrap(JSONDecoder().decode(CoachProposalList.self, from: Data(json.utf8)).proposals.first)
+        XCTAssertFalse(CoachAcceptedLogView.offersRollBack(proposal))
+        let coach = CoachCenter(runner: CoachFixtureRunner(), interval: .seconds(3600))
+        defer { coach.stop() }
+        let log = CoachAcceptedLogView(accepted: [proposal], open: [], coach: coach) { _ in }
+        XCTAssertFalse(try buttonLabels(log).contains("Roll Back"))
+        let withInputs = CoachAcceptedLogView(
+            accepted: [proposal], open: [], coach: coach, onRollback: { _ in },
+            sessionRow: { ContextActionsPresentation.row(of: $0, sessionKinds: [:], linkFailed: [:]) }
+        )
+        XCTAssertTrue(try buttonLabels(withInputs).contains("Undo"), "the confirming Undo comes with the inputs")
+    }
 }

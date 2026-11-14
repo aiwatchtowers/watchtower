@@ -1,19 +1,47 @@
 import SwiftUI
 import WatchtowerCore
 
-/// "Context": what a session starts with (the baseline by part), what made
-/// it grow (by source), the biggest sources, files read again and again,
-/// compactions, and the instruction files' size on disk.
+/// "Context": what a session starts with (the baseline by part), the ready
+/// changes that would shrink it (**Do these**) and what is in it by source,
+/// what made it grow (by source), the biggest sources, files read again and
+/// again, compactions, and the instruction files' size on disk.
 struct AgentAnalyticsContextView: View {
     let context: AgentContextReport?
     var codex: AgentAnalyticsCodexShare = .none
     let actions: AgentAnalyticsActions
+    /// nil: no coach (analytics off, a test, a shot without it).
+    var contextActions: ContextActionsInputs?
+    /// What's in it starts open (a design shot); closed in the app.
+    var sourcesExpanded = false
+
+    @Environment(\.openURL) private var openURL
+    @State private var rollback: CoachRollbackPrompt?
 
     static let shownGrowth = 6
 
     var body: some View {
-        AgentAnalyticsBlock(title: "Context", lead: context?.lead, state: state, codex: codex) {
-            if let context { measured(context) }
+        // While a session start waits to go live, redraw so the row leaves
+        // "starting" when `CoachCenter.launchGrace` passes. One timeline,
+        // paused otherwise: its identity never changes, so the open fold and
+        // a confirmation dialog survive a launch starting or ending.
+        // The clock is read at each redraw: a paused timeline keeps its last date.
+        TimelineView(Self.schedule(launching: contextActions?.coach.hasLaunches == true)) { _ in
+            block(now: Date())
+        }
+    }
+
+    static let launchRedraw: TimeInterval = 5
+
+    static func schedule(launching: Bool) -> AnimationTimelineSchedule {
+        .animation(minimumInterval: launchRedraw, paused: !launching)
+    }
+
+    private func block(now: Date) -> some View {
+        let rows = context.flatMap { contextActions?.rows($0, now: now) } ?? (doThese: [], done: [])
+        let baseline = Int(context?.baseline?.tokens ?? 0)
+        let lead = context?.lead.map { Self.lead($0, baseline: baseline, rows: rows.doThese) }
+        return AgentAnalyticsBlock(title: "Context", lead: lead, state: state, codex: codex) {
+            if let context { measured(context, rows: rows) }
         } footer: {
             // Compactions and the files on disk show in any state.
             if let line = Self.compactionsLine(context?.compactions) {
@@ -25,6 +53,12 @@ struct AgentAnalyticsContextView: View {
         }
     }
 
+    /// The report's lead and "N changes would cut it to ~X." after it.
+    static func lead(_ lead: String, baseline: Int, rows: [ContextActionRow]) -> String {
+        let headline = ContextActionsPresentation.headline(baselineTokens: baseline, rows: rows)
+        return headline.isEmpty ? lead : "\(lead) \(headline)."
+    }
+
     private var state: AgentAnalyticsBlockState {
         let found = [
             context?.baseline?.parts?.isEmpty, context?.growth?.isEmpty,
@@ -33,7 +67,9 @@ struct AgentAnalyticsContextView: View {
         return .make(factsSessions: context?.factsSessions, hasFindings: found)
     }
 
-    private func measured(_ context: AgentContextReport) -> some View {
+    private func measured(
+        _ context: AgentContextReport, rows: (doThese: [ContextActionRow], done: [ContextActionRow])
+    ) -> some View {
         VStack(alignment: .leading, spacing: Spacing.medium) {
             if let baseline = context.baseline, let parts = baseline.parts, !parts.isEmpty {
                 VStack(alignment: .leading, spacing: Spacing.regular) {
@@ -41,6 +77,16 @@ struct AgentAnalyticsContextView: View {
                         .font(.caption).foregroundStyle(.secondary)
                     AgentBaselineBar(parts: AgentBaselinePart.fold(parts))
                 }
+            }
+            if let inputs = contextActions, !(rows.doThese.isEmpty && rows.done.isEmpty) {
+                ContextActionsView(doThese: rows.doThese, done: rows.done, busy: inputs.coach.pending,
+                                   errors: inputs.coach.cardErrors) { action, row in
+                    inputs.perform(action, row, openURL: { openURL($0) }, rollback: { rollback = $0 })
+                }
+                .sheet(item: $rollback) { CoachRollbackSheet(proposal: $0.proposal, diff: $0.diff, coach: inputs.coach) }
+            }
+            if let sources = context.sources, !sources.isEmpty {
+                ContextSourcesFold(sources: sources, parts: context.baseline?.parts ?? [], isExpanded: sourcesExpanded)
             }
             if let growth = context.growth, !growth.isEmpty { growthRows(growth) }
             if let sources = context.topSources, !sources.isEmpty {

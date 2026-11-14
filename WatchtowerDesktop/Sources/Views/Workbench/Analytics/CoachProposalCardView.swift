@@ -9,6 +9,10 @@ struct CoachActions {
     let openTerminalSession: (Int64) -> Void
     /// A hint: the Statistics block.
     let scrollToStatistics: () -> Void
+    /// Starts the workbench session a repository or memory Accept carries
+    /// out (workbench, title, prompt) → its id, nil when it did not start.
+    /// Without one such an Accept goes to the CLI, which refuses it.
+    var startSession: ((Int64, String, String) async -> Int64?)?
 }
 
 /// What one evidence item links to.
@@ -58,7 +62,11 @@ struct CoachProposalCardView: View {
         }
     }
 
-    static func hasEdit(_ proposal: CoachProposal) -> Bool { proposal.destination != "claude_settings_allow" }
+    /// An allow rule is taken as written; a session destination's change is
+    /// written by the session from its brief, so there is no text to edit.
+    static func hasEdit(_ proposal: CoachProposal) -> Bool {
+        proposal.destination != "claude_settings_allow" && !proposal.acceptStartsSession
+    }
 
     var body: some View {
         // One LCS per render, not one per line.
@@ -72,6 +80,13 @@ struct CoachProposalCardView: View {
             Text(proposal.title).font(.headline)
             Text(proposal.why).font(.callout).foregroundStyle(.secondary)
             diffBlock(diff)
+            if coach.sessionStarts.contains(proposal.id) {
+                Text(ContextActionsView.startingLine).font(.caption).foregroundStyle(.secondary)
+            }
+            if coach.linkFailed[proposal.id] != nil {
+                Label(ContextActionsPresentation.Copy.linkFailed, systemImage: "exclamationmark.triangle")
+                    .font(.caption).foregroundStyle(Tone.warning)
+            }
             if let error = coach.cardErrors[proposal.id] {
                 Label(error, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(Tone.warning)
             }
@@ -105,8 +120,12 @@ struct CoachProposalCardView: View {
     /// Disabled apart from the evidence links, which stay live.
     private func verbs(busy: Bool) -> some View {
         HStack(spacing: Spacing.regular) {
-            Button("Decline") { confirmDecline = true }.buttonStyle(.kitSecondary)
-            if Self.hasEdit(proposal) {
+            // Linked to nothing yet, a session runs for it: Open Session /
+            // Retry Link only, as on the Context row.
+            if coach.linkFailed[proposal.id] == nil {
+                Button("Decline") { confirmDecline = true }.buttonStyle(.kitSecondary)
+            }
+            if Self.hasEdit(proposal), coach.linkFailed[proposal.id] == nil {
                 Button("Edit…", action: onEdit).buttonStyle(.kitSecondary)
             }
             acceptButton
@@ -115,11 +134,26 @@ struct CoachProposalCardView: View {
         .disabled(busy)
     }
 
+    /// A session Accept that could not be linked offers Open Session and
+    /// Retry Link instead, so no second session starts.
     @ViewBuilder private var acceptButton: some View {
-        if isFirst {
-            Button("Accept") { Task { await coach.accept(proposal.id, editedText: nil) } }.buttonStyle(.kitPrimary)
+        if let session = coach.linkFailed[proposal.id] {
+            Button("Open Session") { actions.openTerminalSession(session) }.buttonStyle(.kitSecondary)
+            Button("Retry Link") { Task { await coach.retryLink(proposal.id) } }.buttonStyle(.kitSecondary)
+        } else if isFirst {
+            Button("Accept") { Task { await accept() } }.buttonStyle(.kitPrimary)
         } else {
-            Button("Accept") { Task { await coach.accept(proposal.id, editedText: nil) } }.buttonStyle(.kitSecondary)
+            Button("Accept") { Task { await accept() } }.buttonStyle(.kitSecondary)
+        }
+    }
+
+    /// A repository or memory proposal starts its session first (spec C6).
+    private func accept() async {
+        let workbench = proposal.workbenchID
+        if proposal.acceptStartsSession, let start = actions.startSession {
+            await coach.acceptThroughSession(proposal.id) { await start(workbench, $0, $1) }
+        } else {
+            await coach.accept(proposal.id, editedText: nil)
         }
     }
 

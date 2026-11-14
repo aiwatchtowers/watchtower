@@ -20,6 +20,10 @@ struct AgentAnalyticsOverviewView: View {
     /// A section id to scroll to (`CoachSectionsView.acceptedID`); cleared
     /// once scrolled.
     var scrollRequest: Binding<String?> = .constant(nil)
+    /// The Context block's Do these list (nil: none, e.g. without the coach).
+    var contextActions: ContextActionsInputs?
+    /// Starts the session a repository or memory Accept carries out.
+    var startSession: ((Int64, String, String) async -> Int64?)?
 
     static let statisticsID = "statistics"
 
@@ -110,7 +114,9 @@ struct AgentAnalyticsOverviewView: View {
                 CoachSectionsView(
                     coach: coach, workbench: workbench,
                     actions: CoachActions(openAsk: openAsk, openTerminalSession: openTerminalSession,
-                                          scrollToStatistics: scrollToStatistics)
+                                          scrollToStatistics: scrollToStatistics,
+                                          startSession: startSession),
+                    contextActions: contextActions
                 )
                 SectionHeader(title: "Statistics", systemImage: "chart.bar").id(Self.statisticsID)
             }
@@ -119,7 +125,8 @@ struct AgentAnalyticsOverviewView: View {
                 AgentAnalyticsMainThingCard(hint: first, actions: actions)
             }
             let codex = AgentAnalyticsCodexShare.of(overview.sessions)
-            AgentAnalyticsContextView(context: overview.context, codex: codex, actions: actions)
+            AgentAnalyticsContextView(context: overview.context, codex: codex, actions: actions,
+                                      contextActions: coach == nil ? nil : contextActions)
             AgentAnalyticsSkillsView(skills: overview.skills, codex: codex)
             AgentAnalyticsTroubleView(trouble: overview.trouble, actions: actions)
             if overview.hints.count > 1 {

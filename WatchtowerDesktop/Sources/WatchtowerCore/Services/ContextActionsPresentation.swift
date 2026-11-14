@@ -52,12 +52,19 @@ package struct ContextActionRow: Equatable, Identifiable, Sendable {
         case done(beforeTokens: Int, afterTokens: Int?)
         /// Accept (or the start of its session) failed with this message.
         case failed(String)
+        /// Revert… started this session; it opens the revert PR.
+        case reverting(Int64)
+        /// The revert session ended with no revert PR: Revert… again (the
+        /// entry is dropped on that press), its session still openable.
+        case revertEnded(Int64)
     }
 
     package enum Action: Equatable, Sendable {
         case turnOff, accept, archive, decline
         case openSession, retryLink, startAgain, dismiss
         case openPR, showDiff, undo, turnOffAgain
+        /// A merged repository change: a session opens its revert PR.
+        case revert
 
         package var title: String {
             switch self {
@@ -73,6 +80,7 @@ package struct ContextActionRow: Equatable, Identifiable, Sendable {
             case .showDiff: return "Show Diff"
             case .undo: return "Undo"
             case .turnOffAgain: return "Turn Off Again"
+            case .revert: return "Revert…"
             }
         }
     }
@@ -88,14 +96,17 @@ package struct ContextActionRow: Equatable, Identifiable, Sendable {
 
     package var id: Int64 { proposal.id }
 
-    /// "−30.2k"; nil without a saving.
+    /// "−30.2k"; a repository row's estimate (its `saving_tokens`
+    /// evidence) "−~3.5k" (minus, then about); nil without a saving.
     package var savingText: String? {
-        saving.map { "−" + ContextActionsPresentation.tokens($0) }
+        saving.map { (tag == .repoPR ? "−~" : "−") + ContextActionsPresentation.tokens($0) }
     }
 
     /// The buttons the state allows, in order. Decline only ever on a row
     /// not yet accepted; an accepted session row with nothing to measure
-    /// gets Dismiss.
+    /// gets Dismiss. Once applied, a settings row and a written memory index
+    /// offer Undo (`coach rollback`); a merged repository change offers
+    /// Revert… (a session with `coach brief --revert`).
     package var actions: [Action] {
         let primary: Action = switch verb {
         case .turnOff: .turnOff
@@ -104,15 +115,27 @@ package struct ContextActionRow: Equatable, Identifiable, Sendable {
         }
         switch state {
         case .open, .failed: return [primary, .decline]
-        case .starting, .measuring, .notMerged, .changedSince: return []
-        case .working: return [.openSession]
+        case .starting, .notMerged, .changedSince: return []
+        case .measuring: return afterwards
+        case .working, .reverting: return [.openSession]
+        case .revertEnded: return [.openSession, .revert]
         case .linkFailed: return [.openSession, .retryLink]
         case .sessionGone: return [.dismiss]
         case .prReady: return [.openPR, .showDiff]
         case .endedWithoutChange(let session):
             return (session == nil ? [] : [.openSession]) + [.startAgain, .dismiss]
         case .revertedOutside: return [.turnOffAgain]
-        case .done: return tag == .settings ? [.undo] : []
+        case .done: return afterwards
+        }
+    }
+
+    /// An applied row's way back.
+    private var afterwards: [Action] {
+        switch tag {
+        case .settings: return [.undo]
+        // Only an index the session wrote (`measure_from`) has a copy to put back.
+        case .memory: return proposal.measureFrom == nil ? [] : [.undo]
+        case .repoPR: return proposal.prState == "merged" ? [.revert] : []
         }
     }
 
@@ -120,7 +143,7 @@ package struct ContextActionRow: Equatable, Identifiable, Sendable {
     /// buttons say it.
     package var stateLine: String? {
         switch state {
-        case .open, .starting, .working, .prReady, .measuring: return nil
+        case .open, .starting, .working, .prReady, .measuring, .reverting: return nil
         case .failed(let message): return message
         case .linkFailed: return ContextActionsPresentation.Copy.linkFailed
         case .sessionGone: return ContextActionsPresentation.Copy.sessionGone
@@ -130,6 +153,7 @@ package struct ContextActionRow: Equatable, Identifiable, Sendable {
         case .notMerged: return ContextActionsPresentation.Copy.notMerged
         case .changedSince: return ContextActionsPresentation.Copy.changedSince
         case .revertedOutside: return ContextActionsPresentation.Copy.revertedOutside
+        case .revertEnded: return ContextActionsPresentation.Copy.revertEndedWithoutPR
         case .done(_, let after):
             switch proposal.verdict {
             case "no_effect", "too_little_data": return ContextActionsPresentation.Copy.noSaving
@@ -179,10 +203,15 @@ package enum ContextActionsPresentation {
         package static let notMerged = "Not merged"
         package static let saved = "Saved %@ on %d starts"
         package static let noSaving = "No measurable saving"
+        package static let revertEndedWithoutPR = "Revert session ended without a PR"
     }
 
     static let settingsDestinations: Set = ["claude_plugin_off", "claude_mcp_server_off", "claude_connectors_off"]
     static let memoryDestination = "claude_memory_index"
+    /// A session of these kinds has ended: nothing moves until the owner acts.
+    static let endedKinds: Set<SessionSwitcherPresentation.State.Kind> = [.notStarted, .stopped, .finished, .failed]
+    /// The evidence kind carrying a repository row's estimated saving.
+    static let savingEvidence = "saving_tokens"
     /// How long a finished row stays in the list after its last event.
     static let doneDays: TimeInterval = 14 * 24 * 3600
 
@@ -217,18 +246,16 @@ package enum ContextActionsPresentation {
         now: Date,
         starting: Set<Int64> = [],
         errors: [Int64: String] = [:],
-        repository: URL? = nil
+        repository: URL? = nil,
+        revertSessions: [Int64: Int64] = [:]
     ) -> (doThese: [ContextActionRow], done: [ContextActionRow]) {
         let ctx = StateInputs(sessionKinds: sessionKinds, linkFailed: linkFailed, starting: starting,
-                              errors: errors, repository: repository)
+                              errors: errors, repository: repository, revertSessions: revertSessions)
         var doThese: [ContextActionRow] = []
         var done: [(row: ContextActionRow, at: Date)] = []
         for p in proposals where p.origin == "context" && (p.workbenchID == workbenchID || p.workbenchID == 0) {
-            guard let state = state(of: p, ctx) else { continue }
-            let tag = tag(of: p)
-            let row = ContextActionRow(proposal: p, saving: saving(of: p, sources: sources), tag: tag,
-                                       evidence: evidence(of: p, tag: tag), verb: verb(of: tag), state: state)
-            switch state {
+            guard let row = makeRow(p, sources: sources, ctx) else { continue }
+            switch row.state {
             case .done, .measuring, .notMerged, .changedSince:
                 let last = p.verdictAt.flatMap(parseDate)
                     ?? (p.status == "superseded" ? p.decidedAt.flatMap(parseDate) : nil)
@@ -269,6 +296,23 @@ package enum ContextActionsPresentation {
         return (text.hasSuffix(".0") ? String(text.dropLast(2)) : text) + "k"
     }
 
+    /// One proposal of any origin as a row: what the Accepted edits log
+    /// shows for a row accepted through a session (weekly and chat repo
+    /// rows included), with the same inputs as `rows`. nil when not listed.
+    package static func row(
+        of p: CoachProposal,
+        sources: [AgentSourceGroupRow] = [],
+        sessionKinds: [Int64: SessionSwitcherPresentation.State.Kind],
+        linkFailed: [Int64: Int64],
+        starting: Set<Int64> = [],
+        errors: [Int64: String] = [:],
+        repository: URL? = nil,
+        revertSessions: [Int64: Int64] = [:]
+    ) -> ContextActionRow? {
+        makeRow(p, sources: sources, StateInputs(sessionKinds: sessionKinds, linkFailed: linkFailed, starting: starting,
+                                                 errors: errors, repository: repository, revertSessions: revertSessions))
+    }
+
     // MARK: - Row parts
 
     private struct StateInputs {
@@ -277,6 +321,14 @@ package enum ContextActionsPresentation {
         let starting: Set<Int64>
         let errors: [Int64: String]
         let repository: URL?
+        let revertSessions: [Int64: Int64]
+    }
+
+    private static func makeRow(_ p: CoachProposal, sources: [AgentSourceGroupRow], _ ctx: StateInputs) -> ContextActionRow? {
+        guard let state = state(of: p, ctx) else { return nil }
+        let tag = tag(of: p)
+        return ContextActionRow(proposal: p, saving: saving(of: p, sources: sources), tag: tag,
+                                evidence: evidence(of: p, tag: tag), verb: verb(of: tag), state: state)
     }
 
     private static func tag(of p: CoachProposal) -> ContextActionRow.Tag {
@@ -310,6 +362,14 @@ package enum ContextActionsPresentation {
     }
 
     private static func acceptedState(of p: CoachProposal, _ ctx: StateInputs) -> ContextActionRow.State {
+        // A revert session runs: no second Revert…; one that ended (the
+        // kinds `sessionState` counts as ended) offers it again.
+        if let session = ctx.revertSessions[p.id] {
+            guard !ctx.starting.contains(p.id), let kind = ctx.sessionKinds[session], endedKinds.contains(kind) else {
+                return .reverting(session)
+            }
+            return .revertEnded(session)
+        }
         let before = Int(p.baseline ?? 0)
         switch p.verdict {
         case "reverted_outside":
@@ -328,6 +388,8 @@ package enum ContextActionsPresentation {
 
     /// A repository or memory row accepted through a session, no verdict yet.
     private static func sessionState(of p: CoachProposal, _ ctx: StateInputs) -> ContextActionRow.State {
+        // Start Again's session could not be linked: Retry Link, never a second Start Again.
+        if let session = ctx.linkFailed[p.id] { return .linkFailed(session) }
         // The PR decides first; the session's state only while its row exists.
         if let pr = p.pr {
             switch p.prState {
@@ -339,10 +401,7 @@ package enum ContextActionsPresentation {
         if p.measureFrom != nil { return .measuring }
         if ctx.starting.contains(p.id) { return .starting }
         if let session = p.sessionID, let kind = ctx.sessionKinds[session] {
-            switch kind {
-            case .notStarted, .stopped, .finished, .failed: return .endedWithoutChange(session)
-            default: return .working(session)
-            }
+            return endedKinds.contains(kind) ? .endedWithoutChange(session) : .working(session)
         }
         // The session row is gone: a known branch still finds a PR, an
         // unknown one cannot (the memory index has no PR to trace).
@@ -355,7 +414,9 @@ package enum ContextActionsPresentation {
     }
 
     private static func evidence(of p: CoachProposal, tag: ContextActionRow.Tag) -> String {
-        guard tag == .settings else { return p.evidence.map(\.ref).joined(separator: " · ") }
+        guard tag == .settings else {
+            return p.evidence.filter { $0.kind != savingEvidence }.map(\.ref).joined(separator: " · ")
+        }
         let elsewhere = p.evidence.first { $0.kind == "elsewhere" }
             .map { Copy.alsoOnIn + $0.ref.replacingOccurrences(of: "on in: ", with: "", options: .anchored) }
         return [Copy.unusedEverywhere, elsewhere].compactMap { $0 }.joined(separator: " · ")
@@ -364,7 +425,8 @@ package enum ContextActionsPresentation {
     /// A settings row's start weight from the report's sources: its group's
     /// measured rows (a plugin also takes its own MCP servers, each going to
     /// the plugin with the longest matching id, as the Go proposer folds
-    /// them). nil for the other destinations and for a group not in sources.
+    /// them), nil for a group not in sources. A repository row: its
+    /// `saving_tokens` evidence (an estimate). nil for the memory index.
     private static func saving(of p: CoachProposal, sources: [AgentSourceGroupRow]) -> Int? {
         let measured = sources.filter { $0.measuredSessions > 0 }
         let rows: [AgentSourceGroupRow]
@@ -384,7 +446,10 @@ package enum ContextActionsPresentation {
         case "claude_connectors_off":
             rows = measured.filter { $0.groupKind == "claude_ai_connectors" }
         default:
-            return nil
+            // A repository row's estimate from the proposer (the moved
+            // sections' tokens); the memory index has none.
+            guard tag(of: p) == .repoPR else { return nil }
+            return p.evidence.first { $0.kind == savingEvidence }.flatMap { Int($0.ref) }.flatMap { $0 > 0 ? $0 : nil }
         }
         return rows.isEmpty ? nil : rows.map(\.tokens).reduce(0, +)
     }
