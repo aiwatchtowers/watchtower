@@ -525,6 +525,14 @@ func (e *Executor) ExecuteBuiltinInline(ctx context.Context, runID int64) (*db.A
 		}
 		return nil, fmt.Errorf("automation run %d of %q: %w", runID, a.Slug, ErrNotRunnable)
 	}
+	// Defensive: a slot recipe cannot list slack:live (refused at parse
+	// with trigger.sync and in built-ins), but an index row that did would
+	// still be held to the hourly limit.
+	if limited, err := e.limitLiveSlack(run, a, now); err != nil {
+		return nil, fmt.Errorf("automation run %d: %w", runID, err)
+	} else if limited {
+		return e.db.GetAutomationRun(runID)
+	}
 	claimed, err := e.claim(runID, a, now, 0)
 	if err != nil {
 		return nil, fmt.Errorf("automation run %d: %w", runID, err)

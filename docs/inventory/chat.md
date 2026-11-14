@@ -268,8 +268,8 @@ child is never started without it.
 **Status:** Enforced
 
 **Observable:** A conversation whose turn called the Live Slack connector (Claude's
-`mcp__claude_ai_Slack__*` tools, or Codex's Slack app, stored as
-`mcp__codex_apps__slack.<tool>`) is marked: `chat_conversations.live_slack_since` is the
+claude.ai Slack tools, stored as the chat names the step: `claude_ai_Slack:<tool>`, or
+Codex's Slack app, stored as `codex_apps:slack.<tool>`) is marked: `chat_conversations.live_slack_since` is the
 `chat_messages.id` of that turn's assistant message, set once and never moved. That turn's
 answer and every later message of the conversation (even a turn with no Slack step) feed no
 store that makes chat text lasting (the owner's prompt of the Live turn precedes the mark and
@@ -297,7 +297,9 @@ new non-test function in `internal/` that mentions the chat tables must join
 `liveCheckedReaders` or `displayOnlyReaders`); `TestLIVE01_KeptArtifactSkipped`
 (`internal/kb/source_chat_artifact_test.go`); `LiveSlack01GuardTests`
 (`WatchtowerDesktop/Tests/Core/LiveSlack01GuardTests.swift`: the finalize mark for both
-providers, no mark without a Slack step, the first mark kept, keep refused, the panel's
+providers, `testEveryGoSlackStepNameMarks` over every step name in
+`internal/slacklive/testdata/slack_step_names.json` — the names Go's real Claude and Codex
+translators give each connector tool, pinned by `TestLIVE01_StepNamesFixture` —, no mark without a Slack step, the first mark kept, keep refused, the panel's
 reason, and `testReaderList` over the Swift sources, which is file-level: a Swift file that mentions a chat table must be listed as checked or display-only), `testStepStartMarksWithoutFinalize`; `TestInstructionsRemember_LiveSlackRefusesText` (`cmd/instructions_test.go`, the `not_owner_text` refusal).
 
 **Locked since:** 2026-11-14

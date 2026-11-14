@@ -43,7 +43,16 @@ type StreamJSONHooks struct {
 	// OnToolResult observes each finished tool call: its name as the model
 	// called it, whether it failed, and its result text. nil = none.
 	OnToolResult func(name string, isError bool, text string)
+	// Wrap turns the CLI and its argv into the program to start: the file
+	// sandbox the claude.ai connectors' children run in (CHAT-05,
+	// chat.ChildSandbox.Command). Required: nil = the run is refused and no
+	// child starts.
+	Wrap func(bin string, args []string) (string, []string)
 }
+
+// ErrStreamJSONNoSandbox refuses a stream-json run without its file sandbox
+// (StreamJSONHooks.Wrap).
+var ErrStreamJSONNoSandbox = errors.New("the claude.ai connectors run only inside the file sandbox, and none is set")
 
 // SetStreamJSONInput turns the stream-json input mode on for QuerySync (an
 // automation agent() child with slack:live, #1709): the CLI starts with
@@ -90,10 +99,20 @@ func streamUserLine(text string) string {
 // requests through OnControl until the result event, then end the input.
 func (c *Client) queryStreamJSON(ctx context.Context, systemPrompt, userMessage string) (text string, _ *Usage, err error) {
 	h := c.streamHooks
+	if h.Wrap == nil {
+		return "", nil, ErrStreamJSONNoSandbox
+	}
+	// Resolved first: under the sandbox the program started is its wrapper,
+	// so a missing CLI would not fail the start.
+	bin, err := exec.LookPath(c.claudeCmd)
+	if err != nil {
+		return "", nil, classifyError(err, "")
+	}
 	args, _, payloads := c.buildArgs(systemPrompt, userMessage, "stream-json")
 	runCtx, cancelRun := context.WithCancel(ctx)
 	defer cancelRun()
-	cmd := exec.CommandContext(runCtx, c.claudeCmd, args...)
+	name, argv := h.Wrap(bin, args)
+	cmd := exec.CommandContext(runCtx, name, argv...)
 	_, closePayloads, err := fsutil.AttachPayloads(cmd, payloads...)
 	if err != nil {
 		return "", nil, err

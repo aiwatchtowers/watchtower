@@ -1,0 +1,40 @@
+{
+  "claude": [
+    "claude_ai_Slack:slack_search_public",
+    "claude_ai_Slack:slack_search_public_and_private",
+    "claude_ai_Slack:slack_search_channels",
+    "claude_ai_Slack:slack_search_users",
+    "claude_ai_Slack:slack_search_emojis",
+    "claude_ai_Slack:slack_read_channel",
+    "claude_ai_Slack:slack_read_thread",
+    "claude_ai_Slack:slack_read_canvas",
+    "claude_ai_Slack:slack_read_user_profile",
+    "claude_ai_Slack:slack_list_user_channels",
+    "claude_ai_Slack:slack_list_channel_members",
+    "claude_ai_Slack:slack_get_reactions",
+    "claude_ai_Slack:slack_read_file",
+    "claude_ai_Slack:slack_list_workspaces",
+    "claude_ai_Slack:slack_send_message",
+    "claude_ai_Slack:slack_schedule_message",
+    "claude_ai_Slack:slack_send_message_draft",
+    "claude_ai_Slack:slack_create_canvas",
+    "claude_ai_Slack:slack_update_canvas",
+    "claude_ai_Slack:slack_add_reaction"
+  ],
+  "codex": [
+    "codex_apps:slack.slack_search_public",
+    "codex_apps:slack.slack_search_public_and_private",
+    "codex_apps:slack.slack_search_channels",
+    "codex_apps:slack.slack_search_users",
+    "codex_apps:slack.slack_search_emojis",
+    "codex_apps:slack.slack_read_channel",
+    "codex_apps:slack.slack_read_thread",
+    "codex_apps:slack.slack_read_canvas",
+    "codex_apps:slack.slack_read_user_profile",
+    "codex_apps:slack.slack_list_user_channels",
+    "codex_apps:slack.slack_list_channel_members",
+    "codex_apps:slack.slack_get_reactions",
+    "codex_apps:slack.slack_read_file",
+    "codex_apps:slack.slack_list_workspaces"
+  ]
+}

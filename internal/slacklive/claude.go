@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os/exec"
 	"regexp"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"watchtower/internal/chat"
+	"watchtower/internal/slackconnector"
 )
 
 // Result is one probe's verdict. Teams holds team ids, TeamDomains
@@ -25,7 +27,7 @@ type Result struct {
 	ConnectorID string
 }
 
-// Probe is one provider's probe: ProbeClaude or ProbeCodex. The caller picks
+// Probe is one provider's probe: ClaudeProbe's or ProbeCodex. The caller picks
 // it by transport (cmd's transport wiring), so Check names none.
 type Probe func(ctx context.Context, bin string, env []string) Result
 
@@ -142,11 +144,6 @@ var slackHost = regexp.MustCompile(`https?://([a-z0-9][a-z0-9-]*)\.slack\.com`)
 
 const claudeProbePrompt = `Call the slack_search_channels tool exactly once with query "a" and limit 1, then reply with the single word done. Do not call any other tool.`
 
-// claudeWriteTools are the connector's write tools, refused twice: the argv
-// disallows them and the permission gate denies anything but the one search.
-var claudeWriteTools = []string{"slack_send_message", "slack_schedule_message",
-	"slack_send_message_draft", "slack_create_canvas", "slack_update_canvas", "slack_add_reaction"}
-
 // claudeArgs is the chat's claude.ai-mode shape (no --strict-mcp-config, the
 // connectors load) with user settings skipped and the write tools disallowed.
 func claudeArgs() []string {
@@ -158,14 +155,15 @@ func claudeArgs() []string {
 
 // ClaudeConnectorPrefix is the claude.ai Slack connector's tool prefix as
 // the CLI names its tools (mcp__claude_ai_Slack__<name>).
-const ClaudeConnectorPrefix = "mcp__claude_ai_Slack__"
+const ClaudeConnectorPrefix = slackconnector.ClaudeToolPrefix
 
 // ClaudeDisallowedWrites is the --disallowedTools list of the connector's
 // write tools, as the probe passes it (an automation agent() child on Live
-// passes the same).
+// passes the same). The writes are refused twice: the argv disallows them
+// and the permission gate denies anything but the one search.
 func ClaudeDisallowedWrites() []string {
-	out := make([]string, len(claudeWriteTools))
-	for i, t := range claudeWriteTools {
+	out := make([]string, len(slackconnector.WriteTools))
+	for i, t := range slackconnector.WriteTools {
 		out[i] = ClaudeConnectorPrefix + t
 	}
 	return out
@@ -189,9 +187,30 @@ func controlErrorFor(line string) string {
 	return string(b)
 }
 
-// ProbeClaude runs the real read call through the claude.ai Slack connector.
-// A cancelled ctx returns a zero-status Result: the caller writes nothing.
-func ProbeClaude(ctx context.Context, claudeBin string, env []string) Result {
+// Wrap turns a child's program and argv into the ones to start: the file
+// sandbox the claude.ai connectors' children run in (chat.ChildSandbox's
+// Command, CHAT-05).
+type Wrap func(bin string, args []string) (string, []string)
+
+// ErrorClassSandbox is the error class of a Claude probe that had no file
+// sandbox to run in: no child starts.
+const ErrorClassSandbox = "sandbox"
+
+// ClaudeProbe is the Claude probe whose child runs under wrap (the file
+// sandbox). A nil wrap fails closed: unavailable/sandbox, no child started.
+func ClaudeProbe(wrap Wrap) Probe {
+	return func(ctx context.Context, claudeBin string, env []string) Result {
+		if wrap == nil {
+			return Result{Provider: "claude", Status: StatusUnavailable, ErrorClass: ErrorClassSandbox}
+		}
+		return probeClaude(ctx, claudeBin, env, wrap)
+	}
+}
+
+// probeClaude runs the real read call through the claude.ai Slack connector,
+// the child under wrap. A cancelled ctx returns a zero-status Result: the
+// caller writes nothing.
+func probeClaude(ctx context.Context, claudeBin string, env []string, wrap Wrap) Result {
 	res := Result{Provider: "claude"}
 	pctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
@@ -203,7 +222,15 @@ func ProbeClaude(ctx context.Context, claudeBin string, env []string) Result {
 			apiKey.Store(ev.APIKeySrc)
 		}
 	}
-	c, err := startChild(pctx, claudeBin, claudeArgs(), env, observe, newMeter("claude", claudeUsageLine))
+	// Resolved first: under the sandbox the program started is sandbox-exec,
+	// so a missing CLI would not fail the start.
+	resolved, err := exec.LookPath(claudeBin)
+	if err != nil {
+		res.Status, res.ErrorClass = StatusNotConnected, "cli_missing"
+		return res
+	}
+	bin, args := wrap(resolved, claudeArgs())
+	c, err := startChild(pctx, bin, args, env, observe, newMeter("claude", claudeUsageLine))
 	if err != nil {
 		res.Status, res.ErrorClass = StatusNotConnected, "cli_missing"
 		return res

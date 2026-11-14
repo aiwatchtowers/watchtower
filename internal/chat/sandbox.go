@@ -137,6 +137,13 @@ func (s *ChildSandbox) command(bin string, args []string) (string, []string) {
 	return s.exec, append(argv, args...)
 }
 
+// Command is command for the other children that load the owner's claude.ai
+// connectors outside the chat (the Slack Live probe, an automation agent()
+// child on Live): they get the same file sandbox (CHAT-05).
+func (s *ChildSandbox) Command(bin string, args []string) (string, []string) {
+	return s.command(bin, args)
+}
+
 // profile is the SBPL text: everything allowed except file reads, writes and
 // existence tests under the roots and each home's protectedHomeDirs.
 func (s *ChildSandbox) profile() string {

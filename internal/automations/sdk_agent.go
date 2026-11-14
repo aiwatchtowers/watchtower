@@ -292,6 +292,9 @@ func runAgent(env *Env, b Backends, step *Step, req agentCall) (any, error) {
 	if denied := slackLiveDeniedSummary(res.SlackLiveDenied); denied != nil {
 		summary["slack_live_denied"] = denied
 	}
+	if ar.SlackLive && res.SlackLiveUnavailable != "" {
+		summary["slack_live_unavailable"] = res.SlackLiveUnavailable
+	}
 	step.Finish(db.StepFinish{Status: StepOK, ResultSummary: marshalForStep(summary)})
 	return map[string]any{"text": res.Text, "actions": actions}, nil
 }

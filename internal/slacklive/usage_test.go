@@ -47,7 +47,7 @@ func captureCalls(t *testing.T) *callSink {
 func TestLiveProbe_ClaudeRecordsItsModelCall(t *testing.T) {
 	sink := captureCalls(t)
 	env := append(os.Environ(), "SCENARIO=ok", "API_KEY_SRC=none")
-	r := ProbeClaude(context.Background(), stub(t, "fake_claude.sh"), env)
+	r := probeClaudeTest(context.Background(), stub(t, "fake_claude.sh"), env)
 	require.Equal(t, StatusOK, r.Status)
 	calls := sink.all()
 	require.Len(t, calls, 1)
@@ -70,7 +70,7 @@ func TestLiveProbe_ClaudeNoTurnNoCall(t *testing.T) {
 	shortConnect(t)
 	sink := captureCalls(t)
 	env := append(os.Environ(), "SCENARIO=absent", "API_KEY_SRC=none")
-	r := ProbeClaude(context.Background(), stub(t, "fake_claude.sh"), env)
+	r := probeClaudeTest(context.Background(), stub(t, "fake_claude.sh"), env)
 	require.Equal(t, StatusNotConnected, r.Status)
 	assert.Empty(t, sink.all())
 }
@@ -79,7 +79,7 @@ func TestLiveProbe_ClaudeNoTurnNoCall(t *testing.T) {
 func TestLiveProbe_ClaudeNoUsageIsEstimated(t *testing.T) {
 	sink := captureCalls(t)
 	env := append(os.Environ(), "SCENARIO=unknown", "API_KEY_SRC=none")
-	ProbeClaude(context.Background(), stub(t, "fake_claude.sh"), env)
+	probeClaudeTest(context.Background(), stub(t, "fake_claude.sh"), env)
 	calls := sink.all()
 	require.Len(t, calls, 1)
 	assert.True(t, calls[0].Estimated)

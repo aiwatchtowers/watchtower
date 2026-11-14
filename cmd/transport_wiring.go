@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"os"
 	"slices"
 	"strings"
@@ -43,21 +44,23 @@ type transportWiring struct {
 }
 
 // slackLiveWiring is a transport's Slack Live half: how `slack live probe`
-// checks its own Slack connector (the probe, the CLI it runs and that CLI's
-// PATH), and whether a main chat on it may use the connector (chat).
+// checks its own Slack connector (prepare: the probe to run, or a fixed
+// verdict when policy or the owner's switches keep the connector off; the
+// CLI it runs and that CLI's PATH), and whether a main chat on it may use
+// the connector (chat).
 type slackLiveWiring struct {
-	probe  slacklive.Probe
-	binary func() string
-	path   func() string
-	chat   func(slackLiveChatInput) slackLiveChat
+	prepare func(cfg *config.Config) slacklive.Probe
+	binary  func(cfg *config.Config) string
+	path    func() string
+	chat    func(slackLiveChatInput) slackLiveChat
 }
 
 var (
-	claudeSlackLiveWiring = &slackLiveWiring{probe: slacklive.ProbeClaude,
-		binary: func() string { return claude.FindBinary("") }, path: claude.RichPATH,
+	claudeSlackLiveWiring = &slackLiveWiring{prepare: claudeSlackLiveProbe,
+		binary: func(cfg *config.Config) string { return claude.FindBinary(cfg.ClaudePath) }, path: claude.RichPATH,
 		chat: claudeSlackLiveChat}
-	codexSlackLiveWiring = &slackLiveWiring{probe: slacklive.ProbeCodex,
-		binary: func() string { return codex.FindBinary("") }, path: codex.RichPATH,
+	codexSlackLiveWiring = &slackLiveWiring{prepare: codexSlackLiveProbe,
+		binary: func(cfg *config.Config) string { return codex.FindBinary(cfg.CodexPath) }, path: codex.RichPATH,
 		chat: codexSlackLiveChat}
 )
 
@@ -228,8 +231,20 @@ func newClaudeAgentClient(a agentClientWiring) (ai.Provider, func(), error) {
 	c.SetMaxTurns(automationAgentMaxTurns)
 	c.SetChildEnv(a.env)
 	if a.live != nil {
+		if why := claudeAgentSlackLive(a.cfg, a.database); why != "" {
+			a.live.off(why) // the recipe runs without Live, today's argv
+			return c, func() {}, nil
+		}
+		// The connectors' child runs in the chat's file sandbox (CHAT-05);
+		// none = the run fails, no unguarded child.
+		sandbox, err := aiSessionSandbox()
+		if err != nil {
+			return nil, nil, fmt.Errorf("live Slack needs the file sandbox that keeps the connectors out of protected folders: %w", err)
+		}
+		hooks := a.live.claudeHooks()
+		hooks.Wrap = sandbox.Command
 		c.SetStreamJSONInput(true)
-		c.SetStreamJSONHooks(a.live.claudeHooks())
+		c.SetStreamJSONHooks(hooks)
 	}
 	return c, func() {}, nil
 }
@@ -253,9 +268,11 @@ func newCodexAgentClient(a agentClientWiring) (ai.Provider, func(), error) {
 	if a.live != nil {
 		// The run's own home is the one codex loads; its auth.json links
 		// the owner's, so a ChatGPT login reaches the apps.
-		if apps := codexAgentSlackApps(a.database, home); apps != nil {
+		if apps, why := codexAgentSlackApps(a.database, home); apps != nil {
 			c.SetChatApps(apps)
 			c.SetToolCallObserver(a.live.observeCodex)
+		} else {
+			a.live.off(why)
 		}
 	}
 	return c, removeHome, nil

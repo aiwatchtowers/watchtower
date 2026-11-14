@@ -249,7 +249,10 @@ func (r *cliAgentRunner) Run(ctx context.Context, req automations.AgentRequest) 
 	if req.SlackLive {
 		live = newAgentSlackLive(r.database, r.provider)
 		systemPrompt += agentSlackLivePromptLine
-		defer func() { res.UsedSlackLive, res.SlackLiveDenied = live.result() }()
+		defer func() {
+			res.UsedSlackLive, res.SlackLiveDenied = live.result()
+			res.SlackLiveUnavailable = live.unavailableReason()
+		}()
 	}
 	if err := providers.Allowed(r.provider); err != nil {
 		return automations.AgentResult{}, automations.PolicyError(err) // #608: nothing spawned, nothing metered

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -17,9 +18,12 @@ import (
 	"watchtower/internal/ai"
 	"watchtower/internal/automations"
 	"watchtower/internal/automations/automationstest"
+	"watchtower/internal/chat"
 	"watchtower/internal/codex"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/policy/policytest"
+	"watchtower/internal/slackconnector"
 )
 
 // liveAgentRecipe is a manual slack:live recipe whose script runs one agent().
@@ -48,8 +52,12 @@ func liveSlackOf(t *testing.T, d *db.DB, runID int64) int {
 // mcp_status with claude.ai Slack connected, then asks permission for a
 // connector write and for another connector's tool (the host's answers go to
 // <dir>/answers), reads one channel and ends with a result.
-func writeClaudeStreamStub(t *testing.T) (dir, path string) {
+func writeClaudeStreamStub(t *testing.T, connected bool) (dir, path string) {
 	t.Helper()
+	status := "connected"
+	if !connected {
+		status = "pending"
+	}
 	dir = t.TempDir()
 	path = filepath.Join(dir, "claude")
 	script := `#!/bin/sh
@@ -62,7 +70,7 @@ while IFS= read -r line; do
   case "$line" in
     *'"subtype":"mcp_status"'*)
       id=$(printf '%s' "$line" | sed 's/.*"request_id":"\([^"]*\)".*/\1/')
-      printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{"mcpServers":[{"name":"claude.ai Slack","status":"connected"}]}}}\n' "$id"
+      printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{"mcpServers":[{"name":"claude.ai Slack","status":"` + status + `"}]}}}\n' "$id"
       ;;
     *'"type":"user"'*)
       can_use p1 mcp__claude_ai_Slack__slack_send_message
@@ -97,15 +105,36 @@ func stubArgv(t *testing.T, dir string) []string {
 // A Claude agent() on Live: the stream-json launch, the read tools allowed,
 // connector writes disallowed and denied at the gate (logged on the step),
 // any other connector denied, the run marked and the status written on use.
-func TestAgentRun_ClaudeLiveStreamJSON(t *testing.T) {
-	dir, bin := writeClaudeStreamStub(t)
-	t.Setenv("HOME", t.TempDir())
+// liveClaudeConfig is a Claude agent config with the owner's claude.ai
+// connectors on (the default of a real config).
+func liveClaudeConfig(bin string) *config.Config {
 	cfg := &config.Config{ActiveWorkspace: "acme", ClaudePath: bin, AI: config.AIConfig{Provider: "claude"}}
-	f := liveAgentFixture(t, cfg)
+	cfg.AI.ClaudeAI.Connectors = true
+	return cfg
+}
+
+// agentStepSummary decodes the run's agent step summary.
+func agentStepSummary(t *testing.T, f *agentFixture, runID int64) map[string]any {
+	t.Helper()
+	var summary map[string]any
+	require.NoError(t, json.Unmarshal([]byte(f.agentStep(t, runID).ResultSummary), &summary))
+	return summary
+}
+
+func TestAgentRun_ClaudeLiveStreamJSON(t *testing.T) {
+	dir, bin := writeClaudeStreamStub(t, true)
+	t.Setenv("HOME", t.TempDir())
+	policytest.Set(t, nil)
+	sandboxLog := standInSandbox(t)
+	f := liveAgentFixture(t, liveClaudeConfig(bin))
 	run := f.run(t, db.TriggerManual)
 	require.Equal(t, db.RunSucceeded, run.Status, run.Error)
 	assert.Equal(t, "read it", run.Summary)
 	assert.Equal(t, 1, liveSlackOf(t, f.d, run.ID))
+	sandboxed, err := os.ReadFile(sandboxLog)
+	require.NoError(t, err)
+	assert.Contains(t, string(sandboxed), bin+"\n", "the connectors' child started inside the file sandbox (CHAT-05)")
+	assert.NotContains(t, agentStepSummary(t, f, run.ID), "slack_live_unavailable")
 
 	argv := stubArgv(t, dir)
 	joined := strings.Join(argv, " ")
@@ -177,7 +206,9 @@ func TestAgentRun_CodexMarksUsedSlackLive(t *testing.T) {
 	argv := strings.Join(stub.argv(t), " ")
 	assert.Contains(t, argv, "features.apps=true")
 	assert.Contains(t, argv, "apps.connector_abc.tools.slack_read_channel.enabled=true")
-	assert.NotContains(t, argv, "slack_send_message")
+	for _, w := range slackconnector.WriteTools {
+		assert.NotContains(t, argv, w, "no connector write is visible to the Codex agent")
+	}
 	rows, err := f.d.ListSlackLiveStatus()
 	require.NoError(t, err)
 	r, ok := newestSlackLive(rows, "codex")
@@ -195,6 +226,93 @@ func TestAgentRun_CodexLiveWithoutProbeHasNoApps(t *testing.T) {
 	require.Equal(t, db.RunSucceeded, run.Status, run.Error)
 	assert.Equal(t, 0, liveSlackOf(t, f.d, run.ID))
 	assert.NotContains(t, strings.Join(stub.argv(t), " "), "features.apps=true")
+	assert.Equal(t, "no passing Live Slack check for Codex with a ChatGPT login",
+		agentStepSummary(t, f, run.ID)["slack_live_unavailable"], "the run log says why Live was off")
+}
+
+// claudeLiveOffCase runs a Live Claude agent() whose Live is off for a
+// reason before launch: the child keeps today's argv (no stream-json, no
+// connectors), the run succeeds unmarked and the step says why.
+func claudeLiveOffCase(t *testing.T, cfg *config.Config, want string) {
+	t.Helper()
+	stub := newClaudeStub(t, `{"type":"result","subtype":"success","is_error":false,"result":"done","usage":{"input_tokens":7,"output_tokens":3}}`)
+	cfg.ClaudePath = stub.path
+	t.Setenv("HOME", t.TempDir())
+	standInSandbox(t)
+	f := liveAgentFixture(t, cfg)
+	run := f.run(t, db.TriggerManual)
+	require.Equal(t, db.RunSucceeded, run.Status, run.Error)
+	assert.Equal(t, 0, liveSlackOf(t, f.d, run.ID))
+	argv := stub.argv(t)
+	assert.Contains(t, argv, "--strict-mcp-config", "no claude.ai connectors load")
+	assert.NotContains(t, argv, "--input-format")
+	assert.Contains(t, agentStepSummary(t, f, run.ID)["slack_live_unavailable"], want)
+}
+
+// AllowClaudeAITools=false (MDM, #608) covers automation Live: no
+// connectors, the run log says the policy turned it off.
+func TestAgentRun_ClaudeLivePolicyOff(t *testing.T) {
+	policytest.Set(t, map[string]any{"AllowClaudeAITools": false})
+	claudeLiveOffCase(t, liveClaudeConfig(""), "organization's policy")
+}
+
+// The owner's claude.ai connectors switch and the Slack connector switched
+// off one by one cover automation Live.
+func TestAgentRun_ClaudeLiveOwnerSwitchesOff(t *testing.T) {
+	policytest.Set(t, nil)
+	cfg := liveClaudeConfig("")
+	cfg.AI.ClaudeAI.Connectors = false
+	claudeLiveOffCase(t, cfg, "connectors are switched off")
+	cfg = liveClaudeConfig("")
+	cfg.AI.ClaudeAI.DisabledConnectors = []string{"Slack"}
+	claudeLiveOffCase(t, cfg, "Slack connector is switched off")
+}
+
+// A failed newest Claude probe keeps Live off for the run.
+func TestAgentRun_ClaudeLiveFailedProbeOff(t *testing.T) {
+	policytest.Set(t, nil)
+	stub := newClaudeStub(t, `{"type":"result","subtype":"success","is_error":false,"result":"done","usage":{"input_tokens":7,"output_tokens":3}}`)
+	t.Setenv("HOME", t.TempDir())
+	standInSandbox(t)
+	f := liveAgentFixture(t, liveClaudeConfig(stub.path))
+	require.NoError(t, f.d.UpsertSlackLiveStatus(db.SlackLiveStatus{Provider: "claude", Status: "no_plan", ErrorClass: "plan",
+		CheckedAt: time.Now().Add(-time.Hour)}))
+	run := f.run(t, db.TriggerManual)
+	require.Equal(t, db.RunSucceeded, run.Status, run.Error)
+	assert.Contains(t, stub.argv(t), "--strict-mcp-config")
+	assert.Contains(t, agentStepSummary(t, f, run.ID)["slack_live_unavailable"], "did not pass")
+}
+
+// No file sandbox: the Live run fails and no child starts (fail closed).
+func TestAgentRun_ClaudeLiveWithoutSandboxFails(t *testing.T) {
+	policytest.Set(t, nil)
+	dir, bin := writeClaudeStreamStub(t, true)
+	t.Setenv("HOME", t.TempDir())
+	prev := aiSessionSandbox
+	aiSessionSandbox = func() (*chat.ChildSandbox, error) { return nil, errors.New("no sandbox-exec") }
+	t.Cleanup(func() { aiSessionSandbox = prev })
+	f := liveAgentFixture(t, liveClaudeConfig(bin))
+	run := f.run(t, db.TriggerManual)
+	assert.Equal(t, db.RunFailed, run.Status)
+	assert.Contains(t, run.Error, "file sandbox")
+	_, err := os.Stat(filepath.Join(dir, "pid"))
+	assert.ErrorIs(t, err, os.ErrNotExist, "no child started")
+}
+
+// The claude.ai Slack connector never connects: the agent runs without it
+// and the run log says so (not only a log line).
+func TestAgentRun_ClaudeLiveConnectorNotConnected(t *testing.T) {
+	policytest.Set(t, nil)
+	old := agentSlackConnectWait
+	agentSlackConnectWait = 50 * time.Millisecond
+	t.Cleanup(func() { agentSlackConnectWait = old })
+	_, bin := writeClaudeStreamStub(t, false)
+	t.Setenv("HOME", t.TempDir())
+	standInSandbox(t)
+	f := liveAgentFixture(t, liveClaudeConfig(bin))
+	run := f.run(t, db.TriggerManual)
+	require.Equal(t, db.RunSucceeded, run.Status, run.Error)
+	assert.Contains(t, agentStepSummary(t, f, run.ID)["slack_live_unavailable"], "did not connect")
 }
 
 // The stream-json mode is opt-in: an agent() child of a recipe without

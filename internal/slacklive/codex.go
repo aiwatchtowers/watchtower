@@ -173,7 +173,7 @@ func ProbeCodex(ctx context.Context, codexBin string, env []string) Result {
 	res := Result{Provider: "codex"}
 	home := codexHome(env)
 	if codexAPIKeyLogin(home) {
-		res.Status, res.ErrorClass = Classify("codex", SentinelAPIKeyLogin, false, false)
+		res.Status, res.ErrorClass = Classify(SentinelAPIKeyLogin, false, false)
 		return res
 	}
 	pctx, cancel := context.WithTimeout(ctx, probeTimeout)

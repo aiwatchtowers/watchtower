@@ -49,7 +49,7 @@ func openDB(t *testing.T) *db.DB {
 func TestReadToolsPinned(t *testing.T) {
 	assert.Equal(t, []string{
 		"slack_search_public", "slack_search_public_and_private", "slack_search_channels",
-		"slack_search_users", "slack_read_channel", "slack_read_thread", "slack_read_canvas",
+		"slack_search_users", "slack_search_emojis", "slack_read_channel", "slack_read_thread", "slack_read_canvas",
 		"slack_read_user_profile", "slack_list_user_channels", "slack_list_channel_members",
 		"slack_get_reactions", "slack_read_file", "slack_list_workspaces",
 	}, ReadTools)
@@ -75,7 +75,7 @@ func TestLiveProbe_Classifies(t *testing.T) {
 				shortConnect(t) // the connector never shows up: do not wait the full poll
 			}
 			env := append(os.Environ(), "SCENARIO="+tc.scenario, "API_KEY_SRC="+tc.apiKey)
-			r := ProbeClaude(context.Background(), stub(t, "fake_claude.sh"), env)
+			r := probeClaudeTest(context.Background(), stub(t, "fake_claude.sh"), env)
 			assert.Equal(t, tc.status, r.Status)
 			assert.Equal(t, tc.class, r.ErrorClass)
 			if tc.status == "ok" {
@@ -106,7 +106,7 @@ func TestClassify(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			status, class := Classify("claude", tc.text, tc.connected, tc.readOK)
+			status, class := Classify(tc.text, tc.connected, tc.readOK)
 			assert.Equal(t, tc.status, status)
 			assert.Equal(t, tc.class, class)
 		})
@@ -147,7 +147,7 @@ func TestControlErrorFor(t *testing.T) {
 func TestLiveProbe_ClaudeAnswersOtherControlRequests(t *testing.T) {
 	record := filepath.Join(t.TempDir(), "answers")
 	env := append(os.Environ(), "SCENARIO=ok", "RECORD="+record, "EXTRA_CONTROL=1")
-	r := ProbeClaude(context.Background(), stub(t, "fake_claude.sh"), env)
+	r := probeClaudeTest(context.Background(), stub(t, "fake_claude.sh"), env)
 	assert.Equal(t, "ok", r.Status)
 	b, err := os.ReadFile(record)
 	require.NoError(t, err)
@@ -157,7 +157,7 @@ func TestLiveProbe_ClaudeAnswersOtherControlRequests(t *testing.T) {
 func TestLiveProbe_ClaudeDeniesOtherTools(t *testing.T) {
 	record := filepath.Join(t.TempDir(), "answers")
 	env := append(os.Environ(), "SCENARIO=deny", "RECORD="+record)
-	r := ProbeClaude(context.Background(), stub(t, "fake_claude.sh"), env)
+	r := probeClaudeTest(context.Background(), stub(t, "fake_claude.sh"), env)
 	assert.NotEqual(t, "ok", r.Status)
 	b, err := os.ReadFile(record)
 	require.NoError(t, err)
@@ -168,14 +168,14 @@ func TestLiveProbe_ClaudeDeniesOtherTools(t *testing.T) {
 func TestLiveProbe_ClaudeAllowsOnlySearchChannels(t *testing.T) {
 	record := filepath.Join(t.TempDir(), "answers")
 	env := append(os.Environ(), "SCENARIO=ok", "RECORD="+record)
-	ProbeClaude(context.Background(), stub(t, "fake_claude.sh"), env)
+	probeClaudeTest(context.Background(), stub(t, "fake_claude.sh"), env)
 	b, err := os.ReadFile(record)
 	require.NoError(t, err)
 	assert.Contains(t, string(b), `"behavior":"allow"`)
 }
 
 func TestLiveProbe_KilledLeavesNoRow(t *testing.T) {
-	for provider, probe := range map[string]Probe{"claude": ProbeClaude, "codex": ProbeCodex} {
+	for provider, probe := range map[string]Probe{"claude": probeClaudeTest, "codex": ProbeCodex} {
 		t.Run(provider, func(t *testing.T) {
 			dir := t.TempDir()
 			ready, pidfile := filepath.Join(dir, "ready"), filepath.Join(dir, "pid")
@@ -323,7 +323,7 @@ func TestCheck_WritesRowsPerTeam(t *testing.T) {
 	now := time.Now()
 
 	env := append(os.Environ(), "SCENARIO=ok")
-	r, err := Check(context.Background(), d, ProbeClaude, stub(t, "fake_claude.sh"), env, now)
+	r, err := Check(context.Background(), d, probeClaudeTest, stub(t, "fake_claude.sh"), env, now)
 	require.NoError(t, err)
 	assert.Equal(t, "ok", r.Status)
 	rows, err := d.ListSlackLiveStatus()
@@ -336,7 +336,7 @@ func TestCheck_WritesRowsPerTeam(t *testing.T) {
 		"an account the connector did not show is not connected")
 
 	env = append(os.Environ(), "SCENARIO=unknown")
-	_, err = Check(context.Background(), d, ProbeClaude, stub(t, "fake_claude.sh"), env, now.Add(time.Minute))
+	_, err = Check(context.Background(), d, probeClaudeTest, stub(t, "fake_claude.sh"), env, now.Add(time.Minute))
 	require.NoError(t, err)
 	rows, err = d.ListSlackLiveStatus()
 	require.NoError(t, err)
@@ -398,4 +398,37 @@ func TestLiveProbe_CodexAllowListReal(t *testing.T) {
 	out, _ := cmd.Output()
 	assert.Contains(t, string(out), "slack_list_workspaces")
 	assert.NotContains(t, string(out), "slack_search_channels\"", "the disabled tool is never called")
+}
+
+// probeClaudeTest is the Claude probe with a pass-through wrap (the stub
+// runs unsandboxed; the wrap's own use is pinned in
+// TestLiveProbe_ClaudeRunsUnderWrap).
+var probeClaudeTest = ClaudeProbe(func(bin string, args []string) (string, []string) { return bin, args })
+
+// The probe's claude child starts as the wrap's program (the file sandbox,
+// CHAT-05) with the CLI and its argv after it.
+func TestLiveProbe_ClaudeRunsUnderWrap(t *testing.T) {
+	var gotBin string
+	var gotArgs []string
+	wrap := func(bin string, args []string) (string, []string) {
+		gotBin, gotArgs = bin, args
+		return "/bin/sh", append([]string{bin}, args...) // a stand-in for sandbox-exec … -- <claude> <argv>
+	}
+	env := append(os.Environ(), "SCENARIO=ok")
+	r := ClaudeProbe(wrap)(context.Background(), stub(t, "fake_claude.sh"), env)
+	assert.Equal(t, StatusOK, r.Status)
+	assert.Equal(t, stub(t, "fake_claude.sh"), gotBin)
+	assert.Equal(t, claudeArgs(), gotArgs)
+}
+
+// No wrap, no child: the probe fails closed.
+func TestLiveProbe_ClaudeWithoutSandboxStartsNothing(t *testing.T) {
+	dir := t.TempDir()
+	pidfile := filepath.Join(dir, "pid")
+	env := append(os.Environ(), "SCENARIO=ok", "PIDFILE="+pidfile)
+	r := ClaudeProbe(nil)(context.Background(), stub(t, "fake_claude.sh"), env)
+	assert.Equal(t, StatusUnavailable, r.Status)
+	assert.Equal(t, ErrorClassSandbox, r.ErrorClass)
+	_, err := os.Stat(pidfile)
+	assert.ErrorIs(t, err, os.ErrNotExist, "no child started")
 }

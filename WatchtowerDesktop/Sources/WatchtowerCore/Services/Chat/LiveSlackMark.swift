@@ -15,11 +15,18 @@ import GRDB
 /// saved while it runs, and a crash never finalizes) and again at finalize as
 /// a backstop; whichever comes first wins.
 package enum LiveSlackMark {
-    /// Claude's claude.ai Slack connector tools.
-    static let claudePrefix = "mcp__claude_ai_Slack__"
-    /// Codex's Slack app: the shared `codex_apps` server with tool `slack.<tool>`
-    /// (the name the Codex stream translation stores; read and write tools alike).
-    static let codexPrefix = "mcp__codex_apps__slack."
+    /// Step names as Go's chat events carry them (`displayToolName`, the
+    /// name `chat_turn_steps.name` stores), pinned by Go's
+    /// `internal/slacklive/testdata/slack_step_names.json`
+    /// (`TestLIVE01_StepNamesFixture`), which `LiveSlack01GuardTests` reads.
+    /// Claude's claude.ai Slack connector: `claude_ai_Slack:<tool>`, read and
+    /// write tools alike (Go's `slackconnector.ClaudeStepPrefix`).
+    static let claudePrefix = "claude_ai_Slack:"
+    /// Codex's Slack app, an `mcp_tool_call` of server `codex_apps` with tool
+    /// `slack.<tool>`: `codex_apps:slack.<tool>` (Go's
+    /// `slackconnector.CodexStepPrefix`). Every tool of it marks, so a tool the
+    /// allow-list should have hidden still keeps the turn out of lasting stores.
+    static let codexPrefix = "codex_apps:slack."
 
     package static func isSlackConnectorStep(_ name: String) -> Bool {
         name.hasPrefix(claudePrefix) || name.hasPrefix(codexPrefix)

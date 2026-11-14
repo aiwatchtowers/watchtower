@@ -65,7 +65,12 @@ cat >/dev/null
 	var mu sync.Mutex
 	var ready, controls []string
 	var results []string
+	var wrapped []string
 	c.SetStreamJSONHooks(StreamJSONHooks{
+		Wrap: func(bin string, args []string) (string, []string) {
+			wrapped = append([]string{bin}, args...)
+			return "/bin/sh", append([]string{bin}, args...) // a stand-in for sandbox-exec … -- <claude> <argv>
+		},
 		WaitReady: func(context.Context, <-chan string, func(string) error) error {
 			ready = append(ready, "waited")
 			return nil
@@ -84,6 +89,9 @@ cat >/dev/null
 	text, usage, err := c.QuerySync(t.Context(), "sys", "hello-sentinel", "")
 	require.NoError(t, err)
 	assert.Equal(t, "denied msg", text, "the message line and the control answer reached the child")
+	require.NotEmpty(t, wrapped, "the child started through the wrap")
+	assert.Equal(t, bin, wrapped[0])
+	assert.Contains(t, wrapped, "--permission-prompt-tool")
 	assert.Equal(t, []string{"waited"}, ready)
 	require.Len(t, controls, 1)
 	assert.Contains(t, controls[0], "can_use_tool")
@@ -97,7 +105,7 @@ func TestAIClient_StreamJSONWaitErrorEndsRun(t *testing.T) {
 	bin := writeMockClaude(t, "cat >/dev/null\n")
 	c := NewClient("m", "", bin)
 	c.SetStreamJSONInput(true)
-	c.SetStreamJSONHooks(StreamJSONHooks{WaitReady: func(context.Context, <-chan string, func(string) error) error {
+	c.SetStreamJSONHooks(StreamJSONHooks{Wrap: passWrap, WaitReady: func(context.Context, <-chan string, func(string) error) error {
 		return assert.AnError
 	}})
 	_, _, err := c.QuerySync(t.Context(), "sys", "msg", "")
@@ -125,6 +133,7 @@ exec sleep 30
 	t.Cleanup(func() { streamDrainGrace, groupKillGrace = oldGrace, oldKill })
 	c := NewClient("m", "", bin)
 	c.SetStreamJSONInput(true)
+	c.SetStreamJSONHooks(StreamJSONHooks{Wrap: passWrap})
 	text, _, err := c.QuerySync(t.Context(), "sys", "msg", "")
 	require.NoError(t, err)
 	assert.Equal(t, "done", text)
@@ -132,4 +141,21 @@ exec sleep 30
 	require.NoError(t, err)
 	pid, _ := strconv.Atoi(strings.TrimSpace(string(data)))
 	assert.ErrorIs(t, syscall.Kill(-pid, 0), syscall.ESRCH, "the child's group is gone")
+}
+
+// passWrap starts the CLI unwrapped (the stub needs no sandbox).
+func passWrap(bin string, args []string) (string, []string) { return bin, args }
+
+// A stream-json run without its sandbox wrap starts no child (CHAT-05).
+func TestAIClient_StreamJSONRefusedWithoutSandbox(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "started")
+	bin := writeMockClaude(t, "touch '"+marker+"'\ncat >/dev/null\n")
+	c := NewClient("m", "", bin)
+	c.SetStreamJSONInput(true)
+	c.SetStreamJSONHooks(StreamJSONHooks{OnControl: func(string) string { return "" }})
+	_, _, err := c.QuerySync(t.Context(), "sys", "msg", "")
+	require.ErrorIs(t, err, ErrStreamJSONNoSandbox)
+	_, statErr := os.Stat(marker)
+	assert.ErrorIs(t, statErr, os.ErrNotExist, "no child started")
 }

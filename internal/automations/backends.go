@@ -97,6 +97,10 @@ type AgentResult struct {
 	// and the runner denied (Live is read-only in automations); the agent
 	// step's summary lists them.
 	SlackLiveDenied []string
+	// SlackLiveUnavailable says why a slack:live agent ran without the
+	// connector (policy, the owner's switches, no passing check, it did not
+	// connect); the agent step's summary carries it. "" = it had Live.
+	SlackLiveUnavailable string
 }
 
 // AgentRunner runs agent() calls; Name ("claude", "codex", "runtime-b") is

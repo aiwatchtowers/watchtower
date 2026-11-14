@@ -3,7 +3,11 @@
 // outcome into the slack_live_status vocabulary.
 package slacklive
 
-import "strings"
+import (
+	"strings"
+
+	"watchtower/internal/slackconnector"
+)
 
 // Statuses of slack_live_status.
 const (
@@ -18,28 +22,22 @@ const (
 // runs on an API key, which never has the account's connectors.
 const SentinelAPIKeyLogin = "api_key_login"
 
-// ReadTools is the Slack connector's read-only tool allow-list (bare names).
-// Anything outside it is never called by a Live path.
-var ReadTools = []string{
-	"slack_search_public",
-	"slack_search_public_and_private",
-	"slack_search_channels",
-	"slack_search_users",
-	"slack_read_channel",
-	"slack_read_thread",
-	"slack_read_canvas",
-	"slack_read_user_profile",
-	"slack_list_user_channels",
-	"slack_list_channel_members",
-	"slack_get_reactions",
-	"slack_read_file",
-	"slack_list_workspaces",
-}
+// ReadTools is the Slack connector's read-only tool allow-list (bare
+// names), slackconnector's one list. Anything outside it is never called by
+// a Live path.
+var ReadTools = slackconnector.ReadTools
+
+// ClaudeStepPrefix and CodexStepPrefix are a connector tool's step name in
+// the chat (slackconnector).
+const (
+	ClaudeStepPrefix = slackconnector.ClaudeStepPrefix
+	CodexStepPrefix  = slackconnector.CodexStepPrefix
+)
 
 // Classify maps a probe's evidence to (status, error_class). text is the
 // concatenated tool error / stderr / result error text; connected says the
 // Slack connector was present; readOK says a real read call succeeded.
-func Classify(provider, text string, connected, readOK bool) (status, errorClass string) {
+func Classify(text string, connected, readOK bool) (status, errorClass string) {
 	return classify(text, "", connected, readOK)
 }
 
@@ -78,5 +76,18 @@ func classify(toolText, stderr string, connected, readOK bool) (status, errorCla
 	case !connected:
 		return StatusNotConnected, "no_connector"
 	}
-	return StatusUnavailable, "read_failed"
+	return StatusUnavailable, ErrorClassReadFailed
+}
+
+// ErrorClassReadFailed is an ordinary tool error (a missing channel, bad
+// arguments): it says nothing about the connection.
+const ErrorClassReadFailed = "read_failed"
+
+// ConnectionVerdict reports whether a connector call's (status, class) says
+// something about the connection — ok, or a connection-class failure
+// (not connected, admin approval, plan, rate limit, unavailable) — and so
+// may be written as the provider's Live status. An ordinary tool error
+// (ErrorClassReadFailed) may not: one bad read must not turn Live off.
+func ConnectionVerdict(status, errorClass string) bool {
+	return !(status == StatusUnavailable && errorClass == ErrorClassReadFailed)
 }

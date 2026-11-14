@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"slices"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"watchtower/internal/ai"
 	"watchtower/internal/chat"
 	"watchtower/internal/codex"
+	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/slacklive"
 )
@@ -48,11 +50,14 @@ type agentSlackLive struct {
 	database *db.DB // nil = no status written
 	provider string
 	now      func() time.Time
-	classify func(provider, text string, connected, readOK bool) (string, string)
+	classify func(text string, connected, readOK bool) (string, string)
 
 	mu     sync.Mutex
 	used   bool
 	denied []string
+	// unavailable says why this run has no Live Slack ("" = it has it, or
+	// it was never decided): the agent ran without the connector.
+	unavailable string
 }
 
 func newAgentSlackLive(database *db.DB, provider string) *agentSlackLive {
@@ -64,6 +69,23 @@ func (l *agentSlackLive) result() (used bool, denied []string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.used, slices.Clone(l.denied)
+}
+
+// off records that the agent runs without Live Slack and why (the agent
+// step's summary carries it, so the run log says it).
+func (l *agentSlackLive) off(why string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.unavailable == "" {
+		l.unavailable = why
+	}
+}
+
+// unavailableReason is off's reason, "" when Live was not turned off.
+func (l *agentSlackLive) unavailableReason() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.unavailable
 }
 
 // readEnded records one finished connector read call.
@@ -101,7 +123,7 @@ func (l *agentSlackLive) claudeHooks() ai.StreamJSONHooks {
 			err := slacklive.WaitConnected(ctx, lines, write, agentSlackConnectWait)
 			if errors.Is(err, slacklive.ErrNotConnected) {
 				// The agent runs without Slack; its instruction may not need it.
-				log.Printf("automation agent: the claude.ai Slack connector did not connect within %s", agentSlackConnectWait)
+				l.off(fmt.Sprintf("the claude.ai Slack connector did not connect within %s", agentSlackConnectWait))
 				return nil
 			}
 			return err
@@ -178,28 +200,53 @@ func (l *agentSlackLive) observeCodex(call codex.ToolCall) {
 	}
 }
 
-// codexAgentSlackApps is the read-only Slack app allow-list of a Codex
-// agent() child on Live, for the run's own CODEX_HOME (the home codex
-// loads; its auth.json links the owner's): nil when the login is not a
-// ChatGPT one, the owner's newest Codex probe is not ok with a connector id,
-// or the allow-list cannot be built (fail closed: no apps).
-func codexAgentSlackApps(database *db.DB, home string) []string {
+// claudeAgentSlackLive decides a Claude agent() child's Live Slack: "" =
+// on; else why it is off — the organization's policy or the owner's
+// switches (claudeSlackLiveOff, as for the chat and the probe), the status
+// unreadable, or the newest Claude probe a known failure (claudeSlackLive).
+func claudeAgentSlackLive(cfg *config.Config, database *db.DB) string {
+	if _, why := claudeSlackLiveOff(cfg); why != "" {
+		return why
+	}
 	if database == nil {
-		return nil
+		return "no database for the Slack Live status"
 	}
 	rows, err := database.ListSlackLiveStatus()
 	if err != nil {
 		log.Printf("automation agent: reading the Slack Live status: %v", err)
-		return nil
+		return "the Slack Live status could not be read"
+	}
+	if !claudeSlackLive(rows, true, false) {
+		return "the last Live Slack check for Claude did not pass"
+	}
+	return ""
+}
+
+// codexAgentSlackApps is the read-only Slack app allow-list of a Codex
+// agent() child on Live, for the run's own CODEX_HOME (the home codex
+// loads; its auth.json links the owner's). nil with why when the login is
+// not a ChatGPT one, the owner's newest Codex probe is not ok with a
+// connector id, or the allow-list cannot be built (fail closed: no apps).
+func codexAgentSlackApps(database *db.DB, home string) (apps []string, why string) {
+	if database == nil {
+		return nil, "no database for the Slack Live status"
+	}
+	rows, err := database.ListSlackLiveStatus()
+	if err != nil {
+		log.Printf("automation agent: reading the Slack Live status: %v", err)
+		return nil, "the Slack Live status could not be read"
 	}
 	id := codexSlackConnector(rows, home)
 	if id == "" {
-		return nil
+		return nil, "no passing Live Slack check for Codex with a ChatGPT login"
 	}
 	overrides, err := codex.ReadOnlyAppOverrides(home, id, slacklive.ReadTools)
 	if err != nil {
 		log.Printf("automation agent: no Slack apps for this run: %v", err)
-		return nil
+		return nil, "the read-only Slack app list could not be built"
 	}
-	return overrides
+	if len(overrides) == 0 {
+		return nil, "the read-only Slack app list is empty"
+	}
+	return overrides, ""
 }
