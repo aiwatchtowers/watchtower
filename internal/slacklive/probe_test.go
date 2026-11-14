@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -15,6 +16,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/codex"
 	"watchtower/internal/db"
 )
 
@@ -62,6 +64,8 @@ func TestLiveProbe_Classifies(t *testing.T) {
 		{"unknown tool", "unknown", "none", "not_connected", "not_authorized"},
 		{"admin", "admin", "none", "needs_admin", "admin_approval"},
 		{"rate limit", "rate", "none", "unavailable", "rate_limited"},
+		{"plan", "plan", "none", "no_plan", "plan"},
+		{"timeout", "timeout", "none", "unavailable", "timeout"},
 		{"no connector", "absent", "none", "not_connected", "no_connector"},
 		{"api key", "apikey", "ANTHROPIC_API_KEY", "not_connected", "api_key_login"},
 	}
@@ -79,6 +83,75 @@ func TestLiveProbe_Classifies(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestClassify(t *testing.T) {
+	cases := []struct {
+		name, text        string
+		connected, readOK bool
+		status, class     string
+	}{
+		{"ok", "", true, true, "ok", ""},
+		{"api key", SentinelAPIKeyLogin, false, false, "not_connected", "api_key_login"},
+		{"no connector", "", false, false, "not_connected", "no_connector"},
+		{"unknown tool", "Unknown tool: x", true, false, "not_connected", "not_authorized"},
+		{"admin", "An admin must approve this app", true, false, "needs_admin", "admin_approval"},
+		{"admin alone", "admin only", true, false, "unavailable", "read_failed"},
+		{"429", "HTTP 429", true, false, "unavailable", "rate_limited"},
+		{"rate limit", "rate limit exceeded", true, false, "unavailable", "rate_limited"},
+		{"timeout", "request timed out", true, false, "unavailable", "timeout"},
+		{"plan", "This is not available on your plan", true, false, "no_plan", "plan"},
+		{"loose upgrade is not a plan error", "please upgrade the CLI", true, false, "unavailable", "read_failed"},
+		{"connected, read failed", "boom", true, false, "unavailable", "read_failed"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			status, class := Classify("claude", tc.text, tc.connected, tc.readOK)
+			assert.Equal(t, tc.status, status)
+			assert.Equal(t, tc.class, class)
+		})
+	}
+}
+
+func TestClassify_PlanWordingOnlyFromToolText(t *testing.T) {
+	status, class := classify("", "warning: upgrade to a newer version; your plan", true, false)
+	assert.Equal(t, "unavailable", status)
+	assert.Equal(t, "read_failed", class)
+	status, _ = classify("not available on your plan", "", true, false)
+	assert.Equal(t, "no_plan", status)
+}
+
+func TestClaudeArgs(t *testing.T) {
+	args := claudeArgs()
+	assert.NotContains(t, args, "--strict-mcp-config")
+	i := slices.Index(args, "--setting-sources")
+	require.GreaterOrEqual(t, i, 0)
+	assert.Equal(t, "project,local", args[i+1])
+	j := slices.Index(args, "--disallowedTools")
+	require.GreaterOrEqual(t, j, 0)
+	for _, w := range []string{"slack_send_message", "slack_schedule_message", "slack_send_message_draft",
+		"slack_create_canvas", "slack_update_canvas", "slack_add_reaction"} {
+		assert.Contains(t, args[j+1], "mcp__claude_ai_Slack__"+w)
+	}
+	assert.Equal(t, "stdio", args[slices.Index(args, "--permission-prompt-tool")+1])
+}
+
+func TestControlErrorFor(t *testing.T) {
+	reply := controlErrorFor(`{"type":"control_request","request_id":"r9","request":{"subtype":"hook_callback"}}`)
+	assert.Contains(t, reply, `"request_id":"r9"`)
+	assert.Contains(t, reply, `"subtype":"error"`)
+	assert.Empty(t, controlErrorFor(`{"type":"control_request","request_id":"r9","request":{"subtype":"can_use_tool"}}`))
+	assert.Empty(t, controlErrorFor(`{"type":"result"}`))
+}
+
+func TestLiveProbe_ClaudeAnswersOtherControlRequests(t *testing.T) {
+	record := filepath.Join(t.TempDir(), "answers")
+	env := append(os.Environ(), "SCENARIO=ok", "RECORD="+record, "EXTRA_CONTROL=1")
+	r := ProbeClaude(context.Background(), stub(t, "fake_claude.sh"), env)
+	assert.Equal(t, "ok", r.Status)
+	b, err := os.ReadFile(record)
+	require.NoError(t, err)
+	assert.Contains(t, string(b), `"subtype":"error"`)
 }
 
 func TestLiveProbe_ClaudeDeniesOtherTools(t *testing.T) {
@@ -107,7 +180,7 @@ func TestLiveProbe_KilledLeavesNoRow(t *testing.T) {
 			dir := t.TempDir()
 			ready, pidfile := filepath.Join(dir, "ready"), filepath.Join(dir, "pid")
 			require.NoError(t, syscall.Mkfifo(ready, 0o600))
-			home := t.TempDir()
+			home := codexHomeWith(t, "chatgpt", true)
 			env := append(os.Environ(), "SCENARIO=hang", "READY="+ready, "PIDFILE="+pidfile, "CODEX_HOME="+home)
 			bin := stub(t, "fake_"+provider+".sh")
 			ctx, cancel := context.WithCancel(context.Background())
@@ -156,11 +229,64 @@ func TestLiveProbe_CodexConnectorIDFromCache(t *testing.T) {
 
 func TestLiveProbe_CodexConnectorIDMissingFailsClosed(t *testing.T) {
 	home := codexHomeWith(t, "chatgpt", false)
-	env := append(os.Environ(), "SCENARIO=ok", "CODEX_HOME="+home)
+	argsFile := filepath.Join(t.TempDir(), "args")
+	env := append(os.Environ(), "SCENARIO=ok", "CODEX_HOME="+home, "ARGSFILE="+argsFile)
 	r := ProbeCodex(context.Background(), stub(t, "fake_codex.sh"), env)
 	assert.Equal(t, "not_connected", r.Status)
 	assert.Equal(t, "connector_id_unknown", r.ErrorClass)
 	assert.Empty(t, r.ConnectorID)
+	b, err := os.ReadFile(argsFile)
+	require.NoError(t, err)
+	runs := strings.Split(strings.TrimSpace(string(b)), "\n")
+	require.Len(t, runs, 1, "only the warm-up ran; apps are never on without the allow-list")
+	assert.Contains(t, runs[0], "apps._default.default_tools_enabled=false")
+	assert.NotContains(t, runs[0], "slack_list_workspaces")
+}
+
+func TestLiveProbe_CodexWarmupFillsCacheThenReadOnlyRun(t *testing.T) {
+	home := codexHomeWith(t, "chatgpt", false)
+	// The owner's config tries to enable a write tool and another app.
+	require.NoError(t, os.WriteFile(filepath.Join(home, "config.toml"), []byte(
+		"[apps.asdk_app_test.tools.slack_send_message]\nenabled = true\n[apps.asdk_app_other]\nenabled = true\n"), 0o600))
+	fixture, err := filepath.Abs(filepath.Join("testdata", "codex_apps_tools.json"))
+	require.NoError(t, err)
+	argsFile := filepath.Join(t.TempDir(), "args")
+	env := append(os.Environ(), "SCENARIO=ok", "CODEX_HOME="+home, "ARGSFILE="+argsFile, "WARM_FIXTURE="+fixture)
+	r := ProbeCodex(context.Background(), stub(t, "fake_codex.sh"), env)
+	assert.Equal(t, "ok", r.Status)
+	assert.Equal(t, "asdk_app_test", r.ConnectorID)
+	b, err := os.ReadFile(argsFile)
+	require.NoError(t, err)
+	runs := strings.Split(strings.TrimSpace(string(b)), "\n")
+	require.Len(t, runs, 2)
+	assert.NotContains(t, runs[0], "slack_list_workspaces")
+	for _, want := range []string{"features.apps=true", "apps._default.enabled=false",
+		"apps.asdk_app_test.tools.slack_list_workspaces.enabled=true",
+		"apps.asdk_app_test.tools.slack_send_message.enabled=false", "apps.asdk_app_other.enabled=false"} {
+		assert.Contains(t, runs[1], want)
+	}
+}
+
+func TestLiveProbe_CodexInvalidConfigFailsClosed(t *testing.T) {
+	home := codexHomeWith(t, "chatgpt", true)
+	require.NoError(t, os.WriteFile(filepath.Join(home, "config.toml"), []byte("[apps\nbroken"), 0o600))
+	argsFile := filepath.Join(t.TempDir(), "args")
+	env := append(os.Environ(), "SCENARIO=ok", "CODEX_HOME="+home, "ARGSFILE="+argsFile)
+	r := ProbeCodex(context.Background(), stub(t, "fake_codex.sh"), env)
+	assert.NotEqual(t, "ok", r.Status)
+	_, err := os.Stat(argsFile)
+	assert.True(t, os.IsNotExist(err), "codex never ran")
+}
+
+func TestLiveProbe_CodexAuthWithoutModeIsNotAnAPIKey(t *testing.T) {
+	home := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(home, "auth.json"), []byte(`{"tokens":{}}`), 0o600))
+	assert.False(t, codexAPIKeyLogin(home))
+	assert.True(t, codexAPIKeyLogin(codexHomeWith(t, "apikey", false)))
+}
+
+func TestWorkspaceTeamIDsFallbackNeedsADigit(t *testing.T) {
+	assert.Equal(t, []string{"TACME12345"}, workspaceTeamIDs(json.RawMessage(`{"content":[{"text":"TEAMNAMES TACME12345"}]}`)))
 }
 
 func TestLiveProbe_CodexClassifies(t *testing.T) {
@@ -199,7 +325,8 @@ func TestCheck_WritesRowsPerTeam(t *testing.T) {
 	for _, row := range rows {
 		got[row.TeamID] = row.Status
 	}
-	assert.Equal(t, map[string]string{"TACME12345": "ok", "": "ok"}, got)
+	assert.Equal(t, map[string]string{"TACME12345": "ok", "": "ok", "TOTHER1234": "not_connected"}, got,
+		"an account the connector did not show is not connected")
 
 	env = append(os.Environ(), "SCENARIO=unknown")
 	_, err = Check(context.Background(), d, "claude", stub(t, "fake_claude.sh"), env, now.Add(time.Minute))
@@ -248,15 +375,17 @@ func TestLiveProbe_CodexAllowListReal(t *testing.T) {
 	}
 	bin, err := exec.LookPath("codex")
 	require.NoError(t, err)
-	id := slackConnectorID(codexHome(nil))
+	home := codexHome(nil)
+	id := slackConnectorID(home)
 	require.NotEmpty(t, id, "run the probe once so Codex caches its apps")
+	apps, err := codex.ReadOnlyAppOverrides(home, id, []string{codexListTool})
+	require.NoError(t, err)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, bin, "exec", "--json", "--ephemeral", "--skip-git-repo-check",
-		"-c", "approval_policy=never", "-c", "sandbox_mode=read-only", "-c", "features.apps=true",
-		"-c", "apps."+id+".default_tools_enabled=false",
-		"-c", "apps."+id+".tools.slack_list_workspaces.enabled=true",
-		"Call slack_list_workspaces once, then call slack_search_channels once with query a. Reply done.")
+	args := append([]string{"exec", "--json", "--ephemeral", "--skip-git-repo-check",
+		"-c", "approval_policy=never", "-c", "sandbox_mode=read-only"}, apps...)
+	cmd := exec.CommandContext(ctx, bin, append(args,
+		"Call slack_list_workspaces once, then call slack_search_channels once with query a. Reply done.")...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	out, _ := cmd.Output()

@@ -3,6 +3,7 @@ package slacklive
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	"watchtower/internal/db"
@@ -32,7 +33,7 @@ func Check(ctx context.Context, d *db.DB, provider, bin string, env []string, no
 	if err != nil {
 		return Result{}, err
 	}
-	var teams []string
+	var teams, absent []string
 	if r.Status == StatusOK {
 		for _, t := range r.Teams {
 			if provider == "claude" { // a permalink label, matched to its account
@@ -40,6 +41,15 @@ func Check(ctx context.Context, d *db.DB, provider, bin string, env []string, no
 			}
 			if t != "" {
 				teams = append(teams, t)
+			}
+		}
+		// A connected account that the provider did not list cannot be read
+		// through it: record that, so an earlier ok for it does not linger.
+		if len(teams) > 0 {
+			for _, a := range accounts {
+				if a.TeamID != "" && !slices.Contains(teams, a.TeamID) {
+					absent = append(absent, a.TeamID)
+				}
 			}
 		}
 	} else {
@@ -54,6 +64,12 @@ func Check(ctx context.Context, d *db.DB, provider, bin string, env []string, no
 	for _, t := range r.Teams {
 		if err := d.UpsertSlackLiveStatus(db.SlackLiveStatus{TeamID: t, Provider: provider,
 			Status: r.Status, ErrorClass: r.ErrorClass, ConnectorID: r.ConnectorID, CheckedAt: now}); err != nil {
+			return Result{}, err
+		}
+	}
+	for _, t := range dedupe(absent) {
+		if err := d.UpsertSlackLiveStatus(db.SlackLiveStatus{TeamID: t, Provider: provider,
+			Status: StatusNotConnected, ErrorClass: "workspace_not_connected", CheckedAt: now}); err != nil {
 			return Result{}, err
 		}
 	}
