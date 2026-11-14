@@ -51,6 +51,7 @@ Follow a service restriction message even when a quota's forecast stays below it
 - **No plan data:** sign in to the corresponding installed command-line tool, then retry. Codex needs a ChatGPT subscription sign-in; an API key alone supplies no subscription quotas.
 - **Sign-in expired:** use Claude Code so it can refresh its own sign-in, then press **Refresh**. Watchtower does not refresh Claude credentials.
 - **Unsupported Codex tool:** update Codex, then retry. Watchtower does not start a login flow for you.
+- **Codex installed with npm shows no numbers:** Watchtower looks for Node.js in the usual nvm, Volta, fnm, local-bin and Homebrew folders when it reads the limits, so the app needs no special launch. If your Node.js lives in another folder, link it into one of those folders.
 - **Collecting data:** leave the reader running for at least fifteen minutes. A changed reset window or account starts a new history.
 - **Forecast needs an update:** refresh; the previous predicted hit time has passed.
 - **Saved limits could not be read:** retry. One provider's error leaves the other provider usable.
