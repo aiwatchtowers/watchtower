@@ -372,6 +372,8 @@ final class AppState {
     private(set) var planUsageCenter: PlanUsageCenter?
     /// The account purge ledger (board #601): red lines, Home banner, notices.
     var accountPurgeCenter: AccountPurgeCenter?
+    /// The Slack Live probe's verdicts (Connections → Slack).
+    var slackLiveStatusCenter: SlackLiveStatusCenter?
     /// The live workbench sessions' agent states (board #312), polled while
     /// a `claude` session runs, whatever tab is shown.
     private(set) var sessionAgentStateCenter: SessionAgentStateCenter?
@@ -1562,6 +1564,7 @@ final class AppState {
         applyUIVisibility(uiVisibility.isOnScreen)
         initPlanUsage(dbPool: manager.dbPool, cliRunner: ProcessCLIRunner.makeDefault())
         initAccountPurges(dbPool: manager.dbPool, cliRunner: ProcessCLIRunner.makeDefault())
+        initSlackLive(dbPool: manager.dbPool, cliRunner: ProcessCLIRunner.makeDefault())
         startDigestWatcher(dbPool: manager.dbPool)
         startMeetingReminders(dbPool: manager.dbPool)
         startWarmEnginePolicy(dbPool: manager.dbPool)
