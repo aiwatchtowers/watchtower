@@ -928,7 +928,7 @@ func runCoachNow(cmd *cobra.Command, e *coachEnv) (any, error) {
 		ctx = context.Background()
 	}
 	if !coachFlagDryRun { // a dry run writes nothing: the marker refusal is enough
-		detail := "Judge the accepted proposals, read the last weeks' signals and ask the model for new proposals (nothing is applied)."
+		detail := "Judge the accepted proposals, file context proposals from the start-context report, read the last weeks' signals and ask the model for new proposals (nothing is applied)."
 		if err := confirmWithOwner("run the coach", detail); err != nil {
 			return nil, err
 		}
