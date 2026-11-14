@@ -49,6 +49,7 @@ package struct ChatTurnStore: Sendable {
         try await dbPool.write { db in
             try ChatStepQueries.upsertStart(db, messageID: messageID, seq: seq, toolID: start.id, name: start.name,
                                             argsJSON: start.argsJSON, startedAt: date.timeIntervalSince1970)
+            try LiveSlackMark.markIfSlackStep(db, messageID: messageID, name: start.name)
         }
     }
 
@@ -92,6 +93,7 @@ package struct ChatTurnStore: Sendable {
             if let model = usage?.model, !model.isEmpty {
                 try ChatTreeQueries.setModel(db, messageID: messageID, model: model)
             }
+            try LiveSlackMark.markIfUsed(db, conversationID: conversationID, messageID: messageID)
             guard status != "error" else { return [] }
             return try ChatArtifactQueries.persistArtifacts(db, conversationID: conversationID, messageID: messageID, text: text)
         }
