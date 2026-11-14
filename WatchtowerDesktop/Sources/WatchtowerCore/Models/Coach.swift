@@ -113,6 +113,9 @@ package struct CoachProposal: Decodable, Equatable, Identifiable, Sendable {
     package var pr: Int64?
     package var prState: String?
     package var prURL: String?
+    /// The session starts the verdict was measured on; nil before the
+    /// verdict and from an older CLI.
+    package var verdictSessions: Int?
 
     enum CodingKeys: String, CodingKey {
         case id, title, why, destination, kind, metric, before, after, evidence, sources, status
@@ -123,6 +126,7 @@ package struct CoachProposal: Decodable, Equatable, Identifiable, Sendable {
         case writtenBranch = "written_branch", measureFrom = "measure_from", folderBranch = "folder_branch"
         case sessionID = "session_id", sourceKey = "source_key", viaSession = "via_session"
         case sessionBranch = "session_branch", pr, prState = "pr_state", prURL = "pr_url"
+        case verdictSessions = "verdict_sessions"
     }
 }
 
@@ -166,7 +170,8 @@ extension CoachProposal {
             sessionBranch: try c.decodeIfPresent(String.self, forKey: .sessionBranch) ?? "",
             pr: try c.decodeIfPresent(Int64.self, forKey: .pr),
             prState: try c.decodeIfPresent(String.self, forKey: .prState),
-            prURL: try c.decodeIfPresent(String.self, forKey: .prURL))
+            prURL: try c.decodeIfPresent(String.self, forKey: .prURL),
+            verdictSessions: try c.decodeIfPresent(Int.self, forKey: .verdictSessions))
     }
 }
 

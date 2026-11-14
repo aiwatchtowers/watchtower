@@ -134,9 +134,10 @@ package struct ContextActionRow: Equatable, Identifiable, Sendable {
             switch proposal.verdict {
             case "no_effect", "too_little_data": return ContextActionsPresentation.Copy.noSaving
             default:
-                // The verdict's number of starts is not in the proposal
-                // JSON, so a measured saving shows as before → after only.
-                return after == nil && tag == .settings ? ContextActionsPresentation.Copy.takesEffect : nil
+                guard let after else { return tag == .settings ? ContextActionsPresentation.Copy.takesEffect : nil }
+                // Without the verdict's number of starts the row shows before → after only.
+                guard case let .done(before, _) = state, let starts = proposal.verdictSessions else { return nil }
+                return ContextActionsPresentation.savedLine(tokens: max(0, before - after), starts: starts)
             }
         }
     }

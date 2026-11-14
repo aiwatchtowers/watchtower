@@ -80,7 +80,8 @@ final class CoachDecodingTests: XCTestCase {
         let row = try decodeProposal(
             #","session_id":41,"source_key":"acme-tools@example-market","via_session":true,"# +
             #""session_branch":"wt/slim-claude-md","pr":17,"pr_state":"open","# +
-            #""pr_url":"https://github.com/acme/app/pull/17""#)
+            #""pr_url":"https://github.com/acme/app/pull/17","verdict_sessions":12"#)
+        XCTAssertEqual(row.verdictSessions, 12)
         XCTAssertEqual(row.sessionID, 41)
         XCTAssertEqual(row.sourceKey, "acme-tools@example-market")
         XCTAssertTrue(row.viaSession)
@@ -105,6 +106,7 @@ final class CoachDecodingTests: XCTestCase {
         XCTAssertNil(old.pr)
         XCTAssertNil(old.prState)
         XCTAssertNil(old.prURL)
+        XCTAssertNil(old.verdictSessions)
     }
 
     func testContextDestinationLabels() throws {

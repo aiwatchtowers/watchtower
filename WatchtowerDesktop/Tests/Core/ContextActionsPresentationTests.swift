@@ -303,8 +303,16 @@ final class ContextActionsPresentationTests: XCTestCase {
         XCTAssertEqual(repoDone.actions, [])
     }
 
-    func testSavedLine() {
+    func testSavedLine() throws {
         XCTAssertEqual(ContextActionsPresentation.savedLine(tokens: 30200, starts: 12), "Saved 30.2k on 12 starts")
+        var p = proposal(1, status: "accepted", decidedDaysAgo: 15, baseline: 79600, verdict: "works",
+                         verdictValue: 49400, verdictDaysAgo: 1)
+        // No count of starts: before → after only, no line.
+        let unknown = try only(p)
+        XCTAssertNil(unknown.stateLine)
+        XCTAssertEqual(unknown.beforeAfter, "79.6k → 49.4k")
+        p.verdictSessions = 12
+        XCTAssertEqual(try only(p).stateLine, "Saved 30.2k on 12 starts")
     }
 
     func testSupersededShowsChangedSince() {
