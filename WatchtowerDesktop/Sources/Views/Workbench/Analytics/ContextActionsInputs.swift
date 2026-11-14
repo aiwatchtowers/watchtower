@@ -94,7 +94,7 @@ struct ContextActionsInputs {
         switch row.state {
         case let .working(session), let .linkFailed(session), let .reverting(session), let .revertEnded(session):
             return session
-        case let .endedWithoutChange(session): return session
+        case let .endedWithoutChange(session), let .checkingIndex(session): return session
         default: return nil
         }
     }

@@ -65,6 +65,7 @@ final class CoachCenter {
     /// after this, so a crash at launch ends on the session's own state.
     nonisolated static let launchGrace: TimeInterval = 60
     nonisolated static let sessionNotStarted = "The session did not start — the proposal is still open"
+    nonisolated static let reapplyStale = "The setting changed again — nothing was turned off"
 
     @ObservationIgnored var isTabOnScreen: () -> Bool = { false }
 
@@ -274,9 +275,25 @@ final class CoachCenter {
         await verb(id, ["coach", "dismiss", String(id), "--json"])
     }
 
-    /// **Turn Off Again**: a setting turned back on outside Watchtower.
+    /// **Turn Off Again**: a setting turned back on outside Watchtower. A
+    /// `stale` answer means the setting no longer reads on, or changed
+    /// meanwhile: the row is still accepted, so it gets its own line, never
+    /// the closed-proposal one.
     func reapply(_ id: Int64) async {
-        await verb(id, ["coach", "reapply", String(id), "--json"])
+        guard pending.insert(id).inserted else { return }
+        defer { pending.remove(id) }
+        cardErrors[id] = nil
+        do {
+            _ = try await runner.run(args: ["coach", "reapply", String(id), "--json"])
+            reloadAll()
+        } catch where Self.failure(error)?.code == "stale" {
+            cardErrors[id] = Self.reapplyStale
+            reloadAll()
+        } catch where Self.failure(error)?.code == "state_changed" {
+            reloadAll() // turned off again or rolled back elsewhere: the list shows it
+        } catch {
+            decisionFailed(id, error)
+        }
     }
 
     /// The pane found `session`'s row gone: a link entry naming it goes.
@@ -327,23 +344,31 @@ final class CoachCenter {
         for workbench in shown.keys { request(.status(workbench: workbench)) }
     }
 
-    /// `coach accept --session` once more after a failure; `state_changed`
-    /// on either try is another surface's Accept (quiet).
+    /// `coach accept --session` once more after a failure. `state_changed`
+    /// on an Accept is another surface's Accept (quiet); on a `--restart` it
+    /// means the row was not moved to this session, so the new session
+    /// would run unlinked: it is a link failure like any other (the list
+    /// read that follows drops the entry if the row does name the session).
+    /// The last error stays on the card.
     private func link(_ id: Int64, session: Int64, restart: Bool) async {
         let args = ["coach", "accept", String(id), "--session", String(session)] + (restart ? ["--restart"] : []) + ["--json"]
+        var last: Error?
         for _ in 0..<2 {
             do {
                 _ = try await runner.run(args: args)
                 return
             } catch where Self.failure(error)?.code == "state_changed" {
-                return
+                guard restart else { return }
+                last = error
+                break
             } catch {
-                continue
+                last = error
             }
         }
         // Retry Link and Open Session from now on, on an open row and on an
         // accepted one alike: never a second session.
         setLink(id, session, restart: restart)
+        cardErrors[id] = last.map(Self.message)
     }
 
     private func setLink(_ id: Int64, _ session: Int64?, restart: Bool = false) {
@@ -381,7 +406,10 @@ final class CoachCenter {
             let keep = restartLinks.contains(id)
                 ? p?.status == "accepted" && p?.sessionID != session
                 : p?.status == "open"
-            if !keep { setLink(id, nil) }
+            if !keep {
+                setLink(id, nil)
+                cardErrors[id] = nil // the link line's reason goes with it
+            }
         }
         for id in revertSessions.keys where byID[id]?.status != "accepted" { setRevert(id, nil) }
         for (id, launch) in launched where byID[id]?.status != "open" && now.timeIntervalSince(launch.at) >= Self.launchGrace {

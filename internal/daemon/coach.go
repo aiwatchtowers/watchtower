@@ -103,15 +103,15 @@ var (
 	}
 	runCoachContext = coach.ProposeContext
 	// coachRefreshPR refreshes the session report's PR cache for one branch
-	// of a workbench (gh and git; never inside a write transaction): an
-	// incomplete refresh (no gh, no network, auth, the budget) is an error
-	// and the measure check retries at its next run.
+	// of a workbench (gh and git; never inside a write transaction). Its
+	// note is not a verdict: without gh, git's merged verdict is still
+	// stored, and a benign note about another ref says nothing about this
+	// one. The caller re-reads the cache and trusts a row checked at or
+	// after the refresh started (coachBranchPR); an error here is only a
+	// refresh that could not run at all.
 	coachRefreshPR = func(ctx context.Context, database *db.DB, workbenchID int64, branch string) error {
-		res := sessionreport.Refresh(ctx, database, workbenchID, []string{"branch:" + branch},
+		sessionreport.Refresh(ctx, database, workbenchID, []string{"branch:" + branch},
 			sessionreport.RefreshOptions{Network: true})
-		if res.Note != "" {
-			return errors.New(res.Note)
-		}
 		return nil
 	}
 	// coachHomeDir is the home ~/.claude and ~/.claude.json live in.
@@ -302,19 +302,28 @@ func (d *Daemon) coachMeasureCheck(ctx context.Context, now time.Time) (done boo
 		d.logger.Printf("coach: measure check: %v", err)
 		return false
 	}
-	home, _ := coachHomeDir() // "": settings and memory rows are skipped today
-	a := &coach.Applier{DB: d.db, Home: home, Now: func() time.Time { return now }}
+	home, herr := coachHomeDir()
+	if herr != nil { // "": settings and memory rows are skipped today
+		home = ""
+		d.logger.Printf("coach: measure check: no home folder, settings and memory rows skipped today")
+	}
+	a := &coach.Applier{DB: d.db, Home: home, Now: func() time.Time { return now }, Logf: d.logger.Printf}
 	measured := 0
 	for _, p := range ps {
 		if ctx.Err() != nil {
 			return false
 		}
-		if p.Verdict != "" {
+		settings := coach.IsSettingsDestination(p.Destination)
+		// A settings row's too_little_data is provisional (the judge
+		// re-judges it until judgeGiveUp): a key turned back on meanwhile
+		// is still reverted_outside, never graded on a change that no
+		// longer applies.
+		if p.Verdict != "" && !(settings && p.Verdict == "too_little_data") {
 			continue
 		}
 		var set bool
 		switch {
-		case coach.IsSettingsDestination(p.Destination):
+		case settings:
 			d.coachRevertedCheck(a, p, now)
 		case !p.MeasureFrom.IsZero():
 		case p.Destination == coach.DestMemoryIndex:
@@ -362,13 +371,13 @@ func (d *Daemon) coachMergeCheck(ctx context.Context, p db.CoachProposal, now ti
 	if branch != "" {
 		switch pr, ok := d.coachBranchPR(ctx, p, branch, now); {
 		case !ok:
+		case pr.MergedBefore(p.DecidedAt):
+			// A reused branch name's older merge: not this session's PR,
+			// the row keeps waiting for its own.
 		case pr.State == "merged":
 			at, err := time.Parse(time.RFC3339, pr.MergedAt)
 			if err != nil { // git saw the merge, gh did not say when
 				at = now
-			}
-			if at.Before(p.DecidedAt) { // a reused branch name's older merge
-				at = p.DecidedAt
 			}
 			return d.coachSetMeasureFrom(p, at)
 		case pr.State == "closed":
@@ -402,10 +411,14 @@ func (d *Daemon) coachProposalBranch(p db.CoachProposal) string {
 	return branch
 }
 
-// coachBranchPR is branch's cached PR state in p's workbench, refreshed
-// first (that branch only, through the session report's refresher) when the
-// cache row is missing or older than coachPRFreshFor. ok is false when the
-// state could not be read: a failed refresh is logged and the row waits.
+// coachBranchPR is branch's cached PR state in p's workbench. A cached
+// merged or closed state is final and taken whatever its age; any other row
+// is taken while younger than coachPRFreshFor, else that branch is
+// refreshed first (through the session report's refresher) and the row is
+// taken only when the refresh checked it — CheckedAt at or after the
+// refresh started (a failed read keeps the row with an older stamp). ok is
+// false when the state could not be read: logged by ids, and the row waits
+// for the next check.
 func (d *Daemon) coachBranchPR(ctx context.Context, p db.CoachProposal, branch string, now time.Time) (db.PRState, bool) {
 	ref := "branch:" + branch
 	states, err := d.db.PRStates(p.WorkbenchID)
@@ -414,10 +427,14 @@ func (d *Daemon) coachBranchPR(ctx context.Context, p db.CoachProposal, branch s
 		return db.PRState{}, false
 	}
 	row, cached := states[ref]
+	if cached && (row.State == "merged" || row.State == "closed") {
+		return row, true
+	}
 	checked, perr := time.Parse(time.RFC3339, row.CheckedAt)
 	if cached && perr == nil && now.Sub(checked) < coachPRFreshFor {
 		return row, true
 	}
+	started := time.Now().UTC().Truncate(time.Second) // CheckedAt has whole seconds
 	if err := coachRefreshPR(ctx, d.db, p.WorkbenchID, branch); err != nil {
 		d.logger.Printf("coach: measure check: proposal %d (workbench %d): PR state not refreshed, retried next check",
 			p.ID, p.WorkbenchID)
@@ -428,7 +445,13 @@ func (d *Daemon) coachBranchPR(ctx context.Context, p db.CoachProposal, branch s
 		return db.PRState{}, false
 	}
 	row, cached = states[ref]
-	return row, cached
+	checked, perr = time.Parse(time.RFC3339, row.CheckedAt)
+	if !cached || perr != nil || checked.Before(started) {
+		d.logger.Printf("coach: measure check: proposal %d (workbench %d): PR state not refreshed, retried next check",
+			p.ID, p.WorkbenchID)
+		return db.PRState{}, false
+	}
+	return row, true
 }
 
 // coachMemoryCheck decides a memory cleanup once, at the first check that
@@ -467,13 +490,13 @@ func (d *Daemon) coachMemoryCheck(a *coach.Applier, p db.CoachProposal, now time
 		return false
 	}
 	if text == p.BeforeText || modified.After(ended.Add(coachMemoryWriteSlack)) {
-		if _, err := d.db.SetCoachMemoryUnchanged(p.ID); err != nil {
+		if _, err := d.db.SetCoachMemoryUnchanged(p.ID, p.SessionID); err != nil {
 			d.logger.Printf("coach: measure check: proposal %d: %v", p.ID, err)
 			return false
 		}
 		return d.coachMemoryWait(p, now)
 	}
-	set, err := d.db.SetCoachMemoryMeasured(p.ID, ended, text)
+	set, err := d.db.SetCoachMemoryMeasured(p.ID, p.SessionID, ended, text)
 	if err != nil {
 		d.logger.Printf("coach: measure check: proposal %d: %v", p.ID, err)
 		return false

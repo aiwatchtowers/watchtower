@@ -44,20 +44,23 @@ Accepting any repository suggestion of the [agent coach](agent-coach.md) or the 
 4. Follow a session row: **Starting a session…**, **Session working** with **Open Session**, **PR #N ready** with **Open PR** and **Show Diff**, then **Merged · measuring**. **Revert…** on a merged row asks first, then starts a session that opens a revert pull request (**Revert session #N**).
 5. Open **What's in it** under the list to see each bar split into its sources: tokens at start and calls. Built-in tools say **can't change**.
 
-A `CLAUDE.md` saving is an estimate, because the session decides what moves. Measuring starts when a setting is applied, a pull request is merged, or the memory session ends.
+A `CLAUDE.md` saving is an estimate, because the session decides what moves. Measuring starts when a setting is applied, a pull request is merged, or the memory session ends. A merge is seen with or without the GitHub CLI (`gh`): without it, git's view of the merge counts.
 
-Session starts in the next 14 days are compared with the 14 days before, and the row then reads **Saved 6.1k on 12 starts** or **No measurable saving**. Done rows stay faded for 14 days, then live in **Accepted edits**.
+Session starts in the next 14 days are compared with the 14 days before, and the row then reads **Saved 6k on 10 starts** or **No measurable saving**. Done rows stay faded for 14 days, then live in **Accepted edits**.
 
 ## When it's empty or wrong
 
 - **No Do these list.** Nothing crossed the thresholds yet, or fewer than five sessions were measured. Sessions recorded before this version count once the history scan rereads them.
 - **Changed since — nothing was written.** Claude Code or you changed that key after the proposal was made, so the row closes and nothing is written.
-- **Turned back on outside Watchtower.** A running Claude Code wrote its own copy of the settings back. Press **Turn Off Again**.
-- **Session is running, but Watchtower could not link it.** The session started, but the proposal was not marked accepted. Press **Retry Link**; Accept stays hidden so a second session never starts.
-- **Session ended without a PR** or **Session ended without a change.** Press **Start Again** for a new session, or **Dismiss** to close it. A memory session idle for an hour counts as ended, so later edits in it do not count; use **Start Again**.
+- **Turned back on outside Watchtower.** A running Claude Code wrote its own copy of the settings back, or the key was turned on again in any form. Press **Turn Off Again**. A plugin you uninstalled does not count as turned back on.
+- **The setting changed again — nothing was turned off.** After **Turn Off Again**, the key no longer reads on, or changed while Watchtower wrote it. Nothing is written; the row stays as it was.
+- **Session is running, but Watchtower could not link it.** The session started, but the proposal was not marked accepted (after **Start Again**: not moved to the new session). The reason shows under the row. Press **Retry Link**; Accept stays hidden so a second session never starts.
+- **Session ended without a PR** or **Session ended without a change.** Press **Start Again** for a new session, or **Dismiss** to close it. A memory session idle for an hour counts as ended, so later edits in it do not count; use **Start Again**. A session still waiting for your answer to its diff does not count as ended, however long it waits.
+- **Session ended · checking the index.** The memory session ended, and Watchtower's daily check has not yet looked at the index. There is nothing to press but **Open Session**; the row then reads **Index written · measuring** or **Session ended without a change**.
+- **"the session opened a PR: follow it instead"** on **Start Again** or **Dismiss**. The session's branch has a pull request. Follow it with **Open PR** once the list catches up.
 - **Session was removed — its PR can't be traced.** The session was deleted before its branch was known. Press **Dismiss**.
 - **Not merged.** The pull request was closed, or nothing merged in 30 days. Nothing is measured.
-- **"saved settings for this server are gone"** on **Undo**. The copy of the MCP server's settings kept for Undo is missing, so nothing is written. Add the server back in Claude Code yourself.
+- **"saved settings for this server are gone"** on **Undo**. The copy of the MCP server's settings kept for Undo is missing, so nothing is written. Add the server back in Claude Code yourself. **"saved settings for this server can't be read"** means the copy is there but damaged; the same applies.
 - **Undo of a memory cleanup drops new lines.** Lines other sessions added to the index while the cleanup ran go too, as the **Undo the memory cleanup?** dialog says. Add them back by hand if you need them.
 - **Revert session ended without a PR.** The revert session stopped before opening its pull request. Press **Open Session** to look, or **Revert…** to start a new one.
 - **Retry Link** on Home's coach row. A session started but was not linked to the suggestion. Press **Retry Link**; the session itself is in that workbench's **Analytics**.

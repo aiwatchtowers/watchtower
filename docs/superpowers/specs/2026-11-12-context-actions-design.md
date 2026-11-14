@@ -5,7 +5,7 @@ Builds on: Agent analytics (`docs/features/agent-analytics.md`, the Context bloc
 
 ## For the owner (one page)
 
-**Why.** Every Claude Code session and every subagent starts with the same load: CLAUDE.md, memory, tool schemas, the skill and agent lists, hooks. On 2026-11-12 we cut it by hand from 79.6k to 43.3k tokens (−46 %) in one session. The work was: read the Context block, break each bar into its sources, check each source against how often it was actually used, turn off what is unused, slim CLAUDE.md through a PR, measure before and after. The Context block already shows the bars; it should do the rest.
+**Why.** Every Claude Code session and every subagent starts with the same load: CLAUDE.md, memory, tool schemas, the skill and agent lists, hooks. Cutting it by hand took a whole session. The work was: read the Context block, break each bar into its sources, check each source against how often it was actually used, turn off what is unused, slim CLAUDE.md through a PR, measure before and after. The Context block already shows the bars; it should do the rest.
 
 **What you see.** The Analytics → Context block gets a **Do these** list on top. Each row is one change: what it removes, how many tokens a session start saves, the evidence ("0 calls in Watchtower sessions in 30 days"), one button. Below, **What's in it** opens each bar into its sources: weight at start and how often it was used. You act from the top and dig in only when you want to.
 
@@ -13,7 +13,7 @@ Builds on: Agent analytics (`docs/features/agent-analytics.md`, the Context bloc
 - *Your settings* — turn off a plugin, an MCP server, the claude.ai connectors in Claude Code, archive stale lines of the agent's memory index. The button applies it at once; **Undo** puts it back. These are global (every project on the Mac, as done by hand today); the card says where else the thing is turned on, and that Watchtower only sees calls in its own workbench sessions.
 - *Repository files* — for example, move CLAUDE.md's feature summaries into `docs/features/`. **Accept** starts a workbench session with a ready brief. The agent works in its own worktree, reviews by the project's rules, commits and opens a PR, as we did today. The card follows it: *session working → PR #N ready → merged, measuring*. Watchtower itself still never writes to git.
 
-**How it ends.** After a change applies (settings) or merges (repository), the next session starts are measured and the row says what it actually saved ("−30.2k measured on 12 starts"). Rows that saved nothing say so.
+**How it ends.** After a change applies (settings) or merges (repository), the next session starts are measured and the row says what it actually saved ("−25.4k measured on 10 starts"). Rows that saved nothing say so.
 
 **Memory.** When the agent's memory index grows big, **Accept** starts a session. The agent picks the stale lines and shows you the diff, and changes the index only after you approve.
 
@@ -86,7 +86,7 @@ The CLAUDE.md move is not a line edit: the proposal carries an instruction plus 
 ### 4. Screen
 
 Analytics → Context:
-- **Do these**: open context proposals, largest saving first. A row: saving (`−30.2k`), title, tag (`your settings` / `repo · PR`), one evidence line, button (**Turn Off** / **Archive** / **Accept**). A repo row in progress shows the session state and **Open Session**, then **Open PR**.
+- **Do these**: open context proposals, largest saving first. A row: saving (`−25.4k`), title, tag (`your settings` / `repo · PR`), one evidence line, button (**Turn Off** / **Archive** / **Accept**). A repo row in progress shows the session state and **Open Session**, then **Open PR**.
 - Done rows stay faded with the measured saving and **Undo** (settings) for 14 days, then live in **Accepted edits**.
 - **What's in it** (fold): each bar opens into its sources — name, tokens at start, calls in the window, "can't change" for built-ins.
 - The headline sentence (`lead`) adds "N changes would cut it to ~X".

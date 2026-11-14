@@ -41,8 +41,14 @@ package struct ContextActionRow: Equatable, Identifiable, Sendable {
         /// Merged (or the memory index written): the verdict is pending.
         case measuring
         /// The session ended with no PR (repo) or no write (memory); nil when
-        /// its row is gone but its branch is still known.
+        /// its row is gone but its branch is still known. A memory row gets
+        /// it only once the daemon decided "unchanged" (`after == before`).
         case endedWithoutChange(Int64?)
+        /// A memory row whose session ended, before the daemon's daily check
+        /// decided it (`after` still empty): nothing to press, so neither
+        /// Start Again nor Dismiss can destroy the copy Undo restores. nil
+        /// when the session row is gone.
+        case checkingIndex(Int64?)
         case notMerged
         /// A `superseded` row: its key changed before Accept.
         case changedSince
@@ -96,7 +102,7 @@ package struct ContextActionRow: Equatable, Identifiable, Sendable {
 
     package var id: Int64 { proposal.id }
 
-    /// "−30.2k"; a repository row's estimate (its `saving_tokens`
+    /// "−25.4k"; a repository row's estimate (its `saving_tokens`
     /// evidence) "−~3.5k" (minus, then about); nil without a saving.
     package var savingText: String? {
         saving.map { (tag == .repoPR ? "−~" : "−") + ContextActionsPresentation.tokens($0) }
@@ -124,6 +130,8 @@ package struct ContextActionRow: Equatable, Identifiable, Sendable {
         case .prReady: return [.openPR, .showDiff]
         case .endedWithoutChange(let session):
             return (session == nil ? [] : [.openSession]) + [.startAgain, .dismiss]
+        case .checkingIndex(let session):
+            return session == nil ? [] : [.openSession]
         case .revertedOutside: return [.turnOffAgain]
         case .done: return afterwards
         }
@@ -147,6 +155,7 @@ package struct ContextActionRow: Equatable, Identifiable, Sendable {
         case .failed(let message): return message
         case .linkFailed: return ContextActionsPresentation.Copy.linkFailed
         case .sessionGone: return ContextActionsPresentation.Copy.sessionGone
+        case .checkingIndex: return ContextActionsPresentation.Copy.checkingIndex
         case .endedWithoutChange:
             return tag == .memory ? ContextActionsPresentation.Copy.endedWithoutChange
                 : ContextActionsPresentation.Copy.endedWithoutPR
@@ -166,7 +175,7 @@ package struct ContextActionRow: Equatable, Identifiable, Sendable {
         }
     }
 
-    /// "79.6k → 49.4k", "79.6k → measuring" (before the verdict); nil
+    /// "60k → 40k", "60k → measuring" (before the verdict); nil
     /// unless done with a baseline, and nil for a finished verdict that
     /// measured no saving (no_effect, too_little_data): its line says so.
     package var beforeAfter: String? {
@@ -200,6 +209,7 @@ package enum ContextActionsPresentation {
         package static let endedWithoutPR = "Session ended without a PR"
         package static let sessionGone = "Session was removed — its PR can't be traced"
         package static let endedWithoutChange = "Session ended without a change"
+        package static let checkingIndex = "Session ended · checking the index"
         package static let notMerged = "Not merged"
         package static let saved = "Saved %@ on %d starts"
         package static let noSaving = "No measurable saving"
@@ -273,7 +283,7 @@ package enum ContextActionsPresentation {
         return (doThese, done.map(\.row))
     }
 
-    /// "4 changes would cut it to ~42k": the open rows with a known saving
+    /// "4 changes would cut it to ~32k": the open rows with a known saving
     /// against the start context; "" when none has one.
     package static func headline(baselineTokens: Int, rows: [ContextActionRow]) -> String {
         let savings = rows.filter(\.isOpen).compactMap(\.saving).filter { $0 > 0 }
@@ -284,12 +294,12 @@ package enum ContextActionsPresentation {
         return "\(savings.count) \(noun) would cut it to ~\(target)"
     }
 
-    /// "Saved 30.2k on 12 starts".
+    /// "Saved 6k on 10 starts".
     package static func savedLine(tokens: Int, starts: Int) -> String {
         String(format: Copy.saved, Self.tokens(tokens), starts)
     }
 
-    /// "512", "30.2k", "42k": one decimal, dropped when it is 0.
+    /// "512", "25.4k", "42k": one decimal, dropped when it is 0.
     package static func tokens(_ n: Int) -> String {
         guard n >= 1000 else { return "\(n)" }
         let text = String(format: "%.1f", Double(n) / 1000)
@@ -401,11 +411,20 @@ package enum ContextActionsPresentation {
         if p.measureFrom != nil { return .measuring }
         if ctx.starting.contains(p.id) { return .starting }
         if let session = p.sessionID, let kind = ctx.sessionKinds[session] {
-            return endedKinds.contains(kind) ? .endedWithoutChange(session) : .working(session)
+            return endedKinds.contains(kind) ? ended(p, session: session) : .working(session)
         }
         // The session row is gone: a known branch still finds a PR, an
         // unknown one cannot (the memory index has no PR to trace).
-        return p.sessionBranch.isEmpty && tag(of: p) == .repoPR ? .sessionGone : .endedWithoutChange(nil)
+        return p.sessionBranch.isEmpty && tag(of: p) == .repoPR ? .sessionGone : ended(p, session: nil)
+    }
+
+    /// A session that ended without a PR or a measured write. A memory row
+    /// is "ended without a change" only once the daemon decided it so
+    /// (`after` written and equal to `before`); until then it is checking
+    /// the index, with no Start Again or Dismiss (Go refuses both too).
+    private static func ended(_ p: CoachProposal, session: Int64?) -> ContextActionRow.State {
+        guard tag(of: p) == .memory else { return .endedWithoutChange(session) }
+        return !p.after.isEmpty && p.after == p.before ? .endedWithoutChange(session) : .checkingIndex(session)
     }
 
     private static func prURL(of p: CoachProposal, number: Int64, repository: URL?) -> URL? {

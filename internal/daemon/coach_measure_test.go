@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -415,6 +416,45 @@ func TestMeasureCheck_RefreshErrorKeepsWaiting(t *testing.T) {
 	assert.Equal(t, 2, r.calls)
 }
 
+// Without gh the refresher still stores git's merged verdict (no merge
+// time, a note saying gh is missing): the re-read row, checked by this
+// refresh, is taken and the merge measured. A row the refresh did not touch
+// (its stamp older than the refresh) is not; a cached merged state is final
+// and taken however old, with no refresh.
+func TestMeasureCheck_MergedSeenByGitWithoutGH(t *testing.T) {
+	d, database := coachDaemon(t)
+	var logs bytes.Buffer
+	d.logger.SetOutput(&logs)
+	now := measureNow()
+	wb, _ := measureWorkbench(t, database)
+	sess := measureSession(t, database, wb, "wt/no-gh")
+	id := repoViaSession(t, database, wb, sess, now.Add(-72*time.Hour))
+	prState(t, database, wb, "wt/no-gh", "open", "", now.Add(-2*time.Hour))
+
+	// The refresh left the row as it was (a failed read): not refreshed.
+	untouched := stubRefresh(t, &refreshStub{})
+	d.coachMeasureCheck(context.Background(), now)
+	assert.Equal(t, 1, untouched.calls)
+	assert.True(t, getProposal(t, database, id).MeasureFrom.IsZero())
+	assert.Contains(t, logs.String(), "not refreshed")
+	assert.NotContains(t, logs.String(), "wt/no-gh", "ids only in the log")
+
+	// git saw the merge; gh is not there to say when.
+	git := stubRefresh(t, &refreshStub{state: "merged"})
+	d.coachMeasureCheck(context.Background(), now)
+	assert.Equal(t, 1, git.calls)
+	assert.True(t, getProposal(t, database, id).MeasureFrom.Equal(now), "measured from the check")
+
+	// A merged row a day old is final: taken without a refresh.
+	other := measureSession(t, database, wb, "wt/old-merge")
+	old := repoViaSession(t, database, wb, other, now.Add(-72*time.Hour))
+	prState(t, database, wb, "wt/old-merge", "merged", now.Add(-48*time.Hour).Format(time.RFC3339), now.Add(-24*time.Hour))
+	git.calls = 0
+	d.coachMeasureCheck(context.Background(), now)
+	assert.Zero(t, git.calls, "a cached merge is never refreshed")
+	assert.True(t, getProposal(t, database, old).MeasureFrom.Equal(now.Add(-48*time.Hour)))
+}
+
 func TestMeasureCheck_SettingsRevertedOutside(t *testing.T) {
 	d, database := coachDaemon(t)
 	home, err := os.UserHomeDir()
@@ -442,6 +482,88 @@ func TestMeasureCheck_SettingsRevertedOutside(t *testing.T) {
 	assert.Empty(t, getProposal(t, database, off).Verdict, "still off: measured as usual")
 }
 
+// reverted_outside for every settings key: an MCP server re-added (any
+// entry), the connectors switch on in another form than before_text; a
+// plugin key gone from enabledPlugins (uninstalled) is not turned back on.
+func TestMeasureCheck_MCPServerAndConnectorsRevertedOutside(t *testing.T) {
+	d, database := coachDaemon(t)
+	home, err := os.UserHomeDir()
+	require.NoError(t, err)
+	settings := filepath.Join(home, ".claude", "settings.json")
+	require.NoError(t, os.MkdirAll(filepath.Dir(settings), 0o700))
+	now := measureNow()
+	accepted := func(dest, source, before, after string) int64 {
+		id, err := database.InsertContextCoachProposal(db.CoachProposal{Fingerprint: dest + "-" + source, Kind: "cut",
+			Destination: dest, SourceKey: source, Title: "Turn off", Why: "Unused.",
+			Metric: "start_tokens", BeforeText: before, AfterText: after}, now)
+		require.NoError(t, err)
+		require.NoError(t, database.MarkCoachAccepted(id, after, "", nil, 0, now.Add(-time.Hour)))
+		return id
+	}
+	server := accepted(coach.DestMCPServerOff, "example-server", "present", "")
+	connectors := accepted(coach.DestConnectorsOff, "connectors", "", `"false"`)
+	gone := accepted(coach.DestPluginOff, "alpha@example-market", "true", "false")
+	require.NoError(t, os.WriteFile(filepath.Join(home, ".claude.json"),
+		[]byte(`{"mcpServers":{"example-server":{"command":"example-mcp","args":["--v2"]}}}`), 0o600))
+	require.NoError(t, os.WriteFile(settings,
+		[]byte(`{"enabledPlugins":{"beta@example-market":true},"env":{"ENABLE_CLAUDEAI_MCP_SERVERS":"true"}}`), 0o600))
+
+	d.coachMeasureCheck(context.Background(), now)
+	assert.Equal(t, "reverted_outside", getProposal(t, database, server).Verdict)
+	assert.Equal(t, "reverted_outside", getProposal(t, database, connectors).Verdict)
+	assert.Empty(t, getProposal(t, database, gone).Verdict, "an uninstalled plugin is not turned back on")
+}
+
+// A settings row the judge left at a provisional too_little_data is still
+// checked: the key back on reads reverted_outside, not a later no_effect.
+// Any other verdict is final and never looked at again.
+func TestMeasureCheck_SettingsRevertedAfterTooLittleData(t *testing.T) {
+	d, database := coachDaemon(t)
+	home, err := os.UserHomeDir()
+	require.NoError(t, err)
+	settings := filepath.Join(home, ".claude", "settings.json")
+	require.NoError(t, os.MkdirAll(filepath.Dir(settings), 0o700))
+	now := measureNow()
+	accepted := func(source, verdict string) int64 {
+		id, err := database.InsertContextCoachProposal(db.CoachProposal{Fingerprint: "plugin-" + source, Kind: "cut",
+			Destination: coach.DestPluginOff, SourceKey: source, Title: "Turn off", Why: "Unused.",
+			Metric: "start_tokens", BeforeText: "true", AfterText: "false"}, now)
+		require.NoError(t, err)
+		require.NoError(t, database.MarkCoachAccepted(id, "false", "", nil, 0, now.Add(-20*24*time.Hour)))
+		require.NoError(t, database.SetCoachVerdict(id, verdict, nil, now.Add(-time.Hour)))
+		return id
+	}
+	provisional, final := accepted("alpha@example-market", "too_little_data"), accepted("beta@example-market", "works")
+	require.NoError(t, os.WriteFile(settings,
+		[]byte(`{"enabledPlugins":{"alpha@example-market":true,"beta@example-market":true}}`), 0o600))
+
+	d.coachMeasureCheck(context.Background(), now)
+	assert.Equal(t, "reverted_outside", getProposal(t, database, provisional).Verdict)
+	assert.Equal(t, "works", getProposal(t, database, final).Verdict, "a final verdict is not re-checked")
+}
+
+// No home folder: settings and memory rows wait for the next check, and
+// the skip is said once in the log.
+func TestMeasureCheck_NoHomeLogsOnce(t *testing.T) {
+	d, database := coachDaemon(t)
+	var logs bytes.Buffer
+	d.logger.SetOutput(&logs)
+	prev := coachHomeDir
+	coachHomeDir = func() (string, error) { return "", errors.New("no home") }
+	t.Cleanup(func() { coachHomeDir = prev })
+	now := measureNow()
+	for _, source := range []string{"alpha@example-market", "beta@example-market"} {
+		id, err := database.InsertContextCoachProposal(db.CoachProposal{Fingerprint: "plugin-" + source, Kind: "cut",
+			Destination: coach.DestPluginOff, SourceKey: source, Title: "Turn off", Why: "Unused.",
+			Metric: "start_tokens", BeforeText: "true", AfterText: "false"}, now)
+		require.NoError(t, err)
+		require.NoError(t, database.MarkCoachAccepted(id, "false", "", nil, 0, now.Add(-time.Hour)))
+	}
+
+	require.True(t, d.coachMeasureCheck(context.Background(), now))
+	assert.Equal(t, 1, strings.Count(logs.String(), "no home folder"))
+}
+
 // idleSession marks sess's agent as waiting since lastActive.
 func idleSession(t *testing.T, database *db.DB, sess int64, lastActive time.Time) {
 	t.Helper()
@@ -467,6 +589,42 @@ func TestMeasureCheck_MemoryIdleSessionCountsAsEnded(t *testing.T) {
 	d.coachMeasureCheck(context.Background(), now)
 	p := getProposal(t, database, id)
 	assert.True(t, p.MeasureFrom.Equal(last), "measured from the last activity")
+	assert.Equal(t, measureMemAfter, p.AfterText)
+}
+
+// The cleanup shows its diff through ask_owner and ends its turn (D4): idle
+// two hours with the ask still open is waiting, not ended, so the unchanged
+// index is not recorded as "ended without a change". Once the answer is
+// delivered and the agent rewrites the index, the session's end is measured.
+func TestMeasureCheck_MemoryWaitsForOwnerAsk(t *testing.T) {
+	d, database := coachDaemon(t)
+	home, err := os.UserHomeDir()
+	require.NoError(t, err)
+	now := measureNow()
+	wb, folder := measureWorkbench(t, database)
+	sess := measureSession(t, database, wb, "")
+	id, path := memoryViaSession(t, database, home, wb, folder, sess, now.Add(-5*time.Hour))
+	idleSession(t, database, sess, now.Add(-2*time.Hour))
+	res, err := database.Exec(`INSERT INTO owner_asks (project_id, session_id, kind, title)
+		VALUES (?, ?, 'question', 'Memory cleanup diff')`, wb, sess)
+	require.NoError(t, err)
+	ask, err := res.LastInsertId()
+	require.NoError(t, err)
+
+	d.coachMeasureCheck(context.Background(), now)
+	p := getProposal(t, database, id)
+	assert.Empty(t, p.AfterText, "waiting on the owner: not decided")
+	assert.True(t, p.MeasureFrom.IsZero())
+
+	_, err = database.Exec(`UPDATE owner_asks SET status = 'delivered', answer = '{"ok":true}' WHERE id = ?`, ask)
+	require.NoError(t, err)
+	wrote := now.Add(30 * time.Minute)
+	writeMemory(t, path, measureMemAfter, wrote)
+	idleSession(t, database, sess, wrote.Add(time.Minute))
+
+	d.coachMeasureCheck(context.Background(), now.Add(3*time.Hour))
+	p = getProposal(t, database, id)
+	assert.True(t, p.MeasureFrom.Equal(wrote.Add(time.Minute)), "measured from the end after the answer")
 	assert.Equal(t, measureMemAfter, p.AfterText)
 }
 
@@ -516,9 +674,10 @@ func TestMeasureCheck_MemorySessionRowDeletedUnchangedDecidedOnce(t *testing.T) 
 	assert.Empty(t, p.Verdict)
 }
 
-// A merge time before the Accept (a reused branch name's older PR) never
-// starts the window before the change: measured from the Accept.
-func TestMeasureCheck_MergeBeforeAcceptClamped(t *testing.T) {
+// A merge before the Accept is an older PR on a reused branch name, not
+// this session's: nothing is measured and the row keeps waiting; a merge
+// at or after the Accept is measured from its time.
+func TestMeasureCheck_MergeBeforeAcceptIsNotThisSessionsPR(t *testing.T) {
 	d, database := coachDaemon(t)
 	stubRefresh(t, &refreshStub{})
 	now := measureNow()
@@ -529,5 +688,12 @@ func TestMeasureCheck_MergeBeforeAcceptClamped(t *testing.T) {
 	prState(t, database, wb, "wt/a", "merged", decided.Add(-24*time.Hour).Format(time.RFC3339), now)
 
 	d.coachMeasureCheck(context.Background(), now)
-	assert.True(t, getProposal(t, database, id).MeasureFrom.Equal(decided))
+	p := getProposal(t, database, id)
+	assert.True(t, p.MeasureFrom.IsZero(), "an older merge is not this change's")
+	assert.Empty(t, p.Verdict)
+
+	merged := decided.Add(time.Hour)
+	prState(t, database, wb, "wt/a", "merged", merged.Format(time.RFC3339), now)
+	d.coachMeasureCheck(context.Background(), now)
+	assert.True(t, getProposal(t, database, id).MeasureFrom.Equal(merged))
 }

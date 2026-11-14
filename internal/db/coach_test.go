@@ -696,6 +696,15 @@ func TestAcceptCoachThroughSession(t *testing.T) {
 	assert.Equal(t, "a", got.BeforeText)
 }
 
+// coachRowSession is row id's session_id now (what the daemon reads before
+// its decision).
+func coachRowSession(t *testing.T, d *DB, id int64) *int64 {
+	t.Helper()
+	p, err := d.GetCoachProposal(id)
+	require.NoError(t, err)
+	return p.SessionID
+}
+
 func acceptedThroughSession(t *testing.T, d *DB, fp, dest string, wb, sess int64, now time.Time) int64 {
 	t.Helper()
 	id := sessionContextProposal(t, d, fp, dest, wb, now)
@@ -736,6 +745,54 @@ func TestDismissCoachSession(t *testing.T) {
 	require.ErrorIs(t, d.DismissCoachSession(legacy, now), ErrCoachStateChanged)
 }
 
+// Dismiss is refused while the row's branch has this session's PR (open, or
+// merged since the Accept), like Restart; a closed PR or an older merge on
+// a reused branch name does not hold it back.
+func TestDismissCoachSession_RefusedWithPR(t *testing.T) {
+	d := openTestDB(t)
+	now := time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)
+	wb := newTestWorkbench(t, d)
+	sess := newTestSession(t, d, wb)
+	recordSessionBranch(t, d, sess, "/tmp/a", "wt/dismiss", "2026-11-12T08:00:00.000Z")
+	id := acceptedThroughSession(t, d, "fp1", "repo_claude_md", wb, sess, now)
+	pr := func(state, mergedAt string) {
+		t.Helper()
+		require.NoError(t, d.UpsertPRState(PRState{WorkbenchID: wb, Ref: "branch:wt/dismiss", State: state,
+			PRNumber: sql.NullInt64{Int64: 12, Valid: true}, MergedAt: mergedAt, CheckedAt: "2026-11-12T10:00:00Z"}))
+	}
+
+	pr("open", "")
+	require.ErrorIs(t, d.DismissCoachSession(id, now), ErrCoachSessionHasPR)
+	pr("merged", now.Add(time.Hour).Format(time.RFC3339))
+	require.ErrorIs(t, d.DismissCoachSession(id, now), ErrCoachSessionHasPR, "merged since the Accept")
+	got, err := d.GetCoachProposal(id)
+	require.NoError(t, err)
+	assert.Empty(t, got.Verdict)
+
+	pr("merged", now.Add(-time.Hour).Format(time.RFC3339))
+	require.NoError(t, d.DismissCoachSession(id, now), "an older merge on a reused name is not this PR")
+
+	closed := acceptedThroughSession(t, d, "fp2", "repo_claude_md", wb, sess, now)
+	pr("closed", "")
+	require.NoError(t, d.DismissCoachSession(closed, now))
+}
+
+// Restart is not held back by a merge before the Accept (an older PR on a
+// reused branch name).
+func TestRestartCoachSession_MergeBeforeAcceptIsNotThisSessionsPR(t *testing.T) {
+	d := openTestDB(t)
+	now := time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)
+	wb := newTestWorkbench(t, d)
+	old := newTestSession(t, d, wb)
+	recordSessionBranch(t, d, old, "/tmp/a", "wt/reused", "2026-11-12T08:00:00.000Z")
+	id := acceptedThroughSession(t, d, "fp1", "repo_claude_md", wb, old, now)
+	require.NoError(t, d.UpsertPRState(PRState{WorkbenchID: wb, Ref: "branch:wt/reused", State: "merged",
+		PRNumber: sql.NullInt64{Int64: 3, Valid: true}, MergedAt: now.Add(-48 * time.Hour).Format(time.RFC3339),
+		CheckedAt: "2026-11-12T10:00:00Z"}))
+	require.NoError(t, d.RestartCoachSession(id, CoachSessionLink{SessionID: newTestSession(t, d, wb), WorkbenchID: wb},
+		now.Add(time.Hour)))
+}
+
 // Restart moves an accepted session row to a new session: session, branch,
 // decided_at, baseline and (memory) before_text replaced; refused while the
 // old session's branch has an open or merged PR, and on a measured row.
@@ -747,6 +804,14 @@ func TestRestartCoachSession(t *testing.T) {
 	old := newTestSession(t, d, wb)
 	recordSessionBranch(t, d, old, "/tmp/a", "wt/first", "2026-11-12T08:00:00.000Z")
 	id := acceptedThroughSession(t, d, "fp1", "claude_memory_index", wb, old, now)
+	// A memory row is restarted only once the daemon decided its session.
+	decide := func() {
+		t.Helper()
+		ok, err := d.SetCoachMemoryUnchanged(id, coachRowSession(t, d, id))
+		require.NoError(t, err)
+		require.True(t, ok)
+	}
+	decide()
 
 	fresh := newTestSession(t, d, wb)
 	recordSessionBranch(t, d, fresh, "/tmp/b", "wt/second", "2026-12-10T08:00:00.000Z")
@@ -768,6 +833,7 @@ func TestRestartCoachSession(t *testing.T) {
 	require.NoError(t, d.UpsertPRState(PRState{WorkbenchID: wb, Ref: "branch:wt/second", State: "open",
 		PRNumber: sql.NullInt64{Int64: 12, Valid: true}, CheckedAt: "2026-12-10T09:00:00Z"}))
 	third := newTestSession(t, d, wb)
+	decide()
 	err = d.RestartCoachSession(id, CoachSessionLink{SessionID: third, WorkbenchID: wb}, later)
 	require.ErrorIs(t, err, ErrCoachSessionHasPR)
 
@@ -781,6 +847,7 @@ func TestRestartCoachSession(t *testing.T) {
 	assert.Equal(t, before, got.BeforeText, "nil Before keeps the text")
 
 	// Another workbench's session, and a measured row, are refused.
+	decide()
 	other := newTestWorkbench(t, d)
 	require.ErrorIs(t, d.RestartCoachSession(id, CoachSessionLink{SessionID: newTestSession(t, d, other), WorkbenchID: wb}, later),
 		ErrCoachSessionNotFound)
@@ -847,7 +914,7 @@ func TestSetCoachMemoryMeasured(t *testing.T) {
 	sess := newTestSession(t, d, wb)
 	id := acceptedThroughSession(t, d, "fp1", "claude_memory_index", wb, sess, now)
 
-	ok, err := d.SetCoachMemoryMeasured(id, now.Add(time.Hour), "- slim\n")
+	ok, err := d.SetCoachMemoryMeasured(id, coachRowSession(t, d, id), now.Add(time.Hour), "- slim\n")
 	require.NoError(t, err)
 	require.True(t, ok)
 	got, err := d.GetCoachProposal(id)
@@ -855,7 +922,7 @@ func TestSetCoachMemoryMeasured(t *testing.T) {
 	assert.True(t, got.MeasureFrom.Equal(now.Add(time.Hour)))
 	assert.Equal(t, "- slim\n", got.AfterText)
 
-	ok, err = d.SetCoachMemoryMeasured(id, now.Add(2*time.Hour), "- other\n")
+	ok, err = d.SetCoachMemoryMeasured(id, coachRowSession(t, d, id), now.Add(2*time.Hour), "- other\n")
 	require.NoError(t, err)
 	assert.False(t, ok, "already measured")
 	got, err = d.GetCoachProposal(id)
@@ -863,8 +930,9 @@ func TestSetCoachMemoryMeasured(t *testing.T) {
 	assert.Equal(t, "- slim\n", got.AfterText)
 
 	judged := acceptedThroughSession(t, d, "fp2", "claude_memory_index", wb, sess, now)
-	require.NoError(t, d.DismissCoachSession(judged, now))
-	ok, err = d.SetCoachMemoryMeasured(judged, now, "- x\n")
+	// Judged by the 30-day give-up (Dismiss waits for the daemon's decision).
+	require.NoError(t, d.SetCoachVerdict(judged, "too_little_data", nil, now))
+	ok, err = d.SetCoachMemoryMeasured(judged, coachRowSession(t, d, judged), now, "- x\n")
 	require.NoError(t, err)
 	assert.False(t, ok)
 }
@@ -916,6 +984,78 @@ func TestCoachSessionEnd(t *testing.T) {
 	assert.False(t, found)
 }
 
+// A session waiting on an owner ask it filed (open, or answered and not yet
+// delivered) still counts as running, however long it has been idle or even
+// finished; a delivered or withdrawn ask no longer holds it.
+func TestCoachSessionEnd_OpenAskKeepsRunning(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	now := time.Date(2026, 11, 12, 12, 0, 0, 0, time.UTC)
+	idle := now.Add(-2 * time.Hour)
+	sess := newTestSession(t, d, wb)
+	_, err := d.Exec(`UPDATE terminal_sessions SET agent_state = 'waiting', last_active_at = ? WHERE id = ?`,
+		idle.Format("2006-01-02T15:04:05Z"), sess)
+	require.NoError(t, err)
+	res, err := d.Exec(`INSERT INTO owner_asks (project_id, session_id, kind, title) VALUES (?, ?, 'question', 'Apply the cleanup?')`,
+		wb, sess)
+	require.NoError(t, err)
+	ask, err := res.LastInsertId()
+	require.NoError(t, err)
+	setAsk := func(status, answer string) {
+		_, err := d.Exec(`UPDATE owner_asks SET status = ?, answer = ? WHERE id = ?`, status, answer, ask)
+		require.NoError(t, err)
+	}
+	end := func() (bool, time.Time) {
+		found, ended, err := d.CoachSessionEnd(sess, now, time.Hour)
+		require.NoError(t, err)
+		return found, ended
+	}
+
+	found, ended := end()
+	assert.True(t, found)
+	assert.True(t, ended.IsZero(), "an open ask: running though idle two hours")
+	setAsk("answered", `{"ok":true}`)
+	_, ended = end()
+	assert.True(t, ended.IsZero(), "answered, not yet delivered: running")
+	require.NoError(t, d.FinishTerminalSession(sess, "asked", idle))
+	_, ended = end()
+	assert.True(t, ended.IsZero(), "an undelivered answer outweighs finish_session")
+	setAsk("delivered", `{"ok":true}`)
+	_, ended = end()
+	assert.True(t, ended.Equal(idle), "delivered: the finish time again")
+
+	other := newTestSession(t, d, wb)
+	_, err = d.Exec(`INSERT INTO owner_asks (project_id, session_id, kind, title, status, withdrawn_reason)
+		VALUES (?, ?, 'question', 'Old', 'withdrawn', 'agent')`, wb, other)
+	require.NoError(t, err)
+	_, err = d.Exec(`UPDATE terminal_sessions SET agent_state = 'waiting', last_active_at = ? WHERE id = ?`,
+		idle.Format("2006-01-02T15:04:05Z"), other)
+	require.NoError(t, err)
+	found, ended, err = d.CoachSessionEnd(other, now, time.Hour)
+	require.NoError(t, err)
+	assert.True(t, found)
+	assert.True(t, ended.Equal(idle), "a withdrawn ask holds nothing")
+}
+
+// A session whose agent failed (StopFailure) has ended at agent_failed_at,
+// even with a stale 'working' state that would otherwise read as running.
+func TestCoachSessionEnd_FailedAgentEnds(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	now := time.Date(2026, 11, 12, 12, 0, 0, 0, time.UTC)
+	sess := newTestSession(t, d, wb)
+	failedAt := "2026-11-12T10:15:00.250Z"
+	_, err := d.Exec(`UPDATE terminal_sessions SET agent_state = 'working', agent_state_at = ?, agent_failed_at = ?,
+		last_active_at = ? WHERE id = ?`, failedAt, failedAt, now.Add(-time.Minute).Format("2006-01-02T15:04:05Z"), sess)
+	require.NoError(t, err)
+	found, ended, err := d.CoachSessionEnd(sess, now, time.Hour)
+	require.NoError(t, err)
+	assert.True(t, found)
+	want, err := time.Parse(time.RFC3339Nano, failedAt)
+	require.NoError(t, err)
+	assert.True(t, ended.Equal(want), "failed: ended at agent_failed_at, got %v", ended)
+}
+
 // SetCoachVerdictN stores the sessions behind a verdict; SetCoachVerdict
 // stores 0; Reapply clears it with the verdict.
 func TestSetCoachVerdictN(t *testing.T) {
@@ -950,6 +1090,35 @@ func TestSetCoachVerdictN(t *testing.T) {
 // SetCoachMemoryUnchanged decides an accepted memory row once (after_text =
 // before_text); a decided row takes neither decision again, and a Restart
 // clears it for the new session.
+// The memory decision is a compare-and-set on the session the daemon read:
+// a Restart in between moves the row to a new session, and the old
+// session's end is never recorded on it.
+func TestSetCoachMemory_RestartBetweenReadAndWrite(t *testing.T) {
+	d := openTestDB(t)
+	now := time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)
+	wb := newTestWorkbench(t, d)
+	old := newTestSession(t, d, wb)
+	id := acceptedThroughSession(t, d, "fp1", "claude_memory_index", wb, old, now)
+	read := coachRowSession(t, d, id) // a pass's read
+	// Meanwhile another pass decided the row and the owner pressed Start Again.
+	ok, err := d.SetCoachMemoryUnchanged(id, read)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.NoError(t, d.RestartCoachSession(id, CoachSessionLink{SessionID: newTestSession(t, d, wb), WorkbenchID: wb},
+		now.Add(time.Hour)))
+
+	ok, err = d.SetCoachMemoryMeasured(id, read, now, "- slim\n")
+	require.NoError(t, err)
+	assert.False(t, ok, "measured: not on the new session")
+	ok, err = d.SetCoachMemoryUnchanged(id, read)
+	require.NoError(t, err)
+	assert.False(t, ok, "unchanged: not on the new session")
+	got, err := d.GetCoachProposal(id)
+	require.NoError(t, err)
+	assert.Empty(t, got.AfterText)
+	assert.True(t, got.MeasureFrom.IsZero())
+}
+
 func TestSetCoachMemoryUnchanged(t *testing.T) {
 	d := openTestDB(t)
 	now := time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)
@@ -959,7 +1128,7 @@ func TestSetCoachMemoryUnchanged(t *testing.T) {
 	_, err := d.Exec(`UPDATE coach_proposals SET before_text = ? WHERE id = ?`, "- a\n- b\n", id)
 	require.NoError(t, err)
 
-	ok, err := d.SetCoachMemoryUnchanged(id)
+	ok, err := d.SetCoachMemoryUnchanged(id, coachRowSession(t, d, id))
 	require.NoError(t, err)
 	require.True(t, ok)
 	got, err := d.GetCoachProposal(id)
@@ -967,10 +1136,10 @@ func TestSetCoachMemoryUnchanged(t *testing.T) {
 	assert.Equal(t, "- a\n- b\n", got.AfterText)
 	assert.True(t, got.MeasureFrom.IsZero())
 
-	ok, err = d.SetCoachMemoryUnchanged(id)
+	ok, err = d.SetCoachMemoryUnchanged(id, coachRowSession(t, d, id))
 	require.NoError(t, err)
 	assert.False(t, ok)
-	ok, err = d.SetCoachMemoryMeasured(id, now, "- a\n")
+	ok, err = d.SetCoachMemoryMeasured(id, coachRowSession(t, d, id), now, "- a\n")
 	require.NoError(t, err)
 	assert.False(t, ok, "decided: never measured later")
 
@@ -981,7 +1150,7 @@ func TestSetCoachMemoryUnchanged(t *testing.T) {
 	assert.Empty(t, got.AfterText, "a new session is decided afresh")
 
 	repo := acceptedThroughSession(t, d, "fp2", "repo_claude_md", wb, sess, now)
-	ok, err = d.SetCoachMemoryUnchanged(repo)
+	ok, err = d.SetCoachMemoryUnchanged(repo, coachRowSession(t, d, repo))
 	require.NoError(t, err)
 	assert.False(t, ok, "memory rows only")
 }

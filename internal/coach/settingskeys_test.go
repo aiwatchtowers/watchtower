@@ -312,6 +312,44 @@ func TestMCPServerOff_RollbackRefusedWithoutUndoFile(t *testing.T) {
 	assert.Equal(t, "accepted", proposal(t, d, id).Status)
 }
 
+// A saved entry that is there but corrupt is refused with its own reason,
+// distinct from one that is gone; nothing is written.
+func TestMCPServerOff_RollbackRefusedWithCorruptUndoFile(t *testing.T) {
+	d := openDBs(t)
+	home := ctxHome(t)
+	path := claudeJSONPath(home)
+	writeHomeFile(t, path, ctxClaudeJSON)
+	id := proposeCtx(t, d, DestMCPServerOff, "alpha-docs", "present", "")
+	a := ctxApplier(t, d, home)
+	require.NoError(t, a.acceptErr(id, ""))
+	writeHomeFile(t, filepath.Join(a.WorkspaceDir, "coach-undo", fmt.Sprintf("%d.json", id)), "{not json")
+	before := readHomeFile(t, path)
+
+	_, err := a.Rollback(id, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "saved settings for this server can't be read")
+	assert.NotContains(t, err.Error(), "are gone")
+	assert.Equal(t, before, readHomeFile(t, path), "nothing is written")
+	assert.Equal(t, "accepted", proposal(t, d, id).Status)
+}
+
+// A saved entry that cannot be removed is logged by the proposal id only:
+// never its path.
+func TestRemoveUndo_FailureLoggedByIDOnly(t *testing.T) {
+	var lines []string
+	a := &Applier{Logf: func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }}
+	dir := filepath.Join(t.TempDir(), "coach-undo", "7.json")
+	writeHomeFile(t, filepath.Join(dir, "child"), "x") // a non-empty folder: Remove fails
+	a.removeUndo(7, dir)
+	require.Len(t, lines, 1)
+	assert.Contains(t, lines[0], "proposal 7")
+	assert.NotContains(t, lines[0], dir)
+
+	lines = nil
+	a.removeUndo(8, filepath.Join(t.TempDir(), "missing.json"))
+	assert.Empty(t, lines, "already gone: nothing to say")
+}
+
 func TestMCPServerOff_NoWorkspaceRefused(t *testing.T) {
 	d := openDBs(t)
 	home := ctxHome(t)
@@ -473,4 +511,54 @@ func TestSettingsKey_RetriesOnceOnWriteConflict(t *testing.T) {
 	}, nil)
 	require.ErrorIs(t, err, errSettingsChanged)
 	assert.Equal(t, 2, calls)
+}
+
+// When the status write fails after a settings key was written (Decline
+// from Home racing Accept from Analytics), the key is set back: to its
+// before-value, or absent when it was absent; every other key keeps its
+// value, and a server's undo file is removed. The row stays declined.
+func TestSettingsKey_StatusWriteFailsRestoresKey(t *testing.T) {
+	cases := []struct {
+		name, dest, source, before, after string
+		path                              func(home string) string
+		start                             string
+		outer, inner                      string
+	}{
+		{"plugin", DestPluginOff, "alpha@example-market", "true", "false", claudeSettingsPath, ctxSettings,
+			"enabledPlugins", "alpha@example-market"},
+		{"mcp server", DestMCPServerOff, "alpha-docs", "present", "", claudeJSONPath, ctxClaudeJSON,
+			"mcpServers", "alpha-docs"},
+		{"connectors absent", DestConnectorsOff, "connectors", "", `"false"`, claudeSettingsPath,
+			`{"enabledPlugins":{"alpha@example-market":true},"env":{"OTHER_FLAG":"1"},"model":"opus"}` + "\n",
+			"env", connectorsEnvKey},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := openDBs(t)
+			home := ctxHome(t)
+			path := tc.path(home)
+			writeHomeFile(t, path, tc.start)
+			id := proposeCtx(t, d, tc.dest, tc.source, tc.before, tc.after)
+			a := ctxApplier(t, d, home)
+			a.afterSettingsWrite = func() {
+				require.NoError(t, d.DecideCoachProposal(id, "open", "declined", applyNow))
+			}
+
+			err := a.acceptErr(id, "")
+			require.ErrorIs(t, err, db.ErrCoachStateChanged)
+			assert.Equal(t, "declined", proposal(t, d, id).Status)
+
+			got, want := topKeys(t, readHomeFile(t, path)), topKeys(t, []byte(tc.start))
+			assert.Equal(t, want, got, "the key is back and every other key equal")
+			inner := topKeys(t, []byte(got[tc.outer]))
+			if tc.before == "" {
+				assert.NotContains(t, inner, tc.inner, "absent before: absent again")
+			} else {
+				assert.Contains(t, inner, tc.inner)
+			}
+			undo := filepath.Join(a.WorkspaceDir, "coach-undo", fmt.Sprintf("%d.json", id))
+			_, err = os.Stat(undo)
+			assert.ErrorIs(t, err, os.ErrNotExist, "no undo file is left behind")
+		})
+	}
 }

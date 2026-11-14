@@ -31,12 +31,14 @@ final class ContextActionsPresentationTests: XCTestCase {
         pr: Int64? = nil,
         prState: String? = nil,
         prURL: String? = nil,
-        measureFromDaysAgo: Double? = nil
+        measureFromDaysAgo: Double? = nil,
+        before: String = "true",
+        after: String = "false"
     ) -> CoachProposal {
         var p = CoachProposal(
             id: id, title: "Proposal \(id)", why: "w", destination: destination, workbenchID: workbench, promptID: "",
             kind: destination.hasPrefix("repo_") || destination == "claude_memory_index" ? "restructure" : "cut",
-            metric: "start_tokens", before: "true", after: "false", evidence: evidence, sources: 6, status: status,
+            metric: "start_tokens", before: before, after: after, evidence: evidence, sources: 6, status: status,
             createdAt: stamp(daysAgo: 20), decidedAt: decidedDaysAgo.map { stamp(daysAgo: $0) }, baseline: baseline,
             verdict: verdict, verdictValue: verdictValue, verdictAt: verdictDaysAgo.map { stamp(daysAgo: $0) },
             revertsID: 0, budget: 0)
@@ -52,7 +54,9 @@ final class ContextActionsPresentationTests: XCTestCase {
         return p
     }
 
-    /// An accepted repository row started through a session.
+    /// An accepted repository row started through a session. A memory row
+    /// (`destination: "claude_memory_index"`) carries its index as before;
+    /// `decided` sets after = before, the daemon's "ended without a change".
     private func repoRow(
         _ id: Int64 = 50,
         session: Int64? = 41,
@@ -60,11 +64,15 @@ final class ContextActionsPresentationTests: XCTestCase {
         pr: Int64? = nil,
         prState: String? = nil,
         prURL: String? = nil,
-        destination: String = "repo_claude_md"
+        destination: String = "repo_claude_md",
+        decided: Bool = false
     ) -> CoachProposal {
-        proposal(id, destination: destination, workbench: 3, status: "accepted", source: "", decidedDaysAgo: 1,
-                 baseline: 79600, session: session, viaSession: true, branch: branch, pr: pr, prState: prState,
-                 prURL: prURL)
+        let memory = destination == "claude_memory_index"
+        let index = "- [Alpha](alpha.md)\n"
+        return proposal(id, destination: destination, workbench: 3, status: "accepted", source: "", decidedDaysAgo: 1,
+                        baseline: 60000, session: session, viaSession: true, branch: branch, pr: pr, prState: prState,
+                        prURL: prURL, before: memory ? index : "true",
+                        after: memory ? (decided ? index : "") : "false")
     }
 
     private func source(_ group: String, _ kind: String, tokens: Int, part: String = "skills", measured: Int = 6)
@@ -204,7 +212,7 @@ final class ContextActionsPresentationTests: XCTestCase {
         XCTAssertEqual(row.state, .endedWithoutChange(41))
         XCTAssertEqual(row.actions, [.openSession, .startAgain, .dismiss])
         XCTAssertEqual(row.stateLine, "Session ended without a PR")
-        let memory = try only(repoRow(destination: "claude_memory_index"), kinds: [41: .notStarted])
+        let memory = try only(repoRow(destination: "claude_memory_index", decided: true), kinds: [41: .notStarted])
         XCTAssertEqual(memory.stateLine, "Session ended without a change")
     }
 
@@ -236,7 +244,7 @@ final class ContextActionsPresentationTests: XCTestCase {
             let row = try only(repoRow(), kinds: [41: kind])
             XCTAssertEqual(row.state, .endedWithoutChange(41))
             XCTAssertEqual(row.stateLine, "Session ended without a PR")
-            let memory = try only(repoRow(destination: "claude_memory_index"), kinds: [41: kind])
+            let memory = try only(repoRow(destination: "claude_memory_index", decided: true), kinds: [41: kind])
             XCTAssertEqual(memory.state, .endedWithoutChange(41))
             XCTAssertEqual(memory.stateLine, "Session ended without a change")
         }
@@ -252,8 +260,30 @@ final class ContextActionsPresentationTests: XCTestCase {
         XCTAssertEqual(gone.state, .endedWithoutChange(nil))
         XCTAssertEqual(gone.actions, [.startAgain, .dismiss])
         // A memory session whose row is gone ended without a change: no PR to trace.
-        let memory = try only(repoRow(session: nil, branch: "", destination: "claude_memory_index"))
+        let memory = try only(repoRow(session: nil, branch: "", destination: "claude_memory_index", decided: true))
         XCTAssertEqual(memory.state, .endedWithoutChange(nil))
+    }
+
+    /// A memory row whose session ended is "ended without a change" only
+    /// once the daemon decided it (after = before). Until then it is
+    /// checking the index: no Start Again or Dismiss, which would lose the
+    /// copy Undo restores; Go refuses both as well.
+    func testEndedMemorySessionWaitsForTheDaemon() throws {
+        for kind: SessionSwitcherPresentation.State.Kind in [.notStarted, .stopped, .finished, .failed] {
+            let row = try only(repoRow(destination: "claude_memory_index"), kinds: [41: kind])
+            XCTAssertEqual(row.state, .checkingIndex(41), "\(kind)")
+            XCTAssertEqual(row.stateLine, "Session ended · checking the index")
+            XCTAssertEqual(row.actions, [.openSession])
+            XCTAssertFalse(row.isOpen)
+        }
+        let gone = try only(repoRow(session: nil, branch: "", destination: "claude_memory_index"))
+        XCTAssertEqual(gone.state, .checkingIndex(nil))
+        XCTAssertEqual(gone.actions, [])
+        // Still running: working, whatever the index holds.
+        XCTAssertEqual(try only(repoRow(destination: "claude_memory_index"), kinds: [41: .working]).state, .working(41))
+        // Decided unchanged: Start Again and Dismiss come back.
+        let decided = try only(repoRow(destination: "claude_memory_index", decided: true), kinds: [41: .finished])
+        XCTAssertEqual(decided.actions, [.openSession, .startAgain, .dismiss])
     }
 
     func testSessionGoneWithoutBranchOffersDismissOnly() throws {
@@ -299,18 +329,18 @@ final class ContextActionsPresentationTests: XCTestCase {
     /// headline, kept out of the evidence line. The memory index has none.
     func testRepoSavingEstimateFromEvidence() throws {
         let estimate = CoachEvidence(kind: "saving_tokens", ref: "18500")
-        let size = CoachEvidence(kind: "file", ref: "Feature Notes is 74 of 88 KB")
+        let size = CoachEvidence(kind: "file", ref: "Feature Notes is 60 of 80 KB")
         let repo = proposal(7, destination: "repo_claude_md", workbench: 3, source: "", evidence: [size, estimate])
         let memory = proposal(8, destination: "claude_memory_index", workbench: 3, source: "", evidence: [estimate])
         let out = rows([repo, memory])
         let byID = Dictionary(uniqueKeysWithValues: out.doThese.map { ($0.id, $0) })
         XCTAssertEqual(byID[7]?.saving, 18500)
         XCTAssertEqual(byID[7]?.savingText, "−~18.5k", "minus, then about")
-        XCTAssertEqual(byID[7]?.evidence, "Feature Notes is 74 of 88 KB")
+        XCTAssertEqual(byID[7]?.evidence, "Feature Notes is 60 of 80 KB")
         XCTAssertNil(byID[8]?.saving)
         XCTAssertEqual(out.doThese.first?.id, 7, "largest saving first")
-        XCTAssertEqual(ContextActionsPresentation.headline(baselineTokens: 79600, rows: out.doThese),
-                       "1 change would cut it to ~61k")
+        XCTAssertEqual(ContextActionsPresentation.headline(baselineTokens: 60000, rows: out.doThese),
+                       "1 change would cut it to ~42k")
     }
 
     /// Task 9 fix round 2: a revert session that ended (the same ended
@@ -372,27 +402,27 @@ final class ContextActionsPresentationTests: XCTestCase {
     // MARK: - Settings lifecycle
 
     func testDoneShowsBeforeAfter() throws {
-        let measuring = rows([proposal(1, status: "accepted", decidedDaysAgo: 1, baseline: 79600)])
+        let measuring = rows([proposal(1, status: "accepted", decidedDaysAgo: 1, baseline: 60000)])
         let row = try XCTUnwrap(measuring.done.first)
         XCTAssertTrue(measuring.doThese.isEmpty)
-        XCTAssertEqual(row.state, .done(beforeTokens: 79600, afterTokens: nil))
-        XCTAssertEqual(row.beforeAfter, "79.6k → measuring")
+        XCTAssertEqual(row.state, .done(beforeTokens: 60000, afterTokens: nil))
+        XCTAssertEqual(row.beforeAfter, "60k → measuring")
         XCTAssertEqual(row.stateLine, "Takes effect in new sessions")
         XCTAssertEqual(row.actions, [.undo])
 
-        let works = try only(proposal(1, status: "accepted", decidedDaysAgo: 15, baseline: 79600, verdict: "works",
-                                      verdictValue: 49400, verdictDaysAgo: 1))
-        XCTAssertEqual(works.state, .done(beforeTokens: 79600, afterTokens: 49400))
-        XCTAssertEqual(works.beforeAfter, "79.6k → 49.4k")
+        let works = try only(proposal(1, status: "accepted", decidedDaysAgo: 15, baseline: 60000, verdict: "works",
+                                      verdictValue: 40000, verdictDaysAgo: 1))
+        XCTAssertEqual(works.state, .done(beforeTokens: 60000, afterTokens: 40000))
+        XCTAssertEqual(works.beforeAfter, "60k → 40k")
 
         for verdict in ["no_effect", "too_little_data"] {
-            let none = try only(proposal(1, status: "accepted", decidedDaysAgo: 15, baseline: 79600,
+            let none = try only(proposal(1, status: "accepted", decidedDaysAgo: 15, baseline: 60000,
                                          verdict: verdict, verdictValue: verdict == "no_effect" ? 79000 : nil,
                                          verdictDaysAgo: 1))
             XCTAssertEqual(none.stateLine, "No measurable saving", verdict)
             // A finished verdict never reads "measuring": no arrow at all.
             XCTAssertNil(none.beforeAfter, verdict)
-            XCTAssertEqual(none.state, .done(beforeTokens: 79600,
+            XCTAssertEqual(none.state, .done(beforeTokens: 60000,
                                              afterTokens: verdict == "no_effect" ? 79000 : nil))
             XCTAssertEqual(none.actions, [.undo])
         }
@@ -406,25 +436,25 @@ final class ContextActionsPresentationTests: XCTestCase {
         // Undo, Revert… (a session's revert PR) instead.
         var repo = repoRow(pr: 17, prState: "merged")
         repo.measureFrom = stamp(daysAgo: 15)
-        let repoDone = try only(CoachProposal(copying: repo, verdict: "works", verdictValue: 49400,
+        let repoDone = try only(CoachProposal(copying: repo, verdict: "works", verdictValue: 40000,
                                               verdictAt: stamp(daysAgo: 1)))
-        XCTAssertEqual(repoDone.state, .done(beforeTokens: 79600, afterTokens: 49400))
+        XCTAssertEqual(repoDone.state, .done(beforeTokens: 60000, afterTokens: 40000))
         XCTAssertEqual(repoDone.actions, [.revert])
     }
 
     func testSavedLine() throws {
-        XCTAssertEqual(ContextActionsPresentation.savedLine(tokens: 30200, starts: 12), "Saved 30.2k on 12 starts")
-        var p = proposal(1, status: "accepted", decidedDaysAgo: 15, baseline: 79600, verdict: "works",
-                         verdictValue: 49400, verdictDaysAgo: 1)
+        XCTAssertEqual(ContextActionsPresentation.savedLine(tokens: 25400, starts: 10), "Saved 25.4k on 10 starts")
+        var p = proposal(1, status: "accepted", decidedDaysAgo: 15, baseline: 60000, verdict: "works",
+                         verdictValue: 40000, verdictDaysAgo: 1)
         // No count of starts: before → after only, no line.
         let unknown = try only(p)
         XCTAssertNil(unknown.stateLine)
-        XCTAssertEqual(unknown.beforeAfter, "79.6k → 49.4k")
+        XCTAssertEqual(unknown.beforeAfter, "60k → 40k")
         // 0 = not judged on any session: no line either.
         p.verdictSessions = 0
         XCTAssertNil(try only(p).stateLine)
-        p.verdictSessions = 12
-        XCTAssertEqual(try only(p).stateLine, "Saved 30.2k on 12 starts")
+        p.verdictSessions = 10
+        XCTAssertEqual(try only(p).stateLine, "Saved 20k on 10 starts")
     }
 
     func testSupersededShowsChangedSince() {
@@ -436,7 +466,7 @@ final class ContextActionsPresentationTests: XCTestCase {
     }
 
     func testRevertedOutsideOffersTurnOffAgain() throws {
-        let out = rows([proposal(1, status: "accepted", decidedDaysAgo: 3, baseline: 79600,
+        let out = rows([proposal(1, status: "accepted", decidedDaysAgo: 3, baseline: 60000,
                                  verdict: "reverted_outside", verdictDaysAgo: 1)])
         let row = try XCTUnwrap(out.doThese.first)
         XCTAssertEqual(row.state, .revertedOutside)
@@ -446,8 +476,8 @@ final class ContextActionsPresentationTests: XCTestCase {
 
     func testDoneFadesAfter14Days() {
         func done(_ verdictDaysAgo: Double?) -> [Row] {
-            rows([proposal(1, status: "accepted", decidedDaysAgo: 30, baseline: 79600,
-                           verdict: verdictDaysAgo == nil ? "" : "works", verdictValue: 49400,
+            rows([proposal(1, status: "accepted", decidedDaysAgo: 30, baseline: 60000,
+                           verdict: verdictDaysAgo == nil ? "" : "works", verdictValue: 40000,
                            verdictDaysAgo: verdictDaysAgo)]).done
         }
         XCTAssertEqual(done(13).count, 1)
@@ -472,18 +502,18 @@ final class ContextActionsPresentationTests: XCTestCase {
                          proposal(5, destination: "claude_mcp_server_off", workbench: 3, status: "accepted",
                                   source: "example-server", decidedDaysAgo: 1, verdict: "reverted_outside")],
                         sources: sources).doThese
-        XCTAssertEqual(ContextActionsPresentation.headline(baselineTokens: 79600, rows: open),
-                       "3 changes would cut it to ~72k")
-        XCTAssertEqual(ContextActionsPresentation.headline(baselineTokens: 79600, rows: Array(open.prefix(1))),
-                       "1 change would cut it to ~76k")
-        XCTAssertEqual(ContextActionsPresentation.headline(baselineTokens: 79600, rows: []), "")
+        XCTAssertEqual(ContextActionsPresentation.headline(baselineTokens: 60000, rows: open),
+                       "3 changes would cut it to ~52k")
+        XCTAssertEqual(ContextActionsPresentation.headline(baselineTokens: 60000, rows: Array(open.prefix(1))),
+                       "1 change would cut it to ~56k")
+        XCTAssertEqual(ContextActionsPresentation.headline(baselineTokens: 60000, rows: []), "")
         XCTAssertEqual(ContextActionsPresentation.headline(baselineTokens: 3000, rows: Array(open.prefix(1))),
                        "1 change would cut it to ~0")
     }
 
     func testTokens() {
         XCTAssertEqual(ContextActionsPresentation.tokens(512), "512")
-        XCTAssertEqual(ContextActionsPresentation.tokens(30200), "30.2k")
+        XCTAssertEqual(ContextActionsPresentation.tokens(25400), "25.4k")
         XCTAssertEqual(ContextActionsPresentation.tokens(42000), "42k")
         XCTAssertEqual(ContextActionsPresentation.tokens(1_250_000), "1250k")
     }

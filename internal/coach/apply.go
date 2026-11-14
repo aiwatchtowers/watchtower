@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"time"
@@ -57,9 +58,21 @@ type Applier struct {
 	// the claude_mcp_server_off Accept.
 	WorkspaceDir string
 
+	// Logf receives the Applier's rare log lines (ids only); nil is the
+	// standard logger.
+	Logf func(format string, args ...any)
+
 	// afterSettingsWrite, when set, runs right after a settings key's rename
 	// and before its re-read (a test seam for a concurrent writer).
 	afterSettingsWrite func()
+}
+
+func (a *Applier) logf(format string, args ...any) {
+	if a.Logf != nil {
+		a.Logf(format, args...)
+		return
+	}
+	log.Printf(format, args...)
 }
 
 // env is where a's file destinations live.
