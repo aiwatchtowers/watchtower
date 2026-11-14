@@ -21,6 +21,8 @@ package final class ArtifactPanelModel {
     package let comments: ArtifactCommentsModel
     /// The version of this key pinned as knowledge, `nil` when it is not kept.
     package private(set) var keptVersion: Int?
+    /// Why Add to Knowledge is unavailable: the conversation used Live Slack (LIVE-01).
+    package private(set) var keepDisabledReason: String?
     /// Called after a keep / unkeep landed, so the card badges follow.
     @ObservationIgnored package var onKnowledgeChanged: (() -> Void)?
     @ObservationIgnored private let db: any DatabaseWriter
@@ -42,6 +44,8 @@ package final class ArtifactPanelModel {
             keptVersion = try db.read {
                 try ChatArtifactQueries.keptVersion($0, conversationID: conversationID, artifactKey: key)
             }
+            let live = try db.read { try LiveSlackMark.isMarked($0, conversationID: conversationID) }
+            keepDisabledReason = live ? Self.liveSlackReason : nil
             comments.sync(latest: versions.last)
             errorMessage = nil
         } catch {
@@ -126,10 +130,13 @@ package final class ArtifactPanelModel {
         return ArtifactKnowledgeState.for(kind: shown.kind, shownVersion: shown.version, keptVersion: keptVersion)
     }
 
+    package static let liveSlackReason = "Built on Live Slack answers, which are not kept"
+
     /// Runs the press of the knowledge control: Add / Update pin the shown
     /// version, Remove drops the pin. A failure is shown, nothing changes.
     package func toggleKnowledge() async {
         guard let state = knowledgeState else { return }
+        if state != .remove, keepDisabledReason != nil { return }
         await writeKnowledge(remove: state == .remove)
     }
 
@@ -152,6 +159,8 @@ package final class ArtifactPanelModel {
             }
             reload()
             onKnowledgeChanged?()
+        } catch ChatArtifactKeepError.liveSlack {
+            keepDisabledReason = Self.liveSlackReason
         } catch {
             errorMessage = "Could not update Knowledge: \(error.localizedDescription)"
         }
