@@ -70,6 +70,18 @@ const (
 	DestRepoWorkflow    = "repo_workflow"     // workbenchmethod.FileRel
 )
 
+// The context destinations (spec 2026-11-12 part 2): filed by the mechanical
+// proposer (origin 'context'), never by the weekly pass or a tuning chat. The
+// three settings ones edit one key of the owner's user-scope Claude Code
+// config and are global; the memory index is per workbench and is changed by
+// a session (Task 7), not by a writer here.
+const (
+	DestPluginOff     = "claude_plugin_off"     // enabledPlugins["<plugin>"] in ~/.claude/settings.json
+	DestMCPServerOff  = "claude_mcp_server_off" // mcpServers["<server>"] in ~/.claude.json
+	DestConnectorsOff = "claude_connectors_off" // env.ENABLE_CLAUDEAI_MCP_SERVERS in ~/.claude/settings.json
+	DestMemoryIndex   = "claude_memory_index"   // the project's auto-memory MEMORY.md
+)
+
 // Signal is one piece of evidence the model may cite. Ref is the citation key
 // the model's output is validated against: "ask:<id>#<item key>" (a spec
 // review finding), "s<id>" (a workbench session's owner line), "c<id>" (an AI

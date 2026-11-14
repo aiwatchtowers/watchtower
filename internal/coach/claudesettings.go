@@ -92,19 +92,26 @@ func readAllowRules(path string) ([]string, error) {
 // readSettingsFile returns the file's bytes and permission bits; exists is
 // false (and err nil) when there is no file.
 func readSettingsFile(path string) (raw []byte, mode fs.FileMode, exists bool, err error) {
+	return readRegularFile("settings.json", errSettingsNotRegular, path)
+}
+
+// readRegularFile reads a regular file of the owner's config; errors name its
+// label, never its path. A missing file is exists false, err nil; a symlink
+// or special file is notRegular.
+func readRegularFile(label string, notRegular error, path string) (raw []byte, mode fs.FileMode, exists bool, err error) {
 	fi, err := os.Lstat(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, 0, false, nil
 	}
 	if err != nil {
-		return nil, 0, false, settingsErr("reading settings.json", err)
+		return nil, 0, false, settingsErr("reading "+label, err)
 	}
 	if !fi.Mode().IsRegular() {
-		return nil, 0, false, errSettingsNotRegular
+		return nil, 0, false, notRegular
 	}
 	raw, err = os.ReadFile(path)
 	if err != nil {
-		return nil, 0, false, settingsErr("reading settings.json", err)
+		return nil, 0, false, settingsErr("reading "+label, err)
 	}
 	return raw, fi.Mode().Perm(), true, nil
 }

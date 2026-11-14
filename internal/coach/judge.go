@@ -182,9 +182,9 @@ func writeCut(d *db.DB, al *agentlogdb.DB, home string, p db.CoachProposal, now 
 	if weeklyOpen(open) >= maxOpen {
 		return false, nil
 	}
-	key := keyOf(p.Destination, p.WorkbenchID, p.PromptID, p.Skill)
+	key := keyOf(p.Destination, p.WorkbenchID, p.PromptID, p.Skill, p.SourceKey)
 	for _, o := range open {
-		if keyOf(o.Destination, o.WorkbenchID, o.PromptID, o.Skill) == key {
+		if keyOf(o.Destination, o.WorkbenchID, o.PromptID, o.Skill, o.SourceKey) == key {
 			return false, nil
 		}
 	}

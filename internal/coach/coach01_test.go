@@ -11,6 +11,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -21,6 +22,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/db"
+	"watchtower/internal/devpack"
 	"watchtower/internal/prompts"
 )
 
@@ -114,6 +116,29 @@ func TestCOACH01_DestinationsAreNeverRepoFiles(t *testing.T) {
 		require.NoError(t, err)
 		assert.Empty(t, got, dest)
 	}
+
+	// The third pinned set: the context destinations (spec 2026-11-12, owner
+	// amendment of COACH-01). None is a weekly text or a repository file, and
+	// the model can never name one.
+	wantCtx := []string{DestConnectorsOff, DestMCPServerOff, DestMemoryIndex, DestPluginOff}
+	var gotCtx []string
+	for dest := range contextDestinations {
+		gotCtx = append(gotCtx, dest)
+		assert.False(t, textDestinations[dest], "%s is not a weekly destination", dest)
+		assert.False(t, repoDestinations[dest], "%s is not a repository file", dest)
+		assert.False(t, strings.HasPrefix(dest, "repo_"), dest)
+		raw := `{"proposals":[{"title":"t","why":"w","destination":"` + dest + `","workbench_id":0,"prompt_id":"",` +
+			`"kind":"add","find":"","replace":"false","metric":"corrections","evidence":["s1","s2","s3"]}]}`
+		got, err := Validate(raw, proposeInputs())
+		require.NoError(t, err)
+		assert.Empty(t, got, dest)
+	}
+	sort.Strings(gotCtx)
+	assert.Equal(t, wantCtx, gotCtx, "adding a context destination is an owner decision: update COACH-01")
+	for _, path := range []string{claudeSettingsPath(home), claudeJSONPath(home)} {
+		assert.True(t, strings.HasPrefix(path, home+string(filepath.Separator)), path)
+		assert.False(t, strings.Contains(strings.TrimPrefix(path, home), string(filepath.Separator)+".."), path)
+	}
 }
 
 // COACH-01: the destinations a tuning chat may name are the six weekly ones
@@ -136,6 +161,22 @@ func TestCOACH01_HomeDestinationsStayUnderHome(t *testing.T) {
 		assert.True(t, globalDestinations[dest], dest)
 		assert.False(t, textDestinations[dest], "%s is not a weekly destination", dest)
 		assert.False(t, strings.HasPrefix(dest, "repo_"), dest)
+	}
+
+	// The context destinations: settings ones are global (user scope, D3),
+	// the memory index is per workbench; none is a chat or weekly text, and
+	// the settings files resolve under the home folder.
+	for dest := range contextDestinations {
+		assert.Equal(t, dest != DestMemoryIndex, globalDestinations[dest], dest)
+		assert.False(t, textDestinations[dest], "%s is not a weekly destination", dest)
+		assert.False(t, chatDestinations[dest], "%s is not a chat destination", dest)
+		assert.False(t, repoDestinations[dest], dest)
+	}
+	{
+		h := t.TempDir()
+		for _, p := range []string{claudeSettingsPath(h), claudeJSONPath(h)} {
+			assert.True(t, strings.HasPrefix(p, h+string(filepath.Separator)), p)
+		}
 	}
 
 	// The file destinations resolve under <Home>/.claude/, <Home>/.agents/ or
@@ -568,4 +609,113 @@ func selectors(f *ast.File, names map[string]string) map[string]bool {
 		return true
 	})
 	return out
+}
+
+// COACH-01 (context actions): the Watchtower servers, the pack's skills and
+// the plugins a Watchtower skill depends on are never proposed, and Accept of
+// a hand-made row that names one is refused with nothing written.
+func TestCOACH01_ContextNeverTouchesWatchtower(t *testing.T) {
+	settingsDests := []string{DestPluginOff, DestMCPServerOff, DestConnectorsOff}
+	for _, s := range []string{"watchtower-workbench", "watchtower"} {
+		assert.True(t, IsProtected(DestMCPServerOff, s), s)
+	}
+	for _, s := range []string{"superpowers@claude-plugins-official", "pr-review-toolkit@claude-plugins-official",
+		"superpowers@another-market", "pr-review-toolkit"} {
+		assert.True(t, IsProtected(DestPluginOff, s), s)
+	}
+	for _, s := range devpack.PackSkillNames() {
+		for _, dest := range settingsDests {
+			assert.True(t, IsProtected(dest, s), "%s %s", dest, s)
+		}
+	}
+	assert.False(t, IsProtected(DestPluginOff, "alpha@example-market"))
+	assert.False(t, IsProtected(DestMCPServerOff, "alpha-docs"))
+	assert.False(t, IsProtected(DestPluginOff, ""), "an empty key is refused as missing, not as protected")
+
+	d := openDBs(t)
+	home := ctxHome(t)
+	settings := `{"enabledPlugins":{"superpowers@claude-plugins-official":true}}`
+	claudeJSON := `{"mcpServers":{"watchtower-workbench":{"command":"watchtower"},"watchtower":{"command":"watchtower"}}}`
+	writeHomeFile(t, claudeSettingsPath(home), settings)
+	writeHomeFile(t, claudeJSONPath(home), claudeJSON)
+	a := ctxApplier(t, d, home)
+	for _, c := range [][2]string{{DestPluginOff, "superpowers@claude-plugins-official"},
+		{DestMCPServerOff, "watchtower-workbench"}, {DestMCPServerOff, "watchtower"}} {
+		before, after := "true", "false"
+		if c[0] == DestMCPServerOff {
+			before, after = "present", ""
+		}
+		id := proposeCtx(t, d, c[0], c[1], before, after)
+		err := a.acceptErr(id, "")
+		require.ErrorIs(t, err, errProtected, c[1])
+		assert.Equal(t, "open", proposal(t, d, id).Status, c[1])
+	}
+	assert.Equal(t, settings, string(readHomeFile(t, claudeSettingsPath(home))))
+	assert.Equal(t, claudeJSON, string(readHomeFile(t, claudeJSONPath(home))))
+	entries, err := os.ReadDir(a.WorkspaceDir)
+	require.NoError(t, err)
+	assert.Empty(t, entries, "no undo file for a refused Accept")
+}
+
+// skillDependencyRefs scans markdown for the MCP servers (mcp__<server>__)
+// and plugins (<plugin>:<agent or skill>, subagent_type "<plugin>:<agent>")
+// it names.
+var (
+	mcpRefRe    = regexp.MustCompile(`mcp__([A-Za-z0-9_-]+?)__`)
+	pluginRefRe = regexp.MustCompile("(?:^|[\\s`\"'(])([a-z][a-z0-9-]*):([a-z][a-z0-9-]*)(?:$|[\\s`\"'),.;])")
+	// notPlugins are prefixes the plugin pattern matches that name no plugin.
+	notPlugins = map[string]bool{"file": true, "go": true, "http": true, "https": true}
+)
+
+func skillDependencyRefs(text string, servers, plugins map[string]bool) {
+	for _, m := range mcpRefRe.FindAllStringSubmatch(text, -1) {
+		servers[m[1]] = true
+	}
+	for _, line := range strings.Split(text, "\n") {
+		for _, m := range pluginRefRe.FindAllStringSubmatch(line, -1) {
+			if !notPlugins[m[1]] {
+				plugins[m[1]] = true
+			}
+		}
+	}
+}
+
+// COACH-01 (context actions): every MCP server and plugin a Watchtower skill
+// (the repo's .claude/skills and the pack) names is protected, so a new skill
+// dependency fails here instead of drifting from the deny list.
+func TestCOACH01_ProtectedCoversSkillDependencies(t *testing.T) {
+	servers, plugins := map[string]bool{}, map[string]bool{}
+	root := filepath.Join("..", "..", ".claude", "skills")
+	scanned := 0
+	skills := os.DirFS(root)
+	require.NoError(t, fs.WalkDir(skills, ".", func(path string, e fs.DirEntry, err error) error {
+		if err != nil || e.IsDir() || !strings.HasSuffix(path, ".md") {
+			return err
+		}
+		b, err := fs.ReadFile(skills, path)
+		if err != nil {
+			return err
+		}
+		scanned++
+		skillDependencyRefs(string(b), servers, plugins)
+		return nil
+	}))
+	require.NotZero(t, scanned, "the repository skills are scanned")
+	for _, s := range devpack.Skills() {
+		skillDependencyRefs(s.Content, servers, plugins)
+	}
+	require.Contains(t, plugins, "pr-review-toolkit", "the scan sees the review skills' agents")
+
+	for s := range servers {
+		assert.True(t, IsProtected(DestMCPServerOff, s), "a Watchtower skill names server %s: protect it", s)
+	}
+	for p := range plugins {
+		assert.True(t, IsProtected(DestPluginOff, p+"@claude-plugins-official"), "a Watchtower skill names plugin %s: protect it", p)
+	}
+
+	// The pattern itself: a planted reference is found.
+	sv, pl := map[string]bool{}, map[string]bool{}
+	skillDependencyRefs("Call `mcp__acme-srv__do` and dispatch `subagent_type: \"acme-plugin:helper\"`; see file:line.", sv, pl)
+	assert.Equal(t, map[string]bool{"acme-srv": true}, sv)
+	assert.Equal(t, map[string]bool{"acme-plugin": true}, pl)
 }
