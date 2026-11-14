@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -8,6 +9,7 @@ import (
 	"watchtower/internal/chat"
 	"watchtower/internal/codex"
 	"watchtower/internal/db"
+	"watchtower/internal/slacklive"
 )
 
 // Live Slack in the AI chat (#1764): which providers may promise the owner's
@@ -74,17 +76,22 @@ func newSlackLiveWatcher(database *db.DB, provider string) *slackLiveWatcher {
 	return &slackLiveWatcher{database: database, provider: provider, now: time.Now, calls: map[string]string{}}
 }
 
-// isSlackConnectorTool: a tool of the owner's Slack connector — display name
-// "<server>:slack_…" (claude) — as opposed to the local `list_slack_channels`.
+// isSlackConnectorTool: a read tool of the owner's Slack connector as the
+// chat names its steps (displayToolName): Claude "claude_ai_Slack:<name>",
+// Codex "codex_apps:slack.<name>" (an mcp_tool_call item of server
+// codex_apps, tool "slack.<name>"), with <name> in slacklive.ReadTools. The
+// local `list_slack_channels` never matches.
 func isSlackConnectorTool(name string) bool {
-	tool := name
-	if j := strings.LastIndex(name, ":"); j >= 0 {
-		tool = name[j+1:]
+	var tool string
+	switch {
+	case strings.HasPrefix(name, "claude_ai_Slack:"):
+		tool = strings.TrimPrefix(name, "claude_ai_Slack:")
+	case strings.HasPrefix(name, "codex_apps:slack."):
+		tool = strings.TrimPrefix(name, "codex_apps:slack.")
+	default:
+		return false
 	}
-	if j := strings.LastIndex(tool, "__"); j >= 0 {
-		tool = tool[j+2:]
-	}
-	return strings.HasPrefix(tool, "slack_") && strings.Contains(strings.ToLower(name), "slack")
+	return slices.Contains(slacklive.ReadTools, tool)
 }
 
 func isLocalSlackTool(name string) bool {

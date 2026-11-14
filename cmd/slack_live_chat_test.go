@@ -119,12 +119,22 @@ func TestChatLive_StatusWrittenOnUse(t *testing.T) {
 	require.Len(t, rows, 1)
 	assert.Equal(t, "not_connected", rows[0].Status)
 
+	// A Codex app call: server codex_apps, tool slack.<name>.
+	w.now = func() time.Time { return now.Add(2 * time.Minute) }
+	toolCall(w, "5", "codex_apps:slack.slack_list_workspaces", true, "ok")
+	rows, _ = d.ListSlackLiveStatus()
+	assert.Equal(t, "ok", rows[0].Status)
+	w.now = func() time.Time { return now.Add(3 * time.Minute) }
+	toolCall(w, "6", "claude_ai_Slack:slack_send_message", false, "boom") // a write: not a read-status signal
+	rows, _ = d.ListSlackLiveStatus()
+	assert.Equal(t, "ok", rows[0].Status)
+
 	// A local Slack tool or another connector never writes a status.
 	toolCall(w, "3", "list_messages", true, "")
 	toolCall(w, "4", "claude_ai_Gmail:search", true, "")
 	rows, _ = d.ListSlackLiveStatus()
 	assert.Len(t, rows, 1)
-	assert.Equal(t, "not_connected", rows[0].Status)
+	assert.Equal(t, "ok", rows[0].Status)
 }
 
 func TestChatLive_ConnectorErrorShown(t *testing.T) {

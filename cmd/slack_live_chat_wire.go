@@ -1,10 +1,5 @@
 package cmd
 
-// TODO(#1764 task 3): interim file. internal/slacklive (task 2) was not
-// merged yet, so classify is a stub and the Codex allow-list is one tool.
-// Replace with the slacklive-backed version after merging task 2:
-// classify = slacklive.Classify, tools = slacklive.ReadTools.
-
 import (
 	"context"
 	"os"
@@ -14,12 +9,13 @@ import (
 	"watchtower/internal/chat"
 	"watchtower/internal/codex"
 	"watchtower/internal/db"
+	"watchtower/internal/slacklive"
 )
 
 // codexSlackOverrides is the read-only allow-list of the Slack app id for a
-// Codex chat run: only []string{"slack_read_channel"} are visible.
+// Codex chat run: only slacklive.ReadTools are visible.
 func codexSlackOverrides(connectorID string) []string {
-	return codex.SlackReadOnlyOverrides(connectorID, []string{"slack_read_channel"})
+	return codex.SlackReadOnlyOverrides(connectorID, slacklive.ReadTools)
 }
 
 // attachSlackLiveWatcher hooks the session's event stream: statuses on use
@@ -27,12 +23,7 @@ func codexSlackOverrides(connectorID string) []string {
 // with the session.
 func attachSlackLiveWatcher(ctx context.Context, out *chat.EventWriter, database *db.DB, provider string) {
 	w := newSlackLiveWatcher(database, provider)
-	w.classify = func(_, _ string, _, readOK bool) (string, string) {
-		if readOK {
-			return "ok", ""
-		}
-		return "unavailable", "read_failed"
-	}
+	w.classify = slacklive.Classify
 	w.startProbe = func(p string) { startSlackLiveProbe(ctx, p) }
 	out.Observe = w.Observe
 }
