@@ -72,7 +72,7 @@ func TestContext_BaselineSplitFromParts(t *testing.T) {
 		part("s2", "", "instructions", 1000), part("s2", "", "tools", 1000),
 		part("s3", "a1", "system", 2600), // a subagent lane with no call: bytes / defaultBytesPerToken
 	}
-	r := Context(factsOf(s), s, parts, "")
+	r := Context(factsOf(s), s, parts, nil, "")
 
 	// lanes 4000 and 1000 tokens: median 2500; shares over both lanes' parts
 	assert.Equal(t, int64(2500), r.Baseline.Tokens)
@@ -99,7 +99,7 @@ func TestContext_GrowthAttribution(t *testing.T) {
 	s.add("s1", 5*sec, ownerTurn())
 	s.add("s1", 6*sec, call("", 11900, 0, 0)) // +500: 50 model, 450 the owner's turn
 	s.add("s1", 7*sec, call("", 12200, 0, 0)) // +300 with nothing measured: reminders
-	r := Context(factsOf(s), s, nil, "")
+	r := Context(factsOf(s), s, nil, nil, "")
 
 	assert.Equal(t, map[string]int64{"Bash": 1000, "Read": 200, "model": 250, "owner": 450, "reminders": 300}, growthOf(r))
 	assert.Equal(t, "Bash", r.Growth[0].Source)
@@ -117,7 +117,7 @@ func TestContext_NegativeDeltaIsClear(t *testing.T) {
 	s.add("s1", 2*sec, call("", 2000, 0, 0)) // a clear: skipped
 	s.add("s1", 3*sec, call("", 2500, 0, 0))
 	s.add("s2", 0, agentlogdb.AgentReportEvent{Kind: "compaction"}) // sizes not measured: counted, no median
-	r := Context(factsOf(s), s, nil, "")
+	r := Context(factsOf(s), s, nil, nil, "")
 
 	assert.Equal(t, map[string]int64{"reminders": 500}, growthOf(r))
 	assert.Equal(t, CompactionStats{Count: 2, MedianPreTokens: 5000, MedianPostTokens: 2000, Sessions: 2}, r.Compactions)
@@ -133,7 +133,7 @@ func TestContext_SubagentFallbackRatio(t *testing.T) {
 	s.add("s1", 3*sec, call("a1", 1000, 0, 0))
 	s.add("s1", 4*sec, result("a1", "Bash", "ls", 2600))
 	s.add("s1", 5*sec, call("a1", 4000, 0, 0)) // 1000 measured of +3000
-	r := Context(factsOf(s), s, []agentlogdb.AgentContextPart{part("s1", "", "instructions", 1000)}, "")
+	r := Context(factsOf(s), s, []agentlogdb.AgentContextPart{part("s1", "", "instructions", 1000)}, nil, "")
 
 	assert.Equal(t, map[string]int64{"Bash": 1200, "reminders": 2800}, growthOf(r))
 	require.Len(t, r.TopSources, 2)
@@ -159,7 +159,7 @@ func TestContext_RepeatedReads(t *testing.T) {
 	reads("s1", "b.go", 2) // under RepeatReadsMin
 	reads("s2", "a.go", 4)
 	reads("s3", "<outside>", 5) // reads outside the folder share one target: not one file
-	r := Context(factsOf(s), s, nil, "")
+	r := Context(factsOf(s), s, nil, nil, "")
 
 	require.Len(t, r.RepeatedReads, 1)
 	row := r.RepeatedReads[0]
@@ -179,11 +179,11 @@ func TestContext_ReadAfterEditIsNotARepeat(t *testing.T) {
 	s.add("s1", 5*sec, call("", 3000, 0, 0))
 	s.add("s1", 6*sec, result("", "Read", "a.go", 2600))
 	s.add("s1", 7*sec, call("", 4000, 0, 0))
-	assert.Empty(t, Context(factsOf(s), s, nil, "").RepeatedReads, "two runs of 1 and 2 reads")
+	assert.Empty(t, Context(factsOf(s), s, nil, nil, "").RepeatedReads, "two runs of 1 and 2 reads")
 
 	s.add("s1", 8*sec, result("", "Read", "a.go", 2600)) // the second run reaches 3
 	s.add("s1", 9*sec, call("", 5000, 0, 0))
-	r := Context(factsOf(s), s, nil, "")
+	r := Context(factsOf(s), s, nil, nil, "")
 	require.Len(t, r.RepeatedReads, 1)
 	assert.Equal(t, 3, r.RepeatedReads[0].Reads)
 	assert.Equal(t, int64(2000), r.RepeatedReads[0].Tokens)
@@ -197,7 +197,7 @@ func TestContext_OwnerTakesTheRemainder(t *testing.T) {
 	s.add("s1", sec, result("", "Bash", "ls", 260)) // 100 tokens
 	s.add("s1", 2*sec, ownerTurn())
 	s.add("s1", 3*sec, call("", 2000, 0, 0))
-	r := Context(factsOf(s), s, nil, "")
+	r := Context(factsOf(s), s, nil, nil, "")
 	assert.Equal(t, map[string]int64{"Bash": 100, "owner": 900}, growthOf(r))
 }
 
@@ -207,7 +207,7 @@ func TestContext_OldRowsNotMeasured(t *testing.T) {
 	s.add("s1", sec, result("", "Bash", "go test", 1e6))
 	s.add("s1", 2*sec, call("", 900000, 0, 0))
 	sessions := []agentlogdb.AgentReportSession{{SessionUUID: "s1"}, {SessionUUID: "s2", OldFormat: true}}
-	r := Context(sessions, s, []agentlogdb.AgentContextPart{part("s1", "", "instructions", 1e6)}, "")
+	r := Context(sessions, s, []agentlogdb.AgentContextPart{part("s1", "", "instructions", 1e6)}, nil, "")
 
 	assert.Equal(t, 0, r.FactsSessions)
 	assert.Equal(t, 2, r.Sessions)
@@ -232,11 +232,11 @@ func TestContext_DiskSizes(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, ".claude", "rules", "x.md"), []byte("0123456789"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, ".claude", "rules", "sub", "y.md"), []byte("01234"), 0o644))
 
-	r := Context(nil, nil, nil, dir)
+	r := Context(nil, nil, nil, nil, dir)
 	assert.Equal(t, DiskSizes{ClaudeMDBytes: 6, ClaudeMDLines: 3, RulesBytes: 15}, r.Disk)
 
-	assert.Equal(t, DiskSizes{}, Context(nil, nil, nil, filepath.Join(dir, "missing")).Disk)
-	assert.Equal(t, DiskSizes{}, Context(nil, nil, nil, "").Disk)
+	assert.Equal(t, DiskSizes{}, Context(nil, nil, nil, nil, filepath.Join(dir, "missing")).Disk)
+	assert.Equal(t, DiskSizes{}, Context(nil, nil, nil, nil, "").Disk)
 }
 
 // CLAUDE.md is read only when it is a regular file (a symlink to one is
@@ -245,20 +245,20 @@ func TestContext_DiskSizesRegularFileOnly(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("a\nb"), 0o644))
 	require.NoError(t, os.Symlink("AGENTS.md", filepath.Join(dir, "CLAUDE.md")))
-	assert.Equal(t, DiskSizes{ClaudeMDBytes: 3, ClaudeMDLines: 2}, Context(nil, nil, nil, dir).Disk)
+	assert.Equal(t, DiskSizes{ClaudeMDBytes: 3, ClaudeMDLines: 2}, Context(nil, nil, nil, nil, dir).Disk)
 
 	fifo := t.TempDir()
 	require.NoError(t, syscall.Mkfifo(filepath.Join(fifo, "CLAUDE.md"), 0o644))
-	assert.Equal(t, DiskSizes{}, Context(nil, nil, nil, fifo).Disk, "a FIFO is never opened")
+	assert.Equal(t, DiskSizes{}, Context(nil, nil, nil, nil, fifo).Disk, "a FIFO is never opened")
 
 	asDir := t.TempDir()
 	require.NoError(t, os.Mkdir(filepath.Join(asDir, "CLAUDE.md"), 0o755))
-	assert.Equal(t, DiskSizes{}, Context(nil, nil, nil, asDir).Disk)
+	assert.Equal(t, DiskSizes{}, Context(nil, nil, nil, nil, asDir).Disk)
 
 	big := t.TempDir()
 	body := strings.Repeat("x\n", claudeMDReadCap) // 2 × the cap
 	require.NoError(t, os.WriteFile(filepath.Join(big, "CLAUDE.md"), []byte(body), 0o644))
-	assert.Equal(t, DiskSizes{ClaudeMDBytes: int64(len(body)), ClaudeMDLines: claudeMDReadCap / 2}, Context(nil, nil, nil, big).Disk)
+	assert.Equal(t, DiskSizes{ClaudeMDBytes: int64(len(body)), ClaudeMDLines: claudeMDReadCap / 2}, Context(nil, nil, nil, nil, big).Disk)
 }
 
 func TestHintC1_InstructionsHeavy(t *testing.T) {
@@ -371,7 +371,7 @@ func contextRulesInput() HintInput {
 	}
 	parts := []agentlogdb.AgentContextPart{part("s1", "", "instructions", 4000), part("s1", "", "tools", 6000)}
 	in := eventsInput(s)
-	in.Context = Context(factsOf(s), s, parts, "")
+	in.Context = Context(factsOf(s), s, parts, nil, "")
 	return in
 }
 

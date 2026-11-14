@@ -242,10 +242,8 @@ func BuildOverview(main *db.DB, al *agentlogdb.DB, workbenchID int64, since, now
 	if err != nil {
 		return nil, err
 	}
-	sinceStr := ""
 	ov := &Overview{WorkbenchID: workbenchID, Enabled: enabled, Until: now.UTC().Format(time.RFC3339), Agent: agent}
 	if !since.IsZero() {
-		sinceStr = since.UTC().Format(tsLayout)
 		ov.Since = since.UTC().Format(time.RFC3339)
 	}
 	moved, err := al.Moved()
@@ -261,15 +259,12 @@ func BuildOverview(main *db.DB, al *agentlogdb.DB, workbenchID int64, since, now
 		// Durable, unlike a failed Turn On's error: the pane says why nothing loads.
 		ov.Import = ImportState{State: "waiting_for_move"}
 	}
-	// Nothing after now: a session that starts later is not part of this period.
-	nowStr := now.UTC().Format(tsLayout)
 	// The unfiltered period's sessions decide agent_filter; a filter then
 	// keeps its agent's.
-	sessions, err := al.AgentReportSessions(workbenchID, sinceStr, "")
+	sessions, err := periodSessions(al, workbenchID, since, now)
 	if err != nil {
 		return nil, err
 	}
-	sessions = slices.DeleteFunc(sessions, func(s agentlogdb.AgentReportSession) bool { return s.StartedAt > nowStr })
 	present := agentsOf(sessions, nil)
 	if agent != AgentAll {
 		sessions = slices.DeleteFunc(sessions, func(s agentlogdb.AgentReportSession) bool { return s.Agent != agent })
@@ -278,10 +273,7 @@ func BuildOverview(main *db.DB, al *agentlogdb.DB, workbenchID int64, since, now
 	if len(present) > 1 {
 		ov.AgentFilter = present
 	}
-	uuids := make([]string, len(sessions))
-	for i, s := range sessions {
-		uuids[i] = s.SessionUUID
-	}
+	uuids := uuidsOf(sessions)
 	events, err := al.AgentReportEvents(uuids)
 	if err != nil {
 		return nil, err
@@ -338,41 +330,55 @@ func BuildOverview(main *db.DB, al *agentlogdb.DB, workbenchID int64, since, now
 	return ov, nil
 }
 
-// loadBlocks reads the baseline parts and the skill listing of the sessions
-// with the v2 facts and measures the context and skills blocks; folder is the
-// workbench folder for the disk sizes ("" = none).
+// periodSessions lists a workbench's sessions of every agent that started
+// or ended at or after since (zero = all) and started up to now: a session
+// that starts later is not part of the period. BuildOverview and
+// GlobalSources share it, so their windows cannot drift apart.
+func periodSessions(al *agentlogdb.DB, workbenchID int64, since, now time.Time) ([]agentlogdb.AgentReportSession, error) {
+	sinceStr := ""
+	if !since.IsZero() {
+		sinceStr = since.UTC().Format(tsLayout)
+	}
+	sessions, err := al.AgentReportSessions(workbenchID, sinceStr, "")
+	if err != nil {
+		return nil, err
+	}
+	nowStr := now.UTC().Format(tsLayout)
+	return slices.DeleteFunc(sessions, func(s agentlogdb.AgentReportSession) bool { return s.StartedAt > nowStr }), nil
+}
+
+func uuidsOf(sessions []agentlogdb.AgentReportSession) []string {
+	out := make([]string, len(sessions))
+	for i, s := range sessions {
+		out[i] = s.SessionUUID
+	}
+	return out
+}
+
+// loadBlocks reads the baseline parts, the per-source weights and the skill
+// listing of the sessions with the v2 facts and measures the context and
+// skills blocks; folder is the workbench folder for the disk sizes and the
+// project sources ("" = none).
 func loadBlocks(al *agentlogdb.DB, sessions []agentlogdb.AgentReportSession, events map[string][]agentlogdb.AgentReportEvent,
 	folder string) (ContextReport, SkillsReport, error) {
-	var facts []string
-	for _, s := range sessions {
-		if s.Facts {
-			facts = append(facts, s.SessionUUID)
-		}
+	parts, sources, err := loadSources(al, sessions)
+	if err != nil {
+		return ContextReport{}, SkillsReport{}, err
 	}
-	var parts []agentlogdb.AgentContextPart
 	var listing []agentlogdb.AgentSkillListed
-	if len(facts) > 0 {
-		var err error
-		if parts, err = al.AgentReportContextParts(facts); err != nil {
-			return ContextReport{}, SkillsReport{}, err
-		}
+	if facts := factsUUIDs(sessions); len(facts) > 0 {
 		if listing, err = al.AgentReportSkillListing(facts); err != nil {
 			return ContextReport{}, SkillsReport{}, err
 		}
 	}
-	return Context(sessions, events, parts, folder), Skills(sessions, events, parts, listing), nil
+	return Context(sessions, events, parts, sources, folder), Skills(sessions, events, parts, listing), nil
 }
 
 // loadTrouble reads the subagents of the sessions with the v2 facts and
 // measures the trouble block as of now.
 func loadTrouble(al *agentlogdb.DB, sessions []agentlogdb.AgentReportSession, events map[string][]agentlogdb.AgentReportEvent,
 	now time.Time) (TroubleReport, error) {
-	var facts []string
-	for _, s := range sessions {
-		if s.Facts {
-			facts = append(facts, s.SessionUUID)
-		}
-	}
+	facts := factsUUIDs(sessions)
 	var subs []agentlogdb.AgentSubagent
 	if len(facts) > 0 {
 		var err error

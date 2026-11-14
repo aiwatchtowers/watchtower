@@ -52,7 +52,10 @@ func agentsFixture(t *testing.T) (wb int64) {
 	t.Cleanup(func() { agentsClaudeDir = prev })
 	dir := filepath.Join(claude, "projects", agentlog.Slug(folder))
 	require.NoError(t, os.MkdirAll(dir, 0o755))
-	rec := `{"type":"assistant","sessionId":"s1","uuid":"u1","timestamp":"2026-10-01T10:00:00Z","cwd":"` + folder +
+	// A skill listing before the first call: the start context has a source row.
+	rec := `{"type":"attachment","sessionId":"s1","timestamp":"2026-10-01T09:59:59Z","cwd":"` + folder +
+		`","attachment":{"type":"skill_listing","names":["acme:review"],"content":"- acme:review: reviews a change"}}` + "\n"
+	rec += `{"type":"assistant","sessionId":"s1","uuid":"u1","timestamp":"2026-10-01T10:00:00Z","cwd":"` + folder +
 		`","requestId":"r1","message":{"id":"m1","model":"claude-opus-5-5","role":"assistant","content":[],"usage":{"input_tokens":10,"output_tokens":5}}}` + "\n"
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "s1.jsonl"), []byte(rec), 0o600))
 	return wb
@@ -208,14 +211,15 @@ func TestAgentsReportJSON_PinnedKeys(t *testing.T) {
 	require.Len(t, ov.Sessions, 1)
 	assert.Equal(t, []string{"files_stored", "state", "updated_at"}, mapKeys(ov.Import))
 	assert.Equal(t, []string{"agents", "baseline", "compactions", "disk", "facts_sessions", "growth", "lead", "repeated_reads", "sessions",
-		"subagent_baseline", "top_sources"}, mapKeys(ov.Context))
+		"sources", "subagent_baseline", "top_sources"}, mapKeys(ov.Context))
 	assert.Equal(t, []string{"agents", "facts_sessions", "lead", "listed", "listing_tokens", "never_used", "rows", "used"}, mapKeys(ov.Skills))
 	assert.Equal(t, []string{"agents", "classes", "denials", "facts_sessions", "interrupt_sessions", "interrupts", "lead", "rate_limited", "rejections",
 		"unfinished_subagents"}, mapKeys(ov.Trouble))
 	var ctx struct {
-		Baseline    map[string]json.RawMessage `json:"baseline"`
-		Compactions map[string]json.RawMessage `json:"compactions"`
-		Disk        map[string]json.RawMessage `json:"disk"`
+		Baseline    map[string]json.RawMessage   `json:"baseline"`
+		Compactions map[string]json.RawMessage   `json:"compactions"`
+		Disk        map[string]json.RawMessage   `json:"disk"`
+		Sources     []map[string]json.RawMessage `json:"sources"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(out), &struct {
 		Context any `json:"context"`
@@ -223,6 +227,8 @@ func TestAgentsReportJSON_PinnedKeys(t *testing.T) {
 	assert.Equal(t, []string{"parts", "tokens"}, mapKeys(ctx.Baseline))
 	assert.Equal(t, []string{"count", "median_post_tokens", "median_pre_tokens", "sessions"}, mapKeys(ctx.Compactions))
 	assert.Equal(t, []string{"claude_md_bytes", "claude_md_lines", "rules_bytes"}, mapKeys(ctx.Disk))
+	require.Len(t, ctx.Sources, 1)
+	assert.Equal(t, []string{"calls", "group", "group_kind", "measured_sessions", "part", "tokens"}, mapKeys(ctx.Sources[0]))
 	assert.JSONEq(t, `"done"`, string(ov.Import["state"]))
 	assert.Equal(t, []string{"active_ms", "away_ms", "cost_estimated_calls", "cost_usd", "sessions", "tokens"}, mapKeys(ov.Totals))
 	assert.Equal(t, []string{"active_ms", "agent", "avg_parallel", "branch", "cost_estimated_calls", "cost_usd", "ended_at", "model",
