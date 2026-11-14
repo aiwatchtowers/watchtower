@@ -121,6 +121,9 @@ func (a *Applier) accept(p db.CoachProposal, edited string) (string, error) {
 	if p.Status != "open" {
 		return "", fmt.Errorf("coach proposal %d is %s, not open: %w", id, p.Status, db.ErrCoachStateChanged)
 	}
+	if sessionDestinations[p.Destination] {
+		return "", fmt.Errorf("coach proposal %d (%s): %w", id, p.Destination, errAcceptStartsSession)
+	}
 	if contextDestinations[p.Destination] && IsProtected(p.Destination, p.SourceKey) {
 		return "", fmt.Errorf("coach proposal %d (%s): %w", id, p.Destination, errProtected)
 	}
@@ -209,6 +212,17 @@ func (a *Applier) Rollback(id int64, force bool) (string, error) {
 	}
 	if p.Status != "accepted" {
 		return "", fmt.Errorf("coach proposal %d is %s, not accepted: %w", id, p.Status, db.ErrCoachStateChanged)
+	}
+	// A repository row accepted before sessions (written by Accept itself)
+	// keeps the file rollback below.
+	if p.Destination == DestMemoryIndex || p.ViaSession && sessionDestinations[p.Destination] {
+		if err := a.rollbackSession(p); err != nil {
+			return "", fmt.Errorf("coach proposal %d (%s): %w", id, p.Destination, err)
+		}
+		if err := a.DB.DecideCoachProposal(id, "accepted", "rolled_back", a.now()); err != nil {
+			return "", fmt.Errorf("rolling back coach proposal %d: %w", id, err)
+		}
+		return "", nil
 	}
 	cur, err := a.readCurrent(p)
 	if err != nil {

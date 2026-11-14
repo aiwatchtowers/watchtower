@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -46,6 +47,7 @@ func runCoach(t *testing.T, stdin string, args ...string) (string, error) {
 	coachFlagJSON, coachFlagWorkbench, coachFlagStatus = false, 0, "open"
 	coachFlagStdin, coachFlagForce, coachFlagDryRun, coachFlagDays = false, false, false, coachDefaultDays
 	coachFlagAgent = agentreport.AgentAll
+	coachFlagSession, coachFlagRestart, coachFlagRevert = 0, false, false
 	return out.String(), err
 }
 
@@ -217,7 +219,8 @@ func TestCoachProposals_JSONKeysPinned(t *testing.T) {
 	assert.ElementsMatch(t, []string{"id", "title", "why", "destination", "workbench_id", "prompt_id", "kind",
 		"metric", "before", "after", "evidence", "sources", "status", "created_at", "decided_at", "baseline",
 		"verdict", "verdict_value", "verdict_at", "reverts_id", "budget", "origin", "skill", "conversation_id",
-		"written_branch", "measure_from"}, got)
+		"written_branch", "measure_from", "session_id", "source_key", "via_session", "session_branch", "pr",
+		"pr_state", "pr_url"}, got)
 	assert.JSONEq(t, `[{"kind":"session","ref":"s1"}]`, string(items[0]["evidence"]))
 	assert.Equal(t, `""`, string(items[0]["written_branch"]))
 	assert.Equal(t, "null", string(items[0]["measure_from"]))
@@ -935,4 +938,309 @@ func TestCoachProposals_FolderBranch(t *testing.T) {
 	items = coachProposalItems(t)
 	assert.JSONEq(t, `""`, string(coachItemByID(t, items, inPlain)["folder_branch"]))
 	assert.Equal(t, 1, reads, "only the live folder is read")
+}
+
+// ---- accept through a session (context actions, spec part 3) ----
+
+// coachSessionRow adds a workbench session row of wb.
+func coachSessionRow(t *testing.T, d *db.DB, wb int64) int64 {
+	t.Helper()
+	res, err := d.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id)
+		VALUES (?, 'claude', 'Session', '/tmp/acme', 'uuid')`, wb)
+	require.NoError(t, err)
+	id, err := res.LastInsertId()
+	require.NoError(t, err)
+	return id
+}
+
+// insertRestructure files an open CLAUDE.md restructure of a new workbench.
+func insertRestructure(t *testing.T, d *db.DB) (id, wb int64) {
+	t.Helper()
+	wb, err := d.CreateWorkbench("acme", t.TempDir())
+	require.NoError(t, err)
+	id, err = d.InsertContextCoachProposal(db.CoachProposal{Fingerprint: "ctx-claude-md", Kind: "restructure",
+		Destination: coach.DestRepoClaudeMD, WorkbenchID: wb, Title: "Slim CLAUDE.md", Why: "It is 24 KB.",
+		Metric: "start_tokens", Evidence: []db.CoachEvidence{{Kind: "section", Ref: "## Build · 9.1 KB"}}}, time.Now())
+	require.NoError(t, err)
+	require.NotZero(t, id)
+	return id, wb
+}
+
+func coachKeys(m map[string]json.RawMessage) []string {
+	var got []string
+	for k := range m {
+		got = append(got, k)
+	}
+	return got
+}
+
+func TestCoachBriefJSON_Keys(t *testing.T) {
+	d := coachSetup(t)
+	id, _ := insertRestructure(t, d)
+	reqs := withOwnerDesktop(t, ownerconfirm.Reply{Decision: ownerconfirm.Confirmed}, nil)
+
+	out, err := runCoach(t, "", "brief", strconv.FormatInt(id, 10), "--json")
+	require.NoError(t, err, out)
+	top := coachJSONObject(t, out)
+	assert.ElementsMatch(t, []string{"ok", "id", "title", "prompt"}, coachKeys(top))
+	assert.Equal(t, strconv.FormatInt(id, 10), string(top["id"]))
+	var prompt string
+	require.NoError(t, json.Unmarshal(top["prompt"], &prompt))
+	assert.Contains(t, prompt, "## Build · 9.1 KB")
+	assert.Contains(t, prompt, "open a PR")
+	assert.Empty(t, *reqs, "the brief is read-only: no confirmation")
+	p, err := d.GetCoachProposal(id)
+	require.NoError(t, err)
+	assert.Equal(t, "open", p.Status)
+
+	// A settings proposal has no session brief.
+	pid, err := d.InsertContextCoachProposal(db.CoachProposal{Fingerprint: "ctx-plugin", Kind: "cut",
+		Destination: coach.DestPluginOff, SourceKey: "alpha@example-market", Title: "t", Why: "w",
+		Metric: "start_tokens", BeforeText: "true", AfterText: "false"}, time.Now())
+	require.NoError(t, err)
+	out, err = runCoach(t, "", "brief", strconv.FormatInt(pid, 10), "--json")
+	require.Error(t, err)
+	assert.JSONEq(t, `"refused"`, string(coachJSONObject(t, out)["code"]))
+}
+
+// The revert brief names the merged PR found by the session's branch.
+func TestCoachBriefJSON_Revert(t *testing.T) {
+	d := coachSetup(t)
+	id, wb := insertRestructure(t, d)
+	sess := coachSessionRow(t, d, wb)
+	_, err := d.Exec(`INSERT INTO terminal_session_worktrees (session_id, root, branch, first_at)
+		VALUES (?, '/tmp/acme-wt', 'wt/slim', '2026-11-12T09:00:00.000Z')`, sess)
+	require.NoError(t, err)
+	_, err = runCoach(t, "", "accept", strconv.FormatInt(id, 10), "--session", strconv.FormatInt(sess, 10), "--json")
+	require.NoError(t, err)
+
+	out, err := runCoach(t, "", "brief", strconv.FormatInt(id, 10), "--revert", "--json")
+	require.Error(t, err, "nothing merged yet")
+	assert.JSONEq(t, `"refused"`, string(coachJSONObject(t, out)["code"]))
+
+	require.NoError(t, d.UpsertPRState(db.PRState{WorkbenchID: wb, Ref: "branch:wt/slim", State: "merged",
+		PRNumber: sql.NullInt64{Int64: 77, Valid: true}, CheckedAt: "2026-11-13T09:00:00Z"}))
+	out, err = runCoach(t, "", "brief", strconv.FormatInt(id, 10), "--revert", "--json")
+	require.NoError(t, err, out)
+	var prompt string
+	require.NoError(t, json.Unmarshal(coachJSONObject(t, out)["prompt"], &prompt))
+	assert.Contains(t, prompt, "PR #77")
+	assert.Contains(t, prompt, "revert PR")
+}
+
+func TestCoachAcceptSession_JSON(t *testing.T) {
+	d := coachSetup(t)
+	id, wb := insertRestructure(t, d)
+	sess := coachSessionRow(t, d, wb)
+	reqs := withOwnerDesktop(t, ownerconfirm.Reply{Decision: ownerconfirm.Confirmed}, nil)
+
+	out, err := runCoach(t, "", "accept", strconv.FormatInt(id, 10), "--session", strconv.FormatInt(sess, 10), "--json")
+	require.NoError(t, err, out)
+	top := coachJSONObject(t, out)
+	assert.ElementsMatch(t, []string{"ok", "id", "status", "pack_copies_updated", "pack_copies_drifted",
+		"written_path", "written_branch", "session_id"}, coachKeys(top))
+	assert.Equal(t, strconv.FormatInt(sess, 10), string(top["session_id"]))
+	assert.JSONEq(t, `"accepted"`, string(top["status"]))
+	require.Len(t, *reqs, 1, "the owner confirms an accept through a session")
+	p, err := d.GetCoachProposal(id)
+	require.NoError(t, err)
+	assert.True(t, p.ViaSession)
+
+	out, err = runCoach(t, "", "accept", strconv.FormatInt(id, 10), "--session", strconv.FormatInt(sess, 10), "--json")
+	require.Error(t, err)
+	assert.JSONEq(t, `"state_changed"`, string(coachJSONObject(t, out)["code"]))
+
+	// Without --session a repository proposal is refused.
+	id2, _ := insertRestructure2(t, d, wb)
+	out, err = runCoach(t, "", "accept", strconv.FormatInt(id2, 10), "--json")
+	require.Error(t, err)
+	top = coachJSONObject(t, out)
+	assert.JSONEq(t, `"refused"`, string(top["code"]))
+	assert.Contains(t, string(top["error"]), "it starts a session")
+}
+
+func insertRestructure2(t *testing.T, d *db.DB, wb int64) (int64, int64) {
+	t.Helper()
+	id, err := d.InsertContextCoachProposal(db.CoachProposal{Fingerprint: "ctx-memory", Kind: "restructure",
+		Destination: coach.DestMemoryIndex, WorkbenchID: wb, SourceKey: "memory", Title: "Archive memory lines",
+		Why: "It is 9 KB.", Metric: "start_tokens"}, time.Now())
+	require.NoError(t, err)
+	return id, wb
+}
+
+func TestCoachAcceptSession_RefusedUnderAgent(t *testing.T) {
+	d := coachSetup(t)
+	id, wb := insertRestructure(t, d)
+	sess := coachSessionRow(t, d, wb)
+	t.Setenv(agentEnvMarkers[0], "1")
+	reqs := withOwnerDesktop(t, ownerconfirm.Reply{Decision: ownerconfirm.Confirmed}, nil)
+
+	for _, args := range [][]string{
+		{"accept", strconv.FormatInt(id, 10), "--session", strconv.FormatInt(sess, 10)},
+		{"accept", strconv.FormatInt(id, 10), "--session", strconv.FormatInt(sess, 10), "--restart"},
+		{"brief", strconv.FormatInt(id, 10)},
+		{"dismiss", strconv.FormatInt(id, 10)},
+		{"reapply", strconv.FormatInt(id, 10)},
+	} {
+		_, err := runCoach(t, "", args...)
+		require.Error(t, err, args[0])
+		assert.Contains(t, err.Error(), "the owner decides in Watchtower Desktop")
+	}
+	assert.Empty(t, *reqs)
+	p, err := d.GetCoachProposal(id)
+	require.NoError(t, err)
+	assert.Equal(t, "open", p.Status)
+	assert.Nil(t, p.SessionID)
+}
+
+func TestCoachDismissJSON(t *testing.T) {
+	d := coachSetup(t)
+	id, wb := insertRestructure(t, d)
+	sess := coachSessionRow(t, d, wb)
+	out, err := runCoach(t, "", "dismiss", strconv.FormatInt(id, 10), "--json")
+	require.Error(t, err, "an open row is declined, not dismissed")
+	assert.JSONEq(t, `"state_changed"`, string(coachJSONObject(t, out)["code"]))
+
+	_, err = runCoach(t, "", "accept", strconv.FormatInt(id, 10), "--session", strconv.FormatInt(sess, 10))
+	require.NoError(t, err)
+	reqs := withOwnerDesktop(t, ownerconfirm.Reply{Decision: ownerconfirm.Confirmed}, nil)
+	out, err = runCoach(t, "", "dismiss", strconv.FormatInt(id, 10), "--json")
+	require.NoError(t, err, out)
+	assert.JSONEq(t, fmt.Sprintf(`{"ok":true,"id":%d,"status":"accepted","verdict":"too_little_data"}`, id), out)
+	require.Len(t, *reqs, 1)
+	p, err := d.GetCoachProposal(id)
+	require.NoError(t, err)
+	assert.Equal(t, "too_little_data", p.Verdict)
+}
+
+func TestCoachAcceptSession_Restart(t *testing.T) {
+	d := coachSetup(t)
+	id, wb := insertRestructure(t, d)
+	first, second := coachSessionRow(t, d, wb), coachSessionRow(t, d, wb)
+	_, err := runCoach(t, "", "accept", strconv.FormatInt(id, 10), "--session", strconv.FormatInt(first, 10))
+	require.NoError(t, err)
+
+	out, err := runCoach(t, "", "accept", strconv.FormatInt(id, 10), "--session", strconv.FormatInt(second, 10),
+		"--restart", "--json")
+	require.NoError(t, err, out)
+	assert.Equal(t, strconv.FormatInt(second, 10), string(coachJSONObject(t, out)["session_id"]))
+	p, err := d.GetCoachProposal(id)
+	require.NoError(t, err)
+	assert.Equal(t, second, *p.SessionID)
+
+	_, err = runCoach(t, "", "accept", strconv.FormatInt(id, 10), "--restart")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--restart needs --session")
+}
+
+func TestCoachReapplyJSON(t *testing.T) {
+	d := coachSetup(t)
+	home, err := coachHome()
+	require.NoError(t, err)
+	settings := filepath.Join(home, ".claude", "settings.json")
+	require.NoError(t, os.MkdirAll(filepath.Dir(settings), 0o700))
+	on := `{"enabledPlugins":{"alpha@example-market":true}}`
+	require.NoError(t, os.WriteFile(settings, []byte(on), 0o600))
+	id, err := d.InsertContextCoachProposal(db.CoachProposal{Fingerprint: "ctx-plugin", Kind: "cut",
+		Destination: coach.DestPluginOff, SourceKey: "alpha@example-market", Title: "Turn off alpha", Why: "w",
+		Metric: "start_tokens", BeforeText: "true", AfterText: "false"}, time.Now())
+	require.NoError(t, err)
+	_, err = runCoach(t, "", "accept", strconv.FormatInt(id, 10))
+	require.NoError(t, err)
+
+	out, err := runCoach(t, "", "reapply", strconv.FormatInt(id, 10), "--json")
+	require.Error(t, err, "not turned back on")
+	assert.JSONEq(t, `"state_changed"`, string(coachJSONObject(t, out)["code"]))
+
+	require.NoError(t, os.WriteFile(settings, []byte(on), 0o600)) // turned back on outside Watchtower
+	require.NoError(t, d.SetCoachVerdict(id, "reverted_outside", nil, time.Now()))
+	reqs := withOwnerDesktop(t, ownerconfirm.Reply{Decision: ownerconfirm.Confirmed}, nil)
+	out, err = runCoach(t, "", "reapply", strconv.FormatInt(id, 10), "--json")
+	require.NoError(t, err, out)
+	assert.JSONEq(t, fmt.Sprintf(`{"ok":true,"id":%d,"status":"accepted","verdict":""}`, id), out)
+	require.Len(t, *reqs, 1)
+	raw, err := os.ReadFile(settings)
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), `"alpha@example-market": false`)
+}
+
+func TestCoachProposalsJSON_NewKeys(t *testing.T) {
+	d := coachSetup(t)
+	id, wb := insertRestructure(t, d)
+
+	out, err := runCoach(t, "", "proposals", "--json")
+	require.NoError(t, err)
+	p := coachFirstProposal(t, out)
+	for _, k := range []string{"session_id", "source_key", "via_session", "session_branch", "pr", "pr_state", "pr_url"} {
+		assert.Contains(t, p, k)
+	}
+	assert.Equal(t, "null", string(p["session_id"]))
+	assert.Equal(t, `""`, string(p["source_key"]))
+	assert.Equal(t, "false", string(p["via_session"]))
+	assert.Equal(t, `""`, string(p["session_branch"]))
+	assert.Equal(t, "null", string(p["pr"]))
+	assert.Equal(t, "null", string(p["pr_state"]))
+	assert.Equal(t, "null", string(p["pr_url"]))
+
+	// Accepted through a live session whose branch has an open PR: found
+	// through the session's branch while session_branch is still empty.
+	sess := coachSessionRow(t, d, wb)
+	_, err = runCoach(t, "", "accept", strconv.FormatInt(id, 10), "--session", strconv.FormatInt(sess, 10))
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO terminal_session_worktrees (session_id, root, branch, first_at)
+		VALUES (?, '/tmp/acme-wt', 'wt/slim', '2026-11-12T09:00:00.000Z')`, sess)
+	require.NoError(t, err)
+	require.NoError(t, d.UpsertPRState(db.PRState{WorkbenchID: wb, Ref: "branch:wt/slim", State: "open",
+		PRNumber: sql.NullInt64{Int64: 12, Valid: true}, CheckedAt: "2026-11-13T09:00:00Z"}))
+	out, err = runCoach(t, "", "proposals", "--status", "accepted", "--json")
+	require.NoError(t, err)
+	p = coachFirstProposal(t, out)
+	assert.Equal(t, strconv.FormatInt(sess, 10), string(p["session_id"]))
+	assert.Equal(t, "true", string(p["via_session"]))
+	assert.Equal(t, `""`, string(p["session_branch"]))
+	assert.Equal(t, "12", string(p["pr"]))
+	assert.Equal(t, `"open"`, string(p["pr_state"]))
+}
+
+// The Desktop deletes session rows: the PR is still found by the copied
+// session_branch; its URL comes from the agent's own PR link.
+func TestCoachProposalsJSON_PRFoundAfterSessionDeleted(t *testing.T) {
+	d := coachSetup(t)
+	id, wb := insertRestructure(t, d)
+	sess := coachSessionRow(t, d, wb)
+	_, err := runCoach(t, "", "accept", strconv.FormatInt(id, 10), "--session", strconv.FormatInt(sess, 10))
+	require.NoError(t, err)
+	require.NoError(t, d.SetCoachSessionBranch(id, "wt/slim"))
+	_, err = d.Exec(`DELETE FROM terminal_sessions WHERE id = ?`, sess)
+	require.NoError(t, err)
+	require.NoError(t, d.UpsertPRState(db.PRState{WorkbenchID: wb, Ref: "branch:wt/slim", State: "open",
+		PRNumber: sql.NullInt64{Int64: 12, Valid: true}, CheckedAt: "2026-11-13T09:00:00Z"}))
+
+	cfg, err := workspaceConfigFromFlags()
+	require.NoError(t, err)
+	al, err := agentlogdb.Open(agentlogdb.PathFor(cfg.DBPath()))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = al.Close() })
+	const url = "https://github.com/acme/widgets/pull/12"
+	at := time.Now().UTC().Format("2006-01-02T15:04:05Z")
+	_, err = al.ApplyAgentLogBatch(agentlogdb.AgentLogBatch{
+		File: agentlogdb.AgentLogFile{Path: "/w/pr.jsonl", Agent: "claude", ReadOffset: 10, ParserVersion: 4}, ExpectOffset: -1,
+		Sessions: []agentlogdb.AgentLogSession{{SessionUUID: "spr", Agent: "claude", ProjectID: &wb, FolderPath: "/w",
+			HomeCWD: "/w", SourcePath: "/w/pr.jsonl", StartedAt: at, EndedAt: at}},
+		Events: []agentlogdb.AgentLogEvent{
+			{SessionUUID: "spr", Key: "pr_link:spr:" + url, Kind: "pr_link", Target: url, TS: at, SrcPath: "/w/pr.jsonl"},
+			{SessionUUID: "spr", Key: "pr_link:spr:other", Kind: "pr_link", Target: "https://github.com/acme/widgets/pull/123",
+				TS: at, SrcPath: "/w/pr.jsonl", SrcOffset: 1}},
+	})
+	require.NoError(t, err)
+
+	out, err := runCoach(t, "", "proposals", "--status", "accepted", "--json")
+	require.NoError(t, err)
+	p := coachFirstProposal(t, out)
+	assert.Equal(t, "null", string(p["session_id"]))
+	assert.Equal(t, "true", string(p["via_session"]))
+	assert.Equal(t, `"wt/slim"`, string(p["session_branch"]))
+	assert.Equal(t, "12", string(p["pr"]))
+	assert.Equal(t, `"open"`, string(p["pr_state"]))
+	assert.Equal(t, `"`+url+`"`, string(p["pr_url"]))
 }

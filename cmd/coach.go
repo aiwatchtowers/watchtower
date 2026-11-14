@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -38,9 +39,10 @@ var coachCmd = &cobra.Command{
 	Short: "The agent coach: metrics and proposals for the owner's setup",
 	Long: "The weekly coach proposes edits to the owner's own setup (session instructions, target procedure,\n" +
 		"chat instructions, prompt additions, the Claude allow list, ~/.claude/CLAUDE.md). `status` and\n" +
-		"`proposals` read; `accept`, `decline`, `rollback` and `run` are the owner's own decisions and are\n" +
-		"refused under an AI agent. --json prints a pinned shape; a failure prints {\"ok\":false,\"error\":…}\n" +
-		"and exits non-zero.",
+		"`proposals` read; `accept`, `decline`, `rollback`, `dismiss`, `reapply` and `run` are the owner's own\n" +
+		"decisions and are refused under an AI agent. A repository or memory change is accepted through a\n" +
+		"workbench session the Desktop starts with `brief` (`accept --session`). --json prints a pinned shape;\n" +
+		"a failure prints {\"ok\":false,\"error\":…} and exits non-zero.",
 }
 
 var (
@@ -52,6 +54,9 @@ var (
 	coachFlagDryRun    bool
 	coachFlagDays      int
 	coachFlagAgent     string
+	coachFlagSession   int64
+	coachFlagRestart   bool
+	coachFlagRevert    bool
 )
 
 // coachGeneratorFactory is the seam tests override. The prompt carries the
@@ -88,6 +93,33 @@ func init() {
 			return coachRun(c, func(c *cobra.Command, e *coachEnv) (any, error) { return runCoachAccept(c, e, a[0]) })
 		}}
 	acceptCmd.Flags().BoolVar(&coachFlagStdin, "stdin", false, "read the owner's edited whole text from stdin")
+	acceptCmd.Flags().Int64Var(&coachFlagSession, "session", 0,
+		"the workbench session the Desktop started for a repository or memory proposal")
+	acceptCmd.Flags().BoolVar(&coachFlagRestart, "restart", false,
+		"move an accepted session proposal that ended with nothing to measure to the new --session")
+	briefCmd := &cobra.Command{Use: "brief <id> [--revert]", Short: "The brief of the session that carries out a proposal",
+		Args: cobra.ExactArgs(1), RunE: func(c *cobra.Command, a []string) error {
+			// Read-only, but it is the first step of an owner's Accept.
+			if err := coachRefuseUnderAgent(c, "brief a coach session"); err != nil {
+				return err
+			}
+			return coachRun(c, func(_ *cobra.Command, e *coachEnv) (any, error) { return runCoachBrief(e, a[0]) })
+		}}
+	briefCmd.Flags().BoolVar(&coachFlagRevert, "revert", false, "the brief of the session that reverts a merged change")
+	dismissCmd := &cobra.Command{Use: "dismiss <id>", Short: "Close an accepted session proposal that ended with nothing to measure",
+		Args: cobra.ExactArgs(1), RunE: func(c *cobra.Command, a []string) error {
+			if err := coachRefuseUnderAgent(c, "dismiss a coach proposal"); err != nil {
+				return err
+			}
+			return coachRun(c, func(_ *cobra.Command, e *coachEnv) (any, error) { return runCoachDismiss(e, a[0]) })
+		}}
+	reapplyCmd := &cobra.Command{Use: "reapply <id>", Short: "Turn a setting off again after it was turned back on outside Watchtower",
+		Args: cobra.ExactArgs(1), RunE: func(c *cobra.Command, a []string) error {
+			if err := coachRefuseUnderAgent(c, "reapply a coach proposal"); err != nil {
+				return err
+			}
+			return coachRun(c, func(_ *cobra.Command, e *coachEnv) (any, error) { return runCoachReapply(e, a[0]) })
+		}}
 	declineCmd := &cobra.Command{Use: "decline <id>", Short: "Decline an open proposal for good",
 		Args: cobra.ExactArgs(1), RunE: func(c *cobra.Command, a []string) error {
 			if err := coachRefuseUnderAgent(c, "decline a coach proposal"); err != nil {
@@ -112,10 +144,12 @@ func init() {
 			return coachRun(c, runCoachNow)
 		}}
 	runCmd.Flags().BoolVar(&coachFlagDryRun, "dry-run", false, "print the validated proposals, write nothing")
-	for _, c := range []*cobra.Command{statusCmd, proposalsCmd, acceptCmd, declineCmd, rollbackCmd, runCmd} {
+	verbs := []*cobra.Command{statusCmd, proposalsCmd, acceptCmd, declineCmd, rollbackCmd, runCmd, briefCmd,
+		dismissCmd, reapplyCmd}
+	for _, c := range verbs {
 		c.Flags().BoolVar(&coachFlagJSON, "json", false, "output JSON")
 	}
-	coachCmd.AddCommand(statusCmd, proposalsCmd, acceptCmd, declineCmd, rollbackCmd, runCmd)
+	coachCmd.AddCommand(verbs...)
 	rootCmd.AddCommand(coachCmd)
 }
 
@@ -397,6 +431,22 @@ type coachProposalJSON struct {
 	// out in the workbench folder now ("detached:<short sha>"; "" when it
 	// cannot be read). No key on any other row.
 	FolderBranch *string `json:"folder_branch,omitempty"`
+	// SessionID is the workbench session a repository or memory Accept
+	// started (null before, and once the Desktop deleted that session);
+	// ViaSession tells such a row from one accepted before sessions and
+	// survives that delete; SessionBranch is the session's branch, copied
+	// while the session existed. SourceKey is a context proposal's source
+	// (plugin id, server name, "connectors", "memory").
+	SessionID     *int64 `json:"session_id"`
+	SourceKey     string `json:"source_key"`
+	ViaSession    bool   `json:"via_session"`
+	SessionBranch string `json:"session_branch"`
+	// PR is the pull request of a session row's branch as the session report
+	// cached it (number, merged|open|closed, and its URL when the agent's own
+	// transcript linked it); null when there is none.
+	PR      *int64  `json:"pr"`
+	PRState *string `json:"pr_state"`
+	PRURL   *string `json:"pr_url"`
 }
 
 type coachProposalsJSON struct {
@@ -424,7 +474,8 @@ func proposalJSON(p db.CoachProposal) coachProposalJSON {
 		Baseline: p.Baseline, Verdict: p.Verdict, VerdictValue: p.VerdictValue, VerdictAt: stampPtr(p.VerdictAt),
 		RevertsID: p.RevertsID, Budget: coach.BudgetOf(p.Destination, p.BeforeText),
 		Origin: p.Origin, Skill: p.Skill, ConversationID: p.ConversationID,
-		WrittenBranch: p.WrittenBranch, MeasureFrom: stampPtr(p.MeasureFrom)}
+		WrittenBranch: p.WrittenBranch, MeasureFrom: stampPtr(p.MeasureFrom),
+		SessionID: p.SessionID, SourceKey: p.SourceKey, ViaSession: p.ViaSession, SessionBranch: p.SessionBranch}
 }
 
 func proposalsOf(ps []db.CoachProposal) coachProposalsJSON {
@@ -450,7 +501,83 @@ func runCoachProposals(_ *cobra.Command, e *coachEnv) (any, error) {
 	}
 	out := proposalsOf(ps)
 	withFolderBranches(e.db, out.Proposals)
+	if err := withSessionPRs(e, ps, out.Proposals); err != nil {
+		return nil, err
+	}
 	return out, nil
+}
+
+// withSessionPRs gives each row accepted through a session its PR (out[i]
+// is ps[i]'s JSON): found in the session report's cache by session_branch,
+// falling back to the live session's branch while that is still empty, so a
+// deleted session row never hides a PR the copied branch still finds.
+func withSessionPRs(e *coachEnv, ps []db.CoachProposal, out []coachProposalJSON) error {
+	states := map[int64]map[string]db.PRState{}
+	for i, p := range ps {
+		pr, err := coachSessionPR(e.db, p, states)
+		if err != nil {
+			return err
+		}
+		if pr == nil {
+			continue
+		}
+		n, state := pr.PRNumber.Int64, pr.State
+		out[i].PR, out[i].PRState = &n, &state
+		if out[i].PRURL, err = coachPRURL(e.al, p.WorkbenchID, n); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// coachSessionPR is the cached PR of a row accepted through a session (nil
+// when its branch is unknown or has no PR); states caches each workbench's
+// cache rows.
+func coachSessionPR(d *db.DB, p db.CoachProposal, states map[int64]map[string]db.PRState) (*db.PRState, error) {
+	if !p.ViaSession || p.WorkbenchID == 0 {
+		return nil, nil
+	}
+	branch := p.SessionBranch
+	if branch == "" && p.SessionID != nil {
+		var err error
+		if branch, err = d.CoachSessionBranch(*p.SessionID); err != nil {
+			return nil, err
+		}
+	}
+	if branch == "" {
+		return nil, nil
+	}
+	wb, ok := states[p.WorkbenchID]
+	if !ok {
+		var err error
+		if wb, err = d.PRStates(p.WorkbenchID); err != nil {
+			return nil, err
+		}
+		states[p.WorkbenchID] = wb
+	}
+	s, ok := wb["branch:"+branch]
+	if !ok || !s.PRNumber.Valid {
+		return nil, nil
+	}
+	return &s, nil
+}
+
+// coachPRURL is pull request n's URL as an agent session of workbench wb
+// linked it in its transcript (Claude Code's pr-link record); nil when none
+// did. Watchtower reads no git remote for it (COACH-01).
+func coachPRURL(al *agentlogdb.DB, wb, n int64) (*string, error) {
+	var url string
+	err := al.QueryRow(`SELECT e.target FROM agent_log_events e
+		JOIN agent_log_sessions s ON s.session_uuid = e.session_uuid
+		WHERE e.kind = 'pr_link' AND s.project_id = ? AND e.target LIKE ?
+		ORDER BY e.ts DESC, e.id DESC LIMIT 1`, wb, "%/pull/"+strconv.FormatInt(n, 10)).Scan(&url)
+	if errors.Is(err, sql.ErrNoRows) || err == nil && !strings.HasPrefix(url, "https://") {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading the PR link: %w", err)
+	}
+	return &url, nil
 }
 
 // withFolderBranches gives each open repository proposal the branch checked
@@ -518,6 +645,28 @@ type coachAcceptJSON struct {
 	WrittenBranch string `json:"written_branch"`
 }
 
+// coachAcceptSessionJSON is an Accept (or a Restart) through a workbench
+// session: the Accept's keys plus the session recorded.
+type coachAcceptSessionJSON struct {
+	coachAcceptJSON
+	SessionID int64 `json:"session_id"`
+}
+
+// coachVerdictJSON is a decision on an accepted row that sets or clears its
+// verdict (dismiss, reapply).
+type coachVerdictJSON struct {
+	coachDecisionJSON
+	Verdict string `json:"verdict"`
+}
+
+// coachBriefJSON is `coach brief --json`: the session's title and prompt.
+type coachBriefJSON struct {
+	OK     bool   `json:"ok"`
+	ID     int64  `json:"id"`
+	Title  string `json:"title"`
+	Prompt string `json:"prompt"`
+}
+
 func parseCoachID(s string) (int64, error) {
 	id, err := strconv.ParseInt(s, 10, 64)
 	if err != nil || id <= 0 {
@@ -530,6 +679,9 @@ func runCoachAccept(cmd *cobra.Command, e *coachEnv, arg string) (any, error) {
 	id, err := parseCoachID(arg)
 	if err != nil {
 		return nil, err
+	}
+	if coachFlagSession != 0 || coachFlagRestart {
+		return runCoachAcceptSession(e, id)
 	}
 	edited := ""
 	if coachFlagStdin {
@@ -554,6 +706,101 @@ func runCoachAccept(cmd *cobra.Command, e *coachEnv, arg string) (any, error) {
 	return coachAcceptJSON{coachDecisionJSON: coachDecisionJSON{OK: true, ID: id, Status: "accepted"},
 		PackCopiesUpdated: res.PackCopiesUpdated, PackCopiesDrifted: res.PackCopiesDrifted,
 		WrittenPath: res.WrittenPath, WrittenBranch: res.WrittenBranch}, nil
+}
+
+// runCoachAcceptSession records the Accept (or with --restart the new
+// session) of a repository or memory proposal the Desktop started a session
+// for; nothing but the row is written.
+func runCoachAcceptSession(e *coachEnv, id int64) (any, error) {
+	switch {
+	case coachFlagSession <= 0:
+		return nil, errors.New("--restart needs --session <id>")
+	case coachFlagStdin:
+		return nil, errors.New("--stdin does not go with --session: the session writes the change")
+	}
+	verb := "accept a coach proposal through a session"
+	if coachFlagRestart {
+		verb = "start a coach proposal's session again"
+	}
+	if err := coachConfirm(e, verb, id, ""); err != nil {
+		return nil, err
+	}
+	a := e.applier()
+	run := a.AcceptWithSession
+	if coachFlagRestart {
+		run = a.Restart
+	}
+	if err := run(id, coachFlagSession); err != nil {
+		return nil, codedCoachErr(err)
+	}
+	return coachAcceptSessionJSON{coachAcceptJSON: coachAcceptJSON{
+		coachDecisionJSON: coachDecisionJSON{OK: true, ID: id, Status: "accepted"}}, SessionID: coachFlagSession}, nil
+}
+
+// runCoachBrief prints the brief of the session that carries out a
+// repository or memory proposal, or with --revert the session that reverts a
+// merged repository change (its PR named). Read-only.
+func runCoachBrief(e *coachEnv, arg string) (any, error) {
+	id, err := parseCoachID(arg)
+	if err != nil {
+		return nil, err
+	}
+	p, err := e.db.GetCoachProposal(id)
+	if err != nil {
+		return nil, err
+	}
+	if !coach.IsSessionDestination(p.Destination) {
+		return nil, codedCoachErr(fmt.Errorf("coach proposal %d (%s) is applied by Accept, not by a session: %w",
+			id, p.Destination, coach.ErrRefused))
+	}
+	lang := agentreport.LangOf(e.cfg.Digest.Language)
+	if !coachFlagRevert {
+		title, prompt := coach.Brief(p, lang)
+		return coachBriefJSON{OK: true, ID: id, Title: title, Prompt: prompt}, nil
+	}
+	if p.Destination == coach.DestMemoryIndex || p.Status != "accepted" || !p.ViaSession {
+		return nil, codedCoachErr(fmt.Errorf("coach proposal %d has no merged session change to revert: %w",
+			id, coach.ErrRefused))
+	}
+	pr, err := coachSessionPR(e.db, p, map[int64]map[string]db.PRState{})
+	if err != nil {
+		return nil, err
+	}
+	if pr == nil || pr.State != "merged" {
+		return nil, codedCoachErr(fmt.Errorf("coach proposal %d: its PR is not merged, nothing to revert: %w",
+			id, coach.ErrRefused))
+	}
+	title, prompt := coach.RevertBrief(p, pr.PRNumber.Int64, lang)
+	return coachBriefJSON{OK: true, ID: id, Title: title, Prompt: prompt}, nil
+}
+
+func runCoachDismiss(e *coachEnv, arg string) (any, error) {
+	id, err := parseCoachID(arg)
+	if err != nil {
+		return nil, err
+	}
+	if err := coachConfirm(e, "dismiss a coach proposal", id, ""); err != nil {
+		return nil, err
+	}
+	if err := e.applier().Dismiss(id); err != nil {
+		return nil, codedCoachErr(err)
+	}
+	return coachVerdictJSON{coachDecisionJSON: coachDecisionJSON{OK: true, ID: id, Status: "accepted"},
+		Verdict: "too_little_data"}, nil
+}
+
+func runCoachReapply(e *coachEnv, arg string) (any, error) {
+	id, err := parseCoachID(arg)
+	if err != nil {
+		return nil, err
+	}
+	if err := coachConfirm(e, "turn a setting off again", id, ""); err != nil {
+		return nil, err
+	}
+	if err := e.applier().Reapply(id); err != nil {
+		return nil, codedCoachErr(err)
+	}
+	return coachVerdictJSON{coachDecisionJSON: coachDecisionJSON{OK: true, ID: id, Status: "accepted"}}, nil
 }
 
 func runCoachDecline(e *coachEnv, arg string) (any, error) {
@@ -617,6 +864,8 @@ func codedCoachErr(err error) *coachCodedError {
 		code = "changed_since"
 	case errors.Is(err, db.ErrCoachStateChanged):
 		code = "state_changed"
+	case errors.Is(err, db.ErrCoachSessionHasPR):
+		code = "has_pr"
 	case errors.Is(err, coach.ErrRepoDirty):
 		code = "dirty"
 	case errors.Is(err, coach.ErrRepoNotGit):
@@ -733,6 +982,16 @@ func printCoach(w io.Writer, v any) {
 		printCoachProposals(w, r.Proposals)
 	case coachDecisionJSON:
 		fmt.Fprintf(w, "Proposal %d: %s\n", r.ID, r.Status)
+	case coachAcceptSessionJSON:
+		fmt.Fprintf(w, "Proposal %d: %s through session %d\n", r.ID, r.Status, r.SessionID)
+	case coachVerdictJSON:
+		verdict := r.Verdict
+		if verdict == "" {
+			verdict = "measuring again"
+		}
+		fmt.Fprintf(w, "Proposal %d: %s (%s)\n", r.ID, r.Status, verdict)
+	case coachBriefJSON:
+		fmt.Fprintf(w, "%s\n\n%s", r.Title, r.Prompt)
 	case coachAcceptJSON:
 		fmt.Fprintf(w, "Proposal %d: %s\n", r.ID, r.Status)
 		if r.PackCopiesUpdated > 0 || r.PackCopiesDrifted > 0 {
