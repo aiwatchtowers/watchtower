@@ -21,8 +21,8 @@ const slackLiveTimeLayout = "2006-01-02T15:04:05.000000000Z"
 // UpsertSlackLiveStatus keeps the row with the newest CheckedAt per
 // (team_id, provider); an older or equal write is a no-op. An empty
 // ConnectorID never erases a known one.
-func (d *DB) UpsertSlackLiveStatus(s SlackLiveStatus) error {
-	_, err := d.Exec(`INSERT INTO slack_live_status (team_id, provider, status, error_class, connector_id, checked_at)
+func (db *DB) UpsertSlackLiveStatus(s SlackLiveStatus) error {
+	_, err := db.Exec(`INSERT INTO slack_live_status (team_id, provider, status, error_class, connector_id, checked_at)
 VALUES (?, ?, ?, ?, ?, ?)
 ON CONFLICT(team_id, provider) DO UPDATE SET
   status = excluded.status,
@@ -39,8 +39,8 @@ WHERE excluded.checked_at > slack_live_status.checked_at`,
 
 // ListSlackLiveStatus returns every row, newest check first, so a caller can
 // take the first row per provider.
-func (d *DB) ListSlackLiveStatus() ([]SlackLiveStatus, error) {
-	rows, err := d.Query(`SELECT team_id, provider, status, error_class, connector_id, checked_at
+func (db *DB) ListSlackLiveStatus() ([]SlackLiveStatus, error) {
+	rows, err := db.Query(`SELECT team_id, provider, status, error_class, connector_id, checked_at
 FROM slack_live_status ORDER BY checked_at DESC, team_id, provider`)
 	if err != nil {
 		return nil, fmt.Errorf("list slack live status: %w", err)
