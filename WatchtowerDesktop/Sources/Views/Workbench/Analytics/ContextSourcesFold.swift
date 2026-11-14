@@ -7,6 +7,9 @@ import WatchtowerCore
 /// session measured reads "not measured", never 0.
 struct ContextSourcesFold: View {
     let sources: [AgentSourceGroupRow]
+    /// The baseline bar's parts: a part's title shows the bar's total, and
+    /// what its groups do not cover is one "not split by source" line.
+    var parts: [AgentPartShare] = []
     @State var isExpanded = false
 
     struct Part: Equatable {
@@ -24,7 +27,7 @@ struct ContextSourcesFold: View {
     var body: some View {
         DisclosureGroup("What's in it", isExpanded: $isExpanded) {
             VStack(alignment: .leading, spacing: Spacing.regular) {
-                ForEach(Array(Self.parts(sources).enumerated()), id: \.offset) { _, part in
+                ForEach(Array(Self.parts(sources, baseline: parts).enumerated()), id: \.offset) { _, part in
                     VStack(alignment: .leading, spacing: Spacing.tight) {
                         Text(part.title).font(.callout.weight(.semibold).monospacedDigit())
                         ForEach(Array(part.rows.enumerated()), id: \.offset) { _, row in
@@ -49,7 +52,8 @@ struct ContextSourcesFold: View {
 
     /// The parts, heaviest first, each with its groups heaviest first (a
     /// part no session measured last).
-    static func parts(_ sources: [AgentSourceGroupRow]) -> [Part] {
+    static func parts(_ sources: [AgentSourceGroupRow], baseline: [AgentPartShare] = []) -> [Part] {
+        let bar = Dictionary(baseline.map { ($0.part, Int($0.tokens)) }) { a, _ in a }
         let byPart = Dictionary(grouping: sources, by: \.part)
         let weight = { (rows: [AgentSourceGroupRow]) in rows.filter { $0.measuredSessions > 0 }.reduce(0) { $0 + $1.tokens } }
         let measured = { (rows: [AgentSourceGroupRow]) in rows.contains { $0.measuredSessions > 0 } }
@@ -58,16 +62,25 @@ struct ContextSourcesFold: View {
             return ka != kb ? ka < kb : a.key < b.key
         }
         .map { part, rows in
-            let total = measured(rows) ? ContextActionsPresentation.tokens(weight(rows)) : notMeasured
+            let split = weight(rows)
+            let whole = bar[part].map { max($0, split) }
+            let total = whole.map(ContextActionsPresentation.tokens)
+                ?? (measured(rows) ? ContextActionsPresentation.tokens(split) : notMeasured)
             let sorted = rows.sorted { a, b in
                 let ka = (a.measuredSessions > 0 ? 0 : 1, -a.tokens), kb = (b.measuredSessions > 0 ? 0 : 1, -b.tokens)
                 return ka != kb ? ka < kb : name(a) < name(b)
             }
-            return Part(title: "\(AgentAnalyticsFormat.label(part: part)) · \(total)", rows: sorted.map(row))
+            var lines = sorted.map(row)
+            if let whole, whole > split {
+                lines.append(Row(name: notSplit, detail: ContextActionsPresentation.tokens(whole - split), fixed: true))
+            }
+            return Part(title: "\(AgentAnalyticsFormat.label(part: part)) · \(total)", rows: lines)
         }
     }
 
     static let notMeasured = "not measured"
+    /// The part's start weight its source groups do not account for.
+    static let notSplit = "Not split by source"
     static let cantChange = "can't change"
 
     static func row(_ source: AgentSourceGroupRow) -> Row {

@@ -37,6 +37,15 @@ final class CoachCenter {
     /// it survives navigation and an app restart. An entry is dropped once
     /// the proposal is no longer open or its session row is gone.
     private(set) var linkFailed: [Int64: Int64] = [:]
+    /// The `linkFailed` entries a Start Again (`--restart`) left: an
+    /// accepted row whose new session is unlinked. Retry Link sends
+    /// `--restart`; the entry goes once the row names that session.
+    /// Persisted (`restartLinksKey`).
+    private(set) var restartLinks: Set<Int64> = []
+    /// Proposal id → the revert session Revert… started (`revertSessionsKey`):
+    /// the row offers Open Session instead of a second Revert…. Dropped when
+    /// the proposal is no longer accepted or the session row is gone.
+    private(set) var revertSessions: [Int64: Int64] = [:]
     /// Session flows between the press and their `coach accept --session`.
     private(set) var sessionStarts: Set<Int64> = []
     /// The session each Accept / Start Again started, and when: the row
@@ -49,6 +58,9 @@ final class CoachCenter {
     }
 
     nonisolated static let linkFailedKey = "coach.linkFailed"
+    nonisolated static let restartLinksKey = "coach.linkFailedRestart"
+    nonisolated static let revertSessionsKey = "coach.revertSessions"
+    nonisolated static let alreadyStarted = "A session already started for this proposal — the list is being read again"
     /// A started session that never goes live stops counting as starting
     /// after this, so a crash at launch ends on the session's own state.
     nonisolated static let launchGrace: TimeInterval = 60
@@ -77,7 +89,9 @@ final class CoachCenter {
         self.runner = runner
         self.interval = interval
         self.defaults = defaults
-        linkFailed = Self.readLinks(defaults)
+        linkFailed = Self.readMap(defaults, Self.linkFailedKey)
+        revertSessions = Self.readMap(defaults, Self.revertSessionsKey)
+        restartLinks = Set((defaults.array(forKey: Self.restartLinksKey) as? [NSNumber] ?? []).map(\.int64Value))
     }
 
     var isPolling: Bool { loop != nil }
@@ -195,7 +209,13 @@ final class CoachCenter {
     /// `linkFailed`. `pending` holds the id throughout, so a second press is
     /// ignored; an id already linked or launched never starts a second one.
     func acceptThroughSession(_ id: Int64, start: (String, String) async -> Int64?) async {
-        guard linkFailed[id] == nil, launched[id] == nil else { return }
+        guard linkFailed[id] == nil else { return }
+        // Accepted already, but the list still says open (its read failed).
+        guard launched[id] == nil else {
+            cardErrors[id] = Self.alreadyStarted
+            refreshProposals()
+            return
+        }
         await throughSession(id, revert: false, start: start) { session in
             await self.link(id, session: session, restart: false)
         }
@@ -204,6 +224,7 @@ final class CoachCenter {
     /// **Start Again** on an accepted row whose session ended with nothing:
     /// a new session, recorded with `coach accept --session --restart`.
     func restartThroughSession(_ id: Int64, start: (String, String) async -> Int64?) async {
+        guard linkFailed[id] == nil else { return }
         await throughSession(id, revert: false, start: start) { session in
             await self.link(id, session: session, restart: true)
         }
@@ -212,8 +233,20 @@ final class CoachCenter {
     /// **Revert…** of a merged repository change: a session started with
     /// `coach brief <id> --revert`. Nothing is recorded: its PR is the record.
     func revertThroughSession(_ id: Int64, start: (String, String) async -> Int64?) async {
-        await throughSession(id, revert: true, start: start) { _ in }
+        guard revertSessions[id] == nil else { return }
+        await throughSession(id, revert: true, start: start) { session in
+            self.setRevert(id, session)
+        }
     }
+
+    /// The pane found `session`'s row gone: a revert entry naming it goes.
+    func forgetRevert(_ id: Int64, session: Int64) {
+        if revertSessions[id] == session { setRevert(id, nil) }
+    }
+
+    /// A session start is in flight or waits to go live: the rows need a
+    /// redraw when `launchGrace` passes.
+    var hasLaunches: Bool { !sessionStarts.isEmpty || !launched.isEmpty }
 
     /// **Retry Link**: the same `coach accept --session` with the session
     /// that could not be linked.
@@ -221,8 +254,9 @@ final class CoachCenter {
         guard let session = linkFailed[id], pending.insert(id).inserted else { return }
         defer { pending.remove(id) }
         cardErrors[id] = nil
+        let restart = restartLinks.contains(id) ? ["--restart"] : []
         do {
-            _ = try await runner.run(args: ["coach", "accept", String(id), "--session", String(session), "--json"])
+            _ = try await runner.run(args: ["coach", "accept", String(id), "--session", String(session)] + restart + ["--json"])
             setLink(id, nil)
         } catch where Self.failure(error)?.code == "state_changed" {
             setLink(id, nil)
@@ -294,7 +328,6 @@ final class CoachCenter {
     /// on either try is another surface's Accept (quiet).
     private func link(_ id: Int64, session: Int64, restart: Bool) async {
         let args = ["coach", "accept", String(id), "--session", String(session)] + (restart ? ["--restart"] : []) + ["--json"]
-        var last: Error?
         for _ in 0..<2 {
             do {
                 _ = try await runner.run(args: args)
@@ -302,36 +335,55 @@ final class CoachCenter {
             } catch where Self.failure(error)?.code == "state_changed" {
                 return
             } catch {
-                last = error
+                continue
             }
         }
-        guard let last else { return }
-        if restart {
-            // An accepted row: its card keeps Start Again, with the error.
-            cardErrors[id] = "\(ContextActionsPresentation.Copy.linkFailed): \(Self.message(last))"
-        } else {
-            setLink(id, session)
-        }
+        // Retry Link and Open Session from now on, on an open row and on an
+        // accepted one alike: never a second session.
+        setLink(id, session, restart: restart)
     }
 
-    private func setLink(_ id: Int64, _ session: Int64?) {
+    private func setLink(_ id: Int64, _ session: Int64?, restart: Bool = false) {
         linkFailed[id] = session
-        defaults.set(Dictionary(uniqueKeysWithValues: linkFailed.map { (String($0.key), NSNumber(value: $0.value)) }),
-                     forKey: Self.linkFailedKey)
+        if session != nil, restart { restartLinks.insert(id) } else { restartLinks.remove(id) }
+        Self.writeMap(linkFailed, defaults, Self.linkFailedKey)
+        defaults.set(restartLinks.sorted().map { NSNumber(value: $0) }, forKey: Self.restartLinksKey)
     }
 
-    private static func readLinks(_ defaults: UserDefaults) -> [Int64: Int64] {
-        var links: [Int64: Int64] = [:]
-        for (key, value) in defaults.dictionary(forKey: linkFailedKey) ?? [:] {
-            if let id = Int64(key), let session = (value as? NSNumber)?.int64Value { links[id] = session }
+    private func setRevert(_ id: Int64, _ session: Int64?) {
+        revertSessions[id] = session
+        Self.writeMap(revertSessions, defaults, Self.revertSessionsKey)
+    }
+
+    private static func writeMap(_ map: [Int64: Int64], _ defaults: UserDefaults, _ key: String) {
+        defaults.set(Dictionary(uniqueKeysWithValues: map.map { (String($0.key), NSNumber(value: $0.value)) }), forKey: key)
+    }
+
+    private static func readMap(_ defaults: UserDefaults, _ key: String) -> [Int64: Int64] {
+        var map: [Int64: Int64] = [:]
+        for (key, value) in defaults.dictionary(forKey: key) ?? [:] {
+            if let id = Int64(key), let session = (value as? NSNumber)?.int64Value { map[id] = session }
         }
-        return links
+        return map
     }
 
-    /// Drops the link entries whose proposal is no longer open.
-    private func pruneLinks(_ proposals: [CoachProposal]) {
-        let open = Set(proposals.filter { $0.status == "open" }.map(\.id))
-        for id in linkFailed.keys where !open.contains(id) { setLink(id, nil) }
+    /// After a list read: an Accept's link entry goes once the proposal is
+    /// no longer open; a Start Again's once the row is no longer accepted or
+    /// names that session; a revert entry once the row is no longer
+    /// accepted; a launch once its row is no longer open and the grace passed.
+    private func prune(_ proposals: [CoachProposal], now: Date = Date()) {
+        let byID = Dictionary(proposals.map { ($0.id, $0) }) { a, _ in a }
+        for (id, session) in linkFailed {
+            let p = byID[id]
+            let keep = restartLinks.contains(id)
+                ? p?.status == "accepted" && p?.sessionID != session
+                : p?.status == "open"
+            if !keep { setLink(id, nil) }
+        }
+        for id in revertSessions.keys where byID[id]?.status != "accepted" { setRevert(id, nil) }
+        for (id, launch) in launched where byID[id]?.status != "open" && now.timeIntervalSince(launch.at) >= Self.launchGrace {
+            launched[id] = nil
+        }
     }
 
     /// Reads the proposal list and waits for it, a read already in flight
@@ -431,7 +483,7 @@ final class CoachCenter {
                 let list = try JSONDecoder().decode(CoachProposalList.self, from: data)
                 guard !Task.isCancelled else { return }
                 proposals = SessionReportCenter.Snapshot(value: list.proposals)
-                pruneLinks(list.proposals)
+                prune(list.proposals)
             } catch {
                 guard !Task.isCancelled, !(error is CancellationError) else { return }
                 var current = proposals ?? SessionReportCenter.Snapshot()

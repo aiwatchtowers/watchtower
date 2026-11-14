@@ -29,19 +29,27 @@ extension WorkbenchesViewModel {
         })
     }
 
-    /// Drops each `coach.linkFailed` entry whose session row is gone from
-    /// the database. A failed read keeps the entry: an unreadable row is
-    /// not a missing one.
+    /// Drops each `coach.linkFailed` and `coach.revertSessions` entry whose
+    /// session row is gone from the database. A failed read keeps the
+    /// entry: an unreadable row is not a missing one.
     func forgetGoneCoachLinks() async {
-        guard let coach, !coach.linkFailed.isEmpty else { return }
+        guard let coach else { return }
         for (id, session) in coach.linkFailed {
-            let exists: Bool
-            do {
-                exists = try await dbPool.read { try TerminalSessionQueries.fetch($0, id: session) } != nil
-            } catch {
-                continue
-            }
-            if !exists { coach.forgetLink(id, session: session) }
+            guard await sessionRowGone(session) else { continue }
+            coach.forgetLink(id, session: session)
+        }
+        for (id, session) in coach.revertSessions {
+            guard await sessionRowGone(session) else { continue }
+            coach.forgetRevert(id, session: session)
+        }
+    }
+
+    /// true only when the read succeeded and found no row.
+    private func sessionRowGone(_ session: Int64) async -> Bool {
+        do {
+            return try await dbPool.read { try TerminalSessionQueries.fetch($0, id: session) } == nil
+        } catch {
+            return false
         }
     }
 }

@@ -294,6 +294,25 @@ final class ContextActionsPresentationTests: XCTestCase {
         XCTAssertEqual(closed.actions, [])
     }
 
+    /// Task 9 fix round: a CLAUDE.md move carries the proposer's estimate
+    /// (`saving_tokens` evidence): shown as "~−18.5k", counted in the
+    /// headline, kept out of the evidence line. The memory index has none.
+    func testRepoSavingEstimateFromEvidence() throws {
+        let estimate = CoachEvidence(kind: "saving_tokens", ref: "18500")
+        let size = CoachEvidence(kind: "file", ref: "Feature Notes is 74 of 88 KB")
+        let repo = proposal(7, destination: "repo_claude_md", workbench: 3, source: "", evidence: [size, estimate])
+        let memory = proposal(8, destination: "claude_memory_index", workbench: 3, source: "", evidence: [estimate])
+        let out = rows([repo, memory])
+        let byID = Dictionary(uniqueKeysWithValues: out.doThese.map { ($0.id, $0) })
+        XCTAssertEqual(byID[7]?.saving, 18500)
+        XCTAssertEqual(byID[7]?.savingText, "~−18.5k")
+        XCTAssertEqual(byID[7]?.evidence, "Feature Notes is 74 of 88 KB")
+        XCTAssertNil(byID[8]?.saving)
+        XCTAssertEqual(out.doThese.first?.id, 7, "largest saving first")
+        XCTAssertEqual(ContextActionsPresentation.headline(baselineTokens: 79600, rows: out.doThese),
+                       "1 change would cut it to ~61k")
+    }
+
     /// Task 9: a merged repository change is reverted through a session
     /// (**Revert…**); a written memory index is rolled back from its stored
     /// copy (**Undo**); an unmerged or unwritten one offers neither.

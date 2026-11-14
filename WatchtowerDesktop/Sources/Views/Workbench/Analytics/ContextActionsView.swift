@@ -15,100 +15,42 @@ struct ContextActionsView: View {
     var errors: [Int64: String] = [:]
     let perform: (ContextActionRow.Action, ContextActionRow) -> Void
 
-    @State private var confirmDecline: ContextActionRow?
-    @State private var confirmRevert: ContextActionRow?
-
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.small) {
             Text("Do these").font(.callout.weight(.semibold))
-            ForEach(doThese) { row in rowView(row) }
-            ForEach(done) { row in
-                rowView(row).opacity(0.6)
-            }
+            ForEach(doThese) { row in rowView(row, faded: false) }
+            ForEach(done) { row in rowView(row, faded: true) }
         }
         .controlSize(.small)
-        .confirmationDialog("Decline this change?", isPresented: presented($confirmDecline), presenting: confirmDecline) { row in
-            Button("Decline", role: .destructive) { perform(.decline, row) }
-            Button("Cancel", role: .cancel) {}
-        } message: { _ in
-            Text("Decline for good? It will not be proposed again.")
-        }
-        .confirmationDialog("Revert this change?", isPresented: presented($confirmRevert), presenting: confirmRevert) { row in
-            Button("Start Revert Session") { perform(.revert, row) }
-            Button("Cancel", role: .cancel) {}
-        } message: { _ in
-            Text("A session opens a PR that reverts the merged change. Nothing is merged without you.")
-        }
     }
 
-    private func rowView(_ row: ContextActionRow) -> some View {
+    /// A done row fades its text, not its buttons: Undo stays legible.
+    private func rowView(_ row: ContextActionRow, faded: Bool) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: Spacing.medium) {
-            Text(Self.savingLabel(row))
-                .font(.callout.weight(.semibold).monospacedDigit())
-                .foregroundStyle(Tone.success)
-                .frame(width: ListLayout.numberColumn, alignment: .trailing)
-            VStack(alignment: .leading, spacing: Spacing.tight) {
-                HStack(spacing: Spacing.compact) {
-                    Text(row.proposal.title).font(.callout.weight(.medium))
-                    Chip(text: row.tag.label, color: .secondary)
+            HStack(alignment: .firstTextBaseline, spacing: Spacing.medium) {
+                Text(Self.savingLabel(row))
+                    .font(.callout.weight(.semibold).monospacedDigit())
+                    .foregroundStyle(Tone.success)
+                    .frame(width: ListLayout.numberColumn, alignment: .trailing)
+                VStack(alignment: .leading, spacing: Spacing.tight) {
+                    HStack(spacing: Spacing.compact) {
+                        Text(row.proposal.title).font(.callout.weight(.medium))
+                        Chip(text: row.tag.label, color: .secondary)
+                    }
+                    if !row.evidence.isEmpty {
+                        Text(row.evidence).font(.caption).foregroundStyle(.secondary)
+                    }
+                    ContextActionLines(row: row, error: errors[row.id])
                 }
-                if !row.evidence.isEmpty {
-                    Text(row.evidence).font(.caption).foregroundStyle(.secondary)
-                }
-                lines(row)
+                .fixedSize(horizontal: false, vertical: true)
             }
-            .fixedSize(horizontal: false, vertical: true)
+            .opacity(faded ? 0.6 : 1)
             Spacer(minLength: Spacing.regular)
-            buttons(row)
+            ContextActionButtons(row: row, busy: busy.contains(row.id), perform: perform)
         }
         .padding(.vertical, Spacing.compact)
         .padding(.horizontal, Spacing.regular)
         .kitRow(isSelected: false)
-    }
-
-    @ViewBuilder private func lines(_ row: ContextActionRow) -> some View {
-        if row.state == .starting {
-            HStack(spacing: Spacing.compact) {
-                ProgressView().controlSize(.mini)
-                Text(Self.startingLine).font(.caption).foregroundStyle(.secondary)
-            }
-        }
-        if let line = Self.progressLine(row) {
-            Text(line).font(.caption).foregroundStyle(.secondary)
-        }
-        if let line = row.stateLine {
-            Text(line).font(.caption).foregroundStyle(Self.isWarning(row.state) ? Tone.warning : .secondary)
-        }
-        if let numbers = row.beforeAfter {
-            Text(numbers).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-        }
-        // A failed start shows its message as the state line already.
-        if let error = errors[row.id], !Self.isFailed(row.state) {
-            Label(error, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(Tone.warning)
-        }
-    }
-
-    private func buttons(_ row: ContextActionRow) -> some View {
-        HStack(spacing: Spacing.compact) {
-            ForEach(row.actions, id: \.self) { action in
-                switch action {
-                case .decline:
-                    Button(action.title) { confirmDecline = row }.buttonStyle(.kitQuiet)
-                case .revert:
-                    Button(action.title) { confirmRevert = row }.buttonStyle(.kitSecondary)
-                case .undo:
-                    Button(action.title) { perform(action, row) }.buttonStyle(.kitQuiet)
-                default:
-                    Button(action.title) { perform(action, row) }.buttonStyle(.kitSecondary)
-                }
-            }
-        }
-        .fixedSize()
-        .disabled(busy.contains(row.id))
-    }
-
-    private func presented(_ binding: Binding<ContextActionRow?>) -> Binding<Bool> {
-        Binding(get: { binding.wrappedValue != nil }, set: { if !$0 { binding.wrappedValue = nil } })
     }
 
     // MARK: - Lines
@@ -126,6 +68,7 @@ struct ContextActionsView: View {
     static func progressLine(_ row: ContextActionRow) -> String? {
         switch row.state {
         case .working: return "Session working"
+        case let .reverting(session): return "Revert session #\(session)"
         case let .prReady(pr, _): return "PR #\(pr) ready"
         case .measuring:
             return row.tag == .memory ? "Index written · measuring" : "Merged · measuring"
@@ -140,15 +83,85 @@ struct ContextActionsView: View {
         }
     }
 
-    private static func isFailed(_ state: ContextActionRow.State) -> Bool {
+    static func isFailed(_ state: ContextActionRow.State) -> Bool {
         if case .failed = state { return true }
         return false
     }
 
-    private static func isWarning(_ state: ContextActionRow.State) -> Bool {
+    static func isWarning(_ state: ContextActionRow.State) -> Bool {
         switch state {
         case .failed, .linkFailed, .revertedOutside, .sessionGone: return true
         default: return false
+        }
+    }
+}
+
+/// Where a row is: starting, its progress, its state line, the measured
+/// numbers and a failed verb's line.
+struct ContextActionLines: View {
+    let row: ContextActionRow
+    var error: String?
+
+    var body: some View {
+        if row.state == .starting {
+            HStack(spacing: Spacing.compact) {
+                ProgressView().controlSize(.mini)
+                Text(ContextActionsView.startingLine).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        if let line = ContextActionsView.progressLine(row) {
+            Text(line).font(.caption).foregroundStyle(.secondary)
+        }
+        if let line = row.stateLine {
+            Text(line).font(.caption)
+                .foregroundStyle(ContextActionsView.isWarning(row.state) ? Tone.warning : .secondary)
+        }
+        if let numbers = row.beforeAfter {
+            Text(numbers).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+        }
+        // A failed start shows its message as the state line already.
+        if let error, !ContextActionsView.isFailed(row.state) {
+            Label(error, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(Tone.warning)
+        }
+    }
+}
+
+/// A row's buttons, in the order its state allows; Decline and Revert…
+/// are confirmed first.
+struct ContextActionButtons: View {
+    let row: ContextActionRow
+    var busy = false
+    let perform: (ContextActionRow.Action, ContextActionRow) -> Void
+
+    @State private var confirmDecline = false
+    @State private var confirmRevert = false
+
+    var body: some View {
+        HStack(spacing: Spacing.compact) {
+            ForEach(row.actions, id: \.self) { action in
+                switch action {
+                case .decline:
+                    Button(action.title) { confirmDecline = true }.buttonStyle(.kitQuiet)
+                case .revert:
+                    Button(action.title) { confirmRevert = true }.buttonStyle(.kitSecondary)
+                default:
+                    Button(action.title) { perform(action, row) }.buttonStyle(.kitSecondary)
+                }
+            }
+        }
+        .fixedSize()
+        .disabled(busy)
+        .confirmationDialog("Decline this change?", isPresented: $confirmDecline) {
+            Button("Decline", role: .destructive) { perform(.decline, row) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Decline for good? It will not be proposed again.")
+        }
+        .confirmationDialog("Revert this change?", isPresented: $confirmRevert) {
+            Button("Start Revert Session") { perform(.revert, row) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("A session opens a PR that reverts the merged change. Nothing is merged without you.")
         }
     }
 }

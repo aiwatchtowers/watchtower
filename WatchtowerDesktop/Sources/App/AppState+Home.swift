@@ -166,8 +166,13 @@ extension AppState {
     func acceptCoachThroughSession(_ proposal: CoachProposal) async -> String? {
         guard let coach = coachCenter, let vm = workbenchesViewModel else { return "The command line is not available." }
         let workbench = proposal.workbenchID
-        await coach.acceptThroughSession(proposal.id) { title, prompt in
-            await vm.startCoachSession(workbench: workbench, title: title, prompt: prompt)
+        if coach.linkFailed[proposal.id] != nil {
+            // Its session runs unlinked: Accept here is Retry Link, never a second session.
+            await coach.retryLink(proposal.id)
+        } else {
+            await coach.acceptThroughSession(proposal.id) { title, prompt in
+                await vm.startCoachSession(workbench: workbench, title: title, prompt: prompt)
+            }
         }
         await homeCenter.rereadNow()
         if coach.linkFailed[proposal.id] != nil { return ContextActionsPresentation.Copy.linkFailed }

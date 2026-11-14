@@ -120,8 +120,12 @@ struct CoachProposalCardView: View {
     /// Disabled apart from the evidence links, which stay live.
     private func verbs(busy: Bool) -> some View {
         HStack(spacing: Spacing.regular) {
-            Button("Decline") { confirmDecline = true }.buttonStyle(.kitSecondary)
-            if Self.hasEdit(proposal) {
+            // Linked to nothing yet, a session runs for it: Open Session /
+            // Retry Link only, as on the Context row.
+            if coach.linkFailed[proposal.id] == nil {
+                Button("Decline") { confirmDecline = true }.buttonStyle(.kitSecondary)
+            }
+            if Self.hasEdit(proposal), coach.linkFailed[proposal.id] == nil {
                 Button("Edit…", action: onEdit).buttonStyle(.kitSecondary)
             }
             acceptButton

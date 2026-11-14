@@ -17,6 +17,10 @@ struct CoachSectionsView: View {
     let coach: CoachCenter
     let workbench: Int64
     let actions: CoachActions
+    /// Session rows in Accepted edits follow their session (nil: they show
+    /// their verdict line only).
+    var contextActions: ContextActionsInputs?
+    @Environment(\.openURL) private var openURL
     @State private var editing: CoachProposal?
     @State private var rollback: CoachRollbackPrompt?
 
@@ -29,13 +33,15 @@ struct CoachSectionsView: View {
             CoachMetricTilesView(snapshot: status)
             proposed(open, lastRun: status?.value?.lastRun)
             if coach.proposals?.value != nil {
-                CoachAcceptedLogView(accepted: split.accepted, open: open, coach: coach) { proposal in
+                CoachAcceptedLogView(accepted: split.accepted, open: open, coach: coach, onRollback: { proposal in
                     Task {
                         if let diff = await coach.rollback(proposal.id, force: false) {
                             rollback = CoachRollbackPrompt(proposal: proposal, diff: diff)
                         }
                     }
-                }
+                }, sessionRow: { contextActions?.row(for: $0) }, perform: { action, row in
+                    contextActions?.perform(action, row, openURL: { openURL($0) }, rollback: { rollback = $0 })
+                })
                 .id(Self.acceptedID)
             }
         }

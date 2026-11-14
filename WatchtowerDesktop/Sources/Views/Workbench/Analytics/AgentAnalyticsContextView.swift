@@ -1,33 +1,6 @@
 import SwiftUI
 import WatchtowerCore
 
-/// What the Context block's ready actions (context actions, spec 2026-11-12
-/// part 4) need from the pane besides the report: the coach, where the
-/// workbench's sessions are, and how to start or open one.
-struct ContextActionsInputs {
-    let coach: CoachCenter
-    let workbench: Int64
-    /// `WorkbenchesViewModel.coachSessionKinds`: the workbench's session rows.
-    let sessionKinds: [Int64: SessionSwitcherPresentation.State.Kind]
-    /// The sessions whose process runs (a started one counts as starting
-    /// until it is here).
-    let liveSessions: Set<Int64>
-    /// The workbench's GitHub repository, for a PR link the CLI did not give.
-    let repository: URL?
-    /// Starts a session (workbench, title, prompt) → its id, nil on failure.
-    let startSession: (Int64, String, String) async -> Int64?
-    let openSession: (Int64) -> Void
-
-    @MainActor
-    func rows(_ context: AgentContextReport, now: Date = Date()) -> (doThese: [ContextActionRow], done: [ContextActionRow]) {
-        ContextActionsPresentation.rows(
-            proposals: coach.proposals?.value ?? [], workbenchID: workbench, sources: context.sources ?? [],
-            sessionKinds: sessionKinds, linkFailed: coach.linkFailed, now: now,
-            starting: coach.starting(live: liveSessions, now: now), errors: coach.cardErrors, repository: repository
-        )
-    }
-}
-
 /// "Context": what a session starts with (the baseline by part), the ready
 /// changes that would shrink it (**Do these**) and what is in it by source,
 /// what made it grow (by source), the biggest sources, files read again and
@@ -47,10 +20,22 @@ struct AgentAnalyticsContextView: View {
     static let shownGrowth = 6
 
     var body: some View {
-        let rows = context.flatMap { contextActions?.rows($0) } ?? (doThese: [], done: [])
+        // While a session start waits to go live, redraw so the row leaves
+        // "starting" when `CoachCenter.launchGrace` passes.
+        if contextActions?.coach.hasLaunches == true {
+            TimelineView(.periodic(from: .now, by: Self.launchRedraw)) { timeline in block(now: timeline.date) }
+        } else {
+            block(now: Date())
+        }
+    }
+
+    static let launchRedraw: TimeInterval = 5
+
+    private func block(now: Date) -> some View {
+        let rows = context.flatMap { contextActions?.rows($0, now: now) } ?? (doThese: [], done: [])
         let baseline = Int(context?.baseline?.tokens ?? 0)
         let lead = context?.lead.map { Self.lead($0, baseline: baseline, rows: rows.doThese) }
-        AgentAnalyticsBlock(title: "Context", lead: lead, state: state, codex: codex) {
+        return AgentAnalyticsBlock(title: "Context", lead: lead, state: state, codex: codex) {
             if let context { measured(context, rows: rows) }
         } footer: {
             // Compactions and the files on disk show in any state.
@@ -91,12 +76,12 @@ struct AgentAnalyticsContextView: View {
             if let inputs = contextActions, !(rows.doThese.isEmpty && rows.done.isEmpty) {
                 ContextActionsView(doThese: rows.doThese, done: rows.done, busy: inputs.coach.pending,
                                    errors: inputs.coach.cardErrors) { action, row in
-                    perform(action, row, inputs)
+                    inputs.perform(action, row, openURL: { openURL($0) }, rollback: { rollback = $0 })
                 }
                 .sheet(item: $rollback) { CoachRollbackSheet(proposal: $0.proposal, diff: $0.diff, coach: inputs.coach) }
             }
             if let sources = context.sources, !sources.isEmpty {
-                ContextSourcesFold(sources: sources, isExpanded: sourcesExpanded)
+                ContextSourcesFold(sources: sources, parts: context.baseline?.parts ?? [], isExpanded: sourcesExpanded)
             }
             if let growth = context.growth, !growth.isEmpty { growthRows(growth) }
             if let sources = context.topSources, !sources.isEmpty {
@@ -131,56 +116,6 @@ struct AgentAnalyticsContextView: View {
                 }
                 .font(.callout)
             }
-        }
-    }
-
-    /// A Do-these button: the session or the PR page here, a coach verb
-    /// through `run`.
-    private func perform(_ action: ContextActionRow.Action, _ row: ContextActionRow, _ inputs: ContextActionsInputs) {
-        switch action {
-        case .openSession:
-            if let session = Self.session(of: row) { inputs.openSession(session) }
-        case .openPR:
-            if let url = row.prLink { openURL(url) }
-        case .showDiff:
-            if let url = row.diffURL { openURL(url) }
-        case .undo:
-            Task {
-                if let diff = await inputs.coach.rollback(row.id, force: false) {
-                    rollback = CoachRollbackPrompt(proposal: row.proposal, diff: diff)
-                }
-            }
-        default:
-            let workbench = row.proposal.workbenchID == 0 ? inputs.workbench : row.proposal.workbenchID
-            Task {
-                await Self.run(action, id: row.id, coach: inputs.coach) { await inputs.startSession(workbench, $0, $1) }
-            }
-        }
-    }
-
-    /// The coach verb behind a button; a session one starts with `start`.
-    static func run(
-        _ action: ContextActionRow.Action, id: Int64, coach: CoachCenter, start: @escaping (String, String) async -> Int64?
-    ) async {
-        switch action {
-        case .turnOff: await coach.accept(id, editedText: nil)
-        case .accept, .archive: await coach.acceptThroughSession(id, start: start)
-        case .decline: await coach.decline(id)
-        case .retryLink: await coach.retryLink(id)
-        case .startAgain: await coach.restartThroughSession(id, start: start)
-        case .dismiss: await coach.dismiss(id)
-        case .turnOffAgain: await coach.reapply(id)
-        case .revert: await coach.revertThroughSession(id, start: start)
-        case .openSession, .openPR, .showDiff, .undo: break
-        }
-    }
-
-    /// The session a row's Open Session opens.
-    static func session(of row: ContextActionRow) -> Int64? {
-        switch row.state {
-        case let .working(session), let .linkFailed(session): return session
-        case let .endedWithoutChange(session): return session
-        default: return nil
         }
     }
 

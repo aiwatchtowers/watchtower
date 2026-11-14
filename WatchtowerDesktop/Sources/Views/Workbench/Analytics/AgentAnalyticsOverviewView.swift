@@ -115,7 +115,8 @@ struct AgentAnalyticsOverviewView: View {
                     coach: coach, workbench: workbench,
                     actions: CoachActions(openAsk: openAsk, openTerminalSession: openTerminalSession,
                                           scrollToStatistics: scrollToStatistics,
-                                          startSession: startSession)
+                                          startSession: startSession),
+                    contextActions: contextActions
                 )
                 SectionHeader(title: "Statistics", systemImage: "chart.bar").id(Self.statisticsID)
             }

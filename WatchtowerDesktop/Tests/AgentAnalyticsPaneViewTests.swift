@@ -1184,4 +1184,61 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
         XCTAssertTrue(all.contains("7.4k · can't change"))
         XCTAssertTrue(all.contains("not measured · 3 uses"))
     }
+
+    // MARK: - Context actions, fix round 1
+
+    func testAcceptedLogFollowsAWeeklyRepoRowThroughItsSession() throws {
+        let weekly = Self.contextProposal(30, destination: "repo_claude_md", status: "accepted", workbench: 3,
+                                          extra: #","session_id":43,"via_session":true,"session_branch":"wt/w""#)
+            .replacingOccurrences(of: #""origin":"context""#, with: #""origin":"weekly""#)
+        let legacy = Self.contextProposal(31, destination: "repo_claude_md", status: "accepted", workbench: 3)
+            .replacingOccurrences(of: #""origin":"context""#, with: #""origin":"weekly""#)
+        let json = #"{"ok":true,"proposals":["# + weekly + "," + legacy + "]}"
+        let list = try JSONDecoder().decode(CoachProposalList.self, from: Data(json.utf8))
+        let coach = CoachCenter(runner: CoachFixtureRunner(), interval: .seconds(3600))
+        defer { coach.stop() }
+        func view(followed: Bool) -> CoachAcceptedLogView {
+            CoachAcceptedLogView(accepted: [list.proposals[0]], open: [], coach: coach, onRollback: { _ in },
+                                 sessionRow: { p in
+                                     guard followed, p.viaSession else { return nil }
+                                     return ContextActionsPresentation.row(of: p, sessionKinds: [43: .working],
+                                                                           linkFailed: [:])
+                                 })
+        }
+        let all = try texts(view(followed: true))
+        XCTAssertTrue(all.contains("Session working"), "the progress line")
+        let buttons = try buttonLabels(view(followed: true))
+        XCTAssertTrue(buttons.contains("Open Session"))
+        XCTAssertFalse(buttons.contains("Roll Back"), "Go refuses Roll Back of a session repo row")
+        XCTAssertFalse(try buttonLabels(view(followed: false)).contains("Roll Back"), "not even without the inputs")
+        XCTAssertFalse(CoachAcceptedLogView.offersRollBack(list.proposals[0]))
+        XCTAssertTrue(CoachAcceptedLogView.offersRollBack(list.proposals[1]), "a legacy repo row keeps Roll Back")
+    }
+
+    func testRevertingRowShowsItsSession() throws {
+        let rows = try Self.contextRows([
+            Self.contextProposal(5, destination: "repo_claude_md", status: "accepted", workbench: 3,
+                                 extra: #","session_id":41,"via_session":true,"pr":12,"pr_state":"merged""#)
+        ])
+        let row = try XCTUnwrap(rows.done.first)
+        XCTAssertEqual(row.actions, [.revert])
+        let reverting = try XCTUnwrap(ContextActionsPresentation.row(
+            of: row.proposal, sessionKinds: [:], linkFailed: [:], revertSessions: [5: 44]))
+        XCTAssertEqual(ContextActionsView.progressLine(reverting), "Revert session #44")
+        XCTAssertEqual(reverting.actions, [.openSession])
+        XCTAssertEqual(ContextActionsInputs.session(of: reverting), 44)
+    }
+
+    func testSourcesFoldTitleIsTheBarsPart() throws {
+        let sources = try JSONDecoder().decode([AgentSourceGroupRow].self, from: Data("""
+        [{"part":"skills","group":"acme","group_kind":"plugin","tokens":2600,"calls":5,"measured_sessions":4}]
+        """.utf8))
+        let bar = try JSONDecoder().decode([AgentPartShare].self, from: Data("""
+        [{"part":"skills","tokens":10200,"share":0.13}]
+        """.utf8))
+        let part = try XCTUnwrap(ContextSourcesFold.parts(sources, baseline: bar).first)
+        XCTAssertEqual(part.title, "Skill list · 10.2k")
+        XCTAssertEqual(part.rows.map(\.name), ["acme", "Not split by source"])
+        XCTAssertEqual(part.rows.last?.detail, "7.6k")
+    }
 }
