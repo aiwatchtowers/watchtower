@@ -568,3 +568,51 @@ func TestApplyAgentLogBatch_ContextSources(t *testing.T) {
 	_, err = d.Exec(`INSERT INTO agent_log_context_sources (session_uuid, kind, name, bytes) VALUES ('s1', 'hook', 'x', 1)`)
 	require.Error(t, err, "kind is a closed set")
 }
+
+// A reread batch replaces its lane's per-source rows (and, for the main
+// transcript, the skill listing) instead of keeping the MAX; a sub-agent
+// lane's reread leaves the main lane and the listing alone.
+func TestApplyAgentLogBatch_RereadReplacesSources(t *testing.T) {
+	d := openTestDB(t)
+	batch := func(offset, expect int64, reread bool, lane string, src []AgentContextSource, listing []AgentSkillListed) {
+		t.Helper()
+		ok, err := d.ApplyAgentLogBatch(AgentLogBatch{File: AgentLogFile{Path: "/x/a.jsonl", Agent: "claude", ReadOffset: offset},
+			ExpectOffset: expect, Sessions: []AgentLogSession{agentSession("s1", "2026-10-01T10:00:00Z", testWorkbenchID)},
+			ContextSources: src, SkillListing: listing, Reread: reread, RereadLane: lane})
+		require.NoError(t, err)
+		require.True(t, ok)
+	}
+	rows := func() map[string]int64 {
+		got := map[string]int64{}
+		src, err := d.AgentReportContextSources([]string{"s1"})
+		require.NoError(t, err)
+		for _, c := range src {
+			got[c.AgentID+"/"+c.Kind+"/"+c.Name] = c.Bytes
+		}
+		listed, err := d.AgentReportSkillListing([]string{"s1"})
+		require.NoError(t, err)
+		for _, k := range listed {
+			got["listing/"+k.Skill] = k.Bytes
+		}
+		return got
+	}
+	batch(10, -1, false, "", []AgentContextSource{
+		{SessionUUID: "s1", Kind: "skill", Name: "a", Bytes: 900},
+		{SessionUUID: "s1", Kind: "skill", Name: "gone", Bytes: 900},
+		{SessionUUID: "s1", AgentID: "a1", Kind: "tool", Name: "Bash", Bytes: 800}},
+		[]AgentSkillListed{{SessionUUID: "s1", Skill: "a", Bytes: 900}})
+
+	// An incremental batch still grows by MAX.
+	batch(20, 10, false, "", []AgentContextSource{{SessionUUID: "s1", Kind: "skill", Name: "a", Bytes: 5}},
+		[]AgentSkillListed{{SessionUUID: "s1", Skill: "a", Bytes: 5}})
+	assert.Equal(t, int64(900), rows()["/skill/a"])
+
+	// A sub-agent lane's reread touches only that lane.
+	batch(30, 20, true, "a1", []AgentContextSource{{SessionUUID: "s1", AgentID: "a1", Kind: "tool", Name: "Bash", Bytes: 15}}, nil)
+	assert.Equal(t, map[string]int64{"/skill/a": 900, "/skill/gone": 900, "a1/tool/Bash": 15, "listing/a": 900}, rows())
+
+	// The main transcript's reread replaces its lane and the listing.
+	batch(40, 30, true, "", []AgentContextSource{{SessionUUID: "s1", Kind: "skill", Name: "a", Bytes: 6}},
+		[]AgentSkillListed{{SessionUUID: "s1", Skill: "a", Bytes: 6}})
+	assert.Equal(t, map[string]int64{"/skill/a": 6, "a1/tool/Bash": 15, "listing/a": 6}, rows())
+}

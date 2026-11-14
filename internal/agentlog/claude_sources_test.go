@@ -18,7 +18,7 @@ func sourcesOf(r *ParseResult) map[string]int64 {
 }
 
 func TestParse_SkillBytesPerLine(t *testing.T) {
-	content := "The following skills are available:\n\n- a: x\n- bb: yyyy\n- pk:brain: zz\n- pk: q\n"
+	content := "The following skills are available:\n\n- a: x\n- bb: yyyy\r\n- pk:brain: zz\n- pk: q\n"
 	names := []string{"a", "bb", "pk", "pk:brain", "nolines"}
 	s := attachLine(t, "s1", "skill_listing", map[string]any{"names": names, "content": content}, "0123456789") +
 		line(t, assistant("s1", "u1", "m1", "r1", 5))
@@ -73,6 +73,11 @@ func TestParse_SurfacedDeferredTool(t *testing.T) {
 	r := parse(t, s, ParseOptions{})
 	assert.Equal(t, map[string]int64{"s1//tool/mcp__srv__late": jsonLen(t, def)}, sourcesOf(r),
 		"only a surfaced definition is a tool row; listed deferred names weigh nothing yet")
+
+	// A surfaced entry without a definition (absent or null) measures nothing.
+	s = attachLine(t, "s1", "deferred_tools_delta", map[string]any{"surfacedDefinitions": []map[string]any{
+		{"name": "mcp__srv__absent"}, {"name": "mcp__srv__null", "definition": nil}}}, "d")
+	assert.Empty(t, parse(t, s, ParseOptions{}).ContextSources)
 }
 
 func TestParse_MCPInstructionBlocks(t *testing.T) {
@@ -102,6 +107,16 @@ func TestParse_SourcesOnlyBeforeFirstCall(t *testing.T) {
 	sub := parse(t, before+line(t, assistant("s1", "u1", "m9", "r9", 5)),
 		ParseOptions{Path: "/h/.claude/projects/-w/s1/subagents/agent-a1.jsonl", Subagent: true, AgentID: "a1"})
 	assert.Equal(t, map[string]int64{"s1/a1/tool/Bash": jsonLen(t, tool), "s1/a1/mcp_instructions/srv": 3}, sourcesOf(sub))
+
+	// An incremental read of a lane still before its first call continues it:
+	// its sources in this read are emitted (the store grows them by MAX).
+	open := ParseOptions{Path: "/h/.claude/projects/-w/s1.jsonl", Folder: "/w",
+		LaneBaseline: func(string) (bool, map[string]int64, error) {
+			return false, map[string]int64{"instructions": 10}, nil
+		}}
+	cont, err := ParseClaude(strings.NewReader(before), 500, open)
+	require.NoError(t, err)
+	assert.Equal(t, want, sourcesOf(cont))
 
 	// An incremental read of a lane whose first call is stored adds nothing.
 	o := ParseOptions{Path: "/h/.claude/projects/-w/s1.jsonl", Folder: "/w",
@@ -140,5 +155,43 @@ func TestParse_ParserV4RowsStayUnmeasured(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, fr)
 	assert.Equal(t, parserVersionFor(AgentClaude), fr.ParserVersion)
-	assert.Equal(t, 5, fr.ParserVersion)
+}
+
+// A reparse from offset 0 replaces the stored per-source rows: a session
+// stored with v4's even split ends with exactly its own line lengths, not
+// the MAX of the two measures.
+func TestParse_ReparseReplacesV4SkillBytes(t *testing.T) {
+	f := newFixture(t)
+	content := "- a: x\n- bb: yyyy\n"
+	listing := line(t, map[string]any{"type": "attachment", "sessionId": "s1", "cwd": f.folder, "attachment": map[string]any{
+		"type": "skill_listing", "names": []string{"a", "bb"}, "content": content},
+		"rendered": []map[string]any{{"content": content}}})
+	f.write(f.folder, "s1.jsonl", listing+call(t, "s1", f.folder, "u1", "m1", "r1", 5))
+	require.Equal(t, 1, f.scan().FilesScanned)
+
+	// As stored by v4: every name got the listing's even split (larger
+	// than its own line), and no source row was stored.
+	_, err := f.al.Exec(`UPDATE agent_log_skill_listing SET bytes = 999`)
+	require.NoError(t, err)
+	_, err = f.al.Exec(`UPDATE agent_log_context_sources SET bytes = 999`)
+	require.NoError(t, err)
+	_, err = f.al.Exec(`UPDATE agent_log_files SET parser_version = 4`)
+	require.NoError(t, err)
+
+	require.Equal(t, 1, f.scan().FilesScanned)
+	want := map[string]int64{"a": int64(len("- a: x")), "bb": int64(len("- bb: yyyy"))}
+	listed, err := f.al.AgentReportSkillListing([]string{"s1"})
+	require.NoError(t, err)
+	got := map[string]int64{}
+	for _, k := range listed {
+		got[k.Skill] = k.Bytes
+	}
+	assert.Equal(t, want, got)
+	sources, err := f.al.AgentReportContextSources([]string{"s1"})
+	require.NoError(t, err)
+	got = map[string]int64{}
+	for _, s := range sources {
+		got[s.Kind+"/"+s.Name] = s.Bytes
+	}
+	assert.Equal(t, map[string]int64{"skill/a": want["a"], "skill/bb": want["bb"]}, got)
 }

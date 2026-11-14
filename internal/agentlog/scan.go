@@ -528,6 +528,9 @@ func storeSlice(st store, tf TranscriptFile, wb *db.Workbench, pr *ParseResult, 
 	if tf.Agent == AgentCodex && tf.Subagent {
 		b.Lane = tf.AgentID
 	}
+	if tf.Agent != AgentCodex && start == 0 && expect >= 0 { // a stored file read again from 0
+		b.Reread, b.RereadLane = true, tf.AgentID
+	}
 	applied, err := st.al.ApplyAgentLogBatch(b)
 	if err != nil {
 		return 0, false, err

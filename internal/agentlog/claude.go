@@ -525,7 +525,9 @@ func (p *claudeParser) attachment(rec claudeRecord) {
 		}
 	case "deferred_tools_delta":
 		for _, d := range a.SurfacedDefinitions {
-			p.addSource(sid, "tool", d.Name, int64(len(d.Definition)))
+			if len(d.Definition) > 0 && string(d.Definition) != "null" { // no definition: nothing entered the context
+				p.addSource(sid, "tool", d.Name, int64(len(d.Definition)))
+			}
 		}
 	}
 }
@@ -560,6 +562,7 @@ func skillLineBytes(content string, names []string) map[string]int64 {
 	slices.SortFunc(byLen, func(x, y string) int { return len(y) - len(x) })
 	out := map[string]int64{}
 	for ln := range strings.SplitSeq(content, "\n") {
+		ln = strings.TrimSuffix(ln, "\r")
 		rest, ok := strings.CutPrefix(ln, "- ")
 		if !ok {
 			continue
