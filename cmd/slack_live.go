@@ -5,13 +5,12 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
 
-	"watchtower/internal/claude"
-	"watchtower/internal/codex"
 	"watchtower/internal/db"
 	"watchtower/internal/slacklive"
 )
@@ -50,27 +49,18 @@ type slackLiveJSON struct {
 	Skipped     bool     `json:"skipped"`
 }
 
-// slackLiveBinary and slackLiveEnv are seams for the CLI test.
+// slackLiveBinary and slackLiveEnv are seams for the CLI test: the CLI the
+// transport's probe runs and its environment.
 var (
-	slackLiveBinary = func(provider string) string {
-		if provider == "codex" {
-			return codex.FindBinary("")
-		}
-		return claude.FindBinary("")
-	}
-	slackLiveEnv = func(provider string) []string {
-		path := claude.RichPATH()
-		if provider == "codex" {
-			path = codex.RichPATH()
-		}
-		return append(os.Environ(), "PATH="+path)
-	}
+	slackLiveBinary = func(w *slackLiveWiring) string { return w.binary() }
+	slackLiveEnv    = func(w *slackLiveWiring) []string { return append(os.Environ(), "PATH="+w.path()) }
 )
 
 func runSlackLiveProbe(cmd *cobra.Command, _ []string) error {
 	provider, _ := cmd.Flags().GetString("provider")
-	if provider != "claude" && provider != "codex" {
-		return fmt.Errorf("--provider must be claude or codex, got %q", provider)
+	live, ok := slackLiveFor(provider)
+	if !ok {
+		return fmt.Errorf("--provider must be one of %s, got %q", strings.Join(slackLiveProviders(), ", "), provider)
 	}
 	ifOlder, _ := cmd.Flags().GetDuration("if-older")
 	asJSON, _ := cmd.Flags().GetBool("json")
@@ -92,7 +82,7 @@ func runSlackLiveProbe(cmd *cobra.Command, _ []string) error {
 	if !out.Skipped {
 		ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 		defer stop()
-		r, err := slacklive.Check(ctx, database, provider, slackLiveBinary(provider), slackLiveEnv(provider), now)
+		r, err := slacklive.Check(ctx, database, live.probe, slackLiveBinary(live), slackLiveEnv(live), now)
 		if err != nil {
 			return fmt.Errorf("slack live probe: %w", err)
 		}

@@ -21,7 +21,7 @@ Every model call made by a Watchtower Go process is one row in `llm_calls` (`wat
 
 ### Leaves
 
-Only leaf implementations record, wrappers (`PooledGenerator`, `timeoutGenerator`, `policyChecked*`) never do, so nothing is counted twice: `digest.ClaudeGenerator` `Generate`/`GenerateWithImage` (after `cliUsageOf`, with the cache split), `codex.CodexGenerator.run`, `ollama.Generator.Generate`, `ai.Client.QuerySync`/`Query` (the stream's final result event), `codex.Client.QuerySync`/`Query`, `ollama.Client.QuerySync`/`Query` (`stream_options.include_usage`), `agentloop` `meteredChat` (per model call), `chat.ClaudeTranslator` (per `result` line) and the probes.
+Only leaf implementations record, wrappers (`PooledGenerator`, `timeoutGenerator`, `policyChecked*`) never do, so nothing is counted twice: `digest.ClaudeGenerator` `Generate`/`GenerateWithImage` (after `cliUsageOf`, with the cache split), `codex.CodexGenerator.run`, `ollama.Generator.Generate`, `ai.Client.QuerySync`/`Query` (the stream's final result event), `codex.Client.QuerySync`/`Query`, `ollama.Client.QuerySync`/`Query` (`stream_options.include_usage`), `agentloop` `meteredChat` (per model call), `chat.ClaudeTranslator` (per `result` line), the probes, and the Slack Live probe's child (`slacklive.startChild`, purpose `slack.live_probe`: the claude `result` line's usage and cost or codex's `turn.completed` usage, an estimate for a turn asked with none reported, nothing when the connector never connected and no turn was asked).
 
 ### Spool contract
 

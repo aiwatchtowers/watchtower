@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"fmt"
+	"io"
 	"slices"
 	"strings"
 	"sync"
@@ -8,6 +10,7 @@ import (
 
 	"watchtower/internal/chat"
 	"watchtower/internal/codex"
+	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/slacklive"
 )
@@ -55,6 +58,45 @@ func codexSlackConnector(rows []db.SlackLiveStatus, codexHome string) string {
 	return r.ConnectorID
 }
 
+// slackLiveChatInput is what a transport's Slack Live chat rule reads for a
+// main chat session.
+type slackLiveChatInput struct {
+	rows     []db.SlackLiveStatus
+	cfg      *config.Config
+	claudeAI claudeAISetup
+	warn     io.Writer
+}
+
+// slackLiveChat is a main chat's Live Slack: live = the prompt may promise
+// the owner's Slack connector; codexSlack = the read-only apps overrides a
+// codex session runs with (nil = apps off).
+type slackLiveChat struct {
+	live       bool
+	codexSlack []string
+}
+
+// claudeSlackLiveChat: the claude.ai connector, when claude.ai tools are on
+// for the chat (claudeSlackLive).
+func claudeSlackLiveChat(in slackLiveChatInput) slackLiveChat {
+	slackOff := chat.DisabledConnectorTokens(in.cfg.AI.ClaudeAI.DisabledConnectors)["claude_ai_Slack"]
+	return slackLiveChat{live: in.claudeAI.mode.On && claudeSlackLive(in.rows, in.claudeAI.mode.Connectors, slackOff)}
+}
+
+// codexSlackLiveChat: the Codex Slack app, read-only, when the newest probe
+// found it (codexSlackConnector); an overrides failure fails closed.
+func codexSlackLiveChat(in slackLiveChatInput) slackLiveChat {
+	id := codexSlackConnector(in.rows, codex.OwnerHome())
+	if id == "" {
+		return slackLiveChat{}
+	}
+	ov, err := codexSlackOverrides(id)
+	if err != nil { // fail closed: no apps, no promise
+		fmt.Fprintf(in.warn, "Live Slack on Codex is off: %v\n", err)
+		return slackLiveChat{}
+	}
+	return slackLiveChat{live: len(ov) > 0, codexSlack: ov}
+}
+
 // slackLiveWatcher observes the chat's events: it writes the provider's
 // status when a Slack connector tool ends, and starts one background probe
 // the first time the session touches a local Slack tool. Never blocks a turn.
@@ -66,11 +108,15 @@ type slackLiveWatcher struct {
 	classify   func(provider, text string, connected, readOK bool) (status, class string)
 	startProbe func(provider string)
 
-	mu       sync.Mutex
-	wg       sync.WaitGroup
-	provider string
-	calls    map[string]string // tool id → tool name
-	probed   bool
+	mu     sync.Mutex
+	wg     sync.WaitGroup
+	closed bool
+	// Test seams: beforeWrite runs in the status goroutine ahead of the
+	// write, afterWrite once it is done.
+	beforeWrite, afterWrite func(chat.Event)
+	provider                string
+	calls                   map[string]string // tool id → tool name
+	probed                  bool
 }
 
 func newSlackLiveWatcher(database *db.DB, provider string) *slackLiveWatcher {
@@ -125,14 +171,18 @@ func (w *slackLiveWatcher) Observe(e chat.Event) {
 		name := w.calls[e.ID]
 		delete(w.calls, e.ID)
 		if isSlackConnectorTool(name) {
-			provider := w.provider
-			w.run(func() { w.writeStatus(provider, e) })
+			provider, at := w.provider, w.now() // the event's time, not the write's
+			w.run(func() { w.writeStatus(provider, e, at) })
 		}
 	}
 }
 
 // run starts fn in a goroutine Wait will join.
+// Called with mu held; after Wait it schedules nothing.
 func (w *slackLiveWatcher) run(fn func()) {
+	if w.closed {
+		return
+	}
 	w.wg.Add(1)
 	go func() {
 		defer w.wg.Done()
@@ -141,7 +191,14 @@ func (w *slackLiveWatcher) run(fn func()) {
 }
 
 // Wait joins the watcher's goroutines (session end, tests).
-func (w *slackLiveWatcher) Wait() { w.wg.Wait() }
+// After it returns the watcher schedules nothing more (no database use once
+// the session closes it).
+func (w *slackLiveWatcher) Wait() {
+	w.mu.Lock()
+	w.closed = true
+	w.mu.Unlock()
+	w.wg.Wait()
+}
 
 func (w *slackLiveWatcher) maybeProbe(provider string) {
 	if w.startProbe == nil || w.database == nil {
@@ -159,11 +216,17 @@ func (w *slackLiveWatcher) maybeProbe(provider string) {
 
 // writeStatus records the outcome of one connector call on the provider's
 // newest row's key (so a probe's connector id stays with it).
-func (w *slackLiveWatcher) writeStatus(provider string, e chat.Event) {
+func (w *slackLiveWatcher) writeStatus(provider string, e chat.Event, at time.Time) {
+	if w.beforeWrite != nil {
+		w.beforeWrite(e)
+	}
+	if w.afterWrite != nil {
+		defer w.afterWrite(e)
+	}
 	if w.database == nil || w.classify == nil || e.OK == nil {
 		return
 	}
-	recordSlackLiveUse(w.database, w.classify, provider, e.Summary, *e.OK, w.now())
+	recordSlackLiveUse(w.database, w.classify, provider, e.Summary, *e.OK, at)
 }
 
 // recordSlackLiveUse writes the status one connector call shows (the tool
