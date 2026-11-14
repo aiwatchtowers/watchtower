@@ -124,6 +124,16 @@ final class ContextActionsPresentationTests: XCTestCase {
         XCTAssertEqual(out.doThese[0].actions, [.turnOff, .decline])
     }
 
+    /// A global row's saving is its group's weight in this workbench's
+    /// sources; absent there, no number.
+    func testGlobalRowSavingIsThisWorkbenchsWeight() {
+        let here = rows([proposal(1)], sources: [source("acme-tools", "plugin", tokens: 900)])
+        XCTAssertEqual(here.doThese.first?.saving, 900)
+        let absent = rows([proposal(1)], sources: [source("other-plugin", "plugin", tokens: 900)])
+        XCTAssertNil(absent.doThese.first?.saving)
+        XCTAssertNil(absent.doThese.first?.savingText)
+    }
+
     func testPluginServersGoToTheLongestPluginMatch() {
         let sources = [
             source("acme", "plugin", tokens: 600),
@@ -311,6 +321,9 @@ final class ContextActionsPresentationTests: XCTestCase {
         let unknown = try only(p)
         XCTAssertNil(unknown.stateLine)
         XCTAssertEqual(unknown.beforeAfter, "79.6k → 49.4k")
+        // 0 = not judged on any session: no line either.
+        p.verdictSessions = 0
+        XCTAssertNil(try only(p).stateLine)
         p.verdictSessions = 12
         XCTAssertEqual(try only(p).stateLine, "Saved 30.2k on 12 starts")
     }

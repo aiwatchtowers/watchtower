@@ -136,7 +136,7 @@ package struct ContextActionRow: Equatable, Identifiable, Sendable {
             default:
                 guard let after else { return tag == .settings ? ContextActionsPresentation.Copy.takesEffect : nil }
                 // Without the verdict's number of starts the row shows before → after only.
-                guard case let .done(before, _) = state, let starts = proposal.verdictSessions else { return nil }
+                guard case let .done(before, _) = state, let starts = proposal.verdictSessions, starts > 0 else { return nil }
                 return ContextActionsPresentation.savedLine(tokens: max(0, before - after), starts: starts)
             }
         }
@@ -185,8 +185,15 @@ package enum ContextActionsPresentation {
     /// This workbench's context proposals and the global ones (workbench 0).
     /// `doThese`: rows to act on or in progress; the open ones first, then
     /// the rest, each largest saving first. `done`: applied, measured or
-    /// closed rows, newest first; one with a verdict (or superseded) stays
-    /// 14 days after it, one still measuring stays until its verdict.
+    /// closed rows, newest first. A done row fades 14 days after its
+    /// `verdict_at` (a superseded row: after its `decided_at`), not after
+    /// the Accept: the verdict lands at least 14 days after the Accept, so
+    /// the measured saving would otherwise never show. A row still
+    /// measuring (no verdict) stays until its verdict.
+    /// `sources` must be THIS workbench's report sources: a row's saving,
+    /// global rows included, is its group's measured tokens there, i.e. what
+    /// this workbench saves per session start; nil (no number shown) when
+    /// the group is absent from them.
     /// `sessionKinds` is the state of each session row the Desktop has;
     /// `linkFailed` maps a proposal to the session it could not be linked
     /// to; `starting`/`errors` are the Desktop's pending Accepts and their

@@ -97,6 +97,7 @@ final class CoachDecodingTests: XCTestCase {
         XCTAssertNil(nulls.pr)
         XCTAssertNil(nulls.prState)
         XCTAssertNil(nulls.prURL)
+        XCTAssertEqual(try decodeProposal(#","verdict_sessions":0"#).verdictSessions, 0)
 
         let old = try decodeProposal("")
         XCTAssertNil(old.sessionID)
