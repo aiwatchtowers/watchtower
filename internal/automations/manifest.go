@@ -49,12 +49,16 @@ type capabilitySpec struct {
 	// personalOnly capabilities are refused in a workbench recipe and in a
 	// built-in automation.
 	personalOnly bool
+	// unscopedVerbs take no @scope whatever the row's rule (slack:live).
+	unscopedVerbs []string
 }
 
 var readWrite = []string{"read", "write"}
 
 var capabilitySpecs = map[string]capabilitySpec{
-	"slack":       {verbs: readWrite, scope: scopeRequired},
+	// slack:live (#1709) admits the owner's own Slack connector (Live) in
+	// agent(): read tools only, unscoped, at most one run an hour (D15).
+	"slack":       {verbs: []string{"read", "write", VerbLive}, scope: scopeRequired, unscopedVerbs: []string{VerbLive}},
 	"gmail":       {verbs: readWrite, scope: scopeRequired},
 	"calendar":    {verbs: readWrite, scope: scopeRequired},
 	"jira":        {verbs: readWrite, scope: scopeRequired, upperScope: true},
@@ -83,6 +87,12 @@ var capabilitySpecs = map[string]capabilitySpec{
 	// which runs on trigger: {sync: custom_tracks} (syncTriggerAllowed).
 	"track": {verbs: []string{"scan"}, personalOnly: true},
 }
+
+// VerbLive is slack:live's verb; EntrySlackLive the normalised entry.
+const (
+	VerbLive       = "live"
+	EntrySlackLive = "slack:live"
+)
 
 // BuiltinPrimitiveNames are the engine primitives a builtin: entry may name.
 var BuiltinPrimitiveNames = []string{"brief.compose", "plan.compose", "tracks.extract", "ideas.consolidate", "reaction.compose",
@@ -226,7 +236,11 @@ func parseCapabilityPermission(capability, rest string) (Permission, error) {
 	if !slices.Contains(spec.verbs, verb) {
 		return Permission{}, fmt.Errorf("capability %s has no verb %q (want %s)", capability, verb, strings.Join(spec.verbs, "|"))
 	}
-	scope, err := checkScope(capability, spec, scope, hasScope)
+	name := capability
+	if slices.Contains(spec.unscopedVerbs, verb) {
+		spec.scope, name = scopeNone, capability+":"+verb
+	}
+	scope, err := checkScope(name, spec, scope, hasScope)
 	if err != nil {
 		return Permission{}, err
 	}
@@ -333,6 +347,10 @@ func ParseManifest(entries []string, outputs []string, scope Scope) (*Manifest, 
 			return nil, &ManifestError{Field: "permissions", Index: i,
 				Msg: fmt.Sprintf("%q is allowed only in a built-in automation", e)}
 		}
+		if scope.IsBuiltin() && p.String() == EntrySlackLive {
+			return nil, &ManifestError{Field: "permissions", Index: i,
+				Msg: fmt.Sprintf("%q is not allowed in a built-in automation: its runs are not held to Live Slack's once an hour", e)}
+		}
 		if (scope.Kind != ScopePersonal || scope.IsBuiltin()) && capabilitySpecs[p.Capability].personalOnly {
 			return nil, &ManifestError{Field: "permissions", Index: i,
 				Msg: fmt.Sprintf("%q is allowed only in a personal automation", e)}
@@ -391,9 +409,14 @@ func (m *Manifest) FeedsSourcesToLLM() bool {
 		case kindTool, kindMCP, kindShell, "session":
 			return true
 		}
-		return p.Verb == "read"
+		return p.Verb == "read" || p.Verb == VerbLive
 	})
 }
+
+// SlackLive reports whether the manifest lists slack:live: agent() may see
+// the owner's Slack connector read tools, and the recipe runs at most once
+// an hour.
+func (m *Manifest) SlackLive() bool { return m != nil && m.has(EntrySlackLive) }
 
 // Outputs returns the declared output kinds, sorted and deduplicated.
 func (m *Manifest) Outputs() []string { return slices.Clone(m.outputs) }

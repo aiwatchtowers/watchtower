@@ -347,6 +347,13 @@ func runInstructionsRemember(cmd *cobra.Command, d *db.DB) (any, error) {
 	if line == "" {
 		return nil, codedInstructionsErr("empty", errors.New("nothing to remember after the prefix"))
 	}
+	own, err := d.LiveSlackOwnerLineOK(instructionsFlagConv, instructionsFlagMessage, line)
+	if err != nil {
+		return nil, err
+	}
+	if !own {
+		return nil, codedInstructionsErr("not_owner_text", errors.New("this conversation used Live Slack: only the owner's own words can be remembered"))
+	}
 	row, outcome, err := d.RememberChatLine(line, instructionsFlagConv, instructionsFlagMessage, time.Now(), instructions.MaxRunes)
 	if err != nil {
 		return nil, err

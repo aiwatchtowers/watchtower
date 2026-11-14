@@ -82,6 +82,14 @@ func TestSummarizeToolResult_PerTool(t *testing.T) {
 				Ref: "slack:payments:1778666400.000100", Group: "#payments", Snippet: "shipped", Date: "2026-05-13"}},
 		},
 		{
+			name:    "list_messages object shape",
+			tool:    "list_messages",
+			result:  `{"messages":[{"ts":"1778666400.000100","channel":"payments","sender":"Ann","text":"shipped","permalink":"https://acme.slack.com/archives/C1/p1001"}],"coverage":{"scope":"own","synced_through":"","backfill_from":"","channel_in_scope":null}}`,
+			summary: "1 messages",
+			sources: []Source{{Kind: "slack", Title: "#payments · Ann", URL: "https://acme.slack.com/archives/C1/p1001",
+				Ref: "slack:payments:1778666400.000100", Group: "#payments", Snippet: "shipped", Date: "2026-05-13"}},
+		},
+		{
 			name:    "get_transcript",
 			tool:    "get_transcript",
 			result:  `{"id":4,"title":"Weekly sync","created_at":"2026-05-12T15:00:00Z","summary":"Agreed on the refund cutover","transcript_text":"..."}`,

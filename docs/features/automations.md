@@ -397,6 +397,10 @@ Spec `docs/superpowers/specs/2026-10-24-automations-tab-polish-design.md`, plan 
 - **Untrusted text.** The editor now reads email bodies and meeting recaps, which are untrusted. Nothing it reads can write: saves stay `AlwaysAsk`, and the owner approves the diff.
 - **Chat performance.** Markdown inline rendering is memoised and `ChatThreadIndex` keeps the feed's per-message lookups off the render path. A finished answer's prose is drawn by one read-only TextKit 2 text view per run (`MarkdownTextRun` in `Views/Chat/`, runs built by WatchtowerCore `MarkdownRunBuilder`), and each of its tables by one more (`MarkdownTableText`, cells at tab stops, copied as tab-separated text) instead of a selectable `Text` per cell; streaming replies stay SwiftUI, and a table that fits the column has no horizontal scroll view. Details in [chat-redesign.md](chat-redesign.md).
 
+## Slack Live (2026-11-14, #1765)
+
+`slack:live` is an unscoped verb of the `slack` capability: the run's `agent()` gets the owner's Claude or ChatGPT Slack connector, read tools only. A schedule tighter than an hour is refused by the validator, and the executor limits every trigger (dry runs too): a limited run ends `cancelled`/`not_runnable` with "Live Slack: at most once an hour". Writes stay `send_slack_message` proposals; denied connector writes are recorded in the agent step's summary. Runs are marked `automation_runs.live_slack`; their outputs stay in the Inbox but not in the briefing's FROM YOUR AUTOMATIONS block. A recipe with a `slack.*` event or reaction trigger and `slack:live` is refused at save without a Full account. Details and v1 limits: [slack-live.md](slack-live.md).
+
 ## Phase status (P1–P6 shipped)
 
 - **P4 events:** done — bus, publishers in the sync phases, `Flush` per cycle, `where` matching, `db.MergeQueuedAutomationRunEvents`; the event half of AUTO-09 is Enforced (Event triggers above).

@@ -469,3 +469,13 @@ func writeProjectBinaryFiles(b *strings.Builder, files []db.ChatProjectFile, pro
 // attaches them to a session's first turn); the routed session's check
 // reads it too.
 func AttachesProjectFiles(c providers.Capabilities) bool { return c.Images && c.PDFs }
+
+// slackLiveBlock tells a session that can reach the owner's Slack connector
+// when to use it. The caller sets PromptOptions.SlackLive only when the
+// provider's last probe is not a known failure, so the prompt never promises
+// Live Slack to someone without it.
+const slackLiveBlock = "Slack: answer from the local Slack tools first. Each list_messages result has a coverage object; " +
+	"when the question falls outside it (scope none, channel not in scope, dates after synced_through or before backfill_from), " +
+	"use the Slack connector's read tools for that part and say which part came from Live Slack. " +
+	"Never send, schedule or react through the connector without the owner's approval. " +
+	"If a connector call fails, answer from the local data and say plainly that Live Slack was unavailable for that part."

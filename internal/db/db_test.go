@@ -175,7 +175,7 @@ func TestAllTablesExist(t *testing.T) {
 		"feedback", "prompts", "prompt_history", "user_profile",
 		"track_events", "situations", "situation_signals",
 		"meeting_transcripts", "voice_prints", "voice_samples", "voice_imports", "voice_label_queue",
-		"gmail_messages", "google_accounts", "slack_accounts", "jira_accounts",
+		"gmail_messages", "google_accounts", "slack_accounts", "slack_live_status", "jira_accounts",
 		"email_accounts", "imap_messages", "calendar_accounts",
 		"memory_nodes", "memory_aliases", "memory_node_stats",
 		"memory_entity_hints", "memory_dispute_flags", "memory_engagement",

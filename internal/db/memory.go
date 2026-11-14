@@ -872,6 +872,7 @@ func (db *DB) OwnerChatTurnExists(conversationID, ts int64, contextTypes []strin
 		JOIN chat_conversations c ON c.id = m.conversation_id
 		WHERE c.context_type IN (`+placeholders+`)
 		  AND c.id = ? AND m.role = 'user' AND CAST(m.created_at AS INTEGER) = ?
+		  AND `+ChatNotLiveSlack+`
 		LIMIT 1`, args...).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
@@ -922,7 +923,7 @@ func (db *DB) ListOwnerChatTurns(floor int64, contextTypes []string) ([]OwnerCha
 			CAST(m.created_at AS INTEGER), m.text
 		FROM chat_messages m
 		JOIN chat_conversations c ON c.id = m.conversation_id
-		WHERE m.role = 'user' AND c.context_type IN (`+placeholders+`) AND m.id > ? AND `+onActiveBranch+`
+		WHERE m.role = 'user' AND c.context_type IN (`+placeholders+`) AND m.id > ? AND `+ChatNotLiveSlack+` AND `+onActiveBranch+`
 		ORDER BY m.id`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("listing owner chat turns: %w", err)

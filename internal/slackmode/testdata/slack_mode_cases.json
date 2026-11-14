@@ -1,0 +1,8 @@
+[
+  {"name": "full with ok", "full": true, "live": ["ok"], "want": "full"},
+  {"name": "full without live", "full": true, "live": [], "want": "full"},
+  {"name": "live only", "full": false, "live": ["ok"], "want": "live"},
+  {"name": "not connected", "full": false, "live": ["not_connected"], "want": "off"},
+  {"name": "mixed statuses", "full": false, "live": ["not_connected", "ok"], "want": "live"},
+  {"name": "nothing", "full": false, "live": [], "want": "off"}
+]

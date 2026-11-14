@@ -29,6 +29,7 @@ type PromptOptions struct {
 	MemoryChat     bool   // memory.enabled && memory.surfaces.chat
 	WebSearch      bool   // the backend exposes WebSearch (Claude only)
 	ClaudeAI       ClaudeAIPrompt
+	SlackLive      bool // the provider reaches the owner's Slack connector (Live Slack, #1764)
 	Now            time.Time
 }
 
@@ -93,6 +94,9 @@ func BuildSystemPrompt(ctx context.Context, d *db.DB, cfg *config.Config, o Prom
 	}
 	sections := []string{identity, sources}
 	sections = append(sections, toolSections(o, teams, fallback)...)
+	if o.SlackLive && o.ToolsAvailable && o.Surface == "main" {
+		sections = append(sections, slackLiveBlock)
+	}
 	sections = append(sections, claudeAI, ArtifactsContract(), QuestionsContract())
 	extra, err := contextSections(d, o)
 	if err != nil {
