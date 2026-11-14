@@ -222,12 +222,20 @@ func jiraIssueListSources(raw []byte) (string, []Source) {
 	return fmt.Sprintf("%d issues: %s", len(list), strings.Join(keys, ", ")), sources
 }
 
+// slackMessageSources reads list_messages' {"messages":[…],"coverage":{…}};
+// a bare array (a result stored before coverage existed) still parses.
 func slackMessageSources(raw []byte) (string, []Source) {
-	var list []struct {
+	type slackMsg struct {
 		TS                               string `json:"ts"`
 		Channel, Sender, Text, Permalink string
 	}
-	if json.Unmarshal(raw, &list) != nil {
+	var list []slackMsg
+	var obj struct {
+		Messages []slackMsg `json:"messages"`
+	}
+	if json.Unmarshal(raw, &obj) == nil && obj.Messages != nil {
+		list = obj.Messages
+	} else if json.Unmarshal(raw, &list) != nil {
 		return "", nil
 	}
 	sources := make([]Source, 0, len(list))

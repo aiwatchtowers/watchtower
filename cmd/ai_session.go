@@ -99,6 +99,8 @@ func runAISession(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fail(chat.CodeProviderUnavailable, err.Error())
 	}
+	waitSlackLive := attachSlackLiveWatcher(ctx, out, database, cfg.AI.Provider)
+	defer waitSlackLive() // before the database closes
 	s := chat.NewSession(backend, out)
 	s.Provider = cfg.AI.Provider
 	_, s.Model = providers.ResolveModelsFor(cfg, cfg.AI.Provider)
@@ -199,6 +201,7 @@ type sessionWiring struct {
 	chatProjectID int64                  // 0 = not a project chat; bound into the ollama registry
 	warn          io.Writer              // skipped project files are named here
 	claudeAI      claudeAISetup          // zero = claude.ai mode off
+	codexSlack    []string               // read-only apps overrides of a codex chat with Live Slack; nil = apps off
 	// onMounted hears the Quick Connections a warm Claude session mounts for
 	// its whole life (the per-turn policy check, #608); nil = nobody.
 	onMounted func([]ai.ExternalMCPServer)

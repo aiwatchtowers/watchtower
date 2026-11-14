@@ -57,6 +57,7 @@ struct SlackConnectionDetail: View {
             slackAuth.configure(dbPool: appState.databaseManager?.dbPool)
             await slackAuth.refreshStatus()
         }
+        .onAppear { appState.slackLiveStatusCenter?.refreshIfStale() }
         // The Workspaces list below enables/disables, removes and adds
         // accounts through its own VM; re-derive the Workspace status from the
         // table whenever that list changes, or it goes stale (e.g. "Slack

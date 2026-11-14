@@ -151,7 +151,7 @@ func newAutomationAgentRunner(cfg *config.Config, configPath, dbPath string, dat
 	// Not providers.ByID(provider): an unknown id runs the in-process loop,
 	// never the default CLI child.
 	if providers.RunsChild(provider) {
-		return &cliAgentRunner{cfg: cfg, configPath: configPath, dbPath: dbPath, provider: provider}
+		return &cliAgentRunner{cfg: cfg, configPath: configPath, dbPath: dbPath, provider: provider, database: database}
 	}
 	return &runtimeBAgentRunner{cfg: cfg, database: database, reg: buildAutomationRegistry(cfg, database)}
 }
@@ -181,6 +181,9 @@ type cliAgentRunner struct {
 	provider   string // "claude" | "codex"
 	router     *providerrouting.Router
 	prepared   bool
+	// database is the slack:live bookkeeping's (the Slack Live status the
+	// connector calls write, the Codex connector id); nil = no Live.
+	database *db.DB
 }
 
 func (r *cliAgentRunner) Name() string { return r.provider }
@@ -231,13 +234,22 @@ func (r *cliAgentRunner) routingRequest(tier string) providerrouting.Request {
 		}}
 }
 
-func (r *cliAgentRunner) Run(ctx context.Context, req automations.AgentRequest) (automations.AgentResult, error) {
+func (r *cliAgentRunner) Run(ctx context.Context, req automations.AgentRequest) (res automations.AgentResult, err error) {
 	if !r.prepared {
 		selected, err := r.Prepare(ctx, req.Tier)
 		if err != nil {
 			return automations.AgentResult{}, err
 		}
 		return selected.Run(ctx, req)
+	}
+	// slack:live: the child may read Slack through the owner's connector;
+	// what it did is reported on every return, failures included.
+	var live *agentSlackLive
+	systemPrompt := automationAgentSystemPrompt
+	if req.SlackLive {
+		live = newAgentSlackLive(r.database, r.provider)
+		systemPrompt += agentSlackLivePromptLine
+		defer func() { res.UsedSlackLive, res.SlackLiveDenied = live.result() }()
 	}
 	if err := providers.Allowed(r.provider); err != nil {
 		return automations.AgentResult{}, automations.PolicyError(err) // #608: nothing spawned, nothing metered
@@ -259,6 +271,7 @@ func (r *cliAgentRunner) Run(ctx context.Context, req automations.AgentRequest) 
 	}
 	client, cleanup, err := newClient(agentClientWiring{
 		cfg: r.cfg, dbPath: r.dbPath, model: model, mcpArgs: mcpArgs, env: env, tools: req.Tools,
+		database: r.database, live: live,
 	})
 	if err != nil {
 		return automations.AgentResult{}, err
@@ -272,7 +285,7 @@ func (r *cliAgentRunner) Run(ctx context.Context, req automations.AgentRequest) 
 	var observed agentUsageObserver
 	query := func(callCtx context.Context) error {
 		var callErr error
-		text, usage, callErr = client.QuerySync(callCtx, automationAgentSystemPrompt, req.Instruction, "")
+		text, usage, callErr = client.QuerySync(callCtx, systemPrompt, req.Instruction, "")
 		return callErr
 	}
 	if r.router == nil {
@@ -280,7 +293,7 @@ func (r *cliAgentRunner) Run(ctx context.Context, req automations.AgentRequest) 
 	} else {
 		route := r.routingRequest(req.Tier)
 		route.Preferred, route.Mode, route.Retry = r.provider, providerrouting.Pinned, providerrouting.Never
-		route.InputBytes = len(automationAgentSystemPrompt) + len(req.Instruction)
+		route.InputBytes = len(systemPrompt) + len(req.Instruction)
 		route.Hook = &observed
 		_, err = r.router.Run(ctx, route, func(callCtx context.Context, _ providerrouting.Attempt) (providerrouting.Result, error) {
 			callErr := query(callCtx)
@@ -296,7 +309,7 @@ func (r *cliAgentRunner) Run(ctx context.Context, req automations.AgentRequest) 
 		// numbers cannot run unbounded (spec §7.5).
 		return automations.AgentResult{InputTokens: int64(len(req.Instruction)+3) / 4, Estimated: true}, err
 	}
-	res := agentResult(req.Instruction, text, usage)
+	res = agentResult(req.Instruction, text, usage)
 	if observed.seen {
 		res = observed.result
 		res.Text = text

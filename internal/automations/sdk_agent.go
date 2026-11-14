@@ -251,6 +251,7 @@ func runAgent(env *Env, b Backends, step *Step, req agentCall) (any, error) {
 	ar := AgentRequest{
 		Instruction: req.instruction, Tools: req.effective, DryRun: env.DryRun, Tier: req.tier,
 		Budget: req.budget, Deadline: req.deadline, Binding: binding, RunID: binding.AutomationRunID, Manifest: m,
+		SlackLive: m.SlackLive(),
 		BeforeModelCall: func() error {
 			if spent.in+spent.out >= int64(req.budget.Tokens) {
 				return &SDKError{Name: ErrNameBudget, Message: "agent(): its token budget is spent"}
@@ -273,6 +274,13 @@ func runAgent(env *Env, b Backends, step *Step, req agentCall) (any, error) {
 		res = r
 		return u, err
 	})
+	// A run whose agent read Slack through the owner's connector is marked
+	// even when the call then failed: it used Live (D14).
+	if res.UsedSlackLive && ar.SlackLive {
+		if markErr := b.DB.MarkAutomationRunLiveSlack(binding.AutomationRunID); markErr != nil && err == nil {
+			err = markErr
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -280,9 +288,29 @@ func runAgent(env *Env, b Backends, step *Step, req agentCall) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	step.Finish(db.StepFinish{Status: StepOK,
-		ResultSummary: marshalForStep(map[string]any{"text": clipUTF8(res.Text, agentStepClip), "actions": actions})})
+	summary := map[string]any{"text": clipUTF8(res.Text, agentStepClip), "actions": actions}
+	if denied := slackLiveDeniedSummary(res.SlackLiveDenied); denied != nil {
+		summary["slack_live_denied"] = denied
+	}
+	step.Finish(db.StepFinish{Status: StepOK, ResultSummary: marshalForStep(summary)})
 	return map[string]any{"text": res.Text, "actions": actions}, nil
+}
+
+// slackLiveDeniedSummary is the agent step's record of the Slack connector
+// writes the runner denied: one {tool, ok:false, error} per attempt, so the
+// owner sees in the run log what the recipe wanted. It stays inside the
+// agent() step: a step of its own would be a journal row with no SDK call
+// behind it, which the one-step-per-call journal and its replay (AUTO-11)
+// do not allow. nil when none.
+func slackLiveDeniedSummary(tools []string) []map[string]any {
+	if len(tools) == 0 {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(tools))
+	for _, t := range tools {
+		out = append(out, map[string]any{"tool": t, "ok": false, "error": LiveSlackReadOnlyStep})
+	}
+	return out
 }
 
 // authorizeAgent checks the manifest admits agent() and its tier, records

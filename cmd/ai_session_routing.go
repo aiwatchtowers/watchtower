@@ -161,12 +161,19 @@ func buildSessionActual(ctx context.Context, cmd *cobra.Command, cfg *config.Con
 	actual.AI.Provider = p
 	claudeAI := resolveClaudeAI(&actual, aiSessionFlagSurface, conv.ID, os.Environ(), cmd.ErrOrStderr())
 	writeUnavailableConnectors(dbPath, claudeAI, cmd.ErrOrStderr())
-	prompt, err := chat.BuildSystemPrompt(ctx, database, &actual, sessionPromptOptions(&actual, aiSessionFlagSurface, projectID, time.Now(), claudeAI.prompt))
+	opts := sessionPromptOptions(&actual, aiSessionFlagSurface, projectID, time.Now(), claudeAI.prompt)
+	var codexSlack []string
+	if live, ok := slackLiveFor(p); ok && aiSessionFlagSurface == "main" {
+		slackRows, _ := database.ListSlackLiveStatus() // a read failure = no Live promise
+		got := live.chat(slackLiveChatInput{rows: slackRows, cfg: &actual, claudeAI: claudeAI, warn: cmd.ErrOrStderr()})
+		opts.SlackLive, codexSlack = got.live, got.codexSlack
+	}
+	prompt, err := chat.BuildSystemPrompt(ctx, database, &actual, opts)
 	if err != nil {
 		return nil, err
 	}
 	var mounted []ai.ExternalMCPServer
-	backend, err := newSessionBackend(sessionWiring{cfg: &actual, database: database, dbPath: dbPath, conv: conv, model: m, prompt: prompt, mcpArgs: mcpArgs, turnFile: turnFile, project: project, chatProjectID: projectID, warn: cmd.ErrOrStderr(), claudeAI: claudeAI, onMounted: func(ext []ai.ExternalMCPServer) { mounted = ext }})
+	backend, err := newSessionBackend(sessionWiring{cfg: &actual, database: database, dbPath: dbPath, conv: conv, model: m, prompt: prompt, mcpArgs: mcpArgs, turnFile: turnFile, project: project, chatProjectID: projectID, warn: cmd.ErrOrStderr(), claudeAI: claudeAI, codexSlack: codexSlack, onMounted: func(ext []ai.ExternalMCPServer) { mounted = ext }})
 	if err != nil {
 		return nil, err
 	}

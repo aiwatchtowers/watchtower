@@ -55,6 +55,12 @@ type Client struct {
 	runHome string
 	// webSearch: the run searches the web (SetWebSearch); off otherwise.
 	webSearch bool
+	// appsOverrides, when set (SetChatApps), keeps the apps feature on for
+	// the run, limited by these -c pairs.
+	appsOverrides []string
+	// onToolCall observes QuerySync's finished MCP/app tool calls
+	// (SetToolCallObserver).
+	onToolCall func(ToolCall)
 	// images are the next run's --image paths (SetImages), taken by it.
 	imagesMu sync.Mutex
 	images   []string
@@ -260,7 +266,11 @@ func (c *Client) execArgs() []string {
 		off = append([]string{"shell_tool"}, toolRunFeatures...)
 		sandbox = []string{"-c", "features.shell_tool=true", "--sandbox", "read-only"}
 	}
+	if len(c.appsOverrides) > 0 {
+		off = append(slices.Clone(off), "apps") // the chat keeps apps, read-only (SetChatApps)
+	}
 	args := append(append(prefix, featuresOff(off)...), sandbox...)
+	args = append(args, c.appsOverrides...)
 	return append(args, "-c", c.webSearchArg())
 }
 
@@ -505,6 +515,7 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 	err = cmd.Run()
 	stdout.flush()
 	output := stdout.buf.Bytes()
+	c.observeToolCalls(output)
 	// The usage events codex printed count on every path, failures too.
 	ran, reported := cmd.Process != nil, jsonlUsage(output)
 	// A failed turn is the run's own failure even when codex exits 0, and a

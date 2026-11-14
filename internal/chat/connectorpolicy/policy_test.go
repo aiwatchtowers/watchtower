@@ -68,8 +68,9 @@ func testPolicy() Policy {
 			"claude_ai_Claude_Docs/batch":  {ReadOnly: ptr(false)},
 			"claude_ai_Caf_Notes":          {}, // listed, its tools not yet known
 			"claude_ai_Slack":              {},
+			"claude_ai_Off_Server":         {},
 		},
-		Disabled:    map[string]bool{"claude_ai_Slack": true},
+		Disabled:    map[string]bool{"claude_ai_Off_Server": true},
 		PathCheck:   lexicalCheck,
 		PublishDir:  testPublishDir,
 		OwnArtifact: func(url string) bool { return url == ownURL },
@@ -97,7 +98,33 @@ func builtin(tool, input string) Call {
 	return Call{Tool: tool, Input: json.RawMessage(input)}
 }
 
+func slack(tool string) Call {
+	return Call{Tool: "mcp__claude_ai_Slack__" + tool, Server: "claude.ai Slack", Input: json.RawMessage(`{}`)}
+}
+
 var decideCases = []decideCase{
+	// Live Slack connector rows (#1764).
+	{name: "slack slack_get_reactions", call: slack("slack_get_reactions"), want: Allow},
+	{name: "slack slack_list_channel_members", call: slack("slack_list_channel_members"), want: Allow},
+	{name: "slack slack_list_user_channels", call: slack("slack_list_user_channels"), want: Allow},
+	{name: "slack slack_read_canvas", call: slack("slack_read_canvas"), want: Allow},
+	{name: "slack slack_read_file", call: slack("slack_read_file"), want: Allow},
+	{name: "slack slack_read_user_profile", call: slack("slack_read_user_profile"), want: Allow},
+	{name: "slack slack_search_channels", call: slack("slack_search_channels"), want: Allow},
+	{name: "slack slack_search_emojis", call: slack("slack_search_emojis"), want: Allow},
+	{name: "slack slack_search_public_and_private", call: slack("slack_search_public_and_private"), want: Allow},
+	{name: "slack slack_search_users", call: slack("slack_search_users"), want: Allow},
+	{name: "slack slack_list_workspaces", call: slack("slack_list_workspaces"), want: Allow},
+	{name: "slack search public", call: slack("slack_search_public"), want: Allow},
+	{name: "slack read channel", call: slack("slack_read_channel"), want: Allow},
+	{name: "slack read thread", call: slack("slack_read_thread"), want: Allow},
+	{name: "slack send message", call: slack("slack_send_message"), want: Ask},
+	{name: "slack draft", call: slack("slack_send_message_draft"), want: Ask},
+	{name: "slack schedule", call: slack("slack_schedule_message"), want: Ask},
+	{name: "slack add reaction", call: slack("slack_add_reaction"), want: Ask},
+	{name: "slack create canvas", call: slack("slack_create_canvas"), want: Ask},
+	{name: "slack update canvas", call: slack("slack_update_canvas"), want: Ask},
+
 	// Rule 1: file built-ins.
 	{name: "write inside", call: builtin("Write", `{"file_path":"/work/publish/7/a.html","content":"x"}`), want: Allow},
 	{name: "write nested new path", call: builtin("Write", `{"file_path":"/work/publish/7/sub/a.html"}`), want: Allow},
@@ -198,8 +225,8 @@ var decideCases = []decideCase{
 	{name: "built-in name with a server", call: Call{Tool: "Write", Server: gmailServer, Input: json.RawMessage(`{"file_path":"/work/publish/7/a"}`)}, want: Deny},
 
 	// Rule 4: switched off.
-	{name: "disabled server", call: Call{Tool: "mcp__claude_ai_Slack__search", Server: "claude.ai Slack", Input: json.RawMessage(`{}`)}, want: Deny,
-		reason: "Slack is switched off in Settings → Profile → claude.ai tools"},
+	{name: "disabled server", call: Call{Tool: "mcp__claude_ai_Off_Server__search", Server: "claude.ai Off Server", Input: json.RawMessage(`{}`)}, want: Deny,
+		reason: "Off Server is switched off in Settings → Profile → claude.ai tools"},
 
 	// Rule 5: authentication tools.
 	{name: "authenticate", call: gmail("authenticate"), want: Deny, reason: "connect Gmail on claude.ai first"},
