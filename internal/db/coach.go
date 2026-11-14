@@ -447,22 +447,6 @@ func (db *DB) MarkCoachAccepted(id int64, after, branch string, baseline *float6
 	return coachCAS(res, err, "accepting coach proposal")
 }
 
-// MarkCoachAcceptedWithSession accepts an open proposal through the workbench
-// session sessionID: in one compare-and-set on open it stores accepted, the
-// session (via_session = 1, which outlives the session row) and the metric
-// baseline with its number of observations (nil = NULL). A proposal no longer
-// open is refused with ErrCoachStateChanged.
-func (db *DB) MarkCoachAcceptedWithSession(id, sessionID int64, baseline *float64, n int, now time.Time) error {
-	var b any
-	if baseline != nil {
-		b = *baseline
-	}
-	res, err := db.Exec(`UPDATE coach_proposals SET status = 'accepted', decided_at = ?, session_id = ?,
-		via_session = 1, baseline = ?, baseline_n = ? WHERE id = ? AND status = 'open'`,
-		coachStamp(now), sessionID, b, n, id)
-	return coachCAS(res, err, "accepting coach proposal with session")
-}
-
 // SetCoachSessionBranch copies the session's branch onto proposal id, only
 // while its session_branch is still empty: a later call (or one for a missing
 // id) changes nothing and is not an error.

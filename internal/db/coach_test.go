@@ -567,45 +567,6 @@ func TestInsertContextCoachProposal_FingerprintNoop(t *testing.T) {
 	assert.Zero(t, id)
 }
 
-func TestMarkCoachAcceptedWithSession_CAS(t *testing.T) {
-	d := openTestDB(t)
-	now := time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)
-	wb := newTestWorkbench(t, d)
-	sess := newTestSession(t, d, wb)
-	p := contextFixture("fp1", "repo_claude_md", "")
-	p.Kind, p.WorkbenchID = "restructure", wb
-	id, err := d.InsertContextCoachProposal(p, now)
-	require.NoError(t, err)
-
-	base := 1234.0
-	require.NoError(t, d.MarkCoachAcceptedWithSession(id, sess, &base, 7, now))
-	got, err := d.GetCoachProposal(id)
-	require.NoError(t, err)
-	assert.Equal(t, "accepted", got.Status)
-	assert.True(t, got.DecidedAt.Equal(now))
-	assert.True(t, got.ViaSession)
-	require.NotNil(t, got.SessionID)
-	assert.Equal(t, sess, *got.SessionID)
-	require.NotNil(t, got.Baseline)
-	assert.InDelta(t, base, *got.Baseline, 1e-9)
-	assert.Equal(t, 7, got.BaselineN)
-
-	err = d.MarkCoachAcceptedWithSession(id, sess, nil, 0, now.Add(time.Minute))
-	assert.True(t, errors.Is(err, ErrCoachStateChanged), "got %v", err)
-	got, err = d.GetCoachProposal(id)
-	require.NoError(t, err)
-	assert.True(t, got.DecidedAt.Equal(now), "the second call changes nothing")
-	require.NotNil(t, got.Baseline)
-
-	legacy, err := d.InsertCoachProposal(coachFixture("fp-legacy"), now)
-	require.NoError(t, err)
-	require.NoError(t, d.MarkCoachAccepted(legacy, "a\nb", "", nil, 0, now))
-	got, err = d.GetCoachProposal(legacy)
-	require.NoError(t, err)
-	assert.False(t, got.ViaSession, "an ordinary Accept is not via a session")
-	assert.Nil(t, got.SessionID)
-}
-
 // The Desktop deletes terminal_sessions rows: session_id goes NULL, but
 // via_session and session_branch stay, so the row still reads as accepted
 // through a session and its PR can still be found by branch.
@@ -618,7 +579,7 @@ func TestCoachProposal_SessionDeletedKeepsViaSessionAndBranch(t *testing.T) {
 	p.Kind, p.WorkbenchID = "restructure", wb
 	id, err := d.InsertContextCoachProposal(p, now)
 	require.NoError(t, err)
-	require.NoError(t, d.MarkCoachAcceptedWithSession(id, sess, nil, 0, now))
+	require.NoError(t, d.AcceptCoachThroughSession(id, CoachSessionLink{SessionID: sess, WorkbenchID: wb}, now))
 	require.NoError(t, d.SetCoachSessionBranch(id, "wt/slim-memory"))
 
 	_, err = d.Exec(`DELETE FROM terminal_sessions WHERE id = ?`, sess)
@@ -710,6 +671,14 @@ func TestAcceptCoachThroughSession(t *testing.T) {
 
 	err = d.AcceptCoachThroughSession(id, CoachSessionLink{SessionID: sess, WorkbenchID: wb}, now)
 	require.ErrorIs(t, err, ErrCoachStateChanged)
+
+	legacy, err := d.InsertCoachProposal(coachFixture("fp-legacy"), now)
+	require.NoError(t, err)
+	require.NoError(t, d.MarkCoachAccepted(legacy, "a\nb", "", nil, 0, now))
+	got, err = d.GetCoachProposal(legacy)
+	require.NoError(t, err)
+	assert.False(t, got.ViaSession, "an ordinary Accept is not via a session")
+	assert.Nil(t, got.SessionID)
 
 	// No recorded branch yet: session_branch stays empty, before_text kept.
 	id2 := sessionContextProposal(t, d, "fp2", "repo_claude_md", wb, now)
