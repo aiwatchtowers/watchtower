@@ -447,22 +447,6 @@ func (db *DB) MarkCoachAccepted(id int64, after, branch string, baseline *float6
 	return coachCAS(res, err, "accepting coach proposal")
 }
 
-// MarkCoachAcceptedWithSession accepts an open proposal through the workbench
-// session sessionID: in one compare-and-set on open it stores accepted, the
-// session (via_session = 1, which outlives the session row) and the metric
-// baseline with its number of observations (nil = NULL). A proposal no longer
-// open is refused with ErrCoachStateChanged.
-func (db *DB) MarkCoachAcceptedWithSession(id, sessionID int64, baseline *float64, n int, now time.Time) error {
-	var b any
-	if baseline != nil {
-		b = *baseline
-	}
-	res, err := db.Exec(`UPDATE coach_proposals SET status = 'accepted', decided_at = ?, session_id = ?,
-		via_session = 1, baseline = ?, baseline_n = ? WHERE id = ? AND status = 'open'`,
-		coachStamp(now), sessionID, b, n, id)
-	return coachCAS(res, err, "accepting coach proposal with session")
-}
-
 // SetCoachSessionBranch copies the session's branch onto proposal id, only
 // while its session_branch is still empty: a later call (or one for a missing
 // id) changes nothing and is not an error.
@@ -472,6 +456,168 @@ func (db *DB) SetCoachSessionBranch(id int64, branch string) error {
 		return fmt.Errorf("setting coach session branch: %w", err)
 	}
 	return nil
+}
+
+// ErrCoachSessionNotFound refuses an Accept or a Restart through a session
+// that is not a session of the proposal's workbench (or no longer exists).
+var ErrCoachSessionNotFound = errors.New("no such session in this workbench")
+
+// ErrCoachSessionHasPR refuses a Restart while the accepted row's session
+// branch has an open or merged PR: that PR is followed, not started again.
+var ErrCoachSessionHasPR = errors.New("the session opened a PR: follow it instead of starting again")
+
+// CoachSessionLink is what an Accept or a Restart through a workbench
+// session records: the session (it must be a row of WorkbenchID), the index
+// read at that moment for a memory proposal (Before; nil keeps before_text)
+// and the metric baseline with its number of observations (nil = NULL).
+type CoachSessionLink struct {
+	SessionID, WorkbenchID int64
+	Before                 *string
+	Baseline               *float64
+	N                      int
+}
+
+// coachSessionGuard is the state a Dismiss or a Restart acts on: an accepted
+// row through a session that has nothing to measure yet and no verdict.
+const coachSessionGuard = `status = 'accepted' AND via_session = 1 AND measure_from IS NULL AND verdict = ''`
+
+// coachSessionBranch is a session's latest named worktree branch (last seen
+// first), "" when it has none.
+func coachSessionBranch(q interface {
+	QueryRow(string, ...any) *sql.Row
+}, sessionID int64) (string, error) {
+	var b string
+	err := q.QueryRow(`SELECT branch FROM terminal_session_worktrees WHERE session_id = ? AND branch <> ''
+		ORDER BY COALESCE(last_at, first_at) DESC, first_at DESC LIMIT 1`, sessionID).Scan(&b)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("reading session %d branch: %w", sessionID, err)
+	}
+	return b, nil
+}
+
+// CoachSessionBranch is session sessionID's latest named worktree branch
+// (terminal_session_worktrees), "" when it has none or there is no such
+// session.
+func (db *DB) CoachSessionBranch(sessionID int64) (string, error) {
+	return coachSessionBranch(db, sessionID)
+}
+
+// linkCoachSession runs set (the caller's compare-and-set) in one write
+// transaction, after checking l's session is a row of l's workbench; the
+// session's branch is read there and passed to set.
+func (db *DB) linkCoachSession(l CoachSessionLink, set func(tx *sql.Tx, branch string) error) error {
+	return db.WithTx(func(tx *sql.Tx) error {
+		var one int
+		err := tx.QueryRow(`SELECT 1 FROM terminal_sessions WHERE id = ? AND project_id = ?`,
+			l.SessionID, l.WorkbenchID).Scan(&one)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("session %d: %w", l.SessionID, ErrCoachSessionNotFound)
+		}
+		if err != nil {
+			return fmt.Errorf("reading session %d: %w", l.SessionID, err)
+		}
+		branch, err := coachSessionBranch(tx, l.SessionID)
+		if err != nil {
+			return err
+		}
+		return set(tx, branch)
+	})
+}
+
+func (l CoachSessionLink) baseline() any {
+	if l.Baseline == nil {
+		return nil
+	}
+	return *l.Baseline
+}
+
+func (l CoachSessionLink) before() any {
+	if l.Before == nil {
+		return nil
+	}
+	return *l.Before
+}
+
+// AcceptCoachThroughSession accepts an open proposal through the workbench
+// session l.SessionID in one compare-and-set on open: status accepted,
+// decided_at, the session (via_session = 1), the session's branch when it
+// already has one (else "", filled later), the baseline and, when l.Before
+// is set, before_text. A session that is not a row of l.WorkbenchID is
+// ErrCoachSessionNotFound; a proposal no longer open ErrCoachStateChanged.
+func (db *DB) AcceptCoachThroughSession(id int64, l CoachSessionLink, now time.Time) error {
+	return db.linkCoachSession(l, func(tx *sql.Tx, branch string) error {
+		res, err := tx.Exec(`UPDATE coach_proposals SET status = 'accepted', decided_at = ?, session_id = ?,
+			via_session = 1, session_branch = ?, before_text = COALESCE(?, before_text), baseline = ?, baseline_n = ?
+			WHERE id = ? AND status = 'open'`,
+			coachStamp(now), l.SessionID, branch, l.before(), l.baseline(), l.N, id)
+		return coachCAS(res, err, "accepting coach proposal through a session")
+	})
+}
+
+// RestartCoachSession moves an accepted session row that has nothing to
+// measure (coachSessionGuard) to the new session l.SessionID: session,
+// branch (cleared, then the new session's when it has one), decided_at (the
+// wait for a merge restarts), baseline and, when l.Before is set,
+// before_text, in one compare-and-set. While the row's branch — session_branch,
+// or the old session's live branch when that is still empty — has an open or
+// merged PR it is ErrCoachSessionHasPR; a row outside the guard
+// ErrCoachStateChanged.
+func (db *DB) RestartCoachSession(id int64, l CoachSessionLink, now time.Time) error {
+	return db.linkCoachSession(l, func(tx *sql.Tx, branch string) error {
+		var wb sql.NullInt64
+		var oldBranch string
+		var oldSession sql.NullInt64
+		err := tx.QueryRow(`SELECT workbench_id, session_branch, session_id FROM coach_proposals WHERE id = ? AND `+
+			coachSessionGuard, id).Scan(&wb, &oldBranch, &oldSession)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrCoachStateChanged
+		}
+		if err != nil {
+			return fmt.Errorf("restarting coach proposal: %w", err)
+		}
+		if oldBranch == "" && oldSession.Valid {
+			if oldBranch, err = coachSessionBranch(tx, oldSession.Int64); err != nil {
+				return err
+			}
+		}
+		if oldBranch != "" {
+			var n int
+			if err := tx.QueryRow(`SELECT COUNT(*) FROM workbench_pr_states WHERE project_id = ? AND ref = ?
+				AND pr_number IS NOT NULL AND state IN ('open','merged')`, wb, "branch:"+oldBranch).Scan(&n); err != nil {
+				return fmt.Errorf("restarting coach proposal: %w", err)
+			}
+			if n > 0 {
+				return ErrCoachSessionHasPR
+			}
+		}
+		res, err := tx.Exec(`UPDATE coach_proposals SET session_id = ?, session_branch = ?, decided_at = ?,
+			before_text = COALESCE(?, before_text), baseline = ?, baseline_n = ?
+			WHERE id = ? AND `+coachSessionGuard,
+			l.SessionID, branch, coachStamp(now), l.before(), l.baseline(), l.N, id)
+		return coachCAS(res, err, "restarting coach proposal")
+	})
+}
+
+// DismissCoachSession closes an accepted session row that has nothing to
+// measure (coachSessionGuard) now: verdict too_little_data, no value. Any
+// other row is ErrCoachStateChanged.
+func (db *DB) DismissCoachSession(id int64, now time.Time) error {
+	res, err := db.Exec(`UPDATE coach_proposals SET verdict = 'too_little_data', verdict_value = NULL, verdict_at = ?
+		WHERE id = ? AND `+coachSessionGuard, coachStamp(now), id)
+	return coachCAS(res, err, "dismissing coach proposal")
+}
+
+// ReapplyCoachProposal records a settings change turned off again after
+// someone turned it back on: an accepted row with verdict reverted_outside
+// loses its verdict and measures from now. Any other row is
+// ErrCoachStateChanged.
+func (db *DB) ReapplyCoachProposal(id int64, now time.Time) error {
+	res, err := db.Exec(`UPDATE coach_proposals SET verdict = '', verdict_value = NULL, verdict_at = '',
+		measure_from = ? WHERE id = ? AND status = 'accepted' AND verdict = 'reverted_outside'`, coachStamp(now), id)
+	return coachCAS(res, err, "reapplying coach proposal")
 }
 
 // SetCoachMeasureFrom starts the verdict window of an accepted repo_* edit:

@@ -84,10 +84,12 @@ func claudeMDEdit(find, replace, title string) map[string]any {
 }
 
 // A repository proposal through the registry the MCP child builds: filed
-// while CLAUDE.md has uncommitted changes (the dirty check is Accept's, spec
-// §4.3a), then refused by `coach accept` with code dirty; a folder that is
-// not a git work tree is refused at propose. Proves tuningDeps wires
-// CoachEnv.RepoState (a nil one refuses every repository proposal).
+// while CLAUDE.md has uncommitted changes, then refused by a plain
+// `coach accept` (COACH-01 amendment: a repository change is accepted
+// through a session) and recorded by `coach accept --session`, the file
+// untouched either way; a folder that is not a git work tree is refused at
+// propose. Proves tuningDeps wires CoachEnv.RepoState (a nil one refuses
+// every repository proposal).
 func TestTuningSurface_RepoProposalThroughRealRegistry(t *testing.T) {
 	repo := gitBranchRepo(t)
 	e := newTuningSurfaceEnv(t, repo)
@@ -103,7 +105,13 @@ func TestTuningSurface_RepoProposalThroughRealRegistry(t *testing.T) {
 
 	out, err := runCoach(t, "", "accept", strconv.FormatInt(ps[0].ID, 10), "--json")
 	require.Error(t, err)
-	assert.JSONEq(t, `"dirty"`, string(coachJSONObject(t, out)["code"]))
+	assert.JSONEq(t, `"refused"`, string(coachJSONObject(t, out)["code"]))
+	sess := coachSessionRow(t, e.d, e.wb)
+	out, err = runCoach(t, "", "accept", strconv.FormatInt(ps[0].ID, 10), "--session", strconv.FormatInt(sess, 10), "--json")
+	require.NoError(t, err, out)
+	raw, err := os.ReadFile(filepath.Join(repo, "CLAUDE.md"))
+	require.NoError(t, err)
+	assert.Equal(t, "Mine.\n", string(raw), "Watchtower writes no repository file")
 
 	plain, err := filepath.EvalSymlinks(t.TempDir())
 	require.NoError(t, err)

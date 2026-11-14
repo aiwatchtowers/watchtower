@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"log"
 	"os"
 	"path"
 	"path/filepath"
@@ -155,41 +154,6 @@ func (a *Applier) repoFile(p db.CoachProposal) (userFile, error) {
 		return userFile{}, err
 	}
 	return repoFileOf(folder, p.Destination, p.Skill)
-}
-
-// checkRepo is Accept's git check of a repository proposal, before the file
-// is read: the folder (gone → refused before any git read), then the git
-// state of the one path — not a work tree → ErrRepoNotGit, listed at all by
-// `git status` → ErrRepoDirty, a failed read → refused, never taken as clean.
-func (a *Applier) checkRepo(p db.CoachProposal) error {
-	if a.RepoState == nil || a.RepoBranch == nil {
-		return errRepoNotWired
-	}
-	folder, err := repoFolder(a.DB, p.WorkbenchID)
-	if err != nil {
-		return err
-	}
-	return repoGitCheck(a.RepoState, folder, p.Destination, p.Skill, true)
-}
-
-// writtenBranch is the branch a repository file was just written on, through
-// the RepoBranch seam (checkRepo refused a nil one before the write); "" for
-// any other destination, and when the folder or the branch cannot be read —
-// the file is written by then, so a failed read never undoes it (spec §4.3a).
-func (a *Applier) writtenBranch(p db.CoachProposal) string {
-	if !repoDestinations[p.Destination] {
-		return ""
-	}
-	folder, err := repoFolder(a.DB, p.WorkbenchID)
-	if err == nil {
-		var branch string
-		if branch, err = a.RepoBranch(folder); err == nil {
-			return branch
-		}
-	}
-	log.Printf("coach: proposal %d written; reading its branch in workbench %d: %s", p.ID, p.WorkbenchID,
-		logredact.Body([]byte(err.Error())))
-	return ""
 }
 
 // repoGitCheck reads the git state of dest's file in folder: not a work tree

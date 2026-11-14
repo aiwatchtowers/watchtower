@@ -567,45 +567,6 @@ func TestInsertContextCoachProposal_FingerprintNoop(t *testing.T) {
 	assert.Zero(t, id)
 }
 
-func TestMarkCoachAcceptedWithSession_CAS(t *testing.T) {
-	d := openTestDB(t)
-	now := time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)
-	wb := newTestWorkbench(t, d)
-	sess := newTestSession(t, d, wb)
-	p := contextFixture("fp1", "repo_claude_md", "")
-	p.Kind, p.WorkbenchID = "restructure", wb
-	id, err := d.InsertContextCoachProposal(p, now)
-	require.NoError(t, err)
-
-	base := 1234.0
-	require.NoError(t, d.MarkCoachAcceptedWithSession(id, sess, &base, 7, now))
-	got, err := d.GetCoachProposal(id)
-	require.NoError(t, err)
-	assert.Equal(t, "accepted", got.Status)
-	assert.True(t, got.DecidedAt.Equal(now))
-	assert.True(t, got.ViaSession)
-	require.NotNil(t, got.SessionID)
-	assert.Equal(t, sess, *got.SessionID)
-	require.NotNil(t, got.Baseline)
-	assert.InDelta(t, base, *got.Baseline, 1e-9)
-	assert.Equal(t, 7, got.BaselineN)
-
-	err = d.MarkCoachAcceptedWithSession(id, sess, nil, 0, now.Add(time.Minute))
-	assert.True(t, errors.Is(err, ErrCoachStateChanged), "got %v", err)
-	got, err = d.GetCoachProposal(id)
-	require.NoError(t, err)
-	assert.True(t, got.DecidedAt.Equal(now), "the second call changes nothing")
-	require.NotNil(t, got.Baseline)
-
-	legacy, err := d.InsertCoachProposal(coachFixture("fp-legacy"), now)
-	require.NoError(t, err)
-	require.NoError(t, d.MarkCoachAccepted(legacy, "a\nb", "", nil, 0, now))
-	got, err = d.GetCoachProposal(legacy)
-	require.NoError(t, err)
-	assert.False(t, got.ViaSession, "an ordinary Accept is not via a session")
-	assert.Nil(t, got.SessionID)
-}
-
 // The Desktop deletes terminal_sessions rows: session_id goes NULL, but
 // via_session and session_branch stay, so the row still reads as accepted
 // through a session and its PR can still be found by branch.
@@ -618,7 +579,7 @@ func TestCoachProposal_SessionDeletedKeepsViaSessionAndBranch(t *testing.T) {
 	p.Kind, p.WorkbenchID = "restructure", wb
 	id, err := d.InsertContextCoachProposal(p, now)
 	require.NoError(t, err)
-	require.NoError(t, d.MarkCoachAcceptedWithSession(id, sess, nil, 0, now))
+	require.NoError(t, d.AcceptCoachThroughSession(id, CoachSessionLink{SessionID: sess, WorkbenchID: wb}, now))
 	require.NoError(t, d.SetCoachSessionBranch(id, "wt/slim-memory"))
 
 	_, err = d.Exec(`DELETE FROM terminal_sessions WHERE id = ?`, sess)
@@ -646,4 +607,232 @@ func TestSetCoachSessionBranch_OnlyFillsEmpty(t *testing.T) {
 	got, err := d.GetCoachProposal(id)
 	require.NoError(t, err)
 	assert.Equal(t, "feature/a", got.SessionBranch, "the first branch is kept")
+}
+
+// sessionContextProposal files an open restructure proposal of dest in
+// workbench wb.
+func sessionContextProposal(t *testing.T, d *DB, fp, dest string, wb int64, now time.Time) int64 {
+	t.Helper()
+	p := contextFixture(fp, dest, "")
+	p.Kind, p.WorkbenchID = "restructure", wb
+	if dest == "claude_memory_index" {
+		p.SourceKey = "memory"
+	}
+	id, err := d.InsertContextCoachProposal(p, now)
+	require.NoError(t, err)
+	require.NotZero(t, id)
+	return id
+}
+
+func recordSessionBranch(t *testing.T, d *DB, sess int64, root, branch, at string) {
+	t.Helper()
+	_, err := d.Exec(`INSERT INTO terminal_session_worktrees (session_id, root, branch, first_at) VALUES (?, ?, ?, ?)`,
+		sess, root, branch, at)
+	require.NoError(t, err)
+}
+
+// An Accept through a session records the session, its latest worktree
+// branch, the baseline and (memory) the index read at Accept in one
+// compare-and-set; a session of another workbench is refused, a second Accept
+// is state_changed.
+func TestAcceptCoachThroughSession(t *testing.T) {
+	d := openTestDB(t)
+	now := time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)
+	wb := newTestWorkbench(t, d)
+	other := newTestWorkbench(t, d)
+	sess := newTestSession(t, d, wb)
+	foreign := newTestSession(t, d, other)
+	recordSessionBranch(t, d, sess, "/tmp/acme", "main", "2026-11-12T08:00:00.000Z")
+	recordSessionBranch(t, d, sess, "/tmp/acme-wt", "wt/slim", "2026-11-12T08:30:00.000Z")
+	recordSessionBranch(t, d, sess, "/tmp/acme-wt2", "", "2026-11-12T08:40:00.000Z")
+	id := sessionContextProposal(t, d, "fp1", "claude_memory_index", wb, now)
+
+	err := d.AcceptCoachThroughSession(id, CoachSessionLink{SessionID: foreign, WorkbenchID: wb}, now)
+	require.ErrorIs(t, err, ErrCoachSessionNotFound)
+	got, err := d.GetCoachProposal(id)
+	require.NoError(t, err)
+	assert.Equal(t, "open", got.Status)
+
+	before, base := "- line one\n", 900.0
+	require.NoError(t, d.AcceptCoachThroughSession(id, CoachSessionLink{SessionID: sess, WorkbenchID: wb,
+		Before: &before, Baseline: &base, N: 6}, now))
+	got, err = d.GetCoachProposal(id)
+	require.NoError(t, err)
+	assert.Equal(t, "accepted", got.Status)
+	assert.True(t, got.ViaSession)
+	require.NotNil(t, got.SessionID)
+	assert.Equal(t, sess, *got.SessionID)
+	assert.Equal(t, "wt/slim", got.SessionBranch, "the latest named branch")
+	assert.Equal(t, before, got.BeforeText)
+	require.NotNil(t, got.Baseline)
+	assert.InDelta(t, base, *got.Baseline, 1e-9)
+	assert.Equal(t, 6, got.BaselineN)
+	assert.True(t, got.DecidedAt.Equal(now))
+
+	err = d.AcceptCoachThroughSession(id, CoachSessionLink{SessionID: sess, WorkbenchID: wb}, now.Add(time.Minute))
+	require.ErrorIs(t, err, ErrCoachStateChanged)
+	got, err = d.GetCoachProposal(id)
+	require.NoError(t, err)
+	assert.True(t, got.DecidedAt.Equal(now), "the second call changes nothing")
+	require.NotNil(t, got.Baseline, "the second call's nil baseline is not written")
+	assert.InDelta(t, base, *got.Baseline, 1e-9)
+	assert.Equal(t, 6, got.BaselineN)
+
+	legacy, err := d.InsertCoachProposal(coachFixture("fp-legacy"), now)
+	require.NoError(t, err)
+	require.NoError(t, d.MarkCoachAccepted(legacy, "a\nb", "", nil, 0, now))
+	got, err = d.GetCoachProposal(legacy)
+	require.NoError(t, err)
+	assert.False(t, got.ViaSession, "an ordinary Accept is not via a session")
+	assert.Nil(t, got.SessionID)
+
+	// No recorded branch yet: session_branch stays empty, before_text kept.
+	id2 := sessionContextProposal(t, d, "fp2", "repo_claude_md", wb, now)
+	sess2 := newTestSession(t, d, wb)
+	require.NoError(t, d.AcceptCoachThroughSession(id2, CoachSessionLink{SessionID: sess2, WorkbenchID: wb}, now))
+	got, err = d.GetCoachProposal(id2)
+	require.NoError(t, err)
+	assert.Empty(t, got.SessionBranch)
+	assert.Equal(t, "a", got.BeforeText)
+}
+
+func acceptedThroughSession(t *testing.T, d *DB, fp, dest string, wb, sess int64, now time.Time) int64 {
+	t.Helper()
+	id := sessionContextProposal(t, d, fp, dest, wb, now)
+	require.NoError(t, d.AcceptCoachThroughSession(id, CoachSessionLink{SessionID: sess, WorkbenchID: wb}, now))
+	return id
+}
+
+// Dismiss closes an accepted session row with nothing to measure as
+// too_little_data; a measured, judged, legacy or open row is refused.
+func TestDismissCoachSession(t *testing.T) {
+	d := openTestDB(t)
+	now := time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)
+	wb := newTestWorkbench(t, d)
+	sess := newTestSession(t, d, wb)
+	id := acceptedThroughSession(t, d, "fp1", "repo_claude_md", wb, sess, now)
+
+	require.NoError(t, d.DismissCoachSession(id, now.Add(time.Hour)))
+	got, err := d.GetCoachProposal(id)
+	require.NoError(t, err)
+	assert.Equal(t, "accepted", got.Status)
+	assert.Equal(t, "too_little_data", got.Verdict)
+	assert.Nil(t, got.VerdictValue)
+	assert.True(t, got.VerdictAt.Equal(now.Add(time.Hour)))
+	require.ErrorIs(t, d.DismissCoachSession(id, now), ErrCoachStateChanged, "already judged")
+
+	measured := acceptedThroughSession(t, d, "fp2", "claude_memory_index", wb, sess, now)
+	ok, err := d.SetCoachMeasureFrom(measured, now)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.ErrorIs(t, d.DismissCoachSession(measured, now), ErrCoachStateChanged)
+
+	open := sessionContextProposal(t, d, "fp3", "repo_claude_md", wb, now)
+	require.ErrorIs(t, d.DismissCoachSession(open, now), ErrCoachStateChanged)
+
+	legacy, err := d.InsertCoachProposal(coachFixture("fp-legacy"), now)
+	require.NoError(t, err)
+	require.NoError(t, d.MarkCoachAccepted(legacy, "a\nb", "", nil, 0, now))
+	require.ErrorIs(t, d.DismissCoachSession(legacy, now), ErrCoachStateChanged)
+}
+
+// Restart moves an accepted session row to a new session: session, branch,
+// decided_at, baseline and (memory) before_text replaced; refused while the
+// old session's branch has an open or merged PR, and on a measured row.
+func TestRestartCoachSession(t *testing.T) {
+	d := openTestDB(t)
+	now := time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)
+	later := now.Add(28 * 24 * time.Hour)
+	wb := newTestWorkbench(t, d)
+	old := newTestSession(t, d, wb)
+	recordSessionBranch(t, d, old, "/tmp/a", "wt/first", "2026-11-12T08:00:00.000Z")
+	id := acceptedThroughSession(t, d, "fp1", "claude_memory_index", wb, old, now)
+
+	fresh := newTestSession(t, d, wb)
+	recordSessionBranch(t, d, fresh, "/tmp/b", "wt/second", "2026-12-10T08:00:00.000Z")
+	before, base := "- new\n", 500.0
+	require.NoError(t, d.RestartCoachSession(id, CoachSessionLink{SessionID: fresh, WorkbenchID: wb,
+		Before: &before, Baseline: &base, N: 5}, later))
+	got, err := d.GetCoachProposal(id)
+	require.NoError(t, err)
+	assert.Equal(t, "accepted", got.Status)
+	require.NotNil(t, got.SessionID)
+	assert.Equal(t, fresh, *got.SessionID)
+	assert.Equal(t, "wt/second", got.SessionBranch)
+	assert.True(t, got.DecidedAt.Equal(later))
+	assert.Equal(t, before, got.BeforeText)
+	require.NotNil(t, got.Baseline)
+	assert.InDelta(t, base, *got.Baseline, 1e-9)
+
+	// The new session's branch has an open PR now: no third start.
+	require.NoError(t, d.UpsertPRState(PRState{WorkbenchID: wb, Ref: "branch:wt/second", State: "open",
+		PRNumber: sql.NullInt64{Int64: 12, Valid: true}, CheckedAt: "2026-12-10T09:00:00Z"}))
+	third := newTestSession(t, d, wb)
+	err = d.RestartCoachSession(id, CoachSessionLink{SessionID: third, WorkbenchID: wb}, later)
+	require.ErrorIs(t, err, ErrCoachSessionHasPR)
+
+	// A closed PR does not hold a restart back.
+	require.NoError(t, d.UpsertPRState(PRState{WorkbenchID: wb, Ref: "branch:wt/second", State: "closed",
+		PRNumber: sql.NullInt64{Int64: 12, Valid: true}, CheckedAt: "2026-12-10T10:00:00Z"}))
+	require.NoError(t, d.RestartCoachSession(id, CoachSessionLink{SessionID: third, WorkbenchID: wb}, later))
+	got, err = d.GetCoachProposal(id)
+	require.NoError(t, err)
+	assert.Empty(t, got.SessionBranch, "cleared: the third session has no branch yet")
+	assert.Equal(t, before, got.BeforeText, "nil Before keeps the text")
+
+	// Another workbench's session, and a measured row, are refused.
+	other := newTestWorkbench(t, d)
+	require.ErrorIs(t, d.RestartCoachSession(id, CoachSessionLink{SessionID: newTestSession(t, d, other), WorkbenchID: wb}, later),
+		ErrCoachSessionNotFound)
+	ok, err := d.SetCoachMeasureFrom(id, later)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.ErrorIs(t, d.RestartCoachSession(id, CoachSessionLink{SessionID: fresh, WorkbenchID: wb}, later),
+		ErrCoachStateChanged)
+}
+
+// Reapply clears a reverted_outside verdict and restarts the window; any
+// other row is refused.
+func TestReapplyCoachProposal(t *testing.T) {
+	d := openTestDB(t)
+	now := time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)
+	id, err := d.InsertContextCoachProposal(contextFixture("fp1", "claude_plugin_off", "alpha@market"), now)
+	require.NoError(t, err)
+	require.ErrorIs(t, d.ReapplyCoachProposal(id, now), ErrCoachStateChanged, "open")
+	require.NoError(t, d.MarkCoachAccepted(id, "false", "", nil, 0, now))
+	require.ErrorIs(t, d.ReapplyCoachProposal(id, now), ErrCoachStateChanged, "no verdict")
+	v := 1.0
+	require.NoError(t, d.SetCoachVerdict(id, "reverted_outside", &v, now))
+
+	at := now.Add(48 * time.Hour)
+	require.NoError(t, d.ReapplyCoachProposal(id, at))
+	got, err := d.GetCoachProposal(id)
+	require.NoError(t, err)
+	assert.Equal(t, "accepted", got.Status)
+	assert.Empty(t, got.Verdict)
+	assert.Nil(t, got.VerdictValue)
+	assert.True(t, got.VerdictAt.IsZero())
+	assert.True(t, got.MeasureFrom.Equal(at))
+	require.ErrorIs(t, d.ReapplyCoachProposal(id, at), ErrCoachStateChanged, "verdict cleared already")
+}
+
+// CoachSessionBranch is a session's latest named worktree branch; "" when it
+// has none (or no such session).
+func TestCoachSessionBranch(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	sess := newTestSession(t, d, wb)
+	b, err := d.CoachSessionBranch(sess)
+	require.NoError(t, err)
+	assert.Empty(t, b)
+	recordSessionBranch(t, d, sess, "/tmp/a", "wt/one", "2026-11-12T08:00:00.000Z")
+	_, err = d.Exec(`UPDATE terminal_session_worktrees SET last_at = '2026-11-12T10:00:00.000Z'`)
+	require.NoError(t, err)
+	recordSessionBranch(t, d, sess, "/tmp/b", "wt/two", "2026-11-12T09:00:00.000Z")
+	b, err = d.CoachSessionBranch(sess)
+	require.NoError(t, err)
+	assert.Equal(t, "wt/one", b, "last seen wins over first seen")
+	b, err = d.CoachSessionBranch(9999)
+	require.NoError(t, err)
+	assert.Empty(t, b)
 }
