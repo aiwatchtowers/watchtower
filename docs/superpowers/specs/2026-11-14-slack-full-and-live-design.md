@@ -88,7 +88,7 @@ What leaves the local copy: public channels the user is not a member of. Channel
 - `agent()` runs on the Claude provider move to the stream-json launch and wait for the connector the same way as the probe (≤ 15 s). Codex runs pass apps on.
 - A recipe declares `slack:live` in its manifest to get the Slack connector's read tools (AUTO-01: the manifest stays the only source of permissions). Write tools stay proposals (AUTO-02).
 - `slack.*` events and reaction triggers need Full; saving a recipe that needs them on a Live-only workspace is refused with the reason.
-- Storage (D14): a run's own output (`output.inbox`/`report`/`slack`) is that run's transcript and is kept like any run output; it is marked `live_slack` and nothing reads it into ideas, memory, the knowledge index or the briefing's FROM YOUR AUTOMATIONS block.
+- Storage (D14): a run's own output (`output.inbox`/`report`/`slack`) is that run's transcript and is kept like any run output; the run is marked (`automation_runs.live_slack`, migration) and nothing reads its outputs into ideas, memory, the knowledge index or the briefing's FROM YOUR AUTOMATIONS block.
 - Pace (D15): a recipe with `slack:live` may run at most hourly (subscription "ordinary individual use", RTS ≈ 10 calls/min per user plus a daily cap). The validator refuses a tighter schedule.
 
 ## 5. Entry into Full
@@ -166,6 +166,7 @@ PKCE refresh tokens expire after 30 days. The daemon refreshes a token when less
 - `slack_live_status`: the probe, and any chat turn or automation run that called a Slack connector tool; an upsert keeps the row with the newest `checked_at`; the Desktop reads.
 - `slack_bot_home`: the daemon of the Mac holding the bot token (the admin's, or the collaborator's after a take-over; if both publish for a while, they publish the same view, which is harmless).
 - `chat_conversations.live_slack_since`: the chat process, set once in the same transaction as the first turn that called a Slack connector tool; never cleared. It is the only place the mark lives (no per-message column).
+- `automation_runs.live_slack`: the executor of that run, set when the run's `agent()` step calls a Slack connector tool.
 
 ## 9. Promises → tasks → tests
 
