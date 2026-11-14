@@ -27,7 +27,7 @@ const (
 // seedFixtureDB stores one session with the v3 facts that exercises every
 // time category, a background subagent, repeated `make test` runs inside two
 // open board targets (so they share the stretch), a PR link, baseline parts,
-// a skill listing, sized and failed tool results and an unfinished subagent
+// per-source start weights, a skill listing, sized and failed tool results and an unfinished subagent
 // (so the Context, Skills and Trouble blocks have rows), plus one old-format
 // session and an import still loading. Placeholders only.
 func seedFixtureDB(t *testing.T) (testDBs, int64) {
@@ -120,13 +120,22 @@ func seedFixtureDB(t *testing.T) (testDBs, int64) {
 	for _, k := range []string{"review", "pdf", "brainstorming"} {
 		listing = append(listing, agentlogdb.AgentSkillListed{SessionUUID: fixtureSession, Skill: k, Bytes: 600})
 	}
+	var sources []agentlogdb.AgentContextSource
+	for _, c := range []struct {
+		kind, name string
+		bytes      int64
+	}{{"skill", "review", 600}, {"skill", "acme:pdf", 600}, {"agent", "acme:helper", 400}, {"tool", "Bash", 3000},
+		{"tool", "mcp__watchtower-workbench__update_target", 2000}, {"tool", "mcp__claude_ai_Example__search", 1500},
+		{"mcp_instructions", "claude.ai Example", 500}} {
+		sources = append(sources, agentlogdb.AgentContextSource{SessionUUID: fixtureSession, Kind: c.kind, Name: c.name, Bytes: c.bytes})
+	}
 	unfinished := false
 
 	_, err = d.al.ApplyAgentLogBatch(agentlogdb.AgentLogBatch{
-		File: agentlogdb.AgentLogFile{Path: path, Agent: "claude", ReadOffset: 10, ParserVersion: 4}, ExpectOffset: -1,
+		File: agentlogdb.AgentLogFile{Path: path, Agent: "claude", ReadOffset: 10, ParserVersion: 5}, ExpectOffset: -1,
 		Sessions: []agentlogdb.AgentLogSession{{SessionUUID: fixtureSession, Agent: "claude", ProjectID: &wb, FolderPath: "/w", HomeCWD: "/w",
 			SourcePath: path, StartedAt: at(0), EndedAt: at(60*mn + 30*sec), Model: "claude-opus-5-5", GitBranch: "feature/widget"}},
-		Events: evs, ToolResults: results, ContextParts: parts, SkillListing: listing,
+		Events: evs, ToolResults: results, ContextParts: parts, ContextSources: sources, SkillListing: listing,
 		Subagents: []agentlogdb.AgentSubagent{{SessionUUID: fixtureSession, AgentID: "agent-1", AgentType: "general-purpose", Depth: 1, Finished: &unfinished}},
 	})
 	require.NoError(t, err)

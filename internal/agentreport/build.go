@@ -338,41 +338,30 @@ func BuildOverview(main *db.DB, al *agentlogdb.DB, workbenchID int64, since, now
 	return ov, nil
 }
 
-// loadBlocks reads the baseline parts and the skill listing of the sessions
-// with the v2 facts and measures the context and skills blocks; folder is the
-// workbench folder for the disk sizes ("" = none).
+// loadBlocks reads the baseline parts, the per-source weights and the skill
+// listing of the sessions with the v2 facts and measures the context and
+// skills blocks; folder is the workbench folder for the disk sizes and the
+// project sources ("" = none).
 func loadBlocks(al *agentlogdb.DB, sessions []agentlogdb.AgentReportSession, events map[string][]agentlogdb.AgentReportEvent,
 	folder string) (ContextReport, SkillsReport, error) {
-	var facts []string
-	for _, s := range sessions {
-		if s.Facts {
-			facts = append(facts, s.SessionUUID)
-		}
+	parts, sources, err := loadSources(al, sessions)
+	if err != nil {
+		return ContextReport{}, SkillsReport{}, err
 	}
-	var parts []agentlogdb.AgentContextPart
 	var listing []agentlogdb.AgentSkillListed
-	if len(facts) > 0 {
-		var err error
-		if parts, err = al.AgentReportContextParts(facts); err != nil {
-			return ContextReport{}, SkillsReport{}, err
-		}
+	if facts := factsUUIDs(sessions); len(facts) > 0 {
 		if listing, err = al.AgentReportSkillListing(facts); err != nil {
 			return ContextReport{}, SkillsReport{}, err
 		}
 	}
-	return Context(sessions, events, parts, folder), Skills(sessions, events, parts, listing), nil
+	return Context(sessions, events, parts, sources, folder), Skills(sessions, events, parts, listing), nil
 }
 
 // loadTrouble reads the subagents of the sessions with the v2 facts and
 // measures the trouble block as of now.
 func loadTrouble(al *agentlogdb.DB, sessions []agentlogdb.AgentReportSession, events map[string][]agentlogdb.AgentReportEvent,
 	now time.Time) (TroubleReport, error) {
-	var facts []string
-	for _, s := range sessions {
-		if s.Facts {
-			facts = append(facts, s.SessionUUID)
-		}
-	}
+	facts := factsUUIDs(sessions)
 	var subs []agentlogdb.AgentSubagent
 	if len(facts) > 0 {
 		var err error

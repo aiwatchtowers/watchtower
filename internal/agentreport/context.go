@@ -51,6 +51,9 @@ type ContextReport struct {
 	RepeatedReads    []RepeatRow     `json:"repeated_reads"`
 	Compactions      CompactionStats `json:"compactions"`
 	Disk             DiskSizes       `json:"disk"`
+	// Sources is the start context by source group and part, largest first
+	// (see ContextSourceRow); a session parsed before parser v5 adds no row.
+	Sources []ContextSourceRow `json:"sources"`
 }
 
 // BaselineSplit is what a lane's context held before its first API call:
@@ -198,8 +201,9 @@ func contextMeasured(s agentlogdb.AgentReportSession) bool {
 }
 
 // Context measures the period's context from the sessions' events (keyed by
-// uuid, in AgentReportEvents order), their baseline parts and the workbench
-// folder ("" = no disk sizes). Sessions without the v2 facts are skipped.
+// uuid, in AgentReportEvents order), their baseline parts, their per-source
+// start weights (Sources) and the workbench folder ("" = no disk sizes, no
+// project skills). Sessions without the v2 facts are skipped.
 //
 // Growth, per lane: between two calls the context grew by Δ = ctx(n) −
 // ctx(n−1) (a Δ ≤ 0 is a clear and skipped); the previous call's output minus
@@ -208,7 +212,7 @@ func contextMeasured(s agentlogdb.AgentReportSession) bool {
 // proportion when they explain all of it, else each takes its own size and
 // what is left is the owner's turn when one came in between, else reminders.
 func Context(sessions []agentlogdb.AgentReportSession, events map[string][]agentlogdb.AgentReportEvent,
-	parts []agentlogdb.AgentContextPart, folder string) ContextReport {
+	parts []agentlogdb.AgentContextPart, sources []agentlogdb.AgentContextSource, folder string) ContextReport {
 	r := ContextReport{Sessions: len(sessions), Agents: agentsOf(sessions, contextMeasured),
 		Growth: []GrowthRow{}, TopSources: []SourceRow{}, RepeatedReads: []RepeatRow{},
 		Baseline: BaselineSplit{Parts: []PartShare{}}, SubagentBaseline: BaselineSplit{Parts: []PartShare{}}, Disk: diskSizes(folder)}
@@ -227,6 +231,9 @@ func Context(sessions []agentlogdb.AgentReportSession, events map[string][]agent
 	r.RepeatedReads = repeatRows(a.repeats)
 	a.comp.MedianPreTokens, a.comp.MedianPostTokens = median(a.pre), median(a.post)
 	r.Compactions = a.comp
+	srcs := newSourcesAcc()
+	srcs.add(sessions, events, parts, sources, folder)
+	r.Sources = srcs.result()
 	return r
 }
 

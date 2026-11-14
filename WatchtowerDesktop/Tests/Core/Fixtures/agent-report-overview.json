@@ -282,7 +282,65 @@
       "claude_md_bytes": 0,
       "claude_md_lines": 0,
       "rules_bytes": 0
-    }
+    },
+    "sources": [
+      {
+        "part": "tools",
+        "group": "",
+        "group_kind": "builtin",
+        "tokens": 14,
+        "calls": 8,
+        "measured_sessions": 1
+      },
+      {
+        "part": "tools",
+        "group": "watchtower-workbench",
+        "group_kind": "mcp_server",
+        "tokens": 9,
+        "calls": 2,
+        "measured_sessions": 1
+      },
+      {
+        "part": "tools",
+        "group": "claude.ai",
+        "group_kind": "claude_ai_connectors",
+        "tokens": 7,
+        "calls": 0,
+        "measured_sessions": 1
+      },
+      {
+        "part": "skills",
+        "group": "acme",
+        "group_kind": "plugin",
+        "tokens": 3,
+        "calls": 0,
+        "measured_sessions": 1
+      },
+      {
+        "part": "skills",
+        "group": "",
+        "group_kind": "user",
+        "tokens": 3,
+        "calls": 0,
+        "measured_sessions": 1
+      },
+      {
+        "part": "agents",
+        "group": "acme",
+        "group_kind": "plugin",
+        "tokens": 2,
+        "calls": 0,
+        "measured_sessions": 1
+      },
+      {
+        "part": "mcp",
+        "group": "claude.ai",
+        "group_kind": "claude_ai_connectors",
+        "tokens": 2,
+        "calls": 0,
+        "measured_sessions": 1
+      }
+    ]
   },
   "skills": {
     "lead": "The skill list costs 9 tokens per session; 2 of 3 skills were not used in this period.",
