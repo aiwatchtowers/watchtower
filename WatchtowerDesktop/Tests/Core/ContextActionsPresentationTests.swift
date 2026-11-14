@@ -185,7 +185,7 @@ final class ContextActionsPresentationTests: XCTestCase {
 
     func testWorkingUntilSessionEnds() throws {
         let live: [SessionSwitcherPresentation.State.Kind] = [
-            .notStarted, .running, .working, .needsApproval, .waitingOnAsk, .background, .readyToCheck
+            .running, .working, .needsApproval, .waitingOnAsk, .background, .readyToCheck
         ]
         for kind in live {
             let row = try only(repoRow(), kinds: [41: kind])
@@ -195,6 +195,40 @@ final class ContextActionsPresentationTests: XCTestCase {
         }
         XCTAssertEqual(try only(repoRow(), kinds: [41: .finished]).state, .endedWithoutChange(41))
         XCTAssertEqual(try only(repoRow(), kinds: [41: .failed]).state, .endedWithoutChange(41))
+    }
+
+    /// A session closed or crashed before its first turn has kind
+    /// `.notStarted` once it is no longer live: ended, never working forever.
+    func testCrashedSessionIsNotWorking() throws {
+        let row = try only(repoRow(), kinds: [41: .notStarted])
+        XCTAssertEqual(row.state, .endedWithoutChange(41))
+        XCTAssertEqual(row.actions, [.openSession, .startAgain, .dismiss])
+        XCTAssertEqual(row.stateLine, "Session ended without a PR")
+        let memory = try only(repoRow(destination: "claude_memory_index"), kinds: [41: .notStarted])
+        XCTAssertEqual(memory.stateLine, "Session ended without a change")
+    }
+
+    /// Right after Accept (or Start Again) the caller keeps the id in
+    /// `starting` until the session is live: that wins over any kind.
+    func testStartingWinsUntilLive() {
+        func state(_ kinds: [Int64: SessionSwitcherPresentation.State.Kind], _ p: CoachProposal) -> Row.State? {
+            ContextActionsPresentation.rows(proposals: [p], workbenchID: 3, sources: [], sessionKinds: kinds,
+                                            linkFailed: [:], now: now, starting: [50]).doThese.first?.state
+        }
+        for kind: SessionSwitcherPresentation.State.Kind in [.notStarted, .stopped, .finished, .working] {
+            XCTAssertEqual(state([41: kind], repoRow()), .starting, "\(kind)")
+        }
+        // No session row yet, or none at all: still starting, never gone.
+        XCTAssertEqual(state([:], repoRow()), .starting)
+        XCTAssertEqual(state([:], repoRow(session: nil, branch: "")), .starting)
+        // Once the caller drops the id, the kind decides.
+        let live = rows([repoRow()], kinds: [41: .working]).doThese.first
+        XCTAssertEqual(live?.state, .working(41))
+        // An accepted row being started again is not an open change.
+        let again = ContextActionsPresentation.rows(proposals: [repoRow()], workbenchID: 3, sources: [],
+                                                    sessionKinds: [:], linkFailed: [:], now: now, starting: [50])
+        XCTAssertEqual(again.doThese.first?.isOpen, false)
+        XCTAssertEqual(again.doThese.first?.actions, [])
     }
 
     func testEndedWithoutPR() throws {
@@ -245,7 +279,7 @@ final class ContextActionsPresentationTests: XCTestCase {
     func testPRReadyHasDiffURL() throws {
         let row = try only(repoRow(pr: 17, prState: "open", prURL: "https://github.com/acme/app/pull/17"),
                            kinds: [41: .working])
-        XCTAssertEqual(row.prURL, URL(string: "https://github.com/acme/app/pull/17"))
+        XCTAssertEqual(row.prLink, URL(string: "https://github.com/acme/app/pull/17"))
         XCTAssertEqual(row.diffURL, URL(string: "https://github.com/acme/app/pull/17/files"))
         XCTAssertNil(try only(repoRow(pr: 17, prState: "open")).diffURL, "no link and no repository")
     }
@@ -302,7 +336,17 @@ final class ContextActionsPresentationTests: XCTestCase {
                                          verdict: verdict, verdictValue: verdict == "no_effect" ? 79000 : nil,
                                          verdictDaysAgo: 1))
             XCTAssertEqual(none.stateLine, "No measurable saving", verdict)
+            // A finished verdict never reads "measuring": no arrow at all.
+            XCTAssertNil(none.beforeAfter, verdict)
+            XCTAssertEqual(none.state, .done(beforeTokens: 79600,
+                                             afterTokens: verdict == "no_effect" ? 79000 : nil))
+            XCTAssertEqual(none.actions, [.undo])
         }
+        // A repository row closed by Dismiss or the 30-day window: the same.
+        let dismissed = try only(CoachProposal(copying: repoRow(), verdict: "too_little_data", verdictValue: nil,
+                                               verdictAt: stamp(daysAgo: 1)))
+        XCTAssertNil(dismissed.beforeAfter)
+        XCTAssertEqual(dismissed.stateLine, "No measurable saving")
 
         // A repository row measured after its merge ends the same way, with no Undo.
         var repo = repoRow(pr: 17, prState: "merged")
@@ -355,8 +399,7 @@ final class ContextActionsPresentationTests: XCTestCase {
         XCTAssertTrue(done(15).isEmpty)
         // Still measuring: it stays until its verdict, then 14 days more.
         XCTAssertEqual(done(nil).count, 1)
-        // A settings row measuring since 2 days ago stays; one decided 15 days
-        // ago with its verdict that long ago is gone.
+        // A settings row accepted 2 days ago, still measuring, stays.
         XCTAssertEqual(rows([proposal(1, status: "accepted", decidedDaysAgo: 2)]).done.count, 1)
     }
 
@@ -403,6 +446,6 @@ private extension CoachProposal {
             conversationID: p.conversationID, writtenBranch: p.writtenBranch, measureFrom: p.measureFrom,
             folderBranch: p.folderBranch, sessionID: p.sessionID, sourceKey: p.sourceKey,
             viaSession: p.viaSession, sessionBranch: p.sessionBranch, pr: p.pr, prState: p.prState,
-            prURL: p.prURL)
+            prURL: p.prURL, verdictSessions: p.verdictSessions)
     }
 }

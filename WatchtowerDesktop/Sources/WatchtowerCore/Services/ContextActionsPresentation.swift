@@ -142,21 +142,25 @@ package struct ContextActionRow: Equatable, Identifiable, Sendable {
         }
     }
 
-    /// "79.6k → 49.4k", "79.6k → measuring"; nil unless done with a baseline.
+    /// "79.6k → 49.4k", "79.6k → measuring" (before the verdict); nil
+    /// unless done with a baseline, and nil for a finished verdict that
+    /// measured no saving (no_effect, too_little_data): its line says so.
     package var beforeAfter: String? {
-        guard case let .done(before, after) = state, before > 0 else { return nil }
+        guard case let .done(before, after) = state, before > 0,
+              !["no_effect", "too_little_data"].contains(proposal.verdict) else { return nil }
         let tail = after.map(ContextActionsPresentation.tokens) ?? "measuring"
         return "\(ContextActionsPresentation.tokens(before)) → \(tail)"
     }
 
-    package var prURL: URL? {
-        guard case .prReady(_, let url) = state else { return nil }
+    /// The PR page (**Open PR**); `proposal.prURL` is the raw CLI key.
+    package var prLink: URL? {
+        guard case let .prReady(_, url) = state else { return nil }
         return url
     }
 
     /// The PR's files page (**Show Diff**, spec C11).
     package var diffURL: URL? {
-        prURL?.appendingPathComponent("files")
+        prLink?.appendingPathComponent("files")
     }
 }
 
@@ -194,7 +198,13 @@ package enum ContextActionsPresentation {
     /// global rows included, is its group's measured tokens there, i.e. what
     /// this workbench saves per session start; nil (no number shown) when
     /// the group is absent from them.
-    /// `sessionKinds` is the state of each session row the Desktop has;
+    /// `sessionKinds` is the state of each session row the Desktop has. A
+    /// session whose kind is `.notStarted` (closed or crashed before its
+    /// first turn), `.stopped`, `.finished` or `.failed` (a StopFailure
+    /// turn: nothing moves until the owner acts) has ended; any other kind
+    /// is working. The moment after Accept, before the process is live, is
+    /// `starting`: an id in `starting` wins over any session kind, and the
+    /// caller keeps it there until that session's kind is live.
     /// `linkFailed` maps a proposal to the session it could not be linked
     /// to; `starting`/`errors` are the Desktop's pending Accepts and their
     /// failures; `repository` builds a PR link the CLI did not give.
@@ -327,9 +337,10 @@ package enum ContextActionsPresentation {
             }
         }
         if p.measureFrom != nil { return .measuring }
+        if ctx.starting.contains(p.id) { return .starting }
         if let session = p.sessionID, let kind = ctx.sessionKinds[session] {
             switch kind {
-            case .stopped, .finished, .failed: return .endedWithoutChange(session)
+            case .notStarted, .stopped, .finished, .failed: return .endedWithoutChange(session)
             default: return .working(session)
             }
         }
@@ -387,18 +398,23 @@ package enum ContextActionsPresentation {
         })
     }
 
+    private static let plainISO = ISO8601DateFormatter()
+    private static let fractionalISO: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+
     private static func parseDate(_ s: String) -> Date? {
-        let plain = ISO8601DateFormatter()
-        if let d = plain.date(from: s) { return d }
-        let frac = ISO8601DateFormatter()
-        frac.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return frac.date(from: s)
+        plainISO.date(from: s) ?? fractionalISO.date(from: s)
     }
 }
 
 extension ContextActionRow {
     /// Not yet accepted: the list's first part and the headline's changes.
+    /// An accepted row being started again (Start Again) is not.
     package var isOpen: Bool {
+        guard proposal.status == "open" else { return false }
         switch state {
         case .open, .starting, .failed: return true
         default: return false
