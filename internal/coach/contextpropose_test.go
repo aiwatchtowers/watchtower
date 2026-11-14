@@ -369,7 +369,7 @@ func TestProposeContext_ClaudeMDSavingTokens(t *testing.T) {
 		p := f.rows(t)[0]
 		saving := evidenceOf(p, "saving_tokens")
 		require.Len(t, saving, 1)
-		assert.Equal(t, strconv.FormatInt(agentreport.TokensOfBytes(bigBytes), 10), saving[0].Ref)
+		assert.Equal(t, strconv.FormatInt(agentreport.TokensOfBytes(int64(bigBytes)), 10), saving[0].Ref)
 		assert.Equal(t, "saving_tokens", p.Evidence[len(p.Evidence)-1].Kind)
 		assert.Len(t, evidenceOf(p, "section"), 2, "the small section is not counted")
 		// The fingerprint is the key and the size class only, as before the
@@ -406,7 +406,7 @@ func TestProposeContext_ClaudeMDSavingTokens(t *testing.T) {
 		assert.Len(t, evidenceOf(p, "section"), maxEvidence-2)
 		last := p.Evidence[maxEvidence-1]
 		assert.Equal(t, "saving_tokens", last.Kind)
-		assert.Equal(t, strconv.FormatInt(agentreport.TokensOfBytes(bigBytes), 10), last.Ref,
+		assert.Equal(t, strconv.FormatInt(agentreport.TokensOfBytes(int64(bigBytes)), 10), last.Ref,
 			"every big section counts, shown or not")
 	})
 }

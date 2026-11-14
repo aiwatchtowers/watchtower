@@ -92,3 +92,14 @@ func TestBrief_Revert(t *testing.T) {
 	_, ru := RevertBrief(restructureClaudeMD(), 42, agentreport.Russian)
 	assert.Contains(t, ru, "PR #42")
 }
+
+func TestBrief_SavingTokensLabelled(t *testing.T) {
+	p := restructureClaudeMD()
+	p.Evidence = append(p.Evidence, db.CoachEvidence{Kind: "saving_tokens", Ref: "8077"})
+	_, prompt := Brief(p, agentreport.English)
+	assert.Contains(t, prompt, "- Expected saving: ~8077 tokens per session start")
+	assert.NotRegexp(t, regexp.MustCompile(`(?m)^- \d+$`), prompt, "no bare number line")
+	_, ru := Brief(p, agentreport.Russian)
+	assert.Contains(t, ru, "- Ожидаемая экономия: ~8077 токенов на старте каждой сессии")
+	assert.NotRegexp(t, regexp.MustCompile(`(?m)^- \d+$`), ru)
+}

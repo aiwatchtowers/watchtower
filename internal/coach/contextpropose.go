@@ -614,7 +614,7 @@ func claudeMDProposal(env ContextEnv, wb *db.Workbench, measured int) (db.CoachP
 	// session start (every big section, named or not). Evidence is not in the
 	// fingerprint, so the estimate never brings a declined proposal back.
 	ev = append(ev, db.CoachEvidence{Kind: "saving_tokens",
-		Ref: strconv.FormatInt(agentreport.TokensOfBytes(bigBytes), 10)})
+		Ref: strconv.FormatInt(agentreport.TokensOfBytes(int64(bigBytes)), 10)})
 	key := keyOf(DestRepoClaudeMD, wb.ID, "", "", "")
 	return db.CoachProposal{
 		Fingerprint: contextFingerprint(key, fmt.Sprintf("size:%d", len(text)/ctxClaudeMDMinBytes), ""),

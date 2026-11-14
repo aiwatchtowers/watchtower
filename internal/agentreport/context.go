@@ -303,7 +303,7 @@ func (a *contextAcc) session(sid string, evs []agentlogdb.AgentReportEvent) {
 	for _, lp := range a.partsFor[sid] {
 		total, ok := firstCtx[lp.agent]
 		if !ok || total <= 0 {
-			total = int64(math.Round(float64(lp.bytes) / defaultBytesPerToken))
+			total = TokensOfBytes(lp.bytes)
 		}
 		agg := &a.main
 		if lp.agent != "" {
@@ -334,7 +334,7 @@ func (a *contextAcc) session(sid string, evs []agentlogdb.AgentReportEvent) {
 
 // TokensOfBytes estimates the tokens of n bytes of text at
 // defaultBytesPerToken, the ratio a lane with no baseline parts uses.
-func TokensOfBytes(n int) int64 {
+func TokensOfBytes(n int64) int64 {
 	return int64(math.Round(float64(n) / defaultBytesPerToken))
 }
 
