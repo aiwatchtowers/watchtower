@@ -415,6 +415,45 @@ func TestMeasureCheck_RefreshErrorKeepsWaiting(t *testing.T) {
 	assert.Equal(t, 2, r.calls)
 }
 
+// Without gh the refresher still stores git's merged verdict (no merge
+// time, a note saying gh is missing): the re-read row, checked by this
+// refresh, is taken and the merge measured. A row the refresh did not touch
+// (its stamp older than the refresh) is not; a cached merged state is final
+// and taken however old, with no refresh.
+func TestMeasureCheck_MergedSeenByGitWithoutGH(t *testing.T) {
+	d, database := coachDaemon(t)
+	var logs bytes.Buffer
+	d.logger.SetOutput(&logs)
+	now := measureNow()
+	wb, _ := measureWorkbench(t, database)
+	sess := measureSession(t, database, wb, "wt/no-gh")
+	id := repoViaSession(t, database, wb, sess, now.Add(-72*time.Hour))
+	prState(t, database, wb, "wt/no-gh", "open", "", now.Add(-2*time.Hour))
+
+	// The refresh left the row as it was (a failed read): not refreshed.
+	untouched := stubRefresh(t, &refreshStub{})
+	d.coachMeasureCheck(context.Background(), now)
+	assert.Equal(t, 1, untouched.calls)
+	assert.True(t, getProposal(t, database, id).MeasureFrom.IsZero())
+	assert.Contains(t, logs.String(), "not refreshed")
+	assert.NotContains(t, logs.String(), "wt/no-gh", "ids only in the log")
+
+	// git saw the merge; gh is not there to say when.
+	git := stubRefresh(t, &refreshStub{state: "merged"})
+	d.coachMeasureCheck(context.Background(), now)
+	assert.Equal(t, 1, git.calls)
+	assert.True(t, getProposal(t, database, id).MeasureFrom.Equal(now), "measured from the check")
+
+	// A merged row a day old is final: taken without a refresh.
+	other := measureSession(t, database, wb, "wt/old-merge")
+	old := repoViaSession(t, database, wb, other, now.Add(-72*time.Hour))
+	prState(t, database, wb, "wt/old-merge", "merged", now.Add(-48*time.Hour).Format(time.RFC3339), now.Add(-24*time.Hour))
+	git.calls = 0
+	d.coachMeasureCheck(context.Background(), now)
+	assert.Zero(t, git.calls, "a cached merge is never refreshed")
+	assert.True(t, getProposal(t, database, old).MeasureFrom.Equal(now.Add(-48*time.Hour)))
+}
+
 func TestMeasureCheck_SettingsRevertedOutside(t *testing.T) {
 	d, database := coachDaemon(t)
 	home, err := os.UserHomeDir()

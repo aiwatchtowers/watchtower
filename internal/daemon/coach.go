@@ -103,15 +103,15 @@ var (
 	}
 	runCoachContext = coach.ProposeContext
 	// coachRefreshPR refreshes the session report's PR cache for one branch
-	// of a workbench (gh and git; never inside a write transaction): an
-	// incomplete refresh (no gh, no network, auth, the budget) is an error
-	// and the measure check retries at its next run.
+	// of a workbench (gh and git; never inside a write transaction). Its
+	// note is not a verdict: without gh, git's merged verdict is still
+	// stored, and a benign note about another ref says nothing about this
+	// one. The caller re-reads the cache and trusts a row checked at or
+	// after the refresh started (coachBranchPR); an error here is only a
+	// refresh that could not run at all.
 	coachRefreshPR = func(ctx context.Context, database *db.DB, workbenchID int64, branch string) error {
-		res := sessionreport.Refresh(ctx, database, workbenchID, []string{"branch:" + branch},
+		sessionreport.Refresh(ctx, database, workbenchID, []string{"branch:" + branch},
 			sessionreport.RefreshOptions{Network: true})
-		if res.Note != "" {
-			return errors.New(res.Note)
-		}
 		return nil
 	}
 	// coachHomeDir is the home ~/.claude and ~/.claude.json live in.
@@ -407,10 +407,14 @@ func (d *Daemon) coachProposalBranch(p db.CoachProposal) string {
 	return branch
 }
 
-// coachBranchPR is branch's cached PR state in p's workbench, refreshed
-// first (that branch only, through the session report's refresher) when the
-// cache row is missing or older than coachPRFreshFor. ok is false when the
-// state could not be read: a failed refresh is logged and the row waits.
+// coachBranchPR is branch's cached PR state in p's workbench. A cached
+// merged or closed state is final and taken whatever its age; any other row
+// is taken while younger than coachPRFreshFor, else that branch is
+// refreshed first (through the session report's refresher) and the row is
+// taken only when the refresh checked it — CheckedAt at or after the
+// refresh started (a failed read keeps the row with an older stamp). ok is
+// false when the state could not be read: logged by ids, and the row waits
+// for the next check.
 func (d *Daemon) coachBranchPR(ctx context.Context, p db.CoachProposal, branch string, now time.Time) (db.PRState, bool) {
 	ref := "branch:" + branch
 	states, err := d.db.PRStates(p.WorkbenchID)
@@ -419,10 +423,14 @@ func (d *Daemon) coachBranchPR(ctx context.Context, p db.CoachProposal, branch s
 		return db.PRState{}, false
 	}
 	row, cached := states[ref]
+	if cached && (row.State == "merged" || row.State == "closed") {
+		return row, true
+	}
 	checked, perr := time.Parse(time.RFC3339, row.CheckedAt)
 	if cached && perr == nil && now.Sub(checked) < coachPRFreshFor {
 		return row, true
 	}
+	started := time.Now().UTC().Truncate(time.Second) // CheckedAt has whole seconds
 	if err := coachRefreshPR(ctx, d.db, p.WorkbenchID, branch); err != nil {
 		d.logger.Printf("coach: measure check: proposal %d (workbench %d): PR state not refreshed, retried next check",
 			p.ID, p.WorkbenchID)
@@ -433,7 +441,13 @@ func (d *Daemon) coachBranchPR(ctx context.Context, p db.CoachProposal, branch s
 		return db.PRState{}, false
 	}
 	row, cached = states[ref]
-	return row, cached
+	checked, perr = time.Parse(time.RFC3339, row.CheckedAt)
+	if !cached || perr != nil || checked.Before(started) {
+		d.logger.Printf("coach: measure check: proposal %d (workbench %d): PR state not refreshed, retried next check",
+			p.ID, p.WorkbenchID)
+		return db.PRState{}, false
+	}
+	return row, true
 }
 
 // coachMemoryCheck decides a memory cleanup once, at the first check that
