@@ -479,6 +479,12 @@ func TestProposeContext_PluginWithHooksOrStylesSkipped(t *testing.T) {
 		"manifest output styles": func(t *testing.T, f *ctxFixture) {
 			writeHomeFile(t, filepath.Join(f.plugins, "user", ".claude-plugin", "plugin.json"), `{"outputStyles": "./s"}`)
 		},
+		".lsp.json": func(t *testing.T, f *ctxFixture) {
+			writeHomeFile(t, filepath.Join(f.plugins, "acme", ".lsp.json"), `{"go": {}}`)
+		},
+		"manifest lsp servers": func(t *testing.T, f *ctxFixture) {
+			writeHomeFile(t, filepath.Join(f.plugins, "user", ".claude-plugin", "plugin.json"), `{"lspServers": "./lsp.json"}`)
+		},
 		"bad manifest": func(t *testing.T, f *ctxFixture) {
 			writeHomeFile(t, filepath.Join(f.plugins, "user", ".claude-plugin", "plugin.json"), "not json")
 		},
@@ -549,4 +555,32 @@ func TestPreviewContext_StopsBetweenWorkbenches(t *testing.T) {
 	_, err := PreviewContext(ctx, f.env(), []int64{f.wb, other})
 	assert.ErrorIs(t, err, context.Canceled)
 	assert.Equal(t, []int64{f.wb}, seen)
+}
+
+// Overlapping plugin ids ("alpha", "alpha_x"): a server's tokens go to the
+// longest match only, its calls to both.
+func TestProposeContext_PluginServerTokensToLongestMatch(t *testing.T) {
+	f := newCtxFixture(t)
+	f.global = []agentreport.ContextSourceRow{
+		srcRow("skills", "alpha", agentreport.GroupPlugin, 300, 0, 6),
+		srcRow("skills", "alpha_x", agentreport.GroupPlugin, 300, 0, 6),
+		srcRow("mcp", "plugin_alpha_x_docs", agentreport.GroupMCPServer, 900, 0, 6),
+	}
+	assert.Equal(t, 0, f.run(t, f.wb), "alpha stays at 300 tokens: alpha_x's server is not its weight")
+
+	groups := foldPluginServers(sourceGroups(f.global))
+	byName := map[string]sourceGroup{}
+	for _, g := range groups {
+		byName[g.group] = g
+	}
+	assert.Equal(t, 300, byName["alpha"].tokens)
+	assert.Equal(t, 1200, byName["alpha_x"].tokens)
+
+	f.global = append(f.global, srcRow("tools", "plugin_alpha_x_docs", agentreport.GroupMCPServer, 0, 2, 0))
+	groups = foldPluginServers(sourceGroups(f.global))
+	for _, g := range groups {
+		if g.kind == agentreport.GroupPlugin {
+			assert.Equal(t, 2, g.calls, "calls count for every matching plugin: %s", g.group)
+		}
+	}
 }

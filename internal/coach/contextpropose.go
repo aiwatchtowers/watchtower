@@ -225,24 +225,37 @@ func sourceGroups(rows []agentreport.ContextSourceRow) []sourceGroup {
 }
 
 // foldPluginServers adds to each plugin group its own MCP servers' groups
-// (mcp_server "plugin_<plugin id>_<server>"): their calls, so a plugin used
-// only through its server is used, and their measured tokens, since turning
-// the plugin off drops its servers too. A plugin name that is a prefix of
-// another's ("foo", "foo_bar") takes the other's servers too: that errs
-// toward not proposing.
+// (mcp_server "plugin_<plugin id>_<server>"). Their calls go to every plugin
+// whose prefix matches, so a plugin used only through its server is used: a
+// plugin name that is a prefix of another's ("a", "a_b") also takes the
+// other's calls, which errs toward not proposing. Their measured tokens (the
+// plugin's servers go off with it) go only to the plugin with the longest
+// matching id, so no plugin crosses the threshold on another's weight.
 func foldPluginServers(groups []sourceGroup) []sourceGroup {
 	out := slices.Clone(groups)
-	for i := range out {
-		if out[i].kind != agentreport.GroupPlugin {
+	prefixes := map[int]string{}
+	for i, g := range out {
+		if g.kind == agentreport.GroupPlugin {
+			prefixes[i] = "plugin_" + agentreport.MCPServerID(g.group) + "_"
+		}
+	}
+	for _, s := range groups {
+		if s.kind != agentreport.GroupMCPServer {
 			continue
 		}
-		prefix := "plugin_" + agentreport.MCPServerID(out[i].group) + "_"
-		for _, s := range groups {
-			if s.kind == agentreport.GroupMCPServer && strings.HasPrefix(s.group, prefix) {
-				out[i].calls += s.calls
-				out[i].tokens += s.tokens
-				out[i].measured = max(out[i].measured, s.measured)
+		owner, longest := -1, 0
+		for i, prefix := range prefixes {
+			if !strings.HasPrefix(s.group, prefix) {
+				continue
 			}
+			out[i].calls += s.calls
+			out[i].measured = max(out[i].measured, s.measured)
+			if len(prefix) > longest {
+				owner, longest = i, len(prefix)
+			}
+		}
+		if owner >= 0 {
+			out[owner].tokens += s.tokens
 		}
 	}
 	return out
@@ -453,8 +466,9 @@ func pluginInstallPaths(home, id string) ([]string, error) {
 
 // pluginWorksWithoutCalls is whether plugin id may be load-bearing with no
 // calls to show for it: one of its installs ships hooks (hooks/hooks.json, or
-// a "hooks" key in .claude-plugin/plugin.json) or output styles (an
-// output-styles/ folder, or an "outputStyles" key). An install that cannot be
+// a "hooks" key in .claude-plugin/plugin.json), output styles (an
+// output-styles/ folder, or an "outputStyles" key) or LSP servers (.lsp.json,
+// or an "lspServers" key). An install that cannot be
 // read, or no known install folder, counts as yes: the plugin is not
 // proposed. Only names are read: whether the files exist and the manifest's
 // keys, never a value.
@@ -467,7 +481,7 @@ func pluginWorksWithoutCalls(home, id string) bool {
 		if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
 			return true
 		}
-		for _, rel := range []string{filepath.Join("hooks", "hooks.json"), "output-styles"} {
+		for _, rel := range []string{filepath.Join("hooks", "hooks.json"), "output-styles", ".lsp.json"} {
 			_, err := os.Lstat(filepath.Join(dir, rel))
 			if err == nil || !errors.Is(err, fs.ErrNotExist) {
 				return true
@@ -487,8 +501,10 @@ func pluginWorksWithoutCalls(home, id string) bool {
 		if _, hooks := keys["hooks"]; hooks {
 			return true
 		}
-		if _, styles := keys["outputStyles"]; styles {
-			return true
+		for _, k := range []string{"outputStyles", "lspServers"} {
+			if _, ok := keys[k]; ok {
+				return true
+			}
 		}
 	}
 	return false
