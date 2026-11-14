@@ -66,10 +66,21 @@ type AgentContextPart struct {
 	Bytes                      int64
 }
 
-// AgentSkillListed is one skill in the session's context listing.
+// AgentSkillListed is one skill in the session's context listing; Bytes is
+// the skill's own line of the listing (parser v5; the listing split evenly
+// before, and for a name without a line of its own).
 type AgentSkillListed struct {
 	SessionUUID, Skill string
 	Bytes              int64
+}
+
+// AgentContextSource is the start weight of one source in a lane's context
+// before its first API call: Kind "skill" or "agent" (its listing line),
+// "tool" (its definition) or "mcp_instructions" (a server's instruction
+// block), by name.
+type AgentContextSource struct {
+	SessionUUID, AgentID, Kind, Name string
+	Bytes                            int64
 }
 
 // AgentSubagent is one sub-agent lane of a session; Finished nil = unknown.
@@ -86,14 +97,15 @@ type AgentSubagent struct {
 
 // AgentLogBatch is what one parse of one file writes in one transaction.
 type AgentLogBatch struct {
-	File         AgentLogFile // Path, Agent, Size, MTime, ParserVersion; ReadOffset = the new offset
-	ExpectOffset int64        // compare-and-set: the offset the caller read from; -1 = file row must not exist
-	Sessions     []AgentLogSession
-	Events       []AgentLogEvent
-	ToolResults  []AgentToolResult
-	ContextParts []AgentContextPart
-	SkillListing []AgentSkillListed
-	Subagents    []AgentSubagent
+	File           AgentLogFile // Path, Agent, Size, MTime, ParserVersion; ReadOffset = the new offset
+	ExpectOffset   int64        // compare-and-set: the offset the caller read from; -1 = file row must not exist
+	Sessions       []AgentLogSession
+	Events         []AgentLogEvent
+	ToolResults    []AgentToolResult
+	ContextParts   []AgentContextPart
+	ContextSources []AgentContextSource
+	SkillListing   []AgentSkillListed
+	Subagents      []AgentSubagent
 	// Lane is a Codex sub-agent batch's agent id: its tool results time and
 	// settle only that lane's rows, so a forked child's replay of its
 	// parent's results (under the same root session) never re-times the
@@ -102,6 +114,16 @@ type AgentLogBatch struct {
 	// Spawns set spawned_agent_id on stored spawn tool rows (an update only:
 	// a spawn whose call was never stored writes nothing).
 	Spawns []AgentSpawn
+	// Reread: the batch is the first slice of a stored Claude file read
+	// again from offset 0 (a parser bump, a shrunk file). The per-source
+	// rows of the file's own session (RereadSession) in its lane
+	// (RereadLane, the file's agent id; "" = the main transcript, which
+	// also owns the skill listing) are cleared before the batch's rows
+	// land, so a reparse replaces them instead of keeping the MAX of an
+	// older parser's measure. A later slice, and any incremental read,
+	// grows them by MAX.
+	Reread                    bool
+	RereadSession, RereadLane string
 }
 
 // AgentSpawn links a stored tool row (Key) to the sub-agent it spawned.
@@ -284,6 +306,18 @@ func (d *DB) ApplyAgentLogBatch(b AgentLogBatch) (bool, error) {
 				return fmt.Errorf("upserting context part: %w", err)
 			}
 		}
+		if b.Reread {
+			if err := clearRereadSources(tx, b); err != nil {
+				return err
+			}
+		}
+		for _, c := range b.ContextSources {
+			if _, err := tx.Exec(`INSERT INTO agent_log_context_sources (session_uuid, agent_id, kind, name, bytes) VALUES (?, ?, ?, ?, ?)
+				ON CONFLICT(session_uuid, agent_id, kind, name) DO UPDATE SET bytes = MAX(bytes, excluded.bytes)`,
+				c.SessionUUID, c.AgentID, c.Kind, c.Name, c.Bytes); err != nil {
+				return fmt.Errorf("upserting context source: %w", err)
+			}
+		}
 		for _, k := range b.SkillListing {
 			if _, err := tx.Exec(`INSERT INTO agent_log_skill_listing (session_uuid, skill, bytes) VALUES (?, ?, ?)
 				ON CONFLICT(session_uuid, skill) DO UPDATE SET bytes = MAX(bytes, excluded.bytes)`,
@@ -314,6 +348,25 @@ func (d *DB) ApplyAgentLogBatch(b AgentLogBatch) (bool, error) {
 }
 
 var errCASLost = errors.New("agent log offset moved by another writer")
+
+// clearRereadSources deletes the per-source rows a reread batch rebuilds:
+// the file's own session's context sources of its lane and, for the main
+// transcript, that session's skill listing. Another session whose records
+// the file carries (a resumed or replayed copy) keeps its rows: its own
+// file rebuilds them, and MAX keeps the copy's lossless.
+func clearRereadSources(tx *sql.Tx, b AgentLogBatch) error {
+	if _, err := tx.Exec(`DELETE FROM agent_log_context_sources WHERE session_uuid = ? AND agent_id = ?`,
+		b.RereadSession, b.RereadLane); err != nil {
+		return fmt.Errorf("clearing reread context sources: %w", err)
+	}
+	if b.RereadLane != "" {
+		return nil
+	}
+	if _, err := tx.Exec(`DELETE FROM agent_log_skill_listing WHERE session_uuid = ?`, b.RereadSession); err != nil {
+		return fmt.Errorf("clearing reread skill listing: %w", err)
+	}
+	return nil
+}
 
 // batchOwners is the JSON array of the batch's session uuids that limits a
 // tool result's full pairing to a row one of those sessions owns: a fork's

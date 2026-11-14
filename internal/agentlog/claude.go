@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -16,11 +17,12 @@ import (
 
 // ParserVersion is stamped on a Claude transcript's agent_log_files row;
 // bump it when parsing changes so present files are reparsed from 0
-// (idempotent keys, AGENTLOG-03). CodexParserVersion is a Codex rollout's
-// (spec 2026-11-03 §4.7, D56): 5 corrects the stored fresh-input and
+// (idempotent keys, AGENTLOG-03); 5 adds the per-source start weights
+// (ContextSources) and a skill's own listing line. CodexParserVersion is a
+// Codex rollout's (spec 2026-11-03 §4.7, D56): 5 corrects the stored fresh-input and
 // cache-write split once without rereading Claude transcripts.
 const (
-	ParserVersion      = 4
+	ParserVersion      = 5
 	CodexParserVersion = 5
 )
 
@@ -156,13 +158,17 @@ type ParseResult struct {
 	// it has; the next read continues it); SkillListing is every listed skill.
 	ContextParts []agentlogdb.AgentContextPart
 	SkillListing []agentlogdb.AgentSkillListed
-	Unknown      map[string]int
-	LongLines    int
-	Consumed     int64
-	More         bool     // stopped at MaxRows, not at the end of the input
-	Skills       []string // every skill name known at the end of the parse (seed for the next slice)
-	PriorLoaded  bool     // PriorSkills was called: Skills includes the listings before the start
-	CodexLineage string   // the rollout's lineage at the end of the parse (seed for the next slice; ParseCodex only)
+	// ContextSources are the per-source start weights of each lane (a
+	// skill's or agent's listing line, a tool's definition, a server's
+	// instruction block), kept under the same lane rule as ContextParts.
+	ContextSources []agentlogdb.AgentContextSource
+	Unknown        map[string]int
+	LongLines      int
+	Consumed       int64
+	More           bool     // stopped at MaxRows, not at the end of the input
+	Skills         []string // every skill name known at the end of the parse (seed for the next slice)
+	PriorLoaded    bool     // PriorSkills was called: Skills includes the listings before the start
+	CodexLineage   string   // the rollout's lineage at the end of the parse (seed for the next slice; ParseCodex only)
 	// CodexUsageMismatch counts the token lines of this parse whose fresh
 	// input came out negative (input − cached − cache write < 0): stored as
 	// 0 and counted, never floored silently (ParseCodex only).
@@ -321,6 +327,7 @@ func (p *claudeParser) handle(raw []byte, off int64) {
 		if rec.Shape != nil {
 			p.addPart(rec.SessionID, "system", int64(len(rec.Shape.System)))
 			p.addPart(rec.SessionID, "tools", int64(len(rec.Shape.Tools)))
+			p.shapeTools(rec.SessionID, rec.Shape.Tools)
 		}
 	}
 }
@@ -465,11 +472,33 @@ func turnTrigger(text string) string {
 	return "owner"
 }
 
+// claudeAttachment is the part of an attachment record the parser reads.
+// Its texts are measured, never stored: only names and lengths leave the
+// parser (AGENTLOG-01).
+type claudeAttachment struct {
+	Type string `json:"type"`
+	// skill_listing: the listed names and the listing text, one
+	// "- <name>: …" line per skill.
+	Names   []string `json:"names"`
+	Content string   `json:"content"`
+	// agent_listing_delta: added agent types and their lines, by index.
+	AddedTypes []string `json:"addedTypes"`
+	// agent_listing_delta and deferred_tools_delta.
+	AddedLines []string `json:"addedLines"`
+	// mcp_instructions_delta: server display names and their instruction
+	// blocks, by index.
+	AddedNames  []string `json:"addedNames"`
+	AddedBlocks []string `json:"addedBlocks"`
+	// deferred_tools_delta: deferred tools whose full definitions entered
+	// the context.
+	SurfacedDefinitions []struct {
+		Name       string          `json:"name"`
+		Definition json.RawMessage `json:"definition"`
+	} `json:"surfacedDefinitions"`
+}
+
 func (p *claudeParser) attachment(rec claudeRecord) {
-	var a struct {
-		Type  string   `json:"type"`
-		Names []string `json:"names"`
-	}
+	var a claudeAttachment
 	if json.Unmarshal(rec.Attachment, &a) != nil {
 		return
 	}
@@ -477,15 +506,92 @@ func (p *claudeParser) attachment(rec claudeRecord) {
 	for _, r := range rec.Rendered {
 		size += int64(len(r.Content))
 	}
-	p.addPart(rec.SessionID, attachmentPart(a.Type), size)
-	if a.Type != "skill_listing" {
-		return
+	sid := rec.SessionID
+	p.addPart(sid, attachmentPart(a.Type), size)
+	switch a.Type {
+	case "skill_listing":
+		p.skillListing(sid, a, size)
+	case "agent_listing_delta":
+		for i, n := range a.AddedTypes {
+			if i < len(a.AddedLines) { // a type without its line is not measured
+				p.addSource(sid, "agent", n, int64(len(a.AddedLines[i])))
+			}
+		}
+	case "mcp_instructions_delta":
+		for i, n := range a.AddedNames {
+			if i < len(a.AddedBlocks) {
+				p.addSource(sid, "mcp_instructions", n, int64(len(a.AddedBlocks[i])))
+			}
+		}
+	case "deferred_tools_delta":
+		for _, d := range a.SurfacedDefinitions {
+			if len(d.Definition) > 0 && string(d.Definition) != "null" { // no definition: nothing entered the context
+				p.addSource(sid, "tool", d.Name, int64(len(d.Definition)))
+			}
+		}
 	}
+}
+
+// skillListing records the listed skills: each one's bytes are its own line
+// of the listing; a name without a line of its own gets the listing's even
+// split, for that name only.
+func (p *claudeParser) skillListing(sid string, a claudeAttachment, size int64) {
+	lines := skillLineBytes(a.Content, a.Names)
 	for _, n := range a.Names { // union: a later listing never drops an earlier name
 		p.skills[n] = true
-		if rec.SessionID != "" && n != "" {
-			p.res.SkillListing = append(p.res.SkillListing, agentlogdb.AgentSkillListed{SessionUUID: rec.SessionID,
-				Skill: n, Bytes: size / int64(len(a.Names))})
+		if sid == "" || n == "" {
+			continue
+		}
+		b, ok := lines[n]
+		if !ok {
+			b = size / int64(len(a.Names))
+		}
+		p.res.SkillListing = append(p.res.SkillListing, agentlogdb.AgentSkillListed{SessionUUID: sid, Skill: n, Bytes: b})
+		p.addSource(sid, "skill", n, b)
+	}
+}
+
+// skillLineBytes maps each name to the length of its "- <name>:" line in a
+// skill listing's content. A line belongs to the longest name it starts
+// with, so "plugin" never takes the line of "plugin:skill".
+func skillLineBytes(content string, names []string) map[string]int64 {
+	if content == "" {
+		return nil
+	}
+	byLen := slices.Clone(names)
+	slices.SortFunc(byLen, func(x, y string) int { return len(y) - len(x) })
+	out := map[string]int64{}
+	for ln := range strings.SplitSeq(content, "\n") {
+		ln = strings.TrimSuffix(ln, "\r")
+		rest, ok := strings.CutPrefix(ln, "- ")
+		if !ok {
+			continue
+		}
+		for _, n := range byLen {
+			if n != "" && strings.HasPrefix(rest, n+":") {
+				if _, seen := out[n]; !seen {
+					out[n] = int64(len(ln))
+				}
+				break
+			}
+		}
+	}
+	return out
+}
+
+// shapeTools records each tool definition of a request shape by name; a
+// shape whose tools are not a list, or a tool without a name, adds nothing.
+func (p *claudeParser) shapeTools(sid string, tools json.RawMessage) {
+	var defs []json.RawMessage
+	if json.Unmarshal(tools, &defs) != nil {
+		return
+	}
+	for _, d := range defs {
+		var t struct {
+			Name string `json:"name"`
+		}
+		if json.Unmarshal(d, &t) == nil {
+			p.addSource(sid, "tool", t.Name, int64(len(d)))
 		}
 	}
 }
@@ -517,7 +623,14 @@ type laneParts struct {
 	bytes  map[string]int64
 	closed bool
 	stored bool
+	// sources are the lane's per-source weights seen in this read (a
+	// continued lane's stored ones are not loaded: the store keeps the MAX).
+	sourceOrder []sourceKey
+	sources     map[sourceKey]int64
 }
+
+// sourceKey names one source of a lane's start context.
+type sourceKey struct{ kind, name string }
 
 func (p *claudeParser) newLane(sid string, l *laneParts) *laneParts {
 	if l.bytes == nil {
@@ -533,20 +646,52 @@ func (p *claudeParser) newLane(sid string, l *laneParts) *laneParts {
 // continues from the stored bytes (LaneBaseline) unless its first call is
 // already stored; without LaneBaseline such a read tracks nothing.
 func (p *claudeParser) addPart(sid, part string, n int64) {
-	if sid == "" {
-		return
-	}
-	l := p.lanes[sid]
+	l := p.openLaneFor(sid)
 	if l == nil {
-		l = p.newLane(sid, p.openLane(sid))
-	}
-	if l.closed {
 		return
 	}
 	if _, ok := l.bytes[part]; !ok {
 		l.order = append(l.order, part)
 	}
 	l.bytes[part] += n
+}
+
+// addSource sets the bytes of one named source of the session's lane in
+// this file, under addPart's rule (until the lane's first API call). The
+// same source seen twice keeps its larger size: it enters the context once.
+func (p *claudeParser) addSource(sid, kind, name string, n int64) {
+	if name == "" {
+		return
+	}
+	l := p.openLaneFor(sid)
+	if l == nil {
+		return
+	}
+	if l.sources == nil {
+		l.sources = map[sourceKey]int64{}
+	}
+	k := sourceKey{kind, name}
+	old, ok := l.sources[k]
+	if !ok {
+		l.sourceOrder = append(l.sourceOrder, k)
+	}
+	l.sources[k] = max(old, n)
+}
+
+// openLaneFor returns the session's lane in this file while it is still
+// before its first API call, opening it on first sight; nil once closed.
+func (p *claudeParser) openLaneFor(sid string) *laneParts {
+	if sid == "" {
+		return nil
+	}
+	l := p.lanes[sid]
+	if l == nil {
+		l = p.newLane(sid, p.openLane(sid))
+	}
+	if l.closed {
+		return nil
+	}
+	return l
 }
 
 // openLane is the state of a lane first seen in this read: empty from
@@ -590,7 +735,7 @@ func (p *claudeParser) closeLane(sid string) {
 	p.newLane(sid, &laneParts{closed: true, stored: !p.fromStart})
 }
 
-// emitContextParts moves the parts of every lane into the result: the whole
+// emitContextParts moves the parts and sources of every lane into the result: the whole
 // baseline of a lane whose first API call is in this read, the bytes so far
 // of one still before it (the stored row grows by MAX on the next read). A
 // lane whose first call an earlier read stored emits nothing. The lane is
@@ -604,6 +749,10 @@ func (p *claudeParser) emitContextParts() {
 		for _, part := range l.order {
 			p.res.ContextParts = append(p.res.ContextParts, agentlogdb.AgentContextPart{SessionUUID: sid,
 				AgentID: p.o.AgentID, Part: part, Bytes: l.bytes[part]})
+		}
+		for _, k := range l.sourceOrder {
+			p.res.ContextSources = append(p.res.ContextSources, agentlogdb.AgentContextSource{SessionUUID: sid,
+				AgentID: p.o.AgentID, Kind: k.kind, Name: k.name, Bytes: l.sources[k]})
 		}
 	}
 }

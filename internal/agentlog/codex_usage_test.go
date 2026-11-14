@@ -138,13 +138,13 @@ func TestScan_CodexReReadOnceUnderNewParserVersion(t *testing.T) {
 		require.Equal(t, [2]float64{300, 100}, [2]float64{v[0], v[1]})
 	}
 	downgradeCodexRows(t, f)
-	_, err := f.al.Exec(`UPDATE agent_log_files SET parser_version = 4 WHERE agent = 'claude'`) // Claude's current version
+	_, err := f.al.Exec(`UPDATE agent_log_files SET parser_version = ? WHERE agent = 'claude'`, ParserVersion) // Claude's current version
 	require.NoError(t, err)
 
 	r := f.scan()
 	require.Zero(t, r.FailedFiles, "%v", r.FirstFailure)
 	assert.Equal(t, 1, r.FilesScanned, "only the codex rollout is re-read")
-	assert.Equal(t, 1, r.FilesSkipped, "the Claude transcript under version 4 is unchanged")
+	assert.Equal(t, 1, r.FilesSkipped, "the Claude transcript under its current version is unchanged")
 	assert.Equal(t, want, codexSplit(t, f), "split and cost corrected under the unchanged keys")
 	calls, _ := f.totals()
 	assert.Equal(t, int64(4), calls, "no new rows")

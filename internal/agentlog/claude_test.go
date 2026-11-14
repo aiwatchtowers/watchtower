@@ -118,10 +118,19 @@ func TestParseClaude_OwnerTurnCompactionAPIErrorPRLinkCost(t *testing.T) {
 
 func TestParseClaude_StoresNoText(t *testing.T) {
 	s := attachLine(t, "s1", "instructions", nil, "SENTINEL-CLAUDE-MD") +
-		attachLine(t, "s1", "skill_listing", map[string]any{"names": []string{"review"}}, "SENTINEL-SKILL-DESCRIPTION") +
+		attachLine(t, "s1", "skill_listing", map[string]any{"names": []string{"review"},
+			"content": "- review: SENTINEL-SKILL-LINE"}, "SENTINEL-SKILL-DESCRIPTION") +
+		attachLine(t, "s1", "agent_listing_delta", map[string]any{"addedTypes": []string{"Explore"},
+			"addedLines": []string{"- Explore: SENTINEL-AGENT-LINE"}}, "SENTINEL-AGENT-RENDERED") +
+		attachLine(t, "s1", "mcp_instructions_delta", map[string]any{"addedNames": []string{"srv"},
+			"addedBlocks": []string{"SENTINEL-MCP-BLOCK"}}, "SENTINEL-MCP-RENDERED") +
+		attachLine(t, "s1", "deferred_tools_delta", map[string]any{"addedNames": []string{"mcp__srv__x"},
+			"addedLines": []string{"SENTINEL-DEFERRED-LINE"}, "surfacedDefinitions": []map[string]any{{"name": "mcp__srv__x",
+				"listing": "SENTINEL-DEFERRED-LISTING", "definition": map[string]any{"name": "mcp__srv__x", "description": "SENTINEL-DEFERRED-DEF"}}}}, "d") +
 		attachLine(t, "s1", "hook_blocking_error", nil, "SENTINEL-HOOK") +
 		attachLine(t, "s1", "SENTINEL-TYPE", nil, "x") +
-		shapeLine(t, "s1", []map[string]any{{"type": "text", "text": "SENTINEL-SYSTEM"}}, []map[string]any{{"name": "SENTINEL-TOOL"}}) +
+		shapeLine(t, "s1", []map[string]any{{"type": "text", "text": "SENTINEL-SYSTEM"}},
+			[]map[string]any{{"name": "Read", "description": "SENTINEL-TOOL-DESCRIPTION", "input_schema": map[string]any{"description": "SENTINEL-SCHEMA"}}}) +
 		line(t, map[string]any{"type": "user", "sessionId": "s1", "uuid": "o1", "timestamp": "2026-10-01T09:59:00Z", "cwd": "/w",
 			"message": map[string]any{"role": "user", "content": "SENTINEL-PROMPT"}}) + line(t, assistant("s1", "u1", "m1", "r1", 5,
 		toolUse("t1", "Bash", map[string]any{"command": "cd /SENTINEL_DIR && make test SENTINEL_ARG"}))) +
@@ -139,6 +148,7 @@ func TestParseClaude_StoresNoText(t *testing.T) {
 	r := parse(t, s, ParseOptions{})
 	require.Equal(t, int64(len("SENTINEL-CLAUDE-MD")), partsOf(r)["s1//instructions"], "the rendered text was measured")
 	require.NotEmpty(t, r.SkillListing)
+	require.Len(t, r.ContextSources, 5, "the per-source weights were measured: skill, agent, server block, two tools")
 	b, err := json.Marshal(r)
 	require.NoError(t, err)
 	assert.NotContains(t, string(b), "SENTINEL")

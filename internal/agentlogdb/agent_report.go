@@ -175,6 +175,26 @@ func (d *DB) AgentReportContextParts(uuids []string) ([]AgentContextPart, error)
 	return out, nil
 }
 
+// AgentReportContextSources returns the per-source start weights of the
+// given sessions, ordered by session, agent id, kind, name. A session parsed
+// before parser v5 has none (not measured).
+func (d *DB) AgentReportContextSources(uuids []string) ([]AgentContextSource, error) {
+	out := []AgentContextSource{}
+	err := d.agentReportByUUIDs(uuids, `SELECT session_uuid, agent_id, kind, name, bytes FROM agent_log_context_sources
+		WHERE session_uuid IN (%s) ORDER BY session_uuid, agent_id, kind, name`, func(r *sql.Rows) error {
+		var c AgentContextSource
+		if err := r.Scan(&c.SessionUUID, &c.AgentID, &c.Kind, &c.Name, &c.Bytes); err != nil {
+			return err
+		}
+		out = append(out, c)
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("agent report context sources: %w", err)
+	}
+	return out, nil
+}
+
 // AgentReportSkillListing returns the skills listed in the given sessions'
 // context, ordered by session, skill.
 func (d *DB) AgentReportSkillListing(uuids []string) ([]AgentSkillListed, error) {

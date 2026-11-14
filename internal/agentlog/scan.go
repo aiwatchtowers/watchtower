@@ -519,7 +519,7 @@ func storeSlice(st store, tf TranscriptFile, wb *db.Workbench, pr *ParseResult, 
 		return 0, false, err
 	}
 	b := agentlogdb.AgentLogBatch{File: f, ExpectOffset: expect, Events: pr.Events,
-		ToolResults: pr.ToolResults, ContextParts: pr.ContextParts, SkillListing: pr.SkillListing, Sessions: sessions}
+		ToolResults: pr.ToolResults, ContextParts: pr.ContextParts, ContextSources: pr.ContextSources, SkillListing: pr.SkillListing, Sessions: sessions}
 	if tf.Agent != AgentCodex && tf.Subagent && tf.AgentID != "" && hasSession(sessions, tf.SessionUUID) { // the row references its session
 		b.Subagents = []agentlogdb.AgentSubagent{subagentRow(tf)}
 	}
@@ -527,6 +527,12 @@ func storeSlice(st store, tf TranscriptFile, wb *db.Workbench, pr *ParseResult, 
 	b.Spawns = pr.CodexSpawns
 	if tf.Agent == AgentCodex && tf.Subagent {
 		b.Lane = tf.AgentID
+	}
+	// A stored file read again from 0 rebuilds its own session's lane. A
+	// sub-agent file without an agent id (agent-.jsonl) has no lane of its
+	// own: rereading it must not clear the parent's main lane.
+	if tf.Agent != AgentCodex && start == 0 && expect >= 0 && tf.SessionUUID != "" && (!tf.Subagent || tf.AgentID != "") {
+		b.Reread, b.RereadSession, b.RereadLane = true, tf.SessionUUID, tf.AgentID
 	}
 	applied, err := st.al.ApplyAgentLogBatch(b)
 	if err != nil {
@@ -640,11 +646,8 @@ func listedSkills(r io.Reader, limit int64) ([]string, error) {
 			continue
 		}
 		var rec struct {
-			Type       string `json:"type"`
-			Attachment struct {
-				Type  string   `json:"type"`
-				Names []string `json:"names"`
-			} `json:"attachment"`
+			Type       string           `json:"type"`
+			Attachment claudeAttachment `json:"attachment"`
 		}
 		if json.Unmarshal(raw, &rec) != nil || rec.Type != "attachment" || rec.Attachment.Type != "skill_listing" {
 			continue
