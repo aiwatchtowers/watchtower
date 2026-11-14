@@ -747,6 +747,14 @@ func TestRestartCoachSession(t *testing.T) {
 	old := newTestSession(t, d, wb)
 	recordSessionBranch(t, d, old, "/tmp/a", "wt/first", "2026-11-12T08:00:00.000Z")
 	id := acceptedThroughSession(t, d, "fp1", "claude_memory_index", wb, old, now)
+	// A memory row is restarted only once the daemon decided its session.
+	decide := func() {
+		t.Helper()
+		ok, err := d.SetCoachMemoryUnchanged(id)
+		require.NoError(t, err)
+		require.True(t, ok)
+	}
+	decide()
 
 	fresh := newTestSession(t, d, wb)
 	recordSessionBranch(t, d, fresh, "/tmp/b", "wt/second", "2026-12-10T08:00:00.000Z")
@@ -768,6 +776,7 @@ func TestRestartCoachSession(t *testing.T) {
 	require.NoError(t, d.UpsertPRState(PRState{WorkbenchID: wb, Ref: "branch:wt/second", State: "open",
 		PRNumber: sql.NullInt64{Int64: 12, Valid: true}, CheckedAt: "2026-12-10T09:00:00Z"}))
 	third := newTestSession(t, d, wb)
+	decide()
 	err = d.RestartCoachSession(id, CoachSessionLink{SessionID: third, WorkbenchID: wb}, later)
 	require.ErrorIs(t, err, ErrCoachSessionHasPR)
 
@@ -781,6 +790,7 @@ func TestRestartCoachSession(t *testing.T) {
 	assert.Equal(t, before, got.BeforeText, "nil Before keeps the text")
 
 	// Another workbench's session, and a measured row, are refused.
+	decide()
 	other := newTestWorkbench(t, d)
 	require.ErrorIs(t, d.RestartCoachSession(id, CoachSessionLink{SessionID: newTestSession(t, d, other), WorkbenchID: wb}, later),
 		ErrCoachSessionNotFound)
@@ -863,7 +873,8 @@ func TestSetCoachMemoryMeasured(t *testing.T) {
 	assert.Equal(t, "- slim\n", got.AfterText)
 
 	judged := acceptedThroughSession(t, d, "fp2", "claude_memory_index", wb, sess, now)
-	require.NoError(t, d.DismissCoachSession(judged, now))
+	// Judged by the 30-day give-up (Dismiss waits for the daemon's decision).
+	require.NoError(t, d.SetCoachVerdict(judged, "too_little_data", nil, now))
 	ok, err = d.SetCoachMemoryMeasured(judged, now, "- x\n")
 	require.NoError(t, err)
 	assert.False(t, ok)

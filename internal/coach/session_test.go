@@ -368,10 +368,52 @@ func TestRestart_MemoryRefreshesBefore(t *testing.T) {
 	a := ctxApplier(t, d, home)
 	require.NoError(t, a.AcceptWithSession(id, coachSession(t, d, wb)))
 
+	ok, err := d.SetCoachMemoryUnchanged(id) // the daemon decided: ended without a change
+	require.NoError(t, err)
+	require.True(t, ok)
+
 	between := memIndex + "- [Gamma](gamma.md) — auto-memory, between the sessions\n"
 	writeHomeFile(t, path, between)
 	require.NoError(t, a.Restart(id, coachSession(t, d, wb)))
 	assert.Equal(t, between, proposal(t, d, id).BeforeText)
+}
+
+// A memory row whose session ended but that the daemon has not decided yet
+// (after_text empty) is neither restarted nor dismissed: a Restart would
+// read the cleaned index into before_text and a Dismiss would close a write
+// still to be measured — both lose the copy Undo restores.
+func TestRestart_MemoryUndecidedRefused(t *testing.T) {
+	d := openDBs(t)
+	home := ctxHome(t)
+	wb, folder := sessionWorkbench(t, d)
+	id, path := memoryProposal(t, d, home, wb, folder)
+	a := ctxApplier(t, d, home)
+	first := coachSession(t, d, wb)
+	require.NoError(t, a.AcceptWithSession(id, first))
+	before := proposal(t, d, id).BeforeText
+	writeHomeFile(t, path, "- [Alpha](alpha.md) — cleaned\n")
+
+	require.ErrorIs(t, a.Restart(id, coachSession(t, d, wb)), db.ErrCoachStateChanged)
+	p := proposal(t, d, id)
+	assert.Equal(t, before, p.BeforeText, "the original index is kept for Undo")
+	assert.Equal(t, first, *p.SessionID)
+}
+
+func TestDismiss_MemoryUndecidedRefused(t *testing.T) {
+	d := openDBs(t)
+	home := ctxHome(t)
+	wb, folder := sessionWorkbench(t, d)
+	id, _ := memoryProposal(t, d, home, wb, folder)
+	a := ctxApplier(t, d, home)
+	require.NoError(t, a.AcceptWithSession(id, coachSession(t, d, wb)))
+
+	require.ErrorIs(t, a.Dismiss(id), db.ErrCoachStateChanged)
+	assert.Empty(t, proposal(t, d, id).Verdict)
+	ok, err := d.SetCoachMemoryUnchanged(id)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.NoError(t, a.Dismiss(id), "decided unchanged: Dismiss closes it")
+	assert.Equal(t, "too_little_data", proposal(t, d, id).Verdict)
 }
 
 // revertedPlugin is an accepted plugin proposal whose key someone turned back

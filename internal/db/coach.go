@@ -484,8 +484,13 @@ type CoachSessionLink struct {
 }
 
 // coachSessionGuard is the state a Dismiss or a Restart acts on: an accepted
-// row through a session that has nothing to measure yet and no verdict.
-const coachSessionGuard = `status = 'accepted' AND via_session = 1 AND measure_from IS NULL AND verdict = ''`
+// row through a session that has nothing to measure yet and no verdict. A
+// memory row also needs the daemon's decision (after_text written): before
+// it, a Restart would re-read the already-cleaned index into before_text and
+// a Dismiss would close a row whose write is still to be measured, and
+// either loses the copy Undo restores.
+const coachSessionGuard = `status = 'accepted' AND via_session = 1 AND measure_from IS NULL AND verdict = ''
+	AND (destination <> 'claude_memory_index' OR after_text <> '')`
 
 // coachSessionBranch is a session's latest named worktree branch (last seen
 // first), "" when it has none.

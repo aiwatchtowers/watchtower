@@ -31,12 +31,14 @@ final class ContextActionsPresentationTests: XCTestCase {
         pr: Int64? = nil,
         prState: String? = nil,
         prURL: String? = nil,
-        measureFromDaysAgo: Double? = nil
+        measureFromDaysAgo: Double? = nil,
+        before: String = "true",
+        after: String = "false"
     ) -> CoachProposal {
         var p = CoachProposal(
             id: id, title: "Proposal \(id)", why: "w", destination: destination, workbenchID: workbench, promptID: "",
             kind: destination.hasPrefix("repo_") || destination == "claude_memory_index" ? "restructure" : "cut",
-            metric: "start_tokens", before: "true", after: "false", evidence: evidence, sources: 6, status: status,
+            metric: "start_tokens", before: before, after: after, evidence: evidence, sources: 6, status: status,
             createdAt: stamp(daysAgo: 20), decidedAt: decidedDaysAgo.map { stamp(daysAgo: $0) }, baseline: baseline,
             verdict: verdict, verdictValue: verdictValue, verdictAt: verdictDaysAgo.map { stamp(daysAgo: $0) },
             revertsID: 0, budget: 0)
@@ -52,7 +54,9 @@ final class ContextActionsPresentationTests: XCTestCase {
         return p
     }
 
-    /// An accepted repository row started through a session.
+    /// An accepted repository row started through a session. A memory row
+    /// (`destination: "claude_memory_index"`) carries its index as before;
+    /// `decided` sets after = before, the daemon's "ended without a change".
     private func repoRow(
         _ id: Int64 = 50,
         session: Int64? = 41,
@@ -60,11 +64,15 @@ final class ContextActionsPresentationTests: XCTestCase {
         pr: Int64? = nil,
         prState: String? = nil,
         prURL: String? = nil,
-        destination: String = "repo_claude_md"
+        destination: String = "repo_claude_md",
+        decided: Bool = false
     ) -> CoachProposal {
-        proposal(id, destination: destination, workbench: 3, status: "accepted", source: "", decidedDaysAgo: 1,
-                 baseline: 60000, session: session, viaSession: true, branch: branch, pr: pr, prState: prState,
-                 prURL: prURL)
+        let memory = destination == "claude_memory_index"
+        let index = "- [Alpha](alpha.md)\n"
+        return proposal(id, destination: destination, workbench: 3, status: "accepted", source: "", decidedDaysAgo: 1,
+                        baseline: 60000, session: session, viaSession: true, branch: branch, pr: pr, prState: prState,
+                        prURL: prURL, before: memory ? index : "true",
+                        after: memory ? (decided ? index : "") : "false")
     }
 
     private func source(_ group: String, _ kind: String, tokens: Int, part: String = "skills", measured: Int = 6)
@@ -204,7 +212,7 @@ final class ContextActionsPresentationTests: XCTestCase {
         XCTAssertEqual(row.state, .endedWithoutChange(41))
         XCTAssertEqual(row.actions, [.openSession, .startAgain, .dismiss])
         XCTAssertEqual(row.stateLine, "Session ended without a PR")
-        let memory = try only(repoRow(destination: "claude_memory_index"), kinds: [41: .notStarted])
+        let memory = try only(repoRow(destination: "claude_memory_index", decided: true), kinds: [41: .notStarted])
         XCTAssertEqual(memory.stateLine, "Session ended without a change")
     }
 
@@ -236,7 +244,7 @@ final class ContextActionsPresentationTests: XCTestCase {
             let row = try only(repoRow(), kinds: [41: kind])
             XCTAssertEqual(row.state, .endedWithoutChange(41))
             XCTAssertEqual(row.stateLine, "Session ended without a PR")
-            let memory = try only(repoRow(destination: "claude_memory_index"), kinds: [41: kind])
+            let memory = try only(repoRow(destination: "claude_memory_index", decided: true), kinds: [41: kind])
             XCTAssertEqual(memory.state, .endedWithoutChange(41))
             XCTAssertEqual(memory.stateLine, "Session ended without a change")
         }
@@ -252,8 +260,30 @@ final class ContextActionsPresentationTests: XCTestCase {
         XCTAssertEqual(gone.state, .endedWithoutChange(nil))
         XCTAssertEqual(gone.actions, [.startAgain, .dismiss])
         // A memory session whose row is gone ended without a change: no PR to trace.
-        let memory = try only(repoRow(session: nil, branch: "", destination: "claude_memory_index"))
+        let memory = try only(repoRow(session: nil, branch: "", destination: "claude_memory_index", decided: true))
         XCTAssertEqual(memory.state, .endedWithoutChange(nil))
+    }
+
+    /// A memory row whose session ended is "ended without a change" only
+    /// once the daemon decided it (after = before). Until then it is
+    /// checking the index: no Start Again or Dismiss, which would lose the
+    /// copy Undo restores; Go refuses both as well.
+    func testEndedMemorySessionWaitsForTheDaemon() throws {
+        for kind: SessionSwitcherPresentation.State.Kind in [.notStarted, .stopped, .finished, .failed] {
+            let row = try only(repoRow(destination: "claude_memory_index"), kinds: [41: kind])
+            XCTAssertEqual(row.state, .checkingIndex(41), "\(kind)")
+            XCTAssertEqual(row.stateLine, "Session ended · checking the index")
+            XCTAssertEqual(row.actions, [.openSession])
+            XCTAssertFalse(row.isOpen)
+        }
+        let gone = try only(repoRow(session: nil, branch: "", destination: "claude_memory_index"))
+        XCTAssertEqual(gone.state, .checkingIndex(nil))
+        XCTAssertEqual(gone.actions, [])
+        // Still running: working, whatever the index holds.
+        XCTAssertEqual(try only(repoRow(destination: "claude_memory_index"), kinds: [41: .working]).state, .working(41))
+        // Decided unchanged: Start Again and Dismiss come back.
+        let decided = try only(repoRow(destination: "claude_memory_index", decided: true), kinds: [41: .finished])
+        XCTAssertEqual(decided.actions, [.openSession, .startAgain, .dismiss])
     }
 
     func testSessionGoneWithoutBranchOffersDismissOnly() throws {
