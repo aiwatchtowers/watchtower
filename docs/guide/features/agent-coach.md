@@ -29,7 +29,11 @@ A weekly suggestion edits one place, always your own setup and never a file in a
 - permission rules in `~/.claude/settings.json`, only for reading, searching and running the tests or build (`cat`, `ls`, `grep`, `head`, `tail`, `go test`, `go build`, `go vet`, `swift test`, `swift build`, `cargo test`, `npm test`, `pytest`). A test or build rule runs project code, so accept it only if you trust your projects;
 - your `~/.claude/CLAUDE.md`.
 
-The [tuning chat](tuning-chat.md) files proposals too, and they can also edit your Claude Code and Codex skills, extra lines for a Watchtower skill, `~/.codex/AGENTS.md`, the Codex allow rules, and the workbench folder's `CLAUDE.md`, `AGENTS.md`, skills and `.watchtower/workflow.md`, which you commit yourself.
+The [tuning chat](tuning-chat.md) files proposals too, and they can also edit your Claude Code and Codex skills, extra lines for a Watchtower skill, `~/.codex/AGENTS.md`, the Codex allow rules, and the workbench folder's `CLAUDE.md`, `AGENTS.md`, skills and `.watchtower/workflow.md`.
+
+The **Context** block's **Do these** list holds a third kind: mechanical suggestions that make every session start smaller, such as turning off an unused plugin. See [Context actions](context-actions.md).
+
+Accepting a change to a repository file starts a Claude Code session in the workbench. It makes the change in its own worktree, runs your project's review and opens a pull request for you to merge; Watchtower itself writes no file in the repository and runs no git command that changes anything: no commits, no pushes.
 
 After you accept, the coach waits 14 days and compares the measure it targeted with the 14 days before. The verdict is **works**, **no effect** or **too little data**. It shows what changed since the edit, not that the edit caused it. A no-effect edit gets a suggestion to remove it.
 
@@ -38,11 +42,11 @@ After you accept, the coach waits 14 days and compares the measure it targeted w
 Open a workbench's **Analytics** (analytics must be on for it). From the top:
 
 - **How it's going** has four tiles for the period you pick (**1 day**, **7 days** or **30 days**) against the period before: corrections per task, hours and cost per task, your share of active time, and review findings. Lower is better; a change under 5 % reads "about the same", and a tile with too little behind it says so instead of showing a trend.
-- **Proposed edits** lists up to three weekly suggestions and the tuning chat's proposals. Each card shows what it moves, why, the lines removed and added, how big the text gets against its limit, and links to the evidence. **Accept** applies it. **Edit…** opens the whole proposed text so you can change it first (not for Claude Code permission rules). **Decline** asks once and is for good. Below, **Run Now** does the weekly pass at once; if the daemon is already running it, the screen says so and updates when it finishes.
-- **Accepted edits** is the log, newest first, with a verdict line: **works**, **no effect**, **too little data** or **measuring**. **Roll Back** undoes an edit; if you changed the text since, it shows the difference and offers **Roll Back Anyway**.
+- **Proposed edits** lists up to three weekly suggestions and the tuning chat's proposals. Each card shows what it moves, why, the lines removed and added, how big the text gets against its limit, and links to the evidence. **Accept** applies it, or for a repository file starts the session. **Edit…** opens the whole proposed text so you can change it first (not for Claude Code permission rules or repository files). **Decline** asks once and is for good. Below, **Run Now** does the weekly pass at once; if the daemon is already running it, the screen says so and updates when it finishes.
+- **Accepted edits** is the log, newest first, with a verdict line: **works**, **no effect**, **too little data** or **measuring**. **Roll Back** undoes an edit; if you changed the text since, it shows the difference and offers **Roll Back Anyway**. A repository change made by a session shows its progress instead, with **Open Session**, **Open PR** and, once merged, **Revert…**, which starts a session that opens a revert pull request. It is measured from the merge.
 - **Statistics** is the rest of the view, described in [Agent analytics](agent-analytics.md).
 
-Home shows the newest suggestion as **Coach suggests**, with the change itself, **Accept**, **Decline** and **Open in Analytics**. A change longer than four lines shows its first four and offers only **Open in Analytics** and **Decline**, so you never accept a change you cannot see whole.
+Home shows the newest suggestion as **Coach suggests**, with the change itself, **Accept**, **Decline** and **Open in Analytics**. A change longer than four lines shows its first four and offers only **Open in Analytics** and **Decline**, so you never accept a change you cannot see whole. Accepting a repository or memory suggestion there starts its session in the background, and Home says **A session started for it — follow it in that workbench's Analytics**. If the session started but was not linked, the row offers **Retry Link** instead of **Accept**.
 
 Your repeated directions to agents and chats come through the coach too. Settings → System → Workbench and a workbench's **Agent Settings…** have a line pointing to Analytics instead of their own suggestion list.
 
@@ -75,7 +79,8 @@ On a spec review's findings screen, **Not useful** sits next to **Fix**, **Skip*
 - **"The text changed since":** you edited that text meanwhile, so the card closes. The next weekly pass can suggest again.
 - **A superseded suggestion:** you edited that text meanwhile. The next weekly pass can suggest again.
 - **Rolled-back CLAUDE.md is empty:** if an edit created the file, rolling back leaves it empty.
-- The weekly pass never edits a project's own `CLAUDE.md`, workflow file or skills; only a tuning chat proposal you accept does.
+- The weekly pass never edits a project's own `CLAUDE.md`, workflow file or skills; a tuning chat proposal or a context action you accept does, through a session and a pull request.
+- **Accept it in Watchtower — it starts a session.** You ran `watchtower coach accept` on a repository or memory suggestion. Press **Accept** in Watchtower instead.
 
 ## Related
 

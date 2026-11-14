@@ -33,28 +33,30 @@ Chat proposals do not count toward the weekly pass's three open suggestions, and
 
 The chat can also edit five files in the workbench's own folder, never in a session's worktree: `CLAUDE.md`, `AGENTS.md`, `.claude/skills/<name>/SKILL.md`, `.agents/skills/<name>/SKILL.md` and `.watchtower/workflow.md`. Only `CLAUDE.md` and `AGENTS.md` may be created; the others must exist.
 
-**Accept** writes the file and nothing else: Watchtower runs no git command that changes anything, so you review the change and commit it yourself. The card names the branch the edit lands on. The 14-day verdict starts once the commit is seen, because new sessions start from the folder's last commit.
+**Accept** starts a Claude Code session in the workbench with the edit as its brief. The session makes the change in its own worktree, runs your project's review and opens a pull request; you merge it. Watchtower itself writes no file and runs no git command that changes anything.
+
+The 14-day verdict starts once the pull request is merged, because new sessions start from the merged code. A pull request closed or not merged within 30 days is not measured.
 
 ## Using it
 
 1. Open a workbench's **Analytics** (analytics must be on) and press **Tune** in the header. The panel opens on the right; drag its edge to resize it, and press **Esc** or **Tune** again to close it.
 2. Pick a starter, such as **Why did cost per task grow?** or **Which prompt costs the most?**, or type your question. The line above them shows the period's sessions, tasks and cost; the chat reads the period the pane shows.
 3. Quiet lines such as **Read the 7-day report** show what it looked at.
-4. On a proposal card, **Accept** applies it, **Edit…** lets you change the text first (not for Claude Code allow rules), and **Decline** closes it for good. An accepted card folds to **Accepted · measuring for 14 days** with **Show in Accepted edits**, where **Roll Back** lives.
+4. On a proposal card, **Accept** applies it (or, for a workbench file, starts the session), **Edit…** lets you change the text first (not for Claude Code allow rules or workbench files), and **Decline** closes it for good. An accepted card folds to **Accepted · measuring for 14 days** with **Show in Accepted edits**, where **Roll Back** lives.
 5. **New** starts another tuning chat; the title menu switches between this workbench's recent ones. Tuning chats are not listed in **Chats**.
 
-For a workbench file the folded line reads **Accepted · wrote CLAUDE.md on main — commit it yourself** until you commit, then **Accepted · committed · measuring for 14 days**. Rolling one back restores the file, and you commit that too.
+For a workbench file the folded line follows the pull request: **Accepted · a session is making the change**, **Accepted · PR #N ready for review**, then **Accepted · PR #N merged · measuring** (or **Accepted · PR #N closed without merging**). **Accepted edits** has **Open Session**, **Open PR** and **Show Diff**. To undo a merged change, press **Revert…** there; a session opens a revert pull request.
 
 ## When it's empty or wrong
 
 - **Tuning tools need Claude or Codex — pick one in Settings → System → AI.** Your AI provider is neither Claude nor Codex. The chat still talks but cannot read the report or propose an edit; **Open Settings** takes you there.
 - **No Tune button.** Analytics is off for this workbench; turn it on first.
-- **"… has uncommitted changes — commit or discard them, then press Accept again."** The file has changes git has not committed, maybe from a running session. Commit or discard them, then press **Accept** again.
 - **This workbench folder is not a git repository: …** Workbench files are edited only where you can review and commit the change, so the chat cannot propose them for this folder.
 - **The text changed since — this proposal is closed**. The file or text changed after the proposal was made; ask again.
 - **"Codex sees this skill in two folders …"** The skill is in both `~/.agents/skills` and `~/.codex/skills`. Remove one copy.
 - **It gives the text instead of a proposal.** New skills and a new `.watchtower/workflow.md` are not created; save the text yourself.
-- **Accepted · waiting for your commit** in **Accepted edits**. Commit the file; after 30 days without a commit the row reads **Not committed in 30 days — not measured**.
+- **Session ended without a PR** in **Accepted edits**. Press **Start Again** for a new session, or **Dismiss** to close it.
+- **Accepted · waiting for your commit** in **Accepted edits**. The edit was accepted before sessions did this work, so you commit the file yourself; after 30 days without a commit the row reads **Not committed in 30 days — not measured**.
 
 ## Related
 
