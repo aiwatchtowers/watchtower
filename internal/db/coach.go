@@ -691,27 +691,40 @@ func (db *DB) SetCoachMemoryUnchanged(id int64) (bool, error) {
 
 // CoachSessionEnd reads workbench session sessionID: found is false when the
 // row is gone. ended is when it ended, zero while it still counts as
-// running. It has ended when finish_session stamped finished_at (that
-// time), or when its agent is idle — agent_state 'waiting' or never
-// reported — and last_active_at is at least idleAfter before now (then
-// last_active_at). A last_active_at that does not parse never counts as idle.
+// running. A session with an owner ask still open or answered (not yet
+// delivered back to the agent) counts as running whatever its other
+// columns say: the memory cleanup shows its diff through ask_owner and ends
+// its turn while it waits (D4), so the wait is never mistaken for an idle
+// end. Otherwise it has ended when finish_session stamped finished_at (that
+// time), when its agent failed (agent_failed_at, that time), or when its
+// agent is idle — agent_state 'waiting' or never reported — and
+// last_active_at is at least idleAfter before now (then last_active_at). A
+// last_active_at that does not parse never counts as idle.
 func (db *DB) CoachSessionEnd(sessionID int64, now time.Time, idleAfter time.Duration) (found bool, ended time.Time, err error) {
-	var fin, state sql.NullString
+	var fin, failed, state sql.NullString
 	var lastActive string
-	err = db.QueryRow(`SELECT finished_at, agent_state, last_active_at FROM terminal_sessions WHERE id = ?`,
-		sessionID).Scan(&fin, &state, &lastActive)
+	var asking bool
+	err = db.QueryRow(`SELECT finished_at, agent_failed_at, agent_state, last_active_at,
+		EXISTS (SELECT 1 FROM owner_asks WHERE session_id = terminal_sessions.id AND status IN ('open','answered'))
+		FROM terminal_sessions WHERE id = ?`,
+		sessionID).Scan(&fin, &failed, &state, &lastActive, &asking)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, time.Time{}, nil
 	}
 	if err != nil {
 		return false, time.Time{}, fmt.Errorf("reading session %d: %w", sessionID, err)
 	}
-	if fin.Valid && fin.String != "" {
-		ended, err = time.Parse(time.RFC3339Nano, fin.String)
-		if err != nil {
-			return false, time.Time{}, fmt.Errorf("reading session %d finish time: %w", sessionID, err)
+	if asking {
+		return true, time.Time{}, nil // waiting on the owner's answer
+	}
+	for _, stamp := range []sql.NullString{fin, failed} {
+		if stamp.Valid && stamp.String != "" {
+			ended, err = time.Parse(time.RFC3339Nano, stamp.String)
+			if err != nil {
+				return false, time.Time{}, fmt.Errorf("reading session %d end time: %w", sessionID, err)
+			}
+			return true, ended, nil
 		}
-		return true, ended, nil
 	}
 	if state.Valid && state.String != "waiting" {
 		return true, time.Time{}, nil // working or waiting for an approval

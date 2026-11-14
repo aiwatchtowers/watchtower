@@ -916,6 +916,78 @@ func TestCoachSessionEnd(t *testing.T) {
 	assert.False(t, found)
 }
 
+// A session waiting on an owner ask it filed (open, or answered and not yet
+// delivered) still counts as running, however long it has been idle or even
+// finished; a delivered or withdrawn ask no longer holds it.
+func TestCoachSessionEnd_OpenAskKeepsRunning(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	now := time.Date(2026, 11, 12, 12, 0, 0, 0, time.UTC)
+	idle := now.Add(-2 * time.Hour)
+	sess := newTestSession(t, d, wb)
+	_, err := d.Exec(`UPDATE terminal_sessions SET agent_state = 'waiting', last_active_at = ? WHERE id = ?`,
+		idle.Format("2006-01-02T15:04:05Z"), sess)
+	require.NoError(t, err)
+	res, err := d.Exec(`INSERT INTO owner_asks (project_id, session_id, kind, title) VALUES (?, ?, 'question', 'Apply the cleanup?')`,
+		wb, sess)
+	require.NoError(t, err)
+	ask, err := res.LastInsertId()
+	require.NoError(t, err)
+	setAsk := func(status, answer string) {
+		_, err := d.Exec(`UPDATE owner_asks SET status = ?, answer = ? WHERE id = ?`, status, answer, ask)
+		require.NoError(t, err)
+	}
+	end := func() (bool, time.Time) {
+		found, ended, err := d.CoachSessionEnd(sess, now, time.Hour)
+		require.NoError(t, err)
+		return found, ended
+	}
+
+	found, ended := end()
+	assert.True(t, found)
+	assert.True(t, ended.IsZero(), "an open ask: running though idle two hours")
+	setAsk("answered", `{"ok":true}`)
+	_, ended = end()
+	assert.True(t, ended.IsZero(), "answered, not yet delivered: running")
+	require.NoError(t, d.FinishTerminalSession(sess, "asked", idle))
+	_, ended = end()
+	assert.True(t, ended.IsZero(), "an undelivered answer outweighs finish_session")
+	setAsk("delivered", `{"ok":true}`)
+	_, ended = end()
+	assert.True(t, ended.Equal(idle), "delivered: the finish time again")
+
+	other := newTestSession(t, d, wb)
+	_, err = d.Exec(`INSERT INTO owner_asks (project_id, session_id, kind, title, status, withdrawn_reason)
+		VALUES (?, ?, 'question', 'Old', 'withdrawn', 'agent')`, wb, other)
+	require.NoError(t, err)
+	_, err = d.Exec(`UPDATE terminal_sessions SET agent_state = 'waiting', last_active_at = ? WHERE id = ?`,
+		idle.Format("2006-01-02T15:04:05Z"), other)
+	require.NoError(t, err)
+	found, ended, err = d.CoachSessionEnd(other, now, time.Hour)
+	require.NoError(t, err)
+	assert.True(t, found)
+	assert.True(t, ended.Equal(idle), "a withdrawn ask holds nothing")
+}
+
+// A session whose agent failed (StopFailure) has ended at agent_failed_at,
+// even with a stale 'working' state that would otherwise read as running.
+func TestCoachSessionEnd_FailedAgentEnds(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	now := time.Date(2026, 11, 12, 12, 0, 0, 0, time.UTC)
+	sess := newTestSession(t, d, wb)
+	failedAt := "2026-11-12T10:15:00.250Z"
+	_, err := d.Exec(`UPDATE terminal_sessions SET agent_state = 'working', agent_state_at = ?, agent_failed_at = ?,
+		last_active_at = ? WHERE id = ?`, failedAt, failedAt, now.Add(-time.Minute).Format("2006-01-02T15:04:05Z"), sess)
+	require.NoError(t, err)
+	found, ended, err := d.CoachSessionEnd(sess, now, time.Hour)
+	require.NoError(t, err)
+	assert.True(t, found)
+	want, err := time.Parse(time.RFC3339Nano, failedAt)
+	require.NoError(t, err)
+	assert.True(t, ended.Equal(want), "failed: ended at agent_failed_at, got %v", ended)
+}
+
 // SetCoachVerdictN stores the sessions behind a verdict; SetCoachVerdict
 // stores 0; Reapply clears it with the verdict.
 func TestSetCoachVerdictN(t *testing.T) {

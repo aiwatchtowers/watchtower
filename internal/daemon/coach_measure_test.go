@@ -498,6 +498,42 @@ func TestMeasureCheck_MemoryIdleSessionCountsAsEnded(t *testing.T) {
 	assert.Equal(t, measureMemAfter, p.AfterText)
 }
 
+// The cleanup shows its diff through ask_owner and ends its turn (D4): idle
+// two hours with the ask still open is waiting, not ended, so the unchanged
+// index is not recorded as "ended without a change". Once the answer is
+// delivered and the agent rewrites the index, the session's end is measured.
+func TestMeasureCheck_MemoryWaitsForOwnerAsk(t *testing.T) {
+	d, database := coachDaemon(t)
+	home, err := os.UserHomeDir()
+	require.NoError(t, err)
+	now := measureNow()
+	wb, folder := measureWorkbench(t, database)
+	sess := measureSession(t, database, wb, "")
+	id, path := memoryViaSession(t, database, home, wb, folder, sess, now.Add(-5*time.Hour))
+	idleSession(t, database, sess, now.Add(-2*time.Hour))
+	res, err := database.Exec(`INSERT INTO owner_asks (project_id, session_id, kind, title)
+		VALUES (?, ?, 'question', 'Memory cleanup diff')`, wb, sess)
+	require.NoError(t, err)
+	ask, err := res.LastInsertId()
+	require.NoError(t, err)
+
+	d.coachMeasureCheck(context.Background(), now)
+	p := getProposal(t, database, id)
+	assert.Empty(t, p.AfterText, "waiting on the owner: not decided")
+	assert.True(t, p.MeasureFrom.IsZero())
+
+	_, err = database.Exec(`UPDATE owner_asks SET status = 'delivered', answer = '{"ok":true}' WHERE id = ?`, ask)
+	require.NoError(t, err)
+	wrote := now.Add(30 * time.Minute)
+	writeMemory(t, path, measureMemAfter, wrote)
+	idleSession(t, database, sess, wrote.Add(time.Minute))
+
+	d.coachMeasureCheck(context.Background(), now.Add(3*time.Hour))
+	p = getProposal(t, database, id)
+	assert.True(t, p.MeasureFrom.Equal(wrote.Add(time.Minute)), "measured from the end after the answer")
+	assert.Equal(t, measureMemAfter, p.AfterText)
+}
+
 // Idle for 20 minutes is still running: nothing is recorded.
 func TestMeasureCheck_MemoryRecentlyActiveNotEnded(t *testing.T) {
 	d, database := coachDaemon(t)
