@@ -162,7 +162,7 @@ PKCE refresh tokens expire after 30 days. The daemon refreshes a token when less
 - `slack_accounts` + token files: `slack login` and the refresher, serialised by the per-account flock (5.5). The daemon's sync reads only.
 - `slack_live_status`: the probe, and any chat turn or automation run that called a Slack connector tool; an upsert keeps the row with the newest `checked_at`; the Desktop reads.
 - The app's description (`long_description`): only the setup (`apps.manifest.update`), once, or again from **Add the link to the app**; the last update wins.
-- `chat_conversations.live_slack_since`: the chat process, set once in the same transaction as the first turn that called a Slack connector tool; never cleared. It is the only place the mark lives (no per-message column).
+- `chat_conversations.live_slack_since`: the Desktop's `ChatTurnStore.finalizeTurn` (Swift is the only writer of chat rows), set once in the same transaction as the first turn that called a Slack connector tool; never cleared. It is the only place the mark lives (no per-message column).
 - `automation_runs.live_slack`: the executor of that run, set when the run's `agent()` step calls a Slack connector tool.
 
 ## 9. Promises → tasks → tests
