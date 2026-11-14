@@ -120,6 +120,11 @@ func codexSessionClient(w sessionWiring) *codex.Client {
 	c.SetExternalMCPLoader(func() []ai.ExternalMCPServer {
 		return loadExternalMCPServersFrom(w.cfg, w.database, os.Environ()) // the codex child's environment
 	})
+	// Live Slack: the chat alone keeps codex apps on, read-only, for a ChatGPT
+	// login whose probe found the Slack app (codexSlackConnector).
+	if w.codexSlack != "" {
+		c.SetChatApps(codexSlackOverrides(w.codexSlack))
+	}
 	// CHAT-04 (spec §9): the client always routes the system prompt and
 	// replayed history through stdin, never this process's argv.
 	return c

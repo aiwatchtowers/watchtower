@@ -11,6 +11,7 @@ import (
 
 	"watchtower/internal/ai"
 	"watchtower/internal/chat"
+	"watchtower/internal/codex"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
@@ -161,12 +162,23 @@ func buildSessionActual(ctx context.Context, cmd *cobra.Command, cfg *config.Con
 	actual.AI.Provider = p
 	claudeAI := resolveClaudeAI(&actual, aiSessionFlagSurface, conv.ID, os.Environ(), cmd.ErrOrStderr())
 	writeUnavailableConnectors(dbPath, claudeAI, cmd.ErrOrStderr())
-	prompt, err := chat.BuildSystemPrompt(ctx, database, &actual, sessionPromptOptions(&actual, aiSessionFlagSurface, projectID, time.Now(), claudeAI.prompt))
+	opts := sessionPromptOptions(&actual, aiSessionFlagSurface, projectID, time.Now(), claudeAI.prompt)
+	slackRows, _ := database.ListSlackLiveStatus() // a read failure = no Live promise
+	var codexSlack string
+	switch p {
+	case "claude":
+		slackOff := chat.DisabledConnectorTokens(actual.AI.ClaudeAI.DisabledConnectors)["claude_ai_Slack"]
+		opts.SlackLive = claudeAI.mode.On && claudeSlackLive(slackRows, claudeAI.mode.Connectors, slackOff)
+	case "codex":
+		codexSlack = codexSlackConnector(slackRows, codex.OwnerHome())
+		opts.SlackLive = codexSlack != ""
+	}
+	prompt, err := chat.BuildSystemPrompt(ctx, database, &actual, opts)
 	if err != nil {
 		return nil, err
 	}
 	var mounted []ai.ExternalMCPServer
-	backend, err := newSessionBackend(sessionWiring{cfg: &actual, database: database, dbPath: dbPath, conv: conv, model: m, prompt: prompt, mcpArgs: mcpArgs, turnFile: turnFile, project: project, chatProjectID: projectID, warn: cmd.ErrOrStderr(), claudeAI: claudeAI, onMounted: func(ext []ai.ExternalMCPServer) { mounted = ext }})
+	backend, err := newSessionBackend(sessionWiring{cfg: &actual, database: database, dbPath: dbPath, conv: conv, model: m, prompt: prompt, mcpArgs: mcpArgs, turnFile: turnFile, project: project, chatProjectID: projectID, warn: cmd.ErrOrStderr(), claudeAI: claudeAI, codexSlack: codexSlack, onMounted: func(ext []ai.ExternalMCPServer) { mounted = ext }})
 	if err != nil {
 		return nil, err
 	}

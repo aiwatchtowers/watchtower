@@ -69,3 +69,37 @@ func TestListMessages_UnknownPersonErrors(t *testing.T) {
 	var verr *ValidationError
 	require.ErrorAs(t, err, &verr)
 }
+
+type coverageEnvelope struct {
+	Messages []json.RawMessage `json:"messages"`
+	Coverage struct {
+		Scope          string `json:"scope"`
+		SyncedThrough  string `json:"synced_through"`
+		BackfillFrom   string `json:"backfill_from"`
+		ChannelInScope *bool  `json:"channel_in_scope"`
+	} `json:"coverage"`
+}
+
+func TestListMessages_Coverage(t *testing.T) {
+	d := seedMessagesDB(t)
+	var got coverageEnvelope
+	require.NoError(t, json.Unmarshal([]byte(callReadString(t, messagesRegistry(t, d), "list_messages", `{"person":"Петренко"}`)), &got))
+	assert.Len(t, got.Messages, 2)
+	assert.Equal(t, "none", got.Coverage.Scope, "no Slack account yet")
+	assert.Nil(t, got.Coverage.ChannelInScope, "no channel argument")
+
+	_, err := d.CreateSlackAccount(db.SlackAccount{TeamID: "T1", Status: "ok", Enabled: true})
+	require.NoError(t, err)
+	require.NoError(t, d.UpsertChannel(db.Channel{ID: "1:C1", Name: "ops", Type: "public", IsMember: false}))
+	got = coverageEnvelope{}
+	require.NoError(t, json.Unmarshal([]byte(callReadString(t, messagesRegistry(t, d), "list_messages", `{"channel":"ops"}`)), &got))
+	assert.Equal(t, "own", got.Coverage.Scope)
+	require.NotNil(t, got.Coverage.ChannelInScope)
+	assert.False(t, *got.Coverage.ChannelInScope, "the owner is not a member of #ops")
+
+	require.NoError(t, d.UpsertChannel(db.Channel{ID: "1:C1", Name: "ops", Type: "public", IsMember: true}))
+	got = coverageEnvelope{}
+	require.NoError(t, json.Unmarshal([]byte(callReadString(t, messagesRegistry(t, d), "list_messages", `{"channel":"ops"}`)), &got))
+	require.NotNil(t, got.Coverage.ChannelInScope)
+	assert.True(t, *got.Coverage.ChannelInScope)
+}
