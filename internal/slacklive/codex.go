@@ -76,6 +76,29 @@ func slackConnectorID(home string) string {
 	return ""
 }
 
+// workspaceTeamIDs reads the team ids of a slack_list_workspaces result:
+// structured_content.teams[].id; only when structured_content is absent does
+// it fall back to scanning the raw result for team-id-shaped tokens.
+func workspaceTeamIDs(result json.RawMessage) []string {
+	var r struct {
+		Structured *struct {
+			Teams []struct {
+				ID string `json:"id"`
+			} `json:"teams"`
+		} `json:"structured_content"`
+	}
+	if json.Unmarshal(result, &r) == nil && r.Structured != nil {
+		var ids []string
+		for _, t := range r.Structured.Teams {
+			if t.ID != "" {
+				ids = append(ids, t.ID)
+			}
+		}
+		return ids
+	}
+	return teamIDPattern.FindAllString(string(result), -1)
+}
+
 type codexEvent struct {
 	Type    string          `json:"type"`
 	Message string          `json:"message"`
@@ -132,7 +155,7 @@ loop:
 				connected = true
 				if ev.Item.Status == "completed" {
 					readOK = true
-					for _, id := range teamIDPattern.FindAllString(string(ev.Item.Result), -1) {
+					for _, id := range workspaceTeamIDs(ev.Item.Result) {
 						if !seen[id] {
 							seen[id] = true
 							res.Teams = append(res.Teams, id)
