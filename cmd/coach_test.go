@@ -222,9 +222,10 @@ func TestCoachProposals_JSONKeysPinned(t *testing.T) {
 	}
 	assert.ElementsMatch(t, []string{"id", "title", "why", "destination", "workbench_id", "prompt_id", "kind",
 		"metric", "before", "after", "evidence", "sources", "status", "created_at", "decided_at", "baseline",
-		"verdict", "verdict_value", "verdict_at", "reverts_id", "budget", "origin", "skill", "conversation_id",
-		"written_branch", "measure_from", "session_id", "source_key", "via_session", "session_branch", "pr",
-		"pr_state", "pr_url"}, got)
+		"verdict", "verdict_value", "verdict_at", "verdict_sessions", "reverts_id", "budget", "origin", "skill",
+		"conversation_id", "written_branch", "measure_from", "session_id", "source_key", "via_session",
+		"session_branch", "pr", "pr_state", "pr_url"}, got)
+	assert.Equal(t, "0", string(items[0]["verdict_sessions"]))
 	assert.JSONEq(t, `[{"kind":"session","ref":"s1"}]`, string(items[0]["evidence"]))
 	assert.Equal(t, `""`, string(items[0]["written_branch"]))
 	assert.Equal(t, "null", string(items[0]["measure_from"]))
@@ -1204,6 +1205,21 @@ func TestCoachProposalsJSON_NewKeys(t *testing.T) {
 	assert.Equal(t, `""`, string(p["session_branch"]))
 	assert.Equal(t, "12", string(p["pr"]))
 	assert.Equal(t, `"open"`, string(p["pr_state"]))
+}
+
+// verdict_sessions carries the sessions the judge measured the verdict on.
+func TestCoachProposalsJSON_VerdictSessions(t *testing.T) {
+	d := coachSetup(t)
+	id := insertCoachProposal(t, d, "fp1", "Be brief.")
+	require.NoError(t, d.MarkCoachAccepted(id, "Be brief.", "", nil, 0, time.Now()))
+	v := 1.5
+	require.NoError(t, d.SetCoachVerdictN(id, "works", &v, 9, time.Now()))
+
+	out, err := runCoach(t, "", "proposals", "--status", "accepted", "--json")
+	require.NoError(t, err)
+	p := coachFirstProposal(t, out)
+	assert.Equal(t, "9", string(p["verdict_sessions"]))
+	assert.Equal(t, `"works"`, string(p["verdict"]))
 }
 
 // The Desktop deletes session rows: the PR is still found by the copied

@@ -55,8 +55,12 @@ type CoachProposal struct {
 	Verdict                                             string
 	VerdictValue                                        *float64
 	VerdictAt                                           time.Time
-	Origin, Skill                                       string
-	ConversationID                                      *int64
+	// VerdictN is how many sessions the verdict was measured on (the
+	// measured starts for start_tokens); 0 when none were, or for a verdict
+	// that measured nothing (too_little_data by waiting, reverted_outside).
+	VerdictN       int
+	Origin, Skill  string
+	ConversationID *int64
 	// WrittenBranch is the branch a repo_* Accept wrote on ("" otherwise, or
 	// when the branch could not be read); MeasureFrom is when the daemon first
 	// saw a repo_* edit at the folder's HEAD (zero = not yet, or not repo_*).
@@ -100,7 +104,7 @@ func parseCoachStamp(s string) (time.Time, error) {
 const coachCols = `id, fingerprint, kind, destination, COALESCE(workbench_id, 0), prompt_id, title, why, metric,
 	before_text, after_text, evidence, sources, status, COALESCE(reverts_id, 0), created_at, decided_at,
 	baseline, baseline_n, verdict, verdict_value, verdict_at, origin, skill, conversation_id,
-	written_branch, COALESCE(measure_from, ''), session_id, source_key, via_session, session_branch`
+	written_branch, COALESCE(measure_from, ''), session_id, source_key, via_session, session_branch, verdict_n`
 
 func scanCoachProposal(row interface{ Scan(...any) error }) (CoachProposal, error) {
 	var p CoachProposal
@@ -111,7 +115,7 @@ func scanCoachProposal(row interface{ Scan(...any) error }) (CoachProposal, erro
 		&p.Why, &p.Metric, &p.BeforeText, &p.AfterText, &evidence, &p.Sources, &p.Status, &p.RevertsID,
 		&created, &decided, &baseline, &p.BaselineN, &p.Verdict, &verdictValue, &verdictAt,
 		&p.Origin, &p.Skill, &conv, &p.WrittenBranch, &measureFrom,
-		&session, &p.SourceKey, &p.ViaSession, &p.SessionBranch); err != nil {
+		&session, &p.SourceKey, &p.ViaSession, &p.SessionBranch, &p.VerdictN); err != nil {
 		return CoachProposal{}, fmt.Errorf("scanning coach proposal: %w", err)
 	}
 	if err := json.Unmarshal([]byte(evidence), &p.Evidence); err != nil {
@@ -615,7 +619,7 @@ func (db *DB) DismissCoachSession(id int64, now time.Time) error {
 // loses its verdict and measures from now. Any other row is
 // ErrCoachStateChanged.
 func (db *DB) ReapplyCoachProposal(id int64, now time.Time) error {
-	res, err := db.Exec(`UPDATE coach_proposals SET verdict = '', verdict_value = NULL, verdict_at = '',
+	res, err := db.Exec(`UPDATE coach_proposals SET verdict = '', verdict_value = NULL, verdict_at = '', verdict_n = 0,
 		measure_from = ? WHERE id = ? AND status = 'accepted' AND verdict = 'reverted_outside'`, coachStamp(now), id)
 	return coachCAS(res, err, "reapplying coach proposal")
 }
@@ -687,16 +691,22 @@ func (db *DB) ListRepoProposalsAwaitingCommit() ([]CoachProposal, error) {
 		AND measure_from IS NULL AND verdict = '' ORDER BY id`)
 }
 
-// SetCoachVerdict stores the outcome verdict of an accepted proposal, only
-// while it is still accepted (a rolled-back one keeps no verdict); otherwise
-// ErrCoachStateChanged.
+// SetCoachVerdict stores the outcome verdict of an accepted proposal measured
+// on no sessions (SetCoachVerdictN with n = 0).
 func (db *DB) SetCoachVerdict(id int64, verdict string, value *float64, now time.Time) error {
+	return db.SetCoachVerdictN(id, verdict, value, 0, now)
+}
+
+// SetCoachVerdictN stores the outcome verdict of an accepted proposal and the
+// n sessions it was measured on (verdict_n), only while it is still accepted
+// (a rolled-back one keeps no verdict); otherwise ErrCoachStateChanged.
+func (db *DB) SetCoachVerdictN(id int64, verdict string, value *float64, n int, now time.Time) error {
 	var v any
 	if value != nil {
 		v = *value
 	}
-	res, err := db.Exec(`UPDATE coach_proposals SET verdict = ?, verdict_value = ?, verdict_at = ?
-		WHERE id = ? AND status = 'accepted'`, verdict, v, coachStamp(now), id)
+	res, err := db.Exec(`UPDATE coach_proposals SET verdict = ?, verdict_value = ?, verdict_at = ?, verdict_n = ?
+		WHERE id = ? AND status = 'accepted'`, verdict, v, coachStamp(now), n, id)
 	return coachCAS(res, err, "setting coach verdict")
 }
 

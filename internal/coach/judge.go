@@ -104,12 +104,12 @@ func judge(d *db.DB, al *agentlogdb.DB, home string, now time.Time) (judged, cut
 		if p.Verdict == "too_little_data" && !p.VerdictAt.Before(start.Add(judgeGiveUp)) {
 			continue // final
 		}
-		verdict, value, err := verdictOf(d, al, p, now)
+		verdict, value, n, err := verdictOf(d, al, p, now)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("judging coach proposal %d: %w", p.ID, err))
 			continue
 		}
-		if err := d.SetCoachVerdict(p.ID, verdict, value, now); err != nil {
+		if err := d.SetCoachVerdictN(p.ID, verdict, value, n, now); err != nil {
 			if !errors.Is(err, db.ErrCoachStateChanged) { // rolled back meanwhile
 				errs = append(errs, fmt.Errorf("judging coach proposal %d: %w", p.ID, err))
 			}
@@ -164,23 +164,27 @@ func MeasureWaitOver(p db.CoachProposal, now time.Time) bool {
 	return now.Sub(p.DecidedAt) >= repoCommitWait
 }
 
-// verdictOf measures p's period and names the verdict and the measured value.
-func verdictOf(d *db.DB, al *agentlogdb.DB, p db.CoachProposal, now time.Time) (string, *float64, error) {
+// verdictOf measures p's period and names the verdict, the measured value
+// and the sessions behind it: the period's sessions, or for start_tokens the
+// measured starts (a session parsed before the context facts has no start to
+// compare, so it neither counts toward judgeMinSessions nor toward n).
+func verdictOf(d *db.DB, al *agentlogdb.DB, p db.CoachProposal, now time.Time) (string, *float64, int, error) {
 	m, err := Measure(d, al, p.WorkbenchID, windowStart(p), now, AgentFor(p.Destination))
 	if err != nil {
-		return "", nil, err
+		return "", nil, 0, err
 	}
 	v := m.Of(p.Metric)
-	// start_tokens counts the measured sessions too: a session parsed before
-	// the context facts has no start to compare.
-	few := m.Sessions < judgeMinSessions || p.Metric == "start_tokens" && v.N < judgeMinSessions
-	if few || p.Baseline == nil || *p.Baseline <= 0 || !v.Known {
-		return "too_little_data", nil, nil
+	n := m.Sessions
+	if p.Metric == "start_tokens" {
+		n = v.N
+	}
+	if m.Sessions < judgeMinSessions || n < judgeMinSessions || p.Baseline == nil || *p.Baseline <= 0 || !v.Known {
+		return "too_little_data", nil, n, nil
 	}
 	if v.V <= *p.Baseline*(1-judgeImprovement) {
-		return "works", &v.V, nil
+		return "works", &v.V, n, nil
 	}
-	return "no_effect", &v.V, nil
+	return "no_effect", &v.V, n, nil
 }
 
 // writeCut stores the removal of a no_effect edit as an open proposal: the

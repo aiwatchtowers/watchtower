@@ -55,6 +55,7 @@ func TestJudge_Works(t *testing.T) {
 	assert.Equal(t, "works", p.Verdict)
 	require.NotNil(t, p.VerdictValue)
 	assert.InDelta(t, 5.0, *p.VerdictValue, 1e-9)
+	assert.Equal(t, 5, p.VerdictN, "the period's sessions, for every metric")
 	open, err := d.ListCoachProposals("open")
 	require.NoError(t, err)
 	assert.Empty(t, open)
@@ -587,6 +588,7 @@ func TestJudge_StartTokensWorks(t *testing.T) {
 	assert.Equal(t, "works", p.Verdict)
 	require.NotNil(t, p.VerdictValue)
 	assert.InDelta(t, 1760.0, *p.VerdictValue, 1e-9)
+	assert.Equal(t, 5, p.VerdictN, "the measured starts behind the verdict")
 }
 
 func TestJudge_StartTokensNoEffect(t *testing.T) {
@@ -605,7 +607,9 @@ func TestJudge_StartTokensNoEffect(t *testing.T) {
 	d, id = startTokensFixture(t, 4, 2600) // 1000 tokens, but 4 sessions
 	j, _ = runJudge(t, d, judgeDecided.Add(15*24*time.Hour))
 	assert.Zero(t, j)
-	assert.Equal(t, "too_little_data", proposal(t, d, id).Verdict)
+	p := proposal(t, d, id)
+	assert.Equal(t, "too_little_data", p.Verdict)
+	assert.Equal(t, 4, p.VerdictN, "too few, and how few")
 }
 
 // The memory index is measured from measure_from (the cleanup session's

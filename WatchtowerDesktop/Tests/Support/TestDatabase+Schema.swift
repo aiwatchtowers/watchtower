@@ -2466,6 +2466,7 @@ CREATE TABLE IF NOT EXISTS "coach_proposals" (
     verdict       TEXT NOT NULL DEFAULT '' CHECK (verdict IN ('','works','no_effect','too_little_data','reverted_outside')),
     verdict_value REAL,
     verdict_at    TEXT NOT NULL DEFAULT '',
+    verdict_n     INTEGER NOT NULL DEFAULT 0,
     origin          TEXT NOT NULL DEFAULT 'weekly' CHECK (origin IN ('weekly','chat','context')),
     skill           TEXT NOT NULL DEFAULT '',
     conversation_id INTEGER REFERENCES chat_conversations(id) ON DELETE SET NULL,

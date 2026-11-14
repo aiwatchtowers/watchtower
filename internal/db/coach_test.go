@@ -892,3 +892,34 @@ func TestCoachSessionEnd(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, found)
 }
+
+// SetCoachVerdictN stores the sessions behind a verdict; SetCoachVerdict
+// stores 0; Reapply clears it with the verdict.
+func TestSetCoachVerdictN(t *testing.T) {
+	d := openTestDB(t)
+	now := time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)
+	id, err := d.InsertContextCoachProposal(contextFixture("fp1", "claude_plugin_off", "alpha@market"), now)
+	require.NoError(t, err)
+	require.NoError(t, d.MarkCoachAccepted(id, "false", "", nil, 0, now))
+
+	v := 1760.0
+	require.NoError(t, d.SetCoachVerdictN(id, "works", &v, 12, now))
+	got, err := d.GetCoachProposal(id)
+	require.NoError(t, err)
+	assert.Equal(t, "works", got.Verdict)
+	assert.Equal(t, 12, got.VerdictN)
+
+	require.NoError(t, d.SetCoachVerdict(id, "reverted_outside", nil, now))
+	got, err = d.GetCoachProposal(id)
+	require.NoError(t, err)
+	assert.Zero(t, got.VerdictN, "a verdict that measured nothing has no sessions")
+
+	require.NoError(t, d.SetCoachVerdictN(id, "reverted_outside", nil, 3, now))
+	require.NoError(t, d.ReapplyCoachProposal(id, now.Add(time.Hour)))
+	got, err = d.GetCoachProposal(id)
+	require.NoError(t, err)
+	assert.Zero(t, got.VerdictN, "cleared with the verdict")
+
+	require.NoError(t, d.DecideCoachProposal(id, "accepted", "rolled_back", now))
+	require.ErrorIs(t, d.SetCoachVerdictN(id, "works", &v, 5, now), ErrCoachStateChanged)
+}
