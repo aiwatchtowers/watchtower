@@ -1108,7 +1108,7 @@ CREATE TABLE IF NOT EXISTS chat_conversations (
     created_at   REAL NOT NULL,
     updated_at   REAL NOT NULL
 , pinned INTEGER NOT NULL DEFAULT 0, archived_at REAL, title_source TEXT NOT NULL DEFAULT 'prefix'
-    CHECK(title_source IN ('prefix','ai','user')), provider TEXT, model TEXT, project_id INTEGER REFERENCES chat_projects(id) ON DELETE SET NULL, active_leaf_message_id INTEGER, read_at REAL, routing_mode TEXT NOT NULL DEFAULT 'preferred_reserve' CHECK(routing_mode IN ('pinned','preferred_reserve')), actual_provider TEXT NOT NULL DEFAULT '', actual_model TEXT NOT NULL DEFAULT '', routing_reason TEXT NOT NULL DEFAULT '');
+    CHECK(title_source IN ('prefix','ai','user')), provider TEXT, model TEXT, project_id INTEGER REFERENCES chat_projects(id) ON DELETE SET NULL, active_leaf_message_id INTEGER, read_at REAL, routing_mode TEXT NOT NULL DEFAULT 'preferred_reserve' CHECK(routing_mode IN ('pinned','preferred_reserve')), actual_provider TEXT NOT NULL DEFAULT '', actual_model TEXT NOT NULL DEFAULT '', routing_reason TEXT NOT NULL DEFAULT '', live_slack_since INTEGER);
 CREATE TABLE IF NOT EXISTS chat_messages (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
@@ -2134,7 +2134,7 @@ CREATE TABLE IF NOT EXISTS "automation_runs" (
     resume_pending    INTEGER NOT NULL DEFAULT 0 CHECK (resume_pending IN (0, 1)),
     not_resumable     INTEGER NOT NULL DEFAULT 0 CHECK (not_resumable IN (0, 1)),
     random_seed       INTEGER NOT NULL DEFAULT 0
-);
+, live_slack INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS builtin_migrations (
     builtin_id TEXT PRIMARY KEY,
     status     TEXT NOT NULL CHECK (status IN ('done','failed')),
@@ -2470,6 +2470,15 @@ CREATE TABLE IF NOT EXISTS skill_pack_overlays (
     text        TEXT NOT NULL,
     proposal_id INTEGER REFERENCES coach_proposals(id) ON DELETE SET NULL,
     created_at  TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS slack_live_status (
+  team_id TEXT NOT NULL,            -- '' = workspace not identified
+  provider TEXT NOT NULL CHECK (provider IN ('claude','codex')),
+  status TEXT NOT NULL CHECK (status IN ('ok','not_connected','needs_admin','no_plan','unavailable')),
+  error_class TEXT NOT NULL DEFAULT '',
+  connector_id TEXT NOT NULL DEFAULT '',
+  checked_at TEXT NOT NULL,
+  PRIMARY KEY (team_id, provider)
 );
 CREATE VIEW IF NOT EXISTS tracker_issues AS
 SELECT 'jira' AS tracker, ji.account_id, ji.id AS issue_id, ji.key, ji.project_key,

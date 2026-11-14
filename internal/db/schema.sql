@@ -2445,7 +2445,8 @@ CREATE TABLE IF NOT EXISTS chat_conversations (
     routing_mode           TEXT NOT NULL DEFAULT 'preferred_reserve' CHECK(routing_mode IN ('pinned','preferred_reserve')),
     actual_provider        TEXT NOT NULL DEFAULT '',
     actual_model           TEXT NOT NULL DEFAULT '',
-    routing_reason         TEXT NOT NULL DEFAULT ''
+    routing_reason         TEXT NOT NULL DEFAULT '',
+    live_slack_since       INTEGER                              -- chat_messages.id of the first Live Slack turn; NULL = never (00188)
 );
 CREATE INDEX IF NOT EXISTS idx_chat_conversations_project ON chat_conversations(project_id);
 
@@ -3069,7 +3070,8 @@ CREATE TABLE IF NOT EXISTS automation_runs (
     finished_at       TEXT,
     resume_pending    INTEGER NOT NULL DEFAULT 0 CHECK (resume_pending IN (0, 1)), -- 1 = a waiting run kept by the daemon start for a resume (00146)
     not_resumable     INTEGER NOT NULL DEFAULT 0 CHECK (not_resumable IN (0, 1)),  -- 1 = its replay log is incomplete; a restart ends it (00146)
-    random_seed       INTEGER NOT NULL DEFAULT 0                                     -- the run's Math.random seed, set at claim (00146)
+    random_seed       INTEGER NOT NULL DEFAULT 0,                                    -- the run's Math.random seed, set at claim (00146)
+    live_slack        INTEGER NOT NULL DEFAULT 0                                     -- 1 = the run used Live Slack (00188)
 );
 CREATE INDEX IF NOT EXISTS idx_automation_runs_automation_status ON automation_runs(automation_id, status);
 CREATE INDEX IF NOT EXISTS idx_automation_runs_status_queued ON automation_runs(status, queued_at);
@@ -3810,3 +3812,14 @@ CREATE TRIGGER history_backfill_daily_reset AFTER DELETE ON history_backfill
 BEGIN
  DELETE FROM history_backfill_daily WHERE OLD.source_kind='slack' AND account_id=OLD.account_id AND chunk_from >= OLD.floor_ts AND chunk_to <= OLD.upper_ts;
 END;
+
+-- Slack Live probe verdict per workspace and provider (00188). team_id '' = workspace not identified.
+CREATE TABLE IF NOT EXISTS slack_live_status (
+    team_id      TEXT NOT NULL,
+    provider     TEXT NOT NULL CHECK (provider IN ('claude','codex')),
+    status       TEXT NOT NULL CHECK (status IN ('ok','not_connected','needs_admin','no_plan','unavailable')),
+    error_class  TEXT NOT NULL DEFAULT '',
+    connector_id TEXT NOT NULL DEFAULT '',                    -- the Codex Slack app id the probe saw; '' for Claude
+    checked_at   TEXT NOT NULL,
+    PRIMARY KEY (team_id, provider)
+);
