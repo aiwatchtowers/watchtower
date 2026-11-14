@@ -212,11 +212,12 @@ func TestChatLive_OrdinaryToolErrorKeepsLive(t *testing.T) {
 	toolCall(w, "1", "claude_ai_Slack:slack_read_channel", true, "12 messages")
 	w.now = func() time.Time { return now.Add(time.Minute) }
 	toolCall(w, "2", "claude_ai_Slack:slack_read_channel", false, "channel_not_found")
+	toolCall(w, "2b", "claude_ai_Slack:slack_read_channel", false, "request timed out")
 	rows, err := d.ListSlackLiveStatus()
 	require.NoError(t, err)
 	require.Len(t, rows, 1)
 	assert.Equal(t, "ok", rows[0].Status, "one failed read does not turn Live off")
-	assert.True(t, now.Equal(rows[0].CheckedAt), "nothing was written")
+	assert.True(t, now.Equal(rows[0].CheckedAt), "nothing was written: a failed read or one call's timeout is an ordinary tool error")
 	assert.True(t, claudeSlackLive(rows, true, false))
 
 	for _, c := range []struct{ text, status string }{
@@ -255,3 +256,27 @@ func TestChatLive_ConnectorErrorShown(t *testing.T) {
 type discard struct{}
 
 func (discard) Write(p []byte) (int, error) { return len(p), nil }
+
+// Every main-surface chat gets the watcher, whatever the configured provider:
+// a conversation pinned to Claude on an Ollama default still writes the
+// status from its session_ready provider. Other surfaces get none.
+func TestAISession_SlackLiveWatcherForEveryMainChat(t *testing.T) {
+	d := db.OpenTestDB(t)
+	ew := chat.NewEventWriter(discard{})
+	wait := attachSessionSlackLive(t.Context(), ew, d, "main", "ollama")
+	require.NotNil(t, ew.Observe, "attached on main with an unwired configured provider")
+	ok := true
+	require.NoError(t, ew.Emit(chat.Event{Type: chat.EventSessionReady, Provider: "claude"}))
+	require.NoError(t, ew.Emit(chat.Event{Type: chat.EventToolStart, ID: "1", Name: "claude_ai_Slack:slack_read_channel"}))
+	require.NoError(t, ew.Emit(chat.Event{Type: chat.EventToolEnd, ID: "1", OK: &ok, Summary: "3 messages"}))
+	wait()
+	rows, err := d.ListSlackLiveStatus()
+	require.NoError(t, err)
+	r, found := newestSlackLive(rows, "claude")
+	require.True(t, found, "the connector call wrote the session's actual provider's status")
+	assert.Equal(t, "ok", r.Status)
+
+	other := chat.NewEventWriter(discard{})
+	attachSessionSlackLive(t.Context(), other, d, "target", "claude")()
+	assert.Nil(t, other.Observe, "no watcher off the main surface")
+}

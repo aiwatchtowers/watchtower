@@ -99,12 +99,8 @@ func runAISession(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fail(chat.CodeProviderUnavailable, err.Error())
 	}
-	if _, live := slackLiveFor(cfg.AI.Provider); live && aiSessionFlagSurface == "main" {
-		// Only the main chat reaches a Slack connector, only on a provider
-		// with a Slack Live wiring.
-		waitSlackLive := attachSlackLiveWatcher(ctx, out, database, cfg.AI.Provider)
-		defer waitSlackLive() // before the database closes
-	}
+	waitSlackLive := attachSessionSlackLive(ctx, out, database, aiSessionFlagSurface, cfg.AI.Provider)
+	defer waitSlackLive() // before the database closes
 	s := chat.NewSession(backend, out)
 	s.Provider = cfg.AI.Provider
 	_, s.Model = providers.ResolveModelsFor(cfg, cfg.AI.Provider)

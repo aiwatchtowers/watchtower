@@ -30,6 +30,18 @@ func attachSlackLiveWatcher(ctx context.Context, out *chat.EventWriter, database
 	return w.Wait
 }
 
+// attachSessionSlackLive attaches the watcher to every main-surface chat
+// (only the main chat reaches a Slack connector); other surfaces get none.
+// provider is the configured one: the watcher takes the actual provider from
+// session_ready (a conversation pinned to another provider), and its probe
+// skips a provider without a Slack Live wiring.
+func attachSessionSlackLive(ctx context.Context, out *chat.EventWriter, database *db.DB, surface, provider string) (wait func()) {
+	if surface != "main" {
+		return func() {}
+	}
+	return attachSlackLiveWatcher(ctx, out, database, provider)
+}
+
 // startSlackLiveProbe runs `slack live probe --if-older 24h` for provider
 // in the background; a start failure is only a missed refresh.
 func startSlackLiveProbe(ctx context.Context, provider string) {

@@ -67,7 +67,7 @@ func classify(toolText, stderr string, connected, readOK bool) (status, errorCla
 	case has(all, "429", "rate limit", "rate_limit", "ratelimit", "too many requests"):
 		return StatusUnavailable, "rate_limited"
 	case has(all, "timeout", "timed out", "deadline exceeded"):
-		return StatusUnavailable, "timeout"
+		return StatusUnavailable, ErrorClassTimeout
 	case has(tool, "not available on your plan", "your plan does not", "paid plan",
 		"upgrade your plan", "upgrade to a"):
 		return StatusNoPlan, "plan"
@@ -83,11 +83,15 @@ func classify(toolText, stderr string, connected, readOK bool) (status, errorCla
 // arguments): it says nothing about the connection.
 const ErrorClassReadFailed = "read_failed"
 
+// ErrorClassTimeout is a call that timed out.
+const ErrorClassTimeout = "timeout"
+
 // ConnectionVerdict reports whether a connector call's (status, class) says
 // something about the connection — ok, or a connection-class failure
-// (not connected, admin approval, plan, rate limit, unavailable) — and so
-// may be written as the provider's Live status. An ordinary tool error
-// (ErrorClassReadFailed) may not: one bad read must not turn Live off.
+// (not connected, admin approval, plan, rate limit) — and so may be written
+// as the provider's Live status. An ordinary tool error may not: a failed
+// read (ErrorClassReadFailed) or one call's timeout (ErrorClassTimeout)
+// must not turn Live off. The probe still records its own timeout.
 func ConnectionVerdict(status, errorClass string) bool {
-	return !(status == StatusUnavailable && errorClass == ErrorClassReadFailed)
+	return !(status == StatusUnavailable && (errorClass == ErrorClassReadFailed || errorClass == ErrorClassTimeout))
 }
