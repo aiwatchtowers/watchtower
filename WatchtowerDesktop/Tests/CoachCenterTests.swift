@@ -486,7 +486,7 @@ final class CoachCenterTests: XCTestCase {
         await center.acceptThroughSession(50, start: start)
         XCTAssertEqual(verbs(runner).filter { $0.contains("accept") }.count, 2, "one retry")
         XCTAssertEqual(center.linkFailed, [50: 41])
-        XCTAssertNil(center.cardErrors[50], "the row's link line says it")
+        XCTAssertEqual(center.cardErrors[50], "database is locked", "the last link error stays on the card")
         // A later press starts no second session.
         await center.acceptThroughSession(50, start: start)
         XCTAssertEqual(starts, 1)
@@ -551,6 +551,43 @@ final class CoachCenterTests: XCTestCase {
         XCTAssertEqual(verbs(runner), [["coach", "reapply", "50", "--json"],
                                        ["coach", "brief", "50", "--revert", "--json"]])
         XCTAssertEqual(started, ["Slim CLAUDE.md"], "a revert records nothing: its PR is the record")
+    }
+
+    /// A Turn Off Again that finds the setting no longer on (or changed
+    /// meanwhile) gets its own line, never "this proposal is closed": the
+    /// row is still accepted. A state_changed is quiet (done elsewhere).
+    func testReapplyStaleHasItsOwnLine() async {
+        let base = Self.sessionScript(status: "accepted")
+        let code = Counter()
+        let runner = ScriptedCoachRunner { args in
+            guard args.dropFirst().first == "reapply" else { return try base(args) }
+            if code.next() == 0 {
+                throw Self.failure(#"{"ok":false,"error":"the setting changed since it was read","code":"stale"}"#)
+            }
+            throw Self.failure(#"{"ok":false,"error":"not reverted","code":"state_changed"}"#)
+        }
+        let center = makeCenter(runner)
+        await center.reapply(50)
+        XCTAssertEqual(center.cardErrors[50], CoachCenter.reapplyStale)
+        XCTAssertNotEqual(center.cardErrors[50], "The text changed since — this proposal is closed")
+        await center.reapply(50)
+        XCTAssertNil(center.cardErrors[50], "state_changed: quiet, the list shows the change")
+    }
+
+    /// On a Start Again (`--restart`), state_changed means the row was not
+    /// moved to the new session: a link failure with its reason, never a
+    /// quiet success that leaves the session unlinked.
+    func testRestartStateChangedIsALinkFailure() async {
+        let ended = #","session_id":41,"via_session":true,"session_branch":"wt/a""#
+        let runner = ScriptedCoachRunner(Self.sessionScript(status: "accepted", extra: ended) { _ in
+            throw Self.failure(#"{"ok":false,"error":"coach proposal state changed","code":"state_changed"}"#)
+        })
+        let center = makeCenter(runner)
+        await center.restartThroughSession(50) { _, _ in 42 }
+        XCTAssertEqual(verbs(runner).filter { $0.contains("--restart") }.count, 1, "no retry of a refusal")
+        XCTAssertEqual(center.linkFailed, [50: 42])
+        XCTAssertEqual(center.restartLinks, [50])
+        XCTAssertEqual(center.cardErrors[50], "coach proposal state changed")
     }
 
     func testLinkFailedSurvivesRestart() async throws {
