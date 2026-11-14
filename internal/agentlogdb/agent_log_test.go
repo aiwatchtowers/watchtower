@@ -528,3 +528,43 @@ func TestApplyAgentLogBatch_LaneTimesOnlyItsRows(t *testing.T) {
 	assert.Equal(t, "ok", outcome, "a pending row is still filled")
 	assert.False(t, dur.Valid && dur.Int64 > 0, "never timed by another lane's copy")
 }
+
+// Per-source start weights (agentlogdb 00004): one row per lane, kind and
+// name; a later batch keeps the larger bytes, like the parts.
+func TestApplyAgentLogBatch_ContextSources(t *testing.T) {
+	d := openTestDB(t)
+	batch := func(offset, expect int64, src []AgentContextSource) {
+		t.Helper()
+		ok, err := d.ApplyAgentLogBatch(AgentLogBatch{File: AgentLogFile{Path: "/x/a.jsonl", Agent: "claude", ReadOffset: offset},
+			ExpectOffset: expect, Sessions: []AgentLogSession{agentSession("s1", "2026-10-01T10:00:00Z", testWorkbenchID)},
+			ContextSources: src})
+		require.NoError(t, err)
+		require.True(t, ok)
+	}
+	batch(10, -1, []AgentContextSource{
+		{SessionUUID: "s1", Kind: "skill", Name: "plug:review", Bytes: 300},
+		{SessionUUID: "s1", Kind: "tool", Name: "mcp__srv__x", Bytes: 900},
+		{SessionUUID: "s1", AgentID: "a1", Kind: "tool", Name: "mcp__srv__x", Bytes: 700},
+		{SessionUUID: "s1", Kind: "agent", Name: "plug:t2", Bytes: 40},
+		{SessionUUID: "s1", Kind: "mcp_instructions", Name: "srv", Bytes: 50}})
+	batch(20, 10, []AgentContextSource{
+		{SessionUUID: "s1", Kind: "skill", Name: "plug:review", Bytes: 100},
+		{SessionUUID: "s1", Kind: "tool", Name: "mcp__srv__x", Bytes: 950}})
+
+	got, err := d.AgentReportContextSources([]string{"s1", "absent"})
+	require.NoError(t, err)
+	assert.Equal(t, []AgentContextSource{
+		{SessionUUID: "s1", Kind: "agent", Name: "plug:t2", Bytes: 40},
+		{SessionUUID: "s1", Kind: "mcp_instructions", Name: "srv", Bytes: 50},
+		{SessionUUID: "s1", Kind: "skill", Name: "plug:review", Bytes: 300},
+		{SessionUUID: "s1", Kind: "tool", Name: "mcp__srv__x", Bytes: 950},
+		{SessionUUID: "s1", AgentID: "a1", Kind: "tool", Name: "mcp__srv__x", Bytes: 700},
+	}, got)
+
+	none, err := d.AgentReportContextSources([]string{"absent"})
+	require.NoError(t, err)
+	assert.Empty(t, none)
+
+	_, err = d.Exec(`INSERT INTO agent_log_context_sources (session_uuid, kind, name, bytes) VALUES ('s1', 'hook', 'x', 1)`)
+	require.Error(t, err, "kind is a closed set")
+}

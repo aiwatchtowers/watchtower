@@ -66,10 +66,21 @@ type AgentContextPart struct {
 	Bytes                      int64
 }
 
-// AgentSkillListed is one skill in the session's context listing.
+// AgentSkillListed is one skill in the session's context listing; Bytes is
+// the skill's own line of the listing (parser v5; the listing split evenly
+// before, and for a name without a line of its own).
 type AgentSkillListed struct {
 	SessionUUID, Skill string
 	Bytes              int64
+}
+
+// AgentContextSource is the start weight of one source in a lane's context
+// before its first API call: Kind "skill" or "agent" (its listing line),
+// "tool" (its definition) or "mcp_instructions" (a server's instruction
+// block), by name.
+type AgentContextSource struct {
+	SessionUUID, AgentID, Kind, Name string
+	Bytes                            int64
 }
 
 // AgentSubagent is one sub-agent lane of a session; Finished nil = unknown.
@@ -86,14 +97,15 @@ type AgentSubagent struct {
 
 // AgentLogBatch is what one parse of one file writes in one transaction.
 type AgentLogBatch struct {
-	File         AgentLogFile // Path, Agent, Size, MTime, ParserVersion; ReadOffset = the new offset
-	ExpectOffset int64        // compare-and-set: the offset the caller read from; -1 = file row must not exist
-	Sessions     []AgentLogSession
-	Events       []AgentLogEvent
-	ToolResults  []AgentToolResult
-	ContextParts []AgentContextPart
-	SkillListing []AgentSkillListed
-	Subagents    []AgentSubagent
+	File           AgentLogFile // Path, Agent, Size, MTime, ParserVersion; ReadOffset = the new offset
+	ExpectOffset   int64        // compare-and-set: the offset the caller read from; -1 = file row must not exist
+	Sessions       []AgentLogSession
+	Events         []AgentLogEvent
+	ToolResults    []AgentToolResult
+	ContextParts   []AgentContextPart
+	ContextSources []AgentContextSource
+	SkillListing   []AgentSkillListed
+	Subagents      []AgentSubagent
 	// Lane is a Codex sub-agent batch's agent id: its tool results time and
 	// settle only that lane's rows, so a forked child's replay of its
 	// parent's results (under the same root session) never re-times the
@@ -282,6 +294,13 @@ func (d *DB) ApplyAgentLogBatch(b AgentLogBatch) (bool, error) {
 				ON CONFLICT(session_uuid, agent_id, part) DO UPDATE SET bytes = MAX(bytes, excluded.bytes)`,
 				p.SessionUUID, p.AgentID, p.Part, p.Bytes); err != nil {
 				return fmt.Errorf("upserting context part: %w", err)
+			}
+		}
+		for _, c := range b.ContextSources {
+			if _, err := tx.Exec(`INSERT INTO agent_log_context_sources (session_uuid, agent_id, kind, name, bytes) VALUES (?, ?, ?, ?, ?)
+				ON CONFLICT(session_uuid, agent_id, kind, name) DO UPDATE SET bytes = MAX(bytes, excluded.bytes)`,
+				c.SessionUUID, c.AgentID, c.Kind, c.Name, c.Bytes); err != nil {
+				return fmt.Errorf("upserting context source: %w", err)
 			}
 		}
 		for _, k := range b.SkillListing {

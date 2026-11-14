@@ -519,7 +519,7 @@ func storeSlice(st store, tf TranscriptFile, wb *db.Workbench, pr *ParseResult, 
 		return 0, false, err
 	}
 	b := agentlogdb.AgentLogBatch{File: f, ExpectOffset: expect, Events: pr.Events,
-		ToolResults: pr.ToolResults, ContextParts: pr.ContextParts, SkillListing: pr.SkillListing, Sessions: sessions}
+		ToolResults: pr.ToolResults, ContextParts: pr.ContextParts, ContextSources: pr.ContextSources, SkillListing: pr.SkillListing, Sessions: sessions}
 	if tf.Agent != AgentCodex && tf.Subagent && tf.AgentID != "" && hasSession(sessions, tf.SessionUUID) { // the row references its session
 		b.Subagents = []agentlogdb.AgentSubagent{subagentRow(tf)}
 	}
@@ -640,11 +640,8 @@ func listedSkills(r io.Reader, limit int64) ([]string, error) {
 			continue
 		}
 		var rec struct {
-			Type       string `json:"type"`
-			Attachment struct {
-				Type  string   `json:"type"`
-				Names []string `json:"names"`
-			} `json:"attachment"`
+			Type       string           `json:"type"`
+			Attachment claudeAttachment `json:"attachment"`
 		}
 		if json.Unmarshal(raw, &rec) != nil || rec.Type != "attachment" || rec.Attachment.Type != "skill_listing" {
 			continue
