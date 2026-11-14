@@ -321,9 +321,12 @@ package struct AgentContextReport: Decodable, Equatable, Sendable {
     package let disk: AgentDiskSizes?
     /// The agents whose sessions the block measured; absent from an older CLI.
     package let agents: [String]?
+    /// The start context by source group and part (context actions); absent
+    /// from an older CLI.
+    package let sources: [AgentSourceGroupRow]?
 
     enum CodingKeys: String, CodingKey {
-        case lead, sessions, baseline, growth, compactions, disk, agents
+        case lead, sessions, baseline, growth, compactions, disk, agents, sources
         case factsSessions = "facts_sessions", subagentBaseline = "subagent_baseline"
         case topSources = "top_sources", repeatedReads = "repeated_reads"
     }
@@ -352,6 +355,24 @@ package struct AgentSourceRow: Decodable, Equatable, Sendable {
     package let tokens: Int64
     package let calls: Int
     package let sessions: Int
+}
+
+/// One group's sources of one baseline part (`agentreport.ContextSourceRow`).
+/// `groupKind`: plugin, mcp_server, claude_ai_connectors, user, project,
+/// builtin. A calls-only row (tokens 0, measuredSessions 0) was called but
+/// never measured in this part: it adds calls, never weight.
+package struct AgentSourceGroupRow: Decodable, Equatable, Sendable {
+    package let part: String
+    package let group: String
+    package let groupKind: String
+    package let tokens: Int
+    package let calls: Int
+    package let measuredSessions: Int
+
+    enum CodingKeys: String, CodingKey {
+        case part, group, tokens, calls
+        case groupKind = "group_kind", measuredSessions = "measured_sessions"
+    }
 }
 
 package struct AgentRepeatRow: Decodable, Equatable, Sendable {

@@ -237,6 +237,32 @@ final class AgentReportDecodingTests: XCTestCase {
         XCTAssertEqual(tr.factsSessions, 2)
     }
 
+    /// The context block's per-source rows (context actions, Task 2); an
+    /// older CLI sends no `sources` key.
+    func testContextSourcesDecode() throws {
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: fixture("agent-report-overview")) as? [String: Any])
+        var context = try XCTUnwrap(json["context"] as? [String: Any])
+        context["sources"] = [
+            ["part": "skills", "group": "acme-tools", "group_kind": "plugin", "tokens": 1400, "calls": 0,
+             "measured_sessions": 6],
+            ["part": "tools", "group": "example-server", "group_kind": "mcp_server", "tokens": 0, "calls": 3,
+             "measured_sessions": 0]
+        ]
+        json["context"] = context
+        let ov = try JSONDecoder().decode(AgentReportOverview.self, from: JSONSerialization.data(withJSONObject: json))
+        XCTAssertEqual(ov.context?.sources, [
+            AgentSourceGroupRow(part: "skills", group: "acme-tools", groupKind: "plugin", tokens: 1400, calls: 0,
+                                measuredSessions: 6),
+            AgentSourceGroupRow(part: "tools", group: "example-server", groupKind: "mcp_server", tokens: 0, calls: 3,
+                                measuredSessions: 0)
+        ])
+
+        context["sources"] = nil
+        json["context"] = context
+        let old = try JSONDecoder().decode(AgentReportOverview.self, from: JSONSerialization.data(withJSONObject: json))
+        XCTAssertNil(old.context?.sources)
+    }
+
     func testOverviewWithoutV2BlocksStillDecodes() throws {
         var json = try XCTUnwrap(JSONSerialization.jsonObject(with: fixture("agent-report-overview")) as? [String: Any])
         for k in ["context", "skills", "trouble"] { json[k] = nil }

@@ -97,6 +97,22 @@ package struct CoachProposal: Decodable, Equatable, Identifiable, Sendable {
     /// folder, read by the CLI at list time ("" = not a git folder); nil when
     /// the key is absent. Never read from the database row.
     package var folderBranch: String?
+    /// The workbench session a repository or memory Accept started; nil
+    /// before, and once the Desktop deleted that session's row.
+    package var sessionID: Int64?
+    /// A context proposal's source: plugin id, server name, "connectors",
+    /// "memory"; "" otherwise.
+    package var sourceKey = ""
+    /// Accepted through a session; survives the session row's delete.
+    package var viaSession = false
+    /// The session's branch, copied while the session existed ("" = unknown).
+    package var sessionBranch = ""
+    /// The PR of a session row's branch as the session report cached it:
+    /// number, `merged`/`open`/`closed`, and its link when the agent's own
+    /// transcript had one (nil otherwise: build it from the remote).
+    package var pr: Int64?
+    package var prState: String?
+    package var prURL: String?
 
     enum CodingKeys: String, CodingKey {
         case id, title, why, destination, kind, metric, before, after, evidence, sources, status
@@ -105,6 +121,8 @@ package struct CoachProposal: Decodable, Equatable, Identifiable, Sendable {
         case decidedAt = "decided_at", verdictValue = "verdict_value", verdictAt = "verdict_at"
         case revertsID = "reverts_id", conversationID = "conversation_id"
         case writtenBranch = "written_branch", measureFrom = "measure_from", folderBranch = "folder_branch"
+        case sessionID = "session_id", sourceKey = "source_key", viaSession = "via_session"
+        case sessionBranch = "session_branch", pr, prState = "pr_state", prURL = "pr_url"
     }
 }
 
@@ -141,7 +159,14 @@ extension CoachProposal {
             conversationID: try c.decodeIfPresent(Int64.self, forKey: .conversationID),
             writtenBranch: try c.decodeIfPresent(String.self, forKey: .writtenBranch) ?? "",
             measureFrom: try c.decodeIfPresent(String.self, forKey: .measureFrom),
-            folderBranch: try c.decodeIfPresent(String.self, forKey: .folderBranch))
+            folderBranch: try c.decodeIfPresent(String.self, forKey: .folderBranch),
+            sessionID: try c.decodeIfPresent(Int64.self, forKey: .sessionID),
+            sourceKey: try c.decodeIfPresent(String.self, forKey: .sourceKey) ?? "",
+            viaSession: try c.decodeIfPresent(Bool.self, forKey: .viaSession) ?? false,
+            sessionBranch: try c.decodeIfPresent(String.self, forKey: .sessionBranch) ?? "",
+            pr: try c.decodeIfPresent(Int64.self, forKey: .pr),
+            prState: try c.decodeIfPresent(String.self, forKey: .prState),
+            prURL: try c.decodeIfPresent(String.self, forKey: .prURL))
     }
 }
 
