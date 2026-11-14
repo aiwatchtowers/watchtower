@@ -99,7 +99,8 @@ func runAISession(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fail(chat.CodeProviderUnavailable, err.Error())
 	}
-	attachSlackLiveWatcher(ctx, out, database, cfg.AI.Provider)
+	waitSlackLive := attachSlackLiveWatcher(ctx, out, database, cfg.AI.Provider)
+	defer waitSlackLive() // before the database closes
 	s := chat.NewSession(backend, out)
 	s.Provider = cfg.AI.Provider
 	_, s.Model = providers.ResolveModelsFor(cfg, cfg.AI.Provider)

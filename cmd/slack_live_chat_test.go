@@ -73,7 +73,9 @@ func slackWatcher(t *testing.T, database *db.DB, now time.Time) (*slackLiveWatch
 
 func toolCall(w *slackLiveWatcher, id, name string, ok bool, summary string) {
 	w.Observe(chat.Event{Type: chat.EventToolStart, ID: id, Name: name})
+	w.Wait()
 	w.Observe(chat.Event{Type: chat.EventToolEnd, ID: id, OK: &ok, Summary: summary})
+	w.Wait()
 }
 
 func TestAISession_ProbeOnFirstSlackToolOnly(t *testing.T) {
@@ -87,6 +89,7 @@ func TestAISession_ProbeOnFirstSlackToolOnly(t *testing.T) {
 	toolCall(w, "2", "list_messages", true, "")
 	assert.Equal(t, []string{"claude"}, *probes, "first Slack tool, no row: one probe")
 	toolCall(w, "3", "list_slack_channels", true, "")
+	toolCall(w, "3b", "watchtower-app:list_messages", true, "")
 	assert.Len(t, *probes, 1, "at most once per session")
 
 	// A fresh row suppresses the probe.
@@ -99,6 +102,13 @@ func TestAISession_ProbeOnFirstSlackToolOnly(t *testing.T) {
 	w3, probes3 := slackWatcher(t, d, now.Add(48*time.Hour))
 	toolCall(w3, "1", "list_messages", true, "")
 	assert.Len(t, *probes3, 1)
+}
+
+func TestAISession_ProbeMatchesRenamedServer(t *testing.T) {
+	d := db.OpenTestDB(t)
+	w, probes := slackWatcher(t, d, time.Now())
+	toolCall(w, "1", "watchtower-app:list_messages", true, "")
+	assert.Len(t, *probes, 1)
 }
 
 func TestChatLive_StatusWrittenOnUse(t *testing.T) {
@@ -145,6 +155,7 @@ func TestChatLive_ConnectorErrorShown(t *testing.T) {
 	var out []chat.Event
 	ew := chat.NewEventWriter(discard{})
 	ew.Observe = func(e chat.Event) { out = append(out, e); w.Observe(e) }
+	defer w.Wait()
 	f := false
 	require.NoError(t, ew.Emit(chat.Event{Type: chat.EventToolStart, ID: "1", Name: "claude_ai_Slack:slack_read_channel"}))
 	require.NoError(t, ew.Emit(chat.Event{Type: chat.EventToolEnd, ID: "1", OK: &f, Summary: "Unknown tool"}))

@@ -21,11 +21,12 @@ func codexSlackOverrides(connectorID string) []string {
 // attachSlackLiveWatcher hooks the session's event stream: statuses on use
 // and the one background probe. The probe child belongs to ctx, so it goes
 // with the session.
-func attachSlackLiveWatcher(ctx context.Context, out *chat.EventWriter, database *db.DB, provider string) {
+func attachSlackLiveWatcher(ctx context.Context, out *chat.EventWriter, database *db.DB, provider string) (wait func()) {
 	w := newSlackLiveWatcher(database, provider)
 	w.classify = slacklive.Classify
 	w.startProbe = func(p string) { startSlackLiveProbe(ctx, p) }
 	out.Observe = w.Observe
+	return w.Wait
 }
 
 // startSlackLiveProbe runs `slack live probe --if-older 24h` for provider

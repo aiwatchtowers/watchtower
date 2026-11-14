@@ -67,6 +67,7 @@ type slackLiveWatcher struct {
 	startProbe func(provider string)
 
 	mu       sync.Mutex
+	wg       sync.WaitGroup
 	provider string
 	calls    map[string]string // tool id → tool name
 	probed   bool
@@ -94,11 +95,17 @@ func isSlackConnectorTool(name string) bool {
 	return slices.Contains(slacklive.ReadTools, tool)
 }
 
+// isLocalSlackTool matches by bare tool name, so a Watchtower server under
+// another key ("watchtower-app:list_messages") still counts.
 func isLocalSlackTool(name string) bool {
+	if j := strings.LastIndex(name, ":"); j >= 0 {
+		name = name[j+1:]
+	}
 	return name == "list_messages" || name == "list_slack_channels"
 }
 
-// Observe is chat.EventWriter.Observe.
+// Observe is chat.EventWriter.Observe, called under the writer's mutex: it
+// only bookkeeps, and hands the database work to a goroutine (Wait reaps).
 func (w *slackLiveWatcher) Observe(e chat.Event) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -111,18 +118,32 @@ func (w *slackLiveWatcher) Observe(e chat.Event) {
 		w.calls[e.ID] = e.Name
 		if isLocalSlackTool(e.Name) && !w.probed {
 			w.probed = true
-			w.maybeProbe()
+			provider := w.provider
+			w.run(func() { w.maybeProbe(provider) })
 		}
 	case chat.EventToolEnd:
 		name := w.calls[e.ID]
 		delete(w.calls, e.ID)
 		if isSlackConnectorTool(name) {
-			w.writeStatus(e)
+			provider := w.provider
+			w.run(func() { w.writeStatus(provider, e) })
 		}
 	}
 }
 
-func (w *slackLiveWatcher) maybeProbe() {
+// run starts fn in a goroutine Wait will join.
+func (w *slackLiveWatcher) run(fn func()) {
+	w.wg.Add(1)
+	go func() {
+		defer w.wg.Done()
+		fn()
+	}()
+}
+
+// Wait joins the watcher's goroutines (session end, tests).
+func (w *slackLiveWatcher) Wait() { w.wg.Wait() }
+
+func (w *slackLiveWatcher) maybeProbe(provider string) {
 	if w.startProbe == nil || w.database == nil {
 		return
 	}
@@ -130,23 +151,23 @@ func (w *slackLiveWatcher) maybeProbe() {
 	if err != nil {
 		return
 	}
-	if r, ok := newestSlackLive(rows, w.provider); ok && w.now().Sub(r.CheckedAt) < slackLiveProbeAge {
+	if r, ok := newestSlackLive(rows, provider); ok && w.now().Sub(r.CheckedAt) < slackLiveProbeAge {
 		return
 	}
-	w.startProbe(w.provider)
+	w.startProbe(provider)
 }
 
 // writeStatus records the outcome of one connector call on the provider's
 // newest row's key (so a probe's connector id stays with it).
-func (w *slackLiveWatcher) writeStatus(e chat.Event) {
+func (w *slackLiveWatcher) writeStatus(provider string, e chat.Event) {
 	if w.database == nil || w.classify == nil || e.OK == nil {
 		return
 	}
 	ok := *e.OK
-	status, class := w.classify(w.provider, e.Summary, true, ok) // the tool ran, so the connector is present
-	row := db.SlackLiveStatus{Provider: w.provider, Status: status, ErrorClass: class, CheckedAt: w.now()}
+	status, class := w.classify(provider, e.Summary, true, ok) // the tool ran, so the connector is present
+	row := db.SlackLiveStatus{Provider: provider, Status: status, ErrorClass: class, CheckedAt: w.now()}
 	if rows, err := w.database.ListSlackLiveStatus(); err == nil {
-		if r, found := newestSlackLive(rows, w.provider); found {
+		if r, found := newestSlackLive(rows, provider); found {
 			row.TeamID = r.TeamID
 		}
 	}

@@ -168,8 +168,11 @@ func buildSessionActual(ctx context.Context, cmd *cobra.Command, cfg *config.Con
 	switch p {
 	case "claude":
 		slackOff := chat.DisabledConnectorTokens(actual.AI.ClaudeAI.DisabledConnectors)["claude_ai_Slack"]
-		opts.SlackLive = claudeAI.mode.On && claudeSlackLive(slackRows, claudeAI.mode.Connectors, slackOff)
+		opts.SlackLive = aiSessionFlagSurface == "main" && claudeAI.mode.On && claudeSlackLive(slackRows, claudeAI.mode.Connectors, slackOff)
 	case "codex":
+		if aiSessionFlagSurface != "main" {
+			break
+		}
 		codexSlack = codexSlackConnector(slackRows, codex.OwnerHome())
 		opts.SlackLive = codexSlack != ""
 	}

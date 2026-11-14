@@ -131,6 +131,11 @@ func NewListMessages() *Tool {
 			if err != nil {
 				return nil, fmt.Errorf("searching messages: %w", err)
 			}
+			if call.Binding.Surface != "main" {
+				// Every other surface (automations, embedded chats, MCP) keeps the
+				// bare array: recipes and templates parse it (confirmed hashes).
+				return renderMessages(d, msgs), nil
+			}
 			cov, err := messageCoverage(d, inScope)
 			if err != nil {
 				return nil, err
