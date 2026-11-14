@@ -294,6 +294,21 @@ final class ContextActionsPresentationTests: XCTestCase {
         XCTAssertEqual(closed.actions, [])
     }
 
+    /// Task 9: a merged repository change is reverted through a session
+    /// (**Revert…**); a written memory index is rolled back from its stored
+    /// copy (**Undo**); an unmerged or unwritten one offers neither.
+    func testMergedRepoRowRevertsAndWrittenMemoryUndoes() throws {
+        let merged = try only(repoRow(pr: 17, prState: "merged"))
+        XCTAssertEqual(merged.actions, [.revert])
+        XCTAssertEqual(ContextActionRow.Action.revert.title, "Revert…")
+        var memory = repoRow(destination: "claude_memory_index")
+        memory.measureFrom = stamp(daysAgo: 1)
+        let written = try only(memory)
+        XCTAssertEqual(written.state, .measuring)
+        XCTAssertEqual(written.actions, [.undo])
+        XCTAssertEqual(try only(repoRow(pr: 17, prState: "closed")).actions, [])
+    }
+
     func testLinkFailedRow() throws {
         let row = try only(proposal(7, destination: "repo_claude_md", workbench: 3, source: ""), linkFailed: [7: 41])
         XCTAssertEqual(row.state, .linkFailed(41))
@@ -348,13 +363,14 @@ final class ContextActionsPresentationTests: XCTestCase {
         XCTAssertNil(dismissed.beforeAfter)
         XCTAssertEqual(dismissed.stateLine, "No measurable saving")
 
-        // A repository row measured after its merge ends the same way, with no Undo.
+        // A repository row measured after its merge ends the same way: no
+        // Undo, Revert… (a session's revert PR) instead.
         var repo = repoRow(pr: 17, prState: "merged")
         repo.measureFrom = stamp(daysAgo: 15)
         let repoDone = try only(CoachProposal(copying: repo, verdict: "works", verdictValue: 49400,
                                               verdictAt: stamp(daysAgo: 1)))
         XCTAssertEqual(repoDone.state, .done(beforeTokens: 79600, afterTokens: 49400))
-        XCTAssertEqual(repoDone.actions, [])
+        XCTAssertEqual(repoDone.actions, [.revert])
     }
 
     func testSavedLine() throws {

@@ -58,6 +58,8 @@ package struct ContextActionRow: Equatable, Identifiable, Sendable {
         case turnOff, accept, archive, decline
         case openSession, retryLink, startAgain, dismiss
         case openPR, showDiff, undo, turnOffAgain
+        /// A merged repository change: a session opens its revert PR.
+        case revert
 
         package var title: String {
             switch self {
@@ -73,6 +75,7 @@ package struct ContextActionRow: Equatable, Identifiable, Sendable {
             case .showDiff: return "Show Diff"
             case .undo: return "Undo"
             case .turnOffAgain: return "Turn Off Again"
+            case .revert: return "Revert…"
             }
         }
     }
@@ -95,7 +98,9 @@ package struct ContextActionRow: Equatable, Identifiable, Sendable {
 
     /// The buttons the state allows, in order. Decline only ever on a row
     /// not yet accepted; an accepted session row with nothing to measure
-    /// gets Dismiss.
+    /// gets Dismiss. Once applied, a settings row and a written memory index
+    /// offer Undo (`coach rollback`); a merged repository change offers
+    /// Revert… (a session with `coach brief --revert`).
     package var actions: [Action] {
         let primary: Action = switch verb {
         case .turnOff: .turnOff
@@ -104,7 +109,8 @@ package struct ContextActionRow: Equatable, Identifiable, Sendable {
         }
         switch state {
         case .open, .failed: return [primary, .decline]
-        case .starting, .measuring, .notMerged, .changedSince: return []
+        case .starting, .notMerged, .changedSince: return []
+        case .measuring: return afterwards
         case .working: return [.openSession]
         case .linkFailed: return [.openSession, .retryLink]
         case .sessionGone: return [.dismiss]
@@ -112,7 +118,17 @@ package struct ContextActionRow: Equatable, Identifiable, Sendable {
         case .endedWithoutChange(let session):
             return (session == nil ? [] : [.openSession]) + [.startAgain, .dismiss]
         case .revertedOutside: return [.turnOffAgain]
-        case .done: return tag == .settings ? [.undo] : []
+        case .done: return afterwards
+        }
+    }
+
+    /// An applied row's way back.
+    private var afterwards: [Action] {
+        switch tag {
+        case .settings: return [.undo]
+        // Only an index the session wrote (`measure_from`) has a copy to put back.
+        case .memory: return proposal.measureFrom == nil ? [] : [.undo]
+        case .repoPR: return proposal.prState == "merged" ? [.revert] : []
         }
     }
 

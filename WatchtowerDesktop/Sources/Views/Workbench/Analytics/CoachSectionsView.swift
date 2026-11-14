@@ -23,11 +23,13 @@ struct CoachSectionsView: View {
     var body: some View {
         let status = coach.status[workbench]
         let split = CoachProposal.forPane(coach.proposals?.value ?? [], workbench: workbench)
+        // Open context proposals are the Context block's Do these list.
+        let open = split.open.filter { $0.origin != "context" }
         VStack(alignment: .leading, spacing: Spacing.page) {
             CoachMetricTilesView(snapshot: status)
-            proposed(split.open, lastRun: status?.value?.lastRun)
+            proposed(open, lastRun: status?.value?.lastRun)
             if coach.proposals?.value != nil {
-                CoachAcceptedLogView(accepted: split.accepted, open: split.open, coach: coach) { proposal in
+                CoachAcceptedLogView(accepted: split.accepted, open: open, coach: coach) { proposal in
                     Task {
                         if let diff = await coach.rollback(proposal.id, force: false) {
                             rollback = CoachRollbackPrompt(proposal: proposal, diff: diff)

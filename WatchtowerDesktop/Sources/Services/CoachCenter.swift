@@ -31,6 +31,28 @@ final class CoachCenter {
     /// Proposals with an owner verb in flight: a second press on the same
     /// card does nothing and the card disables its buttons meanwhile.
     private(set) var pending: Set<Int64> = []
+    /// Proposal id → the session `coach accept --session` could not link
+    /// (spec failure paths): the row offers Open Session / Retry Link and no
+    /// Accept, so no second session starts. Persisted (`linkFailedKey`):
+    /// it survives navigation and an app restart. An entry is dropped once
+    /// the proposal is no longer open or its session row is gone.
+    private(set) var linkFailed: [Int64: Int64] = [:]
+    /// Session flows between the press and their `coach accept --session`.
+    private(set) var sessionStarts: Set<Int64> = []
+    /// The session each Accept / Start Again started, and when: the row
+    /// stays "starting" until it is live (`starting(live:now:)`).
+    private(set) var launched: [Int64: Launch] = [:]
+
+    struct Launch: Equatable {
+        let session: Int64
+        let at: Date
+    }
+
+    nonisolated static let linkFailedKey = "coach.linkFailed"
+    /// A started session that never goes live stops counting as starting
+    /// after this, so a crash at launch ends on the session's own state.
+    nonisolated static let launchGrace: TimeInterval = 60
+    nonisolated static let sessionNotStarted = "The session did not start — the proposal is still open"
 
     @ObservationIgnored var isTabOnScreen: () -> Bool = { false }
 
@@ -49,9 +71,13 @@ final class CoachCenter {
     /// Bumped by `stop()`: a `runNow` that began earlier applies nothing.
     @ObservationIgnored private var epoch = 0
 
-    init(runner: any CLIRunnerProtocol, interval: Duration = CoachCenter.interval) {
+    @ObservationIgnored private let defaults: UserDefaults
+
+    init(runner: any CLIRunnerProtocol, interval: Duration = CoachCenter.interval, defaults: UserDefaults = .standard) {
         self.runner = runner
         self.interval = interval
+        self.defaults = defaults
+        linkFailed = Self.readLinks(defaults)
     }
 
     var isPolling: Bool { loop != nil }
@@ -150,6 +176,171 @@ final class CoachCenter {
         }
     }
 
+    // MARK: - Session destinations (context actions, spec C6)
+
+    /// The proposals whose session is being started: from the press until
+    /// the started session is in `live` (`ContextActionsPresentation.rows`
+    /// wants them in `starting` until then), or `launchGrace` passed.
+    func starting(live: Set<Int64>, now: Date = Date()) -> Set<Int64> {
+        let waiting = launched.filter { !live.contains($0.value.session) && now.timeIntervalSince($0.value.at) < Self.launchGrace }
+        return sessionStarts.union(waiting.keys)
+    }
+
+    /// Accept of a repository or memory proposal: `coach brief`, then
+    /// `start(title, prompt)` (the Desktop starts the workbench session),
+    /// then `coach accept <id> --session <sid>`. A start that returns nil
+    /// leaves the proposal open with the error on its row. A link that fails
+    /// after the session started is tried once more; `state_changed` means
+    /// another surface accepted it (quiet), anything else records
+    /// `linkFailed`. `pending` holds the id throughout, so a second press is
+    /// ignored; an id already linked or launched never starts a second one.
+    func acceptThroughSession(_ id: Int64, start: (String, String) async -> Int64?) async {
+        guard linkFailed[id] == nil, launched[id] == nil else { return }
+        await throughSession(id, revert: false, start: start) { session in
+            await self.link(id, session: session, restart: false)
+        }
+    }
+
+    /// **Start Again** on an accepted row whose session ended with nothing:
+    /// a new session, recorded with `coach accept --session --restart`.
+    func restartThroughSession(_ id: Int64, start: (String, String) async -> Int64?) async {
+        await throughSession(id, revert: false, start: start) { session in
+            await self.link(id, session: session, restart: true)
+        }
+    }
+
+    /// **Revert…** of a merged repository change: a session started with
+    /// `coach brief <id> --revert`. Nothing is recorded: its PR is the record.
+    func revertThroughSession(_ id: Int64, start: (String, String) async -> Int64?) async {
+        await throughSession(id, revert: true, start: start) { _ in }
+    }
+
+    /// **Retry Link**: the same `coach accept --session` with the session
+    /// that could not be linked.
+    func retryLink(_ id: Int64) async {
+        guard let session = linkFailed[id], pending.insert(id).inserted else { return }
+        defer { pending.remove(id) }
+        cardErrors[id] = nil
+        do {
+            _ = try await runner.run(args: ["coach", "accept", String(id), "--session", String(session), "--json"])
+            setLink(id, nil)
+        } catch where Self.failure(error)?.code == "state_changed" {
+            setLink(id, nil)
+        } catch {
+            cardErrors[id] = Self.message(error)
+            return
+        }
+        await reloadProposalsNow()
+    }
+
+    /// **Dismiss**: closes an accepted session row that ended with nothing.
+    func dismiss(_ id: Int64) async {
+        await verb(id, ["coach", "dismiss", String(id), "--json"])
+    }
+
+    /// **Turn Off Again**: a setting turned back on outside Watchtower.
+    func reapply(_ id: Int64) async {
+        await verb(id, ["coach", "reapply", String(id), "--json"])
+    }
+
+    /// The pane found `session`'s row gone: a link entry naming it goes.
+    func forgetLink(_ id: Int64, session: Int64) {
+        if linkFailed[id] == session { setLink(id, nil) }
+    }
+
+    private func verb(_ id: Int64, _ args: [String]) async {
+        guard pending.insert(id).inserted else { return }
+        defer { pending.remove(id) }
+        cardErrors[id] = nil
+        do {
+            _ = try await runner.run(args: args)
+            reloadAll()
+        } catch {
+            decisionFailed(id, error)
+        }
+    }
+
+    private func throughSession(
+        _ id: Int64, revert: Bool, start: (String, String) async -> Int64?, record: (Int64) async -> Void
+    ) async {
+        guard pending.insert(id).inserted else { return }
+        sessionStarts.insert(id)
+        defer {
+            sessionStarts.remove(id)
+            pending.remove(id)
+        }
+        cardErrors[id] = nil
+        let brief: CoachBrief
+        do {
+            let args = ["coach", "brief", String(id)] + (revert ? ["--revert"] : []) + ["--json"]
+            brief = try JSONDecoder().decode(CoachBrief.self, from: try await runner.run(args: args))
+        } catch {
+            decisionFailed(id, error)
+            return
+        }
+        guard let session = await start(brief.title, brief.prompt) else {
+            cardErrors[id] = Self.sessionNotStarted
+            return
+        }
+        if !revert { launched[id] = Launch(session: session, at: Date()) }
+        await record(session)
+        // The press is released once the list shows the change, so the
+        // row never offers its old buttons in between.
+        await reloadProposalsNow()
+        for workbench in shown.keys { request(.status(workbench: workbench)) }
+    }
+
+    /// `coach accept --session` once more after a failure; `state_changed`
+    /// on either try is another surface's Accept (quiet).
+    private func link(_ id: Int64, session: Int64, restart: Bool) async {
+        let args = ["coach", "accept", String(id), "--session", String(session)] + (restart ? ["--restart"] : []) + ["--json"]
+        var last: Error?
+        for _ in 0..<2 {
+            do {
+                _ = try await runner.run(args: args)
+                return
+            } catch where Self.failure(error)?.code == "state_changed" {
+                return
+            } catch {
+                last = error
+            }
+        }
+        guard let last else { return }
+        if restart {
+            // An accepted row: its card keeps Start Again, with the error.
+            cardErrors[id] = "\(ContextActionsPresentation.Copy.linkFailed): \(Self.message(last))"
+        } else {
+            setLink(id, session)
+        }
+    }
+
+    private func setLink(_ id: Int64, _ session: Int64?) {
+        linkFailed[id] = session
+        defaults.set(Dictionary(uniqueKeysWithValues: linkFailed.map { (String($0.key), NSNumber(value: $0.value)) }),
+                     forKey: Self.linkFailedKey)
+    }
+
+    private static func readLinks(_ defaults: UserDefaults) -> [Int64: Int64] {
+        var links: [Int64: Int64] = [:]
+        for (key, value) in defaults.dictionary(forKey: linkFailedKey) ?? [:] {
+            if let id = Int64(key), let session = (value as? NSNumber)?.int64Value { links[id] = session }
+        }
+        return links
+    }
+
+    /// Drops the link entries whose proposal is no longer open.
+    private func pruneLinks(_ proposals: [CoachProposal]) {
+        let open = Set(proposals.filter { $0.status == "open" }.map(\.id))
+        for id in linkFailed.keys where !open.contains(id) { setLink(id, nil) }
+    }
+
+    /// Reads the proposal list and waits for it, a read already in flight
+    /// and its queued rerun included.
+    private func reloadProposalsNow() async {
+        request(.proposals)
+        while let task = inFlight[.proposals]?.task { await task.value }
+    }
+
     func runNow() async {
         guard !running else { return }
         running = true
@@ -240,6 +431,7 @@ final class CoachCenter {
                 let list = try JSONDecoder().decode(CoachProposalList.self, from: data)
                 guard !Task.isCancelled else { return }
                 proposals = SessionReportCenter.Snapshot(value: list.proposals)
+                pruneLinks(list.proposals)
             } catch {
                 guard !Task.isCancelled, !(error is CancellationError) else { return }
                 var current = proposals ?? SessionReportCenter.Snapshot()
@@ -286,4 +478,10 @@ final class CoachCenter {
         guard let text = (try? JSONDecoder().decode(Out.self, from: data))?.judge_error, !text.isEmpty else { return nil }
         return "Verdicts could not be updated: \(text)"
     }
+}
+
+/// `coach brief <id> [--revert] --json`: the session's title and prompt.
+struct CoachBrief: Decodable {
+    let title: String
+    let prompt: String
 }

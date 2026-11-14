@@ -136,6 +136,9 @@ extension AppState {
     /// failure comes back as text for the row to show. `runner` replaces
     /// the CLI in tests.
     func decideCoachProposal(id: Int64, accept: Bool, runner: (any CLIRunnerProtocol)? = nil) async -> String? {
+        if accept, let proposal = homeCenter.snapshot?.coach?.proposal, proposal.id == id, proposal.acceptStartsSession {
+            return await acceptCoachThroughSession(proposal)
+        }
         guard let runner = runner ?? ProcessCLIRunner.makeDefault() else { return "The command line is not available." }
         do {
             _ = try await runner.run(args: ["coach", accept ? "accept" : "decline", String(id), "--json"])
@@ -155,6 +158,21 @@ extension AppState {
     }
 
     static let coachChangedLine = "That proposal changed — showing the next one"
+
+    /// Accept of a repository or memory proposal from Home's row: through
+    /// the coach center, which starts the workbench session and then records
+    /// it (spec C6), so the Analytics pane sees the same press and its link
+    /// state. Returns the row's line: the start or link failure, nil on success.
+    func acceptCoachThroughSession(_ proposal: CoachProposal) async -> String? {
+        guard let coach = coachCenter, let vm = workbenchesViewModel else { return "The command line is not available." }
+        let workbench = proposal.workbenchID
+        await coach.acceptThroughSession(proposal.id) { title, prompt in
+            await vm.startCoachSession(workbench: workbench, title: title, prompt: prompt)
+        }
+        await homeCenter.rereadNow()
+        if coach.linkFailed[proposal.id] != nil { return ContextActionsPresentation.Copy.linkFailed }
+        return coach.cardErrors[proposal.id]
+    }
 
     /// Opens workbench `workbench`'s Analytics pane (Home's coach row, the
     /// Settings pointer, Agent Settings): its Agent Settings screen is

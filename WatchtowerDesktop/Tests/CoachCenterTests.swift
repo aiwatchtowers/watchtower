@@ -44,16 +44,25 @@ private final class ScriptedCoachRunner: CLIRunnerProtocol, @unchecked Sendable 
 @MainActor
 final class CoachCenterTests: XCTestCase {
     private var centers: [CoachCenter] = []
+    private var suites: [String] = []
 
     override func tearDown() {
         centers.forEach { $0.stop() }
+        suites.forEach { UserDefaults().removePersistentDomain(forName: $0) }
         super.tearDown()
     }
 
-    private func makeCenter(_ runner: ScriptedCoachRunner) -> CoachCenter {
-        let center = CoachCenter(runner: runner, interval: .seconds(3600))
+    private func makeCenter(_ runner: ScriptedCoachRunner, defaults: UserDefaults? = nil) -> CoachCenter {
+        let center = CoachCenter(runner: runner, interval: .seconds(3600), defaults: defaults ?? makeDefaults())
         centers.append(center)
         return center
+    }
+
+    /// A private defaults domain: `coach.linkFailed` never reaches the real one.
+    private func makeDefaults() -> UserDefaults {
+        let name = "CoachCenterTests-\(UUID().uuidString)"
+        suites.append(name)
+        return UserDefaults(suiteName: name) ?? .standard
     }
 
     nonisolated private static func fixture(_ name: String) -> Data {
@@ -328,5 +337,275 @@ final class CoachCenterTests: XCTestCase {
         await center.accept(9, editedText: nil)
         XCTAssertNil(center.cardErrors[9])
         XCTAssertEqual(center.written[9], CoachWrittenFile(path: "CLAUDE.md", branch: "main"))
+    }
+
+    // MARK: - Accept through a session (context actions, spec C6)
+
+    /// One open (or `status`) context repository proposal, id 50, workbench 3.
+    nonisolated private static func contextProposals(status: String = "open") -> Data {
+        Data("""
+        {"ok":true,"proposals":[{"id":50,"title":"Slim CLAUDE.md","why":"w","destination":"repo_claude_md",\
+        "workbench_id":3,"prompt_id":"","kind":"restructure","metric":"start_tokens","before":"","after":"",\
+        "evidence":[],"sources":6,"status":"\(status)","created_at":"2026-11-01T09:00:00Z","decided_at":null,\
+        "baseline":null,"verdict":"","verdict_value":null,"verdict_at":null,"reverts_id":0,"budget":0,\
+        "origin":"context","source_key":"","via_session":false}]}
+        """.utf8)
+    }
+
+    nonisolated private static let brief = Data(#"{"ok":true,"id":50,"title":"Slim CLAUDE.md","prompt":"Move the sections."}"#.utf8)
+
+    /// brief / accept / proposals answered; `accept` by `onAccept` (call index from 0).
+    nonisolated private static func sessionScript(
+        status: String = "open",
+        onAccept: @escaping @Sendable (Int) throws -> Data = { _ in Data(#"{"ok":true}"#.utf8) }
+    ) -> @Sendable ([String]) throws -> Data {
+        let accepts = Counter()
+        return { args in
+            switch args.dropFirst().first {
+            case "brief": return brief
+            case "proposals": return contextProposals(status: status)
+            case "accept": return try onAccept(accepts.next())
+            default: return Data(#"{"ok":true}"#.utf8)
+            }
+        }
+    }
+
+    /// The CLI calls apart from the reads.
+    private func verbs(_ runner: ScriptedCoachRunner) -> [[String]] {
+        runner.invocations.filter { !["proposals", "status"].contains($0.dropFirst().first ?? "") }
+    }
+
+    func testAcceptThroughSessionStartsThenAccepts() async {
+        let runner = ScriptedCoachRunner(Self.sessionScript())
+        let center = makeCenter(runner)
+        var started: [(String, String, Int)] = []
+        await center.acceptThroughSession(50) { title, prompt in
+            started.append((title, prompt, self.verbs(runner).count))
+            return 41
+        }
+        XCTAssertEqual(verbs(runner), [["coach", "brief", "50", "--json"],
+                                       ["coach", "accept", "50", "--session", "41", "--json"]])
+        XCTAssertEqual(started.map(\.0), ["Slim CLAUDE.md"])
+        XCTAssertEqual(started.map(\.1), ["Move the sections."])
+        XCTAssertEqual(started.first?.2, 1, "the session starts after the brief and before the accept")
+        XCTAssertNil(center.cardErrors[50])
+        XCTAssertTrue(center.linkFailed.isEmpty)
+        XCTAssertTrue(center.pending.isEmpty)
+        XCTAssertTrue(runner.invocations.contains(["coach", "proposals", "--status", "all", "--json"]),
+                      "the list is read again before the press is released")
+    }
+
+    func testAcceptThroughSessionStartFailureLeavesOpen() async {
+        let runner = ScriptedCoachRunner(Self.sessionScript())
+        let center = makeCenter(runner)
+        await center.acceptThroughSession(50) { _, _ in nil }
+        XCTAssertEqual(verbs(runner), [["coach", "brief", "50", "--json"]], "no coach accept without a session")
+        XCTAssertEqual(center.cardErrors[50], CoachCenter.sessionNotStarted)
+        XCTAssertTrue(center.linkFailed.isEmpty)
+        XCTAssertTrue(center.starting(live: []).isEmpty)
+        XCTAssertTrue(center.pending.isEmpty)
+    }
+
+    func testAcceptThroughSessionBriefFailureStartsNothing() async {
+        let runner = ScriptedCoachRunner { args in
+            if args.dropFirst().first == "brief" {
+                throw Self.failure(#"{"ok":false,"error":"no such proposal","code":"not_found"}"#)
+            }
+            return Data(#"{"ok":true}"#.utf8)
+        }
+        let center = makeCenter(runner)
+        var starts = 0
+        await center.acceptThroughSession(50) { _, _ in
+            starts += 1
+            return 41
+        }
+        XCTAssertEqual(starts, 0)
+        XCTAssertEqual(center.cardErrors[50], "no such proposal")
+    }
+
+    func testDoublePressIgnored() async {
+        let runner = ScriptedCoachRunner(Self.sessionScript())
+        let center = makeCenter(runner)
+        let gate = AsyncGate()
+        var starts = 0
+        let start: (String, String) async -> Int64? = { _, _ in
+            starts += 1
+            await gate.wait()
+            return 41
+        }
+        let first = Task { await center.acceptThroughSession(50, start: start) }
+        await waitUntil { starts == 1 }
+        XCTAssertTrue(center.pending.contains(50))
+        XCTAssertTrue(center.starting(live: []).contains(50), "the row is starting from the press")
+        await center.acceptThroughSession(50, start: start)
+        await center.accept(50, editedText: nil)
+        XCTAssertEqual(verbs(runner), [["coach", "brief", "50", "--json"]], "the second press ran nothing")
+        gate.release()
+        await first.value
+        XCTAssertEqual(starts, 1)
+        XCTAssertEqual(verbs(runner).filter { $0.contains("brief") }.count, 1)
+    }
+
+    func testStartBeganThenNavigatedAway() async {
+        let runner = ScriptedCoachRunner(Self.sessionScript())
+        let center = makeCenter(runner)
+        center.show(workbench: 3, period: .week)
+        let gate = AsyncGate()
+        let flow = Task {
+            await center.acceptThroughSession(50) { _, _ in
+                await gate.wait()
+                return 41
+            }
+        }
+        await waitUntil { self.verbs(runner).count == 1 }
+        // The owner leaves the Analytics pane while the session starts.
+        center.hide(workbench: 3)
+        XCTAssertTrue(center.pending.contains(50))
+        XCTAssertTrue(center.starting(live: []).contains(50))
+        gate.release()
+        await flow.value
+        XCTAssertEqual(verbs(runner).last, ["coach", "accept", "50", "--session", "41", "--json"],
+                       "the accept is recorded after the pane went away")
+        XCTAssertTrue(center.starting(live: []).contains(50), "not live yet: still starting")
+        XCTAssertFalse(center.starting(live: [41]).contains(50), "live: working")
+        XCTAssertFalse(center.starting(live: [], now: Date().addingTimeInterval(CoachCenter.launchGrace + 1))
+            .contains(50), "a session that never went live stops counting as starting")
+    }
+
+    func testAcceptFailsAfterStartRecordsLinkFailed() async {
+        let runner = ScriptedCoachRunner(Self.sessionScript { _ in
+            throw Self.failure(#"{"ok":false,"error":"database is locked","code":"io"}"#)
+        })
+        let center = makeCenter(runner)
+        var starts = 0
+        let start: (String, String) async -> Int64? = { _, _ in
+            starts += 1
+            return 41
+        }
+        await center.acceptThroughSession(50, start: start)
+        XCTAssertEqual(verbs(runner).filter { $0.contains("accept") }.count, 2, "one retry")
+        XCTAssertEqual(center.linkFailed, [50: 41])
+        XCTAssertNil(center.cardErrors[50], "the row's link line says it")
+        // A later press starts no second session.
+        await center.acceptThroughSession(50, start: start)
+        XCTAssertEqual(starts, 1)
+        XCTAssertEqual(verbs(runner).filter { $0.contains("brief") }.count, 1)
+        // Retry Link records the same session.
+        runner.answer(Self.sessionScript())
+        await center.retryLink(50)
+        XCTAssertEqual(verbs(runner).last, ["coach", "accept", "50", "--session", "41", "--json"])
+        XCTAssertTrue(center.linkFailed.isEmpty)
+    }
+
+    func testRetryLinkFailureKeepsTheLink() async {
+        let runner = ScriptedCoachRunner(Self.sessionScript { _ in
+            throw Self.failure(#"{"ok":false,"error":"database is locked","code":"io"}"#)
+        })
+        let center = makeCenter(runner)
+        await center.acceptThroughSession(50) { _, _ in 41 }
+        await center.retryLink(50)
+        XCTAssertEqual(center.linkFailed, [50: 41])
+        XCTAssertEqual(center.cardErrors[50], "database is locked")
+    }
+
+    func testAcceptFailsAfterStartStateChangedIsQuiet() async {
+        let runner = ScriptedCoachRunner(Self.sessionScript { call in
+            if call == 0 { throw Self.failure(#"{"ok":false,"error":"timed out","code":"io"}"#) }
+            throw Self.failure(#"{"ok":false,"error":"already accepted","code":"state_changed"}"#)
+        })
+        let center = makeCenter(runner)
+        await center.acceptThroughSession(50) { _, _ in 41 }
+        XCTAssertEqual(verbs(runner).filter { $0.contains("accept") }.count, 2)
+        XCTAssertTrue(center.linkFailed.isEmpty)
+        XCTAssertNil(center.cardErrors[50])
+        XCTAssertTrue(runner.invocations.contains(["coach", "proposals", "--status", "all", "--json"]))
+    }
+
+    func testDismissSessionGoneCallsDismiss() async {
+        let runner = ScriptedCoachRunner(Self.sessionScript(status: "accepted"))
+        let center = makeCenter(runner)
+        await center.dismiss(50)
+        XCTAssertEqual(verbs(runner), [["coach", "dismiss", "50", "--json"]])
+        XCTAssertNil(center.cardErrors[50])
+    }
+
+    func testStartAgainUsesRestart() async {
+        let runner = ScriptedCoachRunner(Self.sessionScript(status: "accepted"))
+        let center = makeCenter(runner)
+        await center.restartThroughSession(50) { _, _ in 42 }
+        XCTAssertEqual(verbs(runner), [["coach", "brief", "50", "--json"],
+                                       ["coach", "accept", "50", "--session", "42", "--restart", "--json"]])
+        XCTAssertTrue(center.starting(live: []).contains(50), "starting until session 42 is live")
+    }
+
+    func testReapplyAndRevertArgv() async {
+        let runner = ScriptedCoachRunner(Self.sessionScript(status: "accepted"))
+        let center = makeCenter(runner)
+        await center.reapply(50)
+        var started: [String] = []
+        await center.revertThroughSession(50) { title, _ in
+            started.append(title)
+            return 43
+        }
+        XCTAssertEqual(verbs(runner), [["coach", "reapply", "50", "--json"],
+                                       ["coach", "brief", "50", "--revert", "--json"]])
+        XCTAssertEqual(started, ["Slim CLAUDE.md"], "a revert records nothing: its PR is the record")
+    }
+
+    func testLinkFailedSurvivesRestart() async throws {
+        let defaults = makeDefaults()
+        let runner = ScriptedCoachRunner(Self.sessionScript { _ in
+            throw Self.failure(#"{"ok":false,"error":"database is locked","code":"io"}"#)
+        })
+        await makeCenter(runner, defaults: defaults).acceptThroughSession(50) { _, _ in 41 }
+        // The app restarts: a new center over the same defaults.
+        let again = makeCenter(ScriptedCoachRunner(Self.sessionScript()), defaults: defaults)
+        XCTAssertEqual(again.linkFailed, [50: 41])
+        let list = try JSONDecoder().decode(CoachProposalList.self, from: Self.contextProposals())
+        let row = try XCTUnwrap(ContextActionsPresentation.rows(
+            proposals: list.proposals, workbenchID: 3, sources: [], sessionKinds: [41: .running],
+            linkFailed: again.linkFailed, now: Date()
+        ).doThese.first)
+        XCTAssertFalse(row.actions.contains(.accept), "Accept stays hidden after a restart")
+        XCTAssertEqual(row.actions, [.openSession, .retryLink])
+    }
+
+    func testLinkFailedDroppedWhenProposalNotOpen() async {
+        let defaults = makeDefaults()
+        defaults.set(["50": NSNumber(value: 41)], forKey: CoachCenter.linkFailedKey)
+        let runner = ScriptedCoachRunner(Self.sessionScript(status: "accepted"))
+        let center = makeCenter(runner, defaults: defaults)
+        XCTAssertEqual(center.linkFailed, [50: 41])
+        center.refreshProposals()
+        await waitUntil { center.proposals?.value != nil }
+        XCTAssertTrue(center.linkFailed.isEmpty)
+        XCTAssertNil(defaults.dictionary(forKey: CoachCenter.linkFailedKey)?["50"])
+    }
+
+    func testLinkKeptWhileProposalOpenAndDroppedWhenSessionGone() async {
+        let defaults = makeDefaults()
+        defaults.set(["50": NSNumber(value: 41)], forKey: CoachCenter.linkFailedKey)
+        let center = makeCenter(ScriptedCoachRunner(Self.sessionScript()), defaults: defaults)
+        center.refreshProposals()
+        await waitUntil { center.proposals?.value != nil }
+        XCTAssertEqual(center.linkFailed, [50: 41], "still open: kept")
+        center.forgetLink(50, session: 99)
+        XCTAssertEqual(center.linkFailed, [50: 41], "another session's removal does not drop it")
+        center.forgetLink(50, session: 41)
+        XCTAssertTrue(center.linkFailed.isEmpty)
+        XCTAssertTrue(makeCenter(ScriptedCoachRunner(Self.sessionScript()), defaults: defaults).linkFailed.isEmpty)
+    }
+}
+
+/// A thread-safe call counter for scripted answers.
+private final class Counter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+
+    func next() -> Int {
+        lock.withLock {
+            defer { value += 1 }
+            return value
+        }
     }
 }
