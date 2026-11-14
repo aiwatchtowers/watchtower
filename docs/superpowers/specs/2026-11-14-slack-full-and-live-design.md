@@ -109,7 +109,7 @@ The admin's Watchtower publishes the bot's Home tab (`views.publish`, Tier 4) to
 The link is `http://127.0.0.1:18551/slack/connect?team=<T>&client=<client id>`. It starts the OAuth on the user's own Mac and comes back there; nothing of ours on the web is involved.
 
 - A Slack OAuth link cannot be fully static: PKCE needs a fresh `code_challenge` whose verifier only the Mac holds, and an authorize link without it would need the client secret for the exchange, which colleagues must not have. So the link's first hop is the Watchtower app's loopback listener: it checks the request, makes the PKCE pair, and redirects the browser to `https://slack.com/oauth/v2/authorize` for that client id with user scopes and `redirect_uri=http://127.0.0.1:18551/callback`. Slack sends the code back to the same listener, which exchanges it with the verifier, no secret.
-- The listener is new: the Desktop app keeps it open on 127.0.0.1:18551 while the app runs (today the redirect port is only intercepted inside the login web view). 18551 is the first port outside every OAuth range already in use (Slack 18491–18500, Calendar 18501–18510, Jira 18511–18520, Gmail 18521–18530, Outlook/IMAP and Linear 18531–18540, Quick Connections 18541–18550); a test pins the ranges so a new one cannot land on it.
+- The listener is new: the Desktop app keeps it open on 127.0.0.1:18551 while the app runs (today the redirect port is only intercepted inside the login web view). 18551 is the first port outside every OAuth range already in use (Slack 18491–18500, Calendar 18501–18510, Jira 18511–18520, Gmail 18521–18530, Outlook/IMAP and Linear 18531–18540, Quick Connections 18541–18550); `TestOAuthPortRanges_Disjoint` collects every listener's port range and asserts 18551 is in none of them and no new range overlaps another; the one existing overlap (Linear 18531–18535 inside Outlook/IMAP 18531–18540) is listed as a known exception in the test, not fixed here.
 - Port busy (another app holds 18551): the listener does not start, Connections → Slack shows "The connect link cannot reach Watchtower: port 18551 is busy", and the owner can paste the link into Watchtower instead; pasting runs the same flow. It answers `/slack/connect` and `/callback` only, GET only, checks `Host`, and never serves files.
 - Before redirecting to Slack, Watchtower comes to the front and asks "Connect workspace <team> through app <client id>?" — any web page can open a loopback URL, and nothing starts without the owner's press.
 - Watchtower not running or not installed: the browser shows "can't connect". The Home tab says so next to the link ("open Watchtower first; no Watchtower yet — download it from <release page>").
@@ -121,7 +121,7 @@ The link is `http://127.0.0.1:18551/slack/connect?team=<T>&client=<client id>`. 
 The app belongs to the workspace, not to the Mac: its client id, and so every colleague's connection, outlive the admin's Mac. What is lost with it is the secret and the bot token, so the Home tab is no longer refreshed.
 
 - At the end of setup Watchtower asks the admin to add a second collaborator on the app's page (`https://api.slack.com/apps/<app id>/collaborators`, link opened for them).
-- **Take over the company app** (Connections → Slack, for a collaborator or workspace admin): paste the client secret from the app's Basic Information page; Watchtower reinstalls with the bot scope through the secret-based loopback OAuth and gets its own bot token. The client id does not change; nobody reconnects. The Home tab passes then run from the new Mac, and the old Mac's token is revoked by the reinstall.
+- **Take over the company app** (Connections → Slack, for a collaborator or workspace admin): paste the client secret from the app's Basic Information page; Watchtower reinstalls with the bot scope through the secret-based loopback OAuth and gets its own bot token. The client id does not change; nobody reconnects. The Home tab passes then run from the new Mac. Whether the reinstall revokes the old Mac's bot token is checked in the spike (T1); either way two Macs publishing at once is harmless — both publish the same view for the same link — and the old Mac stops once its token fails or its owner signs out of the app.
 
 ### 5.5 MDM (D4)
 
@@ -164,8 +164,8 @@ PKCE refresh tokens expire after 30 days. The daemon refreshes a token when less
 
 - `slack_accounts` + token files: `slack login` and the refresher, serialised by the per-account flock (5.6). The daemon's sync reads only.
 - `slack_live_status`: the probe, and any chat turn or automation run that called a Slack connector tool; an upsert keeps the row with the newest `checked_at`; the Desktop reads.
-- `slack_bot_home`: the daemon of the Mac holding the bot token (the admin's, or the collaborator's after a take-over; the reinstall revokes the old token, so two Macs never publish at once).
-- `chat_messages.live_slack`: the chat process when it stores the turn, in the same transaction as the turn.
+- `slack_bot_home`: the daemon of the Mac holding the bot token (the admin's, or the collaborator's after a take-over; if both publish for a while, they publish the same view, which is harmless).
+- `chat_conversations.live_slack_since`: the chat process, set once in the same transaction as the first turn that called a Slack connector tool; never cleared. It is the only place the mark lives (no per-message column).
 
 ## 9. Promises → tasks → tests
 
@@ -188,7 +188,7 @@ PKCE refresh tokens expire after 30 days. The daemon refreshes a token when less
 | The shared app is retired, old accounts move | T10 | `TestSlack01_*` unchanged + `TestSharedAppBanner` |
 | Screens show the mode and honest empty states | screens spec | that spec's tests |
 
-Tasks: T1 spike (narrowing method, PKCE + rotation via manifest, `views.publish` to members who never opened the app, OR of repeated `in:`) — the plan depends on its result; T2 model + migration; T3 probe; T4 own-scope sync; T5 chat; T6 automations; T7 admin setup; T8 bot; T9 link, MDM, tokens; T10 retirement, guide and feature notes.
+Tasks: T1 spike (narrowing method, PKCE + rotation via manifest, `views.publish` to members who never opened the app, OR of repeated `in:`, whether a reinstall revokes the previous bot token) — the plan depends on its result; T2 model + migration; T3 probe; T4 own-scope sync; T5 chat; T6 automations; T7 admin setup; T8 bot; T9 link, MDM, tokens; T10 retirement, guide and feature notes.
 
 ## 10. Inventory touched
 
