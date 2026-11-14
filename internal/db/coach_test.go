@@ -471,3 +471,179 @@ func TestCoachProposal_WrittenBranchAndMeasureFrom(t *testing.T) {
 	require.Len(t, awaiting, 1)
 	assert.Equal(t, b, awaiting[0].ID)
 }
+
+func contextFixture(fp, dest, sourceKey string) CoachProposal {
+	p := coachFixture(fp)
+	p.Kind, p.Destination, p.SourceKey, p.Metric = "cut", dest, sourceKey, "start_tokens"
+	return p
+}
+
+// One open context proposal per (destination, source_key[, workbench]); a
+// decided one frees its source, another source is free meanwhile.
+func TestInsertContextCoachProposal_OnePerSource(t *testing.T) {
+	d := openTestDB(t)
+	now := time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)
+	wb := newTestWorkbench(t, d)
+	open, err := d.InsertContextCoachProposal(contextFixture("fp-a", "claude_plugin_off", "alpha@market"), now)
+	require.NoError(t, err)
+	require.NotZero(t, open)
+	got, err := d.GetCoachProposal(open)
+	require.NoError(t, err)
+	assert.Equal(t, "context", got.Origin)
+	assert.Equal(t, "alpha@market", got.SourceKey)
+	assert.Equal(t, "start_tokens", got.Metric)
+	assert.Nil(t, got.SessionID)
+	assert.False(t, got.ViaSession)
+	assert.Equal(t, "", got.SessionBranch)
+
+	_, err = d.InsertContextCoachProposal(contextFixture("fp-a2", "claude_plugin_off", "alpha@market"), now)
+	require.True(t, errors.Is(err, ErrCoachTextBusy), "got %v", err)
+	assert.Contains(t, err.Error(), fmt.Sprintf("#%d", open))
+
+	other, err := d.InsertContextCoachProposal(contextFixture("fp-b", "claude_plugin_off", "beta@market"), now)
+	require.NoError(t, err)
+	assert.NotZero(t, other, "another plugin is free")
+
+	// Per-workbench destinations: one open per workbench.
+	mem := contextFixture("fp-m1", "claude_memory_index", "memory")
+	mem.Kind, mem.WorkbenchID = "restructure", wb
+	m1, err := d.InsertContextCoachProposal(mem, now)
+	require.NoError(t, err)
+	require.NotZero(t, m1)
+	mem.Fingerprint = "fp-m2"
+	_, err = d.InsertContextCoachProposal(mem, now)
+	require.True(t, errors.Is(err, ErrCoachTextBusy), "got %v", err)
+	wb2 := newTestWorkbench(t, d)
+	mem.Fingerprint, mem.WorkbenchID = "fp-m3", wb2
+	m3, err := d.InsertContextCoachProposal(mem, now)
+	require.NoError(t, err)
+	assert.NotZero(t, m3, "another workbench's index is free")
+	got, err = d.GetCoachProposal(m3)
+	require.NoError(t, err)
+	assert.Equal(t, wb2, got.WorkbenchID, "a per-workbench destination keeps its workbench")
+
+	require.NoError(t, d.DecideCoachProposal(open, "open", "declined", now))
+	again, err := d.InsertContextCoachProposal(contextFixture("fp-a3", "claude_plugin_off", "alpha@market"), now)
+	require.NoError(t, err)
+	assert.NotZero(t, again, "a decided proposal no longer holds the source")
+}
+
+// A global destination filed from two workbenches is one row, stored without
+// a workbench.
+func TestInsertContextCoachProposal_GlobalOncePerInstall(t *testing.T) {
+	d := openTestDB(t)
+	now := time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)
+	wb1, wb2 := newTestWorkbench(t, d), newTestWorkbench(t, d)
+	for _, dest := range []string{"claude_plugin_off", "claude_mcp_server_off", "claude_connectors_off"} {
+		p := contextFixture("fp-1-"+dest, dest, "src")
+		p.WorkbenchID = wb1
+		first, err := d.InsertContextCoachProposal(p, now)
+		require.NoError(t, err, dest)
+		require.NotZero(t, first, dest)
+		p.Fingerprint, p.WorkbenchID = "fp-2-"+dest, wb2
+		_, err = d.InsertContextCoachProposal(p, now)
+		require.True(t, errors.Is(err, ErrCoachTextBusy), "%s: got %v", dest, err)
+		got, err := d.GetCoachProposal(first)
+		require.NoError(t, err)
+		assert.Zero(t, got.WorkbenchID, "%s is stored without a workbench", dest)
+	}
+	var n int
+	require.NoError(t, d.QueryRow(`SELECT count(*) FROM coach_proposals WHERE workbench_id IS NOT NULL`).Scan(&n))
+	assert.Zero(t, n)
+}
+
+func TestInsertContextCoachProposal_FingerprintNoop(t *testing.T) {
+	d := openTestDB(t)
+	now := time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)
+	first, err := d.InsertContextCoachProposal(contextFixture("fp1", "claude_connectors_off", "connectors"), now)
+	require.NoError(t, err)
+	require.NotZero(t, first)
+	id, err := d.InsertContextCoachProposal(contextFixture("fp1", "claude_connectors_off", "connectors"), now)
+	require.NoError(t, err, "a retry of the open proposal is a conflict, not busy")
+	assert.Zero(t, id)
+	require.NoError(t, d.DecideCoachProposal(first, "open", "declined", now))
+	id, err = d.InsertContextCoachProposal(contextFixture("fp1", "claude_connectors_off", "connectors"), now)
+	require.NoError(t, err)
+	assert.Zero(t, id)
+}
+
+func TestMarkCoachAcceptedWithSession_CAS(t *testing.T) {
+	d := openTestDB(t)
+	now := time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)
+	wb := newTestWorkbench(t, d)
+	sess := newTestSession(t, d, wb)
+	p := contextFixture("fp1", "repo_claude_md", "")
+	p.Kind, p.WorkbenchID = "restructure", wb
+	id, err := d.InsertContextCoachProposal(p, now)
+	require.NoError(t, err)
+
+	base := 1234.0
+	require.NoError(t, d.MarkCoachAcceptedWithSession(id, sess, &base, 7, now))
+	got, err := d.GetCoachProposal(id)
+	require.NoError(t, err)
+	assert.Equal(t, "accepted", got.Status)
+	assert.True(t, got.DecidedAt.Equal(now))
+	assert.True(t, got.ViaSession)
+	require.NotNil(t, got.SessionID)
+	assert.Equal(t, sess, *got.SessionID)
+	require.NotNil(t, got.Baseline)
+	assert.InDelta(t, base, *got.Baseline, 1e-9)
+	assert.Equal(t, 7, got.BaselineN)
+
+	err = d.MarkCoachAcceptedWithSession(id, sess, nil, 0, now.Add(time.Minute))
+	assert.True(t, errors.Is(err, ErrCoachStateChanged), "got %v", err)
+	got, err = d.GetCoachProposal(id)
+	require.NoError(t, err)
+	assert.True(t, got.DecidedAt.Equal(now), "the second call changes nothing")
+	require.NotNil(t, got.Baseline)
+
+	legacy, err := d.InsertCoachProposal(coachFixture("fp-legacy"), now)
+	require.NoError(t, err)
+	require.NoError(t, d.MarkCoachAccepted(legacy, "a\nb", "", nil, 0, now))
+	got, err = d.GetCoachProposal(legacy)
+	require.NoError(t, err)
+	assert.False(t, got.ViaSession, "an ordinary Accept is not via a session")
+	assert.Nil(t, got.SessionID)
+}
+
+// The Desktop deletes terminal_sessions rows: session_id goes NULL, but
+// via_session and session_branch stay, so the row still reads as accepted
+// through a session and its PR can still be found by branch.
+func TestCoachProposal_SessionDeletedKeepsViaSessionAndBranch(t *testing.T) {
+	d := openTestDB(t)
+	now := time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)
+	wb := newTestWorkbench(t, d)
+	sess := newTestSession(t, d, wb)
+	p := contextFixture("fp1", "claude_memory_index", "memory")
+	p.Kind, p.WorkbenchID = "restructure", wb
+	id, err := d.InsertContextCoachProposal(p, now)
+	require.NoError(t, err)
+	require.NoError(t, d.MarkCoachAcceptedWithSession(id, sess, nil, 0, now))
+	require.NoError(t, d.SetCoachSessionBranch(id, "wt/slim-memory"))
+
+	_, err = d.Exec(`DELETE FROM terminal_sessions WHERE id = ?`, sess)
+	require.NoError(t, err)
+	got, err := d.GetCoachProposal(id)
+	require.NoError(t, err)
+	assert.Nil(t, got.SessionID)
+	assert.True(t, got.ViaSession)
+	assert.Equal(t, "wt/slim-memory", got.SessionBranch)
+	assert.Equal(t, "accepted", got.Status)
+}
+
+// SetCoachSessionBranch only fills an empty branch.
+func TestSetCoachSessionBranch_OnlyFillsEmpty(t *testing.T) {
+	d := openTestDB(t)
+	now := time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)
+	wb := newTestWorkbench(t, d)
+	p := contextFixture("fp1", "repo_claude_md", "")
+	p.Kind, p.WorkbenchID = "restructure", wb
+	id, err := d.InsertContextCoachProposal(p, now)
+	require.NoError(t, err)
+
+	require.NoError(t, d.SetCoachSessionBranch(id, "feature/a"))
+	require.NoError(t, d.SetCoachSessionBranch(id, "feature/b"))
+	got, err := d.GetCoachProposal(id)
+	require.NoError(t, err)
+	assert.Equal(t, "feature/a", got.SessionBranch, "the first branch is kept")
+}

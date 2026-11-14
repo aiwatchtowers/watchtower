@@ -47,16 +47,22 @@ func tcExec(t *testing.T, raw *sql.DB, q string, args ...any) {
 // coachRowsDump renders every 00162 column of every row, ordered by id.
 func coachRowsDump(t *testing.T, raw *sql.DB) []string {
 	t.Helper()
-	rows, err := raw.Query(`SELECT ` + coachV1Columns + ` FROM coach_proposals ORDER BY id`)
+	return coachRowsDumpQuery(t, raw, `SELECT `+coachV1Columns+` FROM coach_proposals ORDER BY id`)
+}
+
+// coachRowsDumpQuery renders every row q returns.
+func coachRowsDumpQuery(t *testing.T, raw *sql.DB, q string) []string {
+	t.Helper()
+	rows, err := raw.Query(q)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer rows.Close()
-	cols, _ := rows.Columns()
+	names, _ := rows.Columns()
 	var out []string
 	for rows.Next() {
-		vals := make([]any, len(cols))
-		ptrs := make([]any, len(cols))
+		vals := make([]any, len(names))
+		ptrs := make([]any, len(names))
 		for i := range vals {
 			ptrs[i] = &vals[i]
 		}

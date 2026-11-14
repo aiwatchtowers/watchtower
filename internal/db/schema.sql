@@ -2856,18 +2856,22 @@ CREATE TABLE IF NOT EXISTS spec_review_thread_findings (
 -- 00184 (tuning chat): the user skill, pack overlay, Codex and workbench
 -- repository (repo_*) destinations, and origin/skill/conversation_id/
 -- written_branch/measure_from.
+-- 00188 (context actions): the plugin/server/connectors/memory-index
+-- destinations, kind restructure, metric start_tokens, origin context, verdict
+-- reverted_outside, and session_id/source_key/via_session/session_branch.
 CREATE TABLE IF NOT EXISTS coach_proposals (
     id            INTEGER PRIMARY KEY,
     fingerprint   TEXT NOT NULL UNIQUE,
-    kind          TEXT NOT NULL CHECK (kind IN ('add','cut','replace')),
+    kind          TEXT NOT NULL CHECK (kind IN ('add','cut','replace','restructure')),
     destination   TEXT NOT NULL CHECK (destination IN ('session','procedure','chat','prompt_addition','claude_settings_allow','claude_md_user',
                   'claude_skill_user','codex_skill_user','pack_overlay','codex_agents_md_user','codex_rules_allow',
-                  'repo_claude_md','repo_agents_md','repo_claude_skill','repo_codex_skill','repo_workflow')),
+                  'repo_claude_md','repo_agents_md','repo_claude_skill','repo_codex_skill','repo_workflow',
+                  'claude_plugin_off','claude_mcp_server_off','claude_connectors_off','claude_memory_index')),
     workbench_id  INTEGER REFERENCES projects(id) ON DELETE CASCADE, -- NULL = global
     prompt_id     TEXT NOT NULL DEFAULT '',
     title         TEXT NOT NULL,
     why           TEXT NOT NULL,
-    metric        TEXT NOT NULL CHECK (metric IN ('corrections','task_cost','owner_loop','review_findings')),
+    metric        TEXT NOT NULL CHECK (metric IN ('corrections','task_cost','owner_loop','review_findings','start_tokens')),
     before_text   TEXT NOT NULL DEFAULT '', -- the whole destination text before
     after_text    TEXT NOT NULL DEFAULT '', -- the whole destination text after
     evidence      TEXT NOT NULL DEFAULT '[]', -- JSON [{kind,ref}]
@@ -2878,16 +2882,21 @@ CREATE TABLE IF NOT EXISTS coach_proposals (
     decided_at    TEXT NOT NULL DEFAULT '',
     baseline      REAL,
     baseline_n    INTEGER NOT NULL DEFAULT 0,
-    verdict       TEXT NOT NULL DEFAULT '' CHECK (verdict IN ('','works','no_effect','too_little_data')),
+    verdict       TEXT NOT NULL DEFAULT '' CHECK (verdict IN ('','works','no_effect','too_little_data','reverted_outside')), -- reverted_outside = a settings change found undone outside Watchtower
     verdict_value REAL,
     verdict_at    TEXT NOT NULL DEFAULT '',
-    origin          TEXT NOT NULL DEFAULT 'weekly' CHECK (origin IN ('weekly','chat')), -- 'chat' = filed by a tuning conversation
+    origin          TEXT NOT NULL DEFAULT 'weekly' CHECK (origin IN ('weekly','chat','context')), -- 'chat' = filed by a tuning conversation, 'context' = by the context proposer
     skill           TEXT NOT NULL DEFAULT '',  -- the skill a skill or pack_overlay destination names
     conversation_id INTEGER REFERENCES chat_conversations(id) ON DELETE SET NULL, -- the tuning conversation of a chat proposal
     written_branch  TEXT NOT NULL DEFAULT '',  -- repo_*: the branch Accept wrote on
-    measure_from    TEXT                       -- repo_*: when the edit was first seen at HEAD; NULL = not yet / not repo_*
+    measure_from    TEXT,                      -- repo_*: when the edit was first seen at HEAD; NULL = not yet / not repo_*
+    session_id      INTEGER REFERENCES terminal_sessions(id) ON DELETE SET NULL, -- the session a repo/memory Accept started; NULL once that row is deleted
+    source_key      TEXT NOT NULL DEFAULT '',  -- context: the plugin id, server name, 'connectors' or 'memory' (part of the text key)
+    via_session     INTEGER NOT NULL DEFAULT 0, -- 1 = accepted through a session (survives the session row's delete)
+    session_branch  TEXT NOT NULL DEFAULT ''   -- the session's branch, copied while the session row exists (its PR is found by it)
 );
 CREATE INDEX IF NOT EXISTS coach_proposals_conversation ON coach_proposals(conversation_id);
+CREATE INDEX IF NOT EXISTS coach_proposals_session ON coach_proposals(session_id);
 
 -- Owner-accepted additions to a Watchtower prompt (00162).
 CREATE TABLE IF NOT EXISTS prompt_additions (
