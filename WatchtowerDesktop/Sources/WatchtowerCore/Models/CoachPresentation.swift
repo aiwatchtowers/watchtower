@@ -108,6 +108,12 @@ extension CoachProposal {
         case "repo_claude_skill": return named("Workbench Claude skill")
         case "repo_codex_skill": return named("Workbench Codex skill")
         case "repo_workflow": return "Workbench workflow.md"
+        // Context actions: the owner's Claude Code settings serve every
+        // project by nature, the memory index is the workbench's own.
+        case "claude_plugin_off": return "Claude Code plugin · \(sourceKey)"
+        case "claude_mcp_server_off": return "Claude Code MCP server · \(sourceKey)"
+        case "claude_connectors_off": return "Claude Code · claude.ai connectors"
+        case "claude_memory_index": return "Claude memory index"
         default: break
         }
         let base: String
