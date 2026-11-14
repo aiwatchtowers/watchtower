@@ -869,27 +869,50 @@ func TestSetCoachMemoryMeasured(t *testing.T) {
 	assert.False(t, ok)
 }
 
-// CoachSessionEnd: a running session, a finished one (its finish time) and
-// a missing row.
+// CoachSessionEnd: a working session, a finished one (its finish time), an
+// idle one (waiting or never reported) past idleAfter (its last activity),
+// an idle one under it, and a missing row.
 func TestCoachSessionEnd(t *testing.T) {
 	d := openTestDB(t)
 	wb := newTestWorkbench(t, d)
-	sess := newTestSession(t, d, wb)
+	now := time.Date(2026, 11, 12, 12, 0, 0, 0, time.UTC)
+	session := func(state any, lastActive time.Time) int64 {
+		id := newTestSession(t, d, wb)
+		_, err := d.Exec(`UPDATE terminal_sessions SET agent_state = ?, last_active_at = ? WHERE id = ?`,
+			state, lastActive.Format("2006-01-02T15:04:05Z"), id)
+		require.NoError(t, err)
+		return id
+	}
+	end := func(id int64) (bool, time.Time) {
+		found, ended, err := d.CoachSessionEnd(id, now, time.Hour)
+		require.NoError(t, err)
+		return found, ended
+	}
 
-	found, ended, err := d.CoachSessionEnd(sess)
-	require.NoError(t, err)
+	working := session("working", now.Add(-5*time.Hour))
+	found, ended := end(working)
 	assert.True(t, found)
-	assert.True(t, ended.IsZero(), "still running")
+	assert.True(t, ended.IsZero(), "working: running however old")
+	approval := session("approval", now.Add(-5*time.Hour))
+	_, ended = end(approval)
+	assert.True(t, ended.IsZero(), "waiting for an approval: running")
 
 	at := time.Date(2026, 11, 12, 9, 30, 0, 0, time.UTC)
-	require.NoError(t, d.FinishTerminalSession(sess, "done", at))
-	found, ended, err = d.CoachSessionEnd(sess)
-	require.NoError(t, err)
-	assert.True(t, found)
-	assert.True(t, ended.Equal(at))
+	require.NoError(t, d.FinishTerminalSession(working, "done", at))
+	_, ended = end(working)
+	assert.True(t, ended.Equal(at), "finished: its finish time")
 
-	found, _, err = d.CoachSessionEnd(sess + 100)
-	require.NoError(t, err)
+	idle := session("waiting", now.Add(-2*time.Hour))
+	_, ended = end(idle)
+	assert.True(t, ended.Equal(now.Add(-2*time.Hour)), "idle an hour or more: ended at its last activity")
+	never := session(nil, now.Add(-time.Hour))
+	_, ended = end(never)
+	assert.True(t, ended.Equal(now.Add(-time.Hour)), "never reported, idle exactly an hour: ended")
+	recent := session("waiting", now.Add(-59*time.Minute))
+	_, ended = end(recent)
+	assert.True(t, ended.IsZero(), "idle under an hour: still running")
+
+	found, _ = end(working + 100)
 	assert.False(t, found)
 }
 

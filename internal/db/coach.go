@@ -661,24 +661,41 @@ func (db *DB) SetCoachMemoryMeasured(id int64, at time.Time, after string) (bool
 }
 
 // CoachSessionEnd reads workbench session sessionID: found is false when the
-// row is gone; ended is its finish time (finish_session), zero while it runs.
-func (db *DB) CoachSessionEnd(sessionID int64) (found bool, ended time.Time, err error) {
-	var fin sql.NullString
-	err = db.QueryRow(`SELECT finished_at FROM terminal_sessions WHERE id = ?`, sessionID).Scan(&fin)
+// row is gone. ended is when it ended, zero while it still counts as
+// running. It has ended when finish_session stamped finished_at (that
+// time), or when its agent is idle — agent_state 'waiting' or never
+// reported — and last_active_at is at least idleAfter before now (then
+// last_active_at). A last_active_at that does not parse never counts as idle.
+func (db *DB) CoachSessionEnd(sessionID int64, now time.Time, idleAfter time.Duration) (found bool, ended time.Time, err error) {
+	var fin, state sql.NullString
+	var lastActive string
+	err = db.QueryRow(`SELECT finished_at, agent_state, last_active_at FROM terminal_sessions WHERE id = ?`,
+		sessionID).Scan(&fin, &state, &lastActive)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, time.Time{}, nil
 	}
 	if err != nil {
 		return false, time.Time{}, fmt.Errorf("reading session %d: %w", sessionID, err)
 	}
-	if !fin.Valid || fin.String == "" {
-		return true, time.Time{}, nil
+	if fin.Valid && fin.String != "" {
+		ended, err = time.Parse(time.RFC3339Nano, fin.String)
+		if err != nil {
+			return false, time.Time{}, fmt.Errorf("reading session %d finish time: %w", sessionID, err)
+		}
+		return true, ended, nil
 	}
-	ended, err = time.Parse(time.RFC3339Nano, fin.String)
-	if err != nil {
-		return false, time.Time{}, fmt.Errorf("reading session %d finish time: %w", sessionID, err)
+	if state.Valid && state.String != "waiting" {
+		return true, time.Time{}, nil // working or waiting for an approval
 	}
-	return true, ended, nil
+	if last, ok := parseLastActive(lastActive); ok && now.Sub(last) >= idleAfter {
+		return true, last, nil
+	}
+	return true, time.Time{}, nil // active lately, or unreadable: never idle
+}
+
+func parseLastActive(s string) (time.Time, bool) {
+	t, err := time.Parse(time.RFC3339Nano, s)
+	return t, err == nil
 }
 
 // ListRepoProposalsAwaitingCommit returns the accepted workbench repository

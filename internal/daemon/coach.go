@@ -43,6 +43,9 @@ const (
 	// coachMemoryWriteSlack: an index written this long after its cleanup
 	// session's recorded end still counts as the session's write.
 	coachMemoryWriteSlack = 2 * time.Minute
+	// coachSessionIdleEnds: a cleanup session whose agent has sat idle this
+	// long (waiting, or never reported) counts as ended at its last activity.
+	coachSessionIdleEnds = time.Hour
 )
 
 // coachGeneratorFactory is the seam tests override. The coach prompt carries
@@ -275,8 +278,9 @@ func (d *Daemon) coachGenerator(ctx context.Context) digest.Generator {
 //     when older than coachPRFreshFor): merged → measure_from = the merge
 //     time; closed unmerged → too_little_data; no branch (the session row was
 //     deleted first) never falls back to the HEAD rule;
-//   - a memory cleanup: nothing while its session runs; once it has finished
-//     (or its row is gone: ended now) an index that differs from before_text
+//   - a memory cleanup: nothing while its session runs; once it has ended —
+//     finished, idle for coachSessionIdleEnds (ended at its last activity),
+//     or its row is gone (ended now) — an index that differs from before_text
 //     and was last written by then records measure_from = the end and
 //     after_text = the index (Rollback compares against it);
 //   - a repository edit accepted before sessions (via_session = 0) keeps the
@@ -429,7 +433,7 @@ func (d *Daemon) coachBranchPR(ctx context.Context, p db.CoachProposal, branch s
 func (d *Daemon) coachMemoryCheck(a *coach.Applier, p db.CoachProposal, now time.Time) bool {
 	ended := now // a session row deleted: ended when first seen gone
 	if p.SessionID != nil {
-		found, at, err := d.db.CoachSessionEnd(*p.SessionID)
+		found, at, err := d.db.CoachSessionEnd(*p.SessionID, now, coachSessionIdleEnds)
 		if err != nil {
 			d.logger.Printf("coach: measure check: proposal %d: %v", p.ID, err)
 			return false

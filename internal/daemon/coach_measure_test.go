@@ -440,3 +440,50 @@ func TestMeasureCheck_SettingsRevertedOutside(t *testing.T) {
 	assert.Equal(t, "accepted", p.Status)
 	assert.Empty(t, getProposal(t, database, off).Verdict, "still off: measured as usual")
 }
+
+// idleSession marks sess's agent as waiting since lastActive.
+func idleSession(t *testing.T, database *db.DB, sess int64, lastActive time.Time) {
+	t.Helper()
+	_, err := database.Exec(`UPDATE terminal_sessions SET agent_state = 'waiting', last_active_at = ? WHERE id = ?`,
+		lastActive.UTC().Format("2006-01-02T15:04:05Z"), sess)
+	require.NoError(t, err)
+}
+
+// A cleanup session never finish_session'ed but idle for an hour or more
+// counts as ended at its last activity.
+func TestMeasureCheck_MemoryIdleSessionEnded(t *testing.T) {
+	d, database := coachDaemon(t)
+	home, err := os.UserHomeDir()
+	require.NoError(t, err)
+	now := measureNow()
+	wb, folder := measureWorkbench(t, database)
+	sess := measureSession(t, database, wb, "")
+	id, path := memoryViaSession(t, database, home, wb, folder, sess, now.Add(-5*time.Hour))
+	last := now.Add(-2 * time.Hour)
+	writeMemory(t, path, measureMemAfter, last.Add(-time.Minute))
+	idleSession(t, database, sess, last)
+
+	d.coachMeasureCheck(context.Background(), now)
+	p := getProposal(t, database, id)
+	assert.True(t, p.MeasureFrom.Equal(last), "measured from the last activity")
+	assert.Equal(t, measureMemAfter, p.AfterText)
+}
+
+// Idle under an hour is still running: nothing is recorded.
+func TestMeasureCheck_MemoryIdleUnderAnHourWaits(t *testing.T) {
+	d, database := coachDaemon(t)
+	home, err := os.UserHomeDir()
+	require.NoError(t, err)
+	now := measureNow()
+	wb, folder := measureWorkbench(t, database)
+	sess := measureSession(t, database, wb, "")
+	id, path := memoryViaSession(t, database, home, wb, folder, sess, now.Add(-5*time.Hour))
+	last := now.Add(-50 * time.Minute)
+	writeMemory(t, path, measureMemAfter, last.Add(-time.Minute))
+	idleSession(t, database, sess, last)
+
+	d.coachMeasureCheck(context.Background(), now)
+	p := getProposal(t, database, id)
+	assert.True(t, p.MeasureFrom.IsZero())
+	assert.Empty(t, p.AfterText)
+}
