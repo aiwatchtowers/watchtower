@@ -32,16 +32,16 @@ The row's tag says what kind of change it is:
 
 - **your settings**: **Turn Off** changes one key in Claude Code's user settings (`~/.claude/settings.json` or `~/.claude.json`) and leaves every other key's value as it was. It applies to every project on your Mac and takes effect in new sessions. **Undo** puts the key back.
 - **repo · PR**: **Accept** starts a Claude Code session in the workbench with a ready brief. The session works in its own worktree, runs your project's review, and opens a pull request. It never merges; you do. Watchtower itself writes no file and no git.
-- **your memory**: **Archive** starts a session that picks the stale lines, moves them to an archive file behind one pointer line, and asks you to approve the diff before it writes. **Undo** restores the old index while it still holds what the session wrote.
+- **your memory**: **Archive** starts a session that picks the stale lines, moves them to an archive file behind one pointer line, and asks you to approve the diff before it writes. **Undo** asks first (**Undo the memory cleanup?**), then restores the old index while it still holds what the session wrote.
 
 Accepting any repository suggestion of the [agent coach](agent-coach.md) or the [tuning chat](tuning-chat.md) now works the same way: a session and a pull request.
 
 ## Using it
 
-1. Open a workbench's **Analytics** (it must be on) and find **Do these** under the **At session start** bar. The biggest saving is first, and the block's sentence says "N changes would cut it to ~X".
+1. Open a workbench's **Analytics** (it must be on) and find **Do these** under the **At session start** bar. The biggest saving is first, and the block's sentence ends with **N changes would cut it to ~X**.
 2. Read a row's evidence line. A `CLAUDE.md` row shows an estimate like **−~18.5k**, because a session decides what moves.
 3. Press **Turn Off**, **Accept** or **Archive**. **Decline** asks once and is for good.
-4. Follow a session row: **Starting a session…**, **Session working** with **Open Session**, **PR #N ready** with **Open PR** and **Show Diff**, then **Merged · measuring**. **Revert…** on a merged row starts a session that opens a revert pull request.
+4. Follow a session row: **Starting a session…**, **Session working** with **Open Session**, **PR #N ready** with **Open PR** and **Show Diff**, then **Merged · measuring**. **Revert…** on a merged row asks first, then starts a session that opens a revert pull request (**Revert session #N**).
 5. Open **What's in it** under the list to see each bar split into its sources: tokens at start and calls. Built-in tools say **can't change**.
 
 Measuring starts when a setting is applied, a pull request is merged, or the memory session ends. Session starts in the next 14 days are compared with the 14 days before. The row then reads **Saved 6.1k on 12 starts**, or **No measurable saving**. Done rows stay faded for 14 days, then live in **Accepted edits**.
@@ -56,7 +56,9 @@ Measuring starts when a setting is applied, a pull request is merged, or the mem
 - **Session was removed — its PR can't be traced.** The session was deleted before its branch was known. Press **Dismiss**.
 - **Not merged.** The pull request was closed, or nothing merged in 30 days. Nothing is measured.
 - **"saved settings for this server are gone"** on **Undo**. The copy of the MCP server's settings kept for Undo is missing, so nothing is written. Add the server back in Claude Code yourself.
-- **Undo of a memory cleanup drops new lines.** Lines other sessions added to the index while the cleanup ran go too, and **Undo** asks nothing first. Add them back by hand if you need them.
+- **Undo of a memory cleanup drops new lines.** Lines other sessions added to the index while the cleanup ran go too, as the **Undo the memory cleanup?** dialog says. Add them back by hand if you need them.
+- **Revert session ended without a PR.** The revert session stopped before opening its pull request. Press **Open Session** to look, or **Revert…** to start a new one.
+- **Retry Link** on Home's coach row. A session started but was not linked to the suggestion. Press **Retry Link**; the session itself is in that workbench's **Analytics**.
 
 ## Related
 

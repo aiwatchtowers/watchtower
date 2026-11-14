@@ -46,7 +46,7 @@ Open a workbench's **Analytics** (analytics must be on for it). From the top:
 - **Accepted edits** is the log, newest first, with a verdict line: **works**, **no effect**, **too little data** or **measuring**. **Roll Back** undoes an edit; if you changed the text since, it shows the difference and offers **Roll Back Anyway**. A repository change made by a session shows its progress instead, with **Open Session**, **Open PR** and, once merged, **Revert…**, which starts a session that opens a revert pull request. It is measured from the merge.
 - **Statistics** is the rest of the view, described in [Agent analytics](agent-analytics.md).
 
-Home shows the newest suggestion as **Coach suggests**, with the change itself, **Accept**, **Decline** and **Open in Analytics**. A change longer than four lines shows its first four and offers only **Open in Analytics** and **Decline**, so you never accept a change you cannot see whole.
+Home shows the newest suggestion as **Coach suggests**, with the change itself, **Accept**, **Decline** and **Open in Analytics**. A change longer than four lines shows its first four and offers only **Open in Analytics** and **Decline**, so you never accept a change you cannot see whole. Accepting a repository or memory suggestion there starts its session in the background, and Home says **A session started for it — follow it in that workbench's Analytics**. If the session started but was not linked, the row offers **Retry Link** instead of **Accept**.
 
 Your repeated directions to agents and chats come through the coach too. Settings → System → Workbench and a workbench's **Agent Settings…** have a line pointing to Analytics instead of their own suggestion list.
 

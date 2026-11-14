@@ -43,7 +43,7 @@ The chat can also edit five files in the workbench's own folder, never in a sess
 4. On a proposal card, **Accept** applies it (or, for a workbench file, starts the session), **Edit…** lets you change the text first (not for Claude Code allow rules or workbench files), and **Decline** closes it for good. An accepted card folds to **Accepted · measuring for 14 days** with **Show in Accepted edits**, where **Roll Back** lives.
 5. **New** starts another tuning chat; the title menu switches between this workbench's recent ones. Tuning chats are not listed in **Chats**.
 
-Follow a workbench file's session in **Accepted edits**: **Open Session**, then **Open PR** and **Show Diff**, then **Merged · measuring**. To undo a merged change, press **Revert…** there; a session opens a revert pull request.
+For a workbench file the folded line follows the pull request: **Accepted · a session is making the change**, **Accepted · PR #N ready for review**, then **Accepted · PR #N merged · measuring** (or **Accepted · PR #N closed without merging**). **Accepted edits** has **Open Session**, **Open PR** and **Show Diff**. To undo a merged change, press **Revert…** there; a session opens a revert pull request.
 
 ## When it's empty or wrong
 
