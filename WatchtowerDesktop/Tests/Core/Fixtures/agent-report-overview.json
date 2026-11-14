@@ -339,6 +339,14 @@
         "tokens": 2,
         "calls": 0,
         "measured_sessions": 1
+      },
+      {
+        "part": "agents",
+        "group": "",
+        "group_kind": "builtin",
+        "tokens": 0,
+        "calls": 1,
+        "measured_sessions": 0
       }
     ]
   },

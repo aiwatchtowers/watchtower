@@ -147,6 +147,31 @@ func TestSources_CallsJoined(t *testing.T) {
 	assert.Equal(t, 2, sourceRowOf(t, r.Sources, "tools", GroupBuiltin, "").Calls, "Bash and the Agent tool itself")
 }
 
+// A deferred MCP tool has no tool source: only its server's instructions are
+// measured. Its calls still belong to the group (a used server is never "0 calls").
+func TestSources_DeferredServerCallsCount(t *testing.T) {
+	for _, tc := range []struct{ display, tool, group, groupKind string }{
+		{"acme-srv", "mcp__acme-srv__x", "acme-srv", GroupMCPServer},
+		{"claude.ai Example Mail", "mcp__claude_ai_Example_Mail__search", ConnectorsGroup, GroupConnectors},
+	} {
+		t.Run(tc.groupKind, func(t *testing.T) {
+			s := evset{}
+			s.add("s1", 0, call("", 1000, 0, 0))
+			for i := range 5 {
+				s.add("s1", time.Duration(i+1)*sec, tl(tc.tool, "", sec, "ok"))
+			}
+			parts := []agentlogdb.AgentContextPart{part("s1", "", "mcp", 1000)}
+			sources := []agentlogdb.AgentContextSource{src("s1", "", "mcp_instructions", tc.display, 400)}
+			r := Context(factsOf(s), s, parts, sources, "")
+			assert.Equal(t, 5, groupCalls(r.Sources, tc.groupKind, tc.group))
+			assert.Equal(t, ContextSourceRow{Part: "mcp", Group: tc.group, GroupKind: tc.groupKind, Tokens: 400, Measured: 1},
+				sourceRowOf(t, r.Sources, "mcp", tc.groupKind, tc.group))
+			assert.Equal(t, ContextSourceRow{Part: "tools", Group: tc.group, GroupKind: tc.groupKind, Calls: 5},
+				sourceRowOf(t, r.Sources, "tools", tc.groupKind, tc.group), "a calls-only row: not measured, never a 0 weight")
+		})
+	}
+}
+
 func TestSources_UnmeasuredSessionsNotZero(t *testing.T) {
 	s := evset{}
 	s.add("s1", 0, call("", 1000, 0, 0))

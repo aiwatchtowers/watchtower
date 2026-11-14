@@ -39,12 +39,16 @@ var builtinAgents = map[string]bool{
 // ContextSourceRow is what one group's sources of one baseline part (skills,
 // agents, tools, mcp) add to a session's start context and how often they
 // were called in the period. Tokens is the median over the Measured sessions
-// that list the group (the main lane, before its first call); a session
-// parsed before parser v5 is not measured, never a 0. Calls counts every
-// session of the period, measured or not, every lane: Skill calls by skill
-// name (skills), Agent calls by subagent_type (agents), tool calls by tool
-// name (tools); server instructions (mcp) have no calls of their own, so a
-// group's calls are the sum over its rows.
+// that list the group's sources of this part (the main lane, before its
+// first call); a session parsed before parser v5 is not measured, never a 0.
+// Calls counts every session of the period, measured or not, every lane:
+// Skill calls by skill name (skills), Agent calls by subagent_type (agents),
+// tool calls by tool name (tools); server instructions (mcp) have no calls
+// of their own. A group's calls are the sum over its rows, which include
+// calls-only rows (Measured 0, Tokens 0: called, never measured in this
+// part, such as deferred MCP tools). A group's start weight summed over its
+// rows is a sum of per-row medians whose session sets may differ: an
+// approximation.
 type ContextSourceRow struct {
 	Part      string `json:"part"`
 	Group     string `json:"group"`
@@ -70,6 +74,8 @@ func GroupOf(kind, name string) (group, groupKind string) {
 		if !ok {
 			return "", GroupBuiltin
 		}
+		// A server name holding "__" is cut at the first one; a user server
+		// literally named claude_ai_* groups with the connectors. Edge cases.
 		server, _, _ := strings.Cut(rest, "__")
 		return serverGroup(server)
 	case "mcp_instructions":
@@ -233,11 +239,22 @@ func (a *sourcesAcc) calls(g *grouper, resolve func(string) string, evs []agentl
 	}
 }
 
-// result is the measured rows (a group only ever called has none), largest first.
+// result is the rows of every group with at least one measured row, largest
+// first: a row of such a group with calls but no measured bytes stays as a
+// calls-only row (tokens 0, measured_sessions 0), so the group's calls are
+// whole — a deferred MCP tool (the claude.ai connectors' usual case) has no
+// tool source, only its server's instructions do. A group only ever called,
+// never measured, has no row.
 func (a *sourcesAcc) result() []ContextSourceRow {
+	measured := map[[2]string]bool{}
+	for k, r := range a.rows {
+		if len(r.tokens) > 0 {
+			measured[[2]string{k.group, k.groupKind}] = true
+		}
+	}
 	out := []ContextSourceRow{}
 	for k, r := range a.rows {
-		if len(r.tokens) == 0 {
+		if !measured[[2]string{k.group, k.groupKind}] || len(r.tokens) == 0 && r.calls == 0 {
 			continue
 		}
 		out = append(out, ContextSourceRow{Part: k.part, Group: k.group, GroupKind: k.groupKind,
@@ -261,8 +278,12 @@ func firstMainCtx(evs []agentlogdb.AgentReportEvent) int64 {
 }
 
 // StartTokensMedian is the median main-lane baseline of the sessions whose
-// context was measured, in tokens at defaultBytesPerToken (no events needed,
-// so one ratio for every period it compares), and n the lanes measured.
+// context was measured, and n the lanes measured. parts must be ordered by
+// session, then agent id (AgentReportContextParts' order, the groupParts
+// contract); unordered input counts one session's main lane more than once.
+// Tokens are the lane's bytes at defaultBytesPerToken (no events needed, so
+// one ratio for every period it compares): not the same quantity as
+// BaselineSplit.Tokens, which scales by the lane's first call context.
 func StartTokensMedian(sessions []agentlogdb.AgentReportSession, parts []agentlogdb.AgentContextPart) (tokens int, n int) {
 	measured := map[string]bool{}
 	for _, s := range sessions {
@@ -295,30 +316,20 @@ func GlobalSources(main *db.DB, al *agentlogdb.DB, since, now time.Time) ([]Cont
 	if err != nil {
 		return nil, err
 	}
-	sinceStr := ""
-	if !since.IsZero() {
-		sinceStr = since.UTC().Format(tsLayout)
-	}
-	nowStr := now.UTC().Format(tsLayout)
 	acc := newSourcesAcc()
 	for _, id := range ids {
 		wb, err := main.GetWorkbench(id)
 		if err != nil {
 			return nil, err
 		}
-		sessions, err := al.AgentReportSessions(id, sinceStr, "")
+		sessions, err := periodSessions(al, id, since, now)
 		if err != nil {
 			return nil, err
 		}
-		sessions = slices.DeleteFunc(sessions, func(s agentlogdb.AgentReportSession) bool { return s.StartedAt > nowStr })
 		if len(sessions) == 0 {
 			continue
 		}
-		uuids := make([]string, len(sessions))
-		for i, s := range sessions {
-			uuids[i] = s.SessionUUID
-		}
-		evs, err := al.AgentReportEvents(uuids)
+		evs, err := al.AgentReportEvents(uuidsOf(sessions))
 		if err != nil {
 			return nil, err
 		}
