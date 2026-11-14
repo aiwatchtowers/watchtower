@@ -36,7 +36,8 @@ const keptJoin = `FROM chat_knowledge_artifacts k
 		AND a.artifact_key = k.artifact_key AND a.version = k.version
 	JOIN chat_conversations c ON c.id = k.conversation_id
 		AND COALESCE(c.context_type, '') NOT IN ('code_question', 'review_reviewer', 'spec_review_thread', 'analytics_tuning')
-		AND ` + db.ChatNotPrivateMeeting
+		AND ` + db.ChatNotPrivateMeeting + `
+		AND c.live_slack_since IS NULL`
 
 func (chatArtifactSource) Changed(ctx context.Context, q Queryer, cursor string, _ time.Time) ([]string, string, bool, error) {
 	keys, next, err := changedByColumn(ctx, q, cursor,

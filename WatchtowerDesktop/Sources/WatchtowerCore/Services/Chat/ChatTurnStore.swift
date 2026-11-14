@@ -92,6 +92,7 @@ package struct ChatTurnStore: Sendable {
             if let model = usage?.model, !model.isEmpty {
                 try ChatTreeQueries.setModel(db, messageID: messageID, model: model)
             }
+            try LiveSlackMark.markIfUsed(db, conversationID: conversationID, messageID: messageID)
             guard status != "error" else { return [] }
             return try ChatArtifactQueries.persistArtifacts(db, conversationID: conversationID, messageID: messageID, text: text)
         }
