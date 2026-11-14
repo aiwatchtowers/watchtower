@@ -25,11 +25,11 @@ Out of scope here: the screens (a separate spec with DesignShotCatalog mockups f
 | D4 | Entry into Full: a Slack bot that hands out the connect link, plus an MDM key | ask #1294 |
 | D5 | No company hub, nothing hosted that carries Slack data | comment #868 |
 | D6 | No index, summary store or memory fed from Live answers; only the chat transcript and what the owner explicitly keeps | agent (comment #870), to be confirmed in a separate ask |
-| D7 | The bot needs no server: the admin's Watchtower publishes the bot's Home tab to every member | agent, to be confirmed |
-| D8 | The connect link opens a static page on our site that hands off to `watchtower-auth://` or offers the download | agent, to be confirmed |
-| D9 | The admin creates the app with one paste: a Slack app configuration token | agent, to be confirmed |
+| D7 | The bot needs no server: the admin's Watchtower publishes the bot's Home tab to every member | ask #1295 |
+| D8 | The connect link is an OAuth link to the workspace app that lands on localhost; no page of ours on the web | ask #1295 |
+| D9 | The admin creates the app with one paste: a Slack app configuration token | ask #1295 |
 | D10 | Turns that used Live are kept out of ideas mining, instruction/coach mining and Add to Knowledge | agent, to be confirmed |
-| D11 | Accounts on the retired shared app keep working until Slack stops them; the app offers Full or Live; synced data follows the purge rules | board intent #1767, to be confirmed |
+| D11 | Accounts on the retired shared app keep working until Slack stops them; the app offers Full or Live; synced data follows the purge rules | ask #1295 |
 
 ## 1. The model
 
@@ -100,7 +100,14 @@ The admin's Watchtower publishes the bot's Home tab (`views.publish`, Tier 4) to
 
 ### 5.3 The link (D8)
 
-`https://<our site>/slack/connect#team=<T>&client=<client id>` — the values ride in the fragment, so the site never receives them. The static page opens `watchtower-auth://slack/connect?team=…&client=…` and offers the download when nothing answers. The client id of a PKCE app is not a secret. Watchtower opens Connections → Slack with the workspace filled in; **Connect** runs PKCE with user scopes only, no secret. A team in the link that differs from the team Slack returns is refused.
+The link is `http://127.0.0.1:18501/slack/connect?team=<T>&client=<client id>`. It starts the OAuth on the user's own Mac and comes back there; nothing of ours on the web is involved.
+
+- A Slack OAuth link cannot be fully static: PKCE needs a fresh `code_challenge` whose verifier only the Mac holds, and an authorize link without it would need the client secret for the exchange, which colleagues must not have. So the link's first hop is the Watchtower app's loopback listener: it checks the request, makes the PKCE pair, and redirects the browser to `https://slack.com/oauth/v2/authorize` for that client id with user scopes and `redirect_uri=http://127.0.0.1:18501/callback`. Slack sends the code back to the same listener, which exchanges it with the verifier, no secret.
+- The listener is new: the Desktop app keeps it open on 127.0.0.1 while the app runs (today the redirect port is only intercepted inside the login web view). It answers `/slack/connect` and `/callback` only, GET only, checks `Host`, and never serves files.
+- Before redirecting to Slack, Watchtower comes to the front and asks "Connect workspace <team> through app <client id>?" — any web page can open a loopback URL, and nothing starts without the owner's press.
+- Watchtower not running or not installed: the browser shows "can't connect". The Home tab says so next to the link ("open Watchtower first; no Watchtower yet — download it from <release page>").
+- The manifest's redirect URLs gain `http://127.0.0.1:18501/callback` (the PKCE loopback form; port 18501 sits outside the 18491–18500 range the CLI login binds, so the two never collide); the existing `https://127.0.0.1:1849x` entries stay for the admin's secret-based install.
+- A team in the link that differs from the team Slack returns is refused.
 
 ### 5.4 MDM (D4)
 
@@ -129,7 +136,9 @@ PKCE refresh tokens expire after 30 days. The daemon refreshes a token when less
 | Setup | config token expired or wrong | stop before any call; ask for a new one | `TestAppSetup_BadConfigToken` |
 | Setup | app created, install not finished (Mac closed, approval pending) | `app_id` + credentials kept; **Check again** resumes at install; a second create is never sent | `TestAppSetup_ResumeAfterCreate` |
 | Bot | `views.publish` fails part-way | the per-user table is the cursor; the next pass continues | `TestBotHome_ResumesFromTable` |
-| Link | Watchtower not installed / scheme not answering | the page offers the download | manual (static page) |
+| Link | Watchtower not running / not installed | the browser cannot connect; the Home tab text says to open or download Watchtower | manual |
+| Link | a web page opens the loopback URL by itself | the confirm prompt; nothing starts without the owner's press | `TestSlackConnectListener_RequiresConfirm` |
+| Link | the app quits between the redirect and the callback | the verifier is gone with the process; the callback answers "start again"; nothing stored | `TestSlackConnectListener_CallbackWithoutFlow` |
 | Link | team mismatch | refused, nothing stored | `TestSlackLinkConnect_TeamMismatch` |
 | Tokens | refresh races login | flock; holder wins; the other re-reads | `TestSlackRefresh_LockRace` |
 | Tokens | offline past 30 days | Re-login state | `TestSlackRefresh_Expired` |
