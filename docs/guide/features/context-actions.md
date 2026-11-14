@@ -46,7 +46,7 @@ Accepting any repository suggestion of the [agent coach](agent-coach.md) or the 
 
 A `CLAUDE.md` saving is an estimate, because the session decides what moves. Measuring starts when a setting is applied, a pull request is merged, or the memory session ends.
 
-Session starts in the next 14 days are compared with the 14 days before, and the row then reads **Saved 6.0k on 10 starts** or **No measurable saving**. Done rows stay faded for 14 days, then live in **Accepted edits**.
+Session starts in the next 14 days are compared with the 14 days before, and the row then reads **Saved 6k on 10 starts** or **No measurable saving**. Done rows stay faded for 14 days, then live in **Accepted edits**.
 
 ## When it's empty or wrong
 

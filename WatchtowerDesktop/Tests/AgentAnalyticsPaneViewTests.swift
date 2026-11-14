@@ -1135,7 +1135,7 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
         XCTAssertTrue(all.contains("PR #13 ready"))
         XCTAssertTrue(all.contains("Session working"))
         XCTAssertTrue(all.contains("Merged · measuring"))
-        XCTAssertTrue(all.contains("60.0k → measuring"), "the settings row's before → after")
+        XCTAssertTrue(all.contains("60k → measuring"), "the settings row's before → after")
     }
 
     func testContextRowShowsItsError() throws {

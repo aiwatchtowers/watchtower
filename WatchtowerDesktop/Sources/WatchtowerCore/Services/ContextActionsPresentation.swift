@@ -175,7 +175,7 @@ package struct ContextActionRow: Equatable, Identifiable, Sendable {
         }
     }
 
-    /// "60.0k → 40.0k", "60.0k → measuring" (before the verdict); nil
+    /// "60k → 40k", "60k → measuring" (before the verdict); nil
     /// unless done with a baseline, and nil for a finished verdict that
     /// measured no saving (no_effect, too_little_data): its line says so.
     package var beforeAfter: String? {
@@ -294,7 +294,7 @@ package enum ContextActionsPresentation {
         return "\(savings.count) \(noun) would cut it to ~\(target)"
     }
 
-    /// "Saved 6.0k on 10 starts".
+    /// "Saved 6k on 10 starts".
     package static func savedLine(tokens: Int, starts: Int) -> String {
         String(format: Copy.saved, Self.tokens(tokens), starts)
     }

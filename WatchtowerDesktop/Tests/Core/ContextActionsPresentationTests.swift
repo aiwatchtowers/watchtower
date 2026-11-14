@@ -406,14 +406,14 @@ final class ContextActionsPresentationTests: XCTestCase {
         let row = try XCTUnwrap(measuring.done.first)
         XCTAssertTrue(measuring.doThese.isEmpty)
         XCTAssertEqual(row.state, .done(beforeTokens: 60000, afterTokens: nil))
-        XCTAssertEqual(row.beforeAfter, "60.0k → measuring")
+        XCTAssertEqual(row.beforeAfter, "60k → measuring")
         XCTAssertEqual(row.stateLine, "Takes effect in new sessions")
         XCTAssertEqual(row.actions, [.undo])
 
         let works = try only(proposal(1, status: "accepted", decidedDaysAgo: 15, baseline: 60000, verdict: "works",
                                       verdictValue: 40000, verdictDaysAgo: 1))
         XCTAssertEqual(works.state, .done(beforeTokens: 60000, afterTokens: 40000))
-        XCTAssertEqual(works.beforeAfter, "60.0k → 40.0k")
+        XCTAssertEqual(works.beforeAfter, "60k → 40k")
 
         for verdict in ["no_effect", "too_little_data"] {
             let none = try only(proposal(1, status: "accepted", decidedDaysAgo: 15, baseline: 60000,
@@ -449,7 +449,7 @@ final class ContextActionsPresentationTests: XCTestCase {
         // No count of starts: before → after only, no line.
         let unknown = try only(p)
         XCTAssertNil(unknown.stateLine)
-        XCTAssertEqual(unknown.beforeAfter, "60.0k → 40.0k")
+        XCTAssertEqual(unknown.beforeAfter, "60k → 40k")
         // 0 = not judged on any session: no line either.
         p.verdictSessions = 0
         XCTAssertNil(try only(p).stateLine)
