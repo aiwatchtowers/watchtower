@@ -21,6 +21,10 @@ type child struct {
 	lines  chan string
 	stderr *capBuf
 	cancel context.CancelFunc
+	outR   *os.File
+	meter  *usageMeter
+	// done closes once the stdout reader has ended and the call is recorded.
+	done chan struct{}
 }
 
 // capBuf keeps the first stderrCap bytes written to it.
@@ -47,8 +51,11 @@ func (b *capBuf) String() string {
 }
 
 // startChild launches bin with args and env. observe, when set, sees every
-// stdout line in the reader goroutine before it is queued.
-func startChild(ctx context.Context, bin string, args, env []string, observe func(string)) (*child, error) {
+// stdout line in the reader goroutine before it is queued. meter reads the
+// stream's usage: once the output ends, the model call the child made (if
+// a prompt was sent, see ask) is recorded into the LLM usage ledger.
+func startChild(ctx context.Context, bin string, args, env []string, observe func(string), meter *usageMeter) (*child, error) {
+	start := time.Now()
 	cctx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(cctx, bin, args...)
 	cmd.Env = env
@@ -56,7 +63,8 @@ func startChild(ctx context.Context, bin string, args, env []string, observe fun
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.WaitDelay = 2 * time.Second
-	c := &child{cmd: cmd, lines: make(chan string, 256), stderr: &capBuf{}, cancel: cancel}
+	c := &child{cmd: cmd, lines: make(chan string, 256), stderr: &capBuf{}, cancel: cancel,
+		meter: meter, done: make(chan struct{})}
 	cmd.Stderr = c.stderr
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -77,13 +85,17 @@ func startChild(ctx context.Context, bin string, args, env []string, observe fun
 		return nil, err
 	}
 	outW.Close()
+	c.outR = outR
 	go func() {
+		defer close(c.done)
+		defer recordProbeCall(context.WithoutCancel(ctx), meter, start)
 		defer close(c.lines)
 		defer outR.Close()
 		r := bufio.NewReaderSize(outR, 64<<10)
 		for {
 			line, err := r.ReadString('\n')
 			if line = strings.TrimRight(line, "\r\n"); line != "" {
+				meter.observe(line)
 				if observe != nil {
 					observe(line)
 				}
@@ -107,9 +119,19 @@ func (c *child) write(line string) error {
 	return err
 }
 
-// stop kills the process group and waits for the child.
+// ask sends the model prompt: line is what goes to stdin, prompt the text
+// the ledger estimates from when the stream reports no usage.
+func (c *child) ask(line, prompt string) error {
+	c.meter.asked(prompt)
+	return c.write(line)
+}
+
+// stop kills the process group, waits for the child and for its reader,
+// which records the call.
 func (c *child) stop() {
 	c.stdin.Close()
 	c.cancel()
 	_ = c.cmd.Wait()
+	_ = c.outR.Close() // a reader blocked on a pipe an escaped grandchild holds
+	<-c.done
 }

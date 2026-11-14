@@ -79,7 +79,7 @@ func TestLiveProbe_Classifies(t *testing.T) {
 			assert.Equal(t, tc.status, r.Status)
 			assert.Equal(t, tc.class, r.ErrorClass)
 			if tc.status == "ok" {
-				assert.Equal(t, []string{"acme"}, r.Teams)
+				assert.Equal(t, []string{"acme"}, r.TeamDomains)
 			}
 		})
 	}
@@ -175,7 +175,7 @@ func TestLiveProbe_ClaudeAllowsOnlySearchChannels(t *testing.T) {
 }
 
 func TestLiveProbe_KilledLeavesNoRow(t *testing.T) {
-	for _, provider := range []string{"claude", "codex"} {
+	for provider, probe := range map[string]Probe{"claude": ProbeClaude, "codex": ProbeCodex} {
 		t.Run(provider, func(t *testing.T) {
 			dir := t.TempDir()
 			ready, pidfile := filepath.Join(dir, "ready"), filepath.Join(dir, "pid")
@@ -190,7 +190,7 @@ func TestLiveProbe_KilledLeavesNoRow(t *testing.T) {
 				cancel()
 			}()
 			d := openDB(t)
-			_, err := Check(ctx, d, provider, bin, env, time.Now())
+			_, err := Check(ctx, d, probe, bin, env, time.Now())
 			require.Error(t, err)
 			rows, err := d.ListSlackLiveStatus()
 			require.NoError(t, err)
@@ -323,7 +323,7 @@ func TestCheck_WritesRowsPerTeam(t *testing.T) {
 	now := time.Now()
 
 	env := append(os.Environ(), "SCENARIO=ok")
-	r, err := Check(context.Background(), d, "claude", stub(t, "fake_claude.sh"), env, now)
+	r, err := Check(context.Background(), d, ProbeClaude, stub(t, "fake_claude.sh"), env, now)
 	require.NoError(t, err)
 	assert.Equal(t, "ok", r.Status)
 	rows, err := d.ListSlackLiveStatus()
@@ -336,7 +336,7 @@ func TestCheck_WritesRowsPerTeam(t *testing.T) {
 		"an account the connector did not show is not connected")
 
 	env = append(os.Environ(), "SCENARIO=unknown")
-	_, err = Check(context.Background(), d, "claude", stub(t, "fake_claude.sh"), env, now.Add(time.Minute))
+	_, err = Check(context.Background(), d, ProbeClaude, stub(t, "fake_claude.sh"), env, now.Add(time.Minute))
 	require.NoError(t, err)
 	rows, err = d.ListSlackLiveStatus()
 	require.NoError(t, err)

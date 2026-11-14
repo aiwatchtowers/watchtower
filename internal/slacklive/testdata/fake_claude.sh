@@ -36,7 +36,11 @@ while IFS= read -r line; do
             plan) tool_result true 'This tool is not available on your plan' ;;
             timeout) tool_result true 'request timed out' ;;
           esac
-          echo '{"type":"result","is_error":false,"result":"done"}'; exit 0 ;;
+          case "$SCENARIO" in
+            ok) echo '{"type":"result","is_error":false,"result":"done","total_cost_usd":0.0012,"usage":{"input_tokens":120,"cache_read_input_tokens":30,"cache_creation_input_tokens":0,"output_tokens":7},"modelUsage":{"claude-haiku-5-5":{"outputTokens":7}}}' ;;
+            *) echo '{"type":"result","is_error":false,"result":"done"}' ;;
+          esac
+          exit 0 ;;
       esac ;;
   esac
 done
