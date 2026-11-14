@@ -126,8 +126,8 @@ struct ContextActionLines: View {
     }
 }
 
-/// A row's buttons, in the order its state allows; Decline and Revert…
-/// are confirmed first.
+/// A row's buttons, in the order its state allows; Decline, Revert… and a
+/// memory row's Undo are confirmed first.
 struct ContextActionButtons: View {
     let row: ContextActionRow
     var busy = false
@@ -135,6 +135,14 @@ struct ContextActionButtons: View {
 
     @State private var confirmDecline = false
     @State private var confirmRevert = false
+    @State private var confirmMemoryUndo = false
+
+    /// The memory Undo's confirmation (spec C10): Rollback restores the
+    /// index as read at Accept, so lines added meanwhile are lost.
+    static let memoryUndoTitle = "Undo the memory cleanup?"
+    static let memoryUndoMessage = "This puts back the memory index as it was before the cleanup. "
+        + "Lines that other sessions' auto-memory added while the cleanup session ran are dropped."
+    static let memoryUndoButton = "Undo Cleanup"
 
     var body: some View {
         HStack(spacing: Spacing.compact) {
@@ -144,6 +152,8 @@ struct ContextActionButtons: View {
                     Button(action.title) { confirmDecline = true }.buttonStyle(.kitQuiet)
                 case .revert:
                     Button(action.title) { confirmRevert = true }.buttonStyle(.kitSecondary)
+                case .undo where row.tag == .memory:
+                    Button(action.title) { confirmMemoryUndo = true }.buttonStyle(.kitSecondary)
                 default:
                     Button(action.title) { perform(action, row) }.buttonStyle(.kitSecondary)
                 }
@@ -162,6 +172,12 @@ struct ContextActionButtons: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("A session opens a PR that reverts the merged change. Nothing is merged without you.")
+        }
+        .confirmationDialog(Self.memoryUndoTitle, isPresented: $confirmMemoryUndo) {
+            Button(Self.memoryUndoButton, role: .destructive) { perform(.undo, row) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(Self.memoryUndoMessage)
         }
     }
 }

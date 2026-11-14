@@ -335,6 +335,24 @@ final class TuningPanelViewTests: XCTestCase {
         XCTAssertNoThrow(try TuningAcceptedLine(proposal: committed) {}.inspect().find(text: TuningChatTexts.committedRepoFile))
     }
 
+    /// Task 9: a repository edit carried out by a session folds to where
+    /// the session is, never "commit it yourself".
+    func testSessionRepoRowFoldsToTheSessionState() throws {
+        let working = try Self.repoProposal(#","session_id":41,"via_session":true,"session_branch":"wt/a""#)
+        let line = TuningAcceptedLine(proposal: working) {}
+        XCTAssertNoThrow(try line.inspect().find(text: "Accepted · a session is making the change"))
+        XCTAssertThrowsError(try line.inspect().find { text, _ in text.contains("commit it yourself") })
+        let ready = try Self.repoProposal(#","via_session":true,"pr":12,"pr_state":"open""#)
+        XCTAssertEqual(TuningChatTexts.folded(ready), "Accepted · PR #12 ready for review")
+        let merged = try Self.repoProposal(#","via_session":true,"pr":12,"pr_state":"merged""#)
+        XCTAssertEqual(TuningChatTexts.folded(merged), "Accepted · PR #12 merged · measuring")
+        let closed = try Self.repoProposal(#","via_session":true,"pr":12,"pr_state":"closed""#)
+        XCTAssertEqual(TuningChatTexts.folded(closed), "Accepted · PR #12 closed without merging")
+        let legacy = try Self.repoProposal(#","written_branch":"main""#)
+        XCTAssertEqual(TuningChatTexts.folded(legacy), TuningChatTexts.acceptedRepoFile(path: "CLAUDE.md", branch: "main"),
+                       "a row accepted before sessions keeps its line")
+    }
+
     func testAcceptedEditsRepoRows() throws {
         let coach = CoachCenter(runner: ProposalsRunner(status: "accepted"), interval: .seconds(3600))
         defer { coach.stop() }

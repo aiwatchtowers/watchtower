@@ -157,6 +157,22 @@ package enum TuningChatTexts {
         return "Accepted · wrote \(path)\(on) — commit it yourself"
     }
 
+    /// The folded line of a proposal a session carries out (spec C2, C6):
+    /// where its PR is, or that the session is still making the change.
+    package static func acceptedThroughSession(_ p: CoachProposal) -> String {
+        if let pr = p.pr {
+            switch p.prState {
+            case "merged": return "Accepted · PR #\(pr) merged · measuring"
+            case "closed": return "Accepted · PR #\(pr) closed without merging"
+            default: return "Accepted · PR #\(pr) ready for review"
+            }
+        }
+        if p.measureFrom != nil { return "Accepted · index written · measuring" }
+        return sessionMakingChange
+    }
+
+    package static let sessionMakingChange = "Accepted · a session is making the change"
+
     /// The folded line once the daemon saw the edit committed (`measure_from`).
     package static let committedRepoFile = "Accepted · committed · measuring for 14 days"
     /// The Accepted edits row of a repository edit not committed yet.
@@ -182,6 +198,8 @@ package enum TuningChatTexts {
     /// repository edit names the file and branch it wrote (`written`, from
     /// the accept result, else derived from the proposal).
     package static func folded(_ proposal: CoachProposal, written: CoachWrittenFile? = nil) -> String? {
+        // Carried out by a session: nothing was written for the owner to commit.
+        if proposal.status == "accepted", proposal.viaSession { return acceptedThroughSession(proposal) }
         if proposal.status == "accepted",
            let path = written?.path ?? proposal.repoRelativePath {
             if proposal.measureFrom != nil { return committedRepoFile }

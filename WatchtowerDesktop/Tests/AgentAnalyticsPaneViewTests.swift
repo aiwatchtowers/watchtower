@@ -1259,4 +1259,23 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
         XCTAssertEqual(parts[2].rows.map(\.name), ["example-server", "claude.ai connectors"])
         XCTAssertEqual(parts[2].rows.map(\.detail), ["3k", "1.1k"], "instructions are never called")
     }
+
+    /// Spec C10: a memory Undo asks first (lines added meanwhile are
+    /// dropped); a settings Undo runs at once.
+    func testMemoryUndoAsksFirstSettingsUndoDoesNot() throws {
+        let memory = try Self.contextRows([
+            Self.contextProposal(9, destination: "claude_memory_index", status: "accepted", workbench: 3,
+                                 extra: #","session_id":41,"via_session":true,"measure_from":"2026-11-11T09:00:00Z""#)
+        ]).done.first
+        let settings = try Self.contextRows([Self.contextProposal(4, destination: "claude_mcp_server_off", status: "accepted")])
+            .done.first
+        var performed: [ContextActionRow.Action] = []
+        let memoryButtons = ContextActionButtons(row: try XCTUnwrap(memory)) { action, _ in performed.append(action) }
+        try memoryButtons.inspect().find(button: "Undo").tap()
+        XCTAssertEqual(performed, [], "the memory Undo opens its confirmation, it does not run")
+        let settingsButtons = ContextActionButtons(row: try XCTUnwrap(settings)) { action, _ in performed.append(action) }
+        try settingsButtons.inspect().find(button: "Undo").tap()
+        XCTAssertEqual(performed, [.undo], "a settings Undo runs at once")
+        XCTAssertTrue(ContextActionButtons.memoryUndoMessage.contains("other sessions' auto-memory added"))
+    }
 }
