@@ -1,6 +1,8 @@
 package coach
 
 import (
+	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -30,10 +32,14 @@ const ctxProposeSettings = `{
   "env": {"OTHER": "x"}
 }`
 
-const ctxInstalled = `{"version": 2, "plugins": {
-  "alpha@example-market": [{"scope": "user"}, {"scope": "project", "projectPath": "/work/acme"}],
-  "superpowers@claude-plugins-official": [{"scope": "user"}]
+// ctxInstalled is installed_plugins.json with alpha's installs in dir.
+func ctxInstalled(dir string) string {
+	return `{"version": 2, "plugins": {
+  "alpha@example-market": [{"scope": "user", "installPath": "` + dir + `/user"},
+    {"scope": "project", "projectPath": "/work/acme", "installPath": "` + dir + `/acme"}],
+  "superpowers@claude-plugins-official": [{"scope": "user", "installPath": "` + dir + `/sp"}]
 }}`
+}
 
 var ctxProposeClaudeJSON = `{
   "mcpServers": {
@@ -47,16 +53,17 @@ var ctxProposeClaudeJSON = `{
 }`
 
 // ctxFixture is a home with the config above, a workbench with analytics on
-// and the two seams faked: global are the install-wide rows, facts the
-// workbench's measured sessions, local its own overview rows.
+// and the two seams faked: global are the install-wide rows, facts every
+// workbench's measured sessions. plugins holds alpha's two install folders
+// (user, acme), each with a skills folder only.
 type ctxFixture struct {
-	d      dbs
-	home   string
-	wb     int64
-	folder string
-	global []agentreport.ContextSourceRow
-	local  []agentreport.ContextSourceRow
-	facts  int
+	d       dbs
+	home    string
+	wb      int64
+	folder  string
+	plugins string
+	global  []agentreport.ContextSourceRow
+	facts   int
 	// globalCalls counts the reads of the install-wide sources.
 	globalCalls int
 }
@@ -69,23 +76,26 @@ func newCtxFixture(t *testing.T) *ctxFixture {
 	require.NoError(t, err)
 	f.folder = w.FolderPath
 	writeHomeFile(t, claudeSettingsPath(f.home), ctxProposeSettings)
-	writeHomeFile(t, installedPluginsPath(f.home), ctxInstalled)
+	f.plugins = t.TempDir()
+	for _, inst := range []string{"user", "acme", "sp"} {
+		writeHomeFile(t, filepath.Join(f.plugins, inst, "skills", "x", "SKILL.md"), "a skill")
+		writeHomeFile(t, filepath.Join(f.plugins, inst, ".claude-plugin", "plugin.json"), `{"name": "alpha", "version": "1.0.0"}`)
+	}
+	writeHomeFile(t, installedPluginsPath(f.home), ctxInstalled(f.plugins))
 	writeHomeFile(t, claudeJSONPath(f.home), ctxProposeClaudeJSON)
-	og, oo := contextGlobalSources, contextOverview
+	og, om := contextGlobalSources, contextMeasuredSessions
 	contextGlobalSources = func(_ *db.DB, _ *agentlogdb.DB, since, now time.Time) ([]agentreport.ContextSourceRow, error) {
 		f.globalCalls++
 		assert.Equal(t, ctxNow.Add(-ctxWindowDays*24*time.Hour), since)
 		assert.Equal(t, ctxNow, now)
 		return f.global, nil
 	}
-	contextOverview = func(_ ContextEnv, wb int64, since, now time.Time) (*agentreport.Overview, error) {
+	contextMeasuredSessions = func(_ *agentlogdb.DB, _ int64, since, now time.Time) (int, error) {
 		assert.Equal(t, ctxNow.Add(-ctxWindowDays*24*time.Hour), since)
-		ov := &agentreport.Overview{WorkbenchID: wb}
-		ov.Context.FactsSessions = f.facts
-		ov.Context.Sources = f.local
-		return ov, nil
+		assert.Equal(t, ctxNow, now)
+		return f.facts, nil
 	}
-	t.Cleanup(func() { contextGlobalSources, contextOverview = og, oo })
+	t.Cleanup(func() { contextGlobalSources, contextMeasuredSessions = og, om })
 	return f
 }
 
@@ -93,9 +103,9 @@ func (f *ctxFixture) env() ContextEnv {
 	return ContextEnv{DB: f.d.DB, AgentLog: f.d.al, Home: f.home, Now: func() time.Time { return ctxNow }}
 }
 
-func (f *ctxFixture) run(t *testing.T, wb int64) int {
+func (f *ctxFixture) run(t *testing.T, wbs ...int64) int {
 	t.Helper()
-	n, err := ProposeContext(f.env(), wb)
+	n, err := ProposeContext(context.Background(), f.env(), wbs)
 	require.NoError(t, err)
 	return n
 }
@@ -155,8 +165,8 @@ func TestProposeContext_UnusedPlugin(t *testing.T) {
 func TestProposeContext_UsedInAnotherWorkbenchSkipped(t *testing.T) {
 	f := newCtxFixture(t)
 	// This workbench never called it; another workbench did, twice (a
-	// calls-only row: called, never measured in that part).
-	f.local = []agentreport.ContextSourceRow{srcRow("skills", "alpha", agentreport.GroupPlugin, 1200, 0, 6)}
+	// calls-only row: called, never measured in that part). The install-wide
+	// rows decide.
 	f.global = []agentreport.ContextSourceRow{
 		srcRow("skills", "alpha", agentreport.GroupPlugin, 1200, 0, 9),
 		srcRow("agents", "alpha", agentreport.GroupPlugin, 0, 2, 0),
@@ -172,11 +182,12 @@ func TestProposeContext_GlobalFiledOnce(t *testing.T) {
 	f.global = []agentreport.ContextSourceRow{srcRow("skills", "alpha", agentreport.GroupPlugin, 1200, 0, 6)}
 	other, _ := f.d.workbench(t, "beta", 0)
 
-	assert.Equal(t, 1, f.run(t, f.wb))
-	assert.Equal(t, 0, f.run(t, other))
+	assert.Equal(t, 1, f.run(t, f.wb, other))
+	assert.Equal(t, 1, f.globalCalls, "one pass reads the install-wide sources once")
 	ps := f.rows(t)
 	require.Len(t, ps, 1)
 	assert.Equal(t, int64(0), ps[0].WorkbenchID)
+	assert.Equal(t, 0, f.run(t, other), "a later pass files it again for no workbench")
 }
 
 // unusedEverything is one unused plugin, one unused server and the unused
@@ -411,7 +422,7 @@ func TestProposeContext_RussianTitles(t *testing.T) {
 	f.global = []agentreport.ContextSourceRow{srcRow("skills", "alpha", agentreport.GroupPlugin, 1200, 0, 6)}
 	env := f.env()
 	env.Lang = agentreport.Russian
-	_, err := ProposeContext(env, f.wb)
+	_, err := ProposeContext(context.Background(), env, []int64{f.wb})
 	require.NoError(t, err)
 	p := f.rows(t)[0]
 	assert.Contains(t, p.Title, "плагин")
@@ -421,8 +432,105 @@ func TestProposeContext_RussianTitles(t *testing.T) {
 func TestPreviewContext_WritesNothing(t *testing.T) {
 	f := newCtxFixture(t)
 	f.global = unusedEverything()
-	ps, err := PreviewContext(f.env(), f.wb)
+	ps, err := PreviewContext(context.Background(), f.env(), []int64{f.wb})
 	require.NoError(t, err)
 	assert.Len(t, ps, 3)
 	assert.Empty(t, f.rows(t))
+}
+
+func TestProposeContext_PluginUsedThroughItsServerSkipped(t *testing.T) {
+	f := newCtxFixture(t)
+	// alpha's skills are never called, but its own server is, every session.
+	f.global = []agentreport.ContextSourceRow{
+		srcRow("skills", "alpha", agentreport.GroupPlugin, 1200, 0, 6),
+		srcRow("tools", "plugin_alpha_docs", agentreport.GroupMCPServer, 0, 3, 0),
+	}
+	assert.Equal(t, 0, f.run(t, f.wb))
+	assert.Empty(t, f.rows(t))
+}
+
+func TestProposeContext_UnusedPluginWeighsItsServer(t *testing.T) {
+	f := newCtxFixture(t)
+	f.global = []agentreport.ContextSourceRow{
+		srcRow("skills", "alpha", agentreport.GroupPlugin, 300, 0, 6),
+		srcRow("mcp", "plugin_alpha_docs", agentreport.GroupMCPServer, 900, 0, 6),
+		srcRow("mcp", "plugin_other_docs", agentreport.GroupMCPServer, 5000, 7, 6), // another plugin's
+	}
+	require.Equal(t, 1, f.run(t, f.wb), "300 tokens alone are under the threshold; with its server they are not")
+	p := f.rows(t)[0]
+	assert.Equal(t, DestPluginOff, p.Destination)
+	assert.Equal(t, "alpha · 1200 tok · 0 calls in Watchtower sessions (all workbenches) in 30 days", p.Evidence[0].Ref)
+}
+
+// A plugin can work with no calls at all, through hooks or an output style:
+// it is never proposed, nor one whose install folder cannot be read.
+func TestProposeContext_PluginWithHooksOrStylesSkipped(t *testing.T) {
+	unused := []agentreport.ContextSourceRow{srcRow("skills", "alpha", agentreport.GroupPlugin, 1200, 0, 6)}
+	for name, prep := range map[string]func(t *testing.T, f *ctxFixture){
+		"hooks.json": func(t *testing.T, f *ctxFixture) {
+			writeHomeFile(t, filepath.Join(f.plugins, "acme", "hooks", "hooks.json"), `{"hooks": {}}`)
+		},
+		"manifest hooks": func(t *testing.T, f *ctxFixture) {
+			writeHomeFile(t, filepath.Join(f.plugins, "user", ".claude-plugin", "plugin.json"), `{"name": "alpha", "hooks": "./h.json"}`)
+		},
+		"output styles": func(t *testing.T, f *ctxFixture) {
+			writeHomeFile(t, filepath.Join(f.plugins, "user", "output-styles", "terse.md"), "style")
+		},
+		"manifest output styles": func(t *testing.T, f *ctxFixture) {
+			writeHomeFile(t, filepath.Join(f.plugins, "user", ".claude-plugin", "plugin.json"), `{"outputStyles": "./s"}`)
+		},
+		"bad manifest": func(t *testing.T, f *ctxFixture) {
+			writeHomeFile(t, filepath.Join(f.plugins, "user", ".claude-plugin", "plugin.json"), "not json")
+		},
+		"install folder gone": func(t *testing.T, f *ctxFixture) {
+			require.NoError(t, os.RemoveAll(filepath.Join(f.plugins, "acme")))
+		},
+		"no install folder known": func(t *testing.T, f *ctxFixture) {
+			writeHomeFile(t, installedPluginsPath(f.home), `{"version": 2, "plugins": {"alpha@example-market": [{"scope": "user"}]}}`)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newCtxFixture(t)
+			f.global = unused
+			prep(t, f)
+			assert.Equal(t, 0, f.run(t, f.wb))
+		})
+	}
+	t.Run("skills only", func(t *testing.T) {
+		f := newCtxFixture(t)
+		f.global = unused
+		assert.Equal(t, 1, f.run(t, f.wb), "the control: the same plugin with skills only is proposed")
+	})
+}
+
+func TestProposeContext_ConnectorsDeclinedStaysDeclined(t *testing.T) {
+	f := newCtxFixture(t)
+	f.global = []agentreport.ContextSourceRow{
+		srcRow("mcp", agentreport.ConnectorsGroup, agentreport.GroupConnectors, 2000, 0, 6),
+	}
+	require.Equal(t, 1, f.run(t, f.wb))
+	require.NoError(t, f.d.DecideCoachProposal(f.rows(t)[0].ID, "open", "declined", ctxNow))
+	// Something writes the key as "true": still on, still declined.
+	writeHomeFile(t, claudeSettingsPath(f.home), `{"env": {"ENABLE_CLAUDEAI_MCP_SERVERS": "true"}}`)
+	assert.Equal(t, 0, f.run(t, f.wb))
+}
+
+func TestProposeContext_CancelledFilesNothing(t *testing.T) {
+	f := newCtxFixture(t)
+	f.global = unusedEverything()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	n, err := ProposeContext(ctx, f.env(), []int64{f.wb})
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Zero(t, n)
+	assert.Empty(t, f.rows(t))
+}
+
+func TestProposeContext_WorkbenchErrorDoesNotStopOthers(t *testing.T) {
+	f := newCtxFixture(t)
+	f.global = []agentreport.ContextSourceRow{srcRow("skills", "alpha", agentreport.GroupPlugin, 1200, 0, 6)}
+	writeHomeFile(t, memoryPath(f.home, f.folder), strings.Repeat("- a memory line\n", 600))
+	n, err := ProposeContext(context.Background(), f.env(), []int64{9999, f.wb})
+	assert.Error(t, err, "the missing workbench is reported")
+	assert.Equal(t, 2, n, "the global row and this workbench's memory row are still filed")
 }

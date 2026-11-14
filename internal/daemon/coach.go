@@ -183,7 +183,7 @@ func (d *Daemon) phaseCoach(ctx context.Context) {
 	}
 	defer unlock()
 	if !weekly { // only fresh analytics facts: the context proposer alone
-		d.coachContext(now)
+		d.coachContext(ctx, now)
 		return
 	}
 	d.trackedPipelineRun("coach", func() pipelineRunStats {
@@ -199,7 +199,7 @@ func (d *Daemon) phaseCoach(ctx context.Context) {
 		} else {
 			d.logger.Printf("coach: %d judged, %d cut", judged, cuts)
 		}
-		d.coachContext(now)
+		d.coachContext(ctx, now)
 		in, err := coach.Collect(ctx, d.db, d.agentLog, instructions.NewFeedReader(ctx, d.db, coachSessionDirs()), now)
 		if err != nil {
 			if ctx.Err() == nil {
@@ -307,12 +307,14 @@ func (d *Daemon) coachEditAtHead(ctx context.Context, p db.CoachProposal) (seen 
 	return ok && text == p.AfterText, ""
 }
 
-// coachContext runs the mechanical context proposer for every workbench with
-// agent analytics on (the caller holds coach.lock). The fresh-import flag is
-// cleared first, so an import landing meanwhile runs it again next cycle. A
-// workbench's error is logged and the others go on. Logs carry ids and
-// counts, never a path or a name.
-func (d *Daemon) coachContext(now time.Time) {
+// coachContext runs one pass of the mechanical context proposer over the
+// workbenches with agent analytics on (the caller holds coach.lock): the
+// install-wide rules once, the per-workbench ones for each. The fresh-import
+// flag is cleared first, so an import landing meanwhile runs it again next
+// cycle; a cancelled pass sets it again. Errors are logged; a line is logged
+// only when something was written. Logs carry ids, counts, labels and source
+// names, never a path or a config value.
+func (d *Daemon) coachContext(ctx context.Context, now time.Time) {
 	d.coachContextFresh.Store(false)
 	if d.agentLog == nil {
 		return
@@ -332,13 +334,15 @@ func (d *Daemon) coachContext(now time.Time) {
 	}
 	env := coach.ContextEnv{DB: d.db, AgentLog: d.agentLog, Home: home, Now: func() time.Time { return now },
 		Lang: agentreport.LangOf(d.config.Digest.Language), Logger: d.logger}
-	written := 0
-	for _, id := range ids {
-		n, err := runCoachContext(env, id)
-		if err != nil {
-			d.logger.Printf("coach: context: workbench %d: %v", id, err)
-		}
-		written += n
+	n, err := runCoachContext(ctx, env, ids)
+	if ctx.Err() != nil {
+		d.coachContextFresh.Store(true) // not done: the next cycle runs it
+		return
 	}
-	d.logger.Printf("coach: context: %d workbench(es), %d proposal(s) written", len(ids), written)
+	if err != nil {
+		d.logger.Printf("coach: context: %v", err)
+	}
+	if n > 0 {
+		d.logger.Printf("coach: context: %d proposal(s) written", n)
+	}
 }

@@ -2,9 +2,13 @@ package coach
 
 import (
 	"cmp"
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -30,13 +34,11 @@ import (
 // Seams tests replace with fake facts.
 var (
 	// contextGlobalSources is the install-wide start-context sources (rules
-	// 1–3).
+	// 1–3), read once per pass.
 	contextGlobalSources = agentreport.GlobalSources
-	// contextOverview is one workbench's report (rules 4–5 read its measured
-	// sessions).
-	contextOverview = func(env ContextEnv, workbenchID int64, since, now time.Time) (*agentreport.Overview, error) {
-		return agentreport.BuildOverview(env.DB, env.AgentLog, workbenchID, since, now, env.Lang, "")
-	}
+	// contextMeasuredSessions is one workbench's measured sessions in the
+	// window (rules 4–5): a light count, not a whole report.
+	contextMeasuredSessions = agentreport.MeasuredSessions
 )
 
 // errContextNotRegular refuses a CLAUDE.md or memory index that is a symlink
@@ -71,64 +73,86 @@ func (e ContextEnv) now() time.Time {
 	return e.Now()
 }
 
-// ProposeContext files the context proposals PreviewContext finds for
-// workbenchID; written counts the new rows. A global proposal another
-// workbench's run already filed is a fingerprint conflict and counts 0, so a
-// run per workbench files it once.
-func ProposeContext(env ContextEnv, workbenchID int64) (written int, err error) {
-	props, err := PreviewContext(env, workbenchID)
-	if err != nil {
-		return 0, err
+// ProposeContext is one pass of the context proposer over the workbenches
+// with agent analytics on (workbenchIDs): it files what PreviewContext finds
+// and counts the new rows. A workbench's error does not stop the others: the
+// proposals found are filed and the errors are returned joined. A cancelled
+// ctx files nothing.
+func ProposeContext(ctx context.Context, env ContextEnv, workbenchIDs []int64) (written int, err error) {
+	props, err := PreviewContext(ctx, env, workbenchIDs)
+	if ctx.Err() != nil {
+		return 0, ctx.Err()
 	}
 	now := env.now()
 	for _, p := range props {
-		id, err := env.DB.InsertContextCoachProposal(p, now)
-		if errors.Is(err, db.ErrCoachTextBusy) { // filed by a parallel run since the preview
+		id, ierr := env.DB.InsertContextCoachProposal(p, now)
+		if errors.Is(ierr, db.ErrCoachTextBusy) { // filed by a parallel run since the preview
 			continue
 		}
-		if err != nil {
-			return written, err
+		if ierr != nil {
+			return written, errors.Join(err, ierr)
 		}
 		if id != 0 {
 			written++
 		}
 	}
-	if len(props) > 0 {
-		env.logf("coach: context: workbench %d: %d proposal(s) found, %d written", workbenchID, len(props), written)
-	}
-	return written, nil
+	return written, err
 }
 
 // PreviewContext is ProposeContext without the writes (`coach run
 // --dry-run`): the proposals whose fingerprint is new and whose text key has
-// no open proposal. Rules 1–3 read GlobalSources over the last ctxWindowDays,
-// rules 4–5 the workbench's folder and memory index when the workbench has
-// judgeMinSessions measured sessions in that window.
-func PreviewContext(env ContextEnv, workbenchID int64) ([]db.CoachProposal, error) {
+// no open proposal. Rules 1–3 read GlobalSources over the last ctxWindowDays
+// once per pass; rules 4–5 read each workbench's folder and memory index when
+// the workbench has judgeMinSessions measured sessions in that window. ctx is
+// checked between workbenches.
+func PreviewContext(ctx context.Context, env ContextEnv, workbenchIDs []int64) ([]db.CoachProposal, error) {
+	if len(workbenchIDs) == 0 {
+		return nil, nil
+	}
 	now := env.now()
 	since := now.Add(-ctxWindowDays * 24 * time.Hour)
-	wb, err := env.DB.GetWorkbench(workbenchID)
-	if err != nil {
-		return nil, err
-	}
 	global, err := contextGlobalSources(env.DB, env.AgentLog, since, now)
 	if err != nil {
 		return nil, err
 	}
-	props := globalContextProposals(env, sourceGroups(global))
-	ov, err := contextOverview(env, workbenchID, since, now)
+	props := globalContextProposals(env, foldPluginServers(sourceGroups(global)))
+	var errs []error
+	for _, id := range workbenchIDs {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		ps, err := workbenchContextProposals(env, id, since, now)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("workbench %d: %w", id, err))
+			continue
+		}
+		props = append(props, ps...)
+	}
+	out, err := newContextProposals(env.DB, props)
 	if err != nil {
 		return nil, err
 	}
-	if measured := ov.Context.FactsSessions; measured >= judgeMinSessions {
-		if p, ok := claudeMDProposal(env, wb, measured); ok {
-			props = append(props, p)
-		}
-		if p, ok := memoryIndexProposal(env, wb, measured); ok {
-			props = append(props, p)
-		}
+	return out, errors.Join(errs...)
+}
+
+// workbenchContextProposals is rules 4–5 for one workbench.
+func workbenchContextProposals(env ContextEnv, id int64, since, now time.Time) ([]db.CoachProposal, error) {
+	wb, err := env.DB.GetWorkbench(id)
+	if err != nil {
+		return nil, err
 	}
-	return newContextProposals(env.DB, props)
+	measured, err := contextMeasuredSessions(env.AgentLog, id, since, now)
+	if err != nil || measured < judgeMinSessions {
+		return nil, err
+	}
+	var out []db.CoachProposal
+	if p, ok := claudeMDProposal(env, wb, measured); ok {
+		out = append(out, p)
+	}
+	if p, ok := memoryIndexProposal(env, wb, measured); ok {
+		out = append(out, p)
+	}
+	return out, nil
 }
 
 // newContextProposals drops the proposals whose fingerprint is known (open,
@@ -196,6 +220,30 @@ func sourceGroups(rows []agentreport.ContextSourceRow) []sourceGroup {
 		}
 		g.calls += r.Calls
 		g.measured = max(g.measured, r.Measured)
+	}
+	return out
+}
+
+// foldPluginServers adds to each plugin group its own MCP servers' groups
+// (mcp_server "plugin_<plugin id>_<server>"): their calls, so a plugin used
+// only through its server is used, and their measured tokens, since turning
+// the plugin off drops its servers too. A plugin name that is a prefix of
+// another's ("foo", "foo_bar") takes the other's servers too: that errs
+// toward not proposing.
+func foldPluginServers(groups []sourceGroup) []sourceGroup {
+	out := slices.Clone(groups)
+	for i := range out {
+		if out[i].kind != agentreport.GroupPlugin {
+			continue
+		}
+		prefix := "plugin_" + agentreport.MCPServerID(out[i].group) + "_"
+		for _, s := range groups {
+			if s.kind == agentreport.GroupMCPServer && strings.HasPrefix(s.group, prefix) {
+				out[i].calls += s.calls
+				out[i].tokens += s.tokens
+				out[i].measured = max(out[i].measured, s.measured)
+			}
+		}
 	}
 	return out
 }
@@ -286,6 +334,9 @@ func pluginProposal(env ContextEnv, conf claudeConfigRead, g sourceGroup) (db.Co
 		return db.CoachProposal{}, false
 	}
 	id := ids[0]
+	if pluginWorksWithoutCalls(env.Home, id) {
+		return db.CoachProposal{}, false
+	}
 	var elsewhere []string
 	for _, s := range conf.cfg.Plugins[id].Scopes {
 		if s != "user" {
@@ -304,7 +355,7 @@ func serverProposal(env ContextEnv, conf claudeConfigRead, g sourceGroup) (db.Co
 	}
 	var names []string
 	for _, n := range conf.cfg.UserServers {
-		if serverToolID(n) == g.group {
+		if agentreport.MCPServerID(n) == g.group {
 			names = append(names, n)
 		}
 	}
@@ -348,7 +399,14 @@ func settingsProposal(env ContextEnv, g sourceGroup, dest, source, title string,
 		return db.CoachProposal{}, false
 	}
 	after := settingsKeyAfter(dest)
-	p.Fingerprint = contextFingerprint(keyOf(dest, 0, "", "", source), cur.Text, after)
+	// The connectors are on whether the key is absent or set to "true": one
+	// before for the fingerprint, so a declined proposal never returns. A
+	// plugin's before is always "true" and a server's "present".
+	fpBefore := cur.Text
+	if dest == DestConnectorsOff {
+		fpBefore = "on"
+	}
+	p.Fingerprint = contextFingerprint(keyOf(dest, 0, "", "", source), fpBefore, after)
 	p.Title = title
 	p.Why = ctxText(env.Lang, "ctx.unused.why", g.tokens, ctxWindowDays)
 	p.Metric = "start_tokens"
@@ -360,6 +418,80 @@ func settingsProposal(env ContextEnv, g sourceGroup, dest, source, title string,
 	}
 	p.Sources = g.measured
 	return p, true
+}
+
+// pluginInstallPaths is the install folders (installPath) of plugin id in
+// installed_plugins.json. They are used here only, to look for file names,
+// and never kept in ClaudeConfig, a row or a log.
+func pluginInstallPaths(home, id string) ([]string, error) {
+	raw, _, ok, err := readRegularFile("installed_plugins.json", errInstalledNotRegular, installedPluginsPath(home))
+	if err != nil || !ok {
+		return nil, err
+	}
+	top, err := objectKeys(raw, errInstalledInvalid)
+	if err != nil {
+		return nil, err
+	}
+	plugins, err := objectKeys(top["plugins"], errInstalledInvalid)
+	if err != nil {
+		return nil, err
+	}
+	var installs []struct {
+		InstallPath string `json:"installPath"`
+	}
+	if json.Unmarshal(plugins[id], &installs) != nil {
+		return nil, errInstalledInvalid
+	}
+	var out []string
+	for _, in := range installs {
+		if in.InstallPath != "" {
+			out = append(out, in.InstallPath)
+		}
+	}
+	return out, nil
+}
+
+// pluginWorksWithoutCalls is whether plugin id may be load-bearing with no
+// calls to show for it: one of its installs ships hooks (hooks/hooks.json, or
+// a "hooks" key in .claude-plugin/plugin.json) or output styles (an
+// output-styles/ folder, or an "outputStyles" key). An install that cannot be
+// read, or no known install folder, counts as yes: the plugin is not
+// proposed. Only names are read: whether the files exist and the manifest's
+// keys, never a value.
+func pluginWorksWithoutCalls(home, id string) bool {
+	installPaths, err := pluginInstallPaths(home, id)
+	if err != nil || len(installPaths) == 0 {
+		return true
+	}
+	for _, dir := range installPaths {
+		if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+			return true
+		}
+		for _, rel := range []string{filepath.Join("hooks", "hooks.json"), "output-styles"} {
+			_, err := os.Lstat(filepath.Join(dir, rel))
+			if err == nil || !errors.Is(err, fs.ErrNotExist) {
+				return true
+			}
+		}
+		raw, _, ok, err := readRegularFile("plugin.json", errContextNotRegular, filepath.Join(dir, ".claude-plugin", "plugin.json"))
+		if err != nil {
+			return true
+		}
+		if !ok {
+			continue
+		}
+		keys, err := objectKeys(raw, errContextNotRegular)
+		if err != nil {
+			return true
+		}
+		if _, hooks := keys["hooks"]; hooks {
+			return true
+		}
+		if _, styles := keys["outputStyles"]; styles {
+			return true
+		}
+	}
+	return false
 }
 
 // baseNames is the folders' last elements, deduplicated and sorted: the card
@@ -375,18 +507,6 @@ func baseNames(folders []string) []string {
 	return slices.Compact(out)
 }
 
-// serverToolID is a server's name as Claude Code names its tools (the form
-// GroupOf groups by): every character other than a letter, digit, '_' or '-'
-// becomes '_'.
-func serverToolID(name string) string {
-	return strings.Map(func(r rune) rune {
-		if r == '_' || r == '-' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' {
-			return r
-		}
-		return '_'
-	}, name)
-}
-
 // mdSection is one "## " section of a markdown file: its heading line and its
 // bytes, the heading and every line up to the next "#" or "##" heading
 // included.
@@ -396,14 +516,14 @@ type mdSection struct {
 }
 
 // mdSections splits text into its "## " sections; headings inside fenced
-// code blocks do not count.
+// code blocks (``` or ~~~) do not count.
 func mdSections(text string) []mdSection {
 	var out []mdSection
 	cur := -1
 	fenced := false
 	for _, line := range strings.SplitAfter(text, "\n") {
 		trimmed := strings.TrimRight(line, "\r\n")
-		if strings.HasPrefix(strings.TrimSpace(trimmed), "```") {
+		if t := strings.TrimSpace(trimmed); strings.HasPrefix(t, "```") || strings.HasPrefix(t, "~~~") {
 			fenced = !fenced
 		}
 		if !fenced {
