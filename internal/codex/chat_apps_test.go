@@ -28,14 +28,16 @@ func TestCodexChatApps_SlackReadOnlyAllowList(t *testing.T) {
 	c := &Client{model: "m"}
 	assert.Contains(t, c.execArgs(), "features.apps=false")
 
-	c.SetChatApps(SlackReadOnlyOverrides("conn_x", []string{"slack_read_channel", "slack_search_public"}))
+	ov, err := ReadOnlyAppOverrides(t.TempDir(), "conn_x", []string{"slack_read_channel", "slack_search_public"})
+	require.NoError(t, err)
+	c.SetChatApps(ov)
 	args := c.execArgs()
 	assert.NotContains(t, args, "features.apps=false")
 	assert.Contains(t, args, "features.plugins=false", "other features stay off")
+	assert.Contains(t, args, "features.apps=true")
 	for _, want := range []string{
 		"apps._default.enabled=false",
 		"apps.conn_x.enabled=true",
-		"apps.conn_x.default_tools_enabled=false",
 		"apps.conn_x.tools.slack_read_channel.enabled=true",
 		"apps.conn_x.tools.slack_search_public.enabled=true",
 	} {
@@ -44,5 +46,4 @@ func TestCodexChatApps_SlackReadOnlyAllowList(t *testing.T) {
 	for _, a := range args {
 		assert.NotContains(t, a, "slack_send_message")
 	}
-	assert.Nil(t, SlackReadOnlyOverrides("", []string{"x"}))
 }

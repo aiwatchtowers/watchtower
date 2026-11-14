@@ -164,7 +164,7 @@ func buildSessionActual(ctx context.Context, cmd *cobra.Command, cfg *config.Con
 	writeUnavailableConnectors(dbPath, claudeAI, cmd.ErrOrStderr())
 	opts := sessionPromptOptions(&actual, aiSessionFlagSurface, projectID, time.Now(), claudeAI.prompt)
 	slackRows, _ := database.ListSlackLiveStatus() // a read failure = no Live promise
-	var codexSlack string
+	var codexSlack []string
 	switch p {
 	case "claude":
 		slackOff := chat.DisabledConnectorTokens(actual.AI.ClaudeAI.DisabledConnectors)["claude_ai_Slack"]
@@ -173,8 +173,15 @@ func buildSessionActual(ctx context.Context, cmd *cobra.Command, cfg *config.Con
 		if aiSessionFlagSurface != "main" {
 			break
 		}
-		codexSlack = codexSlackConnector(slackRows, codex.OwnerHome())
-		opts.SlackLive = codexSlack != ""
+		if id := codexSlackConnector(slackRows, codex.OwnerHome()); id != "" {
+			ov, err := codexSlackOverrides(id)
+			if err != nil { // fail closed: no apps, no promise
+				fmt.Fprintf(cmd.ErrOrStderr(), "Live Slack on Codex is off: %v\n", err)
+			} else {
+				codexSlack = ov
+			}
+		}
+		opts.SlackLive = len(codexSlack) > 0
 	}
 	prompt, err := chat.BuildSystemPrompt(ctx, database, &actual, opts)
 	if err != nil {

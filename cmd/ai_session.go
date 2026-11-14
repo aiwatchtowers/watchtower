@@ -201,7 +201,7 @@ type sessionWiring struct {
 	chatProjectID int64                  // 0 = not a project chat; bound into the ollama registry
 	warn          io.Writer              // skipped project files are named here
 	claudeAI      claudeAISetup          // zero = claude.ai mode off
-	codexSlack    string                 // Slack app id a codex chat may read live; "" = apps off
+	codexSlack    []string               // read-only apps overrides of a codex chat with Live Slack; nil = apps off
 	// onMounted hears the Quick Connections a warm Claude session mounts for
 	// its whole life (the per-turn policy check, #608); nil = nobody.
 	onMounted func([]ai.ExternalMCPServer)

@@ -13,9 +13,10 @@ import (
 )
 
 // codexSlackOverrides is the read-only allow-list of the Slack app id for a
-// Codex chat run: only slacklive.ReadTools are visible.
-func codexSlackOverrides(connectorID string) []string {
-	return codex.SlackReadOnlyOverrides(connectorID, slacklive.ReadTools)
+// Codex chat run (only slacklive.ReadTools visible, the owner's config.toml
+// cannot widen it). An error means no apps for the session.
+func codexSlackOverrides(connectorID string) ([]string, error) {
+	return codex.ReadOnlyAppOverrides(codex.OwnerHome(), connectorID, slacklive.ReadTools)
 }
 
 // attachSlackLiveWatcher hooks the session's event stream: statuses on use

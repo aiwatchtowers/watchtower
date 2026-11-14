@@ -25,28 +25,8 @@ func ChatGPTLogin(codexHome string) bool {
 	return strings.EqualFold(a.Mode, "chatgpt")
 }
 
-// SlackReadOnlyOverrides is the `-c` pairs that leave exactly the listed
-// tools of one connector visible to a codex run: every app off by default,
-// the connector (by its id, not its namespace) on with its default tools off,
-// then one `tools.<t>.enabled=true` per allowed tool. A write tool is simply
-// not listed. Empty connectorID returns nil (apps stay off).
-func SlackReadOnlyOverrides(connectorID string, tools []string) []string {
-	if connectorID == "" {
-		return nil
-	}
-	args := []string{
-		"-c", "apps._default.enabled=false",
-		"-c", "apps." + connectorID + ".enabled=true",
-		"-c", "apps." + connectorID + ".default_tools_enabled=false",
-	}
-	for _, t := range tools {
-		args = append(args, "-c", "apps."+connectorID+".tools."+t+".enabled=true")
-	}
-	return args
-}
-
 // SetChatApps lets this client's runs use the apps feature, restricted to
-// overrides (SlackReadOnlyOverrides). Used by the chat session only; every
+// overrides (ReadOnlyAppOverrides). Used by the chat session only; every
 // other client keeps `apps` off (disabledFeatures).
 func (c *Client) SetChatApps(overrides []string) {
 	if len(overrides) > 0 {
