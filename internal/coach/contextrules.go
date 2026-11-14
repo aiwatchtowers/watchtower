@@ -39,7 +39,9 @@ var (
 // Watchtower skill depends on, or a skill of the Watchtower pack. Such a
 // proposal is never filed, and Accept of a hand-made row naming one is
 // refused (COACH-01). A plugin is matched by its name, the part of
-// "<name>@<marketplace>" before the "@".
+// "<name>@<marketplace>" before the "@". A server is matched in its
+// normalised form, so the Codex spelling (watchtower_workbench) is as
+// protected as the Claude one (watchtower-workbench).
 func IsProtected(destination, sourceKey string) bool {
 	if sourceKey == "" {
 		return false
@@ -49,10 +51,17 @@ func IsProtected(destination, sourceKey string) bool {
 	}
 	switch destination {
 	case DestMCPServerOff:
-		return slices.Contains(protectedServers, sourceKey)
+		return slices.Contains(protectedServers, normalizedServerName(sourceKey))
 	case DestPluginOff:
 		name, _, _ := strings.Cut(sourceKey, "@")
 		return slices.Contains(protectedPlugins, name)
 	}
 	return false
+}
+
+// normalizedServerName folds an MCP server name's "_" into "-": Claude Code
+// registers Watchtower's server as watchtower-workbench, Codex as
+// watchtower_workbench, and both name the same server.
+func normalizedServerName(name string) string {
+	return strings.ReplaceAll(name, "_", "-")
 }
