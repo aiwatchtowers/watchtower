@@ -230,7 +230,7 @@ final class InboxTargetButtonFactsTests: XCTestCase {
         await vm.refresh()
 
         let first = Task { await vm.proposeTarget(press(fx)) }
-        await waitUntil { runner.invocations.count == 1 }
+        await runner.untilInvocations(1)
         XCTAssertTrue(vm.proposingTargets.contains(fx.context))
         await vm.proposeTarget(press(fx))
         XCTAssertEqual(runner.invocations.count, 1)
@@ -305,12 +305,6 @@ final class InboxTargetButtonFactsTests: XCTestCase {
         XCTAssertFalse(vm.isSupersededButtonRow(newerRow))
     }
 
-    private func waitUntil(_ condition: @escaping () -> Bool) async {
-        for _ in 0..<500 where !condition() {
-            await Task.yield()
-            try? await Task.sleep(for: .milliseconds(5))
-        }
-    }
 }
 
 /// A pending target proposal whose artifact went away, or whose living

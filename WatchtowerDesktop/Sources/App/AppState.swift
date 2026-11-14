@@ -1056,6 +1056,10 @@ final class AppState {
     /// often it looks (a first start after an update runs migrations first).
     @ObservationIgnored var daemonStartWaitBound: Duration = .seconds(60)
     @ObservationIgnored var daemonStartPollInterval: Duration = .seconds(1)
+    /// The banner Start's wait clock: its `now` and its sleep between polls;
+    /// tests replace both with a clock that moves only when slept on.
+    @ObservationIgnored var daemonStartWaitNow: () -> ContinuousClock.Instant = { ContinuousClock.now }
+    @ObservationIgnored var daemonStartWaitSleep: (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     /// The banner's Start is waiting for the daemon (no second Start).
     var isStartingDaemon = false
     /// The down stretch (`DaemonManager.notRunningSince`) whose "isn't

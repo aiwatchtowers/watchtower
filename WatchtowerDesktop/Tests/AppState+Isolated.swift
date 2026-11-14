@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 @testable import WatchtowerDesktop
 import WatchtowerCore
 import WatchtowerTestSupport
@@ -47,6 +48,11 @@ extension AppState {
         appState.readinessEnvironmentOverride = FakeReadinessEnvironment()
         appState.homeDefaultsOverride = defaults
         appState.compactionDBPathOverride = { "/isolated/watchtower.db" }
+        // The banner Start's wait for the daemon runs on a clock that moves
+        // only when slept on: its bound is a count of polls, not real time.
+        let startClock = SleptOnClock()
+        appState.daemonStartWaitNow = { startClock.now }
+        appState.daemonStartWaitSleep = { await startClock.sleep($0) }
         isolatedAppStates.append(WeakAppState(appState))
         return appState
     }
@@ -88,10 +94,23 @@ extension AppState {
     }
 }
 
+/// A clock that moves only when slept on: `sleep` adds its duration to `now`
+/// and returns at once (after a yield, as a real sleep would let others run).
+@MainActor
+final class SleptOnClock {
+    private(set) var now = ContinuousClock.now
+
+    func sleep(_ duration: Duration) async {
+        now += duration
+        await Task.yield()
+    }
+}
+
 /// Counts the daemon calls; `running` is what it reports, `startSucceeds`
 /// and `restartError` what start and restart do. `holdRestart` parks a
 /// restart until `releaseRestart()`.
 @MainActor
+@Observable
 final class FakeDaemon: DaemonControl {
     var running = false
     var startSucceeds = true
@@ -113,6 +132,9 @@ final class FakeDaemon: DaemonControl {
     private(set) var starts = 0
     private(set) var restarts = 0
     private(set) var stops = 0
+    /// The most restarts ever running at once (a start queue runs one).
+    private(set) var mostRestartsAtOnce = 0
+    private var restartsNow = 0
     private var parked: CheckedContinuation<Void, Never>?
 
     var isRestartParked: Bool { parked != nil }
@@ -135,6 +157,9 @@ final class FakeDaemon: DaemonControl {
 
     func restartWaiting() async throws {
         restarts += 1
+        restartsNow += 1
+        mostRestartsAtOnce = max(mostRestartsAtOnce, restartsNow)
+        defer { restartsNow -= 1 }
         if stopsDuringRestart { running = false }
         if holdRestart {
             await withCheckedContinuation { parked = $0 }

@@ -56,6 +56,8 @@ public actor ReplicaHydrator {
     /// The currently-running cycle, if any. Concurrent `hydrateOnce` callers
     /// await this instead of starting their own — see `hydrateOnce`.
     private var inFlight: Task<(applied: Int, deleted: Int), Error>?
+    /// Told when a caller joins the running cycle instead of starting one; tests replace it.
+    private var onJoin: @Sendable () -> Void = {}
     private let logger = Logger(subsystem: "WatchtowerKit", category: "ReplicaHydrator")
 
     public init(
@@ -74,6 +76,8 @@ public actor ReplicaHydrator {
 
     func useClock(_ now: @escaping @Sendable () -> Date) { self.now = now }
 
+    func observeJoins(_ onJoin: @escaping @Sendable () -> Void) { self.onJoin = onJoin }
+
     // MARK: - One cycle
 
     /// One hydration cycle: optional engine pull, read data-zone changes
@@ -89,6 +93,7 @@ public actor ReplicaHydrator {
     @discardableResult
     public func hydrateOnce() async throws -> (applied: Int, deleted: Int) {
         if let inFlight {
+            onJoin()
             return try await inFlight.value
         }
         let task = Task { try await self.performHydration() }

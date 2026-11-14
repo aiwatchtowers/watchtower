@@ -620,7 +620,7 @@ final class AskFormTests: XCTestCase {
         let first = Task { try await answerer.send(ask) }
         // Released on every path, so a failing assertion leaks no waiter.
         defer { Task { await gate.release() } }
-        try await poll(timeout: 2) { sent.count == 1 }
+        try await poll { sent.count == 1 }
         XCTAssertTrue(answerer.isSending(140))
 
         let secondDone = expectation(description: "the second send returns")
@@ -629,7 +629,7 @@ final class AskFormTests: XCTestCase {
             secondSent.count = try await answerer.send(ask) ? 1 : 0
             secondDone.fulfill()
         }
-        await fulfillment(of: [secondDone], timeout: 2)
+        await fulfillment(of: [secondDone])
         XCTAssertEqual(secondSent.count, 0, "the second send sent nothing")
         XCTAssertEqual(sent.count, 1)
 

@@ -64,6 +64,8 @@ final class ReadinessCenter {
     @ObservationIgnored private var snapshot: DBSnapshot?
     @ObservationIgnored private var observationTask: Task<Void, Never>?
     @ObservationIgnored private var tickTask: Task<Void, Never>?
+    /// The tick's wait between re-reads; tests replace it to tick by hand.
+    @ObservationIgnored var tickSleep: @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     /// Bumped by `start`/`stop`: a value from an earlier observation is dropped.
     @ObservationIgnored private var generation = 0
     /// Bumped by every `refresh`: only the newest input tracking may trigger
@@ -103,9 +105,10 @@ final class ReadinessCenter {
             }
         }
         let interval = tickInterval
+        let sleep = tickSleep
         tickTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: interval)
+                await sleep(interval)
                 guard !Task.isCancelled, let self, self.generation == current else { return }
                 await self.reread(pool, generation: current)
             }

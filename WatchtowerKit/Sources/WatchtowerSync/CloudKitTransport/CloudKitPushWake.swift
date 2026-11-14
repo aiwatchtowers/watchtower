@@ -101,4 +101,30 @@ public struct CloudKitPushWake: PushWake {
         guard let error = error as? CKError else { return nil }
         return "CKError \(error.code.rawValue)"
     }
+
+    /// The longest server message `errorDetail` keeps.
+    static let serverMessageCap = 200
+
+    /// `errorCode` plus CloudKit's server message when it sent one (`ServerErrorDescription`: the server's reason,
+    /// such as "attempting to create a subscription in a production container"; it may name a record or subscription
+    /// id, while key and payload bytes stay on this side), cut at `serverMessageCap` characters. nil for an error that
+    /// is not a `CKError`.
+    public static func errorDetail(_ error: any Error) -> String? {
+        guard let code = errorCode(error) else { return nil }
+        guard let message = (error as? CKError)?.userInfo["ServerErrorDescription"] as? String, !message.isEmpty
+        else { return code }
+        return "\(code) (\(message.prefix(serverMessageCap)))"
+    }
+
+    /// True for a refusal that the same call cannot get past by trying again: the request itself or the container's
+    /// setup is wrong (an invalid argument, such as a query subscription whose subscription type Production was never
+    /// given; a missing entitlement; a bad container; no permission). A network, quota, account or server-busy error
+    /// is not permanent.
+    public static func isPermanentRefusal(_ error: any Error) -> Bool {
+        guard let error = error as? CKError else { return false }
+        switch error.code {
+        case .invalidArguments, .missingEntitlement, .badContainer, .permissionFailure: return true
+        default: return false
+        }
+    }
 }

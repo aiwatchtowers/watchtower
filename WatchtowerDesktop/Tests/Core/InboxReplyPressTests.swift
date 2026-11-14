@@ -66,7 +66,7 @@ final class InboxReplyPressTests: XCTestCase {
         await vm.refresh()
 
         let first = Task { await vm.pressReply(outputID: id, action: 1, contentHash: "h1") }
-        await waitUntil { runner.invocations.count == 1 }
+        await runner.untilInvocations(1)
         XCTAssertTrue(vm.isWriting(output: id))
 
         await vm.pressReply(outputID: id, action: 1, contentHash: "h1")
@@ -122,16 +122,5 @@ final class InboxReplyPressTests: XCTestCase {
         await vm.pressReply(outputID: id, action: 1, contentHash: "h1")
 
         XCTAssertEqual(vm.lastError, "Sent — run #7")
-    }
-
-    private func waitUntil(timeout: TimeInterval = 5, _ condition: @escaping @MainActor () -> Bool) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !condition() {
-            if Date() > deadline {
-                XCTFail("condition not met in \(timeout)s")
-                return
-            }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
     }
 }

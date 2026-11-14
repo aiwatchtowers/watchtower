@@ -678,3 +678,59 @@ func TestAHeldCallReturnsWhenItsContextEnds(t *testing.T) {
 		release()
 	}
 }
+
+// TestRetireZonesDeletesOnlyTheOtherSpelling (#1750): a hub adopted from the
+// Swift hub (lowercase hub_id) asks the bridge to delete the zones and the
+// database subscription builds up to v0.28.0 named with the uppercase form.
+// Zone names are case-sensitive: the lowercase zones the phones use keep
+// every record, and neither the hub's own spelling nor an unrelated id is
+// ever sent. A zone already gone is done.
+func TestRetireZonesDeletesOnlyTheOtherSpelling(t *testing.T) {
+	r := newRig(t)
+	upper, lower := strings.ToUpper(r.hub), strings.ToLower(r.hub)
+	c := cloudkit.New(cloudkit.Config{Dir: r.dir, HubID: lower, RelayID: relayID})
+	t.Cleanup(func() { _ = c.Close() })
+	env := []byte("sealed")
+	zones := []string{
+		cloudkit.DataZoneName(upper), cloudkit.RelayZoneName(upper),
+		cloudkit.DataZoneName(lower), cloudkit.RelayZoneName(lower),
+	}
+	for _, z := range zones {
+		if _, err := r.fake.Store().Write(z, "k1", env, transport.Expect{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The client says Hello with its own (lowercase) spelling first.
+	if _, err := c.Changes(r.ctx, dataZone, 0); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{lower, "", "0a1b2c3d-4e5f-4a6b-8c7d-8e9fa0b1c2d3", upper + "0"} {
+		frames := len(r.fake.Frames())
+		if err := c.RetireZones(r.ctx, bad); !errors.Is(err, transport.ErrUnsupportedZone) {
+			t.Errorf("RetireZones(%q) = %v, want refused", bad, err)
+		}
+		if n := len(r.fake.Frames()); n != frames {
+			t.Errorf("RetireZones(%q) sent %d frames, want none", bad, n-frames)
+		}
+	}
+	if err := c.RetireZones(r.ctx, upper); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{cloudkit.DataZoneName(upper), cloudkit.RelayZoneName(upper), "watchtower-bridge-db-" + upper}
+	if got := r.fake.Retired(); !slices.Equal(got, want) {
+		t.Fatalf("retired %v, want %v", got, want)
+	}
+	for i, z := range zones {
+		b, err := r.fake.Store().Changes(r.ctx, z, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if gone := i < 2; gone != (len(b.Changed) == 0) {
+			t.Errorf("zone %s holds %d records after the retire (gone = %v)", z, len(b.Changed), gone)
+		}
+	}
+	// Again: the zones are already gone, which is what was asked for.
+	if err := c.RetireZones(r.ctx, upper); err != nil {
+		t.Fatalf("retiring zones already gone: %v", err)
+	}
+}

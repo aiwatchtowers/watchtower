@@ -260,15 +260,13 @@ final class HostedRelaySessionTests: HostedRelayScenarioCase {
 
     // MARK: - Helpers
 
-    /// Polls `condition` (pumping the fake's clock) until it holds or 5 s pass.
+    /// Re-checks `condition` (pumping the fake's clock) until it holds; no wall-clock cap.
     private func until(_ condition: @escaping () async -> Bool) async -> Bool {
-        let deadline = Date().addingTimeInterval(5)
-        while Date() < deadline {
-            if await condition() { return true }
+        while !(await condition()) {
             pump()
-            try? await Task.sleep(for: .milliseconds(10))
+            await Task.yield()
         }
-        return await condition()
+        return true
     }
 
     /// Dials and displacements (`GoingAway`) of one client.

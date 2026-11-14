@@ -358,12 +358,54 @@ final class BridgeContractTests: XCTestCase {
         XCTAssertNotEqual(PushReceiver.databaseSubscriptionID(hubID: hub), PushReceiver.phoneAlertSubscriptionID(hubID: hub))
         let subscription = try XCTUnwrap(PushReceiver.subscription(hubID: hub) as? CKDatabaseSubscription)
         XCTAssertEqual(subscription.notificationInfo?.shouldSendContentAvailable, true, "a silent push, as CKSyncEngine's was")
-        // Nothing in the bridge builds, saves or deletes another subscription.
+        // Nothing in the bridge builds, saves or deletes another subscription. The one deletion is the bridge's
+        // own subscription of another spelling of its hub id (RetireZones, #1750): `deleteSubscription` lives in
+        // BridgeTransport.swift only, and every call there names the retired spelling's
+        // `PushReceiver.databaseSubscriptionID(hubID: old)`.
         for (file, text) in try Self.bridgeSources() {
-            for call in ["AskAlertSubscription.subscription(", "deleteSubscription", "unsubscribeAlerts", "subscribeAlerts", "CKQuerySubscription("] {
+            for call in ["AskAlertSubscription.subscription(", "unsubscribeAlerts", "subscribeAlerts", "CKQuerySubscription("] {
                 XCTAssertNil(text.range(of: call), "\(file) calls \(call)")
             }
+            guard file.hasSuffix("BridgeTransport.swift") else {
+                XCTAssertNil(text.range(of: "deleteSubscription"), "\(file) calls deleteSubscription")
+                continue
+            }
+            let calls = text.split(separator: "\n").filter { line in
+                line.contains("deleteSubscription(") && !line.contains("func deleteSubscription(")
+                    && !line.contains("db.deleteSubscription(withID: id)")
+            }
+            XCTAssertFalse(calls.isEmpty, "RetireZones deletes the old spelling's subscription")
+            for line in calls {
+                XCTAssertTrue(line.contains("PushReceiver.databaseSubscriptionID(hubID: old)"), "\(file): \(line)")
+            }
         }
+    }
+
+    /// #1750: RetireZones deletes the zones of another spelling of the helloed hub id only — the same id, an
+    /// unrelated one or an empty one is refused before CloudKit is called — and the hub's own zones keep their
+    /// records.
+    func testRetireZonesTakesAnotherSpellingOnly() async throws {
+        let lower = "8c1d2e3f-0000-4000-8000-00000000acme"
+        let upper = lower.uppercased()
+        assertResult(await ask(.retireZones(hubID: upper), helloed: false), .failure(class: "bad_request"), "Hello comes first")
+        guard case .hello = await ask(.hello(version: 1, hubID: lower), helloed: false) else { return XCTFail("no hello") }
+        await cloud.write(zone: "DataZone-\(lower)", name: "k1", envelope: env)
+        await cloud.write(zone: "DataZone-\(upper)", name: "k1", envelope: env)
+
+        for refused in [lower, "", "8c1d2e3f-0000-4000-8000-00000000acmf", upper + "0", "8C1D2E3F-0000-4000-8000-00000000ACMÉ"] {
+            assertResult(await ask(.retireZones(hubID: refused)), .failure(class: "bad_request"), refused)
+        }
+        let askedBefore = await cloud.retired
+        XCTAssertEqual(askedBefore, [], "nothing reached CloudKit")
+
+        assertResult(await ask(.retireZones(hubID: upper)), .done)
+        let asked = await cloud.retired
+        XCTAssertEqual(asked, [upper])
+        let own = batch(await ask(.changes(zone: "DataZone-\(lower)", since: 0, generation: "")))
+        XCTAssertEqual(own.changed.map(\.name), ["k1"], "the hub's own zone keeps its records")
+        XCTAssertFalse(BridgeService.otherSpelling(lower, of: lower))
+        XCTAssertTrue(BridgeService.otherSpelling("aB-1", of: "Ab-1"))
+        XCTAssertFalse(BridgeService.otherSpelling("\u{212A}", of: "k"), "no Unicode folding (Kelvin sign)")
     }
 
     func testALateAnswerNeverReachesAnotherConnection() async throws {

@@ -1033,7 +1033,7 @@ final class ActionOutboxOrderedTests: XCTestCase {
         await phone.outbox.setRetryClaimedHook(nil)
         let second = try await phone.outbox.retry(id: one.id)
         gate.open()
-        let retried = try await [first.value(within: 60, "first retry"), second].compactMap { $0 }
+        let retried = try await [first.value, second].compactMap { $0 }
 
         XCTAssertEqual(retried.count, 1, "the second Retry is a no-op")
         XCTAssertNil(try pending(phone, one.id))

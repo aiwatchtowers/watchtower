@@ -184,8 +184,8 @@ final class CloudKitTransportErrorTests: XCTestCase {
         let clock = TestClock()
         let engine = FakeSyncEngine(fetchErrors: [CKError(.requestRateLimited, userInfo: [CKErrorRetryAfterKey: 30.0])])
         // A sleeper that outlasts the test keeps the throttle window open.
-        let transport = await CloudKitTransport.testing(store: try .inMemory(), engine: engine, clock: clock) {
-            try? await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000))
+        let transport = await CloudKitTransport.testing(store: try .inMemory(), engine: engine, clock: clock) { _ in
+            await untilCancelled()
         }
         addTeardownBlock { await transport.retryTask?.cancel() }
 
@@ -219,8 +219,8 @@ final class CloudKitTransportErrorTests: XCTestCase {
         let clock = TestClock()
         let engine = FakeSyncEngine(fetchErrors: [CKError(.requestRateLimited, userInfo: [CKErrorRetryAfterKey: 30.0])])
         let store = try TransportStore.inMemory()
-        let transport = await CloudKitTransport.testing(store: store, engine: engine, clock: clock) {
-            try? await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000))
+        let transport = await CloudKitTransport.testing(store: store, engine: engine, clock: clock) { _ in
+            await untilCancelled()
         }
         addTeardownBlock { await transport.retryTask?.cancel() }
         try await transport.save(records(1))

@@ -149,6 +149,11 @@ type hubRuntime struct {
 	// wasVouched is the vouch state the last link upkeep saw (worker only).
 	subRetry   map[string]*subRetry
 	wasVouched bool
+	// zonesDue: the relay admitted the hub for a phone (a new admission
+	// stamp, SLOT_ADDED) since the last watchZones, which then tries the
+	// refused zones at once instead of at their backoff (#1761). Set from
+	// any goroutine, taken by the worker.
+	zonesDue atomic.Bool
 	// lastPass is when the last mailbox pass started (worker only): the
 	// CloudKit cadence counts from it (cloudkit_runtime.go).
 	lastPass time.Time
@@ -180,6 +185,9 @@ type hubRuntime struct {
 	// Worker goroutine only (icloud.go).
 	ckResetPending bool
 	ckResetAccount bool
+	// ckRetire: the retirement of the uppercase CloudKit zones (zone_spelling.go;
+	// worker goroutine only).
+	ckRetire zoneRetirement
 
 	// push is the work-alert pusher (nil without a relay that sends them).
 	push *alerts.Pusher
@@ -415,6 +423,7 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 	if h.sw != nil {
 		h.sw.SetPublisher(pub)
 	}
+	h.respellCloudKitZones(ctx)
 	if h.paying != nil {
 		// Paused until the first account state shows a paying phone.
 		h.paused = true
@@ -512,7 +521,7 @@ func ensureEnabledAt(st *state.Store, now time.Time) error {
 // heartbeat is the heartbeat source's facts.
 func (h *hubRuntime) heartbeat(st *state.Store, name string) slices.HeartbeatFacts {
 	f := slices.HeartbeatFacts{
-		HubID: h.kr.HubID().String(), MacName: name, AppVersion: guide.Version, Flavor: wire.FlavorOf(BuildFlavor),
+		HubID: h.kr.HubIDText(), MacName: name, AppVersion: guide.Version, Flavor: wire.FlavorOf(BuildFlavor),
 		Clock: h.sup.o.Clock,
 		LastPublishAt: func() (time.Time, bool) {
 			if h.pub == nil {
@@ -1081,8 +1090,14 @@ func zoneKind(zone, data string) string {
 // refuses them (FORBIDDEN) until a phone holds the hub in a slot: a refused
 // zone waits linkEvery, doubling up to maxSubBackoff, and is logged once
 // until it succeeds; the hub becoming vouched (SLOT_ADDED, or a poll that
-// sees a slot) clears the waits. A subscription that takes means
-// the relay is reachable.
+// sees a slot) clears the waits. A phone newly admitted while the hub was
+// already vouched (retryZonesNow: a new admission stamp, SLOT_ADDED) makes
+// the refused zones due now, keeping their failure count: a phone that
+// named its relay id has its mailbox refused until the relay puts the hub
+// in its slot, often within the same second, and its transport_switch must
+// not wait linkEvery (#1761). A refusal after that still backs off, from
+// the doubled wait, so admissions never make it spin. A subscription that
+// takes means the relay is reachable.
 func (h *hubRuntime) watchZones(ctx context.Context, zw zoneWatcher) {
 	if _, ok := h.relayT().(relayAdmission); ok {
 		v := h.relayVouched()
@@ -1090,6 +1105,11 @@ func (h *hubRuntime) watchZones(ctx context.Context, zw zoneWatcher) {
 			clear(h.subRetry)
 		}
 		h.wasVouched = v
+	}
+	if h.zonesDue.Swap(false) {
+		for _, r := range h.subRetry {
+			r.next = time.Time{}
+		}
 	}
 	zones, err := h.zones()
 	if err != nil {
@@ -1131,6 +1151,7 @@ func (h *hubRuntime) watchZones(ctx context.Context, zw zoneWatcher) {
 func (h *hubRuntime) housekeeping(ctx context.Context) {
 	h.retryCloudKitReset(ctx)
 	h.refreshCloudKitAccount(ctx)
+	h.retireOldCloudKitZones(ctx)
 	h.savePhoneContact()
 	if err := h.center.Sweep(); err != nil {
 		log.Printf("hub: link sweep failed (%s)", errClass(err))

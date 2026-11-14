@@ -14,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"watchtower/internal/hub/actions"
@@ -440,9 +441,6 @@ func (r *relayOnly) pair(promote func()) (*hubtest.Phone, wire.LinkPayload) {
 	t := r.t
 	c := r.dial()
 	t.Cleanup(func() { _ = c.Close() })
-	if err := c.Send(ControlRequest{Op: OpPair}); err != nil {
-		t.Fatal(err)
-	}
 	next := func(event string) ControlAnswer {
 		t.Helper()
 		for {
@@ -458,7 +456,7 @@ func (r *relayOnly) pair(promote func()) (*hubtest.Phone, wire.LinkPayload) {
 			}
 		}
 	}
-	qr := next(link.EventQR)
+	qr := pairStep(t, c, ControlRequest{Op: OpPair}, link.EventQR, link.EventWaiting)[link.EventQR]
 	lp, err := wire.ParseLinkURL(qr.URL)
 	if err != nil {
 		t.Fatal(err)
@@ -488,10 +486,7 @@ func (r *relayOnly) pair(promote func()) (*hubtest.Phone, wire.LinkPayload) {
 	if promote != nil {
 		promote()
 	}
-	if err := c.Send(ControlRequest{Op: OpConfirm, Device: phone.ID().String(), Confirm: true}); err != nil {
-		t.Fatal(err)
-	}
-	next(link.EventLinked)
+	pairStep(t, c, ControlRequest{Op: OpConfirm, Device: phone.ID().String(), Confirm: true}, link.EventLinked)
 	eventually(t, "the keys in the pair zone", func() bool {
 		kb, ok, err := phone.ReadKeybox(pair)
 		if err != nil {
@@ -518,6 +513,13 @@ func (r *relayOnly) pauseNow() {
 	r.fake.SetAccountState(notPaying())
 	r.fake.SendEvent(transport.Event{Control: &transport.Control{Kind: transport.EntitlementExpired}})
 	r.waitState(StatePaused, ReasonNeedsRelay)
+	// setPaying sets paused (the status' reason) before it holds the
+	// publisher and the processors, so another poke can report paused while
+	// a cycle started before the hold (such as the device_grant the readers
+	// sync after ENTITLEMENT_EXPIRED asks for) still writes. The hold is in
+	// place, and that cycle over, once every goroutine of the bubble waits
+	// (#1756).
+	synctest.Wait()
 }
 
 func (r *relayOnly) grantInDataZone(phone *hubtest.Phone) bool {

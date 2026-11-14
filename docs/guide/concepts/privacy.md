@@ -61,6 +61,7 @@ Every AI feature sends the relevant text to the provider you chose in [AI provid
 - **Asking with ⌘/:** the same as Chats, plus a short note on the tab you are on, its empty-state status line and the selected item's title. The note is sent with that message only and is not stored.
 - **Automations:** a confirmed automation sends data to the provider on its own schedule whenever its recipe calls `llm()` or `agent()`.
 - **Knowledge search:** new images (strong model) and the text of public pages that synced Slack or Confluence links point to (light model). See [Images and links](../features/search-and-knowledge.md#images-and-links).
+- **Agent coach and tuning chat:** the numbers from a workbench's **Analytics**, your Watchtower prompts, skills, instruction files and allow rules, and for the coach your spec and code review findings and comments and the lines you sent to agents and chats. The tuning chat reads no Slack, mail, Jira, Linear or meeting text.
 - **Workbench sessions:** run by Claude Code or Codex in your folder, so they go to that agent's provider. Anything that agent reads or writes is its provider's concern.
 
 With **Ollama / Local** on a server on your own machine, the text never leaves it. Point it at a remote server and it goes there.

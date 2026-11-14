@@ -49,6 +49,10 @@ protocol TerminalSessionProcess: AnyObject {
     func waitForExit(timeout: Duration) async -> Bool
     /// Tells the host whether a permission dialog is up in the run.
     @discardableResult func sendPromptHint(dialog: Bool) -> Bool
+    /// The pid a close may signal: 0 when the run's pid can no longer be
+    /// trusted (a disconnected hosted run the host does not list running
+    /// with it; #1086).
+    func signalablePID() async -> pid_t
     /// The owner's own input reached the session (a keystroke, a paste),
     /// with its bytes — never `sendInput` or the terminal's replies (focus
     /// and mouse reports). Main thread.
@@ -101,6 +105,7 @@ extension TerminalSessionProcess {
     func requestStop() async -> Bool { false }
     func waitForExit(timeout: Duration) async -> Bool { true }
     func sendPromptHint(dialog: Bool) -> Bool { false }
+    func signalablePID() async -> pid_t { pid }
 
     func setPathLinkHandler(folder: @escaping () -> String, open: @escaping (TerminalPathLinks.Location) -> Void) {}
     func setAskLinkHandler(lookUp: @escaping (Int64) async -> OwnerAsk?, open: @escaping (Int64) -> Void) {}
@@ -157,6 +162,17 @@ final class TerminalCenter {
 
     /// Keyed by `terminal_sessions.id`.
     private(set) var states: [Int64: State] = [:]
+    /// Running sessions whose session host connection is lost while the
+    /// host may still run them (#1086): the pane shows the disconnected bar
+    /// with Reconnect, and no Restart. The state stays `.running` — the run
+    /// is not over until the host says so.
+    private(set) var hostLinks: [Int64: HostedTerminalSession.HostLink] = [:]
+    /// Live runs the host holds for a row beside the one the row shows
+    /// (#1086: a Restart before this fix could launch one beside a lost
+    /// run), by row: never signalled by a reattach, counted live
+    /// (`liveIDs`), stopped by the pane's Stop, a close and Start fresh
+    /// (`stopLiveHostRuns`), left running by an update's quit.
+    private(set) var extraHostRuns: [Int64: [SessionHostSessionInfo]] = [:]
     /// Sessions whose last prompt went to the clipboard: the terminal pane
     /// shows the ⌘V hint until the owner dismisses it or the next delivery.
     private(set) var clipboardHints: Set<Int64> = []
@@ -380,7 +396,18 @@ final class TerminalCenter {
     }
 
     var liveIDs: Set<Int64> {
-        Set(states.compactMap { $0.value == .running ? $0.key : nil })
+        Set(states.compactMap { $0.value == .running ? $0.key : nil }).union(extraHostRuns.keys)
+    }
+
+    /// Whether a session host client was begun, answering or not.
+    var hasSessionHostClient: Bool { (sessionHost ?? sessionHostClient) != nil }
+
+    /// Sets row `row`'s other live runs, keeping `session` known meanwhile;
+    /// once none is left, a row nothing else holds is let go of.
+    func setExtraHostRuns(_ runs: [SessionHostSessionInfo], row: Int64, session: TerminalSession? = nil) {
+        extraHostRuns[row] = runs.isEmpty ? nil : runs
+        if !runs.isEmpty, rows[row] == nil, let session { rows[row] = session }
+        if runs.isEmpty, processes[row] == nil, states[row] == nil, pendingLaunches[row] == nil { rows[row] = nil }
     }
 
     /// The launch's reattach of the session host's runs is done (or there
@@ -952,17 +979,17 @@ final class TerminalCenter {
     /// The owner typed or pasted into the session. Input that answers a
     /// permission dialog changes nothing: the prompt still holds what it
     /// held. Otherwise a submitting Return (`isSubmit`) empties the prompt
-    /// (`promptDrafts`) and any other input leaves a draft in it. A copied
-    /// answer's hint turns into "press Return" (the paste was the first
-    /// step); a typed one has done its job; a held one waits for its
-    /// delivery.
+    /// (`promptDrafts`); Shift+Tab (`isShiftTab`) leaves it as it was; any
+    /// other input — Esc and Ctrl+C too — leaves a draft. A copied answer's
+    /// hint turns into "press Return" (the paste was the first step); a
+    /// typed one has done its job; a held one waits for its delivery.
     private func ownerInput(_ sessionID: Int64, _ bytes: [UInt8]) {
         guard !bytes.isEmpty, !inputAnswersDialog(sessionID) else { return }
         let backslashBefore = ownerBackslashPending.contains(sessionID)
         if Self.isSubmit(bytes, backslashBefore: backslashBefore, profile: inputProfile(sessionID)) {
             clearPromptDraft(sessionID)
             if let run = runs[sessionID], pendingReturns.contains(run) { ownerReturnsInPause.insert(run) }
-        } else {
+        } else if !Self.isShiftTab(bytes) {
             promptDrafts.insert(sessionID)
         }
         if Self.endsAfterBackslash(bytes, backslashBefore: backslashBefore) {
@@ -974,75 +1001,6 @@ final class TerminalCenter {
         case nil, .held?, .stillHeld?, .queued?: break
         case .copied?: answerHints[sessionID] = .typed
         case .typed?: answerHints[sessionID] = nil
-        }
-    }
-
-    /// Whether the owner's input submits the agent's prompt: it ends in the
-    /// profile's `submit` (a plain Return, CR) that does not follow ESC
-    /// (Option+Return), does not end in the profile's `newline`, and whose
-    /// last printable input before it — in this chunk or earlier ones
-    /// (`backslashBefore`), escape sequences such as cursor keys and paste
-    /// brackets skipped — is not `\` (`\` then Return is a line break).
-    /// Anything else is a draft: Ctrl+J (LF), Shift+Return under an extended
-    /// keyboard protocol (an escape sequence ending in `u` or `~`), any
-    /// other key. When unsure the input counts as a draft, which costs the
-    /// owner a Return of their own, never a line submitted with theirs —
-    /// so the `\` rule holds for every agent, Codex too.
-    static func isSubmit(_ bytes: [UInt8], backslashBefore: Bool, profile: AgentInputProfile = .claude) -> Bool {
-        if let newline = profile.newline, endsIn(bytes, newline) { return false }
-        guard endsIn(bytes, profile.submit) else { return false }
-        let body = bytes.dropLast(profile.submit.count)
-        if body.last == 0x1B { return false }
-        return !endsAfterBackslash(body, backslashBefore: backslashBefore)
-    }
-
-    /// Whether `bytes` ends in the non-empty key sequence `key`.
-    private static func endsIn(_ bytes: [UInt8], _ key: [UInt8]) -> Bool {
-        !key.isEmpty && bytes.suffix(key.count).elementsEqual(key)
-    }
-
-    /// Whether, after `bytes`, the last printable input is `\` with only
-    /// escape sequences (CSI `ESC [ … final`, SS3 `ESC O x`, `ESC x`) since —
-    /// paste brackets are CSI sequences too. A CR or LF ends the line and
-    /// clears it; any other byte keeps it as it was (fail safe: a draft).
-    static func endsAfterBackslash<Bytes: Collection>(_ bytes: Bytes, backslashBefore: Bool) -> Bool
-        where Bytes.Element == UInt8 {
-        var pending = backslashBefore
-        var index = bytes.startIndex
-        while index != bytes.endIndex {
-            let byte = bytes[index]
-            index = bytes.index(after: index)
-            switch byte {
-            case 0x1B:
-                index = escapeSequenceEnd(in: bytes, after: index)
-            case 0x0D, 0x0A:
-                pending = false
-            case 0x20...0x7E, 0x80...:
-                pending = byte == UInt8(ascii: "\\")
-            default:
-                break
-            }
-        }
-        return pending
-    }
-
-    /// The index just past the escape sequence whose ESC came before
-    /// `start`.
-    private static func escapeSequenceEnd<Bytes: Collection>(in bytes: Bytes, after start: Bytes.Index) -> Bytes.Index
-        where Bytes.Element == UInt8 {
-        guard start != bytes.endIndex else { return start }
-        var index = bytes.index(after: start)
-        switch bytes[start] {
-        case UInt8(ascii: "["):
-            // Parameters and intermediates, then one final byte 0x40–0x7E.
-            while index != bytes.endIndex, !(0x40...0x7E).contains(bytes[index]) {
-                index = bytes.index(after: index)
-            }
-            return index == bytes.endIndex ? index : bytes.index(after: index)
-        case UInt8(ascii: "O"):
-            return index == bytes.endIndex ? index : bytes.index(after: index)
-        default:
-            return index
         }
     }
 
@@ -1210,11 +1168,17 @@ final class TerminalCenter {
             // The owner's stop (the host's requested exit) is the app's too.
             let closedByApp = process.map { self.processes[id] !== $0 || $0.neverStarted || $0.exitRequested } ?? true
             states[id] = .exited(code)
+            hostLinks[id] = nil
             answerHints[id] = nil
             onSessionExit?(id, code, closedByApp)
             onRowExit?(id)
         }
         process.onOwnerInput = { [weak self] bytes in self?.ownerInput(id, bytes) }
+        hostLinks[id] = nil
+        (process as? HostedTerminalSession)?.onHostLinkChange = { [weak self, weak process] link in
+            guard let self, let process, processes[id] === process else { return }
+            hostLinks[id] = link == .connected ? nil : link
+        }
         process.onDeliveryEvent = { [weak self, weak process] event in
             guard let self, let process, processes[id] === process else { return }
             deliveryEvent(id, event)
@@ -1287,10 +1251,15 @@ final class TerminalCenter {
     /// is adopted too, so the pane shows its last output: its session
     /// reports the exit once through `onSessionExit` as a natural exit and
     /// forgets it; every other exited run is forgotten here. A running run
-    /// whose row is gone — or that is not the one the row runs — is
-    /// stopped (hang-up, then kill after `killGrace`) and forgotten in
-    /// `strayStops`, which the caller need not wait for. Runs this center already holds are left to their
-    /// session. Safe to call again: a second call finds its own runs held.
+    /// whose row is gone is stopped (hang-up, then kill after `killGrace`)
+    /// and forgotten in `strayStops`, which the caller need not wait for.
+    /// A running run of a row that still exists is never signalled
+    /// (#1086): one the row does not show — an older run beside the adopted
+    /// one, or one beside the run the row already shows — may be an agent
+    /// still at work, so it is kept in `extraHostRuns` (replaced by each
+    /// call) for the owner to stop. Runs this
+    /// center already holds are left to their session. Safe to call again:
+    /// a second call finds its own runs held.
     func reattach(_ listed: [SessionHostSessionInfo], rows existing: [Int64: TerminalSession]) async {
         guard let host = sessionHost else { return }
         let scope = sessionHostScope
@@ -1299,16 +1268,27 @@ final class TerminalCenter {
                 && (processes[info.row] as? HostedTerminalSession)?.key != SessionHostAttachRequest(row: info.row, run: info.run)
         }
         var strays: [SessionHostSessionInfo] = []
+        var extras: [Int64: [SessionHostSessionInfo]] = [:]
         let running = Dictionary(grouping: unheld.filter { !$0.exited }, by: \.row)
         for (row, runs) in running {
-            let newestFirst = runs.sorted { $0.startedAtMs > $1.startedAtMs }
-            if let session = existing[row], states[row] != .running, let newest = newestFirst.first {
+            guard let session = existing[row] else {
+                strays += runs
+                continue
+            }
+            var newestFirst = runs.sorted { $0.startedAtMs > $1.startedAtMs }
+            if states[row] != .running, let newest = newestFirst.first {
                 adopt(session, info: newest)
-                strays += newestFirst.dropFirst()
-            } else {
-                strays += newestFirst
+                newestFirst.removeFirst()
+            }
+            if !newestFirst.isEmpty {
+                NSLog("TerminalCenter: session %lld has %ld other live hosted runs: kept for the owner to stop",
+                      row, newestFirst.count)
+                extras[row] = newestFirst
             }
         }
+        let ended = Set(extraHostRuns.keys).subtracting(extras.keys)
+        extraHostRuns = extras
+        for id in ended { setExtraHostRuns([], row: id) }
         let exited = Dictionary(grouping: unheld.filter(\.exited), by: \.row)
         var shown: [Int64: String] = [:] // row → the exited run attached
         for (row, runs) in exited {
@@ -1337,10 +1317,10 @@ final class TerminalCenter {
     /// to reap the child, so the host accepts its forget.
     static let reapPolls = 10
 
-    /// Stops a hosted run nothing here shows — its row is gone, or another
-    /// run of the row was adopted — the way `close` stops a session, then
-    /// forgets it in the host.
-    private func stopStray(_ info: SessionHostSessionInfo, host: SessionHostClient) async {
+    /// Stops a hosted run nothing here shows — its row is gone, or the
+    /// owner stopped a row's other run (`stopLiveHostRuns`) — the way
+    /// `close` stops a session, then forgets it in the host.
+    func stopStray(_ info: SessionHostSessionInfo, host: SessionHostClient) async {
         let pid = pid_t(info.pid)
         if pid > 0 {
             signaller.signal(pid, SIGHUP)
@@ -1438,38 +1418,45 @@ final class TerminalCenter {
     /// then a kill after `killGrace` while it is still alive. Either way its
     /// exit is not the session's own (no PROJ-18 cleanup).
     func close(sessionID: Int64) async {
+        // A disconnected run's stop may not reach it: the host is asked again below (#1086).
+        let wasDisconnected = hostLinks[sessionID] != nil
         guard let process = processes.removeValue(forKey: sessionID) else {
+            if extraHostRuns[sessionID] != nil { await stopOtherRuns(of: sessionID) }
             forget(sessionID)
             return
         }
-        let pid = process.pid
         if states[sessionID] == .running, process.isHosted, await process.requestStop() {
             // The host stops it; the close returns once the run is gone, so
             // nothing after it (a cleanup plan) runs beside a live agent.
-            if !(await process.waitForExit(timeout: Self.hostStopWait)), pid > 0 {
-                signaller.signal(pid, SIGKILL)
+            if !(await process.waitForExit(timeout: Self.hostStopWait)) {
+                let pid = await process.signalablePID()
+                if pid > 0 { signaller.signal(pid, SIGKILL) }
             }
-        } else if pid > 0, states[sessionID] == .running {
-            signaller.signal(pid, SIGHUP)
-            var waited: Duration = .zero
-            while waited < Self.killGrace, isRunning(sessionID, pid) {
-                await signaller.sleep(Self.pollStep)
-                waited += Self.pollStep
-            }
-            if isRunning(sessionID, pid) { signaller.signal(pid, SIGKILL) }
+        } else if states[sessionID] == .running {
+            await hangUp(process, sessionID: sessionID)
         }
         process.onExit = nil
         process.onOwnerInput = nil
         process.onOwnerFocus = nil
         process.onDeliveryEvent = nil
         process.detach()
+        // The row's other live runs go with it (#1086).
+        if wasDisconnected || extraHostRuns[sessionID] != nil { await stopOtherRuns(of: sessionID) }
         forget(sessionID)
+    }
+
+    /// A close's stop of the row's other live runs (#1086); one the host could not be
+    /// asked about stays in `extraHostRuns` (live, its bar shown) and is logged.
+    private func stopOtherRuns(of sessionID: Int64) async {
+        if let failure = await stopLiveHostRuns(of: sessionID) {
+            NSLog("TerminalCenter: session %lld closed, but its other runs could not be stopped: %@", sessionID, failure)
+        }
     }
 
     /// Closes every matching session at once, so the wait is one grace, not
     /// N — the quit path (all) and project delete (that project's ids).
     func closeAll(where predicate: (Int64) -> Bool = { _ in true }) async {
-        let ids = Set(processes.keys).union(states.keys).union(pendingLaunches.keys).filter(predicate)
+        let ids = Set(processes.keys).union(states.keys).union(pendingLaunches.keys).union(extraHostRuns.keys).filter(predicate)
         await withTaskGroup(of: Void.self) { group in
             for id in ids {
                 group.addTask { @MainActor in await self.close(sessionID: id) }
@@ -1483,6 +1470,8 @@ final class TerminalCenter {
     /// it is never signalled — for the next launch to reattach; any other
     /// process is closed as `closeAll` closes it.
     func detachAll() async {
+        // A row's other live runs keep running too (#1086).
+        for id in extraHostRuns.keys { setExtraHostRuns([], row: id) }
         for (id, process) in processes {
             guard let hosted = process as? HostedTerminalSession else { continue }
             processes[id] = nil
@@ -1497,7 +1486,7 @@ final class TerminalCenter {
 
     /// The live sessions the session host runs — the ones a quit can keep.
     var liveHostedCount: Int {
-        liveIDs.filter { processes[$0]?.isHosted == true }.count
+        liveIDs.filter { processes[$0]?.isHosted == true || extraHostRuns[$0] != nil }.count
     }
 
     /// The rows' run marker is gone from the database
@@ -1514,7 +1503,8 @@ final class TerminalCenter {
         pendingLaunches[sessionID] = nil
         missingAgent[sessionID] = nil
         states[sessionID] = nil
-        rows[sessionID] = nil
+        // A row with other runs not stopped stays known (workbench delete, live checks).
+        if extraHostRuns[sessionID] == nil { rows[sessionID] = nil }
         startedAt[sessionID] = nil
         runs[sessionID] = nil
         clearPromptDraft(sessionID)
@@ -1523,7 +1513,23 @@ final class TerminalCenter {
         clipboardHints.remove(sessionID)
         pasteHints.remove(sessionID)
         answerHints[sessionID] = nil
+        hostLinks[sessionID] = nil
+        // `extraHostRuns` stays: only a stop that worked, a reattach or an update's quit drops it.
         focusOrder.removeAll { $0 == sessionID }
+    }
+
+    /// The app's own stop: a hang-up of the pid it may signal, then a kill
+    /// after `killGrace` while it is still alive.
+    private func hangUp(_ process: any TerminalSessionProcess, sessionID: Int64) async {
+        let pid = await process.signalablePID()
+        guard pid > 0 else { return }
+        signaller.signal(pid, SIGHUP)
+        var waited: Duration = .zero
+        while waited < Self.killGrace, isRunning(sessionID, pid) {
+            await signaller.sleep(Self.pollStep)
+            waited += Self.pollStep
+        }
+        if isRunning(sessionID, pid) { signaller.signal(pid, SIGKILL) }
     }
 
     private func isRunning(_ sessionID: Int64, _ pid: pid_t) -> Bool {
@@ -1746,11 +1752,13 @@ final class PalettedTerminalView: LocalProcessTerminalView {
     }
 
     /// Every byte for the process: keystrokes and pastes are the owner's.
-    /// A hosted session's bytes go to the session host instead.
+    /// A hosted session's bytes go to the session host instead, marked
+    /// whether they are the owner's (the host counts only those as a draft).
     override func send(source: TerminalView, data: ArraySlice<UInt8>) {
-        if !forwardingAppInput { onOwnerInput?(Array(data)) }
+        let owner = !forwardingAppInput
+        if owner { onOwnerInput?(Array(data)) }
         if let hostInput {
-            hostInput(Array(data))
+            hostInput(Array(data), owner)
             return
         }
         super.send(source: source, data: data)
@@ -1759,8 +1767,9 @@ final class PalettedTerminalView: LocalProcessTerminalView {
     // MARK: Session host (board #496)
 
     /// Set for a hosted session: the bytes for the process go here, not
-    /// to the (never started) local process.
-    var hostInput: (([UInt8]) -> Void)?
+    /// to the (never started) local process. `owner` is false for the
+    /// terminal's own replies and the app's input (`forwardingAppInput`).
+    var hostInput: ((_ bytes: [UInt8], _ owner: Bool) -> Void)?
     /// Set for a hosted session: the terminal's new columns and rows.
     var hostResize: ((_ cols: Int, _ rows: Int) -> Void)?
     /// While set, the terminal's own replies (`send(source: Terminal, …)`)

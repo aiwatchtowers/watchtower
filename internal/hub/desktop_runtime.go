@@ -60,7 +60,7 @@ func (h *hubRuntime) desktopTransports(ctx context.Context, o Options) error {
 		h.rel = rel
 		_, h.relDown = rel.(relayConnector)
 	}
-	c := cloudkit.Config{Dir: o.Dir, HubID: h.kr.HubID().String(), RelayID: h.relayID, Clock: o.Clock,
+	c := cloudkit.Config{Dir: o.Dir, HubID: h.kr.HubIDText(), RelayID: h.relayID, Clock: o.Clock,
 		Launch: o.Desktop.launcher(o.Dir)}
 	if c.Launch == nil {
 		// No bridge: CloudKit is neither run nor offered (relay only).

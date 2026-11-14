@@ -33,7 +33,7 @@ One runtime (`internal/hub`, `Run`) inside the daemon joins these packages:
 | `internal/hub/transport` | The `Transport` seam (`Write`/`Changes`/`Delete`, `Expect` preconditions, zones), `relay` — the hosted relay client (the relay's Go client and generated proto vendored by `make relay-go`, pinned in `transport/relay/VERSION`) — `memfake`, the in-memory relay/CloudKit stand-in for tests, and `cloudkit` (phase 3) — the client of `WatchtowerCloudBridge.app` over `<hub dir>/bridge.sock` (`bridge.proto`/`bridgepb`, frames pinned by `testdata/frames.json` for the Swift bridge; runtime zone names mapped onto `DataZone-<hub_id>`/`RelayZone-<hub_id>`, every phone on the one shared mailbox `relay/<relay id>/*`; the bridge's generation in `<hub dir>/bridge.generation` so a lost `bridge.db` resets cursors and refuses old tags), its `Supervisor` and the `bridgefake` test bridge. |
 | `internal/hub/link` | Linking: link codes, the pair zone hello, the awaiting keybox, the SAS confirmation (`Confirm(device, code, ok)`), grants (`typing`, `permissions`, `start_sessions`), unlink and the revoke hook; a linked phone's `device` record naming its relay id with the `relay_auth` key's proof (`VerifyRelayIDProof`, relay client Phase 3b Task 23) sets `devices.relay_device_id`, takes the id (with its admission stamp and any relay lapse) off any other row (ask #1005; a hello's unproven id is stored only when no other row holds it), clears the phone's own admission stamp, and `OnRelayIDNamed` makes the runtime run the link upkeep (`set_hub_readers`) and read the account state at once. |
 | `internal/hub/actions` | The processor (ordered actions per phone by `action_seq`: hold ahead of a gap, one `resend_from` per gap (asked again once the ask is 10 minutes old and another action is read ahead of it, #1498), `skip_to`, the exactly-once ledger, `received`/final echoes, the legacy unordered path, controls, and the phone's `device-<id>` record through `link.Center.ApplyDeviceRecord`, on CloudKit's shared `RelayZone` and, since G1, in its relay mailbox with no creator check, see `relay-client.md`) and the dispatcher; the hosted relay keeps one mailbox per phone, read drain-then-read per phone as in phase 1 (a zone event reads only the mailbox it names, see Phase 4 → Relay ops per action), while the shared `RelayZone` (`actions/shared.go`) is read once per pass with every record routed to the phone its envelope's sender names (every linked phone with or without a relay id; a name naming another device than its sender is dropped as `sender_mismatch`; the hub's own records go to the phone whose key opens them; `control_queue` keyed `<zone>@<device>`, moved when a phone's mailbox changes shape; a failed phone's records wait for the next pass with the zone token held back; only a record whose own content fails is struck, and it is passed over after `MaxRecordStrikes` = 3 failures over at least `StrikeWindow` = 10 min — a store or transport error never strikes); `actions/handlers` holds every action handler (asks, board, session start/stop, session input and Interrupt, permission answers, chat/report requests, recording uploads). |
-| `internal/hub/slices` | The publisher (hash per record, debounced saves with a 60 s full diff — only the kinds an applied phone action nudges (`PublishNow`) skip the debounce; they are still held by the transport spacing and by a failed save's retry (the backoff, or the relay's `retry_after_s` after RATE_LIMITED, capped at `RetryRateLimitedMax` 60 s); a held kind keeps its time across the periodic full diff and Resume's full diff, which cover only the kinds not held —, the 900 KB guard, heartbeat), the change watch (`data_version` poll: 250 ms while a phone was in touch within the last 10 min (`ActiveWindow`), else 1 s; nudges from handlers and the session-state lane) and `slices/sources`, one source per slice kind. |
+| `internal/hub/slices` | The publisher (hash per record, debounced saves with a 60 s full diff — only the kinds an applied phone action nudges (`PublishNow`) skip the debounce; they are still held by the transport spacing and by a failed save's retry (the backoff, or the relay's `retry_after_s` after RATE_LIMITED, capped at `RetryRateLimitedMax` 60 s); a held kind keeps its time across the periodic full diff and Resume's full diff, which cover only the kinds not held, except that a Resume after a transport switch drops the retries (and backoffs) of the old transport, spacing holds kept; one kind's failed save does not stop the cycle (#1761): the later kinds still go and only the failed one is retried, on its own backoff (1 s doubling to 10 s, to 5 min for `record_too_large`/`unsupported_version`), while a transport- or zone-wide refusal (`unavailable`, `hub_quota`, `rate_limited`, `forbidden`, `not_vouched`, `unsupported_version`, `entitlement_inactive`), ctx and an epoch rotation still end the cycle (the kinds it never tried back off by the stopping failure's class, by the plain backoff after an epoch rotation); `last_publish_at` moves unless the cycle tried kinds and finished none —, the 900 KB guard, heartbeat), the change watch (`data_version` poll: 250 ms while a phone was in touch within the last 10 min (`ActiveWindow`), else 1 s; nudges from handlers and the session-state lane) and `slices/sources`, one source per slice kind. |
 | `internal/hub/alerts` (phase 4) | The pusher: work alerts to the paying phones over the relay's `send_alert`, at most once per (alert key, phone), with the `alert_pushes` ledger (below). |
 | `internal/hub/measure` (phase 4) | `Recorder`: content-free latency samples (read → applied → slice saved) into `latency_samples`. |
 | `internal/hub/platform` | Darwin/Linux specifics: the owner-away signal, keeping the machine awake, and `PeerUID` (the unix-socket peer check of the control socket and the bridge client). |
@@ -153,7 +153,7 @@ baseline's own columns, checked by the canary test.
 
 The host (`internal/sessionhost`) answers v1 and v2 hellos; a v2 client refuses a v1 host and never replaces it. v2 adds
 operations that never bind the connection to a session, so the hub never takes a run over from the app's window:
-`List`, `InputTo` (bytes into one run and launch — the phone's Interrupt Esc; never the owner's draft), `Deliver`
+`List`, `InputTo` (bytes into one run and launch — the phone's Interrupt Esc, the Desktop pane's terminal replies and app input (#1743); never the owner's draft), `Deliver`
 (PROJ-12's typed-never-submitted delivery inside the host: bracketed paste, the settle pause, `DeliverCheck` before
 the Return, `hold_if_prompt_text` for PROJ-16 lines; outcomes `submitted`, `typed`, `held`, `no_paste_mode`,
 `no_session`), `PromptHint` and `Stop` (the exit carries `requested`, so no PROJ-18 cleanup follows). Every launch of a
@@ -331,6 +331,26 @@ rulings asks #827, #881, #883). The hub leaves the test workspace for real data 
   without `relay_admitted_at`, `relay` with it. `hubtest.Phone.VouchLink` (the copied client's `VouchHub`: VOUCH challenge, then
   `vouch_hub` with no attestation) and `relaytest`'s vouch model (gate incl. open sockets, the relay's refusal order,
   10-minute pending vouch consumed by `promote_pairing`/`add_slot`, best-effort `SLOT_ADDED`, `RemoveSlot`).
+- **Relay saves in requests under the relay's cap** (#1760; `relay.Transport.Save`, `transport/relay/save.go`). The
+  relay refuses a record over 1 MiB and an op body over 1 MiB + 64 KiB as a whole (`RECORD_TOO_LARGE`), and the
+  publisher saves a whole kind per call (a thousand-target board failed every cycle). `Save` packs the items, in
+  order, into requests of at most `saveRequestBudget` (960 KiB estimated, 128 KiB under the cap); an envelope over
+  1 MiB is refused alone (`record_too_large`) and never sent; per request the assets are uploaded first (an
+  attachment over the limit refuses its item alone). A request the relay still refuses `RECORD_TOO_LARGE` is halved
+  and each half sent again; a record refused alone gets `record_too_large`. Any other failure — the relay's answer,
+  a dropped connection, the host stopping (ctx) — fails the whole call at any point, as the CloudKit client does:
+  items of the requests that went through before it may already be in the zone, and the next try re-sends the whole
+  batch (a restart leaves the same state). v1 limit, shared with CloudKit: the publisher records none of a failed
+  call's items, so an item removed (or publishing turned off) before the retry leaves its saved record in the zone
+  until the zone is recreated (no sweep lists a zone). Conflict indexes are per request
+  and mapped back to the items; a refused request re-reads its zones. `relaytest` enforces the same two limits
+  (`MaxRecordBytes`, `MaxBodyBytes`).
+- **Zone subscriptions** (`watchZones`, link upkeep): a zone the relay refuses (FORBIDDEN: no phone holds the hub
+  in a slot for it yet) waits `linkEvery` (1 min) doubling to `maxSubBackoff`; the hub turning vouched clears the
+  waits. A phone newly admitted while the hub was already vouched (a new `relay_admitted_at` stamp, or
+  `SLOT_ADDED`) makes the refused zones due at once and kicks a link upkeep (`retryZonesNow`, #1761: a phone that
+  named its relay id had its mailbox, and its `transport_switch`, read a minute late); the failure count stays, so a
+  refusal after that waits the doubled time.
 - **Session host under a service manager** (PROJ-20 amended for Linux, ask #827): socket dir `/run/user/<uid>` or
   `<data root>/.run` (see Linux behaviour); on Linux `sessionhost.Ensure` always starts the host as the transient unit
   `watchtower-session-host` (`systemd-run --user --collect --quiet --property=UMask=0077`, `--setenv` of `PATH` and the
@@ -389,7 +409,12 @@ decisions asks #843, #851, #956; the plan's Global Constraints are the contract)
   with backoff 1 s → 60 s) carries sealed envelopes and metadata over `<hub dir>/bridge.sock` (0600, peer UID
   checked, u32 BE length ‖ protobuf, 4 MiB max); assets travel as file paths only. It holds no hub key and opens no
   envelope. Its CloudKit state is `<hub dir>/cloudkit/`. It keeps running while the hub is on the relay, to poll the
-  CloudKit mailboxes for a switch back (decision 4).
+  CloudKit mailboxes for a switch back (decision 4). One frame's saves or deletes reach CloudKit in modify requests of
+  at most 200 records and about 1 MiB (`CloudKitBridgeCloud.batches`); a request CloudKit still refuses as a whole
+  (`limitExceeded`) is halved and each half sent again, and only a record refused alone is answered
+  `record_too_large`, for that item alone (#1745: a 4 MiB frame in one request failed every publish cycle). A
+  request that fails otherwise after earlier ones went through keeps their results and refuses the rest with its
+  class; a failure before anything went through still fails the whole call.
 - **Adoption** (`hub adopt`). Desktop's `HubAdoptionDriver` reads the state only through `hub adopt --status --json`,
   hands the settings over on stdin (`--settings-stdin`), then the keys on stdin (`--keys-stdin`, a separate call),
   deletes its Keychain items, and confirms (`--confirm-deleted`). Go derives the Swift directory itself and leaves
@@ -398,6 +423,32 @@ decisions asks #843, #851, #956; the plan's Global Constraints are the contract)
   the Desktop's Keychain items, which Reset All Data does not remove (the guide's privacy page says so).
   **Set up Mobile again** (`hub adopt --set-aside`, after `no_keys`) writes `MOVED` and moves the Swift files into
   `MobileHub/set-aside-<UTC time>/`: kept, never imported or deleted.
+- **`hub_id` keeps its stored spelling** (#1746). The Swift hub stored `UUID().uuidString.lowercased()`; the Go
+  hub makes an uppercase one. CloudKit zone names are case-sensitive and phones compare a grant's and a heartbeat's
+  `hub_id` with their link's as text, so everything that names the hub in text — the bridge's `DataZone-<hub_id>` /
+  `RelayZone-<hub_id>`, link codes, grants, the heartbeat, switch markers — uses `Keyring.HubIDText()` (hub_id as
+  stored), never `HubID().String()` (controls such as `resend_from` keep `HubID().String()`: a phone parses their
+  `hub_id` as a UUID). Releases up to v0.28.0 used the uppercase form, so an adopted hub published into
+  two new, empty zones its phones never read and read a mailbox no phone wrote: no phone action arrived and phones
+  kept the Swift hub's last grant. At start the hub compares `hub_meta.cloudkit_zones_hub_id` (absent = the uppercase
+  form) with the stored spelling; when they differ it runs the account-change reset once (published state forgotten,
+  CloudKit's mailbox read again from the start, the exactly-once ledger answering repeats) and records the mark.
+  **The uppercase zones are deleted once** (#1750): after that mark, while the iCloud account is available,
+  housekeeping (`retireOldCloudKitZones`) sends the bridge `RetireZones{hub_id: <UPPERCASE>}`, which deletes
+  `DataZone-`/`RelayZone-<UPPERCASE>` and the bridge's `watchtower-bridge-db-<UPPERCASE>` database subscription
+  (the extra silent push per private-database change ends) and forgets its tags and cursors of those zones; zones or
+  a subscription already gone count as done. Only another spelling of the hub's id can be named: the Go client
+  (`cloudkit.OtherSpelling`) and the bridge (`BridgeService.otherSpelling`) both refuse the stored spelling itself or
+  any id that differs other than by ASCII case, before CloudKit is called, and zone names are used exactly as given
+  (CloudKit compares them case-sensitively), so the phones' lowercase zones are never touched. A Go-made hub (stored
+  uppercase) has nothing to retire and never asks. `hub_meta.cloudkit_retired_zones_hub_id` records the deletion only
+  after the bridge answered done; a failure (bridge down, an older bridge that answers `bad_request`, iCloud
+  unavailable) never holds the hub, is logged once per class and run, and is retried after a backoff (10 min doubling
+  to 12 h, and at every start). Writers of those zones: only builds up to v0.28.0 (this Mac, before the update) and a
+  phone that linked to an adopted hub while it ran v0.28.0 — it got an uppercase code and lives in those zones; the
+  deletion wins over such a phone for good (its writes then fail with the zone gone) and it must link again, which it
+  already needed. v1 limits: an iCloud account change before the deletion leaves the uppercase zones in the old
+  account (the deletion then runs in the new one, finds nothing and is recorded).
 - **Transport switch.** Only a person switches: a paying phone's `transport_switch`, or `entitlement_expired`. A switch
   toward the relay waits at least 5 minutes after the previous one; a switch toward CloudKit is immediate. Every
   accepted switch rotates the keyring. A notice is left in the transport being left (decision 1), and old keys are

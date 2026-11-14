@@ -104,6 +104,55 @@ func TestAStopDuringTheFirstHeartbeatsAccountsReadWritesNothing(t *testing.T) {
 	}
 }
 
+// stopAfterWrite stops the cycle (cancels its ctx) right after each Save or
+// Delete went through: the hub stopped between a write and its bookkeeping.
+type stopAfterWrite struct {
+	*memfake.Fake
+	stop context.CancelFunc
+}
+
+func (s stopAfterWrite) Save(ctx context.Context, items []transport.SaveItem) ([]transport.Outcome, error) {
+	defer s.stop()
+	return s.Fake.Save(ctx, items)
+}
+
+func (s stopAfterWrite) Delete(ctx context.Context, zone string, items []transport.DeleteItem) ([]transport.Outcome, error) {
+	defer s.stop()
+	return s.Fake.Delete(ctx, zone, items)
+}
+
+// A stop between a write and its bookkeeping still records it: a saved
+// record slice_state does not name is out of reach of every later delete
+// (the policy wipe of a stopped hub left it in the zone, #1756), and a
+// deleted one stays forgotten.
+func TestAStopAfterAWriteStillRecordsIt(t *testing.T) {
+	r := newRig(t, transport.KindRelay)
+	src := &fakeSource{kind: "workbench"}
+	src.set(item("1", `{"id":1}`))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	p := r.publisherWith(Config{Transport: stopAfterWrite{Fake: r.tr, stop: cancel}}, src)
+	_, _ = p.Cycle(ctx, nil) // stopped after its save: the error is ctx's
+	if _, ok := r.live()[r.wireName("workbench-1")]; !ok {
+		t.Fatal("the save did not go out")
+	}
+	if hashes, err := r.st.SliceHashes("workbench"); err != nil || hashes["workbench-1"].WireName == "" {
+		t.Fatalf("a saved record is not in slice state: %v, %v", hashes, err)
+	}
+
+	src.set()
+	ctx, cancel = context.WithCancel(context.Background())
+	defer cancel()
+	p = r.publisherWith(Config{Transport: stopAfterWrite{Fake: r.tr, stop: cancel}}, src)
+	_, _ = p.Cycle(ctx, nil)
+	if _, ok := r.live()[r.wireName("workbench-1")]; ok {
+		t.Fatal("the delete did not go out")
+	}
+	if hashes, err := r.st.SliceHashes("workbench"); err != nil || len(hashes) != 0 {
+		t.Fatalf("a deleted record is still in slice state: %v, %v", hashes, err)
+	}
+}
+
 // twin of HubHeartbeatTests.testLastPublishAtComesFromTheInjectedClock
 func TestLastPublishAtComesFromTheInjectedClock(t *testing.T) {
 	r := newRig(t, transport.KindRelay)

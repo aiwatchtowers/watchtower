@@ -211,11 +211,11 @@ final class ActionStripAutomationOutputTests: XCTestCase {
 
         // The opening waits on the writer (its selection is set just before).
         let opening = Task { await vm.select(.output(id)) }
-        await waitUntil { vm.selection == .output(id) }
+        await untilObserved { vm.selection == .output(id) }
         // Without its own key the Done would return here at once, dropped;
         // with it, the Done waits on the writer too.
         let done = Task { await vm.markOutputDone(id) }
-        await waitUntil { vm.isWriting(output: id) }
+        await untilObserved { vm.isWriting(output: id) }
         release.signal()
         try await holder.value
         await opening.value
@@ -470,16 +470,5 @@ final class ActionStripAutomationOutputTests: XCTestCase {
         XCTAssertNotNil(try XCTUnwrap(outputRow(pool, id))["done_at"] as String?)
         XCTAssertTrue(vm.outputRows.isEmpty)
         XCTAssertNil(vm.selection)
-    }
-
-    private func waitUntil(timeout: TimeInterval = 5, _ condition: @escaping @MainActor () -> Bool) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !condition() {
-            if Date() > deadline {
-                XCTFail("condition not met in \(timeout)s")
-                return
-            }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
     }
 }

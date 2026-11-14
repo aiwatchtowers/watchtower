@@ -6,6 +6,54 @@ import WatchtowerCore
 @testable import WatchtowerDesktop
 import WatchtowerTestSupport
 
+/// A count other threads bump, with a wait for a count.
+private final class Tally: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    private var waiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+
+    var value: Int { lock.withLock { count } }
+
+    @discardableResult
+    func bump() -> Int {
+        let (now, ready) = lock.withLock {
+            count += 1
+            let now = count
+            let ready = waiters.filter { now >= $0.count }.map(\.continuation)
+            waiters.removeAll { now >= $0.count }
+            return (now, ready)
+        }
+        ready.forEach { $0.resume() }
+        return now
+    }
+
+    func until(_ target: Int) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let met = lock.withLock {
+                if count >= target { return true }
+                waiters.append((target, continuation))
+                return false
+            }
+            if met { continuation.resume() }
+        }
+    }
+}
+
+/// The table observation, handing out a value only when the view model asks
+/// for one: the ask for value N + 1 means value N was applied.
+private final class PulledChanges: @unchecked Sendable {
+    let pulls = Tally()
+    private var base: AsyncThrowingStream<Void, Error>.AsyncIterator?
+
+    func changes(_ pool: DatabasePool) -> AsyncThrowingStream<Void, Error> {
+        base = SidebarCountsViewModel.tableChanges(pool).makeAsyncIterator()
+        return AsyncThrowingStream { [self] in
+            pulls.bump()
+            return try await base?.next()
+        }
+    }
+}
+
 @MainActor
 final class SidebarCountsViewModelTests: XCTestCase {
     override func tearDown() async throws {
@@ -474,14 +522,11 @@ final class SidebarCountsViewModelTests: XCTestCase {
     func testAFailedObservationStartsAgainAndReloadsTheCounts() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        let starts = OSAllocatedUnfairLock(initialState: 0)
+        let starts = Tally()
         let vm = SidebarCountsViewModel(
             dbPool: manager.dbPool,
             changes: { _ in
-                let start = starts.withLock { count -> Int in
-                    count += 1
-                    return count
-                }
+                let start = starts.bump()
                 return AsyncThrowingStream { continuation in
                     // The first start fails at once; the restart delivers
                     // its start value and stays open.
@@ -492,7 +537,8 @@ final class SidebarCountsViewModelTests: XCTestCase {
                     }
                 }
             },
-            backoff: RestartBackoff(first: .milliseconds(10))
+            backoff: RestartBackoff(first: .milliseconds(10)),
+            pause: { _ in } // swiftlint:disable:this trailing_closure
         )
         await vm.loadInitial()
         XCTAssertEqual(vm.catchUpTotalCount, 0)
@@ -500,13 +546,8 @@ final class SidebarCountsViewModelTests: XCTestCase {
 
         vm.startObserving()
         defer { vm.stopObserving() }
-        let deadline = ContinuousClock.now + .seconds(3)
-        while vm.catchUpTotalCount == 0 || starts.withLock({ $0 }) < 2, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(10))
-        }
-
-        XCTAssertEqual(vm.catchUpTotalCount, 1, "the restart's first value reloads the counts")
-        XCTAssertEqual(starts.withLock { $0 }, 2, "observing again after the pause, and only once")
+        await untilObserved { vm.catchUpTotalCount == 1 } // the restart's first value reloads the counts
+        XCTAssertEqual(starts.value, 2, "observing again after the pause, and only once")
     }
 
     /// The live observation follows this process's writes, one made right
@@ -519,11 +560,7 @@ final class SidebarCountsViewModelTests: XCTestCase {
         vm.startObserving()
         defer { vm.stopObserving() }
         try await manager.dbPool.write { try Self.insertRecap($0, status: "ready") }
-        let deadline = ContinuousClock.now + .seconds(3)
-        while vm.catchUpTotalCount == 0, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        XCTAssertEqual(vm.catchUpTotalCount, 1)
+        await untilObserved { vm.catchUpTotalCount == 1 }
     }
 
     /// A write to `automations` (Waiting for me turned off in this process)
@@ -535,21 +572,21 @@ final class SidebarCountsViewModelTests: XCTestCase {
             try TestDatabase.insertInboxItem(db, channelID: "C001", messageTS: "1700000000.000100")
             try Self.insertWaitingForMe(db, enabled: true)
         }
-        let vm = SidebarCountsViewModel(dbPool: manager.dbPool)
+        let changes = PulledChanges()
+        let vm = SidebarCountsViewModel(dbPool: manager.dbPool) { changes.changes($0) }
         await vm.loadInitial()
         XCTAssertEqual(vm.inboxStripCount, 1, "no run yet: the Messages entry stands in")
         vm.startObserving()
         defer { vm.stopObserving() }
-        // Let the start's own value land first, so only the write can re-count.
-        try await Task.sleep(for: .milliseconds(300))
+        // The start's own value lands first (the view model asks for the
+        // next one once it applied it), so only the write can re-count.
+        await changes.pulls.until(2)
+        XCTAssertEqual(vm.inboxStripCount, 1)
         try await manager.dbPool.write { db in
             try db.execute(sql: "UPDATE automations SET enabled = 0 WHERE builtin_id = 'waiting-for-me'")
         }
-        let deadline = ContinuousClock.now + .seconds(3)
-        while vm.inboxStripCount != 0, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        XCTAssertEqual(vm.inboxStripCount, 0, "turned off: the badge re-counts without another table's write")
+        // Turned off: the badge re-counts without another table's write.
+        await untilObserved { vm.inboxStripCount == 0 }
     }
 
     /// Every start delivers a value, so an error right after each start must
@@ -557,15 +594,12 @@ final class SidebarCountsViewModelTests: XCTestCase {
     func testTheBackoffDoublesWhenEachStartFailsAfterItsFirstValue() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        let starts = OSAllocatedUnfairLock(initialState: 0)
+        let starts = Tally()
         let pauses = OSAllocatedUnfairLock<[Duration]>(initialState: [])
         let vm = SidebarCountsViewModel(
             dbPool: manager.dbPool,
             changes: { _ in
-                let start = starts.withLock { count -> Int in
-                    count += 1
-                    return count
-                }
+                let start = starts.bump()
                 return AsyncThrowingStream { continuation in
                     continuation.yield()
                     // The fourth run delivers a change too, then fails.
@@ -579,10 +613,8 @@ final class SidebarCountsViewModelTests: XCTestCase {
         )
         vm.startObserving()
         defer { vm.stopObserving() }
-        let deadline = ContinuousClock.now + .seconds(3)
-        while starts.withLock({ $0 }) < 5, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        // Each pause is taken before the start it leads to.
+        await starts.until(5)
 
         XCTAssertEqual(pauses.withLock { $0 }, [.seconds(2), .seconds(4), .seconds(8), .seconds(2)])
     }

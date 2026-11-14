@@ -26,6 +26,8 @@ final class FakeHubSocket: @unchecked Sendable {
     private var open: [Int32] = []
     private var stopped = false
     private var closedConnections = 0
+    /// Waits on (watchers, closed connections), woken by each change.
+    private var waiters: [(due: (Int, Int) -> Bool, continuation: CheckedContinuation<Void, Never>)] = []
     var answer: @Sendable ([String: Any]) -> [String] = { _ in [#"{"ok":true}"#] }
 
     init() throws {
@@ -53,6 +55,30 @@ final class FakeHubSocket: @unchecked Sendable {
     var watcherCount: Int { lock.withLock { watchers.count } }
     /// Connections the client closed (its side hung up).
     var closedCount: Int { lock.withLock { closedConnections } }
+
+    /// Returns once `count` watches are registered.
+    func untilWatchers(_ count: Int) async { await until { watchers, _ in watchers >= count } }
+
+    /// Returns once the client closed `count` connections.
+    func untilClosed(_ count: Int) async { await until { _, closed in closed >= count } }
+
+    private func until(_ due: @escaping (Int, Int) -> Bool) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let now: Bool = lock.withLock {
+                if due(watchers.count, closedConnections) { return true }
+                waiters.append((due, continuation))
+                return false
+            }
+            if now { continuation.resume() }
+        }
+    }
+
+    /// The waiters whose condition now holds, taken off; call under `lock`.
+    private func dueWaiters() -> [CheckedContinuation<Void, Never>] {
+        let due = waiters.filter { $0.due(watchers.count, closedConnections) }
+        waiters.removeAll { $0.due(watchers.count, closedConnections) }
+        return due.map(\.continuation)
+    }
 
     func push(_ line: String) {
         lock.withLock { watchers.forEach { Self.send($0, line) } }
@@ -113,12 +139,14 @@ final class FakeHubSocket: @unchecked Sendable {
         while true {
             let n = read(c, &chunk, chunk.count)
             guard n > 0 else {
-                lock.withLock {
+                let woken = lock.withLock {
                     closedConnections += 1
                     open.removeAll { $0 == c }
                     watchers.removeAll { $0 == c }
                     close(c)
+                    return dueWaiters()
                 }
+                woken.forEach { $0.resume() }
                 return
             }
             buffer.append(contentsOf: chunk[0..<n])
@@ -128,10 +156,12 @@ final class FakeHubSocket: @unchecked Sendable {
                 guard let request = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else { continue }
                 lock.withLock { requests.append(request) }
                 let lines = answer(request)
-                lock.withLock {
+                let woken = lock.withLock {
                     for out in lines { Self.send(c, out) }
                     if request["op"] as? String == "desktop_watch" { watchers.append(c) }
+                    return dueWaiters()
                 }
+                woken.forEach { $0.resume() }
             }
         }
     }
@@ -140,14 +170,6 @@ final class FakeHubSocket: @unchecked Sendable {
         let data = Array((line + "\n").utf8)
         _ = data.withUnsafeBufferPointer { Darwin.write(c, $0.baseAddress, $0.count) }
     }
-}
-
-/// Polls `condition` up to 5 s (the fake server answers on its own threads).
-func waitUntil(_ what: String, _ condition: () -> Bool) async {
-    for _ in 0..<500 where !condition() {
-        try? await Task.sleep(for: .milliseconds(10))
-    }
-    XCTAssertTrue(condition(), what)
 }
 
 final class HubControlClientTests: XCTestCase {
@@ -227,7 +249,7 @@ final class HubControlClientTests: XCTestCase {
         var events = HubControlClient(socketPath: server.path).watch().makeAsyncIterator()
         let first = try await events.next()
         XCTAssertEqual(first, .snapshot(HubStatus(state: "off", reason: "disabled")))
-        await waitUntil("the watch is registered") { server.watcherCount == 1 }
+        await server.untilWatchers(1)
         server.push(#"{"event":"status","ok":false,"state":"running"}"#)
         server.push(#"{"event":"recording_queued","ok":false,"upload_id":"u-1"}"#)
         server.push(#"{"event":"pair","ok":false,"pair":"linked","device_id":"d-1"}"#)
@@ -251,14 +273,20 @@ final class HubControlClientTests: XCTestCase {
     func testCancellingTheWatchClosesItsSocket() async throws {
         server.answer = { _ in [#"{"op":"desktop_watch","ok":true,"state":"running"}"#] }
         let stream = HubControlClient(socketPath: server.path).watch()
+        let (seen, seenSignal) = AsyncStream<Void>.makeStream()
         let consumer = Task {
             var count = 0
-            for try await _ in stream { count += 1 }
+            for try await _ in stream {
+                count += 1
+                seenSignal.yield()
+            }
             return count
         }
-        await waitUntil("the watch is registered") { server.watcherCount == 1 }
+        var seenEvents = seen.makeAsyncIterator()
+        _ = await seenEvents.next()
+        await server.untilWatchers(1)
         consumer.cancel()
-        await waitUntil("the client closed its side") { server.closedCount == 1 }
+        await server.untilClosed(1)
         let count = try await consumer.value
         XCTAssertEqual(count, 1, "the snapshot, then a clean end")
     }

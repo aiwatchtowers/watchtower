@@ -153,7 +153,7 @@ final class ReplicaWiringTests: XCTestCase {
         XCTAssertFalse(root.showsOnboarding)
         XCTAssertEqual(env.session(DemoSeed.secondary.hubID)?.hubName, "Home Mac")
 
-        try await poll(timeout: 20, {
+        try await poll({
             env.sessions.values.allSatisfy { !$0.workbenchReplica.snapshot.workbenches.isEmpty }
         }, "both Macs hydrated")
         XCTAssertEqual(env.workbenchReplica.snapshot.workbenches.map(\.name).sorted(), ["Acme", "Acme Website", "Notes"])

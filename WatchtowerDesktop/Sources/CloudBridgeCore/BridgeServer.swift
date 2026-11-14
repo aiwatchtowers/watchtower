@@ -5,7 +5,8 @@ import Foundation
 
 /// Answers the bridge protocol's requests (internal/hub/transport/cloudkit/bridge.proto) over a `BridgeCloud`
 /// and the share operations; the reference behaviour is the Go side's bridgefake. It checks what the bridge
-/// must: Hello first and one hub per process, the hub's two CloudKit zones only, assets read only from
+/// must: Hello first and one hub per process, the hub's two CloudKit zones only (`RetireZones` deletes those of
+/// another spelling of its hub id and nothing else), assets read only from
 /// `<hub dir>/assets` and downloads written only under `<hub dir>/downloads`, and the generation of every cursor
 /// and tag (another generation's is `token_expired`, never compared). It sees sealed envelopes only and opens
 /// none.
@@ -99,6 +100,8 @@ public actor BridgeService {
                 try ownZone(zone, hubID: hubID)
                 try await backends.shares.removeParticipants(inZoneNamed: zone, userRecordNames: names)
                 return .done
+            case .retireZones(let old):
+                return try await retireZones(old, hubID: hubID, cloud: backends.cloud)
             case .hello, nil:
                 return .failure(class: "bad_request")
             }
@@ -121,6 +124,24 @@ public actor BridgeService {
 
     private func ownZone(_ zone: String, hubID: String) throws {
         guard zone == "DataZone-\(hubID)" || zone == "RelayZone-\(hubID)" else { throw BridgeCloudFailure.unsupportedZone }
+    }
+
+    /// RetireZones: the zones and database subscription of another spelling of the hub id go, and so do the
+    /// tags and cursors this bridge kept for those zones; any other id is `bad_request` before CloudKit is called.
+    private func retireZones(_ old: String, hubID: String, cloud: any BridgeCloud) async throws -> BridgeResult {
+        guard Self.otherSpelling(old, of: hubID) else { return .failure(class: "bad_request") }
+        try await cloud.retireZones(hubID: old)
+        for zone in ["DataZone-\(old)", "RelayZone-\(old)"] { try tags.forget(zone: zone) }
+        return .done
+    }
+
+    /// `other` is `hub` spelled another way: equal ignoring ASCII case (A to Z only, no Unicode folding), different
+    /// byte for byte — the only hub id `RetireZones` may name (the Go client's `cloudkit.OtherSpelling`).
+    public static func otherSpelling(_ other: String, of hub: String) -> Bool {
+        let a = Array(other.utf8), b = Array(hub.utf8)
+        guard a != b, a.count == b.count else { return false }
+        func lower(_ c: UInt8) -> UInt8 { (65...90).contains(c) ? c + 32 : c }
+        return zip(a, b).allSatisfy { lower($0) == lower($1) }
     }
 
     /// `path` resolved (symlinks included) when it lies inside `<hubDir>/<sub>`; nil otherwise.

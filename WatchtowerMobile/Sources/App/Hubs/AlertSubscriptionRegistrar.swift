@@ -17,10 +17,13 @@ final class AlertSubscriptionRegistrar {
     private let hubID: String
     private let route: HubRoute
     private let wake: any PushWake
-    private enum Applied { case unknown, registered, removed }
+    private enum Applied: Equatable { case unknown, registered, removed, refused(enabled: Bool) }
 
-    /// What this process last got CloudKit to do; `unknown` until the first success, so a failure is retried by the
-    /// next call (the next launch, the next foreground, or the next toggle).
+    /// What this process last got CloudKit to do; `unknown` until the first success, so a passing failure (network,
+    /// account, server busy) is retried by the next call (the next launch, the next foreground, or the next toggle).
+    /// A permanent refusal (`CloudKitPushWake.isPermanentRefusal`, e.g. Production never given the subscription type,
+    /// #1749) is `refused`: the same request is not sent again until the switch asks for the other state or the next
+    /// launch, instead of once per foreground.
     private var applied = Applied.unknown
 
     init(hubID: String, route: HubRoute, wake: any PushWake) {
@@ -92,7 +95,7 @@ final class AlertSubscriptionRegistrar {
     private func applyDesired() async {
         let enabled = desired
         let wanted = enabled ? Applied.registered : .removed
-        guard applied != wanted else { return }
+        guard applied != wanted, applied != .refused(enabled: enabled) else { return }
         do {
             if enabled {
                 guard try await wake.subscribeAlerts(hubID: hubID, route: route) else { return }
@@ -102,8 +105,18 @@ final class AlertSubscriptionRegistrar {
             applied = wanted
         } catch {
             let what = enabled ? "save" : "delete"
-            let code = CloudKitPushWake.errorCode(error) ?? String(describing: type(of: error))
-            Self.logger.error("alert subscription \(what, privacy: .public) failed: \(code, privacy: .public)")
+            let detail = CloudKitPushWake.errorDetail(error) ?? String(describing: type(of: error))
+            if CloudKitPushWake.isPermanentRefusal(error) {
+                applied = .refused(enabled: enabled)
+                Self.logger.error("""
+                    alert subscription \(what, privacy: .public) refused: \(detail, privacy: .public); \
+                    not sent again until the next launch or toggle
+                    """)
+            } else {
+                // Whatever CloudKit holds now is unknown, an earlier refusal included: the next call sends again.
+                applied = .unknown
+                Self.logger.error("alert subscription \(what, privacy: .public) failed: \(detail, privacy: .public)")
+            }
         }
     }
 }

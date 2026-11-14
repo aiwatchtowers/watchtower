@@ -80,6 +80,7 @@ func fixtureCases() []struct {
 			Zone: relay, UserRecordNames: []string{"_user-a", "_user-é"},
 		}}}},
 		{"owner_user", &pb.Request{Id: 13, Op: &pb.Request_OwnerUser{OwnerUser: &pb.OwnerUser{}}}},
+		{"retire_zones", &pb.Request{Id: 14, Op: &pb.Request_RetireZones{RetireZones: &pb.RetireZones{HubId: "8c1d2e3f-0000-4000-8000-00000000acme"}}}},
 		{"hello_ok", &pb.Response{Id: 1, Result: &pb.Response_Hello{Hello: &pb.HelloOk{Version: 1, Generation: gen}}}},
 		{"outcomes", &pb.Response{Id: 2, Result: &pb.Response_Outcomes{Outcomes: &pb.Outcomes{Items: []*pb.Outcome{
 			{Saved: true, TagSeq: big},

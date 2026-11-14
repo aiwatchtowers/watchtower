@@ -100,10 +100,11 @@ extension WorkbenchesViewModel {
         if !ids.isEmpty { startSessionDeletes(ids) }
         let writes = deleteWrites
         let bound = quitDeleteWait
+        let arm = quitDeleteTimeout
         let finished = await withCheckedContinuation { continuation in
             let once = ResumeOnce(continuation)
             writes.notify(queue: .global(qos: .userInitiated)) { once.resume(true) }
-            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + bound) { once.resume(false) }
+            arm(bound) { once.resume(false) }
         }
         if !finished {
             NSLog("WorkbenchesViewModel: deleting sessions on quit timed out; they are listed again next launch")

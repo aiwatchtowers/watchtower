@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import os
 import WatchtowerE2ETesting
 import WatchtowerKit
 @testable import WatchtowerSync
@@ -127,7 +128,7 @@ final class OrderedActionsWiringTests: XCTestCase {
             _ = await env.refresh(.pull)
             fetched.fulfill()
         }
-        await fulfillment(of: [fetched], timeout: 5)
+        await fulfillment(of: [fetched])
         XCTAssertEqual(try env.store.pendingActions().first?.delivery, .queued, "the save still hangs")
 
         await transport.releaseHeldSave()
@@ -144,19 +145,22 @@ final class OrderedActionsWiringTests: XCTestCase {
         await transport.holdNextSave()
         addTeardownBlock { await transport.releaseHeldSave() }
         try await env.boardWriter.setStatus(.done, on: try target(415))
-        let deadline = Date().addingTimeInterval(5)
-        while await transport.conditionalSaves.count == savesBefore, Date() < deadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
+        await transport.untilSaveHeld()
         let held = await transport.conditionalSaves.count
         XCTAssertGreaterThan(held, savesBefore, "the enqueue's own flush is held in its save")
 
+        // The cap never runs out here; its wait starting means shutDown() reached the drain.
+        let drainWaits = AsyncStream.makeStream(of: Void.self)
+        env.outboxDrainSleep = { _ in
+            drainWaits.continuation.yield()
+            await untilCancelled()
+        }
         var shutDown = false
         let shutting = Task {
             await env.shutDown()
             shutDown = true
         }
-        try await Task.sleep(for: .milliseconds(200))
+        for await _ in drainWaits.stream { break }
         XCTAssertFalse(shutDown, "the outbox's flush is still running")
 
         await transport.releaseHeldSave()
@@ -169,15 +173,13 @@ final class OrderedActionsWiringTests: XCTestCase {
     func testAHungSaveDoesNotHoldShutDownPastTheCap() async throws {
         let transport = SwitchableTransport()
         let env = try await orderedSession(over: transport)
-        env.outboxDrainCap = .milliseconds(100)
+        let caps = OSAllocatedUnfairLock<[Duration]>(initialState: [])
+        env.outboxDrainSleep = { cap in caps.withLock { $0.append(cap) } } // the cap runs out at once
         let savesBefore = await transport.conditionalSaves.count
         await transport.holdNextSave()
         addTeardownBlock { await transport.releaseHeldSave() }
         try await env.boardWriter.setStatus(.done, on: try target(415))
-        let deadline = Date().addingTimeInterval(5)
-        while await transport.conditionalSaves.count == savesBefore, Date() < deadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
+        await transport.untilSaveHeld()
         let held = await transport.conditionalSaves.count
         XCTAssertGreaterThan(held, savesBefore, "the enqueue's own flush is held in its save")
 
@@ -186,7 +188,8 @@ final class OrderedActionsWiringTests: XCTestCase {
             await env.shutDown()
             returned.fulfill()
         }
-        await fulfillment(of: [returned], timeout: 3)
+        await fulfillment(of: [returned])
+        XCTAssertEqual(caps.withLock { $0 }, [env.outboxDrainCap], "shutDown() waited out its drain cap")
         XCTAssertEqual(try env.store.pendingActions().first?.delivery, .queued, "the save still hangs")
     }
 
@@ -286,7 +289,7 @@ final class OrderedActionsWiringTests: XCTestCase {
         let env = try await orderedSession(over: transport, keys: keys)
 
         await env.keysMerged(newestEpochRaised: false, droppedNewestPair: false)
-        try await env.epochAckWork?.value(within: 60, "env.epochAckWork")
+        await env.epochAckWork?.value
         await env.outbox.drain()
         let adopted = try await phoneControls(in: transport).filter { $0.kind == .epochAck }
         XCTAssertEqual(adopted.map(\.epoch), [1], "the adoption's ack only: no raise, no new ack")
@@ -296,10 +299,10 @@ final class OrderedActionsWiringTests: XCTestCase {
             epoch: 2, dataKey: Data(repeating: 2, count: 32), alertKey: Data(repeating: 3, count: 32)))
         try keys.store.saveHubLink(link)
         await env.keysMerged(newestEpochRaised: true, droppedNewestPair: false)
-        try await env.epochAckWork?.value(within: 60, "env.epochAckWork")
+        await env.epochAckWork?.value
         await env.outbox.drain()
         await env.keysMerged(newestEpochRaised: true, droppedNewestPair: false)
-        try await env.epochAckWork?.value(within: 60, "env.epochAckWork")
+        await env.epochAckWork?.value
         await env.outbox.drain()
 
         let acks = try await phoneControls(in: transport).filter { $0.kind == .epochAck }
@@ -317,7 +320,7 @@ final class OrderedActionsWiringTests: XCTestCase {
         await first.waitForBoot()
         try await publishGrant(orderedActions: 1, over: transport)
         await fetch(first)
-        try await first.epochAckWork?.value(within: 60, "first.epochAckWork")
+        await first.epochAckWork?.value
         await first.shutDown()
         first.closeDatabases()
         let adopted = try await phoneControls(in: transport).filter { $0.kind == .epochAck }
@@ -326,7 +329,7 @@ final class OrderedActionsWiringTests: XCTestCase {
         let second = try session(over: transport, path: path, keys: keys)
         await second.waitForBoot()
         await fetch(second)
-        try await second.epochAckWork?.value(within: 60, "second.epochAckWork")
+        await second.epochAckWork?.value
         await second.outbox.drain()
         let after = try await phoneControls(in: transport).filter { $0.kind == .epochAck }
         XCTAssertEqual(after.map(\.epoch), [1], "no raise: no second ack")
@@ -342,7 +345,7 @@ final class OrderedActionsWiringTests: XCTestCase {
         await first.waitForBoot()
         try await publishGrant(orderedActions: 1, over: transport)
         await fetch(first)
-        try await first.epochAckWork?.value(within: 60, "first.epochAckWork")
+        await first.epochAckWork?.value
         await first.shutDown()
         first.closeDatabases()
 
@@ -353,7 +356,7 @@ final class OrderedActionsWiringTests: XCTestCase {
 
         let second = try session(over: transport, path: path, keys: keys)
         await second.waitForBoot()
-        try await second.epochAckWork?.value(within: 60, "second.epochAckWork")
+        await second.epochAckWork?.value
         await second.outbox.drain()
         let acks = try await phoneControls(in: transport).filter { $0.kind == .epochAck }.compactMap(\.epoch)
         XCTAssertEqual(acks.max(), 2, "the boot acknowledged the raise")
@@ -425,7 +428,7 @@ final class OrderedActionsWiringTests: XCTestCase {
         let on = try await env.outbox.orderedActions()
         XCTAssertTrue(on)
         // The adoption's epoch_ack is written before the test starts counting saves.
-        try await env.epochAckWork?.value(within: 60, "env.epochAckWork")
+        await env.epochAckWork?.value
         await env.outbox.drain()
         return env
     }
@@ -494,6 +497,7 @@ private actor SwitchableTransport: ConditionalTransport {
     /// The next conditional save waits here until released.
     private var holdsNextSave = false
     private var heldSave: CheckedContinuation<Void, Never>?
+    private var heldWaiters: [CheckedContinuation<Void, Never>] = []
     private(set) var conditionalSaves: [ConditionalSave] = []
 
     func refuse(_ refusal: TransportRefusal?) {
@@ -502,6 +506,12 @@ private actor SwitchableTransport: ConditionalTransport {
 
     func holdNextSave() {
         holdsNextSave = true
+    }
+
+    /// Returns once a conditional save waits in the hold.
+    func untilSaveHeld() async {
+        if heldSave != nil { return }
+        await withCheckedContinuation { heldWaiters.append($0) }
     }
 
     func releaseHeldSave() {
@@ -526,7 +536,11 @@ private actor SwitchableTransport: ConditionalTransport {
         conditionalSaves += items
         if holdsNextSave {
             holdsNextSave = false
-            await withCheckedContinuation { heldSave = $0 }
+            await withCheckedContinuation {
+                heldSave = $0
+                heldWaiters.forEach { $0.resume() }
+                heldWaiters.removeAll()
+            }
         }
         if let refusal {
             return items.map { _ in .refused(refusal) }

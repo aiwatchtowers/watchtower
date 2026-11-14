@@ -60,37 +60,15 @@ final class LearnCenterTests: XCTestCase {
         return center
     }
 
-    private func waitUntil(
-        _ center: LearnCenter, timeout: TimeInterval = 5, _ condition: @escaping (LearnSelection?) -> Bool
-    ) async {
-        let met = expectation(description: "selection condition")
-        func check() {
-            if condition(center.selection) {
-                met.fulfill()
-                return
-            }
-            withObservationTracking { _ = center.selection } onChange: {
-                Task { @MainActor in check() }
-            }
-        }
-        check()
-        await fulfillment(of: [met], timeout: timeout)
+    /// Waits until `condition` holds for the selection, re-checking on every
+    /// change of it — no deadline.
+    private func waitUntil(_ center: LearnCenter, _ condition: @escaping (LearnSelection?) -> Bool) async {
+        await untilObserved { condition(center.selection) }
     }
 
-    /// Waits (bounded) until `count` seen-row writes landed.
+    /// Waits until `count` seen-row writes landed.
     private func waitForWrites(_ center: LearnCenter, _ count: Int) async {
-        let met = expectation(description: "writes")
-        func check() {
-            if center.writes >= count {
-                met.fulfill()
-                return
-            }
-            withObservationTracking { _ = center.writes } onChange: {
-                Task { @MainActor in check() }
-            }
-        }
-        check()
-        await fulfillment(of: [met], timeout: 5)
+        await untilObserved { center.writes >= count }
     }
 
     private func seen(_ pool: DatabasePool) throws -> [String: LearnSeenHow] {
@@ -172,12 +150,16 @@ final class LearnCenterTests: XCTestCase {
     func testRestartDuringLoadKeepsTheCatalog() async throws {
         let pool = try makePool()
         let calls = LoadCounter()
+        // The load is held until after the restart.
+        let (gate, open) = AsyncStream<Void>.makeStream()
         let center = start(pool) {
             await calls.increment()
-            try await Task.sleep(for: .milliseconds(100))
+            for await _ in gate {}
+            try Task.checkCancellation()
             return Self.catalog
         }
         center.start(pool: pool, newAfter: nil)
+        open.finish()
         await waitUntil(center) { $0 != nil }
         XCTAssertEqual(center.zone?.total, 5)
         let count = await calls.count
@@ -207,7 +189,7 @@ final class LearnCenterTests: XCTestCase {
             await MainActor.run { loaded.fulfill() }
             throw CLIRunnerError.binaryNotFound
         }
-        await fulfillment(of: [loaded], timeout: 5)
+        await fulfillment(of: [loaded])
         // A restart (another workspace) does not load again.
         center.start(pool: pool, newAfter: nil)
         await center.refresh()
@@ -246,14 +228,11 @@ final class LiveLearnEnvironmentTests: XCTestCase {
 
         for (phones, paired) in [(0, false), (2, true)] {
             let cli = FakeCLIRunner(stdout: Data(#"{"state":"running","phones":\#(phones)}"#.utf8))
-            let center = HubCenter(client: NoHubClient(), cli: cli) { _ in try? await Task.sleep(for: .seconds(60)) }
+            let center = HubCenter(client: NoHubClient(), cli: cli) { _ in try? await parkUntilTaskCancelled() }
             appState.hubCenter = center
             center.start()
             defer { center.stop() }
-            let deadline = ContinuousClock.now + .seconds(5)
-            while center.status?.phones == nil, ContinuousClock.now < deadline {
-                try await Task.sleep(for: .milliseconds(10))
-            }
+            await untilObserved { center.status?.phones != nil }
             XCTAssertEqual(center.status?.phones, phones)
             XCTAssertEqual(environment.iphonePaired, paired, "\(phones) phones")
         }

@@ -98,17 +98,6 @@ final class WorkbenchHeaderControlsTests: XCTestCase {
         try sut.inspect().find(ViewType.Button.self) { try $0.help().string() == help }
     }
 
-    private func waitUntil(timeout: TimeInterval = 5, _ condition: @escaping @MainActor () -> Bool) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !condition() {
-            if Date() > deadline {
-                XCTFail("condition not met in \(timeout)s")
-                return
-            }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-    }
-
     private static let analyticsHelp = "Agent time, cost and hints for this workbench"
 
     // MARK: - View tabs
@@ -192,7 +181,7 @@ final class WorkbenchHeaderControlsTests: XCTestCase {
         let panes = { vm.layout(projectID: p).visiblePanes }
 
         try button(help: Self.analyticsHelp, controls(vm, s.project)).tap()
-        await waitUntil { panes() == [terminal, .analytics] }
+        await untilObserved { panes() == [terminal, .analytics] }
         try button(help: Self.analyticsHelp, controls(vm, s.project)).tap()
         XCTAssertEqual(panes(), [terminal], "off closes the Analytics pane, the session stays")
     }
@@ -218,7 +207,7 @@ final class WorkbenchHeaderControlsTests: XCTestCase {
 
         XCTAssertFalse(try toggle("Session", controls(vm, s.project)).isOn())
         try toggle("Session", controls(vm, s.project)).tap()
-        await waitUntil { layout().isShowingSessionView }
+        await untilObserved { layout().isShowingSessionView }
         XCTAssertFalse(layout().isSplit, "a single pane is replaced")
         XCTAssertFalse(layout().isShowing(.board))
 
@@ -232,7 +221,7 @@ final class WorkbenchHeaderControlsTests: XCTestCase {
         board.workchatSessions = [s.first.id, s.second.id]
         vm.setLayout(board, projectID: p)
         try toggle("Session", controls(vm, s.project)).tap()
-        await waitUntil { layout().isShowingSessionView }
+        await untilObserved { layout().isShowingSessionView }
         XCTAssertEqual(layout().visiblePanes.count, 1)
         XCTAssertTrue(layout().visiblePanes[0].isWorkchat, "the remembered mode: \(layout().visiblePanes)")
     }
@@ -251,14 +240,14 @@ final class WorkbenchHeaderControlsTests: XCTestCase {
 
         vm.setLayout(Self.split(.board, .files), projectID: p)
         try toggle("Session", controls(vm, s.project)).tap()
-        await waitUntil { panes().count == 2 && isTerminal(panes()[1]) }
+        await untilObserved { panes().count == 2 && isTerminal(panes()[1]) }
         XCTAssertEqual(panes().first, .board, "terminal mode: \(panes())")
 
         var chat = Self.split(.board, .files)
         chat.workchatSessions = [s.first.id, s.second.id]
         vm.setLayout(chat, projectID: p)
         try toggle("Session", controls(vm, s.project)).tap()
-        await waitUntil { panes().count == 2 && panes()[1].isWorkchat }
+        await untilObserved { panes().count == 2 && panes()[1].isWorkchat }
         XCTAssertEqual(panes().first, .board, "Workchat mode: \(panes())")
     }
 
@@ -280,7 +269,7 @@ final class WorkbenchHeaderControlsTests: XCTestCase {
         XCTAssertFalse(try session.isOn())
 
         try session.tap()
-        await waitUntil { vm.layout(projectID: empty.id).isShowingSessionView }
+        await untilObserved { vm.layout(projectID: empty.id).isShowingSessionView }
         let rows = try await pool.read { try TerminalSessionQueries.fetchForWorkbench($0, projectID: empty.id) }
         XCTAssertEqual(rows.count, 1, "Terminal's path with none: the most recent session, here a new one")
     }
@@ -298,10 +287,10 @@ final class WorkbenchHeaderControlsTests: XCTestCase {
         let panes = { vm.layout(projectID: p).visiblePanes }
 
         try toggle("Files", controls(vm, s.project)).tap()
-        await waitUntil { panes() == [terminal, .files] }
+        await untilObserved { panes() == [terminal, .files] }
         XCTAssertFalse(try toggle("Board", controls(vm, s.project)).isOn())
         try toggle("Board", controls(vm, s.project)).tap()
-        await waitUntil { panes() == [terminal, .board] }
+        await untilObserved { panes() == [terminal, .board] }
         try toggle("Board", controls(vm, s.project)).tap()
         XCTAssertEqual(panes(), [terminal])
     }
@@ -348,16 +337,22 @@ final class WorkbenchHeaderControlsTests: XCTestCase {
                              "nothing to repair")
 
         let runner = FakeCLIRunner(stdout: Data(#"{"skill":"missing","hook":false,"mcp":true}"#.utf8))
+        let installs = CallSignal()
+        let resyncs = CallSignal()
+        runner.onRun = { args in
+            if args == ["integrate", "claude-code", "--workbench", String(p)] { installs.hit() }
+            if args == ["workbench", "resync", String(p), "--json"] { resyncs.hit() }
+        }
         let vm = makeVM(runner)
         await vm.refreshInstallStatus(projectID: p)
         var deletes = 0
         let sut = controls(vm, s.project) { deletes += 1 }
 
         try sut.inspect().find(button: "Repair install").tap()
-        await waitUntil { runner.invocations.contains(["integrate", "claude-code", "--workbench", String(p)]) }
-        await waitUntil { !vm.isInstalling(projectID: p) }
+        await installs.until(1)
+        await untilObserved { !vm.isInstalling(projectID: p) }
         try controls(vm, s.project).inspect().find(button: "Re-run Setup").tap()
-        await waitUntil { runner.invocations.contains(["workbench", "resync", String(p), "--json"]) }
+        await resyncs.until(1)
         try sut.inspect().find(button: "Delete…").tap()
         XCTAssertEqual(deletes, 1)
     }
@@ -424,7 +419,7 @@ final class WorkbenchHeaderControlsTests: XCTestCase {
         XCTAssertThrowsError(try controls(vm, s.project).inspect().find(button: "Undo Archive Now"), "nothing to undo")
 
         try controls(vm, s.project).inspect().find(button: "Archive Closed Targets Now").tap()
-        await waitUntil { vm.summaries.first?.project.archivedThrough != nil }
+        await untilObserved { vm.summaries.first?.project.archivedThrough != nil }
         let stamped = try XCTUnwrap(vm.summaries.first?.project)
         let stored = try await stamp()
         XCTAssertNotNil(stored)
@@ -438,13 +433,13 @@ final class WorkbenchHeaderControlsTests: XCTestCase {
         await vm.reload()
         XCTAssertEqual(vm.summaries.first?.project.archivedThrough, earlier)
         try controls(vm, stamped).inspect().find(button: "Archive Closed Targets Now").tap()
-        await waitUntil { (vm.summaries.first?.project.archivedThrough ?? earlier) > earlier }
+        await untilObserved { (vm.summaries.first?.project.archivedThrough ?? earlier) > earlier }
         let restamped = try await stamp()
         let moved = try XCTUnwrap(restamped, "pressing again keeps a stamp")
         XCTAssertGreaterThan(moved, earlier, "pressing again moves the moment")
 
         try controls(vm, stamped).inspect().find(button: "Undo Archive Now").tap()
-        await waitUntil { vm.summaries.first?.project.archivedThrough == nil }
+        await untilObserved { vm.summaries.first?.project.archivedThrough == nil }
         let cleared = try await stamp()
         XCTAssertNil(cleared)
     }

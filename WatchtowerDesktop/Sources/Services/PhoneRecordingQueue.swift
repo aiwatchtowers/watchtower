@@ -405,6 +405,10 @@ final class PhoneRecordingQueue {
         }
     }
 
+    /// The backoff of `uploadID` waiting to try it again, if any (tests
+    /// await it instead of a clock).
+    func retryTask(for uploadID: String) -> Task<Void, Never>? { retries[uploadID] }
+
     /// Tries `uploadID` again after the backoff (30 s doubling to 30 min).
     private func retryLater(_ uploadID: String) {
         let attempt = (attempts[uploadID] ?? 0) + 1

@@ -12,7 +12,6 @@ import (
 	"sync/atomic"
 	"syscall"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -129,7 +128,7 @@ func TestAIConnectionCodexChecksSystemPromptNonce(t *testing.T) {
 			cfg := filepath.Join(t.TempDir(), "config.yaml")
 			require.NoError(t, os.WriteFile(cfg, []byte("ai: {provider: codex}"), 0o600))
 			p := startCLI(t, "--config", cfg, "--provider", "codex", "ai", "test", "--model", "form-model", "--cli-path", bin)
-			line, ok := p.next(t, 10*time.Second)
+			line, ok := p.next()
 			require.True(t, ok)
 			require.NoError(t, p.wait())
 			var result map[string]any
@@ -164,7 +163,7 @@ func TestAIConnectionOllamaCompatibility(t *testing.T) {
 	cfg := filepath.Join(t.TempDir(), "config.yaml")
 	require.NoError(t, os.WriteFile(cfg, []byte("ai: {provider: ollama, ollama_url: '"+server.URL+"'}"), 0600))
 	p := startCLI(t, "--config", cfg, "--provider", "ollama", "ai", "test", "--model", "local-form-model")
-	line, ok := p.next(t, 10*time.Second)
+	line, ok := p.next()
 	require.True(t, ok)
 	require.NoError(t, p.wait())
 	require.Contains(t, line, `"ok":true`)
@@ -195,14 +194,14 @@ func TestAIConnectionCancellationKillsAndReapsCanonicalChild(t *testing.T) {
 					_ = syscall.Kill(-child, syscall.SIGKILL)
 				}
 			})
-			require.Eventually(t, func() bool {
+			waitFor(t, "the CLI child's pid", func() bool {
 				data, err := os.ReadFile(pidfile)
 				if err != nil {
 					return false
 				}
 				child, _ = strconv.Atoi(strings.TrimSpace(string(data)))
 				return child > 0
-			}, 10*time.Second, 10*time.Millisecond)
+			})
 			require.NoError(t, p.cmd.Process.Signal(syscall.SIGTERM))
 			var result string
 			for line := range p.lines {
@@ -232,7 +231,7 @@ func TestAIConnectionTypedAuthDoesNotLeakChildDetails(t *testing.T) {
 			require.NoError(t, os.WriteFile(bin, []byte(script), 0700))
 			require.NoError(t, os.WriteFile(cfg, []byte("ai: {provider: "+provider+"}"), 0600))
 			p := startCLI(t, "--config", cfg, "--provider", provider, "ai", "test", "--model", "form-model", "--cli-path", bin)
-			line, ok := p.next(t, 10*time.Second)
+			line, ok := p.next()
 			require.True(t, ok)
 			require.NoError(t, p.wait())
 			require.Contains(t, line, `"error_code":"auth"`)

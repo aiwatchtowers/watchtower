@@ -8,8 +8,8 @@ import WatchtowerCore
 /// invoked off whatever executor happens to run it, while `blockUntilCancelled`
 /// is armed from the test's MainActor context beforehand — `lock` is what
 /// actually protects the recorded invocations and the mutable
-/// cancellation-gate state below (a test's `waitUntil` polls `invocations`
-/// from the main actor while `run` appends from another executor); the
+/// cancellation-gate state below (a test reads `invocations` from the main
+/// actor while `run` appends from another executor); the
 /// plain-`var` config flags are set once before any concurrent access starts.
 package final class FakeCLIRunner: CLIRunnerProtocol, @unchecked Sendable {
     private let stdoutData: Data
@@ -56,7 +56,14 @@ package final class FakeCLIRunner: CLIRunnerProtocol, @unchecked Sendable {
         return recordedStdin
     }
 
+    /// Returns once at least `count` calls have been recorded — the fake's
+    /// own signal, no clock.
+    package func untilInvocations(_ count: Int) async {
+        await signal.until { [self] in invocations.count >= count }
+    }
+
     private let lock = NSLock()
+    private let signal = StateSignal()
     private var recordedStdin: [Data] = []
     private var recordedInvocations: [[String]] = []
     private var recordedTextFiles: [String?] = []
@@ -91,6 +98,7 @@ package final class FakeCLIRunner: CLIRunnerProtocol, @unchecked Sendable {
     }
 
     private func record(_ args: [String], stdin: Data?) {
+        defer { signal.changed() }  // after the lock is released
         lock.lock()
         defer { lock.unlock() }
         recordedInvocations.append(args)

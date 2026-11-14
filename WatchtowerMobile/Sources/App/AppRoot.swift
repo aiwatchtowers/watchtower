@@ -562,7 +562,7 @@ final class AppRoot {
                 )
             }
         } catch {
-            Self.logger.error("heartbeat or grant read failed: \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("heartbeat or grant read failed: \(String(describing: error), privacy: .public)")
             return
         }
         let grant = reading.map { readGrant($0, hubID: hubID) } ?? .unreadable
@@ -812,6 +812,7 @@ final class AppRoot {
     static func resendDirectly(
         _ farewell: PendingFarewell,
         cap: Duration,
+        sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) },
         save: @escaping @Sendable (PendingFarewell) async throws -> Void
     ) async -> Bool {
         let race = FirstOf()
@@ -825,7 +826,7 @@ final class AppRoot {
             }
         }
         let timer = Task { @MainActor in
-            try? await Task.sleep(for: cap)
+            await sleep(cap)
             race.finish(.cap)
         }
         let winner = await race.wait()

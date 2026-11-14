@@ -22,6 +22,8 @@ import os
 package final class AgentActionFeed {
     package private(set) var rows: [AgentAction] = []
     package private(set) var inFlight: Set<Int64> = []
+    /// The observation delivered its first rows since `start` (a test seam).
+    package private(set) var hasObserved = false
     /// Why the last Approve/Reject/Retry on a row failed, keyed by row id —
     /// rendered on that row's card, so a failure shows where the owner
     /// clicked (an SQLITE_BUSY approve leaves the row `pending`, with nothing
@@ -50,6 +52,9 @@ package final class AgentActionFeed {
     /// turn-boundary refresh is what makes proposals feel immediate, this only
     /// has to catch a turn that never reaches its end. Injectable for tests.
     private let pollInterval: Duration
+    /// The poll's wait between two refreshes. A seam: tests pass a sleep they
+    /// let go of by hand, so nothing in them waits on a clock.
+    private let pollSleep: (Duration) async -> Void
     private var observationTask: Task<Void, Never>?
     private var pollTask: Task<Void, Never>?
     private var conversationID: Int64?
@@ -72,12 +77,14 @@ package final class AgentActionFeed {
         dbPool: DatabasePool,
         cliRunner: CLIRunnerProtocol? = nil,
         automationsWake: (() async throws -> Void)? = nil,
-        pollInterval: Duration = .seconds(30)
+        pollInterval: Duration = .seconds(30),
+        pollSleep: @escaping (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     ) {
         self.dbPool = dbPool
         self.cliRunner = cliRunner
         self.automationsWake = automationsWake
         self.pollInterval = pollInterval
+        self.pollSleep = pollSleep
     }
 
     package func start(conversationID: Int64) {
@@ -92,15 +99,17 @@ package final class AgentActionFeed {
                 for try await rows in observation.values(in: pool) {
                     guard !Task.isCancelled, let self else { break }
                     self.rows = rows
+                    if !self.hasObserved { self.hasObserved = true }
                 }
             } catch {
                 self?.lastError = error.localizedDescription
             }
         }
         let interval = pollInterval
+        let pollSleep = pollSleep
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: interval)
+                await pollSleep(interval)
                 guard !Task.isCancelled else { break }
                 self?.refresh()
             }
@@ -113,6 +122,7 @@ package final class AgentActionFeed {
         pollTask?.cancel()
         pollTask = nil
         conversationID = nil
+        hasObserved = false
         rows = []
         rowErrors = [:]
         stateMovedRows = []

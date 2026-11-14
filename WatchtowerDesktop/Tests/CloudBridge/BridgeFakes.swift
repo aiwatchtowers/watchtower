@@ -26,6 +26,7 @@ actor FakeBridgeCloud: BridgeCloud {
     // A held Changes call: it waits until `releaseChanges`.
     private var holding = false
     private var held: CheckedContinuation<Void, Never>?
+    private var heldWatchers: [CheckedContinuation<Void, Never>] = []
 
     func holdChanges() { holding = true }
 
@@ -35,12 +36,11 @@ actor FakeBridgeCloud: BridgeCloud {
         held = nil
     }
 
-    /// Returns once a Changes call is waiting on the hold.
+    /// Returns once a Changes call is waiting on the hold — no clock: the
+    /// held call wakes it.
     func waitUntilHeld() async throws {
-        for _ in 0..<500 where held == nil {
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
-        if held == nil { throw BridgeCloudFailure.unavailable }
+        guard held == nil else { return }
+        await withCheckedContinuation { heldWatchers.append($0) }
     }
 
     private func tag() -> String { UUID().uuidString }
@@ -94,7 +94,14 @@ actor FakeBridgeCloud: BridgeCloud {
     func fetch(zone: String, name: String) async throws -> CloudItem? { current(zone, name) }
 
     func changes(zone: String, since token: Data?) async throws -> CloudPage {
-        if holding { await withCheckedContinuation { held = $0 } }
+        if holding {
+            await withCheckedContinuation {
+                held = $0
+                let watchers = heldWatchers
+                heldWatchers = []
+                watchers.forEach { $0.resume() }
+            }
+        }
         let floor = token.flatMap { String(bytes: $0, encoding: .utf8) }.flatMap { Int($0) } ?? 0
         let entries = (zones[zone] ?? [:]).filter { $0.value.change > floor && (token != nil || $0.value.item != nil) }
             .sorted { $0.value.change < $1.value.change }
@@ -108,6 +115,15 @@ actor FakeBridgeCloud: BridgeCloud {
     func downloadAsset(zone: String, name: String, to dst: URL) async throws {
         guard let data = assets[zone + "/" + name] else { throw BridgeCloudFailure.badRequest }
         try data.write(to: dst)
+    }
+
+    /// The hub ids `retireZones` was asked for, in order.
+    private(set) var retired: [String] = []
+
+    func retireZones(hubID: String) async throws {
+        retired.append(hubID)
+        zones["DataZone-\(hubID)"] = nil
+        zones["RelayZone-\(hubID)"] = nil
     }
 }
 

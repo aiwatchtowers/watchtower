@@ -124,16 +124,33 @@ private final class RetrySleeper: @unchecked Sendable {
     private let lock = NSLock()
     private var parked: [CheckedContinuation<Void, Never>] = []
     private var all: [Duration] = []
+    private var watchers: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
 
     var waits: [Duration] { lock.withLock { all } }
     var parkedCount: Int { lock.withLock { parked.count } }
 
     func sleep(_ duration: Duration) async {
         await withCheckedContinuation { continuation in
-            lock.withLock {
+            let due: [CheckedContinuation<Void, Never>] = lock.withLock {
                 all.append(duration)
                 parked.append(continuation)
+                let due = watchers.filter { $0.count <= parked.count }.map(\.continuation)
+                watchers.removeAll { $0.count <= parked.count }
+                return due
             }
+            due.forEach { $0.resume() }
+        }
+    }
+
+    /// Returns once `count` waits are parked.
+    func untilParked(_ count: Int) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let now: Bool = lock.withLock {
+                if parked.count >= count { return true }
+                watchers.append((count, continuation))
+                return false
+            }
+            if now { continuation.resume() }
         }
     }
 
@@ -248,9 +265,7 @@ final class PhoneRecordingQueueTests: XCTestCase {
     }
 
     private func waitForRetry(_ count: Int) async {
-        for _ in 0..<500 where sleeper.parkedCount < count {
-            try? await Task.sleep(for: .milliseconds(2))
-        }
+        await sleeper.untilParked(count)
         XCTAssertEqual(sleeper.parkedCount, count, "retries parked")
     }
 
@@ -432,8 +447,9 @@ final class PhoneRecordingQueueTests: XCTestCase {
         await waitForRetry(1)
         XCTAssertEqual(sleeper.waits, [.seconds(30), .seconds(60)])
         ingestError = nil
+        let retry = queue.retryTask(for: "u1")
         sleeper.releaseAll()
-        for _ in 0..<500 where ingested.isEmpty { try? await Task.sleep(for: .milliseconds(2)) }
+        await retry?.value
         await queue.idle()
         XCTAssertEqual(ingested, [hub.audio("u1")])
         XCTAssertEqual(hub.sent(HubControlRequest.recordingClaim).count, 3, "each retry claims the failed job again")
@@ -452,8 +468,9 @@ final class PhoneRecordingQueueTests: XCTestCase {
         XCTAssertTrue(hub.sent(HubControlRequest.recordingFinish).isEmpty, "nothing reported")
         await waitForRetry(1)
         calendarError = nil
+        let retry = queue.retryTask(for: "u1")
         sleeper.releaseAll()
-        for _ in 0..<500 where ingested.isEmpty { try? await Task.sleep(for: .milliseconds(2)) }
+        await retry?.value
         await queue.idle()
         XCTAssertEqual(origins, [Origin(eventID: "evt-1", title: "Acme sync")])
     }

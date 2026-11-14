@@ -72,7 +72,8 @@ It refreshes every 30 seconds while on screen, and when the session's state chan
 
 The **Analytics** icon in the title row shows where this folder's Claude Code and Codex sessions spent their time and money:
 
-- Pick **7 days**, **30 days** or **All**. The first time, press **Turn On**: it returns at once, and the daemon loads the history in the background. Until it is done, **Loading history — N files so far** sits above the numbers loaded so far.
+- Pick **1 day**, **7 days** or **30 days**, and **All**, **Claude Code** or **Codex** when both agents have sessions. The first time, press **Turn On**: it returns at once, and the daemon loads the history in the background. Until it is done, **Loading history — N files so far** sits above the numbers loaded so far.
+- **How it's going**, **Proposed edits** and **Accepted edits** come first: the [agent coach](../agent-coach.md)'s numbers and suggested edits. **Tune** opens the [tuning chat](../tuning-chat.md).
 - **The main thing** card names the one change that would save the most, with a button that does it. **Context**, **Skills** and **Trouble** show what loads before the first message, which skills never ran and which calls failed. See [Agent analytics](../agent-analytics.md#what-the-analytics-view-shows).
 - **What else would save** lists the other hints, each with its own button. The **Time** section, collapsed, holds the time bar, tasks, sessions and commands.
 - Click a session to see its timeline: one lane for the main agent and one per subagent.

@@ -577,6 +577,6 @@ final class ActionOutboxTests: XCTestCase {
         defer { cancellable.cancel() }
 
         _ = try await outbox.enqueue(kind: .targetDone, entityRecordName: "target-1")
-        await fulfillment(of: [observed], timeout: 5)
+        await fulfillment(of: [observed])
     }
 }
