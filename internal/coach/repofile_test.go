@@ -214,39 +214,27 @@ func TestValidateChatProposal_RepoArgs(t *testing.T) {
 	assert.Equal(t, calls, g.calls, "no git read through a link")
 }
 
+// COACH-01 amendment: Accept writes no repository file and runs no git; a
+// non-repository destination is still written by Accept.
 func TestAccept_RepoFileWritesAndRunsNoGitWrite(t *testing.T) {
 	d := openDBs(t)
 	folder := fullRepo(t)
 	wb := repoWorkbench(t, d, folder)
-	head := git(t, folder, "rev-parse", "HEAD")
-	a, _ := repoApplier(t, d)
+	a, g := repoApplier(t, d)
 	id := propose(t, d, repoProposal(DestRepoClaudeMD, wb, "", "Run tests.\n", "Run package tests only.\n"))
+	requireSessionRefusal(t, a, d, g, id, folder)
 
-	r, err := a.Accept(id, "")
-	require.NoError(t, err)
-	assert.Equal(t, "CLAUDE.md", r.WrittenPath)
-	assert.Equal(t, "Run package tests only.\n", readFile(t, filepath.Join(folder, "CLAUDE.md")))
-	fi, err := os.Stat(filepath.Join(folder, "CLAUDE.md"))
-	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0o644), fi.Mode().Perm(), "mode kept")
-	assert.Equal(t, "accepted", proposal(t, d, id).Status)
-
-	assert.Equal(t, "M CLAUDE.md", git(t, folder, "status", "--porcelain=v1"), "modified in the work tree only")
-	assert.Empty(t, git(t, folder, "diff", "--cached"), "nothing staged")
-	assert.Equal(t, head, git(t, folder, "rev-parse", "HEAD"), "no commit")
-
-	// A skill: the written path names it.
 	id = propose(t, d, repoProposal(DestRepoCodexSkill, wb, "b", "Read the board.\n", "Read the board first.\n"))
-	r, err = a.Accept(id, "")
-	require.NoError(t, err)
-	assert.Equal(t, ".agents/skills/b/SKILL.md", r.WrittenPath)
-	// Every other destination writes no path.
+	requireSessionRefusal(t, a, d, g, id, folder)
+	// Every other destination is still written by Accept, with no path.
 	id = propose(t, d, db.CoachProposal{Destination: DestChat, BeforeText: "", AfterText: "Be brief."})
-	r, err = a.Accept(id, "")
+	r, err := a.Accept(id, "")
 	require.NoError(t, err)
 	assert.Empty(t, r.WrittenPath)
 }
 
+// COACH-01 amendment: a dirty file is refused like a clean one — Accept never
+// reaches the git check, the session does the change.
 func TestAccept_RepoFileDirtyRefused(t *testing.T) {
 	for _, c := range []struct {
 		name  string
@@ -270,62 +258,58 @@ func TestAccept_RepoFileDirtyRefused(t *testing.T) {
 			d := openDBs(t)
 			folder := fullRepo(t)
 			wb := repoWorkbench(t, d, folder)
-			a, _ := repoApplier(t, d)
+			a, g := repoApplier(t, d)
 			id := propose(t, d, repoProposal(DestRepoClaudeMD, wb, "", "Run tests.\n", "Run package tests only.\n"))
 			c.dirty(t, folder)
-			_, err := a.Accept(id, "")
-			require.ErrorIs(t, err, ErrRepoDirty)
-			assert.Contains(t, err.Error(), "CLAUDE.md has uncommitted changes — commit or discard them, then press Accept again.")
-			assert.NotContains(t, err.Error(), folder)
+			requireSessionRefusal(t, a, d, g, id, folder)
 			assert.Equal(t, "Run tests.\n", readFile(t, filepath.Join(folder, "CLAUDE.md")), "file untouched")
-			assert.Equal(t, "open", proposal(t, d, id).Status)
 		})
 	}
 }
 
-// An ignored path is refused like a dirty one: its local text is not in git,
-// so Accept could lose it (ask #1236).
+// COACH-01 amendment: an ignored path's local text is never overwritten —
+// Accept is refused before any write (ask #1236 kept).
 func TestAccept_RepoFileIgnoredRefused(t *testing.T) {
 	d := openDBs(t)
 	folder := repoFolderWith(t, map[string]string{".gitignore": "AGENTS.md\n"})
 	writeFile(t, filepath.Join(folder, "AGENTS.md"), "Local notes.\n")
 	wb := repoWorkbench(t, d, folder)
-	a, _ := repoApplier(t, d)
+	a, g := repoApplier(t, d)
 	id := propose(t, d, repoProposal(DestRepoAgentsMD, wb, "", "Local notes.\n", "Local notes.\nRun tests.\n"))
-	err := a.acceptErr(id, "")
-	require.ErrorIs(t, err, ErrRepoDirty)
+	requireSessionRefusal(t, a, d, g, id, folder)
 	assert.Equal(t, "Local notes.\n", readFile(t, filepath.Join(folder, "AGENTS.md")))
-	assert.Equal(t, "open", proposal(t, d, id).Status)
 }
 
+// COACH-01 amendment: a folder that is not a git work tree is refused like any
+// other — no file is written there.
 func TestAccept_RepoFolderNotGitRefused(t *testing.T) {
 	d := openDBs(t)
 	folder := t.TempDir()
 	writeFile(t, filepath.Join(folder, "CLAUDE.md"), "Run tests.\n")
 	wb := repoWorkbench(t, d, folder)
-	a, _ := repoApplier(t, d)
+	a, g := repoApplier(t, d)
 	id := propose(t, d, repoProposal(DestRepoClaudeMD, wb, "", "Run tests.\n", "Run package tests only.\n"))
-	err := a.acceptErr(id, "")
-	require.ErrorIs(t, err, ErrRepoNotGit)
-	assert.Contains(t, err.Error(), RepoNotGitLine)
+	requireSessionRefusal(t, a, d, g, id, folder)
 	assert.Equal(t, "Run tests.\n", readFile(t, filepath.Join(folder, "CLAUDE.md")))
-	assert.Equal(t, "open", proposal(t, d, id).Status)
 }
 
+// COACH-01 amendment: Accept never creates CLAUDE.md. A row accepted before
+// sessions (the file created by the old Accept) still rolls back by deleting
+// the created file, and keeps a file the owner changed since.
 func TestAccept_RepoClaudeMDCreatedAndRollbackDeletes(t *testing.T) {
 	d := openDBs(t)
 	folder := repoFolderWith(t, map[string]string{})
 	wb := repoWorkbench(t, d, folder)
-	a, _ := repoApplier(t, d)
+	a, g := repoApplier(t, d)
 	path := filepath.Join(folder, "CLAUDE.md")
 
 	id := propose(t, d, repoProposal(DestRepoClaudeMD, wb, "", "", "Run tests.\n"))
-	require.NoError(t, a.acceptErr(id, ""))
+	requireSessionRefusal(t, a, d, g, id, folder)
+	assert.NoFileExists(t, path, "nothing created")
+
+	legacyAccept(t, a, d, id)
 	assert.Equal(t, "Run tests.\n", readFile(t, path))
-	fi, err := os.Stat(path)
-	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0o644), fi.Mode().Perm(), "a repository file's mode")
-	_, err = a.Rollback(id, false)
+	_, err := a.Rollback(id, false)
 	require.NoError(t, err)
 	assert.NoFileExists(t, path, "a created file goes again")
 	assert.Equal(t, "rolled_back", proposal(t, d, id).Status)
@@ -333,7 +317,7 @@ func TestAccept_RepoClaudeMDCreatedAndRollbackDeletes(t *testing.T) {
 
 	// Changed by the owner since: kept, with the diff.
 	id = propose(t, d, repoProposal(DestRepoClaudeMD, wb, "", "", "Run lint.\n"))
-	require.NoError(t, a.acceptErr(id, ""))
+	legacyAccept(t, a, d, id)
 	writeFile(t, path, "Run lint.\nMine.\n")
 	diff, err := a.Rollback(id, false)
 	require.ErrorIs(t, err, ErrChangedSince)
@@ -351,22 +335,21 @@ func TestAccept_RepoSymlinkedFolderRefused(t *testing.T) {
 	wb := repoWorkbench(t, d, folder)
 	a, g := repoApplier(t, d)
 	id := propose(t, d, repoProposal(DestRepoClaudeSkill, wb, "a", "Read the plan.\n", "Read it twice.\n"))
-	err := a.acceptErr(id, "")
-	require.ErrorIs(t, err, errUnsafeFile)
+	requireSessionRefusal(t, a, d, g, id, folder)
 	assert.Zero(t, g.calls, "git never reads a path through a link")
 	assert.Equal(t, "Read the plan.\n", readFile(t, filepath.Join(other, "skills", "a", "SKILL.md")))
-	assert.Equal(t, "open", proposal(t, d, id).Status)
 }
 
 func TestAccept_RepoAgentWritesBetweenCheckAndRename_IsStale(t *testing.T) {
 	d := openDBs(t)
 	folder := fullRepo(t)
 	wb := repoWorkbench(t, d, folder)
-	a, _ := repoApplier(t, d)
+	a, g := repoApplier(t, d)
 	path := filepath.Join(folder, ".claude", "skills", "a", "SKILL.md")
 	id := propose(t, d, repoProposal(DestRepoClaudeSkill, wb, "a", "Read the plan.\n", "Read it twice.\n"))
 
-	// The writer re-reads just before the rename.
+	// The writer (kept for rows accepted before sessions) re-reads just
+	// before the rename.
 	p := proposal(t, d, id)
 	cur, err := a.readCurrent(p)
 	require.NoError(t, err)
@@ -375,17 +358,11 @@ func TestAccept_RepoAgentWritesBetweenCheckAndRename_IsStale(t *testing.T) {
 	require.ErrorIs(t, err, ErrStale)
 	assert.Equal(t, "The agent's edit.\n", readFile(t, path))
 
-	// Through Accept: the agent writes right after the git check said clean.
+	// Through Accept (COACH-01 amendment): refused before any git check or
+	// write, so the agent's edit is never at risk and the proposal stays open.
 	writeFile(t, path, "Read the plan.\n")
-	state := a.RepoState
-	a.RepoState = func(folder, rel string) (RepoFileState, error) {
-		st, err := state(folder, rel)
-		writeFile(t, path, "The agent's edit.\n")
-		return st, err
-	}
-	require.ErrorIs(t, a.acceptErr(id, ""), ErrStale)
-	assert.Equal(t, "superseded", proposal(t, d, id).Status)
-	assert.Equal(t, "The agent's edit.\n", readFile(t, path))
+	requireSessionRefusal(t, a, d, g, id, folder)
+	assert.Equal(t, "Read the plan.\n", readFile(t, path))
 }
 
 func TestAccept_RepoWorkbenchDeletedAfterWrite_Undone(t *testing.T) {
@@ -420,15 +397,15 @@ func TestAccept_RepoWorkbenchDeletedAfterWrite_Undone(t *testing.T) {
 	}
 }
 
-// Accept "killed" after the write and before the status write: the file holds
-// the after-text, uncommitted, so the next Accept is refused as dirty and the
-// card stays open; once the owner commits the edit, Accept records it (the
-// file already holds the after-text: every file destination's recovery).
+// An old Accept "killed" after the write and before the status write left the
+// file holding the after-text. COACH-01 amendment: the next Accept no longer
+// records it — it is refused like any repository Accept, the card stays open
+// and the file keeps the edit (the session or the owner takes it from there).
 func TestAccept_RepoKilledBeforeStatusCAS_NextAccept(t *testing.T) {
 	d := openDBs(t)
 	folder := fullRepo(t)
 	wb := repoWorkbench(t, d, folder)
-	a, _ := repoApplier(t, d)
+	a, g := repoApplier(t, d)
 	path := filepath.Join(folder, "CLAUDE.md")
 	id := propose(t, d, repoProposal(DestRepoClaudeMD, wb, "", "Run tests.\n", "Run lint.\n"))
 	p := proposal(t, d, id)
@@ -437,13 +414,11 @@ func TestAccept_RepoKilledBeforeStatusCAS_NextAccept(t *testing.T) {
 	_, err = a.writeDestination(p, cur, p.AfterText, applyNow)
 	require.NoError(t, err)
 
-	require.ErrorIs(t, a.acceptErr(id, ""), ErrRepoDirty)
-	assert.Equal(t, "open", proposal(t, d, id).Status)
+	requireSessionRefusal(t, a, d, g, id, folder)
 	assert.Equal(t, "Run lint.\n", readFile(t, path), "the file keeps the edit")
 
 	git(t, folder, "commit", "-q", "-am", "owner commits")
-	require.NoError(t, a.acceptErr(id, ""))
-	assert.Equal(t, "accepted", proposal(t, d, id).Status)
+	requireSessionRefusal(t, a, d, g, id, folder)
 	assert.Equal(t, "Run lint.\n", readFile(t, path))
 }
 
@@ -454,13 +429,9 @@ func TestAccept_RepoFolderGoneWithLiveWorkbench(t *testing.T) {
 	a, g := repoApplier(t, d)
 	id := propose(t, d, repoProposal(DestRepoClaudeMD, wb, "", "Run tests.\n", "Run lint.\n"))
 	require.NoError(t, os.RemoveAll(folder))
-	err := a.acceptErr(id, "")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "workbench folder not found")
-	assert.NotContains(t, err.Error(), folder)
+	requireSessionRefusal(t, a, d, g, id, folder)
 	assert.Zero(t, g.calls, "no git read")
 	assert.NoDirExists(t, folder, "nothing written")
-	assert.Equal(t, "open", proposal(t, d, id).Status)
 }
 
 func TestAccept_RepoSeamsNotWired(t *testing.T) {
@@ -469,19 +440,16 @@ func TestAccept_RepoSeamsNotWired(t *testing.T) {
 	wb := repoWorkbench(t, d, folder)
 	a := newApplier(t, d) // no RepoState
 	id := propose(t, d, repoProposal(DestRepoClaudeMD, wb, "", "Run tests.\n", "Run lint.\n"))
-	err := a.acceptErr(id, "")
-	require.ErrorIs(t, err, errRepoNotWired)
-	// RepoState alone is not enough: the branch reader is wired too, or nothing is written.
-	noBranch, _ := repoApplier(t, d)
+	// COACH-01 amendment: Accept needs no git seam — it is refused first.
+	requireSessionRefusal(t, a, d, nil, id, folder)
+	noBranch, g := repoApplier(t, d)
 	noBranch.RepoBranch = nil
-	require.ErrorIs(t, noBranch.acceptErr(id, ""), errRepoNotWired)
-	assert.Contains(t, err.Error(), "repo_* accept: git state reader not wired")
+	requireSessionRefusal(t, noBranch, d, g, id, folder)
 	assert.Equal(t, "Run tests.\n", readFile(t, filepath.Join(folder, "CLAUDE.md")))
-	assert.Equal(t, "open", proposal(t, d, id).Status)
 
 	e := ChatEdit{Destination: DestRepoClaudeMD, WorkbenchID: wb, Kind: "add", Replace: "Run lint.",
 		Title: "t", Why: "w", Metric: "corrections"}
-	_, err = ValidateChatProposal(context.Background(), d.DB, e, Env{Home: t.TempDir()})
+	_, err := ValidateChatProposal(context.Background(), d.DB, e, Env{Home: t.TempDir()})
 	require.ErrorIs(t, err, errRepoNotWired)
 	assert.False(t, errors.Is(err, ErrRefused), "an internal error, not the model's")
 }
@@ -493,7 +461,7 @@ func TestRollback_RepoAfterOwnerCommit(t *testing.T) {
 	a, g := repoApplier(t, d)
 	path := filepath.Join(folder, workbenchmethod.FileRel)
 	id := propose(t, d, repoProposal(DestRepoWorkflow, wb, "", "# Workflow\n", "# Workflow\nPlans first.\n"))
-	require.NoError(t, a.acceptErr(id, ""))
+	legacyAccept(t, a, d, id) // a row accepted before sessions
 	git(t, folder, "commit", "-q", "-am", "owner commits")
 	head := git(t, folder, "rev-parse", "HEAD")
 	calls := g.calls
@@ -514,7 +482,7 @@ func TestRollback_RepoChangedSince(t *testing.T) {
 	a, _ := repoApplier(t, d)
 	path := filepath.Join(folder, ".claude", "skills", "a", "SKILL.md")
 	id := propose(t, d, repoProposal(DestRepoClaudeSkill, wb, "a", "Read the plan.\n", "Read it twice.\n"))
-	require.NoError(t, a.acceptErr(id, ""))
+	legacyAccept(t, a, d, id) // a row accepted before sessions
 	writeFile(t, path, "Read it twice.\nThe owner's line.\n")
 	diff, err := a.Rollback(id, false)
 	require.ErrorIs(t, err, ErrChangedSince)
@@ -540,7 +508,7 @@ func TestRollback_RepoCreatedFileForcedKeepsOwnerText(t *testing.T) {
 	a, _ := repoApplier(t, d)
 	path := filepath.Join(folder, "CLAUDE.md")
 	id := propose(t, d, repoProposal(DestRepoClaudeMD, wb, "", "", "Run tests.\n"))
-	require.NoError(t, a.acceptErr(id, ""))
+	legacyAccept(t, a, d, id) // a row accepted before sessions
 	writeFile(t, path, "Run tests.\nMine.\n")
 	_, err := a.Rollback(id, true)
 	require.ErrorIs(t, err, ErrChangedSince)
@@ -548,32 +516,33 @@ func TestRollback_RepoCreatedFileForcedKeepsOwnerText(t *testing.T) {
 	assert.Equal(t, "accepted", proposal(t, d, id).Status)
 }
 
-// A failed git state read refuses, at Accept and at propose: never clean.
+// A failed git state read refuses at propose (never clean); COACH-01
+// amendment: Accept reads no git state at all, it is refused first.
 func TestAccept_RepoStateErrorRefuses(t *testing.T) {
 	d := openDBs(t)
 	folder := fullRepo(t)
 	wb := repoWorkbench(t, d, folder)
+	reads := 0
 	failing := func(string, string) (RepoFileState, error) {
+		reads++
 		return RepoFileState{Git: true}, errors.New("fatal: simulated status failure")
 	}
 	a, _ := repoApplier(t, d)
 	a.RepoState = failing
 	id := propose(t, d, repoProposal(DestRepoClaudeMD, wb, "", "Run tests.\n", "Run lint.\n"))
-	err := a.acceptErr(id, "")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "reading the git state of CLAUDE.md")
+	requireSessionRefusal(t, a, d, nil, id, folder)
+	assert.Zero(t, reads, "no git state read")
 	assert.Equal(t, "Run tests.\n", readFile(t, filepath.Join(folder, "CLAUDE.md")))
-	assert.Equal(t, "open", proposal(t, d, id).Status)
 
 	e := ChatEdit{Destination: DestRepoClaudeMD, WorkbenchID: wb, Kind: "add", Replace: "Run lint.",
 		Title: "t", Why: "w", Metric: "corrections"}
-	_, err = ValidateChatProposal(context.Background(), d.DB, e, Env{Home: t.TempDir(), RepoState: failing})
+	_, err := ValidateChatProposal(context.Background(), d.DB, e, Env{Home: t.TempDir(), RepoState: failing})
 	require.Error(t, err)
 	assert.False(t, errors.Is(err, ErrRefused), "a failed read is an error, not a refusal")
 }
 
-// Through Accept: the status compare-and-set finds no open row after the
-// write (as when the workbench goes in between) and the write is undone.
+// COACH-01 amendment: Accept writes nothing, so a lost status write has
+// nothing to undo — the file stays as it was (or absent) and git is clean.
 func TestAccept_RepoStatusCASFailsThroughAccept_Undone(t *testing.T) {
 	d := openDBs(t)
 	for _, c := range []struct{ name, before string }{{"existing", "Run tests.\n"}, {"created", ""}} {
@@ -584,12 +553,12 @@ func TestAccept_RepoStatusCASFailsThroughAccept_Undone(t *testing.T) {
 		folder := repoFolderWith(t, files)
 		path := filepath.Join(folder, "CLAUDE.md")
 		wb := repoWorkbench(t, d, folder)
-		a, _ := repoApplier(t, d)
+		a, g := repoApplier(t, d)
 		id := propose(t, d, repoProposal(DestRepoClaudeMD, wb, "", c.before, "Run lint ("+c.name+").\n"))
 		_, err := d.Exec(`CREATE TRIGGER coach_lost_row BEFORE UPDATE OF status ON coach_proposals
 			WHEN NEW.status = 'accepted' BEGIN SELECT RAISE(IGNORE); END`)
 		require.NoError(t, err)
-		require.ErrorIs(t, a.acceptErr(id, ""), db.ErrCoachStateChanged, c.name)
+		requireSessionRefusal(t, a, d, g, id, folder)
 		_, err = d.Exec(`DROP TRIGGER coach_lost_row`)
 		require.NoError(t, err)
 		if c.before == "" {
@@ -601,46 +570,110 @@ func TestAccept_RepoStatusCASFailsThroughAccept_Undone(t *testing.T) {
 	}
 }
 
-// Accept stores the branch checked out at the write (spec §4.3a, D68); a
-// failed branch read leaves "" and keeps the write.
+// COACH-01 amendment: Accept of a repository proposal writes nothing, so it
+// records no branch (the session's branch is recorded by AcceptWithSession);
+// every other destination still stores none.
 func TestAccept_RepoRecordsBranch(t *testing.T) {
 	d := openDBs(t)
 	folder := fullRepo(t)
 	wb := repoWorkbench(t, d, folder)
-	a, _ := repoApplier(t, d)
+	a, g := repoApplier(t, d)
 
 	git(t, folder, "switch", "-q", "-c", "feature/x")
 	id := propose(t, d, repoProposal(DestRepoClaudeMD, wb, "", "Run tests.\n", "Run lint.\n"))
-	r, err := a.Accept(id, "")
-	require.NoError(t, err)
-	assert.Equal(t, "feature/x", r.WrittenBranch)
-	assert.Equal(t, "feature/x", proposal(t, d, id).WrittenBranch)
+	requireSessionRefusal(t, a, d, g, id, folder)
+	assert.Empty(t, proposal(t, d, id).WrittenBranch)
 
-	git(t, folder, "commit", "-q", "-am", "owner commits")
 	git(t, folder, "switch", "-q", "--detach")
-	sha := git(t, folder, "rev-parse", "--short=7", "HEAD")
 	id = propose(t, d, repoProposal(DestRepoWorkflow, wb, "", "# Workflow\n", "# Workflow\nReview first.\n"))
-	r, err = a.Accept(id, "")
-	require.NoError(t, err)
-	assert.Equal(t, "detached:"+sha, r.WrittenBranch)
-	assert.Equal(t, "detached:"+sha, proposal(t, d, id).WrittenBranch)
-
-	// A failed branch read after the write: accepted, written, no branch.
-	git(t, folder, "commit", "-q", "-am", "owner commits")
-	a.RepoBranch = func(string) (string, error) { return "", errors.New("git status failed") }
-	id = propose(t, d, repoProposal(DestRepoCodexSkill, wb, "b", "Read the board.\n", "Read the board first.\n"))
-	r, err = a.Accept(id, "")
-	require.NoError(t, err)
-	assert.Empty(t, r.WrittenBranch)
-	p := proposal(t, d, id)
-	assert.Equal(t, "accepted", p.Status)
-	assert.Empty(t, p.WrittenBranch)
-	assert.Equal(t, "Read the board first.\n", readFile(t, filepath.Join(folder, ".agents/skills/b/SKILL.md")))
+	requireSessionRefusal(t, a, d, g, id, folder)
+	assert.Empty(t, proposal(t, d, id).WrittenBranch)
 
 	// Every other destination stores no branch.
 	id = propose(t, d, db.CoachProposal{Destination: DestChat, BeforeText: "", AfterText: "Be brief."})
-	r, err = a.Accept(id, "")
+	r, err := a.Accept(id, "")
 	require.NoError(t, err)
 	assert.Empty(t, r.WrittenBranch)
 	assert.Empty(t, proposal(t, d, id).WrittenBranch)
+}
+
+// folderSnapshot is every file under folder outside .git, by relative path,
+// plus the folder's HEAD and git status: what a refused Accept must leave
+// byte-identical.
+func folderSnapshot(t *testing.T, folder string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	if _, err := os.Stat(folder); err != nil {
+		return out
+	}
+	root, err := os.OpenRoot(folder)
+	require.NoError(t, err)
+	defer func() { _ = root.Close() }()
+	require.NoError(t, filepath.WalkDir(folder, func(path string, e os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if e.IsDir() && e.Name() == ".git" {
+			return filepath.SkipDir
+		}
+		rel, _ := filepath.Rel(folder, path)
+		if e.Type()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(path)
+			out[rel] = "link:" + target
+			return err
+		}
+		if e.IsDir() {
+			out[rel+"/"] = ""
+			return nil
+		}
+		b, err := root.ReadFile(rel)
+		fi, ferr := e.Info()
+		if ferr != nil {
+			return ferr
+		}
+		out[rel] = fi.Mode().Perm().String() + ":" + string(b)
+		return err
+	}))
+	if _, err := os.Stat(filepath.Join(folder, ".git")); err == nil {
+		out["@HEAD"] = git(t, folder, "rev-parse", "HEAD")
+		out["@status"] = git(t, folder, "status", "--porcelain=v1", "--ignored=matching")
+	}
+	return out
+}
+
+// requireSessionRefusal is the COACH-01 amendment (spec 2026-11-12, "Contracts
+// touched"): a repository proposal is never written by Accept — it is
+// accepted through a workbench session — so Accept is refused with the
+// session message, the proposal stays open, nothing under folder changes or
+// is created, and no git state is read (g may be nil).
+func requireSessionRefusal(t *testing.T, a *Applier, d dbs, g *gitState, id int64, folder string) {
+	t.Helper()
+	before := folderSnapshot(t, folder)
+	calls := 0
+	if g != nil {
+		calls = g.calls
+	}
+	r, err := a.Accept(id, "")
+	require.ErrorIs(t, err, ErrRefused)
+	assert.Contains(t, err.Error(), "Accept it in Watchtower — it starts a session")
+	assert.NotContains(t, err.Error(), folder)
+	assert.Equal(t, AcceptResult{}, r)
+	assert.Equal(t, before, folderSnapshot(t, folder), "byte-identical, nothing created")
+	if g != nil {
+		assert.Equal(t, calls, g.calls, "no git read")
+	}
+	assert.Equal(t, "open", proposal(t, d, id).Status)
+}
+
+// legacyAccept is how a repository proposal was accepted before sessions
+// (via_session = 0): the file written by the Applier, then the status. Rows
+// accepted that way keep the file Rollback, which these tests pin.
+func legacyAccept(t *testing.T, a *Applier, d dbs, id int64) {
+	t.Helper()
+	p := proposal(t, d, id)
+	cur, err := a.readCurrent(p)
+	require.NoError(t, err)
+	w, err := a.writeDestination(p, cur, p.AfterText, applyNow)
+	require.NoError(t, err)
+	require.NoError(t, d.MarkCoachAccepted(id, w.result, "", nil, 0, applyNow))
 }

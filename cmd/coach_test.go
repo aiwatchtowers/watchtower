@@ -335,8 +335,10 @@ func insertRepoProposal(t *testing.T, d *db.DB, wb int64, fp string) int64 {
 	return id
 }
 
-// A workbench repository file: dirty → "dirty", not a git work tree →
-// "not_git", written → "written_path" relative to the folder.
+// COACH-01 amendment (spec 2026-11-12): a plain `coach accept` of a
+// workbench repository file is refused with code "refused" and the session
+// message — dirty, not a git work tree or clean alike — and writes nothing:
+// no file, no path, no folder named. `accept --session` records it instead.
 func TestCoachAccept_RepoCodes(t *testing.T) {
 	d := coachSetup(t)
 	repo := gitBranchRepo(t)
@@ -346,39 +348,37 @@ func TestCoachAccept_RepoCodes(t *testing.T) {
 	require.NoError(t, err)
 	wbPlain, err := d.CreateWorkbench("acme-plain", plain)
 	require.NoError(t, err)
+	refused := func(id int64, folder string) {
+		t.Helper()
+		out, err := runCoach(t, "", "accept", strconv.FormatInt(id, 10), "--json")
+		require.Error(t, err)
+		top := coachJSONObject(t, out)
+		assert.JSONEq(t, `"refused"`, string(top["code"]))
+		assert.Contains(t, string(top["error"]), "Accept it in Watchtower — it starts a session")
+		assert.NotContains(t, out, folder, "the folder is never named")
+		p, err := d.GetCoachProposal(id)
+		require.NoError(t, err)
+		assert.Equal(t, "open", p.Status)
+		assert.Empty(t, p.WrittenBranch)
+	}
 
-	// Untracked CLAUDE.md in the folder: dirty.
+	// Untracked CLAUDE.md in the folder (was "dirty"): refused, untouched.
 	require.NoError(t, os.WriteFile(filepath.Join(repo, "CLAUDE.md"), []byte("Mine.\n"), 0o644))
 	id := insertRepoProposal(t, d, wb, "repo1")
-	out, err := runCoach(t, "", "accept", strconv.FormatInt(id, 10), "--json")
-	require.Error(t, err)
-	top := coachJSONObject(t, out)
-	assert.JSONEq(t, `"dirty"`, string(top["code"]))
-	assert.NotContains(t, out, repo, "the folder is never named")
-
-	id2 := insertRepoProposal(t, d, wbPlain, "repo2")
-	out, err = runCoach(t, "", "accept", strconv.FormatInt(id2, 10), "--json")
-	require.Error(t, err)
-	assert.JSONEq(t, `"not_git"`, string(coachJSONObject(t, out)["code"]))
-
-	require.NoError(t, os.Remove(filepath.Join(repo, "CLAUDE.md")))
-	out, err = runCoach(t, "", "accept", strconv.FormatInt(id, 10), "--json")
-	require.NoError(t, err, out)
-	top = coachJSONObject(t, out)
-	var got []string
-	for k := range top {
-		got = append(got, k)
-	}
-	assert.ElementsMatch(t, []string{"ok", "id", "status", "pack_copies_updated", "pack_copies_drifted",
-		"written_path", "written_branch"}, got)
-	assert.JSONEq(t, `"CLAUDE.md"`, string(top["written_path"]))
-	assert.JSONEq(t, `"main"`, string(top["written_branch"]))
-	p, err := d.GetCoachProposal(id)
-	require.NoError(t, err)
-	assert.Equal(t, "main", p.WrittenBranch)
+	refused(id, repo)
 	raw, err := os.ReadFile(filepath.Join(repo, "CLAUDE.md"))
 	require.NoError(t, err)
-	assert.Equal(t, "Run tests.\n", string(raw))
+	assert.Equal(t, "Mine.\n", string(raw))
+
+	// Not a git work tree (was "not_git"): refused, nothing created.
+	id2 := insertRepoProposal(t, d, wbPlain, "repo2")
+	refused(id2, plain)
+	assert.NoFileExists(t, filepath.Join(plain, "CLAUDE.md"))
+
+	// Clean (was written): refused, nothing created.
+	require.NoError(t, os.Remove(filepath.Join(repo, "CLAUDE.md")))
+	refused(id, repo)
+	assert.NoFileExists(t, filepath.Join(repo, "CLAUDE.md"))
 }
 
 func TestCoachStatus_JSONKeysPinned(t *testing.T) {
