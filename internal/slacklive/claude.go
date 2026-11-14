@@ -13,15 +13,21 @@ import (
 	"watchtower/internal/chat"
 )
 
-// Result is one probe's verdict. For Claude, Teams holds permalink domain
-// labels the caller maps to team ids; for Codex it holds team ids.
+// Result is one probe's verdict. Teams holds team ids, TeamDomains
+// permalink domain labels (a probe that sees only those, as the claude.ai
+// connector's search does) that Check maps to team ids.
 type Result struct {
 	Provider    string
 	Teams       []string
+	TeamDomains []string
 	Status      string
 	ErrorClass  string
 	ConnectorID string
 }
+
+// Probe is one provider's probe: ProbeClaude or ProbeCodex. The caller picks
+// it by transport (cmd's transport wiring), so Check names none.
+type Probe func(ctx context.Context, bin string, env []string) Result
 
 const (
 	claudeSlackServer = "claude.ai Slack"
@@ -180,7 +186,7 @@ func ProbeClaude(ctx context.Context, claudeBin string, env []string) Result {
 			apiKey.Store(ev.APIKeySrc)
 		}
 	}
-	c, err := startChild(pctx, claudeBin, claudeArgs(), env, observe)
+	c, err := startChild(pctx, claudeBin, claudeArgs(), env, observe, newMeter("claude", claudeUsageLine))
 	if err != nil {
 		res.Status, res.ErrorClass = StatusNotConnected, "cli_missing"
 		return res
@@ -210,7 +216,7 @@ func ProbeClaude(ctx context.Context, claudeBin string, env []string) Result {
 	connected = true
 	msg, _ := json.Marshal(map[string]any{"type": "user", "message": map[string]any{
 		"role": "user", "content": []map[string]string{{"type": "text", "text": claudeProbePrompt}}}})
-	if err := c.write(string(msg)); err != nil {
+	if err := c.ask(string(msg), claudeProbePrompt); err != nil {
 		return finish()
 	}
 
@@ -266,8 +272,8 @@ func ProbeClaude(ctx context.Context, claudeBin string, env []string) Result {
 							text.WriteString(" " + body)
 						case searchIDs[b.ToolUseID]:
 							readOK = true
-							if m := slackHost.FindStringSubmatch(body); m != nil && len(res.Teams) == 0 {
-								res.Teams = []string{m[1]}
+							if m := slackHost.FindStringSubmatch(body); m != nil && len(res.TeamDomains) == 0 {
+								res.TeamDomains = []string{m[1]}
 							}
 						}
 					}

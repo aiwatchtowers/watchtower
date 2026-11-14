@@ -11,10 +11,12 @@ import (
 	"watchtower/internal/agentloop"
 	"watchtower/internal/ai"
 	"watchtower/internal/chat"
+	"watchtower/internal/claude"
 	"watchtower/internal/codex"
 	"watchtower/internal/config"
 	"watchtower/internal/digest"
 	"watchtower/internal/providers"
+	"watchtower/internal/slacklive"
 	"watchtower/internal/specreview"
 	"watchtower/internal/tools"
 )
@@ -34,14 +36,32 @@ type transportWiring struct {
 	// with its cleanup; nil = no CLI child (agent() runs the runtime-B
 	// loop in process).
 	newAgentClient func(agentClientWiring) (ai.Provider, func(), error)
+	// slackLive is the transport's Slack Live half (#1709); nil = the
+	// transport reaches no Slack connector of the owner's.
+	slackLive *slackLiveWiring
 }
+
+// slackLiveWiring is how `slack live probe` checks a transport's own Slack
+// connector: the probe, the CLI it runs and that CLI's PATH.
+type slackLiveWiring struct {
+	probe  slacklive.Probe
+	binary func() string
+	path   func() string
+}
+
+var (
+	claudeSlackLiveWiring = &slackLiveWiring{probe: slacklive.ProbeClaude,
+		binary: func() string { return claude.FindBinary("") }, path: claude.RichPATH}
+	codexSlackLiveWiring = &slackLiveWiring{probe: slacklive.ProbeCodex,
+		binary: func() string { return codex.FindBinary("") }, path: codex.RichPATH}
+)
 
 // wirings is every registry provider's cmd wiring, by id. It covers the
 // registry exactly (TestLLMTRANSPORT01_WiringCoversRegistry), so wiringFor
 // never meets a registered provider it cannot wire.
 var wirings = map[string]transportWiring{
-	"claude": {newChatBackend: newClaudeChatBackend, newAgentClient: newClaudeAgentClient},
-	"codex":  {newChatBackend: newCodexChatBackend, newAgentClient: newCodexAgentClient},
+	"claude": {newChatBackend: newClaudeChatBackend, newAgentClient: newClaudeAgentClient, slackLive: claudeSlackLiveWiring},
+	"codex":  {newChatBackend: newCodexChatBackend, newAgentClient: newCodexAgentClient, slackLive: codexSlackLiveWiring},
 	"ollama": {newChatBackend: newRuntimeBChatBackend},
 }
 
@@ -56,6 +76,26 @@ func wiringFor(id string) transportWiring {
 		panic("transport wiring: no constructors for provider " + p)
 	}
 	return w
+}
+
+// slackLiveFor is provider id's Slack Live wiring, exactly by id (no
+// default-provider fallback: a probe must run the transport the owner
+// named); false when the id is unknown or its transport has none.
+func slackLiveFor(id string) (*slackLiveWiring, bool) {
+	w, ok := wirings[id]
+	return w.slackLive, ok && w.slackLive != nil
+}
+
+// slackLiveProviders is every provider id with a Slack Live wiring, sorted.
+func slackLiveProviders() []string {
+	var ids []string
+	for id, w := range wirings {
+		if w.slackLive != nil {
+			ids = append(ids, id)
+		}
+	}
+	slices.Sort(ids)
+	return ids
 }
 
 // quickConnectionEnv is the environment a provider's child carries the
