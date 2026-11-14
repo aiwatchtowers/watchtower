@@ -199,8 +199,11 @@ var cliNoContentCommands = map[string]bool{
 	"chat title":                       true,
 	"code index":                       true,
 	"coach accept":                     true,
+	"coach brief":                      true, // The owner's own coach proposal text; refused under agent markers anyway.
 	"coach decline":                    true,
+	"coach dismiss":                    true,
 	"coach proposals":                  true,
+	"coach reapply":                    true,
 	"coach rollback":                   true,
 	"coach run":                        true,
 	"coach status":                     true,
