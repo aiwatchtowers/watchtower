@@ -332,6 +332,12 @@ func (a *contextAcc) session(sid string, evs []agentlogdb.AgentReportEvent) {
 	}
 }
 
+// TokensOfBytes estimates the tokens of n bytes of text at
+// defaultBytesPerToken, the ratio a lane with no baseline parts uses.
+func TokensOfBytes(n int) int64 {
+	return int64(math.Round(float64(n) / defaultBytesPerToken))
+}
+
 // tokensPerByte is a lane's tokens per byte: its first call's context over
 // its baseline parts' bytes (lps = the session's lanes), else 1 /
 // defaultBytesPerToken.

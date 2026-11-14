@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -336,6 +337,80 @@ func TestProposeContext_ClaudeMDSections(t *testing.T) {
 	})
 }
 
+// claudeMDBig is a CLAUDE.md of one small section and the big sections of
+// the given sizes, with the bytes of the big sections (heading lines included).
+func claudeMDBig(sizes ...int) (text string, bigBytes int) {
+	var b strings.Builder
+	b.WriteString("# Project\n\nIntro.\n\n## Small\n" + strings.Repeat("x", 3*1024) + "\n")
+	for i, n := range sizes {
+		sec := "## Big " + strconv.Itoa(i) + "\n" + strings.Repeat("y", n) + "\n"
+		b.WriteString(sec)
+		bigBytes += len(sec)
+	}
+	return b.String(), bigBytes
+}
+
+func evidenceOf(p db.CoachProposal, kind string) []db.CoachEvidence {
+	var out []db.CoachEvidence
+	for _, e := range p.Evidence {
+		if e.Kind == kind {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+func TestProposeContext_ClaudeMDSavingTokens(t *testing.T) {
+	t.Run("sum of the big sections in tokens", func(t *testing.T) {
+		f := newCtxFixture(t)
+		text, bigBytes := claudeMDBig(12*1024, 9*1024)
+		writeHomeFile(t, filepath.Join(f.folder, "CLAUDE.md"), text)
+		require.Equal(t, 1, f.run(t, f.wb))
+		p := f.rows(t)[0]
+		saving := evidenceOf(p, "saving_tokens")
+		require.Len(t, saving, 1)
+		assert.Equal(t, strconv.FormatInt(agentreport.TokensOfBytes(bigBytes), 10), saving[0].Ref)
+		assert.Equal(t, "saving_tokens", p.Evidence[len(p.Evidence)-1].Kind)
+		assert.Len(t, evidenceOf(p, "section"), 2, "the small section is not counted")
+		// The fingerprint is the key and the size class only, as before the
+		// saving item: a declined proposal does not come back for it.
+		key := keyOf(DestRepoClaudeMD, f.wb, "", "", "")
+		assert.Equal(t, contextFingerprint(key, "size:"+strconv.Itoa(len(text)/ctxClaudeMDMinBytes), ""), p.Fingerprint)
+	})
+	t.Run("same size class, other sections: same fingerprint", func(t *testing.T) {
+		f := newCtxFixture(t)
+		a, _ := claudeMDBig(12*1024, 9*1024)
+		b, _ := claudeMDBig(8*1024, 8*1024, 5*1024)
+		require.Equal(t, len(a)/ctxClaudeMDMinBytes, len(b)/ctxClaudeMDMinBytes)
+		wb := &db.Workbench{ID: f.wb, FolderPath: f.folder}
+		writeHomeFile(t, filepath.Join(f.folder, "CLAUDE.md"), a)
+		pa, ok := claudeMDProposal(f.env(), wb, 5)
+		require.True(t, ok)
+		writeHomeFile(t, filepath.Join(f.folder, "CLAUDE.md"), b)
+		pb, ok := claudeMDProposal(f.env(), wb, 5)
+		require.True(t, ok)
+		assert.NotEqual(t, evidenceOf(pa, "saving_tokens"), evidenceOf(pb, "saving_tokens"))
+		assert.Equal(t, pa.Fingerprint, pb.Fingerprint)
+	})
+	t.Run("the saving keeps its slot under the evidence cap", func(t *testing.T) {
+		f := newCtxFixture(t)
+		sizes := make([]int, maxEvidence+2)
+		for i := range sizes {
+			sizes[i] = 8 * 1024
+		}
+		text, bigBytes := claudeMDBig(sizes...)
+		writeHomeFile(t, filepath.Join(f.folder, "CLAUDE.md"), text)
+		require.Equal(t, 1, f.run(t, f.wb))
+		p := f.rows(t)[0]
+		require.Len(t, p.Evidence, maxEvidence)
+		assert.Len(t, evidenceOf(p, "section"), maxEvidence-2)
+		last := p.Evidence[maxEvidence-1]
+		assert.Equal(t, "saving_tokens", last.Kind)
+		assert.Equal(t, strconv.FormatInt(agentreport.TokensOfBytes(bigBytes), 10), last.Ref,
+			"every big section counts, shown or not")
+	})
+}
+
 func TestProposeContext_MemoryIndex(t *testing.T) {
 	f := newCtxFixture(t)
 	writeHomeFile(t, memoryPath(f.home, f.folder), strings.Repeat("- a memory line\n", 600))
@@ -353,6 +428,7 @@ func TestProposeContext_MemoryIndex(t *testing.T) {
 	assert.Equal(t, f.wb, p.WorkbenchID)
 	assert.Equal(t, "start_tokens", p.Metric)
 	assert.NotEmpty(t, p.Evidence)
+	assert.Empty(t, evidenceOf(p, "saving_tokens"), "the agent decides what moves: no saving")
 }
 
 func TestProposeContext_TooFewMeasuredSessions(t *testing.T) {

@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -576,8 +577,9 @@ const maxHeadingRunes = 80
 
 // claudeMDProposal is rule 4: the workbench folder's CLAUDE.md of at least
 // ctxClaudeMDMinBytes with a section of at least ctxClaudeMDSectionMinBytes.
-// The session Accept starts does the move; the row carries the sizes, no
-// text (before and after "": the file is in the repository).
+// The session Accept starts does the move; the row carries the sizes and a
+// saving_tokens estimate of the big sections, no text (before and after "":
+// the file is in the repository).
 func claudeMDProposal(env ContextEnv, wb *db.Workbench, measured int) (db.CoachProposal, bool) {
 	text, ok := readContextFile(env, "CLAUDE.md", filepath.Join(wb.FolderPath, "CLAUDE.md"))
 	if !ok || len(text) < ctxClaudeMDMinBytes {
@@ -593,9 +595,13 @@ func claudeMDProposal(env ContextEnv, wb *db.Workbench, measured int) (db.CoachP
 		return db.CoachProposal{}, false
 	}
 	slices.SortStableFunc(big, func(a, b mdSection) int { return cmp.Compare(b.bytes, a.bytes) })
+	bigBytes := 0
+	for _, s := range big {
+		bigBytes += s.bytes
+	}
 	ev := []db.CoachEvidence{{Kind: "file", Ref: fmt.Sprintf("CLAUDE.md · %.1f KB", kb(len(text)))}}
 	for _, s := range big {
-		if len(ev) == maxEvidence {
+		if len(ev) == maxEvidence-1 { // the last slot is the saving's
 			break
 		}
 		h := s.heading
@@ -604,6 +610,11 @@ func claudeMDProposal(env ContextEnv, wb *db.Workbench, measured int) (db.CoachP
 		}
 		ev = append(ev, db.CoachEvidence{Kind: "section", Ref: fmt.Sprintf("%s · %.1f KB", h, kb(s.bytes))})
 	}
+	// saving_tokens estimates what the over-threshold sections cost at every
+	// session start (every big section, named or not). Evidence is not in the
+	// fingerprint, so the estimate never brings a declined proposal back.
+	ev = append(ev, db.CoachEvidence{Kind: "saving_tokens",
+		Ref: strconv.FormatInt(agentreport.TokensOfBytes(bigBytes), 10)})
 	key := keyOf(DestRepoClaudeMD, wb.ID, "", "", "")
 	return db.CoachProposal{
 		Fingerprint: contextFingerprint(key, fmt.Sprintf("size:%d", len(text)/ctxClaudeMDMinBytes), ""),
