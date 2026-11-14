@@ -125,11 +125,12 @@ type codexEvent struct {
 const codexWarmupPrompt = `Reply with the single word ok. Do not call any tool.`
 
 // codexExecArgs is the exec shape every probe run uses; apps is the app
-// section: the read-only allow-list, or the warm-up's "no tool callable".
-func codexExecArgs(apps []string) []string {
+// section (the read-only allow-list, or the warm-up's "no tool callable") and
+// mcp the override that switches the owner's MCP servers off.
+func codexExecArgs(apps, mcp []string) []string {
 	args := []string{"exec", "--json", "--ephemeral", "--skip-git-repo-check",
 		"-c", "approval_policy=never", "-c", "sandbox_mode=read-only"}
-	return append(append(args, apps...), "-")
+	return append(append(append(args, mcp...), apps...), "-")
 }
 
 // runCodex runs one exec with prompt on stdin until handle says stop, the
@@ -186,9 +187,19 @@ func ProbeCodex(ctx context.Context, codexBin string, env []string) Result {
 		return res
 	}
 
+	mcp, err := codex.NoMCPServerArgs(home, os.TempDir())
+	if err != nil {
+		res.Status, res.ErrorClass = StatusUnavailable, "config_unreadable"
+		return res
+	}
 	id := slackConnectorID(home)
 	if id == "" {
-		warm := codexExecArgs([]string{"-c", "features.apps=true", "-c", "apps._default.default_tools_enabled=false"})
+		warmApps, err := codex.WarmUpAppOverrides(home)
+		if err != nil {
+			res.Status, res.ErrorClass = StatusUnavailable, "config_unreadable"
+			return res
+		}
+		warm := codexExecArgs(warmApps, mcp)
 		var tool strings.Builder
 		stderr, err := runCodex(pctx, codexBin, warm, env, codexWarmupPrompt, func(ev codexEvent) {
 			if ev.Type == "error" {
@@ -219,7 +230,7 @@ func ProbeCodex(ctx context.Context, codexBin string, env []string) Result {
 	connected, readOK := false, false
 	var tool strings.Builder
 	seen := map[string]bool{}
-	stderr, err := runCodex(pctx, codexBin, codexExecArgs(apps), env, codexProbePrompt, func(ev codexEvent) {
+	stderr, err := runCodex(pctx, codexBin, codexExecArgs(apps, mcp), env, codexProbePrompt, func(ev codexEvent) {
 		switch {
 		case ev.Type == "item.completed" && ev.Item.Type == "mcp_tool_call" &&
 			strings.HasSuffix(ev.Item.Tool, codexListTool):
