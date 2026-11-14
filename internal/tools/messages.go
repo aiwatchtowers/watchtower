@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"watchtower/internal/db"
 )
@@ -25,6 +26,61 @@ type messageResult struct {
 	Sender    string `json:"sender"`
 	Text      string `json:"text"`
 	Permalink string `json:"permalink,omitempty"`
+}
+
+// listMessagesResult is list_messages' answer: the messages and what the
+// local Slack copy covers, so the assistant knows when to ask Live Slack.
+type listMessagesResult struct {
+	Messages []messageResult       `json:"messages"`
+	Coverage messageCoverageResult `json:"coverage"`
+}
+
+// messageCoverageResult: scope is "own" when an enabled, working Slack
+// account exists, else "none"; synced_through and backfill_from are "" when
+// unknown; channel_in_scope is null unless the call named a channel.
+type messageCoverageResult struct {
+	Scope          string `json:"scope"`
+	SyncedThrough  string `json:"synced_through"`
+	BackfillFrom   string `json:"backfill_from"`
+	ChannelInScope *bool  `json:"channel_in_scope"`
+}
+
+func messageCoverage(d *db.DB, inScope *bool) (messageCoverageResult, error) {
+	c, err := d.SlackCoverage()
+	if err != nil {
+		return messageCoverageResult{}, fmt.Errorf("slack coverage: %w", err)
+	}
+	out := messageCoverageResult{Scope: "none", ChannelInScope: inScope}
+	if c.Own {
+		out.Scope = "own"
+	}
+	if !c.SyncedThrough.IsZero() {
+		out.SyncedThrough = c.SyncedThrough.Format(time.RFC3339)
+	}
+	if !c.BackfillFrom.IsZero() {
+		out.BackfillFrom = c.BackfillFrom.Format("2006-01-02")
+	}
+	if !c.Own && inScope != nil {
+		f := false
+		out.ChannelInScope = &f
+	}
+	return out, nil
+}
+
+// channelInScope is true when one of the resolved channels is synced for
+// the owner: a member channel or a direct message.
+func channelInScope(d *db.DB, ids []string) (*bool, error) {
+	in := false
+	for _, id := range ids {
+		c, err := d.GetChannelByID(id)
+		if err != nil {
+			return nil, fmt.Errorf("resolving channel: %w", err)
+		}
+		if c != nil && !c.IsArchived && (c.IsMember || c.Type == "dm" || c.Type == "group_dm") {
+			in = true
+		}
+	}
+	return &in, nil
 }
 
 // NewListMessages searches/lists raw Slack messages, filtered by person,
@@ -51,12 +107,16 @@ func NewListMessages() *Tool {
 				}
 				opts.UserIDs = userIDs
 			}
+			var inScope *bool
 			if a.Channel != "" {
 				channelIDs, err := resolveChannel(d, a.Channel)
 				if err != nil {
 					return nil, err
 				}
 				opts.ChannelIDs = channelIDs
+				if inScope, err = channelInScope(d, channelIDs); err != nil {
+					return nil, err
+				}
 			}
 			if a.Person == "" && a.Channel == "" && a.Query == "" {
 				return nil, &ValidationError{Msg: "provide at least one filter: person, channel, or query"}
@@ -71,7 +131,16 @@ func NewListMessages() *Tool {
 			if err != nil {
 				return nil, fmt.Errorf("searching messages: %w", err)
 			}
-			return renderMessages(d, msgs), nil
+			if call.Binding.Surface != "main" {
+				// Every other surface (automations, embedded chats, MCP) keeps the
+				// bare array: recipes and templates parse it (confirmed hashes).
+				return renderMessages(d, msgs), nil
+			}
+			cov, err := messageCoverage(d, inScope)
+			if err != nil {
+				return nil, err
+			}
+			return listMessagesResult{Messages: renderMessages(d, msgs), Coverage: cov}, nil
 		},
 	}
 }

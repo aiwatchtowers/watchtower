@@ -46,8 +46,8 @@ final class LiveSlack01GuardTests: XCTestCase {
     }
 
     func testFinalizeMarksConversationOnSlackStep() async throws {
-        try addStep("mcp__watchtower__search_knowledge")
-        try addStep("mcp__claude_ai_Slack__slack_search_public")
+        try addStep("search_knowledge")
+        try addStep("claude_ai_Slack:slack_search_public")
         try await finalize()
         let marked = try mark()
         XCTAssertEqual(marked, assistantID)
@@ -55,38 +55,87 @@ final class LiveSlack01GuardTests: XCTestCase {
 
     func testStepStartMarksWithoutFinalize() async throws {
         let store = ChatTurnStore(dbPool: pool)
-        let plain = ChatToolStart(turnID: "t1", id: "a", name: "mcp__watchtower__search_knowledge", argsJSON: "{}")
+        let plain = ChatToolStart(turnID: "t1", id: "a", name: "search_knowledge", argsJSON: "{}")
         try await store.stepStarted(messageID: assistantID, seq: 0, start: plain, at: Date())
         let none = try mark()
         XCTAssertNil(none)
-        let slack = ChatToolStart(turnID: "t1", id: "b", name: "mcp__codex_apps__slack.slack_search_public", argsJSON: "{}")
+        let slack = ChatToolStart(turnID: "t1", id: "b", name: "codex_apps:slack.slack_search_public", argsJSON: "{}")
         try await store.stepStarted(messageID: assistantID, seq: 1, start: slack, at: Date())
         let marked = try mark()
         XCTAssertEqual(marked, assistantID)
     }
 
     func testFinalizeMarksConversationOnCodexSlackStep() async throws {
-        try addStep("mcp__codex_apps__slack.slack_read_channel")
+        try addStep("codex_apps:slack.slack_read_channel")
         try await finalize()
         let marked = try mark()
         XCTAssertEqual(marked, assistantID)
     }
 
     func testFinalizeLeavesUnmarkedWithoutSlackStep() async throws {
-        try addStep("mcp__watchtower__search_knowledge")
-        try addStep("mcp__claude_ai_Gmail__search_threads")
+        try addStep("search_knowledge")
+        try addStep("claude_ai_Gmail:search_threads")
+        try addStep("list_slack_channels")
+        try addStep("list_messages")
         try await finalize()
         let marked = try mark()
         XCTAssertNil(marked)
     }
 
     func testFirstMarkIsKept() async throws {
-        try addStep("mcp__claude_ai_Slack__slack_read_thread")
+        try addStep("claude_ai_Slack:slack_read_thread")
         let conv = conversationID
         try await pool.write { try $0.execute(sql: "UPDATE chat_conversations SET live_slack_since = 1 WHERE id = ?", arguments: [conv]) }
         try await finalize()
         let marked = try mark()
         XCTAssertEqual(marked, 1)
+    }
+
+    /// Go's chat step names of every Slack connector tool (Claude: reads and
+    /// writes; Codex: the read tools its allow-list shows), produced by the real
+    /// translators in `TestLIVE01_StepNamesFixture`.
+    private static func goStepNames() throws -> [String: [String]] {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // Core
+            .deletingLastPathComponent() // Tests
+            .deletingLastPathComponent() // WatchtowerDesktop
+            .deletingLastPathComponent() // repo root
+            .appendingPathComponent("internal/slacklive/testdata/slack_step_names.json")
+        let obj = try JSONSerialization.jsonObject(with: Data(contentsOf: url))
+        return try XCTUnwrap(obj as? [String: [String]])
+    }
+
+    func testEveryGoSlackStepNameMarks() throws {
+        let names = try Self.goStepNames()
+        let claude = try XCTUnwrap(names["claude"])
+        let codex = try XCTUnwrap(names["codex"])
+        XCTAssertFalse(claude.isEmpty)
+        XCTAssertFalse(codex.isEmpty)
+        for name in claude + codex {
+            XCTAssertTrue(LiveSlackMark.isSlackConnectorStep(name), name)
+            // markIfSlackStep (the step-start writer) on a fresh conversation.
+            let conv = try pool.write { d -> Int64 in
+                let conv = try TestDatabase.insertChatConversation(d)
+                let asst = try ChatTreeQueries.insertAssistant(d, conversationID: conv, parentID: nil, turnID: "t",
+                                                               provider: "claude", model: "")
+                try LiveSlackMark.markIfSlackStep(d, messageID: asst.id, name: name)
+                return conv
+            }
+            let started = try pool.read { try LiveSlackMark.isMarked($0, conversationID: conv) }
+            XCTAssertTrue(started, "step start: \(name)")
+            // markIfUsed (the finalize backstop) on another fresh conversation.
+            let conv2 = try pool.write { d -> Int64 in
+                let conv = try TestDatabase.insertChatConversation(d)
+                let asst = try ChatTreeQueries.insertAssistant(d, conversationID: conv, parentID: nil, turnID: "t",
+                                                               provider: "claude", model: "")
+                try d.execute(sql: "INSERT INTO chat_turn_steps (message_id, seq, tool_id, name, started_at) VALUES (?, 0, 'x', ?, 0)",
+                              arguments: [asst.id, name])
+                try LiveSlackMark.markIfUsed(d, conversationID: conv, messageID: asst.id)
+                return conv
+            }
+            let finalized = try pool.read { try LiveSlackMark.isMarked($0, conversationID: conv2) }
+            XCTAssertTrue(finalized, "finalize: \(name)")
+        }
     }
 
     func testKeepRefusedForLiveConversation() throws {
@@ -118,6 +167,29 @@ final class LiveSlack01GuardTests: XCTestCase {
         try pool.write { try $0.execute(sql: "UPDATE chat_conversations SET live_slack_since = ? WHERE id = ?", arguments: [msg, conv]) }
         model.reload()
         XCTAssertEqual(model.keepDisabledReason, "Built on Live Slack answers, which are not kept")
+    }
+
+    /// The panel disables Add with the reason (M2), but an artifact kept before
+    /// the Live turn can still be removed.
+    @MainActor
+    func testPanelBlocksKeepButNotRemove() async throws {
+        let (conv, msg) = (conversationID, assistantID)
+        try await pool.write { d in
+            let draft = ArtifactDraft(key: "plan", kind: "document", title: "Plan", meta: [:], content: "x", isComplete: true)
+            _ = try ChatArtifactQueries.saveVersion(d, conversationID: conv, messageID: msg, draft: draft, edited: false)
+        }
+        let model = ArtifactPanelModel(db: pool, conversationID: conv, key: "plan")
+        XCTAssertEqual(model.knowledgeState, .add)
+        XCTAssertNil(model.knowledgeKeepBlocked)
+        try await pool.write { try ChatArtifactQueries.keep($0, conversationID: conv, artifactKey: "plan", version: 1) }
+        try await pool.write { try $0.execute(sql: "UPDATE chat_conversations SET live_slack_since = ? WHERE id = ?", arguments: [msg, conv]) }
+        model.reload()
+        XCTAssertEqual(model.knowledgeState, .remove)
+        XCTAssertNil(model.knowledgeKeepBlocked, "Remove is never blocked")
+        await model.toggleKnowledge()
+        XCTAssertNil(model.keptVersion, "the earlier pin is dropped")
+        XCTAssertEqual(model.knowledgeState, .add)
+        XCTAssertEqual(model.knowledgeKeepBlocked, ArtifactPanelModel.liveSlackReason)
     }
 
     // MARK: - Reader list

@@ -178,6 +178,9 @@ func isTerminal(e Event) bool {
 type EventWriter struct {
 	mu sync.Mutex
 	w  io.Writer
+	// Observe, when set before the first Emit, hears every event after it
+	// is written (the Slack Live status watcher); it must not block.
+	Observe func(Event)
 }
 
 // NewEventWriter wraps w.
@@ -198,5 +201,8 @@ func (w *EventWriter) Emit(e Event) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	_, err = w.w.Write(b)
+	if w.Observe != nil {
+		w.Observe(e)
+	}
 	return err
 }

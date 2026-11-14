@@ -5,6 +5,7 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/policy"
+	"watchtower/internal/slackmode"
 )
 
 // The PolicyBlock kinds, also `automations show/list --json`'s policy_blocked.
@@ -70,11 +71,19 @@ func ConnectionLookup(database *db.DB) (func(name string) (kind, url, command st
 
 // CheckRecipePolicy is CheckManifestPolicy for a parsed recipe, its Quick
 // Connections read from database (nil: a registry without a database, whose
-// shell: entries are still checked).
+// shell: entries are still checked). With a database it also refuses a
+// slack:live recipe whose slack.* event trigger needs Slack in Full when no
+// Full account exists.
 func CheckRecipePolicy(database *db.DB, r *Recipe) error {
 	m, err := ParseManifest(r.Permissions, r.Outputs, r.Scope)
 	if err != nil {
 		return err
+	}
+	if database != nil {
+		// slack:live with a Slack event trigger needs Full (#1709 spec §4).
+		if err := liveSlackFullTriggerError(r, m, func() (slackmode.Mode, error) { return SlackMode(database) }); err != nil {
+			return err
+		}
 	}
 	if database == nil {
 		return CheckManifestPolicy(m, nil)

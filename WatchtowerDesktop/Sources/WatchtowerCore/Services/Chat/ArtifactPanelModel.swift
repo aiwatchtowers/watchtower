@@ -132,6 +132,12 @@ package final class ArtifactPanelModel {
 
     package static let liveSlackReason = "Built on Live Slack answers, which are not kept"
 
+    /// Why the shown control cannot keep this version (LIVE-01); `nil` when it
+    /// can. Remove is never blocked: an earlier pin can always be dropped.
+    package var knowledgeKeepBlocked: String? {
+        knowledgeState == .remove ? nil : keepDisabledReason
+    }
+
     /// Runs the press of the knowledge control: Add / Update pin the shown
     /// version, Remove drops the pin. A failure is shown, nothing changes.
     package func toggleKnowledge() async {

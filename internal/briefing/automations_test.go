@@ -283,3 +283,31 @@ func TestBriefing_AutomationMoreCountsRowsNeverLoaded(t *testing.T) {
 	assert.True(t, strings.HasSuffix(section, fmt.Sprintf("\n\n+%d more", n-kept)), "tail of %q", section[len(section)-12:])
 	assert.Contains(t, section, fmt.Sprintf("⚙ Chatty: o%d\n", n-1), "the newest output is kept")
 }
+
+// TestBriefingAutomationBlock_SkipsLiveRuns: a run that used Live Slack keeps
+// its outputs as its own transcript; the briefing's FROM YOUR AUTOMATIONS
+// block never reads them (#1709 D14).
+func TestBriefingAutomationBlock_SkipsLiveRuns(t *testing.T) {
+	d := testDB(t)
+	since := time.Now().Add(-time.Hour)
+	a, liveRun := seedBriefingAutomation(t, d, "live", "Live")
+	insertAutomationOutput(t, d, a, liveRun, "briefing", "LIVE-OUTPUT", "read from Slack Live", since.Add(time.Minute))
+	require.NoError(t, d.MarkAutomationRunLiveSlack(liveRun))
+	pipe := New(d, testConfig(), &mockGenerator{}, log.New(io.Discard, "", 0))
+
+	section, has := pipe.gatherAutomationOutputs(since)
+	assert.False(t, has, "a Live run's output is not briefing material")
+	assert.NotContains(t, section, "LIVE-OUTPUT")
+
+	b, plainRun := seedBriefingAutomation(t, d, "plain", "Plain")
+	insertAutomationOutput(t, d, b, plainRun, "briefing", "PLAIN-OUTPUT", "b", since.Add(2*time.Minute))
+	section, has = pipe.gatherAutomationOutputs(since)
+	assert.True(t, has)
+	assert.Contains(t, section, "PLAIN-OUTPUT")
+	assert.NotContains(t, section, "LIVE-OUTPUT")
+
+	// The output stays where the run wrote it (the Inbox reads it by run).
+	outs, err := d.ListAutomationOutputsForRun(liveRun, 10)
+	require.NoError(t, err)
+	assert.Len(t, outs, 1)
+}
