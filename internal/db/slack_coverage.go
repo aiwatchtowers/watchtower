@@ -17,9 +17,9 @@ type SlackCoverage struct {
 
 // SlackCoverage reads the coverage from slack_accounts, sync_state and the
 // Slack rows of history_backfill (the latest reached day: the safe edge).
-func (d *DB) SlackCoverage() (SlackCoverage, error) {
+func (db *DB) SlackCoverage() (SlackCoverage, error) {
 	var c SlackCoverage
-	accts, err := d.ListEnabledSlackAccounts()
+	accts, err := db.ListEnabledSlackAccounts()
 	if err != nil {
 		return c, err
 	}
@@ -29,7 +29,7 @@ func (d *DB) SlackCoverage() (SlackCoverage, error) {
 		}
 	}
 	var last sql.NullString
-	if err := d.QueryRow(`SELECT MAX(last_sync_at) FROM sync_state WHERE last_sync_at IS NOT NULL AND last_sync_at != ''`).Scan(&last); err != nil {
+	if err := db.QueryRow(`SELECT MAX(last_sync_at) FROM sync_state WHERE last_sync_at IS NOT NULL AND last_sync_at != ''`).Scan(&last); err != nil {
 		return c, fmt.Errorf("slack coverage sync: %w", err)
 	}
 	if last.Valid {
@@ -38,7 +38,7 @@ func (d *DB) SlackCoverage() (SlackCoverage, error) {
 		}
 	}
 	var reached sql.NullFloat64
-	if err := d.QueryRow(`SELECT MAX(reached_ts) FROM history_backfill WHERE source_kind = 'slack' AND status != 'off'`).Scan(&reached); err != nil {
+	if err := db.QueryRow(`SELECT MAX(reached_ts) FROM history_backfill WHERE source_kind = 'slack' AND status != 'off'`).Scan(&reached); err != nil {
 		return c, fmt.Errorf("slack coverage backfill: %w", err)
 	}
 	if reached.Valid && reached.Float64 > 0 {
