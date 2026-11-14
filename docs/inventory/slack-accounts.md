@@ -36,12 +36,13 @@
 
 **Observable:** The app is in Full mode when a synced Slack account exists, in Live mode when there is none but a Slack Live probe says `ok`, and Off otherwise. The Desktop and the daemon always agree on which.
 
-**Mechanism:** Go `slackmode.Derive(full, liveStatuses)` and Swift `SlackMode.derive(full:liveStatuses:)` are twins over the one fixture `internal/slackmode/testdata/slack_mode_cases.json`. The probe verdicts live in `slack_live_status` (migration 00188), one row per `(team_id, provider)`, written by `UpsertSlackLiveStatus`, which keeps the newest `checked_at` and never erases a known `connector_id` with an empty one.
+**Mechanism:** Go `slackmode.Derive(full, liveStatuses)` and Swift `SlackMode.derive(full:liveStatuses:)` are twins over the one fixture `internal/slackmode/testdata/slack_mode_cases.json`. Go derives the mode through `automations.SlackMode` (Full = `HasFullSlackAccount`, the Live verdicts from `slack_live_status`), which the `slack:live` event-trigger refusal at save uses (Live only: "with Live only nothing fires it"; Off: "Slack is not connected"). The probe verdicts live in `slack_live_status` (migration 00188), one row per `(team_id, provider)`, written by `UpsertSlackLiveStatus`, which keeps the newest `checked_at` and never erases a known `connector_id` with an empty one.
 
 **Why locked:** If the two sides disagree, the Desktop shows one mode while the daemon runs another (a Live chat tool offered with no probe, or a Full sync skipped). No other test would see it.
 
 **Test guards:**
 - `internal/slackmode/mode_test.go`: `TestSlackMode_SharedFixture`.
+- `internal/automations/slack_live_internal_test.go`: `TestSlackMode_FromAccountsAndVerdicts` (the Go caller).
 - `WatchtowerDesktop/Tests/Core/SlackModeFixtureTests.swift`: `SlackModeFixtureTests.testFixtureMatchesGo`.
 - `internal/db/slack_live_status_test.go`: `TestUpsertSlackLiveStatus_NewestWins`, `TestUpsertSlackLiveStatus_KeepsConnectorID`.
 

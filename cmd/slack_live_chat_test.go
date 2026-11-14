@@ -11,6 +11,7 @@ import (
 
 	"watchtower/internal/chat"
 	"watchtower/internal/db"
+	"watchtower/internal/slacklive"
 )
 
 func liveRow(provider, status, connector string, at time.Time) db.SlackLiveStatus {
@@ -58,7 +59,7 @@ func slackWatcher(t *testing.T, database *db.DB, now time.Time) (*slackLiveWatch
 	var probes []string
 	w := newSlackLiveWatcher(database, "claude")
 	w.now = func() time.Time { return now }
-	w.classify = func(_, text string, _, readOK bool) (string, string) {
+	w.classify = func(text string, _, readOK bool) (string, string) {
 		if readOK {
 			return "ok", ""
 		}
@@ -148,7 +149,7 @@ func TestSlackLiveWatcher_StatusTimeIsEventTime(t *testing.T) {
 	}
 	bad, good := false, true
 	w.Observe(chat.Event{Type: chat.EventToolStart, ID: "1", Name: "claude_ai_Slack:slack_read_channel"})
-	w.Observe(chat.Event{Type: chat.EventToolEnd, ID: "1", OK: &bad, Summary: "boom"}) // event time t1
+	w.Observe(chat.Event{Type: chat.EventToolEnd, ID: "1", OK: &bad, Summary: "Unknown tool"}) // event time t1
 	w.now = func() time.Time { return t2 }
 	w.Observe(chat.Event{Type: chat.EventToolStart, ID: "2", Name: "claude_ai_Slack:slack_read_channel"})
 	w.Observe(chat.Event{Type: chat.EventToolEnd, ID: "2", OK: &good}) // event time t2
@@ -198,6 +199,39 @@ func TestChatLive_StatusWrittenOnUse(t *testing.T) {
 	rows, _ = d.ListSlackLiveStatus()
 	assert.Len(t, rows, 1)
 	assert.Equal(t, "ok", rows[0].Status)
+}
+
+// An ordinary tool error (a missing channel, bad arguments: read_failed)
+// says nothing about the connection and leaves the status as it was; a
+// connection-class failure is written (M1). The real classifier decides.
+func TestChatLive_OrdinaryToolErrorKeepsLive(t *testing.T) {
+	now := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
+	d := db.OpenTestDB(t)
+	w, _ := slackWatcher(t, d, now)
+	w.classify = slacklive.Classify
+	toolCall(w, "1", "claude_ai_Slack:slack_read_channel", true, "12 messages")
+	w.now = func() time.Time { return now.Add(time.Minute) }
+	toolCall(w, "2", "claude_ai_Slack:slack_read_channel", false, "channel_not_found")
+	rows, err := d.ListSlackLiveStatus()
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, "ok", rows[0].Status, "one failed read does not turn Live off")
+	assert.True(t, now.Equal(rows[0].CheckedAt), "nothing was written")
+	assert.True(t, claudeSlackLive(rows, true, false))
+
+	for _, c := range []struct{ text, status string }{
+		{"Too many requests (429)", "unavailable"},
+		{"Your workspace admin must approve this app", "needs_admin"},
+		{"This tool is not available on your plan", "no_plan"},
+		{"Unknown tool: slack_read_channel", "not_connected"},
+	} {
+		w.now = func() time.Time { return now.Add(time.Hour) }
+		toolCall(w, "3", "claude_ai_Slack:slack_read_channel", false, c.text)
+		rows, err = d.ListSlackLiveStatus()
+		require.NoError(t, err)
+		assert.Equal(t, c.status, rows[0].Status, c.text)
+		now = now.Add(2 * time.Hour)
+	}
 }
 
 func TestChatLive_ConnectorErrorShown(t *testing.T) {

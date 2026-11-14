@@ -4,12 +4,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
 	"github.com/robfig/cron/v3"
 
 	"watchtower/internal/db"
+	"watchtower/internal/slackmode"
 )
 
 // Live Slack in automations (#1709, spec §4, D14/D15): a recipe with
@@ -111,22 +113,26 @@ func zoneTransitions(loc *time.Location, from, to time.Time) []time.Time {
 }
 
 // liveSlackFullTriggerError refuses a slack:live recipe whose trigger needs
-// synced Slack (a slack.* event or a reaction) when no Full account exists:
-// on Live only there is nothing to fire it.
-func liveSlackFullTriggerError(r *Recipe, m *Manifest, fullAccount func() (bool, error)) error {
+// synced Slack (a slack.* event or a reaction) when the app's Slack mode
+// (SlackMode) is not Full: on Live only, or with no Slack, nothing fires it.
+func liveSlackFullTriggerError(r *Recipe, m *Manifest, mode func() (slackmode.Mode, error)) error {
 	if !m.SlackLive() || r.Trigger.Kind != TriggerEvent || r.Trigger.Event == nil ||
 		!strings.HasPrefix(r.Trigger.Event.Type, "slack.") {
 		return nil
 	}
-	ok, err := fullAccount()
+	got, err := mode()
 	if err != nil {
 		return err
 	}
-	if ok {
+	if got == slackmode.Full {
 		return nil
 	}
-	return fmt.Errorf("trigger event %s needs a Slack workspace synced in Full; with Live only nothing fires it — "+
-		"connect Slack in Full, or use a schedule", r.Trigger.Event.Type)
+	why := "with Live only nothing fires it"
+	if got == slackmode.Off {
+		why = "Slack is not connected"
+	}
+	return fmt.Errorf("trigger event %s needs a Slack workspace synced in Full; %s — "+
+		"connect Slack in Full, or use a schedule", r.Trigger.Event.Type, why)
 }
 
 // HasFullSlackAccount reports whether an enabled, non-removed Slack
@@ -144,12 +150,37 @@ func HasFullSlackAccount(d *db.DB) (bool, error) {
 	return false, nil
 }
 
+// SlackMode is the app's Slack mode (SLACKMODE-01, slackmode.Derive, the
+// Swift twin's rule): Full with a Full account (HasFullSlackAccount), else
+// Live when any Slack Live verdict is ok, else Off.
+func SlackMode(d *db.DB) (slackmode.Mode, error) {
+	full, err := HasFullSlackAccount(d)
+	if err != nil {
+		return "", err
+	}
+	rows, err := d.ListSlackLiveStatus()
+	if err != nil {
+		return "", err
+	}
+	statuses := make([]string, 0, len(rows))
+	for _, r := range rows {
+		statuses = append(statuses, r.Status)
+	}
+	return slackmode.Derive(full, statuses), nil
+}
+
 // AutomationSlackLive reports whether an indexed automation's permissions
-// list slack:live (the executor's hourly limit and the agent's wiring).
+// list slack:live (the executor's hourly limit). Permissions that cannot be
+// read count as slack:live: the limit fails closed. None at all ("") lists
+// nothing.
 func AutomationSlackLive(a *db.Automation) bool {
-	var entries []string
-	if a == nil || json.Unmarshal([]byte(a.PermissionsJSON), &entries) != nil {
+	if a == nil || a.PermissionsJSON == "" {
 		return false
+	}
+	var entries []string
+	if err := json.Unmarshal([]byte(a.PermissionsJSON), &entries); err != nil {
+		log.Printf("automation %d: permissions unreadable, held to the Live Slack hourly limit: %v", a.ID, err)
+		return true
 	}
 	for _, e := range entries {
 		if p, err := ParsePermission(e); err == nil && p.String() == EntrySlackLive {

@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"io"
+	"log"
 	"slices"
 	"strings"
 	"sync"
@@ -12,6 +13,7 @@ import (
 	"watchtower/internal/codex"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/slackconnector"
 	"watchtower/internal/slacklive"
 )
 
@@ -78,7 +80,7 @@ type slackLiveChat struct {
 // claudeSlackLiveChat: the claude.ai connector, when claude.ai tools are on
 // for the chat (claudeSlackLive).
 func claudeSlackLiveChat(in slackLiveChatInput) slackLiveChat {
-	slackOff := chat.DisabledConnectorTokens(in.cfg.AI.ClaudeAI.DisabledConnectors)["claude_ai_Slack"]
+	slackOff := chat.DisabledConnectorTokens(in.cfg.AI.ClaudeAI.DisabledConnectors)[slackconnector.ClaudeServer]
 	return slackLiveChat{live: in.claudeAI.mode.On && claudeSlackLive(in.rows, in.claudeAI.mode.Connectors, slackOff)}
 }
 
@@ -105,7 +107,7 @@ type slackLiveWatcher struct {
 	now      func() time.Time
 	// classify is slacklive.Classify; startProbe launches the detached
 	// `slack live probe` for a provider.
-	classify   func(provider, text string, connected, readOK bool) (status, class string)
+	classify   func(text string, connected, readOK bool) (status, class string)
 	startProbe func(provider string)
 
 	mu     sync.Mutex
@@ -131,10 +133,10 @@ func newSlackLiveWatcher(database *db.DB, provider string) *slackLiveWatcher {
 func isSlackConnectorTool(name string) bool {
 	var tool string
 	switch {
-	case strings.HasPrefix(name, "claude_ai_Slack:"):
-		tool = strings.TrimPrefix(name, "claude_ai_Slack:")
-	case strings.HasPrefix(name, "codex_apps:slack."):
-		tool = strings.TrimPrefix(name, "codex_apps:slack.")
+	case strings.HasPrefix(name, slacklive.ClaudeStepPrefix):
+		tool = strings.TrimPrefix(name, slacklive.ClaudeStepPrefix)
+	case strings.HasPrefix(name, slacklive.CodexStepPrefix):
+		tool = strings.TrimPrefix(name, slacklive.CodexStepPrefix)
 	default:
 		return false
 	}
@@ -204,8 +206,12 @@ func (w *slackLiveWatcher) maybeProbe(provider string) {
 	if w.startProbe == nil || w.database == nil {
 		return
 	}
+	if _, ok := slackLiveFor(provider); !ok { // a routed turn on a provider with no connector
+		return
+	}
 	rows, err := w.database.ListSlackLiveStatus()
 	if err != nil {
+		log.Printf("slack live: reading the status before a %s probe: %v", provider, err)
 		return
 	}
 	if r, ok := newestSlackLive(rows, provider); ok && w.now().Sub(r.CheckedAt) < slackLiveProbeAge {
@@ -231,16 +237,25 @@ func (w *slackLiveWatcher) writeStatus(provider string, e chat.Event, at time.Ti
 
 // recordSlackLiveUse writes the status one connector call shows (the tool
 // ran, so the connector is present) on the provider's newest row's key, so
-// a probe's team and connector id stay with it. Shared by the chat and the
-// automation agent() child (#1709 spec §1 "Freshness").
-func recordSlackLiveUse(database *db.DB, classify func(provider, text string, connected, readOK bool) (string, string),
+// a probe's team and connector id stay with it. Only a verdict about the
+// connection is written (slacklive.ConnectionVerdict): an ordinary tool
+// error leaves the status as it was. Shared by the chat and the automation
+// agent() child (#1709 spec §1 "Freshness"). Failures are logged: the call
+// itself already happened.
+func recordSlackLiveUse(database *db.DB, classify func(text string, connected, readOK bool) (string, string),
 	provider, text string, ok bool, now time.Time) {
-	status, class := classify(provider, text, true, ok)
-	row := db.SlackLiveStatus{Provider: provider, Status: status, ErrorClass: class, CheckedAt: now}
-	if rows, err := database.ListSlackLiveStatus(); err == nil {
-		if r, found := newestSlackLive(rows, provider); found {
-			row.TeamID = r.TeamID
-		}
+	status, class := classify(text, true, ok)
+	if !slacklive.ConnectionVerdict(status, class) {
+		return
 	}
-	_ = database.UpsertSlackLiveStatus(row)
+	row := db.SlackLiveStatus{Provider: provider, Status: status, ErrorClass: class, CheckedAt: now}
+	rows, err := database.ListSlackLiveStatus()
+	if err != nil {
+		log.Printf("slack live: reading the status before a %s write: %v", provider, err)
+	} else if r, found := newestSlackLive(rows, provider); found {
+		row.TeamID = r.TeamID
+	}
+	if err := database.UpsertSlackLiveStatus(row); err != nil {
+		log.Printf("slack live: writing the %s status: %v", provider, err)
+	}
 }

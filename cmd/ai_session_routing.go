@@ -164,9 +164,13 @@ func buildSessionActual(ctx context.Context, cmd *cobra.Command, cfg *config.Con
 	opts := sessionPromptOptions(&actual, aiSessionFlagSurface, projectID, time.Now(), claudeAI.prompt)
 	var codexSlack []string
 	if live, ok := slackLiveFor(p); ok && aiSessionFlagSurface == "main" {
-		slackRows, _ := database.ListSlackLiveStatus() // a read failure = no Live promise
-		got := live.chat(slackLiveChatInput{rows: slackRows, cfg: &actual, claudeAI: claudeAI, warn: cmd.ErrOrStderr()})
-		opts.SlackLive, codexSlack = got.live, got.codexSlack
+		if slackRows, err := database.ListSlackLiveStatus(); err != nil {
+			// Fail closed: no Live promise and no apps for either provider.
+			fmt.Fprintf(cmd.ErrOrStderr(), "Live Slack is off: reading its status: %v\n", err)
+		} else {
+			got := live.chat(slackLiveChatInput{rows: slackRows, cfg: &actual, claudeAI: claudeAI, warn: cmd.ErrOrStderr()})
+			opts.SlackLive, codexSlack = got.live, got.codexSlack
+		}
 	}
 	prompt, err := chat.BuildSystemPrompt(ctx, database, &actual, opts)
 	if err != nil {

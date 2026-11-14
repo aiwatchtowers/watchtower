@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"watchtower/internal/db"
+	"watchtower/internal/slackmode"
 )
 
 func TestManifest_SlackLiveParses(t *testing.T) {
@@ -130,5 +131,69 @@ func TestSlackLive_EventTriggerNeedsFull(t *testing.T) {
 	}
 	if err := CheckRecipePolicy(d, event("slack.new_messages", live)); err != nil {
 		t.Fatalf("with a Full account: %v", err)
+	}
+}
+
+// A watch recipe (trigger.sync) with slack:live is refused at parse, so at
+// save too: its sync-slot runs are outside the hourly limit (D15, ruling R16).
+func TestSlackLive_RefusedWithSyncTrigger(t *testing.T) {
+	data := recipeWith("name: Watch\ntrigger:\n  sync: custom_tracks\npermissions: [track:scan, slack:live, agent:run, llm:light]\n", "log(1);\n")
+	_, err := ParseRecipe("watch", data, Scope{Kind: ScopePersonal})
+	if err == nil || !strings.Contains(err.Error(), "slack:live is not allowed with trigger.sync") {
+		t.Fatalf("err = %v; want the trigger.sync refusal", err)
+	}
+	if _, err := ParseRecipe("watch", recipeWith("name: Watch\ntrigger:\n  sync: custom_tracks\npermissions: [track:scan]\n", "log(1);\n"),
+		Scope{Kind: ScopePersonal}); err != nil {
+		t.Fatalf("the same watch recipe without slack:live parses: %v", err)
+	}
+}
+
+// Permissions the index cannot read hold the recipe to the hourly limit
+// (fail closed); none at all list nothing.
+func TestAutomationSlackLive_MalformedPermissionsFailClosed(t *testing.T) {
+	if !AutomationSlackLive(&db.Automation{PermissionsJSON: `{not json`}) {
+		t.Fatal("unreadable permissions must count as slack:live")
+	}
+	if AutomationSlackLive(&db.Automation{PermissionsJSON: `["agent:run"]`}) {
+		t.Fatal("a manifest without slack:live is not Live")
+	}
+	if !AutomationSlackLive(&db.Automation{PermissionsJSON: `["slack:live"]`}) {
+		t.Fatal("slack:live")
+	}
+	if AutomationSlackLive(&db.Automation{}) || AutomationSlackLive(nil) {
+		t.Fatal("no permissions list nothing")
+	}
+}
+
+// SlackMode is slackmode.Derive over the accounts and the Live verdicts
+// (SLACKMODE-01's Go caller); the event-trigger refusal says which.
+func TestSlackMode_FromAccountsAndVerdicts(t *testing.T) {
+	d := db.OpenTestDB(t)
+	mode, err := SlackMode(d)
+	if err != nil || mode != slackmode.Off {
+		t.Fatalf("nothing: mode = %q, %v; want off", mode, err)
+	}
+	r := mustParse(t, recipeWith("name: E\ntrigger:\n  event: {type: slack.new_messages}\npermissions:\n  - slack:live\n  - agent:run\n  - llm:light\n", "x\n"), personalScope)
+	if err := CheckRecipePolicy(d, r); err == nil || !strings.Contains(err.Error(), "Slack is not connected") {
+		t.Fatalf("Off: err = %v", err)
+	}
+	if err := d.UpsertSlackLiveStatus(db.SlackLiveStatus{Provider: "claude", Status: "ok", CheckedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if mode, _ = SlackMode(d); mode != slackmode.Live {
+		t.Fatalf("an ok verdict: mode = %q; want live", mode)
+	}
+	if err := CheckRecipePolicy(d, r); err == nil || !strings.Contains(err.Error(), "with Live only nothing fires it") {
+		t.Fatalf("Live: err = %v", err)
+	}
+	id, err := d.CreateSlackAccount(db.SlackAccount{TeamID: "T1", TeamName: "acme"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetSlackAccountAuthState(id, "ok", ""); err != nil {
+		t.Fatal(err)
+	}
+	if mode, _ = SlackMode(d); mode != slackmode.Full {
+		t.Fatalf("a Full account: mode = %q; want full", mode)
 	}
 }

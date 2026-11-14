@@ -5,6 +5,7 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/policy"
+	"watchtower/internal/slackmode"
 )
 
 // The PolicyBlock kinds, also `automations show/list --json`'s policy_blocked.
@@ -80,7 +81,7 @@ func CheckRecipePolicy(database *db.DB, r *Recipe) error {
 	}
 	if database != nil {
 		// slack:live with a Slack event trigger needs Full (#1709 spec §4).
-		if err := liveSlackFullTriggerError(r, m, func() (bool, error) { return HasFullSlackAccount(database) }); err != nil {
+		if err := liveSlackFullTriggerError(r, m, func() (slackmode.Mode, error) { return SlackMode(database) }); err != nil {
 			return err
 		}
 	}
