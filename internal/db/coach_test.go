@@ -669,8 +669,14 @@ func TestAcceptCoachThroughSession(t *testing.T) {
 	assert.Equal(t, 6, got.BaselineN)
 	assert.True(t, got.DecidedAt.Equal(now))
 
-	err = d.AcceptCoachThroughSession(id, CoachSessionLink{SessionID: sess, WorkbenchID: wb}, now)
+	err = d.AcceptCoachThroughSession(id, CoachSessionLink{SessionID: sess, WorkbenchID: wb}, now.Add(time.Minute))
 	require.ErrorIs(t, err, ErrCoachStateChanged)
+	got, err = d.GetCoachProposal(id)
+	require.NoError(t, err)
+	assert.True(t, got.DecidedAt.Equal(now), "the second call changes nothing")
+	require.NotNil(t, got.Baseline, "the second call's nil baseline is not written")
+	assert.InDelta(t, base, *got.Baseline, 1e-9)
+	assert.Equal(t, 6, got.BaselineN)
 
 	legacy, err := d.InsertCoachProposal(coachFixture("fp-legacy"), now)
 	require.NoError(t, err)

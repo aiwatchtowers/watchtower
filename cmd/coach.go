@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -486,7 +485,7 @@ func proposalsOf(ps []db.CoachProposal) coachProposalsJSON {
 	return out
 }
 
-func runCoachProposals(_ *cobra.Command, e *coachEnv) (any, error) {
+func runCoachProposals(cmd *cobra.Command, e *coachEnv) (any, error) {
 	var statuses []string
 	switch coachFlagStatus {
 	case "all":
@@ -501,33 +500,36 @@ func runCoachProposals(_ *cobra.Command, e *coachEnv) (any, error) {
 	}
 	out := proposalsOf(ps)
 	withFolderBranches(e.db, out.Proposals)
-	if err := withSessionPRs(e, ps, out.Proposals); err != nil {
-		return nil, err
-	}
+	withSessionPRs(cmd.ErrOrStderr(), e, ps, out.Proposals)
 	return out, nil
 }
 
 // withSessionPRs gives each row accepted through a session its PR (out[i]
 // is ps[i]'s JSON): found in the session report's cache by session_branch,
 // falling back to the live session's branch while that is still empty, so a
-// deleted session row never hides a PR the copied branch still finds.
-func withSessionPRs(e *coachEnv, ps []db.CoachProposal, out []coachProposalJSON) error {
+// deleted session row never hides a PR the copied branch still finds. The PR
+// keys are cosmetic: a failed lookup leaves them null, logs one line on
+// logw and never fails the listing.
+func withSessionPRs(logw io.Writer, e *coachEnv, ps []db.CoachProposal, out []coachProposalJSON) {
 	states := map[int64]map[string]db.PRState{}
 	for i, p := range ps {
 		pr, err := coachSessionPR(e.db, p, states)
 		if err != nil {
-			return err
+			fmt.Fprintf(logw, "coach: proposal %d: reading its PR: %v\n", p.ID, err)
+			continue
 		}
 		if pr == nil {
 			continue
 		}
 		n, state := pr.PRNumber.Int64, pr.State
 		out[i].PR, out[i].PRState = &n, &state
-		if out[i].PRURL, err = coachPRURL(e.al, p.WorkbenchID, n); err != nil {
-			return err
+		url, err := coachPRURL(e.al, p.WorkbenchID, strings.TrimPrefix(pr.Ref, "branch:"), n)
+		if err != nil {
+			fmt.Fprintf(logw, "coach: proposal %d: reading its PR link: %v\n", p.ID, err)
+			continue
 		}
+		out[i].PRURL = url
 	}
-	return nil
 }
 
 // coachSessionPR is the cached PR of a row accepted through a session (nil
@@ -562,22 +564,36 @@ func coachSessionPR(d *db.DB, p db.CoachProposal, states map[int64]map[string]db
 	return &s, nil
 }
 
-// coachPRURL is pull request n's URL as an agent session of workbench wb
-// linked it in its transcript (Claude Code's pr-link record); nil when none
-// did. Watchtower reads no git remote for it (COACH-01).
-func coachPRURL(al *agentlogdb.DB, wb, n int64) (*string, error) {
-	var url string
-	err := al.QueryRow(`SELECT e.target FROM agent_log_events e
+// coachPRURL is pull request n's URL as an agent session of workbench wb on
+// branch linked it in its transcript (Claude Code's pr-link record): only an
+// https link ending in /pull/<n>, from a session on that branch, so another
+// repository's PR with the same number is never taken; nil when there is
+// none or more than one such link. Watchtower reads no git remote for it
+// (COACH-01).
+func coachPRURL(al *agentlogdb.DB, wb int64, branch string, n int64) (*string, error) {
+	rows, err := al.Query(`SELECT DISTINCT e.target FROM agent_log_events e
 		JOIN agent_log_sessions s ON s.session_uuid = e.session_uuid
-		WHERE e.kind = 'pr_link' AND s.project_id = ? AND e.target LIKE ?
-		ORDER BY e.ts DESC, e.id DESC LIMIT 1`, wb, "%/pull/"+strconv.FormatInt(n, 10)).Scan(&url)
-	if errors.Is(err, sql.ErrNoRows) || err == nil && !strings.HasPrefix(url, "https://") {
-		return nil, nil
-	}
+		WHERE e.kind = 'pr_link' AND s.project_id = ? AND s.git_branch = ? AND e.target LIKE ?
+		LIMIT 2`, wb, branch, "https://%/pull/"+strconv.FormatInt(n, 10))
 	if err != nil {
 		return nil, fmt.Errorf("reading the PR link: %w", err)
 	}
-	return &url, nil
+	defer rows.Close()
+	var urls []string
+	for rows.Next() {
+		var u string
+		if err := rows.Scan(&u); err != nil {
+			return nil, fmt.Errorf("reading the PR link: %w", err)
+		}
+		urls = append(urls, u)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading the PR link: %w", err)
+	}
+	if len(urls) != 1 {
+		return nil, nil
+	}
+	return &urls[0], nil
 }
 
 // withFolderBranches gives each open repository proposal the branch checked
@@ -713,7 +729,9 @@ func runCoachAccept(cmd *cobra.Command, e *coachEnv, arg string) (any, error) {
 // for; nothing but the row is written.
 func runCoachAcceptSession(e *coachEnv, id int64) (any, error) {
 	switch {
-	case coachFlagSession <= 0:
+	case coachFlagSession < 0:
+		return nil, fmt.Errorf("--session must be a session id, not %d", coachFlagSession)
+	case coachFlagSession == 0:
 		return nil, errors.New("--restart needs --session <id>")
 	case coachFlagStdin:
 		return nil, errors.New("--stdin does not go with --session: the session writes the change")

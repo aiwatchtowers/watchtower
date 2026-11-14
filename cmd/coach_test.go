@@ -32,6 +32,9 @@ import (
 	"watchtower/internal/workbenchgit"
 )
 
+// lastCoachStderr is the stderr of the last runCoach.
+var lastCoachStderr string
+
 // runCoach runs `watchtower coach <args>` with stdin and returns its output.
 func runCoach(t *testing.T, stdin string, args ...string) (string, error) {
 	t.Helper()
@@ -48,6 +51,7 @@ func runCoach(t *testing.T, stdin string, args ...string) (string, error) {
 	coachFlagStdin, coachFlagForce, coachFlagDryRun, coachFlagDays = false, false, false, coachDefaultDays
 	coachFlagAgent = agentreport.AgentAll
 	coachFlagSession, coachFlagRestart, coachFlagRevert = 0, false, false
+	lastCoachStderr = errb.String()
 	return out.String(), err
 }
 
@@ -1226,7 +1230,7 @@ func TestCoachProposalsJSON_PRFoundAfterSessionDeleted(t *testing.T) {
 	_, err = al.ApplyAgentLogBatch(agentlogdb.AgentLogBatch{
 		File: agentlogdb.AgentLogFile{Path: "/w/pr.jsonl", Agent: "claude", ReadOffset: 10, ParserVersion: 4}, ExpectOffset: -1,
 		Sessions: []agentlogdb.AgentLogSession{{SessionUUID: "spr", Agent: "claude", ProjectID: &wb, FolderPath: "/w",
-			HomeCWD: "/w", SourcePath: "/w/pr.jsonl", StartedAt: at, EndedAt: at}},
+			HomeCWD: "/w", SourcePath: "/w/pr.jsonl", StartedAt: at, EndedAt: at, GitBranch: "wt/slim"}},
 		Events: []agentlogdb.AgentLogEvent{
 			{SessionUUID: "spr", Key: "pr_link:spr:" + url, Kind: "pr_link", Target: url, TS: at, SrcPath: "/w/pr.jsonl"},
 			{SessionUUID: "spr", Key: "pr_link:spr:other", Kind: "pr_link", Target: "https://github.com/acme/widgets/pull/123",
@@ -1243,4 +1247,100 @@ func TestCoachProposalsJSON_PRFoundAfterSessionDeleted(t *testing.T) {
 	assert.Equal(t, "12", string(p["pr"]))
 	assert.Equal(t, `"open"`, string(p["pr_state"]))
 	assert.Equal(t, `"`+url+`"`, string(p["pr_url"]))
+}
+
+// seedPRLinks stores one agent session of workbench wb on branch whose
+// transcript linked urls.
+func seedPRLinks(t *testing.T, al *agentlogdb.DB, uuid string, wb int64, branch string, urls ...string) {
+	t.Helper()
+	at := time.Now().UTC().Format("2006-01-02T15:04:05Z")
+	path := "/w/" + uuid + ".jsonl"
+	var evs []agentlogdb.AgentLogEvent
+	for i, u := range urls {
+		evs = append(evs, agentlogdb.AgentLogEvent{SessionUUID: uuid, Key: "pr_link:" + uuid + ":" + u, Kind: "pr_link",
+			Target: u, TS: at, SrcPath: path, SrcOffset: int64(i)})
+	}
+	_, err := al.ApplyAgentLogBatch(agentlogdb.AgentLogBatch{
+		File: agentlogdb.AgentLogFile{Path: path, Agent: "claude", ReadOffset: 10, ParserVersion: 4}, ExpectOffset: -1,
+		Sessions: []agentlogdb.AgentLogSession{{SessionUUID: uuid, Agent: "claude", ProjectID: &wb, FolderPath: "/w",
+			HomeCWD: "/w", SourcePath: path, StartedAt: at, EndedAt: at, GitBranch: branch}},
+		Events: evs,
+	})
+	require.NoError(t, err)
+}
+
+// acceptedWithPR is a restructure accepted through a session on branch
+// wt/slim, whose PR #12 is open in the cache.
+func acceptedWithPR(t *testing.T, d *db.DB) (int64, int64) {
+	t.Helper()
+	id, wb := insertRestructure(t, d)
+	sess := coachSessionRow(t, d, wb)
+	_, err := runCoach(t, "", "accept", strconv.FormatInt(id, 10), "--session", strconv.FormatInt(sess, 10))
+	require.NoError(t, err)
+	require.NoError(t, d.SetCoachSessionBranch(id, "wt/slim"))
+	require.NoError(t, d.UpsertPRState(db.PRState{WorkbenchID: wb, Ref: "branch:wt/slim", State: "open",
+		PRNumber: sql.NullInt64{Int64: 12, Valid: true}, CheckedAt: "2026-11-13T09:00:00Z"}))
+	return id, wb
+}
+
+func coachAgentLog(t *testing.T) *agentlogdb.DB {
+	t.Helper()
+	cfg, err := workspaceConfigFromFlags()
+	require.NoError(t, err)
+	al, err := agentlogdb.Open(agentlogdb.PathFor(cfg.DBPath()))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = al.Close() })
+	return al
+}
+
+// pr_url is never another repository's PR with the same number: only a link
+// from a session on the row's branch counts, and two different links there
+// are ambiguous (null).
+func TestCoachProposalsJSON_PRURLOnlyFromTheSessionBranch(t *testing.T) {
+	d := coachSetup(t)
+	_, wb := acceptedWithPR(t, d)
+	al := coachAgentLog(t)
+	seedPRLinks(t, al, "other-branch", wb, "feature/other", "https://github.com/acme/tools/pull/12")
+
+	prURL := func() string {
+		t.Helper()
+		out, err := runCoach(t, "", "proposals", "--status", "accepted", "--json")
+		require.NoError(t, err)
+		p := coachFirstProposal(t, out)
+		assert.Equal(t, "12", string(p["pr"]))
+		return string(p["pr_url"])
+	}
+	assert.Equal(t, "null", prURL(), "a link from another branch is not this PR's")
+
+	seedPRLinks(t, al, "on-branch", wb, "wt/slim", "https://github.com/acme/widgets/pull/12")
+	assert.Equal(t, `"https://github.com/acme/widgets/pull/12"`, prURL())
+
+	seedPRLinks(t, al, "on-branch-2", wb, "wt/slim", "https://github.com/acme/tools/pull/12")
+	assert.Equal(t, "null", prURL(), "two repositories on one branch: ambiguous")
+}
+
+// A failed PR lookup leaves the PR keys null, logs one line and never fails
+// the listing.
+func TestCoachProposalsJSON_PRLookupFailureKeepsTheList(t *testing.T) {
+	d := coachSetup(t)
+	acceptedWithPR(t, d)
+	_, err := d.Exec(`DROP TABLE workbench_pr_states`)
+	require.NoError(t, err)
+
+	out, err := runCoach(t, "", "proposals", "--status", "accepted", "--json")
+	require.NoError(t, err, out)
+	p := coachFirstProposal(t, out)
+	assert.Equal(t, "null", string(p["pr"]))
+	assert.Equal(t, "null", string(p["pr_state"]))
+	assert.Equal(t, "null", string(p["pr_url"]))
+	assert.Contains(t, lastCoachStderr, "reading its PR")
+}
+
+func TestCoachAcceptSession_BadSessionID(t *testing.T) {
+	d := coachSetup(t)
+	id, _ := insertRestructure(t, d)
+	_, err := runCoach(t, "", "accept", strconv.FormatInt(id, 10), "--session", "-1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--session must be a session id, not -1")
+	assert.NotContains(t, err.Error(), "--restart")
 }
