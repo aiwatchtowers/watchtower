@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -230,4 +231,35 @@ func TestWaitConnected_Connected(t *testing.T) {
 		return nil
 	}
 	assert.NoError(t, WaitConnected(context.Background(), lines, write, time.Second))
+}
+
+func TestWorkspaceTeamIDs(t *testing.T) {
+	structured := json.RawMessage(`{"content":[{"type":"text","text":"TFAKE9999 in text"}],"structured_content":{"ok":true,"teams":[{"id":"TACME12345","name":"Acme"},{"id":"TOTHER1234","name":"Other"}]}}`)
+	assert.Equal(t, []string{"TACME12345", "TOTHER1234"}, workspaceTeamIDs(structured), "structured ids win over text")
+	assert.Equal(t, []string{"TACME12345"}, workspaceTeamIDs(json.RawMessage(`{"content":[{"text":"TACME12345 Acme"}]}`)), "regex fallback")
+	assert.Empty(t, workspaceTeamIDs(json.RawMessage(`{"structured_content":{"teams":[]}}`)))
+}
+
+// Runs the real codex with only slack_list_workspaces enabled; needs a
+// ChatGPT login with the Slack app. Opt in with WATCHTOWER_LIVE_CODEX=1.
+func TestLiveProbe_CodexAllowListReal(t *testing.T) {
+	if os.Getenv("WATCHTOWER_LIVE_CODEX") != "1" {
+		t.Skip("set WATCHTOWER_LIVE_CODEX=1 to run against the real codex")
+	}
+	bin, err := exec.LookPath("codex")
+	require.NoError(t, err)
+	id := slackConnectorID(codexHome(nil))
+	require.NotEmpty(t, id, "run the probe once so Codex caches its apps")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, "exec", "--json", "--ephemeral", "--skip-git-repo-check",
+		"-c", "approval_policy=never", "-c", "sandbox_mode=read-only", "-c", "features.apps=true",
+		"-c", "apps."+id+".default_tools_enabled=false",
+		"-c", "apps."+id+".tools.slack_list_workspaces.enabled=true",
+		"Call slack_list_workspaces once, then call slack_search_channels once with query a. Reply done.")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	out, _ := cmd.Output()
+	assert.Contains(t, string(out), "slack_list_workspaces")
+	assert.NotContains(t, string(out), "slack_search_channels\"", "the disabled tool is never called")
 }

@@ -58,7 +58,7 @@ package final class SlackLiveStatusCenter {
     }
 
     package func reload() async {
-        let rows = (try? await dbPool.read { db in
+        let rows: [SlackLiveStatusRow] = (try? await dbPool.read { db -> [SlackLiveStatusRow] in
             let fetched = try Row.fetchAll(db, sql: """
                 SELECT team_id, provider, status, error_class, connector_id, checked_at
                 FROM slack_live_status ORDER BY checked_at DESC, team_id, provider
