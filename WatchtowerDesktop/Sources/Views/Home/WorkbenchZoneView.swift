@@ -15,6 +15,11 @@ struct WorkbenchZoneView: View {
     let onOpenCoach: (Int64) -> Void
     /// `HomeCenter.coachNote`: shown where the row sits, with or without one.
     var coachNote: String?
+    /// Proposals whose session runs unlinked (`CoachCenter.linkFailed`).
+    var coachLinkFailed: Set<Int64> = []
+
+    /// The coach row's Accept: Retry Link while its session runs unlinked.
+    static func coachAcceptTitle(retriesLink: Bool) -> String { retriesLink ? "Retry Link" : "Accept" }
 
     var body: some View {
         HomeZone(title: "Workbench") {
@@ -29,7 +34,8 @@ struct WorkbenchZoneView: View {
                     WorkbenchBlockView(block: block, onLink: onLink)
                 }
                 if let coach {
-                    HomeCoachRow(coach: coach, onDecide: onDecideCoach, onOpen: onOpenCoach)
+                    HomeCoachRow(coach: coach, retriesLink: coachLinkFailed.contains(coach.proposal.id),
+                                 onDecide: onDecideCoach, onOpen: onOpenCoach)
                         .id(coach.proposal.id)
                 }
                 if let coachNote {
@@ -119,6 +125,8 @@ private struct WorkbenchBlockView: View {
 /// Open in Analytics and Decline: it is read in full in the pane first.
 private struct HomeCoachRow: View {
     let coach: HomeCoachProposal
+    /// Its session runs unlinked: the press retries the link (`AppState.acceptCoachThroughSession`).
+    var retriesLink = false
     let onDecide: (Int64, Bool) async -> String?
     let onOpen: (Int64) -> Void
     @State private var busy = false
@@ -154,7 +162,7 @@ private struct HomeCoachRow: View {
                     .buttonStyle(.kitQuiet)
                     .disabled(busy)
                 if !preview.truncated {
-                    Button("Accept") { decide(accept: true) }
+                    Button(WorkbenchZoneView.coachAcceptTitle(retriesLink: retriesLink)) { decide(accept: true) }
                         .buttonStyle(.kitPrimary)
                         .disabled(busy)
                 }

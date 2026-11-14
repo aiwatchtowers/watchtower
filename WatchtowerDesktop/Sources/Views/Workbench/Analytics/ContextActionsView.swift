@@ -90,7 +90,7 @@ struct ContextActionsView: View {
 
     static func isWarning(_ state: ContextActionRow.State) -> Bool {
         switch state {
-        case .failed, .linkFailed, .revertedOutside, .sessionGone: return true
+        case .failed, .linkFailed, .revertedOutside, .sessionGone, .revertEnded: return true
         default: return false
         }
     }

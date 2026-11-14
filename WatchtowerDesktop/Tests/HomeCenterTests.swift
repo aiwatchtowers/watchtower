@@ -248,6 +248,69 @@ final class HomeCenterTests: XCTestCase {
         XCTAssertEqual(appState.homeCenter.todayReads, reads + 2, "a success re-reads Home")
     }
 
+    // MARK: - Accept through a session (context actions, Task 9)
+
+    private static func repoProposal() throws -> CoachProposal {
+        let json = """
+        {"ok":true,"proposals":[{"id":50,"title":"Slim CLAUDE.md","why":"w","destination":"repo_claude_md",\
+        "workbench_id":3,"prompt_id":"","kind":"restructure","metric":"start_tokens","before":"","after":"",\
+        "evidence":[],"sources":6,"status":"open","created_at":"2026-11-01T09:00:00Z","decided_at":null,\
+        "baseline":null,"verdict":"","verdict_value":null,"verdict_at":null,"reverts_id":0,"budget":0,\
+        "origin":"context","source_key":""}]}
+        """
+        return try XCTUnwrap(JSONDecoder().decode(CoachProposalList.self, from: Data(json.utf8)).proposals.first)
+    }
+
+    /// Only Accept of the row's own session proposal goes through the coach.
+    func testHomeRoutesOnlySessionAcceptsThroughTheCoach() throws {
+        let repo = try Self.repoProposal()
+        XCTAssertEqual(AppState.sessionAccept(repo, id: 50, accept: true)?.id, 50)
+        XCTAssertNil(AppState.sessionAccept(repo, id: 50, accept: false), "Decline stays a plain coach decline")
+        XCTAssertNil(AppState.sessionAccept(repo, id: 7, accept: true), "another id: not this row")
+        XCTAssertNil(AppState.sessionAccept(nil, id: 50, accept: true))
+        XCTAssertEqual(WorkbenchZoneView.coachAcceptTitle(retriesLink: false), "Accept")
+        XCTAssertEqual(WorkbenchZoneView.coachAcceptTitle(retriesLink: true), "Retry Link")
+    }
+
+    func testHomeAcceptStartsTheSessionThroughTheCoachAndStaysHome() async throws {
+        let appState = AppState.isolated()
+        appState.homeEnvironmentOverride = FakeHomeEnvironment()
+        appState.homeCenter.beginReading(pool: try makePool())
+        defer { appState.homeCenter.endReading() }
+        await waitUntil(appState.homeCenter) { $0 != nil }
+        let suite = "HomeCenterTests-\(UUID().uuidString)"
+        defer { UserDefaults().removePersistentDomain(forName: suite) }
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let runner = FakeCLIRunner(stdout: Data(#"{"ok":true,"id":50,"title":"T","prompt":"P","proposals":[]}"#.utf8))
+        let coach = CoachCenter(runner: runner, interval: .seconds(3600), defaults: defaults)
+        defer { coach.stop() }
+        let destination = appState.selectedDestination
+        var started: [Int64] = []
+
+        let line = await appState.acceptCoachThroughSession(try Self.repoProposal(), coach: coach) { workbench, _, _ in
+            started.append(workbench)
+            return 41
+        }
+
+        XCTAssertNil(line)
+        XCTAssertEqual(started, [3], "the session starts in the proposal's workbench")
+        let verbs = runner.invocations.filter { $0.dropFirst().first != "proposals" }
+        XCTAssertEqual(verbs, [["coach", "brief", "50", "--json"], ["coach", "accept", "50", "--session", "41", "--json"]])
+        XCTAssertEqual(appState.homeCenter.coachNote, AppState.coachSessionStartedLine)
+        XCTAssertEqual(appState.selectedDestination, destination, "Home stays on screen")
+
+        // Its link failed earlier: the press retries the link, no second session.
+        defaults.set(["50": NSNumber(value: 41)], forKey: CoachCenter.linkFailedKey)
+        let relinked = CoachCenter(runner: runner, interval: .seconds(3600), defaults: defaults)
+        defer { relinked.stop() }
+        let before = runner.invocations.count
+        _ = await appState.acceptCoachThroughSession(try Self.repoProposal(), coach: relinked) { _, _, _ in
+            XCTFail("no second session")
+            return nil
+        }
+        XCTAssertEqual(runner.invocations[before], ["coach", "accept", "50", "--session", "41", "--json"])
+    }
+
     func testHomeDecideStaleReloads() async throws {
         let appState = AppState.isolated()
         appState.homeEnvironmentOverride = FakeHomeEnvironment()

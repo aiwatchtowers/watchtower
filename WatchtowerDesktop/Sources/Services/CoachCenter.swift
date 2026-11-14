@@ -316,7 +316,8 @@ final class CoachCenter {
             cardErrors[id] = Self.sessionNotStarted
             return
         }
-        if !revert { launched[id] = Launch(session: session, at: Date()) }
+        // A revert session too: its row stays "reverting" until it is live.
+        launched[id] = Launch(session: session, at: Date())
         await record(session)
         // The press is released once the list shows the change, so the
         // row never offers its old buttons in between.

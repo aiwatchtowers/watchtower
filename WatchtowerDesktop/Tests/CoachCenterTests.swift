@@ -713,6 +713,29 @@ final class CoachCenterTests: XCTestCase {
         XCTAssertEqual(center.cardErrors[50], CoachCenter.alreadyStarted)
         XCTAssertEqual(verbs(runner).filter { $0.contains("brief") }.count, 1)
     }
+
+    // MARK: - Fix round 2
+
+    func testRevertAgainAfterTheRevertSessionEnded() async throws {
+        let center = makeCenter(ScriptedCoachRunner(Self.sessionScript(status: "accepted", extra: Self.merged)))
+        await center.revertThroughSession(50) { _, _ in 43 }
+        let list = try JSONDecoder().decode(CoachProposalList.self,
+                                            from: Self.contextProposals(status: "accepted", extra: Self.merged))
+        let row = try XCTUnwrap(ContextActionsPresentation.row(
+            of: list.proposals[0], sessionKinds: [43: .stopped], linkFailed: [:], revertSessions: center.revertSessions))
+        XCTAssertEqual(row.state, .revertEnded(43))
+        var starts: [Int64] = []
+        let inputs = ContextActionsInputs(
+            coach: center, workbench: 3, sessionKinds: [43: .stopped], liveSessions: [], repository: nil,
+            startSession: { workbench, _, _ in
+                starts.append(workbench)
+                return 44
+            }, openSession: { _ in }
+        )
+        inputs.perform(.revert, row, openURL: { _ in }, rollback: { _ in })
+        await waitUntil { center.revertSessions[50] == 44 }
+        XCTAssertEqual(starts, [3], "the ended entry went and one new revert session started")
+    }
 }
 
 /// A thread-safe call counter for scripted answers.

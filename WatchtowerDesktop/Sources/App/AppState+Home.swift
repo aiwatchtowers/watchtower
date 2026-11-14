@@ -136,7 +136,7 @@ extension AppState {
     /// failure comes back as text for the row to show. `runner` replaces
     /// the CLI in tests.
     func decideCoachProposal(id: Int64, accept: Bool, runner: (any CLIRunnerProtocol)? = nil) async -> String? {
-        if accept, let proposal = homeCenter.snapshot?.coach?.proposal, proposal.id == id, proposal.acceptStartsSession {
+        if let proposal = Self.sessionAccept(homeCenter.snapshot?.coach?.proposal, id: id, accept: accept) {
             return await acceptCoachThroughSession(proposal)
         }
         guard let runner = runner ?? ProcessCLIRunner.makeDefault() else { return "The command line is not available." }
@@ -157,6 +157,13 @@ extension AppState {
         return nil
     }
 
+    /// The Home row's proposal when its Accept starts a session (a
+    /// repository or memory destination); nil for any other press.
+    static func sessionAccept(_ shown: CoachProposal?, id: Int64, accept: Bool) -> CoachProposal? {
+        guard accept, let shown, shown.id == id, shown.acceptStartsSession else { return nil }
+        return shown
+    }
+
     static let coachChangedLine = "That proposal changed — showing the next one"
     static let coachSessionStartedLine = "A session started for it — follow it in that workbench's Analytics"
 
@@ -164,16 +171,21 @@ extension AppState {
     /// the coach center, which starts the workbench session and then records
     /// it (spec C6), so the Analytics pane sees the same press and its link
     /// state. Returns the row's line: the start or link failure, nil on success.
-    func acceptCoachThroughSession(_ proposal: CoachProposal) async -> String? {
-        guard let coach = coachCenter, let vm = workbenchesViewModel else { return "The command line is not available." }
+    /// `coach` and `start` replace the app's coach center and session start in tests.
+    func acceptCoachThroughSession(
+        _ proposal: CoachProposal,
+        coach: CoachCenter? = nil,
+        start: ((Int64, String, String) async -> Int64?)? = nil
+    ) async -> String? {
+        let vm = workbenchesViewModel
+        let starter = start ?? vm.map { vm in { await vm.startCoachSession(workbench: $0, title: $1, prompt: $2) } }
+        guard let coach = coach ?? coachCenter, let starter else { return "The command line is not available." }
         let workbench = proposal.workbenchID
         if coach.linkFailed[proposal.id] != nil {
             // Its session runs unlinked: Accept here is Retry Link, never a second session.
             await coach.retryLink(proposal.id)
         } else {
-            await coach.acceptThroughSession(proposal.id) { title, prompt in
-                await vm.startCoachSession(workbench: workbench, title: title, prompt: prompt)
-            }
+            await coach.acceptThroughSession(proposal.id) { await starter(workbench, $0, $1) }
         }
         await homeCenter.rereadNow()
         if coach.linkFailed[proposal.id] != nil { return ContextActionsPresentation.Copy.linkFailed }

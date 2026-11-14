@@ -54,6 +54,9 @@ package struct ContextActionRow: Equatable, Identifiable, Sendable {
         case failed(String)
         /// Revert… started this session; it opens the revert PR.
         case reverting(Int64)
+        /// The revert session ended with no revert PR: Revert… again (the
+        /// entry is dropped on that press), its session still openable.
+        case revertEnded(Int64)
     }
 
     package enum Action: Equatable, Sendable {
@@ -94,9 +97,9 @@ package struct ContextActionRow: Equatable, Identifiable, Sendable {
     package var id: Int64 { proposal.id }
 
     /// "−30.2k"; a repository row's estimate (its `saving_tokens`
-    /// evidence) "~−18.5k"; nil without a saving.
+    /// evidence) "−~3.5k" (minus, then about); nil without a saving.
     package var savingText: String? {
-        saving.map { (tag == .repoPR ? "~−" : "−") + ContextActionsPresentation.tokens($0) }
+        saving.map { (tag == .repoPR ? "−~" : "−") + ContextActionsPresentation.tokens($0) }
     }
 
     /// The buttons the state allows, in order. Decline only ever on a row
@@ -115,6 +118,7 @@ package struct ContextActionRow: Equatable, Identifiable, Sendable {
         case .starting, .notMerged, .changedSince: return []
         case .measuring: return afterwards
         case .working, .reverting: return [.openSession]
+        case .revertEnded: return [.openSession, .revert]
         case .linkFailed: return [.openSession, .retryLink]
         case .sessionGone: return [.dismiss]
         case .prReady: return [.openPR, .showDiff]
@@ -149,6 +153,7 @@ package struct ContextActionRow: Equatable, Identifiable, Sendable {
         case .notMerged: return ContextActionsPresentation.Copy.notMerged
         case .changedSince: return ContextActionsPresentation.Copy.changedSince
         case .revertedOutside: return ContextActionsPresentation.Copy.revertedOutside
+        case .revertEnded: return ContextActionsPresentation.Copy.revertEndedWithoutPR
         case .done(_, let after):
             switch proposal.verdict {
             case "no_effect", "too_little_data": return ContextActionsPresentation.Copy.noSaving
@@ -198,10 +203,13 @@ package enum ContextActionsPresentation {
         package static let notMerged = "Not merged"
         package static let saved = "Saved %@ on %d starts"
         package static let noSaving = "No measurable saving"
+        package static let revertEndedWithoutPR = "Revert session ended without a PR"
     }
 
     static let settingsDestinations: Set = ["claude_plugin_off", "claude_mcp_server_off", "claude_connectors_off"]
     static let memoryDestination = "claude_memory_index"
+    /// A session of these kinds has ended: nothing moves until the owner acts.
+    static let endedKinds: Set<SessionSwitcherPresentation.State.Kind> = [.notStarted, .stopped, .finished, .failed]
     /// The evidence kind carrying a repository row's estimated saving.
     static let savingEvidence = "saving_tokens"
     /// How long a finished row stays in the list after its last event.
@@ -354,8 +362,14 @@ package enum ContextActionsPresentation {
     }
 
     private static func acceptedState(of p: CoachProposal, _ ctx: StateInputs) -> ContextActionRow.State {
-        // A revert session runs: no second Revert….
-        if let session = ctx.revertSessions[p.id] { return .reverting(session) }
+        // A revert session runs: no second Revert…; one that ended (the
+        // kinds `sessionState` counts as ended) offers it again.
+        if let session = ctx.revertSessions[p.id] {
+            guard !ctx.starting.contains(p.id), let kind = ctx.sessionKinds[session], endedKinds.contains(kind) else {
+                return .reverting(session)
+            }
+            return .revertEnded(session)
+        }
         let before = Int(p.baseline ?? 0)
         switch p.verdict {
         case "reverted_outside":
@@ -387,10 +401,7 @@ package enum ContextActionsPresentation {
         if p.measureFrom != nil { return .measuring }
         if ctx.starting.contains(p.id) { return .starting }
         if let session = p.sessionID, let kind = ctx.sessionKinds[session] {
-            switch kind {
-            case .notStarted, .stopped, .finished, .failed: return .endedWithoutChange(session)
-            default: return .working(session)
-            }
+            return endedKinds.contains(kind) ? .endedWithoutChange(session) : .working(session)
         }
         // The session row is gone: a known branch still finds a PR, an
         // unknown one cannot (the memory index has no PR to trace).

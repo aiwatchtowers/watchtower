@@ -63,6 +63,8 @@ struct ContextActionsInputs {
                 }
             }
         default:
+            // Reverting again after the last revert session ended: its entry goes first.
+            if action == .revert, case let .revertEnded(session) = row.state { coach.forgetRevert(row.id, session: session) }
             let workbench = row.proposal.workbenchID == 0 ? self.workbench : row.proposal.workbenchID
             Task { [coach, startSession] in
                 await Self.run(action, id: row.id, coach: coach) { await startSession(workbench, $0, $1) }
@@ -90,7 +92,8 @@ struct ContextActionsInputs {
     /// The session a row's Open Session opens.
     static func session(of row: ContextActionRow) -> Int64? {
         switch row.state {
-        case let .working(session), let .linkFailed(session), let .reverting(session): return session
+        case let .working(session), let .linkFailed(session), let .reverting(session), let .revertEnded(session):
+            return session
         case let .endedWithoutChange(session): return session
         default: return nil
         }

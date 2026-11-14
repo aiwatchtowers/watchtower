@@ -21,15 +21,20 @@ struct AgentAnalyticsContextView: View {
 
     var body: some View {
         // While a session start waits to go live, redraw so the row leaves
-        // "starting" when `CoachCenter.launchGrace` passes.
-        if contextActions?.coach.hasLaunches == true {
-            TimelineView(.periodic(from: .now, by: Self.launchRedraw)) { timeline in block(now: timeline.date) }
-        } else {
+        // "starting" when `CoachCenter.launchGrace` passes. One timeline,
+        // paused otherwise: its identity never changes, so the open fold and
+        // a confirmation dialog survive a launch starting or ending.
+        // The clock is read at each redraw: a paused timeline keeps its last date.
+        TimelineView(Self.schedule(launching: contextActions?.coach.hasLaunches == true)) { _ in
             block(now: Date())
         }
     }
 
     static let launchRedraw: TimeInterval = 5
+
+    static func schedule(launching: Bool) -> AnimationTimelineSchedule {
+        .animation(minimumInterval: launchRedraw, paused: !launching)
+    }
 
     private func block(now: Date) -> some View {
         let rows = context.flatMap { contextActions?.rows($0, now: now) } ?? (doThese: [], done: [])

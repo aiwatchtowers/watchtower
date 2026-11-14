@@ -295,7 +295,7 @@ final class ContextActionsPresentationTests: XCTestCase {
     }
 
     /// Task 9 fix round: a CLAUDE.md move carries the proposer's estimate
-    /// (`saving_tokens` evidence): shown as "~−18.5k", counted in the
+    /// (`saving_tokens` evidence): shown as "−~18.5k", counted in the
     /// headline, kept out of the evidence line. The memory index has none.
     func testRepoSavingEstimateFromEvidence() throws {
         let estimate = CoachEvidence(kind: "saving_tokens", ref: "18500")
@@ -305,12 +305,32 @@ final class ContextActionsPresentationTests: XCTestCase {
         let out = rows([repo, memory])
         let byID = Dictionary(uniqueKeysWithValues: out.doThese.map { ($0.id, $0) })
         XCTAssertEqual(byID[7]?.saving, 18500)
-        XCTAssertEqual(byID[7]?.savingText, "~−18.5k")
+        XCTAssertEqual(byID[7]?.savingText, "−~18.5k", "minus, then about")
         XCTAssertEqual(byID[7]?.evidence, "Feature Notes is 74 of 88 KB")
         XCTAssertNil(byID[8]?.saving)
         XCTAssertEqual(out.doThese.first?.id, 7, "largest saving first")
         XCTAssertEqual(ContextActionsPresentation.headline(baselineTokens: 79600, rows: out.doThese),
                        "1 change would cut it to ~61k")
+    }
+
+    /// Task 9 fix round 2: a revert session that ended (the same ended
+    /// kinds) with no revert PR offers Revert… again, its session still
+    /// openable; while it runs, or before it is live, the row stays reverting.
+    func testEndedRevertSessionOffersRevertAgain() throws {
+        let merged = repoRow(pr: 17, prState: "merged")
+        func state(_ kinds: [Int64: SessionSwitcherPresentation.State.Kind], starting: Set<Int64> = []) throws -> Row {
+            try XCTUnwrap(ContextActionsPresentation.row(of: merged, sessionKinds: kinds, linkFailed: [:],
+                                                         starting: starting, revertSessions: [50: 44]))
+        }
+        for kind in [SessionSwitcherPresentation.State.Kind.stopped, .finished, .failed, .notStarted] {
+            let ended = try state([44: kind])
+            XCTAssertEqual(ended.state, .revertEnded(44), "\(kind)")
+            XCTAssertEqual(ended.actions, [.openSession, .revert])
+            XCTAssertEqual(ended.stateLine, "Revert session ended without a PR")
+        }
+        XCTAssertEqual(try state([44: .working]).state, .reverting(44))
+        XCTAssertEqual(try state([44: .notStarted], starting: [50]).state, .reverting(44), "not live yet")
+        XCTAssertEqual(try state([:]).state, .reverting(44), "an unknown row is pruned elsewhere, never offered again")
     }
 
     /// Task 9: a merged repository change is reverted through a session

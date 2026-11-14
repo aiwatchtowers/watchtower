@@ -28,6 +28,7 @@ struct HomeView: View {
                 learn: appState.learnCenter.zone,
                 learnActions: appState.learnZoneActions,
                 coachNote: appState.homeCenter.coachNote,
+                coachLinkFailed: Set(appState.coachCenter.map { Array($0.linkFailed.keys) } ?? []),
                 aiSpend: appState.homeCenter.aiSpend
             )
         }
@@ -63,6 +64,8 @@ struct HomeContent: View {
     let learn: LearnSelection?
     let learnActions: LearnZoneActions
     let coachNote: String?
+    /// Proposals whose session runs unlinked: their Accept reads Retry Link.
+    let coachLinkFailed: Set<Int64>
     /// The numbers' AI spend (`HomeCenter.aiSpend`).
     let aiSpend: HomeAISpend
 
@@ -84,8 +87,10 @@ struct HomeContent: View {
         learn: LearnSelection? = nil,
         learnActions: LearnZoneActions = .none,
         coachNote: String? = nil,
+        coachLinkFailed: Set<Int64> = [],
         aiSpend: HomeAISpend = .unavailable
     ) {
+        self.coachLinkFailed = coachLinkFailed
         self.aiSpend = aiSpend
         self.purges = purges
         self.learn = learn
@@ -144,7 +149,7 @@ struct HomeContent: View {
                 calendar: calendar)
             HomeSideColumn(
                 snapshot: snapshot, onLink: onLink, onDecideCoach: onDecideCoach, onOpenCoach: onOpenCoach, learn: learn,
-                learnActions: learnActions, coachNote: coachNote, aiSpend: aiSpend)
+                learnActions: learnActions, coachNote: coachNote, coachLinkFailed: coachLinkFailed, aiSpend: aiSpend)
         }
     }
 
@@ -196,6 +201,7 @@ struct HomeSideColumn: View {
     var learn: LearnSelection?
     var learnActions: LearnZoneActions = .none
     var coachNote: String?
+    var coachLinkFailed: Set<Int64> = []
     var aiSpend: HomeAISpend = .unavailable
 
     var body: some View {
@@ -204,7 +210,7 @@ struct HomeSideColumn: View {
                 WorkbenchZoneView(
                     blocks: snapshot.workbench, coach: snapshot.coach, failed: snapshot.workbenchFailed,
                     onLink: onLink, onDecideCoach: onDecideCoach, onOpenCoach: onOpenCoach,
-                    coachNote: coachNote)
+                    coachNote: coachNote, coachLinkFailed: coachLinkFailed)
             }
             if !snapshot.links.isEmpty {
                 LinksZoneView(links: snapshot.links, failed: snapshot.linksFailed, onLink: onLink)

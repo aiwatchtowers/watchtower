@@ -60,17 +60,17 @@ enum ContextActionsShotFixtures {
            {"part":"skills","tokens":10200,"share":0.13},{"part":"agents","tokens":5000,"share":0.06},
            {"part":"mcp","tokens":4100,"share":0.05},{"part":"system","tokens":9000,"share":0.11}]},
          "sources":[
-           {"part":"tools","group":"watchtower-workbench","group_kind":"mcp_server","tokens":9800,"calls":4137,"measured_sessions":14},
+           {"part":"tools","group":"acme-board","group_kind":"mcp_server","tokens":9800,"calls":4137,"measured_sessions":14},
            {"part":"tools","group":"","group_kind":"builtin","tokens":7400,"calls":2210,"measured_sessions":14},
            {"part":"tools","group":"claude.ai","group_kind":"claude_ai_connectors","tokens":2000,"calls":0,"measured_sessions":14},
            {"part":"tools","group":"example-server","group_kind":"mcp_server","tokens":1900,"calls":0,"measured_sessions":14},
-           {"part":"skills","group":"superpowers","group_kind":"plugin","tokens":2600,"calls":58,"measured_sessions":14},
+           {"part":"skills","group":"acme-skills","group_kind":"plugin","tokens":2600,"calls":58,"measured_sessions":14},
            {"part":"skills","group":"acme-tools","group_kind":"plugin","tokens":1400,"calls":0,"measured_sessions":14},
            {"part":"skills","group":"","group_kind":"user","tokens":600,"calls":3,"measured_sessions":14},
            {"part":"agents","group":"acme-tools","group_kind":"plugin","tokens":2700,"calls":0,"measured_sessions":14},
            {"part":"agents","group":"","group_kind":"builtin","tokens":0,"calls":9,"measured_sessions":0},
-           {"part":"mcp","group":"watchtower-workbench","group_kind":"mcp_server","tokens":3000,"calls":0,"measured_sessions":14},
-           {"part":"mcp","group":"claude.ai","group_kind":"claude_ai_connectors","tokens":1100,"calls":0,"measured_sessions":14}]}
+           {"part":"mcp","group":"acme-board","group_kind":"mcp_server","tokens":3000,"calls":0,"measured_sessions":14},
+           {"part":"mcp","group":"claude.ai","group_kind":"claude_ai_connectors","tokens":600,"calls":0,"measured_sessions":14}]}
         """
         return try JSONDecoder().decode(AgentContextReport.self, from: Data(json.utf8))
     }
@@ -101,6 +101,15 @@ enum ContextActionsShotFixtures {
         }
     }
 
+    /// Go's evidence for a CLAUDE.md move: the file, the section, and the
+    /// estimate (`round(section bytes / 2.6)`). The file (60 KB ≈ 23.6k
+    /// tokens) fits inside the bar's "CLAUDE.md & rules" part (30.2k); its
+    /// three sections (30 + 9 + 8 KB) fit inside the file.
+    private static func claudeMD(section: String, saving: Int) -> String {
+        #"[{"kind":"file","ref":"CLAUDE.md · 60.0 KB"},{"kind":"section","ref":""# + section
+            + #""},{"kind":"saving_tokens","ref":""# + String(saving) + #""}]"#
+    }
+
     /// Stamps relative to now: the done rows stay inside their 14 days.
     private static func proposals() -> String {
         let formatter = ISO8601DateFormatter()
@@ -111,14 +120,14 @@ enum ContextActionsShotFixtures {
             Row(id: 12, title: "Turn off claude.ai connectors in Claude Code", destination: "claude_connectors_off",
                 workbench: 0, source: "claude.ai"),
             Row(id: 13, title: "Archive shipped-feature lines in memory", destination: "claude_memory_index",
-                evidence: #"[{"kind":"memory","ref":"MEMORY.md is 19 KB"}]"#),
+                evidence: #"[{"kind":"file","ref":"MEMORY.md · 19.0 KB"}]"#),
             Row(id: 17, title: "Move the setup section out of CLAUDE.md", destination: "repo_claude_md",
-                evidence: #"[{"kind":"file","ref":"Setup is 9 of 88 KB"},{"kind":"saving_tokens","ref":"18500"}]"#),
+                evidence: Self.claudeMD(section: "Setup · 9.0 KB", saving: 3545)),
             Row(id: 14, title: "Move feature summaries out of CLAUDE.md", destination: "repo_claude_md",
-                status: "accepted", evidence: #"[{"kind":"file","ref":"Feature Notes is 74 of 88 KB"}]"#,
+                status: "accepted", evidence: Self.claudeMD(section: "Feature Notes · 30.0 KB", saving: 11815),
                 decidedDaysAgo: 0, extra: #","session_id":41,"via_session":true,"session_branch":"wt/slim""#),
             Row(id: 15, title: "Move the review rules out of CLAUDE.md", destination: "repo_claude_md",
-                status: "accepted", evidence: #"[{"kind":"file","ref":"Review rules is 12 of 88 KB"}]"#,
+                status: "accepted", evidence: Self.claudeMD(section: "Review rules · 8.0 KB", saving: 3151),
                 decidedDaysAgo: 1, extra: #","session_id":42,"via_session":true,"session_branch":"wt/rules","pr":12,"#
                     + #""pr_state":"open","pr_url":"https://github.com/acme/app/pull/12""#),
             Row(id: 18, title: "Turn off the example-server MCP server", destination: "claude_mcp_server_off",
