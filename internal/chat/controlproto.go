@@ -385,3 +385,26 @@ func isJSONObject(raw json.RawMessage) bool {
 	_, ok := decodeObject(raw)
 	return ok
 }
+
+// MCPStatusRequest is the mcp_status control request line (newline-terminated)
+// for requestID; for hosts outside the chat that run their own claude child.
+func MCPStatusRequest(requestID string) string {
+	return string(mcpStatusRequestLine(requestID))
+}
+
+// ParseMCPStatus decodes the CLI's answer to MCPStatusRequest(id). ok is true
+// only for a well-formed success answer to that request.
+func ParseMCPStatus(line, requestID string) (servers []MCPServerStatus, ok bool) {
+	servers, answered, err := parseMCPStatusResponse([]byte(line), requestID)
+	return servers, answered && err == nil
+}
+
+// PermissionAllow answers a can_use_tool request with allow and input.
+func PermissionAllow(requestID string, input json.RawMessage) ([]byte, error) {
+	return permissionAllowLine(requestID, input)
+}
+
+// PermissionDeny answers a can_use_tool request with deny and message.
+func PermissionDeny(requestID, message string) []byte {
+	return permissionDenyLine(requestID, message)
+}
