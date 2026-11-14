@@ -1241,4 +1241,22 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
         XCTAssertEqual(part.rows.map(\.name), ["acme", "Not split by source"])
         XCTAssertEqual(part.rows.last?.detail, "7.6k")
     }
+
+    /// The mcp part (server instructions) shows its groups by weight alone;
+    /// a bar part with no sources (instructions, system) is its title alone.
+    func testSourcesFoldShowsMCPAndSourcelessParts() throws {
+        let sources = try JSONDecoder().decode([AgentSourceGroupRow].self, from: Data("""
+        [{"part":"mcp","group":"example-server","group_kind":"mcp_server","tokens":3000,"calls":0,"measured_sessions":4},
+         {"part":"mcp","group":"claude.ai","group_kind":"claude_ai_connectors","tokens":1100,"calls":0,"measured_sessions":4}]
+        """.utf8))
+        let bar = try JSONDecoder().decode([AgentPartShare].self, from: Data("""
+        [{"part":"instructions","tokens":30200,"share":0.6},{"part":"mcp","tokens":4100,"share":0.08},
+         {"part":"system","tokens":9000,"share":0.18}]
+        """.utf8))
+        let parts = ContextSourcesFold.parts(sources, baseline: bar)
+        XCTAssertEqual(parts.map(\.title), ["CLAUDE.md & rules · 30.2k", "System prompt · 9k", "MCP instructions · 4.1k"])
+        XCTAssertEqual(parts[0].rows, [], "no sources: the title alone")
+        XCTAssertEqual(parts[2].rows.map(\.name), ["example-server", "claude.ai connectors"])
+        XCTAssertEqual(parts[2].rows.map(\.detail), ["3k", "1.1k"], "instructions are never called")
+    }
 }

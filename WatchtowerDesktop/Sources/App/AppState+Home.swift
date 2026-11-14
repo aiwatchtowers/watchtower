@@ -158,6 +158,7 @@ extension AppState {
     }
 
     static let coachChangedLine = "That proposal changed — showing the next one"
+    static let coachSessionStartedLine = "A session started for it — follow it in that workbench's Analytics"
 
     /// Accept of a repository or memory proposal from Home's row: through
     /// the coach center, which starts the workbench session and then records
@@ -176,7 +177,11 @@ extension AppState {
         }
         await homeCenter.rereadNow()
         if coach.linkFailed[proposal.id] != nil { return ContextActionsPresentation.Copy.linkFailed }
-        return coach.cardErrors[proposal.id]
+        if let error = coach.cardErrors[proposal.id] { return error }
+        // The session started in that workbench, off this screen: Home stays,
+        // and the next row's place says where to follow it.
+        homeCenter.showCoachNote(Self.coachSessionStartedLine)
+        return nil
     }
 
     /// Opens workbench `workbench`'s Analytics pane (Home's coach row, the

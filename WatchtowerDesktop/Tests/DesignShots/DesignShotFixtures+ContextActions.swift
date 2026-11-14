@@ -68,7 +68,9 @@ enum ContextActionsShotFixtures {
            {"part":"skills","group":"acme-tools","group_kind":"plugin","tokens":1400,"calls":0,"measured_sessions":14},
            {"part":"skills","group":"","group_kind":"user","tokens":600,"calls":3,"measured_sessions":14},
            {"part":"agents","group":"acme-tools","group_kind":"plugin","tokens":2700,"calls":0,"measured_sessions":14},
-           {"part":"agents","group":"","group_kind":"builtin","tokens":0,"calls":9,"measured_sessions":0}]}
+           {"part":"agents","group":"","group_kind":"builtin","tokens":0,"calls":9,"measured_sessions":0},
+           {"part":"mcp","group":"watchtower-workbench","group_kind":"mcp_server","tokens":3000,"calls":0,"measured_sessions":14},
+           {"part":"mcp","group":"claude.ai","group_kind":"claude_ai_connectors","tokens":1100,"calls":0,"measured_sessions":14}]}
         """
         return try JSONDecoder().decode(AgentContextReport.self, from: Data(json.utf8))
     }
