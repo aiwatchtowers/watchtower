@@ -41,19 +41,23 @@ type transportWiring struct {
 	slackLive *slackLiveWiring
 }
 
-// slackLiveWiring is how `slack live probe` checks a transport's own Slack
-// connector: the probe, the CLI it runs and that CLI's PATH.
+// slackLiveWiring is a transport's Slack Live half: how `slack live probe`
+// checks its own Slack connector (the probe, the CLI it runs and that CLI's
+// PATH), and whether a main chat on it may use the connector (chat).
 type slackLiveWiring struct {
 	probe  slacklive.Probe
 	binary func() string
 	path   func() string
+	chat   func(slackLiveChatInput) slackLiveChat
 }
 
 var (
 	claudeSlackLiveWiring = &slackLiveWiring{probe: slacklive.ProbeClaude,
-		binary: func() string { return claude.FindBinary("") }, path: claude.RichPATH}
+		binary: func() string { return claude.FindBinary("") }, path: claude.RichPATH,
+		chat: claudeSlackLiveChat}
 	codexSlackLiveWiring = &slackLiveWiring{probe: slacklive.ProbeCodex,
-		binary: func() string { return codex.FindBinary("") }, path: codex.RichPATH}
+		binary: func() string { return codex.FindBinary("") }, path: codex.RichPATH,
+		chat: codexSlackLiveChat}
 )
 
 // wirings is every registry provider's cmd wiring, by id. It covers the

@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"fmt"
+	"io"
 	"slices"
 	"strings"
 	"sync"
@@ -8,6 +10,7 @@ import (
 
 	"watchtower/internal/chat"
 	"watchtower/internal/codex"
+	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/slacklive"
 )
@@ -53,6 +56,45 @@ func codexSlackConnector(rows []db.SlackLiveStatus, codexHome string) string {
 		return ""
 	}
 	return r.ConnectorID
+}
+
+// slackLiveChatInput is what a transport's Slack Live chat rule reads for a
+// main chat session.
+type slackLiveChatInput struct {
+	rows     []db.SlackLiveStatus
+	cfg      *config.Config
+	claudeAI claudeAISetup
+	warn     io.Writer
+}
+
+// slackLiveChat is a main chat's Live Slack: live = the prompt may promise
+// the owner's Slack connector; codexSlack = the read-only apps overrides a
+// codex session runs with (nil = apps off).
+type slackLiveChat struct {
+	live       bool
+	codexSlack []string
+}
+
+// claudeSlackLiveChat: the claude.ai connector, when claude.ai tools are on
+// for the chat (claudeSlackLive).
+func claudeSlackLiveChat(in slackLiveChatInput) slackLiveChat {
+	slackOff := chat.DisabledConnectorTokens(in.cfg.AI.ClaudeAI.DisabledConnectors)["claude_ai_Slack"]
+	return slackLiveChat{live: in.claudeAI.mode.On && claudeSlackLive(in.rows, in.claudeAI.mode.Connectors, slackOff)}
+}
+
+// codexSlackLiveChat: the Codex Slack app, read-only, when the newest probe
+// found it (codexSlackConnector); an overrides failure fails closed.
+func codexSlackLiveChat(in slackLiveChatInput) slackLiveChat {
+	id := codexSlackConnector(in.rows, codex.OwnerHome())
+	if id == "" {
+		return slackLiveChat{}
+	}
+	ov, err := codexSlackOverrides(id)
+	if err != nil { // fail closed: no apps, no promise
+		fmt.Fprintf(in.warn, "Live Slack on Codex is off: %v\n", err)
+		return slackLiveChat{}
+	}
+	return slackLiveChat{live: len(ov) > 0, codexSlack: ov}
 }
 
 // slackLiveWatcher observes the chat's events: it writes the provider's
