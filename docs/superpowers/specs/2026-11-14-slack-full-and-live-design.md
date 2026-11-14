@@ -23,14 +23,14 @@ Out of scope here: the screens — a separate spec with DesignShotCatalog mockup
 | D2 | Live is always on where the connector works, also next to Full: local first, the connector for gaps | ask #1294, comment #866 |
 | D3 | Full syncs only the user's own scope (DMs, group DMs, mentions of the user, channels the user is a member of); other public channels are reached through Live | ask #1294 |
 | D12 | Two speeds: DMs and mentions every 15 minutes, member channels every 60 minutes | ask #1294 (the chosen option: "ЛС/упоминания каждые 15 мин, свои каналы реже (30–60 мин)") |
-| D13 | The app's secret and the bot token live on the admin's Mac; a second collaborator can take over without changing the client id | agent (review round 1) |
+| D13 | The app's secret and the bot token live on the admin's Mac; a second collaborator can take over without changing the client id | **open**: proposed by the agent, ask #1301 |
 | D4 | Entry into Full: a Slack bot that hands out the connect link, plus an MDM key | ask #1294 |
 | D5 | No company hub, nothing hosted that carries Slack data | comment #868 |
 | D6 | Strict: of Live answers only the chat transcript is kept — no index, memory, ideas or Knowledge, not even on the owner's press | ask #1296 (comment #870) |
 | D14 | An automation run on Live keeps its own output (the Inbox card, report) as that run's transcript; nothing reads it further | ask #1298 |
 | D15 | A recipe with `slack:live` runs at most hourly; the validator refuses a tighter schedule | ask #1298 |
 | D7 | The bot needs no server: the admin's Watchtower publishes the bot's Home tab to every member | ask #1295 |
-| D8 | The connect link is an OAuth link to the workspace app that lands on localhost; no page of ours on the web | ask #1295 |
+| D8 | The connect link starts the workspace app's OAuth and lands on localhost; no page of ours on the web. Its first hop through Watchtower's loopback listener (fresh PKCE) is **open**: the owner asked why not Slack → localhost directly | ask #1295; the first hop — open, ask #1301 |
 | D9 | The admin creates the app with one paste: a Slack app configuration token | ask #1295 |
 | D10 | Turns that used Live are marked and every consumer that makes chat text lasting skips them | ask #1296 |
 | D11 | Accounts on the retired shared app keep working until Slack stops them; the app offers Full or Live; synced data follows the purge rules | ask #1295 |
