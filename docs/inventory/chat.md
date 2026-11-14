@@ -270,9 +270,10 @@ child is never started without it.
 **Observable:** A conversation whose turn called the Live Slack connector (Claude's
 `mcp__claude_ai_Slack__*` tools, or Codex's Slack app, stored as
 `mcp__codex_apps__slack.<tool>`) is marked: `chat_conversations.live_slack_since` is the
-`chat_messages.id` of that turn's assistant message, set once and never moved. That turn
-and every later turn of the conversation (even one with no Slack step) feed no store that
-makes chat text lasting: not ideas (`ListChatTurnsForIdeas`), not memory
+`chat_messages.id` of that turn's assistant message, set once and never moved. That turn's
+answer and every later message of the conversation (even a turn with no Slack step) feed no
+store that makes chat text lasting (the owner's prompt of the Live turn precedes the mark and
+is the owner's own words, so it stays readable): not ideas (`ListChatTurnsForIdeas`), not memory
 (`ListOwnerChatTurns`, `OwnerChatTurnExists`), not the instruction miner or the agent
 coach (`ListOwnerChatTurnsSince`), not a target's next step (`ListRecentChatTurns`), not
 knowledge (the `chat_artifact` source skips the whole conversation, and Add to Knowledge is
@@ -280,9 +281,11 @@ refused with "Built on Live Slack answers, which are not kept"). Turns before th
 readable. In a marked conversation `instructions remember` stores a line only when it
 appears verbatim in the owner's own message.
 
-**Mechanism:** `LiveSlackMark.markIfUsed` runs inside `ChatTurnStore.finalizeTurn`'s
-transaction, reading the turn's `chat_turn_steps.name` (Swift is the only writer of chat
-rows). Go readers apply `db.ChatNotLiveSlack` (`c.live_slack_since IS NULL OR m.id <
+**Mechanism:** the Swift turn store (the only writer of chat rows) marks the conversation
+when a Slack step starts (`ChatTurnStore.stepStarted`, `LiveSlackMark.markIfSlackStep`: a Live
+turn's partial text is saved while it runs and a crash never finalizes) and again in
+`finalizeTurn`'s transaction as a backstop (`markIfUsed`); whichever comes first wins. Embedded
+chats never carry Slack connectors (main surface only). Go readers apply `db.ChatNotLiveSlack` (`c.live_slack_since IS NULL OR m.id <
 c.live_slack_since`); `ChatArtifactQueries.keep` throws `ChatArtifactKeepError.liveSlack`.
 
 **Why locked:** A Live answer is the owner's live Slack data fetched through a third-party
@@ -295,7 +298,7 @@ new non-test function in `internal/` that mentions the chat tables must join
 (`internal/kb/source_chat_artifact_test.go`); `LiveSlack01GuardTests`
 (`WatchtowerDesktop/Tests/Core/LiveSlack01GuardTests.swift`: the finalize mark for both
 providers, no mark without a Slack step, the first mark kept, keep refused, the panel's
-reason, and `testReaderList` over the Swift sources).
+reason, and `testReaderList` over the Swift sources, which is file-level: a Swift file that mentions a chat table must be listed as checked or display-only), `testStepStartMarksWithoutFinalize`; `TestInstructionsRemember_LiveSlackRefusesText` (`cmd/instructions_test.go`, the `not_owner_text` refusal).
 
 **Locked since:** 2026-11-14
 

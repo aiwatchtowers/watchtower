@@ -16,23 +16,29 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// seedLiveConversation makes a "target" conversation with four owner turns at
-// 2026-10-24 10:00 + n minutes; live_slack_since is the id of turn 3.
-func seedLiveConversation(t *testing.T, d *DB) (conv int64, ids []int64, base time.Time) {
+// seedLiveConversation makes a "target" conversation of four user/assistant
+// pairs at 2026-10-24 10:00 + n minutes. The third pair is the Live turn:
+// live_slack_since is that turn's assistant message id. The Live turn's owner
+// prompt precedes it and stays readable; the Live answer and every later
+// message (the fourth pair, which has no Slack step of its own) are excluded.
+func seedLiveConversation(t *testing.T, d *DB) (conv int64, users, assistants []int64, base time.Time) {
 	t.Helper()
 	base = time.Date(2026, 10, 24, 10, 0, 0, 0, time.UTC)
 	conv = insertChatConversation(t, d, "target", "7")
-	for i, txt := range []string{"turn one", "turn two", "turn three live", "turn four after live"} {
-		ids = append(ids, insertChatMessage(t, d, conv, "user", txt, float64(base.Add(time.Duration(i)*time.Minute).Unix())))
+	for i, q := range []string{"question one", "question two", "question three live", "question four after live"} {
+		at := float64(base.Add(time.Duration(i) * time.Minute).Unix())
+		users = append(users, insertChatMessage(t, d, conv, "user", q, at))
+		assistants = append(assistants, insertChatMessage(t, d, conv, "assistant", "answer "+q, at))
 	}
-	_, err := d.Exec(`UPDATE chat_conversations SET live_slack_since = ? WHERE id = ?`, ids[2], conv)
+	_, err := d.Exec(`UPDATE chat_conversations SET live_slack_since = ? WHERE id = ?`, assistants[2], conv)
 	require.NoError(t, err)
-	return conv, ids, base
+	return conv, users, assistants, base
 }
 
 func TestLIVE01_MarkedTurnsStayOutOfStores(t *testing.T) {
 	d := openTestDB(t)
-	conv, ids, base := seedLiveConversation(t, d)
+	conv, users, assistants, base := seedLiveConversation(t, d)
+	kept := []int64{users[0], assistants[0], users[1], assistants[1], users[2]}
 
 	ideas, err := d.ListChatTurnsForIdeas(0, base.Add(time.Hour).Format(time.RFC3339), 50)
 	require.NoError(t, err)
@@ -40,45 +46,53 @@ func TestLIVE01_MarkedTurnsStayOutOfStores(t *testing.T) {
 	for _, x := range ideas {
 		got = append(got, x.ID)
 	}
-	assert.Equal(t, ids[:2], got, "ideas")
+	assert.Equal(t, kept, got, "ideas")
 
 	mem, err := d.ListOwnerChatTurns(0, []string{"target"})
 	require.NoError(t, err)
-	require.Len(t, mem, 2, "memory")
-	assert.Equal(t, ids[1], mem[1].ID)
+	got = nil
+	for _, x := range mem {
+		got = append(got, x.ID)
+	}
+	assert.Equal(t, []int64{users[0], users[1], users[2]}, got, "memory")
 
 	since, err := d.ListOwnerChatTurnsSince(base.Add(-time.Hour))
 	require.NoError(t, err)
-	require.Len(t, since, 2, "instructions miner / coach")
+	require.Len(t, since, 3, "instructions miner / coach")
 
-	recent, err := d.ListRecentChatTurns("target", "7", 10)
+	recent, err := d.ListRecentChatTurns("target", "7", 20)
 	require.NoError(t, err)
-	require.Len(t, recent, 2, "next step")
+	got = nil
+	for _, x := range recent {
+		got = append(got, x.ID)
+	}
+	assert.Equal(t, kept, got, "next step")
 
-	ok, err := d.OwnerChatTurnExists(conv, base.Add(time.Minute).Unix(), []string{"target"})
+	ok, err := d.OwnerChatTurnExists(conv, base.Add(2*time.Minute).Unix(), []string{"target"})
 	require.NoError(t, err)
-	assert.True(t, ok)
-	ok, err = d.OwnerChatTurnExists(conv, base.Add(2*time.Minute).Unix(), []string{"target"})
+	assert.True(t, ok, "the Live turn's owner prompt is the owner's own words")
+	ok, err = d.OwnerChatTurnExists(conv, base.Add(3*time.Minute).Unix(), []string{"target"})
 	require.NoError(t, err)
-	assert.False(t, ok, "the first Live turn is not an evidence turn")
+	assert.False(t, ok, "a later owner turn is not an evidence turn")
 }
 
 func TestLIVE01_LaterTurnsMarked(t *testing.T) {
 	d := openTestDB(t)
-	conv, ids, base := seedLiveConversation(t, d)
-	// Turn four carried no Slack step of its own; it is still after the mark.
-	rows, err := d.ListOwnerChatTurns(ids[2]-1, []string{"target"})
+	conv, users, assistants, base := seedLiveConversation(t, d)
+	rows, err := d.ListOwnerChatTurns(assistants[2]-1, []string{"target"})
 	require.NoError(t, err)
-	assert.Empty(t, rows)
-	// A conversation without a mark is read in full.
+	assert.Empty(t, rows, "nothing from the Live answer on")
+	_ = users
+
+	// An unmarked conversation is read in full.
 	other := insertChatConversation(t, d, "target", "8")
 	insertChatMessage(t, d, other, "user", "plain", float64(base.Unix()))
 	rows, err = d.ListOwnerChatTurns(0, []string{"target"})
 	require.NoError(t, err)
-	require.Len(t, rows, 3)
-	assert.Equal(t, other, rows[2].ConversationID)
+	require.Len(t, rows, 4)
+	assert.Equal(t, other, rows[3].ConversationID)
 
-	// A later turn is added: still hidden.
+	// A message added later is still hidden.
 	late := insertChatMessage(t, d, conv, "user", "turn five", float64(base.Add(time.Hour).Unix()))
 	rows, err = d.ListOwnerChatTurns(0, []string{"target"})
 	require.NoError(t, err)
@@ -89,11 +103,13 @@ func TestLIVE01_LaterTurnsMarked(t *testing.T) {
 
 func TestLIVE01_LiveSlackOwnerLineOK(t *testing.T) {
 	d := openTestDB(t)
-	conv, ids, _ := seedLiveConversation(t, d)
-	ok, err := d.LiveSlackOwnerLineOK(conv, ids[3], "after live")
+	conv, users, _, _ := seedLiveConversation(t, d)
+	_, err := d.Exec(`UPDATE chat_messages SET text = ? WHERE id = ?`, "remember:  keep it\n  short   and clear", users[3])
 	require.NoError(t, err)
-	assert.True(t, ok)
-	ok, err = d.LiveSlackOwnerLineOK(conv, ids[3], "text a Live answer wrote")
+	ok, err := d.LiveSlackOwnerLineOK(conv, users[3], "keep it short and clear")
+	require.NoError(t, err)
+	assert.True(t, ok, "a multi-line, double-spaced owner message passes")
+	ok, err = d.LiveSlackOwnerLineOK(conv, users[3], "text a Live answer wrote")
 	require.NoError(t, err)
 	assert.False(t, ok)
 	unmarked := insertChatConversation(t, d, "target", "9")
@@ -146,7 +162,7 @@ func TestLIVE01_ReaderList(t *testing.T) {
 		if err != nil || de.IsDir() || !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
 			return err
 		}
-		src, err := os.ReadFile(p)
+		src, err := os.ReadFile(p) //nolint:gosec // the test reads the repo's own source tree
 		if err != nil {
 			return err
 		}

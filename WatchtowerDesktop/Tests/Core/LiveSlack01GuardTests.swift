@@ -53,6 +53,18 @@ final class LiveSlack01GuardTests: XCTestCase {
         XCTAssertEqual(marked, assistantID)
     }
 
+    func testStepStartMarksWithoutFinalize() async throws {
+        let store = ChatTurnStore(dbPool: pool)
+        let plain = ChatToolStart(turnID: "t1", id: "a", name: "mcp__watchtower__search_knowledge", argsJSON: "{}")
+        try await store.stepStarted(messageID: assistantID, seq: 0, start: plain, at: Date())
+        let none = try mark()
+        XCTAssertNil(none)
+        let slack = ChatToolStart(turnID: "t1", id: "b", name: "mcp__codex_apps__slack.slack_search_public", argsJSON: "{}")
+        try await store.stepStarted(messageID: assistantID, seq: 1, start: slack, at: Date())
+        let marked = try mark()
+        XCTAssertEqual(marked, assistantID)
+    }
+
     func testFinalizeMarksConversationOnCodexSlackStep() async throws {
         try addStep("mcp__codex_apps__slack.slack_read_channel")
         try await finalize()

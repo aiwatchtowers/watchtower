@@ -413,7 +413,7 @@ func (db *DB) ChatStepSummaries(messageIDs []int64) (map[int64][]string, error) 
 // LiveSlackOwnerLineOK reports whether line may be stored from message
 // messageID of conversation conversationID. A conversation that never used the
 // Live Slack connector passes any line. In a marked one (LIVE-01) the line must
-// appear verbatim in the stored text of the owner's own message (role 'user'),
+// appear verbatim (whitespace runs collapsed, as ParseRemember does) in the stored text of the owner's own message (role 'user'),
 // so nothing a Live answer said can reach the remembered instructions.
 func (db *DB) LiveSlackOwnerLineOK(conversationID, messageID int64, line string) (bool, error) {
 	var since sql.NullInt64
@@ -436,5 +436,6 @@ func (db *DB) LiveSlackOwnerLineOK(conversationID, messageID int64, line string)
 	if err != nil {
 		return false, fmt.Errorf("reading owner message %d: %w", messageID, err)
 	}
-	return strings.Contains(text, line), nil
+	// ParseRemember collapses whitespace runs, so the stored text is compared the same way.
+	return strings.Contains(strings.Join(strings.Fields(text), " "), line), nil
 }

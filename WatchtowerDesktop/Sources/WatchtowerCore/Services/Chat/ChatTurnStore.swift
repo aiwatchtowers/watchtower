@@ -49,6 +49,7 @@ package struct ChatTurnStore: Sendable {
         try await dbPool.write { db in
             try ChatStepQueries.upsertStart(db, messageID: messageID, seq: seq, toolID: start.id, name: start.name,
                                             argsJSON: start.argsJSON, startedAt: date.timeIntervalSince1970)
+            try LiveSlackMark.markIfSlackStep(db, messageID: messageID, name: start.name)
         }
     }
 
