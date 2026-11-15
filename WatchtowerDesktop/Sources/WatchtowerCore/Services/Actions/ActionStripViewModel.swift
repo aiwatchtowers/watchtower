@@ -1097,9 +1097,16 @@ package final class ActionStripViewModel {
     /// failure — a changed row's args
     /// refused by Go included — stops the run and selects that card while
     /// Needs approval is on screen, where its error shows; the rest are left
-    /// for the owner. Ends with a read.
+    /// for the owner. Ends with a read. An opening read that fails approves
+    /// nothing: `.failed` with its reason, as `approveAllPlan` refuses.
     package func approveAll(ids: [String]) async -> InboxBulkResult {
         await refresh()
+        if let reason = lastError {
+            for text in ids {
+                if let id = Int64(text) { approveAllShownArgs[id] = nil }
+            }
+            return .failed(ApproveAllError.unread(reason).localizedDescription)
+        }
         var done = 0
         var skipped = 0
         var failure: (row: AgentAction, message: String)?

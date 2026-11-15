@@ -428,6 +428,29 @@ final class ActionStripApproveAllTests: XCTestCase {
         }
     }
 
+    /// The apply reads first too: a read that fails there approves nothing
+    /// and says why, rather than deciding from the previous read.
+    func testApplyApprovesNothingAfterABadOpeningRead() async throws {
+        let pool = try pool()
+        _ = try await seed(pool, tool: "create_targets", count: 2)
+        let runner = FakeCLIRunner(stdout: Self.ok)
+        let vm = viewModel(pool, runner: runner)
+        await vm.refresh()
+        let planned = try await vm.approveAllPlan(.targets)
+        XCTAssertEqual(planned.count, 2)
+
+        let otherPool = try DatabasePool(path: pool.path)
+        try await otherPool.write { db in
+            try db.execute(sql: "ALTER TABLE agent_actions RENAME COLUMN status TO status_gone")
+        }
+        let result = await vm.approveAll(ids: planned.ids)
+
+        guard case let .failed(message) = result else { return XCTFail("\(result)") }
+        XCTAssertTrue(message.hasPrefix("The Inbox could not be read: "), message)
+        XCTAssertTrue(runner.invocations.filter { $0.prefix(2) == ["actions", "approve"] }.isEmpty)
+        XCTAssertTrue(vm.approveAllShownArgs.isEmpty, "the run's pinned args are gone")
+    }
+
     /// A finished press keeps its result while its group lists the same
     /// approvable ids; a read that lists other ids, or drops the group,
     /// puts it back to idle. A run's pinned args go when it ends.
