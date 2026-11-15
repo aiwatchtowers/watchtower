@@ -80,7 +80,8 @@ struct WorkchatView: View {
             BoardTargetDetailView(replica: replica, writer: env.boardWriter, targetID: route.id)
         }
         .navigationDestination(item: $openAsk) { route in
-            AskView(replica: replica, drafts: env.askDrafts, answerer: env.askAnswerer, askID: route.id)
+            // Back is the way to this session: the form hides its Open session (#1786).
+            AskView(replica: replica, drafts: env.askDrafts, answerer: env.askAnswerer, askID: route.id, openedFromSessionID: sessionID)
         }
         .navigationDestination(item: $openSubagent) { route in
             SessionChatView(replica: replica, route: route, store: env.store, requester: env.chatRequests)
