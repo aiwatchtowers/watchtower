@@ -271,3 +271,21 @@ func TestAgent07_ApproveBindsToTheArgsTheOwnerSaw(t *testing.T) {
 	assert.True(t, ok)
 	assert.Empty(t, executed, "Approve only decides")
 }
+
+// TestReject_OnlyAPendingRow: the owner's Reject takes a pending row to
+// rejected; a row another decision settled is left as it is (false).
+func TestReject_OnlyAPendingRow(t *testing.T) {
+	database := openDB(t)
+	reg := New(database)
+	id, err := database.InsertAgentAction(db.AgentAction{Tool: "x", ArgsJSON: `{}`})
+	require.NoError(t, err)
+	ok, err := reg.Reject(id)
+	require.NoError(t, err)
+	assert.True(t, ok)
+	row, err := database.GetAgentAction(id)
+	require.NoError(t, err)
+	assert.Equal(t, "rejected", row.Status)
+	ok, err = reg.Reject(id)
+	require.NoError(t, err)
+	assert.False(t, ok, "a settled row is not rejected again")
+}
