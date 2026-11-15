@@ -62,6 +62,10 @@ type RateLimiter struct {
 	gate    chan struct{}       // semaphore (capacity 3), nil in unlimited mode
 	logger  *log.Logger
 
+	// unstatedHold is the hold of a 429 without a usable Retry-After
+	// (missing or 0): a second, none in the test-only unlimited mode.
+	unstatedHold time.Duration
+
 	mu      sync.Mutex
 	backoff time.Time   // account-wide hold, until this time
 	counts  map[int]int // tier -> request count (for stats)
@@ -73,8 +77,9 @@ type RateLimiter struct {
 func NewRateLimiter() *RateLimiter {
 	rl := &RateLimiter{
 		limiter: make(map[int]*tierBucket, len(tierRates)),
-		gate:    make(chan struct{}, 3),
-		counts:  make(map[int]int),
+		gate:         make(chan struct{}, 3),
+		counts:       make(map[int]int),
+		unstatedHold: time.Second,
 	}
 	for tier, a := range tierRates {
 		b := &tierBucket{aimd: a, bucket: rate.NewLimiter(0, 3)}
@@ -85,7 +90,9 @@ func NewRateLimiter() *RateLimiter {
 }
 
 // NewUnlimitedRateLimiter creates a rate limiter that enforces no rate and no
-// gate; a 429's hold still applies. Intended for testing only.
+// gate; a 429's stated Retry-After still holds every call, while one without
+// a usable Retry-After holds nothing, so a test faking such 429s never waits
+// on the wall clock. Intended for testing only.
 func NewUnlimitedRateLimiter() *RateLimiter {
 	return &RateLimiter{counts: make(map[int]int)}
 }
@@ -190,14 +197,13 @@ func (rl *RateLimiter) releaseGate() {
 // floor) and every tier holds for retryAfter plus up to a quarter of jitter.
 func (rl *RateLimiter) HandleRateLimit(tier int, retryAfter time.Duration) {
 	if retryAfter <= 0 {
-		retryAfter = time.Second
+		retryAfter = rl.unstatedHold
 	}
-	jitterMax := int64(retryAfter) / 4
-	if jitterMax <= 0 {
-		jitterMax = 1
+	var backoff time.Duration // zero (no hold) only in the unlimited mode
+	if retryAfter > 0 {
+		jitterMax := max(int64(retryAfter)/4, 1)
+		backoff = retryAfter + time.Duration(rand.Int64N(jitterMax))
 	}
-	jitter := time.Duration(rand.Int64N(jitterMax))
-	backoff := retryAfter + jitter
 	until := time.Now().Add(backoff)
 
 	rl.mu.Lock()

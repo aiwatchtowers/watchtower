@@ -1520,3 +1520,24 @@ func TestAdaptive_UnstatedRetryAfterKeepsThreeRetries(t *testing.T) {
 		assert.Equal(t, 4, f.calls, "one call and three retries")
 	})
 }
+
+// CountRateLimits counts only the 429s of calls made under its context: a
+// run's counter does not see a 429 a concurrent caller (the chat, a media
+// fetch) met on the same client, while RateLimitedCalls sees both.
+func TestCountRateLimits_OnlyCallsUnderTheContext(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := &fakeSlack{limited: 1, retryAfter: "1", body: searchOK}
+		c := newFakeSlackClient(f)
+
+		runCtx, runLimited := CountRateLimits(context.Background())
+		_, err := c.SearchMessages(context.Background(), "q", 1) // another caller's 429
+		require.NoError(t, err)
+		assert.Zero(t, runLimited())
+
+		f.limited = 2
+		_, err = c.SearchMessages(runCtx, "q", 1)
+		require.NoError(t, err)
+		assert.Equal(t, uint64(2), runLimited())
+		assert.Equal(t, uint64(3), c.RateLimitedCalls())
+	})
+}

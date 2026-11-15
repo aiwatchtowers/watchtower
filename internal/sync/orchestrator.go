@@ -256,12 +256,14 @@ func (o *Orchestrator) Run(ctx context.Context, opts SyncOptions) error {
 		o.slackClient.SetDeadline(time.Now().Add(d))
 		defer o.slackClient.SetDeadline(time.Time{})
 	}
-	limitedBefore := o.slackClient.RateLimitedCalls()
+	// Only this run's own 429s count: one another caller of the client meets
+	// meanwhile (the chat, a media fetch) must not back the cadence off.
+	ctx, runLimited := watchtowerslack.CountRateLimits(ctx)
 	err := o.startSyncedAtCycle()
 	if err == nil {
 		err = o.run(ctx, opts)
 	}
-	o.outcome.RateLimited = o.slackClient.RateLimitedCalls() > limitedBefore
+	o.outcome.RateLimited = runLimited() > 0
 	o.outcome.ResumePending = o.resume != nil
 	o.teamMismatch = errors.Is(err, ErrSlackTeamMismatch)
 	if ctx.Err() != nil {

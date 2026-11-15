@@ -311,3 +311,23 @@ func TestAIMD_UnknownTierAndUnlimitedHaveNoRate(t *testing.T) {
 	assert.Zero(t, NewRateLimiter().Rate(99))
 	assert.Zero(t, NewUnlimitedRateLimiter().Rate(Tier2))
 }
+
+// The test-only unlimited limiter holds for a 429 only as long as Slack
+// said: one without a usable Retry-After (missing or 0) holds nothing, so a
+// test faking such 429s never waits the production default of a second per
+// retry. A stated Retry-After still holds every call.
+func TestUnlimited_UnstatedRetryAfterHoldsNothing(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		rl := NewUnlimitedRateLimiter()
+		rl.HandleRateLimit(Tier2, 0)
+		assert.True(t, rl.HoldUntil().IsZero(), "no hold without a stated Retry-After")
+
+		rl.HandleRateLimit(Tier2, 2*time.Second)
+		assert.False(t, rl.HoldUntil().Before(time.Now().Add(2*time.Second)))
+
+		limited := NewRateLimiter()
+		limited.HandleRateLimit(Tier2, 0)
+		assert.False(t, limited.HoldUntil().Before(time.Now().Add(time.Second)),
+			"the production limiter still holds a second")
+	})
+}
