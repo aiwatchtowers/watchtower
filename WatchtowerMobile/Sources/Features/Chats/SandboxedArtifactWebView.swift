@@ -39,6 +39,15 @@ struct SandboxedArtifactWebView: UIViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeUIView(context: Context) -> WKWebView {
+        let webView = Self.makeWebView(coordinator: context.coordinator)
+        context.coordinator.show(html)
+        return webView
+    }
+
+    /// The web view with the whole configuration, driven by `coordinator` (whose `show` loads a page once the rules
+    /// are in); the tests build theirs here too.
+    @MainActor
+    static func makeWebView(coordinator: Coordinator) -> WKWebView {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent()
         config.preferences.javaScriptCanOpenWindowsAutomatically = false
@@ -48,11 +57,10 @@ struct SandboxedArtifactWebView: UIViewRepresentable {
             WKUserScript(source: ArtifactHTMLPolicy.removeWebRTC, injectionTime: .atDocumentStart, forMainFrameOnly: false)
         )
         let webView = WKWebView(frame: .zero, configuration: config)
-        webView.navigationDelegate = context.coordinator
-        webView.uiDelegate = context.coordinator
+        webView.navigationDelegate = coordinator
+        webView.uiDelegate = coordinator
         webView.isOpaque = false
-        context.coordinator.webView = webView
-        context.coordinator.show(html)
+        coordinator.webView = webView
         return webView
     }
 
