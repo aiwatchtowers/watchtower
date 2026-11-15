@@ -267,9 +267,15 @@ struct SessionSection: Equatable, Identifiable {
 /// Ended in the last day and "▸ N older" folded; asks whose session is not
 /// listed wait on top, and the closed asks fold at the end.
 struct WorkbenchMenuModel {
-    /// An ended session stays in Ended this long after its last activity
-    /// (Now's former window for ended sessions); older ones fold.
+    /// An ended session stays in Ended this long after it ended
+    /// (`endedAt`, Now's former window for ended sessions); older ones fold.
     static let endedWindow: TimeInterval = 24 * 3_600
+
+    /// When an ended session ended: its state's time, else its last
+    /// activity, the time Now's ended rows use (`NowWaitingRow(ended:)`).
+    static func endedAt(_ session: TerminalSessionState) -> Date {
+        session.stateAt ?? session.lastActiveAt
+    }
 
     let id: Int64
     let title: String
@@ -304,14 +310,22 @@ struct WorkbenchMenuModel {
         let sessions = snapshot.sessions
             .filter { $0.workbenchID == workbenchID }
             .sorted { $0.lastActiveAt != $1.lastActiveAt ? $0.lastActiveAt > $1.lastActiveAt : $0.id > $1.id }
-        var grouped: [Group: [SessionRowModel]] = [:]
+        var bySection: [Group: [TerminalSessionState]] = [:]
         for session in sessions {
             var group = Group(session)
-            if group == .ended, now.timeIntervalSince(session.lastActiveAt) > Self.endedWindow {
+            if group == .ended, now.timeIntervalSince(Self.endedAt(session)) > Self.endedWindow {
                 group = .older
             }
-            grouped[group, default: []].append(SessionRowModel(session, now: now, asOf: asOf))
+            bySection[group, default: []].append(session)
         }
+        // Ended and older read newest end first; the rest keep the panel's last-activity order.
+        for group in [Group.ended, .older] {
+            bySection[group]?.sort {
+                let (lhs, rhs) = (Self.endedAt($0), Self.endedAt($1))
+                return lhs != rhs ? lhs > rhs : $0.id > $1.id
+            }
+        }
+        let grouped = bySection.mapValues { $0.map { SessionRowModel($0, now: now, asOf: asOf) } }
         sections = Group.listed.compactMap { group in
             grouped[group].map { SessionSection(title: group.title, tone: group.tone, rows: $0) }
         }

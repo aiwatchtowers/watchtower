@@ -6,7 +6,8 @@ import XCTest
 /// Waiting for you (asks, approvals, verdicts), Working, Ended in the last
 /// day, then "▸ N older" folded.
 final class WorkbenchSessionsOrderTests: XCTestCase {
-    private let now = Date()
+    /// Whole seconds: the payload stamps are Unix seconds, so the 24 h edge is exact.
+    private let now = Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.down))
 
     private func menu(extra: [[String: Any]] = []) throws -> WorkbenchMenuModel {
         var snapshot = try demoSnapshot(now: now)
@@ -38,6 +39,29 @@ final class WorkbenchSessionsOrderTests: XCTestCase {
         let ended = try XCTUnwrap(menu.sections.first { $0.title == "Ended" })
         let failed = try XCTUnwrap(ended.rows.first { $0.id == 16 })
         XCTAssertEqual(failed.tone, .red)
+    }
+
+    /// The window and the order use when the session ended (`state_at`,
+    /// Now's time), not its last activity: a long session that ended an
+    /// hour ago is Ended; exactly 24 h still is, a second more is older.
+    func testEndedUsesTheStateTime() throws {
+        func ended(_ id: Int64, lastActive: TimeInterval, state: TimeInterval) -> [String: Any] {
+            DemoSeed.JSON.session(id, workbench: DemoSeed.acmeID, [
+                "title": "Ended \(id)", "state_kind": "finished", "live": false, "is_ring": true,
+                "last_active_at": DemoSeed.JSON.stamp(now.addingTimeInterval(-lastActive)),
+                "state_at": DemoSeed.JSON.stamp(now.addingTimeInterval(-state))
+            ])
+        }
+        let menu = try menu(extra: [
+            ended(40, lastActive: 3 * 86_400, state: 3_600),
+            ended(41, lastActive: 600, state: 86_400),
+            ended(42, lastActive: 600, state: 86_401)
+        ])
+        let rows = try XCTUnwrap(menu.sections.first { $0.title == "Ended" }).rows.map(\.id)
+        XCTAssertEqual(rows.first, 40, "ended an hour ago, though active 3 days ago")
+        XCTAssertEqual(rows.last, 41, "exactly 24 h is still Ended, and the oldest end reads last")
+        XCTAssertTrue(menu.older.contains { $0.id == 42 })
+        XCTAssertFalse(rows.contains(42))
     }
 
     /// An unknown state from a newer Mac: working while live, else ended.
