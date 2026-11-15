@@ -3073,3 +3073,15 @@ Entry format:
 - rule-gap (candidate, dim 7): A re-executed test binary pins every environment-based configuration selector to its fixture, including selectors evaluated during package initialization.
 - rule-gap (candidate, dim 6/8): Reusing discovery code under a bounded operation requires checking its subprocess lifetime; pure known-directory enrichment avoids adding an unbounded shell step to an explicit-path flow.
 - outcome: TBD
+
+## 2026-11-14 — feature/inbox-redesign (#1076, aec09a5b0: Inbox redesign phases 1–5 into main, 349 files ~34k lines, reviewed as four chapters A-go / B-core / C-ui / D-docs; per chapter: prosecutor + codex + pr-test-analyzer + silent-failure-hunter + code-reviewer; this block written by the A-go judge for the whole review, B/C/D judged separately and not yet read here) — verdict: changes-needed (A-go)
+
+- contested: the Slack-window rowid cursor (the brief's named exception). Five lanes raised it with three different trigger stories (full wipe, second-account purge, single-account purge + reconnect); only the last is realistic, because during the PURGE-02 grace the live accounts keep appending above the purged rows. Settled minor (one day's card, young install), fix now with an anchored cursor. Codex said major. [6]
+- contested: the Gmail sent catch-up stopping at the first permanent per-message error and then stamping "done" after 3 tries. Codex said major; settled minor (one-time upgrade path, items stay visible). [9]
+- false-positive: a pr-test-analyzer note that a test pinning UI copy word for word is "testing implementation". The file already pins another feature's copy the same way and the Desktop shows the string. [7]
+- false-positive (partial): a codex "to_owner misses owner-root threads" finding was real but pre-existing and kept on purpose for parity with the detector. It moved to Needs human, not the diff's ledger. Check `git show origin/main:` before charging a moved predicate to the change. [8]
+- miss: the code-reviewer lane alone noticed that the feature note's v1-limit sentence ("rows reusing the removed rowids below it") describes something SQLite never does (rowid = max+1; holes are not reused), while the real gap went undocumented. A docs claim about engine behaviour needs checking against the engine, and in a chaptered review it crosses from the code chapter to the docs chapter. [6/D]
+- weak-dimension: codex coverage on a big chapter. Its open-prompt pass timed out, and the retry covered only the 18 largest non-test files of 118. On a chaptered review, size codex's slice up front, never as a retry.
+- rule-gap (candidate, dim 6): *a rowid/sequence cursor over a table without AUTOINCREMENT needs an anchor (the cursor row's identity) or a reset hook in every writer that deletes from the tail; "reset when the cursor > MAX(rowid)" alone misses a delete that is refilled before the next read.*
+- rule-gap (candidate, dim 9): *a one-time catch-up/backfill loop skips and counts a permanently failing item and keeps going; a give-up stamp is written only once the listing was walked to the end.*
+- outcome: TBD
