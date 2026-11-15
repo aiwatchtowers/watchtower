@@ -18,9 +18,10 @@ A Claude Code session takes your line while it works and reads it at its next st
 
 **Now** starts with your Mac: **MacBook Pro · online**, or **asleep · last seen 40 min ago** once its heartbeat is over 35 minutes old. Then:
 
-- **Waiting for you**, newest first across workbenches: asks (a question with suggested answers takes one tap), permission prompts, and sessions that stopped, finished or failed in the last 24 hours. A session with an open ask shows only as that ask. The first 20 show; the rest are **N more on your Mac**.
+- **Waiting for you**, newest first across workbenches: only what needs your decision, asks and permission prompts. A question's suggested answers are chips, one tap each; with many or long answers, **Answer…** opens the ask. Once you answer, the row says where the answer is instead: **Sending answer…**, **Answer waiting to send**, or **Answer not delivered** with **Retry**. The first 20 show; the rest are **N more on your Mac**.
 - **Working**: sessions whose agent is working, each with its timer (**as of 40 min ago** while the Mac is asleep).
-- **Next meeting**, with **Record**.
+- **Ended**: sessions that stopped, finished or failed in the last 24 hours. A session with an open ask shows only as that ask. **Clear** takes them all off this phone; touch and hold a row for **Seen** to take only that one.
+- **Next meeting**, with **Record** from 10 minutes before it starts to 10 minutes after.
 
 A workbench opens on its sessions in the Mac's sessions panel order: **Waiting for you**, **Working**, **Ready to check**, **Not running**, then **N finished** folded. **N closed** at the end holds answered asks.
 
@@ -38,6 +39,8 @@ changed: A session's chat on the phone now takes your lines and answers.
 -->
 
 Tap a session in **Now** or a workbench. The top shows the workbench, the title and one state line: a timer like **Working · 3:14** while the agent works, an age like **Needs approval · 1m** while it waits on you. Your lines sit on the right, the agent's text on the left. **Brief** opens what the session was told at start, and a subagent row opens that subagent's own chat, which is read-only.
+
+Under it, once the turn is over, a card says what's next, even before the chat loads: a finished session's summary, PR and **Report**; after an error, **Continue** (sends "Continue") and **New session** on its target; a session no longer running, **New session**. The phone can't restart a session.
 
 ### Answer what waits at the bottom
 

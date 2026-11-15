@@ -13,8 +13,10 @@ struct SessionRoute: Hashable {
 /// and the composer pinned under it. A Claude session takes a line while
 /// it works (PROJ-16 amended); a Codex one takes none from the phone (the
 /// bar says to write on the Mac). Opening the
-/// screen asks the Mac for the chat (FEED-05) until it goes away. The
-/// actions menu stops, finishes or interrupts the session and opens its
+/// screen asks the Mac for the chat (FEED-05) until it goes away. Under the
+/// header, a card from the session's record says what to do next once its
+/// turn is over (#1784): the summary and Report, Continue, a new session.
+/// The actions menu stops, finishes or interrupts the session and opens its
 /// report and board target.
 struct WorkchatView: View {
     static let screen = ChatScreen.session
@@ -31,6 +33,8 @@ struct WorkchatView: View {
     @State private var openTarget: BoardTargetRoute?
     @State private var openAsk: AskRoute?
     @State private var openSubagent: SessionChatRoute?
+    @State private var startingSession = false
+    @State private var openSession: SessionRoute?
 
     init(replica: WorkbenchReplicaModel, sessionID: Int64, store: ReplicaStore, requester: SessionChatRequester) {
         self.replica = replica
@@ -76,10 +80,22 @@ struct WorkchatView: View {
             BoardTargetDetailView(replica: replica, writer: env.boardWriter, targetID: route.id)
         }
         .navigationDestination(item: $openAsk) { route in
-            AskView(replica: replica, drafts: env.askDrafts, answerer: env.askAnswerer, askID: route.id)
+            // Back is the way to this session: the form hides its Open session (#1786).
+            AskView(replica: replica, drafts: env.askDrafts, answerer: env.askAnswerer, askID: route.id, openedFromSessionID: sessionID)
         }
         .navigationDestination(item: $openSubagent) { route in
             SessionChatView(replica: replica, route: route, store: env.store, requester: env.chatRequests)
+        }
+        .navigationDestination(item: $openSession) { route in
+            Self(replica: replica, sessionID: route.id, store: env.store, requester: env.chatRequests)
+        }
+        .sheet(isPresented: $startingSession) {
+            if let session {
+                let target = session.targetID.flatMap { id in replica.snapshot.targets.first { $0.id == id } }
+                StartSessionSheet(workbenchID: session.workbenchID, target: target, fixed: target != nil) {
+                    openSession = SessionRoute(id: $0)
+                }
+            }
         }
         .confirmationDialog(SessionStartText.stopConfirm, isPresented: $confirmingStop, titleVisibility: .visible) {
             Button("Stop", role: .destructive) { stop() }
@@ -165,6 +181,13 @@ struct WorkchatView: View {
                 MacAwayBannerView(banner: banner)
                     .padding(.horizontal, Spacing.large)
                     .padding(.bottom, Spacing.regular)
+            }
+            if let card = model.stateCard {
+                WorkchatStateCardView(card: card, isSending: env.sessionInputs.inFlight.contains(SessionInputSender.sendKey(sessionID))) {
+                    run(card: $0)
+                }
+                .padding(.horizontal, Spacing.large)
+                .padding(.bottom, Spacing.regular)
             }
             feed(session, model)
         }
@@ -253,6 +276,7 @@ struct WorkchatView: View {
                 summary: card.summary,
                 allowBlockedNote: card.allowBlock?.note,
                 isAnswering: !card.canAnswer,
+                showsButtons: card.showsButtons,
                 onAllow: {
                     if card.confirmsAllow {
                         confirmingAllow = card
@@ -328,6 +352,15 @@ struct WorkchatView: View {
         case .interrupt: perform { try await env.sessionInputs.interrupt(sessionID: sessionID) }
         case .report: showsReport = true
         case let .openTarget(id): openTarget = BoardTargetRoute(id: id)
+        }
+    }
+
+    private func run(card action: WorkchatStateCard.Action) {
+        switch action {
+        case .report: showsReport = true
+        case .newSession: startingSession = true
+        case .continueSession:
+            perform { try await env.sessionInputs.send(sessionID: sessionID, text: WorkchatStateCard.continueLine) }
         }
     }
 
@@ -471,6 +504,51 @@ struct WorkchatEntryRow: View {
         [subagent.type.isEmpty ? "Subagent" : subagent.type, subagent.description, SessionChatEntryRow.statusText(subagent.status).lowercased()]
             .filter { !$0.isEmpty }
             .joined(separator: " · ")
+    }
+}
+
+/// What to do next with a session whose turn is over (#1784): a plain card
+/// with the title, the finish summary clipped to four lines (the report has
+/// it whole), the details, and up to two actions, the first one primary
+/// unless it is Report.
+private struct WorkchatStateCardView: View {
+    static let summaryLines = 4
+
+    let card: WorkchatStateCard
+    let isSending: Bool
+    let onAction: (WorkchatStateCard.Action) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.regular) {
+            Text(card.title).font(.footnote.weight(.semibold))
+            if let summary = card.summary {
+                Text(summary).font(.subheadline).lineLimit(Self.summaryLines)
+            }
+            ForEach(card.details, id: \.self) { detail in
+                Text(detail).font(TypeScale.meta).foregroundStyle(.secondary)
+            }
+            if !card.actions.isEmpty {
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: Spacing.regular) { buttons }
+                    VStack(spacing: Spacing.regular) { buttons }
+                }
+            }
+        }
+        .card()
+    }
+
+    @ViewBuilder
+    private var buttons: some View {
+        ForEach(Array(card.actions.enumerated()), id: \.element) { index, action in
+            let button = Button(action.title) { onAction(action) }
+                .disabled(action == .continueSession && isSending)
+                .accessibilityHint(action.accessibilityHint)
+            if index == 0, action != .report {
+                button.buttonStyle(ProminentActionStyle())
+            } else {
+                button.buttonStyle(SecondaryActionStyle())
+            }
+        }
     }
 }
 

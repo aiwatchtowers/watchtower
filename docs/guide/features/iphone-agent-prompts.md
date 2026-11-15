@@ -23,7 +23,7 @@ kind: feature
 since: 0.24.0
 -->
 
-A Claude Code session at a permission prompt shows a card with the tool and what it will run, plus **Allow once** and **Deny**. **Allow once** approves that one call, never a rule (a shell command asks first). Nothing is typed into the session.
+A Claude Code session at a permission prompt shows a card with the tool and what it will run, plus **Allow once** and **Deny**; until the phone may answer, the card shows the request without them and says under it how to turn answering on. **Allow once** approves that one call, never a rule (a shell command asks first). Nothing is typed into the session.
 
 Two kinds of prompt offer only **Deny** on the phone, so you answer them on the Mac to allow:
 

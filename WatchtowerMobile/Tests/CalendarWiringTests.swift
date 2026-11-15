@@ -392,10 +392,10 @@ final class CalendarWiringTests: XCTestCase {
         XCTAssertEqual(bare.actions, [.record])
     }
 
-    /// Design pass C4 and review focus 3: a finished event (end <= now) with
-    /// a recap has one button, Open recap; a running one keeps Join and
-    /// Record even with a recap, and a finished one without a recap keeps
-    /// them too.
+    /// Design pass C4: a finished event (end <= now) with a recap has one
+    /// button, Open recap; a running one keeps Join and Record even with a
+    /// recap. #1789: a finished one without a recap never offers Record (it
+    /// keeps Join).
     func testAPastEventWithARecapOffersOnlyOpenRecap() throws {
         let url = "https://meet.example.com/abc"
         let past = event("past", start: now.addingTimeInterval(-7_200), minutes: 30, conference: url)
@@ -422,8 +422,66 @@ final class CalendarWiringTests: XCTestCase {
         XCTAssertEqual(try actions("past"), [.openRecap(9)])
         XCTAssertEqual(try actions("ends-now"), [.openRecap(10)], "an event that ends now is over")
         XCTAssertEqual(try actions("running"), [.join, .record], "a running meeting still records")
-        XCTAssertEqual(try actions("bare"), [.join, .record], "no recap: Join and Record stay")
-        XCTAssertEqual([EventAction.join, .record, .openRecap(9)].map(\.title), ["Join", "Record", "Open recap"])
+        XCTAssertEqual(try actions("bare"), [.join], "#1789: over and no recording: no Record")
+        XCTAssertEqual(
+            [EventAction.join, .record, .openRecap(9), .openRecording].map(\.title),
+            ["Join", "Record", "Open recap", "Open recording"]
+        )
+    }
+
+    /// #1789: meetings overrun — an unrecorded event keeps Record for 30
+    /// minutes after its calendar end, then loses it; a recorded one never
+    /// gets it back.
+    func testAnUnrecordedEventKeepsRecordForThirtyMinutesAfterItsEnd() async throws {
+        let ended = event("overrun", start: now.addingTimeInterval(-3_600), minutes: 30)
+        let end = now.addingTimeInterval(-1_800)
+        func actions(
+            at time: Date,
+            recordings: PhoneRecordingsSnapshot = PhoneRecordingsSnapshot(),
+            id: String = "overrun",
+            events: [CalendarEvent]? = nil
+        ) throws -> [EventAction] {
+            try XCTUnwrap(EventDetailModel(
+                eventID: id, snapshot: snapshot(events ?? [ended]), recordings: recordings, now: time, calendar: calendar
+            )).actions
+        }
+        XCTAssertEqual(EventDetailModel.overrunGrace, 30 * 60)
+        XCTAssertEqual(try actions(at: end.addingTimeInterval(29 * 60)), [.record], "end + 29 min still records")
+        XCTAssertEqual(try actions(at: end.addingTimeInterval(31 * 60)), [], "end + 31 min does not")
+
+        let recordings = try await demoRecordings()
+        let recorded = event(DemoSeed.recordedEventID, start: now.addingTimeInterval(-3_600), minutes: 30)
+        XCTAssertEqual(
+            try actions(at: end.addingTimeInterval(60), recordings: recordings, id: recorded.id, events: [recorded]),
+            [.openRecording], "a recorded event never offers Record after its end"
+        )
+    }
+
+    /// #1789: a finished event recorded on this phone, its transcript not in
+    /// the replica yet (sending, waiting for the Mac, transcribing), offers
+    /// Open recording (the Recordings list) instead of a second Record; the
+    /// recap, once it arrives, wins.
+    func testAPastEventRecordedOnThisPhoneOffersOpenRecordingNotRecord() async throws {
+        let recordings = try await demoRecordings()
+        let recorded = event(DemoSeed.recordedEventID, start: now.addingTimeInterval(-3_600), minutes: 30)
+        func detail(transcripts: [MeetingTranscript] = [], at time: Date) throws -> EventDetailModel {
+            try XCTUnwrap(EventDetailModel(
+                eventID: recorded.id, snapshot: snapshot([recorded], transcripts: transcripts),
+                recordings: recordings, now: time, calendar: calendar
+            ))
+        }
+        let over = try detail(at: now)
+        XCTAssertEqual(over.actions, [.openRecording])
+        XCTAssertFalse(over.showsRecord)
+        XCTAssertEqual(over.transcribingPercent, 37, "the Recording section still shows the Mac's progress")
+        // While it runs, the event still records.
+        XCTAssertEqual(try detail(at: now.addingTimeInterval(-3_000)).actions, [.record])
+        let recap = MeetingTranscript(
+            id: 12, eventID: recorded.id, title: "Recap", durationSec: 600,
+            createdAt: Self.iso.string(from: now), updatedAt: Self.iso.string(from: now), speakers: [],
+            summary: "Done.", keyDecisions: [], actionItems: [], openQuestions: []
+        )
+        XCTAssertEqual(try detail(transcripts: [recap], at: now).actions, [.openRecap(12)])
     }
 
     // MARK: - Now tab
@@ -445,6 +503,22 @@ final class CalendarWiringTests: XCTestCase {
         let ongoing = event("ongoing", start: now.addingTimeInterval(-600), minutes: 30)
         XCTAssertEqual(NextMeetingCardModel(events: [later, ongoing], now: now, calendar: calendar)?.id, "ongoing")
         XCTAssertNil(NextMeetingCardModel(events: [ended, allDay], now: now, calendar: calendar))
+    }
+
+    /// #1785: Record sits on Now's card only from 10 min before the start to 10 min after it.
+    func testRecordShowsOnTheNextMeetingOnlyAroundItsStart() throws {
+        let meeting = event("m", start: now, minutes: 60)
+        func shows(_ offset: TimeInterval) throws -> Bool {
+            try XCTUnwrap(NextMeetingCardModel(events: [meeting], now: now.addingTimeInterval(offset), calendar: calendar)).showsRecord
+        }
+        XCTAssertFalse(try shows(-24 * 60), "24 min before: no Record")
+        XCTAssertFalse(try shows(-NextMeetingCardModel.recordWindow - 1))
+        XCTAssertTrue(try shows(-NextMeetingCardModel.recordWindow))
+        XCTAssertTrue(try shows(0))
+        XCTAssertTrue(try shows(NextMeetingCardModel.recordWindow))
+        XCTAssertFalse(try shows(NextMeetingCardModel.recordWindow + 1), "11 min in: the event's own screen records")
+        let card = try XCTUnwrap(NextMeetingCardModel(events: [meeting], now: now.addingTimeInterval(-24 * 60), calendar: calendar))
+        XCTAssertFalse(card.toneUses.contains { $0.role == .recording }, "no Record, no red")
     }
 
     // MARK: - Week strip

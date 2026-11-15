@@ -55,6 +55,10 @@ struct PermissionCardModel: Equatable {
     var allowConfirmTitle: String { "Allow this command once?" }
     /// The card shows Allow once.
     var offersAllow: Bool { allowBlock == nil }
+    /// Allow once and Deny are on the card at all: not while the phone may
+    /// not answer, where disabled buttons would read as broken (#1784); the
+    /// hint and Turn On say how to get them.
+    var showsButtons: Bool { hint == nil }
 
     /// The request the session's card shows: the pending one of a live
     /// session whose prompts the Mac takes from the phone
