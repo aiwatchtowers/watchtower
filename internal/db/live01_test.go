@@ -149,6 +149,24 @@ var displayOnlyReaders = map[string]string{
 	"deleteWorkbenchCodeQuestions":     "delete only",
 	"deleteWorkbenchSpecReviewThreads": "delete only",
 	"keptJoin":                         "the knowledge source's join: it skips a marked conversation (internal/kb TestLIVE01_KeptArtifactSkipped)",
+	// internal/chatstore: the hub's chat turn store, the Swift write path's
+	// twin. It writes the chat rows and reads its own tree for the next turn;
+	// stepStarted and markIfUsedTx write the mark itself (LIVE-01 mechanism).
+	"readConversationTx": "the turn store reads its own conversation row (routing, leaf, title)",
+	"loadMessagesTx":     "the turn store's own branch walk for the next turn",
+	"insertMessageTx":    "writes a turn's message rows",
+	"setPrefixTitleTx":   "writes the prefix title",
+	"writeRoutingTx":     "routing columns only",
+	"SelectBranch":       "moves the active leaf",
+	"MarkRead":           "read_at from a created_at, no text",
+	"recordActual":       "routing columns of the turn's own rows",
+	"recordSession":      "session id only",
+	"requireMessageTx":   "existence probe of the turn's own row",
+	"updateAssistantTx":  "writes the turn's assistant row",
+	"setModelTx":         "writes the turn's model",
+	"stepStarted":        "writes a step and the LIVE-01 mark",
+	"markIfUsedTx":       "writes the LIVE-01 mark",
+	"titleIfNeeded":      "a count of complete answers, no text",
 }
 
 // TestLIVE01_ReaderList fails when a non-test function in internal/ mentions

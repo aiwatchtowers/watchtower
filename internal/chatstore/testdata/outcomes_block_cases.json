@@ -1,0 +1,201 @@
+[
+  {
+    "name": "first turn has no floor",
+    "conversation_id": 1,
+    "after": null,
+    "rows": [
+      {
+        "id": 1,
+        "tool": "create_target",
+        "status": "applied",
+        "conversation_id": 1,
+        "created_at": "2023-11-14T22:13:25Z",
+        "decided_at": "2023-11-14T22:13:26Z",
+        "applied_at": "2023-11-14T22:13:26Z",
+        "result_json": "{\"id\":5}",
+        "error": ""
+      }
+    ],
+    "expect": null
+  },
+  {
+    "name": "nothing decided since the floor",
+    "conversation_id": 1,
+    "after": 1700000000.0,
+    "rows": [
+      {
+        "id": 1,
+        "tool": "create_target",
+        "status": "pending",
+        "conversation_id": 1,
+        "created_at": "2023-11-14T22:13:25Z",
+        "decided_at": "",
+        "applied_at": "",
+        "result_json": "",
+        "error": ""
+      },
+      {
+        "id": 2,
+        "tool": "create_target",
+        "status": "applied",
+        "conversation_id": 1,
+        "created_at": "2023-11-14T22:00:00Z",
+        "decided_at": "2023-11-14T22:00:01Z",
+        "applied_at": "2023-11-14T22:00:02Z",
+        "result_json": "{\"id\":1}",
+        "error": ""
+      }
+    ],
+    "expect": null
+  },
+  {
+    "name": "applied with a result, rejected and failed with errors",
+    "conversation_id": 1,
+    "after": 1700000000.0,
+    "rows": [
+      {
+        "id": 3,
+        "tool": "send_slack_message",
+        "status": "applied",
+        "conversation_id": 1,
+        "created_at": "2023-11-14T22:13:30Z",
+        "decided_at": "2023-11-14T22:13:31Z",
+        "applied_at": "2023-11-14T22:13:32Z",
+        "result_json": "{\"ts\":\"1.2\"}",
+        "error": ""
+      },
+      {
+        "id": 4,
+        "tool": "create_target",
+        "status": "rejected",
+        "conversation_id": 1,
+        "created_at": "2023-11-14T22:13:21Z",
+        "decided_at": "2023-11-14T22:13:40Z",
+        "applied_at": "",
+        "result_json": "",
+        "error": "rejected by the owner"
+      },
+      {
+        "id": 5,
+        "tool": "update_target",
+        "status": "failed",
+        "conversation_id": 1,
+        "created_at": "2023-11-14T22:13:35Z",
+        "decided_at": "2023-11-14T22:13:36Z",
+        "applied_at": "2023-11-14T22:13:37Z",
+        "result_json": "",
+        "error": "target 9 not found"
+      }
+    ],
+    "expect": "=== ACTIONS SINCE YOUR LAST MESSAGE ===\n- #4 create_target: rejected — rejected by the owner\n- #3 send_slack_message: applied — {\"ts\":\"1.2\"}\n- #5 update_target: failed — target 9 not found"
+  },
+  {
+    "name": "applied without a result falls back to its error, else bare",
+    "conversation_id": 1,
+    "after": 1700000000.0,
+    "rows": [
+      {
+        "id": 6,
+        "tool": "create_track",
+        "status": "applied",
+        "conversation_id": 1,
+        "created_at": "2023-11-14T22:14:00Z",
+        "decided_at": "2023-11-14T22:14:01Z",
+        "applied_at": "2023-11-14T22:14:01Z",
+        "result_json": "",
+        "error": "watch not started"
+      },
+      {
+        "id": 7,
+        "tool": "create_track",
+        "status": "approved",
+        "conversation_id": 1,
+        "created_at": "2023-11-14T22:14:02Z",
+        "decided_at": "2023-11-14T22:14:03Z",
+        "applied_at": "",
+        "result_json": "",
+        "error": ""
+      }
+    ],
+    "expect": "=== ACTIONS SINCE YOUR LAST MESSAGE ===\n- #6 create_track: applied — watch not started\n- #7 create_track: approved"
+  },
+  {
+    "name": "the floor is inclusive and truncated to the second",
+    "conversation_id": 1,
+    "after": 1700000000.9,
+    "rows": [
+      {
+        "id": 8,
+        "tool": "create_target",
+        "status": "applied",
+        "conversation_id": 1,
+        "created_at": "2023-11-14T22:13:20Z",
+        "decided_at": "2023-11-14T22:13:20Z",
+        "applied_at": "2023-11-14T22:13:20Z",
+        "result_json": "{\"id\":2}",
+        "error": ""
+      }
+    ],
+    "expect": "=== ACTIONS SINCE YOUR LAST MESSAGE ===\n- #8 create_target: applied — {\"id\":2}"
+  },
+  {
+    "name": "applied_at alone passes the floor; other chats are excluded",
+    "conversation_id": 1,
+    "after": 1700000000.0,
+    "rows": [
+      {
+        "id": 9,
+        "tool": "create_target",
+        "status": "applied",
+        "conversation_id": 1,
+        "created_at": "2023-11-14T22:00:00Z",
+        "decided_at": "2023-11-14T22:00:00Z",
+        "applied_at": "2023-11-14T22:20:00Z",
+        "result_json": "{\"id\":3}",
+        "error": ""
+      },
+      {
+        "id": 10,
+        "tool": "create_target",
+        "status": "applied",
+        "conversation_id": 2,
+        "created_at": "2023-11-14T22:20:00Z",
+        "decided_at": "2023-11-14T22:20:00Z",
+        "applied_at": "2023-11-14T22:20:00Z",
+        "result_json": "{\"id\":4}",
+        "error": ""
+      }
+    ],
+    "expect": "=== ACTIONS SINCE YOUR LAST MESSAGE ===\n- #9 create_target: applied — {\"id\":3}"
+  },
+  {
+    "name": "same created_at orders by id",
+    "conversation_id": 1,
+    "after": 1700000000.0,
+    "rows": [
+      {
+        "id": 12,
+        "tool": "b_tool",
+        "status": "rejected",
+        "conversation_id": 1,
+        "created_at": "2023-11-14T22:15:00Z",
+        "decided_at": "2023-11-14T22:15:01Z",
+        "applied_at": "",
+        "result_json": "",
+        "error": ""
+      },
+      {
+        "id": 11,
+        "tool": "a_tool",
+        "status": "rejected",
+        "conversation_id": 1,
+        "created_at": "2023-11-14T22:15:00Z",
+        "decided_at": "2023-11-14T22:15:01Z",
+        "applied_at": "",
+        "result_json": "",
+        "error": ""
+      }
+    ],
+    "expect": "=== ACTIONS SINCE YOUR LAST MESSAGE ===\n- #11 a_tool: rejected\n- #12 b_tool: rejected"
+  }
+]
