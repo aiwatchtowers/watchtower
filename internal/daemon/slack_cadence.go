@@ -35,9 +35,10 @@ type slackCadence struct {
 	base time.Duration
 }
 
-// after applies a finished run's outcome; now is when the run started, so
-// the next run is due a whole interval after this one began, whatever it
-// took.
+// after applies a finished run's outcome; now is when the cycle's Slack
+// phase started (every account's anchor), so the next run is due a whole
+// interval after the phase began, whatever this run or an earlier
+// account's took.
 //
 // A 429 wins over everything: the level goes up and the run waits for the
 // backed-off interval even with pages left (the resume position waits in

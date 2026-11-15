@@ -952,12 +952,16 @@ func (d *Daemon) phaseSlackSync(ctx context.Context) (syncErr, inboxErr error) {
 	manual := isManualSync(ctx)
 	now := d.cadenceClock()
 	due := make([]*sync.Orchestrator, 0, len(d.orchestrators))
+	var skipped []int64
 	for _, o := range d.orchestrators {
 		if !d.slackCadence(o.AccountID()).due(now, manual) {
-			d.logger.Printf("slack account %d: not due yet (adaptive cadence), skipping this cycle", o.AccountID())
+			skipped = append(skipped, o.AccountID())
 			continue
 		}
 		due = append(due, o)
+	}
+	if len(skipped) > 0 {
+		d.logger.Printf("slack accounts %v: not due yet (adaptive cadence), skipping this cycle", skipped)
 	}
 	if len(due) == 0 {
 		return nil, nil
@@ -975,12 +979,13 @@ func (d *Daemon) phaseSlackSync(ctx context.Context) (syncErr, inboxErr error) {
 				continue
 			}
 			cadence := d.slackCadence(o.AccountID())
-			start := d.cadenceClock()
 			stopBeat := d.startSyncHeartbeat(o)
 			err := o.Run(ctx, sync.SyncOptions{})
 			stopBeat()
 			if out := o.RunOutcome(); err == nil || out.RateLimited {
-				cadence.after(out, d.slackCadenceBase, start)
+				// Anchored at the phase's start, not this account's: a slow
+				// account before it must not push it off the next tick.
+				cadence.after(out, d.slackCadenceBase, now)
 			} else {
 				cadence.retryNextCycle()
 			}

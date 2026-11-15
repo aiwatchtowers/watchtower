@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	gosync "sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -129,6 +130,8 @@ func TestCadence_NextTickAtBaseRuns(t *testing.T) {
 func TestPhaseSlackSync_SkippedAccountDoesNotFreezeInbox(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	mux := http.NewServeMux()
+	// Retry-After 0 retries at once: the test-only unlimited limiter holds
+	// nothing for an unstated Retry-After (unstatedHold = 0).
 	mux.HandleFunc("/search.messages", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Retry-After", "0")
 		w.WriteHeader(http.StatusTooManyRequests)
@@ -180,4 +183,43 @@ func TestCadence_ManualCycleMarksFetchContext(t *testing.T) {
 	assert.True(t, <-marks)
 	<-d.startCycle(context.Background(), true).done
 	assert.False(t, <-marks)
+}
+
+// Every account's cadence is anchored at the phase's start: a slow first
+// account (here a run that takes past half a base interval) does not push a
+// healthy level-0 account after it off the next tick.
+func TestPhaseSlackSync_SlowAccountDoesNotDelayTheNext(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	now := cadenceT0
+	var mu gosync.Mutex
+	inner := testMux()
+	slowMux := http.NewServeMux()
+	slowMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/search.messages" {
+			mu.Lock()
+			now = now.Add(cadenceBase/2 + time.Minute) // the run takes long
+			mu.Unlock()
+		}
+		inner.ServeHTTP(w, r)
+	})
+	var slowCount, fastCount atomic.Int32
+	slow, _ := newStatusTrackingOrchestrator(t, slowMux, &slowCount)
+	fast, _ := newStatusTrackingOrchestrator(t, testMux(), &fastCount)
+	d := New(&config.Config{Sync: config.SyncConfig{PollInterval: cadenceBase}})
+	d.SetLogger(log.New(os.Stderr, "[test-cadence] ", 0))
+	d.SetOrchestrators([]*sync.Orchestrator{slow, fast})
+	d.slackCadenceBase = cadenceBase
+	d.cadenceNow = func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
+
+	start := d.cadenceClock()
+	syncErr, _ := d.phaseSlackSync(context.Background())
+	require.NoError(t, syncErr, "both runs are clean")
+	require.NotZero(t, slowCount.Load())
+	ran := fastCount.Load()
+
+	mu.Lock()
+	now = start.Add(cadenceBase) // the next tick
+	mu.Unlock()
+	_, _ = d.phaseSlackSync(context.Background())
+	assert.Greater(t, fastCount.Load(), ran, "account 2 is due on the next tick")
 }
