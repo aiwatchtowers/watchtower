@@ -100,11 +100,59 @@ type wiring struct {
 	// handlers'); chatTimer republishes what only time changes (nil under
 	// workbench_only); titles are the AI titles running, cancelled and
 	// waited for at close.
-	chatStore    *chatstore.Store
-	chatTimer    *chatTimer
-	titles       sync.WaitGroup
+	chatStore *chatstore.Store
+	chatTimer *chatTimer
+	// bg is the chat's background work (AI titles, approved actions'
+	// applies), started only through spawn: bgClosed, set under bgMu at
+	// close, refuses new work so no Add ever races the close's Wait.
+	// titlesCtx is cancelled at close (a title is optional); an apply runs
+	// to its end within chatBackgroundBudget.
+	bgMu         sync.Mutex
+	bgClosed     bool
+	bg           sync.WaitGroup
 	titlesCtx    context.Context
 	titlesCancel context.CancelFunc
+}
+
+// chatBackgroundBudget bounds the hub stop's wait for the chat's background
+// work (an approved action's apply, a cancelled title): as the runner's
+// close, the stop never waits longer.
+const chatBackgroundBudget = 30 * time.Second
+
+// spawn runs work on its own goroutine, tracked for the close; false once
+// the wiring is closing (work does not run).
+func (w *wiring) spawn(work func()) bool {
+	w.bgMu.Lock()
+	defer w.bgMu.Unlock()
+	if w.bgClosed {
+		return false
+	}
+	w.bg.Add(1)
+	go func() {
+		defer w.bg.Done()
+		work()
+	}()
+	return true
+}
+
+// stopBackground refuses new background work and waits for what runs, at
+// most budget (close cancels the titles first).
+func (w *wiring) stopBackground(budget time.Duration) {
+	w.bgMu.Lock()
+	w.bgClosed = true
+	w.bgMu.Unlock()
+	done := make(chan struct{})
+	go func() {
+		w.bg.Wait()
+		close(done)
+	}()
+	t := time.NewTimer(budget)
+	defer t.Stop()
+	select {
+	case <-done:
+	case <-t.C:
+		log.Printf("hub: the chat's background work did not end within %s: stopping without it", budget)
+	}
 }
 
 // Seed retry at start: 1 s doubling to 10 s.
@@ -512,15 +560,13 @@ func (h *hubRuntime) newChatStore(o Options, w *wiring) *chatstore.Store {
 	opts := []chatstore.Option{chatstore.WithClock(clock), chatstore.WithPreferredProvider(o.ChatPreferredProvider)}
 	if title := o.ChatTitle; title != nil {
 		opts = append(opts, chatstore.WithTitleHook(func(conv int64) {
-			w.titles.Add(1)
-			go func() {
-				defer w.titles.Done()
+			w.spawn(func() {
 				ctx, cancel := context.WithTimeout(w.titlesCtx, chatTitleBudget)
 				defer cancel()
 				if err := title(ctx, conv); err != nil {
 					log.Printf("hub: chat %d got no AI title (%s)", conv, errClass(err))
 				}
-			}()
+			})
 		}))
 	}
 	return chatstore.New(o.DB, db.ChatLeaseHub, h.kr.HubIDText(), opts...)
@@ -532,10 +578,8 @@ func (w *wiring) close() {
 	if w == nil {
 		return
 	}
-	if w.titlesCancel != nil {
-		w.titlesCancel()
-		w.titles.Wait()
-	}
+	// The runner first: once it closed no turn finalizes, so no title hook
+	// fires; then the background work (spawn refuses anything later).
 	if w.chat != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), chatCloseBudget)
 		if err := w.chat.Close(ctx); err != nil {
@@ -543,6 +587,10 @@ func (w *wiring) close() {
 		}
 		cancel()
 	}
+	if w.titlesCancel != nil {
+		w.titlesCancel()
+	}
+	w.stopBackground(chatBackgroundBudget)
 	if w.port != nil {
 		_ = w.port.Close()
 	}

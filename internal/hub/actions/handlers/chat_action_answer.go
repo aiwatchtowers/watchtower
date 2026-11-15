@@ -74,11 +74,16 @@ func (h *Handlers) chatActionAnswer(ctx context.Context, r actions.Request) acti
 		if t, known := reg.Get(row.Tool); !known || !t.AppliedBySession {
 			// The approval is on disk; the run is the registry's, after the
 			// answer (its outcome reaches the phone through the feed).
-			h.chatAsync("chat_action_apply", func(ctx context.Context) {
+			started := h.chatAsync("chat_action_apply", func(ctx context.Context) {
 				if _, err := reg.Apply(ctx, id); err != nil {
 					log.Printf("hub chat: action %d approved, its run failed (%s)", id, errClass(err))
 				}
 			})
+			if !started {
+				// The approval is on disk; `watchtower actions apply` or the
+				// Mac's Retry runs it.
+				log.Printf("hub chat: action %d approved while the hub stops: not run", id)
+			}
 		}
 		return applied(map[string]any{"status": "approved"})
 	})

@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"slices"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -291,7 +293,7 @@ func TestChatWiring_TitleHookAndPreferredProvider(t *testing.T) {
 	if err := r.w.chatStore.Turn(st).Finalize(chatstore.StatusComplete, nil); err != nil {
 		t.Fatal(err)
 	}
-	r.w.titles.Wait()
+	r.w.bg.Wait()
 	select {
 	case got := <-titled:
 		if got != conv {
@@ -299,5 +301,83 @@ func TestChatWiring_TitleHookAndPreferredProvider(t *testing.T) {
 		}
 	default:
 		t.Fatal("no AI title after the first complete answer")
+	}
+}
+
+// TestChatWiring_CloseRacesFinishingTurns: turns finish (and fire the title
+// hook) while the hub closes; no WaitGroup misuse (run under -race), and
+// once close returned no title starts.
+func TestChatWiring_CloseRacesFinishingTurns(t *testing.T) {
+	var mu sync.Mutex
+	started, closed := 0, false
+	lateTitle := false
+	r := newChatRigWith(t, policy.MobileAllowed, transport.KindRelay, func(o *Options) {
+		o.ChatTitle = func(ctx context.Context, _ int64) error {
+			mu.Lock()
+			started++
+			lateTitle = lateTitle || closed
+			mu.Unlock()
+			<-ctx.Done() // a title runs until the close cancels it
+			return ctx.Err()
+		}
+	})
+	const n = 8
+	sts := make([]chatstore.Started, n)
+	for i := range sts {
+		conv, err := r.w.chatStore.NewConversation(context.Background(), nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sts[i], err = r.w.chatStore.Start(context.Background(),
+			chatstore.StartRequest{ConversationID: conv, Mode: chatstore.ModeSend, Text: "hi"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var wg sync.WaitGroup
+	for _, st := range sts {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = r.w.chatStore.Turn(st).Finalize(chatstore.StatusComplete, nil)
+		}()
+	}
+	r.w.close()
+	mu.Lock()
+	closed = true
+	mu.Unlock()
+	wg.Wait()
+	r.w.bg.Wait()
+	mu.Lock()
+	defer mu.Unlock()
+	if lateTitle {
+		t.Fatal("a title started after the close returned")
+	}
+	if r.w.spawn(func() {}) {
+		t.Fatal("background work starts after the close")
+	}
+}
+
+// TestChatWiring_CloseWaitsForAnApply: the hub's stop waits for an approved
+// action's apply already running (it is never cut by the database closing
+// under it), and refuses to start one after.
+func TestChatWiring_CloseWaitsForAnApply(t *testing.T) {
+	r := newChatRig(t, policy.MobileAllowed, transport.KindRelay)
+	release := make(chan struct{})
+	var done atomic.Bool
+	if !r.w.spawn(func() { <-release; done.Store(true) }) {
+		t.Fatal("spawn refused on a running hub")
+	}
+	closed := make(chan struct{})
+	go func() {
+		r.w.close()
+		close(closed)
+	}()
+	close(release)
+	<-closed
+	if !done.Load() {
+		t.Fatal("the close returned before the apply ended")
+	}
+	if r.w.spawn(func() { t.Error("ran after the close") }) {
+		t.Fatal("spawn accepted work after the close")
 	}
 }

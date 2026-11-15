@@ -88,6 +88,10 @@ type ChatDeps struct {
 	Requests  ChatRequests
 	Tools     *tools.Registry
 	FilesDir  string
+	// Spawn runs work after an answer on the hub's tracked background
+	// (the hub's stop waits for it, bounded); false = the hub is stopping
+	// and work did not start. nil = the handlers' own tracking (WaitChat).
+	Spawn func(work func()) bool
 }
 
 // chatKinds are the chat action kinds and their handlers.
@@ -162,18 +166,31 @@ func (h *Handlers) chatAction(ctx context.Context, name string, r actions.Reques
 }
 
 // chatAsync runs work after the action's answer (an approved action's
-// apply): never cut by the pass, tracked so a test can wait for it.
-func (h *Handlers) chatAsync(name string, work func(context.Context)) {
-	h.chatWG.Add(1)
-	go func() {
-		defer h.chatWG.Done()
+// apply): never cut by the pass, and tracked by the hub (ChatDeps.Spawn), so
+// a stop waits for it rather than close the database under it. False: the
+// hub is stopping and work did not start.
+func (h *Handlers) chatAsync(name string, work func(context.Context)) bool {
+	run := func() {
 		defer func() {
 			if p := recover(); p != nil {
 				log.Printf("hub handlers: %s panicked", name)
 			}
 		}()
 		work(context.Background())
+	}
+	h.chatWG.Add(1)
+	if c := h.d.Chat; c != nil && c.Spawn != nil {
+		ok := c.Spawn(func() { defer h.chatWG.Done(); run() })
+		if !ok {
+			h.chatWG.Done()
+		}
+		return ok
+	}
+	go func() {
+		defer h.chatWG.Done()
+		run()
 	}()
+	return true
 }
 
 // WaitChat waits for the chat work started after an answer (tests).

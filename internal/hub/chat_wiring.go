@@ -108,6 +108,7 @@ func (h *hubRuntime) chatDeps(o Options, w *wiring, path string) *handlers.ChatD
 		Tools:     o.ChatTools,
 		FilesDir:  chatFilesDir(path),
 		Store:     w.chatStore,
+		Spawn:     w.spawn,
 	}
 	if w.chat != nil {
 		c.Runner = w.chat

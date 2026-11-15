@@ -462,3 +462,35 @@ func TestChatActionAnswer_DeadSessionRowIsFinal(t *testing.T) {
 	}
 	wantOutcome(t, c.run("chat_action_answer", map[string]any{"action_id": 4242, "decision": "reject"}), wire.StatusFailed, reasonNotFound)
 }
+
+// TestChatActionAnswer_ApplyRunsOnTheHubsBackground: the apply after an
+// approve goes through ChatDeps.Spawn (the hub's stop waits for it); a hub
+// that is stopping refuses it, and the approval stays for a later apply.
+func TestChatActionAnswer_ApplyRunsOnTheHubsBackground(t *testing.T) {
+	c := newChatEnv(t, false)
+	var spawned []func()
+	accept := true
+	c.h.d.Chat.Spawn = func(work func()) bool {
+		if accept {
+			spawned = append(spawned, work)
+		}
+		return accept
+	}
+	id, sum := c.chatAction("fake_send", "pending")
+	wantOutcome(t, c.run("chat_action_answer", map[string]any{"action_id": id, "decision": "approve", "args_sha256": sum}), wire.StatusApplied, "")
+	if len(spawned) != 1 {
+		t.Fatalf("spawned %d", len(spawned))
+	}
+	spawned[0]()
+	c.h.WaitChat()
+	if got := c.scalar(`SELECT status FROM agent_actions WHERE id = ?`, id); got != "applied" {
+		t.Fatalf("status %q", got)
+	}
+	accept = false
+	id, sum = c.chatAction("fake_send", "pending")
+	wantOutcome(t, c.run("chat_action_answer", map[string]any{"action_id": id, "decision": "approve", "args_sha256": sum}), wire.StatusApplied, "")
+	c.h.WaitChat()
+	if got := c.scalar(`SELECT status FROM agent_actions WHERE id = ?`, id); got != "approved" {
+		t.Fatalf("status %q: refused work must leave the approval", got)
+	}
+}

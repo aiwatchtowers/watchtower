@@ -684,3 +684,33 @@ func TestChatRequests_RepeatRebuilds(t *testing.T) {
 		t.Fatalf("the repeated request served the old record: %d hits", n)
 	}
 }
+
+// TestChatRequests_ExpiredThenRepeatedRebuilds: a key that expired (its
+// generation dropped by an Active read, e.g. the hub's chat timer) and is
+// asked again before the source prunes its cache gets a new record, never
+// the expired request's copy.
+func TestChatRequests_ExpiredThenRepeatedRebuilds(t *testing.T) {
+	d := openDB(t)
+	s := chatSeed{t, d}
+	conv := s.conversation("Rollout", 1, "")
+	s.message(conv, 0, "user", "payments first", "complete", "t", 1_700_000_020)
+	w := NewChatWatches()
+	now := chatNow
+	o := chatFeedOpts(w, nil)
+	o.Now = func() time.Time { return now }
+	src := ChatSearch(d, o)
+	w.Searches.Request("payments", now.Add(ChatRequestHold))
+	if n := len(chatRecords(t, src)[ChatSearchID("payments")]["hits"].([]any)); n != 1 {
+		t.Fatalf("first build: %d hits", n)
+	}
+	other := s.conversation("Notes", 2, "")
+	s.message(other, 0, "user", "payments second", "complete", "t", 1_700_000_030)
+	now = now.Add(ChatRequestHold)
+	if got := w.Searches.Active(now); len(got) != 0 { // expired: its generation goes
+		t.Fatalf("still active: %v", got)
+	}
+	w.Searches.Request("payments", now.Add(ChatRequestHold))
+	if n := len(chatRecords(t, src)[ChatSearchID("payments")]["hits"].([]any)); n != 2 {
+		t.Fatalf("the repeat after expiry served the old record: %d hits", n)
+	}
+}

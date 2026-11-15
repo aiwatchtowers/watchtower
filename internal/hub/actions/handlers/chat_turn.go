@@ -88,8 +88,9 @@ func (h *Handlers) chatTurn(ctx context.Context, r actions.Request) actions.Outc
 	})
 }
 
-// chatTurnRequest reads a chat_turn's params; the 32 000-character cap is
-// the handler's (the Mac's composer has the same).
+// chatTurnRequest reads a chat_turn's params. The text cap (MaxChatText,
+// counted in runes) is the hub's own, from the protocol (iPhone chat spec
+// §4.5): the Mac has no such cap and the store does not check one.
 func chatTurnRequest(r actions.Request) (chatstore.StartRequest, *actions.Outcome) {
 	bad := func(msg string) (chatstore.StartRequest, *actions.Outcome) {
 		o := failed(reasonInvalidParams, msg)
