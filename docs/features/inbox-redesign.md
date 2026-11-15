@@ -264,7 +264,7 @@ Board #1076, asks #634/#638/#653 (2026-11-11). Plan `docs/superpowers/plans/2026
 
 - `SlackTodayQueries.read` (the built-in's automation id and `SlackTodaySummary` of its state) rides in the Inbox's one read (`InboxFolderMenuSnapshot.slackToday`); `InboxFolderEntries.isSlackToday(card, snapshot)` picks the artifact by its automation id.
 - `InboxRootSections.build(…, slackTodayAutomationID:)` puts it in **Today** right after the Morning brief, whatever its `changed_at`. Its unread card counts in the root's rail count as any other artifact; never in the badge.
-- `SlackTodayRow.content`: kind `slackToday` (tile `number`, the accent), title "Slack today"; today's state: the top two lines (label rank, then newest) as `#<channel> — <text>`, else "Nothing for you yet today"; meta "Built in · today · N messages"; pill = conversations with news, `batch` tone. Another day's state or none: "Nothing yet today" under "Built in". `#` only for channels (`SlackTodaySummary.heading`, the recipe's `heading` twin).
+- `SlackTodayRow.content`: kind `slackToday` (tile `number`, the accent), title "Slack today"; today's state: the top two lines (label rank, then newest) as `#<channel> — <text>`, else "Nothing for you yet today"; meta "Built in · today · N messages"; pill = conversations with news, `batch` tone. Another day's state or none: "Nothing yet today" under "Built in"; a state that cannot be read: "Today's numbers can't be read" under "Built in" (`SlackTodayPaneText.unreadable`, also the pane's subtitle). `#` only for channels (`SlackTodaySummary.heading`, the recipe's `heading` twin).
 
 ### Pane
 
