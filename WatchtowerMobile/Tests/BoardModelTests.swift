@@ -48,10 +48,48 @@ final class BoardModelTests: XCTestCase {
         XCTAssertFalse(card.details.contains { $0.text == "Session working" })
     }
 
-    func testDoneFoldFollowsTheFilter() {
-        XCTAssertFalse(BoardView.doneFoldOpen(flipped: false, filter: .open))
-        XCTAssertTrue(BoardView.doneFoldOpen(flipped: false, filter: .archive))
-        XCTAssertTrue(BoardView.doneFoldOpen(flipped: true, filter: .open))
-        XCTAssertFalse(BoardView.doneFoldOpen(flipped: true, filter: .archive))
+    /// #1781: groups start folded, lanes open but Backlog and Done; a flip
+    /// is remembered per hub and workbench, and forgetting the Mac removes it.
+    @MainActor
+    func testFoldsAreRememberedPerHubAndWorkbench() throws {
+        let suite = "board-folds-test"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let backlog = BoardLane(title: "Backlog", nodes: [], kind: .open)
+        let todo = BoardLane(title: "Todo", nodes: [], kind: .open)
+
+        let store = BoardFoldStore(defaults: defaults)
+        let fresh = store.folds(hubID: "hub-a", workbenchID: 1)
+        XCTAssertFalse(fresh.isGroupOpen(400))
+        XCTAssertFalse(fresh.isLaneOpen(backlog))
+        XCTAssertTrue(fresh.isLaneOpen(todo))
+
+        store.update(hubID: "hub-a", workbenchID: 1) {
+            $0.toggleGroup(400)
+            $0.toggleLane(backlog)
+            $0.toggleLane(todo)
+        }
+        let reopened = BoardFoldStore(defaults: defaults).folds(hubID: "hub-a", workbenchID: 1)
+        XCTAssertTrue(reopened.isGroupOpen(400))
+        XCTAssertTrue(reopened.isLaneOpen(backlog))
+        XCTAssertFalse(reopened.isLaneOpen(todo))
+        XCTAssertEqual(BoardFoldStore(defaults: defaults).folds(hubID: "hub-a", workbenchID: 2), BoardFolds(), "per workbench")
+        XCTAssertEqual(BoardFoldStore(defaults: defaults).folds(hubID: "hub-b", workbenchID: 1), BoardFolds(), "per hub")
+
+        store.update(hubID: "hub-a", workbenchID: 1) { $0.toggleGroup(400) }
+        XCTAssertFalse(BoardFoldStore(defaults: defaults).folds(hubID: "hub-a", workbenchID: 1).isGroupOpen(400))
+
+        DeviceSettings.removeChoices(of: "hub-a", defaults: defaults)
+        XCTAssertEqual(BoardFoldStore(defaults: defaults).folds(hubID: "hub-a", workbenchID: 1), BoardFolds())
+    }
+
+    /// A damaged entry reads as no flips rather than failing the board.
+    @MainActor
+    func testUnreadableFoldsReadAsNone() throws {
+        let suite = "board-folds-bad"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(Data("not json".utf8), forKey: BoardFoldStore.key(hubID: "hub-a"))
+        XCTAssertEqual(BoardFoldStore(defaults: defaults).folds(hubID: "hub-a", workbenchID: 1), BoardFolds())
     }
 }

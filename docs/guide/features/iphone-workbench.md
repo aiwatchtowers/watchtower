@@ -67,6 +67,10 @@ Type into **Message the session…** and send. Your line shows under it:
 
 The **⋯** menu has **Stop**, **Finish** (asks the agent to wrap up), **Interrupt**, **Report and timeline** and **Open board target**. A Codex session takes no **Interrupt** from the phone; stop it on the Mac. The report shows the targets' progress, the pull requests and the session's milestones. Tasks not done yet whose branch is already merged into the branch of the task above them are counted apart, as on the Mac: "1 / 3 targets · 1 merged".
 
+### Find a target on the board
+
+The **Board** opens on **Waiting for me** (an open ask or permission prompt on the target or its session), else **Sessions running**, else **All**; **High**, **Blocked**, **Done** and **Archive** share the row. Search finds a target by title, number (`#421`) or branch across the whole board, archived included. Lanes follow the Mac's column order. Under **All**, groups and the **Backlog** and **Done** lanes start folded, and the phone remembers what you open.
+
 ### Run an automation
 
 <!-- learn

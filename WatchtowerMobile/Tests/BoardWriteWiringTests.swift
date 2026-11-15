@@ -339,10 +339,10 @@ final class BoardWriteWiringTests: XCTestCase {
         )
 
         // The board shows it as a pending row until hydration delivers it.
-        let board = BoardModel(workbenchID: DemoSeed.acmeID, snapshot: try snapshot(fixture.store), filter: .open)
+        let board = BoardModel(workbenchID: DemoSeed.acmeID, snapshot: try snapshot(fixture.store), filter: .all)
         XCTAssertEqual(board.pendingCreates.map(\.title), ["Ask colleague A"])
         XCTAssertEqual(board.pendingCreates.first?.state, .sending("Waiting for your Mac"))
-        XCTAssertTrue(BoardModel(workbenchID: DemoSeed.websiteID, snapshot: try snapshot(fixture.store), filter: .open).pendingCreates.isEmpty)
+        XCTAssertTrue(BoardModel(workbenchID: DemoSeed.websiteID, snapshot: try snapshot(fixture.store), filter: .all).pendingCreates.isEmpty)
 
         var empty = NewBoardTargetDraft(workbenchID: DemoSeed.acmeID)
         empty.title = " "
@@ -532,8 +532,8 @@ final class BoardWriteWiringTests: XCTestCase {
         try await other.writer.reply("Thanks", toRoot: 999, workbenchID: DemoSeed.acmeID)
         let orphaned = try snapshot(other.store)
         XCTAssertFalse(try detail(415, orphaned).thread.contains { if case .write = $0 { true } else { false } })
-        XCTAssertEqual(BoardModel(workbenchID: DemoSeed.acmeID, snapshot: orphaned, filter: .open).unplacedReplies.map(\.title), ["Thanks"])
-        XCTAssertTrue(BoardModel(workbenchID: DemoSeed.websiteID, snapshot: orphaned, filter: .open).unplacedReplies.isEmpty)
+        XCTAssertEqual(BoardModel(workbenchID: DemoSeed.acmeID, snapshot: orphaned, filter: .all).unplacedReplies.map(\.title), ["Thanks"])
+        XCTAssertTrue(BoardModel(workbenchID: DemoSeed.websiteID, snapshot: orphaned, filter: .all).unplacedReplies.isEmpty)
     }
 
     // MARK: - Breadcrumb
