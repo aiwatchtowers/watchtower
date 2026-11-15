@@ -78,9 +78,9 @@ since: 0.24.0
 
 - **Now** shows your Mac's status, then **Waiting for you**, **Working** and the next meeting (see [Now and sessions](iphone-workbench.md#now-and-sessions)). The gear opens Settings.
 - **Workbench** lists your workbenches as cards. Open one for **Sessions** (split like Now) or **Board** (targets with status, priority and comments). A group's done sub-targets stay hidden until you tap **Show done (N)** (remembered).
-- **Calendar** shows the events your Mac publishes, with prep, the **Record** button and the **Recordings** list.
+- **Calendar** shows your Mac's events with prep and **Record**; **Recordings** has **Record a voice note**.
 
-Asks come in three kinds: a question, a review (select text, **Comment on the selection**, then **Approve** or **Request changes**) and a check (mark each step **OK**, **Broken** or **Skipped**).
+Asks come in three kinds: a question, a review (hold a paragraph to comment; **Request changes** needs a comment or a note) and a check (**Works**, **Doesn't work** or **Didn't check** per step).
 
 ### Read a session's chat
 A session opens as its chat, with a field to write to it and its report behind **⋯**. Tool output is never shown. See [iPhone: the workchat](iphone-workbench.md).
@@ -111,7 +111,7 @@ Three switches under Settings → **Workbench** on the phone:
 
 - **Start sessions from this phone** lets you start a session from a target, or from the Workbench's **New session** with **No target** and a task you type. It runs the Mac's default agent. The Mac decides: allow typing on its phone row, then **Allow…** on **Starting sessions off**. Until then **Start session** stays off and says why.
 - **Type into sessions from this phone** lets you send a line to a running session. The Mac must also approve: the phone row on the Mac shows **Asks to type into sessions**, and **Allow…** grants it. **Revoke** takes it back.
-- **Answer permission prompts from this phone** lets you answer a Claude Code permission prompt. It is a separate grant: the Mac's phone row shows **Asks to answer permission prompts**, with its own **Allow…**.
+- **Answer permission prompts from this phone** answers permission prompts (off by default: approvals wait at the Mac). The Mac's row shows **Asks to answer permission prompts**, with its own **Allow…**.
 
 Without the typing switch, a running session's bottom bar says so, with **Turn On** right there.
 
@@ -137,9 +137,9 @@ kind: feature
 since: 0.24.0
 -->
 
-Settings → **Macs** lists your Macs. **Add Mac** scans another code (up to four), and rows can be dragged to reorder. **Unlink** (or **Forget**, for a Mac that removed the phone or is long offline) deletes that Mac's data from the phone; changes not yet sent are lost, and the phone says how many ("Not sent: 3 items were still waiting for your Mac").
+Settings → **Macs** lists your Macs. **Add Mac** scans another code (up to four); drag rows to reorder. **Unlink** (or **Forget**, for a Mac that removed the phone or is long offline) deletes that Mac's data from the phone; unsent changes are lost, and the phone says how many. With several Macs, tap the Mac's name atop a tab to switch; other Macs' questions show beside it.
 
-On the Mac, **Remove…** next to a phone unlinks it. On the phone, that Mac's hub freezes in both cases: what it already synced stays readable and nothing new arrives, until you tap **Forget** on the phone. A phone on another Apple ID also leaves the Mac's iCloud sharing.
+On the Mac, **Remove…** next to a phone unlinks it. On the phone, that Mac's hub freezes in both cases: what it synced stays readable, nothing new arrives, until you tap **Forget**. A phone on another Apple ID also leaves the Mac's iCloud sharing.
 
 ## When it's empty or wrong
 

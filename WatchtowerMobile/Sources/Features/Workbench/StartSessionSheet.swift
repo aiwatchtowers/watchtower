@@ -96,7 +96,6 @@ struct StartSessionSheet: View {
     private func form(_ model: StartSessionFormModel) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Spacing.medium) {
-                SheetField(label: "Workbench") { Text(model.workbenchName) }
                 SheetField(label: "Target") {
                     if fixedTargetID != nil {
                         Text(model.targetLabel ?? "").lineLimit(2)
@@ -109,6 +108,14 @@ struct StartSessionSheet: View {
                         .labelsHidden()
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
+                }
+                if let intent = model.targetIntent {
+                    Text(intent)
+                        .font(TypeScale.meta)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(3)
+                        .padding(.horizontal, Spacing.small)
+                        .accessibilityLabel("Intent: \(intent)")
                 }
                 if model.isUntargeted {
                     SheetField(label: SessionStartText.taskLabel) {
@@ -148,9 +155,12 @@ struct StartSessionSheet: View {
         .safeAreaInset(edge: .bottom, spacing: 0) { formButtons(model) }
     }
 
-    /// Agent, and the two switches, on one card (mockup 12).
+    /// Workbench and agent as plain label rows (fixed facts, not inputs —
+    /// #1790), and the two switches, on one card (mockup 12).
     private func optionsCard(_ model: StartSessionFormModel) -> some View {
         VStack(alignment: .leading, spacing: 0) {
+            SettingsRow(title: "Workbench") { Text(model.workbenchName).lineLimit(1) }
+            CardRowDivider()
             SettingsRow(title: "Agent") { Text(model.agent) }
                 .accessibilityHint("The only agent in this version")
             if model.subject != nil {

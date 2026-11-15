@@ -14,6 +14,9 @@ struct InlinePermissionCard: View {
     let summary: String
     var allowBlockedNote: String?
     var isAnswering = false
+    /// false while this phone may not answer: the card shows the request
+    /// only, and the hint under it says how to turn answering on.
+    var showsButtons = true
     var error: String?
     let onAllow: () -> Void
     let onDeny: () -> Void
@@ -39,13 +42,15 @@ struct InlinePermissionCard: View {
             if let allowBlockedNote {
                 Text(allowBlockedNote).font(TypeScale.meta).foregroundStyle(.secondary)
             }
-            HStack(spacing: Spacing.regular) {
-                if allowBlockedNote == nil {
-                    Button("Allow once", action: onAllow).buttonStyle(ProminentActionStyle())
+            if showsButtons {
+                HStack(spacing: Spacing.regular) {
+                    if allowBlockedNote == nil {
+                        Button("Allow once", action: onAllow).buttonStyle(ProminentActionStyle())
+                    }
+                    Button("Deny", action: onDeny).buttonStyle(SecondaryActionStyle())
                 }
-                Button("Deny", action: onDeny).buttonStyle(SecondaryActionStyle())
+                .disabled(isAnswering)
             }
-            .disabled(isAnswering)
             if let error {
                 Text(error).font(TypeScale.meta).foregroundStyle(PhoneTone.red.color)
             }

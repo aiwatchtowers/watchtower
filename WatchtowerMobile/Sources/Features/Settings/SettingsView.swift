@@ -189,13 +189,26 @@ struct SettingsView: View {
     /// The Mac's answer to each request made; an error is drawn apart, in red.
     private func workbenchFooter(_ settings: DeviceSettings) -> String? {
         guard settings.lastError == nil else { return nil }
+        return Self.workbenchFooter(
+            typing: settings.typingRequested, start: settings.startSessions,
+            permissions: settings.permissionsRequested, grant: model.snapshot.grant
+        )
+    }
+
+    /// The Workbench card's footer: the Mac's answer to each switch that is
+    /// on and, while permission answers are off, what that means (#1790 —
+    /// the default stays off; the owner learns the cost before an agent waits).
+    static func workbenchFooter(typing: Bool, start: Bool, permissions: Bool, grant: DeviceGrant?) -> String? {
         let lines = [
-            settings.typingRequested ? "Typing: \(Self.typingCaption(grant: model.snapshot.grant))" : nil,
-            settings.startSessions ? "Starting sessions: \(Self.startSessionsCaption(grant: model.snapshot.grant))" : nil,
-            settings.permissionsRequested ? "Permission prompts: \(Self.permissionsCaption(grant: model.snapshot.grant))" : nil
+            typing ? "Typing: \(typingCaption(grant: grant))" : nil,
+            start ? "Starting sessions: \(startSessionsCaption(grant: grant))" : nil,
+            permissions ? "Permission prompts: \(permissionsCaption(grant: grant))" : permissionsOffHint
         ].compactMap { $0 }
         return lines.isEmpty ? nil : lines.joined(separator: "\n")
     }
+
+    static let permissionsOffHint =
+        "Permission prompts stay on the Mac: a session that needs your approval waits until you answer there."
 
     /// The typing request's answer from the Mac (spec §4.13).
     static func typingCaption(grant: DeviceGrant?) -> String {

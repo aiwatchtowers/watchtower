@@ -63,6 +63,7 @@ final class PermissionCardTests: XCTestCase {
         XCTAssertTrue(card.offersAllow)
         XCTAssertTrue(card.canAnswer)
         XCTAssertNil(card.hint)
+        XCTAssertTrue(card.showsButtons, "the phone may answer: Allow once and Deny show")
 
         let none = try detail(try snapshot([]))
         XCTAssertNil(none.permission)
@@ -73,10 +74,12 @@ final class PermissionCardTests: XCTestCase {
         let off = try XCTUnwrap(try detail(try snapshot(), grant: grant(), requested: false).permission)
         XCTAssertFalse(off.canAnswer)
         XCTAssertEqual(off.hint, .turnOn)
+        XCTAssertFalse(off.showsButtons, "answering off: the request only, no disabled buttons (#1784)")
 
         let waiting = try XCTUnwrap(try detail(try snapshot(), grant: grant(permissions: false), requested: true).permission)
         XCTAssertFalse(waiting.canAnswer)
         XCTAssertEqual(waiting.hint, .waitingForMac)
+        XCTAssertFalse(waiting.showsButtons)
         XCTAssertEqual(
             PermissionHint.waitingForMac.text,
             "Allow answering permission prompts on the Mac: Watchtower → Settings → Mobile → Allow…"

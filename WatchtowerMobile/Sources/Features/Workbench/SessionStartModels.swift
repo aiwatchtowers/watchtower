@@ -25,6 +25,8 @@ enum SessionStartText {
     static let noTarget = "No target — describe the task"
     static let taskLabel = "Task for the session"
     static let describeTask = "Describe the task to start"
+    /// Under an editable, unclipped target brief: Start needs no typing.
+    static let briefReady = "Ready to start. Edit only to add instructions."
     static let briefReadOnly = "The Mac uses this brief. To edit it here, allow typing for this phone on the Mac."
     static let stopConfirm = "Stop this session on the Mac?"
     static let stopping = "Stopping…"

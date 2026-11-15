@@ -31,6 +31,14 @@ struct HubListItem: Identifiable, Equatable {
     /// The term's line of a relay-only link the relay refuses (relay client Phase 5, Task 17, S61,
     /// `RelayBannerModel.termLine(surface: .macs)`), in the secondary tone; nil for every other Mac.
     var termLine: String?
+    /// The newer of the session's and the row's last heartbeat; nil before
+    /// the first one (the switcher's "asleep · 40 min ago").
+    var lastHeartbeat: Date?
+
+    /// Its asks can still be answered from here: the Mac has not removed this
+    /// phone and its data opened. The chip's count and the list's line agree
+    /// on it (#1782).
+    var asksCount: Bool { !removedByMac && !unopened }
 
     /// The online dot: green only while online (`MacStatusRow`'s rule).
     var dotTone: PhoneTone { online ? .green : .secondary }
@@ -109,7 +117,8 @@ enum HubListModel {
                     subscriptionEnded: subscriptionEnded, now: now
                 ) : nil,
                 termLine: showsTransport && !removed
-                    ? RelayBannerModel.termLine(for: row.link, surface: .macs, now: now, heldPurchase: termHold) : nil
+                    ? RelayBannerModel.termLine(for: row.link, surface: .macs, now: now, heldPurchase: termHold) : nil,
+                lastHeartbeat: heartbeat
             )
         }
         let taken = Set(rows.map(\.sortOrder))
@@ -134,17 +143,6 @@ enum HubListModel {
     static func isSwitching(_ link: LinkRecord) -> Bool {
         if let upgrade = link.relayUpgrade, upgrade.step != .switched, upgrade.refusal == nil { return true }
         return link.transportRequest?.isOpen == true
-    }
-
-    /// The open asks of every hub but the one on screen that can still
-    /// answer them (not one the Mac removed): the chip's count.
-    static func otherHubsOpenAsks(_ items: [HubListItem]) -> Int {
-        items.filter { !$0.isActive && !$0.removedByMac }.reduce(0) { $0 + $1.openAsks }
-    }
-
-    static func chipAccessibilityLabel(name: String, otherAsks: Int) -> String {
-        guard otherAsks > 0 else { return "\(name), Mac" }
-        return "\(name), Mac. \(otherAsks) \(otherAsks == 1 ? "ask" : "asks") waiting on other Macs"
     }
 
     /// Add Mac is off at `HubRegistry.limit` linked Macs, those whose row
