@@ -70,7 +70,11 @@ struct ActionStripView: View {
         .navigationTitle("Inbox")
         .focusedSceneValue(\.inboxRail, appState.actionStripViewModel)
         .task {
-            await appState.actionStripViewModel?.refresh()
+            // Before the first read the owner's arrival reads (`ownerArrived`,
+            // or a route's `open`); a second read here would only repeat it.
+            if let vm = appState.actionStripViewModel, vm.hasRead {
+                await vm.refresh()
+            }
             // The cheat sheet reads the dictionary through this VM, so a
             // Settings edit made while the Inbox was out of view shows up.
             appState.reactionDictionaryViewModel?.refresh()
