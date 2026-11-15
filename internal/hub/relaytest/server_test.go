@@ -54,7 +54,7 @@ func newHub(t *testing.T, srv *relaytest.Server) *hub {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	c := relay.NewClient(srv.URL, key)
+	c := relay.NewClient(srv.URL, key, client.WithHTTPClient(srv.HTTPClient()))
 	if _, err := c.Register(t.Context()); err != nil { // a phone can vouch for it before it connects
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func newPhone(t *testing.T, srv *relaytest.Server, h *hub) (*hubtest.Phone, *hub
 	if err != nil {
 		t.Fatal(err)
 	}
-	store.C = hubtest.NewPhoneClient(srv.URL, p)
+	store.C = hubtest.NewPhoneClient(srv.URL, p, client.WithHTTPClient(srv.HTTPClient()))
 	if account, err := store.Register(t.Context()); err != nil || account == "" {
 		t.Fatalf("phone register: %q, %v", account, err)
 	}
@@ -320,7 +320,8 @@ func TestRelaytestIsImportedOnlyByTests(t *testing.T) {
 
 func dialWS(t *testing.T, srv *relaytest.Server, device string) *websocket.Conn {
 	t.Helper()
-	ws, _, err := websocket.Dial(t.Context(), "ws"+strings.TrimPrefix(srv.URL, "http")+"/v1/ws", nil)
+	ws, _, err := websocket.Dial(t.Context(), "ws"+strings.TrimPrefix(srv.URL, "http")+"/v1/ws",
+		&websocket.DialOptions{HTTPClient: srv.HTTPClient()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -366,9 +367,12 @@ func readFrame(t *testing.T, ws *websocket.Conn) *relayv1.Frame {
 }
 
 // A control sent to a socket that just died is not lost: the device's next
-// socket gets it.
+// socket gets it. In memory: over TCP a write into a socket whose peer has
+// just closed can still succeed (the kernel takes the bytes, the peer answers
+// with a reset), so the fake could not know the control never arrived; a
+// pipe write fails once the peer closed, every time.
 func TestControlOnADeadSocketReachesTheNextOne(t *testing.T) {
-	srv := relaytest.Start(t)
+	srv := relaytest.StartInMemory(t)
 	h := newHub(t, srv)
 	_, store := newPhone(t, srv, h)
 	dead := dialWS(t, srv, h.relayID)

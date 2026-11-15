@@ -516,7 +516,7 @@ final class RelayFeedTests: XCTestCase {
     }
 
     /// What a coalescing test sees while both calls start.
-    private enum CycleStep { case joined, changes }
+    private enum CycleStep { case joined, changes, waitedOut }
 
     func testConcurrentPollOnceCoalescesIntoOneCycle() async throws {
         let transport = GatedTransport()
@@ -544,6 +544,44 @@ final class RelayFeedTests: XCTestCase {
         let (a, b) = try await (first, second)
         XCTAssertEqual(a, b)
         // Coalesced: exactly one real cycle ran, so changes() was hit once.
+        let calls = await transport.changesCalls
+        XCTAssertEqual(calls, 1)
+    }
+
+    /// A fetch's poll after its pull never joins a cycle already running: that one may have read its batch before the
+    /// pull buffered, so the fetch would return with a record unrouted (#1795). It waits it out and runs its own.
+    func testPollFreshRunsItsOwnCycleAfterTheRunningOne() async throws {
+        let transport = GatedTransport()
+        try await transport.seed([
+            CloudRecord(recordName: "device-D1", zone: .relay, kind: RelayRecordKind.device.rawValue,
+                        modifiedAt: base, payload: Data("{}".utf8))
+        ])
+        let feed = try makeFixtures(inner: transport).feed
+        let (steps, step) = AsyncStream.makeStream(of: CycleStep.self)
+        await feed.observeJoins { step.yield(.joined) }
+        await feed.observeWaitOuts { step.yield(.waitedOut) }
+        await transport.observeChanges { step.yield(.changes) }
+
+        async let running = feed.pollOnce()
+        var seen = steps.makeAsyncIterator()
+        let entered = await seen.next()
+        XCTAssertEqual(entered, .changes, "the running cycle is inside changes")
+        async let fresh = feed.pollFresh()
+        // The gate opens once the fresh poll waited the cycle out, or (broken) joined it: no hang either way.
+        let second = await seen.next()
+        XCTAssertEqual(second, .waitedOut, "never joined")
+        await transport.openGate()
+
+        _ = try await (running, fresh)
+        let calls = await transport.changesCalls
+        XCTAssertEqual(calls, 2, "the fresh poll ran a cycle of its own")
+    }
+
+    func testPollFreshWithNothingRunningRunsOneCycle() async throws {
+        let transport = GatedTransport()
+        await transport.openGate()
+        let feed = try makeFixtures(inner: transport).feed
+        try await feed.pollFresh()
         let calls = await transport.changesCalls
         XCTAssertEqual(calls, 1)
     }
