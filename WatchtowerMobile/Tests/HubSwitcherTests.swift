@@ -138,12 +138,9 @@ final class HubSwitcherTests: XCTestCase {
         let items = HubListModel.items(rows: rows, sessions: env.sessions, activeHubID: TestHub.acme, now: now)
 
         XCTAssertEqual(items.map(\.openAsks), [1, 2])
-        XCTAssertEqual(HubListModel.otherHubsOpenAsks(items), 2)
-        XCTAssertEqual(
-            HubListModel.chipAccessibilityLabel(name: "Acme Mac", otherAsks: 2),
-            "Acme Mac, Mac. 2 asks waiting on other Macs"
-        )
-        XCTAssertEqual(HubListModel.chipAccessibilityLabel(name: "Acme Mac", otherAsks: 0), "Acme Mac, Mac")
+        let chip = HubSwitcherChipModel(name: "Acme Mac", state: .online, items: items, now: now)
+        XCTAssertEqual(chip.otherAsks, "+2 questions on Home Mac")
+        XCTAssertEqual(chip.accessibilityLabel, "Acme Mac · online. +2 questions on Home Mac")
     }
 
     func testAddMacIsRefusedAtTheLimit() {

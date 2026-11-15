@@ -1128,6 +1128,15 @@ final class ScreenshotTourTests: XCTestCase {
             Shot(number: "36", slug: "mac-switcher", source: "Features/Hubs/HubListSheet.swift", reached: .sheet, make: leaf { _ in
                 HubListSheet { _ in }
             }),
+            Shot(number: "36a", slug: "hub-switcher-chips", source: "Features/Hubs/HubSwitcherChip.swift", reached: .leaf, make: leaf { _ in
+                HubSwitcherTourPages.chips(now: Date())
+            }),
+            Shot(number: "36b", slug: "mac-switcher-states", source: "Features/Hubs/HubListSheet.swift", reached: .sheet, make: leaf { _ in
+                HubListSheetContent(rows: HubSwitcherTourPages.rows(now: Date()), add: .atLimit) { _ in }
+            }),
+            Shot(number: "36c", slug: "mac-switcher-add", source: "Features/Hubs/HubListSheet.swift", reached: .sheet, make: leaf { _ in
+                HubListSheetContent(rows: Array(HubSwitcherTourPages.rows(now: Date()).prefix(2)), add: .on) { _ in }
+            }),
             Shot(number: "35", slug: "mac-not-showing", source: source + "MacNotShowingView.swift", reached: .bareStack, make: stack { _ in
                 MacNotShowingView()
             })

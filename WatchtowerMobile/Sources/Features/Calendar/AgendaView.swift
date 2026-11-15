@@ -20,6 +20,7 @@ struct AgendaView: View {
                 content(now: context.date)
             }
             .navigationTitle("Calendar")
+            .hubSwitcher()
             .navigationDestination(for: CalendarRoute.self) { route in
                 switch route {
                 case let .event(id): EventDetailView(eventID: id)
@@ -71,8 +72,8 @@ struct AgendaView: View {
         return ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: Spacing.regular) {
-                    // The Mac's status, as on Now (mockup 7).
-                    MacStatusChip(model: env.macChip(now: now))
+                    // The Mac's status and the switcher, as on Now (mockup 7, #1782).
+                    HubSwitcherChip(now: now)
                     WeekStripView(strip: strip, select: { selectedDay = $0 }, shiftWeek: shiftWeek)
                     if let empty = agenda.emptyText {
                         Text(empty).foregroundStyle(.secondary).padding(.horizontal, Spacing.small)
