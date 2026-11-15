@@ -29,6 +29,32 @@ final class InboxBriefDaysTests: XCTestCase {
         return InboxDayCard(date: date, briefing: briefing, plan: nil, planDone: 0, planTotal: 0, stamp: try now())
     }
 
+    /// The root count's brief term reads the date's newest briefing only:
+    /// the newest read and an older one unread is 0; the newest unread is 1.
+    /// Dates and times are seeded from `Date()`.
+    func testUnreadCountReadsTheDatesNewestBriefing() throws {
+        let queue = try TestDatabase.create()
+        let now = Date()
+        let date = String(AutomationDates.format(now).prefix(10))
+        let older = AutomationDates.format(now.addingTimeInterval(-3600))
+        let newer = AutomationDates.format(now)
+        try queue.write { db in
+            try TestDatabase.insertBriefing(db, userID: "U001", date: date)
+            try TestDatabase.insertBriefing(db, userID: "U002", date: date, readAt: newer)
+            try db.execute(sql: "UPDATE briefings SET created_at = ? WHERE user_id = 'U001'", arguments: [older])
+            try db.execute(sql: "UPDATE briefings SET created_at = ? WHERE user_id = 'U002'", arguments: [newer])
+        }
+        XCTAssertEqual(try queue.read { try BriefingQueries.unreadCount($0, date: date) }, 0,
+                       "the newest is read; the older unread one does not count")
+
+        try queue.write { db in
+            try db.execute(sql: "UPDATE briefings SET read_at = NULL WHERE user_id = 'U002'")
+            try db.execute(sql: "UPDATE briefings SET read_at = ? WHERE user_id = 'U001'", arguments: [newer])
+        }
+        XCTAssertEqual(try queue.read { try BriefingQueries.unreadCount($0, date: date) }, 1,
+                       "the newest is unread")
+    }
+
     func testHistoryIsThirtyDaysNewestFirst() throws {
         let days = [
             try day("2026-10-12"),
