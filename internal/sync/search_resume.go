@@ -35,18 +35,21 @@ type searchResume struct {
 	after     string // the window's after: date, kept while a moving window resumes
 	nextPage  int
 	firstSync bool
+	startedAt time.Time // the start of the run that began the window (Orchestrator.windowStart)
 }
 
 // RunOutcome is what the last Run tells the daemon's cadence: whether Slack
 // answered any of the run's own calls with a 429 (retried ones included; not
 // another caller's on the same client), whether the blanket
-// search stopped with pages left for the next run, and how many blanket
-// pages and messages it read.
+// search stopped with pages left for the next run, whether it stopped there
+// on the fetch deadline (rather than on an error the next run may meet
+// again), and how many blanket pages and messages it read.
 type RunOutcome struct {
-	RateLimited   bool
-	ResumePending bool
-	Pages         int
-	Messages      int
+	RateLimited     bool
+	ResumePending   bool
+	DeadlineStopped bool
+	Pages           int
+	Messages        int
 }
 
 // RunOutcome returns the last Run's outcome.
@@ -79,7 +82,7 @@ func (o *Orchestrator) recordSearchStop(query, after string, startPage, stopPage
 	o.outcome.Pages += next - startPage
 	o.outcome.Messages += messages
 	if next = max(next, stopPage); !completed && next > 1 {
-		o.resume = &searchResume{query: query, after: after, nextPage: next, firstSync: firstSync}
+		o.resume = &searchResume{query: query, after: after, nextPage: next, firstSync: firstSync, startedAt: o.windowStart}
 	}
 }
 

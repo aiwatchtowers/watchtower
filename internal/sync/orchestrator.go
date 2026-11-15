@@ -124,6 +124,11 @@ type Orchestrator struct {
 	// while it is the first): stampSyncedAt's bounds. Run sets both.
 	runStart     time.Time
 	firstCycleAt time.Time
+	// windowStart is when the blanket window this Run reads was started:
+	// runStart, or the start of the run that began a window this one
+	// resumes (searchResume.startedAt). stampSyncedAt's lookback counts
+	// from it.
+	windowStart time.Time
 	// backfilling is set while BackfillSearch or a Sync again catch-up
 	// (runSyncAgainCatchups) saves: history stamps every message with its post time,
 	// so it never reaches the Inbox.
@@ -584,7 +589,7 @@ func (o *Orchestrator) runSearchSync(ctx context.Context, opts SyncOptions) erro
 	// both parent messages and thread replies within the search window.
 	// Full thread sync only runs with --full flag (runFullSync).
 
-	// A Sync again catch-up (one channel, a few history pages) runs only
+	// Sync again catch-ups (a few history pages in all) run only
 	// after a clean search, last, so a 429 it meets holds no other phase.
 	// Best-effort: a stop keeps its bound for the next run.
 	if !o.searchIncomplete {
@@ -612,17 +617,21 @@ const (
 	readStateDigestWindow = 7 * 24 * time.Hour
 )
 
-// syncedAtLookback is how far before a run's start a message it stores may
-// have been posted and still count as new for the Inbox (stampSyncedAt). A
-// message stored late waits at most the cadence cap (60 min) plus the runs a
-// rate-limit storm stretches, and during a storm the run is incomplete, so
-// INBOX-09 freezes the watermark and even a post-time stamp stays above it.
+// syncedAtLookback is how far before its window's start a message a run
+// stores may have been posted and still count as new for the Inbox
+// (stampSyncedAt). The window's start is the run's own, or, while a blanket
+// window resumes, the start of the run that began it: a cycle the cadence
+// skips is no sync error, so the Inbox watermark moves on while the window
+// waits, and a resume that finishes days later still stamps what it stores
+// for the first time with the current time. Between windows a message
+// stored late waits at most the cadence cap (60 min).
 const syncedAtLookback = 24 * time.Hour
 
 // startSyncedAtCycle records this Run's start and the account's first sync
 // attempt, written once (the first Run's start, kept on a retry).
 func (o *Orchestrator) startSyncedAtCycle() error {
 	o.runStart = o.clock()
+	o.windowStart = o.runStart
 	if err := o.db.SetSlackFirstCycleAtOnce(o.accountID, o.runStart); err != nil {
 		return err
 	}
@@ -636,7 +645,7 @@ func (o *Orchestrator) startSyncedAtCycle() error {
 
 // stampSyncedAt is messages.synced_at for a message posted at tsUnix that
 // this Run stores now: the current time when it was posted at or after
-// max(first_cycle_at, runStart - syncedAtLookback), so a message stored after
+// max(first_cycle_at, windowStart - syncedAtLookback), so a message stored after
 // the Inbox watermark passed its post time is still detected; its post time
 // otherwise, so a first sync, a new account row re-storing old messages or a
 // history backfill never floods the Inbox.
@@ -644,7 +653,7 @@ func (o *Orchestrator) stampSyncedAt(tsUnix float64) float64 {
 	if o.backfilling {
 		return tsUnix
 	}
-	bound := o.runStart.Add(-syncedAtLookback)
+	bound := o.windowStart.Add(-syncedAtLookback)
 	// firstCycleAt is never zero in production: Run writes it before any
 	// save, and with no account row ensureWorkspace fails it before one.
 	if o.firstCycleAt.After(bound) {

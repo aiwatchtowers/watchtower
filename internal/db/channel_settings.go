@@ -162,20 +162,30 @@ func channelSettingsDest(cs *ChannelSettings) []any {
 		&cs.SyncExcluded, &cs.ExcludedAt, &cs.CatchupFrom, &cs.CatchupTo, &cs.MutedByExclusion, &cs.MutedAt}
 }
 
+// SyncAgainOverlap is how far before excluded_at a Sync again catch-up
+// starts: the forward search's own overlap (its window starts two days
+// before the last watermark, for Slack's indexing delay).
+const SyncAgainOverlap = 48 * time.Hour
+
+const syncAgainOverlapSeconds = int64(SyncAgainOverlap / time.Second)
+
 // SetSyncExcluded is Stop syncing (excluded) or Sync again (!excluded) for a
 // channel, in one write; the only writer of the exclusion columns besides the
 // sync's catch-up (AdvanceCatchup, FinishCatchup). SYNCEX-01.
 //
 // Stop syncing sets sync_excluded and excluded_at = now. During an unfinished
-// catch-up excluded_at is the catch-up's start instead (the earliest point
-// not yet known to be covered), so the next Sync again covers that window
-// too; the catch-up is cleared. A channel that was not muted for AI is muted
-// with muted_by_exclusion = 1. Excluding an excluded channel changes nothing.
+// catch-up excluded_at is the exclusion that catch-up started from instead
+// (catchup_from + SyncAgainOverlap, the earliest point not yet known to be
+// covered), so the next Sync again covers that window too; the catch-up is
+// cleared. A channel that was not muted for AI is muted with
+// muted_by_exclusion = 1. Excluding an excluded channel changes nothing.
 //
 // Sync again clears sync_excluded and starts a catch-up of
-// [excluded_at, now): from now on the forward search covers the channel. It
-// lifts the mute only when Stop syncing set it. Including a channel that is
-// not excluded changes nothing.
+// [excluded_at − SyncAgainOverlap, now): from now on the forward search
+// covers the channel. The overlap takes back what was posted just before
+// Stop syncing but not stored yet (the forward search dropped it); the rows
+// already stored upsert. It lifts the mute only when Stop syncing set it.
+// Including a channel that is not excluded changes nothing.
 func (db *DB) SetSyncExcluded(channelID string, excluded bool, now time.Time) error {
 	stamp := now.UTC().Format(time.RFC3339)
 	var err error
@@ -188,7 +198,7 @@ func (db *DB) SetSyncExcluded(channelID string, excluded bool, now time.Time) er
 				excluded_at = CASE
 					WHEN channel_settings.sync_excluded = 1 THEN channel_settings.excluded_at
 					WHEN channel_settings.catchup_from IS NOT NULL
-						THEN strftime('%Y-%m-%dT%H:%M:%SZ', CAST(channel_settings.catchup_from AS INTEGER), 'unixepoch')
+						THEN strftime('%Y-%m-%dT%H:%M:%SZ', CAST(channel_settings.catchup_from AS INTEGER) + ?, 'unixepoch')
 					ELSE excluded.excluded_at END,
 				sync_excluded = 1,
 				catchup_from = NULL,
@@ -199,19 +209,19 @@ func (db *DB) SetSyncExcluded(channelID string, excluded bool, now time.Time) er
 					THEN channel_settings.muted_at ELSE excluded.muted_at END,
 				is_muted_for_llm = 1,
 				updated_at = excluded.updated_at`,
-			channelID, stamp, stamp, stamp)
+			channelID, stamp, stamp, stamp, syncAgainOverlapSeconds)
 	} else {
 		_, err = db.Exec(`
 			UPDATE channel_settings SET
 				sync_excluded = 0,
-				catchup_from = CAST(strftime('%s', excluded_at) AS REAL),
+				catchup_from = CAST(strftime('%s', excluded_at) - ? AS REAL),
 				catchup_to = CASE WHEN strftime('%s', excluded_at) IS NULL THEN NULL ELSE ? END,
 				is_muted_for_llm = CASE WHEN muted_by_exclusion = 1 THEN 0 ELSE is_muted_for_llm END,
 				muted_at = CASE WHEN muted_by_exclusion = 1 THEN '' ELSE muted_at END,
 				muted_by_exclusion = 0,
 				updated_at = ?
 			WHERE channel_id = ? AND sync_excluded = 1`,
-			float64(now.Unix()), stamp, channelID)
+			syncAgainOverlapSeconds, float64(now.Unix()), stamp, channelID)
 	}
 	if err != nil {
 		return fmt.Errorf("setting sync exclusion for %s: %w", channelID, err)

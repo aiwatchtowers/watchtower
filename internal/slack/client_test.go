@@ -1444,7 +1444,7 @@ func TestAIMD_TransportErrorsAreNoSuccess(t *testing.T) {
 			_, err := c.SearchMessages(context.Background(), "q", 1)
 			require.Error(t, err)
 		}
-		assert.InDelta(t, 20.0, c.rateLimiter.Rate(Tier2), 1e-9, "no step up")
+		assert.InDelta(t, 20.0, c.rateLimiter.rate(Tier2), 1e-9, "no step up")
 		counts, _ := c.APIStats()
 		assert.Equal(t, 2*aimdStepEvery, counts[Tier2], "every request still counted")
 
@@ -1453,7 +1453,7 @@ func TestAIMD_TransportErrorsAreNoSuccess(t *testing.T) {
 			_, err := c.SearchMessages(context.Background(), "q", 1)
 			require.NoError(t, err)
 		}
-		assert.InDelta(t, 21.0, c.rateLimiter.Rate(Tier2), 1e-9, "answers step it up")
+		assert.InDelta(t, 21.0, c.rateLimiter.rate(Tier2), 1e-9, "answers step it up")
 	})
 }
 
@@ -1487,7 +1487,7 @@ func TestPageSizes_Max(t *testing.T) {
 	})
 }
 
-// RateLimitedCalls counts every 429 over the client's lifetime, the ones the
+// rateLimitedCalls counts every 429 over the client's lifetime, the ones the
 // retry chain pushed through included, so a caller comparing two readings
 // sees whether its run met a rate limit.
 func TestRateLimitedCalls_CountsRetried429s(t *testing.T) {
@@ -1498,7 +1498,7 @@ func TestRateLimitedCalls_CountsRetried429s(t *testing.T) {
 
 		_, err := c.SearchMessages(context.Background(), "q", 1)
 		require.NoError(t, err)
-		assert.Equal(t, uint64(2), c.RateLimitedCalls())
+		assert.Equal(t, uint64(2), c.rateLimitedCalls())
 	})
 }
 
@@ -1523,7 +1523,7 @@ func TestAdaptive_UnstatedRetryAfterKeepsThreeRetries(t *testing.T) {
 
 // CountRateLimits counts only the 429s of calls made under its context: a
 // run's counter does not see a 429 a concurrent caller (the chat, a media
-// fetch) met on the same client, while RateLimitedCalls sees both.
+// fetch) met on the same client, while rateLimitedCalls sees both.
 func TestCountRateLimits_OnlyCallsUnderTheContext(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := &fakeSlack{limited: 1, retryAfter: "1", body: searchOK}
@@ -1538,6 +1538,17 @@ func TestCountRateLimits_OnlyCallsUnderTheContext(t *testing.T) {
 		_, err = c.SearchMessages(runCtx, "q", 1)
 		require.NoError(t, err)
 		assert.Equal(t, uint64(2), runLimited())
-		assert.Equal(t, uint64(3), c.RateLimitedCalls())
+		assert.Equal(t, uint64(3), c.rateLimitedCalls())
 	})
+}
+
+func TestDeadlinePassed(t *testing.T) {
+	c := NewClientWithAPIURLUnlimited("xoxp-test", "http://127.0.0.1:0/")
+	assert.False(t, c.DeadlinePassed(), "no deadline set")
+	c.SetDeadline(time.Now().Add(time.Hour))
+	assert.False(t, c.DeadlinePassed())
+	c.SetDeadline(time.Now().Add(-time.Second))
+	assert.True(t, c.DeadlinePassed())
+	c.SetDeadline(time.Time{})
+	assert.False(t, c.DeadlinePassed(), "the zero time clears it")
 }

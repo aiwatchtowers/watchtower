@@ -1306,6 +1306,40 @@ func TestSyncHeartbeat_StampsFetchProgressOnlyWhenItMoves(t *testing.T) {
 	assert.Zero(t, d.fetchStalledFor(), "a beat stamping the moved progress")
 }
 
+// A Retry-After hold the run waits on counts as progress on every beat (the
+// run is waiting, not stuck); once the hold has ended it no longer does, so
+// a run stuck after it reads as stalled again.
+func TestSyncHeartbeat_ExpiredHoldIsNoProgress(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	prev := syncHeartbeatInterval
+	syncHeartbeatInterval = 2 * time.Millisecond
+	t.Cleanup(func() { syncHeartbeatInterval = prev })
+
+	orch, _ := newTestOrchestrator(t, new(atomic.Int32))
+	var hold atomic.Pointer[time.Time]
+	live := time.Now().Add(time.Hour)
+	hold.Store(&live)
+	orch.Progress().SetRateLimitHold(func() time.Time { return *hold.Load() })
+	d := newDaemon(orch, &config.Config{Sync: config.SyncConfig{PollInterval: time.Second}})
+	d.SetLogger(log.New(io.Discard, "", 0))
+	mono := &fakeMono{}
+	d.loopMono = mono.now
+
+	nextBeat, _ := startGatedHeartbeat(t, d, orch)
+	mono.advance(time.Minute)
+	nextBeat()
+	assert.Zero(t, d.fetchStalledFor(), "a beat inside a live hold stamps the progress")
+
+	ended := time.Now().Add(-time.Second)
+	hold.Store(&ended)
+	nextBeat() // the hold's end changed the snapshot once
+	mono.advance(time.Minute)
+	for range 3 {
+		nextBeat()
+	}
+	assert.Equal(t, time.Minute, d.fetchStalledFor(), "an ended hold is no progress")
+}
+
 // The Slack passes that move no Progress counter — the read-state refresh
 // (one conversations.info per channel, minutes at the rate limit), the
 // deletion sweep, the inbox reactions — still make progress: every call

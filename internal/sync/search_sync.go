@@ -146,6 +146,11 @@ func (o *Orchestrator) syncViaSearch(ctx context.Context) error {
 		searchAfter = r.after
 	}
 	query := fmt.Sprintf("after:%s", searchAfter)
+	if r := o.resume; r != nil && r.query == query && !r.startedAt.IsZero() {
+		// The window goes on: what this run stores for the first time is
+		// stamped as if the run that began it had (syncedAtLookback).
+		o.windowStart = r.startedAt
+	}
 	o.progress.SetSearchAfter(searchAfter)
 	o.logger.Printf("search sync: query=%q", query)
 
@@ -173,6 +178,7 @@ func (o *Orchestrator) syncViaSearch(ctx context.Context) error {
 	if errors.Is(stopErr, watchtowerslack.ErrFetchDeadline) {
 		// Stopped on the fetch deadline: the rest of the cycle would only
 		// meet the same hold.
+		o.outcome.DeadlineStopped = true
 		o.searchRateLimited = true
 		if o.searchGapNote == "" {
 			o.searchGapNote = "search sync: rate-limited by Slack; retrying next cycle"
@@ -329,6 +335,13 @@ func (o *Orchestrator) searchAndSaveFrom(ctx context.Context, query string, star
 		case <-ctx.Done():
 			return false, totalMessages, seenChannels, page, nil, ctx.Err()
 		default:
+		}
+		if o.slackClient.DeadlinePassed() {
+			// The run's fetch deadline: the rest waits for the next run,
+			// as when a 429 hold would end past it.
+			o.logger.Printf("search sync: fetch deadline reached before page %d, stopping early", page)
+			stopErr = watchtowerslack.ErrFetchDeadline
+			break
 		}
 
 		result, err := o.slackClient.SearchMessages(ctx, query, page)

@@ -91,6 +91,22 @@ type exclHistory struct {
 	onJunk   func(n int) // called before the n-th C0JUNK request (1-based) is answered
 	junkN    int
 	calls    int
+	threaded bool   // every C0JUNK message has one reply
+	replyErr string // conversations.replies answers ok:false with this code ("" = an empty thread)
+	replies  int    // conversations.replies requests
+	poison   bool   // C0JUNK pages hold one message without a parseable ts, has_more set
+}
+
+func (h *exclHistory) handleReplies(w http.ResponseWriter, _ *http.Request) {
+	h.mu.Lock()
+	h.replies++
+	code := h.replyErr
+	h.mu.Unlock()
+	if code != "" {
+		jsonOK(w, map[string]any{"ok": false, "error": code})
+		return
+	}
+	jsonOK(w, map[string]any{"ok": true, "has_more": false, "messages": []map[string]any{}})
 }
 
 type historyReq struct{ channel, oldest, latest string }
@@ -120,6 +136,12 @@ func (h *exclHistory) handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if ch == "C0JUNK" && h.poison {
+		jsonOK(w, map[string]any{"ok": true, "has_more": true, "messages": []map[string]any{
+			{"type": "message", "user": "U002", "ts": "not-a-ts", "text": "poison"},
+		}})
+		return
+	}
 	if ch != "C0JUNK" {
 		jsonOK(w, map[string]any{"ok": true, "has_more": false, "messages": []map[string]any{
 			{"type": "message", "user": "U002", "ts": dayTS(0, 10, 0), "text": ch + "-msg"},
@@ -143,7 +165,12 @@ func (h *exclHistory) handle(w http.ResponseWriter, r *http.Request) {
 		if i == 0 {
 			text = "<@U001> an old mention"
 		}
-		page = append(page, map[string]any{"type": "message", "user": "U002", "ts": ts, "text": text})
+		m := map[string]any{"type": "message", "user": "U002", "ts": ts, "text": text}
+		if h.threaded {
+			m["reply_count"] = 1
+			m["thread_ts"] = ts
+		}
+		page = append(page, m)
 	}
 	if page == nil {
 		page = []map[string]any{}
@@ -176,9 +203,7 @@ func newExclSetup(t *testing.T) *exclSetup {
 	e := &exclSetup{search: &exclSearch{}, history: &exclHistory{served: map[string]int{}}, now: exclNow}
 	mux := searchAuditMux(e.search.handle)
 	mux.HandleFunc("/conversations.history", e.history.handle)
-	mux.HandleFunc("/conversations.replies", func(w http.ResponseWriter, _ *http.Request) {
-		jsonOK(w, map[string]any{"ok": true, "has_more": false, "messages": []map[string]any{}})
-	})
+	mux.HandleFunc("/conversations.replies", e.history.handleReplies)
 	mux.HandleFunc("/conversations.list", func(w http.ResponseWriter, _ *http.Request) {
 		jsonOK(w, map[string]any{"ok": true, "response_metadata": map[string]any{"next_cursor": ""},
 			"channels": []map[string]any{
@@ -492,12 +517,13 @@ func (e *exclSetup) assertCaughtUp(t *testing.T) {
 }
 
 // assertWalk checks the request chain: each latest is the previous page's
-// oldest ts, every oldest the fixed lower bound.
+// oldest ts, every oldest the fixed lower bound (the search overlap before
+// Stop syncing).
 func assertWalk(t *testing.T, reqs []historyReq, firstLatest float64, e *exclSetup, firstPage int) {
 	t.Helper()
 	latest := formatSlackTS(firstLatest)
 	for i, r := range reqs {
-		assert.Equal(t, formatSlackTS(float64(catchDay1.Unix())), r.oldest, "request %d oldest", i)
+		assert.Equal(t, formatSlackTS(float64(catchDay1.Add(-db.SyncAgainOverlap).Unix())), r.oldest, "request %d oldest", i)
 		assert.Equal(t, latest, r.latest, "request %d latest", i)
 		latest = formatSlackTS(e.pageOldest(firstPage + i))
 	}
@@ -610,7 +636,7 @@ func TestSyncAgain_StopSyncingDuringCatchup(t *testing.T) {
 	from, to = e.catchupBounds(t)
 	require.NotNil(t, from)
 	require.NotNil(t, to)
-	assert.Equal(t, float64(catchDay1.Unix()), *from)
+	assert.Equal(t, float64(catchDay1.Add(-db.SyncAgainOverlap).Unix()), *from)
 	assert.Equal(t, float64(day15.Unix()), *to)
 
 	for range 4 {
@@ -673,4 +699,140 @@ func TestSyncAgain_GivesUpOnlyOnChannelErrors(t *testing.T) {
 			assert.Equal(t, tc.pending, to != nil, "catchup_to")
 		})
 	}
+}
+
+// seedSmallCatchup is seedCatchup with a pool of n messages (one page).
+func (e *exclSetup) seedSmallCatchup(t *testing.T, n int) {
+	t.Helper()
+	for i := range n {
+		e.history.pool = append(e.history.pool, float64(catchDay1.Unix()+30+int64(i)*60)+0.0001)
+	}
+	e.exclude(t, true, catchDay1)
+	e.exclude(t, false, catchDay10)
+	e.now = catchDay10.Add(time.Hour)
+	require.NoError(t, e.db.SetSlackAccountSearchWatermark(e.accountID, "2026-11-09"))
+}
+
+// A thread Slack answers for alone (a deleted parent's thread_not_found) is
+// skipped and the catch-up goes on; an account-wide or possibly transient
+// answer keeps the page for the next run, which asks the thread again.
+func TestSyncAgain_ThreadErrorDoesNotBlock(t *testing.T) {
+	for _, tc := range []struct {
+		code    string
+		pending bool
+	}{
+		{"thread_not_found", false},
+		{"message_not_found", false},
+		{"invalid_auth", true},
+		{"internal_error", true},
+		{"service_unavailable", true},
+	} {
+		t.Run(tc.code, func(t *testing.T) {
+			e := newExclSetup(t)
+			e.seedSmallCatchup(t, 3)
+			e.history.threaded = true
+			e.history.replyErr = tc.code
+			e.run(t, SyncOptions{})
+			from, to := e.catchupBounds(t)
+			assert.Equal(t, tc.pending, from != nil, "catchup_from")
+			assert.Equal(t, tc.pending, to != nil, "catchup_to")
+			assert.Len(t, e.stored(t, "C0JUNK"), 3, "the page is saved either way")
+			if !tc.pending {
+				assert.Equal(t, 3, e.history.replies, "every thread was asked once")
+				return
+			}
+			asked := e.history.replies
+			e.history.replyErr = ""
+			e.run(t, SyncOptions{})
+			assert.Greater(t, e.history.replies, asked, "the next run asks the thread again")
+			from, to = e.catchupBounds(t)
+			assert.Nil(t, from, "and finishes the catch-up")
+			assert.Nil(t, to)
+		})
+	}
+}
+
+// A page whose messages move the bound nowhere (no parseable ts) ends the
+// catch-up instead of being asked for again every run.
+func TestSyncAgain_PoisonPageFinishes(t *testing.T) {
+	e := newExclSetup(t)
+	e.seedSmallCatchup(t, 3)
+	e.history.poison = true
+	e.run(t, SyncOptions{})
+	require.Len(t, e.history.junkRequests(), 1)
+	from, to := e.catchupBounds(t)
+	assert.Nil(t, from)
+	assert.Nil(t, to)
+
+	e.run(t, SyncOptions{})
+	assert.Len(t, e.history.junkRequests(), 1, "nothing is asked again")
+}
+
+// A catch-up that fails for its own reasons keeps its bound, and the run
+// goes on to the next pending one.
+func TestSyncAgain_FailingCatchupDoesNotBlockTheNext(t *testing.T) {
+	e := newExclSetup(t)
+	e.seedSmallCatchup(t, 3)
+	e.history.errCode = "internal_error"
+	require.NoError(t, e.db.SetSyncExcluded(e.ns("C001"), true, catchDay1.AddDate(0, 0, 1)))
+	require.NoError(t, e.db.SetSyncExcluded(e.ns("C001"), false, catchDay10))
+	pending, err := e.db.PendingCatchups(e.accountID)
+	require.NoError(t, err)
+	require.Len(t, pending, 2)
+	require.Equal(t, e.ns("C0JUNK"), pending[0].ChannelID, "the failing one comes first")
+
+	e.run(t, SyncOptions{})
+	pending, err = e.db.PendingCatchups(e.accountID)
+	require.NoError(t, err)
+	require.Len(t, pending, 1)
+	assert.Equal(t, e.ns("C0JUNK"), pending[0].ChannelID, "the failing catch-up stays pending")
+	assert.Contains(t, e.stored(t, "C001"), dayTS(0, 10, 0), "the second catch-up ran")
+}
+
+// The two error sets classify codes of nonFatalSlackErrors (n5): every
+// code a catch-up gives up on is one the sync already logs and goes past.
+func TestChannelUnreadableErrorsAreNonFatal(t *testing.T) {
+	for code := range channelUnreadableErrors {
+		assert.True(t, nonFatalSlackErrors[code], code)
+		assert.False(t, accountWideSlackErrors[code], code)
+	}
+}
+
+// m1: a message posted just before Stop syncing that the forward search had
+// not stored yet (Slack's indexing delay; the next searches dropped it as
+// excluded) is fetched by a Sync again made days later: the catch-up starts
+// the search overlap before the exclusion. The rows the overlap re-reads
+// upsert.
+func TestSyncAgain_CatchupCoversPreExclusionOverlap(t *testing.T) {
+	e := newExclSetup(t)
+	stored := float64(catchDay1.Add(-40*time.Hour).Unix()) + 0.0001
+	missed := float64(catchDay1.Add(-time.Hour).Unix()) + 0.0001
+	e.history.pool = []float64{stored, missed}
+	e.seedSmallCatchup(t, 2)
+	require.NoError(t, e.db.UpsertMessage(db.Message{ChannelID: e.ns("C0JUNK"), TS: formatSlackTS(stored),
+		UserID: e.ns("U002"), Text: "stored before Stop syncing"}))
+
+	e.run(t, SyncOptions{})
+	assert.Contains(t, e.stored(t, "C0JUNK"), formatSlackTS(missed), "the message posted before Stop syncing is fetched")
+	assert.Len(t, e.stored(t, "C0JUNK"), 4, "the overlap's stored row is upserted, not duplicated")
+	from, to := e.catchupBounds(t)
+	assert.Nil(t, from)
+	assert.Nil(t, to)
+}
+
+// m3: the fetch deadline also ends a catch-up between history pages; the
+// bound stays at the last saved page.
+func TestSyncAgain_DeadlineStopsBetweenPages(t *testing.T) {
+	e := newExclSetup(t)
+	e.seedCatchup(t)
+	e.history.onJunk = func(n int) {
+		if n == 2 {
+			e.orch.slackClient.SetDeadline(time.Now().Add(-time.Second))
+		}
+	}
+	e.run(t, SyncOptions{})
+	require.Len(t, e.history.junkRequests(), 2)
+	_, to := e.catchupBounds(t)
+	require.NotNil(t, to)
+	assert.Equal(t, e.pageOldest(2), *to)
 }

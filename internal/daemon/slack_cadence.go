@@ -42,8 +42,10 @@ type slackCadence struct {
 //
 // A 429 wins over everything: the level goes up and the run waits for the
 // backed-off interval even with pages left (the resume position waits in
-// memory), so a storm backs the account off instead of hammering. A clean
-// run with pages left is due next cycle.
+// memory), so a storm backs the account off instead of hammering. A run
+// that only ran out of its fetch deadline with pages left is due next
+// cycle; one that stopped on another error waits the interval, or every
+// tick would ask the same failing page again.
 func (c *slackCadence) after(o sync.RunOutcome, base time.Duration, now time.Time) {
 	c.base = base
 	switch {
@@ -63,7 +65,7 @@ func (c *slackCadence) after(o sync.RunOutcome, base time.Duration, now time.Tim
 		c.level = max(c.level-1, 0)
 		c.quietStreak = 0
 	}
-	if o.ResumePending && !o.RateLimited {
+	if o.ResumePending && o.DeadlineStopped && !o.RateLimited {
 		c.nextDue = now
 		return
 	}

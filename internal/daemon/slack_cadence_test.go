@@ -32,7 +32,10 @@ var (
 	runHeavy    = sync.RunOutcome{Pages: 7, Messages: 650}
 	runQuiet    = sync.RunOutcome{Pages: 1, Messages: 2}
 	runOrdinary = sync.RunOutcome{Pages: 1, Messages: 20}
-	runResume   = sync.RunOutcome{ResumePending: true, Pages: 5, Messages: 500}
+	runResume   = sync.RunOutcome{ResumePending: true, DeadlineStopped: true, Pages: 5, Messages: 500}
+	// runResumeErr stopped with pages left on an error other than a 429 or
+	// the deadline (a later page's missing_scope …).
+	runResumeErr = sync.RunOutcome{ResumePending: true, Pages: 2, Messages: 100}
 )
 
 // step applies one run at now and returns the interval to the next due run.
@@ -62,6 +65,39 @@ func TestCadence_RecoversWhenClean(t *testing.T) {
 func TestCadence_ResumeIsDueNextCycle(t *testing.T) {
 	var c slackCadence
 	assert.Zero(t, step(&c, runResume, cadenceT0), "a clean run with pages left is due at once")
+	assert.True(t, c.due(cadenceT0.Add(time.Minute), false))
+}
+
+// A run that stopped with pages left on an error the next page may answer
+// again waits the interval instead of asking it every tick.
+func TestCadence_ResumeAfterErrorWaitsTheInterval(t *testing.T) {
+	var c slackCadence
+	assert.Equal(t, cadenceBase, step(&c, runResumeErr, cadenceT0))
+	assert.False(t, c.due(cadenceT0.Add(time.Minute), false))
+}
+
+// A run that failed for another reason than a rate limit keeps its level and
+// is due next cycle (retryNextCycle).
+func TestPhaseSlackSync_FailedRunRetriesNextCycleAtItsLevel(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	var searches atomic.Int32
+	orch, _ := newStatusTrackingOrchestrator(t, testMux(), &searches)
+	cfg := &config.Config{ActiveWorkspace: "ws", Sync: config.SyncConfig{PollInterval: cadenceBase}}
+	d := New(cfg)
+	d.SetLogger(log.New(os.Stderr, "[test-cadence] ", 0))
+	d.SetOrchestrators([]*sync.Orchestrator{orch})
+	d.slackCadenceBase = cadenceBase
+	d.cadenceNow = func() time.Time { return cadenceT0 }
+	require.NoError(t, os.MkdirAll(cfg.WorkspaceDir(), 0o700))
+	c := d.slackCadence(orch.AccountID())
+	c.level = 2
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // the run fails: a cancelled cycle says nothing about Slack's limits
+	syncErr, _ := d.phaseSlackSync(withManualSync(ctx))
+	require.Error(t, syncErr)
+	assert.Equal(t, 2, c.level, "the level stays")
+	assert.True(t, c.nextDue.IsZero(), "due next cycle")
 	assert.True(t, c.due(cadenceT0.Add(time.Minute), false))
 }
 

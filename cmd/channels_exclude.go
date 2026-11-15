@@ -69,19 +69,19 @@ func runChannelsExclude(cmd *cobra.Command, args []string, excluded bool) error 
 	defer database.Close()
 	// A Desktop click: wait out the daemon's write lock (ownerWriteBusyTimeout).
 	if err := database.SetBusyTimeout(ownerWriteBusyTimeout); err != nil {
-		return err
+		return fmt.Errorf("setting the busy timeout: %w", err)
 	}
 
 	ch, err := resolveChannelRef(database, ref, byID)
 	if err != nil {
-		return err
+		return err // resolveChannelRef names the ref in its errors
 	}
 	if err := database.SetSyncExcluded(ch.ID, excluded, time.Now()); err != nil {
 		return err
 	}
 	cs, err := database.GetChannelSettings(ch.ID)
 	if err != nil {
-		return err
+		return fmt.Errorf("reading the settings of %s: %w", ch.ID, err)
 	}
 	res := channelExcludeResult{OK: true, ChannelID: ch.ID}
 	if cs != nil {
@@ -110,7 +110,7 @@ func runChannelsExclude(cmd *cobra.Command, args []string, excluded bool) error 
 func resolveChannelRef(database *db.DB, ref string, byID bool) (*db.Channel, error) {
 	ch, err := database.GetChannelByID(ref)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("looking up channel id: %w", err)
 	}
 	if ch != nil {
 		return ch, nil
@@ -121,7 +121,7 @@ func resolveChannelRef(database *db.DB, ref string, byID bool) (*db.Channel, err
 	name := strings.TrimPrefix(ref, "#")
 	all, err := database.GetChannels(db.ChannelFilter{})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("listing channels: %w", err)
 	}
 	var found []db.Channel
 	for _, c := range all {

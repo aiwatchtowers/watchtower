@@ -219,7 +219,8 @@ func TestSyncAgain_UnmutesOnlyIfStopSyncingMuted(t *testing.T) {
 	assert.Empty(t, cs.MutedAt)
 	require.True(t, cs.CatchupFrom.Valid)
 	require.True(t, cs.CatchupTo.Valid)
-	assert.Equal(t, float64(exclDay1.Unix()), cs.CatchupFrom.Float64)
+	assert.Equal(t, float64(exclDay1.Add(-SyncAgainOverlap).Unix()), cs.CatchupFrom.Float64,
+		"the catch-up starts the search overlap before Stop syncing")
 	assert.Equal(t, float64(exclDay10.Unix()), cs.CatchupTo.Float64)
 }
 
@@ -259,7 +260,7 @@ func TestCatchups_PendingAdvanceFinish(t *testing.T) {
 	pending, err := db.PendingCatchups(1)
 	require.NoError(t, err)
 	require.Len(t, pending, 2, "another account's catch-up is not listed")
-	assert.Equal(t, Catchup{ChannelID: "1:C0B", From: float64(exclDay1.Unix()), To: float64(exclDay10.Unix())}, pending[0], "the oldest first")
+	assert.Equal(t, Catchup{ChannelID: "1:C0B", From: float64(exclDay1.Add(-SyncAgainOverlap).Unix()), To: float64(exclDay10.Unix())}, pending[0], "the oldest first")
 	assert.Equal(t, "1:C0A", pending[1].ChannelID)
 
 	mid := float64(exclDay1.Add(48 * time.Hour).Unix())
@@ -406,7 +407,11 @@ type muteRow struct {
 	IsMutedForLLM    int    `json:"is_muted_for_llm"`
 	MutedAt          string `json:"muted_at"`
 	MutedByExclusion int    `json:"muted_by_exclusion"`
+	UpdatedAt        string `json:"updated_at"`
 }
+
+// muteCaseSeededUpdatedAt is updated_at of a mute case's before row.
+const muteCaseSeededUpdatedAt = "2020-01-01T00:00:00Z"
 
 // TestMuteCases pins the manual mute writer's muted_at/muted_by_exclusion
 // rule; the Swift twin reads the same cases.
@@ -424,17 +429,21 @@ func TestMuteCases(t *testing.T) {
 			db := openTestDB(t)
 			ensureChannels(t, db, "1:C1")
 			if c.Before != nil {
-				_, err := db.Exec(`INSERT INTO channel_settings (channel_id, is_muted_for_llm, muted_at, muted_by_exclusion)
-					VALUES ('1:C1', ?, ?, ?)`, c.Before.IsMutedForLLM, c.Before.MutedAt, c.Before.MutedByExclusion)
+				_, err := db.Exec(`INSERT INTO channel_settings (channel_id, is_muted_for_llm, muted_at, muted_by_exclusion, updated_at)
+					VALUES ('1:C1', ?, ?, ?, ?)`, c.Before.IsMutedForLLM, c.Before.MutedAt, c.Before.MutedByExclusion, muteCaseSeededUpdatedAt)
 				require.NoError(t, err)
 			}
 			require.Contains(t, []string{"mute", "unmute"}, c.Action)
 			require.NoError(t, db.SetMuteForLLM("1:C1", c.Action == "mute"))
 
 			var got muteRow
-			require.NoError(t, db.QueryRow(`SELECT is_muted_for_llm, muted_at, muted_by_exclusion
-				FROM channel_settings WHERE channel_id = '1:C1'`).Scan(&got.IsMutedForLLM, &got.MutedAt, &got.MutedByExclusion))
+			require.NoError(t, db.QueryRow(`SELECT is_muted_for_llm, muted_at, muted_by_exclusion, updated_at
+				FROM channel_settings WHERE channel_id = '1:C1'`).Scan(&got.IsMutedForLLM, &got.MutedAt, &got.MutedByExclusion, &got.UpdatedAt))
 			assert.Equal(t, c.After.IsMutedForLLM, got.IsMutedForLLM)
+			if c.After.UpdatedAt == "$now" {
+				assert.NotEmpty(t, got.UpdatedAt)
+				assert.NotEqual(t, muteCaseSeededUpdatedAt, got.UpdatedAt)
+			}
 			assert.Equal(t, c.After.MutedByExclusion, got.MutedByExclusion)
 			if c.After.MutedAt == "$now" {
 				assert.NotEmpty(t, got.MutedAt)

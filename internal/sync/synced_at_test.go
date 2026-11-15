@@ -190,7 +190,7 @@ func TestStampSyncedAt(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			o := &Orchestrator{
-				runStart: start, firstCycleAt: tc.firstCycle, backfilling: tc.backfilling,
+				runStart: start, windowStart: start, firstCycleAt: tc.firstCycle, backfilling: tc.backfilling,
 				now: func() time.Time { return start.Add(time.Minute) },
 			}
 			want := unix(tc.ts)
@@ -200,6 +200,20 @@ func TestStampSyncedAt(t *testing.T) {
 			assert.Equal(t, want, o.stampSyncedAt(unix(tc.ts)))
 		})
 	}
+}
+
+// A run resuming a window begun two days ago counts the lookback from that
+// window's start.
+func TestStampSyncedAt_ResumedWindow(t *testing.T) {
+	start := syncedAtStart
+	o := &Orchestrator{
+		runStart: start, windowStart: start.Add(-48 * time.Hour), firstCycleAt: start.AddDate(0, 0, -30),
+		now: func() time.Time { return start },
+	}
+	inLookback := float64(start.Add(-60 * time.Hour).Unix())
+	assert.Equal(t, float64(start.Unix()), o.stampSyncedAt(inLookback))
+	beforeIt := float64(start.Add(-73 * time.Hour).Unix())
+	assert.Equal(t, beforeIt, o.stampSyncedAt(beforeIt))
 }
 
 // first_cycle_at is written by the account's first run attempt; a retry of a
