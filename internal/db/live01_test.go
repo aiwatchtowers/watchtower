@@ -150,6 +150,9 @@ var displayOnlyReaders = map[string]string{
 	"deleteWorkbenchSpecReviewThreads": "delete only",
 	"keptJoin":                         "the knowledge source's join: it skips a marked conversation (internal/kb TestLIVE01_KeptArtifactSkipped)",
 	"MarkChatTurnSessionLost":          "writes the error code of a dead hub turn's reply; reads no text",
+	// internal/hub chat_answer push: ids, status and the conversation title only.
+	"send":            "the chat_answer push reads a conversation title, never message text into a store",
+	"assistantStatus": "the chat_answer push reads one turn row's status, no text",
 	// internal/chatstore: the hub's chat turn store, the Swift write path's
 	// twin. It writes the chat rows and reads its own tree for the next turn;
 	// stepStarted and markIfUsedTx write the mark itself (LIVE-01 mechanism).
