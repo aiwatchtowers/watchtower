@@ -10,7 +10,7 @@
 
 **Tech Stack:** Go 1.26 (cgo SQLCipher, goose SQL migrations), SwiftUI/GRDB (WatchtowerCore + Desktop), XCTest.
 
-**Spec:** `docs/superpowers/specs/2026-11-10-auto-cleanup-on-session-delete-design.md` (approved, ask #1213). Mockup: `docs/design/mockups/session-auto-cleanup/states.html`.
+**Spec:** `docs/superpowers/specs/2026-11-10-auto-cleanup-on-session-delete-design.md` (approved, ask #1213; ownership from facts re-approved in ask #1317). Mockup: `docs/design/mockups/session-auto-cleanup/states.html`.
 
 **Branching:** umbrella branch `feature/1716-auto-cleanup` off `main`. Each task is its own worktree, branch and PR into the umbrella. The umbrella PR into `main` stays a draft until every task is done.
 
@@ -31,6 +31,8 @@
 - **Public repo:** fixtures use `acme`/`example.com` and `/tmp/...` sample paths, never live paths.
 
 ## Review Focus
+
+> Tasks 2–4 (command parsing) are superseded by Task 9 (ask #1244): items 1–2 below no longer apply after Task 9; Task 9's own focus list replaces them.
 
 1. **Command parsing on real agent shapes:** `cd "$WT" && git worktree add ../x -b y`, `git -C /abs worktree add`, quoted paths with spaces, and `&&` chains with an `echo` holding the word `git`. A literal command must parse; anything with `$` or a backtick must record nothing (Task 2 table).
 2. **Two sessions name the same branch** (one created it, one only ran `git checkout -b` that failed because it existed). The birth-after-start check must keep it for the second (Task 4 test `TestProj18_CommandNamedBranchOlderThanSessionIsKept`).
@@ -337,7 +339,45 @@ Steps:
 - [ ] Run `make test-swift FILTER=SessionsPanelHeaderCopyTests`, `make lint-swift` and `go test ./docs/guide`. Expected: PASS.
 - [ ] Commit `feat(desktop): auto-cleanup screens and guide (#1716)`.
 
+### Task 9: Ownership from facts — remove command parsing, add sources 2a/2c (spec §2, asks #1244/#1259/#1317)
+
+Depends on: Tasks 1–8 (all merged into the umbrella)
+
+**Removes** (dead after this task; spec §2, §6):
+- `internal/gitcmdparse` (the package), `recordCommandLedger`/`writeCommandLedger` in `cmd/workbench_session_ledger.go` and their calls in `cmd/workbench_session_state.go`, with their tests;
+- `RecordSessionCommandRow`, `MaxSessionCommandRows`, `SessionWorktree.Source/Kind`, the `sourceCommand`/`kindBranch` handling in `observe`;
+- the `source`/`kind` columns: edit the umbrella's `00187_session_auto_cleanup.sql` in place and renumber both migrations after main's last (main now has `00187_tuning_chat.sql`: ours become `00188_session_auto_cleanup.sql`, `00189_agent_session_tombstones.sql`); regenerate `schema.sql`, the golden and the Swift test schema;
+- the Swift `source = 'cwd'` filters in `TerminalSessionQueries.swift` (`hasWorktree`, `fetchWorkLinks`) — back to main's text;
+- the tests `TestProj18_CommandLedgerAdoptsWorktree`, `TestProj18_CommandNamedBranchOlderThanSessionIsKept`, `TestProj18_CommandRowUnpushedIsKept` (owner: ask #1259).
+
+**Files (new code):** `internal/sessioncleanup/subagents.go` (2a), `internal/sessioncleanup/headlog.go` (2c), `internal/sessioncleanup/ownership.go`, `plan.go`, `apply.go` (`Plan.Notes`), `internal/sessionagent/caps.go` + both `agent_capabilities.json` copies + the Kit struct (`ScratchpadLanes` → `ClaudeSessionFiles`, JSON `claude_session_files`); Swift `SessionAutoCleanupOutcome.swift` / `SessionCleanupNotice` (the note line), `SessionCleanup.swift` (decode `notes`), `DesignShotCatalog` (state 6b); `docs/inventory/workbench.md` PROJ-18 lines 2289–2290 and `docs/features/workbench.md` session-cleanup paragraph; testdata `internal/sessioncleanup/testdata/subagent-meta-sample.json` (neutral values only).
+
+**Interfaces — Produces:**
+- `Plan.Notes []string` (`json:"notes"`), values: `"subagent_records_unreadable"`. Swift decodes `notes` (absent = empty).
+- `func subagentWorktrees(projectsDir string, ids map[string]time.Time, wts []worktree) (roots, branches map[string]bool, note bool, err error)` — 2a, including the drift cross-check and the freshness rule (spec §2a: `agent-<id>` last folder, record named by `worktreePath`, else no record anywhere and no `agent-*.meta.json` with mtime ≥ birth − 60 s → note; missing projects dir with counted uuids → note). The projects dir: `$CLAUDE_CONFIG_DIR/projects` when set, else `~/.claude/projects` — reuse the lookup `internal/sessionfeed` uses (`LocateAll`/`readMetas`), a package var for tests.
+- `func headLogBranches(ctx context.Context, g gitRunner, wt worktree, others []worktree) (named map[string]bool, unknown bool, err error)` — 2c: candidates `<a>`/`<b>` of `checkout: moving from <a> to <b>` + current branch; kept only when the branch's first ref-log entry (`branch: Created from …`) has the same new sha as one entry of this worktree's HEAD log and its time within 1 s; dropped when another worktree's HEAD log (main's included, read only for this) moved to it after its birth; an unreadable other log → `unknown` (all 2c candidates of the repo `created_unknown`); this worktree's unreadable log → `err` (plan fails).
+- `catchSessionInIt` already excludes the planned row unless its terminal is live (gate commit ef7d63ee6) — keep, and add the spec's test cases if missing.
+
+Steps:
+- [ ] **Write the failing tests** (`internal/sessioncleanup`, real git in `t.TempDir`, `gittest.DisableBackgroundGit`, reflog times set via `GIT_COMMITTER_DATE`, no sleeps):
+  - `TestProj18_SubagentWorktreeIsTheSessions`: a meta naming `<repo>/.claude/worktrees/agent-a1`, born after the uuid's acquisition, merged → `remove`, its `worktreeBranch` named;
+  - `TestProj18_HeadLogBranchOnlyCheckedOutIsKept`: in an owned worktree, `checkout -b mine` → named; `checkout other` (created earlier) and `checkout late` (created after the session start, in another worktree) → `not_this_session`;
+  - `TestHeadLogBranchSwitchedToElsewhereIsNotOurs`, `TestHeadLogOtherLogUnreadableIsCreatedUnknown`, `TestHeadLogOwnLogUnreadableFailsPlan`, `TestHeadLogWorksForCodexRows`;
+  - `TestScratchMetaSampleAdopts`, `TestSubagentRecordKeysRenamedGivesNote`, `TestSubagentRecordsMovedGivesNote` (older records stay, a newer `agent-<id>` worktree has none), `TestPrunedTranscriptGivesNoNote`, `TestSubagentMetaUnreadableFailsPlan`, `TestProjectsDirMissingGivesNote`;
+  - `TestProj18_SessionInTheWorktreeKeepsIt` cases: the deleted row alone → removed; with a live terminal → kept; another session in it → kept;
+  - `TestClaudeSessionFilesCapGatesSubagentAndScratch` (codex row: 2a/2b adopt nothing, 2c still names);
+  - Swift: `testSubagentRecordsNoteLine` (the notice line verbatim from spec §3, also when nothing was removed), `testNotesAbsentDecodesEmpty`.
+- [ ] Run `go test ./internal/sessioncleanup` and `make test-swift FILTER='SessionAutoCleanupOutcome|SessionCleanupNotice'`. Expected: the new ones FAIL.
+- [ ] **Implement** the removals and the two sources. Every catch and birth rule of spec §2 applies to the new sources as to a ledger row.
+- [ ] **Docs:** PROJ-18 inventory lines say "subagent records, the Claude scratchpad and the owned worktrees' HEAD logs" instead of `command` rows; drop the 512 cap line; the feature note likewise.
+- [ ] Run `go test ./internal/sessioncleanup ./internal/db ./internal/sessionagent ./cmd -run 'Session|Ledger|Cleanup'`, `make test-swift FILTER='SessionAutoCleanup|SessionCleanup|TerminalSessionQueries'`, `make kit-test FILTER=AgentCapabilities`, `make lint-diff`, `make lint-swift`. Expected: PASS; `grep -rn gitcmdparse .` finds nothing outside git history.
+- [ ] Commit `feat(sessioncleanup): ownership from facts — subagent records and HEAD logs (#1716)`.
+
+**Task 9 focus:** a branch only switched to (owner's, another session's, younger than the session) is never removed; a format change of Claude Code shows the note without noise from pruned transcripts; a Codex row still gets 2c.
+
 ### Gate (controller, once, before the umbrella PR leaves draft)
+
+- [ ] Read-only check of the owner's install (`sqlite3 -readonly`, never a branch CLI): `goose_db_version` has no umbrella version applied and `terminal_sessions` has no `delete_requested_at` (spec §6). Nothing from it goes into the repo.
 
 - [ ] `make test`, `make test-swift`, `make lint-all`, `go test ./cmd/...`. All green; paste the tails into the PR.
 - [ ] Final review of the umbrella diff with `debate-review`.
