@@ -4,8 +4,10 @@ import WatchtowerKit
 /// The Calendar tab (mockup 7): the week strip (seven days from today, the
 /// selected day filled in the accent colour), the selected day's agenda as
 /// the Desktop's calendar rows (`CalendarRow`: now green, next blue) with the
-/// red now line on today, the current or next meeting with Record and Prep, a red mic button for a voice note, and the
-/// waveform button (with a new-recap badge) to the Recordings list.
+/// red now line on today, the current or next meeting with Record and Prep,
+/// and the labelled Recordings button (with a new-recap badge) to the
+/// Recordings list, where a voice note is recorded (#1789: one recording
+/// button on the agenda, none floating over its last events).
 struct AgendaView: View {
     @Environment(AppEnvironment.self) private var env
     @State private var selectedDay = Calendar.current.startOfDay(for: Date())
@@ -35,8 +37,8 @@ struct AgendaView: View {
         }
     }
 
-    /// C1: the waveform icon, with an accent badge counting new recaps. It
-    /// speaks "Recordings · 1 new".
+    /// C1: "Recordings" with the waveform, and an accent badge counting new
+    /// recaps. It speaks "Recordings · 1 new".
     private var recordingsButton: some View {
         let newCount = RecordingsListModel.newCount(
             transcripts: env.calendarReplica.snapshot.transcripts,
@@ -45,8 +47,13 @@ struct AgendaView: View {
         return Button {
             env.navigation.calendarPath.append(.recordings)
         } label: {
-            Image(systemName: "waveform")
-                .frame(minWidth: PhoneMetrics.minTouch, minHeight: PhoneMetrics.minTouch)
+            // An HStack, not a Label: the toolbar draws a Label icon-only.
+            HStack(spacing: Spacing.compact) {
+                Image(systemName: "waveform")
+                Text(RecordingsListModel.screenTitle)
+            }
+            .padding(.horizontal, Spacing.regular)
+            .frame(minWidth: PhoneMetrics.minTouch, minHeight: PhoneMetrics.minTouch)
                 .overlay(alignment: .topTrailing) {
                     if newCount > 0 {
                         CountBadge(count: newCount, tone: .accent).offset(x: Spacing.tight, y: Spacing.small)
@@ -89,16 +96,9 @@ struct AgendaView: View {
                 }
                 .padding(.horizontal, Spacing.large)
             }
-            // The mic button takes room at the bottom: the list's last row
-            // ends above it.
-            .safeAreaInset(edge: .bottom, alignment: .trailing, spacing: 0) {
-                voiceNoteButton
-                    .padding(.trailing, Spacing.large)
-                    .padding(.bottom, Spacing.medium)
-            }
             .task(id: AgendaScrollKey(day: selectedDay, rowID: agenda.highlightedRowID)) {
-                // The current or next meeting sits mid-screen, never under
-                // the button at rest; without one the day stays at the top.
+                // The current or next meeting sits mid-screen; without one
+                // the day stays at the top.
                 let key = AgendaScrollKey(day: selectedDay, rowID: agenda.highlightedRowID)
                 guard let row = AgendaScroll.target(for: key, scrolledDay: scrolledDay) else { return }
                 scrolledDay = key.day
@@ -111,28 +111,10 @@ struct AgendaView: View {
         selectedDay = Calendar.current.date(byAdding: .day, value: 7 * weeks, to: selectedDay) ?? selectedDay
     }
 
-    private var voiceNoteButton: some View {
-        Button {
-            Task { await env.recorder.recordVoiceNote() }
-        } label: {
-            Image(systemName: "mic.fill")
-                .font(.title2)
-                .foregroundStyle(.white)
-                .frame(width: AgendaMetrics.voiceButton, height: AgendaMetrics.voiceButton)
-                .background(PhoneTone.red.color, in: Circle())
-                .shadow(color: FloatingShadow.color, radius: FloatingShadow.radius, y: FloatingShadow.y)
-        }
-        // One microphone: off while any hub's capture runs.
-        .disabled(!env.canStartCapture)
-        .opacity(env.canStartCapture ? 1 : PhoneOpacity.dimmed)
-        .accessibilityLabel("Record a voice note")
-    }
 }
 
 /// The agenda's own sizes, beside the parts' `PhoneMetrics`.
 private enum AgendaMetrics {
-    /// The round voice-note button.
-    static let voiceButton: CGFloat = 56
     /// The event dot under a day.
     static let eventDot: CGFloat = 4
     /// The now line's rule.
@@ -192,8 +174,9 @@ private struct WeekStripView: View {
 }
 
 /// One event: the Desktop's calendar row (an all-day event, a plate with
-/// "All day" in the time column), the recording pills and, on the current
-/// or next meeting, Record and Prep under it, aligned with the title.
+/// "All day" in the time column) with its recording pills inside the plate
+/// under the title (#1789: between two plates they read as the next
+/// event's), and, on the current or next meeting, Record and Prep under it.
 private struct AgendaEventRow: View {
     @Environment(AppEnvironment.self) private var env
     let card: EventCardModel
@@ -206,31 +189,22 @@ private struct AgendaEventRow: View {
                 CalendarRow(model: CalendarRowModel(
                     start: meeting.start, end: meeting.end, title: card.title, location: card.venue ?? "",
                     attendees: card.attendeeCount, isNext: card.isHighlighted, now: now
-                ))
+                )) { pills }
             } else {
-                AllDayRow(title: card.title, detail: card.venue)
+                AllDayRow(title: card.title, detail: card.venue) { pills }
             }
-            if !card.pills.isEmpty || card.isHighlighted {
-                VStack(alignment: .leading, spacing: Spacing.regular) {
-                    if !card.pills.isEmpty {
-                        FlowRow {
-                            ForEach(card.pills) { Pill(text: $0.text, tone: $0.tone) }
+            if card.isHighlighted {
+                // Leading-aligned; the 44 pt Record of Now (Global Constraints).
+                HStack(spacing: Spacing.regular) {
+                    if let meeting = card.meetingEvent {
+                        RecordButton {
+                            Task { await env.recorder.recordMeeting(meeting) }
                         }
+                        .disabled(!env.canStartCapture)
                     }
-                    if card.isHighlighted {
-                        // Leading-aligned; the 44 pt Record of Now (Global Constraints).
-                        HStack(spacing: Spacing.regular) {
-                            if let meeting = card.meetingEvent {
-                                RecordButton {
-                                    Task { await env.recorder.recordMeeting(meeting) }
-                                }
-                                .disabled(!env.canStartCapture)
-                            }
-                            Button("Prep", action: open)
-                                .buttonStyle(.bordered)
-                                .controlSize(.large)
-                        }
-                    }
+                    Button("Prep", action: open)
+                        .buttonStyle(.bordered)
+                        .controlSize(.large)
                 }
                 .padding(.horizontal, Spacing.medium)
             }
@@ -240,13 +214,25 @@ private struct AgendaEventRow: View {
         .onTapGesture(perform: open)
         .accessibilityElement(children: .contain)
     }
+
+    /// The recap / progress pills, inside the plate; nothing without any.
+    @ViewBuilder
+    private var pills: some View {
+        if !card.pills.isEmpty {
+            FlowRow {
+                ForEach(card.pills) { Pill(text: $0.text, tone: $0.tone) }
+            }
+            .padding(.top, Spacing.tight)
+        }
+    }
 }
 
 /// An all-day event: the calendar row's plate with "All day" where the
-/// time goes.
-private struct AllDayRow: View {
+/// time goes, and the same footer slot as `CalendarRow`.
+private struct AllDayRow<Footer: View>: View {
     let title: String
     let detail: String?
+    @ViewBuilder var footer: Footer
 
     var body: some View {
         HStack(alignment: .top, spacing: Spacing.medium) {
@@ -259,6 +245,7 @@ private struct AllDayRow: View {
                 if let detail {
                     Text(detail).font(TypeScale.meta).foregroundStyle(.secondary).lineLimit(1)
                 }
+                footer
             }
             Spacer(minLength: Spacing.small)
         }
