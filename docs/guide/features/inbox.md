@@ -22,7 +22,7 @@ replaces: [inbox-filters]
 changed: The filters above the list are gone; folders you arrange replace them.
 -->
 
-Three columns: the folder menu (**⌥⌘S**, View → **Hide Inbox Folders**, folds it), the folder's list and the reading pane. The menu lists the root, **Inbox**, **Needs approval**, then your folders as a tree under **Folders**, each with its own count. It opens on today's brief, or on the card you last opened in that folder.
+Three columns: the folder menu (**⌥⌘S**, View → **Hide Inbox Folders**, folds it), the folder's list and the reading pane. The menu lists the root folder **Inbox**, then **Needs approval**, then your folders as a tree under **Folders**, each with its own count. It opens on today's brief, or on the card you last opened in that folder.
 
 An automation's cards go to its folder, the root unless you moved it; **Move to Folder** moves its earlier cards too, and a recipe can name a folder for one card ([which folder a card goes to](automations-inbox-buttons.md#which-folder-a-card-goes-to)).
 
