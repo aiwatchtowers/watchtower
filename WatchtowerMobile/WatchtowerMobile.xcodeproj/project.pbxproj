@@ -24,6 +24,7 @@
 		09617116645C4C21D6186218 /* StartSessionFormModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB2B9F86CF3089D68AE6D92D /* StartSessionFormModel.swift */; };
 		09B4E7B56695431319CFE93C /* FakeAppAttest.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1E165BA99AF507DD1630888 /* FakeAppAttest.swift */; };
 		0A54345DFDE0F6C63CD51F01 /* AppRootRelinkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 053CC4A750066E97EA5E2292 /* AppRootRelinkTests.swift */; };
+		0A7A9BD20E29590C78DE22F9 /* WorkchatStateCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33BEBF3341F3F5CE217A9834 /* WorkchatStateCard.swift */; };
 		0ADDDA35A16D26B70C26EB04 /* SessionReportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAD7E1A1B3D8C6356582CA3F /* SessionReportView.swift */; };
 		0AFE1BA59E2563FDE53F7FB9 /* EventRecordingStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6958689BAB5EA3759F3BF525 /* EventRecordingStatus.swift */; };
 		0C39756A17F727F6090C782D /* PriorityMark.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2074A6BD5934DD6A23F717F4 /* PriorityMark.swift */; };
@@ -117,6 +118,7 @@
 		50BA1DEC7AE8647281478CA1 /* NewBoardTargetSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1508284C80622A164AB320D1 /* NewBoardTargetSheet.swift */; };
 		517133D8B559D38811A85FE0 /* RelayStandControl.swift in Sources */ = {isa = PBXBuildFile; fileRef = E155AE7F17A95371CE9C1626 /* RelayStandControl.swift */; };
 		51B012D3BEEDE7C564291497 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55D1C1D5173ED2758596AA8F /* SettingsView.swift */; };
+		52E0CDDF53F50FA096232AA7 /* WorkchatStateCardTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A17B38FC88C637F01D152D /* WorkchatStateCardTests.swift */; };
 		539249EE16F12B661A6D8359 /* WorkbenchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43762D471529DE769FDD240A /* WorkbenchView.swift */; };
 		5499E788A16EA0CBDE2FD812 /* TargetStatusStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D403CB3F9A7FA2CB7C28C34 /* TargetStatusStyle.swift */; };
 		54E8066B476CBC3BC9835B67 /* CalendarRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 598DCCEEF7E141F8F086FB80 /* CalendarRow.swift */; };
@@ -402,6 +404,7 @@
 		321E6860B503B814C29C52CE /* Card.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Card.swift; sourceTree = "<group>"; };
 		32467BA6794CDAB20E3FDE26 /* NotDeliveredModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotDeliveredModel.swift; sourceTree = "<group>"; };
 		33A9A8CE46252B64C968083D /* SendGuard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SendGuard.swift; sourceTree = "<group>"; };
+		33BEBF3341F3F5CE217A9834 /* WorkchatStateCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkchatStateCard.swift; sourceTree = "<group>"; };
 		3423ED435746DC6583E674BC /* FakeHostedRelay+Zones.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "FakeHostedRelay+Zones.swift"; sourceTree = "<group>"; };
 		34D1B5A60BD91F03BDAA61C4 /* PushLaunchSocketTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushLaunchSocketTests.swift; sourceTree = "<group>"; };
 		359CFF7702DA1B4BDAC6D0D1 /* AskDraft.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AskDraft.swift; sourceTree = "<group>"; };
@@ -583,6 +586,7 @@
 		BEDADC4689182E2C4442544B /* ScreenshotTourTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenshotTourTests.swift; sourceTree = "<group>"; };
 		BFCBBC92D3DFC415396C183C /* CheckAskView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CheckAskView.swift; sourceTree = "<group>"; };
 		C01947B686F94F5886C734CB /* Bars.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Bars.swift; sourceTree = "<group>"; };
+		C1A17B38FC88C637F01D152D /* WorkchatStateCardTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkchatStateCardTests.swift; sourceTree = "<group>"; };
 		C3F9240000D56B30D4AB7332 /* NotifyContent.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = NotifyContent.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		C68A6FC9A37EB91641EBFCAB /* DeviceIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceIdentity.swift; sourceTree = "<group>"; };
 		C7D008B26401148680559F68 /* AskFormModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AskFormModel.swift; sourceTree = "<group>"; };
@@ -837,6 +841,7 @@
 				AABA83461C8013610E3BDCB4 /* WelcomeTests.swift */,
 				06939E899729BD12C86EE8EE /* WorkbenchSessionsOrderTests.swift */,
 				5EDE2898F38881978E85D337 /* WorkbenchWiringTests.swift */,
+				C1A17B38FC88C637F01D152D /* WorkchatStateCardTests.swift */,
 				14A19B11833D779D2BDA2BE0 /* WorkchatWiringTests.swift */,
 				EEFE28A121A72623301B09B2 /* Support */,
 			);
@@ -988,6 +993,7 @@
 				FF4654FD829A3CB9BFC8590E /* WorkbenchReplicaModel.swift */,
 				43762D471529DE769FDD240A /* WorkbenchView.swift */,
 				B6761AE7B60B6C8501900869 /* WorkchatModel.swift */,
+				33BEBF3341F3F5CE217A9834 /* WorkchatStateCard.swift */,
 				E34FE8AB2E6D5D3AE4DF1B07 /* WorkchatView.swift */,
 			);
 			path = Workbench;
@@ -1533,6 +1539,7 @@
 				539249EE16F12B661A6D8359 /* WorkbenchView.swift in Sources */,
 				CE73BE7359EBFEB63F294C2E /* WorkchatComposerBar.swift in Sources */,
 				719AEE88A2069575C8634C54 /* WorkchatModel.swift in Sources */,
+				0A7A9BD20E29590C78DE22F9 /* WorkchatStateCard.swift in Sources */,
 				BC527F67856FEBEE8A0EC37D /* WorkchatView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -1649,6 +1656,7 @@
 				EF815CB0B85756C4BAAE485A /* WorkbenchFixtures.swift in Sources */,
 				BB7B446082CF5A851F4A972D /* WorkbenchSessionsOrderTests.swift in Sources */,
 				6E20FEC5D76DB30D07FE3BD4 /* WorkbenchWiringTests.swift in Sources */,
+				52E0CDDF53F50FA096232AA7 /* WorkchatStateCardTests.swift in Sources */,
 				9D354B3D6942E0AD14E45ACE /* WorkchatWiringTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

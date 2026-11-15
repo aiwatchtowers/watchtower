@@ -39,6 +39,8 @@ changed: A session's chat on the phone now takes your lines and answers.
 
 Tap a session in **Now** or a workbench. The top shows the workbench, the title and one state line: a timer like **Working · 3:14** while the agent works, an age like **Needs approval · 1m** while it waits on you. Your lines sit on the right, the agent's text on the left. **Brief** opens what the session was told at start, and a subagent row opens that subagent's own chat, which is read-only.
 
+Under it, once the turn is over, a card says what's next, even before the chat loads: a finished session's summary, PR and **Report**; after an error, **Continue** (sends "Continue") and **New session** on its target; a session no longer running, **New session**. The phone can't restart a session.
+
 ### Answer what waits at the bottom
 
 A permission prompt and the session's open asks sit at the end of the chat. **Allow once** and **Deny** answer the prompt (see [iPhone: permission prompts and interrupts](iphone-agent-prompts.md)). A question with suggested answers takes one tap; other asks have **Open** for the full form.
