@@ -2,6 +2,7 @@ import AppKit
 import DesignKit
 import SwiftUI
 import WatchtowerCore
+import WatchtowerChatText
 
 /// A finished answer's table (spec 2026-10-24 §5c, ask #541): one
 /// read-only, selectable native text view instead of a selectable SwiftUI

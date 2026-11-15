@@ -60,7 +60,7 @@ jobs:
             guide_input:
               - 'docs/guide/reference/keyboard-shortcuts.md'
             mobile:
-              - '{WatchtowerMobile/**,WatchtowerKit/**,Makefile,.github/workflows/ci.yml}'
+              - '{WatchtowerMobile/**,WatchtowerKit/**,WatchtowerChatText/**,Makefile,.github/workflows/ci.yml}'
             guide:
               - 'docs/guide/**'
 
@@ -394,6 +394,10 @@ jobs:
         working-directory: WatchtowerKit
         run: swiftlint lint --strict
 
+      - name: SwiftLint (chat text package)
+        working-directory: WatchtowerChatText
+        run: swiftlint lint --strict
+
       # The iPhone app has its own config: the `orange_outside_phone_tone`
       # rule is the only enforcement of "orange = waiting for you".
       - name: SwiftLint (mobile app)
@@ -404,6 +408,11 @@ jobs:
       - name: Test (mobile Kit)
         timeout-minutes: 15
         working-directory: WatchtowerKit
+        run: swift test
+
+      - name: Test (chat text package)
+        timeout-minutes: 10
+        working-directory: WatchtowerChatText
         run: swift test
 
   swift-test:

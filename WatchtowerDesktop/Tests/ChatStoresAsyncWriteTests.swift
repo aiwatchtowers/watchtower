@@ -3,6 +3,7 @@ import WatchtowerCore
 import WatchtowerTestSupport
 import XCTest
 @testable import WatchtowerDesktop
+import WatchtowerChatText
 
 /// Board #670 phase 2b-2: the chat stores await the writer instead of
 /// writing on the main thread. Each test holds GRDB's writer queue

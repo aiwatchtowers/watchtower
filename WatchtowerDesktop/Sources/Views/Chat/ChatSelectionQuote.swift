@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import WatchtowerCore
+import WatchtowerChatText
 
 /// What a feed offers for a selection in an answer: "Ask about this", which
 /// hands the selected passage to the composer's quote batch. Only the main

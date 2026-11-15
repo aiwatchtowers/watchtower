@@ -1,6 +1,7 @@
 import AppKit
 import WatchtowerCore
 import WebKit
+import WatchtowerChatText
 
 /// Print… for an html or document artifact: the standard print panel, whose
 /// PDF menu is the PDF export. The page is laid out in an offscreen web view

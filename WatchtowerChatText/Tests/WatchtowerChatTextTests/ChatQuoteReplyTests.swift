@@ -1,5 +1,5 @@
 import XCTest
-@testable import WatchtowerCore
+@testable import WatchtowerChatText
 
 final class ChatQuoteReplyTests: XCTestCase {
     /// `NSTextView` reports UTF-16 offsets: an emoji is two of them.

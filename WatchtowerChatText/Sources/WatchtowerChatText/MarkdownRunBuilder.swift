@@ -1,7 +1,7 @@
 import Foundation
 
 /// A list item's marker, drawn on the item's first paragraph.
-package enum MarkdownRunMarker: Hashable, Sendable {
+public enum MarkdownRunMarker: Hashable, Sendable {
     case bullet
     case number(Int)
     case checked
@@ -10,37 +10,37 @@ package enum MarkdownRunMarker: Hashable, Sendable {
 
 /// One container a paragraph sits in, outermost first: a block quote (its
 /// bar is one per quote, `id` unique within the run) or a list item.
-package enum MarkdownRunLevel: Hashable, Sendable {
+public enum MarkdownRunLevel: Hashable, Sendable {
     case quote(id: Int)
     case listItem(MarkdownRunMarker)
 }
 
 /// One paragraph of a text run, with everything the app needs to style it
 /// as `MarkdownBlockView` lays the same block out.
-package struct MarkdownRunParagraph: Hashable, Sendable {
-    package enum Kind: Hashable, Sendable {
+public struct MarkdownRunParagraph: Hashable, Sendable {
+    public enum Kind: Hashable, Sendable {
         case body
         case heading(level: Int)
     }
 
-    package let kind: Kind
-    package let inlines: [MarkdownInline]
-    package let levels: [MarkdownRunLevel]
+    public let kind: Kind
+    public let inlines: [MarkdownInline]
+    public let levels: [MarkdownRunLevel]
     /// The first level that starts on this paragraph: the markers of the
     /// list items from here on are drawn on it. `levels.count` = none.
-    package let startsAt: Int
+    public let startsAt: Int
     /// The gap above it: the spacing of the innermost stack that holds both
     /// it and the paragraph before (`blockSpacing` or `itemSpacing`); 0 for
     /// a run's first paragraph.
-    package let spacingBefore: Double
+    public let spacingBefore: Double
 }
 
 /// A stretch of prose drawn by one native text view.
-package struct MarkdownRun: Hashable, Sendable {
-    package let paragraphs: [MarkdownRunParagraph]
+public struct MarkdownRun: Hashable, Sendable {
+    public let paragraphs: [MarkdownRunParagraph]
 }
 
-package enum MarkdownSegment: Hashable, Sendable {
+public enum MarkdownSegment: Hashable, Sendable {
     case textRun(MarkdownRun)
     /// A block that keeps its own view: a code block, a table, a rule, or a
     /// list or quote holding one.
@@ -53,20 +53,20 @@ package enum MarkdownSegment: Hashable, Sendable {
 /// styles a run (`MarkdownRunText`) with the fonts, colours and spacing the
 /// SwiftUI path (`MarkdownBlockView`) uses — the spacing constants below are
 /// shared by both.
-package enum MarkdownRunBuilder {
+public enum MarkdownRunBuilder {
     /// Between the blocks of one stack (`MarkdownBlocksView`).
-    package static let blockSpacing: Double = 8
+    public static let blockSpacing: Double = 8
     /// Between the items of one list (`MarkdownListView`).
-    package static let itemSpacing: Double = 4
+    public static let itemSpacing: Double = 4
 
     private static let memo = MarkdownMemo<[MarkdownBlock], [MarkdownSegment]>(totalCostLimit: 1 << 16)
 
-    package static func segments(_ blocks: [MarkdownBlock]) -> [MarkdownSegment] {
+    public static func segments(_ blocks: [MarkdownBlock]) -> [MarkdownSegment] {
         memo.value(for: blocks, cost: { max($0.count, 1) }, build: { build(blocks) })
     }
 
     /// `segments` without the memo.
-    package static func build(_ blocks: [MarkdownBlock]) -> [MarkdownSegment] {
+    public static func build(_ blocks: [MarkdownBlock]) -> [MarkdownSegment] {
         var segments: [MarkdownSegment] = []
         var emitter = Emitter()
         func flush() {
@@ -161,7 +161,7 @@ package enum MarkdownRunBuilder {
 
 /// A memo for pure renders keyed by a `Hashable` value, on `NSCache`
 /// (evicts under memory pressure; `cost` bounds the total).
-package final class MarkdownMemo<Key: Hashable, Value>: @unchecked Sendable {
+public final class MarkdownMemo<Key: Hashable, Value>: @unchecked Sendable {
     private final class Box: NSObject {
         let key: Key
         let hashCode: Int
@@ -186,11 +186,11 @@ package final class MarkdownMemo<Key: Hashable, Value>: @unchecked Sendable {
 
     private let cache = NSCache<Box, Entry>()
 
-    package init(totalCostLimit: Int) {
+    public init(totalCostLimit: Int) {
         cache.totalCostLimit = totalCostLimit
     }
 
-    package func value(for key: Key, cost: (Value) -> Int = { _ in 1 }, build: () -> Value) -> Value {
+    public func value(for key: Key, cost: (Value) -> Int = { _ in 1 }, build: () -> Value) -> Value {
         let box = Box(key)
         if let hit = cache.object(forKey: box) { return hit.value }
         let value = build()

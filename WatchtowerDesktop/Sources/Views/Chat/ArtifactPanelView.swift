@@ -1,5 +1,6 @@
 import SwiftUI
 import WatchtowerCore
+import WatchtowerChatText
 
 struct ArtifactPanelView: View {
     @Bindable var model: ArtifactPanelModel

@@ -1,5 +1,6 @@
 import SwiftUI
 import WatchtowerCore
+import WatchtowerChatText
 
 /// What a row can ask of the thread. Closures are rebuilt per render and are
 /// deliberately excluded from `ChatMessageRow`'s equality. A nil action hides
