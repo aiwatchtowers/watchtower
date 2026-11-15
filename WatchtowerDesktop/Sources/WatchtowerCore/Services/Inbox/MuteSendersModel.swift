@@ -62,6 +62,7 @@ package final class MuteSendersModel {
             rows = Array(loaded.filter { !$0.address.isEmpty }.prefix(Self.limit))
             loadError = nil
         } catch {
+            InboxLog.logger.error("mute senders: load failed (\(InboxLog.errorClass(error), privacy: .public))")
             rows = []
             loadError = error.localizedDescription
         }
@@ -87,6 +88,10 @@ package final class MuteSendersModel {
                 try await mute(address)
                 muted.insert(address)
             } catch {
+                InboxLog.logger.error("""
+                    mute senders: stopped after \(muted.count) of \(ticked.count) \
+                    (\(InboxLog.errorClass(error), privacy: .public))
+                    """)
                 let message = error.localizedDescription
                 failureLine = "Muted \(muted.count) of \(ticked.count). \(message)"
                 return .partial(done: muted.count, of: ticked.count, error: message)

@@ -889,6 +889,8 @@ package final class ActionStripViewModel {
             let dropped = try await dbPool.write { try IdeaQueries.dropMany($0, ids: numeric) }
             result = .done(count: dropped, skipped: ids.count - dropped)
         } catch {
+            InboxLog.logger.error(
+                "clear old ideas: write of \(numeric.count) failed (\(InboxLog.errorClass(error), privacy: .public))")
             result = .failed(error.localizedDescription)
         }
         await refresh()
@@ -941,6 +943,7 @@ package final class ActionStripViewModel {
         do {
             try await writeSenderMute(key)
         } catch {
+            InboxLog.logger.error("mute sender: write failed (\(InboxLog.errorClass(error), privacy: .public))")
             textRowErrors[ref] = InboxRowFailure(message: error.localizedDescription, press: .mute)
             return
         }

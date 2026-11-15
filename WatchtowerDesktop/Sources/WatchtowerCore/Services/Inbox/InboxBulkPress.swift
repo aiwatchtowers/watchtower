@@ -72,6 +72,7 @@ package final class InboxBulkPressModel {
                 // swiftlint:disable:next empty_count
                 state = planned.count == 0 ? .finished(.done(count: 0, skipped: 0)) : .confirming(planned)
             } catch {
+                InboxLog.logger.error("bulk press: plan failed (\(InboxLog.errorClass(error), privacy: .public))")
                 state = .finished(.failed(error.localizedDescription))
             }
         }
@@ -94,6 +95,9 @@ package final class InboxBulkPressModel {
             do {
                 state = .finished(try await apply(planned.ids))
             } catch {
+                InboxLog.logger.error("""
+                    bulk press: apply of \(planned.ids.count) failed (\(InboxLog.errorClass(error), privacy: .public))
+                    """)
                 state = .finished(.failed(error.localizedDescription))
             }
         }
