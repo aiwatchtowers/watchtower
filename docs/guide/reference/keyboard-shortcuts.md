@@ -1,6 +1,6 @@
 # Keyboard shortcuts
 
-Every key equivalent in the app, by area. **Help → Keyboard Shortcuts** shows the same list in a window. On a workbench page the **Workbench** menu holds the workbench's chords and the **Navigate** menu the Files editor's; the tray's **New Voice Idea** shows ⌃⌥D. Some chords differ by tab: ⌘K is **Search chats** in Chats and **Go to…** on the Workbench tab, ⌘N is **New chat** in Chats and **New target** in Targets.
+Every key equivalent in the app, by area. **Help → Keyboard Shortcuts** shows the same list in a window. On a workbench page the **Workbench** menu holds the workbench's chords and the **Navigate** menu the Files editor's; the tray's **New Voice Idea** shows ⌃⌥D. Some chords differ by tab: ⌘K is **Search chats** in Chats, **Go to…** on the Workbench tab and **Hand to Agent…** on an Inbox row, ⌘N is **New chat** in Chats and **New target** in Targets.
 
 ## By area
 
@@ -120,6 +120,14 @@ After a click on the panel's empty space, a section label or the older header.
 | **Esc** | Close the card |
 | **⌘Return** | Create (new idea) |
 | **⌥⌘S** | Show or hide the Inbox folders |
+| **J / K** | Move between rows (Waiting for me, Mail waiting) |
+| **Return** | Open the focused row |
+| **E** | Done; on a sender, Mark All Done… |
+| **R** | Reply… (a Slack, Jira or Linear row) |
+| **S** | Open the row's Snooze menu |
+| **⌘K** | Hand to Agent… (a Waiting for me row) |
+| **M** | Mute the focused sender (Mail waiting) |
+| **K / D / L / T** | Keep, Drop, Later, Make a Target… (Idea finder's card) |
 
 ### Workbench
 <!-- learn
