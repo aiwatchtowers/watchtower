@@ -160,3 +160,19 @@ func TestFILES01_ChatHandlers(t *testing.T) {
 	}
 	sink.AssertClean(t)
 }
+
+// TestFILES01_ChatAsyncPanic: a panic after an answer is contained and
+// logged with its value's type and the stack, never the value.
+func TestFILES01_ChatAsyncPanic(t *testing.T) {
+	sink := logcanary.Capture(t)
+	c := newChatEnv(t, false)
+	if !c.h.chatAsync("chat_action_apply", func(context.Context) { panic(logcanary.Text("value")) }) {
+		t.Fatal("not started")
+	}
+	c.h.WaitChat()
+	got := sink.String()
+	if !strings.Contains(got, "chat_action_apply panicked (string)") || !strings.Contains(got, "goroutine") {
+		t.Fatalf("log %q", got)
+	}
+	sink.AssertClean(t)
+}

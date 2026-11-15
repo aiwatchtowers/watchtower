@@ -9,6 +9,7 @@ import (
 	"watchtower/internal/chatstore"
 	"watchtower/internal/hub/actions"
 	"watchtower/internal/hub/chatrun"
+	"watchtower/internal/hub/wire"
 )
 
 // chatNew is `chat_new` (params {client_key, project_id?, routing?}): a new
@@ -62,7 +63,7 @@ func (h *Handlers) chatTurn(ctx context.Context, r actions.Request) actions.Outc
 			return *refused
 		}
 		if c.Runner == nil {
-			return failed(reasonNotSupported, chatOffMessages["runner_down"])
+			return failed(reasonNotSupported, chatOffMessages[wire.ChatOffRunnerDown])
 		}
 		st, err := c.Runner.Run(ctx, req)
 		switch {
@@ -141,7 +142,7 @@ func (h *Handlers) chatCancel(ctx context.Context, r actions.Request) actions.Ou
 			return failed(reasonInvalidParams, "chat_cancel needs a conversation_id and a turn_id")
 		}
 		if c.Runner == nil {
-			return failed(reasonNotSupported, chatOffMessages["runner_down"])
+			return failed(reasonNotSupported, chatOffMessages[wire.ChatOffRunnerDown])
 		}
 		ok, err := c.Runner.Cancel(conv, turn)
 		if err != nil {

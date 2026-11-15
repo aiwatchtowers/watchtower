@@ -111,7 +111,7 @@ func TestRuntime_ChatrunInertWithoutDatabaseFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := &hubRuntime{kr: kr}
-	if r := h.newChatRunner(Options{DB: d, Dir: t.TempDir()}, nil); r != nil {
+	if r := h.newChatRunner(Options{DB: d, Dir: t.TempDir()}, nil, func(func()) bool { return true }); r != nil {
 		t.Error("a chat runner over a database with no file")
 	}
 }

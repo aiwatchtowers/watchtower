@@ -269,3 +269,26 @@ func TestChatPush_DiscussChatNeverPushes(t *testing.T) {
 		t.Errorf("a Discuss chat pushed: %+v", r.sent)
 	}
 }
+
+// TestChatPush_TurnEndRunsOffTheRunner: the runner's OnTurnEnd only hands
+// the push to the hub's tracked background (the push reads the database);
+// a hub that stops refuses it and nothing is pushed.
+func TestChatPush_TurnEndRunsOffTheRunner(t *testing.T) {
+	r := newChatPushRig(t)
+	h := &hubRuntime{}
+	h.chatPush.Store(r.w)
+	var queued []func()
+	end := h.chatTurnEnded(func(work func()) bool { queued = append(queued, work); return true })
+	end(r.conv, "t1", chatstore.StatusComplete)
+	if len(r.sent) != 0 || len(queued) != 1 {
+		t.Fatalf("pushed on the runner's goroutine: %d sent, %d queued", len(r.sent), len(queued))
+	}
+	queued[0]()
+	r.only("answer", "Answer ready")
+
+	stopping := h.chatTurnEnded(func(func()) bool { return false })
+	stopping(r.conv, "t2", chatstore.StatusComplete)
+	if len(r.sent) != 1 {
+		t.Fatalf("pushed while the hub stops: %+v", r.sent)
+	}
+}

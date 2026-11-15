@@ -236,7 +236,7 @@ func (h *hubRuntime) buildWiring(o Options, st *state.Store, mode string, d *act
 	dbPath, _ := mainFile(context.Background(), o.DB)
 	w.titlesCtx, w.titlesCancel = context.WithCancel(context.Background())
 	w.chatStore = h.newChatStore(o, w)
-	w.chat = h.newChatRunner(o, w.chatStore)
+	w.chat = h.newChatRunner(o, w.chatStore, w.spawn)
 	var chatLive sources.LiveText
 	if w.chat != nil {
 		chatLive = w.chat
@@ -530,8 +530,10 @@ func (w *wiring) retrySeed(ctx context.Context) {
 
 // newChatRunner builds the hub's chat runner over o.DB and runs its startup
 // sweep (spec §4.3). A database with no file, or no path to this binary,
-// leaves the hub without one.
-func (h *hubRuntime) newChatRunner(o Options, store *chatstore.Store) *chatrun.Runner {
+// leaves the hub without one. spawn runs a turn end's push off the runner's
+// goroutine as tracked background work (wiring.spawn: close waits for it);
+// it refuses once the hub stops.
+func (h *hubRuntime) newChatRunner(o Options, store *chatstore.Store, spawn func(func()) bool) *chatrun.Runner {
 	path, err := mainFile(context.Background(), o.DB)
 	if err != nil {
 		log.Printf("hub: no chat runner: the database has no file")
@@ -553,18 +555,28 @@ func (h *hubRuntime) newChatRunner(o Options, store *chatstore.Store) *chatrun.R
 		Store: store,
 		// A turn's text, steps and end reach the phone's feed and list (the
 		// publisher coalesces the per-event calls).
-		OnChange: func(int64) { h.publishSoon(slices.KindChatFeed, slices.KindChatList) },
-		// The chat_answer push (spec §4.7).
-		OnTurnEnd: func(conv int64, turnID, status string) {
-			if p := h.chatPush.Load(); p != nil {
-				p.turnEnded(conv, turnID, status)
-			}
-		},
+		OnChange:  func(int64) { h.publishSoon(slices.KindChatFeed, slices.KindChatList) },
+		OnTurnEnd: h.chatTurnEnded(spawn),
 	})
 	if err := r.Sweep(); err != nil {
 		log.Printf("hub: the chat sweep failed (%s)", errClass(err))
 	}
 	return r
+}
+
+// chatTurnEnded is the runner's OnTurnEnd: the chat_answer push (spec
+// §4.7) is a database read and the pusher's enqueue, so it runs off the
+// runner's goroutine (OnTurnEnd must not block) through spawn.
+func (h *hubRuntime) chatTurnEnded(spawn func(func()) bool) func(conv int64, turnID, status string) {
+	return func(conv int64, turnID, status string) {
+		p := h.chatPush.Load()
+		if p == nil {
+			return
+		}
+		if !spawn(func() { p.turnEnded(conv, turnID, status) }) {
+			log.Printf("hub: chat %d turn %s ended while the hub stops: no push", conv, turnID)
+		}
+	}
 }
 
 // newChatStore is the hub's chat turn store: lease owner this hub, the
