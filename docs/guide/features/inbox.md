@@ -83,7 +83,7 @@ since: next
 action: nav:inbox
 -->
 
-The built-in **Mail waiting** lists your open mail after every sync, one row per sender, the busiest first: how many are open, how many came today and the newest subject. Its first line gives the top ten senders' share. Gmail mail leaves once you reply; Outlook and IMAP mail archives on its own. No AI calls.
+The built-in **Mail waiting** lists your open mail after every sync, one row per sender, the busiest first: how many are open, how many came today and the newest subject. Its first line gives the top ten senders' share. Gmail mail leaves once you reply; Outlook and IMAP mail archives on its own. If a run fails, the last list stays. No AI calls.
 
 ### Slack today
 <!-- learn
