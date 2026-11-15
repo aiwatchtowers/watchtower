@@ -202,18 +202,18 @@ func TestStampSyncedAt(t *testing.T) {
 }
 
 // first_cycle_at is written by the account's first run attempt; a retry of a
-// first run that did not finish (rate-limited here) keeps it.
+// first run that did not finish (Slack refused its search here) keeps it.
 func TestFirstCycleAt_WrittenOnceAndKeptOnRetry(t *testing.T) {
 	var mu gosync.Mutex
-	limited := true
+	failing := true
 	tss := []string{slackTS(syncedAtStart)}
 	ok := mentionSearch(&mu, &tss)
 	handler := func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
-		l := limited
+		f := failing
 		mu.Unlock()
-		if l {
-			rateLimitedSearch(w, r)
+		if f {
+			jsonOK(w, map[string]any{"ok": false, "error": "invalid_arguments"})
 			return
 		}
 		ok(w, r)
@@ -221,9 +221,9 @@ func TestFirstCycleAt_WrittenOnceAndKeptOnRetry(t *testing.T) {
 	now := syncedAtStart
 	ts := newSyncedAtSetup(t, handler, &now)
 
-	_ = ts.orch.Run(context.Background(), SyncOptions{})
+	require.Error(t, ts.orch.Run(context.Background(), SyncOptions{}), "the first attempt fails")
 	mu.Lock()
-	limited = false
+	failing = false
 	mu.Unlock()
 	now = syncedAtStart.Add(15 * time.Minute)
 	require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{}))

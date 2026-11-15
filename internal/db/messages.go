@@ -33,7 +33,7 @@ type MessageOpts struct {
 }
 
 // UpsertMessage inserts or updates a message. synced_at is written on insert
-// only (msg.SyncedAt, or the post time when 0).
+// only (msg.SyncedAt; 0 reads as the post time).
 func (db *DB) UpsertMessage(msg Message) error {
 	_, err := db.Exec(`
 		INSERT INTO messages (channel_id, ts, user_id, text, thread_ts, reply_count, is_edited, is_deleted, subtype, permalink, synced_at)
@@ -59,7 +59,7 @@ func (db *DB) UpsertMessage(msg Message) error {
 
 // UpsertMessageBatch inserts or updates a batch of messages within an existing
 // transaction, using a prepared statement for efficiency. synced_at is
-// written on insert only (msg.SyncedAt, or the post time when 0).
+// written on insert only (msg.SyncedAt; 0 reads as the post time).
 func (db *DB) UpsertMessageBatch(tx *sql.Tx, msgs []Message) (int, error) {
 	if tx == nil {
 		return 0, fmt.Errorf("UpsertMessageBatch: nil transaction")

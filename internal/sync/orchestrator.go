@@ -635,8 +635,8 @@ func (o *Orchestrator) stampSyncedAt(tsUnix float64) float64 {
 }
 
 // slackTSUnix is a Slack ts as messages.ts_unix computes it (the whole
-// seconds); 0 when unparseable, which leaves synced_at to the trigger
-// (the same post time).
+// seconds); 0 when unparseable, which leaves synced_at unstamped (read as
+// the same post time).
 func slackTSUnix(ts string) float64 {
 	sec, _, _ := strings.Cut(ts, ".")
 	n, err := strconv.ParseInt(sec, 10, 64)

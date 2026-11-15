@@ -2840,7 +2840,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_inbox_folders_one_root ON inbox_folders(ki
 CREATE INDEX IF NOT EXISTS idx_inbox_folders_parent ON inbox_folders(parent_id, position);
 CREATE INDEX IF NOT EXISTS coach_proposals_conversation ON coach_proposals(conversation_id);
 CREATE INDEX IF NOT EXISTS skill_pack_overlays_skill ON skill_pack_overlays(skill, id);
-CREATE INDEX IF NOT EXISTS idx_messages_synced_at ON messages(synced_at);
+CREATE INDEX IF NOT EXISTS idx_messages_synced_at ON messages(CASE WHEN synced_at = 0 THEN ts_unix ELSE synced_at END);
 CREATE TRIGGER IF NOT EXISTS kb_chunks_ai AFTER INSERT ON kb_chunks BEGIN
     INSERT INTO kb_fts(rowid, title, body, meta) VALUES (NEW.id, NEW.title, NEW.body, NEW.meta);
 END;
@@ -3244,11 +3244,6 @@ END;
 CREATE TRIGGER IF NOT EXISTS review_reviewer_threads_ad AFTER DELETE ON review_reviewer_threads
 BEGIN
   DELETE FROM chat_conversations WHERE id = OLD.conversation_id AND context_type = 'review_reviewer';
-END;
-CREATE TRIGGER IF NOT EXISTS messages_synced_at_fill AFTER INSERT ON messages
-WHEN NEW.synced_at = 0
-BEGIN
-  UPDATE messages SET synced_at = NEW.ts_unix WHERE rowid = NEW.rowid;
 END;
 """#
 }

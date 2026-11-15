@@ -17,21 +17,45 @@ func syncedAtOf(t *testing.T, d *DB, channelID, ts string) float64 {
 	return v
 }
 
-// An insert that does not stamp synced_at (a raw INSERT, a writer other than
-// the Slack sync, every existing test fixture) takes the post time, so the
-// detectors read it exactly as they read ts_unix before the column existed.
-func TestMessagesSyncedAtTrigger_FillsZero(t *testing.T) {
+// An insert that does not stamp synced_at (rows stored before migration
+// 00189, a writer other than the Slack sync, every existing test fixture)
+// keeps 0, and the detectors read it as the post time, exactly as they read
+// ts_unix before the column existed.
+func TestMessagesSyncedAt_UnstampedReadsAsPostTime(t *testing.T) {
 	d := openTestDB(t)
-	_, err := d.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('1:C1', '1000.000100', '1:U1', 'hi')`)
+	_, err := d.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('1:C1', '1500.000100', '1:U_OTHER', '<@U_ME> raw')`)
 	require.NoError(t, err)
-	require.NoError(t, d.UpsertMessage(Message{ChannelID: "1:C1", TS: "1001.000100", UserID: "1:U1", Text: "via upsert"}))
+	require.NoError(t, d.UpsertMessage(Message{ChannelID: "1:C1", TS: "1501.000100", UserID: "1:U_OTHER", Text: "<@U_ME> via upsert"}))
+	assert.Equal(t, 0.0, syncedAtOf(t, d, "1:C1", "1500.000100"))
+	assert.Equal(t, 0.0, syncedAtOf(t, d, "1:C1", "1501.000100"))
 
-	assert.Equal(t, 1000.0, syncedAtOf(t, d, "1:C1", "1000.000100"))
-	assert.Equal(t, 1001.0, syncedAtOf(t, d, "1:C1", "1001.000100"))
+	before, err := d.FindPendingMentions(1, "1:U_ME", 1400)
+	require.NoError(t, err)
+	assert.Len(t, before, 2, "posted after the watermark")
+	after, err := d.FindPendingMentions(1, "1:U_ME", 1600)
+	require.NoError(t, err)
+	assert.Empty(t, after, "posted before the watermark")
 }
 
-// The sync's own stamp wins over the trigger.
-func TestMessagesSyncedAtTrigger_ExplicitWins(t *testing.T) {
+// The detectors' stored-time expression is served by idx_messages_synced_at.
+func TestMessagesSyncedAt_IndexServesDetectorBound(t *testing.T) {
+	d := openTestDB(t)
+	rows, err := d.Query(`EXPLAIN QUERY PLAN SELECT 1 FROM messages m WHERE `+sinceStored+` > ?`, 1000.0)
+	require.NoError(t, err)
+	defer rows.Close()
+	var plan string
+	for rows.Next() {
+		var id, parent, notused int
+		var detail string
+		require.NoError(t, rows.Scan(&id, &parent, &notused, &detail))
+		plan += detail + "\n"
+	}
+	require.NoError(t, rows.Err())
+	assert.Contains(t, plan, "idx_messages_synced_at")
+}
+
+// The sync's own stamp is stored as given.
+func TestMessagesSyncedAt_ExplicitStamp(t *testing.T) {
 	d := openTestDB(t)
 	require.NoError(t, d.UpsertMessage(Message{ChannelID: "1:C1", TS: "1000.000100", UserID: "1:U1", Text: "a", SyncedAt: 1234.5}))
 	tx, err := d.Begin()
@@ -45,9 +69,8 @@ func TestMessagesSyncedAtTrigger_ExplicitWins(t *testing.T) {
 }
 
 // An edit, a tombstone or a re-fetch of a stored message never moves
-// synced_at: the upsert's DO UPDATE branch leaves it, and the fill trigger
-// fires on INSERT only.
-func TestMessagesSyncedAtTrigger_UpdateDoesNotBump(t *testing.T) {
+// synced_at: the upsert's DO UPDATE branch leaves it.
+func TestMessagesSyncedAt_UpdateDoesNotBump(t *testing.T) {
 	d := openTestDB(t)
 	require.NoError(t, d.UpsertMessage(Message{ChannelID: "1:C1", TS: "1000.000100", UserID: "1:U1", Text: "a", SyncedAt: 500}))
 
@@ -130,25 +153,27 @@ func TestFirstCycleAt_SetOnceKeepsTheFirst(t *testing.T) {
 	assert.True(t, missing.IsZero())
 }
 
-// Rows stored before the migration take their post time, and so does an
-// unstamped insert after it (the trigger).
+// The migration rewrites no message row: those stored before it keep
+// synced_at = 0 and are detected by their post time.
 func TestMigration_MessagesSyncedAtFromTs(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "w.db")
 	d, err := Open(path)
 	require.NoError(t, err)
 	require.NoError(t, gooseDownTo(d.DB, "migrations", 188))
-	_, err = d.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('1:C1', '1700000000.000100', '1:U1', 'old')`)
+	_, err = d.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('1:C1', '1700000000.000100', '1:U_OTHER', '<@U_ME> old')`)
 	require.NoError(t, err)
 	require.NoError(t, d.Close())
 
 	d, err = Open(path)
 	require.NoError(t, err)
 	defer d.Close()
-	assert.Equal(t, 1700000000.0, syncedAtOf(t, d, "1:C1", "1700000000.000100"))
-
-	_, err = d.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('1:C1', '1700000001.000100', '1:U1', 'new')`)
+	assert.Equal(t, 0.0, syncedAtOf(t, d, "1:C1", "1700000000.000100"))
+	found, err := d.FindPendingMentions(1, "1:U_ME", 1699999999)
 	require.NoError(t, err)
-	assert.Equal(t, 1700000001.0, syncedAtOf(t, d, "1:C1", "1700000001.000100"), "the trigger fills inserts after the migration")
+	assert.Len(t, found, 1)
+	found, err = d.FindPendingMentions(1, "1:U_ME", 1700000000)
+	require.NoError(t, err)
+	assert.Empty(t, found)
 }
 
 // Existing accounts start their first cycle at the migration, so a late page

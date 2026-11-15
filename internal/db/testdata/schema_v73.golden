@@ -429,7 +429,7 @@ index	idx_messages_channel_ts_unix
 CREATE INDEX idx_messages_channel_ts_unix ON messages(channel_id, ts_unix)
 
 index	idx_messages_synced_at
-CREATE INDEX idx_messages_synced_at ON messages(synced_at)
+CREATE INDEX idx_messages_synced_at ON messages(CASE WHEN synced_at = 0 THEN ts_unix ELSE synced_at END)
 
 index	idx_messages_thread
 CREATE INDEX idx_messages_thread ON messages(channel_id, thread_ts)
@@ -3848,13 +3848,6 @@ INSERT INTO kb_dirty (source, key) VALUES ('slack',
 CASE WHEN COALESCE(OLD.thread_ts, '') != '' THEN 'slack:thread:' || OLD.channel_id || ':' || OLD.thread_ts
 ELSE 'slack:day:' || OLD.channel_id || ':' || date(OLD.ts_unix, 'unixepoch') END)
 ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
-END
-
-trigger	messages_synced_at_fill
-CREATE TRIGGER messages_synced_at_fill AFTER INSERT ON messages
-WHEN NEW.synced_at = 0
-BEGIN
-UPDATE messages SET synced_at = NEW.ts_unix WHERE rowid = NEW.rowid;
 END
 
 trigger	project_target_images_media

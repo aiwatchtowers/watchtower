@@ -88,23 +88,15 @@ CREATE TABLE IF NOT EXISTS messages (
     permalink    TEXT NOT NULL DEFAULT '',
     ts_unix      REAL GENERATED ALWAYS AS (CASE WHEN INSTR(ts, '.') > 0 THEN CAST(SUBSTR(ts, 1, INSTR(ts, '.') - 1) AS REAL) ELSE CAST(ts AS REAL) END) STORED,
     raw_json     TEXT NOT NULL DEFAULT '{}', -- kept empty ('{}'): the Slack payload is not stored (Slack API terms: minimum necessary retention)
-    synced_at    REAL NOT NULL DEFAULT 0,  -- unix seconds the row was first stored (Slack inbox detection compares the watermark with it; see 00189)
+    synced_at    REAL NOT NULL DEFAULT 0,  -- unix seconds the Slack sync first stored the row; 0 = unstamped, read as ts_unix (Slack inbox detection; see 00189)
     PRIMARY KEY (channel_id, ts)
 );
 CREATE INDEX IF NOT EXISTS idx_messages_user_id ON messages(user_id);
 CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(channel_id, thread_ts);
 CREATE INDEX IF NOT EXISTS idx_messages_ts_unix ON messages(ts_unix);
 CREATE INDEX IF NOT EXISTS idx_messages_channel_ts_unix ON messages(channel_id, ts_unix);
-CREATE INDEX IF NOT EXISTS idx_messages_synced_at ON messages(synced_at);
-
--- An insert that does not stamp synced_at (every writer except the Slack sync)
--- takes the post time, as detection read it before 00189; upsert updates
--- never move it.
-CREATE TRIGGER IF NOT EXISTS messages_synced_at_fill AFTER INSERT ON messages
-WHEN NEW.synced_at = 0
-BEGIN
-    UPDATE messages SET synced_at = NEW.ts_unix WHERE rowid = NEW.rowid;
-END;
+-- Slack inbox detection reads synced_at, an unstamped 0 as the post time (see 00189).
+CREATE INDEX IF NOT EXISTS idx_messages_synced_at ON messages(CASE WHEN synced_at = 0 THEN ts_unix ELSE synced_at END);
 
 -- FTS5 virtual table for full-text search on messages
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
