@@ -188,11 +188,63 @@ final class AskFormTests: XCTestCase {
         return try mirror(SessionChat.self, json)
     }
 
-    private func agentContext(_ ask: OwnerAsk, chat: SessionChat?) throws -> AskFormModel.AgentContext? {
+    /// `asOf` nil: the record's stamp is unknown; the chat must prove itself.
+    private func agentContext(_ ask: OwnerAsk, chat: SessionChat?, asOf: Date? = nil) throws -> AskFormModel.AgentContext? {
         try XCTUnwrap(AskFormModel(
             askID: ask.id, snapshot: try replica([ask]), draft: AskDraft(), page: 0, now: now,
-            applied: nil, isSending: false, chat: chat
+            applied: nil, isSending: false, chat: chat, chatAsOf: asOf
         )).agentContext
+    }
+
+    func testAChatThatStopsBeforeTheAskShowsNoMessage() throws {
+        let asked = now.addingTimeInterval(-600)
+        let ask = try makeAsk(143, ["session_id": 11, "created_at": DemoSeed.JSON.stamp(asked)])
+        let stale = try chat(11, [
+            ["id": "a", "kind": "agent", "at": DemoSeed.JSON.stamp(asked.addingTimeInterval(-900)), "text": "An older watch's last line."]
+        ])
+        XCTAssertNil(try agentContext(ask, chat: stale), "no stamp, nothing at or after the ask: maybe stale")
+        XCTAssertNil(try agentContext(ask, chat: stale, asOf: asked.addingTimeInterval(-1)), "written before the ask")
+        XCTAssertEqual(
+            try agentContext(ask, chat: stale, asOf: asked)?.text, "An older watch's last line.",
+            "written at the ask: it has everything before it"
+        )
+        XCTAssertNotNil(try agentContext(ask, chat: stale, asOf: now))
+    }
+
+    func testTheBoundariesOfTheAgentMessage() throws {
+        let asked = now.addingTimeInterval(-600)
+        let ask = try makeAsk(144, ["session_id": 11, "created_at": DemoSeed.JSON.stamp(asked)])
+        let at = DemoSeed.JSON.stamp(asked)
+        let before = DemoSeed.JSON.stamp(asked.addingTimeInterval(-60))
+        let exact = try chat(11, [
+            ["id": "a", "kind": "agent", "at": before, "text": "Earlier."],
+            ["id": "b", "kind": "agent", "at": at, "text": "Written at the ask."]
+        ])
+        XCTAssertEqual(try agentContext(ask, chat: exact)?.text, "Written at the ask.", "an entry at the ask counts and covers it")
+        let tied = try chat(11, [
+            ["id": "a", "kind": "agent", "at": before, "text": "First of two."],
+            ["id": "b", "kind": "agent", "at": before, "text": "Second of two."]
+        ])
+        XCTAssertEqual(try agentContext(ask, chat: tied, asOf: now)?.text, "Second of two.", "equal stamps: the later in the feed")
+
+        func folds(_ text: String) throws -> Bool {
+            try XCTUnwrap(try agentContext(ask, chat: try chat(11, [["id": "a", "kind": "agent", "at": before, "text": text]]), asOf: now)).isLong
+        }
+        XCTAssertFalse(try folds(String(repeating: "a", count: 280)), "280 characters fit")
+        XCTAssertTrue(try folds(String(repeating: "a", count: 281)))
+        XCTAssertFalse(try folds("1\n2\n3\n4\n5"), "five lines fit")
+        XCTAssertTrue(try folds("1\n2\n3\n4\n5\n6"))
+    }
+
+    func testOpenedFromItsOwnSessionTheFormHidesOpenSession() async throws {
+        let fixture = try await makeFixture()
+        let demo = try demoSnapshot(now: now)
+        let fromSession = AskViewModel(askID: 109, drafts: fixture.drafts, answerer: fixture.answerer, openedFromSessionID: 11)
+        let form = try formOf(fromSession, demo)
+        XCTAssertEqual(form.sourceLinks.map(\.destination), [.target(415)], "Back is the way to the session")
+        XCTAssertEqual(form.subline, "From Acme · Archive closed targets", "the line still names the session")
+        let elsewhere = AskViewModel(askID: 109, drafts: fixture.drafts, answerer: fixture.answerer, openedFromSessionID: 14)
+        XCTAssertEqual(try formOf(elsewhere, demo).sourceLinks.map(\.destination), [.session(11), .target(415)])
     }
 
     func testTheAgentContextIsTheLastAgentMessageAtOrBeforeTheAsk() throws {
@@ -221,17 +273,17 @@ final class AskFormTests: XCTestCase {
     }
 
     func testALongOrClippedAgentMessageFolds() throws {
-        let ask = try makeAsk(142, ["session_id": 11])
+        let ask = try makeAsk(142, ["session_id": 11, "created_at": DemoSeed.JSON.stamp(now.addingTimeInterval(-60))])
         let before = DemoSeed.JSON.stamp(now.addingTimeInterval(-120))
         let long = String(repeating: "word ", count: 80)
         let clipped = try XCTUnwrap(try agentContext(ask, chat: try chat(11, [
             ["id": "a", "kind": "agent", "at": before, "text": long, "text_clipped": true]
-        ])))
+        ]), asOf: now))
         XCTAssertTrue(clipped.text.hasSuffix("word…"), "a clipped text says so")
         XCTAssertTrue(clipped.isLong)
         let lines = try XCTUnwrap(try agentContext(ask, chat: try chat(11, [
             ["id": "a", "kind": "agent", "at": before, "text": "1\n2\n3\n4\n5\n6"]
-        ])))
+        ]), asOf: now))
         XCTAssertTrue(lines.isLong, "six short lines fold too")
         XCTAssertEqual([AskText.showMore, AskText.showLess], ["Show more", "Show less"])
     }
@@ -248,6 +300,7 @@ final class AskFormTests: XCTestCase {
 
         model.observeChat(sessionID: 11, store: store)
         try await poll({ model.chat != nil }, "the demo chat never arrived")
+        XCTAssertEqual(model.chatAsOf.map { Int($0.timeIntervalSince1970) }, Int(now.timeIntervalSince1970), "the hub's own stamp")
         XCTAssertEqual(try formOf(model, demo).agentContext?.text, "On it. I will add the menu item and an undo.")
         XCTAssertTrue(try store.pendingActions().isEmpty, "no session_chat_request: the ask screen only reads")
 

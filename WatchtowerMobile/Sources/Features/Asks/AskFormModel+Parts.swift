@@ -18,9 +18,11 @@ extension AskFormModel {
 
     /// Open session when the session is on the phone, Task #N when the
     /// target is (archived targets are published, so they keep the link).
-    static func sourceLinks(_ ask: OwnerAsk, snapshot: WorkbenchReplicaSnapshot) -> [SourceLink] {
+    /// No Open session when the ask was opened from that session's own
+    /// Workchat: Back is the way there.
+    static func sourceLinks(_ ask: OwnerAsk, snapshot: WorkbenchReplicaSnapshot, openedFromSessionID: Int64? = nil) -> [SourceLink] {
         var links: [SourceLink] = []
-        if let id = ask.sessionID, snapshot.session(id) != nil {
+        if let id = ask.sessionID, id != openedFromSessionID, snapshot.session(id) != nil {
             links.append(SourceLink(destination: .session(id), title: AskText.openSession, icon: "bubble.left.and.bubble.right"))
         }
         if let id = ask.targetID, hasTarget(id, snapshot) {
@@ -35,8 +37,15 @@ extension AskFormModel {
 
     /// The last agent entry of the session's main chat dated at or before
     /// the ask; an undated or empty entry cannot be placed and is skipped.
-    static func agentContext(_ ask: OwnerAsk, chat: SessionChat?) -> AgentContext? {
+    /// Only a chat that covers the ask counts: the hub wrote it at or after
+    /// the ask (`asOf`, the record's own stamp on the Mac's clock) or it has
+    /// an entry at or after the ask. A record from an older watch may stop
+    /// before the agent's real last message, so it shows nothing.
+    static func agentContext(_ ask: OwnerAsk, chat: SessionChat?, asOf: Date?) -> AgentContext? {
         guard let chat, chat.agentID == nil, chat.sessionID == ask.sessionID else { return nil }
+        let covers = (asOf.map { $0 >= ask.createdAt } ?? false)
+            || chat.entries.contains { ($0.at ?? .distantPast) >= ask.createdAt }
+        guard covers else { return nil }
         let entry = chat.entries.last { entry in
             guard entry.kind == .agent, let at = entry.at, at <= ask.createdAt else { return false }
             return !entry.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty

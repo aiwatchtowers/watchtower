@@ -166,6 +166,8 @@ struct AskFormModel {
         applied: AppliedAnswer?,
         isSending: Bool,
         chat: SessionChat? = nil,
+        chatAsOf: Date? = nil,
+        openedFromSessionID: Int64? = nil,
         render: (String) -> PlainTextDocument = PlainTextRendering.render
     ) {
         guard let ask = snapshot.asks.first(where: { $0.id == askID }) else { return nil }
@@ -177,8 +179,8 @@ struct AskFormModel {
         summary = ask.summary
         changes = ask.changes
         subline = Self.subline(ask, snapshot: snapshot)
-        sourceLinks = Self.sourceLinks(ask, snapshot: snapshot)
-        agentContext = Self.agentContext(ask, chat: chat)
+        sourceLinks = Self.sourceLinks(ask, snapshot: snapshot, openedFromSessionID: openedFromSessionID)
+        agentContext = Self.agentContext(ask, chat: chat, asOf: chatAsOf)
         let open = ask.status == .open
         headerTone = open ? .waitingForYou : .secondary
         status = Self.status(ask, snapshot: snapshot, now: now, applied: applied)

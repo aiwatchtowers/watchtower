@@ -27,6 +27,12 @@ final class AskViewModel {
     /// observed only, never requested from the Mac (FEED-05), so it is
     /// there only while a Workchat watch keeps it published.
     private(set) var chat: SessionChat?
+    /// When the hub wrote that record (its own stamp): whether the chat
+    /// covers the ask.
+    private(set) var chatAsOf: Date?
+    /// The session whose Workchat pushed this screen; its Open session link
+    /// is hidden (Back goes there).
+    let openedFromSessionID: Int64?
 
     @ObservationIgnored private let drafts: AskDraftStore
     @ObservationIgnored private let answerer: AskAnswerer
@@ -41,9 +47,11 @@ final class AskViewModel {
         askID: Int64,
         drafts: AskDraftStore,
         answerer: AskAnswerer,
+        openedFromSessionID: Int64? = nil,
         render: @escaping (String) -> PlainTextDocument = PlainTextRendering.render
     ) {
         self.askID = askID
+        self.openedFromSessionID = openedFromSessionID
         self.drafts = drafts
         self.answerer = answerer
         self.render = render
@@ -61,6 +69,8 @@ final class AskViewModel {
             applied: answerer.applied[askID],
             isSending: answerer.isSending(askID),
             chat: chat,
+            chatAsOf: chatAsOf,
+            openedFromSessionID: openedFromSessionID,
             render: document
         )
     }
@@ -75,6 +85,7 @@ final class AskViewModel {
         chatObservation = nil
         if sessionID != chatSessionID {
             chat = nil
+            chatAsOf = nil
             chatSessionID = sessionID
         }
         guard let sessionID else { return }
@@ -85,15 +96,25 @@ final class AskViewModel {
             reader: store.reader,
             observation: {
                 ValueObservation.tracking(regions: [ReplicaStore.kindVersionsRegion]) { db in
-                    try SessionChatViewModel.read(recordName: recordName, from: db, store: store, cache: cache)
+                    ChatRead(
+                        chat: try SessionChatViewModel.read(recordName: recordName, from: db, store: store, cache: cache),
+                        asOf: try store.modifiedAt(forRecordName: recordName, from: db)
+                    )
                 }
                 .removeDuplicates()
             },
             onChange: { [weak self] value in
                 guard self?.chatSessionID == sessionID else { return }
-                self?.chat = value
+                self?.chat = value.chat
+                self?.chatAsOf = value.chat == nil ? nil : value.asOf
             }
         )
+    }
+
+    /// One read of the chat record and its stamp.
+    private struct ChatRead: Equatable, Sendable {
+        let chat: SessionChat?
+        let asOf: Date?
     }
 
     func stopObservingChat() {

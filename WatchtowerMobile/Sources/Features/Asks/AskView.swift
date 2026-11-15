@@ -17,9 +17,15 @@ struct AskView: View {
     let replica: WorkbenchReplicaModel
     @State private var model: AskViewModel
 
-    init(replica: WorkbenchReplicaModel, drafts: AskDraftStore, answerer: AskAnswerer, askID: Int64) {
+    /// `openedFromSessionID`: the session whose Workchat pushed this form;
+    /// its Open session link is hidden.
+    init(
+        replica: WorkbenchReplicaModel, drafts: AskDraftStore, answerer: AskAnswerer, askID: Int64, openedFromSessionID: Int64? = nil
+    ) {
         self.replica = replica
-        _model = State(initialValue: AskViewModel(askID: askID, drafts: drafts, answerer: answerer))
+        _model = State(initialValue: AskViewModel(
+            askID: askID, drafts: drafts, answerer: answerer, openedFromSessionID: openedFromSessionID
+        ))
     }
 
     var body: some View {
@@ -60,7 +66,9 @@ struct AskView: View {
             VStack(alignment: .leading, spacing: Spacing.large) {
                 AskHeaderView(form: form)
                 if let context = form.agentContext {
+                    // A new round or a new message starts folded.
                     AskAgentContextView(context: context)
+                        .id("\(form.askID)|\(context.text)")
                 }
                 if let notice = model.carriedNotice {
                     Text(notice).font(TypeScale.meta).foregroundStyle(.secondary)
