@@ -290,9 +290,19 @@ var inboxResolveFlags struct {
 // dry run's own cap, so a dry run's ids always fit a press.
 const inboxResolveMaxIDs = db.BulkResolveMaxIDs
 
-// inboxResolveBulk reports whether any bulk flag was given.
+// inboxResolveSelectors are the bulk flags that select items; --json only
+// shapes the output.
+var inboxResolveSelectors = []string{"dry-run", "sender", "trigger", "older-than", "people", "ids"}
+
+// inboxResolveBulk reports whether any bulk flag (a selector or --json) was
+// given.
 func inboxResolveBulk(cmd *cobra.Command) bool {
-	for _, name := range []string{"dry-run", "sender", "trigger", "older-than", "people", "ids", "json"} {
+	return inboxResolveSelected(cmd) || cmd.Flags().Changed("json")
+}
+
+// inboxResolveSelected reports whether any selector was given.
+func inboxResolveSelected(cmd *cobra.Command) bool {
+	for _, name := range inboxResolveSelectors {
 		if cmd.Flags().Changed(name) {
 			return true
 		}
@@ -328,13 +338,18 @@ func runInboxResolveBulk(cmd *cobra.Command, args []string) error {
 // inboxResolveBulkRun returns how many items it resolved of how many
 // distinct ids were asked (0/0 before any write) and the error, if any.
 func inboxResolveBulkRun(cmd *cobra.Command, args []string) (int, int, error) {
-	if err := refuseUnderAgent("resolve inbox items in bulk"); err != nil {
-		return 0, 0, err
-	}
 	f := inboxResolveFlags
 	changed := cmd.Flags().Changed
+	// An id with flags is a usage error, not a bulk form: checked before the
+	// agent refusal so `resolve <id> --json` is told what is wrong with it.
 	if len(args) > 0 {
+		if !inboxResolveSelected(cmd) {
+			return 0, 0, fmt.Errorf("--json goes with --dry-run or --ids: resolve one id without it")
+		}
 		return 0, 0, fmt.Errorf("an inbox item id takes no flags: resolve one id, or use --dry-run / --ids")
+	}
+	if err := refuseUnderAgent("resolve inbox items in bulk"); err != nil {
+		return 0, 0, err
 	}
 	if changed("ids") {
 		if f.dryRun || changed("sender") || changed("trigger") || changed("older-than") || f.people {

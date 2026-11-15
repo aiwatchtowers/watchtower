@@ -265,6 +265,14 @@ func TestInboxResolve_RefusedUnderAgent(t *testing.T) {
 				assert.Equal(t, "pending", status, "nothing written")
 				assert.Equal(t, before, inboxRowsSnapshot(t, d), "rows byte-identical")
 
+				// An id with --json is a usage error, not a bulk refusal.
+				out, err = runInboxResolveCLI(t, fmt.Sprint(mail), "--json")
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "--json goes with --dry-run or --ids")
+				assert.NotContains(t, err.Error(), "in bulk")
+				assert.Contains(t, lastJSONLine(t, out)["error"], "--json goes with --dry-run or --ids")
+				assert.Equal(t, before, inboxRowsSnapshot(t, d), "nothing written")
+
 				// The single-id form stays open under the same marker.
 				out, err = runInboxResolveCLI(t, fmt.Sprint(mail))
 				require.NoError(t, err)
