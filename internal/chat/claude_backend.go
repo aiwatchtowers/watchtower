@@ -172,8 +172,14 @@ type claudeProc struct {
 	stop      chan struct{} // closed to release a reader blocked on events
 	stopOnce  sync.Once
 	stderr    *boundedBuffer
-	served    bool         // a turn's message was sent to this child (under b.mu)
-	sessionID atomic.Value // string: the latest session id the child reported (see noteSessionID)
+	served    bool // a turn's message was sent to this child (under b.mu)
+	// interruptDone (under b.mu) is closed once Cancel's interrupt write to
+	// this child returned — written, or failed because the child is gone (a
+	// child that stopped reading fails it once the grace timer kills it). The
+	// next turn's message waits for it, so a late interrupt never reaches the
+	// child after that message and interrupts the new turn. Nil: none sent.
+	interruptDone chan struct{}
+	sessionID     atomic.Value // string: the latest session id the child reported (see noteSessionID)
 	// unreadable is set once a JSON line the translator could not read was
 	// reported, so a protocol change is noted once per child, not per line.
 	unreadable atomic.Bool
@@ -238,6 +244,9 @@ type claudeBackend struct {
 	// (stdin EOF, then SIGTERM); nil = time.After. A test fires it itself,
 	// so the escalation is checked step by step instead of by wall clock.
 	graceAfter func(time.Duration) <-chan time.Time
+	// writeInterrupt, a test seam, writes Cancel's interrupt line to the
+	// child; nil = p.write. A test holds it to land the interrupt late.
+	writeInterrupt func(p *claudeProc, line []byte) error
 
 	mu        sync.Mutex
 	proc      *claudeProc
@@ -993,6 +1002,9 @@ func readOutcome(err error) outcome {
 // write itself runs outside b.mu — it can block on a child that stopped
 // reading, and Cancel and Close must still get through to kill it.
 func (b *claudeBackend) send(ctx context.Context, line []byte) (*claudeProc, bool, error) {
+	if err := b.awaitInterrupt(ctx); err != nil {
+		return nil, false, err
+	}
 	p, err := b.claimForSend(ctx)
 	if p == nil || err != nil {
 		return nil, false, err
@@ -1009,6 +1021,29 @@ func (b *claudeBackend) send(ctx context.Context, line []byte) (*claudeProc, boo
 		// Otherwise a dead child surfaces as an exit in await, with its stderr.
 	}
 	return p, true, nil
+}
+
+// awaitInterrupt waits until the interrupt a Stop of an earlier turn sent
+// to the current child has been written or failed (see interruptDone): a
+// Stop can end its turn before that write — the deny of a waiting call
+// alone may end it — and the next message must not overtake the interrupt.
+// It waits outside b.mu, so Cancel and Close still get through.
+func (b *claudeBackend) awaitInterrupt(ctx context.Context) error {
+	b.mu.Lock()
+	var done chan struct{}
+	if b.proc != nil {
+		done = b.proc.interruptDone
+	}
+	b.mu.Unlock()
+	if done == nil {
+		return nil
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // claimForSend returns the live child with its writeLock held, or nil when the
@@ -1106,15 +1141,7 @@ func (b *claudeBackend) Cancel() error {
 	// A call waiting for the owner is denied and its row rejected (or
 	// expired, when approved but not yet claimed) before the interrupt.
 	b.gate.halt(false)
-	b.mu.Lock()
-	b.cancelled = true
-	p, inFlight := b.proc, b.inFlight
-	b.mu.Unlock()
-	if p == nil || !inFlight {
-		return nil // nothing reached the child yet: send will not send it
-	}
 	turn, _ := b.curTurn.Load().(string)
-	b.tr.MarkInterrupted()
 	req, err := json.Marshal(map[string]any{
 		"type": "control_request", "request_id": "interrupt-" + turn,
 		"request": map[string]string{"subtype": "interrupt"},
@@ -1122,11 +1149,30 @@ func (b *claudeBackend) Cancel() error {
 	if err != nil {
 		return err
 	}
+	write := b.writeInterrupt
+	if write == nil {
+		write = (*claudeProc).write
+	}
+	b.mu.Lock()
+	b.cancelled = true
+	p, inFlight := b.proc, b.inFlight
+	var done chan struct{}
+	if p != nil && inFlight {
+		done = make(chan struct{})
+		p.interruptDone = done
+	}
+	b.mu.Unlock()
+	if done == nil {
+		return nil // nothing reached the child yet: send will not send it
+	}
+	b.tr.MarkInterrupted()
 	// The interrupt queues behind the message on writeLock, which may be stuck
 	// on a child that stopped reading, so it is written asynchronously; the
-	// grace timer below kills such a child, which also fails the writes.
+	// grace timer below kills such a child, which also fails the writes. The
+	// next turn's message waits for done (awaitInterrupt).
 	go func() {
-		if werr := p.write(append(req, '\n')); werr != nil {
+		defer close(done)
+		if werr := write(p, append(req, '\n')); werr != nil {
 			// stdin is gone: the child cannot be interrupted, only killed;
 			// the turn then ends as interrupted through the exit path.
 			killGroup(p)

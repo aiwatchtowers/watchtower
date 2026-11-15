@@ -185,6 +185,38 @@ func TestClaudeBackend_CancelInterruptsAndProcessStaysWarm(t *testing.T) {
 	})
 }
 
+// The failure path of the interrupt the next turn waits for: a child that
+// stopped reading leaves the interrupt write stuck until the grace timer
+// kills the child, which fails the write; the next turn then goes ahead on a
+// fresh child instead of waiting for good.
+func TestClaudeBackend_StuckInterruptFailsOnKillAndNextTurnProceeds(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		opts, f := fakeClaude(t, "slow")
+		b := NewClaudeBackend(opts)
+		b.(*claudeBackend).writeInterrupt = func(p *claudeProc, line []byte) error {
+			<-p.exited // stuck, as on a child that stopped reading, until it is killed
+			return p.write(line)
+		}
+		h := startSession(t, b, nil)
+		h.next(EventSessionReady)
+
+		h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "long answer please"})
+		assert.Equal(t, "partial", h.next(EventTextDelta).Text)
+		h.send(Command{Type: CommandCancel})
+		assert.Equal(t, StatusInterrupted, h.next(EventTurnDone).Status, "killed after the grace")
+
+		h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "next"})
+		assert.Equal(t, "turn 1", h.next(EventTextDelta).Text, "a fresh process answers")
+		assert.Equal(t, StatusComplete, h.next(EventTurnDone).Status)
+		require.NoError(t, h.finish())
+
+		assert.Len(t, argvRuns(t, f.argv), 2)
+		stdin, err := os.ReadFile(f.stdin)
+		require.NoError(t, err)
+		assert.NotContains(t, string(stdin), `"subtype":"interrupt"`, "the interrupt never reached a child")
+	})
+}
+
 func TestClaudeBackend_CancelKillsAfterGraceAndNextTurnReplays(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		opts, f := fakeClaude(t, "ignore_interrupt")
