@@ -606,6 +606,7 @@ enum DesignShotCatalog {
         } + ProviderFallbackShotFixtures.runtimeShots + InboxBuilderAShotFixtures.shots + InboxBuilderBShotFixtures.shots
             + ClosedAsksShotFixtures.shots
             + TuningChatShotFixtures.shots // The tuning chat over the Analytics pane (#1517).
+            + SlackFullLiveShotFixtures.shots // Slack Full / Live screens spec (#1779), design only.
     }
 }
 
