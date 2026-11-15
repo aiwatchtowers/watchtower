@@ -35,9 +35,12 @@ struct BoardTargetDetailModel {
     /// (0 = no button; always 0 on an archived target).
     let doneChildCount: Int
     /// "0/2 · 1 archived": done over every sub-target listed here (done ones
-    /// hidden by Show done too), then the ones left under Archive, which the
-    /// Mac's `children_count` still counts (#1788). The header and the
-    /// Sub-targets list show this one string; nil when there are none.
+    /// hidden by Show done too), then the archived ones the phone holds, then
+    /// "N more on the Mac" for the rest of the Mac's `children_count`: the hub's
+    /// board window can leave children out (open past 2000, archived past 90
+    /// days or 500, `internal/hub/slices/sources/target.go`), so the rest is not
+    /// necessarily archived (#1788). The header and the Sub-targets list show
+    /// this one string; nil when there are none.
     let childCounter: String?
     /// "Sub-targets · 0/2 · 1 archived"; "Sub-targets" when there are none.
     let childrenHeader: String
@@ -107,9 +110,10 @@ struct BoardTargetDetailModel {
         let keepsDone = showDone || target.archived
         doneChildCount = target.archived ? 0 : doneCount
         children = childTargets.filter { keepsDone || $0.status != .done }.map { BoardRowModel($0, snapshot: snapshot) }
+        let archivedHeld = target.archived ? 0 : snapshot.targets.filter { $0.parentID == target.id && $0.archived }.count
         childCounter = Self.childCounter(
-            done: doneCount, listed: childTargets.count,
-            archived: target.archived ? 0 : target.childrenCount - childTargets.count
+            done: doneCount, listed: childTargets.count, archived: archivedHeld,
+            more: target.childrenCount - childTargets.count - archivedHeld
         )
         childrenHeader = childCounter.map { "Sub-targets · \($0)" } ?? "Sub-targets"
         sessions = target.sessionIDs.compactMap(snapshot.session).map { SessionRowModel($0, now: now) }
@@ -133,14 +137,17 @@ struct BoardTargetDetailModel {
         return inFlight.contains(key)
     }
 
-    /// "done/listed", then "· N archived" when some are; nil with no
-    /// sub-target at all. `archived` is the Mac's count less the listed ones
-    /// (a negative one, a replica ahead of the count, reads as none).
-    static func childCounter(done: Int, listed: Int, archived: Int) -> String? {
-        let archived = max(0, archived)
-        guard listed > 0 || archived > 0 else { return nil }
-        let counter = "\(done)/\(listed)"
-        return archived > 0 ? "\(counter) · \(archived) archived" : counter
+    /// "done/listed", then "· N archived" and "· N more on the Mac" when
+    /// some are; nil with no sub-target at all. `more` is the Mac's count
+    /// less the ones the phone holds (a negative one, a replica ahead of the
+    /// count, reads as none).
+    static func childCounter(done: Int, listed: Int, archived: Int, more: Int = 0) -> String? {
+        let more = max(0, more)
+        guard listed + archived + more > 0 else { return nil }
+        var parts = ["\(done)/\(listed)"]
+        if archived > 0 { parts.append("\(archived) archived") }
+        if more > 0 { parts.append("\(more) more on the Mac") }
+        return parts.joined(separator: " · ")
     }
 
     /// The editable values, plus the shown one when it is not among them

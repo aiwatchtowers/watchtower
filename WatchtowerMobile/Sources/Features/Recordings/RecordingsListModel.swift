@@ -161,9 +161,18 @@ struct RecordingsListModel {
     /// pause (`PhoneRecorderController.pauseLimit`).
     static let autoFinishedNote = "auto-finished after a 60 min pause"
 
-    /// The Calendar's pill: "Recordings · 1 new", or "Recordings".
+    /// The screen's title and the Calendar's labelled button to it (#1789).
+    static let screenTitle = "Recordings"
+
+    /// The list's bottom button: a voice note not tied to an event, two
+    /// taps from the Calendar (Recordings, then this) since #1789 took the
+    /// round mic off the agenda.
+    static let voiceNoteTitle = "Record a voice note"
+
+    /// The Calendar button's spoken label: "Recordings · 1 new", or
+    /// "Recordings".
     static func pillText(newCount: Int) -> String {
-        newCount > 0 ? "Recordings · \(newCount) new" : "Recordings"
+        newCount > 0 ? "\(screenTitle) · \(newCount) new" : screenTitle
     }
 
     /// `linkedHubIDs` (`AppEnvironment.linkedHubIDs`) has no default: a

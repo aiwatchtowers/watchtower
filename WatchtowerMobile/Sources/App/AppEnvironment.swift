@@ -47,6 +47,8 @@ final class AppEnvironment {
     let recordingsSeen: RecordingsSeenStore
     /// The boards' folded groups and lanes, per hub (#1781).
     let boardFolds: BoardFoldStore
+    /// The ended sessions the owner marked seen on Now, per hub.
+    let endedSeen: NowEndedSeenStore
     /// Every hub's session, by hub id.
     private(set) var sessions: [String: HubSession] = [:]
     /// The sessions on screen, in the registry's order.
@@ -93,6 +95,7 @@ final class AppEnvironment {
         self.setBadge = setBadge
         recordingsSeen = RecordingsSeenStore(defaults: defaults)
         boardFolds = BoardFoldStore(defaults: defaults)
+        endedSeen = NowEndedSeenStore(defaults: defaults)
         observeBadge()
     }
 

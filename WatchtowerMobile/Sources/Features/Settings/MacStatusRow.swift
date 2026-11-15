@@ -123,14 +123,4 @@ extension AppEnvironment {
     func macReachability(now: Date) -> MacReachability {
         .of(heartbeat: workbenchReplica.snapshot.heartbeat?.updatedAt, linked: linkedDevice != nil, now: now)
     }
-
-    /// The Mac status chip of Now and the Calendar (mockups 1, 7).
-    func macChip(now: Date) -> MacStatusChipModel {
-        let linked = linkedDevice != nil
-        return MacStatusChipModel(
-            macName: workbenchReplica.snapshot.heartbeat?.macName ?? "",
-            state: macReachability(now: now).chipState(linked: linked),
-            now: now
-        )
-    }
 }

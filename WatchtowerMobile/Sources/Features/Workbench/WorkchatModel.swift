@@ -55,7 +55,7 @@ enum WorkchatMenuItem: Hashable {
 
 /// Everything the workchat draws (spec §5.3, mockups 3, 4, 8): the header
 /// (title, workbench, one state line counting up while the agent works),
-/// the dialog, the permission card and the session's open asks at the foot
+/// the what-next card under it (#1784), the dialog, the permission card and the session's open asks at the foot
 /// of the feed, and the composer's state. Built from the published records
 /// and the session's chat only.
 struct WorkchatModel: Equatable {
@@ -87,6 +87,9 @@ struct WorkchatModel: Equatable {
     let finishNotice: String?
     /// The session's board target, for "Open board target".
     let targetID: Int64?
+    /// What to do next, under the header (#1784); nil while the agent works
+    /// or waits on an ask.
+    let stateCard: WorkchatStateCard?
 
     init(
         session: TerminalSessionState,
@@ -117,6 +120,7 @@ struct WorkchatModel: Equatable {
             }
         })
         self.permission = permission
+        stateCard = WorkchatStateCard(session: session, input: input, permission: permission, macOnline: mac.isOnline)
         let rows = PermissionAnswerRow.rows(sessionID: session.id, snapshot: snapshot, now: now)
         answerRows = rows
         answerNotice = PermissionAnswerRow.notice(rows: rows, permission: permission, sentRequestID: sentRequestID)
