@@ -70,7 +70,7 @@ struct ChatsSnapshot: Equatable {
     /// The chat actions the hub refused, by action id.
     var failures: [String: ChatActionFailure] = [:]
     /// The chat actions still waiting in the outbox (no final echo yet), by action id.
-    var queued: Set<String> = []
+    var queued: [String: QueuedChatAction] = [:]
     /// The chats whose `chat_manage delete` the hub refused, by when the newest refused one was queued.
     var refusedDeletes: [Int64: Date] = [:]
 
@@ -93,7 +93,9 @@ struct ChatsSnapshot: Equatable {
         let pending = try store.pendingActions(from: db)
         snapshot.refusal = Self.refusal(in: pending)
         snapshot.failures = Self.failures(in: pending)
-        snapshot.queued = Set(pending.filter { $0.state == .pending && ChatsCenter.chatKinds.contains($0.action.kind) }.map(\.id))
+        for row in pending where row.state == .pending && ChatsCenter.chatKinds.contains(row.action.kind) {
+            snapshot.queued[row.id] = QueuedChatAction(kind: row.action.kind, params: row.action.params)
+        }
         snapshot.refusedDeletes = Self.refusedDeletes(in: pending)
         return snapshot
     }
@@ -240,6 +242,7 @@ final class ChatsCenter {
         sender: ChatSender,
         uploads: ChatUploads = .none,
         copy: ChatOfflineCopy? = nil,
+        withdraw: @escaping ChatWithdraw = { _ in .withdrawn },
         staging: URL = ChatAttachmentPrep.stagingDirectory(hubID: "default"),
         now: @escaping @MainActor () -> Date = { Date() },
         sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
@@ -250,7 +253,7 @@ final class ChatsCenter {
         self.copy = copy
         search = ChatSearchModel(sender: sender, sleep: sleep)
         rowActions = ChatRowActions(sender: sender, sleep: sleep)
-        sending = ChatSendCoordinator(sender: sender, uploads: uploads, drafts: drafts, copy: copy, sleep: sleep)
+        sending = ChatSendCoordinator(sender: sender, uploads: uploads, drafts: drafts, copy: copy, withdraw: withdraw, sleep: sleep)
         self.staging = staging
         prefetch = ChatPrefetcher(sender: sender, copy: copy, now: now, sleep: sleep)
         prefetch.onPatience = { [weak self] in self?.stepPrefetch() }

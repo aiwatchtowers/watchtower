@@ -22,7 +22,15 @@ extension HubSession {
         }
         let uploads = ChatUploads { payload, file in try await ledger.upload(payload, file: file) }
         let staging = ChatAttachmentPrep.stagingDirectory(hubID: hubID)
-        return (ChatsCenter(sender: .through(outbox), uploads: uploads, copy: copy, staging: staging), ledger)
+        let withdraw: ChatWithdraw = { id in
+            do {
+                return try await outbox.withdraw(actionID: id)
+            } catch {
+                chatsLogger.warning("chat action not withdrawn: \(String(describing: type(of: error)), privacy: .public)")
+                return .onItsWay
+            }
+        }
+        return (ChatsCenter(sender: .through(outbox), uploads: uploads, copy: copy, withdraw: withdraw, staging: staging), ledger)
     }
 
     /// The hub answers chat now: its heartbeat is fresh and offers chat, and on the relay the relay answers.

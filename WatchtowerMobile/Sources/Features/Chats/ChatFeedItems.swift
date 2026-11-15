@@ -31,6 +31,8 @@ enum ChatFeedItem: Identifiable, Equatable {
         let text: String
         let attachments: [Pill]
         let isPending: Bool
+        /// Under a pending bubble: sending, or waiting for the hub once the patience ran out.
+        var caption: String?
         /// Long-press → Edit (a message the hub stored, while no turn runs).
         let canEdit: Bool
     }
@@ -121,6 +123,8 @@ enum ChatFeedItems {
         var versions: [String: Int] = [:]
         /// The provider that answered (the sign-in hint of an `auth` card).
         var provider: String?
+        /// Under a send that could not be taken back after the patience (`ChatText.waitingForHub`).
+        var stalledCaption = ""
     }
 
     static func build(_ inputs: Inputs) -> [ChatFeedItem] {
@@ -147,7 +151,9 @@ enum ChatFeedItems {
             items.append(.owner(ChatFeedItem.Owner(
                 messageID: nil, text: pending.text,
                 attachments: pending.attachments.enumerated().map { .init(id: "p\($0.offset)", name: $0.element, isImage: false) },
-                isPending: !pending.isApplied, canEdit: false
+                isPending: !pending.isApplied,
+                caption: pending.isApplied ? nil : (pending.isStalled ? inputs.stalledCaption : ChatOwnerBubble.sendingCaption),
+                canEdit: false
             )))
         }
         if !inputs.approvals.isEmpty { items.append(.actions(inputs.approvals)) }

@@ -183,7 +183,7 @@ final class ChatConversationModel {
         return ChatFeedItems.build(ChatFeedItems.Inputs(
             messages: messages, lease: lease, earlier: earlier, pending: center.sending.pending[conversationID],
             approvals: approvals, versions: Dictionary((feed?.artifacts ?? []).map { ($0.key, $0.version) }) { $1 },
-            provider: feed?.conversation.actualProvider
+            provider: feed?.conversation.actualProvider, stalledCaption: ChatText.waitingForHub(host)
         ))
     }
 

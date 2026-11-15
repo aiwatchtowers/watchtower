@@ -206,6 +206,9 @@ enum ChatText {
             : "Open this chat once while your tower is awake to read it here"
     }
 
+    /// Under a send whose echo is late and that may already be on the hub (it is never sent twice).
+    static func waitingForHub(_ host: TowerHost) -> String { host == .mac ? "Waiting for your Mac…" : "Waiting for your tower…" }
+
     /// Mockup 2h.
     static func newChatTitle(_ host: TowerHost) -> String { host == .mac ? "Ask your Mac" : "Ask your tower" }
 

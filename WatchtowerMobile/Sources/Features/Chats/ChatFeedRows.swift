@@ -63,8 +63,8 @@ struct ChatOwnerBubble: View {
                     Button { actions.edit(id, owner.text) } label: { Label(ChatFeedItems.edit, systemImage: "pencil") }
                 }
             }
-            if owner.isPending {
-                Text(Self.sendingCaption).font(.caption2).foregroundStyle(.secondary)
+            if let caption = owner.caption {
+                Text(caption).font(.caption2).foregroundStyle(.secondary)
             }
         }
         .padding(.leading, Spacing.hero)

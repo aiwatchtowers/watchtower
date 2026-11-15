@@ -5,6 +5,15 @@ import WatchtowerChatText
 import WatchtowerKit
 import WatchtowerSync
 
+/// Takes one queued chat action back from the outbox (`ActionOutbox.withdraw(actionID:)`).
+typealias ChatWithdraw = @MainActor (String) async -> OutboxWithdrawal
+
+/// A chat action still waiting in the outbox, as recovery matches it.
+struct QueuedChatAction: Equatable, Sendable {
+    let kind: ActionKind
+    let params: [String: JSONValue]
+}
+
 /// How one attachment reaches the hub: sealed once and sent, the same record again on a retry of a lost send. The
 /// app's is `ChatUploadLedger`; `none` refuses (no hub to upload to).
 struct ChatUploads {
@@ -84,6 +93,9 @@ final class ChatSendCoordinator {
         let attachments: [String]
         /// Set once the `chat_turn` echo is applied: the bubble stops dimming until the feed has the message.
         var userMessageID: Int64?
+        /// The patience ran out but the action could not be taken back (the hub may have it): the bubble says it
+        /// waits for the hub, and the echo settles it whenever it comes.
+        var isStalled = false
 
         var isApplied: Bool { userMessageID != nil }
     }
@@ -121,6 +133,7 @@ final class ChatSendCoordinator {
     @ObservationIgnored private let drafts: ChatDraftStore
     @ObservationIgnored private let copy: ChatOfflineCopy
     @ObservationIgnored private let sleep: @Sendable (Duration) async throws -> Void
+    @ObservationIgnored private let withdraw: ChatWithdraw
     @ObservationIgnored private var waiters: [String: CheckedContinuation<Echo, Never>] = [:]
     @ObservationIgnored private var early: [String: Echo] = [:]
     @ObservationIgnored private var knownFailures: [String: ChatActionFailure] = [:]
@@ -135,8 +148,10 @@ final class ChatSendCoordinator {
         uploads: ChatUploads,
         drafts: ChatDraftStore,
         copy: ChatOfflineCopy,
+        withdraw: @escaping ChatWithdraw = { _ in .withdrawn },
         sleep: @escaping @Sendable (Duration) async throws -> Void
     ) {
+        self.withdraw = withdraw
         self.sender = sender
         self.uploads = uploads
         self.drafts = drafts
@@ -228,16 +243,22 @@ final class ChatSendCoordinator {
     /// Settles the sends a previous run left on its way against the outbox as it stands now: a turn the hub
     /// refused or never got gives its text back with the reason; a turn still queued waits for its echo (with the
     /// usual patience); a turn gone from the outbox was applied.
-    func recover(failures: [String: ChatActionFailure], queued: Set<String>) {
+    func recover(failures: [String: ChatActionFailure], queued: [String: QueuedChatAction]) {
         guard !recovered.isEmpty else { return }
-        for record in recovered {
-            if let turn = record.turnActionID, queued.contains(turn) {
+        for var record in recovered {
+            if record.turnActionID == nil, let turn = Self.queuedTurn(of: record, in: queued) {
+                // Killed after the outbox took the turn, before the kept send heard its id (M2): the outbox has it.
+                record.turnActionID = turn
+                if let index = recovered.firstIndex(where: { $0.clientKey == record.clientKey }) { recovered[index] = record }
+                keep(record)
+            }
+            if let turn = record.turnActionID, queued[turn] != nil {
                 guard pending[record.conversationID] == nil else { continue }
                 pending[record.conversationID] = PendingTurn(
                     conversationID: record.conversationID, mode: ChatTurnMode(rawValue: record.mode) ?? .send, text: record.text,
                     attachments: record.files.map(\.name)
                 )
-                waitRecovered(turn)
+                waitRecovered(turn, conversation: record.conversationID)
                 continue
             }
             recovered.removeAll { $0.clientKey == record.clientKey }
@@ -316,9 +337,10 @@ final class ChatSendCoordinator {
         keep(record)
         if let echo = early.removeValue(forKey: id) { return echo }
         if let failure = knownFailures[id] { return .failed(failure) }
+        let conversation = record.conversationID
         let timer = Task { [weak self, sleep] in
             do { try await sleep(Self.echoPatience) } catch { return }
-            self?.giveUp(id)
+            await self?.giveUp(id, conversation: conversation)
         }
         let echo = await withCheckedContinuation { waiters[id] = $0 }
         timer.cancel()
@@ -336,21 +358,40 @@ final class ChatSendCoordinator {
         return echo
     }
 
-    /// The patience ran out: the waiter hears "Couldn't send that".
-    private func giveUp(_ id: String) {
-        waiters.removeValue(forKey: id)?.resume(returning: .failed(ChatActionFailure(reason: nil, message: Self.couldNotSend)))
+    /// The patience ran out: the action is taken back if the hub cannot have it, and only then the waiter hears
+    /// "Couldn't send that". One the hub may have stays: the bubble waits for the hub and its echo settles it.
+    private func giveUp(_ id: String, conversation: Int64) async {
+        guard waiters[id] != nil else { return }
+        if await withdraw(id) == .withdrawn {
+            waiters.removeValue(forKey: id)?.resume(returning: .failed(ChatActionFailure(reason: nil, message: Self.couldNotSend)))
+        } else {
+            pending[conversation]?.isStalled = true
+        }
     }
 
-    /// A recovered turn still queued: its echo settles it (`receiveApplied`, `recover` on a refusal), or the
-    /// patience gives the text back.
-    private func waitRecovered(_ turn: String) {
+    /// A recovered turn still queued: its echo settles it (`receiveApplied`, `recover` on a refusal); after the
+    /// patience it is taken back and its text given back, unless the hub may have it.
+    private func waitRecovered(_ turn: String, conversation: Int64) {
         Task { [weak self, sleep] in
             do { try await sleep(Self.echoPatience) } catch { return }
-            guard let self, let index = self.recovered.firstIndex(where: { $0.turnActionID == turn }) else { return }
+            guard let self, self.recovered.contains(where: { $0.turnActionID == turn }) else { return }
+            guard await self.withdraw(turn) == .withdrawn,
+                  let index = self.recovered.firstIndex(where: { $0.turnActionID == turn }) else {
+                self.pending[conversation]?.isStalled = true
+                return
+            }
             let record = self.recovered.remove(at: index)
             self.pending[record.conversationID] = nil
             self.restore(record, message: Self.couldNotSend)
         }
+    }
+
+    /// The queued `chat_turn` a kept send became, matched by its conversation and text.
+    private static func queuedTurn(of record: ChatOutgoingSend, in queued: [String: QueuedChatAction]) -> String? {
+        queued.first { _, action in
+            guard action.kind == .chatTurn, let params = try? ChatTurnParams(wireParams: action.params) else { return false }
+            return params.conversationID == record.conversationID && params.text == record.text && params.mode.rawValue == record.mode
+        }?.key
     }
 
     private func resolve(_ id: String, _ echo: Echo) {

@@ -23,9 +23,24 @@ final class ChatSendRecoveryTests: XCTestCase {
         sleeper.cancelAll()
     }
 
+    private var withdrawals: [String] = []
+    /// What the outbox says when a send gives up: taken back, or the hub may have it.
+    private var withdrawal = OutboxWithdrawal.withdrawn
+
     private func center(uploads: ChatUploads = .none) -> ChatsCenter {
         let sleeper: TickSleeper = sleeper
-        return ChatsCenter(sender: recorder.sender, uploads: uploads, copy: copy, now: { ChatFixture.now }, sleep: { try await sleeper.sleep($0) })
+        return ChatsCenter(
+            sender: recorder.sender, uploads: uploads, copy: copy,
+            withdraw: { [weak self] id in
+                self?.withdrawals.append(id)
+                return self?.withdrawal ?? .onItsWay
+            },
+            now: { ChatFixture.now }, sleep: { try await sleeper.sleep($0) }
+        )
+    }
+
+    private func queuedTurn(_ id: String, conversation: Int64, text: String) throws -> [String: QueuedChatAction] {
+        [id: QueuedChatAction(kind: .chatTurn, params: try ChatTurnParams(conversationID: conversation, mode: .send, text: text).wireParams())]
     }
 
     private func applied(_ index: Int, _ kind: ActionKind, _ result: [String: JSONValue]) -> ActionRequestPayload {
@@ -69,7 +84,9 @@ final class ChatSendRecoveryTests: XCTestCase {
 
         let second = center()
         var queued = ChatsSnapshot()
-        queued.queued = [turn]
+        queued.queued = try queuedTurn(turn, conversation: 7, text: ChatQuoteReply.compose(
+            quotes: [ChatQuoteDraft(quote: "the SSO deadline", comment: "")], typed: "When?"
+        ) ?? "")
         second.apply(queued)
         let composed = ChatQuoteReply.compose(quotes: [ChatQuoteDraft(quote: "the SSO deadline", comment: "")], typed: "When?")
         XCTAssertEqual(second.sending.pending[7]?.text, composed)
@@ -109,8 +126,58 @@ final class ChatSendRecoveryTests: XCTestCase {
         XCTAssertEqual(model.composer(list: nil).canSend, false, "pending")
         sleeper.tick()
         try await poll({ model.draft.text == "Hello" }, "text back")
+        XCTAssertEqual(withdrawals, [RecordingChatSender.actionID(2)], "the turn is taken back first")
         XCTAssertEqual(model.draft.notice, ChatSendCoordinator.couldNotSend)
         XCTAssertNil(center.sending.pending[7])
+        XCTAssertTrue(try copy.outgoing().isEmpty)
+    }
+
+    func testALateEchoTheOutboxCannotTakeBackIsHonoured() async throws {
+        withdrawal = .onItsWay
+        let center = center()
+        let model = center.conversation(ChatRoute(id: 7), ticks: ChatTicks().stream)
+        model.appear(online: true)
+        model.setText("Hello")
+        model.send(list: nil)
+        try await poll({ (try? self.recorder.params(ChatTurnParams.self).count) == 1 }, "turn sent")
+        try await poll({ self.sleeper.requested.contains(ChatSendCoordinator.echoPatience) }, "patience")
+        sleeper.tick()
+        try await poll({ center.sending.pending[7]?.isStalled == true }, "stalled")
+        XCTAssertEqual(model.draft.text, "", "the hub may have it: the text is not given back")
+        guard case let .owner(owner)? = model.items(permissions: true, host: .mac).last else { return XCTFail("owner bubble") }
+        XCTAssertEqual(owner.caption, "Waiting for your Mac…")
+
+        var echo = ActionRequestPayload(id: RecordingChatSender.actionID(2), kind: .chatTurn, entityID: nil, createdAt: ChatFixture.now)
+        echo.status = .applied
+        echo.result = ["user_message_id": .integer(41)]
+        center.receiveApplied(echo)
+        try await poll({ center.sending.pending[7]?.isApplied == true }, "marked sent")
+        XCTAssertEqual(model.draft.text, "")
+        XCTAssertTrue(try copy.outgoing().isEmpty)
+    }
+
+    func testRecoveryFindsAQueuedTurnTheKeptSendNeverHeardOf() async throws {
+        try copy.saveOutgoing(ChatOutgoingSend(
+            clientKey: "k1", conversationID: 7, mode: "send", messageID: nil, text: "Hi there", draftText: "Hi there", quotes: [],
+            files: [], createdAt: ChatFixture.now
+        ))
+        withdrawal = .onItsWay
+        let center = center()
+        var snapshot = ChatsSnapshot()
+        snapshot.queued = try queuedTurn("turn-9", conversation: 7, text: "Hi there")
+        center.apply(snapshot)
+        XCTAssertEqual(center.drafts.draft(7).text, "", "the outbox holds it: no Couldn't send")
+        XCTAssertEqual(center.sending.pending[7]?.text, "Hi there")
+        XCTAssertEqual(try copy.outgoing().first?.turnActionID, "turn-9")
+
+        try await poll({ self.sleeper.requested.contains(ChatSendCoordinator.echoPatience) }, "patience")
+        sleeper.tick()
+        try await poll({ center.sending.pending[7]?.isStalled == true }, "stalled, not given back")
+        var echo = ActionRequestPayload(id: "turn-9", kind: .chatTurn, entityID: nil, createdAt: ChatFixture.now)
+        echo.status = .applied
+        center.receiveApplied(echo)
+        XCTAssertNil(center.sending.pending[7])
+        XCTAssertEqual(center.drafts.draft(7).text, "")
         XCTAssertTrue(try copy.outgoing().isEmpty)
     }
 
