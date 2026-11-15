@@ -11,7 +11,7 @@ import WatchtowerSync
 public struct ChatFeed: SliceMirror, Equatable {
     public static let sliceKind = SliceKind.chatFeed
 
-    public struct Routing: Hashable, Sendable, Decodable {
+    public struct Routing: Hashable, Sendable, Codable {
         /// "auto" or "pinned".
         public let mode: String
         public let provider: String?

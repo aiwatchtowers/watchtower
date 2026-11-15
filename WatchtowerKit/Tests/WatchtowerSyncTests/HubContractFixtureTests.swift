@@ -67,7 +67,30 @@ final class HubContractFixtureTests: XCTestCase {
             let encoded = try XCTUnwrap(
                 JSONSerialization.jsonObject(with: RelayCoder.makeEncoder().encode(heartbeat)) as? [String: Any], name)
             XCTAssertEqual(encoded["hub_kind"] as? String, json["hub_kind"] as? String, name)
+            // The capabilities: recordings is on unless "off"; chat is offered only on an explicit "on" (D4).
+            XCTAssertEqual(heartbeat.recordingsOffered, kit["recordings_offered"] as? Bool, name)
+            XCTAssertEqual(heartbeat.chatOffered, (kit["chat"] as? String) == "on", name)
+            XCTAssertEqual(heartbeat.capabilities?.chat, kit["chat"] as? String, name)
+            XCTAssertEqual(heartbeat.capabilities?.chatReason, kit["chat_reason"] as? String, name)
+            // Re-encoded, the capabilities this build knows are what the hub wrote (an unknown key is dropped).
+            let known = (json["capabilities"] as? [String: Any])?.filter { ["recordings", "chat", "chat_reason"].contains($0.key) }
+            XCTAssertEqual(encoded["capabilities"] as? NSDictionary, known as NSDictionary?, name)
         }
+    }
+
+    /// The chat capability fixture cases are there, and an absent `capabilities` object is not a chat host.
+    func testHeartbeatChatCapabilityIsAnExplicitOn() throws {
+        let cases = try XCTUnwrap(load()["heartbeat"])
+        let names = cases.compactMap { $0["name"] as? String }
+        XCTAssertTrue(names.contains("chat_on") && names.contains("chat_off_desktop_too_old"))
+        let older = HeartbeatPayload(
+            updatedAt: Date(), appVersion: "1", hubID: "h", macName: "m", flavor: .default, lastPublishAt: nil,
+            lastRelayAt: nil, relayBacklog: 0, accounts: [], enabledAt: Date(), ownerUser: "", sharing: .none)
+        XCTAssertFalse(older.chatOffered)
+        XCTAssertTrue(older.recordingsOffered)
+        let reason = HeartbeatCapabilities(chat: "off", chatReason: "desktop_too_old")
+        XCTAssertEqual(reason.chatOffReason, .desktopTooOld)
+        XCTAssertEqual(HeartbeatCapabilities(chat: "off", chatReason: "from_the_future").chatOffReason?.isKnown, false)
     }
 
     /// Equal as JSON objects (key order and number spelling aside).

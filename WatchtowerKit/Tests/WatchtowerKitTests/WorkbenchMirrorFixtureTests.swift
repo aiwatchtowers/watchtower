@@ -56,12 +56,14 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
 
     func testWorkbenchActionKindsAreFrozen() {
         XCTAssertEqual(
-            ActionKind.allCases.suffix(16).map(\.rawValue),
+            ActionKind.allCases.suffix(26).map(\.rawValue),
             [
                 "ask_answer", "board_target_status", "board_target_priority", "board_comment_add",
                 "board_comment_reply", "board_target_create", "session_start", "session_input",
                 "session_input_cancel", "session_finish_request", "session_stop", "session_report_request",
-                "permission_answer", "session_interrupt", "session_chat_request", "automation_run"
+                "permission_answer", "session_interrupt", "session_chat_request", "automation_run",
+                "chat_new", "chat_turn", "chat_cancel", "chat_feed_request", "chat_page", "chat_search", "chat_read",
+                "chat_branch_select", "chat_manage", "chat_action_answer"
             ]
         )
     }
@@ -357,8 +359,9 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
         XCTAssertNil(request.summaryClipped)
         XCTAssertEqual(request.createdAt, t0)
         XCTAssertEqual(
-            ActionReason.allCases.suffix(4).map(\.rawValue),
-            ["not_pending", "not_working", "answer_on_mac", "not_supported"]
+            ActionReason.allCases.suffix(7).map(\.rawValue),
+            ["not_pending", "not_working", "answer_on_mac", "not_supported",
+             "conversation_busy", "attachment_missing", "changed"]
         )
     }
 

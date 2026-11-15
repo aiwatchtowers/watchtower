@@ -10,6 +10,7 @@ public struct WorkAlertContent: Equatable, Sendable {
         public static let key = "wt_key"
         public static let session = "wt_session"
         public static let ask = "wt_ask"
+        public static let conversation = "wt_conversation"
     }
 
     public let title: String
@@ -22,10 +23,15 @@ public struct WorkAlertContent: Equatable, Sendable {
     public init(payload: WorkAlertPayload, hubID: String) {
         title = payload.title
         body = payload.body
-        threadID = payload.sessionID.map { "session-\($0)" } ?? "workbench-\(payload.workbenchID)"
+        if let conversation = payload.conversationID {
+            threadID = "chat-\(conversation)"
+        } else {
+            threadID = payload.sessionID.map { "session-\($0)" } ?? "workbench-\(payload.workbenchID)"
+        }
         var info = [Key.hub: hubID, Key.event: payload.event.rawValue, Key.key: payload.key]
         if let session = payload.sessionID { info[Key.session] = String(session) }
         if let ask = payload.askID { info[Key.ask] = String(ask) }
+        if let conversation = payload.conversationID { info[Key.conversation] = String(conversation) }
         userInfo = info
     }
 }
