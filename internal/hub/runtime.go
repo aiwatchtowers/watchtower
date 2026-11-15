@@ -124,6 +124,9 @@ type hubRuntime struct {
 	relDown bool
 	pub     *slices.Publisher
 	wiring  *wiring // nil without a database
+	// chatPush sends the chat_answer pushes (chat_turn_watch.go); set once
+	// the wiring is built, read by the chat runner's OnTurnEnd.
+	chatPush atomic.Pointer[chatPushWatch]
 	// paying is the relay-only rules' watch (nil when they are off), and
 	// paused is true while no phone pays (guarded by mu).
 	paying *PayingWatch

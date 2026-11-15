@@ -329,6 +329,9 @@ type WorkAlertFields struct {
 	Title         string `json:"title"`
 	Body          string `json:"body"`
 	Quick         bool   `json:"quick"`
+	// ConversationID is the AI chat a chat_answer alert is about (the
+	// iPhone chat spec §4.7); absent on every other alert.
+	ConversationID int64 `json:"conversation_id,omitempty"`
 }
 
 // Push is a sealed alert for send_alert. Its fields are unexported, so only
