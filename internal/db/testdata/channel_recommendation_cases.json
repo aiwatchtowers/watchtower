@@ -1,0 +1,95 @@
+{
+  "_doc": "The channel recommendation rule, shared by Go (ComputeRecommendations, TestComputeRecommendations_ExcludeCases) and Swift (ChannelStatsQueries.computeRecommendations, testExcludeRecommendationMatchesGo). now is the evaluation time (unix seconds). stats are channel rows in ChannelStat's JSON keys (unset keys are 0/false/empty; muted_at and catchup_from are unix seconds, 0 and null = none). signals are value signals per channel id; every case passes at least one entry so Go's nil-signals branch is never taken. want is the full recommendation list in order.",
+  "now": 1800000000,
+  "cases": [
+    {"name": "muted 31 days, nothing from you since: stop syncing",
+     "stats": [{"id": "C0JUNK", "name": "old-project-x", "type": "public", "is_member": true, "total_messages": 40, "user_messages": 3,
+                "last_user_activity": 1790000000, "last_mention": 1790500000, "is_muted_for_llm": true, "muted_at": 1797000000}],
+     "signals": {"C0OTHER": {"decision_count": 1}},
+     "want": [{"channel_id": "C0JUNK", "action": "exclude", "reason": "muted 30+ days, no messages or mentions from you"}]},
+
+    {"name": "muted 29 days: nothing yet",
+     "stats": [{"id": "C0JUNK", "name": "old-project-x", "type": "public", "is_member": true, "total_messages": 40,
+                "is_muted_for_llm": true, "muted_at": 1797500000}],
+     "signals": {"C0OTHER": {"decision_count": 1}},
+     "want": []},
+
+    {"name": "muted 31 days, you wrote after the mute: nothing",
+     "stats": [{"id": "C0JUNK", "name": "old-project-x", "type": "public", "is_member": true, "total_messages": 40, "user_messages": 1,
+                "last_user_activity": 1798000000, "is_muted_for_llm": true, "muted_at": 1797000000}],
+     "signals": {"C0OTHER": {"decision_count": 1}},
+     "want": []},
+
+    {"name": "muted 31 days, you were mentioned after the mute: nothing",
+     "stats": [{"id": "C0JUNK", "name": "old-project-x", "type": "public", "is_member": true, "total_messages": 40, "mention_count": 1,
+                "last_mention": 1798000000, "is_muted_for_llm": true, "muted_at": 1797000000}],
+     "signals": {"C0OTHER": {"decision_count": 1}},
+     "want": []},
+
+    {"name": "muted without a known start, bots 50%: nothing",
+     "stats": [{"id": "C0JUNK", "name": "old-project-x", "type": "public", "is_member": true, "total_messages": 40, "bot_messages": 20,
+                "bot_ratio": 0.5, "is_muted_for_llm": true, "muted_at": 0}],
+     "signals": {"C0OTHER": {"decision_count": 1}},
+     "want": []},
+
+    {"name": "muted bot channel, no value signals: stop syncing, percent truncated",
+     "stats": [{"id": "C0BOTS", "name": "ci-builds", "type": "public", "is_member": true, "total_messages": 1000, "bot_messages": 937,
+                "bot_ratio": 0.937, "is_muted_for_llm": true, "muted_at": 1799000000}],
+     "signals": {"C0OTHER": {"decision_count": 1}},
+     "want": [{"channel_id": "C0BOTS", "action": "exclude", "reason": "93% bot messages, no value signals"}]},
+
+    {"name": "muted bot channel with a decision: nothing",
+     "stats": [{"id": "C0BOTS", "name": "ci-builds", "type": "public", "is_member": true, "total_messages": 1000, "bot_messages": 950,
+                "bot_ratio": 0.95, "is_muted_for_llm": true, "muted_at": 1799000000}],
+     "signals": {"C0BOTS": {"decision_count": 1}},
+     "want": []},
+
+    {"name": "muted bot channel with a pending inbox item: nothing",
+     "stats": [{"id": "C0BOTS", "name": "ci-builds", "type": "public", "is_member": true, "total_messages": 1000, "bot_messages": 950,
+                "bot_ratio": 0.95, "is_muted_for_llm": true, "muted_at": 1799000000}],
+     "signals": {"C0BOTS": {"pending_inbox_count": 1}},
+     "want": []},
+
+    {"name": "muted channel at 89% bots: nothing",
+     "stats": [{"id": "C0BOTS", "name": "deploys", "type": "public", "is_member": true, "total_messages": 100, "bot_messages": 89,
+                "bot_ratio": 0.89, "is_muted_for_llm": true, "muted_at": 1799000000}],
+     "signals": {"C0OTHER": {"decision_count": 1}},
+     "want": []},
+
+    {"name": "unmuted bot channel: the mute comes first",
+     "stats": [{"id": "C0BOTS", "name": "ci-builds", "type": "public", "is_member": true, "total_messages": 1000, "bot_messages": 950,
+                "bot_ratio": 0.95}],
+     "signals": {"C0OTHER": {"decision_count": 1}},
+     "want": [{"channel_id": "C0BOTS", "action": "mute", "reason": "95% bot messages (no value signals)"}]},
+
+    {"name": "already not synced: no recommendation at all",
+     "stats": [{"id": "C0JUNK", "name": "alerts-prod", "type": "public", "is_member": true, "total_messages": 2904, "bot_messages": 2788,
+                "bot_ratio": 0.96, "is_muted_for_llm": true, "muted_at": 1790000000, "is_sync_excluded": true, "is_watched": true}],
+     "signals": {"C0OTHER": {"decision_count": 1}},
+     "want": []},
+
+    {"name": "favorite muted 31 days: nothing",
+     "stats": [{"id": "C0FAV", "name": "team-core", "type": "public", "is_member": true, "total_messages": 40,
+                "is_muted_for_llm": true, "muted_at": 1797000000, "is_favorite": true}],
+     "signals": {"C0OTHER": {"decision_count": 1}},
+     "want": []},
+
+    {"name": "watched muted 31 days: favorite, not stop syncing",
+     "stats": [{"id": "C0WATCH", "name": "team-core", "type": "public", "is_member": true, "total_messages": 40,
+                "is_muted_for_llm": true, "muted_at": 1797000000, "is_watched": true}],
+     "signals": {"C0OTHER": {"decision_count": 1}},
+     "want": [{"channel_id": "C0WATCH", "action": "favorite", "reason": "watched channel"}]},
+
+    {"name": "DM muted 31 days: nothing",
+     "stats": [{"id": "D0DM", "name": "D0DM", "type": "dm", "is_member": true, "total_messages": 40, "bot_messages": 40, "bot_ratio": 1.0,
+                "is_muted_for_llm": true, "muted_at": 1797000000}],
+     "signals": {"C0OTHER": {"decision_count": 1}},
+     "want": []},
+
+    {"name": "catching up after Sync again: nothing",
+     "stats": [{"id": "C0JUNK", "name": "random", "type": "public", "is_member": true, "total_messages": 40,
+                "is_muted_for_llm": true, "muted_at": 1797000000, "catchup_from": 1796000000}],
+     "signals": {"C0OTHER": {"decision_count": 1}},
+     "want": []}
+  ]
+}

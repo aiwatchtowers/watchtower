@@ -42,9 +42,13 @@ enum ChannelStatsQueries {
                 COALESCE(ms.mention_count, 0) AS mention_count,
                 COALESCE(ms.last_activity, 0) AS last_activity,
                 COALESCE(ms.last_user_activity, 0) AS last_user_activity,
+                COALESCE(ms.last_mention, 0) AS last_mention,
                 COALESCE(cs.is_muted_for_llm, 0) AS is_muted_for_llm,
+                COALESCE(CAST(strftime('%s', NULLIF(cs.muted_at, '')) AS REAL), 0) AS muted_at,
                 COALESCE(cs.is_favorite, 0) AS is_favorite,
                 CASE WHEN w.entity_id IS NOT NULL THEN 1 ELSE 0 END AS is_watched,
+                COALESCE(cs.sync_excluded, 0) AS is_sync_excluded,
+                cs.catchup_from AS catchup_from,
                 COALESCE(ds.digest_count, 0) AS digest_count,
                 ds.last_digest_at,
                 COALESCE(pending.messages_since_digest, 0) AS messages_since_digest
@@ -57,7 +61,8 @@ enum ChannelStatsQueries {
                     SUM(CASE WHEN m.user_id = '' OR COALESCE(u.is_bot_override, u.is_bot) = 1 THEN 1 ELSE 0 END) AS bot_msgs,
                     SUM(CASE WHEN m.channel_id LIKE ? || '%' AND (m.text LIKE ? OR m.text LIKE ?) THEN 1 ELSE 0 END) AS mention_count,
                     MAX(m.ts_unix) AS last_activity,
-                    MAX(CASE WHEN m.user_id = ? THEN m.ts_unix END) AS last_user_activity
+                    MAX(CASE WHEN m.user_id = ? THEN m.ts_unix END) AS last_user_activity,
+                    MAX(CASE WHEN m.channel_id LIKE ? || '%' AND (m.text LIKE ? OR m.text LIKE ?) THEN m.ts_unix END) AS last_mention
                 FROM messages m
                 LEFT JOIN users u ON u.id = m.user_id
                 WHERE m.is_deleted = 0
@@ -89,17 +94,25 @@ enum ChannelStatsQueries {
             ) pending ON pending.channel_id = c.id
             ORDER BY COALESCE(ms.total_msgs, 0) DESC, c.name
             """
-        return try ChannelStat.fetchAll(db, sql: sql, arguments: [currentUserID, accountPrefix, strictPattern, pipePattern, currentUserID])
+        return try ChannelStat.fetchAll(db, sql: sql, arguments: [
+            currentUserID, accountPrefix, strictPattern, pipePattern, currentUserID,
+            accountPrefix, strictPattern, pipePattern
+        ])
     }
 
-    /// Compute recommendations matching Go `ComputeRecommendations` thresholds exactly.
-    static func computeRecommendations(from stats: [ChannelStat], signals: [String: ChannelValueSignals] = [:]) -> [ChannelRecommendation] {
-        let now = Date().timeIntervalSince1970
+    /// Compute recommendations matching Go `ComputeRecommendations` thresholds exactly
+    /// (pinned by `internal/db/testdata/channel_recommendation_cases.json`).
+    static func computeRecommendations(
+        from stats: [ChannelStat], signals: [String: ChannelValueSignals] = [:], now date: Date = Date()
+    ) -> [ChannelRecommendation] {
+        let now = date.timeIntervalSince1970
         let thirtyDaysAgo = now - 30 * 24 * 3600
 
         var recs: [ChannelRecommendation] = []
 
         for s in stats {
+            // A channel that is not synced is already as quiet as it gets.
+            if s.isSyncExcluded { continue }
             let vs = signals[s.id]
 
             // Mute: total>=50 AND userMsgs==0 AND mentions==0; OR botRatio>=0.70
@@ -126,6 +139,13 @@ enum ChannelStatsQueries {
                         continue
                     }
                 }
+            }
+
+            // Stop syncing, after mute: an unmuted channel is offered the
+            // mute first, and Stop syncing mutes it too.
+            if let reason = excludeReason(s, signals: vs, now: now) {
+                recs.append(ChannelRecommendation(channelID: s.id, channelName: s.name, action: .exclude, reason: reason))
+                continue
             }
 
             // Leave: userMsgs==0 OR lastUserActivity 30+ days ago
@@ -179,6 +199,26 @@ enum ChannelStatsQueries {
         }
 
         return recs
+    }
+
+    /// The Stop syncing rule, Go's `excludeReason`: muted for AI 30+ days
+    /// with no message from the owner and no mention of them since, or
+    /// >= 90% bot messages and no value signals. Never for a favorite, a
+    /// watched channel, a DM or a channel still catching up.
+    private static func excludeReason(_ s: ChannelStat, signals vs: ChannelValueSignals?, now: TimeInterval) -> String? {
+        if s.isFavorite || s.isWatched || s.catchupFrom != nil || s.type == "dm" || s.type == "group_dm" {
+            return nil
+        }
+        if s.isMutedForLLM && s.mutedAt > 0 && s.mutedAt <= now - 30 * 24 * 3600
+            && s.lastUserActivity < s.mutedAt && s.lastMention < s.mutedAt {
+            return ChannelStatsPresentation.reasonMuted
+        }
+        let noSignals = (vs?.decisionCount ?? 0) == 0 && (vs?.activeTrackCount ?? 0) == 0
+            && (vs?.taskCount ?? 0) == 0 && (vs?.pendingInboxCount ?? 0) == 0
+        if s.totalMessages > 0 && s.botRatio >= 0.90 && noSignals {
+            return ChannelStatsPresentation.reasonBots(Int(s.botRatio * 100))
+        }
+        return nil
     }
 
     /// Fetch value signals (decisions, tracks, tasks, inbox) per channel.

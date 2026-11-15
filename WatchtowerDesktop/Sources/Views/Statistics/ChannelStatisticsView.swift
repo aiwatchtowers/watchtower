@@ -55,12 +55,12 @@ struct ChannelStatisticsView: View {
                         chartsSection(vm)
 
                         // Recommendations section
-                        if !vm.recommendations.isEmpty && vm.filter != .muted {
-                            recommendationsSection(vm)
+                        if !vm.recommendations.isEmpty && vm.filter != .muted && vm.filter != .notSynced {
+                            ChannelRecommendationsSection(vm: vm)
                         }
 
                         // Channel table
-                        channelTable(vm)
+                        ChannelStatsTable(vm: vm)
 
                         // Hidden channels note
                         if vm.hiddenChannelCount > 0 {
@@ -365,16 +365,7 @@ struct ChannelStatisticsView: View {
 
     private func toolbar(_ vm: ChannelStatsViewModel) -> some View {
         HStack(spacing: 12) {
-            Picker("Filter", selection: Binding(
-                get: { vm.filter },
-                set: { vm.filter = $0 }
-            )) {
-                ForEach(ChannelStatsViewModel.Filter.allCases, id: \.self) { filter in
-                    Text(filter.rawValue).tag(filter)
-                }
-            }
-            .pickerStyle(.segmented)
-            .frame(maxWidth: 400)
+            ChannelStatsFilterPicker(vm: vm)
 
             Spacer()
 
@@ -397,225 +388,6 @@ struct ChannelStatisticsView: View {
         }
         .padding(.horizontal)
         .padding(.vertical, 8)
-    }
-
-    // MARK: - Recommendations
-
-    private func recommendationsSection(_ vm: ChannelStatsViewModel) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Recommendations")
-                .font(.headline)
-
-            let grouped = Dictionary(grouping: vm.recommendations, by: \.action)
-
-            ForEach([ChannelRecommendation.Action.mute, .leave, .favorite], id: \.self) { action in
-                if let recs = grouped[action], !recs.isEmpty {
-                    recommendationGroup(action: action, recs: recs, vm: vm)
-                }
-            }
-        }
-        .padding()
-        .background(.background, in: RoundedRectangle(cornerRadius: 8))
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(.quaternary, lineWidth: 1)
-        )
-    }
-
-    private func recommendationGroup(
-        action: ChannelRecommendation.Action,
-        recs: [ChannelRecommendation],
-        vm: ChannelStatsViewModel
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-                Image(systemName: actionIcon(action))
-                    .foregroundStyle(actionColor(action))
-                Text(actionTitle(action))
-                    .font(.subheadline.weight(.semibold))
-                Text("(\(recs.count))")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            ForEach(recs) { rec in
-                HStack {
-                    Text("#\(rec.channelName)")
-                        .font(.body.monospaced())
-                    Text(rec.reason)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Button(actionButtonLabel(rec.action)) {
-                        Task { await vm.applyRecommendation(rec) }
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                }
-                .padding(.leading, 22)
-            }
-        }
-    }
-
-    // MARK: - Channel Table
-
-    private func channelTable(_ vm: ChannelStatsViewModel) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Header
-            HStack(spacing: 0) {
-                Text("Channel")
-                    .frame(minWidth: 150, alignment: .leading)
-                Text("Messages")
-                    .frame(width: 70, alignment: .trailing)
-                Text("Yours")
-                    .frame(width: 50, alignment: .trailing)
-                Text("Bot %")
-                    .frame(width: 50, alignment: .trailing)
-                Text("Mentions")
-                    .frame(width: 60, alignment: .trailing)
-                Text("Activity")
-                    .frame(width: 80, alignment: .trailing)
-                Text("Digest")
-                    .frame(width: 100, alignment: .center)
-                Text("Status")
-                    .frame(width: 70, alignment: .center)
-                Spacer()
-                    .frame(width: 60)
-            }
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
-
-            Divider()
-
-            let filtered = vm.filteredStats
-            if filtered.isEmpty {
-                Text("No channels match the current filter")
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 20)
-            } else {
-                ForEach(filtered) { stat in
-                    channelRow(stat, vm: vm)
-                    Divider()
-                }
-            }
-        }
-        .background(.background, in: RoundedRectangle(cornerRadius: 8))
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(.quaternary, lineWidth: 1)
-        )
-    }
-
-    /// The row's mute and favorite toggles; each waits while its write does.
-    private func channelActions(_ stat: ChannelStat, vm: ChannelStatsViewModel) -> some View {
-        // Action buttons
-        HStack(spacing: 4) {
-            Button {
-                Task { await vm.toggleMute(channelID: stat.id) }
-            } label: {
-                Image(systemName: stat.isMutedForLLM ? "speaker.wave.2" : "speaker.slash")
-                    .font(.caption)
-            }
-            .buttonStyle(.borderless)
-            .disabled(vm.isMutePending(stat.id))
-            .help(stat.isMutedForLLM ? "Unmute for AI" : "Mute for AI")
-
-            Button {
-                Task { await vm.toggleFavorite(channelID: stat.id) }
-            } label: {
-                Image(systemName: stat.isFavorite ? "star.slash" : "star")
-                    .font(.caption)
-            }
-            .disabled(vm.isFavoritePending(stat.id))
-            .buttonStyle(.borderless)
-            .help(stat.isFavorite ? "Remove favorite" : "Add favorite")
-        }
-        .frame(width: 60, alignment: .center)
-    }
-
-    private func channelRow(_ stat: ChannelStat, vm: ChannelStatsViewModel) -> some View {
-        HStack(spacing: 0) {
-            // Channel name with Slack link
-            HStack(spacing: 4) {
-                if let url = vm.slackURL(for: stat.id) {
-                    Link(destination: url) {
-                        HStack(spacing: 3) {
-                            Text("#\(stat.name)")
-                                .lineLimit(1)
-                            Image(systemName: "arrow.up.right.square")
-                                .font(.caption2)
-                        }
-                    }
-                } else {
-                    Text("#\(stat.name)")
-                        .lineLimit(1)
-                }
-            }
-            .frame(minWidth: 150, alignment: .leading)
-
-            Text("\(stat.totalMessages)")
-                .frame(width: 70, alignment: .trailing)
-                .monospacedDigit()
-
-            Text("\(stat.userMessages)")
-                .frame(width: 50, alignment: .trailing)
-                .monospacedDigit()
-
-            Text("\(Int(stat.botRatio * 100))%")
-                .frame(width: 50, alignment: .trailing)
-                .foregroundStyle(stat.botRatio > 0.8 ? .red : stat.botRatio > 0.5 ? .orange : .primary)
-                .monospacedDigit()
-
-            Text("\(stat.mentionCount)")
-                .frame(width: 60, alignment: .trailing)
-                .monospacedDigit()
-
-            Text(lastActivityText(stat))
-                .frame(width: 80, alignment: .trailing)
-                .foregroundStyle(lastActivityColor(stat))
-                .font(.caption)
-
-            // Digest status
-            HStack(spacing: 3) {
-                Image(systemName: stat.digestStatus.icon)
-                    .foregroundStyle(stat.digestStatus.color)
-                Text(stat.digestStatus.label)
-            }
-            .font(.caption)
-            .frame(width: 100, alignment: .center)
-            .help(digestHelp(stat))
-
-            // Status badges
-            HStack(spacing: 4) {
-                if stat.isMutedForLLM {
-                    Image(systemName: "speaker.slash.fill")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                        .help("Muted for AI")
-                }
-                if stat.isFavorite {
-                    Image(systemName: "star.fill")
-                        .font(.caption)
-                        .foregroundStyle(.yellow)
-                        .help("Favorite")
-                }
-                if stat.isArchived {
-                    Image(systemName: "archivebox.fill")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .help("Archived")
-                }
-            }
-            .frame(width: 70, alignment: .center)
-
-            channelActions(stat, vm: vm)
-        }
-        .font(.body)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
     }
 
     // MARK: - Hidden Channels Bar
@@ -643,69 +415,6 @@ struct ChannelStatisticsView: View {
     }
 
     // MARK: - Helpers
-
-    private func lastActivityText(_ stat: ChannelStat) -> String {
-        guard let days = stat.lastActivityDaysAgo else { return "Never" }
-        if days == 0 { return "Today" }
-        if days == 1 { return "Yesterday" }
-        if days < 7 { return "\(days)d ago" }
-        if days < 30 { return "\(days / 7)w ago" }
-        return "\(days / 30)mo ago"
-    }
-
-    private func lastActivityColor(_ stat: ChannelStat) -> Color {
-        guard let days = stat.lastActivityDaysAgo else { return .secondary }
-        if days <= 1 { return .green }
-        if days <= 7 { return .primary }
-        if days <= 30 { return .orange }
-        return .red
-    }
-
-    private func digestHelp(_ stat: ChannelStat) -> String {
-        if stat.digestCount == 0 {
-            return "No digests generated"
-        }
-        var text = "\(stat.digestCount) digests"
-        if let lastAt = stat.lastDigestAt {
-            text += "\nLast: \(String(lastAt.prefix(10)))"
-        }
-        if stat.messagesSinceDigest > 0 {
-            text += "\n\(stat.messagesSinceDigest) new messages"
-        }
-        return text
-    }
-
-    private func actionIcon(_ action: ChannelRecommendation.Action) -> String {
-        switch action {
-        case .mute: "speaker.slash"
-        case .leave: "rectangle.portrait.and.arrow.right"
-        case .favorite: "star"
-        }
-    }
-
-    private func actionColor(_ action: ChannelRecommendation.Action) -> Color {
-        switch action {
-        case .mute: .orange
-        case .leave: .red
-        case .favorite: .yellow
-        }
-    }
-
-    private func actionTitle(_ action: ChannelRecommendation.Action) -> String {
-        switch action {
-        case .mute: "Suggest Mute"
-        case .leave: "Suggest Leave"
-        case .favorite: "Suggest Favorite"
-        }
-    }
-
-    private func actionButtonLabel(_ action: ChannelRecommendation.Action) -> String {
-        switch action {
-        case .mute: "Mute"
-        case .leave: "Mute"
-        case .favorite: "Favorite"
-        }
-    }
 
     private func formatNumber(_ n: Int) -> String {
         if n >= 1000 {

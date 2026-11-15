@@ -201,3 +201,18 @@ func TestChannelsExcludeCLI_AmbiguousNameNeedsID(t *testing.T) {
 	_, err = runChannelsExcludeCLI(t, channelsExcludeCmd, []string{"general"}, "", false)
 	assert.ErrorContains(t, err, "pass --id")
 }
+
+// TestChannelsExcludeJSON pins the answer the Desktop's Stop syncing /
+// Sync again buttons decode.
+func TestChannelsExcludeJSON(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+
+	out, err := runChannelsExcludeCLI(t, channelsExcludeCmd, nil, "C001", true)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"ok":true,"channel_id":"C001","sync_excluded":true,"muted":true}`, out)
+
+	out, err = runChannelsExcludeCLI(t, channelsIncludeCmd, nil, "C001", true)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"ok":true,"channel_id":"C001","sync_excluded":false,"muted":false}`, out)
+}

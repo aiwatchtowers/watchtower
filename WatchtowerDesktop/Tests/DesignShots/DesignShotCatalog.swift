@@ -607,7 +607,7 @@ enum DesignShotCatalog {
             + ClosedAsksShotFixtures.shots
             + TuningChatShotFixtures.shots // The tuning chat over the Analytics pane (#1517).
             + SlackFullLiveShotFixtures.shots // Slack Full / Live screens spec (#1779), design only.
-            + SlackAdaptiveSyncShotFixtures.shots // Adaptive Slack sync, Statistics (#1709), design only.
+            + SlackAdaptiveSyncShotFixtures.shots // Adaptive Slack sync, Statistics → Channels (#1709).
     }
 }
 
