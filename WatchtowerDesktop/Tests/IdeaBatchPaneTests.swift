@@ -295,6 +295,14 @@ final class IdeaBatchPaneTests: XCTestCase {
 
     // MARK: - View
 
+    /// The pane takes the keyboard on a click or Tab, never on appear: the
+    /// list's ↑/↓ keeps the keyboard when it reaches the Idea finder row.
+    func testPaneTakesNoFocusOnAppear() throws {
+        let idea = try insert()
+        let sut = pane(state(batchIDs: [idea.id], remaining: [idea]))
+        XCTAssertThrowsError(try sut.inspect().vStack().callOnAppear(), "no onAppear grabs the focus")
+    }
+
     func testShowsFirstRemainingWithFourButtonsKeepProminent() throws {
         let first = try insert(title: "One release checklist for every team",
                                essence: "Three teams keep their own checklist.")

@@ -35,7 +35,6 @@ struct IdeaBatchPane: View {
     var gateOverride: IdeaBatchPressGate.Box?
     private var gate: IdeaBatchPressGate.Box { gateOverride ?? ownGate }
     @State private var facts: ShownFacts?
-    @FocusState private var focused: Bool
 
     /// Facts belong to the card they were read for.
     private struct ShownFacts {
@@ -92,10 +91,10 @@ struct IdeaBatchPane: View {
                 }
             }
         }
+        // The keys work once a click or Tab gives the pane the keyboard,
+        // never on appear: ↑/↓ in the list must reach this row and go on.
         .focusable()
         .focusEffectDisabled()
-        .focused($focused)
-        .onAppear { focused = true }
         .onKeyPress(phases: .down) { handle($0) }
         // Another card is shown: it takes its own press.
         .onChange(of: state.remaining.first?.id) { gate.value.release() }
