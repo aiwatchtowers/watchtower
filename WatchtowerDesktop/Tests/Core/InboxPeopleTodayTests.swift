@@ -4,22 +4,23 @@ import XCTest
 @testable import WatchtowerCore
 import WatchtowerTestSupport
 
-/// People waiting today, the Inbox badge's people term: the SQL count agrees
-/// with `InboxToday` over the fixture shared with Go
+/// People waiting today, the Inbox badge's people term
+/// (`WaitingQueries.peopleCounts(...).today`): the SQL count agrees with
+/// `InboxToday` over the fixture shared with Go
 /// (`internal/inbox/testdata/from_today.json`).
 final class InboxPeopleTodayTests: XCTestCase {
-    func testOpenMessageCountMatchesInboxToday() async throws {
+    func testPeopleTodayCountMatchesInboxToday() async throws {
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
         for item in try InboxTodayFixture.cases() {
             let now = try InboxTodayFixture.date(item.now)
             let since = InboxToday.sinceUTC(now: now, calendar: try InboxTodayFixture.calendar(item.tz))
             let count = try await pool.write { db -> Int in
-                let id = try TestDatabase.insertInboxItem(db)
+                let id = try TestDatabase.insertInboxItem(db, triggerType: "mention")
                 // `mentioned_at` is NOT NULL: none is ''.
                 try db.execute(sql: "UPDATE inbox_items SET created_at = ?, mentioned_at = ? WHERE id = ?",
                                arguments: [item.createdAt, item.mentionedAt ?? "", id])
-                let count = try InboxQueries.openMessageCount(db, nowUTC: item.now, sinceUTC: since)
+                let count = try WaitingQueries.peopleCounts(db, nowUTC: item.now, startOfTodayUTC: since).today
                 try db.execute(sql: "DELETE FROM inbox_items WHERE id = ?", arguments: [id])
                 return count
             }
