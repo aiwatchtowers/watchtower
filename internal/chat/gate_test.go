@@ -672,9 +672,6 @@ func TestGate_StopDeniesWaitingCall(t *testing.T) {
 			h.next(EventToolWait)
 			h.send(Command{Type: CommandCancel})
 			h.next(EventTurnDone)
-			// As above: the interrupt may still be on its way; it must reach
-			// the child before the next turn's message, not interrupt that turn.
-			synctest.Wait()
 
 			fx.setRequests(t, gmailSend("r2", "tu2"))
 			h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "send again"})
@@ -715,6 +712,53 @@ func TestGate_StopDeniesWaitingCall(t *testing.T) {
 			assert.Equal(t, "deny", behavior(t, answers[0]))
 		})
 	})
+}
+
+// The deny of a waiting call ends the turn by itself, so TurnDone can come
+// before Cancel's asynchronously written interrupt. A next turn sent at once
+// must not overtake it: the late interrupt would interrupt the new turn.
+func TestGate_LateInterruptPrecedesNextTurn(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		fx := gateFake(t, gmailSend("r1", "tu1"))
+		b := NewClaudeBackend(fx.opts)
+		release := make(chan struct{})
+		b.(*claudeBackend).writeInterrupt = func(p *claudeProc, line []byte) error {
+			<-release // the interrupt lands only when the test says so
+			return p.write(line)
+		}
+		h := startSession(t, b, nil)
+		h.next(EventSessionReady)
+		h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "send"})
+		h.next(EventToolWait)
+		h.send(Command{Type: CommandCancel})
+		h.next(EventTurnDone) // ended by the deny; the interrupt is held
+
+		fx.setRequests(t, gmailSend("r2", "tu2"))
+		h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "send again"})
+		synctest.Wait()
+		assert.NotContains(t, readStdin(t, fx), "send again", "the next message waits for the pending interrupt")
+
+		close(release)
+		wait := h.next(EventToolWait)
+		assert.Equal(t, "tu2", wait.ID)
+		require.True(t, fx.sink.reject(wait.ActionID))
+		done := h.next(EventTurnDone)
+		assert.Equal(t, "t2", done.TurnID)
+		assert.NotEqual(t, StatusInterrupted, done.Status, "the late interrupt did not interrupt t2")
+		require.NoError(t, h.finish())
+
+		stdin := readStdin(t, fx)
+		interrupt, next := strings.Index(stdin, `"subtype":"interrupt"`), strings.Index(stdin, "send again")
+		assert.True(t, interrupt >= 0 && next > interrupt, "the interrupt reaches the child before t2's message")
+		assert.Len(t, fx.controlAnswers(t)["r2"], 1, "t2's call is answered once (rejected), not cut by an interrupt")
+	})
+}
+
+func readStdin(t *testing.T, fx *gateFixture) string {
+	t.Helper()
+	data, err := os.ReadFile(fx.files.stdin)
+	require.NoError(t, err)
+	return string(data)
 }
 
 func TestGate_ReadOnlyConnectorCallWritesNoRow(t *testing.T) {
