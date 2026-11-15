@@ -158,13 +158,17 @@ func (o *Orchestrator) detectJiraKeys(msgs []db.Message) {
 // NewOrchestrator creates a new sync orchestrator scoped to one connected
 // Slack account (accountID, a slack_accounts.id).
 func NewOrchestrator(database *db.DB, slackClient *watchtowerslack.Client, cfg *config.Config, accountID int64) *Orchestrator {
+	progress := NewProgress()
+	if slackClient != nil {
+		progress.SetRateLimitHold(slackClient.HoldUntil)
+	}
 	return &Orchestrator{
 		db:          database,
 		slackClient: slackClient,
 		config:      cfg,
 		accountID:   accountID,
 		logger:      log.Default(),
-		progress:    NewProgress(),
+		progress:    progress,
 	}
 }
 
