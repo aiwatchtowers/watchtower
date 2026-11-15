@@ -3,16 +3,16 @@ import WatchtowerKit
 
 /// The fixed texts of the ask forms (spec §4.6, §6.2, §9).
 enum AskText {
-    static let openOnMac = "Open the ask on the Mac"
+    static let openOnMac = "Open the ask on the tower"
     static let openOnMacReason = "This ask is too large to answer on the phone."
-    static let footer = "The answer is typed into the session on the Mac"
+    static let footer = "The answer is typed into the session on the tower"
     static let send = "Send answer"
     static let next = "Next question"
     static let previous = "Previous"
     static let approve = "Approve"
     static let requestChanges = "Request changes"
-    static let appliedWithoutDelivery = "Answer saved on the Mac"
-    static let genericFailure = "Your Mac could not take this answer"
+    static let appliedWithoutDelivery = "Answer saved on the tower"
+    static let genericFailure = "Your tower could not take this answer"
     static let noteTooLong = "The note is over 4000 characters — shorten it to send"
     static let openSession = "Open session"
     static let agentContextLabel = "Agent, before asking"
@@ -41,13 +41,13 @@ enum AskText {
     /// for a snapshot the hub cut (the hub publishes at most 256 KiB).
     static func clipped(docBytes: Int?) -> String {
         let full = docBytes.map { ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .file) } ?? "a longer document"
-        return "Showing the first 256 KB of \(full) — the rest is only on the Mac"
+        return "Showing the first 256 KB of \(full) — the rest is only on the tower"
     }
 
     /// Where a cut snapshot stops: what is missing and where to read it.
     static func clippedEnd(docPath: String) -> String {
         let name = docPath.isEmpty ? "the document" : docPath
-        return "The phone has only the first 256 KB of \(name). Open the ask on the Mac to read the rest."
+        return "The phone has only the first 256 KB of \(name). Open the ask on the tower to read the rest."
     }
 
     /// "Press and hold a paragraph to comment · 1 comment"; the count alone
@@ -71,7 +71,7 @@ enum AskText {
 
     /// An `ask_not_open` echo, with the replica's status.
     static func notOpen(_ ask: OwnerAsk) -> String {
-        ask.status == .open ? "This ask is no longer open on the Mac" : "This ask is no longer open: \(status(ask))"
+        ask.status == .open ? "This ask is no longer open on the tower" : "This ask is no longer open: \(status(ask))"
     }
 
     /// A check mark in the Mac drawer's words (`OwnerAskPresentation.checkStates`).

@@ -15,11 +15,11 @@ enum AskDelivery: String, Equatable {
     var text: String {
         switch self {
         case .submitted: "Sent to the session"
-        case .typed: "Typed into the session — press Return on the Mac to send it"
+        case .typed: "Typed into the session — press Return on the tower to send it"
         case .held: "Held until the session is free"
         case .queued: "Queued behind another answer to the session"
-        case .copied: "On the Mac's clipboard — paste it into the session"
-        case .noSession: "No session is running — the answer is saved on the Mac"
+        case .copied: "On the tower's clipboard — paste it into the session"
+        case .noSession: "No session is running — the answer is saved on the tower"
         case .automation: "Answer saved — the automation goes on with it"
         }
     }

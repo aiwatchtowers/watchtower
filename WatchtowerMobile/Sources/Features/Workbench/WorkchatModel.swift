@@ -107,7 +107,7 @@ struct WorkchatModel: Equatable {
         workbenchName = snapshot.workbench(session.workbenchID)?.name ?? ""
         targetID = session.targetID
         stateLine = Self.stateLine(session, asOf: mac.asOf, now: now)
-        banner = MacAwayBanner(mac, now: now)
+        banner = MacAwayBanner(mac, name: snapshot.heartbeat?.macName ?? "", now: now)
         finishNotice = finishDelivery.map { "Finish · \($0.resolved(for: session).text)" }
         entries = chat?.entries ?? []
         let asks = snapshot.asks

@@ -122,13 +122,13 @@ final class StartSheetWiringTests: XCTestCase {
 
         let stale = try XCTUnwrap(try form(400, try snapshot(fixture.store, heartbeatAge: 3_600), fixture.starter).progress)
         XCTAssertEqual(stale.stage, .sent)
-        XCTAssertEqual(stale.current, "Sent to your Mac")
-        XCTAssertEqual(stale.waitingLine, "Waiting for your Mac")
+        XCTAssertEqual(stale.current, "Sent to your tower")
+        XCTAssertEqual(stale.waitingLine, "Waiting for your tower")
         XCTAssertEqual(stale.steps.map(\.state), [.current, .todo, .todo])
         XCTAssertNil(stale.openSessionID)
 
         let fresh = try XCTUnwrap(try form(400, try snapshot(fixture.store), fixture.starter).progress)
-        XCTAssertEqual(fresh.current, "Sent to your Mac")
+        XCTAssertEqual(fresh.current, "Sent to your tower")
         XCTAssertNil(fresh.waitingLine, "an online Mac gets no waiting line")
     }
 
@@ -141,7 +141,7 @@ final class StartSheetWiringTests: XCTestCase {
 
         try await echo(fixture, .received)
         let picked = try XCTUnwrap(try form(400, try snapshot(fixture.store), fixture.starter).progress)
-        XCTAssertEqual(picked.current, "Mac picked it up")
+        XCTAssertEqual(picked.current, "Tower picked it up")
         XCTAssertEqual(picked.steps.map(\.state), [.done, .current, .todo])
 
         try await echo(fixture, .applied, result: ["session_id": .integer(90), "stage": .string("starting")])
@@ -244,7 +244,7 @@ final class StartSheetWiringTests: XCTestCase {
         replica.sessions.append(try mirror(TerminalSessionState.self, staleJSON))
         XCTAssertEqual(
             try form(416, replica, fixture.starter).progress?.stage, .starting(sessionID: 16),
-            "the record from before the resume is not its end, though the Mac stamped it after the phone sent"
+            "the record from before the resume is not its end, though the tower stamped it after the phone sent"
         )
 
         replica.sessions[replica.sessions.count - 1] = try mirror(
@@ -347,11 +347,11 @@ final class StartSheetWiringTests: XCTestCase {
         let fixture = try await makeFixture()
         try await fixture.starter.start(targetID: 400, params: try startParams(400))
         try await echo(fixture, .received)
-        XCTAssertEqual(try form(400, try snapshot(fixture.store), fixture.starter).progress?.current, "Mac picked it up")
-        XCTAssertEqual(try form(400, try snapshot(fixture.store), fixture.starter).progress?.current, "Mac picked it up")
+        XCTAssertEqual(try form(400, try snapshot(fixture.store), fixture.starter).progress?.current, "Tower picked it up")
+        XCTAssertEqual(try form(400, try snapshot(fixture.store), fixture.starter).progress?.current, "Tower picked it up")
 
         let relaunched = SessionStarter.sending(through: fixture.outbox, store: fixture.store)
-        XCTAssertEqual(try form(400, try snapshot(fixture.store), relaunched).progress?.current, "Mac picked it up")
+        XCTAssertEqual(try form(400, try snapshot(fixture.store), relaunched).progress?.current, "Tower picked it up")
 
         let applied = try XCTUnwrap(fixture.store.pendingActions().first).action
         var echo = applied
@@ -454,9 +454,9 @@ final class StartSheetWiringTests: XCTestCase {
         let defaults = try form(415, try snapshot(store))
         XCTAssertEqual(defaults.grant, StartGrant(nil))
         XCTAssertFalse(defaults.grant.typingAllowed)
-        XCTAssertEqual(defaults.briefCaption, "The Mac uses this brief. To edit it here, allow typing for this phone on the Mac.")
-        XCTAssertFalse(defaults.canStart, "no grant record: the Mac has not allowed starts")
-        XCTAssertEqual(defaults.startCaption, SessionStartText.notAllowed)
+        XCTAssertEqual(defaults.briefCaption, "The tower uses this brief. To edit it here, allow typing for this phone on the tower.")
+        XCTAssertFalse(defaults.canStart, "no grant record: the tower has not allowed starts")
+        XCTAssertEqual(defaults.startCaption, SessionStartText.notAllowed(.mac))
 
         var draft = StartSessionDraft(target: try target(415))
         draft.brief = "Fix the archive menu first."
@@ -466,7 +466,7 @@ final class StartSheetWiringTests: XCTestCase {
         XCTAssertEqual(typing.briefCaption, SessionStartText.briefReady, "Start needs no typing")
         XCTAssertEqual(draft.params(workbenchID: DemoSeed.acmeID, mode: .new, grant: typing.grant).brief, "Fix the archive menu first.")
         let unedited = StartSessionDraft(target: try target(415))
-        XCTAssertNil(unedited.params(workbenchID: DemoSeed.acmeID, mode: .new, grant: typing.grant).brief, "an unedited prompt is the Mac's own")
+        XCTAssertNil(unedited.params(workbenchID: DemoSeed.acmeID, mode: .new, grant: typing.grant).brief, "an unedited prompt is the tower's own")
         var blank = unedited
         blank.brief = "  \n"
         XCTAssertNil(blank.params(workbenchID: DemoSeed.acmeID, mode: .new, grant: typing.grant).brief)
@@ -481,13 +481,13 @@ final class StartSheetWiringTests: XCTestCase {
         ])))
         XCTAssertEqual(
             try form(480, replica).briefCaption,
-            "The brief is shortened on the phone. Editing it replaces the Mac's full prompt."
+            "The brief is shortened on the phone. Editing it replaces the tower's full prompt."
         )
         XCTAssertEqual(try form(415, replica).briefCaption, SessionStartText.briefReady, "an unclipped prompt says Start is ready")
         replica.grants = []
         XCTAssertEqual(
             try form(480, replica).briefCaption,
-            "The Mac uses this brief. To edit it here, allow typing for this phone on the Mac."
+            "The tower uses this brief. To edit it here, allow typing for this phone on the tower."
         )
     }
 
@@ -496,7 +496,7 @@ final class StartSheetWiringTests: XCTestCase {
     func testAPhoneNotAllowedToStartCannotStart() throws {
         let model = try form(400, try snapshot(try TestPhone.replica(), grant: grant(typing: false, start: false)))
         XCTAssertFalse(model.canStart)
-        XCTAssertEqual(model.startCaption, SessionStartText.notAllowed)
+        XCTAssertEqual(model.startCaption, SessionStartText.notAllowed(.mac))
     }
 
     /// Bug 5 (design pass spec §3): with no target and a refused grant, the
@@ -504,7 +504,7 @@ final class StartSheetWiringTests: XCTestCase {
     func testTheGrantCaptionWinsOverTheMissingTarget() throws {
         let refused = try form(nil, try snapshot(try TestPhone.replica(), grant: grant(typing: false, start: false)))
         XCTAssertFalse(refused.canStart)
-        XCTAssertEqual(refused.startCaption, SessionStartText.notAllowed)
+        XCTAssertEqual(refused.startCaption, SessionStartText.notAllowed(.mac))
         XCTAssertNil(try form(415, try snapshot(try TestPhone.replica(), grant: grant(typing: true, start: true))).startCaption)
     }
 
@@ -538,12 +538,12 @@ final class StartSheetWiringTests: XCTestCase {
         )
         let model = try form(415, try snapshot(try TestPhone.replica(), grant: refused))
         XCTAssertFalse(model.canStart)
-        XCTAssertEqual(model.startCaption, SessionStartText.notAllowed)
+        XCTAssertEqual(model.startCaption, SessionStartText.notAllowed(.mac))
         XCTAssertEqual(
-            SettingsView.startSessionsCaption(grant: refused),
+            SettingsView.startSessionsCaption(grant: refused, host: .mac),
             "Allow it on your Mac: Watchtower → Settings → Mobile, after typing"
         )
-        XCTAssertEqual(SettingsView.startSessionsCaption(grant: grant(typing: true, start: true)), "Allowed")
+        XCTAssertEqual(SettingsView.startSessionsCaption(grant: grant(typing: true, start: true), host: .mac), "Allowed")
     }
 
     /// From the Workbench header no target is set: Start waits for one, and
@@ -591,11 +591,11 @@ final class StartSheetWiringTests: XCTestCase {
         let fixture = try await makeFixture()
         try await fixture.starter.start(targetID: 400, params: try startParams(400))
         let firstID = try XCTUnwrap(fixture.store.pendingActions().first).id
-        try await echo(fixture, .failed, reason: .claudeNotFound, message: "Claude Code was not found on the Mac")
+        try await echo(fixture, .failed, reason: .claudeNotFound, message: "Claude Code was not found on the tower")
 
         let failed = try XCTUnwrap(try form(400, try snapshot(fixture.store), fixture.starter).progress)
-        XCTAssertEqual(failed.failure, "Claude Code was not found on the Mac")
-        XCTAssertEqual(failed.caption, "Claude Code was not found on the Mac")
+        XCTAssertEqual(failed.failure, "Claude Code was not found on the tower")
+        XCTAssertEqual(failed.caption, "Claude Code was not found on the tower")
         XCTAssertEqual(failed.steps.map(\.state), [.todo, .todo, .todo])
         XCTAssertEqual(try fixture.store.pendingActions().count, 1, "nothing retried on its own")
 
@@ -618,7 +618,7 @@ final class StartSheetWiringTests: XCTestCase {
 
         XCTAssertEqual(
             try form(400, try snapshot(fixture.store), fixture.starter).progress?.failure,
-            "Your Mac restarted while applying this — check it on the Mac"
+            "Your tower restarted while applying this — check it on the tower"
         )
         try fixture.starter.clear(targetID: 400)
         XCTAssertTrue(try fixture.store.pendingActions().isEmpty)
@@ -767,11 +767,11 @@ final class StartSheetWiringTests: XCTestCase {
         XCTAssertFalse(pending.canStop, "one stop at a time")
         XCTAssertEqual(pending.stopRows.map(\.state), [.sending("Stopping…")])
         let asleep = SessionActionsModel(session: live, snapshot: try snapshot(fixture.store, heartbeatAge: 3_600), inFlight: [], now: now)
-        XCTAssertEqual(asleep.stopRows.map(\.state), [.sending("Waiting for your Mac")])
+        XCTAssertEqual(asleep.stopRows.map(\.state), [.sending("Waiting for your tower")])
 
-        try await echo(fixture, .failed, reason: .notFound, message: "This session no longer exists on the Mac")
+        try await echo(fixture, .failed, reason: .notFound, message: "This session no longer exists on the tower")
         let refused = SessionActionsModel(session: live, snapshot: try snapshot(fixture.store), inFlight: [], now: now)
-        XCTAssertEqual(refused.stopRows.map(\.state), [.failed("This session no longer exists on the Mac")])
+        XCTAssertEqual(refused.stopRows.map(\.state), [.failed("This session no longer exists on the tower")])
         XCTAssertTrue(refused.canStop, "a refusal does not lock Stop")
         try fixture.starter.dismiss(try XCTUnwrap(refused.stopRows.first).pending)
         XCTAssertTrue(try fixture.store.pendingActions().isEmpty)
@@ -781,7 +781,7 @@ final class StartSheetWiringTests: XCTestCase {
         let fixture = try await makeFixture()
         try await fixture.starter.start(targetID: 400, params: try startParams(400))
         var uses = try form(400, try snapshot(fixture.store, heartbeatAge: 3_600), fixture.starter).toneUses
-        try await echo(fixture, .failed, reason: .claudeNotFound, message: "Claude Code was not found on the Mac")
+        try await echo(fixture, .failed, reason: .claudeNotFound, message: "Claude Code was not found on the tower")
         uses += try form(400, try snapshot(fixture.store), fixture.starter).toneUses
         XCTAssertFalse(uses.isEmpty)
         XCTAssertFalse(uses.contains { $0.tone == .orange }, "progress stages are not orange")

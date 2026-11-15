@@ -51,21 +51,21 @@ struct WorkbenchListView: View {
                 ContentUnavailableView(
                     "No workbenches yet",
                     systemImage: "hammer",
-                    description: Text("Your Mac's workbenches show up here.")
+                    description: Text("Your tower's workbenches show up here.")
                 )
             }
         } else {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: Spacing.regular) {
                     switcher
-                    SectionHeader(workbenches.count == 1 ? "1 folder on your Mac" : "\(workbenches.count) folders on your Mac")
+                    SectionHeader(workbenches.count == 1 ? "1 folder on your tower" : "\(workbenches.count) folders on your tower")
                     ForEach(workbenches) { workbench in
                         NavigationLink(value: WorkbenchRoute(id: workbench.id)) {
                             WorkbenchCardView(card: WorkbenchCardModel(workbench))
                         }
                         .buttonStyle(.plain)
                     }
-                    Text("Workbenches are folders bound on the Mac. New ones are added there.")
+                    Text("Workbenches are folders bound on the tower. New ones are added there.")
                         .font(TypeScale.meta)
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, Spacing.small)

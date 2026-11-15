@@ -170,7 +170,7 @@ struct NowOutboxRows: Equatable {
 /// the keys, and Waiting to send covers only queued ones, so this row says so. Its words hold whether the Mac is
 /// closed, online with its keys refused, or has cleared this phone. Secondary tone, never orange.
 struct NowParkedRow: Equatable {
-    static let advice = "If this lasts, open Watchtower on the Mac."
+    static let advice = "If this lasts, open Watchtower on the tower."
 
     let title: String
     let detail: String
@@ -179,7 +179,7 @@ struct NowParkedRow: Equatable {
     /// `macName`: the hub on screen ("your Mac" before it has one); `sent`: its actions written and not yet
     /// answered. With none, the count sentences go.
     init(macName: String, sent: Int) {
-        title = "Waiting for new keys from \(macName.isEmpty ? "your Mac" : macName)"
+        title = "Waiting for new keys from \(TowerText.name(macName))"
         let count = switch sent {
         case ...0: ""
         case 1: "1 action has no answer yet. It finishes once it sends it. "

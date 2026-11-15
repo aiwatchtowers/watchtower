@@ -36,7 +36,7 @@ struct AskView: View {
                     .onChange(of: form.status) { model.followSuccessor(snapshot: replica.snapshot, now: context.date) }
                     .onAppear { model.followSuccessor(snapshot: replica.snapshot, now: context.date) }
             } else {
-                ContentUnavailableView("Ask not found", systemImage: "questionmark.bubble", description: Text("It is no longer on your Mac."))
+                ContentUnavailableView("Ask not found", systemImage: "questionmark.bubble", description: Text("It is no longer on your tower."))
             }
         }
         .navigationBarTitleDisplayMode(.inline)

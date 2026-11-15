@@ -60,7 +60,7 @@ struct WorkchatView: View {
             if let session, let model {
                 content(session, model)
             } else {
-                ContentUnavailableView("Session not found", systemImage: "terminal", description: Text("It was removed on your Mac."))
+                ContentUnavailableView("Session not found", systemImage: "terminal", description: Text("It was removed on your tower."))
             }
         }
         .background(Color(.systemBackground))
@@ -287,7 +287,7 @@ struct WorkchatView: View {
                 onDeny: { answer(card, .deny) }
             )
             if let hint = card.hint {
-                Text(hint.text).font(TypeScale.meta).foregroundStyle(.secondary)
+                Text(hint.text).font(TypeScale.meta).foregroundStyle(.secondary).textSelection(.enabled)
                 if hint == .turnOn {
                     Button("Turn On") { Task { await env.deviceSettings.setPermissionsRequested(true) } }
                         .buttonStyle(SecondaryActionStyle())
@@ -675,6 +675,7 @@ private struct TypingHintBar: View {
                     Label(hint.text, systemImage: "keyboard")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     if hint == .turnOn {
                         Button("Turn On", action: onTurnOn)

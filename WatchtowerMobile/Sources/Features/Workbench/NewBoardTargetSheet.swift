@@ -55,7 +55,7 @@ struct NewBoardTargetSheet: View {
                         }
                     }
                     .card(.plain, padding: EdgeInsets(top: Spacing.tight, leading: Spacing.medium, bottom: Spacing.tight, trailing: Spacing.medium))
-                    Text("Your Mac adds it to the board as todo.")
+                    Text("Your tower adds it to the board as todo.")
                         .font(TypeScale.meta)
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, Spacing.small)

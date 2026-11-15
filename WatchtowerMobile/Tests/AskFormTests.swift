@@ -334,7 +334,7 @@ final class AskFormTests: XCTestCase {
         model.setOther("  \n\t ", for: "q")
         XCTAssertFalse(try formOf(model, snapshot).canSend)
         try await fixture.answerer.send(ask)
-        XCTAssertTrue(try fixture.store.pendingActions().isEmpty, "a draft the Mac would refuse is never sent")
+        XCTAssertTrue(try fixture.store.pendingActions().isEmpty, "a draft the tower would refuse is never sent")
 
         model.setOther("  Neither, use C  ", for: "q")
         XCTAssertTrue(try formOf(model, snapshot).canSend)
@@ -374,9 +374,9 @@ final class AskFormTests: XCTestCase {
         let review = try XCTUnwrap(try formOf(model, snapshot).review)
         // N in the phone's locale ("2.1 MB", "2,1 MB").
         let full = ByteCountFormatter.string(fromByteCount: 2_097_152, countStyle: .file)
-        XCTAssertEqual(review.clippedNotice, "Showing the first 256 KB of \(full) — the rest is only on the Mac")
+        XCTAssertEqual(review.clippedNotice, "Showing the first 256 KB of \(full) — the rest is only on the tower")
         XCTAssertEqual(
-            review.clippedEnd, "The phone has only the first 256 KB of docs/plan.md. Open the ask on the Mac to read the rest.",
+            review.clippedEnd, "The phone has only the first 256 KB of docs/plan.md. Open the ask on the tower to read the rest.",
             "where the text stops, what is missing and where it is"
         )
         XCTAssertEqual(review.document?.text, "Plan\n\nShip behind a flag for acme.\n\n")
@@ -595,7 +595,7 @@ final class AskFormTests: XCTestCase {
             try XCTUnwrap(try formOf(model, snapshot).checks.first)
         }
 
-        XCTAssertEqual(try row().choices.map(\.label), ["Works", "Doesn't work", "Didn't check"], "the Mac drawer's words")
+        XCTAssertEqual(try row().choices.map(\.label), ["Works", "Doesn't work", "Didn't check"], "the tower drawer's words")
         XCTAssertEqual(try row().choices.map(\.symbol), ["checkmark.circle", "xmark.circle", "minus.circle"])
         XCTAssertTrue(try row().choices.allSatisfy { $0.tone == .secondary && !$0.isSelected }, "unmarked: outlines in secondary")
 
@@ -655,7 +655,7 @@ final class AskFormTests: XCTestCase {
         let model = AskViewModel(askID: 150, drafts: fixture.drafts, answerer: fixture.answerer)
         let form = try formOf(model, snapshot)
 
-        XCTAssertEqual(form.openOnMac, "Open the ask on the Mac")
+        XCTAssertEqual(form.openOnMac, "Open the ask on the tower")
         XCTAssertNil(form.question)
         XCTAssertNil(form.review)
         XCTAssertTrue(form.checks.isEmpty)
@@ -680,7 +680,7 @@ final class AskFormTests: XCTestCase {
         ], "the question over its answer: no \"?:\" (design pass A6)")
         XCTAssertNil(form.question)
         XCTAssertFalse(form.isEditable)
-        XCTAssertNil(form.openOnMac, "a closed ask is shown, not sent to the Mac")
+        XCTAssertNil(form.openOnMac, "a closed ask is shown, not sent to the tower")
     }
 
     /// Board #223: an ask the owner dismissed on the Mac says so, never an
@@ -696,7 +696,7 @@ final class AskFormTests: XCTestCase {
         let form = try formOf(AskViewModel(askID: 162, drafts: fixture.drafts, answerer: fixture.answerer), snapshot)
         XCTAssertEqual(form.closedStatus, "Dismissed")
         XCTAssertEqual(form.closedLines, [
-            AskFormModel.ClosedLine(label: "Dismissed", value: "Closed on the Mac without an answer"),
+            AskFormModel.ClosedLine(label: "Dismissed", value: "Closed on the tower without an answer"),
             AskFormModel.ClosedLine(label: "Note", value: "Not now")
         ])
     }
@@ -738,7 +738,7 @@ final class AskFormTests: XCTestCase {
         XCTAssertFalse(online.isEditable)
         XCTAssertFalse(online.canSend)
         let stale = try formOf(model, try replica([ask], store: fixture.store, heartbeatAge: 3_600))
-        XCTAssertEqual(stale.status, .sending("Waiting for your Mac"))
+        XCTAssertEqual(stale.status, .sending("Waiting for your tower"))
     }
 
     func testAnAppliedEchoShowsTheDeliveryAndClearsTheDraft() async throws {
@@ -755,8 +755,8 @@ final class AskFormTests: XCTestCase {
         XCTAssertEqual(form.status, .applied("Held until the session is free"))
         XCTAssertFalse(form.isEditable, "an applied answer is not sent again")
         XCTAssertNil(fixture.drafts.byAsk[140], "a successful answer clears the draft")
-        XCTAssertEqual(AskDelivery.noSession.text, "No session is running — the answer is saved on the Mac")
-        XCTAssertEqual(AppliedAnswer(delivery: nil).text, "Answer saved on the Mac")
+        XCTAssertEqual(AskDelivery.noSession.text, "No session is running — the answer is saved on the tower")
+        XCTAssertEqual(AppliedAnswer(delivery: nil).text, "Answer saved on the tower")
     }
 
     /// An automation's ask (the Mac's `automationAnswerNote`); a delivery

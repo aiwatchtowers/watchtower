@@ -274,7 +274,7 @@ final class ScreenshotTourTests: XCTestCase {
         try await publish([request], "the demo request arrived") { snapshot().pendingPermission(for: 12) != nil }
         try await workchat("10o-session-12-approval-phone-off", 12)
         await env.deviceSettings.setPermissionsRequested(true)
-        try await publish([try DemoSeed.keyboxRecord(for: grant(permissions: true), modifiedAt: now)], "the Mac allowed answers") {
+        try await publish([try DemoSeed.keyboxRecord(for: grant(permissions: true), modifiedAt: now)], "the tower allowed answers") {
             snapshot().grant(for: DemoSeed.device.deviceID)?.permissionsAllowed == true && env.deviceSettings.permissionsRequested
         }
         try await workchat("10p-session-12-approval-card", 12)
@@ -299,14 +299,18 @@ final class ScreenshotTourTests: XCTestCase {
         try await publish([stale], "the demo Mac fell asleep again") { env.macReachability(now: Date()) != .online }
         try await workchat("12s-session-16-failed-mac-asleep", 16)
 
+        let serverRows = try await captureServerTower(env, sealing: sealing, now: now, host: host)
+
         try await sealing.delete(recordNames: [request.recordName], in: request.zone)
         await env.deviceSettings.setPermissionsRequested(false)
         try await publish(
-            [try seeded(failedLive.recordName), try DemoSeed.keyboxRecord(for: grant(permissions: false), modifiedAt: now)],
+            [try seeded(failedLive.recordName), try DemoSeed.keyboxRecord(for: grant(permissions: false), modifiedAt: now),
+             stale],
             "the seed is back"
         ) {
             snapshot().pendingPermission(for: 12) == nil && snapshot().session(16)?.live == false
                 && snapshot().grant(for: DemoSeed.device.deviceID)?.permissionsAllowed != true
+                && snapshot().heartbeat?.isMac == true
         }
         let workchat = "Features/Workbench/WorkchatView.swift"
         let waiting = [
@@ -315,13 +319,48 @@ final class ScreenshotTourTests: XCTestCase {
             ScreenshotHost.IndexRow(number: "05c", view: "WorkbenchView", source: "Features/Workbench/WorkbenchView.swift",
                                     reached: "bare stack, a failed live session the phone can continue")
         ]
-        return waiting + [
+        return waiting + serverRows + [
             ("10o", "bare stack, a permission request with the phone's answering off"),
             ("10p", "bare stack, a permission request the phone may answer"),
             ("12l", "bare stack, a failed turn of a live session"),
             ("11s", "bare stack, a session whose run ended"),
             ("12s", "bare stack, a failed live session, Mac asleep")
         ].map { ScreenshotHost.IndexRow(number: $0.0, view: "WorkchatView", source: workchat, reached: $0.1) }
+    }
+
+    /// 10v, 18v (#1783): the primary hub as a server tower (heartbeat hub_kind "server") that has not allowed
+    /// answers or starts: the hints name `watchtower hub allow` instead of the Mac app's Settings → Mobile. The
+    /// caller puts the Mac heartbeat and grant back.
+    private func captureServerTower(
+        _ env: AppEnvironment, sealing: SecureTransport, now: Date, host: ScreenshotHost
+    ) async throws -> [ScreenshotHost.IndexRow] {
+        var server = DemoSeed.primary
+        server.kind = .server
+        let serverBeat = try XCTUnwrap(DemoSeed.records(now: Date(), hub: server).first { $0.recordName == HeartbeatPayload.recordName })
+        let serverGrant = DeviceGrant(
+            deviceID: DemoSeed.device.deviceID, hubID: DemoSeed.primary.hubID, name: DemoSeed.device.name, scope: DemoSeed.device.scope,
+            linked: true, linkedAt: now.addingTimeInterval(-3_600), typingAllowed: true, startSessionsAllowed: false,
+            permissionsAllowed: false, decidedAt: now.addingTimeInterval(-3_600)
+        )
+        try await sealing.save([serverBeat, try DemoSeed.keyboxRecord(for: serverGrant, modifiedAt: now)])
+        _ = await env.refresh(.pull)
+        try await poll({
+            env.workbenchReplica.snapshot.heartbeat?.isMac == false
+                && env.workbenchReplica.snapshot.grant(for: DemoSeed.device.deviceID)?.permissionsAllowed == false
+                && env.macReachability(now: Date()) == .online
+        }, "the server tower")
+        try await host.capture("10v-session-12-approval-server-tower", NavigationStack {
+            WorkchatView(replica: env.workbenchReplica, sessionID: 12, store: env.store, requester: env.chatRequests)
+        })
+        try await host.capture("18v-start-session-server-tower", StartSessionSheet(
+            workbenchID: DemoSeed.acmeID, target: env.workbenchReplica.snapshot.targets.first { $0.id == 415 }, fixed: true
+        ) { _ in })
+        return [
+            ScreenshotHost.IndexRow(number: "10v", view: "WorkchatView", source: "Features/Workbench/WorkchatView.swift",
+                                    reached: "bare stack, a permission request on a server tower that has not allowed answers"),
+            ScreenshotHost.IndexRow(number: "18v", view: "StartSessionSheet", source: "Features/Workbench/StartSessionSheet.swift",
+                                    reached: "sheet, a server tower that has not allowed starting sessions")
+        ]
     }
 
     // MARK: - Linking over Relay (relay client Phase 3 Task 10, mockup section 7)
@@ -778,10 +817,10 @@ final class ScreenshotTourTests: XCTestCase {
         settings.refreshBattery()
         let diagnostics: [(String, String, LatencyDiagnosticsModel.State)] = [
             ("S37", "diagnostics-rows", .rows([
-                .init(title: "Relay", count: "214 actions", result: "p50 0.31 s · p90 0.7 s", answer: "Mac's answer: p50 0.12 s · p90 0.3 s")
+                .init(title: "Relay", count: "214 actions", result: "p50 0.31 s · p90 0.7 s", answer: "Tower's answer: p50 0.12 s · p90 0.3 s")
             ])),
             ("S37b", "diagnostics-rows-icloud", .rows([
-                .init(title: "iCloud", count: "214 actions", result: "p50 0.31 s · p90 0.7 s", answer: "Mac's answer: p50 0.12 s · p90 0.3 s")
+                .init(title: "iCloud", count: "214 actions", result: "p50 0.31 s · p90 0.7 s", answer: "Tower's answer: p50 0.12 s · p90 0.3 s")
             ])),
             ("S38", "diagnostics-empty", .empty),
             ("S48", "diagnostics-needs-mac-update", .needsMacUpdate),

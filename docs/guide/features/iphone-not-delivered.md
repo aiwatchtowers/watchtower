@@ -23,7 +23,7 @@ When your subscription ends and the Mac moves to iCloud, changes the Mac had not
 
 After the Mac's weekly key change, a phone that has not yet received the new keys waits for them. Your changes stay queued; nothing is lost.
 
-If your Mac moved on without this iPhone, **Now** and **Settings → Macs** show a banner with a date. After that date, if Relay still refuses this iPhone when you open the app, the link ends: its history on this iPhone and unsent changes go, and you link the Mac again.
+If your Mac moved on without this iPhone, **Now** and **Settings → Towers** show a banner with a date. After that date, if Relay still refuses this iPhone when you open the app, the link ends: its history on this iPhone and unsent changes go, and you link it again.
 
 ## Using it
 <!-- learn: none -->
@@ -31,7 +31,7 @@ If your Mac moved on without this iPhone, **Now** and **Settings → Macs** show
 ### Read Waiting to send and Not delivered
 <!-- learn
 id: iphone-not-delivered
-title: See what did not reach your Mac
+title: See what did not reach your tower
 text: With an ordered-delivery hub, open **Not delivered** on **Now** and press **Retry** to send a change again.
 area: iphone
 level: next
@@ -53,7 +53,7 @@ Each row in the **Not delivered** list has **Retry**, which sends that change ag
 
 - **No delivery lists on Now.** Your hub does not enable ordered delivery, or there are no queued or undelivered changes.
 - **Unlock your iPhone to retry.** Unlock the phone, then press **Retry** again.
-- **A Mac row you no longer use, or no banner though the Mac moved.** Open **Settings → Macs**, press **Forget This Mac**, then link the Mac again by QR code. This also applies when this iPhone pays for Relay but the Mac moved to iCloud.
+- **A row you no longer use, or no banner though the Mac moved.** Open **Settings → Towers**, press **Forget This Tower**, then link it again by QR code. This also applies when this iPhone pays for Relay but the Mac moved to iCloud.
 
 ## Related
 <!-- learn: none -->

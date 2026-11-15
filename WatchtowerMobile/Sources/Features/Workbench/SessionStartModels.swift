@@ -5,19 +5,18 @@ import WatchtowerSync
 /// The fixed texts of starting and stopping a session from the phone
 /// (spec §6.5, §9).
 enum SessionStartText {
-    static let sheetTitle = "New session on the Mac"
+    static let sheetTitle = "New session on the tower"
     /// The agent a hub older than Codex support starts.
     static let agent = "Claude Code"
-    static let sent = "Sent to your Mac"
-    static let pickedUp = "Mac picked it up"
+    static let sent = "Sent to your tower"
+    static let pickedUp = "Tower picked it up"
     static let openSession = "Open session"
     static let ended = "The session ended"
-    static let clippedBrief = "The brief is shortened on the phone. Editing it replaces the Mac's full prompt."
-    static let leaveHint = "If the Mac is asleep the request waits and starts when it wakes. You can leave this screen."
+    static let clippedBrief = "The brief is shortened on the phone. Editing it replaces the tower's full prompt."
+    static let leaveHint = "If the tower is asleep the request waits and starts when it wakes. You can leave this screen."
     /// The Mac has not allowed this phone to start sessions (#565): the
     /// owner allows typing and then starting sessions on the Mac.
-    static let notAllowed = "Your Mac has not allowed this phone to start sessions. "
-        + "On the Mac: Watchtower → Settings → Mobile → allow typing, then starting sessions."
+    static func notAllowed(_ host: TowerHost) -> String { host.notAllowed("start sessions") }
     /// The phone's own "Start sessions from this phone" is off.
     static let turnedOff = "Start sessions from this phone is off in Settings."
     static let chooseTarget = "Choose a target to start"
@@ -27,12 +26,12 @@ enum SessionStartText {
     static let describeTask = "Describe the task to start"
     /// Under an editable, unclipped target brief: Start needs no typing.
     static let briefReady = "Ready to start. Edit only to add instructions."
-    static let briefReadOnly = "The Mac uses this brief. To edit it here, allow typing for this phone on the Mac."
-    static let stopConfirm = "Stop this session on the Mac?"
+    static let briefReadOnly = "The tower uses this brief. To edit it here, allow typing for this phone on the tower."
+    static let stopConfirm = "Stop this session on the tower?"
     static let stopping = "Stopping…"
-    static let outcomeUnknown = "Your Mac restarted while applying this — check it on the Mac"
-    static let startFailed = "Your Mac could not start the session"
-    static let stopFailed = "Your Mac could not stop the session"
+    static let outcomeUnknown = "Your tower restarted while applying this — check it on the tower"
+    static let startFailed = "Your tower could not start the session"
+    static let stopFailed = "Your tower could not stop the session"
 
     /// "Starting Codex": the progress step naming the agent that starts.
     static func starting(_ agentName: String) -> String {

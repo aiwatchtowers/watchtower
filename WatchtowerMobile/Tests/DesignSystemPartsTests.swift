@@ -60,15 +60,15 @@ extension DesignSystemTests {
             ("MacBook Pro", .asleep(lastSeen: seen), "MacBook Pro · asleep · last seen 12 min ago", .gray),
             ("MacBook Pro", .offline(lastSeen: seen), "MacBook Pro · offline · last seen 12 min ago", .secondary),
             ("MacBook Pro", .offline(lastSeen: nil), "MacBook Pro · offline", .secondary),
-            ("", .online, "Mac · online", .green),
-            ("MacBook Pro", .notLinked, "No Mac linked", .secondary)
+            ("", .online, "Tower · online", .green),
+            ("MacBook Pro", .notLinked, "No tower linked", .secondary)
         ]
         for (name, state, text, tone) in cases {
             let chip = MacStatusChipModel(macName: name, state: state, now: now)
             XCTAssertEqual(chip.text, text)
             XCTAssertEqual(chip.tone, tone, text)
             XCTAssertEqual(chip.toneUse.role, .mac)
-            XCTAssertNotEqual(chip.tone, .orange, "the Mac chip is never orange")
+            XCTAssertNotEqual(chip.tone, .orange, "the tower chip is never orange")
         }
     }
 

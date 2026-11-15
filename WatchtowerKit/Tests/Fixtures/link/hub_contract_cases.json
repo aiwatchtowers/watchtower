@@ -927,7 +927,8 @@
         "updated_at": 1730000100
       },
       "kit": {
-        "recordings_offered": true
+        "recordings_offered": true,
+        "is_mac": true
       }
     },
     {
@@ -963,7 +964,8 @@
         "updated_at": 1730000100
       },
       "kit": {
-        "recordings_offered": false
+        "recordings_offered": false,
+        "is_mac": true
       }
     },
     {
@@ -993,7 +995,8 @@
         "updated_at": 1730000100
       },
       "kit": {
-        "recordings_offered": true
+        "recordings_offered": true,
+        "is_mac": true
       }
     },
     {
@@ -1029,7 +1032,8 @@
         "updated_at": 1730000100
       },
       "kit": {
-        "recordings_offered": true
+        "recordings_offered": true,
+        "is_mac": true
       }
     },
     {
@@ -1066,7 +1070,107 @@
         "updated_at": 1730000100
       },
       "kit": {
-        "recordings_offered": false
+        "recordings_offered": false,
+        "is_mac": true
+      }
+    },
+    {
+      "name": "hub_kind_mac",
+      "json": {
+        "accounts": [],
+        "app_version": "1.0.0",
+        "enabled_at": 1730000000,
+        "flavor": "default",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "hub_kind": "mac",
+        "mac_name": "Test Hub",
+        "owner_user": "",
+        "relay_backlog": 0,
+        "sharing": "none",
+        "updated_at": 1730000100
+      },
+      "expect": {
+        "accounts": [],
+        "app_version": "1.0.0",
+        "enabled_at": 1730000000,
+        "flavor": "default",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "hub_kind": "mac",
+        "mac_name": "Test Hub",
+        "owner_user": "",
+        "relay_backlog": 0,
+        "sharing": "none",
+        "updated_at": 1730000100
+      },
+      "kit": {
+        "recordings_offered": true,
+        "is_mac": true
+      }
+    },
+    {
+      "name": "hub_kind_server",
+      "json": {
+        "accounts": [],
+        "app_version": "1.0.0",
+        "enabled_at": 1730000000,
+        "flavor": "default",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "hub_kind": "server",
+        "mac_name": "Test Hub",
+        "owner_user": "",
+        "relay_backlog": 0,
+        "sharing": "none",
+        "updated_at": 1730000100
+      },
+      "expect": {
+        "accounts": [],
+        "app_version": "1.0.0",
+        "enabled_at": 1730000000,
+        "flavor": "default",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "hub_kind": "server",
+        "mac_name": "Test Hub",
+        "owner_user": "",
+        "relay_backlog": 0,
+        "sharing": "none",
+        "updated_at": 1730000100
+      },
+      "kit": {
+        "recordings_offered": true,
+        "is_mac": false
+      }
+    },
+    {
+      "name": "hub_kind_unknown_value",
+      "json": {
+        "accounts": [],
+        "app_version": "1.0.0",
+        "enabled_at": 1730000000,
+        "flavor": "default",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "hub_kind": "appliance",
+        "mac_name": "Test Hub",
+        "owner_user": "",
+        "relay_backlog": 0,
+        "sharing": "none",
+        "updated_at": 1730000100
+      },
+      "expect": {
+        "accounts": [],
+        "app_version": "1.0.0",
+        "enabled_at": 1730000000,
+        "flavor": "default",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "hub_kind": "appliance",
+        "mac_name": "Test Hub",
+        "owner_user": "",
+        "relay_backlog": 0,
+        "sharing": "none",
+        "updated_at": 1730000100
+      },
+      "kit": {
+        "recordings_offered": true,
+        "is_mac": false
       }
     }
   ],

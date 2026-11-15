@@ -12,14 +12,14 @@ enum MacChipState: Equatable {
 
 /// The Mac status chip of Now and the Calendar's header (mockups 1, 7):
 /// "MacBook Pro · online" green, "… · asleep · last seen 12 min ago" gray,
-/// "… · offline" secondary, "No Mac linked". A Mac with no name is "Mac".
+/// "… · offline" secondary, "No tower linked". A Mac with no name is "Mac".
 /// Never orange.
 struct MacStatusChipModel: Equatable {
     let text: String
     let tone: PhoneTone
 
     init(macName: String, state: MacChipState, now: Date) {
-        let name = macName.isEmpty ? "Mac" : macName
+        let name = TowerText.label(macName)
         switch state {
         case .online:
             text = "\(name) · online"
@@ -31,7 +31,7 @@ struct MacStatusChipModel: Equatable {
             text = "\(name) · offline" + (lastSeen.map { " · last seen \(LastSeen.phrase($0, now: now))" } ?? "")
             tone = .secondary
         case .notLinked:
-            text = "No Mac linked"
+            text = "No tower linked"
             tone = .secondary
         }
     }

@@ -47,6 +47,14 @@ const (
 	SharingUnavail   = "unavailable"
 )
 
+// Heartbeat hub kinds (#1783): what the phone calls the hub. "mac" is a hub
+// run beside the Watchtower app (the app's menus exist there); "server" is a
+// headless hub. An older hub sends no kind, which the phone reads as "mac".
+const (
+	HubKindMac    = "mac"
+	HubKindServer = "server"
+)
+
 // FlavorOf is the heartbeat flavor of a build flavor (the build profile's
 // BUILD_FLAVOR, Desktop's WTBuildFlavor; HubIdentity.flavor): none or "dev"
 // is the default build, any other is a corporate build.
@@ -149,6 +157,8 @@ type Heartbeat struct {
 	EnabledAt     Time               `json:"enabled_at"`
 	OwnerUser     string             `json:"owner_user"`
 	Sharing       string             `json:"sharing"`
+	// HubKind is HubKindMac or HubKindServer; absent from an older hub.
+	HubKind string `json:"hub_kind,omitempty"`
 	// Capabilities is the host's switches (protocol §9); absent from an
 	// older hub, which the phone reads as every capability on.
 	Capabilities *HeartbeatCapabilities `json:"capabilities,omitempty"`

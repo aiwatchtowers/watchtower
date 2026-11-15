@@ -13,7 +13,7 @@ enum SessionInputDelivery: String, Equatable {
     var text: String {
         switch self {
         case .submitted: "Sent to the session"
-        case .typed: "Typed into the session — press Return on the Mac"
+        case .typed: "Typed into the session — press Return on the tower"
         case .queued: Self.queuedText
         }
     }
@@ -224,7 +224,7 @@ struct PhoneTyping: Equatable {
 /// a held one why (with Cancel), a refused one the Mac's message (with
 /// Dismiss).
 struct SessionInputModel: Equatable {
-    static let needsApproval = "Needs approval on the Mac"
+    static let needsApproval = "Needs approval on the tower"
     static let answerAbove = "Answer the request above"
     /// Why a live session takes no line from this phone (board #515): the
     /// composer's place says what to do instead of staying empty.
@@ -232,15 +232,15 @@ struct SessionInputModel: Equatable {
         /// The phone's own toggle is off: one tap asks the Mac.
         case turnOn
         /// Asked; the Mac has not allowed it yet.
-        case waitingForMac
+        case waitingForMac(TowerHost)
         /// The session takes no line from the phone (an older Mac's Codex session, PROJ-16).
         case macOnly(TerminalSessionState.Agent)
 
         var text: String {
             switch self {
             case .turnOn: "Turn on typing to tell this session something from your phone."
-            case .waitingForMac: "Waiting for your Mac to allow typing: Watchtower → Settings → Mobile → Allow…"
-            case let .macOnly(agent): agent == .codexCLI ? "Write to Codex sessions on the Mac." : "Write to this session on the Mac."
+            case let .waitingForMac(host): host.typingWait
+            case let .macOnly(agent): agent == .codexCLI ? "Write to Codex sessions on the tower." : "Write to this session on the tower."
             }
         }
     }
@@ -312,7 +312,7 @@ struct SessionInputModel: Equatable {
         } else if !takesLines {
             .macOnly(session.agent)
         } else {
-            allowed ? nil : (typingRequested ? .waitingForMac : .turnOn)
+            allowed ? nil : (typingRequested ? .waitingForMac(TowerHost(snapshot.heartbeat, device: grant?.deviceID)) : .turnOn)
         }
         approvalText = session.stateKind == .needsApproval ? (answersPermission ? Self.answerAbove : Self.needsApproval) : nil
         notice = delivered?.text
@@ -338,7 +338,7 @@ struct SessionInputModel: Equatable {
         case (.pending, .held?):
             state = .held(heldText(row.reason))
         case (.pending, .received?):
-            state = .waiting("Mac picked it up")
+            state = .waiting("Tower picked it up")
         case (.pending, _):
             state = .waiting(online ? "Sending…" : BoardWriteText.waitingForMac)
         }
@@ -350,8 +350,8 @@ struct SessionInputModel: Equatable {
         switch reason {
         case .agentBusy?: "Queued · sends when the agent stops"
         case .needsApproval?: "Held — \(needsApproval)"
-        case .promptHasText?: "Held — text is typed in the session on the Mac"
-        default: "Held — the Mac can't read the session's state yet"
+        case .promptHasText?: "Held — text is typed in the session on the tower"
+        default: "Held — the tower can't read the session's state yet"
         }
     }
 }

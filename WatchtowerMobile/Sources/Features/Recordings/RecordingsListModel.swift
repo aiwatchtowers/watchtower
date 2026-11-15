@@ -25,7 +25,7 @@ enum RecordingEntryState: Equatable {
         case .recording: self = .recordingOnPhone
         case .sending: self = .sending
         case .waitingForMac: self = .waitingForMac
-        case .delivered: self = .onMac("Sent to your Mac")
+        case .delivered: self = .onMac("Sent to your tower")
         case let .failed(message, retryable): self = .sendFailed(message, retryable: retryable)
         }
     }
@@ -34,11 +34,11 @@ enum RecordingEntryState: Equatable {
         switch self {
         case .recordingOnPhone: "Recording on the phone"
         case .sending: "Sending"
-        case .waitingForMac: "Waiting for the Mac to wake"
+        case .waitingForMac: "Waiting for the tower to wake"
         case let .sendFailed(message, _), let .macFailed(message), let .onMac(message): message
         case .ready: "Ready"
         case let .heldForMac(name):
-            name.map { "Waiting for \($0) — link it again to send" } ?? "Waiting for the Mac it was recorded for"
+            name.map { "Waiting for \($0) — link it again to send" } ?? "Waiting for the tower it was recorded for"
         }
     }
 
@@ -221,7 +221,7 @@ struct RecordingsListModel {
         for transcript in replica.transcripts where !claimed.contains(transcript.id) {
             // A phone upload whose ledger row was removed still names it.
             let fromPhone = recordings.phoneRecordingID(forTranscript: transcript) != nil
-            let origin = fromPhone ? (transcript.eventID == nil ? "voice note" : "from this phone") : "recorded on Mac"
+            let origin = fromPhone ? (transcript.eventID == nil ? "voice note" : "from this phone") : "recorded on the tower"
             entries.append(Self.entry(transcript, origin: origin, seen: seen, format: format))
         }
         let newestFirst: (RecordingEntry, RecordingEntry) -> Bool = { lhs, rhs in
@@ -258,7 +258,7 @@ struct RecordingsListModel {
             case let .inProgress(label): state = .onMac(label)
             case .ready: state = .ready
             case let .failed(message): state = .macFailed(message)
-            case .notStarted: state = .onMac("Sent to your Mac")
+            case .notStarted: state = .onMac("Sent to your tower")
             }
         } else {
             state = RecordingEntryState(upload: PhoneUploadStage(recording: recording, heartbeat: recordings.heartbeat, now: now))

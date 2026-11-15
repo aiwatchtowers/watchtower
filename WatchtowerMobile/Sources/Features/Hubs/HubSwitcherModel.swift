@@ -3,11 +3,11 @@ import Foundation
 /// Every word the switcher puts on screen (#1782), built from one hub word so
 /// the app-wide rename (#1783) changes this feature in one place.
 enum HubSwitcherText {
-    static let hubWord = "Mac"
-    static let hubWordPlural = "Macs"
+    static let hubWord = TowerText.word
+    static let hubWordPlural = TowerText.plural
 
     /// The list's title.
-    static let sheetTitle = hubWordPlural
+    static let sheetTitle = TowerText.pluralTitle
     /// The line above the rows: what a pick does.
     static let sheetNote = "Pick the \(hubWord) this iPhone shows. Every tab switches to it."
     /// The list's last row.

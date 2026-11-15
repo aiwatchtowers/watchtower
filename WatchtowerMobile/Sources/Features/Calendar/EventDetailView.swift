@@ -24,7 +24,7 @@ struct EventDetailView: View {
                 ContentUnavailableView(
                     "Event not found",
                     systemImage: "calendar",
-                    description: Text("It is no longer in your calendar on the Mac.")
+                    description: Text("It is no longer in your calendar on the tower.")
                 )
             }
         }

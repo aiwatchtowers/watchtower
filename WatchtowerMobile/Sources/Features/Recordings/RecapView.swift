@@ -42,7 +42,7 @@ struct RecapView: View {
                 ContentUnavailableView(
                     "Recording not on this phone",
                     systemImage: "waveform",
-                    description: Text("It may have aged out; the Mac still has it.")
+                    description: Text("It may have aged out; the tower still has it.")
                 )
             }
         }

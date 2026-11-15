@@ -23,10 +23,10 @@ final class RelayBannerTermTests: XCTestCase {
     static let pastLine = "The link to Work Mac will end the next time this iPhone can confirm Relay still refuses it. "
         + "Its history and unsent actions on this iPhone will go."
     static let heldBanner = "This iPhone paid, but Relay hasn't seen it. Tap Restore Purchases to keep the link to Work Mac."
-    static let heldNow = "This iPhone paid, but Relay hasn't seen it. See Settings → Macs."
+    static let heldNow = "This iPhone paid, but Relay hasn't seen it. See Settings → Towers."
     static let heldMacs = "This iPhone paid, but Relay hasn't seen it. Open the Relay card on this screen."
     static let refusedNow = "This iPhone paid, but Relay hasn't accepted it. The link to Work Mac stays while that purchase "
-        + "is current. See Settings → Macs."
+        + "is current. See Settings → Towers."
     static let refusedMacs = "This iPhone paid, but Relay hasn't accepted it. The link to Work Mac stays while that purchase "
         + "is current. Open the Relay card on this screen."
 
@@ -67,7 +67,7 @@ final class RelayBannerTermTests: XCTestCase {
             let gone = try XCTUnwrap(try banner(link))
             XCTAssertEqual(gone.text, Self.s59)
             XCTAssertEqual(gone.actions, [.forget])
-            XCTAssertEqual(gone.title(for: .forget), "Forget This Mac")
+            XCTAssertEqual(gone.title(for: .forget), "Forget This Tower")
             XCTAssertFalse(gone.actions.contains(.subscribe))
             XCTAssertTrue(gone.speaksOfTerm)
         }

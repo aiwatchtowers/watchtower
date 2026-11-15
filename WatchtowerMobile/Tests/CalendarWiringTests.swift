@@ -108,7 +108,7 @@ final class CalendarWiringTests: XCTestCase {
             eventID: "e1", snapshot: snapshot([bare]), recordings: PhoneRecordingsSnapshot(), now: now, calendar: calendar
         ))
         XCTAssertTrue(detail.prepBullets.isEmpty)
-        XCTAssertEqual(detail.prepEmptyText, "No prep yet — it is prepared on your Mac")
+        XCTAssertEqual(detail.prepEmptyText, "No prep yet — it is prepared on your tower")
 
         let prepped = event("e2", start: now.addingTimeInterval(1_800), prep: ["Ask about the release"])
         let withPrep = try XCTUnwrap(EventDetailModel(
@@ -171,12 +171,12 @@ final class CalendarWiringTests: XCTestCase {
         let recorded = event(DemoSeed.recordedEventID, start: now.addingTimeInterval(-3_600), minutes: 30)
         let agenda = AgendaDayModel(day: now, snapshot: snapshot([recorded]), recordings: recordings, now: now, calendar: calendar)
         let pill = try XCTUnwrap(agenda.cards.first?.pills.first)
-        XCTAssertEqual(pill.text, "Transcribing on Mac · 37%")
+        XCTAssertEqual(pill.text, "Transcribing on your tower · 37%")
         XCTAssertEqual(pill.tone, .purple)
         let detail = try XCTUnwrap(EventDetailModel(
             eventID: recorded.id, snapshot: snapshot([recorded]), recordings: recordings, now: now, calendar: calendar
         ))
-        XCTAssertEqual(detail.recordingText, "Transcribing on Mac · 37%")
+        XCTAssertEqual(detail.recordingText, "Transcribing on your tower · 37%")
         XCTAssertEqual(detail.transcribingPercent, 37, "design pass C4: one row with a bar and 37%")
         XCTAssertTrue(detail.toneUses.contains { $0.tone == .purple && $0.role == .progress })
     }
@@ -255,7 +255,7 @@ final class CalendarWiringTests: XCTestCase {
     /// the Mac's progress on it, not the older recap.
     func testAnInProgressRecordingWinsOverAnOlderRecap() async throws {
         let recordings = try await demoRecordings()
-        XCTAssertEqual(try recordedCardPills(recordings), ["Transcribing on Mac · 37%"])
+        XCTAssertEqual(try recordedCardPills(recordings), ["Transcribing on your tower · 37%"])
     }
 
     /// C-T7 N2: once the Mac's job is done, the recap is shown again.
@@ -473,7 +473,7 @@ final class CalendarWiringTests: XCTestCase {
         let over = try detail(at: now)
         XCTAssertEqual(over.actions, [.openRecording])
         XCTAssertFalse(over.showsRecord)
-        XCTAssertEqual(over.transcribingPercent, 37, "the Recording section still shows the Mac's progress")
+        XCTAssertEqual(over.transcribingPercent, 37, "the Recording section still shows the tower's progress")
         // While it runs, the event still records.
         XCTAssertEqual(try detail(at: now.addingTimeInterval(-3_000)).actions, [.record])
         let recap = MeetingTranscript(

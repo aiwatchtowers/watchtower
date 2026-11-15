@@ -766,3 +766,14 @@ func linkSharedPhone(t *testing.T, dir, id, user string) {
 		t.Fatalf("devices: %v, %v", devices, err)
 	}
 }
+
+// TestHubKindOf: a desktop host's live mode is a Mac, every other hub a
+// server (#1783).
+func TestHubKindOf(t *testing.T) {
+	if got := hubKindOf(&Desktop{}); got != wire.HubKindMac {
+		t.Fatalf("desktop: %q", got)
+	}
+	if got := hubKindOf(nil); got != wire.HubKindServer {
+		t.Fatalf("headless: %q", got)
+	}
+}

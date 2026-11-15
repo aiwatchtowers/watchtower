@@ -42,7 +42,7 @@ struct WorkbenchView: View {
                 ContentUnavailableView(
                     "Workbench not found",
                     systemImage: "hammer",
-                    description: Text("It was removed on your Mac.")
+                    description: Text("It was removed on your tower.")
                 )
             }
         }

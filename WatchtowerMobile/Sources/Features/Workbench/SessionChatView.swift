@@ -83,8 +83,8 @@ struct SessionChatView: View {
 
 /// The screen's fixed strings.
 enum SessionChatText {
-    static let asking = "Asking your Mac…"
-    static let tooLong = "Your Mac has not sent this chat yet. Is it awake?"
+    static let asking = "Asking your tower…"
+    static let tooLong = "Your tower has not sent this chat yet. Is it awake?"
 }
 
 /// The route of a subagent marker and its status word.

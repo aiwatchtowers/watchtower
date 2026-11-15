@@ -87,7 +87,7 @@ final class WorkchatStateCardTests: XCTestCase {
         let card = try XCTUnwrap(card(try failedLive(), try snapshot()))
 
         XCTAssertEqual(card.title, "Stopped on an error")
-        XCTAssertEqual(card.details, ["It still runs on your Mac. Continue sends it “Continue”, or start a new session on #416 here."])
+        XCTAssertEqual(card.details, ["It still runs on your tower. Continue sends it “Continue”, or start a new session on #416 here."])
         XCTAssertEqual(card.actions, [.continueSession, .newSession(targetID: 416)])
         XCTAssertEqual(card.actions.map(\.title), ["Continue", "New session"])
         XCTAssertEqual(WorkchatStateCard.Action.continueSession.accessibilityHint, "Sends “Continue” to the session")
@@ -96,7 +96,7 @@ final class WorkchatStateCardTests: XCTestCase {
     func testFailedWhileThePhoneMayNotTypeOffersANewSessionOnly() throws {
         let card = try XCTUnwrap(card(try failedLive(), try snapshot(), typing: false))
 
-        XCTAssertEqual(card.details, ["It still runs on your Mac: continue it there, or start a new session on #416 here."])
+        XCTAssertEqual(card.details, ["It still runs on your tower: continue it there, or start a new session on #416 here."])
         XCTAssertEqual(card.actions, [.newSession(targetID: 416)])
     }
 
@@ -105,8 +105,8 @@ final class WorkchatStateCardTests: XCTestCase {
 
         XCTAssertEqual(card.title, "Not running")
         XCTAssertEqual(card.actions, [.newSession(targetID: nil)])
-        XCTAssertEqual(card.details, ["Its run ended on your Mac. Start a new session to pick the work up."])
-        XCTAssertEqual(WorkchatStateCard.Action.newSession(targetID: nil).accessibilityHint, "Starts a new session on your Mac")
+        XCTAssertEqual(card.details, ["Its run ended on your tower. Start a new session to pick the work up."])
+        XCTAssertEqual(WorkchatStateCard.Action.newSession(targetID: nil).accessibilityHint, "Starts a new session on your tower")
     }
 
     /// Continue is a real line: once one is on its way, the card stops
@@ -134,9 +134,9 @@ final class WorkchatStateCardTests: XCTestCase {
             let card = try XCTUnwrap(card(ended, try snapshot()), kind)
 
             XCTAssertEqual(card.title, "Not running")
-            XCTAssertEqual(card.details, ["Its run ended on your Mac. Start a new session on #501 to pick the work up."])
+            XCTAssertEqual(card.details, ["Its run ended on your tower. Start a new session on #501 to pick the work up."])
             XCTAssertEqual(card.actions, [.newSession(targetID: 501)])
-            XCTAssertEqual(WorkchatStateCard.Action.newSession(targetID: 501).accessibilityHint, "Starts a new session on #501 on your Mac")
+            XCTAssertEqual(WorkchatStateCard.Action.newSession(targetID: 501).accessibilityHint, "Starts a new session on #501 on your tower")
         }
     }
 
@@ -144,12 +144,12 @@ final class WorkchatStateCardTests: XCTestCase {
 
     func testNeedsApprovalWithoutARequestSaysWhereToAnswer() throws {
         let waiting = try session(12, ["state_kind": "needs_approval"])
-        XCTAssertEqual(card(waiting, try snapshot())?.details, ["The request is on its way from your Mac."])
-        XCTAssertEqual(card(waiting, try snapshot(online: false))?.details, ["Your Mac sends the request when it wakes."])
+        XCTAssertEqual(card(waiting, try snapshot())?.details, ["The request is on its way from your tower."])
+        XCTAssertEqual(card(waiting, try snapshot(online: false))?.details, ["Your tower sends the request when it wakes."])
         XCTAssertEqual(card(waiting, try snapshot())?.actions, [])
 
         let codex = try session(12, ["state_kind": "needs_approval", "agent": "codex_cli"])
-        XCTAssertEqual(card(codex, try snapshot())?.details, ["Answer this prompt on the Mac."])
+        XCTAssertEqual(card(codex, try snapshot())?.details, ["Answer this prompt on the tower."])
     }
 
     func testNeedsApprovalWithTheCardHasNoStateCard() throws {

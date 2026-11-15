@@ -41,8 +41,8 @@ struct EventDetailModel {
     }
 
     static let avatarLimit = 5
-    static let noPrepText = "No prep yet — it is prepared on your Mac"
-    static let transcribingTitle = "Transcribing on Mac"
+    static let noPrepText = "No prep yet — it is prepared on your tower"
+    static let transcribingTitle = "Transcribing on your tower"
     /// Attendee initials' tones (design pass C4): never red (recording) or
     /// orange (waiting).
     static let attendeeTones: [PhoneTone] = [.blue, .green, .teal, .purple]
@@ -116,13 +116,13 @@ struct EventDetailModel {
         attendeesLine = CalendarFormat.people(event).map { "\($0) · \(accepted) accepted" }
 
         prepBullets = event.prepBullets
-        prepMoreText = (event.prepBulletsMore ?? 0) > 0 ? "\(event.prepBulletsMore ?? 0) more on your Mac" : nil
+        prepMoreText = (event.prepBulletsMore ?? 0) > 0 ? "\(event.prepBulletsMore ?? 0) more on your tower" : nil
         prepEmptyText = event.prepBullets.isEmpty ? Self.noPrepText : nil
         let text = event.description.trimmingCharacters(in: .whitespacesAndNewlines)
         description = text.isEmpty ? nil : text
 
         linkedTargets = event.linkedTargets.map { LinkedTargetRow(id: $0.id, text: $0.text, status: Self.statusLabel($0.status)) }
-        linkedTargetsMoreText = (event.linkedTargetsMore ?? 0) > 0 ? "\(event.linkedTargetsMore ?? 0) more on your Mac" : nil
+        linkedTargetsMoreText = (event.linkedTargetsMore ?? 0) > 0 ? "\(event.linkedTargetsMore ?? 0) more on your tower" : nil
 
         let status = EventRecordingStatus(event: event, snapshot: snapshot, recordings: recordings, now: now)
         recordingText = status.text ?? EventRecordingStatus.notRecordedText
