@@ -343,6 +343,7 @@ final class ChannelStatsTests: XCTestCase {
         let fixture = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
         let cases = try XCTUnwrap(fixture["cases"] as? [[String: Any]])
         XCTAssertFalse(cases.isEmpty)
+        let seededUpdatedAt = "2020-01-01T00:00:00Z" // a before row's updated_at (the fixture's _doc)
         for item in cases {
             let name = try XCTUnwrap(item["name"] as? String)
             let action = try XCTUnwrap(item["action"] as? String)
@@ -353,19 +354,24 @@ final class ChannelStatsTests: XCTestCase {
                 try TestDatabase.insertChannel(db, id: "C001", name: "test")
                 if let before {
                     try db.execute(sql: """
-                        INSERT INTO channel_settings (channel_id, is_muted_for_llm, muted_at, muted_by_exclusion)
-                        VALUES ('C001', ?, ?, ?)
+                        INSERT INTO channel_settings (channel_id, is_muted_for_llm, muted_at, muted_by_exclusion, updated_at)
+                        VALUES ('C001', ?, ?, ?, ?)
                         """, arguments: [before["is_muted_for_llm"] as? Int, before["muted_at"] as? String,
-                                         before["muted_by_exclusion"] as? Int])
+                                         before["muted_by_exclusion"] as? Int, seededUpdatedAt])
                 }
                 try ChannelStatsQueries.toggleMuteForLLM(db, channelID: "C001", muted: action == "mute")
             }
             let row = try XCTUnwrap(db.read { db in
                 try Row.fetchOne(db, sql: """
-                    SELECT is_muted_for_llm, muted_at, muted_by_exclusion
+                    SELECT is_muted_for_llm, muted_at, muted_by_exclusion, updated_at
                     FROM channel_settings WHERE channel_id = 'C001'
                     """)
             }, name)
+            if after["updated_at"] as? String == "$now" {
+                let updatedAt: String = row["updated_at"]
+                XCTAssertFalse(updatedAt.isEmpty, name)
+                XCTAssertNotEqual(updatedAt, seededUpdatedAt, name)
+            }
             XCTAssertEqual(row["is_muted_for_llm"] as Int, after["is_muted_for_llm"] as? Int, name)
             XCTAssertEqual(row["muted_by_exclusion"] as Int, after["muted_by_exclusion"] as? Int, name)
             let mutedAt: String = row["muted_at"]

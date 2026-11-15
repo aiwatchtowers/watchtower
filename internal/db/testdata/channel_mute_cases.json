@@ -1,19 +1,19 @@
 {
-  "_doc": "The manual AI-mute writers' rule, shared by Go (SetMuteForLLM, TestMuteCases) and Swift (ChannelStatsQueries.toggleMuteForLLM, testMuteCasesMatchGo). before is the channel_settings row (null = no row), action is mute or unmute, after is the row the writer leaves. muted_at \"$now\" means set to the write's time (non-empty, differs from before).",
+  "_doc": "The manual AI-mute writers' rule, shared by Go (SetMuteForLLM, TestMuteCases) and Swift (ChannelStatsQueries.toggleMuteForLLM, testMuteCasesMatchGo). before is the channel_settings row (null = no row), action is mute or unmute, after is the row the writer leaves. muted_at \"$now\" means set to the write's time (non-empty, differs from before). A before row is inserted with updated_at = \"2020-01-01T00:00:00Z\"; updated_at \"$now\" in after means the write moved it.",
   "cases": [
     {"name": "no row, mute", "before": null, "action": "mute",
-     "after": {"is_muted_for_llm": 1, "muted_at": "$now", "muted_by_exclusion": 0}},
+     "after": {"is_muted_for_llm": 1, "muted_at": "$now", "muted_by_exclusion": 0, "updated_at": "$now"}},
     {"name": "no row, unmute", "before": null, "action": "unmute",
-     "after": {"is_muted_for_llm": 0, "muted_at": "", "muted_by_exclusion": 0}},
+     "after": {"is_muted_for_llm": 0, "muted_at": "", "muted_by_exclusion": 0, "updated_at": "$now"}},
     {"name": "unmuted, mute", "before": {"is_muted_for_llm": 0, "muted_at": "", "muted_by_exclusion": 0}, "action": "mute",
-     "after": {"is_muted_for_llm": 1, "muted_at": "$now", "muted_by_exclusion": 0}},
+     "after": {"is_muted_for_llm": 1, "muted_at": "$now", "muted_by_exclusion": 0, "updated_at": "$now"}},
     {"name": "muted, mute again keeps muted_at", "before": {"is_muted_for_llm": 1, "muted_at": "2026-01-02T03:04:05Z", "muted_by_exclusion": 0}, "action": "mute",
-     "after": {"is_muted_for_llm": 1, "muted_at": "2026-01-02T03:04:05Z", "muted_by_exclusion": 0}},
+     "after": {"is_muted_for_llm": 1, "muted_at": "2026-01-02T03:04:05Z", "muted_by_exclusion": 0, "updated_at": "$now"}},
     {"name": "muted, unmute clears muted_at", "before": {"is_muted_for_llm": 1, "muted_at": "2026-01-02T03:04:05Z", "muted_by_exclusion": 0}, "action": "unmute",
-     "after": {"is_muted_for_llm": 0, "muted_at": "", "muted_by_exclusion": 0}},
+     "after": {"is_muted_for_llm": 0, "muted_at": "", "muted_by_exclusion": 0, "updated_at": "$now"}},
     {"name": "muted by Stop syncing, mute takes it over", "before": {"is_muted_for_llm": 1, "muted_at": "2026-01-02T03:04:05Z", "muted_by_exclusion": 1}, "action": "mute",
-     "after": {"is_muted_for_llm": 1, "muted_at": "2026-01-02T03:04:05Z", "muted_by_exclusion": 0}},
+     "after": {"is_muted_for_llm": 1, "muted_at": "2026-01-02T03:04:05Z", "muted_by_exclusion": 0, "updated_at": "$now"}},
     {"name": "muted by Stop syncing, unmute", "before": {"is_muted_for_llm": 1, "muted_at": "2026-01-02T03:04:05Z", "muted_by_exclusion": 1}, "action": "unmute",
-     "after": {"is_muted_for_llm": 0, "muted_at": "", "muted_by_exclusion": 0}}
+     "after": {"is_muted_for_llm": 0, "muted_at": "", "muted_by_exclusion": 0, "updated_at": "$now"}}
   ]
 }

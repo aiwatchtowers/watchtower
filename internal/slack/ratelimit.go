@@ -97,9 +97,9 @@ func NewUnlimitedRateLimiter() *RateLimiter {
 	return &RateLimiter{counts: make(map[int]int)}
 }
 
-// Rate returns the tier's current rate in calls per minute; zero for a tier
+// rate returns the tier's current rate in calls per minute; zero for a tier
 // without a bucket (an unknown tier, the unlimited limiter).
-func (rl *RateLimiter) Rate(tier int) float64 {
+func (rl *RateLimiter) rate(tier int) float64 {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 	if b := rl.limiter[tier]; b != nil {

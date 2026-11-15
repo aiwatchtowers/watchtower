@@ -238,21 +238,21 @@ func call(t *testing.T, rl *RateLimiter, tier int) {
 func TestAIMD_HalvesOnRateLimitAndRecovers(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		rl := NewRateLimiter()
-		assert.InDelta(t, 20.0, rl.Rate(Tier2), 1e-9)
+		assert.InDelta(t, 20.0, rl.rate(Tier2), 1e-9)
 
 		rl.HandleRateLimit(Tier2, time.Second)
-		assert.InDelta(t, 10.0, rl.Rate(Tier2), 1e-9)
+		assert.InDelta(t, 10.0, rl.rate(Tier2), 1e-9)
 		rl.HandleRateLimit(Tier2, time.Second)
-		assert.InDelta(t, 5.0, rl.Rate(Tier2), 1e-9)
+		assert.InDelta(t, 5.0, rl.rate(Tier2), 1e-9)
 		rl.HandleRateLimit(Tier2, time.Second)
-		assert.InDelta(t, 5.0, rl.Rate(Tier2), 1e-9, "never below the floor")
+		assert.InDelta(t, 5.0, rl.rate(Tier2), 1e-9, "never below the floor")
 
 		for range aimdStepEvery - 1 {
 			call(t, rl, Tier2)
 		}
-		assert.InDelta(t, 5.0, rl.Rate(Tier2), 1e-9, "one success short of a step")
+		assert.InDelta(t, 5.0, rl.rate(Tier2), 1e-9, "one success short of a step")
 		call(t, rl, Tier2)
-		assert.InDelta(t, 6.0, rl.Rate(Tier2), 1e-9)
+		assert.InDelta(t, 6.0, rl.rate(Tier2), 1e-9)
 	})
 }
 
@@ -272,13 +272,13 @@ func TestAIMD_ProbesUpToTwiceTheTier(t *testing.T) {
 				for range tc.calls - 1 {
 					call(t, rl, tc.tier)
 				}
-				assert.InDelta(t, tc.ceiling-tc.step, rl.Rate(tc.tier), 1e-9, "one step short of the ceiling")
+				assert.InDelta(t, tc.ceiling-tc.step, rl.rate(tc.tier), 1e-9, "one step short of the ceiling")
 				call(t, rl, tc.tier)
-				assert.InDelta(t, tc.ceiling, rl.Rate(tc.tier), 1e-9)
+				assert.InDelta(t, tc.ceiling, rl.rate(tc.tier), 1e-9)
 				for range 100 {
 					call(t, rl, tc.tier)
 				}
-				assert.InDelta(t, tc.ceiling, rl.Rate(tc.tier), 1e-9, "never above the ceiling")
+				assert.InDelta(t, tc.ceiling, rl.rate(tc.tier), 1e-9, "never above the ceiling")
 			})
 		})
 	}
@@ -297,9 +297,9 @@ func TestAIMD_TiersAreIndependent(t *testing.T) {
 		assert.Zero(t, time.Since(start), "a Tier-2 call waits only on its own full bucket")
 
 		rl.HandleRateLimit(Tier2, 30*time.Second)
-		assert.InDelta(t, 10.0, rl.Rate(Tier2), 1e-9, "Tier 2 halves")
-		assert.InDelta(t, 50.0, rl.Rate(Tier3), 1e-9, "Tier 3 untouched")
-		assert.InDelta(t, 100.0, rl.Rate(Tier4), 1e-9, "Tier 4 untouched")
+		assert.InDelta(t, 10.0, rl.rate(Tier2), 1e-9, "Tier 2 halves")
+		assert.InDelta(t, 50.0, rl.rate(Tier3), 1e-9, "Tier 3 untouched")
+		assert.InDelta(t, 100.0, rl.rate(Tier4), 1e-9, "Tier 4 untouched")
 
 		start = time.Now()
 		call(t, rl, Tier4)
@@ -308,8 +308,8 @@ func TestAIMD_TiersAreIndependent(t *testing.T) {
 }
 
 func TestAIMD_UnknownTierAndUnlimitedHaveNoRate(t *testing.T) {
-	assert.Zero(t, NewRateLimiter().Rate(99))
-	assert.Zero(t, NewUnlimitedRateLimiter().Rate(Tier2))
+	assert.Zero(t, NewRateLimiter().rate(99))
+	assert.Zero(t, NewUnlimitedRateLimiter().rate(Tier2))
 }
 
 // The test-only unlimited limiter holds for a 429 only as long as Slack

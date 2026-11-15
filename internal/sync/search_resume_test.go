@@ -527,7 +527,9 @@ func TestRunOutcome_ConcurrentCallers429IsNotTheRuns(t *testing.T) {
 		})
 		search(w, r)
 	})
+	var limited atomic.Int32
 	mux.HandleFunc("/conversations.open", func(w http.ResponseWriter, _ *http.Request) {
+		limited.Add(1)
 		w.Header().Set("Retry-After", "0")
 		w.WriteHeader(http.StatusTooManyRequests)
 	})
@@ -535,7 +537,7 @@ func TestRunOutcome_ConcurrentCallers429IsNotTheRuns(t *testing.T) {
 	orch.Store(ts.orch)
 
 	require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{}))
-	require.NotZero(t, ts.orch.slackClient.RateLimitedCalls(), "the other caller met its 429")
+	require.NotZero(t, limited.Load(), "the other caller met its 429")
 	assert.False(t, ts.orch.RunOutcome().RateLimited)
 }
 

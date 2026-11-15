@@ -347,20 +347,23 @@ enum ChannelStatsQueries {
 
     /// Set mute_for_llm for a channel (upsert into channel_settings). The twin
     /// of Go's `SetMuteForLLM`: muted_at is set when the mute turns on (kept
-    /// when it already was) and cleared when it turns off, and the mute
-    /// becomes the user's own (muted_by_exclusion = 0), so Sync again never
-    /// lifts it. Pinned by `internal/db/testdata/channel_mute_cases.json`.
+    /// when it already was) and cleared when it turns off, the mute becomes
+    /// the user's own (muted_by_exclusion = 0), so Sync again never lifts it,
+    /// and updated_at is the write's time. Pinned by
+    /// `internal/db/testdata/channel_mute_cases.json`.
     static func toggleMuteForLLM(_ db: Database, channelID: String, muted: Bool) throws {
         try db.execute(sql: """
-            INSERT INTO channel_settings (channel_id, is_muted_for_llm, is_favorite, muted_at)
-            VALUES (?, ?, 0, CASE WHEN ? = 1 THEN strftime('%Y-%m-%dT%H:%M:%SZ', 'now') ELSE '' END)
+            INSERT INTO channel_settings (channel_id, is_muted_for_llm, is_favorite, muted_at, updated_at)
+            VALUES (?, ?, 0, CASE WHEN ? = 1 THEN strftime('%Y-%m-%dT%H:%M:%SZ', 'now') ELSE '' END,
+                strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
             ON CONFLICT(channel_id) DO UPDATE SET
                 is_muted_for_llm = excluded.is_muted_for_llm,
                 muted_at = CASE
                     WHEN excluded.is_muted_for_llm = 0 THEN ''
                     WHEN channel_settings.is_muted_for_llm = 1 THEN channel_settings.muted_at
                     ELSE excluded.muted_at END,
-                muted_by_exclusion = 0
+                muted_by_exclusion = 0,
+                updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
             """, arguments: [channelID, muted ? 1 : 0, muted ? 1 : 0])
     }
 

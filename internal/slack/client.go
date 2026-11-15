@@ -33,7 +33,7 @@ type Client struct {
 	rateLimiter *RateLimiter
 	logger      *log.Logger
 	answered    atomic.Uint64             // AnsweredCalls
-	limited     atomic.Uint64             // RateLimitedCalls
+	limited     atomic.Uint64             // rateLimitedCalls
 	deadline    atomic.Pointer[time.Time] // SetDeadline; nil or zero = no deadline
 }
 
@@ -803,11 +803,11 @@ func statedHold(err error) bool {
 	return errors.As(err, &rlErr) && rlErr.RetryAfter >= time.Second
 }
 
-// RateLimitedCalls counts the 429s Slack answered over the client's
+// rateLimitedCalls counts the 429s Slack answered over the client's
 // lifetime, the ones a retry pushed through included. Like AnsweredCalls it
 // is never reset: a caller compares two readings to see whether the calls
 // in between met a rate limit.
-func (c *Client) RateLimitedCalls() uint64 {
+func (c *Client) rateLimitedCalls() uint64 {
 	return c.limited.Load()
 }
 
@@ -815,7 +815,7 @@ type rateLimitCounterKey struct{}
 
 // CountRateLimits returns a context whose calls count their 429s (the ones a
 // retry pushed through included) and a reader of that count. Unlike
-// RateLimitedCalls it does not see a 429 another caller of the same client
+// rateLimitedCalls it does not see a 429 another caller of the same client
 // met meanwhile (the chat, a media fetch), so a sync run reads only the rate
 // limits its own calls hit.
 func CountRateLimits(ctx context.Context) (context.Context, func() uint64) {
