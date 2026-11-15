@@ -557,7 +557,7 @@ final class HubSession {
         // change at the same moment.
         let hydrateAfterEcho: @Sendable () async -> Void = { [hydrator] in
             do {
-                _ = try await hydrator.hydrateOnce()
+                _ = try await hydrator.hydrateFresh()
             } catch {
                 Self.logger.warning("post-echo hydrate failed: \(error.localizedDescription, privacy: .public)")
             }
@@ -1144,7 +1144,8 @@ final class HubSession {
             return .failed
         }
         do {
-            hydrated = try await hydrator.hydrateOnce()
+            // A cycle begun after this fetch's pull, as the feed's below (#1795).
+            hydrated = try await hydrator.hydrateFresh()
         } catch {
             lastFetchError = error.localizedDescription
             let what = "\(trigger), \(Self.describe(depth))"
@@ -1200,7 +1201,7 @@ final class HubSession {
             return
         }
         do {
-            _ = try await hydrator.hydrateOnce()
+            _ = try await hydrator.hydrateFresh()
         } catch {
             Self.logger.error("engine fetch apply failed: \(error.localizedDescription, privacy: .public)")
             return

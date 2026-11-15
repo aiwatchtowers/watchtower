@@ -58,6 +58,8 @@ public actor ReplicaHydrator {
     private var inFlight: Task<(applied: Int, deleted: Int), Error>?
     /// Told when a caller joins the running cycle instead of starting one; tests replace it.
     private var onJoin: @Sendable () -> Void = {}
+    /// Told when `hydrateFresh` waits out the running cycle instead of joining it; tests replace it.
+    private var onWaitOut: @Sendable () -> Void = {}
     private let logger = Logger(subsystem: "WatchtowerKit", category: "ReplicaHydrator")
 
     public init(
@@ -77,6 +79,7 @@ public actor ReplicaHydrator {
     func useClock(_ now: @escaping @Sendable () -> Date) { self.now = now }
 
     func observeJoins(_ onJoin: @escaping @Sendable () -> Void) { self.onJoin = onJoin }
+    func observeWaitOuts(_ onWaitOut: @escaping @Sendable () -> Void) { self.onWaitOut = onWaitOut }
 
     // MARK: - One cycle
 
@@ -96,10 +99,26 @@ public actor ReplicaHydrator {
             onJoin()
             return try await inFlight.value
         }
-        let task = Task { try await self.performHydration() }
+        // The cycle clears itself on the actor before it ends, so a caller resuming from its result never finds it
+        // still in flight (`hydrateFresh`).
+        let task = Task {
+            defer { inFlight = nil }
+            return try await self.performHydration()
+        }
         inFlight = task
-        defer { inFlight = nil }
         return try await task.value
+    }
+
+    /// One cycle begun after this call: what was buffered before it is applied by the time it returns. A running cycle
+    /// may have read its batch before that (a fetch's own pull buffered records the cycle never saw), so it is waited
+    /// out, never joined; a cycle started after it ended began after this call and is joined.
+    @discardableResult
+    public func hydrateFresh() async throws -> (applied: Int, deleted: Int) {
+        if let running = inFlight {
+            onWaitOut()
+            _ = try? await running.value
+        }
+        return try await hydrateOnce()
     }
 
     private func performHydration() async throws -> (applied: Int, deleted: Int) {
