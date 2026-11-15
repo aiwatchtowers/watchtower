@@ -23,7 +23,9 @@ func (s *Store) ReadTx(ctx context.Context, fn func(*sql.Tx) error) error {
 // (a re-pair); the id is stored uppercase. user_record_name, a CloudKit-only Swift column, is written
 // empty. A re-link (no row, or another link nonce) starts with no relay key
 // offer and no per-epoch relay keys: those were derived under the old nonce.
-// The same link written again keeps both.
+// The same link written again keeps both. The owner's chat grant
+// (chat_allowed) is the row's own: a re-link keeps it (the owner turned Chat
+// off for this phone, it stays off), a new phone starts with the default on.
 func LinkDevice(tx *sql.Tx, d Device) error {
 	last, err := u64(d.LastAppliedActionSeq)
 	if err != nil {
@@ -37,9 +39,10 @@ func LinkDevice(tx *sql.Tx, d Device) error {
 		oldNonce   sql.NullString
 		offer      []byte
 		offerEpoch int64
+		chat       = true
 	)
-	err = tx.QueryRow(`SELECT link_nonce, kx_offer, kx_offer_epoch FROM devices WHERE device_id = ? COLLATE NOCASE`, d.ID).
-		Scan(&oldNonce, &offer, &offerEpoch)
+	err = tx.QueryRow(`SELECT link_nonce, kx_offer, kx_offer_epoch, chat_allowed FROM devices WHERE device_id = ? COLLATE NOCASE`, d.ID).
+		Scan(&oldNonce, &offer, &offerEpoch, &chat)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("linking a device: %w", err)
 	}
@@ -55,6 +58,11 @@ func LinkDevice(tx *sql.Tx, d Device) error {
 		last, d.Ordered, nullString(d.RelayDeviceID), resend, int64(d.AckedEpoch))
 	if err != nil {
 		return fmt.Errorf("linking a device: %w", err)
+	}
+	if !chat {
+		if _, err := tx.Exec(`UPDATE devices SET chat_allowed = 0 WHERE device_id = ? COLLATE NOCASE`, d.ID); err != nil {
+			return fmt.Errorf("linking a device: %w", err)
+		}
 	}
 	if relink {
 		return deleteRelayKeys(tx, d.ID)

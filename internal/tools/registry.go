@@ -668,6 +668,14 @@ func (r *Registry) revisedArgs(ctx context.Context, row *db.AgentAction, t *Tool
 	return args, nil
 }
 
+// Reject is the owner's decline of a pending row (`watchtower actions
+// reject`, the Desktop's and the phone's Reject): pending → rejected in one
+// guarded update. False (no error) means the row was not pending — another
+// decision, or the chat's gate, got there first.
+func (r *Registry) Reject(id int64) (bool, error) {
+	return r.db.TransitionAgentAction(id, []string{"pending"}, "rejected", "", "")
+}
+
 // approveWithArgs lands the (possibly edited) args and the approval in one
 // conditional update; a lost race on a still-pending row means another edit
 // landed after this one read the row — refused rather than approving what the

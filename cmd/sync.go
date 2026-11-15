@@ -21,6 +21,7 @@ import (
 	"watchtower/internal/briefing"
 	"watchtower/internal/caldav"
 	"watchtower/internal/calendar"
+	"watchtower/internal/chat"
 	"watchtower/internal/coach"
 	"watchtower/internal/config"
 	"watchtower/internal/customtracks"
@@ -1042,6 +1043,15 @@ func startGoHub(ctx context.Context, cfg *config.Config, database *db.DB, logger
 	sd := sessionStartDeps(cfg, database)
 	sd.Socket = o.SessionStart.Socket
 	o.SessionStart = sd
+	// The AI chat from the phone: approvals through the same registry as
+	// `watchtower actions approve`, titles through `watchtower chat title`'s
+	// code, automatic routing's preferred provider from the config.
+	o.ChatTools = buildToolRegistry(cfg, database)
+	o.ChatTitle = func(ctx context.Context, conv int64) error {
+		_, err := chat.GenerateTitle(ctx, database, cfg, chatTitleGeneratorFactory(cfg), conv)
+		return err
+	}
+	o.ChatPreferredProvider = cfg.AI.ConfiguredProviderID()
 	ctx, cancel := context.WithCancel(ctx)
 	interval := cfg.Sync.PollInterval
 	if interval < time.Minute {

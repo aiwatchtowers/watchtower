@@ -168,6 +168,14 @@ var displayOnlyReaders = map[string]string{
 	"stepStarted":        "writes a step and the LIVE-01 mark",
 	"markIfUsedTx":       "writes the LIVE-01 mark",
 	"titleIfNeeded":      "a count of complete answers, no text",
+	// The phone's chat actions (iPhone chat §4.5): conversation rows the
+	// Mac's Chats panel writes too, and the attachment intake's row.
+	"NewConversation":    "inserts an empty conversation row",
+	"ConversationExists": "an existence count, no text",
+	"Pin":                "the pinned flag",
+	"Rename":             "writes the owner's title",
+	"Delete":             "delete only",
+	"SaveAttachment":     "inserts an attachment row of an existing conversation, no text read",
 	// The phone's chat (iPhone chat spec §4.6): the hub's chat slices and the
 	// Go port of the Mac's ⌘K search show chat text on the phone and store
 	// nothing (the slices live in memory and the sealed relay records only).

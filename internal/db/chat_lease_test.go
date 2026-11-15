@@ -226,3 +226,16 @@ VALUES (?, ?, 'x', ?, ?, 1)`, a, role, status, turn)
 		require.Equal(t, want, code.String, "message %d", id)
 	}
 }
+
+func TestLease_FreshList(t *testing.T) {
+	d := openTestDB(t)
+	a, b := seedLeaseConversation(t, d), seedLeaseConversation(t, d)
+	require.True(t, claimChatLease(t, d, ChatLease{ConversationID: a, Owner: ChatLeaseHub, OwnerID: "h", TurnID: "t1", StartedAtMS: 100_000, HeartbeatAtMS: 100_000}, 100_000))
+	require.True(t, claimChatLease(t, d, ChatLease{ConversationID: b, Owner: ChatLeaseDesktop, OwnerID: "d", TurnID: "t2", StartedAtMS: 130_000, HeartbeatAtMS: 130_000}, 130_000))
+	fresh, err := d.FreshChatLeases(150_000)
+	require.NoError(t, err)
+	require.Equal(t, []int64{a, b}, fresh)
+	fresh, err = d.FreshChatLeases(160_000)
+	require.NoError(t, err)
+	require.Equal(t, []int64{b}, fresh, "a heartbeat 60 s old is stale")
+}

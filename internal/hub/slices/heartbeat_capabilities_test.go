@@ -88,3 +88,22 @@ func TestSwitchChangeIsPublishedWithinMaxDebounceWait(t *testing.T) {
 		t.Fatalf("after %v: recordings %q, want off", ru.ft.Now().Sub(start), got)
 	}
 }
+
+// TestHeartbeatCarriesTheChatCapability: "on" only while the chat fact says
+// so, else "off" with its reason; a change restamps at once (iPhone chat
+// §4.8).
+func TestHeartbeatCarriesTheChatCapability(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	on, reason := true, ""
+	f := heartbeatFacts(func() time.Time { return now }, nil)
+	f.Chat = func() (bool, string) { return on, reason }
+	src := HeartbeatSource(f)
+	if c := capabilitiesOf(t, onlyItem(t, src).Payload); c == nil || c.Chat != "on" || c.ChatReason != "" {
+		t.Fatalf("capabilities = %+v", c)
+	}
+	on, reason = false, wire.ChatOffDesktopTooOld
+	now = now.Add(time.Second)
+	if c := capabilitiesOf(t, onlyItem(t, src).Payload); c == nil || c.Chat != "off" || c.ChatReason != wire.ChatOffDesktopTooOld {
+		t.Fatalf("capabilities = %+v", c)
+	}
+}

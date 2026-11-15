@@ -83,7 +83,7 @@ func (p *Processor) onStandby(ctx context.Context, b mailbox, rec transport.Stor
 		if decodes(o.Frame.Payload, &c) && (c.Kind == wire.ControlSwitch || c.Kind == wire.ControlEpochAck) {
 			return false
 		}
-	case kindAction, kindRecordingUpload:
+	case kindAction, kindRecordingUpload, KindChatAttachment:
 	default:
 		return true // an unknown kind has no work on either side
 	}

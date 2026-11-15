@@ -83,6 +83,10 @@ func (w *ChatWatches) Open(conv int64, since time.Time) bool {
 	return ok && !cur.opened.IsZero() && !cur.opened.Before(since)
 }
 
+// ActiveFeeds is every conversation whose feed watch is open at now, in id
+// order (the hub's chat timer notices a watch ending by it).
+func (w *ChatWatches) ActiveFeeds(now time.Time) []int64 { return w.activeFeeds(now) }
+
 // activeFeeds is every conversation whose feed watch is open at now, in id
 // order; expired watches are dropped.
 func (w *ChatWatches) activeFeeds(now time.Time) []int64 {
@@ -111,24 +115,42 @@ func (w *ChatWatches) DropAll() {
 }
 
 // ChatRequests is one kind of one-shot request (a page, a search): each key
-// is held until its until.
+// is held until its until. Every request of a key counts (Gen): a repeat
+// asks for the record again, so its source builds it anew rather than serve
+// the copy of an earlier request.
 type ChatRequests[K comparable] struct {
 	mu    sync.Mutex
 	until map[K]time.Time
+	gen   map[K]uint64
+	// seq numbers every request of every key: a key's Gen is its newest
+	// request's number, never reused, so a key that expired and is asked
+	// again never matches a record built for an earlier request.
+	seq uint64
 }
 
 // NewChatRequests is an empty request set.
 func NewChatRequests[K comparable]() *ChatRequests[K] {
-	return &ChatRequests[K]{until: map[K]time.Time{}}
+	return &ChatRequests[K]{until: map[K]time.Time{}, gen: map[K]uint64{}}
 }
 
-// Request holds k until until; a repeat never shortens it.
+// Request holds k until until; a repeat never shortens it, and moves k's Gen
+// on.
 func (r *ChatRequests[K]) Request(k K, until time.Time) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if cur, ok := r.until[k]; !ok || until.After(cur) {
 		r.until[k] = until
 	}
+	r.seq++
+	r.gen[k] = r.seq
+}
+
+// Gen is the number of k's newest request while it is held (0 = none);
+// it changes with every request and is never reused.
+func (r *ChatRequests[K]) Gen(k K) uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.gen[k]
 }
 
 // Active is every key still held at now; expired ones are dropped.
@@ -139,6 +161,7 @@ func (r *ChatRequests[K]) Active(now time.Time) []K {
 	for k, until := range r.until {
 		if !until.After(now) {
 			delete(r.until, k)
+			delete(r.gen, k)
 			continue
 		}
 		out = append(out, k)
@@ -151,4 +174,5 @@ func (r *ChatRequests[K]) DropAll() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	clear(r.until)
+	clear(r.gen)
 }

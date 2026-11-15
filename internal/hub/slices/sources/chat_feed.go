@@ -165,13 +165,13 @@ type ChatPageSource struct {
 	d     *db.DB
 	o     ChatFeedOptions
 	mu    sync.Mutex
-	cache map[ChatPageKey][]byte
+	cache map[ChatPageKey]cachedRecord
 }
 
 // ChatPage builds the chat_page source.
 func ChatPage(d *db.DB, o ChatFeedOptions) *ChatPageSource {
 	o.fill()
-	return &ChatPageSource{d: d, o: o, cache: map[ChatPageKey][]byte{}}
+	return &ChatPageSource{d: d, o: o, cache: map[ChatPageKey]cachedRecord{}}
 }
 
 // Kind is "chat_page".
@@ -195,7 +195,7 @@ func (s *ChatPageSource) Items(ctx context.Context) ([]hubslices.Item, error) {
 	})
 	items := make([]hubslices.Item, 0, len(keys))
 	for _, k := range keys {
-		b, err := cached(&s.mu, s.cache, k, func() ([]byte, error) { return s.buildChatPage(ctx, k) })
+		b, err := cached(&s.mu, s.cache, k, s.o.Watches.Pages.Gen(k), func() ([]byte, error) { return s.buildChatPage(ctx, k) })
 		if err != nil {
 			return nil, err
 		}
@@ -251,13 +251,13 @@ type ChatSearchSource struct {
 	d     *db.DB
 	o     ChatFeedOptions
 	mu    sync.Mutex
-	cache map[string][]byte
+	cache map[string]cachedRecord
 }
 
 // ChatSearch builds the chat_search source.
 func ChatSearch(d *db.DB, o ChatFeedOptions) *ChatSearchSource {
 	o.fill()
-	return &ChatSearchSource{d: d, o: o, cache: map[string][]byte{}}
+	return &ChatSearchSource{d: d, o: o, cache: map[string]cachedRecord{}}
 }
 
 // Kind is "chat_search".
@@ -282,7 +282,7 @@ func (s *ChatSearchSource) Items(ctx context.Context) ([]hubslices.Item, error) 
 	slices.Sort(queries)
 	items := make([]hubslices.Item, 0, len(queries))
 	for _, q := range queries {
-		b, err := cached(&s.mu, s.cache, q, func() ([]byte, error) { return s.search(q) })
+		b, err := cached(&s.mu, s.cache, q, s.o.Watches.Searches.Gen(q), func() ([]byte, error) { return s.search(q) })
 		if err != nil {
 			return nil, err
 		}
@@ -350,20 +350,28 @@ func clipSnippet(s string) string {
 	return out
 }
 
-// cached is cache[k], built by build the first time.
-func cached[K comparable](mu *sync.Mutex, cache map[K][]byte, k K, build func() ([]byte, error)) ([]byte, error) {
+// cachedRecord is a built page or search and the request (Gen) it answers.
+type cachedRecord struct {
+	gen uint64
+	b   []byte
+}
+
+// cached is cache[k] while it answers request gen, else built anew by build:
+// the phone asked again (a Retry, a reopened screen), so it gets what the
+// database holds now.
+func cached[K comparable](mu *sync.Mutex, cache map[K]cachedRecord, k K, gen uint64, build func() ([]byte, error)) ([]byte, error) {
 	mu.Lock()
-	b, ok := cache[k]
+	c, ok := cache[k]
 	mu.Unlock()
-	if ok {
-		return bytes.Clone(b), nil
+	if ok && c.gen == gen {
+		return bytes.Clone(c.b), nil
 	}
 	b, err := build()
 	if err != nil {
 		return nil, err
 	}
 	mu.Lock()
-	cache[k] = b
+	cache[k] = cachedRecord{gen: gen, b: b}
 	mu.Unlock()
 	return bytes.Clone(b), nil
 }

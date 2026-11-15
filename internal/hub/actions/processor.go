@@ -631,6 +631,9 @@ func (p *Processor) handle(ctx context.Context, b mailbox, rec transport.Stored,
 	case kindRecordingUpload:
 		ps.report.Read++
 		err = p.recordingUpload(ctx, b, record{name: rec.Name, env: rec.Envelope, expect: expectSeq(rec.RecordSeq), at: rec.ServerAt}, opened, rec.AttachmentID, ps)
+	case KindChatAttachment:
+		ps.report.Read++
+		err = p.chatAttachment(ctx, b, record{name: rec.Name, env: rec.Envelope, expect: expectSeq(rec.RecordSeq), at: rec.ServerAt}, opened, rec.AttachmentID, ps)
 	case kindDevice:
 		if !b.shared && !namesItsSender(opened) { // the shared mailbox checked this above
 			log.Printf("hub: dropped a device record of device %s: sender_mismatch", b.id)
