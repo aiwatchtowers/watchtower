@@ -1,0 +1,65 @@
+# Slack adaptive sync and Stop syncing (2026-11-15, #1709)
+
+Spec `docs/superpowers/specs/2026-11-14-slack-full-and-live-design.md` §2 (D16, ask #1337), plan `docs/superpowers/plans/2026-11-15-slack-adaptive-sync.md`, decisions accepted in ask #1350. Every Slack account keeps one blanket `search.messages after:D` per run (`internal/sync/search_sync.go`) and syncs everything the user can see. Around it: a retry chain through rate limits, a per-tier self-balancing request rate, a resumable search, mentions first while behind, a per-account cadence, ingestion-ordered Inbox detection and a per-channel **Stop syncing**. Every account behaves the same; there is no corp/public split.
+
+## The client: retry chain and AIMD rate (`internal/slack/ratelimit.go`, `client.go`)
+
+- One bucket per Slack tier per account client (burst 3), each AIMD: halved on that tier's 429 (not below the floor), one step up after `aimdStepEvery = 20` consecutive successes (not above the ceiling). Only a Slack answer counts as a success; a transport error steps nothing (`TestAIMD_TransportErrorsAreNoSuccess`).
+
+  | Tier | methods | start | ceiling | floor | step |
+  |---|---|---|---|---|---|
+  | 2 | `search.messages`, `users.list`, `conversations.list`, `team.info` | 20/min | 40/min | 5/min | +1 |
+  | 3 | `conversations.history`, `.replies`, `.info` | 50/min | 100/min | 12/min | +2 |
+  | 4 | `users.info` | 100/min | 200/min | 25/min | +5 |
+
+- Any tier's 429 sets one account-wide `Retry-After` hold (+ jitter) that every later call of that account waits for; the concurrency gate is unchanged.
+- Retry chain: `Client.SetDeadline(t)` makes a call retry its 429s with no fixed count while each hold ends before `t`; a hold past it returns `ErrFetchDeadline`. The zero time restores `maxRetriesNoDeadline = 3`. `Orchestrator.Run` sets `runStart + slackFetchDeadline` (10 min) for a search-path run only and resets it on return, so later CLI, chat and media calls on the same client keep the 3-retry cap; `sync --full` and `--channels` run without a deadline (`runFetchDeadline`).
+- Page sizes: `search.messages` `count=100`, history/replies `limit=999` (`slackPageSize`), `users.list`/`conversations.list` `limit=1000` (`listPageLimit`).
+- The heartbeat carries `rate_limited_until` (`Progress.SetRateLimitHold` → the client's hold), and the menu's sync line appends **Slack rate limit, retrying in …**. The heartbeat keeps moving while a call waits for a hold, so Sync Now's stall restart (no Slack progress for a minute) never cancels a cycle that is only rate-limited (`TestManualTrigger_DoesNotRestartWhileRateLimited`).
+
+## The search: resume and mentions first (`internal/sync/search_resume.go`)
+
+- `searchResume{query, after, nextPage, firstSync}` lives in memory on the orchestrator. A run stopped by the deadline, a 429, a sleep or a failing page keeps the first page it did not read; the next run with the same query starts one page earlier (a deletion on a read page shifts the listing back one), and a different query drops it. A window computed from now (a first sync, a clamped catch-up) keeps its `after:` date across midnight while a resume is pending.
+- The watermark `search_last_date` still moves only after the whole window was read, and a run that stopped with pages left leaves `SearchIncomplete`, so INBOX-09 freezes the Inbox watermark. A resumed run keeps no listing, so it runs no live deletion diff.
+- `firstSync` is carried across resumed runs: a first window finished by a later run still sets `FirstSyncFrom` (see BACKFILL-01 in `docs/inventory/history-backfill.md`).
+- `searchMentions` runs `<@U…> after:D` before the blanket query only while the account is behind (`behind()`: a pending resume, or the last run met a 429), so a throttled account still gets its mentions; a clean account reads them in the blanket pass. It never moves the watermark, its own incompleteness does not mark the window incomplete, a non-rate-limit error on it continues with the blanket query, and a 429 on its page 1 ends the run as incomplete. Skipped while the account's user is unknown.
+- `RunOutcome{RateLimited, ResumePending, Pages, Messages}` feeds the cadence. `RateLimited` counts only 429s of the run's own calls, not a concurrent chat or media call on the same client (`TestRunOutcome_ConcurrentCallers429IsNotTheRuns`).
+
+## The cadence (`internal/daemon/slack_cadence.go`)
+
+- Per account, in memory on the daemon: interval = base × 2^level, base = `sync.poll_interval` (default 15 min), capped at `cadenceMax = 60 min`, anchored at the Slack phase's start for every account.
+- After a run: a 429 → level + 1 (and the run waits for that interval even with pages left); a clean run with `Pages ≥ heavyPages = 5` → level 0; every `quietRuns = 3`rd quiet run in a row (`Messages ≤ quietMessages = 5`) → level + 1; any other clean run → level − 1. A clean run with pages left is due next cycle. A run that failed for another reason keeps its level and is due next cycle.
+- `due` is always true for Sync Now (`withManualSync` on the cycle's context) and for the first run after the daemon starts; half a base interval of tolerance absorbs an early tick. A skipped account writes nothing, is no sync error and does not freeze the Inbox; when no account is due the phase writes no `pipeline_runs` row and no `last_sync.json`.
+
+## Ingestion-ordered Inbox detection (migration 00189, `internal/db/inbox.go`)
+
+- `messages.synced_at REAL NOT NULL DEFAULT 0`, written on the first insert only (the upsert's update branch never touches it). `Orchestrator.stampSyncedAt` stamps `clock()` when the post time is at or after `max(slack_accounts.first_cycle_at, runStart − syncedAtLookback)` (24 h), else the post time. `BackfillSearch` and the Sync again catch-up stamp the post time (`backfilling`). `first_cycle_at` is written once per account (`SetSlackFirstCycleAtOnce`); the migration sets it to the migration time for existing accounts.
+- There is no fill trigger and no row rewrite: 0 means unstamped (every older row, every other writer) and reads as the post time. The four Slack detectors compare the watermark with `sinceStored` = `CASE WHEN m.synced_at = 0 THEN m.ts_unix ELSE m.synced_at END`, which is exactly `idx_messages_synced_at`'s expression, and read a stored-time range through it. Rewriting every row took 5–7 s on a synthetic 2M-row file, too close to the Desktop's 30 s migration limit. INBOX-09's guards are unchanged.
+- So a message a late run stores (cadence backed off, a resumed page) is still detected, a first sync or a new account row does not flood the Inbox, and backfilled rows never reach it. `watchtower inbox backfill-mentions` keeps its post-time window.
+
+## Stop syncing (migration 00190, SYNCEX-01)
+
+- `channel_settings` gains `sync_excluded`, `excluded_at`, `catchup_from`/`catchup_to` (REAL, NULL = no catch-up), `muted_by_exclusion` and `muted_at` (set from `updated_at` for channels already muted).
+- `db.SetSyncExcluded(channelID, excluded, now)` is the only writer of the exclusion columns, reached only through `watchtower channels exclude|include [name|id] [--id <stored id>] [--json]` (`cmd/channels_exclude.go`; `--json` answers `{ok, channel_id, sync_excluded, muted}`). Stop syncing sets `excluded_at` (or keeps an unfinished catch-up's `catchup_from`, so the next Sync again covers that window too), clears the catch-up and mutes the channel for AI with `muted_by_exclusion = 1` if it was not muted. Sync again sets `catchup_from = excluded_at`, `catchup_to = now`, and lifts the mute only when `muted_by_exclusion = 1`; a mute the user set stays.
+- `muted_at` writers: Go `SetMuteForLLM`/`ToggleMuteForLLM`, the Swift twin `ChannelStatsQueries.toggleMuteForLLM` (shared cases `internal/db/testdata/channel_mute_cases.json`) and `SetSyncExcluded`. Favorites never touch it; a manual mute change clears `muted_by_exclusion`.
+- Enforcement (SYNCEX-01, guard `TestSYNCEX01_EveryPathHonoursExclusion`, eight save paths): the sync reads the set once per run (`loadSyncExcluded`), and `searchAndSave` drops an excluded channel's match before any write unless its text mentions the account's user (`<@U…>` or `<@U…|name>`). That covers the forward search, the mention query, resumed pages, the deletion sweep and `BackfillSearch` (the history backfill and `watchtower slack backfill`); the listing still records a dropped match, so the live diff never takes it for deleted. `buildChannelQueue` skips excluded channels for `sync --full`/`--channels`, and `PendingCatchups` never returns one. Stored data stays.
+- Sync again catch-up (`runSyncAgainCatchups`, `internal/sync/syncagain.go`): after a clean run's search, the oldest pending catch-up of the account, at most `syncAgainPagesPerRun = 5` history pages plus replies, one channel per run. It walks the window top-down with the persisted upper bound, never a cursor: each page asks `oldest=catchup_from latest=catchup_to` exclusive, then `AdvanceCatchup` moves `catchup_to` to the page's oldest ts; `has_more=false` → `FinishCatchup`. Both writes are compare-and-set on the bounds read, so a Stop syncing or a new Sync again in between ends the walk. A 429, the deadline or a restart leaves the bound at the last saved page. A channel Slack reports gone or left gives the catch-up up.
+- Chat coverage: `list_messages`' `coverage.channel_in_scope` is false for an excluded channel (`channelInScope`, `internal/tools/messages.go`), so the chat goes to Slack Live for it (see [slack-live.md](slack-live.md)).
+
+## Suggestions and the Statistics screen
+
+- `db.ComputeRecommendations` gains `Action: "exclude"` (`excludeReason`, `internal/db/channel_stats.go`), the Swift twin `ChannelStatsQueries.computeRecommendations`, both pinned by `internal/db/testdata/channel_recommendation_cases.json`. Rule: muted for AI 30+ days (`muted_at`) with no message from the user and no mention of the user since the mute → "muted 30+ days, no messages or mentions from you"; or ≥ 90% bot messages with no value signals (decisions, active tracks, tasks, pending Inbox items) → "N% bot messages, no value signals".
+- Never suggested for a favorite, a watched channel, a DM or group DM, or a channel still catching up; an excluded channel gets no suggestion of any kind. The rule is checked after the mute suggestion, so an unmuted bot channel is first offered **Mute** and is offered **Stop syncing** once muted.
+- The Desktop never writes the exclusion columns: **Stop syncing** / **Sync again** (row button, suggestion button) run `channels exclude|include --id <id> --json` through `CLIRunnerProtocol`; a failure shows the error and keeps the row. **Stop syncing** stays available on a **Catching up** row (the next Sync again then covers the unfinished window too). The **Not synced** filter lists excluded channels and ignores the 5-message minimum. The Statistics sidebar badge counts recommendations with the same value signals as the screen (`SidebarCountsViewModel`). Strings and the row state (synced / not synced / catching up) live in `ChannelStatsPresentation` (WatchtowerCore); mockups in `docs/design/mockups/slack-adaptive-sync/`.
+
+## Capacity
+
+Cost per person per hour ≈ R + V/100: R Slack runs per hour, V the public messages per hour the blanket search sees (the same for everyone). If Slack shares the `search.messages` quota per workspace × app, that is about 1,200 calls/h, so the ceiling is ≈ 1,200 / (V/100) people whatever the cadence. At V = 833/h (20k/day): up to ~95 people fit at 15 min; ~95–145 back off toward 60 min (≈ 129 fit there) while mentions stay first; beyond ~145 the blanket search lags further each run but loses nothing, and only mentions stay current. If the quota is per user token, everyone fits.
+
+## v1 limits
+
+- The resume position, the learned rates and the cadence level live in memory: a restart re-reads the window (idempotent upserts), starts every tier at its documented rate and runs every account at once.
+- Excluding a channel does not lower search calls: the blanket search still returns its messages and they are dropped at save, saving storage and AI work only. Taking excluded channels out of the query with `-in:#channel` is a spike follow-up, not shipped.
+- A commercially distributed non-Marketplace app gets Tier 1 on history/replies (see [slack-multi-account.md](slack-multi-account.md)); the AIMD floor of 12/min is above it, so a Sync again catch-up or a full sync there lives on 429 holds.
+- The Desktop's last-sync time (`last_sync.json`'s mtime) and the readiness ETA follow finished cycles: when every account is skipped the file is not rewritten, so a single backed-off account can show a last sync up to 60 min old and no `onSyncFinished` refresh, and `FeatureReadiness`' `.nextCycle(pollIntervalMinutes)` ("within ~15 min") understates a backed-off account's wait.
+- `last_sync.json` holds only the accounts that ran, so a cycle that ran another account overwrites the row of a backed-off one: `watchtower diagnostics` may not show that account's `ErrFetchDeadline` error from its last run.
