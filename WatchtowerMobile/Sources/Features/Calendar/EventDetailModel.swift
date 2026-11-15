@@ -8,12 +8,17 @@ enum EventAction: Hashable {
     case record
     /// A finished event with a recap: the one button, which opens it.
     case openRecap(Int)
+    /// A finished event recorded on this phone whose transcript has not
+    /// reached the replica yet: opens the Recordings list, where the
+    /// recording's row shows its progress or Retry (#1789).
+    case openRecording
 
     var title: String {
         switch self {
         case .join: "Join"
         case .record: "Record"
         case .openRecap: "Open recap"
+        case .openRecording: "Open recording"
         }
     }
 }
@@ -74,8 +79,9 @@ struct EventDetailModel {
     let meetingEvent: MeetingEvent?
 
     /// The bottom bar's buttons, in order: Join (with a usable link) and
-    /// Record (not all-day); a finished event with a recap has only Open
-    /// recap.
+    /// Record (not all-day) until the event ends; then a recap's Open recap
+    /// alone, or Join and Open recording for a phone recording still on its
+    /// way, and never Record (#1789).
     let actions: [EventAction]
 
     var showsRecord: Bool { actions.contains(.record) }
@@ -125,10 +131,17 @@ struct EventDetailModel {
         meetingEvent = event.isAllDay
             ? nil
             : MeetingEvent(id: event.id, title: event.title, start: event.startDate, end: event.endDate)
-        if event.endDate <= now, let recap = snapshot.transcript(forEvent: event.id) {
+        let join: [EventAction] = joinURL != nil ? [.join] : []
+        if event.endDate > now {
+            actions = join + (meetingEvent != nil ? [.record] : [])
+        } else if let recap = snapshot.transcript(forEvent: event.id) {
             actions = [.openRecap(recap.id)]
+        } else if recordings.recordings.contains(where: { $0.eventID == event.id }) {
+            // Over: no Record (#1789) — a second recording of a finished
+            // meeting would only hide the first one's progress.
+            actions = join + [.openRecording]
         } else {
-            actions = (joinURL != nil ? [.join] : []) + (meetingEvent != nil ? [.record] : [])
+            actions = join
         }
     }
 

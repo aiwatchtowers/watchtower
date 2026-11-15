@@ -270,6 +270,13 @@ final class RecordingsWiringTests: XCTestCase {
         XCTAssertEqual(RecordingsListModel.pillText(newCount: 0), "Recordings")
     }
 
+    /// #1789: the Calendar's labelled button and the list's voice-note
+    /// button (the round mic left the agenda).
+    func testTheCalendarButtonIsLabelledAndTheListRecordsAVoiceNote() {
+        XCTAssertEqual(RecordingsListModel.screenTitle, "Recordings")
+        XCTAssertEqual(RecordingsListModel.voiceNoteTitle, "Record a voice note")
+    }
+
     /// The Calendar pill counts new recaps without building the list (no
     /// formatters, no entry per recording): the same count the list has.
     func testThePillCountsNewRecapsWithoutBuildingTheList() async throws {

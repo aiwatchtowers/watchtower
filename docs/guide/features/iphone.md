@@ -78,7 +78,7 @@ since: 0.24.0
 
 - **Now** shows your Mac's status, then **Waiting for you**, **Working** and the next meeting (see [Now and sessions](iphone-workbench.md#now-and-sessions)). The gear opens Settings.
 - **Workbench** lists your workbenches as cards. Open one for **Sessions** (in the Mac's sessions panel order) or **Board** (targets with status, priority and comments). A group's done sub-targets stay hidden until you tap **Show done (N)** (remembered). Its badge counts open asks.
-- **Calendar** shows the events your Mac publishes, with prep, the **Record** button and the **Recordings** list.
+- **Calendar** shows your Mac's events with prep and **Record**; **Recordings** has **Record a voice note**.
 
 Asks come in three kinds: a question, a review (select text, **Comment on the selection**, then **Approve** or **Request changes**) and a check (mark each step **OK**, **Broken** or **Skipped**).
 
