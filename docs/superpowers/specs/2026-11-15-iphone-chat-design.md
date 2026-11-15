@@ -361,7 +361,7 @@ The owner bubble shows pending until the `chat_turn` echo is `applied`. A refuse
 | Mac-run turn ends while the owner is away | One `chat_answer` push, never twice (ledger key) | `TestChatPush_DesktopTurnEndPushesOnce` |
 | `chat_page` / `chat_search` request unanswered | The phone shows "The Mac did not answer" + Retry after 30 s | phone `ChatPagingModelTests`, `ChatSearchModelTests` |
 | Delete undone on the phone | Nothing is sent; the row comes back | phone `ChatRowActionsTests` |
-| Delete from the phone | The row cascades; the conversation's attachment folder is removed after the commit; a removal failure leaves files only (logged with ids), the next delete of nothing changes nothing | `TestChatManage_DeleteRemovesAttachmentFolder` |
+| Delete from the phone | The row cascades; the conversation's attachment folder is removed after the commit; a failed removal leaves only the folder behind (logged with the conversation id), as on the Mac | `TestChatManage_DeleteRemovesAttachmentFolder` |
 | Prefetch while a turn ends | The push is still sent (prefetch is not looking) | `TestChatPush_PrefetchDoesNotCountAsLooking` |
 
 ## 8. Writers of the same data, and who wins
