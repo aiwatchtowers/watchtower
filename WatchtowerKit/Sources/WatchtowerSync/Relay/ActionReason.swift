@@ -41,4 +41,32 @@ public enum ActionReason: String, Codable, CaseIterable, Sendable {
     /// the transcriber); the echo's message says what to do. An older phone
     /// decodes it to nil and shows that message (plan 2026-11-05 Task G7).
     case notSupported = "not_supported"
+    /// A chat turn refused because another turn of the conversation holds the lease (iPhone chat spec §4.5).
+    case conversationBusy = "conversation_busy"
+    /// A chat turn names an attachment the hub never received or no longer holds.
+    case attachmentMissing = "attachment_missing"
+    /// A chat action answer whose `args_sha256` no longer matches the action's args: "The action changed".
+    case changed
+}
+
+/// The reasons a chat action can fail with that the chat screens treat specially (iPhone chat spec §4.5). Every other
+/// reason shows the echo's message as it is.
+public enum ChatActionReason: Sendable {
+    case conversationBusy
+    case attachmentMissing
+    case actionChanged
+    /// Chat is off on this host (`chat` capability not on); the echo's message says what to do.
+    case notSupported
+    case notFound
+
+    public init?(_ reason: ActionReason?) {
+        switch reason {
+        case .conversationBusy: self = .conversationBusy
+        case .attachmentMissing: self = .attachmentMissing
+        case .changed: self = .actionChanged
+        case .notSupported: self = .notSupported
+        case .notFound: self = .notFound
+        default: return nil
+        }
+    }
 }
