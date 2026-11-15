@@ -7,26 +7,26 @@ import WatchtowerTestSupport
 /// which `TestCreateIdeaFromChat_SharedRows` runs against `db.CreateIdeaFromChat`:
 /// the Mac's and the hub's chat stores write the same chat-born idea rows.
 final class ChatIdeaRowsFixtureTests: XCTestCase {
-    private struct Case: Decodable {
-        struct Expect: Decodable {
-            struct Idea: Decodable {
-                let kind, title, essence, status, source: String
-                let chatBorn: Int
+    private struct IdeaRow: Decodable {
+        let kind, title, essence, status, source: String
+        let chatBorn: Int
 
-                enum CodingKeys: String, CodingKey {
-                    case kind, title, essence, status, source
-                    case chatBorn = "chat_born"
-                }
-            }
-
-            struct Mention: Decodable {
-                let source, ref, quote: String
-            }
-
-            let idea: Idea
-            let mention: Mention
+        enum CodingKeys: String, CodingKey {
+            case kind, title, essence, status, source
+            case chatBorn = "chat_born"
         }
+    }
 
+    private struct MentionRow: Decodable {
+        let source, ref, quote: String
+    }
+
+    private struct Expect: Decodable {
+        let idea: IdeaRow
+        let mention: MentionRow
+    }
+
+    private struct Case: Decodable {
         let name, kind, body: String
         let conversationID, messageID: Int64
         let expect: Expect
