@@ -429,6 +429,34 @@ final class CalendarWiringTests: XCTestCase {
         )
     }
 
+    /// #1789: meetings overrun — an unrecorded event keeps Record for 30
+    /// minutes after its calendar end, then loses it; a recorded one never
+    /// gets it back.
+    func testAnUnrecordedEventKeepsRecordForThirtyMinutesAfterItsEnd() async throws {
+        let ended = event("overrun", start: now.addingTimeInterval(-3_600), minutes: 30)
+        let end = now.addingTimeInterval(-1_800)
+        func actions(
+            at time: Date,
+            recordings: PhoneRecordingsSnapshot = PhoneRecordingsSnapshot(),
+            id: String = "overrun",
+            events: [CalendarEvent]? = nil
+        ) throws -> [EventAction] {
+            try XCTUnwrap(EventDetailModel(
+                eventID: id, snapshot: snapshot(events ?? [ended]), recordings: recordings, now: time, calendar: calendar
+            )).actions
+        }
+        XCTAssertEqual(EventDetailModel.overrunGrace, 30 * 60)
+        XCTAssertEqual(try actions(at: end.addingTimeInterval(29 * 60)), [.record], "end + 29 min still records")
+        XCTAssertEqual(try actions(at: end.addingTimeInterval(31 * 60)), [], "end + 31 min does not")
+
+        let recordings = try await demoRecordings()
+        let recorded = event(DemoSeed.recordedEventID, start: now.addingTimeInterval(-3_600), minutes: 30)
+        XCTAssertEqual(
+            try actions(at: end.addingTimeInterval(60), recordings: recordings, id: recorded.id, events: [recorded]),
+            [.openRecording], "a recorded event never offers Record after its end"
+        )
+    }
+
     /// #1789: a finished event recorded on this phone, its transcript not in
     /// the replica yet (sending, waiting for the Mac, transcribing), offers
     /// Open recording (the Recordings list) instead of a second Record; the

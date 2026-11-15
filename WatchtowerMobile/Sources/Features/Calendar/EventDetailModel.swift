@@ -81,7 +81,8 @@ struct EventDetailModel {
     /// The bottom bar's buttons, in order: Join (with a usable link) and
     /// Record (not all-day) until the event ends; then a recap's Open recap
     /// alone, or Join and Open recording for a phone recording still on its
-    /// way, and never Record (#1789).
+    /// way; an unrecorded event keeps Record for `overrunGrace` after its
+    /// end, then has none (#1789).
     let actions: [EventAction]
 
     var showsRecord: Bool { actions.contains(.record) }
@@ -140,10 +141,17 @@ struct EventDetailModel {
             // Over: no Record (#1789) — a second recording of a finished
             // meeting would only hide the first one's progress.
             actions = join + [.openRecording]
+        } else if meetingEvent != nil, now < event.endDate.addingTimeInterval(Self.overrunGrace) {
+            // A meeting that runs past its calendar end, not recorded yet.
+            actions = join + [.record]
         } else {
             actions = join
         }
     }
+
+    /// How long after its calendar end an event with no recording or
+    /// transcript still offers Record: meetings overrun.
+    static let overrunGrace: TimeInterval = 30 * 60
 
     static func initials(_ name: String) -> String {
         let words = name.split { $0 == " " || $0 == "." || $0 == "@" }.prefix(2)
