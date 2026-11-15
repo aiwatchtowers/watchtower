@@ -1,4 +1,3 @@
-import Combine
 import XCTest
 @testable import WatchtowerCore
 
@@ -35,9 +34,8 @@ final class InboxBulkPressModelTests: XCTestCase {
 
     func testBeginPlansThenConfirms() async {
         let model = InboxBulkPressModel()
-        var states: [InboxBulkPressModel.State] = []
-        let watch = model.$state.sink { states.append($0) }
-        defer { watch.cancel() }
+        var states: [InboxBulkPressModel.State] = [model.state]
+        model.onStateChange = { states.append($0) }
         var applied: [[String]] = []
 
         model.begin { Self.plan }
@@ -58,9 +56,8 @@ final class InboxBulkPressModelTests: XCTestCase {
 
     func testEmptyPlanFinishesWithoutConfirming() async {
         let model = InboxBulkPressModel()
-        var states: [InboxBulkPressModel.State] = []
-        let watch = model.$state.sink { states.append($0) }
-        defer { watch.cancel() }
+        var states: [InboxBulkPressModel.State] = [model.state]
+        model.onStateChange = { states.append($0) }
 
         model.begin { InboxBulkPlan(ids: [], count: 0) }
         await waitUntil(model, isFinished)
