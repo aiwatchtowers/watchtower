@@ -81,13 +81,44 @@ final class BoardFilterTests: XCTestCase {
         let hidden = try XCTUnwrap(BoardTargetDetailModel(targetID: 420, snapshot: snapshot, now: now))
         XCTAssertEqual(hidden.children.map(\.id), [421])
         XCTAssertEqual(hidden.doneChildCount, 1)
-        XCTAssertEqual(hidden.childrenHeader, "Sub-targets · 1 / 2")
+        XCTAssertEqual(hidden.childrenHeader, "Sub-targets · 1/2")
+        XCTAssertEqual(hidden.childCounter, "1/2")
         let shown = try XCTUnwrap(BoardTargetDetailModel(targetID: 420, snapshot: snapshot, now: now, showDone: true))
         XCTAssertEqual(shown.children.map(\.id), [421, 422])
         XCTAssertEqual(shown.childrenHeader, hidden.childrenHeader)
         let leaf = try XCTUnwrap(BoardTargetDetailModel(targetID: 421, snapshot: snapshot, now: now))
         XCTAssertEqual(leaf.childrenHeader, "Sub-targets")
+        XCTAssertNil(leaf.childCounter)
         XCTAssertEqual(leaf.doneChildCount, 0)
+    }
+
+    /// #1788: a group with an archived child says one number in the header
+    /// and the list, and names the archived one instead of counting it.
+    func testAGroupCountsItsArchivedChildApart() throws {
+        let group = try XCTUnwrap(BoardTargetDetailModel(targetID: 400, snapshot: try demoSnapshot(now: now), now: now))
+        XCTAssertEqual(group.children.map(\.id).sorted(), [415, 416])
+        XCTAssertEqual(group.childCounter, "0/2 · 1 archived")
+        XCTAssertEqual(group.childrenHeader, "Sub-targets · 0/2 · 1 archived")
+    }
+
+    func testTheChildCounterWords() {
+        XCTAssertEqual(BoardTargetDetailModel.childCounter(done: 1, listed: 3, archived: 0), "1/3")
+        XCTAssertEqual(BoardTargetDetailModel.childCounter(done: 0, listed: 0, archived: 2), "0/0 · 2 archived")
+        XCTAssertEqual(BoardTargetDetailModel.childCounter(done: 1, listed: 2, archived: -1), "1/2", "a replica ahead of the count")
+        XCTAssertNil(BoardTargetDetailModel.childCounter(done: 0, listed: 0, archived: 0))
+    }
+
+    /// An archived group lists its archived children and names none apart.
+    func testAnArchivedGroupHasNoArchivedNote() throws {
+        var snapshot = try demoSnapshot(now: now)
+        snapshot.targets.append(try mirror(WorkbenchTarget.self, DemoSeed.JSON.target(900, workbench: DemoSeed.acmeID, [
+            "text": "Old group", "archived": true, "status": "done", "children_count": 2
+        ])))
+        snapshot.targets.append(try mirror(WorkbenchTarget.self, DemoSeed.JSON.target(901, workbench: DemoSeed.acmeID, [
+            "parent_id": 900, "text": "Old child", "archived": true, "status": "done"
+        ])))
+        let group = try XCTUnwrap(BoardTargetDetailModel(targetID: 900, snapshot: snapshot, now: now))
+        XCTAssertEqual(group.childCounter, "1/1")
     }
 
     /// A done target with no shown parent stays out of Open, and the other

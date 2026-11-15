@@ -132,8 +132,8 @@ struct BoardTargetDetailView: View {
         }
     }
 
-    /// Mockup 9's head: the status glyph, the title, then the card's chips
-    /// and counter, and the progress bar.
+    /// Mockup 9's head: the status glyph, the title, then the card's chips,
+    /// the sub-target counter and the progress bar.
     private func header(_ detail: BoardTargetDetailModel) -> some View {
         let card = detail.row.card
         return VStack(alignment: .leading, spacing: Spacing.compact) {
@@ -148,7 +148,8 @@ struct BoardTargetDetailView: View {
             FlowRow {
                 Text(card.numberText).font(TypeScale.time).foregroundStyle(.secondary)
                 ForEach(BoardCard.chipIDs(card), id: \.self) { Pill(item: card.chips[$0]) }
-                if let counter = card.counter {
+                // The detail's own counter, the Sub-targets list's (#1788).
+                if let counter = detail.childCounter {
                     Text(counter).font(TypeScale.time).foregroundStyle(.secondary)
                 }
             }

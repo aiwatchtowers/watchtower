@@ -297,9 +297,10 @@ final class AppEnvironment {
 
     // MARK: - The badge
 
-    /// The open asks across every hub that can still answer them: the app
-    /// icon's badge. A hub the Mac removed (frozen, writes off) cannot, so
-    /// its asks are not counted.
+    /// The open asks and pending permission requests across every hub that
+    /// can still answer them: the app icon's badge. A hub the Mac removed
+    /// (frozen, writes off) cannot, so its asks are not counted. The Now
+    /// tab's badge is the same count for the hub on screen only (#1788).
     var openAskTotal: Int {
         sessions.values.filter(\.writesAllowed).reduce(0) { $0 + $1.workbenchReplica.openAskCount }
     }

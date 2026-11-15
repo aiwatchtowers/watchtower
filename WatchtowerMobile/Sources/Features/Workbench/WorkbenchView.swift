@@ -1,10 +1,10 @@
 import SwiftUI
 
 /// The Workbench tab, level 2: a title switcher over the workbenches, New
-/// session (the start sheet with a target picker), the branch and board counts and the
-/// Sessions | Board segment. Sessions lists the workbench's sessions in the Desktop
-/// panel's order (mockup 2), with the closed asks folded at the end. On Board, +
-/// opens New target.
+/// session (the start sheet with a target picker), the branch (the board counts
+/// beside it on Board only, #1788) and the Sessions | Board segment. Sessions lists
+/// the workbench's sessions split as Now splits them, with the closed asks folded at
+/// the end. On Board, + opens New target.
 struct WorkbenchView: View {
     enum Segment: String, CaseIterable, Identifiable {
         case sessions = "Sessions"
@@ -21,7 +21,7 @@ struct WorkbenchView: View {
     @State private var workbenchID: Int64
     @State private var segment: Segment
     @State private var showClosed = false
-    @State private var showFinished = false
+    @State private var showOlder = false
     @State private var addingTarget = false
     @State private var startingSession = false
     @State private var openSession: SessionRoute?
@@ -116,7 +116,10 @@ struct WorkbenchView: View {
                 if let branch = menu.branch {
                     Pill(text: branch, style: .neutral, monospaced: true)
                 }
-                MetaLine(items: menu.boardCounts).font(TypeScale.meta)
+                // The board's numbers belong to the board (#1788).
+                if segment == .board {
+                    MetaLine(items: menu.boardCounts).font(TypeScale.meta)
+                }
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, Spacing.large)
@@ -138,8 +141,8 @@ struct WorkbenchView: View {
         }
     }
 
-    /// Sessions (spec §5.5, mockup 2): one card per section, the finished
-    /// fold, then the closed asks. A `ScrollView`, so each row is its own
+    /// Sessions (spec §5.5, mockup 2; #1788): one card per section, the
+    /// older fold, then the closed asks. A `ScrollView`, so each row is its own
     /// link.
     private func sessions(_ menu: WorkbenchMenuModel) -> some View {
         ScrollView {
@@ -155,9 +158,9 @@ struct WorkbenchView: View {
                     SectionHeader(section.title, count: section.rows.count, tone: section.tone)
                     SessionCard(rows: section.rows)
                 }
-                if let finished = menu.finishedLabel {
-                    DisclosureGroup(finished, isExpanded: $showFinished) {
-                        SessionCard(rows: menu.finished)
+                if let older = menu.olderLabel {
+                    DisclosureGroup(older, isExpanded: $showOlder) {
+                        SessionCard(rows: menu.older)
                     }
                     .font(.footnote)
                     .foregroundStyle(.secondary)

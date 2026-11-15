@@ -34,8 +34,12 @@ struct BoardTargetDetailModel {
     /// The done sub-targets, shown or hidden: the Show done button's count
     /// (0 = no button; always 0 on an archived target).
     let doneChildCount: Int
-    /// "Sub-targets · 1 / 3", counting every sub-target, hidden ones too;
-    /// "Sub-targets" when there are none.
+    /// "0/2 · 1 archived": done over every sub-target listed here (done ones
+    /// hidden by Show done too), then the ones left under Archive, which the
+    /// Mac's `children_count` still counts (#1788). The header and the
+    /// Sub-targets list show this one string; nil when there are none.
+    let childCounter: String?
+    /// "Sub-targets · 0/2 · 1 archived"; "Sub-targets" when there are none.
     let childrenHeader: String
     let sessions: [SessionRowModel]
     let asks: [WaitingCardModel]
@@ -103,7 +107,11 @@ struct BoardTargetDetailModel {
         let keepsDone = showDone || target.archived
         doneChildCount = target.archived ? 0 : doneCount
         children = childTargets.filter { keepsDone || $0.status != .done }.map { BoardRowModel($0, snapshot: snapshot) }
-        childrenHeader = childTargets.isEmpty ? "Sub-targets" : "Sub-targets · \(doneCount) / \(childTargets.count)"
+        childCounter = Self.childCounter(
+            done: doneCount, listed: childTargets.count,
+            archived: target.archived ? 0 : target.childrenCount - childTargets.count
+        )
+        childrenHeader = childCounter.map { "Sub-targets · \($0)" } ?? "Sub-targets"
         sessions = target.sessionIDs.compactMap(snapshot.session).map { SessionRowModel($0, now: now) }
         asks = snapshot.openAsks(in: target.workbenchID)
             .filter { $0.targetID == target.id }
@@ -123,6 +131,16 @@ struct BoardTargetDetailModel {
             BoardWriter.key(.boardCommentAdd, SliceKind.workbenchTarget.recordName(id: String(id)))
         }
         return inFlight.contains(key)
+    }
+
+    /// "done/listed", then "· N archived" when some are; nil with no
+    /// sub-target at all. `archived` is the Mac's count less the listed ones
+    /// (a negative one, a replica ahead of the count, reads as none).
+    static func childCounter(done: Int, listed: Int, archived: Int) -> String? {
+        let archived = max(0, archived)
+        guard listed > 0 || archived > 0 else { return nil }
+        let counter = "\(done)/\(listed)"
+        return archived > 0 ? "\(counter) · \(archived) archived" : counter
     }
 
     /// The editable values, plus the shown one when it is not among them
