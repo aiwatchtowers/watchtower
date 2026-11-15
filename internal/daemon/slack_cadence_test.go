@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	gosync "sync"
@@ -15,6 +16,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/config"
+	"watchtower/internal/db"
+	watchtowerslack "watchtower/internal/slack"
 	"watchtower/internal/sync"
 )
 
@@ -204,7 +207,7 @@ func TestPhaseSlackSync_SlowAccountDoesNotDelayTheNext(t *testing.T) {
 	})
 	var slowCount, fastCount atomic.Int32
 	slow, _ := newStatusTrackingOrchestrator(t, slowMux, &slowCount)
-	fast, _ := newStatusTrackingOrchestrator(t, testMux(), &fastCount)
+	fast := newSecondAccountOrchestrator(t, testMux(), &fastCount)
 	d := New(&config.Config{Sync: config.SyncConfig{PollInterval: cadenceBase}})
 	d.SetLogger(log.New(os.Stderr, "[test-cadence] ", 0))
 	d.SetOrchestrators([]*sync.Orchestrator{slow, fast})
@@ -215,6 +218,7 @@ func TestPhaseSlackSync_SlowAccountDoesNotDelayTheNext(t *testing.T) {
 	syncErr, _ := d.phaseSlackSync(context.Background())
 	require.NoError(t, syncErr, "both runs are clean")
 	require.NotZero(t, slowCount.Load())
+	require.Len(t, d.slackCadences, 2, "each account keeps its own cadence")
 	ran := fastCount.Load()
 
 	mu.Lock()
@@ -222,4 +226,29 @@ func TestPhaseSlackSync_SlowAccountDoesNotDelayTheNext(t *testing.T) {
 	mu.Unlock()
 	_, _ = d.phaseSlackSync(context.Background())
 	assert.Greater(t, fastCount.Load(), ran, "account 2 is due on the next tick")
+}
+
+// newSecondAccountOrchestrator is newStatusTrackingOrchestrator for Slack
+// account 2, so it keeps a cadence of its own next to account 1's.
+func newSecondAccountOrchestrator(t *testing.T, mux *http.ServeMux, searches *atomic.Int32) *sync.Orchestrator {
+	t.Helper()
+	countingMux := http.NewServeMux()
+	countingMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/search.messages" {
+			searches.Add(1)
+		}
+		mux.ServeHTTP(w, r)
+	})
+	database := db.OpenTestDB(t)
+	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T024BE7LD", Name: "test-workspace", Domain: "test-workspace"}))
+	for range 2 {
+		_, err := database.CreateSlackAccount(db.SlackAccount{TeamID: "T024BE7LD", TeamName: "test-workspace", TeamDomain: "test-workspace"})
+		require.NoError(t, err)
+	}
+	srv := httptest.NewServer(countingMux)
+	t.Cleanup(srv.Close)
+	orch := sync.NewOrchestrator(database, watchtowerslack.NewClientWithAPIURLUnlimited("xoxp-test-token", srv.URL+"/"),
+		&config.Config{Sync: config.SyncConfig{Workers: 1, InitialHistoryDays: 1}}, 2)
+	orch.SetLogger(log.New(os.Stderr, "[test-account-2] ", 0))
+	return orch
 }
