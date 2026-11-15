@@ -44,7 +44,13 @@ The chip is `SlackMode.derive` (never stored, SLACKMODE-01) plus one display-onl
 | Full · Live on | `full` and `SlackMode.liveOn` | "Full · Live on" (`Tone.success`) | "Synced on this Mac through your workspace's own Slack app. Chats also read Slack through Live for what is not synced." |
 | Live | derived `live` | "Live" (`Tone.status("blue")`) | "Chats and automations read Slack through your Claude or ChatGPT connector. Nothing is synced, so digests, the Inbox, tracks and people need your workspace's app." |
 | Off | derived `off`, no shared-app account | "Off" (`Tone.status("gray")`) | "Slack is not connected. Connect your workspace's app to sync, or turn on the Slack connector in your Claude or ChatGPT account to ask about Slack in Chats." |
-| Shared app | an enabled, not removed account whose `client_id` is the retired shared app's (or empty: rows written before T2's column) | "Shared app" (`Tone.warning`) | "<label> syncs through Watchtower's old shared Slack app until Slack turns it off." |
+| Shared app | the account's `shared_app` flag (rule below) is true, on an enabled, not removed account — **public build only** | "Shared app" (`Tone.warning`) | "<label> syncs through Watchtower's old shared Slack app until Slack turns it off." |
+
+**Which account is on the shared app (build-aware).** The Slack client id is baked per build: `internal/auth.DefaultClientID`/`DefaultClientSecret` (`internal/auth/oauth.go`) come from `WATCHTOWER_OAUTH_CLIENT_ID`/`_SECRET` in the build profile via `-ldflags` (`Makefile` `LDFLAGS`, `scripts/build-app.sh`), and the profile's `BUILD_FLAVOR` (`cmd.BuildFlavor`, `cmd/version.go`) tells the builds apart — `""`/`dev` is the public build, anything else a corporate one (`wire.FlavorOf`, `internal/hub/wire/payloads.go`). The corp build bakes its own company app's id, which is a workspace app, not the shared one. So Go decides, never Swift, and reports it as `shared_app` in `slack accounts --json`:
+
+- **Public build:** `shared_app` = the row's `client_id` equals the retired shared app's id (kept in the public build as a recognition-only ldflag, `auth.RetiredSharedClientID`, no secret), or `client_id` is empty (rows written before T2's column — in a public build those can only come from the shared app).
+- **Corp build** (`FlavorOf(BuildFlavor) == corp`): `shared_app` is always false — an empty or baked `client_id` there is the company's own app, and the parent spec says nothing changes for corp on day one. No chip, no banner, no tag.
+- Tests: `TestSlackAccountSharedApp_PublicBuild` (match and empty → true; a workspace app → false), `TestSlackAccountSharedApp_CorpBuildNever` (empty and baked id → false). Swift only reads the flag: `SlackModePresentationTests.testSharedAppFollowsFlag`.
 
 ### 1.2 The Live block
 
@@ -119,13 +125,21 @@ Tests: `FeatureReadinessTests.testNeedsFullSlackForSlackFeatures`, `testNeedsFul
 | Statistics | `slackSync` (slack) | never seen: the tab stays hidden without a messages source |
 | Knowledge (search) | `knowledgeIndex` (none) | no readiness change; while the mode is Live a note sits under the search field: "Slack is not in Knowledge: Live answers are not kept. Connect your workspace's app to add synced Slack." with a quiet **Connect workspace app**. Its string lives in `SlackModePresentation.knowledgeNote` |
 
+**Where the parent's promise ("`needsFullSlack` on every Slack-dependent screen") is deliberately narrowed:**
+
+- **Catch-Up and Statistics never show `needsFullSlack` with Live only:** their tabs are hidden then (`SidebarDestination.requiredSources`: Catch-Up needs messages, Jira, Linear or a calendar; Statistics needs messages; Live is not a synced source). Catch-Up shows it only when another source keeps the tab visible; Statistics never.
+- **Knowledge shows a note, not a readiness state** (its feature has no source).
+- Whether Live-only should unhide those tabs, and how the rest of the sidebar treats Live, is the owner's open question in ask #1310; this spec keeps today's gate until it is answered.
+
 Mocked: the Digests empty state (wide and narrow), a Home card, the Knowledge note. The other tabs draw the same `FeatureEmptyState` with their own title and "lands here" line; their loading/error/busy states are `FeatureEmptyState`'s existing ones (nil readiness = no line; error and preparing are other readiness values) and do not change.
 
 ### 2.3 The phone
 
 The phone has no digests, Inbox or briefing screens, so the state shows only in Settings → Accounts:
 
-- Go: `DBAccounts` (`internal/hub/slices/heartbeat.go`) adds one row `{kind: "slack", label: "Slack", status: "live"}` when no `slack_accounts` row is enabled and a `slack_live_status` row is `ok` (the same rule as `SlackMode`; the Go twin `slackmode.Derive`). Test `TestDBAccounts_LiveOnlySlackRow` (and that a Full account suppresses it).
+- Go: `accountsSQL` / `DBAccounts` (`internal/hub/slices/heartbeat.go`) lists Slack accounts with `status != 'removed'` (it does not look at `enabled`). It gains one extra row `{kind: "slack", label: "Slack", status: "live"}` when that query returns no Slack account (no row with `status != 'removed'`) and a `slack_live_status` row is `ok` — the same rule as `slackmode.Derive`, with "an account" meaning what `accountsSQL` already counts. Test `TestDBAccounts_LiveOnlySlackRow` (and that any listed Slack account suppresses it).
+- **Phase-1 limit:** per the code comment on `DBAccounts`, the hub runtime starts only in a `hubtest-*` test workspace (go hub phase 1, Task 14), so this row reaches no real phone until the hub leaves phase 1. The change is still specified now so the wire value is settled.
+- Paths that change together: Go `internal/hub/slices/heartbeat.go` (`accountsSQL`/`DBAccounts`, the row) → the wire `HeartbeatAccount` (`internal/hub/wire/payloads.go`, unchanged shape: `status` is a free string) → Kit `HeartbeatAccount` (`WatchtowerKit/Sources/WatchtowerSync/Relay/HeartbeatPayload.swift`, unchanged) → phone `AccountStatusStyle` (`WatchtowerMobile/Sources/Features/Settings/AccountStatusStyle.swift`, new `live` case). `accountsSQL`'s comment names a Swift twin (`HubAccountRows`) that no longer exists in the tree; nothing else on the Desktop changes.
 - Phone: `AccountStatusStyle(status: "live")` → mark `.textOnly`, text "Live only — sync needs your workspace's app", tone `.secondary`. Test `AccountStatusStyleTests.testLiveOnly` (`WatchtowerMobile/Tests`). A shot is added to `ScreenshotTourTests` with the implementation, not here.
 - An older phone shows the raw word "live" (its `default:` branch) — acceptable, nothing breaks.
 
@@ -194,7 +208,7 @@ Open Watchtower first. No Watchtower yet? Download it from <release page>.
 - A field "Connect link or code" + **Connect** (disabled while empty). It accepts the link or the `<team>:<client id>` code; anything else: "That is not a Watchtower connect link or code. Copy it again from the app's About tab in Slack." (shot `slack-fl-pane-pasteInvalid`).
 - "No Watchtower app in your workspace yet?" + quiet **Set up for my company**.
 
-In Full the section is folded behind a quiet **Connect another workspace…** under Workspaces (shots `slack-fl-pane-full`, `-fullLive`): after retirement (T9) the public build has no baked client id, so this is how a second workspace connects; the old **Add Slack Account** sheet goes.
+In Full the section is folded behind a quiet **Connect another workspace…** under Workspaces (shots `slack-fl-pane-full`, `-fullLive`): after retirement (T9) the public build has no baked client id, so this is how a second workspace connects there. Scope: **public build only, after T9** — there the old **Add Slack Account** sheet goes. The corp build keeps its baked company app and keeps **Add Slack Account** (next to the folded section) until the owner decides otherwise.
 
 ### 4.3 The flow
 
@@ -244,7 +258,7 @@ When the listener cannot bind, the connect section shows a warning line above th
 | Connect | pasted text is neither link nor code | inline error, nothing starts | `SlackConnectFlowModelTests.testPasteRejectsOtherText` |
 | Connect | team mismatch / denied | failed state, nothing stored, **Start again** | `TestSlackLinkConnect_TeamMismatch` (parent), `SlackConnectFlowModelTests.testMismatchAndDeniedStates` |
 | Listener | port 18551 busy | warning line + paste field; bind retried when the pane opens | `TestSlackConnectListener_PortBusy` (parent), `SlackModePresentationTests.testPortBusyLine` |
-| Readiness | Live row turns stale or fails while a tab is open | the tab re-reads readiness on its next evaluation (existing `ReadinessCenter` cycle); a Live-only install with a failed probe becomes Off and the tab says "Connect Slack to get this" | `FeatureReadinessTests.testOffModeKeepsConnectSlack` |
+| Readiness | the mode changes Off ↔ Live (a probe or a chat use writes `slack_live_status`) while a tab is open | `slackLiveOnly` is a new `ReadinessInputs` input, so it needs its own trigger: `ReadinessCenter` reads `slack_live_status` in `readSnapshot` (added to `DBSnapshot`), and a change of `SlackLiveStatusCenter.statuses` calls `ReadinessCenter.refresh()` at once (the probe is a CLI child — another process — which the GRDB observation does not see; the 30 s tick is only the backstop for chat/automation writes). Off → Live turns "Connect Slack to get this" into `needsFullSlack`; Live → Off the reverse | `ReadinessCenterTests.testLiveStatusChangeReevaluates`, `FeatureReadinessTests.testOffModeKeepsConnectSlack` |
 | Phone | the Mac sends `live` to an old phone | the raw word shows (default branch); nothing breaks | `AccountStatusStyleTests.testUnknownStatusShowsRaw` (exists in spirit; add) |
 
 ## 7. Writers of the same data and who wins
@@ -259,7 +273,7 @@ When the listener cannot bind, the connect section shows a warning line above th
 
 ## 8. Mockups
 
-Design-only SwiftUI scenes in `DesignShotCatalog` (`SlackFullLiveShotFixtures`, `WatchtowerDesktop/Tests/DesignShots/DesignShotFixtures+SlackFullLive.swift`), built from the design kit (`SettingsSection`, `Chip`, `.card()`, `.kit*` buttons, `Tone`) and, for the empty state, the real `FeatureEmptyState`. Every string comes from `SlackFullLiveMockCopy` (`Tests/DesignShots/SlackFullLiveMockCopy.swift`), pinned by `SlackFullLiveMockCopyTests` — including that the keep reason equals the shipped `ArtifactPanelModel.liveSlackReason` and that every frame has a shot. Rendered by `DesignShotsTests.testSlackFullLiveShotsRender` (`make desktop-shots` renders them with the rest), light and dark, committed under `docs/design/mockups/slack-full-live/` as `<shot>-light.png` / `<shot>-dark.png`. Sample data only (`acme`, made-up ids).
+Design-only SwiftUI scenes in `DesignShotCatalog` (`SlackFullLiveShotFixtures`, `WatchtowerDesktop/Tests/DesignShots/DesignShotFixtures+SlackFullLive.swift`), built from the design kit (`SettingsSection`, `Chip`, `.card()`, `.kit*` buttons, `Tone`) and, for the empty state, the real `FeatureEmptyState`. Every string comes from `SlackFullLiveMockCopy` (`Tests/DesignShots/SlackFullLiveMockCopy.swift`), pinned by `SlackFullLiveMockCopyTests` — including that the keep reason equals the shipped `ArtifactPanelModel.liveSlackReason` and that every frame has a shot. Rendered by `DesignShotsTests.testSlackFullLiveShotsRender` (`make desktop-shots` renders them with the rest), light and dark, committed under `docs/design/mockups/slack-full-live/` as `<shot>-light.png` / `<shot>-dark.png`. They are on branch `feature/1709-screens-spec` (next to this spec); a checkout of another branch does not have the folder. Sample data only (`acme`, made-up ids).
 
 | Shot | State |
 |---|---|
@@ -361,7 +375,7 @@ Screen tasks (S) follow the parent plan B tasks they need.
 8. Read failure offers **Try again** (reload) and hides **Check again**; a probe failure keeps **Check again** as its retry.
 9. `needsFullSlack` is `ReadinessSource.fullSlack` inside the existing `needsSource` machinery; for "any source" features it shows only when nothing else is connected; `off` still wins.
 10. The sidebar's source gate does not count Live as a source: Catch-Up and Statistics stay hidden with Live only.
-11. Knowledge gets a one-line note while the mode is Live, not a readiness state.
+11. Knowledge gets a one-line note while the mode is Live, not a readiness state. With 10, this narrows the parent's "every Slack-dependent screen" (§2.2; open in ask #1310).
 12. The phone shows Live only as a heartbeat account row "Live only — sync needs your workspace's app"; no new phone screen; no phone mockup (no Desktop-style catalog there).
 13. Setup and connect are sheets (short blocking flows), with their runs on `AppState` so they survive closing the sheet and switching tabs.
 14. The setup's token goes to the CLI on stdin; the CLI reports one JSON line per step; the CLI verb names (`slack app create|link|status`) are placeholders for plan B.
@@ -369,10 +383,14 @@ Screen tasks (S) follow the parent plan B tasks they need.
 16. A pasted link/code and an MDM **Connect** skip the confirm (the owner's own press); only a link that reached the listener asks.
 17. A second connect while one runs is refused, the running sheet stays (one flow at a time, shared with Reconnect).
 18. The listener re-tries the port bind whenever Connections → Slack opens; in Full the folded connect section opens itself while the port is busy.
-19. In Full, **Connect another workspace…** replaces the **Add Slack Account** sheet (after T9 there is no baked client id).
+19. In Full, **Connect another workspace…** replaces the **Add Slack Account** sheet — public build only, after T9 removes its baked client id; the corp build keeps the sheet until decided otherwise.
 20. MDM rows read "Workspace <team id>" (the key has no name) and their **Connect** is the pane's one prominent action.
 21. The shared-app banner has no dismiss, tints with `Tone.warning`, and is not an attention item (no red badge); the overview card says "Shared app retiring".
 22. The pane does not poll `slack_live_status`; it reads on appear and after a probe.
+23. The UI names are English **Full** / **Live** because the Desktop is not localised; they stand for the owner's **Полный** / **Живой** (ask #1294, conversation). Code keeps `full` / `live`.
+24. Shared-app detection is build-aware and decided in Go (`shared_app` in `slack accounts --json`): public build = the retired shared id or an empty `client_id`; corp build never.
+25. `ReadinessCenter` re-evaluates on a `SlackLiveStatusCenter` change and reads `slack_live_status` in its snapshot.
+26. The phone's Live-only row follows `accountsSQL`'s own account rule (`status != 'removed'`), not `enabled`.
 
 ## 12. Out of scope
 
