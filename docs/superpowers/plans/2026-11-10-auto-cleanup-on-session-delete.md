@@ -5,7 +5,8 @@
 **Goal:** Every Desktop session delete removes, in the background, what the session created and what is safe to remove. That includes subagent worktrees and branches. A session whose cleanup failed stays in the list marked **Not fully cleaned**.
 
 **Architecture:**
-- **Go side.** The schema gains `delete_requested_at` and a ledger `source`/`kind`. A pure command parser feeds the session-state hook, which records `command` rows. `internal/sessioncleanup` adopts command rows and the session's Claude scratchpad. Every list reader of `terminal_sessions` hides deleting rows.
+- **Go side.** The schema gains `delete_requested_at` and the `agent_session_tombstones` table. `internal/sessioncleanup` adopts, from facts only, the session's subagent worktrees (Claude Code's records), its Claude scratchpad and the branches created in its own worktrees (their HEAD logs) — Task 9. Every list reader of `terminal_sessions` hides deleting rows.
+- **History:** Tasks 1–4 first built a command parser, a ledger `source`/`kind` and `command` rows; the owner dropped command parsing (ask #1244) and Task 9 removes all of it. Read Tasks 1–4 as history; where they conflict with Task 9, Task 9 wins.
 - **Desktop side.** A per-workbench background queue runs `workbench cleanup --apply` when the Undo window ends. A pure WatchtowerCore outcome function decides between deleting the row and marking it. The UI shows the notice, the header line and the marked row.
 
 **Tech Stack:** Go 1.26 (cgo SQLCipher, goose SQL migrations), SwiftUI/GRDB (WatchtowerCore + Desktop), XCTest.
@@ -17,9 +18,9 @@
 ## Global Constraints
 
 - **Time limit:** a background run is stopped after **10 minutes**: SIGTERM to its process group, then SIGKILL after **5 s**. The outcome is *could not* with the text "the cleanup took longer than 10 minutes".
-- **Caps:** `cwd` ledger rows keep `MaxSessionWorktrees = 64`; `command` rows have their own cap of **512** per session.
+- **Caps:** `cwd` ledger rows keep `MaxSessionWorktrees = 64` (as on main). There are no `command` rows after Task 9.
 - **Notice:** shown for **6 s**. The copy is verbatim from spec §3 (`Cleaned up “T”: removed 3 worktrees and 12 branches (~2.1 GB).` etc.). The row mark reads `Not fully cleaned: <count> — <reason phrase>.`
-- **No git run inside a hook.** Only string parsing and `stat` are allowed there.
+- **No git run inside a hook.** The hooks write only `cwd` sightings, as on main; all reading of Claude Code's files and git logs happens in the planner.
 - **No LLM** anywhere in the path (ask #1210).
 - **Background apply:** never passes `--item`.
 - **UI:** built from the design kit (`WatchtowerDesktop/Sources/DesignKit/`); colours only through `Tone`, warning tone for the mark; no stock look and no row separators. **Delete** in the dialog uses `kitDestructive`. Row actions show on hover; none of them is prominent.
@@ -348,13 +349,15 @@ Depends on: Tasks 1–8 (all merged into the umbrella)
 - `RecordSessionCommandRow`, `MaxSessionCommandRows`, `SessionWorktree.Source/Kind`, the `sourceCommand`/`kindBranch` handling in `observe`;
 - the `source`/`kind` columns: edit the umbrella's `00187_session_auto_cleanup.sql` in place and renumber both migrations after main's last (main now has `00187_tuning_chat.sql`: ours become `00188_session_auto_cleanup.sql`, `00189_agent_session_tombstones.sql`); regenerate `schema.sql`, the golden and the Swift test schema;
 - the Swift `source = 'cwd'` filters in `TerminalSessionQueries.swift` (`hasWorktree`, `fetchWorkLinks`) — back to main's text;
-- the tests `TestProj18_CommandLedgerAdoptsWorktree`, `TestProj18_CommandNamedBranchOlderThanSessionIsKept`, `TestProj18_CommandRowUnpushedIsKept` (owner: ask #1259).
+- the guard tests `TestProj18_CommandLedgerAdoptsWorktree` and `TestProj18_CommandNamedBranchOlderThanSessionIsKept` (owner: ask #1259, replaced by the tests below);
+- `TestProj18_CommandRowUnpushedIsKept` is **not** dropped: it is rewritten like for like on the new source as `TestProj18_SubagentWorktreeUnpushedIsKept` (same assertion: an adopted item with unpushed commits → `unpushed_commits`), so no guard promise is lost;
+- the `source`/`kind` SQL in the cwd-hook writers of `internal/db/terminal_session_worktrees.go`: `HasSessionWorktree`, `TouchSessionWorktree`, `RecordSessionWorktree`/`recordSessionWorktree` (the command-row promote), the cap count, `SessionWorktrees`, `WorkbenchSessionWorktrees` (`w.kind = 'worktree'`) — restore each to main's text (`git show origin/main:internal/db/terminal_session_worktrees.go`), keeping only the umbrella additions that other code still calls (`go build ./...` tells). After the columns go, any leftover reference fails with "no such column" only at run time and the hook would log and carry on, so the test below is required.
 
 **Files (new code):** `internal/sessioncleanup/subagents.go` (2a), `internal/sessioncleanup/headlog.go` (2c), `internal/sessioncleanup/ownership.go`, `plan.go`, `apply.go` (`Plan.Notes`), `internal/sessionagent/caps.go` + both `agent_capabilities.json` copies + the Kit struct (`ScratchpadLanes` → `ClaudeSessionFiles`, JSON `claude_session_files`); Swift `SessionAutoCleanupOutcome.swift` / `SessionCleanupNotice` (the note line), `SessionCleanup.swift` (decode `notes`), `DesignShotCatalog` (state 6b); `docs/inventory/workbench.md` PROJ-18 lines 2289–2290 and `docs/features/workbench.md` session-cleanup paragraph; testdata `internal/sessioncleanup/testdata/subagent-meta-sample.json` (neutral values only).
 
 **Interfaces — Produces:**
 - `Plan.Notes []string` (`json:"notes"`), values: `"subagent_records_unreadable"`. Swift decodes `notes` (absent = empty).
-- `func subagentWorktrees(projectsDir string, ids map[string]time.Time, wts []worktree) (roots, branches map[string]bool, note bool, err error)` — 2a, including the drift cross-check and the freshness rule (spec §2a: `agent-<id>` last folder, record named by `worktreePath`, else no record anywhere and no `agent-*.meta.json` with mtime ≥ birth − 60 s → note; missing projects dir with counted uuids → note). The projects dir: `$CLAUDE_CONFIG_DIR/projects` when set, else `~/.claude/projects` — reuse the lookup `internal/sessionfeed` uses (`LocateAll`/`readMetas`), a package var for tests.
+- `func subagentWorktrees(projectsDir string, ids map[string]time.Time, ended time.Time, wts []worktree) (roots, branches map[string]bool, note bool, err error)` — `ended` is when the row's terminal ended (`terminal_sessions` end time; zero = still live → no upper bound), the upper bound of "born while the row lived" in spec §2a — 2a, including the drift cross-check and the freshness rule (spec §2a: `agent-<id>` last folder, record named by `worktreePath`, else no record anywhere and no `agent-*.meta.json` with mtime ≥ birth − 60 s → note; missing projects dir with counted uuids → note). The projects dir: `$CLAUDE_CONFIG_DIR/projects` when set, else `~/.claude/projects` — reuse the lookup `internal/sessionfeed` uses (`LocateAll`/`readMetas`), a package var for tests.
 - `func headLogBranches(ctx context.Context, g gitRunner, wt worktree, others []worktree) (named map[string]bool, unknown bool, err error)` — 2c: candidates `<a>`/`<b>` of `checkout: moving from <a> to <b>` + current branch; kept only when the branch's first ref-log entry (`branch: Created from …`) has the same new sha as one entry of this worktree's HEAD log and its time within 1 s; dropped when another worktree's HEAD log (main's included, read only for this) moved to it after its birth; an unreadable other log → `unknown` (all 2c candidates of the repo `created_unknown`); this worktree's unreadable log → `err` (plan fails).
 - `catchSessionInIt` already excludes the planned row unless its terminal is live (gate commit ef7d63ee6) — keep, and add the spec's test cases if missing.
 
@@ -366,11 +369,16 @@ Steps:
   - `TestScratchMetaSampleAdopts`, `TestSubagentRecordKeysRenamedGivesNote`, `TestSubagentRecordsMovedGivesNote` (older records stay, a newer `agent-<id>` worktree has none), `TestPrunedTranscriptGivesNoNote`, `TestSubagentMetaUnreadableFailsPlan`, `TestProjectsDirMissingGivesNote`;
   - `TestProj18_SessionInTheWorktreeKeepsIt` cases: the deleted row alone → removed; with a live terminal → kept; another session in it → kept;
   - `TestClaudeSessionFilesCapGatesSubagentAndScratch` (codex row: 2a/2b adopt nothing, 2c still names);
+  - `TestProj18_SubagentWorktreeUnpushedIsKept` (the rewrite of `TestProj18_CommandRowUnpushedIsKept`);
+  - `TestSubagentWorktreeBornAfterRowEndedGivesNoNote` (the `ended` bound);
+  - `internal/db`: `TestSessionLedgerCwdWritersOnMigratedSchema` — on a freshly migrated database, `RecordSessionWorktree`, `HasSessionWorktree`, `TouchSessionWorktree`, `SessionWorktrees` and `WorkbenchSessionWorktrees` all succeed and see the row (catches a leftover `source`/`kind` reference);
+  - keep `testDefaultBranchUnknownIsKeptAndNamed` (gate commit ef7d63ee6, spec §3/ask #1240) passing — it is in the Swift filter below;
   - Swift: `testSubagentRecordsNoteLine` (the notice line verbatim from spec §3, also when nothing was removed), `testNotesAbsentDecodesEmpty`.
-- [ ] Run `go test ./internal/sessioncleanup` and `make test-swift FILTER='SessionAutoCleanupOutcome|SessionCleanupNotice'`. Expected: the new ones FAIL.
+- [ ] Run `go test ./internal/sessioncleanup ./internal/db -run 'Proj18|HeadLog|Subagent|Scratch|Pruned|ProjectsDir|ClaudeSessionFiles|SessionLedgerCwd'` and `make test-swift FILTER='SessionAutoCleanupOutcome|SessionCleanupNotice'`. Expected: the new ones FAIL.
 - [ ] **Implement** the removals and the two sources. Every catch and birth rule of spec §2 applies to the new sources as to a ledger row.
+- [ ] **Screen 6b:** register the state `Clean — subagent records unreadable` in `DesignShotCatalog` on fixture data; run `make desktop-shots DESKTOP_SHOTS=<scratch>` and compare the shot with state 6b of `docs/design/mockups/session-auto-cleanup/states.html` in light and dark; fix any mismatch.
 - [ ] **Docs:** PROJ-18 inventory lines say "subagent records, the Claude scratchpad and the owned worktrees' HEAD logs" instead of `command` rows; drop the 512 cap line; the feature note likewise.
-- [ ] Run `go test ./internal/sessioncleanup ./internal/db ./internal/sessionagent ./cmd -run 'Session|Ledger|Cleanup'`, `make test-swift FILTER='SessionAutoCleanup|SessionCleanup|TerminalSessionQueries'`, `make kit-test FILTER=AgentCapabilities`, `make lint-diff`, `make lint-swift`. Expected: PASS; `grep -rn gitcmdparse .` finds nothing outside git history.
+- [ ] Run `go test ./internal/sessioncleanup ./internal/db ./internal/sessionagent ./cmd -run 'Session|Ledger|Cleanup'`, `make test-swift FILTER='SessionAutoCleanup|SessionCleanup|TerminalSessionQueries|AutoCleanup'`, `make kit-test FILTER=AgentCapabilities`, `make lint-diff`, `make lint-swift`. Expected: PASS; `grep -rn gitcmdparse .` finds nothing outside git history.
 - [ ] Commit `feat(sessioncleanup): ownership from facts — subagent records and HEAD logs (#1716)`.
 
 **Task 9 focus:** a branch only switched to (owner's, another session's, younger than the session) is never removed; a format change of Claude Code shows the note without noise from pruned transcripts; a Codex row still gets 2c.
@@ -378,6 +386,7 @@ Steps:
 ### Gate (controller, once, before the umbrella PR leaves draft)
 
 - [ ] Read-only check of the owner's install (`sqlite3 -readonly`, never a branch CLI): `goose_db_version` has no umbrella version applied and `terminal_sessions` has no `delete_requested_at` (spec §6). Nothing from it goes into the repo.
+- [ ] Right before the merge: `git fetch origin main` and check that `00188`/`00189` (or whatever Task 9 left) are still above main's last migration; if main moved, renumber, regenerate the schema snapshot and the Swift schema, re-run `go test ./internal/db`, and update spec §6's numbers.
 
 - [ ] `make test`, `make test-swift`, `make lint-all`, `go test ./cmd/...`. All green; paste the tails into the PR.
 - [ ] Final review of the umbrella diff with `debate-review`.
