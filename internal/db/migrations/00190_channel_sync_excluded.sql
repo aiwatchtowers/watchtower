@@ -16,7 +16,10 @@ ALTER TABLE channel_settings ADD COLUMN catchup_from REAL;
 ALTER TABLE channel_settings ADD COLUMN catchup_to REAL;
 ALTER TABLE channel_settings ADD COLUMN muted_by_exclusion INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE channel_settings ADD COLUMN muted_at TEXT NOT NULL DEFAULT '';
-UPDATE channel_settings SET muted_at = updated_at WHERE is_muted_for_llm = 1;
+-- A channel muted before this migration gets the migration time: the old
+-- mute writers did not always touch updated_at, so it may be far older than
+-- the mute and would bring the "muted 30+ days" suggestion too early.
+UPDATE channel_settings SET muted_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE is_muted_for_llm = 1;
 
 -- +goose Down
 ALTER TABLE channel_settings DROP COLUMN muted_at;
