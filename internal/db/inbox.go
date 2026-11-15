@@ -428,7 +428,28 @@ func (db *DB) SetInboxLastProcessedTS(ts float64) error {
 // migration 00048); the LIKE patterns are built from its raw form since messages.text carries
 // Slack's markup untouched, while the m.user_id != ? bind keeps the namespaced form as-is
 // because m.user_id is itself a namespaced column.
+//
+// sinceTS is the inbox watermark, compared with when the message was stored
+// (m.synced_at), so a message stored after the watermark passed its post time
+// is still found (INBOX-09).
 func (db *DB) FindPendingMentions(accountID int64, currentUserID string, sinceTS float64) ([]InboxCandidate, error) {
+	return db.findPendingMentions(accountID, currentUserID, sinceStored, sinceTS)
+}
+
+// FindPendingMentionsPostedSince is FindPendingMentions over the messages
+// posted after sinceTS (m.ts_unix) whenever they were stored: the
+// `inbox backfill-mentions` window is a span of post time.
+func (db *DB) FindPendingMentionsPostedSince(accountID int64, currentUserID string, sinceTS float64) ([]InboxCandidate, error) {
+	return db.findPendingMentions(accountID, currentUserID, sincePosted, sinceTS)
+}
+
+// The column a Slack detector compares its since bound with.
+const (
+	sinceStored = "m.synced_at" // when the row was first stored: the inbox watermark
+	sincePosted = "m.ts_unix"   // when Slack says it was posted
+)
+
+func (db *DB) findPendingMentions(accountID int64, currentUserID, sinceCol string, sinceTS float64) ([]InboxCandidate, error) {
 	strictPattern, pipePattern := watchtowerslack.MentionPatterns(currentUserID)
 	prefix := strconv.FormatInt(accountID, 10)
 	rows, err := db.Query(`SELECT m.channel_id, m.ts, COALESCE(m.thread_ts, ''), m.user_id, m.text, m.permalink, m.ts_unix
@@ -437,7 +458,7 @@ func (db *DB) FindPendingMentions(accountID int64, currentUserID string, sinceTS
 		AND m.channel_id LIKE ? || ':%'
 		AND m.user_id != ?
 		AND m.user_id != ''
-		AND m.ts_unix > ?
+		AND `+sinceCol+` > ?
 		AND m.is_deleted = 0
 		AND NOT EXISTS (
 			SELECT 1 FROM inbox_items ii
@@ -466,6 +487,7 @@ func (db *DB) FindPendingMentions(accountID int64, currentUserID string, sinceTS
 // FindPendingDMs finds DM messages from others where the user hasn't replied after.
 // accountID scopes the search to that account's own channels (m.channel_id LIKE '<accountID>:%')
 // — by channel, not by author, since a DM channel belongs to exactly one account.
+// sinceTS is the inbox watermark, compared with m.synced_at (see FindPendingMentions).
 func (db *DB) FindPendingDMs(accountID int64, currentUserID string, sinceTS float64) ([]InboxCandidate, error) {
 	prefix := strconv.FormatInt(accountID, 10)
 	rows, err := db.Query(`SELECT m.channel_id, m.ts, COALESCE(m.thread_ts, ''), m.user_id, m.text, m.permalink, m.ts_unix
@@ -475,7 +497,7 @@ func (db *DB) FindPendingDMs(accountID int64, currentUserID string, sinceTS floa
 		AND m.channel_id LIKE ? || ':%'
 		AND m.user_id != ?
 		AND m.user_id != ''
-		AND m.ts_unix > ?
+		AND m.synced_at > ?
 		AND m.is_deleted = 0
 		AND NOT EXISTS (
 			SELECT 1 FROM inbox_items ii
@@ -505,6 +527,7 @@ func (db *DB) FindPendingDMs(accountID int64, currentUserID string, sinceTS floa
 // (posted the root message OR any reply), but the reply is from someone else.
 // accountID scopes the search to that account's own channels (m.channel_id LIKE '<accountID>:%')
 // — by channel, not by author, since a channel belongs to exactly one account.
+// sinceTS is the inbox watermark, compared with m.synced_at (see FindPendingMentions).
 func (db *DB) FindThreadRepliesToUser(accountID int64, currentUserID string, sinceTS float64) ([]InboxCandidate, error) {
 	prefix := strconv.FormatInt(accountID, 10)
 	rows, err := db.Query(`SELECT m.channel_id, m.ts, COALESCE(m.thread_ts, ''), m.user_id, m.text, m.permalink, m.ts_unix
@@ -514,7 +537,7 @@ func (db *DB) FindThreadRepliesToUser(accountID int64, currentUserID string, sin
 		  AND m.channel_id LIKE ? || ':%'
 		  AND m.user_id != ?
 		  AND m.user_id != ''
-		  AND m.ts_unix > ?
+		  AND m.synced_at > ?
 		  AND m.is_deleted = 0
 		  AND EXISTS (
 		      SELECT 1 FROM messages participant
@@ -551,6 +574,7 @@ func (db *DB) FindThreadRepliesToUser(accountID int64, currentUserID string, sin
 // a question/attention reaction (question, eyes, exclamation, warning, etc.).
 // accountID scopes the search to that account's own channels (m.channel_id LIKE '<accountID>:%')
 // — by channel, not by author, since a channel belongs to exactly one account.
+// sinceTS is the inbox watermark, compared with m.synced_at (see FindPendingMentions).
 func (db *DB) FindReactionRequests(accountID int64, currentUserID string, sinceTS float64) ([]InboxCandidate, error) {
 	prefix := strconv.FormatInt(accountID, 10)
 	rows, err := db.Query(`SELECT m.channel_id, m.ts, COALESCE(m.thread_ts, ''),
@@ -562,7 +586,7 @@ func (db *DB) FindReactionRequests(accountID int64, currentUserID string, sinceT
 		  AND m.channel_id LIKE ? || ':%'
 		  AND r.user_id != ?
 		  AND r.emoji IN ('question', 'grey_question', 'eyes', 'bangbang', 'exclamation', 'heavy_exclamation_mark', 'warning', 'red_circle', 'rotating_light', 'sos')
-		  AND m.ts_unix > ?
+		  AND m.synced_at > ?
 		  AND m.is_deleted = 0
 		  AND NOT EXISTS (
 		      SELECT 1 FROM inbox_items ii

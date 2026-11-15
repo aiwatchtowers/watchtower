@@ -55,6 +55,10 @@ type Message struct {
 	Subtype    string
 	Permalink  string
 	TSUnix     float64
+	// SyncedAt is when the row was first stored (unix seconds), written on
+	// insert only: an upsert of an existing row never moves it. 0 leaves it
+	// to the messages_synced_at_fill trigger (the post time, ts_unix).
+	SyncedAt float64
 }
 
 // Reaction represents a reaction on a Slack message.

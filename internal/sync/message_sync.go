@@ -410,6 +410,7 @@ func (o *Orchestrator) upsertMessagePage(ctx context.Context, channelID string, 
 			IsDeleted:  false,
 			Subtype:    msg.SubType,
 			Permalink:  "", // permalink generated at query time by the renderer
+			SyncedAt:   o.stampSyncedAt(slackTSUnix(msg.Timestamp)),
 		})
 	}
 

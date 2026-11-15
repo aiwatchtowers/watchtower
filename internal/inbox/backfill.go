@@ -94,7 +94,7 @@ func (p *Pipeline) BackfillMentions(ctx context.Context, since time.Time, dryRun
 			continue
 		}
 
-		mentions, err := p.db.FindPendingMentions(acct.ID, acct.CurrentUserID, sinceTS)
+		mentions, err := p.db.FindPendingMentionsPostedSince(acct.ID, acct.CurrentUserID, sinceTS)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("account %d: finding mentions: %w", acct.ID, err))
 			continue
