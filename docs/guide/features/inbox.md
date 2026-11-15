@@ -53,7 +53,7 @@ changed: Proposals and due reminders moved from Needs your decision to their own
 
 **Needs approval** holds every action waiting for you, whatever started it, and every reminder once due. It can't be moved, renamed, hidden or deleted. Each approval is one card with **Approve**, **Reject** and **Edit…** (**Retry** after a failure; **Done** and **Snooze 1h** on a reminder). Nothing outside Watchtower happens before you approve.
 
-The list groups them by kind, oldest first: **Messages**, **Tracks to create**, **Targets**, **Confluence and Jira**, **Reminders**, **Other**. Two or more tracks, targets or one Confluence or Jira action make one row with **Approve All N…**. While the built-in is off, stopped or failing, approvals show in the standard card.
+The list groups them by kind, oldest first: **Messages**, **Tracks to create**, **Targets**, **Confluence and Jira**, **Reminders**, **Other**. Two or more approvals of the same kind under **Tracks to create**, **Targets** or **Confluence and Jira** make one row with **Approve All N…**. While the built-in is off, stopped or failing, approvals show in the standard card.
 
 ### Waiting for me
 <!-- learn
@@ -155,9 +155,9 @@ since: 0.24.0
 action: nav:inbox
 -->
 
-Point at a row in **Waiting for me** for its buttons: **Open in Slack** (or Jira, Linear), **Reply…**, **Done**, **Hide**, **Snooze** (**Tomorrow**, **In 3 days**, **Next week**), **Discuss in Chat** and **Hand to Agent…**. On **Older**'s first row, **Mark All Done…** closes those items after you confirm the count. A failed press leaves the row with the error and **Retry**.
+Point at a row in **Waiting for me** for its buttons: **Open in Slack** (or Jira, Linear), **Reply…**, **Done**, **Hide**, **Snooze** (**Tomorrow**, **In 3 days**, **Next week**), **Discuss in Chat** and **Hand to Agent…**. On **Older**'s first row, **Mark All Done…** closes those items after you confirm the count. A failed press shows its error and **Retry**.
 
-Keys on the focused row: **J** / **K** move, **E** done, **R** reply, **S** snooze, **⏎** open, **⌘K** hand to an agent; on a sender, **⏎** open, **E** mark all done, **M** mute.
+Row keys (**J** / **K**, **E**, **R**, **M**) are in [Keyboard shortcuts](../reference/keyboard-shortcuts.md#inbox).
 
 ### Clear mail by sender
 
