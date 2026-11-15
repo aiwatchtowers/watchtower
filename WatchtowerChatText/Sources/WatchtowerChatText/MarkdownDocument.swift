@@ -1,45 +1,45 @@
 import Foundation
 import Markdown
 
-package enum MarkdownTaskState: Hashable, Sendable { case none, checked, unchecked }
+public enum MarkdownTaskState: Hashable, Sendable { case none, checked, unchecked }
 
-package enum MarkdownAlignment: Hashable, Sendable { case leading, center, trailing }
+public enum MarkdownAlignment: Hashable, Sendable { case leading, center, trailing }
 
-package struct MarkdownListItem: Hashable, Sendable {
-    package let task: MarkdownTaskState
-    package let blocks: [MarkdownBlock]
+public struct MarkdownListItem: Hashable, Sendable {
+    public let task: MarkdownTaskState
+    public let blocks: [MarkdownBlock]
 
-    package init(task: MarkdownTaskState, blocks: [MarkdownBlock]) {
+    public init(task: MarkdownTaskState, blocks: [MarkdownBlock]) {
         self.task = task
         self.blocks = blocks
     }
 }
 
-package struct MarkdownList: Hashable, Sendable {
-    package let ordered: Bool
-    package let start: Int
-    package let items: [MarkdownListItem]
+public struct MarkdownList: Hashable, Sendable {
+    public let ordered: Bool
+    public let start: Int
+    public let items: [MarkdownListItem]
 
-    package init(ordered: Bool, start: Int, items: [MarkdownListItem]) {
+    public init(ordered: Bool, start: Int, items: [MarkdownListItem]) {
         self.ordered = ordered
         self.start = start
         self.items = items
     }
 }
 
-package struct MarkdownTable: Hashable, Sendable {
-    package let header: [[MarkdownInline]]
-    package let rows: [[[MarkdownInline]]]
-    package let alignments: [MarkdownAlignment]
+public struct MarkdownTable: Hashable, Sendable {
+    public let header: [[MarkdownInline]]
+    public let rows: [[[MarkdownInline]]]
+    public let alignments: [MarkdownAlignment]
 
-    package init(header: [[MarkdownInline]], rows: [[[MarkdownInline]]], alignments: [MarkdownAlignment]) {
+    public init(header: [[MarkdownInline]], rows: [[[MarkdownInline]]], alignments: [MarkdownAlignment]) {
         self.header = header
         self.rows = rows
         self.alignments = alignments
     }
 }
 
-package indirect enum MarkdownBlock: Hashable, Sendable {
+public indirect enum MarkdownBlock: Hashable, Sendable {
     case heading(level: Int, inlines: [MarkdownInline])
     case paragraph([MarkdownInline])
     case code(language: String?, code: String)
@@ -49,7 +49,7 @@ package indirect enum MarkdownBlock: Hashable, Sendable {
     case rule
 }
 
-package indirect enum MarkdownInline: Hashable, Sendable {
+public indirect enum MarkdownInline: Hashable, Sendable {
     case text(String)
     case emphasis([Self])
     case strong([Self])
@@ -63,7 +63,7 @@ package indirect enum MarkdownInline: Hashable, Sendable {
 /// swift-markdown (cmark-gfm) → our render model. Pure and memoized: chat
 /// transcripts rebuild rows while scrolling, and the streaming row re-parses
 /// at ≤30 fps — only that row, since finished rows hit the cache.
-package enum MarkdownDocument {
+public enum MarkdownDocument {
     private final class Box {
         let blocks: [MarkdownBlock]
         init(_ blocks: [MarkdownBlock]) { self.blocks = blocks }
@@ -75,7 +75,7 @@ package enum MarkdownDocument {
         return cache
     }()
 
-    package static func parse(_ text: String) -> [MarkdownBlock] {
+    public static func parse(_ text: String) -> [MarkdownBlock] {
         let key = text as NSString
         if let hit = cache.object(forKey: key) { return hit.blocks }
         let blocks = Document(parsing: text).children.compactMap(block)
@@ -143,7 +143,7 @@ package enum MarkdownDocument {
     /// `blocks` with every soft break a line break: for text the owner
     /// wrote (a note, an answer, a comment), where one newline is a new
     /// line, as in a GitHub comment. Code blocks and tables have none.
-    package static func withLineBreaks(_ blocks: [MarkdownBlock]) -> [MarkdownBlock] {
+    public static func withLineBreaks(_ blocks: [MarkdownBlock]) -> [MarkdownBlock] {
         blocks.map(lineBroken)
     }
 
@@ -184,8 +184,8 @@ package enum MarkdownDocument {
 /// Inline model → AttributedString with Foundation presentation intents
 /// (SwiftUI `Text` renders them). Link sanitizing is the app's job
 /// (`AllowedURLSchemes`), applied by `MarkdownView.inlineText`.
-package enum MarkdownInlineRenderer {
-    package static func attributed(_ inlines: [MarkdownInline]) -> AttributedString {
+public enum MarkdownInlineRenderer {
+    public static func attributed(_ inlines: [MarkdownInline]) -> AttributedString {
         inlines.reduce(into: AttributedString()) { $0 += render($1, intent: [], link: nil) }
     }
 
@@ -206,7 +206,7 @@ package enum MarkdownInlineRenderer {
     /// LazyVStack row that scrolls back in, or an unchanged row re-rendered,
     /// hits the memo instead (spec 2026-10-24 §5, measured in
     /// `ChatScrollBenchmarkTests`). `build` must be pure.
-    package static func memoized(
+    public static func memoized(
         _ inlines: [MarkdownInline],
         context: some Hashable & Sendable,
         _ build: ([MarkdownInline]) -> AttributedString

@@ -3,6 +3,7 @@ import SwiftUI
 import ViewInspector
 import WatchtowerCore
 @testable import WatchtowerDesktop
+import WatchtowerChatText
 
 @MainActor
 final class ArtifactCardViewTests: XCTestCase {

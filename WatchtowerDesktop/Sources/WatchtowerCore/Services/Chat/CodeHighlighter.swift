@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerChatText
 
 package struct CodeToken: Equatable, Sendable {
     package enum Kind: Equatable, Sendable { case plain, keyword, string, comment, number }

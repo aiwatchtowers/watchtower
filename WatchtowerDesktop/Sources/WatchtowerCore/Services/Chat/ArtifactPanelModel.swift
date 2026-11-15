@@ -1,6 +1,7 @@
 import Foundation
 import GRDB
 import Observation
+import WatchtowerChatText
 
 /// State of the artifact side panel for one (conversation, key). Owned by
 /// ChatViewModel so the panel survives navigation like the turn itself.

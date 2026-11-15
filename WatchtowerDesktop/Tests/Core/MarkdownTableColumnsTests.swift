@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import WatchtowerCore
+import WatchtowerChatText
 
 /// A chat table's column widths (ask #1197, target #1714): natural when it
 /// fits, otherwise the column's width with the wide columns wrapping.

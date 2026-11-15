@@ -1,5 +1,5 @@
 import XCTest
-@testable import WatchtowerCore
+@testable import WatchtowerChatText
 
 final class MarkdownDocumentTests: XCTestCase {
     func testHeadingParagraphAndInlines() {

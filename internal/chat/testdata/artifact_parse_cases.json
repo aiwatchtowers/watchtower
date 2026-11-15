@@ -1,0 +1,309 @@
+[
+  {
+    "name": "plain text has no artifact",
+    "text": "Hello\n\nworld",
+    "final": true,
+    "expect": []
+  },
+  {
+    "name": "empty text",
+    "text": "",
+    "final": true,
+    "expect": []
+  },
+  {
+    "name": "complete artifact between prose",
+    "text": "Here it is:\n:::artifact key=\"q3\" kind=\"document\" title=\"Q3 plan\"\n# Q3\n- ship\n:::\nDone.",
+    "final": true,
+    "expect": [
+      {
+        "key": "q3",
+        "kind": "document",
+        "title": "Q3 plan",
+        "content": "# Q3\n- ship",
+        "meta": {}
+      }
+    ]
+  },
+  {
+    "name": "artifact inside a backtick fence is prose",
+    "text": "Syntax:\n```\n:::artifact key=\"x\" kind=\"document\" title=\"X\"\nbody\n:::\n```",
+    "final": true,
+    "expect": []
+  },
+  {
+    "name": "tilde and longer fences are respected",
+    "text": "~~~\n:::artifact key=\"a\" kind=\"document\" title=\"A\"\n:::\n~~~\n````markdown\n```\n:::artifact key=\"b\" kind=\"document\" title=\"B\"\n```\n````\n:::artifact key=\"real\" kind=\"document\" title=\"Real\"\nyes\n:::",
+    "final": true,
+    "expect": [
+      {
+        "key": "real",
+        "kind": "document",
+        "title": "Real",
+        "content": "yes",
+        "meta": {}
+      }
+    ]
+  },
+  {
+    "name": "open block while streaming is dropped",
+    "text": "Intro\n:::artifact key=\"q3\" kind=\"document\" title=\"Q3\"\nline one\nline t",
+    "final": false,
+    "expect": []
+  },
+  {
+    "name": "opener with no body yet while streaming is dropped",
+    "text": "Intro\n:::artifact key=\"q3\" kind=\"document\" title=\"Q3\"\n",
+    "final": false,
+    "expect": []
+  },
+  {
+    "name": "unterminated block when final is kept",
+    "text": "Intro\n:::artifact key=\"q3\" kind=\"document\" title=\"Q3\"\nline one\nline t",
+    "final": true,
+    "expect": [
+      {
+        "key": "q3",
+        "kind": "document",
+        "title": "Q3",
+        "content": "line one\nline t",
+        "meta": {}
+      }
+    ]
+  },
+  {
+    "name": "half-written opener is held back while streaming",
+    "text": "Intro\n:::artifact key=\"q3\" kind=\"doc",
+    "final": false,
+    "expect": []
+  },
+  {
+    "name": "opener line without its newline is held back while streaming",
+    "text": "Intro\n:::artifact key=\"q3\" kind=\"document\" title=\"Q3\"",
+    "final": false,
+    "expect": []
+  },
+  {
+    "name": "a block completed before a half-written opener survives while streaming",
+    "text": "a\n:::artifact key=\"k\" kind=\"table\" title=\"T\"\nx,y\n:::\n:::arti",
+    "final": false,
+    "expect": [
+      {
+        "key": "k",
+        "kind": "table",
+        "title": "T",
+        "content": "x,y",
+        "meta": {}
+      }
+    ]
+  },
+  {
+    "name": "malformed opener when final is prose",
+    "text": "Intro\n:::artifact key=\"q3\" kind=\"doc",
+    "final": true,
+    "expect": []
+  },
+  {
+    "name": "cyrillic title and escaped quotes",
+    "text": ":::artifact key=\"lyst\" kind=\"email\" title=\"Лист для \\\"Ані\\\"\" to=\"anna@example.com\" subject=\"Re: \\\"v2\\\" — наступні кроки\"\nПривіт!\n:::",
+    "final": true,
+    "expect": [
+      {
+        "key": "lyst",
+        "kind": "email",
+        "title": "Лист для \"Ані\"",
+        "content": "Привіт!",
+        "meta": {
+          "to": "anna@example.com",
+          "subject": "Re: \"v2\" — наступні кроки"
+        }
+      }
+    ]
+  },
+  {
+    "name": "unknown kind becomes document and a missing key is slugged",
+    "text": ":::artifact kind=\"memo\" title=\"План на Q3 — draft!\"\nx\n:::",
+    "final": true,
+    "expect": [
+      {
+        "key": "план-на-q3-draft",
+        "kind": "document",
+        "title": "План на Q3 — draft!",
+        "content": "x",
+        "meta": {}
+      }
+    ]
+  },
+  {
+    "name": "bare opener gets artifact and Untitled",
+    "text": ":::artifact\nx\n:::",
+    "final": true,
+    "expect": [
+      {
+        "key": "artifact",
+        "kind": "document",
+        "title": "Untitled",
+        "content": "x",
+        "meta": {}
+      }
+    ]
+  },
+  {
+    "name": "key without title uses the key as the title",
+    "text": ":::artifact key=\"k1\" kind=\"code\"\nx\n:::",
+    "final": true,
+    "expect": [
+      {
+        "key": "k1",
+        "kind": "code",
+        "title": "k1",
+        "content": "x",
+        "meta": {}
+      }
+    ]
+  },
+  {
+    "name": "closer inside an inner code fence does not close the document",
+    "text": ":::artifact key=\"doc\" kind=\"document\" title=\"Doc\"\nExample:\n```\n:::\n```\n:::",
+    "final": true,
+    "expect": [
+      {
+        "key": "doc",
+        "kind": "document",
+        "title": "Doc",
+        "content": "Example:\n```\n:::\n```",
+        "meta": {}
+      }
+    ]
+  },
+  {
+    "name": "code kind does not track inner fences",
+    "text": ":::artifact key=\"c\" kind=\"code\" title=\"C\" language=\"swift\"\nlet a = 1\n```\n:::",
+    "final": true,
+    "expect": [
+      {
+        "key": "c",
+        "kind": "code",
+        "title": "C",
+        "content": "let a = 1\n```",
+        "meta": {
+          "language": "swift"
+        }
+      }
+    ]
+  },
+  {
+    "name": "html kind is known, case-insensitive, and does not track inner fences",
+    "text": ":::artifact key=\"deck\" kind=\"HTML\" title=\"Deck\"\n<pre>\n```\n</pre>\n:::",
+    "final": true,
+    "expect": [
+      {
+        "key": "deck",
+        "kind": "html",
+        "title": "Deck",
+        "content": "<pre>\n```\n</pre>",
+        "meta": {}
+      }
+    ]
+  },
+  {
+    "name": "two blocks with one key: the last wins",
+    "text": ":::artifact key=\"a\" kind=\"table\" title=\"A\"\nx,y\n:::\nmid\n:::artifact key=\"a\" kind=\"table\" title=\"A\"\nx,z\n:::",
+    "final": true,
+    "expect": [
+      {
+        "key": "a",
+        "kind": "table",
+        "title": "A",
+        "content": "x,z",
+        "meta": {}
+      }
+    ]
+  },
+  {
+    "name": "two different keys keep their order",
+    "text": ":::artifact key=\"a\" kind=\"table\" title=\"A\"\n1\n:::\n:::artifact key=\"b\" kind=\"slack\" title=\"B\"\n2\n:::",
+    "final": true,
+    "expect": [
+      {
+        "key": "a",
+        "kind": "table",
+        "title": "A",
+        "content": "1",
+        "meta": {}
+      },
+      {
+        "key": "b",
+        "kind": "slack",
+        "title": "B",
+        "content": "2",
+        "meta": {}
+      }
+    ]
+  },
+  {
+    "name": "CRLF line endings",
+    "text": "a\r\n:::artifact key=\"k\" kind=\"table\" title=\"T\"\r\nx,y\r\n:::\r\n",
+    "final": true,
+    "expect": [
+      {
+        "key": "k",
+        "kind": "table",
+        "title": "T",
+        "content": "x,y",
+        "meta": {}
+      }
+    ]
+  },
+  {
+    "name": "indented opener and closer",
+    "text": "  :::artifact key=\"k\" kind=\"document\" title=\"T\"\nbody\n  :::  ",
+    "final": true,
+    "expect": [
+      {
+        "key": "k",
+        "kind": "document",
+        "title": "T",
+        "content": "body",
+        "meta": {}
+      }
+    ]
+  },
+  {
+    "name": "attribute syntax error makes the opener prose",
+    "text": ":::artifact key=k kind=\"document\"\nx\n:::",
+    "final": true,
+    "expect": []
+  },
+  {
+    "name": "duplicate attribute: the last wins and extra attributes land in meta",
+    "text": ":::artifact key=\"k\" kind=\"event\" title=\"T\" start=\"1\" start=\"2\" end=\"3\"\n:::",
+    "final": true,
+    "expect": [
+      {
+        "key": "k",
+        "kind": "event",
+        "title": "T",
+        "content": "",
+        "meta": {
+          "start": "2",
+          "end": "3"
+        }
+      }
+    ]
+  },
+  {
+    "name": "slug is capped at 64 characters",
+    "text": ":::artifact title=\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\nx\n:::",
+    "final": true,
+    "expect": [
+      {
+        "key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "kind": "document",
+        "title": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "content": "x",
+        "meta": {}
+      }
+    ]
+  }
+]

@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerChatText
 
 /// What an artifact button does. A value, not an effect: only the App-side
 /// `ArtifactActionPerformer` turns it into a pasteboard write / URL open.

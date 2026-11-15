@@ -1,5 +1,5 @@
 import XCTest
-@testable import WatchtowerCore
+@testable import WatchtowerChatText
 
 /// A finished answer's prose as native text runs (spec 2026-10-24 §5b): the
 /// segmenting, the paragraph model the app styles, and the memo.

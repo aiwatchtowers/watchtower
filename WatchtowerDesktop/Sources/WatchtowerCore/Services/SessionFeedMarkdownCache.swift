@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerChatText
 
 /// Parsed markdown per feed entry, so a re-render of a long chat does not
 /// re-parse every message. Keyed by entry id; a changed text (a streaming

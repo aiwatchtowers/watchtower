@@ -1,5 +1,6 @@
 import SwiftUI
 import WatchtowerCore
+import WatchtowerChatText
 
 struct ArtifactCardView: View {
     let draft: ArtifactDraft

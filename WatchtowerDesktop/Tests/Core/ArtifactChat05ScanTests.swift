@@ -1,4 +1,5 @@
 import XCTest
+import WatchtowerChatText
 
 /// CHAT-05 — artifacts never send. Every source on the artifact path may only
 /// build URLs, copy to the pasteboard, open URLs and write local chat rows;
@@ -11,7 +12,7 @@ final class ArtifactChat05ScanTests: XCTestCase {
     /// BEHAVIOR CHAT-05 — see docs/inventory/chat.md
     func testChat05ArtifactSurfacesNeverWrite() throws {
         let files = [
-            "WatchtowerCore/Services/Chat/ArtifactParser.swift",
+            "../../WatchtowerChatText/Sources/WatchtowerChatText/ArtifactParser.swift",
             "WatchtowerCore/Services/Chat/ArtifactActions.swift",
             "WatchtowerCore/Services/Chat/ArtifactPanelModel.swift",
             "Views/Chat/ArtifactPanelView.swift",
@@ -28,7 +29,7 @@ final class ArtifactChat05ScanTests: XCTestCase {
             "WatchtowerCore/Services/Chat/ArtifactCommentMessage.swift",
             "WatchtowerCore/Services/Chat/ArtifactCommentReanchor.swift",
             "WatchtowerCore/Services/Chat/ArtifactCommentText.swift",
-            "WatchtowerCore/Services/Chat/CommentBatchComposer.swift",
+            "../../WatchtowerChatText/Sources/WatchtowerChatText/CommentBatchComposer.swift",
             "WatchtowerCore/Database/Queries/ArtifactCommentQueries.swift",
             "Views/Chat/ArtifactCommentsView.swift",
             // The selection-comment affordance the artifact panel shares with
