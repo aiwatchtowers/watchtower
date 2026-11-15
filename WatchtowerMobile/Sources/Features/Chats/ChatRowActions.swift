@@ -15,6 +15,7 @@ final class ChatRowActions {
     static let undoText = "Chat deleted"
     static let undoAction = "Undo"
     static let failureText = "Couldn't send that. Try again."
+    static let deleteRefusedText = "The chat wasn't deleted."
 
     static let pinTitle = "Pin"
     static let unpinTitle = "Unpin"
@@ -33,12 +34,16 @@ final class ChatRowActions {
 
     @ObservationIgnored private let sender: ChatSender
     @ObservationIgnored private let sleep: @Sendable (Duration) async throws -> Void
+    @ObservationIgnored private let now: () -> Date
+    /// When each hidden chat's delete went out: a refusal queued at or after it brings the row back.
+    @ObservationIgnored private var deletedAt: [Int64: Date] = [:]
     @ObservationIgnored private var undoTask: Task<Void, Never>?
     nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "ChatRowActions")
 
-    init(sender: ChatSender, sleep: @escaping @Sendable (Duration) async throws -> Void) {
+    init(sender: ChatSender, sleep: @escaping @Sendable (Duration) async throws -> Void, now: @escaping () -> Date = Date.init) {
         self.sender = sender
         self.sleep = sleep
+        self.now = now
     }
 
     /// The rows the list leaves out: the one under its Undo bar and the ones already deleted.
@@ -94,10 +99,12 @@ final class ChatRowActions {
         undoTask = nil
         pendingDelete = nil
         deleted.insert(id)
+        deletedAt[id] = now()
         Task { [weak self] in
             guard let self else { return }
             if !(await self.send(ChatManageParams(conversationID: id, op: .delete))) {
                 self.deleted.remove(id)
+                self.deletedAt[id] = nil
             }
         }
     }
@@ -105,7 +112,20 @@ final class ChatRowActions {
     /// Forgets the hidden ids the hub's list no longer has.
     func prune(keeping ids: Set<Int64>) {
         let gone = deleted.subtracting(ids)
-        if !gone.isEmpty { deleted.subtract(gone) }
+        guard !gone.isEmpty else { return }
+        deleted.subtract(gone)
+        for id in gone { deletedAt[id] = nil }
+    }
+
+    /// The hub refused deletes (`not_found`, `device_not_allowed`, …): a row hidden by a delete sent no later than
+    /// the refused one comes back. An older refusal left in the outbox never undoes a newer delete.
+    func restoreRefused(_ refused: [Int64: Date]) {
+        for (id, queuedAt) in refused {
+            guard let sentAt = deletedAt[id], queuedAt >= sentAt else { continue }
+            deleted.remove(id)
+            deletedAt[id] = nil
+            failure = Self.deleteRefusedText
+        }
     }
 
     @discardableResult

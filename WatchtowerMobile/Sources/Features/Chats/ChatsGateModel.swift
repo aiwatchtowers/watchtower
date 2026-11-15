@@ -19,8 +19,9 @@ struct ChatsGateInputs: Equatable {
 }
 
 /// The Chats tab's state and its copy (iPhone chat spec §6.1), checked in this order: needs update, turned off by
-/// the organization's policy, needs Relay, not allowed, unavailable (chat off for another reason), loading, error
-/// with Retry, empty, offline (read only), ready.
+/// the organization's policy, needs Relay, not allowed, unavailable (chat off for another reason), loading (away
+/// when the hub is away), error with Retry, empty (with the away line and no New chat while the hub is away),
+/// offline (read only), ready.
 struct ChatsGateModel: Equatable {
     enum State: Equatable {
         case needsUpdate
@@ -29,6 +30,8 @@ struct ChatsGateModel: Equatable {
         case notAllowed
         case unavailable
         case loading
+        /// No list held and the hub away: its away line alone, centred (no loading bars that never end).
+        case away
         case error
         case empty
         case offline
@@ -79,7 +82,7 @@ struct ChatsGateModel: Equatable {
 
     /// ✎ is on the bar (mockups 1a–1d): with the list, its loading bars or the empty state; a state that keeps chat
     /// off has none.
-    var showsNewChat: Bool { showsList || state == .loading || state == .empty }
+    var showsNewChat: Bool { showsList || state == .loading || state == .away || state == .empty }
 
     /// The list (or its loading bars) shows; every other state is a centred message.
     var showsList: Bool { state == .ready || state == .offline }
@@ -110,7 +113,7 @@ struct ChatsGateModel: Equatable {
             (state, title, line) = (.turnedOff, Self.policyTitle, Self.policyLine)
         } else if inputs.route?.cloudKitScope != nil {
             (state, title, line, action) = (.needsRelay, Self.relayTitle, ChatText.relayLine, .switchToRelay)
-        } else if !(inputs.grant?.chatAllowed ?? true) || inputs.refusal != nil {
+        } else if Self.notAllowed(grant: inputs.grant, refusal: inputs.refusal) {
             (state, title, line) = (.notAllowed, Self.notAllowedTitle, Self.notAllowedLine(host, refusal: inputs.refusal))
         } else if inputs.heartbeat?.chatOffered != true {
             (state, title, line) = (.unavailable, Self.unavailableTitle, ChatText.unavailableLine(host))
@@ -118,11 +121,15 @@ struct ChatsGateModel: Equatable {
             if list.error != nil, list.conversations.isEmpty {
                 (state, title, line, action) = (.error, Self.errorTitle, ChatText.readFailed(host), .retry)
             } else if list.conversations.isEmpty {
-                (state, title, line, action) = (.empty, Self.emptyTitle, ChatText.emptyLine(host), .newChat)
+                // Away, New chat could not start: the away line says why.
+                let away = online ? nil : banner
+                (state, title, line, action) = (.empty, Self.emptyTitle, away ?? ChatText.emptyLine(host), away == nil ? .newChat : nil)
             } else {
                 state = online ? .ready : .offline
                 if list.error != nil, banner == nil { banner = ChatText.readFailed(host) }
             }
+        } else if !online, let away = banner {
+            (state, line) = (.away, away)
         } else {
             state = .loading
             banner = ChatText.loading(host)
@@ -135,6 +142,18 @@ struct ChatsGateModel: Equatable {
         self.online = online
         canCreate = online && (state == .ready || state == .empty)
     }
+
+    /// The grant record decides once the hub wrote one (a newer hub writes `chat` on every linked row, so its
+    /// `chatAllowed` is the owner's answer); a refused chat action counts only with no record yet. A refusal left in
+    /// the outbox can then never outlive an allow.
+    static func notAllowed(grant: DeviceGrant?, refusal: String?) -> Bool {
+        guard let grant else { return refusal != nil }
+        return !grant.chatAllowed
+    }
+
+    /// Swipe and long-press actions (Pin, Rename, Delete) write to the hub: only while it answers, never queued
+    /// for later (spec D3).
+    var allowsRowActions: Bool { showsList && online }
 
     private static func showsBanner(_ state: State) -> Bool {
         state == .loading || state == .ready || state == .offline

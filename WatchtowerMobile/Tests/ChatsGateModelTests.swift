@@ -53,8 +53,8 @@ final class ChatsGateModelTests: XCTestCase {
         XCTAssertEqual(byGrant.title, "Chat is off for this phone")
         XCTAssertEqual(byGrant.line, "On the Mac: Settings → Mobile → this phone → allow Chat.")
         XCTAssertNil(byGrant.action)
-        // ... or from a refused chat action, before any list.
-        let byRefusal = gate(Fixture.inputs(grant: Fixture.grant(chat: nil), refusal: "This phone may not use chat", list: nil))
+        // ... or from a refused chat action while the hub wrote no grant record yet.
+        let byRefusal = gate(Fixture.inputs(grant: nil, refusal: "This phone may not use chat", list: nil))
         XCTAssertEqual(byRefusal.state, .notAllowed)
         XCTAssertEqual(byRefusal.line, "On the Mac: Settings → Mobile → this phone → allow Chat.")
     }
@@ -62,7 +62,7 @@ final class ChatsGateModelTests: XCTestCase {
     func testAServerHubGivesTheAllowCommandInsteadOfTheSettingsLine() {
         let server = Fixture.heartbeat(kind: .server)
         let refusal = "This phone may not use chat. On your tower, run:\nwatchtower hub allow PHONE-9 chat"
-        let fromRefusal = gate(Fixture.inputs(heartbeat: server, grant: Fixture.grant(chat: false), refusal: refusal))
+        let fromRefusal = gate(Fixture.inputs(heartbeat: server, grant: nil, refusal: refusal))
         XCTAssertEqual(fromRefusal.state, .notAllowed)
         XCTAssertEqual(fromRefusal.line, "On your tower, run:\nwatchtower hub allow PHONE-9 chat")
         XCTAssertFalse(fromRefusal.line?.contains("Settings") ?? true)
@@ -70,6 +70,46 @@ final class ChatsGateModelTests: XCTestCase {
         let fromGrant = gate(Fixture.inputs(heartbeat: server, grant: Fixture.grant(chat: false, device: "phone-1")))
         XCTAssertEqual(fromGrant.line, "On your tower, run:\nwatchtower hub allow PHONE-1 chat", "the phone's id as hub phones lists it")
         XCTAssertEqual(fromGrant.title, "Chat is off for this phone")
+    }
+
+    /// Review fix 1: the grant record decides once it exists; a refusal left in the outbox never outlives an allow.
+    func testAnAllowingGrantOverridesAHeldRefusal() {
+        let model = gate(Fixture.inputs(grant: Fixture.grant(chat: true), refusal: "This phone may not use chat"))
+        XCTAssertEqual(model.state, .ready)
+        XCTAssertFalse(ChatsGateModel.notAllowed(grant: Fixture.grant(chat: true), refusal: "refused"))
+        XCTAssertTrue(ChatsGateModel.notAllowed(grant: Fixture.grant(chat: false), refusal: nil))
+        XCTAssertTrue(ChatsGateModel.notAllowed(grant: nil, refusal: "refused"))
+        XCTAssertFalse(ChatsGateModel.notAllowed(grant: nil, refusal: nil))
+    }
+
+    /// Review fix 2: row actions write to the hub, so only while it answers (D3: nothing is queued).
+    func testRowActionsOnlyWhileTheHubAnswers() {
+        XCTAssertTrue(gate(Fixture.inputs()).allowsRowActions)
+        XCTAssertFalse(gate(Fixture.inputs(mac: .asleep(lastSeen: Fixture.now))).allowsRowActions)
+        XCTAssertFalse(gate(Fixture.inputs(mac: .offline)).allowsRowActions)
+        XCTAssertFalse(gate(Fixture.inputs(relayUnreachable: true)).allowsRowActions)
+        XCTAssertFalse(gate(Fixture.inputs(list: nil)).allowsRowActions)
+    }
+
+    /// Review fix 5: away with no rows says why; away with no list is not an endless loading.
+    func testAnAwayHubWithNothingHeldSaysItIsAway() {
+        let empty = gate(Fixture.inputs(list: ChatList(conversations: []), mac: .asleep(lastSeen: Fixture.now)))
+        XCTAssertEqual(empty.state, .empty)
+        XCTAssertEqual(empty.title, "No chats yet")
+        XCTAssertEqual(empty.line, "Your Mac is asleep. You can read chats; sending works when it wakes.")
+        XCTAssertNil(empty.action, "no New chat while the Mac is away")
+
+        let fresh = gate(Fixture.inputs(list: nil, mac: .asleep(lastSeen: Fixture.now)))
+        XCTAssertEqual(fresh.state, .away)
+        XCTAssertNil(fresh.title)
+        XCTAssertEqual(fresh.line, "Your Mac is asleep. You can read chats; sending works when it wakes.")
+        XCTAssertNil(fresh.banner)
+        XCTAssertFalse(fresh.canCreate)
+        XCTAssertTrue(fresh.showsNewChat)
+        XCTAssertEqual(gate(Fixture.inputs(list: nil, mac: .offline)).line,
+                       "Your Mac is offline. You can read chats; sending works when it is back.")
+        XCTAssertEqual(gate(Fixture.inputs(heartbeat: nil, list: nil, mac: .offline)).state, .loading,
+                       "before the first heartbeat the phone is still loading")
     }
 
     func testChatOffForAnotherReasonIsUnavailable() {

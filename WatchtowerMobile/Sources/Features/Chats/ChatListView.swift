@@ -112,15 +112,15 @@ struct ChatsTabView: View {
             }
             ForEach(model.sections) { section in
                 Section {
-                    ForEach(section.rows) { chatRow($0) }
+                    ForEach(section.rows) { chatRow($0, editable: gate.allowsRowActions) }
                 } header: {
                     SectionHeader(section.title).listRowInsets(Self.headerInsets)
                 }
             }
             if search.query.isEmpty {
-                olderRows(model)
+                olderRows(model, editable: gate.allowsRowActions)
             } else {
-                messageRows(status, host: host, now: now)
+                messageRows(status, hidden: actions.hiddenIDs, host: host, now: now)
             }
         }
         .macsList()
@@ -148,7 +148,7 @@ struct ChatsTabView: View {
     }
 
     @ViewBuilder
-    private func olderRows(_ model: ChatListModel) -> some View {
+    private func olderRows(_ model: ChatListModel, editable: Bool) -> some View {
         if let label = model.olderLabel {
             Button {
                 withAnimation { showsOlder.toggle() }
@@ -164,13 +164,13 @@ struct ChatsTabView: View {
             .buttonStyle(.plain)
             .macsListRow()
             if showsOlder {
-                ForEach(model.older) { chatRow($0) }
+                ForEach(model.older) { chatRow($0, editable: editable) }
             }
         }
     }
 
     @ViewBuilder
-    private func messageRows(_ status: ChatSearchModel.Status, host: TowerHost, now: Date) -> some View {
+    private func messageRows(_ status: ChatSearchModel.Status, hidden: Set<Int64>, host: TowerHost, now: Date) -> some View {
         switch status {
         case .idle:
             EmptyView()
@@ -179,9 +179,10 @@ struct ChatsTabView: View {
         case .searching:
             lineRow(ChatText.searching(host))
         case let .results(hits):
-            if !hits.isEmpty {
+            let rows = ChatHitRow.rows(hits, hidden: hidden, now: now)
+            if !rows.isEmpty {
                 Section {
-                    ForEach(hits.map { ChatHitRow($0, now: now) }) { hit in
+                    ForEach(rows) { hit in
                         Button { env.navigation.chatsPath.append(hit.route) } label: {
                             FlatRow(icon: .session(tone: .secondary, isRing: true), title: hit.title, titleLineLimit: 1, insets: EdgeInsets()) {
                                 Text(hit.attributedSnippet)
@@ -208,32 +209,44 @@ struct ChatsTabView: View {
         }
     }
 
-    private func chatRow(_ row: ChatListModel.Row) -> some View {
-        let actions = center.rowActions
-        return Button { env.navigation.chatsPath.append(ChatRoute(id: row.id)) } label: {
+    /// One chat row; with `editable` (the hub answers) its swipe and long-press actions too.
+    @ViewBuilder
+    private func chatRow(_ row: ChatListModel.Row, editable: Bool) -> some View {
+        let link = Button { env.navigation.chatsPath.append(ChatRoute(id: row.id)) } label: {
             ChatRowView(row: row)
         }
         .buttonStyle(.plain)
         .macsListRow()
-        .swipeActions(edge: .leading) {
-            Button(ChatRowActions.pinActionTitle(pinned: row.conversation.pinned)) {
-                Task { await actions.togglePin(row.conversation) }
+        if editable {
+            rowActions(link, row.conversation)
+        } else {
+            link
+        }
+    }
+
+    private func rowActions(_ link: some View, _ conversation: ChatList.Conversation) -> some View {
+        let actions = center.rowActions
+        let pinTitle = ChatRowActions.pinActionTitle(pinned: conversation.pinned)
+        return link
+            .swipeActions(edge: .leading) {
+                Button(pinTitle) { Task { await actions.togglePin(conversation) } }
+                    .tint(PhoneTone.accent.color)
             }
-            .tint(.accentColor)
-        }
-        .swipeActions(edge: .trailing) {
-            Button(ChatRowActions.deleteTitle, role: .destructive) { actions.delete(row.id) }
-            Button(ChatRowActions.renameTitle) { startRename(row.conversation) }
-        }
-        .contextMenu {
-            Button {
-                Task { await actions.togglePin(row.conversation) }
-            } label: {
-                Label(ChatRowActions.pinActionTitle(pinned: row.conversation.pinned), systemImage: row.conversation.pinned ? "pin.slash" : "pin")
+            .swipeActions(edge: .trailing) {
+                Button(ChatRowActions.deleteTitle, role: .destructive) { actions.delete(conversation.id) }
+                Button(ChatRowActions.renameTitle) { startRename(conversation) }
             }
-            Button { startRename(row.conversation) } label: { Label(ChatRowActions.renameTitle, systemImage: "pencil") }
-            Button(role: .destructive) { actions.delete(row.id) } label: { Label(ChatRowActions.deleteTitle, systemImage: "trash") }
-        }
+            .contextMenu {
+                Button {
+                    Task { await actions.togglePin(conversation) }
+                } label: {
+                    Label(pinTitle, systemImage: conversation.pinned ? "pin.slash" : "pin")
+                }
+                Button { startRename(conversation) } label: { Label(ChatRowActions.renameTitle, systemImage: "pencil") }
+                Button(role: .destructive) { actions.delete(conversation.id) } label: {
+                    Label(ChatRowActions.deleteTitle, systemImage: "trash")
+                }
+            }
     }
 
     private func startRename(_ conversation: ChatList.Conversation) {
@@ -314,7 +327,7 @@ struct ChatUndoBar: View {
         .frame(minHeight: PhoneMetrics.minTouch)
         // Opaque: the rows scroll under it.
         .background(Fill.card, in: RoundedRectangle(cornerRadius: Radius.container, style: .continuous))
-        .background(Color(.systemBackground), in: RoundedRectangle(cornerRadius: Radius.container, style: .continuous))
+        .background(PhoneSurface.page, in: RoundedRectangle(cornerRadius: Radius.container, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: Radius.container, style: .continuous)
                 .strokeBorder(Stroke.hairlineColor, lineWidth: Stroke.hairline)
@@ -330,7 +343,7 @@ struct ChatPlaceholderView: View {
     let title: String?
 
     var body: some View {
-        Color(.systemBackground)
+        PhoneSurface.page
             .navigationTitle(route.isNew ? ChatListModel.newChatLabel : title ?? "")
             .navigationBarTitleDisplayMode(.inline)
     }

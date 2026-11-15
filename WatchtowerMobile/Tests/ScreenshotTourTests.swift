@@ -174,7 +174,9 @@ final class ScreenshotTourTests: XCTestCase {
         func shot(_ number: String, _ slug: String, _ reached: String, _ chatsShot: ChatsShot?) async throws {
             env.navigation.tab = .chats
             env.navigation.chatsPath = []
-            try await host.captureThree("\(number)-\(slug)", RootTabView(chatsShot: chatsShot))
+            // 1.5 s for the tab bar's selection. In the dark frames that show the list, iOS 26 still draws the bar's lens
+            // over Now (the same at 0.6, 1.5 and 3 s): a capture artifact of the glass tab bar, not a transition.
+            try await host.captureThree("\(number)-\(slug)", RootTabView(chatsShot: chatsShot), settle: .milliseconds(1_500))
             rows.append(ScreenshotHost.IndexRow(
                 number: number, view: "ChatsTabView", source: "Features/Chats/ChatListView.swift", reached: "full app, \(reached), light/dark/narrow"
             ))

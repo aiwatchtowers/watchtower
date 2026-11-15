@@ -1,5 +1,5 @@
 import WatchtowerKit
-import WatchtowerSync
+@testable import WatchtowerSync
 import XCTest
 @testable import WatchtowerMobile
 
@@ -77,6 +77,40 @@ final class ChatRowActionsTests: XCTestCase {
         try await poll({ self.actions.failure != nil }, "the failure shows")
         XCTAssertEqual(actions.failure, "Couldn't send that. Try again.")
         XCTAssertEqual(actions.hiddenIDs, [])
+    }
+
+    /// Review fix 3: a delete the hub refuses after it was queued brings the row back; an older refusal does not
+    /// undo a newer delete.
+    func testARefusedDeleteBringsTheRowBack() async throws {
+        actions.delete(7)
+        try await poll({ self.sleeper.waitingCount == 1 }, "the bar's timer runs")
+        sleeper.tick()
+        try await poll({ !self.recorder.sent.isEmpty }, "the delete went")
+        XCTAssertEqual(actions.hiddenIDs, [7])
+        actions.restoreRefused([7: .distantPast])
+        XCTAssertEqual(actions.hiddenIDs, [7], "a refusal older than this delete is a leftover")
+        actions.restoreRefused([7: Date().addingTimeInterval(1)])
+        XCTAssertEqual(actions.hiddenIDs, [])
+        XCTAssertEqual(actions.failure, "The chat wasn't deleted.")
+    }
+
+    func testTheSnapshotReadsRefusedDeletesFromTheOutbox() throws {
+        func row(_ id: String, _ params: ChatManageParams, state: PendingAction.State, at seconds: TimeInterval) throws -> PendingAction {
+            let at = ChatFixture.now.addingTimeInterval(seconds)
+            return PendingAction(
+                id: id,
+                action: ActionRequestPayload(id: id, kind: .chatManage, entityID: nil, params: try params.wireParams(), createdAt: at),
+                entityRecordName: nil, createdAt: at, state: state, errorMessage: "gone", reason: .notFound, result: nil,
+                echoStatus: nil, actionSeq: nil, epoch: nil, delivery: nil, undeliveredReason: nil
+            )
+        }
+        let refused = try ChatsSnapshot.refusedDeletes(in: [
+            row("a", ChatManageParams(conversationID: 7, op: .delete), state: .failed, at: 0),
+            row("b", ChatManageParams(conversationID: 7, op: .delete), state: .failed, at: 5),
+            row("c", ChatManageParams(conversationID: 8, op: .delete), state: .pending, at: 0),
+            row("d", ChatManageParams(conversationID: 9, op: .pin), state: .failed, at: 0)
+        ])
+        XCTAssertEqual(refused, [7: ChatFixture.now.addingTimeInterval(5)])
     }
 
     func testPinAndUnpinGoAtOnce() async throws {
