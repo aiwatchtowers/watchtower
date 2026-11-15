@@ -275,6 +275,7 @@ struct WorkchatView: View {
                 summary: card.summary,
                 allowBlockedNote: card.allowBlock?.note,
                 isAnswering: !card.canAnswer,
+                showsButtons: card.showsButtons,
                 onAllow: {
                     if card.confirmsAllow {
                         confirmingAllow = card
