@@ -7,7 +7,7 @@
 **Architecture:** The forward sync stays one blanket `search.messages after:D` per Slack run (`internal/sync/search_sync.go`). Four additions:
 - The account's limiter (`internal/slack/ratelimit.go`) becomes adaptive: it halves its rate on a 429 and creeps back after successes (AIMD). `doRequest` keeps retrying 429s after their `Retry-After` until the run's fetch deadline.
 - The search remembers its page position, so a run cut by the deadline, a sleep or a quit continues from that page.
-- A small mention query runs first.
+- A small mention query runs first while the account is behind (a window left unfinished, or a last run that met a 429).
 - The daemon decides per account whether a Slack run is due (adaptive cadence).
 
 A new `channel_settings.sync_excluded` flag drops a channel's new messages at save time (mentions of the user excepted). Statistics' existing recommendations gain a **Stop syncing** suggestion. Slack inbox detection becomes ingestion-ordered (`messages.synced_at`), so a message stored after the Inbox watermark passed its timestamp is still detected.
@@ -20,7 +20,7 @@ A new `channel_settings.sync_excluded` flag drops a channel's new messages at sa
 - `channel_settings` (`is_muted_for_llm`, `is_favorite`; `internal/db/channel_settings.go`).
 - `db.ComputeRecommendations` (mute / leave / favorite, with value signals; `internal/db/channel_stats.go`) and its Swift mirror `ChannelStatsQueries.computeRecommendations`.
 - The Statistics → Channels screen (`ChannelStatisticsView`, `ChannelStatsViewModel.applyRecommendation`: "leave" applies as mute).
-- `watchtower channels` (`cmd/channels.go`).
+- `watchtower channels` (`cmd/channels.go`; the exclude/include verbs shipped in `cmd/channels_exclude.go`).
 - The limiter's account-wide `Retry-After` hold.
 - The search watermark, the 2-day overlap and the catch-up cap.
 - INBOX-09's freeze on `SearchIncomplete`.
@@ -40,9 +40,9 @@ A new `channel_settings.sync_excluded` flag drops a channel's new messages at sa
 
   `search.messages` therefore starts where today's shared bucket effectively left it, and can climb to 40/min on its own while history, replies and profiles run in parallel on their own buckets. The account-wide `Retry-After` hold (any tier's 429 holds every call), burst 3 and the concurrency gate stay as today.
 - Largest allowed page sizes: `search.messages` `count=100` (Slack's maximum, as today), `conversations.history`/`conversations.replies` `limit=999`, `users.list` and `conversations.list` `limit=1000`.
-- Priority: the mention query `<@U…> after:D` runs before the blanket query in every Slack run.
+- Priority: the mention query `<@U…> after:D` runs before the blanket query in every Slack run where the account is behind (`Orchestrator.behind`: a pending resume, or the last run met a 429). A clean account reads its mentions in the blanket pass at no extra call (as shipped in Task 2; `TestAdaptive_CleanRunNoMentionQuery`).
 - Cadence per account: base = `sync.poll_interval` (default 15 min), next interval = base × 2^k, capped at `cadenceMax = 60 * time.Minute`. A 429 wins over everything: a run that saw one sets k+1, and its resume waits for that backed-off interval. Volume: a clean run with `Pages ≥ heavyPages = 5` sets k = 0 (busy → back to base at once). Every `quietRuns = 3`rd quiet run in a row (`Messages ≤ quietMessages = 5`) sets k+1; quiet runs in between leave k unchanged (quiet → longer, up to the cap). A clean run that is neither heavy nor quiet sets k−1. A clean run that stopped at the deadline with pages left is due again next cycle. **Sync Now always runs Slack** (manual triggers are never gated, today's rule).
-- Inbox: Slack detectors compare the watermark with `messages.synced_at`, stamped as `clock()` when `ts ≥ max(slack_accounts.first_cycle_at, runStart − 24 h)`, else `ts_unix`. Backfill writes `ts_unix`. A trigger fills any other insert.
+- Inbox: Slack detectors compare the watermark with `messages.synced_at`, stamped as `clock()` when `ts ≥ max(slack_accounts.first_cycle_at, runStart − 24 h)`, else `ts_unix`. Backfill writes `ts_unix`. Any other insert leaves `synced_at = 0`, which the detectors read as the post time (as shipped in Task 4: no trigger, see Task 4).
 - Migrations: two (Task 4 and Task 5), via the `add-migration` skill; next free numbers at implementation time (00189 when this plan was written); mirror into `schema.sql`, the golden and the Swift test schema.
 - No guard test is weakened or edited. Existing tests keep passing as they are. A fixture that breaks means stop and ask.
 - Tests never wait on wall-clock time: injected clocks and `testing/synctest` (fake `http.RoundTripper` inside the bubble, no sockets). No test spawns a process.
@@ -83,11 +83,11 @@ The ceiling is ≈ 1,200 / (V/100), whatever the cadence. Excluding channels doe
 8. **The suggestion thresholds are 30 days muted and 90% bot messages** (decision 5; ask #1346). Source: ask #1350.
 9. **The AIMD numbers:** per-tier buckets that start at Slack's documented tier rate (20/50/100 per minute), probe up to twice that, and halve on a 429 down to a quarter; +1/+2/+5 per 20 successes. Source: ask #1350.
 10. **Cadence volume thresholds:** `heavyPages = 5` resets the interval to base; `quietMessages = 5` over `quietRuns = 3` runs lengthens it one step (the streak then restarts). Source: ask #1350.
-11. **Sync again catches up the excluded period** with a one-off history fetch of that channel (`catchupPagesPerRun = 5` pages per run, one channel at a time), and un-mutes only if Stop syncing had muted it (`muted_by_exclusion`). Source: ask #1350.
+11. **Sync again catches up the excluded period** with a one-off history fetch of that channel (`syncAgainPagesPerRun = 5` pages per run, one channel at a time; named `catchupPagesPerRun` in the original plan), and un-mutes only if Stop syncing had muted it (`muted_by_exclusion`). Source: ask #1350.
 
 ## Contract changes (all approved)
 
-- **INBOX-09** — approved (ask #1337): Slack detectors compare the watermark with `synced_at`. Its guards stay untouched: a trigger stamps every other insert with the insert time, so existing fixtures behave as before.
+- **INBOX-09** — approved (ask #1337): Slack detectors compare the watermark with `synced_at`. Its guards stay untouched: a row with `synced_at = 0` (every row stored before the migration and every writer other than the Slack sync) is read as its post time, so existing fixtures behave as before.
 - **SYNCEX-01 — Stop syncing is honoured on every save path (approved in ask #1350).** A channel with `sync_excluded = 1` gets no new message rows from the forward search, the deletion sweep, the history backfill or `sync --full/--channels`, except messages mentioning the account's user. Guard `TestSYNCEX01_EveryPathHonoursExclusion` (Task 5). A new inventory file entry in Task 7.
 - BACKFILL-01 and SRCDEL-01/02 — approved, but this plan no longer needs them (the blanket search, the first-sync rule and the live diff stay as they are).
 - Spec: §2 is replaced by D16 (this branch); D3 and D12 are marked superseded.
@@ -99,9 +99,9 @@ The ceiling is ≈ 1,200 / (V/100), whatever the cadence. Excluding channels doe
 | `channel_settings.sync_excluded` | `watchtower channels exclude/include` only. Desktop Statistics (toggle, applied suggestion) runs that CLI through `CLIRunnerProtocol` | Last write wins; the sync reads the set once at the start of each run, so a change applies from the next run |
 | `channel_settings.is_muted_for_llm` | as today, plus **Stop syncing** setting it in the same write | Last write wins |
 | `channel_settings.muted_at`, `muted_by_exclusion` | the mute writers (Go `SetMuteForLLM`/`ToggleMuteForLLM`, Swift `ChannelStatsQueries.toggleMuteForLLM`) and `SetSyncExcluded`; favorites never touch them | Same row write as the mute flag, so they cannot disagree with it |
-| `channel_settings.excluded_at`, `catchup_from`, `catchup_to` | `SetSyncExcluded` (the CLI only; the Desktop calls the CLI); the sync's `runCatchups` moves `catchup_to` down and clears both | A Stop syncing during a catch-up clears `catchup_from` in its write; a catch-up page's advance is `UPDATE … WHERE sync_excluded = 0`, so it cannot revive an excluded channel |
+| `channel_settings.excluded_at`, `catchup_from`, `catchup_to` | `SetSyncExcluded` (the CLI only; the Desktop calls the CLI); the sync's `runSyncAgainCatchups` (`internal/sync/syncagain.go`) moves `catchup_to` down and clears both | A Stop syncing during a catch-up clears `catchup_from` in its write; a catch-up page's advance is `UPDATE … WHERE sync_excluded = 0`, so it cannot revive an excluded channel |
 | `messages` rows | forward search (filtered by exclusion), the sweep, backfill, `sync --full/--channels` | Upserts of Slack content; SQLite serialises them |
-| `messages.synced_at` | the first insert only: the sync's `stampSyncedAt`; backfill `ts_unix`; the trigger for everyone else | Insert-only; never updated |
+| `messages.synced_at` | the first insert only: the sync's `stampSyncedAt`; backfill and Sync again catch-up `ts_unix`; every other writer leaves 0 (read as `ts_unix`) | Insert-only; never updated |
 | `slack_accounts.first_cycle_at` | the orchestrator once (`WHERE first_cycle_at = ''`); the migration for existing rows | First write wins |
 | `slack_accounts.search_last_date` | the forward search only, after a complete window | Single writer |
 | resume position, AIMD rate, cadence level | in memory on the orchestrator/client/daemon | One daemon; a restart starts fresh |
@@ -147,7 +147,7 @@ The ceiling is ≈ 1,200 / (V/100), whatever the cadence. Excluding channels doe
 **Interfaces:**
 - Produces:
   - `type searchResume struct { query string; nextPage int }` on the orchestrator (`o.resume`). After a run stops on `ErrFetchDeadline`, a rate limit or a cancel with pages left, it holds the blanket query and the first page not fetched. The next run with the **same** query starts at that page and keeps the listing for the deletion diff only when every page of the window was read in this run (otherwise no diff, as today). A different query (the date moved) drops it.
-  - The mention query `fmt.Sprintf("<@%s> after:%s", ownerRaw, after)` runs first through `searchAndSave(live=true, listing=nil)`. It is skipped when `CurrentUserID` is empty. It does not move the watermark, and its incompleteness alone does not freeze the Inbox: the blanket query covers the same messages.
+  - The mention query `fmt.Sprintf("<@%s> after:%s", ownerRaw, after)` runs first (as shipped: only while the account is behind, see Global Constraints) through `searchAndSave(live=true, listing=nil)`. It is skipped when `CurrentUserID` is empty. It does not move the watermark, and its incompleteness alone does not freeze the Inbox: the blanket query covers the same messages.
   - `func (o *Orchestrator) RunOutcome() RunOutcome` with `type RunOutcome struct { RateLimited bool; ResumePending bool; Pages int; Messages int }`, read by the daemon's cadence (Task 3). `SearchIncomplete()` keeps its meaning (window not finished in this run), so INBOX-09 freezes as today.
 - [ ] **Step 1: Write the failing tests**:
   - `TestSearchResume_ContinuesFromPage`: a 6-page window; run 1 stops after page 3 on `ErrFetchDeadline`; run 2 requests pages 4–6 only and then moves the watermark; `SearchIncomplete()` true after run 1 and false after run 2.
@@ -191,38 +191,31 @@ The ceiling is ≈ 1,200 / (V/100), whatever the cadence. Excluding channels doe
 
 **Files:**
 - Create: `internal/db/migrations/<next>_messages_synced_at.sql`. In this order:
-  - `ALTER TABLE messages ADD COLUMN synced_at REAL NOT NULL DEFAULT 0;` then `UPDATE messages SET synced_at = ts_unix;`
-  - `CREATE INDEX idx_messages_synced_at ON messages(synced_at);`
+  - `ALTER TABLE messages ADD COLUMN synced_at REAL NOT NULL DEFAULT 0;` (as shipped: no backfilling `UPDATE`, see below)
+  - `CREATE INDEX idx_messages_synced_at ON messages(CASE WHEN synced_at = 0 THEN ts_unix ELSE synced_at END);`
   - `ALTER TABLE slack_accounts ADD COLUMN first_cycle_at TEXT NOT NULL DEFAULT '';` then `UPDATE slack_accounts SET first_cycle_at = strftime('%Y-%m-%dT%H:%M:%SZ','now');`
-  - The trigger:
-    ```sql
-    CREATE TRIGGER messages_synced_at_fill AFTER INSERT ON messages
-    WHEN NEW.synced_at = 0
-    BEGIN
-      UPDATE messages SET synced_at = (julianday('now') - 2440587.5) * 86400.0 WHERE rowid = NEW.rowid;
-    END;
-    ```
+  - **As shipped (`00189_messages_synced_at.sql`), no trigger and no row rewrite.** The planned `UPDATE messages SET synced_at = ts_unix` and the `messages_synced_at_fill` insert trigger were dropped in Task 4's review: rewriting every message took 5–7 s on a synthetic 2M-row plaintext file, too close to the Desktop's 30 s `db migrate` limit once SQLCipher and WAL are added. Instead `synced_at = 0` means unstamped and reads as the post time: the four Slack detectors compare the watermark with `sinceStored` = `CASE WHEN m.synced_at = 0 THEN m.ts_unix ELSE m.synced_at END` (`internal/db/inbox.go`), exactly the expression index above, and read a stored-time range through it rather than scanning the table.
   - The Down migration reverses it all.
-  - Why it works: `julianday` works on both the Go driver's SQLite 3.53.4 and the GRDB fork. The upsert's `ON CONFLICT … DO UPDATE` branch fires UPDATE triggers only, and no writer uses `INSERT OR REPLACE INTO messages`, so an edit, tombstone or heal never moves `synced_at`.
+  - The upsert's `ON CONFLICT … DO UPDATE` branch never writes `synced_at`, and no writer uses `INSERT OR REPLACE INTO messages`, so an edit, tombstone or heal never moves it.
 - Modify: `internal/db/schema.sql`, the golden, `WatchtowerDesktop/Tests/Support/TestDatabase+Schema.swift`.
-- Modify: `internal/db/messages.go` (`Message.SyncedAt`, insert only), `internal/db/inbox.go` (the four detectors: `m.synced_at > ?`), `internal/db/slack_accounts.go` (`SlackFirstCycleAt`, `SetSlackFirstCycleAtOnce`).
+- Modify: `internal/db/messages.go` (`Message.SyncedAt`, insert only), `internal/db/inbox.go` (the four detectors: `sinceStored > ?`), `internal/db/slack_accounts.go` (`SlackFirstCycleAt`, `SetSlackFirstCycleAtOnce`).
 - Modify: `internal/sync/search_sync.go`, `message_sync.go` (`stampSyncedAt`), `BackfillSearch` (`ts_unix`).
 - Test: `internal/db/inbox_ingest_test.go`, `internal/sync/synced_at_test.go`.
 
 **Interfaces:**
 - Produces: `func (o *Orchestrator) stampSyncedAt(tsUnix float64) float64` — returns `clock()` when `tsUnix ≥ max(A, runStart − 24h)`, else `tsUnix`. `A` is `first_cycle_at`, written once at the account's first run attempt; while that first run is in progress, `A` is its start.
 - Why 24 h: a stored-late message waits at most `cadenceMax` (60 min) plus the runs a 429 storm stretches. During a storm the run is incomplete, so INBOX-09 freezes the watermark and even a `ts_unix` stamp stays above it.
-- Writers: everything except the sync leaves `SyncedAt` 0 for the trigger. Desktop production code never writes `messages`; its test schema has the trigger.
+- Writers: everything except the sync leaves `SyncedAt` 0, read as the post time. Desktop production code never writes `messages`.
 - [ ] **Step 1: Write the failing tests**:
   - `TestInbox_LateStoredMessageDetected`: watermark at `runStart − 30 min`; a mention with `ts = runStart − 45 min` stored now is detected.
   - `TestInbox_FirstSyncDoesNotFloodInbox`.
   - `TestInbox_SharedToFullMoveDoesNotFloodInbox`: a new account row re-inserts the same messages under new namespaced keys, and they are older than its `first_cycle_at`.
   - `TestInbox_BackfilledMessageNotDetected`.
-  - `TestMessagesSyncedAtTrigger_FillsZero`, `TestMessagesSyncedAtTrigger_ExplicitWins`, `TestMessagesSyncedAtTrigger_UpdateDoesNotBump`.
+  - As shipped (no trigger): `TestMessagesSyncedAt_UnstampedReadsAsPostTime`, `TestMessagesSyncedAt_ExplicitStamp`, `TestMessagesSyncedAt_UpdateDoesNotBump`, `TestInboxDetectors_ReadARangeNotTheTable`, `TestInbox_DetectorsCompareStoredTime`, `TestInbox_MentionQueryStampsSyncedAt`.
   - `TestStampSyncedAt` (table).
   - `TestFirstCycleAt_WrittenOnceAndKeptOnRetry`.
   - `TestMigration_MessagesSyncedAtFromTs`, `TestMigration_FirstCycleAtForExistingAccounts`.
-- [ ] **Step 2: Run** `go test ./internal/db ./internal/sync -run 'TestInbox_|TestMessagesSyncedAtTrigger_|TestStampSyncedAt|TestFirstCycleAt_|TestMigration_'` — FAIL.
+- [ ] **Step 2: Run** `go test ./internal/db ./internal/sync -run 'TestInbox_|TestMessagesSyncedAt_|TestStampSyncedAt|TestFirstCycleAt_|TestMigration_'` — FAIL.
 - [ ] **Step 3: Implement** with the `add-migration` skill; regenerate the golden and the Swift test schema (`go test ./internal/db/ -run 'TestSchemaGolden|TestDesktopTestSchema' -update`).
 - [ ] **Step 4: Run** `go test ./internal/db ./internal/inbox ./internal/sync ./internal/daemon ./internal/digest ./internal/tools` and `make test-swift FILTER=TestDatabase` — PASS (`TestInbox09_*`, SRCDEL, SLACK-01 fixtures untouched); `make lint-diff`.
 - [ ] **Step 5: Commit** `feat(inbox): Slack detection ordered by when a message was stored (#1709)`.
@@ -241,8 +234,8 @@ The ceiling is ≈ 1,200 / (V/100), whatever the cadence. Excluding channels doe
     - `muted_at` writers: `SetMuteForLLM`/`ToggleMuteForLLM` set it to now only when the mute turns on, clear it when it turns off, and clear `muted_by_exclusion` on any manual change; `SetSyncExcluded` sets it when it mutes; the Swift twin `ChannelStatsQueries.toggleMuteForLLM` does the same. `SetFavorite`/`ToggleFavorite` never touch it.
   - `internal/sync/search_sync.go`: `searchAndSave` drops a match from an excluded channel unless its text contains `<@ownerRaw>`, before `EnsureChannel`/upsert/media; the listing still records it.
   - `internal/sync/message_sync.go`: `buildChannelQueue` skips excluded channels.
-  - New `internal/sync/catchup.go`: `func (o *Orchestrator) runCatchups(ctx context.Context) error`. After the blanket search of a clean run, it takes the oldest pending catch-up of the account and fetches at most `catchupPagesPerRun = 5` pages, plus replies of threaded parents (the history backfill's pacing). `conversations.history` returns the newest messages first, so the catch-up walks the window **from the top down with a persisted upper bound**, never with a stored cursor (cursors can expire, and a cursor alone loses the window across a restart). Each page is `oldest=<catchup_from> latest=<catchup_to> inclusive=false limit=999`. After saving it, `AdvanceCatchup(channel, <oldest ts on that page>)`; the next page asks again with the new `latest`. A page with `has_more=false` ends the window, so `FinishCatchup`. Messages exactly at the boundary ts are fetched by the next page only if newer than it, and Slack ts are unique per channel, so nothing is skipped and nothing is fetched twice. A 429, the deadline or a restart leaves `catchup_to` at the last saved page, and the next run continues below it. The rows are stamped `synced_at = ts_unix`, so they do not flood the Inbox; mentions of that period are already stored. One channel per run, so a catch-up never competes with the forward search.
-  - `cmd/channels.go`: `watchtower channels exclude <name|id>` / `include`.
+  - New `internal/sync/catchup.go` (shipped as `internal/sync/syncagain.go`, `runSyncAgainCatchups`): `func (o *Orchestrator) runCatchups(ctx context.Context) error`. After the blanket search of a clean run, it takes the oldest pending catch-up of the account and fetches at most `catchupPagesPerRun = 5` (shipped: `syncAgainPagesPerRun`) pages, plus replies of threaded parents (the history backfill's pacing). `conversations.history` returns the newest messages first, so the catch-up walks the window **from the top down with a persisted upper bound**, never with a stored cursor (cursors can expire, and a cursor alone loses the window across a restart). Each page is `oldest=<catchup_from> latest=<catchup_to> inclusive=false limit=999`. After saving it, `AdvanceCatchup(channel, <oldest ts on that page>)`; the next page asks again with the new `latest`. A page with `has_more=false` ends the window, so `FinishCatchup`. Messages exactly at the boundary ts are fetched by the next page only if newer than it, and Slack ts are unique per channel, so nothing is skipped and nothing is fetched twice. A 429, the deadline or a restart leaves `catchup_to` at the last saved page, and the next run continues below it. The rows are stamped `synced_at = ts_unix`, so they do not flood the Inbox; mentions of that period are already stored. One channel per run, so a catch-up never competes with the forward search.
+  - `cmd/channels.go` (shipped in `cmd/channels_exclude.go`): `watchtower channels exclude <name|id>` / `include`.
   - `internal/tools/messages.go`: `channelInScope` is false for an excluded channel.
 - Test: `internal/db/channel_settings_test.go`, `internal/sync/sync_excluded_test.go`, `cmd/channels_test.go`, `internal/tools/messages_test.go`
 
@@ -276,7 +269,7 @@ The ceiling is ≈ 1,200 / (V/100), whatever the cadence. Excluding channels doe
 - `slack-as-suggestion`: the **Suggest Stop syncing** group.
 - `slack-as-filter-notsynced` and `slack-as-filter-notsynced-empty`: the **Not synced** filter with its caption.
 
-They are rendered from `WatchtowerDesktop/Tests/DesignShots/DesignShotFixtures+SlackAdaptiveSync.swift` (`make desktop-shots`, or `swift test --filter testSlackAdaptiveSyncShotsRender` with `DESKTOP_SHOTS_DIR`). Their strings are `SlackAdaptiveSyncMockCopy`, pinned by `SlackAdaptiveSyncMockCopyTests`. The implementation moves the strings into a `ChannelStatsPresentation` model (WatchtowerCore) with its own test, and the view matches the mockups. The table keeps today's wide fixed-column layout, so there is no narrow frame.
+They are rendered from `WatchtowerDesktop/Tests/DesignShots/DesignShotFixtures+SlackAdaptiveSync.swift` (`make desktop-shots`, or `swift test --filter testSlackAdaptiveSyncShotsRender` with `DESKTOP_SHOTS_DIR`). Their strings were first `SlackAdaptiveSyncMockCopy` (pinned by `SlackAdaptiveSyncMockCopyTests`); Task 6 moved them into the `ChannelStatsPresentation` model (WatchtowerCore, pinned by `ChannelStatsPresentationTests`) and deleted the mock copy and its test, so the fixtures and the view read the same strings, and the view matches the mockups. The table keeps today's wide fixed-column layout, so there is no narrow frame.
 
 **Files:**
 - Modify (Go): `internal/db/channel_stats.go` — `ComputeRecommendations` gains `Action: "exclude"` per agent decision 5. The `ChannelStatRow` input gains `IsSyncExcluded`, `MutedAt` (from `channel_settings.muted_at`, Task 5) and `CatchingUp` (`catchup_from IS NOT NULL`).
@@ -285,7 +278,7 @@ They are rendered from `WatchtowerDesktop/Tests/DesignShots/DesignShotFixtures+S
   - The mute toggle stays a Swift writer (`toggleMuteForLLM`, today's path). It mirrors Go's `muted_at` / `muted_by_exclusion` rule, pinned by shared JSON cases `internal/db/testdata/channel_mute_cases.json` (each case: the row before, the action, the row after) read by `internal/db/channel_settings_test.go::TestMuteCases` and `ChannelStatsTests.testMuteCasesMatchGo`.
   - `Models/ChannelStat.swift`, `WatchtowerCore/Models/ChannelRecommendation.swift` (`.exclude`).
   - `ViewModels/ChannelStatsViewModel.swift` (`toggleSyncExcluded` → the CLI, `applyRecommendation` for `.exclude` → the CLI, a **Not synced** filter; the CLI runner injected for tests).
-  - `cmd/channels.go` (Task 5) gains `--id` and `--json` for this call.
+  - `cmd/channels_exclude.go` (Task 5) gains `--id` and `--json` for this call.
   - `Views/Statistics/ChannelStatisticsView.swift` (a **Stop syncing** / **Sync again** button per row, the suggestion row's button), built from DesignKit components per `docs/design/desktop-style-guide.md`.
 - Create: `WatchtowerDesktop/Sources/WatchtowerCore/Services/ChannelStatsPresentation.swift` (the mockups' strings, the row state: synced / not synced / catching up) and `WatchtowerDesktop/Tests/Core/ChannelStatsPresentationTests.swift`
 - Test: `internal/db/channel_stats_test.go`, shared cases `internal/db/testdata/channel_recommendation_cases.json` read by Go and by `WatchtowerDesktop/Tests/ChannelStatsTests.swift`
@@ -293,6 +286,7 @@ They are rendered from `WatchtowerDesktop/Tests/DesignShots/DesignShotFixtures+S
 **Interfaces:**
 - Consumes: `channel_settings.sync_excluded` (Task 5).
 - Produces: recommendation action `"exclude"` with reason `"muted 30+ days, no messages or mentions from you"` or `"<n>% bot messages, no value signals"`. A channel already excluded gets no recommendation.
+- As shipped (pending owner review in ask #1359): the Stop syncing suggestion is never made for a favorite, a watched channel, a DM or group DM, or a channel still catching up after Sync again; and it is checked after the mute suggestion, so an unmuted bot channel is first offered **Mute** and only once muted (and still ≥ 90% bots with no value signals) **Stop syncing**. The muted rule reads "no message from you and no mention of you since the mute" (`LastUserActivity`, `LastMention` < `MutedAt`).
 - [ ] **Step 1: Write the failing tests**: `TestComputeRecommendations_Exclude*` (from the shared JSON cases), `ChannelStatsTests.testExcludeRecommendationMatchesGo`, `testStopSyncingCallsCLI` (fake `CLIRunnerProtocol` receives `channels exclude --id <id> --json`), `testCLIFailureShowsErrorAndKeepsRow`, `testMuteCasesMatchGo`, `testNotSyncedFilter`. Go: `cmd/channels_test.go::TestChannelsExcludeJSON`, and `internal/db/channel_settings_test.go::TestSyncAgain_UserMuteFromDesktopSurvives`: the row is muted by the Swift writer's case from `channel_mute_cases.json` (clearing `muted_by_exclusion`), then `channels exclude` and `include`, and the channel is still muted.
 - [ ] **Step 2: Run** `go test ./internal/db -run TestComputeRecommendations_` and `make test-swift FILTER=ChannelStatsTests` — FAIL.
 - [ ] **Step 3: Implement**; look at the screen with `make desktop-shots DESKTOP_SHOTS=<dir>`.
