@@ -66,7 +66,8 @@ final class TracksBulkCLITests: XCTestCase {
     }
 
     func testPlanWithoutPinnedKeysIsUnexpected() async {
-        for stdout in [#"{"count":2}"#, #"{"ids":[4]}"#, "done", "", #"{"count":1,"ids":["x"]}"#] {
+        for stdout in [#"{"count":2}"#, #"{"ids":[4]}"#, "done", "", #"{"count":1,"ids":["x"]}"#,
+                       #"{"count":3,"ids":[4]}"#] {
             let (cli, _) = cli(stdout)
             do {
                 _ = try await cli.planQuiet(days: 30)
@@ -116,10 +117,26 @@ final class TracksBulkCLITests: XCTestCase {
         XCTAssertTrue(runner.invocations.isEmpty)
     }
 
-    func testDismissWithoutPinnedKeysIsFailed() async {
-        let (cli, _) = cli(#"{"dismissed":3}"#)
+    /// Exit 0 means the one transaction committed: an unreadable answer, or
+    /// counts that do not add up to the ids, is unconfirmed, never Try Again.
+    func testDismissExitZeroWithoutPinnedAnswerIsUnconfirmed() async {
+        for stdout in [#"{"dismissed":3}"#, "garbage\n", "", #"{"dismissed":1,"skipped":0,"ids":[4]}"#] {
+            let (cli, _) = cli(stdout)
+            let result = await cli.dismiss(ids: ["4", "9"])
+            XCTAssertEqual(result, .unconfirmed(TracksBulkCLI.unreadAnswerMessage), stdout)
+        }
+    }
+
+    func testCancelIsRefusedWithCancelledMessage() async {
+        let cli = failing(CancellationError())
+        do {
+            _ = try await cli.planQuiet(days: 30)
+            XCTFail("expected a refusal")
+        } catch {
+            XCTAssertEqual(error as? TracksBulkCLIError, .refused(TracksBulkCLI.cancelledMessage))
+        }
         let result = await cli.dismiss(ids: ["4"])
-        XCTAssertEqual(result, .failed("Unexpected answer from watchtower"))
+        XCTAssertEqual(result, .failed(TracksBulkCLI.cancelledMessage))
     }
 
     /// The apply is one transaction: a write error is `.failed` with the

@@ -30,6 +30,12 @@ package struct TracksBulkCLI {
     /// A timed-out call: the outcome is unknown, so the owner reads this
     /// rather than a count.
     package static let timeoutMessage = "watchtower took too long to answer"
+    /// A call cancelled before it answered.
+    package static let cancelledMessage = "The press was cancelled."
+    /// Exit 0 after the write, but its answer is unreadable: the threads
+    /// were stopped (one transaction), so no Try Again. As
+    /// `InboxBulkCLI.unreadAnswerMessage`.
+    package static let unreadAnswerMessage = "Watchtower stopped the threads but its answer could not be read."
 
     private let runner: (any CLIRunnerProtocol)?
 
@@ -59,7 +65,7 @@ package struct TracksBulkCLI {
         guard result.exitCode == 0 else {
             throw TracksBulkCLIError.refused(Self.failureMessage(result))
         }
-        guard let plan: Plan = try? InboxFoldersCLI.decodeLastLine(result.stdout) else {
+        guard let plan: Plan = try? InboxFoldersCLI.decodeLastLine(result.stdout), plan.count == plan.ids.count else {
             throw TracksBulkCLIError.unexpectedAnswer
         }
         return InboxBulkPlan(ids: plan.ids.map(String.init), count: plan.count)
@@ -67,8 +73,10 @@ package struct TracksBulkCLI {
 
     /// Dismisses `ids`. The apply is all or nothing (one transaction): a
     /// write error is `.failed` with the CLI's text, its envelope's
-    /// `dismissed` always 0. Only the view model's reconcile of a call that
-    /// ended without an answer makes a `.partial`. No ids: nothing runs.
+    /// `dismissed` always 0. Exit 0 with an unreadable answer, or one whose
+    /// counts do not add up to `ids`, is `.unconfirmed` (the write committed).
+    /// Only the view model's reconcile of a call that ended without an answer
+    /// makes a `.partial`. No ids: nothing runs.
     package func dismiss(ids: [String]) async -> InboxBulkResult {
         guard !ids.isEmpty else { return .done(count: 0, skipped: 0) }
         let result: CLICapturedResult
@@ -78,8 +86,9 @@ package struct TracksBulkCLI {
             return .failed(error.localizedDescription)
         }
         if result.exitCode == 0 {
-            guard let done: Done = try? InboxFoldersCLI.decodeLastLine(result.stdout) else {
-                return .failed(TracksBulkCLIError.unexpectedAnswer.localizedDescription)
+            guard let done: Done = try? InboxFoldersCLI.decodeLastLine(result.stdout),
+                  done.dismissed + done.skipped == ids.count else {
+                return .unconfirmed(Self.unreadAnswerMessage)
             }
             return .done(count: done.dismissed, skipped: done.skipped)
         }
@@ -97,8 +106,9 @@ package struct TracksBulkCLI {
 
     /// One call, with stdout kept on a non-zero exit (the partial envelope).
     /// A deadline the runner throws comes back as a `timeoutExitCode` result,
-    /// as the protocol's default `capture` hands it; the other runner
-    /// failures throw a `TracksBulkCLIError`.
+    /// as the protocol's default `capture` hands it; a cancel is
+    /// `.refused(cancelledMessage)`; the other runner failures throw a
+    /// `TracksBulkCLIError`.
     private func capture(_ args: [String]) async throws -> CLICapturedResult {
         guard let runner else { throw TracksBulkCLIError.cliUnavailable }
         do {
@@ -107,6 +117,8 @@ package struct TracksBulkCLI {
             return CLICapturedResult(stdout: Data(), exitCode: code, stderr: stderr)
         } catch CLIRunnerError.binaryNotFound {
             throw TracksBulkCLIError.cliUnavailable
+        } catch is CancellationError {
+            throw TracksBulkCLIError.refused(Self.cancelledMessage)
         }
     }
 
