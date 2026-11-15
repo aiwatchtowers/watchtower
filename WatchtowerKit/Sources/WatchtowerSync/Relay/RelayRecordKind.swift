@@ -8,6 +8,8 @@ public enum RelayRecordKind: String, CaseIterable {
     /// spec §4.1), so no current writer emits a relay-zone heartbeat.
     case heartbeat
     case recordingUpload = "recording_upload"
+    /// A chat attachment the phone uploads to the hub (`chatupload-<upload_id>`, iPhone chat spec §4.5).
+    case chatAttachment = "chat_attachment"
     /// The phone's link record (`device-<device_id>`, spec §5.1). Only the
     /// phone writes it; the Mac answers through the `device_grant` slice.
     case device

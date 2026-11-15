@@ -48,7 +48,8 @@ struct NowView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        @Bindable var navigation = env.navigation
+        return NavigationStack(path: $navigation.nowPath) {
             // The working timers tick, and the Mac turns asleep by the clock
             // alone.
             TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -82,6 +83,7 @@ struct NowView: View {
                 case .macs: MacsView()
                 }
             }
+            .navigationDestination(for: MacDetailRoute.self) { MacDetailView(hubID: $0.hubID) }
             .navigationDestination(for: String.self) { EventDetailView(eventID: $0) }
             // An event detail pushed here opens its recap here (Open recap).
             .navigationDestination(for: CalendarRoute.self) { route in

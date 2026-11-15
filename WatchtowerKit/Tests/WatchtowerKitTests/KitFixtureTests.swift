@@ -35,16 +35,16 @@ final class KitFixtureTests: XCTestCase {
     func testRelayRecordKindsAreFrozen() {
         XCTAssertEqual(
             RelayRecordKind.allCases.map(\.rawValue),
-            ["action", "heartbeat", "recording_upload", "device", "hello", "control"]
+            ["action", "heartbeat", "recording_upload", "chat_attachment", "device", "hello", "control"]
         )
     }
 
-    /// The 15 branch kinds, then `probe`, then the 16 workbench kinds
+    /// The 15 branch kinds, then `probe`, then the 16 workbench kinds and the 10 chat kinds
     /// (pinned in WorkbenchMirrorFixtureTests).
     func testActionKindsKeepTheBranchKindsPlusProbe() {
         XCTAssertEqual(ActionKind.probe.rawValue, "probe")
         XCTAssertEqual(ActionKind.allCases.firstIndex(of: .probe), 15)
-        XCTAssertEqual(ActionKind.allCases.count, 32)
+        XCTAssertEqual(ActionKind.allCases.count, 42)
     }
 
     func testReasonCodesAreExactlyTheSpecList() {
@@ -57,7 +57,7 @@ final class KitFixtureTests: XCTestCase {
                 "state_unknown", "cannot_type", "claude_not_found", "codex_not_found",
                 "expired", "cancelled", "outcome_unknown",
                 "unsupported_in_poc", "wrong_hub", "write_failed", "not_pending", "not_working",
-                "answer_on_mac", "not_supported"
+                "answer_on_mac", "not_supported", "conversation_busy", "attachment_missing", "changed"
             ]
         )
     }

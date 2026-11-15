@@ -29,7 +29,8 @@ final class ReplicaWiringTests: XCTestCase {
         .sessionTimeline: 5,
         .sessionChat: 2,
         .calendarEvent: 6,
-        .meetingTranscript: 1
+        .meetingTranscript: 1,
+        .chatList: 1
     ]
 
     /// A booted demo environment also has the job of the demo phone
