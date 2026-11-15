@@ -72,7 +72,7 @@ The **⋯** menu has **Stop**, **Finish** (asks the agent to wrap up), **Interru
 
 ### Find a target on the board
 
-The **Board** opens on **Waiting for me** (an open ask or permission prompt on the target or its session), else **Sessions running**, else **All**; **High**, **Blocked**, **Done** and **Archive** share the row. Search finds a target by title, number (`#421`) or branch across the whole board, archived included. Lanes follow the Mac's column order. Under **All**, groups and the **Backlog** and **Done** lanes start folded, and the phone remembers what you open.
+The **Board** opens on **Waiting for me** (an ask or permission prompt on the target or its session), else **Sessions running**, else **All**. **High**, **Blocked**, **Done** and **Archive** sit beside them. Search by title, `#number` or branch covers the whole board, archive too. Lanes follow the Mac's columns. Under **All**, groups and the **Backlog** and **Done** lanes start folded; the phone remembers what you open.
 
 ### Run an automation
 
