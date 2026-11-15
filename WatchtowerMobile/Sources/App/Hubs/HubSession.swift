@@ -1163,7 +1163,8 @@ final class HubSession {
             await feed.resumeIfParked()
         }
         do {
-            routed = try await feed.pollOnce()
+            // A cycle begun after this fetch's pull: one already running may have read before the pull buffered (#1795).
+            routed = try await feed.pollFresh()
         } catch {
             Self.logger.error("relay fetch failed: \(error.localizedDescription, privacy: .public)")
         }
@@ -1210,7 +1211,7 @@ final class HubSession {
         await postSharedAlerts()
         await adoptOrderedActions()
         do {
-            _ = try await feed.pollOnce()
+            _ = try await feed.pollFresh()
         } catch {
             Self.logger.error("relay apply failed: \(error.localizedDescription, privacy: .public)")
         }
