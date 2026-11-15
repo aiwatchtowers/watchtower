@@ -432,10 +432,21 @@ func slackWindowMessageBytes(m SlackWindowMessage) int {
 	return n
 }
 
+// jsonInvalidByteBytes is how many bytes encoding/json writes for one invalid
+// UTF-8 byte: Go 1.26 escapes it as \ufffd, later releases write a raw U+FFFD.
+var jsonInvalidByteBytes = func() int {
+	b, err := json.Marshal("\xff")
+	if err != nil {
+		return len(`\ufffd`) // the wider form keeps the budget an overestimate
+	}
+	return len(b) - 2
+}()
+
 // jsonStringBytes is len(json.Marshal(s)) without the allocation: encoding/json
 // escapes " and \ (2 bytes), \n \r \t \b \f (2), other control bytes,
-// < > &, U+2028 and U+2029 (6), and writes each invalid UTF-8 byte as a raw
-// U+FFFD (3).
+// < > &, U+2028 and U+2029 (6), and writes each invalid UTF-8 byte as
+// U+FFFD — raw (3) or escaped as \ufffd (6) depending on the Go release, so
+// that width is measured once (jsonInvalidByteBytes).
 func jsonStringBytes(s string) int {
 	n := 2
 	for i := 0; i < len(s); {
@@ -455,7 +466,7 @@ func jsonStringBytes(s string) int {
 		r, size := utf8.DecodeRuneInString(s[i:])
 		switch {
 		case r == utf8.RuneError && size == 1:
-			n += 3 // written as a raw U+FFFD
+			n += jsonInvalidByteBytes
 		case r == '\u2028' || r == '\u2029':
 			n += 6
 		default:
