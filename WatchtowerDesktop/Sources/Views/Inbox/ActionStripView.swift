@@ -404,6 +404,7 @@ struct ActionStripActionsView: View {
         } else if !vm.hasRead, let reason = vm.firstReadError {
             // The first read failed: say so, never a spinner that never ends.
             withReactionCommands(Self.firstReadFailure(reason) { Task { await vm.refresh() } })
+                .inboxPaneColumn()
         } else if !vm.hasRead {
             // Nothing read yet: no "empty" or cheat sheet for a moment.
             withReactionCommands(
@@ -411,6 +412,7 @@ struct ActionStripActionsView: View {
                     .controlSize(.small)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .accessibilityIdentifier("inbox.loading"))
+                .inboxPaneColumn()
         } else if let list = vm.legacyList {
             legacyColumn(list)
         } else if vm.folderEntries.isEmpty, aux == nil {
