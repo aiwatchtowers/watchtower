@@ -126,7 +126,7 @@ struct PermissionCardModel: Equatable {
 
 /// One answer the phone sent to a session's prompt, until the Mac applied
 /// it: how far it got, or the Mac's refusal (with Dismiss) — e.g.
-/// "Answered on the Mac" when the Mac answered first. A row outlives its
+/// "Answered on your tower" when the Mac answered first. A row outlives its
 /// request: the hub stops publishing a prompt once it is answered.
 struct PermissionAnswerRow: Equatable, Identifiable {
     enum State: Equatable {

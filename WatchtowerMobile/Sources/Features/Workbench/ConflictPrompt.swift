@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// "Changed on the Mac to X — apply anyway?" with Yes (send again over the
+/// "Changed on your tower to X — apply anyway?" with Yes (send again over the
 /// Mac's value) and No (drop the change): the design system's prominent and
 /// secondary buttons sharing the width.
 struct ConflictPrompt: View {

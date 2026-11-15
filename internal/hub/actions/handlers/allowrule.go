@@ -26,8 +26,8 @@ const AllowSummaryCap = 2000
 // allowBlockNotes are the phone card's notes and the hub's refusal messages
 // (PermissionAllowBlock.note), verbatim.
 var allowBlockNotes = map[string]string{
-	AllowBlockClipped:      "Shortened — answer on the Mac to allow",
-	AllowBlockSettingsPath: "Changes Watchtower or shell settings — answer on the Mac to allow",
+	AllowBlockClipped:      "Shortened — answer on your tower to allow",
+	AllowBlockSettingsPath: "Changes Watchtower or shell settings — answer on your tower to allow",
 }
 
 // pathTools are the tools whose summary is the file path they write.

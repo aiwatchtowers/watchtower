@@ -626,7 +626,7 @@ private struct StopRowView: View {
 }
 
 /// One answer the phone sent to a prompt: how far it got, or the Mac's
-/// refusal (e.g. "Answered on the Mac") with Dismiss.
+/// refusal (e.g. "Answered on your tower") with Dismiss.
 private struct AnswerRowView: View {
     let row: PermissionAnswerRow
     let onDismiss: (PendingAction) -> Void

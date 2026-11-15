@@ -7,7 +7,7 @@ import XCTest
 final class ActionReasonTests: XCTestCase {
     private func echo(reason: String) throws -> ActionRequestPayload {
         let json = #"{"created_at":1700000000,"id":"A1","kind":"session_input","params":{},"status":"failed","#
-            + #""reason":"\#(reason)","error_message":"Codex sessions can't take messages from the phone yet. Type it on the Mac."}"#
+            + #""reason":"\#(reason)","error_message":"Codex sessions can't take messages from the phone yet. Type it on your tower."}"#
         return try RelayCoder.makeDecoder().decode(ActionRequestPayload.self, from: Data(json.utf8))
     }
 
@@ -23,7 +23,7 @@ final class ActionReasonTests: XCTestCase {
         XCTAssertNil(decoded.reason)
         XCTAssertEqual(decoded.status, .failed)
         XCTAssertEqual(
-            decoded.errorMessage, "Codex sessions can't take messages from the phone yet. Type it on the Mac."
+            decoded.errorMessage, "Codex sessions can't take messages from the phone yet. Type it on your tower."
         )
     }
 }

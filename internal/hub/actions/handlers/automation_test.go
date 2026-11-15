@@ -119,7 +119,7 @@ func TestAPhoneWithoutTheStartGrantIsRefused(t *testing.T) {
 		got := e.runAction(aid, wb, false)
 
 		wantOutcome(t, got, wire.StatusFailed, reasonDeviceNotAllowed)
-		if got.Message != automationNotAllowedMessage || e.runs(aid) != 0 {
+		if got.Message != automationNotAllowedLead+macStartAllowStep || e.runs(aid) != 0 {
 			t.Fatalf("grant %v: %+v", grant, got)
 		}
 	}
@@ -152,9 +152,9 @@ func TestARecipeThatCannotRunIsRefusedWithItsReason(t *testing.T) {
 		r   recipe
 		msg string
 	}{
-		{recipe{confirmedHash: ""}, "Confirm this automation on the Mac first"},
-		{recipe{confirmedHash: "h1", disabled: true}, "This automation is turned off on the Mac"},
-		{recipe{confirmedHash: "h1", parseError: "bad frontmatter"}, "This automation can't be read on the Mac"},
+		{recipe{confirmedHash: ""}, "Confirm this automation on your tower first"},
+		{recipe{confirmedHash: "h1", disabled: true}, "This automation is turned off on your tower"},
+		{recipe{confirmedHash: "h1", parseError: "bad frontmatter"}, "This automation can't be read on your tower"},
 	} {
 		wb := e.workbench()
 		aid := e.automation(wb, c.r)

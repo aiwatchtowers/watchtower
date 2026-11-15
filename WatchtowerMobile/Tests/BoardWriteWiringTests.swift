@@ -111,10 +111,10 @@ final class BoardWriteWiringTests: XCTestCase {
         let fixture = try makeFixture()
         try await fixture.writer.setStatus(.done, on: try target(415))
         let failedID = try XCTUnwrap(fixture.store.pendingActions().first).id
-        try await fail(fixture, reason: .conflict, result: ["current": .string("blocked")], message: "Changed on the tower to blocked")
+        try await fail(fixture, reason: .conflict, result: ["current": .string("blocked")], message: "Changed on your tower to blocked")
 
         let row = try XCTUnwrap(try detail(415, try snapshot(fixture.store)).writes.first)
-        XCTAssertEqual(row.state, .conflict(prompt: "Changed on the tower to Blocked — apply anyway?"))
+        XCTAssertEqual(row.state, .conflict(prompt: "Changed on your tower to Blocked — apply anyway?"))
         XCTAssertTrue(try detail(415, try snapshot(fixture.store)).status.isEnabled, "a failed row does not lock the picker")
 
         try await fixture.writer.applyAnyway(row)
@@ -132,10 +132,10 @@ final class BoardWriteWiringTests: XCTestCase {
     func testAPriorityConflictRetriesWithTheCurrentPriority() async throws {
         let fixture = try makeFixture()
         try await fixture.writer.setPriority(.low, on: try target(415))
-        try await fail(fixture, reason: .conflict, result: ["current": .string("medium")], message: "Changed on the tower to medium")
+        try await fail(fixture, reason: .conflict, result: ["current": .string("medium")], message: "Changed on your tower to medium")
 
         let row = try XCTUnwrap(try detail(415, try snapshot(fixture.store)).writes.first)
-        XCTAssertEqual(row.state, .conflict(prompt: "Changed on the tower to Medium — apply anyway?"))
+        XCTAssertEqual(row.state, .conflict(prompt: "Changed on your tower to Medium — apply anyway?"))
         try await fixture.writer.applyAnyway(row)
 
         let retry = try XCTUnwrap(fixture.store.pendingActions().first)
@@ -146,7 +146,7 @@ final class BoardWriteWiringTests: XCTestCase {
     func testNoDismissesTheConflict() async throws {
         let fixture = try makeFixture()
         try await fixture.writer.setStatus(.done, on: try target(415))
-        try await fail(fixture, reason: .conflict, result: ["current": .string("blocked")], message: "Changed on the tower to blocked")
+        try await fail(fixture, reason: .conflict, result: ["current": .string("blocked")], message: "Changed on your tower to blocked")
         let row = try XCTUnwrap(try detail(415, try snapshot(fixture.store)).writes.first)
 
         try fixture.writer.dismiss(row)
@@ -156,10 +156,10 @@ final class BoardWriteWiringTests: XCTestCase {
     func testAConflictWithoutACurrentValueIsAnOrdinaryFailure() async throws {
         let fixture = try makeFixture()
         try await fixture.writer.setStatus(.done, on: try target(415))
-        try await fail(fixture, reason: .conflict, message: "Changed on the tower")
+        try await fail(fixture, reason: .conflict, message: "Changed on your tower")
 
         let row = try XCTUnwrap(try detail(415, try snapshot(fixture.store)).writes.first)
-        XCTAssertEqual(row.state, .failed("Changed on the tower"))
+        XCTAssertEqual(row.state, .failed("Changed on your tower"))
     }
 
     func testOtherFailuresShowTheHubsMessageOrAShortFallback() async throws {
@@ -493,7 +493,7 @@ final class BoardWriteWiringTests: XCTestCase {
     func testANewerPickDropsTheFieldsOldConflict() async throws {
         let fixture = try makeFixture()
         try await fixture.writer.setStatus(.done, on: try target(415))
-        try await fail(fixture, reason: .conflict, result: ["current": .string("blocked")], message: "Changed on the tower to blocked")
+        try await fail(fixture, reason: .conflict, result: ["current": .string("blocked")], message: "Changed on your tower to blocked")
         try await fixture.writer.setPriority(.low, on: try target(415))
 
         try await fixture.writer.setStatus(.todo, on: try target(415))

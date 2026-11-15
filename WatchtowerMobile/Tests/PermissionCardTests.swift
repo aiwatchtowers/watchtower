@@ -145,7 +145,7 @@ final class PermissionCardTests: XCTestCase {
         XCTAssertEqual(clipped.allowBlock, .clipped)
         XCTAssertFalse(clipped.offersAllow, "Allow once is not on the card")
         XCTAssertTrue(clipped.canAnswer, "Deny still is")
-        XCTAssertEqual(clipped.allowBlock?.note, "Shortened — answer on the Mac to allow")
+        XCTAssertEqual(clipped.allowBlock?.note, "Shortened — answer on your tower to allow")
         XCTAssertEqual(PermissionHint.turnOn.text, "Turn on \"Answer permission prompts from this phone\" to answer here.")
     }
 
@@ -158,7 +158,7 @@ final class PermissionCardTests: XCTestCase {
         XCTAssertEqual(settings.allowBlock, .settingsPath)
         XCTAssertFalse(settings.offersAllow)
         XCTAssertTrue(settings.canAnswer)
-        XCTAssertEqual(settings.allowBlock?.note, "Changes Watchtower or shell settings — answer on the Mac to allow")
+        XCTAssertEqual(settings.allowBlock?.note, "Changes Watchtower or shell settings — answer on your tower to allow")
 
         let rc = try XCTUnwrap(try detail(try snapshot([
             permissionRequestJSON(10, session: 12, ["tool_name": "Edit", "summary": "/tmp/home/.zshrc"])
