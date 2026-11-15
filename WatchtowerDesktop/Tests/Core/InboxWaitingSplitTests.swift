@@ -87,8 +87,12 @@ final class InboxWaitingSplitTests: XCTestCase {
 
     /// The badge, checked against the snapshot's `badge`: the short read
     /// and the full one never disagree.
-    private func badge(_ pool: DatabasePool, disabled: Set<String> = [],
-                       file: StaticString = #filePath, line: UInt = #line) async throws -> Int {
+    private func badge(
+        _ pool: DatabasePool,
+        disabled: Set<String> = [],
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async throws -> Int {
         let utc = try InboxTodayFixture.calendar("UTC")
         let (badge, snapshot) = try await pool.read { db in
             (try ActionStripViewModel.badgeCount(db, nowUTC: self.nowUTC, disabledFeatures: disabled, calendar: utc),
