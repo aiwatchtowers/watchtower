@@ -414,7 +414,10 @@ final class ChatSessionPoolTests: XCTestCase {
         XCTAssertTrue(fakes[0].hasExited)
         XCTAssertEqual(maxAlive, 1)
         fakes[1].emit(.sessionReady(sessionID: "new-session", provider: "codex", model: ""))
-        _ = await waitForCondition { replacement.driver.sessionID == "new-session" }
+        let ready = await waitForCondition { replacement.driver.sessionID == "new-session" }
+        XCTAssertTrue(ready)
+        // `sessionID` is set at once; its database write is queued — wait for it.
+        await replacement.driver.writesSettled()
         let stored = try await dbPool.read { d in try ChatConversationQueries.fetchByID(d, id: conv)?.sessionID }
         XCTAssertEqual(stored, "new-session")
         let text = try await dbPool.read { d in
