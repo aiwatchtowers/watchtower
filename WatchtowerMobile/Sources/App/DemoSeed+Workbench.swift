@@ -173,7 +173,10 @@ extension DemoSeed {
                 "previous_ask_id": 107, "changes": "Step 2 now names the Stop hook.",
                 "payload": ["focus": [["text": "Is the stop blocked early enough?", "heading": "Steps"]]],
                 "doc_path": "docs/plans/ask-guard-v2.md",
-                "doc_snapshot": "# Ask guard v2\n\n## Steps\n\nStep 1: block the stop.\n\nStep 2: the Stop hook asks the owner first.\n",
+                "doc_snapshot": "# Ask guard v2\n\nThe agent must not stop while a question to the owner is open.\n\n"
+                    + "## Steps\n\nStep 1: block the stop.\n\nStep 2: the Stop hook asks the owner first.\n\n"
+                    + "- Read the open asks of the session\n- Refuse the stop with the ask's title\n\n"
+                    + "## Risks\n\nA stale ask could keep the session running; the hook skips asks older than a day.\n",
                 "doc_clipped": true, "doc_bytes": 412_000
             ]),
             JSON.ask(111, workbench: acmeID, [

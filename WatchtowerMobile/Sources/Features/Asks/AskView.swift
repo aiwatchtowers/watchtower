@@ -88,17 +88,11 @@ struct AskView: View {
                 ReviewAskView(review: review, specReview: ask.specReview, model: model, isEditable: form.isEditable)
             }
             if !form.checks.isEmpty {
-                CheckAskView(rows: form.checks, model: model, isEditable: form.isEditable)
+                CheckAskView(rows: form.checks, footer: form.checkFooter, model: model, isEditable: form.isEditable)
             }
-            if form.question?.isLast ?? true {
-                SheetField(label: "Note") {
-                    TextField("Anything else for the agent (optional)", text: noteBinding, axis: .vertical)
-                        .lineLimit(2...8)
-                        .disabled(!form.isEditable)
-                }
-                if let hint = form.noteHint {
-                    Text(hint).font(TypeScale.meta).foregroundStyle(PhoneTone.red.color)
-                }
+            // A review's note sits in the bottom bar, over its verdict buttons (#1787).
+            if form.review == nil, form.question?.isLast ?? true {
+                AskNoteField(form: form, model: model, lines: 2...8)
             }
         }
     }
@@ -126,10 +120,6 @@ struct AskView: View {
             }
             .card(.plain, padding: EdgeInsets())
         }
-    }
-
-    private var noteBinding: Binding<String> {
-        Binding(get: { model.draft.note }, set: { model.setNote($0) })
     }
 
     private func dismiss(_ status: AskStatusRow.Model) {
@@ -233,10 +223,7 @@ private struct AskSendBar: View {
 
     @ViewBuilder private var actions: some View {
         if form.review != nil {
-            PrimaryActionBar(
-                primary: BarAction(title: AskText.approve, isEnabled: form.canSendVerdict) { verdict(.approved) },
-                secondary: BarAction(title: AskText.requestChanges, isEnabled: form.canSendVerdict) { verdict(.changes) }
-            )
+            reviewBar
         } else if let page = form.question, !page.isLast {
             PrimaryActionBar(primary: BarAction(title: AskText.next) { model.next(of: page.count) })
         } else {
@@ -246,7 +233,59 @@ private struct AskSendBar: View {
         }
     }
 
+    /// A review's bar (#1787): the note always in view above Request
+    /// changes · Approve, riding over the keyboard; Request changes waits
+    /// for a note or a comment and says so.
+    private var reviewBar: some View {
+        BottomActionBar {
+            VStack(alignment: .leading, spacing: Spacing.regular) {
+                AskNoteField(form: form, model: model, lines: 1...4)
+                if let hint = form.requestChangesHint {
+                    Text(hint).font(TypeScale.meta).foregroundStyle(.secondary)
+                }
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: Spacing.regular) { verdictButtons }
+                    VStack(spacing: Spacing.regular) { verdictButtons }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var verdictButtons: some View {
+        Button(AskText.requestChanges) { verdict(.changes) }
+            .buttonStyle(SecondaryActionStyle())
+            .disabled(!form.canRequestChanges)
+        Button(AskText.approve) { verdict(.approved) }
+            .buttonStyle(ProminentActionStyle())
+            .disabled(!form.canSendVerdict)
+    }
+
     private func verdict(_ verdict: OwnerAskAnswer.Verdict) {
         Task { await model.review(verdict, ask) }
+    }
+}
+
+/// The answer's note and its length warning: at the end of a question or
+/// check form, in the bottom bar on a review.
+private struct AskNoteField: View {
+    let form: AskFormModel
+    let model: AskViewModel
+    let lines: ClosedRange<Int>
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.small) {
+            SheetField(label: "Note") {
+                TextField("Anything else for the agent (optional)", text: noteBinding, axis: .vertical)
+                    .lineLimit(lines)
+                    .disabled(!form.isEditable)
+            }
+            if let hint = form.noteHint {
+                Text(hint).font(TypeScale.meta).foregroundStyle(PhoneTone.red.color)
+            }
+        }
+    }
+
+    private var noteBinding: Binding<String> {
+        Binding(get: { model.draft.note }, set: { model.setNote($0) })
     }
 }
