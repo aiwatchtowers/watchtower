@@ -236,8 +236,8 @@ final class InboxTracksIdeasWiringTests: XCTestCase {
         var sut = view(vm)
         sut.onGoToTarget = { opened.append($0) }
 
-        try sut.environment(AppState.isolated()).inspect().find(IdeaBatchPane.self)
-            .find(button: "Make a Target…").tap()
+        let pane = try sut.environment(AppState.isolated()).inspect().find(IdeaBatchPane.self)
+        try pane.find(button: "Make a Target…").tap()
         try await settle { !opened.isEmpty }
 
         let converted = try await manager.dbPool.read { db in

@@ -131,8 +131,8 @@ final class ArtifactRowHoverTests: XCTestCase {
         var pressed: [Int] = []
         let hooks = ArtifactRefHooks(nativeKinds: { _ in [.open] },
                                      accessibilityActions: { _ in [ArtifactAccessibilityAction(name: "Done") {}] })
-        let environment = ArtifactEnvironment(onAction: { pressed.append($0) }, refHooks: hooks,
-                                              isActionEnabled: { $0 != 12 })
+        var environment = ArtifactEnvironment(onAction: { pressed.append($0) }, refHooks: hooks)
+        environment.isActionEnabled = { $0 != 12 }
 
         let named = ArtifactListRowView.accessibleActions(row, firstIndex: 10, hidden: [.open],
                                                           environment: environment)

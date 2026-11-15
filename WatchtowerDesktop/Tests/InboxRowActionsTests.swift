@@ -838,8 +838,9 @@ final class InboxRowActionsTests: XCTestCase {
         try seedMailSender(key: "News@Example.com", permalink: link)
         let vm = await strip()
         var commands: [InboxCardCommand] = []
-        await handler(vm, onCommand: { commands.append($0) })
-            .press(.open, on: InboxRef(kind: .mailSender, key: "News@Example.com"))
+        var opener = handler(vm)
+        opener.onCommand = { commands.append($0) }
+        await opener.press(.open, on: InboxRef(kind: .mailSender, key: "News@Example.com"))
         guard case let .openLink(url)? = commands.first else { return XCTFail("\(commands)") }
         XCTAssertEqual(url.absoluteString, link)
     }
