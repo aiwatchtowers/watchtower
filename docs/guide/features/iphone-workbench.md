@@ -18,9 +18,9 @@ A Claude Code session takes your line while it works and reads it at its next st
 
 **Now** starts with your Mac: **MacBook Pro · online**, or **asleep · last seen 40 min ago** once its heartbeat is over 35 minutes old. Then:
 
-- **Waiting for you**, newest first across workbenches: only what needs your decision, asks and permission prompts. A question's suggested answers are chips, one tap each; with many or long answers, **Answer…** opens the ask. Once you answer, the row says where the answer is instead: **Sending answer…**, **Answer waiting to send**, or **Answer not delivered** with **Retry**. The first 20 show; the rest are **N more on your Mac**.
+- **Waiting for you**, newest first across workbenches: asks and permission prompts. A question's suggested answers are chips, one tap each; with many or long answers, **Answer…** opens the ask. Once answered, the row shows **Sending answer…**, **Answer waiting to send**, or **Answer not delivered** with **Retry**. The first 20 show; the rest are **N more on your Mac**.
 - **Working**: sessions whose agent is working, each with its timer (**as of 40 min ago** while the Mac is asleep).
-- **Ended**: sessions that stopped, finished or failed in the last 24 hours. A session with an open ask shows only as that ask. **Clear** takes them all off this phone; touch and hold a row for **Seen** to take only that one.
+- **Ended**: sessions that stopped, finished or failed in the last 24 hours. A session with an open ask shows only as that ask. **Clear** hides them all on this phone; touch and hold a row for **Seen** to hide one.
 - **Next meeting**, with **Record** from 10 minutes before it starts to 10 minutes after.
 
 The **Now** tab's badge counts the asks and permission prompts waiting on the Mac on screen; the app icon's badge counts them on all your Macs.
@@ -71,6 +71,10 @@ Type into **Message the session…** and send. Your line shows under it:
 ### Stop, finish or see the report
 
 The **⋯** menu has **Stop**, **Finish** (asks the agent to wrap up), **Interrupt**, **Report and timeline** and **Open board target**. A Codex session takes no **Interrupt** from the phone; stop it on the Mac. The report shows the targets' progress, the pull requests and the session's milestones. Tasks not done yet whose branch is already merged into the branch of the task above them are counted apart, as on the Mac: "1 / 3 targets · 1 merged".
+
+### Find a target on the board
+
+The **Board** opens on **Waiting for me** (an ask or permission prompt on the target or its session), else **Sessions running**, else **All**. **High**, **Blocked**, **Done** and **Archive** sit beside them. Search by title, `#number` or branch covers the whole board, archive too. Lanes follow the Mac's columns. Under **All**, groups and the **Backlog** and **Done** lanes start folded; the phone remembers what you open.
 
 ### Run an automation
 

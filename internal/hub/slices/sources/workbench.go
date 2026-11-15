@@ -119,6 +119,10 @@ type workbenchPayload struct {
 	TargetsMore          *int                  `json:"targets_more,omitempty"`
 	DefaultAgent         string                `json:"default_agent"`
 	Automations          []workbenchAutomation `json:"automations,omitempty"`
+	// BoardColumns is the workbench's defined board column titles of the
+	// shown statuses in the Mac's Kanban order (status order, then
+	// position): the phone's lane order (#1781). Absent without any.
+	BoardColumns []string `json:"board_columns,omitempty"`
 }
 
 // workbenchRow is one projects row with the switcher's counts.
@@ -157,6 +161,9 @@ func (s *workbenchSource) Items(ctx context.Context) ([]slices.Item, error) {
 		for _, r := range rows {
 			p := s.payload(r, window, counts[r.id], agent)
 			p.Automations = autos[r.id]
+			if p.BoardColumns, err = laneOrder(ctx, tx, r.id); err != nil {
+				return err
+			}
 			b, err := wire.Marshal(p)
 			if err != nil {
 				return err
@@ -195,6 +202,23 @@ func (s *workbenchSource) payload(r workbenchRow, w targetWindow, sessions sessi
 		TargetsMore:         more,
 		DefaultAgent:        agent,
 	}
+}
+
+// laneOrder is the titles of workbenchID's defined columns whose status
+// the board shows, in Kanban order (BoardColumnLayout.slots without the
+// implicit columns); nil when it defines none.
+func laneOrder(ctx context.Context, tx *sql.Tx, workbenchID int64) ([]string, error) {
+	cols, err := boardColumns(ctx, tx, workbenchID)
+	if err != nil {
+		return nil, err
+	}
+	var titles []string
+	for _, c := range cols.Columns {
+		if !cols.IsHidden(c.Status) {
+			titles = append(titles, c.Title)
+		}
+	}
+	return titles, nil
 }
 
 // displayPath is WorkbenchBranchPresentation.displayPath: a folder under

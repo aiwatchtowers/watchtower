@@ -45,6 +45,8 @@ final class AppEnvironment {
     let navigation = AppNavigation()
     /// The ready recaps the owner has opened on this phone.
     let recordingsSeen: RecordingsSeenStore
+    /// The boards' folded groups and lanes, per hub (#1781).
+    let boardFolds: BoardFoldStore
     /// The ended sessions the owner marked seen on Now, per hub.
     let endedSeen: NowEndedSeenStore
     /// Every hub's session, by hub id.
@@ -92,6 +94,7 @@ final class AppEnvironment {
         self.registry = registry
         self.setBadge = setBadge
         recordingsSeen = RecordingsSeenStore(defaults: defaults)
+        boardFolds = BoardFoldStore(defaults: defaults)
         endedSeen = NowEndedSeenStore(defaults: defaults)
         observeBadge()
     }
