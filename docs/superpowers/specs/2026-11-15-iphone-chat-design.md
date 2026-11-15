@@ -1,6 +1,6 @@
 # AI chat on the iPhone, over the relay — design
 
-Date: 2026-11-15. Board: #1791 (under the mobile umbrella #2). Status: draft for the owner's review.
+Date: 2026-11-15. Board: #1791 (under the mobile umbrella #2). Status: approved (ask #1340); §13 lists what changed during implementation.
 Mockups: [`docs/design/mockups/iphone-chat/index.html`](../../design/mockups/iphone-chat/index.html).
 
 ## 1. Goal and scope

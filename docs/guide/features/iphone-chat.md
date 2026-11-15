@@ -12,7 +12,7 @@ You think of a question away from your desk: "what did the vendor say about rene
 
 Chat on the phone needs Relay. Relay isn't in the current version of Watchtower for iPhone.
 
-Until then the **Chats** tab explains what is missing, for example **Chat needs Relay**, with **Switch to Relay…**. With iCloud as the transport, chat stays on the Mac. Chat also needs the Mac's chat permission for this phone, which is on by default, and an up-to-date Watchtower on the Mac (**Update Watchtower on your Mac** otherwise). If your organization limits what phones may read, the tab says **Chat is turned off by your organization**.
+Until then the **Chats** tab explains what is missing, for example **Chat works over Relay**, with **Switch to Relay…**. With iCloud as the transport, chat stays on the Mac. Chat also needs the Mac's chat permission for this phone, which is on by default, and an up-to-date Watchtower on the Mac (**Update Watchtower on your Mac** otherwise). If your organization limits what phones may read, the tab says **Chat is turned off by your organization**.
 
 ## How it works
 <!-- learn: none -->
@@ -47,7 +47,7 @@ When the assistant proposes a write (a Slack message, a Jira comment), the answe
 ### Artifacts and sources
 <!-- learn: none -->
 
-An artifact card opens a sheet: documents, tables and code as text, **Open in Mail** for an email, **Open in Google Calendar** for an event, **Copy and open Slack** for a Slack post, a sandboxed page for HTML. The sheet only opens and copies; nothing is sent from it. **Sources** lists what the answer used, grouped as on the Mac.
+An artifact card opens a sheet: documents, tables and code as text, **Open in Mail** for an email, **Open in Google Calendar** for an event, **Copy & open Slack** for a Slack post, a sandboxed page for HTML. The sheet only opens and copies; nothing is sent from it. **Sources** lists what the answer used, grouped as on the Mac.
 
 ## When it's empty or wrong
 <!-- learn: none -->
