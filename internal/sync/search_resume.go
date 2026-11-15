@@ -25,12 +25,14 @@ func runFetchDeadline(opts SyncOptions) time.Duration {
 
 // searchResume is where the blanket search stopped with pages left: its
 // query and the first page not fetched. The next Run with the same query
-// starts there; a different query (the window moved) drops it. firstSync
+// starts there; a different query (the window moved) drops it. A window
+// computed from now keeps after across midnight (syncViaSearch). firstSync
 // carries the window's first-sync state, which a resumed run can no longer
 // read off the account (run 1 already stored messages). It lives in memory:
 // a restarted daemon re-reads the window (idempotent upserts).
 type searchResume struct {
 	query     string
+	after     string // the window's after: date, kept while a moving window resumes
 	nextPage  int
 	firstSync bool
 }
@@ -72,11 +74,11 @@ func (o *Orchestrator) searchStart(query string, firstSync bool) (startPage, sto
 // deadline, a cancel, an error). A resumed pass that stopped before passing
 // its old stop page keeps that page, so failing runs never walk the
 // position backwards.
-func (o *Orchestrator) recordSearchStop(query string, startPage, stopPage, next int, completed, firstSync bool, messages int) {
+func (o *Orchestrator) recordSearchStop(query, after string, startPage, stopPage, next int, completed, firstSync bool, messages int) {
 	o.outcome.Pages += next - startPage
 	o.outcome.Messages += messages
 	if next = max(next, stopPage); !completed && next > 1 {
-		o.resume = &searchResume{query: query, nextPage: next, firstSync: firstSync}
+		o.resume = &searchResume{query: query, after: after, nextPage: next, firstSync: firstSync}
 	}
 }
 
@@ -100,5 +102,12 @@ func (o *Orchestrator) searchMentions(ctx context.Context, after string) (map[st
 		return nil, nil
 	}
 	_, _, seen, err := o.searchAndSave(ctx, fmt.Sprintf("<@%s> after:%s", owner, after), true, nil)
+	if err != nil && ctx.Err() == nil && isNonFatalError(err) {
+		// Page 1 failed for a reason other than a rate limit (a scope, a
+		// dead channel): the blanket query still covers the mentions, so
+		// this never falls back to the full sync.
+		o.logger.Printf("search sync: mention query failed, continuing with the blanket query: %v", err)
+		return nil, nil
+	}
 	return seen, err
 }

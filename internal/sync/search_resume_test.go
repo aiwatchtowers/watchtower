@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	gosync "sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -27,11 +28,14 @@ var resumeNow = time.Date(2026, 9, 22, 15, 0, 0, 0, time.UTC)
 // that number answers 429 with an hour's Retry-After, which runs past any
 // run's fetch deadline, so the call returns ErrFetchDeadline at once.
 type pagedSearch struct {
-	mu        gosync.Mutex
-	pages     int
-	limitPage int
-	deleted   int      // item removed from the window (0 = none); later items slide back a page
-	requests  []string // "query#page" in request order
+	mu         gosync.Mutex
+	pages      int
+	limitPage  int
+	deleted    int            // item removed from the window (0 = none); later items slide back a page
+	errPage    int            // blanket page answered missing_scope (0 = none)
+	mentionErr bool           // the mention query answers missing_scope
+	onPage     func(page int) // called before a blanket page is answered
+	requests   []string       // "query#page" in request order
 }
 
 func (s *pagedSearch) handle(w http.ResponseWriter, r *http.Request) {
@@ -40,9 +44,13 @@ func (s *pagedSearch) handle(w http.ResponseWriter, r *http.Request) {
 	page, _ := strconv.Atoi(r.FormValue("page"))
 	s.mu.Lock()
 	s.requests = append(s.requests, fmt.Sprintf("%s#%d", query, page))
-	pages, limit, deleted := s.pages, s.limitPage, s.deleted
+	pages, limit, deleted, errPage, mentionErr, onPage := s.pages, s.limitPage, s.deleted, s.errPage, s.mentionErr, s.onPage
 	s.mu.Unlock()
 
+	if strings.HasPrefix(query, "<@") && mentionErr {
+		jsonOK(w, map[string]any{"ok": false, "error": "missing_scope"})
+		return
+	}
 	if strings.HasPrefix(query, "<@") {
 		match := map[string]any{"user": "U002", "username": "bob", "ts": mentionTS, "text": "<@U001> look",
 			"channel": map[string]any{"id": "C001", "name": "general"}}
@@ -51,6 +59,13 @@ func (s *pagedSearch) handle(w http.ResponseWriter, r *http.Request) {
 			"paging":  map[string]any{"count": 100, "total": 1, "page": 1, "pages": 1},
 			"total":   1,
 		}})
+		return
+	}
+	if onPage != nil {
+		onPage(page)
+	}
+	if errPage > 0 && page == errPage {
+		jsonOK(w, map[string]any{"ok": false, "error": "missing_scope"})
 		return
 	}
 	if limit > 0 && page == limit {
@@ -376,4 +391,120 @@ func TestRun_ResetsFetchDeadline(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, context.Canceled)
 	assert.False(t, errors.Is(err, watchtowerslack.ErrFetchDeadline), "no deadline after the run")
+}
+
+// TestSearchResume_MovingWindowKeptAcrossMidnight: a window computed from
+// now (a first sync, a clamped catch-up) keeps its after: date while a
+// resume is pending, so the next day's run continues the same window and a
+// first sync still reports itself.
+func TestSearchResume_MovingWindowKeptAcrossMidnight(t *testing.T) {
+	for name, watermark := range map[string]string{
+		"first sync": "",
+		"clamped":    resumeNow.AddDate(0, 0, -45).Format(searchDateFormat),
+	} {
+		t.Run(name, func(t *testing.T) {
+			ts, s := newResumeSetup(t, 6, 4)
+			require.NoError(t, ts.db.SetSlackAccountSearchWatermark(ts.accountID, watermark))
+			require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{}))
+			run1 := s.blanket()
+			require.Len(t, run1, 4)
+			query := strings.TrimSuffix(run1[0], "#1")
+
+			ts.orch.now = func() time.Time { return resumeNow.AddDate(0, 0, 1) }
+			ts.freshClient()
+			s.reset(0)
+			require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{}))
+			var window []string // the sweep's after:/before: queries follow a finished window
+			for _, r := range s.blanket() {
+				if !strings.Contains(r, "before:") {
+					window = append(window, r)
+				}
+			}
+			assert.Equal(t, pageRequests(query, 3, 4, 5, 6), window, "the next day continues the same window")
+			if watermark == "" {
+				_, ok := ts.orch.FirstSyncFrom()
+				assert.True(t, ok, "the first sync survives midnight")
+			}
+		})
+	}
+}
+
+// TestAdaptive_MentionQueryErrorDoesNotFallBack: the mention query's page 1
+// failing for a reason other than a rate limit is logged and the blanket
+// query runs; no full sync (the mux cannot serve one, so it would fail Run).
+func TestAdaptive_MentionQueryErrorDoesNotFallBack(t *testing.T) {
+	ts, s := newResumeSetup(t, 3, 0)
+	s.mentionErr = true
+	ts.orch.outcome.RateLimited = true // behind, so the mention query runs
+	require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{}))
+	assert.Equal(t, pageRequests(resumeQuery, 1, 2, 3), s.blanket())
+	assert.False(t, ts.orch.SearchIncomplete())
+}
+
+// TestSearchResume_ResumedFirstPageErrorStops: a resumed pass whose first
+// page fails for a reason other than a rate limit keeps what earlier runs
+// fetched and stops; only page 1 falls back to the full sync.
+func TestSearchResume_ResumedFirstPageErrorStops(t *testing.T) {
+	ts, s := newResumeSetup(t, 6, 4)
+	require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{}))
+
+	ts.freshClient()
+	s.reset(0)
+	s.mu.Lock()
+	s.errPage = 3
+	s.mu.Unlock()
+	require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{}), "no full-sync fallback")
+	assert.Equal(t, pageRequests(resumeQuery, 3), s.blanket())
+	assert.True(t, ts.orch.SearchIncomplete())
+	assert.True(t, ts.orch.RunOutcome().ResumePending)
+
+	ts.freshClient()
+	s.reset(0)
+	s.mu.Lock()
+	s.errPage = 0
+	s.mu.Unlock()
+	require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{}))
+	assert.Equal(t, pageRequests(resumeQuery, 3, 4, 5, 6), s.blanket(), "the position survived")
+}
+
+// TestSearchSync_UnrelatedHoldDoesNotEndTheCycle: only a stop on the fetch
+// deadline ends the cycle. A later page failing for another reason while
+// some other call left a hold keeps the cycle going (finishSync runs, no
+// rate-limit note).
+func TestSearchSync_UnrelatedHoldDoesNotEndTheCycle(t *testing.T) {
+	s := &pagedSearch{pages: 3, errPage: 2}
+	inner := searchAuditMux(s.handle)
+	var armed atomic.Bool
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/emoji.list" && armed.Load() {
+			w.Header().Set("Retry-After", "3600")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		inner.ServeHTTP(w, r)
+	})
+	ts := newTestSetup(t, mux)
+	require.NoError(t, ts.db.UpsertWorkspace(db.Workspace{ID: "T001", Name: "test", Domain: "test"}))
+	require.NoError(t, ts.db.SetSlackAccountSearchWatermark(ts.accountID, "2026-09-20"))
+	require.NoError(t, ts.db.SetSlackRosterSyncedAt(ts.accountID, resumeNow))
+	ts.orch.now = func() time.Time { return resumeNow }
+	ts.orch.readStateSyncedAt = resumeNow
+	s.onPage = func(page int) {
+		if page != 2 {
+			return
+		}
+		// Another call on the client meets an hour-long 429 just before
+		// page 2 fails: the hold is active when the pass stops.
+		armed.Store(true)
+		_, _ = ts.orch.slackClient.GetEmoji(context.Background())
+	}
+
+	require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{}))
+	require.False(t, ts.orch.slackClient.HoldUntil().IsZero(), "the unrelated hold is active")
+	assert.False(t, ts.orch.searchRateLimited, "the cycle was not ended")
+	acct, err := ts.db.GetSlackAccount(ts.accountID)
+	require.NoError(t, err)
+	assert.NotContains(t, acct.Error, "rate-limited")
+	assert.True(t, ts.orch.SearchIncomplete())
 }
