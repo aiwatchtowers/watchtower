@@ -183,12 +183,20 @@ package final class ActionStripViewModel {
     /// artifact, root or owner folder, stay out of it. One read, writing
     /// nothing; each source tolerates a schema that predates it (its table
     /// missing counts 0), any other read error is thrown, never folded into
-    /// 0. `disabledFeatures` as in `InboxFolderMenuSnapshot.read`.
+    /// 0. `disabledFeatures` as in `InboxFolderMenuSnapshot.read`, whose
+    /// `badge` this equals: the same two terms and the same Waiting for me
+    /// gate, without the folder tree, artifacts and row states the badge
+    /// never draws.
     nonisolated package static func badgeCount(
         _ db: Database, nowUTC: String, disabledFeatures: Set<String> = [], calendar: Calendar = .current
     ) throws -> Int {
-        try InboxFolderMenuSnapshot.read(
-            db, nowUTC: nowUTC, disabledFeatures: disabledFeatures, calendar: calendar, mailSummary: false).badge
+        let attentionOn = !disabledFeatures.contains(InboxFolderQueries.waitingForMeFeatureID)
+        let people = try InboxFolderQueries.waitingForMe(db, featureOn: attentionOn).turnedOff ? 0
+            : WaitingQueries.peopleCounts(
+                db, nowUTC: nowUTC,
+                startOfTodayUTC: InboxToday.sinceUTC(now: AutomationDates.parse(nowUTC) ?? Date(), calendar: calendar)
+            ).today
+        return try approvalCount(db, nowUTC: nowUTC) + people
     }
 
     /// The counts each folder shows outside its artifacts, by the folder

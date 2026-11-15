@@ -85,11 +85,17 @@ final class InboxWaitingSplitTests: XCTestCase {
             blocks: #"{"v":1,"blocks":[{"type":"list","rows":[\#(rows.joined(separator: ","))]}]}"#)
     }
 
-    private func badge(_ pool: DatabasePool, disabled: Set<String> = []) async throws -> Int {
+    /// The badge, checked against the snapshot's `badge`: the short read
+    /// and the full one never disagree.
+    private func badge(_ pool: DatabasePool, disabled: Set<String> = [],
+                       file: StaticString = #filePath, line: UInt = #line) async throws -> Int {
         let utc = try InboxTodayFixture.calendar("UTC")
-        return try await pool.read { db in
-            try ActionStripViewModel.badgeCount(db, nowUTC: self.nowUTC, disabledFeatures: disabled, calendar: utc)
+        let (badge, snapshot) = try await pool.read { db in
+            (try ActionStripViewModel.badgeCount(db, nowUTC: self.nowUTC, disabledFeatures: disabled, calendar: utc),
+             try InboxFolderMenuSnapshot.read(db, nowUTC: self.nowUTC, disabledFeatures: disabled, calendar: utc).badge)
         }
+        XCTAssertEqual(badge, snapshot, "badgeCount == InboxFolderMenuSnapshot.badge", file: file, line: line)
+        return badge
     }
 
     // MARK: - People only
