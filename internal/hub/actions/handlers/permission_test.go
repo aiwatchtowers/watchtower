@@ -277,8 +277,8 @@ func TestAnUnnamedDeviceDecidesAsPhone(t *testing.T) {
 
 func TestAnAnswerToAClosedRequestIsNotPending(t *testing.T) {
 	for status, msg := range map[string]string{
-		"answered_on_mac": "Answered on the Mac",
-		"expired":         "Too late — answer on the Mac",
+		"answered_on_mac": "Answered on your tower",
+		"expired":         "Too late — answer on your tower",
 		"denied":          "Already denied",
 	} {
 		t.Run(status, func(t *testing.T) {
@@ -376,7 +376,7 @@ func TestProj21_AClippedRequestCannotBeAllowed(t *testing.T) {
 
 	allow := p.answer(sid, rid, "allow")
 	wantOutcome(t, allow, wire.StatusFailed, reasonAnswerOnMac)
-	wantMessage(t, allow, "Shortened — answer on the Mac to allow")
+	wantMessage(t, allow, "Shortened — answer on your tower to allow")
 	if s := p.rowStatus(rid); s != "pending" {
 		t.Fatalf("status = %q", s)
 	}
@@ -449,7 +449,7 @@ func TestProj21_ASettingsPathEditCannotBeAllowed(t *testing.T) {
 
 	refused := p.answer(sid, settings, "allow")
 	wantOutcome(t, refused, wire.StatusFailed, reasonAnswerOnMac)
-	wantMessage(t, refused, "Changes Watchtower or shell settings — answer on the Mac to allow")
+	wantMessage(t, refused, "Changes Watchtower or shell settings — answer on your tower to allow")
 	if s := p.rowStatus(settings); s != "pending" {
 		t.Fatalf("status = %q", s)
 	}
@@ -475,7 +475,7 @@ func TestAnAnswerThatLosesTheRaceIsNotPending(t *testing.T) {
 
 	got := p.answer(sid, rid, "allow")
 	wantOutcome(t, got, wire.StatusFailed, reasonNotPending)
-	wantMessage(t, got, "Answered on the Mac")
+	wantMessage(t, got, "Answered on your tower")
 	if s := p.rowStatus(rid); s != "answered_on_mac" {
 		t.Fatalf("status = %q", s)
 	}
@@ -495,7 +495,7 @@ func TestProj21_CodexPermissionRefusedAsNotSupported(t *testing.T) {
 	got := p.answer(sid, rid, "allow")
 
 	wantOutcome(t, got, wire.StatusFailed, reasonNotSupported)
-	wantMessage(t, got, "Codex sessions can't answer this permission from the phone yet. Answer it on the Mac.")
+	wantMessage(t, got, "Codex sessions can't answer this permission from the phone yet. Answer it on your tower.")
 	if s := p.rowStatus(rid); s != "pending" {
 		t.Fatalf("status = %q", s)
 	}
@@ -651,13 +651,13 @@ func TestProj21_CodexInterruptRefusedAsNotSupported(t *testing.T) {
 
 	got := p.interrupt(sid, time.Second)
 	wantOutcome(t, got, wire.StatusFailed, reasonNotSupported)
-	wantMessage(t, got, "Codex sessions can't be interrupted from the phone yet. Stop it on the Mac.")
+	wantMessage(t, got, "Codex sessions can't be interrupted from the phone yet. Stop it on your tower.")
 	if got := p.esc.interrupts(); len(got) != 0 {
 		t.Fatalf("interrupts = %v", got)
 	}
 }
 
-// A deleted session still reads "no longer exists on the Mac".
+// A deleted session still reads "no longer exists on your tower".
 func TestProj21_DeletedSessionInterruptStillNotFound(t *testing.T) {
 	p := newPermEnv(t)
 	got := p.interrupt(9999, time.Second)

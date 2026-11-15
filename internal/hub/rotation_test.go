@@ -845,7 +845,7 @@ func TestPermissionAnswerAcrossARotationLosesToTheMac(t *testing.T) {
 		t.Fatal(err)
 	}
 	if e := w.ph.Echoes[seq]; e.Status != wire.StatusFailed || echoReason(e) != "not_pending" ||
-		e.ErrorMessage == nil || *e.ErrorMessage != "Answered on the Mac" {
+		e.ErrorMessage == nil || *e.ErrorMessage != "Answered on your tower" {
 		t.Fatalf("answer echo %+v, want failed not_pending, answered on the Mac", e)
 	}
 	if st, at := w.row(rid); st != "answered_on_mac" || at != "mac" {

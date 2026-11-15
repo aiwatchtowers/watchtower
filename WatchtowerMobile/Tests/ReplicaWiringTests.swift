@@ -23,7 +23,7 @@ final class ReplicaWiringTests: XCTestCase {
         .workbench: 3,
         .terminalSession: 10,
         .ownerAsk: 6,
-        .workbenchTarget: 13,
+        .workbenchTarget: 16,
         .workbenchComment: 3,
         .sessionReport: 3,
         .sessionTimeline: 5,
@@ -155,12 +155,12 @@ final class ReplicaWiringTests: XCTestCase {
 
         try await poll({
             env.sessions.values.allSatisfy { !$0.workbenchReplica.snapshot.workbenches.isEmpty }
-        }, "both Macs hydrated")
+        }, "both towers hydrated")
         XCTAssertEqual(env.workbenchReplica.snapshot.workbenches.map(\.name).sorted(), ["Acme", "Acme Website", "Notes"])
         let home = try XCTUnwrap(env.session(DemoSeed.secondary.hubID))
         XCTAssertEqual(home.workbenchReplica.snapshot.workbenches.map(\.name), ["Home Lab"])
-        XCTAssertEqual(home.workbenchReplica.openAskCount, 1)
-        XCTAssertEqual(env.openAskTotal, env.workbenchReplica.openAskCount + 1)
+        XCTAssertEqual(home.workbenchReplica.waitingCount, 1)
+        XCTAssertEqual(env.openAskTotal, env.workbenchReplica.waitingCount + 1)
 
         env.activate(DemoSeed.secondary.hubID)
         XCTAssertEqual(env.workbenchReplica.snapshot.workbenches.map(\.name), ["Home Lab"], "a switch shows the other Mac")

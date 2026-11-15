@@ -43,12 +43,16 @@ final class WorkbenchWiringTests: XCTestCase {
         XCTAssertEqual(notes.pills.map(\.text), ["idle"])
     }
 
-    /// The Workbench tab's badge is the open-ask count; the others have none.
-    func testTheWorkbenchTabBadgeCountsOpenAsks() throws {
-        XCTAssertEqual(try demoSnapshot(now: now).openAsks().count, 3)
-        XCTAssertEqual(RootTabView.Tab.workbench.badge(openAskCount: 3), 3)
-        XCTAssertEqual(RootTabView.Tab.now.badge(openAskCount: 3), 0)
-        XCTAssertEqual(RootTabView.Tab.workbench.badge(openAskCount: 0), 0)
+    /// #1788: the badge is on Now, where the asks are answered, and counts
+    /// what Now's Waiting for you lists: open asks plus pending permission
+    /// requests. Workbench and Calendar carry none.
+    func testTheNowTabBadgeCountsAsksAndPermissionRequests() throws {
+        let snapshot = try demoSnapshot(now: now)
+        XCTAssertEqual(snapshot.openAskCount, snapshot.openAsks().count + snapshot.pendingPermissions.count)
+        XCTAssertEqual(RootTabView.Tab.now.badge(waitingCount: snapshot.openAskCount), snapshot.openAskCount)
+        XCTAssertEqual(RootTabView.Tab.workbench.badge(waitingCount: 3), 0)
+        XCTAssertEqual(RootTabView.Tab.calendar.badge(waitingCount: 3), 0)
+        XCTAssertEqual(RootTabView.Tab.now.badge(waitingCount: 0), 0)
     }
 
     func testADetachedHeadReadsAsDetached() throws {
@@ -61,7 +65,7 @@ final class WorkbenchWiringTests: XCTestCase {
     func testZeroSessionsShowNoSessionsYet() throws {
         let menu = try XCTUnwrap(WorkbenchMenuModel(workbenchID: DemoSeed.notesID, snapshot: try demoSnapshot(now: now), now: now, asOf: nil))
         XCTAssertTrue(menu.sections.isEmpty)
-        XCTAssertTrue(menu.finished.isEmpty)
+        XCTAssertTrue(menu.older.isEmpty)
         XCTAssertEqual(menu.sessionsEmptyText, "No sessions yet")
         XCTAssertTrue(menu.unattachedAsks.isEmpty)
     }
@@ -112,7 +116,7 @@ final class WorkbenchWiringTests: XCTestCase {
         try await poll { model.snapshot.workbenches.count == 3 }
         XCTAssertEqual(model.snapshot.sessions.count, 10)
         XCTAssertEqual(model.snapshot.asks.count, 6)
-        XCTAssertEqual(model.snapshot.targets.count, 13)
+        XCTAssertEqual(model.snapshot.targets.count, 16)
         XCTAssertEqual(model.snapshot.comments.count, 3)
         XCTAssertEqual(model.snapshot.heartbeat?.macName, DemoSeed.macName)
         XCTAssertEqual(model.snapshot.skippedRecords, [.workbench: 1])
@@ -131,12 +135,12 @@ final class WorkbenchWiringTests: XCTestCase {
         let model = WorkbenchReplicaModel()
         model.start(store: store)
         try await poll { model.snapshot.workbenches.count == 3 }
-        XCTAssertEqual(model.openAskCount, 3)
+        XCTAssertEqual(model.waitingCount, 3)
         let published = PublishedValues(WorkbenchReplicaModel.observation(store: store).values(in: store.reader))
         defer { published.cancel() }
         try await poll({ published.values.count == 1 }, "the initial value was not published")
         XCTAssertEqual(published.values.first?.workbenches.count, 3)
-        let badgeSets = ObservedSetCounter { _ = model.openAskCount }
+        let badgeSets = ObservedSetCounter { _ = model.waitingCount }
         // A sibling observation proves the unrelated write was seen.
         let sentinel = CalendarReplicaModel()
         sentinel.start(store: store)
@@ -156,7 +160,7 @@ final class WorkbenchWiringTests: XCTestCase {
             kind: .ownerAsk, id: 199, json: DemoSeed.JSON.ask(199, workbench: 98), modifiedAt: now
         )])
         _ = try await hydrator.hydrateOnce()
-        try await poll { model.openAskCount == 4 }
+        try await poll { model.waitingCount == 4 }
         XCTAssertEqual(badgeSets.count, 1)
     }
 }

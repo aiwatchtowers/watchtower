@@ -33,8 +33,8 @@ final class LatencyDiagnosticsModelTests: XCTestCase {
     func testRowsForRelayAndICloud() {
         let rows = LatencyDiagnosticsModel.rows(mockupSamples(.cloudKit) + mockupSamples(.relay))
         XCTAssertEqual(rows, [
-            .init(title: "Relay", count: "214 actions", result: "p50 0.31 s · p90 0.7 s", answer: "Mac's answer: p50 0.12 s · p90 0.3 s"),
-            .init(title: "iCloud", count: "214 actions", result: "p50 0.31 s · p90 0.7 s", answer: "Mac's answer: p50 0.12 s · p90 0.3 s")
+            .init(title: "Relay", count: "214 actions", result: "p50 0.31 s · p90 0.7 s", answer: "Tower's answer: p50 0.12 s · p90 0.3 s"),
+            .init(title: "iCloud", count: "214 actions", result: "p50 0.31 s · p90 0.7 s", answer: "Tower's answer: p50 0.12 s · p90 0.3 s")
         ])
     }
 
@@ -75,7 +75,7 @@ final class LatencyDiagnosticsModelTests: XCTestCase {
         XCTAssertEqual(LatencyDiagnosticsModel.header, "Action → result on screen · 7 days")
         XCTAssertEqual(LatencyDiagnosticsModel.footer, "Measured on this iPhone only. Nothing is sent anywhere.")
         XCTAssertEqual(LatencyDiagnosticsModel.emptyText, "No timings yet. They appear after your first action.")
-        XCTAssertEqual(LatencyDiagnosticsModel.needsMacUpdateText, "Timings need an updated Watchtower on your Mac.")
+        XCTAssertEqual(LatencyDiagnosticsModel.needsMacUpdateText, "Timings need an updated Watchtower on your tower.")
         XCTAssertEqual(LatencyDiagnosticsModel.failedText, "Couldn't read the timings.")
         XCTAssertEqual(LatencyDiagnosticsModel.loadingText, "Reading timings…")
         XCTAssertEqual(LatencyDiagnosticsModel.retryTitle, "Retry")

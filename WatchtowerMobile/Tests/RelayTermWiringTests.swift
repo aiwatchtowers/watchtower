@@ -139,7 +139,7 @@ final class RelayTermWiringTests: XCTestCase {
         await rig.session.relaySlotLost()
         XCTAssertEqual(try rig.bed.row()?.link.relayRefused?.cause, .slot)
         try await rig.center.refresh()
-        XCTAssertNil(try rig.bed.row()?.link.relayRefused, "paying, the Mac in a slot")
+        XCTAssertNil(try rig.bed.row()?.link.relayRefused, "paying, the tower in a slot")
     }
 
     /// Not paying, the Mac in a slot: still a lapse.
@@ -234,7 +234,7 @@ final class RelayTermWiringTests: XCTestCase {
         XCTAssertEqual(AppRoot.pendingActionCount(rig.session), 0)
         rig.bed.clock.advance(300)
         await foreground(rig)
-        XCTAssertNil(try rig.bed.row(), "the row leaves Settings → Macs")
+        XCTAssertNil(try rig.bed.row(), "the row leaves Settings → Towers")
         XCTAssertNil(try rig.bed.keys.hubLink(hubID), "every key goes")
         XCTAssertNil(rig.bed.root.env.session(hubID))
         XCTAssertEqual(rig.bed.root.linking.notice, .relayEnded(macName: "Work Mac", notSent: 0), "S60, with today's Not sent count")

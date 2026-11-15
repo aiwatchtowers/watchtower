@@ -8,12 +8,17 @@ enum EventAction: Hashable {
     case record
     /// A finished event with a recap: the one button, which opens it.
     case openRecap(Int)
+    /// A finished event recorded on this phone whose transcript has not
+    /// reached the replica yet: opens the Recordings list, where the
+    /// recording's row shows its progress or Retry (#1789).
+    case openRecording
 
     var title: String {
         switch self {
         case .join: "Join"
         case .record: "Record"
         case .openRecap: "Open recap"
+        case .openRecording: "Open recording"
         }
     }
 }
@@ -36,8 +41,8 @@ struct EventDetailModel {
     }
 
     static let avatarLimit = 5
-    static let noPrepText = "No prep yet — it is prepared on your Mac"
-    static let transcribingTitle = "Transcribing on Mac"
+    static let noPrepText = "No prep yet — it is prepared on your tower"
+    static let transcribingTitle = "Transcribing on your tower"
     /// Attendee initials' tones (design pass C4): never red (recording) or
     /// orange (waiting).
     static let attendeeTones: [PhoneTone] = [.blue, .green, .teal, .purple]
@@ -74,8 +79,10 @@ struct EventDetailModel {
     let meetingEvent: MeetingEvent?
 
     /// The bottom bar's buttons, in order: Join (with a usable link) and
-    /// Record (not all-day); a finished event with a recap has only Open
-    /// recap.
+    /// Record (not all-day) until the event ends; then a recap's Open recap
+    /// alone, or Join and Open recording for a phone recording still on its
+    /// way; an unrecorded event keeps Record for `overrunGrace` after its
+    /// end, then has none (#1789).
     let actions: [EventAction]
 
     var showsRecord: Bool { actions.contains(.record) }
@@ -109,13 +116,13 @@ struct EventDetailModel {
         attendeesLine = CalendarFormat.people(event).map { "\($0) · \(accepted) accepted" }
 
         prepBullets = event.prepBullets
-        prepMoreText = (event.prepBulletsMore ?? 0) > 0 ? "\(event.prepBulletsMore ?? 0) more on your Mac" : nil
+        prepMoreText = (event.prepBulletsMore ?? 0) > 0 ? "\(event.prepBulletsMore ?? 0) more on your tower" : nil
         prepEmptyText = event.prepBullets.isEmpty ? Self.noPrepText : nil
         let text = event.description.trimmingCharacters(in: .whitespacesAndNewlines)
         description = text.isEmpty ? nil : text
 
         linkedTargets = event.linkedTargets.map { LinkedTargetRow(id: $0.id, text: $0.text, status: Self.statusLabel($0.status)) }
-        linkedTargetsMoreText = (event.linkedTargetsMore ?? 0) > 0 ? "\(event.linkedTargetsMore ?? 0) more on your Mac" : nil
+        linkedTargetsMoreText = (event.linkedTargetsMore ?? 0) > 0 ? "\(event.linkedTargetsMore ?? 0) more on your tower" : nil
 
         let status = EventRecordingStatus(event: event, snapshot: snapshot, recordings: recordings, now: now)
         recordingText = status.text ?? EventRecordingStatus.notRecordedText
@@ -125,12 +132,26 @@ struct EventDetailModel {
         meetingEvent = event.isAllDay
             ? nil
             : MeetingEvent(id: event.id, title: event.title, start: event.startDate, end: event.endDate)
-        if event.endDate <= now, let recap = snapshot.transcript(forEvent: event.id) {
+        let join: [EventAction] = joinURL != nil ? [.join] : []
+        if event.endDate > now {
+            actions = join + (meetingEvent != nil ? [.record] : [])
+        } else if let recap = snapshot.transcript(forEvent: event.id) {
             actions = [.openRecap(recap.id)]
+        } else if recordings.recordings.contains(where: { $0.eventID == event.id }) {
+            // Over: no Record (#1789) — a second recording of a finished
+            // meeting would only hide the first one's progress.
+            actions = join + [.openRecording]
+        } else if meetingEvent != nil, now < event.endDate.addingTimeInterval(Self.overrunGrace) {
+            // A meeting that runs past its calendar end, not recorded yet.
+            actions = join + [.record]
         } else {
-            actions = (joinURL != nil ? [.join] : []) + (meetingEvent != nil ? [.record] : [])
+            actions = join
         }
     }
+
+    /// How long after its calendar end an event with no recording or
+    /// transcript still offers Record: meetings overrun.
+    static let overrunGrace: TimeInterval = 30 * 60
 
     static func initials(_ name: String) -> String {
         let words = name.split { $0 == " " || $0 == "." || $0 == "@" }.prefix(2)

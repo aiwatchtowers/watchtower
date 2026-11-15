@@ -1,32 +1,130 @@
 import Foundation
 import WatchtowerKit
 
-/// The board's filter chips (spec §13 B2). Archived targets show only under
-/// Archive; the other filters never show them (PROJ-15: hidden, not lost).
+/// The board's quick filters (#1781), one row: what needs the owner, what
+/// runs, then the status cuts. Archived targets show only under Archive;
+/// the other filters never show them (PROJ-15: hidden, not lost).
 enum BoardFilter: CaseIterable, Identifiable {
-    case open, inProgress, blocked, archive
+    case waiting, sessions, high, blocked, all, done, archive
 
     var id: Self { self }
 
     var title: String {
         switch self {
-        case .open: "Open"
-        case .inProgress: "In progress"
+        case .waiting: "Waiting for me"
+        case .sessions: "Sessions running"
+        case .high: "High"
         case .blocked: "Blocked"
+        case .all: "All"
+        case .done: "Done"
         case .archive: "Archive"
+        }
+    }
+
+    /// What an empty board says under this filter.
+    var emptyText: String {
+        switch self {
+        case .waiting: "Nothing waits for you"
+        case .sessions: "No session is running"
+        case .high: "No high-priority targets"
+        case .blocked: "Nothing blocked"
+        case .all: "No open targets"
+        case .done: "Nothing done"
+        case .archive: "Nothing archived"
         }
     }
 
     /// The statuses Desktop's switcher counts as open.
     static let openStatuses: Set<WorkbenchTargetStatus> = [.todo, .inProgress, .inReview, .blocked]
 
-    func matches(_ target: WorkbenchTarget) -> Bool {
+    func matches(_ target: WorkbenchTarget, _ signals: BoardSignals) -> Bool {
+        let open = Self.openStatuses.contains(target.status)
         switch self {
-        case .open: !target.archived && Self.openStatuses.contains(target.status)
-        case .inProgress: !target.archived && target.status == .inProgress
-        case .blocked: !target.archived && target.status == .blocked
-        case .archive: target.archived
+        case .waiting: return !target.archived && signals.isWaiting(target)
+        case .sessions: return !target.archived && signals.isRunning(target)
+        case .high: return !target.archived && open && target.priority == .high
+        case .blocked: return !target.archived && target.status == .blocked
+        case .all: return !target.archived && open
+        case .done: return !target.archived && (target.status == .done || target.status == .dismissed)
+        case .archive: return target.archived
         }
+    }
+
+    /// The board's opening filter: Waiting for me, else Sessions running
+    /// when nothing waits, else All.
+    static func opening(counts: [Self: Int]) -> Self {
+        if (counts[.waiting] ?? 0) > 0 { return .waiting }
+        if (counts[.sessions] ?? 0) > 0 { return .sessions }
+        return .all
+    }
+}
+
+/// What waits and what runs per target, from the replica's asks,
+/// permission requests and sessions (#1781).
+struct BoardSignals {
+    /// What waits on one or more targets, by identity, so a group summing
+    /// its subtree counts an ask or a prompt shared by two targets once.
+    struct Waits: Equatable {
+        /// Open asks the phone holds: filed on the target or by its sessions.
+        var askIDs: Set<Int64> = []
+        /// Asks the Mac counts on a target (`open_asks`) that the replica
+        /// does not hold; each belongs to that one target.
+        var unseenAsks = 0
+        /// Sessions waiting on a permission prompt (one open prompt per
+        /// session, the hub closes the older one).
+        var approvalSessions: Set<Int64> = []
+
+        var asks: Int { askIDs.count + unseenAsks }
+        var approvals: Int { approvalSessions.count }
+
+        mutating func formUnion(_ other: Self) {
+            askIDs.formUnion(other.askIDs)
+            unseenAsks += other.unseenAsks
+            approvalSessions.formUnion(other.approvalSessions)
+        }
+    }
+
+    private let openAsksByTarget: [Int64: Set<Int64>]
+    private let openAsksBySession: [Int64: Set<Int64>]
+    private let approvalSessions: Set<Int64>
+    private let waitingSessions: Set<Int64>
+    private let runningSessions: Set<Int64>
+
+    init(snapshot: WorkbenchReplicaSnapshot, workbenchID: Int64) {
+        let asks = snapshot.openAsks(in: workbenchID)
+        openAsksByTarget = Dictionary(grouping: asks.filter { $0.targetID != nil }) { $0.targetID ?? 0 }.mapValues { Set($0.map(\.id)) }
+        openAsksBySession = Dictionary(grouping: asks.filter { $0.sessionID != nil }) { $0.sessionID ?? 0 }.mapValues { Set($0.map(\.id)) }
+        let sessions = snapshot.sessions.filter { $0.workbenchID == workbenchID }
+        approvalSessions = Set(snapshot.permissionRequests.map(\.sessionID))
+            .union(sessions.filter { $0.stateKind == .needsApproval }.map(\.id))
+        waitingSessions = Set(sessions.filter { $0.stateKind == .waitingOnAsk }.map(\.id))
+        runningSessions = Set(sessions.filter { [.working, .running].contains($0.stateKind) }.map(\.id))
+    }
+
+    func waits(_ target: WorkbenchTarget) -> Waits {
+        let filed = openAsksByTarget[target.id] ?? []
+        var askIDs = filed
+        for session in target.sessionIDs {
+            askIDs.formUnion(openAsksBySession[session] ?? [])
+        }
+        return Waits(
+            askIDs: askIDs,
+            unseenAsks: max(0, target.openAsks - filed.count),
+            approvalSessions: Set(target.sessionIDs.filter(approvalSessions.contains))
+        )
+    }
+
+    func isWaiting(_ target: WorkbenchTarget) -> Bool {
+        let waits = waits(target)
+        return waits.asks > 0 || waits.approvals > 0 || target.sessionIDs.contains(where: waitingSessions.contains)
+    }
+
+    func runningSessionIDs(_ target: WorkbenchTarget) -> Set<Int64> {
+        Set(target.sessionIDs.filter(runningSessions.contains))
+    }
+
+    func isRunning(_ target: WorkbenchTarget) -> Bool {
+        target.sessionIDs.contains(where: runningSessions.contains)
     }
 }
 
@@ -34,14 +132,16 @@ enum BoardFilter: CaseIterable, Identifiable {
 /// count, the only detail that may be orange.
 typealias BoardDetail = MetaItem
 
-/// One board row: status glyph, title, sub-line (asks, sessions, PR), the
-/// priority dot and progress.
+/// One target row as the target detail's sub-target list shows it: status
+/// glyph, title, sub-line (asks, sessions, PR), the priority dot and
+/// progress. The board draws the compact card (`BoardNode.card`).
 struct BoardRowModel: Equatable, Identifiable {
     let id: Int64
     let title: String
     let statusGlyph: String
     let statusTone: PhoneTone
-    /// "In progress", "Done", …: what VoiceOver says for the glyph.
+    /// "In progress", "Done", …: what VoiceOver says for the glyph, and the
+    /// row's lane on the board.
     let statusText: String
     let details: [BoardDetail]
     let priority: WorkbenchTargetPriority
@@ -54,7 +154,7 @@ struct BoardRowModel: Equatable, Identifiable {
     /// progress (no bar).
     let progressValue: Double?
     let progressTone = PhoneTone.green
-    /// A done target shown for context under Open: drawn greyed.
+    /// A done target shown for context: drawn greyed.
     let isDimmed: Bool
     /// The Desktop's board card for this target (mockup 5).
     let card: BoardCardModel
@@ -65,7 +165,7 @@ struct BoardRowModel: Equatable, Identifiable {
         let status = Self.status(target.status)
         statusGlyph = status.glyph
         statusTone = status.tone
-        statusText = target.column ?? Self.statusLabel(target.status)
+        statusText = Self.label(target)
         priority = target.priority
         priorityTone = PriorityMark.tone(target.priority)
         isDimmed = target.status == .done
@@ -83,28 +183,51 @@ struct BoardRowModel: Equatable, Identifiable {
 
         var details: [BoardDetail] = []
         if target.openAsks > 0 {
-            details.append(BoardDetail(text: target.openAsks == 1 ? "1 ask" : "\(target.openAsks) asks", tone: .waitingForYou, role: .ask))
+            details.append(BoardDetail(text: Self.plural(target.openAsks, "ask"), tone: .waitingForYou, role: .ask))
         }
         let sessions = target.sessionIDs.compactMap(snapshot.session)
         if sessions.contains(where: { [.working, .running].contains($0.stateKind) }) {
             details.append(BoardDetail(text: "Session working", tone: .green, role: .info))
         } else if !target.sessionIDs.isEmpty {
             let count = target.sessionIDs.count + (target.sessionIDsMore ?? 0)
-            details.append(BoardDetail(text: count == 1 ? "1 session" : "\(count) sessions", tone: .secondary, role: .info))
+            details.append(BoardDetail(text: Self.plural(count, "session"), tone: .secondary, role: .info))
         }
-        if !target.pr.isEmpty {
-            details.append(BoardDetail(text: target.pr.allSatisfy(\.isNumber) ? "PR #\(target.pr)" : "PR", tone: .secondary, role: .info))
-        }
+        if let pr = Self.prDetail(target) { details.append(pr) }
         self.details = details
-        let doneChildren = snapshot.targets.filter { $0.parentID == target.id && $0.status == .done }.count
         card = BoardCardModel(
             number: target.id, title: target.text, status: target.status, statusText: statusText, priority: target.priority,
-            counter: target.childrenCount > 0 ? "\(doneChildren)/\(target.childrenCount)" : nil,
+            counter: Self.counter(target, snapshot: snapshot),
             progress: progressValue,
             liveSessions: sessions.filter { [.working, .running].contains($0.stateKind) }.count,
             // The live-session dot is on the card already.
             details: details.filter { $0.text != "Session working" }
         )
+    }
+
+    /// The row's label and lane: its board column, else its status label.
+    static func label(_ target: WorkbenchTarget) -> String {
+        target.column ?? statusLabel(target.status)
+    }
+
+    /// A group's counter, the detail's one rule (#1788,
+    /// `BoardTargetDetailModel.childCounter`): "0/2 · 1 archived"; nil for a
+    /// leaf.
+    static func counter(_ target: WorkbenchTarget, snapshot: WorkbenchReplicaSnapshot) -> String? {
+        guard target.childrenCount > 0 else { return nil }
+        let listed = snapshot.targets.filter { $0.parentID == target.id && $0.archived == target.archived }
+        return BoardTargetDetailModel.childCounter(
+            done: listed.filter { $0.status == .done }.count, listed: listed.count,
+            archived: target.archived ? 0 : target.childrenCount - listed.count
+        )
+    }
+
+    static func prDetail(_ target: WorkbenchTarget) -> BoardDetail? {
+        guard !target.pr.isEmpty else { return nil }
+        return BoardDetail(text: target.pr.allSatisfy(\.isNumber) ? "PR #\(target.pr)" : "PR", tone: .secondary, role: .info)
+    }
+
+    static func plural(_ count: Int, _ noun: String) -> String {
+        "\(count) \(noun)\(count == 1 ? "" : "s")"
     }
 
     /// The Mac's status glyph and tone (`TargetStatusStyle`, design pass
@@ -146,27 +269,100 @@ struct BoardRowModel: Equatable, Identifiable {
     }
 }
 
-/// One tree node; a node has a disclosure only when it has visible children.
+/// One board tree node: the compact card (#1781) in its lane; a node has a
+/// disclosure only when it has visible children.
 struct BoardNode: Equatable, Identifiable {
-    let row: BoardRowModel
+    let id: Int64
+    let status: WorkbenchTargetStatus
+    /// The lane label of this row on its own: column, else status label.
+    let label: String
+    let card: BoardCardModel
+    /// Done or archived: drawn greyed.
+    let isDimmed: Bool
     let children: [Self]
 
-    var id: Int64 { row.id }
     var hasDisclosure: Bool { !children.isEmpty }
 }
 
-/// The board tree under one filter: the matching targets plus, for
-/// context, their ancestors from the same pool (archived or not), so a
-/// filter never mixes archived and live records. Under Open, a shown
-/// parent's done children (greyed) show only while `showDone` is on (the
-/// owner's Show done button, #1191); the chip counts stay open-only.
+/// One lane of the board: the top-level targets sharing a column or status
+/// label (mockup 5), in the owner's column order.
+struct BoardLane: Identifiable, Equatable {
+    enum Kind: Equatable {
+        case open, done, archived
+    }
+
+    let title: String
+    let nodes: [BoardNode]
+    let kind: Kind
+
+    var id: String {
+        switch kind {
+        case .open: "lane:" + title
+        case .done: "done:" + title
+        case .archived: "archived"
+        }
+    }
+
+    /// Backlog and Done start folded under All.
+    var isFoldedByDefault: Bool {
+        kind != .open || title.localizedCaseInsensitiveCompare("Backlog") == .orderedSame
+    }
+
+    /// The Mac's Kanban status order (`BoardColumnLayout.openStatusOrder`).
+    static func laneRank(_ status: WorkbenchTargetStatus) -> Int {
+        switch status {
+        case .todo: 0
+        case .inProgress: 1
+        case .inReview: 2
+        case .blocked: 3
+        case .done: 4
+        default: 5
+        }
+    }
+
+    /// Roots grouped by their label: status order, then the label's place
+    /// in `columns` (the Mac's defined column titles, #1781; a label not
+    /// among them after its status's columns), then first seen. An old Mac
+    /// sends no columns: status order, then first seen. Done roots share
+    /// one lane, placed last.
+    static func lanes(_ roots: [BoardNode], columns: [String]?) -> [Self] {
+        var order: [String] = []
+        var groups: [String: [BoardNode]] = [:]
+        for node in roots where node.status != .done {
+            if groups[node.label] == nil { order.append(node.label) }
+            groups[node.label, default: []].append(node)
+        }
+        let columns = columns ?? []
+        func key(_ title: String, _ seen: Int) -> (Int, Int, Int) {
+            let status = groups[title]?.first?.status ?? .todo
+            return (laneRank(status), columns.firstIndex(of: title) ?? columns.count, seen)
+        }
+        let sorted = order.enumerated().sorted { key($0.element, $0.offset) < key($1.element, $1.offset) }.map(\.element)
+        var lanes = sorted.map { Self(title: $0, nodes: groups[$0] ?? [], kind: .open) }
+        let done = roots.filter { $0.status == .done }
+        if !done.isEmpty { lanes.append(Self(title: "Done", nodes: done, kind: .done)) }
+        return lanes
+    }
+}
+
+/// The board under one quick filter, or a search (#1781): the matching
+/// targets plus, for context, their ancestors from the same pool (archived
+/// or not), so a tree never mixes archived and live records, laid out in
+/// lanes. A search covers the whole board: live matches in their lanes,
+/// archived ones in one Archived lane at the end.
 struct BoardModel {
+    static let searchPrompt = "Search title, #number, branch"
+
+    /// The filter shown: the owner's choice, else the opening filter.
     let filter: BoardFilter
-    let roots: [BoardNode]
+    /// The trimmed search; empty when not searching.
+    let query: String
+    let lanes: [BoardLane]
     let visibleIDs: Set<Int64>
-    /// The done children of shown parents under Open, shown or hidden by
-    /// `showDone`: the Show done button's count (0 = no button).
-    let doneChildCount: Int
+    /// The live roots (every lane but Archived), for the tree's tests.
+    let roots: [BoardNode]
+    /// Targets matching the search; 0 when not searching.
+    let matchCount: Int
     /// New targets the phone asked this workbench's Mac to add, until
     /// hydration delivers them (or the Mac refuses).
     let pendingCreates: [BoardWriteRow]
@@ -176,9 +372,8 @@ struct BoardModel {
     private let counts: [BoardFilter: Int]
 
     init(
-        workbenchID: Int64, snapshot: WorkbenchReplicaSnapshot, filter: BoardFilter, showDone: Bool = false, now: Date = Date()
+        workbenchID: Int64, snapshot: WorkbenchReplicaSnapshot, filter: BoardFilter? = nil, query: String = "", now: Date = Date()
     ) {
-        self.filter = filter
         pendingCreates = BoardWriteRow.rows(in: snapshot, now: now) {
             $0.action.kind == .boardTargetCreate
                 && (try? BoardTargetCreateParams(wireParams: $0.action.params).workbenchID) == workbenchID
@@ -189,39 +384,72 @@ struct BoardModel {
                 && BoardTargetDetailModel.replyTarget(of: $0, in: snapshot) == nil
         }
         let board = snapshot.targets.filter { $0.workbenchID == workbenchID }
-        let pool = board.filter { $0.archived == (filter == .archive) }
-        let byID = Dictionary(pool.map { ($0.id, $0) }) { first, _ in first }
-
-        var visible = Set<Int64>()
-        for target in pool where filter.matches(target) {
-            var cursor: WorkbenchTarget? = target
-            while let current = cursor, visible.insert(current.id).inserted {
-                cursor = current.parentID.flatMap { byID[$0] }
-            }
-        }
-        var doneChildren = 0
-        if filter == .open {
-            let shownParents = visible
-            for target in pool where target.status == .done && target.parentID.map(shownParents.contains) == true {
-                doneChildren += 1
-                if showDone { visible.insert(target.id) }
-            }
-        }
-        doneChildCount = doneChildren
-        visibleIDs = visible
-
-        let shown = pool.filter { visible.contains($0.id) }.sorted(by: Self.boardOrder)
-        let childrenByParent = Dictionary(grouping: shown.filter { $0.parentID.map(visible.contains) == true }) { $0.parentID ?? 0 }
-        func node(_ target: WorkbenchTarget) -> BoardNode {
-            BoardNode(row: BoardRowModel(target, snapshot: snapshot), children: (childrenByParent[target.id] ?? []).map(node))
-        }
-        roots = shown.filter { $0.parentID.map(visible.contains) != true }.map(node)
-
+        let signals = BoardSignals(snapshot: snapshot, workbenchID: workbenchID)
         var counts: [BoardFilter: Int] = [:]
         for chip in BoardFilter.allCases where chip != .archive {
-            counts[chip] = board.filter(chip.matches).count
+            counts[chip] = board.filter { chip.matches($0, signals) }.count
         }
         self.counts = counts
+        let filter = filter ?? BoardFilter.opening(counts: counts)
+        self.filter = filter
+        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.query = query
+        let columns = snapshot.workbench(workbenchID)?.boardColumns
+
+        let tree = BoardTree(snapshot: snapshot, signals: signals)
+        if query.isEmpty {
+            let pool = board.filter { $0.archived == (filter == .archive) }
+            let shown = tree.build(pool: pool) { filter.matches($0, signals) }
+            roots = shown.roots
+            visibleIDs = shown.visible
+            matchCount = 0
+            lanes = BoardLane.lanes(shown.roots, columns: columns)
+        } else {
+            let match = { (target: WorkbenchTarget) in Self.matches(target, query: query) }
+            let live = tree.build(pool: board.filter { !$0.archived }, match: match)
+            let archived = tree.build(pool: board.filter(\.archived), match: match)
+            roots = live.roots
+            visibleIDs = live.visible.union(archived.visible)
+            matchCount = board.filter(match).count
+            var lanes = BoardLane.lanes(live.roots, columns: columns)
+            if !archived.roots.isEmpty {
+                lanes.append(BoardLane(title: "Archived", nodes: archived.roots, kind: .archived))
+            }
+            self.lanes = lanes
+        }
+    }
+
+    var isSearching: Bool { !query.isEmpty }
+
+    /// Groups and lanes fold (and remember it) only under All; a narrower
+    /// filter or a search shows every match open, so no fold hides one.
+    var folds: Bool { !isSearching && filter == .all }
+
+    /// "3 matches" over a search; nil when nothing matches (the empty line
+    /// says it).
+    var searchCaption: String? {
+        guard matchCount > 0 else { return nil }
+        return matchCount == 1 ? "1 match" : "\(matchCount) matches"
+    }
+
+    /// What an empty board says; nil with any lane.
+    var emptyText: String? {
+        guard lanes.isEmpty else { return nil }
+        return isSearching ? "No target matches \u{201C}\(query)\u{201D}" : filter.emptyText
+    }
+
+    /// Title (contains), branch (contains) or number: "#42" and "42" match
+    /// ids starting 42; "#42" matches only ids. Case and diacritics ignored.
+    static func matches(_ target: WorkbenchTarget, query: String) -> Bool {
+        let hashed = query.hasPrefix("#")
+        let digits = hashed ? String(query.dropFirst()) : query
+        if !digits.isEmpty, digits.allSatisfy(\.isASCIIDigit), String(target.id).hasPrefix(digits) {
+            return true
+        }
+        if hashed { return false }
+        let options: String.CompareOptions = [.caseInsensitive, .diacriticInsensitive]
+        return target.text.range(of: query, options: options) != nil
+            || (!target.branch.isEmpty && target.branch.range(of: query, options: options) != nil)
     }
 
     /// Sibling order of the board, as the Mac shows it: priority high,
@@ -260,8 +488,82 @@ struct BoardModel {
 
     var toneUses: [ToneUse] {
         func walk(_ nodes: [BoardNode]) -> [ToneUse] {
-            nodes.flatMap { $0.row.toneUses + walk($0.children) }
+            nodes.flatMap { $0.card.toneUses + walk($0.children) }
         }
-        return walk(roots)
+        return lanes.flatMap { walk($0.nodes) }
     }
+}
+
+/// Builds the board tree from one pool (#1781): the matches and their
+/// ancestors, in board order, each with its compact card.
+private struct BoardTree {
+    let snapshot: WorkbenchReplicaSnapshot
+    let signals: BoardSignals
+
+    func build(pool: [WorkbenchTarget], match: (WorkbenchTarget) -> Bool) -> (roots: [BoardNode], visible: Set<Int64>) {
+        let byID = Dictionary(pool.map { ($0.id, $0) }) { first, _ in first }
+        var visible = Set<Int64>()
+        for target in pool where match(target) {
+            var cursor: WorkbenchTarget? = target
+            while let current = cursor, visible.insert(current.id).inserted {
+                cursor = current.parentID.flatMap { byID[$0] }
+            }
+        }
+        let shown = pool.filter { visible.contains($0.id) }.sorted(by: BoardModel.boardOrder)
+        let childrenByParent = Dictionary(grouping: shown.filter { $0.parentID.map(visible.contains) == true }) { $0.parentID ?? 0 }
+        let allChildren = Dictionary(grouping: pool.filter { $0.parentID != nil }) { $0.parentID ?? 0 }
+        func node(_ target: WorkbenchTarget, lane: String) -> BoardNode {
+            BoardNode(
+                id: target.id, status: target.status, label: BoardRowModel.label(target),
+                card: card(target, lane: lane, subtree: subtree(target, allChildren)),
+                isDimmed: target.archived || target.status == .done,
+                children: (childrenByParent[target.id] ?? []).map { node($0, lane: lane) }
+            )
+        }
+        let roots = shown.filter { $0.parentID.map(visible.contains) != true }.map { node($0, lane: BoardRowModel.label($0)) }
+        return (roots, visible)
+    }
+
+    /// The target and every descendant in the pool.
+    private func subtree(_ target: WorkbenchTarget, _ children: [Int64: [WorkbenchTarget]]) -> [WorkbenchTarget] {
+        [target] + (children[target.id] ?? []).flatMap { subtree($0, children) }
+    }
+
+    /// The compact card (#1781): the status chip only when the row's label
+    /// is not its lane's, High as a dot, progress on groups only; a group
+    /// sums its subtree's asks, approvals and running sessions.
+    private func card(_ target: WorkbenchTarget, lane: String, subtree: [WorkbenchTarget]) -> BoardCardModel {
+        let isGroup = target.childrenCount > 0
+        let scope = isGroup ? subtree : [target]
+        let waits = scope.reduce(into: BoardSignals.Waits()) { $0.formUnion(signals.waits($1)) }
+        let asks = waits.asks
+        let approvals = waits.approvals
+        let running = scope.reduce(into: Set<Int64>()) { $0.formUnion(signals.runningSessionIDs($1)) }
+        var details: [BoardDetail] = []
+        if asks > 0 {
+            details.append(BoardDetail(text: BoardRowModel.plural(asks, "ask"), tone: .waitingForYou, role: .ask))
+        }
+        if approvals > 0 {
+            details.append(BoardDetail(text: BoardRowModel.plural(approvals, "approval"), tone: .waitingForYou, role: .ask))
+        }
+        if running.isEmpty, !isGroup, !target.sessionIDs.isEmpty {
+            let count = target.sessionIDs.count + (target.sessionIDsMore ?? 0)
+            details.append(BoardDetail(text: BoardRowModel.plural(count, "session"), tone: .secondary, role: .info))
+        }
+        if let pr = BoardRowModel.prDetail(target) { details.append(pr) }
+        let label = BoardRowModel.label(target)
+        return BoardCardModel(
+            number: target.id, title: target.text, status: target.status, statusText: label, priority: target.priority,
+            counter: BoardRowModel.counter(target, snapshot: snapshot),
+            progress: isGroup && target.status != .done ? target.progress : nil,
+            liveSessions: running.count,
+            details: details,
+            compact: true,
+            statusChip: label != lane
+        )
+    }
+}
+
+private extension Character {
+    var isASCIIDigit: Bool { isASCII && isNumber }
 }

@@ -135,10 +135,28 @@ struct WorkbenchReplicaSnapshot: Equatable {
         permissionRequests.filter { $0.sessionID == sessionID }.max(by: Self.olderRequest)
     }
 
-    /// The Workbench tab's badge: open asks plus pending permission
-    /// requests.
+    /// Open asks plus pending permission requests: the hub switcher's
+    /// "+N questions on <Mac>" counts these only, never a failed session
+    /// (it speaks of questions).
     var openAskCount: Int {
         openAsks().count + pendingPermissions.count
+    }
+
+    /// Failed sessions the owner can continue from this phone
+    /// (`SessionInputModel.waitsToContinue`), unless an open ask of theirs
+    /// already waits: one row per thing (ask #622).
+    func sessionsToContinue(typing: PhoneTyping) -> [TerminalSessionState] {
+        guard typing.allowed else { return [] }
+        let asked = Set(openAsks().compactMap(\.sessionID))
+        return sessions.filter { !asked.contains($0.id) && SessionInputModel.waitsToContinue($0, in: self, typing: typing) }
+    }
+
+    /// Everything Now's Waiting for you lists (#1788, #1785 follow-up): open
+    /// asks, pending permission requests and failed sessions to continue
+    /// (one on a Mac asleep still counts: its Continue queues for the wake).
+    /// The Now tab's badge; summed over the hubs, the app icon's.
+    func waitingCount(typing: PhoneTyping) -> Int {
+        openAskCount + sessionsToContinue(typing: typing).count
     }
 
     private static func olderRequest(_ lhs: PermissionRequest, _ rhs: PermissionRequest) -> Bool {
@@ -156,10 +174,20 @@ struct WorkbenchReplicaSnapshot: Equatable {
 @Observable
 final class WorkbenchReplicaModel {
     private(set) var snapshot = WorkbenchReplicaSnapshot()
-    /// The open asks and pending permission requests across all
-    /// workbenches: the Workbench tab's badge.
-    /// Its own property, so the tab bar re-renders only when it changes.
-    private(set) var openAskCount = 0
+    /// `snapshot.waitingCount(typing:)` across all workbenches: the Now
+    /// tab's badge. Its own property, so the tab bar re-renders only when
+    /// it changes.
+    private(set) var waitingCount = 0
+    /// What `start`'s `typing` read last: the device that may write to the
+    /// hub (nil unlinked or frozen) and the owner's typing toggle.
+    private var typingDevice: String?
+    private var typingRequested = false
+    @ObservationIgnored private var typingSource: TypingSource = { (nil, false) }
+
+    /// The phone's typing to this hub: the grant comes from the snapshot.
+    var typing: PhoneTyping {
+        PhoneTyping(grant: snapshot.grant(for: typingDevice), requested: typingRequested)
+    }
     /// The decoded kinds between reads (and the tests' decode counter).
     @ObservationIgnored let decodeCache = ReplicaDecodeCache()
     @ObservationIgnored private var cancellable: ResilientObservation?
@@ -178,8 +206,16 @@ final class WorkbenchReplicaModel {
         .removeDuplicates()
     }
 
-    func start(store: ReplicaStore, gate: ReplicaObservationGate? = nil) {
+    /// Reads the device that may write to the hub and the owner's typing toggle, from observable state: the badge
+    /// re-counts whenever either changes.
+    typealias TypingSource = @MainActor () -> (deviceID: String?, requested: Bool)
+
+    /// `typing`: read under observation, so a toggle, a link change or a freeze re-counts the badge (the hub
+    /// session passes its own; tests and the demo default to no typing).
+    func start(store: ReplicaStore, gate: ReplicaObservationGate? = nil, typing: @escaping TypingSource = { (nil, false) }) {
         guard cancellable == nil else { return }
+        typingSource = typing
+        observeTyping()
         let cache = decodeCache
         cancellable = ResilientObservation(
             name: "workbench",
@@ -199,9 +235,25 @@ final class WorkbenchReplicaModel {
             }
         }
         snapshot = value
-        let waiting = value.openAskCount
-        if waiting != openAskCount {
-            openAskCount = waiting
+        recount()
+    }
+
+    /// Re-reads `typingSource` and observes it again for its next change.
+    private func observeTyping() {
+        let value = withObservationTracking {
+            typingSource()
+        } onChange: { [weak self] in
+            Task { @MainActor in self?.observeTyping() }
+        }
+        if value.deviceID != typingDevice { typingDevice = value.deviceID }
+        if value.requested != typingRequested { typingRequested = value.requested }
+        recount()
+    }
+
+    private func recount() {
+        let waiting = snapshot.waitingCount(typing: typing)
+        if waiting != waitingCount {
+            waitingCount = waiting
         }
     }
 }

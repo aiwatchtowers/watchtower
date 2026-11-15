@@ -192,6 +192,7 @@ final class DeviceSettings {
         defaults.removeObject(forKey: keys.lastDeviceWrite)
         // A link made again starts with a silent first fetch.
         defaults.removeObject(forKey: SharedAlertPoster.postedDefaultsKey(hubID: hubID))
+        defaults.removeObject(forKey: BoardFoldStore.key(hubID: hubID))
     }
 
     func setTypingRequested(_ value: Bool) async {
@@ -338,7 +339,7 @@ final class DeviceSettings {
             return nil
         } catch {
             Self.logger.error("device record write failed: \(error.localizedDescription, privacy: .public)")
-            return "Couldn't update your Mac: \(error.localizedDescription)"
+            return "Couldn't update your tower: \(error.localizedDescription)"
         }
     }
 }

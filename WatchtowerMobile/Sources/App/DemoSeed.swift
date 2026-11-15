@@ -19,6 +19,8 @@ enum DemoSeed {
         let hubID: String
         let macName: String
         let flavor: HubFlavor
+        /// The heartbeat's hub kind (#1783); nil like an older hub, which reads as a Mac.
+        var kind: HubKind?
     }
 
     /// The Mac with the full demo (today's seed): Workbench, sessions,
@@ -90,7 +92,8 @@ enum DemoSeed {
             ],
             enabledAt: now.addingTimeInterval(-86_400),
             ownerUser: ownerUser,
-            sharing: .none
+            sharing: .none,
+            hubKind: hub.kind
         )
         // Linked, typing allowed: with the phone's toggle on, the workchat
         // shows its composer.

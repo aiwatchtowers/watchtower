@@ -124,7 +124,7 @@ final class AlertSubscriptionRegistrar {
 /// The Settings copy of the alerts switch.
 enum WorkAlertsCopy {
     static let title = "When work stops"
-    static let footer = "Asks, approvals and finished or failed sessions, only while you're away from your Mac."
+    static let footer = "Asks, approvals and finished or failed sessions, only while you're away from your tower."
     static let sharedFootnote = "Alerts may be late on this phone."
 
     static func footer(anyShared: Bool) -> String {

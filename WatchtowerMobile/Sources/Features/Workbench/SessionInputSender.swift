@@ -13,7 +13,7 @@ enum SessionInputDelivery: String, Equatable {
     var text: String {
         switch self {
         case .submitted: "Sent to the session"
-        case .typed: "Typed into the session — press Return on the Mac"
+        case .typed: "Typed into the session — press Return on the tower"
         case .queued: Self.queuedText
         }
     }
@@ -198,6 +198,18 @@ extension TerminalSessionState {
     }
 }
 
+/// Whether this phone may type into the hub's sessions: the owner's own toggle (`DeviceSettings.typingRequested`)
+/// and the Mac's grant (`DeviceGrant.typingAllowed`), PROJ-16.
+struct PhoneTyping: Equatable {
+    static let off = Self(grant: nil, requested: false)
+
+    let allowed: Bool
+
+    init(grant: DeviceGrant?, requested: Bool) {
+        allowed = requested && grant?.typingAllowed == true
+    }
+}
+
 /// The workchat's input (spec §5.4, §6.6, PROJ-16): the composer and Finish
 /// show only on a phone whose typing the Mac allowed and whose own toggle
 /// is on, for a live session that takes lines from the phone
@@ -212,7 +224,7 @@ extension TerminalSessionState {
 /// a held one why (with Cancel), a refused one the Mac's message (with
 /// Dismiss).
 struct SessionInputModel: Equatable {
-    static let needsApproval = "Needs approval on the Mac"
+    static let needsApproval = "Needs approval on the tower"
     static let answerAbove = "Answer the request above"
     /// Why a live session takes no line from this phone (board #515): the
     /// composer's place says what to do instead of staying empty.
@@ -220,15 +232,15 @@ struct SessionInputModel: Equatable {
         /// The phone's own toggle is off: one tap asks the Mac.
         case turnOn
         /// Asked; the Mac has not allowed it yet.
-        case waitingForMac
+        case waitingForMac(TowerHost)
         /// The session takes no line from the phone (an older Mac's Codex session, PROJ-16).
         case macOnly(TerminalSessionState.Agent)
 
         var text: String {
             switch self {
             case .turnOn: "Turn on typing to tell this session something from your phone."
-            case .waitingForMac: "Waiting for your Mac to allow typing: Watchtower → Settings → Mobile → Allow…"
-            case let .macOnly(agent): agent == .codexCLI ? "Write to Codex sessions on the Mac." : "Write to this session on the Mac."
+            case let .waitingForMac(host): host.typingWait
+            case let .macOnly(agent): agent == .codexCLI ? "Write to Codex sessions on the tower." : "Write to this session on the tower."
             }
         }
     }
@@ -260,8 +272,26 @@ struct SessionInputModel: Equatable {
     let lines: [LineRow]
     /// Where the last applied line went.
     let notice: String?
+    /// The state card offers Continue, and Now and the Sessions tab list the session under Waiting for you
+    /// (`waitsToContinue`).
+    let continues: Bool
 
     var canSend: Bool { showsBar && approvalText == nil }
+
+    /// A failed turn the owner can pick up from this phone (#1784, #1785 follow-up): the session is still live at
+    /// its prompt, takes lines from the phone, this phone may type (`typing`), and none of its lines or Finish is on
+    /// its way (a second Continue would be sent twice). The one rule for the workchat's Continue, Now's and the
+    /// Sessions tab's Waiting for you and the badges; not live or typing off, it is Ended.
+    static func waitsToContinue(_ session: TerminalSessionState, in snapshot: WorkbenchReplicaSnapshot, typing: PhoneTyping) -> Bool {
+        session.stateKind == .failed && session.live && session.takesFromPhone.input && typing.allowed
+            && !snapshot.pending.contains { isLine($0, of: session) }
+    }
+
+    /// A line or Finish of the phone's for `session`.
+    private static func isLine(_ row: PendingAction, of session: TerminalSessionState) -> Bool {
+        (row.action.kind == .sessionInput || row.action.kind == .sessionFinishRequest)
+            && row.entityRecordName == SessionStarter.sessionRecordName(session.id)
+    }
 
     init(
         session: TerminalSessionState,
@@ -272,7 +302,8 @@ struct SessionInputModel: Equatable {
         now: Date,
         answersPermission: Bool = false
     ) {
-        let allowed = typingRequested && grant?.typingAllowed == true
+        let typing = PhoneTyping(grant: grant, requested: typingRequested)
+        let allowed = typing.allowed
         let takesLines = session.takesFromPhone.input
         showsBar = allowed && session.live && takesLines
         showsFinish = showsBar
@@ -281,15 +312,15 @@ struct SessionInputModel: Equatable {
         } else if !takesLines {
             .macOnly(session.agent)
         } else {
-            allowed ? nil : (typingRequested ? .waitingForMac : .turnOn)
+            allowed ? nil : (typingRequested ? .waitingForMac(TowerHost(snapshot.heartbeat, device: grant?.deviceID)) : .turnOn)
         }
         approvalText = session.stateKind == .needsApproval ? (answersPermission ? Self.answerAbove : Self.needsApproval) : nil
         notice = delivered?.text
-        let entity = SessionStarter.sessionRecordName(session.id)
         let online = MacStatus(heartbeat: snapshot.heartbeat, now: now).isOnline
         lines = snapshot.pending
-            .filter { ($0.action.kind == .sessionInput || $0.action.kind == .sessionFinishRequest) && $0.entityRecordName == entity }
+            .filter { Self.isLine($0, of: session) }
             .map { Self.row($0, online: online) }
+        continues = Self.waitsToContinue(session, in: snapshot, typing: typing)
     }
 
     private static func row(_ row: PendingAction, online: Bool) -> LineRow {
@@ -307,7 +338,7 @@ struct SessionInputModel: Equatable {
         case (.pending, .held?):
             state = .held(heldText(row.reason))
         case (.pending, .received?):
-            state = .waiting("Mac picked it up")
+            state = .waiting("Tower picked it up")
         case (.pending, _):
             state = .waiting(online ? "Sending…" : BoardWriteText.waitingForMac)
         }
@@ -319,8 +350,8 @@ struct SessionInputModel: Equatable {
         switch reason {
         case .agentBusy?: "Queued · sends when the agent stops"
         case .needsApproval?: "Held — \(needsApproval)"
-        case .promptHasText?: "Held — text is typed in the session on the Mac"
-        default: "Held — the Mac can't read the session's state yet"
+        case .promptHasText?: "Held — text is typed in the session on the tower"
+        default: "Held — the tower can't read the session's state yet"
         }
     }
 }

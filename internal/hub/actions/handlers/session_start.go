@@ -20,10 +20,8 @@ import (
 const (
 	// StartBriefLimit is the phone's task description cap for a start
 	// without a target, in characters.
-	StartBriefLimit        = 4000
-	startNotAllowedMessage = "This phone is not allowed to start sessions. " +
-		"On the Mac: Watchtower → Settings → Mobile → allow typing, then starting sessions."
-	startTimeoutMessage = "The Mac did not finish this in time — check the session on the Mac"
+	StartBriefLimit     = 4000
+	startTimeoutMessage = "Your tower did not finish this in time — check the session there"
 )
 
 // Start refusals the session port answers with (WorkbenchesViewModel's
@@ -114,7 +112,7 @@ func (h *Handlers) startOne(ctx context.Context, r actions.Request, workbenchID 
 	}
 	mayStart, typing := h.startGrant(r)
 	if !mayStart {
-		return failed(reasonDeviceNotAllowed, startNotAllowedMessage)
+		return failed(reasonDeviceNotAllowed, h.startNotAllowed(startNotAllowedLead, r.Device))
 	}
 	if refusal := h.startScope(ctx, targetID, workbenchID); refusal != nil {
 		return *refusal
@@ -150,14 +148,14 @@ func (h *Handlers) startUntargeted(ctx context.Context, r actions.Request, workb
 		return failed(reasonInvalidParams, "The task description is longer than "+strconv.Itoa(StartBriefLimit)+" characters")
 	}
 	if mayStart, typing := h.startGrant(r); !mayStart || !typing {
-		return failed(reasonDeviceNotAllowed, startNotAllowedMessage)
+		return failed(reasonDeviceNotAllowed, h.startNotAllowed(startNotAllowedLead, r.Device))
 	}
 	exists, err := h.workbenchExists(ctx, workbenchID)
 	if err != nil {
 		return failed(reasonWriteFailed, "Could not read the workbench: "+err.Error())
 	}
 	if !exists {
-		return failed(reasonNotFound, "This workbench no longer exists on the Mac")
+		return failed(reasonNotFound, "This workbench no longer exists on your tower")
 	}
 	return h.launch(ctx, StartRequest{Workbench: workbenchID, Brief: brief, PlanFirst: planFirst})
 }
@@ -180,9 +178,9 @@ func (h *Handlers) launch(ctx context.Context, req StartRequest) actions.Outcome
 	case errors.Is(err, ErrStartNotOnBoard):
 		return failed(reasonNotOnBoard, "That target is not on a workbench board")
 	case errors.Is(err, ErrStartInProgress):
-		return failed(reasonConflict, "A session for this target is being started on the Mac")
+		return failed(reasonConflict, "A session for this target is being started on your tower")
 	case errors.Is(err, ErrStartCleaningUp):
-		return failed(reasonConflict, "This session is being cleaned up on the Mac")
+		return failed(reasonConflict, "This session is being cleaned up on your tower")
 	}
 	return failed(reasonWriteFailed, err.Error())
 }
@@ -207,13 +205,13 @@ func (h *Handlers) startScope(ctx context.Context, targetID, workbenchID int64) 
 		return &o
 	}
 	if !exists {
-		o := failed(reasonNotFound, "This workbench no longer exists on the Mac")
+		o := failed(reasonNotFound, "This workbench no longer exists on your tower")
 		return &o
 	}
 	var project sql.NullInt64
 	err = h.d.DB.QueryRowContext(ctx, `SELECT project_id FROM targets WHERE id = ?`, targetID).Scan(&project)
 	if errors.Is(err, sql.ErrNoRows) {
-		o := failed(reasonNotFound, "This target no longer exists on the Mac")
+		o := failed(reasonNotFound, "This target no longer exists on your tower")
 		return &o
 	}
 	if err != nil {

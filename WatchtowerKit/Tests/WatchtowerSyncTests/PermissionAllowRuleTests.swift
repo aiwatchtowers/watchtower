@@ -9,7 +9,7 @@ final class PermissionAllowRuleTests: XCTestCase {
         XCTAssertEqual(PermissionAllowBlock.check(toolName: "Bash", summary: "ls", clipped: true), .clipped)
         XCTAssertEqual(PermissionAllowBlock.check(toolName: "Edit", summary: "/tmp/acme/a.go", clipped: true), .clipped)
         XCTAssertNil(PermissionAllowBlock.check(toolName: "Bash", summary: "ls", clipped: false))
-        XCTAssertEqual(PermissionAllowBlock.clipped.note, "Shortened — answer on the Mac to allow")
+        XCTAssertEqual(PermissionAllowBlock.clipped.note, "Shortened — answer on your tower to allow")
     }
 
     func testProj21_ASettingsPathEditCannotBeAllowed() {
@@ -34,7 +34,7 @@ final class PermissionAllowRuleTests: XCTestCase {
         }
         XCTAssertEqual(
             PermissionAllowBlock.settingsPath.note,
-            "Changes Watchtower or shell settings — answer on the Mac to allow"
+            "Changes Watchtower or shell settings — answer on your tower to allow"
         )
     }
 

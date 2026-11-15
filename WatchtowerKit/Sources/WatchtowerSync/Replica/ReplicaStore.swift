@@ -955,6 +955,13 @@ public final class ReplicaStore: Sendable {
         return try openedPayload(wireName: row["record_name"], payload: row["payload"])
     }
 
+    /// When the hub wrote `recordName` (its `CloudRecord.modifiedAt`, the writer's own clock), from an
+    /// ALREADY-OPEN database; nil when the record is absent. A screen uses it as the record's "as of".
+    public func modifiedAt(forRecordName recordName: String, from db: Database) throws -> Date? {
+        let seconds = try Double.fetchOne(db, sql: "SELECT modified_at FROM slice_records WHERE plain_name = ?", arguments: [recordName])
+        return seconds.map(Date.init(timeIntervalSince1970:))
+    }
+
     /// This phone's whole keybox (`device_grant-<device_id>`, the epoch keys included), from an ALREADY-OPEN
     /// database; nil when the record is absent. A locked keychain throws `KeyStoreError.locked`, and an envelope
     /// that does not open throws its `EnvelopeError` (counted): absent, locked and unreadable stay apart.
