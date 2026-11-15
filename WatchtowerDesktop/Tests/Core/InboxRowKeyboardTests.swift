@@ -138,6 +138,56 @@ final class InboxRowKeyboardTests: XCTestCase {
         XCTAssertTrue(InboxRowKeymap.allows(.press(.mute), content: refusedSender))
     }
 
+    // MARK: - The dispatch (what the row host does with a press)
+
+    private static let pingRef = InboxRef(kind: .inboxItem, id: 9)
+    private static let senderRef = InboxRef(kind: .mailSender, key: "a@example.com")
+    private static let pingContent = InboxRowActionsContent(
+        kind: .inboxItem(openLabel: "Open in Slack", openEnabled: true, canReply: true, showsHandToAgent: true))
+    private static let senderContent = InboxRowActionsContent(
+        kind: .mailSender(address: "a@example.com", openEnabled: true))
+
+    private func effect(
+        _ key: String,
+        command: Bool = false,
+        controlOrOption: Bool = false,
+        ref: InboxRef = pingRef,
+        content: InboxRowActionsContent? = pingContent
+    ) -> InboxRowKeyEffect? {
+        InboxRowKeymap.effect(key: key, command: command, controlOrOption: controlOrOption, ref: ref, content: content)
+    }
+
+    func testDispatchOfAPing() {
+        XCTAssertEqual(effect("j"), .move(1))
+        XCTAssertEqual(effect("k"), .move(-1))
+        XCTAssertEqual(effect("e"), .press(.done))
+        XCTAssertEqual(effect("r"), .press(.reply))
+        XCTAssertEqual(effect("s"), .openSnoozeMenu, "S opens the row's menu, never a press")
+        XCTAssertEqual(effect("k", command: true), .openHandToAgent, "⌘K opens the row's own Hand to Agent…")
+        XCTAssertEqual(effect(InboxRowKeymap.returnKey), .press(.open))
+    }
+
+    func testEOnASenderBeginsTheBulkConfirmationWithNoPress() {
+        XCTAssertEqual(effect("e", ref: Self.senderRef, content: Self.senderContent),
+                       .beginBulk(.sender("a@example.com")))
+        XCTAssertEqual(effect("m", ref: Self.senderRef, content: Self.senderContent), .press(.mute))
+    }
+
+    func testControlOrOptionIsNeverARowKey() {
+        XCTAssertNil(effect("e", controlOrOption: true))
+        XCTAssertNil(effect("j", controlOrOption: true))
+    }
+
+    func testDispatchFollowsTheDrawnButtons() {
+        var busy = Self.pingContent
+        busy.state = .busy
+        XCTAssertNil(effect("e", content: busy), "nothing while a press runs")
+        XCTAssertEqual(effect("j", content: busy), .move(1), "moving still works")
+        XCTAssertNil(effect("e", content: nil), "a row the read does not list: J/K only")
+        XCTAssertEqual(effect("k", content: nil), .move(-1))
+        XCTAssertNil(effect("x"))
+    }
+
     // MARK: - The focus
 
     private let rows = (1...4).map { InboxRef(kind: .inboxItem, id: Int64($0)) }

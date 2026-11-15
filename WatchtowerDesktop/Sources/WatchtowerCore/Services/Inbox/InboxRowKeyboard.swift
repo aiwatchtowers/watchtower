@@ -82,6 +82,51 @@ package enum InboxRowKeymap {
     }
 }
 
+/// What the row host does with a key on the focused row (`InboxRowKeymap.effect`).
+package enum InboxRowKeyEffect: Equatable, Sendable {
+    /// J/K: the focus moves this many rows.
+    case move(Int)
+    /// S: the row's own Snooze menu opens (`InboxRowKeyRequest`).
+    case openSnoozeMenu
+    /// ⌘K: the row's own Hand to Agent… opens, picker and all.
+    case openHandToAgent
+    /// E on a sender: its Mark All Done…'s inline confirmation; no press yet.
+    case beginBulk(InboxBulkKey)
+    /// Any other key: the press the row's own button makes.
+    case press(InboxRowPress)
+}
+
+package extension InboxRowKeymap {
+    /// A key press on the focused row `ref`, whose native actions are drawn
+    /// as `content` (nil: a row the read does not list, J/K only), once the
+    /// host holds the keyboard (`takesKeys`). ⌃ or ⌥ is never a row key.
+    /// Nil: the press is not the rows' (`.ignored`).
+    static func effect(
+        key: String,
+        command isCommand: Bool,
+        controlOrOption: Bool,
+        ref: InboxRef,
+        content: InboxRowActionsContent?
+    ) -> InboxRowKeyEffect? {
+        guard !controlOrOption,
+              let command = command(key: key, command: isCommand, kind: ref.kind,
+                                    canReply: content?.hasReply ?? false) else { return nil }
+        switch command {
+        case .moveDown: return .move(1)
+        case .moveUp: return .move(-1)
+        case .openSnoozeMenu, .press: break
+        }
+        guard let content, allows(command, content: content) else { return nil }
+        switch command {
+        case .openSnoozeMenu: return .openSnoozeMenu
+        case .press(.handToAgent): return .openHandToAgent
+        case .press(.markAllDone): return .beginBulk(.sender(ref.key))
+        case let .press(press): return .press(press)
+        case .moveDown, .moveUp: return nil
+        }
+    }
+}
+
 /// The focused row of an artifact's list rows: `refs` are the shown,
 /// unfolded rows in document order. A fresh focus starts on the first row.
 package struct InboxRowFocus: Equatable, Sendable {

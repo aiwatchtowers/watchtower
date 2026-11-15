@@ -306,8 +306,8 @@ struct InboxRefRowActions: View {
             }
         }
         .onChange(of: keyRequest) { _, request in
-            guard let request, request.ref == ref else { return }
-            switch request.kind {
+            guard let kind = InboxRowKeyRequest.kind(of: request, on: ref) else { return }
+            switch kind {
             case .snoozeMenu: panel = .snooze
             case .handToAgent:
                 if let subject { handToAgent(subject) } else { onPress(.handToAgent) }

@@ -805,6 +805,23 @@ final class InboxRowActionsTests: XCTestCase {
         XCTAssertNil(vm.lastError)
         XCTAssertTrue(vm.reminderRows.isEmpty)
     }
+
+    // MARK: - A key on the focused row (InboxRowKeyRequest)
+
+    /// S or ⌘K opens only the row it names; a repeated key gets a new
+    /// serial, so the row sees it as a new request.
+    func testKeyRequestOpensOnlyItsRowAndRepeats() {
+        let one = InboxRef(kind: .inboxItem, id: 1)
+        let two = InboxRef(kind: .inboxItem, id: 2)
+        let first = InboxRowKeyRequest.next(.snoozeMenu, for: one, after: nil)
+        XCTAssertEqual(InboxRowKeyRequest.kind(of: first, on: one), .snoozeMenu)
+        XCTAssertNil(InboxRowKeyRequest.kind(of: first, on: two), "another row opens nothing")
+        XCTAssertNil(InboxRowKeyRequest.kind(of: nil, on: one))
+
+        let again = InboxRowKeyRequest.next(.snoozeMenu, for: one, after: first)
+        XCTAssertNotEqual(again, first, "the same key twice is two requests")
+        XCTAssertEqual(InboxRowKeyRequest.next(.handToAgent, for: two, after: again).serial, again.serial + 1)
+    }
 }
 
 /// Holds a fake CLI call until the test opens it.
