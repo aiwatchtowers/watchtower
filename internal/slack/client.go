@@ -169,25 +169,27 @@ func (c *Client) HoldUntil() time.Time {
 
 // doRequest acquires the gate, calls fn, handles errors, and releases the gate.
 // A rate limit (429) is retried after its hold: until the deadline when one is
-// set (a hold ending past it returns ErrFetchDeadline), else up to
-// maxRetriesNoDeadline times.
+// set (a hold ending past it — this call's or one it waits on — returns
+// ErrFetchDeadline), else up to maxRetriesNoDeadline times. Only an answer
+// from Slack other than a 429 raises the tier's rate.
 func (c *Client) doRequest(ctx context.Context, tier int, fn func() error) error {
 	var deadline time.Time
 	if d := c.deadline.Load(); d != nil {
 		deadline = *d
 	}
 	for attempt := 0; ; attempt++ {
-		if err := c.rateLimiter.Wait(ctx, tier); err != nil {
+		if err := c.rateLimiter.waitUntil(ctx, tier, deadline); err != nil {
 			return err
 		}
 		err := fn()
 		limited := c.handleError(tier, err) // set the hold BEFORE releasing the gate
-		if limited {
-			c.rateLimiter.doneLimited(tier)
+		answered := isSlackAnswer(err)
+		if answered && !limited {
+			c.rateLimiter.Done(tier) // a success for the rate
 		} else {
-			c.rateLimiter.Done(tier)
+			c.rateLimiter.doneCountOnly(tier)
 		}
-		if isSlackAnswer(err) {
+		if answered {
 			c.answered.Add(1)
 		}
 		if !limited {

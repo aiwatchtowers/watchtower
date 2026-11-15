@@ -2,12 +2,14 @@ package slack
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"maps"
 	"math/rand/v2"
 	"sync"
 	"time"
 
+	"github.com/slack-go/slack"
 	"golang.org/x/time/rate"
 )
 
@@ -102,6 +104,14 @@ func (rl *RateLimiter) Rate(tier int) float64 {
 // Wait blocks until the rate limiter allows a request: it acquires the gate,
 // waits out the account-wide hold, then waits on the tier's bucket.
 func (rl *RateLimiter) Wait(ctx context.Context, tier int) error {
+	return rl.waitUntil(ctx, tier, time.Time{})
+}
+
+// waitUntil is Wait under a fetch deadline: a hold that ends after a
+// non-zero deadline — found on entry or extended mid-wait — releases the
+// gate and returns ErrFetchDeadline at once, wrapping a
+// *slack.RateLimitedError for the hold's remainder.
+func (rl *RateLimiter) waitUntil(ctx context.Context, tier int, deadline time.Time) error {
 	if rl.gate != nil {
 		select {
 		case <-ctx.Done():
@@ -117,6 +127,10 @@ func (rl *RateLimiter) Wait(ctx context.Context, tier int) error {
 
 		if !backoff.After(time.Now()) {
 			break
+		}
+		if !deadline.IsZero() && backoff.After(deadline) {
+			rl.releaseGate()
+			return fmt.Errorf("%w: %w", ErrFetchDeadline, &slack.RateLimitedError{RetryAfter: time.Until(backoff)})
 		}
 		select {
 		case <-ctx.Done():
@@ -154,10 +168,10 @@ func (rl *RateLimiter) Done(tier int) {
 	rl.releaseGate()
 }
 
-// doneLimited releases the gate and records a request Slack answered with a
-// 429 (HandleRateLimit has already lowered the rate): it counts, but not as
-// a success.
-func (rl *RateLimiter) doneLimited(tier int) {
+// doneCountOnly releases the gate and counts a request that is no success
+// for the rate: a 429 (HandleRateLimit has already lowered the rate) or one
+// Slack never answered (a transport error, a cancelled ctx).
+func (rl *RateLimiter) doneCountOnly(tier int) {
 	rl.mu.Lock()
 	rl.counts[tier]++
 	rl.mu.Unlock()
