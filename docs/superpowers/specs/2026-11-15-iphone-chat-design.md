@@ -179,12 +179,12 @@ All of these require the `chat` grant. A refusal names the missing grant; a serv
 | `chat_new` | `client_key` (uuid), `project_id?`, `routing {mode auto\|pinned, provider?, model?}` | yes | `{conversation_id}`; `invalid_params`, `not_found` (project) |
 | `chat_turn` | `conversation_id`, `mode send\|regenerate\|edit`, `message_id?` (regenerate/edit), `text` (≤ 32 000 chars), `attachment_ids[]`, `routing?` | yes (+ `received` echo) | `{user_message_id, assistant_message_id, turn_id}` once the start transaction committed (the turn then runs in the background); `conversation_busy` (lease held), `not_found`, `invalid_params`, `attachment_missing` |
 | `chat_cancel` | `conversation_id`, `turn_id` | no | `{}`; `not_found` when no such running turn |
-| `chat_feed_request` | `conversation_id` | no | watches the feed for 5 min; the phone repeats it every 60 s while the screen is open (the `session_chat_request` model) |
+| `chat_feed_request` | `conversation_id`, `purpose open\|prefetch` | no | `open`: watches the feed for 5 min; the phone repeats it every 60 s while the screen is open (the `session_chat_request` model). `prefetch`: publishes the feed once and deletes the record 2 min later; it never counts as the phone looking (§4.7). A missing `purpose` reads as `open`. |
 | `chat_read` | `conversation_id`, `message_id` | no | `{}` |
 | `chat_branch_select` | `message_id` | no | `{}`; allowed during a turn (D17) |
 | `chat_page` | `conversation_id`, `before_message_id` | no | publishes one `chat_page` record (§4.6) for 5 min; `not_found` |
-| `chat_search` | `query` (≤ 200 chars) | no | publishes one `chat_search` record (§4.6) for 5 min; the Mac's ⌘K search over `chat_fts` and titles, the same reader |
-| `chat_manage` | `conversation_id`, `op pin\|unpin\|rename\|delete`, `title?` | yes | `pin`/`unpin`/`rename` write what the Mac's panel writes (`rename` sets `title_source='user'`). `delete` deletes at once; the 5 s Undo lives on the phone, as on the Mac (`PendingChatDeletes` is in-app state there too): the phone hides the row and sends `delete` only when the Undo bar ends. A delete during a turn follows §4.4 "Conversation deleted during a turn". |
+| `chat_search` | `query` (≤ 200 chars) | no | publishes one `chat_search` record (§4.6) for 5 min; a Go port of the Mac's ⌘K reader (`ChatSearchQueries`: FTS `MATCH` over `chat_fts` and the title index, snippet, `bm25` order and its filters on context type and archived chats), pinned by a shared case fixture `chat_search_cases.json` run by both the Swift `ChatSearchQueries` tests and the Go port, so the phone and the Mac return the same hits |
+| `chat_manage` | `conversation_id`, `op pin\|unpin\|rename\|delete`, `title?` | yes | `pin`/`unpin`/`rename` write what the Mac's panel writes (`rename` sets `title_source='user'`). `delete` deletes the row and, after the commit, removes the conversation's attachment folder, exactly as the Mac's ✕ does (`ChatAttachmentStore.removeFiles(for: .conversation(id))`: the whole `<chat_files>/<owner directory>` folder; Go ports `directoryName` and the removal with a twin test over the same names). The 5 s Undo lives on the phone, as on the Mac (`PendingChatDeletes` is in-app state there too): the phone hides the row and sends `delete` only when the Undo bar ends. A delete during a turn follows §4.4 "Conversation deleted during a turn". |
 | `chat_action_answer` | `action_id`, `decision approve\|reject`, `args_sha256` | yes | needs `permissions` too; approve goes through `Registry.ApproveSeen` with the hash of the args the phone showed; a stale hash → `failed/changed` ("The action changed — look again") |
 
 **Attachments, phone to hub.** A new upload frame, `chat_attachment`, is modelled on `recording_upload`.
@@ -220,7 +220,7 @@ Four new kinds (`chat_list`, `chat_feed`, `chat_page`, `chat_search`) go into `A
 
 **`chat_page`** — one page of older history, `chat_page-<conversation>-<before_message_id>`: the 60 active-branch messages before that id, the same per-message shape and caps as the feed, plus `has_more`. In memory only, deleted 5 min after its request. The phone stitches pages under the feed and keeps them in its copy (§6.4), so a whole chat is readable page by page, online and later offline.
 
-**`chat_search`** — `chat_search-<query hash>`: up to 50 hits (conversation id, title, a snippet ≤ 200 chars, message id, date) from the same reader the Mac's ⌘K uses. In memory only, deleted 5 min after its request. A hit opens the chat and loads pages until that message is on screen.
+**`chat_search`** — `chat_search-<query hash>`: up to 50 hits (conversation id, title, a snippet ≤ 200 chars, message id, date) from the Go port of `ChatSearchQueries` (§4.5, shared fixture). The port lives in `internal/db/chat_search.go` and joins LIVE-01's `displayOnlyReaders` (it only shows text on the phone). In memory only, deleted 5 min after its request. A hit opens the chat and loads pages until that message is on screen.
 - Urgent kind, ordered after the ask kinds.
 - Source of the live text:
   - for a hub-run turn, the runner's memory, with `OnChange` → `PublishSoon`; at relay spacing that is 150 ms;
@@ -228,7 +228,7 @@ Four new kinds (`chat_list`, `chat_feed`, `chat_page`, `chat_search`) go into `A
 
 ### 4.7 Push
 
-A new work-alert event, `chat_answer`, with a new optional `conversation_id` field. It is sent for any turn, run by the hub or by the Mac app (D19), that ended `complete`, `error` or `partial` after a cancel, or that started waiting for an approval, when no `chat_feed_request` for that conversation arrived in the last 90 s (the phone is not looking). The hub sees a Mac-run turn end through the `data_version` watch: the lease row with `owner='desktop'` disappears and the assistant row's status is final; a new pending `agent_actions` row for a chat turn is the approval case. Each (turn, event) pushes at most once, keyed in the existing `alert_pushes` ledger as `chat:<turn_id>:<event>`. The owner-away rule keeps a push off while the owner is at the Mac.
+A new work-alert event, `chat_answer`, with a new optional `conversation_id` field. It is sent for any turn, run by the hub or by the Mac app (D19), that ended `complete`, `error` or `partial` after a cancel, or that started waiting for an approval, when no `chat_feed_request` with `purpose: open` for that conversation arrived in the last 90 s (the phone is not looking; a prefetch never counts). The hub sees a Mac-run turn end through the `data_version` watch: the lease row with `owner='desktop'` disappears and the assistant row's status is final; a new pending `agent_actions` row for a chat turn is the approval case. Each (turn, event) pushes at most once, keyed in the existing `alert_pushes` ledger as `chat:<turn_id>:<event>`. The owner-away rule keeps a push off while the owner is at the Mac.
 - Title: the conversation title, clipped.
 - Body: fixed text. "Answer ready", "The answer stopped" or "Waiting for your approval" (D14).
 - Owner-away rules and the paying-slot targets are as today.
@@ -328,7 +328,7 @@ The owner bubble shows pending until the `chat_turn` echo is `applied`. A refuse
 
 **Chat list.** The `chat_list` record is a slice record, so it lives in the phone's `ReplicaStore` like every other kind: it survives an app relaunch while the Mac sleeps, and the offline list (1d) is that record. It is deleted with the hub link.
 
-**Chats.** The phone writes every chat page it decoded (the feed and every `chat_page`) to its own GRDB file, per hub, with file protection `completeUntilFirstUserAuthentication`. While the Mac is reachable and the app is in the foreground, it also prefetches the latest feed of the 20 most recent chats in the list, one request at a time, at most once per chat per hour. The budget is 200 MB per hub, evicted by chat in order of last opened. The file is deleted with the hub link.
+**Chats.** The phone writes every chat page it decoded (the feed and every `chat_page`) to its own GRDB file, per hub, with file protection `completeUntilFirstUserAuthentication`. While the Mac is reachable and the app is in the foreground, it also prefetches the latest feed of the 20 most recent chats in the list with `chat_feed_request purpose: prefetch` (so prefetching never silences a push), one request at a time, at most once per chat per hour. The budget is 200 MB per hub, evicted by chat in order of last opened. The file is deleted with the hub link.
 - Offline, a chat that was opened or prefetched reads in full as far as its pages were loaded; a chat never loaded shows "Open this chat once while your Mac is awake to read it here" (mockup 2e note).
 - This is a display copy only. Nothing on the phone reads it except the conversation screen and the title search.
 - The Mac's `live_slack_since` rule is unchanged, and the copy keeps Live turns for display only (see ask #1340, §9).
@@ -361,6 +361,8 @@ The owner bubble shows pending until the `chat_turn` echo is `applied`. A refuse
 | Mac-run turn ends while the owner is away | One `chat_answer` push, never twice (ledger key) | `TestChatPush_DesktopTurnEndPushesOnce` |
 | `chat_page` / `chat_search` request unanswered | The phone shows "The Mac did not answer" + Retry after 30 s | phone `ChatPagingModelTests`, `ChatSearchModelTests` |
 | Delete undone on the phone | Nothing is sent; the row comes back | phone `ChatRowActionsTests` |
+| Delete from the phone | The row cascades; the conversation's attachment folder is removed after the commit; a removal failure leaves files only (logged with ids), the next delete of nothing changes nothing | `TestChatManage_DeleteRemovesAttachmentFolder` |
+| Prefetch while a turn ends | The push is still sent (prefetch is not looking) | `TestChatPush_PrefetchDoesNotCountAsLooking` |
 
 ## 8. Writers of the same data, and who wins
 
@@ -375,7 +377,7 @@ The owner bubble shows pending until the `chat_turn` echo is `applied`. A refuse
 | conversation delete | Swift Chats panel (after its Undo), Go `chat_manage delete` (after the phone's Undo), project delete | The cascade; a running turn's holder stops cleanly (§4.4) |
 | `chat_conversations.live_slack_since` | both stores | Set once (`WHERE live_slack_since IS NULL`), first wins |
 | `agent_actions` status | the chat MCP server (propose), Desktop approve, `chat_action_answer`, the gate | The existing compare-and-set in `ApproveSeen`/`ClaimSessionCall`; the second decision gets the row's current state |
-| `chat_attachments` rows (new) | Swift `ChatAttachmentStore`, Go upload intake | Each upload is its own row (no unique key exists, none is added). Only the file is deduplicated by sha256 per conversation, so two rows may share one path. The file is written to a temp name and renamed into place, so a concurrent writer of the same bytes leaves one whole file. The Go intake follows whatever file-removal rule `ChatAttachmentStore` has today for a shared path; T5 reads it and ports it with a twin test. |
+| `chat_attachments` rows (new) | Swift `ChatAttachmentStore`, Go upload intake | Each upload is its own row (no unique key exists, none is added). Only the file is deduplicated by sha256 per conversation, so two rows may share one path. The file is written to a temp name and renamed into place, so a concurrent writer of the same bytes leaves one whole file. Files live in one folder per owner (`ChatAttachmentStore.directoryName`) and are removed only with their conversation or project, the whole folder at once, by whichever store deleted it (Swift `removeFiles`, Go's port) — never per row. |
 | `ideas` (chat-born) | Swift `IdeaQueries.createFromChat`, Go `db.CreateIdeaFromChat` | Each runs only for the owner row its own store wrote, so there are no duplicates |
 
 ## 9. Contracts touched (filed as a separate ask before the review)
@@ -414,8 +416,9 @@ The owner bubble shows pending until the `chat_turn` echo is `applied`. A refuse
 | Conversation deleted mid-turn: clean stop, no orphans | T3, T8 | `TestChatstore_ConversationDeletedMidTurnStopsCleanly`, `testDriverStopsWhenConversationDeleted` |
 | Chat off while an old Desktop runs | T5, T8 | `TestChatCapability_OffWhileOldDesktopRuns` |
 | Whole history readable (paging) | T5, T6, T11 | `TestChatPage_…`, `ChatPagingModelTests` |
-| Search, pin/rename/delete, quote-reply | T5, T10, T11 | `TestChatSearch_SameReaderAsMac`, `TestChatManage_…`, `ChatRowActionsTests`, `ChatQuoteReplyTests` (Kit, moved) |
+| Search, pin/rename/delete, quote-reply | T5, T10, T11 | `chat_search_cases.json` (Swift `ChatSearchQueriesFixtureTests` + Go `TestChatSearch_SharedCases`), `TestChatManage_DeleteRemovesAttachmentFolder`, `TestChatManage_…`, `ChatRowActionsTests`, `ChatQuoteReplyTests` (Kit, moved) |
 | Push for Mac-run turns, once | T7 | `TestChatPush_DesktopTurnEndPushesOnce` |
+| A prefetch never silences a push | T5, T7 | `TestChatPush_PrefetchDoesNotCountAsLooking` |
 | Push opens the chat on the phone | T9, T11 | `NotificationRouterChatTests` |
 | Offline list survives relaunch; prefetch budget | T11 | `ChatOfflineCopyTests` |
 
@@ -427,7 +430,7 @@ The owner bubble shows pending until the `chat_turn` echo is `applied`. A refuse
 | T2 | Move `ArtifactParser`, `MarkdownRunBuilder` and `ChatQuoteReply` to the Kit; Go artifact parser twin | none |
 | T3 | Go turn store (`internal/chatstore`) | T1, T2 |
 | T4 | Hub chat runner (`internal/hub/chatrun`) | T3 |
-| T5 | Hub actions (incl. `chat_manage`, `chat_page`, `chat_search`), the `chat` grant, the attachment upload frame, the capability with the Desktop lease flag | T4 |
+| T5 | Hub actions (incl. `chat_manage` with the attachment-folder removal, `chat_page`, `chat_search` with the Go port of `ChatSearchQueries`), the `chat` grant, the attachment upload frame, the capability with the Desktop lease flag | T4 |
 | T6 | Slices `chat_list`, `chat_feed`, `chat_page`, `chat_search`; Kit mirrors and fixtures | T3 |
 | T7 | `chat_answer` push for hub- and Mac-run turns | T5, T6 |
 | T8 | Desktop: lease in the Swift store, conversation-gone stop, foreign-turn view, Stop, `--chat-lease` heartbeat flag, the Chat toggle, DesignShots 4a/4b | T1 |
