@@ -636,7 +636,24 @@ final class InboxDayPaneTests: XCTestCase {
         XCTAssertThrowsError(try fresh.inspect().find(text: "Today's plan at or after 08:00"))
     }
 
-    // MARK: - Make a Task across the brief's blocks (J-C1)
+    // MARK: - The brief's blocks
+
+    /// Five attention items: Start here draws the first three, More for
+    /// today the other two; each item once.
+    func testStartHereAndMoreForTodaySplitTheAttentionItems() async throws {
+        let items = (1...5).map { #"{"text":"a\#($0)","priority":"high"}"# }
+        try await pool.write { db in
+            try TestDatabase.insertBriefing(db, date: Self.today, attention: "[\(items.joined(separator: ","))]")
+        }
+        let all = try texts(try await pane(date: Self.today))
+
+        let order = try ["Start here", "a1", "a2", "a3", "More for today", "a4", "a5"]
+            .map { try XCTUnwrap(all.firstIndex(of: $0), $0) }
+        XCTAssertEqual(order, order.sorted(), "found in \(all)")
+        for text in ["a1", "a2", "a3", "a4", "a5"] {
+            XCTAssertEqual(all.filter { $0 == text }.count, 1, text)
+        }
+    }
 
     /// A failed Make a Task shows once at the top of its brief's pane, is
     /// not shown over another day, and is still there on the way back.
