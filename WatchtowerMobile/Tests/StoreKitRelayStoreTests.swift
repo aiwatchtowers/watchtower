@@ -39,12 +39,64 @@ final class StoreKitRelayStoreTests: XCTestCase {
         }
     }
 
-    /// `updates()` subscribes to StoreKit in a task of its own, and an event before that subscription is not delivered,
-    /// so a test gives it time before it causes one: a loaded CI machine missed a refund and a renewal otherwise.
-    private func listening() async throws -> AsyncStream<RelayTransaction>.AsyncIterator {
-        let iterator = store.updates().makeAsyncIterator()
-        try await Task.sleep(nanoseconds: 2_000_000_000)
-        return iterator
+    /// A test's listener: `updates()`, and a witness reading StoreKit's own `Transaction.updates`, both made in this
+    /// call. Each holds StoreKit's iterator from the moment it is made, so an event the test causes afterwards reaches
+    /// both, and the test needs no head start (it used to sleep two seconds for a subscription made in a task).
+    private struct Listening {
+        var updates: AsyncStream<RelayTransaction>.AsyncIterator
+        let witness: Witness
+    }
+
+    /// What StoreKit itself delivered to this process, read straight from `Transaction.updates`.
+    private final class Witness: @unchecked Sendable {
+        private struct Source: @unchecked Sendable {
+            let iterator: StoreKit.Transaction.Transactions.AsyncIterator
+        }
+
+        private let lock = NSLock()
+        private var seen: [RelayTransaction] = []
+        private var task: Task<Void, Never>?
+
+        init(productID: String) {
+            let source = Source(iterator: StoreKit.Transaction.updates.makeAsyncIterator())
+            task = Task { [weak self] in
+                var iterator = source.iterator
+                while let verification = await iterator.next() {
+                    guard case .verified(let value) = verification, value.productID == productID,
+                          let mapped = StoreKitRelayStore.map(
+                              id: value.id, originalID: value.originalID, appAccountToken: value.appAccountToken,
+                              jws: verification.jwsRepresentation, revocationDate: value.revocationDate,
+                              isRenewal: value.reason == .renewal, expirationDate: value.expirationDate
+                          ) else { continue }
+                    self?.lock.withLock { self?.seen.append(mapped) }
+                }
+            }
+        }
+
+        deinit { task?.cancel() }
+
+        func saw(_ wanted: (RelayTransaction) -> Bool) -> Bool {
+            lock.withLock { seen.contains(where: wanted) }
+        }
+    }
+
+    private func listening() -> Listening {
+        Listening(updates: store.updates().makeAsyncIterator(), witness: Witness(productID: Self.productID))
+    }
+
+    /// The event a test is about, from `updates()`. Under load the simulator's storekitd at times pushes nothing to
+    /// the test process for the rest of its run: it holds the renewal (`allTransactions()` lists it), yet neither
+    /// `Transaction.updates` nor `Transaction.unfinished` in the process ever shows it. When StoreKit's own listener
+    /// got nothing either, `updates()` had nothing to deliver, and the test is skipped with that reason; when StoreKit
+    /// delivered the event and `updates()` did not pass it on, the test fails.
+    private static func next(
+        _ listening: inout Listening, where wanted: (RelayTransaction) -> Bool
+    ) async throws -> RelayTransaction {
+        do {
+            return try await next(&listening.updates, where: wanted)
+        } catch is NoUpdate where !listening.witness.saw(wanted) {
+            throw XCTSkip("StoreKit delivered no update to this test process (a simulator storekitd fault), so updates() had none to pass on")
+        }
     }
 
     /// StoreKit's transaction lists catch up with a purchase shortly after it returns: reads until there is a value.
@@ -123,9 +175,9 @@ final class StoreKitRelayStoreTests: XCTestCase {
             return XCTFail("expected a purchase")
         }
         await store.finish(first)
-        var iterator = try await listening()
+        var listening = listening()
         try session.forceRenewalOfSubscription(productIdentifier: Self.productID)
-        let renewal = try await Self.next(&iterator) { $0.id != first.id }
+        let renewal = try await Self.next(&listening) { $0.id != first.id }
         XCTAssertEqual(renewal.originalID, first.originalID)
         XCTAssertNotEqual(renewal.id, first.id)
         XCTAssertGreaterThan(renewal.expiresAt, first.expiresAt)
@@ -137,9 +189,9 @@ final class StoreKitRelayStoreTests: XCTestCase {
         }
         await store.finish(bought)
         XCTAssertFalse(bought.revoked)
-        var iterator = try await listening()
+        var listening = listening()
         try session.refundTransaction(identifier: UInt(bought.id))
-        let refunded = try await Self.next(&iterator) { $0.revoked }
+        let refunded = try await Self.next(&listening) { $0.revoked }
         XCTAssertEqual(refunded.id, bought.id)
         XCTAssertTrue(refunded.revoked)
     }
@@ -206,9 +258,9 @@ final class StoreKitRelayStoreTests: XCTestCase {
         }
         XCTAssertFalse(first.isRenewal)
         await store.finish(first)
-        var iterator = try await listening()
+        var listening = listening()
         try session.forceRenewalOfSubscription(productIdentifier: Self.productID)
-        let renewal = try await Self.next(&iterator) { $0.id != first.id }
+        let renewal = try await Self.next(&listening) { $0.id != first.id }
         XCTAssertTrue(renewal.isRenewal)
     }
 
@@ -224,9 +276,13 @@ final class StoreKitRelayStoreTests: XCTestCase {
         XCTAssertEqual(again.originalID, first.originalID)
         XCTAssertEqual(again.expiresAt, first.expiresAt, "no new period was bought")
         XCTAssertEqual(session.allTransactions().count, 1, "nothing was charged")
-        var entitlements = 0
-        for await verification in StoreKit.Transaction.currentEntitlements {
-            if case .verified(let value) = verification, value.productID == Self.productID { entitlements += 1 }
+        // currentEntitlements catches up with the purchase shortly after it returns, like the other lists.
+        let entitlements = await eventually { () -> Int? in
+            var count = 0
+            for await verification in StoreKit.Transaction.currentEntitlements {
+                if case .verified(let value) = verification, value.productID == Self.productID { count += 1 }
+            }
+            return count == 0 ? nil : count
         }
         XCTAssertEqual(entitlements, 1)
     }
