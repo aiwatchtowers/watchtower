@@ -16,6 +16,7 @@ import (
 	"watchtower/internal/agentkind"
 	"watchtower/internal/db"
 	"watchtower/internal/hub/actions"
+	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/wire"
 	"watchtower/internal/sessionagent"
@@ -78,6 +79,48 @@ func PhoneRefusal(actionKind string, agent agentkind.Kind) (message string, refu
 	return fmt.Sprintf(format, agent.DisplayName()), true
 }
 
+// The device_not_allowed messages: what the phone may not do, then how the
+// owner allows it on this hub's kind. A Mac hub points into the Mac app; a
+// server hub names the grants to give with `watchtower hub allow` and the
+// requesting phone's id, as `watchtower hub phones` lists it.
+const (
+	typingNotAllowedLead     = "This phone is not allowed to type into sessions"
+	macTypingAllowStep       = " — Allow it in Settings → Mobile on the Mac"
+	macStartAllowStep        = ". On the Mac: Watchtower → Settings → Mobile → allow typing, then starting sessions."
+	serverAllowStepPrefix    = ". On your tower, run:"
+	startNotAllowedLead      = "This phone is not allowed to start sessions"
+	automationNotAllowedLead = "This phone is not allowed to run automations"
+)
+
+// typingNotAllowed is the refusal of a line from device without the typing
+// grant.
+func (h *Handlers) typingNotAllowed(device secure.ID) string {
+	if !h.d.ServerHost {
+		return typingNotAllowedLead + macTypingAllowStep
+	}
+	return typingNotAllowedLead + serverAllowSteps(device, "typing")
+}
+
+// startNotAllowed is the refusal of a session start (lead
+// startNotAllowedLead) or an automation run (automationNotAllowedLead) from
+// device: both need typing and starting sessions.
+func (h *Handlers) startNotAllowed(lead string, device secure.ID) string {
+	if !h.d.ServerHost {
+		return lead + macStartAllowStep
+	}
+	return lead + serverAllowSteps(device, "typing", "start_sessions")
+}
+
+// serverAllowSteps is one `watchtower hub allow <device> <grant>` line per
+// grant.
+func serverAllowSteps(device secure.ID, grants ...string) string {
+	s := serverAllowStepPrefix
+	for _, g := range grants {
+		s += "\nwatchtower hub allow " + device.String() + " " + g
+	}
+	return s
+}
+
 // DefaultTimeout is every handler's own deadline (Swift HandlerTimeout's 30 s):
 // ample for a write waiting on the database lock or a delivery's pause.
 const DefaultTimeout = 30 * time.Second
@@ -97,14 +140,19 @@ const CannotTypeMessage = "This session can't take typed text right now"
 // picks the work up anyway). Timeout 0 is DefaultTimeout; Clock nil is
 // time.Now.
 type Deps struct {
-	DB              *db.DB
-	Store           *state.Store
-	Sessions        SessionPort
-	DesktopHost     func() bool
-	Clipboard       func(string) error
-	RecordingsDir   string
-	Clock           func() time.Time
-	Policy          func() string
+	DB            *db.DB
+	Store         *state.Store
+	Sessions      SessionPort
+	DesktopHost   func() bool
+	Clipboard     func(string) error
+	RecordingsDir string
+	Clock         func() time.Time
+	Policy        func() string
+	// ServerHost is a hub with no Mac app around it (the heartbeat's
+	// hub_kind server): a device_not_allowed message then names
+	// `watchtower hub allow` with the phone's id instead of the Mac app's
+	// Settings → Mobile (#1783, ask #1322).
+	ServerHost      bool
 	WakeAutomations func()
 	Timeout         time.Duration
 	// Windows (nil = nothing published, so chat and report requests fail
@@ -212,7 +260,7 @@ func (h *Handlers) withTimeout(ctx context.Context, name, msg string, work func(
 		defer func() {
 			if p := recover(); p != nil {
 				log.Printf("hub handlers: %s panicked", name)
-				done <- failed(reasonWriteFailed, "The Mac hit an internal error applying this")
+				done <- failed(reasonWriteFailed, "Your tower hit an internal error applying this")
 			}
 		}()
 		done <- work(context.WithoutCancel(ctx))

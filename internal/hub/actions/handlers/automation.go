@@ -12,8 +12,6 @@ import (
 
 // AutomationRunHandler's messages, verbatim.
 const (
-	automationNotAllowedMessage = "This phone is not allowed to run automations. " +
-		"On the Mac: Watchtower → Settings → Mobile → allow typing, then starting sessions."
 	automationTimeoutMessage = "Your tower did not finish this in time — check the automation there"
 )
 
@@ -45,7 +43,7 @@ func (h *Handlers) applyAutomationRun(r actions.Request) actions.Outcome {
 	// HubSyncState.mayStartSessions: the owner's grant, typing and the
 	// phone's own toggle.
 	if !linked || !device.StartSessionsGranted || !device.TypingAllowed || !device.StartSessionsAllowed {
-		return failed(reasonDeviceNotAllowed, automationNotAllowedMessage)
+		return failed(reasonDeviceNotAllowed, h.startNotAllowed(automationNotAllowedLead, r.Device))
 	}
 	a, err := h.d.DB.GetAutomation(automationID)
 	if errors.Is(err, db.ErrAutomationNotFound) || (err == nil && a.RemovedAt != nil) {

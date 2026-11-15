@@ -15,6 +15,7 @@ import (
 	"watchtower/internal/hub/slices"
 	"watchtower/internal/hub/slices/sources"
 	"watchtower/internal/hub/state"
+	"watchtower/internal/hub/wire"
 	"watchtower/internal/sessionhost"
 	"watchtower/internal/sessionstart"
 )
@@ -232,7 +233,7 @@ func handlerDeps(o Options, st *state.Store, set *sources.Set, watches handlers.
 ) handlers.Deps {
 	deps := handlers.Deps{
 		DB: o.DB, Store: st, Sessions: port, RecordingsDir: o.RecordingsDir, Clock: o.Clock, Policy: o.mobileSync,
-		ChatWatches: watches, Sealer: sealer, LateEcho: lateEcho,
+		ChatWatches: watches, Sealer: sealer, LateEcho: lateEcho, ServerHost: hubKindOf(o.Desktop) == wire.HubKindServer,
 	}
 	// Typed nils stay nil interfaces.
 	if set.Sessions != nil {

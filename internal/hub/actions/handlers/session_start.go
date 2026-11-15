@@ -20,9 +20,7 @@ import (
 const (
 	// StartBriefLimit is the phone's task description cap for a start
 	// without a target, in characters.
-	StartBriefLimit        = 4000
-	startNotAllowedMessage = "This phone is not allowed to start sessions. " +
-		"On the Mac: Watchtower → Settings → Mobile → allow typing, then starting sessions."
+	StartBriefLimit     = 4000
 	startTimeoutMessage = "Your tower did not finish this in time — check the session there"
 )
 
@@ -114,7 +112,7 @@ func (h *Handlers) startOne(ctx context.Context, r actions.Request, workbenchID 
 	}
 	mayStart, typing := h.startGrant(r)
 	if !mayStart {
-		return failed(reasonDeviceNotAllowed, startNotAllowedMessage)
+		return failed(reasonDeviceNotAllowed, h.startNotAllowed(startNotAllowedLead, r.Device))
 	}
 	if refusal := h.startScope(ctx, targetID, workbenchID); refusal != nil {
 		return *refusal
@@ -150,7 +148,7 @@ func (h *Handlers) startUntargeted(ctx context.Context, r actions.Request, workb
 		return failed(reasonInvalidParams, "The task description is longer than "+strconv.Itoa(StartBriefLimit)+" characters")
 	}
 	if mayStart, typing := h.startGrant(r); !mayStart || !typing {
-		return failed(reasonDeviceNotAllowed, startNotAllowedMessage)
+		return failed(reasonDeviceNotAllowed, h.startNotAllowed(startNotAllowedLead, r.Device))
 	}
 	exists, err := h.workbenchExists(ctx, workbenchID)
 	if err != nil {

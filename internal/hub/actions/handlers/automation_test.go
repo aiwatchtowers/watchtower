@@ -119,7 +119,7 @@ func TestAPhoneWithoutTheStartGrantIsRefused(t *testing.T) {
 		got := e.runAction(aid, wb, false)
 
 		wantOutcome(t, got, wire.StatusFailed, reasonDeviceNotAllowed)
-		if got.Message != automationNotAllowedMessage || e.runs(aid) != 0 {
+		if got.Message != automationNotAllowedLead+macStartAllowStep || e.runs(aid) != 0 {
 			t.Fatalf("grant %v: %+v", grant, got)
 		}
 	}

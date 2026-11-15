@@ -99,7 +99,7 @@ struct BoardWriteRow: Equatable, Identifiable {
             conflictCurrent = nil
         case .failed:
             if pending.reason == .conflict, let label, case let .string(current)? = pending.result?["current"] {
-                state = .conflict(prompt: "Changed on the tower to \(label(current)) — apply anyway?")
+                state = .conflict(prompt: "Changed on your tower to \(label(current)) — apply anyway?")
                 conflictCurrent = current
             } else {
                 let message = pending.errorMessage.flatMap { $0.isEmpty || $0 == ActionOutbox.noMessageFallback ? nil : $0 }
