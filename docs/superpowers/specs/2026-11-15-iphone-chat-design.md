@@ -334,7 +334,7 @@ The phone writes the last decoded `chat_feed` per conversation to its own GRDB f
 | `chat_conversations.title`/`title_source` | Go title (both hub and CLI paths), Swift rename | The existing rule: AI never writes over `title_source='user'` |
 | `chat_conversations.live_slack_since` | both stores | Set once (`WHERE live_slack_since IS NULL`), first wins |
 | `agent_actions` status | the chat MCP server (propose), Desktop approve, `chat_action_answer`, the gate | The existing compare-and-set in `ApproveSeen`/`ClaimSessionCall`; the second decision gets the row's current state |
-| `chat_attachments` rows (new) | Swift `ChatAttachmentStore`, Go upload intake | Each upload is its own row (no unique key exists, none is added). Only the file is deduplicated by sha256 per conversation, so two rows may share one path. The file is written to a temp name and renamed into place, so a concurrent writer of the same bytes leaves one whole file. Deleting a row never deletes a path another row still uses (the existing rule). |
+| `chat_attachments` rows (new) | Swift `ChatAttachmentStore`, Go upload intake | Each upload is its own row (no unique key exists, none is added). Only the file is deduplicated by sha256 per conversation, so two rows may share one path. The file is written to a temp name and renamed into place, so a concurrent writer of the same bytes leaves one whole file. The Go intake follows whatever file-removal rule `ChatAttachmentStore` has today for a shared path; T5 reads it and ports it with a twin test. |
 | `ideas` (chat-born) | Swift `IdeaQueries.createFromChat`, Go `db.CreateIdeaFromChat` | Each runs only for the owner row its own store wrote, so there are no duplicates |
 
 ## 9. Contracts touched (filed as a separate ask before the review)
