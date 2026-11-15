@@ -273,6 +273,8 @@ func (o *Orchestrator) BackfillSearch(ctx context.Context, from, to time.Time) (
 	o.account = acct
 	o.slackClient.SetTeamDomain(acct.TeamDomain)
 	o.resetMediaPlan()
+	o.backfilling = true
+	defer func() { o.backfilling = false }()
 	after, before := slackSearchRange(from, to)
 	completed, saved, _, err := o.searchAndSave(ctx, fmt.Sprintf("after:%s before:%s", after, before), false, nil)
 	if err != nil {
@@ -448,6 +450,7 @@ func (o *Orchestrator) searchAndSaveFrom(ctx context.Context, query string, star
 				IsDeleted:  false,
 				Subtype:    "",
 				Permalink:  msg.Permalink,
+				SyncedAt:   o.stampSyncedAt(slackTSUnix(msg.Timestamp)),
 			})
 			if plan != nil && plan.isNew(msg.Timestamp) {
 				writes = append(writes, searchMediaWrite(msg, namespacedChannelID, namespacedUserID, plan))

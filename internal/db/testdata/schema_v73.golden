@@ -428,6 +428,9 @@ CREATE INDEX idx_memory_retrieve_shadow_surface ON memory_retrieve_shadow(surfac
 index	idx_messages_channel_ts_unix
 CREATE INDEX idx_messages_channel_ts_unix ON messages(channel_id, ts_unix)
 
+index	idx_messages_synced_at
+CREATE INDEX idx_messages_synced_at ON messages(CASE WHEN synced_at = 0 THEN ts_unix ELSE synced_at END)
+
 index	idx_messages_thread
 CREATE INDEX idx_messages_thread ON messages(channel_id, thread_ts)
 
@@ -2510,7 +2513,7 @@ is_deleted INTEGER NOT NULL DEFAULT 0,
 subtype TEXT NOT NULL DEFAULT '',
 permalink TEXT NOT NULL DEFAULT '',
 ts_unix REAL GENERATED ALWAYS AS (CASE WHEN INSTR(ts, '.') > 0 THEN CAST(SUBSTR(ts, 1, INSTR(ts, '.') - 1) AS REAL) ELSE CAST(ts AS REAL) END) STORED,
-raw_json TEXT NOT NULL DEFAULT '{}',
+raw_json TEXT NOT NULL DEFAULT '{}', synced_at REAL NOT NULL DEFAULT 0,
 PRIMARY KEY (channel_id, ts)
 )
 
@@ -3065,7 +3068,7 @@ error TEXT NOT NULL DEFAULT '',
 enabled INTEGER NOT NULL DEFAULT 1,
 search_last_date TEXT NOT NULL DEFAULT '',
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-, reaction_commands_seeded_at TEXT NOT NULL DEFAULT '', roster_synced_at TEXT NOT NULL DEFAULT '', reaction_events_seeded_at TEXT NOT NULL DEFAULT '', deletion_sweep_day TEXT NOT NULL DEFAULT '', access_ok_at TEXT NOT NULL DEFAULT '', revoked_at TEXT NOT NULL DEFAULT '')
+, reaction_commands_seeded_at TEXT NOT NULL DEFAULT '', roster_synced_at TEXT NOT NULL DEFAULT '', reaction_events_seeded_at TEXT NOT NULL DEFAULT '', deletion_sweep_day TEXT NOT NULL DEFAULT '', access_ok_at TEXT NOT NULL DEFAULT '', revoked_at TEXT NOT NULL DEFAULT '', first_cycle_at TEXT NOT NULL DEFAULT '')
 
 table	slack_live_status
 CREATE TABLE slack_live_status (
@@ -5888,6 +5891,7 @@ GROUP BY up.ancestor
 8	subtype	TEXT	notnull=1	dflt=''	pk=0
 9	permalink	TEXT	notnull=1	dflt=''	pk=0
 10	raw_json	TEXT	notnull=1	dflt='{}'	pk=0
+11	synced_at	REAL	notnull=1	dflt=0	pk=0
 
 ## messages_fts
 0	text		notnull=0	dflt=NULL	pk=0
@@ -6376,6 +6380,7 @@ GROUP BY up.ancestor
 14	deletion_sweep_day	TEXT	notnull=1	dflt=''	pk=0
 15	access_ok_at	TEXT	notnull=1	dflt=''	pk=0
 16	revoked_at	TEXT	notnull=1	dflt=''	pk=0
+17	first_cycle_at	TEXT	notnull=1	dflt=''	pk=0
 
 ## slack_live_status
 0	team_id	TEXT	notnull=1	dflt=NULL	pk=1

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	gosync "sync"
 	"time"
@@ -117,6 +118,15 @@ type Orchestrator struct {
 	// "" when unknown. checkHomeTeam refuses it like the row's team, so a
 	// token left on another team than the row is caught on every path.
 	tokenTeamID string
+
+	// runStart is when the current Run began and firstCycleAt the account's
+	// first sync attempt (slack_accounts.first_cycle_at; this Run's start
+	// while it is the first): stampSyncedAt's bounds. Run sets both.
+	runStart     time.Time
+	firstCycleAt time.Time
+	// backfilling is set while BackfillSearch saves: a history backfill
+	// stamps every message with its post time, so it never reaches the Inbox.
+	backfilling bool
 
 	// teamMismatch reports that the last Run stopped on a TeamMismatchError.
 	// Run resets it; the daemon reads it via TeamMismatch to pause the
@@ -247,7 +257,10 @@ func (o *Orchestrator) Run(ctx context.Context, opts SyncOptions) error {
 		defer o.slackClient.SetDeadline(time.Time{})
 	}
 	limitedBefore := o.slackClient.RateLimitedCalls()
-	err := o.run(ctx, opts)
+	err := o.startSyncedAtCycle()
+	if err == nil {
+		err = o.run(ctx, opts)
+	}
 	o.outcome.RateLimited = o.slackClient.RateLimitedCalls() > limitedBefore
 	o.outcome.ResumePending = o.resume != nil
 	o.teamMismatch = errors.Is(err, ErrSlackTeamMismatch)
@@ -578,6 +591,62 @@ const (
 	// digests.
 	readStateDigestWindow = 7 * 24 * time.Hour
 )
+
+// syncedAtLookback is how far before a run's start a message it stores may
+// have been posted and still count as new for the Inbox (stampSyncedAt). A
+// message stored late waits at most the cadence cap (60 min) plus the runs a
+// rate-limit storm stretches, and during a storm the run is incomplete, so
+// INBOX-09 freezes the watermark and even a post-time stamp stays above it.
+const syncedAtLookback = 24 * time.Hour
+
+// startSyncedAtCycle records this Run's start and the account's first sync
+// attempt, written once (the first Run's start, kept on a retry).
+func (o *Orchestrator) startSyncedAtCycle() error {
+	o.runStart = o.clock()
+	if err := o.db.SetSlackFirstCycleAtOnce(o.accountID, o.runStart); err != nil {
+		return err
+	}
+	first, err := o.db.SlackFirstCycleAt(o.accountID)
+	if err != nil {
+		return err
+	}
+	o.firstCycleAt = first
+	return nil
+}
+
+// stampSyncedAt is messages.synced_at for a message posted at tsUnix that
+// this Run stores now: the current time when it was posted at or after
+// max(first_cycle_at, runStart - syncedAtLookback), so a message stored after
+// the Inbox watermark passed its post time is still detected; its post time
+// otherwise, so a first sync, a new account row re-storing old messages or a
+// history backfill never floods the Inbox.
+func (o *Orchestrator) stampSyncedAt(tsUnix float64) float64 {
+	if o.backfilling {
+		return tsUnix
+	}
+	bound := o.runStart.Add(-syncedAtLookback)
+	// firstCycleAt is never zero in production: Run writes it before any
+	// save, and with no account row ensureWorkspace fails it before one.
+	if o.firstCycleAt.After(bound) {
+		bound = o.firstCycleAt
+	}
+	if tsUnix >= float64(bound.Unix()) {
+		return float64(o.clock().UnixNano()) / 1e9
+	}
+	return tsUnix
+}
+
+// slackTSUnix is a Slack ts as messages.ts_unix computes it (the whole
+// seconds); 0 when unparseable, which leaves synced_at unstamped (read as
+// the same post time).
+func slackTSUnix(ts string) float64 {
+	sec, _, _ := strings.Cut(ts, ".")
+	n, err := strconv.ParseInt(sec, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return float64(n)
+}
 
 // clock returns the orchestrator's notion of now (time.Now unless a test
 // injected one).
