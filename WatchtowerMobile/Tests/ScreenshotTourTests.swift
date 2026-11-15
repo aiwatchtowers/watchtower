@@ -83,6 +83,7 @@ final class ScreenshotTourTests: XCTestCase {
         let meetingRows = try await captureMeetingSoon(host: host)
         let asleepRows = try await captureMacAsleep(root.env, demo: demo, host: host)
             + (try await captureSessionStates(root.env, demo: demo, host: host))
+            + (try await captureAskSources(root.env, demo: demo, host: host))
         let recorderRows = try await captureRecorder(into: dir, linking: root.linking)
         let outboxRows = try await captureOutbox(into: dir, linking: root.linking)
         let relayRows = try await captureRelayLinking(host: host)
@@ -173,6 +174,65 @@ final class ScreenshotTourTests: XCTestCase {
                 number: "09s", view: "WorkchatView", source: "Features/Workbench/WorkchatView.swift", reached: "bare stack, Mac asleep"
             )
         ]
+    }
+
+    /// 16a–16c (#1786), after the Mac fell asleep so the earlier shots keep the demo as it was: an external
+    /// terminal's check on an archived task (only Task #417), an ask whose session and task were deleted (no
+    /// links, the number as text), and a long agent message folded behind Show more.
+    private func captureAskSources(_ env: AppEnvironment, demo: DemoHub, host: ScreenshotHost) async throws -> [ScreenshotHost.IndexRow] {
+        let now = Date()
+        let ago: (TimeInterval) -> Int = { DemoSeed.JSON.stamp(now.addingTimeInterval(-$0)) }
+        let acme = DemoSeed.acmeID
+        let asks: [[String: Any]] = [
+            DemoSeed.JSON.ask(150, workbench: acme, [
+                "target_id": 417, "kind": "check", "status": "answered", "title": "Check the archive view",
+                "created_at": ago(50_000), "answered_at": ago(49_000)
+            ]),
+            DemoSeed.JSON.ask(151, workbench: acme, [
+                "session_id": 99, "target_id": 999, "status": "answered", "title": "Keep the old lane names?",
+                "created_at": ago(40_000), "answered_at": ago(39_000)
+            ]),
+            DemoSeed.JSON.ask(152, workbench: acme, [
+                "session_id": 15, "target_id": 421, "status": "delivered", "title": "Which lanes count toward the total?",
+                "created_at": ago(11_000), "answered_at": ago(10_900), "delivered_at": ago(10_890),
+                "payload": ["questions": [[
+                    "id": "lanes", "question": "Which lanes count?", "options": [["label": "Open lanes only"], ["label": "Every lane"]]
+                ]]],
+                "answer": [
+                    "verdict": "", "answers": [["id": "lanes", "labels": ["Open lanes only"], "other": ""]],
+                    "checklist": [Any](), "comments": [Any](), "note": ""
+                ]
+            ])
+        ]
+        let message = """
+            The lane header now sums the estimates of its targets. Two readings of "total" fit the board: \
+            the open targets only, which matches what the Done fold hides, or every target in the lane, \
+            which matches the Mac's progress bar. The first keeps the number moving as work lands; the \
+            second keeps it stable across a sprint.
+            I checked the Desktop board: its progress bar counts every lane.
+            Before I change the header I need one answer, so I'm asking.
+            """
+        let chat: [String: Any] = ["session_id": 15, "live": false, "entries_more": 0, "entries": [
+            ["id": "l1", "kind": "owner", "at": ago(12_000), "text": "Add totals to the lane headers."],
+            ["id": "l2", "kind": "agent", "at": ago(11_100), "text": message]
+        ]]
+        let records = try zip([Int64(150), 151, 152], asks).map { try DemoSeed.record(kind: .ownerAsk, id: $0, json: $1, modifiedAt: now) }
+            + [try DemoSeed.record(kind: .sessionChat, id: 15, json: chat, modifiedAt: now)]
+        let sealing = DemoSeed.hubTransport(inner: demo.transport, seq: DemoSeed.hubSeq(defaults: demo.defaults, now: now))
+        try await sealing.save(records)
+        _ = await env.refresh(.pull)
+        try await poll({ env.workbenchReplica.snapshot.asks.contains { $0.id == 152 } }, "the source asks arrived")
+        let shots: [(String, Int64, String)] = [
+            ("16a", 150, "archived-task-no-session"), ("16b", 151, "session-and-task-gone"), ("16c", 152, "long-agent-message")
+        ]
+        for (number, id, slug) in shots {
+            try await host.capture("\(number)-ask-\(id)-\(slug)", NavigationStack {
+                AskView(replica: env.workbenchReplica, drafts: env.askDrafts, answerer: env.askAnswerer, askID: id)
+            })
+        }
+        return shots.map { number, _, slug in
+            ScreenshotHost.IndexRow(number: number, view: "AskView", source: "Features/Asks/AskView.swift", reached: "bare stack, \(slug)")
+        }
     }
 
     /// 10o, 10p, 12l, 11s, 12s: the workchat's what-next card (#1784) and the permission card the seed has no request

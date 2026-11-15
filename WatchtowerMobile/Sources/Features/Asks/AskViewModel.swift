@@ -1,4 +1,5 @@
 import Foundation
+import GRDB
 import Observation
 import WatchtowerKit
 import WatchtowerSync
@@ -22,6 +23,16 @@ final class AskViewModel {
     private(set) var sendError: String?
     /// Set once the screen moved to a newer round.
     private(set) var carriedNotice: String?
+    /// The ask's session chat when the phone already has its record (#1786):
+    /// observed only, never requested from the Mac (FEED-05), so it is
+    /// there only while a Workchat watch keeps it published.
+    private(set) var chat: SessionChat?
+    /// When the hub wrote that record (its own stamp): whether the chat
+    /// covers the ask.
+    private(set) var chatAsOf: Date?
+    /// The session whose Workchat pushed this screen; its Open session link
+    /// is hidden (Back goes there).
+    let openedFromSessionID: Int64?
 
     @ObservationIgnored private let drafts: AskDraftStore
     @ObservationIgnored private let answerer: AskAnswerer
@@ -29,6 +40,8 @@ final class AskViewModel {
     /// The last rendered snapshot: typing rebuilds the form on every
     /// keystroke, and a 256 KB snapshot takes a tenth of a second to render.
     @ObservationIgnored private var rendered: (askID: Int64, markdown: String, document: PlainTextDocument)?
+    @ObservationIgnored private var chatObservation: ResilientObservation?
+    @ObservationIgnored private var chatSessionID: Int64?
     /// The rendered snapshot's lines (#1787), split once per rendered
     /// document (text and headings: a heading level change keeps the text).
     @ObservationIgnored private var split: (document: PlainTextDocument, paragraphs: [ReviewParagraph])?
@@ -37,9 +50,11 @@ final class AskViewModel {
         askID: Int64,
         drafts: AskDraftStore,
         answerer: AskAnswerer,
+        openedFromSessionID: Int64? = nil,
         render: @escaping (String) -> PlainTextDocument = PlainTextRendering.render
     ) {
         self.askID = askID
+        self.openedFromSessionID = openedFromSessionID
         self.drafts = drafts
         self.answerer = answerer
         self.render = render
@@ -56,6 +71,9 @@ final class AskViewModel {
             now: now,
             applied: answerer.applied[askID],
             isSending: answerer.isSending(askID),
+            chat: chat,
+            chatAsOf: chatAsOf,
+            openedFromSessionID: openedFromSessionID,
             render: document,
             paragraphs: paragraphs
         )
@@ -67,6 +85,53 @@ final class AskViewModel {
         let paragraphs = ReviewParagraph.split(document)
         split = (document, paragraphs)
         return paragraphs
+    }
+
+    // MARK: - The agent's message before the ask
+
+    /// Observes `sessionID`'s main chat record, read-only. A screen coming
+    /// back keeps the last chat until the new read lands (no flicker); a
+    /// different session drops it.
+    func observeChat(sessionID: Int64?, store: ReplicaStore) {
+        chatObservation?.cancel()
+        chatObservation = nil
+        if sessionID != chatSessionID {
+            chat = nil
+            chatAsOf = nil
+            chatSessionID = sessionID
+        }
+        guard let sessionID else { return }
+        let recordName = SessionChat.recordName(sessionID: sessionID, agentID: nil)
+        let cache = ReplicaDecodeCache()
+        chatObservation = ResilientObservation(
+            name: "ask chat context",
+            reader: store.reader,
+            observation: {
+                ValueObservation.tracking(regions: [ReplicaStore.kindVersionsRegion]) { db in
+                    ChatRead(
+                        chat: try SessionChatViewModel.read(recordName: recordName, from: db, store: store, cache: cache),
+                        asOf: try store.modifiedAt(forRecordName: recordName, from: db)
+                    )
+                }
+                .removeDuplicates()
+            },
+            onChange: { [weak self] value in
+                guard self?.chatSessionID == sessionID else { return }
+                self?.chat = value.chat
+                self?.chatAsOf = value.chat == nil ? nil : value.asOf
+            }
+        )
+    }
+
+    /// One read of the chat record and its stamp.
+    private struct ChatRead: Equatable, Sendable {
+        let chat: SessionChat?
+        let asOf: Date?
+    }
+
+    func stopObservingChat() {
+        chatObservation?.cancel()
+        chatObservation = nil
     }
 
     /// The snapshot as plain text, rendered once per ask and snapshot.

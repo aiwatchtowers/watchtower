@@ -53,6 +53,18 @@ final class ReplicaResetTests: XCTestCase {
         XCTAssertEqual(try storedStamp(in: store), second)
     }
 
+    func testModifiedAtIsTheWritersStampAndNilWhenAbsent() async throws {
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
+        let stamp = Date().addingTimeInterval(-600).rounded()
+        let transport = InMemoryCloudTransport()
+        try await transport.save([try heartbeatRecord(at: stamp)])
+        _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
+        let stored = try await store.reader.read { db in try store.modifiedAt(forRecordName: HeartbeatPayload.recordName, from: db) }
+        XCTAssertEqual(stored, stamp)
+        let absent = try await store.reader.read { db in try store.modifiedAt(forRecordName: "session_chat-404", from: db) }
+        XCTAssertNil(absent)
+    }
+
     func testResetClearsTheRelayTokenAndKeepsTheWatermark() throws {
         let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         try store.setRelayToken(CloudChangeToken(value: 7))
