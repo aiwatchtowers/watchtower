@@ -102,6 +102,7 @@ type wiring struct {
 	// waited for at close.
 	chatStore *chatstore.Store
 	chatTimer *chatTimer
+	chatPush  *chatPushWatch
 	// bg is the chat's background work (AI titles, approved actions'
 	// applies), started only through spawn: bgClosed, set under bgMu at
 	// close, refuses new work so no Add ever races the close's Wait.
@@ -269,6 +270,8 @@ func (h *hubRuntime) buildWiring(o Options, st *state.Store, mode string, d *act
 			watches: set.ChatWatches, fresh: o.DB.FreshChatLeases, grant: st.AnyChatPhone,
 			available: h.chatAvailable, now: clock, publish: h.publishSoon,
 		}
+		w.chatPush = newChatPushWatch(o.DB.DB, set.ChatWatches, h.onRelay, clock, h.chatPushEnqueue)
+		h.chatPush.Store(w.chatPush)
 	}
 	deps.RecordingQueued = func(uploadID string) {
 		h.sup.notifyDesktop(ControlAnswer{Event: EventRecordingQueued, OK: true, UploadID: uploadID})
@@ -422,6 +425,13 @@ func mainFile(ctx context.Context, d *db.DB) (string, error) {
 // publisher retries it, and the lane does not observe). Nothing else waits:
 // the device_grant and the other kinds keep publishing.
 func (h *hubRuntime) startWiring(ctx context.Context, w *wiring) {
+	if w.chatPush != nil {
+		h.wg.Add(1)
+		go func() {
+			defer h.wg.Done()
+			w.chatPush.run(ctx)
+		}()
+	}
 	if w.chatTimer != nil {
 		h.wg.Add(1)
 		go func() {
@@ -490,6 +500,9 @@ func (h *hubRuntime) startWiring(ctx context.Context, w *wiring) {
 		_ = w.watch.Run(ctx, func(kinds ...slices.Kind) {
 			h.publishSoon(kinds...)
 			w.lane.kick()
+			if w.chatPush != nil {
+				w.chatPush.kick()
+			}
 			if w.live != nil {
 				w.live.kick() // a start or an exit wrote its row
 			}
@@ -541,6 +554,12 @@ func (h *hubRuntime) newChatRunner(o Options, store *chatstore.Store) *chatrun.R
 		// A turn's text, steps and end reach the phone's feed and list (the
 		// publisher coalesces the per-event calls).
 		OnChange: func(int64) { h.publishSoon(slices.KindChatFeed, slices.KindChatList) },
+		// The chat_answer push (spec §4.7).
+		OnTurnEnd: func(conv int64, turnID, status string) {
+			if p := h.chatPush.Load(); p != nil {
+				p.turnEnded(conv, turnID, status)
+			}
+		},
 	})
 	if err := r.Sweep(); err != nil {
 		log.Printf("hub: the chat sweep failed (%s)", errClass(err))

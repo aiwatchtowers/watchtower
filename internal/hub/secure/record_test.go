@@ -667,6 +667,18 @@ func sealGoVectors(t *testing.T) goSealedFile {
 	p, err := s.AlertPush(push.Key, push)
 	add("alertPush", ClassAlert, Record{wireName: AlertPushWireName, envelope: p.Envelope()}, err,
 		InnerFrame{Kind: "ask_alert", ID: "ask_alert-" + push.Key, Payload: pushPayload}, "DataZone", fixtureHubID)
+
+	// A chat_answer push (iPhone chat spec §4.7): the conversation id, the
+	// fixed body, no workbench.
+	chat := WorkAlertFields{Event: "chat_answer", Key: "chat:turn-7:answer", Title: "Release plan", Body: "Answer ready",
+		ConversationID: 5}
+	chatPayload, err := hubwire.Marshal(chat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cp, err := s.AlertPush(chat.Key, chat)
+	add("chatAnswerPush", ClassAlert, Record{wireName: AlertPushWireName, envelope: cp.Envelope()}, err,
+		InnerFrame{Kind: "ask_alert", ID: "ask_alert-" + chat.Key, Payload: chatPayload}, "DataZone", fixtureHubID)
 	return out
 }
 

@@ -200,3 +200,11 @@ func (h *hubRuntime) pruneAlertPushes() {
 		log.Printf("hub: pruning the alert push ledger failed (%s)", errClass(err))
 	}
 }
+
+// chatPushEnqueue hands a chat_answer push to the pusher (none on CloudKit
+// only hosts).
+func (h *hubRuntime) chatPushEnqueue(key string, fields secure.WorkAlertFields, at time.Time) {
+	if h.push != nil {
+		h.push.Enqueue(key, fields, at)
+	}
+}
