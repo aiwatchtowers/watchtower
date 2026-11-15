@@ -251,8 +251,7 @@ final class IdeaDailyBatchTests: XCTestCase {
         XCTAssertFalse(done.isUnread)
         XCTAssertEqual(done.rowMeta, "1 older than 30 days")
 
-        let empty = IdeaDailyBatch.state(ideas: [idea(10, daysAgo: 40)], batchIDs: [], now: now, size: 13,
-                                         calendar: calendar)
+        let empty = IdeaDailyBatch.state(ideas: [idea(10, daysAgo: 40)], batchIDs: [], now: now, size: 13)
         XCTAssertEqual(empty.rowPreview, "Nothing to judge from the last 30 days")
         XCTAssertNil(empty.pillCount)
         XCTAssertFalse(empty.isUnread)

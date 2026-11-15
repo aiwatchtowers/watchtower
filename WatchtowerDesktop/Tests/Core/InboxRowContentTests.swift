@@ -224,7 +224,7 @@ final class InboxRowContentTests: XCTestCase {
         // A stored batch from the view model wins over the default one.
         var stored = try inputs(feed)
         stored.ideaBatch = IdeaDailyBatch.state(
-            ideas: feed.ideas, batchIDs: [2], now: try now(), size: 13, calendar: Self.kyiv)
+            ideas: feed.ideas, batchIDs: [2], now: try now(), size: 13)
         let batch = InboxFolderEntries.content(.legacyIdeas, stored)
         XCTAssertEqual(batch.preview, "Today’s 1 idea to judge. Top one: “Weekly digest”.")
         XCTAssertEqual(batch.pill, InboxRowPill(count: 1, tone: .batch))
