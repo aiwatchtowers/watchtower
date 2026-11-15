@@ -447,7 +447,7 @@ final class ActionStripApproveAllTests: XCTestCase {
 
         guard case let .failed(message) = result else { return XCTFail("\(result)") }
         XCTAssertTrue(message.hasPrefix("The Inbox could not be read: "), message)
-        XCTAssertTrue(runner.invocations.filter { $0.prefix(2) == ["actions", "approve"] }.isEmpty)
+        XCTAssertFalse(runner.invocations.contains { $0.prefix(2) == ["actions", "approve"] })
         XCTAssertTrue(vm.approveAllShownArgs.isEmpty, "the run's pinned args are gone")
     }
 
