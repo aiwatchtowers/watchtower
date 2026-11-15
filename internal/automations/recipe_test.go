@@ -961,6 +961,10 @@ func TestAuto01_RawWindowBuiltinOnly(t *testing.T) {
 	if !errors.As(err, &pe) || !strings.Contains(err.Error(), `"builtin:slack.window" is allowed only in a built-in automation`) {
 		t.Fatalf("Personal recipe: err = %v; want a ParseError refusing builtin:slack.window", err)
 	}
+	_, err = ParseRecipe("ok", data, Scope{Kind: ScopeWorkbench, WorkbenchID: 7})
+	if !errors.As(err, &pe) || !strings.Contains(err.Error(), `"builtin:slack.window" is allowed only in a built-in automation`) {
+		t.Fatalf("workbench recipe: err = %v; want a ParseError refusing builtin:slack.window", err)
+	}
 	if r := mustParse(t, data, builtinScope); r.Concurrency != 1 {
 		t.Errorf("built-in: concurrency = %d; want 1", r.Concurrency)
 	}

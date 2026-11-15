@@ -5,3 +5,4 @@
 # the ids stay retired and the newer card's chain still reaches them.
 # docs/guide/WRITING.md "Learn cards" has the rules.
 ideas-review ideas-review-finder
+mail-attention mail-attention-waiting

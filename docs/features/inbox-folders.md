@@ -32,7 +32,7 @@ Owner decisions: asks #947 (folders, root first, Needs approval pinned), #952 (f
 
 ## Waiting for me
 
-- Built-in `waiting-for-me` (`recipes/waiting-for-me.md`): `trigger: {sync: waiting_for_me}`, run by `phaseWaitingForMe` right after `phaseInbox`; `FeatureIDs: [secretary-inbox]`; capability `builtin:attention.waiting` over `db.OpenInboxItems` (the Go twin of `HomeFeedQueries.openMessageClause`, newest first, 200); one living artifact `waiting` with a row per item (`ref {kind: inbox_item}`, age badge, `warning` tone past 24 h); no `llm()` (pinned).
+- Built-in `waiting-for-me` (`recipes/waiting-for-me.md`): `trigger: {sync: waiting_for_me}`, run by `phaseWaitingForMe` right after `phaseInbox`; `FeatureIDs: [secretary-inbox]`; capability `builtin:attention.waiting` over `db.OpenInboxItems` (the Go twin of `HomeFeedQueries.openMessageClause`, newest first, 200); one living artifact `waiting` with a row per item (people only and in sections since the redesign's phase 2, see the pointer below) (`ref {kind: inbox_item}`, age badge, `warning` tone past 24 h); no `llm()` (pinned).
 - Pinned first in the root while a row waits. A native row action queues no run: the render-time check hides the closed row at once.
 - **Stand-in:** until its first successful run and after a failed one (`WaitingForMeState.messagesStandIn`), the root shows the **Messages** legacy entry and leaves the built-in's artifact out.
 
@@ -40,7 +40,7 @@ Owner decisions: asks #947 (folders, root first, Needs approval pinned), #952 (f
 
 The root lists Waiting for me, the artifacts routed there, and Desktop-only legacy entries over today's queries and panes (`InboxFeedQueries.read`, `InboxLegacyList` `tracks|ideas|messages`): **Morning brief** per date (`InboxListBuilder.rootDays`: today's — a placeholder before it exists while the owner is known — and every unread one), **Track my threads** (Stopped fold, **Restore**), **Idea finder** (its ⋯ has **Find Ideas in Past Messages…**), **Messages** (stand-in only), and one **Thread brief** per `brief_context` row applied in the last 24 hours (ask #609: `AgentActionQueries.fetchExecutedBriefs` by `applied_at`, `notWorkbenchRow` as on the strip, read as `InboxFeedSnapshot.briefs`; `InboxFolderEntry.brief`, row kind `result`, placed by `applied_at` among the root's timed entries). A brief is a result, not something waiting: never unread, never in a folder's count or the badge, never in Needs approval. Selecting it draws its `AgentActionCardView` (the summary from `result_json`) in the reading pane; a `.proposal` route to a listed brief opens its root entry. The list re-reads on the 30 s poll, on appear and after a press (the daemon writes the row from another process, which no observation sees). This replaces the old Automations filter's 24-hour executed tail, which nothing drew after the filters went. The filters are gone: no `InboxFilter`, no `inbox.filter` key, no `inbox.dayCardDone`, no Done on the day card (ask #607). `InboxRoute` is `{folderID, entry}`; the old nav hosts `briefings`, `dayPlan`, `day-plan` open today's Morning brief, `tracks` / `ideas` their entry; a deleted folder opens the root. Empty-state keys: `inbox`, `inboxFolder`, `inboxApprovals`, and `InboxLegacyList.emptyCopyKey` (`tracks`, `ideas`, `inboxMessages`).
 
-Superseded by the Inbox redesign phase 1 (`inbox-redesign.md`): one Morning brief row with past days inside it; the badge rule.
+Superseded by the Inbox redesign (`inbox-redesign.md`): phase 1 — one Morning brief row with past days inside it, the badge rule (approvals + people waiting today); phase 2 — Waiting for me lists people only (`db.OpenInboxItemsOfKind`, sections Today / This week / Older) and mail moves to the built-in **Mail waiting**, one row per sender; phase 3 — **Track my threads** and **Idea finder** open their own panes (the news list, the daily batch), the old lists (Stopped fold, **Restore**) only behind **All Threads** / **Backlog**.
 
 ## Native row actions and Reply
 
@@ -58,7 +58,6 @@ Artifact ⋯ (header and row context menu): **Run Now**, **Edit What It Collects
 - A failed reply does not block a new one: **Retry** on the failed proposal plus a new reply can post twice (Go's rule: only pending, approved or executing replies block).
 - The editor's folder suggestion must be passed on every `draft_automation` call; the newest draft's is the one shown.
 - No artifact drag: **Move to Folder** moves the automation. A folder has no look of its own. The phone keeps its current Inbox slice.
-- Superseded by the Inbox redesign phase 1 (`inbox-redesign.md`): one Morning brief row with past days inside it; the badge rule.
 
 ## Inventory
 

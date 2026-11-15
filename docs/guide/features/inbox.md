@@ -22,13 +22,13 @@ replaces: [inbox-filters]
 changed: The filters above the list are gone; folders you arrange replace them.
 -->
 
-Three columns: the folder menu (**⌥⌘S**, View → **Hide Inbox Folders**, folds it), the folder's list and the reading pane. The menu lists the root, **Inbox**, **Needs approval**, then your folders as a tree under **Folders**, each with its own count. It opens on today's brief, or on the card you last opened in that folder.
+Three columns: the folder menu (**⌥⌘S**, View → **Hide Inbox Folders**, folds it), the folder's list and the reading pane. The menu lists the root folder **Inbox**, then **Needs approval**, then your folders as a tree under **Folders**, each with its own count. It opens on today's brief, or on the card you last opened in that folder.
 
 An automation's cards go to its folder, the root unless you moved it; **Move to Folder** moves its earlier cards too, and a recipe can name a folder for one card ([which folder a card goes to](automations-inbox-buttons.md#which-folder-a-card-goes-to)).
 
 ### What the root holds
 
-Root rows sort by urgency, each with its first line, time and a count of what needs you.
+Root rows sort by urgency, each with its first line, time and count.
 
 - **Needs you**: **Waiting for me** (people waiting today; older ones as a grey line), **Messages** in its place before it has run or after a failed run, **Mail waiting** once it has run, and each **Thread brief** a reaction made, for 24 hours.
 - **Today**: today's **Morning brief**, **Slack today**, then cards your automations changed today.
@@ -53,7 +53,7 @@ changed: Proposals and due reminders moved from Needs your decision to their own
 
 **Needs approval** holds every action waiting for you, whatever started it, and every reminder once due. It can't be moved, renamed, hidden or deleted. Each approval is one card with **Approve**, **Reject** and **Edit…** (**Retry** after a failure; **Done** and **Snooze 1h** on a reminder). Nothing outside Watchtower happens before you approve.
 
-The list groups them by kind, oldest first: **Messages**, **Tracks to create**, **Targets**, **Confluence and Jira**, **Reminders**, **Other**. Two or more tracks, targets or one Confluence or Jira action make one row with **Approve All N…**. While the built-in is off, stopped or failing, approvals show in the standard card.
+The list groups them by kind, oldest first: **Messages**, **Tracks to create**, **Targets**, **Confluence and Jira**, **Reminders**, **Other**. Two or more approvals of the same kind under **Tracks to create**, **Targets** or **Confluence and Jira** make one row with **Approve All N…**. While the built-in is off, stopped or failing, approvals show in the standard card.
 
 ### Waiting for me
 <!-- learn
@@ -69,7 +69,7 @@ replaces: [inbox-messages]
 changed: The Messages filter became the Waiting for me list in the Inbox.
 -->
 
-**Attention detection** finds Slack mentions, DMs and thread replies, and Jira and Linear issues assigned to you or mentioning you. The built-in **Waiting for me** lists these people after every sync under **Today**, **This week** and **Older** (7 days or more, folded), newest first, up to 200, each with its age, flagged past a day. An item leaves when you answer in the source or press **Done**, **Hide** or **Snooze**; nothing old leaves on its own. An edited copy lists people only too. No AI calls.
+**Attention detection** finds Slack mentions, DMs and thread replies, and Jira and Linear issues assigned to you or mentioning you. The built-in **Waiting for me** lists these people after every sync under **Today**, **This week** and **Older** (7 days or more, folded), newest first, up to 200, each with its age, flagged past a day. An item leaves when you answer in the source or press **Done**, **Hide** or **Snooze**; one untouched for 14 days is archived. An edited copy lists people only too. No AI calls.
 
 ### Mail waiting
 <!-- learn
@@ -83,7 +83,7 @@ since: next
 action: nav:inbox
 -->
 
-The built-in **Mail waiting** lists your open mail after every sync, one row per sender, the busiest first: how many are open, how many came today and the newest subject. Its first line gives the top ten senders' share. Gmail mail leaves once you reply; Outlook and IMAP mail archives on its own. No AI calls.
+The built-in **Mail waiting** lists your open mail after every sync, one row per sender, the busiest first: how many are open, how many came today and the newest subject. Its first line gives the top ten senders' share. Gmail mail leaves once you reply; Outlook and IMAP mail archives on its own. If a run fails, the last list stays. No AI calls.
 
 ### Slack today
 <!-- learn
@@ -155,9 +155,9 @@ since: 0.24.0
 action: nav:inbox
 -->
 
-Point at a row in **Waiting for me** for its buttons: **Open in Slack** (or Jira, Linear), **Reply…**, **Done**, **Hide**, **Snooze** (**Tomorrow**, **In 3 days**, **Next week**), **Discuss in Chat** and **Hand to Agent…**. On **Older**'s first row, **Mark All Done…** closes those items after you confirm the count. A failed press leaves the row with the error and **Retry**.
+Point at a row in **Waiting for me** for its buttons: **Open in Slack** (or Jira, Linear), **Reply…**, **Done**, **Hide**, **Snooze** (**Tomorrow**, **In 3 days**, **Next week**), **Discuss in Chat** and **Hand to Agent…**. On **Older**'s first row, **Mark All Done…** closes those items after you confirm the count. A failed press shows its error and **Retry**.
 
-Keys on the focused row: **J** / **K** move, **E** done, **R** reply, **S** snooze, **⏎** open, **⌘K** hand to an agent; on a sender, **⏎** open, **E** mark all done, **M** mute.
+Row keys (**J** / **K**, **E**, **R**, **M**) are in [Keyboard shortcuts](../reference/keyboard-shortcuts.md#inbox).
 
 ### Clear mail by sender
 

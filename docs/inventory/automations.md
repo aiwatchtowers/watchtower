@@ -91,7 +91,7 @@ owner never read.
 - `internal/automations/manifest_scope_test.go` — `TestManifest_JiraProjectGrantCoversLinkedData`, `TestManifest_CaseVariantScopeArgRefused`, `TestManifest_NilDBDeniedNotPanic`
 - `cmd/automations_registry_test.go` — `TestToolCapabilities_CoversEveryAutomationTool` (every tool visible on `automation` has a capability entry or is deliberately `tool:`-only)
 - `internal/automations/executor_test.go` — `TestExecutor_UncaughtPermissionDeniedFailsWithPermissionKind` (the run-level mapping)
-- `internal/automations/recipe_test.go` — `TestAuto01_RawWindowBuiltinOnly`; `internal/automations/sdk_window_test.go` — `TestStateSet_ReservedWindowKeyRefused` (the raw window, Inbox redesign phase 5)
+- `internal/automations/recipe_test.go` — `TestAuto01_RawWindowBuiltinOnly` (a Personal and a workbench recipe refused, a built-in admitted); `internal/automations/sdk_window_test.go` — `TestStateSet_ReservedWindowKeyRefused` (the raw window, Inbox redesign phase 5)
 
 **Locked since:** 2026-10-14
 

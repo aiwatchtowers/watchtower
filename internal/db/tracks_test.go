@@ -655,6 +655,52 @@ func TestTracks07_BulkDismissSetsDismissedAtOnly(t *testing.T) {
 	assert.Equal(t, statesBefore, statesAfter, "no track_states row added")
 }
 
+// TRACKS-07 bulk note: the bulk write changes no recipe. A custom track's
+// watch recipe row (automations) is the same, column for column, after the
+// track is dismissed in bulk.
+func TestDismissActiveTracks_LeavesWatchRecipeUnchanged(t *testing.T) {
+	db := openTestDB(t)
+	recipe := seedAutomationRow(t, db, "watch-refund", "/tmp/acme/watch-refund.md", "a1")
+	_, err := db.Exec(`UPDATE automations SET enabled = 1 WHERE id = ?`, recipe)
+	require.NoError(t, err)
+	c, err := db.CreateCustomTrack(Track{AssigneeUserID: "U001", Text: "custom", Instruction: "watch the refund"})
+	require.NoError(t, err)
+	_, err = db.Exec(`UPDATE tracks SET enabled = 1, automation_id = ? WHERE id = ?`, recipe, c)
+	require.NoError(t, err)
+
+	image := func() map[string]string {
+		rows, err := db.Query(`SELECT * FROM automations WHERE id = ?`, recipe)
+		require.NoError(t, err)
+		defer rows.Close()
+		cols, err := rows.Columns()
+		require.NoError(t, err)
+		require.True(t, rows.Next(), "automation %d not found", recipe)
+		vals := make([]any, len(cols))
+		ptrs := make([]any, len(cols))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		require.NoError(t, rows.Scan(ptrs...))
+		img := make(map[string]string, len(cols))
+		for i, col := range cols {
+			img[col] = fmt.Sprintf("%T:%v", vals[i], vals[i])
+		}
+		return img
+	}
+	before := image()
+	var count int
+	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM automations`).Scan(&count))
+
+	got, err := db.DismissActiveTracks([]int{int(c)})
+	require.NoError(t, err)
+	assert.Equal(t, []int{int(c)}, got)
+
+	assert.Equal(t, before, image(), "the watch recipe's row is unchanged")
+	var after int
+	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM automations`).Scan(&after))
+	assert.Equal(t, count, after, "no automations row added or removed")
+}
+
 func TestDismissActiveTracks_ErrorCommitsNothing(t *testing.T) {
 	db := openTestDB(t)
 	first, err := db.UpsertTrack(Track{Text: "first", Priority: "low"})

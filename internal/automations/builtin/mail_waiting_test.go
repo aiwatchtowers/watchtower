@@ -3,6 +3,7 @@ package builtin
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -300,5 +301,49 @@ func TestMailWaiting_SkippedWhenDetectionOff(t *testing.T) {
 	runs, err := f.d.ListAutomationRuns(f.rowOf(t, MailWaitingID).ID, 0)
 	if err != nil || len(runs) != 0 {
 		t.Errorf("runs = %+v, %v; want none", runs, err)
+	}
+}
+
+// STRIP-01 / INBOX-05: a real Mail waiting run writes nothing but its own
+// artifact. Every inbox_items row, a muted sender's included, is column for
+// column the same after the run.
+func TestMailWaiting_RunLeavesInboxItemsUnchanged(t *testing.T) {
+	f := newFixture(t)
+	now := f.clock.Now()
+	f.insertMail(t, "3100.0001", "muted@example.com", "Muted subject", now)
+	f.insertMail(t, "3100.0002", "other@example.com", "Other subject", now.Add(-time.Minute))
+	f.insertMail(t, "3100.0003", "other@example.com", "Older subject", now.Add(-10*24*time.Hour))
+	if _, err := f.d.Exec(`INSERT INTO inbox_learned_rules (rule_type, scope_key, weight, source, last_updated)
+		VALUES ('source_mute', 'email:muted@example.com', -1, 'user_rule', ?)`, now.UTC().Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
+	stamps := []string{"3100.0001", "3100.0002", "3100.0003"}
+	before := map[string]map[string]any{}
+	for _, ts := range stamps {
+		before[ts] = inboxRow(t, f.d, ts)
+	}
+	var count int
+	if err := f.d.QueryRow(`SELECT COUNT(*) FROM inbox_items`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+
+	f.sync(t)
+	card := f.runMail(t)
+	if len(card.list.Rows) != 1 || card.list.Rows[0].Title != "other@example.com" {
+		t.Fatalf("rows = %+v; want other@example.com only (the muted sender left out)", card.list.Rows)
+	}
+
+	var after int
+	if err := f.d.QueryRow(`SELECT COUNT(*) FROM inbox_items`).Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if after != count {
+		t.Fatalf("inbox_items has %d rows after the run; had %d", after, count)
+	}
+	for _, ts := range stamps {
+		got := inboxRow(t, f.d, ts)
+		if !reflect.DeepEqual(got, before[ts]) {
+			t.Errorf("inbox_items %s = %v after the run; was %v", ts, got, before[ts])
+		}
 	}
 }

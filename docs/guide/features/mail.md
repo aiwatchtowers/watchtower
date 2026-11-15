@@ -20,20 +20,20 @@ Every sync cycle (every 15 minutes by default) the daemon pulls new mail for eac
 ### Where mail shows up
 
 <!-- learn
-id: mail-attention-waiting
+id: mail-attention-mail-waiting
 title: See mail that names you
-text: Mail sent to you becomes an attention item in Catch Up, the briefing and the Inbox's **Waiting for me**.
+text: Mail sent to you becomes an attention item in Catch Up, the briefing and the Inbox's **Mail waiting**.
 area: communication
 level: next
 kind: tip
-since: 0.28.0
-replaces: [mail-attention]
-changed: The Inbox's Messages filter became Waiting for me.
+since: next
+replaces: [mail-attention-waiting]
+changed: Mail moved from Waiting for me to its own Mail waiting row.
 action: nav:inbox
 -->
 
 - **Attention items:** a message addressed to you (you are in To) becomes an item, like a Slack mention. A message that only copies you (Cc) becomes a lower-priority item. A message from you mints nothing.
-- **Where you see them:** the Inbox's **Waiting for me** lists them with your Slack and tracker items ([Inbox](inbox.md)). They also surface in **Catch Up** (needs you), the briefing and meeting prep. Catch Up also reads the mail stream digests described below.
+- **Where you see them:** the Inbox's **Mail waiting** lists them, one row per sender ([Inbox](inbox.md#mail-waiting)). They also surface in **Catch Up** (needs you), the briefing and meeting prep. Catch Up also reads the mail stream digests described below.
 - **Ideas:** with **Stream Digests** on (**Settings → Features**), new mail is summarized per account (Gmail by thread, Outlook and IMAP message by message), and ideas and decisions mined from it reach the Ideas registry. Stream Digests is a medium AI cost.
 - **Memory:** Gmail is a Memory source, off by default.
 
@@ -41,7 +41,7 @@ action: nav:inbox
 <!-- learn
 id: mail-closes-on-reply
 title: Mail closes when you reply
-text: Reply to a Gmail message and its Waiting for me item closes on the next sync.
+text: Reply to a Gmail message and it leaves **Mail waiting** on the next sync.
 area: communication
 level: basics
 kind: feature
