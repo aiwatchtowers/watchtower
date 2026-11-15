@@ -144,6 +144,10 @@ package struct HubControlRequest: Encodable, Equatable, Sendable {
     /// A progress: `transcribing` (with `percent` when known), `diarizing`, `summarizing`.
     package let phase: String?
     package let percent: Int?
+    /// A heartbeat's `chat_lease`: 1 = this app honours `chat_turn_leases`
+    /// (spec 2026-11-15 §4.8, D18); a hub that sees a fresh heartbeat
+    /// without it keeps chat off (`desktop_too_old`).
+    package let chatLease: Int?
 
     package init(
         op: String,
@@ -153,7 +157,8 @@ package struct HubControlRequest: Encodable, Equatable, Sendable {
         transcriptID: Int64? = nil,
         errorClass: String? = nil,
         phase: String? = nil,
-        percent: Int? = nil
+        percent: Int? = nil,
+        chatLease: Int? = nil
     ) {
         self.op = op
         self.hidden = hidden
@@ -163,9 +168,10 @@ package struct HubControlRequest: Encodable, Equatable, Sendable {
         self.errorClass = errorClass
         self.phase = phase
         self.percent = percent
+        self.chatLease = chatLease
     }
 
-    package static var heartbeat: Self { Self(op: desktopHeartbeat) }
+    package static var heartbeat: Self { Self(op: desktopHeartbeat, chatLease: 1) }
     package static var watch: Self { Self(op: desktopWatch) }
 
     package static func claim(_ upload: String) -> Self { Self(op: recordingClaim, upload: upload) }
@@ -198,6 +204,7 @@ package struct HubControlRequest: Encodable, Equatable, Sendable {
         case displayOver = "display_over"
         case transcriptID = "transcript_id"
         case errorClass = "error_class"
+        case chatLease = "chat_lease"
     }
 }
 

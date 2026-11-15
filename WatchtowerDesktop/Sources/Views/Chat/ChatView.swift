@@ -102,6 +102,8 @@ struct ChatSplitView: View {
                             modelSuggestions: appState.aiModelCatalog.suggestions(for: chatVM.selectedProvider.rawValue),
                             maxHeight: max(120, geo.size.height * 0.4)
                         )
+                        // A turn the phone runs in this chat (spec 2026-11-15 §5).
+                        .task(id: chatVM.conversationID) { await chatVM.watchForeignTurns() }
                         .frame(maxWidth: 760)
                         .frame(maxWidth: .infinity)
                     }

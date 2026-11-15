@@ -50,6 +50,8 @@ final class MobileSettingsModel {
         let typingRequested, permissionsRequested, startSessionsGranted: Bool
         /// What the phone asks for and the owner has not allowed yet.
         let requests: [String]
+        /// The `chat` grant: the phone may use the AI chat (spec 2026-11-15).
+        var chat = true
         /// The RC §10 lines (phase 4 Task 8, `withIndicators`), independent
         /// of each other: a free phone on a Relay hub, the actions this Mac's
         /// side has not applied, its relay mailbox full, its last alert.
@@ -84,6 +86,7 @@ final class MobileSettingsModel {
     nonisolated static let typingGrant = "typing"
     nonisolated static let permissionsGrant = "permissions"
     nonisolated static let startSessionsGrant = "start_sessions"
+    nonisolated static let chatGrant = "chat"
     /// The `Tone.status` name of the iCloud pill.
     nonisolated static let iCloudStatusColor = "blue"
 
@@ -300,7 +303,8 @@ final class MobileSettingsModel {
                 switchedLine: switchedLine,
                 typing: phone.typingAllowed, permissions: phone.permissionsAllowed, startSessions: phone.startSessionsAllowed,
                 typingRequested: phone.typingRequested, permissionsRequested: phone.permissionsRequested,
-                startSessionsGranted: phone.startSessionsGranted, requests: requests
+                startSessionsGranted: phone.startSessionsGranted, requests: requests,
+                chat: phone.chatAllowed ?? true
             )
             return Self.withIndicators(row, phone, hubTransport: status.transport)
         }
@@ -362,6 +366,11 @@ final class MobileSettingsModel {
             recordingsError = MobileHubCLI.reason(error)
         }
         await load()
+    }
+
+    /// The Chat toggle: on by default, so no confirmation either way.
+    func setChat(_ row: PhoneRow, _ on: Bool) async {
+        await allow(row.id, Self.chatGrant, on)
     }
 
     func allow(_ id: String, _ grant: String, _ on: Bool) async {

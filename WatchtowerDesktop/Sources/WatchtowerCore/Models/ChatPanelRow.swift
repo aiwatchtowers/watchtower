@@ -16,6 +16,8 @@ package struct ChatPanelRow: FetchableRecord, Identifiable, Equatable, Sendable 
     package let pendingTool: String?
     /// The chat's project name; nil outside a project.
     package let projectName: String?
+    /// The hub runs a turn of it for the phone (a live hub lease).
+    package let answeringElsewhere: Bool
 
     package var id: Int64 { conversation.id }
 
@@ -33,7 +35,8 @@ package struct ChatPanelRow: FetchableRecord, Identifiable, Equatable, Sendable 
         lastAnswerPreview: String,
         pendingApprovals: Int,
         pendingTool: String?,
-        projectName: String?
+        projectName: String?,
+        answeringElsewhere: Bool = false
     ) {
         self.conversation = conversation
         self.lastAnswerAt = lastAnswerAt
@@ -41,6 +44,7 @@ package struct ChatPanelRow: FetchableRecord, Identifiable, Equatable, Sendable 
         self.pendingApprovals = pendingApprovals
         self.pendingTool = pendingTool
         self.projectName = projectName
+        self.answeringElsewhere = answeringElsewhere
     }
 
     package init(row: Row) throws {
@@ -51,6 +55,7 @@ package struct ChatPanelRow: FetchableRecord, Identifiable, Equatable, Sendable 
         pendingApprovals = row["pending_approvals"] ?? 0
         pendingTool = row["pending_tool"]
         projectName = row["project_name"]
+        answeringElsewhere = row["answering_elsewhere"] ?? false
     }
 
     /// The first line of `markdown` that has text once stripped (a fence
