@@ -635,4 +635,56 @@ final class InboxDayPaneTests: XCTestCase {
         XCTAssertNoThrow(try fresh.inspect().find(text: firstRunTitle))
         XCTAssertThrowsError(try fresh.inspect().find(text: "Today's plan at or after 08:00"))
     }
+
+    // MARK: - Make a Task across the brief's blocks (J-C1)
+
+    /// A failed Make a Task shows once at the top of its brief's pane, is
+    /// not shown over another day, and is still there on the way back.
+    func testMakeTaskFailureShowsOnceAndOutlivesADayStep() async throws {
+        let suggest = #"[{"text":"File the release ticket","priority":"high","suggest_target":true}]"#
+        try await pool.write { db in
+            try TestDatabase.insertBriefing(db, date: Self.today, attention: suggest)
+            try TestDatabase.insertBriefing(db, date: Self.yesterday, attention: Self.attention)
+        }
+        let model = BriefMakeTaskModel()
+        var sut = try await pane(date: Self.today)
+        sut.makeTask = model
+        sut.onMakeTask = { _ in "Jira is not connected" }
+
+        try sut.inspect().find(button: "Make a Task").tap()
+        for _ in 0..<100 where model.failure == nil {
+            await Task.yield()
+        }
+        XCTAssertFalse(model.running)
+        XCTAssertEqual(try texts(sut).filter { $0 == "Jira is not connected" }.count, 1, "one banner")
+
+        var other = try await pane(date: Self.yesterday)
+        other.makeTask = model
+        XCTAssertFalse(try texts(other).contains("Jira is not connected"), "not over another day")
+
+        var back = try await pane(date: Self.today)
+        back.makeTask = model
+        XCTAssertEqual(try texts(back).filter { $0 == "Jira is not connected" }.count, 1, "still there")
+    }
+
+    /// One press at a time across the brief; a success clears the failure.
+    func testMakeTaskModelRunsOnePressAtATime() async {
+        let model = BriefMakeTaskModel()
+        let item = BriefingTaskSource.coaching(CoachingItem(text: "Pair more", relatedUserID: nil, category: nil))
+        await model.press(item, briefingID: 7) { _ in "failed" }
+        XCTAssertEqual(model.message(for: 7), "failed")
+        XCTAssertNil(model.message(for: 8))
+
+        var calls = 0
+        await model.press(item, briefingID: 7) { _ in
+            calls += 1
+            await model.press(item, briefingID: 7) { _ in
+                calls += 1
+                return nil
+            }
+            return nil
+        }
+        XCTAssertEqual(calls, 1, "a press while one runs does nothing")
+        XCTAssertNil(model.failure, "a success clears the failure")
+    }
 }

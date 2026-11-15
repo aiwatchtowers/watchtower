@@ -61,6 +61,9 @@ struct InboxDayPane: View {
     var onOpenBriefingLink: (BriefingLink) -> Void = { _ in }
     /// Returns the failure to show, or nil.
     var onMakeTask: (BriefingTaskSource) async -> String? = { _ in nil }
+    /// Make a Task's running flag and failure (AppState's, so a failure that
+    /// lands after a day step is still there on the way back).
+    var makeTask = BriefMakeTaskModel()
     /// AppState's briefing view model, whose `briefing generate` survives
     /// leaving the Inbox; nil (no CLI) hides the Make buttons.
     var briefing: BriefingViewModel?
@@ -78,10 +81,15 @@ struct InboxDayPane: View {
     var controls = InboxBriefControls()
 
     @State private var openRow: InboxDayPlanRow?
+    /// Read once per pane for every brief section's Jira badges.
+    @State private var jira = BriefingJiraLinks()
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.page) {
             header
+            if let message = makeTask.message(for: card.briefing?.id) {
+                WriteErrorBanner(message: message) { makeTask.dismiss() }
+            }
             if showsNothingReady {
                 InboxDayNothingReady(
                     owner: owner,
@@ -105,10 +113,8 @@ struct InboxDayPane: View {
                 movedOvernight
             }
             if let briefing = card.briefing {
-                BriefingSectionsView(briefing: briefing,
-                                     parts: [.attention(from: InboxBriefLayout.topCount, limit: nil),
-                                             .whatHappened, .teamPulse, .coaching],
-                                     onOpen: onOpenBriefingLink, onMakeTask: onMakeTask)
+                sections(briefing, parts: [.attention(from: InboxBriefLayout.topCount, limit: nil),
+                                           .whatHappened, .teamPulse, .coaching])
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -116,6 +122,24 @@ struct InboxDayPane: View {
             openRow = initialRow
             await plan.loadFor(date: card.date)
         }
+        .task { jira = await BriefingJiraLinks.load() }
+    }
+
+    /// One block of the brief over the pane's shared Jira config and Make a
+    /// Task state.
+    private func sections(_ briefing: Briefing, parts: [BriefingPart], showsTitles: Bool = true)
+        -> BriefingSectionsView {
+        BriefingSectionsView(
+            briefing: briefing,
+            parts: parts,
+            onOpen: onOpenBriefingLink,
+            onMakeTask: { source in
+                Task { await makeTask.press(source, briefingID: briefing.id, run: onMakeTask) }
+            },
+            makingTask: makeTask.running,
+            jira: jira,
+            showsTitles: showsTitles
+        )
     }
 
     // MARK: - The mockup's sections
@@ -127,9 +151,7 @@ struct InboxDayPane: View {
     @ViewBuilder
     private func startHereCard(_ briefing: Briefing) -> some View {
         if !InboxBriefLayout.startHere(briefing).isEmpty {
-            BriefingSectionsView(briefing: briefing,
-                                 parts: [.attention(from: 0, limit: InboxBriefLayout.topCount)],
-                                 onOpen: onOpenBriefingLink, onMakeTask: onMakeTask)
+            sections(briefing, parts: [.attention(from: 0, limit: InboxBriefLayout.topCount)])
         }
     }
 
@@ -158,8 +180,7 @@ struct InboxDayPane: View {
                     )
                 }
                 if let briefing = card.briefing, !items.isEmpty {
-                    BriefingSectionsView(briefing: briefing, parts: [.yourDay], onOpen: onOpenBriefingLink,
-                                         onMakeTask: onMakeTask, showsTitles: false)
+                    sections(briefing, parts: [.yourDay], showsTitles: false)
                 }
             }
         }

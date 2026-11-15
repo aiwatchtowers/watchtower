@@ -53,33 +53,28 @@ enum BriefingPart: Equatable {
 
 /// A briefing's sections — `parts`, by default Needs you, Your day, What
 /// happened, Team pulse, Coaching — with their deep links, for the Inbox's
-/// Morning brief. No header and no sheet: the pane owns the header, and an
-/// item's **Make a Task** creates the target at once (`onMakeTask`, which
-/// returns the failure to show, or nil). A section with nothing in it is not
-/// drawn; `showsTitles` false leaves out the section titles (the pane draws
-/// its own over them).
+/// Morning brief. No header, no sheet and no state of its own: the pane owns
+/// the header, the Jira config (`jira`, read once per pane) and the Make a
+/// Task state (`BriefMakeTaskModel`: `makingTask` disables the buttons,
+/// `onMakeTask` starts a press, the pane draws its failure once). A section
+/// with nothing in it is not drawn; `showsTitles` false leaves out the
+/// section titles (the pane draws its own over them).
 struct BriefingSectionsView: View {
     let briefing: Briefing
     var parts: [BriefingPart] = BriefingPart.all
     var onOpen: (BriefingLink) -> Void = { _ in }
-    var onMakeTask: (BriefingTaskSource) async -> String? = { _ in nil }
+    var onMakeTask: (BriefingTaskSource) -> Void = { _ in }
+    /// A Make a Task press is running.
+    var makingTask = false
+    var jira = BriefingJiraLinks()
     var showsTitles = true
-
-    @State private var makingTask = false
-    @State private var makeTaskError: String?
-    @State private var jiraConnected = false
-    @State private var jiraSiteURL: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.page) {
-            if let makeTaskError {
-                WriteErrorBanner(message: makeTaskError) { self.makeTaskError = nil }
-            }
             ForEach(Array(parts.enumerated()), id: \.offset) { _, part in
                 self.part(part)
             }
         }
-        .task { await loadJiraConfig() }
     }
 
     @ViewBuilder
@@ -93,25 +88,8 @@ struct BriefingSectionsView: View {
         }
     }
 
-    /// Jira link badges need the connection and site; both are read off the
-    /// main thread (a directory listing and a database read), once per
-    /// appearance.
-    private func loadJiraConfig() async {
-        jiraConnected = await Task.detached { JiraQueries.isConnected() }.value
-        jiraSiteURL = await JiraConfigHelper.siteURL()
-    }
-
-    private func makeTask(_ source: BriefingTaskSource) {
-        guard !makingTask else { return }
-        makingTask = true
-        Task {
-            makeTaskError = await onMakeTask(source)
-            makingTask = false
-        }
-    }
-
     private func makeTaskButton(_ source: BriefingTaskSource) -> some View {
-        Button("Make a Task") { makeTask(source) }
+        Button("Make a Task") { onMakeTask(source) }
             .buttonStyle(.kitQuiet)
             .controlSize(.small)
             .disabled(makingTask)
@@ -369,6 +347,6 @@ struct BriefingSectionsView: View {
     }
 
     private func jiraKeyBadges(in text: String) -> some View {
-        JiraKeyLinkBadgesView(text: text, siteURL: jiraSiteURL, isConnected: jiraConnected)
+        JiraKeyLinkBadgesView(text: text, siteURL: jira.siteURL, isConnected: jira.connected)
     }
 }

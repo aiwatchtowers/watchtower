@@ -113,6 +113,7 @@ struct ActionStripView: View {
             onOpenSource: appState.openDayPlanItemSource,
             onOpenBriefingLink: appState.openBriefingLink,
             onMakeTask: makeTask,
+            makeTask: appState.briefMakeTask,
             briefing: appState.briefingViewModel,
             emptyState: appState.emptyStateContext,
             onOpenConnections: { appState.openConnections() },
