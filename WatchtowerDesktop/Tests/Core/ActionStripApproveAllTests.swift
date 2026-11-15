@@ -428,6 +428,29 @@ final class ActionStripApproveAllTests: XCTestCase {
         }
     }
 
+    /// The apply reads first too: a read that fails there approves nothing
+    /// and says why, rather than deciding from the previous read.
+    func testApplyApprovesNothingAfterABadOpeningRead() async throws {
+        let pool = try pool()
+        _ = try await seed(pool, tool: "create_targets", count: 2)
+        let runner = FakeCLIRunner(stdout: Self.ok)
+        let vm = viewModel(pool, runner: runner)
+        await vm.refresh()
+        let planned = try await vm.approveAllPlan(.targets)
+        XCTAssertEqual(planned.count, 2)
+
+        let otherPool = try DatabasePool(path: pool.path)
+        try await otherPool.write { db in
+            try db.execute(sql: "ALTER TABLE agent_actions RENAME COLUMN status TO status_gone")
+        }
+        let result = await vm.approveAll(ids: planned.ids)
+
+        guard case let .failed(message) = result else { return XCTFail("\(result)") }
+        XCTAssertTrue(message.hasPrefix("The Inbox could not be read: "), message)
+        XCTAssertFalse(runner.invocations.contains { $0.prefix(2) == ["actions", "approve"] })
+        XCTAssertTrue(vm.approveAllShownArgs.isEmpty, "the run's pinned args are gone")
+    }
+
     /// A finished press keeps its result while its group lists the same
     /// approvable ids; a read that lists other ids, or drops the group,
     /// puts it back to idle. A run's pinned args go when it ends.
@@ -462,8 +485,9 @@ final class ActionStripApproveAllTests: XCTestCase {
         XCTAssertEqual(ids.count, 2)
     }
 
-    /// One approvable row left (no Approve All any more), then another
-    /// arrives: the ids changed, so the old result goes.
+    /// One approvable row left (no Approve All any more: the press fails
+    /// as not offered), then another arrives: the ids changed, so the old
+    /// result goes.
     func testFinishedPressResetsWhenANewRowJoinsOneLeft() async throws {
         let pool = try pool()
         let (_, ids) = try await seed(pool, tool: "create_targets", count: 2)
@@ -480,10 +504,14 @@ final class ActionStripApproveAllTests: XCTestCase {
         await vm.refresh()
         XCTAssertEqual(model.state, .idle, "one row left: the ids changed")
 
-        try await run(model) // nothing to approve: finishes at once
-        XCTAssertEqual(model.state, .finished(.done(count: 0, skipped: 0)))
+        // A lone row is still listed but no longer offers Approve All: the
+        // press says so, never "Nothing left to do".
+        let notOffered = InboxBulkResult.failed(
+            "These approvals can no longer be approved all at once. Approve them one by one.")
+        try await run(model)
+        XCTAssertEqual(model.state, .finished(notOffered))
         await vm.refresh()
-        XCTAssertEqual(model.state, .finished(.done(count: 0, skipped: 0)), "same lone row: kept")
+        XCTAssertEqual(model.state, .finished(notOffered), "same lone row: kept")
         try await otherPool.write { db in
             _ = try TestDatabase.insertAgentAction(
                 db, tool: "create_targets", argsJSON: #"{"title":"Later"}"#, createdAt: "2026-11-06T09:09:00Z")

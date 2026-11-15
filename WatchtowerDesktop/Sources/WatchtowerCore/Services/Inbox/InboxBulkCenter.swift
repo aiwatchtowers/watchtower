@@ -35,7 +35,7 @@ package final class InboxBulkPins {
 /// every finished press — an apply's result, an empty plan (the pressed row
 /// was stale), a failed dry run — so the rows redraw with its result line.
 @MainActor
-package final class InboxBulkCenter: ObservableObject {
+package final class InboxBulkCenter {
     /// The days an item waits before it is in Older (Go's `db.WaitingOlderAfter`).
     package static let olderDays = 7
 
@@ -59,7 +59,7 @@ package final class InboxBulkCenter: ObservableObject {
         if let model = models[key] { return model }
         let model = InboxBulkPressModel(
             plan: { [weak self] in
-                guard let self else { throw InboxBulkCLIError.unexpectedAnswer }
+                guard let self else { throw InboxBulkCLIError.closed }
                 let plan: InboxBulkPlan
                 do {
                     plan = try await self.plan(key)
@@ -72,7 +72,7 @@ package final class InboxBulkCenter: ObservableObject {
                 return plan
             },
             apply: { [weak self] ids in
-                guard let self else { return .failed(InboxBulkCLIError.unexpectedAnswer.localizedDescription) }
+                guard let self else { return .failed(InboxBulkCLIError.closed.localizedDescription) }
                 let result = await cli().resolve(ids: ids)
                 await onFinished()
                 return result

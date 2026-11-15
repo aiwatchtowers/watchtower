@@ -109,7 +109,7 @@ package struct IdeaDailyBatch {
     /// The batch's state; `dayIDs` are the ids handed out today (nil: the
     /// batch's own).
     package static func state(
-        ideas: [Idea], batchIDs: [Int], dayIDs: [Int]? = nil, now: Date, size: Int, calendar: Calendar
+        ideas: [Idea], batchIDs: [Int], dayIDs: [Int]? = nil, now: Date, size: Int
     ) -> IdeaBatchState {
         let byID = Dictionary(ideas.map { ($0.id, $0) }) { first, _ in first }
         let remaining = batchIDs.compactMap { byID[$0] }.filter(\.awaitsVerdict)
@@ -143,25 +143,25 @@ package struct IdeaDailyBatch {
         if defaults.string(forKey: Self.dateKey) == day,
            let stored = defaults.array(forKey: Self.idsKey) as? [Int], !stored.isEmpty {
             return Self.state(ideas: ideas, batchIDs: stored, dayIDs: dayIDs(day: day, batchIDs: stored),
-                              now: now, size: size, calendar: calendar)
+                              now: now, size: size)
         }
-        return pick(ideas: ideas, now: now, size: size, day: day, calendar: calendar)
+        return pick(ideas: ideas, now: now, size: size, day: day)
     }
 
     /// Replaces the stored batch with the first `size` candidates now (unjudged
     /// leftovers come first again by age) and keeps today's date.
     package func next(ideas: [Idea], now: Date, calendar: Calendar) -> IdeaBatchState {
-        pick(ideas: ideas, now: now, size: size, day: Self.localDay(now, calendar: calendar), calendar: calendar)
+        pick(ideas: ideas, now: now, size: size, day: Self.localDay(now, calendar: calendar))
     }
 
-    private func pick(ideas: [Idea], now: Date, size: Int, day: String, calendar: Calendar) -> IdeaBatchState {
+    private func pick(ideas: [Idea], now: Date, size: Int, day: String) -> IdeaBatchState {
         let ids = Self.candidates(ideas, now: now).prefix(size).map(\.id)
         let earlier = dayIDs(day: day, batchIDs: defaults.array(forKey: Self.idsKey) as? [Int] ?? [])
         let handedOut = earlier + ids.filter { !earlier.contains($0) }
         defaults.set(day, forKey: Self.dateKey)
         defaults.set(ids, forKey: Self.idsKey)
         defaults.set(handedOut, forKey: Self.dayIDsKey)
-        return Self.state(ideas: ideas, batchIDs: ids, dayIDs: handedOut, now: now, size: size, calendar: calendar)
+        return Self.state(ideas: ideas, batchIDs: ids, dayIDs: handedOut, now: now, size: size)
     }
 
     /// The ids handed out on `day` so far: none when the stored date is

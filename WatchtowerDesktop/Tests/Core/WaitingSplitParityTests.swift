@@ -224,12 +224,18 @@ final class WaitingSplitParityTests: XCTestCase {
     }
 
     /// An unparsable now reads as the current time, as `InboxRefState`
-    /// reads it: Older still counts, never silently zero.
+    /// reads it: Older still counts, never silently zero, and an item
+    /// snoozed past the current time stays out.
     func testUnparsableNowReadsAsTheCurrentTime() throws {
         try pool.write { db in
             let id = try TestDatabase.insertInboxItem(db, triggerType: "mention")
             try db.execute(sql: "UPDATE inbox_items SET created_at = '2020-01-01T00:00:00Z', mentioned_at = '' WHERE id = ?",
                            arguments: [id])
+            let snoozed = try TestDatabase.insertInboxItem(
+                db, messageTS: "1700000000.000200", triggerType: "mention",
+                snoozeUntil: AutomationDates.format(Date().addingTimeInterval(3600)))
+            try db.execute(sql: "UPDATE inbox_items SET created_at = '2020-01-01T00:00:00Z', mentioned_at = '' WHERE id = ?",
+                           arguments: [snoozed])
         }
         let counts = try pool.read {
             try WaitingQueries.peopleCounts($0, nowUTC: "not a time", startOfTodayUTC: "9999-01-01T00:00:00Z")

@@ -20,18 +20,6 @@ package enum InboxQueries {
     /// How many open messages the Inbox lists, newest first.
     package static let openMessageLimit = 200
 
-    /// People waiting today: the open messages (`HomeFeedQueries.openMessageClause`,
-    /// no list limit) whose `MAX(created_at, mentioned_at)` is at or after
-    /// `sinceUTC` (`InboxToday.sinceUTC`, local midnight), read or not. The
-    /// Inbox badge's and the root count's people term.
-    package static func openMessageCount(_ db: Database, nowUTC: String, sinceUTC: String) throws -> Int {
-        try Int.fetchOne(db, sql: """
-            SELECT COUNT(*) FROM inbox_items
-            WHERE \(HomeFeedQueries.openMessageClause)
-              AND MAX(created_at, mentioned_at) >= ?
-            """, arguments: [nowUTC, sinceUTC]) ?? 0
-    }
-
     /// Opening a message card: writes `read_at` only, once.
     package static func markRead(_ db: Database, id: Int) throws {
         try db.execute(sql: """

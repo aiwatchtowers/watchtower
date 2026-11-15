@@ -14,7 +14,7 @@ struct InboxTracksNewsPane: View {
     let summary: TrackThreadsSummary
     /// Stop Tracking Quiet Ones…: built with its plan and apply by the view
     /// model (`quietTracksPress`), which keeps a run alive across navigation.
-    @ObservedObject var quietPress: InboxBulkPressModel
+    let quietPress: InboxBulkPressModel
     let onOpenThread: (Int) -> Void
     let onAllThreads: () -> Void
 

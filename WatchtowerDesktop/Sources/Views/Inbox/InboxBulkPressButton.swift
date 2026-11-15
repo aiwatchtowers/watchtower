@@ -18,7 +18,7 @@ struct InboxBulkPressButton: View {
     let title: String?
     let confirmTitle: (Int) -> String
     let style: Style
-    @ObservedObject var model: InboxBulkPressModel
+    let model: InboxBulkPressModel
 
     init(title: String?, confirmTitle: @escaping (Int) -> String, model: InboxBulkPressModel, style: Style = .header) {
         self.title = title
@@ -140,7 +140,7 @@ struct InboxBulkPressButton: View {
 /// secondary. The header style (Approve All) keeps its secondary line with
 /// Try Again under it.
 struct InboxBulkPressResult: View {
-    @ObservedObject var model: InboxBulkPressModel
+    let model: InboxBulkPressModel
     var inline = false
 
     var body: some View {

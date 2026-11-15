@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import os
 
 package enum TrackQueries {
 
@@ -58,19 +59,26 @@ package enum TrackQueries {
     /// The tracks whose newest item carries a non-junk image (`media_items`
     /// kind `image`, never `skipped_junk`): the newest Slack source ref, or
     /// the newest mail event. One batched probe per read; the chip is a
-    /// decoration, so a failed probe is logged (track ids only) and reads
+    /// decoration, so a failed probe is logged (track ids only, once per
+    /// error code in this process: the read repeats every poll) and reads
     /// as no attachment — it never fails or empties the tracks read.
     private static func attachmentTrackIDs(_ db: Database, tracks: [Track], newestMailIDs: [Int: String]) -> Set<Int> {
         do {
             return try slackAttachmentTrackIDs(db, tracks: tracks)
                 .union(mailAttachmentTrackIDs(db, newestMailIDs: newestMailIDs))
         } catch {
-            let ids = tracks.map { String($0.id) }.joined(separator: ",")
             let code = (error as? DatabaseError)?.resultCode.rawValue ?? -1
-            InboxLog.logger.error("track attachment probe failed (sqlite \(code)) for tracks \(ids, privacy: .public)")
+            if loggedProbeCodes.withLock({ $0.insert(code).inserted }) {
+                let ids = tracks.map { String($0.id) }.joined(separator: ",")
+                InboxLog.logger.error(
+                    "track attachment probe failed (sqlite \(code)) for tracks \(ids, privacy: .public)")
+            }
             return []
         }
     }
+
+    /// The attachment probe's error codes already logged in this process.
+    private static let loggedProbeCodes = OSAllocatedUnfairLock<Set<Int32>>(initialState: [])
 
     /// Slack: each track's newest source ref, matched through `messages`
     /// (its `ts_unix` index; the media row's channel may be namespaced
@@ -99,8 +107,11 @@ package enum TrackQueries {
     /// Mail: the watch scan records mail as `source_type = 'email'` with
     /// `source_id` = the `list_emails` id, the Gmail message id or
     /// `<uidvalidity>-<uid>` for IMAP (`internal/db/emails_read.go`
-    /// `imapEmailIDExpr`). Matched per account so the account-led
-    /// `media_items` indexes serve.
+    /// `imapEmailIDExpr`). Each id is probed against every account, so the
+    /// account-led `media_items` indexes serve; the id binds no account.
+    /// Gmail message ids are globally unique. An IMAP id is not: two
+    /// mailboxes with the same UIDVALIDITY and UID can give a false chip
+    /// (v1 limit; the track's `source_id` carries no account).
     private static func mailAttachmentTrackIDs(_ db: Database, newestMailIDs: [Int: String]) throws -> Set<Int> {
         var gmail: [[String: Any]] = []
         var imap: [[String: Any]] = []

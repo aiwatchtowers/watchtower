@@ -32,7 +32,7 @@ struct MuteSendersButton: View {
 /// count, one prominent **Mute N Senders**, and "Muted N of M. <error>" under
 /// it when a press stopped part-way.
 struct MuteSendersPopover: View {
-    @StateObject private var model: MuteSendersModel
+    @State private var model: MuteSendersModel
     let onApplied: (MuteSendersResult) async -> Void
 
     init(
@@ -40,7 +40,7 @@ struct MuteSendersPopover: View {
         mute: @escaping (String) async throws -> Void,
         onApplied: @escaping (MuteSendersResult) async -> Void
     ) {
-        _model = StateObject(wrappedValue: MuteSendersModel(load: load, mute: mute))
+        _model = State(initialValue: MuteSendersModel(load: load, mute: mute))
         self.onApplied = onApplied
     }
 

@@ -12,6 +12,8 @@ package enum InboxBulkCLIError: Error, Equatable, LocalizedError {
     case unexpectedAnswer
     /// The call was stopped (its timeout, a cancel) before it answered.
     case stopped(String)
+    /// The press outlived its `InboxBulkCenter`: no CLI ran.
+    case closed
 
     package var errorDescription: String? {
         switch self {
@@ -19,6 +21,7 @@ package enum InboxBulkCLIError: Error, Equatable, LocalizedError {
         case let .refused(message): message
         case .unexpectedAnswer: "Unexpected answer from watchtower"
         case let .stopped(reason): reason
+        case .closed: "The Inbox is closed."
         }
     }
 }
@@ -37,8 +40,9 @@ package struct InboxBulkCLI {
     /// How long a dry run may take before the child is terminated.
     static let timeout: TimeInterval = 120
 
-    /// A resolve's time: `timeout` plus a second per 100 ids, at most 15
-    /// minutes (Go closes them in 200-id chunks).
+    /// A resolve's time: `timeout` plus a second per 100 ids (Go closes them
+    /// in 200-id chunks). Go's `db.BulkResolveMaxIDs` (10 000 ids) keeps it
+    /// at 220 s; the 15-minute clamp only guards a raised Go cap.
     static func timeout(ids: Int) -> TimeInterval {
         min(timeout + TimeInterval(ids / 100), 900)
     }

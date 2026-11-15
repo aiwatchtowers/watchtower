@@ -96,7 +96,7 @@ struct InboxRowActionsView: View {
 /// Open or Mute meanwhile, as the approved mockup) — and its usual buttons
 /// (`idle`) otherwise.
 struct InboxBulkRowButtons<Idle: View>: View {
-    @ObservedObject var model: InboxBulkPressModel
+    let model: InboxBulkPressModel
     let isSender: Bool
     @ViewBuilder let idle: () -> Idle
 
@@ -220,7 +220,7 @@ struct InboxRowActionsFooter: View {
 /// under way, or a full success).
 struct InboxRowBulkFooter: View {
     let content: InboxRowActionsContent
-    @ObservedObject var model: InboxBulkPressModel
+    let model: InboxBulkPressModel
     var onPress: (InboxRowPress) -> Void = { _ in }
 
     var body: some View {

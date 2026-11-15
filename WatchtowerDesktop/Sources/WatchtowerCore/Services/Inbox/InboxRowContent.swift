@@ -81,12 +81,26 @@ package enum InboxRowTime {
             format = calendar.component(.year, from: date) == calendar.component(.year, from: now)
                 ? "d MMM" : "d MMM yyyy"
         }
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.calendar = calendar
-        formatter.timeZone = calendar.timeZone
-        formatter.dateFormat = format
-        return formatter.string(from: date)
+        return formatter(format, calendar: calendar).string(from: date)
+    }
+
+    /// One formatter per pattern, calendar and zone, built once and reused
+    /// by every row (formatting is thread-safe; the cache is locked).
+    nonisolated(unsafe) private static var formatters: [String: DateFormatter] = [:]
+    private static let formattersLock = NSLock()
+
+    private static func formatter(_ format: String, calendar: Calendar) -> DateFormatter {
+        let key = "\(format)|\(calendar.identifier)|\(calendar.timeZone.identifier)"
+        return formattersLock.withLock {
+            if let cached = formatters[key] { return cached }
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.calendar = calendar
+            formatter.timeZone = calendar.timeZone
+            formatter.dateFormat = format
+            formatters[key] = formatter
+            return formatter
+        }
     }
 }
 

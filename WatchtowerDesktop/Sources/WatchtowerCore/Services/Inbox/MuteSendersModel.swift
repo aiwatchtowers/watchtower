@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 
 /// What one **Mute N Senders** press did.
 package enum MuteSendersResult: Equatable {
@@ -15,22 +16,23 @@ package enum MuteSendersResult: Equatable {
 /// (the Desktop's one rules writer, INBOX-05) and stops at the first failure;
 /// the senders it muted leave the panel, the rest stay ticked.
 @MainActor
-package final class MuteSendersModel: ObservableObject {
+@Observable
+package final class MuteSendersModel {
     /// The panel's cap.
     package static let limit = 10
 
-    @Published package private(set) var rows: [MailSenderRow] = []
+    package private(set) var rows: [MailSenderRow] = []
     /// The ticked senders' addresses.
-    @Published package var selected: Set<String> = []
+    package var selected: Set<String> = []
     /// Why the senders could not be read; nil after a read that landed.
-    @Published package private(set) var loadError: String?
+    package private(set) var loadError: String?
     /// "Muted N of M. <error>" under the button after a press that stopped.
-    @Published package private(set) var failureLine: String?
-    @Published package private(set) var isLoading = false
-    @Published package private(set) var isApplying = false
+    package private(set) var failureLine: String?
+    package private(set) var isLoading = false
+    package private(set) var isApplying = false
 
-    private let loadRows: () async throws -> [MailSenderRow]
-    private let mute: (String) async throws -> Void
+    @ObservationIgnored private let loadRows: () async throws -> [MailSenderRow]
+    @ObservationIgnored private let mute: (String) async throws -> Void
 
     /// `load` reads the busiest unmuted senders (ask for one more than
     /// `limit`: a sender without an address is dropped); `mute` writes one
@@ -60,6 +62,7 @@ package final class MuteSendersModel: ObservableObject {
             rows = Array(loaded.filter { !$0.address.isEmpty }.prefix(Self.limit))
             loadError = nil
         } catch {
+            InboxLog.logger.error("mute senders: load failed (\(InboxLog.errorClass(error), privacy: .public))")
             rows = []
             loadError = error.localizedDescription
         }
@@ -85,6 +88,10 @@ package final class MuteSendersModel: ObservableObject {
                 try await mute(address)
                 muted.insert(address)
             } catch {
+                InboxLog.logger.error("""
+                    mute senders: stopped after \(muted.count) of \(ticked.count) \
+                    (\(InboxLog.errorClass(error), privacy: .public))
+                    """)
                 let message = error.localizedDescription
                 failureLine = "Muted \(muted.count) of \(ticked.count). \(message)"
                 return .partial(done: muted.count, of: ticked.count, error: message)
