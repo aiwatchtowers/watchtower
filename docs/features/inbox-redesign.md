@@ -91,7 +91,7 @@ Plan `docs/superpowers/plans/2026-11-11-inbox-redesign-phase-2-waiting-mail.md`,
 ### The split and "today"
 
 - People = every feed trigger but `email_received`; mail = `email_received` (`db.WaitingKindOf`, Swift `InboxPeopleRule.isPeople`). A sender has one spelling: `db.MailSenderKey` / `InboxPeopleRule.senderKey`, spaces trimmed and ASCII letters lowered, other characters unchanged — exactly SQLite's `lower(trim(x))`.
-- "From today" has its Go twin: `db.StartOfToday` / `db.IsFromToday` (`internal/db/inbox_today.go`) read `internal/inbox/testdata/from_today.json` (`TestInboxToday_SharedFixture`), the fixture phase 1's `InboxToday` already pinned. Sections (`db.WaitingSectionOf`): Today from local midnight, Older at or before now − 7 × 24 h (`WaitingOlderAfter`) and not today, This week the rest.
+- "From today" has its Go twin: `db.StartOfToday` / `db.WaitingSectionOf` (`internal/db/inbox_today.go`) read `internal/inbox/testdata/from_today.json` (`TestInboxToday_SharedFixture`), the fixture phase 1's `InboxToday` already pinned. Sections (`db.WaitingSectionOf`): Today from local midnight, Older at or before now − 7 × 24 h (`WaitingOlderAfter`) and not today, This week the rest.
 - `internal/inbox/testdata/waiting_split.json` pins the split, the people counts, the sender view (incl. spellings and mutes) for Go (`TestWaitingSplit_SharedFixture`) and Swift (`WaitingSplitParityTests`).
 
 ### `attention.waiting`

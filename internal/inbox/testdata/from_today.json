@@ -1,5 +1,5 @@
 {
-  "about": "The \"from today\" rule of the Inbox, shared by Swift (InboxToday) and Go (db.IsFromToday): in the zone tz, an item is from today when MAX(created_at, mentioned_at) is at or after the first instant of now's local date (local midnight, or the first instant after a DST gap that swallows midnight). Times are RFC 3339 UTC; mentioned_at \"\" (or null) = none. expected is the answer.",
+  "about": "The \"from today\" rule of the Inbox, shared by Swift (InboxToday) and Go (db.WaitingSectionOf on db.StartOfToday): in the zone tz, an item is from today when MAX(created_at, mentioned_at) is at or after the first instant of now's local date (local midnight, or the first instant after a DST gap that swallows midnight). Times are RFC 3339 UTC; mentioned_at \"\" (or null) = none. expected is the answer.",
   "cases": [
     {"name": "midnight_exact", "now": "2026-11-11T08:00:00Z", "tz": "Europe/Kyiv", "created_at": "2026-11-10T22:00:00Z", "mentioned_at": "", "expected": true},
     {"name": "before_midnight", "now": "2026-11-11T08:00:00Z", "tz": "Europe/Kyiv", "created_at": "2026-11-10T21:59:59Z", "mentioned_at": "", "expected": false},
