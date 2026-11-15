@@ -1,18 +1,22 @@
 import Foundation
 import WatchtowerKit
 
-/// The Now tab (spec §5.5, mockup 1): the Mac status chip, the outbox's
+/// The Now tab (spec §5.5, mockup 1; #1785): the Mac status chip, the outbox's
 /// Waiting to send and Not delivered (relay client mockup 5a), then Waiting for
-/// you across every workbench (open asks with their quick answers, pending
-/// permission requests, sessions that stopped, finished or failed in the
-/// last 24 h unless an open ask of theirs already shows; newest first, 20
-/// shown), then Working (live working sessions with timers). The next
-/// meeting is `NextMeetingCardModel` (Calendar).
+/// you across every workbench — only what waits for the owner's decision: open
+/// asks with their answer line (`NowAnswer`) and pending permission requests,
+/// newest first, 20 shown —, then Working (live working sessions with timers),
+/// then Ended (sessions that stopped, finished or failed in the last 24 h,
+/// unless an open ask of theirs already shows or the owner marked them seen on
+/// this phone). The next meeting is `NextMeetingCardModel` (Calendar).
 struct NowModel {
     static let waitingLimit = 20
-    /// A stopped, finished or failed session waits on Now this long after
-    /// its state changed.
+    /// A stopped, finished or failed session shows under Ended this long
+    /// after its state changed.
     static let endedSessionWindow: TimeInterval = 24 * 3_600
+    static let endedTitle = "Ended"
+    static let seenTitle = "Seen"
+    static let emptyWaitingText = "Nothing is waiting for you"
 
     let mac: MacReachability
     let chip: MacStatusChipModel
@@ -22,6 +26,8 @@ struct NowModel {
     /// "Nothing is waiting for you" when nothing is.
     let emptyText: String?
     let working: [NowWorkingRow]
+    /// Ended sessions not marked seen, newest first.
+    let ended: [NowWaitingRow]
     let waitingHeaderTone = PhoneTone.waitingForYou
     /// Waiting to send and Not delivered; nil when neither shows.
     let outbox: NowOutboxRows?
@@ -29,14 +35,18 @@ struct NowModel {
     /// `backlog`: the session's outbox state (`OutboxBacklog`). Waiting to send and Not delivered take their rows
     /// and counts from the snapshot's own `pending` rows, so they always agree with each other; the parked row
     /// takes the parked mark and the `sent` count from the backlog, which needs no keys to read. `macName`: the
-    /// hub on screen (`NowHubName.of`, the banner's rule).
+    /// hub on screen (`NowHubName.of`, the banner's rule). `seenEnded`: the ended rows the owner marked seen on
+    /// this phone (`NowEndedSeenStore`). `answering`: an answer to the ask is being written to the outbox right
+    /// now (`AskAnswerer.isSending`), before its row exists.
     init(
         snapshot: WorkbenchReplicaSnapshot,
         linked: Bool,
         now: Date,
         backlog: OutboxBacklog = .empty,
         macName: String = "",
-        calendar: Calendar = .current
+        calendar: Calendar = .current,
+        seenEnded: Set<NowEndedKey> = [],
+        answering: (Int64) -> Bool = { _ in false }
     ) {
         outbox = NowOutboxRows(
             lastFlushStopped: backlog.lastFlushStopped, queued: OutboxItem.rows(snapshot.pending, .queued),
@@ -45,18 +55,26 @@ struct NowModel {
         mac = .of(heartbeat: snapshot.heartbeat?.updatedAt, linked: linked, now: now)
         chip = MacStatusChipModel(macName: snapshot.heartbeat?.macName ?? "", state: mac.chipState(linked: linked), now: now)
         let openAsks = snapshot.openAsks()
-        let asks: [NowWaitingRow] = openAsks.map { NowWaitingRow($0, snapshot: snapshot, now: now) }
+        let online = mac == .online
+        let asks: [NowWaitingRow] = openAsks.map { ask in
+            let answer = NowAnswer.of(
+                ask, pending: snapshot.pending, flushStopped: backlog.lastFlushStopped, macOnline: online,
+                writing: answering(ask.id))
+            return NowWaitingRow(ask, snapshot: snapshot, now: now, answer: answer)
+        }
         let requests: [NowWaitingRow] = snapshot.pendingPermissions.map { NowWaitingRow($0, snapshot: snapshot, now: now) }
-        // One row per waiting thing (ask #622): an ended session with an open ask shows as that ask only.
+        let all = (asks + requests).sorted(by: NowWaitingRow.newestFirst)
+        waitingForYou = Array(all.prefix(Self.waitingLimit))
+        waitingMore = max(0, all.count - Self.waitingLimit)
+        emptyText = all.isEmpty ? Self.emptyWaitingText : nil
+        // One row per thing (ask #622): an ended session with an open ask shows as that ask only.
         let askedSessions = Set(openAsks.compactMap(\.sessionID))
-        let ended: [NowWaitingRow] = snapshot.sessions
+        ended = snapshot.sessions
             .filter { [.stopped, .finished, .failed].contains($0.stateKind) && !askedSessions.contains($0.id) }
             .map { NowWaitingRow(ended: $0, snapshot: snapshot, now: now) }
             .filter { now.timeIntervalSince($0.at) <= Self.endedSessionWindow }
-        let all = (asks + requests + ended).sorted { $0.at != $1.at ? $0.at > $1.at : $0.order < $1.order }
-        waitingForYou = Array(all.prefix(Self.waitingLimit))
-        waitingMore = max(0, all.count - Self.waitingLimit)
-        emptyText = all.isEmpty ? "Nothing is waiting for you" : nil
+            .filter { row in row.endedKey.map { !seenEnded.contains($0) } ?? true }
+            .sorted(by: NowWaitingRow.newestFirst)
         let asOf = mac.asOf
         working = snapshot.sessions
             .filter { $0.live && [.working, .running].contains($0.stateKind) }
@@ -64,7 +82,13 @@ struct NowModel {
             .map { NowWorkingRow($0, snapshot: snapshot, asOf: asOf, now: now) }
     }
 
-    /// The header's count; nil when nothing waits.
+    /// How many things wait for the owner's decision in `snapshot`: its open asks and pending permission requests,
+    /// exactly the rows of Waiting for you (the ones past the first 20 too), without building the screen.
+    static func waitingCount(in snapshot: WorkbenchReplicaSnapshot) -> Int {
+        snapshot.openAsks().count + snapshot.pendingPermissions.count
+    }
+
+    /// The header's count, equal to `waitingCount(in:)` of the snapshot; nil when nothing waits.
     var waitingCount: Int? {
         let total = waitingForYou.count + waitingMore
         return total > 0 ? total : nil
@@ -72,8 +96,9 @@ struct NowModel {
 
     var toneUses: [ToneUse] {
         [chip.toneUse, ToneUse(element: "waiting header", tone: waitingHeaderTone, role: .waiting)]
-            + waitingForYou.map(\.toneUse)
+            + waitingForYou.flatMap { [$0.toneUse] + $0.answer.toneUses(row: "\($0.id)") }
             + working.map { ToneUse(element: "working session \($0.id) dot", tone: .green, role: .session(isWaiting: false)) }
+            + ended.map(\.toneUse)
             + (outbox?.toneUses ?? [])
     }
 }
@@ -198,9 +223,9 @@ struct NowQueuedRow: Equatable, Identifiable {
     let time: String
 }
 
-/// One Waiting-for-you row of Now (mockup 1): a state mark, the title, a
+/// One Waiting-for-you or Ended row of Now (mockup 1): a state mark, the title, a
 /// mono line for a permission prompt's command, the meta line and the age;
-/// a quick question carries its one-tap answers.
+/// an ask carries its answer line (`NowAnswer`).
 struct NowWaitingRow: Equatable, Identifiable {
     enum Key: Hashable {
         case ask(Int64)
@@ -219,13 +244,13 @@ struct NowWaitingRow: Equatable, Identifiable {
     /// "Acme · Archive closed targets · ask #109".
     let meta: String
     let age: String
-    /// The Mac's one-tap answers (`OwnerAsk.quick`); empty opens the form.
-    let options: [InlineAskOption]
+    /// What an ask's row offers under its text; `.none` for every other row.
+    let answer: NowAnswer
     let at: Date
     private let role: ToneRole
 
     /// Ties at the same moment: asks, then requests, then sessions.
-    fileprivate var order: Int {
+    private var order: Int {
         switch id {
         case .ask: 0
         case .request: 1
@@ -233,7 +258,17 @@ struct NowWaitingRow: Equatable, Identifiable {
         }
     }
 
-    init(_ ask: OwnerAsk, snapshot: WorkbenchReplicaSnapshot, now: Date) {
+    static func newestFirst(_ lhs: Self, _ rhs: Self) -> Bool {
+        lhs.at != rhs.at ? lhs.at > rhs.at : lhs.order < rhs.order
+    }
+
+    /// An ended session's seen mark; nil for an ask or a request.
+    var endedKey: NowEndedKey? {
+        guard case let .session(id) = id else { return nil }
+        return NowEndedKey(sessionID: id, at: at)
+    }
+
+    init(_ ask: OwnerAsk, snapshot: WorkbenchReplicaSnapshot, now: Date, answer: NowAnswer) {
         id = .ask(ask.id)
         destination = .ask(ask.id)
         glyph = ask.kind == .question ? "questionmark" : AskKindStyle.icon(ask.kind)
@@ -244,9 +279,7 @@ struct NowWaitingRow: Equatable, Identifiable {
             .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
         at = ask.createdAt
         age = CompactAge.string(from: at, now: now)
-        options = ask.quick.map { quick in
-            quick.options.map { InlineAskOption(id: $0.label, label: $0.label, isRecommended: $0.recommended) }
-        } ?? []
+        self.answer = answer
         role = .ask
     }
 
@@ -261,13 +294,12 @@ struct NowWaitingRow: Equatable, Identifiable {
             .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
         at = request.createdAt
         age = CompactAge.string(from: at, now: now)
-        options = []
+        answer = .none
         role = .waiting
     }
 
-    /// A stopped, finished or failed session: its turn is over, the next
-    /// move is the owner's. `at` is its state's time (`state_at`, else the
-    /// last activity).
+    /// A stopped, finished or failed session (Ended): its turn is over. `at`
+    /// is its state's time (`state_at`, else the last activity).
     init(ended session: TerminalSessionState, snapshot: WorkbenchReplicaSnapshot, now: Date) {
         id = .session(session.id)
         destination = .session(session.id)
@@ -283,7 +315,7 @@ struct NowWaitingRow: Equatable, Identifiable {
         meta = [snapshot.workbench(session.workbenchID)?.name ?? "", detail].filter { !$0.isEmpty }.joined(separator: " · ")
         at = session.stateAt ?? session.lastActiveAt
         age = CompactAge.string(from: at, now: now)
-        options = []
+        answer = .none
         // A finished session with an open ask is orange: it waits on that ask.
         role = .session(isWaiting: session.openAsks > 0)
     }

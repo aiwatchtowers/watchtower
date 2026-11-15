@@ -447,6 +447,22 @@ final class CalendarWiringTests: XCTestCase {
         XCTAssertNil(NextMeetingCardModel(events: [ended, allDay], now: now, calendar: calendar))
     }
 
+    /// #1785: Record sits on Now's card only from 10 min before the start to 10 min after it.
+    func testRecordShowsOnTheNextMeetingOnlyAroundItsStart() throws {
+        let meeting = event("m", start: now, minutes: 60)
+        func shows(_ offset: TimeInterval) throws -> Bool {
+            try XCTUnwrap(NextMeetingCardModel(events: [meeting], now: now.addingTimeInterval(offset), calendar: calendar)).showsRecord
+        }
+        XCTAssertFalse(try shows(-24 * 60), "24 min before: no Record")
+        XCTAssertFalse(try shows(-NextMeetingCardModel.recordWindow - 1))
+        XCTAssertTrue(try shows(-NextMeetingCardModel.recordWindow))
+        XCTAssertTrue(try shows(0))
+        XCTAssertTrue(try shows(NextMeetingCardModel.recordWindow))
+        XCTAssertFalse(try shows(NextMeetingCardModel.recordWindow + 1), "11 min in: the event's own screen records")
+        let card = try XCTUnwrap(NextMeetingCardModel(events: [meeting], now: now.addingTimeInterval(-24 * 60), calendar: calendar))
+        XCTAssertFalse(card.toneUses.contains { $0.role == .recording }, "no Record, no red")
+    }
+
     // MARK: - Week strip
 
     func testTheWeekStripStartsOnTodayWithEachDaysLetter() throws {
