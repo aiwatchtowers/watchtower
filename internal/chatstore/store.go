@@ -575,6 +575,8 @@ func composeTurnText(userText, outcomes string) string {
 // SelectBranch shows messageID's branch: the conversation's leaf moves to
 // the newest leaf under it (ChatTreeQueries.selectSibling). Never refused
 // during a turn (D17): a turn writes its rows by message id.
+// ErrNotFound for a message of a Discuss chat: the phone reaches main chats
+// only (iPhone chat spec §1).
 func (s *Store) SelectBranch(ctx context.Context, messageID int64) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -582,7 +584,9 @@ func (s *Store) SelectBranch(ctx context.Context, messageID int64) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 	var conv int64
-	err = tx.QueryRow(`SELECT conversation_id FROM chat_messages WHERE id = ?`, messageID).Scan(&conv)
+	err = tx.QueryRow(`SELECT m.conversation_id FROM chat_messages m
+		JOIN chat_conversations c ON c.id = m.conversation_id
+		WHERE m.id = ? AND c.context_type IS NULL`, messageID).Scan(&conv)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}

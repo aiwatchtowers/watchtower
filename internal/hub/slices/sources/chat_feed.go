@@ -218,7 +218,7 @@ func (s *ChatPageSource) buildChatPage(ctx context.Context, k ChatPageKey) ([]by
 	var out []byte
 	err := readTx(ctx, s.d, func(tx *sql.Tx) error {
 		var leaf sql.NullInt64
-		err := tx.QueryRowContext(ctx, `SELECT active_leaf_message_id FROM chat_conversations WHERE id = ?`, k.Conversation).Scan(&leaf)
+		err := tx.QueryRowContext(ctx, `SELECT active_leaf_message_id FROM chat_conversations WHERE id = ? AND context_type IS NULL`, k.Conversation).Scan(&leaf)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("reading a chat page: %w", err)
 		}
@@ -475,7 +475,7 @@ type chatPagePayload struct {
 }
 
 // chatFeedConversationTx is the feed's conversation meta and its leaf; ok
-// is false when the conversation is gone. The lease is shown only while
+// is false when the conversation is gone or is not a main chat (spec §1). The lease is shown only while
 // its heartbeat is less than 60 s old.
 func chatFeedConversationTx(ctx context.Context, tx *sql.Tx, conv int64, now time.Time) (chatFeedConversation, sql.NullInt64, bool, error) {
 	var (
@@ -492,7 +492,7 @@ SELECT c.id, c.title, c.active_leaf_message_id, c.project_id, p.name, c.routing_
 FROM chat_conversations c
 LEFT JOIN chat_projects p ON p.id = c.project_id
 LEFT JOIN chat_turn_leases l ON l.conversation_id = c.id
-WHERE c.id = ?`, conv).Scan(&c.ID, &c.Title, &leaf, &projectID, &project, &mode, &provider, &mdl,
+WHERE c.id = ? AND c.context_type IS NULL`, conv).Scan(&c.ID, &c.Title, &leaf, &projectID, &project, &mode, &provider, &mdl,
 		&c.ActualProvider, &c.ActualModel, &slack, &leaseOwner, &leaseTurnID, &heartbeat)
 	if errors.Is(err, sql.ErrNoRows) {
 		return c, leaf, false, nil

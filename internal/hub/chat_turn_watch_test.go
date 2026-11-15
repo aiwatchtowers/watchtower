@@ -250,3 +250,22 @@ func TestChatPush_WiringBuildsTheWatch(t *testing.T) {
 		t.Fatal("the chat push watch is not wired")
 	}
 }
+
+// A Discuss chat (context_type set) is not a main chat: neither its turn
+// ends nor its approval waits push (iPhone chat spec §1).
+func TestChatPush_DiscussChatNeverPushes(t *testing.T) {
+	r := newChatPushRig(t)
+	r.exec(`UPDATE chat_conversations SET context_type = 'meeting', context_id = '7' WHERE id = ?`, r.conv)
+	r.w.turnEnded(r.conv, "t0", chatstore.StatusComplete)
+	r.lease("desktop", "t1")
+	r.check() // primes
+	r.assistant("t1", "complete")
+	r.release()
+	r.exec(`INSERT INTO agent_actions (tool, args_json, conversation_id, turn_id, status, trust_at_create)
+		VALUES ('send_slack_message', '{}', ?, 't2', 'pending', 'ask')`, r.conv)
+	r.check()
+	r.check()
+	if len(r.sent) != 0 {
+		t.Errorf("a Discuss chat pushed: %+v", r.sent)
+	}
+}

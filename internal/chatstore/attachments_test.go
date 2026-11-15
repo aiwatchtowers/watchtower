@@ -172,3 +172,38 @@ func TestConversationOps(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, ok)
 }
+
+// TestConversationOps_MainChatsOnly: a Discuss chat (context_type set) is
+// not a main chat; the phone's conversation ops treat it as absent and
+// write nothing to it (iPhone chat spec §1).
+func TestConversationOps_MainChatsOnly(t *testing.T) {
+	d, s, _ := newStore(t)
+	ctx := context.Background()
+	res, err := d.Exec(`INSERT INTO chat_conversations (title, context_type, context_id, created_at, updated_at) VALUES ('Standup', 'meeting', '7', 1, 1)`)
+	require.NoError(t, err)
+	conv, err := res.LastInsertId()
+	require.NoError(t, err)
+	msg, err := d.Exec(`INSERT INTO chat_messages (conversation_id, role, text, created_at) VALUES (?, 'user', 'q', 1)`, conv)
+	require.NoError(t, err)
+	msgID, err := msg.LastInsertId()
+	require.NoError(t, err)
+
+	ok, err := s.ConversationExists(ctx, conv)
+	require.NoError(t, err)
+	assert.False(t, ok)
+	require.ErrorIs(t, s.Pin(ctx, conv, true), ErrConversationGone)
+	require.ErrorIs(t, s.Rename(ctx, conv, "Mine"), ErrConversationGone)
+	require.ErrorIs(t, s.Delete(ctx, conv), ErrConversationGone)
+	require.ErrorIs(t, s.SelectBranch(ctx, msgID), ErrNotFound)
+	_, err = SaveAttachment(ctx, d, t.TempDir(), conv, "x.txt", AttachmentKind{"text", "text/plain"}, []byte("x"), 1)
+	require.ErrorIs(t, err, ErrConversationGone)
+
+	var title string
+	var pinned bool
+	require.NoError(t, d.QueryRow(`SELECT title, pinned FROM chat_conversations WHERE id = ?`, conv).Scan(&title, &pinned))
+	assert.Equal(t, "Standup", title)
+	assert.False(t, pinned)
+	var n int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM chat_attachments WHERE conversation_id = ?`, conv).Scan(&n))
+	assert.Zero(t, n)
+}

@@ -50,18 +50,21 @@ func (s *Store) NewConversation(ctx context.Context, projectID *int64, routing *
 	return id, tx.Commit()
 }
 
-// ConversationExists says whether conversation conv is there.
+// ConversationExists says whether main chat conv is there. A Discuss chat
+// (context_type set) is not a main chat and counts as absent: the phone
+// reaches main chats only (iPhone chat spec §1).
 func (s *Store) ConversationExists(ctx context.Context, conv int64) (bool, error) {
 	var n int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM chat_conversations WHERE id = ?`, conv).Scan(&n); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM chat_conversations WHERE id = ? AND context_type IS NULL`, conv).Scan(&n); err != nil {
 		return false, fmt.Errorf("reading a chat: %w", err)
 	}
 	return n > 0, nil
 }
 
-// Pin is ChatConversationQueries.pin. ErrConversationGone when absent.
+// Pin is ChatConversationQueries.pin. ErrConversationGone when absent or
+// not a main chat (Pin, Rename and Delete write main chats only, spec §1).
 func (s *Store) Pin(ctx context.Context, conv int64, pinned bool) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE chat_conversations SET pinned = ? WHERE id = ?`, pinned, conv)
+	res, err := s.db.ExecContext(ctx, `UPDATE chat_conversations SET pinned = ? WHERE id = ? AND context_type IS NULL`, pinned, conv)
 	return requireConversation(res, err)
 }
 
@@ -72,7 +75,7 @@ func (s *Store) Rename(ctx context.Context, conv int64, title string) error {
 	if title == "" {
 		return ErrInvalid
 	}
-	res, err := s.db.ExecContext(ctx, `UPDATE chat_conversations SET title = ?, title_source = 'user', updated_at = ? WHERE id = ?`,
+	res, err := s.db.ExecContext(ctx, `UPDATE chat_conversations SET title = ?, title_source = 'user', updated_at = ? WHERE id = ? AND context_type IS NULL`,
 		title, seconds(s.now()), conv)
 	return requireConversation(res, err)
 }
@@ -81,7 +84,7 @@ func (s *Store) Rename(ctx context.Context, conv int64, title string) error {
 // messages, steps, artifacts, attachment rows and lease. The caller removes
 // the attachment folder after it returns (RemoveConversationFiles).
 func (s *Store) Delete(ctx context.Context, conv int64) error {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM chat_conversations WHERE id = ?`, conv)
+	res, err := s.db.ExecContext(ctx, `DELETE FROM chat_conversations WHERE id = ? AND context_type IS NULL`, conv)
 	return requireConversation(res, err)
 }
 

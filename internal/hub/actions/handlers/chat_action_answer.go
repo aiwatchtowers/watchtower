@@ -20,7 +20,9 @@ import (
 // run after the answer, as `watchtower actions approve` runs it. A row that
 // is no longer pending (decided on the Mac, or failed by the chat's gate
 // because its session died) answers not_pending with its status, the row's
-// final state. Non-idempotent. Result {status}.
+// final state. An action of a chat that is not a main chat (a Discuss chat,
+// spec §1) or of a deleted chat is not_found. Non-idempotent. Result
+// {status}.
 func (h *Handlers) chatActionAnswer(ctx context.Context, r actions.Request) actions.Outcome {
 	return h.chatAction(ctx, "chat_action_answer", r, true, func(ctx context.Context, c *ChatDeps) actions.Outcome {
 		id, okID := intParam(r, "action_id")
@@ -38,6 +40,16 @@ func (h *Handlers) chatActionAnswer(ctx context.Context, r actions.Request) acti
 			return failed(reasonWriteFailed, chatWriteFailedMessage)
 		}
 		if row == nil || row.ConversationID == 0 {
+			return failed(reasonNotFound, chatActionGoneMessage)
+		}
+		// The phone answers only a main chat's actions (spec §1): a Discuss
+		// chat's or a deleted chat's action is not found here.
+		main, err := c.Store.ConversationExists(ctx, row.ConversationID)
+		if err != nil {
+			log.Printf("hub chat: reading the chat of action %d failed (%s)", id, errClass(err))
+			return failed(reasonWriteFailed, chatWriteFailedMessage)
+		}
+		if !main {
 			return failed(reasonNotFound, chatActionGoneMessage)
 		}
 		reg := c.Tools

@@ -494,3 +494,66 @@ func TestChatActionAnswer_ApplyRunsOnTheHubsBackground(t *testing.T) {
 		t.Fatalf("status %q: refused work must leave the approval", got)
 	}
 }
+
+// discussChat inserts a Discuss chat (context_type set) with one message:
+// not a main chat, so the phone never reaches it (iPhone chat spec §1).
+func (c *chatEnv) discussChat() (conv, msg int64) {
+	c.t.Helper()
+	res, err := c.db.Exec(`INSERT INTO chat_conversations (title, context_type, context_id, created_at, updated_at) VALUES ('Standup', 'meeting', '7', 1, 1)`)
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	conv, _ = res.LastInsertId()
+	res, err = c.db.Exec(`INSERT INTO chat_messages (conversation_id, role, text, status, created_at) VALUES (?, 'assistant', 'a', 'complete', 1)`, conv)
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	msg, _ = res.LastInsertId()
+	return conv, msg
+}
+
+func TestChatHandlers_DiscussChatIsNotFound(t *testing.T) {
+	c := newChatEnv(t, true)
+	conv, msg := c.discussChat()
+	for name, tc := range map[string]struct {
+		kind   string
+		params map[string]any
+	}{
+		"feed request":  {"chat_feed_request", map[string]any{"conversation_id": conv, "purpose": "open"}},
+		"page":          {"chat_page", map[string]any{"conversation_id": conv, "before_message_id": msg}},
+		"read":          {"chat_read", map[string]any{"conversation_id": conv, "message_id": msg}},
+		"branch select": {"chat_branch_select", map[string]any{"message_id": msg}},
+		"pin":           {"chat_manage", map[string]any{"conversation_id": conv, "op": "pin"}},
+		"rename":        {"chat_manage", map[string]any{"conversation_id": conv, "op": "rename", "title": "Mine"}},
+		"delete":        {"chat_manage", map[string]any{"conversation_id": conv, "op": "delete"}},
+	} {
+		if out := c.run(tc.kind, tc.params); out.Status != wire.StatusFailed || out.Reason != reasonNotFound {
+			t.Errorf("%s: %s/%s", name, out.Status, out.Reason)
+		}
+	}
+	if len(c.requests.feeds) != 0 || len(c.requests.pages) != 0 {
+		t.Fatalf("watched a Discuss chat: %v %v", c.requests.feeds, c.requests.pages)
+	}
+	if c.scalar(`SELECT title || '/' || pinned FROM chat_conversations WHERE id = ?`, conv) != "Standup/0" {
+		t.Fatal("a Discuss chat was written")
+	}
+	wantOutcome(t, c.h.IntakeChatAttachment(context.Background(), c.upload(conv, "a.txt", []byte("a"), -1)), wire.StatusFailed, reasonNotFound)
+	if n := c.count(`SELECT COUNT(*) FROM chat_attachments`); n != 0 {
+		t.Fatalf("%d attachment rows", n)
+	}
+
+	// An action of a Discuss chat is not answered from the phone.
+	id, err := c.db.InsertAgentAction(db.AgentAction{Tool: "fake_send", ArgsJSON: `{"text":"hi"}`, Surface: "chat", ConversationID: conv,
+		TurnID: "T", Status: "pending"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := tools.ArgsSHA256(`{"text":"hi"}`)
+	for _, decision := range []string{"approve", "reject"} {
+		wantOutcome(t, c.run("chat_action_answer", map[string]any{"action_id": id, "decision": decision, "args_sha256": sum}),
+			wire.StatusFailed, reasonNotFound)
+	}
+	if c.scalar(`SELECT status FROM agent_actions WHERE id = ?`, id) != "pending" {
+		t.Fatal("a Discuss chat's action was decided from the phone")
+	}
+}

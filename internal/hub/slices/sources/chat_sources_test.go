@@ -719,3 +719,25 @@ func TestChatRequests_ExpiredThenRepeatedRebuilds(t *testing.T) {
 		t.Fatalf("the repeat after expiry served the old record: %d hits", n)
 	}
 }
+
+// A Discuss chat (context_type set) is not a main chat: a watch on its id
+// publishes no feed record and a page request gets an empty page (iPhone
+// chat spec §1).
+func TestChatFeedAndPage_DiscussChatNotPublished(t *testing.T) {
+	d := openDB(t)
+	s := chatSeed{t, d}
+	conv := s.conversation("Standup", 1, "context_type = 'meeting', context_id = '7'")
+	u := s.message(conv, 0, "user", "q", "complete", "t", 1)
+	a := s.message(conv, u, "assistant", "secret answer", "complete", "t", 2)
+	w := NewChatWatches()
+	w.Watch(conv, ChatPurposeOpen, chatNow.Add(ChatOpenWatch))
+	if got := chatRecords(t, ChatFeed(d, chatFeedOpts(w, nil))); len(got) != 0 {
+		t.Fatalf("feed records %v", got)
+	}
+	k := ChatPageKey{Conversation: conv, Before: a}
+	w.Pages.Request(k, chatNow.Add(ChatRequestHold))
+	page := chatRecords(t, ChatPage(d, chatFeedOpts(w, nil)))[ChatPageID(k)]
+	if msgs := page["messages"].([]any); len(msgs) != 0 {
+		t.Fatalf("page of a Discuss chat has %d messages", len(msgs))
+	}
+}

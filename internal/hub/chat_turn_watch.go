@@ -101,7 +101,8 @@ func endKind(status string) string {
 }
 
 // send pushes one (turn, event) unless the owner's phone is looking at the
-// chat or the hub is not on the relay.
+// chat or the hub is not on the relay. A Discuss chat (context_type set) is
+// not a main chat and never pushes (iPhone chat spec §1).
 func (c *chatPushWatch) send(ctx context.Context, conv int64, turnID, kind string) {
 	if turnID == "" || c.enqueue == nil || (c.onRelay != nil && !c.onRelay()) {
 		return
@@ -111,9 +112,9 @@ func (c *chatPushWatch) send(ctx context.Context, conv int64, turnID, kind strin
 		return
 	}
 	var title string
-	err := c.db.QueryRowContext(ctx, `SELECT title FROM chat_conversations WHERE id = ?`, conv).Scan(&title)
+	err := c.db.QueryRowContext(ctx, `SELECT title FROM chat_conversations WHERE id = ? AND context_type IS NULL`, conv).Scan(&title)
 	if err != nil {
-		if !errors.Is(err, sql.ErrNoRows) { // a deleted conversation has nothing to push
+		if !errors.Is(err, sql.ErrNoRows) { // a deleted or Discuss conversation has nothing to push
 			log.Printf("hub: chat push of conversation %d dropped: title unreadable (%s)", conv, errClass(err))
 		}
 		return
@@ -192,9 +193,11 @@ type pendingChatAction struct {
 	turn string
 }
 
-// desktopLeases is the conversations the Mac app runs a turn in.
+// desktopLeases is the main chats the Mac app runs a turn in.
 func (c *chatPushWatch) desktopLeases(ctx context.Context) (map[int64]string, error) {
-	rows, err := c.db.QueryContext(ctx, `SELECT conversation_id, turn_id FROM chat_turn_leases WHERE owner = 'desktop'`)
+	rows, err := c.db.QueryContext(ctx, `SELECT l.conversation_id, l.turn_id FROM chat_turn_leases l
+		JOIN chat_conversations c ON c.id = l.conversation_id
+		WHERE l.owner = 'desktop' AND c.context_type IS NULL`)
 	if err != nil {
 		return nil, fmt.Errorf("reading desktop chat leases: %w", err)
 	}
@@ -211,11 +214,12 @@ func (c *chatPushWatch) desktopLeases(ctx context.Context) (map[int64]string, er
 	return out, rows.Err()
 }
 
-// pendingActions is the chat actions waiting for the owner (asked, not
-// executed on their own).
+// pendingActions is the main chats' actions waiting for the owner (asked,
+// not executed on their own).
 func (c *chatPushWatch) pendingActions(ctx context.Context) (map[int64]pendingChatAction, error) {
-	rows, err := c.db.QueryContext(ctx, `SELECT id, conversation_id, turn_id FROM agent_actions
-		WHERE status = 'pending' AND trust_at_create = 'ask' AND conversation_id > 0 AND turn_id <> ''`)
+	rows, err := c.db.QueryContext(ctx, `SELECT a.id, a.conversation_id, a.turn_id FROM agent_actions a
+		JOIN chat_conversations c ON c.id = a.conversation_id
+		WHERE a.status = 'pending' AND a.trust_at_create = 'ask' AND a.turn_id <> '' AND c.context_type IS NULL`)
 	if err != nil {
 		return nil, fmt.Errorf("reading pending chat actions: %w", err)
 	}

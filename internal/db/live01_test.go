@@ -162,6 +162,8 @@ var displayOnlyReadersAt = map[string]string{
 	// internal/hub chat_answer push: ids, status and the conversation title only.
 	"hub/chat_turn_watch.go:send":            "the chat_answer push reads a conversation title, never message text into a store",
 	"hub/chat_turn_watch.go:assistantStatus": "the chat_answer push reads one turn row's status, no text",
+	"hub/chat_turn_watch.go:desktopLeases":   "the chat_answer push: lease ids of main chats, no text",
+	"hub/chat_turn_watch.go:pendingActions":  "the chat_answer push: pending action ids of main chats, no text",
 	// internal/chatstore: the hub's chat turn store, the Swift write path's
 	// twin. It writes the chat rows and reads its own tree for the next turn;
 	// stepStarted and markIfUsedTx write the mark itself (LIVE-01 mechanism).
