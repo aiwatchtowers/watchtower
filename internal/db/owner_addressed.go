@@ -33,8 +33,10 @@ func ownerMentionSQL(textCol string) string {
 }
 
 // ownerThreadReplySQL matches a reply (not a thread root) in a thread where the
-// owner has another message, root or reply. alias is the messages alias.
-// Binds, in order: the owner's namespaced user id.
+// owner has another message whose thread_ts is the thread's: in practice
+// another reply, since sync stores a thread root with thread_ts NULL, so a
+// thread the owner started but never replied in does not match. alias is the
+// messages alias. Binds, in order: the owner's namespaced user id.
 func ownerThreadReplySQL(alias string) string {
 	return `(` + alias + `.thread_ts != ''
 		  AND ` + alias + `.thread_ts != ` + alias + `.ts
