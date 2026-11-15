@@ -49,7 +49,6 @@ enum SlackFullLiveMockCopy {
     static let checked5H = "checked 5 h ago"
     static let notCheckedYet = "Live has not been checked yet."
     static let checkAgain = "Check again"
-    static let checkNow = "Check now"
     static let checking = "Checking Live… this takes a few seconds."
     static let loading = "Reading the Live status…"
     static let probeFailed = "The Claude Live Slack check failed: the watchtower command did not answer in 150 seconds."
@@ -67,6 +66,7 @@ enum SlackFullLiveMockCopy {
     static let portBusy = "The connect link cannot reach Watchtower: port 18551 is busy. "
         + "Paste the link or the code here instead."
     static let orgTitle = "Set up by your organization"
+    static let orgRow = "Workspace T0ACME"
     static let noAppYet = "No Watchtower app in your workspace yet?"
     static let setUpForCompany = "Set up for my company"
 
@@ -89,6 +89,7 @@ enum SlackFullLiveMockCopy {
 
     static let workspacesTitle = "Workspaces"
     static let accountFull = "Syncing · last sync 3 min ago"
+    static let connectAnother = "Connect another workspace…"
     static let accountShared = "Syncing through the shared app · last sync 3 min ago"
 
     // MARK: Set up for my company (sheet)

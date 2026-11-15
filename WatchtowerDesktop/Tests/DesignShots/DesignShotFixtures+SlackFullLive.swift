@@ -224,7 +224,7 @@ private struct SlackPaneMock: View {
                 VStack(alignment: .leading, spacing: Spacing.compact) {
                     Text(Copy.orgTitle).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                     HStack {
-                        Label("acme", systemImage: "building.2").font(.callout)
+                        Label(Copy.orgRow, systemImage: "building.2").font(.callout)
                         Spacer(minLength: Spacing.medium)
                         Button(Copy.connect) {}.buttonStyle(.kitPrimary)
                     }
@@ -305,6 +305,9 @@ private struct SlackPaneMock: View {
                 Spacer(minLength: Spacing.medium)
                 Text(pane == .sharedApp ? Copy.accountShared : Copy.accountFull)
                     .font(.caption).foregroundStyle(.secondary)
+            }
+            if pane != .sharedApp {
+                Button(Copy.connectAnother) {}.buttonStyle(.kitQuiet)
             }
         }
     }
