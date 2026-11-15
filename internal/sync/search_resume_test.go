@@ -538,3 +538,55 @@ func TestRunOutcome_ConcurrentCallers429IsNotTheRuns(t *testing.T) {
 	require.NotZero(t, ts.orch.slackClient.RateLimitedCalls(), "the other caller met its 429")
 	assert.False(t, ts.orch.RunOutcome().RateLimited)
 }
+
+// m2: a window that resumes across cycles the cadence skips (no sync error,
+// so the Inbox watermark moves on meanwhile) and finishes more than 24 h
+// after it began still stamps what it stores for the first time with the
+// current time: the lookback counts from the run that began the window. A
+// late mention on its last page is detected exactly once, and the search
+// watermark waits for that page.
+func TestSearchResume_LateWindowStillDetected(t *testing.T) {
+	ts, s := newResumeSetup(t, 6, 4)
+	now := resumeNow
+	ts.orch.now = func() time.Time { return now }
+	require.NoError(t, ts.db.SetSlackFirstCycleAtOnce(ts.accountID, resumeNow.AddDate(0, 0, -30)))
+	mention := func(at time.Time) map[string]any {
+		return map[string]any{"user": "U002", "username": "bob", "ts": slackTS(at), "text": "<@U001> ping",
+			"channel": map[string]any{"id": "C001", "name": "general"}}
+	}
+	early, late := resumeNow.Add(-2*time.Hour), resumeNow.Add(-time.Hour)
+	s.extra = map[int][]map[string]any{1: {mention(early)}, 6: {mention(late)}}
+	watermark := func() string {
+		wm, err := ts.db.GetSlackAccountSearchWatermark(ts.accountID)
+		require.NoError(t, err)
+		return wm
+	}
+
+	require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{}))
+	require.True(t, ts.orch.RunOutcome().ResumePending, "run 1 stops on page 4")
+
+	now = resumeNow.Add(30 * time.Minute)
+	ts.freshClient()
+	s.reset(5)
+	require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{}))
+	require.True(t, ts.orch.RunOutcome().ResumePending, "run 2 stops on page 5")
+	assert.Equal(t, "2026-09-20", watermark(), "the watermark waits for the last page")
+
+	// The cadence skips cycles meanwhile; the Inbox watermark moves on.
+	inboxWatermark := resumeNow.Add(25 * time.Hour)
+	now = resumeNow.Add(26 * time.Hour)
+	ts.freshClient()
+	s.reset(0)
+	require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{}))
+	require.False(t, ts.orch.RunOutcome().ResumePending, "run 3 finishes the window")
+	assert.NotEqual(t, "2026-09-20", watermark(), "the finished window moves the watermark")
+
+	assert.Equal(t, []string{slackTS(late)}, detectedMentions(t, ts, inboxWatermark),
+		"the late mention is detected; the one run 1 stored is not again")
+	assert.Equal(t, float64(now.Unix()), storedSyncedAt(t, ts, slackTS(late)))
+
+	// A later run re-reading the same messages moves nothing.
+	now = now.Add(time.Hour)
+	require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{}))
+	assert.Empty(t, detectedMentions(t, ts, resumeNow.Add(26*time.Hour)), "detected exactly once")
+}

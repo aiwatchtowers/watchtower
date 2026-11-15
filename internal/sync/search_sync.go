@@ -146,6 +146,11 @@ func (o *Orchestrator) syncViaSearch(ctx context.Context) error {
 		searchAfter = r.after
 	}
 	query := fmt.Sprintf("after:%s", searchAfter)
+	if r := o.resume; r != nil && r.query == query && !r.startedAt.IsZero() {
+		// The window goes on: what this run stores for the first time is
+		// stamped as if the run that began it had (syncedAtLookback).
+		o.windowStart = r.startedAt
+	}
 	o.progress.SetSearchAfter(searchAfter)
 	o.logger.Printf("search sync: query=%q", query)
 

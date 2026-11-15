@@ -35,6 +35,7 @@ type searchResume struct {
 	after     string // the window's after: date, kept while a moving window resumes
 	nextPage  int
 	firstSync bool
+	startedAt time.Time // the start of the run that began the window (Orchestrator.windowStart)
 }
 
 // RunOutcome is what the last Run tells the daemon's cadence: whether Slack
@@ -79,7 +80,7 @@ func (o *Orchestrator) recordSearchStop(query, after string, startPage, stopPage
 	o.outcome.Pages += next - startPage
 	o.outcome.Messages += messages
 	if next = max(next, stopPage); !completed && next > 1 {
-		o.resume = &searchResume{query: query, after: after, nextPage: next, firstSync: firstSync}
+		o.resume = &searchResume{query: query, after: after, nextPage: next, firstSync: firstSync, startedAt: o.windowStart}
 	}
 }
 
