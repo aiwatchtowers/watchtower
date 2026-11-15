@@ -1,0 +1,7 @@
+{
+  "hits": [
+    {"conversation_id": 3, "date": 1700000020, "message_id": 11, "snippet": "The \u0002payments\u0003 rollout slipped to Friday.", "title": "Payments rollout"},
+    {"conversation_id": 2, "date": 1700000200, "snippet": "Payments notes", "title": "Payments notes"}
+  ],
+  "query": "payments"
+}

@@ -168,6 +168,19 @@ var displayOnlyReaders = map[string]string{
 	"stepStarted":        "writes a step and the LIVE-01 mark",
 	"markIfUsedTx":       "writes the LIVE-01 mark",
 	"titleIfNeeded":      "a count of complete answers, no text",
+	// The phone's chat (iPhone chat spec §4.6): the hub's chat slices and the
+	// Go port of the Mac's ⌘K search show chat text on the phone and store
+	// nothing (the slices live in memory and the sealed relay records only).
+	"SearchChats":            "the ⌘K search port: hits shown on the phone",
+	"chatTitleMatches":       "the ⌘K search port: title hits shown on the phone",
+	"chatMessageMatches":     "the ⌘K search port: message hits shown on the phone",
+	"chatListRows":           "the phone's chat list (titles, states, last lines)",
+	"chatFeedConversationTx": "the phone's chat feed: the conversation's meta",
+	"chatBranchTx":           "the phone's chat feed: the active branch's ids",
+	"chatFeedMessageRowsTx":  "the phone's chat feed: the messages shown",
+	"chatFeedActionsTx":      "the phone's chat feed: the actions of the turns shown",
+	"buildChatPage":          "the phone's chat page: older messages shown",
+	"ChangeTables":           "table names of the hub's data_version watch, no read",
 }
 
 // TestLIVE01_ReaderList fails when a non-test function in internal/ mentions

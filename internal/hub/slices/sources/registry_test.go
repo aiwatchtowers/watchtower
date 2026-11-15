@@ -36,7 +36,7 @@ func TestWorkbenchOnlyPublishesNoCalendarOrTranscripts(t *testing.T) {
 		t.Errorf("workbench_only kinds = %v", got)
 	}
 	for _, k := range got {
-		if k == "calendar_event" || k == "meeting_transcript" || k == "recording_job" {
+		if k == "calendar_event" || k == "meeting_transcript" || k == "recording_job" || strings.HasPrefix(k, "chat_") {
 			t.Errorf("%s published in workbench_only", k)
 		}
 	}
@@ -44,7 +44,8 @@ func TestWorkbenchOnlyPublishesNoCalendarOrTranscripts(t *testing.T) {
 
 func TestAllowedAddsCalendarTranscriptsAndRecordingJobs(t *testing.T) {
 	got := registryKinds(t, policy.MobileAllowed)
-	want := append(append([]string(nil), workbenchOnlyKinds...), "calendar_event", "meeting_transcript", "recording_job")
+	want := append(append([]string(nil), workbenchOnlyKinds...), "calendar_event", "meeting_transcript", "recording_job",
+		"chat_list", "chat_feed", "chat_page", "chat_search")
 	sort.Strings(want)
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("allowed kinds = %v", got)
@@ -111,7 +112,7 @@ func TestChangeTablesCoverTheDatabaseKinds(t *testing.T) {
 		}
 	}
 	for _, k := range registryKinds(t, policy.MobileAllowed) {
-		runnerFed := k == "session_chat" || k == "session_report" || k == "recording_job"
+		runnerFed := k == "session_chat" || k == "session_report" || k == "recording_job" || k == "chat_page" || k == "chat_search"
 		if fed[k] == runnerFed {
 			t.Errorf("%s: in ChangeTables = %v", k, fed[k])
 		}
