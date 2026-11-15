@@ -99,8 +99,11 @@ package enum TrackQueries {
     /// Mail: the watch scan records mail as `source_type = 'email'` with
     /// `source_id` = the `list_emails` id, the Gmail message id or
     /// `<uidvalidity>-<uid>` for IMAP (`internal/db/emails_read.go`
-    /// `imapEmailIDExpr`). Matched per account so the account-led
-    /// `media_items` indexes serve.
+    /// `imapEmailIDExpr`). Each id is probed against every account, so the
+    /// account-led `media_items` indexes serve; the id binds no account.
+    /// Gmail message ids are globally unique. An IMAP id is not: two
+    /// mailboxes with the same UIDVALIDITY and UID can give a false chip
+    /// (v1 limit; the track's `source_id` carries no account).
     private static func mailAttachmentTrackIDs(_ db: Database, newestMailIDs: [Int: String]) throws -> Set<Int> {
         var gmail: [[String: Any]] = []
         var imap: [[String: Any]] = []
