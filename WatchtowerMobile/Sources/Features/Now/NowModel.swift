@@ -16,6 +16,8 @@ struct NowModel {
     static let endedSessionWindow: TimeInterval = 24 * 3_600
     static let endedTitle = "Ended"
     static let seenTitle = "Seen"
+    /// The Ended header's action: every row shown is marked seen.
+    static let clearTitle = "Clear"
     static let emptyWaitingText = "Nothing is waiting for you"
 
     let mac: MacReachability
@@ -86,6 +88,11 @@ struct NowModel {
     /// exactly the rows of Waiting for you (the ones past the first 20 too), without building the screen.
     static func waitingCount(in snapshot: WorkbenchReplicaSnapshot) -> Int {
         snapshot.openAsks().count + snapshot.pendingPermissions.count
+    }
+
+    /// What the Ended header's **Clear** marks seen: exactly the Ended rows shown.
+    var endedKeys: [NowEndedKey] {
+        ended.compactMap(\.endedKey)
     }
 
     /// The header's count, equal to `waitingCount(in:)` of the snapshot; nil when nothing waits.

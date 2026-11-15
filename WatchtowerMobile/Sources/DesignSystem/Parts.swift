@@ -125,7 +125,7 @@ struct StepRow: View {
 /// HStack-or-VStack `ViewThatFits` fallbacks, which went one item per line.
 struct FlowRow: Layout {
     var spacing = Spacing.compact
-    let lineSpacing = Spacing.small
+    var lineSpacing = Spacing.small
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         Self.arrange(

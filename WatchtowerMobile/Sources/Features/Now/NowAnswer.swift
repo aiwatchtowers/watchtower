@@ -87,8 +87,9 @@ enum NowAnswer: Equatable {
     }
 }
 
-/// What marks an ended row seen: the session and the moment its state changed, so a session that ends again later
-/// comes back under Ended.
+/// What marks an ended row seen: the session and the moment its state changed (`state_at`), so a session that ends
+/// again later comes back under Ended. A session without `state_at` is keyed by its `last_active_at` instead, so it
+/// comes back whenever that moves, even without ending again.
 struct NowEndedKey: Hashable {
     let sessionID: Int64
     let at: Date
@@ -96,8 +97,9 @@ struct NowEndedKey: Hashable {
 
 /// The ended rows marked seen, per hub, in the phone's UserDefaults: the owner's reading position on this phone
 /// only, never synced (`RecordingsSeenStore`'s rule), so it survives a relaunch and another phone keeps its own. Its
-/// only writer is Now's **Seen** (the swipe, the long press, the VoiceOver action), on the main actor. A mark older
-/// than `keepFor` can no longer match a row (Ended keeps 24 h) and goes on the next write.
+/// only writers are Now's **Seen** (a row's long press or VoiceOver action) and the Ended header's **Clear**, on the
+/// main actor. A mark older than `keepFor` can no longer match a row (Ended keeps 24 h) and goes on the next write.
+/// Marks of a hub this phone no longer links stay until the defaults go (a few short strings).
 @MainActor
 @Observable
 final class NowEndedSeenStore {
@@ -119,8 +121,13 @@ final class NowEndedSeenStore {
     }
 
     func markSeen(_ key: NowEndedKey, hubID: String, now: Date = Date()) {
+        markSeen([key], hubID: hubID, now: now)
+    }
+
+    /// Marks every key seen in one write (the header's **Clear**).
+    func markSeen(_ keys: [NowEndedKey], hubID: String, now: Date = Date()) {
         var hub = (marks[hubID] ?? []).filter { now.timeIntervalSince($0.at) <= Self.keepFor }
-        hub.insert(key)
+        hub.formUnion(keys)
         marks[hubID] = hub
         defaults.set(marks.mapValues { $0.map(Self.encode).sorted() }, forKey: Self.key)
     }

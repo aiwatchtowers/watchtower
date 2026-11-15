@@ -138,7 +138,9 @@ struct NowView: View {
                     working(model)
                 }
                 if !model.ended.isEmpty {
-                    SectionHeader(NowModel.endedTitle, count: model.ended.count)
+                    NowEndedHeader(count: model.ended.count) {
+                        env.endedSeen.markSeen(model.endedKeys, hubID: env.activeSession.hubID, now: date)
+                    }
                     VStack(spacing: Spacing.regular) {
                         ForEach(model.ended) { row in
                             NowEndedCard(row: row) { markSeen(row, now: date) }
@@ -532,16 +534,19 @@ private struct NowWaitingCard: View {
         case .none:
             EmptyView()
         case let .chips(options):
-            FlowRow {
+            // The chips' own hit margins make the gaps: the same between rows as between chips.
+            FlowRow(spacing: 0, lineSpacing: 0) {
                 ForEach(options) { option in
                     Button { onPick(option) } label: { AnswerChip(text: option.label, isProminent: option.isRecommended) }
                         .buttonStyle(.plain)
                 }
             }
+            .padding(.horizontal, -AnswerChip.margin)
         case .openForm:
             if case let .ask(id) = row.destination {
                 NavigationLink(value: AskRoute(id: id)) { AnswerChip(text: NowAnswer.answerFormTitle, isProminent: false) }
                     .buttonStyle(.plain)
+                    .padding(.horizontal, -AnswerChip.margin)
             }
         case .sending, .waitingToSend:
             HStack(spacing: Spacing.compact) {
@@ -567,9 +572,12 @@ private struct NowWaitingCard: View {
     }
 }
 
-/// A quick answer as a chip (mockup 1's `.btn`): a capsule about 32 pt tall inside a 44 pt tall hit area, the
-/// recommended one filled with the accent.
+/// A quick answer as a chip (mockup 1's `.btn`): a capsule at least 38 pt tall with a 3 pt hit margin all round
+/// (a 44 pt tall hit area), so two chips sit 6 pt apart across and down; the recommended one filled with the accent.
 private struct AnswerChip: View {
+    static let margin = Spacing.compact / 2
+    static let capsuleHeight = PhoneMetrics.minTouch - 2 * margin
+
     let text: String
     let isProminent: Bool
 
@@ -579,48 +587,45 @@ private struct AnswerChip: View {
             .lineLimit(1)
             .foregroundStyle(isProminent ? Color.white : PhoneTone.accent.color)
             .padding(.horizontal, Spacing.medium)
-            .padding(.vertical, Spacing.compact)
+            .frame(minHeight: Self.capsuleHeight)
             .background(isProminent ? PhoneTone.accent.color : Fill.selected, in: Capsule())
-            .frame(minHeight: PhoneMetrics.minTouch)
+            .padding(Self.margin)
             .contentShape(Rectangle())
     }
 }
 
-/// One Ended card (#1785): the session's row; swiped left it shows **Seen**, which takes it off Now on this phone.
-/// The swipe is a paging horizontal scroll (a vertical `ScrollView` has no `swipeActions`), so it never fights the
-/// page's own scroll; a long press and VoiceOver offer the same action.
+/// The Ended header (#1785): the caps title and its count, then **Clear**, which marks every row shown seen.
+private struct NowEndedHeader: View {
+    let count: Int
+    let onClear: () -> Void
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 0) {
+            SectionHeader(NowModel.endedTitle, count: count)
+            Button(NowModel.clearTitle, action: onClear)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(PhoneTone.accent.color)
+                .padding(.horizontal, Spacing.small)
+                .frame(minHeight: PhoneMetrics.minTouch)
+                .contentShape(Rectangle())
+                .buttonStyle(.plain)
+        }
+    }
+}
+
+/// One Ended card (#1785): the session's row; a long press (and VoiceOver) offers **Seen**, which takes it off Now
+/// on this phone. The header's **Clear** does it for all of them.
 private struct NowEndedCard: View {
     let row: NowWaitingRow
     let onSeen: () -> Void
 
     var body: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: Spacing.regular) {
-                NowRowLink(row: row)
-                    .card()
-                    .containerRelativeFrame(.horizontal)
-                Button(action: onSeen) {
-                    Label(NowModel.seenTitle, systemImage: "eye")
-                        .labelStyle(.titleAndIcon)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(Color.white)
-                        .padding(.horizontal, Spacing.medium)
-                        .frame(maxHeight: .infinity)
-                        .background(PhoneTone.accent.color, in: RoundedRectangle(cornerRadius: Card.radius, style: .continuous))
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityHidden(true)
+        NowRowLink(row: row)
+            .card()
+            .contextMenu {
+                Button(NowModel.seenTitle, systemImage: "eye", action: onSeen)
             }
-            .fixedSize(horizontal: false, vertical: true)
-            .scrollTargetLayout()
-        }
-        .scrollIndicators(.hidden)
-        .scrollTargetBehavior(.viewAligned)
-        .contextMenu {
-            Button(NowModel.seenTitle, systemImage: "eye", action: onSeen)
-        }
-        .accessibilityAction(named: NowModel.seenTitle, onSeen)
+            .accessibilityAction(named: NowModel.seenTitle, onSeen)
     }
 }
 

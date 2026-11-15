@@ -188,11 +188,43 @@ final class NowWiringTests: XCTestCase {
         let relaunched = NowEndedSeenStore(defaults: defaults)
         XCTAssertEqual(relaunched.seen(hubID: "hub-a"), [key], "read back from UserDefaults")
         XCTAssertTrue(relaunched.seen(hubID: "hub-b").isEmpty, "each Mac keeps its own")
+    }
 
+    @MainActor
+    func testMarkSeenPrunesMarksOlderThanKeepFor() throws {
+        let defaults = try makeDefaults()
+        let store = NowEndedSeenStore(defaults: defaults)
         let old = NowEndedKey(sessionID: 1, at: now.addingTimeInterval(-NowEndedSeenStore.keepFor - 60))
-        relaunched.markSeen(old, hubID: "hub-a", now: now.addingTimeInterval(-NowEndedSeenStore.keepFor))
-        relaunched.markSeen(NowEndedKey(sessionID: 2, at: now), hubID: "hub-a", now: now)
-        XCTAssertEqual(relaunched.seen(hubID: "hub-a").map(\.sessionID).sorted(), [2, 13], "a mark past keepFor goes on the next write")
+        let edge = NowEndedKey(sessionID: 3, at: now.addingTimeInterval(-NowEndedSeenStore.keepFor))
+        store.markSeen([old, edge], hubID: "hub-a", now: now.addingTimeInterval(-3_600))
+        store.markSeen(NowEndedKey(sessionID: 9, at: now), hubID: "hub-b", now: now)
+        XCTAssertEqual(store.seen(hubID: "hub-a").map(\.sessionID).sorted(), [1, 3], "kept until the hub's next write")
+
+        store.markSeen(NowEndedKey(sessionID: 2, at: now), hubID: "hub-a", now: now)
+        XCTAssertEqual(store.seen(hubID: "hub-a").map(\.sessionID).sorted(), [2, 3], "past keepFor goes, the edge stays")
+        XCTAssertEqual(NowEndedSeenStore(defaults: defaults).seen(hubID: "hub-a").map(\.sessionID).sorted(), [2, 3], "and stays gone")
+    }
+
+    /// The Ended header's **Clear** marks exactly the rows shown — not a session an open ask represents, not one past
+    /// the 24 h window — and Ended empties.
+    @MainActor
+    func testClearMarksExactlyTheShownEndedRows() throws {
+        var snapshot = try demoSnapshot(now: now)
+        snapshot.sessions.append(try mirror(TerminalSessionState.self, DemoSeed.JSON.session(40, workbench: DemoSeed.acmeID, [
+            "title": "Old stop", "state_kind": "stopped", "state_caption": "Stopped", "state_tone": "secondary", "live": false,
+            "state_at": DemoSeed.JSON.stamp(now.addingTimeInterval(-25 * 3_600)),
+            "last_active_at": DemoSeed.JSON.stamp(now.addingTimeInterval(-25 * 3_600))
+        ])))
+        let model = NowModel(snapshot: snapshot, linked: true, now: now)
+        XCTAssertEqual(NowModel.clearTitle, "Clear")
+        XCTAssertEqual(model.endedKeys.map(\.sessionID), [21, 13, 15, 16])
+
+        let store = NowEndedSeenStore(defaults: try makeDefaults())
+        store.markSeen(model.endedKeys, hubID: "hub-a", now: now)
+        XCTAssertEqual(store.seen(hubID: "hub-a"), Set(model.endedKeys), "session 14 (open ask) and 40 (past 24 h) are not marked")
+        let cleared = NowModel(snapshot: snapshot, linked: true, now: now, seenEnded: store.seen(hubID: "hub-a"))
+        XCTAssertTrue(cleared.ended.isEmpty)
+        XCTAssertEqual(cleared.waitingForYou.map(\.id), model.waitingForYou.map(\.id), "Waiting for you is untouched")
     }
 
     /// Owner decision (ask #622): an ended session with an open ask is one waiting thing, shown as the ask.
