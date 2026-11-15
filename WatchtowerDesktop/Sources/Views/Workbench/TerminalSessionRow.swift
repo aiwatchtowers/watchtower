@@ -38,18 +38,31 @@ struct TerminalSessionRow: View {
 
     private var session: TerminalSession { row.session }
 
+    /// The state dot's column; the details line starts under the title.
+    private static let dotColumn: CGFloat = 16
+    private static let dotGap = Spacing.compact
+
+    /// The details line has text to show. A running standalone terminal has
+    /// none: its row stays one line, the controls beside the title.
+    private var hasDetailText: Bool {
+        row.caption != nil || row.place != nil || row.badge != nil || row.agentTag != nil || opensIn != nil
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.tight) {
-            Text(session.title)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.leading, Spacing.large + Spacing.compact)
-                .contentShape(Rectangle())
-                .simultaneousGesture(TapGesture().onEnded { actions.open(session) })
-                .accessibilityRepresentation { accessibleOpener }
-                .help(row.state.live ? session.title : "Not running — click to start")
-            details
+            HStack(spacing: 4) {
+                titleLine
+                if !hasDetailText { trailingControls }
+            }
+            if hasDetailText {
+                HStack(spacing: 4) {
+                    opener
+                        .padding(.leading, Self.dotColumn + Self.dotGap)
+                        .opensSession(session, row: row, actions: actions)
+                        .accessibilityHidden(true)
+                    trailingControls
+                }
+            }
         }
         .overlay {
             if hasCursor {
@@ -63,30 +76,45 @@ struct TerminalSessionRow: View {
         .contextMenu { contextMenu }
     }
 
-    private var details: some View {
-        HStack(spacing: 4) {
-            opener
-                .accessibilityHidden(true)
-            if openAsks > 0 {
-                Text("\(openAsks)")
-                    .font(.caption2.weight(.semibold))
-                    .padding(.horizontal, 5)
-                    .background(Color.accentColor.opacity(0.2), in: Capsule())
-                    .help("\(openAsks) open ask\(openAsks == 1 ? "" : "s")")
-                    .accessibilityLabel("\(openAsks) open ask\(openAsks == 1 ? "" : "s")")
-            }
-            closedAsks
-            if showsDelete, row.state.kind == .readyToCheck, session.projectID != nil,
-               let reviewChanges = actions.reviewChanges {
-                Button("Review Branch") { reviewChanges(session) }
-                    .buttonStyle(.kitQuiet)
-                    .help("Review this session's branch")
-            }
-            if showsDelete, let quickDelete {
-                SessionRowDeleteButton {
-                    deleteButtonTakesKeyboard?()
-                    quickDelete()
-                }
+    /// The dot and the title across the row's whole width; VoiceOver reads
+    /// it as the row's one named open control (`accessibleOpener`).
+    private var titleLine: some View {
+        HStack(spacing: Self.dotGap) {
+            SessionLiveDot(state: row.state)
+                .frame(width: Self.dotColumn)
+                // The state label reads the state out.
+                .accessibilityHidden(row.showsStateLabel)
+            Text(session.title)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .opensSession(session, row: row, actions: actions)
+        .accessibilityRepresentation { accessibleOpener }
+    }
+
+    /// The ask counts, Review Branch and the ✕: buttons of their own, outside
+    /// the open click.
+    @ViewBuilder private var trailingControls: some View {
+        if openAsks > 0 {
+            Text("\(openAsks)")
+                .font(.caption2.weight(.semibold))
+                .padding(.horizontal, 5)
+                .background(Color.accentColor.opacity(0.2), in: Capsule())
+                .help("\(openAsks) open ask\(openAsks == 1 ? "" : "s")")
+                .accessibilityLabel("\(openAsks) open ask\(openAsks == 1 ? "" : "s")")
+        }
+        closedAsks
+        if showsDelete, row.state.kind == .readyToCheck, session.projectID != nil,
+           let reviewChanges = actions.reviewChanges {
+            Button("Review Branch") { reviewChanges(session) }
+                .buttonStyle(.kitQuiet)
+                .help("Review this session's branch")
+        }
+        if showsDelete, let quickDelete {
+            SessionRowDeleteButton {
+                deleteButtonTakesKeyboard?()
+                quickDelete()
             }
         }
     }
@@ -121,12 +149,11 @@ struct TerminalSessionRow: View {
         Button("Delete…", role: .destructive) { actions.delete(session) }
     }
 
+    /// The details under the title: the state label and report line (or a
+    /// standalone terminal's caption), place, badge, agent tag and the mode
+    /// glyph.
     private var opener: some View {
         HStack(spacing: 6) {
-            SessionLiveDot(state: row.state)
-                .frame(width: 16)
-                // The label below reads the state out.
-                .accessibilityHidden(row.showsStateLabel)
             VStack(alignment: .leading, spacing: 1) {
                 if row.showsStateLabel, let caption = row.caption {
                     SessionStateLabel(state: row.state, caption: caption)
@@ -174,17 +201,18 @@ struct TerminalSessionRow: View {
                     .accessibilityLabel("Opens in \(opensIn.title)")
             }
         }
-        .contentShape(Rectangle())
-        .simultaneousGesture(TapGesture().onEnded { actions.open(session) })
-        .help(row.state.live ? session.title : "Not running — click to start")
     }
 
     /// VoiceOver gets one named session control while the visible title
-    /// and details open independently of the closed-asks button.
+    /// and details open independently of the closed-asks button. The control
+    /// sits on the title line; the details line is hidden from VoiceOver.
     private var accessibleOpener: some View {
         VStack(alignment: .leading) {
+            SessionLiveDot(state: row.state)
+                // The state label reads the state out.
+                .accessibilityHidden(row.showsStateLabel)
             Text(session.title)
-            opener
+            if hasDetailText { opener }
         }
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(hasCursor ? [.isButton, .isSelected] : .isButton)
@@ -192,6 +220,17 @@ struct TerminalSessionRow: View {
         .accessibilityActions {
             if let quickDelete { Button("Delete session", action: quickDelete) }
         }
+    }
+}
+
+private extension View {
+    /// A click opens the session (a not running one starts); both lines of
+    /// the row carry it, its buttons do not.
+    func opensSession(_ session: TerminalSession, row: SessionSwitcherPresentation.Row,
+                      actions: SessionRowActions) -> some View {
+        contentShape(Rectangle())
+            .simultaneousGesture(TapGesture().onEnded { actions.open(session) })
+            .help(row.state.live ? session.title : "Not running — click to start")
     }
 }
 

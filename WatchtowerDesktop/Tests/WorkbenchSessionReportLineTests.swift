@@ -187,4 +187,38 @@ final class WorkbenchSessionReportLineTests: XCTestCase {
         XCTAssertThrowsError(try view.inspect().find(ViewType.ProgressView.self), "no bar either")
         XCTAssertThrowsError(try view.inspect().find(text: "#314 · 14/15 · PR #147 open"))
     }
+
+    // MARK: - The full-width title (#1088)
+
+    func testAClickOnTheTitleLineOpensTheSession() async throws {
+        let row = try await session(projectID: workbench())
+        let presented = SessionSwitcherPresentation.rows([row], liveIDs: [], statuses: [:], now: Date())[0]
+        var opened: [Int64] = []
+        let view = TerminalSessionRow(row: presented, actions: .init(open: { opened.append($0.id) }, rename: { _ in },
+                                                                     delete: { _ in }))
+        let titleLine = try view.inspect().find(text: "Release").find(ViewType.HStack.self, relation: .parent)
+        XCTAssertNoThrow(try titleLine.find(SessionLiveDot.self), "the dot sits on the title line")
+        try titleLine.simultaneousGesture(TapGesture.self).callOnEnded(value: ())
+        XCTAssertEqual(opened, [row.id])
+    }
+
+    func testTheDetailsLineIsHiddenFromVoiceOver() async throws {
+        let row = try await session(projectID: workbench())
+        let presented = SessionSwitcherPresentation.rows([row], liveIDs: [], statuses: [:], now: Date())[0]
+        let view = TerminalSessionRow(row: presented, actions: .init(open: { _ in }, rename: { _ in }, delete: { _ in }))
+        let details = try view.inspect().find(SessionStateLabel.self)
+            .find(ViewType.HStack.self, relation: .parent)
+        XCTAssertTrue(try details.accessibilityHidden(), "the title line's control reads it out instead")
+    }
+
+    func testARunningStandaloneTerminalKeepsOneLine() async throws {
+        let row = try await session(projectID: nil, kind: .shell)
+        let presented = SessionSwitcherPresentation.rows([row], liveIDs: [row.id], statuses: [:], now: Date())[0]
+        XCTAssertNil(presented.caption, "precondition: a running standalone terminal has no caption")
+        let view = TerminalSessionRow(row: presented, actions: .init(open: { _ in }, rename: { _ in }, delete: { _ in }))
+        XCTAssertEqual(try view.inspect().findAll(SessionLiveDot.self).count, 1)
+        XCTAssertEqual(try view.inspect().findAll(ViewType.HStack.self, where: { hstack in
+            (try? hstack.find(SessionLiveDot.self)) == nil && (try? hstack.find(text: "Release")) == nil
+        }).count, 0, "no details line under the title")
+    }
 }
