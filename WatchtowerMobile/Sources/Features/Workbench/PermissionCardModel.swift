@@ -71,7 +71,7 @@ struct PermissionCardModel: Equatable {
     /// The session shows a card this phone may answer: the bar's footer
     /// points at it instead of the Mac.
     static func answerable(_ session: TerminalSessionState, in snapshot: WorkbenchReplicaSnapshot, access: PermissionAccess) -> Bool {
-        request(for: session, in: snapshot) != nil && hint(access, host: TowerHost(snapshot.heartbeat)) == nil
+        request(for: session, in: snapshot) != nil && hint(access, host: TowerHost(snapshot.heartbeat, device: access.grant?.deviceID)) == nil
     }
 
     /// The session's card with this phone's answers so far; nil without a
@@ -86,7 +86,7 @@ struct PermissionCardModel: Equatable {
             Self(
                 request: $0, session: session,
                 rows: PermissionAnswerRow.rows(sessionID: session.id, snapshot: snapshot, now: now), access: access,
-                host: TowerHost(snapshot.heartbeat)
+                host: TowerHost(snapshot.heartbeat, device: access.grant?.deviceID)
             )
         }
     }

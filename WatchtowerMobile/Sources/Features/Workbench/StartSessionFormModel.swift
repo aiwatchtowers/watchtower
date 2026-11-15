@@ -156,6 +156,7 @@ struct StartSessionFormModel {
         targetIntent = target.map { $0.intent.trimmingCharacters(in: .whitespacesAndNewlines) }.flatMap { $0.isEmpty ? nil : $0 }
         targetOptions = NewBoardTargetDraft.parentOptions(workbenchID: workbenchID, snapshot: snapshot)
             .map { TargetOption(id: $0.id, label: $0.label) }
+        let host = TowerHost(snapshot.heartbeat, device: grant?.deviceID)
         let grant = StartGrant(grant)
         self.grant = grant
         if !grant.typingAllowed {
@@ -170,11 +171,11 @@ struct StartSessionFormModel {
         let hasTask = untargetedTask.map { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? false
         let ready = isUntargeted ? hasTask : target.map { !$0.archived } == true
         canStart = ready && startsTurnedOn && grant.startSessionsAllowed && !sending
-        bringForwardTitle = TowerHost(snapshot.heartbeat).bringForwardTitle
+        bringForwardTitle = host.bringForwardTitle
         startCaption = if !startsTurnedOn {
             SessionStartText.turnedOff
         } else if !grant.startSessionsAllowed {
-            SessionStartText.notAllowed(TowerHost(snapshot.heartbeat))
+            SessionStartText.notAllowed(host)
         } else if isUntargeted, !hasTask {
             SessionStartText.describeTask
         } else if !isUntargeted, target == nil {

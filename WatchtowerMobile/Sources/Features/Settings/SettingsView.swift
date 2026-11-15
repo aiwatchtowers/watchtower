@@ -192,7 +192,7 @@ struct SettingsView: View {
         return Self.workbenchFooter(
             typing: settings.typingRequested, start: settings.startSessions,
             permissions: settings.permissionsRequested, grant: model.snapshot.grant,
-            host: TowerHost(model.snapshot.heartbeat)
+            host: TowerHost(model.snapshot.heartbeat, device: model.snapshot.grant?.deviceID)
         )
     }
 

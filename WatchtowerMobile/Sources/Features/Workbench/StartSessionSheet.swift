@@ -215,7 +215,7 @@ struct StartSessionSheet: View {
         BottomActionBar {
             VStack(spacing: Spacing.regular) {
                 if let caption = model.startCaption {
-                    Text(caption).font(TypeScale.meta).foregroundStyle(.secondary)
+                    Text(caption).font(TypeScale.meta).foregroundStyle(.secondary).textSelection(.enabled)
                 }
                 if let existing = model.existing {
                     Button("Open it") { openIt(model) }

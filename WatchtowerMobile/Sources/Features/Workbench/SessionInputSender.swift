@@ -312,7 +312,7 @@ struct SessionInputModel: Equatable {
         } else if !takesLines {
             .macOnly(session.agent)
         } else {
-            allowed ? nil : (typingRequested ? .waitingForMac(TowerHost(snapshot.heartbeat)) : .turnOn)
+            allowed ? nil : (typingRequested ? .waitingForMac(TowerHost(snapshot.heartbeat, device: grant?.deviceID)) : .turnOn)
         }
         approvalText = session.stateKind == .needsApproval ? (answersPermission ? Self.answerAbove : Self.needsApproval) : nil
         notice = delivered?.text

@@ -58,7 +58,7 @@ struct WorkbenchAutomationsModel: Equatable {
 
     init(workbenchID: Int64, snapshot: WorkbenchReplicaSnapshot, grant: DeviceGrant?, inFlight: Set<String>, now: Date) {
         let allowed = StartGrant(grant).startSessionsAllowed
-        notAllowed = allowed ? nil : AutomationRunText.notAllowed(TowerHost(snapshot.heartbeat))
+        notAllowed = allowed ? nil : AutomationRunText.notAllowed(TowerHost(snapshot.heartbeat, device: grant?.deviceID))
         let online = MacStatus(heartbeat: snapshot.heartbeat, now: now).isOnline
         rows = (snapshot.workbench(workbenchID)?.automations ?? []).map { automation in
             let entity = BoardWriter.automationRecordName(automation.id)

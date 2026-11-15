@@ -57,17 +57,29 @@ enum PairingText {
 /// first heartbeat the phone reads a Mac, today's wording.
 enum TowerHost: Equatable {
     case mac
-    case server
+    /// `device` is this iPhone's id as `watchtower hub phones` lists it (its grant's device id), nil before the
+    /// tower's grant reached the phone.
+    case server(device: String?)
 
-    init(_ heartbeat: HeartbeatPayload?) {
-        self = heartbeat?.isMac ?? true ? .mac : .server
+    init(_ heartbeat: HeartbeatPayload?, device: String?) {
+        self = heartbeat?.isMac ?? true ? .mac : .server(device: device?.uppercased())
     }
 
-    /// "Waiting for your Mac to allow typing: …", the typing hint.
+    /// The command a server tower runs to give this phone `grant`, with this iPhone's real id when the phone
+    /// has it; without it, where to find the id.
+    static func allowCommand(_ grant: String, device: String?) -> String {
+        guard let device, !device.isEmpty else {
+            return "watchtower hub phones (find this iPhone's id), then watchtower hub allow <id> \(grant)"
+        }
+        return "watchtower hub allow \(device) \(grant)"
+    }
+
+    /// The typing hint while the grant is missing.
     var typingWait: String {
         switch self {
         case .mac: "Waiting for your Mac to allow typing: Watchtower → Settings → Mobile → Allow…"
-        case .server: "Waiting for your tower to allow typing: run watchtower hub allow <phone> typing on it."
+        case let .server(device):
+            "Waiting for your tower to allow typing. On it, run:\n\(Self.allowCommand("typing", device: device))"
         }
     }
 
@@ -75,7 +87,8 @@ enum TowerHost: Equatable {
     var permissionsWait: String {
         switch self {
         case .mac: "Allow answering permission prompts on the Mac: Watchtower → Settings → Mobile → Allow…"
-        case .server: "Allow answering permission prompts on your tower: watchtower hub allow <phone> permissions."
+        case let .server(device):
+            "Allow answering permission prompts on your tower. On it, run:\n\(Self.allowCommand("permissions", device: device))"
         }
     }
 
@@ -83,7 +96,8 @@ enum TowerHost: Equatable {
     var startSessionsAllow: String {
         switch self {
         case .mac: "Allow it on your Mac: Watchtower → Settings → Mobile, after typing"
-        case .server: "Allow it on your tower: watchtower hub allow <phone> start_sessions, after typing"
+        case let .server(device):
+            "Allow it on your tower, after typing:\n\(Self.allowCommand("start_sessions", device: device))"
         }
     }
 
@@ -101,9 +115,9 @@ enum TowerHost: Equatable {
         case .mac:
             "Your Mac has not allowed this phone to \(what). "
                 + "On the Mac: Watchtower → Settings → Mobile → allow typing, then starting sessions."
-        case .server:
-            "Your tower has not allowed this phone to \(what). "
-                + "On it: watchtower hub allow <phone> typing, then start_sessions."
+        case let .server(device):
+            "Your tower has not allowed this phone to \(what). On it, run:\n"
+                + Self.allowCommand("typing", device: device) + "\n" + Self.allowCommand("start_sessions", device: device)
         }
     }
 }

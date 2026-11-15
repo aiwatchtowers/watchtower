@@ -18,30 +18,44 @@ final class TowerTextTests: XCTestCase {
     }
 
     func testTheHostComesFromTheHeartbeatKind() {
-        XCTAssertEqual(TowerHost(nil), .mac, "before the first heartbeat: today's Mac wording")
-        XCTAssertEqual(TowerHost(heartbeat(nil)), .mac, "an older hub sends no kind")
-        XCTAssertEqual(TowerHost(heartbeat(.mac)), .mac)
-        XCTAssertEqual(TowerHost(heartbeat(.server)), .server)
-        XCTAssertEqual(TowerHost(heartbeat(HubKind(rawValue: "appliance"))), .server, "an unknown kind gets no Mac menus")
+        let id = "aaaaaaaa-0000-4000-8000-000000000001"
+        XCTAssertEqual(TowerHost(nil, device: id), .mac, "before the first heartbeat: today's Mac wording")
+        XCTAssertEqual(TowerHost(heartbeat(nil), device: id), .mac, "an older hub sends no kind")
+        XCTAssertEqual(TowerHost(heartbeat(.mac), device: id), .mac)
+        XCTAssertEqual(
+            TowerHost(heartbeat(.server), device: id), .server(device: id.uppercased()), "as `watchtower hub phones` prints it"
+        )
+        XCTAssertEqual(
+            TowerHost(heartbeat(HubKind(rawValue: "appliance")), device: nil), .server(device: nil), "an unknown kind gets no Mac menus"
+        )
     }
 
     func testOnlyAMacHostPointsIntoTheMacApp() {
         let mac = TowerHost.mac
-        let server = TowerHost.server
+        let id = "AAAAAAAA-0000-4000-8000-000000000001"
+        let server = TowerHost.server(device: id)
         for text in [mac.typingWait, mac.permissionsWait, mac.startSessionsAllow, mac.notAllowed("start sessions")] {
             XCTAssertTrue(text.contains("Watchtower → Settings → Mobile"), text)
         }
         for text in [server.typingWait, server.permissionsWait, server.startSessionsAllow, server.notAllowed("run automations")] {
             XCTAssertFalse(text.contains("Settings → Mobile"), text)
             XCTAssertFalse(text.contains("Mac"), text)
-            XCTAssertTrue(text.contains("watchtower hub allow <phone>"), text)
+            XCTAssertTrue(text.contains("watchtower hub allow \(id) "), text)
+            XCTAssertFalse(text.contains("<"), "no placeholder when the phone knows its id: \(text)")
         }
         XCTAssertEqual(mac.bringForwardTitle, "Bring the window forward on the Mac")
         XCTAssertNil(server.bringForwardTitle, "a server has no window to bring forward")
-        XCTAssertEqual(server.typingWait, "Waiting for your tower to allow typing: run watchtower hub allow <phone> typing on it.")
+        XCTAssertEqual(server.typingWait, "Waiting for your tower to allow typing. On it, run:\nwatchtower hub allow \(id) typing")
         XCTAssertEqual(
             server.notAllowed("start sessions"),
-            "Your tower has not allowed this phone to start sessions. On it: watchtower hub allow <phone> typing, then start_sessions."
+            "Your tower has not allowed this phone to start sessions. On it, run:\n"
+                + "watchtower hub allow \(id) typing\nwatchtower hub allow \(id) start_sessions"
+        )
+        // Before the grant reached the phone it has no id: the command says where to find it.
+        XCTAssertEqual(
+            TowerHost.server(device: nil).permissionsWait,
+            "Allow answering permission prompts on your tower. On it, run:\n"
+                + "watchtower hub phones (find this iPhone's id), then watchtower hub allow <id> permissions"
         )
     }
 
