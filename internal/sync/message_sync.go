@@ -14,7 +14,7 @@ import (
 )
 
 // slackPageSize is the number of messages to request per Slack API call.
-const slackPageSize = 200
+const slackPageSize = 999
 
 // syncMessages builds a priority-ordered channel queue and uses the worker pool
 // to sync message history for each channel in parallel.
