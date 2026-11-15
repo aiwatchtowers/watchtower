@@ -37,7 +37,7 @@ struct ChatComposerView: View {
                 onRemoveMention: { chatVM.composer.removeMention($0) },
                 onRemoveSkill: { chatVM.composer.clearSkill() }
             )
-            ChatComposerBar(input: ChatComposerField(
+            ChatComposerBar(status: chatVM.foreignTurn.line.map(ChatComposerStatus.elsewhere), input: ChatComposerField(
                 text: $chatVM.draft,
                 isStreaming: chatVM.isBusy,
                 onSend: { Task { await chatVM.sendDraft() } },
