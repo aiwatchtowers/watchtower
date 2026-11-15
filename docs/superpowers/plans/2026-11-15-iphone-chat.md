@@ -67,6 +67,8 @@
   - "Answering from your iPhone — you can watch here"
   - "Your Mac is asleep. You can read chats; sending works when it wakes."
   - "Your Mac is asleep — sending works when it wakes."
+  - "Answering on your Mac — you can watch here."
+  - "Switch to Relay…"
   - "Chat works over Relay"
   - "Update Watchtower on your Mac"
   - "Chat is off for this phone"
@@ -230,7 +232,7 @@ func (s *Store) MarkRead(ctx context.Context, conv, messageID int64) error // MA
   - `TestCreateIdeaFromChat_SharedRows` over `chat_idea_rows.json`.
   - `TestGenerateTitle_NeverOverUser`.
   - Run them; expected: FAIL.
-- [ ] **Step 3: Write the Swift twin.** `ChatTurnStoreFixtureTests` drives `ChatTreeQueries` + `ChatTurnDriver` over the same `chat_turn_cases.json` (copy it to `WatchtowerDesktop/Tests/Core/Fixtures/` via the existing fixture-sync pattern, or read it by relative path as other Go↔Swift fixtures do), and `IdeaQueries.createFromChat` over `chat_idea_rows.json`. Run `make test-swift FILTER='ChatTurnStoreFixture|ChatIdeaRows'`. Expected: PASS against the current Swift code; this pins the fixture to today's behaviour. Fix the fixture, not the Swift, where they differ.
+- [ ] **Step 3: Write the Swift twin.** `ChatTurnStoreFixtureTests` drives `ChatTreeQueries` + `ChatTurnDriver` over the same `chat_turn_cases.json` (copy it to `WatchtowerDesktop/Tests/Core/Fixtures/` via the existing fixture-sync pattern, or read it by relative path as other Go↔Swift fixtures do), and `IdeaQueries.createFromChat` over `chat_idea_rows.json`. Run `make test-swift FILTER='ChatTurnStoreFixture|ChatIdeaRows'`. Expected: PASS against the current Swift code; this pins the fixture to today's behaviour. Where the fixture and today's Swift differ, the Swift is the reference (the Mac's behaviour is what the phone must match) and the fixture is fixed. A difference that looks like a Swift bug is reported to the controller, which files it as its own target; it is not fixed inside this plan.
 - [ ] **Step 4: Implement `chatstore`** until the Go tests pass. Port `AgentActionFeed.outcomesBlock(after:)` exactly; add a shared fixture `outcomes_block_cases.json` read by a Swift test too. Add the new chat readers to `liveCheckedReaders`/`displayOnlyReaders`.
 - [ ] **Step 5: Run** `go test ./internal/chatstore ./internal/db ./internal/chat ./cmd -run 'Chat|Title|LIVE01'`, `make test-swift FILTER='ChatTurnStoreFixture|ChatIdea|Outcomes'` and `make lint-diff`. Expected: PASS.
 - [ ] **Step 6: Commit** `feat(chatstore): Go chat turn store, the Swift write path's twin (#1791 T3)`.
@@ -262,6 +264,7 @@ const MaxLive = 2; const IdleTTL = 10 * time.Minute
 
 - Spawn argv: `<Exe> ai session --conversation N --surface main [--provider P --model M] [--project-id K] --db-path <DBPath>`. Its own process group is killed and waited for on close (CHAT-03).
 - The startup sweep calls `ReleaseOwnedChatLeases(hub, HubID)` and marks those turns' `partial` assistant rows `error_code='session_lost'` before the first claim.
+- Orphans after a `kill -9` of the daemon: each child's process-group id is written at spawn to `<hub dir>/chatrun/<conversation>.pgid` (0600) and removed after the child is reaped. The startup sweep reads every file left, checks that the group still runs `watchtower ai session` (the process command line, so a reused pgid is never killed), kills that group with SIGKILL, waits, and removes the file.
 
 - [ ] **Step 1: Write the failing tests.**
   - `TestChat03Go_PoolBound`: 3 conversations with turns that block mid-answer → 2 children alive, the third waits with `waitingSlot=true` and starts when one ends.
@@ -269,6 +272,7 @@ const MaxLive = 2; const IdleTTL = 10 * time.Minute
   - `TestChatrun_RemoteCancelStopsTurn`: `RequestChatCancel` → `cancel` is written to the fake's stdin within 1 s of virtual time; with no `turn_done`, `partial` comes at 7 s, then the group is killed.
   - `TestChatrun_DaemonStopLeavesPartialAndSweepReleases`.
   - `TestChatrun_StartupSweepMarksSessionLost`.
+  - `TestChatrun_SweepKillsOrphanGroup`: a real stub child whose parent runner is dropped without `Close` (simulated `kill -9`); a new runner's sweep kills its group and removes the pgid file; a pgid file naming a process that is not `ai session` is removed without a kill.
   - `TestChatrun_HeartbeatEvery15s`.
   - `TestChatrun_RoutingChangeRecycles`.
   - `TestChatrun_ConversationGoneClosesSession`.
@@ -286,7 +290,7 @@ const MaxLive = 2; const IdleTTL = 10 * time.Minute
 
 ### Task 5: Hub actions, the `chat` grant, the attachment upload, and the capability
 
-**Depends on:** T4.
+**Depends on:** T4, T6 (`ChatWatches`).
 
 **Files:**
 - Create in `internal/hub/actions/handlers/`:
@@ -296,12 +300,11 @@ const MaxLive = 2; const IdleTTL = 10 * time.Minute
   - `chat_action_answer.go`;
   - `chat_attachment.go`: the upload intake, modelled on `recording.go` `IntakeRecording`;
   - a test file for each.
-- Create: `internal/db/chat_search.go`, a Go port of `ChatSearchQueries`, with `internal/db/testdata/chat_search_cases.json` and the Swift `ChatSearchQueriesFixtureTests`.
 - Create: `internal/chatstore/attachments.go`:
   - limits and validation, ported from `ChatAttachmentStore`, with `testdata/attachment_limit_cases.json` shared with Swift;
   - the owner `directoryName`;
   - `RemoveConversationFiles`.
-- Create: `internal/hub/state/migrations/00017_chat_grant.sql`, which adds `chat_allowed INTEGER NOT NULL DEFAULT 1` (on by default, ask #1340). Modify `state/devices.go`, `link.Grant`, `cmd/hub_link.go` (`hub allow|deny <device> chat`) and `internal/hub/control.go`.
+- Create: `internal/hub/state/migrations/00017_chat_grant.sql`, which adds `chat_allowed INTEGER NOT NULL DEFAULT 1` (on by default, ask #1340). Modify `state/devices.go`, `link.Grant` and its column map (`internal/hub/link/center.go`), every grant read and copy in `internal/hub/link/grants.go`, `device_record.go` and `keybox.go`, the `device_grant` record (`internal/hub/wire/grant.go`: a `chat` key) and its Kit twin (`WatchtowerKit/Sources/WatchtowerSync/Link/DeviceGrant.swift`), `cmd/hub_link.go` (`hub allow|deny <device> chat`) and `internal/hub/control.go`.
 - Modify:
   - `actions/dispatcher.go`: put `chat_new`, `chat_turn`, `chat_action_answer` and `chat_manage` in `NonIdempotentKinds`, and `chat_turn` in `ReceivedEchoKinds`;
   - `handlers/deps.go` `Register` and `nudge.go`;
@@ -317,7 +320,7 @@ const MaxLive = 2; const IdleTTL = 10 * time.Minute
     - `chat_new{client_key, project_id?, routing?}` → `{conversation_id}`;
     - `chat_turn{conversation_id, mode, message_id?, text, attachment_ids, routing?}` → `{user_message_id, assistant_message_id, turn_id}`;
     - `chat_cancel{conversation_id, turn_id}`;
-    - `chat_feed_request{conversation_id, purpose}`;
+    - `chat_feed_request{conversation_id, purpose}`; `conversation_id = 0` means "republish `chat_list` now" (the Retry on mockup 1h): the handler clears the list source's last error and calls `PublishNow(chat_list)`;
     - `chat_page{conversation_id, before_message_id}`;
     - `chat_search{query}`;
     - `chat_read{conversation_id, message_id}`;
@@ -326,9 +329,8 @@ const MaxLive = 2; const IdleTTL = 10 * time.Minute
     - `chat_action_answer{action_id, decision, args_sha256}`;
     - the upload descriptor `{upload_id, conversation_id, name, mime, size}` → `{attachment_id}`.
   - new refusal reasons in `deps.go`: `conversation_busy`, `attachment_missing`, `changed`.
-  - `type ChatWatches interface{ Watch(conv int64, purpose string, until time.Time); Open(conv int64, since time.Time) bool; ... }`, consumed by T6 (sources) and T7 (push).
+  - uses `ChatWatches` from T6 (`Watch(conv int64, purpose string, until time.Time)`, `Open(conv int64, since time.Time) bool`, `Pages`, `Searches`), also consumed by T7.
   - `Deps.ChatAvailable() (on bool, reason string)`. The reasons are `not_relay`, `runner_down` and `desktop_too_old`. Desktop freshness ≤ 2 min.
-  - `db.SearchChats(q string, limit int) ([]ChatSearchHit, error)`.
 
 - [ ] **Step 1: Write the failing tests.**
   - One test per handler for its success and each refusal:
@@ -344,13 +346,15 @@ const MaxLive = 2; const IdleTTL = 10 * time.Minute
     - `TestChatManage_RenameSetsUserTitle`;
     - `TestChatAttachment_PartialUploadWritesNothing`;
     - `TestChatAttachment_LimitsSharedCases` over `attachment_limit_cases.json`;
-    - `TestChatSearch_SharedCases`;
     - `TestChatCapability_OffWhileOldDesktopRuns`;
     - `TestChatCapability_OnWithoutDesktop`;
     - `TestChatGrant_DefaultOnForLinkedPhones`: the migration on a sidecar with an existing device → `chat_allowed=1`.
-  - The heartbeat contract case `chat: "on"` and the Kit `HubContractFixtureTests`.
+    - `TestChatGrant_SurvivesRelink`: the owner turns Chat off, the phone links again → still off (every path that rewrites a device row carries `chat_allowed`).
+    - `TestChatGrant_InDeviceGrantRecord`: the `device_grant` payload carries `chat`; the Kit `DeviceGrantTests` decode it from the same fixture.
+    - `TestChatFeedRequest_ZeroRepublishesList`.
+  - The heartbeat contract case `chat: "on"` and the Kit `HubContractFixtureTests`; the `device_grant` fixture case with `chat`.
   - Run `go test ./internal/hub/... ./internal/db ./internal/chatstore ./cmd -run 'Chat|HubContract'`. Expected: FAIL.
-- [ ] **Step 2: Write the Swift twin tests.** `ChatSearchQueriesFixtureTests` and `ChatAttachmentLimitFixtureTests` run over the shared fixtures against today's Swift. Run `make test-swift FILTER='ChatSearchQueriesFixture|ChatAttachmentLimitFixture'`. Expected: PASS.
+- [ ] **Step 2: Write the Swift twin tests.** `ChatAttachmentLimitFixtureTests` runs over the shared fixtures against today's Swift. Run `make test-swift FILTER='ChatAttachmentLimitFixture'`. Expected: PASS.
 - [ ] **Step 3: Implement the handlers, the grant, the intake, the search port and the capability.** Heavy work goes in a goroutine after the fast ack (the `session_input` pattern). The `chat_turn` ack waits only for `Runner.Run` (the start tx).
 - [ ] **Step 4: Run** the same commands and `make lint-diff`. Expected: PASS.
 - [ ] **Step 5: Commit** `feat(hub): chat actions, chat grant, attachment upload, relay-only capability (#1791 T5)`.
@@ -359,7 +363,7 @@ const MaxLive = 2; const IdleTTL = 10 * time.Minute
 
 ### Task 6: Slices `chat_list`, `chat_feed`, `chat_page`, `chat_search`, and the Kit mirrors
 
-**Depends on:** T3, and T5's `ChatWatches` interface. Start this task once T5's interface is merged; it can run beside T5's handler work.
+**Depends on:** T3. `ChatWatches` is defined in this task (`internal/hub/slices/sources/chat_watch.go`) and consumed by T5's handlers, so T6 runs beside T4 right after T3, as the spec's lanes say.
 
 **Files:**
 - Create in `internal/hub/slices/sources/`: `chat_list.go`, `chat_feed.go` (feed, page and search sources sharing one payload builder) and their tests.
@@ -371,7 +375,8 @@ const MaxLive = 2; const IdleTTL = 10 * time.Minute
 - Create: `WatchtowerKit/Sources/WatchtowerKit/Models/ChatList.swift`, `ChatFeed.swift`, `ChatPage.swift`, `ChatSearch.swift` (`SliceMirror`). Modify `WatchtowerSync/Sync/SliceRecord.swift` `SliceKind`.
 
 **Interfaces:**
-- Consumes: `chatrun.Runner.Live` (live text for hub turns), `ChatWatches` (T5), `db.SearchChats` (T5) and `chatstore` readers.
+- Consumes: `chatrun.Runner.Live` through a `LiveText` seam (T4 merges its implementation; until then a fake), and `chatstore` readers.
+- Also creates: `internal/db/chat_search.go`, `db.SearchChats(q string, limit int) ([]ChatSearchHit, error)`, a Go port of `ChatSearchQueries` (FTS `MATCH`, snippet, `bm25`, context-type and archived filters), with `internal/db/testdata/chat_search_cases.json` run by Go `TestChatSearch_SharedCases` and the Swift `ChatSearchQueriesFixtureTests` (which must pass against today's Swift first).
 - Produces: the payload keys exactly as spec §4.6, pinned by the four fixtures:
   - `chat_list{conversations:[{id,title,pinned,updated_at,project?,state,last_line,lease_owner?}], projects:[{id,name}], models:[{provider,model,display_name,images,pdf}], error?}`;
   - `chat_feed{conversation:{id,title,project?,routing,actual_provider,actual_model,live_slack_since?,lease?:{owner,turn_id,waiting_slot}}, messages:[{id,role,text,text_cut,status,error_code?,error_message?,created_at,siblings:{index,count},attachments:[{id,name,mime,size}],steps:[{name,ok?,summary,sources:[…]}]}], has_more, artifacts:[{key,kind,title,version,content?,content_cut}], actions:[{id,tool,title,args_display,args_sha256,status,reason?}]}`;
@@ -390,9 +395,11 @@ const MaxLive = 2; const IdleTTL = 10 * time.Minute
   - `TestChatFeed_PrefetchRecordGoneAfter2Min`.
   - `TestChatPage_SixtyBeforeID`.
   - `TestChatSearch_RecordShape`.
+  - `TestChatSources_OnlyWithChatGrant`.
+  - `TestLIVE01_ReaderList` stays green with the new readers listed.
   - Kit: `ChatSliceMirrorTests` decode all four fixtures.
   - Run `go test ./internal/hub/slices/...` and `make kit-test FILTER=ChatSliceMirror`. Expected: FAIL.
-- [ ] **Step 2: Implement the sources and the Kit mirrors.**
+- [ ] **Step 2: Implement the sources and the Kit mirrors.** `chat_list` and every chat source publish only while at least one linked phone holds the `chat` grant (else `Items` returns none and the publisher deletes the records). The feed, page and search builders are display paths: add them to LIVE-01's `displayOnlyReaders` in `internal/db/live01_test.go`.
 - [ ] **Step 3: Run** the same commands, `make lint-diff` and `make lint-swift`. Expected: PASS.
 - [ ] **Step 4: Commit** `feat(hub): chat slices and Kit mirrors (#1791 T6)`.
 
@@ -449,6 +456,7 @@ const MaxLive = 2; const IdleTTL = 10 * time.Minute
 
 - [ ] **Step 1: Write the failing tests.**
   - `ChatLeaseQueriesTests` over `chat_lease_cases.json`.
+  - `ChatTurnLeaseTests.testConcurrentClaimOneWins`: two `DatabasePool`s on one file claim the same conversation from two tasks; exactly one owner row and one lease exist.
   - `testSendRefusedWhileHubHoldsLeaseKeepsDraft`.
   - `testDriverHonoursRemoteCancel`.
   - `testDriverStopsWhenConversationDeleted`.
@@ -519,7 +527,8 @@ const MaxLive = 2; const IdleTTL = 10 * time.Minute
 - Produces, for T11: `ChatsCenter` (outbox sender, list snapshot, gate) and `ChatRoute(id:)`.
 
 - [ ] **Step 1: Write the failing tests:**
-  - `ChatsGateModelTests` covers every state and its exact copy, including `desktop_too_old` → "Update Watchtower on your Mac" and route iCloud → "Chat works over Relay";
+  - `ChatsGateModelTests` covers every state and its exact copy, including `desktop_too_old` → "Update Watchtower on your Mac", route iCloud → "Chat works over Relay" with the **Switch to Relay…** action (opens Settings → Macs → this Mac through `AppNavigation`), and the not-allowed state on a server hub carrying the refusal's `watchtower hub allow <phone> chat` line instead of the Settings line;
+  - `ChatListRetryTests`: Retry on 1h sends `chat_feed_request` with `conversation_id 0`;
   - `ChatListModelTests`;
   - `ChatSearchModelTests` covers debounce, offline → "Searching messages needs your Mac", and timeout → "The Mac did not answer";
   - `ChatRowActionsTests` covers that Undo sends nothing;
@@ -556,7 +565,10 @@ const MaxLive = 2; const IdleTTL = 10 * time.Minute
 - Produces: none.
 
 - [ ] **Step 1: Write the failing tests:**
-  - `ChatConversationModelTests`;
+  - `ChatConversationModelTests`, including: the 2f line "Answering on your Mac — you can watch here." while `lease.owner == desktop`, with Stop sending `chat_cancel`; `chat_read` sent with the newest complete answer's id when the screen shows it (open, or a turn finishing while it is on screen), never for an older id;
+  - `ChatFeedReconnectTests`: a feed record replaced after a relay reconnect (gap in versions, text shorter or longer) renders the latest record whole, with no duplicated or lost messages;
+  - `ChatTurnActionsTests`: Retry on a retryable error card sends `chat_turn mode regenerate`; Regenerate on the last answer the same; Edit from the owner bubble's long-press sends `mode edit` with that message id; ‹ i/n › sends `chat_branch_select`; a non-retryable error shows no Retry;
+  - `ChatArtifactActionsTests`: email → a `mailto:` URL with to/subject/body encoded; event → the Google Calendar template URL (the Mac's builder moved to the Kit, or a twin with a shared fixture); slack → copies the body and opens the Slack app's URL; Copy and Share for every kind;
   - `ChatSendTests`, the phone half of CHAT-01: the text comes back on `conversation_busy`, and the owner bubble stays pending until `applied`;
   - `ChatApprovalWiringTests`;
   - `ChatPagingModelTests`;
@@ -596,11 +608,11 @@ const MaxLive = 2; const IdleTTL = 10 * time.Minute
 
 ## Lanes
 
-- **Lane A:** T1 → T3 → T4 → T5 → T7.
+- **Lane A:** T1 → T3 → T4 → T5 → T7 (T5 also waits for T6).
 - **Lane B:** T2, which joins A at T3.
 - **Lane C:** T8, after T1.
-- **Lane D:** T6, after T3 and T5's interface.
+- **Lane D:** T6, after T3, beside T4; T5 starts once T4 and T6 are merged.
 - **Lane E:** T9, after T5, then T10 → T11.
 - **Last:** T12.
 
-T1 and T2 start in parallel; T8 starts as soon as T1 merges. The controller runs the full gate (`make test`, `make test-swift`, `make lint-all`, `make mobile-test`) after T5, after T8 and before the umbrella PR.
+T1 and T2 start in parallel; T8 starts as soon as T1 merges. The controller runs the full gate (`make test`, `make test-swift`, `make lint-all`, and `make mobile-test` from T9 on) at each phase end: after the hub phase (T5, T6, T7 merged), after T8, after the phone phase (T9, T10, T11 merged), and before the umbrella PR. Every task still runs its own inner loop; no task merges with a red inner loop.
