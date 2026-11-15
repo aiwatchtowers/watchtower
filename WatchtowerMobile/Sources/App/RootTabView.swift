@@ -27,8 +27,9 @@ struct RootTabView: View {
         }
 
         /// The Now tab's badge (#1788): what Now's Waiting for you lists for
-        /// the hub on screen, open asks plus pending permission requests
-        /// (`WorkbenchReplicaSnapshot.openAskCount`; orange, set in `init`);
+        /// the hub on screen, open asks, pending permission requests and
+        /// failed sessions to continue (`WorkbenchReplicaModel.waitingCount`;
+        /// orange, set in `init`);
         /// 0 hides it. Other tabs carry none: the asks are answered on Now.
         /// The app icon's badge counts the same things summed over every hub
         /// that can still answer them (`AppEnvironment.openAskTotal`), so with
@@ -75,7 +76,7 @@ struct RootTabView: View {
             ForEach(Tab.allCases) { tab in
                 content(for: tab)
                     .tabItem { Label(tab.title, systemImage: tab.systemImage) }
-                    .badge(tab.badge(waitingCount: env.workbenchReplica.openAskCount))
+                    .badge(tab.badge(waitingCount: env.workbenchReplica.waitingCount))
                     .tag(tab)
             }
         }

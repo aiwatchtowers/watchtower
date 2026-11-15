@@ -106,7 +106,7 @@ enum HubListModel {
                 flavor: flavor == "default" ? nil : flavor,
                 online: online,
                 offlineDays: offlineDays,
-                openAsks: session?.workbenchReplica.openAskCount ?? 0,
+                openAsks: session?.workbenchReplica.snapshot.openAskCount ?? 0,
                 isActive: row.hubID == activeHubID,
                 removedByMac: removed,
                 unopened: unopened,
