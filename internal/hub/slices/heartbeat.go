@@ -32,10 +32,12 @@ const (
 // switch (protocol §9); nil carries no capabilities. Clock defaults to
 // time.Now.
 type HeartbeatFacts struct {
-	HubID         string
-	MacName       string
-	AppVersion    string
-	Flavor        string
+	HubID      string
+	MacName    string
+	AppVersion string
+	Flavor     string
+	// HubKind is wire.HubKindMac or wire.HubKindServer ("" = absent).
+	HubKind       string
 	EnabledAt     time.Time
 	Accounts      func(ctx context.Context) ([]wire.HeartbeatAccount, error)
 	LastPublishAt func() (time.Time, bool)
@@ -130,6 +132,7 @@ func (h *heartbeatSource) build(now time.Time, accounts []wire.HeartbeatAccount,
 		UpdatedAt: wire.Time{Time: now}, AppVersion: h.f.AppVersion, HubID: h.f.HubID,
 		MacName: wire.ClipMacName(h.f.MacName), Flavor: h.f.Flavor, Accounts: accounts,
 		EnabledAt: wire.Time{Time: h.f.EnabledAt}, OwnerUser: "", Sharing: wire.SharingNone,
+		HubKind: h.f.HubKind,
 	}
 	if caps != (wire.HeartbeatCapabilities{}) {
 		hb.Capabilities = &caps

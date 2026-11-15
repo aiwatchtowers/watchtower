@@ -43,6 +43,22 @@ func TestHeartbeatCarriesTheRecordingsCapability(t *testing.T) {
 	}
 }
 
+// TestHeartbeatCarriesTheHubKind: the hub kind goes out as hub_kind (#1783);
+// no kind fact leaves the key out, as an older hub does.
+func TestHeartbeatCarriesTheHubKind(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	for _, kind := range []string{wire.HubKindMac, wire.HubKindServer} {
+		f := heartbeatFacts(func() time.Time { return now }, nil)
+		f.HubKind = kind
+		if p := onlyItem(t, HeartbeatSource(f)).Payload; !bytes.Contains(p, []byte(`"hub_kind":"`+kind+`"`)) {
+			t.Fatalf("kind %s: payload %s", kind, p)
+		}
+	}
+	if p := onlyItem(t, HeartbeatSource(heartbeatFacts(func() time.Time { return now }, nil))).Payload; bytes.Contains(p, []byte(`hub_kind`)) {
+		t.Fatalf("payload without a kind fact: %s", p)
+	}
+}
+
 func TestSwitchChangeIsPublishedWithinMaxDebounceWait(t *testing.T) {
 	r := newRig(t, transport.KindRelay)
 	var on atomic.Bool
