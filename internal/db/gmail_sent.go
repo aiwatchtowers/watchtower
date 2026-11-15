@@ -56,7 +56,11 @@ func (db *DB) SetGmailSentCatchUpAt(accountID int64, at time.Time) error {
 	if err != nil {
 		return fmt.Errorf("setting gmail sent catch-up stamp for account %d: %w", accountID, err)
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("setting gmail sent catch-up stamp for account %d: rows affected: %w", accountID, err)
+	}
+	if n == 0 {
 		return fmt.Errorf("setting gmail sent catch-up stamp: no google_accounts row %d", accountID)
 	}
 	return nil
