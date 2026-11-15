@@ -16,7 +16,7 @@ struct InboxLegacyListRow: View {
         HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
             Circle()
                 .fill(content.unread ? Color.accentColor : .clear)
-                .frame(width: Self.dotSize, height: Self.dotSize)
+                .frame(width: IconSize.stateDot, height: IconSize.stateDot)
                 .accessibilityHidden(!content.unread)
                 .accessibilityLabel("Unread")
             VStack(alignment: .leading, spacing: Spacing.tight) {
@@ -30,7 +30,7 @@ struct InboxLegacyListRow: View {
                     if content.conflicts {
                         Circle()
                             .fill(Tone.error)
-                            .frame(width: Self.dotSize, height: Self.dotSize)
+                            .frame(width: IconSize.stateDot, height: IconSize.stateDot)
                             .help("The plan has conflicts")
                             .accessibilityLabel("The plan has conflicts")
                     }
@@ -49,8 +49,6 @@ struct InboxLegacyListRow: View {
         }
         .padding(.vertical, Spacing.small)
     }
-
-    private static let dotSize: CGFloat = 7
 
     struct Content: Equatable {
         let unread: Bool
