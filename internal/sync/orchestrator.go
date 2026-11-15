@@ -124,9 +124,15 @@ type Orchestrator struct {
 	// while it is the first): stampSyncedAt's bounds. Run sets both.
 	runStart     time.Time
 	firstCycleAt time.Time
-	// backfilling is set while BackfillSearch saves: a history backfill
-	// stamps every message with its post time, so it never reaches the Inbox.
+	// backfilling is set while BackfillSearch or a Sync again catch-up
+	// (runCatchups) saves: history stamps every message with its post time,
+	// so it never reaches the Inbox.
 	backfilling bool
+
+	// syncExcluded is the account's Stop-syncing channels (namespaced ids),
+	// read once per Run and per BackfillSearch (loadSyncExcluded): a change
+	// applies from the next one. SYNCEX-01.
+	syncExcluded map[string]bool
 
 	// teamMismatch reports that the last Run stopped on a TeamMismatchError.
 	// Run resets it; the daemon reads it via TeamMismatch to pause the
@@ -260,6 +266,9 @@ func (o *Orchestrator) Run(ctx context.Context, opts SyncOptions) error {
 	// meanwhile (the chat, a media fetch) must not back the cadence off.
 	ctx, runLimited := watchtowerslack.CountRateLimits(ctx)
 	err := o.startSyncedAtCycle()
+	if err == nil {
+		err = o.loadSyncExcluded()
+	}
 	if err == nil {
 		err = o.run(ctx, opts)
 	}
@@ -574,6 +583,15 @@ func (o *Orchestrator) runSearchSync(ctx context.Context, opts SyncOptions) erro
 	// Thread sync skipped in search path — search.messages already returns
 	// both parent messages and thread replies within the search window.
 	// Full thread sync only runs with --full flag (runFullSync).
+
+	// A Sync again catch-up (one channel, a few history pages) runs only
+	// after a clean search, last, so a 429 it meets holds no other phase.
+	// Best-effort: a stop keeps its bound for the next run.
+	if !o.searchIncomplete {
+		if err := o.runCatchups(ctx); err != nil {
+			o.logger.Printf("slack catch-up: account %d: %v", o.accountID, err)
+		}
+	}
 
 	return o.finishWithInboxReactions(ctx)
 }
