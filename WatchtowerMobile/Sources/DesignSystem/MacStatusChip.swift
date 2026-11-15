@@ -43,11 +43,13 @@ struct MacStatusChipModel: Equatable {
 
 /// The chip: a dot in the tone and the text in `.caption` secondary on a
 /// `Fill.rest` capsule, inside a 44 pt tall hit area (wrap it in a Button
-/// or a NavigationLink to open the Macs).
+/// or a NavigationLink to open the Macs; `opensList` adds the switcher's ▾,
+/// #1782).
 ///
 ///     MacStatusChip(model: MacStatusChipModel(macName: name, state: .online, now: date))
 struct MacStatusChip: View {
     let model: MacStatusChipModel
+    var opensList = false
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
@@ -59,6 +61,11 @@ struct MacStatusChip: View {
             Text(model.text)
                 .font(TypeScale.meta)
                 .foregroundStyle(.secondary)
+            if opensList {
+                Image(systemName: "chevron.down")
+                    .font(TypeScale.badge)
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding(.vertical, Spacing.small)
         .padding(.leading, Spacing.regular)

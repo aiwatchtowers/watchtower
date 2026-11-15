@@ -478,7 +478,8 @@ final class MultiHubEnvironmentTests: XCTestCase {
         let removed = row(TestHub.hubB, 1, .unlinkedByMac)
         let items = HubListModel.items(rows: [linked, removed], sessions: env.sessions, activeHubID: TestHub.hubA, now: Date())
         XCTAssertEqual(items.map(\.openAsks), [1, 2], "each row still shows its own")
-        XCTAssertEqual(HubListModel.otherHubsOpenAsks(items), 0, "the chip leaves the removed Mac out")
+        let chip = HubSwitcherChipModel(name: "Mac \(TestHub.hubA)", state: .online, items: items, now: Date())
+        XCTAssertNil(chip.otherAsks, "the chip leaves the removed Mac out")
     }
 
     // MARK: - Keys per hub (mobile E2E, port review I-2)

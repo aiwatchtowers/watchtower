@@ -463,7 +463,7 @@ final class StartSheetWiringTests: XCTestCase {
         XCTAssertNil(draft.params(workbenchID: DemoSeed.acmeID, mode: .new, grant: defaults.grant).brief, "typing off sends no brief")
 
         let typing = try form(415, try snapshot(store, grant: grant(typing: true, start: true)))
-        XCTAssertNil(typing.briefCaption)
+        XCTAssertEqual(typing.briefCaption, SessionStartText.briefReady, "Start needs no typing")
         XCTAssertEqual(draft.params(workbenchID: DemoSeed.acmeID, mode: .new, grant: typing.grant).brief, "Fix the archive menu first.")
         let unedited = StartSessionDraft(target: try target(415))
         XCTAssertNil(unedited.params(workbenchID: DemoSeed.acmeID, mode: .new, grant: typing.grant).brief, "an unedited prompt is the Mac's own")
@@ -483,7 +483,7 @@ final class StartSheetWiringTests: XCTestCase {
             try form(480, replica).briefCaption,
             "The brief is shortened on the phone. Editing it replaces the Mac's full prompt."
         )
-        XCTAssertNil(try form(415, replica).briefCaption, "an unclipped prompt needs no caption")
+        XCTAssertEqual(try form(415, replica).briefCaption, SessionStartText.briefReady, "an unclipped prompt says Start is ready")
         replica.grants = []
         XCTAssertEqual(
             try form(480, replica).briefCaption,
@@ -563,6 +563,24 @@ final class StartSheetWiringTests: XCTestCase {
         draft.pick(try target(430))
         XCTAssertEqual(draft.targetID, 430)
         XCTAssertEqual(draft.brief, "Work on target #430.")
+    }
+
+    /// #1790: a picked target starts without typing — the brief is the Mac's
+    /// prompt (not sent unedited), the caption says so, and its intent shows
+    /// read-only; an empty intent shows nothing; no target shows no intent.
+    func testAPickedTargetStartsWithoutTypingAndShowsItsIntent() throws {
+        let replica = try snapshot(try TestPhone.replica(), grant: grant(typing: true, start: true))
+        let model = try form(415, replica)
+        XCTAssertTrue(model.canStart)
+        XCTAssertNil(model.startCaption)
+        XCTAssertEqual(model.briefCaption, "Ready to start. Edit only to add instructions.")
+        XCTAssertEqual(model.targetIntent, "Archive closed targets on demand from the header menu.")
+        let draft = StartSessionDraft(target: try target(415))
+        XCTAssertNil(draft.params(workbenchID: DemoSeed.acmeID, mode: .new, grant: model.grant).brief)
+
+        XCTAssertNil(try form(430, replica).targetIntent, "a target without an intent shows none")
+        XCTAssertNil(try form(nil, replica).targetIntent)
+        XCTAssertNil(try form(nil, replica).briefCaption, "no target, no brief caption")
     }
 
     // MARK: - Refusals

@@ -102,12 +102,17 @@ struct StartSessionFormModel {
     let isUntargeted: Bool
     /// "#415 Archive Closed Targets Now".
     let targetLabel: String?
+    /// The picked target's intent, shown read-only under it (#1790); nil
+    /// when it has none. The agent reads it from the target itself, so it
+    /// never goes on the wire as the brief.
+    let targetIntent: String?
     /// The live targets the header's New session can start, in board order.
     let targetOptions: [TargetOption]
     /// The agent Start runs (`SessionStartText.agentName`).
     let agent: String
     let grant: StartGrant
-    /// Why the brief cannot be edited here; nil when it can.
+    /// The line under a target's brief: why it cannot be edited here, that
+    /// an edit replaces the Mac's full prompt, or that Start needs no typing.
     let briefCaption: String?
     let existing: ExistingSession?
     let progress: StartProgressModel?
@@ -146,6 +151,7 @@ struct StartSessionFormModel {
         let target = isUntargeted ? nil : targetID.flatMap { id in snapshot.targets.first { $0.id == id && $0.workbenchID == workbenchID } }
         self.target = target
         targetLabel = target.map { "#\($0.id) \($0.text)" }
+        targetIntent = target.map { $0.intent.trimmingCharacters(in: .whitespacesAndNewlines) }.flatMap { $0.isEmpty ? nil : $0 }
         targetOptions = NewBoardTargetDraft.parentOptions(workbenchID: workbenchID, snapshot: snapshot)
             .map { TargetOption(id: $0.id, label: $0.label) }
         let grant = StartGrant(grant)
@@ -153,7 +159,7 @@ struct StartSessionFormModel {
         if !grant.typingAllowed {
             briefCaption = SessionStartText.briefReadOnly
         } else {
-            briefCaption = target?.workOnPromptClipped == true ? SessionStartText.clippedBrief : nil
+            briefCaption = target.map { $0.workOnPromptClipped == true ? SessionStartText.clippedBrief : SessionStartText.briefReady }
         }
         existing = target.flatMap { Self.existingSession(of: $0, in: snapshot, now: now) }
         let subject: StartSubject? = isUntargeted ? .untargeted(workbenchID: workbenchID) : target.map { .target($0.id) }

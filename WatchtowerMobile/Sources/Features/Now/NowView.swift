@@ -114,7 +114,7 @@ struct NowView: View {
                 ForEach(Self.topBlocks, id: \.self) { block in
                     switch block {
                     case .chip:
-                        MacStatusChip(model: model.chip)
+                        HubSwitcherChip(now: date)
                     case .relayBanner:
                         NowRelayBanner(override: bannerOverride, termRowsOverride: termRowsOverride) { showsSubscription = true }
                     case .outbox:

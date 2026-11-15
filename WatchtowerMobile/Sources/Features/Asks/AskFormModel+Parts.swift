@@ -80,17 +80,46 @@ extension AskFormModel {
         )
     }
 
-    static func review(_ ask: OwnerAsk, draft: AskDraft, render: (String) -> PlainTextDocument) -> Review {
-        let count = draft.comments.count
-        let noun = count == 1 ? "1 comment" : "\(count) comments"
+    static func review(
+        _ ask: OwnerAsk, draft: AskDraft, render: (String) -> PlainTextDocument, split: (PlainTextDocument) -> [ReviewParagraph]
+    ) -> Review {
+        let document = ask.docSnapshot.map(render)
+        let paragraphs = document.map(split) ?? []
+        let clipped = ask.docClipped == true && document != nil
+        var byParagraph: [Int: [Comment]] = [:]
+        var unplaced: [Comment] = []
+        let comments = draft.comments.map { Comment(id: $0.id, quote: $0.anchor.quote, body: $0.body) }
+        for (draftComment, comment) in zip(draft.comments, comments) {
+            if let id = paragraphID(of: draftComment, in: document, paragraphs: paragraphs) {
+                byParagraph[id, default: []].append(comment)
+            } else {
+                unplaced.append(comment)
+            }
+        }
         return Review(
             docPath: ask.docPath,
-            document: ask.docSnapshot.map(render),
-            clippedNotice: ask.docClipped == true ? AskText.clipped(docBytes: ask.docBytes) : nil,
-            comments: draft.comments.map { Comment(id: $0.id, quote: $0.anchor.quote, body: $0.body) },
+            document: document,
+            paragraphs: paragraphs,
+            clippedNotice: clipped ? AskText.clipped(docBytes: ask.docBytes) : nil,
+            clippedEnd: clipped ? AskText.clippedEnd(docPath: ask.docPath) : nil,
+            comments: comments,
+            commentsByParagraph: byParagraph,
+            unplacedComments: unplaced,
             verdict: draft.verdict,
-            commentsLine: ask.docSnapshot == nil ? noun : "Select text to comment · \(noun)"
+            commentsLine: AskText.commentsLine(count: comments.count, hasDocument: document != nil)
         )
+    }
+
+    /// The paragraph a comment was made on: the line holding its start,
+    /// when the quote is still there (a newer snapshot moves text).
+    private static func paragraphID(of comment: AskCommentDraft, in document: PlainTextDocument?, paragraphs: [ReviewParagraph]) -> Int? {
+        guard let document, let location = comment.location,
+              let index = ReviewParagraph.index(of: location, in: paragraphs) else { return nil }
+        let quote = comment.anchor.quote as NSString
+        let text = document.text as NSString
+        guard location + quote.length <= text.length,
+              text.substring(with: NSRange(location: location, length: quote.length)) == comment.anchor.quote else { return nil }
+        return paragraphs[index].id
     }
 
     private static let checkMarks: [(state: OwnerAskAnswer.CheckState, symbol: String, tone: PhoneTone)] = [

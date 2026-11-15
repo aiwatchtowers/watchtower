@@ -42,6 +42,9 @@ final class AskViewModel {
     @ObservationIgnored private var rendered: (askID: Int64, markdown: String, document: PlainTextDocument)?
     @ObservationIgnored private var chatObservation: ResilientObservation?
     @ObservationIgnored private var chatSessionID: Int64?
+    /// The rendered snapshot's lines (#1787), split once per rendered
+    /// document (text and headings: a heading level change keeps the text).
+    @ObservationIgnored private var split: (document: PlainTextDocument, paragraphs: [ReviewParagraph])?
 
     init(
         askID: Int64,
@@ -71,8 +74,17 @@ final class AskViewModel {
             chat: chat,
             chatAsOf: chatAsOf,
             openedFromSessionID: openedFromSessionID,
-            render: document
+            render: document,
+            paragraphs: paragraphs
         )
+    }
+
+    /// The rendered snapshot's lines, split once per rendered document.
+    private func paragraphs(_ document: PlainTextDocument) -> [ReviewParagraph] {
+        if let split, split.document == document { return split.paragraphs }
+        let paragraphs = ReviewParagraph.split(document)
+        split = (document, paragraphs)
+        return paragraphs
     }
 
     // MARK: - The agent's message before the ask
@@ -183,7 +195,7 @@ final class AskViewModel {
     @discardableResult
     func addComment(on selection: NSRange, in document: PlainTextDocument, body: String) -> UUID? {
         guard let anchor = CommentAnchorBuilder.anchor(selection: selection, in: document) else { return nil }
-        let comment = AskCommentDraft(anchor: anchor, body: body)
+        let comment = AskCommentDraft(anchor: anchor, body: body, location: selection.location)
         drafts.update(askID) { $0.comments.append(comment) }
         return comment.id
     }

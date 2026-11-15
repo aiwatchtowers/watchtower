@@ -45,14 +45,19 @@ struct WorkbenchListView: View {
     private var content: some View {
         let workbenches = replica.snapshot.orderedWorkbenches
         if workbenches.isEmpty {
-            ContentUnavailableView(
-                "No workbenches yet",
-                systemImage: "hammer",
-                description: Text("Your Mac's workbenches show up here.")
-            )
+            // The switcher stays reachable over an empty hub.
+            VStack(alignment: .leading, spacing: 0) {
+                switcher.padding(.horizontal, Spacing.large)
+                ContentUnavailableView(
+                    "No workbenches yet",
+                    systemImage: "hammer",
+                    description: Text("Your Mac's workbenches show up here.")
+                )
+            }
         } else {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: Spacing.regular) {
+                    switcher
                     SectionHeader(workbenches.count == 1 ? "1 folder on your Mac" : "\(workbenches.count) folders on your Mac")
                     ForEach(workbenches) { workbench in
                         NavigationLink(value: WorkbenchRoute(id: workbench.id)) {
@@ -71,6 +76,11 @@ struct WorkbenchListView: View {
             .background(Color(.systemBackground))
             .refreshable { await env.refresh(.pull) }
         }
+    }
+
+    /// The hub switcher chip, as on Now (#1782); asleep by the clock alone.
+    private var switcher: some View {
+        TimelineView(.periodic(from: .now, by: 30)) { HubSwitcherChip(now: $0.date) }
     }
 }
 
