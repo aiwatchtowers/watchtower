@@ -20,9 +20,6 @@ import (
 const (
 	MaxChatListConversations = 200
 	MaxChatLastLine          = 120
-	// chatLeaseStale is the lease rule: a heartbeat older than this is dead
-	// (spec §4.4).
-	chatLeaseStale = 60 * time.Second
 	// chatListReadFailed is the chat_list error when the read failed
 	// ("Couldn't load chats" on the phone, mockup 1h).
 	chatListReadFailed = "read_failed"
@@ -280,9 +277,11 @@ func chatRowState(waiting, answering, unread bool) string {
 	return ChatStateRead
 }
 
-// liveLease: a heartbeat at heartbeatMS (Unix ms) is less than 60 s old.
+// liveLease: a heartbeat at heartbeatMS (Unix ms) is at most
+// db.ChatLeaseStaleMS old — nobody may take the lease yet (the claim needs
+// older), as Swift's ChatLease.isLive.
 func liveLease(heartbeatMS int64, now time.Time) bool {
-	return now.UnixMilli()-heartbeatMS < chatLeaseStale.Milliseconds()
+	return now.UnixMilli()-heartbeatMS <= db.ChatLeaseStaleMS
 }
 
 // chatListProjects is the chat projects that are not archived, by name.

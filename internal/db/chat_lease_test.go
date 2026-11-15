@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"os"
+	"slices"
 	"sync"
 	"testing"
 
@@ -88,6 +89,10 @@ func TestChatLeaseCases(t *testing.T) {
 					require.NoError(t, ReleaseChatLeaseTx(tx, conv, s.TurnID))
 					require.NoError(t, tx.Commit())
 					ok = true
+				case "live": // shown as answering: the display predicate (FreshChatLeases)
+					fresh, err := d.FreshChatLeases(s.NowMS)
+					require.NoError(t, err)
+					ok = slices.Contains(fresh, conv)
 				default:
 					t.Fatalf("unknown op %q", s.Op)
 				}
@@ -237,5 +242,8 @@ func TestLease_FreshList(t *testing.T) {
 	require.Equal(t, []int64{a, b}, fresh)
 	fresh, err = d.FreshChatLeases(160_000)
 	require.NoError(t, err)
-	require.Equal(t, []int64{b}, fresh, "a heartbeat 60 s old is stale")
+	require.Equal(t, []int64{a, b}, fresh, "a heartbeat exactly 60 s old is still held (the claim needs older)")
+	fresh, err = d.FreshChatLeases(160_001)
+	require.NoError(t, err)
+	require.Equal(t, []int64{b}, fresh, "a heartbeat over 60 s old is stale")
 }

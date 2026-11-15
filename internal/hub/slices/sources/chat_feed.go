@@ -657,7 +657,8 @@ func chatFeedMessageRowsTx(ctx context.Context, tx *sql.Tx, b chatBranch, in str
 			m.ErrorCode = &code.String
 		}
 		if message.String != "" {
-			m.ErrorMessage = &message.String
+			msg, _ := clipText(message.String, maxChatLabel)
+			m.ErrorMessage = &msg
 		}
 		m.CreatedAt = secondsTime(created)
 		m.Siblings = b.siblings[m.ID]
@@ -689,6 +690,7 @@ func chatFeedAttachmentsTx(ctx context.Context, tx *sql.Tx, in string, args []an
 		if err := rows.Scan(&a.ID, &msg, &a.Name, &a.Mime, &a.Size); err != nil {
 			return fmt.Errorf("reading chat attachments: %w", err)
 		}
+		a.Name, _ = clipText(a.Name, maxChatLabel)
 		if m := byID[msg]; m != nil {
 			m.Attachments = append(m.Attachments, a)
 		}
@@ -757,7 +759,7 @@ func applyLiveText(msgs []chatFeedMessage, turnID, text string, steps []chatstor
 func boolPtr(v bool) *bool { return &v }
 
 // chatFeedArtifactsTx is the latest version of each artifact key of conv,
-// in creation order.
+// in creation order; keys and titles clipped at maxChatLabel graphemes.
 func chatFeedArtifactsTx(ctx context.Context, tx *sql.Tx, conv int64) ([]chatFeedArtifact, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT a.artifact_key, a.kind, a.title, a.version, a.content FROM chat_artifacts a
 		WHERE a.conversation_id = ? AND a.version = (SELECT MAX(b.version) FROM chat_artifacts b
@@ -774,6 +776,10 @@ func chatFeedArtifactsTx(ctx context.Context, tx *sql.Tx, conv int64) ([]chatFee
 		if err := rows.Scan(&a.Key, &a.Kind, &a.Title, &a.Version, &content); err != nil {
 			return nil, fmt.Errorf("reading chat artifacts: %w", err)
 		}
+		// The labels the cap's cuts never shrink are bounded here, so one
+		// oversized value cannot keep the record over MaxChatFeedBytes.
+		a.Key, _ = clipText(a.Key, maxChatLabel)
+		a.Title, _ = clipText(a.Title, maxChatLabel)
 		a.Content = &content
 		out = append(out, a)
 	}
