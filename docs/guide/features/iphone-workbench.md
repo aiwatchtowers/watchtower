@@ -18,9 +18,9 @@ A Claude Code session takes your line while it works and reads it at its next st
 
 **Now** starts with your Mac: **MacBook Pro · online**, or **asleep · last seen 40 min ago** once its heartbeat is over 35 minutes old. Then:
 
-- **Waiting for you**, newest first across workbenches: only what needs your decision, asks and permission prompts. A question's suggested answers are chips, one tap each; with many or long answers, **Answer…** opens the ask. Once you answer, the row says where the answer is instead: **Sending answer…**, **Answer waiting to send**, or **Answer not delivered** with **Retry**. The first 20 show; the rest are **N more on your Mac**.
+- **Waiting for you**, newest first across workbenches: asks and permission prompts. A question's suggested answers are chips, one tap each; with many or long answers, **Answer…** opens the ask. Once answered, the row shows **Sending answer…**, **Answer waiting to send**, or **Answer not delivered** with **Retry**. The first 20 show; the rest are **N more on your Mac**.
 - **Working**: sessions whose agent is working, each with its timer (**as of 40 min ago** while the Mac is asleep).
-- **Ended**: sessions that stopped, finished or failed in the last 24 hours. A session with an open ask shows only as that ask. **Clear** takes them all off this phone; touch and hold a row for **Seen** to take only that one.
+- **Ended**: sessions that stopped, finished or failed in the last 24 hours. A session with an open ask shows only as that ask. **Clear** hides them all on this phone; touch and hold a row for **Seen** to hide one.
 - **Next meeting**, with **Record** from 10 minutes before it starts to 10 minutes after.
 
 The **Now** tab's badge counts the asks and permission prompts waiting on the Mac on screen; the app icon's badge counts them on all your Macs.
