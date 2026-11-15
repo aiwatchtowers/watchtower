@@ -341,11 +341,34 @@ private struct MobilePhoneRow: View {
                 grantRow(Copy.permissionsLabel(row), requested: row.permissionsRequested, allowed: row.permissions,
                          onAllow: { model.requestPermissionsAllow(row) },
                          onRevoke: { Task { await model.allow(row.id, Copy.permissionsGrant, false) } })
+                chatRow
             }
             .disabled(busy)
         }
         .kitRow(isSelected: false)
         .onHover { hovered = $0 }
+    }
+
+    /// The `chat` grant as a switch (spec 2026-11-15 §5, mockup 4b): on by
+    /// default, so it asks nothing either way.
+    private var chatRow: some View {
+        GridRow(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: Spacing.tight) {
+                Text(Copy.chatTitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(Copy.chatCaption)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Toggle(Copy.chatTitle, isOn: Binding(get: { row.chat }, set: { on in Task { await model.setChat(row, on) } }))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .gridColumnAlignment(.trailing)
+        }
+        .controlSize(.small)
     }
 
     private var lines: some View {

@@ -240,15 +240,6 @@ func (t *Turn) Finalize(status string, failure *Failure) error {
 }
 
 func (t *Turn) finalize(status string, failure *Failure) error {
-	t.mu.Lock()
-	t.done, t.status = true, status
-	for i := range t.steps {
-		// A call still waiting when the turn ends never ran: it reads as stopped.
-		if t.steps[i].State == StepWaiting {
-			t.steps[i].State, t.steps[i].Summary, t.steps[i].ActionID = StepRunning, "", 0
-		}
-	}
-	t.mu.Unlock()
 	text := t.Text()
 	createdAt := seconds(t.s.now())
 	err := t.write(func(tx *sql.Tx) error {
@@ -270,6 +261,21 @@ func (t *Turn) finalize(status string, failure *Failure) error {
 		}
 		return db.ReleaseChatLeaseTx(tx, t.conv, t.turnID)
 	})
+	// The turn ends only once its end is on disk (or its conversation is
+	// gone): a transient failure (busy past busy_timeout) leaves it running,
+	// so the caller's retried Finalize writes it and releases the lease.
+	if err != nil && !errors.Is(err, ErrConversationGone) {
+		return err
+	}
+	t.mu.Lock()
+	t.done, t.status = true, status
+	for i := range t.steps {
+		// A call still waiting when the turn ends never ran: it reads as stopped.
+		if t.steps[i].State == StepWaiting {
+			t.steps[i].State, t.steps[i].Summary, t.steps[i].ActionID = StepRunning, "", 0
+		}
+	}
+	t.mu.Unlock()
 	if err != nil {
 		return err
 	}
@@ -280,6 +286,11 @@ func (t *Turn) finalize(status string, failure *Failure) error {
 // write runs fn in one transaction; a conversation deleted under the turn
 // (a 0-row update by id, a foreign-key failure) marks the turn gone.
 func (t *Turn) write(fn func(*sql.Tx) error) error {
+	if t.s.failWrite != nil {
+		if err := t.s.failWrite(); err != nil {
+			return err
+		}
+	}
 	err := t.s.db.WithTx(fn)
 	if errors.Is(err, ErrConversationGone) || isForeignKeyFailure(err) {
 		t.gone = true
