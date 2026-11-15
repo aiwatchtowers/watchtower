@@ -137,9 +137,9 @@ kind: feature
 since: 0.24.0
 -->
 
-Settings → **Macs** lists your Macs. **Add Mac** scans another code (up to four), and rows can be dragged to reorder. **Unlink** (or **Forget**, for a Mac that removed the phone or is long offline) deletes that Mac's data from the phone; changes not yet sent are lost, and the phone says how many ("Not sent: 3 items were still waiting for your Mac").
+Settings → **Macs** lists your Macs. **Add Mac** scans another code (up to four); drag rows to reorder. **Unlink** (or **Forget**, for a Mac that removed the phone or is long offline) deletes that Mac's data from the phone; unsent changes are lost, and the phone says how many. With several Macs, tap the Mac's name atop a tab to switch; other Macs' questions show beside it.
 
-On the Mac, **Remove…** next to a phone unlinks it. On the phone, that Mac's hub freezes in both cases: what it already synced stays readable and nothing new arrives, until you tap **Forget** on the phone. A phone on another Apple ID also leaves the Mac's iCloud sharing.
+On the Mac, **Remove…** next to a phone unlinks it. On the phone, that Mac's hub freezes in both cases: what it synced stays readable, nothing new arrives, until you tap **Forget**. A phone on another Apple ID also leaves the Mac's iCloud sharing.
 
 ## When it's empty or wrong
 
