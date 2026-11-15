@@ -325,7 +325,7 @@ func runInboxResolveBulk(cmd *cobra.Command, args []string) error {
 			Resolved int    `json:"resolved"`
 			Of       int    `json:"of"`
 			Error    string `json:"error"`
-		}{resolved, of, err.Error()})
+		}{resolved, of, logredact.Full(err)})
 		fmt.Fprintln(cmd.OutOrStdout(), string(line))
 		return err
 	}
