@@ -68,6 +68,18 @@ final class BuiltinAutomationDetailDecodingTests: XCTestCase {
         XCTAssertTrue(today.runNow)
     }
 
+    /// Mail waiting's golden: the Desktop turns it off with Waiting for me's
+    /// feature (`InboxFolderQueries.mailWaiting`), which Go's `feature_ids` pin.
+    func testMailWaitingGoldenDecodes() throws {
+        let mail = try JSONDecoder().decode(BuiltinAutomationDetail.self, from: Self.golden("show_mail_waiting"))
+        XCTAssertEqual(mail.id, InboxFolderQueries.mailWaitingBuiltinID)
+        XCTAssertEqual(mail.slot, "waiting_for_me")
+        XCTAssertEqual(mail.featureIDs, [InboxFolderQueries.waitingForMeFeatureID])
+        XCTAssertEqual(mail.parameters, [])
+        XCTAssertEqual(mail.defaultFolder, "inbox")
+        XCTAssertTrue(mail.runNow)
+    }
+
     /// Inbox builder B's Needs approval golden: no slot, its own feature.
     func testDecodesNeedsApprovalGolden() throws {
         let needs = try JSONDecoder().decode(BuiltinAutomationDetail.self, from: Self.golden("show_needs_approval"))
