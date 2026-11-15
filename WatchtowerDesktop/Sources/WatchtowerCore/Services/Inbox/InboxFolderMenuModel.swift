@@ -16,6 +16,8 @@ package struct InboxFolderMenuSnapshot: Equatable, Sendable {
     /// approvals they show (`approvalArtifacts`), so a card of a closed
     /// approval is never on screen (APPROVAL-01).
     package let cards: [Int64: [AutomationOutputCard]]
+    /// Each card's folder (card id → folder id), built once from `cards`.
+    package let cardFolders: [Int64: Int64]
     /// Each card's row refs (card id → refs).
     package let refs: [Int64: [InboxRef]]
     package let refState: InboxRefState
@@ -73,6 +75,11 @@ package struct InboxFolderMenuSnapshot: Equatable, Sendable {
         self.counts = counts
         self.artifacts = artifacts
         self.cards = cards
+        var cardFolders: [Int64: Int64] = [:]
+        for (folderID, folderCards) in cards {
+            for card in folderCards { cardFolders[card.id] = folderID }
+        }
+        self.cardFolders = cardFolders
         self.refs = refs
         self.refState = refState
         self.waitingForMe = waitingForMe

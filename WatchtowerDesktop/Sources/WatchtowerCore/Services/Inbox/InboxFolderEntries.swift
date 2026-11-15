@@ -364,8 +364,7 @@ package enum InboxFolderEntries {
         let read = inputs.folders
         let refs = read.refs[card.id] ?? []
         let waiting = waitingCount(card, read)
-        let folderID = read.cards.first { $0.value.contains { $0.id == card.id } }?.key
-        let icon = folderID.flatMap { read.tree.folder($0)?.icon } ?? ""
+        let icon = read.cardFolders[card.id].flatMap { read.tree.folder($0)?.icon } ?? ""
         return InboxRowContent(
             kind: .artifact, title: card.title.isEmpty ? card.automationName : card.title,
             preview: InboxRowText.preview(card.body),

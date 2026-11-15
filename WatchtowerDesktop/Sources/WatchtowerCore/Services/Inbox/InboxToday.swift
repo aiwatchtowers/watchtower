@@ -35,12 +35,7 @@ package enum InboxToday {
     /// `startOfToday` in the UTC form `inbox_items` stores, for SQL
     /// `MAX(created_at, mentioned_at) >= ?`.
     package static func sinceUTC(now: Date, calendar: Calendar) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(identifier: "UTC")
-        formatter.calendar = Calendar(identifier: .gregorian)
-        formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss'Z'"
-        return formatter.string(from: startOfToday(now: now, calendar: calendar))
+        AutomationDates.format(startOfToday(now: now, calendar: calendar))
     }
 }
 
