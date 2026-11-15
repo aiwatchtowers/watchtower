@@ -289,6 +289,48 @@ func TestCatchUpSent_GivesUpAfterThreeFailures(t *testing.T) {
 	assertWatermark(t, database, accountID, wm)
 }
 
+// One message failing for good never costs the ones listed after it: the
+// pass goes on, stores the third, and a retried pass fetches only the bad one.
+func TestCatchUpSent_PermanentFailureKeepsTheRestOfThePass(t *testing.T) {
+	srv := newCatchUpServer("s1", "bad", "s3")
+	s, database, accountID, _ := newCatchUpSyncer(t, srv)
+	var mu sync.Mutex
+	var fetched []string
+	srv.setAnswer(func(id string, w http.ResponseWriter) bool {
+		mu.Lock()
+		fetched = append(fetched, id)
+		mu.Unlock()
+		if id != "bad" {
+			return false
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `{"error":"invalid"}`)
+		return true
+	})
+
+	n, err := s.CatchUpSent(context.Background(), time.Now())
+	if err == nil {
+		t.Fatal("want the counted failure")
+	}
+	rows := storedIDs(t, database, accountID)
+	if n != 2 || rows["s1"].ID == "" || rows["s3"].ID == "" || rows["bad"].ID != "" {
+		t.Fatalf("stored %d (%v), want s1 and s3", n, rows)
+	}
+	assertCatchUpStamp(t, database, accountID, "")
+
+	mu.Lock()
+	fetched = nil
+	mu.Unlock()
+	if n, err := s.CatchUpSent(context.Background(), time.Now()); err == nil || n != 0 {
+		t.Fatalf("pass 2 = %d, %v; want 0 and the failure", n, err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(fetched) != 1 || fetched[0] != "bad" {
+		t.Fatalf("pass 2 fetched %v; want only the message it is missing", fetched)
+	}
+}
+
 func TestCatchUpSent_TransientFailuresNeverGiveUp(t *testing.T) {
 	srv := newCatchUpServer("s1", "flaky")
 	s, database, accountID, wm := newCatchUpSyncer(t, srv)

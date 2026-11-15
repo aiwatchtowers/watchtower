@@ -61,6 +61,20 @@ func (db *DB) SetGmailSentCatchUpAt(accountID int64, at time.Time) error {
 	return nil
 }
 
+// GmailMessageStored reports whether accountID already holds a
+// gmail_messages row with the Gmail message id.
+func (db *DB) GmailMessageStored(accountID int64, id string) (bool, error) {
+	var one int
+	err := db.QueryRow(`SELECT 1 FROM gmail_messages WHERE account_id = ? AND id = ?`, accountID, id).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("checking gmail message %s of account %d: %w", id, accountID, err)
+	}
+	return true, nil
+}
+
 // GmailItemsAnsweredByOwner returns the ids of the pending, unarchived Gmail
 // email_received inbox items whose thread holds an owner sent row (see
 // GmailOwnSent) newer than the received message. The received message's

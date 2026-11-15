@@ -26,12 +26,16 @@ const sentCatchUpMaxAttempts = 3
 // already stamped or the account has not synced yet (watermark 0: its first
 // Sync lists sent mail and stamps). It writes no watermark and no auth state.
 //
-// A message deleted between the listing and the fetch (404) is skipped. Any
-// other error stops the pass and stamps nothing, so the next cycle
-// retries; after sentCatchUpMaxAttempts passes that failed with a
-// non-transient error (catchUpCountsFailure) it stamps now anyway. A pass in
-// which every listed message was stored or skipped stamps now. Returns the
-// count of stored messages.
+// A message the account already holds is not fetched again, so a pass that
+// is retried fetches only what the last one missed. A message deleted
+// between the listing and the fetch (404) is skipped. A transient error
+// (catchUpCountsFailure false: rate limit, network, cancel, a busy
+// database) stops the pass and stamps nothing, so the next cycle retries. A
+// non-transient error on one message is counted and the pass goes on to the
+// next; a pass that reached the end with such failures stamps nothing and
+// counts toward sentCatchUpMaxAttempts, after which it stamps now anyway and
+// logs how many messages it gave up on. A pass in which every listed message
+// was stored or skipped stamps now. Returns the count of stored messages.
 func (s *Syncer) CatchUpSent(ctx context.Context, now time.Time) (int, error) {
 	stamp, err := s.db.GmailSentCatchUpAt(s.accountID)
 	if err != nil {
@@ -62,33 +66,50 @@ func (s *Syncer) CatchUpSent(ctx context.Context, now time.Time) (int, error) {
 
 	maxBody := s.maxBodyBytes()
 	ownDate := func(internalDate string) string { return backfillSyncedAt(internalDate, from) }
-	count := 0
+	count, failed := 0, 0
+	var firstErr error
 	for _, id := range ids {
-		stored, _, err := s.storeMessage(ctx, id, ownDate, maxBody, 0)
+		has, err := s.db.GmailMessageStored(s.accountID, id)
 		if err != nil {
-			if isNotFound(err) {
-				continue // deleted between the listing and the fetch
+			return count, err
+		}
+		if has {
+			continue
+		}
+		stored, _, err := s.storeMessage(ctx, id, ownDate, maxBody, 0)
+		switch {
+		case err == nil:
+			if stored {
+				count++
 			}
-			return count, s.catchUpFailed(now, err)
+		case isNotFound(err):
+			// deleted between the listing and the fetch
+		case !catchUpCountsFailure(err):
+			return count, err
+		default:
+			failed++
+			if firstErr == nil {
+				firstErr = err
+			}
 		}
-		if stored {
-			count++
-		}
+	}
+	if failed > 0 {
+		return count, s.catchUpFailed(now, failed, firstErr)
 	}
 	s.stampSentCatchUp(now)
 	return count, nil
 }
 
-// catchUpFailed counts a failed pass and, when it counts, stamps now on the
-// sentCatchUpMaxAttempts-th such failure. The error goes back unwrapped: the
-// daemon's log line already names the sent catch-up.
-func (s *Syncer) catchUpFailed(now time.Time, err error) error {
-	if !catchUpCountsFailure(err) {
-		return err
-	}
+// catchUpFailed counts a pass that reached the end with failed messages and
+// stamps now on the sentCatchUpMaxAttempts-th such pass. The returned error
+// names the count and the first failure: the daemon's log line already names
+// the sent catch-up.
+func (s *Syncer) catchUpFailed(now time.Time, failed int, first error) error {
+	err := fmt.Errorf("%d of the sent messages failed, the first: %w", failed, first)
 	s.catchUpFailures++
 	if s.catchUpFailures >= sentCatchUpMaxAttempts {
-		s.logger.Printf("gmail: sent catch-up for account %d gave up after %d attempts: %v", s.accountID, sentCatchUpMaxAttempts, err)
+		s.logger.Printf("gmail: sent catch-up for account %d gave up on %d messages after %d attempts: %v",
+			s.accountID, failed, sentCatchUpMaxAttempts, err)
 		s.stampSentCatchUp(now)
 	}
 	return err
