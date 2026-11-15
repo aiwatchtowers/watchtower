@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	gosync "sync"
 	"testing"
 	"time"
@@ -233,4 +234,39 @@ func TestFirstCycleAt_WrittenOnceAndKeptOnRetry(t *testing.T) {
 	assert.True(t, syncedAtStart.Equal(first), "got %v", first)
 	assert.True(t, syncedAtStart.Equal(ts.orch.firstCycleAt), "the retry reads the first attempt back")
 	assert.True(t, now.Equal(ts.orch.runStart))
+}
+
+// The mention query (run before the blanket search while the account is
+// behind) stamps what it stores by the same rule: a late mention only it
+// returns is still detected.
+func TestInbox_MentionQueryStampsSyncedAt(t *testing.T) {
+	late := slackTS(syncedAtStart.Add(-45 * time.Minute))
+	other := slackTS(syncedAtStart.Add(-10 * time.Minute))
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		ts, text := other, "unrelated"
+		if strings.HasPrefix(r.FormValue("query"), "<@") {
+			ts, text = late, "<@U001> ping"
+		}
+		jsonOK(w, map[string]any{
+			"ok": true,
+			"messages": map[string]any{
+				"matches": []map[string]any{{"user": "U002", "username": "bob", "ts": ts, "text": text,
+					"channel": map[string]any{"id": "C001", "name": "general"}}},
+				"paging": map[string]any{"count": 100, "total": 1, "page": 1, "pages": 1},
+				"total":  1,
+			},
+		})
+	}
+	now := syncedAtStart
+	ts := newSyncedAtSetup(t, handler, &now)
+	require.NoError(t, ts.db.UpdateSlackAccountConnection(ts.accountID, "T001", "Acme", "acme", ts.ns("U001")))
+	require.NoError(t, ts.db.SetSlackFirstCycleAtOnce(ts.accountID, syncedAtStart.AddDate(0, 0, -30)))
+	require.NoError(t, ts.db.SetSlackAccountSearchWatermark(ts.accountID, "2026-11-14"))
+	ts.orch.outcome.RateLimited = true // the previous run was throttled: behind
+
+	require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{}))
+
+	assert.Equal(t, float64(syncedAtStart.Unix()), storedSyncedAt(t, ts, late))
+	assert.Equal(t, []string{late}, detectedMentions(t, ts, syncedAtStart.Add(-30*time.Minute)))
 }
