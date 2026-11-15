@@ -10,6 +10,7 @@ final class ChannelStatsViewModel {
         case muted = "Muted"
         case favorites = "Favorites"
         case hasRecommendations = "Recommendations"
+        case notSynced = "Not synced"
     }
 
     enum SortOrder: String, CaseIterable {
@@ -31,14 +32,18 @@ final class ChannelStatsViewModel {
     private(set) var slackLinks: SlackLinkResolver?
 
     private let dbManager: DatabaseManager
+    /// Runs `watchtower channels exclude|include`: the CLI is the only
+    /// writer of the Stop syncing columns (`db.SetSyncExcluded`).
+    @ObservationIgnored private let cliRunner: (any CLIRunnerProtocol)?
     /// Every write of this view model, in order (board #670).
     @ObservationIgnored private let writes = SerialWrites()
     /// One pending toggle per row (board #670).
     let pendingWrites = PendingWrites()
     private(set) var observationTask: Task<Void, Never>?
 
-    init(dbManager: DatabaseManager) {
+    init(dbManager: DatabaseManager, cliRunner: (any CLIRunnerProtocol)? = ProcessCLIRunner.makeDefault()) {
         self.dbManager = dbManager
+        self.cliRunner = cliRunner
     }
 
     func startObserving() {
@@ -115,6 +120,8 @@ final class ChannelStatsViewModel {
         case .hasRecommendations:
             let recChannelIDs = Set(recommendations.map(\.channelID))
             result = result.filter { recChannelIDs.contains($0.id) }
+        case .notSynced:
+            result = result.filter(\.isSyncExcluded)
         }
 
         if !searchText.isEmpty {
@@ -174,8 +181,39 @@ final class ChannelStatsViewModel {
         }
     }
 
+    /// Stop syncing a synced channel, Sync again an excluded one.
+    func toggleSyncExcluded(channelID: String) async {
+        await pendingWrites.run("sync:\(channelID)") {
+            guard let stat = stats.first(where: { $0.id == channelID }) else { return }
+            await setSyncExcluded(channelID: channelID, excluded: !stat.isSyncExcluded)
+        }
+    }
+
     func isMutePending(_ channelID: String) -> Bool { pendingWrites.isPending("mute:\(channelID)") }
     func isFavoritePending(_ channelID: String) -> Bool { pendingWrites.isPending("favorite:\(channelID)") }
+    func isSyncPending(_ channelID: String) -> Bool { pendingWrites.isPending("sync:\(channelID)") }
+
+    /// The CLI's `--json` answer.
+    private struct ExcludeAnswer: Decodable {
+        let ok: Bool
+    }
+
+    /// Runs `channels exclude|include --id <id> --json` in this view model's
+    /// write chain. No optimistic flip: a failure says why and leaves the
+    /// row as the database has it.
+    private func setSyncExcluded(channelID: String, excluded: Bool) async {
+        do {
+            guard let runner = cliRunner else { throw CLIRunnerError.binaryNotFound }
+            let args = ["channels", excluded ? "exclude" : "include", "--id", channelID, "--json"]
+            let data = try await writes.runThrowing { try await runner.run(args: args) }
+            // The CLI answers ok or exits non-zero; an answer that does not
+            // decode is a failure too.
+            _ = try JSONDecoder().decode(ExcludeAnswer.self, from: data)
+            load()
+        } catch {
+            errorMessage = ChannelStatsPresentation.actionFailed(excluding: excluded, error.localizedDescription)
+        }
+    }
 
     private func setMuted(channelID: String, muted: Bool) async {
         do {
@@ -213,6 +251,8 @@ final class ChannelStatsViewModel {
             await setMuted(channelID: rec.channelID, muted: true)
         case .favorite:
             await setFavorite(channelID: rec.channelID, favorite: true)
+        case .exclude:
+            await setSyncExcluded(channelID: rec.channelID, excluded: true)
         }
     }
 
