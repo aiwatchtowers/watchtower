@@ -105,8 +105,10 @@ final class ChannelStatsViewModel {
     var filteredStats: [ChannelStat] {
         var result = stats
 
-        // Apply minimum messages filter unless showing all
-        if !showAllChannels {
+        // Apply minimum messages filter unless showing all. Not synced
+        // shows every excluded channel: they stop growing, so a small one
+        // would otherwise vanish.
+        if !showAllChannels && filter != .notSynced {
             result = result.filter { $0.totalMessages >= minMessages }
         }
 
@@ -143,13 +145,17 @@ final class ChannelStatsViewModel {
         return result
     }
 
+    /// Whether any channel is not synced (the Not synced filter's empty
+    /// state says "Every channel is synced" only when none is).
+    var hasNotSyncedChannels: Bool { stats.contains(where: \.isSyncExcluded) }
+
     var recommendationCount: Int {
         recommendations.count
     }
 
     /// Number of channels hidden by min messages filter.
     var hiddenChannelCount: Int {
-        guard !showAllChannels else { return 0 }
+        guard !showAllChannels && filter != .notSynced else { return 0 }
         return stats.filter { $0.totalMessages < minMessages }.count
     }
 
@@ -252,7 +258,9 @@ final class ChannelStatsViewModel {
         case .favorite:
             await setFavorite(channelID: rec.channelID, favorite: true)
         case .exclude:
-            await setSyncExcluded(channelID: rec.channelID, excluded: true)
+            await pendingWrites.run("sync:\(rec.channelID)") {
+                await setSyncExcluded(channelID: rec.channelID, excluded: true)
+            }
         }
     }
 

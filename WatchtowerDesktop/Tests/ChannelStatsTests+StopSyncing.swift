@@ -145,9 +145,72 @@ extension ChannelStatsTests {
 
         vm.filter = .notSynced
         XCTAssertEqual(vm.filteredStats.map(\.id), ["C2"])
+        XCTAssertTrue(vm.hasNotSyncedChannels)
 
         vm.stats = try [Self.stat(from: ["id": "C1", "name": "team-core", "total_messages": 412])]
         XCTAssertTrue(vm.filteredStats.isEmpty)
+        XCTAssertFalse(vm.hasNotSyncedChannels, "only now is every channel synced")
+    }
+
+    /// An excluded channel stops growing, so the minimum-messages filter
+    /// must not hide it under Not synced (nor claim every channel is synced).
+    @MainActor
+    func testNotSyncedFilterShowsSmallExcludedChannels() throws {
+        let (dbManager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let vm = ChannelStatsViewModel(dbManager: dbManager, cliRunner: nil)
+        vm.stats = try [
+            Self.stat(from: ["id": "C1", "name": "team-core", "total_messages": 412]),
+            Self.stat(from: ["id": "C2", "name": "tiny-alerts", "total_messages": 2, "is_sync_excluded": true])
+        ]
+        XCTAssertEqual(vm.minMessages, 5)
+        XCTAssertFalse(vm.filteredStats.contains { $0.id == "C2" }, "All hides it below the minimum")
+
+        vm.filter = .notSynced
+        XCTAssertEqual(vm.filteredStats.map(\.id), ["C2"])
+        XCTAssertEqual(vm.hiddenChannelCount, 0)
+
+        // A search that matches nothing is the generic empty table, not
+        // "Every channel is synced".
+        vm.searchText = "nope"
+        XCTAssertTrue(vm.filteredStats.isEmpty)
+        XCTAssertTrue(vm.hasNotSyncedChannels)
+    }
+
+    /// Stop syncing works during Sync again's catch-up (the next Sync again
+    /// covers the old window too).
+    @MainActor
+    func testStopSyncingDuringCatchUpCallsCLI() async throws {
+        let (dbManager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let runner = FakeCLIRunner(stdout: Data(#"{"ok":true,"channel_id":"C3","sync_excluded":true,"muted":true}"#.utf8))
+        let vm = ChannelStatsViewModel(dbManager: dbManager, cliRunner: runner)
+        vm.stats = try [Self.stat(from: ["id": "C3", "name": "random", "catchup_from": 1_800_000_000])]
+        XCTAssertEqual(try XCTUnwrap(vm.stats.first).syncState, .catchingUp(since: Date(timeIntervalSince1970: 1_800_000_000)))
+
+        await vm.toggleSyncExcluded(channelID: "C3")
+
+        XCTAssertEqual(runner.invocations, [["channels", "exclude", "--id", "C3", "--json"]])
+        XCTAssertNil(vm.errorMessage)
+    }
+
+    /// The suggestion's button waits while its CLI call runs, like the row's.
+    @MainActor
+    func testApplyExcludeIsPendingWhileCLIRuns() async throws {
+        let (dbManager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let runner = FakeCLIRunner(stdout: Data(#"{"ok":true,"channel_id":"C0JUNK","sync_excluded":true,"muted":true}"#.utf8))
+        let vm = ChannelStatsViewModel(dbManager: dbManager, cliRunner: runner)
+        let seen = PendingSeen()
+        runner.onRun = { _ in await seen.record(await vm.isSyncPending("C0JUNK")) }
+
+        await vm.applyRecommendation(ChannelRecommendation(
+            channelID: "C0JUNK", channelName: "alerts", action: .exclude, reason: ChannelStatsPresentation.reasonMuted
+        ))
+
+        let pendingDuringRun = await seen.values
+        XCTAssertEqual(pendingDuringRun, [true])
+        XCTAssertFalse(vm.isSyncPending("C0JUNK"))
     }
 
     /// A `ChannelStat` from its JSON keys; unset keys are 0, false or empty.
@@ -162,4 +225,10 @@ extension ChannelStatsTests {
         json.merge(fields) { _, new in new }
         return try JSONDecoder().decode(ChannelStat.self, from: JSONSerialization.data(withJSONObject: json))
     }
+}
+
+/// What `isSyncPending` read while the fake CLI ran.
+private actor PendingSeen {
+    var values: [Bool] = []
+    func record(_ pending: Bool) { values.append(pending) }
 }

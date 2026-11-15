@@ -123,7 +123,7 @@ struct ChannelStatsTable: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            if vm.filter == .notSynced && filtered.isEmpty {
+            if vm.filter == .notSynced && !vm.hasNotSyncedChannels {
                 Text(Copy.notSyncedEmpty)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .center)
@@ -146,7 +146,6 @@ struct ChannelStatsTable: View {
             } else {
                 ForEach(filtered) { stat in
                     row(stat)
-                    Divider()
                 }
             }
         }
@@ -229,8 +228,7 @@ struct ChannelStatsTable: View {
                 .frame(width: 110, alignment: .trailing)
         }
         .font(.body)
-        .padding(.horizontal, Spacing.regular)
-        .padding(.vertical, Spacing.small)
+        .kitRow(isSelected: false)
     }
 
     @ViewBuilder
@@ -309,17 +307,16 @@ struct ChannelStatsTable: View {
     }
 
     /// Stop syncing, or Sync again for an excluded channel. Stop syncing
-    /// waits while a catch-up runs, as the mockup shows.
+    /// works during a catch-up too: the next Sync again covers the old
+    /// window as well (`SetSyncExcluded`).
     private func syncButton(_ stat: ChannelStat) -> some View {
         let excluded = stat.syncState == .notSynced
-        var catchingUp = false
-        if case .catchingUp = stat.syncState { catchingUp = true }
         return Button(excluded ? Copy.syncAgain : Copy.stopSyncing) {
             Task { await vm.toggleSyncExcluded(channelID: stat.id) }
         }
         .buttonStyle(.kitQuiet)
         .help(excluded ? Copy.syncAgainHelp : Copy.stopSyncingHelp)
-        .disabled(vm.isSyncPending(stat.id) || catchingUp)
+        .disabled(vm.isSyncPending(stat.id))
     }
 
     // MARK: - Helpers

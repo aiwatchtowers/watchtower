@@ -472,10 +472,12 @@ func TestSyncAgain_UserMuteFromDesktopSurvives(t *testing.T) {
 	require.NoError(t, db.SetSyncExcluded("1:C0JUNK", true, exclDay1))
 	require.True(t, mustSettings(t, db, "1:C0JUNK").MutedByExclusion)
 
-	// The Desktop writer leaves the case's after row.
+	// The Desktop writer leaves the case's after row (it keeps the
+	// mute's start, so muted_at is a fixed value, not "$now").
 	after := takeOver.After
-	_, err = db.Exec(`UPDATE channel_settings SET is_muted_for_llm = ?, muted_by_exclusion = ? WHERE channel_id = '1:C0JUNK'`,
-		after.IsMutedForLLM, after.MutedByExclusion)
+	require.NotEqual(t, "$now", after.MutedAt)
+	_, err = db.Exec(`UPDATE channel_settings SET is_muted_for_llm = ?, muted_at = ?, muted_by_exclusion = ?
+		WHERE channel_id = '1:C0JUNK'`, after.IsMutedForLLM, after.MutedAt, after.MutedByExclusion)
 	require.NoError(t, err)
 
 	require.NoError(t, db.SetSyncExcluded("1:C0JUNK", false, exclDay10))
@@ -485,4 +487,5 @@ func TestSyncAgain_UserMuteFromDesktopSurvives(t *testing.T) {
 	cs := mustSettings(t, db, "1:C0JUNK")
 	assert.True(t, cs.IsMutedForLLM, "a second round lifted the user's mute")
 	assert.False(t, cs.MutedByExclusion)
+	assert.Equal(t, after.MutedAt, cs.MutedAt, "the user's mute keeps its start")
 }
