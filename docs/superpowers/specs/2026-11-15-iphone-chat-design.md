@@ -465,3 +465,4 @@ The approved text above was kept where it held; these points differ in the shipp
 - **§4.5:** the grant verb is `hub allow <device> chat [--revoke]`; reject goes through the new `tools.Registry.Reject`.
 - **§6.2:** Ask about this is a long-press on a finished answer plus a passage picker sheet.
 - **§7/§12:** see the v1 limits above (WebRTC proof, vanished-lease checks, glass tab-bar lens).
+- **Guide:** no Learn card for chat while Relay ships dark (`relay_dark_test.go` holds back cards that point at a relay feature a build lacks); add one, with an id without "relay", once the relay origin ships.
