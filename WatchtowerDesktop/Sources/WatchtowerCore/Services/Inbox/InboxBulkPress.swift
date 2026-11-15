@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 
 /// What a bulk press would touch, read just before the owner confirms.
 package struct InboxBulkPlan: Equatable, Sendable {
@@ -26,20 +27,21 @@ package enum InboxBulkResult: Equatable, Sendable {
 /// apply → one result. Nothing retries by itself; Try Again is the owner's
 /// `begin()` running the stored plan again.
 @MainActor
-package final class InboxBulkPressModel: ObservableObject {
+@Observable
+package final class InboxBulkPressModel {
     package enum State: Equatable {
         case idle, planning, confirming(InboxBulkPlan), running, finished(InboxBulkResult)
     }
 
-    @Published package private(set) var state: State = .idle {
+    package private(set) var state: State = .idle {
         didSet { onStateChange?(state) }
     }
 
     /// Called after every state change (`InboxBulkCenter` keeps its pins with it).
-    package var onStateChange: ((State) -> Void)?
+    @ObservationIgnored package var onStateChange: ((State) -> Void)?
 
-    private var plan: (() async throws -> InboxBulkPlan)?
-    private var apply: (([String]) async throws -> InboxBulkResult)?
+    @ObservationIgnored private var plan: (() async throws -> InboxBulkPlan)?
+    @ObservationIgnored private var apply: (([String]) async throws -> InboxBulkResult)?
 
     package init(
         plan: (() async throws -> InboxBulkPlan)? = nil,

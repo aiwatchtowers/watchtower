@@ -35,7 +35,7 @@ package final class InboxBulkPins {
 /// every finished press — an apply's result, an empty plan (the pressed row
 /// was stale), a failed dry run — so the rows redraw with its result line.
 @MainActor
-package final class InboxBulkCenter: ObservableObject {
+package final class InboxBulkCenter {
     /// The days an item waits before it is in Older (Go's `db.WaitingOlderAfter`).
     package static let olderDays = 7
 
