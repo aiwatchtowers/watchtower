@@ -22,6 +22,23 @@ final class InboxBulkPressButtonTests: XCTestCase {
             "Closed 2 of 5. card 3 is gone"
         )
         XCTAssertEqual(InboxBulkPressButton.resultLine(.failed("database is locked")), "database is locked")
+        XCTAssertEqual(InboxBulkPressButton.resultLine(.done(count: 4, skipped: 1)), "Done: 4. 1 was already closed.")
+    }
+
+    /// Clear Old Ideas and Stop Tracking Quiet Ones say what they did, not "closed".
+    func testResultLinesPerPress() {
+        XCTAssertEqual(InboxBulkPressButton.resultLine(.done(count: 4, skipped: 2), copy: .clearedIdeas),
+                       "Cleared 4. 2 had changed meanwhile.")
+        XCTAssertEqual(InboxBulkPressButton.resultLine(.partial(done: 2, of: 5, error: "busy"), copy: .clearedIdeas),
+                       "Cleared 2 of 5. busy")
+        XCTAssertEqual(InboxBulkPressButton.resultLine(.done(count: 3, skipped: 1), copy: .stoppedTracks),
+                       "Stopped 3. 1 had changed meanwhile.")
+        XCTAssertEqual(InboxBulkPressButton.resultLine(.partial(done: 1, of: 3, error: "busy"), copy: .stoppedTracks),
+                       "Stopped 1 of 3. busy")
+        XCTAssertNil(InboxBulkPressButton.resultLine(.done(count: 4, skipped: 0), copy: .stoppedTracks))
+        let button = InboxBulkPressButton(title: "Clear Old Ideas…", confirmTitle: { "Clear \($0)" },
+                                          model: InboxBulkPressModel())
+        XCTAssertEqual(button.resultCopy(.clearedIdeas).copy, .clearedIdeas)
     }
 
     func testTryAgainOnlyAfterPartialOrFailed() async throws {

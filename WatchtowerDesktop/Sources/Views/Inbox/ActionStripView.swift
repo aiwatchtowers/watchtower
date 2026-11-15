@@ -373,6 +373,7 @@ struct ActionStripActionsView: View {
             if list == .ideas, vm.ideaBatch.olderCount > 0 || vm.oldIdeasPress.holdsResult {
                 InboxBulkPressButton(title: vm.ideaBatch.olderCount > 0 ? "Clear Old Ideas…" : nil,
                                      confirmTitle: Self.clearOldIdeasTitle, model: vm.oldIdeasPress)
+                    .resultCopy(.clearedIdeas)
                     .controlSize(.small)
                     .fixedSize()
                     .onAppear { vm.oldIdeasPress.reset() }

@@ -15,9 +15,17 @@ import WatchtowerCore
 struct InboxBulkPressButton: View {
     enum Style { case header, inline }
 
+    /// The verb of a press's result line: Mark All Done and Approve All
+    /// close, Clear Old Ideas clears, Stop Tracking Quiet Ones stops.
+    enum ResultCopy: Equatable {
+        case closed, clearedIdeas, stoppedTracks
+    }
+
     let title: String?
     let confirmTitle: (Int) -> String
     let style: Style
+    /// Set with `resultCopy(_:)`; `.closed` by default.
+    private(set) var copy = ResultCopy.closed
     @ObservedObject var model: InboxBulkPressModel
 
     init(title: String?, confirmTitle: @escaping (Int) -> String, model: InboxBulkPressModel, style: Style = .header) {
@@ -77,7 +85,7 @@ struct InboxBulkPressButton: View {
             } else if isBusy {
                 ProgressView().controlSize(.small)
             }
-            InboxBulkPressResult(model: model)
+            InboxBulkPressResult(model: model, copy: copy)
         }
         .confirmationDialog(
             confirmTitle(pending?.count ?? 0),
@@ -94,6 +102,13 @@ struct InboxBulkPressButton: View {
             Button(confirmTitle(plan.count)) { model.confirm() }
             Button("Cancel", role: .cancel) { model.cancel() }
         }
+    }
+
+    /// The same press with `copy`'s result line.
+    func resultCopy(_ copy: ResultCopy) -> Self {
+        var button = self
+        button.copy = copy
+        return button
     }
 
     private var isBusy: Bool {
@@ -116,19 +131,28 @@ struct InboxBulkPressButton: View {
     }
 
     /// The line under the button; nil when everything went and nothing was
-    /// skipped (the list shows it).
-    static func resultLine(_ result: InboxBulkResult) -> String? {
+    /// skipped (the list shows it). Skipped rows changed between the dry run
+    /// and the apply.
+    static func resultLine(_ result: InboxBulkResult, copy: ResultCopy = .closed) -> String? {
         switch result {
         case .done(0, 0):
-            "Nothing left to do."
+            return "Nothing left to do."
         case .done(_, 0):
-            nil
+            return nil
         case let .done(count, skipped):
-            "Done: \(count). \(skipped) were already closed."
+            switch copy {
+            case .closed: return "Done: \(count). \(skipped == 1 ? "1 was" : "\(skipped) were") already closed."
+            case .clearedIdeas: return "Cleared \(count). \(skipped) had changed meanwhile."
+            case .stoppedTracks: return "Stopped \(count). \(skipped) had changed meanwhile."
+            }
         case let .partial(done, total, error):
-            "Closed \(done) of \(total). \(error)"
+            switch copy {
+            case .closed: return "Closed \(done) of \(total). \(error)"
+            case .clearedIdeas: return "Cleared \(done) of \(total). \(error)"
+            case .stoppedTracks: return "Stopped \(done) of \(total). \(error)"
+            }
         case .failed(let error), .unconfirmed(let error):
-            error
+            return error
         }
     }
 }
@@ -142,11 +166,12 @@ struct InboxBulkPressButton: View {
 struct InboxBulkPressResult: View {
     @ObservedObject var model: InboxBulkPressModel
     var inline = false
+    var copy = InboxBulkPressButton.ResultCopy.closed
 
     var body: some View {
         if inline, case .finished(let result) = model.state, InboxBulkPressButton.offersTryAgain(result) {
             HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
-                if let line = InboxBulkPressButton.resultLine(result) {
+                if let line = InboxBulkPressButton.resultLine(result, copy: copy) {
                     Text(line)
                         .font(.caption)
                         .foregroundStyle(Tone.error)
@@ -158,7 +183,7 @@ struct InboxBulkPressResult: View {
                     .controlSize(.small)
             }
         } else if case .finished(let result) = model.state {
-            if let line = InboxBulkPressButton.resultLine(result) {
+            if let line = InboxBulkPressButton.resultLine(result, copy: copy) {
                 Text(line)
                     .font(.caption)
                     .foregroundStyle(.secondary)

@@ -136,6 +136,7 @@ struct InboxTracksNewsPane: View {
     private var quietPressButton: some View {
         InboxBulkPressButton(title: summary.showsStopQuiet ? "Stop Tracking Quiet Ones…" : nil,
                              confirmTitle: Self.confirmTitle, model: quietPress)
+            .resultCopy(.stoppedTracks)
             .controlSize(.small)
             .fixedSize()
     }
