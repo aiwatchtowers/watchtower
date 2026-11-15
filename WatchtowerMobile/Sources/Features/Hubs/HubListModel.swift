@@ -35,6 +35,11 @@ struct HubListItem: Identifiable, Equatable {
     /// the first one (the switcher's "asleep · 40 min ago").
     var lastHeartbeat: Date?
 
+    /// Its asks can still be answered from here: the Mac has not removed this
+    /// phone and its data opened. The chip's count and the list's line agree
+    /// on it (#1782).
+    var asksCount: Bool { !removedByMac && !unopened }
+
     /// The online dot: green only while online (`MacStatusRow`'s rule).
     var dotTone: PhoneTone { online ? .green : .secondary }
 

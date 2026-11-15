@@ -51,7 +51,10 @@ enum HubSwitcherTourPages {
             VStack(alignment: .leading, spacing: Spacing.regular) {
                 ForEach(frames.indices, id: \.self) { index in
                     SectionHeader(frames[index].0)
+                    // The live button branch: a chip that switches gets the
+                    // opener `hubSwitcher()` sets (one hub stays plain status).
                     HubSwitcherChipView(model: frames[index].1)
+                        .environment(\.openHubList) {}
                 }
             }
             .padding(.horizontal, Spacing.large)

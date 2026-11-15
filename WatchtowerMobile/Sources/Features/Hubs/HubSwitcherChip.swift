@@ -77,33 +77,59 @@ extension View {
     }
 }
 
-private struct HubSwitcherModifier: ViewModifier {
-    @Environment(AppEnvironment.self) private var env
-    @Environment(LinkingViewModel.self) private var linking
-    @State private var showsList = false
-    @State private var pending: HubListSheet.Choice?
+/// The list's open and close and the owner's choice (#1782): a pick closes
+/// the list at once and is held until the list is gone, then runs once.
+struct HubSwitcherFlow: Equatable {
+    var showsList = false
+    private(set) var pending: HubListSheet.Choice?
 
-    func body(content: Content) -> some View {
-        content
-            .environment(\.openHubList) { showsList = true }
-            .sheet(isPresented: $showsList, onDismiss: runPending) {
-                HubListSheet { choice in
-                    pending = choice
-                    showsList = false
-                }
-            }
+    mutating func open() {
+        pending = nil
+        showsList = true
     }
 
-    private func runPending() {
-        guard let choice = pending else { return }
-        pending = nil
+    /// A row or Add Mac was tapped: the list closes, no Done needed.
+    mutating func choose(_ choice: HubListSheet.Choice) {
+        pending = choice
+        showsList = false
+    }
+
+    /// On dismiss: the held choice, once (nil after a swipe down).
+    mutating func takePending() -> HubListSheet.Choice? {
+        defer { pending = nil }
+        return pending
+    }
+
+    /// Runs a choice: another hub with a session goes on screen (the current
+    /// one, or one with no session, changes nothing); Add Mac starts a scan.
+    @MainActor
+    static func run(_ choice: HubListSheet.Choice, env: AppEnvironment, startScan: () -> Void) {
         switch choice {
         case let .activate(hubID):
             if hubID != env.activeHubID, env.session(hubID) != nil {
                 env.activate(hubID)
             }
         case .addMac:
-            linking.startScan()
+            startScan()
         }
+    }
+}
+
+private struct HubSwitcherModifier: ViewModifier {
+    @Environment(AppEnvironment.self) private var env
+    @Environment(LinkingViewModel.self) private var linking
+    @State private var flow = HubSwitcherFlow()
+
+    func body(content: Content) -> some View {
+        content
+            .environment(\.openHubList) { flow.open() }
+            .sheet(isPresented: $flow.showsList, onDismiss: runPending) {
+                HubListSheet { flow.choose($0) }
+            }
+    }
+
+    private func runPending() {
+        guard let choice = flow.takePending() else { return }
+        HubSwitcherFlow.run(choice, env: env) { linking.startScan() }
     }
 }

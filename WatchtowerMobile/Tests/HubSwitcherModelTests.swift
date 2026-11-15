@@ -84,6 +84,39 @@ final class HubSwitcherModelTests: XCTestCase {
         XCTAssertFalse(chip.toneUses.contains { $0.tone == .waitingForYou })
     }
 
+    /// The chip and the list agree on whose asks count (`HubListItem.asksCount`).
+    func testTheChipAndTheListCountTheSameHubs() {
+        let items = [
+            item("a", "Acme Mac", active: true),
+            item("h", "Home Mac", asks: 1),
+            item("r", "Old Mac", asks: 5, removed: true),
+            item("u", "Broken Mac", asks: 6, unopened: true)
+        ]
+        let chip = HubSwitcherChipModel(name: "Acme Mac", state: .online, items: items, now: now)
+        let listed = items.filter { HubSwitcherRowModel($0, now: now).waiting != nil }.map(\.name)
+
+        XCTAssertEqual(chip.otherAsks, "+1 question on Home Mac")
+        XCTAssertEqual(listed, ["Home Mac"])
+    }
+
+    // MARK: - Picking a row
+
+    func testAPickClosesTheListAtOnceAndRunsOnceAfterIt() {
+        var flow = HubSwitcherFlow()
+        flow.open()
+        XCTAssertTrue(flow.showsList)
+
+        flow.choose(.activate("h"))
+
+        XCTAssertFalse(flow.showsList, "a row closes the list: no Done")
+        XCTAssertEqual(flow.takePending(), .activate("h"))
+        XCTAssertNil(flow.takePending(), "runs once")
+
+        flow.open()
+        flow.showsList = false
+        XCTAssertNil(flow.takePending(), "a swipe down picks nothing")
+    }
+
     // MARK: - The list
 
     func testEachRowSaysItsStateAndQuestionsWaiting() {
@@ -112,9 +145,10 @@ final class HubSwitcherModelTests: XCTestCase {
         XCTAssertEqual(removed.dotTone, .secondary)
 
         let broken = HubSwitcherRowModel(
-            item("u", "Broken Mac", online: false, unopened: true, problem: HubListModel.unopenedProblem), now: now
+            item("u", "Broken Mac", online: false, asks: 4, unopened: true, problem: HubListModel.unopenedProblem), now: now
         )
         XCTAssertFalse(broken.isEnabled)
+        XCTAssertNil(broken.waiting, "an unopened hub's asks count nowhere: the chip leaves them out too")
         XCTAssertEqual(broken.lines, [HubListModel.unopenedProblem])
         XCTAssertTrue(online.toneUses.contains { $0.role == .waiting && $0.tone == .waitingForYou })
     }

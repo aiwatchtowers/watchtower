@@ -171,6 +171,30 @@ final class HubSwitcherTests: XCTestCase {
         XCTAssertEqual(env.navigation.tab, .calendar, "the tab is kept")
     }
 
+    /// A row's pick, run once the list is gone, puts that hub on screen; the
+    /// current hub changes nothing; Add Mac starts a scan.
+    func testAPickedRowSwitchesHubsAndAddMacScans() throws {
+        let base = try makeBase()
+        let env = try makeEnvironment([try makeSession(TestHub.acme, base: base), try makeSession(TestHub.home, base: base)])
+        env.activate(TestHub.acme)
+        var flow = HubSwitcherFlow()
+        var scans = 0
+
+        flow.open()
+        flow.choose(.activate(TestHub.home))
+        XCTAssertFalse(flow.showsList)
+        try HubSwitcherFlow.run(XCTUnwrap(flow.takePending()), env: env) { scans += 1 }
+        XCTAssertEqual(env.activeHubID, TestHub.home)
+
+        HubSwitcherFlow.run(.activate(TestHub.home), env: env) { scans += 1 }
+        HubSwitcherFlow.run(.activate("no-such-hub"), env: env) { scans += 1 }
+        XCTAssertEqual(env.activeHubID, TestHub.home, "the current hub or one with no session changes nothing")
+        XCTAssertEqual(scans, 0)
+
+        HubSwitcherFlow.run(.addMac, env: env) { scans += 1 }
+        XCTAssertEqual(scans, 1)
+    }
+
     // MARK: - Helpers
 
     private func makeBase() throws -> URL {

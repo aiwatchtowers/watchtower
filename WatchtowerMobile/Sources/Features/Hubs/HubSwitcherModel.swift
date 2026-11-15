@@ -58,9 +58,7 @@ struct HubSwitcherChipModel: Equatable {
     init(name: String, state: MacChipState, items: [HubListItem], now: Date) {
         status = MacStatusChipModel(macName: name, state: state, now: now)
         switches = items.count > 1
-        // A hub the Mac removed can no longer take an answer; an unopened
-        // one shows no data.
-        let waiting = items.filter { !$0.isActive && !$0.removedByMac && !$0.unopened && $0.openAsks > 0 }
+        let waiting = items.filter { !$0.isActive && $0.asksCount && $0.openAsks > 0 }
         let count = waiting.reduce(0) { $0 + $1.openAsks }
         otherAsks = count > 0 ? HubSwitcherText.otherAsks(count, hubs: waiting.map(\.name)) : nil
         accessibilityLabel = [status.text, otherAsks].compactMap(\.self).joined(separator: ". ")
@@ -80,7 +78,8 @@ struct HubSwitcherRowModel: Equatable, Identifiable {
     let status: String
     let dotTone: PhoneTone
     let flavor: String?
-    /// "2 questions waiting"; nil with none, or on a hub the Mac removed.
+    /// "2 questions waiting"; nil with none, or on a hub whose asks don't
+    /// count (`HubListItem.asksCount`).
     let waiting: String?
     let lines: [String]
     let isActive: Bool
@@ -92,7 +91,7 @@ struct HubSwitcherRowModel: Equatable, Identifiable {
         status = HubSwitcherText.status(item, now: now)
         dotTone = item.online ? .green : item.lastHeartbeat == nil || item.removedByMac ? .secondary : .gray
         flavor = item.flavor
-        waiting = item.openAsks > 0 && !item.removedByMac ? HubSwitcherText.waiting(item.openAsks) : nil
+        waiting = item.openAsks > 0 && item.asksCount ? HubSwitcherText.waiting(item.openAsks) : nil
         lines = [item.transportLine, item.termLine, item.problem].compactMap(\.self)
         isActive = item.isActive
         // A hub whose data could not be opened never goes on screen: Forget
