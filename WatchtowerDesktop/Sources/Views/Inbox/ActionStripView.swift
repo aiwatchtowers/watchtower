@@ -523,7 +523,7 @@ struct ActionStripActionsView: View {
     @ViewBuilder
     private func readingPane(_ entry: InboxFolderEntry?) -> some View {
         switch entry {
-        case let .artifact(card)? where InboxFolderEntries.isSlackToday(card, vm.folderMenu.snapshot):
+        case let .artifact(card)? where InboxBuiltinPane.of(card, vm.folderMenu.snapshot) == .slackToday:
             let menu = artifactMenuState(card)
             pane(.output(card), menu: menu, slackToday: SlackTodayPane(
                 card: card, state: vm.folderMenu.snapshot.slackToday?.state ?? .none, now: now ?? Date(),
@@ -533,13 +533,14 @@ struct ActionStripActionsView: View {
                 .task(id: card.automationID) { await artifactMenu?.prepare(card) }
         case let .artifact(card)?:
             let menu = artifactMenuState(card)
-            let waiting = waitingPane(card)
+            let builtin = InboxBuiltinPane.of(card, vm.folderMenu.snapshot)
             pane(.output(card), menu: menu, header: AnyView(InboxArtifactPaneHeader(
                 content: InboxFolderEntries.content(.artifact(card), vm.entryInputs),
-                subtitle: waiting?.subtitle ?? InboxCardTexts.readingSourceLine(card, now: now ?? Date()),
+                subtitle: waitingSubtitle(builtin) ?? InboxCardTexts.readingSourceLine(card, now: now ?? Date()),
                 isHighPriority: card.priority == "high", menu: menu,
-                onOpenRun: waiting == nil ? onOpenAutomationRun.map { open in { open(card.runID) } } : nil,
-                onReactionCommands: { openAux(.reactionCommands) }, muteSenders: waiting?.muteSenders)))
+                onOpenRun: builtin.showsRunLink ? onOpenAutomationRun.map { open in { open(card.runID) } } : nil,
+                onReactionCommands: { openAux(.reactionCommands) },
+                muteSenders: builtin.offersMuteSenders ? muteSenders : nil)))
                 .task(id: card.automationID) { await artifactMenu?.prepare(card) }
         case let .legacyDay(card)?: pane(.day(vm.briefDay ?? card))
         case let .brief(action)?: pane(.proposal(action), header: helpHeader(entry))
@@ -638,19 +639,23 @@ struct ActionStripActionsView: View {
         return outcome
     }
 
-    /// Waiting for me's and Mail waiting's pane header lines (their counts
-    /// in place of the provenance line) and Mail waiting's **Mute
-    /// Senders…**; nil for any other artifact.
-    private func waitingPane(_ card: AutomationOutputCard) -> (subtitle: String, muteSenders: MuteSendersButton?)? {
+    /// Waiting for me's and Mail waiting's pane header lines: their counts
+    /// in place of the provenance line; nil for any other artifact.
+    private func waitingSubtitle(_ builtin: InboxBuiltinPane) -> String? {
         let snapshot = vm.folderMenu.snapshot
-        if card.automationID == snapshot.waitingForMe.automationID {
-            return (InboxWaitingTexts.peoplePaneSubtitle(snapshot.peopleWaiting), nil)
+        switch builtin {
+        case .waitingForMe: return InboxWaitingTexts.peoplePaneSubtitle(snapshot.peopleWaiting)
+        case .mailWaiting: return InboxWaitingTexts.mailPaneSubtitle(snapshot.mailSummary)
+        case .slackToday, .other: return nil
         }
-        guard card.automationID == snapshot.mailWaiting.automationID else { return nil }
-        return (InboxWaitingTexts.mailPaneSubtitle(snapshot.mailSummary), MuteSendersButton(
+    }
+
+    /// Mail waiting's **Mute Senders…**.
+    private var muteSenders: MuteSendersButton {
+        MuteSendersButton(
             load: { [vm] in try await vm.muteSenderCandidates() },
             mute: { [vm] in try await vm.writeSenderMute($0) },
-            onFinished: { [vm] in await vm.refresh() }))
+            onFinished: { [vm] in await vm.refresh() })
     }
 
     /// An entry's pane header with the `?` only: its row's tile, title and
@@ -769,18 +774,10 @@ struct ActionStripActionsView: View {
         )
     }
 
-    /// Waiting for me's entry in the folder: its artifact, else the Messages
-    /// entry standing in for it; nil while the folder lists neither.
+    /// Waiting for me's entry in the folder (`InboxBuiltinPane.waitingForMeEntryID`).
     private var waitingForMeEntryID: String? {
-        let entries = vm.folderEntries
-        if let automationID = vm.folderMenu.snapshot.waitingForMe.automationID,
-           let artifact = entries.first(where: { entry in
-               if case let .artifact(card) = entry { return card.automationID == automationID }
-               return false
-           }) {
-            return artifact.id
-        }
-        return entries.contains(.legacyMessages) ? InboxFolderEntry.legacyMessages.id : nil
+        InboxBuiltinPane.waitingForMeEntryID(vm.folderEntries,
+                                             waitingForMe: vm.folderMenu.snapshot.waitingForMe.automationID)
     }
 
     private func entryOpener(_ id: String) -> () -> Void {
