@@ -107,28 +107,21 @@ struct InboxListRow: View {
     }
 }
 
-/// A row's count: waits on the owner in the warning tone, news in the
-/// accent, a batch to go through quiet on the card fill.
+/// A row's count: the kit's `CountBadge`, warning when it waits on the
+/// owner, accent for news, quiet for a batch to go through.
 struct InboxRowPillView: View {
     let pill: InboxRowPill
 
     var body: some View {
-        Text("\(pill.count)")
-            .font(.caption2.weight(.semibold).monospacedDigit())
-            .foregroundStyle(pill.tone == .batch ? Color.secondary : Color.white)
-            .lineLimit(1)
-            .fixedSize()
-            .padding(.horizontal, Spacing.compact)
-            .padding(.vertical, Spacing.tight)
-            .background(Self.fill(pill.tone), in: Capsule())
+        CountBadge(text: "\(pill.count)", tone: Self.tone(pill.tone))
             .accessibilityIdentifier("inbox.row.pill")
     }
 
-    static func fill(_ tone: InboxRowPill.Tone) -> Color {
+    static func tone(_ tone: InboxRowPill.Tone) -> CountBadge.Tone {
         switch tone {
-        case .needsYou: Tone.warning
-        case .news: Color.accentColor
-        case .batch: Fill.card
+        case .needsYou: .warning
+        case .news: .accent
+        case .batch: .quiet
         }
     }
 }

@@ -288,10 +288,13 @@ struct DisplayPage: View {
                         ForEach(statuses, id: \.0) { Chip(text: $0.0, color: Tone.status($0.1), dot: true) }
                     }
                 }
-                Sample("CountBadge: a session's #id, a count", usage: "CountBadge(text: \"#42\")") {
+                Sample("CountBadge: a session's #id, a count; warning waits on you, quiet is a batch",
+                       usage: "CountBadge(text: \"#42\")  ·  CountBadge(text: \"12\", tone: .warning)") {
                     HStack(spacing: Spacing.regular) {
                         CountBadge(text: "#42")
                         CountBadge(text: "3")
+                        CountBadge(text: "12", tone: .warning)
+                        CountBadge(text: "13", tone: .quiet)
                     }
                 }
                 Sample("OutlineTag: a quiet tag (a session's agent)", usage: "OutlineTag(text: \"Codex\")") {
