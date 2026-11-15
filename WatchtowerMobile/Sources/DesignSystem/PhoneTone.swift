@@ -52,6 +52,11 @@ enum PhoneTone: Equatable, Sendable {
     }
 }
 
+/// The phone's page surface: what an opaque bar or a floating bar over scrolling rows sits on.
+enum PhoneSurface {
+    static let page = Color(.systemBackground)
+}
+
 /// What a coloured element is, decided by the screen model from the data it
 /// shows and independent of the tone it paints. Only waiting and ask
 /// elements, and a session record in a waiting state, may be orange.

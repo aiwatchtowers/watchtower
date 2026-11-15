@@ -133,6 +133,13 @@ final class ChatSearchModelTests: XCTestCase {
         XCTAssertEqual(row.age, "now")
     }
 
+    /// Review fix 6: a hit of a chat under its Undo bar or deleted is left out.
+    func testHitsOfHiddenChatsAreLeftOut() {
+        let found = DemoSeed.Chat.search(now: ChatFixture.now).hits.filter { $0.messageID != nil }
+        XCTAssertEqual(ChatHitRow.rows(found, hidden: [], now: ChatFixture.now).count, 2)
+        XCTAssertEqual(ChatHitRow.rows(found, hidden: [2], now: ChatFixture.now).map(\.route.id), [100])
+    }
+
     func testTheCopy() {
         XCTAssertEqual(ChatText.searching(.mac), "Searching on your Mac…")
         XCTAssertEqual(ChatListModel.titlesTitle, "Titles")

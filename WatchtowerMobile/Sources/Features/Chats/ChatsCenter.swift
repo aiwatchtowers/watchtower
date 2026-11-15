@@ -41,6 +41,8 @@ struct ChatsSnapshot: Equatable {
     var searches: [String: ChatSearch] = [:]
     /// The refusal's message while the newest chat action this phone sent was refused with `device_not_allowed`.
     var refusal: String?
+    /// The chats whose `chat_manage delete` the hub refused, by when the newest refused one was queued.
+    var refusedDeletes: [Int64: Date] = [:]
 
     nonisolated static func read(from db: Database, store: ReplicaStore, cache: ReplicaDecodeCache) throws -> Self {
         let versions = try store.kindVersions([.chatList, .chatSearch], from: db)
@@ -53,8 +55,20 @@ struct ChatsSnapshot: Equatable {
             let decoded = try store.payloads(of: .chatSearch, from: db).compactMap { try? ChatSearch.decode(payload: $0) }
             return Dictionary(decoded.map { ($0.query, $0) }) { _, newer in newer }
         }
-        snapshot.refusal = Self.refusal(in: try store.pendingActions(from: db))
+        let pending = try store.pendingActions(from: db)
+        snapshot.refusal = Self.refusal(in: pending)
+        snapshot.refusedDeletes = Self.refusedDeletes(in: pending)
         return snapshot
+    }
+
+    /// Every failed `chat_manage delete` by its chat, the newest queue time kept.
+    nonisolated static func refusedDeletes(in pending: [PendingAction]) -> [Int64: Date] {
+        var refused: [Int64: Date] = [:]
+        for row in pending where row.state == .failed && row.action.kind == .chatManage {
+            guard let params = try? ChatManageParams(wireParams: row.action.params), params.op == .delete else { continue }
+            refused[params.conversationID] = max(refused[params.conversationID] ?? .distantPast, row.createdAt)
+        }
+        return refused
     }
 
     /// The newest chat action's refusal for the grant; nil when that action went or waits.
@@ -115,6 +129,9 @@ final class ChatsCenter {
         guard value != snapshot else { return }
         if let list = value.list, list != snapshot.list {
             rowActions.prune(keeping: Set(list.conversations.map(\.id)))
+        }
+        if value.refusedDeletes != snapshot.refusedDeletes {
+            rowActions.restoreRefused(value.refusedDeletes)
         }
         snapshot = value
     }

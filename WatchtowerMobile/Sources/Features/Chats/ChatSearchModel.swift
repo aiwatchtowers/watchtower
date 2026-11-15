@@ -168,6 +168,11 @@ struct ChatHitRow: Identifiable, Equatable {
         age = ChatAge.label(hit.date, now: now, calendar: calendar)
     }
 
+    /// The "In messages" rows: the hits whose chat is not hidden (deleted, or under its Undo bar).
+    static func rows(_ hits: [ChatSearch.Hit], hidden: Set<Int64>, now: Date, calendar: Calendar = .current) -> [Self] {
+        hits.filter { !hidden.contains($0.conversationID) }.map { Self($0, now: now, calendar: calendar) }
+    }
+
     /// The snippet split at the hub's match markers; an unclosed marker runs to the end.
     static func segments(_ snippet: String) -> [Segment] {
         var segments: [Segment] = []
