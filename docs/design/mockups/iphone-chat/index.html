@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>iPhone chat mockups</title>
+<style>
+body{margin:0;padding:24px;background:#0f0f10;color:#e6e6e8;font-family:-apple-system,system-ui,sans-serif;font-size:13px}
+h1{font-size:18px}
+h2{font-size:14px;color:#a1a1a6;margin:32px 0 6px}
+.note{color:#8e8e93;font-size:12px;max-width:980px;margin:4px 0 12px}
+.row{display:flex;gap:22px;flex-wrap:wrap;align-items:flex-start}
+.cap{color:#a1a1a6;font-size:11px;margin:6px 0 0 4px;max-width:300px}
+/* phone frame */
+.ph{width:300px;height:600px;background:#000;border:1px solid #3a3a3c;border-radius:36px;padding:10px 0 0;display:flex;flex-direction:column;overflow:hidden;position:relative}
+.sb{display:flex;justify-content:space-between;padding:4px 26px 8px;font-size:11px;color:#e6e6e8}
+.nav{display:flex;align-items:center;gap:8px;padding:4px 14px 8px}
+.nav .t{font-size:17px;font-weight:600;flex:1}
+.nav .big{font-size:26px;font-weight:700}
+.nav .ic{color:#0a84ff;font-size:15px}
+.chip{font-size:10px;border-radius:9px;padding:1px 7px;background:#1f2a22;color:#7ee29a}
+.chip.off{background:#2c2c2e;color:#8e8e93}
+.body{flex:1;overflow:hidden;padding:0 12px}
+.tabs{display:flex;justify-content:space-around;border-top:1px solid #1c1c1e;padding:7px 0 18px;font-size:10px;color:#8e8e93}
+.tabs .on{color:#0a84ff}
+.sec{color:#8e8e93;font-size:10px;text-transform:uppercase;letter-spacing:.05em;margin:10px 2px 4px}
+.r{display:flex;gap:9px;align-items:flex-start;padding:8px 4px}
+.dot{width:7px;height:7px;border-radius:4px;margin-top:6px;flex:none}
+.d-ans{background:#0a84ff}.d-wait{background:#ff9f0a}.d-unread{background:#e6e6e8}.d-read{background:transparent;border:1px solid #48484a}
+.r .ti{font-weight:600;font-size:13px}
+.r .s2{color:#8e8e93;font-size:11px;margin-top:2px}
+.r .tm{color:#8e8e93;font-size:10px;margin-left:auto;white-space:nowrap}
+.fold{color:#8e8e93;font-size:12px;padding:8px 4px}
+.search{background:#1c1c1e;border-radius:9px;color:#8e8e93;padding:6px 10px;font-size:12px;margin:0 0 4px}
+/* feed */
+.own{background:#0a64d0;color:#fff;border-radius:16px 16px 4px 16px;padding:8px 11px;margin:8px 0 8px 46px;font-size:13px}
+.own .att{display:flex;gap:5px;margin-bottom:6px}
+.thumb{width:44px;height:44px;border-radius:8px;background:#5b7fae}
+.file{background:rgba(255,255,255,.18);border-radius:8px;padding:4px 7px;font-size:11px}
+.ans{font-size:13px;line-height:1.42;margin:6px 0}
+.ans h4{margin:6px 0 2px;font-size:14px}
+.ans ul{margin:2px 0;padding-left:18px}
+.ans code{font-family:ui-monospace,Menlo,monospace;font-size:11px;background:#1c1c1e;border-radius:4px;padding:0 3px}
+.steps{color:#8e8e93;font-size:11px;padding:4px 0;display:flex;gap:6px;align-items:center}
+.steps .ok{color:#7ee29a}.steps .bad{color:#ff6961}
+.src{display:inline-block;background:#1c1c1e;border-radius:10px;padding:3px 9px;color:#a1a1a6;font-size:11px;margin:4px 0}
+.card{background:#1c1c1e;border-radius:12px;padding:10px;margin:8px 0}
+.card .h{font-size:12px;font-weight:600;margin-bottom:4px}
+.card .k{color:#8e8e93;font-size:11px}
+.card .btns{display:flex;gap:8px;margin-top:8px}
+.b{border-radius:8px;padding:5px 12px;font-size:12px;background:#2c2c2e;color:#e6e6e8}
+.b.blue{background:#0a84ff;color:#fff}
+.b.org{background:#ff9f0a;color:#000}
+.b.red{color:#ff6961}
+.wait{border:1px solid #ff9f0a}
+.art{display:flex;gap:8px;align-items:center}
+.art .ico{width:28px;height:28px;border-radius:7px;background:#2c2c2e;display:flex;align-items:center;justify-content:center;font-size:12px}
+.err{border:1px solid #5c2b29}
+.err .h{color:#ff6961}
+.var{color:#8e8e93;font-size:11px;display:flex;gap:10px;align-items:center;margin:2px 0}
+.cursor{display:inline-block;width:6px;height:12px;background:#0a84ff;vertical-align:-1px}
+/* composer */
+.comp{display:flex;gap:7px;align-items:flex-end;padding:7px 10px 4px;border-top:1px solid #1c1c1e}
+.comp .plus{width:28px;height:28px;border-radius:14px;background:#1c1c1e;color:#a1a1a6;display:flex;align-items:center;justify-content:center}
+.comp .in{flex:1;background:#1c1c1e;border-radius:15px;padding:6px 11px;color:#8e8e93;font-size:13px;min-height:16px}
+.comp .send{width:28px;height:28px;border-radius:14px;background:#0a84ff;color:#fff;display:flex;align-items:center;justify-content:center;font-size:13px}
+.comp .stop{background:#e6e6e8;color:#000}
+.comp .dis{background:#2c2c2e;color:#636366}
+.ctx{display:flex;gap:6px;padding:4px 10px 0;font-size:10px;color:#8e8e93}
+.ctx span{background:#1c1c1e;border-radius:8px;padding:1px 7px}
+.line{color:#8e8e93;font-size:11px;text-align:center;padding:6px 14px}
+.line.org{color:#ff9f0a}
+.empty{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;height:100%;gap:8px;padding:0 20px}
+.empty .ti{font-size:15px;font-weight:600}
+.empty .s{color:#8e8e93;font-size:12px}
+.skel{background:#1c1c1e;border-radius:6px;height:11px;margin:9px 4px}
+.sheet{position:absolute;left:0;right:0;bottom:0;background:#1c1c1e;border-radius:14px 14px 0 0;padding:12px 14px 22px}
+.sheet .gr{width:36px;height:4px;border-radius:2px;background:#48484a;margin:0 auto 10px}
+.opt{padding:9px 2px;font-size:13px;border-bottom:1px solid #2c2c2e}
+.opt:last-child{border:none}
+.opt .k{color:#8e8e93;font-size:11px}
+/* mac */
+.mac{width:520px;background:#1e1e20;border:1px solid #3a3a3c;border-radius:12px;padding:14px 18px}
+.mac .own{margin-left:180px}
+.mac .comp{border:1px solid #3a3a3c;border-radius:10px;margin-top:8px}
+</style></head><body>
+<h1>AI chat on iPhone — mockups (spec 2026-11-15-iphone-chat-design.md)</h1>
+<p class="note">Dark appearance only here; the phone builds every screen from the Kit tokens (Tone, Spacing, Radius), so light follows. No live-install data: titles and text are neutral samples. The status-chip on the nav bar is the existing Mac chip. Orange stays reserved for "waiting for you" (an approval), per OrangeToneTests.</p>
+
+<h2>1 · Chat list</h2>
+<div class="row">
+<div><div class="ph"><div class="sb"><span>9:41</span><span>●●● 100%</span></div>
+<div class="nav"><span class="t big">Chats</span><span class="chip">Mac · Relay</span><span class="ic">✎</span></div>
+<div class="body">
+<div class="search">Search chats</div>
+<div class="sec">Pinned</div>
+<div class="r"><span class="dot d-wait"></span><div><div class="ti">Release checklist</div><div class="s2">Waiting for your approval</div></div><span class="tm">2m</span></div>
+<div class="sec">Recent</div>
+<div class="r"><span class="dot d-ans"></span><div><div class="ti">Q3 roadmap summary</div><div class="s2">Answering…</div></div><span class="tm">now</span></div>
+<div class="r"><span class="dot d-unread"></span><div><div class="ti">Who owns the billing API?</div><div class="s2">📁 acme-platform · New answer</div></div><span class="tm">14m</span></div>
+<div class="r"><span class="dot d-read"></span><div><div class="ti">Draft reply to the vendor</div><div class="s2">Email draft ready</div></div><span class="tm">1h</span></div>
+<div class="r"><span class="dot d-read"></span><div><div class="ti">Meeting prep for Thursday</div><div class="s2">You: and the open risks?</div></div><span class="tm">Mon</span></div>
+<div class="fold">▸ 23 older</div>
+</div>
+<div class="tabs"><span>Now</span><span>Workbench</span><span class="on">Chats</span><span>Calendar</span></div></div>
+<div class="cap">1a · Loaded. Dot precedence as on the Mac: waiting (orange) &gt; answering (blue) &gt; unread (white) &gt; read (ring). Second line = state or project + last line, from the hub's chat_list.</div></div>
+
+<div><div class="ph"><div class="sb"><span>9:41</span><span>●●● 100%</span></div>
+<div class="nav"><span class="t big">Chats</span><span class="chip">Mac · Relay</span><span class="ic">✎</span></div>
+<div class="body"><div class="empty"><div class="ti">No chats yet</div><div class="s">Ask anything about your Slack, mail, Jira, meetings and work. Your Mac answers with everything it knows.</div><div class="b blue">New chat</div></div></div>
+<div class="tabs"><span>Now</span><span>Workbench</span><span class="on">Chats</span><span>Calendar</span></div></div>
+<div class="cap">1b · Empty.</div></div>
+
+<div><div class="ph"><div class="sb"><span>9:41</span><span>●●● 100%</span></div>
+<div class="nav"><span class="t big">Chats</span><span class="chip">Mac · Relay</span><span class="ic">✎</span></div>
+<div class="body"><div class="skel" style="width:60%"></div><div class="skel"></div><div class="skel" style="width:80%"></div><div class="skel"></div><div class="skel" style="width:70%"></div><div class="line">Getting your chats from the Mac…</div></div>
+<div class="tabs"><span>Now</span><span>Workbench</span><span class="on">Chats</span><span>Calendar</span></div></div>
+<div class="cap">1c · Loading: first open after linking, no chat_list record yet.</div></div>
+
+<div><div class="ph"><div class="sb"><span>9:41</span><span>●●● 100%</span></div>
+<div class="nav"><span class="t big">Chats</span><span class="chip off">Mac · asleep</span><span class="ic" style="color:#48484a">✎</span></div>
+<div class="body">
+<div class="line">Your Mac is asleep. You can read chats; sending works when it wakes.</div>
+<div class="sec">Recent</div>
+<div class="r"><span class="dot d-read"></span><div><div class="ti">Q3 roadmap summary</div><div class="s2">Done</div></div><span class="tm">3h</span></div>
+<div class="r"><span class="dot d-read"></span><div><div class="ti">Who owns the billing API?</div><div class="s2">📁 acme-platform</div></div><span class="tm">5h</span></div>
+</div>
+<div class="tabs"><span>Now</span><span>Workbench</span><span class="on">Chats</span><span>Calendar</span></div></div>
+<div class="cap">1d · Mac offline (narrow scope: read only). The list is the last chat_list the phone holds; ✎ disabled.</div></div>
+</div>
+
+<div class="row" style="margin-top:22px">
+<div><div class="ph"><div class="sb"><span>9:41</span><span>●●● 100%</span></div>
+<div class="nav"><span class="t big">Chats</span><span class="chip off">Mac · iCloud</span></div>
+<div class="body"><div class="empty"><div class="ti">Chat works over Relay</div><div class="s">This Mac talks to your phone through iCloud. Chat needs Relay, which streams the answer as it is written.</div><div class="b blue">Switch to Relay…</div></div></div>
+<div class="tabs"><span>Now</span><span>Workbench</span><span class="on">Chats</span><span>Calendar</span></div></div>
+<div class="cap">1e · Hub on CloudKit (capability chat ≠ on, transport iCloud). The button opens Settings → Macs → this Mac.</div></div>
+
+<div><div class="ph"><div class="sb"><span>9:41</span><span>●●● 100%</span></div>
+<div class="nav"><span class="t big">Chats</span><span class="chip">Mac · Relay</span></div>
+<div class="body"><div class="empty"><div class="ti">Update Watchtower on your Mac</div><div class="s">This Mac's Watchtower is too old for chat on the phone.</div></div></div>
+<div class="tabs"><span>Now</span><span>Workbench</span><span class="on">Chats</span><span>Calendar</span></div></div>
+<div class="cap">1f · Old hub: no capabilities.chat key in its heartbeat.</div></div>
+
+<div><div class="ph"><div class="sb"><span>9:41</span><span>●●● 100%</span></div>
+<div class="nav"><span class="t big">Chats</span><span class="chip">Mac · Relay</span></div>
+<div class="body"><div class="empty"><div class="ti">Chat is off for this phone</div><div class="s">On the Mac: Settings → Mobile → this phone → allow Chat.</div></div></div>
+<div class="tabs"><span>Now</span><span>Workbench</span><span class="on">Chats</span><span>Calendar</span></div></div>
+<div class="cap">1g · Device not allowed (no chat grant). A server hub shows the <code>watchtower hub allow &lt;phone&gt; chat</code> line instead.</div></div>
+
+<div><div class="ph"><div class="sb"><span>9:41</span><span>●●● 100%</span></div>
+<div class="nav"><span class="t big">Chats</span><span class="chip">Mac · Relay</span></div>
+<div class="body"><div class="empty"><div class="ti">Couldn't load chats</div><div class="s">The Mac could not read its chats (database busy).</div><div class="b">Retry</div></div></div>
+<div class="tabs"><span>Now</span><span>Workbench</span><span class="on">Chats</span><span>Calendar</span></div></div>
+<div class="cap">1h · Error with Retry: chat_list carries error, no rows held yet. With rows held the error is a one-line banner over them.</div></div>
+</div>
+
+<h2>2 · Conversation</h2>
+<div class="row">
+<div><div class="ph"><div class="sb"><span>9:41</span><span>●●● 100%</span></div>
+<div class="nav"><span class="ic">‹</span><span class="t">Q3 roadmap summary</span><span class="ic">⋯</span></div>
+<div class="body">
+<div class="own">Summarise the Q3 roadmap threads and what is still open</div>
+<div class="steps"><span class="ok">✓</span> Searched Slack, Jira · 3 steps</div>
+<div class="ans"><h4>Q3 roadmap</h4><ul><li>Billing v2 is on track for August.</li><li>Search reindex slipped one sprint; owner: colleague A.</li><li>Mobile chat waits on the relay rollout.</li></ul>Two items are still open: the SSO deadline and the <code>export</code> API.</div>
+<div class="src">Sources · 6</div>
+<div class="var">‹ 2/2 › <span>↻ Regenerate</span><span>⧉ Copy</span></div>
+</div>
+<div class="ctx"><span>Auto · Claude</span><span>📁 none</span></div>
+<div class="comp"><span class="plus">+</span><span class="in">Ask a follow-up</span><span class="send dis">↑</span></div>
+<div style="height:16px"></div></div>
+<div class="cap">2a · Done turn. Steps row collapses the tool steps (tap → list with summaries); Sources opens a sheet; ‹ i/n › switches branches; long-press an owner bubble → Edit.</div></div>
+
+<div><div class="ph"><div class="sb"><span>9:41</span><span>●●● 100%</span></div>
+<div class="nav"><span class="ic">‹</span><span class="t">Q3 roadmap summary</span><span class="ic">⋯</span></div>
+<div class="body">
+<div class="own"><div class="att"><span class="thumb"></span><span class="file">plan.pdf</span></div>What changed in this plan vs last week?</div>
+<div class="steps"><span>◌</span> Reading Jira · get_jira_issue</div>
+<div class="ans">The plan moves the SSO deadline by two weeks and<span class="cursor"></span></div>
+</div>
+<div class="ctx"><span>Auto · Claude</span></div>
+<div class="comp"><span class="plus">+</span><span class="in">Ask a follow-up</span><span class="send stop">■</span></div>
+<div style="height:16px"></div></div>
+<div class="cap">2b · Busy: answering. Text streams (hub turn: ≤150 ms per update; a Mac-run turn: about 1 s). Send turns into Stop. The composer keeps a typed draft but Send waits for the turn to end.</div></div>
+
+<div><div class="ph"><div class="sb"><span>9:41</span><span>●●● 100%</span></div>
+<div class="nav"><span class="ic">‹</span><span class="t">Release checklist</span><span class="ic">⋯</span></div>
+<div class="body">
+<div class="own">Post the checklist to #release and move PROJ-12 to Done</div>
+<div class="steps"><span class="ok">✓</span> Drafted message · 2 steps</div>
+<div class="card wait"><div class="h">Send Slack message</div><div class="k">#release · acme</div><div style="font-size:12px;margin-top:4px">Release 1.4 checklist: ✅ notes ✅ tag ⏳ store review</div><div class="btns"><span class="b org">Approve</span><span class="b">Reject</span></div></div>
+<div class="card wait"><div class="h">Move PROJ-12 to Done</div><div class="k">Jira · acme</div><div class="btns"><span class="b org">Approve</span><span class="b">Reject</span></div></div>
+</div>
+<div class="comp"><span class="plus">+</span><span class="in">Ask a follow-up</span><span class="send stop">■</span></div>
+<div style="height:16px"></div></div>
+<div class="cap">2c · Waiting for approval (orange: the one "waiting for you" use). Approve sends the args hash of exactly what is shown; a phone without the permissions grant sees "Approve on the Mac".</div></div>
+
+<div><div class="ph"><div class="sb"><span>9:41</span><span>●●● 100%</span></div>
+<div class="nav"><span class="ic">‹</span><span class="t">Draft reply to the vendor</span><span class="ic">⋯</span></div>
+<div class="body">
+<div class="own">Draft a polite reply declining the renewal</div>
+<div class="ans">Here is a draft you can send from your mail app:</div>
+<div class="card"><div class="art"><span class="ico">✉</span><div><div class="h">Reply to vendor</div><div class="k">Email · v2</div></div></div></div>
+<div class="card err"><div class="h">The answer stopped</div><div class="k">Claude hit its usage limit. Try again in a few minutes.</div><div class="btns"><span class="b">Retry</span></div></div>
+</div>
+<div class="comp"><span class="plus">+</span><span class="in">Ask a follow-up</span><span class="send dis">↑</span></div>
+<div style="height:16px"></div></div>
+<div class="cap">2d · Artifact card (tap → artifact sheet, 3) and an error card with Retry (= regenerate, retryable codes only). A non-retryable error shows its text with no Retry.</div></div>
+</div>
+
+<div class="row" style="margin-top:22px">
+<div><div class="ph"><div class="sb"><span>9:41</span><span>●●● 100%</span></div>
+<div class="nav"><span class="ic">‹</span><span class="t">Who owns the billing API?</span><span class="chip off">asleep</span></div>
+<div class="body">
+<div class="own">Who owns the billing API?</div>
+<div class="ans">Colleague B leads it since March; colleague C reviews schema changes.</div>
+</div>
+<div class="line">Your Mac is asleep — sending works when it wakes.</div>
+<div class="comp"><span class="plus" style="color:#48484a">+</span><span class="in">Ask a follow-up</span><span class="send dis">↑</span></div>
+<div style="height:16px"></div></div>
+<div class="cap">2e · Narrow scope: Mac offline. The feed is the phone's own copy of the last feed it saw; nothing can be sent. A chat never opened before shows 2g.</div></div>
+
+<div><div class="ph"><div class="sb"><span>9:41</span><span>●●● 100%</span></div>
+<div class="nav"><span class="ic">‹</span><span class="t">Q3 roadmap summary</span><span class="ic">⋯</span></div>
+<div class="body">
+<div class="own">Summarise the Q3 roadmap threads</div>
+<div class="ans">The roadmap has three threads<span class="cursor" style="background:#8e8e93"></span></div>
+</div>
+<div class="line">Answering on your Mac — you can watch here.</div>
+<div class="comp"><span class="plus">+</span><span class="in">Ask a follow-up</span><span class="send stop">■</span></div>
+<div style="height:16px"></div></div>
+<div class="cap">2f · Busy elsewhere: the Mac app runs this turn. The phone watches it (about 1 s updates) and may Stop it — Stop goes to the hub, which cancels through the turn lease (spec §4.4).</div></div>
+
+<div><div class="ph"><div class="sb"><span>9:41</span><span>●●● 100%</span></div>
+<div class="nav"><span class="ic">‹</span><span class="t">Meeting prep for Thursday</span><span class="ic">⋯</span></div>
+<div class="body"><div class="skel" style="width:50%;margin-left:auto"></div><div class="skel"></div><div class="skel" style="width:75%"></div><div class="line">Opening the chat on your Mac…</div></div>
+<div class="comp"><span class="plus">+</span><span class="in">Ask a follow-up</span><span class="send dis">↑</span></div>
+<div style="height:16px"></div></div>
+<div class="cap">2g · Loading the feed (chat_feed_request sent, no record yet). After 30 s without one: "The Mac did not answer" + Retry.</div></div>
+
+<div><div class="ph"><div class="sb"><span>9:41</span><span>●●● 100%</span></div>
+<div class="nav"><span class="ic">‹</span><span class="t">New chat</span></div>
+<div class="body"><div class="empty"><div class="ti">Ask your Mac</div><div class="s">It answers with your Slack, mail, Jira, meetings and memory.</div></div></div>
+<div class="ctx"><span>Auto · Claude ⌄</span><span>📁 No project ⌄</span></div>
+<div class="comp"><span class="plus">+</span><span class="in">Message</span><span class="send dis">↑</span></div>
+<div style="height:16px"></div></div>
+<div class="cap">2h · Empty: new chat. Model and project pickers sit above the composer; they lock after the first message (as on the Mac, a change starts a fresh session).</div></div>
+</div>
+
+<h2>3 · Sheets</h2>
+<div class="row">
+<div><div class="ph"><div class="sb"><span>9:41</span><span>●●● 100%</span></div>
+<div class="nav"><span class="ic">‹</span><span class="t">New chat</span></div><div class="body"></div>
+<div class="sheet"><div class="gr"></div>
+<div class="opt">📷 Take photo</div><div class="opt">🖼 Photo library</div><div class="opt">📄 Files<div class="k">PDF, text, code — up to 30 MB per message</div></div></div></div>
+<div class="cap">3a · + menu. Dictation is the keyboard's own mic (no app code).</div></div>
+
+<div><div class="ph"><div class="sb"><span>9:41</span><span>●●● 100%</span></div>
+<div class="nav"><span class="ic">‹</span><span class="t">Reply to vendor</span><span class="ic">v2 ⌄</span></div>
+<div class="body"><div class="card"><div class="k">To</div><div>vendor@example.com</div><div class="k" style="margin-top:6px">Subject</div><div>Re: renewal</div><div class="k" style="margin-top:6px">Body</div><div style="font-size:12px">Hello, thank you for the offer. We have decided not to renew this year…</div></div>
+<div class="btns" style="display:flex;gap:8px"><span class="b blue">Open in Mail</span><span class="b">Copy</span><span class="b">Share</span></div></div>
+</div>
+<div class="cap">3b · Artifact sheet (email). Only open or copy (CHAT-05): Open in Mail = mailto:, event = Google Calendar template URL, Slack = copy + open the Slack app. document/table/code render as Markdown; html in a sandboxed web view with no network.</div></div>
+
+<div><div class="ph"><div class="sb"><span>9:41</span><span>●●● 100%</span></div>
+<div class="nav"><span class="ic">‹</span><span class="t">Q3 roadmap summary</span></div><div class="body"></div>
+<div class="sheet"><div class="gr"></div>
+<div class="sec">Slack</div><div class="opt">#roadmap · thread from Tuesday<div class="k">“billing v2 is on track…”</div></div>
+<div class="sec">Jira</div><div class="opt">PROJ-881 SSO deadline<div class="k">In progress</div></div><div class="opt">PROJ-902 export API</div></div></div>
+<div class="cap">3c · Sources sheet, grouped as on the Mac (Source.group). Links open in the matching app or Safari.</div></div>
+</div>
+
+<h2>4 · Mac side</h2>
+<div class="row">
+<div><div class="mac">
+<div style="font-weight:600;margin-bottom:6px">Q3 roadmap summary</div>
+<div class="own">Summarise the Q3 roadmap threads</div>
+<div class="ans">The roadmap has three threads<span class="cursor"></span></div>
+<div class="comp"><span class="in">Answering from your iPhone — you can watch here</span><span class="send stop">■</span></div>
+</div>
+<div class="cap" style="max-width:520px">4a · A phone-run turn seen on the Mac (DesignShotCatalog entry <code>chat-phone-turn</code>). The feed reads the rows the hub writes; Stop cancels through the lease. The Chats panel row shows the usual "answering" state. The line text is set in the model and tested.</div></div>
+</div>
+</body></html>
