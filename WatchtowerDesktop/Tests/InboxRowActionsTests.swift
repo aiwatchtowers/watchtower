@@ -851,7 +851,7 @@ final class InboxRowActionsTests: XCTestCase {
     func testFailedMuteShowsOnTheRowAndRetryWritesTheRule() async throws {
         let ref = InboxRef(kind: .mailSender, key: "News@Example.com")
         try seedMailSender(key: ref.key, permalink: "")
-        try pool.write { db in
+        try await pool.write { db in
             try db.execute(sql: """
                 CREATE TRIGGER fail_rule BEFORE INSERT ON inbox_learned_rules
                 BEGIN SELECT RAISE(ABORT, 'disk is busy'); END
@@ -866,7 +866,7 @@ final class InboxRowActionsTests: XCTestCase {
             return XCTFail("the failure shows on the row: \(String(describing: hooks(vm).content(ref, .inbox)))")
         }
 
-        try pool.write { db in try db.execute(sql: "DROP TRIGGER fail_rule") }
+        try await pool.write { db in try db.execute(sql: "DROP TRIGGER fail_rule") }
         await handler(vm).press(.retryFailedPress, on: ref)
         let scope = try await pool.read { db in
             try String.fetchOne(db, sql: "SELECT scope_key FROM inbox_learned_rules WHERE rule_type = 'source_mute'")
