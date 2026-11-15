@@ -71,24 +71,24 @@ The ceiling is ≈ 1,200 / (V/100), whatever the cadence. Excluding channels doe
 
 ---
 
-## Decisions made by the agent (for one owner ask)
+## Decisions made by the agent (accepted in ask #1350)
 
-1. **Keep ingestion-ordered inbox detection** (`messages.synced_at`; INBOX-09 extension already approved). Adaptive cadence skips Slack in some cycles while the shared Inbox watermark keeps moving, and resumed pages store messages after the watermark passed their timestamps. The alternative is to freeze the watermark whenever an account's Slack run is skipped. That needs no migration, but it holds detection for every source for up to 60 minutes and does not fix search's indexing lag, which already loses late-indexed messages today. Recommended: `synced_at`.
-2. **Resume position and the learned rate live in memory** on the orchestrator and the client. A restart re-reads the window (idempotent upserts) and starts at 40/min, relearning from the first 429s. Recommended: in memory; persisting them needs another migration for little gain.
-3. **Mentions in an excluded channel are still stored.** Recommended: yes (attention beats the exclusion). Alternative: exclusion drops everything.
-4. **Data already stored in a channel the user excludes stays.** It stops being digested only if it is also muted, which the **Stop syncing** button does in the same write. Recommended: keep it and mute it; a purge would be a new deletion path.
-5. **The Stop syncing suggestion rule**: a channel muted for AI for 30+ days with no message from the user and no mention of the user in that time, or one with ≥ 90% bot messages and no value signals. Recommended as written; it reuses the mute rule's inputs.
-6. **The fetch deadline is 10 minutes per Slack run per account** (`slackFetchDeadline`), so the rest of the cycle (the pipelines) never waits behind a rate-limited account. **The cadence cap is 60 minutes** (`cadenceMax`), so a backed-off account is never more than an hour behind. Both are in ask #1346.
-8. **The suggestion thresholds are 30 days muted and 90% bot messages** (decision 5; ask #1346).
-9. **The AIMD numbers:** per-tier buckets that start at Slack's documented tier rate (20/50/100 per minute), probe up to twice that, and halve on a 429 down to a quarter; +1/+2/+5 per 20 successes.
-10. **Cadence volume thresholds:** `heavyPages = 5` resets the interval to base; `quietMessages = 5` over `quietRuns = 3` runs lengthens it one step (the streak then restarts).
-11. **Sync again catches up the excluded period** with a one-off history fetch of that channel (`catchupPagesPerRun = 5` pages per run, one channel at a time), and un-mutes only if Stop syncing had muted it (`muted_by_exclusion`).
-7. **An excluded channel reads `channel_in_scope: false`** in the chat's `coverage`, so the chat uses Live for it (plan A's rule extended).
+1. **Keep ingestion-ordered inbox detection** (`messages.synced_at`; INBOX-09 extension already approved). Adaptive cadence skips Slack in some cycles while the shared Inbox watermark keeps moving, and resumed pages store messages after the watermark passed their timestamps. The alternative is to freeze the watermark whenever an account's Slack run is skipped. That needs no migration, but it holds detection for every source for up to 60 minutes and does not fix search's indexing lag, which already loses late-indexed messages today. Recommended: `synced_at`. Source: ask #1350.
+2. **Resume position and the learned rate live in memory** on the orchestrator and the client. A restart re-reads the window (idempotent upserts) and starts at 40/min, relearning from the first 429s. Recommended: in memory; persisting them needs another migration for little gain. Source: ask #1350.
+3. **Mentions in an excluded channel are still stored.** Recommended: yes (attention beats the exclusion). Alternative: exclusion drops everything. Source: ask #1350.
+4. **Data already stored in a channel the user excludes stays.** It stops being digested only if it is also muted, which the **Stop syncing** button does in the same write. Recommended: keep it and mute it; a purge would be a new deletion path. Source: ask #1350.
+5. **The Stop syncing suggestion rule**: a channel muted for AI for 30+ days with no message from the user and no mention of the user in that time, or one with ≥ 90% bot messages and no value signals. Recommended as written; it reuses the mute rule's inputs. Source: ask #1350.
+6. **The fetch deadline is 10 minutes per Slack run per account** (`slackFetchDeadline`), so the rest of the cycle (the pipelines) never waits behind a rate-limited account. **The cadence cap is 60 minutes** (`cadenceMax`), so a backed-off account is never more than an hour behind. Both are in ask #1346. Source: ask #1350.
+7. **An excluded channel reads `channel_in_scope: false`** in the chat's `coverage`, so the chat uses Live for it (plan A's rule extended). Source: ask #1350.
+8. **The suggestion thresholds are 30 days muted and 90% bot messages** (decision 5; ask #1346). Source: ask #1350.
+9. **The AIMD numbers:** per-tier buckets that start at Slack's documented tier rate (20/50/100 per minute), probe up to twice that, and halve on a 429 down to a quarter; +1/+2/+5 per 20 successes. Source: ask #1350.
+10. **Cadence volume thresholds:** `heavyPages = 5` resets the interval to base; `quietMessages = 5` over `quietRuns = 3` runs lengthens it one step (the streak then restarts). Source: ask #1350.
+11. **Sync again catches up the excluded period** with a one-off history fetch of that channel (`catchupPagesPerRun = 5` pages per run, one channel at a time), and un-mutes only if Stop syncing had muted it (`muted_by_exclusion`). Source: ask #1350.
 
-## Contract changes needing owner approval
+## Contract changes (all approved)
 
 - **INBOX-09** — approved (ask #1337): Slack detectors compare the watermark with `synced_at`. Its guards stay untouched: a trigger stamps every other insert with the insert time, so existing fixtures behave as before.
-- **New, needs approval: SYNCEX-01 — Stop syncing is honoured on every save path.** A channel with `sync_excluded = 1` gets no new message rows from the forward search, the deletion sweep, the history backfill or `sync --full/--channels`, except messages mentioning the account's user. Guard `TestSYNCEX01_EveryPathHonoursExclusion` (Task 5). A new inventory file entry in Task 7.
+- **SYNCEX-01 — Stop syncing is honoured on every save path (approved in ask #1350).** A channel with `sync_excluded = 1` gets no new message rows from the forward search, the deletion sweep, the history backfill or `sync --full/--channels`, except messages mentioning the account's user. Guard `TestSYNCEX01_EveryPathHonoursExclusion` (Task 5). A new inventory file entry in Task 7.
 - BACKFILL-01 and SRCDEL-01/02 — approved, but this plan no longer needs them (the blanket search, the first-sync rule and the live diff stay as they are).
 - Spec: §2 is replaced by D16 (this branch); D3 and D12 are marked superseded.
 
@@ -235,7 +235,7 @@ The ceiling is ≈ 1,200 / (V/100), whatever the cadence. Excluding channels doe
 - Create: `internal/db/migrations/<next>_channel_sync_excluded.sql` — on `channel_settings`: `sync_excluded INTEGER NOT NULL DEFAULT 0`, `excluded_at TEXT NOT NULL DEFAULT ''`, `catchup_from REAL` (NULL = no catch-up pending; the fixed lower bound), `catchup_to REAL` (the moving upper bound), `muted_by_exclusion INTEGER NOT NULL DEFAULT 0`, `muted_at TEXT NOT NULL DEFAULT ''`, then `UPDATE channel_settings SET muted_at = updated_at WHERE is_muted_for_llm = 1;` (+ Down); `schema.sql`, golden, Swift test schema.
 - Modify:
   - `internal/db/channel_settings.go`:
-    - `SetSyncExcluded(channelID string, excluded bool, now time.Time) error`, one write. **Stop syncing**: `sync_excluded = 1`, `excluded_at = now`, `catchup_from = NULL`; if the channel was not muted, it mutes it and sets `muted_by_exclusion = 1`. **Sync again**: `sync_excluded = 0`, `catchup_from = <excluded_at as unix>`, `catchup_to = now` (from `now` on the forward search covers the channel); it un-mutes only when `muted_by_exclusion = 1`, then clears that flag. A mute the user set themselves stays.
+    - `SetSyncExcluded(channelID string, excluded bool, now time.Time) error`, one write. **Stop syncing**: `sync_excluded = 1`; `excluded_at = now`, except during an unfinished catch-up, where it is set to that catch-up's `catchup_from` (the earliest point not yet known to be covered) so the next Sync again covers the old window as well; `catchup_from = catchup_to = NULL`; if the channel was not muted, it mutes it and sets `muted_by_exclusion = 1`. **Sync again**: `sync_excluded = 0`, `catchup_from = <excluded_at as unix>`, `catchup_to = now` (from `now` on the forward search covers the channel); it un-mutes only when `muted_by_exclusion = 1`, then clears that flag. A mute the user set themselves stays.
     - `SyncExcludedChannelIDs(accountID int64) (map[string]bool, error)`.
     - `PendingCatchups(accountID int64) ([]Catchup, error)` (`Catchup{ChannelID string; From, To float64}`), `AdvanceCatchup(channelID string, to float64) error` (`UPDATE … SET catchup_to = ? WHERE channel_id = ? AND sync_excluded = 0 AND catchup_to > ?`; it only moves down) and `FinishCatchup(channelID string) error` (clears both).
     - `muted_at` writers: `SetMuteForLLM`/`ToggleMuteForLLM` set it to now only when the mute turns on, clear it when it turns off, and clear `muted_by_exclusion` on any manual change; `SetSyncExcluded` sets it when it mutes; the Swift twin `ChannelStatsQueries.toggleMuteForLLM` does the same. `SetFavorite`/`ToggleFavorite` never touch it.
@@ -256,7 +256,7 @@ The ceiling is ≈ 1,200 / (V/100), whatever the cadence. Excluding channels doe
   - `TestSyncAgain_CatchesUpExcludedPeriod`: excluded on day 1, included on day 10, with 12 pages (×999) of messages in between. Run 1 fetches 5 pages and `catchup_to` drops to the oldest ts of page 5, run 2 fetches 5 more, run 3 fetches 2 and finishes. Every message of days 1–10 is stored exactly once (the request log shows each `latest` equal to the previous page's oldest ts), both columns are cleared, and none of these messages is detected in the Inbox.
   - `TestSyncAgain_CatchupSurvivesRestart`: after run 1, a new orchestrator over the same DB continues at `catchup_to` and the final set is the same.
   - `TestSyncAgain_CatchupResumesAfter429`: a 429 on page 3 of a run leaves `catchup_to` at page 2's oldest ts.
-  - `TestSyncAgain_StopSyncingDuringCatchup`: an exclusion between two runs clears the catch-up, and a late `AdvanceCatchup` changes nothing.
+  - `TestSyncAgain_StopSyncingDuringCatchup`: excluded on day 1, included on day 10 (12 pages pending). After run 1 (5 pages) the channel is excluded again on day 11: the catch-up columns are cleared, `excluded_at` is day 1, and a late `AdvanceCatchup` changes nothing. Included again on day 15, the following runs finish: every message of days 1–15 is stored exactly once (overlap with the pages saved in run 1 is upserted), and both columns are cleared.
   - `TestSyncAgain_UnmutesOnlyIfStopSyncingMuted` (muted before Stop syncing → stays muted after Sync again; not muted before → un-muted).
   - `TestMutedAt_FavoriteToggleDoesNotReset`, `TestMutedAt_SetOnMuteClearedOnUnmute`.
   - `TestSetSyncExcluded_AlsoMutes`.
