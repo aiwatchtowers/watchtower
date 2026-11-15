@@ -87,7 +87,9 @@ struct InboxArtifactPaneHeader: View {
     /// Mail waiting's **Mute Senders…**; nil draws none.
     var muteSenders: MuteSendersButton?
     /// A pane's own button before Run Now (`leadingAction(_:)`); nil = none.
-    private var leading: AnyView?
+    /// Not private: Swift 6.3 (CI) makes the memberwise init private when a
+    /// stored property is, even one with a default.
+    var leading: AnyView?
 
     private var offersRunNow: Bool {
         menu?.entries.contains { $0.command == .runNow } ?? false
