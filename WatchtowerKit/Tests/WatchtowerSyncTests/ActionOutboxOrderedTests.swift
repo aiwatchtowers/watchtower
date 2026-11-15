@@ -921,6 +921,33 @@ final class ActionOutboxOrderedTests: XCTestCase {
         XCTAssertEqual(try pending(phone, one.id)?.undeliveredReason, .noAnswer)
     }
 
+    /// A chat send's give-up (iPhone chat spec §6.3): a row never written goes at once; a written one goes while its
+    /// record is still the phone's; one the hub answered stays to be settled by its echo.
+    func testWithdrawingOneActionTakesItBackOnlyWhileTheHubCannotHaveIt() async throws {
+        let phone = try await makePhone()
+        let queued = try await insert(phone)
+        let unwritten = try await phone.outbox.withdraw(actionID: queued.id)
+        XCTAssertEqual(unwritten, .withdrawn)
+        XCTAssertNil(try pending(phone, queued.id), "the overlay row goes with it")
+
+        let sent = try await insert(phone)
+        _ = try await phone.outbox.flush()
+        let wireName = try XCTUnwrap(row(phone, sent.id)).wireName
+        let written = try await phone.outbox.withdraw(actionID: sent.id)
+        XCTAssertEqual(written, .withdrawn)
+        let stored = try await current(phone, wireName)
+        XCTAssertNil(stored, "its record is deleted")
+
+        let answered = try await insert(phone)
+        _ = try await phone.outbox.flush()
+        try await hubWrites(phone, echo(answered.id, seq: answered.seq, status: .received))
+        let late = try await phone.outbox.withdraw(actionID: answered.id)
+        XCTAssertEqual(late, .onItsWay, "the hub took it: its echo settles it")
+        XCTAssertNotNil(try pending(phone, answered.id))
+        let gone = try await phone.outbox.withdraw(actionID: "unknown")
+        XCTAssertEqual(gone, .notWaiting)
+    }
+
     func testAWithdrawalThatMeetsAnEchoSettlesInstead() async throws {
         let phone = try await makePhone()
         let one = try await insert(phone)

@@ -231,6 +231,12 @@ final class ScreenshotTourTests: XCTestCase {
             ChatsShot(center: center(nil), heartbeat: heartbeat(chat: "off", reason: .policy), route: relay)
         )
 
+        let approving = DeviceGrant(
+            deviceID: DemoSeed.device.deviceID, hubID: DemoSeed.hubID, name: DemoSeed.device.name, scope: .private, linked: true,
+            typingAllowed: true, startSessionsAllowed: true, permissionsAllowed: true, chatAllowed: true
+        )
+        rows += try await captureConversations(host: host, list: list, heartbeat: on, relay: relay, grant: approving, now: now)
+
         // 1d: the Mac asleep (its heartbeat 40 min old), the last list the phone holds.
         let stale = now.addingTimeInterval(-2_400)
         let beat = try XCTUnwrap(DemoSeed.records(now: stale).first { $0.recordName == HeartbeatPayload.recordName })
@@ -248,11 +254,72 @@ final class ScreenshotTourTests: XCTestCase {
         return rows
     }
 
+    /// C2a–C2i, C3a–C3c (iPhone chat mockups 2a–2i, 3a–3c): each conversation in the full app over its own center;
+    /// the sheets on their own.
+    private func captureConversations(
+        host: ScreenshotHost, list: ChatList, heartbeat: HeartbeatPayload, relay: HubRoute, grant: DeviceGrant, now: Date
+    ) async throws -> [ScreenshotHost.IndexRow] {
+        typealias Feeds = DemoSeed.Chat.Feeds
+        let env = host.env
+        var rows: [ScreenshotHost.IndexRow] = []
+        let holds: @Sendable (Duration) async throws -> Void = { _ in try await Task.sleep(for: .seconds(86_400)) }
+        func center(_ feed: ChatFeed?) -> ChatsCenter {
+            let center = ChatsCenter(sender: ChatSender { _, _ in "" }, sleep: holds)
+            var snapshot = ChatsSnapshot(list: list)
+            if let feed { snapshot.feeds[feed.conversation.id] = ChatFeedEntry(feed: feed, payload: Data()) }
+            center.apply(snapshot)
+            return center
+        }
+        func shot(
+            _ number: String, _ slug: String, _ reached: String, _ route: ChatRoute, _ center: ChatsCenter, mac: MacReachability = .online
+        ) async throws {
+            env.navigation.tab = .chats
+            env.navigation.chatsPath = [route]
+            let chats = ChatsShot(center: center, heartbeat: heartbeat, route: relay, grant: grant, mac: mac)
+            try await host.captureThree("\(number)-\(slug)", RootTabView(chatsShot: chats))
+            rows.append(ScreenshotHost.IndexRow(
+                number: number, view: "ChatConversationView", source: "Features/Chats/ChatConversationView.swift",
+                reached: "full app, \(reached), light/dark/narrow"
+            ))
+        }
+        func sheet(_ number: String, _ slug: String, _ view: some View, _ source: String) async throws {
+            try await host.captureThree("\(number)-\(slug)", view)
+            rows.append(ScreenshotHost.IndexRow(number: number, view: source, source: "Features/Chats/\(source).swift", reached: "sheet alone"))
+        }
+        try await shot("C2a", "chat-done", "a finished turn", ChatRoute(id: Feeds.roadmap), center(Feeds.done(now: now)))
+        try await shot("C2b", "chat-answering", "the hub answers", ChatRoute(id: Feeds.roadmap), center(Feeds.busy(now: now)))
+        try await shot("C2c", "chat-approvals", "two actions wait", ChatRoute(id: Feeds.release), center(Feeds.waiting(now: now)))
+        try await shot("C2d", "chat-artifact-error", "an artifact and a stopped answer", ChatRoute(id: Feeds.vendor),
+                       center(Feeds.artifactAndError(now: now)))
+        try await shot("C2e", "chat-mac-asleep", "the held copy, the Mac asleep", ChatRoute(id: Feeds.billing), center(Feeds.held(now: now)),
+                       mac: .asleep(lastSeen: now.addingTimeInterval(-2_400)))
+        try await shot("C2f", "chat-answering-on-mac", "the Mac runs the turn", ChatRoute(id: Feeds.roadmap), center(Feeds.elsewhere(now: now)))
+        try await shot("C2g", "chat-loading", "no feed yet", ChatRoute(id: Feeds.meeting), center(nil))
+        try await shot("C2h", "chat-new", "a new chat", .new, center(nil))
+        let quoting = center(Feeds.quoting(now: now))
+        quoting.drafts.update(Feeds.roadmap) { $0.quotes = [Feeds.quote] }
+        try await shot("C2i", "chat-quote", "a quote waits, older history above", ChatRoute(id: Feeds.roadmap), quoting)
+
+        let menu = NavigationStack {
+            Color.clear
+                .navigationTitle(ChatConversationModel.newChatTitle)
+                .navigationBarTitleDisplayMode(.inline)
+                .safeAreaInset(edge: .bottom) { ChatAttachmentMenu { _ in }.padding(.bottom, Spacing.wide).background(.regularMaterial) }
+        }
+        try await sheet("C3a", "chat-attach-menu", menu, "ChatAttachmentPicker")
+        let vendor = center(Feeds.artifactAndError(now: now)).conversation(ChatRoute(id: Feeds.vendor))
+        let email = try XCTUnwrap(vendor.artifact("reply-to-vendor"))
+        try await sheet("C3b", "chat-artifact-email", ChatArtifactSheet(artifact: email, host: .mac), "ChatArtifactSheet")
+        try await sheet("C3c", "chat-sources", ChatSourcesSheet(sources: Feeds.roadmapSources), "ChatSourcesSheet")
+        env.navigation.chatsPath = []
+        return rows
+    }
+
     /// A chat center showing `list` and `searches`, its sends going nowhere.
     private static func chatCenter(
         _ list: ChatList?, searches: [String: ChatSearch] = [:], sleep: @escaping @Sendable (Duration) async throws -> Void = { _ in }
     ) -> ChatsCenter {
-        let center = ChatsCenter(sender: ChatSender { _, _ in }, sleep: sleep)
+        let center = ChatsCenter(sender: ChatSender { _, _ in "" }, sleep: sleep)
         center.apply(ChatsSnapshot(list: list, searches: searches))
         return center
     }

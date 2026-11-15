@@ -196,10 +196,32 @@ public struct ChatFeed: SliceMirror, Equatable {
     public struct Siblings: Hashable, Sendable, Decodable {
         public let index: Int
         public let count: Int
+        /// The siblings' message ids in order, sent only when there are two or more: ‹ and › select the one before
+        /// or after (`chat_branch_select`).
+        public let ids: [Int64]
 
-        public init(index: Int = 1, count: Int = 1) {
+        public init(index: Int = 1, count: Int = 1, ids: [Int64] = []) {
             self.index = index
             self.count = count
+            self.ids = ids
+        }
+
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            index = try c.decodeIfPresent(Int.self, forKey: .index) ?? 1
+            count = try c.decodeIfPresent(Int.self, forKey: .count) ?? 1
+            ids = try c.decodeIfPresent([Int64].self, forKey: .ids) ?? []
+        }
+
+        /// The sibling `step` places away (-1 = ‹, +1 = ›); nil at either end or without the ids.
+        public func neighbour(_ step: Int) -> Int64? {
+            let target = index - 1 + step
+            guard ids.count == count, ids.indices.contains(target) else { return nil }
+            return ids[target]
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case index, count, ids
         }
     }
 

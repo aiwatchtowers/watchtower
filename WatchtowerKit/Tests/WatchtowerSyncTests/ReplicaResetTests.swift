@@ -96,6 +96,28 @@ final class ReplicaResetTests: XCTestCase {
         XCTAssertTrue(none.isEmpty)
     }
 
+    /// The seqs of one kind's records by plain name; a rewrite moves its record's seq only.
+    func testRecordSeqsMoveWithARewrite() async throws {
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
+        let transport = InMemoryCloudTransport()
+        let stamp = Date().rounded()
+        func record(_ id: String, _ body: String) throws -> CloudRecord {
+            try sealed(CloudRecordFactory.record(for: SliceRecord(kind: .workbench, id: id, modifiedAt: stamp, payload: Data(body.utf8))))
+        }
+        try await transport.save([try heartbeatRecord(at: stamp), try record("1", "{\"id\":1}"), try record("2", "{\"id\":2}")])
+        _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
+        let first = try await store.reader.read { db in try store.recordSeqs(of: .workbench, from: db) }
+        XCTAssertEqual(Set(first.keys), ["workbench-1", "workbench-2"])
+
+        try await transport.save([try record("2", "{\"id\":2,\"x\":1}")])
+        _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
+        let second = try await store.reader.read { db in try store.recordSeqs(of: .workbench, from: db) }
+        XCTAssertEqual(second["workbench-1"], first["workbench-1"])
+        XCTAssertNotEqual(second["workbench-2"], first["workbench-2"])
+        let none = try await store.reader.read { db in try store.recordSeqs(of: .ownerAsk, from: db) }
+        XCTAssertTrue(none.isEmpty)
+    }
+
     func testPayloadForAnAbsentRecordIsNil() throws {
         let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         let payload = try store.reader.read { db in try store.payload(forRecordName: "heartbeat", from: db) }
