@@ -97,7 +97,7 @@ package enum InboxFolderEntries {
             if let ideaBatch { return ideaBatch }
             let size = IdeaDailyBatch.defaultSize
             let ids = IdeaDailyBatch.candidates(feed.ideas, now: now).prefix(size).map(\.id)
-            return IdeaDailyBatch.state(ideas: feed.ideas, batchIDs: ids, now: now, size: size, calendar: calendar)
+            return IdeaDailyBatch.state(ideas: feed.ideas, batchIDs: ids, now: now, size: size)
         }
     }
 

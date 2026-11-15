@@ -224,7 +224,7 @@ final class IdeaDailyBatchTests: XCTestCase {
         XCTAssertEqual(state.backlogCount, 4)
         XCTAssertEqual(state.olderCount, 2)
         XCTAssertEqual(state.nextAvailable, 2)
-        XCTAssertEqual(IdeaDailyBatch.state(ideas: ideas, batchIDs: [1, 2], now: now, size: 13, calendar: calendar)
+        XCTAssertEqual(IdeaDailyBatch.state(ideas: ideas, batchIDs: [1, 2], now: now, size: 13)
             .nextAvailable, 4)
     }
 
@@ -235,17 +235,17 @@ final class IdeaDailyBatchTests: XCTestCase {
             idea(item.id, daysAgo: 0, createdAt: item.createdAt, title: index == 0 ? "Weekly demo" : nil)
         } + [idea(10, daysAgo: 40)]
 
-        let open = IdeaDailyBatch.state(ideas: ideas, batchIDs: [1, 2], now: now, size: 13, calendar: calendar)
+        let open = IdeaDailyBatch.state(ideas: ideas, batchIDs: [1, 2], now: now, size: 13)
         XCTAssertEqual(open.rowPreview, "Today’s 2 ideas to judge. Top one: “Weekly demo”.")
         XCTAssertEqual(open.pillCount, 2)
         XCTAssertTrue(open.isUnread)
         XCTAssertEqual(open.rowMeta, "3 in the backlog · 1 older than 30 days")
 
-        let one = IdeaDailyBatch.state(ideas: ideas, batchIDs: [1], now: now, size: 13, calendar: calendar)
+        let one = IdeaDailyBatch.state(ideas: ideas, batchIDs: [1], now: now, size: 13)
         XCTAssertEqual(one.rowPreview, "Today’s 1 idea to judge. Top one: “Weekly demo”.")
 
         let judgedAll = judged(ideas, ids: [1, 2], status: "rejected", updatedAt: stamp(daysAgo: 0))
-        let done = IdeaDailyBatch.state(ideas: judgedAll, batchIDs: [1, 2], now: now, size: 13, calendar: calendar)
+        let done = IdeaDailyBatch.state(ideas: judgedAll, batchIDs: [1, 2], now: now, size: 13)
         XCTAssertEqual(done.rowPreview, "Today’s batch done · 3 in the backlog")
         XCTAssertNil(done.pillCount)
         XCTAssertFalse(done.isUnread)
@@ -258,14 +258,14 @@ final class IdeaDailyBatchTests: XCTestCase {
         XCTAssertFalse(empty.isUnread)
         XCTAssertEqual(empty.rowMeta, "1 in the backlog · 1 older than 30 days")
 
-        let none = IdeaDailyBatch.state(ideas: [], batchIDs: [], now: now, size: 13, calendar: calendar)
+        let none = IdeaDailyBatch.state(ideas: [], batchIDs: [], now: now, size: 13)
         XCTAssertEqual(none.rowMeta, "")
         XCTAssertEqual(none.nextTitle, "Next 13")
     }
 
     func testPaneSubtitle() {
         let ideas = judged(fresh(6), ids: [1], status: "active", updatedAt: stamp(daysAgo: 0))
-        let state = IdeaDailyBatch.state(ideas: ideas, batchIDs: [1, 2, 3], now: now, size: 3, calendar: calendar)
+        let state = IdeaDailyBatch.state(ideas: ideas, batchIDs: [1, 2, 3], now: now, size: 3)
         XCTAssertEqual(state.paneSubtitle, "Today’s batch · 1 of 3 judged · 3 more in the backlog")
         XCTAssertEqual(state.nextTitle, "Next 3")
     }

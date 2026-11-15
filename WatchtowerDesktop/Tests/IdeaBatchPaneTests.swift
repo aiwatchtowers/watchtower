@@ -55,7 +55,7 @@ final class IdeaBatchPaneTests: XCTestCase {
     ) -> IdeaBatchState {
         // The memberwise init is internal to WatchtowerCore: start from an
         // empty state and set the parts under test.
-        var state = IdeaDailyBatch.state(ideas: [], batchIDs: [], now: Date(), size: size, calendar: .current)
+        var state = IdeaDailyBatch.state(ideas: [], batchIDs: [], now: Date(), size: size)
         state.batchIDs = batchIDs
         state.remaining = remaining
         state.keptToday = keptToday
