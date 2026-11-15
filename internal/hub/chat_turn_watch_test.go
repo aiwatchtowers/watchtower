@@ -109,6 +109,40 @@ func TestChatPush_DesktopTurnEndPushesOnce(t *testing.T) {
 	}
 }
 
+// The lease goes one check before the final row lands: the push waits for it.
+func TestChatPush_DesktopRowLandsAfterTheLease(t *testing.T) {
+	r := newChatPushRig(t)
+	r.lease("desktop", "t1")
+	r.check()
+	r.release()
+	r.check() // no row yet
+	if len(r.sent) != 0 {
+		t.Fatalf("pushed without a row: %+v", r.sent)
+	}
+	r.assistant("t1", "complete")
+	r.check()
+	r.only("answer", "Answer ready")
+	r.check()
+	if len(r.sent) != 1 {
+		t.Errorf("pushed again: %d", len(r.sent))
+	}
+}
+
+func TestChatPush_DesktopRowNeverLandsIsDropped(t *testing.T) {
+	r := newChatPushRig(t)
+	r.lease("desktop", "t1")
+	r.check()
+	r.release()
+	for i := 0; i < chatUnresolvedChecks+2; i++ {
+		r.check()
+	}
+	r.assistant("t1", "complete")
+	r.check()
+	if len(r.sent) != 0 || len(r.w.unresolved) != 0 {
+		t.Errorf("sent %+v unresolved %v", r.sent, r.w.unresolved)
+	}
+}
+
 func TestChatPush_DesktopTurnWithoutRowDoesNotPush(t *testing.T) {
 	r := newChatPushRig(t)
 	r.lease("desktop", "t1")

@@ -35,7 +35,7 @@ final class GoSealedEnvelopeTests: XCTestCase {
     func testEveryGoSealedRecordOpensInTheKit() throws {
         let k = try E2EFixtureKeys()
         let file = try JSONDecoder().decode(File.self, from: Data(contentsOf: Self.url))
-        XCTAssertEqual(Set(file.cases.keys), ["data", "alert", "relayToPhone", "keybox", "keyboxRelayKX", "alertPush"])
+        XCTAssertEqual(Set(file.cases.keys), ["data", "alert", "relayToPhone", "keybox", "keyboxRelayKX", "alertPush", "chatAnswerPush"])
         let metaKey = SymmetricKey(data: E2EFixtureKeys.metaKeyBytes)
         let hubToPhone = try KeyDerivation.relayKey(
             agreementPrivate: k.hubKX, peerPublic: k.devKX.publicKey, linkNonce: k.linkNonce,
@@ -76,7 +76,7 @@ final class GoSealedEnvelopeTests: XCTestCase {
             XCTAssertEqual(opened.header.hubID, k.hubID, name)
             XCTAssertEqual(opened.header.senderID.uuidString, item.sender, name)
             XCTAssertEqual(opened.header.epoch, file.epoch, name)
-            if name == "alertPush" {
+            if name == "alertPush" || name == "chatAnswerPush" {
                 // A push is no zone record: its AAD names the fixed wire name.
                 XCTAssertEqual(item.wireName, "alert-push", name)
             } else if envelopeClass != .keybox {
@@ -104,6 +104,26 @@ final class GoSealedEnvelopeTests: XCTestCase {
             KeyDerivation.recordName(
                 metaKey: SymmetricKey(data: E2EFixtureKeys.metaKeyBytes), zone: zone, kind: parts[0], id: parts[1]),
             item.wireName)
+    }
+
+    /// The chat_answer push (iPhone chat spec section 4.7) opens under the same wire name and carries `event` and
+    /// `conversation_id`. This branch's `WorkAlertPayload` does not decode them yet (Task 9 adds them), so the raw
+    /// JSON keys are asserted.
+    func testGoSealedChatAnswerPushOpens() throws {
+        let k = try E2EFixtureKeys()
+        let file = try JSONDecoder().decode(File.self, from: Data(contentsOf: Self.url))
+        let item = try XCTUnwrap(file.cases["chatAnswerPush"])
+        // `WorkAlertPayload.Event` has no `chat_answer` yet, so the opener's typed decode would refuse it: open
+        // the envelope itself with the alert key.
+        let key = SymmetricKey(data: E2EFixtureKeys.sequence(0xD0, 0xEF))
+        let opened = try EnvelopeSealer.openSymmetric(
+            Data(hex: item.envelope), accepting: [.alert],
+            context: EnvelopeContext(zone: .data, wireName: "alert-push"), verifier: k.hubSig.publicKey) { _ in key }
+        XCTAssertEqual(opened.frame.payload, Data(hex: item.payload))
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(hex: item.payload)) as? [String: Any])
+        XCTAssertEqual(json["event"] as? String, "chat_answer")
+        XCTAssertEqual(json["conversation_id"] as? Int, 5)
+        XCTAssertEqual(json["body"] as? String, "Answer ready")
     }
 
     /// The Go hub's relay push (`secure.Sealer.AlertPush`) opens in the notification extension's `AlertOpener` under

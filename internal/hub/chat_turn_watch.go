@@ -42,13 +42,25 @@ type chatPushWatch struct {
 	primed  bool
 	leases  map[int64]string // desktop-owned leases: conversation → turn
 	pending map[int64]bool   // pending chat actions seen
+	// unresolved are vanished leases whose assistant row was not final yet
+	// (turn → tries left): looked at again on the next checks, then dropped.
+	unresolved map[string]unresolvedTurn
+}
+
+// chatUnresolvedChecks bounds how many checks wait for a vanished lease's
+// final assistant row.
+const chatUnresolvedChecks = 6
+
+type unresolvedTurn struct {
+	conv  int64
+	tries int
 }
 
 func newChatPushWatch(d *sql.DB, w *sources.ChatWatches, onRelay func() bool, now func() time.Time,
 	enqueue func(string, secure.WorkAlertFields, time.Time),
 ) *chatPushWatch {
 	return &chatPushWatch{db: d, watches: w, enqueue: enqueue, onRelay: onRelay, now: now,
-		kickCh: make(chan struct{}, 1), leases: map[int64]string{}, pending: map[int64]bool{}}
+		kickCh: make(chan struct{}, 1), leases: map[int64]string{}, pending: map[int64]bool{}, unresolved: map[string]unresolvedTurn{}}
 }
 
 // kick asks for a check (the data_version watch saw a write).
@@ -138,17 +150,34 @@ func (c *chatPushWatch) check(ctx context.Context) {
 	if !primed {
 		return
 	}
+	c.mu.Lock()
 	for conv, turn := range oldLeases {
-		if leases[conv] == turn {
-			continue
+		if leases[conv] != turn {
+			c.unresolved[turn] = unresolvedTurn{conv: conv}
 		}
-		status, ok, err := c.assistantStatus(ctx, conv, turn)
+	}
+	waiting := make(map[string]unresolvedTurn, len(c.unresolved))
+	for turn, u := range c.unresolved {
+		waiting[turn] = u
+	}
+	c.mu.Unlock()
+	for turn, u := range waiting {
+		status, ok, err := c.assistantStatus(ctx, u.conv, turn)
 		if err != nil {
 			log.Printf("hub: chat push watch: turn %s unreadable (%s)", turn, errClass(err))
-			continue
 		}
-		if ok {
-			c.send(ctx, conv, turn, endKind(status))
+		c.mu.Lock()
+		switch {
+		case err == nil && ok:
+			delete(c.unresolved, turn)
+		case u.tries+1 >= chatUnresolvedChecks:
+			delete(c.unresolved, turn) // the row never became final
+		default:
+			c.unresolved[turn] = unresolvedTurn{conv: u.conv, tries: u.tries + 1}
+		}
+		c.mu.Unlock()
+		if err == nil && ok {
+			c.send(ctx, u.conv, turn, endKind(status))
 		}
 	}
 	for id, p := range pending {
