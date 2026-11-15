@@ -204,7 +204,7 @@ An account that synced before this release has its sent mail only from the relea
 - `Syncer.CatchUpSent(ctx, now)` (`internal/gmail/sent_catchup.go`) lists `in:sent after:<now − gmail.initial_history_days>` once per account and stores each message with its own date as `synced_at` (`backfillSyncedAt`), so the inbox detector never sees the rows as new. It writes no watermark and no auth state.
 - No-op when the stamp is set, or when the account has not synced yet (watermark 0): a first `Sync` lists sent mail itself and stamps at its listing time.
 - `phaseGmailSync` (`internal/daemon/daemon.go`) runs it after a successful `Sync`, outside `observePhase`, so catch-up rows are never `gmail.new_messages` events.
-- Failures: a 404 on one message skips it; any other error stops the pass unstamped and the next cycle retries (a failed listing never counts). A transient error (Gmail 429/5xx and rate-limit 403 via `StatusError.Transient`, a network or `*url.Error`, a cancelled or expired context, `io.ErrUnexpectedEOF`, `ErrAuthRevoked`) retries without limit; after 3 passes in one process that failed with a non-transient error (`sentCatchUpMaxAttempts`) the pass stamps anyway and logs that it gave up.
+- Failures: ids already stored for the account are skipped without a fetch, and a 404 on one message skips it. Any other per-message error that is not transient is counted and the pass goes on; a pass that reaches the end of the listing stamps the account done and logs the failed messages as a count only. A transient error (Gmail 429/5xx and rate-limit 403 via `StatusError.Transient`, a network or `*url.Error`, `io.ErrUnexpectedEOF`, `ErrAuthRevoked`, a busy database `db.IsBusy`) or a cancelled or expired context ends the pass unstamped, and the next cycle retries without limit; a failed listing never stamps. A retried pass re-lists but fetches only the ids still missing.
 
 ### The owner-sent predicate
 
@@ -251,7 +251,8 @@ The rule: a reader that treats a row as something that happened to the owner ski
 - For an account connected before this release, sent mail older than the catch-up window (`gmail.initial_history_days`, 7 by default) is not fetched: the history backfill already done does not re-run.
 - The ideas and memory floors do not re-mine the catch-up rows: they are dated in the past, below floors that already moved on.
 - Any owner message in the thread newer than the received one closes the item: a forward or a note to a colleague in the same thread counts too.
-- The sent catch-up is one pass per cycle with no per-pass cap and no resume: a pass cut by a cycle cancel restarts and re-fetches. A one-time cost, like `FetchRange`.
+- The sent catch-up is one pass per cycle with no per-pass cap: a pass cut by a cycle cancel or a transient error re-lists the sent window at the next cycle and fetches only the messages not stored yet. A one-time cost, like `FetchRange`.
+- A sent message whose fetch failed with a non-transient error in the catch-up's one complete pass is never fetched again (the account is stamped done; the log names only the count): its thread's received item does not close on reply and stays in Mail waiting until **Done** or the 14-day archive.
 - Sent rows also feed the ideas email pre-digests (`ListGmailThreadsForExtract`), so ideas mining spends more AI on mail (owner decision 8: the owner's words are evidence).
 - Installed copies of the "New mail summary" template made before this release still sum up sent mail: they are confirmed by hash (AUTO-06) and are not upgraded. Reinstall from the gallery to get the skip.
 
