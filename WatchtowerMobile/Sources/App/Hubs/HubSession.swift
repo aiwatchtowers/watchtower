@@ -194,6 +194,9 @@ final class HubSession {
     /// The Workbench slices as the Now and Workbench tabs and the tab badge
     /// draw them: one observation for the app's lifetime.
     let workbenchReplica = WorkbenchReplicaModel()
+    /// This hub's AI chats (iPhone chat spec §6): the chat records, the chat sender, the list's search and row
+    /// actions.
+    let chats: ChatsCenter
     /// Takes settled work alerts out of Notification Center after each successful fetch or engine apply.
     private let alertCleaner: DeliveredAlertCleaner
     /// The sweep's own decode cache: its reads never race the screens' observation over one cache.
@@ -511,9 +514,7 @@ final class HubSession {
         self.transportStore = transportStore
         self.backend = backend
         self.hubID = hubID
-        self.hold = hold
-        self.route = route
-        self.defaults = defaults
+        (self.hold, self.route, self.defaults) = (hold, route, defaults)
         let device = backend == .inMemoryDemo ? DemoSeed.device : linkedDevice
         self.linkedDevice = device
         // The demo pairing only on the demo path: the demo kind over the in-memory transport.
@@ -552,6 +553,7 @@ final class HubSession {
         askAnswerer = AskAnswerer.sending(through: outbox, store: store, drafts: askDrafts)
         sessionStarts = SessionStarter.sending(through: outbox, store: store)
         sessionInputs = SessionInputSender.sending(through: outbox, store: store)
+        chats = ChatsCenter(sender: .through(outbox))
         // An `applied` echo clears the queued row; hydrating right behind it
         // (from what the same fetch buffered) lands the Mac's authoritative
         // change at the same moment.
@@ -586,6 +588,7 @@ final class HubSession {
             posting: alertPosting)
         workbenchReplica.start(store: store) { [weak self] in self?.typingState ?? (nil, false) }
         calendarReplica.start(store: store)
+        chats.start(store: store)
         phoneRecordings.start(store: store)
         observeOutboxBacklog()
 
