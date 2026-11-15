@@ -124,3 +124,44 @@ func (db *DB) ReleaseOwnedChatLeases(owner ChatLeaseOwner, ownerID string) (int6
 	}
 	return res.RowsAffected()
 }
+
+// OwnedChatLeases lists the leases one owner process holds (the hub's
+// startup sweep reads them before it releases them).
+func (db *DB) OwnedChatLeases(owner ChatLeaseOwner, ownerID string) ([]ChatLease, error) {
+	rows, err := db.Query(`SELECT conversation_id, owner, owner_id, turn_id, started_at_ms, heartbeat_at_ms, cancel_requested_at_ms
+FROM chat_turn_leases WHERE owner = ? AND owner_id = ? ORDER BY conversation_id`, string(owner), ownerID)
+	if err != nil {
+		return nil, fmt.Errorf("owned chat leases: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []ChatLease
+	for rows.Next() {
+		var l ChatLease
+		var o string
+		var cancel sql.NullInt64
+		if err := rows.Scan(&l.ConversationID, &o, &l.OwnerID, &l.TurnID, &l.StartedAtMS, &l.HeartbeatAtMS, &cancel); err != nil {
+			return nil, fmt.Errorf("owned chat leases: %w", err)
+		}
+		l.Owner = ChatLeaseOwner(o)
+		if cancel.Valid {
+			l.CancelRequestedAtMS = &cancel.Int64
+		}
+		out = append(out, l)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("owned chat leases: %w", err)
+	}
+	return out, nil
+}
+
+// MarkChatTurnSessionLost gives turnID's still-partial replies in conv the
+// session_lost error code (a turn whose runner died: the error card offers
+// Retry); the text is kept. It returns how many rows it marked.
+func (db *DB) MarkChatTurnSessionLost(conv int64, turnID string) (int64, error) {
+	res, err := db.Exec(`UPDATE chat_messages SET error_code = 'session_lost'
+WHERE conversation_id = ? AND turn_id = ? AND role = 'assistant' AND status = 'partial'`, conv, turnID)
+	if err != nil {
+		return 0, fmt.Errorf("mark chat turn session lost: %w", err)
+	}
+	return res.RowsAffected()
+}

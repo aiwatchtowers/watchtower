@@ -9,9 +9,11 @@ import (
 	"path/filepath"
 	"time"
 
+	"watchtower/internal/chatstore"
 	"watchtower/internal/db"
 	"watchtower/internal/hub/actions"
 	"watchtower/internal/hub/actions/handlers"
+	"watchtower/internal/hub/chatrun"
 	"watchtower/internal/hub/slices"
 	"watchtower/internal/hub/slices/sources"
 	"watchtower/internal/hub/state"
@@ -32,6 +34,10 @@ const hostWarmBudget = 10 * time.Second
 // reportKinds is what a stored report or summary changes: the report, its
 // timeline milestones and the terminal_session record's report_* fields.
 var reportKinds = []slices.Kind{"session_report", "session_timeline", "terminal_session"}
+
+// chatCloseBudget bounds the chat runner's close at the hub's stop (its own
+// sequence is close, 2 s, SIGTERM, 3 s, SIGKILL).
+const chatCloseBudget = 10 * time.Second
 
 // watchBusy is the dedicated read handle's busy timeout: one data_version
 // read never waits longer for a lock.
@@ -86,6 +92,9 @@ type wiring struct {
 	live *liveness
 	// away nudges the work alerts when the owner leaves the Mac.
 	away *awayWatch
+	// chat runs the hub's AI chat turns (nil = no database file or no
+	// executable: chat is off). Nothing runs until a turn starts.
+	chat *chatrun.Runner
 }
 
 // Seed retry at start: 1 s doubling to 10 s.
@@ -179,6 +188,9 @@ func (h *hubRuntime) buildWiring(o Options, st *state.Store, mode string, d *act
 		return nil, err
 	}
 	w.set = set
+	// The sweep runs before the handlers register: nothing claims a chat
+	// turn before this hub's leases of an earlier run are released.
+	w.chat = h.newChatRunner(o)
 	deps := handlerDeps(o, st, set, watches, h.kr, port, lateEcho)
 	deps.RecordingQueued = func(uploadID string) {
 		h.sup.notifyDesktop(ControlAnswer{Event: EventRecordingQueued, OK: true, UploadID: uploadID})
@@ -418,10 +430,44 @@ func (w *wiring) retrySeed(ctx context.Context) {
 	}
 }
 
-// close releases the watch's handle once the goroutines are done.
+// newChatRunner builds the hub's chat runner over o.DB and runs its startup
+// sweep (spec §4.3). A database with no file, or no path to this binary,
+// leaves the hub without one.
+func (h *hubRuntime) newChatRunner(o Options) *chatrun.Runner {
+	path, err := mainFile(context.Background(), o.DB)
+	if err != nil {
+		log.Printf("hub: no chat runner: the database has no file")
+		return nil
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		log.Printf("hub: no chat runner: the executable is unknown (%s)", errClass(err))
+		return nil
+	}
+	hubID, clock := h.kr.HubIDText(), o.Clock
+	if clock == nil {
+		clock = time.Now
+	}
+	r := chatrun.New(chatrun.Config{Exe: exe, DBPath: path, HubID: hubID, Dir: o.Dir, DB: o.DB, Clock: clock,
+		Store: chatstore.New(o.DB, db.ChatLeaseHub, hubID, chatstore.WithClock(clock))})
+	if err := r.Sweep(); err != nil {
+		log.Printf("hub: the chat sweep failed (%s)", errClass(err))
+	}
+	return r
+}
+
+// close stops the chat sessions (before the daemon closes the database) and
+// releases the watch's handle once the goroutines are done.
 func (w *wiring) close() {
 	if w == nil {
 		return
+	}
+	if w.chat != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), chatCloseBudget)
+		if err := w.chat.Close(ctx); err != nil {
+			log.Printf("hub: closing the chat sessions failed (%s)", errClass(err))
+		}
+		cancel()
 	}
 	if w.port != nil {
 		_ = w.port.Close()
