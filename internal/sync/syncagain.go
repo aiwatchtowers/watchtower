@@ -216,12 +216,21 @@ func accountWideSlackError(err error) bool {
 	return accountWideSlackErrors[slackErrorCode(err)]
 }
 
-// threadScopedError reports a Slack error answer that is not about the
-// account (thread_not_found, channel_not_found …): it concerns one thread
-// and repeats on every retry.
+// threadGoneErrors are the Slack error codes that say one thread is gone
+// for good (its parent deleted); with channelUnreadableErrors they are the
+// only thread answers a catch-up skips. Any other code (internal_error,
+// service_unavailable, an unknown one) may be transient: the page stays
+// pending and the next run asks again.
+var threadGoneErrors = map[string]bool{
+	"thread_not_found":  true,
+	"message_not_found": true,
+}
+
+// threadScopedError reports a Slack error answer that says this thread (or
+// its channel) cannot be read, now or on any retry.
 func threadScopedError(err error) bool {
 	code := slackErrorCode(err)
-	return code != "" && !accountWideSlackErrors[code]
+	return threadGoneErrors[code] || channelUnreadableErrors[code]
 }
 
 // formatSlackTS is a unix time as a Slack ts ("1700000000.000100").

@@ -714,15 +714,18 @@ func (e *exclSetup) seedSmallCatchup(t *testing.T, n int) {
 }
 
 // A thread Slack answers for alone (a deleted parent's thread_not_found) is
-// skipped and the catch-up goes on; an account-wide answer keeps the page
-// for the next run.
+// skipped and the catch-up goes on; an account-wide or possibly transient
+// answer keeps the page for the next run, which asks the thread again.
 func TestSyncAgain_ThreadErrorDoesNotBlock(t *testing.T) {
 	for _, tc := range []struct {
 		code    string
 		pending bool
 	}{
 		{"thread_not_found", false},
+		{"message_not_found", false},
 		{"invalid_auth", true},
+		{"internal_error", true},
+		{"service_unavailable", true},
 	} {
 		t.Run(tc.code, func(t *testing.T) {
 			e := newExclSetup(t)
@@ -736,7 +739,15 @@ func TestSyncAgain_ThreadErrorDoesNotBlock(t *testing.T) {
 			assert.Len(t, e.stored(t, "C0JUNK"), 3, "the page is saved either way")
 			if !tc.pending {
 				assert.Equal(t, 3, e.history.replies, "every thread was asked once")
+				return
 			}
+			asked := e.history.replies
+			e.history.replyErr = ""
+			e.run(t, SyncOptions{})
+			assert.Greater(t, e.history.replies, asked, "the next run asks the thread again")
+			from, to = e.catchupBounds(t)
+			assert.Nil(t, from, "and finishes the catch-up")
+			assert.Nil(t, to)
 		})
 	}
 }
