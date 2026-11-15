@@ -80,7 +80,7 @@ since: 0.24.0
 - **Workbench** lists your workbenches as cards. Open one for **Sessions** (in the Mac's sessions panel order) or **Board** (targets with status, priority and comments). A group's done sub-targets stay hidden until you tap **Show done (N)** (remembered). Its badge counts open asks.
 - **Calendar** shows the events your Mac publishes, with prep, the **Record** button and the **Recordings** list.
 
-Asks come in three kinds: a question, a review (select text, **Comment on the selection**, then **Approve** or **Request changes**) and a check (mark each step **OK**, **Broken** or **Skipped**).
+Asks come in three kinds: a question, a review (hold a paragraph to comment; **Request changes** needs a comment or a note) and a check (**Works**, **Doesn't work** or **Didn't check** per step).
 
 ### Read a session's chat
 A session opens as its chat, with a field to write to it and its report behind **⋯**. Tool output is never shown. See [iPhone: the workchat](iphone-workbench.md).

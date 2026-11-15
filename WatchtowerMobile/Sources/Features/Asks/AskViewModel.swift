@@ -29,6 +29,8 @@ final class AskViewModel {
     /// The last rendered snapshot: typing rebuilds the form on every
     /// keystroke, and a 256 KB snapshot takes a tenth of a second to render.
     @ObservationIgnored private var rendered: (askID: Int64, markdown: String, document: PlainTextDocument)?
+    /// The rendered snapshot's lines (#1787), split once per rendered text.
+    @ObservationIgnored private var split: (text: String, paragraphs: [ReviewParagraph])?
 
     init(
         askID: Int64,
@@ -53,8 +55,17 @@ final class AskViewModel {
             now: now,
             applied: answerer.applied[askID],
             isSending: answerer.isSending(askID),
-            render: document
+            render: document,
+            paragraphs: paragraphs
         )
+    }
+
+    /// The rendered snapshot's lines, split once per rendered text.
+    private func paragraphs(_ document: PlainTextDocument) -> [ReviewParagraph] {
+        if let split, split.text == document.text { return split.paragraphs }
+        let paragraphs = ReviewParagraph.split(document)
+        split = (document.text, paragraphs)
+        return paragraphs
     }
 
     /// The snapshot as plain text, rendered once per ask and snapshot.
@@ -118,7 +129,7 @@ final class AskViewModel {
     @discardableResult
     func addComment(on selection: NSRange, in document: PlainTextDocument, body: String) -> UUID? {
         guard let anchor = CommentAnchorBuilder.anchor(selection: selection, in: document) else { return nil }
-        let comment = AskCommentDraft(anchor: anchor, body: body)
+        let comment = AskCommentDraft(anchor: anchor, body: body, location: selection.location)
         drafts.update(askID) { $0.comments.append(comment) }
         return comment.id
     }

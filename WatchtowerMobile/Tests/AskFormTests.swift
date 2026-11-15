@@ -210,11 +210,78 @@ final class AskFormTests: XCTestCase {
         let review = try XCTUnwrap(try formOf(model, snapshot).review)
         // N in the phone's locale ("2.1 MB", "2,1 MB").
         let full = ByteCountFormatter.string(fromByteCount: 2_097_152, countStyle: .file)
-        XCTAssertEqual(review.clippedNotice, "Showing the first 256 KB of \(full)")
+        XCTAssertEqual(review.clippedNotice, "Showing the first 256 KB of \(full) — the rest is only on the Mac")
+        XCTAssertEqual(
+            review.clippedEnd, "The phone has only the first 256 KB of docs/plan.md. Open the ask on the Mac to read the rest.",
+            "where the text stops, what is missing and where it is"
+        )
         XCTAssertEqual(review.document?.text, "Plan\n\nShip behind a flag for acme.\n\n")
+        XCTAssertEqual(review.paragraphs.map(\.text), ["Plan", "Ship behind a flag for acme."])
 
         let whole = try XCTUnwrap(try formOf(model, try replica([try makeAsk(130, Self.review)])).review)
         XCTAssertNil(whole.clippedNotice)
+        XCTAssertNil(whole.clippedEnd)
+    }
+
+    /// #1787: a comment shows under the paragraph it was made on; one whose
+    /// quote is no longer at its place (a revised snapshot) goes after the
+    /// document. No snapshot: no paragraphs, the count alone.
+    func testACommentSitsUnderItsParagraph() async throws {
+        let fixture = try await makeFixture()
+        let snapshot = try replica([try makeAsk(130, Self.review)])
+        let model = AskViewModel(askID: 130, drafts: fixture.drafts, answerer: fixture.answerer)
+        let review = try XCTUnwrap(try formOf(model, snapshot).review)
+        let document = try XCTUnwrap(review.document)
+        let body = try XCTUnwrap(review.paragraphs.last)
+        XCTAssertEqual(review.commentsLine, "Press and hold a paragraph to comment · 0 comments")
+
+        let id = try XCTUnwrap(model.addComment(on: body.range, in: document, body: "Which flag?"))
+        let placed = try XCTUnwrap(try formOf(model, snapshot).review)
+        XCTAssertEqual(placed.commentsByParagraph[body.id]?.map(\.id), [id])
+        XCTAssertEqual(placed.unplacedComments, [])
+        XCTAssertEqual(placed.commentsLine, "Press and hold a paragraph to comment · 1 comment")
+
+        var revised = Self.review
+        revised["doc_snapshot"] = "# Plan\n\nA new first line.\n\nShip behind a flag for acme.\n"
+        let moved = try XCTUnwrap(try formOf(model, try replica([try makeAsk(130, revised)])).review)
+        XCTAssertEqual(moved.unplacedComments.map(\.id), [id], "the quote moved: drawn after the document")
+
+        var bare = Self.review
+        bare["doc_snapshot"] = nil
+        let none = try XCTUnwrap(try formOf(model, try replica([try makeAsk(130, bare)])).review)
+        XCTAssertEqual(none.paragraphs, [])
+        XCTAssertEqual(none.commentsLine, "1 comment")
+    }
+
+    /// #1787: Request changes needs words — a note or a comment with text;
+    /// Approve does not. The answer sent is the same shape as before.
+    func testRequestChangesNeedsANoteOrAComment() async throws {
+        let fixture = try await makeFixture()
+        let ask = try makeAsk(130, Self.review)
+        let snapshot = try replica([ask])
+        let model = AskViewModel(askID: 130, drafts: fixture.drafts, answerer: fixture.answerer)
+        var form = try formOf(model, snapshot)
+        XCTAssertTrue(form.canSendVerdict)
+        XCTAssertFalse(form.canRequestChanges)
+        XCTAssertEqual(form.requestChangesHint, "Add a comment or a note to request changes")
+
+        let document = try XCTUnwrap(form.review?.document)
+        let id = try XCTUnwrap(model.addComment(on: NSRange(location: 6, length: 4), in: document, body: "  "))
+        XCTAssertFalse(try formOf(model, snapshot).canRequestChanges, "a blank comment says nothing")
+        model.setCommentBody("Which flag?", for: id)
+        form = try formOf(model, snapshot)
+        XCTAssertTrue(form.canRequestChanges)
+        XCTAssertNil(form.requestChangesHint)
+
+        model.removeComment(id)
+        model.setNote("Split the rollout")
+        XCTAssertTrue(try formOf(model, snapshot).canRequestChanges, "a note is enough")
+
+        await model.review(.changes, ask)
+        let answer = try AskAnswerParams(wireParams: try XCTUnwrap(try fixture.store.pendingActions().first).action.params).answer
+        XCTAssertEqual(answer.verdict, .changes)
+        XCTAssertEqual(answer.note, "Split the rollout")
+        XCTAssertNil(try formOf(model, snapshot).requestChangesHint, "no hint while the answer is on its way")
     }
 
     func testAReviewCommentAnchorsOnTheShownTextAndApproveSends() async throws {
@@ -230,7 +297,7 @@ final class AskFormTests: XCTestCase {
         let id = try XCTUnwrap(model.addComment(on: NSRange(location: 6, length: 4), in: document, body: ""))
         model.setCommentBody("Which flag?", for: id)
         model.addComment(on: NSRange(location: 11, length: 6), in: document, body: "   ")
-        XCTAssertEqual(try formOf(model, snapshot).review?.commentsLine, "Select text to comment · 2 comments")
+        XCTAssertEqual(try formOf(model, snapshot).review?.commentsLine, "Press and hold a paragraph to comment · 2 comments")
 
         await model.review(.approved, ask)
         let row = try XCTUnwrap(try fixture.store.pendingActions().first)
@@ -273,7 +340,16 @@ final class AskFormTests: XCTestCase {
         let snapshot = try replica([ask])
         let model = AskViewModel(askID: 140, drafts: fixture.drafts, answerer: fixture.answerer)
         XCTAssertEqual(try formOf(model, snapshot).checks.map(\.text), ["Open the menu", "Archive"])
-        XCTAssertTrue(try formOf(model, snapshot).canSend, "unmarked steps go as skipped")
+        XCTAssertFalse(try formOf(model, snapshot).canSend, "#1787: nothing marked, nothing to send")
+        XCTAssertEqual(
+            try formOf(model, snapshot).checkFooter,
+            "Mark at least one step to send. A step you leave unmarked goes as Didn't check."
+        )
+
+        model.setCheck(.ok, for: "2")
+        XCTAssertTrue(try formOf(model, snapshot).canSend, "one mark is enough; the unmarked step goes as skipped")
+        XCTAssertEqual(try formOf(model, snapshot).checkFooter, "A step you leave unmarked goes as Didn't check.")
+        model.setCheck(nil, for: "2")
 
         model.setCheck(.broken, for: "1")
         XCTAssertTrue(try XCTUnwrap(try formOf(model, snapshot).checks.first).needsNote)
@@ -300,7 +376,7 @@ final class AskFormTests: XCTestCase {
             try XCTUnwrap(try formOf(model, snapshot).checks.first)
         }
 
-        XCTAssertEqual(try row().choices.map(\.label), ["OK", "Broken", "Skipped"])
+        XCTAssertEqual(try row().choices.map(\.label), ["Works", "Doesn't work", "Didn't check"], "the Mac drawer's words")
         XCTAssertEqual(try row().choices.map(\.symbol), ["checkmark.circle", "xmark.circle", "minus.circle"])
         XCTAssertTrue(try row().choices.allSatisfy { $0.tone == .secondary && !$0.isSelected }, "unmarked: outlines in secondary")
 
@@ -342,6 +418,7 @@ final class AskFormTests: XCTestCase {
         let ask = try makeAsk(140, ["kind": "check", "payload": ["checklist": [["id": "1", "text": "Open"]]]])
         let model = AskViewModel(askID: 140, drafts: fixture.drafts, answerer: fixture.answerer)
         let snapshot = try replica([ask])
+        model.setCheck(.ok, for: "1")
         model.setNote(String(repeating: "a", count: 4_000))
         XCTAssertNil(try formOf(model, snapshot).noteHint)
         XCTAssertTrue(try formOf(model, snapshot).canSend)
@@ -425,7 +502,7 @@ final class AskFormTests: XCTestCase {
         XCTAssertEqual(form.closedLines, [
             AskFormModel.ClosedLine(label: "Verdict", value: "Approved"),
             AskFormModel.ClosedLine(label: "Keep it?", value: "No answer"),
-            AskFormModel.ClosedLine(label: "Open the menu", value: "Broken — The menu is empty")
+            AskFormModel.ClosedLine(label: "Open the menu", value: "Doesn't work — The menu is empty")
         ])
     }
 

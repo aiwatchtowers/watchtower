@@ -16,10 +16,34 @@ enum AskText {
     static let noteTooLong = "The note is over 4000 characters — shorten it to send"
     static let carriedNotice = "This ask was replaced by a newer round. Your earlier draft is in the note."
 
-    /// "Showing the first 256 KB of 2.1 MB" for a snapshot the hub cut.
+    static let commentHint = "Press and hold a paragraph to comment"
+    static let comment = "Comment"
+    static let copy = "Copy"
+    static let commentSheetHint = "Select words to comment on just them, or leave it as is to comment on the whole paragraph."
+    static let requestChangesNeedsWords = "Add a comment or a note to request changes"
+    static let markOneStep = "Mark at least one step to send."
+    static let unmarkedStep = "A step you leave unmarked goes as Didn't check."
+    static let brokenNote = "What happened? (required)"
+    static let stepNote = "Note"
+
+    /// "Showing the first 256 KB of 2.1 MB — the rest is only on the Mac"
+    /// for a snapshot the hub cut (the hub publishes at most 256 KiB).
     static func clipped(docBytes: Int?) -> String {
         let full = docBytes.map { ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .file) } ?? "a longer document"
-        return "Showing the first 256 KB of \(full)"
+        return "Showing the first 256 KB of \(full) — the rest is only on the Mac"
+    }
+
+    /// Where a cut snapshot stops: what is missing and where to read it.
+    static func clippedEnd(docPath: String) -> String {
+        let name = docPath.isEmpty ? "the document" : docPath
+        return "The phone has only the first 256 KB of \(name). Open the ask on the Mac to read the rest."
+    }
+
+    /// "Press and hold a paragraph to comment · 1 comment"; the count alone
+    /// when there is no snapshot to comment on.
+    static func commentsLine(count: Int, hasDocument: Bool) -> String {
+        let noun = count == 1 ? "1 comment" : "\(count) comments"
+        return hasDocument ? "\(commentHint) · \(noun)" : noun
     }
 
     /// The ask's status as the replica has it.
@@ -39,11 +63,12 @@ enum AskText {
         ask.status == .open ? "This ask is no longer open on the Mac" : "This ask is no longer open: \(status(ask))"
     }
 
+    /// A check mark in the Mac drawer's words (`OwnerAskPresentation.checkStates`).
     static func check(_ state: OwnerAskAnswer.CheckState) -> String {
         switch state {
-        case .ok: "OK"
-        case .broken: "Broken"
-        case .skipped: "Skipped"
+        case .ok: "Works"
+        case .broken: "Doesn't work"
+        case .skipped: "Didn't check"
         default: state.rawValue.capitalized
         }
     }

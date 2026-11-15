@@ -1069,14 +1069,42 @@ final class ScreenshotTourTests: XCTestCase {
         ]
     }
 
-    /// 13 question, 14 review, 15 check, 16 answered, 17 withdrawn.
+    /// 13 question, 14 review, 15 check, 16 answered, 17 withdrawn; #1787:
+    /// 14b the review with a comment under its paragraph and a note (Request
+    /// changes on), 15b the check with Works and Doesn't work marked (Send on).
     static func askShots() -> [Shot] {
-        [("13", 109, "question"), ("14", 110, "review"), ("15", 111, "check"), ("16", 105, "answered"), ("17", 107, "withdrawn")]
+        let plain = [("13", 109, "question"), ("14", 110, "review"), ("15", 111, "check"), ("16", 105, "answered"), ("17", 107, "withdrawn")]
             .map { number, id, slug in
                 Shot(number: number, slug: "ask-\(id)-\(slug)", source: "Features/Asks/AskView.swift", reached: .bareStack, make: stack {
                     AskView(replica: $0.workbenchReplica, drafts: $0.askDrafts, answerer: $0.askAnswerer, askID: id)
                 })
             }
+        return plain + [
+            Shot(number: "14b", slug: "ask-110-review-commented", source: "Features/Asks/ReviewAskView.swift", reached: .bareStack, make: stack {
+                seedReviewDraft($0)
+                return AskView(replica: $0.workbenchReplica, drafts: $0.askDrafts, answerer: $0.askAnswerer, askID: 110)
+            }),
+            Shot(number: "15b", slug: "ask-111-check-marked", source: "Features/Asks/CheckAskView.swift", reached: .bareStack, make: stack { env in
+                env.askDrafts.update(111) { draft in
+                    draft.checks = ["1": .ok, "2": .broken]
+                    draft.checkNotes = ["2": "The menu item is greyed out"]
+                }
+                return AskView(replica: env.workbenchReplica, drafts: env.askDrafts, answerer: env.askAnswerer, askID: 111)
+            })
+        ]
+    }
+
+    /// A comment on the demo review's "Step 2" paragraph and a note.
+    @MainActor
+    private static func seedReviewDraft(_ env: AppEnvironment) {
+        guard let markdown = env.workbenchReplica.snapshot.asks.first(where: { $0.id == 110 })?.docSnapshot else { return }
+        let document = PlainTextRendering.render(markdown)
+        guard let paragraph = ReviewParagraph.split(document).first(where: { $0.text.hasPrefix("Step 2") }),
+              let anchor = CommentAnchorBuilder.anchor(selection: paragraph.range, in: document) else { return }
+        env.askDrafts.update(110) { draft in
+            draft.comments = [AskCommentDraft(anchor: anchor, body: "Ask before the hook blocks, not after.", location: paragraph.range.location)]
+            draft.note = "Otherwise fine."
+        }
     }
 
     static func calendarShots() -> [Shot] {

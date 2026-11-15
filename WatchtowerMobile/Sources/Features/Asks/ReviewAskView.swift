@@ -2,30 +2,38 @@ import SwiftUI
 import UIKit
 import WatchtowerKit
 
-/// A review: the snapshot as the plain text the anchors index (so a
-/// selection is an anchor), "Showing the first 256 KB of N" when the hub
-/// cut it, the margin comments, and Approve / Request changes (the send
-/// bar). Comments go only on shown text; without a snapshot there is
-/// nothing to select.
+/// A review (#1787): the snapshot reads full width in the screen's own
+/// scroll, one paragraph per line of the rendered text (no nested box);
+/// press and hold a paragraph to comment on it, and the comment shows under
+/// it. A cut snapshot says so above the text and where it stops. The note
+/// and Approve / Request changes live in the bottom bar (`AskView`).
 struct ReviewAskView: View {
     let review: AskFormModel.Review
     /// The Mac reviewer's state; nil from an older Mac or a non-spec document.
     var specReview: OwnerAsk.SpecReviewLine?
     let model: AskViewModel
     let isEditable: Bool
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    @State private var selection = NSRange(location: 0, length: 0)
-    @State private var composing: NSRange?
-    @State private var commentText = ""
+    @State private var composing: ReviewParagraph?
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.regular) {
-            documentCard
-            if !review.comments.isEmpty {
-                SectionHeader("Your comments", count: review.comments.count)
-                ForEach(review.comments) { comment in
-                    commentCard(comment)
+            header
+            if review.document != nil {
+                LazyVStack(alignment: .leading, spacing: Spacing.regular) {
+                    ForEach(review.paragraphs) { paragraph in
+                        paragraphBlock(paragraph)
+                    }
                 }
+            }
+            if let end = review.clippedEnd {
+                Label(end, systemImage: "desktopcomputer")
+                    .font(TypeScale.meta)
+                    .foregroundStyle(.secondary)
+                    .card(.plain)
+            }
+            if !review.unplacedComments.isEmpty {
+                SectionHeader("Your comments", count: review.unplacedComments.count)
+                ForEach(review.unplacedComments) { commentCard($0) }
             }
             if let verdict = review.verdict {
                 Text(verdict == .approved ? "Your verdict: approve" : "Your verdict: changes requested")
@@ -33,16 +41,14 @@ struct ReviewAskView: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .sheet(item: Binding(get: { composing.map(SelectionBox.init) }, set: { composing = $0?.range })) { box in
-            commentSheet(box.range)
+        .sheet(item: $composing) { paragraph in
+            ReviewCommentSheet(paragraph: paragraph, review: review, model: model) { composing = nil }
         }
-        // A new document (a newer round) never keeps the old selection.
-        .onChange(of: review.document?.text) { selection = NSRange(location: 0, length: 0) }
     }
 
-    /// The document reads full width on a card (mockup 10); the path above.
-    private var documentCard: some View {
-        VStack(alignment: .leading, spacing: Spacing.regular) {
+    /// The path, the Mac reviewer's line, the cut notice and the comment hint.
+    private var header: some View {
+        VStack(alignment: .leading, spacing: Spacing.small) {
             Text(review.docPath).font(TypeScale.code).foregroundStyle(.secondary)
             if let specReview, !specReview.line.isEmpty {
                 Label(specReview.line, systemImage: "checklist")
@@ -50,34 +56,75 @@ struct ReviewAskView: View {
                     .foregroundStyle(.secondary)
                     .accessibilityLabel(specReview.line)
             }
-            if let document = review.document {
-                SnapshotTextView(document: document, category: UIContentSizeCategory(dynamicTypeSize), selection: $selection)
-                    .frame(minHeight: PhoneMetrics.documentHeight.lowerBound, maxHeight: PhoneMetrics.documentHeight.upperBound)
-                    .accessibilityLabel("Document under review")
-                if let clipped = review.clippedNotice {
-                    Text(clipped).font(TypeScale.meta).foregroundStyle(.secondary)
-                }
-                Button {
-                    commentText = ""
-                    composing = selection
-                } label: {
-                    Label("Comment on the selection", systemImage: "text.bubble")
-                }
-                .buttonStyle(SecondaryActionStyle())
-                .disabled(!isEditable || selection.length == 0)
+            if let clipped = review.clippedNotice {
+                Text(clipped).font(TypeScale.meta).foregroundStyle(.secondary)
             }
             Text(review.commentsLine).font(TypeScale.meta).foregroundStyle(.secondary)
         }
-        .card(.plain)
     }
 
-    private func commentCard(_ comment: AskFormModel.Comment) -> some View {
+    private func paragraphBlock(_ paragraph: ReviewParagraph) -> some View {
+        let comments = review.commentsByParagraph[paragraph.id] ?? []
+        return VStack(alignment: .leading, spacing: Spacing.regular) {
+            paragraphText(paragraph)
+                .padding(.leading, comments.isEmpty ? 0 : Spacing.regular)
+                .overlay(alignment: .leading) {
+                    if !comments.isEmpty {
+                        Capsule().fill(PhoneTone.accent.color).frame(width: Spacing.tight)
+                    }
+                }
+                .contentShape(Rectangle())
+                .contextMenu {
+                    if isEditable {
+                        Button { composing = paragraph } label: { Label(AskText.comment, systemImage: "text.bubble") }
+                    }
+                    Button { UIPasteboard.general.string = paragraph.text } label: { Label(AskText.copy, systemImage: "doc.on.doc") }
+                }
+                .accessibilityAction(named: AskText.comment) { if isEditable { composing = paragraph } }
+            // The paragraph is right above: a whole-paragraph quote is not repeated.
+            ForEach(comments) { commentCard($0, showQuote: $0.quote != paragraph.text) }
+        }
+    }
+
+    @ViewBuilder
+    private func paragraphText(_ paragraph: ReviewParagraph) -> some View {
+        if let level = paragraph.headingLevel {
+            Text(paragraph.text)
+                .font(Self.headingFont(level))
+                .padding(.top, Spacing.regular)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityAddTraits(.isHeader)
+        } else {
+            HStack(alignment: .firstTextBaseline, spacing: 0) {
+                if let marker = paragraph.marker {
+                    Text(marker).foregroundStyle(.secondary)
+                }
+                Text(paragraph.text)
+            }
+            .font(.body)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .combine)
+        }
+    }
+
+    /// Level 1 title2, level 2 title3, deeper headline; all semibold.
+    private static func headingFont(_ level: Int) -> Font {
+        switch level {
+        case 1: TypeScale.pageTitle
+        case 2: TypeScale.screenTitle
+        default: Font.headline
+        }
+    }
+
+    private func commentCard(_ comment: AskFormModel.Comment, showQuote: Bool = true) -> some View {
         HStack(alignment: .top, spacing: Spacing.regular) {
             VStack(alignment: .leading, spacing: Spacing.regular) {
-                Text("“\(comment.quote)”")
-                    .font(TypeScale.meta)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(3)
+                if showQuote {
+                    Text("“\(comment.quote)”")
+                        .font(TypeScale.meta)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(3)
+                }
                 SheetField(label: "Your comment") {
                     TextField("Your comment", text: bodyBinding(comment.id), axis: .vertical)
                         .lineLimit(1...6)
@@ -98,34 +145,6 @@ struct ReviewAskView: View {
         .card(.plain)
     }
 
-    private func commentSheet(_ range: NSRange) -> some View {
-        NavigationStack {
-            Form {
-                if let document = review.document, let quote = Range(range, in: document.text).map({ String(document.text[$0]) }) {
-                    Section("On") { Text("“\(quote)”").foregroundStyle(.secondary).lineLimit(4) }
-                }
-                Section("Comment") {
-                    TextField("Your comment", text: $commentText, axis: .vertical).lineLimit(3...10)
-                }
-            }
-            .navigationTitle("Comment")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { composing = nil } }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Add") {
-                        if let document = review.document {
-                            model.addComment(on: range, in: document, body: commentText)
-                        }
-                        composing = nil
-                    }
-                    .disabled(AskDraft.trimmed(commentText).isEmpty)
-                }
-            }
-        }
-        .presentationDetents([.medium])
-    }
-
     private func bodyBinding(_ id: UUID) -> Binding<String> {
         Binding(
             get: { model.draft.comments.first { $0.id == id }?.body ?? "" },
@@ -134,18 +153,61 @@ struct ReviewAskView: View {
     }
 }
 
-/// A selection to comment on, as a sheet item.
-private struct SelectionBox: Identifiable {
-    let range: NSRange
-    var id: String { "\(range.location):\(range.length)" }
+/// The comment on one paragraph: the paragraph selectable (a selection
+/// narrows the quote to it; none keeps the whole paragraph), then the
+/// comment, Cancel and Add.
+private struct ReviewCommentSheet: View {
+    let paragraph: ReviewParagraph
+    let review: AskFormModel.Review
+    let model: AskViewModel
+    let close: () -> Void
+    @State private var selection = NSRange(location: 0, length: 0)
+    @State private var text = ""
+
+    /// The quoted range in the document: the selection, or the paragraph.
+    private var quoted: NSRange {
+        selection.length > 0 ? NSRange(location: paragraph.range.location + selection.location, length: selection.length) : paragraph.range
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    ParagraphSelectView(text: paragraph.text, selection: $selection)
+                        .frame(minHeight: PhoneMetrics.minTouch * 2)
+                        .accessibilityLabel("Paragraph to comment on")
+                } header: {
+                    Text("On")
+                } footer: {
+                    Text(AskText.commentSheetHint)
+                }
+                Section("Comment") {
+                    TextField("Your comment", text: $text, axis: .vertical).lineLimit(3...10)
+                }
+            }
+            .navigationTitle(AskText.comment)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel", action: close) }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Add") {
+                        if let document = review.document {
+                            model.addComment(on: quoted, in: document, body: text)
+                        }
+                        close()
+                    }
+                    .disabled(AskDraft.trimmed(text).isEmpty)
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
 }
 
-/// The snapshot as a styled, read-only, selectable document; reports the
-/// selection in UTF-16 units of `document.text` (the anchors' offsets).
-private struct SnapshotTextView: UIViewRepresentable {
-    let document: PlainTextDocument
-    /// The Dynamic Type size to style at; a change restyles the same text.
-    let category: UIContentSizeCategory
+/// One paragraph as read-only selectable text; reports the selection in
+/// UTF-16 units of `text`.
+private struct ParagraphSelectView: UIViewRepresentable {
+    let text: String
     @Binding var selection: NSRange
 
     func makeUIView(context: Context) -> UITextView {
@@ -153,29 +215,18 @@ private struct SnapshotTextView: UIViewRepresentable {
         view.isEditable = false
         view.isSelectable = true
         view.adjustsFontForContentSizeCategory = true
+        view.font = .preferredFont(forTextStyle: .body)
+        view.textColor = .label
         view.backgroundColor = .clear
+        view.textContainerInset = .zero
+        view.textContainer.lineFragmentPadding = 0
+        view.text = text
         view.delegate = context.coordinator
         return view
     }
 
     func updateUIView(_ view: UITextView, context: Context) {
-        let coordinator = context.coordinator
-        guard ReviewDocumentStyler.needsRestyle(
-            shown: view.attributedText.string, styledCategory: coordinator.styledCategory, document: document, category: category
-        ) else { return }
-        // A size change keeps the text, so it keeps the selection. While
-        // restyling, the delegate ignores the programmatic selection change,
-        // so nothing writes the binding during this view update. The string
-        // is `document.text` itself, so selections stay UTF-16 offsets into it.
-        let kept = view.attributedText.string == document.text ? view.selectedRange : nil
-        coordinator.isRestyling = true
-        let traits = view.traitCollection.modifyingTraits { $0.preferredContentSizeCategory = category }
-        view.attributedText = ReviewDocumentStyler.attributed(document, traits: traits)
-        if let kept {
-            view.selectedRange = kept
-        }
-        coordinator.isRestyling = false
-        coordinator.styledCategory = category
+        if view.text != text { view.text = text }
     }
 
     func makeCoordinator() -> Coordinator {
@@ -184,16 +235,12 @@ private struct SnapshotTextView: UIViewRepresentable {
 
     final class Coordinator: NSObject, UITextViewDelegate {
         let selection: Binding<NSRange>
-        /// The size the shown text was styled at; nil before the first style.
-        var styledCategory: UIContentSizeCategory?
-        var isRestyling = false
 
         init(selection: Binding<NSRange>) {
             self.selection = selection
         }
 
         func textViewDidChangeSelection(_ textView: UITextView) {
-            guard !isRestyling else { return }
             selection.wrappedValue = textView.selectedRange
         }
     }
