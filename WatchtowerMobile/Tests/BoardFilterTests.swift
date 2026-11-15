@@ -133,6 +133,49 @@ final class BoardFilterTests: XCTestCase {
         XCTAssertEqual(BoardLane.lanes(roots, columns: nil).map(\.title), ["Todo", "Backlog", "Coding", "In progress", "Review", "Blocked", "Done"])
     }
 
+    /// A decoded `board_columns` with a duplicate or a title no lane has
+    /// (renamed on the Mac since) still gives every lane once, in a stable
+    /// order: the first place of a title wins, an unknown title is skipped,
+    /// and a lane missing from the list goes after its status's columns.
+    func testDuplicateAndUnknownColumnTitlesKeepASaneOrder() throws {
+        func lanes(_ columns: [String]) throws -> [String] {
+            var snapshot = try demoSnapshot(now: now)
+            var json = DemoSeed.JSON.workbench(DemoSeed.acmeID)
+            json["board_columns"] = columns
+            snapshot.workbenches = [try mirror(Workbench.self, json)]
+            XCTAssertEqual(snapshot.workbench(DemoSeed.acmeID)?.boardColumns, columns)
+            return BoardModel(workbenchID: DemoSeed.acmeID, snapshot: snapshot, filter: .all).lanes.map(\.title)
+        }
+        XCTAssertEqual(try lanes(["Todo", "Backlog", "Todo"]), ["Todo", "Backlog", "In progress"])
+        XCTAssertEqual(try lanes(["Gone", "Backlog", "Coding"]), ["Backlog", "Todo", "In progress"])
+        XCTAssertEqual(try lanes([]), ["Todo", "Backlog", "In progress"], "an empty list reads like none")
+    }
+
+    /// An ask or a permission prompt shared by two sub-targets (one session
+    /// on both) counts once on their group (codex review of #873).
+    func testAGroupCountsASharedAskAndPromptOnce() throws {
+        var snapshot = try demoSnapshot(now: now)
+        snapshot.targets = snapshot.targets.map { target in
+            guard target.id == 416 else { return target }
+            var json = DemoSeed.JSON.target(416, workbench: DemoSeed.acmeID, ["parent_id": 400, "text": "Undo Archive Now"])
+            json["session_ids"] = [11, 12]
+            return (try? mirror(WorkbenchTarget.self, json)) ?? target
+        }
+        snapshot.targets = snapshot.targets.map { target in
+            guard target.id == 415 else { return target }
+            var json = DemoSeed.JSON.target(415, workbench: DemoSeed.acmeID, ["parent_id": 400, "text": "Archive Closed Targets Now"])
+            json["session_ids"] = [11, 12]
+            json["open_asks"] = 2
+            return (try? mirror(WorkbenchTarget.self, json)) ?? target
+        }
+        let all = BoardModel(workbenchID: DemoSeed.acmeID, snapshot: snapshot, filter: .all)
+        let group = try XCTUnwrap(node(400, in: all.roots)).card
+        // Asks 109 and 111 (session 11, filed on 415) and session 12's
+        // approval reach both children: two asks and one approval, not four
+        // and two.
+        XCTAssertEqual(group.details.filter { $0.role == .ask }.map(\.text), ["2 asks", "1 approval"])
+    }
+
     /// #1191: a target's sub-targets hide done ones the same way; the
     /// header still counts them all.
     func testTheDetailHidesDoneSubTargetsUntilShowDone() throws {
@@ -216,7 +259,7 @@ final class BoardFilterTests: XCTestCase {
     func testEmptyTexts() throws {
         let none = try board(query: "zzz")
         XCTAssertEqual(none.emptyText, "No target matches \u{201C}zzz\u{201D}")
-        XCTAssertEqual(none.searchCaption, "0 matches")
+        XCTAssertNil(none.searchCaption, "the empty line alone says it")
         XCTAssertEqual(try board(query: "#434").searchCaption, "1 match")
         let notes = BoardModel(workbenchID: DemoSeed.notesID, snapshot: try demoSnapshot(now: now))
         XCTAssertEqual(notes.filter, .all)

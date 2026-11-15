@@ -63,6 +63,14 @@ final class BoardFoldStore {
         }
     }
 
+    /// Drops a forgotten hub's folds from memory; its UserDefaults entry
+    /// goes with the hub's other choices (`DeviceSettings.removeChoices`).
+    /// A link made again starts with nothing folded open.
+    func forget(hubID: String) {
+        byHub[hubID] = nil
+        defaults.removeObject(forKey: Self.key(hubID: hubID))
+    }
+
     private func load(_ hubID: String?) -> [Int64: BoardFolds] {
         if let cached = byHub[hubID ?? ""] { return cached }
         guard let data = defaults.data(forKey: Self.key(hubID: hubID)) else { return [:] }

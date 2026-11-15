@@ -83,6 +83,24 @@ final class BoardModelTests: XCTestCase {
         XCTAssertEqual(BoardFoldStore(defaults: defaults).folds(hubID: "hub-a", workbenchID: 1), BoardFolds())
     }
 
+    /// Forgetting a Mac drops its folds from the running store too, so
+    /// linking the same Mac again starts over (codex review of #873).
+    @MainActor
+    func testForgettingAHubDropsItsFoldsInMemory() throws {
+        let suite = "board-folds-forget"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = BoardFoldStore(defaults: defaults)
+        store.update(hubID: "hub-a", workbenchID: 1) { $0.toggleGroup(400) }
+        store.update(hubID: "hub-b", workbenchID: 1) { $0.toggleGroup(400) }
+        XCTAssertTrue(store.folds(hubID: "hub-a", workbenchID: 1).isGroupOpen(400))
+
+        store.forget(hubID: "hub-a")
+        XCTAssertEqual(store.folds(hubID: "hub-a", workbenchID: 1), BoardFolds())
+        XCTAssertNil(defaults.data(forKey: BoardFoldStore.key(hubID: "hub-a")))
+        XCTAssertTrue(store.folds(hubID: "hub-b", workbenchID: 1).isGroupOpen(400), "another Mac keeps its folds")
+    }
+
     /// A damaged entry reads as no flips rather than failing the board.
     @MainActor
     func testUnreadableFoldsReadAsNone() throws {

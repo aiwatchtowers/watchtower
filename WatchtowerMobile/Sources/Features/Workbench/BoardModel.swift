@@ -62,18 +62,38 @@ enum BoardFilter: CaseIterable, Identifiable {
 /// What waits and what runs per target, from the replica's asks,
 /// permission requests and sessions (#1781).
 struct BoardSignals {
-    private let snapshot: WorkbenchReplicaSnapshot
-    private let openAsksByTarget: [Int64: Int]
-    private let openAsksBySession: [Int64: [OwnerAsk]]
+    /// What waits on one or more targets, by identity, so a group summing
+    /// its subtree counts an ask or a prompt shared by two targets once.
+    struct Waits: Equatable {
+        /// Open asks the phone holds: filed on the target or by its sessions.
+        var askIDs: Set<Int64> = []
+        /// Asks the Mac counts on a target (`open_asks`) that the replica
+        /// does not hold; each belongs to that one target.
+        var unseenAsks = 0
+        /// Sessions waiting on a permission prompt (one open prompt per
+        /// session, the hub closes the older one).
+        var approvalSessions: Set<Int64> = []
+
+        var asks: Int { askIDs.count + unseenAsks }
+        var approvals: Int { approvalSessions.count }
+
+        mutating func formUnion(_ other: Self) {
+            askIDs.formUnion(other.askIDs)
+            unseenAsks += other.unseenAsks
+            approvalSessions.formUnion(other.approvalSessions)
+        }
+    }
+
+    private let openAsksByTarget: [Int64: Set<Int64>]
+    private let openAsksBySession: [Int64: Set<Int64>]
     private let approvalSessions: Set<Int64>
     private let waitingSessions: Set<Int64>
     private let runningSessions: Set<Int64>
 
     init(snapshot: WorkbenchReplicaSnapshot, workbenchID: Int64) {
-        self.snapshot = snapshot
         let asks = snapshot.openAsks(in: workbenchID)
-        openAsksByTarget = Dictionary(grouping: asks.compactMap(\.targetID)) { $0 }.mapValues(\.count)
-        openAsksBySession = Dictionary(grouping: asks.filter { $0.sessionID != nil }) { $0.sessionID ?? 0 }
+        openAsksByTarget = Dictionary(grouping: asks.filter { $0.targetID != nil }) { $0.targetID ?? 0 }.mapValues { Set($0.map(\.id)) }
+        openAsksBySession = Dictionary(grouping: asks.filter { $0.sessionID != nil }) { $0.sessionID ?? 0 }.mapValues { Set($0.map(\.id)) }
         let sessions = snapshot.sessions.filter { $0.workbenchID == workbenchID }
         approvalSessions = Set(snapshot.permissionRequests.map(\.sessionID))
             .union(sessions.filter { $0.stateKind == .needsApproval }.map(\.id))
@@ -81,23 +101,22 @@ struct BoardSignals {
         runningSessions = Set(sessions.filter { [.working, .running].contains($0.stateKind) }.map(\.id))
     }
 
-    /// Open asks on the target: the Mac's count or the asks the phone holds
-    /// for it, whichever is larger, plus its sessions' asks filed elsewhere.
-    func asks(_ target: WorkbenchTarget) -> Int {
-        let own = max(target.openAsks, openAsksByTarget[target.id] ?? 0)
-        let viaSessions = target.sessionIDs.reduce(0) { total, id in
-            total + (openAsksBySession[id] ?? []).filter { $0.targetID != target.id }.count
+    func waits(_ target: WorkbenchTarget) -> Waits {
+        let filed = openAsksByTarget[target.id] ?? []
+        var askIDs = filed
+        for session in target.sessionIDs {
+            askIDs.formUnion(openAsksBySession[session] ?? [])
         }
-        return own + viaSessions
-    }
-
-    /// Its sessions waiting on a permission prompt.
-    func approvals(_ target: WorkbenchTarget) -> Int {
-        target.sessionIDs.filter(approvalSessions.contains).count
+        return Waits(
+            askIDs: askIDs,
+            unseenAsks: max(0, target.openAsks - filed.count),
+            approvalSessions: Set(target.sessionIDs.filter(approvalSessions.contains))
+        )
     }
 
     func isWaiting(_ target: WorkbenchTarget) -> Bool {
-        asks(target) > 0 || approvals(target) > 0 || target.sessionIDs.contains(where: waitingSessions.contains)
+        let waits = waits(target)
+        return waits.asks > 0 || waits.approvals > 0 || target.sessionIDs.contains(where: waitingSessions.contains)
     }
 
     func runningSessionIDs(_ target: WorkbenchTarget) -> Set<Int64> {
@@ -406,9 +425,11 @@ struct BoardModel {
     /// filter or a search shows every match open, so no fold hides one.
     var folds: Bool { !isSearching && filter == .all }
 
-    /// "3 matches" over a search.
-    var searchCaption: String {
-        matchCount == 1 ? "1 match" : "\(matchCount) matches"
+    /// "3 matches" over a search; nil when nothing matches (the empty line
+    /// says it).
+    var searchCaption: String? {
+        guard matchCount > 0 else { return nil }
+        return matchCount == 1 ? "1 match" : "\(matchCount) matches"
     }
 
     /// What an empty board says; nil with any lane.
@@ -514,8 +535,9 @@ private struct BoardTree {
     private func card(_ target: WorkbenchTarget, lane: String, subtree: [WorkbenchTarget]) -> BoardCardModel {
         let isGroup = target.childrenCount > 0
         let scope = isGroup ? subtree : [target]
-        let asks = scope.reduce(0) { $0 + signals.asks($1) }
-        let approvals = scope.reduce(0) { $0 + signals.approvals($1) }
+        let waits = scope.reduce(into: BoardSignals.Waits()) { $0.formUnion(signals.waits($1)) }
+        let asks = waits.asks
+        let approvals = waits.approvals
         let running = scope.reduce(into: Set<Int64>()) { $0.formUnion(signals.runningSessionIDs($1)) }
         var details: [BoardDetail] = []
         if asks > 0 {

@@ -39,10 +39,12 @@ struct BoardView: View {
             LazyVStack(alignment: .leading, spacing: Spacing.regular) {
                 BoardSearchField(query: $query)
                 if board.isSearching {
-                    Text(board.searchCaption)
-                        .font(TypeScale.meta)
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, Spacing.small)
+                    if let caption = board.searchCaption {
+                        Text(caption)
+                            .font(TypeScale.meta)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, Spacing.small)
+                    }
                 } else {
                     chips(board)
                 }
@@ -230,8 +232,9 @@ struct BoardNodeView: View {
 
     private var card: some View {
         NavigationLink(value: BoardTargetRoute(id: node.id)) {
-            BoardCard(model: node.card, isDimmed: node.isDimmed)
-                .padding(.trailing, foldable ? PhoneMetrics.minTouch - Spacing.large : 0)
+            // The chevron lies over the card's trailing edge, so a group is
+            // as wide as its lane's other cards.
+            BoardCard(model: node.card, isDimmed: node.isDimmed, trailingReserve: foldable ? PhoneMetrics.minTouch - Spacing.large : 0)
         }
         .buttonStyle(.plain)
         .overlay(alignment: .trailing) {

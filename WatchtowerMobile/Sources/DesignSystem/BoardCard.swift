@@ -90,6 +90,9 @@ struct BoardCard: View {
     let model: BoardCardModel
     var isSelected = false
     var isDimmed = false
+    /// Room kept clear at the trailing edge, inside the card, for a control
+    /// laid over it (the board's fold chevron, #1781).
+    var trailingReserve: CGFloat = 0
 
     /// The chips' identities: their places, so a column titled like a
     /// priority word ("High") never collides with the priority chip.
@@ -145,6 +148,7 @@ struct BoardCard: View {
                 }
             }
         }
+        .padding(.trailing, trailingReserve)
         .card(isSelected ? .highlighted : .plain)
         .opacity(isDimmed && !isSelected ? PhoneOpacity.dimmed : 1)
         .accessibilityElement(children: .combine)
