@@ -4,16 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"strconv"
-	"strings"
 
 	"github.com/spf13/cobra"
 
+	"watchtower/internal/chat"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
-	"watchtower/internal/prompts"
 )
 
 // chatTitleGeneratorFactory is the seam tests override to inject a mock
@@ -25,11 +23,6 @@ import (
 var chatTitleGeneratorFactory = func(cfg *config.Config) digest.Generator {
 	return cliGenerator(cfg)
 }
-
-const (
-	chatTitleMaxRunes     = 60
-	chatTitleExcerptRunes = 4000
-)
 
 var chatTitleFlagDBPath string
 
@@ -85,20 +78,6 @@ func openChatTitleDB() (*config.Config, *db.DB, error) {
 	return cfg, database, nil
 }
 
-// chatTitlePrompt renders the chat.title system prompt (the tunable DB row,
-// else the registered default; a fallback is reported on stderr) and the
-// first-exchange user message.
-func chatTitlePrompt(database *db.DB, cfg *config.Config, owner, assistant string, stderr io.Writer) (system, user string) {
-	tmpl, _, err := prompts.Resolve(prompts.New(database, nil), prompts.ChatTitle, "")
-	if err != nil {
-		fmt.Fprintf(stderr, "chat title: using the default prompt: %v\n", err)
-	}
-	system = fmt.Sprintf(tmpl, prompts.Directive(cfg.Digest.Language))
-	user = "=== FIRST EXCHANGE ===\nOwner: " + excerptRunes(owner, chatTitleExcerptRunes) +
-		"\n\nAssistant: " + excerptRunes(assistant, chatTitleExcerptRunes)
-	return system, user
-}
-
 func runChatTitle(cmd *cobra.Command, args []string) error {
 	id, err := strconv.ParseInt(args[0], 10, 64)
 	if err != nil || id <= 0 {
@@ -110,96 +89,16 @@ func runChatTitle(cmd *cobra.Command, args []string) error {
 	}
 	defer database.Close()
 
-	conv, err := database.GetChatConversation(id)
-	if err != nil {
-		return err
-	}
-	if conv == nil {
-		return fmt.Errorf("conversation %d not found", id)
-	}
-	enc := json.NewEncoder(cmd.OutOrStdout())
-	if conv.TitleSource == "user" {
-		return enc.Encode(chatTitleResult{Title: conv.Title, Written: false})
-	}
-
-	path, err := database.ActiveChatPath(id)
-	if err != nil {
-		return err
-	}
-	owner, assistant := firstChatExchange(path)
-	if owner == "" {
-		return fmt.Errorf("conversation %d has no owner message yet", id)
-	}
-
-	system, user := chatTitlePrompt(database, cfg, owner, assistant, cmd.ErrOrStderr())
 	ctx := cmd.Context()
 	if ctx == nil { // RunE invoked directly (tests)
 		ctx = context.Background()
 	}
-	reply, _, _, err := chatTitleGeneratorFactory(cfg).Generate(digest.WithSource(ctx, "chat.title"), system, user, "")
-	if err != nil {
-		return fmt.Errorf("generating the title: %w", err)
+	res, err := chat.GenerateTitle(ctx, database, cfg, chatTitleGeneratorFactory(cfg), id)
+	if res.PromptFallback != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "chat title: using the default prompt: %v\n", res.PromptFallback)
 	}
-	title := cleanChatTitle(reply)
-	if title == "" {
-		return fmt.Errorf("the model returned an empty title")
-	}
-	written, err := database.SetChatTitle(id, title, "ai")
 	if err != nil {
 		return err
 	}
-	return enc.Encode(chatTitleResult{Title: title, Written: written})
-}
-
-// firstChatExchange returns the first owner message and the first assistant
-// reply after it on the active path.
-func firstChatExchange(path []db.ChatMessage) (owner, assistant string) {
-	for _, m := range path {
-		switch {
-		case m.Role == "user" && owner == "":
-			owner = strings.TrimSpace(m.Text)
-		case m.Role == "assistant" && owner != "" && assistant == "":
-			assistant = strings.TrimSpace(m.Text)
-		}
-	}
-	return owner, assistant
-}
-
-// cleanChatTitle takes the first non-empty line of the reply and strips the
-// decoration models add anyway: heading/list markers, a "Title:" label,
-// quotes of any script, emphasis and a trailing period; then caps it at
-// chatTitleMaxRunes runes.
-func cleanChatTitle(reply string) string {
-	s := titleLine(reply)
-	if r := []rune(s); len(r) > chatTitleMaxRunes {
-		s = strings.TrimSpace(string(r[:chatTitleMaxRunes-1])) + "…"
-	}
-	return s
-}
-
-// titleLine is the reply's first line that still has text once markdown
-// markers, a "Title:" prefix, quotes and a trailing period are stripped;
-// not yet capped at chatTitleMaxRunes.
-func titleLine(reply string) string {
-	for line := range strings.SplitSeq(reply, "\n") {
-		s := strings.TrimSpace(line)
-		s = strings.TrimLeft(s, "#>-* ")
-		if strings.HasPrefix(strings.ToLower(s), "title:") {
-			s = strings.TrimSpace(s[len("title:"):])
-		}
-		s = strings.Trim(s, "\"'`“”«»*_ ")
-		s = strings.TrimSpace(strings.TrimSuffix(s, "."))
-		if s != "" {
-			return s
-		}
-	}
-	return ""
-}
-
-// excerptRunes caps s at n runes (the first exchange can be a pasted document).
-func excerptRunes(s string, n int) string {
-	if r := []rune(s); len(r) > n {
-		return string(r[:n]) + "…"
-	}
-	return s
+	return json.NewEncoder(cmd.OutOrStdout()).Encode(chatTitleResult{Title: res.Title, Written: res.Written})
 }
