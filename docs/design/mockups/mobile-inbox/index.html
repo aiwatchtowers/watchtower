@@ -1,0 +1,475 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Phone Inbox mockups</title>
+<style>
+body{margin:0;padding:24px;background:#0f0f10;color:#e6e6e8;font-family:-apple-system,system-ui,sans-serif;font-size:13px}
+h1{font-size:18px}
+h2{font-size:14px;color:#a1a1a6;margin:32px 0 6px}
+.note{color:#8e8e93;font-size:12px;max-width:980px;margin:4px 0 12px;line-height:1.45}
+.row{display:flex;gap:24px;flex-wrap:wrap;align-items:flex-start}
+.col{display:flex;flex-direction:column}
+.tag{color:#8e8e93;font-size:11px;margin:0 0 4px}
+
+/* phone frame — dark is the default, .lt is light */
+.phone{--bg:#000;--fg:#f2f2f7;--sec:#8e8e93;--ter:#5a5a5e;--card:#1c1c1e;--fill:#2c2c2e;--line:#38383a;--blue:#0a84ff;--green:#30d158;--orange:#ff9f0a;--red:#ff453a;--purple:#bf5af2;--teal:#64d2ff;--wait:rgba(255,159,10,.13);--waitline:rgba(255,159,10,.35);
+  width:300px;height:640px;background:var(--bg);color:var(--fg);border:1px solid #3a3a3c;border-radius:40px;padding:12px 10px 8px;box-sizing:border-box;display:flex;flex-direction:column;overflow:hidden;position:relative}
+.phone.lt{--bg:#fff;--fg:#000;--sec:#6c6c70;--ter:#aeaeb2;--card:#f2f2f7;--fill:#e5e5ea;--line:#d1d1d6;--blue:#007aff;--green:#248a3d;--orange:#c93400;--red:#d70015;--purple:#8944ab;--teal:#0071a4;--wait:rgba(255,149,0,.12);--waitline:rgba(201,52,0,.3);border-color:#c6c6c8}
+.status{display:flex;justify-content:space-between;font-size:12px;padding:2px 16px 6px;font-weight:600}
+.top{display:flex;align-items:center;justify-content:space-between;padding:0 8px;min-height:22px}
+.back{color:var(--blue);font-size:14px}
+.tbtn{color:var(--blue);font-size:15px}
+.title{font-size:26px;font-weight:700;padding:2px 8px 6px}
+.ptitle{font-size:16px;font-weight:600;text-align:center;flex:1}
+.body{flex:1;overflow:hidden;padding:0 6px}
+.chipline{display:flex;gap:6px;align-items:center;padding:0 8px 10px;font-size:12px;color:var(--sec)}
+.macchip{display:inline-flex;gap:5px;align-items:center;background:var(--card);border-radius:12px;padding:3px 9px;font-size:12px;color:var(--fg)}
+.dot{width:7px;height:7px;border-radius:50%;display:inline-block;flex:none}
+.d-green{background:var(--green)}.d-gray{background:var(--ter)}.d-blue{background:var(--blue)}.d-orange{background:var(--orange)}.d-red{background:var(--red)}
+.caps{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--sec);padding:12px 8px 6px;display:flex;justify-content:space-between}
+.caps.wait{color:var(--orange)}
+/* flat row (no separators outside a card) */
+.fr{display:flex;gap:10px;align-items:flex-start;padding:8px 8px}
+.fr .ic{width:22px;text-align:center;font-size:15px;flex:none;padding-top:1px}
+.fr .main{flex:1;min-width:0}
+.fr .t{font-size:15px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fr .t.b{font-weight:600}
+.fr .m{font-size:12px;color:var(--sec);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fr .p{font-size:13px;color:var(--sec);margin-top:2px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.fr .r{flex:none;display:flex;gap:6px;align-items:center;color:var(--sec);font-size:12px;padding-top:2px}
+.chev{color:var(--ter);font-size:15px}
+.num{font-variant-numeric:tabular-nums}
+.ud{width:8px;flex:none;padding-top:7px}
+.cnt{font-variant-numeric:tabular-nums;color:var(--sec);font-size:13px}
+.cnt.wait{color:var(--orange);font-weight:600}
+/* cards */
+.card{background:var(--card);border-radius:14px;margin:0 2px 10px;padding:10px 12px}
+.card.wait{background:var(--wait);border:1px solid var(--waitline)}
+.card .fr{padding:7px 0}
+.hair{height:1px;background:var(--line);margin:0 0 0 32px;opacity:.6}
+.ct{font-size:15px;font-weight:600;line-height:1.25}
+.cm{font-size:12px;color:var(--sec);margin-top:3px}
+.cq{font-size:14px;margin-top:6px;line-height:1.35}
+.btns{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+.btn{border-radius:9px;padding:6px 12px;font-size:14px;font-weight:600;background:var(--fill);color:var(--blue)}
+.btn.pri{background:var(--blue);color:#fff}
+.btn.dis{color:var(--ter)}
+.btn.red{color:var(--red)}
+.pill{display:inline-block;border-radius:8px;padding:1px 7px;font-size:11px;font-weight:600}
+.t-neutral{background:var(--fill);color:var(--sec)}
+.t-info{background:rgba(10,132,255,.18);color:var(--blue)}
+.t-success{background:rgba(48,209,88,.18);color:var(--green)}
+.t-warning{background:rgba(255,159,10,.18);color:var(--orange)}
+.t-danger{background:rgba(255,69,58,.18);color:var(--red)}
+.t-accent{background:rgba(191,90,242,.18);color:var(--purple)}
+.av{width:26px;height:26px;border-radius:50%;background:var(--fill);color:var(--sec);font-size:11px;font-weight:600;display:flex;align-items:center;justify-content:center;flex:none}
+.line{font-size:12px;color:var(--sec);padding:6px 8px}
+.err{color:var(--red)}
+.link{color:var(--blue)}
+.spin{display:inline-block;width:11px;height:11px;border:2px solid var(--ter);border-top-color:var(--sec);border-radius:50%}
+.banner{background:var(--card);border-radius:12px;margin:0 2px 10px;padding:9px 12px;font-size:13px;line-height:1.35}
+.empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:0 24px;color:var(--sec);gap:8px}
+.empty .big{font-size:34px}
+.empty .h{font-size:17px;font-weight:600;color:var(--fg)}
+.empty .s{font-size:14px;line-height:1.4}
+/* blocks */
+.bh{font-size:17px;font-weight:700;padding:10px 8px 4px}
+.bt{font-size:14px;line-height:1.45;padding:2px 8px 6px}
+.metrics{display:flex;gap:8px;padding:4px 4px 8px}
+.metric{flex:1;background:var(--card);border-radius:12px;padding:8px 10px}
+.metric .v{font-size:20px;font-weight:700;font-variant-numeric:tabular-nums}
+.metric .k{font-size:11px;color:var(--sec)}
+.tbl{margin:2px 2px 10px;background:var(--card);border-radius:12px;padding:6px 10px;font-size:12px}
+.tbl table{border-collapse:collapse;width:100%}
+.tbl td,.tbl th{padding:4px 6px 4px 0;text-align:left;white-space:nowrap}
+.tbl th{color:var(--sec);font-weight:500}
+.scrollhint{font-size:10px;color:var(--ter);text-align:right}
+/* bottom bars */
+.bar{display:flex;gap:8px;padding:8px 6px 4px;background:var(--bg);border-top:1px solid var(--line)}
+.bar .btn{flex:1;text-align:center;padding:10px}
+.tabs{display:flex;justify-content:space-around;border-top:1px solid var(--line);padding:6px 0 2px;font-size:10px;color:var(--ter)}
+.tabs div{display:flex;flex-direction:column;align-items:center;gap:2px;position:relative}
+.tabs .on{color:var(--blue)}
+.tabs .gl{font-size:17px}
+.badge{position:absolute;top:-4px;right:-10px;background:var(--orange);color:#fff;border-radius:9px;font-size:10px;padding:0 5px;font-weight:700}
+/* swipe */
+.swipe{display:flex;overflow:hidden;margin:0 -6px 0 0}
+.swipe .slid{flex:1;min-width:0}
+.sa{flex:none;width:64px;display:flex;align-items:center;justify-content:center;color:#fff;font-size:12px;font-weight:600}
+.sa.g{background:var(--green)}.sa.gr{background:#8e8e93}.sa.o{background:#5e5ce6}
+/* sheet */
+.dim{position:absolute;inset:0;background:rgba(0,0,0,.45)}
+.sheet{position:absolute;left:0;right:0;bottom:0;background:var(--card);border-radius:16px 16px 0 0;padding:10px 14px 18px}
+.grab{width:36px;height:5px;border-radius:3px;background:var(--ter);margin:0 auto 10px}
+.field{background:var(--bg);border-radius:10px;padding:10px;font-size:14px;min-height:70px;line-height:1.4}
+.menu{position:absolute;right:16px;top:150px;background:var(--fill);border-radius:12px;width:190px;font-size:14px;box-shadow:0 8px 30px rgba(0,0,0,.5)}
+.menu div{padding:10px 12px;border-top:1px solid var(--line)}
+.menu div:first-child{border-top:0}
+.menu .red{color:var(--red)}
+.check{width:18px;height:18px;border-radius:50%;border:1.5px solid var(--ter);flex:none;display:flex;align-items:center;justify-content:center;font-size:11px}
+.check.on{background:var(--green);border-color:var(--green);color:#fff}
+.strike{text-decoration:line-through;color:var(--sec)}
+</style></head><body>
+<h1>Phone Inbox: mockups (2026-11-15, target #1170)</h1>
+<div class="note">Spec: docs/superpowers/specs/2026-11-15-mobile-inbox-design.md. This is sub-project F of the Inbox builder (docs/superpowers/specs/2026-11-02-inbox-builder-design.md). Sample data only (acme, colleague A, example.com). Frames come in dark and light pairs where the layout differs. Colours follow PhoneTone. Orange is used only for waiting-for-you: Needs approval, rows that wait on the owner and the tab badge. Rows are flat with no separators, and cards are used only for waiting items and blocks. After the build, each frame is captured as a ScreenshotTourTests shot named <code>inbox-…</code> and compared against this file.</div>
+
+<!-- ===================================================== 1 -->
+<h2>1. Inbox tab — the root (the menu and the root's own entries)</h2>
+<div class="note">The tab sits second, after Now, so it is one tap from triage. The root has three parts:
+<ul>
+<li>A pinned <b>Needs approval</b> card, shown only when something waits, with an orange count.</li>
+<li>The owner's folders as flat rows, each with an icon, its own count and a chevron.</li>
+<li>The root's entries in the Mac's order: Waiting for me first while a row waits, then by time.</li>
+</ul>
+An unread entry has a blue dot. A folder's count is the Mac's <code>InboxFolderCounts</code>. The tab badge counts only what waits on the owner: open approvals and open Waiting for me rows. Pull to refresh does a fetch.</div>
+<div class="row">
+<div class="col"><div class="tag">Root — dark</div>
+<div class="phone"><div class="status"><span>9:41</span><span>●●●</span></div>
+<div class="top"><span></span><span class="tbtn">⋯</span></div>
+<div class="title">Inbox</div>
+<div class="chipline"><span class="macchip"><span class="dot d-green"></span>Acme Mac</span></div>
+<div class="body">
+ <div class="card wait"><div class="fr" style="padding:2px 0"><span class="ic" style="color:var(--orange)">✓</span><div class="main"><div class="t b">Needs approval</div><div class="m">Send a Slack message · Create a Jira issue · 1 more</div></div><div class="r"><span class="cnt wait">3</span><span class="chev">›</span></div></div></div>
+ <div class="fr"><span class="ic">🚩</span><div class="main"><div class="t">Release acme 2.0</div></div><div class="r"><span class="cnt">2</span><span class="chev">›</span></div></div>
+ <div class="fr"><span class="ic">📦</span><div class="main"><div class="t">Blockers</div></div><div class="r"><span class="cnt">1</span><span class="chev">›</span></div></div>
+ <div class="fr"><span class="ic">👥</span><div class="main"><div class="t">Team</div></div><div class="r"><span class="chev">›</span></div></div>
+ <div class="caps"><span>Inbox</span></div>
+ <div class="fr"><span class="ud"><span class="dot d-blue"></span></span><div class="main"><div class="t b">Waiting for me</div><div class="m">4 waiting · updated 6 min ago</div></div><div class="r"><span class="cnt wait">4</span><span class="chev">›</span></div></div>
+ <div class="fr"><span class="ud"><span class="dot d-blue"></span></span><div class="main"><div class="t b">Morning brief · today</div><div class="m">Plan: 2 of 6 done · 08:02</div></div><div class="r"><span class="chev">›</span></div></div>
+ <div class="fr"><span class="ud"></span><div class="main"><div class="t">Track my threads</div><div class="m">2 with news</div></div><div class="r"><span class="chev">›</span></div></div>
+ <div class="fr"><span class="ud"></span><div class="main"><div class="t">Idea finder</div><div class="m">1 to judge</div></div><div class="r"><span class="chev">›</span></div></div>
+ <div class="fr"><span class="ud"><span class="dot d-blue"></span></span><div class="main"><div class="t b">Weekly mail roundup</div><div class="m">ϟ run #12 · 2 h ago</div></div><div class="r"><span class="chev">›</span></div></div>
+</div>
+<div class="tabs"><div><span class="gl">◷</span>Now</div><div class="on"><span class="gl">▤</span>Inbox<span class="badge">7</span></div><div><span class="gl">⚒</span>Workbench</div><div><span class="gl">▦</span>Calendar</div></div>
+</div></div>
+
+<div class="col"><div class="tag">Root — light</div>
+<div class="phone lt"><div class="status"><span>9:41</span><span>●●●</span></div>
+<div class="top"><span></span><span class="tbtn">⋯</span></div>
+<div class="title">Inbox</div>
+<div class="chipline"><span class="macchip"><span class="dot d-green"></span>Acme Mac</span></div>
+<div class="body">
+ <div class="card wait"><div class="fr" style="padding:2px 0"><span class="ic" style="color:var(--orange)">✓</span><div class="main"><div class="t b">Needs approval</div><div class="m">Send a Slack message · Create a Jira issue · 1 more</div></div><div class="r"><span class="cnt wait">3</span><span class="chev">›</span></div></div></div>
+ <div class="fr"><span class="ic">🚩</span><div class="main"><div class="t">Release acme 2.0</div></div><div class="r"><span class="cnt">2</span><span class="chev">›</span></div></div>
+ <div class="fr"><span class="ic">📦</span><div class="main"><div class="t">Blockers</div></div><div class="r"><span class="cnt">1</span><span class="chev">›</span></div></div>
+ <div class="fr"><span class="ic">👥</span><div class="main"><div class="t">Team</div></div><div class="r"><span class="chev">›</span></div></div>
+ <div class="caps"><span>Inbox</span></div>
+ <div class="fr"><span class="ud"><span class="dot d-blue"></span></span><div class="main"><div class="t b">Waiting for me</div><div class="m">4 waiting · updated 6 min ago</div></div><div class="r"><span class="cnt wait">4</span><span class="chev">›</span></div></div>
+ <div class="fr"><span class="ud"><span class="dot d-blue"></span></span><div class="main"><div class="t b">Morning brief · today</div><div class="m">Plan: 2 of 6 done · 08:02</div></div><div class="r"><span class="chev">›</span></div></div>
+ <div class="fr"><span class="ud"></span><div class="main"><div class="t">Track my threads</div><div class="m">2 with news</div></div><div class="r"><span class="chev">›</span></div></div>
+ <div class="fr"><span class="ud"></span><div class="main"><div class="t">Idea finder</div><div class="m">1 to judge</div></div><div class="r"><span class="chev">›</span></div></div>
+ <div class="fr"><span class="ud"><span class="dot d-blue"></span></span><div class="main"><div class="t b">Weekly mail roundup</div><div class="m">ϟ run #12 · 2 h ago</div></div><div class="r"><span class="chev">›</span></div></div>
+</div>
+<div class="tabs"><div><span class="gl">◷</span>Now</div><div class="on"><span class="gl">▤</span>Inbox<span class="badge">7</span></div><div><span class="gl">⚒</span>Workbench</div><div><span class="gl">▦</span>Calendar</div></div>
+</div></div>
+
+<div class="col"><div class="tag">Owner folder (pushed) — dark</div>
+<div class="phone"><div class="status"><span>9:41</span><span>●●●</span></div>
+<div class="top"><span class="back">‹ Inbox</span><span></span></div>
+<div class="title">Release acme 2.0</div>
+<div class="body">
+ <div class="fr"><span class="ic">🧪</span><div class="main"><div class="t">QA</div></div><div class="r"><span class="chev">›</span></div></div>
+ <div class="caps"><span>In this folder</span></div>
+ <div class="fr"><span class="ud"><span class="dot d-blue"></span></span><div class="main"><div class="t b">Release checklist</div><div class="m">Updated 12 min ago · living</div><div class="p">4 of 9 items green · 2 blockers</div></div><div class="r"><span class="chev">›</span></div></div>
+ <div class="fr"><span class="ud"><span class="dot d-blue"></span></span><div class="main"><div class="t b">Changelog draft</div><div class="m">ϟ run #4 · 09:20</div><div class="p">Twelve merged changes since 1.9; three need a note from the owner…</div></div><div class="r"><span class="chev">›</span></div></div>
+</div>
+<div class="tabs"><div><span class="gl">◷</span>Now</div><div class="on"><span class="gl">▤</span>Inbox<span class="badge">7</span></div><div><span class="gl">⚒</span>Workbench</div><div><span class="gl">▦</span>Calendar</div></div>
+</div></div>
+</div>
+
+<!-- ===================================================== 2 -->
+<h2>2. Waiting for me — rows that carry a <code>ref</code> and their native actions</h2>
+<div class="note">This is one living artifact that lists every ping. Each row shows the avatar or initials, who · where, two lines of text and an age badge, which turns <code>warning</code> after 24 h, as on the Mac. Swiping left shows <b>Done</b> and <b>Snooze</b>; swiping right shows <b>Hide</b>.
+<ul>
+<li>A long press, or a tap and then ⋯, opens the full menu: Reply…, Done, Snooze ▸ (1 day / 3 days / 1 week), Hide, Open in Slack.</li>
+<li>Tapping a row opens its detail (frame 2c).</li>
+<li>While an action runs, the row is dimmed with a spinner.</li>
+<li>After it applies, the row leaves at once. The phone hides it locally until the hub's next publish leaves it out.</li>
+<li>If it fails, the row stays with the hub's error and <b>Retry</b>. A failed Done never hides a row.</li>
+</ul></div>
+<div class="row">
+<div class="col"><div class="tag">List + one row swiped — dark</div>
+<div class="phone"><div class="status"><span>9:41</span><span>●●●</span></div>
+<div class="top"><span class="back">‹ Inbox</span><span class="tbtn">⋯</span></div>
+<div class="title">Waiting for me</div>
+<div class="chipline">4 waiting · updated 6 min ago</div>
+<div class="body">
+ <div class="fr"><span class="av">CA</span><div class="main"><div class="m">Colleague A · #acme-release</div><div class="p" style="color:var(--fg)">Can you sign off the 2.0 checklist before 15:00? QA is done on our side.</div></div><div class="r"><span class="pill t-warning num">26 h</span></div></div>
+ <div class="swipe"><div class="slid"><div class="fr"><span class="av">CB</span><div class="main"><div class="m">Colleague B · DM</div><div class="p" style="color:var(--fg)">Quick one: are we keeping the old…</div></div></div></div><div class="sa g">Done</div><div class="sa o">Snooze</div></div>
+ <div class="fr"><span class="av">JR</span><div class="main"><div class="m">ACME-412 · Jira · mentioned you</div><div class="p" style="color:var(--fg)">@owner which build fixed the login loop?</div></div><div class="r"><span class="pill t-neutral num">3 h</span></div></div>
+ <div class="fr"><span class="av">✉</span><div class="main"><div class="m">partner@example.com · mail</div><div class="p" style="color:var(--fg)">Contract renewal — need your answer this week</div></div><div class="r"><span class="pill t-neutral num">1 h</span></div></div>
+</div>
+<div class="tabs"><div><span class="gl">◷</span>Now</div><div class="on"><span class="gl">▤</span>Inbox<span class="badge">7</span></div><div><span class="gl">⚒</span>Workbench</div><div><span class="gl">▦</span>Calendar</div></div>
+</div></div>
+
+<div class="col"><div class="tag">Busy row + failed row with Retry — light</div>
+<div class="phone lt"><div class="status"><span>9:41</span><span>●●●</span></div>
+<div class="top"><span class="back">‹ Inbox</span><span class="tbtn">⋯</span></div>
+<div class="title">Waiting for me</div>
+<div class="chipline">4 waiting · updated 6 min ago</div>
+<div class="body">
+ <div class="fr" style="opacity:.45"><span class="av">CA</span><div class="main"><div class="m">Colleague A · #acme-release</div><div class="p" style="color:var(--fg)">Can you sign off the 2.0 checklist before 15:00?</div></div><div class="r"><span class="spin"></span></div></div>
+ <div class="line" style="margin:-6px 0 0 36px;padding-top:0">Marking done…</div>
+ <div class="fr"><span class="av">CB</span><div class="main"><div class="m">Colleague B · DM</div><div class="p" style="color:var(--fg)">Quick one: are we keeping the old login page after 2.0?</div><div class="m err" style="white-space:normal">Couldn't snooze: the item was already closed on the Mac.</div><div class="btns" style="margin-top:6px"><span class="btn">Retry</span></div></div><div class="r"><span class="pill t-neutral num">5 h</span></div></div>
+ <div class="fr"><span class="av">JR</span><div class="main"><div class="m">ACME-412 · Jira · mentioned you</div><div class="p" style="color:var(--fg)">@owner which build fixed the login loop?</div></div><div class="r"><span class="pill t-neutral num">3 h</span></div></div>
+</div>
+<div class="tabs"><div><span class="gl">◷</span>Now</div><div class="on"><span class="gl">▤</span>Inbox<span class="badge">7</span></div><div><span class="gl">⚒</span>Workbench</div><div><span class="gl">▦</span>Calendar</div></div>
+</div></div>
+
+<div class="col"><div class="tag">2c. Row detail — dark</div>
+<div class="phone"><div class="status"><span>9:41</span><span>●●●</span></div>
+<div class="top"><span class="back">‹ Waiting for me</span><span class="tbtn">⋯</span></div>
+<div class="body" style="padding-top:8px">
+ <div class="fr"><span class="av">CA</span><div class="main"><div class="t b">Colleague A</div><div class="m">#acme-release · yesterday 07:40 · <span class="pill t-warning">26 h</span></div></div></div>
+ <div class="bt">Can you sign off the 2.0 checklist before 15:00? QA is done on our side, only the docs link is still red.</div>
+ <div class="caps"><span>Why it matters</span></div>
+ <div class="bt" style="color:var(--sec)">You own the release sign-off; the tag waits on it.</div>
+ <div class="caps"><span>Thread</span></div>
+ <div class="bt" style="color:var(--sec)">3 replies · QA green, docs link broken, colleague C fixing it.</div>
+ <div class="bt"><span class="link">Open in Slack ↗</span></div>
+</div>
+<div class="bar"><span class="btn">Snooze ▾</span><span class="btn">Reply…</span><span class="btn pri">Done</span></div>
+</div></div>
+
+<div class="col"><div class="tag">2d. Reply… sheet — light</div>
+<div class="phone lt"><div class="status"><span>9:41</span><span>●●●</span></div>
+<div class="top"><span class="back">‹ Waiting for me</span></div>
+<div class="body" style="opacity:.4;padding-top:8px"><div class="fr"><span class="av">CA</span><div class="main"><div class="t b">Colleague A</div><div class="m">#acme-release · yesterday 07:40</div></div></div><div class="bt">Can you sign off the 2.0 checklist before 15:00?</div></div>
+<div class="dim"></div>
+<div class="sheet"><div class="grab"></div>
+ <div style="display:flex;justify-content:space-between;font-size:15px;margin-bottom:4px"><span class="link">Cancel</span><span class="link" style="font-weight:600">Propose</span></div><div style="font-size:15px;font-weight:600;margin-bottom:8px">Reply in #acme-release</div>
+ <div class="field">Signing off now — docs link is the only open item, fine to tag after colleague C's fix.</div>
+ <div class="line" style="padding:8px 2px 0">The reply goes to Needs approval. Nothing is sent until you approve it there, on this phone or on the Mac.</div>
+</div>
+</div></div>
+</div>
+
+<!-- ===================================================== 3 -->
+<h2>3. Needs approval</h2>
+<div class="note">Each approval is a waiting card. It shows the recipe's look when the Mac would draw it (APPROVAL-01, computed by the hub), otherwise the native card. The actions are always the Mac's:
+<ul>
+<li>proposals: <b>Approve</b> and <b>Reject</b>;</li>
+<li>failed proposals: <b>Retry</b> and <b>Dismiss</b>;</li>
+<li>reminders: <b>Done</b> and <b>Snooze 1h</b>.</li>
+</ul>
+<b>Approve</b> pins the SHA-256 of the arguments shown on screen, as <code>actions approve --args-sha256</code> does. If the arguments changed meanwhile, the hub refuses and the card redraws. <b>Edit…</b> and <b>Open Draft</b> (save_automation) stay on the Mac: the phone shows "Edit on your Mac". The off / stopped / failed notes from the Mac are one line at the top.</div>
+<div class="row">
+<div class="col"><div class="tag">Needs approval — dark</div>
+<div class="phone"><div class="status"><span>9:41</span><span>●●●</span></div>
+<div class="top"><span class="back">‹ Inbox</span><span></span></div>
+<div class="title">Needs approval</div>
+<div class="body">
+ <div class="card wait"><div class="ct">Send a Slack message</div><div class="cm">to #acme-release · ϟ Release notes · run #4 · 09:12</div><div class="cq">“Release 2.0 is tagged; checklist in the thread.”</div><div class="btns"><span class="btn pri">Approve</span><span class="btn">Reject</span></div></div>
+ <div class="card wait"><div class="ct">Reply in #acme-release</div><div class="cm">Reply from Waiting for me · this iPhone · 09:40</div><div class="cq">“Signing off now — docs link is the only open item…”</div><div class="btns"><span class="btn pri">Approve</span><span class="btn">Reject</span></div></div>
+ <div class="card wait"><div class="ct">Create a Linear issue</div><div class="cm err">Failed: the team was archived</div><div class="btns"><span class="btn">Retry</span><span class="btn">Dismiss</span></div></div>
+ <div class="card wait"><div class="ct">Reminder · 14:00</div><div class="cq">Answer colleague A about the budget</div><div class="cm"><span class="link">Slack message ↗</span></div><div class="btns"><span class="btn pri">Done</span><span class="btn">Snooze 1h</span></div></div>
+</div>
+<div class="tabs"><div><span class="gl">◷</span>Now</div><div class="on"><span class="gl">▤</span>Inbox<span class="badge">7</span></div><div><span class="gl">⚒</span>Workbench</div><div><span class="gl">▦</span>Calendar</div></div>
+</div></div>
+
+<div class="col"><div class="tag">Needs approval — light, recipe off + save_automation</div>
+<div class="phone lt"><div class="status"><span>9:41</span><span>●●●</span></div>
+<div class="top"><span class="back">‹ Inbox</span><span></span></div>
+<div class="title">Needs approval</div>
+<div class="body">
+ <div class="line">Showing approvals in the standard card — Needs approval is off on Acme Mac.</div>
+ <div class="card wait"><div class="ct">Save automation “Standup notes”</div><div class="cm">Assistant proposal · 08:55</div><div class="cq">Runs weekdays at 09:30 · writes to your Inbox · reads Slack</div><div class="btns"><span class="btn dis">Open Draft — on your Mac</span><span class="btn">Reject</span></div></div>
+ <div class="card wait"><div class="ct">Create a Jira issue</div><div class="cm">ACME · from your :ticket: reaction · 08:31</div><div class="cq">“Checklist link broken on the release page”</div><div class="btns"><span class="btn pri">Approve</span><span class="btn">Reject</span></div><div class="cm">Edit on your Mac</div></div>
+</div>
+<div class="tabs"><div><span class="gl">◷</span>Now</div><div class="on"><span class="gl">▤</span>Inbox<span class="badge">7</span></div><div><span class="gl">⚒</span>Workbench</div><div><span class="gl">▦</span>Calendar</div></div>
+</div></div>
+
+<div class="col"><div class="tag">Approve — sending, then changed on the Mac — dark</div>
+<div class="phone"><div class="status"><span>9:41</span><span>●●●</span></div>
+<div class="top"><span class="back">‹ Inbox</span><span></span></div>
+<div class="title">Needs approval</div>
+<div class="body">
+ <div class="card wait"><div class="ct">Send a Slack message</div><div class="cm">to #acme-release · ϟ Release notes · run #4</div><div class="cq">“Release 2.0 is tagged; checklist in the thread.”</div><div class="btns"><span class="btn pri" style="opacity:.6"><span class="spin" style="border-top-color:#fff"></span> Approving…</span></div></div>
+ <div class="card wait"><div class="ct">Create a Jira issue</div><div class="cm">ACME · from your :ticket: reaction</div><div class="cq">“Checklist link broken on the release page (v2)”</div><div class="cm err" style="margin-top:6px">This proposal changed on the Mac — look again before approving.</div><div class="btns"><span class="btn pri">Approve</span><span class="btn">Reject</span></div></div>
+</div>
+<div class="tabs"><div><span class="gl">◷</span>Now</div><div class="on"><span class="gl">▤</span>Inbox<span class="badge">7</span></div><div><span class="gl">⚒</span>Workbench</div><div><span class="gl">▦</span>Calendar</div></div>
+</div></div>
+</div>
+
+<!-- ===================================================== 4 -->
+<h2>4. An artifact drawn from blocks</h2>
+<div class="note">This is the same JSON the Mac draws (Kit <code>ArtifactDocument</code>), rendered by a phone renderer built from phone parts. The header line is ϟ automation · run · time, or "Updated … ago" for a living card. Block by block:
+<ul>
+<li><code>heading</code> and <code>text</code> (markdown) draw in place.</li>
+<li><code>metrics</code> draw as a 2- or 3-up row.</li>
+<li><code>list</code> rows use the tone pill. A row with a <code>ref</code> gets the native actions from section 2.</li>
+<li><code>table</code> scrolls sideways inside its card.</li>
+<li><code>person</code> draws as an avatar row.</li>
+<li><code>link</code> opens Safari or the source's app.</li>
+<li><code>actions</code>: <code>reply</code> and <code>target</code> work from the phone. <code>open</code> opens the URL. <code>chat</code> and <code>agent</code> are drawn disabled with "On your Mac".</li>
+</ul>
+The bottom bar has <b>Done</b> and <b>Dismiss</b>, which mark only the drawn version (<code>content_hash</code>). Opening the card marks it read, also by hash.</div>
+<div class="row">
+<div class="col"><div class="tag">Feed card — dark</div>
+<div class="phone"><div class="status"><span>9:41</span><span>●●●</span></div>
+<div class="top"><span class="back">‹ Inbox</span><span class="tbtn">⋯</span></div>
+<div class="body" style="padding-top:4px">
+ <div class="line" style="padding-bottom:0">ϟ Weekly mail roundup · run #12 · 2 h ago</div>
+ <div class="bh">Three threads need an answer</div>
+ <div class="metrics"><div class="metric"><div class="v">3</div><div class="k">to answer</div></div><div class="metric"><div class="v">11</div><div class="k">read only</div></div><div class="metric"><div class="v">2</div><div class="k">from new people</div></div></div>
+ <div class="fr"><span class="av">✉</span><div class="main"><div class="t">Contract renewal</div><div class="m">partner@example.com · Tue</div></div><div class="r"><span class="pill t-danger">due Fri</span></div></div>
+ <div class="fr"><span class="av">✉</span><div class="main"><div class="t">Invoice 2026-11 question</div><div class="m">billing@example.com · Mon</div></div><div class="r"><span class="pill t-warning">this week</span></div></div>
+ <div class="fr"><span class="av">✉</span><div class="main"><div class="t">Conference talk slot</div><div class="m">events@example.com · Mon</div></div><div class="r"><span class="pill t-info">FYI</span></div></div>
+ <div class="btns" style="padding:4px 8px"><span class="btn">Draft replies</span><span class="btn">＋ Task</span><span class="btn dis">Chat — on your Mac</span></div>
+</div>
+<div class="bar"><span class="btn">Dismiss</span><span class="btn pri">Done</span></div>
+</div></div>
+
+<div class="col"><div class="tag">Living card with a table — light</div>
+<div class="phone lt"><div class="status"><span>9:41</span><span>●●●</span></div>
+<div class="top"><span class="back">‹ Release acme 2.0</span><span class="tbtn">⋯</span></div>
+<div class="body" style="padding-top:4px">
+ <div class="line" style="padding-bottom:0">ϟ Release checklist · Updated 12 min ago</div>
+ <div class="bh">acme 2.0 — 4 of 9 green</div>
+ <div class="tbl"><table><tr><th>Item</th><th>Owner</th><th>State</th><th>Since</th></tr>
+ <tr><td>QA pass</td><td>Colleague C</td><td><span class="pill t-success">green</span></td><td>Mon</td></tr>
+ <tr><td>Docs link</td><td>Colleague C</td><td><span class="pill t-danger">red</span></td><td>Tue</td></tr>
+ <tr><td>Changelog</td><td>You</td><td><span class="pill t-warning">draft</span></td><td>Wed</td></tr></table><div class="scrollhint">scrolls ›</div></div>
+ <div class="fr"><span class="av">CC</span><div class="main"><div class="t">Colleague C</div><div class="m">QA lead · fixing the docs link</div></div></div>
+ <div class="bt"><span class="link">Release page ↗</span></div>
+</div>
+<div class="bar"><span class="btn">Dismiss</span><span class="btn pri">Done</span></div>
+</div></div>
+
+<div class="col"><div class="tag">Card ⋯ menu — dark</div>
+<div class="phone"><div class="status"><span>9:41</span><span>●●●</span></div>
+<div class="top"><span class="back">‹ Inbox</span><span class="tbtn">⋯</span></div>
+<div class="body" style="padding-top:4px;opacity:.5">
+ <div class="line" style="padding-bottom:0">ϟ Weekly mail roundup · run #12 · 2 h ago</div>
+ <div class="bh">Three threads need an answer</div>
+</div>
+<div class="menu" style="top:70px"><div>Run Now</div><div style="color:var(--sec);font-size:12px">Edit, Move to Folder, Turn Off and Delete are on your Mac</div></div>
+<div class="bar"><span class="btn">Dismiss</span><span class="btn pri">Done</span></div>
+</div></div>
+
+<div class="col"><div class="tag">Unsupported / unreadable card — light</div>
+<div class="phone lt"><div class="status"><span>9:41</span><span>●●●</span></div>
+<div class="top"><span class="back">‹ Inbox</span><span class="tbtn">⋯</span></div>
+<div class="body" style="padding-top:4px">
+ <div class="line" style="padding-bottom:0">ϟ Sprint board · Updated 3 min ago</div>
+ <div class="banner">This card needs a newer Watchtower on this iPhone. Showing its text.</div>
+ <div class="bt">Sprint 47: 18 of 24 done. Blocked: ACME-401 (waiting on design), ACME-415 (needs review)…</div>
+</div>
+<div class="bar"><span class="btn">Dismiss</span><span class="btn pri">Done</span></div>
+</div></div>
+</div>
+
+<!-- ===================================================== 5 -->
+<h2>5. The root's legacy entries (until sub-project C) — open in ask #1348</h2>
+<div class="note">The recommended answer is drawn here. The hub turns the Mac's Morning brief, Track my threads and Idea finder into block documents with <code>ref</code> rows, so the phone needs no separate screen for them. Plan items get a new ref kind, <code>plan_item</code>, whose check writes <code>day_plan_items.status</code>. Tracks and ideas use the native actions of their ref kinds.</div>
+<div class="row">
+<div class="col"><div class="tag">Morning brief — dark</div>
+<div class="phone"><div class="status"><span>9:41</span><span>●●●</span></div>
+<div class="top"><span class="back">‹ Inbox</span><span></span></div>
+<div class="body" style="padding-top:4px">
+ <div class="line" style="padding-bottom:0">Your day · Wed 12 Nov · 08:02</div>
+ <div class="bh">Plan · 2 of 6</div>
+ <div class="fr"><span class="check on">✓</span><div class="main"><div class="t strike">Review ACME-412 fix</div></div><div class="r num">09:00</div></div>
+ <div class="fr"><span class="check on">✓</span><div class="main"><div class="t strike">Standup</div></div><div class="r num">09:30</div></div>
+ <div class="fr"><span class="check"></span><div class="main"><div class="t">Sign off the 2.0 checklist</div><div class="m">from Waiting for me</div></div><div class="r num">11:00</div></div>
+ <div class="fr"><span class="check"></span><div class="main"><div class="t">1:1 with colleague B</div><div class="m">calendar</div></div><div class="r num">14:00</div></div>
+ <div class="bh">Attention</div>
+ <div class="bt">Release 2.0 tag waits on your sign-off; the docs link is the only red item.</div>
+</div>
+<div class="tabs"><div><span class="gl">◷</span>Now</div><div class="on"><span class="gl">▤</span>Inbox<span class="badge">7</span></div><div><span class="gl">⚒</span>Workbench</div><div><span class="gl">▦</span>Calendar</div></div>
+</div></div>
+
+<div class="col"><div class="tag">Track my threads — light</div>
+<div class="phone lt"><div class="status"><span>9:41</span><span>●●●</span></div>
+<div class="top"><span class="back">‹ Inbox</span><span class="tbtn">⋯</span></div>
+<div class="title">Track my threads</div>
+<div class="body">
+ <div class="fr"><span class="ud"><span class="dot d-blue"></span></span><div class="main"><div class="t b">Budget approval for Q1</div><div class="m">Track · 10:12</div><div class="p">Finance asked for the revised numbers by Friday.</div></div><div class="r"><span class="pill t-info">2 new</span></div></div>
+ <div class="fr"><span class="ud"><span class="dot d-blue"></span></span><div class="main"><div class="t b">Hiring: backend role</div><div class="m">Track · yesterday</div><div class="p">Second-round slot moved to Thursday.</div></div><div class="r"><span class="pill t-info">1 new</span></div></div>
+ <div class="fr"><span class="ud"></span><div class="main"><div class="t">Office move</div><div class="m">Track · Mon</div></div></div>
+ <div class="line">Swipe: Done · Stop watching · long press: Make a Task</div>
+ <div class="caps"><span>Stopped · 3</span><span class="link" style="text-transform:none">Show</span></div>
+</div>
+<div class="tabs"><div><span class="gl">◷</span>Now</div><div class="on"><span class="gl">▤</span>Inbox<span class="badge">7</span></div><div><span class="gl">⚒</span>Workbench</div><div><span class="gl">▦</span>Calendar</div></div>
+</div></div>
+
+<div class="col"><div class="tag">Idea finder — dark</div>
+<div class="phone"><div class="status"><span>9:41</span><span>●●●</span></div>
+<div class="top"><span class="back">‹ Inbox</span><span></span></div>
+<div class="title">Idea finder</div>
+<div class="body">
+ <div class="caps wait"><span>To judge · 1</span></div>
+ <div class="card wait"><div class="ct">Self-serve release notes page</div><div class="cm">Idea · proposed · from #acme-release</div><div class="cq">Teams keep asking where the notes live; one page per release would end the pings.</div><div class="btns"><span class="btn pri">Approve</span><span class="btn">Not now</span><span class="btn">Reject</span></div></div>
+ <div class="caps"><span>Recent</span></div>
+ <div class="fr"><span class="ic">💡</span><div class="main"><div class="t">Shared on-call calendar</div><div class="m">Idea · active · Mon</div></div></div>
+ <div class="fr"><span class="ic">⚖</span><div class="main"><div class="t">Keep the old login page until 2.1</div><div class="m">Decision · Tue</div></div></div>
+</div>
+<div class="tabs"><div><span class="gl">◷</span>Now</div><div class="on"><span class="gl">▤</span>Inbox<span class="badge">7</span></div><div><span class="gl">⚒</span>Workbench</div><div><span class="gl">▦</span>Calendar</div></div>
+</div></div>
+</div>
+
+<!-- ===================================================== 6 -->
+<h2>6. States of the tab</h2>
+<div class="note">The copy for each state lives in the model and is covered by a test.
+<ul>
+<li><b>Loading:</b> the first fetch after linking, before any Inbox record has arrived.</li>
+<li><b>Empty:</b> the Inbox is fetched and nothing is in it.</li>
+<li><b>Empty folder:</b> the narrow scope.</li>
+<li><b>Mac away:</b> the cards stay as of the last publish, actions queue in the outbox, and the hub chip turns gray.</li>
+<li><b>Not delivered:</b> an action the hub refused shows with <b>Retry</b>.</li>
+<li><b>Old Mac:</b> the hub does not announce the <code>inbox</code> capability.</li>
+<li><b>Organization policy:</b> <code>MobileSync = workbench_only</code>.</li>
+</ul></div>
+<div class="row">
+<div class="col"><div class="tag">Loading — dark</div>
+<div class="phone"><div class="status"><span>9:41</span><span>●●●</span></div>
+<div class="top"><span></span><span></span></div><div class="title">Inbox</div>
+<div class="chipline"><span class="macchip"><span class="dot d-green"></span>Acme Mac</span></div>
+<div class="empty"><span class="spin" style="width:18px;height:18px"></span><div class="s">Getting your Inbox from Acme Mac…</div></div>
+<div class="tabs"><div><span class="gl">◷</span>Now</div><div class="on"><span class="gl">▤</span>Inbox</div><div><span class="gl">⚒</span>Workbench</div><div><span class="gl">▦</span>Calendar</div></div>
+</div></div>
+
+<div class="col"><div class="tag">Empty — light</div>
+<div class="phone lt"><div class="status"><span>9:41</span><span>●●●</span></div>
+<div class="top"><span></span><span class="tbtn">⋯</span></div><div class="title">Inbox</div>
+<div class="chipline"><span class="macchip"><span class="dot d-green"></span>Acme Mac</span></div>
+<div class="empty"><div class="big">✓</div><div class="h">Nothing waits for you</div><div class="s">New cards arrive after the next sync on Acme Mac.</div></div>
+<div class="tabs"><div><span class="gl">◷</span>Now</div><div class="on"><span class="gl">▤</span>Inbox</div><div><span class="gl">⚒</span>Workbench</div><div><span class="gl">▦</span>Calendar</div></div>
+</div></div>
+
+<div class="col"><div class="tag">Empty folder (narrow scope) — dark</div>
+<div class="phone"><div class="status"><span>9:41</span><span>●●●</span></div>
+<div class="top"><span class="back">‹ Inbox</span><span></span></div><div class="title">Team</div>
+<div class="empty"><div class="h">No cards in Team</div><div class="s">Automations routed here write their cards into this folder. Routes are set on your Mac.</div></div>
+<div class="tabs"><div><span class="gl">◷</span>Now</div><div class="on"><span class="gl">▤</span>Inbox<span class="badge">7</span></div><div><span class="gl">⚒</span>Workbench</div><div><span class="gl">▦</span>Calendar</div></div>
+</div></div>
+
+<div class="col"><div class="tag">Mac away + queued and not delivered — light</div>
+<div class="phone lt"><div class="status"><span>9:41</span><span>●●●</span></div>
+<div class="top"><span></span><span class="tbtn">⋯</span></div><div class="title">Inbox</div>
+<div class="chipline"><span class="macchip"><span class="dot d-gray"></span>Acme Mac · asleep</span><span>as of 40 min ago</span></div>
+<div class="body">
+ <div class="banner"><b>Waiting to send · 2</b><div class="cm">Done on a ping · Approve on a Slack message. They apply when Acme Mac wakes.</div></div>
+ <div class="banner"><b class="err">Not delivered · 1</b><div class="cm">Snooze on “Quick one: are we keeping…” — the Mac refused it: the item was already closed.</div><div class="btns" style="margin-top:6px"><span class="btn">Retry</span><span class="btn">Discard</span></div></div>
+ <div class="card wait"><div class="fr" style="padding:2px 0"><span class="ic" style="color:var(--orange)">✓</span><div class="main"><div class="t b">Needs approval</div></div><div class="r"><span class="cnt wait">2</span><span class="chev">›</span></div></div></div>
+ <div class="fr"><span class="ud"><span class="dot d-blue"></span></span><div class="main"><div class="t b">Waiting for me</div><div class="m">3 waiting · updated 46 min ago</div></div><div class="r"><span class="cnt wait">3</span><span class="chev">›</span></div></div>
+</div>
+<div class="tabs"><div><span class="gl">◷</span>Now</div><div class="on"><span class="gl">▤</span>Inbox<span class="badge">5</span></div><div><span class="gl">⚒</span>Workbench</div><div><span class="gl">▦</span>Calendar</div></div>
+</div></div>
+
+<div class="col"><div class="tag">Old Mac (no inbox capability) — dark</div>
+<div class="phone"><div class="status"><span>9:41</span><span>●●●</span></div>
+<div class="top"><span></span><span></span></div><div class="title">Inbox</div>
+<div class="chipline"><span class="macchip"><span class="dot d-green"></span>Acme Mac</span></div>
+<div class="empty"><div class="h">Update Watchtower on Acme Mac</div><div class="s">This Mac's Watchtower is too old to send its Inbox to the phone.</div></div>
+<div class="tabs"><div><span class="gl">◷</span>Now</div><div class="on"><span class="gl">▤</span>Inbox</div><div><span class="gl">⚒</span>Workbench</div><div><span class="gl">▦</span>Calendar</div></div>
+</div></div>
+
+<div class="col"><div class="tag">Organization policy — light</div>
+<div class="phone lt"><div class="status"><span>9:41</span><span>●●●</span></div>
+<div class="top"><span></span><span></span></div><div class="title">Inbox</div>
+<div class="chipline"><span class="macchip"><span class="dot d-green"></span>Acme Mac</span></div>
+<div class="empty"><div class="h">The Inbox stays on your Mac</div><div class="s">Your organization lets this phone see only Workbench.</div></div>
+<div class="tabs"><div><span class="gl">◷</span>Now</div><div class="on"><span class="gl">▤</span>Inbox</div><div><span class="gl">⚒</span>Workbench</div><div><span class="gl">▦</span>Calendar</div></div>
+</div></div>
+</div>
+
+</body></html>
