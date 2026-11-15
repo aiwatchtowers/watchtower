@@ -53,6 +53,16 @@ final class KeyboardShortcutCatalogTests: XCTestCase {
         XCTAssertTrue(inbox.entries.contains(KeyboardShortcutCatalog.Entry("⌥⌘S", "Show or hide the Inbox folders")))
     }
 
+    /// The Inbox's row keys (`InboxRowKeymap`) and Idea finder's verdict
+    /// keys (`IdeaBatchPress`) are listed under Inbox.
+    func testInboxRowAndIdeaFinderKeysAreListed() throws {
+        let inbox = try XCTUnwrap(KeyboardShortcutCatalog.areas.first { $0.title == "Inbox" })
+        let keys = Set(inbox.entries.map(\.keys))
+        for chord in ["J / K", "Return", "E", "R", "S", "⌘K", "M", "K / D / L / T"] {
+            XCTAssertTrue(keys.contains(chord), chord)
+        }
+    }
+
     func testMarkdownRendersOneTablePerArea() {
         let markdown = KeyboardShortcutCatalog.markdown
         XCTAssertTrue(markdown.hasPrefix("### Global\n\n| Keys | Action |\n|---|---|\n| **⌘B** | Collapse or expand the menu |"))

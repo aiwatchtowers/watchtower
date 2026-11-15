@@ -24,6 +24,18 @@ struct InboxRowKeyRequest: Equatable {
     let ref: InboxRef
     let kind: Kind
     let serial: Int
+
+    /// A request for `ref`'s `kind` after `previous`: a new serial, so a
+    /// second press of the same key opens it again.
+    static func next(_ kind: Kind, for ref: InboxRef, after previous: Self?) -> Self {
+        Self(ref: ref, kind: kind, serial: (previous?.serial ?? 0) + 1)
+    }
+
+    /// What `request` opens on the row `ref`: nothing for another row.
+    static func kind(of request: Self?, on ref: InboxRef) -> Kind? {
+        guard let request, request.ref == ref else { return nil }
+        return request.kind
+    }
 }
 
 extension EnvironmentValues {
@@ -76,34 +88,26 @@ struct InboxRowKeyboardHost<Content: View>: View {
         // reaches here too: keys are the rows' only while the pane itself
         // holds the keyboard and no composer is open.
         guard InboxRowKeymap.takesKeys(hostHasKeyboard: hasKeyboard, replyOpen: replyOpen),
-              press.modifiers.isDisjoint(with: [.control, .option]), let ref = focus.focused else { return .ignored }
+              let ref = focus.focused else { return .ignored }
         let key = press.key == .return ? InboxRowKeymap.returnKey : press.characters.lowercased()
-        let content = keys.content(ref)
-        guard let command = InboxRowKeymap.command(
-            key: key, command: press.modifiers.contains(.command), kind: ref.kind,
-            canReply: content?.hasReply ?? false) else { return .ignored }
-        switch command {
-        case .moveDown, .moveUp:
-            focus.move(command == .moveDown ? 1 : -1)
+        guard let effect = InboxRowKeymap.effect(
+            key: key, command: press.modifiers.contains(.command),
+            controlOrOption: !press.modifiers.isDisjoint(with: [.control, .option]),
+            ref: ref, content: keys.content(ref)) else { return .ignored }
+        switch effect {
+        case let .move(delta):
+            focus.move(delta)
             if let target = focusedArtifactRef {
                 withAnimation(Motion.toggle) { proxy.scrollTo(target) }
             }
-            return .handled
-        default:
-            break
-        }
-        guard let content, InboxRowKeymap.allows(command, content: content) else { return .ignored }
-        switch command {
         case .openSnoozeMenu:
-            request = InboxRowKeyRequest(ref: ref, kind: .snoozeMenu, serial: (request?.serial ?? 0) + 1)
-        case .press(.handToAgent):
-            request = InboxRowKeyRequest(ref: ref, kind: .handToAgent, serial: (request?.serial ?? 0) + 1)
-        case .press(.markAllDone):
-            keys.beginBulk(.sender(ref.key))
+            request = .next(.snoozeMenu, for: ref, after: request)
+        case .openHandToAgent:
+            request = .next(.handToAgent, for: ref, after: request)
+        case let .beginBulk(key):
+            keys.beginBulk(key)
         case let .press(rowPress):
             keys.press(ref, rowPress)
-        case .moveDown, .moveUp:
-            break
         }
         return .handled
     }

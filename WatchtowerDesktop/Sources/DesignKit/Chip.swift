@@ -27,24 +27,49 @@ public struct Chip: View {
     }
 }
 
-/// White semibold text on a blue capsule: a session's `#id`, a workbench's
-/// new-comments count.
+/// A count or an id on a filled capsule. `.accent` (the default) is white
+/// on blue: a session's `#id`, a workbench's new-comments count. `.warning`
+/// is dark text on orange, for a count that waits on the owner (white on
+/// orange is too faint in light mode); `.quiet` is secondary text on the
+/// card fill, for a batch to go through.
 public struct CountBadge: View {
-    let text: String
+    public enum Tone: Equatable, Sendable {
+        case accent, warning, quiet
 
-    public init(text: String) {
+        public var fill: Color {
+            switch self {
+            case .accent: .blue
+            case .warning: WatchtowerDesign.Tone.warning
+            case .quiet: Fill.card
+            }
+        }
+
+        public var text: Color {
+            switch self {
+            case .accent: .white
+            case .warning: .black
+            case .quiet: .secondary
+            }
+        }
+    }
+
+    let text: String
+    var tone: Tone = .accent
+
+    public init(text: String, tone: Tone = .accent) {
         self.text = text
+        self.tone = tone
     }
 
     public var body: some View {
         Text(text)
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(.white)
+            .font(.caption2.weight(.semibold).monospacedDigit())
+            .foregroundStyle(tone.text)
             .lineLimit(1)
             .fixedSize()
             .padding(.horizontal, 5)
             .padding(.vertical, 1)
-            .background(Color.blue, in: Capsule())
+            .background(tone.fill, in: Capsule())
     }
 }
 

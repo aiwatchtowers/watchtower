@@ -306,8 +306,8 @@ struct InboxRefRowActions: View {
             }
         }
         .onChange(of: keyRequest) { _, request in
-            guard let request, request.ref == ref else { return }
-            switch request.kind {
+            guard let kind = InboxRowKeyRequest.kind(of: request, on: ref) else { return }
+            switch kind {
             case .snoozeMenu: panel = .snooze
             case .handToAgent:
                 if let subject { handToAgent(subject) } else { onPress(.handToAgent) }
@@ -502,11 +502,16 @@ struct InboxRowActionHandler {
             }
         } else if press == .makeTask {
             await vm.runRowPress(.idea(id), press: press) {
-                guard let target = await ideas.convertToTarget(idea) else {
-                    return ideas.errorMessage ?? "Couldn't make a task"
+                switch await ideas.convertToTarget(idea) {
+                case .landed(let target):
+                    if let target { onIdeaMadeTask(target) }
+                    return nil
+                case .failed(let message):
+                    return message
+                case .didNotRun:
+                    // Another conversion of this idea is running: not a failure.
+                    return nil
                 }
-                onIdeaMadeTask(target)
-                return nil
             }
         }
     }

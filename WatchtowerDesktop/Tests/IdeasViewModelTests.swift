@@ -275,9 +275,10 @@ final class IdeasViewModelTests: XCTestCase {
         vm.load()
         let idea = try XCTUnwrap(vm.registryItems.first)
 
-        let targetID = await vm.convertToTarget(idea)
+        let outcome = await vm.convertToTarget(idea)
 
-        let newTargetID = try XCTUnwrap(targetID)
+        guard case .landed(let targetID?) = outcome else { return XCTFail("\(outcome)") }
+        let newTargetID = targetID
         XCTAssertNil(vm.errorMessage)
         let target = try await dbManager.dbPool.read { try TargetQueries.fetchByID($0, id: newTargetID) }
         XCTAssertEqual(target?.text, "Adopt the new onboarding flow")
@@ -287,6 +288,25 @@ final class IdeasViewModelTests: XCTestCase {
         let convertedIdea = try await dbManager.dbPool.read { try IdeaQueries.fetchOne($0, id: Int(ideaID)) }
         XCTAssertEqual(convertedIdea?.status, .converted)
         XCTAssertEqual(convertedIdea?.convertedTargetID, newTargetID)
+    }
+
+    /// A conversion that cannot be written is `.failed` with its text,
+    /// which the Ideas lists show too.
+    func testConvertToTargetFailureIsFailedWithItsText() async throws {
+        try await dbManager.dbPool.write {
+            _ = try TestDatabase.insertIdea($0, title: "Adopt the flow", essence: "Cuts drop-off", status: "active")
+            try $0.execute(sql: "CREATE TRIGGER fail_target BEFORE INSERT ON targets "
+                + "BEGIN SELECT RAISE(ABORT, 'disk is full'); END")
+        }
+        let vm = IdeasViewModel(dbManager: dbManager)
+        vm.load()
+        let idea = try XCTUnwrap(vm.registryItems.first)
+
+        let outcome = await vm.convertToTarget(idea)
+
+        guard case .failed(let message) = outcome else { return XCTFail("\(outcome)") }
+        XCTAssertTrue(message.contains("disk is full"), message)
+        XCTAssertEqual(vm.errorMessage, message)
     }
 
     // MARK: - IDEA-04 reachability

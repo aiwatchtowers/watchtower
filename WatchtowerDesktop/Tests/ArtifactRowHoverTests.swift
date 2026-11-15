@@ -118,6 +118,31 @@ final class ArtifactRowHoverTests: XCTestCase {
         XCTAssertEqual(pressed, [.done])
     }
 
+    /// VoiceOver's list on an `.inbox` row: the recipe's actions that are
+    /// enabled and not replaced by a native one, in order, then the host's.
+    func testRecipeActionsStayAccessible() {
+        let actions = [
+            ArtifactAction(label: "Read the doc", payload: .open("https://example.com/doc")),
+            ArtifactAction(label: "Ask in chat", payload: .chat("Summarise it")),
+            ArtifactAction(label: "Send to agent", payload: .agent(task: "Triage", workbench: nil)),
+            ArtifactAction(label: "Answer yes", payload: .reply(value: "yes", dataJSON: nil))
+        ]
+        let row = ArtifactListRow(title: "acme release notes", actions: actions, ref: ref)
+        var pressed: [Int] = []
+        let hooks = ArtifactRefHooks(nativeKinds: { _ in [.open] },
+                                     accessibilityActions: { _ in [ArtifactAccessibilityAction(name: "Done") {}] })
+        var environment = ArtifactEnvironment(onAction: { pressed.append($0) }, refHooks: hooks)
+        environment.isActionEnabled = { $0 != 12 }
+
+        let named = ArtifactListRowView.accessibleActions(row, firstIndex: 10, hidden: [.open],
+                                                          environment: environment)
+
+        XCTAssertEqual(named.map(\.name), ["Ask in chat", "Answer yes", "Done"],
+                       "Open is replaced by the native one; the disabled Send to agent is not named")
+        named[1].perform()
+        XCTAssertEqual(pressed, [13], "the recipe action's own index")
+    }
+
     /// A sender row whose Mark All Done… is asking keeps Cancel and
     /// "Mark N Done" shown with neither the pointer nor the keyboard on it.
     func testConfirmingSenderRowShowsItsActionsWithoutHover() async throws {

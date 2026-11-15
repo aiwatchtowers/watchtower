@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import os
 
 /// What a bulk press would touch, read just before the owner confirms.
 package struct InboxBulkPlan: Equatable, Sendable {
@@ -93,7 +94,7 @@ package final class InboxBulkPressModel {
         state = .running
         Task {
             do {
-                state = .finished(try await apply(planned.ids))
+                state = .finished(Self.logged(try await apply(planned.ids)))
             } catch {
                 InboxLog.logger.error("""
                     bulk press: apply of \(planned.ids.count) failed (\(InboxLog.errorClass(error), privacy: .public))
@@ -131,6 +132,23 @@ package final class InboxBulkPressModel {
         case .planning, .confirming, .running: true
         case .idle, .finished: false
         }
+    }
+
+    /// A failed or partial result is logged as it lands: its line may be
+    /// reset before the owner sees it (a pane that appears again resets a
+    /// press that finished while it was away).
+    private static func logged(_ result: InboxBulkResult) -> InboxBulkResult {
+        switch result {
+        case let .partial(done, total, _):
+            InboxLog.logger.error("bulk press closed \(done) of \(total)")
+        case .failed:
+            InboxLog.logger.error("bulk press failed")
+        case .unconfirmed:
+            InboxLog.logger.error("bulk press finished unconfirmed")
+        case .done:
+            break
+        }
+        return result
     }
 
     private var canBegin: Bool {

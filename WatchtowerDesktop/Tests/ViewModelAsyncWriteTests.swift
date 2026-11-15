@@ -198,10 +198,11 @@ final class ViewModelAsyncWriteTests: XCTestCase {
         let pending = await eventually { vm.pendingWrites.isPending("convert:\(idea.id)") }
         XCTAssertTrue(pending)
         let second = await boundedValue(Task { await vm.convertToTarget(idea) })
-        XCTAssertEqual(second, .some(nil), "a second press returns at once and converts nothing")
+        XCTAssertEqual(second, .didNotRun, "a second press returns at once and converts nothing")
         held.release()
         let created = await boundedValue(first)
-        XCTAssertNotNil(created.flatMap { $0 })
+        guard case .landed(let targetID?)? = created else { return XCTFail("\(String(describing: created))") }
+        XCTAssertGreaterThan(targetID, 0)
         let targets = try await dbManager.dbPool.read {
             try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM targets WHERE source_type = 'idea'")
         }

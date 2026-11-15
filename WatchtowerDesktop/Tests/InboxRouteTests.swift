@@ -426,6 +426,20 @@ final class InboxRouteTests: XCTestCase {
         assertLanding(state, .root, "the root")
     }
 
+    /// On a tree without Needs approval (an old database), a proposal push
+    /// opens the root.
+    func testNeedsApprovalWithoutTheFolderOpensTheRoot() async throws {
+        try await manager.dbPool.write { db in
+            try db.execute(sql: """
+                INSERT INTO inbox_folders (kind, parent_id, slug, title, position) VALUES ('root', NULL, 'inbox', 'Inbox', 0)
+                """)
+            try db.execute(sql: "INSERT INTO inbox_folder_state (id, revision) VALUES (1, 1)")
+        }
+        let state = appState()
+        await state.openNeedsApproval()?.value
+        assertLanding(state, .root, "the root stands in for the missing folder")
+    }
+
     /// A proposal push's click opens Needs approval as a route: the owner's
     /// arrival yields to it, so the brief on screen before stays unread.
     func testProposalPushOpensNeedsApprovalAsARoute() async throws {

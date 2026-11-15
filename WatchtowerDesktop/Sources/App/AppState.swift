@@ -156,6 +156,8 @@ final class AppState {
     /// survive the composer sheet being dismissed and any navigation away.
     /// Its chat-VM factory is wired below once the DB pool opens.
     let targetBriefCenter = TargetBriefCenter()
+    /// The Morning brief's Make a Task state, kept across day steps (R9).
+    let briefMakeTask = BriefMakeTaskModel()
 
     /// App-wide, single-slot registry for meeting recording + transcription, so
     /// an in-flight recording and its transcription survive navigating away from
@@ -292,12 +294,15 @@ final class AppState {
     /// so badges are visible the moment the main UI appears.
     private(set) var sidebarCountsViewModel: SidebarCountsViewModel?
 
-    /// Test seam (design shots): the sidebar reads `counts`, loaded by the
-    /// caller over its own database, with no observation started. The app
-    /// never calls it; `initialize()` owns the real one.
+    #if DEBUG
+    /// Test seam (design shots, which build in debug): the sidebar reads
+    /// `counts`, loaded by the caller over its own database, with no
+    /// observation started. Not in a release build; `initialize()` owns the
+    /// real one.
     func useSidebarCounts(_ counts: SidebarCountsViewModel) {
         sidebarCountsViewModel = counts
     }
+    #endif
 
     /// Email Accounts ViewModel (multi-account IMAP/Outlook) — persists across
     /// tab switches so an in-flight connect (Outlook OAuth or IMAP add) survives

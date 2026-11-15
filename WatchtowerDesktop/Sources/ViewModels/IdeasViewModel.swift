@@ -52,7 +52,7 @@ final class IdeasViewModel {
     /// meant to stay small by daily triage).
     private let registryLimit = 200
 
-    let dbManager: DatabaseManager
+    private let dbManager: DatabaseManager
     /// Every write of this view model, in order (board #670).
     @ObservationIgnored private let writes = SerialWrites()
     /// One pending create or conversion (board #670).
@@ -247,21 +247,23 @@ final class IdeasViewModel {
     /// Converts an idea into a Target: creates the target from the idea's
     /// title/essence (`source_type: "idea"`), marks the idea converted with a
     /// link back to it, and returns the new target id so the caller can
-    /// navigate via `AppState.navigateToTarget`.
-    /// One conversion per idea at a time: a second press while the first
-    /// waits does nothing (nil), so no second target is made.
+    /// navigate via `AppState.navigateToTarget` (`.landed`). A failure is
+    /// `.failed` with its text (also in `errorMessage`, which the Ideas lists
+    /// show). One conversion per idea at a time: a second press while the
+    /// first waits does nothing (`.didNotRun`), so no second target is made
+    /// and no failure is shown for a conversion still running.
     @discardableResult
-    func convertToTarget(_ idea: Idea) async -> Int? {
-        let converted = await pendingWrites.run(Self.convertKey(idea.id)) { () -> Int? in
+    func convertToTarget(_ idea: Idea) async -> IdeaBatchPressOutcome {
+        let converted = await pendingWrites.run(Self.convertKey(idea.id)) { () -> IdeaBatchPressOutcome in
             switch await convert(idea) {
             case .success(let targetID):
-                return targetID
+                return .landed(targetID: targetID)
             case .failure(let failure):
                 errorMessage = failure.message
-                return nil
+                return .failed(failure.message)
             }
         }
-        return converted.flatMap { $0 }
+        return converted ?? .didNotRun
     }
 
     /// One conversion per idea at a time (`convertToTarget`).
@@ -453,6 +455,17 @@ final class IdeasViewModel {
         guard let text = String(data: data, encoding: .utf8) else { return nil }
         guard let lastLine = text.split(separator: "\n", omittingEmptySubsequences: true).last else { return nil }
         return try? JSONDecoder().decode(IdeasDisabledEnvelope.self, from: Data(lastLine.utf8))
+    }
+
+    /// An Idea finder card's quotes and source; nil on a failed read,
+    /// logged (the card leaves them out).
+    func facts(for ideaID: Int) async -> IdeaBatchCardFacts? {
+        do {
+            return try await dbManager.dbPool.read { db in try IdeaBatchCardFacts.read(db, ideaID: ideaID) }
+        } catch {
+            InboxLog.logger.error("idea facts read failed for idea \(ideaID): \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
     }
 
     /// A database write in this view model's chain (board #670): it starts

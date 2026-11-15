@@ -635,4 +635,73 @@ final class InboxDayPaneTests: XCTestCase {
         XCTAssertNoThrow(try fresh.inspect().find(text: firstRunTitle))
         XCTAssertThrowsError(try fresh.inspect().find(text: "Today's plan at or after 08:00"))
     }
+
+    // MARK: - The brief's blocks
+
+    /// Five attention items: Start here draws the first three, More for
+    /// today the other two; each item once.
+    func testStartHereAndMoreForTodaySplitTheAttentionItems() async throws {
+        let items = (1...5).map { #"{"text":"a\#($0)","priority":"high"}"# }
+        try await pool.write { db in
+            try TestDatabase.insertBriefing(db, date: Self.today, attention: "[\(items.joined(separator: ","))]")
+        }
+        let all = try texts(try await pane(date: Self.today))
+
+        let order = try ["Start here", "a1", "a2", "a3", "More for today", "a4", "a5"]
+            .map { try XCTUnwrap(all.firstIndex(of: $0), $0) }
+        XCTAssertEqual(order, order.sorted(), "found in \(all)")
+        for text in ["a1", "a2", "a3", "a4", "a5"] {
+            XCTAssertEqual(all.filter { $0 == text }.count, 1, text)
+        }
+    }
+
+    /// A failed Make a Task shows once at the top of its brief's pane, is
+    /// not shown over another day, and is still there on the way back.
+    func testMakeTaskFailureShowsOnceAndOutlivesADayStep() async throws {
+        let suggest = #"[{"text":"File the release ticket","priority":"high","suggest_target":true}]"#
+        try await pool.write { db in
+            try TestDatabase.insertBriefing(db, date: Self.today, attention: suggest)
+            try TestDatabase.insertBriefing(db, date: Self.yesterday, attention: Self.attention)
+        }
+        let model = BriefMakeTaskModel()
+        var sut = try await pane(date: Self.today)
+        sut.makeTask = model
+        sut.onMakeTask = { _ in "Jira is not connected" }
+
+        try sut.inspect().find(button: "Make a Task").tap()
+        for _ in 0..<100 where model.failure == nil {
+            await Task.yield()
+        }
+        XCTAssertFalse(model.running)
+        XCTAssertEqual(try texts(sut).filter { $0 == "Jira is not connected" }.count, 1, "one banner")
+
+        var other = try await pane(date: Self.yesterday)
+        other.makeTask = model
+        XCTAssertFalse(try texts(other).contains("Jira is not connected"), "not over another day")
+
+        var back = try await pane(date: Self.today)
+        back.makeTask = model
+        XCTAssertEqual(try texts(back).filter { $0 == "Jira is not connected" }.count, 1, "still there")
+    }
+
+    /// One press at a time across the brief; a success clears the failure.
+    func testMakeTaskModelRunsOnePressAtATime() async {
+        let model = BriefMakeTaskModel()
+        let item = BriefingTaskSource.coaching(CoachingItem(text: "Pair more", relatedUserID: nil, category: nil))
+        await model.press(item, briefingID: 7) { _ in "failed" }
+        XCTAssertEqual(model.message(for: 7), "failed")
+        XCTAssertNil(model.message(for: 8))
+
+        var calls = 0
+        await model.press(item, briefingID: 7) { _ in
+            calls += 1
+            await model.press(item, briefingID: 7) { _ in
+                calls += 1
+                return nil
+            }
+            return nil
+        }
+        XCTAssertEqual(calls, 1, "a press while one runs does nothing")
+        XCTAssertNil(model.failure, "a success clears the failure")
+    }
 }

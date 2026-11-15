@@ -64,17 +64,6 @@ extension IdeasViewModel {
         pendingWrites.isPending(InboxIdeaPane.writeKey(ideaID)) || pendingWrites.isPending(Self.convertKey(ideaID))
     }
 
-    /// An Idea finder card's quotes and source; nil on a failed read,
-    /// logged (the card leaves them out).
-    func facts(for ideaID: Int) async -> IdeaBatchCardFacts? {
-        do {
-            return try await dbManager.dbPool.read { db in try IdeaBatchCardFacts.read(db, ideaID: ideaID) }
-        } catch {
-            InboxLog.logger.error("idea facts read failed for idea \(ideaID): \(error.localizedDescription, privacy: .public)")
-            return nil
-        }
-    }
-
     private static func outcome(_ result: Result<Void, IdeaWriteFailure>) -> IdeaBatchPressOutcome {
         switch result {
         case .success: .landed(targetID: nil)

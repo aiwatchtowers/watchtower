@@ -153,6 +153,44 @@ final class InboxTracksIdeasWiringTests: XCTestCase {
         XCTAssertNotEqual(dismissedAt ?? "", "")
     }
 
+    /// Every UPDATE of `table` fails until `allowWrites(on:)`.
+    private func failWrites(on table: String) throws {
+        try manager.dbPool.write { db in
+            try db.execute(sql: "CREATE TRIGGER fail_\(table) BEFORE UPDATE ON \(table) "
+                + "BEGIN SELECT RAISE(ABORT, 'disk is full'); END")
+        }
+    }
+
+    private func allowWrites(on table: String) throws {
+        try manager.dbPool.write { db in try db.execute(sql: "DROP TRIGGER fail_\(table)") }
+    }
+
+    /// Waits (bounded) until `done` holds.
+    private func settle(_ done: () -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(5)
+        while !done(), Date() < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    /// A failed Done or Stop watching keeps the thread open with its row error.
+    func testFailedWriteOnOpenedThreadKeepsTheCardWithItsError() async throws {
+        let trackID = try seedNewsTrack()
+        try failWrites(on: "tracks")
+
+        for button in ["Done", "Stop watching"] {
+            let vm = await makeVM()
+            await vm.selectEntry(InboxFolderEntry.legacyTracks.id)
+            vm.openNewsTrack(trackID)
+            let pane = try view(vm).environment(AppState.isolated()).inspect().find(InboxTrackPane.self)
+            try pane.find(button: button).tap()
+            try await settle { vm.rowErrors[.track(trackID)] != nil }
+
+            XCTAssertNotNil(vm.rowErrors[.track(trackID)], "\(button): the failure is on its row")
+            XCTAssertEqual(vm.openedNewsTrackID, trackID, "\(button): the card stays open")
+        }
+    }
+
     // MARK: - Idea finder
 
     func testIdeasEntryDrawsBatchPane() async throws {
@@ -167,6 +205,45 @@ final class InboxTracksIdeasWiringTests: XCTestCase {
 
         try batch.find(button: "Backlog · \(vm.ideaBatch.backlogCount)").tap()
         XCTAssertEqual(vm.legacyList, .ideas, "Backlog opens the whole list")
+    }
+
+    /// A failed verdict sets the strip's failure for its idea; a verdict
+    /// that lands later clears it.
+    func testIdeaFinderFailureIsSetThenClearedByALandedPress() async throws {
+        try seedIdeas(daysAgo: [1, 2])
+        let vm = await makeVM()
+        await vm.selectEntry(InboxFolderEntry.legacyIdeas.id)
+        let first = try XCTUnwrap(vm.ideaBatch.remaining.first)
+        try failWrites(on: "ideas")
+
+        try view(vm).environment(AppState.isolated()).inspect().find(IdeaBatchPane.self).find(button: "Drop").tap()
+        try await settle { vm.ideaBatchFailure != nil }
+        XCTAssertEqual(vm.ideaBatchFailure?.ideaID, first.id)
+        XCTAssertEqual(vm.ideaBatchFailure?.press, .drop)
+
+        try allowWrites(on: "ideas")
+        try view(vm).environment(AppState.isolated()).inspect().find(IdeaBatchPane.self).find(button: "Drop").tap()
+        try await settle { vm.ideaBatchFailure == nil }
+        XCTAssertNil(vm.ideaBatchFailure, "a landed press clears the failure")
+    }
+
+    /// A landed Make a Target… opens its new target.
+    func testMakeATargetOpensTheNewTarget() async throws {
+        try seedIdeas(daysAgo: [1])
+        let vm = await makeVM()
+        await vm.selectEntry(InboxFolderEntry.legacyIdeas.id)
+        var opened: [Int] = []
+        var sut = view(vm)
+        sut.onGoToTarget = { opened.append($0) }
+
+        let pane = try sut.environment(AppState.isolated()).inspect().find(IdeaBatchPane.self)
+        try pane.find(button: "Make a Target…").tap()
+        try await settle { !opened.isEmpty }
+
+        let converted = try await manager.dbPool.read { db in
+            try Int.fetchOne(db, sql: "SELECT converted_target_id FROM ideas")
+        }
+        XCTAssertEqual(opened, [try XCTUnwrap(converted)])
     }
 
     func testBacklogHeaderShowsClearOldIdeasOnlyWithOldIdeas() async throws {

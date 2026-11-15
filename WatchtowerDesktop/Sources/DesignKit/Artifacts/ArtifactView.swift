@@ -172,9 +172,8 @@ struct ArtifactListView: View {
         let shown = list.rows.indices.filter { index in
             list.rows[index].ref.map(environment.refHooks.isOpen) ?? true
         }
-        let folds = foldsOlder && shown.first == 0
-        let older = folds ? shown.count - 1 : 0
-        let drawn = folds && !olderOpen ? [0] : shown
+        let (drawn, older) = Self.fold(shown: shown, foldsOlder: foldsOlder, olderOpen: olderOpen)
+        let folds = older > 0
         VStack(alignment: .leading, spacing: Spacing.tight) {
             if let title = list.title { ArtifactBlockTitle(text: title).padding(.horizontal, Spacing.regular) }
             if shown.isEmpty {
@@ -186,7 +185,7 @@ struct ArtifactListView: View {
             }
             ForEach(drawn, id: \.self) { index in
                 ArtifactListRowView(row: list.rows[index], firstIndex: offsets[index], mode: mode)
-                if folds, index == 0, older > 0 {
+                if folds, index == 0 {
                     Button(olderOpen ? "Hide" : "Show \(older) older") { olderOpen.toggle() }
                         .buttonStyle(.kitQuiet)
                         .controlSize(.small)
@@ -197,6 +196,16 @@ struct ArtifactListView: View {
         // The rows' hover plates sit flush with the card's other blocks.
         .padding(.horizontal, -Spacing.regular)
         .preference(key: ArtifactShownRefsKey.self, value: drawn.compactMap { list.rows[$0].ref })
+    }
+
+    /// The rows drawn (indexes into the list's rows) and how many are
+    /// folded behind the first: with `foldsOlder` and the first row shown,
+    /// the first row alone until `olderOpen`, else every shown row. Only
+    /// the drawn rows are published (`ArtifactShownRefsKey`), so the row
+    /// keys never land on a folded row.
+    static func fold(shown: [Int], foldsOlder: Bool, olderOpen: Bool) -> (drawn: [Int], older: Int) {
+        guard foldsOlder, shown.first == 0, shown.count > 1 else { return (shown, 0) }
+        return (olderOpen ? shown : [0], shown.count - 1)
     }
 
     /// In the Inbox, a list whose first row the host folds after
@@ -286,6 +295,10 @@ struct ArtifactListRowView: View {
         if mode == .inbox {
             let shows = ArtifactRowChrome.showsActions(
                 isHovered: isHovered, isFocused: isFocused, mode: mode, pinned: isPinned)
+            // The host's native view and hidden kinds, read once per draw.
+            let hidden = hiddenKinds
+            let native = nativeActions
+            let hasActions = Self.hasActions(row, hidden: hidden, hasNative: native != nil)
             HStack(alignment: .center, spacing: Spacing.regular) {
                 dot
                 texts(badgeInline: false)
@@ -302,7 +315,7 @@ struct ArtifactListRowView: View {
                     // Its own width, over the badge and the line's end: never
                     // the row's. Wider than the line, it is cut at the line's
                     // leading edge (the mask), never drawn past the row.
-                    HStack(spacing: Spacing.regular) { actions }
+                    HStack(spacing: Spacing.regular) { actions(hidden: hidden, native: native) }
                         .fixedSize()
                         .padding(.leading, Spacing.regular)
                         .background(backing)
@@ -316,7 +329,9 @@ struct ArtifactListRowView: View {
             }
             // Hidden actions leave the accessibility tree: the row names them.
             .accessibilityActions {
-                ForEach(Array(accessibleActions.enumerated()), id: \.offset) { _, action in
+                let accessible = Self.accessibleActions(row, firstIndex: firstIndex, hidden: hidden,
+                                                        environment: environment)
+                ForEach(Array(accessible.enumerated()), id: \.offset) { _, action in
                     Button(action.name, action: action.perform)
                 }
             }
@@ -325,7 +340,7 @@ struct ArtifactListRowView: View {
                 dot
                 texts(badgeInline: true)
                 Spacer(minLength: Spacing.regular)
-                actions
+                actions(hidden: hiddenKinds, native: nativeActions)
             }
         }
     }
@@ -366,10 +381,24 @@ struct ArtifactListRowView: View {
         }
     }
 
+    /// The recipe's action kinds the host's native ones replace on this row.
+    private var hiddenKinds: Set<ArtifactActionKind> {
+        row.ref.map(environment.refHooks.nativeKinds) ?? []
+    }
+
+    /// The host's native actions for this row, nil when it draws none.
+    private var nativeActions: AnyView? {
+        row.ref.flatMap { environment.refHooks.nativeActions($0, mode) }
+    }
+
     /// The row's actions for VoiceOver in `.inbox`: the recipe's enabled
-    /// ones a native one does not replace, then the host's.
-    private var accessibleActions: [ArtifactAccessibilityAction] {
-        let hidden = row.ref.map(environment.refHooks.nativeKinds) ?? []
+    /// ones a native one does not replace (`hidden`), then the host's.
+    static func accessibleActions(
+        _ row: ArtifactListRow,
+        firstIndex: Int,
+        hidden: Set<ArtifactActionKind>,
+        environment: ArtifactEnvironment
+    ) -> [ArtifactAccessibilityAction] {
         let recipe = row.actions.enumerated().compactMap { offset, action -> ArtifactAccessibilityAction? in
             let index = firstIndex + offset
             guard !hidden.contains(action.kind), environment.isActionEnabled(index) else { return nil }
@@ -378,21 +407,19 @@ struct ArtifactListRowView: View {
         return recipe + (row.ref.map(environment.refHooks.accessibilityActions) ?? [])
     }
 
-    private var hasActions: Bool {
-        let hidden = row.ref.map(environment.refHooks.nativeKinds) ?? []
-        return row.actions.contains { !hidden.contains($0.kind) }
-            || row.ref.flatMap { environment.refHooks.nativeActions($0, mode) } != nil
+    private static func hasActions(_ row: ArtifactListRow, hidden: Set<ArtifactActionKind>, hasNative: Bool) -> Bool {
+        hasNative || row.actions.contains { !hidden.contains($0.kind) }
     }
 
     /// The recipe's row actions a native one does not replace, then the native ones.
-    @ViewBuilder private var actions: some View {
-        let hidden = row.ref.map(environment.refHooks.nativeKinds) ?? []
+    @ViewBuilder
+    private func actions(hidden: Set<ArtifactActionKind>, native: AnyView?) -> some View {
         ForEach(Array(row.actions.enumerated()), id: \.offset) { offset, action in
             if !hidden.contains(action.kind) {
                 ArtifactActionButton(action: action, index: firstIndex + offset, mode: mode, prominent: false)
             }
         }
-        if let ref = row.ref, let native = environment.refHooks.nativeActions(ref, mode) {
+        if let native {
             native
         }
     }

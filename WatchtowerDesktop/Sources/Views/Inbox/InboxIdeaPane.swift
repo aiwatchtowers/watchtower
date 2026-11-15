@@ -77,7 +77,7 @@ struct InboxIdeaPane: View {
             drop: once { await ideas.drop(idea) },
             merge: { targetID in await once { await ideas.merge(idea, into: targetID) }() },
             makeTask: once {
-                if let targetID = await ideas.convertToTarget(idea) { onMadeTask(targetID) }
+                if case .landed(let targetID?) = await ideas.convertToTarget(idea) { onMadeTask(targetID) }
             },
             supersede: once { await ideas.supersede(idea) },
             reverse: once { await ideas.reverse(idea) },

@@ -68,9 +68,13 @@ struct ActionStripView: View {
             }
         }
         .navigationTitle("Inbox")
-        .searchable(text: listQuery, placement: .toolbar, prompt: "Search the Inbox")
+        .focusedSceneValue(\.inboxRail, appState.actionStripViewModel)
         .task {
-            await appState.actionStripViewModel?.refresh()
+            // Before the first read the owner's arrival reads (`ownerArrived`,
+            // or a route's `open`); a second read here would only repeat it.
+            if let vm = appState.actionStripViewModel, vm.hasRead {
+                await vm.refresh()
+            }
             // The cheat sheet reads the dictionary through this VM, so a
             // Settings edit made while the Inbox was out of view shows up.
             appState.reactionDictionaryViewModel?.refresh()
@@ -87,13 +91,6 @@ struct ActionStripView: View {
             Task { await vm.ownerArrived() }
         }
         .onDisappear { appState.actionStripViewModel?.setOnScreen(false) }
-    }
-
-    /// The list's search (`ActionStripViewModel.listQuery`), one query for
-    /// every folder.
-    private var listQuery: Binding<String> {
-        Binding(get: { appState.actionStripViewModel?.listQuery ?? "" },
-                set: { appState.actionStripViewModel?.listQuery = $0 })
     }
 
     /// The Your day card over the AppState-owned plan, `today` told from the
@@ -113,6 +110,7 @@ struct ActionStripView: View {
             onOpenSource: appState.openDayPlanItemSource,
             onOpenBriefingLink: appState.openBriefingLink,
             onMakeTask: makeTask,
+            makeTask: appState.briefMakeTask,
             briefing: appState.briefingViewModel,
             emptyState: appState.emptyStateContext,
             onOpenConnections: { appState.openConnections() },
@@ -379,6 +377,7 @@ struct ActionStripActionsView: View {
             if list == .ideas, vm.ideaBatch.olderCount > 0 || vm.oldIdeasPress.holdsResult {
                 InboxBulkPressButton(title: vm.ideaBatch.olderCount > 0 ? "Clear Old Ideas…" : nil,
                                      confirmTitle: Self.clearOldIdeasTitle, model: vm.oldIdeasPress)
+                    .resultCopy(.clearedIdeas)
                     .controlSize(.small)
                     .fixedSize()
                     .onAppear { vm.oldIdeasPress.reset() }
@@ -405,6 +404,7 @@ struct ActionStripActionsView: View {
         } else if !vm.hasRead, let reason = vm.firstReadError {
             // The first read failed: say so, never a spinner that never ends.
             withReactionCommands(Self.firstReadFailure(reason) { Task { await vm.refresh() } })
+                .inboxPaneColumn()
         } else if !vm.hasRead {
             // Nothing read yet: no "empty" or cheat sheet for a moment.
             withReactionCommands(
@@ -412,6 +412,7 @@ struct ActionStripActionsView: View {
                     .controlSize(.small)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .accessibilityIdentifier("inbox.loading"))
+                .inboxPaneColumn()
         } else if let list = vm.legacyList {
             legacyColumn(list)
         } else if vm.folderEntries.isEmpty, aux == nil {
@@ -428,9 +429,11 @@ struct ActionStripActionsView: View {
                 }
             }
             .inboxPaneColumn()
+            .inboxListSearch(vm)
         } else {
             folderList
                 .inboxListColumn()
+                .inboxListSearch(vm)
             Group {
                 if let aux {
                     auxPane(aux)
@@ -527,7 +530,7 @@ struct ActionStripActionsView: View {
     @ViewBuilder
     private func readingPane(_ entry: InboxFolderEntry?) -> some View {
         switch entry {
-        case let .artifact(card)? where InboxFolderEntries.isSlackToday(card, vm.folderMenu.snapshot):
+        case let .artifact(card)? where InboxBuiltinPane.of(card, vm.folderMenu.snapshot) == .slackToday:
             let menu = artifactMenuState(card)
             pane(.output(card), menu: menu, slackToday: SlackTodayPane(
                 card: card, state: vm.folderMenu.snapshot.slackToday?.state ?? .none, now: now ?? Date(),
@@ -537,13 +540,14 @@ struct ActionStripActionsView: View {
                 .task(id: card.automationID) { await artifactMenu?.prepare(card) }
         case let .artifact(card)?:
             let menu = artifactMenuState(card)
-            let waiting = waitingPane(card)
+            let builtin = InboxBuiltinPane.of(card, vm.folderMenu.snapshot)
             pane(.output(card), menu: menu, header: AnyView(InboxArtifactPaneHeader(
                 content: InboxFolderEntries.content(.artifact(card), vm.entryInputs),
-                subtitle: waiting?.subtitle ?? InboxCardTexts.readingSourceLine(card, now: now ?? Date()),
+                subtitle: waitingSubtitle(builtin) ?? InboxCardTexts.readingSourceLine(card, now: now ?? Date()),
                 isHighPriority: card.priority == "high", menu: menu,
-                onOpenRun: waiting == nil ? onOpenAutomationRun.map { open in { open(card.runID) } } : nil,
-                onReactionCommands: { openAux(.reactionCommands) }, muteSenders: waiting?.muteSenders)))
+                onOpenRun: builtin.showsRunLink ? onOpenAutomationRun.map { open in { open(card.runID) } } : nil,
+                onReactionCommands: { openAux(.reactionCommands) },
+                muteSenders: builtin.offersMuteSenders ? muteSenders : nil)))
                 .task(id: card.automationID) { await artifactMenu?.prepare(card) }
         case let .legacyDay(card)?: pane(.day(vm.briefDay ?? card))
         case let .brief(action)?: pane(.proposal(action), header: helpHeader(entry))
@@ -642,19 +646,23 @@ struct ActionStripActionsView: View {
         return outcome
     }
 
-    /// Waiting for me's and Mail waiting's pane header lines (their counts
-    /// in place of the provenance line) and Mail waiting's **Mute
-    /// Senders…**; nil for any other artifact.
-    private func waitingPane(_ card: AutomationOutputCard) -> (subtitle: String, muteSenders: MuteSendersButton?)? {
+    /// Waiting for me's and Mail waiting's pane header lines: their counts
+    /// in place of the provenance line; nil for any other artifact.
+    private func waitingSubtitle(_ builtin: InboxBuiltinPane) -> String? {
         let snapshot = vm.folderMenu.snapshot
-        if card.automationID == snapshot.waitingForMe.automationID {
-            return (InboxWaitingTexts.peoplePaneSubtitle(snapshot.peopleWaiting), nil)
+        switch builtin {
+        case .waitingForMe: return InboxWaitingTexts.peoplePaneSubtitle(snapshot.peopleWaiting)
+        case .mailWaiting: return InboxWaitingTexts.mailPaneSubtitle(snapshot.mailSummary)
+        case .slackToday, .other: return nil
         }
-        guard card.automationID == snapshot.mailWaiting.automationID else { return nil }
-        return (InboxWaitingTexts.mailPaneSubtitle(snapshot.mailSummary), MuteSendersButton(
+    }
+
+    /// Mail waiting's **Mute Senders…**.
+    private var muteSenders: MuteSendersButton {
+        MuteSendersButton(
             load: { [vm] in try await vm.muteSenderCandidates() },
             mute: { [vm] in try await vm.writeSenderMute($0) },
-            onFinished: { [vm] in await vm.refresh() }))
+            onFinished: { [vm] in await vm.refresh() })
     }
 
     /// An entry's pane header with the `?` only: its row's tile, title and
@@ -773,18 +781,10 @@ struct ActionStripActionsView: View {
         )
     }
 
-    /// Waiting for me's entry in the folder: its artifact, else the Messages
-    /// entry standing in for it; nil while the folder lists neither.
+    /// Waiting for me's entry in the folder (`InboxBuiltinPane.waitingForMeEntryID`).
     private var waitingForMeEntryID: String? {
-        let entries = vm.folderEntries
-        if let automationID = vm.folderMenu.snapshot.waitingForMe.automationID,
-           let artifact = entries.first(where: { entry in
-               if case let .artifact(card) = entry { return card.automationID == automationID }
-               return false
-           }) {
-            return artifact.id
-        }
-        return entries.contains(.legacyMessages) ? InboxFolderEntry.legacyMessages.id : nil
+        InboxBuiltinPane.waitingForMeEntryID(vm.folderEntries,
+                                             waitingForMe: vm.folderMenu.snapshot.waitingForMe.automationID)
     }
 
     private func entryOpener(_ id: String) -> () -> Void {
@@ -1106,5 +1106,15 @@ struct ActionStripActionsView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(Color.orange.opacity(0.12))
+    }
+}
+
+extension View {
+    /// The list's search (`ActionStripViewModel.listQuery`, one query for
+    /// every folder), drawn only over a folder's list: the legacy lists have
+    /// their own rows it would not filter, so they show no field.
+    func inboxListSearch(_ vm: ActionStripViewModel) -> some View {
+        searchable(text: Binding(get: { vm.listQuery }, set: { vm.listQuery = $0 }),
+                   placement: .toolbar, prompt: "Search the Inbox")
     }
 }

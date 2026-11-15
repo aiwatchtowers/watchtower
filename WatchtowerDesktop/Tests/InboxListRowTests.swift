@@ -32,9 +32,11 @@ final class InboxListRowTests: XCTestCase {
                        "Waiting for me, \(Self.content.preview), 12")
         XCTAssertEqual(try unread.inspect().find(ViewType.HStack.self).accessibilityValue().string(), "Unread")
 
-        XCTAssertEqual(InboxRowPillView.fill(.needsYou), Tone.warning)
-        XCTAssertEqual(InboxRowPillView.fill(.news), Color.accentColor)
-        XCTAssertEqual(InboxRowPillView.fill(.batch), Fill.card)
+        XCTAssertEqual(InboxRowPillView.tone(.needsYou), .warning)
+        XCTAssertEqual(InboxRowPillView.tone(.news), .accent)
+        XCTAssertEqual(InboxRowPillView.tone(.batch), .quiet)
+        XCTAssertNoThrow(try unread.inspect().find(CountBadge.self), "the kit's badge, not a hand-drawn capsule")
+        XCTAssertEqual(CountBadge.Tone.warning.text, .black, "dark text on orange")
     }
 
     func testTileTintsPerKind() {

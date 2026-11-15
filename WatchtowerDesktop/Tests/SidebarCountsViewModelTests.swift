@@ -341,6 +341,29 @@ final class SidebarCountsViewModelTests: XCTestCase {
         XCTAssertEqual(sleeper.calls.last, Self.date("2026-11-13T00:00:01Z"), "the next midnight is scheduled")
     }
 
+    /// Stopping cancels the midnight recount: the moment arriving later
+    /// re-reads nothing and schedules no next midnight.
+    func testStopObservingCancelsTheMidnightRecount() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        try await manager.dbPool.write { try Self.insertOpenMessage($0, createdAt: "2026-11-11T20:00:00Z") }
+        let time = FakeTime("2026-11-11T23:59:00Z", zone: "UTC")
+        let sleeper = FakeSleeper()
+        let vm = dayViewModel(manager.dbPool, time, sleeper)
+        await vm.loadInitial()
+        vm.startObserving()
+        try await waitFor(sleeper, calls: 1)
+
+        vm.stopObserving()
+        time.set("2026-11-12T00:00:01Z")
+        sleeper.fire()
+        for _ in 0..<50 { await Task.yield() }
+        try await Task.sleep(for: .milliseconds(100))
+
+        XCTAssertEqual(sleeper.calls.count, 1, "no next midnight is scheduled")
+        XCTAssertEqual(vm.inboxStripCount, 1, "no recount after stopping")
+    }
+
     func testInboxBadgeRecountsAfterWakePastMidnight() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }

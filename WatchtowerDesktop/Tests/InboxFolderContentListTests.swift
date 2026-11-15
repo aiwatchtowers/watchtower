@@ -174,6 +174,16 @@ final class InboxFolderContentListTests: XCTestCase {
         XCTAssertFalse(vm.folderList.hasNoMatches)
     }
 
+    /// A legacy list draws no search field and filters nothing, so opening
+    /// one clears the query: it is not left in the field for the way back.
+    func testOpeningALegacyListClearsTheSearch() async throws {
+        let (vm, _, _) = try await seededRoot()
+        vm.listQuery = "release"
+        vm.openLegacy(.messages)
+        XCTAssertEqual(vm.listQuery, "")
+        XCTAssertEqual(vm.legacyList, .messages)
+    }
+
     // MARK: - Needs approval's stack
 
     private static func action(_ id: Int64, tool: String) -> InboxFolderEntry {

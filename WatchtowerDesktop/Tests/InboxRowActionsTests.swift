@@ -805,6 +805,92 @@ final class InboxRowActionsTests: XCTestCase {
         XCTAssertNil(vm.lastError)
         XCTAssertTrue(vm.reminderRows.isEmpty)
     }
+
+    // MARK: - A Mail waiting sender row
+
+    /// Mail waiting's card listing the sender `key` (spelled as given), with
+    /// an open mail from it whose link is `permalink`.
+    private func seedMailSender(key: String, permalink: String) throws {
+        try pool.write { db in
+            try db.execute(sql: "INSERT INTO inbox_folders (kind, parent_id, slug, title, position) "
+                + "VALUES ('root', NULL, 'inbox', 'Inbox', 0)")
+            try db.execute(sql: "INSERT INTO inbox_folder_state (id, revision) VALUES (1, 1)")
+            let automation = try TestDatabase.insertAutomation(db, slug: "mail-waiting", name: "Mail waiting")
+            try db.execute(sql: """
+                UPDATE automations SET origin = 'builtin', builtin_id = 'mail-waiting',
+                    path = 'builtin:mail-waiting', enabled = 1 WHERE id = ?
+                """, arguments: [automation])
+            let run = try TestDatabase.insertAutomationRun(db, automationID: automation, status: "succeeded")
+            let written = AutomationDates.format(Date().addingTimeInterval(-60))
+            let row = #"{"title":"\#(key)","ref":{"kind":"mail_sender","id":"\#(key)"}}"#
+            try TestDatabase.insertAutomationOutput(
+                db, automationID: automation, runID: run, title: "Mail waiting", createdAt: written,
+                blocksJSON: #"{"v":1,"blocks":[{"type":"list","rows":[\#(row)]}]}"#, outputKey: "mail",
+                contentHash: "h-mail", writtenAt: written, changedAt: written)
+            _ = try TestDatabase.insertInboxItem(db, senderUserID: InboxPeopleRule.senderKey(key),
+                                                 triggerType: "email_received", permalink: permalink)
+        }
+    }
+
+    /// Open follows the sender's newest open mail's link.
+    func testSenderOpenFollowsTheNewestMailsLink() async throws {
+        let link = "https://mail.google.com/mail/u/0/#all/abc"
+        try seedMailSender(key: "News@Example.com", permalink: link)
+        let vm = await strip()
+        var commands: [InboxCardCommand] = []
+        var opener = handler(vm)
+        opener.onCommand = { commands.append($0) }
+        await opener.press(.open, on: InboxRef(kind: .mailSender, key: "News@Example.com"))
+        guard case let .openLink(url)? = commands.first else { return XCTFail("\(commands)") }
+        XCTAssertEqual(url.absoluteString, link)
+    }
+
+    /// A failed Mute shows on the row as drawn (its key spelled as the card
+    /// has it, the error kept under the normalised key), and Retry sends the
+    /// Mute again on the raw ref, which writes the rule.
+    func testFailedMuteShowsOnTheRowAndRetryWritesTheRule() async throws {
+        let ref = InboxRef(kind: .mailSender, key: "News@Example.com")
+        try seedMailSender(key: ref.key, permalink: "")
+        try pool.write { db in
+            try db.execute(sql: """
+                CREATE TRIGGER fail_rule BEFORE INSERT ON inbox_learned_rules
+                BEGIN SELECT RAISE(ABORT, 'disk is busy'); END
+                """)
+        }
+        let vm = await strip()
+        let shown = try XCTUnwrap(hooks(vm).content(ref, .inbox), "Mail waiting lists the sender")
+        XCTAssertEqual(shown.state, .idle)
+
+        await handler(vm).press(.mute, on: ref)
+        guard case .failed? = hooks(vm).content(ref, .inbox)?.state else {
+            return XCTFail("the failure shows on the row: \(String(describing: hooks(vm).content(ref, .inbox)))")
+        }
+
+        try pool.write { db in try db.execute(sql: "DROP TRIGGER fail_rule") }
+        await handler(vm).press(.retryFailedPress, on: ref)
+        let scope = try await pool.read { db in
+            try String.fetchOne(db, sql: "SELECT scope_key FROM inbox_learned_rules WHERE rule_type = 'source_mute'")
+        }
+        XCTAssertEqual(scope, "email:news@example.com", "Retry wrote the mute")
+        XCTAssertNil(vm.textRowErrors[InboxRef(kind: .mailSender, key: "news@example.com")])
+    }
+
+    // MARK: - A key on the focused row (InboxRowKeyRequest)
+
+    /// S or ⌘K opens only the row it names; a repeated key gets a new
+    /// serial, so the row sees it as a new request.
+    func testKeyRequestOpensOnlyItsRowAndRepeats() {
+        let one = InboxRef(kind: .inboxItem, id: 1)
+        let two = InboxRef(kind: .inboxItem, id: 2)
+        let first = InboxRowKeyRequest.next(.snoozeMenu, for: one, after: nil)
+        XCTAssertEqual(InboxRowKeyRequest.kind(of: first, on: one), .snoozeMenu)
+        XCTAssertNil(InboxRowKeyRequest.kind(of: first, on: two), "another row opens nothing")
+        XCTAssertNil(InboxRowKeyRequest.kind(of: nil, on: one))
+
+        let again = InboxRowKeyRequest.next(.snoozeMenu, for: one, after: first)
+        XCTAssertNotEqual(again, first, "the same key twice is two requests")
+        XCTAssertEqual(InboxRowKeyRequest.next(.handToAgent, for: two, after: again).serial, again.serial + 1)
+    }
 }
 
 /// Holds a fake CLI call until the test opens it.
