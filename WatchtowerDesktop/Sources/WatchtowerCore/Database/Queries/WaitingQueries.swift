@@ -56,11 +56,19 @@ package struct MailWaitingSummary: Equatable, Sendable {
 /// mentioned_at); today = stamp at or after `startOfTodayUTC`; older = stamp
 /// at or before now − 7 × 24 h and not today; week = the rest. Times are RFC
 /// 3339 UTC strings; an unparsable `nowUTC` reads as the current time, as
-/// `InboxRefState` and `InboxFolderMenuSnapshot` read it. A missing items
+/// `InboxRefState` and `InboxFolderMenuSnapshot` read it, for the Older
+/// cutoff and the snooze check alike (`boundNow`). A missing items
 /// table reads as no items; a missing rules table as no mutes.
 package enum WaitingQueries {
     /// Go's `db.WaitingOlderAfter`.
     package static let olderAfter: TimeInterval = 7 * 24 * 3600
+
+    /// `nowUTC` parsed (the current time when it does not parse) and
+    /// formatted again: the time the open clause's snooze check binds.
+    private static func boundNow(_ nowUTC: String) -> (date: Date, utc: String) {
+        let now = AutomationDates.parse(nowUTC) ?? Date()
+        return (now, AutomationDates.format(now))
+    }
 
     /// The open, unmuted mail. The mute clause only while its table is
     /// there: without it nothing is muted, and the mail still reads.
@@ -71,15 +79,15 @@ package enum WaitingQueries {
 
     /// Every open people item (no cap) by section, in one read.
     package static func peopleCounts(_ db: Database, nowUTC: String, startOfTodayUTC: String) throws -> PeopleWaitingCounts {
-        let now = AutomationDates.parse(nowUTC) ?? Date()
-        let cutoff = AutomationDates.format(now.addingTimeInterval(-olderAfter))
+        let now = boundNow(nowUTC)
+        let cutoff = AutomationDates.format(now.date.addingTimeInterval(-olderAfter))
         return try missingTableAsEmpty(.zero) {
             guard let row = try Row.fetchOne(db, sql: """
                 SELECT COUNT(*) AS open, COALESCE(SUM(stamp >= ?), 0) AS today,
                   COALESCE(SUM(stamp < ? AND stamp <= ?), 0) AS older
                 FROM (SELECT MAX(created_at, mentioned_at) AS stamp FROM inbox_items
                   WHERE \(HomeFeedQueries.openMessageClause) AND \(InboxPeopleRule.peopleClause))
-                """, arguments: [startOfTodayUTC, startOfTodayUTC, cutoff, nowUTC]) else { return .zero }
+                """, arguments: [startOfTodayUTC, startOfTodayUTC, cutoff, now.utc]) else { return .zero }
             let open: Int = row["open"], today: Int = row["today"], older: Int = row["older"]
             return PeopleWaitingCounts(open: open, today: today, week: open - today - older, older: older)
         }
@@ -96,7 +104,7 @@ package enum WaitingQueries {
                 SELECT lower(trim(sender_user_id)) AS address, MAX(created_at, mentioned_at) AS stamp, snippet
                 FROM inbox_items WHERE \(try mailFilter(db))
                 ORDER BY stamp DESC, id DESC
-                """, arguments: [nowUTC])
+                """, arguments: [boundNow(nowUTC).utc])
             var senders: [(row: MailSenderRow, newest: String)] = []
             var index: [String: Int] = [:]
             var open = 0, today = 0
@@ -143,7 +151,7 @@ package enum WaitingQueries {
                   FROM inbox_items
                   WHERE \(try mailFilter(db)) AND lower(trim(sender_user_id)) IN (\(databaseQuestionMarks(count: keys.count))))
                 WHERE n = 1
-                """, arguments: StatementArguments([nowUTC] + keys))
+                """, arguments: StatementArguments([boundNow(nowUTC).utc] + keys))
             var out: [String: String] = [:]
             for row in rows {
                 out[row["address"] ?? ""] = row["permalink"] ?? ""
