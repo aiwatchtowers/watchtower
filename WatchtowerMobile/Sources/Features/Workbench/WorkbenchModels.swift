@@ -299,8 +299,10 @@ struct WorkbenchMenuModel {
     let sessionsEmptyText: String?
 
     /// `asOf`: the Mac's last contact while it is asleep
-    /// (`MacReachability.asOf`), so live rows stop counting.
-    init?(workbenchID: Int64, snapshot: WorkbenchReplicaSnapshot, now: Date, asOf: Date?) {
+    /// (`MacReachability.asOf`), so live rows stop counting. `typing`:
+    /// whether this phone may type into the hub's sessions, which makes a
+    /// live failed session wait for Continue.
+    init?(workbenchID: Int64, snapshot: WorkbenchReplicaSnapshot, now: Date, asOf: Date?, typing: PhoneTyping = .off) {
         guard let workbench = snapshot.workbench(workbenchID) else { return nil }
         id = workbench.id
         title = workbench.name
@@ -312,7 +314,7 @@ struct WorkbenchMenuModel {
             .sorted { $0.lastActiveAt != $1.lastActiveAt ? $0.lastActiveAt > $1.lastActiveAt : $0.id > $1.id }
         var bySection: [Group: [TerminalSessionState]] = [:]
         for session in sessions {
-            var group = Group(session)
+            var group = Group(session, continues: SessionInputModel.waitsToContinue(session, in: snapshot, typing: typing))
             if group == .ended, now.timeIntervalSince(Self.endedAt(session)) > Self.endedWindow {
                 group = .older
             }
@@ -344,15 +346,21 @@ struct WorkbenchMenuModel {
 
     /// Where a session sits in the list, by the Mac's state (#1788, Now's
     /// split): the owner's move (an open ask of any state, an approval, a
-    /// verdict on a check), the agent's, or ended. A stopped or failed
-    /// session with nothing open is Ended: the phone has no action for it
-    /// (its caption keeps the colour). `older` is Ended past the window.
+    /// verdict on a check, a failed turn this phone can continue), the
+    /// agent's, or ended. A stopped or failed session with nothing open and
+    /// no Continue from this phone is Ended (its caption keeps the colour).
+    /// `older` is Ended past the window.
     private enum Group: CaseIterable {
         case waiting, working, ended, older
 
         static let listed: [Self] = [.waiting, .working, .ended]
 
-        init(_ session: TerminalSessionState) {
+        /// `continues`: `SessionInputModel.waitsToContinue`.
+        init(_ session: TerminalSessionState, continues: Bool) {
+            if continues {
+                self = .waiting
+                return
+            }
             switch session.stateKind {
             case .waitingOnAsk, .needsApproval, .readyToCheck: self = .waiting
             case _ where session.openAsks > 0: self = .waiting

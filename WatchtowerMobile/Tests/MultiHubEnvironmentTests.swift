@@ -445,6 +445,46 @@ final class MultiHubEnvironmentTests: XCTestCase {
         XCTAssertEqual(zip(badges, badges.dropFirst()).filter { $0 == $1 }.count, 0, "never set to the same total twice: \(badges)")
     }
 
+    /// A failed session the phone can continue counts in the badge while
+    /// typing is on and the hub takes writes (#1785 follow-up): the toggle
+    /// and a freeze take it out, through the hub session's own state.
+    func testAFailedSessionToContinueFollowsTypingAndTheFreeze() async throws {
+        let base = try makeBase()
+        let transport = InMemoryCloudTransport()
+        let grant = DeviceGrant(
+            deviceID: device.deviceID, hubID: TestHub.acme, name: device.name, scope: .private, linked: true,
+            typingAllowed: true, startSessionsAllowed: true
+        )
+        try await TestHub.hub(over: transport, TestHub.acme).save([
+            try workbench("Acme"), try openAsk(11),
+            try DemoSeed.record(kind: .terminalSession, id: 16, json: DemoSeed.JSON.session(16, workbench: 1, [
+                "state_kind": "failed", "state_caption": "Error: rate limit", "state_tone": "red"
+            ]), modifiedAt: Date()),
+            try TestPhone.grantRecord(grant, keys: TestPhone.keyboxKeys(), modifiedAt: Date())
+        ])
+        var badges: [Int] = []
+        let hub = try makeSession(TestHub.acme, base: base, transport: transport)
+        let env = try makeEnvironment([hub]) { badges.append($0) }
+        try await bootAll(env)
+        try await poll({ hub.workbenchReplica.snapshot.session(16) != nil && !hub.workbenchReplica.snapshot.grants.isEmpty },
+                       "the session and grant never hydrated")
+        XCTAssertEqual(env.openAskTotal, 1, "typing off: the ask only")
+
+        await hub.deviceSettings.setTypingRequested(true)
+        XCTAssertTrue(hub.deviceSettings.typingRequested, "the toggle's write failed")
+        try await poll({ env.openAskTotal == 2 }, "the toggle on did not count the failed session: \(badges)")
+        XCTAssertEqual(hub.workbenchReplica.waitingCount, 2, "the Now tab's badge")
+
+        await hub.deviceSettings.setTypingRequested(false)
+        try await poll({ hub.workbenchReplica.waitingCount == 1 }, "the toggle off still counts it")
+        await hub.deviceSettings.setTypingRequested(true)
+        try await poll({ hub.workbenchReplica.waitingCount == 2 }, "the toggle on again")
+
+        await hub.freeze(as: device)
+        try await poll({ hub.workbenchReplica.waitingCount == 1 }, "a frozen hub cannot take Continue, yet it counts")
+        XCTAssertEqual(env.openAskTotal, 0, "a frozen hub leaves the app badge")
+    }
+
     /// A hub the Mac removed (frozen, writes off) cannot answer its asks:
     /// they leave the badge, and the chip's other-Macs count, at the freeze.
     func testAFrozenHubsAsksLeaveTheBadgeAndTheChip() async throws {
@@ -464,7 +504,7 @@ final class MultiHubEnvironmentTests: XCTestCase {
 
         try await poll({ badges.last == 1 }, "the frozen hub's asks still count: \(badges)")
         XCTAssertEqual(env.openAskTotal, 1)
-        XCTAssertEqual(hubB.workbenchReplica.openAskCount, 2, "its replica still holds them, readable")
+        XCTAssertEqual(hubB.workbenchReplica.waitingCount, 2, "its replica still holds them, readable")
         func row(_ hubID: String, _ order: Int, _ state: HubRow.State) -> HubRow {
             HubRow(
                 link: LinkRecord(

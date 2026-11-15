@@ -4,11 +4,13 @@ import WatchtowerKit
 /// The Now tab (spec §5.5, mockup 1; #1785): the Mac status chip, the outbox's
 /// Waiting to send and Not delivered (relay client mockup 5a), then Waiting for
 /// you across every workbench — only what waits for the owner's decision: open
-/// asks with their answer line (`NowAnswer`) and pending permission requests,
-/// newest first, 20 shown —, then Working (live working sessions with timers),
-/// then Ended (sessions that stopped, finished or failed in the last 24 h,
-/// unless an open ask of theirs already shows or the owner marked them seen on
-/// this phone). The next meeting is `NextMeetingCardModel` (Calendar).
+/// asks with their answer line (`NowAnswer`), pending permission requests and
+/// failed sessions this phone can continue (`SessionInputModel.waitsToContinue`,
+/// in their red failed look), newest first, 20 shown —, then Working (live
+/// working sessions with timers), then Ended (sessions that stopped, finished
+/// or failed in the last 24 h, unless they wait above, an open ask of theirs
+/// already shows or the owner marked them seen on this phone). The next
+/// meeting is `NextMeetingCardModel` (Calendar).
 struct NowModel {
     static let waitingLimit = 20
     /// A stopped, finished or failed session shows under Ended this long
@@ -39,7 +41,8 @@ struct NowModel {
     /// takes the parked mark and the `sent` count from the backlog, which needs no keys to read. `macName`: the
     /// hub on screen (`NowHubName.of`, the banner's rule). `seenEnded`: the ended rows the owner marked seen on
     /// this phone (`NowEndedSeenStore`). `answering`: an answer to the ask is being written to the outbox right
-    /// now (`AskAnswerer.isSending`), before its row exists.
+    /// now (`AskAnswerer.isSending`), before its row exists. `typing`: whether this phone may type into the hub's
+    /// sessions, which makes a live failed session wait for Continue.
     init(
         snapshot: WorkbenchReplicaSnapshot,
         linked: Bool,
@@ -48,6 +51,7 @@ struct NowModel {
         macName: String = "",
         calendar: Calendar = .current,
         seenEnded: Set<NowEndedKey> = [],
+        typing: PhoneTyping = .off,
         answering: (Int64) -> Bool = { _ in false }
     ) {
         outbox = NowOutboxRows(
@@ -65,14 +69,16 @@ struct NowModel {
             return NowWaitingRow(ask, snapshot: snapshot, now: now, answer: answer)
         }
         let requests: [NowWaitingRow] = snapshot.pendingPermissions.map { NowWaitingRow($0, snapshot: snapshot, now: now) }
-        let all = (asks + requests).sorted(by: NowWaitingRow.newestFirst)
+        let toContinue = snapshot.sessionsToContinue(typing: typing)
+        let continues: [NowWaitingRow] = toContinue.map { NowWaitingRow(ended: $0, snapshot: snapshot, now: now) }
+        let all = (asks + requests + continues).sorted(by: NowWaitingRow.newestFirst)
         waitingForYou = Array(all.prefix(Self.waitingLimit))
         waitingMore = max(0, all.count - Self.waitingLimit)
         emptyText = all.isEmpty ? Self.emptyWaitingText : nil
         // One row per thing (ask #622): an ended session with an open ask shows as that ask only.
-        let askedSessions = Set(openAsks.compactMap(\.sessionID))
+        let shown = Set(openAsks.compactMap(\.sessionID)).union(toContinue.map(\.id))
         ended = snapshot.sessions
-            .filter { [.stopped, .finished, .failed].contains($0.stateKind) && !askedSessions.contains($0.id) }
+            .filter { [.stopped, .finished, .failed].contains($0.stateKind) && !shown.contains($0.id) }
             .map { NowWaitingRow(ended: $0, snapshot: snapshot, now: now) }
             .filter { now.timeIntervalSince($0.at) <= Self.endedSessionWindow }
             .filter { row in row.endedKey.map { !seenEnded.contains($0) } ?? true }
@@ -84,10 +90,11 @@ struct NowModel {
             .map { NowWorkingRow($0, snapshot: snapshot, asOf: asOf, now: now) }
     }
 
-    /// How many things wait for the owner's decision in `snapshot`: its open asks and pending permission requests,
-    /// exactly the rows of Waiting for you (the ones past the first 20 too), without building the screen.
-    static func waitingCount(in snapshot: WorkbenchReplicaSnapshot) -> Int {
-        snapshot.openAsks().count + snapshot.pendingPermissions.count
+    /// How many things wait for the owner's decision in `snapshot`: its open asks, pending permission requests and
+    /// failed sessions to continue, exactly the rows of Waiting for you (the ones past the first 20 too), without
+    /// building the screen: the badges' count (`WorkbenchReplicaSnapshot.waitingCount(typing:)`).
+    static func waitingCount(in snapshot: WorkbenchReplicaSnapshot, typing: PhoneTyping = .off) -> Int {
+        snapshot.waitingCount(typing: typing)
     }
 
     /// What the Ended header's **Clear** marks seen: exactly the Ended rows shown.
@@ -305,7 +312,8 @@ struct NowWaitingRow: Equatable, Identifiable {
         role = .waiting
     }
 
-    /// A stopped, finished or failed session (Ended): its turn is over. `at`
+    /// A stopped, finished or failed session (Ended): its turn is over; a
+    /// failed one to continue (Waiting for you) keeps the same red look. `at`
     /// is its state's time (`state_at`, else the last activity).
     init(ended session: TerminalSessionState, snapshot: WorkbenchReplicaSnapshot, now: Date) {
         id = .session(session.id)
