@@ -76,7 +76,7 @@ type RateLimiter struct {
 // each starting at the tier's documented rate, burst 3.
 func NewRateLimiter() *RateLimiter {
 	rl := &RateLimiter{
-		limiter: make(map[int]*tierBucket, len(tierRates)),
+		limiter:      make(map[int]*tierBucket, len(tierRates)),
 		gate:         make(chan struct{}, 3),
 		counts:       make(map[int]int),
 		unstatedHold: time.Second,
