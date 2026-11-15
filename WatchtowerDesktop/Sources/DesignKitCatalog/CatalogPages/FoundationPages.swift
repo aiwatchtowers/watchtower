@@ -316,7 +316,10 @@ struct StrokesPage: View {
                 }
             }
             PageSection("Between panes") {
-                Sample("A hairline separates panes, never rows", usage: ".overlay(alignment: .leading) { Divider() }") {
+                Sample(
+                    "A hairline separates panes, never rows",
+                    usage: ".overlay(alignment: .leading) { Rectangle().fill(Stroke.hairlineColor).frame(width: Stroke.hairline) }"
+                ) {
                     HStack(spacing: 0) {
                         Text("Board").frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                             .padding(Spacing.medium)
@@ -487,7 +490,7 @@ struct MotionPage: View {
                                     .frame(width: 180, alignment: .topLeading)
                                     .frame(maxHeight: .infinity, alignment: .top)
                                     .panelBackground()
-                                    .overlay(alignment: .leading) { Divider() }
+                                    .overlay(alignment: .leading) { Rectangle().fill(Stroke.hairlineColor).frame(width: Stroke.hairline) }
                                     .transition(.move(edge: .trailing).combined(with: .opacity))
                             }
                         }

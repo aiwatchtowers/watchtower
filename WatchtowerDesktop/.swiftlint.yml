@@ -163,6 +163,12 @@ type_name:
 # Keep new Desktop code on the design kit (Sources/DesignKit); legacy uses live in the baseline.
 # The rules include only Sources/(Views|App); the kit and the gallery are deliberately not held to them.
 custom_rules:
+  kit_no_overlay_divider:
+    name: 'kit_no_overlay_divider'
+    regex: '\.(overlay|background)\(alignment:\s*\.(leading|trailing)\)\s*\{\s*Divider\(\)'
+    included: '.*/Sources/.*\.swift'
+    message: 'A Divider outside a stack lies flat across the view. Use Rectangle().fill(Stroke.hairlineColor).frame(width: Stroke.hairline).'
+    severity: error
   kit_no_form:
     name: 'kit_no_form'
     regex: '\bForm\s*\{'
