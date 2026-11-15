@@ -46,7 +46,7 @@ Times are local. "Every cycle" means every 15 minutes by default.
 
 | Output | When | Needs |
 |---|---|---|
-| Slack messages | Every cycle | Slack workspace connected and enabled |
+| Slack messages | Every cycle by default. Each account backs off, up to once an hour, while Slack is rate-limiting it or its messages are few, and returns to every cycle when they pick up. A lagging account fetches your mentions first. **Sync Now** always syncs every account | Slack workspace connected and enabled |
 | Reaction commands | Every cycle, right after the Slack sync; the [Reactions](../features/automations-rules.md) built-in composes each | Slack; Reactions on (on by default) |
 | Calendar events, mail | Every cycle | An account connected; calendar and Gmail sync on (on by default) |
 | Jira issues | Every cycle, at most every 15 minutes (own interval) | A Jira site connected |
