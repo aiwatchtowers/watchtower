@@ -2,7 +2,9 @@ package db
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"os"
 	"testing"
 	"time"
 
@@ -600,4 +602,112 @@ func TestRecommendations_NilSignals(t *testing.T) {
 	recs := ComputeRecommendations(stats, "U1", nil)
 	require.Len(t, recs, 1)
 	assert.Equal(t, "mute", recs[0].Action)
+}
+
+// recommendationCaseStat is one stats row of channel_recommendation_cases.json,
+// in the Swift ChannelStat's JSON keys.
+type recommendationCaseStat struct {
+	ID               string   `json:"id"`
+	Name             string   `json:"name"`
+	Type             string   `json:"type"`
+	IsMember         bool     `json:"is_member"`
+	TotalMessages    int      `json:"total_messages"`
+	UserMessages     int      `json:"user_messages"`
+	BotMessages      int      `json:"bot_messages"`
+	BotRatio         float64  `json:"bot_ratio"`
+	MentionCount     int      `json:"mention_count"`
+	LastUserActivity float64  `json:"last_user_activity"`
+	LastMention      float64  `json:"last_mention"`
+	IsMutedForLLM    bool     `json:"is_muted_for_llm"`
+	MutedAt          float64  `json:"muted_at"`
+	IsSyncExcluded   bool     `json:"is_sync_excluded"`
+	CatchupFrom      *float64 `json:"catchup_from"`
+	IsFavorite       bool     `json:"is_favorite"`
+	IsWatched        bool     `json:"is_watched"`
+}
+
+type recommendationCaseSignals struct {
+	DecisionCount     int `json:"decision_count"`
+	ActiveTrackCount  int `json:"active_track_count"`
+	TaskCount         int `json:"task_count"`
+	PendingInboxCount int `json:"pending_inbox_count"`
+}
+
+type recommendationCaseWant struct {
+	ChannelID string `json:"channel_id"`
+	Action    string `json:"action"`
+	Reason    string `json:"reason"`
+}
+
+// TestComputeRecommendations_ExcludeCases pins the Stop syncing suggestion
+// (and its interplay with mute, leave and favorite); the Swift twin reads
+// the same cases.
+func TestComputeRecommendations_ExcludeCases(t *testing.T) {
+	raw, err := os.ReadFile("testdata/channel_recommendation_cases.json")
+	require.NoError(t, err)
+	var file struct {
+		Now   int64 `json:"now"`
+		Cases []struct {
+			Name    string                               `json:"name"`
+			Stats   []recommendationCaseStat             `json:"stats"`
+			Signals map[string]recommendationCaseSignals `json:"signals"`
+			Want    []recommendationCaseWant             `json:"want"`
+		} `json:"cases"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &file))
+	require.NotEmpty(t, file.Cases)
+	now := time.Unix(file.Now, 0)
+
+	for _, c := range file.Cases {
+		t.Run(c.Name, func(t *testing.T) {
+			require.NotEmpty(t, c.Signals, "every case passes signals")
+			var stats []ChannelStatRow
+			for _, s := range c.Stats {
+				stats = append(stats, ChannelStatRow{
+					ChannelID: s.ID, ChannelName: s.Name, ChannelType: s.Type, IsMember: s.IsMember,
+					TotalMsgs: s.TotalMessages, UserMsgs: s.UserMessages, BotMsgs: s.BotMessages, BotRatio: s.BotRatio,
+					Mentions: s.MentionCount, LastUserActivity: s.LastUserActivity, LastMention: s.LastMention,
+					IsMuted: s.IsMutedForLLM, MutedAt: s.MutedAt, IsSyncExcluded: s.IsSyncExcluded,
+					CatchingUp: s.CatchupFrom != nil, IsFavorite: s.IsFavorite, IsWatched: s.IsWatched,
+				})
+			}
+			signals := make(map[string]ChannelValueSignals, len(c.Signals))
+			for id, v := range c.Signals {
+				signals[id] = ChannelValueSignals(v)
+			}
+			got := []recommendationCaseWant{}
+			for _, r := range computeRecommendationsAt(stats, signals, now) {
+				got = append(got, recommendationCaseWant{ChannelID: r.ChannelID, Action: r.Action, Reason: r.Reason})
+			}
+			if c.Want == nil {
+				c.Want = []recommendationCaseWant{}
+			}
+			assert.Equal(t, c.Want, got)
+		})
+	}
+}
+
+// TestGetChannelStats_SyncFields reads the Stop syncing inputs: the
+// exclusion, the mute's start, a pending catch-up and the last mention.
+func TestGetChannelStats_SyncFields(t *testing.T) {
+	db := openTestDB(t)
+	setupStatsTestData(t, db)
+	require.NoError(t, db.SetSyncExcluded("C2", true, time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)))
+	_, err := db.Exec(`INSERT INTO channel_settings (channel_id, catchup_from, catchup_to) VALUES ('C3', 1600000000, 1600000500)`)
+	require.NoError(t, err)
+
+	stats, err := db.GetChannelStats("U1")
+	require.NoError(t, err)
+	byID := map[string]ChannelStatRow{}
+	for _, s := range stats {
+		byID[s.ChannelID] = s
+	}
+	assert.True(t, byID["C2"].IsSyncExcluded)
+	assert.Equal(t, float64(time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC).Unix()), byID["C2"].MutedAt)
+	assert.False(t, byID["C2"].CatchingUp)
+	assert.True(t, byID["C3"].CatchingUp)
+	assert.False(t, byID["C3"].IsSyncExcluded)
+	assert.Zero(t, byID["C3"].MutedAt)
+	assert.Equal(t, 1700000000.0+11, byID["C1"].LastMention, "the newest message mentioning U1")
+	assert.Zero(t, byID["C2"].LastMention)
 }

@@ -23,9 +23,13 @@ type ChannelStatRow struct {
 	Mentions         int
 	LastActivity     float64
 	LastUserActivity float64
+	LastMention      float64 // newest message mentioning currentUserID (0 = none)
 	IsMuted          bool
+	MutedAt          float64 // when the AI mute turned on, unix (0 = not muted or unknown)
 	IsFavorite       bool
 	IsWatched        bool
+	IsSyncExcluded   bool // Stop syncing (channel_settings.sync_excluded)
+	CatchingUp       bool // Sync again's catch-up is pending (catchup_from set)
 }
 
 // ChannelValueSignals holds value indicators from related entities for a channel.
@@ -68,9 +72,13 @@ func (db *DB) GetChannelStats(currentUserID string) ([]ChannelStatRow, error) {
 			COALESCE(ms.mention_count, 0),
 			ms.last_activity,
 			ms.last_user_activity,
+			ms.last_mention,
 			COALESCE(cs.is_muted_for_llm, 0),
+			CAST(strftime('%s', NULLIF(cs.muted_at, '')) AS REAL),
 			COALESCE(cs.is_favorite, 0),
-			CASE WHEN w.entity_id IS NOT NULL THEN 1 ELSE 0 END
+			CASE WHEN w.entity_id IS NOT NULL THEN 1 ELSE 0 END,
+			COALESCE(cs.sync_excluded, 0),
+			cs.catchup_from IS NOT NULL
 		FROM channels c
 		LEFT JOIN (
 			SELECT
@@ -80,7 +88,8 @@ func (db *DB) GetChannelStats(currentUserID string) ([]ChannelStatRow, error) {
 				SUM(CASE WHEN m.user_id = '' OR COALESCE(u.is_bot_override, u.is_bot) = 1 THEN 1 ELSE 0 END) AS bot_msgs,
 				SUM(CASE WHEN m.channel_id LIKE ? || '%' AND (m.text LIKE ? OR m.text LIKE ?) THEN 1 ELSE 0 END) AS mention_count,
 				MAX(m.ts_unix) AS last_activity,
-				MAX(CASE WHEN m.user_id = ? THEN m.ts_unix END) AS last_user_activity
+				MAX(CASE WHEN m.user_id = ? THEN m.ts_unix END) AS last_user_activity,
+				MAX(CASE WHEN m.channel_id LIKE ? || '%' AND (m.text LIKE ? OR m.text LIKE ?) THEN m.ts_unix END) AS last_mention
 			FROM messages m
 			LEFT JOIN users u ON u.id = m.user_id
 			WHERE m.is_deleted = 0
@@ -89,7 +98,8 @@ func (db *DB) GetChannelStats(currentUserID string) ([]ChannelStatRow, error) {
 		LEFT JOIN channel_settings cs ON cs.channel_id = c.id
 		LEFT JOIN watch_list w ON w.entity_type = 'channel' AND w.entity_id = c.id
 		ORDER BY COALESCE(ms.total_msgs, 0) DESC, c.name`,
-		currentUserID, accountPrefix, strictPattern, pipePattern, currentUserID)
+		currentUserID, accountPrefix, strictPattern, pipePattern, currentUserID,
+		accountPrefix, strictPattern, pipePattern)
 	if err != nil {
 		return nil, fmt.Errorf("querying channel stats: %w", err)
 	}
@@ -98,13 +108,14 @@ func (db *DB) GetChannelStats(currentUserID string) ([]ChannelStatRow, error) {
 	var stats []ChannelStatRow
 	for rows.Next() {
 		var s ChannelStatRow
-		var lastActivity, lastUserActivity sql.NullFloat64
+		var lastActivity, lastUserActivity, lastMention, mutedAt sql.NullFloat64
 		err := rows.Scan(
 			&s.ChannelID, &s.ChannelName, &s.ChannelType,
 			&s.IsArchived, &s.IsMember, &s.NumMembers,
 			&s.TotalMsgs, &s.UserMsgs, &s.BotMsgs,
-			&s.Mentions, &lastActivity, &lastUserActivity,
-			&s.IsMuted, &s.IsFavorite, &s.IsWatched,
+			&s.Mentions, &lastActivity, &lastUserActivity, &lastMention,
+			&s.IsMuted, &mutedAt, &s.IsFavorite, &s.IsWatched,
+			&s.IsSyncExcluded, &s.CatchingUp,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scanning channel stat row: %w", err)
@@ -115,6 +126,8 @@ func (db *DB) GetChannelStats(currentUserID string) ([]ChannelStatRow, error) {
 		if lastUserActivity.Valid {
 			s.LastUserActivity = lastUserActivity.Float64
 		}
+		s.LastMention = lastMention.Float64
+		s.MutedAt = mutedAt.Float64
 		if s.TotalMsgs > 0 {
 			s.BotRatio = float64(s.BotMsgs) / float64(s.TotalMsgs)
 		}
@@ -199,17 +212,33 @@ func (db *DB) GetChannelValueSignals() (map[string]ChannelValueSignals, error) {
 type Recommendation struct {
 	ChannelID   string
 	ChannelName string
-	Action      string // "mute", "leave", "favorite"
+	Action      string // "mute", "leave", "favorite", "exclude" (Stop syncing)
 	Reason      string
 }
 
+// Stop syncing suggestion thresholds (adaptive sync plan, decisions 5 and 8).
+const (
+	excludeMutedFor = 30 * 24 * time.Hour
+	excludeBotRatio = 0.90
+)
+
 // ComputeRecommendations returns channel action recommendations based on heuristics.
-func ComputeRecommendations(stats []ChannelStatRow, currentUserID string, signals map[string]ChannelValueSignals) []Recommendation {
-	now := float64(time.Now().Unix())
+// The Swift twin is ChannelStatsQueries.computeRecommendations; both are pinned
+// by testdata/channel_recommendation_cases.json.
+func ComputeRecommendations(stats []ChannelStatRow, _ string, signals map[string]ChannelValueSignals) []Recommendation {
+	return computeRecommendationsAt(stats, signals, time.Now())
+}
+
+func computeRecommendationsAt(stats []ChannelStatRow, signals map[string]ChannelValueSignals, at time.Time) []Recommendation {
+	now := float64(at.Unix())
 	thirtyDaysAgo := now - 30*24*3600
 
 	var recs []Recommendation
 	for _, s := range stats {
+		// A channel that is not synced is already as quiet as it gets.
+		if s.IsSyncExcluded {
+			continue
+		}
 		var vs ChannelValueSignals
 		if signals != nil {
 			vs = signals[s.ChannelID]
@@ -240,6 +269,18 @@ func ComputeRecommendations(stats []ChannelStatRow, currentUserID string, signal
 					continue // don't suggest leave+mute for same channel
 				}
 			}
+		}
+
+		// Stop syncing candidates (after mute: an unmuted channel is
+		// offered the mute first, and Stop syncing mutes it too):
+		if reason, ok := excludeReason(s, vs, now); ok {
+			recs = append(recs, Recommendation{
+				ChannelID:   s.ChannelID,
+				ChannelName: s.ChannelName,
+				Action:      "exclude",
+				Reason:      reason,
+			})
+			continue
 		}
 
 		// Leave candidates:
@@ -296,4 +337,25 @@ func ComputeRecommendations(stats []ChannelStatRow, currentUserID string, signal
 		}
 	}
 	return recs
+}
+
+// excludeReason is the Stop syncing rule: a channel muted for AI for 30+ days
+// with no message from the user and no mention of the user since the mute,
+// or one with >= 90% bot messages and no value signals. Never for a
+// favorite, a watched channel, a DM or a channel still catching up after
+// Sync again.
+func excludeReason(s ChannelStatRow, vs ChannelValueSignals, now float64) (string, bool) {
+	if s.IsFavorite || s.IsWatched || s.CatchingUp || s.ChannelType == "dm" || s.ChannelType == "group_dm" {
+		return "", false
+	}
+	if s.IsMuted && s.MutedAt > 0 && s.MutedAt <= now-excludeMutedFor.Seconds() &&
+		s.LastUserActivity < s.MutedAt && s.LastMention < s.MutedAt {
+		return "muted 30+ days, no messages or mentions from you", true
+	}
+	noSignals := vs.DecisionCount == 0 && vs.ActiveTrackCount == 0 && vs.TaskCount == 0 && vs.PendingInboxCount == 0
+	if s.TotalMsgs > 0 && s.BotRatio >= excludeBotRatio && noSignals {
+		// Truncated, like the Swift twin's Int(ratio * 100).
+		return fmt.Sprintf("%d%% bot messages, no value signals", int(s.BotRatio*100)), true
+	}
+	return "", false
 }

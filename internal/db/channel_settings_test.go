@@ -447,3 +447,42 @@ func TestMuteCases(t *testing.T) {
 		})
 	}
 }
+
+// TestSyncAgain_UserMuteFromDesktopSurvives: the Desktop's mute toggle
+// (Swift toggleMuteForLLM, pinned by the shared case below) takes over the
+// mute Stop syncing set, so neither this Sync again nor a later Stop
+// syncing / Sync again round lifts it.
+func TestSyncAgain_UserMuteFromDesktopSurvives(t *testing.T) {
+	raw, err := os.ReadFile("testdata/channel_mute_cases.json")
+	require.NoError(t, err)
+	var file struct {
+		Cases []muteCase `json:"cases"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &file))
+	var takeOver *muteCase
+	for i := range file.Cases {
+		if file.Cases[i].Name == "muted by Stop syncing, mute takes it over" {
+			takeOver = &file.Cases[i]
+		}
+	}
+	require.NotNil(t, takeOver)
+
+	db := openTestDB(t)
+	ensureChannels(t, db, "1:C0JUNK")
+	require.NoError(t, db.SetSyncExcluded("1:C0JUNK", true, exclDay1))
+	require.True(t, mustSettings(t, db, "1:C0JUNK").MutedByExclusion)
+
+	// The Desktop writer leaves the case's after row.
+	after := takeOver.After
+	_, err = db.Exec(`UPDATE channel_settings SET is_muted_for_llm = ?, muted_by_exclusion = ? WHERE channel_id = '1:C0JUNK'`,
+		after.IsMutedForLLM, after.MutedByExclusion)
+	require.NoError(t, err)
+
+	require.NoError(t, db.SetSyncExcluded("1:C0JUNK", false, exclDay10))
+	assert.True(t, mustSettings(t, db, "1:C0JUNK").IsMutedForLLM, "Sync again lifted the user's mute")
+	require.NoError(t, db.SetSyncExcluded("1:C0JUNK", true, exclDay10.Add(24*time.Hour)))
+	require.NoError(t, db.SetSyncExcluded("1:C0JUNK", false, exclDay10.Add(48*time.Hour)))
+	cs := mustSettings(t, db, "1:C0JUNK")
+	assert.True(t, cs.IsMutedForLLM, "a second round lifted the user's mute")
+	assert.False(t, cs.MutedByExclusion)
+}
