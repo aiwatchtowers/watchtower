@@ -29,8 +29,12 @@ type Syncer struct {
 	// start a history backfill.
 	firstSyncFrom time.Time
 
-	// ownEmail is the account's own address, read once (fromOwner).
+	// ownEmail is the account's own address, read once (ownSent).
 	ownEmail string
+
+	// catchUpFailures counts CatchUpSent passes that failed on a message
+	// with a non-transient error (catchUpCountsFailure), in memory only.
+	catchUpFailures int
 }
 
 // AccountID returns the google_accounts row this syncer serves.
@@ -53,10 +57,15 @@ func NewSyncer(client *Client, database *db.DB, cfg *config.Config, logger *log.
 	return &Syncer{client: client, db: database, cfg: cfg, logger: logger, accountID: accountID}
 }
 
+// listScope is what Sync and FetchRange list: the inbox and the owner's sent
+// mail. Sent mail is ordinary mail; the readers that treat a row as
+// something that happened to the owner skip the owner's own sent rows.
+const listScope = "{in:inbox in:sent}"
+
 // noiseLabels are Gmail categories we skip before AI ever sees them.
 var noiseLabels = map[string]bool{"CATEGORY_PROMOTIONS": true, "CATEGORY_SOCIAL": true}
 
-// Sync pulls inbox messages newer than the watermark, stores them, and advances
+// Sync pulls inbox and sent messages newer than the watermark, stores them, and advances
 // the watermark. Returns the count of stored messages.
 func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	s.firstSyncFrom = time.Time{}
@@ -78,9 +87,9 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	if watermark > 0 {
 		// Narrow the server-side window to strictly-new mail. Gmail's after:
 		// operator accepts unix seconds.
-		query = fmt.Sprintf("in:inbox after:%d", int64(watermark))
+		query = fmt.Sprintf("%s after:%d", listScope, int64(watermark))
 	} else {
-		query = fmt.Sprintf("in:inbox newer_than:%dd", days) // initial backfill window
+		query = fmt.Sprintf("%s newer_than:%dd", listScope, days) // initial backfill window
 	}
 
 	// List the whole query window uncapped: messages.list pagination is cheap
@@ -98,6 +107,11 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("listing gmail messages: %w", err)
 	}
 	s.recordAuthResult(ctx, nil)
+	if watermark == 0 {
+		// The first sync's window already holds the sent mail, so the
+		// one-time sent catch-up (CatchUpSent) has nothing to add.
+		s.stampSentCatchUp(listedAt)
+	}
 	if watermark == 0 && len(ids) > 0 { // an empty inbox has nothing to backfill (R25)
 		// R30: the backfill starts at this Sync, not at its newer_than window
 		// start: the forward ideas floor is initialized at the newest synced
@@ -191,14 +205,14 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	return count, nil
 }
 
-// FetchRange stores every non-noise inbox message received in [from, to)
+// FetchRange stores every non-noise inbox or sent message received in [from, to)
 // (the fetch side of the chunk convention in internal/historybackfill/chunk.go),
 // ignoring MaxMessagesPerSync. It writes no watermark and no auth state, and
 // each row's synced_at is the message's own date, so the inbox detector never
 // sees backfilled mail as new. The first error stops it (wrapped, so
 // ErrAuthRevoked stays matchable).
 func (s *Syncer) FetchRange(ctx context.Context, from, to time.Time) (int, error) {
-	query := fmt.Sprintf("in:inbox after:%d before:%d", from.Unix(), to.Unix())
+	query := fmt.Sprintf("%s after:%d before:%d", listScope, from.Unix(), to.Unix())
 	ids, err := s.client.ListInboxMessageIDs(ctx, query, 0)
 	if err != nil {
 		return 0, fmt.Errorf("listing gmail messages %q: %w", query, err)
@@ -249,7 +263,7 @@ func (s *Syncer) storeMessage(ctx context.Context, id string, syncedAt func(inte
 		IsUnread: m.IsUnread, Permalink: m.Permalink,
 	}
 	row.SyncedAt = syncedAt(m.InternalDate)
-	if err := s.db.UpsertGmailMessageMedia(ctx, s.accountID, row, s.fromOwner(m.FromEmail), mediaFound(m.Images)); err != nil {
+	if err := s.db.UpsertGmailMessageMedia(ctx, s.accountID, row, s.ownSent(row.LabelsJSON, m.FromEmail), mediaFound(m.Images)); err != nil {
 		return false, msgUnix, fmt.Errorf("upsert %s: %w", m.ID, err)
 	}
 	return true, msgUnix, nil
@@ -355,18 +369,20 @@ func isoToUnix(iso string) float64 {
 	return float64(t.Unix())
 }
 
-// fromOwner reports whether from is the account's own address. A failed
-// account read is retried on the next message.
-func (s *Syncer) fromOwner(from string) bool {
+// ownSent reports whether the message is the owner's own sent mail
+// (db.GmailOwnSent: the SENT label, or the account's own address as sender),
+// so its media goes first. A failed account read falls back to the label
+// alone and is retried on the next message.
+func (s *Syncer) ownSent(labelsJSON, from string) bool {
 	if s.ownEmail == "" {
 		acct, err := s.db.GetGoogleAccount(s.accountID)
 		if err != nil {
 			s.logger.Printf("gmail: reading account %d for its own address: %v", s.accountID, err)
-			return false
+		} else {
+			s.ownEmail = strings.TrimSpace(acct.Email)
 		}
-		s.ownEmail = strings.TrimSpace(acct.Email)
 	}
-	return s.ownEmail != "" && strings.EqualFold(strings.TrimSpace(from), s.ownEmail)
+	return db.GmailOwnSent(labelsJSON, from, s.ownEmail)
 }
 
 // mediaFound turns a message's image parts into media rows (locator

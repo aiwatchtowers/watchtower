@@ -1,0 +1,36 @@
+{
+  "id": "mail-waiting",
+  "slot": "waiting_for_me",
+  "overridden": false,
+  "shipped_hash": "eb7309612e0875627c46d1017e18e3f4509a02fea578874f07e6995cda2bda0d",
+  "base_hash": "",
+  "update_available": false,
+  "shipped_text": "---\nname: Mail waiting\nsummary: Mail that waits on you, by sender\ntrigger:\n  sync: waiting_for_me\nartifacts: living\npermissions:\n  - builtin:attention.waiting\noutputs: [inbox]\nbudget: {tokens: 1000, minutes: 2}\n---\nAfter every sync, groups the mail that waits on you by sender, the busiest first.\n\n```js\nvar waiting = attention.waiting();\nvar mail = waiting.mail;\n\n// The stored document's cap is 128 KiB; the rows get an even share of this\n// much, the header, the list and the closing line the rest.\nvar ROWS_BUDGET = 128000;\n// A row's keys the stored form adds (\"actions\":[]) and JSON's escapes the\n// estimate below does not see.\nvar ROW_SLACK = 16;\n// A row title's limit, in characters.\nvar MAX_TITLE = 300;\n\n// bytesOf is s's size in UTF-8 (a surrogate pair is 2 + 2).\nfunction bytesOf(s) {\n  var n = 0;\n  for (var i = 0; i \u003c s.length; i++) {\n    var c = s.charCodeAt(i);\n    n += c \u003c 0x80 ? 1 : c \u003c 0x800 || (c \u003e= 0xd800 \u0026\u0026 c \u003c 0xe000) ? 2 : 3;\n  }\n  return n;\n}\n\nfunction sizeOf(row) {\n  return bytesOf(JSON.stringify(row)) + ROW_SLACK;\n}\n\nfunction plural(n, one, many) {\n  return n + \" \" + (n === 1 ? one : many);\n}\n\n// rowOf is one sender's row within share bytes: past it the subject goes\n// first, then the link. A sender the ref would refuse is still listed and\n// counted, with no ref (no Open, Mark All Done or Mute).\nfunction rowOf(sender, share) {\n  var title = sender.address || \"Unknown sender\";\n  if (title.length \u003e MAX_TITLE) {\n    title = title.slice(0, MAX_TITLE - 1) + \"…\";\n  }\n  var counts = sender.open + \" open · \" + sender.today + \" today\";\n  var row = {\n    title: title,\n    subtitle: sender.subject ? counts + \" · \" + sender.subject : counts,\n    badge: { text: String(sender.open) }\n  };\n  if (sender.permalink) {\n    row.link = sender.permalink;\n  }\n  if (sender.actionable) {\n    row.ref = { kind: \"mail_sender\", id: sender.address };\n  }\n  if (sizeOf(row) \u003e share) {\n    row.subtitle = counts;\n  }\n  if (sizeOf(row) \u003e share) {\n    delete row.link;\n  }\n  return row;\n}\n\nvar share = Math.floor(ROWS_BUDGET / Math.max(waiting.senders.length, 1));\nvar rows = waiting.senders.map(function (sender) {\n  return rowOf(sender, share);\n});\n\nvar out = [];\nif (mail.senders \u003e 0) {\n  var top = Math.min(10, mail.senders);\n  out.push({\n    type: \"text\",\n    markdown: mail.top_ten_share + \"% of this mail comes from \" + plural(top, \"sender\", \"senders\") + \".\"\n  });\n}\nout.push({ type: \"list\", rows: rows, empty: \"No mail is waiting on you\" });\nif (mail.senders \u003e rows.length) {\n  out.push({ type: \"text\", markdown: plural(mail.senders - rows.length, \"more sender\", \"more senders\") });\n}\n\noutput.inbox({\n  key: \"mail\",\n  title: \"Mail waiting\",\n  blocks: out\n});\n```\n",
+  "default_prompts": {},
+  "when": "After every sync, while attention detection is on",
+  "reads": [
+    "The mail attention detection found"
+  ],
+  "does": [
+    "Groups the mail that waits on you by sender, the busiest first",
+    "Updates the list after every sync; muted senders are left out",
+    "Uses no AI"
+  ],
+  "sends": [
+    "One Mail waiting list in your Inbox"
+  ],
+  "default_folder": "inbox",
+  "parameters": [],
+  "feature_ids": [
+    "secretary-inbox"
+  ],
+  "enabled": true,
+  "run_now": true,
+  "copy_error": "",
+  "costs": {
+    "usd": 0,
+    "days": 7,
+    "reported": false,
+    "tokens": 0
+  }
+}

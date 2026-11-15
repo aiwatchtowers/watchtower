@@ -102,7 +102,8 @@ public enum CatalogPage: String, CaseIterable, Identifiable {
         case .display: ["Chip", "CountBadge", "OutlineTag", "MenuLabel", "SectionHeader"]
         case .containers: ["card", "kitRow"]
         case .artifacts: ["ArtifactView", "ArtifactCardBody", "ArtifactRenderMode", "ArtifactEnvironment",
-                          "artifactEnvironment", "ArtifactRefHooks", "ArtifactTargetButton", "ArtifactTargetButtonState",
+                          "artifactEnvironment", "ArtifactRefHooks", "ArtifactAccessibilityAction",
+                          "ArtifactShownRefsKey", "ArtifactTargetButton", "ArtifactTargetButtonState",
                           "ArtifactTargetStuckLine", "ArtifactDocument", "ArtifactDecodeResult",
                           "ArtifactActionsDecodeResult", "ArtifactBlock", "ArtifactListRow", "ArtifactTableColumn",
                           "ArtifactTableCell", "ArtifactMetric", "ArtifactPersonLine", "ArtifactBadge", "ArtifactTone",

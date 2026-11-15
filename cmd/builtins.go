@@ -40,10 +40,12 @@ import (
 func wireBuiltins(d *daemon.Daemon, cfg *config.Config, database *db.DB, gen digest.Generator, logger *log.Logger) *builtin.Runner {
 	exec := automations.NewExecutor(database, slotBackends(d, cfg, database, gen), automations.ExecutorOptions{Logger: logger})
 	gates := map[string]builtin.Gate{
-		"morning-brief":    d.MorningBriefGate(),
-		"track-my-threads": d.TrackMyThreadsGate(),
-		"idea-finder":      d.IdeaFinderGate(),
-		"waiting-for-me":   d.WaitingForMeGate(),
+		"morning-brief":       d.MorningBriefGate(),
+		"track-my-threads":    d.TrackMyThreadsGate(),
+		"idea-finder":         d.IdeaFinderGate(),
+		"waiting-for-me":      d.WaitingForMeGate(),
+		builtin.MailWaitingID: d.MailWaitingGate(),
+		"slack-today":         d.SlackTodayGate(),
 		// Reactions has no gate: it never runs at a slot. The reaction pass
 		// runs it once per claimed command (Daemon.reactionDispatcher).
 	}
@@ -197,6 +199,7 @@ func cliBuiltinBackends(cfg *config.Config, database *db.DB, gen digest.Generato
 	}
 	add(builtin.WaitingPrimitives(database, time.Now))
 	add(builtin.ApprovalsPrimitives(database, time.Now))
+	add(builtin.SlackWindowPrimitives(database, time.Now))
 	b.DefaultPrompt = builtin.DefaultPromptFunc
 	return b
 }

@@ -53,6 +53,16 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
     /// A message card's Reply (`messageReply(_:onPress:)`); nil draws none.
     private(set) var messageReplyContent: (HomeFeedInboxRow) -> InboxRowActionsContent? = { _ in nil }
     private(set) var onMessageReplyPress: (Int, InboxRowPress) -> Void = { _, _ in }
+    /// The keys on an artifact's rows (`rowKeyboard(_:)`); nil: none.
+    private(set) var rowKeys: InboxRowKeys?
+    /// The pane's `InboxPaneHeader` over the card (`paneHeader(_:)`); nil draws none.
+    private(set) var header: AnyView?
+    /// Slack today's pane around the automation card (`slackToday(_:)`):
+    /// its own header, yesterday's note and the quiet channels' fold.
+    private(set) var slackTodayPane: SlackTodayPane?
+    /// An automation card's own source and title row; off under a pane
+    /// header (Slack today's included), which already says both.
+    private var showsTitleRow: Bool { header == nil && slackTodayPane == nil }
 
     init(
         item: InboxListItem?,
@@ -127,6 +137,15 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
         return pane
     }
 
+    /// This pane with `keys` on the rows of the artifact it shows: J/K
+    /// move a focused row, the other keys press its actions (Waiting for
+    /// me and Mail waiting; nil: none).
+    func rowKeyboard(_ keys: InboxRowKeys?) -> Self {
+        var pane = self
+        pane.rowKeys = keys
+        return pane
+    }
+
     /// This pane with the artifact ⋯ on an automation card's title row, and
     /// a failed press's text under it.
     func withArtifactMenu(_ menu: InboxArtifactMenuState?) -> Self {
@@ -135,13 +154,33 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
         return pane
     }
 
+    /// This pane with `header` above the card, in the same column; an
+    /// automation card then leaves out its own source and title row.
+    func paneHeader(_ header: AnyView) -> Self {
+        var pane = self
+        pane.header = header
+        return pane
+    }
+
+    /// This pane with an automation card drawn inside Slack today's pane
+    /// (`pane`); nil draws the card as any other.
+    func slackToday(_ pane: SlackTodayPane?) -> Self {
+        var reading = self
+        reading.slackTodayPane = pane
+        return reading
+    }
+
     /// The pane's one readable column (style guide: "one readable column").
     static var readableWidth: CGFloat { InboxCardColumn<EmptyView>.readableWidth }
 
     var body: some View {
         switch item {
         case .output(let card):
-            column { output(card) }
+            if let slackTodayPane {
+                column { slackTodayPane.drawing(output(card)) }
+            } else {
+                column { output(card) }
+            }
         case .reminder(let reminder):
             column { self.reminder(reminder) }
         case .proposal(let action):
@@ -182,6 +221,13 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
     private func column(@ViewBuilder _ content: () -> some View) -> some View {
         if inApprovals {
             content()
+        } else if let header {
+            InboxCardColumn {
+                VStack(alignment: .leading, spacing: Spacing.page) {
+                    header
+                    content()
+                }
+            }
         } else {
             InboxCardColumn(content: content)
         }
@@ -198,18 +244,20 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
 
     private func output(_ card: AutomationOutputCard) -> some View {
         VStack(alignment: .leading, spacing: Spacing.medium) {
-            source(card)
-            HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
-                Text(card.title.isEmpty ? "Automation output" : card.title)
-                    .font(.title3.weight(.semibold))
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
-                if card.priority == "high" {
-                    Chip(text: "High", color: Tone.priority("high"))
-                }
-                if let artifactMenu, !inApprovals {
-                    Spacer(minLength: Spacing.regular)
-                    InboxArtifactMenuButton(menu: artifactMenu)
+            if showsTitleRow {
+                source(card)
+                HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
+                    Text(card.title.isEmpty ? "Automation output" : card.title)
+                        .font(.title3.weight(.semibold))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                    if card.priority == "high" {
+                        Chip(text: "High", color: Tone.priority("high"))
+                    }
+                    if let artifactMenu, !inApprovals {
+                        Spacer(minLength: Spacing.regular)
+                        InboxArtifactMenuButton(menu: artifactMenu)
+                    }
                 }
             }
             if let error = artifactMenu?.error, !inApprovals {
@@ -230,12 +278,29 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
                                  showsDoneDismiss: !inApprovals)
                     .padding(.top, Spacing.small)
             case let .artifact(result, cardActions):
-                InboxArtifactCard(card: card, result: result, cardActions: cardActions, people: artifactPeople,
-                                  navScreens: navScreens, isWriting: isWriting, onCommand: onCommand,
-                                  onDone: onDone, onDismiss: onDismiss, workbenches: workbenches, targets: targets,
-                                  showsDoneDismiss: !inApprovals, refHooks: rowHooks)
+                if let rowKeys {
+                    InboxRowKeyboardHost(keys: rowKeys) { focused in
+                        artifactCard(card, result: result, cardActions: cardActions, focusedRef: focused)
+                    }
+                    // Another card starts with its own first row.
+                    .id(card.id)
+                } else {
+                    artifactCard(card, result: result, cardActions: cardActions, focusedRef: nil)
+                }
             }
         }
+    }
+
+    private func artifactCard(
+        _ card: AutomationOutputCard,
+        result: ArtifactDecodeResult,
+        cardActions: [ArtifactAction],
+        focusedRef: ArtifactRef?
+    ) -> InboxArtifactCard {
+        InboxArtifactCard(card: card, result: result, cardActions: cardActions, people: artifactPeople,
+                          navScreens: navScreens, isWriting: isWriting, onCommand: onCommand,
+                          onDone: onDone, onDismiss: onDismiss, workbenches: workbenches, targets: targets,
+                          showsDoneDismiss: !inApprovals, refHooks: rowHooks, focusedRef: focusedRef)
     }
 
     @ViewBuilder
@@ -257,7 +322,7 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
     /// **Retry**; the card leaves once a read finds the move done.
     private func builtinNotice(_ notice: BuiltinUpgradeNotice) -> some View {
         VStack(alignment: .leading, spacing: Spacing.medium) {
-            Text(InboxListRow.builtinNoticeSource)
+            Text(InboxLegacyListRow.builtinNoticeSource)
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Text(notice.title)
@@ -288,7 +353,7 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
 
     private func reminder(_ reminder: Reminder) -> some View {
         VStack(alignment: .leading, spacing: Spacing.medium) {
-            Text(InboxListRow.reminderSource(reminder, now: now))
+            Text(InboxLegacyListRow.reminderSource(reminder, now: now))
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Text(reminder.note.isEmpty ? "Reminder" : reminder.note)
@@ -346,7 +411,7 @@ where DayCard == InboxCardPlaceholder, TrackCard == InboxCardColumn<InboxCardPla
 
 /// A card in the reading pane's one readable column, scrolling.
 struct InboxCardColumn<Content: View>: View {
-    static var readableWidth: CGFloat { 640 }
+    static var readableWidth: CGFloat { ReadableColumn.maxLineWidth }
 
     let content: Content
 
@@ -371,19 +436,19 @@ struct InboxCardPlaceholder: View {
     let source: String
 
     init(day: InboxDayCard) {
-        title = InboxListRow.dayTitle(day)
-        source = InboxListRow.daySource(day)
+        title = InboxLegacyListRow.dayTitle(day)
+        source = InboxLegacyListRow.daySource(day)
     }
 
     init(track: InboxTrackCard, now: Date) {
-        let content = InboxListRow.content(.track(track), proposalLabel: nil, now: now)
+        let content = InboxLegacyListRow.content(.track(track), proposalLabel: nil, now: now)
         title = content.title
         source = content.source
     }
 
     init(idea: Idea) {
         title = idea.title
-        source = InboxListRow.ideaSource(idea)
+        source = InboxLegacyListRow.ideaSource(idea)
     }
 
     var body: some View {

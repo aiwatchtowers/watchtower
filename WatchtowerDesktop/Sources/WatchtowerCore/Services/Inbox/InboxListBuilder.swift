@@ -90,18 +90,18 @@ package enum InboxListBuilder {
         return listed
     }
 
-    /// The root's day cards (the Morning brief entries): today's and every
-    /// unread one, newest first. Today with neither a briefing nor a plan
-    /// gets a placeholder card (`InboxDayCard.placeholder`) while the owner
-    /// is known (`feed.ownerKnown`; else the empty root carries OWNER-02) —
-    /// never while the briefing and day-plan features are both off
-    /// (`feed.briefingOn`, `feed.dayPlanOn`). `today` is the "YYYY-MM-DD" of `now`.
+    /// The root's one day card (the Morning brief entry, spec "One brief
+    /// row"): today's; past days live inside it and on the Earlier line
+    /// (`InboxRootSections.earlierLine`). Today with neither a briefing nor
+    /// a plan gets a placeholder card (`InboxDayCard.placeholder`) while the
+    /// owner is known (`feed.ownerKnown`; else the empty root carries
+    /// OWNER-02) — never while the briefing and day-plan features are both
+    /// off (`feed.briefingOn`, `feed.dayPlanOn`). `today` is the
+    /// "YYYY-MM-DD" of `now`.
     package static func rootDays(_ feed: InboxFeedSnapshot, today: String, now: Date, calendar: Calendar) -> [InboxDayCard] {
-        var days = feed.days.filter { $0.date == today || $0.isUnread }
-        if feed.briefingOn || feed.dayPlanOn, feed.ownerKnown, !feed.days.contains(where: { $0.date == today }) {
-            days.append(.placeholder(date: today, stamp: calendar.startOfDay(for: now)))
-        }
-        return days.sorted { $0.stamp > $1.stamp }
+        if let card = feed.days.first(where: { $0.date == today }) { return [card] }
+        guard feed.briefingOn || feed.dayPlanOn, feed.ownerKnown else { return [] }
+        return [.placeholder(date: today, stamp: calendar.startOfDay(for: now))]
     }
 
     /// Equal times keep one order across refreshes: tracks, messages, ideas,

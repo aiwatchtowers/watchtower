@@ -1,4 +1,5 @@
 import XCTest
+import ViewInspector
 import GRDB
 @testable import WatchtowerDesktop
 import WatchtowerCore
@@ -19,6 +20,7 @@ final class InboxRowActionsTests: XCTestCase {
     }
 
     override func tearDown() async throws {
+        IdeaBatchDefaults.clearStandard()
         manager = nil
         TestDatabase.cleanup(path: path)
     }
@@ -85,6 +87,43 @@ final class InboxRowActionsTests: XCTestCase {
         XCTAssertEqual(content.kind, .inboxItem(openLabel: "Open in Slack", openEnabled: true, canReply: true,
                                                 showsHandToAgent: true))
         XCTAssertEqual(content.state, .idle)
+    }
+
+    /// Waiting for me lists up to 200 people; the Messages list is the 200
+    /// newest open items, mail included. A person past that cap keeps every
+    /// action: the row reads its own message, never the capped list.
+    func testWaitingForMeRowPastTheMessagesCapKeepsItsActions() async throws {
+        let dm = try await pool.write { db -> Int64 in
+            for n in 0..<InboxQueries.openMessageLimit {
+                try TestDatabase.insertInboxItem(
+                    db, messageTS: "1700001\(String(format: "%03d", n)).000100",
+                    senderUserID: "news@example.com", triggerType: "email_received")
+            }
+            let dm = try TestDatabase.insertInboxItem(
+                db, channelID: "D001", messageTS: "1690000000.000100", triggerType: "dm",
+                permalink: "https://acme.slack.com/archives/D001/p1690000000000100")
+            try db.execute(sql: """
+                UPDATE inbox_items SET created_at = CASE WHEN id = ? THEN '2026-01-01T00:00:00Z'
+                  ELSE '2026-11-01T00:00:00Z' END, mentioned_at = ''
+                """, arguments: [dm])
+            let automation = try TestDatabase.insertAutomation(db, slug: "waiting-for-me", name: "Waiting for me")
+            try db.execute(sql: "UPDATE automations SET origin = 'builtin', builtin_id = 'waiting-for-me' WHERE id = ?",
+                           arguments: [automation])
+            let run = try TestDatabase.insertAutomationRun(db, automationID: automation, status: "succeeded")
+            try TestDatabase.insertAutomationOutput(
+                db, automationID: automation, runID: run,
+                blocksJSON: #"{"v":1,"blocks":[{"type":"list","rows":[{"title":"Colleague A","ref":{"kind":"inbox_item","id":\#(dm)}}]}]}"#,
+                outputKey: "waiting", contentHash: "h")
+            return dm
+        }
+        let vm = await strip()
+        XCTAssertFalse(vm.feed.messages.contains { Int64($0.item.id) == dm }, "the capped list leaves the DM out")
+        let ref = InboxRef(kind: .inboxItem, id: dm)
+        XCTAssertTrue(vm.folderMenu.snapshot.refState.isShown(ref))
+        let content = try XCTUnwrap(hooks(vm).content(ref, .inbox), "the row offers its actions")
+        XCTAssertEqual(content.kind, .inboxItem(openLabel: "Open in Slack", openEnabled: true, canReply: true,
+                                                showsHandToAgent: true))
+        XCTAssertNotNil(vm.messageRow(Int(dm)), "Done, Reply… and Discuss find the same row")
     }
 
     func testInboxItemWithoutPermalinkHasNoOpen() async throws {
@@ -427,6 +466,52 @@ final class InboxRowActionsTests: XCTestCase {
         XCTAssertEqual(InboxRefHooks.nativeKinds(.action), [])
     }
 
+    /// A sender row's Open replaces the recipe's link; the Older note row
+    /// keeps whatever the recipe draws.
+    func testSenderAndOlderRowsSuppressOnlyTheRecipesOpen() {
+        XCTAssertEqual(InboxRefHooks.nativeKinds(.mailSender), [.open])
+        XCTAssertEqual(InboxRefHooks.nativeKinds(.waitingOlder), [])
+    }
+
+    /// I-1: the row's footer follows its bulk press, so a partial apply's
+    /// "Closed N of M" and Try Again appear the moment it finishes, with no
+    /// further read; a full success leaves no line and no Try Again.
+    func testBulkFooterFollowsItsPress() async throws {
+        let model = InboxBulkPressModel()
+        let hooks = InboxRefHooks.make(
+            isShown: { _ in true },
+            content: { _, _ in InboxRowActionsContent(kind: .waitingOlder) },
+            bulk: { _ in model })
+        let footer = try XCTUnwrap(hooks.nativeFooter(ArtifactRef(kind: .waitingOlder, key: "older"), .inbox),
+                                   "drawn while idle, so it can follow the press")
+        XCTAssertThrowsError(try footer.inspect().find(ViewType.Text.self), "idle draws nothing")
+
+        model.begin { InboxBulkPlan(ids: ["1", "2", "3"], count: 3) }
+        await waitUntil { if case .confirming = model.state { true } else { false } }
+        model.confirm { _ in .partial(done: 1, of: 3, error: "database is locked") }
+        await waitUntil { if case .finished = model.state { true } else { false } }
+
+        XCTAssertNoThrow(try footer.inspect().find(text: "Closed 1 of 3. database is locked"))
+        XCTAssertNoThrow(try footer.inspect().find(button: "Try Again"))
+
+        let done = InboxBulkPressModel()
+        done.begin { InboxBulkPlan(ids: ["1"], count: 1) }
+        await waitUntil { if case .confirming = done.state { true } else { false } }
+        done.confirm { _ in .done(count: 1, skipped: 0) }
+        await waitUntil { if case .finished = done.state { true } else { false } }
+        let quiet = InboxRowBulkFooter(content: InboxRowActionsContent(kind: .waitingOlder), model: done)
+        XCTAssertFalse(quiet.drawsAnything)
+        XCTAssertThrowsError(try quiet.inspect().find(ViewType.Text.self))
+    }
+
+    private func waitUntil(_ condition: () -> Bool) async {
+        let deadline = Date().addingTimeInterval(10)
+        while !condition() {
+            guard Date() < deadline else { return XCTFail("timed out") }
+            await Task.yield()
+        }
+    }
+
     func testPreviewDrawsDisabled() async throws {
         let id = try insertReminder()
         let vm = await strip()
@@ -719,6 +804,92 @@ final class InboxRowActionsTests: XCTestCase {
         XCTAssertNil(vm.rowErrors[.reminder(id)])
         XCTAssertNil(vm.lastError)
         XCTAssertTrue(vm.reminderRows.isEmpty)
+    }
+
+    // MARK: - A Mail waiting sender row
+
+    /// Mail waiting's card listing the sender `key` (spelled as given), with
+    /// an open mail from it whose link is `permalink`.
+    private func seedMailSender(key: String, permalink: String) throws {
+        try pool.write { db in
+            try db.execute(sql: "INSERT INTO inbox_folders (kind, parent_id, slug, title, position) "
+                + "VALUES ('root', NULL, 'inbox', 'Inbox', 0)")
+            try db.execute(sql: "INSERT INTO inbox_folder_state (id, revision) VALUES (1, 1)")
+            let automation = try TestDatabase.insertAutomation(db, slug: "mail-waiting", name: "Mail waiting")
+            try db.execute(sql: """
+                UPDATE automations SET origin = 'builtin', builtin_id = 'mail-waiting',
+                    path = 'builtin:mail-waiting', enabled = 1 WHERE id = ?
+                """, arguments: [automation])
+            let run = try TestDatabase.insertAutomationRun(db, automationID: automation, status: "succeeded")
+            let written = AutomationDates.format(Date().addingTimeInterval(-60))
+            let row = #"{"title":"\#(key)","ref":{"kind":"mail_sender","id":"\#(key)"}}"#
+            try TestDatabase.insertAutomationOutput(
+                db, automationID: automation, runID: run, title: "Mail waiting", createdAt: written,
+                blocksJSON: #"{"v":1,"blocks":[{"type":"list","rows":[\#(row)]}]}"#, outputKey: "mail",
+                contentHash: "h-mail", writtenAt: written, changedAt: written)
+            _ = try TestDatabase.insertInboxItem(db, senderUserID: InboxPeopleRule.senderKey(key),
+                                                 triggerType: "email_received", permalink: permalink)
+        }
+    }
+
+    /// Open follows the sender's newest open mail's link.
+    func testSenderOpenFollowsTheNewestMailsLink() async throws {
+        let link = "https://mail.google.com/mail/u/0/#all/abc"
+        try seedMailSender(key: "News@Example.com", permalink: link)
+        let vm = await strip()
+        var commands: [InboxCardCommand] = []
+        var opener = handler(vm)
+        opener.onCommand = { commands.append($0) }
+        await opener.press(.open, on: InboxRef(kind: .mailSender, key: "News@Example.com"))
+        guard case let .openLink(url)? = commands.first else { return XCTFail("\(commands)") }
+        XCTAssertEqual(url.absoluteString, link)
+    }
+
+    /// A failed Mute shows on the row as drawn (its key spelled as the card
+    /// has it, the error kept under the normalised key), and Retry sends the
+    /// Mute again on the raw ref, which writes the rule.
+    func testFailedMuteShowsOnTheRowAndRetryWritesTheRule() async throws {
+        let ref = InboxRef(kind: .mailSender, key: "News@Example.com")
+        try seedMailSender(key: ref.key, permalink: "")
+        try await pool.write { db in
+            try db.execute(sql: """
+                CREATE TRIGGER fail_rule BEFORE INSERT ON inbox_learned_rules
+                BEGIN SELECT RAISE(ABORT, 'disk is busy'); END
+                """)
+        }
+        let vm = await strip()
+        let shown = try XCTUnwrap(hooks(vm).content(ref, .inbox), "Mail waiting lists the sender")
+        XCTAssertEqual(shown.state, .idle)
+
+        await handler(vm).press(.mute, on: ref)
+        guard case .failed? = hooks(vm).content(ref, .inbox)?.state else {
+            return XCTFail("the failure shows on the row: \(String(describing: hooks(vm).content(ref, .inbox)))")
+        }
+
+        try await pool.write { db in try db.execute(sql: "DROP TRIGGER fail_rule") }
+        await handler(vm).press(.retryFailedPress, on: ref)
+        let scope = try await pool.read { db in
+            try String.fetchOne(db, sql: "SELECT scope_key FROM inbox_learned_rules WHERE rule_type = 'source_mute'")
+        }
+        XCTAssertEqual(scope, "email:news@example.com", "Retry wrote the mute")
+        XCTAssertNil(vm.textRowErrors[InboxRef(kind: .mailSender, key: "news@example.com")])
+    }
+
+    // MARK: - A key on the focused row (InboxRowKeyRequest)
+
+    /// S or ⌘K opens only the row it names; a repeated key gets a new
+    /// serial, so the row sees it as a new request.
+    func testKeyRequestOpensOnlyItsRowAndRepeats() {
+        let one = InboxRef(kind: .inboxItem, id: 1)
+        let two = InboxRef(kind: .inboxItem, id: 2)
+        let first = InboxRowKeyRequest.next(.snoozeMenu, for: one, after: nil)
+        XCTAssertEqual(InboxRowKeyRequest.kind(of: first, on: one), .snoozeMenu)
+        XCTAssertNil(InboxRowKeyRequest.kind(of: first, on: two), "another row opens nothing")
+        XCTAssertNil(InboxRowKeyRequest.kind(of: nil, on: one))
+
+        let again = InboxRowKeyRequest.next(.snoozeMenu, for: one, after: first)
+        XCTAssertNotEqual(again, first, "the same key twice is two requests")
+        XCTAssertEqual(InboxRowKeyRequest.next(.handToAgent, for: two, after: again).serial, again.serial + 1)
     }
 }
 

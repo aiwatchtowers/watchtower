@@ -56,7 +56,7 @@ Migration 00139 adds `kb_dirty(source, key, gen)` and AFTER triggers: `messages_
 - `jira_linked_issues` rows (the other-board cache) are not diffed.
 - Linear permanent deletions are not diffed (archived and trashed issues are already flagged by the Linear sync).
 - The retention mirror from spec Phase 3 is not built.
-- Gmail mail restored from trash (or spam) after the daily check removed it may not come back: the forward sync queries `in:inbox after:<watermark>` on the message date, and the history backfill covers each date window once, so a restored mail dated before the watermark is not re-fetched.
+- Gmail mail restored from trash (or spam) after the daily check removed it may not come back: the forward sync queries `{in:inbox in:sent} after:<watermark>` (`listScope`) on the message date, and the history backfill covers each date window once, so a restored mail dated before the watermark is not re-fetched.
 
 ## Tests
 

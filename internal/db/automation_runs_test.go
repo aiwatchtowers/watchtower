@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // runTestNow is a fixed instant for run tests (only ordering matters).
@@ -1180,4 +1184,45 @@ func TestListAutomationOutputsSince_NewestFirstNamedLimitedAndCounted(t *testing
 	if err != nil || none == nil || len(none) != 0 || total != 0 {
 		t.Errorf("no rows = (%v, %d, %v); want an empty, non-nil slice and 0", none, total, err)
 	}
+}
+
+func TestLastAutomationRunQueuedAt(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	id := seedBuiltinRow(t, d, "slack-today", "slack-today", "c1", "a1")
+	other := seedBuiltinRow(t, d, "morning-brief", "morning-brief", "c2", "a2")
+	all := []string{RunSucceeded, RunFailed, RunCancelled}
+
+	_, ok, err := d.LastAutomationRunQueuedAt(ctx, id, TriggerSync, all)
+	require.NoError(t, err)
+	assert.False(t, ok, "no runs")
+
+	_, err = d.Exec(`INSERT INTO automation_runs (automation_id, trigger, status, queued_at) VALUES
+		(?, 'sync', 'succeeded', '2026-10-22T08:00:00Z'),
+		(?, 'sync', 'failed', '2026-10-22T09:00:00Z'),
+		(?, 'manual', 'succeeded', '2026-10-22T11:00:00Z'),
+		(?, 'sync', 'succeeded', '2026-10-22T12:00:00Z')`, id, id, id, other)
+	require.NoError(t, err)
+
+	at, ok, err := d.LastAutomationRunQueuedAt(ctx, id, TriggerSync, all)
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, time.Date(2026, 10, 22, 9, 0, 0, 0, time.UTC), at, "newest sync run; other triggers and automations ignored")
+
+	at, ok, err = d.LastAutomationRunQueuedAt(ctx, id, TriggerSync, []string{RunSucceeded})
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, time.Date(2026, 10, 22, 8, 0, 0, 0, time.UTC), at)
+
+	at, ok, err = d.LastAutomationRunQueuedAt(ctx, id, TriggerSync, []string{RunFailed})
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, time.Date(2026, 10, 22, 9, 0, 0, 0, time.UTC), at)
+
+	_, ok, err = d.LastAutomationRunQueuedAt(ctx, id, TriggerSync, []string{RunCancelled})
+	require.NoError(t, err)
+	assert.False(t, ok)
+
+	_, _, err = d.LastAutomationRunQueuedAt(ctx, id, TriggerSync, nil)
+	require.Error(t, err, "no status is refused, not read as any status")
 }

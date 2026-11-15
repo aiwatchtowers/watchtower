@@ -95,7 +95,11 @@ type fixture struct {
 	brief *fakePrimitive
 	plan  *fakePrimitive
 	// c3 holds the fakes of the C3 built-ins' primitives, by name.
-	c3     map[string]*fakePrimitive
+	c3 map[string]*fakePrimitive
+	// window is the fake slack.window, answering the Slack today window
+	// fixture; gen is the model, answering slackTodayReply.
+	window *fakePrimitive
+	gen    *automationstest.FakeGenerator
 	asked  *promptLog
 	gate   *fakeGate
 	exec   *automations.Executor
@@ -137,6 +141,8 @@ func newFixture(t *testing.T) *fixture {
 		brief: &fakePrimitive{res: automations.PrimitiveResult{Status: "done"}},
 		plan:  &fakePrimitive{res: automations.PrimitiveResult{Status: "done"}},
 		asked: &promptLog{}, gate: &fakeGate{due: true}, c3: map[string]*fakePrimitive{},
+		window: &fakePrimitive{res: slackTodayWindow(t, "")},
+		gen:    &automationstest.FakeGenerator{Replies: []string{slackTodayReply}},
 	}
 	prims := map[string]automations.PrimitiveFunc{"brief.compose": f.brief.fn, "plan.compose": f.plan.fn}
 	for _, name := range []string{"tracks.extract", "ideas.consolidate", "reaction.compose"} {
@@ -145,7 +151,8 @@ func newFixture(t *testing.T) *fixture {
 	}
 	maps.Copy(prims, WaitingPrimitives(f.d, f.clock.Now))
 	maps.Copy(prims, ApprovalsPrimitives(f.d, f.clock.Now))
-	b := automations.Backends{DB: f.d, Clock: f.clock,
+	prims[automations.PrimitiveSlackWindow] = f.window.fn
+	b := automations.Backends{DB: f.d, Clock: f.clock, Generator: f.gen,
 		Primitives: prims,
 		DefaultPrompt: func(builtinID, name, role string) (string, error) {
 			f.asked.add(name)

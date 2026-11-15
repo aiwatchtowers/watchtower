@@ -143,7 +143,23 @@ package enum HomeFeedQueries {
             ORDER BY stamp DESC, id DESC
             LIMIT ?
             """, arguments: StatementArguments(arguments))
-        return try rows.map { row in
+        return try feedRows(db, rows, now: now)
+    }
+
+    /// The open messages among `ids` (any trigger, any age, no cap): what a
+    /// row's `inbox_item` ref is drawn from when the capped list above has
+    /// left it out. `nowUTC` is RFC 3339 UTC.
+    package static func openMessageRows(_ db: Database, ids: [Int64], nowUTC: String) throws -> [HomeFeedInboxRow] {
+        guard !ids.isEmpty else { return [] }
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT *, MAX(created_at, mentioned_at) AS stamp FROM inbox_items
+            WHERE id IN (\(databaseQuestionMarks(count: ids.count))) AND \(openMessageClause)
+            """, arguments: StatementArguments(ids) + [nowUTC])
+        return try feedRows(db, rows, now: AutomationDates.parse(nowUTC) ?? Date())
+    }
+
+    private static func feedRows(_ db: Database, _ rows: [Row], now: Date) throws -> [HomeFeedInboxRow] {
+        try rows.map { row in
             let item = InboxItem(row: row)
             let stamp: String = row["stamp"] ?? ""
             let names = try senderNames(db, item)

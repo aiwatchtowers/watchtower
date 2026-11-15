@@ -2,7 +2,7 @@ import Foundation
 import GRDB
 
 /// What one read of the menu sees: the tree, each folder's own count (the
-/// numbers the menu shows, whose visible sum is the sidebar badge), how
+/// numbers the menu shows), the sidebar badge's two terms (`badge`), how
 /// many open artifacts each folder holds (Delete…'s summary), and what the
 /// folder's entries are composed from (`InboxFolderEntries`): each folder's
 /// artifacts with their row refs and the render-time check, Waiting for me's
@@ -16,10 +16,16 @@ package struct InboxFolderMenuSnapshot: Equatable, Sendable {
     /// approvals they show (`approvalArtifacts`), so a card of a closed
     /// approval is never on screen (APPROVAL-01).
     package let cards: [Int64: [AutomationOutputCard]]
+    /// Each card's folder (card id → folder id), built once from `cards`.
+    package let cardFolders: [Int64: Int64]
     /// Each card's row refs (card id → refs).
     package let refs: [Int64: [InboxRef]]
     package let refState: InboxRefState
     package let waitingForMe: WaitingForMeState
+    package let mailWaiting: MailWaitingState
+    /// The open, unmuted mail by sender (`WaitingQueries.mailSenders`, no
+    /// sender rows): Mail waiting's row lines. Empty while it has no card.
+    package let mailSummary: MailWaitingSummary
     package let needsApproval: NeedsApprovalState
     /// The `needs-approval` built-in's living cards by key (`action:<id>`,
     /// `reminder:<id>`).
@@ -30,6 +36,22 @@ package struct InboxFolderMenuSnapshot: Equatable, Sendable {
     package let openActions: Set<Int64>
     /// The `idea-finder` built-in is indexed (`InboxFolderQueries.ideaFinderPresent`).
     package let ideaFinderPresent: Bool
+    /// The open people items by section (`WaitingQueries.peopleCounts`,
+    /// uncapped; today since `InboxToday`'s local midnight; `InboxPeopleRule`:
+    /// mail never counts), read or not; zero while Waiting for me is turned off.
+    package let peopleWaiting: PeopleWaitingCounts
+    /// People waiting today: the badge's and Waiting for me's pill term.
+    package var peopleWaitingToday: Int { peopleWaiting.today }
+    /// Needs approval's count: its open approvals (`ActionStripViewModel
+    /// .approvalCount`), the same terms in the root on a tree without it.
+    package let approvalsCount: Int
+    /// The `slack-today` built-in and its state's summary
+    /// (`SlackTodayQueries.read`): its row and pane draw from the state.
+    package let slackToday: SlackTodayQueries.Read?
+
+    /// The sidebar's Inbox badge (spec "Counts"): Needs approval + people
+    /// waiting today. No folder's artifacts reach it.
+    package var badge: Int { approvalsCount + peopleWaitingToday }
 
     package init(
         tree: InboxFolderTree,
@@ -39,36 +61,64 @@ package struct InboxFolderMenuSnapshot: Equatable, Sendable {
         refs: [Int64: [InboxRef]] = [:],
         refState: InboxRefState = InboxRefState(),
         waitingForMe: WaitingForMeState = WaitingForMeState(automationID: nil, messagesStandIn: true),
+        mailWaiting: MailWaitingState = MailWaitingState(automationID: nil, turnedOff: false),
+        mailSummary: MailWaitingSummary = .empty,
         needsApproval: NeedsApprovalState = .absent,
         approvalArtifacts: [String: AutomationOutputCard] = [:],
         openActions: Set<Int64> = [],
-        ideaFinderPresent: Bool = false
+        ideaFinderPresent: Bool = false,
+        peopleWaiting: PeopleWaitingCounts = .zero,
+        approvalsCount: Int = 0,
+        slackToday: SlackTodayQueries.Read? = nil
     ) {
         self.tree = tree
         self.counts = counts
         self.artifacts = artifacts
         self.cards = cards
+        var cardFolders: [Int64: Int64] = [:]
+        for (folderID, folderCards) in cards {
+            for card in folderCards { cardFolders[card.id] = folderID }
+        }
+        self.cardFolders = cardFolders
         self.refs = refs
         self.refState = refState
         self.waitingForMe = waitingForMe
+        self.mailWaiting = mailWaiting
+        self.mailSummary = mailSummary
         self.needsApproval = needsApproval
         self.approvalArtifacts = approvalArtifacts
         self.openActions = openActions
         self.ideaFinderPresent = ideaFinderPresent
+        self.peopleWaiting = peopleWaiting
+        self.approvalsCount = approvalsCount
+        self.slackToday = slackToday
     }
 
     /// One read, nothing written. Each source tolerates a schema that
     /// predates it; any other error is thrown. `disabledFeatures` are the
     /// feature ids the owner turned off (attention detection off hides
     /// Waiting for me and its stand-in, `InboxFolderQueries.waitingForMe`).
-    package static func read(_ db: Database, nowUTC: String, disabledFeatures: Set<String> = []) throws -> Self {
+    /// `calendar` is the zone "today" is in (`InboxToday`); the app passes
+    /// `.autoupdatingCurrent` so a time-zone change moves it. `mailSummary`
+    /// false skips Mail waiting's row lines (`mailSummary` stays empty): the
+    /// badge never draws a row.
+    package static func read(
+        _ db: Database,
+        nowUTC: String,
+        disabledFeatures: Set<String> = [],
+        calendar: Calendar = .current,
+        mailSummary readsMailSummary: Bool = true
+    ) throws -> Self {
+        let now = AutomationDates.parse(nowUTC) ?? Date()
         let tree = try InboxFolderQueries.tree(db)
-        let waitingForMe = try InboxFolderQueries.waitingForMe(
-            db, featureOn: !disabledFeatures.contains(InboxFolderQueries.waitingForMeFeatureID))
+        let attentionOn = !disabledFeatures.contains(InboxFolderQueries.waitingForMeFeatureID)
+        let waitingForMe = try InboxFolderQueries.waitingForMe(db, featureOn: attentionOn)
+        let mailWaiting = try InboxFolderQueries.mailWaiting(db, featureOn: attentionOn)
         let needsApproval = try InboxFolderQueries.needsApproval(db)
         // The stand-in rule (`WaitingForMeState`): a stale Waiting for me
         // list never counts beside the Messages entry it gives way to.
-        var artifacts = waitingForMe.withoutStandInArtifacts(try InboxFolderQueries.artifactsByFolder(db, tree: tree))
+        var artifacts = mailWaiting.withoutTurnedOffArtifacts(
+            waitingForMe.withoutStandInArtifacts(try InboxFolderQueries.artifactsByFolder(db, tree: tree)))
         var approvalArtifacts: [String: AutomationOutputCard] = [:]
         if let approvalsID = needsApproval.automationID {
             for card in artifacts.values.joined() where card.automationID == approvalsID {
@@ -80,17 +130,38 @@ package struct InboxFolderMenuSnapshot: Equatable, Sendable {
         // Needs approval's cards are read too: their `action`/`reminder`
         // rows draw only while the record is open (the row hooks' `isOpen`).
         let approvalRefs = approvalArtifacts.values.flatMap { InboxRef.refs(blocksJSON: $0.blocksJSON) }
+        let startOfToday = InboxToday.sinceUTC(now: now, calendar: calendar)
+        let peopleWaiting = waitingForMe.turnedOff ? .zero
+            : try WaitingQueries.peopleCounts(db, nowUTC: nowUTC, startOfTodayUTC: startOfToday)
+        // Waiting for me's Older row is shown on these counts (turned off,
+        // its card is not listed and nothing reads them).
         let refState = try InboxRefState.read(
-            db, refs: Array(refs.values.joined()) + approvalRefs, nowUTC: nowUTC)
+            db, refs: Array(refs.values.joined()) + approvalRefs, nowUTC: nowUTC, timeZone: calendar.timeZone,
+            peopleCounts: peopleWaiting)
+        // Mail waiting's row lines, read only while its card is listed.
+        let mailShown = artifacts.values.joined().contains { $0.automationID == mailWaiting.automationID }
+        let mailSummary = readsMailSummary && mailShown
+            ? try WaitingQueries.mailSenders(db, nowUTC: nowUTC, startOfTodayUTC: startOfToday, limit: 0) : .empty
         let legacy = try ActionStripViewModel.legacyCounts(
-            db, nowUTC: nowUTC, tree: tree, messagesStandIn: waitingForMe.messagesStandIn)
+            db, nowUTC: nowUTC, today: HomeFeedBuilder.dayString(now, calendar: calendar), tree: tree,
+            peopleWaitingToday: peopleWaiting.today)
+        // Needs approval's legacy count is its approvals alone; on a tree
+        // without the folder they sit in the root's sum, so read them apart.
+        let approvalsCount = try tree.approvals.map { legacy[$0.id] ?? 0 }
+            ?? ActionStripViewModel.approvalCount(db, nowUTC: nowUTC)
+        // Waiting for me's artifacts list the people `peopleWaiting.today`
+        // already counts; Mail waiting's never count (mail never does).
         let counts = InboxFolderCounts.counts(
-            tree: tree, artifacts: artifacts, refs: refs, refState: refState, legacy: legacy)
+            tree: tree, artifacts: artifacts, refs: refs, refState: refState, legacy: legacy,
+            uncounted: Set([waitingForMe.automationID, mailWaiting.automationID].compactMap { $0 }))
         let openActions = Set(try openActionIDs(db))
         return Self(tree: tree, counts: counts, artifacts: artifacts.mapValues(\.count), cards: artifacts,
-                    refs: refs, refState: refState, waitingForMe: waitingForMe, needsApproval: needsApproval,
+                    refs: refs, refState: refState, waitingForMe: waitingForMe, mailWaiting: mailWaiting,
+                    mailSummary: mailSummary, needsApproval: needsApproval,
                     approvalArtifacts: approvalArtifacts, openActions: openActions,
-                    ideaFinderPresent: try InboxFolderQueries.ideaFinderPresent(db))
+                    ideaFinderPresent: try InboxFolderQueries.ideaFinderPresent(db),
+                    peopleWaiting: peopleWaiting, approvalsCount: approvalsCount,
+                    slackToday: try SlackTodayQueries.read(db))
     }
 
     /// The ids of the actions that wait on the owner; none on a database
@@ -204,7 +275,8 @@ package final class InboxFolderMenuModel {
         let disabledFeatures = disabledFeatures
         do {
             receive(try await dbPool.read { db in
-                try InboxFolderMenuSnapshot.read(db, nowUTC: nowUTC, disabledFeatures: disabledFeatures)
+                try InboxFolderMenuSnapshot.read(
+                    db, nowUTC: nowUTC, disabledFeatures: disabledFeatures, calendar: .autoupdatingCurrent)
             })
         } catch {
             receiveFailure(error.localizedDescription)

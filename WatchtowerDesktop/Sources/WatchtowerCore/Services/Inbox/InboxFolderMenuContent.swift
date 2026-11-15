@@ -226,6 +226,13 @@ package struct InboxFolderMenuContent: Equatable, Sendable {
         collapsing(shownRows)
     }
 
+    /// The rail draws "Folders" above the owner folders: only while at
+    /// least one of them is drawn, else it shows Inbox and Needs approval
+    /// alone.
+    package var showsFoldersHeading: Bool {
+        visibleRows.contains { $0.kind == .owner }
+    }
+
     /// Whether `row` has a child on screen once expanded: a folder whose
     /// children are all hidden (Show Hidden Folders off) has none, so it
     /// draws no chevron. Collapsing does not count — a collapsed folder
@@ -280,6 +287,8 @@ package enum InboxMenuCommand: Hashable, Sendable {
     case learnedRules, assistantProfile, showHiddenFolders, hideHiddenFolders, newFolder
     // The Idea finder legacy entry's ⋯.
     case findIdeasInPastMessages
+    // Slack today's row context menu (and its pane header's button).
+    case markAllSeen
 
     /// A press that only opens or shows something: it stays available while
     /// the menu is read-only (the CLI is missing, a move runs).

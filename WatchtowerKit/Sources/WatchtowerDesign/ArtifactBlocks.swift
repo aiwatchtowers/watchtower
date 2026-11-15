@@ -18,16 +18,35 @@ public enum ArtifactTone: String, CaseIterable, Equatable, Sendable {
 public enum ArtifactRefKind: String, Equatable, Sendable {
     case inboxItem = "inbox_item"
     case track, idea, reminder, action
+    case mailSender = "mail_sender"
+    case waitingOlder = "waiting_older"
+
+    /// The kind's JSON id is a string (`ArtifactRef.key`), not an integer.
+    public var hasTextID: Bool {
+        switch self {
+        case .mailSender, .waitingOlder: true
+        case .inboxItem, .track, .idea, .reminder, .action: false
+        }
+    }
 }
 
-/// A list row's record: `{kind, id}`, id > 0.
+/// A list row's record: `{kind, id}` — an integer id > 0 (`id`, `key` "")
+/// or, for a kind with `hasTextID`, a non-empty string id (`key`, `id` 0).
 public struct ArtifactRef: Hashable, Sendable {
     public let kind: ArtifactRefKind
     public let id: Int64
+    public let key: String
 
     public init(kind: ArtifactRefKind, id: Int64) {
         self.kind = kind
         self.id = id
+        key = ""
+    }
+
+    public init(kind: ArtifactRefKind, key: String) {
+        self.kind = kind
+        id = 0
+        self.key = key
     }
 }
 
@@ -439,9 +458,14 @@ enum ArtifactJSON {
         )
     }
 
+    /// A text kind with a number id, or an integer kind with a string id,
+    /// is unreadable.
     private static func ref(_ object: [String: Any]) throws -> ArtifactRef {
-        guard let kind = ArtifactRefKind(rawValue: try string(object, "kind")),
-              let id = integer(object["id"]), id > 0 else { throw Unreadable() }
+        guard let kind = ArtifactRefKind(rawValue: try string(object, "kind")) else { throw Unreadable() }
+        if kind.hasTextID {
+            return ArtifactRef(kind: kind, key: try string(object, "id"))
+        }
+        guard let id = integer(object["id"]), id > 0 else { throw Unreadable() }
         return ArtifactRef(kind: kind, id: id)
     }
 

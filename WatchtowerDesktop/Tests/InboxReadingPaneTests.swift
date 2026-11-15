@@ -15,6 +15,11 @@ private typealias PlaceholderPane = InboxReadingPane<
 /// checked again by `InboxCardLinkPolicy`.
 @MainActor
 final class InboxReadingPaneTests: XCTestCase {
+    override func tearDown() async throws {
+        IdeaBatchDefaults.clearStandard()
+        try await super.tearDown()
+    }
+
     private func card(
         actions: String = "[]",
         link: String = "",
@@ -264,15 +269,15 @@ final class InboxReadingPaneTests: XCTestCase {
 
         XCTAssertNoThrow(try sut.inspect().find(InboxDayPane.self))
         let texts = try sut.inspect().findAll(ViewType.Text.self).compactMap { try? $0.string() }
+        let startHere = try XCTUnwrap(texts.firstIndex(of: "Start here"))
         let item = try XCTUnwrap(texts.firstIndex(of: "Write tests"))
-        let needsYou = try XCTUnwrap(texts.firstIndex(of: "Needs you"))
-        XCTAssertLessThan(item, needsYou, "the plan block comes before Needs you")
+        XCTAssertLessThan(startHere, item, "the Morning brief's order: Start here, then Your day's plan")
     }
 
     func testListRowContentForEveryKind() throws {
         let now = try local(10, 30)
-        func content(_ item: InboxListItem) -> InboxListRow.Content {
-            InboxListRow.content(item, proposalLabel: nil, now: now)
+        func content(_ item: InboxListItem) -> InboxLegacyListRow.Content {
+            InboxLegacyListRow.content(item, proposalLabel: nil, now: now)
         }
         XCTAssertEqual(content(.day(try dayCard())),
                        .init(unread: true, title: "Morning brief", high: false, source: "Your day · Wed 22 Oct",
@@ -298,11 +303,11 @@ final class InboxReadingPaneTests: XCTestCase {
     /// day's plan has conflicts.
     func testDayRowMarksAPlanWithConflicts() throws {
         let now = try local(10, 30)
-        func row(conflicts: Bool) -> InboxListRow.Content {
+        func row(conflicts: Bool) -> InboxLegacyListRow.Content {
             let card = InboxDayCard(date: "2025-10-22", briefing: nil,
                                     plan: .stub(planDate: "2025-10-22", hasConflicts: conflicts),
                                     planDone: 0, planTotal: 2, stamp: now)
-            return InboxListRow.content(.day(card), proposalLabel: nil, now: now)
+            return InboxLegacyListRow.content(.day(card), proposalLabel: nil, now: now)
         }
         XCTAssertTrue(row(conflicts: true).conflicts)
         XCTAssertFalse(row(conflicts: false).conflicts)
@@ -310,9 +315,9 @@ final class InboxReadingPaneTests: XCTestCase {
         let card = InboxDayCard(date: "2025-10-22", briefing: nil,
                                 plan: .stub(planDate: "2025-10-22", hasConflicts: true),
                                 planDone: 0, planTotal: 2, stamp: now)
-        let marked = InboxListRow(item: .day(card), now: now)
+        let marked = InboxLegacyListRow(item: .day(card), now: now)
         XCTAssertNoThrow(try marked.inspect().find(viewWithAccessibilityLabel: "The plan has conflicts"))
-        let plain = InboxListRow(item: .day(try dayCard()), now: now)
+        let plain = InboxLegacyListRow(item: .day(try dayCard()), now: now)
         XCTAssertThrowsError(try plain.inspect().find(viewWithAccessibilityLabel: "The plan has conflicts"))
     }
 
@@ -335,10 +340,10 @@ final class InboxReadingPaneTests: XCTestCase {
         XCTAssertEqual(opened, [.learnedRules, .profile])
     }
 
-    /// The Inbox's header, above the menu, the list and the reading pane
-    /// (b-01): its title and the `?`, which opens the cheat sheet in the
-    /// reading pane; the header has no pop-up and no filter segments.
-    func testHeaderShowsTheTitleAndTheCheatSheetButton() async throws {
+    /// No header row above the rail, the list and the reading pane (inbox
+    /// redesign): "Inbox" is the window's title and the rail's root row
+    /// only, the `?` sits on the pane headers; no pop-up, no filter segments.
+    func testNoHeaderRowAboveTheColumns() async throws {
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
         let suite = "InboxReadingPaneTests.\(UUID().uuidString)"
@@ -353,8 +358,8 @@ final class InboxReadingPaneTests: XCTestCase {
             vm: vm, cheatSheetRows: [], feature: .on(lastCheck: nil), isEnabling: false, featureError: nil,
             onEnable: {}, onOpenSettings: {}, onOpen: { _ in })
 
-        XCTAssertNoThrow(try sut.inspect().find(text: "Inbox"))
-        XCTAssertNoThrow(try sut.inspect().find(viewWithAccessibilityIdentifier: "actionStrip.cheatSheetButton"))
+        XCTAssertEqual(try sut.inspect().findAll(ViewType.Text.self) { try $0.string() == "Inbox" }.count, 1,
+                       "the rail's root row, no title row")
         for gone in ["All", "Day", "Automations"] {
             XCTAssertThrowsError(try sut.inspect().find(button: gone), gone)
         }

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -267,6 +268,30 @@ func TestFeatureGates_DisabledPhaseWritesNoPipelineRun(t *testing.T) {
 				runMorningBriefBothWays(d)
 				now := time.Now()
 				d.runDayPlanConflictPhase(context.Background(), now, d.dayPlanOwner(now))
+			},
+			check: assertNoPipelineOrAutomationRuns,
+		},
+		{
+			// Slack today off: its slot writes no run and calls no model,
+			// on an install where it would be due (a member channel with a
+			// message today, no run yet), active or not.
+			name: "slack_today",
+			wire: func(t *testing.T, d *Daemon, cfg *config.Config, database *db.DB, gen *mockGenerator, l *log.Logger) {
+				cfg.SlackToday.Enabled = false
+				_, err := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U001"})
+				require.NoError(t, err)
+				_, err = database.Exec(`INSERT INTO channels (id, name, type, is_member) VALUES ('1:C1', 'release', 'public', 1)`)
+				require.NoError(t, err)
+				_, err = database.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('1:C1', ?, 'U002', 'hello')`,
+					fmt.Sprintf("%d.000001", time.Now().Unix()))
+				require.NoError(t, err)
+				wireTestBuiltins(t, d, database, cfg, automations.RealClock{})
+			},
+			run: func(d *Daemon) {
+				for _, active := range []bool{false, true} {
+					d.builtinActive[slackTodayID] = active
+					d.phaseSlackToday(context.Background())
+				}
 			},
 			check: assertNoPipelineOrAutomationRuns,
 		},

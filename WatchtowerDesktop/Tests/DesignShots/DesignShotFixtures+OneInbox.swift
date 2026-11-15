@@ -166,7 +166,7 @@ enum OneInboxShotFixtures {
             return AnyView(ActionStripActionsView(
                 vm: vm, cheatSheetRows: cheatSheetRows, feature: .on(lastCheck: nil),
                 isEnabling: false, featureError: nil, onEnable: {}, onOpenSettings: {}, onOpen: { _ in },
-                dayPane: { card in dayPane(card, manager: manager, plan: plan, row: scene.dayRow) },
+                dayPane: { card, _ in dayPane(card, manager: manager, plan: plan, row: scene.dayRow) },
                 ideas: ideas,
                 ideaPane: { idea in InboxIdeaPane(idea: idea, ideas: ideas, allIdeas: vm.feed.ideas) },
                 onRetryBuiltin: { _ in },

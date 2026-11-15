@@ -61,6 +61,8 @@ struct InboxArtifactCard: View {
     var showsDoneDismiss = true
     /// The native row actions of rows with a `ref` (`InboxRefHooks`).
     var refHooks = ArtifactRefHooks()
+    /// The row the keyboard is on (`InboxRowKeyboardHost`).
+    var focusedRef: ArtifactRef?
 
     /// An agent press waiting for the owner's workbench.
     @State private var pickingTask: String?
@@ -133,7 +135,8 @@ struct InboxArtifactCard: View {
                     return !targets.isProposing(targets.button(target, index: index, card: card).context)
                 }
                 return !InboxCardPress.isDisabled(action, reply: reply, isWriting: isWriting, navScreens: navScreens)
-            }
+            },
+            focusedRef: focusedRef
         )
     }
 

@@ -39,9 +39,24 @@ action: nav:automations
 
 There is one list in the tab, with no switch between sections. The **Built in** section holds **Reactions**, **Track my threads** and **Idea finder** next to **Morning brief** (see [Built-in automations](automations-built-in.md)), and your recipes follow it.
 
-- **Reactions** is the card behind your reaction commands: an emoji you put on a Slack message runs a tool on it, such as a reminder or a draft Jira issue (see [Inbox](inbox.md#reaction-commands)). Under **When**, the dictionary lists each emoji with its tool, how much it asks first, an on/off switch and **Remove**. The **+** adds a row; changes apply at once. The card has no **Run Now**, because it works for each reaction you place. **Turn On** and **Turn Off** switch reaction commands.
+- **Reactions** is the card behind your reaction commands: an emoji you put on a Slack message runs a tool on it, such as a reminder or a draft Jira issue (see [what each emoji does](#what-each-emoji-does)). Under **When**, the dictionary lists each emoji with its tool, how much it asks first, an on/off switch and **Remove**. The **+** adds a row; changes apply at once. The card has no **Run Now**, because it works for each reaction you place. **Turn On** and **Turn Off** switch reaction commands.
 - **New reaction automation**, under **When** on the Reactions card, opens a Personal automation from the `on-reaction` template: pick the emoji and it leaves a card in your Inbox when you react. An emoji can be in the dictionary and also trigger a recipe: both happen, once each.
 - **Custom tracks** are watches: one automation per track, listed with your recipes. **+** → **Watch for something** makes a new one; the track and its events are in the Inbox's **Track my threads**, and its card has **Collecting / Paused** and the instruction (see [Tracks](tracks.md)).
+
+### What each emoji does
+
+An emoji from your dictionary on a Slack message makes the built-in **Reactions** gather the thread and compose an action, checked every sync cycle (**Sync Now** picks one up at once). Reactions placed before the first check are never acted on.
+
+| Emoji | Does | Default |
+|---|---|---|
+| :eyes: | Starts a track on the topic | Asks first |
+| :bulb: | Captures the message as an idea | Applies at once |
+| :alarm_clock: | A reminder, tomorrow 09:00 unless it names a time | Applies at once |
+| :pushpin: | Summarises the thread (**Thread brief**) | Applies at once |
+| :white_check_mark: | Turns the message into a target | Asks first |
+| :ticket: | Drafts an issue in Jira or Linear | Always asks |
+
+"Asks first" waits in the Inbox's **Needs approval**. An issue goes to the tracker whose keys the channel mentions (`ENG-41` Linear, `ABC-9` Jira), else the one your dictionary names.
 
 ## When it's empty or wrong
 

@@ -81,7 +81,7 @@ package struct NeedsApprovalItem: Identifiable, Equatable, Sendable {
 
     /// Its place in the list, as Go's `openApprovals` orders it: created
     /// time (an unreadable one first), actions before reminders, then id.
-    fileprivate func listedBefore(_ other: Self) -> Bool {
+    package func listedBefore(_ other: Self) -> Bool {
         let (lhs, rhs) = (createdAt, other.createdAt)
         if lhs != rhs { return lhs < rhs }
         if ref.kind != other.ref.kind { return ref.kind == .action }

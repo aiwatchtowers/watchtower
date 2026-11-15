@@ -87,36 +87,113 @@ func SeedTestOpenItemsFixture(t *testing.T, d *DB, path string) OpenItemsFixture
 	if err := json.Unmarshal(data, &fx); err != nil {
 		t.Fatalf("decoding %s: %v", path, err)
 	}
-	insert := func(table string, row map[string]any) {
-		t.Helper()
-		cols := slices.Sorted(maps.Keys(row))
-		cols = slices.DeleteFunc(cols, func(c string) bool { return c == "note" })
-		args := make([]any, len(cols))
-		for i, c := range cols {
-			args[i] = row[c]
-		}
-		q := "INSERT INTO " + table + " (" + strings.Join(cols, ", ") + ") VALUES (?" + strings.Repeat(", ?", len(cols)-1) + ")"
-		if _, err := d.Exec(q, args...); err != nil {
-			t.Fatalf("seeding %s %v: %v", table, row, err)
-		}
+	seedInboxFixtureRows(t, d, fx.Now, fx.Users, fx.Channels, fx.JiraIssues, fx.Items)
+	return OpenItemsFixture{Now: fx.Now, OpenIDs: fx.OpenIDs}
+}
+
+// seedInboxFixtureRows inserts a shared inbox fixture's rows into d: its
+// users, channels, Jira issues (under one new Jira account, the other NOT
+// NULL columns filled from now) and inbox items, each object key but note a
+// column.
+func seedInboxFixtureRows(t *testing.T, d *DB, now time.Time, users, channels, jiraIssues, items []map[string]any) {
+	t.Helper()
+	for _, u := range users {
+		seedFixtureRow(t, d, "users", u)
 	}
-	for _, u := range fx.Users {
-		insert("users", u)
-	}
-	for _, c := range fx.Channels {
-		insert("channels", c)
+	for _, c := range channels {
+		seedFixtureRow(t, d, "channels", c)
 	}
 	account := SeedTestJiraAccount(t, d)
-	for _, j := range fx.JiraIssues {
+	stamp := now.UTC().Format(time.RFC3339)
+	for _, j := range jiraIssues {
 		key, _ := j["key"].(string)
 		row := map[string]any{"account_id": account, "project_key": strings.Split(key, "-")[0], "summary": key,
-			"status": "To Do", "status_category": "new", "created_at": fx.Now.Format(time.RFC3339),
-			"updated_at": fx.Now.Format(time.RFC3339), "synced_at": fx.Now.Format(time.RFC3339)}
+			"status": "To Do", "status_category": "new", "created_at": stamp, "updated_at": stamp, "synced_at": stamp}
 		maps.Copy(row, j)
-		insert("jira_issues", row)
+		seedFixtureRow(t, d, "jira_issues", row)
 	}
-	for _, it := range fx.Items {
-		insert("inbox_items", it)
+	for _, it := range items {
+		seedFixtureRow(t, d, "inbox_items", it)
 	}
-	return OpenItemsFixture{Now: fx.Now, OpenIDs: fx.OpenIDs}
+}
+
+// seedFixtureRow inserts row into table, each key but note a column.
+func seedFixtureRow(t *testing.T, d *DB, table string, row map[string]any) {
+	t.Helper()
+	cols := slices.Sorted(maps.Keys(row))
+	cols = slices.DeleteFunc(cols, func(c string) bool { return c == "note" })
+	args := make([]any, len(cols))
+	for i, c := range cols {
+		args[i] = row[c]
+	}
+	q := "INSERT INTO " + table + " (" + strings.Join(cols, ", ") + ") VALUES (?" + strings.Repeat(", ?", len(cols)-1) + ")"
+	if _, err := d.Exec(q, args...); err != nil {
+		t.Fatalf("seeding %s %v: %v", table, row, err)
+	}
+}
+
+// WaitingSplitFixture is the shared people/mail fixture
+// (internal/inbox/testdata/waiting_split.json): its now, in its tz, and
+// what the readers must answer.
+type WaitingSplitFixture struct {
+	Now      time.Time
+	Expected WaitingSplitExpected
+}
+
+// WaitingSplitExpected is the fixture's expected block.
+type WaitingSplitExpected struct {
+	Kinds  map[int64]WaitingKind `json:"kinds"`
+	People struct {
+		Open  int `json:"open"`
+		Today int `json:"today"`
+		Week  int `json:"week"`
+		Older int `json:"older"`
+	} `json:"people"`
+	Mail struct {
+		Open        int `json:"open"`
+		Today       int `json:"today"`
+		SenderCount int `json:"sender_count"`
+		TopTenShare int `json:"top_ten_share"`
+	} `json:"mail"`
+	Senders []struct {
+		Address string `json:"address"`
+		Open    int    `json:"open"`
+		Today   int    `json:"today"`
+		Subject string `json:"subject"`
+	} `json:"senders"`
+	OlderPeopleIDs []int64            `json:"older_people_ids"`
+	SenderIDs      map[string][]int64 `json:"sender_ids"`
+}
+
+// SeedTestWaitingSplitFixture loads the people/mail fixture at path into d —
+// the rows SeedTestOpenItemsFixture loads plus its inbox_learned_rules rows —
+// and returns its now (in the fixture's tz) and expected answers.
+func SeedTestWaitingSplitFixture(t *testing.T, d *DB, path string) WaitingSplitFixture {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fx struct {
+		Now        time.Time            `json:"now"`
+		TZ         string               `json:"tz"`
+		Users      []map[string]any     `json:"users"`
+		Channels   []map[string]any     `json:"channels"`
+		JiraIssues []map[string]any     `json:"jira_issues"`
+		Items      []map[string]any     `json:"items"`
+		Rules      []map[string]any     `json:"rules"`
+		Expected   WaitingSplitExpected `json:"expected"`
+	}
+	if err := json.Unmarshal(data, &fx); err != nil {
+		t.Fatalf("decoding %s: %v", path, err)
+	}
+	loc, err := time.LoadLocation(fx.TZ)
+	if err != nil {
+		t.Fatalf("fixture tz %q: %v", fx.TZ, err)
+	}
+	seedInboxFixtureRows(t, d, fx.Now, fx.Users, fx.Channels, fx.JiraIssues, fx.Items)
+	for _, r := range fx.Rules {
+		seedFixtureRow(t, d, "inbox_learned_rules", r)
+	}
+	return WaitingSplitFixture{Now: fx.Now.In(loc), Expected: fx.Expected}
 }

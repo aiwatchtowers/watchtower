@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/dop251/goja"
 )
@@ -64,6 +65,8 @@ func stateSet(env *Env, call goja.FunctionCall, rt *goja.Runtime) (any, error) {
 		switch {
 		case keyErr != nil:
 			return nil, keyErr
+		case strings.HasPrefix(key, WindowStateKeyPrefix):
+			return nil, validationf("state.set(%q): keys starting with %q belong to the raw window", key, WindowStateKeyPrefix)
 		case errors.Is(valueErr, errArgUndefined):
 			return nil, validationf("state.set(%q): undefined is not a JSON value", key)
 		case valueErr != nil:

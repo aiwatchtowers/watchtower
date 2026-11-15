@@ -715,7 +715,7 @@ CREATE TABLE IF NOT EXISTS google_accounts (
     memory_gmail_last_extracted_ts REAL NOT NULL DEFAULT 0,   -- per-account memory extraction watermark (was workspace.memory_gmail_last_extracted_ts)
     created_at                     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     updated_at                     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-, ideas_email_floor REAL NOT NULL DEFAULT 0, deletions_checked_at TEXT NOT NULL DEFAULT '', access_ok_at TEXT NOT NULL DEFAULT '', revoked_at   TEXT NOT NULL DEFAULT '');
+, ideas_email_floor REAL NOT NULL DEFAULT 0, deletions_checked_at TEXT NOT NULL DEFAULT '', access_ok_at TEXT NOT NULL DEFAULT '', revoked_at   TEXT NOT NULL DEFAULT '', gmail_sent_catchup_at TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS "gmail_messages" (
     account_id     INTEGER NOT NULL REFERENCES google_accounts(id) ON DELETE CASCADE,
     id             TEXT NOT NULL,

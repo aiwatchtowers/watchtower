@@ -1203,3 +1203,28 @@ func TestOnSlackBackfillDone_PeopleRowLoopCancelVsBudget(t *testing.T) {
 		})
 	}
 }
+
+// catchUpMailSyncer is a stubMailSyncer that also offers the Gmail sent
+// catch-up and records its calls.
+type catchUpMailSyncer struct {
+	stubMailSyncer
+	catchUpCalls int
+}
+
+func (s *catchUpMailSyncer) CatchUpSent(context.Context, time.Time) (int, error) {
+	s.catchUpCalls++
+	return 0, nil
+}
+
+// The sent catch-up runs once after a successful Sync and never after a
+// failed one.
+func TestPhaseGmailSync_RunsSentCatchUpAfterSync(t *testing.T) {
+	d, _, _ := newBackfillDaemon(t)
+	ok := &catchUpMailSyncer{stubMailSyncer: stubMailSyncer{accountID: 7}}
+	failed := &catchUpMailSyncer{stubMailSyncer: stubMailSyncer{accountID: 8, syncErr: fmt.Errorf("offline")}}
+	d.gmailSyncers = []mailSyncer{ok, failed}
+
+	d.phaseGmailSync(context.Background())
+	assert.Equal(t, 1, ok.catchUpCalls, "after a successful Sync")
+	assert.Equal(t, 0, failed.catchUpCalls, "after a failed Sync")
+}

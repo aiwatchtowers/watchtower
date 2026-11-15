@@ -23,6 +23,7 @@ final class IdeaNavigationTests: XCTestCase {
     }
 
     override func tearDown() async throws {
+        IdeaBatchDefaults.clearStandard()
         UserDefaults.standard.set(savedFolder, forKey: ActionStripViewModel.folderKey)
         TestDatabase.cleanup(path: dbPath)
         dbManager = nil

@@ -213,3 +213,38 @@ func TestCheckDeletions_AllUndatedStoreSkipsListing(t *testing.T) {
 		t.Fatal("stamp expected")
 	}
 }
+
+// TestCheckDeletions_SentRowsLikeReceived: sent mail is ordinary mail — a
+// SENT row the listing no longer returns is removed like a received one, a
+// listed SENT row stays, and the listing still covers all mail (no in:inbox).
+func TestCheckDeletions_SentRowsLikeReceived(t *testing.T) {
+	rec := &listRecorder{}
+	s, d, acct := newTestSyncerForMux(t, listMux(rec, []string{"recv", "recv-2", "sent-listed"}, nil))
+	at := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)
+	for _, m := range []struct{ id, labels string }{
+		{"recv", `["INBOX"]`}, {"recv-2", `["INBOX"]`},
+		{"sent-listed", `["SENT"]`}, {"sent-gone", `["SENT"]`},
+	} {
+		if err := d.UpsertGmailMessage(acct, db.GmailMessage{ID: m.id, ThreadID: "th-" + m.id, InternalDate: at,
+			ToJSON: "[]", CcJSON: "[]", LabelsJSON: m.labels, SyncedAt: at}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	n, err := s.CheckDeletions(t.Context(), time.Now())
+	if err != nil || n != 1 {
+		t.Fatalf("n=%d err=%v", n, err)
+	}
+	var gone, kept int
+	if err := d.QueryRow(`SELECT COUNT(*) FROM gmail_messages WHERE account_id = ? AND id = 'sent-gone'`, acct).Scan(&gone); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.QueryRow(`SELECT COUNT(*) FROM gmail_messages WHERE account_id = ? AND id IN ('recv', 'recv-2', 'sent-listed')`, acct).Scan(&kept); err != nil {
+		t.Fatal(err)
+	}
+	if gone != 0 || kept != 3 {
+		t.Fatalf("unlisted sent row left %d, listed rows kept %d (want 0, 3)", gone, kept)
+	}
+	if q := rec.queries[0]; strings.Contains(q, "in:inbox") {
+		t.Fatalf("deletions listing narrowed to the inbox: %q", q)
+	}
+}

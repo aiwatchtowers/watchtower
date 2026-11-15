@@ -48,17 +48,23 @@ var blockTypes = []string{TypeHeading, TypeText, TypeList, TypeTable, TypePerson
 // Tones are the six colour names a block may use.
 var Tones = []string{"neutral", "info", "success", "warning", "danger", "accent"}
 
-// Ref kinds of a list row; RefAction and RefReminder only from a built-in
-// automation.
+// Ref kinds of a list row; RefAction, RefReminder, RefMailSender and
+// RefWaitingOlder only from a built-in automation. RefMailSender and
+// RefWaitingOlder carry a text id (Ref.Key), the others an integer one.
 const (
-	RefInboxItem = "inbox_item"
-	RefTrack     = "track"
-	RefIdea      = "idea"
-	RefReminder  = "reminder"
-	RefAction    = "action"
+	RefInboxItem    = "inbox_item"
+	RefTrack        = "track"
+	RefIdea         = "idea"
+	RefReminder     = "reminder"
+	RefAction       = "action"
+	RefMailSender   = "mail_sender"
+	RefWaitingOlder = "waiting_older"
 )
 
-var refKinds = []string{RefInboxItem, RefTrack, RefIdea, RefReminder, RefAction}
+var refKinds = []string{RefInboxItem, RefTrack, RefIdea, RefReminder, RefAction, RefMailSender, RefWaitingOlder}
+
+// textRefKind reports whether a ref of kind carries a text id.
+func textRefKind(kind string) bool { return kind == RefMailSender || kind == RefWaitingOlder }
 
 // Error is a validation refusal; Msg is the whole message the script sees
 // (the SDK throws it as a ValidationError).
@@ -123,9 +129,50 @@ type Badge struct {
 }
 
 // Ref points a row at a record sub-project B draws native actions for.
+// Its JSON id is Key (a string) for a text kind (mail_sender,
+// waiting_older) and ID (an integer) for every other kind, so an integer
+// ref's canonical bytes are what they were before text ids existed.
 type Ref struct {
 	Kind string `json:"kind"`
 	ID   int64  `json:"id"`
+	Key  string `json:"-"` // written as "id" (MarshalJSON)
+}
+
+// MarshalJSON writes {"kind": …, "id": …}, id a string for a text kind.
+func (r Ref) MarshalJSON() ([]byte, error) {
+	if textRefKind(r.Kind) {
+		return marshal(struct {
+			Kind string `json:"kind"`
+			ID   string `json:"id"`
+		}{r.Kind, r.Key})
+	}
+	return marshal(struct {
+		Kind string `json:"kind"`
+		ID   int64  `json:"id"`
+	}{r.Kind, r.ID})
+}
+
+// UnmarshalJSON reads a ref; a text kind's id must be a string and every
+// other kind's a number.
+func (r *Ref) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Kind string          `json:"kind"`
+		ID   json.RawMessage `json:"id"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*r = Ref{Kind: raw.Kind}
+	if textRefKind(raw.Kind) {
+		if len(raw.ID) == 0 || raw.ID[0] != '"' {
+			return fmt.Errorf("a %s ref's id is not a string", raw.Kind)
+		}
+		return json.Unmarshal(raw.ID, &r.Key)
+	}
+	if len(raw.ID) == 0 || raw.ID[0] == '"' {
+		return fmt.Errorf("a %s ref's id is not a number", raw.Kind)
+	}
+	return json.Unmarshal(raw.ID, &r.ID)
 }
 
 // Table is a table block; every row has exactly len(Columns) cells.

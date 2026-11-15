@@ -155,7 +155,18 @@ func TestPromptsShow_MovedPromptNote(t *testing.T) {
 	require.NoError(t, promptsShowCmd.RunE(promptsShowCmd, []string{"briefing.daily"}))
 	assert.True(t, strings.HasPrefix(buf.String(), "Used by the Morning brief built-in — change it in Automations → Built in.\n"))
 
+	// Each moved prompt names its own built-in.
+	for id, want := range map[string]string{
+		"tracks.extract_batch": "Track my threads",
+		"inbox.slack_today":    "Slack today",
+	} {
+		buf.Reset()
+		require.NoError(t, promptsShowCmd.RunE(promptsShowCmd, []string{id}))
+		assert.True(t, strings.HasPrefix(buf.String(), "Used by the "+want+" built-in — change it in Automations → Built in.\n"),
+			"%s: %q", id, buf.String())
+	}
+
 	buf.Reset()
 	require.NoError(t, promptsShowCmd.RunE(promptsShowCmd, []string{"digest.channel"}))
-	assert.NotContains(t, buf.String(), "Morning brief built-in")
+	assert.NotContains(t, buf.String(), "Used by the")
 }

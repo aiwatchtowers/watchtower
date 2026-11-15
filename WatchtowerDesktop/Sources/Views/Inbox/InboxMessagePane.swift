@@ -38,7 +38,7 @@ struct InboxMessagePane: View {
         let item = row.item
         VStack(alignment: .leading, spacing: Spacing.medium) {
             HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
-                Text(InboxListRow.messageSource(row, now: now))
+                Text(InboxLegacyListRow.messageSource(row, now: now))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 if item.priority == "high" {

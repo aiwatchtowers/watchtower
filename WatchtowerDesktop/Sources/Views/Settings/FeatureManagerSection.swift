@@ -21,8 +21,11 @@ struct FeatureManagerSection: View {
 
     /// Features whose switch moved to a built-in automation's card
     /// (Automations → Built in, spec §5.4): Morning brief (C2), Track my
-    /// threads, Idea finder and Reactions (C3). Not listed here.
-    static let movedToBuiltins: Set<String> = ["briefing", "day-plan", "tracks", "ideas", "reaction-commands"]
+    /// threads, Idea finder and Reactions (C3), Slack today (Inbox redesign
+    /// phase 5). Not listed here.
+    static let movedToBuiltins: Set<String> = [
+        "briefing", "day-plan", "tracks", "ideas", "reaction-commands", "slack-today"
+    ]
 
     /// The rows listed under `parent` ("" = top level): every feature but the moved ones.
     static func listed(_ features: [FeatureInfo], parent: String = "") -> [FeatureInfo] {

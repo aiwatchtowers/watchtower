@@ -447,3 +447,26 @@ func TestPurge02_KnowledgeStepsUseKeyRanges(t *testing.T) {
 		}
 	}
 }
+
+// TestPurge02_GmailStepTakesSentRows (supporting PURGE-02): sent mail is
+// ordinary mail, so a Google purge deletes the account's SENT rows with its
+// received ones; another account's SENT row stays.
+func TestPurge02_GmailStepTakesSentRows(t *testing.T) {
+	d := OpenTestDB(t)
+	mustExecAll(t, d,
+		`INSERT INTO google_accounts (id, email) VALUES (1, 'owner@example.com'), (2, 'alias@example.com')`,
+		`INSERT INTO gmail_messages (account_id, id, thread_id, from_email, labels_json) VALUES
+			(1, 'recv', 't1', 'colleague-a@example.com', '["INBOX"]'),
+			(1, 'sent', 't1', 'owner@example.com', '["SENT"]'),
+			(1, 'sent-alias', 't2', 'other@example.com', '["SENT"]'),
+			(2, 'sent', 't1', 'alias@example.com', '["SENT"]')`,
+	)
+	drainPurge(t, d, "google", 1, 2)
+
+	if got := count(t, d, `SELECT COUNT(*) FROM gmail_messages WHERE account_id = 1`); got != 0 {
+		t.Errorf("account 1 keeps %d gmail rows, want 0 (sent rows go with received ones)", got)
+	}
+	if got := count(t, d, `SELECT COUNT(*) FROM gmail_messages WHERE account_id = 2 AND id = 'sent'`); got != 1 {
+		t.Errorf("account 2's sent row: %d, want 1", got)
+	}
+}

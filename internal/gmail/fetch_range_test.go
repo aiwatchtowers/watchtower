@@ -65,7 +65,7 @@ func TestFetchRange_StoresAllInRangeWithoutWatermarkOrAuthState(t *testing.T) {
 	if n != 5 {
 		t.Fatalf("saved = %d, want 5 (uncapped, promo skipped)", n)
 	}
-	want := fmt.Sprintf("in:inbox after:%d before:%d", from.Unix(), to.Unix())
+	want := fmt.Sprintf("{in:inbox in:sent} after:%d before:%d", from.Unix(), to.Unix())
 	if len(queries) != 1 || queries[0] != want {
 		t.Fatalf("queries = %q, want [%q]", queries, want)
 	}

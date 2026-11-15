@@ -151,6 +151,8 @@ Neither Go nor Swift ever cascade-deletes mentions or chat on a status transitio
 
 The flag must always be *clearable*: every Swift owner action — `setStatus`, `snooze`, `merge`, `supersede`, `markConverted` — clears `needs_review`/`review_reason` in the same write, and the detail pane offers at least one such action for every status a resurfacing can flag (including `rejected` and `dropped`: while flagged, the Inbox card offers **Approve** — the same `setStatus(active)` write as Activate — alongside **Merge…**, and an unflagged rejected or dropped item shows **Activate**; amended 2026-10-22, C1, **approved by the owner in ask #509**). An idea that could be flagged but not unflagged would sit in the review queue forever.
 
+**Clear Old Ideas (2026-11-11, Inbox redesign phase 3, approved with the spec in ask #638):** one owner press applies `dropped` to every idea awaiting a verdict whose `created_at` is older than 30 days, after a confirmation naming the count — `IdeaQueries.dropMany(_:ids:)`, one GRDB transaction over the ids the confirmation read, touching only those still awaiting a verdict and clearing `needs_review`/`review_reason` like every owner action. It is one owner action applied to many ideas: owner-only, never automatic or scheduled. A dropped idea resurfaces under this contract like any other.
+
 **Why locked:** A repeat mention silently reversing the owner's earlier "not now" or "rejected" call would make triage decisions non-sticky — the owner would have to re-litigate the same idea every time it comes up again, defeating the point of triaging it once. The clearability half is the same contract from the other side: a flag with no way out turns the review queue into a graveyard.
 
 **Test guards:**
@@ -159,6 +161,7 @@ The flag must always be *clearable*: every Swift owner action — `setStatus`, `
 - `WatchtowerDesktop/Tests/Core/IdeaQueriesTests.swift::testIdeas04_SetStatusClearsNeedsReview`
 - `WatchtowerDesktop/Tests/Core/IdeaQueriesTests.swift::testIdeas04_EveryOwnerActionClearsNeedsReview`
 - `WatchtowerDesktop/Tests/IdeasViewModelTests.swift::testIdeas04_ResurfacedRejectedIdeaLeavesReviewQueueViaActivate`
+- `WatchtowerDesktop/Tests/Core/IdeaQueriesTests.swift::testIdeas04_DropManyClearsNeedsReviewAndTouchesOnlyAwaiting`
 
 **Locked since:** 2026-08-07
 
@@ -184,6 +187,8 @@ The check is a lookup per mention inside `applyConsolidateOps`, backed by `idx_i
 **Locked since:** 2026-08-08
 
 ## Changelog
+
+- 2026-11-11 (Inbox redesign phase 3, board #1076, spec `docs/superpowers/specs/2026-11-11-inbox-redesign-design.md`, **IDEA-04 extended, approved with the spec in ask #638**): Clear Old Ideas — one owner press drops every idea awaiting a verdict older than 30 days through `IdeaQueries.dropMany(_:ids:)`, one transaction, only ids still awaiting a verdict, clearing `needs_review`/`review_reason`. Guard added: `testIdeas04_DropManyClearsNeedsReviewAndTouchesOnlyAwaiting`. No guard relaxed.
 
 - 2026-10-25 (images and links become knowledge, board #907, spec `docs/superpowers/specs/2026-10-25-media-knowledge-design.md`, **IDEA-01 and IDEA-02 extended, owner approved in asks #576, #590 and #594**): owner chat turns carry labelled image description lines; a pending image holds the chat floor below its turn for at most 2 h (IDEA-01); the stored quote stays the typed text and `ideas.consolidate` is v6 (IDEA-02). Guards added: `TestIdeas01_PendingChatImageHoldsTheFloor`, `TestIdeas01_ChatImageHoldIsBounded`, `TestConsolidate_ChatImageLinesRenderedButNeverStoredAsQuote`, with support tests listed. No guard relaxed.
 

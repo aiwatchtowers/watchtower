@@ -188,8 +188,9 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
         case "daily_summary":
             appState?.selectedDestination = .digests
         case "agent_action":
-            // A proposal from a workbench terminal: its card is in Inbox → Actions.
-            appState?.selectedDestination = .inbox
+            // A proposal from a workbench terminal: its card is in the Inbox's
+            // Needs approval, opened as a route so the arrival yields to it.
+            appState?.openNeedsApproval()
         case "plan_usage":
             UserDefaults.standard.set(UsageView.Tab.plan.rawValue, forKey: UsageView.selectedTabKey)
             appState?.selectedDestination = .usage
@@ -490,6 +491,9 @@ struct WatchtowerApp: App {
             // View → Back (⌘[) and Go to Item (⌘1…⌘9): the Workbench page's
             // and the Chats tab's, one set (spec 2026-10-26 §4, §5.4).
             ItemShortcutCommands()
+            // View → Show/Hide Sessions Panel or Inbox Folders (⌥⌘S): one
+            // item for the Workbench page and the Inbox.
+            PanelToggleCommands()
             // Only while a workbench window is key (spec §10, ruling R36):
             // `keyWorkbench` is the workbench on screen while its window (or
             // its Open Quickly panel) is key. Inside Monaco these chords reach

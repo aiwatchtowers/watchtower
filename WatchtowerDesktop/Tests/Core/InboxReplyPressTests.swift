@@ -8,6 +8,11 @@ import WatchtowerTestSupport
 /// for it (STRIP-02).
 @MainActor
 final class InboxReplyPressTests: XCTestCase {
+    override func tearDown() async throws {
+        IdeaBatchDefaults.clearStandard()
+        try await super.tearDown()
+    }
+
     private func seed(_ pool: DatabasePool) async throws -> Int64 {
         try await pool.write { db in
             let automationID = try TestDatabase.insertAutomation(db, slug: "triage", name: "Triage")

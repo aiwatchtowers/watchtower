@@ -183,6 +183,7 @@ final class NoOwnerEmptyStateViewTests: XCTestCase {
     private var suites: [String] = []
 
     override func tearDown() {
+        IdeaBatchDefaults.clearStandard()
         for suite in suites { UserDefaults.standard.removePersistentDomain(forName: suite) }
         if !dbPath.isEmpty { TestDatabase.cleanup(path: dbPath) }
         super.tearDown()

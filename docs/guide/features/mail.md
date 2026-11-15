@@ -12,7 +12,7 @@ A customer emails you a question on Tuesday and your Slack is quiet. Because the
 
 Every sync cycle (every 15 minutes by default) the daemon pulls new mail for each connected account, after Slack and calendars. A first sync fetches the last 7 days. Watchtower then backfills about a month of older mail in the background; see [History backfill](../concepts/history-backfill.md).
 
-- **Gmail:** the Inbox only. Messages in the Promotions and Social categories are skipped before any AI sees them.
+- **Gmail:** the Inbox and the mail you sent. Messages in the Promotions and Social categories are skipped before any AI sees them. An account connected before this version also gets your last 7 days of sent mail once (`gmail.initial_history_days`).
 - **Outlook and IMAP:** the one folder you set, `INBOX` unless you changed it.
 - Each cycle takes at most 100 messages per account, oldest first, so the rest follows on the next cycle.
 - Message bodies are cut at about 50 KB.
@@ -20,24 +20,36 @@ Every sync cycle (every 15 minutes by default) the daemon pulls new mail for eac
 ### Where mail shows up
 
 <!-- learn
-id: mail-attention-waiting
+id: mail-attention-mail-waiting
 title: See mail that names you
-text: Mail sent to you becomes an attention item in Catch Up, the briefing and the Inbox's **Waiting for me**.
+text: Mail sent to you becomes an attention item in Catch Up, the briefing and the Inbox's **Mail waiting**.
 area: communication
 level: next
 kind: tip
-since: 0.28.0
-replaces: [mail-attention]
-changed: The Inbox's Messages filter became Waiting for me.
+since: next
+replaces: [mail-attention-waiting]
+changed: Mail moved from Waiting for me to its own Mail waiting row.
 action: nav:inbox
 -->
 
 - **Attention items:** a message addressed to you (you are in To) becomes an item, like a Slack mention. A message that only copies you (Cc) becomes a lower-priority item. A message from you mints nothing.
-- **Where you see them:** the Inbox's **Waiting for me** lists them with your Slack and tracker items ([Inbox](inbox.md)). They also surface in **Catch Up** (needs you), the briefing and meeting prep. Catch Up also reads the mail stream digests described below.
+- **Where you see them:** the Inbox's **Mail waiting** lists them, one row per sender ([Inbox](inbox.md#mail-waiting)). They also surface in **Catch Up** (needs you), the briefing and meeting prep. Catch Up also reads the mail stream digests described below.
 - **Ideas:** with **Stream Digests** on (**Settings → Features**), new mail is summarized per account (Gmail by thread, Outlook and IMAP message by message), and ideas and decisions mined from it reach the Ideas registry. Stream Digests is a medium AI cost.
 - **Memory:** Gmail is a Memory source, off by default.
 
-Your reply does not close a mail item. Slack, Jira and calendar items resolve when you answer; mail items instead archive on their own, after 14 days if you are in To and after 7 days if you are in Cc.
+### When a mail item closes
+<!-- learn
+id: mail-closes-on-reply
+title: Mail closes when you reply
+text: Reply to a Gmail message and it leaves **Mail waiting** on the next sync.
+area: communication
+level: basics
+kind: feature
+since: next
+requires: source:google
+-->
+
+A Gmail item closes when you reply in its thread, from your address or a "Send mail as" alias, at the next sync; a forward in the same thread counts as your reply too. A Gmail item sent to you that you never answer still archives on its own after 14 days, and one that only copies you (Cc) after 7 days. Outlook and IMAP items never close on reply: they archive on their own, after 14 days if you are in To and after 7 days if you are in Cc.
 
 ## Using it
 
@@ -74,7 +86,8 @@ Switch Gmail syncing off for all Google accounts with **Enable Gmail sync** unde
 
 - **No mail in Catch Up or the briefing:** only messages that name you become items. Check that **Enable Gmail sync** is on and that the account is listed. The first items appear after the first sync.
 - **Missing a newsletter or promotion:** Gmail Promotions and Social are skipped on purpose.
-- **Missing mail from a folder other than Inbox:** Gmail reads the Inbox only, and IMAP reads the single folder set under **Advanced** in the form.
+- **Missing mail from a folder other than Inbox:** Gmail reads the Inbox and your sent mail only, and IMAP reads the single folder set under **Advanced** in the form.
+- **A Gmail item stays after you replied:** the reply must be in the same Gmail thread, and the item closes at the next sync. Outlook and IMAP items never close on reply.
 - **Account shows an error:** use **Re-login** on the Google account to sign in again. For IMAP, remove the account and add it again.
 - **Mail I deleted is still here:** Gmail checks once a day for deleted or trashed mail, and IMAP checks on every sync. Archived Gmail stays.
 - **Old mail is missing:** only the last 7 days sync first. Older mail arrives with the background history backfill.

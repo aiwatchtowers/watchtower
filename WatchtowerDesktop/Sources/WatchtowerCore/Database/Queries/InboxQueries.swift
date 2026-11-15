@@ -20,22 +20,6 @@ package enum InboxQueries {
     /// How many open messages the Inbox lists, newest first.
     package static let openMessageLimit = 200
 
-    /// Unread open messages: the Inbox badge's Messages term, over the same
-    /// rows `fetchOpenMessages` lists (its clause, order and limit), so the
-    /// badge never counts a message the list does not show.
-    package static func unreadOpenMessageCount(
-        _ db: Database, nowUTC: String, limit: Int = openMessageLimit
-    ) throws -> Int {
-        try Int.fetchOne(db, sql: """
-            SELECT COUNT(*) FROM (
-                SELECT read_at FROM inbox_items
-                WHERE \(HomeFeedQueries.openMessageClause)
-                ORDER BY MAX(created_at, mentioned_at) DESC, id DESC
-                LIMIT ?
-            ) WHERE read_at IS NULL OR read_at = ''
-            """, arguments: [nowUTC, limit]) ?? 0
-    }
-
     /// Opening a message card: writes `read_at` only, once.
     package static func markRead(_ db: Database, id: Int) throws {
         try db.execute(sql: """

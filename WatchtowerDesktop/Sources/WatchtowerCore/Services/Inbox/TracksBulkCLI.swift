@@ -1,0 +1,155 @@
+import Foundation
+
+/// Why the quiet-threads plan could not be read. The Desktop never retries
+/// one by itself.
+package enum TracksBulkCLIError: Error, Equatable, LocalizedError {
+    /// No `watchtower` binary.
+    case cliUnavailable
+    /// The CLI refused or failed; its message (the last stderr line), or the
+    /// timeout message.
+    case refused(String)
+    /// The CLI answered without the pinned JSON: never taken as a plan.
+    case unexpectedAnswer
+
+    package var errorDescription: String? {
+        switch self {
+        case .cliUnavailable: "The watchtower CLI isn't available"
+        case let .refused(message): message
+        case .unexpectedAnswer: "Unexpected answer from watchtower"
+        }
+    }
+}
+
+/// The Inbox's bulk close of Track my threads: `watchtower tracks dismiss`
+/// (cmd/tracks.go), a dry run that plans the quiet threads and an apply of
+/// the confirmed ids. Both read the pinned `--json` keys of the last stdout
+/// line; the apply never throws, every outcome is an `InboxBulkResult`.
+package struct TracksBulkCLI {
+    /// Both calls give up after this many seconds.
+    package static let timeout: TimeInterval = 60
+    /// A timed-out call: the outcome is unknown, so the owner reads this
+    /// rather than a count.
+    package static let timeoutMessage = "watchtower took too long to answer"
+    /// A call cancelled before it answered.
+    package static let cancelledMessage = "The press was cancelled."
+    /// Exit 0 after the write, but its answer is unreadable: the threads
+    /// were stopped (one transaction), so no Try Again. As
+    /// `InboxBulkCLI.unreadAnswerMessage`.
+    package static let unreadAnswerMessage = "Watchtower stopped the threads but its answer could not be read."
+
+    private let runner: (any CLIRunnerProtocol)?
+
+    /// `runner` nil = no binary was found (`ProcessCLIRunner.makeDefault()`).
+    package init(runner: (any CLIRunnerProtocol)?) {
+        self.runner = runner
+    }
+
+    package static func dryRunArgs(quietDays: Int) -> [String] {
+        ["tracks", "dismiss", "--quiet-days", String(quietDays), "--dry-run", "--json"]
+    }
+
+    package static func dismissArgs(ids: [String]) -> [String] {
+        ["tracks", "dismiss", "--ids", ids.joined(separator: ","), "--json"]
+    }
+
+    /// The threads quiet for `days` days, as the dry run lists them.
+    package func planQuiet(days: Int) async throws -> InboxBulkPlan {
+        let result: CLICapturedResult
+        do {
+            result = try await capture(Self.dryRunArgs(quietDays: days))
+        } catch let error as TracksBulkCLIError {
+            throw error
+        } catch {
+            throw TracksBulkCLIError.refused(error.localizedDescription)
+        }
+        guard result.exitCode == 0 else {
+            throw TracksBulkCLIError.refused(Self.failureMessage(result))
+        }
+        guard let plan: Plan = try? InboxFoldersCLI.decodeLastLine(result.stdout), plan.count == plan.ids.count else {
+            throw TracksBulkCLIError.unexpectedAnswer
+        }
+        return InboxBulkPlan(ids: plan.ids.map(String.init), count: plan.count)
+    }
+
+    /// Dismisses `ids`. The apply is all or nothing (one transaction): a
+    /// write error is `.failed` with the CLI's text, its envelope's
+    /// `dismissed` always 0. Exit 0 with an unreadable answer, or one whose
+    /// counts do not add up to `ids`, is `.unconfirmed` (the write committed).
+    /// Only the view model's reconcile of a call that ended without an answer
+    /// makes a `.partial`. No ids: nothing runs.
+    package func dismiss(ids: [String]) async -> InboxBulkResult {
+        guard !ids.isEmpty else { return .done(count: 0, skipped: 0) }
+        let result: CLICapturedResult
+        do {
+            result = try await capture(Self.dismissArgs(ids: ids))
+        } catch {
+            return .failed(error.localizedDescription)
+        }
+        if result.exitCode == 0 {
+            guard let done: Done = try? InboxFoldersCLI.decodeLastLine(result.stdout),
+                  done.dismissed + done.skipped == ids.count else {
+                return .unconfirmed(Self.unreadAnswerMessage)
+            }
+            return .done(count: done.dismissed, skipped: done.skipped)
+        }
+        if result.exitCode != Self.timeoutExitCode,
+           let failed: Failed = try? InboxFoldersCLI.decodeLastLine(result.stdout) {
+            return .failed(failed.error)
+        }
+        return .failed(Self.failureMessage(result))
+    }
+
+    // MARK: - Running
+
+    /// `CLIRunnerError.nonZeroExit`'s code for a call past its deadline.
+    private static let timeoutExitCode: Int32 = -1
+
+    /// One call, with stdout kept on a non-zero exit (the partial envelope).
+    /// A deadline the runner throws comes back as a `timeoutExitCode` result,
+    /// as the protocol's default `capture` hands it; a cancel is
+    /// `.refused(cancelledMessage)`; the other runner failures throw a
+    /// `TracksBulkCLIError`.
+    private func capture(_ args: [String]) async throws -> CLICapturedResult {
+        guard let runner else { throw TracksBulkCLIError.cliUnavailable }
+        do {
+            return try await runner.capture(args: args, timeout: Self.timeout)
+        } catch let CLIRunnerError.nonZeroExit(code, stderr) {
+            return CLICapturedResult(stdout: Data(), exitCode: code, stderr: stderr)
+        } catch CLIRunnerError.binaryNotFound {
+            throw TracksBulkCLIError.cliUnavailable
+        } catch is CancellationError {
+            throw TracksBulkCLIError.refused(Self.cancelledMessage)
+        }
+    }
+
+    /// What a failed call says: the timeout message, else the CLI's last
+    /// stderr line, else its exit code.
+    private static func failureMessage(_ result: CLICapturedResult) -> String {
+        if result.exitCode == timeoutExitCode { return timeoutMessage }
+        let message = InboxFoldersCLI.lastLine(result.stderr)
+        return message.isEmpty ? "watchtower exited with code \(result.exitCode)" : message
+    }
+
+    // MARK: - Pinned `--json` keys
+
+    /// `--dry-run --json`: `count`, `ids` (integers).
+    private struct Plan: Decodable {
+        let count: Int
+        let ids: [Int64]
+    }
+
+    /// `--ids … --json`: `dismissed`, `skipped`, `ids`.
+    private struct Done: Decodable {
+        let dismissed: Int
+        let skipped: Int
+        let ids: [Int64]
+    }
+
+    /// A write error (exit 1): `dismissed` (always 0: nothing was
+    /// committed), `of`, `error`.
+    private struct Failed: Decodable {
+        let dismissed: Int
+        let of: Int
+        let error: String
+    }
+}

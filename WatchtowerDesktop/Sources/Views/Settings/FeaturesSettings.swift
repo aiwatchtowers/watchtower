@@ -107,11 +107,11 @@ struct FeaturesSettings: View {
 
 /// Settings → Features' row for the features that moved to built-in
 /// automations (spec §5.4): Briefing and Day Plan (Morning brief), Tracks
-/// (Track my threads), Ideas (Idea finder) and Reaction commands
-/// (Reactions). Their cards turn them on or off and hold their settings.
+/// (Track my threads), Ideas (Idea finder), Reaction commands (Reactions)
+/// and Slack today. Their cards turn them on or off and hold their settings.
 /// **Open Automations** goes there.
 struct BuiltinFeaturesPointer: View {
-    static let title = "Briefing, Day Plan, Tracks, Ideas and Reaction commands"
+    static let title = "Briefing, Day Plan, Tracks, Ideas, Reaction commands and Slack today"
     static let line = "These now live in Automations → Built in"
 
     let onOpen: () -> Void

@@ -109,6 +109,8 @@ package final class ActionStripViewModel {
     private let dbPool: DatabasePool
     /// nil = the installed CLI, found at press time.
     private let cliRunner: CLIRunnerProtocol?
+    /// The runner a bulk press uses: `cliRunner`, else the CLI found at press time.
+    @ObservationIgnored private let pressRunner: @MainActor () -> (any CLIRunnerProtocol)?
     private let customTrackControls: any CustomTrackControlling
     private let defaults: UserDefaults
     /// The moment the list is read and laid out at (Today, Earlier, due
@@ -121,10 +123,16 @@ package final class ActionStripViewModel {
     /// The refresh under way; a call meanwhile waits for it and asks for one more read.
     private var refreshTask: Task<Void, Never>?
     private var refreshAgain = false
+    /// Re-reads on a day, zone or wake change (set once in `init`).
+    @ObservationIgnored private var dayChangeObserver: InboxDayChangeObserver?
 
     /// The folder the owner last picked in the menu, remembered per viewer;
     /// one that no longer exists opens the root.
     package static let folderKey = "inbox.folder"
+    /// The dates one page of the read takes. The Morning brief's History
+    /// and the root's Earlier line rely on the first page holding every
+    /// card of the last 30 dates (`InboxBriefDays.window`): lowering this
+    /// below 30 breaks them.
     package static let dayPage = 30
     /// The safety-net poll while on screen (board #731): daemon and CLI
     /// writes come from other processes, which GRDB observation cannot see.
@@ -136,6 +144,9 @@ package final class ActionStripViewModel {
     /// `customTrackControls` nil = C1's direct writes (`DirectCustomTrackControls`).
     /// `findCLI` is how the folder menu (and so the rows' writes) finds the
     /// binary when `cliRunner` is nil; tests pass `{ nil }` for a missing one.
+    /// `dayChangeSignals`: each one re-reads (`refresh()`), since "today"
+    /// (the people count, today's brief) moves with no database write; the
+    /// app adds the wake from sleep to the system's two.
     package init(
         dbPool: DatabasePool,
         cliRunner: CLIRunnerProtocol? = nil,
@@ -143,59 +154,75 @@ package final class ActionStripViewModel {
         defaults: UserDefaults = .standard,
         automationsWake: (() async throws -> Void)? = nil,
         clock: @escaping @Sendable () -> Date = { Date() },
-        findCLI: @escaping @MainActor () -> (any CLIRunnerProtocol)? = { ProcessCLIRunner.makeDefault() }
+        findCLI: @escaping @MainActor () -> (any CLIRunnerProtocol)? = { ProcessCLIRunner.makeDefault() },
+        dayChangeSignals: [InboxDayChangeObserver.Signal] = InboxDayChangeObserver.systemSignals()
     ) {
         self.dbPool = dbPool
         self.clock = clock
         self.cliRunner = cliRunner
+        self.pressRunner = { cliRunner ?? findCLI() }
         self.customTrackControls = customTrackControls ?? DirectCustomTrackControls(
             dbPool: dbPool, scanService: TrackScanService(runner: cliRunner ?? InstalledCLIRunner()))
         self.defaults = defaults
+        self.railHidden = defaults.bool(forKey: Self.railHiddenKey)
         self.actionFeed = AgentActionFeed(dbPool: dbPool, cliRunner: cliRunner, automationsWake: automationsWake)
         self.folderMenu = InboxFolderMenuModel(
             dbPool: dbPool, runner: { cliRunner ?? findCLI() }, clock: clock)
+        self.dayChangeObserver = InboxDayChangeObserver(signals: dayChangeSignals) { [weak self] in
+            Task { await self?.refresh() }
+        }
     }
 
-    /// The Inbox sidebar badge: the sum of the counts of every folder the
-    /// menu shows (inbox builder B, `InboxFolderCounts`). It keeps every
-    /// term of the 2026-10-18 badge as a folder's legacy count — Needs
-    /// approval: proposals awaiting the owner, due reminders, built-in
-    /// upgrade notices (C2); the root: ideas awaiting a verdict, unread
-    /// Messages (while that entry stands in for Waiting for me) and 1 when
-    /// the latest briefing is unread — and adds the automation artifacts:
-    /// 1 per unread one, or its rows that wait on the owner. Track cards
-    /// stay unread dots only. Each source tolerates a schema that predates
-    /// it (its table missing counts 0); any other read error is thrown,
-    /// never folded into 0. `disabledFeatures` as in
-    /// `InboxFolderMenuSnapshot.read` (attention detection off counts no
-    /// Waiting for me and no Messages stand-in).
+    /// The Inbox sidebar badge (spec "Counts", STRIP badge amendment, ask
+    /// #634): Needs approval's open approvals (proposals awaiting the owner,
+    /// due reminders, built-in upgrade notices) + people waiting today (open
+    /// people items, `InboxPeopleRule` — mail never counts — whose
+    /// `MAX(created_at, mentioned_at)` is at or after local
+    /// midnight in `calendar`, `InboxToday`; 0 while Waiting for me is turned
+    /// off). Ideas, briefings, Messages' unread count and every automation
+    /// artifact, root or owner folder, stay out of it. One read, writing
+    /// nothing; each source tolerates a schema that predates it (its table
+    /// missing counts 0), any other read error is thrown, never folded into
+    /// 0. `disabledFeatures` as in `InboxFolderMenuSnapshot.read`, whose
+    /// `badge` this equals: the same two terms and the same Waiting for me
+    /// gate, without the folder tree, artifacts and row states the badge
+    /// never draws.
     nonisolated package static func badgeCount(
-        _ db: Database, nowUTC: String, disabledFeatures: Set<String> = []
+        _ db: Database, nowUTC: String, disabledFeatures: Set<String> = [], calendar: Calendar = .current
     ) throws -> Int {
-        let snapshot = try InboxFolderMenuSnapshot.read(db, nowUTC: nowUTC, disabledFeatures: disabledFeatures)
-        return InboxFolderCounts.badge(counts: snapshot.counts, tree: snapshot.tree)
+        let attentionOn = !disabledFeatures.contains(InboxFolderQueries.waitingForMeFeatureID)
+        let people = try InboxFolderQueries.waitingForMe(db, featureOn: attentionOn).turnedOff ? 0
+            : WaitingQueries.peopleCounts(
+                db, nowUTC: nowUTC,
+                startOfTodayUTC: InboxToday.sinceUTC(now: AutomationDates.parse(nowUTC) ?? Date(), calendar: calendar)
+            ).today
+        return try approvalCount(db, nowUTC: nowUTC) + people
     }
 
-    /// The badge's terms from before the folders, by the folder that shows
-    /// them now: Needs approval (the root on a database without it) and the
-    /// root.
+    /// The counts each folder shows outside its artifacts, by the folder
+    /// that shows them: the root's people waiting today (`peopleWaitingToday`)
+    /// + 1 while `today`'s briefing is unread; Needs approval's approvals
+    /// (`approvalCount`), in the root on a tree without Needs approval.
+    /// Ideas, unread messages and older briefings are not among them.
     nonisolated package static func legacyCounts(
         _ db: Database,
         nowUTC: String,
+        today: String,
         tree: InboxFolderTree,
-        messagesStandIn: Bool
+        peopleWaitingToday: Int
     ) throws -> [Int64: Int] {
-        let approvals = try zeroIfTableMissing { try AgentActionQueries.awaitingOwnerCount(db) }
+        let root = try peopleWaitingToday + zeroIfTableMissing { try BriefingQueries.unreadCount(db, date: today) }
+        var out: [Int64: Int] = [tree.root.id: root]
+        out[tree.approvals?.id ?? tree.root.id, default: 0] += try approvalCount(db, nowUTC: nowUTC)
+        return out
+    }
+
+    /// Needs approval's open approvals: proposals awaiting the owner, due
+    /// reminders, built-in upgrade notices (C2).
+    nonisolated package static func approvalCount(_ db: Database, nowUTC: String) throws -> Int {
+        try zeroIfTableMissing { try AgentActionQueries.awaitingOwnerCount(db) }
             + zeroIfTableMissing { try ReminderQueries.dueCount(db, nowUTC: nowUTC) }
             + zeroIfTableMissing { try BuiltinUpgradeNotice.load(db).count }
-        let messages = messagesStandIn
-            ? try zeroIfTableMissing { try InboxQueries.unreadOpenMessageCount(db, nowUTC: nowUTC) } : 0
-        let root = try zeroIfTableMissing { try IdeaQueries.countForReview(db) }
-            + messages
-            + zeroIfTableMissing { try BriefingQueries.latestUnreadCount(db) }
-        var out: [Int64: Int] = [tree.root.id: root]
-        out[tree.approvals?.id ?? tree.root.id, default: 0] += approvals
-        return out
     }
 
     /// `count()`, or 0 when its table does not exist yet (an older schema).
@@ -287,12 +314,18 @@ package final class ActionStripViewModel {
                     tasks: tasks,
                     labels: Self.labels(for: feed.proposals, runLabels: runLabels),
                     lastCheck: try PipelineRunQueries.lastSuccessfulFinish(db, pipeline: "reaction-commands"),
-                    folders: try InboxFolderMenuSnapshot.read(db, nowUTC: nowUTC, disabledFeatures: disabledFeatures)
+                    folders: try InboxFolderMenuSnapshot.read(
+                        db, nowUTC: nowUTC, disabledFeatures: disabledFeatures, calendar: Self.calendar)
                 )
             }
             let before = sections
-            let entriesBefore = folderEntries.map(\.id)
+            let entriesBefore = listedFolder.rows.map(\.id)
+            let firstRead = !hasRead
             feed = snapshot.feed
+            ideaBatch = IdeaDailyBatch(defaults: defaults).today(ideas: feed.ideas, now: now, calendar: Self.calendar)
+            if let opened = openedNewsTrackID, !feed.tracks.contains(where: { $0.track.id == opened }) {
+                openedNewsTrackID = nil
+            }
             actionLabels = snapshot.labels
             lastReactionCheck = snapshot.lastCheck
             targetProposals = snapshot.buttons
@@ -306,8 +339,14 @@ package final class ActionStripViewModel {
             dropLeftRowErrors()
             firstReadError = nil
             rebuildSections()
+            resetStaleApproveAll()
+            bulk.resetFinished(shown: Set(snapshot.folders.refState.shown.compactMap(Self.bulkKey)))
             keepSelectionListed(was: before)
-            keepEntryListed(was: entriesBefore)
+            if firstRead {
+                showDefaultEntry()
+            } else {
+                keepEntryListed(was: entriesBefore)
+            }
         } catch {
             // The previous feed, tree and entries stay under the error line.
             lastError = error.localizedDescription
@@ -337,22 +376,69 @@ package final class ActionStripViewModel {
     package var entryInputs: InboxFolderEntries.Inputs {
         InboxFolderEntries.Inputs(
             feed: feed, folders: folderMenu.snapshot,
-            approvalsOn: !disabledFeatures.contains(Self.approvalsFeatureID),
-            selectedDay: entrySelection.flatMap(Self.dayOfEntry), now: clock())
+            approvalsOn: !disabledFeatures.contains(Self.approvalsFeatureID), now: clock(), calendar: Self.calendar,
+            ideaBatch: ideaBatch)
     }
 
-    /// The date of a day entry's id (`day:<yyyy-MM-dd>`), else nil.
-    private static func dayOfEntry(_ id: String) -> String? {
-        id.hasPrefix("day:") ? String(id.dropFirst("day:".count)) : nil
+    /// The per-viewer key of `railHidden`.
+    package static let railHiddenKey = "inbox.railHidden"
+
+    /// The folder rail is collapsed (View → Hide Inbox Folders, ⌥⌘S),
+    /// remembered per viewer (`inbox.railHidden`, default shown).
+    package var railHidden = false {
+        didSet { defaults.set(railHidden, forKey: Self.railHiddenKey) }
     }
 
-    /// The selected folder's list column.
+    /// The list's search: one query for every folder, kept across
+    /// navigation (this model is AppState-owned). Filtering never touches
+    /// the selection.
+    package var listQuery = ""
+
+    /// The selected folder's list column as drawn: `listedFolder` filtered
+    /// by `listQuery` (`InboxListFilter`), the Earlier line hidden while a
+    /// search is on.
     package var folderList: InboxFolderListContent {
+        var list = listedFolder
+        guard !InboxListFilter.trimmed(listQuery).isEmpty else { return list }
+        list.sections = InboxListFilter.apply(list.sections, query: listQuery)
+        list.earlierLine = nil
+        list.query = listQuery
+        return list
+    }
+
+    /// The selected folder's whole list, no search applied: the root's and
+    /// an owner folder's sections (`InboxRootSections`), the root's Earlier
+    /// line, Needs approval's groups (`NeedsApprovalGroups.sections`). What
+    /// keeps the selection listed (`keepEntryListed`) reads, so a search
+    /// that hides the selected row never moves the selection.
+    private var listedFolder: InboxFolderListContent {
         let folder = folderMenu.tree.folder(folderMenu.selectedFolderID) ?? folderMenu.tree.root
         let inputs = entryInputs
-        let rows = folderEntries.map { InboxFolderEntries.row($0, inputs) }
+        let sections: [InboxListSection]
+        if folder.kind == .approvals {
+            sections = NeedsApprovalGroups.sections(
+                folderEntries, openActions: folderMenu.snapshot.openActions, now: inputs.now,
+                calendar: inputs.calendar) { InboxFolderEntries.row($0, inputs) }
+        } else {
+            let grouped = InboxRootSections.build(
+                entries: folderEntries, folder: folder.kind,
+                waitingForMeAutomationID: folderMenu.snapshot.waitingForMe.automationID,
+                mailWaitingAutomationID: folderMenu.snapshot.mailWaiting.automationID,
+                slackTodayAutomationID: folderMenu.snapshot.slackToday?.automationID,
+                now: inputs.now, calendar: inputs.calendar)
+            sections = grouped.map { section, entries in
+                InboxListSection(id: section.rawValue, title: section.title,
+                                 rows: entries.map { InboxFolderEntries.row($0, inputs) })
+            }
+        }
+        let earlier = folder.kind == .root
+            ? InboxRootSections.earlierLine(
+                days: feed.days, today: HomeFeedBuilder.dayString(inputs.now, calendar: inputs.calendar),
+                now: inputs.now, calendar: inputs.calendar)
+            : nil
         return InboxFolderListContent(
-            folderKind: folder.kind, folderTitle: folder.title, rows: rows, selection: entrySelection)
+            folderKind: folder.kind, folderTitle: folder.title, sections: sections, earlierLine: earlier,
+            selection: entrySelection)
     }
 
     /// The entry the reading pane shows (`InboxFolderEntry.id`); nil = none.
@@ -369,45 +455,111 @@ package final class ActionStripViewModel {
         return folderEntries.first { $0.id == entrySelection }
     }
 
-    /// The menu picked a folder: its list, nothing selected yet. The pick
-    /// is remembered (`inbox.folder`); a route's folder never is.
+    /// The menu picked a folder: its list with its default entry
+    /// (`defaultEntry`: the owner's last pick there, today's brief in the
+    /// root, else the first entry). The pick is remembered
+    /// (`inbox.folder`); a route's folder never is. Picking a folder is
+    /// the owner's arrival there (`ownerArrived`, awaitable as `arrival`).
     package func selectFolder(_ id: Int64) {
         folderMenu.select(id)
         defaults.set(folderMenu.selectedFolderID, forKey: Self.folderKey)
-        entrySelection = nil
         legacyList = nil
         selection = nil
+        openedNewsTrackID = nil
+        resetBriefDay()
+        showDefaultEntry()
+        arrival = Task { await ownerArrived() }
     }
 
-    /// Opens an entry: an artifact or a day writes its read mark on opening
-    /// (`select`); a legacy list opens today's list for it.
+    /// The `ownerArrived` a folder pick started — held so tests can await it.
+    package private(set) var arrival: Task<Void, Never>?
+
+    /// The per-viewer key of the entry the owner last opened in `folderID`.
+    package static func entryKey(_ folderID: Int64) -> String {
+        "inbox.entry.\(folderID)"
+    }
+
+    /// Opens an entry (the owner's click): remembered for its folder
+    /// (`entryKey`); an artifact or a day writes its read mark on opening
+    /// (`select`); a legacy list opens today's list for it. The Morning
+    /// brief opens on today.
     package func selectEntry(_ id: String?) async {
+        let key = Self.entryKey(folderMenu.selectedFolderID)
+        if let id { defaults.set(id, forKey: key) } else { defaults.removeObject(forKey: key) }
+        openedNewsTrackID = nil
+        // A click on the Morning brief opens it on today (`showEntry` keeps
+        // the day it shows for a day entry).
+        resetBriefDay()
         guard let opening = showEntry(id) else { return }
         await select(opening)
     }
 
-    /// `selectEntry` without its read mark: selects the entry, opens a
-    /// legacy entry's list, and returns the card whose opening `select`
-    /// still has to write (an artifact or a day), else nil.
+    /// The selected folder's default entry (`InboxFolderEntries.defaultEntry`),
+    /// shown without a read mark (STRIP-02: a read writes nothing).
+    private func showDefaultEntry() {
+        let tree = folderMenu.tree
+        let folder = tree.folder(folderMenu.selectedFolderID) ?? tree.root
+        _ = showEntry(InboxFolderEntries.defaultEntry(
+            entries: folderEntries, saved: defaults.string(forKey: Self.entryKey(folder.id)),
+            folder: folder.kind, today: today, drawnRows: listedFolder.rows.map(\.id)))
+    }
+
+    /// The owner opened the Inbox (`ActionStripView.onAppear`) or picked a
+    /// folder: a gesture, so the Morning brief day or the unread artifact
+    /// the default pick put on screen is marked read now ("a brief is read
+    /// once opened"), through `select`. Waits for the first read. A poll, a
+    /// refresh or the midnight rollover never calls this (STRIP-02). It
+    /// yields to a route (`beginRoute`, `open`): one pending, running or
+    /// started while it waits marks nothing, since the card on screen is
+    /// the route's, whose own opening writes its mark.
+    package func ownerArrived() async {
+        let generation = routeGeneration
+        guard !routePending else { return }
+        if !hasRead {
+            if let running = refreshTask { await running.value } else { await refresh() }
+        }
+        guard !routePending, routeGeneration == generation else { return }
+        switch selectedEntry {
+        case let .legacyDay(card)?:
+            await select(.day(briefDate ?? card.date))
+        case let .artifact(card)?:
+            await select(.output(card.id))
+        default:
+            return
+        }
+    }
+
+    /// `selectEntry` without its read mark: selects the entry, opens
+    /// Messages' legacy list (Track my threads and Idea finder show their
+    /// own panes and close any open list), and returns the card whose opening `select`
+    /// still has to write (an artifact or a day), else nil. An id that is
+    /// no entry (none, a Needs approval group row) shows no card.
     private func showEntry(_ id: String?) -> InboxSelection? {
         entrySelection = id
-        guard let entry = selectedEntry else { return nil }
-        if let list = entry.legacyList {
-            openLegacy(list)
+        guard let entry = selectedEntry else {
+            selection = nil
             return nil
         }
+        if case .legacyDay = entry {} else { resetBriefDay() }
         switch entry {
+        case .legacyMessages:
+            openLegacy(.messages)
+            return nil
+        case .legacyTracks, .legacyIdeas:
+            closeLegacy()
+            return nil
         case let .artifact(card):
             selection = .output(card.id)
             return .output(card.id)
         case let .legacyDay(card):
-            selection = .day(card.date)
-            return .day(card.date)
+            let date = briefDate ?? card.date
+            selection = .day(date)
+            return .day(date)
         case let .brief(action):
             // Its agent-action card; a brief has no read mark to write.
             selection = .proposal(action.id)
             return nil
-        case .legacyTracks, .legacyIdeas, .legacyMessages, .approval, .builtinNotice:
+        case .approval, .builtinNotice:
             selection = nil
             return nil
         }
@@ -415,9 +567,125 @@ package final class ActionStripViewModel {
 
     /// Opens today's list for a legacy entry, with its own reading pane.
     package func openLegacy(_ list: InboxLegacyList) {
+        listQuery = "" // a legacy list has no search: none waits for the way back
         legacyList = list
         selection = nil
     }
+
+    // MARK: - Routes
+
+    /// Routes announced by `beginRoute` whose `open` has not started yet.
+    private var announcedRoutes = 0
+    /// `open` calls running now.
+    private var runningRoutes = 0
+    /// A route into the Inbox is on its way (`beginRoute`) or running
+    /// (`open`) — routes may overlap: the owner's arrival yields while any is.
+    private var routePending: Bool { announcedRoutes + runningRoutes > 0 }
+    /// Bumped by each route, so an arrival that waited sees one started.
+    private var routeGeneration = 0
+
+    /// A route into the Inbox starts (AppState, before it shows the Inbox,
+    /// so the view's arrival sees it): the arrival marks nothing until
+    /// `open` has opened the route's card. Each call is taken up by one
+    /// `open`.
+    package func beginRoute() {
+        announcedRoutes += 1
+        routeGeneration += 1
+    }
+
+    /// `open` starts: it takes up one announced route (an `open` with none
+    /// announced counts on its own) and runs until `endOpen`.
+    private func startOpen() {
+        if announcedRoutes > 0 { announcedRoutes -= 1 }
+        runningRoutes += 1
+        routeGeneration += 1
+    }
+
+    private func endOpen() {
+        runningRoutes -= 1
+    }
+
+    // MARK: - The Morning brief's day
+
+    /// The day the Morning brief shows; nil = today.
+    package private(set) var briefDate: String?
+
+    /// The brief's History popover is open.
+    package var briefHistoryShown = false
+
+    /// The Morning brief back on today, its History closed.
+    private func resetBriefDay() {
+        briefDate = nil
+        briefHistoryShown = false
+    }
+
+    /// The card the Morning brief shows: `briefDate`'s, or for today the
+    /// root entry's card (its placeholder before anything is written).
+    package var briefDay: InboxDayCard? {
+        guard let briefDate else {
+            let now = clock()
+            return InboxListBuilder.rootDays(feed, today: today, now: now, calendar: Self.calendar).first
+        }
+        return feed.days.first { $0.date == briefDate }
+    }
+
+    /// The owner picked `date` (History, the stepper, a route to a day):
+    /// the root's Morning brief entry opens on that day and its briefing
+    /// is marked read when unread (`select`). A date with neither a
+    /// briefing nor a plan in the read opens today with no read mark — the
+    /// owner asked for another day. Nothing is selected while the root
+    /// lists no Morning brief.
+    package func showBriefDay(_ date: String) async {
+        let today = today
+        let held = feed.days.contains { $0.date == date && !$0.isEmpty }
+        closeLegacy()
+        folderMenu.select(folderMenu.tree.root.id)
+        briefDate = held && date < today ? date : nil
+        briefHistoryShown = false
+        guard showEntry(InboxFolderEntry.dayID(today)) != nil else {
+            entrySelection = nil
+            briefDate = nil
+            return
+        }
+        let shown = briefDate ?? today
+        guard shown == date else { return }
+        await select(.day(shown))
+    }
+
+    /// The stepper's ‹ (older) or › (newer): the next day with a brief or
+    /// a plan (`InboxBriefDays.step`); nothing past the ends.
+    package func stepBrief(_ step: InboxBriefDays.Step) async {
+        guard let next = InboxBriefDays.step(from: briefDate ?? today, step, in: feed.days, today: today) else {
+            return
+        }
+        await showBriefDay(next)
+    }
+
+    /// The Earlier line: the root's Morning brief with its History open.
+    /// Nothing opens while the root lists no Morning brief.
+    package func openBriefHistory() {
+        let brief = InboxFolderEntry.dayID(today)
+        if folderMenu.selectedFolderID != folderMenu.tree.root.id || entrySelection != brief {
+            closeLegacy()
+            folderMenu.select(folderMenu.tree.root.id)
+            briefDate = nil
+            guard showEntry(brief) != nil else {
+                entrySelection = nil
+                briefHistoryShown = false
+                return
+            }
+        }
+        briefHistoryShown = true
+    }
+
+    /// "yyyy-MM-dd" of the clock's now.
+    private var today: String {
+        HomeFeedBuilder.dayString(clock(), calendar: Self.calendar)
+    }
+
+    /// The one calendar the Inbox's days follow (the read's too): the
+    /// system's, following a time-zone change.
+    nonisolated private static let calendar = Calendar.autoupdatingCurrent
 
     /// The first read: the folder the owner last picked, or the root when
     /// it no longer exists (or none was saved).
@@ -433,21 +701,476 @@ package final class ActionStripViewModel {
     }
 
     /// The selected entry left the folder (done elsewhere, auto-resolved,
-    /// closed): the next entry of the old list still listed, else the one
-    /// above it, else none — as `keepSelectionListed` does for cards.
+    /// closed): the next row of the old list (`listedFolder.rows`,
+    /// sections in order, before any search) still listed, else the one above it, else none —
+    /// as `keepSelectionListed` does for cards. A selected Needs approval
+    /// group row stays while its group is listed. The Morning brief of a
+    /// day that rolled over moves to today's. Nothing is re-selected
+    /// once the owner cleared the selection.
     private func keepEntryListed(was before: [String]) {
         guard let current = entrySelection else { return }
-        let listed = folderEntries.map(\.id)
-        guard !listed.contains(current) else { return }
-        guard let index = before.firstIndex(of: current) else {
-            entrySelection = nil
+        let drawn = listedFolder.rows.map(\.id)
+        let entries = folderEntries.map(\.id)
+        guard !drawn.contains(current), !entries.contains(current) else { return }
+        let brief = InboxFolderEntry.dayID(today)
+        if current.hasPrefix(InboxFolderEntry.dayID("")), entries.contains(brief) {
+            _ = showEntry(brief)
             return
         }
+        guard let index = before.firstIndex(of: current) else {
+            entrySelection = nil
+            selection = nil
+            return
+        }
+        let listed = Set(drawn)
         let below = before[(index + 1)...].first(where: listed.contains)
         // A click's path without its write: a legacy entry's list opens, an
         // artifact or a day is selected, and no read mark is written — a
         // poll or refresh never marks anything read (STRIP-02).
         _ = showEntry(below ?? before[..<index].last(where: listed.contains))
+    }
+
+    // MARK: - Track my threads and Idea finder (phase 3)
+
+    /// **Stop Tracking Quiet Ones…** on Track my threads' pane: plans with
+    /// `planQuietTracks`, applies with `stopTrackingQuiet`.
+    package var quietTracksPress: InboxBulkPressModel {
+        if let model = quietTracksPressModel { return model }
+        let model = bulkPress(plan: { try await $0.planQuietTracks() },
+                              apply: { await $0.stopTrackingQuiet($1) })
+        quietTracksPressModel = model
+        return model
+    }
+
+    /// **Clear Old Ideas…** on Idea finder's pane: plans with
+    /// `planOldIdeas`, applies with `clearOldIdeas`.
+    package var oldIdeasPress: InboxBulkPressModel {
+        if let model = oldIdeasPressModel { return model }
+        let model = bulkPress(plan: { try await $0.planOldIdeas() },
+                              apply: { await $0.clearOldIdeas($1) })
+        oldIdeasPressModel = model
+        return model
+    }
+
+    @ObservationIgnored private var quietTracksPressModel: InboxBulkPressModel?
+    @ObservationIgnored private var oldIdeasPressModel: InboxBulkPressModel?
+
+    /// A bulk press that reaches this model weakly (the `approveAllModel` way).
+    private func bulkPress(
+        plan: @escaping @MainActor (ActionStripViewModel) async throws -> InboxBulkPlan,
+        apply: @escaping @MainActor (ActionStripViewModel, [String]) async -> InboxBulkResult
+    ) -> InboxBulkPressModel {
+        InboxBulkPressModel(
+            plan: { [weak self] in
+                guard let self else { throw ApproveAllError.closed }
+                return try await plan(self)
+            },
+            apply: { [weak self] ids in
+                guard let self else { return .failed(ApproveAllError.closed.localizedDescription) }
+                return await apply(self, ids)
+            })
+    }
+
+    /// Track my threads' news and quiet threads, from the last read.
+    package var trackSummary: TrackThreadsSummary {
+        TrackThreadsSummary.build(tracks: feed.tracks, now: clock())
+    }
+
+    /// Today's idea batch (`IdeaDailyBatch`), set by each read; the batch is
+    /// kept in UserDefaults, so the read still writes nothing to the
+    /// database (STRIP-02).
+    package private(set) var ideaBatch = IdeaBatchState(
+        batchIDs: [], remaining: [], keptToday: [], backlogCount: 0, olderCount: 0, nextAvailable: 0,
+        size: IdeaDailyBatch.defaultSize)
+
+    /// The Idea finder card's last failed press, kept here (AppState-owned)
+    /// so it survives leaving the Inbox; shown only while its idea is the
+    /// card on screen, cleared by the next press and by Dismiss.
+    package var ideaBatchFailure: IdeaBatchFailure?
+
+    /// **Next N**: a new batch from the last read's ideas.
+    package func takeNextIdeaBatch() {
+        ideaBatch = IdeaDailyBatch(defaults: defaults).next(ideas: feed.ideas, now: clock(), calendar: Self.calendar)
+    }
+
+    /// The news thread open in Track my threads' pane; nil = the news list.
+    /// Reset by a folder or entry pick and a route; cleared by a read once
+    /// the track is no longer active.
+    package private(set) var openedNewsTrackID: Int?
+
+    /// The opened thread's card; nil while it is not among the active tracks.
+    package var openedNewsTrack: InboxTrackCard? {
+        guard let openedNewsTrackID else { return nil }
+        return feed.tracks.first { $0.track.id == openedNewsTrackID }
+    }
+
+    package func openNewsTrack(_ id: Int) {
+        openedNewsTrackID = id
+    }
+
+    package func closeNewsTrack() {
+        openedNewsTrackID = nil
+    }
+
+    /// A write on thread `id` landed: back to the news list only if that
+    /// thread is still the one open (the owner may have opened another
+    /// while it ran).
+    package func closeNewsTrack(ifStill id: Int) {
+        if openedNewsTrackID == id { openedNewsTrackID = nil }
+    }
+
+    private var tracksBulkCLI: TracksBulkCLI {
+        TracksBulkCLI(runner: pressRunner())
+    }
+
+    /// The threads quiet for `TrackNewsRule.quietDays`, as the CLI's dry run plans them.
+    package func planQuietTracks() async throws -> InboxBulkPlan {
+        try await tracksBulkCLI.planQuiet(days: TrackNewsRule.quietDays)
+    }
+
+    /// Stops tracking `ids` through the CLI, then reads. A failed call (a
+    /// timeout, a lost answer) may have committed before it ended: one read
+    /// of the ids that were active before the press turns it into `.partial`
+    /// with the CLI's text when some of them did stop. A thread stopped
+    /// elsewhere before the press is never credited. When the "active
+    /// before" read itself failed there is nothing to reconcile against:
+    /// the failure says some threads may have stopped.
+    package func stopTrackingQuiet(_ ids: [String]) async -> InboxBulkResult {
+        let numeric = ids.compactMap(Int64.init)
+        let activeBefore: [Int64]?
+        do {
+            activeBefore = try await dbPool.read { try TrackQueries.ids($0, among: numeric, stopped: false) }
+        } catch {
+            InboxLog.logger.error("stop tracking quiet: active read failed: \(error.localizedDescription, privacy: .public)")
+            activeBefore = nil
+        }
+        var result = await tracksBulkCLI.dismiss(ids: ids)
+        if case let .failed(message) = result {
+            if let activeBefore {
+                result = await reconcileQuietStop(message, activeBefore: activeBefore, of: ids.count)
+            } else {
+                result = .failed(message + Self.quietStopUncheckedNote)
+            }
+        }
+        await refresh()
+        return result
+    }
+
+    /// Appended to a failed bulk stop whose outcome could not be checked.
+    package static let quietStopUncheckedNote = " Some threads may have stopped — check All Threads."
+
+    /// A failed bulk stop as `.partial` when some of `activeBefore` are now stopped.
+    private func reconcileQuietStop(_ message: String, activeBefore: [Int64], of total: Int) async -> InboxBulkResult {
+        guard !activeBefore.isEmpty else { return .failed(message) }
+        do {
+            let stopped = try await dbPool.read { try TrackQueries.ids($0, among: activeBefore, stopped: true) }.count
+            return stopped > 0 ? .partial(done: stopped, of: total, error: message) : .failed(message)
+        } catch {
+            // The failure stands as the CLI reported it.
+            InboxLog.logger.error("stop tracking quiet: reconcile read failed: \(error.localizedDescription, privacy: .public)")
+            return .failed(message)
+        }
+    }
+
+    /// The ideas awaiting a verdict for more than 30 days (one read).
+    package func planOldIdeas() async throws -> InboxBulkPlan {
+        let now = clock()
+        let ids = try await dbPool.read { db in
+            try IdeaQueries.fetchAwaitingVerdict(db).filter { IdeaDailyBatch.isOld($0, now: now) }.map(\.id)
+        }
+        return InboxBulkPlan(ids: ids.map(String.init), count: ids.count)
+    }
+
+    /// Drops `ids` (`IdeaQueries.dropMany`: one judged meanwhile is
+    /// skipped), then reads.
+    package func clearOldIdeas(_ ids: [String]) async -> InboxBulkResult {
+        let numeric = ids.compactMap(Int.init)
+        let result: InboxBulkResult
+        do {
+            let dropped = try await dbPool.write { try IdeaQueries.dropMany($0, ids: numeric) }
+            result = .done(count: dropped, skipped: ids.count - dropped)
+        } catch {
+            InboxLog.logger.error(
+                "clear old ideas: write of \(numeric.count) failed (\(InboxLog.errorClass(error), privacy: .public))")
+            result = .failed(error.localizedDescription)
+        }
+        await refresh()
+        return result
+    }
+
+    // MARK: - Mark All Done… and Mute (sender and Older rows)
+
+    /// The **Mark All Done…** presses of Mail waiting's sender rows and
+    /// Waiting for me's Older row, here (AppState-owned) so a press under
+    /// way survives leaving the Inbox; each result re-reads the list.
+    @ObservationIgnored package private(set) lazy var bulk = InboxBulkCenter(
+        cli: { [weak self] in InboxBulkCLI(runner: self?.pressRunner()) },
+        onFinished: { [weak self] in await self?.refresh() })
+
+    /// The bulk press a shown row offers; nil for a row without one. The
+    /// one ref → key mapping (the row hooks' pin and press use it too).
+    nonisolated package static func bulkKey(_ ref: InboxRef) -> InboxBulkKey? {
+        switch ref.kind {
+        case .mailSender: .sender(ref.key)
+        case .waitingOlder: .olderPeople
+        case .inboxItem, .track, .idea, .reminder, .action: nil
+        }
+    }
+
+    /// A failed press on a text-id row (a sender's Mute), by the row's
+    /// ref with its key in `InboxPeopleRule.senderKey` form: kept with
+    /// **Retry** until the next press on it or until the row leaves.
+    package private(set) var textRowErrors: [InboxRef: InboxRowFailure] = [:]
+    /// The senders whose Mute is being written.
+    package private(set) var mutingSenders: Set<String> = []
+
+    /// A Mute on `address` (any spelling) is being written.
+    package func isMuting(_ address: String) -> Bool {
+        mutingSenders.contains(InboxPeopleRule.senderKey(address))
+    }
+
+    /// **Mute** on a Mail waiting row (INBOX-05): one user rule
+    /// `source_mute` / `email:<address>` through the Desktop's rules writer,
+    /// then a re-read; the sender leaves Mail waiting only, no
+    /// `inbox_items` row changes. A failure stays on the row with Retry.
+    /// A second press while one is written is dropped.
+    package func muteSender(_ address: String) async {
+        let key = InboxPeopleRule.senderKey(address)
+        let ref = InboxRef(kind: .mailSender, key: key)
+        guard !mutingSenders.contains(key) else { return }
+        mutingSenders.insert(key)
+        defer { mutingSenders.remove(key) }
+        textRowErrors[ref] = nil
+        do {
+            try await writeSenderMute(key)
+        } catch {
+            InboxLog.logger.error("mute sender: write failed (\(InboxLog.errorClass(error), privacy: .public))")
+            textRowErrors[ref] = InboxRowFailure(message: error.localizedDescription, press: .mute)
+            return
+        }
+        await refresh()
+    }
+
+    /// The one writer of a sender's mute (INBOX-05): a user rule
+    /// `source_mute` / `email:<address>` through the Desktop's rules writer.
+    /// Throws when it could not be written; no re-read (the caller re-reads
+    /// once its presses are done). **Mute** and **Mute Senders…** both
+    /// write through it.
+    package func writeSenderMute(_ address: String) async throws {
+        try await InboxLearnedRulesQueries(dbPool: dbPool).upsertManual(
+            ruleType: "source_mute", scopeKey: InboxPeopleRule.muteScope(address),
+            weight: -1.0)
+    }
+
+    /// The busiest unmuted senders of Mail waiting, for **Mute Senders…**:
+    /// one more than its cap, so a sender without an address can be dropped.
+    package func muteSenderCandidates() async throws -> [MailSenderRow] {
+        let now = clock()
+        let nowUTC = AutomationDates.format(now)
+        let startOfToday = InboxToday.sinceUTC(now: now, calendar: Self.calendar)
+        return try await dbPool.read { db in
+            try WaitingQueries.mailSenders(
+                db, nowUTC: nowUTC, startOfTodayUTC: startOfToday, limit: MuteSendersModel.limit + 1).senders
+        }
+    }
+
+    // MARK: - Approve All (Needs approval groups)
+
+    /// Each group's **Approve All** press, kept here (AppState-owned) so a
+    /// run survives leaving the Inbox.
+    @ObservationIgnored private var approveAllModels: [NeedsApprovalGroup: InboxBulkPressModel] = [:]
+
+    /// `group`'s **Approve All** press: one per group, planned with
+    /// `approveAllPlan` and applied with `approveAll(ids:)`.
+    package func approveAllModel(_ group: NeedsApprovalGroup) -> InboxBulkPressModel {
+        if let model = approveAllModels[group] { return model }
+        let model = InboxBulkPressModel(
+            plan: { [weak self] in
+                guard let self else { throw ApproveAllError.closed }
+                return try await approveAllPlan(group)
+            },
+            apply: { [weak self] ids in
+                guard let self else { return .failed(ApproveAllError.closed.localizedDescription) }
+                let result = await approveAll(ids: ids)
+                approveAllFinishedIDs[group] = approvableIDs(group)
+                return result
+            })
+        approveAllModels[group] = model
+        return model
+    }
+
+    /// Why **Approve All** could not plan or run.
+    private enum ApproveAllError: LocalizedError {
+        case closed
+        case unread(String)
+        /// The group is still listed but no longer offers Approve All (a
+        /// row joined or left between the draw and the press).
+        case notOffered
+
+        var errorDescription: String? {
+            switch self {
+            case .closed: "The Inbox is closed."
+            case .unread(let reason): "The Inbox could not be read: \(reason)"
+            case .notOffered: "These approvals can no longer be approved all at once. Approve them one by one."
+            }
+        }
+    }
+
+    /// The args each planned row had when **Approve All** was planned (what
+    /// the owner saw), by action id: `approveAll` approves with these, so a
+    /// row whose args changed since is refused by Go and stops the run.
+    /// A run's ids leave it when the run ends.
+    @ObservationIgnored package private(set) var approveAllShownArgs: [Int64: String] = [:]
+
+    /// Each group's approvable ids when its last press finished (nil: the
+    /// group was not listed): a later read that lists other ids, or drops
+    /// the group, puts its press back to idle (`resetStaleApproveAll`).
+    @ObservationIgnored private var approveAllFinishedIDs: [NeedsApprovalGroup: [Int64]?] = [:]
+
+    /// What **Approve All** would approve in `group` now: one read first,
+    /// then its approvable ids (`NeedsApprovalGroups.approveAllIDs`), their
+    /// args pinned (`approveAllShownArgs`); empty when the group is no
+    /// longer listed. Throws when no read has landed or that read failed —
+    /// never an empty plan standing in for an Inbox it could not read — and
+    /// when the group is listed but no longer offers Approve All.
+    package func approveAllPlan(_ group: NeedsApprovalGroup) async throws -> InboxBulkPlan {
+        await refresh()
+        approveAllFinishedIDs[group] = approvableIDs(group)
+        if let reason = hasRead ? lastError : (firstReadError ?? lastError ?? "nothing was read yet") {
+            throw ApproveAllError.unread(reason)
+        }
+        let items = NeedsApprovalGroups.build(openApprovals).first { $0.0 == group }?.1 ?? []
+        guard let ids = items.isEmpty ? [] : NeedsApprovalGroups.approveAllIDs(group, items) else {
+            throw ApproveAllError.notOffered
+        }
+        for item in items {
+            guard case let .action(action) = item.record, ids.contains(action.id) else { continue }
+            approveAllShownArgs[action.id] = action.argsJSON
+        }
+        return InboxBulkPlan(ids: ids.map(String.init), count: ids.count)
+    }
+
+    /// `group`'s rows **Approve All** could approve from the last read
+    /// (`NeedsApprovalGroups.isBulkApprovable`, without the two-row and
+    /// one-tool rules, so any change is seen); nil while it is not listed.
+    private func approvableIDs(_ group: NeedsApprovalGroup) -> [Int64]? {
+        guard let items = NeedsApprovalGroups.build(openApprovals).first(where: { $0.0 == group })?.1 else {
+            return nil
+        }
+        return items.compactMap { item in
+            guard case let .action(action) = item.record, NeedsApprovalGroups.isBulkApprovable(action) else {
+                return nil
+            }
+            return action.id
+        }
+    }
+
+    /// The error line after an Approve All run whose approved tracks are not
+    /// all watched (`messages`: their `AgentActionFeed.startVerb` errors);
+    /// nil when every one is.
+    package static func notWatchedLine(_ messages: [String]) -> String? {
+        guard let first = messages.first else { return nil }
+        let reason = first.hasPrefix(AgentActionFeed.notWatchedPrefix)
+            ? String(first.dropFirst(AgentActionFeed.notWatchedPrefix.count)) : first
+        let tracks = messages.count == 1 ? "1 track is" : "\(messages.count) tracks are"
+        return "Approved, but \(tracks) not watched yet: \(reason)"
+    }
+
+    /// After a read: a finished press whose group now lists other approvable
+    /// ids (or is gone) goes back to idle, so its result line never speaks
+    /// for rows it did not see.
+    private func resetStaleApproveAll() {
+        for (group, model) in approveAllModels {
+            guard case .finished = model.state else { continue }
+            let now = approvableIDs(group)
+            if now == nil || approveAllFinishedIDs[group].map({ $0 != now }) ?? true {
+                model.reset()
+                approveAllFinishedIDs[group] = nil
+            }
+        }
+    }
+
+    /// Approves `ids` one by one through the per-action path
+    /// (`AgentActionFeed.approve`, args pinned to what the plan read). One
+    /// read first; skipped (counted, the run goes on): an id never planned,
+    /// no longer open or pending (closed or failed meanwhile), no longer
+    /// `NeedsApprovalGroups.isBulkApprovable`, or whose approve found its
+    /// state moved (exit 3). An approved `create_track` whose `tracks start`
+    /// failed counts as done; an applied row leaves Needs approval, so the
+    /// run says so on the Inbox's error line (`notWatchedLine`). The first
+    /// failure — a changed row's args
+    /// refused by Go included — stops the run and selects that card while
+    /// Needs approval is on screen, where its error shows; the rest are left
+    /// for the owner. Ends with a read. An opening read that fails approves
+    /// nothing: `.failed` with its reason, as `approveAllPlan` refuses.
+    package func approveAll(ids: [String]) async -> InboxBulkResult {
+        await refresh()
+        if let reason = lastError {
+            for text in ids {
+                if let id = Int64(text) { approveAllShownArgs[id] = nil }
+            }
+            return .failed(ApproveAllError.unread(reason).localizedDescription)
+        }
+        var done = 0
+        var skipped = 0
+        var failure: (row: AgentAction, message: String)?
+        var notWatched: [String] = []
+        for text in ids {
+            guard let id = Int64(text), let shown = approveAllShownArgs[id],
+                  folderMenu.snapshot.openActions.contains(id),
+                  let row = feed.proposals.first(where: { $0.id == id }),
+                  NeedsApprovalGroups.isBulkApprovable(row) else {
+                skipped += 1
+                continue
+            }
+            await actionFeed.approve(id, shownArgs: shown)
+            // A `create_track` approved whose track is not watched yet
+            // (`AgentActionFeed.startVerb`) was approved: it counts as done,
+            // and its reason goes to the error line after the run.
+            if let error = actionFeed.rowErrors[id] {
+                guard error.verb == AgentActionFeed.startVerb else {
+                    failure = (row, error.message)
+                    break
+                }
+                notWatched.append(error.message)
+            }
+            if actionFeed.stateMovedRows.contains(id) {
+                skipped += 1
+            } else {
+                done += 1
+            }
+        }
+        await refresh()
+        adoptFeedError()
+        if lastError == nil, let line = Self.notWatchedLine(notWatched) {
+            lastError = line
+        }
+        for text in ids {
+            if let id = Int64(text) { approveAllShownArgs[id] = nil }
+        }
+        guard let failure else { return .done(count: done, skipped: skipped) }
+        // Set after the last read so it is not moved off, and only while the
+        // folder that lists the card is selected: the owner may have moved
+        // on while the run went.
+        let tree = folderMenu.tree
+        if folderMenu.selectedFolderID == (tree.approvals ?? tree.root).id, legacyList == nil {
+            entrySelection = InboxFolderEntry.approval(NeedsApprovalItem(.action(failure.row))).id
+        }
+        return .partial(done: done, of: ids.count, error: failure.message)
+    }
+
+    /// Needs approval's open approvals from the last read, whichever folder
+    /// is selected (the root holds them on a tree without Needs approval).
+    private var openApprovals: [NeedsApprovalItem] {
+        guard hasRead else { return [] }
+        let tree = folderMenu.tree
+        let open = folderMenu.snapshot.openActions
+        return InboxFolderEntries.build(folder: tree.approvals ?? tree.root, entryInputs).compactMap { entry in
+            guard case let .approval(item) = entry, NeedsApprovalGroups.isOpen(item, openActions: open) else {
+                return nil
+            }
+            return item
+        }
     }
 
     // MARK: - Needs approval's note
@@ -523,35 +1246,46 @@ package final class ActionStripViewModel {
     ///   threads, Idea finder, Messages) over the root with its card
     ///   selected when listed: a stopped track opens the Stopped fold, a
     ///   merged idea the idea it was merged into.
-    /// - A day opens its Morning brief entry in the root; a day past the
-    ///   loaded pages reads older pages until it is there.
+    /// - A day opens the root's Morning brief on that day (`showBriefDay`);
+    ///   a day past the loaded pages reads older pages until it is there.
     /// - A thread brief applied in the last 24 hours opens its root entry.
     /// - An automation card opens the folder that lists it; a proposal, a
     ///   reminder, a notice or one of Needs approval's cards opens Needs
     ///   approval.
-    /// Anything not listed selects nothing, so the pane never opens on a
-    /// card the next refresh would drop. The route's folder is not
-    /// remembered (`inbox.folder` keeps the owner's own pick).
+    /// - No entry opens the folder's default entry (`defaultEntry`), with
+    ///   no read mark.
+    /// A card that is not listed opens its folder with nothing selected,
+    /// so the pane never opens on a card the next refresh would drop. The
+    /// route's folder is not remembered (`inbox.folder` keeps the owner's
+    /// own pick).
     package func open(folder: Int64?, select entry: InboxRoute.Entry?) async {
+        startOpen()
+        defer { endOpen() }
         await refresh()
         closeLegacy()
         entrySelection = nil
+        openedNewsTrackID = nil
+        resetBriefDay()
         if let folder { folderMenu.select(folderMenu.tree.folder(folder) == nil ? folderMenu.tree.root.id : folder) }
         switch entry {
         case nil:
             if folder == nil { folderMenu.select(folderMenu.tree.root.id) }
+            showDefaultEntry()
         case let .legacy(list):
-            showLegacy(list)
+            // Track my threads and Idea finder are panes of their own.
+            showLegacy(list, openList: list == .messages)
         case let .card(item):
             await openCard(item, keepFolder: folder != nil)
         }
     }
 
-    /// A legacy entry's list over the root, its entry selected.
-    private func showLegacy(_ list: InboxLegacyList) {
+    /// A legacy entry selected in the root, its list opened over it when
+    /// `openList` (a card route; a route to the entry itself opens only
+    /// Messages' list).
+    private func showLegacy(_ list: InboxLegacyList, openList: Bool = true) {
         folderMenu.select(folderMenu.tree.root.id)
         entrySelection = InboxFolderEntry.legacy(list).id
-        openLegacy(list)
+        if openList { openLegacy(list) }
     }
 
     /// The card `item` in the folder or legacy list that lists it
@@ -585,10 +1319,7 @@ package final class ActionStripViewModel {
                 await showOlderDays().value
                 if feed.days.count == before { break }
             }
-            // A day read but not listed (read, not today) still opens: the
-            // selected day stays listed (`Inputs.selectedDay`).
-            show(tree.root.id, "day:\(date)")
-            if entrySelection != nil { await select(item) }
+            await showBriefDay(date)
         case .output(let id):
             if folderMenu.snapshot.approvalArtifacts.values.contains(where: { $0.id == id }) {
                 show((tree.approvals ?? tree.root).id, nil)
@@ -649,7 +1380,7 @@ package final class ActionStripViewModel {
         case let .reminder(id): feed.reminders.contains { $0.id == id }
         case let .builtinNotice(id): feed.builtinNotices.contains { $0.builtinID == id }
         case let .day(date):
-            date == HomeFeedBuilder.dayString(clock(), calendar: .current) || feed.days.contains { $0.date == date }
+            date == today || feed.days.contains { $0.date == date }
         case let .track(id): (feed.tracks + feed.stoppedTracks).contains { $0.track.id == id }
         case let .idea(id): feed.ideas.contains { $0.id == id }
         case let .message(id): feed.messages.contains { $0.item.id == id }
@@ -778,8 +1509,9 @@ package final class ActionStripViewModel {
     // MARK: - Tracks
 
     /// Done on a track card (R4): the track read (TRACKS-04, with its digests)
-    /// and every event of it read, in one write.
-    package func markTrackDone(_ id: Int) async {
+    /// and every event of it read, in one write. True when it landed.
+    @discardableResult
+    package func markTrackDone(_ id: Int) async -> Bool {
         await write(.card(.track(id)), { db in
             try TrackQueries.markRead(db, id: id)
             try TrackEventQueries.markAllRead(db, trackId: id)
@@ -788,16 +1520,17 @@ package final class ActionStripViewModel {
 
     /// Stop watching (R4): an auto track is dismissed (TRACKS-07); a custom
     /// track goes through the seam, which also turns its collection off. A
-    /// track deleted meanwhile is quiet.
-    package func stopWatching(_ track: Track) async {
+    /// track deleted meanwhile is quiet. True when it landed (or the track
+    /// was gone).
+    @discardableResult
+    package func stopWatching(_ track: Track) async -> Bool {
         let id = track.id
         guard track.isCustom else {
-            await write(.card(.track(id)), { db in
+            return await write(.card(.track(id)), { db in
                 do { try TrackQueries.dismiss(db, id: id) } catch is RowNotFoundError {}
             }, press: .stopWatching)
-            return
         }
-        await throughSeam(track, press: .stopWatching) { try await $0.stopWatching(track) }
+        return await throughSeam(track, press: .stopWatching) { try await $0.stopWatching(track) }
     }
 
     /// Restore on a stopped card (the undo of Stop watching, TRACKS-07's
@@ -815,27 +1548,33 @@ package final class ActionStripViewModel {
         await throughSeam(track) { try await $0.resumeWatching(track) }
     }
 
-    /// One seam call per card at a time, then a read; a vanished row is quiet.
+    /// One seam call per card at a time, then a read; a vanished row is
+    /// quiet. True when the call landed or the row was gone (false too for
+    /// a press that did not run).
+    @discardableResult
     private func throughSeam(
         _ track: Track,
         press: InboxRowPress? = nil,
         _ call: @escaping (any CustomTrackControlling) async throws -> Void
-    ) async {
+    ) async -> Bool {
         let controls = customTrackControls
         let item = InboxSelection.track(track.id)
-        await pendingWrites.run(CardKey.card(item)) {
+        return await pendingWrites.run(CardKey.card(item)) {
             lastError = nil
             if press != nil { rowErrors[item] = nil }
             do {
                 try await call(controls)
                 await refresh()
+                return true
             } catch is RowNotFoundError {
                 await refresh()
+                return true
             } catch {
                 lastError = error.localizedDescription
                 if let press { rowErrors[item] = InboxRowFailure(message: error.localizedDescription, press: press) }
+                return false
             }
-        }
+        } ?? false
     }
 
     // MARK: - Messages
@@ -926,7 +1665,7 @@ package final class ActionStripViewModel {
     package func proposeReply(_ itemID: Int, text: String, host: String) async {
         let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !body.isEmpty, replyDrafts[itemID] != nil,
-              let item = feed.messages.first(where: { $0.item.id == itemID })?.item,
+              let item = messageRow(itemID)?.item,
               let tool = InboxReplyPolicy.tool(for: item) else { return }
         guard let args = InboxReplyPolicy.args(for: item, text: body, host: host) else {
             // The args could not be encoded (not expected): say so on the draft, never a silent no-op.
@@ -996,6 +1735,18 @@ package final class ActionStripViewModel {
         await guardedWrite(.output(id)) { try AutomationQueries.dismissOutput($0, id: id, contentHash: hash, now: now) }
     }
 
+    /// Mark All Seen on Slack today's pane and row: `read_at` at the version
+    /// drawn (`markOutputOpened`), then a read either way. Never optimistic:
+    /// a card rewritten under the view (its hash moved) stays unread and the
+    /// read shows the new version. The card stays listed and selected.
+    package func markOutputSeen(id: Int64) async {
+        let now = Date()
+        let hash = drawnHash(id)
+        await guardedWrite(.output(id), deselecting: false) {
+            try AutomationQueries.markOutputOpened($0, id: id, contentHash: hash, now: now)
+        }
+    }
+
     /// The content hash of output `id` as the list drew it; `""` (a row from
     /// before the blocks migration, or one no longer listed) otherwise.
     private func drawnHash(_ id: Int64) -> String {
@@ -1003,14 +1754,19 @@ package final class ActionStripViewModel {
     }
 
     /// A read-state write that may change nothing: the card is deselected
-    /// only when its row changed; either way the list is read again, so a
-    /// card rewritten meanwhile shows as the database has it.
-    private func guardedWrite(_ item: InboxSelection, _ change: @escaping @Sendable (Database) throws -> Bool) async {
+    /// only when its row changed (and `deselecting`; Mark All Seen keeps
+    /// it selected); either way the list is read again, so a card
+    /// rewritten meanwhile shows as the database has it.
+    private func guardedWrite(
+        _ item: InboxSelection,
+        deselecting: Bool = true,
+        _ change: @escaping @Sendable (Database) throws -> Bool
+    ) async {
         let pool = dbPool
         await pendingWrites.run(CardKey.card(item)) {
             lastError = nil
             do {
-                if try await pool.write(change) { deselect(item) }
+                if try await pool.write(change), deselecting { deselect(item) }
                 await refresh()
             } catch {
                 lastError = error.localizedDescription
@@ -1144,6 +1900,12 @@ package final class ActionStripViewModel {
         if !rowErrors.isEmpty {
             rowErrors = rowErrors.filter { item, _ in isOpenRecord(item) }
         }
+        if !textRowErrors.isEmpty {
+            let refState = folderMenu.snapshot.refState
+            textRowErrors = textRowErrors.filter { ref, _ in
+                refState.shown.contains { $0.kind == ref.kind && InboxPeopleRule.senderKey($0.key) == ref.key }
+            }
+        }
         if !replyDrafts.isEmpty {
             // A draft whose reply now waits in Needs approval goes too (a
             // propose that timed out may have landed): it never comes back
@@ -1152,10 +1914,17 @@ package final class ActionStripViewModel {
         }
     }
 
+    /// Open message `id` as the last read has it: the Messages list's row,
+    /// else a shown `inbox_item` ref's (`InboxRefState.messages`: an
+    /// artifact row the list's cap leaves out).
+    package func messageRow(_ id: Int) -> HomeFeedInboxRow? {
+        feed.messages.first { $0.item.id == id } ?? folderMenu.snapshot.refState.messages[Int64(id)]
+    }
+
     /// The last read still lists `item`'s record.
     private func isOpenRecord(_ item: InboxSelection) -> Bool {
         switch item {
-        case let .message(id): feed.messages.contains { $0.item.id == id }
+        case let .message(id): messageRow(id) != nil
         case let .track(id): feed.tracks.contains { $0.track.id == id }
         case let .idea(id): feed.ideas.contains { $0.id == id }
         case let .reminder(id): feed.reminders.contains { $0.id == id }

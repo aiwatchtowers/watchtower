@@ -1,3 +1,4 @@
+import UserNotifications
 import XCTest
 import GRDB
 import WatchtowerCore
@@ -33,6 +34,7 @@ final class InboxRouteTests: XCTestCase {
     }
 
     override func tearDown() async throws {
+        IdeaBatchDefaults.clearStandard()
         UserDefaults.standard.set(savedFolder, forKey: ActionStripViewModel.folderKey)
         UserDefaults.standard.set(savedFilter, forKey: Self.oldFilterKey)
         TestDatabase.cleanup(path: path)
@@ -54,27 +56,41 @@ final class InboxRouteTests: XCTestCase {
     }
 
     /// Where a route left the Inbox: its folder (nil = the root), the open
-    /// legacy list, the selected entry and the open card.
+    /// legacy list, the selected entry, the open card and the Morning
+    /// brief's day (nil = today).
     private struct Landing: Equatable {
         var folder: Int64?
         var list: InboxLegacyList?
         var entry: String?
         var selection: InboxSelection?
+        var briefDate: String?
 
         static func legacy(_ list: InboxLegacyList, _ selection: InboxSelection? = nil) -> Self {
             Self(list: list, entry: InboxFolderEntry.legacy(list).id, selection: selection)
         }
 
-        static func day(_ date: String) -> Self {
-            Self(entry: "day:\(date)", selection: .day(date))
+        /// A root entry with a pane of its own (Track my threads, Idea
+        /// finder, phase 3): selected, no legacy list open.
+        static func pane(_ list: InboxLegacyList) -> Self {
+            Self(entry: InboxFolderEntry.legacy(list).id)
         }
+
+        /// The root's one Morning brief entry (today's) open on `date`
+        /// (`showBriefDay`).
+        static func day(_ date: String) -> Self {
+            Self(entry: "day:\(InboxRouteTests.today)", selection: .day(date),
+                 briefDate: date == InboxRouteTests.today ? nil : date)
+        }
+
+        /// The root with its default entry: today's Morning brief.
+        static let root = day(InboxRouteTests.today)
     }
 
     private func landing(_ state: AppState) -> Landing? {
         guard let vm = state.actionStripViewModel else { return nil }
         let folder = vm.folderMenu.selectedFolderID
         return Landing(folder: folder == vm.folderMenu.tree.root.id ? nil : folder, list: vm.legacyList,
-                       entry: vm.entrySelection, selection: vm.selection)
+                       entry: vm.entrySelection, selection: vm.selection, briefDate: vm.briefDate)
     }
 
     private func assertLanding(
@@ -105,8 +121,8 @@ final class InboxRouteTests: XCTestCase {
             ("briefings", .card(.day(Self.today)), .day(Self.today)),
             ("dayPlan", .card(.day(Self.today)), .day(Self.today)),
             ("day-plan", .card(.day(Self.today)), .day(Self.today)),
-            ("tracks", .legacy(.tracks), .legacy(.tracks)),
-            ("ideas", .legacy(.ideas), .legacy(.ideas))
+            ("tracks", .legacy(.tracks), .pane(.tracks)),
+            ("ideas", .legacy(.ideas), .pane(.ideas))
         ]
         XCTAssertEqual(InboxRoute.aliasHosts, Set(cases.map(\.0)))
         for (host, route, expected) in cases {
@@ -136,8 +152,8 @@ final class InboxRouteTests: XCTestCase {
             state.openNavLink(NavLink.url(raw))
             XCTAssertEqual(state.selectedDestination, .inbox, raw)
         }
-        // A hidden-items entry naming one is ignored: FOCUS shows Catch Up and Inbox.
-        XCTAssertEqual(SidebarSection.today.partition(hidden: Set(expected.keys)).visible, [.catchUp, .inbox])
+        // A hidden-items entry naming one is ignored: FOCUS shows Catch Up and Targets.
+        XCTAssertEqual(SidebarSection.today.partition(hidden: Set(expected.keys)).visible, [.catchUp, .targets])
     }
 
     /// With no source connected the Inbox still shows (no gate since C1),
@@ -210,6 +226,60 @@ final class InboxRouteTests: XCTestCase {
         assertLanding(state, .day(Self.today), "a vanished briefing opens today")
     }
 
+    /// A route to a day (Home's link, a notification) opens the root's
+    /// one Morning brief on that day and marks that day's briefing read
+    /// (the owner's pick); today's stays unread.
+    func testDayRouteOpensTheBriefOnThatDay() async throws {
+        let date = "2026-10-21"
+        let (pastID, todayID) = try await manager.dbPool.write { db -> (Int, Int) in
+            try TestDatabase.insertBriefing(db, date: date)
+            let past = Int(db.lastInsertedRowID)
+            try TestDatabase.insertBriefing(db, date: Self.today)
+            return (past, Int(db.lastInsertedRowID))
+        }
+        let state = appState()
+        await state.navigateToBriefing(pastID)?.value
+
+        assertLanding(state, .day(date), "the brief on its day")
+        let vm = try XCTUnwrap(state.actionStripViewModel)
+        XCTAssertEqual(vm.briefDay?.date, date)
+        let marks = try await manager.dbPool.read { db in
+            try [pastID, todayID].map {
+                try String.fetchOne(db, sql: "SELECT read_at FROM briefings WHERE id = ?", arguments: [$0])
+            }
+        }
+        XCTAssertNotNil(marks[0], "that day's briefing is opened")
+        XCTAssertNil(marks[1], "today's is not")
+    }
+
+    /// A route shows the Inbox before its read: the view's arrival
+    /// (onAppear) yields to it, so the brief left on screen from the last
+    /// visit is not marked read — only the route's card is (STRIP-02).
+    func testRouteIntoTheInboxMarksOnlyItsCard() async throws {
+        let output = try await manager.dbPool.write { db -> Int64 in
+            try TestDatabase.insertBriefing(db, date: Self.today)
+            let automation = try TestDatabase.insertAutomation(db)
+            let run = try TestDatabase.insertAutomationRun(db, automationID: automation)
+            return try TestDatabase.insertAutomationOutput(db, automationID: automation, runID: run)
+        }
+        let state = appState()
+        let vm = try XCTUnwrap(state.actionStripViewModel)
+        await vm.refresh()
+        XCTAssertEqual(vm.entrySelection, "day:\(Self.today)")
+
+        let route = state.openInbox(.card(.output(output)))
+        await vm.ownerArrived()
+        await route?.value
+
+        XCTAssertEqual(vm.selection, .output(output))
+        let marks = try await manager.dbPool.read { db in
+            (try String.fetchOne(db, sql: "SELECT read_at FROM briefings"),
+             try String.fetchOne(db, sql: "SELECT read_at FROM automation_outputs WHERE id = ?", arguments: [output]))
+        }
+        XCTAssertNil(marks.0, "the brief from before the route stays unread")
+        XCTAssertNotNil(marks.1, "the route's card is opened")
+    }
+
     // MARK: - Home
 
     func testHomeBriefLinkOpensTheDayCard() async throws {
@@ -244,8 +314,8 @@ final class InboxRouteTests: XCTestCase {
         let cases: [(ReadinessFeature, InboxRoute, Landing)] = [
             (.briefing, .card(.day(Self.today)), .day(Self.today)),
             (.dayPlan, .card(.day(Self.today)), .day(Self.today)),
-            (.tracks, .legacy(.tracks), .legacy(.tracks)),
-            (.ideas, .legacy(.ideas), .legacy(.ideas))
+            (.tracks, .legacy(.tracks), .pane(.tracks)),
+            (.ideas, .legacy(.ideas), .pane(.ideas))
         ]
         for (feature, route, expected) in cases {
             XCTAssertEqual(InboxRoute.forFeature(feature, today: Self.today), route)
@@ -293,7 +363,7 @@ final class InboxRouteTests: XCTestCase {
         assertLanding(state, Landing(folder: ids.owner), "a folder that exists")
 
         await state.openInbox(InboxRoute(folderID: 9_999))?.value
-        assertLanding(state, Landing(), "a deleted folder opens the root")
+        assertLanding(state, .root, "a deleted folder opens the root on today's brief")
     }
 
     /// The menu's pick is remembered in `inbox.folder` and opens again in a
@@ -322,17 +392,17 @@ final class InboxRouteTests: XCTestCase {
         stale.databaseManager = manager
         stale.initActionStrip(dbPool: manager.dbPool)
         await stale.actionStripViewModel?.refresh()
-        XCTAssertEqual(landing(stale), Landing(), "a deleted folder opens the root")
+        XCTAssertEqual(landing(stale), .root, "a deleted folder opens the root")
     }
 
     /// A value the filter bar left in `inbox.filter` is never read: the
-    /// Inbox opens on the root with no legacy list.
+    /// Inbox opens on the root's brief with no legacy list.
     func testOldInboxFilterValueOpensTheRoot() async throws {
         UserDefaults.standard.set("tracks", forKey: Self.oldFilterKey)
         let state = appState()
         let vm = try XCTUnwrap(state.actionStripViewModel)
         await vm.refresh()
-        XCTAssertEqual(landing(state), Landing())
+        XCTAssertEqual(landing(state), .root)
         XCTAssertTrue(vm.sections.isEmpty)
     }
 
@@ -353,6 +423,43 @@ final class InboxRouteTests: XCTestCase {
         assertLanding(state, Landing(folder: ids.owner), "the route the owner set")
 
         await state.openBuiltinInInbox(automationID: automation + 1, defaultFolder: "inbox")?.value
-        assertLanding(state, Landing(), "the root")
+        assertLanding(state, .root, "the root")
+    }
+
+    /// On a tree without Needs approval (an old database), a proposal push
+    /// opens the root.
+    func testNeedsApprovalWithoutTheFolderOpensTheRoot() async throws {
+        try await manager.dbPool.write { db in
+            try db.execute(sql: """
+                INSERT INTO inbox_folders (kind, parent_id, slug, title, position) VALUES ('root', NULL, 'inbox', 'Inbox', 0)
+                """)
+            try db.execute(sql: "INSERT INTO inbox_folder_state (id, revision) VALUES (1, 1)")
+        }
+        let state = appState()
+        await state.openNeedsApproval()?.value
+        assertLanding(state, .root, "the root stands in for the missing folder")
+    }
+
+    /// A proposal push's click opens Needs approval as a route: the owner's
+    /// arrival yields to it, so the brief on screen before stays unread.
+    func testProposalPushOpensNeedsApprovalAsARoute() async throws {
+        let ids = try await seedFolders()
+        try await manager.dbPool.write { db in try TestDatabase.insertBriefing(db, date: Self.today) }
+        let state = appState()
+        let vm = try XCTUnwrap(state.actionStripViewModel)
+        await vm.refresh()
+        XCTAssertEqual(vm.entrySelection, "day:\(Self.today)")
+
+        await NotificationDelegate.route(
+            actionID: UNNotificationDefaultActionIdentifier, userInfo: ["type": "agent_action"],
+            appState: state, forwarded: false)
+        await vm.ownerArrived()
+        await settle(state, Landing(folder: ids.approvals))
+
+        assertLanding(state, Landing(folder: ids.approvals), "Needs approval")
+        let mark = try await manager.dbPool.read { db in
+            try String.fetchOne(db, sql: "SELECT read_at FROM briefings")
+        }
+        XCTAssertNil(mark, "the arrival yielded to the route")
     }
 }

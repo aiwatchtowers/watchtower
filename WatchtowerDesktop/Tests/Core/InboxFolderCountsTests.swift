@@ -3,9 +3,8 @@ import GRDB
 @testable import WatchtowerCore
 import WatchtowerTestSupport
 
-/// The menu's numbers and the sidebar badge (spec "Unread counts and the
-/// sidebar badge"): pure cases on hand-built trees, then the badge read end
-/// to end.
+/// The menu's numbers and the sidebar badge (spec "Counts"): pure cases on
+/// hand-built trees, then the counts and the badge read end to end.
 final class InboxFolderCountsTests: XCTestCase {
     // root 1 ▸ approvals 2, a 3 ▸ a1 4, hidden 5 ▸ under-hidden 6
     private let tree = InboxFolderTree(revision: 1, folders: [
@@ -80,61 +79,144 @@ final class InboxFolderCountsTests: XCTestCase {
         XCTAssertEqual(refs[12], [InboxRef(kind: .idea, id: 2), InboxRef(kind: .idea, id: 3)])
     }
 
-    func testBadgeLeavesHiddenFoldersOut() {
-        let counts: [Int64: Int] = [1: 1, 2: 2, 3: 3, 4: 4, 5: 50, 6: 60]
-        XCTAssertEqual(InboxFolderCounts.badge(counts: counts, tree: tree), 10,
-                       "the hidden folder and its child are out")
+    func testUncountedAutomationsArtifactsAddNothing() {
+        let artifacts = [Int64(1): [card(1), card(2)]]
+        let counts = InboxFolderCounts.counts(
+            tree: tree, artifacts: artifacts, refs: InboxFolderCounts.refs(of: artifacts), refState: InboxRefState(),
+            legacy: [1: 2], uncounted: [1])
+        XCTAssertEqual(counts[1], 2, "only the legacy terms")
     }
 
     // MARK: - The badge, read end to end
 
-    func testBadgeIsTheVisibleFolderSumAndKeepsTheOldTerms() async throws {
+    private let now = "2026-10-16T12:00:00Z"
+    private let today = "2026-10-16T09:00:00Z"
+
+    private func utc() throws -> Calendar {
+        try InboxTodayFixture.calendar("UTC")
+    }
+
+    /// An open message, created at `createdAt`.
+    @discardableResult
+    private static func message(_ db: Database, _ ts: String = "1", createdAt: String) throws -> Int64 {
+        let id = try TestDatabase.insertInboxItem(db, messageTS: ts)
+        try db.execute(sql: "UPDATE inbox_items SET created_at = ? WHERE id = ?", arguments: [createdAt, id])
+        return id
+    }
+
+    private func snapshot(_ pool: DatabasePool) async throws -> InboxFolderMenuSnapshot {
+        let now = now
+        let calendar = try utc()
+        return try await pool.read { try InboxFolderMenuSnapshot.read($0, nowUTC: now, calendar: calendar) }
+    }
+
+    func testRootCountsPeopleTodayBriefAndArtifacts() async throws {
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
-        let now = "2026-10-16T12:00:00Z"
-        try await pool.write { db in
+        let today = today
+        let root = try await pool.write { db -> Int64 in
             let seed = try InboxFolderFixtures.seed(db)
-            let hidden = try InboxFolderFixtures.folder(db, parent: seed.root, slug: "h", position: 1, hidden: true)
+            try Self.message(db, "1", createdAt: today)
+            try Self.message(db, "2", createdAt: "2026-10-15T09:00:00Z")
+            // Today's unread brief counts; an unread past brief does not.
+            try TestDatabase.insertBriefing(db, date: "2026-10-16")
+            try TestDatabase.insertBriefing(db, date: "2026-10-15")
+            try db.execute(sql: "UPDATE briefings SET created_at = date || 'T05:00:00Z'")
+            _ = try TestDatabase.insertIdea(db, status: "proposed")
+            let automation = try TestDatabase.insertAutomation(db, slug: "root-one")
+            let run = try TestDatabase.insertAutomationRun(db, automationID: automation)
+            try TestDatabase.insertAutomationOutput(db, automationID: automation, runID: run)
+            return seed.root
+        }
+
+        let read = try await snapshot(pool)
+
+        XCTAssertEqual(read.peopleWaitingToday, 1)
+        XCTAssertEqual(read.counts[root], 3, "1 person today + today's unread brief + the unread plain artifact")
+        XCTAssertEqual(read.badge, 1, "the badge takes the people only")
+    }
+
+    /// A succeeded Waiting for me lists today's people, whom the root
+    /// already counts through `peopleWaitingToday`: its rows add nothing.
+    func testWaitingForMeArtifactIsNotCountedTwice() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        let (now, today) = (now, today)
+        let root = try await pool.write { db -> Int64 in
+            let seed = try InboxFolderFixtures.seed(db)
+            let first = try Self.message(db, "1", createdAt: today)
+            let second = try Self.message(db, "2", createdAt: today)
+            let id = try TestDatabase.insertAutomation(db, slug: "waiting-for-me")
+            try db.execute(sql: """
+                UPDATE automations SET origin = 'builtin', builtin_id = 'waiting-for-me', path = 'builtin:waiting-for-me'
+                WHERE id = ?
+                """, arguments: [id])
+            let run = try TestDatabase.insertAutomationRun(db, automationID: id, status: "succeeded")
+            try TestDatabase.insertAutomationOutput(
+                db, automationID: id, runID: run, readAt: now,
+                blocksJSON: InboxFolderFixtures.listDocument([("inbox_item", first), ("inbox_item", second)]),
+                outputKey: "waiting")
+            return seed.root
+        }
+
+        let read = try await snapshot(pool)
+
+        XCTAssertFalse(read.waitingForMe.messagesStandIn)
+        XCTAssertEqual(read.counts[root], 2, "2 people today, not 4")
+        XCTAssertEqual(read.badge, 2)
+    }
+
+    /// An owner folder's and a hidden folder's artifacts keep their own
+    /// counts on their rail rows; neither reaches the badge, nor does a
+    /// root artifact.
+    func testOwnerFolderArtifactsNeverReachTheBadge() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        let today = today
+        let ids = try await pool.write { db -> (owner: Int64, hidden: Int64) in
+            let seed = try InboxFolderFixtures.seed(db)
+            let owner = try InboxFolderFixtures.folder(db, parent: seed.root, slug: "a", position: 1)
+            let hidden = try InboxFolderFixtures.folder(db, parent: seed.root, slug: "h", position: 2, hidden: true)
             // Needs approval: one proposal + one due reminder.
             try TestDatabase.insertAgentAction(db, status: "pending")
             try db.execute(sql: """
                 INSERT INTO reminders (message_ref, note, remind_at, status) VALUES ('C1@1', 'n', '2000-01-01T00:00:00Z', 'pending')
                 """)
-            // Root legacy: one idea to judge, one unread open message.
-            _ = try TestDatabase.insertIdea(db, status: "proposed")
-            let item = try TestDatabase.insertInboxItem(db)
-            // Root artifacts: one unread plain, one read plain (0), one read
-            // with a waiting row and a closed row (1).
-            let automation = try TestDatabase.insertAutomation(db, slug: "root-one")
-            let run = try TestDatabase.insertAutomationRun(db, automationID: automation)
-            try TestDatabase.insertAutomationOutput(db, automationID: automation, runID: run)
-            try TestDatabase.insertAutomationOutput(db, automationID: automation, runID: run, readAt: now)
-            try TestDatabase.insertAutomationOutput(
-                db, automationID: automation, runID: run, readAt: now,
-                blocksJSON: InboxFolderFixtures.listDocument([("inbox_item", item), ("track", 999)]))
-            // A hidden folder's artifact leaves the badge.
-            let hiddenAutomation = try TestDatabase.insertAutomation(db, slug: "hidden-one")
-            try InboxFolderFixtures.route(db, automation: hiddenAutomation, folder: hidden)
-            let hiddenRun = try TestDatabase.insertAutomationRun(db, automationID: hiddenAutomation)
-            try TestDatabase.insertAutomationOutput(db, automationID: hiddenAutomation, runID: hiddenRun)
+            try Self.message(db, createdAt: today)
+            let rootAutomation = try TestDatabase.insertAutomation(db, slug: "root-one")
+            let rootRun = try TestDatabase.insertAutomationRun(db, automationID: rootAutomation)
+            try TestDatabase.insertAutomationOutput(db, automationID: rootAutomation, runID: rootRun)
+            for (slug, folder) in [("owner-one", owner), ("hidden-one", hidden)] {
+                let automation = try TestDatabase.insertAutomation(db, slug: slug)
+                try InboxFolderFixtures.route(db, automation: automation, folder: folder)
+                let run = try TestDatabase.insertAutomationRun(db, automationID: automation)
+                try TestDatabase.insertAutomationOutput(db, automationID: automation, runID: run)
+            }
+            return (owner: owner, hidden: hidden)
         }
 
-        let badge = try await pool.read { try ActionStripViewModel.badgeCount($0, nowUTC: now) }
+        let read = try await snapshot(pool)
 
-        // 2 (Needs approval) + 2 (root legacy) + 2 (root artifacts).
-        XCTAssertEqual(badge, 6)
+        XCTAssertEqual(read.counts[ids.owner], 1)
+        XCTAssertEqual(read.counts[ids.hidden], 1)
+        XCTAssertEqual(read.approvalsCount, 2)
+        XCTAssertEqual(read.badge, 3, "2 approvals + 1 person today; no artifact")
+        let calendar = try utc()
+        let now = now
+        let badge = try await pool.read { try ActionStripViewModel.badgeCount($0, nowUTC: now, calendar: calendar) }
+        XCTAssertEqual(badge, read.badge)
     }
 
     func testUnreadMessagesLeaveTheRootOnceWaitingForMeSucceeded() async throws {
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
-        let now = "2026-10-16T12:00:00Z"
+        let (now, today, calendar) = (now, today, try utc())
         let item = try await pool.write { db -> Int64 in
             try InboxFolderFixtures.seed(db)
-            return try TestDatabase.insertInboxItem(db)
+            return try Self.message(db, createdAt: today)
         }
-        let before = try await pool.read { try ActionStripViewModel.badgeCount($0, nowUTC: now) }
-        XCTAssertEqual(before, 1, "the Messages entry stands in before the first run")
+        let before = try await pool.read { try ActionStripViewModel.badgeCount($0, nowUTC: now, calendar: calendar) }
+        XCTAssertEqual(before, 1, "the Messages entry stands in before the first run: one person today")
 
         try await pool.write { db in
             let id = try TestDatabase.insertAutomation(db, slug: "waiting-for-me")
@@ -147,8 +229,8 @@ final class InboxFolderCountsTests: XCTestCase {
                 db, automationID: id, runID: run, readAt: now,
                 blocksJSON: InboxFolderFixtures.listDocument([("inbox_item", item)]), outputKey: "waiting")
         }
-        let after = try await pool.read { try ActionStripViewModel.badgeCount($0, nowUTC: now) }
-        XCTAssertEqual(after, 1, "the message counts once, as Waiting for me's waiting row")
+        let after = try await pool.read { try ActionStripViewModel.badgeCount($0, nowUTC: now, calendar: calendar) }
+        XCTAssertEqual(after, 1, "the person counts once, as people waiting today, not again as Waiting for me's row")
     }
 
     /// The stand-in rule: after a failed run the Messages entry is back and
@@ -157,11 +239,11 @@ final class InboxFolderCountsTests: XCTestCase {
     func testStaleWaitingForMeListLeavesTheBadgeAfterAFailedRun() async throws {
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
-        let now = "2026-10-16T12:00:00Z"
+        let (now, today, calendar) = (now, today, try utc())
         try await pool.write { db in
             try InboxFolderFixtures.seed(db)
-            let first = try TestDatabase.insertInboxItem(db, messageTS: "1")
-            let second = try TestDatabase.insertInboxItem(db, messageTS: "2")
+            let first = try Self.message(db, "1", createdAt: today)
+            let second = try Self.message(db, "2", createdAt: today)
             let id = try TestDatabase.insertAutomation(db, slug: "waiting-for-me")
             try db.execute(sql: """
                 UPDATE automations SET origin = 'builtin', builtin_id = 'waiting-for-me', path = 'builtin:waiting-for-me'
@@ -175,9 +257,9 @@ final class InboxFolderCountsTests: XCTestCase {
             try TestDatabase.insertAutomationRun(db, automationID: id, status: "failed")
         }
 
-        let badge = try await pool.read { try ActionStripViewModel.badgeCount($0, nowUTC: now) }
+        let badge = try await pool.read { try ActionStripViewModel.badgeCount($0, nowUTC: now, calendar: calendar) }
 
-        XCTAssertEqual(badge, 2, "two open messages, counted once by the Messages entry")
+        XCTAssertEqual(badge, 2, "two people waiting today, counted once; the stale list counts nothing")
         let state = try await pool.read { try InboxFolderQueries.waitingForMe($0) }
         XCTAssertTrue(state.messagesStandIn)
     }
@@ -192,6 +274,6 @@ final class InboxFolderCountsTests: XCTestCase {
             try TestDatabase.insertAutomationOutput(db, automationID: automation, runID: run)
         }
         let badge = try await pool.read { try ActionStripViewModel.badgeCount($0, nowUTC: "2026-10-16T12:00:00Z") }
-        XCTAssertEqual(badge, 2, "the proposal and the unread artifact, both in the root-only tree")
+        XCTAssertEqual(badge, 1, "the proposal; the unread artifact is not a badge term")
     }
 }

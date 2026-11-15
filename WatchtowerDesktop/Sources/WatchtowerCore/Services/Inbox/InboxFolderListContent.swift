@@ -1,39 +1,41 @@
 import Foundation
 
-/// One row of a folder's list (spec "The Inbox screen" 2): an automation
-/// artifact, a legacy entry over today's panes (Morning brief, Track my
-/// threads, Idea finder, Messages), a native approval card in Needs
-/// approval, or a result shown for a while (a thread brief, ask #609).
+/// One row of a folder's list (spec "The list"): an automation artifact,
+/// a legacy entry over today's panes (Morning brief, Track my threads,
+/// Idea finder, Messages), a native approval card in Needs approval, or a
+/// result shown for a while (a thread brief, ask #609), drawn from its
+/// `content`.
 package struct InboxFolderListRow: Identifiable, Equatable, Sendable {
-    package enum Kind: Equatable, Sendable { case artifact, legacy, approval, result }
-
     package let id: String
-    package let kind: Kind
-    package let title: String
-    /// "4 waiting", "today", "2 unread"; empty draws none.
-    package var summary: String
-    /// "updated 6 min ago · after every sync", "run #12 · 2 h ago".
-    package var detail: String
-    package var unread: Bool
+    package var content: InboxRowContent
     /// The row's own ⋯ (and context menu); empty draws none.
     package var menu: [InboxMenuEntry]
+    /// An artifact's row: its context menu is its automation's ⋯.
+    package let isArtifact: Bool
 
-    package init(
-        id: String,
-        kind: Kind,
-        title: String,
-        summary: String = "",
-        detail: String = "",
-        unread: Bool = false,
-        menu: [InboxMenuEntry] = []
-    ) {
+    package init(id: String, content: InboxRowContent, menu: [InboxMenuEntry] = [], isArtifact: Bool = false) {
         self.id = id
-        self.kind = kind
-        self.title = title
-        self.summary = summary
-        self.detail = detail
-        self.unread = unread
+        self.content = content
         self.menu = menu
+        self.isArtifact = isArtifact
+    }
+}
+
+/// One titled section of a folder's list ("Needs you", "Today", …).
+package struct InboxListSection: Identifiable, Equatable, Sendable {
+    package let id: String
+    package let title: String
+    package let rows: [InboxFolderListRow]
+    /// The count the heading shows after its title ("Targets · 4"); nil
+    /// shows none. A Needs approval group's approvals, which its one
+    /// Approve All row may stand for.
+    package let count: Int?
+
+    package init(id: String, title: String, rows: [InboxFolderListRow], count: Int? = nil) {
+        self.id = id
+        self.title = title
+        self.rows = rows
+        self.count = count
     }
 }
 
@@ -42,25 +44,57 @@ package struct InboxFolderListRow: Identifiable, Equatable, Sendable {
 package struct InboxFolderListContent: Equatable, Sendable {
     package let folderKind: InboxFolderKind
     package let folderTitle: String
-    package var rows: [InboxFolderListRow]
+    package var sections: [InboxListSection]
+    /// The root's line for past briefs; nil elsewhere and with none.
+    package var earlierLine: InboxEarlierLine?
     package var selection: String?
     /// A failed folder read: the previous list stays under today's strip
     /// error line.
     package var readError: String?
+    /// The list's search (`InboxListFilter`) the sections are filtered by;
+    /// empty = none.
+    package var query: String
 
     package init(
         folderKind: InboxFolderKind,
         folderTitle: String,
-        rows: [InboxFolderListRow] = [],
+        sections: [InboxListSection] = [],
+        earlierLine: InboxEarlierLine? = nil,
         selection: String? = nil,
-        readError: String? = nil
+        readError: String? = nil,
+        query: String = ""
     ) {
         self.folderKind = folderKind
         self.folderTitle = folderTitle
-        self.rows = rows
+        self.sections = sections
+        self.earlierLine = earlierLine
         self.selection = selection
         self.readError = readError
+        self.query = query
     }
+
+    /// The drawn row `step` rows from the selection (↑ = -1, ↓ = +1),
+    /// sections in order; with no selection drawn, ↓ picks the first row
+    /// and ↑ the last. Nil past either end or with no rows: the key does
+    /// nothing.
+    package func neighbour(_ step: Int) -> String? {
+        let ids = rows.map(\.id)
+        guard !ids.isEmpty, step != 0 else { return nil }
+        guard let selection, let index = ids.firstIndex(of: selection) else {
+            return step > 0 ? ids.first : ids.last
+        }
+        let next = index + step
+        return ids.indices.contains(next) ? ids[next] : nil
+    }
+
+    /// A search is on and nothing matches it: "No matches for …" in place
+    /// of the folder's empty state.
+    package var hasNoMatches: Bool {
+        rows.isEmpty && !InboxListFilter.trimmed(query).isEmpty
+    }
+
+    /// Every row, sections in order.
+    package var rows: [InboxFolderListRow] { sections.flatMap(\.rows) }
 
     /// The `EmptyStateCopyTable` key of the empty folder (spec "The Inbox
     /// screen" → States): `inbox`, `inboxFolder` or `inboxApprovals`.

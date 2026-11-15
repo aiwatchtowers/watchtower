@@ -105,12 +105,16 @@ final class InboxBriefEntryTests: XCTestCase {
         vm.selectFolder(ids.root)
 
         XCTAssertEqual(vm.folderEntries.map(\.id), ["brief:\(ids.newer)", "ideas", "brief:\(ids.older)"])
+        // Needs you holds the briefs newest first; Idea finder is Running.
         let rows = vm.folderList.rows
-        XCTAssertEqual(rows[0].kind, .result)
-        XCTAssertEqual(rows[0].title, "Brief of a thread")
-        XCTAssertEqual(rows[0].detail, "Thread brief · 15 min ago")
-        XCTAssertEqual(rows[2].title, "Thread brief", "an empty reason falls back to the tool's name")
-        XCTAssertFalse(rows[0].unread || rows[2].unread, "a result never waits on the owner")
+        XCTAssertEqual(rows.map(\.id), ["brief:\(ids.newer)", "brief:\(ids.older)", "ideas"])
+        XCTAssertEqual(rows[0].content.kind, .threads)
+        XCTAssertEqual(rows[0].content.title, "Brief of a thread")
+        XCTAssertEqual(rows[0].content.meta, "Thread brief")
+        let applied = try XCTUnwrap(AutomationDates.parse(vm.feed.briefs.first?.appliedAt ?? ""))
+        XCTAssertEqual(rows[0].content.time, InboxRowTime.label(applied, now: now, calendar: .current))
+        XCTAssertEqual(rows[1].content.title, "Thread brief", "an empty reason falls back to the tool's name")
+        XCTAssertFalse(rows[0].content.isUnread || rows[1].content.isUnread, "a result never waits on the owner")
 
         vm.selectFolder(ids.approvals)
         XCTAssertFalse(vm.folderEntries.contains { $0.id.hasPrefix("brief:") }, "Needs approval is for decisions only")

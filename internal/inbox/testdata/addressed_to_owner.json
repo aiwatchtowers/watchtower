@@ -1,0 +1,32 @@
+{
+  "comment": "Messages addressed to the owner, shared by the attention detector and the Slack window (internal/db TestSlackWindow_ToOwnerMatchesDetectorFixture). minutes_ago is relative to the test's now; thread_of names the root message's id.",
+  "account_id": 1,
+  "owner": "1:U0OWNER",
+  "users": [
+    {"id": "1:U0OWNER", "name": "owner", "display_name": "Owner"},
+    {"id": "1:U0ALICE", "name": "alice", "display_name": "Alice"},
+    {"id": "1:U0BOB", "name": "bob", "display_name": "Bob"}
+  ],
+  "channels": [
+    {"id": "1:C0ACME", "name": "acme-release", "type": "public"},
+    {"id": "1:D0ACME", "name": "D0ACME", "type": "dm", "dm_user_id": "1:U0ALICE"},
+    {"id": "1:G0ACME", "name": "mpdm-owner--alice--bob-1", "type": "group_dm"}
+  ],
+  "messages": [
+    {"id": "mention_strict", "channel": "1:C0ACME", "user": "1:U0ALICE", "minutes_ago": 60, "text": "<@U0OWNER> can you check the release notes?"},
+    {"id": "mention_pipe", "channel": "1:C0ACME", "user": "1:U0ALICE", "minutes_ago": 59, "text": "<@U0OWNER|owner> the tag is ready"},
+    {"id": "owner_thread_root", "channel": "1:C0ACME", "user": "1:U0OWNER", "minutes_ago": 58, "text": "Who owns the rollout today?"},
+    {"id": "reply_in_owner_thread", "channel": "1:C0ACME", "user": "1:U0BOB", "minutes_ago": 57, "thread_of": "owner_thread_root", "text": "I can take it"},
+    {"id": "owner_own_reply", "channel": "1:C0ACME", "user": "1:U0OWNER", "minutes_ago": 56, "thread_of": "owner_thread_root", "text": "Thanks, go ahead"},
+    {"id": "owner_eyes_from_other", "channel": "1:C0ACME", "user": "1:U0OWNER", "minutes_ago": 55, "text": "Draft of the plan is up", "reactions": [{"user": "1:U0ALICE", "emoji": "eyes"}]},
+    {"id": "owner_own_eyes_only", "channel": "1:C0ACME", "user": "1:U0OWNER", "minutes_ago": 54, "text": "Reminder to myself", "reactions": [{"user": "1:U0OWNER", "emoji": "eyes"}]},
+    {"id": "owner_thumbsup", "channel": "1:C0ACME", "user": "1:U0OWNER", "minutes_ago": 53, "text": "Shipped", "reactions": [{"user": "1:U0ALICE", "emoji": "thumbsup"}]},
+    {"id": "plain_line", "channel": "1:C0ACME", "user": "1:U0ALICE", "minutes_ago": 52, "text": "The build is green"},
+    {"id": "other_user_mention", "channel": "1:C0ACME", "user": "1:U0BOB", "minutes_ago": 51, "text": "<@U0ALICE> please review"},
+    {"id": "dm_from_other", "channel": "1:D0ACME", "user": "1:U0ALICE", "minutes_ago": 50, "text": "Do you have a minute?"},
+    {"id": "dm_owner_own", "channel": "1:D0ACME", "user": "1:U0OWNER", "minutes_ago": 49, "text": "Sure, in ten"},
+    {"id": "group_dm_plain", "channel": "1:G0ACME", "user": "1:U0BOB", "minutes_ago": 48, "text": "Lunch at noon?"},
+    {"id": "group_dm_mention", "channel": "1:G0ACME", "user": "1:U0ALICE", "minutes_ago": 47, "text": "<@U0OWNER> are you in?"}
+  ],
+  "expected_to_owner": ["mention_strict", "mention_pipe", "reply_in_owner_thread", "owner_eyes_from_other", "dm_from_other", "group_dm_mention"]
+}

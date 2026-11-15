@@ -557,7 +557,8 @@ final class ActionStripAllKindsTests: XCTestCase {
     }
 
     /// A route to a day past the loaded pages reads older pages until the
-    /// day is listed; a day that is nowhere selects nothing.
+    /// day is listed and opens the Morning brief on it; a day that is
+    /// nowhere opens today's.
     func testOpeningAnOldDayLoadsOlderPages() async throws {
         try await pool.write { db in
             for day in 1...31 {
@@ -565,16 +566,20 @@ final class ActionStripAllKindsTests: XCTestCase {
                 try TestDatabase.insertBriefing(db, date: String(format: "2026-07-%02d", day))
             }
         }
+        // An owner: today's Morning brief entry is listed (its placeholder).
+        try await pool.write { db in _ = try TestDatabase.insertSlackAccount(db, currentUserID: "1:U1") }
         let vm = makeVM()
 
         await vm.open(folder: nil, select: .card(.day("2026-07-01")))
         XCTAssertEqual(vm.selection, .day("2026-07-01"))
-        XCTAssertEqual(vm.entrySelection, "day:2026-07-01", "its Morning brief entry in the root")
+        XCTAssertEqual(vm.entrySelection, "day:\(today)", "the Morning brief entry in the root")
+        XCTAssertEqual(vm.briefDate, "2026-07-01")
         XCTAssertEqual(vm.dayLimit, 90)
 
         await vm.open(folder: nil, select: .card(.day("2020-01-01")))
-        XCTAssertNil(vm.selection, "not found: nothing selected")
-        XCTAssertNil(vm.entrySelection)
+        XCTAssertEqual(vm.selection, .day(today), "not found: today's brief")
+        XCTAssertEqual(vm.entrySelection, "day:\(today)")
+        XCTAssertNil(vm.briefDate)
         XCTAssertFalse(vm.feed.hasOlderDays)
     }
 
@@ -643,6 +648,22 @@ final class ActionStripAllKindsTests: XCTestCase {
         let nowUTC = AutomationDates.format(Date())
         let badge = try await pool.read { try ActionStripViewModel.badgeCount($0, nowUTC: nowUTC) }
         XCTAssertEqual(badge, 0)
+    }
+
+    /// "Today" (the people count, today's brief) moves with no database
+    /// write: a day, zone or wake signal re-reads.
+    func testADayChangeSignalReReads() async throws {
+        let center = NotificationCenter()
+        let vm = ActionStripViewModel(
+            dbPool: pool, cliRunner: FakeCLIRunner(), defaults: defaults,
+            dayChangeSignals: InboxDayChangeObserver.systemSignals(center: center))
+        let read = expectation(description: "a read after the time-zone change")
+        vm.onFeedRefreshed = { read.fulfill() }
+
+        center.post(name: .NSSystemTimeZoneDidChange, object: nil)
+
+        await fulfillment(of: [read], timeout: 5)
+        XCTAssertTrue(vm.hasRead)
     }
 
     // MARK: - Polling (board #731)

@@ -3,12 +3,12 @@ import GRDB
 import SwiftUI
 import ViewInspector
 @testable import WatchtowerDesktop
-import WatchtowerCore
+@testable import WatchtowerCore
 import WatchtowerTestSupport
 
-/// The Inbox's Your day card (spec §6.3, R10): the plan on top, the brief
-/// below; Add and Regenerate with feedback… only on today's card, both
-/// inline rows.
+/// The Inbox's Morning brief (spec "One brief row", §6.3, R10): the
+/// mockup's order under a pane header with the day stepper and History;
+/// Add and Regenerate with feedback… only on today's card, both inline rows.
 @MainActor
 final class InboxDayPaneTests: XCTestCase {
     nonisolated private static let today = "2026-10-22"
@@ -17,6 +17,7 @@ final class InboxDayPaneTests: XCTestCase {
         id: "1:U1", source: .slack, slackUserID: "1:U1", email: "", jiraAccountID: "", displayName: "Me"
     )
     nonisolated private static let attention = #"[{"text":"Reply to the release thread","priority":"high","source_type":"track","source_id":"3"}]"#
+    nonisolated private static let yourDay = #"[{"text":"Prepare the ACME-12 review"}]"#
 
     private var pool: DatabaseQueue!
     private var cli: FakeCLIRunner!
@@ -50,10 +51,26 @@ final class InboxDayPaneTests: XCTestCase {
         }
     }
 
-    private func insertBriefing(date: String) async throws {
+    private func insertBriefing(date: String, yourDay: String = "[]") async throws {
         try await pool.write { db in
-            try TestDatabase.insertBriefing(db, date: date, attention: Self.attention)
+            try TestDatabase.insertBriefing(db, date: date, attention: Self.attention, yourDay: yourDay)
         }
+    }
+
+    /// Today's people and threads for the pane's `controls`.
+    private func controls(onStep: @escaping (InboxBriefDays.Step) -> Void = { _ in }) -> InboxBriefControls {
+        let item = InboxItem(row: Row(["id": 9, "snippet": "Will you approve the budget?"]
+            as [String: (any DatabaseValueConvertible)?]))
+        let track = Track(row: Row(["id": 4, "text": "The tag goes out Thursday"]
+            as [String: (any DatabaseValueConvertible)?]))
+        var controls = InboxBriefControls()
+        controls.canStepOlder = true
+        controls.onStep = onStep
+        controls.waitingOnYou = [HomeFeedInboxRow(item: item, stamp: Date(), who: "Colleague B", whereText: nil)]
+        controls.movedOvernight = [InboxTrackCard(track: track, lastEventAt: Date(), newEventCount: 1)]
+        controls.onAllWaiting = {}
+        controls.onTrackMyThreads = {}
+        return controls
     }
 
     /// The card over what the database holds for `date`, with the view model
@@ -100,16 +117,144 @@ final class InboxDayPaneTests: XCTestCase {
 
     // MARK: - Tests
 
-    func testPlanAboveBriefing() async throws {
+    /// The mockup's order: the lead and Start here, Your day (the plan,
+    /// then the brief's day items), Waiting on you, Moved overnight.
+    func testSectionOrderFollowsTheMockup() async throws {
         try await insertPlan(date: Self.today)
-        try await insertBriefing(date: Self.today)
-        let sut = try await pane(date: Self.today)
+        try await insertBriefing(date: Self.today, yourDay: Self.yourDay)
+        var sut = try await pane(date: Self.today)
+        sut.controls = controls()
 
         let all = try texts(sut)
-        let firstRow = try XCTUnwrap(all.firstIndex(of: "Standup"))
-        let needsYou = try XCTUnwrap(all.firstIndex(of: "Needs you"))
-        XCTAssertLessThan(firstRow, needsYou)
-        XCTAssertNoThrow(try sut.inspect().find(text: "Reply to the release thread"))
+        let order = try ["Start here", "Your day", "Standup", "Prepare the ACME-12 review", "Waiting on you",
+                         "Moved overnight"].map { try XCTUnwrap(all.firstIndex(of: $0), $0) }
+        XCTAssertEqual(order, order.sorted(), "found in \(all)")
+        XCTAssertEqual(all.filter { $0 == "Reply to the release thread" }.count, 1,
+                       "the lead repeats Start here #1, so it is drawn once")
+        XCTAssertFalse(all.contains("Needs you"))
+        XCTAssertEqual(all.first, "Morning brief")
+        XCTAssertNoThrow(try sut.inspect().find(button: "All in Waiting for me"))
+        XCTAssertNoThrow(try sut.inspect().find(button: "Track my threads"))
+    }
+
+    func testHeaderStepperDisablesNewerOnToday() async throws {
+        try await insertBriefing(date: Self.today)
+        try await insertBriefing(date: Self.yesterday)
+        var steps: [InboxBriefDays.Step] = []
+        var todayCard = try await pane(date: Self.today)
+        todayCard.controls = controls { steps.append($0) }
+
+        let newer = try todayCard.inspect().find(viewWithAccessibilityIdentifier: "inbox.brief.newer").button()
+        XCTAssertTrue(newer.isDisabled(), "› is disabled on today")
+        let older = try todayCard.inspect().find(viewWithAccessibilityIdentifier: "inbox.brief.older").button()
+        XCTAssertFalse(older.isDisabled())
+        try older.tap()
+        XCTAssertNoThrow(try todayCard.inspect().find(text: "Thu 22 Oct"), "the stepper's date")
+        XCTAssertNoThrow(try todayCard.inspect().find(button: "History"))
+
+        var pastCard = try await pane(date: Self.yesterday)
+        pastCard.controls = controls { steps.append($0) }
+        try pastCard.inspect().find(viewWithAccessibilityIdentifier: "inbox.brief.newer").button().tap()
+        XCTAssertEqual(steps, [.older, .newer])
+
+        var oldest = try await pane(date: Self.yesterday)
+        oldest.controls.canStepOlder = false
+        let olderOfOldest = try oldest.inspect().find(viewWithAccessibilityIdentifier: "inbox.brief.older").button()
+        XCTAssertTrue(olderOfOldest.isDisabled(), "‹ is disabled with no older day")
+    }
+
+    func testHistoryListsUnreadMarked() throws {
+        func day(_ date: String, readAt: String?) throws -> InboxDayCard {
+            let briefing = try XCTUnwrap(try pool.write { db -> Briefing? in
+                try TestDatabase.insertBriefing(db, date: date, readAt: readAt)
+                return try BriefingQueries.fetchByDate(db, date: date)
+            })
+            return InboxDayCard(date: date, briefing: briefing, plan: nil, planDone: 0, planTotal: 0, stamp: Date())
+        }
+        let days = [try day(Self.today, readAt: nil), try day(Self.yesterday, readAt: "2026-10-21T09:00:00Z")]
+        var picked: [String] = []
+        let sut = InboxBriefHistoryList(days: days, shownDate: Self.today) { picked.append($0) }
+
+        func marked(_ id: String) throws -> Int {
+            try sut.inspect().findAll { try $0.accessibilityIdentifier() == id }.count
+        }
+        XCTAssertEqual(try marked("inbox.brief.history.unread"), 1)
+        XCTAssertEqual(try marked("inbox.brief.history.read"), 1)
+        XCTAssertEqual(try texts(sut), ["Thu 22 Oct", "Wed 21 Oct"], "newest first, the stepper's date label")
+        try sut.inspect().find(button: "Wed 21 Oct").tap()
+        XCTAssertEqual(picked, [Self.yesterday])
+    }
+
+    /// Waiting on you and Moved overnight are today's: a past brief leaves them out.
+    func testPastDayHidesTodayOnlySections() async throws {
+        try await insertBriefing(date: Self.yesterday)
+        var past = try await pane(date: Self.yesterday)
+        past.controls = controls()
+        XCTAssertNoThrow(try past.inspect().find(text: "Start here"))
+        XCTAssertThrowsError(try past.inspect().find(text: "Waiting on you"))
+        XCTAssertThrowsError(try past.inspect().find(text: "Moved overnight"))
+
+        try await insertBriefing(date: Self.today)
+        var today = try await pane(date: Self.today)
+        var empty = controls()
+        empty.waitingOnYou = []
+        empty.movedOvernight = []
+        today.controls = empty
+        XCTAssertThrowsError(try today.inspect().find(text: "Waiting on you"), "left out when empty")
+        XCTAssertThrowsError(try today.inspect().find(text: "Moved overnight"), "left out when empty")
+    }
+
+    func testConflictsChip() async throws {
+        try await insertPlan(date: Self.today, hasConflicts: true)
+        let sut = try await pane(date: Self.today)
+        XCTAssertNoThrow(try sut.inspect().find(text: "1 conflict"))
+
+        try await insertPlan(date: Self.yesterday)
+        let calm = try await pane(date: Self.yesterday)
+        XCTAssertThrowsError(try calm.inspect().find(text: "1 conflict"))
+    }
+
+    func testSubtitleSaysTheDayAndWhenItWasWritten() throws {
+        let card = InboxDayCard.placeholder(date: Self.today, stamp: Date())
+        XCTAssertEqual(InboxDayPane.subtitle(card), "Thursday, 22 October", "before a briefing, the day alone")
+
+        let briefing = try Briefing(row: Row([
+            "id": 1, "user_id": "u", "date": Self.today, "role": "", "attention": "[]", "your_day": "[]",
+            "what_happened": "[]", "team_pulse": "[]", "coaching": "[]", "model": "", "input_tokens": 0,
+            "output_tokens": 0, "cost_usd": 0.0, "prompt_version": 1, "read_at": nil,
+            "created_at": "2026-10-22T06:02:00Z"
+        ] as [String: (any DatabaseValueConvertible)?]))
+        let written = InboxDayCard(date: Self.today, briefing: briefing, plan: nil, planDone: 0, planTotal: 0,
+                                   stamp: Date())
+        XCTAssertEqual(InboxDayPane.subtitle(written, timeZone: try XCTUnwrap(TimeZone(identifier: "UTC"))),
+                       "Thursday, 22 October · written 06:02")
+        XCTAssertEqual(InboxDayPane.subtitle(written, timeZone: try XCTUnwrap(TimeZone(identifier: "Asia/Tokyo"))),
+                       "Thursday, 22 October · written 15:02", "the write time in the local time zone")
+    }
+
+    /// The lead is the first attention item: Start here draws it, and the
+    /// pane draws no lead paragraph of its own.
+    func testLeadRepeatingStartHereIsDrawnOnce() async throws {
+        try await insertBriefing(date: Self.today)
+        let sut = try await pane(date: Self.today)
+        let briefing = try XCTUnwrap(sut.card.briefing)
+
+        XCTAssertEqual(InboxBriefLayout.lead(briefing), "Reply to the release thread", "the row's preview keeps it")
+        XCTAssertEqual(try texts(sut).filter { $0 == "Reply to the release thread" }.count, 1)
+    }
+
+    /// No attention items: the lead falls back to the first your-day item,
+    /// which Your day draws; it is not drawn twice.
+    func testLeadFromYourDayIsDrawnOnce() async throws {
+        try await pool.write { db in
+            try TestDatabase.insertBriefing(db, date: Self.today, yourDay: Self.yourDay)
+        }
+        let sut = try await pane(date: Self.today)
+        let briefing = try XCTUnwrap(sut.card.briefing)
+
+        XCTAssertEqual(InboxBriefLayout.lead(briefing), "Prepare the ACME-12 review")
+        XCTAssertEqual(try texts(sut).filter { $0 == "Prepare the ACME-12 review" }.count, 1)
+        XCTAssertThrowsError(try sut.inspect().find(text: "Start here"), "no attention items, no Start here")
     }
 
     func testHeaderButtons() async throws {
@@ -244,13 +389,13 @@ final class InboxDayPaneTests: XCTestCase {
     func testBriefingOnlyCard() async throws {
         try await insertBriefing(date: Self.yesterday)
         let past = try await pane(date: Self.yesterday)
-        XCTAssertNoThrow(try past.inspect().find(text: "Needs you"))
+        XCTAssertNoThrow(try past.inspect().find(text: "Start here"))
         XCTAssertThrowsError(try past.inspect().find(text: "Plan"))
         XCTAssertThrowsError(try past.inspect().find(viewWithAccessibilityLabel: "Add to the plan"))
 
         try await insertBriefing(date: Self.today)
         let noOwner = try await pane(date: Self.today, owner: .unknown)
-        XCTAssertNoThrow(try noOwner.inspect().find(text: "Needs you"))
+        XCTAssertNoThrow(try noOwner.inspect().find(text: "Start here"))
         XCTAssertThrowsError(try noOwner.inspect().find(text: "Plan"))
     }
 
@@ -261,7 +406,7 @@ final class InboxDayPaneTests: XCTestCase {
         let sut = try await pane(date: Self.today)
 
         XCTAssertNoThrow(try sut.inspect().find(button: "Make today's plan"))
-        XCTAssertNoThrow(try sut.inspect().find(text: "Needs you"))
+        XCTAssertNoThrow(try sut.inspect().find(text: "Start here"))
         XCTAssertThrowsError(try sut.inspect().find(viewWithAccessibilityLabel: "Add to the plan"))
         XCTAssertThrowsError(try sut.inspect().find(button: "Regenerate with feedback…"))
     }
@@ -356,10 +501,10 @@ final class InboxDayPaneTests: XCTestCase {
 
         XCTAssertNoThrow(try sut.inspect().find(text: "Plan"))
         XCTAssertNoThrow(try sut.inspect().find(text: "Write tests"))
-        for header in ["Needs you", "What happened", "Team pulse", "Coaching"] {
+        for header in ["Start here", "Needs you", "More for today", "What happened", "Team pulse", "Coaching"] {
             XCTAssertThrowsError(try sut.inspect().find(text: header), header)
         }
-        XCTAssertEqual(try texts(sut).filter { $0 == "Your day" }.count, 1, "the card's title, no briefing section")
+        XCTAssertEqual(try texts(sut).filter { $0 == "Your day" }.count, 1, "the plan's section, no briefing one")
     }
 
     func testBriefingItemOpensItsLink() throws {
@@ -489,5 +634,74 @@ final class InboxDayPaneTests: XCTestCase {
         let fresh = try await view(Self.owner, context)
         XCTAssertNoThrow(try fresh.inspect().find(text: firstRunTitle))
         XCTAssertThrowsError(try fresh.inspect().find(text: "Today's plan at or after 08:00"))
+    }
+
+    // MARK: - The brief's blocks
+
+    /// Five attention items: Start here draws the first three, More for
+    /// today the other two; each item once.
+    func testStartHereAndMoreForTodaySplitTheAttentionItems() async throws {
+        let items = (1...5).map { #"{"text":"a\#($0)","priority":"high"}"# }
+        try await pool.write { db in
+            try TestDatabase.insertBriefing(db, date: Self.today, attention: "[\(items.joined(separator: ","))]")
+        }
+        let all = try texts(try await pane(date: Self.today))
+
+        let order = try ["Start here", "a1", "a2", "a3", "More for today", "a4", "a5"]
+            .map { try XCTUnwrap(all.firstIndex(of: $0), $0) }
+        XCTAssertEqual(order, order.sorted(), "found in \(all)")
+        for text in ["a1", "a2", "a3", "a4", "a5"] {
+            XCTAssertEqual(all.filter { $0 == text }.count, 1, text)
+        }
+    }
+
+    /// A failed Make a Task shows once at the top of its brief's pane, is
+    /// not shown over another day, and is still there on the way back.
+    func testMakeTaskFailureShowsOnceAndOutlivesADayStep() async throws {
+        let suggest = #"[{"text":"File the release ticket","priority":"high","suggest_target":true}]"#
+        try await pool.write { db in
+            try TestDatabase.insertBriefing(db, date: Self.today, attention: suggest)
+            try TestDatabase.insertBriefing(db, date: Self.yesterday, attention: Self.attention)
+        }
+        let model = BriefMakeTaskModel()
+        var sut = try await pane(date: Self.today)
+        sut.makeTask = model
+        sut.onMakeTask = { _ in "Jira is not connected" }
+
+        try sut.inspect().find(button: "Make a Task").tap()
+        for _ in 0..<100 where model.failure == nil {
+            await Task.yield()
+        }
+        XCTAssertFalse(model.running)
+        XCTAssertEqual(try texts(sut).filter { $0 == "Jira is not connected" }.count, 1, "one banner")
+
+        var other = try await pane(date: Self.yesterday)
+        other.makeTask = model
+        XCTAssertFalse(try texts(other).contains("Jira is not connected"), "not over another day")
+
+        var back = try await pane(date: Self.today)
+        back.makeTask = model
+        XCTAssertEqual(try texts(back).filter { $0 == "Jira is not connected" }.count, 1, "still there")
+    }
+
+    /// One press at a time across the brief; a success clears the failure.
+    func testMakeTaskModelRunsOnePressAtATime() async {
+        let model = BriefMakeTaskModel()
+        let item = BriefingTaskSource.coaching(CoachingItem(text: "Pair more", relatedUserID: nil, category: nil))
+        await model.press(item, briefingID: 7) { _ in "failed" }
+        XCTAssertEqual(model.message(for: 7), "failed")
+        XCTAssertNil(model.message(for: 8))
+
+        var calls = 0
+        await model.press(item, briefingID: 7) { _ in
+            calls += 1
+            await model.press(item, briefingID: 7) { _ in
+                calls += 1
+                return nil
+            }
+            return nil
+        }
+        XCTAssertEqual(calls, 1, "a press while one runs does nothing")
+        XCTAssertNil(model.failure, "a success clears the failure")
     }
 }

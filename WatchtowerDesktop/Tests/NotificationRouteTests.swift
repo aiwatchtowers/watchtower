@@ -16,6 +16,10 @@ import WatchtowerTestSupport
 /// (`UNNotificationResponse` has no public initializer, so no test can synthesize one).
 @MainActor
 final class NotificationRouteTests: XCTestCase {
+    override func tearDown() async throws {
+        IdeaBatchDefaults.clearStandard()
+        try await super.tearDown()
+    }
 
     // MARK: - Forwarded responses are navigation-only
 
@@ -338,7 +342,7 @@ final class NotificationRouteTests: XCTestCase {
         ).userInfo
         // The legacy list open, the root's entry selected, the card open.
         let cases: [([AnyHashable: Any], InboxLegacyList?, String, InboxSelection?)] = [
-            (["type": "track"], .tracks, "tracks", nil),
+            (["type": "track"], nil, "tracks", nil),
             (["type": "track_update", "trackId": 7], .tracks, "tracks", .track(7)),
             (forwardedUpdate, .tracks, "tracks", .track(7)),
             (["type": "briefing"], nil, "day:\(today)", .day(today))

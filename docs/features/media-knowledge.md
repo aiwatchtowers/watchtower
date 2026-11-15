@@ -75,7 +75,7 @@ Media rows follow their parent: a Slack tombstone deletes them in its write (`To
 - No flood caps: a bot flood queues ahead of later non-owner items, bounded only by the cycle budget and the plan-limit pause (C).
 - Opening a link fetches it from the Mac like a browser visit: the site sees the Mac's address and the time, and a tracking link can tell its author it was opened (B).
 - The own-address check covers the Mac's interface addresses only: a LAN host on a public-looking range is not recognised.
-- Mail `from_owner` trusts the From header (it only orders the queue).
+- Mail `from_owner` trusts the From header, and for Gmail also the `SENT` label (a "Send mail as" alias included; `db.GmailOwnSent`); it only orders the queue.
 - A link answering `image/*` is treated as a posted image, so its text feeds the key scanners.
 - Dedupe is per account: identical bytes in a private and a public channel of one account share one description.
 - Codex's hardening is a denylist (see "The image call").

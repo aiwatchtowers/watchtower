@@ -205,6 +205,16 @@ func TestConfig_PlanUsageDefaults(t *testing.T) {
 	assert.False(t, off.PlanUsage.Enabled)
 }
 
+func TestConfig_SlackTodayDefaultOn(t *testing.T) {
+	cfg, err := Load(writeTestConfig(t, ""))
+	require.NoError(t, err)
+	assert.True(t, cfg.SlackToday.Enabled, "absent block = on")
+	assert.True(t, DefaultSlackTodayEnabled)
+	off, err := Load(writeTestConfig(t, "slack_today:\n  enabled: false\n"))
+	require.NoError(t, err)
+	assert.False(t, off.SlackToday.Enabled)
+}
+
 func TestValidate_Valid(t *testing.T) {
 	cfg := &Config{
 		ActiveWorkspace: "test",

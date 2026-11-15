@@ -156,6 +156,8 @@ final class AppState {
     /// survive the composer sheet being dismissed and any navigation away.
     /// Its chat-VM factory is wired below once the DB pool opens.
     let targetBriefCenter = TargetBriefCenter()
+    /// The Morning brief's Make a Task state, kept across day steps (R9).
+    let briefMakeTask = BriefMakeTaskModel()
 
     /// App-wide, single-slot registry for meeting recording + transcription, so
     /// an in-flight recording and its transcription survive navigating away from
@@ -291,6 +293,16 @@ final class AppState {
     /// Sidebar badge counts — created during initialize() before the splash hides,
     /// so badges are visible the moment the main UI appears.
     private(set) var sidebarCountsViewModel: SidebarCountsViewModel?
+
+    #if DEBUG
+    /// Test seam (design shots, which build in debug): the sidebar reads
+    /// `counts`, loaded by the caller over its own database, with no
+    /// observation started. Not in a release build; `initialize()` owns the
+    /// real one.
+    func useSidebarCounts(_ counts: SidebarCountsViewModel) {
+        sidebarCountsViewModel = counts
+    }
+    #endif
 
     /// Email Accounts ViewModel (multi-account IMAP/Outlook) — persists across
     /// tab switches so an in-flight connect (Outlook OAuth or IMAP add) survives
@@ -1764,10 +1776,16 @@ final class AppState {
             cli: AutomationsCLI(runner: runner),
             direct: DirectCustomTrackControls(dbPool: dbPool, scanService: TrackScanService(runner: runner)))
         customTrackControls = controls
-        let vm = ActionStripViewModel(dbPool: dbPool, cliRunner: cliRunner, customTrackControls: controls) {
-            guard let runner = ProcessCLIRunner.makeDefault() else { throw CLIRunnerError.binaryNotFound }
-            try await AutomationsCLI(runner: runner).wake()
-        }
+        // "Today" also moves on a wake past midnight, with no database write.
+        let dayChanges = InboxDayChangeObserver.systemSignals() + [InboxDayChangeObserver.Signal(
+            center: NSWorkspace.shared.notificationCenter, name: NSWorkspace.didWakeNotification)]
+        let vm = ActionStripViewModel(
+            dbPool: dbPool, cliRunner: cliRunner, customTrackControls: controls,
+            automationsWake: {
+                guard let runner = ProcessCLIRunner.makeDefault() else { throw CLIRunnerError.binaryNotFound }
+                try await AutomationsCLI(runner: runner).wake()
+            },
+            dayChangeSignals: dayChanges)
         // The badge counts the rows this read lists, and the daemon's writes
         // to them never fire the counts VM's observation; resolved at call time.
         vm.onFeedRefreshed = { [weak self] in

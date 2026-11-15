@@ -24,6 +24,8 @@ extension AppState {
     /// Inbox's view model exists.
     @discardableResult
     func openInbox(_ route: InboxRoute) -> Task<Void, Never>? {
+        // Before the Inbox shows: its arrival yields to the route.
+        actionStripViewModel?.beginRoute()
         selectedDestination = .inbox
         guard let inbox = actionStripViewModel else { return nil }
         return Task { await inbox.open(folder: route.folderID, select: route.entry) }
@@ -34,12 +36,27 @@ extension AppState {
     /// fresh read of the menu.
     @discardableResult
     func openBuiltinInInbox(automationID: Int64, defaultFolder: String) -> Task<Void, Never>? {
+        actionStripViewModel?.beginRoute()
         selectedDestination = .inbox
         guard let inbox = actionStripViewModel else { return nil }
         return Task {
             await inbox.refresh()
             let folder = inbox.folderMenu.tree.folder(forAutomation: automationID, defaultSlug: defaultFolder)
             await inbox.open(folder: folder.id, select: nil)
+        }
+    }
+
+    /// The Inbox's Needs approval folder (the root on a tree without it),
+    /// resolved on a fresh read of the menu: a proposal push's click.
+    @discardableResult
+    func openNeedsApproval() -> Task<Void, Never>? {
+        actionStripViewModel?.beginRoute()
+        selectedDestination = .inbox
+        guard let inbox = actionStripViewModel else { return nil }
+        return Task {
+            await inbox.refresh()
+            let tree = inbox.folderMenu.tree
+            await inbox.open(folder: (tree.approvals ?? tree.root).id, select: nil)
         }
     }
 
@@ -64,8 +81,10 @@ extension AppState {
     /// opens; a briefing that is gone (or no database) opens today's card.
     @discardableResult
     func navigateToBriefing(_ briefingID: Int) -> Task<Void, Never>? {
+        actionStripViewModel?.beginRoute()
         selectedDestination = .inbox
         let pool = databaseManager?.dbPool
+        let inbox = actionStripViewModel
         return Task {
             var date: String?
             if let pool {
@@ -77,7 +96,8 @@ extension AppState {
                         "reading briefing \(briefingID) for its day card: \(error.localizedDescription, privacy: .public)")
                 }
             }
-            await navigateToDayPlan(date)?.value
+            // The route announced above is this `open`'s: no second announce.
+            await inbox?.open(folder: nil, select: .card(.day(date ?? Self.inboxToday())))
         }
     }
 

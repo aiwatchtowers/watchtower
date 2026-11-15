@@ -436,3 +436,128 @@ func TestContentHash_DefaultPriorityIsMedium(t *testing.T) {
 		t.Fatal(`ContentHash with priority "" equals "low"`)
 	}
 }
+
+// TestRef_TextKinds: mail_sender and waiting_older carry a text id, from a
+// built-in automation only, and round-trip through the canonical form.
+func TestRef_TextKinds(t *testing.T) {
+	expr := `[{type: "list", rows: [{title: "a", ref: {kind: "mail_sender", id: "a@example.com"}},` +
+		` {title: "b", ref: {kind: "waiting_older", id: "people"}}, {title: "c", ref: {kind: "track", id: 3}}]}]`
+	d, err := validate(t, expr, blocks.Options{BuiltIn: true})
+	if err != nil {
+		t.Fatalf("built-in text refs refused: %v", err)
+	}
+	r := d.Blocks[0].List.Rows
+	if *r[0].Ref != (blocks.Ref{Kind: blocks.RefMailSender, Key: "a@example.com"}) ||
+		*r[1].Ref != (blocks.Ref{Kind: blocks.RefWaitingOlder, Key: "people"}) ||
+		*r[2].Ref != (blocks.Ref{Kind: blocks.RefTrack, ID: 3}) {
+		t.Fatalf("refs = %+v %+v %+v", *r[0].Ref, *r[1].Ref, *r[2].Ref)
+	}
+	canonical, err := d.Canonical()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"ref":{"kind":"mail_sender","id":"a@example.com"}`,
+		`"ref":{"kind":"waiting_older","id":"people"}`, `"ref":{"kind":"track","id":3}`} {
+		if !strings.Contains(string(canonical), want) {
+			t.Errorf("canonical %s lacks %s", canonical, want)
+		}
+	}
+	back, err := blocks.Decode(string(canonical))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	again, err := back.Canonical()
+	if err != nil || string(again) != string(canonical) {
+		t.Fatalf("round trip = %s, %v; want %s", again, err, canonical)
+	}
+	if *back.Blocks[0].List.Rows[0].Ref != *r[0].Ref || *back.Blocks[0].List.Rows[2].Ref != *r[2].Ref {
+		t.Fatalf("decoded refs = %+v", back.Blocks[0].List.Rows)
+	}
+
+	row := func(kind, id string) string {
+		return `[{type: "list", rows: [{title: "t", ref: {kind: "` + kind + `", id: ` + id + `}}]}]`
+	}
+	wantRefused(t, row("mail_sender", `"a@example.com"`), blocks.Options{},
+		"blocks[0].rows[0].ref: a mail_sender ref is only for built-in automations")
+	wantRefused(t, row("waiting_older", `"people"`), blocks.Options{},
+		"blocks[0].rows[0].ref: a waiting_older ref is only for built-in automations")
+	builtIn := blocks.Options{BuiltIn: true}
+	for _, id := range []string{`"A@example.com"`, `"a example.com"`, `""`, `7`, `null`} {
+		wantRefused(t, row("mail_sender", id), builtIn, "blocks[0].rows[0].ref.id must be a sender address")
+	}
+	for _, id := range []string{`"mail"`, `"People"`, `""`, `1`} {
+		wantRefused(t, row("waiting_older", id), builtIn, `blocks[0].rows[0].ref.id must be "people"`)
+	}
+	wantRefused(t, row("track", `"3"`), builtIn, "blocks[0].rows[0].ref.id must be a positive integer")
+}
+
+func TestValidSenderAddress(t *testing.T) {
+	long := strings.Repeat("a", 251) + "@b.c" // 255 bytes
+	for s, want := range map[string]bool{
+		"a@example.com": true, "a@b": true, "ü@example.com": true, long[1:]: true, long: false,
+		"": false, "@": false, "a@": false, "A@example.com": false, "a example.com": false,
+		"a@@example.com": false, "a@b@c": false, "example.com": false, " a@example.com": false,
+		"a@example.com\n": false, "a\t@b": false, `"a"@b`: false, "<a@b>": false, "a,b@c": false,
+		"a@b\x7f": false, "a@b\u0085": false, "a@ex\u00e4mple.com": true,
+		// Invalid UTF-8 would be rewritten to U+FFFD in the stored ref, so
+		// its key would differ from the bulk resolve's; spaces and format
+		// characters are invisible.
+		"a@b\xff": false, "a\xc3@b": false, "a\u00a0b@c": false, "a\u200b@b": false,
+		"\ufeffa@b": false, "a@b\u2028": false, "a@b\u3000": false,
+		// JSON escapes both (\u0026, \\): an actionable address's JSON is
+		// exactly its bytes plus the quotes.
+		"a&b@example.com": false, `a\b@example.com`: false,
+	} {
+		if got := blocks.ValidSenderAddress(s); got != want {
+			t.Errorf("ValidSenderAddress(%q) = %v; want %v", s, got, want)
+		}
+	}
+}
+
+// TestRef_DecodeRefusesAMismatchedID: a text kind with a number id, or an
+// integer kind with a string id, is not a readable document.
+func TestRef_DecodeRefusesAMismatchedID(t *testing.T) {
+	for _, ref := range []string{`{"kind":"mail_sender","id":5}`, `{"kind":"track","id":"5"}`} {
+		doc := `{"v":1,"blocks":[{"type":"list","rows":[{"title":"t","actions":[],"ref":` + ref + `}],"empty":"x"}]}`
+		if d, err := blocks.Decode(doc); err == nil {
+			t.Errorf("Decode(%s) = %+v; want an error", ref, d)
+		}
+	}
+}
+
+// TestContentHash_ExistingCasesUnchanged pins the content hash of every
+// fixture case that predates the text-id refs: a stored living artifact
+// compares hashes, so an integer ref must marshal exactly as before.
+func TestContentHash_ExistingCasesUnchanged(t *testing.T) {
+	pinned := map[string]string{
+		"every block and optional field":    "b26c9d1d9a0268add78d3d072baae2ea4f009d8fcb9d8e3dd471fb7816eb62a1",
+		"empty document":                    "a47faeb391e508d3f7bdbbf27833bd6c6cc3d0fc6d987556eea7dbd5703f4a2e",
+		"defaults written":                  "7e64c048f8560ec165460fd31f852bac0474b59495961195daf69e58e45c4504",
+		"strings trimmed":                   "9a14c015ba3db96f9dfaf8ff5e91a932b96ad896faf377763fae32caf8b90681",
+		"built-in action and reminder refs": "e1ab0cb2bf885c75de84ded42836df276de2dc2176d82a88d9dfc270b11b7d77",
+		"target without intent or parent":   "ebf55636cc7283a248cb61704eecbdab4147f20bb112ae63241c6251771eb793",
+		"flattened order":                   "5a476ab7610787eb0ae4266a96c03c35bf79f2c4613c157dcf74b5e96b4be133",
+		"html characters are not escaped":   "33997692bd1018cb8e271b5984f8411db8491a535227570ff214bd174b33a6f9",
+		"non-ASCII text":                    "cf73bd16a69ea899b29963a3b542b1d59da41fc3df20557742c1dc29655a1cfa",
+		"escaping of special characters":    "441b01e7d7587abc04d703bd654754eaf8d476bf80630101fb5ac2b5b93d8927",
+		"reply data bytes":                  "6cbcc3f508c9b92c26f23a6a91667386b342e01258855bad515d3ce17ca8b42a",
+	}
+	seen := 0
+	for _, c := range readFixture(t).Valid {
+		want, ok := pinned[c.Name]
+		if !ok {
+			continue
+		}
+		seen++
+		r, err := card(exported(t, c.Input), c.BuiltIn)
+		if err != nil {
+			t.Fatalf("%s: refused: %v", c.Name, err)
+		}
+		if r.hash != want || c.ContentHash != want {
+			t.Errorf("%s: content hash = %s (stored %s); want %s", c.Name, r.hash, c.ContentHash, want)
+		}
+	}
+	if seen != len(pinned) {
+		t.Fatalf("found %d of the %d pinned cases", seen, len(pinned))
+	}
+}

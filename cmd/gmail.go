@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"log"
 	"strings"
 
 	"watchtower/internal/calendar"
@@ -179,7 +180,8 @@ func runGmailSync(cmd *cobra.Command, _ []string) error {
 			fmt.Fprintf(cmd.ErrOrStderr(), "account %d: failed to create client: %v\n", acct.ID, err)
 			continue
 		}
-		syncer := gmail.NewSyncer(client, database, cfg, nil, acct.ID)
+		// The syncer's warnings (a failed first-sync stamp, a cap) go to stderr.
+		syncer := gmail.NewSyncer(client, database, cfg, log.New(cmd.ErrOrStderr(), "", 0), acct.ID)
 		count, err := syncer.Sync(cmd.Context())
 		if err != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "account %d: sync failed: %v\n", acct.ID, err)

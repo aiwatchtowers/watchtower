@@ -437,3 +437,31 @@ func TestListEmails_BeforePagesOlder(t *testing.T) {
 	require.Len(t, imap, 1)
 	assert.Equal(t, "7-1", imap[0].ID)
 }
+
+// TestListEmails_SentKey: list_emails and get_email mark the owner's own sent
+// mail with "sent": true and a received message with false.
+func TestListEmails_SentKey(t *testing.T) {
+	f := newEmailFixture(t)
+	f.seedGmail(t, "recv", f.recent.Add(-time.Hour), false, "")
+	require.NoError(t, f.d.UpsertGmailMessage(f.gmail, db.GmailMessage{
+		ID: "mine", ThreadID: "t-recv", FromEmail: "owner@example.com", FromName: "Owner",
+		ToJSON: `["colleague@example.com"]`, CcJSON: `[]`, Subject: "Re: subject recv", Snippet: "reply",
+		BodyText: "my reply", InternalDate: f.recent.Format(time.RFC3339), LabelsJSON: `["` + db.GmailSentLabel + `"]`,
+		SyncedAt: f.recent.Format(time.RFC3339),
+	}))
+
+	var got struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(callReadString(t, f.reg, "list_emails", `{"account":"work"}`)), &got))
+	require.Len(t, got.Messages, 2)
+	sent := map[string]any{}
+	for _, m := range got.Messages {
+		sent[m["id"].(string)] = m["sent"]
+	}
+	assert.Equal(t, map[string]any{"mine": true, "recv": false}, sent)
+
+	var one map[string]any
+	require.NoError(t, json.Unmarshal([]byte(callReadString(t, f.reg, "get_email", `{"account":"work","id":"mine"}`)), &one))
+	assert.Equal(t, true, one["sent"])
+}

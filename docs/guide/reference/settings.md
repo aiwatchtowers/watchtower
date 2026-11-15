@@ -40,7 +40,7 @@ since: 0.24.0
 -->
 
 - The list turns each feature on or off, asking first if others depend on the one turned off. **Keep ML engines in memory** keeps the speech models loaded. **Save** restarts the background sync once. See [Features on and off](../concepts/features-on-and-off.md).
-- **Briefing, Day Plan, Tracks, Ideas and Reaction commands** have no switch here: "These now live in Automations → Built in", and **Open Automations** leads there. See [Built-in automations](../features/automations-built-in.md).
+- **Briefing, Day Plan, Tracks, Ideas, Reaction commands and Slack today** have no switch here: "These now live in Automations → Built in", and **Open Automations** leads there. See [Built-in automations](../features/automations-built-in.md).
 - Tuning sections appear only while their feature is on:
   - **Digest**: minimum messages.
 - Notifications:

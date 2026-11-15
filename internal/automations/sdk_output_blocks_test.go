@@ -305,6 +305,25 @@ func TestOutput_BlockActionRefs(t *testing.T) {
 	mustReturn(t, try(`output.inbox({title: "t", blocks: [{type: "list", rows: [{title: "x", ref: {kind: "track", id: 2}}]}]})`), feedCase(), "ok")
 }
 
+// TestOutput_BlockTextRefsBuiltinOnly: the mail_sender and waiting_older
+// refs (STRIP-01, ask #649) are refused through the SDK in a recipe that is
+// not a built-in and kept in a built-in's card.
+func TestOutput_BlockTextRefsBuiltinOnly(t *testing.T) {
+	for kind, id := range map[string]string{"mail_sender": `"a@example.com"`, "waiting_older": `"people"`} {
+		t.Run(kind, func(t *testing.T) {
+			row := `output.inbox({title: "t", blocks: [{type: "list", rows: [{title: "x", ref: {kind: "` + kind + `", id: ` + id + `}}]}]})`
+			wantRefusal(t, row, feedCase(), "ValidationError",
+				"output.inbox(): blocks[0].rows[0].ref: a "+kind+" ref is only for built-in automations")
+			c := feedCase()
+			c.builtin = true
+			r := mustReturn(t, try(row), c, "ok")
+			if want := `"ref":{"kind":"` + kind + `","id":` + id + `}`; !strings.Contains(r.env.Buffer.Outputs()[0].BlocksJSON, want) {
+				t.Fatalf("BlocksJSON = %s; want %s", r.env.Buffer.Outputs()[0].BlocksJSON, want)
+			}
+		})
+	}
+}
+
 func TestOutput_BlockReplyActionNeedsInboxReply(t *testing.T) {
 	call := `output.inbox({title: "t", blocks: [{type: "actions", actions: [{label: "Snooze", reply: "snooze"}]}]})`
 	r := wantRefusal(t, call, feedCase(), "PermissionDenied", "inbox:reply")
