@@ -404,6 +404,10 @@ type chatFeedConversation struct {
 type chatSiblings struct {
 	Index int `json:"index"`
 	Count int `json:"count"`
+	// IDs are the siblings' message ids in order, only when there is more
+	// than one: the phone's ‹ i/n › names the sibling it selects
+	// (chat_branch_select).
+	IDs []int64 `json:"ids,omitempty"`
 }
 
 type chatFeedAttachment struct {
@@ -588,7 +592,11 @@ func chatBranchTx(ctx context.Context, tx *sql.Tx, conv int64, leaf sql.NullInt6
 		if len(sibs) == 0 {
 			sibs = []int64{n.id}
 		}
-		b.siblings[n.id] = chatSiblings{Index: max(slices.Index(sibs, n.id), 0) + 1, Count: len(sibs)}
+		sib := chatSiblings{Index: max(slices.Index(sibs, n.id), 0) + 1, Count: len(sibs)}
+		if len(sibs) > 1 {
+			sib.IDs = slices.Clone(sibs)
+		}
+		b.siblings[n.id] = sib
 	}
 	return b, nil
 }
