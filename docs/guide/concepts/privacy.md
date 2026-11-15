@@ -57,7 +57,7 @@ Every AI feature sends the relevant text to the provider you chose in [AI provid
 - **Mail and Jira digests:** the text of new mail and changed issues and comments.
 - **Briefing, day plan, Catch Up:** your calendar, targets, digests and attention items.
 - **Meeting recaps and the meeting chat:** the transcript, unless the recording is [private](../features/meeting-recording-private-and-export.md).
-- **Chats:** your question plus whatever the assistant reads to answer it, such as messages, mail, tickets or memory notes. It reads them through Watchtower's local tools, and what a tool returns is sent to the provider.
+- **Chats:** your question plus whatever the assistant reads to answer it, such as messages, mail, tickets or memory notes. It reads them through Watchtower's local tools, and what a tool returns is sent to the provider. With [Live Slack](sources-and-accounts.md#live-slack-through-your-claude-or-chatgpt-account) on, the assistant can also read Slack through your Claude or ChatGPT account's own Slack connector; what it reads that way stays in that chat and is not kept anywhere else.
 - **Asking with ⌘/:** the same as Chats, plus a short note on the tab you are on, its empty-state status line and the selected item's title. The note is sent with that message only and is not stored.
 - **Automations:** a confirmed automation sends data to the provider on its own schedule whenever its recipe calls `llm()` or `agent()`.
 - **Knowledge search:** new images (strong model) and the text of public pages that synced Slack or Confluence links point to (light model). See [Images and links](../features/search-and-knowledge.md#images-and-links).

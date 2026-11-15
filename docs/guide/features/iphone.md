@@ -4,7 +4,7 @@ The Watchtower iPhone app is a window onto your tower: your Mac or server runnin
 
 ## Why use it
 
-You step away while a Workbench session waits on a question. The phone shows an orange card; a few taps answer it and the session goes on. The same app lists today's meetings with their prep, and its red **Record** button sends the audio to your Mac, which transcribes it and writes the recap.
+You step away while a Workbench session waits on a question. The phone shows an orange card; a few taps answer it and the session goes on. Its **Record** button sends a meeting's audio to your Mac for the transcript and recap.
 
 ## How it works
 
@@ -76,9 +76,9 @@ kind: feature
 since: 0.24.0
 -->
 
-- **Now** shows your tower's status, then **Waiting for you**, **Working** and the next meeting (see [Now and sessions](iphone-workbench.md#now-and-sessions)). The gear opens Settings.
+- **Now** shows your tower's status, then **Waiting for you**, **Working**, **Ended** and the next meeting (see [Now and sessions](iphone-workbench.md#now-and-sessions)). The gear opens Settings.
 - **Workbench** lists your workbenches as cards. Open one for **Sessions** (split like Now) or **Board** (targets with status, priority and comments). A group's done sub-targets stay hidden until you tap **Show done (N)** (remembered).
-- **Calendar** shows your tower's events with prep and **Record**; **Recordings** has **Record a voice note**.
+- **Calendar** shows your tower's events with prep and **Record**, kept 30 minutes past an unrecorded event's end. **Recordings** has **Record a voice note**.
 
 Asks come in three kinds: a question, a review (hold a paragraph to comment; **Request changes** needs a comment or a note) and a check (**Works**, **Doesn't work** or **Didn't check** per step).
 
@@ -113,13 +113,20 @@ Three switches under Settings → **Workbench** on the phone:
 - **Type into sessions from this phone** lets you send a line to a running session. The Mac must also approve: the phone row on the Mac shows **Asks to type into sessions**, and **Allow…** grants it. **Revoke** takes it back.
 - **Answer permission prompts from this phone** answers permission prompts (off by default: approvals wait at the Mac). The Mac's row shows **Asks to answer permission prompts**, with its own **Allow…**.
 
-Without the typing switch, a running session's bottom bar says so, with **Turn On** right there.
+Without the typing switch, a running session's bottom bar says so, with **Turn On** right there. A server tower has no Settings window: the phone shows the `watchtower hub allow` command to run on it instead.
 
-A session's status shows its time in that state, like **Working · 12m**.
+### Start a target's session
+<!-- learn
+id: iphone-start-from-target
+title: Start a target's session in two taps
+text: Pick a target on the phone's board and press **Start session**; its brief is ready, nothing to type.
+area: iphone
+level: next
+kind: tip
+since: 0.28.3
+-->
 
-### Answer prompts and interrupt agents
-
-These have their own page: [iPhone: permission prompts and interrupts](iphone-agent-prompts.md).
+From a target, the sheet shows its intent and a ready brief: press **Start session**. Editing the brief needs typing allowed.
 
 ### Read your timings
 <!-- learn: none -->
@@ -136,20 +143,29 @@ level: power
 kind: feature
 since: 0.24.0
 -->
+<!-- learn
+id: iphone-tower-switcher
+title: Switch towers from the status chip
+text: With several towers linked, tap the status chip atop **Now** to see them all and switch every tab.
+area: iphone
+level: next
+kind: tip
+since: 0.28.3
+-->
 
-Settings → **Towers** lists your towers. **Add tower** scans another code (up to four); drag rows to reorder. **Unlink** (or **Forget**, for one that removed the phone or is long offline) deletes its data from the phone; unsent changes are lost, and the phone says how many. With several, tap the name atop a tab to switch; other towers' questions show beside it.
+Settings → **Towers** lists your towers. **Add tower** scans another code (up to four); drag rows to reorder. **Unlink** (or **Forget**, for one that removed the phone or is long offline) deletes its data from the phone; unsent changes are lost, and the phone says how many. With several, the status chip atop Now, Workbench and Calendar (**Acme Mac · online ▾**) lists them and the questions waiting on the others; a tap switches every tab.
 
 On the Mac, **Remove…** next to a phone unlinks it. On the phone, that Mac's hub freezes in both cases: what it synced stays readable, nothing new arrives, until you tap **Forget**. A phone on another Apple ID also leaves the Mac's iCloud sharing.
 
 ## When it's empty or wrong
 
-- **The tower doesn't show up on the phone.** On a Mac, check that Watchtower is open on the Mac, **Mobile sync** is on, the Mac is awake, the build is signed and iCloud is on; then the environment pairing above.
+- **The tower doesn't show up on the phone.** On a Mac, check that Watchtower is open, **Mobile sync** is on, the Mac is awake, the build is signed and iCloud is on; then the environment pairing above.
 - **"This code expired" or "This code can't be used".** Press **New code** on the Mac and scan again. A code works for one phone.
 - **"Sign in to iCloud on this iPhone to use Watchtower".** The phone and the Mac both need an iCloud account ("Mobile isn't available on this Mac: iCloud is off.").
 - **Another Apple ID won't link.** "This tower can't share with another Apple ID right now" means the Mac's share failed. Show a new code.
 - **"<tower> hasn't synced for a day".** No heartbeat for a day. If the Mac changed iCloud account, link again.
 - **"<tower> removed this phone".** It removed the link and freezes: its data stays readable but nothing new arrives. **Forget** deletes the data and clears the row.
-- **"Your Mac has not allowed this phone to start sessions"** under **Start session**. On the Mac, open Settings → **Mobile**, allow typing for the phone, then click **Allow…** on its **Starting sessions off** line.
+- **"Your Mac has not allowed this phone to start sessions"** under **Start session**. Allow it on the Mac as above (a server tower names its `watchtower hub allow` commands).
 - **"<hub> works over Relay only".** Relay isn't in the current version of Watchtower for iPhone. That hub (a Linux box or a Mac without the Watchtower app) links only over Relay. Link it from its Mac app, if it has one.
 - **Nothing updates.** Mobile stops when you quit Watchtower. Closing the window is fine.
 

@@ -112,15 +112,16 @@ final class WorkbenchesBackgroundRenderTests: XCTestCase {
             let detail = try pixel(render(Color.clear.detailBackground(), appearance), x: 450, y: 250)
             let page = try render(WorkbenchesView(vm: vm).environment(appState), appearance)
             // The panel's last column, where its edge line runs; the rows sit
-            // under the header and the SESSIONS label, about 38pt apart (a title
-            // and its caption).
+            // under the header and the SESSIONS label, about 52pt apart (a
+            // full-width title line above the state line); y 136 is the middle
+            // of the selected row.
             let edge = Int(PanelResizeHandle.defaultWidth) - 1
             let line = try pixel(page, x: edge, y: 400)
             XCTAssertNotEqual(line, detail, "\(name): the edge line shows below the list")
-            XCTAssertEqual(try pixel(page, x: edge, y: 110), detail, "\(name): the selected tab covers the line")
+            XCTAssertEqual(try pixel(page, x: edge, y: 136), detail, "\(name): the selected tab covers the line")
             XCTAssertEqual(try pixel(page, x: edge, y: 70), line, "\(name): another row keeps the line")
             // Through the resize strip into the page, the same colour.
-            XCTAssertEqual(try pixel(page, x: edge + 4, y: 110), detail, "\(name): the strip beside the tab")
+            XCTAssertEqual(try pixel(page, x: edge + 4, y: 136), detail, "\(name): the strip beside the tab")
         }
     }
 

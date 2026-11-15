@@ -3084,3 +3084,21 @@ Entry format:
 - rule-gap (candidate, dim 7/8): *a Swift matcher over a string Go writes (tool step names, statuses) is tested with values produced by the Go function (shared JSON fixture or a Go-generated golden), never hand-typed in the Swift test.*
 - rule-gap (candidate, dim 6/9): *a new path that launches a provider child in a mode an inventory contract governs (claude.ai mode, sandbox, org policy keys like `AllowClaudeAITools`) lists each contract's gate and calls it, or amends the contract with the owner.*
 - outcome: TBD
+
+## 2026-11-12 — session-163 (b820de0ff: full-width session titles; panel: prosecutor + codex + all three pr-review-toolkit specialists; judge verified source, no runtime accessibility reproduction) — verdict: changes-needed
+
+- contested: the separated title's accessibility impact was minor in the prosecutor lane and major in codex/general review. Held major: the named open control lacks selection and Delete, while the metadata control carrying them lacks the session name. One logical row now declares two different open controls. [8]
+- false-positive: none. No extra test was required solely for this reversible layout change; the existing screenshots cover the normal and narrow layout, with no closed-asks example. [7]
+- miss: none late. Three lanes independently found the same split; the test analyzer corroborated the coverage concern rather than adding a separate defect. [8]
+- weak-dimension: 8. Moving text between visual containers also moves its accessibility identity, even when both containers call the same open action.
+- rule-gap (candidate, dim 8): *when a row's label moves outside its combined accessibility element, retain one named open control with its selection trait and custom actions; keep independently actionable sibling controls outside that replacement. Check the accessibility tree as well as the screenshot.*
+- outcome: TBD
+
+## 2026-11-15 — session-163 round 2 (PR #851, 0fc105270: title moved above a details line, `accessibilityRepresentation` restores one named open control, render probe moved to y 136; panel: prosecutor (10) + codex (0) + all three pr-review-toolkit specialists; judge verified by reading `TerminalSessionRow`, `TerminalsSection` and `SessionSwitcherPresentation`, no runs) — verdict: changes-needed
+
+- contested: the code-reviewer's standalone-terminal regression. Upheld as the blocker. `TerminalsSection` uses the same row and passes no `opensIn`. A running standalone terminal has a nil caption, no place, no badge and no Codex tag (`NewTerminalMenu` starts only Claude Code and shells). Its details line is a lone state dot under the title, where main drew dot and title on one line. [8]
+- false-positive: F6 (rows grow about 38 to 52 pt, "density loss unjustified"). Dismissed: a second line is what a full-width title costs, and that is the purpose of the PR. The screenshots show it to the owner. [6]
+- miss: the round-1 fix lane and the PR's two screenshots covered only workbench sessions. Only the code-reviewer followed the shared row to its second caller. Codex and the prosecutor both missed it. [8]
+- weak-dimension: 8. A layout change to a view shared by two sections is checked against the section the ticket names, not against every caller's degenerate data (all optional lines nil).
+- rule-gap (candidate, dim 8/Design kit): *when a shared row view is restructured, grep its callers and render each one in its emptiest real state (every optional line nil). The PR's shots include one per caller.*
+- outcome: TBD

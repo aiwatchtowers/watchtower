@@ -15,6 +15,15 @@ A Claude Code session takes your line while it works and reads it at its next st
 ## Using it
 
 ### Now and sessions
+<!-- learn
+id: iphone-now-answer-chips
+title: Answer from Now in one tap
+text: A question's suggested answers are chips on the phone's **Now**; finished sessions move to **Ended**.
+area: iphone
+level: basics
+kind: feature
+since: 0.28.3
+-->
 
 **Now** starts with your tower: **MacBook Pro · online**, or **asleep · last seen 40 min ago** once its heartbeat is over 35 minutes old. Then:
 
@@ -23,7 +32,7 @@ A Claude Code session takes your line while it works and reads it at its next st
 - **Ended**: sessions that stopped, finished or failed in the last 24 hours. A session with an open ask shows only as that ask. **Clear** hides them all on this phone; touch and hold a row for **Seen** to hide one.
 - **Next meeting**, with **Record** from 10 minutes before it starts to 10 minutes after.
 
-The **Now** tab's badge counts what waits for you on the Mac on screen; the app icon's, on all your Macs.
+The **Now** tab's badge counts what waits for you on the tower on screen; the app icon's, on all your towers.
 
 A workbench opens on its sessions: **Waiting for you** (an ask, a permission prompt, a check, a failed session to continue), **Working**, **Ended** (stopped, finished or failed in the last 24 hours), then **N older** folded. **N closed** at the end holds answered asks. The board's counts show on **Board**; a group there counts its sub-targets as **0/2 · 1 archived**: done of those on the board, then those in the archive, and **N more on the tower** for any the phone does not hold.
 
@@ -38,6 +47,15 @@ kind: feature
 since: 0.26.0
 replaces: [iphone-session-chat]
 changed: A session's chat on the phone now takes your lines and answers.
+-->
+<!-- learn
+id: iphone-session-next-step
+title: See what a session needs next
+text: A session on the phone ends with a card: its summary and **Report**, or **Continue** after an error.
+area: iphone
+level: next
+kind: tip
+since: 0.28.3
 -->
 
 Tap a session in **Now** or a workbench. The top shows the workbench, the title and one state line: a timer like **Working · 3:14** while the agent works, an age like **Needs approval · 1m** while it waits on you. Your lines sit on the right, the agent's text on the left. **Brief** opens what the session was told at start, and a subagent row opens that subagent's own chat, which is read-only.
@@ -73,6 +91,15 @@ Type into **Message the session…** and send. Your line shows under it:
 The **⋯** menu has **Stop**, **Finish** (asks the agent to wrap up), **Interrupt**, **Report and timeline** and **Open board target**. A Codex session takes no **Interrupt** from the phone; stop it on the Mac. The report shows the targets' progress, the pull requests and the session's milestones. Tasks not done yet whose branch is already merged into the branch of the task above them are counted apart, as on the Mac: "1 / 3 targets · 1 merged".
 
 ### Find a target on the board
+<!-- learn
+id: iphone-board-find
+title: Find a task on the phone's board
+text: Search the phone's **Board** by title, `#number` or branch, or tap **Waiting for me** for what needs you.
+area: iphone
+level: next
+kind: feature
+since: 0.28.3
+-->
 
 The **Board** opens on **Waiting for me** (an ask or permission prompt on the target or its session), else **Sessions running**, else **All**. **High**, **Blocked**, **Done** and **Archive** sit beside them. Search by title, `#number` or branch covers the whole board, archive too. Lanes follow the Mac's columns. Under **All**, groups and the **Backlog** and **Done** lanes start folded; the phone remembers what you open.
 
