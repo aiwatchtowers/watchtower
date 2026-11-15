@@ -90,7 +90,7 @@ action: nav:statistics
 - **A channel I expected is hidden.** It has fewer than 5 messages; the footer counts them.
 - **A muted channel still has old digests.** Muting stops new analysis only. Existing digests and tracks stay until dismissed.
 - **A channel I stopped syncing still gets new messages.** They mention you. Those are always stored, so they reach your Inbox.
-- **A row says Catching up for a while.** Sync again fetches the missed period a few pages per sync, one channel at a time, so a long gap takes several syncs.
+- **A row says Catching up for a while.** Sync again fetches the missed period a few pages per sync, one channel at a time, so a long gap takes several syncs. You can press **Stop syncing** meanwhile; the next **Sync again** fetches the unfinished part too.
 - **A recommendation looks wrong.** It uses message counts only, so a quiet but critical channel can be flagged. Favorite it to stop the suggestion, or ignore it.
 
 Tab still empty? See [A tab is empty](../troubleshooting/tab-is-empty.md).
