@@ -167,7 +167,7 @@ A row opens the thread in place (`openNewsTrack`) under `InboxTrackBackBar`, ove
 
 ### Stop Tracking Quiet Ones…
 
-`quietTracksPress` (`InboxBulkPressModel`, on the view model so a run survives navigation) plans with `watchtower tracks dismiss --quiet-days 30 --dry-run --json` (last stdout line `{"count":N,"ids":[…]}`) and applies with `tracks dismiss --ids ID,… --json` (`{"dismissed":N,"skipped":N,"ids":[…]}`; on a write error exit 1 and `{"dismissed":N,"of":M,"error":"…"}`) through `TracksBulkCLI`. `--quiet-days` requires `--dry-run`; `--ids` writes only `dismissed_at` on each listed track still active and is refused under an agent marker. A failed call re-reads the ids' `dismissed_at` and reports `.partial` when some did stop. TRACKS-07 note in `docs/inventory/tracks.md`.
+`quietTracksPress` (`InboxBulkPressModel`, on the view model so a run survives navigation) plans with `watchtower tracks dismiss --quiet-days 30 --dry-run --json` (last stdout line `{"count":N,"ids":[…]}`) and applies with `tracks dismiss --ids ID,… --json` (`{"dismissed":N,"skipped":N,"ids":[…]}`; on a write error exit 1 and `{"dismissed":N,"of":M,"error":"…"}`) through `TracksBulkCLI`. `--quiet-days` requires `--dry-run`; `--ids` writes only `dismissed_at` on each listed track still active and is refused under an agent marker. A failed call re-reads the ids' `dismissed_at` and reports `.partial` when some did stop. Exit 0 with an answer that cannot be read is `.unconfirmed` (the write is one transaction; said, never **Try Again**), as in `InboxBulkCLI`. TRACKS-07 note in `docs/inventory/tracks.md`.
 
 ### The daily idea batch
 
