@@ -151,6 +151,33 @@ h2{font-size:14px;color:#a1a1a6;margin:32px 0 6px}
 <div class="cap">1h · Error with Retry: chat_list carries error, no rows held yet. With rows held the error is a one-line banner over them.</div></div>
 </div>
 
+<div class="row" style="margin-top:22px">
+<div><div class="ph"><div class="sb"><span>9:41</span><span>●●● 100%</span></div>
+<div class="nav"><span class="t big">Chats</span><span class="chip">Mac · Relay</span></div>
+<div class="body">
+<div class="search" style="color:#e6e6e8">billing</div>
+<div class="sec">Titles</div>
+<div class="r"><span class="dot d-read"></span><div><div class="ti">Who owns the <b>billing</b> API?</div><div class="s2">📁 acme-platform</div></div><span class="tm">5h</span></div>
+<div class="sec">In messages</div>
+<div class="r"><span class="dot d-read"></span><div><div class="ti">Q3 roadmap summary</div><div class="s2">…<b>Billing</b> v2 is on track for August…</div></div><span class="tm">Tue</span></div>
+<div class="r"><span class="dot d-read"></span><div><div class="ti">Vendor contracts</div><div class="s2">…the <b>billing</b> clause renews in May…</div></div><span class="tm">Oct 2</span></div>
+<div class="line">Searching on your Mac… (while the record is on its way)</div>
+</div><div class="tabs"><span>Now</span><span>Workbench</span><span class="on">Chats</span><span>Calendar</span></div></div>
+<div class="cap">1i · Search. Titles filter at once from the held list; "In messages" comes from chat_search on the Mac. Offline: titles only + "Searching messages needs your Mac".</div></div>
+
+<div><div class="ph"><div class="sb"><span>9:41</span><span>●●● 100%</span></div>
+<div class="nav"><span class="t big">Chats</span><span class="chip">Mac · Relay</span></div>
+<div class="body">
+<div class="sec">Recent</div>
+<div class="r"><span class="dot d-read"></span><div><div class="ti">Draft reply to the vendor</div><div class="s2">Email draft ready</div></div><span class="tm">1h</span></div>
+<div class="card" style="margin-left:40px"><div class="opt">📌 Pin</div><div class="opt">✎ Rename</div><div class="opt" style="color:#ff6961">🗑 Delete</div></div>
+<div class="r" style="opacity:.35"><span class="dot d-read"></span><div><div class="ti">Meeting prep for Thursday</div></div></div>
+</div>
+<div class="line" style="background:#1c1c1e;margin:0 10px 6px;border-radius:10px;color:#e6e6e8">Chat deleted · <span style="color:#0a84ff">Undo</span> (5 s)</div>
+<div class="tabs"><span>Now</span><span>Workbench</span><span class="on">Chats</span><span>Calendar</span></div></div>
+<div class="cap">1j · Row actions (long-press or swipe) and the Undo bar after Delete; nothing is sent to the Mac until the bar ends.</div></div>
+</div>
+
 <h2>2 · Conversation</h2>
 <div class="row">
 <div><div class="ph"><div class="sb"><span>9:41</span><span>●●● 100%</span></div>
@@ -214,7 +241,7 @@ h2{font-size:14px;color:#a1a1a6;margin:32px 0 6px}
 <div class="line">Your Mac is asleep — sending works when it wakes.</div>
 <div class="comp"><span class="plus" style="color:#48484a">+</span><span class="in">Ask a follow-up</span><span class="send dis">↑</span></div>
 <div style="height:16px"></div></div>
-<div class="cap">2e · Narrow scope: Mac offline. The feed is the phone's own copy of the last feed it saw; nothing can be sent. A chat never opened before shows 2g.</div></div>
+<div class="cap">2e · Narrow scope: Mac offline. The feed is the phone's own copy of the last feed it saw; nothing can be sent. A chat never loaded here shows "Open this chat once while your Mac is awake to read it here".</div></div>
 
 <div><div class="ph"><div class="sb"><span>9:41</span><span>●●● 100%</span></div>
 <div class="nav"><span class="ic">‹</span><span class="t">Q3 roadmap summary</span><span class="ic">⋯</span></div>
@@ -232,7 +259,7 @@ h2{font-size:14px;color:#a1a1a6;margin:32px 0 6px}
 <div class="body"><div class="skel" style="width:50%;margin-left:auto"></div><div class="skel"></div><div class="skel" style="width:75%"></div><div class="line">Opening the chat on your Mac…</div></div>
 <div class="comp"><span class="plus">+</span><span class="in">Ask a follow-up</span><span class="send dis">↑</span></div>
 <div style="height:16px"></div></div>
-<div class="cap">2g · Loading the feed (chat_feed_request sent, no record yet). After 30 s without one: "The Mac did not answer" + Retry.</div></div>
+<div class="cap">2g · Loading the feed (chat_feed_request sent, no record yet). A held copy shows at once instead. After 30 s without a record: "The Mac did not answer" + Retry.</div></div>
 
 <div><div class="ph"><div class="sb"><span>9:41</span><span>●●● 100%</span></div>
 <div class="nav"><span class="ic">‹</span><span class="t">New chat</span></div>
@@ -241,6 +268,20 @@ h2{font-size:14px;color:#a1a1a6;margin:32px 0 6px}
 <div class="comp"><span class="plus">+</span><span class="in">Message</span><span class="send dis">↑</span></div>
 <div style="height:16px"></div></div>
 <div class="cap">2h · Empty: new chat. Model and project pickers sit above the composer; they lock after the first message (as on the Mac, a change starts a fresh session).</div></div>
+</div>
+
+<div class="row" style="margin-top:22px">
+<div><div class="ph"><div class="sb"><span>9:41</span><span>●●● 100%</span></div>
+<div class="nav"><span class="ic">‹</span><span class="t">Q3 roadmap summary</span><span class="ic">⋯</span></div>
+<div class="body">
+<div class="fold" style="text-align:center;color:#0a84ff">Load earlier messages</div>
+<div class="ans">Two items are still open: <span style="background:#264a7a">the SSO deadline and the export API</span>.</div>
+<div style="display:flex;justify-content:center"><span class="b blue" style="font-size:11px">Ask about this</span></div>
+</div>
+<div class="ctx"><span>❝ the SSO deadline and the export API ✕</span></div>
+<div class="comp"><span class="plus">+</span><span class="in">Ask about the quote</span><span class="send dis">↑</span></div>
+<div style="height:16px"></div></div>
+<div class="cap">2i · Quote-reply: select a passage → Ask about this → the quote waits above the composer and goes with the next message (ChatQuoteReply format). "Load earlier messages" pages older history (chat_page).</div></div>
 </div>
 
 <h2>3 · Sheets</h2>
@@ -275,5 +316,13 @@ h2{font-size:14px;color:#a1a1a6;margin:32px 0 6px}
 <div class="comp"><span class="in">Answering from your iPhone — you can watch here</span><span class="send stop">■</span></div>
 </div>
 <div class="cap" style="max-width:520px">4a · A phone-run turn seen on the Mac (DesignShotCatalog entry <code>chat-phone-turn</code>). The feed reads the rows the hub writes; Stop cancels through the lease. The Chats panel row shows the usual "answering" state. The line text is set in the model and tested.</div></div>
+
+<div><div class="mac">
+<div style="font-weight:600;margin-bottom:8px">Settings → Mobile → iPhone</div>
+<div class="r"><div><div class="ti">Type into sessions</div></div><span class="tm">●━ On</span></div>
+<div class="r"><div><div class="ti">Answer permissions</div></div><span class="tm">●━ On</span></div>
+<div class="r"><div><div class="ti">Chat</div><div class="s2">Chat on this iPhone: ask, approve with Permissions</div></div><span class="tm">●━ On</span></div>
+</div>
+<div class="cap" style="max-width:520px">4b · The Chat toggle (the chat grant) beside the existing ones (DesignShot <code>settings-mobile-phone-chat</code>). Its default is ask #1340.</div></div>
 </div>
 </body></html>

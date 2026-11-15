@@ -18,15 +18,17 @@ Chat works **only over the hosted relay**. On a CloudKit link the tab says so (�
 - choosing a project and a model for a new chat;
 - regenerate, edit and branches ‹ i/n ›;
 - the `запомни:`/`remember:` and `решили:`/`факт:` prefixes;
-- titles, read state and a push when an answer is ready.
+- titles, read state and a push when an answer is ready;
+- the whole history of a chat, paged (§4.6);
+- search over the chats (titles and text, the Mac's `chat_fts`);
+- pin, rename and delete, with Undo;
+- quote-reply ("Ask about this" on a selected passage of an answer).
 
-**Phase 2 (not in this spec's plan):**
+**Phase 2 (not in this spec's plan) — exactly the list agreed in ask #1327:**
 - editing projects;
 - `@` mentions and `/` skills (they need pickers over the Mac's database);
-- quote-reply ("Ask about this") and artifact comments;
-- Add to Knowledge;
-- pin, rename and delete from the phone;
-- search inside the chats.
+- artifact comments;
+- Add to Knowledge.
 
 ## 2. Decisions
 
@@ -38,13 +40,18 @@ Chat works **only over the hosted relay**. On a CloudKit link the tab says so (�
 | D4 | Relay only. The hub advertises `capabilities.chat = "on"` only while its transport is the relay. The phone shows chat only on an explicit `"on"`, so an old hub (key absent) is not a chat host. | conversation (owner's first message: "only through the relay") |
 | D5 | The hub runs turns by spawning the existing `watchtower ai session` (protocol v2), unchanged. A Go turn store ports the Swift write path: `ChatTreeQueries`, `ChatTurnDriver`/`ChatTurnStore`, `LiveSlackMark`, the artifact persistence and the actions-outcome block. All backends, routing and the claude.ai gate come with `ai session` for free. | decided by the agent |
 | D6 | One turn at a time per conversation, across processes: a `chat_turn_leases` row claimed in the same transaction that writes the owner's message. The first commit wins; the other side is refused with "busy" and can watch or Stop. | decided by the agent |
-| D7 | Stop from the other device goes through the lease (`cancel_requested_at`). The lease owner sends `cancel` to its own session. Nobody signals another process. | decided by the agent |
-| D8 | `ArtifactParser` and `MarkdownRunBuilder` (pure Foundation, now in WatchtowerCore) move to WatchtowerKit, shared by the Mac and the phone. Go gets an artifact parser twin over the same fixture. | decided by the agent |
-| D9 | A new device grant `chat` lets a phone use chat. Approving actions also needs the existing `permissions` grant, never implied by `chat`. The default of the `chat` grant is asked in the contract ask (§9). | decided by the agent; default → contract ask |
-| D10 | The phone keeps its own copy of the last feed of up to 30 conversations it opened (file-protected, per hub). That copy is what offline reading shows. The hub does not publish every chat's feed all the time. | decided by the agent |
+| D7 | Stop from the other device goes through the lease (`cancel_requested_at_ms`). The lease owner sends `cancel` to its own session. Nobody signals another process. | decided by the agent |
+| D8 | `ArtifactParser`, `MarkdownRunBuilder` and `ChatQuoteReply` (pure Foundation, now in WatchtowerCore) move to WatchtowerKit, shared by the Mac and the phone. Go gets an artifact parser twin over the same fixture. | decided by the agent |
+| D9 | A new device grant `chat` lets a phone use chat. Approving actions also needs the existing `permissions` grant, never implied by `chat`. Its default for linked and new phones is asked in ask #1340 (§9); the answer is recorded here before the plan. | decided by the agent; default → ask #1340 |
+| D10 | The phone keeps its own copy of every chat page it loaded, plus a background prefetch of the 20 most recent chats' latest pages while the Mac is reachable. The budget is 200 MB per hub, evicted by last opened. That copy and the stored `chat_list` are what offline reading shows. The hub does not publish every chat's feed all the time. | decided by the agent |
+| D15 | v1 also covers search, pin/rename/delete and quote-reply; phase 2 is exactly ask #1327's "later" list. | conversation ("со всем функционалом") + spec review round 1 |
+| D16 | A chat's whole history is readable from the phone, in pages of 60 messages (`chat_page`). | spec review round 1 |
+| D17 | Branch selection is never refused, on either device, even during a turn: a turn's rows are written by message id, so moving the leaf cannot corrupt them; the feed follows the leaf. | spec review round 1 (no Mac behaviour change) |
+| D18 | The hub turns chat on only while the running Desktop app (if any) reports that it honours the lease. An old app still running after an update keeps chat off on the phone, with "Update Watchtower on your Mac". | spec review round 1 |
+| D19 | The push covers every turn that ends while the owner is away and the phone is not looking, whether the hub or the Mac ran it. | spec review round 1 |
 | D11 | The feed streams from memory for hub-run turns (≤ 150 ms per update) and from the database for Mac-run turns (about 1 s, the Swift flush interval). | decided by the agent |
 | D12 | Dictation is the iOS keyboard's mic. No speech code in the app. | decided by the agent (simplest) |
-| D13 | Hub chat sessions are capped at 2 live processes, a 10-minute idle TTL and a queue beyond that, separately from the Desktop's 3. | decided by the agent |
+| D13 | Hub chat sessions are capped at 2 live processes, separately from the Desktop's 3. An idle session is evicted at once to make room for a new turn, so a turn waits only while 2 other hub turns are mid-answer. | decided by the agent |
 | D14 | The push for a finished answer carries the conversation title and a fixed body, never answer text, like work alerts today. | decided by the agent |
 
 ## 3. Architecture
@@ -123,10 +130,10 @@ Go `chatstore.ParseArtifacts(text, final)` follows the grammar of `ArtifactParse
 
 ### 4.3 Runner (`internal/hub/chatrun`)
 
-- **Pool.** At most 2 live `ai session` processes (D13), a 10-minute idle TTL on a 30 s check, and LRU eviction of idle sessions only; a running turn is never cut. A third conversation's turn waits in a queue and is visible as "Waiting for a free slot".
+- **Pool.** At most 2 live `ai session` processes (D13), a 10-minute idle TTL on a 30 s check. A new turn evicts the least recently used idle session at once; a running turn is never cut. Only when both live sessions are mid-turn does a third conversation's turn wait in a queue, visible as "Waiting for a free slot"; it starts as soon as either turn ends.
 - **Spawn.** `<os.Executable()> ai session --conversation N --surface main [--provider P --model M] [--project-id K] --db-path <db>`, in the daemon's working directory and with the daemon's environment. It runs in its own process group, killed and waited for on close, as `sessionhost/ensure.go` does. A routing change (provider or model) recycles the session, as `ChatSessionConfig.isCompatible` does.
 - **Replay.** It reuses `ChatContinuity` semantics: `replay: true` unless this process's last completed turn is the current tip. So after a Mac-run turn, the hub's next turn replays.
-- **Cancel watcher.** While a turn runs, the runner reads `chat_turn_leases.cancel_requested_at` every 1 s. A set value sends `cancel`. With no `turn_done` within 7 s, it finalises `partial`, then SIGTERM and SIGKILL, the same numbers as `ChatSessionClient`.
+- **Cancel watcher.** While a turn runs, the runner reads `chat_turn_leases.cancel_requested_at_ms` every 1 s. A set value sends `cancel`. With no `turn_done` within 7 s, it finalises `partial`, then SIGTERM and SIGKILL, the same numbers as `ChatSessionClient`.
 - **Lease heartbeat.** Every 15 s while a turn runs.
 - **Startup sweep.** Before the first claim, every lease with `owner='hub'` and this hub's id is released. Its assistant rows are already `partial`, with the text flushed at most 1 s before the death. Those turns get `error_code='session_lost'` for the error card.
 - **Daemon stop.** It closes the sessions before the database closes: `close`, a 2 s grace, SIGTERM, then SIGKILL after 3 s. It waits for the store's last write.
@@ -140,13 +147,17 @@ CREATE TABLE chat_turn_leases (
   owner               TEXT NOT NULL CHECK (owner IN ('desktop','hub')),
   owner_id            TEXT NOT NULL,      -- desktop: app launch uuid; hub: hub id
   turn_id             TEXT NOT NULL,
-  started_at          TEXT NOT NULL,
-  heartbeat_at        TEXT NOT NULL,
-  cancel_requested_at TEXT                -- set by the other side's Stop
+  started_at_ms       INTEGER NOT NULL,   -- Unix epoch milliseconds, UTC
+  heartbeat_at_ms     INTEGER NOT NULL,   -- Unix epoch milliseconds, UTC
+  cancel_requested_at_ms INTEGER          -- set by the other side's Stop
 );
 ```
 
-**Claim.** Inside the start transaction: `INSERT … ON CONFLICT(conversation_id) DO UPDATE … WHERE heartbeat_at < now − 60 s`. If no row changed, the claim is refused and the transaction rolls back.
+**Time format.** Every time in this table is an integer of Unix epoch milliseconds, compared as a number. Both writers run on the same machine and read the same clock. There is no text timestamp to parse, so Swift and Go cannot disagree on fractions or zones. A shared case fixture (`chat_lease_cases.json`: claim, stale, cancel, release) is run by both the Go and the Swift lease code.
+
+**Claim.** Inside the start transaction: `INSERT … ON CONFLICT(conversation_id) DO UPDATE … WHERE heartbeat_at_ms < :now_ms − 60000`. If no row changed, the claim is refused and the transaction rolls back.
+
+**Conversation deleted during a turn.** A delete (Mac ✕, phone delete, or the cascade of a deleted project's chats) removes the lease and the turn's rows by the existing cascades. Foreign keys are on in both writers (`connPragmas`, GRDB's default). The lease holder treats any of these as "conversation gone": an `UPDATE` by message id that changes 0 rows, a foreign-key failure on a step, artifact or lease write, or a missing lease at heartbeat. It then rolls back the write, sends `cancel`, closes the session and writes nothing more. No orphan rows are possible: every child insert is checked by its foreign key, and the finalize transaction rolls back as a whole. Archiving only sets `archived_at`; the turn continues and finishes normally.
 
 **Release.** `DELETE … WHERE conversation_id = ? AND turn_id = ?`, inside the finalize transaction.
 
@@ -155,7 +166,7 @@ CREATE TABLE chat_turn_leases (
 **Writers:**
 - the Swift turn store (claim, heartbeat, release, honouring cancel);
 - the Go turn store (the same);
-- either side's Stop, which sets `cancel_requested_at` only, under `WHERE turn_id = ?`.
+- either side's Stop, which sets `cancel_requested_at_ms` only, under `WHERE turn_id = ?`.
 
 **Race.** Both writers claim in `BEGIN IMMEDIATE`, so SQLite serialises them and the first commit wins (§8).
 
@@ -170,7 +181,10 @@ All of these require the `chat` grant. A refusal names the missing grant; a serv
 | `chat_cancel` | `conversation_id`, `turn_id` | no | `{}`; `not_found` when no such running turn |
 | `chat_feed_request` | `conversation_id` | no | watches the feed for 5 min; the phone repeats it every 60 s while the screen is open (the `session_chat_request` model) |
 | `chat_read` | `conversation_id`, `message_id` | no | `{}` |
-| `chat_branch_select` | `message_id` | no | `{}`; refused while a turn runs in that conversation |
+| `chat_branch_select` | `message_id` | no | `{}`; allowed during a turn (D17) |
+| `chat_page` | `conversation_id`, `before_message_id` | no | publishes one `chat_page` record (§4.6) for 5 min; `not_found` |
+| `chat_search` | `query` (≤ 200 chars) | no | publishes one `chat_search` record (§4.6) for 5 min; the Mac's ⌘K search over `chat_fts` and titles, the same reader |
+| `chat_manage` | `conversation_id`, `op pin\|unpin\|rename\|delete`, `title?` | yes | `pin`/`unpin`/`rename` write what the Mac's panel writes (`rename` sets `title_source='user'`). `delete` deletes at once; the 5 s Undo lives on the phone, as on the Mac (`PendingChatDeletes` is in-app state there too): the phone hides the row and sends `delete` only when the Undo bar ends. A delete during a turn follows §4.4 "Conversation deleted during a turn". |
 | `chat_action_answer` | `action_id`, `decision approve\|reject`, `args_sha256` | yes | needs `permissions` too; approve goes through `Registry.ApproveSeen` with the hash of the args the phone showed; a stale hash → `failed/changed` ("The action changed — look again") |
 
 **Attachments, phone to hub.** A new upload frame, `chat_attachment`, is modelled on `recording_upload`.
@@ -182,7 +196,7 @@ All of these require the `chat` grant. A refusal names the missing grant; a serv
 
 ### 4.6 Slices
 
-Two new kinds go into `AllKinds`, the `dataKinds` in `secure` and the Kit `SliceKind`, each with a Kit fixture read by both sides.
+Four new kinds (`chat_list`, `chat_feed`, `chat_page`, `chat_search`) go into `AllKinds`, the `dataKinds` in `secure` and the Kit `SliceKind`, each with a Kit fixture read by both sides.
 
 **`chat_list`**
 - One record, published while a linked phone holds the `chat` grant.
@@ -199,10 +213,14 @@ Two new kinds go into `AllKinds`, the `dataKinds` in `secure` and the Kit `Slice
 - One record per watched conversation (`chat_feed-<id>`), in memory only, deleted when the watch ends (the `session_chat` model).
 - Payload:
   - conversation meta: title, project, routing, actual provider and model, `live_slack_since`, `lease {owner, turn_id, waiting_slot?}`;
-  - the active branch's last 60 messages, each with `id`, `role`, `text`, `status`, `error_code`, `error_message`, `created_at`, `siblings {index,count}`, `attachments[] {id,name,mime,size}`, `steps[] {name, ok?, summary, sources[]}`;
+  - the active branch's last 60 messages (older ones come in `chat_page` records on request), each with `id`, `role`, `text`, `status`, `error_code`, `error_message`, `created_at`, `siblings {index,count}`, `attachments[] {id,name,mime,size}`, `steps[] {name, ok?, summary, sources[]}`;
   - the latest version of each artifact key, with content;
   - the pending and recent `agent_actions` of those turns: `id`, `tool`, `title`, display args, `args_sha256`, `status`, reason.
-- Cap: 600 000 bytes. Over the cap, the oldest messages are dropped first (with a "Earlier messages are on your Mac" marker), then artifact contents (marked "Open on your Mac"). One message's text is capped at 40 000 chars, with the cut marked.
+- Cap: 600 000 bytes. Over the cap, the oldest messages are dropped first (the phone then shows **Load earlier messages**, which sends `chat_page`), then artifact contents (marked "Open on your Mac"). One message's text is capped at 40 000 chars, with the cut marked.
+
+**`chat_page`** — one page of older history, `chat_page-<conversation>-<before_message_id>`: the 60 active-branch messages before that id, the same per-message shape and caps as the feed, plus `has_more`. In memory only, deleted 5 min after its request. The phone stitches pages under the feed and keeps them in its copy (§6.4), so a whole chat is readable page by page, online and later offline.
+
+**`chat_search`** — `chat_search-<query hash>`: up to 50 hits (conversation id, title, a snippet ≤ 200 chars, message id, date) from the same reader the Mac's ⌘K uses. In memory only, deleted 5 min after its request. A hit opens the chat and loads pages until that message is on screen.
 - Urgent kind, ordered after the ask kinds.
 - Source of the live text:
   - for a hub-run turn, the runner's memory, with `OnChange` → `PublishSoon`; at relay spacing that is 150 ms;
@@ -210,11 +228,11 @@ Two new kinds go into `AllKinds`, the `dataKinds` in `secure` and the Kit `Slice
 
 ### 4.7 Push
 
-A new work-alert event, `chat_answer`, with a new optional `conversation_id` field. It is sent for a **hub-run** turn that ended `complete`, `error` or `partial` after a cancel, or that started waiting for an approval, when no `chat_feed_request` for that conversation arrived in the last 90 s (the phone is not looking).
+A new work-alert event, `chat_answer`, with a new optional `conversation_id` field. It is sent for any turn, run by the hub or by the Mac app (D19), that ended `complete`, `error` or `partial` after a cancel, or that started waiting for an approval, when no `chat_feed_request` for that conversation arrived in the last 90 s (the phone is not looking). The hub sees a Mac-run turn end through the `data_version` watch: the lease row with `owner='desktop'` disappears and the assistant row's status is final; a new pending `agent_actions` row for a chat turn is the approval case. Each (turn, event) pushes at most once, keyed in the existing `alert_pushes` ledger as `chat:<turn_id>:<event>`. The owner-away rule keeps a push off while the owner is at the Mac.
 - Title: the conversation title, clipped.
 - Body: fixed text. "Answer ready", "The answer stopped" or "Waiting for your approval" (D14).
 - Owner-away rules and the paying-slot targets are as today.
-- The phone's router opens the conversation.
+- The phone's router opens the conversation (phone side in T11, Kit `WorkAlertContent` event in T9).
 - `TestAlertPushPayloadKeysMatchTheKit` and `go-sealed.json` gain the field.
 
 ### 4.8 Capability and the relay-only gate
@@ -222,6 +240,7 @@ A new work-alert event, `chat_answer`, with a new optional `conversation_id` fie
 **Heartbeat.**
 - `capabilities.chat` is `"on"` while the hub's transport is the relay and `chatrun` started.
 - It is `"off"` on CloudKit or when the runner failed to start; the failure reason goes to the log.
+- It is also `"off"` while a Desktop app is running that does not honour the lease (D18). The Desktop already calls `hub desktop heartbeat` on a timer; the new app adds `--chat-lease 1`. The hub keeps the latest Desktop heartbeat's flag: a fresh heartbeat (≤ 2 min) without the flag means an old app is running, so chat is off with the reason `desktop_too_old`, which the phone shows as "Update Watchtower on your Mac" (mockup 1f). No running Desktop (no fresh heartbeat, or a headless host) means chat may be on. The app and the daemon ship in one bundle, so the window is only the time between an update and the old app's relaunch.
 - A `Deps.ChatAvailable()` seam lets every `chat_*` handler refuse with `not_supported` when chat is not on, so a stale phone cannot run a turn over CloudKit.
 
 **Protocol spec.** `2026-10-31-hub-phone-protocol-design.md` §7.2 and §9 gain the new kinds and the "explicit on" rule.
@@ -230,21 +249,24 @@ A new work-alert event, `chat_answer`, with a new optional `conversation_id` fie
 
 **Lease in the Swift turn store.**
 - `persistTurnStart` claims (refused → no rows are written, and the composer shows the busy line);
-- the driver sends a heartbeat every 15 s and checks `cancel_requested_at` every 1 s (a set value runs the existing Stop path);
+- the driver sends a heartbeat every 15 s and checks `cancel_requested_at_ms` every 1 s (a set value runs the existing Stop path);
 - `finalizeTurn` releases.
+- A conversation deleted during the app's own turn (for example from the phone) ends that turn as §4.4 "Conversation deleted during a turn" says: the driver stops writing on the first 0-row update or foreign-key failure, and sends `cancel`.
+- The app's `hub desktop heartbeat` call gains `--chat-lease 1` (D18).
+- Branch selection stays as it is today, allowed during any turn (D17).
 - The app's `owner_id` is a uuid per launch. At launch, the app releases its own stale leases left by a crash: a lease with `owner='desktop'` whose `owner_id` is not the current launch.
 
 **A turn run elsewhere.** While a live lease with `owner='hub'` holds the open conversation:
 - the thread reloads from the database every 1 s and once more at the release;
-- the composer shows **Answering from your iPhone — you can watch here**, with Stop, which sets `cancel_requested_at` (mockup 4a);
+- the composer shows **Answering from your iPhone — you can watch here**, with Stop, which sets `cancel_requested_at_ms` (mockup 4a);
 - Send is off until the release. The draft is kept.
 - The Chats panel shows "answering" for hub leases (`ChatHistoryQueries.panelRows` reads the lease).
 
 The line texts are set in the model and tested.
 
-**Settings → Mobile → a phone.** A **Chat** toggle (the `chat` grant), beside the existing typing and permissions toggles.
+**Settings → Mobile → a phone.** A **Chat** toggle (the `chat` grant), beside the existing typing and permissions toggles, with the line "Chat on this iPhone: ask, approve with Permissions" (mockup 4b).
 
-**Design shots.** A `DesignShotCatalog` entry, `chat-phone-turn`, for 4a.
+**Design shots.** `DesignShotCatalog` entries `chat-phone-turn` (4a) and `settings-mobile-phone-chat` (4b).
 
 ## 6. The phone
 
@@ -254,7 +276,7 @@ A fourth tab, **Chats**, between Workbench and Calendar. The gate is checked in 
 
 | State | When | Mockup |
 |---|---|---|
-| needs update | no `capabilities.chat` key | 1f |
+| needs update | no `capabilities.chat` key, or `chat` off with reason `desktop_too_old` (D18) | 1f |
 | needs Relay | route is CloudKit | 1e |
 | not allowed | `chat_*` refused with `device_not_allowed`, or the `device_grant` record says no chat | 1g |
 | loading | no `chat_list` record yet | 1c |
@@ -266,11 +288,15 @@ A fourth tab, **Chats**, between Workbench and Calendar. The gate is checked in 
 ### 6.2 Screens
 
 - **List** (1a): Pinned / Recent (7 days) / "▸ N older", with dots in the Mac's precedence. Orange is only `waiting`, so `OrangeToneTests` gains the case. ✎ starts a new chat (2h).
+  - **Search** (1i): typing filters the held list by title at once; after 300 ms of no typing it also sends `chat_search` and shows the Mac's hits under "In messages", with a "Searching on your Mac…" line until the record arrives (30 s → "The Mac did not answer" + Retry). Offline: titles only, with the line "Searching messages needs your Mac".
+  - **Row actions** (1j): swipe or long-press → Pin/Unpin, Rename, Delete. Delete hides the row and shows an Undo bar for 5 s, then sends `chat_manage delete`.
 - **Conversation:**
   - Owner bubbles (`ChatBubble.owner`) with attachment thumbnails or file pills.
   - Answers rendered by the shared `MarkdownRunBuilder` (moved to the Kit, D8) into SwiftUI text runs, with headings, lists, code, quotes and tables. Tables scroll sideways on the phone; the Mac does not change.
   - A collapsed steps row and a sources chip that opens the sources sheet (3c).
   - Artifact cards, ‹ i/n ›, Regenerate and Copy on the last answer. Long-press on an owner bubble → Edit.
+  - **Ask about this** (2i): selecting a passage of a finished answer shows the chip; the passage joins the per-conversation quote batch shown above the composer and goes out with the next message, composed by the shared `ChatQuoteReply.compose` (D8), the Mac's exact format.
+  - **Load earlier messages** at the top when the feed or the last page says there is more; it sends `chat_page`.
   - Error card with Retry for retryable codes (2d).
   - Approval cards (2c), orange, with Approve and Reject. Without the `permissions` grant they show "Approve on the Mac".
 - **Composer:**
@@ -294,13 +320,18 @@ A fourth tab, **Chats**, between Workbench and Calendar. The gate is checked in 
 
 The owner bubble shows pending until the `chat_turn` echo is `applied`. A refused echo puts the text back into the composer with the reason (CHAT-01 on the phone: the owner's text is never lost).
 
+**Opening a chat.** The phone sends `chat_feed_request` and shows the held copy at once, if any, else the loading state (2g). With no `chat_feed` record 30 s after the request, the screen shows "The Mac did not answer" with Retry, which sends the request again. The text is set in the model and tested.
+
 **Streaming.** The feed record updates and the view diffs it by message id. While a turn runs, the view hides a partial `:::artifact` fence with the shared `ArtifactParser`, as the Mac does.
 
 ### 6.4 Offline copy (D10)
 
-The phone writes the last decoded `chat_feed` per conversation to its own GRDB file: per hub, with file protection `completeUntilFirstUserAuthentication`, at most 30 conversations by last opened, evicted LRU. It is deleted with the hub link.
-- This is a display copy only. Nothing on the phone reads it except the conversation screen.
-- The Mac's `live_slack_since` rule is unchanged, and the copy keeps Live turns for display only (see the contract ask, §9).
+**Chat list.** The `chat_list` record is a slice record, so it lives in the phone's `ReplicaStore` like every other kind: it survives an app relaunch while the Mac sleeps, and the offline list (1d) is that record. It is deleted with the hub link.
+
+**Chats.** The phone writes every chat page it decoded (the feed and every `chat_page`) to its own GRDB file, per hub, with file protection `completeUntilFirstUserAuthentication`. While the Mac is reachable and the app is in the foreground, it also prefetches the latest feed of the 20 most recent chats in the list, one request at a time, at most once per chat per hour. The budget is 200 MB per hub, evicted by chat in order of last opened. The file is deleted with the hub link.
+- Offline, a chat that was opened or prefetched reads in full as far as its pages were loaded; a chat never loaded shows "Open this chat once while your Mac is awake to read it here" (mockup 2e note).
+- This is a display copy only. Nothing on the phone reads it except the conversation screen and the title search.
+- The Mac's `live_slack_since` rule is unchanged, and the copy keeps Live turns for display only (see ask #1340, §9).
 
 ## 7. Failure paths
 
@@ -313,7 +344,7 @@ The phone writes the last decoded `chat_feed` per conversation to its own GRDB f
 | Phone sends the same `chat_turn` twice (retry) | The exactly-once ledger replays the stored echo; a crash mid-apply answers `outcome_unknown` and never runs twice | `TestChatTurn_RepeatReplaysEcho`, `TestChatTurn_CrashMidApplyIsOutcomeUnknown` |
 | Phone and Mac send at the same moment | `BEGIN IMMEDIATE` serialises the claims; the loser writes nothing: the phone gets `conversation_busy` and its text back, the Mac shows the busy line | `TestLease_ConcurrentClaimOneWins` (Go, two connections); Swift `ChatTurnLeaseTests` |
 | Owner of the lease dies | After 60 s without a heartbeat the other side may claim; the dead turn's row stays `partial` | `TestLease_StaleIsClaimable` |
-| Stop from the other device | `cancel_requested_at` is set; the owner cancels within ≤ 1 s, then within 7 s finalises; a cancel for an ended turn is a no-op (`turn_id` guard) | `TestChatrun_RemoteCancelStopsTurn`, `testDriverHonoursRemoteCancel` |
+| Stop from the other device | `cancel_requested_at_ms` is set; the owner cancels within ≤ 1 s, then within 7 s finalises; a cancel for an ended turn is a no-op (`turn_id` guard) | `TestChatrun_RemoteCancelStopsTurn`, `testDriverHonoursRemoteCancel` |
 | Approval answered, but the session died | The gate already expires the row (`TestChat05_DeadSessionNeverRunsAnApprovedCall`); `chat_action_answer` gets the row's final state | `TestChatActionAnswer_DeadSessionRowIsFinal` |
 | Approval args changed since the phone showed them | `ApproveSeen` hash mismatch → `failed/changed` | `TestChatActionAnswer_StaleHashRefused` |
 | Attachment upload cut mid-way | The relay attachment is never applied; no row is written; the phone shows Retry on that pill; `chat_turn` with a missing id → `attachment_missing` | `TestChatAttachment_PartialUploadWritesNothing` |
@@ -321,17 +352,27 @@ The phone writes the last decoded `chat_feed` per conversation to its own GRDB f
 | Feed over 600 KB | Oldest messages dropped first, then artifact contents, with markers | `TestChatFeed_CapsDropOldestThenArtifacts` |
 | Hub switches to CloudKit while a phone is in a chat | The capability turns `off`; handlers refuse with `not_supported`; a running turn finishes and is visible on the Mac | `TestChatHandlers_RefuseWhenNotOnRelay` |
 | Phone unlinked | Watches are dropped; the feed records are deleted; the offline copy is deleted with the link | `TestChatFeed_UnlinkDropsWatches`; phone `ChatOfflineCopyTests` |
-| Third concurrent hub conversation | Queued, "Waiting for a free slot" in the feed's lease | `TestChatrun_PoolQueuesBeyondTwo` |
+| Third concurrent hub conversation | Only when both hub sessions are mid-turn: queued, "Waiting for a free slot" in the feed's lease | `TestChatrun_PoolQueuesBeyondTwo` |
+| Conversation deleted (Mac ✕, phone delete, project delete) during a hub turn | The cascade removes the lease and rows; the Go store's next write changes 0 rows or fails its foreign key; it rolls back, cancels, closes the session and writes nothing more; no orphan steps or artifacts | `TestChatstore_ConversationDeletedMidTurnStopsCleanly` (deletes between a step and finalize) |
+| Conversation deleted during a Mac-run turn (from the phone) | The same in the Swift driver | `testDriverStopsWhenConversationDeleted` |
+| Conversation archived during a turn | Only `archived_at` changes; the turn finishes and is written normally | `TestChatstore_ArchiveMidTurnFinishes` |
+| Old Desktop app still running after an update (knows no lease) | Its heartbeat lacks `--chat-lease`; the hub keeps chat off (`desktop_too_old`); the phone shows "Update Watchtower on your Mac"; turns on as soon as the new app heartbeats | `TestChatCapability_OffWhileOldDesktopRuns`, `TestChatCapability_OnWithoutDesktop` |
+| Branch selected during a turn | The turn finishes by message id; the feed follows the new leaf; the next turn starts from the leaf current at its start | `TestChatstore_BranchSelectMidTurn` |
+| Mac-run turn ends while the owner is away | One `chat_answer` push, never twice (ledger key) | `TestChatPush_DesktopTurnEndPushesOnce` |
+| `chat_page` / `chat_search` request unanswered | The phone shows "The Mac did not answer" + Retry after 30 s | phone `ChatPagingModelTests`, `ChatSearchModelTests` |
+| Delete undone on the phone | Nothing is sent; the row comes back | phone `ChatRowActionsTests` |
 
 ## 8. Writers of the same data, and who wins
 
 | Data | Writers | Race rule |
 |---|---|---|
 | `chat_messages`, `chat_turn_steps`, `chat_artifacts`, `chat_attachments.message_id` of a turn | Swift turn store, Go turn store | Only the lease holder writes a turn's rows. The claim is in the owner-row transaction, so the first commit wins. |
-| `chat_turn_leases` | both turn stores (claim, heartbeat, release); either Stop (`cancel_requested_at`) | Claim by conditional upsert; Stop only under `turn_id`; release only by its own `turn_id` |
-| `chat_conversations.active_leaf_message_id` | both stores; branch select (Mac UI, `chat_branch_select`) | Branch select is refused while a lease is live, so nobody moves the leaf under a running turn |
+| `chat_turn_leases` | both turn stores (claim, heartbeat, release); either Stop (`cancel_requested_at_ms`) | Claim by conditional upsert; Stop only under `turn_id`; release only by its own `turn_id` |
+| `chat_conversations.active_leaf_message_id` | both stores; branch select (Mac UI, `chat_branch_select`) | Last write wins on the leaf. A turn never writes the leaf after its start transaction (flushes and finalize update by message id), so a branch select during a turn cannot corrupt it; the feed follows the leaf (D17). The next turn starts from whatever leaf is current when its start transaction commits. |
 | `chat_conversations.read_at` | Swift `markRead`, Go `chat_read` | `MAX(…)`, never backwards: both orders converge |
 | `chat_conversations.title`/`title_source` | Go title (both hub and CLI paths), Swift rename | The existing rule: AI never writes over `title_source='user'` |
+| `chat_conversations.pinned`, `title`/`title_source='user'` (rename) | Swift Chats panel, Go `chat_manage` | Last write wins, as with two Mac windows today; each write is one row update |
+| conversation delete | Swift Chats panel (after its Undo), Go `chat_manage delete` (after the phone's Undo), project delete | The cascade; a running turn's holder stops cleanly (§4.4) |
 | `chat_conversations.live_slack_since` | both stores | Set once (`WHERE live_slack_since IS NULL`), first wins |
 | `agent_actions` status | the chat MCP server (propose), Desktop approve, `chat_action_answer`, the gate | The existing compare-and-set in `ApproveSeen`/`ClaimSessionCall`; the second decision gets the row's current state |
 | `chat_attachments` rows (new) | Swift `ChatAttachmentStore`, Go upload intake | Each upload is its own row (no unique key exists, none is added). Only the file is deduplicated by sha256 per conversation, so two rows may share one path. The file is written to a temp name and renamed into place, so a concurrent writer of the same bytes leaves one whole file. The Go intake follows whatever file-removal rule `ChatAttachmentStore` has today for a shared path; T5 reads it and ports it with a twin test. |
@@ -369,22 +410,30 @@ The phone writes the last decoded `chat_feed` per conversation to its own GRDB f
 | Offline copy | T11 | `ChatOfflineCopyTests` |
 | Screens match the mockups | T10, T11 | new `ScreenshotTourTests` shots (`SHOTS_ONLY=chat`), compared with this spec's mockups before review |
 | Logs carry no chat content | T4 | `TestFILES01_Chatrun` |
+| Lease time format shared by Swift and Go | T1, T8 | `chat_lease_cases.json` in both |
+| Conversation deleted mid-turn: clean stop, no orphans | T3, T8 | `TestChatstore_ConversationDeletedMidTurnStopsCleanly`, `testDriverStopsWhenConversationDeleted` |
+| Chat off while an old Desktop runs | T5, T8 | `TestChatCapability_OffWhileOldDesktopRuns` |
+| Whole history readable (paging) | T5, T6, T11 | `TestChatPage_…`, `ChatPagingModelTests` |
+| Search, pin/rename/delete, quote-reply | T5, T10, T11 | `TestChatSearch_SameReaderAsMac`, `TestChatManage_…`, `ChatRowActionsTests`, `ChatQuoteReplyTests` (Kit, moved) |
+| Push for Mac-run turns, once | T7 | `TestChatPush_DesktopTurnEndPushesOnce` |
+| Push opens the chat on the phone | T9, T11 | `NotificationRouterChatTests` |
+| Offline list survives relaunch; prefetch budget | T11 | `ChatOfflineCopyTests` |
 
 ## 11. Plan outline
 
 | Task | Title | Depends on |
 |---|---|---|
 | T1 | Migration `chat_turn_leases` + Go lease API | none |
-| T2 | Move `ArtifactParser` + `MarkdownRunBuilder` to the Kit; Go artifact parser twin | none |
+| T2 | Move `ArtifactParser`, `MarkdownRunBuilder` and `ChatQuoteReply` to the Kit; Go artifact parser twin | none |
 | T3 | Go turn store (`internal/chatstore`) | T1, T2 |
 | T4 | Hub chat runner (`internal/hub/chatrun`) | T3 |
-| T5 | Hub actions, the `chat` grant, the attachment upload frame, the capability | T4 |
-| T6 | Slices `chat_list` + `chat_feed`; Kit mirrors and fixtures | T3 |
-| T7 | `chat_answer` push | T5, T6 |
-| T8 | Desktop: lease in the Swift store, foreign-turn view, Stop, the Chat toggle, DesignShot | T1 |
-| T9 | Kit: action params and the frozen kind lists | T5 |
-| T10 | Phone: Chats tab, gate and list | T6, T9 |
-| T11 | Phone: conversation, composer, attachments, approvals, artifacts, sources, branches, offline copy | T10 |
+| T5 | Hub actions (incl. `chat_manage`, `chat_page`, `chat_search`), the `chat` grant, the attachment upload frame, the capability with the Desktop lease flag | T4 |
+| T6 | Slices `chat_list`, `chat_feed`, `chat_page`, `chat_search`; Kit mirrors and fixtures | T3 |
+| T7 | `chat_answer` push for hub- and Mac-run turns | T5, T6 |
+| T8 | Desktop: lease in the Swift store, conversation-gone stop, foreign-turn view, Stop, `--chat-lease` heartbeat flag, the Chat toggle, DesignShots 4a/4b | T1 |
+| T9 | Kit: action params, the frozen kind lists, the `chat_answer` event in `WorkAlertContent` | T5 |
+| T10 | Phone: Chats tab, gate, list, search, row actions with Undo | T6, T9 |
+| T11 | Phone: conversation, paging, composer, quote-reply, attachments, approvals, artifacts, sources, branches, offline copy and prefetch, the push router opening a chat | T10 |
 | T12 | Docs: feature note, guide pages (iPhone → Chat), inventory amendments, protocol spec §7/§9 | all |
 
 Lanes run in parallel where the dependencies allow: T1, T2 and T8 start together; T6 and T4 run side by side after T3.
@@ -395,5 +444,5 @@ Lanes run in parallel where the dependencies allow: T1, T2 and T8 start together
 - A new chat's model and project are fixed after the first message, as on the Mac.
 - Edited messages keep their attachments on the original, as on the Mac.
 - A Mac-run turn streams to the phone at about 1 s, not 150 ms.
-- The offline copy holds only the conversations opened on this phone, at most 30.
+- Offline, only chats opened or prefetched (the 20 most recent) can be read, as far as their pages were loaded; search over message text needs the Mac.
 - The hub's 2-session pool is separate from the Desktop's 3. With both busy, up to 5 provider processes run on one Mac.
