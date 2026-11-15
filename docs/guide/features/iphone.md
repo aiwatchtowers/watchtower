@@ -111,7 +111,7 @@ Three switches under Settings → **Workbench** on the phone:
 
 - **Start sessions from this phone** lets you start a session from a target, or from the Workbench's **New session** with **No target** and a task you type. It runs the Mac's default agent. The Mac decides: allow typing on its phone row, then **Allow…** on **Starting sessions off**. Until then **Start session** stays off and says why.
 - **Type into sessions from this phone** lets you send a line to a running session. The Mac must also approve: the phone row on the Mac shows **Asks to type into sessions**, and **Allow…** grants it. **Revoke** takes it back.
-- **Answer permission prompts from this phone** lets you answer a Claude Code permission prompt. It is a separate grant: the Mac's phone row shows **Asks to answer permission prompts**, with its own **Allow…**.
+- **Answer permission prompts from this phone** answers permission prompts (off by default: approvals wait at the Mac). The Mac's row shows **Asks to answer permission prompts**, with its own **Allow…**.
 
 Without the typing switch, a running session's bottom bar says so, with **Turn On** right there.
 
