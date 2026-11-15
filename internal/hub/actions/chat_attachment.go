@@ -120,8 +120,8 @@ func (p *Processor) chatAttachment(ctx context.Context, b mailbox, r record, o s
 		default:
 			in := ChatAttachmentIntake{Device: b.id, UploadID: id, TargetHub: target, ThisHub: hub,
 				Name: strField(payload, "name"), Mime: strField(payload, "mime")}
-			in.ConversationID, _ = intField(payload, "conversation_id")
-			in.Size, _ = intField(payload, "size")
+			in.ConversationID = intField(payload, "conversation_id")
+			in.Size = intField(payload, "size")
 			if d := o.Frame.Asset; d != nil {
 				c := *d
 				in.Descriptor = &c
@@ -201,13 +201,13 @@ func (p *Processor) echoChatAttachment(ctx context.Context, b mailbox, r record,
 	return nil
 }
 
-func intField(m map[string]json.RawMessage, k string) (int64, bool) {
+// intField is m[k] as an integer (0 when missing or not one).
+func intField(m map[string]json.RawMessage, k string) int64 {
 	var v int64
-	raw, ok := m[k]
-	if !ok || json.Unmarshal(raw, &v) != nil {
-		return 0, false
+	if raw, ok := m[k]; ok && json.Unmarshal(raw, &v) == nil {
+		return v
 	}
-	return v, true
+	return 0
 }
 
 // uploadIDOK keeps an upload id usable in a record name: the phone's UUID.

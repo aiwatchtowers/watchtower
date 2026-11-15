@@ -139,8 +139,12 @@ func (c *chatEnv) run(kind string, params map[string]any) actions.Outcome {
 
 func (c *chatEnv) setGrant(column string, on bool) {
 	c.t.Helper()
+	q := map[string]string{
+		"chat_allowed":        `UPDATE devices SET chat_allowed = ?`,
+		"permissions_allowed": `UPDATE devices SET permissions_allowed = ?`,
+	}[column]
 	if err := c.env.store.WithTx(context.Background(), func(tx *sql.Tx) error {
-		_, err := tx.Exec(`UPDATE devices SET `+column+` = ?`, on)
+		_, err := tx.Exec(q, on)
 		return err
 	}); err != nil {
 		c.t.Fatal(err)

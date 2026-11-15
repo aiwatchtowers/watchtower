@@ -32,8 +32,8 @@ func (s *Store) NewConversation(ctx context.Context, projectID *int64, routing *
 		}
 	}
 	now := seconds(s.now())
-	res, err := tx.Exec(`INSERT INTO chat_conversations (title, context_type, context_id, project_id, created_at, updated_at)
-		VALUES ('', NULL, NULL, ?, ?, ?)`, projectID, now, now)
+	res, err := tx.Exec(`INSERT INTO chat_conversations (title, project_id, created_at, updated_at)
+		VALUES ('', ?, ?, ?)`, projectID, now, now)
 	if err != nil {
 		return 0, fmt.Errorf("creating a chat: %w", err)
 	}

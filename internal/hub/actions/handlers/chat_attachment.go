@@ -75,35 +75,35 @@ func (h *Handlers) IntakeChatAttachment(ctx context.Context, in actions.ChatAtta
 // openChatFile downloads the sealed asset beside the chat files and opens it
 // in memory; the sealed copy is removed either way.
 func (h *Handlers) openChatFile(ctx context.Context, c *ChatDeps, in actions.ChatAttachmentIntake, d secure.AssetDescriptor) ([]byte, *actions.Outcome) {
-	fail := func(reason, msg string) ([]byte, *actions.Outcome) {
-		o := failed(reason, msg)
-		return nil, &o
+	fail := func(reason, msg string) *actions.Outcome {
+		out := failed(reason, msg)
+		return &out
 	}
 	if c.FilesDir == "" {
-		return fail(reasonWriteFailed, chatFileWriteFailed)
+		return nil, fail(reasonWriteFailed, chatFileWriteFailed)
 	}
 	if err := os.MkdirAll(c.FilesDir, 0o700); err != nil {
 		log.Printf("hub chat: the chat files folder is unavailable")
-		return fail(reasonWriteFailed, chatFileWriteFailed)
+		return nil, fail(reasonWriteFailed, chatFileWriteFailed)
 	}
 	sealed := filepath.Join(c.FilesDir, "."+in.UploadID+".sealed")
 	defer func() { _ = os.Remove(sealed) }()
 	if err := in.Download(ctx, sealed); err != nil {
-		return fail(reasonNotFound, chatFileMissingMessage)
+		return nil, fail(reasonNotFound, chatFileMissingMessage)
 	}
 	st, err := os.Stat(sealed)
 	if err != nil || st.Size() < 0 || uint64(st.Size()) > secure.SealedAssetLen(secure.AssetHeader{
 		ChunkSize: d.Header.ChunkSize, ChunkCount: d.Header.ChunkCount,
 	}) {
-		return fail(reasonNotFound, chatFileMissingMessage)
+		return nil, fail(reasonNotFound, chatFileMissingMessage)
 	}
-	raw, err := os.ReadFile(sealed) //nolint:gosec // the hub's own temporary file
+	raw, err := os.ReadFile(sealed)
 	if err != nil {
-		return fail(reasonNotFound, chatFileMissingMessage)
+		return nil, fail(reasonNotFound, chatFileMissingMessage)
 	}
 	data, err := secure.DecryptAsset(raw, d)
 	if err != nil {
-		return fail(reasonNotFound, chatFileMissingMessage)
+		return nil, fail(reasonNotFound, chatFileMissingMessage)
 	}
 	return data, nil
 }

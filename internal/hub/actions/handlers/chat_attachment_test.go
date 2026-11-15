@@ -76,9 +76,17 @@ func TestChatAttachment_PartialUploadWritesNothing(t *testing.T) {
 	conv := c.conversation()
 	plain := bytes.Repeat([]byte("a"), 3000)
 	for name, in := range map[string]actions.ChatAttachmentIntake{
-		"cut":         c.upload(conv, "log.txt", plain, 1500),
-		"no_asset":    func() actions.ChatAttachmentIntake { in := c.upload(conv, "log.txt", plain, -1); in.Descriptor = nil; return in }(),
-		"no_download": func() actions.ChatAttachmentIntake { in := c.upload(conv, "log.txt", plain, -1); in.Download = nil; return in }(),
+		"cut": c.upload(conv, "log.txt", plain, 1500),
+		"no_asset": func() actions.ChatAttachmentIntake {
+			in := c.upload(conv, "log.txt", plain, -1)
+			in.Descriptor = nil
+			return in
+		}(),
+		"no_download": func() actions.ChatAttachmentIntake {
+			in := c.upload(conv, "log.txt", plain, -1)
+			in.Download = nil
+			return in
+		}(),
 		"download_failed": func() actions.ChatAttachmentIntake {
 			in := c.upload(conv, "log.txt", plain, -1)
 			in.Download = func(context.Context, string) error { return errors.New("cut") }

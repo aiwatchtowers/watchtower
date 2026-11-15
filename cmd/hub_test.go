@@ -416,8 +416,10 @@ func TestHubPhonesJSONKeys(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(out), &list), out)
 	require.Len(t, list, 1)
 	assert.ElementsMatch(t, []string{"device_id", "name", "scope", "linked_at", "typing_allowed", "typing_requested",
-		"permissions_allowed", "permissions_requested", "start_sessions_allowed", "start_sessions_granted", "ordered",
-		"last_applied_action_seq", "transport", "paying", "undelivered", "mailbox_full", "alerts", "keys"}, hubKeysOf(list[0]))
+		"permissions_allowed", "permissions_requested", "start_sessions_allowed", "start_sessions_granted", "chat_allowed",
+		"ordered", "last_applied_action_seq", "transport", "paying", "undelivered", "mailbox_full", "alerts", "keys"},
+		hubKeysOf(list[0]))
+	assert.Equal(t, true, list[0]["chat_allowed"], "the chat grant is on by default")
 	assert.Equal(t, id, list[0]["device_id"])
 	// No hub runs: paying is null; nothing held, no flag, no alert yet.
 	assert.Nil(t, list[0]["paying"])
@@ -702,6 +704,22 @@ func TestHubAllowJSONKeys(t *testing.T) {
 	out, err = runHub(t, "allow", id, "typing", "--revoke", "--json")
 	require.NoError(t, err)
 	assert.Equal(t, false, decodeKeys(t, out)["allowed"])
+
+	// The chat grant (iPhone chat D9): on by default, taken with --revoke,
+	// shown by `hub phones` (the Desktop's Settings → Mobile toggle).
+	out, err = runHub(t, "allow", id, "chat", "--revoke", "--json")
+	require.NoError(t, err)
+	m = decodeKeys(t, out)
+	assert.Equal(t, "chat", m["grant"])
+	assert.Equal(t, false, m["allowed"])
+	out, err = runHub(t, "phones", "--json")
+	require.NoError(t, err)
+	var phones []map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out), &phones), out)
+	require.Len(t, phones, 1)
+	assert.Equal(t, false, phones[0]["chat_allowed"])
+	_, err = runHub(t, "allow", id, "chat", "--json")
+	require.NoError(t, err)
 
 	_, err = runHub(t, "allow", id, "admin")
 	assert.ErrorContains(t, err, "unknown grant")
