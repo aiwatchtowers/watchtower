@@ -157,7 +157,10 @@ struct IdeaBatchPane: View {
                 .buttonStyle(.kitQuiet)
         }
         .controlSize(.small)
-        .disabled(isWriting)
+        // A card whose verdict landed but whose re-read failed is still
+        // shown: the gate refuses it a second press, so its buttons say so.
+        // (The gate is not observed; the pane redraws as the write ends.)
+        .disabled(isWriting || gate.value.pressedID == idea.id)
     }
 
     private var keyHint: some View {

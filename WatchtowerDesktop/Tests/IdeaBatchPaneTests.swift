@@ -235,8 +235,10 @@ final class IdeaBatchPaneTests: XCTestCase {
         let inspected = try view.inspect()
 
         try inspected.find(button: "Keep").tap()
-        try inspected.find(button: "Keep").tap()
-        try inspected.find(button: "Drop").tap()
+        // The held card's buttons now draw disabled; a press that still
+        // reaches them (a key) is refused by the gate either way.
+        _ = try? inspected.find(button: "Keep").tap()
+        _ = try? inspected.find(button: "Drop").tap()
         await settle { presses.count == 1 }
         for _ in 0..<20 { await Task.yield() }
         XCTAssertEqual(presses, [.keep])
@@ -319,6 +321,22 @@ final class IdeaBatchPaneTests: XCTestCase {
         XCTAssertTrue(try inspected.find(button: "Later").buttonStyle() is KitSecondaryButtonStyle)
         XCTAssertTrue(try inspected.find(button: "Make a Target…").buttonStyle() is KitQuietButtonStyle)
         XCTAssertThrowsError(try inspected.find(button: "Next 13"))
+    }
+
+    /// A card whose press landed but which is still shown (its re-read
+    /// failed) takes no second press, and its buttons are drawn disabled.
+    func testPressedCardStillShownDrawsItsButtonsDisabled() throws {
+        let idea = try insert()
+        let gate = IdeaBatchPressGate.Box()
+        XCTAssertTrue(gate.value.admit(idea.id, isWriting: false))
+        var view = pane(state(batchIDs: [idea.id], remaining: [idea]))
+        view.gateOverride = gate
+        let inspected = try view.inspect()
+        for title in IdeaBatchPress.allCases.map(\.title) {
+            XCTAssertTrue(try inspected.find(button: title).isDisabled(), title)
+        }
+        gate.value.release()
+        XCTAssertFalse(try view.inspect().find(button: "Keep").isDisabled(), "released: pressable again")
     }
 
     func testWritingDisablesTheVerdictButtons() throws {
