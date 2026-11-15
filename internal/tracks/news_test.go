@@ -54,8 +54,8 @@ func deref(s *string) string {
 
 func TestTrackNews_Fixture(t *testing.T) {
 	f := loadTrackNewsFixture(t)
-	if f.QuietDays != QuietDays {
-		t.Errorf("fixture quiet_days = %d, QuietDays = %d", f.QuietDays, QuietDays)
+	if f.QuietDays != defaultQuietDays {
+		t.Errorf("fixture quiet_days = %d, defaultQuietDays = %d", f.QuietDays, defaultQuietDays)
 	}
 	for _, c := range f.Cases {
 		now, err := time.Parse(time.RFC3339Nano, c.Now)
@@ -135,6 +135,6 @@ func TestQuietTrackIDs_KeepsQuietInOrder(t *testing.T) {
 		{ID: 5, ReadAt: at(50 * day), UpdatedAt: at(40 * day), NewestEventAt: at(5 * day)},
 		{ID: 6, UpdatedAt: at(31 * day)}, // never read, old: no news, quiet
 	}
-	assert.Equal(t, []int{1, 6}, QuietTrackIDs(rows, now, QuietDays))
-	assert.Empty(t, QuietTrackIDs(nil, now, QuietDays))
+	assert.Equal(t, []int{1, 6}, QuietTrackIDs(rows, now, defaultQuietDays))
+	assert.Empty(t, QuietTrackIDs(nil, now, defaultQuietDays))
 }

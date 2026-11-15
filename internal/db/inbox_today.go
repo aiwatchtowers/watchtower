@@ -7,7 +7,9 @@ import (
 
 // The "from today" rule of the Inbox and the Waiting for me sections. This is
 // the Go twin of the Desktop's InboxToday (WatchtowerCore); the shared fixture
-// internal/inbox/testdata/from_today.json pins that both agree.
+// internal/inbox/testdata/from_today.json pins that both agree: Go reads it
+// through WaitingSectionOf (Today) on the later of created_at and
+// mentioned_at, the item time the SQL readers select.
 
 // StartOfToday returns the first instant, in now's location, whose local date
 // is now's date: local midnight, or — when a DST gap swallows midnight — the
@@ -34,16 +36,6 @@ func StartOfToday(now time.Time) time.Time {
 }
 
 func dayKey(y int, m time.Month, d int) int { return y*10000 + int(m)*100 + d }
-
-// IsFromToday reports whether an item counts as from today: the later of
-// createdAt and mentionedAt (zero = no mention) is at or after StartOfToday(now).
-func IsFromToday(createdAt, mentionedAt, now time.Time) bool {
-	at := createdAt
-	if !mentionedAt.IsZero() && mentionedAt.After(at) {
-		at = mentionedAt
-	}
-	return !at.Before(StartOfToday(now))
-}
 
 // WaitingSection is the section of Waiting for me / Mail waiting an item
 // falls into by its time (the later of created_at and mentioned_at).

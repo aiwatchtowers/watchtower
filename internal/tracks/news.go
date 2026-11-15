@@ -10,9 +10,11 @@ import (
 // event (inclusive).
 const NewsWindow = 72 * time.Hour
 
-// QuietDays is the default number of days without an event after which a
-// track with no news counts as quiet (inclusive).
-const QuietDays = 30
+// defaultQuietDays is the default number of days without an event after
+// which a track with no news counts as quiet (inclusive): the Desktop's
+// default, pinned to the shared track_news.json fixture. The CLI's
+// --quiet-days takes the number explicitly.
+const defaultQuietDays = 30
 
 // NewsInput is the part of a track the "with news" rule reads. The Swift twin
 // reads the same rule from testdata/track_news.json.

@@ -28,7 +28,8 @@ func mustRFC3339(t *testing.T, s string) time.Time {
 }
 
 // TestInboxToday_SharedFixture pins the Go twin of the Swift InboxToday rule
-// to the fixture both sides read.
+// to the fixture both sides read: WaitingSectionOf's Today on the later of
+// created_at and mentioned_at (the SQL readers' MAX of the two).
 func TestInboxToday_SharedFixture(t *testing.T) {
 	raw, err := os.ReadFile(fromTodayFixture)
 	if err != nil {
@@ -50,12 +51,14 @@ func TestInboxToday_SharedFixture(t *testing.T) {
 		}
 		now := mustRFC3339(t, c.Now).In(loc)
 		created := mustRFC3339(t, c.CreatedAt)
-		var mentioned time.Time
+		at := created
 		if c.MentionedAt != nil && *c.MentionedAt != "" {
-			mentioned = mustRFC3339(t, *c.MentionedAt)
+			if mentioned := mustRFC3339(t, *c.MentionedAt); mentioned.After(at) {
+				at = mentioned
+			}
 		}
-		if got := IsFromToday(created, mentioned, now); got != c.Expected {
-			t.Errorf("case %d (%s): IsFromToday = %v, want %v", i, c.Name, got, c.Expected)
+		if got := WaitingSectionOf(at, now) == SectionToday; got != c.Expected {
+			t.Errorf("case %d (%s): WaitingSectionOf(...) == today is %v, want %v", i, c.Name, got, c.Expected)
 		}
 	}
 }
