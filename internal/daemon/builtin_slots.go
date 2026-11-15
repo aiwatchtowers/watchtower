@@ -278,12 +278,12 @@ func (g *slackTodayGate) Due(ctx context.Context, e builtin.Entry, now time.Time
 	if day != local.Format("2006-01-02") && (hasDay || !t.hasOK || t.lastOK.Before(midnight)) {
 		return true
 	}
-	after, behind, err := automations.WindowCursorOf(state, automations.SlackWindowStateKey)
+	cur, err := automations.WindowCursorOf(state, automations.SlackWindowStateKey)
 	if err != nil {
 		d.logger.Printf("slack-today: automation %d's state: %v", a.ID, err)
 		return true
 	}
-	if behind {
+	if cur.Behind {
 		return true
 	}
 	if !t.timeDue {
@@ -291,7 +291,8 @@ func (g *slackTodayGate) Due(ctx context.Context, e builtin.Entry, now time.Time
 	}
 	has, err := d.db.SlackWindowHasMaterial(ctx, db.SlackWindowQuery{
 		Scope:      e.WindowScope,
-		AfterRowID: after,
+		AfterRowID: cur.AfterRowID,
+		Anchor:     cur.Anchor,
 		Floor:      midnight,
 		Now:        local,
 	})

@@ -23,45 +23,48 @@ const WindowFloorToday = "today"
 // windowCursorVersion is the cursor value's "v".
 const windowCursorVersion = 1
 
-// windowCursor is a window cursor's state value,
-// {"v":1,"after_rowid":N,"behind":bool}.
-type windowCursor struct {
-	V          int   `json:"v"`
-	AfterRowID int64 `json:"after_rowid"`
-	Behind     bool  `json:"behind"`
+// WindowCursor is a window cursor's state value,
+// {"v":1,"after_rowid":N,"behind":bool,"anchor":"<id>"}. Anchor is the
+// primitive's id of the row at AfterRowID, checked by the next read (a
+// cursor written before anchors existed has none and is still v1).
+type WindowCursor struct {
+	V          int    `json:"v"`
+	AfterRowID int64  `json:"after_rowid"`
+	Behind     bool   `json:"behind"`
+	Anchor     string `json:"anchor,omitempty"`
 }
 
 // WindowCursorOf reads the window cursor at key from an automation's
 // committed state (a JSON object; empty or null = {}). A missing key is
-// 0, false, nil; a state that is not an object, or a value that is not a
+// the zero cursor; a state that is not an object, or a value that is not a
 // v1 cursor, is an error.
-func WindowCursorOf(state json.RawMessage, key string) (afterRowID int64, behind bool, err error) {
+func WindowCursorOf(state json.RawMessage, key string) (WindowCursor, error) {
 	if len(state) == 0 {
-		return 0, false, nil
+		return WindowCursor{}, nil
 	}
 	var all map[string]json.RawMessage
 	if err := json.Unmarshal(state, &all); err != nil {
-		return 0, false, fmt.Errorf("decoding the automation state: %w", err)
+		return WindowCursor{}, fmt.Errorf("decoding the automation state: %w", err)
 	}
 	raw, ok := all[key]
 	if !ok {
-		return 0, false, nil
+		return WindowCursor{}, nil
 	}
 	return decodeWindowCursor(key, raw)
 }
 
-func decodeWindowCursor(key string, raw json.RawMessage) (int64, bool, error) {
-	var c windowCursor
+func decodeWindowCursor(key string, raw json.RawMessage) (WindowCursor, error) {
+	var c WindowCursor
 	if err := json.Unmarshal(raw, &c); err != nil {
-		return 0, false, fmt.Errorf("decoding the window cursor %q: %w", key, err)
+		return WindowCursor{}, fmt.Errorf("decoding the window cursor %q: %w", key, err)
 	}
 	if c.V != windowCursorVersion {
-		return 0, false, fmt.Errorf("the window cursor %q has version %d; want %d", key, c.V, windowCursorVersion)
+		return WindowCursor{}, fmt.Errorf("the window cursor %q has version %d; want %d", key, c.V, windowCursorVersion)
 	}
 	if c.AfterRowID < 0 {
-		return 0, false, fmt.Errorf("the window cursor %q has a negative after_rowid %d", key, c.AfterRowID)
+		return WindowCursor{}, fmt.Errorf("the window cursor %q has a negative after_rowid %d", key, c.AfterRowID)
 	}
-	return c.AfterRowID, c.Behind, nil
+	return c, nil
 }
 
 // windowCursorProblem names why raw is not a v1 window cursor, without its
@@ -147,14 +150,14 @@ func (s *builtinSDK) callWindow(env *Env, name string, raw any, argErr error) (a
 			return nil, err
 		}
 		key := windowStateKeys[name]
-		var after int64
+		var cur WindowCursor
 		if raw, ok := env.Buffer.getRaw(key); ok {
-			if after, _, err = decodeWindowCursor(key, raw); err != nil {
-				after, badCursor = 0, windowCursorProblem(raw)
+			if cur, err = decodeWindowCursor(key, raw); err != nil {
+				cur, badCursor = WindowCursor{}, windowCursorProblem(raw)
 			}
 		}
 		res, err := fn(env.Ctx, PrimitiveCall{Name: name, BuiltinID: builtinIDOf(env), Trigger: env.Trigger,
-			Input: env.Trigger.Builtin, Cursor: after, Floor: floor})
+			Input: env.Trigger.Builtin, Cursor: cur.AfterRowID, CursorAnchor: cur.Anchor, Floor: floor})
 		if err == nil && res.Status != primitiveDone && res.Status != primitiveSkipped {
 			err = fmt.Errorf("%s returned status %q (want %q or %q)", name, res.Status, primitiveDone, primitiveSkipped)
 		}
@@ -162,7 +165,7 @@ func (s *builtinSDK) callWindow(env *Env, name string, raw any, argErr error) (a
 			return nil, modelCallError(err, ErrNamePrimitiveFailed, "")
 		}
 		if res.Status == primitiveDone {
-			next := windowCursor{V: windowCursorVersion, AfterRowID: res.NextCursor, Behind: res.Behind}
+			next := WindowCursor{V: windowCursorVersion, AfterRowID: res.NextCursor, Behind: res.Behind, Anchor: res.NextAnchor}
 			if err := env.Buffer.Set(key, next); err != nil {
 				return nil, err
 			}

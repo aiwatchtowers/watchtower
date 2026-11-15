@@ -62,11 +62,11 @@ func (f *exFixture) windowCursor(t *testing.T, a db.Automation) (int64, bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	after, behind, err := automations.WindowCursorOf(state, automations.SlackWindowStateKey)
+	c, err := automations.WindowCursorOf(state, automations.SlackWindowStateKey)
 	if err != nil {
 		t.Fatalf("WindowCursorOf(%s): %v", state, err)
 	}
-	return after, behind
+	return c.AfterRowID, c.Behind
 }
 
 // TestAuto04_RawWindowCursorOnlyOnSuccess: the cursor a window call stages
@@ -108,14 +108,18 @@ func TestAuto04_RawWindowCursorOnlyOnSuccess(t *testing.T) {
 
 func TestWindowCursorOf(t *testing.T) {
 	for _, state := range []string{"", "{}", "null", `{"other":1}`} {
-		after, behind, err := automations.WindowCursorOf(json.RawMessage(state), automations.SlackWindowStateKey)
-		if after != 0 || behind || err != nil {
-			t.Errorf("%q: %d %v %v; want 0 false nil", state, after, behind, err)
+		c, err := automations.WindowCursorOf(json.RawMessage(state), automations.SlackWindowStateKey)
+		if c != (automations.WindowCursor{}) || err != nil {
+			t.Errorf("%q: %+v %v; want the zero cursor", state, c, err)
 		}
 	}
-	after, behind, err := automations.WindowCursorOf(json.RawMessage(`{"__window:slack":{"v":1,"after_rowid":9,"behind":true}}`), automations.SlackWindowStateKey)
-	if after != 9 || !behind || err != nil {
-		t.Errorf("v1: %d %v %v; want 9 true nil", after, behind, err)
+	c, err := automations.WindowCursorOf(json.RawMessage(`{"__window:slack":{"v":1,"after_rowid":9,"behind":true}}`), automations.SlackWindowStateKey)
+	if c.AfterRowID != 9 || !c.Behind || c.Anchor != "" || err != nil {
+		t.Errorf("v1 without an anchor: %+v %v; want 9 true no anchor", c, err)
+	}
+	c, err = automations.WindowCursorOf(json.RawMessage(`{"__window:slack":{"v":1,"after_rowid":9,"behind":false,"anchor":"1:C1/1.000001"}}`), automations.SlackWindowStateKey)
+	if c.AfterRowID != 9 || c.Behind || c.Anchor != "1:C1/1.000001" || err != nil {
+		t.Errorf("v1 with an anchor: %+v %v", c, err)
 	}
 	for _, state := range []string{
 		`{"__window:slack":{"v":2,"after_rowid":9}}`,
@@ -125,7 +129,7 @@ func TestWindowCursorOf(t *testing.T) {
 		`{"__window:slack":`,
 		`[1]`,
 	} {
-		if _, _, err := automations.WindowCursorOf(json.RawMessage(state), automations.SlackWindowStateKey); err == nil {
+		if _, err := automations.WindowCursorOf(json.RawMessage(state), automations.SlackWindowStateKey); err == nil {
 			t.Errorf("%s: want an error", state)
 		}
 	}
@@ -152,6 +156,32 @@ func TestSlackWindowCall_PassesCursorAndFloor(t *testing.T) {
 	}
 	if c := w.call(t, 3); c.Cursor != 7 || c.Floor != "" {
 		t.Errorf("run 2's first call = %+v; want Cursor 7", c)
+	}
+}
+
+// The primitive's NextAnchor is committed with the cursor and handed back as
+// the next run's CursorAnchor.
+func TestSlackWindowCall_AnchorRoundTrips(t *testing.T) {
+	w := &windowFake{next: func(automations.PrimitiveCall) automations.PrimitiveResult {
+		return automations.PrimitiveResult{Status: "done", NextCursor: 7, NextAnchor: "1:C1/7.000007"}
+	}}
+	f := windowFixture(t, w)
+	a := f.seedWindow(t, `return slack.window().status;`)
+	if r := f.runBuiltin(t, a, db.TriggerSync, ""); r.Status != db.RunSucceeded {
+		t.Fatalf("run 1 = %s (%s)", r.Status, r.Error)
+	}
+	if c := w.call(t, 0); c.CursorAnchor != "" {
+		t.Errorf("first call CursorAnchor = %q; want none", c.CursorAnchor)
+	}
+	state, err := f.d.GetAutomationState(a.ID)
+	if err != nil || string(state) != `{"__window:slack":{"v":1,"after_rowid":7,"behind":false,"anchor":"1:C1/7.000007"}}` {
+		t.Fatalf("state = %s, %v", state, err)
+	}
+	if r := f.runBuiltin(t, a, db.TriggerSync, ""); r.Status != db.RunSucceeded {
+		t.Fatalf("run 2 = %s (%s)", r.Status, r.Error)
+	}
+	if c := w.call(t, 1); c.Cursor != 7 || c.CursorAnchor != "1:C1/7.000007" {
+		t.Errorf("run 2 call = Cursor %d CursorAnchor %q; want 7 and the committed anchor", c.Cursor, c.CursorAnchor)
 	}
 }
 

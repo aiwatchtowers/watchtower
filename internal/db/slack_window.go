@@ -50,9 +50,13 @@ const (
 // SlackWindowQuery is one read of the Slack window.
 type SlackWindowQuery struct {
 	Scope      WindowScope
-	AfterRowID int64     // messages.rowid already read; 0 = no cursor
-	Floor      time.Time // zero = none
-	Now        time.Time
+	AfterRowID int64 // messages.rowid already read; 0 = no cursor
+	// Anchor is the id ("<channel_id>/<ts>", SlackWindowMessage.ID) of the
+	// message at AfterRowID when the cursor was taken; "" = a cursor taken
+	// before anchors existed, checked by the newest rowid only.
+	Anchor string
+	Floor  time.Time // zero = none
+	Now    time.Time
 }
 
 // SlackWindowMessage is one message of the window, in arrival order.
@@ -82,16 +86,22 @@ type SlackWindow struct {
 	// when the window was read to its end, else the last included message's.
 	// It is never below AfterRowID unless CursorReset.
 	NextRowID int64
-	Truncated bool
+	// NextAnchor is the id of the message at NextRowID ("" when NextRowID
+	// is 0), stored with it as the next read's Anchor.
+	NextAnchor string
+	Truncated  bool
 	// SkippedOlder counts in-scope rows past the cursor older than
 	// SlackWindowMaxAge; BelowFloor those within the age limit but before
 	// Floor. Both stay 0 without a cursor.
 	SkippedOlder int
 	BelowFloor   int
-	// CursorReset is set when AfterRowID was above the newest
-	// messages.rowid: rowids are reused once the table is emptied (a Slack
-	// disconnect, an account purge), so such a cursor would hide every new
-	// message. The window is then read as with no cursor.
+	// CursorReset is set when the cursor no longer points at the message it
+	// was taken at: AfterRowID is above the newest messages.rowid, or the
+	// row at AfterRowID is gone or holds another message than Anchor.
+	// messages has no AUTOINCREMENT, so once its newest rows are deleted (a
+	// Slack disconnect, an account purge) new rows reuse their rowids, and
+	// such a cursor would hide them. The window is then read as with no
+	// cursor: a repeat of the day, never a gap.
 	CursorReset bool
 }
 
@@ -146,23 +156,51 @@ type slackWindowQueryer interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
-// slackWindowCursor returns the newest messages.rowid and the cursor to
-// read past: after, or 0 with reset when after is above that rowid (see
-// SlackWindow.CursorReset).
-func slackWindowCursor(ctx context.Context, q slackWindowQueryer, after int64) (maxRowID, cursor int64, reset bool, err error) {
-	if err := q.QueryRowContext(ctx, `SELECT COALESCE(MAX(rowid), 0) FROM messages`).Scan(&maxRowID); err != nil {
-		return 0, 0, false, fmt.Errorf("slack window: newest rowid: %w", err)
+// slackWindowCursorCheck is the cursor check of one read.
+type slackWindowCursorCheck struct {
+	maxRowID  int64  // the newest messages.rowid (0 = none)
+	maxAnchor string // the id of the message at maxRowID
+	after     int64  // the cursor to read past: the query's, or 0 on reset
+	anchor    string // the id of the message at after ("" when after is 0)
+	reset     bool   // see SlackWindow.CursorReset
+}
+
+// slackWindowCursor checks the query's cursor against the table: it is reset
+// (read past 0) when it is above the newest rowid, or, with an anchor, when
+// the row at it is gone or is another message. A cursor without an anchor is
+// checked by the newest rowid only.
+func slackWindowCursor(ctx context.Context, q slackWindowQueryer, after int64, anchor string) (slackWindowCursorCheck, error) {
+	var c slackWindowCursorCheck
+	err := q.QueryRowContext(ctx, `SELECT rowid, channel_id || '/' || ts FROM messages ORDER BY rowid DESC LIMIT 1`).
+		Scan(&c.maxRowID, &c.maxAnchor)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return c, fmt.Errorf("slack window: newest rowid: %w", err)
 	}
-	if after > maxRowID {
-		return maxRowID, 0, true, nil
+	if after > c.maxRowID {
+		c.reset = true
+		return c, nil
 	}
-	return maxRowID, after, false, nil
+	if after > 0 && anchor != "" {
+		var at string
+		err := q.QueryRowContext(ctx, `SELECT channel_id || '/' || ts FROM messages WHERE rowid = ?`, after).Scan(&at)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			c.reset = true
+			return c, nil
+		case err != nil:
+			return c, fmt.Errorf("slack window: the cursor's message: %w", err)
+		case at != anchor:
+			c.reset = true
+			return c, nil
+		}
+	}
+	c.after, c.anchor = after, anchor
+	return c, nil
 }
 
 // SlackWindowHasMaterial reports whether ReadSlackWindow would return at least
-// one message: an in-scope message past the cursor (none when the cursor is
-// above the newest rowid, as ReadSlackWindow resets it) at or after the
-// effective lower bound. It reads no message bodies.
+// one message: an in-scope message past the cursor (checked and reset as
+// ReadSlackWindow does) at or after the effective lower bound. It reads no message bodies.
 func (db *DB) SlackWindowHasMaterial(ctx context.Context, q SlackWindowQuery) (bool, error) {
 	scope, err := slackWindowScopeSQL(q.Scope)
 	if err != nil {
@@ -177,14 +215,14 @@ func (db *DB) SlackWindowHasMaterial(ctx context.Context, q SlackWindowQuery) (b
 		return false, fmt.Errorf("slack window: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	_, after, _, err := slackWindowCursor(ctx, tx, q.AfterRowID)
+	c, err := slackWindowCursor(ctx, tx, q.AfterRowID, q.Anchor)
 	if err != nil {
 		return false, err
 	}
 	var has bool
 	err = tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 `+slackWindowJoins+`
 		WHERE `+slackWindowFilters+`
-		  AND m.ts_unix >= ? AND `+scope+`)`, after, lower).Scan(&has)
+		  AND m.ts_unix >= ? AND `+scope+`)`, c.after, lower).Scan(&has)
 	if err != nil {
 		return false, fmt.Errorf("slack window: checking for material: %w", err)
 	}
@@ -223,7 +261,7 @@ func (db *DB) readSlackWindow(ctx context.Context, q SlackWindowQuery, caps slac
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	maxRowID, after, reset, err := slackWindowCursor(ctx, tx, q.AfterRowID)
+	c, err := slackWindowCursor(ctx, tx, q.AfterRowID, q.Anchor)
 	if err != nil {
 		return SlackWindow{}, err
 	}
@@ -236,16 +274,16 @@ func (db *DB) readSlackWindow(ctx context.Context, q SlackWindowQuery, caps slac
 	// with one, every in-scope row past it is streamed and the old ones are
 	// counted (their bodies are not read).
 	scanFrom := lower
-	if after > 0 {
+	if c.after > 0 {
 		scanFrom = -math.MaxFloat64
 	}
-	w, owners, err := streamSlackWindow(ctx, tx, scope, after, scanFrom, age, lower, groupNames, caps)
+	w, owners, err := streamSlackWindow(ctx, tx, scope, c.after, c.anchor, scanFrom, age, lower, groupNames, caps)
 	if err != nil {
 		return SlackWindow{}, err
 	}
-	w.CursorReset = reset
+	w.CursorReset = c.reset
 	if !w.Truncated {
-		w.NextRowID = maxRowID // ≥ after: after is never above it
+		w.NextRowID, w.NextAnchor = c.maxRowID, c.maxAnchor // ≥ after: after is never above it
 	}
 	if err := markSlackWindowToOwner(ctx, tx, &w, owners); err != nil {
 		return SlackWindow{}, err
@@ -258,7 +296,7 @@ func (db *DB) readSlackWindow(ctx context.Context, q SlackWindowQuery, caps slac
 // message when the window is cut, so the next read does not count them twice.
 // owners maps each included message's account ("<id>" of its channel's
 // "<id>:" prefix) to that account's current_user_id.
-func streamSlackWindow(ctx context.Context, tx *sql.Tx, scope string, after int64, scanFrom, age, lower float64,
+func streamSlackWindow(ctx context.Context, tx *sql.Tx, scope string, after int64, anchor string, scanFrom, age, lower float64,
 	groupNames map[string]string, caps slackWindowCaps) (w SlackWindow, owners map[string]string, err error) {
 	//nolint:gosec // G202: the concatenated joins, filters and scope are the package's constant SQL; every value is a bound arg.
 	rows, err := tx.QueryContext(ctx, `SELECT m.rowid, m.channel_id, c.name, c.type, m.ts, COALESCE(m.thread_ts, ''),
@@ -278,7 +316,7 @@ func streamSlackWindow(ctx context.Context, tx *sql.Tx, scope string, after int6
 	}
 	defer rows.Close()
 
-	w = SlackWindow{NextRowID: after}
+	w = SlackWindow{NextRowID: after, NextAnchor: anchor}
 	owners = map[string]string{}
 	var chars, size, pendingOlder, pendingBelow int
 	for rows.Next() {
@@ -313,7 +351,7 @@ func streamSlackWindow(ctx context.Context, tx *sql.Tx, scope string, after int6
 		w.SkippedOlder += pendingOlder
 		w.BelowFloor += pendingBelow
 		pendingOlder, pendingBelow = 0, 0
-		w.NextRowID = m.RowID
+		w.NextRowID, w.NextAnchor = m.RowID, m.ID()
 	}
 	if err := rows.Err(); err != nil {
 		return SlackWindow{}, nil, fmt.Errorf("slack window: reading messages: %w", err)

@@ -189,6 +189,13 @@ func TestSlackWindowPrimitive_FieldsShape(t *testing.T) {
 	if res.NextCursor != s.maxRowID() || res.Behind {
 		t.Errorf("NextCursor %d Behind %v; want %d false", res.NextCursor, res.Behind, s.maxRowID())
 	}
+	var anchor string
+	if err := s.d.QueryRow(`SELECT channel_id || '/' || ts FROM messages WHERE rowid = ?`, res.NextCursor).Scan(&anchor); err != nil {
+		t.Fatal(err)
+	}
+	if res.NextAnchor != anchor {
+		t.Errorf("NextAnchor %q; want the id of the row at NextCursor, %q", res.NextAnchor, anchor)
+	}
 }
 
 func TestSlackWindowPrimitive_ScopeFromEntry(t *testing.T) {
@@ -254,7 +261,7 @@ func TestSlackWindowPrimitive_PolicyOffSkipsAndKeepsCursor(t *testing.T) {
 	now := time.Date(2026, 11, 12, 6, 0, 0, 0, time.UTC)
 	s.msg("1:C0ACME", "1:U0BOB", "hidden", "", "", now.Add(-time.Hour))
 
-	res := mustWindow(t, s.d, now, automations.PrimitiveCall{Cursor: 7})
+	res := mustWindow(t, s.d, now, automations.PrimitiveCall{Cursor: 7, CursorAnchor: "1:C0ACME/7.000007"})
 	if res.Status != "skipped" || res.Fields["reason"] != "source_off" ||
 		res.Fields["day"] != now.In(time.Local).Format("2006-01-02") || len(res.Fields) != 3 {
 		t.Fatalf("status %q fields %v; want reason, day and messages", res.Status, res.Fields)
@@ -262,8 +269,8 @@ func TestSlackWindowPrimitive_PolicyOffSkipsAndKeepsCursor(t *testing.T) {
 	if msgs := windowMessages(t, res); len(msgs) != 0 {
 		t.Errorf("messages %v", msgs)
 	}
-	if res.NextCursor != 7 {
-		t.Errorf("NextCursor %d; want the call's 7", res.NextCursor)
+	if res.NextCursor != 7 || res.NextAnchor != "1:C0ACME/7.000007" {
+		t.Errorf("NextCursor %d NextAnchor %q; want the call's 7 and its anchor", res.NextCursor, res.NextAnchor)
 	}
 }
 

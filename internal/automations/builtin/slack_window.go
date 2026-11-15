@@ -15,10 +15,10 @@ import (
 // the calling built-in's WindowScope, as {status: "done", day, owner: {name},
 // messages: [{id, channel_id, channel, author, at, time, text, thread_id,
 // permalink, by_owner, to_owner, bot}], count, truncated, skipped_older,
-// below_floor, cursor_reset}, with NextCursor the next read's cursor (never
-// behind the call's unless cursor_reset: the call's cursor was above the
-// newest message row, see db.SlackWindow.CursorReset) and Behind when a cap
-// cut the window. Floor "today" starts the
+// below_floor, cursor_reset}, with NextCursor and NextAnchor the next read's
+// cursor and the id of the row at it (never behind the call's unless
+// cursor_reset: the call's cursor no longer points at the row it was taken
+// at, see db.SlackWindow.CursorReset) and Behind when a cap cut the window. Floor "today" starts the
 // window at local midnight of now. A policy that turns Slack off reads
 // nothing: {status: "skipped", reason: "source_off", day, messages: []}
 // with the call's cursor. It calls no model.
@@ -37,10 +37,10 @@ func SlackWindowPrimitives(d *db.DB, now func() time.Time) map[string]automation
 			}
 			at := now().In(time.Local)
 			if !policy.SourceAllowed("slack") {
-				return automations.PrimitiveResult{Status: "skipped", NextCursor: call.Cursor,
+				return automations.PrimitiveResult{Status: "skipped", NextCursor: call.Cursor, NextAnchor: call.CursorAnchor,
 					Fields: map[string]any{"reason": "source_off", "day": at.Format("2006-01-02"), "messages": []any{}}}, nil
 			}
-			q := db.SlackWindowQuery{Scope: entry.WindowScope, AfterRowID: call.Cursor, Now: at}
+			q := db.SlackWindowQuery{Scope: entry.WindowScope, AfterRowID: call.Cursor, Anchor: call.CursorAnchor, Now: at}
 			switch call.Floor {
 			case "":
 			case automations.WindowFloorToday:
@@ -70,6 +70,7 @@ func SlackWindowPrimitives(d *db.DB, now func() time.Time) map[string]automation
 					"cursor_reset":  w.CursorReset,
 				},
 				NextCursor: w.NextRowID,
+				NextAnchor: w.NextAnchor,
 				Behind:     w.Truncated,
 			}, nil
 		},

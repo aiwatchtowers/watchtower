@@ -521,6 +521,59 @@ func TestSlackWindow_CursorAboveNewestRowIDResets(t *testing.T) {
 	assert.Empty(t, w.Messages)
 }
 
+// The newest rows deleted (a purge of the account that synced last) and more
+// rows inserted than the gap before the next read: SQLite reuses the deleted
+// rowids, so MAX(rowid) climbs back past the cursor. The anchor sees that the
+// row at the cursor is another message and resets: every new row is read.
+func TestSlackWindow_ReusedRowidsUnderAnchoredCursorReset(t *testing.T) {
+	s := newWindowSeed(t)
+	now := time.Date(s.now.Year(), s.now.Month(), s.now.Day(), 10, 0, 0, 0, time.Local)
+	midnight := StartOfToday(now)
+	s.msg("1:C0ACME", windowOwner, "kept", midnight.Add(time.Hour))
+	for i := 0; i < 3; i++ {
+		s.msg("1:C0ACME", windowOwner, fmt.Sprintf("purged %d", i), midnight.Add(2*time.Hour))
+	}
+	first := s.read(SlackWindowQuery{Floor: midnight, Now: now})
+	require.Equal(t, s.maxRowID(), first.NextRowID, "the cursor sits at the top row")
+	require.NotEmpty(t, first.NextAnchor)
+
+	_, err := s.d.Exec(`DELETE FROM messages WHERE text LIKE 'purged %'`)
+	require.NoError(t, err)
+	var fresh []string
+	for i := 0; i < 5; i++ {
+		fresh = append(fresh, fmt.Sprintf("new %d", i))
+		s.msg("1:C0ACME", windowOwner, fresh[i], midnight.Add(3*time.Hour))
+	}
+	require.Greater(t, s.maxRowID(), first.NextRowID, "precondition: MAX(rowid) climbed back past the cursor")
+
+	q := SlackWindowQuery{AfterRowID: first.NextRowID, Anchor: first.NextAnchor, Floor: midnight, Now: now}
+	w := s.read(q)
+	assert.True(t, w.CursorReset)
+	assert.Equal(t, append([]string{"kept"}, fresh...), windowTexts(w), "a repeat of the day, never a gap")
+	assert.Equal(t, s.maxRowID(), w.NextRowID)
+
+	legacy := s.read(SlackWindowQuery{AfterRowID: first.NextRowID, Floor: midnight, Now: now})
+	assert.False(t, legacy.CursorReset, "a pre-anchor cursor keeps the newest-rowid rule")
+
+	again := s.read(SlackWindowQuery{AfterRowID: w.NextRowID, Anchor: w.NextAnchor, Floor: midnight, Now: now})
+	assert.False(t, again.CursorReset, "an anchor that still matches is kept")
+	assert.Empty(t, again.Messages)
+}
+
+// A cursor whose row is gone while newer rows survive (a purge in the middle)
+// is reset too: a repeat, never a gap.
+func TestSlackWindow_AnchoredCursorOnADeletedRowResets(t *testing.T) {
+	s := newWindowSeed(t)
+	s.msg("1:C0ACME", windowOwner, "one", s.now.Add(-2*time.Hour))
+	w := s.read(SlackWindowQuery{})
+	s.msg("1:C0ACME", windowOwner, "two", s.now.Add(-time.Hour))
+	_, err := s.d.Exec(`DELETE FROM messages WHERE text = 'one'`)
+	require.NoError(t, err)
+	next := s.read(SlackWindowQuery{AfterRowID: w.NextRowID, Anchor: w.NextAnchor})
+	assert.True(t, next.CursorReset)
+	assert.Equal(t, []string{"two"}, windowTexts(next))
+}
+
 func TestSlackWindow_RemovedAccountReadsNothing(t *testing.T) {
 	for _, tc := range []struct{ name, set string }{
 		{"removed", "status = 'removed'"},
