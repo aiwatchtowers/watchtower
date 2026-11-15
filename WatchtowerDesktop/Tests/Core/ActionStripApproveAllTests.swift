@@ -462,8 +462,9 @@ final class ActionStripApproveAllTests: XCTestCase {
         XCTAssertEqual(ids.count, 2)
     }
 
-    /// One approvable row left (no Approve All any more), then another
-    /// arrives: the ids changed, so the old result goes.
+    /// One approvable row left (no Approve All any more: the press fails
+    /// as not offered), then another arrives: the ids changed, so the old
+    /// result goes.
     func testFinishedPressResetsWhenANewRowJoinsOneLeft() async throws {
         let pool = try pool()
         let (_, ids) = try await seed(pool, tool: "create_targets", count: 2)
@@ -480,10 +481,14 @@ final class ActionStripApproveAllTests: XCTestCase {
         await vm.refresh()
         XCTAssertEqual(model.state, .idle, "one row left: the ids changed")
 
-        try await run(model) // nothing to approve: finishes at once
-        XCTAssertEqual(model.state, .finished(.done(count: 0, skipped: 0)))
+        // A lone row is still listed but no longer offers Approve All: the
+        // press says so, never "Nothing left to do".
+        let notOffered = InboxBulkResult.failed(
+            "These approvals can no longer be approved all at once. Approve them one by one.")
+        try await run(model)
+        XCTAssertEqual(model.state, .finished(notOffered))
         await vm.refresh()
-        XCTAssertEqual(model.state, .finished(.done(count: 0, skipped: 0)), "same lone row: kept")
+        XCTAssertEqual(model.state, .finished(notOffered), "same lone row: kept")
         try await otherPool.write { db in
             _ = try TestDatabase.insertAgentAction(
                 db, tool: "create_targets", argsJSON: #"{"title":"Later"}"#, createdAt: "2026-11-06T09:09:00Z")

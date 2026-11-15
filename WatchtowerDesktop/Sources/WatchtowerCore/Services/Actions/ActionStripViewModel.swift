@@ -999,11 +999,15 @@ package final class ActionStripViewModel {
     private enum ApproveAllError: LocalizedError {
         case closed
         case unread(String)
+        /// The group is still listed but no longer offers Approve All (a
+        /// row joined or left between the draw and the press).
+        case notOffered
 
         var errorDescription: String? {
             switch self {
             case .closed: "The Inbox is closed."
             case .unread(let reason): "The Inbox could not be read: \(reason)"
+            case .notOffered: "These approvals can no longer be approved all at once. Approve them one by one."
             }
         }
     }
@@ -1021,9 +1025,10 @@ package final class ActionStripViewModel {
 
     /// What **Approve All** would approve in `group` now: one read first,
     /// then its approvable ids (`NeedsApprovalGroups.approveAllIDs`), their
-    /// args pinned (`approveAllShownArgs`); empty when the group offers none.
-    /// Throws when no read has landed or that read failed — never an empty
-    /// plan standing in for an Inbox it could not read.
+    /// args pinned (`approveAllShownArgs`); empty when the group is no
+    /// longer listed. Throws when no read has landed or that read failed —
+    /// never an empty plan standing in for an Inbox it could not read — and
+    /// when the group is listed but no longer offers Approve All.
     package func approveAllPlan(_ group: NeedsApprovalGroup) async throws -> InboxBulkPlan {
         await refresh()
         approveAllFinishedIDs[group] = approvableIDs(group)
@@ -1031,7 +1036,9 @@ package final class ActionStripViewModel {
             throw ApproveAllError.unread(reason)
         }
         let items = NeedsApprovalGroups.build(openApprovals).first { $0.0 == group }?.1 ?? []
-        let ids = NeedsApprovalGroups.approveAllIDs(group, items) ?? []
+        guard let ids = items.isEmpty ? [] : NeedsApprovalGroups.approveAllIDs(group, items) else {
+            throw ApproveAllError.notOffered
+        }
         for item in items {
             guard case let .action(action) = item.record, ids.contains(action.id) else { continue }
             approveAllShownArgs[action.id] = action.argsJSON
