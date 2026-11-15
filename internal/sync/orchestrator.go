@@ -92,6 +92,9 @@ type Orchestrator struct {
 	// outcome is the current Run's RunOutcome. Run resets it.
 	outcome RunOutcome
 
+	// lastRunRateLimited is the previous Run's outcome.RateLimited (behind).
+	lastRunRateLimited bool
+
 	// fileLookups counts the current Run's conversations.history lookups of
 	// search matches that shared a file without listing it
 	// (maxSlackFileLookups). Run resets it.
@@ -236,10 +239,11 @@ func (o *Orchestrator) Run(ctx context.Context, opts SyncOptions) error {
 	o.searchIncomplete = false
 	o.firstSyncFrom = time.Time{}
 	o.fileLookups = 0
+	o.lastRunRateLimited = o.outcome.RateLimited
 	o.outcome = RunOutcome{}
 	o.resetMediaPlan()
-	if !opts.Full && len(opts.Channels) == 0 {
-		o.slackClient.SetDeadline(time.Now().Add(slackFetchDeadline))
+	if d := runFetchDeadline(opts); d > 0 {
+		o.slackClient.SetDeadline(time.Now().Add(d))
 		defer o.slackClient.SetDeadline(time.Time{})
 	}
 	limitedBefore := o.slackClient.RateLimitedCalls()

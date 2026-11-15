@@ -143,15 +143,24 @@ func (o *Orchestrator) syncViaSearch(ctx context.Context) error {
 	o.progress.SetSearchAfter(searchAfter)
 	o.logger.Printf("search sync: query=%q", query)
 
+	mentionChannels, err := o.searchMentions(ctx, searchAfter)
+	if err != nil {
+		return err
+	}
+	if o.searchRateLimited { // the mention query's page 1: the blanket would meet the same limit
+		o.searchIncomplete = true
+		return nil
+	}
+
 	// A resumed window keeps no listing: only a window read whole in this
 	// run can prove a stored message gone.
-	startPage, firstSync := o.searchStart(query, firstSync)
+	startPage, stopPage, firstSync := o.searchStart(query, firstSync)
 	var listing *searchListing
 	if startPage == 1 {
 		listing = newSearchListing(0)
 	}
 	completed, totalMessages, seenChannels, next, err := o.searchAndSaveFrom(ctx, query, startPage, true, listing)
-	o.recordSearchStop(query, startPage, next, completed, firstSync, totalMessages)
+	o.recordSearchStop(query, startPage, stopPage, next, completed, firstSync, totalMessages)
 	if err != nil {
 		return err
 	}
@@ -162,6 +171,9 @@ func (o *Orchestrator) syncViaSearch(ctx context.Context) error {
 		if o.searchGapNote == "" {
 			o.searchGapNote = "search sync: rate-limited by Slack; retrying next cycle"
 		}
+	}
+	for chID := range mentionChannels {
+		seenChannels[chID] = true
 	}
 
 	// Advance the watermark to today only when every page was fetched. An early

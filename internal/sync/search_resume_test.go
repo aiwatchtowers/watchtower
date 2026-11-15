@@ -30,6 +30,7 @@ type pagedSearch struct {
 	mu        gosync.Mutex
 	pages     int
 	limitPage int
+	deleted   int      // item removed from the window (0 = none); later items slide back a page
 	requests  []string // "query#page" in request order
 }
 
@@ -39,7 +40,7 @@ func (s *pagedSearch) handle(w http.ResponseWriter, r *http.Request) {
 	page, _ := strconv.Atoi(r.FormValue("page"))
 	s.mu.Lock()
 	s.requests = append(s.requests, fmt.Sprintf("%s#%d", query, page))
-	pages, limit := s.pages, s.limitPage
+	pages, limit, deleted := s.pages, s.limitPage, s.deleted
 	s.mu.Unlock()
 
 	if strings.HasPrefix(query, "<@") {
@@ -57,12 +58,22 @@ func (s *pagedSearch) handle(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTooManyRequests)
 		return
 	}
+	item := page
+	if deleted > 0 {
+		pages--
+		if item >= deleted {
+			item++
+		}
+	}
 	jsonOK(w, map[string]any{"ok": true, "messages": map[string]any{
-		"matches": []map[string]any{liveDiffMatch(dayTS(0, 8, page))},
+		"matches": []map[string]any{liveDiffMatch(itemTS(item))},
 		"paging":  map[string]any{"count": 100, "total": pages, "page": page, "pages": pages},
 		"total":   pages,
 	}})
 }
+
+// itemTS is the ts of the window's item i (one per page).
+func itemTS(i int) string { return dayTS(0, 8, i) }
 
 // mentionTS is the ts of the mention query's one match.
 var mentionTS = dayTS(0, 9, 30)
@@ -126,11 +137,21 @@ func TestSearchResume_ContinuesFromPage(t *testing.T) {
 	assert.True(t, out.RateLimited)
 	assert.True(t, out.ResumePending)
 	assert.Equal(t, 3, out.Pages)
+	// The deadline stop ends the cycle cleanly: the roster phase, which would
+	// meet the same hold and fail the run, is skipped, and the row keeps a note.
+	rosterSyncedAt, err := ts.db.SlackRosterSyncedAt(ts.accountID)
+	require.NoError(t, err)
+	assert.True(t, rosterSyncedAt.IsZero(), "the roster refresh is left for the next cycle")
+	acct, err := ts.db.GetSlackAccount(ts.accountID)
+	require.NoError(t, err)
+	assert.Equal(t, "ok", acct.Status)
+	assert.Contains(t, acct.Error, "rate-limited")
 
 	ts.freshClient()
 	s.reset(0)
 	require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{}))
-	assert.Equal(t, pageRequests(resumeQuery, 4, 5, 6), s.blanket(), "run 2 fetches only the pages run 1 left")
+	assert.Equal(t, pageRequests(resumeQuery, 3, 4, 5, 6), s.blanket(),
+		"run 2 re-reads the last page run 1 read, then the pages it left")
 	assert.False(t, ts.orch.SearchIncomplete())
 	wm, err = ts.db.GetSlackAccountSearchWatermark(ts.accountID)
 	require.NoError(t, err)
@@ -138,7 +159,7 @@ func TestSearchResume_ContinuesFromPage(t *testing.T) {
 	out = ts.orch.RunOutcome()
 	assert.False(t, out.RateLimited)
 	assert.False(t, out.ResumePending)
-	assert.Equal(t, 3, out.Pages)
+	assert.Equal(t, 4, out.Pages)
 
 	var n int
 	require.NoError(t, ts.db.QueryRow(`SELECT COUNT(*) FROM messages WHERE ts <> ?`, mentionTS).Scan(&n))
@@ -206,6 +227,138 @@ func TestSearchResume_FirstSyncCarriedAcrossRuns(t *testing.T) {
 	require.False(t, ts.orch.SearchIncomplete())
 	_, ok = ts.orch.FirstSyncFrom()
 	assert.True(t, ok, "the first sync finished by a resumed run is still the account's first")
+}
+
+// TestSearchResume_DeletionOnReadPageSkipsNothing: a message deleted from
+// a page run 1 already read slides every later match back a page; the
+// resumed run's one-page overlap still reads the match that slid onto the
+// last page run 1 read.
+func TestSearchResume_DeletionOnReadPageSkipsNothing(t *testing.T) {
+	ts, s := newResumeSetup(t, 6, 4)
+	require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{}))
+	require.Equal(t, pageRequests(resumeQuery, 1, 2, 3, 4), s.blanket())
+
+	ts.freshClient()
+	s.reset(0)
+	s.mu.Lock()
+	s.deleted = 2 // item 4 now sits on page 3, which run 1 read before it
+	s.mu.Unlock()
+	require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{}))
+	require.False(t, ts.orch.SearchIncomplete())
+
+	var n int
+	require.NoError(t, ts.db.QueryRow(`SELECT COUNT(*) FROM messages WHERE channel_id = ? AND ts = ?`,
+		ts.ns("C001"), itemTS(4)).Scan(&n))
+	assert.Equal(t, 1, n, "the match that slid onto an already-read page is stored")
+}
+
+// TestSearchResume_FailingRunsKeepTheirPosition: a resumed run that stops
+// on its overlap page keeps the old stop page, so the position never walks
+// backwards run after run.
+func TestSearchResume_FailingRunsKeepTheirPosition(t *testing.T) {
+	ts, s := newResumeSetup(t, 6, 4)
+	require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{}))
+
+	for range 2 {
+		ts.freshClient()
+		s.reset(3) // the overlap page itself is rate-limited
+		require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{}))
+		assert.Equal(t, pageRequests(resumeQuery, 3), s.blanket())
+	}
+	ts.freshClient()
+	s.reset(0)
+	require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{}))
+	assert.Equal(t, pageRequests(resumeQuery, 3, 4, 5, 6), s.blanket())
+}
+
+// TestAdaptive_MentionQueryFirst: an account that is behind (here, its last
+// run was rate-limited) runs the mention query before the blanket query, so
+// the mention lands even while the blanket query stays rate-limited.
+func TestAdaptive_MentionQueryFirst(t *testing.T) {
+	ts, s := newResumeSetup(t, 3, 1)
+	require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{}))
+	require.True(t, ts.orch.RunOutcome().RateLimited)
+	require.Equal(t, []string{resumeQuery + "#1"}, s.requests, "a clean account runs no mention query")
+
+	ts.freshClient()
+	s.reset(1)
+	require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{}))
+	s.mu.Lock()
+	requests := append([]string(nil), s.requests...)
+	s.mu.Unlock()
+	require.GreaterOrEqual(t, len(requests), 2)
+	assert.Equal(t, "<@U001> "+resumeQuery+"#1", requests[0], "the mention query runs first")
+	assert.Equal(t, resumeQuery+"#1", requests[1], "then the blanket query")
+
+	var n int
+	require.NoError(t, ts.db.QueryRow(`SELECT COUNT(*) FROM messages WHERE channel_id = ? AND ts = ?`,
+		ts.ns("C001"), mentionTS).Scan(&n))
+	assert.Equal(t, 1, n, "the mention is stored although the blanket query is rate-limited")
+	assert.True(t, ts.orch.SearchIncomplete(), "the blanket window is unfinished")
+	wm, err := ts.db.GetSlackAccountSearchWatermark(ts.accountID)
+	require.NoError(t, err)
+	assert.Equal(t, "2026-09-20", wm, "the mention query never moves the watermark")
+}
+
+// TestAdaptive_CleanRunNoMentionQuery: a clean account issues no mention
+// query; once a behind account catches up, the next run is clean again.
+func TestAdaptive_CleanRunNoMentionQuery(t *testing.T) {
+	ts, s := newResumeSetup(t, 3, 0)
+	require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{}))
+	assert.Equal(t, pageRequests(resumeQuery, 1, 2, 3), s.requests, "a clean run sends only the blanket query")
+
+	// Behind (a pending resume), then caught up.
+	ts2, s2 := newResumeSetup(t, 6, 4)
+	require.NoError(t, ts2.orch.Run(context.Background(), SyncOptions{}))
+	ts2.freshClient()
+	s2.reset(0)
+	require.NoError(t, ts2.orch.Run(context.Background(), SyncOptions{}))
+	assert.Equal(t, "<@U001> "+resumeQuery+"#1", s2.requests[0], "the behind run reads mentions first")
+	require.False(t, ts2.orch.RunOutcome().RateLimited)
+	require.False(t, ts2.orch.RunOutcome().ResumePending)
+
+	require.NoError(t, ts2.db.SetSlackAccountSearchWatermark(ts2.accountID, "2026-09-20"))
+	s2.reset(0)
+	require.NoError(t, ts2.orch.Run(context.Background(), SyncOptions{}))
+	assert.Equal(t, pageRequests(resumeQuery, 1, 2, 3, 4, 5, 6), s2.requests, "caught up: no mention query")
+}
+
+func TestAdaptive_NoMentionQueryWithoutUser(t *testing.T) {
+	s := &pagedSearch{pages: 1}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/team.info", func(w http.ResponseWriter, _ *http.Request) {
+		jsonOK(w, map[string]any{"ok": true, "team": map[string]any{"id": "T001", "name": "test", "domain": "test"}})
+	})
+	mux.HandleFunc("/auth.test", func(w http.ResponseWriter, _ *http.Request) {
+		jsonOK(w, map[string]any{"ok": false, "error": "internal_error"})
+	})
+	for _, method := range []string{"/emoji.list", "/users.list", "/conversations.info"} {
+		mux.HandleFunc(method, func(w http.ResponseWriter, _ *http.Request) {
+			jsonOK(w, map[string]any{"ok": true, "emoji": map[string]string{}, "members": []any{},
+				"channel": map[string]any{"id": "C001", "last_read": ""}, "response_metadata": map[string]any{"next_cursor": ""}})
+		})
+	}
+	mux.HandleFunc("/users.info", func(w http.ResponseWriter, _ *http.Request) {
+		jsonOK(w, map[string]any{"ok": false, "error": "user_not_found"})
+	})
+	mux.HandleFunc("/search.messages", s.handle)
+	ts := newTestSetup(t, mux)
+	require.NoError(t, ts.db.UpsertWorkspace(db.Workspace{ID: "T001", Name: "test", Domain: "test"}))
+	require.NoError(t, ts.db.SetSlackAccountSearchWatermark(ts.accountID, "2026-09-20"))
+	ts.orch.now = func() time.Time { return resumeNow }
+	ts.orch.outcome.RateLimited = true // behind: only the missing user skips the mention query
+
+	require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{}))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	assert.Equal(t, []string{resumeQuery + "#1"}, s.requests, "no user, no mention query")
+}
+
+func TestRunFetchDeadline_SearchRunsOnly(t *testing.T) {
+	assert.Equal(t, slackFetchDeadline, runFetchDeadline(SyncOptions{}))
+	assert.Equal(t, slackFetchDeadline, runFetchDeadline(SyncOptions{Workers: 4, SkipDMs: true}))
+	assert.Zero(t, runFetchDeadline(SyncOptions{Full: true}), "a full sync keeps the plain retry cap")
+	assert.Zero(t, runFetchDeadline(SyncOptions{Channels: []string{"general"}}))
 }
 
 // TestRun_ResetsFetchDeadline: Run's deadline lasts only the run. A later
