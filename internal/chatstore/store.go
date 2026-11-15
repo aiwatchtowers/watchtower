@@ -13,12 +13,14 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"watchtower/internal/chat"
 	"watchtower/internal/db"
+	"watchtower/internal/providers"
 )
 
 // Start refusals. ErrBusy: another turn holds the conversation's lease;
@@ -344,7 +346,9 @@ func validateStart(r StartRequest, text string) error {
 	return nil
 }
 
-func knownProvider(p string) bool { return p == "claude" || p == "codex" || p == "ollama" }
+// knownProvider is a registered provider id: the registry is the list the
+// Mac's ManagedPolicy.knownProviders mirrors for setRouting.
+func knownProvider(p string) bool { return slices.Contains(providers.IDs(), p) }
 
 // resolveRouting is the turn's session config: the request's choice, else
 // the conversation's own (pinned provider and model, or automatic with the
