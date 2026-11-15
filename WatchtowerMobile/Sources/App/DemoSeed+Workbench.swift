@@ -69,6 +69,7 @@ extension DemoSeed {
                 "open_asks": 3, "open_targets": 7, "in_progress_targets": 3, "blocked_targets": 1, "done_targets": 1,
                 "session_counts": JSON.counts(working: 1, waiting: 1, needsApproval: 1, finished: 2, failed: 1, stopped: 1, notRunning: 1),
                 "last_session_activity": JSON.stamp(ago(30)),
+                "board_columns": ["Backlog", "Todo"],
                 "automations": [
                     ["id": 71, "name": "Release notes", "kind": "button", "asks_first": true, "state": "runnable",
                      "last_run_status": "succeeded", "last_run_at": JSON.stamp(ago(7200))],
@@ -217,7 +218,7 @@ extension DemoSeed {
                 "progress": 0.5, "pr": "175", "branch": "feature/archive-now", "open_asks": 2, "open_comments": 1,
                 "session_ids": [11], "intent": "Archive closed targets on demand from the header menu."
             ]),
-            JSON.target(416, workbench: acmeID, ["parent_id": 400, "text": "Undo Archive Now", "session_ids": [16]]),
+            JSON.target(416, workbench: acmeID, ["parent_id": 400, "text": "Undo Archive Now", "session_ids": [16], "column": "Todo"]),
             JSON.target(417, workbench: acmeID, [
                 "parent_id": 400, "text": "Archive view", "status": "done", "archived": true, "progress": 1,
                 "last_status_at": JSON.stamp(ago(864_000)), "last_status_actor": "owner"
@@ -228,7 +229,12 @@ extension DemoSeed {
             ]),
             JSON.target(422, workbench: acmeID, ["parent_id": 420, "text": "Per-lane fold", "status": "done", "progress": 1, "session_ids": [13]]),
             JSON.target(430, workbench: acmeID, ["text": "Session report", "status": "in_progress", "progress": 0.3, "session_ids": [10]]),
-            JSON.target(431, workbench: acmeID, ["text": "Ask guard v2", "priority": "low", "open_asks": 1, "session_ids": [14]]),
+            JSON.target(431, workbench: acmeID, ["text": "Ask guard v2", "priority": "low", "open_asks": 1, "session_ids": [14], "column": "Todo"]),
+            JSON.target(432, workbench: acmeID, ["text": "Export the board as CSV", "column": "Backlog"]),
+            JSON.target(433, workbench: acmeID, ["text": "Pinned lanes", "priority": "low", "column": "Backlog"]),
+            JSON.target(434, workbench: acmeID, [
+                "text": "Search the board from the phone", "priority": "high", "column": "Todo", "branch": "feature/board-search"
+            ]),
             JSON.target(390, workbench: acmeID, ["text": "Old onboarding", "status": "done", "archived": true, "progress": 1]),
             JSON.target(391, workbench: acmeID, ["text": "Legacy inbox", "status": "dismissed", "archived": true])
         ]

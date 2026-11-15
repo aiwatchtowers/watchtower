@@ -23,7 +23,7 @@ final class ReplicaWiringTests: XCTestCase {
         .workbench: 3,
         .terminalSession: 10,
         .ownerAsk: 6,
-        .workbenchTarget: 13,
+        .workbenchTarget: 16,
         .workbenchComment: 3,
         .sessionReport: 3,
         .sessionTimeline: 5,

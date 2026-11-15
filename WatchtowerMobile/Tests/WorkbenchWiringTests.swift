@@ -116,7 +116,7 @@ final class WorkbenchWiringTests: XCTestCase {
         try await poll { model.snapshot.workbenches.count == 3 }
         XCTAssertEqual(model.snapshot.sessions.count, 10)
         XCTAssertEqual(model.snapshot.asks.count, 6)
-        XCTAssertEqual(model.snapshot.targets.count, 13)
+        XCTAssertEqual(model.snapshot.targets.count, 16)
         XCTAssertEqual(model.snapshot.comments.count, 3)
         XCTAssertEqual(model.snapshot.heartbeat?.macName, DemoSeed.macName)
         XCTAssertEqual(model.snapshot.skippedRecords, [.workbench: 1])

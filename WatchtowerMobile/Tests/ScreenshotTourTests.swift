@@ -1154,6 +1154,23 @@ final class ScreenshotTourTests: XCTestCase {
         { env in AnyView(NavigationStack { content(env) }) }
     }
 
+    /// The Acme board in a bare stack under `filter` and `query`, its folds
+    /// reset first and then changed by `folds` (#1781).
+    private static func board(
+        _ filter: BoardFilter? = nil, query: String = "", folds: @escaping (inout BoardFolds) -> Void = { _ in }
+    ) -> @MainActor (AppEnvironment) -> AnyView {
+        stack { env in
+            env.boardFolds.update(hubID: env.activeHubID, workbenchID: DemoSeed.acmeID) { stored in
+                stored = BoardFolds()
+                folds(&stored)
+            }
+            return BoardView(
+                replica: env.workbenchReplica, writer: env.boardWriter, workbenchID: DemoSeed.acmeID, now: Date(),
+                filter: filter, query: query
+            )
+        }
+    }
+
     /// A sheet (which owns its stack) or an onboarding leaf view.
     private static func leaf<Content: View>(
         _ content: @escaping @MainActor (AppEnvironment) -> Content
@@ -1200,6 +1217,19 @@ final class ScreenshotTourTests: XCTestCase {
             Shot(number: "06", slug: "workbench-board", source: source + "BoardView.swift", reached: .bareStack, make: stack {
                 WorkbenchView(replica: $0.workbenchReplica, writer: $0.boardWriter, workbenchID: acme, segment: .board)
             }),
+            // #1781: All with its folds (default, then a group and Backlog
+            // opened), a search with an archived match, no match, Archive.
+            Shot(number: "06a", slug: "board-all", source: source + "BoardView.swift", reached: .bareStack, make: board(.all)),
+            Shot(
+                number: "06b", slug: "board-all-opened", source: source + "BoardView.swift", reached: .bareStack,
+                make: board(.all) { folds in
+                    folds.toggleGroup(400)
+                    folds.toggleLane(BoardLane(title: "Backlog", nodes: [], kind: .open))
+                }
+            ),
+            Shot(number: "06c", slug: "board-search", source: source + "BoardView.swift", reached: .bareStack, make: board(query: "archive")),
+            Shot(number: "06d", slug: "board-search-empty", source: source + "BoardView.swift", reached: .bareStack, make: board(query: "zzz")),
+            Shot(number: "06e", slug: "board-archive", source: source + "BoardView.swift", reached: .bareStack, make: board(.archive)),
             Shot(number: "07", slug: "target-415", source: source + "BoardTargetDetailView.swift", reached: .bareStack, hasEnd: true, make: stack {
                 BoardTargetDetailView(replica: $0.workbenchReplica, writer: $0.boardWriter, targetID: 415)
             }),
