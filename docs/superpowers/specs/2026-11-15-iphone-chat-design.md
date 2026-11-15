@@ -42,13 +42,14 @@ Chat works **only over the hosted relay**. On a CloudKit link the tab says so (�
 | D6 | One turn at a time per conversation, across processes: a `chat_turn_leases` row claimed in the same transaction that writes the owner's message. The first commit wins; the other side is refused with "busy" and can watch or Stop. | decided by the agent |
 | D7 | Stop from the other device goes through the lease (`cancel_requested_at_ms`). The lease owner sends `cancel` to its own session. Nobody signals another process. | decided by the agent |
 | D8 | `ArtifactParser`, `MarkdownRunBuilder` and `ChatQuoteReply` (pure Foundation, now in WatchtowerCore) move to WatchtowerKit, shared by the Mac and the phone. Go gets an artifact parser twin over the same fixture. | decided by the agent |
-| D9 | A new device grant `chat` lets a phone use chat. Approving actions also needs the existing `permissions` grant, never implied by `chat`. Its default for linked and new phones is asked in ask #1340 (§9); the answer is recorded here before the plan. | decided by the agent; default → ask #1340 |
+| D9 | A new device grant `chat` lets a phone use chat. Approving actions also needs the existing `permissions` grant, never implied by `chat`. It is **on by default** for already linked and new phones; the owner can turn it off per phone. | decided by the agent; default: ask #1340 |
 | D10 | The phone keeps its own copy of every chat page it loaded, plus a background prefetch of the 20 most recent chats' latest pages while the Mac is reachable. The budget is 200 MB per hub, evicted by last opened. That copy and the stored `chat_list` are what offline reading shows. The hub does not publish every chat's feed all the time. | decided by the agent |
 | D15 | v1 also covers search, pin/rename/delete and quote-reply; phase 2 is exactly ask #1327's "later" list. | conversation ("со всем функционалом") + spec review round 1 |
 | D16 | A chat's whole history is readable from the phone, in pages of 60 messages (`chat_page`). | spec review round 1 |
 | D17 | Branch selection is never refused, on either device, even during a turn: a turn's rows are written by message id, so moving the leaf cannot corrupt them; the feed follows the leaf. | spec review round 1 (no Mac behaviour change) |
 | D18 | The hub turns chat on only while the running Desktop app (if any) reports that it honours the lease. An old app still running after an update keeps chat off on the phone, with "Update Watchtower on your Mac". | spec review round 1 |
 | D19 | The push covers every turn that ends while the owner is away and the phone is not looking, whether the hub or the Mac ran it. | spec review round 1 |
+| D20 | The contract changes of §9 (CHAT-01/02/03/05, LIVE-01, the `chat` grant, the protocol rule) are approved as written. | ask #1340 |
 | D11 | The feed streams from memory for hub-run turns (≤ 150 ms per update) and from the database for Mac-run turns (about 1 s, the Swift flush interval). | decided by the agent |
 | D12 | Dictation is the iOS keyboard's mic. No speech code in the app. | decided by the agent (simplest) |
 | D13 | Hub chat sessions are capped at 2 live processes, separately from the Desktop's 3. An idle session is evicted at once to make room for a new turn, so a turn waits only while 2 other hub turns are mid-answer. | decided by the agent |
@@ -380,14 +381,14 @@ The owner bubble shows pending until the `chat_turn` echo is `applied`. A refuse
 | `chat_attachments` rows (new) | Swift `ChatAttachmentStore`, Go upload intake | Each upload is its own row (no unique key exists, none is added). Only the file is deduplicated by sha256 per conversation, so two rows may share one path. The file is written to a temp name and renamed into place, so a concurrent writer of the same bytes leaves one whole file. Files live in one folder per owner (`ChatAttachmentStore.directoryName`) and are removed only with their conversation or project, the whole folder at once, by whichever store deleted it (Swift `removeFiles`, Go's port) — never per row. |
 | `ideas` (chat-born) | Swift `IdeaQueries.createFromChat`, Go `db.CreateIdeaFromChat` | Each runs only for the owner row its own store wrote, so there are no duplicates |
 
-## 9. Contracts touched (filed as a separate ask before the review)
+## 9. Contracts touched (approved in ask #1340)
 
 - **CHAT-01:** "the Swift turn store is the writer" → "the lease holder's turn store (Swift or Go)". The same order and `partial` rules apply, with Go guards added. No Swift guard changes.
 - **CHAT-02:** the Go store writes steps at once. New Go guard.
 - **CHAT-03:** a second bounded pool in the daemon (2 processes, reaped on daemon stop). New guards.
 - **CHAT-05:** the phone's artifact sheet only opens or copies. A source scan over the phone's artifact files: no `URLSession`, no action enqueue, no `send`.
 - **LIVE-01:** the mechanism gains the Go store (the same mark points). The phone's offline copy is a display copy (like `chat_messages` itself). The feed builder joins `displayOnlyReaders`.
-- **Hub grants:** the new `chat` grant and its default.
+- **Hub grants:** the new `chat` grant, on by default for linked and new phones (ask #1340).
 - **Mobile protocol:** new kinds, plus the explicit-`on` capability rule.
 
 ## 10. Testing and traceability
