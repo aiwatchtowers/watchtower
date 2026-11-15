@@ -622,3 +622,37 @@ func TestChatSearch_WideTitlesStayUnderCap(t *testing.T) {
 		}
 	}
 }
+
+// 200 conversations with very long titles of wide graphemes: titles and
+// project names are clipped at 200 and the record stays within the cap.
+func TestChatList_WideTitlesStayUnderCap(t *testing.T) {
+	d := openDB(t)
+	s := chatSeed{t, d}
+	project := execID(t, d, `INSERT INTO chat_projects (name, created_at, updated_at) VALUES (?, 1, 1)`, strings.Repeat(zwj, 5000))
+	for i := range 210 {
+		conv := s.conversation(strings.Repeat(zwj, 5000), float64(i), "project_id = ?", project)
+		s.message(conv, 0, "assistant", strings.Repeat(zwj, 500), "complete", "t", 1)
+	}
+	src := ChatList(d, ChatListOptions{Grant: chatGranted, Models: func() []ChatModel { return nil }, Now: func() time.Time { return chatNow }})
+	items, err := src.Items(context.Background())
+	if err != nil || len(items) != 1 {
+		t.Fatalf("%d items, %v", len(items), err)
+	}
+	if n := len(items[0].Payload); n > MaxChatFeedBytes {
+		t.Fatalf("chat_list record %d bytes, over %d", n, MaxChatFeedBytes)
+	}
+	list := decode(t, items[0].Payload)
+	convs := list["conversations"].([]any)
+	if len(convs) == 0 {
+		t.Fatal("no conversation kept")
+	}
+	first := convs[0].(map[string]any)
+	if uniseg.GraphemeClusterCount(first["title"].(string)) > maxChatLabel ||
+		uniseg.GraphemeClusterCount(first["project"].(map[string]any)["name"].(string)) > maxChatLabel ||
+		uniseg.GraphemeClusterCount(first["last_line"].(string)) > MaxChatLastLine {
+		t.Fatal("a text is not clipped")
+	}
+	if num(first["id"]) != 210 {
+		t.Errorf("the newest conversation must stay first, got %v", first["id"])
+	}
+}

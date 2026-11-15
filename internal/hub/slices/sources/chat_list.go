@@ -81,8 +81,9 @@ type ChatListOptions struct {
 }
 
 // ChatListSource is the `chat_list` slice, one record `chat_list-main`: the
-// main chat's conversations (up to 200, not archived), its projects and
-// the composer's models (iPhone chat spec §4.6). It is rebuilt on every
+// main chat's conversations (up to 200, not archived; titles and project
+// names clipped at 200 characters, within MaxChatFeedBytes), its projects
+// and the composer's models (iPhone chat spec §4.6). It is rebuilt on every
 // data_version change, not urgent, and published only while a phone holds
 // the chat grant. A failed read publishes the list with `error` and nothing
 // else, so the phone shows "Couldn't load chats" and Retry.
@@ -156,11 +157,24 @@ func (s *ChatListSource) Items(ctx context.Context) ([]hubslices.Item, error) {
 		code := chatListReadFailed
 		payload = chatListPayload{Conversations: []chatListConversation{}, Projects: []chatListProject{}, Models: []ChatModel{}, Error: &code}
 	}
-	b, err := wire.Marshal(payload)
+	b, err := encodeChatList(payload)
 	if err != nil {
 		return nil, fmt.Errorf("hub slices: encoding the chat list: %w", err)
 	}
 	return []hubslices.Item{{ID: ChatListID, Payload: b}}, nil
+}
+
+// encodeChatList encodes p within MaxChatFeedBytes, always: titles and
+// names are already clipped at 200 and last lines at 120, so 200 rows fit;
+// should they ever not, the oldest conversations (the list's tail) go.
+func encodeChatList(p chatListPayload) ([]byte, error) {
+	for {
+		b, err := wire.Marshal(p)
+		if err != nil || len(b) <= MaxChatFeedBytes || len(p.Conversations) == 0 {
+			return b, err
+		}
+		p.Conversations = p.Conversations[:len(p.Conversations)-1]
+	}
 }
 
 // chatListRows is the Chats panel's read (ChatHistoryQueries.panelRows)
@@ -233,9 +247,11 @@ ORDER BY c.pinned DESC, c.updated_at DESC, c.id DESC`, MaxChatListConversations)
 			&answeredAt, &answer, &waiting, &owner, &heartbeat); err != nil {
 			return nil, fmt.Errorf("reading the chat list: %w", err)
 		}
+		c.Title, _ = clipText(c.Title, maxChatLabel)
 		c.UpdatedAt = secondsTime(updated)
 		if projectID.Valid {
-			c.Project = &chatListProject{ID: projectID.Int64, Name: project.String}
+			name, _ := clipText(project.String, maxChatLabel)
+			c.Project = &chatListProject{ID: projectID.Int64, Name: name}
 		}
 		live := owner.Valid && liveLease(heartbeat.Int64, now)
 		if live {
@@ -282,6 +298,7 @@ func chatListProjects(ctx context.Context, tx *sql.Tx) ([]chatListProject, error
 		if err := rows.Scan(&p.ID, &p.Name); err != nil {
 			return nil, fmt.Errorf("reading the chat projects: %w", err)
 		}
+		p.Name, _ = clipText(p.Name, maxChatLabel)
 		out = append(out, p)
 	}
 	return out, rows.Err()
