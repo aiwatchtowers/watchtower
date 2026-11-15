@@ -574,6 +574,25 @@ func TestSlackWindow_AnchoredCursorOnADeletedRowResets(t *testing.T) {
 	assert.Equal(t, []string{"two"}, windowTexts(next))
 }
 
+// An account with no current_user_id has no owner to address: its messages
+// are read, none is marked ToOwner, and the account is reported.
+func TestSlackWindow_AccountWithNoOwnerIsReported(t *testing.T) {
+	s := newWindowSeed(t)
+	acct, err := s.d.CreateSlackAccount(SlackAccount{TeamID: "T2", TeamName: "acme-2", TeamDomain: "acme-2"})
+	require.NoError(t, err)
+	require.Equal(t, int64(2), acct)
+	s.channel("2:D0BOB", "", "dm", true)
+	s.msg("2:D0BOB", "2:U0BOB", "hi <@U0OWNER>", s.now.Add(-time.Hour))
+	s.msg("1:C0ACME", windowOwner, "mine", s.now.Add(-time.Hour))
+
+	w := s.read(SlackWindowQuery{})
+	require.Len(t, w.Messages, 2)
+	for _, m := range w.Messages {
+		assert.False(t, m.ToOwner, m.Text)
+	}
+	assert.Equal(t, []string{"2"}, w.NoOwnerAccounts)
+}
+
 func TestSlackWindow_RemovedAccountReadsNothing(t *testing.T) {
 	for _, tc := range []struct{ name, set string }{
 		{"removed", "status = 'removed'"},

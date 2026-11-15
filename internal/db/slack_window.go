@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -103,6 +104,11 @@ type SlackWindow struct {
 	// such a cursor would hide them. The window is then read as with no
 	// cursor: a repeat of the day, never a gap.
 	CursorReset bool
+	// NoOwnerAccounts lists, ascending, the accounts ("<id>" of the channel
+	// id's "<id>:" prefix) with included messages but no current_user_id:
+	// none of their messages could be marked ToOwner (OWNER-01, no silent
+	// skip: the caller reports them).
+	NoOwnerAccounts []string
 }
 
 type slackWindowCaps struct{ messages, textChars, bytes int }
@@ -583,7 +589,8 @@ func joinGroupDMNames(names []string) string {
 // markSlackWindowToOwner sets ToOwner with the attention detector's rules
 // (owner_addressed.go), one query per account over the included rows, plus the
 // 1:1 DM rule (another person's message in a DM). owners maps an account to
-// its current_user_id; an account with none has no owner to address.
+// its current_user_id; an account with none has no owner to address and is
+// listed in w.NoOwnerAccounts.
 func markSlackWindowToOwner(ctx context.Context, tx *sql.Tx, w *SlackWindow, owners map[string]string) error {
 	byAccount := map[string][]int64{}
 	index := make(map[int64]int, len(w.Messages))
@@ -595,6 +602,7 @@ func markSlackWindowToOwner(ctx context.Context, tx *sql.Tx, w *SlackWindow, own
 	for acct, rowIDs := range byAccount {
 		owner := owners[acct]
 		if owner == "" {
+			w.NoOwnerAccounts = append(w.NoOwnerAccounts, acct)
 			continue
 		}
 		addressed, err := slackWindowAddressedRows(ctx, tx, owner, rowIDs)
@@ -611,6 +619,7 @@ func markSlackWindowToOwner(ctx context.Context, tx *sql.Tx, w *SlackWindow, own
 			}
 		}
 	}
+	slices.Sort(w.NoOwnerAccounts)
 	return nil
 }
 

@@ -3,6 +3,7 @@ package builtin
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"watchtower/internal/automations"
@@ -22,7 +23,9 @@ import (
 // Floor "today" starts the window at the start of now's local day
 // (db.StartOfToday, the Inbox's "from today" rule). A policy that turns
 // Slack off reads nothing: {status: "skipped", reason: "source_off", day,
-// messages: []} with the call's cursor. It calls no model.
+// messages: []} with the call's cursor. An account whose messages could not
+// be marked to_owner (no owner user id) is named in the step's note. It
+// calls no model.
 func SlackWindowPrimitives(d *db.DB, now func() time.Time) map[string]automations.PrimitiveFunc {
 	return map[string]automations.PrimitiveFunc{
 		automations.PrimitiveSlackWindow: func(ctx context.Context, call automations.PrimitiveCall) (automations.PrimitiveResult, error) {
@@ -58,7 +61,13 @@ func SlackWindowPrimitives(d *db.DB, now func() time.Time) map[string]automation
 				return automations.PrimitiveResult{}, err
 			}
 			msgs := slackWindowRows(w.Messages)
+			var note string
+			if len(w.NoOwnerAccounts) > 0 {
+				note = fmt.Sprintf("Slack account(s) %s have no owner user id: none of their messages is marked to_owner",
+					strings.Join(w.NoOwnerAccounts, ", "))
+			}
 			return automations.PrimitiveResult{
+				Note:   note,
 				Status: "done",
 				Fields: map[string]any{
 					"day":           at.Format("2006-01-02"),

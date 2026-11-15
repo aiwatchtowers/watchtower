@@ -352,3 +352,21 @@ func TestRegistry_WindowReadersDeclareScope(t *testing.T) {
 		}
 	}
 }
+
+// An account with no owner user id is named in the step's note, so the
+// missing to_owner marks are not a silent skip (OWNER-01).
+func TestSlackWindowPrimitive_NoOwnerAccountNoted(t *testing.T) {
+	withWindowEntry(t, db.WindowScopeMemberChannels)
+	s := newSlackSeed(t)
+	now := time.Now()
+	s.msg("1:C0ACME", "1:U0BOB", "owned", "", "", now.Add(-time.Hour))
+	if res := mustWindow(t, s.d, now, automations.PrimitiveCall{}); res.Note != "" {
+		t.Fatalf("note %q; want none with an owner", res.Note)
+	}
+
+	s.exec(`UPDATE slack_accounts SET current_user_id = '' WHERE id = 1`)
+	res := mustWindow(t, s.d, now, automations.PrimitiveCall{})
+	if want := "Slack account(s) 1 have no owner user id"; !strings.Contains(res.Note, want) {
+		t.Errorf("note %q; want it to name account 1", res.Note)
+	}
+}
