@@ -48,6 +48,7 @@ Make the Inbox the place the owner opens first in the morning and after every ab
 ## Anti-goals
 
 - **Anything disappears without the owner's press.** Every bulk clear is an owner gesture with a confirmation that states the count; nothing expires on its own (owner's call in the brainstorm).
+  - *Known gap at ship (final review, open owner question):* the detector's pre-existing 14-day stale archive (`ArchiveStaleActionable`, every cycle, any trigger) still archives a waiting item nobody touched for 14 days, people items included, so such an item leaves **Older** without a press. Exempting people items is an owner decision not taken in this project; the guide and the feature note state the current behaviour.
 - **Mail in the badge or in Needs you.**
 - **A count that cannot reach zero today** (a total, a backlog) shown as the row's main number.
 - **Layout jumps on hover.** Row actions appear over the row's trailing edge, never by growing the row (owner's comment on the mockup).

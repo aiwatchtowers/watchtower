@@ -28,7 +28,7 @@ An automation's cards go to its folder, the root unless you moved it; **Move to 
 
 ### What the root holds
 
-Root rows sort by urgency, each with its first line, time and a count of what needs you.
+Root rows sort by urgency, each with its first line, time and count.
 
 - **Needs you**: **Waiting for me** (people waiting today; older ones as a grey line), **Messages** in its place before it has run or after a failed run, **Mail waiting** once it has run, and each **Thread brief** a reaction made, for 24 hours.
 - **Today**: today's **Morning brief**, **Slack today**, then cards your automations changed today.
@@ -69,7 +69,7 @@ replaces: [inbox-messages]
 changed: The Messages filter became the Waiting for me list in the Inbox.
 -->
 
-**Attention detection** finds Slack mentions, DMs and thread replies, and Jira and Linear issues assigned to you or mentioning you. The built-in **Waiting for me** lists these people after every sync under **Today**, **This week** and **Older** (7 days or more, folded), newest first, up to 200, each with its age, flagged past a day. An item leaves when you answer in the source or press **Done**, **Hide** or **Snooze**; nothing old leaves on its own. An edited copy lists people only too. No AI calls.
+**Attention detection** finds Slack mentions, DMs and thread replies, and Jira and Linear issues assigned to you or mentioning you. The built-in **Waiting for me** lists these people after every sync under **Today**, **This week** and **Older** (7 days or more, folded), newest first, up to 200, each with its age, flagged past a day. An item leaves when you answer in the source or press **Done**, **Hide** or **Snooze**; one untouched for 14 days is archived. An edited copy lists people only too. No AI calls.
 
 ### Mail waiting
 <!-- learn

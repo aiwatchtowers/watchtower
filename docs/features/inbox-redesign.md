@@ -151,6 +151,7 @@ Owner verbs, refused under every agent marker before anything is read (AGENT-07 
 - Closing the **Mute Senders…** popover while a press runs loses its "Muted N of M" line; the writes still finish.
 - **Hand to Agent…** is not offered as a VoiceOver action on a row (its picker hangs from the hidden buttons).
 - The Waiting for me and Mail waiting pane subtitles no longer open the automation run (their counts take the provenance line's place).
+- The detector's 14-day stale archive (`ArchiveStaleActionable` in `internal/inbox/pipeline.go`, pre-existing, every cycle, no trigger filter) also archives Waiting for me's people items: an item whose `updated_at` is 14 days old leaves **Older** without a press, although the spec says nothing leaves on its own. Exempting people triggers is an open owner question; the guide states the archive.
 
 ## Phase 3 — Track my threads and Idea finder
 
