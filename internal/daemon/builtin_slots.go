@@ -335,14 +335,16 @@ func (d *Daemon) slackTodayTiming(ctx context.Context, id int64, now time.Time) 
 }
 
 // slackAccountEnabled reports whether a Slack account is enabled and
-// neither removed nor purged.
+// neither removed nor purged: db.ListEnabledSlackAccounts plus the purged
+// check, since `slack enable` can turn a purged account back on before its
+// re-login (the window reads no purged account's messages).
 func (d *Daemon) slackAccountEnabled() (bool, error) {
-	accts, err := d.db.ListSlackAccounts()
+	accts, err := d.db.ListEnabledSlackAccounts()
 	if err != nil {
 		return false, err
 	}
 	for _, a := range accts {
-		if a.Enabled && a.Status != "removed" && a.Status != "purged" {
+		if a.Status != "purged" {
 			return true, nil
 		}
 	}
