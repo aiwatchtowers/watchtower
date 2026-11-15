@@ -12,7 +12,7 @@ Most of the AI bill and most of the noise come from a few channels: bot feeds, h
 
 **Mute for AI is the real lever.** A muted channel is skipped by channel digests, and so by everything built on them (tracks, rollups, people cards, ideas). Its digests are also left out of the briefing. A muted user is treated as a bot when digests are written, so their messages are not read.
 
-**Stop syncing keeps only what matters to you.** From the next Slack sync on, Watchtower stores no new messages from the channel, except messages that mention you, so those still reach your Inbox. Messages stored before stay. The channel is also muted for AI, unless it already was.
+**Stop syncing keeps only what matters to you.** From the next Slack sync on, Watchtower stores no new messages from the channel, except messages that mention you, so those still reach your Inbox. Messages stored before stay. The channel is also muted for AI, unless it already was. When Live Slack is on, the assistant in **Chats** reads such a channel through it; see [sources and accounts](../concepts/sources-and-accounts.md).
 
 **Sync again fills the gap.** It fetches the messages missed while the channel was not synced, a few pages each sync. The row shows **Catching up** meanwhile. These older messages never reach the Inbox. Sync again lifts the AI mute only if Stop syncing set it; a mute you set yourself stays.
 
