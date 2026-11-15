@@ -58,6 +58,7 @@ Per-feature notes — architecture, contracts, dual paths, v1 limits — live in
 - Google Multi-Account — `google-multi-account.md`
 - Slack Multi-Account — `slack-multi-account.md`
 - Slack Live — the owner's own Claude/ChatGPT Slack connector — `slack-live.md`
+- Slack adaptive sync and Stop syncing — `slack-adaptive-sync.md`
 - Jira Multi-Account — `jira-multi-account.md`
 - Jira status history + time in status — `jira-changelog.md`
 - Jira custom fields discovery & mapping — `jira-custom-fields.md`
