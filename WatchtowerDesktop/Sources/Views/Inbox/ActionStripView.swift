@@ -69,7 +69,6 @@ struct ActionStripView: View {
         }
         .navigationTitle("Inbox")
         .focusedSceneValue(\.inboxRail, appState.actionStripViewModel)
-        .searchable(text: listQuery, placement: .toolbar, prompt: "Search the Inbox")
         .task {
             await appState.actionStripViewModel?.refresh()
             // The cheat sheet reads the dictionary through this VM, so a
@@ -88,13 +87,6 @@ struct ActionStripView: View {
             Task { await vm.ownerArrived() }
         }
         .onDisappear { appState.actionStripViewModel?.setOnScreen(false) }
-    }
-
-    /// The list's search (`ActionStripViewModel.listQuery`), one query for
-    /// every folder.
-    private var listQuery: Binding<String> {
-        Binding(get: { appState.actionStripViewModel?.listQuery ?? "" },
-                set: { appState.actionStripViewModel?.listQuery = $0 })
     }
 
     /// The Your day card over the AppState-owned plan, `today` told from the
@@ -430,9 +422,11 @@ struct ActionStripActionsView: View {
                 }
             }
             .inboxPaneColumn()
+            .inboxListSearch(vm)
         } else {
             folderList
                 .inboxListColumn()
+                .inboxListSearch(vm)
             Group {
                 if let aux {
                     auxPane(aux)
@@ -1108,5 +1102,15 @@ struct ActionStripActionsView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(Color.orange.opacity(0.12))
+    }
+}
+
+extension View {
+    /// The list's search (`ActionStripViewModel.listQuery`, one query for
+    /// every folder), drawn only over a folder's list: the legacy lists have
+    /// their own rows it would not filter, so they show no field.
+    func inboxListSearch(_ vm: ActionStripViewModel) -> some View {
+        searchable(text: Binding(get: { vm.listQuery }, set: { vm.listQuery = $0 }),
+                   placement: .toolbar, prompt: "Search the Inbox")
     }
 }

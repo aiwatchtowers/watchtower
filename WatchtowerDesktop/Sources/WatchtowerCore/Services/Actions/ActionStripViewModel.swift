@@ -559,6 +559,7 @@ package final class ActionStripViewModel {
 
     /// Opens today's list for a legacy entry, with its own reading pane.
     package func openLegacy(_ list: InboxLegacyList) {
+        listQuery = "" // a legacy list has no search: none waits for the way back
         legacyList = list
         selection = nil
     }
