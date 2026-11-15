@@ -58,6 +58,13 @@ enum SlackFullLiveShotFixtures {
             DesignShot(name: "slack-fl-needs-full-digests-narrow", size: NSSize(width: 360, height: 400)) {
                 AnyView(NeedsFullSlackDigestsMock())
             },
+            // Owner's answer to ask #1315: both tabs stay visible with Live only.
+            DesignShot(name: "slack-fl-needs-full-catchup", size: NSSize(width: 720, height: 360)) {
+                AnyView(NeedsFullSlackDigestsMock(tab: "catchUp"))
+            },
+            DesignShot(name: "slack-fl-needs-full-statistics", size: NSSize(width: 720, height: 360)) {
+                AnyView(NeedsFullSlackDigestsMock(tab: "statistics"))
+            },
             DesignShot(name: "slack-fl-needs-full-home-card", size: NSSize(width: 420, height: 0)) {
                 AnyView(NeedsFullSlackHomeCardMock())
             },
@@ -539,8 +546,13 @@ private struct SlackConnectSheetMock: View {
 /// The real `FeatureEmptyState` of the Digests tab; the new readiness line
 /// and its button stand in `extra` until `Readiness.needsFullSlack` exists.
 private struct NeedsFullSlackDigestsMock: View {
+    var tab = "digests"
+
     var body: some View {
-        if let copy = EmptyStateCopyTable.copy(for: "digests", briefingHour: 8) {
+        if let row = EmptyStateCopyTable.copy(for: tab, briefingHour: 8) {
+            // `needsFullSlack` replaces the tab's own action (as `needsSource` does today).
+            let copy = EmptyStateCopy(
+                icon: row.icon, title: row.title, landsHere: row.landsHere, feature: row.feature, primaryAction: nil)
             FeatureEmptyState(
                 copy: copy, readiness: nil, syncLine: nil, turnOnError: nil, isTurningOn: false,
                 onAction: { _ in },
