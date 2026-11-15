@@ -45,6 +45,8 @@ final class AppEnvironment {
     let navigation = AppNavigation()
     /// The ready recaps the owner has opened on this phone.
     let recordingsSeen: RecordingsSeenStore
+    /// The ended sessions the owner marked seen on Now, per hub.
+    let endedSeen: NowEndedSeenStore
     /// Every hub's session, by hub id.
     private(set) var sessions: [String: HubSession] = [:]
     /// The sessions on screen, in the registry's order.
@@ -90,6 +92,7 @@ final class AppEnvironment {
         self.registry = registry
         self.setBadge = setBadge
         recordingsSeen = RecordingsSeenStore(defaults: defaults)
+        endedSeen = NowEndedSeenStore(defaults: defaults)
         observeBadge()
     }
 

@@ -29,10 +29,15 @@ struct NowView: View {
     private let bannerOverride: RelayBannerModel?
     /// Term rows to show in place of the live ones (the screenshot tour's frames).
     private let termRowsOverride: [NowTermRow]?
+    /// How far the screen's clock runs ahead of the real one (the screenshot tour's next-meeting frame).
+    private let clockOffset: TimeInterval
+    /// Retries of an ask's undelivered answer under way, by its outbox row.
+    @State private var retrying: Set<String> = []
 
-    init(banner: RelayBannerModel? = nil, termRows: [NowTermRow]? = nil) {
+    init(banner: RelayBannerModel? = nil, termRows: [NowTermRow]? = nil, clockOffset: TimeInterval = 0) {
         bannerOverride = banner
         termRowsOverride = termRows
+        self.clockOffset = clockOffset
     }
 
     private var replica: WorkbenchReplicaModel { env.workbenchReplica }
@@ -47,12 +52,15 @@ struct NowView: View {
             // The working timers tick, and the Mac turns asleep by the clock
             // alone.
             TimelineView(.periodic(from: .now, by: 1)) { context in
+                let date = context.date.addingTimeInterval(clockOffset)
                 content(
                     NowModel(
-                        snapshot: replica.snapshot, linked: env.linkedDevice != nil, now: context.date,
-                        backlog: env.activeSession.outboxBacklog, macName: macName
+                        snapshot: replica.snapshot, linked: env.linkedDevice != nil, now: date,
+                        backlog: env.activeSession.outboxBacklog, macName: macName,
+                        seenEnded: env.endedSeen.seen(hubID: env.activeSession.hubID),
+                        answering: env.askAnswerer.isSending
                     ),
-                    date: context.date
+                    date: date
                 )
             }
             .navigationTitle("Now")
@@ -129,6 +137,16 @@ struct NowView: View {
                     SectionHeader("Working", count: model.working.count)
                     working(model)
                 }
+                if !model.ended.isEmpty {
+                    NowEndedHeader(count: model.ended.count) {
+                        env.endedSeen.markSeen(model.endedKeys, hubID: env.activeSession.hubID, now: date)
+                    }
+                    VStack(spacing: Spacing.regular) {
+                        ForEach(model.ended) { row in
+                            NowEndedCard(row: row) { markSeen(row, now: date) }
+                        }
+                    }
+                }
                 if let next = NextMeetingCardModel(events: env.calendarReplica.snapshot.events, now: date, calendar: .current) {
                     SectionHeader("Next meeting")
                     NextMeetingRow(card: next)
@@ -156,7 +174,7 @@ struct NowView: View {
         } else {
             VStack(spacing: Spacing.regular) {
                 ForEach(model.waitingForYou) { row in
-                    NowWaitingCard(row: row, isAnswering: isAnswering(row)) { pick(row, $0) }
+                    NowWaitingCard(row: row, isRetrying: isRetrying(row.answer), onPick: { pick(row, $0) }, onRetry: { retry(row.answer) })
                 }
             }
             if model.waitingMore > 0 {
@@ -194,11 +212,30 @@ struct NowView: View {
 
     // MARK: - Quick answers
 
-    private func isAnswering(_ row: NowWaitingRow) -> Bool {
-        guard case let .ask(askID) = row.id else { return false }
-        return env.askAnswerer.isSending(askID) || replica.snapshot.pending.contains {
-            $0.action.kind == .askAnswer && $0.entityRecordName == AskAnswerer.recordName(askID) && $0.state == .pending
+    private func isRetrying(_ answer: NowAnswer) -> Bool {
+        guard case let .notDelivered(rowID) = answer else { return false }
+        return retrying.contains(rowID)
+    }
+
+    /// **Retry** on an undelivered answer: the outbox writes it again at the end of the queue (the Not delivered
+    /// list's path); a second press while it runs does nothing, a failure says why in the alert.
+    private func retry(_ answer: NowAnswer) {
+        guard case let .notDelivered(rowID) = answer, retrying.insert(rowID).inserted else { return }
+        let session = env.activeSession
+        Task {
+            do {
+                try await session.retry(actionID: rowID)
+            } catch {
+                answerError = NotDeliveredModel.retryErrorText(error)
+            }
+            retrying.remove(rowID)
         }
+    }
+
+    /// **Seen** on an ended row: it leaves Now on this phone until the session ends again.
+    private func markSeen(_ row: NowWaitingRow, now: Date) {
+        guard let key = row.endedKey else { return }
+        env.endedSeen.markSeen(key, hubID: env.activeSession.hubID, now: now)
     }
 
     /// A one-tap answer: the pick goes into the ask's draft and is sent as
@@ -442,65 +479,26 @@ private struct NowOutboxGroup: View {
     }
 }
 
-/// One Waiting-for-you card (mockup 1): the state mark, the title, a mono
-/// command line for a permission prompt, the meta line and the age; a
-/// quick question adds its answers and Open under the text.
-private struct NowWaitingCard: View {
+/// The row's text inside a card: the state mark, the title, a mono command line for a permission prompt, the meta
+/// line and the age. A tap opens the ask's form or the session.
+private struct NowRowLink: View {
     let row: NowWaitingRow
-    let isAnswering: Bool
-    let onPick: (InlineAskOption) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.regular) {
-            link {
-                FlatRow(icon: .state(glyph: row.glyph, tone: row.tone), title: row.title, insets: EdgeInsets()) {
-                    VStack(alignment: .leading, spacing: Spacing.tight) {
-                        if let code = row.code {
-                            Text(code).font(TypeScale.code)
-                        }
-                        Text(row.meta)
+        link {
+            FlatRow(icon: .state(glyph: row.glyph, tone: row.tone), title: row.title, insets: EdgeInsets()) {
+                VStack(alignment: .leading, spacing: Spacing.tight) {
+                    if let code = row.code {
+                        Text(code).font(TypeScale.code)
                     }
-                } trailing: {
-                    Text(row.age).font(TypeScale.time).foregroundStyle(.tertiary)
+                    Text(row.meta)
                 }
-                .accessibilityElement(children: .combine)
+            } trailing: {
+                Text(row.age).font(TypeScale.time).foregroundStyle(.tertiary)
             }
-            .buttonStyle(.plain)
-            if !row.options.isEmpty {
-                answers
-            }
+            .accessibilityElement(children: .combine)
         }
-        .card()
-    }
-
-    /// The answers, the recommended one prominent, then Open; they wrap
-    /// to a column when they do not fit on one line.
-    private var answers: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: Spacing.compact) { buttons }
-            VStack(alignment: .leading, spacing: Spacing.compact) { buttons }
-        }
-        .padding(.leading, PhoneMetrics.iconColumn + Spacing.cozy)
-        .disabled(isAnswering)
-    }
-
-    /// Compact answers (mockup 1's `.btn`), 44 pt tall to tap.
-    @ViewBuilder private var buttons: some View {
-        ForEach(row.options) { option in
-            if option.isRecommended {
-                Button { onPick(option) } label: { answerLabel(option.label) }.buttonStyle(.borderedProminent)
-            } else {
-                Button { onPick(option) } label: { answerLabel(option.label) }.buttonStyle(.bordered)
-            }
-        }
-        link { answerLabel("Open") }.buttonStyle(.bordered)
-    }
-
-    private func answerLabel(_ text: String) -> some View {
-        Text(text)
-            .font(.subheadline.weight(.semibold))
-            .lineLimit(2)
-            .frame(minHeight: PhoneMetrics.minTouch - 2 * Spacing.compact)
+        .buttonStyle(.plain)
     }
 
     @ViewBuilder
@@ -512,8 +510,127 @@ private struct NowWaitingCard: View {
     }
 }
 
+/// One Waiting-for-you card (mockup 1, #1785): the row, then its answer line — the quick answers as wrapping chips,
+/// one **Answer…** chip, or where the answer already sent stands ("Answer not delivered · Retry").
+private struct NowWaitingCard: View {
+    let row: NowWaitingRow
+    let isRetrying: Bool
+    let onPick: (InlineAskOption) -> Void
+    let onRetry: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.compact) {
+            NowRowLink(row: row)
+            // The 44 pt hit areas reach into the card's padding, so the line sits close to the text.
+            answerLine
+                .padding(.leading, PhoneMetrics.iconColumn + Spacing.cozy)
+                .padding(.vertical, -Spacing.compact)
+        }
+        .card()
+    }
+
+    @ViewBuilder private var answerLine: some View {
+        switch row.answer {
+        case .none:
+            EmptyView()
+        case let .chips(options):
+            // The chips' own hit margins make the gaps: the same between rows as between chips.
+            FlowRow(spacing: 0, lineSpacing: 0) {
+                ForEach(options) { option in
+                    Button { onPick(option) } label: { AnswerChip(text: option.label, isProminent: option.isRecommended) }
+                        .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, -AnswerChip.margin)
+        case .openForm:
+            if case let .ask(id) = row.destination {
+                NavigationLink(value: AskRoute(id: id)) { AnswerChip(text: NowAnswer.answerFormTitle, isProminent: false) }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, -AnswerChip.margin)
+            }
+        case .sending, .waitingToSend:
+            HStack(spacing: Spacing.compact) {
+                if case .sending = row.answer {
+                    ProgressView().controlSize(.small)
+                }
+                Text(row.answer.statusText ?? "").font(TypeScale.meta).foregroundStyle(row.answer.statusTone.color)
+            }
+            .frame(minHeight: PhoneMetrics.minTouch)
+        case .notDelivered:
+            HStack(spacing: Spacing.regular) {
+                Text(row.answer.statusText ?? "").font(TypeScale.meta).foregroundStyle(row.answer.statusTone.color)
+                Text("·").font(TypeScale.meta).foregroundStyle(.tertiary).accessibilityHidden(true)
+                Button(NowAnswer.retryTitle, action: onRetry)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(isRetrying ? PhoneTone.secondary.color : PhoneTone.accent.color)
+                    .frame(minHeight: PhoneMetrics.minTouch)
+                    .contentShape(Rectangle())
+                    .buttonStyle(.plain)
+                    .disabled(isRetrying)
+            }
+        }
+    }
+}
+
+/// A quick answer as a chip (mockup 1's `.btn`): a capsule at least 38 pt tall with a 3 pt hit margin all round
+/// (a 44 pt tall hit area), so two chips sit 6 pt apart across and down; the recommended one filled with the accent.
+private struct AnswerChip: View {
+    static let margin = Spacing.compact / 2
+    static let capsuleHeight = PhoneMetrics.minTouch - 2 * margin
+
+    let text: String
+    let isProminent: Bool
+
+    var body: some View {
+        Text(text)
+            .font(.subheadline.weight(.semibold))
+            .lineLimit(1)
+            .foregroundStyle(isProminent ? Color.white : PhoneTone.accent.color)
+            .padding(.horizontal, Spacing.medium)
+            .frame(minHeight: Self.capsuleHeight)
+            .background(isProminent ? PhoneTone.accent.color : Fill.selected, in: Capsule())
+            .padding(Self.margin)
+            .contentShape(Rectangle())
+    }
+}
+
+/// The Ended header (#1785): the caps title and its count, then **Clear**, which marks every row shown seen.
+private struct NowEndedHeader: View {
+    let count: Int
+    let onClear: () -> Void
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 0) {
+            SectionHeader(NowModel.endedTitle, count: count)
+            Button(NowModel.clearTitle, action: onClear)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(PhoneTone.accent.color)
+                .padding(.horizontal, Spacing.small)
+                .frame(minHeight: PhoneMetrics.minTouch)
+                .contentShape(Rectangle())
+                .buttonStyle(.plain)
+        }
+    }
+}
+
+/// One Ended card (#1785): the session's row; a long press (and VoiceOver) offers **Seen**, which takes it off Now
+/// on this phone. The header's **Clear** does it for all of them.
+private struct NowEndedCard: View {
+    let row: NowWaitingRow
+    let onSeen: () -> Void
+
+    var body: some View {
+        NowRowLink(row: row)
+            .card()
+            .contextMenu {
+                Button(NowModel.seenTitle, systemImage: "eye", action: onSeen)
+            }
+            .accessibilityAction(named: NowModel.seenTitle, onSeen)
+    }
+}
+
 /// The next meeting as a calendar row (mockup 1), tap for the event, with
-/// Record under it.
+/// Record under it only within ten minutes of its start (#1785).
 private struct NextMeetingRow: View {
     @Environment(AppEnvironment.self) private var env
     let card: NextMeetingCardModel
@@ -526,10 +643,12 @@ private struct NextMeetingRow: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            RecordButton {
-                Task { await env.recorder.recordMeeting(card.meetingEvent) }
+            if card.showsRecord {
+                RecordButton {
+                    Task { await env.recorder.recordMeeting(card.meetingEvent) }
+                }
+                .disabled(!env.canStartCapture)
             }
-            .disabled(!env.canStartCapture)
         }
     }
 }

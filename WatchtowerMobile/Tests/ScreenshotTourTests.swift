@@ -80,6 +80,7 @@ final class ScreenshotTourTests: XCTestCase {
             let end = shot.hasEnd ? "\(shot.number)e-\(shot.slug)" : nil
             try await host.capture("\(shot.number)-\(shot.slug)", shot.make(root.env), endName: end)
         }
+        let meetingRows = try await captureMeetingSoon(host: host)
         let asleepRows = try await captureMacAsleep(root.env, demo: demo, host: host)
             + (try await captureSessionStates(root.env, demo: demo, host: host))
         let recorderRows = try await captureRecorder(into: dir, linking: root.linking)
@@ -89,7 +90,7 @@ final class ScreenshotTourTests: XCTestCase {
         let phase4Rows = try await captureRelayPhase4(host: host)
         let phase5Rows = try await captureParkedFeed(into: dir, linking: root.linking)
         try ScreenshotHost.writeIndex(
-            Self.indexRows(shots) + asleepRows + recorderRows + outboxRows + relayRows + onRelayRows + phase4Rows + phase5Rows,
+            Self.indexRows(shots) + meetingRows + asleepRows + recorderRows + outboxRows + relayRows + onRelayRows + phase4Rows + phase5Rows,
             to: dir)
 
         let pngs = try FileManager.default
@@ -97,7 +98,7 @@ final class ScreenshotTourTests: XCTestCase {
             .filter { $0.pathExtension == "png" }
         XCTAssertEqual(
             pngs.count,
-            2 * (shots.count + shots.filter(\.hasEnd).count + asleepRows.count + recorderRows.count + outboxRows.count)
+            2 * (shots.count + shots.filter(\.hasEnd).count + meetingRows.count + asleepRows.count + recorderRows.count + outboxRows.count)
                 + 3 * (relayRows.count + onRelayRows.count + phase4Rows.count + phase5Rows.count)
         )
         for png in pngs {
@@ -140,6 +141,16 @@ final class ScreenshotTourTests: XCTestCase {
         env.activate(DemoSeed.primary.hubID)
         let demo = DemoHub(transport: try XCTUnwrap(primary), defaults: defaults)
         return (try AppRoot.demo(env, defaults: defaults), demo)
+    }
+
+    /// 01m, 01me (#1785): Now with its clock 20 min ahead, so the demo's next meeting starts in about 4 min and its
+    /// card carries Record (shown only within 10 min of the start); the end frame shows the card and Ended above it.
+    private func captureMeetingSoon(host: ScreenshotHost) async throws -> [ScreenshotHost.IndexRow] {
+        try await host.capture("01m-now-meeting-soon", NowView(clockOffset: 20 * 60), endName: "01me-now-meeting-soon")
+        return ["01m", "01me"].map {
+            ScreenshotHost.IndexRow(
+                number: $0, view: "NowView", source: "Features/Now/NowView.swift", reached: "leaf view, clock 20 min ahead")
+        }
     }
 
     /// 01s, 09s (mockup 8): the primary Mac's heartbeat 40 min old, so the

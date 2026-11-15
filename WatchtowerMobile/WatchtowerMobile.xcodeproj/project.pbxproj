@@ -200,6 +200,7 @@
 		9D354B3D6942E0AD14E45ACE /* WorkchatWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14A19B11833D779D2BDA2BE0 /* WorkchatWiringTests.swift */; };
 		9D8B8940EB3B69B1B03F6335 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 6C3E438CAF4935002C6DAC61 /* PrivacyInfo.xcprivacy */; };
 		9EB2B0C11F51971D49AF4FE1 /* PhoneTone.swift in Sources */ = {isa = PBXBuildFile; fileRef = 972F58018C997D775DD0EAA1 /* PhoneTone.swift */; };
+		9EECF9DC1E985314B6FE2763 /* NowAnswer.swift in Sources */ = {isa = PBXBuildFile; fileRef = EFCEDA6614679AF716E261DE /* NowAnswer.swift */; };
 		9F28AD417086206121616519 /* NowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27F9F7B9E929C013BC8C456F /* NowView.swift */; };
 		A01ED6EABB46966DF042B60D /* DesignSystemTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8F8031BEE354E1EDC067BB7 /* DesignSystemTests.swift */; };
 		A0BE5F402AC94E7324FC5530 /* RelayPushRegistrar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 898B58250245EB8FEB3A6C40 /* RelayPushRegistrar.swift */; };
@@ -642,6 +643,7 @@
 		EDA82747FE5EB5BCDDB4E091 /* AppRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppRootView.swift; sourceTree = "<group>"; };
 		EE90B2DF231D47C2A8E03EA7 /* WorkbenchAutomationsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkbenchAutomationsView.swift; sourceTree = "<group>"; };
 		EF9AC4698238F4AEA346AB8F /* DiagnosticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsView.swift; sourceTree = "<group>"; };
+		EFCEDA6614679AF716E261DE /* NowAnswer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowAnswer.swift; sourceTree = "<group>"; };
 		EFEAE5C2DA8B8D7B7FFDEA68 /* MacMovedWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacMovedWiringTests.swift; sourceTree = "<group>"; };
 		F1751079508437F093108AD4 /* HubSwitcherTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubSwitcherTests.swift; sourceTree = "<group>"; };
 		F270954E959932DD49D7C63D /* BoardModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardModelTests.swift; sourceTree = "<group>"; };
@@ -738,6 +740,7 @@
 			children = (
 				32467BA6794CDAB20E3FDE26 /* NotDeliveredModel.swift */,
 				0ECAE064651C75595E6982FE /* NotDeliveredView.swift */,
+				EFCEDA6614679AF716E261DE /* NowAnswer.swift */,
 				F2D287A1BE3B31FA6D711C52 /* NowModel.swift */,
 				27F9F7B9E929C013BC8C456F /* NowView.swift */,
 				F3669465836FFBCB98FA1EBB /* RelayBannerModel.swift */,
@@ -1469,6 +1472,7 @@
 				1EA2C0AEB3CF27D46DEFEA8B /* NotDeliveredView.swift in Sources */,
 				F5939764C56F581EC24D8A85 /* NotificationRouter.swift in Sources */,
 				D4F7DB9F9B82AF8D7EA7E806 /* NotificationToken.swift in Sources */,
+				9EECF9DC1E985314B6FE2763 /* NowAnswer.swift in Sources */,
 				151770A7D2209403DADBD038 /* NowModel.swift in Sources */,
 				9F28AD417086206121616519 /* NowView.swift in Sources */,
 				445E795F75304FAD8372B7B6 /* ObservationHealth.swift in Sources */,
