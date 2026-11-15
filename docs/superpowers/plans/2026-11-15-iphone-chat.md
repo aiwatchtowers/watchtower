@@ -304,7 +304,7 @@ const MaxLive = 2; const IdleTTL = 10 * time.Minute
   - limits and validation, ported from `ChatAttachmentStore`, with `testdata/attachment_limit_cases.json` shared with Swift;
   - the owner `directoryName`;
   - `RemoveConversationFiles`.
-- Create: `internal/hub/state/migrations/00017_chat_grant.sql`, which adds `chat_allowed INTEGER NOT NULL DEFAULT 1` (on by default, ask #1340). Modify `state/devices.go`, `link.Grant` and its column map (`internal/hub/link/center.go`), every grant read and copy in `internal/hub/link/grants.go`, `device_record.go` and `keybox.go`, the `device_grant` record (`internal/hub/wire/grant.go`: a `chat` key) and its Kit twin (`WatchtowerKit/Sources/WatchtowerSync/Link/DeviceGrant.swift`), `cmd/hub_link.go` (`hub allow|deny <device> chat`) and `internal/hub/control.go`.
+- The `chat_allowed` column and `state.Device.ChatAllowed` come from T6. This task adds the rest of the grant: `link.Grant` and its column map (`internal/hub/link/center.go`), every grant read and copy in `internal/hub/link/grants.go`, `device_record.go` and `keybox.go`, the `device_grant` record (`internal/hub/wire/grant.go`: a `chat` key) and its Kit twin (`WatchtowerKit/Sources/WatchtowerSync/Link/DeviceGrant.swift`), `cmd/hub_link.go` (`hub allow|deny <device> chat`) and `internal/hub/control.go`.
 - Modify:
   - `actions/dispatcher.go`: put `chat_new`, `chat_turn`, `chat_action_answer` and `chat_manage` in `NonIdempotentKinds`, and `chat_turn` in `ReceivedEchoKinds`;
   - `handlers/deps.go` `Register` and `nudge.go`;
@@ -348,7 +348,6 @@ const MaxLive = 2; const IdleTTL = 10 * time.Minute
     - `TestChatAttachment_LimitsSharedCases` over `attachment_limit_cases.json`;
     - `TestChatCapability_OffWhileOldDesktopRuns`;
     - `TestChatCapability_OnWithoutDesktop`;
-    - `TestChatGrant_DefaultOnForLinkedPhones`: the migration on a sidecar with an existing device → `chat_allowed=1`.
     - `TestChatGrant_SurvivesRelink`: the owner turns Chat off, the phone links again → still off (every path that rewrites a device row carries `chat_allowed`).
     - `TestChatGrant_InDeviceGrantRecord`: the `device_grant` payload carries `chat`; the Kit `DeviceGrantTests` decode it from the same fixture.
     - `TestChatFeedRequest_ZeroRepublishesList`.
@@ -376,6 +375,7 @@ const MaxLive = 2; const IdleTTL = 10 * time.Minute
 
 **Interfaces:**
 - Consumes: `chatrun.Runner.Live` through a `LiveText` seam (T4 merges its implementation; until then a fake), and `chatstore` readers.
+- Also creates the grant's storage, so the sources can gate on it: `internal/hub/state/migrations/00017_chat_grant.sql` (`chat_allowed INTEGER NOT NULL DEFAULT 1`, on by default, ask #1340), `state.Device.ChatAllowed bool` read in `state/devices.go`, and `Store.AnyChatPhone() (bool, error)` (a linked device with `chat_allowed = 1`). T5 adds the CLI, link, wire and relink paths on top. Test `TestChatGrant_DefaultOnForLinkedPhones` moves here.
 - Also creates: `internal/db/chat_search.go`, `db.SearchChats(q string, limit int) ([]ChatSearchHit, error)`, a Go port of `ChatSearchQueries` (FTS `MATCH`, snippet, `bm25`, context-type and archived filters), with `internal/db/testdata/chat_search_cases.json` run by Go `TestChatSearch_SharedCases` and the Swift `ChatSearchQueriesFixtureTests` (which must pass against today's Swift first).
 - Produces: the payload keys exactly as spec §4.6, pinned by the four fixtures:
   - `chat_list{conversations:[{id,title,pinned,updated_at,project?,state,last_line,lease_owner?}], projects:[{id,name}], models:[{provider,model,display_name,images,pdf}], error?}`;
@@ -395,13 +395,15 @@ const MaxLive = 2; const IdleTTL = 10 * time.Minute
   - `TestChatFeed_PrefetchRecordGoneAfter2Min`.
   - `TestChatPage_SixtyBeforeID`.
   - `TestChatSearch_RecordShape`.
-  - `TestChatSources_OnlyWithChatGrant`.
+  - `TestChatSources_OnlyWithChatGrant` (over `Store.AnyChatPhone`).
+  - `TestChatGrant_DefaultOnForLinkedPhones`: the migration on a sidecar with an existing device → `chat_allowed=1`.
+  - `TestChatSearch_SharedCases` (Go) and the Swift `ChatSearchQueriesFixtureTests`.
   - `TestLIVE01_ReaderList` stays green with the new readers listed.
   - Kit: `ChatSliceMirrorTests` decode all four fixtures.
-  - Run `go test ./internal/hub/slices/...` and `make kit-test FILTER=ChatSliceMirror`. Expected: FAIL.
+  - Run `go test ./internal/hub/slices/... ./internal/hub/state ./internal/db -run 'Chat|LIVE01'`, `make kit-test FILTER=ChatSliceMirror` and `make test-swift FILTER=ChatSearchQueriesFixture` (this one must PASS against today's Swift before the Go port exists). Expected: the Go and Kit tests FAIL.
 - [ ] **Step 2: Implement the sources and the Kit mirrors.** `chat_list` and every chat source publish only while at least one linked phone holds the `chat` grant (else `Items` returns none and the publisher deletes the records). The feed, page and search builders are display paths: add them to LIVE-01's `displayOnlyReaders` in `internal/db/live01_test.go`.
-- [ ] **Step 3: Run** the same commands, `make lint-diff` and `make lint-swift`. Expected: PASS.
-- [ ] **Step 4: Commit** `feat(hub): chat slices and Kit mirrors (#1791 T6)`.
+- [ ] **Step 3: Run** the same commands (including `make test-swift FILTER=ChatSearchQueriesFixture`), `make lint-diff` and `make lint-swift`. Expected: PASS.
+- [ ] **Step 4: Commit** `feat(hub): chat slices, chat grant storage, Kit mirrors (#1791 T6)`.
 
 ---
 
