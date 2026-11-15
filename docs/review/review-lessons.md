@@ -3102,3 +3102,14 @@ Entry format:
 - weak-dimension: 8. A layout change to a view shared by two sections is checked against the section the ticket names, not against every caller's degenerate data (all optional lines nil).
 - rule-gap (candidate, dim 8/Design kit): *when a shared row view is restructured, grep its callers and render each one in its emptiest real state (every optional line nil). The PR's shots include one per caller.*
 - outcome: TBD
+
+## 2026-11-16 — feature/1791-iphone-chat (PR #885 umbrella, eb1ad6db4: iPhone AI chat over the relay — chat_turn_leases, Go chatstore twin of the Swift write path, hub chatrun runner, chat slices/handlers/push, WatchtowerChatText package, phone Chats tab; 328 files +32.7k; panel: prosecutor (12) + codex (1 visible) + three general-purpose lanes substituting the uninstalled pr-review-toolkit trio; judge verified by reading, no runs; CI Swift/Mobile pending at judging) — verdict: changes-needed
+
+- contested: F1, generic bare names (`send`, `Delete`, `Pin`, `Rename`, `MarkRead`, …) added to LIVE-01's `displayOnlyReaders`. Not a §7 weakening: the scan and the assertion are unchanged, and the inventory names the list as the extension point. Held major anyway, because a bare-name allowlist over all of `internal/` exempts every future function of that name in any package. The fix is to qualify the new entries by `<pkg>/<file>:<name>`, which is strictly stronger and needs no owner sign-off. [7]
+- contested: codex's unbounded stdin write in `chatrun/session.go`. Real (the kill/escalation path shares the blocked loop goroutine), but `ai session` drains stdin on a dedicated reader goroutine, so it needs a wedged child. Held minor; still fixed, because the cost is a daemon that never shuts down. [9]
+- false-positive: test-gap #5, a cross-chat attachment id. `chatstore` already pins "another chat's file" → `ErrAttachmentMissing` (store_test.go:352); only the handler-level mapping is untested. Test-gap #10/#11 (wall-clock): a real-process reap poll and a never-firing parked sleep seam are not timing waits. [7]
+- miss: F2 came from the prosecutor alone. Only `Start` refuses `context_type` conversations; feed, page, manage, attachment intake and the approval push take any id. Codex and the three substitute lanes all missed the scope hole. [6]
+- weak-dimension: 9. Phone-side `try?` over a kept owner send (`ChatOfflineCopy.outgoing`) survived 12 task reviews as "deferred minor". It is the exact absent-vs-undecodable shape a promoted Swift rule names.
+- rule-gap (candidate, dim 6): *a second writer/reader of a shared table that serves a subset of its rows (main chat = `context_type IS NULL`) applies the subset predicate at every entry point that takes an id from the client, not only at the listing.*
+- rule-gap (candidate, dim 7): *a name-keyed guard allowlist scanned across packages qualifies new entries by package/file; a bare generic name is the tell.*
+- outcome: TBD
