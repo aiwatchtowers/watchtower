@@ -59,7 +59,7 @@ package final class InboxBulkCenter {
         if let model = models[key] { return model }
         let model = InboxBulkPressModel(
             plan: { [weak self] in
-                guard let self else { throw InboxBulkCLIError.unexpectedAnswer }
+                guard let self else { throw InboxBulkCLIError.closed }
                 let plan: InboxBulkPlan
                 do {
                     plan = try await self.plan(key)
@@ -72,7 +72,7 @@ package final class InboxBulkCenter {
                 return plan
             },
             apply: { [weak self] ids in
-                guard let self else { return .failed(InboxBulkCLIError.unexpectedAnswer.localizedDescription) }
+                guard let self else { return .failed(InboxBulkCLIError.closed.localizedDescription) }
                 let result = await cli().resolve(ids: ids)
                 await onFinished()
                 return result

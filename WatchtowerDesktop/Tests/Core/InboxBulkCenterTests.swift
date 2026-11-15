@@ -55,6 +55,25 @@ final class InboxBulkCenterTests: XCTestCase {
         return false
     }
 
+    /// A press that outlives its center ran no CLI: it says so, never
+    /// "Unexpected answer".
+    func testPressWithoutItsCenterSaysTheInboxIsClosed() async {
+        let runner = ScriptedRunner([])
+        weak var gone: InboxBulkCenter?
+        let model: InboxBulkPressModel = {
+            let center = center(runner)
+            gone = center
+            return center.model(for: .olderPeople)
+        }()
+        XCTAssertNil(gone, "the model keeps no hold on its center")
+
+        model.begin()
+        await waitUntil(model, isFinished)
+
+        XCTAssertEqual(model.state, .finished(.failed("The Inbox is closed.")))
+        XCTAssertTrue(runner.calls.isEmpty)
+    }
+
     func testSenderPressPlansThenResolvesExactlyThePlannedIDs() async {
         let runner = ScriptedRunner([
             (#"{"count":2,"ids":["12","5"]}"#, 0),

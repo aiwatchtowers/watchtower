@@ -12,6 +12,8 @@ package enum InboxBulkCLIError: Error, Equatable, LocalizedError {
     case unexpectedAnswer
     /// The call was stopped (its timeout, a cancel) before it answered.
     case stopped(String)
+    /// The press outlived its `InboxBulkCenter`: no CLI ran.
+    case closed
 
     package var errorDescription: String? {
         switch self {
@@ -19,6 +21,7 @@ package enum InboxBulkCLIError: Error, Equatable, LocalizedError {
         case let .refused(message): message
         case .unexpectedAnswer: "Unexpected answer from watchtower"
         case let .stopped(reason): reason
+        case .closed: "The Inbox is closed."
         }
     }
 }
