@@ -216,7 +216,9 @@ func (d *Daemon) SlackTodayPrimitives() map[string]automations.PrimitiveFunc {
 // failed-run hold (the accounts, the row, the state, the run times) counts
 // as due at most once per slackTodayRetryAfter, as the hold would not see a
 // run that never started. An owner's edited copy is read with the shipped
-// state shape (a bad shape logs and counts as due). Slack today off skips
+// state shape; a state or cursor that does not decode counts as due at most
+// once per slackTodayRetryAfter too (the run that follows rewrites the
+// cursor, see automations' callWindow). Slack today off skips
 // the built-in before the gate is asked (FEAT-01), and a queued Run Now
 // runs without asking it.
 func (d *Daemon) SlackTodayGate() builtin.Gate { return &slackTodayGate{d: d} }
@@ -229,8 +231,9 @@ type slackTodayGate struct {
 	lastErrDue time.Time
 }
 
-// errDue logs a failed read before the hold and reports whether it counts
-// as due: once per slackTodayRetryAfter.
+// errDue logs a failed read (before the hold, or a state that does not
+// decode) and reports whether it counts as due: once per
+// slackTodayRetryAfter.
 func (g *slackTodayGate) errDue(now time.Time, format string, args ...any) bool {
 	g.d.logger.Printf("slack-today: "+format, args...)
 	g.mu.Lock()
@@ -272,16 +275,14 @@ func (g *slackTodayGate) Due(ctx context.Context, e builtin.Entry, now time.Time
 	midnight := db.StartOfToday(local)
 	day, hasDay, err := slackTodayDay(state)
 	if err != nil {
-		d.logger.Printf("slack-today: automation %d's state: %v", a.ID, err)
-		return true
+		return g.errDue(now, "automation %d's state: %v", a.ID, err)
 	}
 	if day != local.Format("2006-01-02") && (hasDay || !t.hasOK || t.lastOK.Before(midnight)) {
 		return true
 	}
 	cur, err := automations.WindowCursorOf(state, automations.SlackWindowStateKey)
 	if err != nil {
-		d.logger.Printf("slack-today: automation %d's state: %v", a.ID, err)
-		return true
+		return g.errDue(now, "automation %d's state: %v", a.ID, err)
 	}
 	if cur.Behind {
 		return true

@@ -301,12 +301,18 @@ func TestSlackTodayGate_ReadErrorIsDue(t *testing.T) {
 	f.run(t, db.RunSucceeded, 2*time.Minute)
 	require.False(t, f.due(t))
 
+	start := f.now
 	f.rawState(t, `[1]`)
 	assert.True(t, f.due(t), "an unreadable state counts as due")
 	assert.Contains(t, f.log.String(), "slack-today: ")
+	f.now = start.Add(time.Minute)
+	assert.False(t, f.due(t), "and then at most once per 15 minutes, as the other failed reads")
 
+	f.now = start.Add(15 * time.Minute)
 	f.rawState(t, fmt.Sprintf(`{"today":{"v":1,"day":%q},"__window:slack":{"v":9}}`, f.now.Format("2006-01-02")))
 	assert.True(t, f.due(t), "an unreadable cursor counts as due")
+	f.now = start.Add(16 * time.Minute)
+	assert.False(t, f.due(t), "a minute after that")
 }
 
 // A failed read before the failed-run hold counts as due at most once per
