@@ -305,5 +305,82 @@
         "meta": {}
       }
     ]
+  },
+  {
+    "name": "slug keeps an NFD combining mark in its cluster",
+    "text": ":::artifact title=\"Café au lait\"\nx\n:::",
+    "final": true,
+    "expect": [
+      {
+        "key": "café-au-lait",
+        "kind": "document",
+        "title": "Café au lait",
+        "content": "x",
+        "meta": {}
+      }
+    ]
+  },
+  {
+    "name": "slug keeps a keycap cluster",
+    "text": ":::artifact title=\"1️⃣ Step one\"\nx\n:::",
+    "final": true,
+    "expect": [
+      {
+        "key": "1️⃣-step-one",
+        "kind": "document",
+        "title": "1️⃣ Step one",
+        "content": "x",
+        "meta": {}
+      }
+    ]
+  },
+  {
+    "name": "slug keeps Devanagari vowel signs",
+    "text": ":::artifact title=\"हिन्दी योजना\"\nx\n:::",
+    "final": true,
+    "expect": [
+      {
+        "key": "हिन्दी-योजना",
+        "kind": "document",
+        "title": "हिन्दी योजना",
+        "content": "x",
+        "meta": {}
+      }
+    ]
+  },
+  {
+    "name": "slug lowercases the Turkish dotted capital I in full",
+    "text": ":::artifact title=\"İstanbul plan\"\nx\n:::",
+    "final": true,
+    "expect": [
+      {
+        "key": "i̇stanbul-plan",
+        "kind": "document",
+        "title": "İstanbul plan",
+        "content": "x",
+        "meta": {}
+      }
+    ]
+  },
+  {
+    "name": "interleaved repeats: a, b, a keeps first-seen order with the last content",
+    "text": ":::artifact key=\"a\" kind=\"table\" title=\"A\"\n1\n:::\n:::artifact key=\"b\" kind=\"table\" title=\"B\"\n2\n:::\n:::artifact key=\"a\" kind=\"table\" title=\"A\"\n3\n:::",
+    "final": true,
+    "expect": [
+      {
+        "key": "a",
+        "kind": "table",
+        "title": "A",
+        "content": "3",
+        "meta": {}
+      },
+      {
+        "key": "b",
+        "kind": "table",
+        "title": "B",
+        "content": "2",
+        "meta": {}
+      }
+    ]
   }
 ]

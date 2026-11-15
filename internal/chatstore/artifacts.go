@@ -7,6 +7,8 @@ package chatstore
 import (
 	"strings"
 	"unicode"
+
+	"github.com/rivo/uniseg"
 )
 
 // ParsedArtifact is one complete artifact block of an assistant message.
@@ -81,27 +83,56 @@ func dropLeading(s string, pred func(byte) bool) string {
 	return s[i:]
 }
 
+// swiftIsLetterOrNumber classifies a grapheme cluster the way Swift's
+// Character.isLetter / isNumber do: by its FIRST scalar only (isLetter =
+// Alphabetic, which takes in Indic vowel signs; isNumber = has a numeric type).
+func swiftIsLetterOrNumber(first rune) bool {
+	return unicode.IsLetter(first) || unicode.IsNumber(first) || unicode.Is(unicode.Other_Alphabetic, first)
+}
+
+// swiftLower mirrors String.lowercased(): full case mapping per scalar, no
+// context (so a final sigma stays σ). The only unconditional full mapping that
+// differs from the simple one is U+0130 -> "i" + U+0307.
+func swiftLower(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if r == 0x130 {
+			b.WriteString("i\u0307")
+			continue
+		}
+		b.WriteRune(unicode.ToLower(r))
+	}
+	return b.String()
+}
+
+// artifactSlug walks grapheme clusters like Swift's Character loop: the 64 cap
+// counts clusters and appends the whole cluster.
 func artifactSlug(title string) string {
-	var out []rune
+	var out strings.Builder
+	count := 0
 	pendingDash := false
-	for _, r := range strings.ToLower(title) {
-		if unicode.IsLetter(r) || unicode.IsNumber(r) {
-			if pendingDash && len(out) > 0 {
-				out = append(out, '-')
+	g := uniseg.NewGraphemes(swiftLower(title))
+	for g.Next() {
+		runes := g.Runes()
+		if swiftIsLetterOrNumber(runes[0]) {
+			if pendingDash && count > 0 {
+				out.WriteByte('-')
+				count++
 			}
 			pendingDash = false
-			out = append(out, r)
-			if len(out) >= 64 {
+			out.WriteString(g.Str())
+			count++
+			if count >= 64 {
 				break
 			}
 		} else {
 			pendingDash = true
 		}
 	}
-	if len(out) == 0 {
+	if count == 0 {
 		return "artifact"
 	}
-	return string(out)
+	return out.String()
 }
 
 func isOpenerLine(trimmed string) bool {
@@ -157,6 +188,8 @@ func parseOpener(trimmed string) (artifactDraft, bool) {
 	return artifactDraft{ParsedArtifact: ParsedArtifact{Key: key, Kind: kind, Title: title, Meta: attrs}}, true
 }
 
+// Attribute names, quotes and fence markers below are scanned per rune: a
+// combining mark right after one (one Character in Swift) is not mirrored.
 // parseArtifactAttributes reads `name="value"` pairs; `\"` and `\\` are
 // escapes. ok=false on any syntax error (including an unterminated quote).
 func parseArtifactAttributes(src string) (map[string]string, bool) {
