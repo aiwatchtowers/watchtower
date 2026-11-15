@@ -269,7 +269,7 @@ func (g *slackTodayGate) Due(ctx context.Context, e builtin.Entry, now time.Time
 		return false
 	}
 	local := now.In(time.Local)
-	midnight := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, time.Local)
+	midnight := db.StartOfToday(local)
 	day, hasDay, err := slackTodayDay(state)
 	if err != nil {
 		d.logger.Printf("slack-today: automation %d's state: %v", a.ID, err)

@@ -18,10 +18,11 @@ import (
 // below_floor, cursor_reset}, with NextCursor and NextAnchor the next read's
 // cursor and the id of the row at it (never behind the call's unless
 // cursor_reset: the call's cursor no longer points at the row it was taken
-// at, see db.SlackWindow.CursorReset) and Behind when a cap cut the window. Floor "today" starts the
-// window at local midnight of now. A policy that turns Slack off reads
-// nothing: {status: "skipped", reason: "source_off", day, messages: []}
-// with the call's cursor. It calls no model.
+// at, see db.SlackWindow.CursorReset) and Behind when a cap cut the window.
+// Floor "today" starts the window at the start of now's local day
+// (db.StartOfToday, the Inbox's "from today" rule). A policy that turns
+// Slack off reads nothing: {status: "skipped", reason: "source_off", day,
+// messages: []} with the call's cursor. It calls no model.
 func SlackWindowPrimitives(d *db.DB, now func() time.Time) map[string]automations.PrimitiveFunc {
 	return map[string]automations.PrimitiveFunc{
 		automations.PrimitiveSlackWindow: func(ctx context.Context, call automations.PrimitiveCall) (automations.PrimitiveResult, error) {
@@ -44,7 +45,7 @@ func SlackWindowPrimitives(d *db.DB, now func() time.Time) map[string]automation
 			switch call.Floor {
 			case "":
 			case automations.WindowFloorToday:
-				q.Floor = time.Date(at.Year(), at.Month(), at.Day(), 0, 0, 0, 0, time.Local)
+				q.Floor = db.StartOfToday(at)
 			default:
 				return automations.PrimitiveResult{}, fmt.Errorf("slack.window: unknown floor %q", call.Floor)
 			}
