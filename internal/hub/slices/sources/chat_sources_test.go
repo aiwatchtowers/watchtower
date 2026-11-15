@@ -742,9 +742,10 @@ func TestChatFeedAndPage_DiscussChatNotPublished(t *testing.T) {
 	}
 }
 
-// An oversized artifact key and title, attachment name and error message
-// (each alone over the cap) are clipped at maxChatLabel graphemes, so the
-// feed and the page stay under MaxChatFeedBytes.
+// An oversized artifact title, attachment name and error message (each
+// alone over the cap) are clipped at maxChatLabel graphemes and an artifact
+// with an oversized key is left out (keys stay exact), so the feed and the
+// page stay under MaxChatFeedBytes.
 func TestChatFeed_OversizedLabelsClipped(t *testing.T) {
 	d := openDB(t)
 	s := chatSeed{t, d}
@@ -756,15 +757,23 @@ func TestChatFeed_OversizedLabelsClipped(t *testing.T) {
 	a := s.message(conv, u, "assistant", "a", "error", "turn-1", 2)
 	exec(t, d, `UPDATE chat_messages SET error_code = 'provider_error', error_message = ? WHERE id = ?`, huge, a)
 	exec(t, d, `INSERT INTO chat_artifacts (conversation_id, message_id, artifact_key, version, kind, title, content, created_at)
-		VALUES (?, ?, ?, 1, 'document', ?, 'x', 1)`, conv, a, huge, huge)
+		VALUES (?, ?, ?, 1, 'document', 'Too long a key', 'x', 1),
+		       (?, ?, 'rollout-plan', 1, 'document', ?, 'x', 2)`, conv, a, huge, conv, a, huge)
 	last := s.message(conv, a, "user", "next", "complete", "turn-2", 3)
 
 	feed := decode(t, feedRecord(t, d, conv))
-	art := feed["artifacts"].([]any)[0].(map[string]any)
+	arts := feed["artifacts"].([]any)
+	if len(arts) != 1 {
+		t.Fatalf("%d artifacts: the row with an oversized key is left out", len(arts))
+	}
+	art := arts[0].(map[string]any)
+	if art["key"] != "rollout-plan" {
+		t.Fatalf("key %v: a normal key stays exact", art["key"])
+	}
 	msgs := feed["messages"].([]any)
 	att := msgs[0].(map[string]any)["attachments"].([]any)[0].(map[string]any)
 	for name, v := range map[string]any{
-		"artifact key": art["key"], "artifact title": art["title"], "attachment name": att["name"],
+		"artifact title": art["title"], "attachment name": att["name"],
 		"error message": msgs[1].(map[string]any)["error_message"],
 	} {
 		if n := uniseg.GraphemeClusterCount(v.(string)); n != maxChatLabel {

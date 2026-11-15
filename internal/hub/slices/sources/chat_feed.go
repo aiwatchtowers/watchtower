@@ -759,7 +759,8 @@ func applyLiveText(msgs []chatFeedMessage, turnID, text string, steps []chatstor
 func boolPtr(v bool) *bool { return &v }
 
 // chatFeedArtifactsTx is the latest version of each artifact key of conv,
-// in creation order; keys and titles clipped at maxChatLabel graphemes.
+// in creation order; titles clipped at maxChatLabel graphemes, a key over it
+// left out.
 func chatFeedArtifactsTx(ctx context.Context, tx *sql.Tx, conv int64) ([]chatFeedArtifact, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT a.artifact_key, a.kind, a.title, a.version, a.content FROM chat_artifacts a
 		WHERE a.conversation_id = ? AND a.version = (SELECT MAX(b.version) FROM chat_artifacts b
@@ -777,8 +778,13 @@ func chatFeedArtifactsTx(ctx context.Context, tx *sql.Tx, conv int64) ([]chatFee
 			return nil, fmt.Errorf("reading chat artifacts: %w", err)
 		}
 		// The labels the cap's cuts never shrink are bounded here, so one
-		// oversized value cannot keep the record over MaxChatFeedBytes.
-		a.Key, _ = clipText(a.Key, maxChatLabel)
+		// oversized value cannot keep the record over MaxChatFeedBytes. The
+		// key stays exact (the phone finds an artifact by its fence's key):
+		// a row whose key is over maxChatLabel is left out, and the phone
+		// shows the fence's draft.
+		if uniseg.GraphemeClusterCount(a.Key) > maxChatLabel {
+			continue
+		}
 		a.Title, _ = clipText(a.Title, maxChatLabel)
 		a.Content = &content
 		out = append(out, a)
