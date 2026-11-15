@@ -3,7 +3,7 @@
 **Project:** `watchtower` (Go module: `watchtower`)
 **Backend:** Go 1.26, SQLite via an in-repo SQLCipher build of `mattn/go-sqlite3` (`internal/sqlcipher`, cgo; `database/sql`), see `go.mod` and `internal/sqlcipher/VERSION`
 **Desktop:** SwiftUI macOS app (Swift 5.10 language mode, macOS 14+; building requires a Swift 6+ toolchain / Xcode 16+ — the FluidAudio dependency's manifest declares swift-tools 6.0), GRDB.swift through our SQLCipher fork (`aiwatchtowers/GRDB.swift`, pinned exactly; the Kit and the phone use the same pin), see `WatchtowerDesktop/Package.swift`
-**Mobile (POC):** shared Swift package `WatchtowerKit/` (`WatchtowerSync` + `WatchtowerKit`, macOS 14 / iOS 17) and the iPhone app `WatchtowerMobile/` (SwiftUI, iOS 17+, xcodegen `project.yml` with the generated `.xcodeproj` committed), see `docs/features/mobile-companion.md`; the chat text helpers both apps share (artifact parser, Markdown runs, quote reply) live in the dependency-free package `WatchtowerChatText/` (`make chattext-test`)
+**Mobile (POC):** shared Swift package `WatchtowerKit/` (`WatchtowerSync` + `WatchtowerKit`, macOS 14 / iOS 17) and the iPhone app `WatchtowerMobile/` (SwiftUI, iOS 17+, xcodegen `project.yml` with the generated `.xcodeproj` committed), see `docs/features/mobile-companion.md`; the chat text helpers both apps share (artifact parser, Markdown runs, quote reply) live in the Kit-free package `WatchtowerChatText/` (swift-markdown only) (`make chattext-test`)
 
 ---
 
