@@ -107,7 +107,7 @@ final class SessionInputWiringTests: XCTestCase {
 
         XCTAssertEqual(model(live, replica, typing: false, requested: false).typingHint, .turnOn)
         XCTAssertEqual(model(live, replica, typing: true, requested: false).typingHint, .turnOn, "the phone's own toggle is off")
-        XCTAssertEqual(model(live, replica, typing: false, requested: true).typingHint, .waitingForMac)
+        XCTAssertEqual(model(live, replica, typing: false, requested: true).typingHint, .waitingForMac(.mac))
         XCTAssertNil(model(live, replica).typingHint)
         let stopped = try session(["live": false, "state_kind": "stopped", "is_ring": true])
         XCTAssertNil(model(stopped, replica, typing: false, requested: false).typingHint)
@@ -115,8 +115,8 @@ final class SessionInputWiringTests: XCTestCase {
 
     /// The toggle's caption in Settings: the Mac's answer.
     func testTheToggleStatusFollowsTheMacsAnswer() {
-        XCTAssertEqual(SettingsView.typingCaption(grant: grant(typing: false)), "Waiting for your Mac to confirm")
-        XCTAssertEqual(SettingsView.typingCaption(grant: nil), "Waiting for your Mac to confirm")
+        XCTAssertEqual(SettingsView.typingCaption(grant: grant(typing: false)), "Waiting for your tower to confirm")
+        XCTAssertEqual(SettingsView.typingCaption(grant: nil), "Waiting for your tower to confirm")
         XCTAssertEqual(SettingsView.typingCaption(grant: grant(typing: true)), "Allowed")
     }
 
@@ -128,7 +128,7 @@ final class SessionInputWiringTests: XCTestCase {
         let input = model(try session(["state_kind": "needs_approval", "state_tone": "orange"]), try snapshot())
 
         XCTAssertTrue(input.showsBar)
-        XCTAssertEqual(input.approvalText, "Needs approval on the Mac")
+        XCTAssertEqual(input.approvalText, "Needs approval on the tower")
         XCTAssertFalse(input.canSend)
     }
 
@@ -165,11 +165,11 @@ final class SessionInputWiringTests: XCTestCase {
 
         try await echo(fixture, .held, reason: .needsApproval)
         input = model(try session(), try snapshot(fixture.store))
-        XCTAssertEqual(input.lines.map(\.state), [.held("Held — Needs approval on the Mac")])
+        XCTAssertEqual(input.lines.map(\.state), [.held("Held — Needs approval on the tower")])
 
         try await echo(fixture, .held, reason: .promptHasText)
         input = model(try session(), try snapshot(fixture.store))
-        XCTAssertEqual(input.lines.map(\.state), [.held("Held — text is typed in the session on the Mac")])
+        XCTAssertEqual(input.lines.map(\.state), [.held("Held — text is typed in the session on the tower")])
     }
 
     func testCancelSendsSessionInputCancelForTheOriginal() async throws {
@@ -196,7 +196,7 @@ final class SessionInputWiringTests: XCTestCase {
 
         let input = model(try session(), try snapshot(fixture.store), delivered: fixture.inputs.delivered[11])
         XCTAssertTrue(input.lines.isEmpty)
-        XCTAssertEqual(input.notice, "Typed into the session — press Return on the Mac")
+        XCTAssertEqual(input.notice, "Typed into the session — press Return on the tower")
     }
 
     func testARefusedLineShowsTheMacsMessage() async throws {

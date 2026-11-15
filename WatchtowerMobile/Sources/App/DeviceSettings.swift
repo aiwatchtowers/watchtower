@@ -339,7 +339,7 @@ final class DeviceSettings {
             return nil
         } catch {
             Self.logger.error("device record write failed: \(error.localizedDescription, privacy: .public)")
-            return "Couldn't update your Mac: \(error.localizedDescription)"
+            return "Couldn't update your tower: \(error.localizedDescription)"
         }
     }
 }

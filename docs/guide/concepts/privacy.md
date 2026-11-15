@@ -93,7 +93,7 @@ Records are sealed with keys held only by your Mac and your paired phones, so iC
 
 **Diagnostics** in **Settings → Mobile** shows how long the Mac took to apply phone actions. Those timings hold no content, are kept for 7 days on the Mac and never leave it.
 
-A phone pairs only after you confirm it on the Mac with a four-digit code. An iPhone on another Apple ID joins through shares your Mac creates. **Unlink** or **Forget** on the phone (Settings → Macs) deletes that Mac's data from the phone. Removing the phone on the Mac freezes it there: what it already synced stays readable until you tap **Forget**. Turning off **Mobile sync** deletes the records your Mac published and unlinks every phone; after you turn it back on, link each phone again. If the delete fails, **Settings → Mobile** says so and the Mac tries again while sync stays off. To unlink one phone only, remove it.
+A phone pairs only after you confirm it on the Mac with a four-digit code. An iPhone on another Apple ID joins through shares your Mac creates. **Unlink** or **Forget** on the phone (Settings → Towers) deletes its data from the phone. Removing the phone on the Mac freezes it there: what it already synced stays readable until you tap **Forget**. Turning off **Mobile sync** deletes the records your Mac published and unlinks every phone; after you turn it back on, link each phone again. If the delete fails, **Settings → Mobile** says so and the Mac tries again while sync stays off. To unlink one phone only, remove it.
 
 ## How much an assistant can read in one session
 <!-- learn

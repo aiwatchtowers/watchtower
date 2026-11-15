@@ -148,11 +148,11 @@ enum DesignSystemGallery {
             MacStatusChip(model: MacStatusChipModel(macName: "MacBook Pro", state: .asleep(lastSeen: now - 720), now: now))
             VStack(spacing: Spacing.medium) {
                 ChatBubble(role: .agent, text: "All 42 tests pass. Next I'll update the Desktop card so the link opens in the browser.")
-                ChatBubble(role: .owner, text: "Ship it when the card is done.", caption: "Waiting for your Mac", isPending: true)
+                ChatBubble(role: .owner, text: "Ship it when the card is done.", caption: "Waiting for your tower", isPending: true)
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            WorkchatComposerBar(text: .constant("Also bump the version"), mode: .message, note: "New lines go when your Mac wakes.") {}
+            WorkchatComposerBar(text: .constant("Also bump the version"), mode: .message, note: "New lines go when your tower wakes.") {}
         }
     }
 
@@ -205,12 +205,12 @@ enum DesignSystemGallery {
     /// Mockup 16: grouped settings with small switches and a footer.
     static var settingsPage: some View {
         Page(title: "Settings") {
-            SettingsCard(title: "This Mac") {
+            SettingsCard(title: "This tower") {
                 SettingsRow(title: "MacBook Pro") { Text("Online") }
                 CardRowDivider()
                 SettingsRow(title: "Last sync") { Text("just now") }
                 CardRowDivider()
-                SettingsRow(title: "Macs") { Text("2 ›") }
+                SettingsRow(title: "Towers") { Text("2 ›") }
             }
             SettingsCard(title: "Workbench") {
                 SettingsRow(title: "Type into sessions") { Toggle("", isOn: .constant(true)).toggleStyle(SmallSwitchStyle()) }
@@ -221,7 +221,7 @@ enum DesignSystemGallery {
             }
             SettingsCard(
                 title: "Notifications",
-                footer: "Asks, approvals and finished or failed sessions, only while you’re away from your Mac."
+                footer: "Asks, approvals and finished or failed sessions, only while you’re away from your tower."
             ) {
                 SettingsRow(title: "When work stops") { Toggle("", isOn: .constant(true)).toggleStyle(SmallSwitchStyle()) }
             }
@@ -250,7 +250,7 @@ enum DesignSystemGallery {
                 SessionDot(tone: .secondary, isRing: true)
             }
             SectionHeader("Steps")
-            StepRow(state: .done, text: "Lock the Mac and wait for the ask push")
+            StepRow(state: .done, text: "Lock the tower and wait for the ask push")
             StepRow(state: .failed, text: "Answer it from the lock screen")
             Text("Target detail: one prominent action").font(TypeScale.meta).foregroundStyle(.secondary)
         }

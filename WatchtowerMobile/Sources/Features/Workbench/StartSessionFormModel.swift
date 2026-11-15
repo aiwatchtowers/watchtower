@@ -121,6 +121,8 @@ struct StartSessionFormModel {
     /// Why starting is off: the phone's own toggle, then the Mac's grant,
     /// then a missing target (or task); nil when it is on.
     let startCaption: String?
+    /// "Bring the window forward on the Mac" for a Mac tower; nil for a server, which has no window (#1783).
+    let bringForwardTitle: String?
 
     /// What the start is on; nil while neither a target nor "No target" is
     /// picked.
@@ -168,10 +170,11 @@ struct StartSessionFormModel {
         let hasTask = untargetedTask.map { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? false
         let ready = isUntargeted ? hasTask : target.map { !$0.archived } == true
         canStart = ready && startsTurnedOn && grant.startSessionsAllowed && !sending
+        bringForwardTitle = TowerHost(snapshot.heartbeat).bringForwardTitle
         startCaption = if !startsTurnedOn {
             SessionStartText.turnedOff
         } else if !grant.startSessionsAllowed {
-            SessionStartText.notAllowed
+            SessionStartText.notAllowed(TowerHost(snapshot.heartbeat))
         } else if isUntargeted, !hasTask {
             SessionStartText.describeTask
         } else if !isUntargeted, target == nil {

@@ -154,7 +154,7 @@ final class MultiHubEnvironmentTests: XCTestCase {
         let target = try XCTUnwrap(try demoSnapshot(now: Date()).targets.first { $0.id == 415 })
         try await hubB.boardWriter.setStatus(.done, on: target)
         let queued = await hubB.hasPendingWork
-        XCTAssertTrue(queued, "the status change waits for the Mac")
+        XCTAssertTrue(queued, "the status change waits for the tower")
         env.activate(TestHub.hubA)
 
         try await poll({ self.sleeps[TestHub.hubB]?.count == 2 }, "hub-b's poll did not restart")

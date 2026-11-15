@@ -180,7 +180,7 @@ struct RecapModel {
     let emptyTranscriptText: String?
     let jumpPoints: [JumpPoint]
 
-    static let clippedText = "Transcript shortened — the full text is on the Mac"
+    static let clippedText = "Transcript shortened — the full text is on the tower"
     private static let speakerTones: [PhoneTone] = [.blue, .purple, .green, .secondary]
 
     init(transcript: MeetingTranscript, body: TranscriptBody, marks: [Int], calendar: Calendar, now: Date) {
@@ -203,7 +203,7 @@ struct RecapModel {
             Self.section("Open questions", transcript.openQuestions, more: transcript.openQuestionsMore)
         ].compactMap { $0 }
         recapEmptyText = summary == nil && sections.isEmpty
-            ? "No recap yet — your Mac writes it after the transcript"
+            ? "No recap yet — your tower writes it after the transcript"
             : nil
 
         let segments: [TranscriptSegment]
@@ -263,7 +263,7 @@ struct RecapModel {
     private static func section(_ title: String, _ items: [String], more: Int?) -> RecapSection? {
         let dropped = more ?? 0
         guard !items.isEmpty || dropped > 0 else { return nil }
-        return RecapSection(title: title, items: items, moreText: dropped > 0 ? "\(dropped) more on your Mac" : nil)
+        return RecapSection(title: title, items: items, moreText: dropped > 0 ? "\(dropped) more on your tower" : nil)
     }
 
     /// Every visible string, for the tests.

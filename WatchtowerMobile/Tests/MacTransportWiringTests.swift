@@ -165,7 +165,7 @@ final class MacTransportWiringTests: XCTestCase {
 
         XCTAssertEqual(try bed.row()?.link.relayUpgrade?.refusal, .vouch(.slotsFull))
         let row = try model(bed, session, phase: center.phase).rows.first
-        XCTAssertEqual(row?.line, "Your subscription already has 3 Macs.")
+        XCTAssertEqual(row?.line, "Your subscription already has 3 towers.")
         XCTAssertEqual(row?.action, .manageMacs)
     }
 
@@ -214,7 +214,7 @@ final class MacTransportWiringTests: XCTestCase {
         try await bed.writeRejection(RelayUpgrade.notSupported, on: .cloudKit)
         try await bed.fetch(session)
         await session.relayUpgrader?.idle()
-        let line = "Work Mac can't switch to Relay. Update Watchtower on the Mac."
+        let line = "Work Mac can't switch to Relay. Update Watchtower on it."
         XCTAssertEqual(try model(bed, session).rows.first?.line, line)
 
         try await bed.relaunch(self)
@@ -255,7 +255,7 @@ final class MacTransportWiringTests: XCTestCase {
 
         await bed.root.linking.unlink(hubID)
 
-        XCTAssertNil(try bed.row(), "the Mac goes while its switch waits")
+        XCTAssertNil(try bed.row(), "the tower goes while its switch waits")
     }
 
     func testManageMacsOpensTheSlotsScreen() async throws {

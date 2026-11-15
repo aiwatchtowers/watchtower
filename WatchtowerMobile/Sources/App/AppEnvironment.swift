@@ -490,7 +490,7 @@ final class AppEnvironment {
     /// no name yet reads "another Mac".
     var captureHubName: String? {
         guard let capturing = capturingSession, capturing.hubID != activeHubID else { return nil }
-        return capturing.hubName ?? "another Mac"
+        return capturing.hubName ?? "another tower"
     }
 
     /// Pull to refresh: the session on screen; with none (the last hub just

@@ -98,7 +98,7 @@ final class BoardModelTests: XCTestCase {
         store.forget(hubID: "hub-a")
         XCTAssertEqual(store.folds(hubID: "hub-a", workbenchID: 1), BoardFolds())
         XCTAssertNil(defaults.data(forKey: BoardFoldStore.key(hubID: "hub-a")))
-        XCTAssertTrue(store.folds(hubID: "hub-b", workbenchID: 1).isGroupOpen(400), "another Mac keeps its folds")
+        XCTAssertTrue(store.folds(hubID: "hub-b", workbenchID: 1).isGroupOpen(400), "another tower keeps its folds")
     }
 
     /// A damaged entry reads as no flips rather than failing the board.

@@ -1637,7 +1637,7 @@ final class RelayAccountCenterTests: XCTestCase {
         await center.refresh()
 
         XCTAssertEqual(center.phase, .paying(grace: false, macs: []))
-        XCTAssertEqual(macs.relay.lapses, 1, "nothing more asked of the Macs")
+        XCTAssertEqual(macs.relay.lapses, 1, "nothing more asked of the towers")
         XCTAssertNil(center.switchReason)
     }
 

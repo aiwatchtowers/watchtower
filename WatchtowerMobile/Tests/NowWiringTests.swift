@@ -115,7 +115,7 @@ final class NowWiringTests: XCTestCase {
         XCTAssertEqual(try answer(queued, stopped: true), .waitingToSend, "behind a stopped flush: nothing to retry")
         XCTAssertEqual(NowAnswer.waitingToSend.statusText, "Answer waiting to send")
         XCTAssertEqual(try answer(queued), .sending("Sending answer…"))
-        XCTAssertEqual(try answer(queued, online: false), .sending("Answer waits for your Mac"))
+        XCTAssertEqual(try answer(queued, online: false), .sending("Answer waits for your tower"))
         XCTAssertEqual(try answer([], writing: true), .sending("Sending answer…"), "written to the outbox right now")
     }
 
@@ -187,7 +187,7 @@ final class NowWiringTests: XCTestCase {
 
         let relaunched = NowEndedSeenStore(defaults: defaults)
         XCTAssertEqual(relaunched.seen(hubID: "hub-a"), [key], "read back from UserDefaults")
-        XCTAssertTrue(relaunched.seen(hubID: "hub-b").isEmpty, "each Mac keeps its own")
+        XCTAssertTrue(relaunched.seen(hubID: "hub-b").isEmpty, "each tower keeps its own")
     }
 
     @MainActor
@@ -305,7 +305,7 @@ final class NowWiringTests: XCTestCase {
         XCTAssertEqual(working.first?.time, "3:14")
 
         let asleep = model(snapshot, at: now.addingTimeInterval(2_160)).working
-        XCTAssertEqual(asleep.first?.time, "as of 36 min ago", "the Mac away stops the count")
+        XCTAssertEqual(asleep.first?.time, "as of 36 min ago", "the tower away stops the count")
     }
 
     func testMacReachabilityFollowsTheHeartbeat() {
@@ -318,8 +318,8 @@ final class NowWiringTests: XCTestCase {
 
     func testTheMacChipFollowsTheHeartbeat() throws {
         var snapshot = try demoSnapshot(now: now)
-        XCTAssertEqual(model(snapshot).chip.text, "Mac · offline")
-        XCTAssertEqual(model(snapshot, linked: false).chip.text, "No Mac linked")
+        XCTAssertEqual(model(snapshot).chip.text, "Tower · offline")
+        XCTAssertEqual(model(snapshot, linked: false).chip.text, "No tower linked")
         snapshot.heartbeat = heartbeat(now)
         XCTAssertEqual(model(snapshot, at: now.addingTimeInterval(12)).chip.text, "Acme Mac · online")
         XCTAssertEqual(model(snapshot, at: now.addingTimeInterval(12)).chip.tone, .green)
@@ -383,7 +383,7 @@ final class NowWiringTests: XCTestCase {
 
     // MARK: - The parked feed (relay client Phase 5 Task 16, S58)
 
-    private static let parkedTail = "If this lasts, open Watchtower on the Mac."
+    private static let parkedTail = "If this lasts, open Watchtower on the tower."
 
     /// A replica whose outbox holds `sent` written, unanswered actions, the feed parked when `parked`.
     private func replica(sent: Int, parked: Bool = true) async throws -> ReplicaStore {
@@ -415,7 +415,7 @@ final class NowWiringTests: XCTestCase {
         XCTAssertEqual(parked.title, "Waiting for new keys from Work Mac")
         XCTAssertEqual(
             parked.detail,
-            "2 actions have no answer yet. They finish once it sends them. If this lasts, open Watchtower on the Mac.")
+            "2 actions have no answer yet. They finish once it sends them. If this lasts, open Watchtower on the tower.")
     }
 
     func testOneSentActionReadsSingular() async throws {
@@ -429,7 +429,7 @@ final class NowWiringTests: XCTestCase {
         let parked = try XCTUnwrap(try model(store, macName: "Work Mac").outbox?.parked, "parked with nothing sent still shows")
         XCTAssertEqual(parked.title, "Waiting for new keys from Work Mac")
         XCTAssertEqual(parked.detail, Self.parkedTail)
-        XCTAssertEqual(NowParkedRow(macName: "", sent: 0).title, "Waiting for new keys from your Mac", "no name yet")
+        XCTAssertEqual(NowParkedRow(macName: "", sent: 0).title, "Waiting for new keys from your tower", "no name yet")
     }
 
     func testTwoMacsEachNameTheirOwn() async throws {
@@ -439,7 +439,7 @@ final class NowWiringTests: XCTestCase {
         XCTAssertEqual(try model(work, macName: "Work Mac").outbox?.parked?.title, "Waiting for new keys from Work Mac")
         XCTAssertEqual(try model(home, macName: "Home Mac").outbox?.parked?.title, "Waiting for new keys from Home Mac")
         XCTAssertEqual(try model(home, macName: "Home Mac").outbox?.parked?.detail.hasPrefix("1 action has"), true)
-        XCTAssertNil(try model(idle, macName: "Studio Mac").outbox, "a Mac whose feed reads shows nothing")
+        XCTAssertNil(try model(idle, macName: "Studio Mac").outbox, "a tower whose feed reads shows nothing")
     }
 
     @MainActor

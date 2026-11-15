@@ -8,7 +8,7 @@ You leave your desk while an agent works through a target. On the phone you foll
 
 ## How it works
 
-The phone never gets terminal output. The Mac sends the session's dialog only while the screen is open, plus five minutes, and refreshes it every few seconds while the agent works. You see your lines, the agent's text, subagents and Watchtower's notes, never tool calls; the newest 300 entries, with **N earlier messages — open on the Mac** above them.
+The phone never gets terminal output. The Mac sends the session's dialog only while the screen is open, plus five minutes, and refreshes it every few seconds while the agent works. You see your lines, the agent's text, subagents and Watchtower's notes, never tool calls; the newest 300 entries, with **N earlier messages — open on the tower** above them.
 
 A Claude Code session takes your line while it works and reads it at its next step. A Codex session takes your line when it is idle: while it works, the Mac holds the line and sends it once Codex stops (an older Mac shows no field for Codex: write to it on the Mac). If the Mac refuses a line, the line shows the Mac's reason, for example **The session is not running on the Mac**. Writing needs **Type into sessions from this phone** and the Mac's **Allow…**; see [Let the phone do more](iphone.md#let-the-phone-do-more).
 
@@ -16,16 +16,16 @@ A Claude Code session takes your line while it works and reads it at its next st
 
 ### Now and sessions
 
-**Now** starts with your Mac: **MacBook Pro · online**, or **asleep · last seen 40 min ago** once its heartbeat is over 35 minutes old. Then:
+**Now** starts with your tower: **MacBook Pro · online**, or **asleep · last seen 40 min ago** once its heartbeat is over 35 minutes old. Then:
 
-- **Waiting for you**, newest first across workbenches: asks, permission prompts, failed runs you can **Continue**. A question's suggested answers are chips, one tap each; with many or long answers, **Answer…** opens the ask. Once answered, the row shows **Sending answer…**, **Answer waiting to send**, or **Answer not delivered** with **Retry**. The first 20 show; the rest are **N more on your Mac**.
+- **Waiting for you**, newest first across workbenches: asks, permission prompts, failed runs you can **Continue**. A question's suggested answers are chips, one tap each; with many or long answers, **Answer…** opens the ask. Once answered, the row shows **Sending answer…**, **Answer waiting to send**, or **Answer not delivered** with **Retry**. The first 20 show; the rest are **N more on your tower**.
 - **Working**: sessions whose agent is working, each with its timer (**as of 40 min ago** while the Mac is asleep).
 - **Ended**: sessions that stopped, finished or failed in the last 24 hours. A session with an open ask shows only as that ask. **Clear** hides them all on this phone; touch and hold a row for **Seen** to hide one.
 - **Next meeting**, with **Record** from 10 minutes before it starts to 10 minutes after.
 
 The **Now** tab's badge counts what waits for you on the Mac on screen; the app icon's, on all your Macs.
 
-A workbench opens on its sessions: **Waiting for you** (an ask, a permission prompt, a check, a failed session to continue), **Working**, **Ended** (stopped, finished or failed in the last 24 hours), then **N older** folded. **N closed** at the end holds answered asks. The board's counts show on **Board**; a group there counts its sub-targets as **0/2 · 1 archived**: done of those on the board, then those in the archive, and **N more on the Mac** for any the phone does not hold.
+A workbench opens on its sessions: **Waiting for you** (an ask, a permission prompt, a check, a failed session to continue), **Working**, **Ended** (stopped, finished or failed in the last 24 hours), then **N older** folded. **N closed** at the end holds answered asks. The board's counts show on **Board**; a group there counts its sub-targets as **0/2 · 1 archived**: done of those on the board, then those in the archive, and **N more on the tower** for any the phone does not hold.
 
 ### Follow a session
 <!-- learn
@@ -66,7 +66,7 @@ Type into **Message the session…** and send. Your line shows under it:
 - **Queued · the agent reads it at its next step**: a Claude Code session took it while working.
 - **Sent**: the agent was idle and got it at once.
 - **Queued · sends when the agent stops**: the Mac holds it until the session can take it, with **Cancel**.
-- **Typed into the session — press Return on the Mac**: text was already typed in the session on the Mac.
+- **Typed into the session — press Return on the tower**: text was already typed there.
 
 ### Stop, finish or see the report
 
@@ -105,12 +105,12 @@ While a session runs and the phone has been in touch in the last 24 hours, the M
 
 ## When it's empty or wrong
 
-- **Asking your Mac…** then **Your Mac has not sent this chat yet. Is it awake?**: the Mac is asleep or offline; the chat appears once it answers.
+- **Asking your tower…** then **Your tower has not sent this chat yet. Is it awake?**: it is asleep or offline; the chat appears once it answers.
 - **Unlock this iPhone to see the chat.**: the chat is sealed until the phone is unlocked.
-- **Your Mac is asleep · last seen 40 min ago. New lines go when it wakes.** above the chat, **Waiting for your Mac** under the field and your line, and a state line that reads **as of 40 min ago**: the Mac has not checked in for over 35 minutes. The line goes when it is back.
-- **Answer the request above** or **Needs approval on the Mac** instead of the field: the agent waits on a permission prompt, and nothing else goes to it until that is answered.
-- No field at all: typing is off for this phone; the bar says why, with **Turn On**. On a Codex session with a Mac that has not been updated, the bar says **Write to Codex sessions on the Mac.**
-- **Confirm on the Mac** beside an automation: it changed since you last confirmed it; confirm it in the Mac's Automations tab. **Off** means it is turned off there. **Not allowed**: the Mac has not allowed this phone to start sessions. If the Mac refuses a run, the row shows why in red; **Dismiss** clears it.
+- **<tower> is asleep · last seen 40 min ago. New lines go when it wakes.** above the chat, **Waiting for your tower** under the field and your line, and a state line that reads **as of 40 min ago**: no check-in for over 35 minutes. The line goes when it is back.
+- **Answer the request above** or **Needs approval on the tower** instead of the field: the agent waits on a permission prompt, and nothing else goes to it until that is answered.
+- No field at all: typing is off for this phone; the bar says why, with **Turn On**. On a Codex session with a Mac that has not been updated, the bar says **Write to Codex sessions on the tower.**
+- **Confirm on the tower** beside an automation: it changed since you last confirmed it; confirm it in its Automations tab. **Off** means it is turned off there. **Not allowed**: the Mac has not allowed this phone to start sessions. If the Mac refuses a run, the row shows why in red; **Dismiss** clears it.
 
 Phone not syncing? See [The iPhone is not syncing](../troubleshooting/iphone-not-syncing.md).
 

@@ -155,7 +155,7 @@ final class ReplicaWiringTests: XCTestCase {
 
         try await poll({
             env.sessions.values.allSatisfy { !$0.workbenchReplica.snapshot.workbenches.isEmpty }
-        }, "both Macs hydrated")
+        }, "both towers hydrated")
         XCTAssertEqual(env.workbenchReplica.snapshot.workbenches.map(\.name).sorted(), ["Acme", "Acme Website", "Notes"])
         let home = try XCTUnwrap(env.session(DemoSeed.secondary.hubID))
         XCTAssertEqual(home.workbenchReplica.snapshot.workbenches.map(\.name), ["Home Lab"])

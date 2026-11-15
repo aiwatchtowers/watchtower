@@ -60,7 +60,7 @@ struct WorkchatView: View {
             if let session, let model {
                 content(session, model)
             } else {
-                ContentUnavailableView("Session not found", systemImage: "terminal", description: Text("It was removed on your Mac."))
+                ContentUnavailableView("Session not found", systemImage: "terminal", description: Text("It was removed on your tower."))
             }
         }
         .background(Color(.systemBackground))

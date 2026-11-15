@@ -104,7 +104,7 @@ enum HubSessionError: LocalizedError, Equatable {
 
     var errorDescription: String? {
         switch self {
-        case .keysOfAnotherHub: "This Mac's keys do not belong to it. Scan its code again."
+        case .keysOfAnotherHub: "This tower's keys do not belong to it. Scan its code again."
         }
     }
 }

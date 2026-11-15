@@ -17,7 +17,7 @@ struct ConflictPrompt: View {
                     .accessibilityLabel("Yes, apply anyway")
                 Button("No", role: .cancel, action: onNo)
                     .buttonStyle(SecondaryActionStyle())
-                    .accessibilityLabel("No, keep the Mac's value")
+                    .accessibilityLabel("No, keep the tower's value")
             }
         }
         .padding(.vertical, Spacing.small)

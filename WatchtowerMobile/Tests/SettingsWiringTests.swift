@@ -68,7 +68,7 @@ final class SettingsWiringTests: XCTestCase {
     func testNoHeartbeatShowsNotConnectedYet() {
         let status = MacStatus(heartbeat: nil, now: Date())
         XCTAssertEqual(status, .notConnected)
-        XCTAssertEqual(status.title, "Your Mac has not connected yet")
+        XCTAssertEqual(status.title, "Your tower has not connected yet")
     }
 
     /// Bug 10 (design pass spec §3): the Mac's name on the left, its state
@@ -85,9 +85,9 @@ final class SettingsWiringTests: XCTestCase {
         XCTAssertEqual([offline.label, offline.value], ["Acme Mac", "Offline · seen 3 min. ago"])
         XCTAssertEqual(offline.tone, .secondary)
         let never = MacStatusRow(status: .notConnected, now: now, locale: english)
-        XCTAssertEqual([never.label, never.value], ["Mac", "Not connected"])
+        XCTAssertEqual([never.label, never.value], ["Tower", "Not connected"])
         XCTAssertEqual(never.tone, .secondary)
-        XCTAssertEqual(MacStatusRow(status: .online(macName: ""), now: now).label, "Mac", "an empty name reads Mac")
+        XCTAssertEqual(MacStatusRow(status: .online(macName: ""), now: now).label, "Tower", "an empty name reads Tower")
         XCTAssertEqual(online.toneUse.role, .mac)
     }
 
@@ -244,10 +244,10 @@ final class SettingsWiringTests: XCTestCase {
         XCTAssertEqual(WorkAlertsCopy.title, "When work stops")
         XCTAssertEqual(
             WorkAlertsCopy.footer(anyShared: false),
-            "Asks, approvals and finished or failed sessions, only while you're away from your Mac.")
+            "Asks, approvals and finished or failed sessions, only while you're away from your tower.")
         XCTAssertEqual(
             WorkAlertsCopy.footer(anyShared: true),
-            "Asks, approvals and finished or failed sessions, only while you're away from your Mac. "
+            "Asks, approvals and finished or failed sessions, only while you're away from your tower. "
                 + "Alerts may be late on this phone.")
     }
 
@@ -385,7 +385,7 @@ final class SettingsWiringTests: XCTestCase {
             typingAllowed: false, startSessionsAllowed: true, permissionsAllowed: true
         )
         XCTAssertEqual(SettingsView.permissionsCaption(grant: allowed), "Allowed")
-        XCTAssertEqual(SettingsView.permissionsCaption(grant: nil), "Waiting for your Mac to confirm")
+        XCTAssertEqual(SettingsView.permissionsCaption(grant: nil), "Waiting for your tower to confirm")
     }
 
     /// #1790: while permission answers are off (the default stays off) the
@@ -393,19 +393,19 @@ final class SettingsWiringTests: XCTestCase {
     /// replaces the hint.
     func testTheWorkbenchFooterExplainsPermissionAnswersOff() {
         XCTAssertEqual(
-            SettingsView.workbenchFooter(typing: false, start: false, permissions: false, grant: nil),
-            "Permission prompts stay on the Mac: a session that needs your approval waits until you answer there."
+            SettingsView.workbenchFooter(typing: false, start: false, permissions: false, grant: nil, host: .mac),
+            "Permission prompts stay on the tower: a session that needs your approval waits until you answer there."
         )
         let allowed = DeviceGrant(
             deviceID: "d", hubID: "hub", name: "Phone", scope: .private, linked: true,
             typingAllowed: true, startSessionsAllowed: true, permissionsAllowed: true
         )
         XCTAssertEqual(
-            SettingsView.workbenchFooter(typing: true, start: true, permissions: false, grant: allowed),
+            SettingsView.workbenchFooter(typing: true, start: true, permissions: false, grant: allowed, host: .mac),
             "Typing: Allowed\nStarting sessions: Allowed\n" + SettingsView.permissionsOffHint
         )
         XCTAssertEqual(
-            SettingsView.workbenchFooter(typing: true, start: false, permissions: true, grant: allowed),
+            SettingsView.workbenchFooter(typing: true, start: false, permissions: true, grant: allowed, host: .mac),
             "Typing: Allowed\nPermission prompts: Allowed"
         )
     }
@@ -434,7 +434,7 @@ final class SettingsWiringTests: XCTestCase {
 
         let written = try await deviceWrites(transport)
         XCTAssertEqual(written.first?.permissionsRequested, true)
-        XCTAssertEqual(try card(nil).hint, .waitingForMac)
+        XCTAssertEqual(try card(nil).hint, .waitingForMac(.mac))
         let allowed = DeviceGrant(
             deviceID: device.deviceID, hubID: "hub", name: device.name, scope: .private, linked: true,
             typingAllowed: false, startSessionsAllowed: true, permissionsAllowed: true
@@ -735,7 +735,7 @@ final class SettingsWiringTests: XCTestCase {
         _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
 
         model.refreshFormatNotice()
-        XCTAssertEqual(model.formatNotice, "Update Watchtower on this iPhone: your Mac uses a newer format.")
+        XCTAssertEqual(model.formatNotice, "Update Watchtower on this iPhone: your tower uses a newer format.")
         XCTAssertEqual(store.newerFormatCount(), 1)
     }
 
@@ -857,7 +857,7 @@ final class SettingsWiringTests: XCTestCase {
         XCTAssertEqual(try macsRegistry.rows().map(\.hubID), [TestHub.lab, TestHub.acme, TestHub.home])
         XCTAssertEqual(root.env.order, [TestHub.lab, TestHub.acme, TestHub.home])
         XCTAssertEqual(root.linking.links.map(\.hubID), [TestHub.lab, TestHub.acme, TestHub.home])
-        XCTAssertEqual(root.env.activeHubID, TestHub.acme, "the Mac on screen stays")
+        XCTAssertEqual(root.env.activeHubID, TestHub.acme, "the tower on screen stays")
     }
 
     func testUnlinkingAnInactiveMacRemovesOnlyIt() async throws {

@@ -32,7 +32,7 @@ enum TransportRequestRefusal: String, Codable, Sendable {
         case .unavailable:
             "\(macName) couldn't switch right now. Try again in a minute."
         case .notSupported:
-            "\(macName) can't switch from here. Update Watchtower on the Mac."
+            "\(macName) can't switch from here. Update Watchtower on it."
         case .notOrdered:
             "Update Watchtower on \(macName) to change how it connects."
         case .macNoAnswer:

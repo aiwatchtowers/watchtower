@@ -43,7 +43,7 @@ struct RecordingsListView: View {
                 }
             }
         } message: { _ in
-            Text("Its audio is removed from this iPhone. It was not received by a Mac.")
+            Text("Its audio is removed from this iPhone. It was not received by a tower.")
         }
         .alert("Couldn't delete", isPresented: Binding(get: { deleteError != nil }, set: { if !$0 { deleteError = nil } })) {
             Button("OK", role: .cancel) {}
@@ -220,7 +220,7 @@ private struct UnreadableRecordingsView: View {
                         }
                     }
                     .card(padding: EdgeInsets())
-                    Text("Their details couldn't be read while this iPhone was setting a Mac's data aside, so they are not sent to any Mac.")
+                    Text("Their details couldn't be read while this iPhone was setting a tower's data aside, so they are not sent to any tower.")
                         .font(TypeScale.meta)
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, Spacing.small)

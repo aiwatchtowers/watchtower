@@ -21,7 +21,7 @@ struct RelayBannerModel: Equatable {
         case banner, now, macs
     }
 
-    static let forgetThisMac = "Forget This Mac"
+    static let forgetThisMac = "Forget This Tower"
 
     static let unavailableAfter: TimeInterval = 60
     static let offerAfter: TimeInterval = 600
@@ -226,7 +226,7 @@ struct RelayBannerModel: Equatable {
         return "The link to \(mac) will end the next time this iPhone can confirm Relay still refuses it. \(goes)"
     }
 
-    private static let seeMacs = "See Settings → Macs."
+    private static let seeMacs = "See Settings → Towers."
     private static let openRelayCard = "Open the Relay card on this screen."
 
     /// "December 14": the term's day, in the phone's calendar.
@@ -291,8 +291,8 @@ struct RelayBannerModel: Equatable {
     private static func macOnRelay(_ macName: String, canSubscribe: Bool) -> String {
         let lead = "\(macName) runs over Relay. This iPhone doesn't get updates from it."
         return canSubscribe
-            ? "\(lead) Subscribe or switch the Mac to iCloud from a subscribed phone."
-            : "\(lead) Switch the Mac to iCloud from a subscribed phone."
+            ? "\(lead) Subscribe or switch the tower to iCloud from a subscribed phone."
+            : "\(lead) Switch the tower to iCloud from a subscribed phone."
     }
 
     /// S31, S32, S36, S50. The offer needs a hub with iCloud to go to; a lapse's kept copy (`awaitsAnswer` after its day)

@@ -63,11 +63,11 @@ enum HubListModel {
     static let forgetAfterDays = 7
 
     /// The problem line of a hub whose session could not be built.
-    static let unopenedProblem = "Couldn't open this Mac's data on this iPhone"
+    static let unopenedProblem = "Couldn't open this tower's data on this iPhone"
     /// The name and problem line of a registry row that cannot be read (a
     /// newer build's link, a damaged value): its Mac's name is in it.
-    static let unreadableName = "Unknown Mac"
-    static let unreadableProblem = "Couldn't read this Mac's link on this iPhone"
+    static let unreadableName = "Unknown tower"
+    static let unreadableProblem = "Couldn't read this tower's link on this iPhone"
 
     /// The items in registry order. A hub's last heartbeat is the newer of
     /// its session's (fresh after every fetch) and its row's (kept across

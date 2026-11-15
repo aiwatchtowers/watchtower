@@ -26,7 +26,7 @@ enum NowAnswer: Equatable {
     static let chipLabelLimit = 32
     static let answerFormTitle = "Answer…"
     static let sendingText = "Sending answer…"
-    static let waitingForMacText = "Answer waits for your Mac"
+    static let waitingForMacText = "Answer waits for your tower"
     static let waitingToSendText = "Answer waiting to send"
     static let notDeliveredText = "Answer not delivered"
     static let retryTitle = "Retry"

@@ -26,7 +26,7 @@ extension LinkingViewModelTests {
         XCTAssertEqual(
             LinkNotice.relayEnded(macName: "Work Mac", notSent: 2).message,
             "The link to Work Mac ended after 21 days without Relay. Link it again to see its data. "
-                + "Not sent: 2 items were still waiting for your Mac")
+                + "Not sent: 2 items were still waiting for your tower")
         XCTAssertEqual(LinkNotice.relayEnded(macName: "Work Mac", notSent: 0).dismissTitle, "OK")
 
         let model = try await linkedModel(code())

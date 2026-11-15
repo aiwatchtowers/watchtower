@@ -14,14 +14,14 @@ struct LinkStepsModel: Equatable {
     }
 
     static let hintDelay: TimeInterval = 20
-    static let hintText = "Keep Settings → Mobile open on the Mac."
+    static let hintText = "Keep the code open on your tower."
 
-    static let macSeesPhoneText = "Your Mac sees this iPhone"
+    static let macSeesPhoneText = "Your tower sees this iPhone"
 
     /// "Check that your Mac shows **7342**, then click Link on the Mac.",
     /// the code in bold (Markdown).
     static func codeInstruction(_ code: String) -> String {
-        "Check that your Mac shows **\(code)**, then click Link on the Mac."
+        "Check that your tower shows **\(code)**, then confirm it there."
     }
 
     let steps: [Step]
@@ -43,14 +43,14 @@ struct LinkStepsModel: Equatable {
         guard let macName else {
             steps = [
                 Step(state: .current, text: "Code read"),
-                Step(state: .todo, text: "Waiting for your Mac to confirm"),
+                Step(state: .todo, text: "Waiting for your tower to confirm"),
                 Step(state: .todo, text: "Linked")
             ]
             hint = nil
             codeInstruction = nil
             return
         }
-        let name = macName.isEmpty ? "your Mac" : macName
+        let name = TowerText.name(macName)
         steps = [
             Step(state: .done, text: "Code read"),
             Step(state: .current, text: macSeesPhone ? Self.macSeesPhoneText : "Waiting for \(name) to confirm"),

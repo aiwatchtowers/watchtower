@@ -146,7 +146,7 @@ struct BoardTargetDetailModel {
         guard listed + archived + more > 0 else { return nil }
         var parts = ["\(done)/\(listed)"]
         if archived > 0 { parts.append("\(archived) archived") }
-        if more > 0 { parts.append("\(more) more on the Mac") }
+        if more > 0 { parts.append("\(more) more on the tower") }
         return parts.joined(separator: " · ")
     }
 

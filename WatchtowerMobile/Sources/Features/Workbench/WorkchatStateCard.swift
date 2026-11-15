@@ -34,7 +34,7 @@ struct WorkchatStateCard: Equatable {
             switch self {
             case .report: "Opens the session's report and timeline"
             case .continueSession: "Sends “\(WorkchatStateCard.continueLine)” to the session"
-            case let .newSession(targetID): "Starts a new session \(WorkchatStateCard.onTarget(targetID))on your Mac"
+            case let .newSession(targetID): "Starts a new session \(WorkchatStateCard.onTarget(targetID))on your tower"
             }
         }
     }
@@ -68,11 +68,11 @@ struct WorkchatStateCard: Equatable {
             summary = nil
             // A line already on its way would be sent twice.
             if input.canSend {
-                details = ["It still runs on your Mac. Continue sends it “\(Self.continueLine)”, or start \(aNewSession)here."]
+                details = ["It still runs on your tower. Continue sends it “\(Self.continueLine)”, or start \(aNewSession)here."]
                 // `continues` is the rule Now and the Sessions tab wait on (`SessionInputModel.waitsToContinue`).
                 actions = input.continues ? [.continueSession, newSession] : [newSession]
             } else {
-                details = ["It still runs on your Mac: continue it there, or start \(aNewSession)here."]
+                details = ["It still runs on your tower: continue it there, or start \(aNewSession)here."]
                 actions = [newSession]
             }
         case .failed, .stopped, .notStarted:
@@ -80,7 +80,7 @@ struct WorkchatStateCard: Equatable {
             guard !session.live else { return nil }
             title = "Not running"
             summary = nil
-            details = ["Its run ended on your Mac. Start \(aNewSession)to pick the work up."]
+            details = ["Its run ended on your tower. Start \(aNewSession)to pick the work up."]
             actions = [newSession]
         case .needsApproval where permission == nil:
             title = "Needs approval"
@@ -95,11 +95,11 @@ struct WorkchatStateCard: Equatable {
     /// Where a prompt the phone has no card for gets its answer.
     static func approvalText(_ session: TerminalSessionState, macOnline: Bool) -> String {
         if !session.takesFromPhone.permissionAnswer {
-            "Answer this prompt on the Mac."
+            "Answer this prompt on the tower."
         } else if macOnline {
-            "The request is on its way from your Mac."
+            "The request is on its way from your tower."
         } else {
-            "Your Mac sends the request when it wakes."
+            "Your tower sends the request when it wakes."
         }
     }
 }

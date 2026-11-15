@@ -180,7 +180,7 @@ struct NowView: View {
                 }
             }
             if model.waitingMore > 0 {
-                Text("\(model.waitingMore) more on your Mac")
+                Text("\(model.waitingMore) more on your tower")
                     .font(TypeScale.meta)
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, Spacing.small)

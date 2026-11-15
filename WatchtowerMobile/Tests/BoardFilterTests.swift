@@ -206,7 +206,7 @@ final class BoardFilterTests: XCTestCase {
     func testTheChildCounterWords() {
         XCTAssertEqual(BoardTargetDetailModel.childCounter(done: 1, listed: 3, archived: 0), "1/3")
         XCTAssertEqual(BoardTargetDetailModel.childCounter(done: 0, listed: 0, archived: 2), "0/0 · 2 archived")
-        XCTAssertEqual(BoardTargetDetailModel.childCounter(done: 1, listed: 2, archived: 1, more: 3), "1/2 · 1 archived · 3 more on the Mac")
+        XCTAssertEqual(BoardTargetDetailModel.childCounter(done: 1, listed: 2, archived: 1, more: 3), "1/2 · 1 archived · 3 more on the tower")
         XCTAssertEqual(BoardTargetDetailModel.childCounter(done: 1, listed: 2, archived: 0, more: -1), "1/2", "a replica ahead of the count")
         XCTAssertNil(BoardTargetDetailModel.childCounter(done: 0, listed: 0, archived: 0))
     }
@@ -221,7 +221,7 @@ final class BoardFilterTests: XCTestCase {
             "text": "Board archive", "status": "in_progress", "children_count": 5
         ]))
         let group = try XCTUnwrap(BoardTargetDetailModel(targetID: 400, snapshot: snapshot, now: now))
-        XCTAssertEqual(group.childCounter, "0/2 · 1 archived · 2 more on the Mac")
+        XCTAssertEqual(group.childCounter, "0/2 · 1 archived · 2 more on the tower")
     }
 
     /// An archived group lists its archived children and names none apart.

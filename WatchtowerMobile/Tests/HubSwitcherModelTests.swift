@@ -68,7 +68,7 @@ final class HubSwitcherModelTests: XCTestCase {
             now: now
         )
 
-        XCTAssertEqual(chip.otherAsks, "+3 questions on 2 other Macs")
+        XCTAssertEqual(chip.otherAsks, "+3 questions on 2 other towers")
         XCTAssertTrue(chip.toneUses.contains { $0.element == "other hubs' questions" && $0.role == .waiting })
     }
 
@@ -154,11 +154,11 @@ final class HubSwitcherModelTests: XCTestCase {
     }
 
     func testEveryStringComesFromTheOneHubWord() {
-        XCTAssertEqual(HubSwitcherText.sheetTitle, "Macs")
-        XCTAssertEqual(HubSwitcherText.sheetNote, "Pick the Mac this iPhone shows. Every tab switches to it.")
-        XCTAssertEqual(HubSwitcherText.addRow, "Add Mac")
-        XCTAssertEqual(HubSwitcherText.limitNote(4), "You can link up to 4 Macs")
-        XCTAssertEqual(HubSwitcherText.chipHint, "Shows your Macs and switches between them")
+        XCTAssertEqual(HubSwitcherText.sheetTitle, "Towers")
+        XCTAssertEqual(HubSwitcherText.sheetNote, "Pick the tower this iPhone shows. Every tab switches to it.")
+        XCTAssertEqual(HubSwitcherText.addRow, "Add tower")
+        XCTAssertEqual(HubSwitcherText.limitNote(4), "You can link up to 4 towers")
+        XCTAssertEqual(HubSwitcherText.chipHint, "Shows your towers and switches between them")
         XCTAssertEqual(HubSwitcherText.currentLabel, "Showing now")
         XCTAssertEqual(HubSwitcherText.questions(1), "1 question")
         XCTAssertEqual(HubSwitcherText.waiting(3), "3 questions waiting")

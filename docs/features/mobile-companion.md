@@ -394,6 +394,10 @@ Desktop reads the hub only through `hub … --json` and the control socket: `Hub
 
 ## Phone app
 
+### The hub is a tower (#1783)
+
+On screen the phone calls a hub a **tower** (asks #1318 → #1320): its name where the phone has one (`TowerText.name`, "Acme Mac is asleep"), else "your tower" / "Tower". The heartbeat's optional `hub_kind` (`mac` | `server`, written by the Go hub: `mac` in a desktop host's live mode, else `server`) picks the instructions: `TowerHost` points into the Mac app (Watchtower → Settings → Mobile) only for `mac` or a hub that sends no kind, and names `watchtower hub allow <phone> …` for `server` and any kind it does not know. Pairing (`PairingText`) cannot know the kind yet, so it explains the word once ("your Mac or server running Watchtower") and gives both steps. Every Mac-only string lives in `Features/Hubs/TowerText.swift`; `TowerWordGuardTests` fails on a new "Mac"/"Macs" string literal elsewhere under `Sources` (allowlist: the demo hub names and one internal precondition message). Hub-written messages (an action's refusal, "Answered on the Mac") and the Kit's `PermissionAllowBlock` notes (inventory-pinned) still say Mac.
+
 ### Design layer (design pass)
 
 `Sources/DesignSystem/` names the values the Mac uses, so the phone's screens stop inventing their own: `PhoneTone` (moved here), `Spacing`/`Radius`/`RowInsets`, `TypeScale`, the target status glyph and tone (`TargetStatusStyle`, the Mac's model table), `PriorityMark` (high red, low blue, medium none), `card(_:)`, `Pill`/`CountBadge`/`FilterChip`, `FlatRow`/`RowDivider`/`SectionHeader`, `BottomActionBar`/`ProminentActionStyle`/`RecordButton`, and `SessionDot`/`ThinProgressBar`/`StepRow`/`FlowRow`. There is no custom colour or font: semantic SwiftUI colours, Dynamic Type and SF Symbols, accent system blue. Spec: `docs/superpowers/specs/2026-10-11-mobile-design-pass-design.md` §2.

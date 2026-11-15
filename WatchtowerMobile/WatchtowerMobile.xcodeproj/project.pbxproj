@@ -74,6 +74,7 @@
 		2C469681A2CC35A1F668794C /* RecordingUploadWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8524749B2AB47915FC4DFB4A /* RecordingUploadWiringTests.swift */; };
 		2CFEF414FF433DE57CCB0673 /* PushLaunchSocketTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 34D1B5A60BD91F03BDAA61C4 /* PushLaunchSocketTests.swift */; };
 		2DBC73EB92D6356CAEC0E1DE /* MacDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD7C29E7FA56B9E7A085F69C /* MacDetailView.swift */; };
+		2E08297036EBDEE39370914A /* TowerTextTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28EBDF47B99C4A235324ECDD /* TowerTextTests.swift */; };
 		2E3168D3BC931B2646C1D085 /* WatchtowerHostedRelay in Frameworks */ = {isa = PBXBuildFile; productRef = 1C53FC403A2C3717C2D23C92 /* WatchtowerHostedRelay */; };
 		2EDD7B7533E80AD3C0747DC2 /* NotifyService.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = CE1581266064A628CA86BA7B /* NotifyService.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		2F12EA186C4296538FCD54AC /* RelayUpgrade.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5AE2EA575CD6AECE288CB25 /* RelayUpgrade.swift */; };
@@ -114,6 +115,7 @@
 		4775CC25932238F3DE9B47AE /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 5CF9E51BB968298C0AAB2FD5 /* GRDB */; };
 		49581B2DB8F7B23814B73BBA /* MacsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACB75AFB86CD8FA28BE4C1B3 /* MacsView.swift */; };
 		4AFB097B5F15151D72EE5076 /* HubSwitcherModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CA14AAC38703FAD1DD03DBF /* HubSwitcherModel.swift */; };
+		4C142DAF123A25E1208E83EE /* TowerText.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6EA9A77C68138BE881A21E52 /* TowerText.swift */; };
 		4C91F81D0C0C3D00A3DF1344 /* StoreKitRelayStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB51D5844D98DDBFB3E2B8C3 /* StoreKitRelayStore.swift */; };
 		4CC11EBE1DF90C0C89628B34 /* WatchtowerHostedRelay in Frameworks */ = {isa = PBXBuildFile; productRef = 7FD33DE7CAA4EFCB621F1395 /* WatchtowerHostedRelay */; };
 		4CF6B8088DE86AE15CD85609 /* HubListSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23FAC5D7A97B8E470DD52F4A /* HubListSheet.swift */; };
@@ -399,6 +401,7 @@
 		23FAC5D7A97B8E470DD52F4A /* HubListSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubListSheet.swift; sourceTree = "<group>"; };
 		251A5D4D6991B8CA24069FFC /* StoreKitTest.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = StoreKitTest.framework; path = System/Library/Frameworks/StoreKitTest.framework; sourceTree = SDKROOT; };
 		27F9F7B9E929C013BC8C456F /* NowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowView.swift; sourceTree = "<group>"; };
+		28EBDF47B99C4A235324ECDD /* TowerTextTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TowerTextTests.swift; sourceTree = "<group>"; };
 		297FDFC3CED17D5BE064E1CC /* AskFormModel+Status.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AskFormModel+Status.swift"; sourceTree = "<group>"; };
 		29D81A81B240E676E80E724C /* TransportFollowerWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransportFollowerWiringTests.swift; sourceTree = "<group>"; };
 		2C7BE965E32256F4C81D29A0 /* HubSession+RecordingHandover.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "HubSession+RecordingHandover.swift"; sourceTree = "<group>"; };
@@ -480,6 +483,7 @@
 		6C31DCEEDF952183BAF4ECC6 /* SessionDetailModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionDetailModel.swift; sourceTree = "<group>"; };
 		6C3E438CAF4935002C6DAC61 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		6C4A6293238CB4D4340AF5CE /* RelayCardModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayCardModel.swift; sourceTree = "<group>"; };
+		6EA9A77C68138BE881A21E52 /* TowerText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TowerText.swift; sourceTree = "<group>"; };
 		6F2951765F447B4F2CD0F1C9 /* WorkbenchFixtures.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkbenchFixtures.swift; sourceTree = "<group>"; };
 		6F42875048B226127DDDBF6C /* TransportFactory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransportFactory.swift; sourceTree = "<group>"; };
 		6FD08E4A5B5561A03B350B95 /* AskFormModel+Parts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AskFormModel+Parts.swift"; sourceTree = "<group>"; };
@@ -849,6 +853,7 @@
 				A6283CE039E23035A2749FC9 /* SideMailboxWiringTests.swift */,
 				85CF6FB6B18EC8CAC1C2671C /* StartSheetWiringTests.swift */,
 				BD391FA751F38532CCD56FB0 /* StoreKitRelayStoreTests.swift */,
+				28EBDF47B99C4A235324ECDD /* TowerTextTests.swift */,
 				E189AE7235CFC575473FA7CC /* TransportFactoryTests.swift */,
 				29D81A81B240E676E80E724C /* TransportFollowerWiringTests.swift */,
 				95542DB73942F56F675F128A /* TransportRequestCopyTests.swift */,
@@ -1134,6 +1139,7 @@
 				23FAC5D7A97B8E470DD52F4A /* HubListSheet.swift */,
 				EAE19619029A8B7286D78A2B /* HubSwitcherChip.swift */,
 				4CA14AAC38703FAD1DD03DBF /* HubSwitcherModel.swift */,
+				6EA9A77C68138BE881A21E52 /* TowerText.swift */,
 			);
 			path = Hubs;
 			sourceTree = "<group>";
@@ -1545,6 +1551,7 @@
 				9191FD86BB27AD1B521425EE /* StateLine.swift in Sources */,
 				4C91F81D0C0C3D00A3DF1344 /* StoreKitRelayStore.swift in Sources */,
 				5499E788A16EA0CBDE2FD812 /* TargetStatusStyle.swift in Sources */,
+				4C142DAF123A25E1208E83EE /* TowerText.swift in Sources */,
 				1E1CC9DFE2FE5F4F0B567F5A /* TransportFactory.swift in Sources */,
 				02256DE705F39E629063D8C3 /* TransportFollower.swift in Sources */,
 				772241DF8C99B5627B4AEE7D /* TransportRequest.swift in Sources */,
@@ -1672,6 +1679,7 @@
 				390A2DF54CDB7734D895E9F2 /* StartSheetWiringTests.swift in Sources */,
 				B417663C73CD2961FABE740F /* StoreKitRelayStoreTests.swift in Sources */,
 				23465832B1685AD88083B094 /* SubscriptionFakes.swift in Sources */,
+				2E08297036EBDEE39370914A /* TowerTextTests.swift in Sources */,
 				402CB17C6C06838DA15471C1 /* TransportFactoryTests.swift in Sources */,
 				2593FC7270AB69224136A860 /* TransportFollowerWiringTests.swift in Sources */,
 				D6854570BDEB1DDD7B0EF389 /* TransportRequestCopyTests.swift in Sources */,

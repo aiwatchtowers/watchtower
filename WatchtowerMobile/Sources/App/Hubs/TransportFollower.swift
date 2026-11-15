@@ -364,7 +364,7 @@ final class TransportFollower {
     private static func refusal(_ target: TransportKind, link: LinkRecord) -> String? {
         switch target {
         case .relay:
-            return link.relayMacDeviceID == nil ? "a move to the relay without the Mac's relay id, refused" : nil
+            return link.relayMacDeviceID == nil ? "a move to the relay without the tower's relay id, refused" : nil
         case .cloudKit:
             guard let offered = link.hubTransports, !offered.contains(TransportKind.cloudKit.rawValue) else { return nil }
             return "a move to CloudKit for a hub that offers only the relay, refused"

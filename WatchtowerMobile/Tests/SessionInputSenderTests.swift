@@ -10,7 +10,7 @@ import XCTest
 @MainActor
 final class SessionInputSenderTests: XCTestCase {
     private let now = Date()
-    private static let hubMessage = "Codex sessions can't take messages from the phone yet. Type it on the Mac."
+    private static let hubMessage = "Codex sessions can't take messages from the phone yet. Type it on the tower."
 
     private func failedRow(reasonOnTheWire reason: String) async throws -> SessionInputModel.LineRow.State? {
         let store = try TestPhone.replica()

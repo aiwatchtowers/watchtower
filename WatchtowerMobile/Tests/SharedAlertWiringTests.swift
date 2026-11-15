@@ -78,7 +78,7 @@ final class SharedAlertWiringTests: XCTestCase {
 
         _ = await env.refresh(.pull)
         _ = await env.refresh(.pull)
-        XCTAssertTrue(posted.requests.isEmpty, "what the Mac kept before the first fetch is history, not news")
+        XCTAssertTrue(posted.requests.isEmpty, "what the tower kept before the first fetch is history, not news")
         let seen = try XCTUnwrap(defaults.dictionary(forKey: SharedAlertPoster.postedDefaultsKey(hubID: hubID)) as? [String: String])
         XCTAssertEqual(Set(seen.values), ["ask-41", "stop-7-1700000000000"], "both count as seen")
     }

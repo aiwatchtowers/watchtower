@@ -63,7 +63,7 @@ final class ContinueWaitsTests: XCTestCase {
     func testTypingOffKeepsItEnded() throws {
         let snapshot = try snapshot()
         XCTAssertFalse(try waits(snapshot, typing: PhoneTyping(grant: Self.grant(typing: true), requested: false)), "the phone's toggle off")
-        XCTAssertFalse(try waits(snapshot, typing: PhoneTyping(grant: Self.grant(typing: false), requested: true)), "the Mac never allowed it")
+        XCTAssertFalse(try waits(snapshot, typing: PhoneTyping(grant: Self.grant(typing: false), requested: true)), "the tower never allowed it")
         XCTAssertFalse(try waits(snapshot, typing: .off))
     }
 

@@ -7,15 +7,14 @@ enum AutomationRunText {
     static let segment = "Automations"
     static let run = "Run"
     static let running = "Running"
-    static let runFailed = "Your Mac could not run the automation"
+    static let runFailed = "Your tower could not run the automation"
     /// The Mac allows runs from the phone with its start-sessions grant.
-    static let notAllowed = "Your Mac has not allowed this phone to run automations. "
-        + "On the Mac: Watchtower → Settings → Mobile → allow typing, then starting sessions."
-    static let footer = "Only running is possible here. Edit, confirm or turn automations on and off on the Mac; "
-        + "their results land in the Mac's Inbox."
+    static func notAllowed(_ host: TowerHost) -> String { host.notAllowed("run automations") }
+    static let footer = "Only running is possible here. Edit, confirm or turn automations on and off on the tower; "
+        + "their results land in the tower's Inbox."
 
     static func confirmTitle(_ name: String) -> String {
-        "Run “\(name)” on the Mac?"
+        "Run “\(name)” on the tower?"
     }
 }
 
@@ -59,7 +58,7 @@ struct WorkbenchAutomationsModel: Equatable {
 
     init(workbenchID: Int64, snapshot: WorkbenchReplicaSnapshot, grant: DeviceGrant?, inFlight: Set<String>, now: Date) {
         let allowed = StartGrant(grant).startSessionsAllowed
-        notAllowed = allowed ? nil : AutomationRunText.notAllowed
+        notAllowed = allowed ? nil : AutomationRunText.notAllowed(TowerHost(snapshot.heartbeat))
         let online = MacStatus(heartbeat: snapshot.heartbeat, now: now).isOnline
         rows = (snapshot.workbench(workbenchID)?.automations ?? []).map { automation in
             let entity = BoardWriter.automationRecordName(automation.id)
@@ -85,10 +84,10 @@ struct WorkbenchAutomationsModel: Equatable {
         switch state {
         case .running: .running
         case .runnable: allowed ? .run : .unavailable("Not allowed")
-        case .needsConfirmation: .unavailable("Confirm on the Mac")
+        case .needsConfirmation: .unavailable("Confirm on the tower")
         case .disabled: .unavailable("Off")
         case .parseError: .unavailable("Can't be read")
-        default: .unavailable("Open on the Mac")
+        default: .unavailable("Open on the tower")
         }
     }
 

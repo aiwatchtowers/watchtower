@@ -14,7 +14,7 @@ struct ScanView: View {
     var body: some View {
         NavigationStack {
             content
-                .navigationTitle("Scan the code on your Mac")
+                .navigationTitle("Scan the code on your tower")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
@@ -36,7 +36,7 @@ struct ScanView: View {
                 QRScannerView(onCode: onCode)
                     .ignoresSafeArea(edges: .bottom)
                     .overlay(alignment: .bottom) {
-                        Text("Point the camera at the code on your Mac.")
+                        Text("Point the camera at the code on your tower.")
                             .font(.subheadline)
                             .padding(Spacing.large)
                             .background(.regularMaterial, in: Capsule())
@@ -46,7 +46,7 @@ struct ScanView: View {
                 ContentUnavailableView(
                     "No camera",
                     systemImage: "camera",
-                    description: Text("Scan the code on your Mac with the Camera app instead.")
+                    description: Text("Scan the code on your tower with the Camera app instead.")
                 )
             }
         case .notDetermined:
@@ -55,7 +55,7 @@ struct ScanView: View {
             ContentUnavailableView(
                 "Camera access is off",
                 systemImage: "camera",
-                description: Text("Allow camera access for Watchtower in Settings, or scan the code on your Mac with the Camera app.")
+                description: Text("Allow camera access for Watchtower in Settings, or scan the code on your tower with the Camera app.")
             )
         }
     }

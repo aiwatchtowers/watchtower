@@ -30,7 +30,7 @@ final class NowTermRowTests: XCTestCase {
         let home = row("home", "Home Mac", Term.link(.lapse))
         let banner = try needsRelayBanner(work.link)
         let rows = NowTermRow.rows(links: [work, home], activeHubID: "work", activeBanner: banner, hold: .none, now: Term.before)
-        XCTAssertEqual(rows.map(\.id), ["home"], "the Mac on screen has its banner's line")
+        XCTAssertEqual(rows.map(\.id), ["home"], "the tower on screen has its banner's line")
         XCTAssertEqual(rows.first?.title, "Home Mac")
         XCTAssertEqual(rows.first?.line, "If this stays as it is, the link to Home Mac ends on December 14. "
             + "Its history and unsent actions on this iPhone will go.")
@@ -52,7 +52,7 @@ final class NowTermRowTests: XCTestCase {
             macName: "Work Mac", now: Term.past, link: work.link, termHold: .refusedRow)
         XCTAssertEqual(update?.text, "Update Watchtower from the App Store to keep using Relay.")
         let rows = NowTermRow.rows(links: [work], activeHubID: "work", activeBanner: update, hold: .refusedRow, now: Term.past)
-        XCTAssertEqual(rows.map(\.line), [Term.refusedNow], "S61n: the row for the Mac on screen says why")
+        XCTAssertEqual(rows.map(\.line), [Term.refusedNow], "S61n: the row for the tower on screen says why")
         let none = NowTermRow.rows(links: [work], activeHubID: "work", activeBanner: nil, hold: .none, now: Term.past)
         XCTAssertEqual(none.map(\.line), [Term.pastLine])
     }
@@ -60,7 +60,7 @@ final class NowTermRowTests: XCTestCase {
     func testNowsRowSendsAHeldPurchaseToMacs() {
         let home = row("home", "Home Mac", Term.link(.lapse))
         let rows = NowTermRow.rows(links: [home], activeHubID: "work", activeBanner: nil, hold: .held, now: Term.before)
-        XCTAssertEqual(rows.map(\.line), ["This iPhone paid, but Relay hasn't seen it. See Settings → Macs."])
+        XCTAssertEqual(rows.map(\.line), ["This iPhone paid, but Relay hasn't seen it. See Settings → Towers."])
         XCTAssertEqual(rows.first?.destination, .macs)
     }
 
@@ -74,7 +74,7 @@ final class NowTermRowTests: XCTestCase {
         let ask = MacsModel.Ask(forgetting: "work", name: "Work Mac")
         XCTAssertEqual(ask.title, "Forget Work Mac?")
         XCTAssertEqual(ask.button, "Forget")
-        XCTAssertEqual(ask.message, "This unlinks the Mac and deletes its data on this iPhone.")
+        XCTAssertEqual(ask.message, "This unlinks the tower and deletes its data on this iPhone.")
         XCTAssertEqual(ask.hubID, "work")
     }
 

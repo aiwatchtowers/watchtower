@@ -109,7 +109,7 @@ final class SessionChatWiringTests: XCTestCase {
         try await poll({ model.waitingTooLong }, "never waited too long")
         model.disappeared()
         model.appeared()
-        XCTAssertFalse(model.waitingTooLong, "back to Asking your Mac…")
+        XCTAssertFalse(model.waitingTooLong, "back to Asking your tower…")
         try await poll({ releases.count == 2 }, "the wait did not restart")
         model.disappeared()
         releases[1].resume()
@@ -138,11 +138,11 @@ final class SessionChatWiringTests: XCTestCase {
         model.appeared()
         try await poll({ release != nil }, "the wait never began")
         XCTAssertNil(model.chat, "no record for session 17")
-        XCTAssertFalse(model.waitingTooLong, "Asking your Mac… until the limit")
-        XCTAssertEqual(SessionChatText.asking, "Asking your Mac…")
+        XCTAssertFalse(model.waitingTooLong, "Asking your tower… until the limit")
+        XCTAssertEqual(SessionChatText.asking, "Asking your tower…")
         release?.resume()
         try await poll({ model.waitingTooLong }, "never waited too long")
-        XCTAssertEqual(SessionChatText.tooLong, "Your Mac has not sent this chat yet. Is it awake?")
+        XCTAssertEqual(SessionChatText.tooLong, "Your tower has not sent this chat yet. Is it awake?")
         model.disappeared()
     }
 
@@ -226,8 +226,8 @@ final class SessionChatWiringTests: XCTestCase {
 
     func testEarlierMessagesLine() {
         XCTAssertNil(SessionChatViewModel.earlierText(0))
-        XCTAssertEqual(SessionChatViewModel.earlierText(12), "12 earlier messages — open on the Mac")
-        XCTAssertEqual(SessionChatViewModel.earlierText(1), "1 earlier message — open on the Mac")
+        XCTAssertEqual(SessionChatViewModel.earlierText(12), "12 earlier messages — open on the tower")
+        XCTAssertEqual(SessionChatViewModel.earlierText(1), "1 earlier message — open on the tower")
     }
 
     // MARK: - The composer follows the typing grant
