@@ -4,7 +4,7 @@ Board #1076 under the inbox builder umbrella #917. Spec `docs/superpowers/specs/
 
 ## Phase 1 — the shell (Desktop)
 
-Swift only: no migration, no Go source change, no prompt, no phone change. One shared JSON fixture (`internal/inbox/testdata/from_today.json`) waits for phase 2's Go twin. Pure rules live in WatchtowerCore, state stays on `ActionStripViewModel` (AppState-owned, survives navigation), the views in `Sources/Views/Inbox/` only render. `InboxFolderEntries` stays the single source of entries; sections, rows and groups are built over its output.
+Swift only: no migration, no Go source change, no prompt, no phone change. One shared JSON fixture (`internal/inbox/testdata/from_today.json`); its Go twin shipped in phase 2 (`TestInboxToday_SharedFixture`). Pure rules live in WatchtowerCore, state stays on `ActionStripViewModel` (AppState-owned, survives navigation), the views in `Sources/Views/Inbox/` only render. `InboxFolderEntries` stays the single source of entries; sections, rows and groups are built over its output.
 
 ### Sidebar
 
