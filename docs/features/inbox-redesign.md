@@ -184,6 +184,7 @@ On the Backlog's header while `olderCount > 0`: `oldIdeasPress` plans by reading
 - A bulk-stopped custom track keeps its watch recipe enabled: per the approved TRACKS-07 note the bulk write is `dismissed_at` only. The slot's `Due` gate skips a dismissed track, so the recipe runs no scan and no model call, and Restore resumes it.
 - The batch is per Mac in UserDefaults, like `inbox.folder`: each Mac has its own database; the phone is out of scope.
 - `ideas.dailyBatch` has no setting in the app.
+- The **attachment** chip on an IMAP mail track matches `media_items` by `(imap_uidvalidity, imap_uid)` across every mailbox (`TrackQueries.mailAttachmentTrackIDs`): the track's `source_id` (`<uidvalidity>-<uid>`) carries no account, so two mailboxes with the same UIDVALIDITY and UID can give a track a chip from the other mailbox's message. Gmail ids are unique, so Gmail is not affected. Binding the account needs it in the track's source id (an open owner question).
 - The news row's latest line makes user mentions, labelled channel links and links readable; special mentions (`<!here>`, `<!channel>`, user groups `<!subteam^…>`) and a channel link without a label (`<#C…>`) stay as stored.
 - Not in the mockup, kept for the owner's look: the back bar over a thread (`inbox-r-threads-detail`), **All Threads** (`inbox-r-threads`), **Clear Old Ideas…** (`inbox-r-ideas-backlog`).
 
