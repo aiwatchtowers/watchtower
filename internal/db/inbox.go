@@ -433,14 +433,14 @@ func (db *DB) SetInboxLastProcessedTS(ts float64) error {
 // (sinceStored), so a message stored after the watermark passed its post time
 // is still found (INBOX-09).
 func (db *DB) FindPendingMentions(accountID int64, currentUserID string, sinceTS float64) ([]InboxCandidate, error) {
-	return db.findPendingMentions(accountID, currentUserID, sinceStored, sinceTS)
+	return db.findPendingMentions(accountID, currentUserID, pendingMentionsStoredSQL, sinceTS)
 }
 
 // FindPendingMentionsPostedSince is FindPendingMentions over the messages
 // posted after sinceTS (m.ts_unix) whenever they were stored: the
 // `inbox backfill-mentions` window is a span of post time.
 func (db *DB) FindPendingMentionsPostedSince(accountID int64, currentUserID string, sinceTS float64) ([]InboxCandidate, error) {
-	return db.findPendingMentions(accountID, currentUserID, sincePosted, sinceTS)
+	return db.findPendingMentions(accountID, currentUserID, pendingMentionsPostedSQL, sinceTS)
 }
 
 // The expression a Slack detector compares its since bound with.
@@ -453,23 +453,98 @@ const (
 	sincePosted = "m.ts_unix" // when Slack says it was posted
 )
 
-func (db *DB) findPendingMentions(accountID int64, currentUserID, sinceCol string, sinceTS float64) ([]InboxCandidate, error) {
-	strictPattern, pipePattern := watchtowerslack.MentionPatterns(currentUserID)
-	prefix := strconv.FormatInt(accountID, 10)
-	rows, err := db.Query(`SELECT m.channel_id, m.ts, COALESCE(m.thread_ts, ''), m.user_id, m.text, m.permalink, m.ts_unix
+// The Slack detectors' queries. Each one reads only the rows past its since
+// bound through an index range (idx_messages_synced_at, or idx_messages_ts_unix
+// for the post-time variant), never the whole table: the result is ordered by
+// "+m.ts_unix", which keeps the planner from walking idx_messages_ts_unix
+// end to end just to skip the sort; a join to another table names
+// messages first (CROSS JOIN) so the range drives it; and the reaction
+// detector's "+m.user_id" and "+" GROUP BY terms keep it off
+// idx_messages_user_id (every message the owner ever posted) and off the
+// primary key (walked whole to skip the grouping sort).
+// TestInboxDetectors_ReadARangeNotTheTable pins the plans.
+const (
+	pendingMentionsHead = `SELECT m.channel_id, m.ts, COALESCE(m.thread_ts, ''), m.user_id, m.text, m.permalink, m.ts_unix
 		FROM messages m
 		WHERE (m.text LIKE ? OR m.text LIKE ?)
 		AND m.channel_id LIKE ? || ':%'
 		AND m.user_id != ?
 		AND m.user_id != ''
-		AND `+sinceCol+` > ?
+		AND `
+	pendingMentionsTail = ` > ?
 		AND m.is_deleted = 0
 		AND NOT EXISTS (
 			SELECT 1 FROM inbox_items ii
 			WHERE ii.channel_id = m.channel_id AND ii.message_ts = m.ts
 		)
-		AND `+notListedInMentions+`
-		ORDER BY m.ts_unix DESC`,
+		AND ` + notListedInMentions + `
+		ORDER BY +m.ts_unix DESC`
+	pendingMentionsStoredSQL = pendingMentionsHead + sinceStored + pendingMentionsTail
+	pendingMentionsPostedSQL = pendingMentionsHead + sincePosted + pendingMentionsTail
+
+	pendingDMsSQL = `SELECT m.channel_id, m.ts, COALESCE(m.thread_ts, ''), m.user_id, m.text, m.permalink, m.ts_unix
+		FROM messages m
+		CROSS JOIN channels c ON c.id = m.channel_id
+		WHERE c.type = 'dm'
+		AND m.channel_id LIKE ? || ':%'
+		AND m.user_id != ?
+		AND m.user_id != ''
+		AND ` + sinceStored + ` > ?
+		AND m.is_deleted = 0
+		AND NOT EXISTS (
+			SELECT 1 FROM inbox_items ii
+			WHERE ii.channel_id = m.channel_id AND ii.message_ts = m.ts
+		)
+		AND ` + notListedInMentions + `
+		ORDER BY +m.ts_unix DESC`
+
+	threadRepliesSQL = `SELECT m.channel_id, m.ts, COALESCE(m.thread_ts, ''), m.user_id, m.text, m.permalink, m.ts_unix
+		FROM messages m
+		WHERE m.thread_ts != ''
+		  AND m.thread_ts != m.ts
+		  AND m.channel_id LIKE ? || ':%'
+		  AND m.user_id != ?
+		  AND m.user_id != ''
+		  AND ` + sinceStored + ` > ?
+		  AND m.is_deleted = 0
+		  AND EXISTS (
+		      SELECT 1 FROM messages participant
+		      WHERE participant.channel_id = m.channel_id
+		        AND participant.thread_ts = m.thread_ts
+		        AND participant.user_id = ?
+		        AND participant.ts != m.ts
+		  )
+		  AND NOT EXISTS (
+		      SELECT 1 FROM inbox_items ii
+		      WHERE ii.channel_id = m.channel_id AND ii.message_ts = m.ts
+		  )
+		  AND ` + notListedInMentions + `
+		ORDER BY +m.ts_unix DESC`
+
+	reactionRequestsSQL = `SELECT m.channel_id, m.ts, COALESCE(m.thread_ts, ''),
+		   MIN(r.user_id) as reactor_id,
+		   m.text, m.permalink, m.ts_unix
+		FROM messages m
+		CROSS JOIN reactions r ON r.channel_id = m.channel_id AND r.message_ts = m.ts
+		WHERE +m.user_id = ?
+		  AND m.channel_id LIKE ? || ':%'
+		  AND r.user_id != ?
+		  AND r.emoji IN ('question', 'grey_question', 'eyes', 'bangbang', 'exclamation', 'heavy_exclamation_mark', 'warning', 'red_circle', 'rotating_light', 'sos')
+		  AND ` + sinceStored + ` > ?
+		  AND m.is_deleted = 0
+		  AND NOT EXISTS (
+		      SELECT 1 FROM inbox_items ii
+		      WHERE ii.channel_id = m.channel_id AND ii.message_ts = m.ts
+		  )
+		  AND ` + notListedInMentions + `
+		GROUP BY +m.channel_id, +m.ts
+		ORDER BY +m.ts_unix DESC`
+)
+
+func (db *DB) findPendingMentions(accountID int64, currentUserID, query string, sinceTS float64) ([]InboxCandidate, error) {
+	strictPattern, pipePattern := watchtowerslack.MentionPatterns(currentUserID)
+	prefix := strconv.FormatInt(accountID, 10)
+	rows, err := db.Query(query,
 		strictPattern, pipePattern, prefix, currentUserID, sinceTS)
 	if err != nil {
 		return nil, fmt.Errorf("finding pending mentions: %w", err)
@@ -494,21 +569,7 @@ func (db *DB) findPendingMentions(accountID int64, currentUserID, sinceCol strin
 // sinceTS is the inbox watermark, compared with when the message was stored (sinceStored).
 func (db *DB) FindPendingDMs(accountID int64, currentUserID string, sinceTS float64) ([]InboxCandidate, error) {
 	prefix := strconv.FormatInt(accountID, 10)
-	rows, err := db.Query(`SELECT m.channel_id, m.ts, COALESCE(m.thread_ts, ''), m.user_id, m.text, m.permalink, m.ts_unix
-		FROM messages m
-		JOIN channels c ON c.id = m.channel_id
-		WHERE c.type = 'dm'
-		AND m.channel_id LIKE ? || ':%'
-		AND m.user_id != ?
-		AND m.user_id != ''
-		AND `+sinceStored+` > ?
-		AND m.is_deleted = 0
-		AND NOT EXISTS (
-			SELECT 1 FROM inbox_items ii
-			WHERE ii.channel_id = m.channel_id AND ii.message_ts = m.ts
-		)
-		AND `+notListedInMentions+`
-		ORDER BY m.ts_unix DESC`,
+	rows, err := db.Query(pendingDMsSQL,
 		prefix, currentUserID, sinceTS)
 	if err != nil {
 		return nil, fmt.Errorf("finding pending DMs: %w", err)
@@ -534,28 +595,7 @@ func (db *DB) FindPendingDMs(accountID int64, currentUserID string, sinceTS floa
 // sinceTS is the inbox watermark, compared with when the message was stored (sinceStored).
 func (db *DB) FindThreadRepliesToUser(accountID int64, currentUserID string, sinceTS float64) ([]InboxCandidate, error) {
 	prefix := strconv.FormatInt(accountID, 10)
-	rows, err := db.Query(`SELECT m.channel_id, m.ts, COALESCE(m.thread_ts, ''), m.user_id, m.text, m.permalink, m.ts_unix
-		FROM messages m
-		WHERE m.thread_ts != ''
-		  AND m.thread_ts != m.ts
-		  AND m.channel_id LIKE ? || ':%'
-		  AND m.user_id != ?
-		  AND m.user_id != ''
-		  AND `+sinceStored+` > ?
-		  AND m.is_deleted = 0
-		  AND EXISTS (
-		      SELECT 1 FROM messages participant
-		      WHERE participant.channel_id = m.channel_id
-		        AND participant.thread_ts = m.thread_ts
-		        AND participant.user_id = ?
-		        AND participant.ts != m.ts
-		  )
-		  AND NOT EXISTS (
-		      SELECT 1 FROM inbox_items ii
-		      WHERE ii.channel_id = m.channel_id AND ii.message_ts = m.ts
-		  )
-		  AND `+notListedInMentions+`
-		ORDER BY m.ts_unix DESC`,
+	rows, err := db.Query(threadRepliesSQL,
 		prefix, currentUserID, sinceTS, currentUserID)
 	if err != nil {
 		return nil, fmt.Errorf("finding thread replies to user: %w", err)
@@ -581,24 +621,7 @@ func (db *DB) FindThreadRepliesToUser(accountID int64, currentUserID string, sin
 // sinceTS is the inbox watermark, compared with when the message was stored (sinceStored).
 func (db *DB) FindReactionRequests(accountID int64, currentUserID string, sinceTS float64) ([]InboxCandidate, error) {
 	prefix := strconv.FormatInt(accountID, 10)
-	rows, err := db.Query(`SELECT m.channel_id, m.ts, COALESCE(m.thread_ts, ''),
-		   MIN(r.user_id) as reactor_id,
-		   m.text, m.permalink, m.ts_unix
-		FROM messages m
-		JOIN reactions r ON r.channel_id = m.channel_id AND r.message_ts = m.ts
-		WHERE m.user_id = ?
-		  AND m.channel_id LIKE ? || ':%'
-		  AND r.user_id != ?
-		  AND r.emoji IN ('question', 'grey_question', 'eyes', 'bangbang', 'exclamation', 'heavy_exclamation_mark', 'warning', 'red_circle', 'rotating_light', 'sos')
-		  AND `+sinceStored+` > ?
-		  AND m.is_deleted = 0
-		  AND NOT EXISTS (
-		      SELECT 1 FROM inbox_items ii
-		      WHERE ii.channel_id = m.channel_id AND ii.message_ts = m.ts
-		  )
-		  AND `+notListedInMentions+`
-		GROUP BY m.channel_id, m.ts
-		ORDER BY m.ts_unix DESC`,
+	rows, err := db.Query(reactionRequestsSQL,
 		currentUserID, prefix, currentUserID, sinceTS)
 	if err != nil {
 		return nil, fmt.Errorf("finding reaction requests: %w", err)

@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -37,21 +38,52 @@ func TestMessagesSyncedAt_UnstampedReadsAsPostTime(t *testing.T) {
 	assert.Empty(t, after, "posted before the watermark")
 }
 
-// The detectors' stored-time expression is served by idx_messages_synced_at.
-func TestMessagesSyncedAt_IndexServesDetectorBound(t *testing.T) {
-	d := openTestDB(t)
-	rows, err := d.Query(`EXPLAIN QUERY PLAN SELECT 1 FROM messages m WHERE `+sinceStored+` > ?`, 1000.0)
+// queryPlan is EXPLAIN QUERY PLAN's detail lines for query, every bind a
+// placeholder value.
+func queryPlan(t *testing.T, d *DB, query string) []string {
+	t.Helper()
+	args := make([]any, strings.Count(query, "?"))
+	for i := range args {
+		args[i] = "1"
+	}
+	rows, err := d.Query(`EXPLAIN QUERY PLAN `+query, args...)
 	require.NoError(t, err)
 	defer rows.Close()
-	var plan string
+	var plan []string
 	for rows.Next() {
 		var id, parent, notused int
 		var detail string
 		require.NoError(t, rows.Scan(&id, &parent, &notused, &detail))
-		plan += detail + "\n"
+		plan = append(plan, detail)
 	}
 	require.NoError(t, rows.Err())
-	assert.Contains(t, plan, "idx_messages_synced_at")
+	return plan
+}
+
+// Every Slack detector reads only the messages past its bound through an
+// index range, never the whole table (a scan of every message each cycle).
+func TestInboxDetectors_ReadARangeNotTheTable(t *testing.T) {
+	d := openTestDB(t)
+	cases := []struct {
+		name, query, index string
+	}{
+		{"mentions", pendingMentionsStoredSQL, "idx_messages_synced_at"},
+		{"mentions posted since", pendingMentionsPostedSQL, "idx_messages_ts_unix"},
+		{"dms", pendingDMsSQL, "idx_messages_synced_at"},
+		{"thread replies", threadRepliesSQL, "idx_messages_synced_at"},
+		{"reaction requests", reactionRequestsSQL, "idx_messages_synced_at"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			plan := queryPlan(t, d, tc.query)
+			joined := strings.Join(plan, "\n")
+			assert.Contains(t, joined, "SEARCH m USING INDEX "+tc.index+" (", joined)
+			for _, line := range plan {
+				assert.False(t, strings.HasPrefix(line, "SCAN m"), "full scan: %s\n%s", line, joined)
+				assert.False(t, strings.HasPrefix(line, "SCAN c") || strings.HasPrefix(line, "SCAN r"), "joined table scanned: %s\n%s", line, joined)
+			}
+		})
+	}
 }
 
 // The sync's own stamp is stored as given.

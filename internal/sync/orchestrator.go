@@ -625,6 +625,8 @@ func (o *Orchestrator) stampSyncedAt(tsUnix float64) float64 {
 		return tsUnix
 	}
 	bound := o.runStart.Add(-syncedAtLookback)
+	// firstCycleAt is never zero in production: Run writes it before any
+	// save, and with no account row ensureWorkspace fails it before one.
 	if o.firstCycleAt.After(bound) {
 		bound = o.firstCycleAt
 	}
