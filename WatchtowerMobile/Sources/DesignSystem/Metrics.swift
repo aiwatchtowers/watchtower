@@ -50,6 +50,12 @@ enum PhoneMetrics {
     static let gateButton: CGFloat = 240
     /// A loading bar where a row will be (iPhone chat mockup 1c `.skel`).
     static let skeletonBar: CGFloat = 11
+    /// An image tile in an owner's chat bubble (iPhone chat mockup 2b `.thumb`).
+    static let chatThumb: CGFloat = 44
+    /// An artifact card's icon (iPhone chat mockup 2d `.art .ico`).
+    static let chatArtifactIcon: CGFloat = 28
+    /// The + menu's sheet (iPhone chat mockup 3a).
+    static let attachMenuHeight: CGFloat = 220
 }
 
 /// The phone's view opacities: a closed card, a line not yet taken, a
@@ -63,4 +69,6 @@ enum PhoneOpacity {
     static let waveform = 0.85
     /// A button under the finger.
     static let pressed = 0.8
+    /// The white of a file tile or pill on the owner's accent bubble (iPhone chat mockup 2b).
+    static let thumbTint = 0.22
 }

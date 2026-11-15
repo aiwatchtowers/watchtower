@@ -12,6 +12,11 @@ final class ChatErrorPresentationTests: XCTestCase {
         }
     }
 
+    /// The shared table's quota title is the Mac's stopped-turn title, word for word.
+    func testQuotaTitleIsTheStoppedPreviewTitle() {
+        XCTAssertEqual(ChatErrorPresentation.message(for: "quota_exhausted"), ProviderFallbackPreview(state: .stopped).copy.title)
+    }
+
     func testMessages() {
         XCTAssertTrue(ChatErrorPresentation.message(for: "auth").contains("claude login"))
         XCTAssertTrue(ChatErrorPresentation.message(for: "auth", provider: "claude").contains("claude login"))

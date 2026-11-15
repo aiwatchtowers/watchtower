@@ -64,7 +64,10 @@ final class ChatSliceMirrorTests: XCTestCase {
         XCTAssertEqual(feed.messages.map(\.id), [10, 11, 12, 13])
         XCTAssertEqual(feed.messages[0].attachments, [ChatFeed.Attachment(id: 5, name: "plan.pdf", mime: "application/pdf", size: 2048)])
         let answer = feed.messages[1]
-        XCTAssertEqual(answer.siblings, ChatFeed.Siblings(index: 2, count: 2))
+        XCTAssertEqual(answer.siblings, ChatFeed.Siblings(index: 2, count: 2, ids: [9, 11]))
+        XCTAssertEqual(answer.siblings.neighbour(-1), 9)
+        XCTAssertNil(answer.siblings.neighbour(1))
+        XCTAssertEqual(feed.messages[0].siblings.ids, [])
         XCTAssertEqual(answer.steps[0].outcome, .succeeded)
         XCTAssertEqual(answer.steps[0].sources[0].url, "https://example.com/p1")
         XCTAssertEqual(answer.steps[1].outcome, .running)

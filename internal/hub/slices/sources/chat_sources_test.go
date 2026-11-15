@@ -220,6 +220,11 @@ func TestChatFeed_PayloadMatchesKitFixture(t *testing.T) {
 	answer := msgs[1].(map[string]any)
 	if sib := answer["siblings"].(map[string]any); num(sib["index"]) != 2 || num(sib["count"]) != 2 {
 		t.Errorf("siblings %v", sib)
+	} else if ids, _ := sib["ids"].([]any); len(ids) != 2 || num(ids[1]) != num(answer["id"]) {
+		t.Errorf("sibling ids %v, answer %v", sib["ids"], answer["id"])
+	}
+	if _, ok := msgs[0].(map[string]any)["siblings"].(map[string]any)["ids"]; ok {
+		t.Error("an only child carries sibling ids")
 	}
 	actions := feed["actions"].([]any)
 	if len(actions) != 1 || actions[0].(map[string]any)["args_sha256"] == "" {

@@ -197,6 +197,8 @@ final class HubSession {
     /// This hub's AI chats (iPhone chat spec §6): the chat records, the chat sender, the list's search and row
     /// actions.
     let chats: ChatsCenter
+    /// The chat uploads waiting for their echo (the Kit's uploader keeps no ledger).
+    @ObservationIgnored let chatUploads: ChatUploadLedger
     /// Takes settled work alerts out of Notification Center after each successful fetch or engine apply.
     private let alertCleaner: DeliveredAlertCleaner
     /// The sweep's own decode cache: its reads never race the screens' observation over one cache.
@@ -481,6 +483,7 @@ final class HubSession {
         seqFloor: UInt64 = 0,
         defaults: UserDefaults = .standard,
         recordingsDirectory: URL? = nil,
+        chatCopyPath: String? = nil,
         hold: RecordingHold? = nil,
         route: HubRoute? = nil,
         link: LinkRecord? = nil,
@@ -553,7 +556,7 @@ final class HubSession {
         askAnswerer = AskAnswerer.sending(through: outbox, store: store, drafts: askDrafts)
         sessionStarts = SessionStarter.sending(through: outbox, store: store)
         sessionInputs = SessionInputSender.sending(through: outbox, store: store)
-        chats = ChatsCenter(sender: .through(outbox))
+        (chats, chatUploads) = Self.makeChats(outbox: outbox, secure: secure, hubID: hubID, copyPath: chatCopyPath)
         // An `applied` echo clears the queued row; hydrating right behind it
         // (from what the same fetch buffered) lands the Mac's authoritative
         // change at the same moment.
@@ -578,7 +581,7 @@ final class HubSession {
         if !startsActive {
             recorder.setForeground(false)
         }
-        feed = Self.makeFeed(secure, store, outbox, uploader, hydrateAfterEcho, hubOnRelay)
+        feed = Self.makeFeed(secure, store, outbox, uploader, chatUploads, hydrateAfterEcho, hubOnRelay)
         // Sealed like every other write: the hub drops a plaintext `device` record.
         (deviceSettings, alertRegistrar) = Self.makeDeviceSettings(
             secure: secure, defaults: defaults, kind: backend, hubID: hubID, device: device,
@@ -601,6 +604,8 @@ final class HubSession {
     /// still working under this fetch's time. Only while the app is active (so unlocked, every stored row open);
     /// the return to the foreground fetches or applies, and sweeps then.
     private func sweepDeliveredAlerts(fetchedAt: Date) {
+        // A fetch ended: the chats' prefetch looks again (the hub may have woken or gone to sleep).
+        chats.stepPrefetch()
         guard isActive else { return }
         let snapshot: WorkbenchReplicaSnapshot
         do {
@@ -640,11 +645,12 @@ final class HubSession {
         _ store: ReplicaStore,
         _ outbox: ActionOutbox,
         _ uploader: RecordingUploader,
+        _ chatUploads: ChatUploadLedger,
         _ hydrate: @escaping @Sendable () async -> Void,
         _ sighting: HubOnRelaySighting
     ) -> RelayFeed {
         RelayFeed(
-            transport: secure, store: store, outbox: outbox, uploads: uploader, onActionApplied: hydrate,
+            transport: secure, store: store, outbox: outbox, uploads: uploader, chatUploads: chatUploads, onActionApplied: hydrate,
             onHubOnRelay: sighting.note
         )
     }
@@ -856,9 +862,16 @@ final class HubSession {
         // delivery, a start's session id.
         await outbox.setAppliedObserver(
             Self.appliedObserver(
-                askAnswerer: askAnswerer, sessionStarts: sessionStarts, sessionInputs: sessionInputs, boardWriter: boardWriter
+                askAnswerer: askAnswerer, sessionStarts: sessionStarts, sessionInputs: sessionInputs, boardWriter: boardWriter,
+                chats: chats
             )
         )
+        // The chats' prefetch asks this session whether the hub answers, never a screen.
+        chats.setReachability { [weak self] in self?.chatsReachable(now: Date()) ?? false }
+        // A chat upload's echo reaches the send waiting for it.
+        await chatUploads.setEchoHandler { [weak chats] upload in
+            await MainActor.run { chats?.sending.receiveUpload(upload) }
+        }
         // A raise this phone has not acknowledged yet (no session was up, or the Keychain was locked).
         acknowledgeNewestEpoch()
         switch backend {
@@ -961,14 +974,16 @@ final class HubSession {
         askAnswerer: AskAnswerer,
         sessionStarts: SessionStarter,
         sessionInputs: SessionInputSender? = nil,
-        boardWriter: BoardWriter? = nil
+        boardWriter: BoardWriter? = nil,
+        chats: ChatsCenter? = nil
     ) -> @Sendable (ActionRequestPayload) -> Void {
-        { [weak askAnswerer, weak sessionStarts, weak sessionInputs, weak boardWriter] action in
+        { [weak askAnswerer, weak sessionStarts, weak sessionInputs, weak boardWriter, weak chats] action in
             Task { @MainActor in
                 askAnswerer?.receiveApplied(action)
                 sessionStarts?.receiveApplied(action)
                 sessionInputs?.receiveApplied(action)
                 boardWriter?.receiveApplied(action)
+                chats?.receiveApplied(action)
             }
         }
     }
@@ -1247,6 +1262,8 @@ final class HubSession {
         sideReader?.activeChanged(active)
         // A capture keeps going in the background, but its timer slows.
         recorder.setForeground(active)
+        // The chats' prefetch runs in the foreground only.
+        chats.setForeground(active)
         guard active else {
             restartLoop(firstCycle: nil)
             return

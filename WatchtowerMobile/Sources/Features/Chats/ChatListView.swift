@@ -39,26 +39,13 @@ struct ChatsTabView: View {
             .navigationTitle(ChatListModel.navigationTitle)
             .hubSwitcher()
             .navigationDestination(for: ChatRoute.self) { route in
-                ChatPlaceholderView(route: route, title: center.snapshot.list?.conversations.first { $0.id == route.id }?.title)
+                ChatConversationView(route: route, center: center, shot: shot)
             }
         }
     }
 
     private func inputs(now: Date) -> ChatsGateInputs {
-        let snapshot = center.snapshot
-        if let shot {
-            return ChatsGateInputs(
-                heartbeat: shot.heartbeat, route: shot.route, grant: shot.grant, refusal: snapshot.refusal, list: snapshot.list,
-                mac: shot.mac, relayUnreachable: shot.relayUnreachable
-            )
-        }
-        let session = env.activeSession
-        let replica = env.workbenchReplica.snapshot
-        return ChatsGateInputs(
-            heartbeat: replica.heartbeat, route: session.route, grant: replica.grant(for: env.linkedDevice?.deviceID),
-            refusal: snapshot.refusal, list: snapshot.list, mac: env.macReachability(now: now),
-            relayUnreachable: session.relayUnansweredSince != nil
-        )
+        ChatsGateInputs.current(env, shot: shot, snapshot: center.snapshot, now: now)
     }
 
     @ViewBuilder
@@ -94,7 +81,7 @@ struct ChatsTabView: View {
                 }
             }
         }
-        .onChange(of: gate.online, initial: true) { center.search.setOnline(gate.online) }
+        .onChange(of: gate.online, initial: true) { center.setOnline(gate.online) }
     }
 
     private func listScreen(_ list: ChatList, gate: ChatsGateModel, host: TowerHost, now: Date) -> some View {
@@ -337,14 +324,22 @@ struct ChatUndoBar: View {
     }
 }
 
-/// The conversation screen's place until it lands (Task 11): the chat's title.
-struct ChatPlaceholderView: View {
-    let route: ChatRoute
-    let title: String?
-
-    var body: some View {
-        PhoneSurface.page
-            .navigationTitle(route.isNew ? ChatListModel.newChatLabel : title ?? "")
-            .navigationBarTitleDisplayMode(.inline)
+extension ChatsGateInputs {
+    /// The gate's inputs now: the hub on screen's heartbeat, grant, route and reachability, or the shot's.
+    @MainActor
+    static func current(_ env: AppEnvironment, shot: ChatsShot?, snapshot: ChatsSnapshot, now: Date) -> Self {
+        if let shot {
+            return Self(
+                heartbeat: shot.heartbeat, route: shot.route, grant: shot.grant, refusal: snapshot.refusal, list: snapshot.list,
+                mac: shot.mac, relayUnreachable: shot.relayUnreachable
+            )
+        }
+        let session = env.activeSession
+        let replica = env.workbenchReplica.snapshot
+        return Self(
+            heartbeat: replica.heartbeat, route: session.route, grant: replica.grant(for: env.linkedDevice?.deviceID),
+            refusal: snapshot.refusal, list: snapshot.list, mac: env.macReachability(now: now),
+            relayUnreachable: session.relayUnansweredSince != nil
+        )
     }
 }
