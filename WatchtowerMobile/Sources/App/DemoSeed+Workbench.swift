@@ -130,7 +130,7 @@ extension DemoSeed {
             ]),
             JSON.session(17, workbench: acmeID, [
                 "title": "Scratch", "state_kind": "not_started", "state_caption": "Not running", "state_tone": "secondary",
-                "live": false, "is_ring": true, "last_active_at": JSON.stamp(ago(86_400))
+                "live": false, "is_ring": true, "last_active_at": JSON.stamp(ago(172_800))
             ])
         ]
         let website: [[String: Any]] = [

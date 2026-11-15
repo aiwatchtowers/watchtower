@@ -23,7 +23,9 @@ A Claude Code session takes your line while it works and reads it at its next st
 - **Ended**: sessions that stopped, finished or failed in the last 24 hours. A session with an open ask shows only as that ask. **Clear** takes them all off this phone; touch and hold a row for **Seen** to take only that one.
 - **Next meeting**, with **Record** from 10 minutes before it starts to 10 minutes after.
 
-A workbench opens on its sessions in the Mac's sessions panel order: **Waiting for you**, **Working**, **Ready to check**, **Not running**, then **N finished** folded. **N closed** at the end holds answered asks.
+The **Now** tab's badge counts the asks and permission prompts waiting on the Mac on screen; the app icon's badge counts them on all your Macs.
+
+A workbench opens on its sessions: **Waiting for you** (a session with an open ask, a permission prompt or a check to give), **Working**, **Ended** (stopped, finished or failed in the last 24 hours), then **N older** folded. **N closed** at the end holds answered asks. The board's counts show on **Board**; a group there counts its sub-targets as **0/2 · 1 archived**: done of those on the board, then those in the archive, and **N more on the Mac** for any the phone does not hold.
 
 ### Follow a session
 <!-- learn

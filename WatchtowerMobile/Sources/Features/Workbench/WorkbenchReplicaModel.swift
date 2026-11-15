@@ -135,8 +135,8 @@ struct WorkbenchReplicaSnapshot: Equatable {
         permissionRequests.filter { $0.sessionID == sessionID }.max(by: Self.olderRequest)
     }
 
-    /// The Workbench tab's badge: open asks plus pending permission
-    /// requests.
+    /// Open asks plus pending permission requests: Now's Waiting for you and
+    /// the Now tab's badge (#1788); summed over the hubs, the app icon's.
     var openAskCount: Int {
         openAsks().count + pendingPermissions.count
     }
@@ -157,7 +157,7 @@ struct WorkbenchReplicaSnapshot: Equatable {
 final class WorkbenchReplicaModel {
     private(set) var snapshot = WorkbenchReplicaSnapshot()
     /// The open asks and pending permission requests across all
-    /// workbenches: the Workbench tab's badge.
+    /// workbenches: the Now tab's badge.
     /// Its own property, so the tab bar re-renders only when it changes.
     private(set) var openAskCount = 0
     /// The decoded kinds between reads (and the tests' decode counter).
