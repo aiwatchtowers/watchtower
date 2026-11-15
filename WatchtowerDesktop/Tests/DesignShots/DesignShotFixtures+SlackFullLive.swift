@@ -149,7 +149,9 @@ private struct SlackPaneMock: View {
              LiveRowMock(provider: Copy.providerCodex, status: Copy.liveNotConnected,
                          reason: Copy.reasonCLIMissing, checked: Copy.checked5H, tone: Tone.status("gray"))]
         case .live:
-            [LiveRowMock(provider: Copy.providerClaude, status: Copy.liveOn, reason: nil,
+            [LiveRowMock(provider: Copy.providerClaude, status: Copy.liveNotConnected,
+                         reason: Copy.reasonDefault, checked: Copy.checked12Min, tone: Tone.status("gray")),
+             LiveRowMock(provider: Copy.providerCodex, status: Copy.liveOnTeamID, reason: nil,
                          checked: Copy.checked12Min, tone: Tone.success)]
         case .liveProblems:
             [LiveRowMock(provider: Copy.providerClaude, status: Copy.liveOnUnidentified,

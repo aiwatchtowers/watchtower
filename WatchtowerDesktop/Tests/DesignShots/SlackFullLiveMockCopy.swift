@@ -32,6 +32,7 @@ enum SlackFullLiveMockCopy {
     static let providerClaude = "Claude"
     static let providerCodex = "ChatGPT (Codex)"
     static let liveOn = "On · acme"
+    static let liveOnTeamID = "On · T0ACME"
     static let liveOnUnidentified = "On · workspace not identified"
     static let liveNotConnected = "Not connected"
     static let liveNeedsAdmin = "Waiting for your Slack admin"
