@@ -123,7 +123,7 @@ text: Pick a target on the phone's board and press **Start session**; its brief 
 area: iphone
 level: next
 kind: tip
-since: next
+since: 0.28.3
 -->
 
 From a target, the sheet shows its intent and a ready brief: press **Start session**. Editing the brief needs typing allowed.
@@ -150,7 +150,7 @@ text: With several towers linked, tap the status chip atop **Now** to see them a
 area: iphone
 level: next
 kind: tip
-since: next
+since: 0.28.3
 -->
 
 Settings → **Towers** lists your towers. **Add tower** scans another code (up to four); drag rows to reorder. **Unlink** (or **Forget**, for one that removed the phone or is long offline) deletes its data from the phone; unsent changes are lost, and the phone says how many. With several, the status chip atop Now, Workbench and Calendar (**Acme Mac · online ▾**) lists them and the questions waiting on the others; a tap switches every tab.
