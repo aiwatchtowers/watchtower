@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -122,6 +123,27 @@ func TestListMessages_Coverage(t *testing.T) {
 	require.NoError(t, d.UpsertChannel(db.Channel{ID: "1:C1", Name: "ops", Type: "public", IsMember: true}))
 	got = coverageEnvelope{}
 	require.NoError(t, json.Unmarshal([]byte(callMain(t, messagesRegistry(t, d), "list_messages", `{"channel":"ops"}`)), &got))
+	require.NotNil(t, got.Coverage.ChannelInScope)
+	assert.True(t, *got.Coverage.ChannelInScope)
+}
+
+// An excluded channel (Stop syncing) is not in scope: the chat asks Live
+// Slack for it.
+func TestListMessages_ExcludedChannelNotInScope(t *testing.T) {
+	d := seedMessagesDB(t)
+	_, err := d.CreateSlackAccount(db.SlackAccount{TeamID: "T1", Status: "ok", Enabled: true})
+	require.NoError(t, err)
+	require.NoError(t, d.UpsertChannel(db.Channel{ID: "1:C0JUNK", Name: "junk", Type: "public", IsMember: true}))
+	require.NoError(t, d.SetSyncExcluded("1:C0JUNK", true, time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)))
+
+	var got coverageEnvelope
+	require.NoError(t, json.Unmarshal([]byte(callMain(t, messagesRegistry(t, d), "list_messages", `{"channel":"junk"}`)), &got))
+	require.NotNil(t, got.Coverage.ChannelInScope)
+	assert.False(t, *got.Coverage.ChannelInScope)
+
+	require.NoError(t, d.SetSyncExcluded("1:C0JUNK", false, time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC)))
+	got = coverageEnvelope{}
+	require.NoError(t, json.Unmarshal([]byte(callMain(t, messagesRegistry(t, d), "list_messages", `{"channel":"junk"}`)), &got))
 	require.NotNil(t, got.Coverage.ChannelInScope)
 	assert.True(t, *got.Coverage.ChannelInScope)
 }

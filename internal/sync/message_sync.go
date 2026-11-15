@@ -148,6 +148,11 @@ func (o *Orchestrator) buildChannelQueue(opts SyncOptions) ([]SyncTask, error) {
 			}
 		}
 
+		// Stop syncing (SYNCEX-01) wins even over an explicit --channels.
+		if o.syncExcluded[ch.ID] {
+			continue
+		}
+
 		// Skip archived channels unless explicitly requested
 		if ch.IsArchived && filterSet == nil {
 			continue

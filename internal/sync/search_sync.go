@@ -273,6 +273,9 @@ func (o *Orchestrator) BackfillSearch(ctx context.Context, from, to time.Time) (
 	o.account = acct
 	o.slackClient.SetTeamDomain(acct.TeamDomain)
 	o.resetMediaPlan()
+	if err := o.loadSyncExcluded(); err != nil {
+		return 0, err
+	}
 	o.backfilling = true
 	defer func() { o.backfilling = false }()
 	after, before := slackSearchRange(from, to)
@@ -398,6 +401,16 @@ func (o *Orchestrator) searchAndSaveFrom(ctx context.Context, query string, star
 		for _, msg := range result.Messages {
 			namespacedChannelID := watchtowerslack.Namespace(o.accountID, msg.Channel.ID)
 			namespacedUserID := watchtowerslack.Namespace(o.accountID, msg.User)
+
+			// Stop syncing (SYNCEX-01): an excluded channel's match is
+			// dropped unless it mentions the owner. The listing still
+			// records it, so a deletion diff never takes it for gone.
+			if o.syncExcluded[namespacedChannelID] && !o.mentionsOwner(msg.Text) {
+				if listing != nil {
+					listing.seen[db.SlackMessageKey{ChannelID: namespacedChannelID, TS: msg.Timestamp}] = struct{}{}
+				}
+				continue
+			}
 
 			// Ensure channel
 			if msg.Channel.ID != "" && !seenChannels[msg.Channel.ID] {

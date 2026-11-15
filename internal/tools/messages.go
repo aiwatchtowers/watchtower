@@ -68,7 +68,7 @@ func messageCoverage(d *db.DB, inScope *bool) (messageCoverageResult, error) {
 }
 
 // channelInScope is true when one of the resolved channels is synced for
-// the owner: a member channel or a direct message.
+// the owner: a member channel or a direct message, without Stop syncing on.
 func channelInScope(d *db.DB, ids []string) (*bool, error) {
 	in := false
 	for _, id := range ids {
@@ -76,7 +76,14 @@ func channelInScope(d *db.DB, ids []string) (*bool, error) {
 		if err != nil {
 			return nil, fmt.Errorf("resolving channel: %w", err)
 		}
-		if c != nil && !c.IsArchived && (c.IsMember || c.Type == "dm" || c.Type == "group_dm") {
+		if c == nil || c.IsArchived || !(c.IsMember || c.Type == "dm" || c.Type == "group_dm") {
+			continue
+		}
+		cs, err := d.GetChannelSettings(id)
+		if err != nil {
+			return nil, fmt.Errorf("resolving channel: %w", err)
+		}
+		if cs == nil || !cs.SyncExcluded {
 			in = true
 		}
 	}

@@ -332,6 +332,53 @@ final class ChannelStatsTests: XCTestCase {
         XCTAssertFalse(updated.isMutedForLLM)
     }
 
+    /// The mute writer follows Go's rule case for case
+    /// (`internal/db/testdata/channel_mute_cases.json`, read by Go's `TestMuteCases`).
+    func testMuteCasesMatchGo() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // Tests
+            .deletingLastPathComponent() // WatchtowerDesktop
+            .deletingLastPathComponent() // repo root
+            .appendingPathComponent("internal/db/testdata/channel_mute_cases.json")
+        let fixture = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        let cases = try XCTUnwrap(fixture["cases"] as? [[String: Any]])
+        XCTAssertFalse(cases.isEmpty)
+        for item in cases {
+            let name = try XCTUnwrap(item["name"] as? String)
+            let action = try XCTUnwrap(item["action"] as? String)
+            let after = try XCTUnwrap(item["after"] as? [String: Any])
+            let before = item["before"] as? [String: Any]
+            let db = try TestDatabase.create()
+            try db.write { db in
+                try TestDatabase.insertChannel(db, id: "C001", name: "test")
+                if let before {
+                    try db.execute(sql: """
+                        INSERT INTO channel_settings (channel_id, is_muted_for_llm, muted_at, muted_by_exclusion)
+                        VALUES ('C001', ?, ?, ?)
+                        """, arguments: [before["is_muted_for_llm"] as? Int, before["muted_at"] as? String,
+                                         before["muted_by_exclusion"] as? Int])
+                }
+                try ChannelStatsQueries.toggleMuteForLLM(db, channelID: "C001", muted: action == "mute")
+            }
+            let row = try XCTUnwrap(db.read { db in
+                try Row.fetchOne(db, sql: """
+                    SELECT is_muted_for_llm, muted_at, muted_by_exclusion
+                    FROM channel_settings WHERE channel_id = 'C001'
+                    """)
+            }, name)
+            XCTAssertEqual(row["is_muted_for_llm"] as Int, after["is_muted_for_llm"] as? Int, name)
+            XCTAssertEqual(row["muted_by_exclusion"] as Int, after["muted_by_exclusion"] as? Int, name)
+            let mutedAt: String = row["muted_at"]
+            let want = try XCTUnwrap(after["muted_at"] as? String)
+            if want == "$now" {
+                XCTAssertFalse(mutedAt.isEmpty, name)
+                XCTAssertNotEqual(mutedAt, before?["muted_at"] as? String, name)
+            } else {
+                XCTAssertEqual(mutedAt, want, name)
+            }
+        }
+    }
+
     func testToggleFavorite() throws {
         let db = try TestDatabase.create()
         try db.write { db in

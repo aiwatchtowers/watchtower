@@ -31,11 +31,12 @@ type pagedSearch struct {
 	mu         gosync.Mutex
 	pages      int
 	limitPage  int
-	deleted    int            // item removed from the window (0 = none); later items slide back a page
-	errPage    int            // blanket page answered missing_scope (0 = none)
-	mentionErr bool           // the mention query answers missing_scope
-	onPage     func(page int) // called before a blanket page is answered
-	requests   []string       // "query#page" in request order
+	deleted    int                      // item removed from the window (0 = none); later items slide back a page
+	errPage    int                      // blanket page answered missing_scope (0 = none)
+	mentionErr bool                     // the mention query answers missing_scope
+	onPage     func(page int)           // called before a blanket page is answered
+	extra      map[int][]map[string]any // more matches on a blanket page (nil = none)
+	requests   []string                 // "query#page" in request order
 }
 
 func (s *pagedSearch) handle(w http.ResponseWriter, r *http.Request) {
@@ -45,6 +46,7 @@ func (s *pagedSearch) handle(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.requests = append(s.requests, fmt.Sprintf("%s#%d", query, page))
 	pages, limit, deleted, errPage, mentionErr, onPage := s.pages, s.limitPage, s.deleted, s.errPage, s.mentionErr, s.onPage
+	extra := s.extra[page]
 	s.mu.Unlock()
 
 	if strings.HasPrefix(query, "<@") && mentionErr {
@@ -81,7 +83,7 @@ func (s *pagedSearch) handle(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	jsonOK(w, map[string]any{"ok": true, "messages": map[string]any{
-		"matches": []map[string]any{liveDiffMatch(itemTS(item))},
+		"matches": append([]map[string]any{liveDiffMatch(itemTS(item))}, extra...),
 		"paging":  map[string]any{"count": 100, "total": pages, "page": page, "pages": pages},
 		"total":   pages,
 	}})

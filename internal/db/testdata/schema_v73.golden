@@ -1018,7 +1018,7 @@ channel_id TEXT PRIMARY KEY REFERENCES channels(id) ON DELETE CASCADE,
 is_muted_for_llm INTEGER NOT NULL DEFAULT 0,
 is_favorite INTEGER NOT NULL DEFAULT 0,
 updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-)
+, sync_excluded INTEGER NOT NULL DEFAULT 0, excluded_at TEXT NOT NULL DEFAULT '', catchup_from REAL, catchup_to REAL, muted_by_exclusion INTEGER NOT NULL DEFAULT 0, muted_at TEXT NOT NULL DEFAULT '')
 
 table	channels
 CREATE TABLE channels (
@@ -4590,6 +4590,12 @@ GROUP BY up.ancestor
 1	is_muted_for_llm	INTEGER	notnull=1	dflt=0	pk=0
 2	is_favorite	INTEGER	notnull=1	dflt=0	pk=0
 3	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
+4	sync_excluded	INTEGER	notnull=1	dflt=0	pk=0
+5	excluded_at	TEXT	notnull=1	dflt=''	pk=0
+6	catchup_from	REAL	notnull=0	dflt=NULL	pk=0
+7	catchup_to	REAL	notnull=0	dflt=NULL	pk=0
+8	muted_by_exclusion	INTEGER	notnull=1	dflt=0	pk=0
+9	muted_at	TEXT	notnull=1	dflt=''	pk=0
 
 ## channels
 0	id	TEXT	notnull=0	dflt=NULL	pk=1
