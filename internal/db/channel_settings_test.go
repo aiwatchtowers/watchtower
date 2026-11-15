@@ -263,11 +263,25 @@ func TestCatchups_PendingAdvanceFinish(t *testing.T) {
 	assert.Equal(t, "1:C0A", pending[1].ChannelID)
 
 	mid := float64(exclDay1.Add(48 * time.Hour).Unix())
-	require.NoError(t, db.AdvanceCatchup("1:C0B", mid))
-	require.NoError(t, db.AdvanceCatchup("1:C0B", mid+3600), "an advance only moves down")
+	c := pending[0]
+	applied, err := db.AdvanceCatchup(c, mid)
+	require.NoError(t, err)
+	assert.True(t, applied)
+	applied, err = db.AdvanceCatchup(c, mid-60)
+	require.NoError(t, err)
+	assert.False(t, applied, "a stale bound (c.To is no longer the stored one) changes nothing")
+	c.To = mid
+	applied, err = db.AdvanceCatchup(c, mid+3600)
+	require.NoError(t, err)
+	assert.False(t, applied, "an advance only moves down")
 	assert.Equal(t, mid, mustSettings(t, db, "1:C0B").CatchupTo.Float64)
 
-	require.NoError(t, db.FinishCatchup("1:C0B"))
+	applied, err = db.FinishCatchup(Catchup{ChannelID: "1:C0B", From: c.From, To: c.To + 1})
+	require.NoError(t, err)
+	assert.False(t, applied, "a stale finish changes nothing")
+	applied, err = db.FinishCatchup(c)
+	require.NoError(t, err)
+	assert.True(t, applied)
 	cs := mustSettings(t, db, "1:C0B")
 	assert.False(t, cs.CatchupFrom.Valid)
 	assert.False(t, cs.CatchupTo.Valid)
@@ -284,7 +298,14 @@ func TestSetSyncExcluded_DuringCatchupKeepsItsStart(t *testing.T) {
 	ensureChannels(t, db, "1:C0JUNK")
 	require.NoError(t, db.SetSyncExcluded("1:C0JUNK", true, exclDay1))
 	require.NoError(t, db.SetSyncExcluded("1:C0JUNK", false, exclDay10))
-	require.NoError(t, db.AdvanceCatchup("1:C0JUNK", float64(exclDay1.Add(72*time.Hour).Unix())))
+	pending, err := db.PendingCatchups(1)
+	require.NoError(t, err)
+	require.Len(t, pending, 1)
+	walk := pending[0]
+	applied, err := db.AdvanceCatchup(walk, float64(exclDay1.Add(72*time.Hour).Unix()))
+	require.NoError(t, err)
+	require.True(t, applied)
+	walk.To = float64(exclDay1.Add(72 * time.Hour).Unix())
 
 	require.NoError(t, db.SetSyncExcluded("1:C0JUNK", true, exclDay11))
 	cs := mustSettings(t, db, "1:C0JUNK")
@@ -292,9 +313,25 @@ func TestSetSyncExcluded_DuringCatchupKeepsItsStart(t *testing.T) {
 	assert.False(t, cs.CatchupFrom.Valid)
 	assert.False(t, cs.CatchupTo.Valid)
 
-	require.NoError(t, db.AdvanceCatchup("1:C0JUNK", float64(exclDay1.Add(24*time.Hour).Unix())))
+	applied, err = db.AdvanceCatchup(walk, float64(exclDay1.Add(24*time.Hour).Unix()))
+	require.NoError(t, err)
+	assert.False(t, applied)
 	cs = mustSettings(t, db, "1:C0JUNK")
 	assert.False(t, cs.CatchupTo.Valid, "a late advance cannot revive a catch-up of an excluded channel")
+
+	// ABA: Sync again starts a catch-up with the same start; the old walk's
+	// advance and finish must not touch it.
+	require.NoError(t, db.SetSyncExcluded("1:C0JUNK", false, exclDay11.Add(time.Hour)))
+	cs = mustSettings(t, db, "1:C0JUNK")
+	require.Equal(t, walk.From, cs.CatchupFrom.Float64, "same start as the old walk")
+	applied, err = db.AdvanceCatchup(walk, float64(exclDay1.Add(24*time.Hour).Unix()))
+	require.NoError(t, err)
+	assert.False(t, applied)
+	applied, err = db.FinishCatchup(walk)
+	require.NoError(t, err)
+	assert.False(t, applied)
+	cs = mustSettings(t, db, "1:C0JUNK")
+	assert.Equal(t, float64(exclDay11.Add(time.Hour).Unix()), cs.CatchupTo.Float64, "the new catch-up is intact")
 }
 
 func TestSyncExcludedChannelIDs(t *testing.T) {

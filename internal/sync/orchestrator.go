@@ -125,7 +125,7 @@ type Orchestrator struct {
 	runStart     time.Time
 	firstCycleAt time.Time
 	// backfilling is set while BackfillSearch or a Sync again catch-up
-	// (runCatchups) saves: history stamps every message with its post time,
+	// (runSyncAgainCatchups) saves: history stamps every message with its post time,
 	// so it never reaches the Inbox.
 	backfilling bool
 
@@ -588,7 +588,7 @@ func (o *Orchestrator) runSearchSync(ctx context.Context, opts SyncOptions) erro
 	// after a clean search, last, so a 429 it meets holds no other phase.
 	// Best-effort: a stop keeps its bound for the next run.
 	if !o.searchIncomplete {
-		if err := o.runCatchups(ctx); err != nil {
+		if err := o.runSyncAgainCatchups(ctx); err != nil {
 			o.logger.Printf("slack catch-up: account %d: %v", o.accountID, err)
 		}
 	}

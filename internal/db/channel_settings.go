@@ -274,22 +274,38 @@ func (db *DB) PendingCatchups(accountID int64) ([]Catchup, error) {
 	return out, rows.Err()
 }
 
-// AdvanceCatchup moves a catch-up's upper bound down to `to` after a saved
-// page. It only moves down, and never for an excluded channel, so a page
-// saved after a new Stop syncing cannot revive the catch-up.
-func (db *DB) AdvanceCatchup(channelID string, to float64) error {
-	if _, err := db.Exec(`UPDATE channel_settings SET catchup_to = ?
-		WHERE channel_id = ? AND sync_excluded = 0 AND catchup_to > ?`, to, channelID, to); err != nil {
-		return fmt.Errorf("advancing catch-up of %s: %w", channelID, err)
+// AdvanceCatchup moves the catch-up c of a channel down to `to` after a
+// saved page. It is a compare-and-set on the bounds the walker read (c.From,
+// c.To): it applies only while the channel is not excluded, the catch-up is
+// still that one at that bound, and `to` is below it. applied is false
+// otherwise, and the walker stops: a Stop syncing (and a later Sync again,
+// which may start a catch-up with the same From) made its walk stale.
+func (db *DB) AdvanceCatchup(c Catchup, to float64) (applied bool, err error) {
+	res, err := db.Exec(`UPDATE channel_settings SET catchup_to = ?
+		WHERE channel_id = ? AND sync_excluded = 0 AND catchup_from = ? AND catchup_to = ? AND catchup_to > ?`,
+		to, c.ChannelID, c.From, c.To, to)
+	if err != nil {
+		return false, fmt.Errorf("advancing catch-up of %s: %w", c.ChannelID, err)
 	}
-	return nil
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("advancing catch-up of %s: %w", c.ChannelID, err)
+	}
+	return n > 0, nil
 }
 
-// FinishCatchup clears a channel's catch-up.
-func (db *DB) FinishCatchup(channelID string) error {
-	if _, err := db.Exec(`UPDATE channel_settings SET catchup_from = NULL, catchup_to = NULL
-		WHERE channel_id = ?`, channelID); err != nil {
-		return fmt.Errorf("finishing catch-up of %s: %w", channelID, err)
+// FinishCatchup clears the catch-up c of a channel, compare-and-set on its
+// bounds like AdvanceCatchup: a catch-up started or cleared since the walker
+// read c is left alone (applied = false).
+func (db *DB) FinishCatchup(c Catchup) (applied bool, err error) {
+	res, err := db.Exec(`UPDATE channel_settings SET catchup_from = NULL, catchup_to = NULL
+		WHERE channel_id = ? AND catchup_from = ? AND catchup_to = ?`, c.ChannelID, c.From, c.To)
+	if err != nil {
+		return false, fmt.Errorf("finishing catch-up of %s: %w", c.ChannelID, err)
 	}
-	return nil
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("finishing catch-up of %s: %w", c.ChannelID, err)
+	}
+	return n > 0, nil
 }

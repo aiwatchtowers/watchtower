@@ -29,13 +29,14 @@ func exclMatch(ch, name, ts, text string) map[string]any {
 		"channel": map[string]any{"id": ch, "name": name}}
 }
 
-// exclSearch answers search.messages by query: the mention query gets the
-// forward matches that mention U001, a dated query (the sweep, a history
+// exclSearch answers search.messages by query: the mention query gets
+// mention when set, else the forward matches that mention U001, a dated query (the sweep, a history
 // backfill) dated, any other query (the blanket search) forward.
 type exclSearch struct {
 	mu        gosync.Mutex
 	forward   []map[string]any
 	dated     []map[string]any
+	mention   []map[string]any
 	onForward func()
 	queries   []string
 }
@@ -48,6 +49,8 @@ func (s *exclSearch) handle(w http.ResponseWriter, r *http.Request) {
 	var matches []map[string]any
 	onForward := s.onForward
 	switch {
+	case strings.HasPrefix(query, "<@") && s.mention != nil:
+		matches = s.mention
 	case strings.HasPrefix(query, "<@"):
 		for _, m := range s.forward {
 			if strings.Contains(m["text"].(string), "<@U001>") {
@@ -84,6 +87,9 @@ type exclHistory struct {
 	served   map[string]int
 	requests []historyReq
 	limitAt  int
+	errCode  string      // C0JUNK requests answer ok:false with this code ("" = none)
+	onJunk   func(n int) // called before the n-th C0JUNK request (1-based) is answered
+	junkN    int
 	calls    int
 }
 
@@ -103,6 +109,16 @@ func (h *exclHistory) handle(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Retry-After", "3600")
 		w.WriteHeader(http.StatusTooManyRequests)
 		return
+	}
+	if ch == "C0JUNK" {
+		h.junkN++
+		if h.onJunk != nil {
+			h.onJunk(h.junkN)
+		}
+		if h.errCode != "" {
+			jsonOK(w, map[string]any{"ok": false, "error": h.errCode})
+			return
+		}
 	}
 	if ch != "C0JUNK" {
 		jsonOK(w, map[string]any{"ok": true, "has_more": false, "messages": []map[string]any{
@@ -201,29 +217,82 @@ func (e *exclSetup) stored(t *testing.T, raw string) []string {
 	return out
 }
 
+func (e *exclSetup) deleted(t *testing.T, raw, ts string) bool {
+	t.Helper()
+	var d bool
+	require.NoError(t, e.db.QueryRow(`SELECT is_deleted FROM messages WHERE channel_id = ? AND ts = ?`, e.ns(raw), ts).Scan(&d))
+	return d
+}
+
 func (e *exclSetup) run(t *testing.T, opts SyncOptions) {
 	t.Helper()
 	require.NoError(t, e.orch.Run(context.Background(), opts))
 }
 
 // TestSYNCEX01_EveryPathHonoursExclusion guards SYNCEX-01: a channel with
-// Stop syncing on gets no new message rows from the forward search, the
-// deletion sweep, the history backfill or `sync --channels`, while the same
-// answer still stores another channel's message (the path ran).
+// Stop syncing on gets no new message rows from any save path — the forward
+// search, the mention query (except mentions of the user), resumed search
+// pages, the deletion sweep, the history backfill, `sync --full`,
+// `sync --channels` and a Sync again catch-up — while the same answer still
+// stores another channel's message (the path ran).
 func TestSYNCEX01_EveryPathHonoursExclusion(t *testing.T) {
 	junkTS := slackTS(exclNow.Add(-time.Hour))
 	okTS := slackTS(exclNow.Add(-50 * time.Minute))
 
 	t.Run("forward search", func(t *testing.T) {
 		e := newExclSetup(t)
+		// Stored before Stop syncing, inside the live diff window: its
+		// match is dropped, and the listing diff must not take it for gone.
+		kept := slackTS(exclNow.Add(-4 * time.Hour))
+		require.NoError(t, e.db.UpsertMessage(db.Message{ChannelID: e.ns("C0JUNK"), TS: kept, UserID: e.ns("U002"), Text: "before"}))
 		e.exclude(t, true, exclNow.AddDate(0, 0, -5))
 		e.search.forward = []map[string]any{
+			exclMatch("C0JUNK", "junk", kept, "before"),
 			exclMatch("C0JUNK", "junk", junkTS, "noise"),
 			exclMatch("C001", "general", okTS, "kept"),
 		}
 		e.run(t, SyncOptions{})
-		assert.Empty(t, e.stored(t, "C0JUNK"))
+		assert.Equal(t, []string{kept}, e.stored(t, "C0JUNK"), "only the row stored before")
+		assert.False(t, e.deleted(t, "C0JUNK", kept), "a dropped match still counts as listed")
 		assert.Equal(t, []string{okTS}, e.stored(t, "C001"))
+	})
+
+	t.Run("mention query", func(t *testing.T) {
+		e := newExclSetup(t)
+		e.exclude(t, true, exclNow.AddDate(0, 0, -5))
+		e.orch.outcome.RateLimited = true // behind: the mention query runs first
+		mention := slackTS(exclNow.Add(-time.Hour))
+		plain := slackTS(exclNow.Add(-59 * time.Minute))
+		okMention := slackTS(exclNow.Add(-58 * time.Minute))
+		e.search.mention = []map[string]any{
+			exclMatch("C0JUNK", "junk", mention, "<@U001> look"),
+			exclMatch("C0JUNK", "junk", plain, "no mention in this text"),
+			exclMatch("C001", "general", okMention, "<@U001> here too"),
+		}
+		e.run(t, SyncOptions{})
+		require.True(t, strings.HasPrefix(e.search.queries[0], "<@U001>"), "the mention query ran first: %v", e.search.queries)
+		assert.Equal(t, []string{mention}, e.stored(t, "C0JUNK"))
+		assert.Equal(t, []string{okMention}, e.stored(t, "C001"))
+	})
+
+	t.Run("resumed search pages", func(t *testing.T) {
+		ts, s := newResumeSetup(t, 4, 3) // run 1 reads pages 1-2, page 3 is rate-limited
+		ts.orch.logger = log.New(io.Discard, "", 0)
+		require.NoError(t, ts.db.EnsureChannel(ts.ns("C0JUNK"), "junk", "public", ""))
+		require.NoError(t, ts.db.SetSyncExcluded(ts.ns("C0JUNK"), true, resumeNow.AddDate(0, 0, -5)))
+		s.extra = map[int][]map[string]any{3: {exclMatch("C0JUNK", "junk", itemTS(30), "noise")}}
+		require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{}))
+		require.Equal(t, pageRequests(resumeQuery, 1, 2, 3), s.blanket())
+
+		ts.freshClient()
+		s.reset(0)
+		require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{}))
+		require.Equal(t, pageRequests(resumeQuery, 2, 3, 4), s.blanket(), "the run resumed")
+		var junk, ok int
+		require.NoError(t, ts.db.QueryRow(`SELECT COUNT(*) FROM messages WHERE channel_id = ?`, ts.ns("C0JUNK")).Scan(&junk))
+		require.NoError(t, ts.db.QueryRow(`SELECT COUNT(*) FROM messages WHERE channel_id = ? AND ts = ?`, ts.ns("C001"), itemTS(3)).Scan(&ok))
+		assert.Zero(t, junk)
+		assert.Equal(t, 1, ok, "the resumed page's other match is stored")
 	})
 
 	t.Run("deletion sweep", func(t *testing.T) {
@@ -233,14 +302,18 @@ func TestSYNCEX01_EveryPathHonoursExclusion(t *testing.T) {
 		oldOK := slackTS(day)
 		require.NoError(t, e.db.UpsertMessage(db.Message{ChannelID: e.ns("C001"), TS: oldOK, UserID: e.ns("U002"), Text: "old"}))
 		newOK := slackTS(day.Add(time.Minute))
+		keptJunk := slackTS(day.Add(3 * time.Minute))
+		require.NoError(t, e.db.UpsertMessage(db.Message{ChannelID: e.ns("C0JUNK"), TS: keptJunk, UserID: e.ns("U002"), Text: "before"}))
 		e.search.dated = []map[string]any{
+			exclMatch("C0JUNK", "junk", keptJunk, "before"),
 			exclMatch("C0JUNK", "junk", slackTS(day.Add(2*time.Minute)), "noise"),
 			exclMatch("C001", "general", oldOK, "old"),
 			exclMatch("C001", "general", newOK, "found by the sweep"),
 		}
 		e.run(t, SyncOptions{})
 		require.NotEmpty(t, sweepQueries(e.search.queries), "the sweep ran")
-		assert.Empty(t, e.stored(t, "C0JUNK"))
+		assert.Equal(t, []string{keptJunk}, e.stored(t, "C0JUNK"), "only the row stored before")
+		assert.False(t, e.deleted(t, "C0JUNK", keptJunk), "a dropped match still counts as listed")
 		assert.Equal(t, []string{oldOK, newOK}, e.stored(t, "C001"))
 	})
 
@@ -256,6 +329,34 @@ func TestSYNCEX01_EveryPathHonoursExclusion(t *testing.T) {
 		require.NoError(t, err)
 		assert.Empty(t, e.stored(t, "C0JUNK"))
 		assert.Equal(t, []string{slackTS(day.Add(time.Minute))}, e.stored(t, "C001"))
+	})
+
+	t.Run("sync --full", func(t *testing.T) {
+		e := newExclSetup(t)
+		e.exclude(t, true, exclNow.AddDate(0, 0, -5))
+		e.history.pool = []float64{float64(exclNow.Add(-time.Hour).Unix())}
+		e.run(t, SyncOptions{Full: true})
+		assert.Empty(t, e.history.junkRequests(), "an excluded channel is never queued")
+		assert.Empty(t, e.stored(t, "C0JUNK"))
+		assert.Len(t, e.stored(t, "C001"), 1)
+	})
+
+	t.Run("sync again catch-up", func(t *testing.T) {
+		e := newExclSetup(t)
+		e.seedCatchup(t)
+		// Excluded with the bounds still set (no writer leaves this, but
+		// PendingCatchups must hold on its own): no catch-up page.
+		_, err := e.db.Exec(`UPDATE channel_settings SET sync_excluded = 1 WHERE channel_id = ?`, e.ns("C0JUNK"))
+		require.NoError(t, err)
+		from, to := e.catchupBounds(t)
+		require.NotNil(t, from)
+		require.NotNil(t, to)
+		okTS := slackTS(e.now.Add(-30 * time.Minute))
+		e.search.forward = []map[string]any{exclMatch("C001", "general", okTS, "kept")}
+		e.run(t, SyncOptions{})
+		assert.Empty(t, e.history.junkRequests(), "no catch-up of an excluded channel")
+		assert.Empty(t, e.stored(t, "C0JUNK"))
+		assert.Equal(t, []string{okTS}, e.stored(t, "C001"))
 	})
 
 	t.Run("sync --channels", func(t *testing.T) {
@@ -408,14 +509,14 @@ func TestSyncAgain_CatchesUpExcludedPeriod(t *testing.T) {
 
 	e.run(t, SyncOptions{})
 	reqs := e.history.junkRequests()
-	require.Len(t, reqs, catchupPagesPerRun)
+	require.Len(t, reqs, syncAgainPagesPerRun)
 	assertWalk(t, reqs, float64(catchDay10.Unix()), e, 1)
 	_, to := e.catchupBounds(t)
 	require.NotNil(t, to)
 	assert.Equal(t, e.pageOldest(5), *to)
 
 	e.run(t, SyncOptions{})
-	require.Len(t, e.history.junkRequests(), 2*catchupPagesPerRun)
+	require.Len(t, e.history.junkRequests(), 2*syncAgainPagesPerRun)
 	_, to = e.catchupBounds(t)
 	require.NotNil(t, to)
 	assert.Equal(t, e.pageOldest(10), *to)
@@ -434,7 +535,7 @@ func TestSyncAgain_CatchupSurvivesRestart(t *testing.T) {
 	e := newExclSetup(t)
 	e.seedCatchup(t)
 	e.run(t, SyncOptions{})
-	require.Len(t, e.history.junkRequests(), catchupPagesPerRun)
+	require.Len(t, e.history.junkRequests(), syncAgainPagesPerRun)
 
 	// A new orchestrator over the same database (a daemon restart).
 	restarted := NewOrchestrator(e.db, e.orch.slackClient, e.orch.config, e.accountID)
@@ -443,8 +544,8 @@ func TestSyncAgain_CatchupSurvivesRestart(t *testing.T) {
 	e.orch = restarted
 	e.run(t, SyncOptions{})
 	reqs := e.history.junkRequests()
-	require.Len(t, reqs, 2*catchupPagesPerRun)
-	assert.Equal(t, formatSlackTS(e.pageOldest(5)), reqs[catchupPagesPerRun].latest, "continues at catchup_to")
+	require.Len(t, reqs, 2*syncAgainPagesPerRun)
+	assert.Equal(t, formatSlackTS(e.pageOldest(5)), reqs[syncAgainPagesPerRun].latest, "continues at catchup_to")
 
 	e.run(t, SyncOptions{})
 	assertWalk(t, e.history.junkRequests(), float64(catchDay10.Unix()), e, 1)
@@ -478,8 +579,11 @@ func TestSyncAgain_StopSyncingDuringCatchup(t *testing.T) {
 	e := newExclSetup(t)
 	e.seedCatchup(t)
 	e.run(t, SyncOptions{})
-	require.Len(t, e.history.junkRequests(), catchupPagesPerRun)
+	require.Len(t, e.history.junkRequests(), syncAgainPagesPerRun)
 
+	walk, err := e.db.PendingCatchups(e.accountID)
+	require.NoError(t, err)
+	require.Len(t, walk, 1)
 	day11 := catchDay10.AddDate(0, 0, 1)
 	e.exclude(t, true, day11)
 	from, to := e.catchupBounds(t)
@@ -488,7 +592,9 @@ func TestSyncAgain_StopSyncingDuringCatchup(t *testing.T) {
 	cs, err := e.db.GetChannelSettings(e.ns("C0JUNK"))
 	require.NoError(t, err)
 	assert.Equal(t, catchDay1.Format(time.RFC3339), cs.ExcludedAt)
-	require.NoError(t, e.db.AdvanceCatchup(e.ns("C0JUNK"), e.pageOldest(6)))
+	applied, err := e.db.AdvanceCatchup(walk[0], e.pageOldest(6))
+	require.NoError(t, err)
+	assert.False(t, applied)
 	_, to = e.catchupBounds(t)
 	assert.Nil(t, to, "a late advance changes nothing")
 
@@ -523,4 +629,48 @@ func TestSyncAgain_StopSyncingDuringCatchup(t *testing.T) {
 func TestFormatSlackTS(t *testing.T) {
 	v := float64(catchDay1.Unix()) + 0.0001
 	assert.Equal(t, fmt.Sprintf("%d.000100", catchDay1.Unix()), formatSlackTS(v))
+}
+
+// A Stop syncing while a catch-up walks ends the walk at its next advance
+// (compare-and-set).
+func TestSyncAgain_ReExcludedMidRunStops(t *testing.T) {
+	e := newExclSetup(t)
+	e.seedCatchup(t)
+	e.history.onJunk = func(n int) {
+		if n == 2 {
+			require.NoError(t, e.db.SetSyncExcluded(e.ns("C0JUNK"), true, e.now))
+		}
+	}
+	e.run(t, SyncOptions{})
+	assert.Len(t, e.history.junkRequests(), 2, "the walk stopped at the advance that no longer applied")
+	from, to := e.catchupBounds(t)
+	assert.Nil(t, from)
+	assert.Nil(t, to)
+}
+
+// Only a channel-specific error gives a catch-up up; an account-wide one
+// keeps it pending.
+func TestSyncAgain_GivesUpOnlyOnChannelErrors(t *testing.T) {
+	for _, tc := range []struct {
+		code    string
+		pending bool
+	}{
+		{"channel_not_found", false},
+		{"not_in_channel", false},
+		{"missing_scope", true},
+		{"access_denied", true},
+		{"account_inactive", true},
+		{"invalid_auth", true},
+	} {
+		t.Run(tc.code, func(t *testing.T) {
+			e := newExclSetup(t)
+			e.seedCatchup(t)
+			e.history.errCode = tc.code
+			_ = e.orch.Run(context.Background(), SyncOptions{})
+			require.Len(t, e.history.junkRequests(), 1)
+			from, to := e.catchupBounds(t)
+			assert.Equal(t, tc.pending, from != nil, "catchup_from")
+			assert.Equal(t, tc.pending, to != nil, "catchup_to")
+		})
+	}
 }
