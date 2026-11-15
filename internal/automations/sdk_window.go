@@ -3,6 +3,7 @@ package automations
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 )
 
 // WindowStateKeyPrefix starts the state keys of the raw window's cursors:
@@ -113,8 +114,9 @@ func windowFloorOf(name string, raw any) (string, error) {
 // never commits. An error, or a status other than done/skipped, fails the
 // call as PrimitiveFailed and stages nothing. A cursor value that is not a
 // v1 cursor (undecodable, a foreign version) is read as no cursor and
-// replaced by the done call's; a log step after the call names the key and
-// the version only.
+// replaced by the done call's; the done result then says cursor_reset: true
+// (the script starts the day over as for a reset cursor), and the call's own
+// step carries a note naming the key and the version only.
 //
 // The call is not CallBuffered: a resumed run's replay answers it from
 // its log without staging the cursor again, so the next run re-reads that
@@ -129,7 +131,7 @@ func (s *builtinSDK) callWindow(env *Env, name string, raw any, argErr error) (a
 		args["floor"] = floor
 	}
 	var badCursor string
-	out, err := env.Call(StepKindTool, name, args, func(step *Step) (any, error) {
+	return env.Call(StepKindTool, name, args, func(step *Step) (any, error) {
 		m, err := manifestOf(env)
 		if err != nil {
 			return nil, err
@@ -164,6 +166,9 @@ func (s *builtinSDK) callWindow(env *Env, name string, raw any, argErr error) (a
 		if err != nil {
 			return nil, modelCallError(err, ErrNamePrimitiveFailed, "")
 		}
+		if badCursor != "" {
+			res = unreadableCursorResult(res, name, key, badCursor)
+		}
 		if res.Status == primitiveDone {
 			next := WindowCursor{V: windowCursorVersion, AfterRowID: res.NextCursor, Behind: res.Behind, Anchor: res.NextAnchor}
 			if err := env.Buffer.Set(key, next); err != nil {
@@ -172,12 +177,23 @@ func (s *builtinSDK) callWindow(env *Env, name string, raw any, argErr error) (a
 		}
 		return primitiveOutcome(step, res), nil
 	})
-	if err != nil || badCursor == "" || env.Journal.CountKind(StepKindLog) >= MaxLogCalls {
-		return out, err
+}
+
+// unreadableCursorResult marks a window result read with no cursor because
+// the stored one was unreadable: a done result says cursor_reset, and the
+// step's note names the key and the problem.
+func unreadableCursorResult(res PrimitiveResult, name, key, problem string) PrimitiveResult {
+	note := fmt.Sprintf("warning: %s: the cursor %q was unreadable (%s); read with no cursor", name, key, problem)
+	if res.Note != "" {
+		note = res.Note + "; " + note
 	}
-	msg := fmt.Sprintf("warning: %s: the cursor %q was unreadable (%s); read with no cursor", name, windowStateKeys[name], badCursor)
-	if _, err := env.Call(StepKindLog, "log", msg, func(*Step) (any, error) { return nil, nil }); err != nil {
-		return nil, err
+	res.Note = note
+	if res.Status == primitiveDone {
+		res.Fields = maps.Clone(res.Fields)
+		if res.Fields == nil {
+			res.Fields = map[string]any{}
+		}
+		res.Fields["cursor_reset"] = true
 	}
-	return out, nil
+	return res
 }

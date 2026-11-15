@@ -295,8 +295,9 @@ func TestSlackWindowCall_FailureStagesNoCursor(t *testing.T) {
 }
 
 // An unreadable or foreign-version cursor never fails the call for good: it
-// is read as no cursor, one log step names the key and the version, and the
-// done call's cursor replaces it.
+// is read as no cursor, the result says cursor_reset (the script starts the
+// day over), the call's own step notes the key and the version, and the done
+// call's cursor replaces it.
 func TestSlackWindowCall_CorruptCursorResets(t *testing.T) {
 	for _, tc := range []struct{ value, problem string }{
 		{`{"v":9,"after_rowid":5}`, "version 9"},
@@ -306,14 +307,14 @@ func TestSlackWindowCall_CorruptCursorResets(t *testing.T) {
 		t.Run(tc.problem+" "+tc.value, func(t *testing.T) {
 			w := &windowFake{next: windowAt(12, false)}
 			f := windowFixture(t, w)
-			a := f.seedWindow(t, `return slack.window().status;`)
+			a := f.seedWindow(t, `const r = slack.window(); return r.status + " " + r.cursor_reset;`)
 			if _, err := f.d.Exec(`INSERT INTO automation_state (automation_id, state_json) VALUES (?, ?)`,
 				a.ID, `{"`+automations.SlackWindowStateKey+`":`+tc.value+`}`); err != nil {
 				t.Fatal(err)
 			}
 			r := f.runBuiltin(t, a, db.TriggerSync, "")
-			if r.Status != db.RunSucceeded || r.Summary != "done" {
-				t.Fatalf("run = %s %q (%s)", r.Status, r.Summary, r.Error)
+			if r.Status != db.RunSucceeded || r.Summary != "done true" {
+				t.Fatalf("run = %s %q (%s); want done with cursor_reset", r.Status, r.Summary, r.Error)
 			}
 			if c := w.call(t, 0); c.Cursor != 0 {
 				t.Errorf("Cursor = %d; want 0 (no cursor)", c.Cursor)
@@ -322,14 +323,24 @@ func TestSlackWindowCall_CorruptCursorResets(t *testing.T) {
 				t.Errorf("committed cursor %d behind %v; want 12 false", after, behind)
 			}
 			steps := f.steps(t, r.ID)
-			if len(steps) != 2 || steps[1].Kind != automations.StepKindLog {
-				t.Fatalf("steps = %+v; want the tool step and one log step", steps)
+			if len(steps) != 1 || steps[0].Kind != automations.StepKindTool {
+				t.Fatalf("steps = %+v; want the tool step only", steps)
 			}
-			want := `warning: slack.window: the cursor "__window:slack" was unreadable (` + tc.problem + `); read with no cursor`
-			if steps[1].ArgsJSON != want {
-				t.Errorf("log = %s; want %s", steps[1].ArgsJSON, want)
+			want := `warning: slack.window: the cursor \"__window:slack\" was unreadable (` + tc.problem + `); read with no cursor`
+			if !strings.Contains(steps[0].ResultSummary, want) {
+				t.Errorf("step summary = %s; want the note %s", steps[0].ResultSummary, want)
 			}
 		})
+	}
+}
+
+// A readable cursor adds no cursor_reset of its own: the primitive's says.
+func TestSlackWindowCall_ReadableCursorKeepsThePrimitivesReset(t *testing.T) {
+	w := &windowFake{next: windowAt(12, false)}
+	f := windowFixture(t, w)
+	a := f.seedWindow(t, `return String(slack.window().cursor_reset);`)
+	if r := f.runBuiltin(t, a, db.TriggerSync, ""); r.Status != db.RunSucceeded || r.Summary != "undefined" {
+		t.Fatalf("run = %s %q (%s); want no cursor_reset added", r.Status, r.Summary, r.Error)
 	}
 }
 
