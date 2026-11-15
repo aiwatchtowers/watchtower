@@ -9,7 +9,9 @@ import WatchtowerCore
 /// Panel item without a key equivalent.
 struct PanelToggleCommands: Commands {
     @FocusedValue(\.workbenchMenu) private var workbench
-    let appState: AppState
+    /// The Inbox publishes its view model in its own window only, so a key
+    /// Settings window (a plain window) leaves the item off.
+    @FocusedValue(\.inboxRail) private var inbox
 
     private var target: PanelToggleTarget? {
         PanelToggleTarget.resolve(
@@ -17,8 +19,8 @@ struct PanelToggleCommands: Commands {
             workbenchPanelShown: workbench?.vm.panelVisible == true,
             // The Workbench page publishes its menu context in its window only.
             workbenchWindowIsKey: workbench != nil,
-            inboxOnScreen: appState.selectedDestination == .inbox && appState.actionStripViewModel != nil,
-            inboxRailHidden: appState.actionStripViewModel?.railHidden == true
+            inboxOnScreen: inbox != nil,
+            inboxRailHidden: inbox?.railHidden == true
         )
     }
 
@@ -37,8 +39,21 @@ struct PanelToggleCommands: Commands {
         guard WorkbenchCommands.pageTakesKeys(NSApp.keyWindow) else { return }
         switch target {
         case .workbenchSessions: workbench?.vm.panelVisible.toggle()
-        case .inboxFolders: appState.actionStripViewModel?.railHidden.toggle()
+        case .inboxFolders: inbox?.railHidden.toggle()
         case nil: break
         }
+    }
+}
+
+private struct InboxRailKey: FocusedValueKey {
+    typealias Value = ActionStripViewModel
+}
+
+extension FocusedValues {
+    /// The Inbox's view model while the Inbox is in the key window
+    /// (`ActionStripView`): ⌥⌘S hides or shows its folder rail.
+    var inboxRail: ActionStripViewModel? {
+        get { self[InboxRailKey.self] }
+        set { self[InboxRailKey.self] = newValue }
     }
 }

@@ -68,6 +68,7 @@ struct ActionStripView: View {
             }
         }
         .navigationTitle("Inbox")
+        .focusedSceneValue(\.inboxRail, appState.actionStripViewModel)
         .searchable(text: listQuery, placement: .toolbar, prompt: "Search the Inbox")
         .task {
             await appState.actionStripViewModel?.refresh()
