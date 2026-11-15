@@ -111,6 +111,16 @@ func (h *Handlers) startNotAllowed(lead string, device secure.ID) string {
 	return lead + serverAllowSteps(device, "typing", "start_sessions")
 }
 
+// withServerAllowStep is a permission answer's or interrupt's refusal: msg
+// alone on a Mac hub (the phone's card shows the Mac app's step), msg plus
+// the missing grant's `watchtower hub allow` line on a server hub.
+func (h *Handlers) withServerAllowStep(msg string, device secure.ID, grant string) string {
+	if !h.d.ServerHost {
+		return msg
+	}
+	return msg + serverAllowSteps(device, grant)
+}
+
 // serverAllowSteps is one `watchtower hub allow <device> <grant>` line per
 // grant.
 func serverAllowSteps(device secure.ID, grants ...string) string {

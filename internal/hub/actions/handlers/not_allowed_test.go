@@ -46,6 +46,33 @@ func TestNotAllowedMessagesOnAServerHubNameHubAllowWithThePhonesID(t *testing.T)
 	}
 }
 
+// A permission answer needs the permissions grant, an interrupt the typing
+// grant: the Mac hub's refusal stays bare, a server hub's names the missing
+// grant.
+func TestPermissionRefusalsNameTheMissingGrantOnAServerHub(t *testing.T) {
+	for _, server := range []bool{false, true} {
+		p := newPermEnv(t)
+		p.h.d.ServerHost = server
+		sid := p.liveSession("claude")
+		rid := p.permRequest(sid, reqOpt{})
+		p.grant("permissions_allowed", false)
+		p.grant("typing_allowed", false)
+		id := p.device.String()
+
+		answerWant, interruptWant := "This phone is not allowed to answer permission prompts", "This phone is not allowed to type into sessions"
+		if server {
+			answerWant += ". On your tower, run:\nwatchtower hub allow " + id + " permissions"
+			interruptWant += ". On your tower, run:\nwatchtower hub allow " + id + " typing"
+		}
+		answer := p.answer(sid, rid, "allow")
+		wantOutcome(t, answer, wire.StatusFailed, reasonDeviceNotAllowed)
+		wantMessage(t, answer, answerWant)
+		interrupt := p.interrupt(sid, 0)
+		wantOutcome(t, interrupt, wire.StatusFailed, reasonDeviceNotAllowed)
+		wantMessage(t, interrupt, interruptWant)
+	}
+}
+
 func TestAServerHubsStartRefusalNamesHubAllow(t *testing.T) {
 	le := startEnv(t)
 	le.h.d.ServerHost = true
