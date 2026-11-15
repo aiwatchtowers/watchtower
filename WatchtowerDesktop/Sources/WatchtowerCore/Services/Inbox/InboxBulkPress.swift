@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// What a bulk press would touch, read just before the owner confirms.
 package struct InboxBulkPlan: Equatable, Sendable {
@@ -70,7 +71,7 @@ package final class InboxBulkPressModel: ObservableObject {
                 // swiftlint:disable:next empty_count
                 state = planned.count == 0 ? .finished(.done(count: 0, skipped: 0)) : .confirming(planned)
             } catch {
-                state = .finished(.failed(error.localizedDescription))
+                state = .finished(Self.logged(.failed(error.localizedDescription)))
             }
         }
     }
@@ -90,9 +91,9 @@ package final class InboxBulkPressModel: ObservableObject {
         state = .running
         Task {
             do {
-                state = .finished(try await apply(planned.ids))
+                state = .finished(Self.logged(try await apply(planned.ids)))
             } catch {
-                state = .finished(.failed(error.localizedDescription))
+                state = .finished(Self.logged(.failed(error.localizedDescription)))
             }
         }
     }
@@ -125,6 +126,21 @@ package final class InboxBulkPressModel: ObservableObject {
         case .planning, .confirming, .running: true
         case .idle, .finished: false
         }
+    }
+
+    /// A failed or partial result is logged as it lands: its line may be
+    /// reset before the owner sees it (a pane that appears again resets a
+    /// press that finished while it was away).
+    private static func logged(_ result: InboxBulkResult) -> InboxBulkResult {
+        switch result {
+        case let .partial(done, total, error):
+            InboxLog.logger.error("bulk press closed \(done) of \(total): \(error, privacy: .public)")
+        case .failed(let error), .unconfirmed(let error):
+            InboxLog.logger.error("bulk press failed: \(error, privacy: .public)")
+        case .done:
+            break
+        }
+        return result
     }
 
     private var canBegin: Bool {
