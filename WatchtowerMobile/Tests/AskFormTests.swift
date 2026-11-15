@@ -147,6 +147,117 @@ final class AskFormTests: XCTestCase {
         XCTAssertNil(try formOf(model, try replica([single])).pageText, "one question has no page text")
     }
 
+    // MARK: - Where the ask came from (#1786)
+
+    func testTheSourceLinksOpenOnlyWhatThePhoneHas() async throws {
+        let fixture = try await makeFixture()
+        var demo = try demoSnapshot(now: now)
+        demo.asks += [
+            // An external terminal's ask on an archived target.
+            try makeAsk(130, ["target_id": 417]),
+            // Its session deleted since, its target too.
+            try makeAsk(131, ["session_id": 99, "target_id": 999]),
+            try makeAsk(132, [:])
+        ]
+        func form(_ id: Int64) throws -> AskFormModel {
+            try XCTUnwrap(AskViewModel(askID: id, drafts: fixture.drafts, answerer: fixture.answerer).form(snapshot: demo, now: now))
+        }
+        typealias Link = AskFormModel.SourceLink
+        let both = try form(109)
+        XCTAssertEqual(both.subline, "From Acme · Archive closed targets", "the task number moves into its link")
+        XCTAssertEqual(both.sourceLinks.map(\.destination), [.session(11), .target(415)])
+        XCTAssertEqual(both.sourceLinks.map(\.title), ["Open session", "Task #415"])
+        let sessionOnly = try form(106)
+        XCTAssertEqual(sessionOnly.sourceLinks.map(\.destination), [Link.Destination.session(11)])
+        let archived = try form(130)
+        XCTAssertEqual(archived.subline, "From Acme")
+        XCTAssertEqual(archived.sourceLinks.map(\.destination), [Link.Destination.target(417)], "an archived target keeps its link")
+        let gone = try form(131)
+        XCTAssertEqual(gone.subline, "From Acme · #999", "a target not on the phone keeps its number as text")
+        XCTAssertTrue(gone.sourceLinks.isEmpty, "no link to a session or target the phone does not have")
+        XCTAssertTrue(try form(132).sourceLinks.isEmpty)
+        let closed = try form(105)
+        XCTAssertEqual(closed.sourceLinks.map(\.destination), [.session(11), .target(415)], "a closed ask links too")
+        let withdrawn = try form(107)
+        XCTAssertEqual(withdrawn.sourceLinks.map(\.destination), [.session(14), .target(431)])
+    }
+
+    private func chat(_ session: Int64, agentID: String? = nil, _ entries: [[String: Any]]) throws -> SessionChat {
+        var json: [String: Any] = ["session_id": session, "live": true, "entries_more": 0, "entries": entries]
+        if let agentID { json["agent_id"] = agentID }
+        return try mirror(SessionChat.self, json)
+    }
+
+    private func agentContext(_ ask: OwnerAsk, chat: SessionChat?) throws -> AskFormModel.AgentContext? {
+        try XCTUnwrap(AskFormModel(
+            askID: ask.id, snapshot: try replica([ask]), draft: AskDraft(), page: 0, now: now,
+            applied: nil, isSending: false, chat: chat
+        )).agentContext
+    }
+
+    func testTheAgentContextIsTheLastAgentMessageAtOrBeforeTheAsk() throws {
+        let asked = now.addingTimeInterval(-600)
+        let ask = try makeAsk(140, ["session_id": 11, "created_at": DemoSeed.JSON.stamp(asked)])
+        let stamp: (TimeInterval) -> Int = { DemoSeed.JSON.stamp(asked.addingTimeInterval($0)) }
+        let entries: [[String: Any]] = [
+            ["id": "a", "kind": "agent", "at": stamp(-300), "text": "Older reasoning."],
+            ["id": "b", "kind": "agent", "at": stamp(-60), "text": "  Two wordings fit; I'll ask.  "],
+            ["id": "c", "kind": "owner", "at": stamp(-30), "text": "An owner line is not the agent's."],
+            ["id": "d", "kind": "agent", "at": stamp(-20), "text": "   "],
+            ["id": "e", "kind": "agent", "text": "Undated: cannot be placed."],
+            ["id": "f", "kind": "agent", "at": stamp(120), "text": "After the ask."]
+        ]
+        let context = try XCTUnwrap(try agentContext(ask, chat: try chat(11, entries)))
+        XCTAssertEqual(context.label, "Agent, before asking")
+        XCTAssertEqual(context.text, "Two wordings fit; I'll ask.")
+        XCTAssertFalse(context.isLong)
+
+        XCTAssertNil(try agentContext(ask, chat: nil), "no chat on the phone: nothing, nothing asked for")
+        XCTAssertNil(try agentContext(ask, chat: try chat(12, entries)), "another session's chat")
+        XCTAssertNil(try agentContext(ask, chat: try chat(11, agentID: "sub-1", entries)), "a subagent's chat")
+        XCTAssertNil(try agentContext(ask, chat: try chat(11, [entries[5]])), "only messages after the ask")
+        let external = try makeAsk(141, ["created_at": DemoSeed.JSON.stamp(asked)])
+        XCTAssertNil(try agentContext(external, chat: try chat(11, entries)), "an ask without a session has no chat")
+    }
+
+    func testALongOrClippedAgentMessageFolds() throws {
+        let ask = try makeAsk(142, ["session_id": 11])
+        let before = DemoSeed.JSON.stamp(now.addingTimeInterval(-120))
+        let long = String(repeating: "word ", count: 80)
+        let clipped = try XCTUnwrap(try agentContext(ask, chat: try chat(11, [
+            ["id": "a", "kind": "agent", "at": before, "text": long, "text_clipped": true]
+        ])))
+        XCTAssertTrue(clipped.text.hasSuffix("word…"), "a clipped text says so")
+        XCTAssertTrue(clipped.isLong)
+        let lines = try XCTUnwrap(try agentContext(ask, chat: try chat(11, [
+            ["id": "a", "kind": "agent", "at": before, "text": "1\n2\n3\n4\n5\n6"]
+        ])))
+        XCTAssertTrue(lines.isLong, "six short lines fold too")
+        XCTAssertEqual([AskText.showMore, AskText.showLess], ["Show more", "Show less"])
+    }
+
+    func testTheScreenReadsAChatAlreadyOnThePhoneAndAsksTheMacForNothing() async throws {
+        let fixture = try await makeFixture()
+        let store = try makePoolStore(.demo)
+        let transport = InMemoryCloudTransport()
+        try await DemoSeed.load(into: TestPhone.hub(over: transport, .demo), now: now)
+        _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
+        let demo = try demoSnapshot(now: now)
+        let model = AskViewModel(askID: 109, drafts: fixture.drafts, answerer: fixture.answerer)
+        XCTAssertNil(try formOf(model, demo).agentContext, "nothing before the chat is read")
+
+        model.observeChat(sessionID: 11, store: store)
+        try await poll({ model.chat != nil }, "the demo chat never arrived")
+        XCTAssertEqual(try formOf(model, demo).agentContext?.text, "On it. I will add the menu item and an undo.")
+        XCTAssertTrue(try store.pendingActions().isEmpty, "no session_chat_request: the ask screen only reads")
+
+        model.stopObservingChat()
+        XCTAssertNotNil(model.chat, "leaving for the session keeps the text for the way back")
+        model.observeChat(sessionID: 14, store: store)
+        XCTAssertNil(model.chat, "another session drops the old chat at once")
+        model.stopObservingChat()
+    }
+
     func testAPickOnASingleSelectQuestionReplacesTheOtherAndTogglesOff() async throws {
         let fixture = try await makeFixture()
         let snapshot = try replica([try makeAsk(120, Self.twoQuestions)])

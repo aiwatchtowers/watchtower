@@ -80,6 +80,33 @@ struct AskFormModel {
         let value: String
     }
 
+    /// Where the ask came from, as links (#1786): the session's Workchat and
+    /// the board target, each only when the replica has it, so a link never
+    /// opens "not found".
+    struct SourceLink: Equatable, Identifiable {
+        enum Destination: Hashable {
+            case session(Int64)
+            case target(Int64)
+        }
+
+        let destination: Destination
+        /// "Open session", "Task #415".
+        let title: String
+        let icon: String
+
+        var id: Destination { destination }
+    }
+
+    /// The agent's last message before the ask, from the session's chat
+    /// record when the phone already has one (#1786); never requested here.
+    struct AgentContext: Equatable {
+        let label: String
+        /// Ends with "…" when the hub clipped it.
+        let text: String
+        /// Long enough to fold behind Show more.
+        let isLong: Bool
+    }
+
     /// The answer on its way, refused, or applied.
     enum Status: Equatable {
         case none
@@ -100,8 +127,14 @@ struct AskFormModel {
     let pageText: String?
     let headerTone: PhoneTone
     let title: String
-    /// "From <session> · #415".
+    /// "From <workbench> · <session>"; ends with "· #415" only when the
+    /// target is not on the phone (no link then, the number stays).
     let subline: String
+    /// Open session, Task #415; empty when neither is on the phone.
+    let sourceLinks: [SourceLink]
+    /// nil unless the session's chat is already on the phone with an agent
+    /// message at or before the ask.
+    let agentContext: AgentContext?
     let summary: String
     let changes: String
     let focus: [String]
@@ -132,6 +165,7 @@ struct AskFormModel {
         now: Date,
         applied: AppliedAnswer?,
         isSending: Bool,
+        chat: SessionChat? = nil,
         render: (String) -> PlainTextDocument = PlainTextRendering.render
     ) {
         guard let ask = snapshot.asks.first(where: { $0.id == askID }) else { return nil }
@@ -143,6 +177,8 @@ struct AskFormModel {
         summary = ask.summary
         changes = ask.changes
         subline = Self.subline(ask, snapshot: snapshot)
+        sourceLinks = Self.sourceLinks(ask, snapshot: snapshot)
+        agentContext = Self.agentContext(ask, chat: chat)
         let open = ask.status == .open
         headerTone = open ? .waitingForYou : .secondary
         status = Self.status(ask, snapshot: snapshot, now: now, applied: applied)

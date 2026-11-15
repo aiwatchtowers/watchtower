@@ -10,10 +10,45 @@ extension AskFormModel {
         if let session = ask.sessionID.flatMap(snapshot.session) {
             parts.append(session.title)
         }
-        if let target = ask.targetID {
+        if let target = ask.targetID, !hasTarget(target, snapshot) {
             parts.append("#\(target)")
         }
         return "From " + parts.joined(separator: " · ")
+    }
+
+    /// Open session when the session is on the phone, Task #N when the
+    /// target is (archived targets are published, so they keep the link).
+    static func sourceLinks(_ ask: OwnerAsk, snapshot: WorkbenchReplicaSnapshot) -> [SourceLink] {
+        var links: [SourceLink] = []
+        if let id = ask.sessionID, snapshot.session(id) != nil {
+            links.append(SourceLink(destination: .session(id), title: AskText.openSession, icon: "bubble.left.and.bubble.right"))
+        }
+        if let id = ask.targetID, hasTarget(id, snapshot) {
+            links.append(SourceLink(destination: .target(id), title: AskText.task(id), icon: "checklist"))
+        }
+        return links
+    }
+
+    private static func hasTarget(_ id: Int64, _ snapshot: WorkbenchReplicaSnapshot) -> Bool {
+        snapshot.targets.contains { $0.id == id }
+    }
+
+    /// The last agent entry of the session's main chat dated at or before
+    /// the ask; an undated or empty entry cannot be placed and is skipped.
+    static func agentContext(_ ask: OwnerAsk, chat: SessionChat?) -> AgentContext? {
+        guard let chat, chat.agentID == nil, chat.sessionID == ask.sessionID else { return nil }
+        let entry = chat.entries.last { entry in
+            guard entry.kind == .agent, let at = entry.at, at <= ask.createdAt else { return false }
+            return !entry.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        guard let entry else { return nil }
+        let text = entry.text.trimmingCharacters(in: .whitespacesAndNewlines) + (entry.textClipped ? "…" : "")
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false).count
+        return AgentContext(
+            label: AskText.agentContextLabel,
+            text: text,
+            isLong: text.count > AskText.agentContextFoldCharacters || lines > AskText.agentContextFoldLines
+        )
     }
 
     static func page(_ question: OwnerAskPayload.Question, index: Int, count: Int, draft: AskDraft) -> QuestionPage {

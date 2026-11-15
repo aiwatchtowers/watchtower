@@ -43,6 +43,8 @@ Tap a session in **Now** or a workbench. The top shows the workbench, the title 
 
 A permission prompt and the session's open asks sit at the end of the chat. **Allow once** and **Deny** answer the prompt (see [iPhone: permission prompts and interrupts](iphone-agent-prompts.md)). A question with suggested answers takes one tap; other asks have **Open** for the full form.
 
+Under its title the full form has **Open session**, which goes to the chat that asked, and **Task #N** for its board target; each shows only when the phone has it. If you had that chat open in the last few minutes, the agent's last message before the ask shows above the question.
+
 ### Write to the session
 <!-- learn
 id: iphone-write-to-codex

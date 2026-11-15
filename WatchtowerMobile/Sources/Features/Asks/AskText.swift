@@ -14,7 +14,17 @@ enum AskText {
     static let appliedWithoutDelivery = "Answer saved on the Mac"
     static let genericFailure = "Your Mac could not take this answer"
     static let noteTooLong = "The note is over 4000 characters — shorten it to send"
+    static let openSession = "Open session"
+    static let agentContextLabel = "Agent, before asking"
+    static let showMore = "Show more"
+    static let showLess = "Show less"
+    /// The agent's message folds past these (5 lines shown).
+    static let agentContextFoldCharacters = 280
+    static let agentContextFoldLines = 5
     static let carriedNotice = "This ask was replaced by a newer round. Your earlier draft is in the note."
+
+    /// "Task #415": the link to the ask's board target.
+    static func task(_ id: Int64) -> String { "Task #\(id)" }
 
     /// "Showing the first 256 KB of 2.1 MB" for a snapshot the hub cut.
     static func clipped(docBytes: Int?) -> String {

@@ -34,8 +34,20 @@ struct AskView: View {
             }
         }
         .navigationBarTitleDisplayMode(.inline)
-        .onAppear { if let alertScreen { env.navigation.screenAppeared(alertScreen) } }
-        .onDisappear { if let alertScreen { env.navigation.screenDisappeared(alertScreen) } }
+        .onAppear {
+            if let alertScreen { env.navigation.screenAppeared(alertScreen) }
+            model.observeChat(sessionID: chatSessionID, store: env.store)
+        }
+        .onDisappear {
+            if let alertScreen { env.navigation.screenDisappeared(alertScreen) }
+            model.stopObservingChat()
+        }
+        .onChange(of: chatSessionID) { model.observeChat(sessionID: chatSessionID, store: env.store) }
+    }
+
+    /// The session whose chat may carry the agent's message before the ask.
+    private var chatSessionID: Int64? {
+        replica.snapshot.asks.first { $0.id == model.askID }?.sessionID
     }
 
     /// This form as a work alert names it: its own alerts stay quiet while it is on top.
@@ -47,6 +59,9 @@ struct AskView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: Spacing.large) {
                 AskHeaderView(form: form)
+                if let context = form.agentContext {
+                    AskAgentContextView(context: context)
+                }
                 if let notice = model.carriedNotice {
                     Text(notice).font(TypeScale.meta).foregroundStyle(.secondary)
                 }
@@ -146,18 +161,35 @@ private struct AskHeaderView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.compact) {
-            HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
-                Label(form.kindName, systemImage: form.kindIcon)
-                    .font(TypeScale.kind)
-                    .foregroundStyle(form.headerTone.color)
-                Text(form.idText).font(TypeScale.time).foregroundStyle(.secondary)
-                Spacer(minLength: Spacing.regular)
-                if let page = form.pageText {
-                    Text(page).font(TypeScale.meta).foregroundStyle(.secondary)
+            // Where it came from sits with its links (#1786); the links stay
+            // their own buttons outside the combined accessibility element.
+            VStack(alignment: .leading, spacing: Spacing.compact) {
+                HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
+                    Label(form.kindName, systemImage: form.kindIcon)
+                        .font(TypeScale.kind)
+                        .foregroundStyle(form.headerTone.color)
+                    Text(form.idText).font(TypeScale.time).foregroundStyle(.secondary)
+                    Spacer(minLength: Spacing.regular)
+                    if let page = form.pageText {
+                        Text(page).font(TypeScale.meta).foregroundStyle(.secondary)
+                    }
                 }
+                Text(form.title).font(TypeScale.screenTitle)
+                Text(form.subline).font(TypeScale.meta).foregroundStyle(.secondary)
             }
-            Text(form.title).font(TypeScale.screenTitle)
-            Text(form.subline).font(TypeScale.meta).foregroundStyle(.secondary)
+            .accessibilityElement(children: .combine)
+            if !form.sourceLinks.isEmpty {
+                AskSourceLinksView(links: form.sourceLinks)
+            }
+            if !form.summary.isEmpty || !form.changes.isEmpty || !form.focus.isEmpty {
+                details
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var details: some View {
+        VStack(alignment: .leading, spacing: Spacing.compact) {
             if !form.summary.isEmpty {
                 Text(form.summary).font(TypeScale.rowTitle)
             }
@@ -170,6 +202,67 @@ private struct AskHeaderView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
+    }
+}
+
+/// Open session and Task #415 under the header (#1786): each pushes its
+/// screen onto the current stack, whose back button returns to the ask with
+/// its draft. Only links whose screen is on the phone are passed in.
+private struct AskSourceLinksView: View {
+    let links: [AskFormModel.SourceLink]
+
+    var body: some View {
+        FlowRow(spacing: Spacing.regular) {
+            ForEach(links) { link in
+                switch link.destination {
+                case let .session(id): NavigationLink(value: SessionRoute(id: id)) { label(link) }.buttonStyle(.plain)
+                case let .target(id): NavigationLink(value: BoardTargetRoute(id: id)) { label(link) }.buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    private func label(_ link: AskFormModel.SourceLink) -> some View {
+        let paint = Pill.paint(.tinted, tone: .accent)
+        return HStack(spacing: Spacing.small) {
+            Image(systemName: link.icon)
+            Text(link.title).lineLimit(1)
+            Image(systemName: "chevron.right").font(TypeScale.badge)
+        }
+        .font(TypeScale.kind)
+        .foregroundStyle(paint.text)
+        .padding(.horizontal, Spacing.medium)
+        .padding(.vertical, Spacing.compact)
+        .background(paint.fill, in: Capsule())
+        .overlay(Capsule().strokeBorder(paint.stroke, lineWidth: ChipTint.strokeWidth))
+        .frame(minHeight: PhoneMetrics.minTouch)
+        .contentShape(Rectangle())
+    }
+}
+
+/// The agent's last message before the ask (#1786), when the phone already
+/// has the session's chat; long text folds to five lines behind Show more.
+private struct AskAgentContextView: View {
+    let context: AskFormModel.AgentContext
+    @State private var isExpanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.small) {
+            Label(context.label, systemImage: "text.bubble")
+                .font(TypeScale.meta)
+                .foregroundStyle(.secondary)
+            Text(context.text)
+                .font(TypeScale.rowTitle)
+                .lineLimit(context.isLong && !isExpanded ? AskText.agentContextFoldLines : nil)
+                .textSelection(.enabled)
+            if context.isLong {
+                Button(isExpanded ? AskText.showLess : AskText.showMore) { isExpanded.toggle() }
+                    .font(TypeScale.meta)
+                    .frame(minHeight: PhoneMetrics.minTouch)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .card(.plain)
     }
 }
 

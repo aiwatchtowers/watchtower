@@ -1,4 +1,5 @@
 import Foundation
+import GRDB
 import Observation
 import WatchtowerKit
 import WatchtowerSync
@@ -22,6 +23,10 @@ final class AskViewModel {
     private(set) var sendError: String?
     /// Set once the screen moved to a newer round.
     private(set) var carriedNotice: String?
+    /// The ask's session chat when the phone already has its record (#1786):
+    /// observed only, never requested from the Mac (FEED-05), so it is
+    /// there only while a Workchat watch keeps it published.
+    private(set) var chat: SessionChat?
 
     @ObservationIgnored private let drafts: AskDraftStore
     @ObservationIgnored private let answerer: AskAnswerer
@@ -29,6 +34,8 @@ final class AskViewModel {
     /// The last rendered snapshot: typing rebuilds the form on every
     /// keystroke, and a 256 KB snapshot takes a tenth of a second to render.
     @ObservationIgnored private var rendered: (askID: Int64, markdown: String, document: PlainTextDocument)?
+    @ObservationIgnored private var chatObservation: ResilientObservation?
+    @ObservationIgnored private var chatSessionID: Int64?
 
     init(
         askID: Int64,
@@ -53,8 +60,45 @@ final class AskViewModel {
             now: now,
             applied: answerer.applied[askID],
             isSending: answerer.isSending(askID),
+            chat: chat,
             render: document
         )
+    }
+
+    // MARK: - The agent's message before the ask
+
+    /// Observes `sessionID`'s main chat record, read-only. A screen coming
+    /// back keeps the last chat until the new read lands (no flicker); a
+    /// different session drops it.
+    func observeChat(sessionID: Int64?, store: ReplicaStore) {
+        chatObservation?.cancel()
+        chatObservation = nil
+        if sessionID != chatSessionID {
+            chat = nil
+            chatSessionID = sessionID
+        }
+        guard let sessionID else { return }
+        let recordName = SessionChat.recordName(sessionID: sessionID, agentID: nil)
+        let cache = ReplicaDecodeCache()
+        chatObservation = ResilientObservation(
+            name: "ask chat context",
+            reader: store.reader,
+            observation: {
+                ValueObservation.tracking(regions: [ReplicaStore.kindVersionsRegion]) { db in
+                    try SessionChatViewModel.read(recordName: recordName, from: db, store: store, cache: cache)
+                }
+                .removeDuplicates()
+            },
+            onChange: { [weak self] value in
+                guard self?.chatSessionID == sessionID else { return }
+                self?.chat = value
+            }
+        )
+    }
+
+    func stopObservingChat() {
+        chatObservation?.cancel()
+        chatObservation = nil
     }
 
     /// The snapshot as plain text, rendered once per ask and snapshot.
