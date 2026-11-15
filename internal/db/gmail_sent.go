@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -79,49 +80,74 @@ func (db *DB) GmailMessageStored(accountID int64, id string) (bool, error) {
 // email_received inbox items whose thread holds an owner sent row (see
 // GmailOwnSent) newer than the received message. The received message's
 // internal_date is the reference; when its row is gone or its date does not
-// parse, the item's created_at stands in. Dates are compared in Go (RFC 3339).
-// Items whose channel_id is not a Gmail one are skipped. Any read error
-// returns the error and no ids.
+// parse, the item's created_at stands in. The dates of every candidate are
+// read in one query and compared in Go (RFC 3339). Items whose channel_id is
+// not a Gmail one are skipped. Any read error returns the error and no ids.
 func (db *DB) GmailItemsAnsweredByOwner() ([]int, error) {
 	candidates, err := db.pendingGmailReceivedItems()
 	if err != nil {
 		return nil, err
 	}
-
-	sentQuery := `SELECT MAX(m.internal_date) FROM gmail_messages m
-		JOIN google_accounts a ON a.id = m.account_id
-		WHERE m.thread_id = ? AND m.account_id = ? AND ` + GmailOwnSentSQL("m", "a")
-
-	var out []int
+	type key struct {
+		ID        int    `json:"i"`
+		AccountID int64  `json:"a"`
+		ThreadID  string `json:"t"`
+		MessageID string `json:"m"`
+	}
+	keys := make([]key, 0, len(candidates))
+	createdAt := make(map[int]string, len(candidates))
 	for _, c := range candidates {
 		accountID, threadID, ok := ParseGmailChannelID(c.channelID)
 		if !ok {
 			continue
 		}
-		var received string
-		err := db.QueryRow(`SELECT internal_date FROM gmail_messages WHERE account_id = ? AND id = ?`,
-			accountID, c.messageTS).Scan(&received)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("reading received gmail message for item %d: %w", c.id, err)
-		}
-		since, perr := time.Parse(time.RFC3339, received)
-		if perr != nil {
-			if since, perr = time.Parse(time.RFC3339, c.createdAt); perr != nil {
-				continue
-			}
-		}
-		var sent sql.NullString
-		if err := db.QueryRow(sentQuery, threadID, accountID).Scan(&sent); err != nil {
-			return nil, fmt.Errorf("reading owner sent mail for item %d: %w", c.id, err)
+		keys = append(keys, key{ID: c.id, AccountID: accountID, ThreadID: threadID, MessageID: c.messageTS})
+		createdAt[c.id] = c.createdAt
+	}
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	keysJSON, err := json.Marshal(keys)
+	if err != nil {
+		return nil, fmt.Errorf("encoding pending gmail items: %w", err)
+	}
+
+	rows, err := db.Query(`SELECT json_extract(c.value, '$.i'),
+		       (SELECT r.internal_date FROM gmail_messages r
+		         WHERE r.account_id = json_extract(c.value, '$.a') AND r.id = json_extract(c.value, '$.m')),
+		       (SELECT MAX(m.internal_date) FROM gmail_messages m
+		         JOIN google_accounts a ON a.id = m.account_id
+		         WHERE m.thread_id = json_extract(c.value, '$.t') AND m.account_id = json_extract(c.value, '$.a')
+		           AND `+GmailOwnSentSQL("m", "a")+`)
+		FROM json_each(?) c`, string(keysJSON))
+	if err != nil {
+		return nil, fmt.Errorf("reading owner sent mail for pending gmail items: %w", err)
+	}
+	defer rows.Close()
+	var out []int
+	for rows.Next() {
+		var id int
+		var received, sent sql.NullString
+		if err := rows.Scan(&id, &received, &sent); err != nil {
+			return nil, fmt.Errorf("scanning owner sent mail for a pending gmail item: %w", err)
 		}
 		if !sent.Valid {
 			continue
+		}
+		since, perr := time.Parse(time.RFC3339, received.String)
+		if perr != nil {
+			if since, perr = time.Parse(time.RFC3339, createdAt[id]); perr != nil {
+				continue
+			}
 		}
 		sentAt, perr := time.Parse(time.RFC3339, sent.String)
 		if perr != nil || !sentAt.After(since) {
 			continue
 		}
-		out = append(out, c.id)
+		out = append(out, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading owner sent mail for pending gmail items: %w", err)
 	}
 	return out, nil
 }

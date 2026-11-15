@@ -210,3 +210,21 @@ func TestGmailItemsAnsweredByOwner_ArchivedItemSkipped(t *testing.T) {
 	f.addMessage(t, f.acct, "s1", "owner@example.com", `["SENT"]`, f.recvAt.Add(5*time.Minute))
 	assert.Empty(t, answeredIDs(t, f.d), "an archived pending item is not closed by a later reply")
 }
+
+// Several candidates are read in one query: each item gets its own thread's
+// and its own received message's dates.
+func TestGmailItemsAnsweredByOwner_SeveralItemsEachOnItsOwnThread(t *testing.T) {
+	f := seedGmailAnswered(t)
+	require.NoError(t, f.d.UpsertGmailMessage(f.acct, GmailMessage{
+		ID: "r2", ThreadID: "thr-b", FromEmail: "colleague-b@example.com", ToJSON: `["owner@example.com"]`, CcJSON: `[]`,
+		LabelsJSON: `["INBOX"]`, InternalDate: f.recvAt.Format(time.RFC3339), SyncedAt: f.recvAt.Format(time.RFC3339),
+	}))
+	other, err := f.d.CreateInboxItem(InboxItem{ChannelID: GmailChannelID(f.acct, "thr-b"), MessageTS: "r2",
+		SenderUserID: "colleague-b@example.com", TriggerType: "email_received"})
+	require.NoError(t, err)
+	assert.Empty(t, answeredIDs(t, f.d))
+
+	f.addMessage(t, f.acct, "s1", "owner@example.com", `["SENT"]`, f.recvAt.Add(5*time.Minute))
+	assert.Equal(t, []int{int(f.itemID)}, answeredIDs(t, f.d), "a reply in thr-a answers only thr-a's item")
+	assert.NotEqual(t, f.itemID, other)
+}
