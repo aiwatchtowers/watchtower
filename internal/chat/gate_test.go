@@ -644,6 +644,11 @@ func TestGate_StopDeniesWaitingCall(t *testing.T) {
 			h.next(EventToolWait)
 			h.send(Command{Type: CommandCancel})
 			h.next(EventTurnDone)
+			// The deny alone can end the fake's turn (its last pending call is
+			// answered), so TurnDone may come before the interrupt, written
+			// asynchronously after the deny, reached the child: let the child
+			// read it before Close stops it, or the stdin log below lacks it.
+			synctest.Wait()
 			require.NoError(t, h.finish())
 
 			row := fx.sink.row(1)
@@ -667,6 +672,9 @@ func TestGate_StopDeniesWaitingCall(t *testing.T) {
 			h.next(EventToolWait)
 			h.send(Command{Type: CommandCancel})
 			h.next(EventTurnDone)
+			// As above: the interrupt may still be on its way; it must reach
+			// the child before the next turn's message, not interrupt that turn.
+			synctest.Wait()
 
 			fx.setRequests(t, gmailSend("r2", "tu2"))
 			h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "send again"})
