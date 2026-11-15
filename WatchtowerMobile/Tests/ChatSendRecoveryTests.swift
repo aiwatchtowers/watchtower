@@ -1,3 +1,4 @@
+import GRDB
 import WatchtowerChatText
 import WatchtowerKit
 import WatchtowerSync
@@ -60,7 +61,7 @@ final class ChatSendRecoveryTests: XCTestCase {
         try await poll({ !((try? self.recorder.params(ChatNewParams.self)) ?? []).isEmpty }, "chat_new")
         first.receiveApplied(applied(1, .chatNew, ["conversation_id": .integer(88)]))
         try await poll({ model.conversationID == 88 }, "created")
-        XCTAssertEqual(try copy.outgoing().first?.conversationID, 88, "the send is kept with its new chat")
+        XCTAssertEqual(try copy.outgoing().sends.first?.conversationID, 88, "the send is kept with its new chat")
 
         // The app is killed during the upload; the next launch reads the kept send.
         let second = center()
@@ -68,7 +69,7 @@ final class ChatSendRecoveryTests: XCTestCase {
         XCTAssertEqual(second.drafts.draft(88).text, "Read this")
         XCTAssertEqual(second.drafts.draft(88).notice, ChatSendCoordinator.couldNotSend)
         XCTAssertEqual(second.drafts.draft(88).attachments.map(\.name), ["notes.md"])
-        XCTAssertTrue(try copy.outgoing().isEmpty)
+        XCTAssertTrue(try copy.outgoing().sends.isEmpty)
     }
 
     func testARefusalAfterARelaunchGivesTheTextBackWithTheReason() async throws {
@@ -80,7 +81,7 @@ final class ChatSendRecoveryTests: XCTestCase {
         model.send(list: nil)
         try await poll({ (try? self.recorder.params(ChatTurnParams.self).count) == 1 }, "turn sent")
         let turn = RecordingChatSender.actionID(2)
-        try await poll({ (try? self.copy.outgoing().first?.turnActionID) == turn }, "turn kept")
+        try await poll({ (try? self.copy.outgoing().sends.first?.turnActionID) == turn }, "turn kept")
 
         let second = center()
         var queued = ChatsSnapshot()
@@ -99,7 +100,7 @@ final class ChatSendRecoveryTests: XCTestCase {
         XCTAssertEqual(second.drafts.draft(7).quotes.map(\.quote), ["the SSO deadline"])
         XCTAssertEqual(second.drafts.draft(7).notice, "This chat is busy.")
         XCTAssertNil(second.sending.pending[7])
-        XCTAssertTrue(try copy.outgoing().isEmpty)
+        XCTAssertTrue(try copy.outgoing().sends.isEmpty)
     }
 
     func testATurnAppliedWhileTheAppWasDeadLeavesNothingBehind() async throws {
@@ -108,11 +109,11 @@ final class ChatSendRecoveryTests: XCTestCase {
         model.appear(online: true)
         model.setText("Hi")
         model.send(list: nil)
-        try await poll({ (try? self.copy.outgoing().first?.turnActionID) != nil }, "turn kept")
+        try await poll({ (try? self.copy.outgoing().sends.first?.turnActionID) != nil }, "turn kept")
         let second = center()
         second.apply(ChatsSnapshot())
         XCTAssertEqual(second.drafts.draft(7).text, "", "gone from the outbox: applied, the feed has it")
-        XCTAssertTrue(try copy.outgoing().isEmpty)
+        XCTAssertTrue(try copy.outgoing().sends.isEmpty)
     }
 
     func testALostEchoGivesTheTextBackAfterThePatience() async throws {
@@ -129,7 +130,7 @@ final class ChatSendRecoveryTests: XCTestCase {
         XCTAssertEqual(withdrawals, [RecordingChatSender.actionID(2)], "the turn is taken back first")
         XCTAssertEqual(model.draft.notice, ChatSendCoordinator.couldNotSend)
         XCTAssertNil(center.sending.pending[7])
-        XCTAssertTrue(try copy.outgoing().isEmpty)
+        XCTAssertTrue(try copy.outgoing().sends.isEmpty)
     }
 
     func testALateEchoTheOutboxCannotTakeBackIsHonoured() async throws {
@@ -153,7 +154,7 @@ final class ChatSendRecoveryTests: XCTestCase {
         center.receiveApplied(echo)
         try await poll({ center.sending.pending[7]?.isApplied == true }, "marked sent")
         XCTAssertEqual(model.draft.text, "")
-        XCTAssertTrue(try copy.outgoing().isEmpty)
+        XCTAssertTrue(try copy.outgoing().sends.isEmpty)
     }
 
     func testRecoveryFindsAQueuedTurnTheKeptSendNeverHeardOf() async throws {
@@ -168,7 +169,7 @@ final class ChatSendRecoveryTests: XCTestCase {
         center.apply(snapshot)
         XCTAssertEqual(center.drafts.draft(7).text, "", "the outbox holds it: no Couldn't send")
         XCTAssertEqual(center.sending.pending[7]?.text, "Hi there")
-        XCTAssertEqual(try copy.outgoing().first?.turnActionID, "turn-9")
+        XCTAssertEqual(try copy.outgoing().sends.first?.turnActionID, "turn-9")
 
         try await poll({ self.sleeper.requested.contains(ChatSendCoordinator.echoPatience) }, "patience")
         sleeper.tick()
@@ -178,7 +179,64 @@ final class ChatSendRecoveryTests: XCTestCase {
         center.receiveApplied(echo)
         XCTAssertNil(center.sending.pending[7])
         XCTAssertEqual(center.drafts.draft(7).text, "")
-        XCTAssertTrue(try copy.outgoing().isEmpty)
+        XCTAssertTrue(try copy.outgoing().sends.isEmpty)
+    }
+
+    /// B1: a kept send that no longer decodes is dropped (by key, after a log line) and never stops the readable
+    /// ones from coming back.
+    func testAnUndecodableKeptSendIsDroppedAndTheRestRecovered() async throws {
+        let path = NSTemporaryDirectory() + "chat-copy-\(UUID().uuidString).sqlite"
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        copy = try ChatOfflineCopy(path: path)
+        try copy.saveOutgoing(ChatOutgoingSend(
+            clientKey: "good", conversationID: 7, mode: "send", messageID: nil, text: "Hi there", draftText: "Hi there", quotes: [],
+            files: [], createdAt: ChatFixture.now
+        ))
+        let raw = try DatabaseQueue(path: path)
+        try await raw.write { try $0.execute(sql: "INSERT INTO chat_outgoing (client_key, body) VALUES ('bad', x'00ff')") }
+        let kept = try copy.outgoing()
+        XCTAssertEqual(kept.sends.map(\.clientKey), ["good"])
+        XCTAssertEqual(kept.undecodableKeys, ["bad"])
+
+        let center = center()
+        center.apply(ChatsSnapshot())
+        XCTAssertEqual(center.drafts.draft(7).text, "Hi there", "the readable send comes back")
+        let left = try await raw.read { try String.fetchAll($0, sql: "SELECT client_key FROM chat_outgoing") }
+        XCTAssertFalse(left.contains("bad"), "the unreadable row is deleted")
+    }
+
+    /// B1: a copy whose kept sends cannot be read recovers nothing and deletes nothing.
+    func testAKeptSendReadFailureDeletesNothing() async throws {
+        let path = NSTemporaryDirectory() + "chat-copy-\(UUID().uuidString).sqlite"
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        copy = try ChatOfflineCopy(path: path)
+        try copy.saveOutgoing(ChatOutgoingSend(
+            clientKey: "k1", conversationID: 7, mode: "send", messageID: nil, text: "Hi there", draftText: "Hi there", quotes: [],
+            files: [], createdAt: ChatFixture.now
+        ))
+        let raw = try DatabaseQueue(path: path)
+        try await raw.write { try $0.execute(sql: "ALTER TABLE chat_outgoing RENAME TO chat_outgoing_away") }
+        XCTAssertThrowsError(try copy.outgoing())
+        let center = center()
+        center.apply(ChatsSnapshot())
+        XCTAssertEqual(center.drafts.draft(7).text, "", "nothing recovered")
+        try await raw.write { try $0.execute(sql: "ALTER TABLE chat_outgoing_away RENAME TO chat_outgoing") }
+        XCTAssertEqual(try copy.outgoing().sends.map(\.clientKey), ["k1"], "the row waits for a launch that can read it")
+    }
+
+    /// n5: an applied chat_turn no send here waits for is not held once no send is in flight.
+    func testEarlyEchoesArePrunedWhenASendEnds() async throws {
+        let center = center()
+        center.receiveApplied(applied(99, .chatTurn, [:]))
+        XCTAssertEqual(center.sending.earlyEchoCount, 1)
+        let model = center.conversation(ChatRoute(id: 7), ticks: ChatTicks().stream)
+        model.appear(online: true)
+        model.setText("Hello")
+        model.send(list: nil)
+        try await poll({ (try? self.recorder.params(ChatTurnParams.self).count) == 1 }, "turn sent")
+        let turn = try XCTUnwrap(recorder.sent.firstIndex { $0.kind == .chatTurn }) + 1
+        center.receiveApplied(applied(turn, .chatTurn, ["user_message_id": .integer(5)]))
+        try await poll({ center.sending.earlyEchoCount == 0 }, "pruned when the send ended")
     }
 
     func testAnAppliedUploadDropsItsPlaintext() async throws {

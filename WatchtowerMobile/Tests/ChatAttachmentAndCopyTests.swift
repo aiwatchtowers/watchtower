@@ -172,6 +172,29 @@ final class ChatOfflineCopyTests: XCTestCase {
         }
     }
 
+    /// m8: a copy that does not open leaves the tab working in memory, with its line; no path (the demo) has none.
+    func testACopyThatDoesNotOpenShowsItsLineAndTheTabStillWorks() throws {
+        // A folder where the file should be: SQLite cannot open it.
+        let blocked = directory.appendingPathComponent(ChatOfflineCopy.fileName, isDirectory: true)
+        try FileManager.default.createDirectory(at: blocked, withIntermediateDirectories: true)
+        let opened = HubSession.openChatCopy(path: blocked.path)
+        XCTAssertNil(opened.copy)
+        XCTAssertTrue(opened.unavailable)
+        let center = ChatsCenter(sender: RecordingChatSender().sender, copy: opened.copy, copyUnavailable: opened.unavailable)
+        XCTAssertEqual(
+            center.copyNotice,
+            "Saved chats are off on this phone — chats can't be read offline and an unsent message won't survive a restart."
+        )
+        try center.copy.saveFeed(conversationID: 3, payload: try payload(3))
+        XCTAssertNotNil(try center.copy.held(conversationID: 3), "the in-memory copy still holds what the tab shows")
+
+        XCTAssertFalse(HubSession.openChatCopy(path: nil).unavailable)
+        XCTAssertNil(ChatsCenter(sender: RecordingChatSender().sender).copyNotice)
+        let fine = HubSession.openChatCopy(path: directory.appendingPathComponent("other.sqlite").path)
+        XCTAssertNotNil(fine.copy)
+        XCTAssertFalse(fine.unavailable)
+    }
+
     func testOverBudgetTheLongestUnopenedChatGoesFirst() throws {
         let one = try payload(1)
         let copy = try ChatOfflineCopy(path: nil, budget: Int64(one.count * 2))

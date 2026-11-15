@@ -222,6 +222,8 @@ final class ChatsCenter {
     let drafts = ChatDraftStore()
     let sending: ChatSendCoordinator
     let copy: ChatOfflineCopy
+    /// The hub's copy file did not open: the tab runs on an in-memory copy and says so (`copyNotice`).
+    let copyUnavailable: Bool
     let prefetch: ChatPrefetcher
     /// Where picked files wait in plaintext until their upload is applied.
     @ObservationIgnored let staging: URL
@@ -242,6 +244,7 @@ final class ChatsCenter {
         sender: ChatSender,
         uploads: ChatUploads = .none,
         copy: ChatOfflineCopy? = nil,
+        copyUnavailable: Bool = false,
         withdraw: @escaping ChatWithdraw = { _ in .withdrawn },
         staging: URL = ChatAttachmentPrep.stagingDirectory(hubID: "default"),
         now: @escaping @MainActor () -> Date = { Date() },
@@ -251,6 +254,7 @@ final class ChatsCenter {
         self.sleep = sleep
         let copy = copy ?? ChatOfflineCopy.inMemory()
         self.copy = copy
+        self.copyUnavailable = copyUnavailable
         search = ChatSearchModel(sender: sender, sleep: sleep)
         rowActions = ChatRowActions(sender: sender, sleep: sleep)
         sending = ChatSendCoordinator(sender: sender, uploads: uploads, drafts: drafts, copy: copy, withdraw: withdraw, sleep: sleep)
@@ -258,6 +262,9 @@ final class ChatsCenter {
         prefetch = ChatPrefetcher(sender: sender, copy: copy, now: now, sleep: sleep)
         prefetch.onPatience = { [weak self] in self?.stepPrefetch() }
     }
+
+    /// The Chats tab's line while the copy is off (nil otherwise).
+    var copyNotice: String? { copyUnavailable ? ChatText.copyUnavailableLine : nil }
 
     /// Observes the replica's chat records for the session's lifetime.
     func start(store: ReplicaStore, gate: ReplicaObservationGate? = nil) {

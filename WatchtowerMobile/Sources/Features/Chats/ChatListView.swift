@@ -61,6 +61,14 @@ struct ChatsTabView: View {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 0) {
                             switcher.padding(.horizontal, Spacing.large)
+                            if let notice = center.copyNotice {
+                                Text(notice)
+                                    .font(TypeScale.meta)
+                                    .foregroundStyle(.secondary)
+                                    .multilineTextAlignment(.center)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.horizontal, Spacing.large)
+                            }
                             if gate.state == .loading {
                                 ChatsLoadingView(line: gate.banner).padding(.horizontal, Spacing.large)
                             } else {
@@ -93,6 +101,9 @@ struct ChatsTabView: View {
             switcher.macsListRow()
             if let banner = gate.banner {
                 lineRow(banner)
+            }
+            if let notice = center.copyNotice {
+                lineRow(notice)
             }
             if let failure = actions.failure {
                 lineRow(failure)

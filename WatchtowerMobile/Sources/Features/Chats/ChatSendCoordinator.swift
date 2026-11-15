@@ -135,7 +135,10 @@ final class ChatSendCoordinator {
     @ObservationIgnored private let sleep: @Sendable (Duration) async throws -> Void
     @ObservationIgnored private let withdraw: ChatWithdraw
     @ObservationIgnored private var waiters: [String: CheckedContinuation<Echo, Never>] = [:]
+    /// Echoes that came before their waiter. Only a send in flight can still claim one: a send's own are dropped
+    /// when it ends, and every one once no send is in flight (an applied chat_new/chat_turn of no send here).
     @ObservationIgnored private var early: [String: Echo] = [:]
+    @ObservationIgnored private var sendsInFlight = 0
     @ObservationIgnored private var knownFailures: [String: ChatActionFailure] = [:]
     @ObservationIgnored private var uploadWaiters: [String: CheckedContinuation<ChatAttachmentUploadPayload?, Never>] = [:]
     @ObservationIgnored private var earlyUploads: [String: ChatAttachmentUploadPayload] = [:]
@@ -157,7 +160,19 @@ final class ChatSendCoordinator {
         self.drafts = drafts
         self.copy = copy
         self.sleep = sleep
-        recovered = (try? copy.outgoing()) ?? []
+        recovered = []
+        do {
+            let kept = try copy.outgoing()
+            recovered = kept.sends
+            for key in kept.undecodableKeys {
+                do { try copy.deleteOutgoing(key) } catch {
+                    Self.logger.error("unreadable kept send not deleted: \(String(describing: type(of: error)), privacy: .public)")
+                }
+            }
+        } catch {
+            // Nothing is recovered and nothing deleted: the rows stay for the next launch that can read them.
+            Self.logger.error("kept sends unreadable: \(String(describing: type(of: error)), privacy: .public)")
+        }
     }
 
     func isSending(_ conversationID: Int64) -> Bool { pending[conversationID].map { !$0.isApplied } ?? false }
@@ -167,6 +182,8 @@ final class ChatSendCoordinator {
     @discardableResult
     func send(_ request: Request, clientKey: String = UUID().uuidString, onCreated: ((Int64) -> Void)? = nil) async -> Int64? {
         var record = Self.record(request, clientKey: clientKey)
+        sendsInFlight += 1
+        defer { ended(record) }
         keep(record)
         var conversation = request.conversationID
         let names = request.attachments.map(\.name)
@@ -448,6 +465,16 @@ final class ChatSendCoordinator {
             createdAt: Date()
         )
     }
+
+    /// A send ended (applied or given back): its early echoes go, and every one once no send is in flight.
+    private func ended(_ record: ChatOutgoingSend) {
+        sendsInFlight -= 1
+        for id in [record.newActionID, record.turnActionID].compactMap({ $0 }) { early[id] = nil }
+        if sendsInFlight == 0 { early.removeAll() }
+    }
+
+    /// Echoes held for a waiter not there yet (tests).
+    var earlyEchoCount: Int { early.count }
 
     private func keep(_ record: ChatOutgoingSend) {
         do {
