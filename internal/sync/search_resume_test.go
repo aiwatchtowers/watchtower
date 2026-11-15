@@ -508,3 +508,31 @@ func TestSearchSync_UnrelatedHoldDoesNotEndTheCycle(t *testing.T) {
 	assert.NotContains(t, acct.Error, "rate-limited")
 	assert.True(t, ts.orch.SearchIncomplete())
 }
+
+// RunOutcome.RateLimited counts only the run's own 429s: one another caller
+// of the same client meets while the run is going (the chat, a media fetch)
+// does not back the account's cadence off.
+func TestRunOutcome_ConcurrentCallers429IsNotTheRuns(t *testing.T) {
+	var queries []string
+	var mu gosync.Mutex
+	var orch atomic.Pointer[Orchestrator]
+	var once gosync.Once
+	search := oneMatchSearch(&queries, &mu)
+	mux := searchAuditMux(func(w http.ResponseWriter, r *http.Request) {
+		once.Do(func() { // the chat opens a DM mid-run and is rate-limited
+			_, err := orch.Load().slackClient.OpenDM(context.Background(), "U0OTHER")
+			require.Error(t, err)
+		})
+		search(w, r)
+	})
+	mux.HandleFunc("/conversations.open", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "0")
+		w.WriteHeader(http.StatusTooManyRequests)
+	})
+	ts := newTestSetup(t, mux)
+	orch.Store(ts.orch)
+
+	require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{}))
+	require.NotZero(t, ts.orch.slackClient.RateLimitedCalls(), "the other caller met its 429")
+	assert.False(t, ts.orch.RunOutcome().RateLimited)
+}

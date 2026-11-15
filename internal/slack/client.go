@@ -198,6 +198,9 @@ func (c *Client) doRequest(ctx context.Context, tier int, fn func() error) error
 			return err
 		}
 		c.limited.Add(1)
+		if n, ok := ctx.Value(rateLimitCounterKey{}).(*atomic.Uint64); ok {
+			n.Add(1)
+		}
 
 		if deadline.IsZero() || !statedHold(err) {
 			if attempt >= maxRetriesNoDeadline {
@@ -797,6 +800,18 @@ func statedHold(err error) bool {
 // in between met a rate limit.
 func (c *Client) RateLimitedCalls() uint64 {
 	return c.limited.Load()
+}
+
+type rateLimitCounterKey struct{}
+
+// CountRateLimits returns a context whose calls count their 429s (the ones a
+// retry pushed through included) and a reader of that count. Unlike
+// RateLimitedCalls it does not see a 429 another caller of the same client
+// met meanwhile (the chat, a media fetch), so a sync run reads only the rate
+// limits its own calls hit.
+func CountRateLimits(ctx context.Context) (context.Context, func() uint64) {
+	n := new(atomic.Uint64)
+	return context.WithValue(ctx, rateLimitCounterKey{}, n), n.Load
 }
 
 // isSlackAnswer reports whether a request ended with a complete answer from

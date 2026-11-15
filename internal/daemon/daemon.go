@@ -266,6 +266,14 @@ type Daemon struct {
 	// (INBOX-09), so a test moves it across a sync instead of sleeping
 	// through one; nil = time.Now.
 	syncStartClock func() time.Time
+	// slackCadences is each Slack account's adaptive cadence (slack_cadence.go),
+	// by account id; in memory, so a restart runs every account at once.
+	// slackCadenceBase is its level-0 interval, the loop's poll interval set
+	// by Run; zero (a test driving a phase directly) makes every run due.
+	// cadenceNow, a test seam, is its clock; nil = time.Now.
+	slackCadences    map[int64]*slackCadence
+	slackCadenceBase time.Duration
+	cadenceNow       func() time.Time
 	// fullWake reports the system capability bits and whether the Mac is in
 	// a full wake rather than a Power Nap DarkWake (SetFullWakeProbe);
 	// runLoop starts no scheduled cycle while it says no. nil = always a
@@ -538,6 +546,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if pollInterval < minPollInterval {
 		pollInterval = config.DefaultPollInterval
 	}
+	d.slackCadenceBase = pollInterval
 
 	// Always watched, whatever sync.sync_on_wake says: a sleep that
 	// interrupts a cycle cancels it (runLoop). Only when not already wired: a
@@ -925,6 +934,10 @@ func (d *Daemon) reapStalePipelineRuns() {
 // every other account's watermark for good; recordAuthResult marks its
 // status row (revoked, or the mismatch's Re-login error), and the error is
 // still logged and returned as the cycle's sync error.
+//
+// Each account runs only when its adaptive cadence says it is due
+// (slack_cadence.go); a manual trigger runs them all. When none is due the
+// phase writes nothing at all: no pipeline run, no last_sync.json.
 func (d *Daemon) phaseSlackSync(ctx context.Context) (syncErr, inboxErr error) {
 	if len(d.orchestrators) == 0 {
 		return nil, nil
@@ -932,21 +945,50 @@ func (d *Daemon) phaseSlackSync(ctx context.Context) (syncErr, inboxErr error) {
 	if !d.sourceAllowed("slack") {
 		return nil, nil
 	}
+	// The accounts whose Slack run is due (the adaptive cadence). A skipped
+	// account writes nothing, is no sync error and does not freeze the Inbox:
+	// detection reads when a message was stored, so what its later run
+	// stores is still found.
+	manual := isManualSync(ctx)
+	now := d.cadenceClock()
+	due := make([]*sync.Orchestrator, 0, len(d.orchestrators))
+	var skipped []int64
+	for _, o := range d.orchestrators {
+		if !d.slackCadence(o.AccountID()).due(now, manual) {
+			skipped = append(skipped, o.AccountID())
+			continue
+		}
+		due = append(due, o)
+	}
+	if len(skipped) > 0 {
+		d.logger.Printf("slack accounts %v: not due yet (adaptive cadence), skipping this cycle", skipped)
+	}
+	if len(due) == 0 {
+		return nil, nil
+	}
 	var firstErr error
 	var freezing []error
-	snaps := make([]sync.Snapshot, 0, len(d.orchestrators))
+	snaps := make([]sync.Snapshot, 0, len(due))
 	// Tracked like every other pipeline so the Slack sync finally shows up in
 	// pipeline_runs (and the Desktop's Pipeline Progress window) — it was the
 	// one phase that ran invisibly.
 	d.trackedPipelineRun("slack-sync", func() pipelineRunStats {
 		messages := 0
-		for _, o := range d.orchestrators {
+		for _, o := range due {
 			if d.purgeHeld("slack", o.AccountID()) {
 				continue
 			}
+			cadence := d.slackCadence(o.AccountID())
 			stopBeat := d.startSyncHeartbeat(o)
 			err := o.Run(ctx, sync.SyncOptions{})
 			stopBeat()
+			if out := o.RunOutcome(); err == nil || out.RateLimited {
+				// Anchored at the phase's start, not this account's: a slow
+				// account before it must not push it off the next tick.
+				cadence.after(out, d.slackCadenceBase, now)
+			} else {
+				cadence.retryNextCycle()
+			}
 			if from, ok := o.FirstSyncFrom(); ok {
 				d.startHistoryBackfill("slack", o.AccountID(), from)
 			}

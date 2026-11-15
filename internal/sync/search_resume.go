@@ -38,7 +38,8 @@ type searchResume struct {
 }
 
 // RunOutcome is what the last Run tells the daemon's cadence: whether Slack
-// answered any call with a 429 (retried ones included), whether the blanket
+// answered any of the run's own calls with a 429 (retried ones included; not
+// another caller's on the same client), whether the blanket
 // search stopped with pages left for the next run, and how many blanket
 // pages and messages it read.
 type RunOutcome struct {
