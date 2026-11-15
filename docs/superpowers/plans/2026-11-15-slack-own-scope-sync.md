@@ -106,7 +106,7 @@ Under own scope `is_member` becomes Slack's real membership. Today it is pollute
 | `messages` rows | forward lanes (Task 4), mention search and the sweep through `searchAndSave` (filtered, Task 3), backfill range fetch (Task 7), `watchtower slack backfill` and `sync --full/--channels` in another process | upserts of the same Slack content; SQLite serialises the write transactions; the last write is Slack's newer state. A tombstone and a restore follow SRCDEL-02: the next fetch that returns the message heals it |
 | `channels.is_member` | membership refresh (`ReplaceSlackMembership`, Task 2, authoritative per account, complete listing only), `UpsertChannel` from `conversations.list` (full sync, per channel), `EnsureChannel` (insert only, membership-aware after Task 2) | the two Slack readers both carry Slack's answer at their time; the later write wins. `EnsureChannel` never changes an existing row's flag |
 | `sync_state` (per conversation) | the forward lanes through the existing `syncChannel`, and `runFullSync` — same function, same daemon or a CLI process | `last_synced_ts` only moves after the last page; an interrupted fetch keeps the old value and the cursor, so the later complete fetch wins. The backfill never writes `sync_state` |
-| `messages.synced_at` (Task 9) | the first insert of a row, by whichever path stores it (forward: the writer's clock; backfill: `ts_unix`) | insert-only: `ON CONFLICT` never touches it, so the first writer wins and a later edit, tombstone or heal leaves it |
+| `messages.synced_at` (Task 9) | the first insert of a row, by whichever path stores it (forward sync: the orchestrator's clock; backfill: `ts_unix`; any other writer, Go or the Swift test schema: the `messages_synced_at_fill` trigger, insert time) | insert-only: `ON CONFLICT` never touches it, so the first writer wins and a later edit, tombstone or heal leaves it |
 | `slack_accounts.search_last_date` | the mention lane only (today's writer, `syncViaSearch`) | single writer per process |
 | lane stamps, backfill chunk progress | in memory on the `Orchestrator` (the `readStateSyncedAt` precedent) | one daemon; a restart starts both from empty |
 
@@ -330,23 +330,35 @@ Under own scope `is_member` becomes Slack's real membership. Today it is pollute
 **Why this model.** Lanes poll each conversation at its own cadence: hot DMs every cycle, channels hourly, quiet channels every 6 h, and the budget can defer any of them. A message stored by a later poll can carry a `ts` from long before this cycle's sync start, so a `ts`-ordered watermark loses it. Bounding the watermark by the oldest pending poll fixes it only with an unbounded or capped re-scan, and the cap brings the loss back. Ordering detection by when a row was stored needs no bound at all, and it is the rule Gmail detection already follows. `rowid` cannot serve: `messages` has no `INTEGER PRIMARY KEY`, so the launch-time `VACUUM` (`db-compact.md`) may renumber rowids, and a deleted top row's rowid can be reused. Hence a real column, which means a migration.
 
 **Files:**
-- Create: `internal/db/migrations/<next>_messages_synced_at.sql` — `ALTER TABLE messages ADD COLUMN synced_at REAL NOT NULL DEFAULT 0;` `UPDATE messages SET synced_at = ts_unix;` (existing rows look old, so nothing is re-detected) and `CREATE INDEX idx_messages_synced_at ON messages(synced_at);`. The Down migration drops the index and the column.
-- Modify: `internal/db/schema.sql`; the golden and `WatchtowerDesktop/Tests/Support/TestDatabase+Schema.swift` (`go test ./internal/db/ -run 'TestSchemaGolden|TestDesktopTestSchema' -update`)
-- Modify: `internal/db/messages.go` (`Message.SyncedAt float64`; `UpsertMessage`/`UpsertMessageBatch` write it on insert only, and `ON CONFLICT` leaves it, so an edit, tombstone or heal does not re-trigger detection), `internal/db/inbox.go` (the four detectors: `m.synced_at > ?` instead of `m.ts_unix > ?`)
-- Modify: the writers. `internal/sync/message_sync.go` and `search_sync.go` set `SyncedAt` from `o.clock()` (forward paths). `BackfillSearch`/`Range` (Task 7) and `cmd/slack_backfill.go` set `SyncedAt = ts_unix`. Every other `UpsertMessage*` caller: re-run `grep -rn 'UpsertMessage' --include='*.go' .`; production callers outside `internal/sync` pass `float64(time.Now().Unix())` unless they write history, in which case they pass `ts_unix`
+- Create: `internal/db/migrations/<next>_messages_synced_at.sql` — `ALTER TABLE messages ADD COLUMN synced_at REAL NOT NULL DEFAULT 0;` `UPDATE messages SET synced_at = ts_unix;` (existing rows look old, so nothing is re-detected; this runs before the trigger exists), `CREATE INDEX idx_messages_synced_at ON messages(synced_at);`, then the trigger. The trigger is needed because `ALTER TABLE … ADD COLUMN` cannot take a non-constant default:
+  ```sql
+  CREATE TRIGGER messages_synced_at_fill AFTER INSERT ON messages
+  WHEN NEW.synced_at = 0
+  BEGIN
+    UPDATE messages SET synced_at = (julianday('now') - 2440587.5) * 86400.0
+    WHERE rowid = NEW.rowid;
+  END;
+  ```
+  `julianday` is used rather than `unixepoch('subsec')` (SQLite ≥ 3.42; the Go driver has 3.53.4, but the GRDB SQLCipher fork that runs the Swift test schema is not checked here), so it works on both. An explicit non-zero `synced_at` wins. The trigger fires on a real insert only: the `UpsertMessage*` path is `INSERT … ON CONFLICT(channel_id, ts) DO UPDATE`, whose update branch fires UPDATE triggers, not INSERT ones, so a re-upsert, an edit, a tombstone or a heal never moves `synced_at`. No writer uses `INSERT OR REPLACE INTO messages` (checked; a REPLACE would delete and re-insert and so bump it). The Down migration drops the trigger, the index and the column.
+- Modify: `internal/db/schema.sql` (column, index and trigger); the golden and `WatchtowerDesktop/Tests/Support/TestDatabase+Schema.swift` (`go test ./internal/db/ -run 'TestSchemaGolden|TestDesktopTestSchema' -update`)
+- Modify: `internal/db/messages.go` (`Message.SyncedAt float64`; `UpsertMessage`/`UpsertMessageBatch` pass it on insert, `0` meaning "let the trigger stamp it", and the `ON CONFLICT` update leaves it), `internal/db/inbox.go` (the four detectors: `m.synced_at > ?` instead of `m.ts_unix > ?`)
+- Modify: the writers that need a value other than "now". `internal/sync/message_sync.go` and `search_sync.go` set `SyncedAt` from `o.clock()` on the forward paths, so the fake-clock tests can control it. `BackfillSearch`/`Range` (Task 7) and `cmd/slack_backfill.go` set `SyncedAt = ts_unix`. Every other writer (other Go callers, every test fixture, raw `INSERT INTO messages` in Go tests and in the two Swift test files that insert messages) leaves it `0`, and the trigger stamps the insert time. The Desktop app itself never writes `messages`; its tests are covered by the trigger in the generated schema.
+- **No existing test is edited.** Because of the trigger, the INBOX-09, SRCDEL and SLACK-01 guard fixtures (raw inserts and `UpsertMessage*` calls with no `SyncedAt`) get `synced_at = insert time`. For a forward write that is what `ts`-ordered detection saw before (rows inserted after the watermark was taken), so they keep passing unchanged. If one still fails, stop and ask the owner.
 - Test: `internal/db/inbox_ingest_test.go`, `internal/db/migrations_test.go` (migration), `internal/sync/ownscope_lanes_test.go`
 
 **Interfaces:**
-- Produces: `db.Message.SyncedAt float64` (unix seconds, the writer's clock; `0` from a caller that forgets it is refused by `UpsertMessageBatch` with an error, so no silent `0` row is ever stored); the detectors' `sinceTS` parameter now means "stored after".
+- Produces: `db.Message.SyncedAt float64` (unix seconds; `0` = stamped by the trigger at insert time); the trigger `messages_synced_at_fill`; the detectors' `sinceTS` parameter now means "stored after".
 
 - [ ] **Step 1: Write the failing tests**:
   - `TestInbox_HourlyChannelMessageDetected`: the watermark is at `syncStart − 30 min`. A mention with `ts = syncStart − 45 min` in an hourly channel is stored by this cycle's poll (`synced_at = syncStart + 2 min`), and `FindPendingMentions` returns it.
   - `TestInbox_BackfilledMessageNotDetected`: a row stored with `synced_at = ts_unix` far below the watermark is not returned.
   - `TestInbox_EditDoesNotRetrigger`: re-upserting an old row keeps its `synced_at`.
   - `TestMigration_MessagesSyncedAtFromTs`: rows that exist before the migration get `synced_at = ts_unix`.
-  - `TestUpsertMessageBatch_RefusesZeroSyncedAt`.
+  - `TestMessagesSyncedAtTrigger_FillsZero`: an insert with no `synced_at` gets the insert time (within the test's before/after `julianday` readings).
+  - `TestMessagesSyncedAtTrigger_ExplicitWins`: an insert with `synced_at = ts_unix` keeps it.
+  - `TestMessagesSyncedAtTrigger_UpdateDoesNotBump`: an `UpsertMessage` of an existing row (an edit) and a tombstone keep the first `synced_at`.
   - `TestOwnScope_DeferredMessageDetectedWhenStored` (`internal/sync` + `internal/inbox`): a DM deferred by the budget in cycle 1 and fetched in cycle 2 is detected in cycle 2.
-- [ ] **Step 2: Run** `go test ./internal/db -run 'TestInbox_|TestMigration_MessagesSyncedAt|TestUpsertMessageBatch_Refuses'` — FAIL.
+- [ ] **Step 2: Run** `go test ./internal/db -run 'TestInbox_|TestMigration_MessagesSyncedAt|TestMessagesSyncedAtTrigger_'` — FAIL.
 - [ ] **Step 3: Implement** with the `add-migration` skill; regenerate the golden and the Swift test schema.
 - [ ] **Step 4: Run** `go test ./internal/db ./internal/inbox ./internal/sync ./internal/daemon ./internal/digest ./internal/tools` (every package that writes or reads `messages`), `go test ./internal/inbox ./internal/daemon -run Inbox09` (the guards, untouched) and `make test-swift FILTER=TestDatabase` — PASS; `make lint-diff`.
 - [ ] **Step 5: Commit** `feat(inbox): Slack detection ordered by when a message was stored (#1709)`.
