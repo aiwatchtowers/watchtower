@@ -2,7 +2,7 @@ import XCTest
 
 /// LLMTRANSPORT-01 — a consumer decides by capability, never by transport
 /// identity. The Swift twin of the Go guard in `internal/transporttest`:
-/// it scans `WatchtowerDesktop/Sources` and `WatchtowerKit/Sources` for
+/// it scans `WatchtowerDesktop/Sources`, `WatchtowerKit/Sources` and `WatchtowerChatText/Sources` for
 /// `== "claude"`-style literals, `.claude`/`.codex`/`.ollama` comparisons
 /// or cases (the Kit's `.claudeCode`/`.codexCLI` too) and array-literal
 /// `.contains` membership tests. Every hit today is listed in
@@ -340,7 +340,8 @@ final class LLMTransportGuardTests: XCTestCase {
             )
         }
         var out: [String: Int] = [:]
-        for dir in ["WatchtowerDesktop/Sources", "WatchtowerKit/Sources"] {
+        // WatchtowerChatText holds code the Mac runs too (the chat error table moved there, #1791): scanned like the rest.
+        for dir in ["WatchtowerDesktop/Sources", "WatchtowerKit/Sources", "WatchtowerChatText/Sources"] {
             let files = try swiftFiles(in: dir)
             XCTAssertFalse(files.isEmpty, "\(dir) has no Swift files: the guard would pass vacuously")
             for url in files {

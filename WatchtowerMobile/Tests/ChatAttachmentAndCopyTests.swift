@@ -315,7 +315,8 @@ final class ChatArtifactActionsTests: XCTestCase {
     }
 
     func testEmailOpensAMailtoWithEverythingEncoded() throws {
-        let actions = ChatArtifactActions(artifact("email", meta: ["to": "vendor@example.com", "subject": "Re: renewal & terms"], content: "Hello, a+b"))
+        let meta = ["to": "vendor@example.com", "subject": "Re: renewal & terms"]
+        let actions = ChatArtifactActions(artifact("email", meta: meta, content: "Hello, a+b"))
         XCTAssertEqual(actions.buttons.map(\.title), ["Open in Mail", "Copy", "Share"])
         guard case let .open(url) = actions.buttons[0].effect else { return XCTFail("open") }
         XCTAssertTrue(url.absoluteString.hasPrefix("mailto:vendor%40example.com?"))
