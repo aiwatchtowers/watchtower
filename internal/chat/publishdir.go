@@ -12,7 +12,7 @@ import (
 )
 
 // publishDirName is the folder under the chat work dir that holds one
-// publish dir per conversation.
+// publish dir per conversation and process.
 const publishDirName = "publish"
 
 // ErrOutsidePublishDir is a path that does not name a place inside the
@@ -30,7 +30,7 @@ var ErrUnsafePublishPath = errors.New("unsafe path in the publish folder")
 // Check is that confinement.
 type PublishDir struct {
 	workDir string // the child's cwd: relative paths resolve against it
-	path    string // <workDir>/publish/<conversation id>, as created
+	path    string // <workDir>/publish/<conversation id>-<pid>, as created
 	// realPath is path with its ancestors' symlinks resolved (macOS: /var →
 	// /private/var), the spelling the CLI's cwd has; "" when it equals path.
 	realPath string
@@ -40,8 +40,10 @@ type PublishDir struct {
 	lstat  func(string) (os.FileInfo, error)
 }
 
-// NewPublishDir creates <workDir>/publish/<conversationID> (0700, parents
-// 0700) and checks each level is a real directory of ours that nobody else
+// NewPublishDir creates <workDir>/publish/<conversationID>-<pid> (0700,
+// parents 0700) for this process: the Desktop's and the hub's `ai session`
+// of one conversation share the work dir, and each removes only its own
+// folder on close (PublishDirName). It checks each level is a real directory of ours that nobody else
 // can write to. Every level is checked before the next is made inside it,
 // so a planted symlink is refused (*WorkDirError) and never followed into a
 // folder outside the work dir.
@@ -60,7 +62,7 @@ func NewPublishDir(workDir string, conversationID int64) (*PublishDir, error) {
 		return nil, err
 	}
 	parent := filepath.Join(workDir, publishDirName)
-	dir := filepath.Join(parent, strconv.FormatInt(conversationID, 10))
+	dir := filepath.Join(parent, PublishDirName(conversationID))
 	for _, level := range []string{parent, dir} {
 		if err := os.Mkdir(level, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
 			return nil, fmt.Errorf("publish folder %s: %w", level, err)
@@ -85,6 +87,12 @@ func NewPublishDir(workDir string, conversationID int64) (*PublishDir, error) {
 		d.realPath = resolved
 	}
 	return d, nil
+}
+
+// PublishDirName is this process's publish dir name for a conversation:
+// "<conversation id>-<pid>".
+func PublishDirName(conversationID int64) string {
+	return strconv.FormatInt(conversationID, 10) + "-" + strconv.Itoa(os.Getpid())
 }
 
 // Path is the publish dir as created (under the work dir).
