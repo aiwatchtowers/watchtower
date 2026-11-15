@@ -518,11 +518,20 @@ func ensureEnabledAt(st *state.Store, now time.Time) error {
 	return st.SetMeta(state.MetaEnabledAt, strconv.FormatFloat(float64(now.UnixNano())/1e9, 'f', -1, 64))
 }
 
+// hubKindOf is the heartbeat's hub kind: a desktop host's live mode runs
+// beside the Watchtower app (a Mac), every other hub is headless (#1783).
+func hubKindOf(d *Desktop) string {
+	if d != nil {
+		return wire.HubKindMac
+	}
+	return wire.HubKindServer
+}
+
 // heartbeat is the heartbeat source's facts.
 func (h *hubRuntime) heartbeat(st *state.Store, name string) slices.HeartbeatFacts {
 	f := slices.HeartbeatFacts{
 		HubID: h.kr.HubIDText(), MacName: name, AppVersion: guide.Version, Flavor: wire.FlavorOf(BuildFlavor),
-		Clock: h.sup.o.Clock,
+		HubKind: hubKindOf(h.sup.o.Desktop), Clock: h.sup.o.Clock,
 		LastPublishAt: func() (time.Time, bool) {
 			if h.pub == nil {
 				return time.Time{}, false

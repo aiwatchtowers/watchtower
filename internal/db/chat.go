@@ -47,7 +47,7 @@ func (db *DB) ListRecentChatTurns(contextType, contextID string, limit int) ([]C
 	rows, err := db.Query(activeBranchCTE+`SELECT m.id, m.role, m.text, CAST(m.created_at AS INTEGER)
 		FROM chat_messages m
 		JOIN chat_conversations c ON c.id = m.conversation_id
-		WHERE c.context_type = ? AND c.context_id = ? AND `+onActiveBranch+`
+		WHERE c.context_type = ? AND c.context_id = ? AND `+ChatNotLiveSlack+` AND `+onActiveBranch+`
 		ORDER BY m.created_at DESC, m.id DESC
 		LIMIT ?`, contextType, contextID, limit)
 	if err != nil {
@@ -99,7 +99,7 @@ func (db *DB) ListOwnerChatTurnsSince(since time.Time) ([]ChatOwnerTurn, error) 
 	rows, err := db.Query(activeBranchCTE+`SELECT m.conversation_id, m.text, m.created_at
 		FROM chat_messages m
 		JOIN chat_conversations c ON c.id = m.conversation_id
-		WHERE m.role = 'user' AND m.created_at >= ? AND `+onActiveBranch+`
+		WHERE m.role = 'user' AND m.created_at >= ? AND `+ChatNotLiveSlack+` AND `+onActiveBranch+`
 		ORDER BY m.created_at, m.id`, float64(since.Unix()))
 	if err != nil {
 		return nil, fmt.Errorf("listing owner chat turns since: %w", err)
@@ -117,6 +117,13 @@ func (db *DB) ListOwnerChatTurnsSince(since time.Time) ([]ChatOwnerTurn, error) 
 	}
 	return out, rows.Err()
 }
+
+// ChatNotLiveSlack is the SQL predicate, over messages m and conversations c,
+// that keeps a message unless it belongs to or follows the first turn that used
+// the Live Slack connector (chat_conversations.live_slack_since = that turn's
+// chat_messages.id, NULL = never; LIVE-01). Every reader that feeds a store that
+// makes chat text lasting applies it.
+const ChatNotLiveSlack = `(c.live_slack_since IS NULL OR m.id < c.live_slack_since)`
 
 // activeBranchCTE yields active_path(id, parent_id): every message on its
 // conversation's active branch (root → active_leaf_message_id). Paired with
@@ -401,4 +408,34 @@ func (db *DB) ChatStepSummaries(messageIDs []int64) (map[int64][]string, error) 
 		out[msgID] = append(out[msgID], label)
 	}
 	return out, rows.Err()
+}
+
+// LiveSlackOwnerLineOK reports whether line may be stored from message
+// messageID of conversation conversationID. A conversation that never used the
+// Live Slack connector passes any line. In a marked one (LIVE-01) the line must
+// appear verbatim (whitespace runs collapsed, as ParseRemember does) in the stored text of the owner's own message (role 'user'),
+// so nothing a Live answer said can reach the remembered instructions.
+func (db *DB) LiveSlackOwnerLineOK(conversationID, messageID int64, line string) (bool, error) {
+	var since sql.NullInt64
+	err := db.QueryRow(`SELECT live_slack_since FROM chat_conversations WHERE id = ?`, conversationID).Scan(&since)
+	if errors.Is(err, sql.ErrNoRows) {
+		return true, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("reading live slack mark of conversation %d: %w", conversationID, err)
+	}
+	if !since.Valid {
+		return true, nil
+	}
+	var text string
+	err = db.QueryRow(`SELECT text FROM chat_messages WHERE id = ? AND conversation_id = ? AND role = 'user'`,
+		messageID, conversationID).Scan(&text)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("reading owner message %d: %w", messageID, err)
+	}
+	// ParseRemember collapses whitespace runs, so the stored text is compared the same way.
+	return strings.Contains(strings.Join(strings.Fields(text), " "), line), nil
 }

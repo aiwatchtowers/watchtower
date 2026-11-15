@@ -211,7 +211,7 @@ func TestReportRequestOutsideTheWindowIsNotFound(t *testing.T) {
 
 	got := r.report(7)
 	wantOutcome(t, got, wire.StatusFailed, reasonNotFound)
-	wantMessage(t, got, "This session has no report on the Mac")
+	wantMessage(t, got, "This session has no report on your tower")
 	if len(r.reports.ids) != 0 {
 		t.Fatalf("requests = %v", r.reports.ids)
 	}

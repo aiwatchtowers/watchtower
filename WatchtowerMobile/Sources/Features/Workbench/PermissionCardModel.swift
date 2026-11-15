@@ -7,12 +7,12 @@ import WatchtowerSync
 /// to answer. The typing grant never implies it.
 enum PermissionHint: Equatable {
     case turnOn
-    case waitingForMac
+    case waitingForMac(TowerHost)
 
     var text: String {
         switch self {
         case .turnOn: "Turn on \"Answer permission prompts from this phone\" to answer here."
-        case .waitingForMac: "Allow answering permission prompts on the Mac: Watchtower → Settings → Mobile → Allow…"
+        case let .waitingForMac(host): host.permissionsWait
         }
     }
 }
@@ -55,6 +55,10 @@ struct PermissionCardModel: Equatable {
     var allowConfirmTitle: String { "Allow this command once?" }
     /// The card shows Allow once.
     var offersAllow: Bool { allowBlock == nil }
+    /// Allow once and Deny are on the card at all: not while the phone may
+    /// not answer, where disabled buttons would read as broken (#1784); the
+    /// hint and Turn On say how to get them.
+    var showsButtons: Bool { hint == nil }
 
     /// The request the session's card shows: the pending one of a live
     /// session whose prompts the Mac takes from the phone
@@ -67,7 +71,7 @@ struct PermissionCardModel: Equatable {
     /// The session shows a card this phone may answer: the bar's footer
     /// points at it instead of the Mac.
     static func answerable(_ session: TerminalSessionState, in snapshot: WorkbenchReplicaSnapshot, access: PermissionAccess) -> Bool {
-        request(for: session, in: snapshot) != nil && hint(access) == nil
+        request(for: session, in: snapshot) != nil && hint(access, host: TowerHost(snapshot.heartbeat, device: access.grant?.deviceID)) == nil
     }
 
     /// The session's card with this phone's answers so far; nil without a
@@ -81,22 +85,29 @@ struct PermissionCardModel: Equatable {
         request(for: session, in: snapshot).map {
             Self(
                 request: $0, session: session,
-                rows: PermissionAnswerRow.rows(sessionID: session.id, snapshot: snapshot, now: now), access: access
+                rows: PermissionAnswerRow.rows(sessionID: session.id, snapshot: snapshot, now: now), access: access,
+                host: TowerHost(snapshot.heartbeat, device: access.grant?.deviceID)
             )
         }
     }
 
-    static func hint(_ access: PermissionAccess) -> PermissionHint? {
+    static func hint(_ access: PermissionAccess, host: TowerHost) -> PermissionHint? {
         if !access.requested {
             .turnOn
         } else if access.grant?.permissionsAllowed == true {
             nil
         } else {
-            .waitingForMac
+            .waitingForMac(host)
         }
     }
 
-    init(request: PermissionRequest, session: TerminalSessionState, rows: [PermissionAnswerRow], access: PermissionAccess) {
+    init(
+        request: PermissionRequest,
+        session: TerminalSessionState,
+        rows: [PermissionAnswerRow],
+        access: PermissionAccess,
+        host: TowerHost
+    ) {
         requestID = request.id
         sessionID = session.id
         tool = request.toolName
@@ -105,7 +116,7 @@ struct PermissionCardModel: Equatable {
             toolName: request.toolName, summary: request.summary, clipped: request.summaryClipped == true
         )
         confirmsAllow = request.toolName == "Bash"
-        hint = Self.hint(access)
+        hint = Self.hint(access, host: host)
         let answering = access.inFlight.contains(SessionInputSender.answerKey(session.id))
             || access.sentRequestID == request.id
             || rows.contains { $0.requestID == request.id && !$0.isFailed }
@@ -115,7 +126,7 @@ struct PermissionCardModel: Equatable {
 
 /// One answer the phone sent to a session's prompt, until the Mac applied
 /// it: how far it got, or the Mac's refusal (with Dismiss) — e.g.
-/// "Answered on the Mac" when the Mac answered first. A row outlives its
+/// "Answered on your tower" when the Mac answered first. A row outlives its
 /// request: the hub stops publishing a prompt once it is answered.
 struct PermissionAnswerRow: Equatable, Identifiable {
     enum State: Equatable {
@@ -132,7 +143,7 @@ struct PermissionAnswerRow: Equatable, Identifiable {
         if case .failed = state { true } else { false }
     }
 
-    static let failedFallback = "Your Mac could not take the answer"
+    static let failedFallback = "Your tower could not take the answer"
 
     /// "Sent to the session" once the Mac applied an answer to the card's
     /// request (or to one no longer shown) and no row waits: never

@@ -64,7 +64,7 @@ struct OwnerAskMarginComments: View {
             }
         }
         .background(Color.secondary.opacity(0.04))
-        .overlay(alignment: .leading) { Divider() }
+        .overlay(alignment: .leading) { Rectangle().fill(Stroke.hairlineColor).frame(width: Stroke.hairline) }
     }
 
     private func measured(_ comment: OwnerAskMarginComment) -> some View {

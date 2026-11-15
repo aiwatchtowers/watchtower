@@ -74,17 +74,17 @@ enum RelayUpgradeRefusal: Equatable, Sendable {
         case .unavailable:
             "\(macName) couldn't switch right now. Try again in a minute."
         case .notSupported:
-            "\(macName) can't switch to Relay. Update Watchtower on the Mac."
+            "\(macName) can't switch to Relay. Update Watchtower on it."
         case .readerNotConfirmed:
-            "\(macName) didn't confirm Relay. Update Watchtower on the Mac and try again."
+            "\(macName) didn't confirm Relay. Update Watchtower on it and try again."
         case .replacementLimit:
-            "\(macName) stays on iCloud: too many Mac changes on Relay this month. Try again later."
+            "\(macName) stays on iCloud: too many tower changes on Relay this month. Try again later."
         }
     }
 
     /// The line under the choice (`too_soon` only).
     var footnote: String? {
-        if case .tooSoon = self { return "The Mac was switched less than 5 minutes ago." }
+        if case .tooSoon = self { return "The tower was switched less than 5 minutes ago." }
         return nil
     }
 

@@ -534,7 +534,7 @@ func TestProj16_CodexSessionRefusedAsNotSupported(t *testing.T) {
 	for _, r := range []actions.Request{le.input(sid, "Also update the changelog"), le.finish(sid)} {
 		out := le.send(le.h, r)
 		wantOutcome(t, out, wire.StatusFailed, reasonNotSupported)
-		if want := "Codex sessions can't take messages from the phone yet. Type it on the Mac."; out.Message != want {
+		if want := "Codex sessions can't take messages from the phone yet. Type it on your tower."; out.Message != want {
 			t.Fatalf("message = %q, want %q", out.Message, want)
 		}
 	}
@@ -545,7 +545,7 @@ func TestProj16_CodexSessionRefusedAsNotSupported(t *testing.T) {
 }
 
 // not_found keeps its meaning: a session id with no board row (deleted) is
-// still "no longer exists on the Mac", whatever the capability table says.
+// still "no longer exists on your tower", whatever the capability table says.
 func TestProj16_DeletedSessionStillNotFound(t *testing.T) {
 	le := newLineEnv(t)
 	sid := le.agentSession("codex")

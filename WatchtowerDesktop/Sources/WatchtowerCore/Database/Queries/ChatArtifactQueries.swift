@@ -74,7 +74,12 @@ package enum ChatArtifactQueries {
 
     /// Pins `version` of an artifact as knowledge (**Keep in Knowledge**, and
     /// **Update in Knowledge** for a newer version: one kept version per key).
+    /// Refused with `ChatArtifactKeepError.liveSlack` in a conversation that used
+    /// the Live Slack connector (LIVE-01): its text never becomes knowledge.
     package static func keep(_ db: Database, conversationID: Int64, artifactKey: String, version: Int) throws {
+        if try LiveSlackMark.isMarked(db, conversationID: conversationID) {
+            throw ChatArtifactKeepError.liveSlack
+        }
         try db.execute(sql: """
             INSERT INTO chat_knowledge_artifacts (conversation_id, artifact_key, version, kept_at)
             VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
@@ -120,4 +125,10 @@ package enum ChatArtifactQueries {
         }
         return json
     }
+}
+
+/// Why an artifact cannot be pinned as knowledge.
+package enum ChatArtifactKeepError: Error {
+    /// The conversation used the Live Slack connector (LIVE-01).
+    case liveSlack
 }

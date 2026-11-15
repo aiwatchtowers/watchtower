@@ -216,3 +216,22 @@ func TestHTMLToText_MalformedPages(t *testing.T) {
 		})
 	}
 }
+
+func TestLIVE01_KeptArtifactSkipped(t *testing.T) {
+	ctx := context.Background()
+	d := db.OpenTestDB(t)
+	seedChatArtifact(t, d, 1, "document", "Plan v1", "first draft of the rollout")
+	exec(t, d, `INSERT INTO chat_knowledge_artifacts (conversation_id, artifact_key, version, kept_at) VALUES (5, 'plan', 1, '2026-10-24T10:00:00Z')`)
+	src := chatArtifactSource{}
+	keys, err := src.Keys(ctx, d)
+	require.NoError(t, err)
+	require.Len(t, keys, 1)
+
+	exec(t, d, `UPDATE chat_conversations SET live_slack_since = 1 WHERE id = 5`)
+	keys, err = src.Keys(ctx, d)
+	require.NoError(t, err)
+	assert.Empty(t, keys)
+	changed, _, _, err := src.Changed(ctx, d, "", testNow())
+	require.NoError(t, err)
+	assert.Empty(t, changed)
+}

@@ -31,7 +31,8 @@ package enum LLMPurposeNames {
             ("digest.weekly", "Weekly digest"),
             ("digest.period", "Period summaries"),
             ("analysis.period", "Period analysis"),
-            ("light", "Quick classifications")
+            ("light", "Quick classifications"),
+            ("slack.live_probe", "Live Slack checks")
         ]),
         ("Built-in automations", [
             ("briefing.daily", "Morning brief"),

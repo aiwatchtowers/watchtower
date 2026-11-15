@@ -59,11 +59,11 @@ struct RelaySlotsModel: Equatable {
         var id: String { mac }
     }
 
-    static let navigationTitle = "Add Mac"
+    static let navigationTitle = "Add tower"
     static let cancelTitle = "Cancel"
     static let footnote = "Up to \(replacementsPer30Days) replacements in 30 days."
-    static let failedTitle = "Couldn't remove the Mac. Try again."
-    static let unknownMacName = "A Mac not on this iPhone"
+    static let failedTitle = "Couldn't remove the tower. Try again."
+    static let unknownMacName = "A tower not on this iPhone"
     static let finishingSub = "Finishing link"
     /// The relay's replacement limit (Worker `slotReplacementsPer30Days`).
     static let replacementsPer30Days = 5
@@ -78,7 +78,7 @@ struct RelaySlotsModel: Equatable {
     /// link still finishing, else "A Mac not on this iPhone".
     init(state: RelaySlotsState, links: [HubRow], promoted: [PromotedLink]) {
         title = state.failed == nil
-            ? "Your subscription already has \(HostedRelayLimits.maxMacSlots) Macs. Remove one to add this Mac over Relay."
+            ? "Your subscription already has \(HostedRelayLimits.maxMacSlots) towers. Remove one to add this tower over Relay."
             : Self.failedTitle
         isLoading = state.loading
         rows = state.macs.map { mac in
@@ -125,7 +125,7 @@ struct RelaySlotsModel: Equatable {
         case .linkedHere:
             return Ask(
                 mac: row.id, title: "Unlink \(row.name)?",
-                message: "This phone forgets the Mac's data. Changes still waiting for the Mac are not sent.",
+                message: "This phone forgets the tower's data. Changes still waiting for the tower are not sent.",
                 confirm: "Unlink", keep: "Cancel"
             )
         case .finishing:

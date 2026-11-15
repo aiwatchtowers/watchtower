@@ -63,7 +63,7 @@ final class WorkchatWiringTests: XCTestCase {
 
         XCTAssertNil(chat.agentID, "the workchat is the session's main chat")
         chat.appeared()
-        try await poll({ sent == ["10/-"] }, "opening the session asked the Mac for its chat")
+        try await poll({ sent == ["10/-"] }, "opening the session asked the tower for its chat")
         chat.disappeared()
     }
 
@@ -82,8 +82,8 @@ final class WorkchatWiringTests: XCTestCase {
         XCTAssertFalse(workchat.stateLine.isWaiting)
 
         let asleep = model(working, try snapshot(heartbeatAt: now.addingTimeInterval(-3_600)))
-        XCTAssertEqual(asleep.stateLine.visibleText, "Working · as of 1 h ago", "the Mac away stops the count")
-        XCTAssertEqual(asleep.composer, .macAway("Waiting for your Mac"))
+        XCTAssertEqual(asleep.stateLine.visibleText, "Working · as of 1 h ago", "the tower away stops the count")
+        XCTAssertEqual(asleep.composer, .macAway("Waiting for your tower"))
     }
 
     // MARK: - The foot of the feed
@@ -99,7 +99,7 @@ final class WorkchatWiringTests: XCTestCase {
 
         let codexLike = model(try XCTUnwrap(replica.session(12)), try snapshot())
         XCTAssertNil(codexLike.permission)
-        XCTAssertEqual(codexLike.composer, .approval("Needs approval on the Mac"), "no card: the Mac answers it")
+        XCTAssertEqual(codexLike.composer, .approval("Needs approval on the tower"), "no card: the tower answers it")
     }
 
     func testOpenAsksShowInline() throws {
@@ -146,14 +146,14 @@ final class WorkchatWiringTests: XCTestCase {
 
         XCTAssertEqual(claude.composer, .ready, "a Claude session takes a line while it works")
         XCTAssertEqual(codex.composer, .hidden(.macOnly(.codexCLI)))
-        XCTAssertEqual(SessionInputModel.TypingHint.macOnly(.codexCLI).text, "Write to Codex sessions on the Mac.")
+        XCTAssertEqual(SessionInputModel.TypingHint.macOnly(.codexCLI).text, "Write to Codex sessions on the tower.")
         let input = SessionInputModel(
             session: codexSession, snapshot: replica, grant: grant(typing: true), typingRequested: true, delivered: nil, now: now
         )
         XCTAssertFalse(input.showsBar)
-        XCTAssertFalse(input.showsFinish, "no Finish either: the Mac refuses it for a Codex session")
+        XCTAssertFalse(input.showsFinish, "no Finish either: the tower refuses it for a Codex session")
         XCTAssertEqual(ComposerBarModel(text: "", mode: .message).placeholder, "Message the session…")
-        XCTAssertEqual(model(try session(10), replica, typing: false).composer, .hidden(.waitingForMac))
+        XCTAssertEqual(model(try session(10), replica, typing: false).composer, .hidden(.waitingForMac(.mac)))
         XCTAssertEqual(model(try session(15, ["live": false, "state_kind": "stopped"]), replica).composer, .hidden(nil))
     }
 
@@ -170,12 +170,12 @@ final class WorkchatWiringTests: XCTestCase {
         )
         XCTAssertTrue(input.showsBar)
         XCTAssertTrue(input.showsFinish)
-        XCTAssertEqual(model(codexSession, replica, typing: false).composer, .hidden(.waitingForMac))
+        XCTAssertEqual(model(codexSession, replica, typing: false).composer, .hidden(.waitingForMac(.mac)))
 
         let none: [String: Any] = ["input": false, "input_while_working": false, "permission_answer": false, "interrupt": false]
         let refused = try session(10, ["state_kind": "working", "phone": none])
         XCTAssertEqual(model(refused, replica).composer, .hidden(.macOnly(.claudeCode)))
-        XCTAssertEqual(SessionInputModel.TypingHint.macOnly(.claudeCode).text, "Write to this session on the Mac.")
+        XCTAssertEqual(SessionInputModel.TypingHint.macOnly(.claudeCode).text, "Write to this session on the tower.")
         XCTAssertFalse(
             SessionInputModel(
                 session: refused, snapshot: replica, grant: grant(typing: true), typingRequested: true, delivered: nil, now: now
@@ -188,12 +188,12 @@ final class WorkchatWiringTests: XCTestCase {
         let replica = try snapshot(heartbeatAt: lastSeen)
         let asleep = model(try XCTUnwrap(replica.session(10)), replica)
 
-        XCTAssertEqual(asleep.banner?.title, "Your Mac is asleep")
-        XCTAssertEqual(asleep.banner?.text, "Your Mac is asleep · last seen 40 min ago. New lines go when it wakes.")
+        XCTAssertEqual(asleep.banner?.title, "Acme Mac is asleep")
+        XCTAssertEqual(asleep.banner?.text, "Acme Mac is asleep · last seen 40 min ago. New lines go when it wakes.")
         XCTAssertEqual(asleep.stateLine.visibleText, "Working · running tests · as of 40 min ago")
-        XCTAssertEqual(asleep.composer, .macAway("Waiting for your Mac"))
-        XCTAssertEqual(asleep.composer.bar?.note, "Waiting for your Mac")
-        XCTAssertNil(model(try XCTUnwrap(replica.session(10)), try snapshot()).banner, "no banner while the Mac is online")
+        XCTAssertEqual(asleep.composer, .macAway("Waiting for your tower"))
+        XCTAssertEqual(asleep.composer.bar?.note, "Waiting for your tower")
+        XCTAssertNil(model(try XCTUnwrap(replica.session(10)), try snapshot()).banner, "no banner while the tower is online")
     }
 
     func testQueuedCaptionOnlyForSessionsThatTakeALineWhileWorking() async throws {
@@ -217,7 +217,7 @@ final class WorkchatWiringTests: XCTestCase {
         let codexRow: [String: Any] = ["input": true, "input_while_working": false, "permission_answer": false, "interrupt": false]
         XCTAssertEqual(
             delivery.caption(for: try session(10, ["agent": "codex_cli", "phone": codexRow])), "Sent",
-            "the Mac holds a Codex line until idle, so it never goes while busy (PROJ-16)"
+            "the tower holds a Codex line until idle, so it never goes while busy (PROJ-16)"
         )
     }
 

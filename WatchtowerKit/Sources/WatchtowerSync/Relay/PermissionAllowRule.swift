@@ -14,8 +14,8 @@ public enum PermissionAllowBlock: String, Equatable, Sendable {
     /// The card's note and the hub's refusal message.
     public var note: String {
         switch self {
-        case .clipped: "Shortened — answer on the Mac to allow"
-        case .settingsPath: "Changes Watchtower or shell settings — answer on the Mac to allow"
+        case .clipped: "Shortened — answer on your tower to allow"
+        case .settingsPath: "Changes Watchtower or shell settings — answer on your tower to allow"
         }
     }
 

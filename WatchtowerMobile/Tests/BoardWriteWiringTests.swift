@@ -111,10 +111,10 @@ final class BoardWriteWiringTests: XCTestCase {
         let fixture = try makeFixture()
         try await fixture.writer.setStatus(.done, on: try target(415))
         let failedID = try XCTUnwrap(fixture.store.pendingActions().first).id
-        try await fail(fixture, reason: .conflict, result: ["current": .string("blocked")], message: "Changed on the Mac to blocked")
+        try await fail(fixture, reason: .conflict, result: ["current": .string("blocked")], message: "Changed on your tower to blocked")
 
         let row = try XCTUnwrap(try detail(415, try snapshot(fixture.store)).writes.first)
-        XCTAssertEqual(row.state, .conflict(prompt: "Changed on the Mac to Blocked — apply anyway?"))
+        XCTAssertEqual(row.state, .conflict(prompt: "Changed on your tower to Blocked — apply anyway?"))
         XCTAssertTrue(try detail(415, try snapshot(fixture.store)).status.isEnabled, "a failed row does not lock the picker")
 
         try await fixture.writer.applyAnyway(row)
@@ -132,10 +132,10 @@ final class BoardWriteWiringTests: XCTestCase {
     func testAPriorityConflictRetriesWithTheCurrentPriority() async throws {
         let fixture = try makeFixture()
         try await fixture.writer.setPriority(.low, on: try target(415))
-        try await fail(fixture, reason: .conflict, result: ["current": .string("medium")], message: "Changed on the Mac to medium")
+        try await fail(fixture, reason: .conflict, result: ["current": .string("medium")], message: "Changed on your tower to medium")
 
         let row = try XCTUnwrap(try detail(415, try snapshot(fixture.store)).writes.first)
-        XCTAssertEqual(row.state, .conflict(prompt: "Changed on the Mac to Medium — apply anyway?"))
+        XCTAssertEqual(row.state, .conflict(prompt: "Changed on your tower to Medium — apply anyway?"))
         try await fixture.writer.applyAnyway(row)
 
         let retry = try XCTUnwrap(fixture.store.pendingActions().first)
@@ -146,7 +146,7 @@ final class BoardWriteWiringTests: XCTestCase {
     func testNoDismissesTheConflict() async throws {
         let fixture = try makeFixture()
         try await fixture.writer.setStatus(.done, on: try target(415))
-        try await fail(fixture, reason: .conflict, result: ["current": .string("blocked")], message: "Changed on the Mac to blocked")
+        try await fail(fixture, reason: .conflict, result: ["current": .string("blocked")], message: "Changed on your tower to blocked")
         let row = try XCTUnwrap(try detail(415, try snapshot(fixture.store)).writes.first)
 
         try fixture.writer.dismiss(row)
@@ -156,26 +156,26 @@ final class BoardWriteWiringTests: XCTestCase {
     func testAConflictWithoutACurrentValueIsAnOrdinaryFailure() async throws {
         let fixture = try makeFixture()
         try await fixture.writer.setStatus(.done, on: try target(415))
-        try await fail(fixture, reason: .conflict, message: "Changed on the Mac")
+        try await fail(fixture, reason: .conflict, message: "Changed on your tower")
 
         let row = try XCTUnwrap(try detail(415, try snapshot(fixture.store)).writes.first)
-        XCTAssertEqual(row.state, .failed("Changed on the Mac"))
+        XCTAssertEqual(row.state, .failed("Changed on your tower"))
     }
 
     func testOtherFailuresShowTheHubsMessageOrAShortFallback() async throws {
         let fixture = try makeFixture()
         try await fixture.writer.setStatus(.done, on: try target(415))
-        try await fail(fixture, reason: .notFound, message: "This target no longer exists on the Mac")
+        try await fail(fixture, reason: .notFound, message: "This target no longer exists on the tower")
         XCTAssertEqual(
             try detail(415, try snapshot(fixture.store)).writes.first?.state,
-            .failed("This target no longer exists on the Mac")
+            .failed("This target no longer exists on the tower")
         )
 
         // The outbox's own fallback text is replaced by the phone's.
         let other = try makeFixture()
         try await other.writer.setPriority(.low, on: try target(415))
         try await fail(other, reason: .writeFailed, message: nil)
-        XCTAssertEqual(try detail(415, try snapshot(other.store)).writes.first?.state, .failed("Your Mac could not make this change"))
+        XCTAssertEqual(try detail(415, try snapshot(other.store)).writes.first?.state, .failed("Your tower could not make this change"))
     }
 
     // MARK: - Offline
@@ -185,9 +185,9 @@ final class BoardWriteWiringTests: XCTestCase {
         try await fixture.writer.setStatus(.done, on: try target(415))
 
         let stale = try detail(415, try snapshot(fixture.store, heartbeatAge: 3_600))
-        XCTAssertEqual(stale.writes.first?.state, .sending("Waiting for your Mac"))
+        XCTAssertEqual(stale.writes.first?.state, .sending("Waiting for your tower"))
         let none = try detail(415, try snapshot(fixture.store))
-        XCTAssertEqual(none.writes.first?.state, .sending("Waiting for your Mac"), "no heartbeat yet is not online")
+        XCTAssertEqual(none.writes.first?.state, .sending("Waiting for your tower"), "no heartbeat yet is not online")
         let online = try detail(415, try snapshot(fixture.store, heartbeatAge: 10))
         XCTAssertEqual(online.writes.first?.state, .sending("Sending…"))
     }
@@ -339,10 +339,10 @@ final class BoardWriteWiringTests: XCTestCase {
         )
 
         // The board shows it as a pending row until hydration delivers it.
-        let board = BoardModel(workbenchID: DemoSeed.acmeID, snapshot: try snapshot(fixture.store), filter: .open)
+        let board = BoardModel(workbenchID: DemoSeed.acmeID, snapshot: try snapshot(fixture.store), filter: .all)
         XCTAssertEqual(board.pendingCreates.map(\.title), ["Ask colleague A"])
-        XCTAssertEqual(board.pendingCreates.first?.state, .sending("Waiting for your Mac"))
-        XCTAssertTrue(BoardModel(workbenchID: DemoSeed.websiteID, snapshot: try snapshot(fixture.store), filter: .open).pendingCreates.isEmpty)
+        XCTAssertEqual(board.pendingCreates.first?.state, .sending("Waiting for your tower"))
+        XCTAssertTrue(BoardModel(workbenchID: DemoSeed.websiteID, snapshot: try snapshot(fixture.store), filter: .all).pendingCreates.isEmpty)
 
         var empty = NewBoardTargetDraft(workbenchID: DemoSeed.acmeID)
         empty.title = " "
@@ -493,7 +493,7 @@ final class BoardWriteWiringTests: XCTestCase {
     func testANewerPickDropsTheFieldsOldConflict() async throws {
         let fixture = try makeFixture()
         try await fixture.writer.setStatus(.done, on: try target(415))
-        try await fail(fixture, reason: .conflict, result: ["current": .string("blocked")], message: "Changed on the Mac to blocked")
+        try await fail(fixture, reason: .conflict, result: ["current": .string("blocked")], message: "Changed on your tower to blocked")
         try await fixture.writer.setPriority(.low, on: try target(415))
 
         try await fixture.writer.setStatus(.todo, on: try target(415))
@@ -517,13 +517,13 @@ final class BoardWriteWiringTests: XCTestCase {
     func testAReplyWhoseRootIsNotShownStillShowsAndCanBeDismissed() async throws {
         let fixture = try makeFixture()
         try await fixture.writer.reply("Thanks", toRoot: 80, workbenchID: DemoSeed.acmeID)
-        try await fail(fixture, reason: .notFound, message: "This comment no longer exists on the Mac")
+        try await fail(fixture, reason: .notFound, message: "This comment no longer exists on the tower")
 
         var pruned = try snapshot(fixture.store)
         pruned.comments.removeAll { $0.id == 80 }
         let thread = try detail(415, pruned).thread
         guard case let .write(row, _)? = thread.last else { return XCTFail("the reply is not in the thread") }
-        XCTAssertEqual(row.state, .failed("This comment no longer exists on the Mac"))
+        XCTAssertEqual(row.state, .failed("This comment no longer exists on the tower"))
         try fixture.writer.dismiss(row)
         XCTAssertTrue(try fixture.store.pendingActions().isEmpty)
 
@@ -532,8 +532,8 @@ final class BoardWriteWiringTests: XCTestCase {
         try await other.writer.reply("Thanks", toRoot: 999, workbenchID: DemoSeed.acmeID)
         let orphaned = try snapshot(other.store)
         XCTAssertFalse(try detail(415, orphaned).thread.contains { if case .write = $0 { true } else { false } })
-        XCTAssertEqual(BoardModel(workbenchID: DemoSeed.acmeID, snapshot: orphaned, filter: .open).unplacedReplies.map(\.title), ["Thanks"])
-        XCTAssertTrue(BoardModel(workbenchID: DemoSeed.websiteID, snapshot: orphaned, filter: .open).unplacedReplies.isEmpty)
+        XCTAssertEqual(BoardModel(workbenchID: DemoSeed.acmeID, snapshot: orphaned, filter: .all).unplacedReplies.map(\.title), ["Thanks"])
+        XCTAssertTrue(BoardModel(workbenchID: DemoSeed.websiteID, snapshot: orphaned, filter: .all).unplacedReplies.isEmpty)
     }
 
     // MARK: - Breadcrumb

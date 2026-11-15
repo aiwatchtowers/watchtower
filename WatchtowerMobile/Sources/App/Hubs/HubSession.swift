@@ -104,7 +104,7 @@ enum HubSessionError: LocalizedError, Equatable {
 
     var errorDescription: String? {
         switch self {
-        case .keysOfAnotherHub: "This Mac's keys do not belong to it. Scan its code again."
+        case .keysOfAnotherHub: "This tower's keys do not belong to it. Scan its code again."
         }
     }
 }
@@ -253,6 +253,12 @@ final class HubSession {
     /// removed, frozen: multi-hub spec §6.1): the outbox and the uploader
     /// refuse as if unlinked.
     private(set) var writesAllowed = true
+
+    /// What the replica's badge needs of the phone's typing (#1785 follow-up), all observable: the device that may
+    /// write to this hub (none while unlinked or frozen) and the owner's typing toggle.
+    private var typingState: (deviceID: String?, requested: Bool) {
+        (writesAllowed ? linkedDevice?.deviceID : nil, deviceSettings.typingRequested)
+    }
 
     /// The link flow's hooks (`AppRoot`): the transport's link signals, and
     /// a call after every successful fetch (the heartbeat checks).
@@ -578,7 +584,7 @@ final class HubSession {
         sharedAlerts = Self.makeSharedAlerts(
             hubID: hubID, route: route, link: link, keys: sealed.hasDeviceKeys ? keys : nil, store: store, defaults: defaults,
             posting: alertPosting)
-        workbenchReplica.start(store: store)
+        workbenchReplica.start(store: store) { [weak self] in self?.typingState ?? (nil, false) }
         calendarReplica.start(store: store)
         phoneRecordings.start(store: store)
         observeOutboxBacklog()

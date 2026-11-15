@@ -23,18 +23,18 @@ kind: feature
 since: 0.24.0
 -->
 
-A Claude Code session at a permission prompt shows a card with the tool and what it will run, plus **Allow once** and **Deny**. **Allow once** approves that one call, never a rule (a shell command asks first). Nothing is typed into the session.
+A Claude Code session at a permission prompt shows a card with the tool and what it will run, plus **Allow once** and **Deny**; until the phone may answer, the card shows the request without them and says under it how to turn answering on. **Allow once** approves that one call, never a rule (a shell command asks first). Nothing is typed into the session.
 
-Two kinds of prompt offer only **Deny** on the phone, so you answer them on the Mac to allow:
+Two kinds of prompt offer only **Deny** on the phone, so you answer them on your tower to allow:
 
-- one too long to show in full, which says **Shortened — answer on the Mac to allow**;
-- a file edit that changes Claude Code's, an agent's, git or shell settings (a `.claude`, `.codex` or `.agents` folder, `.git/hooks`, `.git/config`, `.watchtower/workflow.md`, or a file such as `.zshrc`, `.bash_profile`, `.mcp.json`, `.envrc` or `.gitconfig`), which says **Changes Watchtower or shell settings — answer on the Mac to allow**.
+- one too long to show in full, which says **Shortened — answer on your tower to allow**;
+- a file edit that changes Claude Code's, an agent's, git or shell settings (a `.claude`, `.codex` or `.agents` folder, `.git/hooks`, `.git/config`, `.watchtower/workflow.md`, or a file such as `.zshrc`, `.bash_profile`, `.mcp.json`, `.envrc` or `.gitconfig`), which says **Changes Watchtower or shell settings — answer on your tower to allow**.
 
-The prompt stays open on the Mac too, and the first answer wins. If you already answered on the Mac, the phone's answer usually comes back **Answered on the Mac**. Once the Mac takes a phone answer, the card says **Sent to the session**.
+The prompt stays open on the Mac too, and the first answer wins. If you already answered on the Mac, the phone's answer usually comes back **Answered on your tower**. Once the Mac takes a phone answer, the card says **Sent to the session**.
 
 If you allowed a long-running command on the Mac, the phone keeps showing the prompt until the command ends. Answering it then does nothing; to stop the command, use the Mac.
 
-Prompts show in **Now** under **Waiting for you** and in the Workbench badge, with no push alert. Codex sessions keep **Needs approval on the Mac**: answer them on the Mac. Codex prompts and **Interrupt** are not taken from the phone. If a prompt answer reaches the Mac, it replies **Codex sessions can't answer this permission from the phone yet. Answer it on the Mac.**; an Interrupt gets **Codex sessions can't be interrupted from the phone yet. Stop it on the Mac.**
+Prompts show in **Now** under **Waiting for you** and in the Workbench badge, with no push alert. Codex sessions keep **Needs approval on the tower**: answer them there. Codex prompts and **Interrupt** are not taken from the phone. If a prompt answer reaches the Mac, it replies **Codex sessions can't answer this permission from the phone yet. Answer it on your tower.**; an Interrupt gets **Codex sessions can't be interrupted from the phone yet. Stop it on your tower.**
 
 ### Interrupt a working agent
 <!-- learn
@@ -51,9 +51,9 @@ since: 0.24.0
 
 ## When it's empty or wrong
 
-- **Only Deny is offered.** The prompt is too long to show, or the edit changes Watchtower or shell settings; answer it on the Mac to allow.
-- **Answered on the Mac.** Someone answered on the Mac first; the first answer wins.
-- **"Too late — answer on the Mac"** after Allow once or Deny: the prompt waited too long or its session stopped.
+- **Only Deny is offered.** The prompt is too long to show, or the edit changes Watchtower or shell settings; answer it on your tower to allow.
+- **Answered on your tower.** Someone answered on the Mac first; the first answer wins.
+- **"Too late — answer on your tower"** after Allow once or Deny: the prompt waited too long or its session stopped.
 - **"Allow answering permission prompts on the Mac: Watchtower → Settings → Mobile → Allow…"** on a prompt card. Click **Allow…** on the phone's permission-prompts line on the Mac.
 - **No Interrupt in the menu.** Turn on **Type into sessions from this phone** and get the Mac's **Allow…**; it shows only while a Claude Code session is **Working** with no prompt open.
 

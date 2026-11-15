@@ -200,7 +200,7 @@ Board #1076, ask #634 (2026-11-11). A Gmail `email_received` item resolves (`Use
 
 ### Sent catch-up
 
-An account that synced before this release has its sent mail only from the release on. Migration 00188 adds `google_accounts.gmail_sent_catchup_at` (`''` = not yet, else RFC 3339 UTC).
+An account that synced before this release has its sent mail only from the release on. Migration 00189 adds `google_accounts.gmail_sent_catchup_at` (`''` = not yet, else RFC 3339 UTC).
 
 - `Syncer.CatchUpSent(ctx, now)` (`internal/gmail/sent_catchup.go`) lists `in:sent after:<now − gmail.initial_history_days>` once per account and stores each message with its own date as `synced_at` (`backfillSyncedAt`), so the inbox detector never sees the rows as new. It writes no watermark and no auth state.
 - No-op when the stamp is set, or when the account has not synced yet (watermark 0): a first `Sync` lists sent mail itself and stamps at its listing time.

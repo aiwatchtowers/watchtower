@@ -18,6 +18,7 @@ import (
 	"watchtower/internal/hub/identity"
 	"watchtower/internal/hub/link"
 	hubslices "watchtower/internal/hub/slices"
+	"watchtower/internal/hub/slices/sources"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/transport/memfake"
@@ -764,5 +765,28 @@ func linkSharedPhone(t *testing.T, dir, id, user string) {
 	}
 	if devices, err := st.Devices(); err != nil || !slices.ContainsFunc(devices, func(d state.Device) bool { return d.ID == id }) {
 		t.Fatalf("devices: %v, %v", devices, err)
+	}
+}
+
+// TestHubKindOf: a desktop host's live mode is a Mac, every other hub a
+// server (#1783).
+func TestHubKindOf(t *testing.T) {
+	if got := hubKindOf(&Desktop{}); got != wire.HubKindMac {
+		t.Fatalf("desktop: %q", got)
+	}
+	if got := hubKindOf(nil); got != wire.HubKindServer {
+		t.Fatalf("headless: %q", got)
+	}
+}
+
+// TestHandlerDepsServerHostFollowsTheHubKind: the handlers word a
+// device_not_allowed refusal for a server hub only when no desktop host runs
+// it (#1783, ask #1322).
+func TestHandlerDepsServerHostFollowsTheHubKind(t *testing.T) {
+	if d := handlerDeps(Options{Desktop: &Desktop{}}, nil, &sources.Set{}, nil, nil, nil, nil); d.ServerHost {
+		t.Fatal("a desktop host's hub reads as a server")
+	}
+	if d := handlerDeps(Options{}, nil, &sources.Set{}, nil, nil, nil, nil); !d.ServerHost {
+		t.Fatal("a headless hub reads as a Mac")
 	}
 }

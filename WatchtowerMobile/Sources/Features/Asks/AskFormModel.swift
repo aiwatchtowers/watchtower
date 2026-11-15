@@ -39,11 +39,21 @@ struct AskFormModel {
         let docPath: String
         /// The snapshot as plain text; nil when the phone has none.
         let document: PlainTextDocument?
-        /// "Showing the first 256 KB of N" when the hub cut the snapshot.
+        /// The snapshot's lines as the page draws them (#1787); empty
+        /// without a snapshot.
+        let paragraphs: [ReviewParagraph]
+        /// "Showing the first 256 KB of N — the rest is only on the Mac"
+        /// when the hub cut the snapshot.
         let clippedNotice: String?
+        /// The line where a cut snapshot stops; nil when it is whole.
+        let clippedEnd: String?
         let comments: [Comment]
+        /// Paragraph id → the comments drawn under it, in draft order.
+        let commentsByParagraph: [Int: [Comment]]
+        /// Comments with no paragraph to sit under; drawn after the document.
+        let unplacedComments: [Comment]
         let verdict: OwnerAskAnswer.Verdict?
-        /// "Select text to comment · 1 comment".
+        /// "Press and hold a paragraph to comment · 1 comment".
         let commentsLine: String
     }
 
@@ -52,7 +62,7 @@ struct AskFormModel {
     /// Green for OK, red for Broken, secondary for Skipped; never orange.
     struct CheckChoice: Equatable, Identifiable {
         let state: OwnerAskAnswer.CheckState
-        /// "OK", "Broken", "Skipped": the button's VoiceOver label.
+        /// "Works", "Doesn't work", "Didn't check": the button's word (the Mac's).
         let label: String
         let symbol: String
         let tone: PhoneTone
@@ -80,6 +90,33 @@ struct AskFormModel {
         let value: String
     }
 
+    /// Where the ask came from, as links (#1786): the session's Workchat and
+    /// the board target, each only when the replica has it, so a link never
+    /// opens "not found".
+    struct SourceLink: Equatable, Identifiable {
+        enum Destination: Hashable {
+            case session(Int64)
+            case target(Int64)
+        }
+
+        let destination: Destination
+        /// "Open session", "Task #415".
+        let title: String
+        let icon: String
+
+        var id: Destination { destination }
+    }
+
+    /// The agent's last message before the ask, from the session's chat
+    /// record when the phone already has one (#1786); never requested here.
+    struct AgentContext: Equatable {
+        let label: String
+        /// Ends with "…" when the hub clipped it.
+        let text: String
+        /// Long enough to fold behind Show more.
+        let isLong: Bool
+    }
+
     /// The answer on its way, refused, or applied.
     enum Status: Equatable {
         case none
@@ -100,8 +137,14 @@ struct AskFormModel {
     let pageText: String?
     let headerTone: PhoneTone
     let title: String
-    /// "From <session> · #415".
+    /// "From <workbench> · <session>"; ends with "· #415" only when the
+    /// target is not on the phone (no link then, the number stays).
     let subline: String
+    /// Open session, Task #415; empty when neither is on the phone.
+    let sourceLinks: [SourceLink]
+    /// nil unless the session's chat is already on the phone with an agent
+    /// message at or before the ask.
+    let agentContext: AgentContext?
     let summary: String
     let changes: String
     let focus: [String]
@@ -123,6 +166,15 @@ struct AskFormModel {
     /// A review: Approve and Request changes (which set the verdict, then
     /// send) would send.
     let canSendVerdict: Bool
+    /// Request changes: a verdict would send and the owner said what to
+    /// change, in a note or a comment with text (#1787; the Mac takes an
+    /// empty one, the phone does not send it by one stray tap).
+    let canRequestChanges: Bool
+    /// Why Request changes is off when that is the only reason.
+    let requestChangesHint: String?
+    /// Under the check steps: what an unmarked step sends, and while none is
+    /// marked, that Send needs one.
+    let checkFooter: String
 
     init?(
         askID: Int64,
@@ -132,7 +184,11 @@ struct AskFormModel {
         now: Date,
         applied: AppliedAnswer?,
         isSending: Bool,
-        render: (String) -> PlainTextDocument = PlainTextRendering.render
+        chat: SessionChat? = nil,
+        chatAsOf: Date? = nil,
+        openedFromSessionID: Int64? = nil,
+        render: (String) -> PlainTextDocument = PlainTextRendering.render,
+        paragraphs: (PlainTextDocument) -> [ReviewParagraph] = ReviewParagraph.split
     ) {
         guard let ask = snapshot.asks.first(where: { $0.id == askID }) else { return nil }
         self.askID = askID
@@ -143,6 +199,8 @@ struct AskFormModel {
         summary = ask.summary
         changes = ask.changes
         subline = Self.subline(ask, snapshot: snapshot)
+        sourceLinks = Self.sourceLinks(ask, snapshot: snapshot, openedFromSessionID: openedFromSessionID)
+        agentContext = Self.agentContext(ask, chat: chat, asOf: chatAsOf)
         let open = ask.status == .open
         headerTone = open ? .waitingForYou : .secondary
         status = Self.status(ask, snapshot: snapshot, now: now, applied: applied)
@@ -151,16 +209,24 @@ struct AskFormModel {
         openOnMac = open && clipped ? AskText.openOnMac : nil
         focus = (payload?.focus ?? []).map(\.text)
         isEditable = open && !clipped && !isSending && applied == nil && !Self.isPending(status)
-        canSend = isEditable && draft.isAnswerable(for: ask) && !Self.isNotOpen(status)
+        // A check sends only once a step is marked (#1787): an all-unmarked
+        // answer reads to the agent as nothing failed.
+        let checklist = payload?.checklist ?? []
+        let marked = checklist.isEmpty || checklist.contains { draft.checks[$0.id] != nil }
+        canSend = isEditable && draft.isAnswerable(for: ask) && !Self.isNotOpen(status) && marked
+        checkFooter = marked ? AskText.unmarkedStep : "\(AskText.markOneStep) \(AskText.unmarkedStep)"
         var withVerdict = draft
         withVerdict.verdict = .approved
         canSendVerdict = ask.kind == .review && isEditable && withVerdict.isAnswerable(for: ask) && !Self.isNotOpen(status)
+        let saidSomething = !AskDraft.trimmed(draft.note).isEmpty || draft.comments.contains { !AskDraft.trimmed($0.body).isEmpty }
+        canRequestChanges = canSendVerdict && saidSomething
+        requestChangesHint = canSendVerdict && !saidSomething ? AskText.requestChangesNeedsWords : nil
 
         let questions = open && !clipped ? payload?.questions ?? [] : []
         let shown = questions.isEmpty ? 0 : min(max(page, 0), questions.count - 1)
         question = questions.isEmpty ? nil : Self.page(questions[shown], index: shown, count: questions.count, draft: draft)
         pageText = questions.count > 1 ? "\(shown + 1) of \(questions.count)" : nil
-        review = open && !clipped && ask.kind == .review ? Self.review(ask, draft: draft, render: render) : nil
+        review = open && !clipped && ask.kind == .review ? Self.review(ask, draft: draft, render: render, split: paragraphs) : nil
         checks = open && !clipped ? (payload?.checklist ?? []).map { Self.checkRow($0, draft: draft) } : []
         note = draft.note
         noteHint = AskDraft.trimmed(draft.note).unicodeScalars.count > AskDraft.noteLimit ? AskText.noteTooLong : nil

@@ -509,7 +509,7 @@ struct DemoTourBanner: View {
             Image(systemName: "play.rectangle")
                 .foregroundStyle(.secondary)
                 .accessibilityHidden(true)
-            Text("Demo: sample Macs and data")
+            Text("Demo: sample towers and data")
                 .font(.subheadline)
                 .frame(maxWidth: .infinity, alignment: .leading)
             Button("Exit Demo", action: exit)

@@ -51,6 +51,24 @@ final class HubContractFixtureTests: XCTestCase {
         }
     }
 
+    /// The heartbeat's hub kind (#1783): an older hub sends none and reads as a Mac; `server` and a kind this
+    /// build does not know do not. Every case decodes, and `hub_kind` re-encodes exactly as the Go hub writes it.
+    func testHeartbeatCasesReadTheHubKind() throws {
+        let cases = try XCTUnwrap(load()["heartbeat"])
+        XCTAssertTrue(cases.contains { $0["name"] as? String == "hub_kind_server" })
+        for fixtureCase in cases {
+            let name = try XCTUnwrap(fixtureCase["name"] as? String)
+            let json = try XCTUnwrap(fixtureCase["json"] as? [String: Any], name)
+            let heartbeat = try RelayCoder.makeDecoder().decode(HeartbeatPayload.self, from: bytes(json))
+            let kit = try XCTUnwrap(fixtureCase["kit"] as? [String: Any], name)
+            XCTAssertEqual(heartbeat.isMac, kit["is_mac"] as? Bool, name)
+            XCTAssertEqual(heartbeat.hubKind?.rawValue, json["hub_kind"] as? String, name)
+            let encoded = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: RelayCoder.makeEncoder().encode(heartbeat)) as? [String: Any], name)
+            XCTAssertEqual(encoded["hub_kind"] as? String, json["hub_kind"] as? String, name)
+        }
+    }
+
     /// Equal as JSON objects (key order and number spelling aside).
     private func assertSameJSON(_ data: Data, _ expected: Any, _ name: String) throws {
         let got = try JSONSerialization.jsonObject(with: data) as? NSDictionary

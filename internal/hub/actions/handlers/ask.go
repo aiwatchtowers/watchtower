@@ -20,7 +20,7 @@ import (
 )
 
 // askTimeoutMessage is AskAnswerHandler.timeoutMessage, verbatim.
-const askTimeoutMessage = "The Mac did not finish this answer in time — check the ask on the Mac"
+const askTimeoutMessage = "Your tower did not finish this answer in time — check the ask there"
 
 // result.delivery values of an ask answer (mobile POC spec §5.2). An
 // automation's ask is never typed into a session: its answer goes to the
@@ -110,7 +110,7 @@ func (h *Handlers) applyAskAnswer(ctx context.Context, r actions.Request) action
 		return h.rerun(r, ask, payload, given)
 	}
 	if !h.beginAnswering(askID) {
-		return failed(reasonConflict, "Another answer to this ask is being saved on the Mac")
+		return failed(reasonConflict, "Another answer to this ask is being saved on your tower")
 	}
 	defer h.endAnswering(askID)
 

@@ -180,7 +180,7 @@ final class LinkingViewModelTests: XCTestCase {
         XCTAssertEqual(model.phase, .failed(.cannotShare))
         XCTAssertEqual(
             LinkFailure.cannotShare.message,
-            "This Mac can't share with another Apple ID right now — Show a new code on the Mac"
+            "This tower can't share with another Apple ID right now — Show a new code on the tower"
         )
         XCTAssertTrue(container.accepted.isEmpty)
         XCTAssertTrue(host.prepared.isEmpty, "nothing is written")
@@ -219,7 +219,7 @@ final class LinkingViewModelTests: XCTestCase {
         await model.open(code(issuedAgo: Double(LinkPayload.lifetime) + 121).url())
 
         XCTAssertEqual(model.phase, .failed(.expired))
-        XCTAssertEqual(LinkFailure.expired.message, "This code expired — Show a new code on the Mac")
+        XCTAssertEqual(LinkFailure.expired.message, "This code expired — Show a new code on the tower")
         XCTAssertTrue(host.prepared.isEmpty)
         let writes = try await host.deviceWrites()
         XCTAssertTrue(writes.isEmpty)
@@ -277,7 +277,7 @@ final class LinkingViewModelTests: XCTestCase {
         XCTAssertEqual(model.phase, .failed(.noAnswer))
         XCTAssertEqual(
             LinkFailure.noAnswer.message,
-            "Your Mac didn't answer — Keep Settings → Mobile open on the Mac and scan again",
+            "Your tower didn't answer — Keep the code open on your tower and scan again",
             "title — hint (design pass O3)"
         )
         // Issued 10 s ago: exp is 590 s ahead, plus the 120 s grace.
@@ -300,7 +300,7 @@ final class LinkingViewModelTests: XCTestCase {
         await model.open(payload.url())
 
         XCTAssertEqual(model.phase, .failed(.refused))
-        XCTAssertEqual(LinkFailure.refused.message, "This code can't be used — Show a new code on the Mac")
+        XCTAssertEqual(LinkFailure.refused.message, "This code can't be used — Show a new code on the tower")
         XCTAssertTrue(model.links.isEmpty)
         XCTAssertTrue(host.linkedCalls.isEmpty)
     }
@@ -426,7 +426,7 @@ final class LinkingViewModelTests: XCTestCase {
         let relaunched = makeModel()
         await relaunched.resumePendingLink()
 
-        XCTAssertEqual(relaunched.phase, .failed(.noAnswer), "nothing reached the Mac: scan again at once")
+        XCTAssertEqual(relaunched.phase, .failed(.noAnswer), "nothing reached the tower: scan again at once")
         XCTAssertEqual(host.prepared.count, preparedBefore, "no wait to resume")
         XCTAssertEqual(clock.slept, 0)
         XCTAssertTrue(host.linkedCalls.isEmpty, "never shown as linked")
@@ -627,8 +627,8 @@ final class LinkingViewModelTests: XCTestCase {
         XCTAssertTrue(host.rows.isEmpty)
         XCTAssertEqual(model.phase, .idle)
         XCTAssertEqual(model.notice, .notSent(3))
-        XCTAssertEqual(LinkNotice.notSent(3).message, "Not sent: 3 items were still waiting for your Mac")
-        XCTAssertEqual(LinkNotice.notSent(1).message, "Not sent: 1 item was still waiting for your Mac")
+        XCTAssertEqual(LinkNotice.notSent(3).message, "Not sent: 3 items were still waiting for your tower")
+        XCTAssertEqual(LinkNotice.notSent(1).message, "Not sent: 1 item was still waiting for your tower")
         XCTAssertTrue(container.left.isEmpty, "a private link has no shares to leave")
     }
 
@@ -641,15 +641,15 @@ final class LinkingViewModelTests: XCTestCase {
 
         await model.unlink(acme)
 
-        XCTAssertEqual(model.notice, .recordingKept(macName: "Acme Mac", notSent: 2), "names the Mac whose link ended")
+        XCTAssertEqual(model.notice, .recordingKept(macName: "Acme Mac", notSent: 2), "names the tower whose link ended")
         XCTAssertEqual(
             LinkNotice.recordingKept(macName: "Acme Mac", notSent: 2).message,
             "The link to Acme Mac ended during a recording. It's saved on this iPhone and goes to Acme Mac after you link it again. "
-                + "Not sent: 2 items were still waiting for your Mac"
+                + "Not sent: 2 items were still waiting for your tower"
         )
         XCTAssertEqual(
             LinkNotice.recordingKept(macName: nil, notSent: 0).message,
-            "The link ended during a recording. It's saved on this iPhone and goes to your Mac after you link it again",
+            "The link ended during a recording. It's saved on this iPhone and goes to your tower after you link it again",
             "several links ended (an account change): no one Mac to name"
         )
         model.startScan()
@@ -693,7 +693,7 @@ final class LinkingViewModelTests: XCTestCase {
         XCTAssertEqual(model.notice, .recordingsProblem("Some recordings couldn't be read (disk full)", notSent: 2))
         XCTAssertEqual(
             model.notice?.message,
-            "Some recordings couldn't be read (disk full). Not sent: 2 items were still waiting for your Mac"
+            "Some recordings couldn't be read (disk full). Not sent: 2 items were still waiting for your tower"
         )
         model.startScan()
         XCTAssertNil(model.notice)
@@ -877,7 +877,7 @@ final class LinkingViewModelTests: XCTestCase {
 
         XCTAssertEqual(host.removedHubIDs, [acme], "only the unlink's own removal")
         XCTAssertTrue(host.markedRemoved.isEmpty, "not frozen: it is gone")
-        XCTAssertNil(model.notice, "the owner unlinked; the Mac did not remove the phone")
+        XCTAssertNil(model.notice, "the owner unlinked; the tower did not remove the phone")
         XCTAssertTrue(model.links.isEmpty)
         XCTAssertEqual(model.phase, .idle)
     }
@@ -955,8 +955,8 @@ final class LinkingViewModelTests: XCTestCase {
         XCTAssertTrue(container.accepted.isEmpty, "no share accepted")
         XCTAssertTrue(host.prepared.isEmpty, "nothing written")
         XCTAssertEqual(host.rows.count, HubRegistry.limit)
-        XCTAssertEqual(LinkFailure.tooManyMacs.title, "You can link up to 4 Macs")
-        XCTAssertEqual(LinkFailure.tooManyMacs.hint, "Unlink one in Settings → Macs, then scan again")
+        XCTAssertEqual(LinkFailure.tooManyMacs.title, "You can link up to 4 towers")
+        XCTAssertEqual(LinkFailure.tooManyMacs.hint, "Unlink one in Settings → Towers, then scan again")
         XCTAssertFalse(LinkFailure.tooManyMacs.offersScan)
     }
 
@@ -1060,7 +1060,7 @@ final class LinkingViewModelTests: XCTestCase {
         XCTAssertEqual(model.notice, .removed(macName: "Acme Mac"))
         XCTAssertEqual(LinkNotice.removed(macName: "Acme Mac").message, "Acme Mac removed this phone")
         let writes = try await host.deviceWrites()
-        XCTAssertNil(writes.last?.unlinked, "the Mac's zones are gone: nothing to write")
+        XCTAssertNil(writes.last?.unlinked, "the tower's zones are gone: nothing to write")
 
         await model.removedByMac(acme)
         XCTAssertEqual(host.markedRemoved, [acme], "a frozen hub is frozen once")
@@ -1127,7 +1127,7 @@ final class LinkingViewModelTests: XCTestCase {
         XCTAssertEqual(model.notice, .removed(macName: "Acme Mac"))
         XCTAssertEqual(
             LinkNotice.removed(macName: "Acme Mac", notSent: 2).message,
-            "Acme Mac removed this phone — Not sent: 2 items were still waiting for your Mac"
+            "Acme Mac removed this phone — Not sent: 2 items were still waiting for your tower"
         )
         XCTAssertEqual(host.markedRemoved, [acme])
         XCTAssertEqual(host.row(acme)?.state, .unlinkedByMac)
@@ -1374,7 +1374,7 @@ final class LinkingViewModelTests: XCTestCase {
         model.activated(
             hubID: homeID, heartbeat: heartbeat(hubID: homeID, macName: "Home Mac", updatedAt: start.addingTimeInterval(-90_000))
         )
-        XCTAssertEqual(model.notice, .stale(macName: "Home Mac"), "named for the Mac on screen")
+        XCTAssertEqual(model.notice, .stale(macName: "Home Mac"), "named for the tower on screen")
 
         model.activated(hubID: acme, heartbeat: nil)
         XCTAssertNil(model.notice, "no heartbeat read yet: nothing to say")
@@ -1422,7 +1422,7 @@ final class LinkingViewModelTests: XCTestCase {
         await model.open(code(version: 1).url())
 
         XCTAssertEqual(model.phase, .failed(.updateMac))
-        XCTAssertEqual(LinkFailure.updateMac.message, "Update Watchtower on this Mac")
+        XCTAssertEqual(LinkFailure.updateMac.message, "Update Watchtower on this tower")
         XCTAssertTrue(host.prepared.isEmpty)
     }
 
@@ -1479,16 +1479,16 @@ final class LinkingViewModelTests: XCTestCase {
     /// reason has no hint.
     func testEveryFailureIsATitleOverAHint() {
         let expected: [(LinkFailure, String, String?)] = [
-            (.expired, "This code expired", "Show a new code on the Mac"),
-            (.signIn, "Sign in to iCloud on this iPhone", "Watchtower uses iCloud to reach your Mac"),
-            (.cannotShare, "This Mac can't share with another Apple ID right now", "Show a new code on the Mac"),
-            (.noAnswer, "Your Mac didn't answer", "Keep Settings → Mobile open on the Mac and scan again"),
-            (.refused, "This code can't be used", "Show a new code on the Mac"),
+            (.expired, "This code expired", "Show a new code on the tower"),
+            (.signIn, "Sign in to iCloud on this iPhone", "Watchtower uses iCloud to reach your tower"),
+            (.cannotShare, "This tower can't share with another Apple ID right now", "Show a new code on the tower"),
+            (.noAnswer, "Your tower didn't answer", "Keep the code open on your tower and scan again"),
+            (.refused, "This code can't be used", "Show a new code on the tower"),
             (.updateApp, "Update Watchtower on this iPhone", nil),
-            (.updateMac, "Update Watchtower on this Mac", nil),
+            (.updateMac, "Update Watchtower on this tower", nil),
             (.iCloud("The network is offline"), "Couldn't reach iCloud", "The network is offline"),
             (.local("disk I/O error"), "Couldn't set up sync on this iPhone", "disk I/O error"),
-            (.tooManyMacs, "You can link up to 4 Macs", "Unlink one in Settings → Macs, then scan again")
+            (.tooManyMacs, "You can link up to 4 towers", "Unlink one in Settings → Towers, then scan again")
         ]
         for (failure, title, hint) in expected {
             XCTAssertEqual(failure.title, title, "\(failure)")
@@ -1511,7 +1511,7 @@ final class LinkingViewModelTests: XCTestCase {
             (.relayUnreachable, "Couldn't reach Relay", "Check your connection and scan again"),
             (
                 .macOnRelay(macName: "Work Mac"), "Work Mac runs over Relay",
-                "This iPhone can't use Relay, so it would get no updates from it. Link it when the Mac is back on iCloud."
+                "This iPhone can't use Relay, so it would get no updates from it. Link it when the tower is back on iCloud."
             )
         ]
         for (failure, title, hint) in expected {
@@ -1572,7 +1572,7 @@ final class LinkingViewModelTests: XCTestCase {
     func testTheLinkStepsFollowThePhaseAndHintAfterTwentySeconds() {
         let checking = LinkStepsModel(waitingFor: nil, startedAt: start, now: start.addingTimeInterval(60))
         XCTAssertEqual(checking.steps.map(\.state), [.current, .todo, .todo])
-        XCTAssertEqual(checking.steps.map(\.text), ["Code read", "Waiting for your Mac to confirm", "Linked"])
+        XCTAssertEqual(checking.steps.map(\.text), ["Code read", "Waiting for your tower to confirm", "Linked"])
         XCTAssertNil(checking.hint, "no hint while checking")
 
         let waiting = LinkStepsModel(waitingFor: "Acme Mac", startedAt: start, now: start.addingTimeInterval(19))
@@ -1580,11 +1580,11 @@ final class LinkingViewModelTests: XCTestCase {
         XCTAssertEqual(waiting.steps[1].text, "Waiting for Acme Mac to confirm")
         XCTAssertNil(waiting.hint)
         let late = LinkStepsModel(waitingFor: "Acme Mac", startedAt: start, now: start.addingTimeInterval(20))
-        XCTAssertEqual(late.hint, "Keep Settings → Mobile open on the Mac.")
+        XCTAssertEqual(late.hint, "Keep the code open on your tower.")
 
         XCTAssertNil(LinkStepsModel(waitingFor: "Acme Mac", startedAt: start.addingTimeInterval(30), now: start).hint, "a future start")
         XCTAssertNil(LinkStepsModel(waitingFor: "Acme Mac", startedAt: nil, now: start).hint)
-        XCTAssertEqual(LinkStepsModel(waitingFor: "", startedAt: nil, now: start).steps[1].text, "Waiting for your Mac to confirm")
+        XCTAssertEqual(LinkStepsModel(waitingFor: "", startedAt: nil, now: start).steps[1].text, "Waiting for your tower to confirm")
     }
 
     // MARK: - E2E pairing (mobile E2E spec §2.3, Task 16)
@@ -1614,9 +1614,9 @@ final class LinkingViewModelTests: XCTestCase {
         let opened = try TestPhone.openHello(try XCTUnwrap(sealed.first), code: payload)
         XCTAssertEqual(opened.hello.device.linkNonce, payload.nonce)
         XCTAssertEqual(opened.hello.device.deviceID, TestE2E.deviceID.uuidString)
-        XCTAssertEqual(model.linkCode, opened.sas, "the phone shows the code the Mac computes")
+        XCTAssertEqual(model.linkCode, opened.sas, "the phone shows the code the tower computes")
         let steps = LinkStepsModel(waitingFor: "Acme Mac", code: model.linkCode, waited: 0)
-        XCTAssertEqual(steps.codeInstruction, "Check that your Mac shows **\(opened.sas)**, then click Link on the Mac.")
+        XCTAssertEqual(steps.codeInstruction, "Check that your tower shows **\(opened.sas)**, then confirm it there.")
 
         let stored = try XCTUnwrap(try keyStore.hubLink(acme))
         XCTAssertEqual(stored.hubSigningKey, TestE2E.hubSigningKey.publicKey.rawRepresentation)
@@ -1746,14 +1746,14 @@ final class LinkingViewModelTests: XCTestCase {
 
         await model.open(payload.url())
 
-        XCTAssertTrue(seen.events.contains("true"), "the waiting screen said the Mac sees this iPhone")
+        XCTAssertTrue(seen.events.contains("true"), "the waiting screen said the tower sees this iPhone")
         XCTAssertEqual(model.phase, .failed(.noAnswer))
         XCTAssertGreaterThanOrEqual(clock.slept, 710, "exp (590 s ahead) + 120 s, not 60 s")
         XCTAssertLessThan(clock.slept, 712)
         XCTAssertEqual(LinkingViewModel.grantPollInterval, 2)
         XCTAssertGreaterThan(seen.events.count, 300, "a keybox fetch every 2 s")
         let steps = LinkStepsModel(waitingFor: "Acme Mac", code: "7342", macSeesPhone: true, waited: 0)
-        XCTAssertEqual(steps.steps.map(\.text), ["Code read", "Your Mac sees this iPhone", "Linked"])
+        XCTAssertEqual(steps.steps.map(\.text), ["Code read", "Your tower sees this iPhone", "Linked"])
         XCTAssertEqual(steps.steps.map(\.state), [.done, .current, .todo])
     }
 
@@ -1964,7 +1964,7 @@ final class LinkingViewModelTests: XCTestCase {
         XCTAssertTrue(model.links.isEmpty)
         XCTAssertNil(LinkStore(defaults: defaults).pending, "a pending link without keys goes too")
         XCTAssertEqual(model.notice, .encryptionReScan)
-        XCTAssertEqual(LinkNotice.encryptionReScan.message, "Watchtower now encrypts your data. Scan the code on your Mac again.")
+        XCTAssertEqual(LinkNotice.encryptionReScan.message, "Watchtower now encrypts your data. Scan the code on your tower again.")
         XCTAssertEqual(host.removedHubIDs, [acme], "the old link's hub is removed")
         XCTAssertTrue(host.farewells.isEmpty, "nothing can be sealed for it")
 

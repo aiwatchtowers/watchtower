@@ -197,7 +197,7 @@ final class SessionChatViewModel {
 
     static func earlierText(_ more: Int) -> String? {
         guard more > 0 else { return nil }
-        return "\(more) earlier \(more == 1 ? "message" : "messages") — open on the Mac"
+        return "\(more) earlier \(more == 1 ? "message" : "messages") — open on the tower"
     }
 
     /// The screen appeared: observe and ask the Mac for the chat.

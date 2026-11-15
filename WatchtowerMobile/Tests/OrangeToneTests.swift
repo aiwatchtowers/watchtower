@@ -138,7 +138,7 @@ final class OrangeToneTests: XCTestCase {
                 eventID: event.id, snapshot: calendar, recordings: recordings, now: now, calendar: .current
             )).toneUses
         }
-        XCTAssertTrue(uses.contains { $0.tone == .purple }, "the demo shows a recording the Mac is transcribing")
+        XCTAssertTrue(uses.contains { $0.tone == .purple }, "the demo shows a recording the tower is transcribing")
         XCTAssertTrue(uses.contains { $0.tone == .red && $0.role == .recording })
         XCTAssertFalse(uses.contains { $0.tone == .orange })
     }

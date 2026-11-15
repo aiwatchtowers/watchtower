@@ -80,7 +80,10 @@ final class ScreenshotTourTests: XCTestCase {
             let end = shot.hasEnd ? "\(shot.number)e-\(shot.slug)" : nil
             try await host.capture("\(shot.number)-\(shot.slug)", shot.make(root.env), endName: end)
         }
+        let meetingRows = try await captureMeetingSoon(host: host)
         let asleepRows = try await captureMacAsleep(root.env, demo: demo, host: host)
+            + (try await captureSessionStates(root.env, demo: demo, host: host))
+            + (try await captureAskSources(root.env, demo: demo, host: host))
         let recorderRows = try await captureRecorder(into: dir, linking: root.linking)
         let outboxRows = try await captureOutbox(into: dir, linking: root.linking)
         let relayRows = try await captureRelayLinking(host: host)
@@ -88,7 +91,7 @@ final class ScreenshotTourTests: XCTestCase {
         let phase4Rows = try await captureRelayPhase4(host: host)
         let phase5Rows = try await captureParkedFeed(into: dir, linking: root.linking)
         try ScreenshotHost.writeIndex(
-            Self.indexRows(shots) + asleepRows + recorderRows + outboxRows + relayRows + onRelayRows + phase4Rows + phase5Rows,
+            Self.indexRows(shots) + meetingRows + asleepRows + recorderRows + outboxRows + relayRows + onRelayRows + phase4Rows + phase5Rows,
             to: dir)
 
         let pngs = try FileManager.default
@@ -96,7 +99,7 @@ final class ScreenshotTourTests: XCTestCase {
             .filter { $0.pathExtension == "png" }
         XCTAssertEqual(
             pngs.count,
-            2 * (shots.count + shots.filter(\.hasEnd).count + asleepRows.count + recorderRows.count + outboxRows.count)
+            2 * (shots.count + shots.filter(\.hasEnd).count + meetingRows.count + asleepRows.count + recorderRows.count + outboxRows.count)
                 + 3 * (relayRows.count + onRelayRows.count + phase4Rows.count + phase5Rows.count)
         )
         for png in pngs {
@@ -141,6 +144,16 @@ final class ScreenshotTourTests: XCTestCase {
         return (try AppRoot.demo(env, defaults: defaults), demo)
     }
 
+    /// 01m, 01me (#1785): Now with its clock 20 min ahead, so the demo's next meeting starts in about 4 min and its
+    /// card carries Record (shown only within 10 min of the start); the end frame shows the card and Ended above it.
+    private func captureMeetingSoon(host: ScreenshotHost) async throws -> [ScreenshotHost.IndexRow] {
+        try await host.capture("01m-now-meeting-soon", NowView(clockOffset: 20 * 60), endName: "01me-now-meeting-soon")
+        return ["01m", "01me"].map {
+            ScreenshotHost.IndexRow(
+                number: $0, view: "NowView", source: "Features/Now/NowView.swift", reached: "leaf view, clock 20 min ahead")
+        }
+    }
+
     /// 01s, 09s (mockup 8): the primary Mac's heartbeat 40 min old, so the
     /// Mac is asleep: Now's chip and working times "as of", the workchat's
     /// banner and composer note. Last of the app shots: the Mac stays asleep.
@@ -160,6 +173,193 @@ final class ScreenshotTourTests: XCTestCase {
             ScreenshotHost.IndexRow(
                 number: "09s", view: "WorkchatView", source: "Features/Workbench/WorkchatView.swift", reached: "bare stack, Mac asleep"
             )
+        ]
+    }
+
+    /// 16a–16c (#1786), after the Mac fell asleep so the earlier shots keep the demo as it was: an external
+    /// terminal's check on an archived task (only Task #417), an ask whose session and task were deleted (no
+    /// links, the number as text), and a long agent message folded behind Show more.
+    private func captureAskSources(_ env: AppEnvironment, demo: DemoHub, host: ScreenshotHost) async throws -> [ScreenshotHost.IndexRow] {
+        let now = Date()
+        let ago: (TimeInterval) -> Int = { DemoSeed.JSON.stamp(now.addingTimeInterval(-$0)) }
+        let acme = DemoSeed.acmeID
+        let asks: [[String: Any]] = [
+            DemoSeed.JSON.ask(150, workbench: acme, [
+                "target_id": 417, "kind": "check", "status": "answered", "title": "Check the archive view",
+                "created_at": ago(50_000), "answered_at": ago(49_000)
+            ]),
+            DemoSeed.JSON.ask(151, workbench: acme, [
+                "session_id": 99, "target_id": 999, "status": "answered", "title": "Keep the old lane names?",
+                "created_at": ago(40_000), "answered_at": ago(39_000)
+            ]),
+            DemoSeed.JSON.ask(152, workbench: acme, [
+                "session_id": 15, "target_id": 421, "status": "delivered", "title": "Which lanes count toward the total?",
+                "created_at": ago(11_000), "answered_at": ago(10_900), "delivered_at": ago(10_890),
+                "payload": ["questions": [[
+                    "id": "lanes", "question": "Which lanes count?", "options": [["label": "Open lanes only"], ["label": "Every lane"]]
+                ]]],
+                "answer": [
+                    "verdict": "", "answers": [["id": "lanes", "labels": ["Open lanes only"], "other": ""]],
+                    "checklist": [Any](), "comments": [Any](), "note": ""
+                ]
+            ])
+        ]
+        let message = """
+            The lane header now sums the estimates of its targets. Two readings of "total" fit the board: \
+            the open targets only, which matches what the Done fold hides, or every target in the lane, \
+            which matches the Mac's progress bar. The first keeps the number moving as work lands; the \
+            second keeps it stable across a sprint.
+            I checked the Desktop board: its progress bar counts every lane.
+            Before I change the header I need one answer, so I'm asking.
+            """
+        let chat: [String: Any] = ["session_id": 15, "live": false, "entries_more": 0, "entries": [
+            ["id": "l1", "kind": "owner", "at": ago(12_000), "text": "Add totals to the lane headers."],
+            ["id": "l2", "kind": "agent", "at": ago(11_100), "text": message]
+        ]]
+        let records = try zip([Int64(150), 151, 152], asks).map { try DemoSeed.record(kind: .ownerAsk, id: $0, json: $1, modifiedAt: now) }
+            + [try DemoSeed.record(kind: .sessionChat, id: 15, json: chat, modifiedAt: now)]
+        let sealing = DemoSeed.hubTransport(inner: demo.transport, seq: DemoSeed.hubSeq(defaults: demo.defaults, now: now))
+        try await sealing.save(records)
+        _ = await env.refresh(.pull)
+        try await poll({ env.workbenchReplica.snapshot.asks.contains { $0.id == 152 } }, "the source asks arrived")
+        let shots: [(String, Int64, String)] = [
+            ("16a", 150, "archived-task-no-session"), ("16b", 151, "session-and-task-gone"), ("16c", 152, "long-agent-message")
+        ]
+        for (number, id, slug) in shots {
+            try await host.capture("\(number)-ask-\(id)-\(slug)", NavigationStack {
+                AskView(replica: env.workbenchReplica, drafts: env.askDrafts, answerer: env.askAnswerer, askID: id)
+            })
+        }
+        return shots.map { number, _, slug in
+            ScreenshotHost.IndexRow(number: number, view: "AskView", source: "Features/Asks/AskView.swift", reached: "bare stack, \(slug)")
+        }
+    }
+
+    /// 10o, 10p, 12l, 11s, 12s: the workchat's what-next card (#1784), with 01c and 05c (Now and the Sessions tab while
+    /// the failed session waits to continue, #1785 follow-up), and the permission card the seed has no request
+    /// for. Runs after the Mac-asleep shots: the Mac wakes, records saved in its name set each state, and at the end
+    /// the Mac sleeps again and every record is put back, so the shots after it see what they saw before.
+    private func captureSessionStates(_ env: AppEnvironment, demo: DemoHub, host: ScreenshotHost) async throws -> [ScreenshotHost.IndexRow] {
+        let now = Date()
+        let sealing = DemoSeed.hubTransport(inner: demo.transport, seq: DemoSeed.hubSeq(defaults: demo.defaults, now: now))
+        let seed = try DemoSeed.records(now: now)
+        func seeded(_ name: String) throws -> CloudRecord { try XCTUnwrap(seed.first { $0.recordName == name }, name) }
+        func publish(_ records: [CloudRecord], _ what: String, until done: @escaping @MainActor () -> Bool) async throws {
+            try await sealing.save(records)
+            _ = await env.refresh(.pull)
+            try await poll(done, what)
+        }
+        func workchat(_ name: String, _ id: Int64) async throws {
+            try await host.capture(name, NavigationStack {
+                WorkchatView(replica: env.workbenchReplica, sessionID: id, store: env.store, requester: env.chatRequests)
+            })
+        }
+        func grant(permissions: Bool) -> DeviceGrant {
+            DeviceGrant(
+                deviceID: DemoSeed.device.deviceID, hubID: DemoSeed.primary.hubID, name: DemoSeed.device.name, scope: DemoSeed.device.scope,
+                linked: true, linkedAt: now.addingTimeInterval(-3_600), typingAllowed: true, startSessionsAllowed: true,
+                permissionsAllowed: permissions, decidedAt: now.addingTimeInterval(-3_600)
+            )
+        }
+        let snapshot = { env.workbenchReplica.snapshot }
+        let beat = try seeded(HeartbeatPayload.recordName)
+        try await publish([beat], "the demo Mac woke") { env.macReachability(now: Date()) == .online }
+
+        // A Bash request on "Board lanes": first with the phone's answering off (the seed's), then on.
+        let request = try DemoSeed.record(
+            kind: .permissionRequest, id: 7,
+            json: permissionRequestJSON(7, session: 12, ["summary": "npm run build\nBuild the board before the lane test"]),
+            modifiedAt: now
+        )
+        try await publish([request], "the demo request arrived") { snapshot().pendingPermission(for: 12) != nil }
+        try await workchat("10o-session-12-approval-phone-off", 12)
+        await env.deviceSettings.setPermissionsRequested(true)
+        try await publish([try DemoSeed.keyboxRecord(for: grant(permissions: true), modifiedAt: now)], "the tower allowed answers") {
+            snapshot().grant(for: DemoSeed.device.deviceID)?.permissionsAllowed == true && env.deviceSettings.permissionsRequested
+        }
+        try await workchat("10p-session-12-approval-card", 12)
+
+        // "Undo archive" as a current Mac publishes a failed turn: still live, at its prompt.
+        let failedLive = try DemoSeed.record(kind: .terminalSession, id: 16, json: DemoSeed.JSON.session(16, workbench: DemoSeed.acmeID, [
+            "title": "Undo archive", "state_kind": "failed", "state_caption": "Error: rate limit", "state_tone": "red",
+            "state_glyph": "exclamationmark", "agent_error": "rate_limit", "target_id": 416,
+            "last_active_at": DemoSeed.JSON.stamp(now.addingTimeInterval(-600)), "state_at": DemoSeed.JSON.stamp(now.addingTimeInterval(-600))
+        ]), modifiedAt: now)
+        try await publish([failedLive], "the failed session runs") { snapshot().session(16)?.live == true }
+        try await workchat("12l-session-16-failed-live", 16)
+        // #1785 follow-up: the failed session this phone can continue waits on Now (and the tab badge) and the Sessions tab.
+        try await host.capture("01c-now-failed-to-continue", Self.app(.now)(env))
+        try await host.capture("05c-workbench-sessions-failed-to-continue", NavigationStack {
+            WorkbenchView(replica: env.workbenchReplica, writer: env.boardWriter, workbenchID: DemoSeed.acmeID, segment: .sessions)
+        })
+        try await workchat("11s-session-15-not-running", 15)
+
+        // The Mac asleep over the failed session: Continue queues for its wake.
+        let stale = try XCTUnwrap(DemoSeed.records(now: now.addingTimeInterval(-2_400)).first { $0.recordName == HeartbeatPayload.recordName })
+        try await publish([stale], "the demo Mac fell asleep again") { env.macReachability(now: Date()) != .online }
+        try await workchat("12s-session-16-failed-mac-asleep", 16)
+
+        let serverRows = try await captureServerTower(env, sealing: sealing, now: now, host: host)
+
+        try await sealing.delete(recordNames: [request.recordName], in: request.zone)
+        await env.deviceSettings.setPermissionsRequested(false)
+        try await publish(
+            [try seeded(failedLive.recordName), try DemoSeed.keyboxRecord(for: grant(permissions: false), modifiedAt: now),
+             stale],
+            "the seed is back"
+        ) {
+            snapshot().pendingPermission(for: 12) == nil && snapshot().session(16)?.live == false
+                && snapshot().grant(for: DemoSeed.device.deviceID)?.permissionsAllowed != true
+                && snapshot().heartbeat?.isMac == true
+        }
+        let workchat = "Features/Workbench/WorkchatView.swift"
+        let waiting = [
+            ScreenshotHost.IndexRow(number: "01c", view: "NowView", source: "Features/Now/NowView.swift",
+                                    reached: "full app, a failed live session the phone can continue"),
+            ScreenshotHost.IndexRow(number: "05c", view: "WorkbenchView", source: "Features/Workbench/WorkbenchView.swift",
+                                    reached: "bare stack, a failed live session the phone can continue")
+        ]
+        return waiting + serverRows + [
+            ("10o", "bare stack, a permission request with the phone's answering off"),
+            ("10p", "bare stack, a permission request the phone may answer"),
+            ("12l", "bare stack, a failed turn of a live session"),
+            ("11s", "bare stack, a session whose run ended"),
+            ("12s", "bare stack, a failed live session, Mac asleep")
+        ].map { ScreenshotHost.IndexRow(number: $0.0, view: "WorkchatView", source: workchat, reached: $0.1) }
+    }
+
+    /// 10v, 18v (#1783): the primary hub as a server tower (heartbeat hub_kind "server") that has not allowed
+    /// answers or starts: the hints name `watchtower hub allow` instead of the Mac app's Settings → Mobile. The
+    /// caller puts the Mac heartbeat and grant back.
+    private func captureServerTower(
+        _ env: AppEnvironment, sealing: SecureTransport, now: Date, host: ScreenshotHost
+    ) async throws -> [ScreenshotHost.IndexRow] {
+        var server = DemoSeed.primary
+        server.kind = .server
+        let serverBeat = try XCTUnwrap(DemoSeed.records(now: Date(), hub: server).first { $0.recordName == HeartbeatPayload.recordName })
+        let serverGrant = DeviceGrant(
+            deviceID: DemoSeed.device.deviceID, hubID: DemoSeed.primary.hubID, name: DemoSeed.device.name, scope: DemoSeed.device.scope,
+            linked: true, linkedAt: now.addingTimeInterval(-3_600), typingAllowed: true, startSessionsAllowed: false,
+            permissionsAllowed: false, decidedAt: now.addingTimeInterval(-3_600)
+        )
+        try await sealing.save([serverBeat, try DemoSeed.keyboxRecord(for: serverGrant, modifiedAt: now)])
+        _ = await env.refresh(.pull)
+        try await poll({
+            env.workbenchReplica.snapshot.heartbeat?.isMac == false
+                && env.workbenchReplica.snapshot.grant(for: DemoSeed.device.deviceID)?.permissionsAllowed == false
+                && env.macReachability(now: Date()) == .online
+        }, "the server tower")
+        try await host.capture("10v-session-12-approval-server-tower", NavigationStack {
+            WorkchatView(replica: env.workbenchReplica, sessionID: 12, store: env.store, requester: env.chatRequests)
+        })
+        try await host.capture("18v-start-session-server-tower", StartSessionSheet(
+            workbenchID: DemoSeed.acmeID, target: env.workbenchReplica.snapshot.targets.first { $0.id == 415 }, fixed: true
+        ) { _ in })
+        return [
+            ScreenshotHost.IndexRow(number: "10v", view: "WorkchatView", source: "Features/Workbench/WorkchatView.swift",
+                                    reached: "bare stack, a permission request on a server tower that has not allowed answers"),
+            ScreenshotHost.IndexRow(number: "18v", view: "StartSessionSheet", source: "Features/Workbench/StartSessionSheet.swift",
+                                    reached: "sheet, a server tower that has not allowed starting sessions")
         ]
     }
 
@@ -617,10 +817,10 @@ final class ScreenshotTourTests: XCTestCase {
         settings.refreshBattery()
         let diagnostics: [(String, String, LatencyDiagnosticsModel.State)] = [
             ("S37", "diagnostics-rows", .rows([
-                .init(title: "Relay", count: "214 actions", result: "p50 0.31 s · p90 0.7 s", answer: "Mac's answer: p50 0.12 s · p90 0.3 s")
+                .init(title: "Relay", count: "214 actions", result: "p50 0.31 s · p90 0.7 s", answer: "Tower's answer: p50 0.12 s · p90 0.3 s")
             ])),
             ("S37b", "diagnostics-rows-icloud", .rows([
-                .init(title: "iCloud", count: "214 actions", result: "p50 0.31 s · p90 0.7 s", answer: "Mac's answer: p50 0.12 s · p90 0.3 s")
+                .init(title: "iCloud", count: "214 actions", result: "p50 0.31 s · p90 0.7 s", answer: "Tower's answer: p50 0.12 s · p90 0.3 s")
             ])),
             ("S38", "diagnostics-empty", .empty),
             ("S48", "diagnostics-needs-mac-update", .needsMacUpdate),
@@ -993,6 +1193,23 @@ final class ScreenshotTourTests: XCTestCase {
         { env in AnyView(NavigationStack { content(env) }) }
     }
 
+    /// The Acme board in a bare stack under `filter` and `query`, its folds
+    /// reset first and then changed by `folds` (#1781).
+    private static func board(
+        _ filter: BoardFilter? = nil, query: String = "", folds: @escaping (inout BoardFolds) -> Void = { _ in }
+    ) -> @MainActor (AppEnvironment) -> AnyView {
+        stack { env in
+            env.boardFolds.update(hubID: env.activeHubID, workbenchID: DemoSeed.acmeID) { stored in
+                stored = BoardFolds()
+                folds(&stored)
+            }
+            return BoardView(
+                replica: env.workbenchReplica, writer: env.boardWriter, workbenchID: DemoSeed.acmeID, now: Date(),
+                filter: filter, query: query
+            )
+        }
+    }
+
     /// A sheet (which owns its stack) or an onboarding leaf view.
     private static func leaf<Content: View>(
         _ content: @escaping @MainActor (AppEnvironment) -> Content
@@ -1029,12 +1246,29 @@ final class ScreenshotTourTests: XCTestCase {
             Shot(number: "01", slug: "now", source: "Features/Now/NowView.swift", reached: .fullApp, hasEnd: true, make: app(.now)),
             Shot(number: "02", slug: "workbench-list", source: source + "WorkbenchListView.swift", reached: .fullApp, make: app(.workbench)),
             Shot(number: "03", slug: "calendar", source: "Features/Calendar/AgendaView.swift", reached: .fullApp, hasEnd: true, make: app(.calendar)),
-            Shot(number: "05", slug: "workbench-sessions", source: source + "WorkbenchView.swift", reached: .bareStack, make: stack {
+            Shot(number: "05", slug: "workbench-sessions", source: source + "WorkbenchView.swift", reached: .bareStack, hasEnd: true, make: stack {
                 WorkbenchView(replica: $0.workbenchReplica, writer: $0.boardWriter, workbenchID: acme, segment: .sessions)
+            }),
+            // #1788: a workbench with no sessions, no board counts on Sessions.
+            Shot(number: "05n", slug: "workbench-sessions-empty", source: source + "WorkbenchView.swift", reached: .bareStack, make: stack {
+                WorkbenchView(replica: $0.workbenchReplica, writer: $0.boardWriter, workbenchID: DemoSeed.notesID, segment: .sessions)
             }),
             Shot(number: "06", slug: "workbench-board", source: source + "BoardView.swift", reached: .bareStack, make: stack {
                 WorkbenchView(replica: $0.workbenchReplica, writer: $0.boardWriter, workbenchID: acme, segment: .board)
             }),
+            // #1781: All with its folds (default, then a group and Backlog
+            // opened), a search with an archived match, no match, Archive.
+            Shot(number: "06a", slug: "board-all", source: source + "BoardView.swift", reached: .bareStack, make: board(.all)),
+            Shot(
+                number: "06b", slug: "board-all-opened", source: source + "BoardView.swift", reached: .bareStack,
+                make: board(.all) { folds in
+                    folds.toggleGroup(400)
+                    folds.toggleLane(BoardLane(title: "Backlog", nodes: [], kind: .open))
+                }
+            ),
+            Shot(number: "06c", slug: "board-search", source: source + "BoardView.swift", reached: .bareStack, make: board(query: "archive")),
+            Shot(number: "06d", slug: "board-search-empty", source: source + "BoardView.swift", reached: .bareStack, make: board(query: "zzz")),
+            Shot(number: "06e", slug: "board-archive", source: source + "BoardView.swift", reached: .bareStack, make: board(.archive)),
             Shot(number: "07", slug: "target-415", source: source + "BoardTargetDetailView.swift", reached: .bareStack, hasEnd: true, make: stack {
                 BoardTargetDetailView(replica: $0.workbenchReplica, writer: $0.boardWriter, targetID: 415)
             }),
@@ -1044,6 +1278,13 @@ final class ScreenshotTourTests: XCTestCase {
         ] + sessionShots() + askShots() + [
             Shot(number: "18", slug: "start-session", source: source + "StartSessionSheet.swift", reached: .sheet, make: leaf { _ in
                 StartSessionSheet(workbenchID: acme, target: nil, fixed: false) { _ in }
+            }),
+            // #1790: "Work on it in a session" from target #415 — brief
+            // prefilled, intent shown, Start on without typing.
+            Shot(number: "18t", slug: "start-session-target", source: source + "StartSessionSheet.swift", reached: .sheet, make: leaf { env in
+                StartSessionSheet(
+                    workbenchID: acme, target: env.workbenchReplica.snapshot.targets.first { $0.id == 415 }, fixed: true
+                ) { _ in }
             }),
             Shot(number: "19", slug: "new-target", source: source + "NewBoardTargetSheet.swift", reached: .sheet, make: leaf {
                 NewBoardTargetSheet(replica: $0.workbenchReplica, writer: $0.boardWriter, workbenchID: acme)
@@ -1069,14 +1310,42 @@ final class ScreenshotTourTests: XCTestCase {
         ]
     }
 
-    /// 13 question, 14 review, 15 check, 16 answered, 17 withdrawn.
+    /// 13 question, 14 review, 15 check, 16 answered, 17 withdrawn; #1787:
+    /// 14b the review with a comment under its paragraph and a note (Request
+    /// changes on), 15b the check with Works and Doesn't work marked (Send on).
     static func askShots() -> [Shot] {
-        [("13", 109, "question"), ("14", 110, "review"), ("15", 111, "check"), ("16", 105, "answered"), ("17", 107, "withdrawn")]
+        let plain = [("13", 109, "question"), ("14", 110, "review"), ("15", 111, "check"), ("16", 105, "answered"), ("17", 107, "withdrawn")]
             .map { number, id, slug in
                 Shot(number: number, slug: "ask-\(id)-\(slug)", source: "Features/Asks/AskView.swift", reached: .bareStack, make: stack {
                     AskView(replica: $0.workbenchReplica, drafts: $0.askDrafts, answerer: $0.askAnswerer, askID: id)
                 })
             }
+        return plain + [
+            Shot(number: "14b", slug: "ask-110-review-commented", source: "Features/Asks/ReviewAskView.swift", reached: .bareStack, make: stack {
+                seedReviewDraft($0)
+                return AskView(replica: $0.workbenchReplica, drafts: $0.askDrafts, answerer: $0.askAnswerer, askID: 110)
+            }),
+            Shot(number: "15b", slug: "ask-111-check-marked", source: "Features/Asks/CheckAskView.swift", reached: .bareStack, make: stack { env in
+                env.askDrafts.update(111) { draft in
+                    draft.checks = ["1": .ok, "2": .broken]
+                    draft.checkNotes = ["2": "The menu item is greyed out"]
+                }
+                return AskView(replica: env.workbenchReplica, drafts: env.askDrafts, answerer: env.askAnswerer, askID: 111)
+            })
+        ]
+    }
+
+    /// A comment on the demo review's "Step 2" paragraph and a note.
+    @MainActor
+    private static func seedReviewDraft(_ env: AppEnvironment) {
+        guard let markdown = env.workbenchReplica.snapshot.asks.first(where: { $0.id == 110 })?.docSnapshot else { return }
+        let document = PlainTextRendering.render(markdown)
+        guard let paragraph = ReviewParagraph.split(document).first(where: { $0.text.hasPrefix("Step 2") }),
+              let anchor = CommentAnchorBuilder.anchor(selection: paragraph.range, in: document) else { return }
+        env.askDrafts.update(110) { draft in
+            draft.comments = [AskCommentDraft(anchor: anchor, body: "Ask before the hook blocks, not after.", location: paragraph.range.location)]
+            draft.note = "Otherwise fine."
+        }
     }
 
     static func calendarShots() -> [Shot] {
@@ -1127,6 +1396,15 @@ final class ScreenshotTourTests: XCTestCase {
             Shot(number: "34", slug: "linked", source: source + "LinkedView.swift", reached: .leaf, make: leaf { _ in LinkedView(macName: mac) }),
             Shot(number: "36", slug: "mac-switcher", source: "Features/Hubs/HubListSheet.swift", reached: .sheet, make: leaf { _ in
                 HubListSheet { _ in }
+            }),
+            Shot(number: "36a", slug: "hub-switcher-chips", source: "Features/Hubs/HubSwitcherChip.swift", reached: .leaf, make: leaf { _ in
+                HubSwitcherTourPages.chips(now: Date())
+            }),
+            Shot(number: "36b", slug: "mac-switcher-states", source: "Features/Hubs/HubListSheet.swift", reached: .sheet, make: leaf { _ in
+                HubListSheetContent(rows: HubSwitcherTourPages.rows(now: Date()), add: .atLimit) { _ in }
+            }),
+            Shot(number: "36c", slug: "mac-switcher-add", source: "Features/Hubs/HubListSheet.swift", reached: .sheet, make: leaf { _ in
+                HubListSheetContent(rows: Array(HubSwitcherTourPages.rows(now: Date()).prefix(2)), add: .on) { _ in }
             }),
             Shot(number: "35", slug: "mac-not-showing", source: source + "MacNotShowingView.swift", reached: .bareStack, make: stack { _ in
                 MacNotShowingView()

@@ -15,7 +15,7 @@ final class RelayUpgradeCopyTests: XCTestCase {
     func testTooSoon() {
         let refusal = RelayUpgradeRefusal.tooSoon(retryAt: now.addingTimeInterval(200))
         XCTAssertEqual(message(refusal), "Switching to Relay is possible again in 4 min")
-        XCTAssertEqual(refusal.footnote, "The Mac was switched less than 5 minutes ago.")
+        XCTAssertEqual(refusal.footnote, "The tower was switched less than 5 minutes ago.")
         XCTAssertEqual(message(.tooSoon(retryAt: now)), "Switching to Relay is possible again in 1 min", "never 0")
     }
 
@@ -30,11 +30,11 @@ final class RelayUpgradeCopyTests: XCTestCase {
     }
 
     func testNotSupported() {
-        XCTAssertEqual(message(.notSupported), "Work Mac can't switch to Relay. Update Watchtower on the Mac.")
+        XCTAssertEqual(message(.notSupported), "Work Mac can't switch to Relay. Update Watchtower on it.")
     }
 
     func testReaderNotConfirmed() {
-        XCTAssertEqual(message(.readerNotConfirmed), "Work Mac didn't confirm Relay. Update Watchtower on the Mac and try again.")
+        XCTAssertEqual(message(.readerNotConfirmed), "Work Mac didn't confirm Relay. Update Watchtower on it and try again.")
     }
 
     /// `.vouch(_)` shows the Task 10 row's text for the same refusal.
@@ -46,18 +46,18 @@ final class RelayUpgradeCopyTests: XCTestCase {
         for (refusal, reason) in rows {
             XCTAssertEqual(message(.vouch(refusal)), reason.message(macName: "Work Mac"), "\(refusal)")
         }
-        XCTAssertEqual(message(.vouch(.slotsFull)), "Relay already has 3 Macs. Remove one, then try again, or cancel this link.")
+        XCTAssertEqual(message(.vouch(.slotsFull)), "Relay already has 3 towers. Remove one, then try again, or cancel this link.")
     }
 
     /// The upgrade's own texts for its two extra refusals (ask #997); Task 10's link-time texts are unchanged.
     func testUpgradeOnlyTexts() {
         XCTAssertEqual(
-            message(.replacementLimit), "Work Mac stays on iCloud: too many Mac changes on Relay this month. Try again later.")
+            message(.replacementLimit), "Work Mac stays on iCloud: too many tower changes on Relay this month. Try again later.")
         XCTAssertEqual(message(.vouch(.updateRequired)), "Update Watchtower on this iPhone to move Work Mac to Relay.")
         XCTAssertEqual(PromotedLink.Reason.updateApp.message(macName: "Work Mac"), "Update Watchtower to finish this link, or cancel it.")
         XCTAssertEqual(
             PromotedLink.Reason.replacementLimit.message(macName: "Work Mac"),
-            "Too many Mac changes on Relay. Try again later, or cancel this link.")
+            "Too many tower changes on Relay. Try again later, or cancel this link.")
     }
 
     /// No relay on this phone, or a hub that names no relay identity: the choice is not offered, so there is no text.

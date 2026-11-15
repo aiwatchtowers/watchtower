@@ -46,8 +46,6 @@ enum PhoneMetrics {
     /// A timeline row's time column and its dot (mockup 13 `.tl`).
     static let timeColumn: CGFloat = 48
     static let timelineDot: CGFloat = 8
-    /// A review ask's document view scrolls inside its card between these.
-    static let documentHeight: ClosedRange<CGFloat> = 320...480
 }
 
 /// The phone's view opacities: a closed card, a line not yet taken, a

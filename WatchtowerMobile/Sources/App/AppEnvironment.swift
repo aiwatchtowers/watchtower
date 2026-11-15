@@ -45,6 +45,10 @@ final class AppEnvironment {
     let navigation = AppNavigation()
     /// The ready recaps the owner has opened on this phone.
     let recordingsSeen: RecordingsSeenStore
+    /// The boards' folded groups and lanes, per hub (#1781).
+    let boardFolds: BoardFoldStore
+    /// The ended sessions the owner marked seen on Now, per hub.
+    let endedSeen: NowEndedSeenStore
     /// Every hub's session, by hub id.
     private(set) var sessions: [String: HubSession] = [:]
     /// The sessions on screen, in the registry's order.
@@ -90,6 +94,8 @@ final class AppEnvironment {
         self.registry = registry
         self.setBadge = setBadge
         recordingsSeen = RecordingsSeenStore(defaults: defaults)
+        boardFolds = BoardFoldStore(defaults: defaults)
+        endedSeen = NowEndedSeenStore(defaults: defaults)
         observeBadge()
     }
 
@@ -297,11 +303,14 @@ final class AppEnvironment {
 
     // MARK: - The badge
 
-    /// The open asks across every hub that can still answer them: the app
-    /// icon's badge. A hub the Mac removed (frozen, writes off) cannot, so
-    /// its asks are not counted.
+    /// What waits for the owner across every hub that can still answer it
+    /// (`WorkbenchReplicaModel.waitingCount`: open asks, pending permission
+    /// requests, failed sessions to continue): the app icon's badge. A hub
+    /// the Mac removed (frozen, writes off) cannot, so its rows are not
+    /// counted. The Now tab's badge is the same count for the hub on screen
+    /// only (#1788).
     var openAskTotal: Int {
-        sessions.values.filter(\.writesAllowed).reduce(0) { $0 + $1.workbenchReplica.openAskCount }
+        sessions.values.filter(\.writesAllowed).reduce(0) { $0 + $1.workbenchReplica.waitingCount }
     }
 
     /// Sets the badge to `openAskTotal` when it changed from the last known
@@ -481,7 +490,7 @@ final class AppEnvironment {
     /// no name yet reads "another Mac".
     var captureHubName: String? {
         guard let capturing = capturingSession, capturing.hubID != activeHubID else { return nil }
-        return capturing.hubName ?? "another Mac"
+        return capturing.hubName ?? "another tower"
     }
 
     /// Pull to refresh: the session on screen; with none (the last hub just

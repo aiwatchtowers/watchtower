@@ -39,6 +39,7 @@ var knownNonLLMExec = map[string]string{
 	"cmd.runQuickSync":                   "runs this binary's `sync`, which records its own calls",
 	"cmd.runServiceCommand":              "systemctl/launchctl/loginctl for `service install|uninstall|status` (no model call)",
 	"cmd.runSyncDetach":                  "re-execs this binary as the detached daemon, which records its own calls",
+	"cmd.startSlackLiveProbe":            "runs this binary's `slack live probe`, whose probe child records its model call in that process",
 	"codewalk.gitCheckIgnore":            "git check-ignore",
 	"codewalk.gitListFiles":              "git ls-files",
 	"codex.codexVersion":                 "codex --version probe",

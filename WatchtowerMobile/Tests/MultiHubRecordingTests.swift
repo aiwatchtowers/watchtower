@@ -151,7 +151,7 @@ final class MultiHubRecordingTests: XCTestCase {
         XCTAssertNotNil(try hubA.session.store.phoneRecording(id: id))
         XCTAssertNil(try hubB.session.store.phoneRecording(id: id))
         let uploadsA = try await relayUploads(in: hubA.transport, hub: TestHub.hubA)
-        XCTAssertEqual(uploadsA.map(\.id), [id], "sent to the Mac it started on")
+        XCTAssertEqual(uploadsA.map(\.id), [id], "sent to the tower it started on")
         let uploadsB = try await relayUploads(in: hubB.transport, hub: TestHub.hubB)
         XCTAssertTrue(uploadsB.isEmpty, "never sent to the hub on screen")
     }
@@ -173,7 +173,7 @@ final class MultiHubRecordingTests: XCTestCase {
 
         env.showRecordings()
 
-        XCTAssertEqual(env.activeHubID, TestHub.hubA, "the Mac the recording is for")
+        XCTAssertEqual(env.activeHubID, TestHub.hubA, "the tower the recording is for")
         XCTAssertEqual(env.navigation.tab, .calendar)
         XCTAssertEqual(env.navigation.calendarPath, [.recordings])
         XCTAssertFalse(hubA.session.recorder.holdsMicrophoneOrScreen, "the recorder is closed")

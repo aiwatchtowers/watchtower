@@ -162,6 +162,17 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
         XCTAssertEqual(workbench.lastSessionActivity, t0)
         XCTAssertEqual(workbench.archiveAfterDays, 14)
         XCTAssertEqual(workbench.targetsMore, 1)
+        XCTAssertEqual(workbench.boardColumns, ["Backlog", "Todo", "Coding"])
+    }
+
+    /// #1781: a hub older than the lane order (or a workbench without
+    /// columns) sends no `board_columns`; the record still decodes.
+    func testWorkbenchWithoutBoardColumnsDecodes() throws {
+        var json = try object("workbench")
+        json["board_columns"] = nil
+        let workbench = try Workbench.decode(payload: try data(json))
+        XCTAssertNil(workbench.boardColumns)
+        XCTAssertEqual(workbench.id, 7)
     }
 
     /// A hub older than Codex support sends no `default_agent` (board #399):

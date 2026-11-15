@@ -209,7 +209,7 @@ final class AppRootRelinkTests: XCTestCase {
         )
         try await TestHub.hub(over: try zone(), hubID).save([try CloudRecordFactory.record(for: heartbeat, modifiedAt: updatedAt)])
         _ = await session.refresh(.pull)
-        try await poll({ session.heartbeat?.updatedAt == updatedAt }, "the replica reads the Mac's heartbeat")
+        try await poll({ session.heartbeat?.updatedAt == updatedAt }, "the replica reads the tower's heartbeat")
         let typing = !session.deviceSettings.typingRequested
         await session.deviceSettings.setTypingRequested(typing)
         XCTAssertNil(session.deviceSettings.lastError)

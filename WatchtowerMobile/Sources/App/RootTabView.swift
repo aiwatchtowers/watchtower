@@ -26,10 +26,16 @@ struct RootTabView: View {
             }
         }
 
-        /// The Workbench tab's badge is the open-ask count (orange, set in
-        /// `init`); 0 hides it. Other tabs carry none.
-        func badge(openAskCount: Int) -> Int {
-            self == .workbench ? openAskCount : 0
+        /// The Now tab's badge (#1788): what Now's Waiting for you lists for
+        /// the hub on screen, open asks, pending permission requests and
+        /// failed sessions to continue (`WorkbenchReplicaModel.waitingCount`;
+        /// orange, set in `init`);
+        /// 0 hides it. Other tabs carry none: the asks are answered on Now.
+        /// The app icon's badge counts the same things summed over every hub
+        /// that can still answer them (`AppEnvironment.openAskTotal`), so with
+        /// one Mac the two agree.
+        func badge(waitingCount: Int) -> Int {
+            self == .now ? waitingCount : 0
         }
     }
 
@@ -48,7 +54,7 @@ struct RootTabView: View {
         Self.configureTabBarAppearance()
     }
 
-    /// The only tab badge is the open-ask count: a waiting-for-you element,
+    /// The only tab badge is Now's waiting count: a waiting-for-you element,
     /// orange. `UITabBarItem.appearance().badgeColor` alone did not reach
     /// the iOS 26 tab bar in the review captures (it drew red), so every
     /// item layout of the tab bar's appearance carries the colour too.
@@ -70,7 +76,7 @@ struct RootTabView: View {
             ForEach(Tab.allCases) { tab in
                 content(for: tab)
                     .tabItem { Label(tab.title, systemImage: tab.systemImage) }
-                    .badge(tab.badge(openAskCount: env.workbenchReplica.openAskCount))
+                    .badge(tab.badge(waitingCount: env.workbenchReplica.waitingCount))
                     .tag(tab)
             }
         }

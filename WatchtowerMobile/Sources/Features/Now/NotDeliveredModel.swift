@@ -162,13 +162,13 @@ struct NotDeliveredModel {
         retrying: Set<String>,
         errors: [String: String]
     ) {
-        let mac = macName.isEmpty ? "your Mac" : macName
+        let mac = TowerText.name(macName)
         footer = "These actions never reached \(mac). Retry sends them again, after anything you did since."
         let format = RecordingsFormat(calendar: calendar, now: now)
         rows = items.map { item in
             NotDeliveredRow(
                 id: item.id, summary: ActionSummary.text(for: item, snapshot: snapshot),
-                detail: Self.detail(item, mac: mac, sentenceMac: macName.isEmpty ? "Your Mac" : macName, format: format),
+                detail: Self.detail(item, mac: mac, sentenceMac: TowerText.sentenceName(macName), format: format),
                 isRetrying: retrying.contains(item.id), error: errors[item.id])
         }
     }

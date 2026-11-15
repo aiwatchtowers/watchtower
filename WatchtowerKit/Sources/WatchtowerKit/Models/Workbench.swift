@@ -48,6 +48,11 @@ public struct Workbench: SliceMirror, Identifiable {
     /// 50 (the hub's `WorkbenchSlice.maxAutomations`), in the Mac's quick-run order.
     /// Absent when it has none, and from a hub older than phone runs.
     public let automations: [WorkbenchAutomation]?
+    /// The board's defined column titles of the shown statuses, in the Mac's
+    /// Kanban order (status order, then position): the phone's lane order
+    /// (#1781). Absent when the workbench defines no columns, and from a hub
+    /// older than it; the phone then orders lanes by status.
+    public let boardColumns: [String]?
 
     /// Session counts over the workbench's published `terminal_session`
     /// records, by resolved state.

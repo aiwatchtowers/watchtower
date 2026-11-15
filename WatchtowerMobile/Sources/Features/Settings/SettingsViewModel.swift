@@ -31,7 +31,7 @@ enum MacStatus: Equatable {
 
     var title: String {
         switch self {
-        case .notConnected: "Your Mac has not connected yet"
+        case .notConnected: "Your tower has not connected yet"
         case .online: "Online"
         case .offline: "Offline"
         }
@@ -118,8 +118,8 @@ struct ObservationDiagnostic: Identifiable, Equatable {
 @MainActor
 @Observable
 final class SettingsViewModel {
-    static let newerFormatNotice = "Update Watchtower on this iPhone: your Mac uses a newer format."
-    static let waitingForKeysNotice = "Unlock this iPhone to see the latest from your Mac."
+    static let newerFormatNotice = "Update Watchtower on this iPhone: your tower uses a newer format."
+    static let waitingForKeysNotice = "Unlock this iPhone to see the latest from your tower."
 
     private(set) var snapshot = SettingsSnapshot()
     /// `newerFormatNotice` once the replica kept a record of a newer envelope

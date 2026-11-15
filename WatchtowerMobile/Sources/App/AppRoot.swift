@@ -696,6 +696,7 @@ final class AppRoot {
         pairingHubs.remove(hubID)
         loggedUnreadableGrants.remove(hubID)
         DeviceSettings.removeChoices(of: hubID, defaults: defaults)
+        env.boardFolds.forget(hubID: hubID)
         if filesFree {
             do {
                 try paths.removeHubFiles(hubID)

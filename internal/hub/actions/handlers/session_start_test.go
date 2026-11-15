@@ -173,7 +173,7 @@ func TestADeviceNotAllowedToStartSessionsFailsDeviceNotAllowed(t *testing.T) {
 	for _, g := range []struct{ allowed, granted bool }{{false, true}, {true, false}} {
 		le.setStartGrants(g.allowed, g.granted)
 		out := le.startOutcome(&target, startParams(le.wb, "new", false, nil))
-		if out.Status != wire.StatusFailed || out.Reason != reasonDeviceNotAllowed || out.Message != startNotAllowedMessage {
+		if out.Status != wire.StatusFailed || out.Reason != reasonDeviceNotAllowed || out.Message != startNotAllowedLead+macStartAllowStep {
 			t.Fatalf("%+v: %+v", g, out)
 		}
 	}

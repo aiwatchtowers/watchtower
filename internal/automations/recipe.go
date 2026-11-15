@@ -359,6 +359,17 @@ func applyFields(f map[string]*yaml.Node, r *Recipe) error {
 	if m.has(entryTrackScan) && (r.Trigger.Kind != TriggerSync || r.Trigger.Sync != slotCustomTracks) {
 		return &ParseError{Line: fileLine(f["trigger"]), Msg: entryTrackScan + " needs trigger: {sync: " + slotCustomTracks + "}"}
 	}
+	if m.SlackLive() && r.Trigger.Kind == TriggerSync {
+		// A sync-slot run (a watch recipe) runs inline every cycle, outside
+		// the executor's hourly check (D15): refused, not limited.
+		return &ParseError{Line: fileLine(f["trigger"]), Msg: EntrySlackLive +
+			" is not allowed with trigger.sync: a sync-slot run is not held to Live Slack's once an hour; use a schedule"}
+	}
+	if m.SlackLive() && r.Trigger.Kind == TriggerSchedule {
+		if err = checkLiveCadence(r.Trigger.Schedule); err != nil {
+			return &ParseError{Line: fileLine(f["trigger"]), Msg: err.Error()}
+		}
+	}
 	if r.Trigger.Kind == TriggerSync {
 		if err = syncTriggerAllowed(r.Scope, r.Trigger.Sync, m); err != nil {
 			return &ParseError{Line: fileLine(f["trigger"]), Msg: err.Error()}

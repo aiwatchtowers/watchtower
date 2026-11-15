@@ -8,11 +8,15 @@ struct AskCommentDraft: Identifiable, Equatable {
     let id: UUID
     let anchor: CommentAnchorBuilder.Anchor
     var body: String
+    /// Where the quote starts in the shown text (UTF-16), so the page draws
+    /// the comment under its paragraph; phone-only, never sent.
+    let location: Int?
 
-    init(id: UUID = UUID(), anchor: CommentAnchorBuilder.Anchor, body: String = "") {
+    init(id: UUID = UUID(), anchor: CommentAnchorBuilder.Anchor, body: String = "", location: Int? = nil) {
         self.id = id
         self.anchor = anchor
         self.body = body
+        self.location = location
     }
 }
 

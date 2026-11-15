@@ -34,6 +34,13 @@ public struct HeartbeatPayload: Codable, Equatable, Sendable {
     /// The Mac's `CKContainer.userRecordID().recordName` (spec §2.3).
     public let ownerUser: String
     public let sharing: HubSharing
+    /// What runs the hub (#1783); nil from an older hub, which is a Mac.
+    public let hubKind: HubKind?
+
+    /// Whether the hub runs beside the Watchtower app on a Mac, so the app's
+    /// menus exist there: true for `mac` and for an older hub that sends no
+    /// kind; false for `server` and a kind this build does not know.
+    public var isMac: Bool { hubKind == nil || hubKind == .mac }
 
     // convertFromSnakeCase maps "hub_id" -> "hubId" (lowercase d), so the
     // CodingKey stringValue must be "hubId" to round-trip.
@@ -50,6 +57,7 @@ public struct HeartbeatPayload: Codable, Equatable, Sendable {
         case enabledAt
         case ownerUser
         case sharing
+        case hubKind
     }
 
     public init(
@@ -64,7 +72,8 @@ public struct HeartbeatPayload: Codable, Equatable, Sendable {
         accounts: [HeartbeatAccount],
         enabledAt: Date,
         ownerUser: String,
-        sharing: HubSharing
+        sharing: HubSharing,
+        hubKind: HubKind? = nil
     ) {
         self.updatedAt = updatedAt
         self.appVersion = appVersion
@@ -78,6 +87,7 @@ public struct HeartbeatPayload: Codable, Equatable, Sendable {
         self.enabledAt = enabledAt
         self.ownerUser = ownerUser
         self.sharing = sharing
+        self.hubKind = hubKind
     }
 }
 
@@ -90,6 +100,19 @@ public struct HubFlavor: OpenWireValue {
     public static let `default` = Self(rawValue: "default")
     public static let corp = Self(rawValue: "corp")
     public static let knownValues: [Self] = [.default, .corp]
+}
+
+/// What runs the hub (#1783). rawValues are wire format; a kind added by a
+/// newer hub decodes as an unknown value (`OpenWireValue`).
+public struct HubKind: OpenWireValue {
+    public let rawValue: String
+    public init(rawValue: String) { self.rawValue = rawValue }
+
+    /// A hub beside the Watchtower app on a Mac.
+    public static let mac = Self(rawValue: "mac")
+    /// A headless hub (a server).
+    public static let server = Self(rawValue: "server")
+    public static let knownValues: [Self] = [.mac, .server]
 }
 
 /// Whether the hub's zone shares exist (spec §4.1). rawValues are wire
