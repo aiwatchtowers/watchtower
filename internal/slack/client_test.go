@@ -1486,3 +1486,37 @@ func TestPageSizes_Max(t *testing.T) {
 		assert.Equal(t, "100", f.forms["search.messages"].Get("count"))
 	})
 }
+
+// RateLimitedCalls counts every 429 over the client's lifetime, the ones the
+// retry chain pushed through included, so a caller comparing two readings
+// sees whether its run met a rate limit.
+func TestRateLimitedCalls_CountsRetried429s(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := &fakeSlack{limited: 2, retryAfter: "1", body: searchOK}
+		c := newFakeSlackClient(f)
+		c.SetDeadline(time.Now().Add(10 * time.Minute))
+
+		_, err := c.SearchMessages(context.Background(), "q", 1)
+		require.NoError(t, err)
+		assert.Equal(t, uint64(2), c.RateLimitedCalls())
+	})
+}
+
+// Under a deadline the chain runs only through holds Slack states: a 429
+// without a usable Retry-After (missing or 0) keeps the three-retry cap, so
+// a server that never says how long to wait is not hammered until the
+// deadline.
+func TestAdaptive_UnstatedRetryAfterKeepsThreeRetries(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := &fakeSlack{limited: 100, retryAfter: "0", body: searchOK}
+		c := newFakeSlackClient(f)
+		c.SetDeadline(time.Now().Add(10 * time.Minute))
+
+		_, err := c.SearchMessages(context.Background(), "q", 1)
+
+		var rlErr *goslack.RateLimitedError
+		require.ErrorAs(t, err, &rlErr)
+		require.NotErrorIs(t, err, ErrFetchDeadline)
+		assert.Equal(t, 4, f.calls, "one call and three retries")
+	})
+}

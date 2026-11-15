@@ -65,7 +65,9 @@ type Orchestrator struct {
 	// searchRateLimited records whether the current Run's search sync gave up
 	// on its first page specifically because Slack rate-limited the token
 	// (isRateLimitError — never set for a scope/permission problem or any
-	// other non-fatal error, which keep falling back to full sync as before).
+	// other non-fatal error, which keep falling back to full sync as before),
+	// or stopped on a later page while Slack still holds the account (the
+	// fetch deadline).
 	// Run resets it; runSearchSync's "zero channels discovered" fallback must
 	// not escalate to the far more expensive full sync while this is true, or
 	// a rate-limited token gets hit with even more calls instead of backing off.
@@ -82,6 +84,13 @@ type Orchestrator struct {
 	// watermark written after); zero otherwise. Run resets it; the daemon
 	// reads it via FirstSyncFrom to start a history backfill.
 	firstSyncFrom time.Time
+
+	// resume is where the blanket search stopped with pages left; it
+	// outlives the Run that set it (searchStart/recordSearchStop).
+	resume *searchResume
+
+	// outcome is the current Run's RunOutcome. Run resets it.
+	outcome RunOutcome
 
 	// fileLookups counts the current Run's conversations.history lookups of
 	// search matches that shared a file without listing it
@@ -214,14 +223,29 @@ func (o *Orchestrator) resolveWorkerCount(requested int) int {
 // daemon's fetches, a shutdown) never reaches finishSync, which logs and
 // resets the run's API stats: Run resets them itself, or the next run's
 // "sync complete" line counts this run's calls too.
+//
+// A search-path run (no Full, no Channels) retries rate limits until
+// slackFetchDeadline and then leaves the rest of the window to the next run;
+// the client's deadline is cleared when Run returns, so later calls on the
+// same client (the CLI, the chat, media) keep the plain retry cap. An
+// explicit full or per-channel sync keeps that cap too: it can rightly run
+// longer than the deadline.
 func (o *Orchestrator) Run(ctx context.Context, opts SyncOptions) error {
 	o.searchGapNote = ""
 	o.searchRateLimited = false
 	o.searchIncomplete = false
 	o.firstSyncFrom = time.Time{}
 	o.fileLookups = 0
+	o.outcome = RunOutcome{}
 	o.resetMediaPlan()
+	if !opts.Full && len(opts.Channels) == 0 {
+		o.slackClient.SetDeadline(time.Now().Add(slackFetchDeadline))
+		defer o.slackClient.SetDeadline(time.Time{})
+	}
+	limitedBefore := o.slackClient.RateLimitedCalls()
 	err := o.run(ctx, opts)
+	o.outcome.RateLimited = o.slackClient.RateLimitedCalls() > limitedBefore
+	o.outcome.ResumePending = o.resume != nil
 	o.teamMismatch = errors.Is(err, ErrSlackTeamMismatch)
 	if ctx.Err() != nil {
 		o.slackClient.ResetAPIStats()

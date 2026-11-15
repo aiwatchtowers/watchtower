@@ -143,10 +143,25 @@ func (o *Orchestrator) syncViaSearch(ctx context.Context) error {
 	o.progress.SetSearchAfter(searchAfter)
 	o.logger.Printf("search sync: query=%q", query)
 
-	listing := newSearchListing(0)
-	completed, totalMessages, seenChannels, err := o.searchAndSave(ctx, query, true, listing)
+	// A resumed window keeps no listing: only a window read whole in this
+	// run can prove a stored message gone.
+	startPage, firstSync := o.searchStart(query, firstSync)
+	var listing *searchListing
+	if startPage == 1 {
+		listing = newSearchListing(0)
+	}
+	completed, totalMessages, seenChannels, next, err := o.searchAndSaveFrom(ctx, query, startPage, true, listing)
+	o.recordSearchStop(query, startPage, next, completed, firstSync, totalMessages)
 	if err != nil {
 		return err
+	}
+	if !completed && !o.slackClient.HoldUntil().IsZero() {
+		// Stopped on a rate limit after its first page (the fetch deadline):
+		// the rest of the cycle would only meet the same hold.
+		o.searchRateLimited = true
+		if o.searchGapNote == "" {
+			o.searchGapNote = "search sync: rate-limited by Slack; retrying next cycle"
+		}
 	}
 
 	// Advance the watermark to today only when every page was fetched. An early
@@ -175,7 +190,7 @@ func (o *Orchestrator) syncViaSearch(ctx context.Context) error {
 		o.logger.Printf("search sync: pagination incomplete, leaving search_last_date unchanged to avoid data loss")
 	}
 	// Only a completed search can prove a stored message is gone.
-	if completed {
+	if completed && listing != nil {
 		o.diffLiveWindow(listing, searchAfter)
 	}
 
@@ -270,14 +285,23 @@ func (o *Orchestrator) FirstSyncFrom() (time.Time, bool) {
 // listing with maxPages set whose page 1 reports more pages is marked
 // tooLarge and the search stops after saving page 1, with completed=false.
 func (o *Orchestrator) searchAndSave(ctx context.Context, query string, live bool, listing *searchListing) (completed bool, totalMessages int, seenChannels map[string]bool, err error) {
+	completed, totalMessages, seenChannels, _, err = o.searchAndSaveFrom(ctx, query, 1, live, listing)
+	return completed, totalMessages, seenChannels, err
+}
+
+// searchAndSaveFrom is searchAndSave starting at startPage; next is the
+// first page it did not fetch and save. Its first request plays page 1's
+// part in the rate-limit and fallback rules: nothing was fetched yet.
+func (o *Orchestrator) searchAndSaveFrom(ctx context.Context, query string, startPage int, live bool, listing *searchListing) (completed bool, totalMessages int, seenChannels map[string]bool, next int, err error) {
 	seenChannels = make(map[string]bool)
 	seenUsers := make(map[string]bool)
-	page := 1
+	page := startPage
+	next = page
 
 	for {
 		select {
 		case <-ctx.Done():
-			return false, totalMessages, seenChannels, ctx.Err()
+			return false, totalMessages, seenChannels, page, ctx.Err()
 		default:
 		}
 
@@ -285,7 +309,7 @@ func (o *Orchestrator) searchAndSave(ctx context.Context, query string, live boo
 		if err != nil {
 			if isNonFatalError(err) {
 				o.logger.Printf("search sync: non-fatal error on page %d, stopping early: %v", page, err)
-				if page == 1 {
+				if page == startPage {
 					if isRateLimitError(err) {
 						if !live {
 							break
@@ -313,14 +337,14 @@ func (o *Orchestrator) searchAndSave(ctx context.Context, query string, live boo
 					// instead of reporting a silent success with zero
 					// messages and advancing the watermark — unchanged from
 					// before the rate-limit carve-out above.
-					return false, totalMessages, seenChannels, fmt.Errorf("search sync (page %d): %w", page, err)
+					return false, totalMessages, seenChannels, page, fmt.Errorf("search sync (page %d): %w", page, err)
 				}
 				// A later page failed after partial progress: keep what we fetched
 				// but leave the watermark untouched (completed stays false) so the
 				// next run re-covers the unfetched pages instead of skipping them.
 				break
 			}
-			return false, totalMessages, seenChannels, fmt.Errorf("search sync (page %d): %w", page, err)
+			return false, totalMessages, seenChannels, page, fmt.Errorf("search sync (page %d): %w", page, err)
 		}
 
 		if listing != nil {
@@ -333,6 +357,7 @@ func (o *Orchestrator) searchAndSave(ctx context.Context, query string, live boo
 		}
 		if len(result.Messages) == 0 {
 			completed = true
+			next = page + 1
 			break
 		}
 
@@ -363,7 +388,7 @@ func (o *Orchestrator) searchAndSave(ctx context.Context, query string, live boo
 					dmUserID = watchtowerslack.Namespace(o.accountID, name)
 				}
 				if err := o.db.EnsureChannel(namespacedChannelID, name, chType, dmUserID); err != nil {
-					return false, totalMessages, seenChannels, fmt.Errorf("ensuring channel %s: %w", namespacedChannelID, err)
+					return false, totalMessages, seenChannels, page, fmt.Errorf("ensuring channel %s: %w", namespacedChannelID, err)
 				}
 			}
 
@@ -375,7 +400,7 @@ func (o *Orchestrator) searchAndSave(ctx context.Context, query string, live boo
 					userName = msg.User
 				}
 				if err := o.db.EnsureUser(namespacedUserID, userName); err != nil {
-					return false, totalMessages, seenChannels, fmt.Errorf("ensuring user %s: %w", namespacedUserID, err)
+					return false, totalMessages, seenChannels, page, fmt.Errorf("ensuring user %s: %w", namespacedUserID, err)
 				}
 			}
 
@@ -412,7 +437,7 @@ func (o *Orchestrator) searchAndSave(ctx context.Context, query string, live boo
 		if len(dbMsgs) > 0 {
 			count, err := o.upsertSearchPage(ctx, dbMsgs, writes)
 			if err != nil {
-				return false, totalMessages, seenChannels, err
+				return false, totalMessages, seenChannels, page, err
 			}
 			o.lookUpFileShares(ctx, lookups)
 			totalMessages += count
@@ -421,6 +446,7 @@ func (o *Orchestrator) searchAndSave(ctx context.Context, query string, live boo
 			}
 		}
 
+		next = page + 1
 		if live {
 			o.progress.SetDiscovery(page, result.Pages, len(seenChannels), len(seenUsers))
 		}
@@ -444,7 +470,7 @@ func (o *Orchestrator) searchAndSave(ctx context.Context, query string, live boo
 	}
 	o.logger.Printf("search: %d channels, %d users, %d messages from %d pages (query=%q, completed=%t)",
 		len(seenChannels), len(seenUsers), totalMessages, page, query, completed)
-	return completed, totalMessages, seenChannels, nil
+	return completed, totalMessages, seenChannels, next, nil
 }
 
 // extractThreadTSFromPermalink parses thread_ts from a Slack permalink URL.

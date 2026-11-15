@@ -33,6 +33,7 @@ type Client struct {
 	rateLimiter *RateLimiter
 	logger      *log.Logger
 	answered    atomic.Uint64             // AnsweredCalls
+	limited     atomic.Uint64             // RateLimitedCalls
 	deadline    atomic.Pointer[time.Time] // SetDeadline; nil or zero = no deadline
 }
 
@@ -169,8 +170,9 @@ func (c *Client) HoldUntil() time.Time {
 
 // doRequest acquires the gate, calls fn, handles errors, and releases the gate.
 // A rate limit (429) is retried after its hold: until the deadline when one is
-// set (a hold ending past it — this call's or one it waits on — returns
-// ErrFetchDeadline), else up to maxRetriesNoDeadline times. Only an answer
+// set and Slack stated the hold (a hold ending past it — this call's or one
+// it waits on — returns ErrFetchDeadline), else up to maxRetriesNoDeadline
+// times. Only an answer
 // from Slack other than a 429 raises the tier's rate.
 func (c *Client) doRequest(ctx context.Context, tier int, fn func() error) error {
 	var deadline time.Time
@@ -195,8 +197,9 @@ func (c *Client) doRequest(ctx context.Context, tier int, fn func() error) error
 		if !limited {
 			return err
 		}
+		c.limited.Add(1)
 
-		if deadline.IsZero() {
+		if deadline.IsZero() || !statedHold(err) {
 			if attempt >= maxRetriesNoDeadline {
 				return err
 			}
@@ -778,6 +781,22 @@ func (c *Client) ResetAPIStats() {
 // making progress.
 func (c *Client) AnsweredCalls() uint64 {
 	return c.answered.Load()
+}
+
+// statedHold reports whether a 429 said how long to wait (Retry-After of a
+// second or more). Only such holds feed the deadline's retry chain; a 429
+// without one keeps the maxRetriesNoDeadline cap.
+func statedHold(err error) bool {
+	var rlErr *slack.RateLimitedError
+	return errors.As(err, &rlErr) && rlErr.RetryAfter >= time.Second
+}
+
+// RateLimitedCalls counts the 429s Slack answered over the client's
+// lifetime, the ones a retry pushed through included. Like AnsweredCalls it
+// is never reset: a caller compares two readings to see whether the calls
+// in between met a rate limit.
+func (c *Client) RateLimitedCalls() uint64 {
+	return c.limited.Load()
 }
 
 // isSlackAnswer reports whether a request ended with a complete answer from
