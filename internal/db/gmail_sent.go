@@ -15,22 +15,25 @@ const GmailSentLabel = "SENT"
 
 // GmailOwnSent reports whether a gmail_messages row is the owner's own sent
 // mail: its labels carry SENT, or its sender is the account's own address.
-// labelsJSON is the stored JSON array; the test is a substring match on the
-// quoted label so a user label id that merely contains SENT never counts.
+// labelsJSON is the stored JSON array; the test is a case-sensitive substring
+// match on the quoted label so a user label id that merely contains SENT
+// never counts. Addresses compare as MailSenderKey does (spaces trimmed,
+// ASCII case folded), which is what SQLite's trim and lower do.
 // GmailOwnSentSQL is its SQL twin; the two must decide every row alike.
 func GmailOwnSent(labelsJSON, fromEmail, accountEmail string) bool {
 	if strings.Contains(labelsJSON, `"`+GmailSentLabel+`"`) {
 		return true
 	}
-	account := strings.TrimSpace(accountEmail)
-	return account != "" && strings.EqualFold(strings.TrimSpace(fromEmail), account)
+	account := MailSenderKey(accountEmail)
+	return account != "" && MailSenderKey(fromEmail) == account
 }
 
 // GmailOwnSentSQL returns the SQL twin of GmailOwnSent over the table aliases
-// msg (a gmail_messages row) and acct (its google_accounts row). Callers pass
-// fixed aliases only, never user input.
+// msg (a gmail_messages row) and acct (its google_accounts row). instr is
+// case-sensitive as strings.Contains is (LIKE would fold ASCII case). Callers
+// pass fixed aliases only, never user input.
 func GmailOwnSentSQL(msg, acct string) string {
-	return `(` + msg + `.labels_json LIKE '%"` + GmailSentLabel + `"%' OR (` + acct + `.email <> '' AND lower(trim(` +
+	return `(instr(` + msg + `.labels_json, '"` + GmailSentLabel + `"') > 0 OR (trim(` + acct + `.email) <> '' AND lower(trim(` +
 		msg + `.from_email)) = lower(trim(` + acct + `.email))))`
 }
 

@@ -21,6 +21,11 @@ var gmailOwnSentCases = []gmailOwnSentCase{
 	{"labels not json", `not json`, "colleague-a@example.com", "owner@example.com", false},
 	{"empty sender and account", `["INBOX"]`, "", "", false},
 	{"user label containing SENT unquoted", `["Label_SENT_1"]`, "colleague-a@example.com", "owner@example.com", false},
+	{"lowercase sent label", `["sent"]`, "colleague-a@example.com", "owner@example.com", false},
+	{"sender with a tab", `["INBOX"]`, "\towner@example.com", "owner@example.com", false},
+	{"non-ASCII case differs", `["INBOX"]`, "\u00d3wner@example.com", "\u00f3wner@example.com", false},
+	{"non-ASCII same", `["INBOX"]`, "\u00f3wner@Example.com", "\u00f3wner@example.com", true},
+	{"blank account, empty sender", `["INBOX"]`, "", "  ", false},
 }
 
 func TestGmailOwnSent_Cases(t *testing.T) {
