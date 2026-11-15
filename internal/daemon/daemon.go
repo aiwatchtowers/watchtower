@@ -1017,8 +1017,10 @@ func (d *Daemon) writeSyncProgress(p sync.SyncProgress) {
 // the caller can immediately publish a final state without racing it. A beat
 // whose progress moved, or that sees a Slack API call answered since the last
 // one (the read-state, deletion-sweep and reaction passes move no progress
-// counter), stamps the cycle's fetch progress (markFetchProgress), so a long
-// but moving Slack sync is never taken for a stalled one.
+// counter), or that finds the sync waiting out a Slack Retry-After hold
+// (Snapshot.RateLimitedUntil: no call is answered while it lasts), stamps the
+// cycle's fetch progress (markFetchProgress), so a long but moving Slack sync
+// is never taken for a stalled one.
 func (d *Daemon) startSyncHeartbeat(o *sync.Orchestrator) (stop func()) {
 	// Touched by write only: the call below, then the writer goroutine.
 	var last sync.Snapshot
@@ -1026,7 +1028,8 @@ func (d *Daemon) startSyncHeartbeat(o *sync.Orchestrator) (stop func()) {
 	write := func() {
 		snap := o.Progress().Snapshot()
 		answered := o.SlackCallsAnswered()
-		if snap != last || answered != lastAnswered {
+		held := snap.RateLimitedUntil.After(time.Now())
+		if snap != last || answered != lastAnswered || held {
 			last, lastAnswered = snap, answered
 			d.markFetchProgress()
 		}

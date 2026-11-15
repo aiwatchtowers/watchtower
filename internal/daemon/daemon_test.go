@@ -1559,3 +1559,47 @@ func TestDaemon_StartReapsAbandonedPipelineRuns(t *testing.T) {
 	assert.Equal(t, "error", status(cliOld), "an abandoned CLI run is failed once past the window")
 	assert.Equal(t, "running", status(cliRecent), "a recent CLI run is left to the process that may own it")
 }
+
+// Sync Now while the Slack sync waits out a long Retry-After hold — no call
+// answered, no counter moving for minutes — is queued: the heartbeat counts
+// a run held by the rate limit as progressing, so the restart never kills a
+// fetch that is only waiting for its turn.
+func TestManualTrigger_DoesNotRestartWhileRateLimited(t *testing.T) {
+	prev := syncHeartbeatInterval
+	syncHeartbeatInterval = 2 * time.Millisecond
+	t.Cleanup(func() { syncHeartbeatInterval = prev })
+	h := startLoop(t, loopOpts{syncOnWake: true, blockFirst: true})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "600")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	t.Cleanup(srv.Close)
+	client := watchtowerslack.NewClientWithAPIURLUnlimited("xoxp-test-token", srv.URL+"/")
+	orch := sync.NewOrchestrator(db.OpenTestDB(t), client, &config.Config{}, 1)
+
+	recv(t, h.probe.started, "the initial cycle")
+	h.probe.block.Store(false)
+	h.inSlackSync()
+	// The 429 sets a 10-minute hold; a deadline already reached returns at
+	// once instead of waiting it out.
+	client.SetDeadline(time.Now())
+	_, err := client.GetChannelReadCursor(context.Background(), "C001")
+	require.ErrorIs(t, err, watchtowerslack.ErrFetchDeadline)
+	require.False(t, client.HoldUntil().IsZero())
+
+	nextBeat, stopBeat := startGatedHeartbeat(t, h.d, orch)
+	for range 3 {
+		h.mono.advance(manualRestartAfter)
+		nextBeat()
+		require.Zero(t, h.d.fetchStalledFor(), "a beat stamping the held run")
+		h.pressSyncNow(t, logQueuedFetching)
+	}
+	stopBeat()
+	assert.Zero(t, h.logs.count("afresh"), "a run held by the rate limit is not restarted")
+
+	h.releaseProbe(t)
+	recv(t, h.probe.started, "the queued cycle")
+	h.stop(t)
+	assert.Empty(t, h.probe.cancelled, "no cycle was cancelled before shutdown")
+}

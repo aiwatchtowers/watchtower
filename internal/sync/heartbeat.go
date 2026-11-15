@@ -24,6 +24,9 @@ type SyncProgress struct {
 	MessagesFetched int       `json:"messages_fetched"`
 	StartedAt       time.Time `json:"started_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
+	// RateLimitedUntil is the end of the Slack Retry-After hold the sync is
+	// waiting on, absent when none: a long wait is not a stall.
+	RateLimitedUntil time.Time `json:"rate_limited_until,omitzero"`
 }
 
 // StaleAfter is how long a heartbeat may go unrefreshed before a reader should
@@ -44,13 +47,23 @@ func (p SyncProgress) IsSyncing(now time.Time) bool {
 
 // ProgressFromSnapshot renders a live heartbeat from a progress snapshot.
 func ProgressFromSnapshot(snap Snapshot) SyncProgress {
+	now := time.Now()
+	detail := progressDetail(snap)
+	if left := snap.RateLimitedUntil.Sub(now); left > 0 {
+		wait := "Slack rate limit, retrying in " + left.Round(time.Second).String()
+		if detail != "" {
+			detail += " · "
+		}
+		detail += wait
+	}
 	return SyncProgress{
-		Active:          true,
-		Phase:           snap.Phase.String(),
-		Detail:          progressDetail(snap),
-		MessagesFetched: snap.MessagesFetched,
-		StartedAt:       snap.StartTime,
-		UpdatedAt:       time.Now(),
+		Active:           true,
+		Phase:            snap.Phase.String(),
+		Detail:           detail,
+		MessagesFetched:  snap.MessagesFetched,
+		StartedAt:        snap.StartTime,
+		UpdatedAt:        now,
+		RateLimitedUntil: snap.RateLimitedUntil,
 	}
 }
 
