@@ -30,10 +30,10 @@ A new `channel_settings.sync_excluded` flag drops a channel's new messages at sa
 - Every Slack account, same behaviour. There is no corp/public split (ask #1337: "corp will not exist").
 - The search watermark (`search_last_date`) moves only when the whole window was read (today's rule). Resuming never skips a page.
 - 429: wait `Retry-After` (+ jitter, today's `HandleRateLimit`), retry with no fixed count until the run's fetch deadline `slackFetchDeadline = 10 * time.Minute` (and never past the cycle's ctx). Every later call of that account waits for the same hold.
-- AIMD rate per account client: start `aimdStart = 40/min` (today's rate), ceiling `aimdMax = 40/min`, floor `aimdMin = 4/min`. On each 429: rate × 0.5, not below the floor. After `aimdStepEvery = 20` consecutive successes: +2/min, not above the ceiling. Burst 3 and the concurrency gate stay as today.
+- AIMD rate per account client, one bucket per Slack tier. Today the client has one global bucket of 40/min for every method, so a burst of `users.info` (Tier 4) calls slows `search.messages` (Tier 2), and `conversations.history` (Tier 3) can never use its larger tier. Slack documents its tiers as minimums: Tier 2 "20+ per minute", Tier 3 "50+", Tier 4 "100+". Bursts above them are tolerated, and a 429 is the only real signal. So each tier `t` gets its own bucket with start = the documented rate (`T2 = 20`, `T3 = 50`, `T4 = 100` per minute) and a ceiling of twice that (`40`/`100`/`200`), which the bucket probes toward. The floor is a quarter of the documented rate (`5`/`12`/`25`). On a 429 of a tier the rate × 0.5, not below the floor. After `aimdStepEvery = 20` consecutive successes the rate +1/min (T2), +2 (T3) or +5 (T4), not above the ceiling. `search.messages` therefore starts where today's shared bucket effectively left it, and can climb to 40/min on its own while history, replies and profiles run in parallel on their own buckets. The account-wide `Retry-After` hold (any tier's 429 holds every call), burst 3 and the concurrency gate stay as today.
 - Largest allowed page sizes: `search.messages` `count=100` (Slack's maximum, as today), `conversations.history`/`conversations.replies` `limit=999`, `users.list` and `conversations.list` `limit=1000`.
 - Priority: the mention query `<@U…> after:D` runs before the blanket query in every Slack run.
-- Cadence per account: base = `sync.poll_interval` (default 15 min), next interval = base × 2^k, capped at `cadenceMax = 60 * time.Minute`. k increases by 1 after a run that saw a 429. A clean run halves the interval back toward base. A run that stopped at the deadline with pages left is due again next cycle. **Sync Now always runs Slack** (manual triggers are never gated, today's rule).
+- Cadence per account: base = `sync.poll_interval` (default 15 min), next interval = base × 2^k, capped at `cadenceMax = 60 * time.Minute`. A 429 wins over everything: a run that saw one sets k+1, and its resume waits for that backed-off interval. Volume: a clean run with `Pages ≥ heavyPages = 5` sets k = 0 (busy → back to base at once); a clean run with `Messages ≤ quietMessages = 5` for `quietRuns = 3` runs in a row sets k+1 (quiet → longer, up to the cap); any other clean run sets k−1. A clean run that stopped at the deadline with pages left is due again next cycle. **Sync Now always runs Slack** (manual triggers are never gated, today's rule).
 - Inbox: Slack detectors compare the watermark with `messages.synced_at`, stamped as `clock()` when `ts ≥ max(slack_accounts.first_cycle_at, runStart − 24 h)`, else `ts_unix`. Backfill writes `ts_unix`. A trigger fills any other insert.
 - Migrations: two (Task 4 and Task 5), via the `add-migration` skill; next free numbers at implementation time (00189 when this plan was written); mirror into `schema.sql`, the golden and the Swift test schema.
 - No guard test is weakened or edited. Existing tests keep passing as they are. A fixture that breaks means stop and ask.
@@ -70,7 +70,11 @@ The ceiling is ≈ 1,200 / (V/100), whatever the cadence. Excluding channels doe
 3. **Mentions in an excluded channel are still stored.** Recommended: yes (attention beats the exclusion). Alternative: exclusion drops everything.
 4. **Data already stored in a channel the user excludes stays.** It stops being digested only if it is also muted, which the **Stop syncing** button does in the same write. Recommended: keep it and mute it; a purge would be a new deletion path.
 5. **The Stop syncing suggestion rule**: a channel muted for AI for 30+ days with no message from the user and no mention of the user in that time, or one with ≥ 90% bot messages and no value signals. Recommended as written; it reuses the mute rule's inputs.
-6. **The fetch deadline is 10 minutes per Slack run per account.** The rest of the cycle (pipelines) must not wait behind a rate-limited account.
+6. **The fetch deadline is 10 minutes per Slack run per account** (`slackFetchDeadline`), so the rest of the cycle (the pipelines) never waits behind a rate-limited account. **The cadence cap is 60 minutes** (`cadenceMax`), so a backed-off account is never more than an hour behind. Both are in ask #1346.
+8. **The suggestion thresholds are 30 days muted and 90% bot messages** (decision 5; ask #1346).
+9. **The AIMD numbers:** per-tier buckets that start at Slack's documented tier rate (20/50/100 per minute), probe up to twice that, and halve on a 429 down to a quarter; +1/+2/+5 per 20 successes.
+10. **Cadence volume thresholds:** `heavyPages = 5` resets the interval to base; `quietMessages = 5` over `quietRuns = 3` runs lengthens it one step.
+11. **Sync again catches up the excluded period** with a one-off history fetch of that channel (`catchupPagesPerRun = 5` pages per run, one channel at a time), and un-mutes only if Stop syncing had muted it (`muted_by_exclusion`).
 7. **An excluded channel reads `channel_in_scope: false`** in the chat's `coverage`, so the chat uses Live for it (plan A's rule extended).
 
 ## Contract changes needing owner approval
@@ -86,6 +90,8 @@ The ceiling is ≈ 1,200 / (V/100), whatever the cadence. Excluding channels doe
 |---|---|---|
 | `channel_settings.sync_excluded` | Desktop Statistics (toggle, applied suggestion), `watchtower channels exclude/include` | Last write wins; the sync reads the set once at the start of each run, so a change applies from the next run |
 | `channel_settings.is_muted_for_llm` | as today, plus **Stop syncing** setting it in the same write | Last write wins |
+| `channel_settings.muted_at`, `muted_by_exclusion` | the mute writers (Go `SetMuteForLLM`/`ToggleMuteForLLM`, Swift `ChannelStatsQueries.toggleMuteForLLM`) and `SetSyncExcluded`; favorites never touch them | Same row write as the mute flag, so they cannot disagree with it |
+| `channel_settings.excluded_at`, `catchup_from` | `SetSyncExcluded` (Desktop, CLI); the sync's `runCatchups` advances and clears `catchup_from` | A Stop syncing during a catch-up clears `catchup_from` in its write; a catch-up page's advance is `UPDATE … WHERE sync_excluded = 0`, so it cannot revive an excluded channel |
 | `messages` rows | forward search (filtered by exclusion), the sweep, backfill, `sync --full/--channels` | Upserts of Slack content; SQLite serialises them |
 | `messages.synced_at` | the first insert only: the sync's `stampSyncedAt`; backfill `ts_unix`; the trigger for everyone else | Insert-only; never updated |
 | `slack_accounts.first_cycle_at` | the orchestrator once (`WHERE first_cycle_at = ''`); the migration for existing rows | First write wins |
@@ -105,11 +111,13 @@ The ceiling is ≈ 1,200 / (V/100), whatever the cadence. Excluding channels doe
 
 **Interfaces:**
 - Produces:
-  - `func (rl *RateLimiter) Rate() float64` (calls per minute now); AIMD as in Global Constraints, applied in `HandleRateLimit` (decrease) and `Done` (success count, increase).
+  - `func (rl *RateLimiter) Rate(tier int) float64` (calls per minute now for that tier); one `rate.Limiter` per tier, AIMD as in Global Constraints, applied in `HandleRateLimit(tier, …)` (decrease that tier, hold every tier) and `Done(tier)` (success count, increase). `Wait(ctx, tier)` waits on the account-wide hold, then on that tier's bucket.
   - `func (c *Client) SetDeadline(t time.Time)` — `doRequest` retries a 429 after its hold for as long as the hold ends before `t` (zero = today's 3-retry cap). Past it, it returns `ErrFetchDeadline` wrapping the `*slack.RateLimitedError`, so `isRateLimitError` still holds.
   - `func (c *Client) HoldUntil() time.Time` — the current `Retry-After` hold (zero when none). The sync heartbeat reports it and `Snapshot` carries `RateLimitedUntil time.Time`; the daemon's stall check counts a run waiting on a hold as progressing.
 - [ ] **Step 1: Write the failing tests** (`synctest`):
-  - `TestAIMD_HalvesOnRateLimitAndRecovers`: 40 → 20 → 10 on two 429s; +2/min after each 20 successes; never below 4 nor above 40.
+  - `TestAIMD_HalvesOnRateLimitAndRecovers`: Tier 2 20 → 10 → 5 on two 429s, never below 5; +1/min after each 20 successes, never above 40.
+  - `TestAIMD_ProbesUpToTwiceTheTier`: 400 clean Tier-3 calls → the rate reaches 100/min and stays there.
+  - `TestAIMD_TiersAreIndependent`: a Tier-4 burst does not delay a Tier-2 call beyond its own bucket; a Tier-2 429 halves only Tier 2 but holds every tier for `Retry-After`.
   - `TestAdaptive_RetryChainPushesThrough`: five 429s with `Retry-After: 30` then 200, deadline 10 min. One call succeeds after 150 s of bubble time; no error.
   - `TestAdaptive_DeadlineStopsChain`: holds summing past the deadline → `ErrFetchDeadline`, `errors.As(*slack.RateLimitedError)`.
   - `TestDoRequest_NoDeadlineKeepsThreeRetries` (today's behaviour without `SetDeadline`).
@@ -155,13 +163,12 @@ The ceiling is ≈ 1,200 / (V/100), whatever the cadence. Excluding channels doe
 **Interfaces:**
 - Consumes: `Orchestrator.RunOutcome()` (Task 2).
 - Produces: `type slackCadence struct { level int; nextDue time.Time }` per account id on the daemon; `func (c *slackCadence) after(o RunOutcome, base time.Duration, now time.Time)`:
-  - `RateLimited` → `level++`, capped where `base × 2^level ≥ cadenceMax`.
-  - Clean → `level--`, not below 0.
-  - `ResumePending` → `nextDue = now` (due next cycle).
-  - Otherwise `nextDue = now + base × 2^level`, capped at `cadenceMax`.
+  - `RateLimited` → `level++` (capped where `base × 2^level ≥ cadenceMax`) and `nextDue = now + interval`, **even when `ResumePending`**. The resume position stays in memory until then, so a storm backs everyone off instead of hammering.
+  - Clean with `Pages ≥ heavyPages` → `level = 0`. Clean with `Messages ≤ quietMessages` for the `quietRuns`-th run in a row → `level++`. Other clean runs → `level--`, not below 0.
+  - Clean and `ResumePending` → `nextDue = now` (due next cycle). Otherwise `nextDue = now + base × 2^level`, capped at `cadenceMax`.
 
   `func (c *slackCadence) due(now time.Time, manual bool) bool` is always true for a manual trigger or the first run after start. A skipped account writes nothing and does not count as a sync error. Its last `last_sync.json` entry stays. It does not freeze the Inbox (Task 4 makes that safe).
-- [ ] **Step 1: Write the failing tests** (fake clock): `TestCadence_BacksOffOn429` (15 → 30 → 60 → 60), `TestCadence_RecoversWhenClean` (60 → 30 → 15), `TestCadence_ResumeIsDueNextCycle`, `TestCadence_ManualTriggerAlwaysRuns`, `TestCadence_RestartRunsAtOnce`, `TestPhaseSlackSync_SkippedAccountDoesNotFreezeInbox`.
+- [ ] **Step 1: Write the failing tests** (fake clock): `TestCadence_BacksOffOn429` (15 → 30 → 60 → 60), `TestCadence_RecoversWhenClean` (60 → 30 → 15), `TestCadence_ResumeIsDueNextCycle` (clean run only), `TestCadence_StormBacksOffToCap` (five runs in a row with 429s and pages left: intervals 30 → 60 → 60 → 60, never `now`; the resume position survives until the run that is finally due), `TestCadence_VolumeShortensAndQuietLengthens` (a 7-page clean run at level 2 → base; three runs of ≤ 5 messages → 30 min, six → 60 min), `TestCadence_ManualTriggerAlwaysRuns`, `TestCadence_RestartRunsAtOnce`, `TestPhaseSlackSync_SkippedAccountDoesNotFreezeInbox`.
 - [ ] **Step 2: Run** `go test ./internal/daemon -run 'TestCadence_|TestPhaseSlackSync_Skipped'` — FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run** `go test ./internal/daemon` — PASS (`TestInbox09_*` untouched); `make lint-diff`.
@@ -214,11 +221,16 @@ The ceiling is ≈ 1,200 / (V/100), whatever the cadence. Excluding channels doe
 **Depends on:** Task 4 (migration order only)
 
 **Files:**
-- Create: `internal/db/migrations/<next>_channel_sync_excluded.sql` — `ALTER TABLE channel_settings ADD COLUMN sync_excluded INTEGER NOT NULL DEFAULT 0;` (+ Down); `schema.sql`, golden, Swift test schema.
+- Create: `internal/db/migrations/<next>_channel_sync_excluded.sql` — on `channel_settings`: `sync_excluded INTEGER NOT NULL DEFAULT 0`, `excluded_at TEXT NOT NULL DEFAULT ''`, `catchup_from REAL` (NULL = no catch-up pending), `muted_by_exclusion INTEGER NOT NULL DEFAULT 0`, `muted_at TEXT NOT NULL DEFAULT ''`, then `UPDATE channel_settings SET muted_at = updated_at WHERE is_muted_for_llm = 1;` (+ Down); `schema.sql`, golden, Swift test schema.
 - Modify:
-  - `internal/db/channel_settings.go`: `SetSyncExcluded(channelID string, excluded bool) error` sets `is_muted_for_llm = 1` too when `excluded` is true; `SyncExcludedChannelIDs(accountID int64) (map[string]bool, error)`.
+  - `internal/db/channel_settings.go`:
+    - `SetSyncExcluded(channelID string, excluded bool, now time.Time) error`, one write. **Stop syncing**: `sync_excluded = 1`, `excluded_at = now`, `catchup_from = NULL`; if the channel was not muted, it mutes it and sets `muted_by_exclusion = 1`. **Sync again**: `sync_excluded = 0`, `catchup_from = <excluded_at as unix>`; it un-mutes only when `muted_by_exclusion = 1`, then clears that flag. A mute the user set themselves stays.
+    - `SyncExcludedChannelIDs(accountID int64) (map[string]bool, error)`.
+    - `PendingCatchups(accountID int64) ([]Catchup, error)` and `FinishCatchup(channelID string) error`.
+    - `muted_at` writers: `SetMuteForLLM`/`ToggleMuteForLLM` set it to now only when the mute turns on, clear it when it turns off, and clear `muted_by_exclusion` on any manual change; `SetSyncExcluded` sets it when it mutes; the Swift twin `ChannelStatsQueries.toggleMuteForLLM` does the same. `SetFavorite`/`ToggleFavorite` never touch it.
   - `internal/sync/search_sync.go`: `searchAndSave` drops a match from an excluded channel unless its text contains `<@ownerRaw>`, before `EnsureChannel`/upsert/media; the listing still records it.
   - `internal/sync/message_sync.go`: `buildChannelQueue` skips excluded channels.
+  - New `internal/sync/catchup.go`: `func (o *Orchestrator) runCatchups(ctx context.Context) error`. After the blanket search of a clean run, it takes the oldest pending catch-up of the account and fetches at most `catchupPagesPerRun = 5` pages of `conversations.history oldest=<catchup_from> limit=999` (Tier 3), plus replies of threaded parents, the history backfill's pacing. The rows are stamped `synced_at = ts_unix`, so they do not flood the Inbox; mentions of that period are already stored. It moves `catchup_from` to the newest fetched ts and calls `FinishCatchup` when the history reaches now. A 429 or the deadline leaves `catchup_from` where it was. One channel per run, so a catch-up never competes with the forward search.
   - `cmd/channels.go`: `watchtower channels exclude <name|id>` / `include`.
   - `internal/tools/messages.go`: `channelInScope` is false for an excluded channel.
 - Test: `internal/db/channel_settings_test.go`, `internal/sync/sync_excluded_test.go`, `cmd/channels_test.go`, `internal/tools/messages_test.go`
@@ -230,6 +242,10 @@ The ceiling is ≈ 1,200 / (V/100), whatever the cadence. Excluding channels doe
   - `TestSyncExcluded_MentionStillStored`.
   - `TestSyncExcluded_StoredDataStays`.
   - `TestSyncExcluded_IncludeResumes`.
+  - `TestSyncAgain_CatchesUpExcludedPeriod`: excluded on day 1, included on day 10; over the next runs the channel's messages of days 1–10 are stored (5 pages per run), `catchup_from` advances and is cleared at the end, nothing is detected in the Inbox for them.
+  - `TestSyncAgain_CatchupResumesAfter429`.
+  - `TestSyncAgain_UnmutesOnlyIfStopSyncingMuted` (muted before Stop syncing → stays muted after Sync again; not muted before → un-muted).
+  - `TestMutedAt_FavoriteToggleDoesNotReset`, `TestMutedAt_SetOnMuteClearedOnUnmute`.
   - `TestSetSyncExcluded_AlsoMutes`.
   - `TestChannelsExcludeCLI`.
   - `TestListMessages_ExcludedChannelNotInScope`.
@@ -242,13 +258,21 @@ The ceiling is ≈ 1,200 / (V/100), whatever the cadence. Excluding channels doe
 
 **Depends on:** Task 5
 
+**Mockups (done before implementation, owner rule):** `docs/design/mockups/slack-adaptive-sync/`, each in light and dark:
+- `slack-as-rows`: a row's **Stop syncing**, an excluded row's **Not synced** tag with **Sync again**, and a **Catching up** row.
+- `slack-as-suggestion`: the **Suggest Stop syncing** group.
+- `slack-as-filter-notsynced` and `slack-as-filter-notsynced-empty`: the **Not synced** filter with its caption.
+
+They are rendered from `WatchtowerDesktop/Tests/DesignShots/DesignShotFixtures+SlackAdaptiveSync.swift` (`make desktop-shots`, or `swift test --filter testSlackAdaptiveSyncShotsRender` with `DESKTOP_SHOTS_DIR`). Their strings are `SlackAdaptiveSyncMockCopy`, pinned by `SlackAdaptiveSyncMockCopyTests`. The implementation moves the strings into a `ChannelStatsPresentation` model (WatchtowerCore) with its own test, and the view matches the mockups. The table keeps today's wide fixed-column layout, so there is no narrow frame.
+
 **Files:**
-- Modify (Go): `internal/db/channel_stats.go` — `ComputeRecommendations` gains `Action: "exclude"` per agent decision 5. The `ChannelStatRow` input gains `IsSyncExcluded` and `MutedSince`. `MutedSince` is read from `channel_settings.updated_at` while muted; no new column.
+- Modify (Go): `internal/db/channel_stats.go` — `ComputeRecommendations` gains `Action: "exclude"` per agent decision 5. The `ChannelStatRow` input gains `IsSyncExcluded`, `MutedAt` (from `channel_settings.muted_at`, Task 5) and `CatchingUp` (`catchup_from IS NOT NULL`).
 - Modify (Swift, dual path):
   - `WatchtowerDesktop/Sources/Database/Queries/ChannelStatsQueries.swift`: the same rule, and `setSyncExcluded`, which writes both flags in one write.
   - `Models/ChannelStat.swift`, `WatchtowerCore/Models/ChannelRecommendation.swift` (`.exclude`).
   - `ViewModels/ChannelStatsViewModel.swift` (`toggleSyncExcluded`, `applyRecommendation` for `.exclude`, a **Not synced** filter).
   - `Views/Statistics/ChannelStatisticsView.swift` (a **Stop syncing** / **Sync again** button per row, the suggestion row's button), built from DesignKit components per `docs/design/desktop-style-guide.md`.
+- Create: `WatchtowerDesktop/Sources/WatchtowerCore/Services/ChannelStatsPresentation.swift` (the mockups' strings, the row state: synced / not synced / catching up) and `WatchtowerDesktop/Tests/Core/ChannelStatsPresentationTests.swift`
 - Test: `internal/db/channel_stats_test.go`, shared cases `internal/db/testdata/channel_recommendation_cases.json` read by Go and by `WatchtowerDesktop/Tests/ChannelStatsTests.swift`
 
 **Interfaces:**
@@ -285,7 +309,7 @@ The ceiling is ≈ 1,200 / (V/100), whatever the cadence. Excluding channels doe
 | 429 storm mid-window | AIMD halves the rate; the retry chain waits and continues until the deadline; then resume next run; the watermark holds; the Inbox freezes | `TestAdaptive_RetryChainPushesThrough`, `TestAdaptive_DeadlineStopsChain`, `TestSearchResume_ContinuesFromPage` |
 | Sleep or quit mid-pagination (ctx cancelled) | the resume position is kept (sleep) or lost (quit, so a re-read); nothing half-written | `TestSearchResume_ContinuesFromPage`, `TestSearchResume_RestartReReads` |
 | Long `Retry-After` vs the Sync Now stall restart | the heartbeat shows the hold; no restart | `TestManualTrigger_DoesNotRestartWhileRateLimited` |
-| Restart | cadence due at once, rate 40/min, resume lost (re-read) | `TestCadence_RestartRunsAtOnce`, `TestSearchResume_RestartReReads` |
+| Restart | cadence due at once, every tier back at its documented rate, resume lost (re-read) | `TestCadence_RestartRunsAtOnce`, `TestSearchResume_RestartReReads` |
 | Skipped Slack run (cadence) | no error, no freeze; late-stored messages still detected | `TestPhaseSlackSync_SkippedAccountDoesNotFreezeInbox`, `TestInbox_LateStoredMessageDetected` |
 | Exclusion toggled while a run is in flight | applies from the next run | `TestSyncExcluded_IncludeResumes` |
 
@@ -294,8 +318,8 @@ The ceiling is ≈ 1,200 / (V/100), whatever the cadence. Excluding channels doe
 | Promise (ask #1337 / D16) | Task | Test |
 |---|---|---|
 | Retry chain pushes through limits, no lost work | 1, 2 | `TestAdaptive_RetryChainPushesThrough`, `TestSearchResume_*` |
-| Self-balancing packing | 1, 2 | `TestAIMD_*`, `TestPageSizes_Max`, `TestAdaptive_MentionQueryFirst` |
-| Cadence adapts to volume and 429s | 3 | `TestCadence_*` |
+| Self-balancing packing (per-tier buckets probing up to 2× the documented tier) | 1, 2 | `TestAIMD_ProbesUpToTwiceTheTier`, `TestAIMD_TiersAreIndependent`, `TestAIMD_*`, `TestPageSizes_Max`, `TestAdaptive_MentionQueryFirst` |
+| Cadence adapts to volume and 429s | 3 | `TestCadence_VolumeShortensAndQuietLengthens`, `TestCadence_BacksOffOn429`, `TestCadence_StormBacksOffToCap` |
 | "What I don't need" + suggestions, on the existing groundwork | 5, 6 | `TestSYNCEX01_*`, `TestComputeRecommendations_Exclude*`, `ChannelStatsTests` |
 | Everything synced for every account | 2 | existing search tests untouched |
 | The guide says all of this | 7 | `go test ./docs/guide` |
