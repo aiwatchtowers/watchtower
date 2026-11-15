@@ -174,6 +174,39 @@ func TestSlackTodayGate_WithinTheHourNotDue(t *testing.T) {
 	assert.True(t, f.due(t), "no run yet")
 }
 
+// A cursor that no longer points at its row (above the newest rowid, or an
+// anchor that names another message after the rowids were reused) is reset by
+// the db layer, so the gate sees today's material once the hour has passed.
+func TestSlackTodayGate_ResetCursorSeesTodaysMaterial(t *testing.T) {
+	day := func(f *stFixture) string { return f.now.Format("2006-01-02") }
+	t.Run("above the newest rowid", func(t *testing.T) {
+		f := newSTFixture(t)
+		f.message(t, f.now.Add(-time.Hour))
+		f.state(t, day(f), 1000, false)
+		f.run(t, db.RunSucceeded, 59*time.Minute)
+		assert.False(t, f.due(t), "the hour's rule still applies")
+		f.clearRuns(t)
+		f.run(t, db.RunSucceeded, 61*time.Minute)
+		assert.True(t, f.due(t), "the message below the stale cursor is today's material")
+	})
+	t.Run("an anchor on a reused rowid", func(t *testing.T) {
+		f := newSTFixture(t)
+		f.message(t, f.now.Add(-2*time.Hour))
+		var top int64
+		require.NoError(t, f.db.QueryRow(`SELECT MAX(rowid) FROM messages`).Scan(&top))
+		f.rawState(t, fmt.Sprintf(`{"today":{"v":1,"day":%q},%q:{"v":1,"after_rowid":%d,"behind":false,"anchor":"1:C1/0.000000"}}`,
+			day(f), automations.SlackWindowStateKey, top))
+		f.run(t, db.RunSucceeded, 61*time.Minute)
+		assert.True(t, f.due(t), "the row at the cursor is another message: reset, the message is material")
+
+		var anchor string
+		require.NoError(t, f.db.QueryRow(`SELECT channel_id || '/' || ts FROM messages WHERE rowid = ?`, top).Scan(&anchor))
+		f.rawState(t, fmt.Sprintf(`{"today":{"v":1,"day":%q},%q:{"v":1,"after_rowid":%d,"behind":false,"anchor":%q}}`,
+			day(f), automations.SlackWindowStateKey, top, anchor))
+		assert.False(t, f.due(t), "a matching anchor at the newest row: nothing new")
+	})
+}
+
 func TestSlackTodayGate_TruncatedWindowIsDueAtOnce(t *testing.T) {
 	f := newSTFixture(t)
 	f.message(t, f.now.Add(-time.Hour))
