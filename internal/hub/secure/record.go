@@ -139,7 +139,7 @@ var (
 		"session_timeline", "permission_request", "session_chat", "chat_list", "chat_feed", "chat_page", "chat_search",
 		"transport",
 	}
-	relayKinds = []string{"action", "recording_upload", "device", "control"}
+	relayKinds = []string{"action", "recording_upload", "chat_attachment", "device", "control"}
 )
 
 // Sealer is the single sealing choke point: every Record comes from here.

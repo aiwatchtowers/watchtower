@@ -39,6 +39,7 @@ final class HubContractFixtureTests: XCTestCase {
             XCTAssertEqual(grant.revoked, kit["revoked"] as? Bool, name)
             XCTAssertEqual(grant.mayStartSessions, kit["may_start_sessions"] as? Bool, name)
             XCTAssertEqual(grant.permissionsAllowed, kit["permissions_allowed"] as? Bool, name)
+            XCTAssertEqual(grant.chatAllowed, kit["chat_allowed"] as? Bool, name)
             XCTAssertEqual(grant.name, kit["name"] as? String, name)
             XCTAssertEqual(grant.scope.rawValue, kit["scope"] as? String, name)
             XCTAssertEqual(grant.typingAllowed, kit["typing_allowed"] as? Bool, name)

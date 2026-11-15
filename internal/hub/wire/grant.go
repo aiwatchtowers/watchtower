@@ -38,7 +38,12 @@ type DeviceGrant struct {
 	StartSessionsGranted *bool   `json:"start_sessions_granted,omitempty"`
 	// PermissionsAllowed is true or absent: false is never written, so older
 	// peers' bytes stay as they were.
-	PermissionsAllowed   *bool    `json:"permissions_allowed,omitempty"`
+	PermissionsAllowed *bool `json:"permissions_allowed,omitempty"`
+	// Chat is the owner's chat grant of a linked phone (iPhone chat D9):
+	// written true or false on every linked row; absent (an older hub, a
+	// waiting or refused phone) reads as allowed — such a hub announces no
+	// chat capability, so the phone shows no chat there anyway.
+	Chat                 *bool    `json:"chat,omitempty"`
 	DecidedAt            *Time    `json:"decided_at,omitempty"`
 	AwaitingConfirmation *bool    `json:"awaiting_confirmation,omitempty"`
 	ConfirmNonce         *string  `json:"confirm_nonce,omitempty"`

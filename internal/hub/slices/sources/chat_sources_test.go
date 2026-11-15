@@ -656,3 +656,31 @@ func TestChatList_WideTitlesStayUnderCap(t *testing.T) {
 		t.Errorf("the newest conversation must stay first, got %v", first["id"])
 	}
 }
+
+// TestChatRequests_RepeatRebuilds: a chat_page or chat_search asked again
+// within its hold (a Retry, a reopened screen) is built anew from the
+// database, never the first request's copy (T5 handoff item 12).
+func TestChatRequests_RepeatRebuilds(t *testing.T) {
+	d := openDB(t)
+	s := chatSeed{t, d}
+	conv := s.conversation("Rollout", 1, "")
+	s.message(conv, 0, "user", "payments first", "complete", "t", 1_700_000_020)
+	w := NewChatWatches()
+	src := ChatSearch(d, chatFeedOpts(w, nil))
+	w.Searches.Request("payments", chatNow.Add(ChatRequestHold))
+	hits := func() int {
+		return len(chatRecords(t, src)[ChatSearchID("payments")]["hits"].([]any))
+	}
+	if n := hits(); n != 1 {
+		t.Fatalf("first build: %d hits", n)
+	}
+	other := s.conversation("Notes", 2, "")
+	s.message(other, 0, "user", "payments second", "complete", "t", 1_700_000_030)
+	if n := hits(); n != 1 {
+		t.Fatalf("a publish of the same request rebuilt it: %d hits", n)
+	}
+	w.Searches.Request("payments", chatNow.Add(ChatRequestHold))
+	if n := hits(); n != 2 {
+		t.Fatalf("the repeated request served the old record: %d hits", n)
+	}
+}

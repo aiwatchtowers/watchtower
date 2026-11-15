@@ -187,6 +187,10 @@ type Deps struct {
 	// spec §6.5): Desktop shows that workbench and session in front. A host
 	// without Desktop has no window and nobody hears it.
 	BringForward func(workbenchID, sessionID int64)
+	// Chat is the AI chat from the phone (iPhone chat §4.5); nil = this hub
+	// has no chat (the organization's workbench_only policy): every chat_*
+	// kind is refused not_supported.
+	Chat *ChatDeps
 }
 
 // Handlers is the registered handler set: its in-memory state (asks being
@@ -198,6 +202,8 @@ type Handlers struct {
 	answering map[int64]bool
 	held      []heldAnswer
 	lines     lineState
+	// chatWG tracks the chat work run after an answer (chatAsync).
+	chatWG sync.WaitGroup
 }
 
 // Register adds every handler kind of this plan to d and returns the set;
@@ -238,6 +244,12 @@ func Register(d *actions.Dispatcher, deps Deps) *Handlers {
 	reg("session_interrupt", h.sessionInterrupt)
 	reg("session_report_request", h.sessionReportRequest)
 	reg("session_chat_request", h.sessionChatRequest)
+	for kind, fn := range h.chatKinds() {
+		reg(kind, fn)
+	}
+	// chat_attachment, like recording_upload, is no action kind: the
+	// processor calls the intake for the upload records.
+	d.SetChatAttachments(h.IntakeChatAttachment, []string{"chat_feed"})
 	// recording_upload is no action kind: the processor calls the intake for
 	// the upload records, and a received one refreshes the recording_job slice.
 	d.SetRecordings(h.IntakeRecording, []string{"recording_job"})

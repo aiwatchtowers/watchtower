@@ -38,7 +38,24 @@ var NudgeTable = map[string][]slices.Kind{
 	"session_input_cancel":   sessionSlices,
 	"session_start":          sessionSlices,
 	"session_stop":           sessionSlices,
+	// The AI chat from the phone (iPhone chat §4.5): a write moves the list
+	// and the open feed; a request publishes what it asked for (a
+	// chat_feed_request for conversation 0 is the list's Retry).
+	"chat_new":           {slices.KindChatList},
+	"chat_turn":          chatSlices,
+	"chat_cancel":        chatSlices,
+	"chat_feed_request":  chatSlices,
+	"chat_page":          {slices.KindChatPage},
+	"chat_search":        {slices.KindChatSearch},
+	"chat_read":          {slices.KindChatList},
+	"chat_branch_select": chatSlices,
+	"chat_manage":        chatSlices,
+	"chat_action_answer": chatSlices,
 }
+
+// chatSlices are the records a chat write changes: the conversation's feed
+// and the chat list's row.
+var chatSlices = []slices.Kind{slices.KindChatFeed, slices.KindChatList}
 
 // sessionSlices are the records a session action changes.
 var sessionSlices = []slices.Kind{"terminal_session", "session_timeline"}
