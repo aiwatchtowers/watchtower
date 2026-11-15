@@ -43,7 +43,7 @@ You need a 64-bit Linux with glibc 2.35 or newer (Ubuntu 22.04+, Debian 12+, Ras
 2. Scan the code with the Watchtower app on your iPhone, or open the link on the phone.
 3. The terminal shows **"<phone>" wants to link.** and **Confirm code 1234 on your phone? [y/N]**. Check the phone shows the same four digits and type `y`.
 4. **Linked "<phone>".** means you are done. Any other answer refuses the link; **Ctrl-C** prints **Cancelled. Not linked.**
-5. To let the phone type into sessions or start them, run `watchtower hub allow <device> typing` and `watchtower hub allow <device> start_sessions`. `watchtower hub phones` lists the device ids.
+5. To let the phone type into sessions, start them or answer permission prompts, run `watchtower hub allow <device> typing`, `watchtower hub allow <device> start_sessions` or `watchtower hub allow <device> permissions`. `watchtower hub phones` lists the device ids; once the phone has its grant, it shows the command with its own id where it waits for one.
 
 `hub pair`, `hub allow`, `hub unlink` and `service install` are yours alone: a coding agent's shell is refused, and `hub pair` needs a real terminal.
 

@@ -33,7 +33,7 @@ kind: feature
 since: next
 -->
 
-If your Claude or ChatGPT account has its Slack connector turned on, the assistant in **Chats** can use it for what Watchtower has not synced: a channel outside your synced scope, a date older than the history, a first sync that is still running. The assistant looks in Watchtower's own data first and says which part of an answer came from Live.
+If your Claude or ChatGPT account has its Slack connector turned on, the assistant in **Chats** can use it for what Watchtower has not synced: a channel outside your synced scope, a date older than the history, a first sync that is still running. The assistant looks in Watchtower's own data first and says which part of an answer came from Live. Watchtower checks the connector with one real read when you open **Connections → Slack** (unless it checked in the last 10 minutes) and at a chat's first Slack lookup once the last check is a day old; `watchtower slack live probe` runs the check now. Live is not on the iPhone.
 
 **What is not kept.** A Live answer stays in that chat and nowhere else. A conversation that used Live feeds no ideas, memory, coach, target next steps or Knowledge, and **Add to Knowledge** is disabled on its artifacts. A `remember:` line is saved only when it is your own words.
 

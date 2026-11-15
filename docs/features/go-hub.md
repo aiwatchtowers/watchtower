@@ -689,3 +689,13 @@ Measured with `TestMeasure_HubLatencyOverTheStand` (200 actions, local stand, hu
 ## Relay key rotation (relay client Phase 5, ask #1066/#1067)
 
 On a relay route the keyring rotates every 7 days (`relayRotationAge`; 90 days on iCloud). A phone's `epoch_ack.next_kx` is stored as `devices.kx_offer`/`kx_offer_epoch` (only on the relay, only while not lapsed); at the rotation the hub draws `hub_eph` per offering phone, seals the derived keys as `epoch_relay_keys`, clears `hub_eph`, and sends a keybox sealed to the offer (`KeyboxRecipient`, `relay_kx`/`previous_relay_kx`), in the data zone for timer rotations. A free phone gets a grant and no keys on the relay. Erasure runs only on epochs that began on the relay (`hub_epochs.on_relay`). Each republish after a rotation logs `hub: rotation republish: complete|interrupted|resumed, N records, B asset bytes, E envelope bytes, D s`. Limits: see relay-client.md "Phase 5 limits".
+
+## Hub kind and board columns (2026-11-15, #1783, #1781)
+
+- The heartbeat carries an optional `hub_kind` (`wire.HubKindMac` = `mac` in a desktop host's live mode, else
+  `server`). The phone reads it to word its allow steps: the Mac app's Settings → Mobile for `mac` or a hub that sends
+  no kind, `watchtower hub allow <phone id> typing|start_sessions|permissions` otherwise. A `device_not_allowed`
+  refusal follows the same kind (`handlers.Deps.ServerHost`, from `hubKindOf`). Phone-facing hub messages call the hub
+  "your tower" ("Answered on your tower", "Too late — answer on your tower"; PROJ-21 amended, ask #1322).
+- The workbench record carries an optional `board_columns` (the workbench's Kanban column titles in order, from
+  `workbench_board_columns`) for the phone's board lanes; an older phone ignores it.
