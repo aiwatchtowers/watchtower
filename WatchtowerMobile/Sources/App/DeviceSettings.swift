@@ -39,13 +39,7 @@ struct LinkedDevice: Equatable, Sendable {
 @MainActor
 @Observable
 final class DeviceSettings {
-    private(set) var typingRequested: Bool {
-        didSet { if typingRequested != oldValue { onTypingRequested?(typingRequested) } }
-    }
-
-    /// Told of every change of `typingRequested` (the hub session's replica counts the failed sessions to continue
-    /// in the badge with it). Not called for the value the init reads.
-    @ObservationIgnored var onTypingRequested: (@MainActor (Bool) -> Void)?
+    private(set) var typingRequested: Bool
     private(set) var startSessions: Bool
     private(set) var permissionsRequested: Bool
     /// Phone-wide, so `AppEnvironment.setWorkAlerts` sets it on every hub's settings and registers or removes each

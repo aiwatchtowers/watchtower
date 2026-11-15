@@ -59,7 +59,7 @@ struct NowView: View {
                         backlog: env.activeSession.outboxBacklog, macName: macName,
                         seenEnded: env.endedSeen.seen(hubID: env.activeSession.hubID),
                         // The badge's own source: the tab's count and the rows agree.
-                        typing: replica.typing.typing(in: replica.snapshot),
+                        typing: replica.typing,
                         answering: env.askAnswerer.isSending
                     ),
                     date: date

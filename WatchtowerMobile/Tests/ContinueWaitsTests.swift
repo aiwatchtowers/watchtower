@@ -12,7 +12,7 @@ import XCTest
 @MainActor
 final class ContinueWaitsTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.down))
-    private let typingOn = PhoneTyping(grant: grant(typing: true), requested: true)
+    private let typingOn = PhoneTyping(grant: ContinueWaitsTests.grant(typing: true), requested: true)
 
     private static func grant(typing: Bool, deviceID: String = DemoSeed.device.deviceID) -> DeviceGrant {
         DeviceGrant(
@@ -160,8 +160,8 @@ final class ContinueWaitsTests: XCTestCase {
         }
     }
 
-    /// The replica model's badge follows the phone's typing as the hub
-    /// session feeds it, and publishes only on a change.
+    /// The replica model's badge follows the typing source under
+    /// observation: the toggle, the device (a link change or a freeze).
     func testTheReplicaBadgeFollowsTyping() async throws {
         let store = try makePoolStore()
         let transport = InMemoryCloudTransport()
@@ -176,18 +176,36 @@ final class ContinueWaitsTests: XCTestCase {
             try TestPhone.grantRecord(Self.grant(typing: true, deviceID: TestPhone.deviceID()), keys: TestPhone.keyboxKeys(), modifiedAt: now)
         ])
         _ = try await hydrator.hydrateOnce()
+        let phone = TypingState(deviceID: TestPhone.deviceID())
         let model = WorkbenchReplicaModel()
-        model.start(store: store)
+        model.start(store: store) { (phone.deviceID, phone.requested) }
         try await poll { model.snapshot.session(16)?.live == true && !model.snapshot.grants.isEmpty }
-        XCTAssertEqual(model.waitingCount, 3, "typing off by default")
+        XCTAssertEqual(model.waitingCount, 3, "typing off")
 
-        model.typing = PhoneTypingSource(deviceID: TestPhone.deviceID(), requested: true)
-        XCTAssertEqual(model.waitingCount, 4)
-        model.typing.requested = false
-        XCTAssertEqual(model.waitingCount, 3)
+        phone.requested = true
+        try await poll({ model.waitingCount == 4 }, "the toggle on did not count it")
+        XCTAssertTrue(model.typing.allowed)
+        phone.deviceID = nil
+        try await poll({ model.waitingCount == 3 }, "a hub with no device that may write still counts it")
+        phone.deviceID = TestPhone.deviceID()
+        try await poll({ model.waitingCount == 4 }, "the link back did not count it")
+        phone.requested = false
+        try await poll({ model.waitingCount == 3 }, "the toggle off still counts it")
     }
 
     private func menu(_ snapshot: WorkbenchReplicaSnapshot, typing: PhoneTyping) throws -> WorkbenchMenuModel {
         try XCTUnwrap(WorkbenchMenuModel(workbenchID: DemoSeed.acmeID, snapshot: snapshot, now: now, asOf: nil, typing: typing))
+    }
+}
+
+/// The hub session's observable typing state, in small.
+@MainActor
+@Observable
+private final class TypingState {
+    var deviceID: String?
+    var requested = false
+
+    init(deviceID: String?) {
+        self.deviceID = deviceID
     }
 }
