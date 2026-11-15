@@ -1,6 +1,7 @@
 import Foundation
 import GRDB
 import WatchtowerCore
+import WatchtowerChatText
 
 struct ChatMessage: Identifiable, Equatable {
     let id: UUID

@@ -2,6 +2,7 @@ import XCTest
 import GRDB
 import WatchtowerTestSupport
 @testable import WatchtowerCore
+import WatchtowerChatText
 
 @MainActor
 final class ArtifactCommentsModelTests: XCTestCase {

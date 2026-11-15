@@ -5,6 +5,7 @@ import GRDB
 @testable import WatchtowerDesktop
 import WatchtowerCore
 import WatchtowerTestSupport
+import WatchtowerChatText
 
 /// The main chat against a real pool with scripted session processes. The
 /// turn is owned by the pool, so several tests release or switch the view

@@ -2,6 +2,7 @@ import XCTest
 import GRDB
 import WatchtowerTestSupport
 @testable import WatchtowerCore
+import WatchtowerChatText
 
 /// LIVE-01 — a conversation that used the Live Slack connector, from that turn
 /// on, stays out of every store that makes chat text lasting. The Go readers

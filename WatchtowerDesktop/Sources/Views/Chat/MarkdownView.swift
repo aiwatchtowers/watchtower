@@ -1,6 +1,7 @@
 import DesignKit
 import SwiftUI
 import WatchtowerCore
+import WatchtowerChatText
 
 /// The one markdown renderer for every chat surface (spec §3.3) — main chat,
 /// Discuss chats, setup assistants, recording notes, memory pages.

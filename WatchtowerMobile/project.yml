@@ -17,6 +17,10 @@ options:
 packages:
   WatchtowerKit:
     path: ../WatchtowerKit
+  # The chat text helpers shared with the Mac (artifact parser, Markdown run
+  # builder, quote reply; iPhone chat spec D8). Dependency-free of the Kit.
+  WatchtowerChatText:
+    path: ../WatchtowerChatText
   # GRDB is transitive through WatchtowerKit, but the app and its tests use
   # its types directly (`ValueObservation`, `Database`). A testability build
   # dead-strips the autolink hint, so the app would fail with undefined GRDB
@@ -73,6 +77,8 @@ targets:
       # The hosted relay client. The app only: the extensions never link it (R20).
       - package: WatchtowerKit
         product: WatchtowerHostedRelay
+      - package: WatchtowerChatText
+        product: WatchtowerChatText
       - package: GRDB
         product: GRDB
       - package: SwiftProtobuf

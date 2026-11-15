@@ -1,14 +1,14 @@
 import Foundation
 
-package struct ArtifactDraft: Equatable, Sendable {
-    package var key: String
-    package var kind: String
-    package var title: String
-    package var meta: [String: String]
-    package var content: String
-    package var isComplete: Bool
+public struct ArtifactDraft: Equatable, Sendable {
+    public var key: String
+    public var kind: String
+    public var title: String
+    public var meta: [String: String]
+    public var content: String
+    public var isComplete: Bool
 
-    package init(key: String, kind: String, title: String, meta: [String: String], content: String, isComplete: Bool) {
+    public init(key: String, kind: String, title: String, meta: [String: String], content: String, isComplete: Bool) {
         self.key = key
         self.kind = kind
         self.title = title
@@ -18,15 +18,15 @@ package struct ArtifactDraft: Equatable, Sendable {
     }
 }
 
-package struct ParsedMessage: Equatable, Sendable {
-    package enum Segment: Equatable, Sendable {
+public struct ParsedMessage: Equatable, Sendable {
+    public enum Segment: Equatable, Sendable {
         case markdown(String)
         case artifact(ArtifactDraft)
     }
 
-    package var segments: [Segment]
+    public var segments: [Segment]
 
-    package var artifacts: [ArtifactDraft] {
+    public var artifacts: [ArtifactDraft] {
         segments.compactMap { segment -> ArtifactDraft? in
             guard case .artifact(let draft) = segment else { return nil }
             return draft
@@ -40,8 +40,8 @@ package struct ParsedMessage: Equatable, Sendable {
 /// `final: false` holds back a half-written opener line and reports an open
 /// block as an incomplete draft; `final: true` keeps an unterminated block as
 /// complete content. A fence inside a ``` / ~~~ code block is literal text.
-package enum ArtifactParser {
-    package static let knownKinds: Set<String> = ["document", "table", "email", "slack", "event", "code", "html"]
+public enum ArtifactParser {
+    public static let knownKinds: Set<String> = ["document", "table", "email", "slack", "event", "code", "html"]
     static let opener = ":::artifact"
 
     private final class Box {
@@ -59,7 +59,7 @@ package enum ArtifactParser {
         return cache
     }()
 
-    package static func parse(_ text: String, final: Bool) -> ParsedMessage {
+    public static func parse(_ text: String, final: Bool) -> ParsedMessage {
         let key = cacheKey(text, final: final)
         if let hit = cache.object(forKey: key) { return hit.parsed }
         var machine = Machine(final: final)
@@ -74,7 +74,7 @@ package enum ArtifactParser {
     }
 
     /// The memoized parse of `text`, if any (tests: a repeat is a cache hit).
-    package static func cached(_ text: String, final: Bool) -> ParsedMessage? {
+    public static func cached(_ text: String, final: Bool) -> ParsedMessage? {
         cache.object(forKey: cacheKey(text, final: final))?.parsed
     }
 
@@ -82,7 +82,7 @@ package enum ArtifactParser {
         ((final ? "1" : "0") + text) as NSString
     }
 
-    package static func slug(_ title: String) -> String {
+    public static func slug(_ title: String) -> String {
         var out = ""
         var pendingDash = false
         for character in title.lowercased() {
