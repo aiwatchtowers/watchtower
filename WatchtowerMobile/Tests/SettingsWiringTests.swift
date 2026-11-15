@@ -388,6 +388,28 @@ final class SettingsWiringTests: XCTestCase {
         XCTAssertEqual(SettingsView.permissionsCaption(grant: nil), "Waiting for your Mac to confirm")
     }
 
+    /// #1790: while permission answers are off (the default stays off) the
+    /// Workbench footer says what that costs; once on, the Mac's answer
+    /// replaces the hint.
+    func testTheWorkbenchFooterExplainsPermissionAnswersOff() {
+        XCTAssertEqual(
+            SettingsView.workbenchFooter(typing: false, start: false, permissions: false, grant: nil),
+            "Permission prompts stay on the Mac: a session that needs your approval waits until you answer there."
+        )
+        let allowed = DeviceGrant(
+            deviceID: "d", hubID: "hub", name: "Phone", scope: .private, linked: true,
+            typingAllowed: true, startSessionsAllowed: true, permissionsAllowed: true
+        )
+        XCTAssertEqual(
+            SettingsView.workbenchFooter(typing: true, start: true, permissions: false, grant: allowed),
+            "Typing: Allowed\nStarting sessions: Allowed\n" + SettingsView.permissionsOffHint
+        )
+        XCTAssertEqual(
+            SettingsView.workbenchFooter(typing: true, start: false, permissions: true, grant: allowed),
+            "Typing: Allowed\nPermission prompts: Allowed"
+        )
+    }
+
     /// The permission card's Turn On (#517) runs the phone's permissions
     /// toggle: it writes `permissions_requested`, and the card moves from
     /// "Turn on" to waiting for the Mac, then to Allow once and Deny once

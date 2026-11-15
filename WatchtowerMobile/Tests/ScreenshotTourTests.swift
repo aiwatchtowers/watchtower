@@ -1045,6 +1045,13 @@ final class ScreenshotTourTests: XCTestCase {
             Shot(number: "18", slug: "start-session", source: source + "StartSessionSheet.swift", reached: .sheet, make: leaf { _ in
                 StartSessionSheet(workbenchID: acme, target: nil, fixed: false) { _ in }
             }),
+            // #1790: "Work on it in a session" from target #415 — brief
+            // prefilled, intent shown, Start on without typing.
+            Shot(number: "18t", slug: "start-session-target", source: source + "StartSessionSheet.swift", reached: .sheet, make: leaf { env in
+                StartSessionSheet(
+                    workbenchID: acme, target: env.workbenchReplica.snapshot.targets.first { $0.id == 415 }, fixed: true
+                ) { _ in }
+            }),
             Shot(number: "19", slug: "new-target", source: source + "NewBoardTargetSheet.swift", reached: .sheet, make: leaf {
                 NewBoardTargetSheet(replica: $0.workbenchReplica, writer: $0.boardWriter, workbenchID: acme)
             })
