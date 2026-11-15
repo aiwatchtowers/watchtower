@@ -108,6 +108,6 @@ struct ChatSourcesSheet: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(link == nil)
+        .allowsHitTesting(link != nil)
     }
 }

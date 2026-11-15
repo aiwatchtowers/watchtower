@@ -92,7 +92,7 @@ struct ChatAnswerView: View {
                     artifactCard(card)
                 }
             }
-            if answer.isStreaming {
+            if answer.isStreaming, !answer.message.text.isEmpty {
                 RoundedRectangle(cornerRadius: Radius.mark / 2)
                     .fill(answer.isElsewhere ? Color.secondary : Color.accentColor)
                     .frame(width: Spacing.compact, height: Spacing.medium)

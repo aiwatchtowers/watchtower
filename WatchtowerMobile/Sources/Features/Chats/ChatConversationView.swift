@@ -86,13 +86,11 @@ struct ChatConversationView: View {
         let host = inputs.host
         let permissions = inputs.grant?.permissionsAllowed ?? false
         let canAct = gate.allowsRowActions && model.lease == nil
+        let items = model.items(permissions: permissions, host: host)
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: Spacing.medium) {
-                    if let placeholder = model.placeholder {
-                        placeholderView(placeholder, host: host)
-                    }
-                    ForEach(model.items(permissions: permissions, host: host)) { item in
+                    ForEach(items) { item in
                         row(item, host: host, canAct: canAct).id(item.id)
                     }
                 }
@@ -100,6 +98,11 @@ struct ChatConversationView: View {
                 .padding(.vertical, Spacing.regular)
             }
             .defaultScrollAnchor(.bottom)
+            .overlay(alignment: model.placeholder == .loading ? .top : .center) {
+                if let placeholder = model.placeholder, items.isEmpty {
+                    placeholderView(placeholder, host: host).padding(.horizontal, Spacing.large).padding(.vertical, Spacing.regular)
+                }
+            }
             .onChange(of: model.messages.count) {
                 model.followFocus()
                 if let focus = model.focusMessageID { proxy.scrollTo("m\(focus)", anchor: .center) }
@@ -127,7 +130,6 @@ struct ChatConversationView: View {
             }
             .multilineTextAlignment(.center)
             .frame(maxWidth: .infinity)
-            .padding(.top, PhoneMetrics.appIcon * 2)
         case .loading:
             VStack(alignment: .leading, spacing: Spacing.regular) {
                 skeleton(0.5).frame(maxWidth: .infinity, alignment: .trailing)
@@ -141,14 +143,12 @@ struct ChatConversationView: View {
                 Button(ChatsGateModel.retry) { model.retryOpen() }.buttonStyle(SecondaryActionStyle()).frame(maxWidth: PhoneMetrics.gateButton)
             }
             .frame(maxWidth: .infinity)
-            .padding(.top, PhoneMetrics.appIcon)
         case .neverLoaded:
             Text(ChatText.neverLoaded(host))
                 .font(TypeScale.meta)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: .infinity)
-                .padding(.top, PhoneMetrics.appIcon)
         }
     }
 

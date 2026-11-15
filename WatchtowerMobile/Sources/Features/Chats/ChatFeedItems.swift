@@ -190,7 +190,9 @@ enum ChatFeedItems {
             return .init(mark: .running, line: "Working · \(running.name)", steps: steps)
         }
         let kinds = orderedUnique(steps.flatMap(\.sources).map { kindName($0.kind) })
-        let what = kinds.isEmpty ? (steps.count == 1 ? "Used \(steps[0].name)" : "Used tools") : "Searched " + kinds.joined(separator: ", ")
+        let summary = steps.first { !$0.summary.isEmpty }?.summary
+        let used = summary ?? (steps.count == 1 ? "Used \(steps[0].name)" : "Used tools")
+        let what = kinds.isEmpty ? used : "Searched " + kinds.joined(separator: ", ")
         let line = steps.count == 1 ? what : "\(what) · \(steps.count) steps"
         return .init(mark: steps.contains { $0.outcome == .failed } ? .failed : .done, line: line, steps: steps)
     }
