@@ -194,3 +194,35 @@ func TestLease_ReleaseOwned(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, got)
 }
+
+func TestLease_OwnedListAndSessionLostMark(t *testing.T) {
+	d := openTestDB(t)
+	a, b := seedLeaseConversation(t, d), seedLeaseConversation(t, d)
+	require.True(t, claimChatLease(t, d, ChatLease{ConversationID: a, Owner: ChatLeaseHub, OwnerID: "hub-1", TurnID: "ta",
+		StartedAtMS: 1, HeartbeatAtMS: 1}, 1))
+	require.True(t, claimChatLease(t, d, ChatLease{ConversationID: b, Owner: ChatLeaseDesktop, OwnerID: "hub-1", TurnID: "tb",
+		StartedAtMS: 1, HeartbeatAtMS: 1}, 1))
+	owned, err := d.OwnedChatLeases(ChatLeaseHub, "hub-1")
+	require.NoError(t, err)
+	require.Len(t, owned, 1)
+	require.Equal(t, a, owned[0].ConversationID)
+	require.Equal(t, "ta", owned[0].TurnID)
+
+	insert := func(role, status, turn string) int64 {
+		res, err := d.Exec(`INSERT INTO chat_messages (conversation_id, role, text, status, turn_id, created_at)
+VALUES (?, ?, 'x', ?, ?, 1)`, a, role, status, turn)
+		require.NoError(t, err)
+		id, _ := res.LastInsertId()
+		return id
+	}
+	partial, owner, done, other := insert("assistant", "partial", "ta"), insert("user", "complete", "ta"),
+		insert("assistant", "complete", "ta"), insert("assistant", "partial", "tz")
+	n, err := d.MarkChatTurnSessionLost(a, "ta")
+	require.NoError(t, err)
+	require.EqualValues(t, 1, n)
+	for id, want := range map[int64]string{partial: "session_lost", owner: "", done: "", other: ""} {
+		var code sql.NullString
+		require.NoError(t, d.QueryRow(`SELECT error_code FROM chat_messages WHERE id = ?`, id).Scan(&code))
+		require.Equal(t, want, code.String, "message %d", id)
+	}
+}

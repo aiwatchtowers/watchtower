@@ -149,6 +149,7 @@ var displayOnlyReaders = map[string]string{
 	"deleteWorkbenchCodeQuestions":     "delete only",
 	"deleteWorkbenchSpecReviewThreads": "delete only",
 	"keptJoin":                         "the knowledge source's join: it skips a marked conversation (internal/kb TestLIVE01_KeptArtifactSkipped)",
+	"MarkChatTurnSessionLost":          "writes the error code of a dead hub turn's reply; reads no text",
 	// internal/chatstore: the hub's chat turn store, the Swift write path's
 	// twin. It writes the chat rows and reads its own tree for the next turn;
 	// stepStarted and markIfUsedTx write the mark itself (LIVE-01 mechanism).
