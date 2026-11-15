@@ -584,7 +584,7 @@ func (o *Orchestrator) runSearchSync(ctx context.Context, opts SyncOptions) erro
 	// both parent messages and thread replies within the search window.
 	// Full thread sync only runs with --full flag (runFullSync).
 
-	// A Sync again catch-up (one channel, a few history pages) runs only
+	// Sync again catch-ups (a few history pages in all) run only
 	// after a clean search, last, so a 429 it meets holds no other phase.
 	// Best-effort: a stop keeps its bound for the next run.
 	if !o.searchIncomplete {
