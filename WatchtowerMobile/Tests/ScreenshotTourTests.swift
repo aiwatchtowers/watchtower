@@ -252,7 +252,7 @@ final class ScreenshotTourTests: XCTestCase {
     private static func chatCenter(
         _ list: ChatList?, searches: [String: ChatSearch] = [:], sleep: @escaping @Sendable (Duration) async throws -> Void = { _ in }
     ) -> ChatsCenter {
-        let center = ChatsCenter(sender: ChatSender { _, _ in }, sleep: sleep)
+        let center = ChatsCenter(sender: ChatSender { _, _ in "" }, sleep: sleep)
         center.apply(ChatsSnapshot(list: list, searches: searches))
         return center
     }

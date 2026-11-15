@@ -54,6 +54,12 @@ struct HubPaths {
         return localHubDirectory(hubID).appendingPathComponent(name).path
     }
 
+    /// The phone's offline copy of this hub's chats (iPhone chat spec §6.4): in the local hub folder, so it goes
+    /// with the link (`removeHubFiles`).
+    func chatCopyPath(_ hubID: String) -> String {
+        localHubDirectory(hubID).appendingPathComponent(ChatOfflineCopy.fileName).path
+    }
+
     func recordingsDirectory(_ hubID: String) -> URL {
         recordingsBase.appendingPathComponent("hubs", isDirectory: true).appendingPathComponent(hubID, isDirectory: true)
     }

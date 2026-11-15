@@ -59,11 +59,16 @@ final class AppNavigation {
 
     /// Selects the Workbench tab and pushes the destination on its stack, from the root.
     func show(_ destination: AlertDestination) {
+        if case let .chat(_, conversationID) = destination {
+            show(conversation: conversationID)
+            return
+        }
         tab = .workbench
         workbenchPath = NavigationPath()
         switch destination {
         case let .ask(_, askID): workbenchPath.append(AskRoute(id: askID))
         case let .session(_, sessionID): workbenchPath.append(SessionRoute(id: sessionID))
+        case .chat: break
         }
         openedAlert = (destination, workbenchPath.count)
     }

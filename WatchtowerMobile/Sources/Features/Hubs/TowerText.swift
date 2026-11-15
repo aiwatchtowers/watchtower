@@ -175,4 +175,45 @@ enum ChatText {
     static func noAnswer(_ host: TowerHost) -> String {
         host == .mac ? "The Mac did not answer" : "Your tower did not answer"
     }
+
+    // MARK: The conversation (mockups 2a–2i, 3b)
+
+    /// Mockup 2f: the Mac app runs this turn; a server never does.
+    static func answeringElsewhere(_ host: TowerHost) -> String {
+        host == .mac ? "Answering on your Mac — you can watch here." : "Answering on your tower — you can watch here."
+    }
+
+    /// Mockup 2g.
+    static func opening(_ host: TowerHost) -> String {
+        host == .mac ? "Opening the chat on your Mac…" : "Opening the chat on your tower…"
+    }
+
+    /// Mockup 2e: the composer is off while the hub sleeps.
+    static func asleepSending(_ host: TowerHost) -> String {
+        "\(host == .mac ? "Your Mac" : "Your tower") is asleep — sending works when it wakes."
+    }
+
+    static func offlineSending(_ host: TowerHost) -> String {
+        "\(host == .mac ? "Your Mac" : "Your tower") is offline — sending works when it is back."
+    }
+
+    static let relayUnreachableSending = "Relay isn't answering — sending works when it is back."
+
+    /// Mockup 2e's note: a chat the phone never held, read while the hub sleeps.
+    static func neverLoaded(_ host: TowerHost) -> String {
+        host == .mac
+            ? "Open this chat once while your Mac is awake to read it here"
+            : "Open this chat once while your tower is awake to read it here"
+    }
+
+    /// Mockup 2h.
+    static func newChatTitle(_ host: TowerHost) -> String { host == .mac ? "Ask your Mac" : "Ask your tower" }
+
+    /// Mockup 2c without the `permissions` grant.
+    static func approveElsewhere(_ host: TowerHost) -> String { host == .mac ? "Approve on the Mac" : "Approve on your tower" }
+
+    /// An artifact the feed cap cut (spec §4.6).
+    static func openToSeeAll(_ host: TowerHost) -> String {
+        host == .mac ? "Too long for the phone. Open it on your Mac." : "Too long for the phone. Open it on your tower."
+    }
 }
