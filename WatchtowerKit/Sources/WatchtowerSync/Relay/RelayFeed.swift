@@ -132,6 +132,8 @@ public actor RelayFeed {
     private var inFlight: Task<Int, Error>?
     /// Told when a caller joins the running cycle instead of starting one; tests replace it.
     private var onJoin: @Sendable () -> Void = {}
+    /// Told when `pollFresh` waits out the running cycle instead of joining it; tests replace it.
+    private var onWaitOut: @Sendable () -> Void = {}
     /// No fetch until `resumeIfParked()`: the feed waited its cap for a keybox, or has no key source (relay client
     /// Phase 5). In memory only, so a launch reads again.
     private var parked = false
@@ -179,6 +181,7 @@ public actor RelayFeed {
     // MARK: - One cycle
 
     func observeJoins(_ onJoin: @escaping @Sendable () -> Void) { self.onJoin = onJoin }
+    func observeWaitOuts(_ onWaitOut: @escaping @Sendable () -> Void) { self.onWaitOut = onWaitOut }
 
     /// One relay cycle: optional engine pull, read relay-zone changes since
     /// the persisted relay token, route every record, persist the new token.
@@ -196,10 +199,26 @@ public actor RelayFeed {
             onJoin()
             return try await inFlight.value
         }
-        let task = Task { try await self.performPoll() }
+        // The cycle clears itself on the actor before it ends, so a caller resuming from its result never finds it
+        // still in flight (`pollFresh`).
+        let task = Task {
+            defer { inFlight = nil }
+            return try await self.performPoll()
+        }
         inFlight = task
-        defer { inFlight = nil }
         return try await task.value
+    }
+
+    /// One cycle begun after this call: what was buffered before it is routed by the time it returns. A running cycle
+    /// may have read its batch before that (a fetch's own pull buffered a control the cycle never saw), so it is waited
+    /// out, never joined; a cycle started after it ended began after this call and is joined.
+    @discardableResult
+    public func pollFresh() async throws -> Int {
+        if let running = inFlight {
+            onWaitOut()
+            _ = try? await running.value
+        }
+        return try await pollOnce()
     }
 
     private func performPoll() async throws -> Int {

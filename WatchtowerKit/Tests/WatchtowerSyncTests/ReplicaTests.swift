@@ -497,7 +497,7 @@ final class ReplicaTests: XCTestCase {
     }
 
     /// What a coalescing test sees while both calls start.
-    private enum CycleStep { case joined, changes }
+    private enum CycleStep { case joined, changes, waitedOut }
 
     func testConcurrentHydrateOnceCoalescesIntoOneCycle() async throws {
         let transport = GatedTransport()
@@ -527,6 +527,35 @@ final class ReplicaTests: XCTestCase {
         // Coalesced: exactly one real cycle ran, so changes() was hit once.
         let calls = await transport.changesCalls
         XCTAssertEqual(calls, 1)
+    }
+
+    /// A fetch's hydrate after its pull never joins a cycle already running: that one may have read its batch before
+    /// the pull buffered, so the fetch would return with records unapplied (#1795). It waits it out and runs its own.
+    func testHydrateFreshRunsItsOwnCycleAfterTheRunningOne() async throws {
+        let transport = GatedTransport()
+        try await transport.seed([
+            dataRecord(kind: .target, id: "1", payload: try RowPayloadCoder.payload(from: targetRow(id: 1, text: "gated")))
+        ])
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
+        let hydrator = ReplicaHydrator(transport: transport, store: store)
+        let (steps, step) = AsyncStream.makeStream(of: CycleStep.self)
+        await hydrator.observeJoins { step.yield(.joined) }
+        await hydrator.observeWaitOuts { step.yield(.waitedOut) }
+        await transport.observeChanges { step.yield(.changes) }
+
+        async let running = hydrator.hydrateOnce()
+        var seen = steps.makeAsyncIterator()
+        let entered = await seen.next()
+        XCTAssertEqual(entered, .changes, "the running cycle is inside changes")
+        async let fresh = hydrator.hydrateFresh()
+        // The gate opens once the fresh hydrate waited the cycle out, or (broken) joined it: no hang either way.
+        let second = await seen.next()
+        XCTAssertEqual(second, .waitedOut, "never joined")
+        await transport.openGate()
+
+        _ = try await (running, fresh)
+        let calls = await transport.changesCalls
+        XCTAssertEqual(calls, 2, "the fresh hydrate ran a cycle of its own")
     }
 
     // MARK: - DatabasePool (production mechanism) path
