@@ -40,8 +40,9 @@ package struct InboxBulkCLI {
     /// How long a dry run may take before the child is terminated.
     static let timeout: TimeInterval = 120
 
-    /// A resolve's time: `timeout` plus a second per 100 ids, at most 15
-    /// minutes (Go closes them in 200-id chunks).
+    /// A resolve's time: `timeout` plus a second per 100 ids (Go closes them
+    /// in 200-id chunks). Go's `db.BulkResolveMaxIDs` (10 000 ids) keeps it
+    /// at 220 s; the 15-minute clamp only guards a raised Go cap.
     static func timeout(ids: Int) -> TimeInterval {
         min(timeout + TimeInterval(ids / 100), 900)
     }
