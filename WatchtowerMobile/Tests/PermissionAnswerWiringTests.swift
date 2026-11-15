@@ -170,13 +170,13 @@ final class PermissionAnswerWiringTests: XCTestCase {
         XCTAssertEqual(row.entityRecordName, "terminal_session-10")
         XCTAssertEqual(row.action.params, [:])
 
-        try await echo(fixture, .failed, reason: .notWorking, message: "A permission prompt may be open — answer it on the tower or with Deny")
+        try await echo(fixture, .failed, reason: .notWorking, message: "A permission prompt may be open — answer it on your tower or with Deny")
         let replica = try snapshot(fixture.store)
         let actions = SessionActionsModel(
             session: try XCTUnwrap(replica.session(10)), snapshot: replica, inFlight: [], now: now,
             grant: grant(), typingRequested: true
         )
-        XCTAssertEqual(actions.interruptRows.map(\.state), [.failed("A permission prompt may be open — answer it on the tower or with Deny")])
+        XCTAssertEqual(actions.interruptRows.map(\.state), [.failed("A permission prompt may be open — answer it on your tower or with Deny")])
         XCTAssertTrue(actions.canInterrupt, "a refused interrupt does not hold the next")
     }
 

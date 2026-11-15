@@ -47,9 +47,9 @@ var sessionCaps = func(k agentkind.Kind) sessionagent.Caps { return sessionagent
 // The not_supported messages, by what the phone asked; %s is the agent's
 // display name. An older phone without the reason shows the message.
 const (
-	notSupportedInputFormat      = "%s sessions can't take messages from the phone yet. Type it on the Mac."
-	notSupportedPermissionFormat = "%s sessions can't answer this permission from the phone yet. Answer it on the Mac."
-	notSupportedInterruptFormat  = "%s sessions can't be interrupted from the phone yet. Stop it on the Mac."
+	notSupportedInputFormat      = "%s sessions can't take messages from the phone yet. Type it on your tower."
+	notSupportedPermissionFormat = "%s sessions can't answer this permission from the phone yet. Answer it on your tower."
+	notSupportedInterruptFormat  = "%s sessions can't be interrupted from the phone yet. Stop it on your tower."
 )
 
 // PhoneRefusal is the not_supported message of a phone action of

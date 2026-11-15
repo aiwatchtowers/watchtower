@@ -50,17 +50,17 @@ const (
 
 // SessionInputHandlers' messages, verbatim.
 const (
-	inputTimeoutMessage    = "The Mac did not finish this in time — check the session on the Mac"
+	inputTimeoutMessage    = "Your tower did not finish this in time — check the session there"
 	inputNotAllowedMessage = "This phone is not allowed to type into sessions — Allow it in Settings → Mobile on the Mac"
-	inputNotRunningMessage = "The session is not running on the Mac"
-	copiedMessage          = "The session can't take typed text — it is on the Mac's clipboard"
-	restartedTypingMessage = "Your Mac restarted while typing this — check the session on the Mac"
+	inputNotRunningMessage = "The session is not running on your tower"
+	copiedMessage          = "The session can't take typed text — it is on your tower's clipboard"
+	restartedTypingMessage = "Your tower restarted while typing this — check the session there"
 	expiredMessage         = "Held for a day without the session getting idle"
 	cancelledMessage       = "Cancelled on the phone"
 	foreignCancelMessage   = "Only the phone that sent this message can cancel it"
 	// lostWhileTypingMessage: the host connection failed during a Deliver,
 	// so whether the line reached the prompt is not known.
-	lostWhileTypingMessage = "The Mac lost the session while typing this — check the session on the Mac"
+	lostWhileTypingMessage = "Your tower lost the session while typing this — check the session there"
 )
 
 // inputKinds are the phone line kinds (SessionInputHandlers.kinds).

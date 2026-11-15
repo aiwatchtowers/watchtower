@@ -429,14 +429,14 @@ final class ActionOutboxTests: XCTestCase {
         echo.status = .failed
         echo.reason = .conflict
         echo.result = ["current": .string("blocked"), "nested": .object(["n": .integer(3)])]
-        echo.errorMessage = "Changed on the Mac to blocked"
+        echo.errorMessage = "Changed on your tower to blocked"
         try await outbox.applyEcho(echo)
 
         let row = try XCTUnwrap(store.pendingActions().first)
         XCTAssertEqual(row.state, .failed)
         XCTAssertEqual(row.reason, .conflict)
         XCTAssertEqual(row.result, ["current": .string("blocked"), "nested": .object(["n": .integer(3)])])
-        XCTAssertEqual(row.errorMessage, "Changed on the Mac to blocked")
+        XCTAssertEqual(row.errorMessage, "Changed on your tower to blocked")
     }
 
     /// An expired echo keeps its reason too; one without a result stores none.

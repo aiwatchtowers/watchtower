@@ -14,7 +14,7 @@ import (
 const (
 	automationNotAllowedMessage = "This phone is not allowed to run automations. " +
 		"On the Mac: Watchtower → Settings → Mobile → allow typing, then starting sessions."
-	automationTimeoutMessage = "The Mac did not finish this in time — check the automation on the Mac"
+	automationTimeoutMessage = "Your tower did not finish this in time — check the automation there"
 )
 
 // automationRun is `automation_run` (ask #692; entity the automation id,
@@ -49,7 +49,7 @@ func (h *Handlers) applyAutomationRun(r actions.Request) actions.Outcome {
 	}
 	a, err := h.d.DB.GetAutomation(automationID)
 	if errors.Is(err, db.ErrAutomationNotFound) || (err == nil && a.RemovedAt != nil) {
-		return failed(reasonNotFound, "This automation no longer exists on the Mac")
+		return failed(reasonNotFound, "This automation no longer exists on your tower")
 	}
 	if err != nil {
 		return failed(reasonWriteFailed, err.Error())
@@ -60,7 +60,7 @@ func (h *Handlers) applyAutomationRun(r actions.Request) actions.Outcome {
 	// QuickRunCatalog.state: a parse error first, then an active run, then
 	// runnable, a confirmed but switched-off recipe, else unconfirmed.
 	if a.ParseError != "" {
-		return failed(reasonConflict, "This automation can't be read on the Mac")
+		return failed(reasonConflict, "This automation can't be read on your tower")
 	}
 	active, err := h.activeRun(a.ID)
 	if err != nil {
@@ -72,9 +72,9 @@ func (h *Handlers) applyAutomationRun(r actions.Request) actions.Outcome {
 	confirmedHash := a.ConfirmedHash != "" && a.ConfirmedHash == a.ApprovalHash
 	switch {
 	case confirmedHash && !a.Enabled:
-		return failed(reasonConflict, "This automation is turned off on the Mac")
+		return failed(reasonConflict, "This automation is turned off on your tower")
 	case !confirmedHash:
-		return failed(reasonConflict, "Confirm this automation on the Mac first")
+		return failed(reasonConflict, "Confirm this automation on your tower first")
 	case asksFirst(a) && !confirmed:
 		return failed(reasonConflict, "This automation asks before it runs — confirm it on the phone")
 	}

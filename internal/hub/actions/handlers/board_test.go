@@ -109,7 +109,7 @@ func TestAStaleFromStatusIsAConflictWithTheCurrentStatus(t *testing.T) {
 	got := e.board(e.statusAction(tg, wb, "done", "todo"))
 
 	wantOutcome(t, got, wire.StatusFailed, reasonConflict)
-	if got.Result["current"] != "in_review" || got.Message != "Changed on the Mac to in_review" {
+	if got.Result["current"] != "in_review" || got.Message != "Changed on your tower to in_review" {
 		t.Fatalf("outcome = %+v", got)
 	}
 	if e.status(tg) != "in_review" || e.history(tg) != before {

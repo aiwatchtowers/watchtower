@@ -71,11 +71,11 @@ final class AutomationRunWiringTests: XCTestCase {
         var echo = row.action
         echo.status = .failed
         echo.reason = .conflict
-        echo.errorMessage = "Confirm this automation on the tower first"
+        echo.errorMessage = "Confirm this automation on your tower first"
         try await outbox.applyEcho(echo)
         snapshot.pending = try store.pendingActions()
         let failed = try XCTUnwrap(model(snapshot).rows[0].failure)
-        XCTAssertEqual(failed.message, "Confirm this automation on the tower first")
+        XCTAssertEqual(failed.message, "Confirm this automation on your tower first")
         XCTAssertEqual(model(snapshot).rows[0].action, .run, "a refused run can be sent again")
 
         try writer.dismissRun(failed)

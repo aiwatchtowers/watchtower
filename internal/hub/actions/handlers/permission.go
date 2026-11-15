@@ -27,14 +27,14 @@ const (
 	// not land on a later turn the owner never saw.
 	InterruptMaxAge = 120 * time.Second
 
-	permissionTimeoutMessage   = "The Mac did not finish this in time — check the session on the Mac"
-	answeredOnMacMessage       = "Answered on the Mac"
-	tooLateMessage             = "Too late — answer on the Mac"
-	sessionGoneMessage         = "This session no longer exists on the Mac"
-	promptMayBeOpenMessage     = "A permission prompt may be open — answer it on the Mac or with Deny"
-	notRunningMessage          = "This session is not running on the Mac"
+	permissionTimeoutMessage   = "Your tower did not finish this in time — check the session there"
+	answeredOnMacMessage       = "Answered on your tower"
+	tooLateMessage             = "Too late — answer on your tower"
+	sessionGoneMessage         = "This session no longer exists on your tower"
+	promptMayBeOpenMessage     = "A permission prompt may be open — answer it on your tower or with Deny"
+	notRunningMessage          = "This session is not running on your tower"
 	notWorkingMessage          = "The agent is not working right now"
-	requestGoneMessage         = "This permission request no longer exists on the Mac"
+	requestGoneMessage         = "This permission request no longer exists on your tower"
 	permissionsNotAllowedMsg   = "This phone is not allowed to answer permission prompts"
 	typingNotAllowedMessage    = "This phone is not allowed to type into sessions"
 	unnamedDevice              = "phone"

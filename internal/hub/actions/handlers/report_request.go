@@ -8,8 +8,8 @@ import (
 
 // SessionReportRequestHandler's messages, verbatim.
 const (
-	reportTimeoutMessage = "The Mac did not answer in time — check the session report on the Mac"
-	reportNotFoundMsg    = "This session has no report on the Mac"
+	reportTimeoutMessage = "Your tower did not answer in time — check the session report there"
+	reportNotFoundMsg    = "This session has no report on your tower"
 )
 
 // ReportRequests takes the phone's session_report_request: a report run with
