@@ -172,9 +172,8 @@ struct ArtifactListView: View {
         let shown = list.rows.indices.filter { index in
             list.rows[index].ref.map(environment.refHooks.isOpen) ?? true
         }
-        let folds = foldsOlder && shown.first == 0
-        let older = folds ? shown.count - 1 : 0
-        let drawn = folds && !olderOpen ? [0] : shown
+        let (drawn, older) = Self.fold(shown: shown, foldsOlder: foldsOlder, olderOpen: olderOpen)
+        let folds = older > 0
         VStack(alignment: .leading, spacing: Spacing.tight) {
             if let title = list.title { ArtifactBlockTitle(text: title).padding(.horizontal, Spacing.regular) }
             if shown.isEmpty {
@@ -186,7 +185,7 @@ struct ArtifactListView: View {
             }
             ForEach(drawn, id: \.self) { index in
                 ArtifactListRowView(row: list.rows[index], firstIndex: offsets[index], mode: mode)
-                if folds, index == 0, older > 0 {
+                if folds, index == 0 {
                     Button(olderOpen ? "Hide" : "Show \(older) older") { olderOpen.toggle() }
                         .buttonStyle(.kitQuiet)
                         .controlSize(.small)
@@ -197,6 +196,16 @@ struct ArtifactListView: View {
         // The rows' hover plates sit flush with the card's other blocks.
         .padding(.horizontal, -Spacing.regular)
         .preference(key: ArtifactShownRefsKey.self, value: drawn.compactMap { list.rows[$0].ref })
+    }
+
+    /// The rows drawn (indexes into the list's rows) and how many are
+    /// folded behind the first: with `foldsOlder` and the first row shown,
+    /// the first row alone until `olderOpen`, else every shown row. Only
+    /// the drawn rows are published (`ArtifactShownRefsKey`), so the row
+    /// keys never land on a folded row.
+    static func fold(shown: [Int], foldsOlder: Bool, olderOpen: Bool) -> (drawn: [Int], older: Int) {
+        guard foldsOlder, shown.first == 0, shown.count > 1 else { return (shown, 0) }
+        return (olderOpen ? shown : [0], shown.count - 1)
     }
 
     /// In the Inbox, a list whose first row the host folds after
