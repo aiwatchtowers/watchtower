@@ -46,6 +46,10 @@ enum PhoneMetrics {
     /// A timeline row's time column and its dot (mockup 13 `.tl`).
     static let timeColumn: CGFloat = 48
     static let timelineDot: CGFloat = 8
+    /// A centred message's one button (iPhone chat mockups 1b, 1e, 1h).
+    static let gateButton: CGFloat = 240
+    /// A loading bar where a row will be (iPhone chat mockup 1c `.skel`).
+    static let skeletonBar: CGFloat = 11
 }
 
 /// The phone's view opacities: a closed card, a line not yet taken, a

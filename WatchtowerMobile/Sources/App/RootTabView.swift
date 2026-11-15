@@ -1,12 +1,12 @@
 import SwiftUI
 import UIKit
 
-/// The three tabs (design pass spec §5, amending mobile POC spec §13 A4):
-/// Now, Workbench and Calendar. Settings is pushed from Now's gear; a voice
+/// The four tabs (design pass spec §5, amending mobile POC spec §13 A4; iPhone chat spec §6.1):
+/// Now, Workbench, Chats and Calendar. Settings is pushed from Now's gear; a voice
 /// note is the Calendar's mic button.
 struct RootTabView: View {
     enum Tab: String, CaseIterable, Identifiable {
-        case now, workbench, calendar
+        case now, workbench, chats, calendar
 
         var id: Self { self }
 
@@ -14,6 +14,7 @@ struct RootTabView: View {
             switch self {
             case .now: "Now"
             case .workbench: "Workbench"
+            case .chats: "Chats"
             case .calendar: "Calendar"
             }
         }
@@ -22,6 +23,7 @@ struct RootTabView: View {
             switch self {
             case .now: "clock"
             case .workbench: "hammer"
+            case .chats: "bubble.left.and.bubble.right"
             case .calendar: "calendar"
             }
         }
@@ -50,7 +52,11 @@ struct RootTabView: View {
         phase == .active
     }
 
-    init() {
+    /// The Chats tab's frame in the screenshot tour; nil reads the hub on screen.
+    private let chatsShot: ChatsShot?
+
+    init(chatsShot: ChatsShot? = nil) {
+        self.chatsShot = chatsShot
         Self.configureTabBarAppearance()
     }
 
@@ -123,6 +129,8 @@ struct RootTabView: View {
             NowView()
         case .workbench:
             WorkbenchListView()
+        case .chats:
+            ChatsTabView(shot: chatsShot)
         case .calendar:
             AgendaView()
         }
