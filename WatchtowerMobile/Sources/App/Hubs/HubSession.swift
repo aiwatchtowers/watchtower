@@ -578,7 +578,7 @@ final class HubSession {
         sharedAlerts = Self.makeSharedAlerts(
             hubID: hubID, route: route, link: link, keys: sealed.hasDeviceKeys ? keys : nil, store: store, defaults: defaults,
             posting: alertPosting)
-        workbenchReplica.start(store: store)
+        workbenchReplica.start(store: store, following: deviceSettings)
         calendarReplica.start(store: store)
         phoneRecordings.start(store: store)
         observeOutboxBacklog()
@@ -1473,6 +1473,7 @@ final class HubSession {
     func setLinkedDevice(_ device: LinkedDevice?, writesAllowed: Bool = true) async {
         linkedDevice = device
         self.writesAllowed = writesAllowed
+        workbenchReplica.typing.deviceID = device?.deviceID
         deviceSettings.linkedDevice = writesAllowed ? device : nil
         let sendingID = writesAllowed ? device?.deviceID : nil
         await outbox.setDeviceID(sendingID)

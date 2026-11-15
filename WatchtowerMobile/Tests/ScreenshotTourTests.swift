@@ -235,7 +235,8 @@ final class ScreenshotTourTests: XCTestCase {
         }
     }
 
-    /// 10o, 10p, 12l, 11s, 12s: the workchat's what-next card (#1784) and the permission card the seed has no request
+    /// 10o, 10p, 12l, 11s, 12s: the workchat's what-next card (#1784), with 01c and 05c (Now and the Sessions tab while
+    /// the failed session waits to continue, #1785 follow-up), and the permission card the seed has no request
     /// for. Runs after the Mac-asleep shots: the Mac wakes, records saved in its name set each state, and at the end
     /// the Mac sleeps again and every record is put back, so the shots after it see what they saw before.
     private func captureSessionStates(_ env: AppEnvironment, demo: DemoHub, host: ScreenshotHost) async throws -> [ScreenshotHost.IndexRow] {
@@ -286,6 +287,11 @@ final class ScreenshotTourTests: XCTestCase {
         ]), modifiedAt: now)
         try await publish([failedLive], "the failed session runs") { snapshot().session(16)?.live == true }
         try await workchat("12l-session-16-failed-live", 16)
+        // #1785 follow-up: the failed session this phone can continue waits on Now (and the tab badge) and the Sessions tab.
+        try await host.capture("01c-now-failed-to-continue", Self.app(.now)(env))
+        try await host.capture("05c-workbench-sessions-failed-to-continue", NavigationStack {
+            WorkbenchView(replica: env.workbenchReplica, writer: env.boardWriter, workbenchID: DemoSeed.acmeID, segment: .sessions)
+        })
         try await workchat("11s-session-15-not-running", 15)
 
         // The Mac asleep over the failed session: Continue queues for its wake.
@@ -303,7 +309,13 @@ final class ScreenshotTourTests: XCTestCase {
                 && snapshot().grant(for: DemoSeed.device.deviceID)?.permissionsAllowed != true
         }
         let workchat = "Features/Workbench/WorkchatView.swift"
-        return [
+        let waiting = [
+            ScreenshotHost.IndexRow(number: "01c", view: "NowView", source: "Features/Now/NowView.swift",
+                                    reached: "full app, a failed live session the phone can continue"),
+            ScreenshotHost.IndexRow(number: "05c", view: "WorkbenchView", source: "Features/Workbench/WorkbenchView.swift",
+                                    reached: "bare stack, a failed live session the phone can continue")
+        ]
+        return waiting + [
             ("10o", "bare stack, a permission request with the phone's answering off"),
             ("10p", "bare stack, a permission request the phone may answer"),
             ("12l", "bare stack, a failed turn of a live session"),

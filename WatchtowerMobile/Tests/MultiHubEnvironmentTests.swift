@@ -464,7 +464,7 @@ final class MultiHubEnvironmentTests: XCTestCase {
 
         try await poll({ badges.last == 1 }, "the frozen hub's asks still count: \(badges)")
         XCTAssertEqual(env.openAskTotal, 1)
-        XCTAssertEqual(hubB.workbenchReplica.openAskCount, 2, "its replica still holds them, readable")
+        XCTAssertEqual(hubB.workbenchReplica.waitingCount, 2, "its replica still holds them, readable")
         func row(_ hubID: String, _ order: Int, _ state: HubRow.State) -> HubRow {
             HubRow(
                 link: LinkRecord(

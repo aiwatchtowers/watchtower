@@ -69,7 +69,8 @@ struct WorkchatStateCard: Equatable {
             // A line already on its way would be sent twice.
             if input.canSend {
                 details = ["It still runs on your Mac. Continue sends it “\(Self.continueLine)”, or start \(aNewSession)here."]
-                actions = input.lines.isEmpty ? [.continueSession, newSession] : [newSession]
+                // `continues` is the rule Now and the Sessions tab wait on (`SessionInputModel.waitsToContinue`).
+                actions = input.continues ? [.continueSession, newSession] : [newSession]
             } else {
                 details = ["It still runs on your Mac: continue it there, or start \(aNewSession)here."]
                 actions = [newSession]

@@ -159,8 +159,8 @@ final class ReplicaWiringTests: XCTestCase {
         XCTAssertEqual(env.workbenchReplica.snapshot.workbenches.map(\.name).sorted(), ["Acme", "Acme Website", "Notes"])
         let home = try XCTUnwrap(env.session(DemoSeed.secondary.hubID))
         XCTAssertEqual(home.workbenchReplica.snapshot.workbenches.map(\.name), ["Home Lab"])
-        XCTAssertEqual(home.workbenchReplica.openAskCount, 1)
-        XCTAssertEqual(env.openAskTotal, env.workbenchReplica.openAskCount + 1)
+        XCTAssertEqual(home.workbenchReplica.waitingCount, 1)
+        XCTAssertEqual(env.openAskTotal, env.workbenchReplica.waitingCount + 1)
 
         env.activate(DemoSeed.secondary.hubID)
         XCTAssertEqual(env.workbenchReplica.snapshot.workbenches.map(\.name), ["Home Lab"], "a switch shows the other Mac")

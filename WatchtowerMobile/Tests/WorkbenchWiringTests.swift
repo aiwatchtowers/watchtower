@@ -135,12 +135,12 @@ final class WorkbenchWiringTests: XCTestCase {
         let model = WorkbenchReplicaModel()
         model.start(store: store)
         try await poll { model.snapshot.workbenches.count == 3 }
-        XCTAssertEqual(model.openAskCount, 3)
+        XCTAssertEqual(model.waitingCount, 3)
         let published = PublishedValues(WorkbenchReplicaModel.observation(store: store).values(in: store.reader))
         defer { published.cancel() }
         try await poll({ published.values.count == 1 }, "the initial value was not published")
         XCTAssertEqual(published.values.first?.workbenches.count, 3)
-        let badgeSets = ObservedSetCounter { _ = model.openAskCount }
+        let badgeSets = ObservedSetCounter { _ = model.waitingCount }
         // A sibling observation proves the unrelated write was seen.
         let sentinel = CalendarReplicaModel()
         sentinel.start(store: store)
@@ -160,7 +160,7 @@ final class WorkbenchWiringTests: XCTestCase {
             kind: .ownerAsk, id: 199, json: DemoSeed.JSON.ask(199, workbench: 98), modifiedAt: now
         )])
         _ = try await hydrator.hydrateOnce()
-        try await poll { model.openAskCount == 4 }
+        try await poll { model.waitingCount == 4 }
         XCTAssertEqual(badgeSets.count, 1)
     }
 }

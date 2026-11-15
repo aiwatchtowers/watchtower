@@ -58,6 +58,8 @@ struct NowView: View {
                         snapshot: replica.snapshot, linked: env.linkedDevice != nil, now: date,
                         backlog: env.activeSession.outboxBacklog, macName: macName,
                         seenEnded: env.endedSeen.seen(hubID: env.activeSession.hubID),
+                        // The badge's own source: the tab's count and the rows agree.
+                        typing: replica.typing.typing(in: replica.snapshot),
                         answering: env.askAnswerer.isSending
                     ),
                     date: date

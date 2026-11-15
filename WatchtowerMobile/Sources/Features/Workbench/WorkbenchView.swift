@@ -86,7 +86,8 @@ struct WorkbenchView: View {
 
     private func menu(at date: Date) -> WorkbenchMenuModel? {
         WorkbenchMenuModel(
-            workbenchID: workbenchID, snapshot: replica.snapshot, now: date, asOf: env.macReachability(now: date).asOf
+            workbenchID: workbenchID, snapshot: replica.snapshot, now: date, asOf: env.macReachability(now: date).asOf,
+            typing: replica.typing.typing(in: replica.snapshot)
         )
     }
 

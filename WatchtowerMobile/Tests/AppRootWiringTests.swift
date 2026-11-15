@@ -1548,7 +1548,7 @@ final class AppRootWiringTests: XCTestCase {
         XCTAssertTrue(env.calendarReplica === removed.calendarReplica)
         XCTAssertTrue(env.phoneRecordings === removed.phoneRecordings)
         XCTAssertTrue(env.recorder === removed.recorder)
-        _ = env.workbenchReplica.openAskCount
+        _ = env.workbenchReplica.waitingCount
         _ = env.recorder.isPresented
         _ = env.heldRecordings
         _ = env.linkedDevice
