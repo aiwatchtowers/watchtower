@@ -91,6 +91,7 @@ guarded — not relaxed.
 - `internal/db/targets_remind_test.go::TestInbox02_AutoResolveTargetOnClose`
 - `internal/inbox/pipeline_test.go::TestInbox02_AutoResolveGmailOnOwnerReply`
 - `internal/inbox/gmail_readers_test.go::TestInbox02_EveryGmailReaderHasASide` — every file that names `gmail_messages` has a side (skip / keep / answer / lifecycle).
+- The Gmail edge rules (2026-11-11): `internal/db/gmail_sent_test.go::TestGmailItemsAnsweredByOwner_ReplyAfterReceived`, `::TestGmailItemsAnsweredByOwner_OlderOwnMessageKeepsItem` (a reply dated after the source message only), `::TestGmailItemsAnsweredByOwner_ReplyBeforeItemCreated` and `::TestGmailItemsAnsweredByOwner_ReceivedRowGoneUsesCreatedAt` (the `created_at` fallback), `::TestGmailItemsAnsweredByOwner_AliasSentLabel` (an alias's `SENT`), `::TestGmailItemsAnsweredByOwner_OtherAccountKeepsItem` (the same account only), `::TestGmailItemsAnsweredByOwner_OnlyPendingEmailReceived` (`email_cc` untouched), `::TestGmailOwnSent_Cases` and `::TestGmailOwnSentSQL_MatchesGo` (the owner-sent predicate and its SQL twin), `internal/inbox/gmail_detector_test.go::TestDetectGmailAccounts_SkipsOwnSentFromAlias` (a message of mine never mints an item).
 
 **Locked since:** 2026-04-27 (target_due family added 2026-05-01; calendar_time_change rule amended by owner decision 2026-09-29; Gmail mail added 2026-11-11, ask #634)
 
