@@ -783,7 +783,13 @@ CREATE TABLE IF NOT EXISTS channel_settings (
     channel_id       TEXT PRIMARY KEY REFERENCES channels(id) ON DELETE CASCADE,
     is_muted_for_llm INTEGER NOT NULL DEFAULT 0,
     is_favorite      INTEGER NOT NULL DEFAULT 0,
-    updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    sync_excluded    INTEGER NOT NULL DEFAULT 0,  -- 1 = Stop syncing: no new messages stored, except mentions of the user (see 00190)
+    excluded_at      TEXT NOT NULL DEFAULT '',    -- when Stop syncing began
+    catchup_from     REAL,                        -- Sync again's pending catch-up: fixed lower bound (unix); NULL = none
+    catchup_to       REAL,                        -- the catch-up's moving upper bound (unix)
+    muted_by_exclusion INTEGER NOT NULL DEFAULT 0, -- 1 = Stop syncing set the AI mute; Sync again lifts it
+    muted_at         TEXT NOT NULL DEFAULT ''     -- when the AI mute turned on ('' = not muted)
 );
 
 -- Pipeline run history — logs every pipeline invocation (CLI, daemon, desktop)

@@ -408,7 +408,7 @@ CREATE TABLE IF NOT EXISTS channel_settings (
     is_muted_for_llm INTEGER NOT NULL DEFAULT 0,
     is_favorite      INTEGER NOT NULL DEFAULT 0,
     updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-);
+, sync_excluded INTEGER NOT NULL DEFAULT 0, excluded_at TEXT NOT NULL DEFAULT '', catchup_from REAL, catchup_to REAL, muted_by_exclusion INTEGER NOT NULL DEFAULT 0, muted_at TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS pipeline_runs (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     pipeline         TEXT NOT NULL,                          -- 'digests', 'tracks', 'people', 'briefing'

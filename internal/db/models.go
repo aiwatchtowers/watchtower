@@ -411,6 +411,16 @@ type ChannelSettings struct {
 	IsMutedForLLM bool
 	IsFavorite    bool
 	UpdatedAt     string
+	// Stop syncing (SYNCEX-01, SetSyncExcluded): the flag, when it began,
+	// Sync again's pending catch-up window (both NULL when none) and whether
+	// Stop syncing set the AI mute.
+	SyncExcluded     bool
+	ExcludedAt       string
+	CatchupFrom      sql.NullFloat64
+	CatchupTo        sql.NullFloat64
+	MutedByExclusion bool
+	// MutedAt is when the AI mute turned on ("" while not muted).
+	MutedAt string
 }
 
 // Target represents a hierarchical goal at any level (replaces Task).
