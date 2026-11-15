@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -546,4 +547,90 @@ func TestOutcomesBlock_SharedCases(t *testing.T) {
 			assert.Equal(t, want, got)
 		})
 	}
+}
+
+// TestFinalize_RetriesAfterWriteFailure: a finalize whose write fails (a
+// lock held past busy_timeout) leaves the turn running; the retried
+// Finalize commits and releases the lease.
+func TestFinalize_RetriesAfterWriteFailure(t *testing.T) {
+	d, s, _ := newStore(t)
+	conv := newConversation(t, d)
+	st := send(t, s, conv, "hi")
+	turn := s.Turn(st)
+	require.NoError(t, turn.Apply(deltaEv(st.TurnID, "Answer")))
+	busy := errors.New("database is locked")
+	s.failWrite = func() error { return busy }
+	done := ev(chat.EventTurnDone, st.TurnID)
+	done.Status = chat.StatusComplete
+	assert.ErrorIs(t, turn.Apply(done), busy)
+	finished, _ := turn.Done()
+	assert.False(t, finished, "the end is not on disk: the turn still runs")
+	lease, err := d.GetChatLease(conv)
+	require.NoError(t, err)
+	require.NotNil(t, lease, "the lease stays until the end commits")
+
+	s.failWrite = nil
+	require.NoError(t, turn.Finalize(StatusComplete, nil))
+	m, _ := message(t, d, st.AssistantMessageID)
+	assert.Equal(t, msgState{Role: "assistant", Text: "Answer", Status: "complete", TurnID: st.TurnID}, m)
+	lease, err = d.GetChatLease(conv)
+	require.NoError(t, err)
+	assert.Nil(t, lease)
+	finished, status := turn.Done()
+	assert.True(t, finished)
+	assert.Equal(t, StatusComplete, status)
+}
+
+// TestStart_LinkedAttachmentRefusedOnSend: a send names pending files only —
+// a file already linked to a message would be sent but never linked — while a
+// regenerate still re-sends its owner message's linked files.
+func TestStart_LinkedAttachmentRefusedOnSend(t *testing.T) {
+	d, s, _ := newStore(t)
+	conv := newConversation(t, d)
+	res, err := d.Exec(`INSERT INTO chat_attachments (conversation_id, name, mime, size, path, sha256, created_at)
+		VALUES (?, 'a.png', 'image/png', 1, '/files/a.png', 's', 1)`, conv)
+	require.NoError(t, err)
+	file, _ := res.LastInsertId()
+	first, err := s.Start(context.Background(), StartRequest{ConversationID: conv, Mode: ModeSend, Text: "look", AttachmentIDs: []int64{file}})
+	require.NoError(t, err)
+	require.Len(t, first.Attachments, 1)
+	done := ev(chat.EventTurnDone, first.TurnID)
+	done.Status = chat.StatusComplete
+	require.NoError(t, s.Turn(first).Apply(done))
+
+	var before int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM chat_messages`).Scan(&before))
+	_, err = s.Start(context.Background(), StartRequest{ConversationID: conv, Mode: ModeSend, Text: "again", AttachmentIDs: []int64{file}})
+	assert.ErrorIs(t, err, ErrAttachmentMissing)
+	var after int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM chat_messages`).Scan(&after))
+	assert.Equal(t, before, after)
+
+	regen, err := s.Start(context.Background(), StartRequest{ConversationID: conv, Mode: ModeRegenerate, MessageID: first.AssistantMessageID})
+	require.NoError(t, err)
+	assert.Equal(t, []chat.Attachment{{Path: "/files/a.png", Mime: "image/png", Name: "a.png"}}, regen.Attachments)
+}
+
+// TestPrefix_RememberInLiveChatOnlyOwnerText: in a conversation marked by
+// the Live Slack connector (LIVE-01) a remember stores the owner's own words
+// and refuses a line that is not in the owner's message.
+func TestPrefix_RememberInLiveChatOnlyOwnerText(t *testing.T) {
+	d, s, _ := newStore(t)
+	conv := newConversation(t, d)
+	first := send(t, s, conv, "what is new in eng?")
+	turn := s.Turn(first)
+	require.NoError(t, turn.Apply(toolStart(first.TurnID, "s-1", "claude_ai_Slack:slack_read_channel")))
+	require.NoError(t, turn.Finalize(StatusComplete, nil))
+
+	st := send(t, s, conv, "remember: answer in short bullets")
+	require.NoError(t, st.PrefixErr)
+	assert.Equal(t, string(db.RememberAdded), st.RememberOutcome, "the owner's own words")
+
+	outcome, err := s.remember("the launch moved to Friday", conv, st.UserMessageID)
+	require.NoError(t, err)
+	assert.Equal(t, RememberNotOwnerText, outcome)
+	got, err := d.GetOwnerInstructions()
+	require.NoError(t, err)
+	assert.NotContains(t, got.Chat, "launch moved")
+	assert.Contains(t, got.Chat, "answer in short bullets")
 }

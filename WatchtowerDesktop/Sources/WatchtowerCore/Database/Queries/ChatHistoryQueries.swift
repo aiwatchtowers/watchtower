@@ -5,8 +5,11 @@ import GRDB
 package enum ChatHistoryQueries {
     /// The main chat's conversations (standalone, not archived) with each
     /// row's second line and state, newest first — one read. `projectID`
-    /// nil = all chats, else that project's only.
-    package static func panelRows(_ db: Database, projectID: Int64?) throws -> [ChatPanelRow] {
+    /// nil = all chats, else that project's only. A live hub lease at
+    /// `nowMS` reads as "answering" (spec 2026-11-15 §5: a phone-run turn).
+    package static func panelRows(
+        _ db: Database, projectID: Int64?, nowMS: Int64 = ChatLease.milliseconds(Date())
+    ) throws -> [ChatPanelRow] {
         try ChatPanelRow.fetchAll(db, sql: """
             \(lastAnswerCTE(listed: "context_type IS NULL AND archived_at IS NULL AND (?1 IS NULL OR project_id = ?1)"))
             SELECT c.*,
@@ -18,13 +21,16 @@ package enum ChatHistoryQueries {
                  WHERE x.conversation_id = c.id AND x.status = 'pending') AS pending_approvals,
                 (SELECT x.tool FROM agent_actions x
                  WHERE x.conversation_id = c.id AND x.status = 'pending'
-                 ORDER BY x.created_at, x.id LIMIT 1) AS pending_tool
+                 ORDER BY x.created_at, x.id LIMIT 1) AS pending_tool,
+                EXISTS (SELECT 1 FROM chat_turn_leases l
+                        WHERE l.conversation_id = c.id AND l.owner = 'hub'
+                          AND l.heartbeat_at_ms >= ?2 - ?3) AS answering_elsewhere
             FROM listed c
             LEFT JOIN chat_projects p ON p.id = c.project_id
             LEFT JOIN last_answer la ON la.conversation_id = c.id
             LEFT JOIN chat_messages answer ON answer.id = la.message_id
             ORDER BY c.updated_at DESC, c.id DESC
-            """, arguments: [projectID])
+            """, arguments: [projectID, nowMS, ChatLease.staleAfterMS])
     }
 
     /// `created_at` of one conversation's last complete answer on the

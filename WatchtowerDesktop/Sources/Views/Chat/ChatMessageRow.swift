@@ -51,11 +51,15 @@ struct ChatMessageRow: View, Equatable {
     /// The owner bubble looks up its remember and knowledge marks: a persisted
     /// chat with the owner's instructions only (`ChatSurfaceSpec.showsRememberMarks`).
     var showsRememberMark = false
+    /// The reply of a turn the hub still runs for the phone (spec 2026-11-15
+    /// §5): its `partial` row is in progress, not stopped — no Continue.
+    var answeringElsewhere = false
     @State private var hovering = false
     @State private var editText = ""
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.item == rhs.item && lhs.isLast == rhs.isLast && lhs.isEditing == rhs.isEditing
+            && lhs.answeringElsewhere == rhs.answeringElsewhere
             && lhs.artifactVersions == rhs.artifactVersions && lhs.keptArtifactKeys == rhs.keptArtifactKeys
             // Retry comes and goes on an embedded chat's failed reply (it
             // hides while a turn runs or waits): its presence is data.
@@ -117,6 +121,8 @@ struct ChatMessageRow: View, Equatable {
             }
             .padding(8)
             .background(.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+        case "partial" where answeringElsewhere:
+            EmptyView()
         case "partial":
             // An embedded chat (no Continue) is handed Retry for a partial
             // row only when its error could not be written over it.

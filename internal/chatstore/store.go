@@ -13,12 +13,14 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"watchtower/internal/chat"
 	"watchtower/internal/db"
+	"watchtower/internal/providers"
 )
 
 // Start refusals. ErrBusy: another turn holds the conversation's lease;
@@ -53,6 +55,10 @@ type Store struct {
 
 	mu     sync.Mutex
 	titled map[int64]bool
+
+	// failWrite, set by tests only, fails a turn write before it starts
+	// (a lock held past busy_timeout, without waiting on the clock).
+	failWrite func() error
 }
 
 // Option configures a Store.
@@ -159,7 +165,10 @@ func (s *Store) Start(ctx context.Context, r StartRequest) (Started, error) {
 	}
 	now := s.now()
 	st := Started{ConversationID: r.ConversationID, TurnID: turnID}
-	var userText string
+	// userText is the stored owner text (the composer's format); titleText
+	// the prefix title's source: the owner's own words for a send, the
+	// stored text for an edit (the Mac's titleText ?? userText).
+	var userText, titleText string
 	wroteUser := false
 
 	tx, err := s.db.BeginTx(ctx, nil) // BEGIN IMMEDIATE (_txlock=immediate)
@@ -215,7 +224,7 @@ func (s *Store) Start(ctx context.Context, r StartRequest) (Started, error) {
 			return Started{}, err
 		}
 		st.Attachments = atts
-		userText = text
+		userText, titleText = composeOwnerText(r.Text), text
 	case ModeRegenerate:
 		m, ok := byID[r.MessageID]
 		if !ok {
@@ -241,7 +250,8 @@ func (s *Store) Start(ctx context.Context, r StartRequest) (Started, error) {
 			return Started{}, ErrInvalid
 		}
 		historyTip = nullable(m.parent)
-		userText = text
+		userText = recompose(m.text, r.Text) // keeps the original's skill and REFERENCED lines
+		titleText = userText
 		// The files are sent again; their rows stay on the original message (v1 limit).
 		if st.Attachments, err = messageAttachmentsTx(tx, m.id); err != nil {
 			return Started{}, err
@@ -274,7 +284,7 @@ func (s *Store) Start(ctx context.Context, r StartRequest) (Started, error) {
 		if err := linkAttachmentsTx(tx, r.AttachmentIDs, id); err != nil {
 			return Started{}, err
 		}
-		if err := setPrefixTitleTx(tx, r.ConversationID, text); err != nil {
+		if err := setPrefixTitleTx(tx, r.ConversationID, titleText); err != nil {
 			return Started{}, err
 		}
 	}
@@ -302,7 +312,10 @@ func (s *Store) Start(ctx context.Context, r StartRequest) (Started, error) {
 	st.Replay = r.Mode != ModeSend || !sameID(historyTip, r.ContinuousLeafID)
 	st.SendText = composeTurnText(userText, outcomes)
 	if wroteUser {
-		s.runPrefixes(&st, text)
+		// Remember and the knowledge prefixes get the owner's own words,
+		// never the skill or REFERENCED lines.
+		_, body, _ := displayParts(userText)
+		s.runPrefixes(&st, body)
 	}
 	return st, nil
 }
@@ -333,7 +346,9 @@ func validateStart(r StartRequest, text string) error {
 	return nil
 }
 
-func knownProvider(p string) bool { return p == "claude" || p == "codex" || p == "ollama" }
+// knownProvider is a registered provider id: the registry is the list the
+// Mac's ManagedPolicy.knownProviders mirrors for setRouting.
+func knownProvider(p string) bool { return slices.Contains(providers.IDs(), p) }
 
 // resolveRouting is the turn's session config: the request's choice, else
 // the conversation's own (pinned provider and model, or automatic with the
@@ -500,12 +515,15 @@ func setPrefixTitleTx(tx *sql.Tx, conv int64, text string) error {
 }
 
 // pendingAttachmentsTx returns the requested files in request order; every
-// id must be a file of this conversation.
+// id must be a pending (not yet linked) file of this conversation, as the
+// Mac's composer only ever holds those.
 func pendingAttachmentsTx(tx *sql.Tx, conv int64, ids []int64) ([]chat.Attachment, error) {
 	out := make([]chat.Attachment, 0, len(ids))
 	for _, id := range ids {
 		var a chat.Attachment
-		err := tx.QueryRow(`SELECT path, mime, name FROM chat_attachments WHERE id = ? AND conversation_id = ?`, id, conv).
+		// A pending file of this conversation only: one already linked to
+		// another message would be sent but never linked to this one.
+		err := tx.QueryRow(`SELECT path, mime, name FROM chat_attachments WHERE id = ? AND conversation_id = ? AND message_id IS NULL`, id, conv).
 			Scan(&a.Path, &a.Mime, &a.Name)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrAttachmentMissing
