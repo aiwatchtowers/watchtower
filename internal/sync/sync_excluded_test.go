@@ -808,3 +808,20 @@ func TestSyncAgain_CatchupCoversPreExclusionOverlap(t *testing.T) {
 	assert.Nil(t, from)
 	assert.Nil(t, to)
 }
+
+// m3: the fetch deadline also ends a catch-up between history pages; the
+// bound stays at the last saved page.
+func TestSyncAgain_DeadlineStopsBetweenPages(t *testing.T) {
+	e := newExclSetup(t)
+	e.seedCatchup(t)
+	e.history.onJunk = func(n int) {
+		if n == 2 {
+			e.orch.slackClient.SetDeadline(time.Now().Add(-time.Second))
+		}
+	}
+	e.run(t, SyncOptions{})
+	require.Len(t, e.history.junkRequests(), 2)
+	_, to := e.catchupBounds(t)
+	require.NotNil(t, to)
+	assert.Equal(t, e.pageOldest(2), *to)
+}

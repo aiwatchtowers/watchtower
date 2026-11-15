@@ -56,9 +56,10 @@ func (o *Orchestrator) mentionsOwner(text string) bool {
 // database) keeps its bound and the run moves on to the next one, so one
 // stuck channel never holds the others. A rate limit, the deadline, a
 // cancel or an account-wide Slack error ends the whole pass: every other
-// catch-up would meet the same answer. The rows keep their post time as
-// synced_at (backfilling), so they never reach the Inbox; mentions of that
-// period were stored while it was excluded.
+// catch-up would meet the same answer (the deadline is checked before every
+// page). The rows keep their post time as synced_at (backfilling), so they
+// never reach the Inbox; mentions of that period were stored while it was
+// excluded.
 func (o *Orchestrator) runSyncAgainCatchups(ctx context.Context) error {
 	pending, err := o.db.PendingCatchups(o.accountID)
 	if err != nil || len(pending) == 0 {
@@ -79,7 +80,7 @@ func (o *Orchestrator) runSyncAgainCatchups(ctx context.Context) error {
 			continue
 		}
 		errs = append(errs, err)
-		if ctx.Err() != nil || isRateLimitError(err) || accountWideSlackError(err) {
+		if ctx.Err() != nil || isRateLimitError(err) || errors.Is(err, watchtowerslack.ErrFetchDeadline) || accountWideSlackError(err) {
 			break
 		}
 	}
@@ -93,6 +94,9 @@ func (o *Orchestrator) runCatchup(ctx context.Context, c db.Catchup, budget int)
 	for pages < budget {
 		if err := ctx.Err(); err != nil {
 			return pages, err
+		}
+		if o.slackClient.DeadlinePassed() {
+			return pages, fmt.Errorf("sync again catch-up of %s: %w", c.ChannelID, watchtowerslack.ErrFetchDeadline)
 		}
 		pages++
 		resp, err := o.slackClient.GetConversationHistory(ctx, watchtowerslack.HistoryOptions{

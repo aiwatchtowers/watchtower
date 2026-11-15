@@ -1541,3 +1541,14 @@ func TestCountRateLimits_OnlyCallsUnderTheContext(t *testing.T) {
 		assert.Equal(t, uint64(3), c.RateLimitedCalls())
 	})
 }
+
+func TestDeadlinePassed(t *testing.T) {
+	c := NewClientWithAPIURLUnlimited("xoxp-test", "http://127.0.0.1:0/")
+	assert.False(t, c.DeadlinePassed(), "no deadline set")
+	c.SetDeadline(time.Now().Add(time.Hour))
+	assert.False(t, c.DeadlinePassed())
+	c.SetDeadline(time.Now().Add(-time.Second))
+	assert.True(t, c.DeadlinePassed())
+	c.SetDeadline(time.Time{})
+	assert.False(t, c.DeadlinePassed(), "the zero time clears it")
+}

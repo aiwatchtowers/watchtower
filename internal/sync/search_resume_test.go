@@ -590,3 +590,36 @@ func TestSearchResume_LateWindowStillDetected(t *testing.T) {
 	require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{}))
 	assert.Empty(t, detectedMentions(t, ts, resumeNow.Add(26*time.Hour)), "detected exactly once")
 }
+
+// m3: the fetch deadline cuts the blanket search between pages, not only a
+// 429 hold: the tier's own rate waits would otherwise run past it. The stop
+// is the deadline's (DeadlineStopped), with no 429 met.
+func TestSearchSync_DeadlineStopsBeforeTheNextPage(t *testing.T) {
+	ts, s := newResumeSetup(t, 6, 0)
+	s.onPage = func(page int) {
+		if page == 2 {
+			ts.orch.slackClient.SetDeadline(time.Now().Add(-time.Second))
+		}
+	}
+	require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{}))
+	assert.Equal(t, pageRequests(resumeQuery, 1, 2), s.blanket(), "page 3 waits for the next run")
+	out := ts.orch.RunOutcome()
+	assert.True(t, out.ResumePending)
+	assert.True(t, out.DeadlineStopped)
+	assert.False(t, out.RateLimited)
+	assert.True(t, ts.orch.SearchIncomplete())
+	wm, err := ts.db.GetSlackAccountSearchWatermark(ts.accountID)
+	require.NoError(t, err)
+	assert.Equal(t, "2026-09-20", wm)
+}
+
+// A later page's error other than a 429 leaves pages for the next run but is
+// no deadline stop: the cadence waits the interval before asking it again.
+func TestSearchSync_ErrorStopIsNoDeadlineStop(t *testing.T) {
+	ts, s := newResumeSetup(t, 6, 0)
+	s.errPage = 3
+	require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{}))
+	out := ts.orch.RunOutcome()
+	assert.True(t, out.ResumePending)
+	assert.False(t, out.DeadlineStopped)
+}

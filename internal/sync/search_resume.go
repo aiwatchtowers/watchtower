@@ -41,13 +41,15 @@ type searchResume struct {
 // RunOutcome is what the last Run tells the daemon's cadence: whether Slack
 // answered any of the run's own calls with a 429 (retried ones included; not
 // another caller's on the same client), whether the blanket
-// search stopped with pages left for the next run, and how many blanket
-// pages and messages it read.
+// search stopped with pages left for the next run, whether it stopped there
+// on the fetch deadline (rather than on an error the next run may meet
+// again), and how many blanket pages and messages it read.
 type RunOutcome struct {
-	RateLimited   bool
-	ResumePending bool
-	Pages         int
-	Messages      int
+	RateLimited     bool
+	ResumePending   bool
+	DeadlineStopped bool
+	Pages           int
+	Messages        int
 }
 
 // RunOutcome returns the last Run's outcome.

@@ -162,6 +162,15 @@ func (c *Client) SetDeadline(t time.Time) {
 	c.deadline.Store(&t)
 }
 
+// DeadlinePassed reports whether the deadline SetDeadline set is reached.
+// A paginated read checks it before each page: only a 429 hold is cut at
+// the deadline, while the waits of the tier's own rate go on, so a long
+// read would otherwise run past it.
+func (c *Client) DeadlinePassed() bool {
+	d := c.deadline.Load()
+	return d != nil && !d.IsZero() && !time.Now().Before(*d)
+}
+
 // HoldUntil returns the end of the account's current Retry-After hold, which
 // every call waits for; zero when none is active.
 func (c *Client) HoldUntil() time.Time {
