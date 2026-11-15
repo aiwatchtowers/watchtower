@@ -8,13 +8,15 @@ Your morning read, your tracks, your ideas and your reaction commands used to ha
 
 ## How it works
 <!-- learn
-id: builtin-morning-brief
+id: builtin-morning-brief-row
 title: Get a morning brief and day plan
-text: The **Morning brief** built-in writes your briefing and day plan each morning onto the Inbox's **Your day** card.
+text: The **Morning brief** built-in writes your briefing and day plan each morning into the Inbox's **Morning brief**.
 area: automations
 level: basics
 kind: feature
-since: 0.24.0
+since: next
+replaces: [builtin-morning-brief]
+changed: The Your day card became the Your day section of the Morning brief.
 action: nav:automations
 -->
 

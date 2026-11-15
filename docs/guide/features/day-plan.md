@@ -32,13 +32,15 @@ In the Inbox, today's plan is under **Your day** in the **Morning brief** entry 
 ### Work the plan
 
 <!-- learn
-id: dayplan-work
+id: dayplan-work-brief
 title: Tick off today's plan
-text: Click an item's circle on today's **Your day** card to mark it done; the **Plan** header counts progress.
+text: Click an item's circle under **Your day** in today's **Morning brief** to mark it done; **Plan** counts progress.
 area: planning
 level: basics
 kind: feature
-since: 0.24.0
+since: next
+replaces: [dayplan-work]
+changed: The Your day card became the Your day section of the Morning brief.
 action: nav:dayPlan
 -->
 
