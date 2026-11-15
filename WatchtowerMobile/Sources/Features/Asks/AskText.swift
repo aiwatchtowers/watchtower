@@ -20,6 +20,7 @@ enum AskText {
     static let comment = "Comment"
     static let copy = "Copy"
     static let commentSheetHint = "Select words to comment on just them, or leave it as is to comment on the whole paragraph."
+    static let commentNotAdded = "This comment could not be placed on the text. Select other words or none, then Add again."
     static let requestChangesNeedsWords = "Add a comment or a note to request changes"
     static let markOneStep = "Mark at least one step to send."
     static let unmarkedStep = "A step you leave unmarked goes as Didn't check."

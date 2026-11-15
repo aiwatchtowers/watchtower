@@ -163,11 +163,8 @@ private struct ReviewCommentSheet: View {
     let close: () -> Void
     @State private var selection = NSRange(location: 0, length: 0)
     @State private var text = ""
-
-    /// The quoted range in the document: the selection, or the paragraph.
-    private var quoted: NSRange {
-        selection.length > 0 ? NSRange(location: paragraph.range.location + selection.location, length: selection.length) : paragraph.range
-    }
+    /// Set when Add could not anchor the comment; the sheet stays open.
+    @State private var notAdded: String?
 
     var body: some View {
         NavigationStack {
@@ -181,8 +178,14 @@ private struct ReviewCommentSheet: View {
                 } footer: {
                     Text(AskText.commentSheetHint)
                 }
-                Section("Comment") {
+                Section {
                     TextField("Your comment", text: $text, axis: .vertical).lineLimit(3...10)
+                } header: {
+                    Text("Comment")
+                } footer: {
+                    if let notAdded {
+                        Text(notAdded).foregroundStyle(PhoneTone.red.color)
+                    }
                 }
             }
             .navigationTitle(AskText.comment)
@@ -191,10 +194,13 @@ private struct ReviewCommentSheet: View {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel", action: close) }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Add") {
-                        if let document = review.document {
-                            model.addComment(on: quoted, in: document, body: text)
+                        // A whitespace-only selection quotes the whole paragraph.
+                        let quoted = paragraph.quoteRange(selection: selection)
+                        if let document = review.document, model.addComment(on: quoted, in: document, body: text) != nil {
+                            close()
+                        } else {
+                            notAdded = AskText.commentNotAdded
                         }
-                        close()
                     }
                     .disabled(AskDraft.trimmed(text).isEmpty)
                 }

@@ -253,6 +253,61 @@ final class AskFormTests: XCTestCase {
         XCTAssertEqual(none.commentsLine, "1 comment")
     }
 
+    /// #1787: the draft keeps a comment's location across leaving and
+    /// reopening the ask (a new screen model on the same store), so it is
+    /// still drawn under its paragraph.
+    func testACommentsLocationSurvivesReopeningTheAsk() async throws {
+        let fixture = try await makeFixture()
+        let snapshot = try replica([try makeAsk(130, Self.review)])
+        let first = AskViewModel(askID: 130, drafts: fixture.drafts, answerer: fixture.answerer)
+        let review = try XCTUnwrap(try formOf(first, snapshot).review)
+        let body = try XCTUnwrap(review.paragraphs.last)
+        let id = try XCTUnwrap(first.addComment(on: NSRange(location: body.range.location, length: 4), in: try XCTUnwrap(review.document), body: "x"))
+
+        let reopened = AskViewModel(askID: 130, drafts: fixture.drafts, answerer: fixture.answerer)
+        XCTAssertEqual(reopened.draft.comments.first?.location, body.range.location)
+        XCTAssertEqual(try formOf(reopened, snapshot).review?.commentsByParagraph[body.id]?.map(\.id), [id])
+    }
+
+    /// #1787: comments are placed by location and checked by quote: two
+    /// comments starting at the same place with different quotes ("Ship",
+    /// the whole line) both sit under that paragraph; one whose quote is not
+    /// the text at its location (made on another snapshot) is drawn after
+    /// the document instead of under a wrong paragraph.
+    func testCommentsAtOneLocationArePlacedByTheirQuote() async throws {
+        let fixture = try await makeFixture()
+        let snapshot = try replica([try makeAsk(130, Self.review)])
+        let model = AskViewModel(askID: 130, drafts: fixture.drafts, answerer: fixture.answerer)
+        let review = try XCTUnwrap(try formOf(model, snapshot).review)
+        let document = try XCTUnwrap(review.document)
+        let body = try XCTUnwrap(review.paragraphs.last)
+        let word = try XCTUnwrap(model.addComment(on: NSRange(location: body.range.location, length: 4), in: document, body: "a"))
+        let line = try XCTUnwrap(model.addComment(on: body.range, in: document, body: "b"))
+        let elsewhere = PlainTextRendering.render("# Plan\n\nAnother text here.\n")
+        let stale = try XCTUnwrap(CommentAnchorBuilder.anchor(selection: NSRange(location: body.range.location, length: 7), in: elsewhere))
+        let staleID = UUID()
+        fixture.drafts.update(130) { $0.comments.append(AskCommentDraft(id: staleID, anchor: stale, body: "c", location: body.range.location)) }
+
+        let placed = try XCTUnwrap(try formOf(model, snapshot).review)
+        XCTAssertEqual(placed.commentsByParagraph[body.id]?.map(\.id), [word, line])
+        XCTAssertEqual(placed.unplacedComments.map(\.id), [staleID])
+    }
+
+    /// #1787 review: the paragraphs follow the rendered document, not just
+    /// its text — a heading level change keeps the text and changes the split.
+    func testAHeadingLevelChangeSplitsAgain() async throws {
+        let fixture = try await makeFixture()
+        let model = AskViewModel(askID: 130, drafts: fixture.drafts, answerer: fixture.answerer)
+        let first = try XCTUnwrap(try formOf(model, try replica([try makeAsk(130, Self.review)])).review)
+        XCTAssertEqual(first.paragraphs.first?.headingLevel, 1)
+
+        var revised = Self.review
+        revised["doc_snapshot"] = "## Plan\n\nShip behind a flag for acme.\n"
+        let second = try XCTUnwrap(try formOf(model, try replica([try makeAsk(130, revised)])).review)
+        XCTAssertEqual(second.document?.text, first.document?.text, "same text")
+        XCTAssertEqual(second.paragraphs.first?.headingLevel, 2)
+    }
+
     /// #1787: Request changes needs words — a note or a comment with text;
     /// Approve does not. The answer sent is the same shape as before.
     func testRequestChangesNeedsANoteOrAComment() async throws {
@@ -630,6 +685,9 @@ final class AskFormTests: XCTestCase {
         XCTAssertEqual(model.draft.note, "“Ship” — Which flag?\n\nLooks fine otherwise")
         XCTAssertNil(model.draft.verdict, "the verdict is not carried over")
         XCTAssertTrue(model.draft.comments.isEmpty, "anchors do not carry over to another snapshot")
+        let carriedReview = try XCTUnwrap(try formOf(model, caughtUp).review)
+        XCTAssertTrue(carriedReview.commentsByParagraph.isEmpty && carriedReview.unplacedComments.isEmpty,
+                      "#1787: no old location is placed on the new round's text; the comment lives in the note")
         XCTAssertNil(fixture.drafts.byAsk[170], "the old draft went")
         XCTAssertTrue(try fixture.store.pendingActions().isEmpty, "the failed answer row went")
 

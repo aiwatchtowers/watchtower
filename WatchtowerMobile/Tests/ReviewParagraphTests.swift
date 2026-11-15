@@ -59,6 +59,23 @@ final class ReviewParagraphTests: XCTestCase {
         XCTAssertNil(ReviewParagraph.index(of: 10_000, in: paragraphs), "past the text")
     }
 
+    /// #1787 review: the sheet's Add never yields an empty anchor — a
+    /// whitespace-only selection quotes the whole paragraph, a selection's
+    /// end spaces are trimmed.
+    func testTheSheetsQuoteIsNeverBlank() throws {
+        let document = try demoReview()
+        let paragraph = try XCTUnwrap(ReviewParagraph.split(document).first { $0.text.hasPrefix("Step 2") })
+        let text = paragraph.text as NSString
+        XCTAssertEqual(paragraph.quoteRange(selection: NSRange(location: 0, length: 0)), paragraph.range, "nothing selected")
+        let space = text.range(of: " ")
+        XCTAssertEqual(paragraph.quoteRange(selection: space), paragraph.range, "only a space selected")
+        XCTAssertNotNil(CommentAnchorBuilder.anchor(selection: paragraph.quoteRange(selection: space), in: document))
+        let padded = NSRange(location: text.range(of: " the Stop").location, length: " the Stop ".count)
+        let quoted = paragraph.quoteRange(selection: padded)
+        XCTAssertEqual((document.text as NSString).substring(with: quoted), "the Stop")
+        XCTAssertEqual(paragraph.quoteRange(selection: NSRange(location: 2, length: 10_000)), paragraph.range, "past the text")
+    }
+
     /// A comment on a whole paragraph, or on words picked inside it, anchors
     /// as the same range of the plain text does.
     func testAParagraphAnchorsAsThePlainText() throws {

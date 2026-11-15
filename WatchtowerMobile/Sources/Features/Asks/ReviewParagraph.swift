@@ -59,6 +59,22 @@ struct ReviewParagraph: Equatable, Identifiable {
         return nil
     }
 
+    /// The document range a comment from the sheet quotes: `selection` (in
+    /// UTF-16 units of `text`) without the whitespace at its ends; the whole
+    /// paragraph when nothing, or only whitespace, is selected — so Add
+    /// never yields an empty anchor.
+    func quoteRange(selection: NSRange) -> NSRange {
+        let text = self.text as NSString
+        guard selection.length > 0, NSMaxRange(selection) <= text.length else { return range }
+        var start = selection.location
+        var end = NSMaxRange(selection)
+        let blank = CharacterSet.whitespacesAndNewlines
+        while start < end, let scalar = UnicodeScalar(text.character(at: start)), blank.contains(scalar) { start += 1 }
+        while end > start, let scalar = UnicodeScalar(text.character(at: end - 1)), blank.contains(scalar) { end -= 1 }
+        guard end > start else { return range }
+        return NSRange(location: range.location + start, length: end - start)
+    }
+
     /// The marker a list line starts with, its leading spaces included:
     /// "• ", "N. ", "☐ " or "☑ "; nil for any other line.
     static func listPrefix(of line: String) -> String? {

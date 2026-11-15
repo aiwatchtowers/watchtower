@@ -29,8 +29,9 @@ final class AskViewModel {
     /// The last rendered snapshot: typing rebuilds the form on every
     /// keystroke, and a 256 KB snapshot takes a tenth of a second to render.
     @ObservationIgnored private var rendered: (askID: Int64, markdown: String, document: PlainTextDocument)?
-    /// The rendered snapshot's lines (#1787), split once per rendered text.
-    @ObservationIgnored private var split: (text: String, paragraphs: [ReviewParagraph])?
+    /// The rendered snapshot's lines (#1787), split once per rendered
+    /// document (text and headings: a heading level change keeps the text).
+    @ObservationIgnored private var split: (document: PlainTextDocument, paragraphs: [ReviewParagraph])?
 
     init(
         askID: Int64,
@@ -60,11 +61,11 @@ final class AskViewModel {
         )
     }
 
-    /// The rendered snapshot's lines, split once per rendered text.
+    /// The rendered snapshot's lines, split once per rendered document.
     private func paragraphs(_ document: PlainTextDocument) -> [ReviewParagraph] {
-        if let split, split.text == document.text { return split.paragraphs }
+        if let split, split.document == document { return split.paragraphs }
         let paragraphs = ReviewParagraph.split(document)
-        split = (document.text, paragraphs)
+        split = (document, paragraphs)
         return paragraphs
     }
 
