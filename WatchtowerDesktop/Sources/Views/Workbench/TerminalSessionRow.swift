@@ -43,19 +43,20 @@ struct TerminalSessionRow: View {
     private static let dotGap = Spacing.compact
 
     /// The details line has text to show. A running standalone terminal has
-    /// none: its row stays one line, the controls beside the title.
+    /// none: its row stays one line, the controls beside the title. Lists
+    /// the fields `opener` draws; a new one there is added here too.
     private var hasDetailText: Bool {
         row.caption != nil || row.place != nil || row.badge != nil || row.agentTag != nil || opensIn != nil
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.tight) {
-            HStack(spacing: 4) {
+            HStack(spacing: Spacing.small) {
                 titleLine
                 if !hasDetailText { trailingControls }
             }
             if hasDetailText {
-                HStack(spacing: 4) {
+                HStack(spacing: Spacing.small) {
                     opener
                         .padding(.leading, Self.dotColumn + Self.dotGap)
                         .opensSession(session, row: row, actions: actions)
@@ -99,19 +100,32 @@ struct TerminalSessionRow: View {
         if openAsks > 0 {
             Text("\(openAsks)")
                 .font(.caption2.weight(.semibold))
-                .padding(.horizontal, 5)
-                .background(Color.accentColor.opacity(0.2), in: Capsule())
+                .padding(.horizontal, Spacing.small)
+                .background(Fill.on, in: Capsule())
                 .help("\(openAsks) open ask\(openAsks == 1 ? "" : "s")")
                 .accessibilityLabel("\(openAsks) open ask\(openAsks == 1 ? "" : "s")")
         }
         closedAsks
-        if showsDelete, row.state.kind == .readyToCheck, session.projectID != nil,
-           let reviewChanges = actions.reviewChanges {
+        if showsDelete {
+            hoverButtons
+        } else {
+            // Laid out unseen with no width: the line keeps the buttons'
+            // height, so hovering never grows the row under the pointer.
+            HStack(spacing: Spacing.small) { hoverButtons }
+                .fixedSize()
+                .hidden()
+                .frame(width: 0)
+        }
+    }
+
+    /// Review Branch on a Ready-to-check row and the ✕, shown on hover.
+    @ViewBuilder private var hoverButtons: some View {
+        if row.state.kind == .readyToCheck, session.projectID != nil, let reviewChanges = actions.reviewChanges {
             Button("Review Branch") { reviewChanges(session) }
                 .buttonStyle(.kitQuiet)
                 .help("Review this session's branch")
         }
-        if showsDelete, let quickDelete {
+        if let quickDelete {
             SessionRowDeleteButton {
                 deleteButtonTakesKeyboard?()
                 quickDelete()
@@ -226,8 +240,11 @@ struct TerminalSessionRow: View {
 private extension View {
     /// A click opens the session (a not running one starts); both lines of
     /// the row carry it, its buttons do not.
-    func opensSession(_ session: TerminalSession, row: SessionSwitcherPresentation.Row,
-                      actions: SessionRowActions) -> some View {
+    func opensSession(
+        _ session: TerminalSession,
+        row: SessionSwitcherPresentation.Row,
+        actions: SessionRowActions
+    ) -> some View {
         contentShape(Rectangle())
             .simultaneousGesture(TapGesture().onEnded { actions.open(session) })
             .help(row.state.live ? session.title : "Not running — click to start")
