@@ -52,7 +52,7 @@ final class IdeasViewModel {
     /// meant to stay small by daily triage).
     private let registryLimit = 200
 
-    let dbManager: DatabaseManager
+    private let dbManager: DatabaseManager
     /// Every write of this view model, in order (board #670).
     @ObservationIgnored private let writes = SerialWrites()
     /// One pending create or conversion (board #670).
@@ -453,6 +453,17 @@ final class IdeasViewModel {
         guard let text = String(data: data, encoding: .utf8) else { return nil }
         guard let lastLine = text.split(separator: "\n", omittingEmptySubsequences: true).last else { return nil }
         return try? JSONDecoder().decode(IdeasDisabledEnvelope.self, from: Data(lastLine.utf8))
+    }
+
+    /// An Idea finder card's quotes and source; nil on a failed read,
+    /// logged (the card leaves them out).
+    func facts(for ideaID: Int) async -> IdeaBatchCardFacts? {
+        do {
+            return try await dbManager.dbPool.read { db in try IdeaBatchCardFacts.read(db, ideaID: ideaID) }
+        } catch {
+            InboxLog.logger.error("idea facts read failed for idea \(ideaID): \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
     }
 
     /// A database write in this view model's chain (board #670): it starts
