@@ -137,8 +137,9 @@ package struct SlackTodaySummary: Equatable, Sendable {
         )
     }
 
-    /// The card's order of lines (the recipe's `lineOrder`): label rank,
-    /// then the newest, then by channel and text so the order is stable.
+    /// The pane's order of lines: label rank (the recipe's `RANK`), then the
+    /// newest, then by channel and text so the order is stable. The ties
+    /// break the Desktop's own way, not as the recipe's `lineOrder` does.
     private static func lineOrder(
         _ lhs: (rank: Int, at: Date, line: Line), _ rhs: (rank: Int, at: Date, line: Line)
     ) -> Bool {
