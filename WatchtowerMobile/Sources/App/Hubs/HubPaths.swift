@@ -60,6 +60,12 @@ struct HubPaths {
         localHubDirectory(hubID).appendingPathComponent(ChatOfflineCopy.fileName).path
     }
 
+    /// The chat files a hub keeps under the temporary folder: plaintext waiting to upload, sealed uploads waiting
+    /// for their echo. Removed with the link.
+    static func chatTempDirectories(_ hubID: String) -> [URL] {
+        [ChatAttachmentPrep.stagingDirectory(hubID: hubID), ChatUploadLedger.directory(hubID: hubID)]
+    }
+
     func recordingsDirectory(_ hubID: String) -> URL {
         recordingsBase.appendingPathComponent("hubs", isDirectory: true).appendingPathComponent(hubID, isDirectory: true)
     }
@@ -79,7 +85,7 @@ struct HubPaths {
     /// handed to the hold and its session shut down.
     func removeHubFiles(_ hubID: String) throws {
         precondition(Self.isValidHubID(hubID), "not a hub id: \(hubID.debugDescription)")
-        for directory in [hubDirectory(hubID), localHubDirectory(hubID), recordingsDirectory(hubID)]
+        for directory in [hubDirectory(hubID), localHubDirectory(hubID), recordingsDirectory(hubID)] + Self.chatTempDirectories(hubID)
         where FileManager.default.fileExists(atPath: directory.path) {
             try FileManager.default.removeItem(at: directory)
         }

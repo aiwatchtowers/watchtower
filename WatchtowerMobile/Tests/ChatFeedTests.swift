@@ -114,6 +114,7 @@ final class ChatTurnActionsTests: XCTestCase {
     }
 
     func testRetryOnARetryableErrorSendsRegenerate() async throws {
+        model.appear(online: true)
         let failed = ChatFixture.message(2, status: "error", errorCode: "rate_limit", errorMessage: "Claude hit its usage limit.")
         show([ChatFixture.message(1, "user", "Q"), failed])
         let card = try XCTUnwrap(try answer(2).error)
@@ -121,7 +122,7 @@ final class ChatTurnActionsTests: XCTestCase {
         XCTAssertEqual(card.line, "Claude hit its usage limit.")
         XCTAssertEqual(ChatFeedItem.ErrorCard.title, "The answer stopped")
         model.regenerate(2)
-        try await poll({ !self.recorder.sent.isEmpty }, "turn sent")
+        try await poll({ (try? self.recorder.params(ChatTurnParams.self).count) == 1 }, "turn sent")
         XCTAssertEqual(try recorder.params(ChatTurnParams.self), [ChatTurnParams(conversationID: 7, mode: .regenerate, messageID: 2, text: "")])
     }
 
@@ -133,10 +134,11 @@ final class ChatTurnActionsTests: XCTestCase {
     }
 
     func testRegenerateOnTheLastAnswerSendsRegenerate() async throws {
+        model.appear(online: true)
         show([ChatFixture.message(1, "user"), ChatFixture.message(2)])
         XCTAssertTrue(try answer(2).isLast)
         model.regenerate(2)
-        try await poll({ !self.recorder.sent.isEmpty }, "turn sent")
+        try await poll({ (try? self.recorder.params(ChatTurnParams.self).count) == 1 }, "turn sent")
         XCTAssertEqual(try recorder.params(ChatTurnParams.self).first?.mode, .regenerate)
         XCTAssertEqual(try recorder.params(ChatTurnParams.self).first?.messageID, 2)
     }
@@ -154,12 +156,30 @@ final class ChatTurnActionsTests: XCTestCase {
         XCTAssertEqual(try recorder.params(ChatTurnParams.self), [ChatTurnParams(conversationID: 7, mode: .edit, messageID: 1, text: "New question")])
     }
 
+    func testOfflineNoTurnActionIsQueued() async throws {
+        let lease = ChatFeed.Lease(owner: "hub", turnID: "t")
+        var snapshot = center.snapshot
+        let messages = [ChatFixture.message(1, "user"), ChatFixture.message(5, siblings: .init(index: 2, count: 3, ids: [3, 5, 9]))]
+        let action = ChatFeed.Action(id: 4, tool: "t", title: "T", argsDisplay: "", argsSHA256: "h", status: "pending")
+        snapshot.feeds[7] = ChatFixture.entry(ChatFixture.feed(messages: messages, lease: lease, actions: [action]))
+        center.apply(snapshot)
+        model.appear(online: false)
+        let answer = try answer(5)
+        model.selectBranch(answer.message, step: 1)
+        model.regenerate(5)
+        model.stop()
+        model.answer(try XCTUnwrap(model.feed?.actions.first), .approve)
+        for _ in 0..<5 { await Task.yield() }
+        XCTAssertTrue(recorder.sent.isEmpty, "D3: ‹ ›, Regenerate, Stop and Approve queue nothing while the hub is away")
+    }
+
     func testBranchArrowsSelectTheSibling() async throws {
+        model.appear(online: true)
         show([ChatFixture.message(1, "user"), ChatFixture.message(5, siblings: .init(index: 2, count: 3, ids: [3, 5, 9]))])
         let answer = try answer(5)
         model.selectBranch(answer.message, step: -1)
         model.selectBranch(answer.message, step: 1)
-        try await poll({ self.recorder.sent.count == 2 }, "two selects")
+        try await poll({ (try? self.recorder.params(ChatBranchSelectParams.self).count) == 2 }, "two selects")
         XCTAssertEqual(try recorder.params(ChatBranchSelectParams.self).map(\.messageID), [3, 9])
     }
 }

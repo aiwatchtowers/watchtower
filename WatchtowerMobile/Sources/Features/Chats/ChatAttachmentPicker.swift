@@ -250,15 +250,26 @@ enum ChatAttachmentPrep {
         return (base.isEmpty ? "file" : base) + "." + ext
     }
 
-    /// Writes the prepared bytes to a file of their own under the temporary folder (deleted with the app's temp).
-    static func stage(_ prepared: Prepared) throws -> ComposerAttachment {
+    /// Writes the prepared bytes to a folder of their own under `directory` (the hub's staging folder, removed with
+    /// the link); `discard` deletes it once the upload is applied or the file leaves the draft.
+    static func stage(_ prepared: Prepared, in directory: URL) throws -> ComposerAttachment {
         let id = UUID().uuidString
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("chat-attachments", isDirectory: true)
-            .appendingPathComponent(id, isDirectory: true)
+        let folder = directory.appendingPathComponent(id, isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let file = folder.appendingPathComponent(prepared.name)
         try prepared.data.write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
         return ComposerAttachment(id: id, name: prepared.name, mime: prepared.mime, size: Int64(prepared.data.count), file: file)
+    }
+
+    /// Deletes a staged file's plaintext (its own folder).
+    static func discard(_ file: URL) {
+        try? FileManager.default.removeItem(at: file.deletingLastPathComponent())
+    }
+
+    /// Where a hub's chat files wait in plaintext before their upload.
+    static func stagingDirectory(hubID: String) -> URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent("chat-attachments", isDirectory: true)
+            .appendingPathComponent(hubID, isDirectory: true)
     }
 }
 

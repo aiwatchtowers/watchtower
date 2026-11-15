@@ -216,6 +216,45 @@ enum ChatFeedItems {
 
     static func sourcesLabel(_ count: Int) -> String { "Sources · \(count)" }
 
+    /// An answer as the owner reads it, for the passage picker (Ask about this): the Markdown rendered to plain
+    /// text, every artifact fence left out.
+    static func displayText(_ text: String) -> String {
+        let prose = ArtifactParser.parse(text, final: true).segments.compactMap { segment -> String? in
+            if case let .markdown(body) = segment { return body }
+            return nil
+        }
+        let blocks = prose.flatMap { MarkdownDocument.parse($0) }
+        return blocks.map(plain).joined(separator: "\n\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func plain(_ block: MarkdownBlock) -> String {
+        switch block {
+        case let .heading(_, inlines), let .paragraph(inlines): return plain(inlines)
+        case let .code(_, code): return code
+        case let .list(list):
+            let items = list.items.enumerated().map { index, item in
+                (list.ordered ? "\(list.start + index). " : "• ") + item.blocks.map(plain).joined(separator: "\n")
+            }
+            return items.joined(separator: "\n")
+        case let .quote(blocks): return blocks.map(plain).joined(separator: "\n")
+        case let .table(table):
+            return ([table.header] + table.rows).map { $0.map(plain).joined(separator: "\t") }.joined(separator: "\n")
+        case .rule: return ""
+        }
+    }
+
+    private static func plain(_ inlines: [MarkdownInline]) -> String {
+        let parts = inlines.map { inline in
+            switch inline {
+            case let .text(value), let .code(value): value
+            case let .emphasis(children), let .strong(children), let .strikethrough(children), let .link(_, children): plain(children)
+            case .lineBreak: "\n"
+            case .softBreak: " "
+            }
+        }
+        return parts.joined()
+    }
+
     static func kindName(_ kind: String) -> String {
         switch kind {
         case "slack": "Slack"

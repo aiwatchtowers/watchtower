@@ -22,8 +22,8 @@ final class ArtifactLinksTests: XCTestCase {
     }
 
     func testMailtoKeepsUnicodeAndPlusEncoded() throws {
-        let url = try XCTUnwrap(opened(ArtifactLinks.mailto(meta: ["to": "a@x.com", "cc": "c@x.com", "subject": #"Re: "v2" & next"#],
-                                                             body: "Привіт,\nsee a+b=c")))
+        let meta = ["to": "a@x.com", "cc": "c@x.com", "subject": #"Re: "v2" & next"#]
+        let url = try XCTUnwrap(opened(ArtifactLinks.mailto(meta: meta, body: "Привіт,\nsee a+b=c")))
         XCTAssertEqual(query(url)["subject"], #"Re: "v2" & next"#)
         XCTAssertEqual(query(url)["cc"], "c@x.com")
         XCTAssertEqual(query(url)["body"], "Привіт,\nsee a+b=c")

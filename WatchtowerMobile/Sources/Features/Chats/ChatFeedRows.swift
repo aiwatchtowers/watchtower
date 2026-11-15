@@ -79,6 +79,8 @@ struct ChatAnswerView: View {
     let answer: ChatFeedItem.Answer
     let expanded: Bool
     let canAct: Bool
+    /// The hub answers now: ‹ and › write to it (nothing is queued while it is away).
+    let online: Bool
     let actions: ChatFeedRowActions
 
     var body: some View {
@@ -194,10 +196,10 @@ struct ChatAnswerView: View {
             if siblings.count > 1 {
                 HStack(spacing: Spacing.small) {
                     Button { actions.selectBranch(answer.message, -1) } label: { Image(systemName: "chevron.left") }
-                        .disabled(siblings.neighbour(-1) == nil)
+                        .disabled(!online || siblings.neighbour(-1) == nil)
                     Text("\(siblings.index)/\(siblings.count)").monospacedDigit()
                     Button { actions.selectBranch(answer.message, 1) } label: { Image(systemName: "chevron.right") }
-                        .disabled(siblings.neighbour(1) == nil)
+                        .disabled(!online || siblings.neighbour(1) == nil)
                 }
             }
             Button { actions.regenerate(answer.message.id) } label: { Label(ChatFeedItems.regenerate, systemImage: "arrow.clockwise") }

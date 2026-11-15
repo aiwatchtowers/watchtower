@@ -5,6 +5,32 @@ import os
 import WatchtowerKit
 import WatchtowerSync
 
+/// A send on its way, kept in the hub's copy until its `chat_turn` is applied (CHAT-01 on the phone): a kill or a
+/// relaunch mid-send never loses the owner's text. The draft is what goes back into the composer.
+struct ChatOutgoingSend: Codable, Equatable, Sendable {
+    struct File: Codable, Equatable, Sendable {
+        let id: String
+        let name: String
+        let mime: String
+        let size: Int64
+        let path: String
+        var attachmentID: Int64?
+    }
+
+    let clientKey: String
+    var conversationID: Int64
+    let mode: String
+    let messageID: Int64?
+    let text: String
+    /// The typed text and the quotes as they were in the composer.
+    let draftText: String
+    let quotes: [String]
+    var files: [File]
+    var newActionID: String?
+    var turnActionID: String?
+    let createdAt: Date
+}
+
 /// One chat as the phone holds it offline: the last feed it decoded and every page under it.
 struct ChatHeldCopy: Equatable, Sendable {
     let feed: ChatFeed?
@@ -47,6 +73,10 @@ final class ChatOfflineCopy: @unchecked Sendable {
                     saved_at REAL NOT NULL,
                     last_opened REAL,
                     prefetched_at REAL
+                );
+                CREATE TABLE IF NOT EXISTS chat_outgoing (
+                    client_key TEXT PRIMARY KEY,
+                    body BLOB NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS chat_copy_pages (
                     conversation_id INTEGER NOT NULL,
@@ -126,6 +156,26 @@ final class ChatOfflineCopy: @unchecked Sendable {
         }
     }
 
+    // MARK: Sends on their way (CHAT-01 across a relaunch)
+
+    func saveOutgoing(_ send: ChatOutgoingSend) throws {
+        let body = try JSONEncoder().encode(send)
+        try queue.write { db in
+            try db.execute(sql: "INSERT OR REPLACE INTO chat_outgoing (client_key, body) VALUES (?, ?)", arguments: [send.clientKey, body])
+        }
+    }
+
+    func deleteOutgoing(_ clientKey: String) throws {
+        try queue.write { db in try db.execute(sql: "DELETE FROM chat_outgoing WHERE client_key = ?", arguments: [clientKey]) }
+    }
+
+    /// Every send a previous run left on its way; an unreadable row is dropped.
+    func outgoing() throws -> [ChatOutgoingSend] {
+        try queue.read { db in
+            try Data.fetchAll(db, sql: "SELECT body FROM chat_outgoing").compactMap { try? JSONDecoder().decode(ChatOutgoingSend.self, from: $0) }
+        }
+    }
+
     /// When each chat was last prefetched.
     func prefetchedAt() throws -> [Int64: Date] {
         try queue.read { db in
@@ -191,12 +241,21 @@ final class ChatPrefetcher {
     @ObservationIgnored private let copy: ChatOfflineCopy
     @ObservationIgnored private let now: @MainActor () -> Date
     @ObservationIgnored private var sentAt: [Int64: Date]?
+    @ObservationIgnored private let sleep: @Sendable (Duration) async throws -> Void
+    /// Called when the request in flight has waited out its patience (the center steps again).
+    @ObservationIgnored var onPatience: (@MainActor () -> Void)?
     nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "ChatPrefetcher")
 
-    init(sender: ChatSender, copy: ChatOfflineCopy, now: @escaping @MainActor () -> Date) {
+    init(
+        sender: ChatSender,
+        copy: ChatOfflineCopy,
+        now: @escaping @MainActor () -> Date,
+        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+    ) {
         self.sender = sender
         self.copy = copy
         self.now = now
+        self.sleep = sleep
     }
 
     /// The next chat to prefetch: the most recent of the 20 newest not prefetched within the hour.
@@ -213,7 +272,8 @@ final class ChatPrefetcher {
         self.foreground = foreground
     }
 
-    /// The feeds the replica holds now: the one in flight has come.
+    /// The feeds that came or changed with the last snapshot: the one in flight has come only when its record is new
+    /// (a record already held is not the answer to this request).
     func feedsArrived(_ ids: Set<Int64>) {
         if let inFlight, ids.contains(inFlight.id) { self.inFlight = nil }
     }
@@ -233,6 +293,12 @@ final class ChatPrefetcher {
             Self.logger.warning("prefetch time not kept: \(String(describing: type(of: error)), privacy: .public)")
         }
         let sender = sender
+        Task { [weak self, sleep] in
+            do { try await sleep(.seconds(Self.patience)) } catch { return }
+            guard let self, self.inFlight?.id == id else { return }
+            self.inFlight = nil
+            self.onPatience?()
+        }
         Task {
             do {
                 try await sender(ChatFeedRequestParams(conversationID: id, purpose: .prefetch))

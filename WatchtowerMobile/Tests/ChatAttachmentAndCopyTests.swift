@@ -195,8 +195,15 @@ final class ChatOfflineCopyTests: XCTestCase {
         let copy = try ChatOfflineCopy(path: paths.chatCopyPath("hub-1"))
         try copy.saveFeed(conversationID: 1, payload: try payload(1))
         XCTAssertTrue(FileManager.default.fileExists(atPath: paths.chatCopyPath("hub-1")))
+        for folder in HubPaths.chatTempDirectories("hub-1") {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try Data("x".utf8).write(to: folder.appendingPathComponent("staged"))
+        }
         try paths.removeHubFiles("hub-1")
         XCTAssertFalse(FileManager.default.fileExists(atPath: paths.chatCopyPath("hub-1")))
+        for folder in HubPaths.chatTempDirectories("hub-1") {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: folder.path), "staged and sealed chat files go with the link")
+        }
     }
 
     func testThePrefetchCadence() async throws {

@@ -34,7 +34,6 @@ struct ChatConversationView: View {
         }
         .navigationTitle(model.title)
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar { toolbar }
         .sheet(item: $artifact) { ChatArtifactSheet(artifact: $0, host: host) }
         .sheet(isPresented: Binding(get: { sources != nil }, set: { if !$0 { sources = nil } })) {
             ChatSourcesSheet(sources: sources ?? [])
@@ -111,6 +110,7 @@ struct ChatConversationView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             composer(gate: gate, inputs: inputs)
         }
+        .toolbar { toolbar(gate: gate, inputs: inputs) }
         .onAppear {
             model.appear(online: gate.allowsRowActions)
             if let screen { env.navigation.screenAppeared(screen) }
@@ -168,7 +168,7 @@ struct ChatConversationView: View {
             regenerate: { model.regenerate($0) },
             selectBranch: { model.selectBranch($0, step: $1) },
             edit: { model.startEdit($0, text: $1) },
-            askAbout: { quoting = $0 },
+            askAbout: { quoting = ChatFeedItems.displayText($0) },
             loadEarlier: { model.loadEarlier() },
             answer: { model.answer($0, $1) }
         )
@@ -178,7 +178,9 @@ struct ChatConversationView: View {
         case let .owner(owner):
             ChatOwnerBubble(owner: owner, actions: actions)
         case let .answer(answer):
-            ChatAnswerView(answer: answer, expanded: model.expandedSteps.contains(answer.message.id), canAct: canAct, actions: actions)
+            ChatAnswerView(
+                answer: answer, expanded: model.expandedSteps.contains(answer.message.id), canAct: canAct, online: model.online, actions: actions
+            )
         case let .actions(cards):
             VStack(spacing: Spacing.regular) {
                 ForEach(cards) { card in ChatApprovalCard(model: card) { actions.answer(card.action, $0) } }
@@ -306,8 +308,20 @@ struct ChatConversationView: View {
         }
     }
 
-    @ToolbarContentBuilder private var toolbar: some ToolbarContent {
-        if !model.isNew, let conversation = center.snapshot.list?.conversations.first(where: { $0.id == model.conversationID }) {
+    @ToolbarContentBuilder
+    private func toolbar(gate: ChatsGateModel, inputs: ChatsGateInputs) -> some ToolbarContent {
+        if let chip = ChatNavChip(mac: inputs.mac, relayUnreachable: inputs.relayUnreachable) {
+            ToolbarItem(placement: .topBarTrailing) {
+                HStack(spacing: Spacing.small) {
+                    Circle().fill(chip.tone.color).frame(width: PhoneMetrics.macDot, height: PhoneMetrics.macDot)
+                    Text(chip.word).font(TypeScale.pill).foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, Spacing.regular)
+                .padding(.vertical, Spacing.small)
+                .background(Fill.rest, in: Capsule())
+                .accessibilityElement(children: .combine)
+            }
+        } else if !model.isNew, let conversation = center.snapshot.list?.conversations.first(where: { $0.id == model.conversationID }) {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button {

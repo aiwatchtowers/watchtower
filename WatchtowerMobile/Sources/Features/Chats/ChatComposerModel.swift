@@ -163,3 +163,25 @@ struct ChatComposerModel: Equatable {
         }
     }
 }
+
+/// The nav-bar chip while the hub does not answer (mockup 2e): "asleep" or "offline", in the Mac status chip's tone.
+struct ChatNavChip: Equatable {
+    static let asleep = "asleep"
+    static let offline = "offline"
+
+    let word: String
+    let tone: PhoneTone
+
+    /// Nil while the hub answers.
+    init?(mac: MacReachability, relayUnreachable: Bool) {
+        switch mac {
+        case .online:
+            guard relayUnreachable else { return nil }
+            (word, tone) = (Self.offline, .secondary)
+        case .asleep:
+            (word, tone) = (Self.asleep, .gray)
+        case .offline:
+            (word, tone) = (Self.offline, .secondary)
+        }
+    }
+}

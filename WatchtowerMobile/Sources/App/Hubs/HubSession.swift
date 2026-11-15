@@ -604,6 +604,8 @@ final class HubSession {
     /// still working under this fetch's time. Only while the app is active (so unlocked, every stored row open);
     /// the return to the foreground fetches or applies, and sweeps then.
     private func sweepDeliveredAlerts(fetchedAt: Date) {
+        // A fetch ended: the chats' prefetch looks again (the hub may have woken or gone to sleep).
+        chats.stepPrefetch()
         guard isActive else { return }
         let snapshot: WorkbenchReplicaSnapshot
         do {
@@ -651,25 +653,6 @@ final class HubSession {
             transport: secure, store: store, outbox: outbox, uploads: uploader, chatUploads: chatUploads, onActionApplied: hydrate,
             onHubOnRelay: sighting.note
         )
-    }
-
-    /// This hub's chats: the outbox sender, the upload ledger (sealed files in temp) and the copy (in memory without one).
-    private static func makeChats(
-        outbox: ActionOutbox, secure: SecureTransport, hubID: String, copyPath: String?
-    ) -> (ChatsCenter, ChatUploadLedger) {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("chat-uploads", isDirectory: true)
-            .appendingPathComponent(hubID, isDirectory: true)
-        let ledger = ChatUploadLedger(transport: secure, directory: directory)
-        var copy: ChatOfflineCopy?
-        if let copyPath {
-            do {
-                copy = try ChatOfflineCopy(path: copyPath)
-            } catch {
-                logger.error("chat copy did not open: \(String(describing: type(of: error)), privacy: .public)")
-            }
-        }
-        let uploads = ChatUploads { payload, file in try await ledger.upload(payload, file: file) }
-        return (ChatsCenter(sender: .through(outbox), uploads: uploads, copy: copy), ledger)
     }
 
     private static func makeSharedAlerts(
@@ -883,6 +866,8 @@ final class HubSession {
                 chats: chats
             )
         )
+        // The chats' prefetch asks this session whether the hub answers, never a screen.
+        chats.setReachability { [weak self] in self?.chatsReachable(now: Date()) ?? false }
         // A chat upload's echo reaches the send waiting for it.
         await chatUploads.setEchoHandler { [weak chats] upload in
             await MainActor.run { chats?.sending.receiveUpload(upload) }

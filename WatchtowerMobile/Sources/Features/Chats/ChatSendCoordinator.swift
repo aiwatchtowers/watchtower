@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import os
+import WatchtowerChatText
 import WatchtowerKit
 import WatchtowerSync
 
@@ -23,6 +24,12 @@ actor ChatUploadLedger: ChatAttachmentAcking {
     private var sealed: [String: ChatAttachmentUploader.Sealed] = [:]
     private var onEcho: (@Sendable (ChatAttachmentUploadPayload) async -> Void)?
     nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "ChatUploadLedger")
+
+    /// Where a hub's sealed uploads wait for their echo.
+    static func directory(hubID: String) -> URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent("chat-uploads", isDirectory: true)
+            .appendingPathComponent(hubID, isDirectory: true)
+    }
 
     init(transport: SecureTransport, directory: URL) {
         self.transport = transport
@@ -62,7 +69,9 @@ actor ChatUploadLedger: ChatAttachmentAcking {
 /// The phone's sends (iPhone chat spec §6.3): a new chat first sends `chat_new`, then the attachments upload, then
 /// `chat_turn`. The owner bubble stays pending until the `chat_turn` echo is `applied`; a refused echo puts the
 /// text back into the composer with the reason (CHAT-01 on the phone: the owner's text is never lost). Regenerate,
-/// Retry and Edit go the same way. Waits for each echo by its action or upload id.
+/// Retry and Edit go the same way. Each send is kept in the hub's copy until its turn is applied, so a kill or a
+/// relaunch mid-send brings the text back (`recover`); an echo that never comes gives the text back after
+/// `echoPatience` with "Couldn't send that".
 @MainActor
 @Observable
 final class ChatSendCoordinator {
@@ -99,6 +108,9 @@ final class ChatSendCoordinator {
     }
 
     static let couldNotSend = "Couldn't send that. Try again."
+    /// How long a send waits for one echo before it gives the text back. Sending is only possible while the hub
+    /// answers, so a missing echo is a lost one.
+    static let echoPatience: Duration = .seconds(120)
 
     /// By conversation.
     private(set) var pending: [Int64: PendingTurn] = [:]
@@ -107,17 +119,30 @@ final class ChatSendCoordinator {
     @ObservationIgnored private let sender: ChatSender
     @ObservationIgnored private let uploads: ChatUploads
     @ObservationIgnored private let drafts: ChatDraftStore
+    @ObservationIgnored private let copy: ChatOfflineCopy
+    @ObservationIgnored private let sleep: @Sendable (Duration) async throws -> Void
     @ObservationIgnored private var waiters: [String: CheckedContinuation<Echo, Never>] = [:]
     @ObservationIgnored private var early: [String: Echo] = [:]
     @ObservationIgnored private var knownFailures: [String: ChatActionFailure] = [:]
-    @ObservationIgnored private var uploadWaiters: [String: CheckedContinuation<ChatAttachmentUploadPayload, Never>] = [:]
+    @ObservationIgnored private var uploadWaiters: [String: CheckedContinuation<ChatAttachmentUploadPayload?, Never>] = [:]
     @ObservationIgnored private var earlyUploads: [String: ChatAttachmentUploadPayload] = [:]
+    /// Sends a previous run left on its way, not settled yet (`recover`).
+    @ObservationIgnored private var recovered: [ChatOutgoingSend]
     nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "ChatSendCoordinator")
 
-    init(sender: ChatSender, uploads: ChatUploads, drafts: ChatDraftStore) {
+    init(
+        sender: ChatSender,
+        uploads: ChatUploads,
+        drafts: ChatDraftStore,
+        copy: ChatOfflineCopy,
+        sleep: @escaping @Sendable (Duration) async throws -> Void
+    ) {
         self.sender = sender
         self.uploads = uploads
         self.drafts = drafts
+        self.copy = copy
+        self.sleep = sleep
+        recovered = (try? copy.outgoing()) ?? []
     }
 
     func isSending(_ conversationID: Int64) -> Bool { pending[conversationID].map { !$0.isApplied } ?? false }
@@ -126,25 +151,30 @@ final class ChatSendCoordinator {
     /// Returns the conversation the turn went to, nil when it was refused (the draft is back then).
     @discardableResult
     func send(_ request: Request, clientKey: String = UUID().uuidString, onCreated: ((Int64) -> Void)? = nil) async -> Int64? {
+        var record = Self.record(request, clientKey: clientKey)
+        keep(record)
         var conversation = request.conversationID
         let names = request.attachments.map(\.name)
         pending[conversation] = PendingTurn(conversationID: conversation, mode: request.mode, text: request.text, attachments: names)
         if conversation == 0 {
-            guard let created = await create(request, clientKey: clientKey) else { return nil }
+            guard let created = await create(request, record: &record) else { return nil }
             pending[0] = nil
             pending[created] = PendingTurn(conversationID: created, mode: request.mode, text: request.text, attachments: names)
             drafts.move(from: 0, to: created)
             self.created[clientKey] = created
             conversation = created
+            record.conversationID = created
+            keep(record)
             onCreated?(created)
         }
-        guard let attachmentIDs = await upload(request, conversation: conversation) else { return nil }
+        guard let attachmentIDs = await upload(request, conversation: conversation, record: &record) else { return nil }
         let turn = ChatTurnParams(
             conversationID: conversation, mode: request.mode, messageID: request.messageID, text: request.text,
             attachmentIDs: attachmentIDs, routing: nil
         )
-        switch await run(turn) {
+        switch await run(turn, record: &record, \.turnActionID) {
         case let .applied(result):
+            forget(record)
             drafts.clearAttachments(conversation: conversation)
             if case let .integer(id)? = result?["user_message_id"] {
                 pending[conversation]?.userMessageID = id
@@ -153,13 +183,18 @@ final class ChatSendCoordinator {
             }
             return conversation
         case let .failed(failure):
-            refuse(request, conversation: conversation, message: failure.message)
+            refuse(request, conversation: conversation, message: failure.message, record: record)
             return nil
         }
     }
 
     /// An applied echo of a chat action. Only the kinds a send waits for are kept for a waiter still on its way.
     func receiveApplied(_ action: ActionRequestPayload) {
+        if let index = recovered.firstIndex(where: { $0.turnActionID == action.id }) {
+            let record = recovered.remove(at: index)
+            forget(record)
+            pending[record.conversationID] = nil
+        }
         if waiters[action.id] != nil || [.chatNew, .chatTurn].contains(action.kind) {
             resolve(action.id, .applied(action.result))
         }
@@ -190,24 +225,50 @@ final class ChatSendCoordinator {
         }
     }
 
+    /// Settles the sends a previous run left on its way against the outbox as it stands now: a turn the hub
+    /// refused or never got gives its text back with the reason; a turn still queued waits for its echo (with the
+    /// usual patience); a turn gone from the outbox was applied.
+    func recover(failures: [String: ChatActionFailure], queued: Set<String>) {
+        guard !recovered.isEmpty else { return }
+        for record in recovered {
+            if let turn = record.turnActionID, queued.contains(turn) {
+                guard pending[record.conversationID] == nil else { continue }
+                pending[record.conversationID] = PendingTurn(
+                    conversationID: record.conversationID, mode: ChatTurnMode(rawValue: record.mode) ?? .send, text: record.text,
+                    attachments: record.files.map(\.name)
+                )
+                waitRecovered(turn)
+                continue
+            }
+            recovered.removeAll { $0.clientKey == record.clientKey }
+            pending[record.conversationID] = nil
+            if let turn = record.turnActionID, failures[turn] == nil {
+                forget(record)
+                continue
+            }
+            let message = record.turnActionID.flatMap { failures[$0]?.message }.flatMap { $0.isEmpty ? nil : $0 } ?? Self.couldNotSend
+            restore(record, message: message)
+        }
+    }
+
     // MARK: - Steps
 
-    private func create(_ request: Request, clientKey: String) async -> Int64? {
-        let params = ChatNewParams(clientKey: clientKey, projectID: request.projectID, routing: request.routing)
-        switch await run(params) {
+    private func create(_ request: Request, record: inout ChatOutgoingSend) async -> Int64? {
+        let params = ChatNewParams(clientKey: record.clientKey, projectID: request.projectID, routing: request.routing)
+        switch await run(params, record: &record, \.newActionID) {
         case let .applied(result):
             if case let .integer(id)? = result?["conversation_id"] { return id }
-            refuse(request, conversation: 0, message: Self.couldNotSend)
+            refuse(request, conversation: 0, message: Self.couldNotSend, record: record)
             return nil
         case let .failed(failure):
-            refuse(request, conversation: 0, message: failure.message)
+            refuse(request, conversation: 0, message: failure.message, record: record)
             return nil
         }
     }
 
     /// Uploads every attachment not uploaded yet, one at a time; nil (the draft back, the pill failed) on the first
-    /// one that does not make it.
-    private func upload(_ request: Request, conversation: Int64) async -> [Int64]? {
+    /// one that does not make it. An uploaded file's plaintext copy goes at once.
+    private func upload(_ request: Request, conversation: Int64, record: inout ChatOutgoingSend) async -> [Int64]? {
         var ids: [Int64] = []
         for attachment in request.attachments {
             if case let .uploaded(id) = attachment.state {
@@ -223,23 +284,27 @@ final class ChatSendCoordinator {
             } catch {
                 Self.logger.warning("chat upload not sent: \(String(describing: type(of: error)), privacy: .public)")
                 drafts.setAttachmentState(attachment.id, .failed(Self.couldNotSend), conversation: conversation)
-                refuse(request, conversation: conversation, message: Self.couldNotSend, uploaded: ids)
+                refuse(request, conversation: conversation, message: Self.couldNotSend, record: record)
                 return nil
             }
             let echo = await waitForUpload(attachment.id)
-            guard echo.status == .applied, let id = echo.attachmentID else {
-                let message = echo.errorMessage ?? Self.couldNotSend
+            guard let echo, echo.status == .applied, let id = echo.attachmentID else {
+                let message = echo?.errorMessage ?? Self.couldNotSend
                 drafts.setAttachmentState(attachment.id, .failed(message), conversation: conversation)
-                refuse(request, conversation: conversation, message: message, uploaded: ids)
+                refuse(request, conversation: conversation, message: message, record: record)
                 return nil
             }
             drafts.setAttachmentState(attachment.id, .uploaded(id), conversation: conversation)
+            if let index = record.files.firstIndex(where: { $0.id == attachment.id }) { record.files[index].attachmentID = id }
+            keep(record)
+            ChatAttachmentPrep.discard(attachment.file)
             ids.append(id)
         }
         return ids
     }
 
-    private func run<P: ActionParams>(_ params: P) async -> Echo {
+    /// Queues `params`, notes its action id in the kept send, then waits for the echo.
+    private func run<P: ActionParams>(_ params: P, record: inout ChatOutgoingSend, _ slot: WritableKeyPath<ChatOutgoingSend, String?>) async -> Echo {
         let id: String
         do {
             id = try await sender(params)
@@ -247,14 +312,45 @@ final class ChatSendCoordinator {
             Self.logger.warning("chat action not queued: \(String(describing: type(of: error)), privacy: .public)")
             return .failed(ChatActionFailure(reason: nil, message: Self.couldNotSend))
         }
+        record[keyPath: slot] = id
+        keep(record)
         if let echo = early.removeValue(forKey: id) { return echo }
         if let failure = knownFailures[id] { return .failed(failure) }
-        return await withCheckedContinuation { waiters[id] = $0 }
+        let timer = Task { [weak self, sleep] in
+            do { try await sleep(Self.echoPatience) } catch { return }
+            self?.giveUp(id)
+        }
+        let echo = await withCheckedContinuation { waiters[id] = $0 }
+        timer.cancel()
+        return echo
     }
 
-    private func waitForUpload(_ uploadID: String) async -> ChatAttachmentUploadPayload {
+    private func waitForUpload(_ uploadID: String) async -> ChatAttachmentUploadPayload? {
         if let echo = earlyUploads.removeValue(forKey: uploadID) { return echo }
-        return await withCheckedContinuation { uploadWaiters[uploadID] = $0 }
+        let timer = Task { [weak self, sleep] in
+            do { try await sleep(Self.echoPatience) } catch { return }
+            self?.uploadWaiters.removeValue(forKey: uploadID)?.resume(returning: nil)
+        }
+        let echo = await withCheckedContinuation { uploadWaiters[uploadID] = $0 }
+        timer.cancel()
+        return echo
+    }
+
+    /// The patience ran out: the waiter hears "Couldn't send that".
+    private func giveUp(_ id: String) {
+        waiters.removeValue(forKey: id)?.resume(returning: .failed(ChatActionFailure(reason: nil, message: Self.couldNotSend)))
+    }
+
+    /// A recovered turn still queued: its echo settles it (`receiveApplied`, `recover` on a refusal), or the
+    /// patience gives the text back.
+    private func waitRecovered(_ turn: String) {
+        Task { [weak self, sleep] in
+            do { try await sleep(Self.echoPatience) } catch { return }
+            guard let self, let index = self.recovered.firstIndex(where: { $0.turnActionID == turn }) else { return }
+            let record = self.recovered.remove(at: index)
+            self.pending[record.conversationID] = nil
+            self.restore(record, message: Self.couldNotSend)
+        }
     }
 
     private func resolve(_ id: String, _ echo: Echo) {
@@ -266,7 +362,8 @@ final class ChatSendCoordinator {
     }
 
     /// Puts the owner's text and files back (the attachments already uploaded keep their ids) with the reason.
-    private func refuse(_ request: Request, conversation: Int64, message: String, uploaded: [Int64] = []) {
+    private func refuse(_ request: Request, conversation: Int64, message: String, record: ChatOutgoingSend) {
+        forget(record)
         pending[conversation] = nil
         guard request.mode != .regenerate else {
             drafts.setNotice(message.isEmpty ? Self.couldNotSend : message, conversation: conversation)
@@ -278,5 +375,52 @@ final class ChatSendCoordinator {
         draft.editing = request.mode == .edit ? request.messageID : nil
         draft.notice = message.isEmpty ? Self.couldNotSend : message
         drafts.restore(draft, conversation: conversation)
+    }
+
+    /// A kept send from a previous run, back in its composer.
+    private func restore(_ record: ChatOutgoingSend, message: String) {
+        forget(record)
+        guard record.mode != ChatTurnMode.regenerate.rawValue else {
+            drafts.setNotice(message, conversation: record.conversationID)
+            return
+        }
+        let files = record.files.compactMap { file -> ComposerAttachment? in
+            let url = URL(fileURLWithPath: file.path)
+            if let id = file.attachmentID {
+                return ComposerAttachment(id: file.id, name: file.name, mime: file.mime, size: file.size, file: url, state: .uploaded(id))
+            }
+            guard FileManager.default.fileExists(atPath: file.path) else { return nil }
+            return ComposerAttachment(id: UUID().uuidString, name: file.name, mime: file.mime, size: file.size, file: url)
+        }
+        let draft = ChatDraft(
+            text: record.draftText, quotes: record.quotes.map { ChatQuoteDraft(quote: $0, comment: "") }, attachments: files,
+            editing: record.mode == ChatTurnMode.edit.rawValue ? record.messageID : nil, notice: message
+        )
+        drafts.restore(draft, conversation: record.conversationID)
+    }
+
+    private static func record(_ request: Request, clientKey: String) -> ChatOutgoingSend {
+        ChatOutgoingSend(
+            clientKey: clientKey, conversationID: request.conversationID, mode: request.mode.rawValue, messageID: request.messageID,
+            text: request.text, draftText: request.draft?.text ?? request.text, quotes: request.draft?.quotes.map(\.quote) ?? [],
+            files: request.attachments.map { .init(id: $0.id, name: $0.name, mime: $0.mime, size: $0.size, path: $0.file.path) },
+            createdAt: Date()
+        )
+    }
+
+    private func keep(_ record: ChatOutgoingSend) {
+        do {
+            try copy.saveOutgoing(record)
+        } catch {
+            Self.logger.error("chat send not kept: \(String(describing: type(of: error)), privacy: .public)")
+        }
+    }
+
+    private func forget(_ record: ChatOutgoingSend) {
+        do {
+            try copy.deleteOutgoing(record.clientKey)
+        } catch {
+            Self.logger.error("kept chat send not dropped: \(String(describing: type(of: error)), privacy: .public)")
+        }
     }
 }

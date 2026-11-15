@@ -306,25 +306,27 @@ final class ChatConversationModel {
 
     /// Retry on an error card and Regenerate on the last answer: `chat_turn mode regenerate` of that answer.
     func regenerate(_ messageID: Int64) {
+        guard online else { return }
         let request = ChatSendCoordinator.Request(conversationID: conversationID, mode: .regenerate, messageID: messageID, text: "")
         Task { await center.sending.send(request) }
     }
 
     /// ‹ or › under an answer: shows that sibling's branch.
     func selectBranch(_ message: ChatFeed.Message, step: Int) {
-        guard let sibling = message.siblings.neighbour(step) else { return }
+        guard online, let sibling = message.siblings.neighbour(step) else { return }
         send(ChatBranchSelectParams(messageID: sibling), what: "branch select")
     }
 
     /// Stop, whoever runs the turn: the hub cancels through the lease.
     func stop() {
-        guard let lease, !lease.turnID.isEmpty else { return }
+        guard online, let lease, !lease.turnID.isEmpty else { return }
         stopping = lease.turnID
         send(ChatCancelParams(conversationID: conversationID, turnID: lease.turnID), what: "stop")
     }
 
     /// Approve or Reject with the hash of the args the card shows.
     func answer(_ action: ChatFeed.Action, _ decision: ChatActionDecision) {
+        guard online else { return }
         let params = ChatActionAnswerParams(actionID: action.id, decision: decision, argsSHA256: action.argsSHA256)
         Task {
             do {
@@ -396,7 +398,7 @@ final class ChatConversationModel {
                 return center.drafts.setNotice(ChatAttachmentLimits.Rejection.overMessage.message, conversation: conversationID)
             }
             do {
-                let staged = try ChatAttachmentPrep.stage(prepared)
+                let staged = try ChatAttachmentPrep.stage(prepared, in: center.staging)
                 center.drafts.update(conversationID) { draft in
                     draft.attachments.append(staged)
                     draft.notice = nil
@@ -408,6 +410,7 @@ final class ChatConversationModel {
     }
 
     func removeAttachment(_ id: String) {
+        if let file = draft.attachments.first(where: { $0.id == id }) { ChatAttachmentPrep.discard(file.file) }
         center.drafts.update(conversationID) { $0.attachments.removeAll { $0.id == id } }
     }
 

@@ -69,6 +69,8 @@ struct ChatsSnapshot: Equatable {
     var pages: [Int64: [Int64: ChatPageEntry]] = [:]
     /// The chat actions the hub refused, by action id.
     var failures: [String: ChatActionFailure] = [:]
+    /// The chat actions still waiting in the outbox (no final echo yet), by action id.
+    var queued: Set<String> = []
     /// The chats whose `chat_manage delete` the hub refused, by when the newest refused one was queued.
     var refusedDeletes: [Int64: Date] = [:]
 
@@ -91,6 +93,7 @@ struct ChatsSnapshot: Equatable {
         let pending = try store.pendingActions(from: db)
         snapshot.refusal = Self.refusal(in: pending)
         snapshot.failures = Self.failures(in: pending)
+        snapshot.queued = Set(pending.filter { $0.state == .pending && ChatsCenter.chatKinds.contains($0.action.kind) }.map(\.id))
         snapshot.refusedDeletes = Self.refusedDeletes(in: pending)
         return snapshot
     }
@@ -218,11 +221,16 @@ final class ChatsCenter {
     let sending: ChatSendCoordinator
     let copy: ChatOfflineCopy
     let prefetch: ChatPrefetcher
+    /// Where picked files wait in plaintext until their upload is applied.
+    @ObservationIgnored let staging: URL
     /// The hub answers now (the Chats tab's gate); nothing that needs it is sent otherwise.
     private(set) var online = false
     @ObservationIgnored let decodeCache = ReplicaDecodeCache()
     @ObservationIgnored let recordCache = ChatRecordCache()
     @ObservationIgnored private var cancellable: ResilientObservation?
+    @ObservationIgnored private var reachability: (@MainActor () -> Bool)?
+    /// The copy's writes, one after another: an older snapshot never overwrites a newer one.
+    @ObservationIgnored private var copyWrites: Task<Void, Never>?
     @ObservationIgnored private let sleep: @Sendable (Duration) async throws -> Void
     nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "ChatsCenter")
 
@@ -232,6 +240,7 @@ final class ChatsCenter {
         sender: ChatSender,
         uploads: ChatUploads = .none,
         copy: ChatOfflineCopy? = nil,
+        staging: URL = ChatAttachmentPrep.stagingDirectory(hubID: "default"),
         now: @escaping @MainActor () -> Date = { Date() },
         sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     ) {
@@ -241,8 +250,10 @@ final class ChatsCenter {
         self.copy = copy
         search = ChatSearchModel(sender: sender, sleep: sleep)
         rowActions = ChatRowActions(sender: sender, sleep: sleep)
-        sending = ChatSendCoordinator(sender: sender, uploads: uploads, drafts: drafts)
-        prefetch = ChatPrefetcher(sender: sender, copy: copy, now: now)
+        sending = ChatSendCoordinator(sender: sender, uploads: uploads, drafts: drafts, copy: copy, sleep: sleep)
+        self.staging = staging
+        prefetch = ChatPrefetcher(sender: sender, copy: copy, now: now, sleep: sleep)
+        prefetch.onPatience = { [weak self] in self?.stepPrefetch() }
     }
 
     /// Observes the replica's chat records for the session's lifetime.
@@ -266,6 +277,9 @@ final class ChatsCenter {
     /// A snapshot as the observation delivers it (the screenshot tour and the tests set their own). New feeds and
     /// pages go to the offline copy; refusals reach the sends waiting for them.
     func apply(_ value: ChatsSnapshot) {
+        // Before the equality check: the first read after a relaunch settles the sends a previous run kept, even when
+        // it reads the same as the empty start.
+        sending.recover(failures: value.failures, queued: value.queued)
         guard value != snapshot else { return }
         let previous = snapshot
         if let list = value.list, list != previous.list {
@@ -278,8 +292,8 @@ final class ChatsCenter {
         saveToCopy(value, previous: previous)
         sending.receive(failures: value.failures)
         sending.settle(feeds: value.feeds)
-        prefetch.feedsArrived(Set(value.feeds.keys))
-        prefetch.step(list: value.list, online: online)
+        prefetch.feedsArrived(Set(value.feeds.filter { previous.feeds[$0.key] != $0.value }.keys))
+        stepPrefetch()
     }
 
     /// An applied echo of any chat action (the session's one applied observer).
@@ -288,18 +302,29 @@ final class ChatsCenter {
         sending.receiveApplied(action)
     }
 
-    /// The Chats tab's gate: the hub answers now. Search asks the hub only then, and the prefetch runs only then.
+    /// The Chats tab's gate: the hub answers now. Search asks the hub only then.
     func setOnline(_ online: Bool) {
         search.setOnline(online)
-        guard online != self.online else { return }
         self.online = online
-        prefetch.step(list: snapshot.list, online: online)
+    }
+
+    /// Whether the hub answers now, as the hub session sees it (its heartbeat and the relay), read fresh at every
+    /// prefetch step; the session sets it, so the prefetch needs no screen.
+    func setReachability(_ reachable: @escaping @MainActor () -> Bool) {
+        reachability = reachable
+        stepPrefetch()
     }
 
     /// The app came to the foreground or left it: the prefetch runs in the foreground only.
     func setForeground(_ foreground: Bool) {
         prefetch.setForeground(foreground)
-        prefetch.step(list: snapshot.list, online: online)
+        stepPrefetch()
+    }
+
+    /// One prefetch step when the hub answers now (a fetch ended, the app came back, a feed arrived, the patience
+    /// of the one in flight ran out).
+    func stepPrefetch() {
+        prefetch.step(list: snapshot.list, online: reachability?() ?? false)
     }
 
     /// A conversation screen's model.
@@ -320,6 +345,11 @@ final class ChatsCenter {
         }
     }
 
+    /// Waits for every copy write queued so far (tests).
+    func copyWritesDone() async {
+        await copyWrites?.value
+    }
+
     private func saveToCopy(_ value: ChatsSnapshot, previous: ChatsSnapshot) {
         let feeds = value.feeds.filter { previous.feeds[$0.key] != $0.value }.mapValues(\.payload)
         var pages: [(Int64, Int64, Data)] = []
@@ -330,7 +360,9 @@ final class ChatsCenter {
         }
         guard !feeds.isEmpty || !pages.isEmpty else { return }
         let copy = copy
-        Task.detached(priority: .utility) {
+        let previousWrite = copyWrites
+        copyWrites = Task.detached(priority: .utility) {
+            await previousWrite?.value
             do {
                 for (id, payload) in feeds {
                     try copy.saveFeed(conversationID: id, payload: payload)
