@@ -1,0 +1,569 @@
+[
+ {
+  "name": "claim on an empty row",
+  "steps": [
+   {
+    "op": "claim",
+    "owner": "desktop",
+    "owner_id": "app-1",
+    "turn_id": "t1",
+    "now_ms": 1000
+   }
+  ],
+  "expect": [
+   {
+    "ok": true,
+    "lease": {
+     "owner": "desktop",
+     "owner_id": "app-1",
+     "turn_id": "t1",
+     "started_at_ms": 1000,
+     "heartbeat_at_ms": 1000,
+     "cancel_requested_at_ms": null
+    }
+   }
+  ]
+ },
+ {
+  "name": "second owner refused at +59999",
+  "steps": [
+   {
+    "op": "claim",
+    "owner": "desktop",
+    "owner_id": "app-1",
+    "turn_id": "t1",
+    "now_ms": 1000
+   },
+   {
+    "op": "claim",
+    "owner": "hub",
+    "owner_id": "hub-1",
+    "turn_id": "t2",
+    "now_ms": 60999
+   }
+  ],
+  "expect": [
+   {
+    "ok": true,
+    "lease": {
+     "owner": "desktop",
+     "owner_id": "app-1",
+     "turn_id": "t1",
+     "started_at_ms": 1000,
+     "heartbeat_at_ms": 1000,
+     "cancel_requested_at_ms": null
+    }
+   },
+   {
+    "ok": false,
+    "lease": {
+     "owner": "desktop",
+     "owner_id": "app-1",
+     "turn_id": "t1",
+     "started_at_ms": 1000,
+     "heartbeat_at_ms": 1000,
+     "cancel_requested_at_ms": null
+    }
+   }
+  ]
+ },
+ {
+  "name": "second owner refused at exactly +60000",
+  "steps": [
+   {
+    "op": "claim",
+    "owner": "desktop",
+    "owner_id": "app-1",
+    "turn_id": "t1",
+    "now_ms": 1000
+   },
+   {
+    "op": "claim",
+    "owner": "hub",
+    "owner_id": "hub-1",
+    "turn_id": "t2",
+    "now_ms": 61000
+   }
+  ],
+  "expect": [
+   {
+    "ok": true,
+    "lease": {
+     "owner": "desktop",
+     "owner_id": "app-1",
+     "turn_id": "t1",
+     "started_at_ms": 1000,
+     "heartbeat_at_ms": 1000,
+     "cancel_requested_at_ms": null
+    }
+   },
+   {
+    "ok": false,
+    "lease": {
+     "owner": "desktop",
+     "owner_id": "app-1",
+     "turn_id": "t1",
+     "started_at_ms": 1000,
+     "heartbeat_at_ms": 1000,
+     "cancel_requested_at_ms": null
+    }
+   }
+  ]
+ },
+ {
+  "name": "second owner takes a stale lease at +60001",
+  "steps": [
+   {
+    "op": "claim",
+    "owner": "desktop",
+    "owner_id": "app-1",
+    "turn_id": "t1",
+    "now_ms": 1000
+   },
+   {
+    "op": "claim",
+    "owner": "hub",
+    "owner_id": "hub-1",
+    "turn_id": "t2",
+    "now_ms": 61001
+   }
+  ],
+  "expect": [
+   {
+    "ok": true,
+    "lease": {
+     "owner": "desktop",
+     "owner_id": "app-1",
+     "turn_id": "t1",
+     "started_at_ms": 1000,
+     "heartbeat_at_ms": 1000,
+     "cancel_requested_at_ms": null
+    }
+   },
+   {
+    "ok": true,
+    "lease": {
+     "owner": "hub",
+     "owner_id": "hub-1",
+     "turn_id": "t2",
+     "started_at_ms": 61001,
+     "heartbeat_at_ms": 61001,
+     "cancel_requested_at_ms": null
+    }
+   }
+  ]
+ },
+ {
+  "name": "heartbeat keeps the lease alive",
+  "steps": [
+   {
+    "op": "claim",
+    "owner": "desktop",
+    "owner_id": "app-1",
+    "turn_id": "t1",
+    "now_ms": 1000
+   },
+   {
+    "op": "heartbeat",
+    "owner": "desktop",
+    "owner_id": "app-1",
+    "turn_id": "t1",
+    "now_ms": 50000
+   },
+   {
+    "op": "claim",
+    "owner": "hub",
+    "owner_id": "hub-1",
+    "turn_id": "t2",
+    "now_ms": 100000
+   }
+  ],
+  "expect": [
+   {
+    "ok": true,
+    "lease": {
+     "owner": "desktop",
+     "owner_id": "app-1",
+     "turn_id": "t1",
+     "started_at_ms": 1000,
+     "heartbeat_at_ms": 1000,
+     "cancel_requested_at_ms": null
+    }
+   },
+   {
+    "ok": true,
+    "lease": {
+     "owner": "desktop",
+     "owner_id": "app-1",
+     "turn_id": "t1",
+     "started_at_ms": 1000,
+     "heartbeat_at_ms": 50000,
+     "cancel_requested_at_ms": null
+    }
+   },
+   {
+    "ok": false,
+    "lease": {
+     "owner": "desktop",
+     "owner_id": "app-1",
+     "turn_id": "t1",
+     "started_at_ms": 1000,
+     "heartbeat_at_ms": 50000,
+     "cancel_requested_at_ms": null
+    }
+   }
+  ]
+ },
+ {
+  "name": "heartbeat on a released row is false",
+  "steps": [
+   {
+    "op": "claim",
+    "owner": "desktop",
+    "owner_id": "app-1",
+    "turn_id": "t1",
+    "now_ms": 1000
+   },
+   {
+    "op": "release",
+    "owner": "desktop",
+    "owner_id": "app-1",
+    "turn_id": "t1",
+    "now_ms": 2000
+   },
+   {
+    "op": "heartbeat",
+    "owner": "desktop",
+    "owner_id": "app-1",
+    "turn_id": "t1",
+    "now_ms": 3000
+   }
+  ],
+  "expect": [
+   {
+    "ok": true,
+    "lease": {
+     "owner": "desktop",
+     "owner_id": "app-1",
+     "turn_id": "t1",
+     "started_at_ms": 1000,
+     "heartbeat_at_ms": 1000,
+     "cancel_requested_at_ms": null
+    }
+   },
+   {
+    "ok": true,
+    "lease": null
+   },
+   {
+    "ok": false,
+    "lease": null
+   }
+  ]
+ },
+ {
+  "name": "heartbeat with a wrong turn is false",
+  "steps": [
+   {
+    "op": "claim",
+    "owner": "desktop",
+    "owner_id": "app-1",
+    "turn_id": "t1",
+    "now_ms": 1000
+   },
+   {
+    "op": "heartbeat",
+    "owner": "desktop",
+    "owner_id": "app-1",
+    "turn_id": "other",
+    "now_ms": 2000
+   }
+  ],
+  "expect": [
+   {
+    "ok": true,
+    "lease": {
+     "owner": "desktop",
+     "owner_id": "app-1",
+     "turn_id": "t1",
+     "started_at_ms": 1000,
+     "heartbeat_at_ms": 1000,
+     "cancel_requested_at_ms": null
+    }
+   },
+   {
+    "ok": false,
+    "lease": {
+     "owner": "desktop",
+     "owner_id": "app-1",
+     "turn_id": "t1",
+     "started_at_ms": 1000,
+     "heartbeat_at_ms": 1000,
+     "cancel_requested_at_ms": null
+    }
+   }
+  ]
+ },
+ {
+  "name": "cancel sets the request time",
+  "steps": [
+   {
+    "op": "claim",
+    "owner": "desktop",
+    "owner_id": "app-1",
+    "turn_id": "t1",
+    "now_ms": 1000
+   },
+   {
+    "op": "cancel",
+    "owner": "hub",
+    "owner_id": "hub-1",
+    "turn_id": "t1",
+    "now_ms": 5000
+   }
+  ],
+  "expect": [
+   {
+    "ok": true,
+    "lease": {
+     "owner": "desktop",
+     "owner_id": "app-1",
+     "turn_id": "t1",
+     "started_at_ms": 1000,
+     "heartbeat_at_ms": 1000,
+     "cancel_requested_at_ms": null
+    }
+   },
+   {
+    "ok": true,
+    "lease": {
+     "owner": "desktop",
+     "owner_id": "app-1",
+     "turn_id": "t1",
+     "started_at_ms": 1000,
+     "heartbeat_at_ms": 1000,
+     "cancel_requested_at_ms": 5000
+    }
+   }
+  ]
+ },
+ {
+  "name": "cancel with a wrong turn is false",
+  "steps": [
+   {
+    "op": "claim",
+    "owner": "desktop",
+    "owner_id": "app-1",
+    "turn_id": "t1",
+    "now_ms": 1000
+   },
+   {
+    "op": "cancel",
+    "owner": "desktop",
+    "owner_id": "app-1",
+    "turn_id": "other",
+    "now_ms": 5000
+   }
+  ],
+  "expect": [
+   {
+    "ok": true,
+    "lease": {
+     "owner": "desktop",
+     "owner_id": "app-1",
+     "turn_id": "t1",
+     "started_at_ms": 1000,
+     "heartbeat_at_ms": 1000,
+     "cancel_requested_at_ms": null
+    }
+   },
+   {
+    "ok": false,
+    "lease": {
+     "owner": "desktop",
+     "owner_id": "app-1",
+     "turn_id": "t1",
+     "started_at_ms": 1000,
+     "heartbeat_at_ms": 1000,
+     "cancel_requested_at_ms": null
+    }
+   }
+  ]
+ },
+ {
+  "name": "cancel on an empty row is false",
+  "steps": [
+   {
+    "op": "cancel",
+    "owner": "desktop",
+    "owner_id": "app-1",
+    "turn_id": "t1",
+    "now_ms": 5000
+   }
+  ],
+  "expect": [
+   {
+    "ok": false,
+    "lease": null
+   }
+  ]
+ },
+ {
+  "name": "release by a wrong turn is a no-op",
+  "steps": [
+   {
+    "op": "claim",
+    "owner": "desktop",
+    "owner_id": "app-1",
+    "turn_id": "t1",
+    "now_ms": 1000
+   },
+   {
+    "op": "release",
+    "owner": "desktop",
+    "owner_id": "app-1",
+    "turn_id": "other",
+    "now_ms": 2000
+   }
+  ],
+  "expect": [
+   {
+    "ok": true,
+    "lease": {
+     "owner": "desktop",
+     "owner_id": "app-1",
+     "turn_id": "t1",
+     "started_at_ms": 1000,
+     "heartbeat_at_ms": 1000,
+     "cancel_requested_at_ms": null
+    }
+   },
+   {
+    "ok": true,
+    "lease": {
+     "owner": "desktop",
+     "owner_id": "app-1",
+     "turn_id": "t1",
+     "started_at_ms": 1000,
+     "heartbeat_at_ms": 1000,
+     "cancel_requested_at_ms": null
+    }
+   }
+  ]
+ },
+ {
+  "name": "release frees the row for another owner",
+  "steps": [
+   {
+    "op": "claim",
+    "owner": "desktop",
+    "owner_id": "app-1",
+    "turn_id": "t1",
+    "now_ms": 1000
+   },
+   {
+    "op": "release",
+    "owner": "desktop",
+    "owner_id": "app-1",
+    "turn_id": "t1",
+    "now_ms": 2000
+   },
+   {
+    "op": "claim",
+    "owner": "hub",
+    "owner_id": "hub-1",
+    "turn_id": "t2",
+    "now_ms": 2001
+   }
+  ],
+  "expect": [
+   {
+    "ok": true,
+    "lease": {
+     "owner": "desktop",
+     "owner_id": "app-1",
+     "turn_id": "t1",
+     "started_at_ms": 1000,
+     "heartbeat_at_ms": 1000,
+     "cancel_requested_at_ms": null
+    }
+   },
+   {
+    "ok": true,
+    "lease": null
+   },
+   {
+    "ok": true,
+    "lease": {
+     "owner": "hub",
+     "owner_id": "hub-1",
+     "turn_id": "t2",
+     "started_at_ms": 2001,
+     "heartbeat_at_ms": 2001,
+     "cancel_requested_at_ms": null
+    }
+   }
+  ]
+ },
+ {
+  "name": "a taken-over lease drops the old cancel request",
+  "steps": [
+   {
+    "op": "claim",
+    "owner": "desktop",
+    "owner_id": "app-1",
+    "turn_id": "t1",
+    "now_ms": 1000
+   },
+   {
+    "op": "cancel",
+    "owner": "hub",
+    "owner_id": "hub-1",
+    "turn_id": "t1",
+    "now_ms": 2000
+   },
+   {
+    "op": "claim",
+    "owner": "hub",
+    "owner_id": "hub-1",
+    "turn_id": "t2",
+    "now_ms": 70000
+   }
+  ],
+  "expect": [
+   {
+    "ok": true,
+    "lease": {
+     "owner": "desktop",
+     "owner_id": "app-1",
+     "turn_id": "t1",
+     "started_at_ms": 1000,
+     "heartbeat_at_ms": 1000,
+     "cancel_requested_at_ms": null
+    }
+   },
+   {
+    "ok": true,
+    "lease": {
+     "owner": "desktop",
+     "owner_id": "app-1",
+     "turn_id": "t1",
+     "started_at_ms": 1000,
+     "heartbeat_at_ms": 1000,
+     "cancel_requested_at_ms": 2000
+    }
+   },
+   {
+    "ok": true,
+    "lease": {
+     "owner": "hub",
+     "owner_id": "hub-1",
+     "turn_id": "t2",
+     "started_at_ms": 70000,
+     "heartbeat_at_ms": 70000,
+     "cancel_requested_at_ms": null
+    }
+   }
+  ]
+ }
+]

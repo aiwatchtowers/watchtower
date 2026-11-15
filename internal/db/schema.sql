@@ -3823,3 +3823,14 @@ CREATE TABLE IF NOT EXISTS slack_live_status (
     checked_at   TEXT NOT NULL,
     PRIMARY KEY (team_id, provider)
 );
+
+-- Chat turn lease (00189): the one process (desktop or hub) running a conversation's turn. Times are Unix epoch milliseconds, UTC; a heartbeat older than 60 s is stale.
+CREATE TABLE IF NOT EXISTS chat_turn_leases (
+    conversation_id        INTEGER PRIMARY KEY REFERENCES chat_conversations(id) ON DELETE CASCADE,
+    owner                  TEXT NOT NULL CHECK (owner IN ('desktop','hub')),
+    owner_id               TEXT NOT NULL,                        -- desktop: app launch uuid; hub: hub id
+    turn_id                TEXT NOT NULL,
+    started_at_ms          INTEGER NOT NULL,
+    heartbeat_at_ms        INTEGER NOT NULL,
+    cancel_requested_at_ms INTEGER                               -- set by the other side's Stop
+);
