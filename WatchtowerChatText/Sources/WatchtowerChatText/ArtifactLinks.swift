@@ -8,8 +8,8 @@ public enum ArtifactLink: Equatable, Sendable {
 }
 
 /// The open-ready links of chat artifacts, shared by the Mac and the iPhone (iPhone chat spec §6.2): `mailto:` for
-/// an email, the Google Calendar template URL for an event, a Slack permalink. The Mac's `ArtifactActions` builds
-/// the same links (its tests and `ArtifactLinksTests` pin the same cases). Pure.
+/// an email, the Google Calendar template URL for an event, a Slack permalink. The Mac's `ArtifactActions` opens
+/// these through `ArtifactActions` (its `ArtifactActionsTests` and `ArtifactLinksTests` pin the same cases). Pure.
 public enum ArtifactLinks {
     /// Browsers and Gmail start misbehaving past ~8k; above it the body goes to the clipboard and compose opens
     /// without it — never truncated.
@@ -22,7 +22,7 @@ public enum ArtifactLinks {
         value.addingPercentEncoding(withAllowedCharacters: unreserved) ?? ""
     }
 
-    static func query(_ items: [(String, String?)]) -> String {
+    public static func query(_ items: [(String, String?)]) -> String {
         items
             .compactMap { name, value -> String? in
                 guard let value, !value.isEmpty else { return nil }
@@ -38,7 +38,7 @@ public enum ArtifactLinks {
             .filter { !$0.isEmpty }
     }
 
-    private static func withBody(head: String, separator: String, bodyParam: String, body: String) -> ArtifactLink {
+    public static func withBody(head: String, separator: String, bodyParam: String, body: String) -> ArtifactLink {
         let full = body.isEmpty ? head : head + separator + bodyParam + "=" + encode(body)
         if full.count < maxURLLength, let url = URL(string: full) { return .open(url) }
         return .copyThenOpen(text: body, url: URL(string: head))
@@ -86,7 +86,7 @@ public enum ArtifactLinks {
         }
     }
 
-    static func calendarDates(start: String?, end: String?, timeZone: TimeZone) -> String? {
+    public static func calendarDates(start: String?, end: String?, timeZone: TimeZone) -> String? {
         guard let start = start?.trimmingCharacters(in: .whitespaces), !start.isEmpty else { return nil }
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = timeZone

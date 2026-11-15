@@ -1,3 +1,4 @@
+import WatchtowerChatText
 import WatchtowerKit
 import WatchtowerSync
 import XCTest
@@ -128,7 +129,7 @@ final class ChatTurnActionsTests: XCTestCase {
         show([ChatFixture.message(1, "user"), ChatFixture.message(2, status: "error", errorCode: "auth")])
         let card = try XCTUnwrap(try answer(2).error)
         XCTAssertFalse(card.retryable)
-        XCTAssertEqual(card.line, "The AI provider isn't signed in.")
+        XCTAssertEqual(card.line, ChatErrorText.message(for: "auth", provider: "claude"), "the Mac's table, its sign-in hint included")
     }
 
     func testRegenerateOnTheLastAnswerSendsRegenerate() async throws {

@@ -78,7 +78,8 @@ enum ChatFeedItem: Identifiable, Equatable {
         let steps: [ChatFeed.Step]
     }
 
-    /// "The answer stopped" (mockup 2d): Retry only for a retryable code.
+    /// "The answer stopped" (mockup 2d): the session's own message, else the shared table's phrase (`ChatErrorText`, the
+/// Mac's `ChatErrorPresentation`); Retry only for a retryable code.
     struct ErrorCard: Equatable {
         static let title = "The answer stopped"
         static let retry = "Retry"
@@ -118,6 +119,8 @@ enum ChatFeedItems {
         var approvals: [ChatApprovalCardModel] = []
         /// Each artifact's latest version (the feed's artifacts).
         var versions: [String: Int] = [:]
+        /// The provider that answered (the sign-in hint of an `auth` card).
+        var provider: String?
     }
 
     static func build(_ inputs: Inputs) -> [ChatFeedItem] {
@@ -135,7 +138,8 @@ enum ChatFeedItems {
             } else {
                 let streaming = inputs.lease != nil && message.id == lastAnswer && message.status != "complete"
                 items.append(.answer(answer(
-                    message, isLast: message.id == lastAnswer, streaming: streaming, lease: inputs.lease, versions: inputs.versions
+                    message, isLast: message.id == lastAnswer, streaming: streaming, lease: inputs.lease, versions: inputs.versions,
+                    provider: inputs.provider
                 )))
             }
         }
@@ -151,7 +155,12 @@ enum ChatFeedItems {
     }
 
     static func answer(
-        _ message: ChatFeed.Message, isLast: Bool, streaming: Bool, lease: ChatFeed.Lease?, versions: [String: Int] = [:]
+        _ message: ChatFeed.Message,
+        isLast: Bool,
+        streaming: Bool,
+        lease: ChatFeed.Lease?,
+        versions: [String: Int] = [:],
+        provider: String? = nil
     ) -> ChatFeedItem.Answer {
         let parsed = ArtifactParser.parse(message.text, final: !streaming)
         var segments: [ChatFeedItem.Segment] = []
@@ -174,8 +183,8 @@ enum ChatFeedItems {
             segments: segments,
             sources: sources(message.steps),
             error: stopped ? ChatFeedItem.ErrorCard(
-                line: ChatErrorCopy.line(code: message.errorCode, detail: message.errorMessage),
-                retryable: ChatErrorCopy.isRetryable(message.errorCode)
+                line: ChatErrorText.detail(message.errorMessage) ?? ChatErrorText.message(for: message.errorCode, provider: provider),
+                retryable: ChatErrorText.isRetryable(message.errorCode)
             ) : nil,
             isLast: isLast,
             isStreaming: streaming,
@@ -228,33 +237,5 @@ enum ChatFeedItems {
     private static func orderedUnique(_ values: [String]) -> [String] {
         var seen = Set<String>()
         return values.filter { seen.insert($0).inserted }
-    }
-}
-
-/// The error card's text and Retry, the Mac's table (`ChatErrorPresentation`): the session's own message when it
-/// sent one, else the code's phrase.
-enum ChatErrorCopy {
-    static let detailLimit = 600
-
-    static func message(for code: String?) -> String {
-        switch code {
-        case "auth": "The AI provider isn't signed in."
-        case "quota_exhausted": "Limit reached after work started"
-        case "rate_limit": "The provider is rate-limiting requests. Try again in a moment."
-        case "provider_unavailable": "The AI provider couldn't be started."
-        case "session_lost": "The previous session couldn't be resumed."
-        case "attachment_unsupported": "An attachment isn't supported by this provider."
-        case "workdir_unsafe": "Watchtower's chat folder isn't private. Delete it, then send your message again."
-        default: "Something went wrong while answering."
-        }
-    }
-
-    static func line(code: String?, detail: String?) -> String {
-        guard let text = detail?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return message(for: code) }
-        return text.count > detailLimit ? String(text.prefix(detailLimit)) + "…" : text
-    }
-
-    static func isRetryable(_ code: String?) -> Bool {
-        code != "quota_exhausted" && code != "auth" && code != "attachment_unsupported" && code != "workdir_unsafe"
     }
 }
