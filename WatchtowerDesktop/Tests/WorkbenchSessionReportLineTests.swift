@@ -187,4 +187,65 @@ final class WorkbenchSessionReportLineTests: XCTestCase {
         XCTAssertThrowsError(try view.inspect().find(ViewType.ProgressView.self), "no bar either")
         XCTAssertThrowsError(try view.inspect().find(text: "#314 · 14/15 · PR #147 open"))
     }
+
+    // MARK: - The full-width title (#1088)
+
+    func testAClickOnTheTitleLineOpensTheSession() async throws {
+        let row = try await session(projectID: workbench())
+        let presented = SessionSwitcherPresentation.rows([row], liveIDs: [], statuses: [:], now: Date())[0]
+        var opened: [Int64] = []
+        let view = TerminalSessionRow(row: presented, actions: .init(open: { opened.append($0.id) }, rename: { _ in },
+                                                                     delete: { _ in }))
+        let titleLine = try view.inspect().find(text: "Release").find(ViewType.HStack.self, relation: .parent)
+        XCTAssertNoThrow(try titleLine.find(SessionLiveDot.self), "the dot sits on the title line")
+        try titleLine.simultaneousGesture(TapGesture.self).callOnEnded(value: ())
+        XCTAssertEqual(opened, [row.id])
+    }
+
+    func testTheDetailsLineIsHiddenFromVoiceOver() async throws {
+        let row = try await session(projectID: workbench())
+        let presented = SessionSwitcherPresentation.rows([row], liveIDs: [], statuses: [:], now: Date())[0]
+        let view = TerminalSessionRow(row: presented, actions: .init(open: { _ in }, rename: { _ in }, delete: { _ in }))
+        let label = try view.inspect().find(SessionStateLabel.self)
+        let details = try label.find(ViewType.HStack.self, relation: .parent)
+        XCTAssertTrue(try details.accessibilityHidden(), "the title line's control reads it out instead")
+    }
+
+    /// The hover buttons (the ✕, Review Branch) sit on a details line that
+    /// may be one caption: they never change the row's height, so the list
+    /// does not jump under the pointer.
+    func testHoverButtonsKeepTheRowHeight() async throws {
+        let row = try await session(projectID: workbench())
+        let states: [SessionSwitcherPresentation.State] = [
+            .live(.stopped),
+            .live(.readyToCheck, openAsks: 1, openQuestionAsks: 0, openReviewAsks: 1)
+        ]
+        let actions = SessionRowActions(open: { _ in }, rename: { _ in }, delete: { _ in }, reviewChanges: { _ in })
+        for state in states {
+            let status = SessionAgentStatus(sessionID: row.id, workbenchID: row.projectID, workbenchName: "acme",
+                                            title: row.title, state: state, at: "t")
+            let presented = SessionSwitcherPresentation.rows([row], liveIDs: [row.id], statuses: [row.id: status],
+                                                             now: Date())[0]
+            func height(hovered: Bool) -> CGFloat {
+                ViewRenderProbe.fittingHeight(
+                    TerminalSessionRow(row: presented, actions: actions, quickDelete: {}, showsDelete: hovered),
+                    width: 276
+                )
+            }
+            XCTAssertEqual(height(hovered: true), height(hovered: false), "\(state.kind)")
+        }
+    }
+
+    func testARunningStandaloneTerminalKeepsOneLine() async throws {
+        let row = try await session(projectID: nil, kind: .shell)
+        let presented = SessionSwitcherPresentation.rows([row], liveIDs: [row.id], statuses: [:], now: Date())[0]
+        XCTAssertNil(presented.caption, "precondition: a running standalone terminal has no caption")
+        let view = TerminalSessionRow(row: presented, actions: .init(open: { _ in }, rename: { _ in }, delete: { _ in }))
+        XCTAssertEqual(try view.inspect().findAll(SessionLiveDot.self).count, 1)
+        let titleLine = try view.inspect().find(text: "Release").find(ViewType.HStack.self, relation: .parent)
+        XCTAssertNoThrow(try titleLine.find(SessionLiveDot.self), "the dot beside the title")
+        // The details line is the one HStack hidden from VoiceOver.
+        let detailLines = try view.inspect().findAll(ViewType.HStack.self) { (try? $0.accessibilityHidden()) == true }
+        XCTAssertEqual(detailLines.count, 0, "no details line under the title")
+    }
 }
