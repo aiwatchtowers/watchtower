@@ -219,7 +219,8 @@ func TestSyncAgain_UnmutesOnlyIfStopSyncingMuted(t *testing.T) {
 	assert.Empty(t, cs.MutedAt)
 	require.True(t, cs.CatchupFrom.Valid)
 	require.True(t, cs.CatchupTo.Valid)
-	assert.Equal(t, float64(exclDay1.Unix()), cs.CatchupFrom.Float64)
+	assert.Equal(t, float64(exclDay1.Add(-SyncAgainOverlap).Unix()), cs.CatchupFrom.Float64,
+		"the catch-up starts the search overlap before Stop syncing")
 	assert.Equal(t, float64(exclDay10.Unix()), cs.CatchupTo.Float64)
 }
 
@@ -259,7 +260,7 @@ func TestCatchups_PendingAdvanceFinish(t *testing.T) {
 	pending, err := db.PendingCatchups(1)
 	require.NoError(t, err)
 	require.Len(t, pending, 2, "another account's catch-up is not listed")
-	assert.Equal(t, Catchup{ChannelID: "1:C0B", From: float64(exclDay1.Unix()), To: float64(exclDay10.Unix())}, pending[0], "the oldest first")
+	assert.Equal(t, Catchup{ChannelID: "1:C0B", From: float64(exclDay1.Add(-SyncAgainOverlap).Unix()), To: float64(exclDay10.Unix())}, pending[0], "the oldest first")
 	assert.Equal(t, "1:C0A", pending[1].ChannelID)
 
 	mid := float64(exclDay1.Add(48 * time.Hour).Unix())

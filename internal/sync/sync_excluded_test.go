@@ -517,12 +517,13 @@ func (e *exclSetup) assertCaughtUp(t *testing.T) {
 }
 
 // assertWalk checks the request chain: each latest is the previous page's
-// oldest ts, every oldest the fixed lower bound.
+// oldest ts, every oldest the fixed lower bound (the search overlap before
+// Stop syncing).
 func assertWalk(t *testing.T, reqs []historyReq, firstLatest float64, e *exclSetup, firstPage int) {
 	t.Helper()
 	latest := formatSlackTS(firstLatest)
 	for i, r := range reqs {
-		assert.Equal(t, formatSlackTS(float64(catchDay1.Unix())), r.oldest, "request %d oldest", i)
+		assert.Equal(t, formatSlackTS(float64(catchDay1.Add(-db.SyncAgainOverlap).Unix())), r.oldest, "request %d oldest", i)
 		assert.Equal(t, latest, r.latest, "request %d latest", i)
 		latest = formatSlackTS(e.pageOldest(firstPage + i))
 	}
@@ -635,7 +636,7 @@ func TestSyncAgain_StopSyncingDuringCatchup(t *testing.T) {
 	from, to = e.catchupBounds(t)
 	require.NotNil(t, from)
 	require.NotNil(t, to)
-	assert.Equal(t, float64(catchDay1.Unix()), *from)
+	assert.Equal(t, float64(catchDay1.Add(-db.SyncAgainOverlap).Unix()), *from)
 	assert.Equal(t, float64(day15.Unix()), *to)
 
 	for range 4 {
@@ -784,4 +785,26 @@ func TestChannelUnreadableErrorsAreNonFatal(t *testing.T) {
 		assert.True(t, nonFatalSlackErrors[code], code)
 		assert.False(t, accountWideSlackErrors[code], code)
 	}
+}
+
+// m1: a message posted just before Stop syncing that the forward search had
+// not stored yet (Slack's indexing delay; the next searches dropped it as
+// excluded) is fetched by a Sync again made days later: the catch-up starts
+// the search overlap before the exclusion. The rows the overlap re-reads
+// upsert.
+func TestSyncAgain_CatchupCoversPreExclusionOverlap(t *testing.T) {
+	e := newExclSetup(t)
+	stored := float64(catchDay1.Add(-40*time.Hour).Unix()) + 0.0001
+	missed := float64(catchDay1.Add(-time.Hour).Unix()) + 0.0001
+	e.history.pool = []float64{stored, missed}
+	e.seedSmallCatchup(t, 2)
+	require.NoError(t, e.db.UpsertMessage(db.Message{ChannelID: e.ns("C0JUNK"), TS: formatSlackTS(stored),
+		UserID: e.ns("U002"), Text: "stored before Stop syncing"}))
+
+	e.run(t, SyncOptions{})
+	assert.Contains(t, e.stored(t, "C0JUNK"), formatSlackTS(missed), "the message posted before Stop syncing is fetched")
+	assert.Len(t, e.stored(t, "C0JUNK"), 4, "the overlap's stored row is upserted, not duplicated")
+	from, to := e.catchupBounds(t)
+	assert.Nil(t, from)
+	assert.Nil(t, to)
 }
