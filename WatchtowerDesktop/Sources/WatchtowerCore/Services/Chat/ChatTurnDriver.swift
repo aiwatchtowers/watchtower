@@ -407,6 +407,14 @@ package final class ChatTurnDriver {
                         self?.conversationLost()
                     } else {
                         turn.persistError = "Couldn't finalize the reply: \(error.localizedDescription)"
+                        // The failed transaction rolled its lease release
+                        // back: free the lease in its own write, best effort.
+                        do {
+                            try await store.releaseLease(conversationID: conversationID, turnID: turn.turnID)
+                        } catch {
+                            NSLog("ChatTurnDriver: releasing the chat lease after a failed finalize failed (%@)",
+                                  String(describing: type(of: error)))
+                        }
                     }
                 }
             }

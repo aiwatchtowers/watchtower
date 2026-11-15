@@ -278,12 +278,19 @@ final class NotificationRouterChatTests: XCTestCase {
 /// CHAT-05 on the phone: the artifact files only open or copy.
 final class PhoneArtifactChat05ScanTests: XCTestCase {
     func testTheArtifactFilesSendNothing() throws {
-        let folder = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("Sources/Features/Chats")
-        for name in ["ChatArtifactSheet.swift", "SandboxedArtifactWebView.swift"] {
-            let source = try String(contentsOf: folder.appendingPathComponent(name), encoding: .utf8)
+        let app = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // Tests
+            .deletingLastPathComponent() // WatchtowerMobile
+        let files = [
+            app.appendingPathComponent("Sources/Features/Chats/ChatArtifactSheet.swift"),
+            app.appendingPathComponent("Sources/Features/Chats/SandboxedArtifactWebView.swift"),
+            // The artifact links the reply resolves (shared with the Mac).
+            app.deletingLastPathComponent()
+                .appendingPathComponent("WatchtowerChatText/Sources/WatchtowerChatText/ArtifactLinks.swift")
+        ]
+        for file in files {
+            let name = file.lastPathComponent
+            let source = try String(contentsOf: file, encoding: .utf8)
             for banned in ["URLSession", "enqueue", "send(", "ActionOutbox", "ChatSender", "addScriptMessageHandler"] {
                 XCTAssertFalse(source.contains(banned), "\(name) must not use \(banned)")
             }

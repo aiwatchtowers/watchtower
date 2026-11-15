@@ -13,6 +13,8 @@ final class ArtifactChat05ScanTests: XCTestCase {
     func testChat05ArtifactSurfacesNeverWrite() throws {
         let files = [
             "../../WatchtowerChatText/Sources/WatchtowerChatText/ArtifactParser.swift",
+            // The artifact links both apps resolve in a reply (iPhone chat).
+            "../../WatchtowerChatText/Sources/WatchtowerChatText/ArtifactLinks.swift",
             "WatchtowerCore/Services/Chat/ArtifactActions.swift",
             "WatchtowerCore/Services/Chat/ArtifactPanelModel.swift",
             "Views/Chat/ArtifactPanelView.swift",
