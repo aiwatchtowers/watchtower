@@ -136,7 +136,8 @@ var (
 		"situation", "meeting_transcript", "day_plan", "day_plan_item", "feature_state", "stream_digest",
 		"slack_account", "google_account", "jira_account", heartbeatName, "recording_job", "workbench",
 		"workbench_target", "workbench_comment", "terminal_session", "owner_ask", "session_report",
-		"session_timeline", "permission_request", "session_chat", "transport",
+		"session_timeline", "permission_request", "session_chat", "chat_list", "chat_feed", "chat_page", "chat_search",
+		"transport",
 	}
 	relayKinds = []string{"action", "recording_upload", "device", "control"}
 )

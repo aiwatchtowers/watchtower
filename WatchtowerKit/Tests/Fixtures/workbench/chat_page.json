@@ -1,0 +1,7 @@
+{
+  "has_more": false,
+  "messages": [
+    {"attachments": [], "created_at": 1700000001, "id": 4, "role": "user", "siblings": {"count": 1, "index": 1}, "status": "complete", "steps": [], "text": "Start a plan for the Acme launch.", "text_cut": false},
+    {"attachments": [], "created_at": 1700000002, "id": 5, "role": "assistant", "siblings": {"count": 1, "index": 1}, "status": "complete", "steps": [], "text": "Here is a first draft.", "text_cut": false}
+  ]
+}
