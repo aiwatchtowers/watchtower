@@ -42,6 +42,9 @@ accepted — both close the same failure mode: Go's `HistoryBefore` strips
 only a *trailing* owner row with no reply, so an owner message can never be
 silently dropped from replay.
 
+**Amendment (2026-11-15, #1791, owner decision ask #1340):** the turn's rows are written by the turn's **lease holder's** store, Swift (the Desktop's `ChatTurnStore`) or Go (`internal/chatstore`, run by the hub's `chatrun` runner); "the Swift turn store is the writer" no longer holds. One `chat_turn_leases` row per conversation (migration 00189) is claimed inside the owner-row transaction, so the first commit wins and the loser writes nothing (the phone gets `conversation_busy` and its text back; the Mac keeps its draft). The same order and `partial` rules bind the Go store, and no Swift guard changed. The phone never writes chat rows; its typed text survives a kill of the app because each send is kept in `chat_outgoing` (the hub's offline-copy file) until the hub applies or refuses it, and a send the hub never saw comes back as a draft.
+Added guards: `TestChat01Go_OwnerRowBeforeTurn`, `TestChatstore_StopKeepsPartial`, `TestChatstore_ProcessDeathFinalizesPartial`, `TestFinalize_RetriesAfterWriteFailure`, `TestChatstore_ConversationDeletedMidTurnStopsCleanly`, `TestChatstore_MatchesSwiftFixture` (`internal/chatstore/store_test.go`, `fixture_test.go`: the Go store's rows equal the Swift store's over `internal/chatstore/testdata/chat_turn_cases.json`, read by `WatchtowerDesktop/Tests/Core/ChatTurnStoreFixtureTests.swift`); the lease: `TestChatLeaseCases`, `TestLease_ConcurrentClaimOneWins` (`internal/db/chat_lease_test.go`), `ChatLeaseQueriesTests` and `ChatTurnLeaseTests` (`testConcurrentClaimOneWins`, `testSendRefusedWhileHubHoldsLeaseKeepsDraft`, `testDriverStopsWhenConversationDeleted`; Swift, same `chat_lease_cases.json`); the phone: `ChatSendTests`, `ChatSendRecoveryTests` (`WatchtowerMobile/Tests/`).
+
 **Guard:** `testChat01UserMessageIsPersistedBeforeTheTurnIsSent`,
 `testChat01NothingIsSentWhenTheMessageCannotBeSaved`,
 `testChat01PartialTextSurvivesStop`,
@@ -66,6 +69,8 @@ translator ever emits for a turn containing a tool call is asserted to
 never be `"reset"`. A call the permission gate denies is a red step carrying
 the gate's reason; a call waiting for the owner's approval is a visible
 waiting step until it is approved, rejected or times out.
+
+**Amendment (2026-11-15, #1791, ask #1340):** the Go turn store writes a tool step at once when it starts (`Apply` on `tool_start`), not at turn end, exactly as the Swift driver does; a failed tool is a red step. New guard `TestChat02Go_StepPersistedOnStart` (`internal/chatstore/store_test.go`). No existing guard changed.
 
 **Guard:** `TestChat02_ToolCallNeverWipesText`
 (`internal/chat/claude_translate_test.go`);
@@ -103,6 +108,8 @@ reaps the backend's child process group, any transport, on `Close()`, on stdin E
 and when a stuck write blocks a full pipe (the write fails instead of
 hanging the turn) — no orphan process survives eviction, quit, or a
 misbehaving child.
+
+**Amendment (2026-11-15, #1791, ask #1340):** the daemon (the hub) runs a **second**, separate bounded pool for phone-started turns: at most 2 `ai session` processes (`chatrun.MaxLive`), a turn's own session never cut to make room, a third conversation queues ("Waiting for a free slot"), idle sessions closed after 10 minutes, every session reaped (`close`, SIGTERM after 2 s, SIGKILL after 3 s more, own process group, group file under `<hub dir>/chatrun/`) when the daemon stops, and a start-up sweep kills orphan groups and releases the dead turns' leases. The Desktop's pool of 3 is unchanged, so up to 5 provider processes can run on one Mac. Added guards (`internal/hub/chatrun`): `TestChat03Go_PoolBound`, `TestChatrun_IdleEvictedForNewTurn`, `TestChatrun_DaemonStopLeavesPartialAndSweepReleases`, `TestChatrun_StartupSweepMarksSessionLost`, `TestChatrun_SweepKillsOrphanGroup`, `TestChatrun_RemoteCancelStopsTurn`. The Swift guards are unchanged.
 
 **Guard:** `testChat03NeverEvictsABusySessionQueuesInstead`,
 `testChat03DecisionNeverExceedsTheBound`
@@ -246,6 +253,8 @@ stat and existence test — and a sandbox denial never reaches TCC, so no privac
 prompt appears in Watchtower's name. Without the sandbox the claude.ai tools are off; a claude.ai-mode
 child is never started without it.
 
+**Amendment (2026-11-15, #1791, ask #1340):** the iPhone app's artifact sheet only opens or copies, like the Mac's panel: an `email` artifact opens `mailto:`, an `event` a Google Calendar template URL, a `slack` artifact copies its body and opens the Slack link, `html` renders in a sandboxed `WKWebView` (non-persistent store, a content rule blocking every non-local load, no message handlers, navigation pinned to `about:`, WebRTC removed in the page and in script-made iframes), and Copy and Share are on every kind. The links come from the one builder both apps use (`WatchtowerChatText.ArtifactLinks`). A source scan covers the phone's artifact files: no `URLSession`, no `enqueue`, no `send(`, no `ActionOutbox`, no `ChatSender`, no script message handler. Approvals from the phone go through the registry (`chat_action_answer` → `Registry.ApproveSeen` with the shown args hash, or `Registry.Reject`, AGENT-05 unchanged). Added guards: `PhoneArtifactChat05ScanTests`, `ChatArtifactActionsTests`, `ChatApprovalWiringTests` (`WatchtowerMobile/Tests/ChatAttachmentAndCopyTests.swift`, `ChatSendTests.swift`), `PhoneArtifactWebRTCTests` (`ChatArtifactWebRTCTests.swift`, a simulator test), `ArtifactLinksTests` (`WatchtowerChatText/Tests`), and in Go `TestChatActionAnswer_NeedsPermissions`, `TestChatActionAnswer_StaleHashRefused`, `TestChatActionAnswer_DeadSessionRowIsFinal` (`internal/hub/actions/handlers/chat_test.go`), `TestReject_OnlyAPendingRow` (`internal/tools`). The Mac's `ArtifactChat05ScanTests` is unchanged except for the new location of the two moved files.
+
 **Guard:** `testChat05ArtifactActionsOnlyOpenOrCopy`
 (`WatchtowerDesktop/Tests/Core/ArtifactActionsTests.swift`);
 `testChat05ArtifactSurfacesNeverWrite`
@@ -281,12 +290,12 @@ refused with "Built on Live Slack answers, which are not kept"). Turns before th
 readable. In a marked conversation `instructions remember` stores a line only when it
 appears verbatim in the owner's own message.
 
-**Mechanism:** the Swift turn store (the only writer of chat rows) marks the conversation
+**Mechanism:** the turn's lease holder's store — the Swift turn store on the Mac, or since 2026-11-15 (#1791, ask #1340) the Go turn store `internal/chatstore`, at the same mark points (`markIfSlackStep` when a Slack step starts, `markIfUsed` in finalize) — marks the conversation
 when a Slack step starts (`ChatTurnStore.stepStarted`, `LiveSlackMark.markIfSlackStep`: a Live
 turn's partial text is saved while it runs and a crash never finalizes) and again in
 `finalizeTurn`'s transaction as a backstop (`markIfUsed`); whichever comes first wins. Embedded
 chats never carry Slack connectors (main surface only). Go readers apply `db.ChatNotLiveSlack` (`c.live_slack_since IS NULL OR m.id <
-c.live_slack_since`); `ChatArtifactQueries.keep` throws `ChatArtifactKeepError.liveSlack`.
+c.live_slack_since`); `ChatArtifactQueries.keep` throws `ChatArtifactKeepError.liveSlack`. The iPhone's offline copy of a chat (`chat-copy.sqlite`, the hub's own file) and the hub's feed builder (`chat_list`/`chat_feed`/`chat_page`/`chat_search`) are display copies, like `chat_messages` itself: the feed builder's functions join `displayOnlyReaders`, and the Go store's own new functions are listed there with reasons (`TestLIVE01_ReaderList` unchanged).
 
 **Why locked:** A Live answer is the owner's live Slack data fetched through a third-party
 connector; Watchtower's compliance position is that it is shown and never stored or mined.
@@ -343,3 +352,4 @@ reason, and `testReaderList` over the Swift sources, which is file-level: a Swif
 - 2026-11-08 (board #1025 phase 3): strengthening, no guard relaxed. Branch review's reviewer threads (`chat_conversations.context_type = 'review_reviewer'`) quote the folder's code as code questions do, so `db.ListChatTurnsForIdeas` and the `chat_artifact` knowledge source leave them out next to `code_question` (`TestListChatTurnsForIdeas`, `TestChatArtifactSource_SkipsCodeQuestionChats`), and the Desktop saves no knowledge prefix typed there. The surface is draft-only (`ReviewerSurfaceTests`).
 - 2026-11-10 (board #1517, tuning chat, spec `docs/superpowers/specs/2026-11-03-tuning-chat-design.md` D63, ask #1164): the code-question guard also requires `analytics_tuning` in both chat-history readers and a third behavioural test (`tuningTest` in `TestCodeQuestionGuard_NoGoToolReadsChatHistory`): `db.ListChatTurnsForIdeas` and the `chat_artifact` knowledge source leave tuning conversations out next to `code_question` (`internal/db/chat_knowledge_test.go::TestListChatTurnsForIdeas_SkipsTuningChats`, `internal/kb/source_chat_artifact_test.go::TestChatArtifactSource_SkipsTuningChats`). No CHAT-01 amendment (the removed-conversation rule of ask #1057 left with D61/D62). Strengthening only, no guard relaxed.
 - 2026-11-14 (Slack Live, #1709, board #1764): new contract **LIVE-01**. `chat_conversations.live_slack_since` (migration 00188) marks the first turn that used the Live Slack connector; ideas, memory, the instruction miner, the next step and the knowledge index skip it and every later turn; Add to Knowledge is refused. No existing CHAT guard changed.
+- 2026-11-15 (board #1791, owner decision ask #1340; spec `docs/superpowers/specs/2026-11-15-iphone-chat-design.md` §9): amended for the iPhone chat over the relay, no guard relaxed. **CHAT-01**: the writer of a turn's rows is the turn's lease holder's store, Swift or Go (`chat_turn_leases`, migration 00189), same order and `partial` rules, Go guards added. **CHAT-02**: the Go store writes steps at once, new Go guard. **CHAT-03**: a second bounded pool in the daemon (2 processes, reaped on daemon stop), new guards. **CHAT-05**: the phone's artifact sheet only opens or copies, with a source scan. **LIVE-01**: the mechanism gains the Go store at the same mark points; the phone's offline copy and the feed builder are display copies. Hub grant `chat` on by default for linked and new phones (ask #1340), and the explicit-`on` capability rule are in the mobile protocol spec §7.2/§9. Every guard named above was verified by `grep` when written. Feature note: `docs/features/iphone-chat.md`.

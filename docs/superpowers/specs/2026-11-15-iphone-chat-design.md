@@ -1,6 +1,6 @@
 # AI chat on the iPhone, over the relay — design
 
-Date: 2026-11-15. Board: #1791 (under the mobile umbrella #2). Status: draft for the owner's review.
+Date: 2026-11-15. Board: #1791 (under the mobile umbrella #2). Status: approved (ask #1340); §13 lists what changed during implementation.
 Mockups: [`docs/design/mockups/iphone-chat/index.html`](../../design/mockups/iphone-chat/index.html).
 
 ## 1. Goal and scope
@@ -41,7 +41,7 @@ Chat works **only over the hosted relay**. On a CloudKit link the tab says so (�
 | D5 | The hub runs turns by spawning the existing `watchtower ai session` (protocol v2), unchanged. A Go turn store ports the Swift write path: `ChatTreeQueries`, `ChatTurnDriver`/`ChatTurnStore`, `LiveSlackMark`, the artifact persistence and the actions-outcome block. All backends, routing and the claude.ai gate come with `ai session` for free. | decided by the agent |
 | D6 | One turn at a time per conversation, across processes: a `chat_turn_leases` row claimed in the same transaction that writes the owner's message. The first commit wins; the other side is refused with "busy" and can watch or Stop. | decided by the agent |
 | D7 | Stop from the other device goes through the lease (`cancel_requested_at_ms`). The lease owner sends `cancel` to its own session. Nobody signals another process. | decided by the agent |
-| D8 | `ArtifactParser`, `MarkdownRunBuilder` and `ChatQuoteReply` (pure Foundation, now in WatchtowerCore) move to WatchtowerKit, shared by the Mac and the phone. Go gets an artifact parser twin over the same fixture. | decided by the agent |
+| D8 | `ArtifactParser`, `MarkdownRunBuilder` and `ChatQuoteReply` (pure Foundation, now in WatchtowerCore) move to a new local package `WatchtowerChatText/` (not WatchtowerKit, see "Changed during implementation"), shared by the Mac and the phone. Go gets an artifact parser twin over the same fixture. | decided by the agent |
 | D9 | A new device grant `chat` lets a phone use chat. Approving actions also needs the existing `permissions` grant, never implied by `chat`. It is **on by default** for already linked and new phones; the owner can turn it off per phone. | decided by the agent; default: ask #1340 |
 | D10 | The phone keeps its own copy of every chat page it loaded, plus a background prefetch of the 20 most recent chats' latest pages while the Mac is reachable. The budget is 200 MB per hub, evicted by last opened. That copy and the stored `chat_list` are what offline reading shows. The hub does not publish every chat's feed all the time. | decided by the agent |
 | D15 | v1 also covers search, pin/rename/delete and quote-reply; phase 2 is exactly ask #1327's "later" list. | conversation ("со всем функционалом") + spec review round 1 |
@@ -173,7 +173,7 @@ CREATE TABLE chat_turn_leases (
 
 ### 4.5 Actions
 
-All of these require the `chat` grant. A refusal names the missing grant; a server hub adds the `watchtower hub allow` line. They are registered in `handlers.Register` and the nudge table, and are additive per protocol spec §8.
+All of these require the `chat` grant (`watchtower hub allow <device> chat [--revoke]`; there is no `deny` verb). A refusal names the missing grant; a server hub adds the `watchtower hub allow` line. They are registered in `handlers.Register` and the nudge table, and are additive per protocol spec §8.
 
 | Kind | Params | Non-idempotent | Result / refusals |
 |---|---|---|---|
@@ -186,7 +186,7 @@ All of these require the `chat` grant. A refusal names the missing grant; a serv
 | `chat_page` | `conversation_id`, `before_message_id` | no | publishes one `chat_page` record (§4.6) for 5 min; `not_found` |
 | `chat_search` | `query` (≤ 200 chars) | no | publishes one `chat_search` record (§4.6) for 5 min; a Go port of the Mac's ⌘K reader (`ChatSearchQueries`: FTS `MATCH` over `chat_fts` and the title index, snippet, `bm25` order and its filters on context type and archived chats), pinned by a shared case fixture `chat_search_cases.json` run by both the Swift `ChatSearchQueries` tests and the Go port, so the phone and the Mac return the same hits |
 | `chat_manage` | `conversation_id`, `op pin\|unpin\|rename\|delete`, `title?` | yes | `pin`/`unpin`/`rename` write what the Mac's panel writes (`rename` sets `title_source='user'`). `delete` deletes the row and, after the commit, removes the conversation's attachment folder, exactly as the Mac's ✕ does (`ChatAttachmentStore.removeFiles(for: .conversation(id))`: the whole `<chat_files>/<owner directory>` folder; Go ports `directoryName` and the removal with a twin test over the same names). The 5 s Undo lives on the phone, as on the Mac (`PendingChatDeletes` is in-app state there too): the phone hides the row and sends `delete` only when the Undo bar ends. A delete during a turn follows §4.4 "Conversation deleted during a turn". |
-| `chat_action_answer` | `action_id`, `decision approve\|reject`, `args_sha256` | yes | needs `permissions` too; approve goes through `Registry.ApproveSeen` with the hash of the args the phone showed; a stale hash → `failed/changed` ("The action changed — look again") |
+| `chat_action_answer` | `action_id`, `decision approve\|reject`, `args_sha256` | yes | needs `permissions` too; approve goes through `Registry.ApproveSeen` with the hash of the args the phone showed, reject through the new `tools.Registry.Reject` (the approval-writers guard allows only the registry); a stale hash → `failed/changed` ("The action changed — look again") |
 
 **Attachments, phone to hub.** A new upload frame, `chat_attachment`, is modelled on `recording_upload`.
 - **Descriptor:** `upload_id`, `conversation_id`, `name`, `mime`, `size`.
@@ -204,7 +204,7 @@ Four new kinds (`chat_list`, `chat_feed`, `chat_page`, `chat_search`) go into `A
 - It holds up to 200 non-archived conversations. Each has:
   - `id`, `title`, `pinned`, `updated_at`;
   - `project {id,name}?`;
-  - `state` (`waiting|answering|unread|read`, the Mac's precedence; `waiting` = a pending `agent_actions` row of its last turn, `answering` = a live lease);
+  - `state` (`waiting|answering|unread|read`, the Mac's precedence; `waiting` = any pending `agent_actions` row of the conversation, as the Mac's `panelRows`, `answering` = a live lease);
   - `last_line` (≤ 120 chars);
   - `lease_owner?`.
 - It also holds `projects[]` (id and name) and `models[]` (from the provider catalog: provider, model, display name and the capabilities the composer needs, i.e. images and PDF), plus `error?` when the read failed (mockup 1h).
@@ -214,10 +214,10 @@ Four new kinds (`chat_list`, `chat_feed`, `chat_page`, `chat_search`) go into `A
 - One record per watched conversation (`chat_feed-<id>`), in memory only, deleted when the watch ends (the `session_chat` model).
 - Payload:
   - conversation meta: title, project, routing, actual provider and model, `live_slack_since`, `lease {owner, turn_id, waiting_slot?}`;
-  - the active branch's last 60 messages (older ones come in `chat_page` records on request), each with `id`, `role`, `text`, `status`, `error_code`, `error_message`, `created_at`, `siblings {index,count}`, `attachments[] {id,name,mime,size}`, `steps[] {name, ok?, summary, sources[]}`;
+  - the active branch's last 60 messages (older ones come in `chat_page` records on request), each with `id`, `role`, `text`, `status`, `error_code`, `error_message`, `created_at`, `siblings {index,count,ids}` (`ids` = the sibling message ids, only when count > 1, so `chat_branch_select` can name one), `attachments[] {id,name,mime,size}`, `steps[] {name, ok?, summary, sources[]}`;
   - the latest version of each artifact key, with content;
   - the pending and recent `agent_actions` of those turns: `id`, `tool`, `title`, display args, `args_sha256`, `status`, reason.
-- Cap: 600 000 bytes. Over the cap, the oldest messages are dropped first (the phone then shows **Load earlier messages**, which sends `chat_page`), then artifact contents (marked "Open on your Mac"). One message's text is capped at 40 000 chars, with the cut marked.
+- Cap: 600 000 bytes, for every chat record (list, feed, page, search) encoded, for any input. Over the cap, the oldest messages are dropped first (the phone then shows **Load earlier messages**, which sends `chat_page`), then artifact contents (marked "Open on your Mac"). One message's text is capped at 40 000 chars, with the cut marked.
 
 **`chat_page`** — one page of older history, `chat_page-<conversation>-<before_message_id>`: the 60 active-branch messages before that id, the same per-message shape and caps as the feed, plus `has_more`. In memory only, deleted 5 min after its request. The phone stitches pages under the feed and keeps them in its copy (§6.4), so a whole chat is readable page by page, online and later offline.
 
@@ -241,7 +241,7 @@ A new work-alert event, `chat_answer`, with a new optional `conversation_id` fie
 **Heartbeat.**
 - `capabilities.chat` is `"on"` while the hub's transport is the relay and `chatrun` started.
 - It is `"off"` on CloudKit or when the runner failed to start; the failure reason goes to the log.
-- It is also `"off"` while a Desktop app is running that does not honour the lease (D18). The Desktop already calls `hub desktop heartbeat` on a timer; the new app adds `--chat-lease 1`. The hub keeps the latest Desktop heartbeat's flag: a fresh heartbeat (≤ 2 min) without the flag means an old app is running, so chat is off with the reason `desktop_too_old`, which the phone shows as "Update Watchtower on your Mac" (mockup 1f). No running Desktop (no fresh heartbeat, or a headless host) means chat may be on. The app and the daemon ship in one bundle, so the window is only the time between an update and the old app's relaunch.
+- It is also `"off"` while a Desktop app is running that does not honour the lease (D18). The Desktop heartbeats over the hub's control socket (`desktop_heartbeat`), so the new app adds `"chat_lease": 1` there (the `hub desktop heartbeat --chat-lease 0|1` flag is the CLI twin). The hub keeps the latest Desktop heartbeat's flag: a fresh heartbeat (≤ 2 min) without the flag means an old app is running, so chat is off with the reason `desktop_too_old`, which the phone shows as "Update Watchtower on your Mac" (mockup 1f). The heartbeat's `capabilities` carries the reason as `chat_reason`: `not_relay`, `runner_down`, `desktop_too_old` or `policy` (MDM `MobileSync` `workbench_only`). Chat sources publish only under `MobileSync` `allowed`, never under `workbench_only`: chat is not workbench data. No running Desktop (no fresh heartbeat, or a headless host) means chat may be on. The app and the daemon ship in one bundle, so the window is only the time between an update and the old app's relaunch.
 - A `Deps.ChatAvailable()` seam lets every `chat_*` handler refuse with `not_supported` when chat is not on, so a stale phone cannot run a turn over CloudKit.
 
 **Protocol spec.** `2026-10-31-hub-phone-protocol-design.md` §7.2 and §9 gain the new kinds and the "explicit on" rule.
@@ -293,10 +293,10 @@ A fourth tab, **Chats**, between Workbench and Calendar. The gate is checked in 
   - **Row actions** (1j): swipe or long-press → Pin/Unpin, Rename, Delete. Delete hides the row and shows an Undo bar for 5 s, then sends `chat_manage delete`.
 - **Conversation:**
   - Owner bubbles (`ChatBubble.owner`) with attachment thumbnails or file pills.
-  - Answers rendered by the shared `MarkdownRunBuilder` (moved to the Kit, D8) into SwiftUI text runs, with headings, lists, code, quotes and tables. Tables scroll sideways on the phone; the Mac does not change.
+  - Answers rendered by the shared `MarkdownRunBuilder` (moved to `WatchtowerChatText`, D8) into SwiftUI text runs, with headings, lists, code, quotes and tables. Tables scroll sideways on the phone; the Mac does not change.
   - A collapsed steps row and a sources chip that opens the sources sheet (3c).
   - Artifact cards, ‹ i/n ›, Regenerate and Copy on the last answer. Long-press on an owner bubble → Edit.
-  - **Ask about this** (2i): selecting a passage of a finished answer shows the chip; the passage joins the per-conversation quote batch shown above the composer and goes out with the next message, composed by the shared `ChatQuoteReply.compose` (D8), the Mac's exact format.
+  - **Ask about this** (2i): a long-press on a finished answer opens a passage picker sheet (selectable text; no in-place selection or floating chip on the phone) and the chosen passage joins the per-conversation quote batch shown above the composer and goes out with the next message, composed by the shared `ChatQuoteReply.compose` (D8), the Mac's exact format.
   - **Load earlier messages** at the top when the feed or the last page says there is more; it sends `chat_page`.
   - Error card with Retry for retryable codes (2d).
   - Approval cards (2c), orange, with Approve and Reject. Without the `permissions` grant they show "Approve on the Mac".
@@ -428,7 +428,7 @@ The owner bubble shows pending until the `chat_turn` echo is `applied`. A refuse
 | Task | Title | Depends on |
 |---|---|---|
 | T1 | Migration `chat_turn_leases` + Go lease API | none |
-| T2 | Move `ArtifactParser`, `MarkdownRunBuilder` and `ChatQuoteReply` to the Kit; Go artifact parser twin | none |
+| T2 | Move `ArtifactParser`, `MarkdownRunBuilder` and `ChatQuoteReply` to the `WatchtowerChatText` package; Go artifact parser twin | none |
 | T3 | Go turn store (`internal/chatstore`) | T1, T2 |
 | T4 | Hub chat runner (`internal/hub/chatrun`) | T3 |
 | T5 | Hub actions (incl. `chat_manage` with the attachment-folder removal, `chat_page`, `chat_search` with the Go port of `ChatSearchQueries`), the `chat` grant, the attachment upload frame, the capability with the Desktop lease flag | T4 |
@@ -450,3 +450,19 @@ Lanes run in parallel where the dependencies allow: T1, T2 and T8 start together
 - A Mac-run turn streams to the phone at about 1 s, not 150 ms.
 - Offline, only chats opened or prefetched (the 20 most recent) can be read, as far as their pages were loaded; search over message text needs the Mac.
 - The hub's 2-session pool is separate from the Desktop's 3. With both busy, up to 5 provider processes run on one Mac.
+- An html artifact on the phone has WebRTC removed by a document-start script in the page and in script-made iframes (a simulator test, `PhoneArtifactWebRTCTests`, proves it); the phone sets no private `WKPreferences` selector, which the Mac does.
+- A Mac-run turn shorter than the hub's check cadence may go without a push: a vanished desktop lease is kept for at most 6 checks until its assistant row shows, then dropped.
+- Dark list screenshots show the iOS 26 glass tab-bar lens over "Now"; that is a capture artifact of the screenshot host, the screen content is right.
+- A message edited on the phone is stored as typed plus the original's skill and REFERENCED lines (`internal/chatstore/composer.go`, the port of `ChatTurnComposer`).
+
+## 13. Changed during implementation
+
+The approved text above was kept where it held; these points differ in the shipped code (the feature note `docs/features/iphone-chat.md` has the details).
+
+- **D8:** the shared text code lives in a new dependency-free local package `WatchtowerChatText/` (swift-markdown only), not in WatchtowerKit, because WatchtowerCore must stay Kit-free (`PublicAPISurfaceTests`). It also holds `ArtifactLinks` (mailto, Google Calendar template and Slack link builders) and `ChatErrorText`, which the Mac's `ArtifactActions` and `ChatErrorPresentation` now delegate to, so the Mac and the phone share one builder and one error table.
+- **§4.6:** `chat_list` `waiting` is any pending `agent_actions` row of the conversation (the Mac's `panelRows`), not the last turn's; `siblings` gains `ids`; every chat record is at most 600 000 bytes encoded, for any input (long text is cut with `text_cut`, then steps and actions are dropped, titles clip at 200).
+- **§4.8:** the heartbeat carries `chat_reason` (`not_relay`, `runner_down`, `desktop_too_old`, `policy`); the Desktop sends `chat_lease` on the control-socket heartbeat (the `--chat-lease` CLI flag exists as a twin); chat sources publish only under `MobileSync` `allowed`.
+- **§4.5:** the grant verb is `hub allow <device> chat [--revoke]`; reject goes through the new `tools.Registry.Reject`.
+- **§6.2:** Ask about this is a long-press on a finished answer plus a passage picker sheet.
+- **§7/§12:** see the v1 limits above (WebRTC proof, vanished-lease checks, glass tab-bar lens).
+- **Guide:** no Learn card for chat while Relay ships dark (`relay_dark_test.go` holds back cards that point at a relay feature a build lacks); add one, with an id without "relay", once the relay origin ships.
