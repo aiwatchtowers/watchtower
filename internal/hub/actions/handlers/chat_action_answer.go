@@ -40,8 +40,12 @@ func (h *Handlers) chatActionAnswer(ctx context.Context, r actions.Request) acti
 		if row == nil || row.ConversationID == 0 {
 			return failed(reasonNotFound, chatActionGoneMessage)
 		}
+		reg := c.Tools
+		if reg == nil {
+			reg = tools.New(h.d.DB)
+		}
 		if decision == "reject" {
-			ok, err := h.d.DB.TransitionAgentAction(id, []string{"pending"}, "rejected", "", "")
+			ok, err := reg.Reject(id)
 			if err != nil {
 				log.Printf("hub chat: rejecting action %d failed (%s)", id, errClass(err))
 				return failed(reasonWriteFailed, chatWriteFailedMessage)
@@ -50,10 +54,6 @@ func (h *Handlers) chatActionAnswer(ctx context.Context, r actions.Request) acti
 				return h.chatActionSettled(id)
 			}
 			return applied(map[string]any{"status": "rejected"})
-		}
-		reg := c.Tools
-		if reg == nil {
-			reg = tools.New(h.d.DB)
 		}
 		ok, err := reg.ApproveSeen(ctx, id, nil, seen)
 		switch {
