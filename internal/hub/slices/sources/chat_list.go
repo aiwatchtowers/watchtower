@@ -167,9 +167,10 @@ func (s *ChatListSource) Items(ctx context.Context) ([]hubslices.Item, error) {
 // for the phone: the main chat's conversations, not archived, pinned first
 // then newest, at most 200, each with its state and its last answer's first
 // line. The last answer is the newest complete assistant message on the
-// active branch (every message when there is no leaf). waiting = a pending
-// agent_actions row of the conversation's last turn; answering = a lease
-// with a heartbeat in the last 60 s.
+// active branch (every message when there is no leaf). waiting = any
+// pending agent_actions row of the conversation (panelRows'
+// pending_approvals > 0); answering = a lease with a heartbeat in the last
+// 60 s.
 func chatListRows(ctx context.Context, tx *sql.Tx, now time.Time) ([]chatListConversation, error) {
 	rows, err := tx.QueryContext(ctx, `
 WITH RECURSIVE listed AS (
@@ -202,10 +203,7 @@ last_answer(conversation_id, message_id) AS (
 SELECT c.id, c.title, c.pinned, c.updated_at, c.project_id, p.name, c.read_at,
        answer.created_at, substr(answer.text, 1, 2000),
        EXISTS (SELECT 1 FROM agent_actions x
-               WHERE x.conversation_id = c.id AND x.status = 'pending' AND x.turn_id <> ''
-                 AND x.turn_id = (SELECT m.turn_id FROM chat_messages m
-                                  WHERE m.conversation_id = c.id AND m.turn_id <> ''
-                                  ORDER BY m.id DESC LIMIT 1)),
+               WHERE x.conversation_id = c.id AND x.status = 'pending'),
        l.owner, l.heartbeat_at_ms
 FROM listed c
 LEFT JOIN chat_projects p ON p.id = c.project_id

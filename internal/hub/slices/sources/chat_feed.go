@@ -16,6 +16,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rivo/uniseg"
+
 	"watchtower/internal/chat"
 	"watchtower/internal/chatstore"
 	"watchtower/internal/db"
@@ -242,7 +244,8 @@ func (s *ChatPageSource) buildChatPage(ctx context.Context, k ChatPageKey) ([]by
 
 // ChatSearchSource is the `chat_search` slice, record `chat_search-<query
 // hash>` (ChatSearchID): up to 50 hits of the Mac's chat search
-// (db.SearchChats) with snippets of at most 200 characters. Built once on
+// (db.SearchChats) with titles and snippets of at most 200 characters,
+// within MaxChatFeedBytes. Built once on
 // its request (Watches.Searches) and kept for 5 minutes.
 type ChatSearchSource struct {
 	d     *db.DB
@@ -318,13 +321,22 @@ func (s *ChatSearchSource) search(q string) ([]byte, error) {
 	}
 	payload := chatSearchPayload{Query: q, Hits: make([]chatSearchHit, 0, len(hits))}
 	for _, h := range hits {
-		out := chatSearchHit{ConversationID: h.ConversationID, Title: h.Title, Snippet: clipSnippet(h.Snippet), Date: secondsTime(h.Date)}
+		title, _ := clipText(h.Title, maxChatLabel)
+		out := chatSearchHit{ConversationID: h.ConversationID, Title: title, Snippet: clipSnippet(h.Snippet), Date: secondsTime(h.Date)}
 		if h.MessageID != 0 {
 			out.MessageID = int64Ptr(h.MessageID)
 		}
 		payload.Hits = append(payload.Hits, out)
 	}
-	return wire.Marshal(payload)
+	// Titles and snippets are capped, so 50 hits fit; the weakest hits go
+	// should a query's echo ever not leave them room.
+	for {
+		b, err := wire.Marshal(payload)
+		if err != nil || len(b) <= MaxChatFeedBytes || len(payload.Hits) == 0 {
+			return b, err
+		}
+		payload.Hits = payload.Hits[:len(payload.Hits)-1]
+	}
 }
 
 // clipSnippet cuts a snippet to MaxChatSearchSnippet characters, closing a
@@ -433,6 +445,8 @@ type chatFeedAction struct {
 	ArgsSHA256  string  `json:"args_sha256"`
 	Status      string  `json:"status"`
 	Reason      *string `json:"reason,omitempty"`
+
+	turnID string
 }
 
 type chatFeedPayload struct {
@@ -763,7 +777,7 @@ func chatFeedActionsTx(ctx context.Context, tx *sql.Tx, conv int64, window []cha
 	}
 	in, args := inList(ids)
 	//nolint:gosec // G202: in is "?,?,…" placeholders only
-	rows, err := tx.QueryContext(ctx, `SELECT id, tool, args_json, status, reason FROM agent_actions
+	rows, err := tx.QueryContext(ctx, `SELECT id, tool, args_json, status, reason, turn_id FROM agent_actions
 		WHERE conversation_id = ? AND turn_id <> ''
 		  AND turn_id IN (SELECT turn_id FROM chat_messages WHERE id IN (`+in+`))
 		ORDER BY id`, append([]any{conv}, args...)...)
@@ -774,7 +788,7 @@ func chatFeedActionsTx(ctx context.Context, tx *sql.Tx, conv int64, window []cha
 	for rows.Next() {
 		var a chatFeedAction
 		var argsJSON, reason string
-		if err := rows.Scan(&a.ID, &a.Tool, &argsJSON, &a.Status, &reason); err != nil {
+		if err := rows.Scan(&a.ID, &a.Tool, &argsJSON, &a.Status, &reason, &a.turnID); err != nil {
 			return nil, fmt.Errorf("reading chat actions: %w", err)
 		}
 		a.Title = actionTitle(a.Tool)
@@ -811,25 +825,22 @@ func argsDisplay(argsJSON string) string {
 	return out
 }
 
-// encodeChatFeed encodes p within MaxChatFeedBytes: the oldest messages go
-// first (has_more then true; the newest one always stays), then the
-// artifacts' contents, largest first (content_cut: "Open on your Mac").
+// encodeChatFeed encodes p within MaxChatFeedBytes, always: the oldest
+// messages go first (has_more then true; the newest one always stays) with
+// the actions of their turns, then the artifacts' contents, largest first
+// (content_cut: "Open on your Mac"), then fitFeed's last resort.
 func encodeChatFeed(p chatFeedPayload) ([]byte, error) {
 	msgSizes, err := sizes(p.Messages)
 	if err != nil {
 		return nil, err
 	}
-	artSizes, err := sizes(p.Artifacts)
-	if err != nil {
-		return nil, err
-	}
 	envelope := p
-	envelope.Messages, envelope.Artifacts, envelope.HasMore = []chatFeedMessage{}, []chatFeedArtifact{}, false
+	envelope.Messages, envelope.HasMore = []chatFeedMessage{}, false
 	base, err := wire.Marshal(envelope)
 	if err != nil {
 		return nil, err
 	}
-	total := len(base) + sum(msgSizes) + commas(len(msgSizes)) + sum(artSizes) + commas(len(artSizes))
+	total := len(base) + sum(msgSizes) + commas(len(msgSizes))
 	drop := 0
 	for total > MaxChatFeedBytes && len(msgSizes)-drop > 1 {
 		total -= msgSizes[drop] + min(1, len(msgSizes)-drop-1)
@@ -837,30 +848,72 @@ func encodeChatFeed(p chatFeedPayload) ([]byte, error) {
 	}
 	if drop > 0 {
 		p.Messages, p.HasMore = p.Messages[drop:], true
-	}
-	if total > MaxChatFeedBytes {
-		order := make([]int, len(p.Artifacts))
-		for i := range order {
-			order[i] = i
+		turns := map[string]bool{}
+		for _, m := range p.Messages {
+			turns[m.turnID] = true
 		}
-		slices.SortStableFunc(order, func(a, b int) int { return cmp.Compare(artSizes[b], artSizes[a]) })
-		p.Artifacts = slices.Clone(p.Artifacts)
-		for _, i := range order {
-			if total <= MaxChatFeedBytes {
-				break
-			}
-			a := &p.Artifacts[i]
-			a.Content, a.ContentCut = nil, true
-			b, err := wire.Marshal(*a)
-			if err != nil {
-				return nil, err
-			}
-			total -= artSizes[i] - len(b)
-		}
+		p.Actions = slices.DeleteFunc(slices.Clone(p.Actions), func(a chatFeedAction) bool { return !turns[a.turnID] })
 	}
-	return wire.Marshal(p)
+	b, err := wire.Marshal(p)
+	if err != nil || len(b) <= MaxChatFeedBytes {
+		return b, err
+	}
+	artSizes, err := sizes(p.Artifacts)
+	if err != nil {
+		return nil, err
+	}
+	over := len(b) - MaxChatFeedBytes
+	order := make([]int, len(p.Artifacts))
+	for i := range order {
+		order[i] = i
+	}
+	slices.SortStableFunc(order, func(a, b int) int { return cmp.Compare(artSizes[b], artSizes[a]) })
+	p.Artifacts = slices.Clone(p.Artifacts)
+	for _, i := range order {
+		if over <= 0 {
+			break
+		}
+		a := &p.Artifacts[i]
+		a.Content, a.ContentCut = nil, true
+		cut, err := wire.Marshal(*a)
+		if err != nil {
+			return nil, err
+		}
+		over -= artSizes[i] - len(cut)
+	}
+	return fitFeed(p)
 }
 
+// fitFeed is the hard ceiling: while the record is over MaxChatFeedBytes
+// (a newest message of wide graphemes or escaped control characters, many
+// large actions or steps), it cuts the largest message text by encoded
+// bytes (text_cut stays true), then empties the messages' steps, then
+// drops actions, oldest first, then clips the title. The result always
+// fits unless the envelope alone does not, which no field allows.
+func fitFeed(p chatFeedPayload) ([]byte, error) {
+	p.Messages = slices.Clone(p.Messages)
+	p.Actions = slices.Clone(p.Actions)
+	for {
+		b, err := wire.Marshal(p)
+		if err != nil || len(b) <= MaxChatFeedBytes {
+			return b, err
+		}
+		over := len(b) - MaxChatFeedBytes
+		switch {
+		case shrinkLargestText(p.Messages, over):
+		case clearSteps(p.Messages):
+		case len(p.Actions) > 0:
+			p.Actions = p.Actions[1:]
+		case uniseg.GraphemeClusterCount(p.Conversation.Title) > maxChatLabel:
+			p.Conversation.Title, _ = clipText(p.Conversation.Title, maxChatLabel)
+		default:
+			return b, nil
+		}
+	}
+}
+
+// encodeChatPage is encodeChatFeed for a page: the oldest messages go
+// first, then fitPage's last resort.
 func encodeChatPage(p chatPagePayload) ([]byte, error) {
 	msgSizes, err := sizes(p.Messages)
 	if err != nil {
@@ -879,7 +932,74 @@ func encodeChatPage(p chatPagePayload) ([]byte, error) {
 	if drop > 0 {
 		p.Messages, p.HasMore = p.Messages[drop:], true
 	}
-	return wire.Marshal(p)
+	p.Messages = slices.Clone(p.Messages)
+	for {
+		b, err := wire.Marshal(p)
+		if err != nil || len(b) <= MaxChatFeedBytes {
+			return b, err
+		}
+		if !shrinkLargestText(p.Messages, len(b)-MaxChatFeedBytes) && !clearSteps(p.Messages) {
+			return b, nil
+		}
+	}
+}
+
+// shrinkLargestText cuts the message text that encodes largest by at least
+// over encoded bytes (by graphemes, ellipsis included; text_cut set); false
+// when every text is already empty.
+func shrinkLargestText(msgs []chatFeedMessage, over int) bool {
+	best, bestLen := -1, 2 // `""`
+	for i := range msgs {
+		if n := jsonLen(msgs[i].Text); n > bestLen {
+			best, bestLen = i, n
+		}
+	}
+	if best < 0 {
+		return false
+	}
+	m := &msgs[best]
+	target := bestLen - over
+	lo, hi := 0, uniseg.GraphemeClusterCount(m.Text)-1 // hi: cut by at least one
+	for lo < hi {
+		mid := (lo + hi + 1) / 2
+		if t, _ := clipText(m.Text, mid); jsonLen(t) <= target {
+			lo = mid
+		} else {
+			hi = mid - 1
+		}
+	}
+	m.Text, _ = clipText(m.Text, lo)
+	m.TextCut = true
+	return true
+}
+
+// clearSteps empties the steps of the message whose steps are largest;
+// false when no message has steps.
+func clearSteps(msgs []chatFeedMessage) bool {
+	best, bestLen := -1, 0
+	for i := range msgs {
+		if len(msgs[i].Steps) == 0 {
+			continue
+		}
+		b, _ := wire.Marshal(msgs[i].Steps)
+		if len(b) > bestLen {
+			best, bestLen = i, len(b)
+		}
+	}
+	if best < 0 {
+		return false
+	}
+	msgs[best].Steps = []chatFeedStep{}
+	return true
+}
+
+// jsonLen is a string's encoded length on the wire.
+func jsonLen(s string) int {
+	b, err := wire.Marshal(s)
+	if err != nil {
+		return len(s)
+	}
+	return len(b)
 }
 
 func sizes[T any](items []T) ([]int, error) {

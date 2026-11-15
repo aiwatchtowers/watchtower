@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rivo/uniseg"
+
 	"watchtower/internal/chat"
 	"watchtower/internal/chatstore"
 	"watchtower/internal/db"
@@ -120,10 +122,15 @@ func TestChatList_StatePrecedence(t *testing.T) {
 	s.lease(all, "desktop", "turn-a", chatNow)
 	s.action(all, "turn-a", "pending", "{}", "")
 
+	oldTurn := s.conversation("old turn pending", 2, "")
+	s.message(oldTurn, 0, "assistant", "a", "complete", "turn-b", 10)
+	s.lease(oldTurn, "hub", "turn-b", chatNow.Add(-59*time.Second))
+	s.action(oldTurn, "turn-old", "pending", "{}", "") // any pending row waits, as on the Mac
+
 	answering := s.conversation("answering", 2, "")
-	s.message(answering, 0, "assistant", "a", "complete", "turn-b", 10)
-	s.lease(answering, "hub", "turn-b", chatNow.Add(-59*time.Second))
-	s.action(answering, "turn-old", "pending", "{}", "") // not its last turn
+	s.message(answering, 0, "assistant", "a", "complete", "turn-f", 10)
+	s.lease(answering, "hub", "turn-f", chatNow.Add(-59*time.Second))
+	s.action(answering, "turn-f", "applied", "{}", "")
 
 	unread := s.conversation("unread", 3, "read_at = 5")
 	s.message(unread, 0, "assistant", "a", "complete", "turn-c", 10)
@@ -145,7 +152,7 @@ func TestChatList_StatePrecedence(t *testing.T) {
 		m := c.(map[string]any)
 		states[m["title"].(string)] = m["state"].(string)
 	}
-	want := map[string]string{"all": "waiting", "answering": "answering", "unread": "unread", "read": "read", "no answer": "read"}
+	want := map[string]string{"all": "waiting", "old turn pending": "waiting", "answering": "answering", "unread": "unread", "read": "read", "no answer": "read"}
 	if len(states) != len(want) {
 		t.Fatalf("listed %v", states)
 	}
@@ -508,3 +515,110 @@ func TestChatSources_OnlyWithChatGrant(t *testing.T) {
 }
 
 func idStr(v int64) string { return strconv.FormatInt(v, 10) }
+
+// zwj is one grapheme of 25 UTF-8 bytes (a family emoji).
+const zwj = "👩‍👩‍👧‍👦"
+
+func feedRecord(t *testing.T, d *db.DB, conv int64) []byte {
+	t.Helper()
+	w := NewChatWatches()
+	w.Watch(conv, ChatPurposeOpen, chatNow.Add(ChatOpenWatch))
+	items, err := ChatFeed(d, chatFeedOpts(w, nil)).Items(context.Background())
+	if err != nil || len(items) != 1 {
+		t.Fatalf("%d items, %v", len(items), err)
+	}
+	if n := len(items[0].Payload); n > MaxChatFeedBytes {
+		t.Fatalf("feed record %d bytes, over %d", n, MaxChatFeedBytes)
+	}
+	return items[0].Payload
+}
+
+// A newest message of 40 000 wide graphemes (~1 MB) alone is over the cap:
+// its text is cut further by encoded bytes, never the record refused.
+func TestChatFeed_WideGraphemesStayUnderCap(t *testing.T) {
+	d := openDB(t)
+	s := chatSeed{t, d}
+	conv := s.conversation("wide", 1, "")
+	u := s.message(conv, 0, "user", strings.Repeat(zwj, 1000), "complete", "turn-1", 1)
+	a := s.message(conv, u, "assistant", strings.Repeat(zwj, 40_001), "complete", "turn-1", 2)
+	feed := decode(t, feedRecord(t, d, conv))
+	msgs := feed["messages"].([]any)
+	last := msgs[len(msgs)-1].(map[string]any)
+	if num(last["id"]) != a || last["text_cut"] != true || runes(last["text"]) == 0 {
+		t.Fatalf("newest message %v cut %v", last["id"], last["text_cut"])
+	}
+}
+
+// Escaped control characters (6 bytes each) in the text, the actions and
+// the steps of one turn: the actions of dropped turns go, then the text is
+// cut, the steps emptied and actions dropped until the record fits.
+func TestChatFeed_EscapedTextActionsAndStepsStayUnderCap(t *testing.T) {
+	d := openDB(t)
+	s := chatSeed{t, d}
+	conv := s.conversation("escaped", 1, "")
+	ctl := strings.Repeat("\x01", 40_000)
+	old := s.message(conv, 0, "user", ctl, "complete", "turn-old", 1)
+	s.action(conv, "turn-old", "applied", `{"text":"old"}`, "")
+	oldAnswer := s.message(conv, old, "assistant", ctl, "complete", "turn-old", 2)
+	u := s.message(conv, oldAnswer, "user", ctl, "complete", "turn-new", 3)
+	a := s.message(conv, u, "assistant", ctl, "partial", "turn-new", 4)
+	for i := range 60 {
+		exec(t, d, `INSERT INTO chat_turn_steps (message_id, seq, tool_id, name, summary, started_at) VALUES (?, ?, ?, 'step', ?, 1)`,
+			a, i, "t"+idStr(int64(i)), strings.Repeat("\x02", 3000))
+		s.action(conv, "turn-new", "pending", `{"text":"`+strings.Repeat(`\u0003`, 4000)+`"}`, "")
+	}
+	feed := decode(t, feedRecord(t, d, conv))
+	msgs := feed["messages"].([]any)
+	if feed["has_more"] != true || num(msgs[len(msgs)-1].(map[string]any)["id"]) != a {
+		t.Fatalf("has_more %v, %d messages", feed["has_more"], len(msgs))
+	}
+	for _, x := range feed["actions"].([]any) {
+		if strings.Contains(x.(map[string]any)["args_display"].(string), "old") {
+			t.Error("an action of a dropped turn stayed")
+		}
+	}
+}
+
+func TestChatPage_WideGraphemesStayUnderCap(t *testing.T) {
+	d := openDB(t)
+	s := chatSeed{t, d}
+	conv := s.conversation("wide page", 1, "")
+	var parent int64
+	var ids []int64
+	for i := range 4 {
+		parent = s.message(conv, parent, "user", strings.Repeat(zwj, 40_001), "complete", "t", float64(i))
+		ids = append(ids, parent)
+	}
+	w := NewChatWatches()
+	k := ChatPageKey{Conversation: conv, Before: ids[3]}
+	w.Pages.Request(k, chatNow.Add(ChatRequestHold))
+	items, err := ChatPage(d, chatFeedOpts(w, nil)).Items(context.Background())
+	if err != nil || len(items) != 1 || len(items[0].Payload) > MaxChatFeedBytes {
+		t.Fatalf("%d items, %v", len(items), err)
+	}
+	p := decode(t, items[0].Payload)
+	msgs := p["messages"].([]any)
+	if p["has_more"] != true || num(msgs[len(msgs)-1].(map[string]any)["id"]) != ids[2] {
+		t.Fatalf("page %v", p["has_more"])
+	}
+}
+
+func TestChatSearch_WideTitlesStayUnderCap(t *testing.T) {
+	d := openDB(t)
+	s := chatSeed{t, d}
+	for i := range 60 {
+		conv := s.conversation("payments "+strings.Repeat(zwj, 5000), float64(i), "")
+		s.message(conv, 0, "user", "payments "+strings.Repeat(zwj+" \x01", 2000), "complete", "t", 1)
+	}
+	w := NewChatWatches()
+	w.Searches.Request("payments", chatNow.Add(ChatRequestHold))
+	items, err := ChatSearch(d, chatFeedOpts(w, nil)).Items(context.Background())
+	if err != nil || len(items) != 1 || len(items[0].Payload) > MaxChatFeedBytes {
+		t.Fatalf("%d items, %v, %d bytes", len(items), err, len(items[0].Payload))
+	}
+	for _, h := range decode(t, items[0].Payload)["hits"].([]any) {
+		if uniseg.GraphemeClusterCount(h.(map[string]any)["title"].(string)) > maxChatLabel {
+			t.Fatal("title not clipped")
+		}
+	}
+}
