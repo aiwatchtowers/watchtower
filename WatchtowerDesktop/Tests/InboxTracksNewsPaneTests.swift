@@ -159,7 +159,7 @@ final class InboxTracksNewsPaneTests: XCTestCase {
         for tracks in [[card(id: 1, hasUpdates: true)], [card(id: 1, hasUpdates: true), card(id: 2, lastEventDaysAgo: 5)]] {
             let sut = InboxTracksNewsPane(summary: TrackThreadsSummary.build(tracks: tracks, now: now),
                                           quietPress: model, onOpenThread: { _ in }, onAllThreads: {})
-            XCTAssertNoThrow(try sut.inspect().find(text: "Closed 1 of 2. timed out"))
+            XCTAssertNoThrow(try sut.inspect().find(text: "Stopped 1 of 2. timed out"))
             XCTAssertNoThrow(try sut.inspect().find(button: "Try Again"))
             XCTAssertThrowsError(try sut.inspect().find(button: "Stop Tracking Quiet Ones…"))
         }
