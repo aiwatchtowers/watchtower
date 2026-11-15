@@ -364,10 +364,10 @@ func buttonStateExit(err error) error {
 	return err
 }
 
-// decideOrExplain moves the row from one of from to to; a row in another
-// state is an error naming its status.
-func decideOrExplain(reg *tools.Registry, database *db.DB, id int64, from []string, to string) error {
-	ok, err := decide(reg, database, id, from, to)
+// decideOrExplain moves a pending row to to; a row in another state is an
+// error naming its status.
+func decideOrExplain(reg *tools.Registry, database *db.DB, id int64, to string) error {
+	ok, err := decide(reg, id, to)
 	if err != nil || ok {
 		return err
 	}
@@ -385,7 +385,7 @@ func decideOrExplain(reg *tools.Registry, database *db.DB, id int64, from []stri
 // change is the persisted outcome (exit 0 once it landed); execution is
 // reported separately through applied_ok/error — the recap_ok precedent —
 // so a Jira failure never masquerades as "the approve did not happen".
-func decideAndMaybeApply(cmd *cobra.Command, idArg string, from []string, to string, execute bool) error {
+func decideAndMaybeApply(cmd *cobra.Command, idArg, to string, execute bool) error {
 	id, err := parseActionID(idArg)
 	if err != nil {
 		return err
@@ -405,7 +405,7 @@ func decideAndMaybeApply(cmd *cobra.Command, idArg string, from []string, to str
 	env := actionEnvelope{OK: true}
 	switch {
 	case to != "":
-		if err := decideOrExplain(reg, database, id, from, to); err != nil {
+		if err := decideOrExplain(reg, database, id, to); err != nil {
 			return err
 		}
 	case execute:
@@ -512,12 +512,12 @@ func refuseUnderAgent(verb string) error {
 	return nil
 }
 
-// decide records the owner's decision. An approval goes through the
-// registry, which merges --patch and checks the tool is ready to run; a
-// rejection is the plain conditional transition.
-func decide(reg *tools.Registry, database *db.DB, id int64, from []string, to string) (bool, error) {
+// decide records the owner's decision through the registry: an approval
+// merges --patch and checks the tool is ready to run; a rejection is
+// Registry.Reject, pending → rejected (the only other decision).
+func decide(reg *tools.Registry, id int64, to string) (bool, error) {
 	if to != "approved" {
-		return database.TransitionAgentAction(id, from, to, "", "")
+		return reg.Reject(id)
 	}
 	ok, err := reg.ApproveSeen(context.Background(), id, json.RawMessage(actionsFlagPatch), actionsFlagArgsSHA256)
 	if errors.Is(err, tools.ErrNotFound) {
@@ -533,11 +533,11 @@ func runActionsApprove(cmd *cobra.Command, args []string) error {
 	if err := confirmWithOwner("approve an action", actionConfirmDetail(args[0])); err != nil {
 		return err
 	}
-	return decideAndMaybeApply(cmd, args[0], []string{"pending"}, "approved", true)
+	return decideAndMaybeApply(cmd, args[0], "approved", true)
 }
 
 func runActionsReject(cmd *cobra.Command, args []string) error {
-	return decideAndMaybeApply(cmd, args[0], []string{"pending"}, "rejected", false)
+	return decideAndMaybeApply(cmd, args[0], "rejected", false)
 }
 
 // runActionsDismiss acknowledges a claude.ai connector call whose session
@@ -588,7 +588,7 @@ func runActionsApply(cmd *cobra.Command, args []string) error {
 	if err := confirmWithOwner("apply an action", actionConfirmDetail(args[0])); err != nil {
 		return err
 	}
-	return decideAndMaybeApply(cmd, args[0], nil, "", true)
+	return decideAndMaybeApply(cmd, args[0], "", true)
 }
 
 func runActionsTrust(cmd *cobra.Command, args []string) error {
