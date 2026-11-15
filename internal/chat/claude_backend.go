@@ -1156,8 +1156,11 @@ func (b *claudeBackend) Cancel() error {
 	b.mu.Lock()
 	b.cancelled = true
 	p, inFlight := b.proc, b.inFlight
-	var done chan struct{}
+	var done, prev chan struct{}
 	if p != nil && inFlight {
+		// A second Stop in the same turn chains behind the first interrupt, so
+		// the one slot awaitInterrupt reads still covers every pending write.
+		prev = p.interruptDone
 		done = make(chan struct{})
 		p.interruptDone = done
 	}
@@ -1172,6 +1175,9 @@ func (b *claudeBackend) Cancel() error {
 	// next turn's message waits for done (awaitInterrupt).
 	go func() {
 		defer close(done)
+		if prev != nil {
+			<-prev // closed once the earlier write finished or failed
+		}
 		if werr := write(p, append(req, '\n')); werr != nil {
 			// stdin is gone: the child cannot be interrupted, only killed;
 			// the turn then ends as interrupted through the exit path.

@@ -217,6 +217,47 @@ func TestClaudeBackend_StuckInterruptFailsOnKillAndNextTurnProceeds(t *testing.T
 	})
 }
 
+// Two Stops in one turn: the slot the next turn waits on holds only the
+// second interrupt, so the second write waits for the first; otherwise the
+// next turn's message could overtake an interrupt still pending.
+func TestClaudeBackend_SecondCancelWaitsForTheFirstInterrupt(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		opts, _ := fakeClaude(t, "slow")
+		cb := NewClaudeBackend(opts).(*claudeBackend)
+		release := make(chan struct{})
+		var mu sync.Mutex
+		var order []int
+		calls := 0
+		cb.writeInterrupt = func(*claudeProc, []byte) error {
+			mu.Lock()
+			calls++
+			n := calls
+			mu.Unlock()
+			if n == 1 {
+				<-release // the first interrupt is stuck behind a write
+			}
+			mu.Lock()
+			order = append(order, n)
+			mu.Unlock()
+			return nil
+		}
+		cb.proc, cb.inFlight = &claudeProc{exited: make(chan struct{})}, true
+
+		require.NoError(t, cb.Cancel())
+		require.NoError(t, cb.Cancel())
+		synctest.Wait()
+		mu.Lock()
+		assert.Empty(t, order, "the second write waits while the first is pending")
+		mu.Unlock()
+
+		close(release)
+		require.NoError(t, cb.awaitInterrupt(t.Context()))
+		mu.Lock()
+		assert.Equal(t, []int{1, 2}, order, "both interrupts are written, in order, before the next turn goes")
+		mu.Unlock()
+	})
+}
+
 func TestClaudeBackend_CancelKillsAfterGraceAndNextTurnReplays(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		opts, f := fakeClaude(t, "ignore_interrupt")

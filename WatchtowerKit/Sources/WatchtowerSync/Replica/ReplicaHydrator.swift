@@ -111,14 +111,18 @@ public actor ReplicaHydrator {
 
     /// One cycle begun after this call: what was buffered before it is applied by the time it returns. A running cycle
     /// may have read its batch before that (a fetch's own pull buffered records the cycle never saw), so it is waited
-    /// out, never joined; a cycle started after it ended began after this call and is joined.
+    /// out, never joined; a cycle started after it ended began after this call and is joined. The counts include the
+    /// waited-out cycle's, which may have applied what this call's caller pulled.
     @discardableResult
     public func hydrateFresh() async throws -> (applied: Int, deleted: Int) {
+        var waitedOut = (applied: 0, deleted: 0)
         if let running = inFlight {
             onWaitOut()
-            _ = try? await running.value
+            // Only its end matters here: the cycle's own caller gets and reports its error.
+            waitedOut = (try? await running.value) ?? waitedOut
         }
-        return try await hydrateOnce()
+        let own = try await hydrateOnce()
+        return (own.applied + waitedOut.applied, own.deleted + waitedOut.deleted)
     }
 
     private func performHydration() async throws -> (applied: Int, deleted: Int) {

@@ -211,14 +211,17 @@ public actor RelayFeed {
 
     /// One cycle begun after this call: what was buffered before it is routed by the time it returns. A running cycle
     /// may have read its batch before that (a fetch's own pull buffered a control the cycle never saw), so it is waited
-    /// out, never joined; a cycle started after it ended began after this call and is joined.
+    /// out, never joined; a cycle started after it ended began after this call and is joined. The count includes the
+    /// waited-out cycle's, which may have routed what this call's caller pulled.
     @discardableResult
     public func pollFresh() async throws -> Int {
+        var waitedOut = 0
         if let running = inFlight {
             onWaitOut()
-            _ = try? await running.value
+            // Only its end matters here: the cycle's own caller gets and reports its error.
+            waitedOut = (try? await running.value) ?? 0
         }
-        return try await pollOnce()
+        return try await pollOnce() + waitedOut
     }
 
     private func performPoll() async throws -> Int {

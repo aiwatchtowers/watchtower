@@ -553,9 +553,10 @@ final class ReplicaTests: XCTestCase {
         XCTAssertEqual(second, .waitedOut, "never joined")
         await transport.openGate()
 
-        _ = try await (running, fresh)
+        let (_, freshCounts) = try await (running, fresh)
         let calls = await transport.changesCalls
         XCTAssertEqual(calls, 2, "the fresh hydrate ran a cycle of its own")
+        XCTAssertEqual(freshCounts.applied, 1, "the waited-out cycle's record counts, so a fetch reports new data")
     }
 
     // MARK: - DatabasePool (production mechanism) path
