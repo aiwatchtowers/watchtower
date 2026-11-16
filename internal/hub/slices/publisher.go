@@ -11,9 +11,11 @@ import (
 	"log"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
+	"watchtower/internal/hub/logreason"
 	"watchtower/internal/hub/platform"
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/state"
@@ -129,7 +131,8 @@ type SaveLatency interface {
 
 // CycleReport is what one cycle did. Skipped names records not published
 // this cycle and not hashed, so a later cycle retries them (oversized,
-// unsealable, refused by the transport, an invalid id). Deferred holds the
+// unsealable, refused by the transport, an invalid id), and records whose
+// delete the transport refused (still known, so retried too). Deferred holds the
 // kinds the spacing rule kept back, with the time they may be written.
 // Failed lists the kinds whose source failed. Aborted is true when an epoch
 // rotation stopped the cycle. Unfinished lists the kinds the cycle was given
@@ -195,6 +198,11 @@ type Publisher struct {
 	lastDirty   time.Time       // monotonic, latest PublishSoon
 	nowDirty    map[Kind]bool   // PublishNow's kinds, due at once
 	lastPublish time.Time
+	// stuck is each kind whose last attempt did not go through whole, from
+	// its first such attempt (stuck.go, the heartbeat's stuck_since).
+	stuck map[Kind]time.Time
+	// failLog rate-limits the cycle and source failure lines.
+	failLog *logreason.Limiter
 	// resignal holds the alert keys Resignal asked to signal on CloudKit,
 	// kept until a cycle saved the alert with its signal or found it gone.
 	resignal map[string]bool
@@ -223,10 +231,14 @@ func NewPublisher(c Config) *Publisher {
 			log.Printf("hub slices: source of unknown kind %s is never published", s.Kind())
 		}
 	}
-	return &Publisher{
+	p := &Publisher{
 		c: c, spacing: spacing, clock: c.Clock, wake: make(chan struct{}, 1), mono: time.Now, timer: realTimer,
 		lastWrite: map[Kind]time.Time{}, warned: map[string]string{}, dirty: map[Kind]bool{}, nowDirty: map[Kind]bool{}, resignal: map[string]bool{},
 	}
+	// A failing cycle or source repeats every few seconds: its line reaches
+	// the log once per logreason.RepeatEvery (#1873), on Run's clock.
+	p.failLog = logreason.NewLimiter(logreason.RepeatEvery, func() time.Time { return p.mono() })
+	return p
 }
 
 func realTimer(d time.Duration) (<-chan time.Time, func()) {
@@ -573,7 +585,10 @@ func (p *Publisher) Run(ctx context.Context) error {
 				return ctx.Err()
 			}
 			if err != nil {
-				log.Printf("hub slices: publish cycle failed (%s); %d kinds retried", errClass(err), len(rep.Unfinished))
+				// Keyed by the reason alone: the kinds retried vary from
+				// cycle to cycle through one outage (#1873).
+				why := logreason.With(errClass(err), err)
+				p.failLog.Keyed("cycle "+why, fmt.Sprintf("hub slices: publish cycle failed (%s); kinds retried: %s", why, kindList(rep.Unfinished)))
 				if p.c.OnError != nil {
 					p.c.OnError(err)
 				}
@@ -703,10 +718,14 @@ func (p *Publisher) Cycle(ctx context.Context, kinds []Kind) (CycleReport, error
 			continue
 		}
 		tried++
+		skipped := len(rep.Skipped)
 		wrote, err := p.publishKind(ctx, k, srcs, &rep)
 		if err == nil && !slices.Contains(rep.Failed, k) {
 			p.kindPublished(k)
 			published++
+		}
+		if !errors.Is(err, errEpochMoved) {
+			p.noteKindOutcome(k, err == nil && !slices.Contains(rep.Failed, k) && len(rep.Skipped) == skipped, now)
 		}
 		if wrote {
 			p.lastWrite[k] = now
@@ -870,7 +889,7 @@ func (p *Publisher) readItems(ctx context.Context, k Kind, srcs []Source, rep *C
 			if ctx.Err() != nil {
 				return nil, false, ctx.Err()
 			}
-			log.Printf("hub slices: %s source failed (%s): kind skipped this cycle", k, errClass(err))
+			p.failLog.Printf("hub slices: %s source failed (%s): kind skipped this cycle", k, logreason.With(errClass(err), err))
 			rep.Failed = append(rep.Failed, k)
 			rep.Unfinished = append(rep.Unfinished, k)
 			return nil, false, nil
@@ -1041,6 +1060,8 @@ func (p *Publisher) deleteGone(ctx context.Context, k Kind, known map[string]sta
 		if o.Saved {
 			done = append(done, gone[i])
 		} else {
+			// Skipped: the kind did not go through whole (stuck_since, #1873).
+			rep.Skipped = append(rep.Skipped, gone[i])
 			log.Printf("hub slices: delete of %s not done (%s); retried next cycle", gone[i], errClass(o.Refused))
 		}
 	}
@@ -1351,6 +1372,19 @@ func latestEpoch(epochs []state.Epoch, err error) (uint32, error) {
 		return 0, ErrNoKeys
 	}
 	return epochs[len(epochs)-1].Epoch, nil
+}
+
+// kindList is kinds for a log line, "none" when empty.
+func kindList(kinds []Kind) string {
+	if len(kinds) == 0 {
+		return "none"
+	}
+	names := make([]string, len(kinds))
+	for i, k := range kinds {
+		names[i] = string(k)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
 }
 
 // errClass names an error by its sentinel for a log line, never its text.

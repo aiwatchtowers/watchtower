@@ -78,9 +78,15 @@ struct WorkbenchListView: View {
         }
     }
 
-    /// The hub switcher chip, as on Now (#1782); asleep by the clock alone.
+    /// The hub switcher chip, as on Now (#1782); asleep by the clock alone. Under it, how old the
+    /// data is when the tower's updates stopped (#1873).
     private var switcher: some View {
-        TimelineView(.periodic(from: .now, by: 30)) { HubSwitcherChip(now: $0.date) }
+        TimelineView(.periodic(from: .now, by: 30)) { context in
+            VStack(alignment: .leading, spacing: 0) {
+                HubSwitcherChip(now: context.date)
+                ReplicaFreshnessLine(now: context.date)
+            }
+        }
     }
 }
 

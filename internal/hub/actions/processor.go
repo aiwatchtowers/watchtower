@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"watchtower/internal/hub/logreason"
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
@@ -77,6 +78,9 @@ type Latency interface {
 type Processor struct {
 	cfg Config
 	mu  sync.Mutex
+	// failLog keeps a mailbox read that fails every pass to one line per
+	// logreason.RepeatEvery per phone and reason (#1873).
+	failLog *logreason.Limiter
 	// fault, when set (tests), is called at named points; an error stops
 	// the pass there as a crash would: "opened" (then "opened <device> <wire name>")
 	// after a record opened and before any decision commits, "done" inside
@@ -167,7 +171,7 @@ func NewProcessor(c Config) *Processor {
 	if c.Clock == nil {
 		c.Clock = time.Now
 	}
-	return &Processor{cfg: c}
+	return &Processor{cfg: c, failLog: logreason.NewLimiter(logreason.RepeatEvery, c.Clock)}
 }
 
 // mailbox is one linked phone's mailbox, read under one link: zone is where
@@ -381,7 +385,7 @@ func (p *Processor) PassEvent(ctx context.Context, ev transport.Event) (PassRepo
 		})
 	}
 	p.noteRead(b.zone, err)
-	errs := passError(b, err, nil)
+	errs := p.passError(b, err, nil)
 	written, _, err := p.flushAll(ctx)
 	ps.report.ControlsWritten = written
 	p.nudge(ps)
@@ -433,7 +437,7 @@ func (p *Processor) passBoxes(ctx context.Context, boxes []mailbox, ps *pass) (P
 				err = p.readMailbox(ctx, b, ps)
 			}
 			p.noteRead(b.zone, err)
-			errs = passError(b, err, errs)
+			errs = p.passError(b, err, errs)
 		}
 	}
 	written, _, err := p.flushAll(ctx)
@@ -445,7 +449,7 @@ func (p *Processor) passBoxes(ctx context.Context, boxes []mailbox, ps *pass) (P
 // passError logs the error that stopped b's phone and adds it to errs (nil
 // adds nothing). The batch limit and a re-link are no errors: the rest is
 // read next pass (Remaining counts the first).
-func passError(b mailbox, err error, errs []error) []error {
+func (p *Processor) passError(b mailbox, err error, errs []error) []error {
 	if err == nil {
 		return errs
 	}
@@ -457,7 +461,7 @@ func passError(b mailbox, err error, errs []error) []error {
 		return errs
 	}
 	// One phone's failure never holds back the other phones.
-	log.Printf("hub: reading device %s's mailbox: %s", b.id, errClass(err))
+	p.failLog.Printf("hub: reading device %s's mailbox: %s", b.id, logreason.With(errClass(err), err))
 	return append(errs, err)
 }
 

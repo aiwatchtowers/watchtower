@@ -510,7 +510,7 @@ final class NowWiringTests: XCTestCase {
     // MARK: - The Relay banner (relay client Phase 4 Task 10)
 
     func testTheBannerSitsAboveWaitingToSend() {
-        XCTAssertEqual(NowView.topBlocks, [.chip, .relayBanner, .outbox])
+        XCTAssertEqual(NowView.topBlocks, [.chip, .freshness, .relayBanner, .outbox])
     }
 
     @MainActor

@@ -14,12 +14,13 @@ enum NowRoute: Hashable, CaseIterable {
 /// one-tap answers), Working with timers, then the next meeting with
 /// Record. A `ScrollView`, so each row is its own link.
 struct NowView: View {
-    /// What sits at the top of the list, in order: the Relay banner above Waiting to send (Phase 1's row stays where it is).
+    /// What sits at the top of the list, in order: how old the data is right under the chip (#1873), the Relay
+    /// banner above Waiting to send (Phase 1's row stays where it is).
     enum TopBlock: Hashable {
-        case chip, relayBanner, outbox
+        case chip, freshness, relayBanner, outbox
     }
 
-    static let topBlocks: [TopBlock] = [.chip, .relayBanner, .outbox]
+    static let topBlocks: [TopBlock] = [.chip, .freshness, .relayBanner, .outbox]
 
     @Environment(AppEnvironment.self) private var env
     @Environment(LinkingViewModel.self) private var linking
@@ -127,6 +128,9 @@ struct NowView: View {
                     switch block {
                     case .chip:
                         HubSwitcherChip(now: date)
+                    case .freshness:
+                        // The Relay banner below says when Relay does not answer.
+                        ReplicaFreshnessLine(now: date, showsOffline: false)
                     case .relayBanner:
                         NowRelayBanner(override: bannerOverride, termRowsOverride: termRowsOverride) { showsSubscription = true }
                     case .outbox:

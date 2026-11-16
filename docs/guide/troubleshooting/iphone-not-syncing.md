@@ -9,6 +9,7 @@ The phone shows "<tower> · offline", never finds the Mac, an answered ask stays
 - While linking: "This code expired", "This code can't be used", or "Sign in to iCloud on this iPhone to use Watchtower".
 - On the Mac, **Settings → Mobile** shows why Mobile is off, **Needs a signed build**, "iCloud is slowing sync down", "Paused until iCloud is available on this Mac." or "Mobile is run by a newer Watchtower".
 - "<tower> hasn't synced for a day" or "<tower> removed this phone".
+- A red line under the tower on **Now** and the **Workbench** tab: "Updated 15:20 · <tower> is not sending updates", "Updated 8:26 · <tower> is not sending some updates" or "Updated 15:20 · this iPhone can't reach Relay". The time is how fresh the data on screen is.
 - On a Mac that runs over Relay, **Settings → Mobile** shows "Relay unavailable for <N> min.", "This Mac's Relay storage is full (5 GB).", "<phone>'s Relay mailbox is full.", "Doesn't get updates: this Mac runs over Relay.", "On this Mac's side, <N> actions from this phone are not applied yet." or "Notifications aren't set up on this iPhone."
 
 ## Why
@@ -33,6 +34,9 @@ The Mac is the hub. It publishes your data into your iCloud and applies the phon
 14. **Doesn't get updates: this Mac runs over Relay:** Relay isn't in the current version of Watchtower for iPhone. That phone has no Relay subscription. Subscribe on it, or switch the Mac to iCloud from a subscribed phone. See [iPhone: Relay](../features/iphone-relay.md).
 15. **On this Mac's side, <N> actions from this phone are not applied yet:** the Mac holds them until the phone sends the ones before them. Open Watchtower on the phone and keep it online until the line goes away.
 16. **Notifications aren't set up on this iPhone:** open Watchtower on that iPhone once.
+17. **Is not sending updates:** the tower has sent nothing for 35 minutes. Wake it and check its connection. On a server, `watchtower hub status` says e.g. "relay unavailable since 15:22 (last saved 15:20)".
+18. **Is not sending some updates:** the tower keeps running but one kind of data has failed to publish for 10 minutes or more, so some screens are stale since that time. Its log (`watchtower logs`) names the failing kinds and the reason. Report it if it stays.
+19. **This iPhone can't reach Relay:** the phone's own connection fails. Check its network; the line goes once Relay answers.
 
 ## How to check
 
