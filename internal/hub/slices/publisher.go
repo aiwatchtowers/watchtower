@@ -131,7 +131,8 @@ type SaveLatency interface {
 
 // CycleReport is what one cycle did. Skipped names records not published
 // this cycle and not hashed, so a later cycle retries them (oversized,
-// unsealable, refused by the transport, an invalid id). Deferred holds the
+// unsealable, refused by the transport, an invalid id), and records whose
+// delete the transport refused (still known, so retried too). Deferred holds the
 // kinds the spacing rule kept back, with the time they may be written.
 // Failed lists the kinds whose source failed. Aborted is true when an epoch
 // rotation stopped the cycle. Unfinished lists the kinds the cycle was given
@@ -1054,6 +1055,8 @@ func (p *Publisher) deleteGone(ctx context.Context, k Kind, known map[string]sta
 		if o.Saved {
 			done = append(done, gone[i])
 		} else {
+			// Skipped: the kind did not go through whole (stuck_since, #1873).
+			rep.Skipped = append(rep.Skipped, gone[i])
 			log.Printf("hub slices: delete of %s not done (%s); retried next cycle", gone[i], errClass(o.Refused))
 		}
 	}

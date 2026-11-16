@@ -66,7 +66,9 @@ func deepestTyped(err error, depth int) (string, int) {
 		name, at = t, depth
 	}
 	var children []error
-	switch u := err.(type) {
+	// The chain itself is walked here, one link at a time: errors.As has no
+	// "every link" form.
+	switch u := err.(type) { //nolint:errorlint // walks each link, not a match
 	case interface{ Unwrap() []error }:
 		children = u.Unwrap()
 	case interface{ Unwrap() error }:

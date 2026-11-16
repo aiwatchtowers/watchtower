@@ -10,6 +10,7 @@ import (
 
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/transport"
+	"watchtower/internal/hub/transport/memfake"
 	"watchtower/internal/hub/wire"
 )
 
@@ -65,6 +66,54 @@ func TestStuckSinceCountsASkippedRecord(t *testing.T) {
 	r.cycle(p)
 	if _, ok := p.StuckSince(); ok {
 		t.Fatal("still stuck after the record shrank and went")
+	}
+}
+
+// deleteRefusing answers every Delete with each item refused while refuse is
+// set, and passes the rest to the fake.
+type deleteRefusing struct {
+	*memfake.Fake
+	refuse bool
+}
+
+func (t *deleteRefusing) Delete(ctx context.Context, zone string, items []transport.DeleteItem) ([]transport.Outcome, error) {
+	if !t.refuse {
+		return t.Fake.Delete(ctx, zone, items)
+	}
+	outs := make([]transport.Outcome, len(items))
+	for i := range outs {
+		outs[i] = transport.Outcome{Refused: transport.ErrForbidden}
+	}
+	return outs, nil
+}
+
+// A record whose delete the transport refuses stays on the phone: its kind
+// is stuck until the delete goes through.
+func TestStuckSinceCountsARefusedDelete(t *testing.T) {
+	r := newRig(t, transport.KindRelay)
+	tr := &deleteRefusing{Fake: r.tr}
+	src := &fakeSource{kind: "target"}
+	src.set(item("1", `{"id":1}`), item("2", `{"id":2}`))
+	p := r.publisherWith(Config{Transport: tr}, src)
+	if _, err := p.Cycle(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	tr.refuse = true
+	src.set(item("1", `{"id":1}`))
+	r.advance(time.Minute)
+	if _, err := p.Cycle(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if at, ok := p.StuckSince(); !ok || !at.Equal(r.clock()) {
+		t.Fatalf("StuckSince = %v %v after a refused delete", at, ok)
+	}
+	tr.refuse = false
+	r.advance(time.Minute)
+	if _, err := p.Cycle(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := p.StuckSince(); ok {
+		t.Fatal("still stuck after the delete went through")
 	}
 }
 
