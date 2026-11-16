@@ -211,10 +211,6 @@ func (s *Store) Start(ctx context.Context, r StartRequest) (Started, error) {
 	}
 	now := s.now()
 	st := Started{ConversationID: r.ConversationID, TurnID: turnID}
-	// userText is the stored owner text (the composer's format); titleText
-	// the prefix title's source: the owner's own words for a send, the
-	// stored text for an edit (the Mac's titleText ?? userText).
-	var userText, titleText string
 	wroteUser := false
 
 	tx, err := s.db.BeginTx(ctx, nil) // BEGIN IMMEDIATE (_txlock=immediate)
@@ -252,130 +248,28 @@ func (s *Store) Start(ctx context.Context, r StartRequest) (Started, error) {
 		byID[m.id] = m
 	}
 	createdAt := seconds(now)
-	var historyTip *int64
-	var outcomes string
-
-	switch r.Mode {
-	case ModeSend, ModeContinue:
-		path := activePath(all, conv.leaf)
-		if len(path) > 0 {
-			historyTip = &path[len(path)-1].id
-		}
-		if r.Mode == ModeContinue {
-			if len(path) == 0 {
-				return Started{}, ErrInvalid
-			}
-			last := path[len(path)-1]
-			if last.id != r.MessageID || last.role != "assistant" || last.status != "partial" ||
-				last.errorCode.String == codeQuotaExhausted {
-				return Started{}, ErrInvalid
-			}
-		}
-		// The floor is the previous owner message, and it alone.
-		if floor, ok := lastOwnerCreatedAt(path); ok {
-			outcomes, _ = outcomesBlockTx(tx, r.ConversationID, floor) // a failed read sends no block, as on the Mac
-		}
-		atts, err := pendingAttachmentsTx(tx, r.ConversationID, r.AttachmentIDs)
-		if err != nil {
-			return Started{}, err
-		}
-		st.Attachments = atts
-		switch {
-		case r.Mode == ModeContinue:
-			userText, titleText = ContinueText, ContinueText
-		case len(r.ArtifactCommentIDs) > 0:
-			msg, err := artifactCommentsTextTx(tx, r.ConversationID, r.ArtifactCommentIDs)
-			if err != nil {
-				return Started{}, err
-			}
-			userText, titleText = composeTurn(msg, "", nil), swiftTrim(msg)
-		default:
-			userText, titleText = composed, swiftTrim(quoted)
-		}
-	case ModeRegenerate, ModeRetry:
-		m, ok := byID[r.MessageID]
-		if !ok {
-			return Started{}, ErrNotFound
-		}
-		owner, hasOwner := byID[m.parent.Int64]
-		if m.role != "assistant" || !m.parent.Valid || !hasOwner || owner.role != "user" ||
-			m.errorCode.String == codeQuotaExhausted || (r.Mode == ModeRetry && notRetryable[m.errorCode.String]) {
-			return Started{}, ErrInvalid
-		}
-		st.UserMessageID = owner.id
-		historyTip = nullable(owner.parent)
-		userText = owner.text
-		if st.Attachments, err = messageAttachmentsTx(tx, owner.id); err != nil {
-			return Started{}, err
-		}
-	case ModeEdit:
-		m, ok := byID[r.MessageID]
-		if !ok {
-			return Started{}, ErrNotFound
-		}
-		if m.role != "user" {
-			return Started{}, ErrInvalid
-		}
-		historyTip = nullable(m.parent)
-		userText = recompose(m.text, r.Text) // keeps the original's skill and REFERENCED lines
-		titleText = userText
-		// The files are sent again; their rows stay on the original message (v1 limit).
-		if st.Attachments, err = messageAttachmentsTx(tx, m.id); err != nil {
-			return Started{}, err
-		}
+	in := startInput{r: r, conv: conv, all: all, byID: byID, quoted: quoted, composed: composed}
+	pl, err := prepareTx(tx, in, &st)
+	if err != nil {
+		return Started{}, err
 	}
-
 	reusesOwner := r.Mode == ModeRegenerate || r.Mode == ModeRetry
 	if !reusesOwner {
-		// A legacy owner question that never got a reply gets an empty
-		// partial reply, so the new owner message never sits right under it.
-		if historyTip != nil {
-			if tip, ok := byID[*historyTip]; ok && tip.role == "user" {
-				id, err := insertMessageTx(tx, newMessage{conv: r.ConversationID, parent: historyTip, role: "assistant",
-					turnID: tip.turnID, status: "partial", provider: sql.NullString{String: routing.Provider, Valid: true},
-					createdAt: createdAt})
-				if err != nil {
-					return Started{}, err
-				}
-				historyTip = &id
-			}
+		if st.UserMessageID, err = insertOwnerTx(tx, in, &pl, routing, turnID, createdAt); err != nil {
+			return Started{}, err
 		}
-		id, err := insertMessageTx(tx, newMessage{conv: r.ConversationID, parent: historyTip, role: "user", text: userText,
-			turnID: turnID, status: "complete", createdAt: createdAt, ClientKey: r.ClientKey})
-		if err != nil {
-			return Started{}, duplicateKey(err, r.ClientKey)
-		}
-		st.UserMessageID = id
 		wroteUser = true
-		// An edit's files stay linked to the original message (the Mac's
-		// link of them is a no-op), so only a send links.
-		if err := linkAttachmentsTx(tx, r.AttachmentIDs, id); err != nil {
-			return Started{}, err
-		}
-		if err := markCommentsSentTx(tx, r.ConversationID, r.ArtifactCommentIDs, createdAt); err != nil {
-			return Started{}, err
-		}
-		if err := setPrefixTitleTx(tx, r.ConversationID, titleText); err != nil {
-			return Started{}, err
-		}
 	}
 	if err := writeRoutingTx(tx, r.ConversationID, conv, r.Routing, routing); err != nil {
 		return Started{}, err
 	}
-	provider, model := sql.NullString{String: "", Valid: true}, sql.NullString{}
-	if !routing.Automatic {
-		provider.String = routing.Provider
-		model = sql.NullString{String: routing.Model, Valid: routing.Model != ""}
-	}
-	userID := st.UserMessageID
 	replyKey := ""
 	if reusesOwner {
 		replyKey = r.ClientKey // the reused owner row keeps its own key
 	}
-	asst, err := insertMessageTx(tx, newMessage{conv: r.ConversationID, parent: &userID, role: "assistant",
-		turnID: turnID, status: "partial", provider: provider, model: model, createdAt: createdAt, ClientKey: replyKey})
+	asst, err := insertReplyTx(tx, r.ConversationID, st.UserMessageID, routing, turnID, createdAt, replyKey)
 	if err != nil {
-		return Started{}, duplicateKey(err, replyKey)
+		return Started{}, err
 	}
 	if err := tx.Commit(); err != nil {
 		return Started{}, fmt.Errorf("starting chat turn: %w", err)
@@ -384,18 +278,189 @@ func (s *Store) Start(ctx context.Context, r StartRequest) (Started, error) {
 	st.AssistantMessageID = asst
 	st.Routing = routing
 	st.ProjectID = nullable(conv.projectID)
-	st.Replay = (r.Mode != ModeSend && r.Mode != ModeContinue) || !sameID(historyTip, r.ContinuousLeafID)
-	st.SendText = composeTurnText(userText, outcomes)
+	st.Replay = (r.Mode != ModeSend && r.Mode != ModeContinue) || !sameID(pl.historyTip, r.ContinuousLeafID)
+	st.SendText = composeTurnText(pl.userText, pl.outcomes)
 	if r.ProviderPrefix != "" {
 		st.SendText = r.ProviderPrefix + "\n\n" + st.SendText
 	}
 	if wroteUser {
 		// Remember and the knowledge prefixes get the owner's own words,
 		// never the skill or REFERENCED lines.
-		_, body, _ := displayParts(userText)
+		_, body, _ := displayParts(pl.userText)
 		s.runPrefixes(&st, body)
 	}
 	return st, nil
+}
+
+// startInput is what a turn's start read before its per-mode step.
+type startInput struct {
+	r                StartRequest
+	conv             *convRow
+	all              []msgRow
+	byID             map[int64]msgRow
+	quoted, composed string // a send's quote-composed and stored texts
+}
+
+// turnPlan is a start's per-mode result: userText is the stored owner text
+// (the composer's format); titleText the prefix title's source — the
+// owner's own words for a send, the stored text for an edit (the Mac's
+// titleText ?? userText); historyTip the new owner row's parent; outcomes
+// the actions-outcome block (a new message only).
+type turnPlan struct {
+	userText, titleText string
+	historyTip          *int64
+	outcomes            string
+}
+
+// prepareTx is a start's per-mode step: it checks the named message and
+// fills the plan and st's reused owner row and attachments.
+func prepareTx(tx *sql.Tx, in startInput, st *Started) (turnPlan, error) {
+	switch in.r.Mode {
+	case ModeSend, ModeContinue:
+		return prepareSendTx(tx, in, st)
+	case ModeRegenerate, ModeRetry:
+		return prepareRegenerateTx(tx, in, st)
+	default: // ModeEdit (validateStart refused every other mode)
+		return prepareEditTx(tx, in, st)
+	}
+}
+
+// prepareSendTx: a send (or a continue, after its check) on the active
+// branch's tip; its owner text is the composer's, the comments' or
+// ContinueText.
+func prepareSendTx(tx *sql.Tx, in startInput, st *Started) (turnPlan, error) {
+	r := in.r
+	var pl turnPlan
+	path := activePath(in.all, in.conv.leaf)
+	if len(path) > 0 {
+		pl.historyTip = &path[len(path)-1].id
+	}
+	if r.Mode == ModeContinue && !continuable(path, r.MessageID) {
+		return pl, ErrInvalid
+	}
+	// The floor is the previous owner message, and it alone.
+	if floor, ok := lastOwnerCreatedAt(path); ok {
+		pl.outcomes, _ = outcomesBlockTx(tx, r.ConversationID, floor) // a failed read sends no block, as on the Mac
+	}
+	atts, err := pendingAttachmentsTx(tx, r.ConversationID, r.AttachmentIDs)
+	if err != nil {
+		return pl, err
+	}
+	st.Attachments = atts
+	switch {
+	case r.Mode == ModeContinue:
+		pl.userText, pl.titleText = ContinueText, ContinueText
+	case len(r.ArtifactCommentIDs) > 0:
+		msg, err := artifactCommentsTextTx(tx, r.ConversationID, r.ArtifactCommentIDs)
+		if err != nil {
+			return pl, err
+		}
+		pl.userText, pl.titleText = composeTurn(msg, "", nil), swiftTrim(msg)
+	default:
+		pl.userText, pl.titleText = in.composed, swiftTrim(in.quoted)
+	}
+	return pl, nil
+}
+
+// continuable: messageID is the branch's last row, a cut (`partial`) reply
+// not stopped by an exhausted quota.
+func continuable(path []msgRow, messageID int64) bool {
+	if len(path) == 0 {
+		return false
+	}
+	last := path[len(path)-1]
+	return last.id == messageID && last.role == "assistant" && last.status == "partial" &&
+		last.errorCode.String != codeQuotaExhausted
+}
+
+// prepareRegenerateTx: a regenerate (or a retry of a retryable error)
+// reuses the reply's owner row and its files.
+func prepareRegenerateTx(tx *sql.Tx, in startInput, st *Started) (turnPlan, error) {
+	var pl turnPlan
+	m, ok := in.byID[in.r.MessageID]
+	if !ok {
+		return pl, ErrNotFound
+	}
+	owner, hasOwner := in.byID[m.parent.Int64]
+	if m.role != "assistant" || !m.parent.Valid || !hasOwner || owner.role != "user" ||
+		m.errorCode.String == codeQuotaExhausted || (in.r.Mode == ModeRetry && notRetryable[m.errorCode.String]) {
+		return pl, ErrInvalid
+	}
+	st.UserMessageID = owner.id
+	pl.historyTip = nullable(owner.parent)
+	pl.userText = owner.text
+	var err error
+	st.Attachments, err = messageAttachmentsTx(tx, owner.id)
+	return pl, err
+}
+
+// prepareEditTx: a new owner sibling with the edited body, keeping the
+// original's skill and REFERENCED lines and sending its files again (their
+// rows stay on the original message, v1 limit).
+func prepareEditTx(tx *sql.Tx, in startInput, st *Started) (turnPlan, error) {
+	var pl turnPlan
+	m, ok := in.byID[in.r.MessageID]
+	if !ok {
+		return pl, ErrNotFound
+	}
+	if m.role != "user" {
+		return pl, ErrInvalid
+	}
+	pl.historyTip = nullable(m.parent)
+	pl.userText = recompose(m.text, in.r.Text)
+	pl.titleText = pl.userText
+	var err error
+	st.Attachments, err = messageAttachmentsTx(tx, m.id)
+	return pl, err
+}
+
+// insertOwnerTx writes a new owner row (after an empty reply under a legacy
+// unanswered owner question, so the new row never sits right under it),
+// links a send's files, marks its artifact comments sent and sets the
+// prefix title; pl.historyTip moves to the row's parent.
+func insertOwnerTx(tx *sql.Tx, in startInput, pl *turnPlan, routing Routing, turnID string, createdAt float64) (int64, error) {
+	r := in.r
+	if pl.historyTip != nil {
+		if tip, ok := in.byID[*pl.historyTip]; ok && tip.role == "user" {
+			id, err := insertMessageTx(tx, newMessage{conv: r.ConversationID, parent: pl.historyTip, role: "assistant",
+				turnID: tip.turnID, status: "partial", provider: sql.NullString{String: routing.Provider, Valid: true},
+				createdAt: createdAt})
+			if err != nil {
+				return 0, err
+			}
+			pl.historyTip = &id
+		}
+	}
+	id, err := insertMessageTx(tx, newMessage{conv: r.ConversationID, parent: pl.historyTip, role: "user", text: pl.userText,
+		turnID: turnID, status: "complete", createdAt: createdAt, ClientKey: r.ClientKey})
+	if err != nil {
+		return 0, duplicateKey(err, r.ClientKey)
+	}
+	// An edit's files stay linked to the original message (the Mac's link
+	// of them is a no-op), so only a send links.
+	if err := linkAttachmentsTx(tx, r.AttachmentIDs, id); err != nil {
+		return 0, err
+	}
+	if err := markCommentsSentTx(tx, r.ConversationID, r.ArtifactCommentIDs, createdAt); err != nil {
+		return 0, err
+	}
+	return id, setPrefixTitleTx(tx, r.ConversationID, pl.titleText)
+}
+
+// insertReplyTx writes the turn's empty `partial` reply under userID with
+// the turn's provider and model (none for an automatic turn).
+func insertReplyTx(tx *sql.Tx, conv, userID int64, routing Routing, turnID string, createdAt float64, key string) (int64, error) {
+	provider, model := sql.NullString{String: "", Valid: true}, sql.NullString{}
+	if !routing.Automatic {
+		provider.String = routing.Provider
+		model = sql.NullString{String: routing.Model, Valid: routing.Model != ""}
+	}
+	id, err := insertMessageTx(tx, newMessage{conv: conv, parent: &userID, role: "assistant",
+		turnID: turnID, status: "partial", provider: provider, model: model, createdAt: createdAt, ClientKey: key})
+	if err != nil {
+		return 0, duplicateKey(err, key)
+	}
+	return id, nil
 }
 
 func validateStart(r StartRequest, text, composed string) error {
