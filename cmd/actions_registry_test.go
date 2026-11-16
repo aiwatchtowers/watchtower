@@ -248,6 +248,29 @@ func surfaceNamesOf(reg *tools.Registry, surface string, access tools.Access) []
 	return out
 }
 
+// The chat's own history reads are on the chats that have a conversation —
+// main, target and the editor — and nowhere else, and never in the dev-mode
+// read set (DEV-01).
+func TestBuildToolRegistry_ChatHistoryReadsOnChatsOnly(t *testing.T) {
+	database, err := db.Open(":memory:")
+	require.NoError(t, err)
+	database.SetMaxOpenConns(1)
+	defer database.Close()
+	reg := buildToolRegistry(&config.Config{ActiveWorkspace: "test-ws"}, database)
+	names := []string{"get_chat_history", "list_chat_artifacts", "get_chat_artifact"}
+	for _, name := range names {
+		for _, surface := range []string{"main", "target", tools.AutomationEditorSurface} {
+			assert.True(t, surfaceToolNames(reg, surface)[name], "%s missing on %s", name, surface)
+		}
+		for _, surface := range []string{tools.AutomationSurface, "inbox", "project", "reaction", tools.SurfaceTuning} {
+			assert.False(t, surfaceToolNames(reg, surface)[name], "%s leaked onto %s", name, surface)
+		}
+		for _, rt := range tools.ReadTools() {
+			assert.NotEqual(t, name, rt.Name, "dev-mode MCP never mounts %s (DEV-01)", name)
+		}
+	}
+}
+
 func surfaceToolNames(reg *tools.Registry, surface string) map[string]bool {
 	out := map[string]bool{}
 	for _, tool := range reg.List(surface) {

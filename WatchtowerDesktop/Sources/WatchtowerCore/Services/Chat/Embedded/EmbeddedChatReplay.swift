@@ -9,6 +9,8 @@ package enum EmbeddedChatReplay {
     /// The main chat's cap (`chat.ReplayCapChars`), in characters; the
     /// header and footer are Go's `replayHeader`/`replayFooter`.
     package static let capCharacters = 24000
+    /// Go's omitted-line hint naming the chat-history reads.
+    package static let omittedHint = " — get_chat_history reads them, list_chat_artifacts lists the artifacts"
     package static let header =
         "=== CONVERSATION SO FAR (replayed from Watchtower's history; the earlier model session is not available) ==="
     package static let footer = "=== END OF CONVERSATION SO FAR — the owner's new message follows ==="
@@ -62,7 +64,7 @@ package enum EmbeddedChatReplay {
             start = index
         }
         var lines = [header + "\n"]
-        if start > 0 { lines.append("[\(start) earlier messages omitted]\n") }
+        if start > 0 { lines.append("[\(start) earlier messages omitted\(omittedHint)]\n") }
         lines += kept[start...]
         lines.append(footer + "\n\n")
         return lines.joined()

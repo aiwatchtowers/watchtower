@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -102,11 +103,67 @@ func TestGetChatHistory_TruncatesLongMessages(t *testing.T) {
 func TestChatHistory_RefusesWithoutConversation(t *testing.T) {
 	d := openDB(t)
 	reg := chatHistoryRegistry(t, d)
-	for _, name := range []string{"get_chat_history", "list_chat_artifacts"} {
-		_, err := reg.CallRead(context.Background(), name, json.RawMessage(`{}`), Binding{Surface: "main"})
-		var ve *ValidationError
-		require.ErrorAs(t, err, &ve, name)
+	conv, ids := seedChatConversation(t, d, "a", "b")
+	_, err := d.Exec(`INSERT INTO chat_artifacts (conversation_id, message_id, artifact_key, version, kind, content, created_at)
+		VALUES (?, ?, 'k', 1, 'document', 'c', 1)`, conv, ids[1])
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO chat_conversations (id, created_at, updated_at) VALUES (999, 1, 1)`)
+	require.NoError(t, err)
+	_, err = d.Exec(`DELETE FROM chat_conversations WHERE id = 999`)
+	require.NoError(t, err)
+	args := map[string]string{"get_chat_history": `{}`, "list_chat_artifacts": `{}`, "get_chat_artifact": `{"key":"k"}`}
+	for name, a := range args {
+		for _, b := range []Binding{{Surface: "main"}, {Surface: "main", ConversationID: 999}} {
+			_, err := reg.CallRead(context.Background(), name, json.RawMessage(a), b)
+			var ve *ValidationError
+			require.ErrorAs(t, err, &ve, "%s on conversation %d", name, b.ConversationID)
+		}
 	}
+}
+
+// The newest page is cut by the encoded-byte budget, never by dropping a
+// message mid-page, and the next page resumes where it stopped.
+func TestGetChatHistory_ByteBudgetPagesWithoutLoss(t *testing.T) {
+	d := openDB(t)
+	reg := chatHistoryRegistry(t, d)
+	big := strings.Repeat("<", 20000) // 120 000 encoded bytes each
+	conv, ids := seedChatConversation(t, d, "old", big, big, big)
+	page := callChatRead(t, reg, "get_chat_history", conv, `{"max_chars":30000}`)
+	msgs := page["messages"].([]any)
+	require.Len(t, msgs, 2)
+	assert.EqualValues(t, ids[2], msgs[0].(map[string]any)["id"])
+	assert.Equal(t, true, msgs[0].(map[string]any)["truncated"], "the older one is cut to the remaining budget")
+	assert.Equal(t, false, msgs[1].(map[string]any)["truncated"])
+	assert.EqualValues(t, ids[2], page["next_before"])
+	page = callChatRead(t, reg, "get_chat_history", conv, `{"before":`+jsonInt(ids[2])+`}`)
+	assert.Equal(t, []string{"old", strings.Repeat("<", 6000)}, messageTexts(page))
+	assert.Equal(t, false, page["has_more"])
+	_, hasNext := page["next_before"]
+	assert.False(t, hasNext)
+	assert.EqualValues(t, 2, page["matched"])
+	assert.EqualValues(t, 4, page["total"])
+}
+
+// An abandoned branch (an edited-away message) stays out of the history.
+func TestGetChatHistory_ActivePathOnly(t *testing.T) {
+	d := openDB(t)
+	reg := chatHistoryRegistry(t, d)
+	conv, ids := seedChatConversation(t, d, "root", "answer")
+	ins := func(parent int64, role, text string) int64 {
+		r, err := d.Exec(`INSERT INTO chat_messages (conversation_id, parent_id, role, text, created_at) VALUES (?, ?, ?, ?, 1)`,
+			conv, parent, role, text)
+		require.NoError(t, err)
+		id, err := r.LastInsertId()
+		require.NoError(t, err)
+		return id
+	}
+	_, err := d.Exec(`UPDATE chat_messages SET parent_id = ? WHERE id = ?`, ids[0], ids[1])
+	require.NoError(t, err)
+	ins(ids[1], "user", "abandoned question")
+	leaf := ins(ids[1], "user", "kept question")
+	_, err = d.Exec(`UPDATE chat_conversations SET active_leaf_message_id = ? WHERE id = ?`, leaf, conv)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"root", "answer", "kept question"}, messageTexts(callChatRead(t, reg, "get_chat_history", conv, `{}`)))
 }
 
 func TestChatArtifacts_ListLatestAndOpenVersions(t *testing.T) {
@@ -140,8 +197,71 @@ func TestChatArtifacts_ListLatestAndOpenVersions(t *testing.T) {
 	assert.Equal(t, true, got["has_more"])
 	assert.EqualValues(t, 7, got["next_from_char"])
 
-	_, err := reg.CallRead(context.Background(), "get_chat_artifact", json.RawMessage(`{"key":"foreign"}`),
-		Binding{Surface: "main", ConversationID: conv})
-	var ve *ValidationError
-	require.ErrorAs(t, err, &ve, "another chat's artifact must not open")
+	for args, want := range map[string]string{
+		`{"key":"foreign"}`:             `no artifact "foreign"`,
+		`{"key":"plan","version":3}`:    `has no version 3 (it has 2)`,
+		`{"key":"plan","from_char":99}`: "past the end",
+		`{"key":"  "}`:                  "key is required",
+		`{"key":"plan","version":-1}`:   "must not be negative",
+	} {
+		_, err := reg.CallRead(context.Background(), "get_chat_artifact", json.RawMessage(args),
+			Binding{Surface: "main", ConversationID: conv})
+		var ve *ValidationError
+		require.ErrorAs(t, err, &ve, args)
+		assert.Contains(t, ve.Msg, want, args)
+	}
+}
+
+// The attributes an email/slack/event/code artifact keeps outside its body
+// come back, so a revision under the same key keeps them.
+func TestGetChatArtifact_ReturnsMeta(t *testing.T) {
+	d := openDB(t)
+	reg := chatHistoryRegistry(t, d)
+	conv, ids := seedChatConversation(t, d, "draft a mail", "here")
+	_, err := d.Exec(`INSERT INTO chat_artifacts (conversation_id, message_id, artifact_key, version, kind, title, content, meta_json, edited, created_at)
+		VALUES (?, ?, 'mail', 1, 'email', 'Hi', 'body', '{"to":["a@example.com"],"subject":"Hi"}', 1, 1)`, conv, ids[1])
+	require.NoError(t, err)
+	got := callChatRead(t, reg, "get_chat_artifact", conv, `{"key":"mail"}`)
+	assert.Equal(t, map[string]any{"to": []any{"a@example.com"}, "subject": "Hi"}, got["meta"])
+	assert.Equal(t, true, got["artifact"].(map[string]any)["edited_by_owner"])
+}
+
+// A default call on a large HTML artifact stays under READ-01's byte cap and
+// pages instead of being refused.
+func TestGetChatArtifact_HTMLStaysUnderByteCap(t *testing.T) {
+	d := openDB(t)
+	reg := chatHistoryRegistry(t, d)
+	conv, ids := seedChatConversation(t, d, "page", "here")
+	_, err := d.Exec(`INSERT INTO chat_artifacts (conversation_id, message_id, artifact_key, version, kind, content, created_at)
+		VALUES (?, ?, 'p', 1, 'html', ?, 1)`, conv, ids[1], strings.Repeat("<b>&</b>", 20000))
+	require.NoError(t, err)
+	got := callChatRead(t, reg, "get_chat_artifact", conv, `{"key":"p","max_chars":50000}`)
+	assert.Equal(t, true, got["has_more"])
+	n := utf8.RuneCountInString(got["content"].(string))
+	assert.Positive(t, n)
+	assert.EqualValues(t, n, got["next_from_char"])
+}
+
+// The list keeps the most recently changed artifacts, in that order, and says
+// when it left older ones out.
+func TestListChatArtifacts_LimitKeepsRecent(t *testing.T) {
+	d := openDB(t)
+	reg := chatHistoryRegistry(t, d)
+	conv, ids := seedChatConversation(t, d, "a", "b")
+	for i, key := range []string{"a", "b", "c", "a"} {
+		_, err := d.Exec(`INSERT INTO chat_artifacts (conversation_id, message_id, artifact_key, version, kind, content, created_at)
+			VALUES (?, ?, ?, (SELECT COALESCE(MAX(version), 0) + 1 FROM chat_artifacts WHERE conversation_id = ? AND artifact_key = ?), 'document', 'я', ?)`,
+			conv, ids[1], key, conv, key, i)
+		require.NoError(t, err)
+	}
+	list := callChatRead(t, reg, "list_chat_artifacts", conv, `{"limit":2}`)
+	var keys []string
+	for _, a := range list["artifacts"].([]any) {
+		keys = append(keys, a.(map[string]any)["key"].(string))
+	}
+	assert.Equal(t, []string{"c", "a"}, keys)
+	assert.Equal(t, true, list["has_more"])
+	all := callChatRead(t, reg, "list_chat_artifacts", conv, `{}`)
+	assert.Len(t, all["artifacts"].([]any), 3)
+	assert.Equal(t, false, all["has_more"])
 }

@@ -78,7 +78,7 @@ func TestBuildReplay_CapKeepsNewestAndCountsOmitted(t *testing.T) {
 		path = append(path, msg(i, "user", strings.Repeat("x", 90)+string(rune('a'+i-1)), "t"))
 	}
 	out := BuildReplay(path, 300) // each entry ≈ 98 runes + newline → three fit
-	assert.Contains(t, out, "[7 earlier messages omitted")
+	assert.Contains(t, out, "[7 earlier messages omitted — get_chat_history reads them, list_chat_artifacts lists the artifacts]")
 	assert.Contains(t, out, strings.Repeat("x", 90)+"j", "the newest message is kept")
 	assert.NotContains(t, out, strings.Repeat("x", 90)+"g")
 }

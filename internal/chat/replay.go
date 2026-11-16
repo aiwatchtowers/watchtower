@@ -59,7 +59,8 @@ func BuildReplay(path []db.ChatMessage, capChars int) string {
 
 // BuildReplaySteps renders path (root first) as a transcript block, newest
 // messages kept first: when the entries exceed capChars runes, the oldest are
-// dropped and counted in a "[N earlier messages omitted]" line; a single
+// dropped and counted in a "[N earlier messages omitted — …]" line naming
+// the history reads (get_chat_history, list_chat_artifacts); a single
 // newest entry longer than the cap is truncated rather than dropped. Tool
 // steps are one line each (steps is keyed by message id). An assistant row
 // with no text and no steps says nothing and is skipped — e.g. the empty

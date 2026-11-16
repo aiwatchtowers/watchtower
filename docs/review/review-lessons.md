@@ -3113,3 +3113,13 @@ Entry format:
 - rule-gap (candidate, dim 6): *a second writer/reader of a shared table that serves a subset of its rows (main chat = `context_type IS NULL`) applies the subset predicate at every entry point that takes an id from the client, not only at the listing.*
 - rule-gap (candidate, dim 7): *a name-keyed guard allowlist scanned across packages qualifies new entries by package/file; a bare generic name is the tell.*
 - outcome: TBD
+
+## 2026-11-16 — fix/chat-reads-own-history (7f45b32ac: `get_chat_history`, `list_chat_artifacts`, `get_chat_artifact` on main/target/automation_editor over `Binding.ConversationID`, the replay's omitted line names them; 8 files +440; panel: prosecutor (12) + codex (1) + all three pr-review-toolkit specialists; judge verified by reading and ran the new `internal/tools` tests green; a concurrent fix lane's uncommitted edit was in the tree at judging) — verdict: changes-needed
+
+- contested: F1, `meta_json` missing from the artifact tools. Partly mitigated, because the stored assistant text keeps the original `:::artifact` fence with its attributes, so `get_chat_history` can recover them. Held major anyway: the tool the description points to for revisions returns the latest version without to/cc/subject/channel/start/end, so a same-key re-emit drops them. [6]
+- contested: rune caps against READ-01's 256 KB byte gate. Real only for escape-heavy text (`<`/`>`/`&` encode to 6 bytes each), and the gate refuses loudly with "narrow the request". Held minor. [9]
+- false-positive: F4 (branched path untested at the tool level). `ActiveChatPath` owns the branch logic and is tested in `internal/db`; the tool only consumes the path. The silent-failure "unknown conversation reads empty" finding is close to a false positive too: the binding comes from process flags, not from the model. [7]
+- miss: the AGENT-06 guard ran its new calls against an unseeded conversation 7, so it exercised only the empty path. Once a fix made a missing conversation an error, the guard went red (`chat conversation 7 no longer exists`). A guard call list that names an id should seed that id. [7]
+- weak-dimension: 7. The registration and surface wiring in `buildToolRegistry` had no cmd-level pin even though `TestAutomationEditorSurface_MountsOnlyDraftSaveAndReads` already lists editor tools by name.
+- rule-gap (candidate, dim 9): *a read tool with rune or char caps must keep its worst-case JSON encoding (6-byte escapes) under `MaxReadResultBytes`, or cap on encoded bytes.*
+- outcome: TBD
