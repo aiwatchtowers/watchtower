@@ -255,10 +255,15 @@ extension MobileSettingsModel {
         return phone.permissionsRequested ? "Asks to answer permission prompts" : "Permission prompts off"
     }
 
+    /// The Chat toggle (spec 2026-11-15 §5, mockup 4b).
+    nonisolated static let chatTitle = "Chat"
+    nonisolated static let chatCaption = "Chat on this iPhone: ask, approve with Permissions"
+
     nonisolated static func couldNotChange(_ grant: String, name: String, why: String) -> String {
         let what = switch grant {
         case "typing": "typing"
         case "permissions": "permission prompts"
+        case "chat": "chat"
         default: "starting sessions"
         }
         return "Couldn't change \(what) for \(name). \(why)"

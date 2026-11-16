@@ -30,7 +30,7 @@ text: With the Slack connector on in your Claude or ChatGPT account, **Chats** c
 area: assistant
 level: next
 kind: feature
-since: next
+since: 0.28.3
 -->
 
 If your Claude or ChatGPT account has its Slack connector turned on, the assistant in **Chats** can use it for what Watchtower has not synced: a channel outside your synced scope, a channel you set to **Stop syncing** in [Statistics](../features/statistics.md), a date older than the history, a first sync that is still running. The assistant looks in Watchtower's own data first and says which part of an answer came from Live. Watchtower checks the connector with one real read when you open **Connections → Slack** (unless it checked in the last 10 minutes) and at a chat's first Slack lookup once the last check is a day old; `watchtower slack live probe` runs the check now. Live is not on the iPhone.

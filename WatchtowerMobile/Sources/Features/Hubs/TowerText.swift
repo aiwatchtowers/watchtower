@@ -121,3 +121,105 @@ enum TowerHost: Equatable {
         }
     }
 }
+
+/// The Chats tab's lines that name the hub (iPhone chat spec §6.1, mockups 1a–1j): the spec's own copy on a Mac
+/// hub, "your tower" on a server (#1783). Lines that never name the hub live in the chat models.
+enum ChatText {
+    static func updateTitle(_ host: TowerHost) -> String {
+        host == .mac ? "Update Watchtower on your Mac" : "Update Watchtower on your tower"
+    }
+
+    static func updateLine(_ host: TowerHost) -> String {
+        host == .mac ? "This Mac's Watchtower is too old for chat on the phone." : "This tower's Watchtower is too old for chat on the phone."
+    }
+
+    /// Only a Mac hub runs over iCloud: a server is on Relay or nowhere.
+    static let relayLine = "This Mac talks to your phone through iCloud. Chat needs Relay, which streams the answer as it is written."
+    static let macAllowLine = "On the Mac: Settings → Mobile → this phone → allow Chat."
+    /// The phone's chat copy (`chat-copy.sqlite`) did not open: the tab still works, in memory.
+    static let copyUnavailableLine =
+        "Saved chats are off on this phone — chats can't be read offline and an unsent message won't survive a restart."
+
+    static func unavailableLine(_ host: TowerHost) -> String {
+        host == .mac
+            ? "Watchtower on your Mac could not start chat. Restart Watchtower there to try again."
+            : "Watchtower on your tower could not start chat. Restart the Watchtower service there to try again."
+    }
+
+    static func loading(_ host: TowerHost) -> String {
+        host == .mac ? "Getting your chats from the Mac…" : "Getting your chats from your tower…"
+    }
+
+    static func readFailed(_ host: TowerHost) -> String {
+        host == .mac ? "The Mac could not read its chats." : "Your tower could not read its chats."
+    }
+
+    static func emptyLine(_ host: TowerHost) -> String {
+        let who = host == .mac ? "Your Mac" : "Your tower"
+        return "Ask anything about your Slack, mail, Jira, meetings and work. \(who) answers with everything it knows."
+    }
+
+    static func asleep(_ host: TowerHost) -> String {
+        "\(host == .mac ? "Your Mac" : "Your tower") is asleep. You can read chats; sending works when it wakes."
+    }
+
+    static func offline(_ host: TowerHost) -> String {
+        "\(host == .mac ? "Your Mac" : "Your tower") is offline. You can read chats; sending works when it is back."
+    }
+
+    static func searching(_ host: TowerHost) -> String {
+        host == .mac ? "Searching on your Mac…" : "Searching on your tower…"
+    }
+
+    static func searchNeedsHub(_ host: TowerHost) -> String {
+        host == .mac ? "Searching messages needs your Mac" : "Searching messages needs your tower"
+    }
+
+    static func noAnswer(_ host: TowerHost) -> String {
+        host == .mac ? "The Mac did not answer" : "Your tower did not answer"
+    }
+
+    // MARK: The conversation (mockups 2a–2i, 3b)
+
+    /// Mockup 2f: the Mac app runs this turn; a server never does.
+    static func answeringElsewhere(_ host: TowerHost) -> String {
+        host == .mac ? "Answering on your Mac — you can watch here." : "Answering on your tower — you can watch here."
+    }
+
+    /// Mockup 2g.
+    static func opening(_ host: TowerHost) -> String {
+        host == .mac ? "Opening the chat on your Mac…" : "Opening the chat on your tower…"
+    }
+
+    /// Mockup 2e: the composer is off while the hub sleeps.
+    static func asleepSending(_ host: TowerHost) -> String {
+        "\(host == .mac ? "Your Mac" : "Your tower") is asleep — sending works when it wakes."
+    }
+
+    static func offlineSending(_ host: TowerHost) -> String {
+        "\(host == .mac ? "Your Mac" : "Your tower") is offline — sending works when it is back."
+    }
+
+    static let relayUnreachableSending = "Relay isn't answering — sending works when it is back."
+
+    /// Mockup 2e's note: a chat the phone never held, read while the hub sleeps.
+    static func neverLoaded(_ host: TowerHost) -> String {
+        host == .mac
+            ? "Open this chat once while your Mac is awake to read it here"
+            : "Open this chat once while your tower is awake to read it here"
+    }
+
+    /// Under a send whose echo is late and that may already be on the hub (it is never sent twice).
+    static func waitingForHub(_ host: TowerHost) -> String { host == .mac ? "Waiting for your Mac…" : "Waiting for your tower…" }
+
+    /// Mockup 2h.
+    static func newChatTitle(_ host: TowerHost) -> String { host == .mac ? "Ask your Mac" : "Ask your tower" }
+
+    /// Mockup 2c without the `permissions` grant.
+    static func approveElsewhere(_ host: TowerHost) -> String { host == .mac ? "Approve on the Mac" : "Approve on your tower" }
+
+    /// An artifact the feed cap cut (spec §4.6).
+    static func openToSeeAll(_ host: TowerHost) -> String {
+        host == .mac ? "Too long for the phone. Open it on your Mac." : "Too long for the phone. Open it on your tower."
+    }
+}

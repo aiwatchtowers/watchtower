@@ -2480,6 +2480,15 @@ CREATE TABLE IF NOT EXISTS slack_live_status (
   checked_at TEXT NOT NULL,
   PRIMARY KEY (team_id, provider)
 );
+CREATE TABLE IF NOT EXISTS chat_turn_leases (
+  conversation_id        INTEGER PRIMARY KEY REFERENCES chat_conversations(id) ON DELETE CASCADE,
+  owner                  TEXT NOT NULL CHECK (owner IN ('desktop','hub')),
+  owner_id               TEXT NOT NULL,
+  turn_id                TEXT NOT NULL,
+  started_at_ms          INTEGER NOT NULL,
+  heartbeat_at_ms        INTEGER NOT NULL,
+  cancel_requested_at_ms INTEGER
+);
 CREATE VIEW IF NOT EXISTS tracker_issues AS
 SELECT 'jira' AS tracker, ji.account_id, ji.id AS issue_id, ji.key, ji.project_key,
        ji.summary AS title, ji.description_text, ji.status, ji.status_category,

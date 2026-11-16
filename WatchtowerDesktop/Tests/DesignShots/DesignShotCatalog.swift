@@ -53,6 +53,12 @@ enum DesignShotCatalog {
             DesignShot(name: "session-drag-preview-narrow-busy", size: NSSize(width: 190, height: 140)) {
                 DesignShotFixtures.sessionDragPreview(width: 166, busy: true)
             },
+            DesignShot(name: "session-rows-title", size: NSSize(width: 300, height: 0)) {
+                DesignShotFixtures.sessionRowsTitle(width: 276)
+            },
+            DesignShot(name: "session-rows-title-narrow", size: NSSize(width: 214, height: 0)) {
+                DesignShotFixtures.sessionRowsTitle(width: 190)
+            },
             DesignShot(name: "chat-rows", size: NSSize(width: 560, height: 280)) {
                 AnyView(DesignShotFixtures.chatRows().padding(12).shotFrame().detailBackground())
             },
@@ -608,6 +614,7 @@ enum DesignShotCatalog {
             + TuningChatShotFixtures.shots // The tuning chat over the Analytics pane (#1517).
             + SlackFullLiveShotFixtures.shots // Slack Full / Live screens spec (#1779), design only.
             + SlackAdaptiveSyncShotFixtures.shots // Adaptive Slack sync, Statistics → Channels (#1709).
+            + IPhoneChatShotFixtures.shots // The iPhone chat's Mac side (#1791), mockups 4a/4b.
     }
 }
 
@@ -650,6 +657,7 @@ enum DesignShotFixtures {
         TuningChatShotFixtures.cleanUp()
         ProjectPageShotFixtures.cleanUp()
         ClosedAsksShotFixtures.cleanUp()
+        IPhoneChatShotFixtures.cleanUp()
         if let newTaskPoolPath { TestDatabase.cleanup(path: newTaskPoolPath) }
         newTaskPoolPath = nil
         UserDefaults().removePersistentDomain(forName: defaultsSuite)
@@ -815,6 +823,36 @@ enum DesignShotFixtures {
             .padding(Spacing.medium)
             .shotFrame()
             .panelBackground())
+    }
+
+    /// Session rows with a title wider than the panel (#1088): a workbench
+    /// session with open asks and the ✕ (the title keeps the whole first
+    /// line), and a running standalone terminal, which stays one line.
+    static func sessionRowsTitle(width: CGFloat) -> AnyView {
+        func session(_ id: Int64, projectID: Int64?, kind: TerminalSession.Kind, title: String) -> TerminalSession {
+            TerminalSession(id: id, projectID: projectID, kind: kind, title: title, titleSource: .user,
+                            folderPath: "/tmp/acme", createdAt: "2026-10-01T12:00:00Z",
+                            lastActiveAt: "2026-10-01T12:00:00Z")
+        }
+        let actions = SessionRowActions(open: { _ in }, rename: { _ in }, delete: { _ in })
+        let agent = SessionSwitcherPresentation.Row(
+            session: session(42, projectID: 1, kind: .codex, title: "acme billing export and invoice reconciliation"),
+            state: .live(.working), caption: "Working", badge: nil, shortcut: nil
+        )
+        let shell = SessionSwitcherPresentation.Row(
+            session: session(43, projectID: nil, kind: .shell, title: "acme deploy logs on the staging host"),
+            state: .live(.running), caption: nil, badge: nil, shortcut: nil
+        )
+        return AnyView(VStack(alignment: .leading, spacing: Spacing.medium) {
+            TerminalSessionRow(row: agent, actions: actions, openAsks: 2, reportLine: "#42 · 3/5",
+                               reportProgress: 0.6, quickDelete: {}, showsDelete: true, opensIn: .terminal)
+                .panelTab(isSelected: true)
+            TerminalSessionRow(row: shell, actions: actions)
+        }
+        .frame(width: width)
+        .padding(Spacing.medium)
+        .shotFrame()
+        .panelBackground())
     }
 
     // MARK: - Chat

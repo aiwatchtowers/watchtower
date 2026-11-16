@@ -211,6 +211,18 @@ final class HubControlClientTests: XCTestCase {
         XCTAssertEqual(server.received.first?["op"] as? String, "desktop_heartbeat")
     }
 
+    /// Spec 2026-11-15 §4.8 (D18): every heartbeat tells the hub this app
+    /// honours `chat_turn_leases` (`chat_lease: 1`, Go `hub desktop
+    /// heartbeat --chat-lease 1`); a fresh one without it keeps chat off.
+    func testHeartbeatCarriesChatLeaseFlag() async throws {
+        server.answer = { _ in [#"{"op":"desktop_heartbeat","ok":true}"#] }
+        _ = try await HubControlClient(socketPath: server.path).send(.heartbeat)
+        XCTAssertEqual(server.received.first?["op"] as? String, "desktop_heartbeat")
+        XCTAssertEqual(server.received.first?["chat_lease"] as? Int, 1)
+        let other = try JSONSerialization.jsonObject(with: JSONEncoder().encode(HubControlRequest.watch)) as? [String: Any]
+        XCTAssertNil(other?["chat_lease"], "only the heartbeat carries it")
+    }
+
     func testPairEventsBeforeTheAnswerAreSkipped() async throws {
         server.answer = { _ in [#"{"event":"pair","ok":false,"pair":"waiting"}"#, #"{"op":"desktop_view","ok":true}"#] }
         let answer = try await HubControlClient(socketPath: server.path).send(.view(hidden: [], displayOver: []).request)

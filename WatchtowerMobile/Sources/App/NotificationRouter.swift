@@ -2,14 +2,16 @@ import Foundation
 import UserNotifications
 import WatchtowerSync
 
-/// Where a work alert's tap goes: the ask's form, or the session (its workchat).
+/// Where a work alert's tap goes: the ask's form, the session (its workchat), or the AI chat.
 enum AlertDestination: Equatable {
     case ask(hubID: String, askID: Int64)
     case session(hubID: String, sessionID: Int64)
+    /// An AI chat's answer ended or waits for an approval (iPhone chat spec §4.7).
+    case chat(hubID: String, conversationID: Int64)
 
     var hubID: String {
         switch self {
-        case let .ask(hubID, _), let .session(hubID, _): hubID
+        case let .ask(hubID, _), let .session(hubID, _), let .chat(hubID, _): hubID
         }
     }
 
@@ -22,6 +24,9 @@ enum AlertDestination: Equatable {
         else { return nil }
         if event == .ask {
             return (userInfo[Key.ask] as? String).flatMap { Int64($0) }.map { .ask(hubID: hubID, askID: $0) }
+        }
+        if event == .chatAnswer {
+            return (userInfo[Key.conversation] as? String).flatMap { Int64($0) }.map { .chat(hubID: hubID, conversationID: $0) }
         }
         return (userInfo[Key.session] as? String).flatMap { Int64($0) }.map { .session(hubID: hubID, sessionID: $0) }
     }

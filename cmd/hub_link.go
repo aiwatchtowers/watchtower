@@ -48,6 +48,9 @@ type hubPhoneJSON struct {
 	PermissionsRequested bool   `json:"permissions_requested"`
 	StartSessionsAllowed bool   `json:"start_sessions_allowed"`
 	StartSessionsGranted bool   `json:"start_sessions_granted"`
+	// ChatAllowed is the owner's chat grant (on by default; the Desktop
+	// reads a missing key as on).
+	ChatAllowed          bool   `json:"chat_allowed"`
 	Ordered              bool   `json:"ordered"`
 	LastAppliedActionSeq uint64 `json:"last_applied_action_seq"`
 	Transport            string `json:"transport"`
@@ -136,7 +139,7 @@ func init() {
 	status := &cobra.Command{Use: "status", Short: "Show whether the hub runs and why not", Args: cobra.NoArgs, RunE: runHubStatus}
 	phones := &cobra.Command{Use: "phones", Short: "List the linked phones", Args: cobra.NoArgs, RunE: runHubPhones}
 	unlink := &cobra.Command{Use: "unlink <device>", Short: "Unlink a phone", Args: cobra.ExactArgs(1), RunE: runHubUnlink}
-	allow := &cobra.Command{Use: "allow <device> typing|permissions|start_sessions", Short: "Give a phone a grant (or take it with --revoke)",
+	allow := &cobra.Command{Use: "allow <device> typing|permissions|start_sessions|chat", Short: "Give a phone a grant (or take it with --revoke)",
 		Args: cobra.ExactArgs(2), RunE: runHubAllow}
 	allow.Flags().Bool("revoke", false, "take the grant away")
 	pair := &cobra.Command{Use: "pair", Short: "Pair a phone with the running hub", Args: cobra.NoArgs, RunE: runHubPair}
@@ -379,7 +382,7 @@ func hubPhone(d state.Device, active string) hubPhoneJSON {
 		TypingAllowed: d.TypingAllowed, TypingRequested: d.TypingRequested,
 		PermissionsAllowed: d.PermissionsAllowed, PermissionsRequested: d.PermissionsRequested,
 		StartSessionsAllowed: d.StartSessionsAllowed, StartSessionsGranted: d.StartSessionsGranted,
-		Ordered: d.Ordered, LastAppliedActionSeq: d.LastAppliedActionSeq, Transport: tr,
+		ChatAllowed: d.ChatAllowed, Ordered: d.Ordered, LastAppliedActionSeq: d.LastAppliedActionSeq, Transport: tr,
 	}
 }
 
@@ -410,7 +413,7 @@ func runHubAllow(cmd *cobra.Command, args []string) error {
 	revoke, _ := cmd.Flags().GetBool("revoke")
 	device, grant, on := strings.ToUpper(args[0]), args[1], !revoke
 	switch link.Grant(grant) {
-	case link.GrantTyping, link.GrantPermissions, link.GrantStartSessions:
+	case link.GrantTyping, link.GrantPermissions, link.GrantStartSessions, link.GrantChat:
 	default:
 		return hubAnswerError(hub.ControlAnswer{Error: hub.ErrClassUnknownGrant})
 	}

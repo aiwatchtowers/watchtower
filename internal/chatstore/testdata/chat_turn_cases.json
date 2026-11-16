@@ -1,0 +1,2950 @@
+{
+ "turns": [
+  {
+   "name": "plain complete turn",
+   "conversation": {
+    "title": "",
+    "title_source": "prefix",
+    "routing_mode": "preferred_reserve",
+    "provider": null,
+    "model": null,
+    "actual_provider": "",
+    "actual_model": "",
+    "routing_reason": ""
+   },
+   "messages": [],
+   "active_leaf": null,
+   "artifacts": [],
+   "attachments": [],
+   "actions": [],
+   "request": {
+    "mode": "send",
+    "message": null,
+    "text": "  Hello there  ",
+    "attachments": [],
+    "turn_id": "t1",
+    "routing": null,
+    "continuous_leaf": null
+   },
+   "events": [
+    {
+     "type": "turn_start",
+     "turn_id": "t1"
+    },
+    {
+     "type": "text_delta",
+     "turn_id": "t1",
+     "text": "Hi"
+    },
+    {
+     "type": "text_delta",
+     "turn_id": "t1",
+     "text": " there",
+     "advance_ms": 300
+    },
+    {
+     "type": "usage",
+     "turn_id": "t1",
+     "tokens_in": 12,
+     "tokens_out": 5,
+     "model": "claude-x"
+    },
+    {
+     "type": "turn_done",
+     "turn_id": "t1",
+     "status": "complete",
+     "session_id": "s1"
+    }
+   ],
+   "expect": {
+    "steps": [],
+    "artifacts": [],
+    "attachment_links": {},
+    "lease": null,
+    "send_text": "Hello there",
+    "replay": false,
+    "attachments_sent": [],
+    "messages": [
+     {
+      "ref": "new_user",
+      "role": "user",
+      "text": "Hello there",
+      "parent": null,
+      "status": "complete",
+      "turn_id": "t1",
+      "provider": null,
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     },
+     {
+      "ref": "new_assistant",
+      "role": "assistant",
+      "text": "Hi there",
+      "parent": "new_user",
+      "status": "complete",
+      "turn_id": "t1",
+      "provider": "",
+      "model": "claude-x",
+      "tokens_in": 12,
+      "tokens_out": 5,
+      "error_code": null,
+      "error_message": null
+     }
+    ],
+    "conversation": {
+     "title": "Hello there",
+     "title_source": "prefix",
+     "routing_mode": "preferred_reserve",
+     "provider": null,
+     "model": null,
+     "actual_provider": "",
+     "actual_model": "",
+     "routing_reason": "",
+     "session_id": "s1",
+     "active_leaf": "new_assistant",
+     "live_slack_since": null
+    }
+   }
+  },
+  {
+   "name": "a tool step then text",
+   "conversation": {
+    "title": "Earlier chat",
+    "title_source": "prefix",
+    "routing_mode": "preferred_reserve",
+    "provider": null,
+    "model": null,
+    "actual_provider": "",
+    "actual_model": "",
+    "routing_reason": ""
+   },
+   "messages": [
+    {
+     "ref": "u1",
+     "role": "user",
+     "text": "First",
+     "parent": null,
+     "status": "complete",
+     "turn_id": "t0",
+     "provider": null,
+     "model": null,
+     "tokens_in": null,
+     "tokens_out": null,
+     "error_code": null,
+     "error_message": null,
+     "created_at": 1700000000.0
+    },
+    {
+     "ref": "a1",
+     "role": "assistant",
+     "text": "Answer",
+     "parent": "u1",
+     "status": "complete",
+     "turn_id": "t0",
+     "provider": "claude",
+     "model": null,
+     "tokens_in": null,
+     "tokens_out": null,
+     "error_code": null,
+     "error_message": null,
+     "created_at": 1700000001.0
+    }
+   ],
+   "active_leaf": "a1",
+   "artifacts": [],
+   "attachments": [],
+   "actions": [],
+   "request": {
+    "mode": "send",
+    "message": null,
+    "text": "Search it",
+    "attachments": [],
+    "turn_id": "t1",
+    "routing": null,
+    "continuous_leaf": "a1"
+   },
+   "events": [
+    {
+     "type": "session_ready",
+     "session_id": "s2",
+     "provider": "claude",
+     "model": "opus-x",
+     "routing_mode": "preferred_reserve",
+     "preferred_provider": "claude",
+     "reason": "preferred"
+    },
+    {
+     "type": "tool_start",
+     "turn_id": "t1",
+     "id": "call-1",
+     "name": "search_knowledge",
+     "args": {
+      "query": "a/b",
+      "limit": 5
+     }
+    },
+    {
+     "type": "text_delta",
+     "turn_id": "t0",
+     "text": "IGNORED"
+    },
+    {
+     "type": "tool_end",
+     "turn_id": "t1",
+     "id": "call-1",
+     "ok": true,
+     "summary": "3 hits",
+     "sources": [
+      {
+       "kind": "slack",
+       "title": "#general",
+       "url": "https://chat.example.com/a/b",
+       "ref": "slack:1"
+      },
+      {
+       "kind": "jira",
+       "title": "PROJ-1",
+       "ref": "jira:PROJ-1",
+       "group": "PROJ"
+      }
+     ]
+    },
+    {
+     "type": "text_delta",
+     "turn_id": "t1",
+     "text": "Found three.",
+     "advance_ms": 200
+    },
+    {
+     "type": "turn_done",
+     "turn_id": "t1",
+     "status": "complete"
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "message": "new_assistant",
+      "seq": 0,
+      "tool_id": "call-1",
+      "name": "search_knowledge",
+      "args": {
+       "limit": 5,
+       "query": "a/b"
+      },
+      "ok": true,
+      "summary": "3 hits",
+      "sources": [
+       {
+        "kind": "slack",
+        "title": "#general",
+        "url": "https://chat.example.com/a/b",
+        "ref": "slack:1"
+       },
+       {
+        "kind": "jira",
+        "title": "PROJ-1",
+        "ref": "jira:PROJ-1",
+        "group": "PROJ"
+       }
+      ],
+      "ended": true
+     }
+    ],
+    "artifacts": [],
+    "attachment_links": {},
+    "lease": null,
+    "send_text": "Search it",
+    "replay": false,
+    "attachments_sent": [],
+    "messages": [
+     {
+      "ref": "u1",
+      "role": "user",
+      "text": "First",
+      "parent": null,
+      "status": "complete",
+      "turn_id": "t0",
+      "provider": null,
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     },
+     {
+      "ref": "a1",
+      "role": "assistant",
+      "text": "Answer",
+      "parent": "u1",
+      "status": "complete",
+      "turn_id": "t0",
+      "provider": "claude",
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     },
+     {
+      "ref": "new_user",
+      "role": "user",
+      "text": "Search it",
+      "parent": "a1",
+      "status": "complete",
+      "turn_id": "t1",
+      "provider": null,
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     },
+     {
+      "ref": "new_assistant",
+      "role": "assistant",
+      "text": "Found three.",
+      "parent": "new_user",
+      "status": "complete",
+      "turn_id": "t1",
+      "provider": "claude",
+      "model": "opus-x",
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     }
+    ],
+    "conversation": {
+     "title": "Earlier chat",
+     "title_source": "prefix",
+     "routing_mode": "preferred_reserve",
+     "provider": null,
+     "model": null,
+     "actual_provider": "claude",
+     "actual_model": "opus-x",
+     "routing_reason": "preferred",
+     "session_id": "s2",
+     "active_leaf": "new_assistant",
+     "live_slack_since": null
+    }
+   }
+  },
+  {
+   "name": "a turn error stores the code and message and no artifacts",
+   "conversation": {
+    "title": "",
+    "title_source": "prefix",
+    "routing_mode": "preferred_reserve",
+    "provider": null,
+    "model": null,
+    "actual_provider": "",
+    "actual_model": "",
+    "routing_reason": ""
+   },
+   "messages": [],
+   "active_leaf": null,
+   "artifacts": [],
+   "attachments": [],
+   "actions": [],
+   "request": {
+    "mode": "send",
+    "message": null,
+    "text": "Do it",
+    "attachments": [],
+    "turn_id": "t1",
+    "routing": null,
+    "continuous_leaf": null
+   },
+   "events": [
+    {
+     "type": "text_delta",
+     "turn_id": "t1",
+     "text": ":::artifact key=\"x\" kind=\"document\" title=\"X\"\nbody\n:::\n"
+    },
+    {
+     "type": "error",
+     "turn_id": "t1",
+     "code": "provider_unavailable",
+     "message": "boom",
+     "retryable": true
+    }
+   ],
+   "expect": {
+    "steps": [],
+    "artifacts": [],
+    "attachment_links": {},
+    "lease": null,
+    "send_text": "Do it",
+    "replay": false,
+    "attachments_sent": [],
+    "messages": [
+     {
+      "ref": "new_user",
+      "role": "user",
+      "text": "Do it",
+      "parent": null,
+      "status": "complete",
+      "turn_id": "t1",
+      "provider": null,
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     },
+     {
+      "ref": "new_assistant",
+      "role": "assistant",
+      "text": ":::artifact key=\"x\" kind=\"document\" title=\"X\"\nbody\n:::\n",
+      "parent": "new_user",
+      "status": "error",
+      "turn_id": "t1",
+      "provider": "",
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": "provider_unavailable",
+      "error_message": "boom"
+     }
+    ],
+    "conversation": {
+     "title": "Do it",
+     "title_source": "prefix",
+     "routing_mode": "preferred_reserve",
+     "provider": null,
+     "model": null,
+     "actual_provider": "",
+     "actual_model": "",
+     "routing_reason": "",
+     "session_id": null,
+     "active_leaf": "new_assistant",
+     "live_slack_since": null
+    }
+   }
+  },
+  {
+   "name": "quota with text is partial",
+   "conversation": {
+    "title": "",
+    "title_source": "prefix",
+    "routing_mode": "preferred_reserve",
+    "provider": null,
+    "model": null,
+    "actual_provider": "",
+    "actual_model": "",
+    "routing_reason": ""
+   },
+   "messages": [],
+   "active_leaf": null,
+   "artifacts": [],
+   "attachments": [],
+   "actions": [],
+   "request": {
+    "mode": "send",
+    "message": null,
+    "text": "Long one",
+    "attachments": [],
+    "turn_id": "t1",
+    "routing": null,
+    "continuous_leaf": null
+   },
+   "events": [
+    {
+     "type": "text_delta",
+     "turn_id": "t1",
+     "text": "Some text"
+    },
+    {
+     "type": "error",
+     "turn_id": "t1",
+     "code": "rate_limit",
+     "reason": "quota_exhausted",
+     "message": "quota"
+    }
+   ],
+   "expect": {
+    "steps": [],
+    "artifacts": [],
+    "attachment_links": {},
+    "lease": null,
+    "send_text": "Long one",
+    "replay": false,
+    "attachments_sent": [],
+    "messages": [
+     {
+      "ref": "new_user",
+      "role": "user",
+      "text": "Long one",
+      "parent": null,
+      "status": "complete",
+      "turn_id": "t1",
+      "provider": null,
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     },
+     {
+      "ref": "new_assistant",
+      "role": "assistant",
+      "text": "Some text",
+      "parent": "new_user",
+      "status": "partial",
+      "turn_id": "t1",
+      "provider": "",
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": "quota_exhausted",
+      "error_message": "quota"
+     }
+    ],
+    "conversation": {
+     "title": "Long one",
+     "title_source": "prefix",
+     "routing_mode": "preferred_reserve",
+     "provider": null,
+     "model": null,
+     "actual_provider": "",
+     "actual_model": "",
+     "routing_reason": "",
+     "session_id": null,
+     "active_leaf": "new_assistant",
+     "live_slack_since": null
+    }
+   }
+  },
+  {
+   "name": "quota without text is an error",
+   "conversation": {
+    "title": "",
+    "title_source": "prefix",
+    "routing_mode": "preferred_reserve",
+    "provider": null,
+    "model": null,
+    "actual_provider": "",
+    "actual_model": "",
+    "routing_reason": ""
+   },
+   "messages": [],
+   "active_leaf": null,
+   "artifacts": [],
+   "attachments": [],
+   "actions": [],
+   "request": {
+    "mode": "send",
+    "message": null,
+    "text": "Long one",
+    "attachments": [],
+    "turn_id": "t1",
+    "routing": null,
+    "continuous_leaf": null
+   },
+   "events": [
+    {
+     "type": "error",
+     "turn_id": "t1",
+     "code": "rate_limit",
+     "reason": "quota_exhausted",
+     "message": "quota"
+    }
+   ],
+   "expect": {
+    "steps": [],
+    "artifacts": [],
+    "attachment_links": {},
+    "lease": null,
+    "send_text": "Long one",
+    "replay": false,
+    "attachments_sent": [],
+    "messages": [
+     {
+      "ref": "new_user",
+      "role": "user",
+      "text": "Long one",
+      "parent": null,
+      "status": "complete",
+      "turn_id": "t1",
+      "provider": null,
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     },
+     {
+      "ref": "new_assistant",
+      "role": "assistant",
+      "text": "",
+      "parent": "new_user",
+      "status": "error",
+      "turn_id": "t1",
+      "provider": "",
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": "quota_exhausted",
+      "error_message": "quota"
+     }
+    ],
+    "conversation": {
+     "title": "Long one",
+     "title_source": "prefix",
+     "routing_mode": "preferred_reserve",
+     "provider": null,
+     "model": null,
+     "actual_provider": "",
+     "actual_model": "",
+     "routing_reason": "",
+     "session_id": null,
+     "active_leaf": "new_assistant",
+     "live_slack_since": null
+    }
+   }
+  },
+  {
+   "name": "a session-level error with an unknown code ends the turn as internal",
+   "conversation": {
+    "title": "",
+    "title_source": "prefix",
+    "routing_mode": "preferred_reserve",
+    "provider": null,
+    "model": null,
+    "actual_provider": "",
+    "actual_model": "",
+    "routing_reason": ""
+   },
+   "messages": [],
+   "active_leaf": null,
+   "artifacts": [],
+   "attachments": [],
+   "actions": [],
+   "request": {
+    "mode": "send",
+    "message": null,
+    "text": "Hm",
+    "attachments": [],
+    "turn_id": "t1",
+    "routing": null,
+    "continuous_leaf": null
+   },
+   "events": [
+    {
+     "type": "text_delta",
+     "turn_id": "t1",
+     "text": "x"
+    },
+    {
+     "type": "error",
+     "code": "weird",
+     "message": "m"
+    }
+   ],
+   "expect": {
+    "steps": [],
+    "artifacts": [],
+    "attachment_links": {},
+    "lease": null,
+    "send_text": "Hm",
+    "replay": false,
+    "attachments_sent": [],
+    "messages": [
+     {
+      "ref": "new_user",
+      "role": "user",
+      "text": "Hm",
+      "parent": null,
+      "status": "complete",
+      "turn_id": "t1",
+      "provider": null,
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     },
+     {
+      "ref": "new_assistant",
+      "role": "assistant",
+      "text": "x",
+      "parent": "new_user",
+      "status": "error",
+      "turn_id": "t1",
+      "provider": "",
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": "internal",
+      "error_message": "m"
+     }
+    ],
+    "conversation": {
+     "title": "Hm",
+     "title_source": "prefix",
+     "routing_mode": "preferred_reserve",
+     "provider": null,
+     "model": null,
+     "actual_provider": "",
+     "actual_model": "",
+     "routing_reason": "",
+     "session_id": null,
+     "active_leaf": "new_assistant",
+     "live_slack_since": null
+    }
+   }
+  },
+  {
+   "name": "interrupted keeps the text as partial",
+   "conversation": {
+    "title": "",
+    "title_source": "prefix",
+    "routing_mode": "preferred_reserve",
+    "provider": null,
+    "model": null,
+    "actual_provider": "",
+    "actual_model": "",
+    "routing_reason": ""
+   },
+   "messages": [],
+   "active_leaf": null,
+   "artifacts": [],
+   "attachments": [],
+   "actions": [],
+   "request": {
+    "mode": "send",
+    "message": null,
+    "text": "Go",
+    "attachments": [],
+    "turn_id": "t1",
+    "routing": null,
+    "continuous_leaf": null
+   },
+   "events": [
+    {
+     "type": "text_delta",
+     "turn_id": "t1",
+     "text": "Half"
+    },
+    {
+     "type": "text_delta",
+     "turn_id": "t1",
+     "text": " more",
+     "advance_ms": 1500
+    },
+    {
+     "type": "turn_done",
+     "turn_id": "t1",
+     "status": "interrupted"
+    }
+   ],
+   "expect": {
+    "steps": [],
+    "artifacts": [],
+    "attachment_links": {},
+    "lease": null,
+    "send_text": "Go",
+    "replay": false,
+    "attachments_sent": [],
+    "messages": [
+     {
+      "ref": "new_user",
+      "role": "user",
+      "text": "Go",
+      "parent": null,
+      "status": "complete",
+      "turn_id": "t1",
+      "provider": null,
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     },
+     {
+      "ref": "new_assistant",
+      "role": "assistant",
+      "text": "Half more",
+      "parent": "new_user",
+      "status": "partial",
+      "turn_id": "t1",
+      "provider": "",
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     }
+    ],
+    "conversation": {
+     "title": "Go",
+     "title_source": "prefix",
+     "routing_mode": "preferred_reserve",
+     "provider": null,
+     "model": null,
+     "actual_provider": "",
+     "actual_model": "",
+     "routing_reason": "",
+     "session_id": null,
+     "active_leaf": "new_assistant",
+     "live_slack_since": null
+    }
+   }
+  },
+  {
+   "name": "stop keeps the text as partial",
+   "conversation": {
+    "title": "",
+    "title_source": "prefix",
+    "routing_mode": "preferred_reserve",
+    "provider": null,
+    "model": null,
+    "actual_provider": "",
+    "actual_model": "",
+    "routing_reason": ""
+   },
+   "messages": [],
+   "active_leaf": null,
+   "artifacts": [],
+   "attachments": [],
+   "actions": [],
+   "request": {
+    "mode": "send",
+    "message": null,
+    "text": "Go",
+    "attachments": [],
+    "turn_id": "t1",
+    "routing": null,
+    "continuous_leaf": null
+   },
+   "events": [
+    {
+     "type": "text_delta",
+     "turn_id": "t1",
+     "text": "Half"
+    },
+    {
+     "type": "stop"
+    }
+   ],
+   "expect": {
+    "steps": [],
+    "artifacts": [],
+    "attachment_links": {},
+    "lease": null,
+    "send_text": "Go",
+    "replay": false,
+    "attachments_sent": [],
+    "messages": [
+     {
+      "ref": "new_user",
+      "role": "user",
+      "text": "Go",
+      "parent": null,
+      "status": "complete",
+      "turn_id": "t1",
+      "provider": null,
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     },
+     {
+      "ref": "new_assistant",
+      "role": "assistant",
+      "text": "Half",
+      "parent": "new_user",
+      "status": "partial",
+      "turn_id": "t1",
+      "provider": "",
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     }
+    ],
+    "conversation": {
+     "title": "Go",
+     "title_source": "prefix",
+     "routing_mode": "preferred_reserve",
+     "provider": null,
+     "model": null,
+     "actual_provider": "",
+     "actual_model": "",
+     "routing_reason": "",
+     "session_id": null,
+     "active_leaf": "new_assistant",
+     "live_slack_since": null
+    }
+   }
+  },
+  {
+   "name": "regenerate reuses the owner row and resends its files",
+   "conversation": {
+    "title": "Explain",
+    "title_source": "prefix",
+    "routing_mode": "preferred_reserve",
+    "provider": null,
+    "model": null,
+    "actual_provider": "",
+    "actual_model": "",
+    "routing_reason": ""
+   },
+   "messages": [
+    {
+     "ref": "u1",
+     "role": "user",
+     "text": "Explain",
+     "parent": null,
+     "status": "complete",
+     "turn_id": "t0",
+     "provider": null,
+     "model": null,
+     "tokens_in": null,
+     "tokens_out": null,
+     "error_code": null,
+     "error_message": null,
+     "created_at": 1700000000.0
+    },
+    {
+     "ref": "a1",
+     "role": "assistant",
+     "text": "Old answer",
+     "parent": "u1",
+     "status": "complete",
+     "turn_id": "t0",
+     "provider": null,
+     "model": null,
+     "tokens_in": null,
+     "tokens_out": null,
+     "error_code": null,
+     "error_message": null,
+     "created_at": 1700000001.0
+    }
+   ],
+   "active_leaf": "a1",
+   "artifacts": [],
+   "attachments": [
+    {
+     "ref": "f1",
+     "name": "shot.png",
+     "mime": "image/png",
+     "path": "/files/shot.png",
+     "message": "u1"
+    }
+   ],
+   "actions": [],
+   "request": {
+    "mode": "regenerate",
+    "message": "a1",
+    "text": "",
+    "attachments": [],
+    "turn_id": "t1",
+    "routing": null,
+    "continuous_leaf": "a1"
+   },
+   "events": [
+    {
+     "type": "text_delta",
+     "turn_id": "t1",
+     "text": "New answer"
+    },
+    {
+     "type": "turn_done",
+     "turn_id": "t1",
+     "status": "complete"
+    }
+   ],
+   "expect": {
+    "steps": [],
+    "artifacts": [],
+    "attachment_links": {
+     "f1": "u1"
+    },
+    "lease": null,
+    "send_text": "Explain",
+    "replay": true,
+    "attachments_sent": [
+     "f1"
+    ],
+    "messages": [
+     {
+      "ref": "u1",
+      "role": "user",
+      "text": "Explain",
+      "parent": null,
+      "status": "complete",
+      "turn_id": "t0",
+      "provider": null,
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     },
+     {
+      "ref": "a1",
+      "role": "assistant",
+      "text": "Old answer",
+      "parent": "u1",
+      "status": "complete",
+      "turn_id": "t0",
+      "provider": null,
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     },
+     {
+      "ref": "new_assistant",
+      "role": "assistant",
+      "text": "New answer",
+      "parent": "u1",
+      "status": "complete",
+      "turn_id": "t1",
+      "provider": "",
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     }
+    ],
+    "conversation": {
+     "title": "Explain",
+     "title_source": "prefix",
+     "routing_mode": "preferred_reserve",
+     "provider": null,
+     "model": null,
+     "actual_provider": "",
+     "actual_model": "",
+     "routing_reason": "",
+     "session_id": null,
+     "active_leaf": "new_assistant",
+     "live_slack_since": null
+    }
+   }
+  },
+  {
+   "name": "edit writes a sibling owner row; files stay on the original",
+   "conversation": {
+    "title": "Old question",
+    "title_source": "prefix",
+    "routing_mode": "preferred_reserve",
+    "provider": null,
+    "model": null,
+    "actual_provider": "",
+    "actual_model": "",
+    "routing_reason": ""
+   },
+   "messages": [
+    {
+     "ref": "u1",
+     "role": "user",
+     "text": "Old question",
+     "parent": null,
+     "status": "complete",
+     "turn_id": "t0",
+     "provider": null,
+     "model": null,
+     "tokens_in": null,
+     "tokens_out": null,
+     "error_code": null,
+     "error_message": null,
+     "created_at": 1700000000.0
+    },
+    {
+     "ref": "a1",
+     "role": "assistant",
+     "text": "Old answer",
+     "parent": "u1",
+     "status": "complete",
+     "turn_id": "t0",
+     "provider": null,
+     "model": null,
+     "tokens_in": null,
+     "tokens_out": null,
+     "error_code": null,
+     "error_message": null,
+     "created_at": 1700000001.0
+    }
+   ],
+   "active_leaf": "a1",
+   "artifacts": [],
+   "attachments": [
+    {
+     "ref": "f1",
+     "name": "a.pdf",
+     "mime": "application/pdf",
+     "path": "/files/a.pdf",
+     "message": "u1"
+    }
+   ],
+   "actions": [],
+   "request": {
+    "mode": "edit",
+    "message": "u1",
+    "text": "  New question ",
+    "attachments": [],
+    "turn_id": "t1",
+    "routing": null,
+    "continuous_leaf": null
+   },
+   "events": [
+    {
+     "type": "text_delta",
+     "turn_id": "t1",
+     "text": "Edited answer"
+    },
+    {
+     "type": "turn_done",
+     "turn_id": "t1",
+     "status": "complete"
+    }
+   ],
+   "expect": {
+    "steps": [],
+    "artifacts": [],
+    "attachment_links": {
+     "f1": "u1"
+    },
+    "lease": null,
+    "send_text": "New question",
+    "replay": true,
+    "attachments_sent": [
+     "f1"
+    ],
+    "messages": [
+     {
+      "ref": "u1",
+      "role": "user",
+      "text": "Old question",
+      "parent": null,
+      "status": "complete",
+      "turn_id": "t0",
+      "provider": null,
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     },
+     {
+      "ref": "a1",
+      "role": "assistant",
+      "text": "Old answer",
+      "parent": "u1",
+      "status": "complete",
+      "turn_id": "t0",
+      "provider": null,
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     },
+     {
+      "ref": "new_user",
+      "role": "user",
+      "text": "New question",
+      "parent": null,
+      "status": "complete",
+      "turn_id": "t1",
+      "provider": null,
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     },
+     {
+      "ref": "new_assistant",
+      "role": "assistant",
+      "text": "Edited answer",
+      "parent": "new_user",
+      "status": "complete",
+      "turn_id": "t1",
+      "provider": "",
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     }
+    ],
+    "conversation": {
+     "title": "Old question",
+     "title_source": "prefix",
+     "routing_mode": "preferred_reserve",
+     "provider": null,
+     "model": null,
+     "actual_provider": "",
+     "actual_model": "",
+     "routing_reason": "",
+     "session_id": null,
+     "active_leaf": "new_assistant",
+     "live_slack_since": null
+    }
+   }
+  },
+  {
+   "name": "an artifact from a new message is the next version",
+   "conversation": {
+    "title": "Plan it",
+    "title_source": "prefix",
+    "routing_mode": "preferred_reserve",
+    "provider": null,
+    "model": null,
+    "actual_provider": "",
+    "actual_model": "",
+    "routing_reason": ""
+   },
+   "messages": [
+    {
+     "ref": "u1",
+     "role": "user",
+     "text": "Plan it",
+     "parent": null,
+     "status": "complete",
+     "turn_id": "t0",
+     "provider": null,
+     "model": null,
+     "tokens_in": null,
+     "tokens_out": null,
+     "error_code": null,
+     "error_message": null,
+     "created_at": 1700000000.0
+    },
+    {
+     "ref": "a1",
+     "role": "assistant",
+     "text": "Plan",
+     "parent": "u1",
+     "status": "complete",
+     "turn_id": "t0",
+     "provider": null,
+     "model": null,
+     "tokens_in": null,
+     "tokens_out": null,
+     "error_code": null,
+     "error_message": null,
+     "created_at": 1700000001.0
+    }
+   ],
+   "active_leaf": "a1",
+   "artifacts": [
+    {
+     "key": "plan",
+     "version": 1,
+     "message": "a1",
+     "kind": "document",
+     "title": "Plan",
+     "content": "old plan",
+     "meta": {},
+     "edited": false
+    },
+    {
+     "key": "draft",
+     "version": 1,
+     "message": "a1",
+     "kind": "email",
+     "title": "Mail",
+     "content": "Hello",
+     "meta": {},
+     "edited": false
+    },
+    {
+     "key": "draft",
+     "version": 2,
+     "message": "a1",
+     "kind": "email",
+     "title": "Mail",
+     "content": "Hello!",
+     "meta": {},
+     "edited": true
+    }
+   ],
+   "attachments": [],
+   "actions": [],
+   "request": {
+    "mode": "send",
+    "message": null,
+    "text": "Update the plan",
+    "attachments": [],
+    "turn_id": "t1",
+    "routing": null,
+    "continuous_leaf": null
+   },
+   "events": [
+    {
+     "type": "text_delta",
+     "turn_id": "t1",
+     "text": ":::artifact key=\"plan\" kind=\"document\" title=\"Plan v2\"\nnew plan\n:::\n"
+    },
+    {
+     "type": "text_delta",
+     "turn_id": "t1",
+     "text": ":::artifact key=\"draft\" kind=\"email\" title=\"Mail\" to=\"a@example.com\" subject=\"Re: x/y\"\nHi\n:::\n"
+    },
+    {
+     "type": "text_delta",
+     "turn_id": "t1",
+     "text": ":::artifact key=\"notes\" kind=\"document\" title=\"Notes\"\nn\n:::",
+     "advance_ms": 2000
+    },
+    {
+     "type": "turn_done",
+     "turn_id": "t1",
+     "status": "complete"
+    }
+   ],
+   "expect": {
+    "steps": [],
+    "artifacts": [
+     {
+      "key": "draft",
+      "version": 1,
+      "message": "a1",
+      "kind": "email",
+      "title": "Mail",
+      "content": "Hello",
+      "meta": {},
+      "edited": false
+     },
+     {
+      "key": "draft",
+      "version": 2,
+      "message": "a1",
+      "kind": "email",
+      "title": "Mail",
+      "content": "Hello!",
+      "meta": {},
+      "edited": true
+     },
+     {
+      "key": "draft",
+      "version": 3,
+      "message": "new_assistant",
+      "kind": "email",
+      "title": "Mail",
+      "content": "Hi",
+      "meta": {
+       "subject": "Re: x/y",
+       "to": "a@example.com"
+      },
+      "edited": false
+     },
+     {
+      "key": "notes",
+      "version": 1,
+      "message": "new_assistant",
+      "kind": "document",
+      "title": "Notes",
+      "content": "n",
+      "meta": {},
+      "edited": false
+     },
+     {
+      "key": "plan",
+      "version": 1,
+      "message": "a1",
+      "kind": "document",
+      "title": "Plan",
+      "content": "old plan",
+      "meta": {},
+      "edited": false
+     },
+     {
+      "key": "plan",
+      "version": 2,
+      "message": "new_assistant",
+      "kind": "document",
+      "title": "Plan v2",
+      "content": "new plan",
+      "meta": {},
+      "edited": false
+     }
+    ],
+    "attachment_links": {},
+    "lease": null,
+    "send_text": "Update the plan",
+    "replay": true,
+    "attachments_sent": [],
+    "messages": [
+     {
+      "ref": "u1",
+      "role": "user",
+      "text": "Plan it",
+      "parent": null,
+      "status": "complete",
+      "turn_id": "t0",
+      "provider": null,
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     },
+     {
+      "ref": "a1",
+      "role": "assistant",
+      "text": "Plan",
+      "parent": "u1",
+      "status": "complete",
+      "turn_id": "t0",
+      "provider": null,
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     },
+     {
+      "ref": "new_user",
+      "role": "user",
+      "text": "Update the plan",
+      "parent": "a1",
+      "status": "complete",
+      "turn_id": "t1",
+      "provider": null,
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     },
+     {
+      "ref": "new_assistant",
+      "role": "assistant",
+      "text": ":::artifact key=\"plan\" kind=\"document\" title=\"Plan v2\"\nnew plan\n:::\n:::artifact key=\"draft\" kind=\"email\" title=\"Mail\" to=\"a@example.com\" subject=\"Re: x/y\"\nHi\n:::\n:::artifact key=\"notes\" kind=\"document\" title=\"Notes\"\nn\n:::",
+      "parent": "new_user",
+      "status": "complete",
+      "turn_id": "t1",
+      "provider": "",
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     }
+    ],
+    "conversation": {
+     "title": "Plan it",
+     "title_source": "prefix",
+     "routing_mode": "preferred_reserve",
+     "provider": null,
+     "model": null,
+     "actual_provider": "",
+     "actual_model": "",
+     "routing_reason": "",
+     "session_id": null,
+     "active_leaf": "new_assistant",
+     "live_slack_since": null
+    }
+   }
+  },
+  {
+   "name": "a Slack connector step marks the conversation",
+   "conversation": {
+    "title": "",
+    "title_source": "prefix",
+    "routing_mode": "preferred_reserve",
+    "provider": null,
+    "model": null,
+    "actual_provider": "",
+    "actual_model": "",
+    "routing_reason": ""
+   },
+   "messages": [],
+   "active_leaf": null,
+   "artifacts": [],
+   "attachments": [],
+   "actions": [],
+   "request": {
+    "mode": "send",
+    "message": null,
+    "text": "What is new in eng?",
+    "attachments": [],
+    "turn_id": "t1",
+    "routing": null,
+    "continuous_leaf": null
+   },
+   "events": [
+    {
+     "type": "tool_start",
+     "turn_id": "t1",
+     "id": "s-1",
+     "name": "claude_ai_Slack:slack_read_channel",
+     "args": {
+      "channel": "eng"
+     }
+    },
+    {
+     "type": "tool_end",
+     "turn_id": "t1",
+     "id": "s-1",
+     "ok": true,
+     "summary": "read"
+    },
+    {
+     "type": "text_delta",
+     "turn_id": "t1",
+     "text": "Three threads."
+    },
+    {
+     "type": "turn_done",
+     "turn_id": "t1",
+     "status": "complete"
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "message": "new_assistant",
+      "seq": 0,
+      "tool_id": "s-1",
+      "name": "claude_ai_Slack:slack_read_channel",
+      "args": {
+       "channel": "eng"
+      },
+      "ok": true,
+      "summary": "read",
+      "sources": [],
+      "ended": true
+     }
+    ],
+    "artifacts": [],
+    "attachment_links": {},
+    "lease": null,
+    "send_text": "What is new in eng?",
+    "replay": false,
+    "attachments_sent": [],
+    "messages": [
+     {
+      "ref": "new_user",
+      "role": "user",
+      "text": "What is new in eng?",
+      "parent": null,
+      "status": "complete",
+      "turn_id": "t1",
+      "provider": null,
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     },
+     {
+      "ref": "new_assistant",
+      "role": "assistant",
+      "text": "Three threads.",
+      "parent": "new_user",
+      "status": "complete",
+      "turn_id": "t1",
+      "provider": "",
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     }
+    ],
+    "conversation": {
+     "title": "What is new in eng?",
+     "title_source": "prefix",
+     "routing_mode": "preferred_reserve",
+     "provider": null,
+     "model": null,
+     "actual_provider": "",
+     "actual_model": "",
+     "routing_reason": "",
+     "session_id": null,
+     "active_leaf": "new_assistant",
+     "live_slack_since": "new_assistant"
+    }
+   }
+  },
+  {
+   "name": "a tool_wait with no prior start, and a tool_end with no start, are steps",
+   "conversation": {
+    "title": "",
+    "title_source": "prefix",
+    "routing_mode": "preferred_reserve",
+    "provider": null,
+    "model": null,
+    "actual_provider": "",
+    "actual_model": "",
+    "routing_reason": ""
+   },
+   "messages": [],
+   "active_leaf": null,
+   "artifacts": [],
+   "attachments": [],
+   "actions": [],
+   "request": {
+    "mode": "send",
+    "message": null,
+    "text": "Post it",
+    "attachments": [],
+    "turn_id": "t1",
+    "routing": null,
+    "continuous_leaf": null
+   },
+   "events": [
+    {
+     "type": "tool_wait",
+     "turn_id": "t1",
+     "id": "w1",
+     "action_id": 5,
+     "message": "Waiting for your approval"
+    },
+    {
+     "type": "tool_end",
+     "turn_id": "t1",
+     "id": "e1",
+     "ok": false,
+     "summary": "denied"
+    },
+    {
+     "type": "stop"
+    }
+   ],
+   "expect": {
+    "steps": [
+     {
+      "message": "new_assistant",
+      "seq": 0,
+      "tool_id": "w1",
+      "name": "",
+      "args": {},
+      "ok": null,
+      "summary": "",
+      "sources": [],
+      "ended": false
+     },
+     {
+      "message": "new_assistant",
+      "seq": 1,
+      "tool_id": "e1",
+      "name": "",
+      "args": {},
+      "ok": false,
+      "summary": "denied",
+      "sources": [],
+      "ended": true
+     }
+    ],
+    "artifacts": [],
+    "attachment_links": {},
+    "lease": null,
+    "send_text": "Post it",
+    "replay": false,
+    "attachments_sent": [],
+    "messages": [
+     {
+      "ref": "new_user",
+      "role": "user",
+      "text": "Post it",
+      "parent": null,
+      "status": "complete",
+      "turn_id": "t1",
+      "provider": null,
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     },
+     {
+      "ref": "new_assistant",
+      "role": "assistant",
+      "text": "",
+      "parent": "new_user",
+      "status": "partial",
+      "turn_id": "t1",
+      "provider": "",
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     }
+    ],
+    "conversation": {
+     "title": "Post it",
+     "title_source": "prefix",
+     "routing_mode": "preferred_reserve",
+     "provider": null,
+     "model": null,
+     "actual_provider": "",
+     "actual_model": "",
+     "routing_reason": "",
+     "session_id": null,
+     "active_leaf": "new_assistant",
+     "live_slack_since": null
+    }
+   }
+  },
+  {
+   "name": "files link to the new owner row and the prefix title is 80 characters",
+   "conversation": {
+    "title": "",
+    "title_source": "prefix",
+    "routing_mode": "preferred_reserve",
+    "provider": null,
+    "model": null,
+    "actual_provider": "",
+    "actual_model": "",
+    "routing_reason": ""
+   },
+   "messages": [],
+   "active_leaf": null,
+   "artifacts": [],
+   "attachments": [
+    {
+     "ref": "f1",
+     "name": "a.txt",
+     "mime": "text/plain",
+     "path": "/files/a.txt",
+     "message": null
+    },
+    {
+     "ref": "f2",
+     "name": "b.png",
+     "mime": "image/png",
+     "path": "/files/b.png",
+     "message": null
+    }
+   ],
+   "actions": [],
+   "request": {
+    "mode": "send",
+    "message": null,
+    "text": "Plan the 👨‍👩‍👧‍👦 offsite: agenda, travel and rooms; agenda, travel and rooms; agenda, travel and rooms; agenda, travel and rooms; ",
+    "attachments": [
+     "f2",
+     "f1"
+    ],
+    "turn_id": "t1",
+    "routing": null,
+    "continuous_leaf": null
+   },
+   "events": [
+    {
+     "type": "text_delta",
+     "turn_id": "t1",
+     "text": "ok"
+    },
+    {
+     "type": "turn_done",
+     "turn_id": "t1",
+     "status": "complete"
+    }
+   ],
+   "expect": {
+    "steps": [],
+    "artifacts": [],
+    "attachment_links": {
+     "f1": "new_user",
+     "f2": "new_user"
+    },
+    "lease": null,
+    "send_text": "Plan the 👨‍👩‍👧‍👦 offsite: agenda, travel and rooms; agenda, travel and rooms; agenda, travel and rooms; agenda, travel and rooms;",
+    "replay": false,
+    "attachments_sent": [
+     "f2",
+     "f1"
+    ],
+    "messages": [
+     {
+      "ref": "new_user",
+      "role": "user",
+      "text": "Plan the 👨‍👩‍👧‍👦 offsite: agenda, travel and rooms; agenda, travel and rooms; agenda, travel and rooms; agenda, travel and rooms;",
+      "parent": null,
+      "status": "complete",
+      "turn_id": "t1",
+      "provider": null,
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     },
+     {
+      "ref": "new_assistant",
+      "role": "assistant",
+      "text": "ok",
+      "parent": "new_user",
+      "status": "complete",
+      "turn_id": "t1",
+      "provider": "",
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     }
+    ],
+    "conversation": {
+     "title": "Plan the 👨‍👩‍👧‍👦 offsite: agenda, travel and rooms; agenda, travel and rooms; agenda, ",
+     "title_source": "prefix",
+     "routing_mode": "preferred_reserve",
+     "provider": null,
+     "model": null,
+     "actual_provider": "",
+     "actual_model": "",
+     "routing_reason": "",
+     "session_id": null,
+     "active_leaf": "new_assistant",
+     "live_slack_since": null
+    }
+   }
+  },
+  {
+   "name": "a legacy unanswered owner question gets an empty reply first",
+   "conversation": {
+    "title": "Old q",
+    "title_source": "prefix",
+    "routing_mode": "preferred_reserve",
+    "provider": null,
+    "model": null,
+    "actual_provider": "",
+    "actual_model": "",
+    "routing_reason": ""
+   },
+   "messages": [
+    {
+     "ref": "u1",
+     "role": "user",
+     "text": "Old q",
+     "parent": null,
+     "status": "complete",
+     "turn_id": "t0",
+     "provider": null,
+     "model": null,
+     "tokens_in": null,
+     "tokens_out": null,
+     "error_code": null,
+     "error_message": null,
+     "created_at": 1700000000.0
+    }
+   ],
+   "active_leaf": "u1",
+   "artifacts": [],
+   "attachments": [],
+   "actions": [],
+   "request": {
+    "mode": "send",
+    "message": null,
+    "text": "New q",
+    "attachments": [],
+    "turn_id": "t1",
+    "routing": null,
+    "continuous_leaf": null
+   },
+   "events": [
+    {
+     "type": "text_delta",
+     "turn_id": "t1",
+     "text": "A"
+    },
+    {
+     "type": "turn_done",
+     "turn_id": "t1",
+     "status": "complete"
+    }
+   ],
+   "expect": {
+    "steps": [],
+    "artifacts": [],
+    "attachment_links": {},
+    "lease": null,
+    "send_text": "New q",
+    "replay": true,
+    "attachments_sent": [],
+    "messages": [
+     {
+      "ref": "u1",
+      "role": "user",
+      "text": "Old q",
+      "parent": null,
+      "status": "complete",
+      "turn_id": "t0",
+      "provider": null,
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     },
+     {
+      "ref": "placeholder",
+      "role": "assistant",
+      "text": "",
+      "parent": "u1",
+      "status": "partial",
+      "turn_id": "t0",
+      "provider": "claude",
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     },
+     {
+      "ref": "new_user",
+      "role": "user",
+      "text": "New q",
+      "parent": "placeholder",
+      "status": "complete",
+      "turn_id": "t1",
+      "provider": null,
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     },
+     {
+      "ref": "new_assistant",
+      "role": "assistant",
+      "text": "A",
+      "parent": "new_user",
+      "status": "complete",
+      "turn_id": "t1",
+      "provider": "",
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     }
+    ],
+    "conversation": {
+     "title": "Old q",
+     "title_source": "prefix",
+     "routing_mode": "preferred_reserve",
+     "provider": null,
+     "model": null,
+     "actual_provider": "",
+     "actual_model": "",
+     "routing_reason": "",
+     "session_id": null,
+     "active_leaf": "new_assistant",
+     "live_slack_since": null
+    }
+   }
+  },
+  {
+   "name": "a pinned routing request pins the conversation",
+   "conversation": {
+    "title": "",
+    "title_source": "prefix",
+    "routing_mode": "preferred_reserve",
+    "provider": null,
+    "model": null,
+    "actual_provider": "",
+    "actual_model": "",
+    "routing_reason": ""
+   },
+   "messages": [],
+   "active_leaf": null,
+   "artifacts": [],
+   "attachments": [],
+   "actions": [],
+   "request": {
+    "mode": "send",
+    "message": null,
+    "text": "Use codex",
+    "attachments": [],
+    "turn_id": "t1",
+    "routing": {
+     "automatic": false,
+     "provider": "codex",
+     "model": "gpt-x"
+    },
+    "continuous_leaf": null
+   },
+   "events": [
+    {
+     "type": "session_ready",
+     "provider": "codex",
+     "model": "gpt-x",
+     "routing_mode": "pinned",
+     "preferred_provider": "codex"
+    },
+    {
+     "type": "text_delta",
+     "turn_id": "t1",
+     "text": "done"
+    },
+    {
+     "type": "turn_done",
+     "turn_id": "t1",
+     "status": "complete"
+    }
+   ],
+   "expect": {
+    "steps": [],
+    "artifacts": [],
+    "attachment_links": {},
+    "lease": null,
+    "send_text": "Use codex",
+    "replay": false,
+    "attachments_sent": [],
+    "messages": [
+     {
+      "ref": "new_user",
+      "role": "user",
+      "text": "Use codex",
+      "parent": null,
+      "status": "complete",
+      "turn_id": "t1",
+      "provider": null,
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     },
+     {
+      "ref": "new_assistant",
+      "role": "assistant",
+      "text": "done",
+      "parent": "new_user",
+      "status": "complete",
+      "turn_id": "t1",
+      "provider": "codex",
+      "model": "gpt-x",
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     }
+    ],
+    "conversation": {
+     "title": "Use codex",
+     "title_source": "prefix",
+     "routing_mode": "pinned",
+     "provider": "codex",
+     "model": "gpt-x",
+     "actual_provider": "codex",
+     "actual_model": "gpt-x",
+     "routing_reason": "",
+     "session_id": null,
+     "active_leaf": "new_assistant",
+     "live_slack_since": null
+    }
+   }
+  },
+  {
+   "name": "a pinned conversation keeps its pin and clears the sticky actual pair",
+   "conversation": {
+    "title": "",
+    "title_source": "prefix",
+    "routing_mode": "pinned",
+    "provider": "claude",
+    "model": "opus-x",
+    "actual_provider": "claude",
+    "actual_model": "opus-x",
+    "routing_reason": "pinned"
+   },
+   "messages": [],
+   "active_leaf": null,
+   "artifacts": [],
+   "attachments": [],
+   "actions": [],
+   "request": {
+    "mode": "send",
+    "message": null,
+    "text": "Again",
+    "attachments": [],
+    "turn_id": "t1",
+    "routing": null,
+    "continuous_leaf": null
+   },
+   "events": [
+    {
+     "type": "text_delta",
+     "turn_id": "t1",
+     "text": "ok"
+    },
+    {
+     "type": "turn_done",
+     "turn_id": "t1",
+     "status": "complete"
+    }
+   ],
+   "expect": {
+    "steps": [],
+    "artifacts": [],
+    "attachment_links": {},
+    "lease": null,
+    "send_text": "Again",
+    "replay": false,
+    "attachments_sent": [],
+    "messages": [
+     {
+      "ref": "new_user",
+      "role": "user",
+      "text": "Again",
+      "parent": null,
+      "status": "complete",
+      "turn_id": "t1",
+      "provider": null,
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     },
+     {
+      "ref": "new_assistant",
+      "role": "assistant",
+      "text": "ok",
+      "parent": "new_user",
+      "status": "complete",
+      "turn_id": "t1",
+      "provider": "claude",
+      "model": "opus-x",
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     }
+    ],
+    "conversation": {
+     "title": "Again",
+     "title_source": "prefix",
+     "routing_mode": "pinned",
+     "provider": "claude",
+     "model": "opus-x",
+     "actual_provider": "",
+     "actual_model": "",
+     "routing_reason": "",
+     "session_id": null,
+     "active_leaf": "new_assistant",
+     "live_slack_since": null
+    }
+   }
+  },
+  {
+   "name": "actions settled since the previous owner message prefix the sent text",
+   "conversation": {
+    "title": "First",
+    "title_source": "prefix",
+    "routing_mode": "preferred_reserve",
+    "provider": null,
+    "model": null,
+    "actual_provider": "",
+    "actual_model": "",
+    "routing_reason": ""
+   },
+   "messages": [
+    {
+     "ref": "u1",
+     "role": "user",
+     "text": "First",
+     "parent": null,
+     "status": "complete",
+     "turn_id": "t0",
+     "provider": null,
+     "model": null,
+     "tokens_in": null,
+     "tokens_out": null,
+     "error_code": null,
+     "error_message": null,
+     "created_at": 1700000000.0
+    },
+    {
+     "ref": "a1",
+     "role": "assistant",
+     "text": "Proposed",
+     "parent": "u1",
+     "status": "complete",
+     "turn_id": "t0",
+     "provider": null,
+     "model": null,
+     "tokens_in": null,
+     "tokens_out": null,
+     "error_code": null,
+     "error_message": null,
+     "created_at": 1700000005.0
+    }
+   ],
+   "active_leaf": "a1",
+   "artifacts": [],
+   "attachments": [],
+   "actions": [
+    {
+     "id": 1,
+     "tool": "create_target",
+     "status": "applied",
+     "created_at": "2023-11-14T22:13:21Z",
+     "decided_at": "2023-11-14T22:13:30Z",
+     "applied_at": "2023-11-14T22:13:30Z",
+     "result_json": "{\"id\":7}",
+     "error": ""
+    },
+    {
+     "id": 2,
+     "tool": "send_slack_message",
+     "status": "rejected",
+     "created_at": "2023-11-14T22:13:22Z",
+     "decided_at": "2023-11-14T22:13:31Z",
+     "applied_at": "",
+     "result_json": "",
+     "error": ""
+    },
+    {
+     "id": 3,
+     "tool": "create_target",
+     "status": "applied",
+     "created_at": "2023-11-14T22:00:00Z",
+     "decided_at": "2023-11-14T22:00:01Z",
+     "applied_at": "2023-11-14T22:00:01Z",
+     "result_json": "{\"id\":1}",
+     "error": ""
+    }
+   ],
+   "request": {
+    "mode": "send",
+    "message": null,
+    "text": "Next",
+    "attachments": [],
+    "turn_id": "t1",
+    "routing": null,
+    "continuous_leaf": "a1"
+   },
+   "events": [
+    {
+     "type": "text_delta",
+     "turn_id": "t1",
+     "text": "ok"
+    },
+    {
+     "type": "turn_done",
+     "turn_id": "t1",
+     "status": "complete"
+    }
+   ],
+   "expect": {
+    "steps": [],
+    "artifacts": [],
+    "attachment_links": {},
+    "lease": null,
+    "send_text": "=== ACTIONS SINCE YOUR LAST MESSAGE ===\n- #1 create_target: applied — {\"id\":7}\n- #2 send_slack_message: rejected\n\nNext",
+    "replay": false,
+    "attachments_sent": [],
+    "messages": [
+     {
+      "ref": "u1",
+      "role": "user",
+      "text": "First",
+      "parent": null,
+      "status": "complete",
+      "turn_id": "t0",
+      "provider": null,
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     },
+     {
+      "ref": "a1",
+      "role": "assistant",
+      "text": "Proposed",
+      "parent": "u1",
+      "status": "complete",
+      "turn_id": "t0",
+      "provider": null,
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     },
+     {
+      "ref": "new_user",
+      "role": "user",
+      "text": "Next",
+      "parent": "a1",
+      "status": "complete",
+      "turn_id": "t1",
+      "provider": null,
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     },
+     {
+      "ref": "new_assistant",
+      "role": "assistant",
+      "text": "ok",
+      "parent": "new_user",
+      "status": "complete",
+      "turn_id": "t1",
+      "provider": "",
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     }
+    ],
+    "conversation": {
+     "title": "First",
+     "title_source": "prefix",
+     "routing_mode": "preferred_reserve",
+     "provider": null,
+     "model": null,
+     "actual_provider": "",
+     "actual_model": "",
+     "routing_reason": "",
+     "session_id": null,
+     "active_leaf": "new_assistant",
+     "live_slack_since": null
+    }
+   }
+  },
+  {
+   "name": "a send follows the selected branch, not the newest message",
+   "conversation": {
+    "title": "Q",
+    "title_source": "prefix",
+    "routing_mode": "preferred_reserve",
+    "provider": null,
+    "model": null,
+    "actual_provider": "",
+    "actual_model": "",
+    "routing_reason": ""
+   },
+   "messages": [
+    {
+     "ref": "u1",
+     "role": "user",
+     "text": "Q",
+     "parent": null,
+     "status": "complete",
+     "turn_id": "t0",
+     "provider": null,
+     "model": null,
+     "tokens_in": null,
+     "tokens_out": null,
+     "error_code": null,
+     "error_message": null,
+     "created_at": 1700000000.0
+    },
+    {
+     "ref": "a1",
+     "role": "assistant",
+     "text": "First variant",
+     "parent": "u1",
+     "status": "complete",
+     "turn_id": "t0",
+     "provider": null,
+     "model": null,
+     "tokens_in": null,
+     "tokens_out": null,
+     "error_code": null,
+     "error_message": null,
+     "created_at": 1700000001.0
+    },
+    {
+     "ref": "a2",
+     "role": "assistant",
+     "text": "Second variant",
+     "parent": "u1",
+     "status": "complete",
+     "turn_id": "t0",
+     "provider": null,
+     "model": null,
+     "tokens_in": null,
+     "tokens_out": null,
+     "error_code": null,
+     "error_message": null,
+     "created_at": 1700000002.0
+    }
+   ],
+   "active_leaf": "a1",
+   "artifacts": [],
+   "attachments": [],
+   "actions": [],
+   "request": {
+    "mode": "send",
+    "message": null,
+    "text": "Follow up",
+    "attachments": [],
+    "turn_id": "t1",
+    "routing": null,
+    "continuous_leaf": null
+   },
+   "events": [
+    {
+     "type": "text_delta",
+     "turn_id": "t1",
+     "text": "ok"
+    },
+    {
+     "type": "turn_done",
+     "turn_id": "t1",
+     "status": "complete"
+    }
+   ],
+   "expect": {
+    "steps": [],
+    "artifacts": [],
+    "attachment_links": {},
+    "lease": null,
+    "send_text": "Follow up",
+    "replay": true,
+    "attachments_sent": [],
+    "messages": [
+     {
+      "ref": "u1",
+      "role": "user",
+      "text": "Q",
+      "parent": null,
+      "status": "complete",
+      "turn_id": "t0",
+      "provider": null,
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     },
+     {
+      "ref": "a1",
+      "role": "assistant",
+      "text": "First variant",
+      "parent": "u1",
+      "status": "complete",
+      "turn_id": "t0",
+      "provider": null,
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     },
+     {
+      "ref": "a2",
+      "role": "assistant",
+      "text": "Second variant",
+      "parent": "u1",
+      "status": "complete",
+      "turn_id": "t0",
+      "provider": null,
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     },
+     {
+      "ref": "new_user",
+      "role": "user",
+      "text": "Follow up",
+      "parent": "a1",
+      "status": "complete",
+      "turn_id": "t1",
+      "provider": null,
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     },
+     {
+      "ref": "new_assistant",
+      "role": "assistant",
+      "text": "ok",
+      "parent": "new_user",
+      "status": "complete",
+      "turn_id": "t1",
+      "provider": "",
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     }
+    ],
+    "conversation": {
+     "title": "Q",
+     "title_source": "prefix",
+     "routing_mode": "preferred_reserve",
+     "provider": null,
+     "model": null,
+     "actual_provider": "",
+     "actual_model": "",
+     "routing_reason": "",
+     "session_id": null,
+     "active_leaf": "new_assistant",
+     "live_slack_since": null
+    }
+   }
+  },
+  {
+   "name": "an edit keeps the original's skill and REFERENCED lines",
+   "conversation": {
+    "title": "",
+    "title_source": "prefix",
+    "routing_mode": "preferred_reserve",
+    "provider": null,
+    "model": null,
+    "actual_provider": "",
+    "actual_model": "",
+    "routing_reason": ""
+   },
+   "messages": [
+    {
+     "ref": "u1",
+     "role": "user",
+     "text": "Use skill weekly-report: load it with load_skill first.\n\nDraft the report\n\nREFERENCED: person:7 \"Ann \\\"A\\\" Lee\"; jira:PROJ-1 \"PROJ-1\"",
+     "parent": null,
+     "status": "complete",
+     "turn_id": "t0",
+     "provider": null,
+     "model": null,
+     "tokens_in": null,
+     "tokens_out": null,
+     "error_code": null,
+     "error_message": null,
+     "created_at": 1700000000.0
+    },
+    {
+     "ref": "a1",
+     "role": "assistant",
+     "text": "Report",
+     "parent": "u1",
+     "status": "complete",
+     "turn_id": "t0",
+     "provider": null,
+     "model": null,
+     "tokens_in": null,
+     "tokens_out": null,
+     "error_code": null,
+     "error_message": null,
+     "created_at": 1700000001.0
+    }
+   ],
+   "active_leaf": "a1",
+   "artifacts": [],
+   "attachments": [],
+   "actions": [],
+   "request": {
+    "mode": "edit",
+    "message": "u1",
+    "text": "  Draft it shorter ",
+    "attachments": [],
+    "turn_id": "t1",
+    "routing": null,
+    "continuous_leaf": null
+   },
+   "events": [
+    {
+     "type": "text_delta",
+     "turn_id": "t1",
+     "text": "ok"
+    },
+    {
+     "type": "turn_done",
+     "turn_id": "t1",
+     "status": "complete"
+    }
+   ],
+   "expect": {
+    "steps": [],
+    "artifacts": [],
+    "attachment_links": {},
+    "lease": null,
+    "send_text": "Use skill weekly-report: load it with load_skill first.\n\nDraft it shorter\n\nREFERENCED: person:7 \"Ann \\\"A\\\" Lee\"; jira:PROJ-1 \"PROJ-1\"",
+    "replay": true,
+    "attachments_sent": [],
+    "messages": [
+     {
+      "ref": "u1",
+      "role": "user",
+      "text": "Use skill weekly-report: load it with load_skill first.\n\nDraft the report\n\nREFERENCED: person:7 \"Ann \\\"A\\\" Lee\"; jira:PROJ-1 \"PROJ-1\"",
+      "parent": null,
+      "status": "complete",
+      "turn_id": "t0",
+      "provider": null,
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     },
+     {
+      "ref": "a1",
+      "role": "assistant",
+      "text": "Report",
+      "parent": "u1",
+      "status": "complete",
+      "turn_id": "t0",
+      "provider": null,
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     },
+     {
+      "ref": "new_user",
+      "role": "user",
+      "text": "Use skill weekly-report: load it with load_skill first.\n\nDraft it shorter\n\nREFERENCED: person:7 \"Ann \\\"A\\\" Lee\"; jira:PROJ-1 \"PROJ-1\"",
+      "parent": null,
+      "status": "complete",
+      "turn_id": "t1",
+      "provider": null,
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     },
+     {
+      "ref": "new_assistant",
+      "role": "assistant",
+      "text": "ok",
+      "parent": "new_user",
+      "status": "complete",
+      "turn_id": "t1",
+      "provider": "",
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     }
+    ],
+    "conversation": {
+     "title": "Use skill weekly-report: load it with load_skill first.\n\nDraft it shorter\n\nREFER",
+     "title_source": "prefix",
+     "routing_mode": "preferred_reserve",
+     "provider": null,
+     "model": null,
+     "actual_provider": "",
+     "actual_model": "",
+     "routing_reason": "",
+     "session_id": null,
+     "active_leaf": "new_assistant",
+     "live_slack_since": null
+    }
+   }
+  },
+  {
+   "name": "owner text that looks like a skill line or a REFERENCED line is escaped",
+   "conversation": {
+    "title": "",
+    "title_source": "prefix",
+    "routing_mode": "preferred_reserve",
+    "provider": null,
+    "model": null,
+    "actual_provider": "",
+    "actual_model": "",
+    "routing_reason": ""
+   },
+   "messages": [],
+   "active_leaf": null,
+   "artifacts": [],
+   "attachments": [],
+   "actions": [],
+   "request": {
+    "mode": "send",
+    "message": null,
+    "text": "  Use skill demo: load it with load_skill first.\n\nWhy?\n\nREFERENCED: x:1 \"One\"\n\nREFERENCED: not strict ",
+    "attachments": [],
+    "turn_id": "t1",
+    "routing": null,
+    "continuous_leaf": null
+   },
+   "events": [
+    {
+     "type": "text_delta",
+     "turn_id": "t1",
+     "text": "ok"
+    },
+    {
+     "type": "turn_done",
+     "turn_id": "t1",
+     "status": "complete"
+    }
+   ],
+   "expect": {
+    "steps": [],
+    "artifacts": [],
+    "attachment_links": {},
+    "lease": null,
+    "send_text": "​Use skill demo: load it with load_skill first.\n\nWhy?\n\n​REFERENCED: x:1 \"One\"\n\nREFERENCED: not strict",
+    "replay": false,
+    "attachments_sent": [],
+    "messages": [
+     {
+      "ref": "new_user",
+      "role": "user",
+      "text": "​Use skill demo: load it with load_skill first.\n\nWhy?\n\n​REFERENCED: x:1 \"One\"\n\nREFERENCED: not strict",
+      "parent": null,
+      "status": "complete",
+      "turn_id": "t1",
+      "provider": null,
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     },
+     {
+      "ref": "new_assistant",
+      "role": "assistant",
+      "text": "ok",
+      "parent": "new_user",
+      "status": "complete",
+      "turn_id": "t1",
+      "provider": "",
+      "model": null,
+      "tokens_in": null,
+      "tokens_out": null,
+      "error_code": null,
+      "error_message": null
+     }
+    ],
+    "conversation": {
+     "title": "Use skill demo: load it with load_skill first.\n\nWhy?\n\nREFERENCED: x:1 \"One\"\n\nREF",
+     "title_source": "prefix",
+     "routing_mode": "preferred_reserve",
+     "provider": null,
+     "model": null,
+     "actual_provider": "",
+     "actual_model": "",
+     "routing_reason": "",
+     "session_id": null,
+     "active_leaf": "new_assistant",
+     "live_slack_since": null
+    }
+   }
+  }
+ ],
+ "save_version": [
+  {
+   "name": "the same message's unedited latest version is overwritten",
+   "existing": [
+    {
+     "key": "k",
+     "version": 1,
+     "message": 1,
+     "title": "Old",
+     "content": "old",
+     "edited": false
+    }
+   ],
+   "message": 1,
+   "draft": {
+    "key": "k",
+    "kind": "document",
+    "title": "New",
+    "content": "new",
+    "meta": {
+     "a": "b"
+    }
+   },
+   "expect": [
+    {
+     "key": "k",
+     "version": 1,
+     "message": 1,
+     "title": "New",
+     "content": "new",
+     "meta": {
+      "a": "b"
+     },
+     "edited": false
+    }
+   ]
+  },
+  {
+   "name": "an edited latest version is never overwritten",
+   "existing": [
+    {
+     "key": "k",
+     "version": 1,
+     "message": 1,
+     "title": "Old",
+     "content": "old",
+     "edited": true
+    }
+   ],
+   "message": 1,
+   "draft": {
+    "key": "k",
+    "kind": "document",
+    "title": "New",
+    "content": "new",
+    "meta": {}
+   },
+   "expect": [
+    {
+     "key": "k",
+     "version": 1,
+     "message": 1,
+     "title": "Old",
+     "content": "old",
+     "meta": {},
+     "edited": true
+    },
+    {
+     "key": "k",
+     "version": 2,
+     "message": 1,
+     "title": "New",
+     "content": "new",
+     "meta": {},
+     "edited": false
+    }
+   ]
+  },
+  {
+   "name": "another message's version gets the next number",
+   "existing": [
+    {
+     "key": "k",
+     "version": 1,
+     "message": 1,
+     "title": "Old",
+     "content": "old",
+     "edited": false
+    }
+   ],
+   "message": 2,
+   "draft": {
+    "key": "k",
+    "kind": "document",
+    "title": "New",
+    "content": "new",
+    "meta": {}
+   },
+   "expect": [
+    {
+     "key": "k",
+     "version": 1,
+     "message": 1,
+     "title": "Old",
+     "content": "old",
+     "meta": {},
+     "edited": false
+    },
+    {
+     "key": "k",
+     "version": 2,
+     "message": 2,
+     "title": "New",
+     "content": "new",
+     "meta": {},
+     "edited": false
+    }
+   ]
+  },
+  {
+   "name": "only the latest version counts",
+   "existing": [
+    {
+     "key": "k",
+     "version": 1,
+     "message": 2,
+     "title": "A",
+     "content": "a",
+     "edited": false
+    },
+    {
+     "key": "k",
+     "version": 2,
+     "message": 1,
+     "title": "B",
+     "content": "b",
+     "edited": false
+    }
+   ],
+   "message": 1,
+   "draft": {
+    "key": "k",
+    "kind": "document",
+    "title": "C",
+    "content": "c",
+    "meta": {}
+   },
+   "expect": [
+    {
+     "key": "k",
+     "version": 1,
+     "message": 2,
+     "title": "A",
+     "content": "a",
+     "meta": {},
+     "edited": false
+    },
+    {
+     "key": "k",
+     "version": 2,
+     "message": 1,
+     "title": "C",
+     "content": "c",
+     "meta": {},
+     "edited": false
+    }
+   ]
+  },
+  {
+   "name": "a new key starts at version 1",
+   "existing": [
+    {
+     "key": "other",
+     "version": 4,
+     "message": 1,
+     "title": "O",
+     "content": "o",
+     "edited": false
+    }
+   ],
+   "message": 2,
+   "draft": {
+    "key": "k",
+    "kind": "table",
+    "title": "T",
+    "content": "|a|",
+    "meta": {}
+   },
+   "expect": [
+    {
+     "key": "k",
+     "version": 1,
+     "message": 2,
+     "title": "T",
+     "content": "|a|",
+     "meta": {},
+     "edited": false
+    },
+    {
+     "key": "other",
+     "version": 4,
+     "message": 1,
+     "title": "O",
+     "content": "o",
+     "meta": {},
+     "edited": false
+    }
+   ]
+  }
+ ]
+}

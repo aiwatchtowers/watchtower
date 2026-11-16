@@ -137,6 +137,9 @@ type ControlRequest struct {
 	DisplayOver  []ShownOverWire `json:"display_over,omitempty"`
 	Phase        string          `json:"phase,omitempty"`
 	Percent      *int            `json:"percent,omitempty"`
+	// ChatLease is a desktop_heartbeat's flag: 1 = the app honours
+	// chat_turn_leases (iPhone chat D18); absent from an older app.
+	ChatLease int `json:"chat_lease,omitempty"`
 }
 
 // ControlAnswer is one line from the hub: the answer to a request (Op set,
@@ -491,7 +494,7 @@ func (s *supervisor) handle(r ControlRequest, pl *pairListener) ControlAnswer {
 		now := s.o.Clock()
 		wasFresh, _, err := s.st.DesktopHost(now)
 		wasFresh = err == nil && wasFresh
-		if err := s.st.Heartbeat(now); err != nil {
+		if err := s.st.HeartbeatChat(now, r.ChatLease == 1); err != nil {
 			return ControlAnswer{Error: ErrClassFailed}
 		}
 		s.recordingsChanged() // the first beat turns the default switch on
@@ -737,6 +740,11 @@ func (h *hubRuntime) handle(r ControlRequest, pl *pairListener) ControlAnswer {
 		}
 		if err := h.center.Allow(r.Device, link.Grant(r.Grant), r.On); err != nil {
 			return ControlAnswer{Error: LinkErrClass(err)}
+		}
+		if link.Grant(r.Grant) == link.GrantChat {
+			// The chat slices publish only while a phone holds the grant; a
+			// sidecar write changes no watchtower.db row.
+			h.publishSoon(chatKinds...)
 		}
 		on := r.On
 		return ControlAnswer{OK: true, DeviceID: strings.ToUpper(r.Device), Grant: r.Grant, Allowed: &on}

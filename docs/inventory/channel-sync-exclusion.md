@@ -11,7 +11,7 @@
 > Any proposed change that would break a guard test or remove a contract must be
 > raised as a question before touching code.
 
-**Module:** `internal/sync/` (every Slack save path), `internal/db/channel_settings.go`, `internal/db/migrations/00190_channel_sync_excluded.sql`, `cmd/channels_exclude.go`
+**Module:** `internal/sync/` (every Slack save path), `internal/db/channel_settings.go`, `internal/db/migrations/00191_channel_sync_excluded.sql`, `cmd/channels_exclude.go`
 **Last full audit:** 2026-11-15
 
 ## SYNCEX-01 — Stop syncing is honoured on every save path

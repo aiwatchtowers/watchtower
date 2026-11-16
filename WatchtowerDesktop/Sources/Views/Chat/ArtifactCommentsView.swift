@@ -1,5 +1,6 @@
 import SwiftUI
 import WatchtowerCore
+import WatchtowerChatText
 
 /// The latest artifact version as selectable text — the one view the panel
 /// shows whether or not the owner is commenting, so starting a comment never

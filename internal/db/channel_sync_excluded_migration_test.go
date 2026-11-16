@@ -9,18 +9,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestMigration00190_SeedsMutedAtWithTheUpgrade replays goose to 00189,
+// TestMigration00191_SeedsMutedAtWithTheUpgrade replays goose to 00190,
 // seeds a channel muted long ago whose updated_at is old (the old mute
 // writers did not always touch it) and an unmuted one, applies 00190 and
 // checks that the muted one's muted_at is the upgrade time, so the "muted
 // 30+ days" suggestion counts from the upgrade, and the unmuted one has none.
-func TestMigration00190_SeedsMutedAtWithTheUpgrade(t *testing.T) {
+func TestMigration00191_SeedsMutedAtWithTheUpgrade(t *testing.T) {
 	t.Parallel()
 	raw, err := sql.Open("sqlite3", ":memory:")
 	require.NoError(t, err)
 	defer raw.Close()
 	raw.SetMaxOpenConns(1)
-	require.NoError(t, gooseUpTo(raw, "migrations", 189))
+	require.NoError(t, gooseUpTo(raw, "migrations", 190))
 	_, err = raw.Exec(`INSERT INTO channels (id, name, type) VALUES ('1:C0MUTED', 'muted', 'public'), ('1:C0OPEN', 'open', 'public')`)
 	require.NoError(t, err)
 	_, err = raw.Exec(`INSERT INTO channel_settings (channel_id, is_muted_for_llm, updated_at) VALUES
@@ -28,7 +28,7 @@ func TestMigration00190_SeedsMutedAtWithTheUpgrade(t *testing.T) {
 	require.NoError(t, err)
 
 	before := time.Now().UTC().Add(-time.Second)
-	require.NoError(t, gooseUpTo(raw, "migrations", 190))
+	require.NoError(t, gooseUpTo(raw, "migrations", 191))
 
 	var mutedAt, openAt string
 	require.NoError(t, raw.QueryRow(`SELECT muted_at FROM channel_settings WHERE channel_id = '1:C0MUTED'`).Scan(&mutedAt))

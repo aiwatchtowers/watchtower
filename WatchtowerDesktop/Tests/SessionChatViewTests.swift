@@ -3,6 +3,7 @@ import SwiftUI
 import ViewInspector
 @testable import WatchtowerDesktop
 import WatchtowerCore
+import WatchtowerChatText
 
 @MainActor
 final class SessionChatViewTests: XCTestCase {

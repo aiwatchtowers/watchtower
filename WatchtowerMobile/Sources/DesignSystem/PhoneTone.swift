@@ -14,6 +14,8 @@ import WatchtowerKit
 /// `waitingForYou` or from a session record's published tone.
 enum PhoneTone: Equatable, Sendable {
     case green, orange, blue, red, purple, teal, gray, secondary, accent
+    /// The primary label colour: an unread chat's dot (iPhone chat mockup 1a).
+    case primary
 
     /// The tone of every waiting-for-you and ask element.
     static let waitingForYou = Self.orange
@@ -45,8 +47,14 @@ enum PhoneTone: Equatable, Sendable {
         case .gray: Tone.status("gray")
         case .secondary: .secondary
         case .accent: .accentColor
+        case .primary: .primary
         }
     }
+}
+
+/// The phone's page surface: what an opaque bar or a floating bar over scrolling rows sits on.
+enum PhoneSurface {
+    static let page = Color(.systemBackground)
 }
 
 /// What a coloured element is, decided by the screen model from the data it

@@ -70,7 +70,7 @@ func TestAISession_PromptOptionsClaudeAIByProvider(t *testing.T) {
 	require.NotNil(t, on.publish)
 	assert.Equal(t, on.publish.Path(), on.prompt.PublishDir)
 	assert.True(t, filepath.IsAbs(on.prompt.PublishDir))
-	assert.Equal(t, filepath.Join(chat.NeutralWorkDir(), "publish", "7"), on.publish.Path())
+	assert.Equal(t, filepath.Join(chat.NeutralWorkDir(), "publish", chat.PublishDirName(7)), on.publish.Path())
 	assert.Empty(t, on.reason)
 
 	def := resolveClaudeAI(cfgFor(""), "main", 7, os.Environ(), io.Discard)
@@ -97,7 +97,7 @@ func TestAISession_PromptOptionsClaudeAIByProvider(t *testing.T) {
 
 	// A publish dir that cannot be made turns this conversation's mode off,
 	// without telling Settings (the sidecar is every conversation's).
-	require.NoError(t, os.WriteFile(filepath.Join(chat.NeutralWorkDir(), "publish", "8"), nil, 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(chat.NeutralWorkDir(), "publish", chat.PublishDirName(8)), nil, 0o600))
 	broken := resolveClaudeAI(cfgFor("claude"), "main", 8, os.Environ(), io.Discard)
 	assert.Equal(t, chat.ClaudeAIPromptUnavailable, broken.prompt.Kind)
 	assert.NotEmpty(t, broken.prompt.Reason)

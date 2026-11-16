@@ -88,14 +88,14 @@ CREATE TABLE IF NOT EXISTS messages (
     permalink    TEXT NOT NULL DEFAULT '',
     ts_unix      REAL GENERATED ALWAYS AS (CASE WHEN INSTR(ts, '.') > 0 THEN CAST(SUBSTR(ts, 1, INSTR(ts, '.') - 1) AS REAL) ELSE CAST(ts AS REAL) END) STORED,
     raw_json     TEXT NOT NULL DEFAULT '{}', -- kept empty ('{}'): the Slack payload is not stored (Slack API terms: minimum necessary retention)
-    synced_at    REAL NOT NULL DEFAULT 0,  -- unix seconds the Slack sync first stored the row; 0 = unstamped, read as ts_unix (Slack inbox detection; see 00189)
+    synced_at    REAL NOT NULL DEFAULT 0,  -- unix seconds the Slack sync first stored the row; 0 = unstamped, read as ts_unix (Slack inbox detection; see 00190)
     PRIMARY KEY (channel_id, ts)
 );
 CREATE INDEX IF NOT EXISTS idx_messages_user_id ON messages(user_id);
 CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(channel_id, thread_ts);
 CREATE INDEX IF NOT EXISTS idx_messages_ts_unix ON messages(ts_unix);
 CREATE INDEX IF NOT EXISTS idx_messages_channel_ts_unix ON messages(channel_id, ts_unix);
--- Slack inbox detection reads synced_at, an unstamped 0 as the post time (see 00189).
+-- Slack inbox detection reads synced_at, an unstamped 0 as the post time (see 00190).
 CREATE INDEX IF NOT EXISTS idx_messages_synced_at ON messages(CASE WHEN synced_at = 0 THEN ts_unix ELSE synced_at END);
 
 -- FTS5 virtual table for full-text search on messages
@@ -784,7 +784,7 @@ CREATE TABLE IF NOT EXISTS channel_settings (
     is_muted_for_llm INTEGER NOT NULL DEFAULT 0,
     is_favorite      INTEGER NOT NULL DEFAULT 0,
     updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-    sync_excluded    INTEGER NOT NULL DEFAULT 0,  -- 1 = Stop syncing: no new messages stored, except mentions of the user (see 00190)
+    sync_excluded    INTEGER NOT NULL DEFAULT 0,  -- 1 = Stop syncing: no new messages stored, except mentions of the user (see 00191)
     excluded_at      TEXT NOT NULL DEFAULT '',    -- when Stop syncing began
     catchup_from     REAL,                        -- Sync again's pending catch-up: fixed lower bound (unix); NULL = none
     catchup_to       REAL,                        -- the catch-up's moving upper bound (unix)
@@ -1604,7 +1604,7 @@ CREATE TABLE IF NOT EXISTS slack_accounts (
     deletion_sweep_day TEXT NOT NULL DEFAULT '',  -- last UTC day (YYYY-MM-DD) the Slack deletion sweep finished (see 00139)
     access_ok_at      TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC of the last confirmed authenticated call; '' = unknown (see 00148)
     revoked_at        TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC when status turned revoked; cleared by ok (see 00148)
-    first_cycle_at    TEXT NOT NULL DEFAULT ''   -- RFC 3339 UTC of the account's first sync attempt; older messages a sync stores keep their post time as synced_at (see 00189)
+    first_cycle_at    TEXT NOT NULL DEFAULT ''   -- RFC 3339 UTC of the account's first sync attempt; older messages a sync stores keep their post time as synced_at (see 00190)
 );
 
 -- Multi-account IMAP/Outlook email source: one row per connected mailbox
@@ -3832,4 +3832,15 @@ CREATE TABLE IF NOT EXISTS slack_live_status (
     connector_id TEXT NOT NULL DEFAULT '',                    -- the Codex Slack app id the probe saw; '' for Claude
     checked_at   TEXT NOT NULL,
     PRIMARY KEY (team_id, provider)
+);
+
+-- Chat turn lease (00189): the one process (desktop or hub) running a conversation's turn. Times are Unix epoch milliseconds, UTC; a heartbeat older than 60 s is stale.
+CREATE TABLE IF NOT EXISTS chat_turn_leases (
+    conversation_id        INTEGER PRIMARY KEY REFERENCES chat_conversations(id) ON DELETE CASCADE,
+    owner                  TEXT NOT NULL CHECK (owner IN ('desktop','hub')),
+    owner_id               TEXT NOT NULL,                        -- desktop: app launch uuid; hub: hub id
+    turn_id                TEXT NOT NULL,
+    started_at_ms          INTEGER NOT NULL,
+    heartbeat_at_ms        INTEGER NOT NULL,
+    cancel_requested_at_ms INTEGER                               -- set by the other side's Stop
 );

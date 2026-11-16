@@ -2,6 +2,7 @@ import XCTest
 import GRDB
 import WatchtowerTestSupport
 @testable import WatchtowerCore
+import WatchtowerChatText
 
 /// LIVE-01 — a conversation that used the Live Slack connector, from that turn
 /// on, stays out of every store that makes chat text lasting. The Go readers
@@ -217,7 +218,6 @@ final class LiveSlack01GuardTests: XCTestCase {
         "IdeaQueries.swift": "delete only",
         "LearnQueries.swift": "an existence signal, no text",
         "ChatCommand.swift": "comment only",
-        "ChatErrorPresentation.swift": "comment only",
         "ChatModels.swift": "row types and comments",
         "ChatTurnDriver.swift": "the chat's own flushes",
         "CodeQuestionContext.swift": "comment only",

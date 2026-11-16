@@ -2,6 +2,7 @@ import XCTest
 import GRDB
 @testable import WatchtowerCore
 import WatchtowerTestSupport
+import WatchtowerChatText
 
 /// Answers `automations …` and `inbox folders …` by verb, optionally holding
 /// one verb at a gate until the test opens it.

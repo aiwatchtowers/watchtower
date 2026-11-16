@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -131,20 +130,6 @@ func TestChatTitle_DegenerateInputs(t *testing.T) {
 
 	err = chatTitleCmd.RunE(chatTitleCmd, []string{"abc"})
 	assert.ErrorContains(t, err, "invalid conversation id")
-}
-
-func TestCleanChatTitle(t *testing.T) {
-	cases := map[string]string{
-		"Payments rollout":           "Payments rollout",
-		"# Title: Q3 plan.\n\nextra": "Q3 plan",
-		"«Релиз платежей»":           "Релиз платежей",
-		"**Vendor contract review**": "Vendor contract review",
-		"":                           "",
-		strings.Repeat("Долгое название ", 10): strings.TrimSpace(string([]rune(strings.Repeat("Долгое название ", 10))[:59])) + "…",
-	}
-	for in, want := range cases {
-		assert.Equal(t, want, cleanChatTitle(in), in)
-	}
 }
 
 func TestChatTitleIsLightTier(t *testing.T) {

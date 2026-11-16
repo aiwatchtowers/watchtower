@@ -22,7 +22,7 @@ text: A question's suggested answers are chips on the phone's **Now**; finished 
 area: iphone
 level: basics
 kind: feature
-since: next
+since: 0.28.3
 -->
 
 **Now** starts with your tower: **MacBook Pro · online**, or **asleep · last seen 40 min ago** once its heartbeat is over 35 minutes old. Then:
@@ -55,7 +55,7 @@ text: A session on the phone ends with a card: its summary and **Report**, or **
 area: iphone
 level: next
 kind: tip
-since: next
+since: 0.28.3
 -->
 
 Tap a session in **Now** or a workbench. The top shows the workbench, the title and one state line: a timer like **Working · 3:14** while the agent works, an age like **Needs approval · 1m** while it waits on you. Your lines sit on the right, the agent's text on the left. **Brief** opens what the session was told at start, and a subagent row opens that subagent's own chat, which is read-only.
@@ -98,7 +98,7 @@ text: Search the phone's **Board** by title, `#number` or branch, or tap **Waiti
 area: iphone
 level: next
 kind: feature
-since: next
+since: 0.28.3
 -->
 
 The **Board** opens on **Waiting for me** (an ask or permission prompt on the target or its session), else **Sessions running**, else **All**. **High**, **Blocked**, **Done** and **Archive** sit beside them. Search by title, `#number` or branch covers the whole board, archive too. Lanes follow the Mac's columns. Under **All**, groups and the **Backlog** and **Done** lanes start folded; the phone remembers what you open.

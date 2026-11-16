@@ -2,6 +2,7 @@ import AppKit
 import DesignKit
 import SwiftUI
 import WatchtowerCore
+import WatchtowerChatText
 
 /// A finished chat answer's markdown (spec 2026-10-24 §5b): its prose is
 /// drawn by one native text view per run instead of a selectable SwiftUI

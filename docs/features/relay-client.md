@@ -478,3 +478,7 @@ Relay links rotate their epoch every 7 days (iCloud links keep 90 days). Each ro
 - **Phase 4: a process iOS never brings forward leaves the relay with the last token.** A token changed meanwhile is dropped on `BadDeviceToken`, and Desktop shows the no-token line until the next open.
 - **Smaller parked items.** A pull after a terminal stop redials the socket each time. A `ZoneChanged` that carries a record still costs one `changes` round trip (R9).
 - **Phase 5 limits** are listed with the Phase 5 section above.
+
+## iPhone chat on the relay (2026-11-15, board #1791)
+
+Chat is relay-only: the hub's heartbeat says `capabilities.chat: "on"` only on the relay (`not_relay` otherwise), and only an explicit `"on"` shows the Chats tab. The phone's `chat_attachment` upload frame is a relay record kind sealed with `ChunkedAssetCipher` like a recording upload, and `chat_answer` pushes travel as work alerts. A turn's rows are written by the lease holder's store, Swift or Go. See [iphone-chat.md](iphone-chat.md).

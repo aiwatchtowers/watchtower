@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerChatText
 
 /// A chat table's column widths for the width it has (ask #1197, target
 /// #1714): one rule for the finished answer's native table and the

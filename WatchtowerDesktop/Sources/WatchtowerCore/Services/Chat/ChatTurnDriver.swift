@@ -16,10 +16,20 @@ import Observation
 /// its full text still shown) while its terminal write is under way
 /// (`isFinishing`); `onTurnFinished` fires once that write landed, so what a
 /// reload reads is the turn's final state.
+///
+/// The turn's lease (spec 2026-11-15 §4.4, §5): while a turn runs, the
+/// lease watch reads the lease every `leasePollInterval` — a cancel set by
+/// the phone's Stop runs `onRemoteCancel` (the session's own Stop) — and
+/// refreshes its heartbeat every `heartbeatInterval`. A heartbeat that finds
+/// no lease, an update by message id that changes no row, or a foreign-key
+/// failure means the conversation is gone: `onConversationGone` fires once
+/// and the turn writes nothing more.
 @MainActor
 @Observable
 package final class ChatTurnDriver {
     package static let flushInterval: TimeInterval = 1
+    package static let heartbeatInterval: TimeInterval = 15
+    package static let leasePollInterval: Duration = .seconds(1)
 
     package private(set) var liveTurn: LiveTurn?
     package private(set) var sessionID: String?
@@ -52,23 +62,38 @@ package final class ChatTurnDriver {
     /// action feeds re-read now — the card the step points at must exist
     /// while the turn is blocked on it, not at the turn's end.
     @ObservationIgnored package var onActionAwaited: ((Int64) -> Void)?
+    /// The other device's Stop set the running turn's cancel: stop it as
+    /// the owner's Stop does. Fires once per turn.
+    @ObservationIgnored package var onRemoteCancel: (() -> Void)?
+    /// The running turn's conversation is gone: cancel the turn. Fires once.
+    @ObservationIgnored package var onConversationGone: (() -> Void)?
+    /// The running turn's conversation went away under it; nothing more is written.
+    @ObservationIgnored package private(set) var conversationGone = false
     @ObservationIgnored private let store: ChatTurnStore
     @ObservationIgnored private let clock: () -> Date
     @ObservationIgnored private var lastFlush = Date.distantPast
     /// False once the session's prompt is stale (`stopRecordingSession`).
     @ObservationIgnored private var recordsSession = true
     @ObservationIgnored private let writes = SerialWrites()
+    /// Waits one lease poll; nil: no lease watch runs (it is driven by
+    /// `pollLease` alone).
+    @ObservationIgnored private let leaseTick: (@Sendable () async throws -> Void)?
+    @ObservationIgnored private var leaseWatch: Task<Void, Never>?
+    @ObservationIgnored private var lastHeartbeat = Date.distantPast
+    @ObservationIgnored private var remoteCancelHonoured = false
 
     package init(
         conversationID: Int64,
         projectID: Int64? = nil,
         store: ChatTurnStore,
-        clock: @escaping () -> Date = Date.init
+        clock: @escaping () -> Date = Date.init,
+        leaseTick: (@Sendable () async throws -> Void)? = { try await Task.sleep(for: ChatTurnDriver.leasePollInterval) }
     ) {
         self.conversationID = conversationID
         self.projectID = projectID
         self.store = store
         self.clock = clock
+        self.leaseTick = leaseTick
     }
 
     /// Starts tracking a turn whose assistant row (`messageID`) already
@@ -85,7 +110,48 @@ package final class ChatTurnDriver {
             recordActual(provider: provider, model: model, routing: routing)
         }
         lastFlush = .distantPast
+        conversationGone = false
+        remoteCancelHonoured = false
+        lastHeartbeat = clock()
+        startLeaseWatch()
         return turn
+    }
+
+    /// One lease poll of the running turn: honours a cancel the other
+    /// device set, and refreshes the heartbeat once `heartbeatInterval`
+    /// passed. The watch calls it every `leasePollInterval`.
+    package func pollLease() async {
+        guard let turn = liveTurn, turn.isRunning, !conversationGone else { return }
+        let (store, conversationID, turnID) = (store, conversationID, turn.turnID)
+        let now = clock()
+        if now.timeIntervalSince(lastHeartbeat) >= Self.heartbeatInterval {
+            lastHeartbeat = now
+            do {
+                let held = try await store.heartbeat(conversationID: conversationID, turnID: turnID,
+                                                     nowMS: ChatLease.milliseconds(now))
+                guard liveTurn === turn, turn.isRunning else { return }
+                if !held {
+                    conversationLost()
+                    return
+                }
+            } catch {
+                guard liveTurn === turn, turn.isRunning else { return }
+                if ChatConversationGoneError.matches(error) {
+                    conversationLost()
+                    return
+                }
+                NSLog("ChatTurnDriver: chat lease heartbeat failed: %@", error.localizedDescription)
+            }
+        }
+        do {
+            let lease = try await store.lease(conversationID: conversationID)
+            guard liveTurn === turn, turn.isRunning, !remoteCancelHonoured,
+                  let lease, lease.turnID == turnID, lease.cancelRequestedAtMS != nil else { return }
+            remoteCancelHonoured = true
+            onRemoteCancel?()
+        } catch {
+            NSLog("ChatTurnDriver: reading the chat lease failed: %@", error.localizedDescription)
+        }
     }
 
     package func apply(_ event: ChatEvent) {
@@ -162,8 +228,29 @@ package final class ChatTurnDriver {
         return turn
     }
 
+    private func startLeaseWatch() {
+        leaseWatch?.cancel()
+        guard let leaseTick else { return }
+        leaseWatch = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await leaseTick() } catch { return }
+                guard let self, self.liveTurn?.isRunning == true else { return }
+                await self.pollLease()
+            }
+        }
+    }
+
+    /// The conversation went away under the running turn: stop writing,
+    /// and let the session cancel the turn.
+    private func conversationLost() {
+        guard !conversationGone else { return }
+        conversationGone = true
+        leaseWatch?.cancel()
+        onConversationGone?()
+    }
+
     private func recordActual(provider: String, model: String, routing: ChatRoutingMetadata?) {
-        guard recordsSession else { return }
+        guard recordsSession, !conversationGone else { return }
         self.routing = routing
         guard !provider.isEmpty else { return }
         actualProvider = provider
@@ -196,7 +283,7 @@ package final class ChatTurnDriver {
     }
 
     private func recordSession(_ sid: String?) {
-        guard recordsSession, let sid, !sid.isEmpty, sid != sessionID else { return }
+        guard recordsSession, !conversationGone, let sid, !sid.isEmpty, sid != sessionID else { return }
         sessionID = sid
         let turn = liveTurn
         let (store, conversationID, projectID) = (store, conversationID, projectID)
@@ -267,11 +354,18 @@ package final class ChatTurnDriver {
     }
 
     /// Queues `write` behind the ones asked for before it.
+    /// Nothing runs once the conversation is gone, a write queued before
+    /// that included.
     private func persist(_ turn: LiveTurn, _ write: @escaping @MainActor () async throws -> Void) {
-        writes.start {
+        writes.start { [weak self] in
+            guard self?.conversationGone != true else { return }
             do {
                 try await write()
             } catch {
+                if ChatConversationGoneError.matches(error) {
+                    self?.conversationLost()
+                    return
+                }
                 turn.persistError = "Couldn't save the reply: \(error.localizedDescription)"
             }
         }
@@ -300,13 +394,29 @@ package final class ChatTurnDriver {
     private func finalizePersist(_ turn: LiveTurn, status: String, failure: ChatSessionError?) {
         lastFlush = clock()
         isFinishing = true
+        leaseWatch?.cancel()
         let (store, conversationID, text, usage) = (store, conversationID, turn.fullText, turn.usage)
         writes.start { [weak self] in
-            do {
-                try await store.finalizeTurn(conversationID: conversationID, messageID: turn.messageID, text: text,
-                                             status: status, usage: usage, error: failure)
-            } catch {
-                turn.persistError = "Couldn't finalize the reply: \(error.localizedDescription)"
+            if self?.conversationGone != true {
+                do {
+                    // The lease is released in the same transaction.
+                    try await store.finalizeTurn(conversationID: conversationID, messageID: turn.messageID, turnID: turn.turnID,
+                                                 text: text, status: status, usage: usage, error: failure)
+                } catch {
+                    if ChatConversationGoneError.matches(error) {
+                        self?.conversationLost()
+                    } else {
+                        turn.persistError = "Couldn't finalize the reply: \(error.localizedDescription)"
+                        // The failed transaction rolled its lease release
+                        // back: free the lease in its own write, best effort.
+                        do {
+                            try await store.releaseLease(conversationID: conversationID, turnID: turn.turnID)
+                        } catch {
+                            NSLog("ChatTurnDriver: releasing the chat lease after a failed finalize failed (%@)",
+                                  String(describing: type(of: error)))
+                        }
+                    }
+                }
             }
             guard let self else { return }
             if self.liveTurn === turn { self.liveTurn = nil }

@@ -91,6 +91,7 @@ struct HubSessionFactory {
             linkedDevice: device,
             keys: PhoneKeys(store: keys, hubID: hubID),
             recordingsDirectory: paths.recordingsDirectory(hubID),
+            chatCopyPath: paths.chatCopyPath(hubID),
             hold: RecordingHold(directory: paths.holdDirectory) { paths.recordingsDirectory($0) },
             route: route,
             link: link,

@@ -1181,6 +1181,17 @@ CREATE TABLE 'chat_title_fts_docsize'(id INTEGER PRIMARY KEY, sz BLOB)
 table	chat_title_fts_idx
 CREATE TABLE 'chat_title_fts_idx'(segid, term, pgno, PRIMARY KEY(segid, term)) WITHOUT ROWID
 
+table	chat_turn_leases
+CREATE TABLE chat_turn_leases (
+conversation_id INTEGER PRIMARY KEY REFERENCES chat_conversations(id) ON DELETE CASCADE,
+owner TEXT NOT NULL CHECK (owner IN ('desktop','hub')),
+owner_id TEXT NOT NULL,
+turn_id TEXT NOT NULL,
+started_at_ms INTEGER NOT NULL,
+heartbeat_at_ms INTEGER NOT NULL,
+cancel_requested_at_ms INTEGER
+)
+
 table	chat_turn_steps
 CREATE TABLE chat_turn_steps (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -4753,6 +4764,15 @@ GROUP BY up.ancestor
 0	segid		notnull=1	dflt=NULL	pk=1
 1	term		notnull=1	dflt=NULL	pk=2
 2	pgno		notnull=0	dflt=NULL	pk=0
+
+## chat_turn_leases
+0	conversation_id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	owner	TEXT	notnull=1	dflt=NULL	pk=0
+2	owner_id	TEXT	notnull=1	dflt=NULL	pk=0
+3	turn_id	TEXT	notnull=1	dflt=NULL	pk=0
+4	started_at_ms	INTEGER	notnull=1	dflt=NULL	pk=0
+5	heartbeat_at_ms	INTEGER	notnull=1	dflt=NULL	pk=0
+6	cancel_requested_at_ms	INTEGER	notnull=0	dflt=NULL	pk=0
 
 ## chat_turn_steps
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1

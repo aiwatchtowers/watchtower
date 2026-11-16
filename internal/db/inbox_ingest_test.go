@@ -19,7 +19,7 @@ func syncedAtOf(t *testing.T, d *DB, channelID, ts string) float64 {
 }
 
 // An insert that does not stamp synced_at (rows stored before migration
-// 00189, a writer other than the Slack sync, every existing test fixture)
+// 00190, a writer other than the Slack sync, every existing test fixture)
 // keeps 0, and the detectors read it as the post time, exactly as they read
 // ts_unix before the column existed.
 func TestMessagesSyncedAt_UnstampedReadsAsPostTime(t *testing.T) {
@@ -191,7 +191,7 @@ func TestMigration_MessagesSyncedAtFromTs(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "w.db")
 	d, err := Open(path)
 	require.NoError(t, err)
-	require.NoError(t, gooseDownTo(d.DB, "migrations", 188))
+	require.NoError(t, gooseDownTo(d.DB, "migrations", 189))
 	_, err = d.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('1:C1', '1700000000.000100', '1:U_OTHER', '<@U_ME> old')`)
 	require.NoError(t, err)
 	require.NoError(t, d.Close())
@@ -215,7 +215,7 @@ func TestMigration_FirstCycleAtForExistingAccounts(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "w.db")
 	d, err := Open(path)
 	require.NoError(t, err)
-	require.NoError(t, gooseDownTo(d.DB, "migrations", 188))
+	require.NoError(t, gooseDownTo(d.DB, "migrations", 189))
 	_, err = d.Exec(`INSERT INTO slack_accounts (id, team_id) VALUES (1, 'T000')`)
 	require.NoError(t, err)
 	require.NoError(t, d.Close())

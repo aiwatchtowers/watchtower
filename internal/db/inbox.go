@@ -447,7 +447,7 @@ func (db *DB) FindPendingMentionsPostedSince(accountID int64, currentUserID stri
 const (
 	// sinceStored is when the row was first stored, the inbox watermark's
 	// order: synced_at, or the post time for an unstamped row (0: stored
-	// before migration 00189, or by a writer other than the Slack sync). It
+	// before migration 00190, or by a writer other than the Slack sync). It
 	// is exactly idx_messages_synced_at's expression, so the index serves it.
 	sinceStored = "(CASE WHEN m.synced_at = 0 THEN m.ts_unix ELSE m.synced_at END)"
 	sincePosted = "m.ts_unix" // when Slack says it was posted

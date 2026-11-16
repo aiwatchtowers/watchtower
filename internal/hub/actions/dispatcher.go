@@ -54,10 +54,11 @@ const (
 var NonIdempotentKinds = []string{
 	"board_comment_add", "board_comment_reply", "board_target_create", "session_start", "session_input",
 	"session_finish_request", "permission_answer", "session_interrupt", "automation_run",
+	"chat_new", "chat_turn", "chat_action_answer", "chat_manage",
 }
 
 // ReceivedEchoKinds get a non-final received echo before their handler runs.
-var ReceivedEchoKinds = []string{"session_start", "session_input", "board_target_create"}
+var ReceivedEchoKinds = []string{"session_start", "session_input", "board_target_create", "chat_turn"}
 
 // RefusedKinds are the pre-POC Today/task kinds: failed unsupported_in_poc,
 // never dispatched, even with a handler registered.
@@ -117,6 +118,8 @@ type Dispatcher struct {
 	kinds      map[string]registration
 	recordings RecordingIntaker
 	recNudges  []string
+	chatFiles  ChatAttachmentIntaker
+	chatNudges []string
 }
 
 // NewDispatcher returns an empty dispatcher: every kind is unsupported until

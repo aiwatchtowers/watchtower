@@ -1,5 +1,6 @@
 import XCTest
 @testable import WatchtowerCore
+import WatchtowerChatText
 
 /// `internal/chat/artifacts_examples.md` is embedded verbatim in the Go
 /// `ArtifactsContract()` prompt; the Swift parser must accept exactly what

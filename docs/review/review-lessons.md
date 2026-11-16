@@ -3085,6 +3085,24 @@ Entry format:
 - rule-gap (candidate, dim 6/9): *a new path that launches a provider child in a mode an inventory contract governs (claude.ai mode, sandbox, org policy keys like `AllowClaudeAITools`) lists each contract's gate and calls it, or amends the contract with the owner.*
 - outcome: TBD
 
+## 2026-11-12 — session-163 (b820de0ff: full-width session titles; panel: prosecutor + codex + all three pr-review-toolkit specialists; judge verified source, no runtime accessibility reproduction) — verdict: changes-needed
+
+- contested: the separated title's accessibility impact was minor in the prosecutor lane and major in codex/general review. Held major: the named open control lacks selection and Delete, while the metadata control carrying them lacks the session name. One logical row now declares two different open controls. [8]
+- false-positive: none. No extra test was required solely for this reversible layout change; the existing screenshots cover the normal and narrow layout, with no closed-asks example. [7]
+- miss: none late. Three lanes independently found the same split; the test analyzer corroborated the coverage concern rather than adding a separate defect. [8]
+- weak-dimension: 8. Moving text between visual containers also moves its accessibility identity, even when both containers call the same open action.
+- rule-gap (candidate, dim 8): *when a row's label moves outside its combined accessibility element, retain one named open control with its selection trait and custom actions; keep independently actionable sibling controls outside that replacement. Check the accessibility tree as well as the screenshot.*
+- outcome: TBD
+
+## 2026-11-15 — session-163 round 2 (PR #851, 0fc105270: title moved above a details line, `accessibilityRepresentation` restores one named open control, render probe moved to y 136; panel: prosecutor (10) + codex (0) + all three pr-review-toolkit specialists; judge verified by reading `TerminalSessionRow`, `TerminalsSection` and `SessionSwitcherPresentation`, no runs) — verdict: changes-needed
+
+- contested: the code-reviewer's standalone-terminal regression. Upheld as the blocker. `TerminalsSection` uses the same row and passes no `opensIn`. A running standalone terminal has a nil caption, no place, no badge and no Codex tag (`NewTerminalMenu` starts only Claude Code and shells). Its details line is a lone state dot under the title, where main drew dot and title on one line. [8]
+- false-positive: F6 (rows grow about 38 to 52 pt, "density loss unjustified"). Dismissed: a second line is what a full-width title costs, and that is the purpose of the PR. The screenshots show it to the owner. [6]
+- miss: the round-1 fix lane and the PR's two screenshots covered only workbench sessions. Only the code-reviewer followed the shared row to its second caller. Codex and the prosecutor both missed it. [8]
+- weak-dimension: 8. A layout change to a view shared by two sections is checked against the section the ticket names, not against every caller's degenerate data (all optional lines nil).
+- rule-gap (candidate, dim 8/Design kit): *when a shared row view is restructured, grep its callers and render each one in its emptiest real state (every optional line nil). The PR's shots include one per caller.*
+- outcome: TBD
+
 ## 2026-11-15 — feature/1709-adaptive-sync (f98449a91: Slack adaptive sync, #1709 — AIMD limiter + 429 retry chain to a 10-min fetch deadline, resumable search, per-account adaptive cadence, `messages.synced_at` ingestion-ordered Inbox detection, Stop syncing / Sync again with a top-down catch-up, exclusion suggestions; 83 files +6274/−560; panel: prosecutor (11) + codex (0) + style-guardian + a general-purpose silent-failure/test lane standing in for pr-review-toolkit (not installed); judge verified by reading, no runs) — verdict: changes-needed
 
 - contested: whether the Sync again pre-exclusion hole (F1) and the history-backfill hole (F2) are defects when the plan literally specifies `catchup_from = excluded_at`. F1 kept as minor (the gap is real only when Sync again comes > 2 days after Stop syncing, past the forward search's 2-day overlap; a lookback margin on catchup_from is cheap and upserts dedupe); F2 sent to the owner (re-covering backfill ranges skipped while excluded is a scope decision). [6]
@@ -3093,4 +3111,15 @@ Entry format:
 - miss: codex returned nothing on an 83-file diff; every correctness item came from the prosecutor or the substitute silent-failure lane. A codex "no findings" on a diff this size is not signal. [process]
 - weak-dimension: 9 — a catch-up queue processed strictly head-first (`pending[0]`) with log-only errors means one persistent error wedges every later item; raised by two lanes.
 - rule-gap (candidate, dim 9): *a persisted work queue drained one item per run must not let a persistent non-transient error on the head item block the rest — skip, park or finish it, and surface the state, never log-and-retry forever.*
+- outcome: TBD
+
+## 2026-11-16 — feature/1791-iphone-chat (PR #885 umbrella, eb1ad6db4: iPhone AI chat over the relay — chat_turn_leases, Go chatstore twin of the Swift write path, hub chatrun runner, chat slices/handlers/push, WatchtowerChatText package, phone Chats tab; 328 files +32.7k; panel: prosecutor (12) + codex (1 visible) + three general-purpose lanes substituting the uninstalled pr-review-toolkit trio; judge verified by reading, no runs; CI Swift/Mobile pending at judging) — verdict: changes-needed
+
+- contested: F1, generic bare names (`send`, `Delete`, `Pin`, `Rename`, `MarkRead`, …) added to LIVE-01's `displayOnlyReaders`. Not a §7 weakening: the scan and the assertion are unchanged, and the inventory names the list as the extension point. Held major anyway, because a bare-name allowlist over all of `internal/` exempts every future function of that name in any package. The fix is to qualify the new entries by `<pkg>/<file>:<name>`, which is strictly stronger and needs no owner sign-off. [7]
+- contested: codex's unbounded stdin write in `chatrun/session.go`. Real (the kill/escalation path shares the blocked loop goroutine), but `ai session` drains stdin on a dedicated reader goroutine, so it needs a wedged child. Held minor; still fixed, because the cost is a daemon that never shuts down. [9]
+- false-positive: test-gap #5, a cross-chat attachment id. `chatstore` already pins "another chat's file" → `ErrAttachmentMissing` (store_test.go:352); only the handler-level mapping is untested. Test-gap #10/#11 (wall-clock): a real-process reap poll and a never-firing parked sleep seam are not timing waits. [7]
+- miss: F2 came from the prosecutor alone. Only `Start` refuses `context_type` conversations; feed, page, manage, attachment intake and the approval push take any id. Codex and the three substitute lanes all missed the scope hole. [6]
+- weak-dimension: 9. Phone-side `try?` over a kept owner send (`ChatOfflineCopy.outgoing`) survived 12 task reviews as "deferred minor". It is the exact absent-vs-undecodable shape a promoted Swift rule names.
+- rule-gap (candidate, dim 6): *a second writer/reader of a shared table that serves a subset of its rows (main chat = `context_type IS NULL`) applies the subset predicate at every entry point that takes an id from the client, not only at the listing.*
+- rule-gap (candidate, dim 7): *a name-keyed guard allowlist scanned across packages qualifies new entries by package/file; a bare generic name is the tell.*
 - outcome: TBD
