@@ -1304,13 +1304,13 @@
       }
     },
     {
-      "name": "chat_off_desktop_too_old",
+      "name": "chat_off_runner_down",
       "json": {
         "accounts": [],
         "app_version": "1.0.0",
         "capabilities": {
           "chat": "off",
-          "chat_reason": "desktop_too_old",
+          "chat_reason": "runner_down",
           "recordings": "on"
         },
         "enabled_at": 1730000000,
@@ -1327,7 +1327,7 @@
         "app_version": "1.0.0",
         "capabilities": {
           "chat": "off",
-          "chat_reason": "desktop_too_old",
+          "chat_reason": "runner_down",
           "recordings": "on"
         },
         "enabled_at": 1730000000,
@@ -1343,7 +1343,7 @@
         "recordings_offered": true,
         "is_mac": true,
         "chat": "off",
-        "chat_reason": "desktop_too_old"
+        "chat_reason": "runner_down"
       }
     }
   ],
@@ -1840,6 +1840,14 @@
         "chat_feed",
         "chat_list"
       ]
+    },
+    {
+      "action_kind": "chat_entity_search",
+      "slice_kinds": []
+    },
+    {
+      "action_kind": "chat_skills_list",
+      "slice_kinds": []
     }
   ],
   "epoch_ack": [

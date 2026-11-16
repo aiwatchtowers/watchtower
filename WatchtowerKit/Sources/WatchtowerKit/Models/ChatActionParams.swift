@@ -249,3 +249,24 @@ public struct ChatActionAnswerParams: ActionParams {
         case argsSHA256 = "argsSha256"
     }
 }
+
+/// `chat_entity_search`: the composer's `@` picker. No `kinds` (an empty list) is the mention search; named kinds
+/// search those, in order. The hits come back in the applied echo's result (`hits`, at most 20).
+public struct ChatEntitySearchParams: ActionParams {
+    public static let actionKind = ActionKind.chatEntitySearch
+
+    public let query: String
+    public let kinds: [String]
+
+    public init(query: String, kinds: [String] = []) {
+        self.query = query
+        self.kinds = kinds
+    }
+}
+
+/// `chat_skills_list`: the composer's `/` picker. The skills come back in the applied echo's result (`skills`).
+public struct ChatSkillsListParams: ActionParams {
+    public static let actionKind = ActionKind.chatSkillsList
+
+    public init() {}
+}

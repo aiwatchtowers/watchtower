@@ -16,11 +16,13 @@ import (
 	"watchtower/internal/tools"
 )
 
-// The AI chat from the phone (iPhone chat spec §4.5). Every chat_* kind
+// The AI chat from the phone (iPhone chat spec §4.5; unified chat §6.4).
+// The hub is an adapter: every chat_* kind is a call on the daemon's chat
+// engine (chatengine.Engine), which alone writes the chat rows. Every kind
 // needs the device's chat grant; chat_action_answer also needs its
-// permissions grant. While the hub's chat is off (not on the relay, no chat
-// runner, an old Desktop app running, the organization's policy) every one
-// is refused not_supported, so a stale phone never runs a turn over iCloud.
+// permissions grant. While the hub's chat is off (not on the relay, no
+// engine, the organization's policy) every one is refused not_supported, so
+// a stale phone never runs a turn over iCloud.
 
 // Wire reasons of the chat kinds (the Kit's ChatActionReason).
 const (
@@ -32,8 +34,12 @@ const (
 // MaxChatText is the most characters (runes) a chat_turn's text may carry.
 const MaxChatText = 32000
 
-// MaxChatSearchQuery is the most characters a chat_search query may carry.
+// MaxChatSearchQuery is the most characters a chat_search (or
+// chat_entity_search) query may carry.
 const MaxChatSearchQuery = 200
+
+// MaxChatEntityHits is the most hits a chat_entity_search answer carries.
+const MaxChatEntityHits = 20
 
 const (
 	chatNotAllowedLead      = "This phone is not allowed to use chat"
@@ -49,24 +55,33 @@ const (
 	chatTextTooLongMessage  = "This message is over 32,000 characters"
 	chatHubStoppingMessage  = "Your Mac is stopping chat right now — try again in a moment"
 	chatWriteFailedMessage  = "Your Mac could not save this"
+	chatReadFailedMessage   = "Your Mac could not read this"
 	chatUnavailableFallback = "This Mac can't run chat"
 )
 
 // chatOffMessages are the not_supported messages, by the capability's off
 // reason (wire.ChatOff*).
 var chatOffMessages = map[string]string{
-	wire.ChatOffNotRelay:      "Chat works over Relay. Switch this Mac to Relay to chat.",
-	wire.ChatOffRunnerDown:    "Chat can't run on your Mac right now",
-	wire.ChatOffDesktopTooOld: "Update Watchtower on your Mac",
-	wire.ChatOffPolicy:        "Chat is turned off by your organization",
+	wire.ChatOffNotRelay:   "Chat works over Relay. Switch this Mac to Relay to chat.",
+	wire.ChatOffRunnerDown: "Chat can't run on your Mac right now",
+	wire.ChatOffPolicy:     "Chat is turned off by your organization",
 }
 
-// ChatRunner runs chat turns (chatengine.Engine).
-type ChatRunner interface {
+// ChatEngine is the daemon's chat engine as the chat kinds use it
+// (*chatengine.Engine): every write of a chat row goes through it.
+type ChatEngine interface {
 	// Turn starts a turn and returns once its start transaction committed.
 	Turn(ctx context.Context, req chatengine.TurnRequest) (chatstore.Started, error)
-	// Cancel asks the turn's lease holder (this hub or the Mac) to stop.
+	// Cancel asks the turn's lease holder to stop.
 	Cancel(conv int64, turnID string) (bool, error)
+	NewConversation(ctx context.Context, projectID *int64, r *chatstore.Routing) (int64, error)
+	Manage(ctx context.Context, r chatengine.ManageRequest) error
+	SelectBranch(ctx context.Context, messageID int64) error
+	MarkRead(ctx context.Context, conv, messageID int64) error
+	ConversationExists(ctx context.Context, conv int64) (bool, error)
+	AttachBytes(ctx context.Context, conv int64, name string, data []byte) (int64, error)
+	EntitySearch(ctx context.Context, q string, kinds []string) ([]chatengine.EntityHit, error)
+	SkillsList(ctx context.Context) ([]chatengine.SkillSummary, error)
 }
 
 // ChatRequests is the hub's register of what the phone asked of the chat
@@ -79,14 +94,14 @@ type ChatRequests interface {
 }
 
 // ChatDeps is the AI chat's side of the hub. Available says whether chat is
-// on (the heartbeat's capabilities.chat) and why not; Runner (nil = none,
-// Available is then off) runs the turns; Store writes conversations; Tools
+// on (the heartbeat's capabilities.chat) and why not; Engine (nil = none,
+// Available is then off) runs the turns and writes every chat row; Tools
 // approves the chat's actions and runs the ones no session runs (nil = a
-// registry with no tools); FilesDir is <workspace>/chat_files.
+// registry with no tools); FilesDir is <workspace>/chat_files, where an
+// upload's sealed download waits while it is opened.
 type ChatDeps struct {
 	Available func() (on bool, reason string)
-	Runner    ChatRunner
-	Store     *chatstore.Store
+	Engine    ChatEngine
 	Requests  ChatRequests
 	Tools     *tools.Registry
 	FilesDir  string
@@ -109,6 +124,8 @@ func (h *Handlers) chatKinds() map[string]actions.Handler {
 		"chat_branch_select": h.chatBranchSelect,
 		"chat_manage":        h.chatManage,
 		"chat_action_answer": h.chatActionAnswer,
+		"chat_entity_search": h.chatEntitySearch,
+		"chat_skills_list":   h.chatSkillsList,
 	}
 }
 
@@ -121,7 +138,10 @@ func (h *Handlers) chatGate(device secure.ID, permissions bool) (*ChatDeps, *act
 		o := failed(reasonNotSupported, chatOffMessages[wire.ChatOffPolicy])
 		return nil, &o
 	}
-	if on, reason := c.Available(); !on {
+	if on, reason := c.Available(); !on || c.Engine == nil {
+		if on {
+			reason = wire.ChatOffRunnerDown
+		}
 		msg, ok := chatOffMessages[reason]
 		if !ok {
 			msg = chatUnavailableFallback

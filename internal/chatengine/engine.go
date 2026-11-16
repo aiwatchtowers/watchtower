@@ -458,6 +458,12 @@ func (e *Engine) MarkRead(ctx context.Context, conv, messageID int64) error {
 	return err
 }
 
+// ConversationExists says whether main chat conv is there (a Discuss chat
+// counts as absent: the phone reaches main chats only).
+func (e *Engine) ConversationExists(ctx context.Context, conv int64) (bool, error) {
+	return e.store.ConversationExists(ctx, conv)
+}
+
 // Feed is conv's feed (ReadFeed) with the engine's live turn over it.
 func (e *Engine) Feed(ctx context.Context, conv, beforeMessageID int64) (Feed, error) {
 	return ReadFeed(ctx, e.c.Read, conv, beforeMessageID, e.c.Clock(), e)
@@ -547,6 +553,11 @@ func (e *Engine) title(conv int64) {
 		defer cancel()
 		if err := e.c.Title(ctx, conv); err != nil {
 			log.Printf("chatengine: chat %d got no AI title (%s)", conv, errClass(err))
+			return
 		}
+		// The title is a row change no turn event carries: the list and the
+		// conversation's subscribers (and the hub's OnChange) see it now,
+		// not at the next turn.
+		e.changed(conv)
 	}()
 }

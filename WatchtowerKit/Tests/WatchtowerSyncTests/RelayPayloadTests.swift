@@ -48,7 +48,8 @@ final class RelayPayloadTests: XCTestCase {
                 "session_finish_request", "session_stop", "session_report_request",
                 "permission_answer", "session_interrupt", "session_chat_request", "automation_run",
                 "chat_new", "chat_turn", "chat_cancel", "chat_feed_request", "chat_page", "chat_search", "chat_read",
-                "chat_branch_select", "chat_manage", "chat_action_answer"
+                "chat_branch_select", "chat_manage", "chat_action_answer",
+                "chat_entity_search", "chat_skills_list"
             ]
         )
     }
