@@ -3,12 +3,17 @@ import XCTest
 
 /// `TowerClient`'s state machine over a scripted transport and a manual
 /// clock (mobile Inbox spec §3 "Reconnecting", §9). Time moves only through
-/// `clock.advance`; each step then waits until the client has gone back to
-/// sleep (the down timer and the backoff: two sleepers) or for the calls it
-/// made, never for wall-clock time.
+/// `clock.advance`; each step then waits for the calls the client made and
+/// for it to sleep until its next attempt, never for wall-clock time.
+///
+/// After a drop at 0 the attempts come at 0.2, 0.6, 1.0 (the line probe),
+/// 1.4, 3.0, 5.0 … 13.0 s, and the cycle fails at 15 s.
 final class TowerClientTests: XCTestCase {
     private var clock: ManualClock!
     private var fake: FakeTransport!
+
+    /// The attempts after a drop at 0, in milliseconds.
+    private static let attempts = [200, 600, 1_000, 1_400, 3_000, 5_000, 7_000, 9_000, 11_000, 13_000]
 
     override func setUp() {
         super.setUp()
@@ -31,12 +36,23 @@ final class TowerClientTests: XCTestCase {
         await client.act(.syncPause, key: key) { PauseRequest(requestID: $0) }
     }
 
-    /// Moves time by `step`, then waits for `hellos` hello calls in all and
-    /// for the client to sleep again (down timer + backoff).
-    private func step(_ step: Duration, hellos: Int) async {
-        clock.advance(by: step)
+    /// Moves time to `offset`, then waits for `hellos` hello calls in all
+    /// and for the client to sleep until `next`.
+    private func step(to offset: Duration, hellos: Int, next: Duration) async {
+        clock.advance(by: offset - clock.now.offset)
         await fake.waitFor(.towerHello, count: hellos)
-        await clock.waitForSleepers(2)
+        await clock.waitForSleeper(at: next)
+    }
+
+    /// Runs the whole down schedule of a cycle that began at `start` with
+    /// `hellos` hellos already made, up to 15 s.
+    private func runToFailure(from start: Duration, hellos: Int) async {
+        let offsets = Self.attempts.map { start + .milliseconds($0) }
+        for (index, offset) in offsets.enumerated() {
+            let next = index + 1 < offsets.count ? offsets[index + 1] : start + .seconds(15)
+            await step(to: offset, hellos: hellos + index + 1, next: next)
+        }
+        clock.advance(by: start + .seconds(15) - clock.now.offset)
     }
 
     /// Waits until the client's screen state is `expected`.
@@ -44,21 +60,17 @@ final class TowerClientTests: XCTestCase {
         for await state in await client.screenStates() where state == expected { return }
     }
 
-    /// Drives a fresh client (daemon down from the start) to `failed(.down)`:
-    /// a read, then the whole backoff schedule up to 15 s. Returns the read.
+    /// Drives a fresh client (daemon down from the start) to `failed(.down)`.
     private func failDown(_ client: TowerClient) async -> Result<PingResponse, TowerFailure> {
         fake.setDown(true)
         let read = Task { await ping(client) }
         await fake.waitFor(.towerHello, count: 1)
-        await clock.waitForSleepers(2)
-        var hellos = 1
-        for interval in [200, 400, 800, 1_600, 2_000, 2_000, 2_000, 2_000, 2_000] {
-            hellos += 1
-            await step(.milliseconds(interval), hellos: hellos)
-        }
-        clock.advance(by: .seconds(2)) // 15 s since the first attempt
+        await clock.waitForSleeper(at: .milliseconds(200))
+        await runToFailure(from: .zero, hellos: 1)
         return await read.value
     }
+
+    private static let down = TowerFailure(kind: .down, sentence: TowerText.daemonDown)
 
     // MARK: - Screen states
 
@@ -86,28 +98,27 @@ final class TowerClientTests: XCTestCase {
 
         let read = Task { await ping(client) }
         await fake.waitFor(.towerPing, count: 2)
-        await clock.waitForSleepers(2)
+        await clock.waitForSleeper(at: .milliseconds(200))
         var state = await client.screenState
         var line = await client.showsReconnectingLine()
         XCTAssertEqual(state, .reconnecting)
         XCTAssertFalse(line)
 
-        await step(.milliseconds(200), hellos: 2) // t = 0.2 s, still down
+        await step(to: .milliseconds(200), hellos: 2, next: .milliseconds(600))
+        await step(to: .milliseconds(600), hellos: 3, next: .seconds(1))
         line = await client.showsReconnectingLine()
         XCTAssertFalse(line)
 
-        fake.setDown(false)
-        clock.advance(by: .milliseconds(400)) // t = 0.6 s, back
+        fake.setDown(false) // the daemon is back after its ~1 s restart
+        clock.advance(by: .milliseconds(400)) // t = 1.0 s: the line probe finds it
         _ = try await read.value.get()
 
         state = await client.screenState
         line = await client.showsReconnectingLine()
         XCTAssertEqual(state, .ready(stale: nil))
-        XCTAssertFalse(line)
+        XCTAssertFalse(line, "a restart of about a second shows no line")
+        XCTAssertEqual(fake.calls(.towerHello).last?.at, .seconds(1))
         await clock.waitForSleepers(0)
-        clock.advance(by: .seconds(1)) // past 1 s: no timer is left to show the line
-        line = await client.showsReconnectingLine()
-        XCTAssertFalse(line)
         XCTAssertEqual(fake.calls(.towerPing).count, 3, "the read is re-sent once on return, no extra refresh")
     }
 
@@ -119,17 +130,18 @@ final class TowerClientTests: XCTestCase {
 
         fake.setDown(true)
         fake.dropWatches()
-        await clock.waitForSleepers(2)
+        await clock.waitForSleeper(at: .milliseconds(200))
         var state = await client.screenState
         XCTAssertEqual(state, .reconnecting)
 
-        await step(.milliseconds(200), hellos: 2) // 0.2 s
-        await step(.milliseconds(400), hellos: 3) // 0.6 s
+        await step(to: .milliseconds(200), hellos: 2, next: .milliseconds(600))
+        await step(to: .milliseconds(600), hellos: 3, next: .seconds(1))
         var line = await client.showsReconnectingLine()
         XCTAssertFalse(line, "no line in the first second")
-        await step(.milliseconds(800), hellos: 4) // 1.4 s
+        await step(to: .seconds(1), hellos: 4, next: .milliseconds(1_400))
         line = await client.showsReconnectingLine()
-        XCTAssertTrue(line, "the line shows after 1 s down")
+        XCTAssertTrue(line, "the line shows once the 1 s probe fails")
+        await step(to: .milliseconds(1_400), hellos: 5, next: .seconds(3))
 
         fake.setDown(false)
         clock.advance(by: .milliseconds(1_600)) // 3.0 s, back
@@ -156,12 +168,38 @@ final class TowerClientTests: XCTestCase {
 
         let read = await failDown(client)
 
-        let failure = TowerFailure(kind: .down, sentence: TowerText.daemonDown)
-        XCTAssertEqual(read, .failure(failure))
-        await waitForState(client, .failed(failure))
-        XCTAssertEqual(failure.actionTitle, TowerText.retry)
+        XCTAssertEqual(read, .failure(Self.down))
+        await waitForState(client, .failed(Self.down))
+        XCTAssertEqual(Self.down.actionTitle, TowerText.retry)
         let line = await client.showsReconnectingLine()
         XCTAssertFalse(line)
+    }
+
+    func testHungHelloFailsAfterFifteenSeconds() async {
+        fake.hang(.towerHello)
+        let client = makeClient()
+        let read = Task { await ping(client) }
+        await fake.waitFor(.towerHello, count: 1)
+        await clock.waitForSleeper(at: .milliseconds(2_500))
+        var state = await client.screenState
+        XCTAssertEqual(state, .loading)
+
+        // Each unanswered hello gives up after 2.5 s and the next one starts.
+        for attempt in 1...5 {
+            let at = Duration.milliseconds(2_500 * attempt)
+            await step(to: at, hellos: attempt + 1, next: at + .milliseconds(2_500))
+        }
+        state = await client.screenState
+        let line = await client.showsReconnectingLine()
+        XCTAssertEqual(state, .reconnecting)
+        XCTAssertTrue(line)
+        clock.advance(by: .seconds(15) - clock.now.offset)
+
+        let result = await read.value
+        XCTAssertEqual(result, .failure(Self.down))
+        await waitForState(client, .failed(Self.down))
+        XCTAssertGreaterThanOrEqual(fake.cancelledCalls, 5, "each unanswered hello's call is cancelled (its connection dropped)")
+        XCTAssertEqual(fake.calls(.towerPing).count, 0)
     }
 
     func testRetryAfterDownAsksToStartDaemon() async throws {
@@ -169,15 +207,14 @@ final class TowerClientTests: XCTestCase {
         let startDaemon: @Sendable () async -> Void = { started.increment() }
         let client = makeClient(startDaemon: startDaemon)
         _ = await failDown(client)
-        await waitForState(client, .failed(TowerFailure(kind: .down, sentence: TowerText.daemonDown)))
-        await clock.waitForSleepers(0)
+        await waitForState(client, .failed(Self.down))
         let hellosBefore = fake.calls(.towerHello).count
         let retriedAt = clock.now.offset
 
         let retry = Task { await client.retry() }
-        await clock.waitForSleepers(2)
+        await clock.waitForSleeper(at: retriedAt + .milliseconds(200))
         XCTAssertEqual(started.value, 1)
-        await step(.milliseconds(200), hellos: hellosBefore + 1) // still down
+        await step(to: retriedAt + .milliseconds(200), hellos: hellosBefore + 1, next: retriedAt + .milliseconds(600))
         fake.setDown(false)
         clock.advance(by: .milliseconds(400))
         await retry.value
@@ -193,14 +230,17 @@ final class TowerClientTests: XCTestCase {
         fake.setDown(true)
         let read = Task { await ping(client) }
         await fake.waitFor(.towerHello, count: 1)
-        await clock.waitForSleepers(2)
+        await clock.waitForSleeper(at: .milliseconds(200))
 
-        for (index, interval) in [200, 400, 800, 1_600, 2_000, 2_000].enumerated() {
-            await step(.milliseconds(interval), hellos: index + 2)
+        let offsets = Self.attempts.prefix(8).map { Duration.milliseconds($0) }
+        for (index, offset) in offsets.dropLast().enumerated() {
+            await step(to: offset, hellos: index + 2, next: offsets[index + 1])
         }
 
         let times = fake.calls(.towerHello).map(\.at)
-        let gaps = zip(times.dropFirst(), times).map { $0 - $1 }
+        XCTAssertEqual(times, [.zero] + offsets.dropLast(), "plus one probe at the line's 1 s mark")
+        let backoff = times.filter { $0 != .seconds(1) }
+        let gaps = zip(backoff.dropFirst(), backoff).map { $0 - $1 }
         XCTAssertEqual(gaps, [200, 400, 800, 1_600, 2_000, 2_000].map { .milliseconds($0) })
         read.cancel()
     }
@@ -214,7 +254,7 @@ final class TowerClientTests: XCTestCase {
 
         let press = Task { await pause(client) }
         await fake.waitFor(.syncPause, count: 1)
-        await clock.waitForSleepers(2)
+        await clock.waitForSleeper(at: .milliseconds(200))
         let busy = await client.actionState(key: "pause")
         XCTAssertEqual(busy, .busy)
 
@@ -237,15 +277,10 @@ final class TowerClientTests: XCTestCase {
         fake.setDown(true)
         let press = Task { await pause(client) }
         await fake.waitFor(.syncPause, count: 1)
-        await clock.waitForSleepers(2)
-        var hellos = 1
-        for interval in [200, 400, 800, 1_600, 2_000, 2_000, 2_000, 2_000, 2_000] {
-            hellos += 1
-            await step(.milliseconds(interval), hellos: hellos)
-        }
-        clock.advance(by: .seconds(2))
+        await clock.waitForSleeper(at: .milliseconds(200))
+        await runToFailure(from: .zero, hellos: 1)
         let failed = await press.value
-        XCTAssertEqual(failed, .failed(TowerFailure(kind: .down, sentence: TowerText.daemonDown)))
+        XCTAssertEqual(failed, .failed(Self.down))
 
         fake.setDown(false)
         let retried = await pause(client)
@@ -254,6 +289,26 @@ final class TowerClientTests: XCTestCase {
         let ids = fake.calls(.syncPause).map(FakeTransport.requestID)
         XCTAssertEqual(ids.count, 2)
         XCTAssertEqual(ids.first, ids.last, "Retry re-sends the same request_id")
+    }
+
+    func testHungActionFailsAtTheWriteLimitAndKeepsItsRequestID() async throws {
+        let client = makeClient()
+        _ = try await ping(client).get()
+        fake.hang(.syncPause)
+
+        let press = Task { await pause(client) }
+        await fake.waitFor(.syncPause, count: 1)
+        await clock.waitForSleeper(at: TowerTiming.writeAnswerLimit)
+        let busy = await client.actionState(key: "pause")
+        XCTAssertEqual(busy, .busy)
+        clock.advance(by: TowerTiming.writeAnswerLimit)
+        let outcome = await press.value
+
+        XCTAssertEqual(outcome, .failed(Self.down), "a press is never busy forever")
+        XCTAssertEqual(fake.cancelledCalls, 1, "its call is cancelled, which drops the connection")
+        let after = await client.actionState(key: "pause")
+        XCTAssertNil(after)
+        XCTAssertGreaterThan(TowerTiming.writeAnswerLimit, .seconds(120), "above the socket's 120 s approve wait")
     }
 
     func testUnknownNeverResendsAndRefreshes() async throws {
@@ -268,7 +323,7 @@ final class TowerClientTests: XCTestCase {
         XCTAssertEqual(state, .unknown)
         XCTAssertEqual(fake.calls(.syncPause).count, 1, "an unknown outcome is never re-sent")
         XCTAssertEqual(fake.calls(.towerPing).count, 2, "the screen's last read is re-issued once")
-        XCTAssertEqual(clock.sleeperCount, 0, "nothing is scheduled to send it again")
+        await clock.waitForSleepers(0)
     }
 
     func testRefusalKeepsTheGoSentence() async throws {
@@ -302,7 +357,7 @@ final class TowerClientTests: XCTestCase {
         )
 
         let read = Task { await ping(client) }
-        await clock.waitForSleepers(2)
+        await clock.waitForSleeper(at: .milliseconds(200))
         clock.advance(by: .milliseconds(200))
         _ = try await read.value.get()
 

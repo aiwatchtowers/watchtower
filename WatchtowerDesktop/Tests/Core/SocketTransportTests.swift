@@ -38,7 +38,11 @@ final class FakeTowerSocket: @unchecked Sendable {
         let bound = withUnsafePointer(to: &addr) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(listener, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
         }
-        guard bound == 0, listen(listener, 8) == 0 else { throw POSIXError(.EADDRINUSE) }
+        guard bound == 0, listen(listener, 8) == 0 else {
+            let err = errno
+            close(listener)
+            throw POSIXError(POSIXErrorCode(rawValue: err) ?? .EIO)
+        }
         var pipeFDs: [Int32] = [0, 0]
         guard pipe(&pipeFDs) == 0 else { throw POSIXError(.EMFILE) }
         fd = listener
@@ -270,6 +274,26 @@ final class SocketTransportTests: XCTestCase {
         } catch {
             XCTAssertEqual(error as? TowerTransportError, .down)
         }
+
+        server.answer = { [Self.ok($0, #"{"at":"later"}"#)] }
+        let later = try await transport.call(try Self.ping("b"))
+        XCTAssertEqual(later.status, .ok, "the next call opens a new connection")
+    }
+
+    func testCancellingACallDropsItsConnection() async throws {
+        let server = try makeServer()
+        let transport = SocketTransport(workspace: server.dir)
+
+        let hung = Task { try await transport.call(try Self.ping("a")) }
+        await server.untilRequests(1)
+        hung.cancel() // the client's answer limit ran out
+        do {
+            _ = try await hung.value
+            XCTFail("a cancelled call must fail")
+        } catch {
+            XCTAssertEqual(error as? TowerTransportError, .down)
+        }
+        await server.untilClosed(1)
 
         server.answer = { [Self.ok($0, #"{"at":"later"}"#)] }
         let later = try await transport.call(try Self.ping("b"))

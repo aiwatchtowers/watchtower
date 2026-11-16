@@ -60,16 +60,24 @@ package final class SocketTransport: TowerTransport {
 
     // MARK: - TowerTransport
 
+    /// Cancelling the calling task drops the connection the call went out
+    /// on (a daemon that stopped answering): the call and every other one
+    /// waiting on it fail with `.down`, and the next call reconnects.
     package func call(_ request: Request) async throws -> Response {
         let line = try Self.frame(request)
-        return try await withCheckedThrowingContinuation { continuation in
-            queue.async { self.send(line, id: request.id, continuation) }
+        let ticket = CallTicket()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                queue.async { self.send(line, id: request.id, ticket: ticket, continuation) }
+            }
+        } onCancel: {
+            ticket.cancel()
         }
     }
 
     package func watch(_ request: Request) -> AsyncThrowingStream<ChangedEvent, Error> {
         let workspace = workspace
-        let socket = WatchSocket()
+        let socket = UnixSocket.WatchSocket()
         return AsyncThrowingStream { continuation in
             continuation.onTermination = { _ in socket.stop() }
             let thread = Thread {
@@ -89,7 +97,7 @@ package final class SocketTransport: TowerTransport {
     /// On `queue`: registers the call on the open connection (opening one
     /// when none is) and writes its frame. A failed write closes the
     /// connection, which fails this call and every other one waiting.
-    private func send(_ line: Data, id: String, _ continuation: CheckedContinuation<Response, Error>) {
+    private func send(_ line: Data, id: String, ticket: CallTicket, _ continuation: CheckedContinuation<Response, Error>) {
         let connection: CallConnection
         do {
             connection = try openConnection()
@@ -97,7 +105,7 @@ package final class SocketTransport: TowerTransport {
             continuation.resume(throwing: TowerTransportError.down)
             return
         }
-        guard connection.register(id, continuation) else {
+        guard ticket.sent(on: connection), connection.register(id, continuation) else {
             continuation.resume(throwing: TowerTransportError.down)
             return
         }
@@ -115,6 +123,32 @@ package final class SocketTransport: TowerTransport {
         current.withLock { $0 = connection }
         connection.startReading()
         return connection
+    }
+
+    /// One call's link to its connection, so cancelling the call closes the
+    /// connection it went out on (or, cancelled before it was sent, the
+    /// connection it is about to use).
+    private final class CallTicket: Sendable {
+        private let state = OSAllocatedUnfairLock<(connection: CallConnection?, cancelled: Bool)>(initialState: (nil, false))
+
+        /// Records the call's connection; false (and the connection closed)
+        /// when the call was already cancelled.
+        func sent(on connection: CallConnection) -> Bool {
+            let cancelled = state.withLock {
+                $0.connection = connection
+                return $0.cancelled
+            }
+            if cancelled { connection.close() }
+            return !cancelled
+        }
+
+        func cancel() {
+            let connection = state.withLock {
+                $0.cancelled = true
+                return $0.connection
+            }
+            connection?.close()
+        }
     }
 
     /// The calls' connection: the calls waiting for an answer, by `id`. Its
@@ -188,7 +222,7 @@ package final class SocketTransport: TowerTransport {
     private static func runWatch(
         _ request: Request,
         workspace: String,
-        socket: WatchSocket,
+        socket: UnixSocket.WatchSocket,
         yield: (ChangedEvent) -> Void
     ) throws {
         guard let path = socketPath(workspace: workspace) else { throw TowerTransportError.down }
@@ -220,37 +254,6 @@ package final class SocketTransport: TowerTransport {
         throw TowerTransportError.down
     }
 
-    /// A watch's socket: `stop` shuts it down (waking a blocked read) while
-    /// it is open; only the watch thread closes it, under the same lock.
-    private final class WatchSocket: Sendable {
-        private let state = OSAllocatedUnfairLock(initialState: (fd: Int32(-1), stopped: false))
-
-        var isStopped: Bool { state.withLock { $0.stopped } }
-
-        /// Keeps `fd` unless the stream already ended (then false: the caller closes it).
-        func adopt(_ fd: Int32) -> Bool {
-            state.withLock {
-                guard !$0.stopped else { return false }
-                $0.fd = fd
-                return true
-            }
-        }
-
-        func stop() {
-            state.withLock {
-                $0.stopped = true
-                if $0.fd >= 0 { Darwin.shutdown($0.fd, SHUT_RDWR) }
-            }
-        }
-
-        func close() {
-            state.withLock {
-                if $0.fd >= 0 { Darwin.close($0.fd) }
-                $0.fd = -1
-            }
-        }
-    }
-
     // MARK: - POSIX
 
     private static func frame(_ request: Request) throws -> Data {
@@ -261,53 +264,21 @@ package final class SocketTransport: TowerTransport {
 
     /// A connected socket, or `.down` (nothing serves `path`, or it does not fit).
     private static func connect(_ path: String) throws -> Int32 {
-        var addr = sockaddr_un()
-        let bytes = Array(path.utf8)
-        guard bytes.count < MemoryLayout.size(ofValue: addr.sun_path) else {
-            log.error("tower socket path does not fit sockaddr_un")
+        do {
+            return try UnixSocket.connect(path)
+        } catch UnixSocket.Failure.absent {
+            throw TowerTransportError.down
+        } catch {
+            log.error("tower socket connect failed: \(String(describing: error), privacy: .public)")
             throw TowerTransportError.down
         }
-        addr.sun_family = sa_family_t(AF_UNIX)
-        withUnsafeMutableBytes(of: &addr.sun_path) { raw in
-            for (i, b) in bytes.enumerated() { raw[i] = b }
-        }
-        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-        guard fd >= 0 else { throw TowerTransportError.down }
-        var on: Int32 = 1
-        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
-        let result = withUnsafePointer(to: &addr) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
-            }
-        }
-        guard result == 0 else {
-            let err = errno
-            Darwin.close(fd)
-            if err != ENOENT, err != ECONNREFUSED, err != ENOTDIR {
-                log.error("tower socket connect failed: errno \(err, privacy: .public)")
-            }
-            throw TowerTransportError.down
-        }
-        return fd
     }
 
     private static func sendAll(_ fd: Int32, _ data: Data) throws {
-        let deadline = Date().addingTimeInterval(writeTimeout)
-        var sent = 0
-        while sent < data.count {
-            let left = deadline.timeIntervalSinceNow
-            guard left > 0 else { throw TowerTransportError.down }
-            var pfd = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
-            guard poll(&pfd, 1, Int32(max(1, left * 1000))) > 0 else { continue }
-            let n = data.withUnsafeBytes { raw -> Int in
-                guard let base = raw.baseAddress else { return 0 }
-                return Darwin.write(fd, base + sent, raw.count - sent)
-            }
-            guard n > 0 else {
-                if n < 0, errno == EINTR || errno == EAGAIN { continue }
-                throw TowerTransportError.down
-            }
-            sent += n
+        do {
+            try UnixSocket.sendAll(fd, data, deadline: Date().addingTimeInterval(writeTimeout))
+        } catch {
+            throw TowerTransportError.down
         }
     }
 

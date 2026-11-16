@@ -109,6 +109,12 @@ public actor TowerClient {
         case match, mismatch, down
     }
 
+    fileprivate enum Answer: Sendable {
+        case answer(Response)
+        case down
+        case timedOut
+    }
+
     private struct WatchSlot {
         let command: TowerCommand
         let continuation: AsyncStream<ChangedEvent>.Continuation
@@ -173,7 +179,9 @@ public actor TowerClient {
 
     // MARK: - Observing
 
-    /// The current state, then every change.
+    /// The current state, then every change. The same value can come twice
+    /// in a row: `.reconnecting` is yielded again when
+    /// `showsReconnectingLine()` turns true, so do not drop repeats.
     public func screenStates() -> AsyncStream<TowerScreenState> {
         let id = UUID()
         let (stream, continuation) = AsyncStream<TowerScreenState>.makeStream()
@@ -230,6 +238,9 @@ public actor TowerClient {
     /// Sends the press `key` (a row's id plus its verb). A new press makes a
     /// request_id, passed to `params`; it is kept, and re-sent, until a final
     /// answer. A second press while one is on its way waits for that one.
+    /// `key` must change when the params would (e.g. carry the row's
+    /// content hash): a press that failed keeps its request_id, and a
+    /// re-send of that id with other params is answered from the ledger.
     public func act<Resp: Decodable & Sendable, Params: Encodable & Sendable>(
         _ command: TowerCommand,
         key: String,
@@ -307,11 +318,40 @@ public actor TowerClient {
             if let failure = await linkReady(startingOver: startingOver) { return .failed(failure) }
             startingOver = false
             let request = Request(v: Self.envelopeVersion, id: Self.newID(), command: command.rawValue, params: params)
-            do {
-                return .answer(try await transport.call(request))
-            } catch {
+            let limit = command.isRead ? TowerTiming.readAnswerLimit : TowerTiming.writeAnswerLimit
+            switch await send(request, limit: limit) {
+            case .answer(let response):
+                return .answer(response)
+            case .down:
                 linkDropped()
+            case .timedOut:
+                // The daemon stopped answering: drop the link and give up on
+                // this call (a press keeps its request_id for Retry).
+                linkDropped()
+                return .failed(Self.downFailure)
             }
+        }
+    }
+
+    /// Sends `request`, giving up after `limit` on the client's clock: the
+    /// call's task is then cancelled, which drops the transport's connection.
+    private func send(_ request: Request, limit: Duration) async -> Answer {
+        let transport = transport
+        let timeline = clock.timeline()
+        let gate = AnswerGate()
+        return await withCheckedContinuation { continuation in
+            gate.wait(continuation)
+            gate.setTimer(Task {
+                do { try await timeline.sleep(limit) } catch { return }
+                gate.finish(.timedOut)
+            })
+            gate.setCall(Task {
+                do {
+                    gate.finish(.answer(try await transport.call(request)))
+                } catch {
+                    gate.finish(.down)
+                }
+            })
         }
     }
 
@@ -365,23 +405,22 @@ public actor TowerClient {
         link = .connecting
         let gen = generation
         let timeline = clock.timeline()
-        if afterDrop { enterDown(gen, timeline) }
+        armFailTimer(gen, timeline)
+        if afterDrop { screenState = .reconnecting }
         connectTask = Task { await self.connect(gen, timeline, firstWaits: afterDrop, mayRestart: mayRestart) }
     }
 
     /// Says hello until it answers: at once (or after the first wait after a
-    /// drop), then on the backoff schedule counted from the cycle's start.
+    /// drop), then on `ReconnectSchedule` counted from the cycle's start. A
+    /// hello that fails once the cycle is 1 s old shows the line.
     private func connect(_ gen: Int, _ start: Timeline, firstWaits: Bool, mayRestart: Bool) async {
         var timeline = start
         var mayRestart = mayRestart
-        var at = Duration.zero
-        var wait = TowerTiming.retryStart
+        var schedule = ReconnectSchedule()
         var waits = firstWaits
         while gen == generation {
             if waits {
-                at += wait
-                wait = min(wait * 2, TowerTiming.retryMax)
-                do { try await timeline.sleep(at) } catch { return }
+                do { try await timeline.sleep(schedule.next()) } catch { return }
                 guard gen == generation else { return }
             }
             waits = true
@@ -392,7 +431,8 @@ public actor TowerClient {
                 linkUp()
                 return
             case .down:
-                enterDown(gen, timeline)
+                screenState = .reconnecting
+                if timeline.elapsed() >= TowerTiming.reconnectingLineAfter { showLine() }
             case .mismatch:
                 guard mayRestart, let restartDaemon else {
                     linkFailed(gen, Self.versionFailure)
@@ -406,49 +446,42 @@ public actor TowerClient {
                 guard gen == generation else { return }
                 // The daemon restarts: a new down period from now.
                 timeline = clock.timeline()
-                at = .zero
-                wait = TowerTiming.retryStart
+                schedule = ReconnectSchedule()
                 stopDown()
-                enterDown(gen, timeline)
+                armFailTimer(gen, timeline)
+                screenState = .reconnecting
             }
         }
     }
 
+    /// One hello, bounded by `TowerTiming.helloAnswerLimit`: a daemon that
+    /// does not answer counts as down.
     private func hello() async -> Hello {
         let request = Request(
             v: Self.envelopeVersion, id: Self.newID(), command: TowerCommand.towerHello.rawValue, params: Self.encode(HelloRequest())
         )
-        let response: Response
-        do {
-            response = try await transport.call(request)
-        } catch {
-            return .down
-        }
+        guard case .answer(let response) = await send(request, limit: TowerTiming.helloAnswerLimit) else { return .down }
         // A daemon without tower.hello refuses it: another version too.
         guard case .success(let hello) = Self.decode(response) as Result<HelloResponse, TowerFailure> else { return .mismatch }
         return hello.interfaceVersion == InterfaceVersion.current ? .match : .mismatch
     }
 
-    /// The tower is down: `reconnecting`, the line after 1 s, `failed` after 15 s.
-    private func enterDown(_ gen: Int, _ timeline: Timeline) {
-        guard gen == generation else { return }
-        if downTimer == nil {
-            downTimer = Task { [weak self] in
-                do {
-                    try await timeline.sleep(TowerTiming.reconnectingLineAfter)
-                    await self?.showLine(gen)
-                    try await timeline.sleep(TowerTiming.failAfter)
-                    await self?.linkFailed(gen, Self.downFailure)
-                } catch {
-                    // Cancelled: the tower came back or the cycle ended.
-                }
+    /// `failed(.down)` once the cycle is `TowerTiming.failAfter` old,
+    /// unless the tower answers first. Armed at the cycle's start, so a
+    /// hello that hangs cannot hold the client in `loading`.
+    private func armFailTimer(_ gen: Int, _ timeline: Timeline) {
+        downTimer = Task { [weak self] in
+            do {
+                try await timeline.sleep(TowerTiming.failAfter)
+            } catch {
+                return // cancelled: the tower came back or the cycle ended
             }
+            await self?.linkFailed(gen, Self.downFailure)
         }
-        screenState = .reconnecting
     }
 
-    private func showLine(_ gen: Int) {
-        guard gen == generation, case .connecting = link else { return }
+    private func showLine() {
+        guard !lineShown else { return }
         lineShown = true
         publishState()
     }
@@ -610,15 +643,85 @@ public actor TowerClient {
     }
 }
 
-/// Sleeps until an offset from the moment it was made (a down period's start).
+/// Sleeps until an offset from the moment it was made (a down period's
+/// start), and tells how long ago that was.
 private struct Timeline: Sendable {
     let sleep: @Sendable (Duration) async throws -> Void
+    let elapsed: @Sendable () -> Duration
 }
 
 extension Clock where Duration == Swift.Duration {
     /// A timeline starting now on this clock.
     fileprivate func timeline() -> Timeline {
         let start = now
-        return Timeline { offset in try await sleep(until: start.advanced(by: offset), tolerance: nil) }
+        return Timeline(
+            sleep: { offset in try await sleep(until: start.advanced(by: offset), tolerance: nil) },
+            elapsed: { start.duration(to: now) }
+        )
+    }
+}
+
+/// The reconnect attempts' offsets from a down period's start: 0.2 s, then
+/// each gap doubles up to 2 s (0.2, 0.6, 1.4, 3.0, 5.0 s…), plus one probe at
+/// `reconnectingLineAfter` (1 s), so a daemon back within a second is found
+/// before the line would show.
+private struct ReconnectSchedule {
+    private var backoffAt = Duration.zero
+    private var gap = TowerTiming.retryStart
+    private var probePending = true
+
+    mutating func next() -> Duration {
+        let candidate = backoffAt + gap
+        if probePending, TowerTiming.reconnectingLineAfter <= candidate {
+            probePending = false
+            if TowerTiming.reconnectingLineAfter < candidate { return TowerTiming.reconnectingLineAfter }
+        }
+        backoffAt = candidate
+        gap = min(gap * 2, TowerTiming.retryMax)
+        return candidate
+    }
+}
+
+/// One bounded call's outcome, decided once: by the answer, or by the time
+/// limit (which cancels the call) — whichever comes first.
+private final class AnswerGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<TowerClient.Answer, Never>?
+    private var done = false
+    private var timer: Task<Void, Never>?
+    private var call: Task<Void, Never>?
+
+    func wait(_ continuation: CheckedContinuation<TowerClient.Answer, Never>) {
+        lock.withLock { self.continuation = continuation }
+    }
+
+    func setTimer(_ task: Task<Void, Never>) {
+        let finished = lock.withLock {
+            timer = task
+            return done
+        }
+        if finished { task.cancel() }
+    }
+
+    func setCall(_ task: Task<Void, Never>) {
+        let finished = lock.withLock {
+            call = task
+            return done
+        }
+        if finished { task.cancel() }
+    }
+
+    func finish(_ answer: TowerClient.Answer) {
+        typealias Taken = (CheckedContinuation<TowerClient.Answer, Never>?, Task<Void, Never>?, Task<Void, Never>?)
+        let (waiting, timer, call) = lock.withLock { () -> Taken in
+            guard !done else { return (nil, nil, nil) }
+            done = true
+            defer { continuation = nil }
+            return (continuation, self.timer, self.call)
+        }
+        guard let waiting else { return }
+        // The loser stops before the caller goes on.
+        if case .timedOut = answer { call?.cancel() } else { timer?.cancel() }
+        waiting.resume(returning: answer)
     }
 }

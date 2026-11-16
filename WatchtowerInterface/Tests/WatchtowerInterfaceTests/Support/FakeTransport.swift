@@ -20,6 +20,8 @@ final class FakeTransport: TowerTransport, @unchecked Sendable {
     private let lock = NSLock()
     private let clock: ManualClock
     private var down = false
+    private var hanging: Set<String> = []
+    private var cancelled = 0
     private var responders: [String: Responder] = [:]
     private var recorded: [Call] = []
     private var opened: [Request] = []
@@ -35,6 +37,14 @@ final class FakeTransport: TowerTransport, @unchecked Sendable {
     func setDown(_ isDown: Bool) {
         lock.withLock { down = isDown }
     }
+
+    /// Calls of `command` never answer; they end (throwing) only when cancelled.
+    func hang(_ command: TowerCommand) {
+        lock.withLock { _ = hanging.insert(command.rawValue) }
+    }
+
+    /// Hanging calls that were cancelled.
+    var cancelledCalls: Int { lock.withLock { cancelled } }
 
     func respond(_ command: TowerCommand, with responder: @escaping Responder) {
         lock.withLock { responders[command.rawValue] = responder }
@@ -85,11 +95,12 @@ final class FakeTransport: TowerTransport, @unchecked Sendable {
     // MARK: - TowerTransport
 
     func call(_ request: Request) async throws -> Response {
-        let (isDown, responder) = record {
+        let (isDown, hangs, responder) = record {
             recorded.append(Call(request: request, at: clock.now.offset))
-            return (down, responders[request.command])
+            return (down, hanging.contains(request.command), responders[request.command])
         }
         if isDown { throw TowerTransportError.down }
+        if hangs { try await hangUntilCancelled() }
         if let responder { return responder(request) }
         switch request.command {
         case TowerCommand.towerHello.rawValue:
@@ -113,6 +124,17 @@ final class FakeTransport: TowerTransport, @unchecked Sendable {
     }
 
     // MARK: - Helpers
+
+    private func hangUntilCancelled() async throws {
+        let gate = HangGate()
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { gate.park($0) }
+        } onCancel: {
+            gate.release()
+        }
+        lock.withLock { cancelled += 1 }
+        throw CancellationError()
+    }
 
     static func ok(_ request: Request, _ value: some Encodable) -> Response {
         // swiftlint:disable:next force_try
@@ -153,5 +175,30 @@ final class Counter: @unchecked Sendable {
 
     func increment() {
         lock.withLock { count += 1 }
+    }
+}
+
+/// Parks a hanging call until its task is cancelled (either order).
+private final class HangGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var released = false
+
+    func park(_ continuation: CheckedContinuation<Void, Never>) {
+        let resumeNow = lock.withLock {
+            if released { return true }
+            self.continuation = continuation
+            return false
+        }
+        if resumeNow { continuation.resume() }
+    }
+
+    func release() {
+        let waiting = lock.withLock {
+            released = true
+            defer { continuation = nil }
+            return continuation
+        }
+        waiting?.resume()
     }
 }

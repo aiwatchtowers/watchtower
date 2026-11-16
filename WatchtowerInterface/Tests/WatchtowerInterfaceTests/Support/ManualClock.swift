@@ -24,7 +24,7 @@ final class ManualClock: Clock, @unchecked Sendable {
     private var current = Instant(offset: .zero)
     private var sleepers: [Sleeper] = []
     private var nextID = 0
-    private var countWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+    private var waiters: [(ready: ([Sleeper]) -> Bool, continuation: CheckedContinuation<Void, Never>)] = []
 
     var now: Instant { lock.withLock { current } }
     var minimumResolution: Duration { .zero }
@@ -82,22 +82,32 @@ final class ManualClock: Clock, @unchecked Sendable {
 
     /// Returns once exactly `count` tasks sleep on this clock.
     func waitForSleepers(_ count: Int) async {
+        await waitUntil { $0.count == count }
+    }
+
+    /// Returns once a task sleeps until `offset` (the code under test went
+    /// back to sleep until its next step).
+    func waitForSleeper(at offset: Duration) async {
+        await waitUntil { $0.contains { $0.deadline.offset == offset } }
+    }
+
+    private func waitUntil(_ ready: @escaping ([Sleeper]) -> Bool) async {
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             lock.lock()
-            if sleepers.count == count {
+            if ready(sleepers) {
                 lock.unlock()
                 continuation.resume()
                 return
             }
-            countWaiters.append((count, continuation))
+            waiters.append((ready, continuation))
             lock.unlock()
         }
     }
 
-    /// Removes and returns the waiters whose count is met (lock held).
+    /// Removes and returns the waiters whose condition holds (lock held).
     private func takeSatisfiedWaiters() -> [CheckedContinuation<Void, Never>] {
-        let met = countWaiters.filter { $0.count == sleepers.count }
-        countWaiters.removeAll { $0.count == sleepers.count }
+        let met = waiters.filter { $0.ready(sleepers) }
+        waiters.removeAll { $0.ready(sleepers) }
         return met.map(\.continuation)
     }
 }
