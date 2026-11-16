@@ -52,7 +52,7 @@ One line at the top of the screen, under the tower chip:
 | Fresh | heartbeat under 35 min old, Relay answers, nothing stuck 10 min or more | no line |
 | Stuck | `stuck_since` 10 min old or more | `Updated 08:26 · Acme Mac is not sending some updates` |
 | Stale | heartbeat 35 min old or more | `Updated 15:20 · Acme Mac is not sending updates` |
-| Offline | Relay does not answer this iPhone | `Updated 15:20 · this iPhone can't reach Relay` |
+| Offline | Relay has not answered this iPhone for 60 s (the Relay banner's own wait) | `Updated 15:20 · this iPhone can't reach Relay` |
 | Loading / empty | not linked, or no heartbeat yet | no line (the screen's own empty or loading state stands) |
 
 - Precedence: offline, then stale, then stuck. When the phone cannot reach Relay it cannot know
@@ -65,7 +65,8 @@ One line at the top of the screen, under the tower chip:
 - The tower is named as everywhere else (`TowerText.name`/`sentenceName`: its name, "your tower"
   without one).
 - Stuck waits 10 min: a record refused once and taken on the retry (seconds later; 5 min for
-  `record_too_large`) does not flash the line.
+  `record_too_large`) does not flash the line. Offline waits 60 s, as the Relay banner on Now does,
+  so a short Relay failure does not flash it either.
 - Tone: red (`PhoneTone.red`, role `status`), with an `exclamationmark.arrow.circlepath` glyph.
   Orange stays reserved for waiting-for-you (spec §14, `OrangeToneTests`).
 - The line ticks with the screen's existing `TimelineView` (Workbench list 30 s, workbench 60 s,
@@ -73,7 +74,9 @@ One line at the top of the screen, under the tower chip:
 
 ## Where
 
-- **Now**: under the tower chip, above the Relay banner.
+- **Now**: under the tower chip, above the Relay banner. Now leaves the offline state to that
+  banner (it already says Relay does not answer, and when): there the line shows stuck and stale
+  only, and nothing while Relay does not answer.
 - **Workbench tab, the list of workbenches**: under the tower switcher chip, above
   "N folders on your tower". On the empty list it sits under the chip too.
 - **Workbench tab, one workbench** (sessions, board, automations): the first row of the list,
@@ -92,7 +95,7 @@ Now and both Workbench screens.
 
 ## Docs
 
-`docs/features/mobile-companion.md` (the line, its states, the tone exception if any),
+`docs/features/mobile-companion.md` (the line, its states, its red tone),
 `docs/features/go-hub.md` (`stuck_since`, the log reasons), the protocol spec's heartbeat row,
 and the user guide's iPhone page.
 
@@ -104,7 +107,11 @@ and the user guide's iPhone page.
   on the phone (spec §14, `OrangeToneTests`), so the rule gets no exception.
 - Stale threshold is the existing 35 min heartbeat rule, not a new 20 min one: one rule for
   "online" across the phone (решил агент; the 35 min rule is owner decision Q2 on #724).
-- Stuck waits 10 min before the line shows (решил агент).
+- Stuck waits 10 min before the line shows (решил агент): the hub retries a `record_too_large`
+  record every 5 min, so one refused-then-taken retry must not show; a real stuck kind shows
+  10–11 min after its first failure.
+- Offline waits 60 s, the Relay banner's wait, and Now leaves offline to that banner (решил агент,
+  after the spec review).
 - "Updated" reads `stuck_since` / `last_publish_at`, not the heartbeat's stamp (решил агент, after
   the spec review).
 - Offline wins over stale, stale over stuck (решил агент).
