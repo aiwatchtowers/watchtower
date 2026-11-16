@@ -58,7 +58,7 @@ Stage 1 of #1170 (spec `docs/superpowers/specs/2026-11-15-mobile-inbox-design.md
 - `inbox.feed`: `Spec{Read: true, ChangeTables}`; `api.FeedRequest` → `api.Feed`.
 - `inbox.watch`: `Spec{Watch: true, ChangeTables}`; `api.WatchRequest` → `api.WatchResponse`. It answers ok, then the socket streams `ChangedEvent` frames.
 
-`ChangeTables` lists the tables the feed reads. `internal/tower/api/inbox.go` also holds the act types (`ActRequest`, `ActParams`, `ActResult` and their enums), which the writes part registers.
+`ChangeTables` lists every table the feed reads, `jira_issues` included (`db.OpenInboxClause` drops an open Jira item whose issue was deleted). `TestChangeTables_CoverEveryTableBuildReads` checks it against the package's SQL. `internal/tower/api/inbox.go` also holds the act types (`ActRequest`, `ActParams`, `ActResult` and their enums), which the writes part registers.
 
 ## What moved from Swift
 

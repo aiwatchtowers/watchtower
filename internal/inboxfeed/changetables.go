@@ -10,4 +10,7 @@ var ChangeTables = []string{
 	"tracks", "track_events", "ideas",
 	"briefings", "day_plans", "day_plan_items",
 	"builtin_migrations",
+	// db.OpenInboxClause drops an open Jira item whose issue was deleted at
+	// the source: a deletion changes the counts.
+	"jira_issues",
 }
