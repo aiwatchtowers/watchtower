@@ -213,6 +213,18 @@ package struct ChatSurfaceSpec {
         /// which has no automation yet.
         case actionsWithoutContext(surface: String)
 
+        /// Whether the surface mounts the chat-history reads (`get_chat_history`,
+        /// `list_chat_artifacts`, `get_chat_artifact`): Go's
+        /// `chatHistorySurfaces` in `internal/tools/chat_history.go`.
+        package var readsChatHistory: Bool {
+            switch self {
+            case .draftOnly:
+                return false
+            case .actions(let surface), .actionsWithoutContext(let surface):
+                return ["main", "target", "automation_editor"].contains(surface)
+            }
+        }
+
         package func toolMode(key: EmbeddedChatKey, turnID: String) -> ChatToolMode? {
             guard let conversationID = key.conversationID else { return nil }
             switch self {

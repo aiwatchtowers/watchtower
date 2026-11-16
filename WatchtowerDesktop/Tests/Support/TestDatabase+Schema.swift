@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS messages (
     subtype      TEXT NOT NULL DEFAULT '',
     permalink    TEXT NOT NULL DEFAULT '',
     ts_unix      REAL GENERATED ALWAYS AS (CASE WHEN INSTR(ts, '.') > 0 THEN CAST(SUBSTR(ts, 1, INSTR(ts, '.') - 1) AS REAL) ELSE CAST(ts AS REAL) END) STORED,
-    raw_json     TEXT NOT NULL DEFAULT '{}',
+    raw_json     TEXT NOT NULL DEFAULT '{}', synced_at REAL NOT NULL DEFAULT 0,
     PRIMARY KEY (channel_id, ts)
 );
 CREATE TABLE IF NOT EXISTS reactions (
@@ -408,7 +408,7 @@ CREATE TABLE IF NOT EXISTS channel_settings (
     is_muted_for_llm INTEGER NOT NULL DEFAULT 0,
     is_favorite      INTEGER NOT NULL DEFAULT 0,
     updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-);
+, sync_excluded INTEGER NOT NULL DEFAULT 0, excluded_at TEXT NOT NULL DEFAULT '', catchup_from REAL, catchup_to REAL, muted_by_exclusion INTEGER NOT NULL DEFAULT 0, muted_at TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS pipeline_runs (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     pipeline         TEXT NOT NULL,                          -- 'digests', 'tracks', 'people', 'briefing'
@@ -747,7 +747,7 @@ CREATE TABLE IF NOT EXISTS slack_accounts (
     enabled           INTEGER NOT NULL DEFAULT 1,
     search_last_date  TEXT NOT NULL DEFAULT '',
     created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-, reaction_commands_seeded_at TEXT NOT NULL DEFAULT '', roster_synced_at TEXT NOT NULL DEFAULT '', reaction_events_seeded_at TEXT NOT NULL DEFAULT '', deletion_sweep_day TEXT NOT NULL DEFAULT '', access_ok_at TEXT NOT NULL DEFAULT '', revoked_at   TEXT NOT NULL DEFAULT '');
+, reaction_commands_seeded_at TEXT NOT NULL DEFAULT '', roster_synced_at TEXT NOT NULL DEFAULT '', reaction_events_seeded_at TEXT NOT NULL DEFAULT '', deletion_sweep_day TEXT NOT NULL DEFAULT '', access_ok_at TEXT NOT NULL DEFAULT '', revoked_at   TEXT NOT NULL DEFAULT '', first_cycle_at TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS jira_accounts (
     id                            INTEGER PRIMARY KEY AUTOINCREMENT,
     cloud_id                      TEXT NOT NULL DEFAULT '',
@@ -2849,6 +2849,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_inbox_folders_one_root ON inbox_folders(ki
 CREATE INDEX IF NOT EXISTS idx_inbox_folders_parent ON inbox_folders(parent_id, position);
 CREATE INDEX IF NOT EXISTS coach_proposals_conversation ON coach_proposals(conversation_id);
 CREATE INDEX IF NOT EXISTS skill_pack_overlays_skill ON skill_pack_overlays(skill, id);
+CREATE INDEX IF NOT EXISTS idx_messages_synced_at ON messages(CASE WHEN synced_at = 0 THEN ts_unix ELSE synced_at END);
 CREATE TRIGGER IF NOT EXISTS kb_chunks_ai AFTER INSERT ON kb_chunks BEGIN
     INSERT INTO kb_fts(rowid, title, body, meta) VALUES (NEW.id, NEW.title, NEW.body, NEW.meta);
 END;

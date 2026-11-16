@@ -10,7 +10,7 @@ import (
 )
 
 // BackfillAccountResult is one connected Slack account's contribution to a
-// BackfillMentions run. Every candidate FindPendingMentions returns lands in
+// BackfillMentions run. Every candidate FindPendingMentionsPostedSince returns lands in
 // exactly one of Created/AlreadyAnswered/EmptySnippet/CreateErrors (unless
 // the run was interrupted by context cancellation partway through this
 // account — see BackfillMentions), so CandidatesFound always equals their
@@ -53,7 +53,7 @@ type BackfillMentionsResult struct {
 // per-cycle detectSlackTriggers path) — see backfillAccountMentions' doc
 // comment for why the two are not interchangeable over a multi-week window.
 // It creates exactly one item per candidate, never groups, and never folds
-// into an existing item, so the dedup guard already in FindPendingMentions
+// into an existing item, so the dedup guard already in FindPendingMentionsPostedSince
 // (NOT EXISTS against inbox_items, keyed on channel_id+message_ts) is on its
 // own sufficient to make re-running this any number of times over the same
 // window genuinely idempotent — every recovered candidate becomes its own
@@ -94,7 +94,7 @@ func (p *Pipeline) BackfillMentions(ctx context.Context, since time.Time, dryRun
 			continue
 		}
 
-		mentions, err := p.db.FindPendingMentions(acct.ID, acct.CurrentUserID, sinceTS)
+		mentions, err := p.db.FindPendingMentionsPostedSince(acct.ID, acct.CurrentUserID, sinceTS)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("account %d: finding mentions: %w", acct.ID, err))
 			continue
@@ -163,7 +163,7 @@ func (p *Pipeline) BackfillMentions(ctx context.Context, since time.Time, dryRun
 //  3. otherwise, one CreateInboxItem call. A UNIQUE(channel_id, message_ts)
 //     collision here — only reachable via a race against a concurrently
 //     running detector inserting the identical message between this
-//     account's FindPendingMentions read and this write — counts as
+//     account's FindPendingMentionsPostedSince read and this write — counts as
 //     Created rather than CreateErrors: an inbox item for this candidate
 //     exists either way, which is what Created promises to every reader of
 //     the envelope (CandidatesFound always equals the other three buckets'

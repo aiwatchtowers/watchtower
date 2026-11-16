@@ -260,7 +260,10 @@ final class SidebarCountsViewModel {
                     // owner has any; a Google/Jira-keyed owner gets none.
                     if !owner.slackUserID.isEmpty {
                         let allStats = try ChannelStatsQueries.fetchAll(db, currentUserID: owner.slackUserID)
-                        recCount = ChannelStatsQueries.computeRecommendations(from: allStats).count
+                        // The same signals as the Statistics screen, so the
+                        // badge counts what the screen shows.
+                        let signals = try ChannelStatsQueries.fetchValueSignals(db)
+                        recCount = ChannelStatsQueries.computeRecommendations(from: allStats, signals: signals).count
                     } else {
                         recCount = 0
                     }
