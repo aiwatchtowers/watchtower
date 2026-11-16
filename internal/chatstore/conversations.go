@@ -88,6 +88,15 @@ func (s *Store) Delete(ctx context.Context, conv int64) error {
 	return requireConversation(res, err)
 }
 
+// Archive is ChatConversationQueries.archive: the chat leaves the list
+// (ReadList skips archived rows) and keeps its messages. ErrConversationGone
+// when absent or not a main chat.
+func (s *Store) Archive(ctx context.Context, conv int64) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE chat_conversations SET archived_at = ? WHERE id = ? AND context_type IS NULL`,
+		seconds(s.now()), conv)
+	return requireConversation(res, err)
+}
+
 // Move is ChatConversationQueries.setProject: conv into projectID (nil =
 // out of any project). An actual move also clears the stored provider
 // session, so the next turn starts fresh and replays with the new

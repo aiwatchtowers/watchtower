@@ -378,7 +378,7 @@ func (e *Engine) NewConversation(ctx context.Context, projectID *int64, r *chats
 // ManageRequest is one Chats-panel write.
 type ManageRequest struct {
 	Conversation int64
-	Op           string // pin|unpin|rename|delete|move
+	Op           string // pin|unpin|rename|delete|move|archive
 	Title        string
 	ProjectID    *int64
 }
@@ -390,6 +390,9 @@ const (
 	ManageRename = "rename"
 	ManageDelete = "delete"
 	ManageMove   = "move"
+	// ManageArchive hides the chat from the list, its messages kept (the
+	// Mac's Archive; chat.sock only).
+	ManageArchive = "archive"
 )
 
 // Manage applies a Chats-panel write. delete cancels the conversation's
@@ -405,6 +408,8 @@ func (e *Engine) Manage(ctx context.Context, r ManageRequest) error {
 		err = e.store.Move(ctx, r.Conversation, r.ProjectID)
 	case ManageDelete:
 		err = e.delete(ctx, r.Conversation)
+	case ManageArchive:
+		err = e.store.Archive(ctx, r.Conversation)
 	default:
 		return chatstore.ErrInvalid
 	}
