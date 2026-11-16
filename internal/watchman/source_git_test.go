@@ -278,3 +278,72 @@ func TestGitSource_LateCachedMergeStillEmitted(t *testing.T) {
 		t.Fatalf("second: %+v err=%v", ps, err)
 	}
 }
+
+func TestGitSource_LateFindOfferedOnce(t *testing.T) {
+	r := newTestRepo(t)
+	r.commit(day(0), "agent work"+claudeTrailer, "a.go", "b.go")
+	r.git(day(0), "branch", "wt")
+	r.commit(day(3), "owner on main", "a.go")
+	d := openWatchmanDB(t)
+	wb := addWorkbench(t, d, r.dir)
+	src := GitSource(ExecGit)
+	ctx := context.Background()
+	ps, c, _, err := src.Next(ctx, d, wb, "", 10)
+	if err != nil || len(ps) != 1 {
+		t.Fatalf("first: %+v err=%v", ps, err)
+	}
+	store(t, d, ps)
+	r.git(day(2), "checkout", "-q", "wt")
+	r.commit(day(2), "owner on branch", "b.go")
+	r.git(day(2), "checkout", "-q", "main")
+	r.git(day(5), "merge", "-q", "--no-ff", "-m", "merge wt", "wt")
+	ps, c, _, err = src.Next(ctx, d, wb, c, 10)
+	if err != nil || len(ps) != 1 || ps[0].OwnerWords != "owner on branch" {
+		t.Fatalf("second: %+v err=%v", ps, err)
+	}
+	// The learner could not label it: marked skipped, not stored.
+	tx, err := d.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.MarkWatchmanSkippedKeys(tx, "git", []string{ps[0].SourceKey}, day(6)); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	ps, _, _, err = src.Next(ctx, d, wb, c, 10)
+	if err != nil || len(ps) != 0 {
+		t.Fatalf("third: %+v err=%v", ps, err)
+	}
+}
+
+func TestGitSource_LateFindsCountTowardLimit(t *testing.T) {
+	r := newTestRepo(t)
+	r.commit(day(0), "initial", "a.go")
+	d := openWatchmanDB(t)
+	wb := addWorkbench(t, d, r.dir)
+	pr := func(n int64, merged time.Time) db.PRState {
+		return db.PRState{WorkbenchID: wb, Ref: "pr:" + strconv.FormatInt(n, 10), State: "merged",
+			PRNumber: sql.NullInt64{Int64: n, Valid: true}, Title: "PR", MergedAt: merged.Format(time.RFC3339)}
+	}
+	if err := d.UpsertPRState(pr(9, day(10))); err != nil {
+		t.Fatal(err)
+	}
+	src := GitSource(ExecGit)
+	ctx := context.Background()
+	ps, c, _, err := src.Next(ctx, d, wb, "", 10)
+	if err != nil || len(ps) != 1 {
+		t.Fatalf("first: %+v err=%v", ps, err)
+	}
+	store(t, d, ps)
+	for n := int64(1); n <= 3; n++ { // three merges cached late
+		if err := d.UpsertPRState(pr(n, day(int(n)))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ps, _, done, err := src.Next(ctx, d, wb, c, 2)
+	if err != nil || done || len(ps) != 2 {
+		t.Fatalf("second: %d rows done=%v err=%v", len(ps), done, err)
+	}
+}

@@ -11,22 +11,35 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/instructions"
+	"watchtower/internal/logredact"
 	"watchtower/internal/sessionfeed"
 )
 
-// turnTextLimit caps a turn's situation and words (runes, ≤ 2 KB of text).
-const turnTextLimit = 2048
+const (
+	// turnTextLimit caps a turn's situation and words (runes).
+	turnTextLimit = 2048
+	// turnReadGrace is how long after its last activity a session whose feed
+	// cannot be read still stops the newer pass (it may be live and the read
+	// error passing); after it the session is skipped.
+	turnReadGrace = 24 * time.Hour
+)
 
 // TurnSource reads the owner's own messages in the workbench's agent
 // sessions: each owner entry of a session feed is a precedent whose
 // situation is the agent text just before it. Ask answers and Watchtower
-// lines are other feed kinds and never count; app-typed start prompts and
-// pasted blocks (instructions.CleanOwnerText) and owner lines with no agent
-// text before them are skipped. The category is left "" for the runner's
-// labeller.
-func TurnSource(read instructions.FeedReader) Source { return turnSource{read: read} }
+// lines are other feed kinds and never count. App-typed start prompts are
+// removed (instructions.StripAppStartPrompts); a message with nothing else,
+// one holding a fenced block (a paste), and an owner line with no agent text
+// before it are skipped. The words are the owner's text, redacted and
+// clipped. The category is left "" for the runner's labeller.
+func TurnSource(read instructions.FeedReader) Source {
+	return turnSource{read: read, now: time.Now}
+}
 
-type turnSource struct{ read instructions.FeedReader }
+type turnSource struct {
+	read instructions.FeedReader
+	now  func() time.Time
+}
 
 func (turnSource) Name() string { return "turn" }
 
@@ -94,9 +107,14 @@ func (s turnSource) Next(ctx context.Context, d *db.DB, workbenchID int64, curso
 			}
 			items, err := itemsOf(rs)
 			if err != nil {
-				// A newer session that cannot be read now may hold turns
-				// newer than hi: stop rather than move hi past them.
-				return nil, "", false, err
+				// A newer session that may still be live can hold turns newer
+				// than hi: stop rather than move hi past them. A session idle
+				// past the grace is skipped so it cannot stall the source.
+				if s.now().Sub(rs.LastActiveAt) < turnReadGrace {
+					return nil, "", false, err
+				}
+				log.Printf("watchman: turns: skipping session %d: %v", rs.ID, err)
+				continue
 			}
 			for _, it := range items {
 				if !hi.less(it.pos) {
@@ -120,8 +138,8 @@ func (s turnSource) Next(ctx context.Context, d *db.DB, workbenchID int64, curso
 		items, err := itemsOf(rs)
 		if err != nil {
 			// An older transcript that cannot be read is skipped so the
-			// backfill does not stall on it; the reason may name a file.
-			log.Printf("watchman: turns: skipping session %d: unreadable feed", rs.ID)
+			// backfill does not stall on it.
+			log.Printf("watchman: turns: skipping session %d: %v", rs.ID, err)
 			continue
 		}
 		for j := len(items) - 1; j >= 0; j-- {
@@ -145,11 +163,12 @@ func (s turnSource) Next(ctx context.Context, d *db.DB, workbenchID int64, curso
 }
 
 // turnsOf reads one session's owner turns. A missing transcript reads as
-// no entries (sessionfeed); any other read error is returned.
+// no entries (sessionfeed); any other read error is returned with its text
+// as a fingerprint only (it may name a transcript file, FILES-01).
 func (s turnSource) turnsOf(rs db.RecentWorkbenchSession) ([]turnItem, error) {
 	entries, err := s.read(rs)
 	if err != nil {
-		return nil, fmt.Errorf("watchman turns of session %d: %w", rs.ID, err)
+		return nil, logredact.Errorf("watchman turns of session %d: %s", rs.ID, logredact.Text(err.Error()))
 	}
 	var items []turnItem
 	agentText, conv := "", ""
@@ -169,8 +188,8 @@ func (s turnSource) turnsOf(rs db.RecentWorkbenchSession) ([]turnItem, error) {
 			continue // ask answers, Watchtower lines, briefs, markers; an owner line with no agent text before it answers nothing
 		}
 		// App-typed start prompts and pasted blocks are not the owner's words.
-		words, ok := instructions.CleanOwnerText(e.Text)
-		if !ok {
+		words := instructions.StripAppStartPrompts(e.Text)
+		if words == "" || strings.Contains(words, "```") {
 			continue
 		}
 		key := e.ID

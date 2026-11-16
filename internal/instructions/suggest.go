@@ -169,7 +169,7 @@ func collectOwnerLines(d *db.DB, read FeedReader, since time.Time, logf func(str
 			if e.Kind != sessionfeed.KindOwner {
 				continue
 			}
-			if text, ok := CleanOwnerText(e.Text); ok {
+			if text, ok := cleanOwnerText(e.Text); ok {
 				lines = append(lines, OwnerLine{SessionID: s.ID, WorkbenchID: s.WorkbenchID, Text: text, at: e.At})
 			}
 		}
@@ -178,7 +178,7 @@ func collectOwnerLines(d *db.DB, read FeedReader, since time.Time, logf func(str
 		if _, remember := ParseRemember(t.Text); remember {
 			continue
 		}
-		if text, ok := CleanOwnerText(t.Text); ok {
+		if text, ok := cleanOwnerText(t.Text); ok {
 			lines = append(lines, OwnerLine{ChatID: t.ConversationID, Text: text, at: t.At})
 		}
 	}
@@ -210,28 +210,19 @@ var appStartPromptPrefixes = []string{"Work on target #", "Work on group #"}
 
 const appPlanFirstPrefix = "Plan first: put the plan on the board"
 
-// CleanOwnerText skips a pasted block (a fenced code block, or more than 15
+// cleanOwnerText skips a pasted block (a fenced code block, or more than 15
 // lines), drops app-typed start prompts, and returns the rest on one line,
-// truncated to 500 runes. The watchman turn source uses it too.
-func CleanOwnerText(s string) (string, bool) {
+// truncated to 500 runes.
+func cleanOwnerText(s string) (string, bool) {
 	s = strings.TrimSpace(s)
 	if s == "" || strings.Contains(s, "```") || strings.Count(s, "\n")+1 > maxOwnerLineLines {
 		return "", false
 	}
 	var parts []string
-	startPrompt := false
-	for _, l := range strings.Split(s, "\n") {
-		l = strings.Join(strings.Fields(l), " ")
-		switch {
-		case l == "":
-			continue
-		case hasAnyPrefix(l, appStartPromptPrefixes):
-			startPrompt = true
-			continue
-		case startPrompt && strings.HasPrefix(l, appPlanFirstPrefix):
-			continue
+	for _, l := range strings.Split(StripAppStartPrompts(s), "\n") {
+		if l = strings.Join(strings.Fields(l), " "); l != "" {
+			parts = append(parts, l)
 		}
-		parts = append(parts, l)
 	}
 	if len(parts) == 0 {
 		return "", false
@@ -241,6 +232,26 @@ func CleanOwnerText(s string) (string, bool) {
 		s = string([]rune(s)[:maxOwnerLineRunes]) + "…"
 	}
 	return s, true
+}
+
+// StripAppStartPrompts removes the app-typed start prompt lines from an
+// owner message (and the "Plan first" line after one) and returns the rest
+// trimmed, "" when nothing else is left. The watchman turn source uses it too.
+func StripAppStartPrompts(s string) string {
+	var keep []string
+	startPrompt := false
+	for _, l := range strings.Split(s, "\n") {
+		t := strings.Join(strings.Fields(l), " ")
+		switch {
+		case hasAnyPrefix(t, appStartPromptPrefixes):
+			startPrompt = true
+			continue
+		case startPrompt && strings.HasPrefix(t, appPlanFirstPrefix):
+			continue
+		}
+		keep = append(keep, l)
+	}
+	return strings.TrimSpace(strings.Join(keep, "\n"))
 }
 
 func hasAnyPrefix(s string, prefixes []string) bool {

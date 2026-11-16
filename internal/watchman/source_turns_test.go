@@ -3,6 +3,7 @@ package watchman
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -173,6 +174,8 @@ func TestTurnSource_CursorNewestFirst(t *testing.T) {
 }
 
 func TestTurnSource_SkipsAppStartPrompts(t *testing.T) {
+	// A long direction (20 lines, > 500 runes) is kept whole.
+	long := strings.TrimSpace(strings.Repeat("keep every exported name stable across the refactor please\n", 20))
 	d := openWatchmanDB(t)
 	wb := addWorkbench(t, d, t.TempDir())
 	s1 := addSession(t, d, wb, "a1")
@@ -182,34 +185,58 @@ func TestTurnSource_SkipsAppStartPrompts(t *testing.T) {
 		entry("u2", sessionfeed.KindOwner, "Work on group #3 using the watchtower-workbench skill.\nPlan first: put the plan on the board", 2),
 		entry("u3", sessionfeed.KindOwner, "Work on target #4 using the watchtower-workbench skill.\nkeep the old flag", 3),
 		entry("u4", sessionfeed.KindOwner, "look:\n```\npanic: boom\n```", 4),
+		entry("u5", sessionfeed.KindOwner, long, 5),
 	}}
 	ps, _, _, err := TurnSource(fakeFeeds(feeds)).Next(context.Background(), d, wb, "", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ps) != 1 || ps[0].OwnerWords != "keep the old flag" {
+	if len(ps) != 2 || ps[0].OwnerWords != long || ps[1].OwnerWords != "keep the old flag" {
 		t.Fatalf("got %+v", ps)
 	}
 }
 
-func TestTurnSource_ReadErrorStopsNewerPass(t *testing.T) {
+func setLastActive(t *testing.T, d *db.DB, id int64, at time.Time) {
+	t.Helper()
+	if _, err := d.Exec(`UPDATE terminal_sessions SET last_active_at = ? WHERE id = ?`, at.UTC().Format(time.RFC3339), id); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTurnSource_PermanentlyUnreadableSessionSkippedAfterGrace(t *testing.T) {
 	d := openWatchmanDB(t)
 	wb := addWorkbench(t, d, t.TempDir())
+	now := turnT0.Add(48 * time.Hour)
+	turn := func(id, words string, m int) []sessionfeed.Entry {
+		return []sessionfeed.Entry{entry("a"+id, sessionfeed.KindAgent, "ok?", m), entry("u"+id, sessionfeed.KindOwner, words, m+1)}
+	}
 	s1 := addSession(t, d, wb, "a1")
 	s2 := addSession(t, d, wb, "a2")
-	feeds := map[int64][]sessionfeed.Entry{
-		s1: {entry("a1", sessionfeed.KindAgent, "ok?", 0), entry("u1", sessionfeed.KindOwner, "one", 1)},
-		s2: {entry("a2", sessionfeed.KindAgent, "ok?", 2), entry("u2", sessionfeed.KindOwner, "two", 3)},
-	}
+	s3 := addSession(t, d, wb, "a3") // never readable
+	setLastActive(t, d, s3, now.Add(-time.Hour))
+	feeds := map[int64][]sessionfeed.Entry{s1: turn("1", "one", 0), s2: turn("2", "two", 2)}
+	src := turnSource{read: fakeFeeds(feeds, s3), now: func() time.Time { return now }}
 	ctx := context.Background()
-	// Backfill skips an unreadable session.
-	ps, c, done, err := TurnSource(fakeFeeds(feeds, s2)).Next(ctx, d, wb, "", 10)
-	if err != nil || !done || len(ps) != 1 || ps[0].OwnerWords != "one" {
+
+	// Backfill skips it.
+	ps, c, done, err := src.Next(ctx, d, wb, "", 1)
+	if err != nil || done || len(ps) != 1 || ps[0].OwnerWords != "two" {
 		t.Fatalf("backfill: %+v done=%v err=%v", ps, done, err)
 	}
-	// The newer pass fails instead of moving hi past an unread session.
-	s3 := addSession(t, d, wb, "a3")
-	if _, _, _, err := TurnSource(fakeFeeds(feeds, s3)).Next(ctx, d, wb, c, 10); err == nil {
-		t.Fatal("newer pass read error not returned")
+	// Within the grace the newer pass stops on it.
+	if _, _, _, err := src.Next(ctx, d, wb, c, 5); err == nil {
+		t.Fatal("newer pass read error within the grace not returned")
+	} else if strings.Contains(err.Error(), "transcript busy") {
+		t.Errorf("error carries the read error's text: %v", err)
+	}
+	// After the grace it is skipped: a newer session flows and the backfill
+	// goes on.
+	now = now.Add(turnReadGrace)
+	s4 := addSession(t, d, wb, "a4")
+	setLastActive(t, d, s4, now)
+	feeds[s4] = turn("4", "four", 10)
+	ps, _, done, err = src.Next(ctx, d, wb, c, 5)
+	if err != nil || !done || len(ps) != 2 || ps[0].OwnerWords != "four" || ps[1].OwnerWords != "one" {
+		t.Fatalf("after grace: %+v done=%v err=%v", ps, done, err)
 	}
 }

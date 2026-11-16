@@ -40,10 +40,9 @@ const (
 // "merged"). A folder that is not a git repository yields nothing and is done.
 //
 // The incremental pass rescans gitLookback behind the hi mark and returns
-// what it finds there that is not stored yet (outside the limit), so a late
-// commit or merge is not lost. Such an item can come back on a later call
-// while it is not stored (an unlabelled one); the upsert's
-// UNIQUE(source, source_key) keeps one row.
+// what it finds there that the learner has not handled yet — neither stored
+// nor marked skipped (db.MarkWatchmanSkippedKeys) — so a late commit or
+// merge is not lost and each is offered once.
 func GitSource(git GitRunner) Source { return gitSource{git: git} }
 
 type gitSource struct{ git GitRunner }
@@ -107,7 +106,7 @@ func (s gitSource) Next(ctx context.Context, d *db.DB, workbenchID int64, cursor
 		return encodeGitPos(hi) + "|" + encodeGitPos(lo)
 	}
 	var out []db.WatchmanPrecedent
-	n := 0 // rows counted toward limit; late finds are not
+	n := 0
 	if has {
 		floor := hi.at.Add(-gitLookback)
 		items, err := s.items(ctx, d, workbenchID, wb.FolderPath, floor)
@@ -124,18 +123,19 @@ func (s gitSource) Next(ctx context.Context, d *db.DB, workbenchID int64, cursor
 				late = append(late, it.key)
 			}
 		}
-		stored, err := d.WatchmanStoredKeys("git", late)
+		known, err := d.WatchmanKnownKeys("git", late)
 		if err != nil {
 			return nil, "", false, fmt.Errorf("watchman git source: %w", err)
 		}
 		for _, it := range items {
 			if !hi.less(it.pos()) {
-				if isLate(it) && !stored[it.key] {
-					out = append(out, it.p) // a late find: outside the limit
+				if !isLate(it) || known[it.key] {
+					continue
 				}
-				continue
+				out = append(out, it.p) // a late find; hi stays
+			} else {
+				out, hi = append(out, it.p), it.pos()
 			}
-			out, hi = append(out, it.p), it.pos()
 			if n++; n == limit {
 				return out, next(), false, nil
 			}
