@@ -240,6 +240,7 @@ Design-only SwiftUI scenes in `DesignShotCatalog` (`WatchmanShotFixtures`, `Watc
 | [`watchman-strip-unarmed`](../../design/mockups/watchman/watchman-strip-unarmed-light.png) | session strip: **Hand to Watchman** |
 | [`watchman-arm-first-time`](../../design/mockups/watchman/watchman-arm-first-time-light.png) | first arm: analytics turned on, history size and cost, main not protected warning |
 | [`watchman-settings-results`](../../design/mockups/watchman/watchman-settings-results-light.png) | Settings with a backtest: sleep window, per-category table, profile texts, extra limits |
+| [`watchman-settings-not-learned`](../../design/mockups/watchman/watchman-settings-not-learned-light.png) | Settings before any workbench is learned: per-workbench estimate + **Start Learning**, one row busy ("Learning… 340 of 1 850") |
 | [`watchman-settings-never-run`](../../design/mockups/watchman/watchman-settings-never-run-light.png) | Settings before any backtest |
 | [`watchman-settings-running`](../../design/mockups/watchman/watchman-settings-running-light.png) | busy: backtest running |
 | [`watchman-settings-failed`](../../design/mockups/watchman/watchman-settings-failed-light.png) | error: backtest stopped (plan limit), **Retry**, last results kept |
