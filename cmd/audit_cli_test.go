@@ -196,6 +196,8 @@ var cliNoContentCommands = map[string]bool{
 	"catchup ack":                      true,
 	"catchup feedback":                 true,
 	"channels":                         true,
+	"channels exclude":                 true,
+	"channels include":                 true,
 	"chat title":                       true,
 	"code index":                       true,
 	"coach accept":                     true,

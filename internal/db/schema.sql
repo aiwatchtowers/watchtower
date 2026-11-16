@@ -88,12 +88,15 @@ CREATE TABLE IF NOT EXISTS messages (
     permalink    TEXT NOT NULL DEFAULT '',
     ts_unix      REAL GENERATED ALWAYS AS (CASE WHEN INSTR(ts, '.') > 0 THEN CAST(SUBSTR(ts, 1, INSTR(ts, '.') - 1) AS REAL) ELSE CAST(ts AS REAL) END) STORED,
     raw_json     TEXT NOT NULL DEFAULT '{}', -- kept empty ('{}'): the Slack payload is not stored (Slack API terms: minimum necessary retention)
+    synced_at    REAL NOT NULL DEFAULT 0,  -- unix seconds the Slack sync first stored the row; 0 = unstamped, read as ts_unix (Slack inbox detection; see 00190)
     PRIMARY KEY (channel_id, ts)
 );
 CREATE INDEX IF NOT EXISTS idx_messages_user_id ON messages(user_id);
 CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(channel_id, thread_ts);
 CREATE INDEX IF NOT EXISTS idx_messages_ts_unix ON messages(ts_unix);
 CREATE INDEX IF NOT EXISTS idx_messages_channel_ts_unix ON messages(channel_id, ts_unix);
+-- Slack inbox detection reads synced_at, an unstamped 0 as the post time (see 00190).
+CREATE INDEX IF NOT EXISTS idx_messages_synced_at ON messages(CASE WHEN synced_at = 0 THEN ts_unix ELSE synced_at END);
 
 -- FTS5 virtual table for full-text search on messages
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
@@ -780,7 +783,13 @@ CREATE TABLE IF NOT EXISTS channel_settings (
     channel_id       TEXT PRIMARY KEY REFERENCES channels(id) ON DELETE CASCADE,
     is_muted_for_llm INTEGER NOT NULL DEFAULT 0,
     is_favorite      INTEGER NOT NULL DEFAULT 0,
-    updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    sync_excluded    INTEGER NOT NULL DEFAULT 0,  -- 1 = Stop syncing: no new messages stored, except mentions of the user (see 00191)
+    excluded_at      TEXT NOT NULL DEFAULT '',    -- when Stop syncing began
+    catchup_from     REAL,                        -- Sync again's pending catch-up: fixed lower bound (unix); NULL = none
+    catchup_to       REAL,                        -- the catch-up's moving upper bound (unix)
+    muted_by_exclusion INTEGER NOT NULL DEFAULT 0, -- 1 = Stop syncing set the AI mute; Sync again lifts it
+    muted_at         TEXT NOT NULL DEFAULT ''     -- when the AI mute turned on ('' = not muted)
 );
 
 -- Pipeline run history — logs every pipeline invocation (CLI, daemon, desktop)
@@ -1594,7 +1603,8 @@ CREATE TABLE IF NOT EXISTS slack_accounts (
     roster_synced_at  TEXT NOT NULL DEFAULT '',  -- last full users.list roster fetch (sync and sync --users-only); '' = never
     deletion_sweep_day TEXT NOT NULL DEFAULT '',  -- last UTC day (YYYY-MM-DD) the Slack deletion sweep finished (see 00139)
     access_ok_at      TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC of the last confirmed authenticated call; '' = unknown (see 00148)
-    revoked_at        TEXT NOT NULL DEFAULT ''   -- RFC 3339 UTC when status turned revoked; cleared by ok (see 00148)
+    revoked_at        TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC when status turned revoked; cleared by ok (see 00148)
+    first_cycle_at    TEXT NOT NULL DEFAULT ''   -- RFC 3339 UTC of the account's first sync attempt; older messages a sync stores keep their post time as synced_at (see 00190)
 );
 
 -- Multi-account IMAP/Outlook email source: one row per connected mailbox

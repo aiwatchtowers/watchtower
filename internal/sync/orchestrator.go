@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	gosync "sync"
 	"time"
@@ -65,7 +66,9 @@ type Orchestrator struct {
 	// searchRateLimited records whether the current Run's search sync gave up
 	// on its first page specifically because Slack rate-limited the token
 	// (isRateLimitError — never set for a scope/permission problem or any
-	// other non-fatal error, which keep falling back to full sync as before).
+	// other non-fatal error, which keep falling back to full sync as before),
+	// or stopped on a later page while Slack still holds the account (the
+	// fetch deadline).
 	// Run resets it; runSearchSync's "zero channels discovered" fallback must
 	// not escalate to the far more expensive full sync while this is true, or
 	// a rate-limited token gets hit with even more calls instead of backing off.
@@ -82,6 +85,16 @@ type Orchestrator struct {
 	// watermark written after); zero otherwise. Run resets it; the daemon
 	// reads it via FirstSyncFrom to start a history backfill.
 	firstSyncFrom time.Time
+
+	// resume is where the blanket search stopped with pages left; it
+	// outlives the Run that set it (searchStart/recordSearchStop).
+	resume *searchResume
+
+	// outcome is the current Run's RunOutcome. Run resets it.
+	outcome RunOutcome
+
+	// lastRunRateLimited is the previous Run's outcome.RateLimited (behind).
+	lastRunRateLimited bool
 
 	// fileLookups counts the current Run's conversations.history lookups of
 	// search matches that shared a file without listing it
@@ -105,6 +118,26 @@ type Orchestrator struct {
 	// "" when unknown. checkHomeTeam refuses it like the row's team, so a
 	// token left on another team than the row is caught on every path.
 	tokenTeamID string
+
+	// runStart is when the current Run began and firstCycleAt the account's
+	// first sync attempt (slack_accounts.first_cycle_at; this Run's start
+	// while it is the first): stampSyncedAt's bounds. Run sets both.
+	runStart     time.Time
+	firstCycleAt time.Time
+	// windowStart is when the blanket window this Run reads was started:
+	// runStart, or the start of the run that began a window this one
+	// resumes (searchResume.startedAt). stampSyncedAt's lookback counts
+	// from it.
+	windowStart time.Time
+	// backfilling is set while BackfillSearch or a Sync again catch-up
+	// (runSyncAgainCatchups) saves: history stamps every message with its post time,
+	// so it never reaches the Inbox.
+	backfilling bool
+
+	// syncExcluded is the account's Stop-syncing channels (namespaced ids),
+	// read once per Run and per BackfillSearch (loadSyncExcluded): a change
+	// applies from the next one. SYNCEX-01.
+	syncExcluded map[string]bool
 
 	// teamMismatch reports that the last Run stopped on a TeamMismatchError.
 	// Run resets it; the daemon reads it via TeamMismatch to pause the
@@ -158,13 +191,17 @@ func (o *Orchestrator) detectJiraKeys(msgs []db.Message) {
 // NewOrchestrator creates a new sync orchestrator scoped to one connected
 // Slack account (accountID, a slack_accounts.id).
 func NewOrchestrator(database *db.DB, slackClient *watchtowerslack.Client, cfg *config.Config, accountID int64) *Orchestrator {
+	progress := NewProgress()
+	if slackClient != nil {
+		progress.SetRateLimitHold(slackClient.HoldUntil)
+	}
 	return &Orchestrator{
 		db:          database,
 		slackClient: slackClient,
 		config:      cfg,
 		accountID:   accountID,
 		logger:      log.Default(),
-		progress:    NewProgress(),
+		progress:    progress,
 	}
 }
 
@@ -210,14 +247,38 @@ func (o *Orchestrator) resolveWorkerCount(requested int) int {
 // daemon's fetches, a shutdown) never reaches finishSync, which logs and
 // resets the run's API stats: Run resets them itself, or the next run's
 // "sync complete" line counts this run's calls too.
+//
+// A search-path run (no Full, no Channels) retries rate limits until
+// slackFetchDeadline and then leaves the rest of the window to the next run;
+// the client's deadline is cleared when Run returns, so later calls on the
+// same client (the CLI, the chat, media) keep the plain retry cap. An
+// explicit full or per-channel sync keeps that cap too: it can rightly run
+// longer than the deadline.
 func (o *Orchestrator) Run(ctx context.Context, opts SyncOptions) error {
 	o.searchGapNote = ""
 	o.searchRateLimited = false
 	o.searchIncomplete = false
 	o.firstSyncFrom = time.Time{}
 	o.fileLookups = 0
+	o.lastRunRateLimited = o.outcome.RateLimited
+	o.outcome = RunOutcome{}
 	o.resetMediaPlan()
-	err := o.run(ctx, opts)
+	if d := runFetchDeadline(opts); d > 0 {
+		o.slackClient.SetDeadline(time.Now().Add(d))
+		defer o.slackClient.SetDeadline(time.Time{})
+	}
+	// Only this run's own 429s count: one another caller of the client meets
+	// meanwhile (the chat, a media fetch) must not back the cadence off.
+	ctx, runLimited := watchtowerslack.CountRateLimits(ctx)
+	err := o.startSyncedAtCycle()
+	if err == nil {
+		err = o.loadSyncExcluded()
+	}
+	if err == nil {
+		err = o.run(ctx, opts)
+	}
+	o.outcome.RateLimited = runLimited() > 0
+	o.outcome.ResumePending = o.resume != nil
 	o.teamMismatch = errors.Is(err, ErrSlackTeamMismatch)
 	if ctx.Err() != nil {
 		o.slackClient.ResetAPIStats()
@@ -528,6 +589,15 @@ func (o *Orchestrator) runSearchSync(ctx context.Context, opts SyncOptions) erro
 	// both parent messages and thread replies within the search window.
 	// Full thread sync only runs with --full flag (runFullSync).
 
+	// Sync again catch-ups (a few history pages in all) run only
+	// after a clean search, last, so a 429 it meets holds no other phase.
+	// Best-effort: a stop keeps its bound for the next run.
+	if !o.searchIncomplete {
+		if err := o.runSyncAgainCatchups(ctx); err != nil {
+			o.logger.Printf("slack catch-up: account %d: %v", o.accountID, err)
+		}
+	}
+
 	return o.finishWithInboxReactions(ctx)
 }
 
@@ -546,6 +616,66 @@ const (
 	// digests.
 	readStateDigestWindow = 7 * 24 * time.Hour
 )
+
+// syncedAtLookback is how far before its window's start a message a run
+// stores may have been posted and still count as new for the Inbox
+// (stampSyncedAt). The window's start is the run's own, or, while a blanket
+// window resumes, the start of the run that began it: a cycle the cadence
+// skips is no sync error, so the Inbox watermark moves on while the window
+// waits, and a resume that finishes days later still stamps what it stores
+// for the first time with the current time. Between windows a message
+// stored late waits at most the cadence cap (60 min).
+const syncedAtLookback = 24 * time.Hour
+
+// startSyncedAtCycle records this Run's start and the account's first sync
+// attempt, written once (the first Run's start, kept on a retry).
+func (o *Orchestrator) startSyncedAtCycle() error {
+	o.runStart = o.clock()
+	o.windowStart = o.runStart
+	if err := o.db.SetSlackFirstCycleAtOnce(o.accountID, o.runStart); err != nil {
+		return err
+	}
+	first, err := o.db.SlackFirstCycleAt(o.accountID)
+	if err != nil {
+		return err
+	}
+	o.firstCycleAt = first
+	return nil
+}
+
+// stampSyncedAt is messages.synced_at for a message posted at tsUnix that
+// this Run stores now: the current time when it was posted at or after
+// max(first_cycle_at, windowStart - syncedAtLookback), so a message stored after
+// the Inbox watermark passed its post time is still detected; its post time
+// otherwise, so a first sync, a new account row re-storing old messages or a
+// history backfill never floods the Inbox.
+func (o *Orchestrator) stampSyncedAt(tsUnix float64) float64 {
+	if o.backfilling {
+		return tsUnix
+	}
+	bound := o.windowStart.Add(-syncedAtLookback)
+	// firstCycleAt is never zero in production: Run writes it before any
+	// save, and with no account row ensureWorkspace fails it before one.
+	if o.firstCycleAt.After(bound) {
+		bound = o.firstCycleAt
+	}
+	if tsUnix >= float64(bound.Unix()) {
+		return float64(o.clock().UnixNano()) / 1e9
+	}
+	return tsUnix
+}
+
+// slackTSUnix is a Slack ts as messages.ts_unix computes it (the whole
+// seconds); 0 when unparseable, which leaves synced_at unstamped (read as
+// the same post time).
+func slackTSUnix(ts string) float64 {
+	sec, _, _ := strings.Cut(ts, ".")
+	n, err := strconv.ParseInt(sec, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return float64(n)
+}
 
 // clock returns the orchestrator's notion of now (time.Now unless a test
 // injected one).

@@ -73,6 +73,10 @@ type Progress struct {
 
 	// Timing for ETA
 	phaseStartTime time.Time
+
+	// holdUntil reads the Slack client's Retry-After hold (SetRateLimitHold);
+	// nil when there is none to read.
+	holdUntil func() time.Time
 }
 
 // NewProgress creates a new progress tracker.
@@ -188,13 +192,29 @@ type Snapshot struct {
 	MessagesFetched     int
 	PhaseStartTime      time.Time
 	ChannelsSkippedInfo string
+	// RateLimitedUntil is the end of the Slack Retry-After hold the run is
+	// waiting on; zero when none.
+	RateLimitedUntil time.Time
+}
+
+// SetRateLimitHold installs the source of Snapshot's RateLimitedUntil (the
+// Slack client's HoldUntil).
+func (p *Progress) SetRateLimitHold(holdUntil func() time.Time) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.holdUntil = holdUntil
 }
 
 // Snapshot takes a consistent snapshot of the progress state.
 func (p *Progress) Snapshot() Snapshot {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	var hold time.Time
+	if p.holdUntil != nil {
+		hold = p.holdUntil()
+	}
 	return Snapshot{
+		RateLimitedUntil:    hold,
 		Phase:               p.phase,
 		StartTime:           p.startTime,
 		UsersTotal:          p.usersTotal,
