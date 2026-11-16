@@ -31,7 +31,7 @@
 
 ## Review Focus
 
-1. **A reader in another time zone than the process that builds the feed.** "Today/Earlier" sections, `stamp` and the Morning-brief day must follow the zone the request names, never the daemon's `TZ` environment. The Mac sends its zone in `FeedRequest.TimeZone`; the hub builds with its host's zone (the owner's Mac, documented in `inbox-core.md`). Task 6 adds `TestBuild_SectionsFollowTheRequestTimeZone`.
+1. **A reader in another time zone than the Mac.** The feed carries UTC stamps only (`stamp`, no time inside `source_line`); "Today/Earlier" grouping and every displayed time are computed in the shared screen models with the client's own `TimeZone.current`, so the phone groups by the phone's zone and the Mac by the Mac's. Task 6 adds `TestBuild_StampsAreUTCAndSourceLineHasNoTime`; Task 10 adds `testTodayEarlierFollowsTheClientZone` with a non-UTC zone.
 2. **A body clipped in the middle of a multi-byte character or an over-long card.** `Clip` cuts on a rune boundary and sets `body_clipped`; a card whose canonical blocks exceed 128 KB is sent as a notice card, never as a broken record. Task 6 adds `TestClip_CutsOnARuneBoundary` and `TestBuild_OversizeBlocksBecomeANotice`.
 3. **An action pressed while the Mac sleeps for more than 15 s.** It fails with Retry, and Retry re-sends the same `request_id`, so a first send that did land returns its stored result instead of acting twice. Task 4 adds `testRetryAfterFailureReusesTheRequestID`.
 4. **A malformed or endless frame on the socket** (no newline, garbage, a 50 MB line). The server answers `unsupported` for garbage, closes the connection past `MaxFrame`, and keeps serving others. Task 3 adds `TestSocket_OversizeFrameClosesOnlyThatConnection` and `TestSocket_GarbageLineAnswersUnsupported`.
@@ -198,7 +198,8 @@ git commit -m "feat(tower): Swift generator and WatchtowerInterface package (#11
 **Interfaces:**
 - Consumes: `tower.Tower.Call`, `Spec.Watch`, `Spec.ChangeTables` (Task 1); `platform.PeerUID` (`internal/hub/platform`, the hub control socket's check).
 - Produces:
-  - `func Serve(ctx context.Context, path string, t *Tower) (stop func(), err error)` — binds `path` 0600 (replacing a stale socket), refuses a peer whose uid is not `os.Getuid()` (seam `var peerUID = func(net.Conn) (int, error)`), reads newline-delimited `api.Request` frames, answers `api.Response` frames with the same `id`; a `Watch` command answers `ok` once, then streams `api.ChangedEvent` frames until the client closes.
+  - `const SunPathMax = 103` (macOS `sun_path` is 104 bytes with the terminator); `func SocketPath(workspace string) (path string, fallback bool)` — `<workspace>/tower.sock` when its length ≤ `SunPathMax`, else `<os.TempDir()>/wt-<uid>/<first 12 hex of sha256(workspace path)>.sock`; `const SocketPathFile = "tower.sock.path"`
+  - `func Serve(ctx context.Context, path string, t *Tower) (stop func(), err error)` — makes sure the socket's directory is 0700 (creates the fallback dir 0700; chmods a wider directory to 0700), binds `path` 0600 (replacing a stale socket); on a fallback path the daemon writes the path into `<workspace>/tower.sock.path` (0600, temp + rename) and removes it on stop; refuses a peer whose uid is not `os.Getuid()` (seam `var peerUID = func(net.Conn) (int, error)`), reads newline-delimited `api.Request` frames, answers `api.Response` frames with the same `id`; a `Watch` command answers `ok` once, then streams `api.ChangedEvent` frames until the client closes.
   - `const MaxFrame = 1 << 20`
   - `type ChangedEvent struct { ID string \`json:"id"\`; Event string \`json:"event"\` /* "changed" */; Tables []string \`json:"tables,omitempty"\` }`
   - `type Changes struct`; `func NewChanges(d *db.DB, poll time.Duration) *Changes`; `func (c *Changes) Publish(tables []string)`; `func (c *Changes) Subscribe(filter []string) (events <-chan api.ChangedEvent, cancel func())` — delivers an event whose tables meet `filter`, or that has none; `const PollInterval = 250 * time.Millisecond`; the poll goroutine runs only while subscribers > 0.
@@ -208,11 +209,12 @@ git commit -m "feat(tower): Swift generator and WatchtowerInterface package (#11
 
 - [ ] **Step 1: Write the failing socket tests** (bind under a short `os.MkdirTemp("/tmp", "tw")` dir: macOS limits `sun_path` to 104 bytes, as the hub's `shortDir` helper does)
 
-- `TestSocket_IsPrivateAndChecksPeer` (same shape as `internal/hub/hub_test.go::TestControlSocketIsPrivateAndChecksPeer`): mode `0600`; with `peerUID` returning another uid the connection is closed without an answer.
+- `TestSocket_IsPrivateAndChecksPeer` (same shape as `internal/hub/hub_test.go::TestControlSocketIsPrivateAndChecksPeer`): socket mode `0600` and its directory `0700` (a directory created 0755 is tightened); with `peerUID` returning another uid the connection is closed without an answer.
 - `TestSocket_PingEndToEnd`: `tower.ping` over a real connection answers `ok`.
 - `TestSocket_AnswersMatchIDsWhenInterleaved`: two requests on one connection, answers carry their ids.
 - `TestSocket_GarbageLineAnswersUnsupported`, `TestSocket_OversizeFrameClosesOnlyThatConnection` (a frame past `MaxFrame` closes that connection; a second connection still pings).
 - `TestSocket_StaleSocketFileIsReplaced`.
+- `TestSocketPath_LongWorkspaceFallsBackAndWritesThePathFile`: a workspace whose `tower.sock` path exceeds 103 bytes binds at `<TempDir>/wt-<uid>/<12 hex>.sock` (dir 0700), `tower.sock.path` holds that path (mode 0600), and a client that reads it pings `ok`; a short workspace writes no path file.
 
 - [ ] **Step 2: Write the failing watch tests** (`synctest.Test`; a second `db.Open` handle on the same file is the "other process")
 
@@ -259,10 +261,10 @@ git commit -m "feat(tower): daemon socket, change watch and sync pause (#1170)"
   - `enum TowerScreenState: Equatable, Sendable { case idle, loading, ready(stale: Date?), reconnecting, failed(TowerFailure) }`; `struct TowerFailure: Equatable, Sendable { enum Kind { case down, version, refused }; let kind: Kind; let sentence: String }` — `version` draws **Restart**, the others **Retry**.
   - `enum TowerActionState: Equatable, Sendable { case busy, refused(String), unknown }`
   - `enum TowerTiming { static let retryStart: Duration = .milliseconds(200); static let retryMax: Duration = .seconds(2); static let reconnectingLineAfter: Duration = .seconds(1); static let failAfter: Duration = .seconds(15) }`
-  - `actor TowerClient { init(transport: any TowerTransport, clock: any Clock<Duration>, restartDaemon: (@Sendable () async -> Bool)?) ; var screenState: TowerScreenState { get }; func screenStates() -> AsyncStream<TowerScreenState>; func showsReconnectingLine() -> Bool; func read<Resp: Decodable & Sendable>(_ command: TowerCommand, params: some Encodable & Sendable) async -> Result<Resp, TowerFailure>; func act<Resp: Decodable & Sendable>(_ command: TowerCommand, key: String, params: (String) -> some Encodable & Sendable) async -> TowerActOutcome<Resp>; func actionState(key: String) -> TowerActionState?; func watch(_ command: TowerCommand) -> AsyncStream<ChangedEvent> }`
+  - `actor TowerClient { init(transport: any TowerTransport, clock: any Clock<Duration>, restartDaemon: (@Sendable () async -> Bool)?, startDaemon: (@Sendable () async -> Void)?) ; func retry() async /* after failed(.down) also calls startDaemon, then reconnects */; var screenState: TowerScreenState { get }; func screenStates() -> AsyncStream<TowerScreenState>; func showsReconnectingLine() -> Bool; func read<Resp: Decodable & Sendable>(_ command: TowerCommand, params: some Encodable & Sendable) async -> Result<Resp, TowerFailure>; func act<Resp: Decodable & Sendable>(_ command: TowerCommand, key: String, params: (String) -> some Encodable & Sendable) async -> TowerActOutcome<Resp>; func actionState(key: String) -> TowerActionState?; func watch(_ command: TowerCommand) -> AsyncStream<ChangedEvent> }`
   - `enum TowerActOutcome<Resp> { case ok(Resp), refused(String), unknown, failed(TowerFailure) }` — `key` identifies the press (a row's id plus verb); the client makes the `request_id` (UUID) for a new press of `key`, passes it to `params`, and keeps it until a final answer (`ok`, `refused`, `unknown`).
-  - `enum TowerText` with: `reconnecting = "Reconnecting to Watchtower…"`, `daemonDown = "Watchtower's background service isn't running"`, `differentVersion = "Watchtower's background service is a different version."`, `retry = "Retry"`, `restart = "Restart"`, `didntConfirmMac = "Didn't confirm — checking again…"`, `didntConfirmPhone = "Didn't confirm — check on the Mac."`, `refresh = "Refresh"`, `syncPaused = "Sync paused"`, `pauseSync = "Pause Sync"`, `resumeSync = "Resume Sync"` (later tasks add the Inbox strings here).
-- Produces (WatchtowerCore): `final class SocketTransport: TowerTransport` — `init(path: String)`; one connection, newline JSON frames, answers matched by `id`; a closed socket fails every pending call with `.down`.
+  - `enum TowerText` with: `reconnecting = "Reconnecting to Watchtower…"`, `daemonDown = "Watchtower's background service isn't running"`, `differentVersion = "Watchtower's background service is a different version."`, `retry = "Retry"`, `restart = "Restart"`, `didntConfirmMac = "Didn't confirm — checking again…"` (mockup §8), `didntConfirmPhone = "Didn't confirm — check on the Mac."` (mockup §6), `refresh = "Refresh"`, `syncPaused = "Sync paused"`, `pauseSync = "Pause Sync"`, `resumeSync = "Resume Sync"` (later tasks add the Inbox strings here).
+- Produces (WatchtowerCore): `final class SocketTransport: TowerTransport` — `init(workspace: String)`: connects to the path in `<workspace>/tower.sock.path` when that file exists, else `<workspace>/tower.sock` (re-read on every reconnect, so a daemon that moved is found); one connection, newline JSON frames, answers matched by `id`; a closed socket fails every pending call with `.down`.
 
 - [ ] **Step 1: Write the failing `TowerClientTests`** (FakeTransport scripts drops and answers; ManualClock advances virtual time)
 
@@ -270,6 +272,7 @@ git commit -m "feat(tower): daemon socket, change watch and sync pause (#1170)"
 - `testDropUnderOneSecondShowsNoLine` (1 s drop: state `reconnecting`, `showsReconnectingLine() == false` until 1 s, then the call succeeds — the spec's 1 s case)
 - `testDropOfThreeSecondsShowsTheLineThenRecovers` (3 s drop: line shows after 1 s; on return the client re-opens the watch and reads once)
 - `testNeverReturnsFailsAfterFifteenSecondsWithRetry` (`failed(.down, TowerText.daemonDown)`)
+- `testRetryAfterDownAsksToStartDaemon` (after `failed(.down)`, `retry()` calls `startDaemon` exactly once, then retries the connection from the 0.2 s backoff)
 - `testBackoffDoublesFromTwoHundredMillisecondsToTwoSeconds` (attempt times 0.2, 0.4, 0.8, 1.6, 2.0, 2.0 s)
 - `testPressedActionWaitsBusyAndIsSentWithTheSameRequestIDOnReturn`
 - `testRetryAfterFailureReusesTheRequestID` (Review Focus 3)
@@ -283,7 +286,7 @@ Run: `make interface-test FILTER='TowerClientTests|TowerTextTests'` — Expected
 
 - [ ] **Step 2: Implement** `TowerClient` and `TowerText`. Run the same command — Expected: PASS.
 
-- [ ] **Step 3: SocketTransport** — `SocketTransportTests` run against an in-test Unix socket server (a short `/tmp` path; no Go process): `testFramesMatchTheGoGoldens` (the request frame it writes for `tower.ping` decodes as `internal/tower/api/testdata/Request.json`'s shape; the golden `Response.json` line is decoded and matched by `id`), `testInterleavedAnswersMatchByID`, `testServerCloseFailsPendingCallsWithDown`, `testWatchYieldsChangedFrames`. The end-to-end ping against the real daemon is Go's `TestSocket_PingEndToEnd` (Task 3). Implement `SocketTransport` beside `HubControlClient.swift`.
+- [ ] **Step 3: SocketTransport** — `SocketTransportTests` run against an in-test Unix socket server (a short `/tmp` path; no Go process): `testFramesMatchTheGoGoldens` (the request frame it writes for `tower.ping` decodes as `internal/tower/api/testdata/Request.json`'s shape; the golden `Response.json` line is decoded and matched by `id`), `testInterleavedAnswersMatchByID`, `testServerCloseFailsPendingCallsWithDown`, `testWatchYieldsChangedFrames`, `testReadsTheFallbackPathFile` (a `tower.sock.path` naming a short `/tmp` socket is used instead of `<workspace>/tower.sock`). The end-to-end ping against the real daemon is Go's `TestSocket_PingEndToEnd` (Task 3). Implement `SocketTransport` beside `HubControlClient.swift`.
 
 Run: `make test-swift FILTER=SocketTransportTests`, `make lint-swift` — Expected: PASS.
 
@@ -300,7 +303,7 @@ git commit -m "feat(interface): TowerClient state machine and socket transport (
 
 **Files:**
 - Modify: `WatchtowerDesktop/Sources/WatchtowerCore/Services/DaemonManager.swift` (`launchDetachedDaemon(path:noSync:…)`), `Sources/WatchtowerCore/Services/OnboardingFinishPlan.swift` (`DaemonControl.startDetached(noSync:)`, default `false`)
-- Modify: `WatchtowerDesktop/Sources/App/AppState.swift` (launch: `ensureDaemonRunning(noSync: needsOnboarding)` after the compaction step for every launch, onboarding included; a `towerClient` over `SocketTransport` with `restartDaemon` wired to the start queue; `syncPaused` read from `tower.hello`; `pauseSync()`/`resumeSync()`)
+- Modify: `WatchtowerDesktop/Sources/App/AppState.swift` (launch: `ensureDaemonRunning(noSync: needsOnboarding)` after the compaction step for every launch, onboarding included; a `towerClient` over `SocketTransport` with `restartDaemon` and `startDaemon` both wired to the app's daemon start queue (`enqueueDaemonStart`, the queue `ensureDaemonRunning` uses); `syncPaused` read from `tower.hello`; `pauseSync()`/`resumeSync()`)
 - Modify: `WatchtowerDesktop/Sources/Views/TrayMenuView.swift` (`TrayMenuContent` gains `syncPaused`, `pauseAction`, `resumeAction`; `statusText(isRunning:syncPaused:syncProgress:now:)`)
 - Modify: `WatchtowerDesktop/Tests/DesignShots/DesignShotCatalog.swift` (`tray-menu-running`, `tray-menu-paused`)
 - Test: `WatchtowerDesktop/Tests/Core/DaemonManagerStartTests.swift`, `WatchtowerDesktop/Tests/TrayMenuContentTests.swift`, `WatchtowerDesktop/Tests/DaemonLaunchSequenceTests.swift`
@@ -314,7 +317,7 @@ git commit -m "feat(interface): TowerClient state machine and socket transport (
 
 - `DaemonManagerStartTests.testNoSyncStartPassesTheFlag` (argv `["sync", "--daemon", "--detach", "--no-sync"]`) and `testDefaultStartHasNoFlag`.
 - `DaemonLaunchSequenceTests.testLaunchStartsADaemonWithNoSyncBeforeOnboardingFinishes` (fake `DaemonControl`: one `startDetached(noSync: true)` after the compaction step), `testOnboardingFinishRestartsWithoutNoSync`, `testLaunchAfterOnboardingStartsWithSync`.
-- `TrayMenuContentTests.testStatusLineReadsSyncPausedWhilePaused` (`"Sync paused"`), `testPauseItemBecomesResumeWhilePaused` (labels `"Pause Sync"` / `"Resume Sync"` from `TowerText`), `testPauseCallsTheTowerCommand` (a fake transport receives `sync.pause` with a `request_id`).
+- `TrayMenuContentTests.testStatusLineReadsSyncPausedWhilePaused` (`"Sync paused"`), `testPauseItemBecomesResumeWhilePaused` (labels `"Pause Sync"` / `"Resume Sync"` from `TowerText`), `testPauseCallsTheTowerCommand` (a fake transport receives `sync.pause` with a `request_id`), `DaemonLaunchSequenceTests.testTowerRetryAfterDownEnqueuesADaemonStart` (the client's `startDaemon` puts one start on the fake start queue, never a second while one is queued).
 
 Run: `make test-swift FILTER='DaemonManagerStartTests|DaemonLaunchSequenceTests|TrayMenuContentTests'` — Expected: FAIL.
 
@@ -339,7 +342,7 @@ git commit -m "feat(desktop): always-on daemon with tray Pause Sync (#1170)"
 
 ### Task 6: `inboxfeed.Build` part 1 — folders, counts, cards, texts, limit
 
-**Depends on:** Task 1
+**Depends on:** Task 1, Task 2 (`commands.RegisterAll`, `make gen-interface`), Task 3 (`Spec.Watch` delivery and `pause_test.go`, which this task extends)
 
 **Files:**
 - Create: `internal/inboxfeed/build.go` (`Build`, `Options`), `folders.go`, `counts.go`, `cards.go`, `texts.go`, `limit.go` (`Limit`, `Clip`), `register.go` (`inbox.feed`, `inbox.watch`), `changetables.go`
@@ -353,11 +356,11 @@ git commit -m "feat(desktop): always-on daemon with tray Pause Sync (#1170)"
 **Interfaces:**
 - Consumes: `tower.Register`, `tower.Spec{Read, Watch, ChangeTables}` (Tasks 1, 3).
 - Produces (`internal/tower/api/inbox.go`):
-  - `type FeedRequest struct { Folder *int64 \`json:"folder,omitempty"\`; Limit int \`json:"limit,omitempty"\`; Clip bool \`json:"clip,omitempty"\`; TimeZone string \`json:"time_zone"\` }`
+  - `type FeedRequest struct { Folder *int64 \`json:"folder,omitempty"\`; Limit int \`json:"limit,omitempty"\`; Clip bool \`json:"clip,omitempty"\` }` — no time zone: the feed is zone-free
   - `type Feed struct { V int \`json:"v"\`; BuiltAt string \`json:"built_at"\`; Folders []Folder \`json:"folders"\`; Cards []Card \`json:"cards"\`; More []FolderMore \`json:"more,omitempty"\` }`; `const FeedVersion = 1`
   - `type Folder struct { ID int64; Kind FolderKind /* root|approvals|owner */; Slug, Title, Icon string; ParentID *int64; Position, Count, Waiting int }` (JSON tags snake_case as in spec §4.2)
   - `type FolderMore struct { FolderID int64 \`json:"folder_id"\`; Count int \`json:"count"\` }`
-  - `type Card struct { ID string; FolderID int64; CardKind CardKind /* artifact|approval_native|reminder|notice|legacy */; Title, SourceLine, Preview, Stamp string; Living, Unread bool; Priority string; Pinned bool; Automation *CardAutomation; Blocks string; Body string; BodyClipped bool; ContentHash string; Actions []CardAction; RefFacts []RefFacts; Approval *Approval; Legacy *LegacySection }`
+  - `type Card struct { ID string; FolderID int64; CardKind CardKind /* artifact|approval_native|reminder|notice|legacy */; Title, SourceLine /* no time */, Preview, Stamp /* RFC 3339 UTC */ string; Living, Unread bool; Priority string; Pinned bool; Automation *CardAutomation; Blocks string; Body string; BodyClipped bool; ContentHash string; Actions []CardAction; RefFacts []RefFacts; Approval *Approval; Legacy *LegacySection }`
   - `type CardAutomation struct { ID int64; Name, BuiltinID string; RunID int64 }`
   - `type CardAction struct { Index int; Kind, Label string; State ActionState /* enabled|disabled|pressed|mac_only */ }`
   - `type RefFacts struct { Kind RefKind /* inbox_item|track|idea|reminder|action|plan_item */; ID int64; Open, Waits, Reply, ReplyWaiting bool; Link string }`
@@ -365,7 +368,7 @@ git commit -m "feat(desktop): always-on daemon with tray Pause Sync (#1170)"
   - `type LegacySection struct { Kind LegacyKind /* morning_brief|tracks|ideas|thread_briefs|messages */; Items []LegacyItem }`; `type LegacyItem struct { RefKind RefKind; ID int64; Title, Subtitle, Stamp string; Unread, Stopped bool; Date string }`
   - Card id helpers in `internal/inboxfeed`: `func OutputCardID(id int64) string` (`o<id>`), `ActionCardID` (`a`), `ReminderCardID` (`r`), `NoticeCardID` (`n<builtin migration id>`), `BriefCardID(date string)` (`brief-<date>`), and the constants `"tracks"`, `"ideas"`, `"thread-briefs"`, `"messages"`; `func ParseCardID(id string) (kind string, num int64, date string, err error)`.
 - Produces (`internal/inboxfeed`):
-  - `type Options struct { Folder *int64; Limit int; Clip bool; Location *time.Location; Now time.Time }`
+  - `type Options struct { Folder *int64; Limit int; Clip bool; Now time.Time }`
   - `func Build(ctx context.Context, d *db.DB, o Options) (api.Feed, error)` — one `BeginTx(ReadOnly: true)`; writes nothing.
   - `var ChangeTables = []string{"automation_outputs", "automation_runs", "automations", "inbox_folders", "inbox_folder_state", "inbox_folder_routes", "inbox_items", "agent_actions", "reminders", "tracks", "track_events", "ideas", "briefings", "day_plans", "day_plan_items", "builtin_migrations"}`
   - `func Register(r *tower.Registry)` — `inbox.feed` (`Spec{Read: true, ChangeTables: ChangeTables}`) and `inbox.watch` (`Spec{Watch: true, ChangeTables: ChangeTables}`).
@@ -375,9 +378,9 @@ The Swift sources ported here (read each before writing its Go half): `Watchtowe
 
 - [ ] **Step 1: Write the fixture and the failing Go tests**
 
-`inbox_feed_cases.json`: `[{ "name", "now", "time_zone", "seed": [SQL...], "opts": FeedRequest, "expect": Feed }]`. Cases (Task 6 part): `empty_install` (root + approvals only, counts 0), `owner_folders_order_and_counts` (three levels, a hidden folder and its subtree out of the root count), `unread_artifact_counts_one`, `artifact_rows_waiting_count_per_ref`, `markdown_card_has_empty_blocks`, `living_card_stamp_updated`, `sections_today_earlier`, `save_automation_proposal_summary`, `builtin_upgrade_notice_card`, `limit_keeps_approvals_and_waiting_first` (Limit 3 over 5 cards: the approval and the Waiting for me card kept, `more` counts the cut per folder, every folder still sent), `folder_option_narrows`.
+`inbox_feed_cases.json`: `[{ "name", "now", "seed": [SQL...], "opts": FeedRequest, "expect": Feed }]`. Cases (Task 6 part): `empty_install` (root + approvals only, counts 0), `owner_folders_order_and_counts` (three levels, a hidden folder and its subtree out of the root count), `unread_artifact_counts_one`, `artifact_rows_waiting_count_per_ref`, `markdown_card_has_empty_blocks`, `living_card_stamp_updated`, `save_automation_proposal_summary`, `builtin_upgrade_notice_card`, `limit_keeps_approvals_and_waiting_first` (Limit 3 over 5 cards: the approval and the Waiting for me card kept, `more` counts the cut per folder, every folder still sent), `folder_option_narrows`.
 
-`build_test.go`: `TestInboxFeedCases` (every case: `Build` equals `expect` with `built_at` blanked), `TestBuild_IsOneReadOnlySnapshot` (a concurrent writer between two reads inside `Build` is not seen: counts and rows agree), `TestBuild_WritesNothing` (`PRAGMA data_version` and `total_changes` unchanged), `TestBuild_SectionsFollowTheRequestTimeZone` (Review Focus 1), `TestClip_CutsOnARuneBoundary` (a body of 16 KB − 1 byte + "ё" → valid UTF-8, `body_clipped`), `TestBuild_OversizeBlocksBecomeANotice` (Review Focus 2), `TestCardIDs_RoundTripAndNeverCollide`.
+`build_test.go`: `TestInboxFeedCases` (every case: `Build` equals `expect` with `built_at` blanked), `TestBuild_IsOneReadOnlySnapshot` (a concurrent writer between two reads inside `Build` is not seen: counts and rows agree), `TestBuild_WritesNothing` (`PRAGMA data_version` and `total_changes` unchanged), `TestBuild_StampsAreUTCAndSourceLineHasNoTime` (Review Focus 1: every `stamp` is RFC 3339 UTC, ending in `Z`; `source_line` carries the source only, the model appends the time), `TestClip_CutsOnARuneBoundary` (a body of 16 KB − 1 byte + "ё" → valid UTF-8, `body_clipped`), `TestBuild_OversizeBlocksBecomeANotice` (Review Focus 2), `TestCardIDs_RoundTripAndNeverCollide`.
 
 Run: `go test ./internal/inboxfeed/` — Expected: FAIL.
 
@@ -387,7 +390,7 @@ Run: `go test ./internal/inboxfeed/` — Expected: FAIL.
 
 Run: `go test ./internal/inboxfeed/ ./internal/tower/... && make gen-interface-check` — Expected: PASS.
 
-- [ ] **Step 4: Swift parity half** — `InboxFeedParityTests.testSwiftBuilderMatchesEveryGoCase` seeds each case's SQL into a `TestDatabase`, runs today's Swift builders under the case's `now` and time zone, maps them through `SwiftFeedAdapter` and asserts equality with `expect`. A field the Swift side does not compute is listed in the adapter's `goOnlyFields` with a one-line reason, never silently skipped.
+- [ ] **Step 4: Swift parity half** — `InboxFeedParityTests.testSwiftBuilderMatchesEveryGoCase` seeds each case's SQL into a `TestDatabase`, runs today's Swift builders under the case's `now` in UTC, maps them (the adapter strips the time part Swift puts in the source line and keeps sections out: grouping is the models' job, Task 10) through `SwiftFeedAdapter` and asserts equality with `expect`. A field the Swift side does not compute is listed in the adapter's `goOnlyFields` with a one-line reason, never silently skipped.
 
 Run: `make test-swift FILTER=InboxFeedParityTests` — Expected: PASS.
 
@@ -534,16 +537,18 @@ git commit -m "feat(inboxfeed): Go writers and inbox.act (#1170)"
 | `ideas.decision_seen` / `ideas.decisions_seen_all` | `id` / none | new (`IdeaQueries.markDecisionSeen/markAllDecisionsSeen`) | `DigestViewModel` |
 | `ideas.create_from_chat` → `{id}` / `ideas.undo_chat` → `{undone}` | `conversation_id, message_id, kind, body` / `id, created_updated_at` | `CreateIdeaFromChat` (Tx form) / new | `ChatKnowledgeCenter` |
 | `dayplan.done` / `dayplan.pending` / `dayplan.delete` / `dayplan.reorder` / `dayplan.add` → `{id}` | `item_id, cascade` / … / `plan_id, ordered_ids` / `addManualItem`'s fields | `SetPlanItemStatusTx` / `DeleteDayPlanItem` (Tx form) / new | `DayPlanViewModel` |
+| `targets.set_status` | `id, status, board_column_id?` | `UpdateTargetStatusAsTx` extended to the Swift `TargetQueries.updateStatus` (both overloads, with `afterStatusWrite`, `status_actor = 'owner'`) | `TargetsViewModel`, `HomeFeedActions`, `WorkbenchOwnerWrites` (re-run the grep: 11 `updateStatus(` call sites today, some inside Queries) |
+| `targets.snooze` | `id, until` | new (both `TargetQueries` snooze writers that set `status = 'snoozed'`) | `TargetsViewModel` |
 | `catchup.acknowledge` | `CatchUpQueries.acknowledge`'s inputs | new (one transaction over its six tables) | `CatchUpViewModel` |
 | `digests.read` / `digests.decision_read` / `digests.decisions_read_all` | `ids` / `digest_id, idx` / `digest_id` | `MarkDigestRead` (Tx form) / new | `DigestViewModel` |
 
-`catchup.*` and `digests.*` are not in spec §2.1's list: `CatchUpQueries.acknowledge` writes `tracks`, `inbox_items` and `briefings` (moved tables) in one transaction with `digests`, `stream_digests` and `catchup_recaps`, so it moves whole, and `digests.read_at` then needs one writer.
+`catchup.*`, `digests.*` and `targets.*` follow the owner's rule in ask #1362 ("the Inbox moves, and so does every screen that writes the same rows"), though spec §2.1's list does not name them: `CatchUpQueries.acknowledge` writes `tracks`, `inbox_items` and `briefings` (moved tables) in one transaction with `digests`, `stream_digests` and `catchup_recaps`, so it moves whole, and `digests.read_at` then needs one writer. `ideas.create_from_chat`/`ideas.undo_chat` stay in stage 1 for the same reason: they write the moved `ideas` table. `targets.set_status`/`targets.snooze` move because the plan-item cascade writes `targets.status` from Go, so its other Swift writers move with it.
 
 - [ ] **Step 1: Re-run the call-site grep** and reconcile it with the table (add a row for anything new; the grep pattern is the moved writers' names, run over `WatchtowerDesktop/Sources` excluding `WatchtowerCore/Database/Queries`).
 
-- [ ] **Step 2: Write the fixture and failing tests** — `screen_writes.json` (same shape as `inbox_writes.json`, one case per command plus an `already` case where a guard exists) run by `TestScreenWritesCases` and by `ScreenWritesFixtureTests.testSwiftWritersMatchEveryGoCase`; `TestScreenCommands_EveryCommandIsRegisteredGuarded` (each name in the table is registered with `Idempotent: true` and non-empty `ChangeTables`).
+- [ ] **Step 2: Write the fixture and failing tests** — `screen_writes.json` (same shape as `inbox_writes.json`, one case per command plus an `already` case where a guard exists) run by `TestScreenWritesCases` and by `ScreenWritesFixtureTests.testSwiftWritersMatchEveryGoCase`; `TestScreenCommands_EveryCommandIsRegisteredGuarded` (each name in the table is registered with `Idempotent: true` and non-empty `ChangeTables`); `screen_writes.json` cases `targets_set_status`, `targets_set_status_with_board_column`, `targets_snooze`; `TestTargetsSetStatus_TwoConnectionsRace` (two `db.Open` handles set different statuses on one target concurrently: both answer `ok`, the row holds exactly one of the two with its matching `afterStatusWrite` effects, never a mix).
 
-Run: `go test ./internal/inboxfeed/ -run 'ScreenWrites|ScreenCommands'` — Expected: FAIL.
+Run: `go test ./internal/inboxfeed/ -run 'ScreenWrites|ScreenCommands|TargetsSetStatus'` — Expected: FAIL.
 
 - [ ] **Step 3: Implement** the new writers and registrations; regenerate; add goldens.
 
@@ -558,7 +563,7 @@ git commit -m "feat(tower): write commands for Home, Ideas, Tracks, Day plan, Ca
 
 ### Task 10: Screen models in `WatchtowerInterface`
 
-**Depends on:** Task 2, Task 6 (the generated feed and act types)
+**Depends on:** Task 2, Task 4 (`TowerText.swift`, which this task extends), Task 6 (the generated feed and act types)
 
 **Files:**
 - Create: `WatchtowerInterface/Sources/WatchtowerInterface/Inbox/Platform.swift`, `InboxRootModel.swift`, `InboxFolderModel.swift`, `InboxCardModel.swift`, `InboxRefRowModel.swift`, `InboxApprovalModel.swift`, `InboxTabState.swift`, `InboxHiddenRows.swift`
@@ -570,24 +575,24 @@ git commit -m "feat(tower): write commands for Home, Ideas, Tracks, Day plan, Ca
 - Produces (`public`):
   - `enum Platform: Sendable { case mac, phone }`; `struct Grants: Sendable, Equatable { var permissions: Bool; var typing: Bool; static let all }`
   - `struct InboxRootModel { init(feed: Feed, platform: Platform); let rows: [InboxFolderRow]; let badge: Int /* sum of folders' waiting */ }`; `struct InboxFolderRow { let folder: Folder; let depth: Int /* 0...2 */; let count: Int; let waiting: Int; let children: [InboxFolderRow] }`
-  - `struct InboxFolderModel { init(feed: Feed, folderID: Int64, platform: Platform, hidden: InboxHiddenRows); let cards: [InboxCardModel]; let olderLine: String?; let empty: (title: String, body: String)? }`
-  - `struct InboxCardModel { init(card: Card, platform: Platform, grants: Grants); let id: String; let title, sourceLine, preview, stamp: String; let showsUnreadDot: Bool; let actions: [InboxCardActionModel]; let refRows: [InboxRefRowModel] /* open refs only */ }`; `struct InboxCardActionModel { let index: Int; let label: String; let enabled: Bool; let note: String? /* TowerText.onYourMac for mac-only on the phone */ }`
+  - `struct InboxFolderModel { init(feed: Feed, folderID: Int64, platform: Platform, hidden: InboxHiddenRows, now: Date, timeZone: TimeZone = .current); let sections: [InboxSection] /* Needs your decision / Today / Earlier by the given zone */; let cards: [InboxCardModel]; let olderLine: String?; let empty: (title: String, body: String)? }`
+  - `struct InboxCardModel { init(card: Card, platform: Platform, grants: Grants, blocksReadable: Bool, now: Date, timeZone: TimeZone = .current); let id: String; let title, sourceLine /* source + " · " + the time formatted in timeZone */, preview, stamp: String; let unsupportedBanner: String? /* set when !blocksReadable */; let showsUnreadDot: Bool; let actions: [InboxCardActionModel]; let refRows: [InboxRefRowModel] /* open refs only */ }`; `struct InboxCardActionModel { let index: Int; let label: String; let enabled: Bool; let note: String? /* TowerText.onYourMac for mac-only on the phone */ }`
   - `struct InboxRefRowModel { init(facts: RefFacts, platform: Platform, grants: Grants); let leadingSwipe: [RefVerb]; let trailingSwipe: [RefVerb]; let menu: [RefVerb]; func request(_ verb: RefVerb, cardID: String, requestID: String, until: String?) -> ActRequest }` — swipe right Hide, swipe left Done and Snooze; a track gets Done and Stop, a reminder Done and "Snooze 1h"; the menu holds every verb of the kind, Make a Task included.
   - `struct InboxApprovalModel { init(card: Card, platform: Platform, grants: Grants); let canApprove: Bool; let approveNote: String?; let canEdit: Bool; func approve(requestID: String) -> ActRequest /* pins args_sha256 */ }`
   - `enum InboxTabState: Equatable { case loading(hub: String), empty(hub: String), tooOld(hub: String), policyOff, ready, macAway(hub: String, asOf: Date) }` with `static func resolve(capability: String?, fetched: Bool, feed: Feed?, hubName: String, macAway: Date?) -> InboxTabState` (`capability == nil` → `tooOld`; `"policy_off"` → `policyOff`)
   - `struct InboxHiddenRows { mutating func hideOnOK(_ key: String); mutating func observe(feed: Feed); func isHidden(_ key: String) -> Bool }` — a row hidden on `ok` stays hidden until a feed leaves it out (then forgotten) or until two feeds still contain it (then shown again).
-  - `TowerText` additions: `loadingInbox(hub:) = "Getting your Inbox from \(hub)…"`, `emptyTitle = "Nothing waits for you"`, `emptyBody(hub:) = "New cards arrive after the next sync on \(hub)."`, `emptyFolderTitle(_:) = "No cards in \(folder)"`, `emptyFolderBody = "Automations routed here write their cards into this folder. Routes are set on your Mac."`, `tooOldTitle(hub:) = "Update Watchtower on \(hub)"`, `tooOldBody(hub:) = "Watchtower on \(hub) is too old to send its Inbox to the phone."`, `policyTitle = "The Inbox stays on your Mac"`, `policyBody = "Your organization lets this phone see only Workbench."`, `olderCards(_ n: Int) = "\(n) older cards are on your Mac."`, `onYourMac = "On your Mac"`, `propose = "Propose"`, `snoozeOneHour = "Snooze 1h"`, `makeATask = "Make a Task"`.
+  - `TowerText` additions: `loadingInbox(hub:) = "Getting your Inbox from \(hub)…"`, `emptyTitle = "Nothing waits for you"`, `emptyBody(hub:) = "New cards arrive after the next sync on \(hub)."`, `emptyFolderTitle(_:) = "No cards in \(folder)"`, `emptyFolderBody = "Automations routed here write their cards into this folder. Routes are set on your Mac."`, `tooOldTitle(hub:) = "Update Watchtower on \(hub)"`, `tooOldBody(hub:) = "Watchtower on \(hub) is too old to send its Inbox to the phone."`, `policyTitle = "The Inbox stays on your Mac"`, `policyBody = "Your organization lets this phone see only Workbench."`, `olderCards(_ n: Int) = "\(n) older cards are on your Mac."`, `onYourMac = "On your Mac"`, `propose = "Propose"`, `snoozeOneHour = "Snooze 1h"`, `makeATask = "Make a Task"`, `loadingInboxMac = "Loading the Inbox…"` (Mac first load, mockup §7), `refreshFailed(reason: String, shownAt: Date, timeZone: TimeZone) -> String` = `"Couldn't refresh the Inbox: \(reason). Showing the list from \(time)."` with `time` formatted by the model (`h:mm` in the given zone, e.g. "9:14"; a different day adds the short date), `unsupportedCard = "This card needs a newer Watchtower on this iPhone. Showing its text."` (mockup §4).
 
 - [ ] **Step 1: Write the failing tests** (feeds built from `internal/tower/api/testdata/Feed.json` and small literals)
 
 - `InboxRootModelTests`: `testBadgeIsTheSumOfWaiting`, `testFoldersOrderedByPosition`, `testFoldersPastThreeLevelsRollUpIntoTheThirdLevel` (Review Focus 5).
-- `InboxFolderModelTests`: `testClosedRefRowsAreHidden`, `testOlderLineWhenMoreIsPositive` (`"42 older cards are on your Mac."`), `testEmptyFolderCopy`, `testApprovalsAndWaitingFirst`.
+- `InboxFolderModelTests`: `testTodayEarlierFollowsTheClientZone` (a card at 23:30 UTC is Today in `Asia/Tokyo` and Earlier in `America/Los_Angeles` for the same `now`; Review Focus 1), `testClosedRefRowsAreHidden`, `testOlderLineWhenMoreIsPositive` (`"42 older cards are on your Mac."`), `testEmptyFolderCopy`, `testApprovalsAndWaitingFirst`.
 - `InboxCardModelTests`: `testMacOnlyActionsAreDisabledOnThePhoneWithOnYourMac` (`chat`, `agent`, `save_automation`, Discuss, Hand to Agent), `testMacKeepsThemEnabled`, `testUnreadIsADotOnly`.
 - `InboxRefRowModelTests`: `testSwipesPerKind` (inbox_item, track, reminder, idea, plan_item), `testMenuHoldsEveryVerbIncludingMakeATask`, `testRequestCarriesRefKindIDAndVerb`.
 - `InboxApprovalModelTests`: `testApproveNeedsPermissionsOnThePhone`, `testApprovePinsTheShownArgsHash`, `testEditIsMacOnly`.
 - `InboxTabStateTests`: one test per state (`loading`, `empty`, `tooOld` on a missing key, `policyOff`, `macAway`).
 - `InboxHiddenRowsTests`: `testHiddenUntilAFeedLeavesItOut`, `testShownAgainAfterTwoFeedsStillContainIt`.
-- `TowerTextInboxTests.testEveryInboxStringIsPinned`.
+- `TowerTextInboxTests.testEveryInboxStringIsPinned`, `testRefreshFailedFormatsTheTimeInTheGivenZone` (reason `TowerText.daemonDown`, 09:14 in `Europe/Berlin` → `"Couldn't refresh the Inbox: Watchtower's background service isn't running. Showing the list from 9:14."`), `testUnsupportedBannerOnlyWhenBlocksAreUnreadable` (`InboxCardModel`).
 
 Run: `make interface-test FILTER='Inbox|TowerTextInbox'` — Expected: FAIL.
 
@@ -602,7 +607,7 @@ git commit -m "feat(interface): shared Inbox screen models and copy (#1170)"
 
 ### Task 11: Desktop Inbox on the tower
 
-**Depends on:** Task 4, Task 8, Task 10
+**Depends on:** Task 4, Task 5 (`AppState.towerClient`), Task 8, Task 10
 
 **Files:**
 - Create: `WatchtowerDesktop/Sources/WatchtowerCore/Services/Inbox/InboxFeedLoader.swift` (one read in flight + a dirty flag)
@@ -651,23 +656,23 @@ git commit -m "feat(desktop): Inbox reads and acts through the tower (#1170)"
 **Depends on:** Task 9, Task 11
 
 **Files:**
-- Modify (callers → `towerClient.act`): `WatchtowerDesktop/Sources/ViewModels/IdeasViewModel.swift`, `DigestViewModel.swift`, `TracksViewModel.swift`, `DayPlanViewModel.swift`, `CatchUpViewModel.swift`, `TargetWatchesViewModel.swift`, `CustomTrackTimelineViewModel.swift`; `Sources/App/AppState+Home.swift`, `Sources/Services/HomeFeedActions.swift`; `Sources/Views/QuickCapture/QuickCaptureView.swift`, `Sources/Views/Ideas/IdeaDetailPane.swift`, `Sources/Views/Digests/DecisionsListView.swift`; `Sources/WatchtowerCore/Services/Actions/ActionStripViewModel.swift`, `Sources/WatchtowerCore/Models/Reminder.swift`, `Sources/WatchtowerCore/Services/Inbox/CustomTrackControlling.swift`, `RecipeCustomTrackControls.swift`, `Sources/Services/ChatKnowledgeCenter.swift`
+- Modify (callers → `towerClient.act`): `WatchtowerDesktop/Sources/ViewModels/IdeasViewModel.swift`, `DigestViewModel.swift`, `TracksViewModel.swift`, `DayPlanViewModel.swift`, `CatchUpViewModel.swift`, `TargetWatchesViewModel.swift`, `CustomTrackTimelineViewModel.swift`; `Sources/App/AppState+Home.swift`, `Sources/Services/HomeFeedActions.swift`; `Sources/Views/QuickCapture/QuickCaptureView.swift`, `Sources/Views/Ideas/IdeaDetailPane.swift`, `Sources/Views/Digests/DecisionsListView.swift`; `Sources/WatchtowerCore/Services/Actions/ActionStripViewModel.swift`, `Sources/WatchtowerCore/Models/Reminder.swift`, `Sources/WatchtowerCore/Services/Inbox/CustomTrackControlling.swift`, `RecipeCustomTrackControls.swift`, `Sources/Services/ChatKnowledgeCenter.swift`, `Sources/ViewModels/TargetsViewModel.swift`, `Sources/WatchtowerCore/Services/WorkbenchOwnerWrites.swift` (and every other `targets.status` writer the grep finds)
 - Create: `WatchtowerDesktop/Sources/DesignKit/TowerRowState.swift` (the shared row treatment: busy label, refused sentence + Retry, "Didn't confirm — checking again…")
-- Delete: the moved Swift writers in `WatchtowerCore/Database/Queries/` (`AutomationQueries.markOutputOpened/markOutputDone/dismissOutput/stampOnce`, `TrackQueries` writers, `TrackEventQueries` writers, `DayPlanQueries` writers, `ReminderQueries.markDone/snooze`, `InboxQueries.markRead`, `BriefingQueries.markRead`, `IdeaQueries` writers, `CatchUpQueries.acknowledge`, `DigestQueries.mark*`) and the Swift halves of `InboxWritesFixtureTests`/`ScreenWritesFixtureTests` (the JSON stays as the Go golden)
+- Delete: the moved Swift writers in `WatchtowerCore/Database/Queries/` (`AutomationQueries.markOutputOpened/markOutputDone/dismissOutput/stampOnce`, `TrackQueries` writers, `TrackEventQueries` writers, `DayPlanQueries` writers, `ReminderQueries.markDone/snooze`, `InboxQueries.markRead`, `BriefingQueries.markRead`, `IdeaQueries` writers, `CatchUpQueries.acknowledge`, `DigestQueries.mark*`, `TargetQueries.updateStatus` (both overloads) and the snooze writers) and the Swift halves of `InboxWritesFixtureTests`/`ScreenWritesFixtureTests` (the JSON stays as the Go golden)
 - Create: `WatchtowerDesktop/Tests/Core/MovedTablesWriteGuardTests.swift`
 - Modify: `WatchtowerDesktop/Tests/DesignShots/DesignShotCatalog.swift` (`ideas-row-states`, mockup §8 "Ideas: busy, refused, didn't confirm")
 - Modify: `docs/inventory/reaction-commands.md` (STRIP-02 writer guards such as `testDoneWritesOnlyDoneAt`, `testDismissWritesOnlyDismissedAt`, `testOutputWritesTouchOnlyTheirOwnColumn`, `testMarkReminderDoneDropsItOnNextRefresh`, `testSnoozeReminderMovesItOutOfTheDueWindow` move to Go as `TestStrip02_DoneWritesOnlyDoneAt` etc. in `internal/inboxfeed/strip02_test.go`, same full-row assertions), any other inventory entry naming a deleted writer (grep `docs/inventory` for each deleted name)
-- Test: one refusal test per screen (`IdeasViewModelTowerTests`, `DigestViewModelTowerTests`, `TracksViewModelTowerTests`, `DayPlanViewModelTowerTests`, `HomeActionsTowerTests`, `CatchUpViewModelTowerTests`, `QuickCaptureTowerTests`), `internal/inboxfeed/strip02_test.go`
+- Test: one refusal test per screen (`IdeasViewModelTowerTests`, `DigestViewModelTowerTests`, `TracksViewModelTowerTests`, `DayPlanViewModelTowerTests`, `HomeActionsTowerTests`, `CatchUpViewModelTowerTests`, `QuickCaptureTowerTests`, `TargetsViewModelTowerTests`), `internal/inboxfeed/strip02_test.go`
 
 **Interfaces:**
 - Consumes: the Task 9 commands; `TowerClient.act`, `TowerActionState` (Task 4); `TowerText.didntConfirmMac` (Task 4).
-- Produces: `struct TowerRowState: View { init(state: TowerActionState?, busyLabel: String, retry: @escaping () -> Void) }`; the guard test's table list `MovedTablesWriteGuardTests.movedTables = ["automation_outputs", "briefings", "inbox_items", "tracks", "track_events", "ideas", "reminders", "day_plan_items", "digests", "decision_reads", "stream_digests", "catchup_recaps"]` — `targets` is not on the list: the plan-item cascade writes `targets.status` from Go while the Targets screens keep their own Swift writes (their reads and writes are a follow-up target).
+- Produces: `struct TowerRowState: View { init(state: TowerActionState?, busyLabel: String, retry: @escaping () -> Void) }`; the guard test's table list `MovedTablesWriteGuardTests.movedTables = ["automation_outputs", "briefings", "inbox_items", "tracks", "track_events", "ideas", "reminders", "day_plan_items", "digests", "decision_reads", "stream_digests", "catchup_recaps"]` and the column list `movedColumns = ["targets.status"]` (an `UPDATE targets` whose `SET` names `status` fails; other `targets` columns stay Swift-written).
 
 - [ ] **Step 1: Write the failing guard** — `MovedTablesWriteGuardTests.testNoSwiftWriteToAMovedTable` scans every `.swift` file under `WatchtowerDesktop/Sources` for `INSERT INTO <t>`, `UPDATE <t>`, `DELETE FROM <t>`, `INSERT OR … INTO <t>` (case-insensitive, across line breaks) and GRDB record writes on the moved tables' record types (`.insert(db`, `.update(db`, `.save(db`, `.delete(db`, `updateAll`, `deleteAll` on `Idea`, `Track`, `Reminder`, `DayPlanItem`, `InboxItem`, `Briefing`, `AutomationOutput`, `Digest`), and fails listing file:line. `testTheMatcherCatchesEveryForm` pins the matcher on literals.
 
 Run: `make test-swift FILTER=MovedTablesWriteGuardTests` — Expected: FAIL (lists today's writers).
 
-- [ ] **Step 2: Per-screen refusal tests** — each `<Screen>TowerTests.testRefusalShowsTheSentenceAndRetry` (fake transport refuses with a sentence; the row shows it, Retry re-sends the same `request_id`) and `testRefreshesAfterOK` where the screen refreshed after its GRDB write. Run `make test-swift FILTER='TowerTests'` — Expected: FAIL.
+- [ ] **Step 2: Per-screen refusal tests** — each `<Screen>TowerTests.testRefusalShowsTheSentenceAndRetry` (fake transport refuses with a sentence; the row shows it, Retry re-sends the same `request_id`) and `testRefreshesAfterOK` where the screen refreshed after its GRDB write. Add `TargetsViewModelTowerTests` to the list. Run `make test-swift FILTER='TowerTests'` — Expected: FAIL.
 
 - [ ] **Step 3: Switch every caller**; reads stay on GRDB. Delete the moved writers and the Swift halves of the fixtures. Move the STRIP-02 writer guards to Go with their assertions.
 
@@ -690,7 +695,7 @@ git commit -m "feat(desktop): Home, Ideas, Tracks, Day plan, CatchUp and Digests
 
 ### Task 13: Hub — Inbox slices, capability and `inbox_act`
 
-**Depends on:** Task 7, Task 8
+**Depends on:** Task 3 (the daemon's `Tower` and socket wiring in `runSyncDaemon` that `startGoHub` now receives), Task 7, Task 8
 
 **Files:**
 - Modify: `internal/hub/slices/kinds.go` (`KindInboxFolder = "inbox_folder"`, `KindInboxCard = "inbox_card"` appended to `AllKinds`), `internal/hub/secure/record.go` (`dataKinds`), `WatchtowerKit/Sources/WatchtowerSync/Sync/SliceRecord.swift` (`SliceKind.inboxFolder`, `.inboxCard`) — one change
@@ -766,13 +771,13 @@ git commit -m "feat(mobile): phone artifact renderer over the Kit block document
 
 ### Task 15: Phone Inbox tab
 
-**Depends on:** Task 10, Task 13, Task 14
+**Depends on:** Task 4 (`TowerClient`, which `HubTransport` serves), Task 10, Task 13, Task 14
 
 **Files:**
 - Modify: `WatchtowerMobile/project.yml` only if new folders need listing; `make mobile-gen`
 - Create: `WatchtowerMobile/Sources/Features/Inbox/HubTransport.swift`, `InboxTabView.swift`, `InboxFolderView.swift`, `InboxCardDetailView.swift`, `InboxRefRow.swift`, `InboxApprovalCard.swift`, `InboxReplySheet.swift`, `InboxCenter.swift` (the tab's `TowerClient` over `HubTransport`)
 - Modify: `WatchtowerMobile/Sources/App/RootTabView.swift` (`Tab.inbox`, second: `now, inbox, workbench, chats, calendar`; icon `tray`; orange badge = `InboxRootModel.badge`), `Sources/App/AppRoot.swift` (wiring), `Sources/App/DemoSeed.swift` + new `DemoSeed+Inbox.swift` (the sample Inbox: root, Needs approval with 2, Waiting for me with 3, an owner folder, an artifact with every block kind, the legacy entries)
-- Modify: `WatchtowerMobile/Tests/ScreenshotTourTests.swift` (`testTheInboxShots`: `inbox-root`, `inbox-waiting`, `inbox-approvals`, `inbox-artifact`, `inbox-legacy-brief`, `inbox-legacy-tracks`, `inbox-legacy-ideas`, `inbox-loading`, `inbox-empty`, `inbox-empty-folder`, `inbox-mac-away`, `inbox-too-old`, `inbox-policy`, `inbox-didnt-confirm`, `inbox-older-cards`, light and dark)
+- Modify: `WatchtowerMobile/Tests/ScreenshotTourTests.swift` (`testTheInboxShots`: every frame of mockup §§1–6 has one named shot, rendered light and dark — see the table below)
 - Test: `WatchtowerMobile/Tests/HubTransportTests.swift`, `InboxTabWiringTests.swift`, `InboxOutboxWiringTests.swift`
 - Modify docs: `docs/features/mobile-companion.md` (Inbox section), `docs/guide/features/iphone.md` (the Inbox tab; stays within the guide's page cap — `go test ./docs/guide`)
 
@@ -783,12 +788,42 @@ git commit -m "feat(mobile): phone artifact renderer over the Kit block document
 - [ ] **Step 1: Failing tests**
 
 - `HubTransportTests`: `testFeedAssembledFromRecords`, `testActEnqueuesInboxActWithTheRequestJSON`, `testOutboxStatesMapToTowerStates` (four cases), `testUnknownIsNeverResent`.
-- `InboxTabWiringTests`: `testInboxIsTheSecondTab`, `testBadgeIsOrangeSumOfWaiting`, `testOptimisticHideThenTheHubWinsAfterTwoPublishes`, `testRefusalBringsTheRowBackWithRetry`, `testReplyOpensASheetWithPropose`, `testMacOnlyActionsShowOnYourMac`, `testApproveWithoutPermissionsGrantIsDisabledWithItsLine`, `testDidntConfirmShowsRefresh` (`TowerText.didntConfirmPhone`, `TowerText.refresh`).
+- `InboxTabWiringTests`: `testInboxIsTheSecondTab`, `testBadgeIsOrangeSumOfWaiting`, `testOptimisticHideThenTheHubWinsAfterTwoPublishes`, `testRefusalBringsTheRowBackWithRetry`, `testReplyOpensASheetWithPropose`, `testMacOnlyActionsShowOnYourMac`, `testApproveWithoutPermissionsGrantIsDisabledWithItsLine`, `testDidntConfirmShowsRefresh` (`TowerText.didntConfirmPhone`, `TowerText.refresh`), `testCardMenuOffersRunNow` (non-idempotent: a second tap while `unknown` sends nothing), `testUnreadableBlocksShowTheUnsupportedBanner` (`TowerText.unsupportedCard` over the card's text).
 - `InboxOutboxWiringTests.testQueuedInboxActSurvivesAnAppKill` (persistent outbox replays `inbox_act` after relaunch).
 
 Run: `make mobile-test MOBILE_FILTER='HubTransportTests|InboxTabWiringTests|InboxOutboxWiringTests'` — Expected: FAIL.
 
 - [ ] **Step 2: Implement** the views over the models; gestures: ref rows swipe left Done and Snooze, swipe right Hide (track: Done and Stop; reminder: Done and Snooze 1h); the context menu holds the full verb set and is the accessibility path; a tap pushes the detail. Run the same — Expected: PASS.
+
+Mockup frame → shot:
+
+| Mockup §, frame | Shot |
+|---|---|
+| 1 Root — dark / light | `inbox-root` |
+| 1 Owner folder (pushed) | `inbox-owner-folder` |
+| 2 List + one row swiped | `inbox-waiting-swiped` |
+| 2 Busy row + failed row with Retry | `inbox-row-busy-failed` |
+| 2c Row detail | `inbox-row-detail` |
+| 2d Reply… sheet | `inbox-reply-sheet` |
+| 3 Needs approval | `inbox-approvals` |
+| 3 Approve — sending, then changed on the Mac | `inbox-approve-changed` |
+| 4 Feed card | `inbox-artifact` |
+| 4 Living card with a table | `inbox-artifact-table` |
+| 4 Card ⋯ menu (Run Now) | `inbox-card-menu` |
+| 4 Unsupported / unreadable card | `inbox-card-unsupported` |
+| 5 Morning brief | `inbox-legacy-brief` |
+| 5 Track my threads | `inbox-legacy-tracks` |
+| 5 Idea finder | `inbox-legacy-ideas` |
+| 6 Loading | `inbox-loading` |
+| 6 Empty | `inbox-empty` |
+| 6 Empty folder | `inbox-empty-folder` |
+| 6 Mac away + queued and not delivered | `inbox-mac-away` |
+| 6 Old Mac | `inbox-too-old` |
+| 6 Organization policy | `inbox-policy` |
+| 6 Didn't confirm | `inbox-didnt-confirm` |
+| 6 Older cards on the Mac | `inbox-older-cards` |
+
+`DemoTourTests.testEveryInboxMockupFrameHasAShot` pins this list of 23 names.
 
 - [ ] **Step 3: Tour** — `testTheInboxShots`; run `make mobile-shots` and compare each `inbox-*` shot with mockup §§1–6. Run `make mobile-test MOBILE_FILTER='ScreenshotTourTests|DemoTourTests'`, `make lint-swift`, `go test ./docs/guide`.
 
@@ -842,7 +877,7 @@ git commit -m "feat(chat): chatstore start gaps and ai session --persist (#1170)
 
 ### Task 17: `chat.*` commands
 
-**Depends on:** Task 1, Task 16
+**Depends on:** Task 1, Task 2 (`commands.RegisterAll`, the generator), Task 16
 
 **Files:**
 - Create: `internal/chatstore/commands.go` (registrations), `internal/tower/api/chat.go`, `internal/db/chat_projects.go`, `internal/db/artifact_comments.go`, `internal/db/queued_drafts.go`, `internal/db/chat_artifact_keep.go` (the new writers), `internal/chatstore/testdata/chat_writes.json`
@@ -869,7 +904,7 @@ git commit -m "feat(chat): chat.* tower commands and their Go writers (#1170)"
 
 ### Task 18: Desktop chat on `--persist` and `TowerClient`
 
-**Depends on:** Task 4, Task 17
+**Depends on:** Task 4, Task 5 (`AppState.towerClient`, launch wiring), Task 17
 
 **Files:**
 - Modify: `WatchtowerDesktop/Sources/ViewModels/ChatViewModel.swift` (send through `--persist`; the owner bubble from the draft at once; keep the draft until `started`; 10 s `started` timeout → the draft comes back and "session ended" shows; reload rows at `started` and at the end; `chat.recover` on a death after `started`), `Sources/WatchtowerCore/Services/Chat/ChatTurnDriver.swift` (stream half only), `Sources/Services/Chat/ChatSessionClient.swift` (`--persist --lease-owner desktop --lease-owner-id <launch id>`; parse `started`/`refused`), `Sources/Services/Chat/ChatSessionPool.swift`, `Sources/App/AppState.swift` and `AppState+Chat.swift` (`chat.release_launches` at launch), `Sources/WatchtowerCore/Services/Chat/Embedded/EmbeddedChatStore.swift` and the embedded engine (database chats on `ai query --events v2 --persist`), every caller of a `chat_*` Swift writer (switch to `chat.*` with optimistic row change and revert on refusal; Delete keeps its confirmation)
@@ -909,4 +944,4 @@ git commit -m "feat(desktop): chat writes through Go (--persist and chat.* comma
 ## Spec coverage notes
 
 - Spec §10 docs are folded into Tasks 1–3 (`tower-interface.md`, CLAUDE.md, README), 5 (tray, guide), 6–8 and 11 (`inbox-core.md`, `inbox-folders.md`, `inbox-card-blocks.md`, inventory), 13 (`go-hub.md`, protocol spec), 15 (`mobile-companion.md`, iPhone guide page), 18 (`chat-redesign.md`, `embedded-chat.md`, `iphone-chat.md`, chat inventory).
-- Deviations decided in this plan, from reading the code: the phone tab order keeps the existing Chats tab (`now, inbox, workbench, chats, calendar`); the embedded chats run `ai query`, so `--persist` lands on both `ai session` and `ai query --events v2`; `catchup.acknowledge` and `digests.*` join the stage-1 commands; the Mac handoff texts stay in the Swift `InboxCardTexts` remainder beside `preview` and `targetTitleLimit`; the phone's "too old" body names the hub instead of "This Mac's".
+- Deviations decided in this plan, from reading the code: the phone tab order keeps the existing Chats tab (`now, inbox, workbench, chats, calendar`); the embedded chats run `ai query`, so `--persist` lands on both `ai session` and `ai query --events v2`; `catchup.acknowledge`, `digests.*`, `targets.set_status`/`targets.snooze` and the chat-born idea writes join the stage-1 commands (ask #1362); the Mac handoff texts stay in the Swift `InboxCardTexts` remainder beside `preview` and `targetTitleLimit`; the phone's "too old" body names the hub instead of "This Mac's"; the feed is zone-free and grouping happens in the models.
