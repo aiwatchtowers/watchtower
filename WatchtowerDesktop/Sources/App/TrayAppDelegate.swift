@@ -249,14 +249,14 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
             hasBlockingWork: plan.prompt != nil,
             keepsSessions: plan.keepsSessions,
             confirmQuit: { plan.prompt.map { plan.choice(button: Self.runQuitAlert($0)) } ?? .cancel },
-            closeChatSessions: {
+            shutdownChat: {
                 await app.observedProviderConnection?.cancelAndWait()
                 // An embedded chat's reply keeps all it streamed: its writes
                 // await the writer (board #670), so the quit waits for them.
                 await app.embeddedChatCenter.finishAllAsPartialForQuit()
                 // The engine ends every chat turn (partial kept) and reaps the
-                // sessions (`chat_shutdown`); T10b adds the CLI fallback.
-                if let client = app.chatClient { _ = await client.shutdown() }
+                // sessions (`chat_shutdown`), else `watchtower chat shutdown`.
+                await app.shutdownChat()
             },
             closeTerminals: {
                 // Not reported stopped: the next launch reconciles them.
@@ -337,7 +337,7 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
         hasBlockingWork: Bool,
         keepsSessions: Bool = false,
         confirmQuit: () -> QuitChoice,
-        closeChatSessions: @escaping () async -> Void = {},
+        shutdownChat: @escaping () async -> Void = {},
         closeTerminals: @escaping () async -> Void = {},
         detachTerminals: @escaping () async -> Void = {},
         stopDaemon: @escaping () async -> Void,
@@ -350,7 +350,7 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
             hasBlockingWork: hasBlockingWork,
             confirmQuit: confirmQuit,
             keepsSessions: keepsSessions,
-            closeChatSessions: closeChatSessions,
+            shutdownChat: shutdownChat,
             closeTerminals: closeTerminals,
             detachTerminals: detachTerminals,
             stopDaemon: stopDaemon,

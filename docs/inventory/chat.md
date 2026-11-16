@@ -119,6 +119,8 @@ misbehaving child.
 
 **Amendment (2026-11-16, #1822 unified chat T8):** the Desktop's own pool is gone; the engine's pool of 3 is the only one. Quitting asks the engine to end every chat turn (`chat_shutdown` through `SocketChatClient.shutdown()`) before the daemon stops; T10b adds the CLI fallback.
 
+**Amendment (2026-11-17, #1822 unified chat T10b, spec §7):** the app's stops that must end the chat — quit, the Settings → Data wipe and Slack disconnect — call `AppState.shutdownChat()` before their daemon stop: `SocketChatClient.shutdown()`, and when the engine could not end it (unreachable, refused, past its 8 s bound) `watchtower chat shutdown` (`DaemonManager.chatShutdownBounded`, 12 s watchdog). The launch's compaction runs `watchtower chat shutdown` (`CompactionCLI.chatShutdown()`) before it stops the daemon. Every `sync stop` the app runs passes `--internal` (no stopped marker; sessions left to the shutdown above), pinned by `DaemonManagerArgvScanTests.testEveryAppSyncStopIsInternal`. The quit guard keeps its name and assertion; its closure is renamed `closeChatSessions` → `shutdownChat`. Added: `testQuitFallsBackToCLIShutdown`, `testWipeShutsDownChatFirst`, `testSlackDisconnectShutsDownChatFirst`, `testCompactionStepShutsDownChatSessionsFirst`. An account removal that purges data runs in the daemon (`account_purges`), not through an app stop, so it has no app path here.
+
 **Guard:** `TestChat03Go_PoolBound`, `TestChat03_AdmitNeverExceedsTheBound`,
 `TestChat03_RetiringSessionNeverOverlapsTheQueuedFourth`, `TestChat03_RetireOfBusySessionsNeverCutsOrOverlaps`,
 `TestChat03_PredecessorAliveHoldsTheReplacement`, `TestChatengine_WarmNeverTakesASlotFromATurn`,
@@ -389,7 +391,7 @@ reason, and `testReaderList` over the Swift sources, which is file-level: a Swif
   | `testChat03RetiringABusySessionNeverLetsTheQueuedFourthOverlap` | `TestChat03_RetiringSessionNeverOverlapsTheQueuedFourth` (a slow exit holds the queued 4th), `TestChat03_RetireOfBusySessionsNeverCutsOrOverlaps` (a config change on busy sessions: no turn cut, the 4th waits for an exit), `TestChat03_PredecessorAliveHoldsTheReplacement` (a recycled chat's new process waits for its old one) |
   | `testChat03IdleSessionIsClosedByTheNextTickAfterTTL` | `TestChatengine_IdleSessionExpires` |
   | `testChat03CloseAllClosesEverySessionAndKeepsPartialText` | `TestChatengine_ShutdownReapsSessions` + `TestChatengine_DaemonStopLeavesPartialAndSweepReleases` |
-  | `testChat03QuitClosesChatSessionsBeforeStoppingTheDaemon` | kept (`QuitCoordinatorTests`, unchanged); the closure now calls `SocketChatClient.shutdown()` |
+  | `testChat03QuitClosesChatSessionsBeforeStoppingTheDaemon` | kept (`QuitCoordinatorTests`, name and assertion unchanged); the closure, renamed `shutdownChat` (T10b), calls `SocketChatClient.shutdown()`, else `watchtower chat shutdown` |
   | `testChat04SessionArgvNeverCarriesContent` | `TestChat04_EngineSessionArgvCarriesNoContent` |
   | `testChat04TurnContentTravelsOnlyOnStdin` | `TestChat04_ListenTurnContentOnlyOnSocket` |
   | `testArtifactCommentsReachTheAssistantOnlyAsTheOwnersMessage` | `TestChatengine_ArtifactCommentsMarkedSentInStartTx` + `testArtifactCommentsGoAsTheOwnersTurn` + `ArtifactChat05ScanTests` (unchanged) |

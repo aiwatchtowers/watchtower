@@ -158,11 +158,25 @@ extension AppState {
         start: @escaping @MainActor () async -> Void
     ) async -> Bool {
         await enqueueDaemonStart { () -> Bool in
+            // Spec §7: the chat ends first; the stop is `--internal`.
+            await self.shutdownChat()
             await stop()
             let done = await disconnect()
             if !self.daemonStartBlocked("Slack disconnect") { await start() }
             return done
         }.value
+    }
+
+    /// Ends every chat turn and session (spec §7): the engine's
+    /// `chat_shutdown`, else `watchtower chat shutdown`. Quit, the data wipe
+    /// and Slack disconnect run it before their daemon stop.
+    func shutdownChat() async {
+        if let chatShutdownOverride { return await chatShutdownOverride() }
+        let client = chatClient
+        await QuitCoordinator.shutdownChat(
+            engine: { await client?.shutdown() ?? false },
+            cli: { await DaemonManager.chatShutdownBounded() }
+        )
     }
 
     static func daemonRestartFailureText(_ error: any Error) -> String {
@@ -175,6 +189,10 @@ extension AppState {
     func stopDaemonAndRemoveEverything(_ remove: @escaping @MainActor () -> Void) async -> Bool {
         let daemon = daemonControl
         return await enqueueDaemonStart { () -> Bool in
+            // Spec §7: every chat turn and session ends first — also with no
+            // daemon running (the CLI reaps sessions a crash left alive), so
+            // nothing writes into what is about to be removed.
+            await self.shutdownChat()
             if daemon.daemonIsRunning() {
                 await daemon.stopDaemonNow()
             }

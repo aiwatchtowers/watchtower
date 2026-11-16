@@ -508,6 +508,8 @@ final class AppState {
     /// (`daemonManager`, `wireAppDatabase`'s body).
     @ObservationIgnored var daemonControlOverride: (any DaemonControl)?
     @ObservationIgnored var wireAppDatabaseOverride: ((DatabaseManager) -> Void)?
+    /// Test seam: `shutdownChat()` without the engine or the CLI.
+    @ObservationIgnored var chatShutdownOverride: (@MainActor () async -> Void)?
     /// Test seam: the readiness inputs without the live config, workspace
     /// directory and stamps.
     @ObservationIgnored var readinessEnvironmentOverride: (any ReadinessEnvironment)?
