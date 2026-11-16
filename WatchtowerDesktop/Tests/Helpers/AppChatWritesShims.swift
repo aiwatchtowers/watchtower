@@ -66,6 +66,24 @@ extension TargetAssistantViewModel {
     }
 }
 
+extension TargetChatViewModel {
+    convenience init(
+        target: Target,
+        viewModel: TargetsViewModel,
+        dbManager: DatabaseManager,
+        conversationID: Int64,
+        aiService: (any AIServiceProtocol)? = nil,
+        cliRunner: CLIRunnerProtocol? = nil,
+        toolsAvailable: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
+        center: EmbeddedChatCenter? = nil,
+        providerID: @escaping @MainActor () -> String = { Constants.aiProviderID() }
+    ) {
+        self.init(target: target, viewModel: viewModel, dbManager: dbManager, writes: .fake(dbManager.dbPool),
+                  conversationID: conversationID, aiService: aiService, cliRunner: cliRunner,
+                  toolsAvailable: toolsAvailable, center: center, providerID: providerID)
+    }
+}
+
 extension ReviewerCenter {
     convenience init(
         embeddedChats: EmbeddedChatCenter,

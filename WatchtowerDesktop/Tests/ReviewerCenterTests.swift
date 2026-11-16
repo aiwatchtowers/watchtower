@@ -98,11 +98,11 @@ private final class FolderReadingAIService: AIServiceProtocol, @unchecked Sendab
         readFolderRoundID: Int64?,
         persist: ChatQueryPersist
     ) -> AsyncThrowingStream<StreamEvent, Error> {
-        FakeEmbeddedPersist.wrap(
+        FakeEmbeddedPersist.wrap({ [self] in
             stream(prompt: prompt, systemPrompt: systemPrompt, sessionID: nil, dbPath: dbPath, model: model,
                    provider: provider, toolMode: toolMode, readFolder: readFolder, ownerInstructions: ownerInstructions,
-                   purpose: purpose, readFolderAskID: readFolderAskID, readFolderRoundID: readFolderRoundID),
-            dbPath: dbPath, persist: persist, provider: provider)
+                   purpose: purpose, readFolderAskID: readFolderAskID, readFolderRoundID: readFolderRoundID)
+        }, dbPath: dbPath, persist: persist, provider: provider)
     }
 }
 

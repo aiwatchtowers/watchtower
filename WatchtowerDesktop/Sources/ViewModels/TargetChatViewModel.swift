@@ -181,7 +181,7 @@ final class TargetChatViewModel {
         target: Target,
         viewModel: TargetsViewModel,
         dbManager: DatabaseManager,
-        writes: ChatWrites = .notReady,
+        writes: ChatWrites,
         conversationID: Int64,
         aiService: (any AIServiceProtocol)? = nil,
         cliRunner: CLIRunnerProtocol? = nil,

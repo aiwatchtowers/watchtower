@@ -519,6 +519,7 @@ final class TargetAssistantViewModelTests: XCTestCase {
         }
         let targets = TargetAssistantCenter()
         targets.embeddedChats = embedded
+        targets.chatWrites = .fake(manager.dbPool)
         let container = targets.container(for: target, viewModel: TargetsViewModel(dbManager: manager),
                                           dbManager: manager)
         _ = await container.readyChat()

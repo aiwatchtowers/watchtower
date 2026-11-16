@@ -101,9 +101,10 @@ extension FakeEmbeddedPersist {
     /// `stream` as an `ai query --persist` run: `.started` first (the rows
     /// written), each event folded into the reply as it passes, the end
     /// written when the run ends — for test doubles that script only the
-    /// provider's events.
+    /// provider's events. Like Go, the provider is reached only once the
+    /// starting rows are written: a failed start never sends the prompt.
     package static func wrap(
-        _ stream: AsyncThrowingStream<StreamEvent, Error>, dbPath: String?, persist: ChatQueryPersist, provider: String?
+        _ makeStream: @escaping @Sendable () -> AsyncThrowingStream<StreamEvent, Error>, dbPath: String?, persist: ChatQueryPersist, provider: String?
     ) -> AsyncThrowingStream<StreamEvent, Error> {
         AsyncThrowingStream { continuation in
             guard let dbPath, let emulator = FakeEmbeddedPersist(dbPath: dbPath, persist: persist, provider: provider) else {
@@ -113,7 +114,7 @@ extension FakeEmbeddedPersist {
             let task = Task {
                 do {
                     continuation.yield(try emulator.begin())
-                    for try await event in stream {
+                    for try await event in makeStream() {
                         emulator.apply(event)
                         continuation.yield(event)
                     }

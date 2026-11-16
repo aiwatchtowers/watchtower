@@ -767,10 +767,10 @@ private final class FailsFirstService: AIServiceProtocol, @unchecked Sendable {
         readFolderRoundID: Int64?,
         persist: ChatQueryPersist
     ) -> AsyncThrowingStream<StreamEvent, Error> {
-        FakeEmbeddedPersist.wrap(
+        FakeEmbeddedPersist.wrap({ [self] in
             stream(prompt: prompt, systemPrompt: systemPrompt, sessionID: nil, dbPath: dbPath, model: model,
                    provider: provider, toolMode: toolMode, readFolder: readFolder, ownerInstructions: ownerInstructions,
-                   purpose: purpose, readFolderAskID: readFolderAskID, readFolderRoundID: readFolderRoundID),
-            dbPath: dbPath, persist: persist, provider: provider)
+                   purpose: purpose, readFolderAskID: readFolderAskID, readFolderRoundID: readFolderRoundID)
+        }, dbPath: dbPath, persist: persist, provider: provider)
     }
 }
