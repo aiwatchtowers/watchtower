@@ -1,0 +1,192 @@
+[
+  {
+    "name": "none",
+    "now": "2026-11-16T12:00:00Z",
+    "proposal": null,
+    "task_exists": false,
+    "expect": {
+      "detail": "idle",
+      "note": ""
+    }
+  },
+  {
+    "name": "pending",
+    "now": "2026-11-16T12:00:00Z",
+    "proposal": {
+      "status": "pending",
+      "decided_at": "",
+      "dismissed_at": "",
+      "error": ""
+    },
+    "task_exists": false,
+    "expect": {
+      "detail": "waiting",
+      "note": ""
+    }
+  },
+  {
+    "name": "approved_recently",
+    "now": "2026-11-16T12:00:00Z",
+    "proposal": {
+      "status": "approved",
+      "decided_at": "2026-11-16T11:59:00Z",
+      "dismissed_at": "",
+      "error": ""
+    },
+    "task_exists": false,
+    "expect": {
+      "detail": "creating",
+      "note": ""
+    }
+  },
+  {
+    "name": "approved_fractional_recently",
+    "now": "2026-11-16T12:00:00Z",
+    "proposal": {
+      "status": "approved",
+      "decided_at": "2026-11-16T11:59:30.250Z",
+      "dismissed_at": "",
+      "error": ""
+    },
+    "task_exists": false,
+    "expect": {
+      "detail": "creating",
+      "note": ""
+    }
+  },
+  {
+    "name": "executing_just_under_two_minutes",
+    "now": "2026-11-16T12:00:00Z",
+    "proposal": {
+      "status": "executing",
+      "decided_at": "2026-11-16T11:58:01Z",
+      "dismissed_at": "",
+      "error": ""
+    },
+    "task_exists": false,
+    "expect": {
+      "detail": "creating",
+      "note": ""
+    }
+  },
+  {
+    "name": "executing_two_minutes",
+    "now": "2026-11-16T12:00:00Z",
+    "proposal": {
+      "status": "executing",
+      "decided_at": "2026-11-16T11:58:00Z",
+      "dismissed_at": "",
+      "error": ""
+    },
+    "task_exists": false,
+    "expect": {
+      "detail": "stuck",
+      "note": ""
+    }
+  },
+  {
+    "name": "approved_unreadable_decision",
+    "now": "2026-11-16T12:00:00Z",
+    "proposal": {
+      "status": "approved",
+      "decided_at": "yesterday",
+      "dismissed_at": "",
+      "error": ""
+    },
+    "task_exists": false,
+    "expect": {
+      "detail": "stuck",
+      "note": ""
+    }
+  },
+  {
+    "name": "applied_with_task",
+    "now": "2026-11-16T12:00:00Z",
+    "proposal": {
+      "status": "applied",
+      "decided_at": "2026-11-16T09:00:00Z",
+      "dismissed_at": "",
+      "error": ""
+    },
+    "task_exists": true,
+    "expect": {
+      "detail": "created",
+      "note": ""
+    }
+  },
+  {
+    "name": "applied_task_deleted",
+    "now": "2026-11-16T12:00:00Z",
+    "proposal": {
+      "status": "applied",
+      "decided_at": "2026-11-16T09:00:00Z",
+      "dismissed_at": "",
+      "error": ""
+    },
+    "task_exists": false,
+    "expect": {
+      "detail": "idle",
+      "note": ""
+    }
+  },
+  {
+    "name": "failed_with_error",
+    "now": "2026-11-16T12:00:00Z",
+    "proposal": {
+      "status": "failed",
+      "decided_at": "2026-11-16T09:00:00Z",
+      "dismissed_at": "",
+      "error": "the board is archived"
+    },
+    "task_exists": false,
+    "expect": {
+      "detail": "failed",
+      "note": "the board is archived"
+    }
+  },
+  {
+    "name": "failed_without_error",
+    "now": "2026-11-16T12:00:00Z",
+    "proposal": {
+      "status": "failed",
+      "decided_at": "2026-11-16T09:00:00Z",
+      "dismissed_at": "",
+      "error": ""
+    },
+    "task_exists": false,
+    "expect": {
+      "detail": "failed",
+      "note": "The task was not created."
+    }
+  },
+  {
+    "name": "failed_dismissed",
+    "now": "2026-11-16T12:00:00Z",
+    "proposal": {
+      "status": "failed",
+      "decided_at": "2026-11-16T09:00:00Z",
+      "dismissed_at": "2026-11-16T10:00:00Z",
+      "error": "boom"
+    },
+    "task_exists": false,
+    "expect": {
+      "detail": "idle",
+      "note": ""
+    }
+  },
+  {
+    "name": "rejected",
+    "now": "2026-11-16T12:00:00Z",
+    "proposal": {
+      "status": "rejected",
+      "decided_at": "2026-11-16T09:00:00Z",
+      "dismissed_at": "",
+      "error": ""
+    },
+    "task_exists": false,
+    "expect": {
+      "detail": "idle",
+      "note": ""
+    }
+  }
+]

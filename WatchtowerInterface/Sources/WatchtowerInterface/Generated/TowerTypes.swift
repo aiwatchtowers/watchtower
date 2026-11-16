@@ -58,6 +58,14 @@ public struct Approval: Codable, Hashable, Sendable {
     public var proposer: String
     public var reason: String
     public var editOnMac: Bool
+    public var target: String
+    public var targetNote: String
+    public var targetUntil: String
+    public var superseded: Bool
+    public var disclosure: String
+    public var recipeText: String
+    public var diff: [DiffLine]
+    public var recipeClipped: Bool
 
     public init(
         tool: String,
@@ -68,7 +76,15 @@ public struct Approval: Codable, Hashable, Sendable {
         error: String,
         proposer: String,
         reason: String,
-        editOnMac: Bool
+        editOnMac: Bool,
+        target: String,
+        targetNote: String,
+        targetUntil: String,
+        superseded: Bool,
+        disclosure: String,
+        recipeText: String,
+        diff: [DiffLine],
+        recipeClipped: Bool
     ) {
         self.tool = tool
         self.title = title
@@ -79,6 +95,14 @@ public struct Approval: Codable, Hashable, Sendable {
         self.proposer = proposer
         self.reason = reason
         self.editOnMac = editOnMac
+        self.target = target
+        self.targetNote = targetNote
+        self.targetUntil = targetUntil
+        self.superseded = superseded
+        self.disclosure = disclosure
+        self.recipeText = recipeText
+        self.diff = diff
+        self.recipeClipped = recipeClipped
     }
 
     enum CodingKeys: String, CodingKey {
@@ -91,6 +115,35 @@ public struct Approval: Codable, Hashable, Sendable {
         case proposer
         case reason
         case editOnMac = "edit_on_mac"
+        case target
+        case targetNote = "target_note"
+        case targetUntil = "target_until"
+        case superseded
+        case disclosure
+        case recipeText = "recipe_text"
+        case diff
+        case recipeClipped = "recipe_clipped"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.tool = try container.decode(String.self, forKey: .tool)
+        self.title = try container.decode(String.self, forKey: .title)
+        self.summary = try container.decode(String.self, forKey: .summary)
+        self.argsSHA256 = try container.decode(String.self, forKey: .argsSHA256)
+        self.status = try container.decode(String.self, forKey: .status)
+        self.error = try container.decode(String.self, forKey: .error)
+        self.proposer = try container.decode(String.self, forKey: .proposer)
+        self.reason = try container.decode(String.self, forKey: .reason)
+        self.editOnMac = try container.decode(Bool.self, forKey: .editOnMac)
+        self.target = try container.decode(String.self, forKey: .target)
+        self.targetNote = try container.decode(String.self, forKey: .targetNote)
+        self.targetUntil = try container.decode(String.self, forKey: .targetUntil)
+        self.superseded = try container.decode(Bool.self, forKey: .superseded)
+        self.disclosure = try container.decode(String.self, forKey: .disclosure)
+        self.recipeText = try container.decode(String.self, forKey: .recipeText)
+        self.diff = try container.decodeIfPresent([DiffLine].self, forKey: .diff) ?? []
+        self.recipeClipped = try container.decode(Bool.self, forKey: .recipeClipped)
     }
 }
 
@@ -110,6 +163,7 @@ public struct Card: Codable, Hashable, Sendable {
     public var blocks: String
     public var body: String
     public var bodyClipped: Bool
+    public var link: String
     public var contentHash: String
     public var actions: [CardAction]
     public var refFacts: [RefFacts]
@@ -132,6 +186,7 @@ public struct Card: Codable, Hashable, Sendable {
         blocks: String,
         body: String,
         bodyClipped: Bool,
+        link: String,
         contentHash: String,
         actions: [CardAction],
         refFacts: [RefFacts],
@@ -153,6 +208,7 @@ public struct Card: Codable, Hashable, Sendable {
         self.blocks = blocks
         self.body = body
         self.bodyClipped = bodyClipped
+        self.link = link
         self.contentHash = contentHash
         self.actions = actions
         self.refFacts = refFacts
@@ -176,6 +232,7 @@ public struct Card: Codable, Hashable, Sendable {
         case blocks
         case body
         case bodyClipped = "body_clipped"
+        case link
         case contentHash = "content_hash"
         case actions
         case refFacts = "ref_facts"
@@ -200,6 +257,7 @@ public struct Card: Codable, Hashable, Sendable {
         self.blocks = try container.decode(String.self, forKey: .blocks)
         self.body = try container.decode(String.self, forKey: .body)
         self.bodyClipped = try container.decode(Bool.self, forKey: .bodyClipped)
+        self.link = try container.decode(String.self, forKey: .link)
         self.contentHash = try container.decode(String.self, forKey: .contentHash)
         self.actions = try container.decodeIfPresent([CardAction].self, forKey: .actions) ?? []
         self.refFacts = try container.decodeIfPresent([RefFacts].self, forKey: .refFacts) ?? []
@@ -213,17 +271,26 @@ public struct CardAction: Codable, Hashable, Sendable {
     public var kind: String
     public var label: String
     public var state: ActionState
+    public var detail: String
+    public var note: String
+    public var until: String
 
     public init(
         index: Int,
         kind: String,
         label: String,
-        state: ActionState
+        state: ActionState,
+        detail: String,
+        note: String,
+        until: String
     ) {
         self.index = index
         self.kind = kind
         self.label = label
         self.state = state
+        self.detail = detail
+        self.note = note
+        self.until = until
     }
 
     enum CodingKeys: String, CodingKey {
@@ -231,6 +298,9 @@ public struct CardAction: Codable, Hashable, Sendable {
         case kind
         case label
         case state
+        case detail
+        case note
+        case until
     }
 }
 
@@ -1375,6 +1445,67 @@ public struct ChatTurnRequest: Codable, Hashable, Sendable {
     }
 }
 
+public enum DiffKind: Codable, Hashable, Sendable {
+    case same
+    case added
+    case removed
+    /// A value this build does not know (sent by a newer Watchtower).
+    case unknown(String)
+
+    public init(rawValue: String) {
+        switch rawValue {
+        case "same": self = .same
+        case "added": self = .added
+        case "removed": self = .removed
+        default: self = .unknown(rawValue)
+        }
+    }
+
+    public var rawValue: String {
+        switch self {
+        case .same: "same"
+        case .added: "added"
+        case .removed: "removed"
+        case .unknown(let value): value
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        self.init(rawValue: try decoder.singleValueContainer().decode(String.self))
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.rawValue == rhs.rawValue
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(rawValue)
+    }
+}
+
+public struct DiffLine: Codable, Hashable, Sendable {
+    public var kind: DiffKind
+    public var text: String
+
+    public init(
+        kind: DiffKind,
+        text: String
+    ) {
+        self.kind = kind
+        self.text = text
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case kind
+        case text
+    }
+}
+
 public struct Feed: Codable, Hashable, Sendable {
     public var v: Int
     public var builtAt: String
@@ -1577,14 +1708,48 @@ public struct HelloResponse: Codable, Hashable, Sendable {
     }
 }
 
+public struct LegacyAttention: Codable, Hashable, Sendable {
+    public var text: String
+    public var reason: String
+    public var priority: String
+    public var sourceType: String
+    public var sourceID: String
+
+    public init(
+        text: String,
+        reason: String,
+        priority: String,
+        sourceType: String,
+        sourceID: String
+    ) {
+        self.text = text
+        self.reason = reason
+        self.priority = priority
+        self.sourceType = sourceType
+        self.sourceID = sourceID
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case text
+        case reason
+        case priority
+        case sourceType = "source_type"
+        case sourceID = "source_id"
+    }
+}
+
 public struct LegacyItem: Codable, Hashable, Sendable {
     public var refKind: RefKind
     public var id: Int64
     public var title: String
     public var subtitle: String
+    public var preview: String
     public var stamp: String
+    public var end: String
     public var unread: Bool
+    public var high: Bool
     public var stopped: Bool
+    public var done: Bool
     public var date: String
 
     public init(
@@ -1592,18 +1757,26 @@ public struct LegacyItem: Codable, Hashable, Sendable {
         id: Int64,
         title: String,
         subtitle: String,
+        preview: String,
         stamp: String,
+        end: String,
         unread: Bool,
+        high: Bool,
         stopped: Bool,
+        done: Bool,
         date: String
     ) {
         self.refKind = refKind
         self.id = id
         self.title = title
         self.subtitle = subtitle
+        self.preview = preview
         self.stamp = stamp
+        self.end = end
         self.unread = unread
+        self.high = high
         self.stopped = stopped
+        self.done = done
         self.date = date
     }
 
@@ -1612,9 +1785,13 @@ public struct LegacyItem: Codable, Hashable, Sendable {
         case id
         case title
         case subtitle
+        case preview
         case stamp
+        case end
         case unread
+        case high
         case stopped
+        case done
         case date
     }
 }
@@ -1671,24 +1848,29 @@ public enum LegacyKind: Codable, Hashable, Sendable {
 public struct LegacySection: Codable, Hashable, Sendable {
     public var kind: LegacyKind
     public var items: [LegacyItem]
+    public var attention: [LegacyAttention]
 
     public init(
         kind: LegacyKind,
-        items: [LegacyItem]
+        items: [LegacyItem],
+        attention: [LegacyAttention]
     ) {
         self.kind = kind
         self.items = items
+        self.attention = attention
     }
 
     enum CodingKeys: String, CodingKey {
         case kind
         case items
+        case attention
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.kind = try container.decode(LegacyKind.self, forKey: .kind)
         self.items = try container.decodeIfPresent([LegacyItem].self, forKey: .items) ?? []
+        self.attention = try container.decodeIfPresent([LegacyAttention].self, forKey: .attention) ?? []
     }
 }
 

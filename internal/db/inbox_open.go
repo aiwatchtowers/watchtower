@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 	"time"
@@ -47,7 +48,19 @@ type OpenInboxItem struct {
 // order and rows of the Desktop's InboxQueries.fetchOpenMessages. A
 // channel-folded item (INBOX-09) is one row.
 func (db *DB) OpenInboxItems(ctx context.Context, now time.Time, limit int) ([]OpenInboxItem, error) {
-	rows, err := db.QueryContext(ctx, `SELECT `+inboxItemColumns+`, MAX(created_at, mentioned_at) AS stamp,
+	return openInboxItems(ctx, db, now, limit)
+}
+
+// OpenInboxItemsTx is OpenInboxItems inside the caller's transaction (one
+// snapshot with the rest of its read, internal/inboxfeed).
+func OpenInboxItemsTx(ctx context.Context, tx *sql.Tx, now time.Time, limit int) ([]OpenInboxItem, error) {
+	return openInboxItems(ctx, tx, now, limit)
+}
+
+func openInboxItems(ctx context.Context, q interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}, now time.Time, limit int) ([]OpenInboxItem, error) {
+	rows, err := q.QueryContext(ctx, `SELECT `+inboxItemColumns+`, MAX(created_at, mentioned_at) AS stamp,
 		COALESCE((SELECT COALESCE(NULLIF(u.display_name, ''), NULLIF(u.real_name, ''), NULLIF(u.name, ''), u.id)
 			FROM users u WHERE u.id = inbox_items.sender_user_id), ''),
 		COALESCE((SELECT c.name FROM channels c WHERE c.id = inbox_items.channel_id), '')
