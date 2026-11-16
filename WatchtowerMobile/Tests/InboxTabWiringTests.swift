@@ -304,9 +304,9 @@ final class InboxTabWiringTests: XCTestCase {
         XCTAssertTrue(center.hidden.isHidden("inbox_item:301"))
     }
 
-    /// A press on a Not delivered row is that action's outbox Retry: the same action, the same request_id, never a
-    /// second hub action the Not delivered list could also retry (re-review I1).
-    func testAPressOnANotDeliveredRowRetriesTheSameAction() async throws {
+    /// A Not delivered row has one action: its named Retry ("Retry Done"), the same action again (same request_id).
+    /// Its swipes are gone, its menu is off, and any other press sends nothing (re-review I1).
+    func testANotDeliveredRowOffersOnlyItsNamedRetry() async throws {
         let hub = FakeInboxHub(feed: feed)
         let center = try await startedInboxCenter(hub)
         var retried: [String] = []
@@ -321,13 +321,46 @@ final class InboxTabWiringTests: XCTestCase {
         let card = try card(DemoSeed.Inbox.waitingForMe, in: center)
         let row = actions(center, card)(ping)
         XCTAssertEqual(row.error, InboxPhoneText.notDelivered(hub: ""))
+        XCTAssertTrue(row.leading.isEmpty && row.trailing.isEmpty, "no swipes")
+        XCTAssertFalse(row.menu.contains { $0.enabled }, "every menu action is off")
+        XCTAssertEqual(row.retry?.title, "Retry Done", "the one button names what it retries")
 
-        row.trailing[0].action() // Done again, by swipe
-        try await poll({ retried.count == 1 }, "the swipe retried the undelivered action")
         let hide = InboxRefRowModel(facts: card.refRows[0].facts, platform: .phone, grants: .all)
         await center.press { hide.request(.dismiss, cardID: DemoSeed.Inbox.waitingForMe, requestID: $0) }
-        XCTAssertEqual(retried, ["act-undelivered", "act-undelivered"], "every press on the row is the same action's Retry")
-        XCTAssertTrue(hub.requests.isEmpty, "no second hub action")
+        XCTAssertTrue(retried.isEmpty, "another press is not a retry")
+        XCTAssertTrue(hub.requests.isEmpty, "and sends nothing")
+
+        row.retry?.action()
+        try await poll({ retried.count == 1 }, "the named Retry retried the action")
+        XCTAssertEqual(retried, ["act-undelivered"])
+        XCTAssertTrue(hub.requests.isEmpty, "the outbox's retry: no new request_id through the client")
+    }
+
+    /// Each verb's named Retry.
+    func testRetryTitlesNameTheVerb() {
+        func title(_ verb: ActVerb, _ params: ActParams = ActParams()) -> String {
+            InboxPhoneText.retryTitle(for: ActRequest(requestID: "r", target: "c", verb: verb, params: params))
+        }
+        let ref = { (verb: RefVerb, kind: RefKind) in ActParams(refKind: kind, refID: 1, refVerb: verb) }
+        XCTAssertEqual(title(.done), "Retry Done")
+        XCTAssertEqual(title(.dismiss), "Retry Dismiss")
+        XCTAssertEqual(title(.runNow), "Retry Run Now")
+        XCTAssertEqual(title(.replyPropose), "Retry Reply…")
+        XCTAssertEqual(title(.ref, ref(.resolve, .inboxItem)), "Retry Done")
+        XCTAssertEqual(title(.ref, ref(.snooze, .inboxItem)), "Retry Snooze")
+        XCTAssertEqual(title(.ref, ref(.snooze, .reminder)), "Retry Snooze 1h")
+        XCTAssertEqual(title(.ref, ref(.dismiss, .inboxItem)), "Retry Hide")
+        XCTAssertEqual(title(.ref, ref(.stop, .track)), "Retry Stop watching")
+        XCTAssertEqual(title(.ref, ref(.approve, .idea)), "Retry Approve")
+        XCTAssertEqual(title(.ref, ref(.reject, .idea)), "Retry Reject")
+        XCTAssertEqual(title(.ref, ref(.notNow, .idea)), "Retry Not now")
+        XCTAssertEqual(title(.ref, ref(.check, .planItem)), "Retry Done")
+        XCTAssertEqual(title(.approval, ActParams(approvalVerb: .approve)), "Retry Approve")
+        XCTAssertEqual(title(.approval, ActParams(approvalVerb: .reject)), "Retry Reject")
+        XCTAssertEqual(title(.approval, ActParams(approvalVerb: .retry)), "Retry")
+        XCTAssertEqual(title(.approval, ActParams(approvalVerb: .dismiss)), "Retry Dismiss")
+        XCTAssertEqual(title(.press, ActParams(index: 0, actionKind: "reply")), "Retry", "a card button names itself")
+        XCTAssertEqual(InboxPhoneText.retryTitle(label: "Draft replies"), "Retry Draft replies")
     }
 
     /// A new press on a refused row supersedes the old failure: its own outcome (here a local failure) is what the

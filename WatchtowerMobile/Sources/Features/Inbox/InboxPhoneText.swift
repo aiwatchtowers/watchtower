@@ -33,6 +33,19 @@ enum InboxPhoneText {
 
     static let inboxAction = "An Inbox action"
 
+    /// A Not delivered press's one button, naming what it retries: "Retry Done", "Retry Approve"; "Retry" when the
+    /// press has no name (a read mark, a card button).
+    static func retryTitle(for request: ActRequest) -> String {
+        // A failed proposal's own Retry stays "Retry".
+        guard let verb = verb(of: request), verb != InboxText.retry else { return InboxText.retry }
+        return retryTitle(label: verb)
+    }
+
+    /// A Not delivered card button: "Retry Draft replies".
+    static func retryTitle(label: String) -> String {
+        "\(InboxText.retry) \(label)"
+    }
+
     /// The root's line while the hub is away: "as of 40 min ago".
     static func asOf(_ phrase: String) -> String {
         "as of \(phrase)"
@@ -89,6 +102,11 @@ enum InboxPhoneText {
         guard let data = try? JSONEncoder().encode(params), let request = try? JSONDecoder().decode(ActRequest.self, from: data) else {
             return nil
         }
+        return verb(of: request)
+    }
+
+    /// A press's verb as the screens name it ("Done", "Approve"); nil for a read mark or a card button.
+    static func verb(of request: ActRequest) -> String? {
         switch request.verb {
         case .done: return InboxText.done
         case .dismiss: return InboxText.dismiss

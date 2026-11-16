@@ -140,6 +140,11 @@ struct InboxCardDetailView: View {
 
     private func press(_ index: Int, _ model: InboxCardModel, _ document: ArtifactDocument) {
         guard let action = model.actions.first(where: { $0.index == index }), action.enabled else { return }
+        if case let .refused(_, retry)? = center.rowState(InboxPress.buttonRow(model.id, index)), case .outbox = retry {
+            // Not delivered: the button is its own named Retry.
+            Task { await center.retry(retry) }
+            return
+        }
         if action.kind == "link" {
             let flattened = document.flattenedActions(cardActions: [])
             let offset = index - (model.actions.count - flattened.count)
@@ -171,7 +176,17 @@ struct InboxCardDetailView: View {
 
     // MARK: - Parts
 
+    @ViewBuilder
     private func bar(_ model: InboxCardModel) -> some View {
+        if let state = center.rowState(model.id), case let .refused(_, retry) = state, state.isUndelivered {
+            // Not delivered: the card's one action is its named Retry ("Retry Done"), the same action again.
+            PrimaryActionBar(primary: BarAction(title: state.retryTitle) { Task { await center.retry(retry) } })
+        } else {
+            decisionBar(model)
+        }
+    }
+
+    private func decisionBar(_ model: InboxCardModel) -> some View {
         PrimaryActionBar(
             primary: BarAction(title: InboxText.done, isEnabled: !isBusy(model)) {
                 cardVerb(.done, model)
@@ -190,7 +205,7 @@ struct InboxCardDetailView: View {
                     cardVerb(.runNow, model)
                 }
                 .font(TypeScale.rowTitle)
-                .disabled(center.rowState(model.id) == .unknown || isBusy(model))
+                .disabled(center.rowState(model.id) == .unknown || isBusy(model) || center.rowState(model.id)?.isUndelivered == true)
             }
             Text(InboxText.macOnlyMenuNote).font(TypeScale.meta).foregroundStyle(.secondary)
         }
@@ -215,8 +230,13 @@ enum InboxCardButtons {
         } else {
             state.note = action.note
         }
-        switch center.rowState(InboxPress.buttonRow(model.id, index)) {
+        let row = center.rowState(InboxPress.buttonRow(model.id, index))
+        switch row {
         case .busy?: state.busyLabel = action.label
+        case let .refused(sentence, .outbox)?:
+            // Not delivered: the button retries the same press, and says so.
+            state.label = InboxPhoneText.retryTitle(label: action.label)
+            state.note = sentence
         case let .refused(sentence, _)?: state.note = sentence
         case .unknown?: state.note = InboxText.didntConfirmPhone
         case nil: break

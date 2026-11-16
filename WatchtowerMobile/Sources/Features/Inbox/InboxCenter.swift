@@ -27,8 +27,9 @@ struct InboxReplicaSnapshot: Equatable {
 /// How a row's press that did not go through gets another try.
 enum InboxRetry: Equatable {
     /// The outbox never delivered it: the outbox's own Retry, the same action (one request_id) whichever screen
-    /// asks — the Not delivered list's Retry is the same call.
-    case outbox(actionID: String)
+    /// asks — the Not delivered list's Retry is the same call. `request` is that action's press (it names the
+    /// row's only button, "Retry Done").
+    case outbox(actionID: String, ActRequest)
     /// The hub (or this phone) refused it: the same press again under a new request_id, the failed row dismissed.
     case resend(ActRequest, dismiss: String?)
 }
@@ -41,6 +42,18 @@ enum InboxRowState: Equatable {
     case refused(String, InboxRetry)
     /// The hub stopped mid-way (`outcome_unknown`): never sent again; Refresh.
     case unknown
+
+    /// Not delivered: every action of the row is off but its named Retry.
+    var isUndelivered: Bool {
+        if case .refused(_, .outbox) = self { return true }
+        return false
+    }
+
+    /// The Retry button's title: "Retry Done" for a Not delivered press, else "Retry".
+    var retryTitle: String {
+        if case let .refused(_, .outbox(_, request)) = self { return InboxPhoneText.retryTitle(for: request) }
+        return InboxText.retry
+    }
 
     /// The busy line ("Marking done…"); nil when the press shows a spinner only.
     var busyLabel: String? {
@@ -55,8 +68,8 @@ enum InboxRowState: Equatable {
 ///
 /// - A publish of `inbox_card` or `inbox_folder` reaches the client's watch, which re-reads the feed. Only a
 ///   publish of the cards counts toward the optimistic hide (`InboxHiddenRows`: two of them and the hub wins).
-/// - A press goes through `TowerClient.act` (one request_id per press); on a Not delivered row it is that action's
-///   outbox Retry instead, and on a refused row it supersedes the failure. Its row's state (`rowState`) comes from the
+/// - A press goes through `TowerClient.act` (one request_id per press); on a Not delivered row only its named Retry
+///   sends (the outbox's retry of the same action), and on a refused row a press supersedes the failure. Its row's state (`rowState`) comes from the
 ///   press on its way, then from the replica's `inbox_act` rows (queued: busy; failed: the hub's sentence and
 ///   Retry, kept across a relaunch until Retry, Refresh or an `ok` on the row), then from the client's answer (a
 ///   local failure). `ok` hides its row or card, also when it lands with no press waiting (the client gave up, or
@@ -132,7 +145,7 @@ final class InboxCenter {
             case .failed:
                 switch InboxActSettlement.of(newest, hubName: hubName()) {
                 case .unknown?: return .unknown
-                case let .notDelivered(sentence)?: return .refused(sentence, .outbox(actionID: newest.id))
+                case let .notDelivered(sentence)?: return .refused(sentence, .outbox(actionID: newest.id, request))
                 case let .refused(_, sentence)?: return .refused(sentence, .resend(request, dismiss: newest.id))
                 case .applied?, nil: break
                 }
@@ -223,10 +236,9 @@ final class InboxCenter {
         switch rowState(row) {
         case .busy?, .unknown?:
             return
-        case let .refused(_, .outbox(actionID))?:
-            // Not delivered: the row has one action. Any press on it is that action's Retry (same request_id), never
-            // a second action the Not delivered list could also retry.
-            await retry(.outbox(actionID: actionID))
+        case .refused(_, .outbox)?:
+            // Not delivered: the row's only action is its named Retry (`retry`), the same request_id; any other
+            // press sends nothing, never a second action the Not delivered list could also retry.
             return
         case let .refused(_, .resend(_, dismiss))?:
             // The new press supersedes the older failure: its outcome is the one the row shows.
@@ -258,7 +270,7 @@ final class InboxCenter {
     /// A refused or not delivered press's Retry (`InboxRowState.refused`).
     func retry(_ retry: InboxRetry) async {
         switch retry {
-        case let .outbox(actionID):
+        case let .outbox(actionID, _):
             // The same action again: a second Retry (here or on the Not delivered list) finds it gone or running.
             guard retrying.insert(actionID).inserted else { return }
             defer { retrying.remove(actionID) }

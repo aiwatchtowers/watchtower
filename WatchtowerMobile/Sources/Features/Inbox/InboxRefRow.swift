@@ -77,11 +77,19 @@ struct InboxRefRowActions {
             // An idea to judge is a waiting card with its verdicts (mockup §5).
             actions.inline = actions.menu.filter { $0.enabled && $0.children.isEmpty }
         }
-        switch center.rowState(row.key) {
+        let state = center.rowState(row.key)
+        if state?.isUndelivered == true {
+            // Not delivered: its named Retry is the row's only action (the same action again); the rest are off.
+            actions.leading = []
+            actions.trailing = []
+            actions.inline = []
+            actions.menu = actions.menu.map { PhoneMenuEntry(title: $0.title, enabled: false) }
+        }
+        switch state {
         case let .busy(request)?: actions.busyLabel = InboxText.busyLabel(for: request) ?? ""
         case let .refused(sentence, retry)?:
             actions.error = sentence
-            actions.retry = (InboxText.retry, { [center] in Task { await center.retry(retry) } })
+            actions.retry = (state?.retryTitle ?? InboxText.retry, { [center] in Task { await center.retry(retry) } })
         case .unknown?: actions.error = InboxText.didntConfirmPhone
         case nil: break
         }

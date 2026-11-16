@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerDesign
 import WatchtowerInterface
 
 /// A Needs approval entry as a waiting card (mockup §3): the proposal's title, where it came from (or "Failed: …"),
@@ -86,11 +87,17 @@ struct InboxApprovalCard: View {
                 Text(InboxText.didntFinish).font(TypeScale.meta).foregroundStyle(.secondary)
                 verb(.retry, InboxText.tryAgain, primary: true, busy: InboxText.approving)
             case .decision:
-                let busy = Self.busyVerb(center.rowState(card.id))
-                if busy == nil, !model.canApprove, let note = model.approveNote {
+                let state = center.rowState(card.id)
+                if let state, state.isUndelivered, case let .refused(_, retry) = state {
+                    // Not delivered: the one action is its named Retry ("Retry Approve"), the same action again.
+                    Button(state.retryTitle) { Task { await center.retry(retry) } }
+                        .buttonStyle(PhoneArtifactButtonStyle(primary: true))
+                }
+                let busy = state?.isUndelivered == true ? nil : Self.busyVerb(state)
+                if busy == nil, state?.isUndelivered != true, !model.canApprove, let note = model.approveNote {
                     Button(note) {}.buttonStyle(PhoneArtifactButtonStyle(primary: false)).disabled(true).opacity(PhoneOpacity.disabled)
                 }
-                ForEach(Self.shownVerbs(model, busy: busy), id: \.rawValue) { item in
+                ForEach(state?.isUndelivered == true ? [] : Self.shownVerbs(model, busy: busy), id: \.rawValue) { item in
                     verb(item, Self.title(item), primary: item == .approve || item == .retry, busy: Self.busyTitle(item))
                 }
             }
@@ -154,10 +161,21 @@ struct InboxApprovalCard: View {
 
     private func reminderButtons(_ row: InboxRefRowModel) -> some View {
         let actions = InboxRefRowActions(center: center, card: card, now: now, onReply: { _ in }, openURL: { openURL($0) })
-        return FlowRow(spacing: Spacing.regular, lineSpacing: Spacing.regular) {
-            ForEach(Array(row.menu.enumerated()), id: \.offset) { offset, verb in
-                Button(InboxRefVerbs.title(verb, kind: row.facts.kind)) { actions.press(verb, row) }
-                    .buttonStyle(PhoneArtifactButtonStyle(primary: offset == 0))
+        let drawn = actions(ArtifactRef(kind: .reminder, id: row.facts.id))
+        return VStack(alignment: .leading, spacing: Spacing.compact) {
+            if let error = drawn.error {
+                Text(error).font(TypeScale.meta).foregroundStyle(PhoneTone.red.color)
+            }
+            FlowRow(spacing: Spacing.regular, lineSpacing: Spacing.regular) {
+                if center.rowState(row.key)?.isUndelivered == true, let retry = drawn.retry {
+                    // Not delivered: its named Retry is the reminder's one action.
+                    Button(retry.title, action: retry.action).buttonStyle(PhoneArtifactButtonStyle(primary: true))
+                } else {
+                    ForEach(Array(row.menu.enumerated()), id: \.offset) { offset, verb in
+                        Button(InboxRefVerbs.title(verb, kind: row.facts.kind)) { actions.press(verb, row) }
+                            .buttonStyle(PhoneArtifactButtonStyle(primary: offset == 0))
+                    }
+                }
             }
         }
     }

@@ -76,13 +76,13 @@ final class InboxOutboxWiringTests: XCTestCase {
         _ = try await env.outbox.flush()
         try await poll({ InboxActSettlement.isUndelivered(env.inbox.actions.first ?? Self.none) }, "listed as Not delivered")
         await press.value
-        guard case let .refused(sentence, .outbox(actionID))? = env.inbox.rowState(DemoSeed.Inbox.roundup) else {
+        guard case let .refused(sentence, .outbox(actionID, _))? = env.inbox.rowState(DemoSeed.Inbox.roundup) else {
             return XCTFail("the row offers the outbox's Retry: \(String(describing: env.inbox.rowState(DemoSeed.Inbox.roundup)))")
         }
         XCTAssertEqual(sentence, InboxPhoneText.notDelivered(hub: ""))
 
         await transport.refuse(nil)
-        async let fromRow: Void = env.inbox.retry(.outbox(actionID: actionID))
+        async let fromRow: Void = env.inbox.retry(.outbox(actionID: actionID, request))
         async let fromList: Void = { try? await env.retry(actionID: actionID) }()
         _ = await (fromRow, fromList)
         try await poll({ (try? env.store.pendingActions().filter { $0.action.kind == .inboxAct }.count) == 1 }, "one action left")
@@ -90,7 +90,7 @@ final class InboxOutboxWiringTests: XCTestCase {
         XCTAssertEqual(rows.count, 1, "both Retries sent one action")
         XCTAssertNotEqual(rows[0].id, actionID, "the retried action replaced the undelivered one")
         XCTAssertEqual(rows[0].action.params["request_id"], .string("req-once"), "under the same request_id")
-        await env.inbox.retry(.outbox(actionID: actionID))
+        await env.inbox.retry(.outbox(actionID: actionID, request))
         XCTAssertEqual(try env.store.pendingActions().filter { $0.action.kind == .inboxAct }.count, 1, "a late Retry is a no-op")
     }
 
