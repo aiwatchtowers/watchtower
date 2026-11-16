@@ -244,6 +244,19 @@ func computeRecommendationsAt(stats []ChannelStatRow, signals map[string]Channel
 			vs = signals[s.ChannelID]
 		}
 
+		// Stop syncing candidates come first: a >= 90% bot channel with no
+		// value signals is offered Stop syncing directly, never Mute first
+		// (Stop syncing mutes it too; owner, ask #1359):
+		if reason, ok := excludeReason(s, vs, now); ok {
+			recs = append(recs, Recommendation{
+				ChannelID:   s.ChannelID,
+				ChannelName: s.ChannelName,
+				Action:      "exclude",
+				Reason:      reason,
+			})
+			continue
+		}
+
 		// Mute candidates:
 		// - total>=50 AND user_msgs==0 AND mentions==0; OR bot_ratio>=0.70
 		// - Skip if already favorite or already muted
@@ -269,18 +282,6 @@ func computeRecommendationsAt(stats []ChannelStatRow, signals map[string]Channel
 					continue // don't suggest leave+mute for same channel
 				}
 			}
-		}
-
-		// Stop syncing candidates (after mute: an unmuted channel is
-		// offered the mute first, and Stop syncing mutes it too):
-		if reason, ok := excludeReason(s, vs, now); ok {
-			recs = append(recs, Recommendation{
-				ChannelID:   s.ChannelID,
-				ChannelName: s.ChannelName,
-				Action:      "exclude",
-				Reason:      reason,
-			})
-			continue
 		}
 
 		// Leave candidates:

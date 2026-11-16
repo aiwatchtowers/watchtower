@@ -629,11 +629,13 @@ final class ChannelStatsTests: XCTestCase {
     }
 
     func testRecommendationsWithEmptySignals() {
-        // Empty signals dict (not nil) — same behavior as before
+        // Empty signals dict: no value signals, so a 100% bot channel is
+        // offered Stop syncing directly, not Mute (owner, ask #1359)
         let stat = makeStat(totalMessages: 60, userMessages: 0, botRatio: 1.0)
         let recs = ChannelStatsQueries.computeRecommendations(from: [stat], signals: [:])
         XCTAssertEqual(recs.count, 1)
-        XCTAssertEqual(recs[0].action, .mute)
+        XCTAssertEqual(recs[0].action, .exclude)
+        XCTAssertEqual(recs[0].reason, "100% bot messages, no value signals")
     }
 
     // MARK: - Helpers

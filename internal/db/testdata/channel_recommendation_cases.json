@@ -56,11 +56,29 @@
      "signals": {"C0OTHER": {"decision_count": 1}},
      "want": []},
 
-    {"name": "unmuted bot channel: the mute comes first",
+    {"name": "unmuted bot channel: stop syncing directly, no mute first",
      "stats": [{"id": "C0BOTS", "name": "ci-builds", "type": "public", "is_member": true, "total_messages": 1000, "bot_messages": 950,
                 "bot_ratio": 0.95}],
      "signals": {"C0OTHER": {"decision_count": 1}},
-     "want": [{"channel_id": "C0BOTS", "action": "mute", "reason": "95% bot messages (no value signals)"}]},
+     "want": [{"channel_id": "C0BOTS", "action": "exclude", "reason": "95% bot messages, no value signals"}]},
+
+    {"name": "unmuted channel at 80% bots: mute",
+     "stats": [{"id": "C0BOTS", "name": "deploys", "type": "public", "is_member": true, "total_messages": 100, "bot_messages": 80,
+                "bot_ratio": 0.8}],
+     "signals": {"C0OTHER": {"decision_count": 1}},
+     "want": [{"channel_id": "C0BOTS", "action": "mute", "reason": "80% bot messages (no value signals)"}]},
+
+    {"name": "unmuted bot channel with a decision: mute, not stop syncing",
+     "stats": [{"id": "C0BOTS", "name": "ci-builds", "type": "public", "is_member": true, "total_messages": 1000, "bot_messages": 950,
+                "bot_ratio": 0.95}],
+     "signals": {"C0BOTS": {"decision_count": 1}},
+     "want": [{"channel_id": "C0BOTS", "action": "mute", "reason": "95% bot messages"}]},
+
+    {"name": "unmuted favorite bot channel: nothing",
+     "stats": [{"id": "C0BOTS", "name": "ci-builds", "type": "public", "is_member": true, "total_messages": 1000, "bot_messages": 950,
+                "bot_ratio": 0.95, "is_favorite": true}],
+     "signals": {"C0OTHER": {"decision_count": 1}},
+     "want": []},
 
     {"name": "already not synced: no recommendation at all",
      "stats": [{"id": "C0JUNK", "name": "alerts-prod", "type": "public", "is_member": true, "total_messages": 2904, "bot_messages": 2788,
