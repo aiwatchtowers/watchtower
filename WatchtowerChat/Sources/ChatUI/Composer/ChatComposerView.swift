@@ -48,6 +48,14 @@ public struct ChatComposerView: View {
             }
         }
         .padding(Spacing.medium)
+        .background {
+            ChatComposerShortcuts(
+                canSend: model.canSend,
+                canStop: conversation.canStop,
+                onSend: { Task { await model.send() } },
+                onStop: { Task { await conversation.cancelTurn() } }
+            )
+        }
         .task(id: MentionQuery(text: model.draft, cursor: cursor)) {
             guard let query = MentionTokenizer.activeQuery(text: model.draft, cursor: cursor) else {
                 hits = []

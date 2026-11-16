@@ -1,7 +1,6 @@
 import Foundation
 import SwiftUI
 import WatchtowerChatText
-import WatchtowerChatText
 
 /// The single allowlist of URL schemes the app is willing to open.
 ///

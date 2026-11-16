@@ -22,3 +22,17 @@ struct ChatComposerTextInput: View {
     }
 }
 #endif
+
+#if os(iOS)
+/// The phone has no composer shortcuts (a hardware keyboard's Return sends through the field).
+struct ChatComposerShortcuts: View {
+    let canSend: Bool
+    let canStop: Bool
+    let onSend: () -> Void
+    let onStop: () -> Void
+
+    var body: some View {
+        EmptyView()
+    }
+}
+#endif
