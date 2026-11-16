@@ -159,7 +159,7 @@ public struct ArtifactViewer: View {
             ShareLink(item: text) { Label(choice.title, systemImage: choice.symbol) }
         case .open(let url):
             style.secondaryButton(choice.title) { openURL(url) }
-        case .copyThenOpen(let text, let url):
+        case let .copyThenOpen(text, url):
             style.secondaryButton(choice.title) {
                 copy(text)
                 if let url { openURL(url) }

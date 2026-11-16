@@ -12,7 +12,7 @@ struct SourcesPartView: View {
     var body: some View {
         let sources = payload.sources.map(ChatSource.init(wire:))
         let summary = ChatSourceGrouping.summary(sources)
-        if summary.count > 0 {
+        if !summary.kinds.isEmpty {
             Button { context.actions.openSources(sources) } label: {
                 HStack(spacing: Spacing.compact) {
                     HStack(spacing: Spacing.tight) {

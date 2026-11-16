@@ -47,16 +47,16 @@ private struct StepLine: View {
             icon
             Text(step.summary.isEmpty ? step.name : step.summary)
                 .font(.caption)
-                .foregroundStyle(step.ok == false ? Tone.error : Color.primary)
+                .foregroundStyle(step.outcome == .failed ? Tone.error : Color.primary)
                 .lineLimit(3)
         }
     }
 
     @ViewBuilder private var icon: some View {
-        switch step.ok {
-        case true?: Image(systemName: "checkmark.circle").foregroundStyle(Tone.success).font(.caption)
-        case false?: Image(systemName: "xmark.octagon").foregroundStyle(Tone.error).font(.caption)
-        case nil:
+        switch step.outcome {
+        case .succeeded: Image(systemName: "checkmark.circle").foregroundStyle(Tone.success).font(.caption)
+        case .failed: Image(systemName: "xmark.octagon").foregroundStyle(Tone.error).font(.caption)
+        case .running:
             if turnRunning {
                 ProgressView().controlSize(.mini)
             } else {

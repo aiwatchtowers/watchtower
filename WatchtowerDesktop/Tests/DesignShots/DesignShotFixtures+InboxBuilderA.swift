@@ -4,6 +4,7 @@ import SwiftUI
 import XCTest
 @testable import WatchtowerDesktop
 import WatchtowerCore
+@testable import ChatUI
 
 /// Inbox builder A (plan Task 1): the block renderer, today's Inbox card
 /// states, every Look step state and the target button's states, on the

@@ -4,6 +4,7 @@ import XCTest
 @testable import WatchtowerDesktop
 import WatchtowerCore
 import WatchtowerChatText
+@testable import ChatUI
 
 /// Reproducible numbers for scrolling a long chat (automations tab polish,
 /// spec §5): a 100-message thread whose answers are long markdown (tables,

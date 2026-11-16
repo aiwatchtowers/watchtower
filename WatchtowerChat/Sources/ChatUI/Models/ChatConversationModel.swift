@@ -222,7 +222,7 @@ public final class ChatConversationModel {
     func report(_ echo: ChatEcho?) {
         switch echo {
         case .applied?: notice = nil
-        case .refused(let code, let message)?: notice = Self.refusalLine(code: code, message: message)
+        case let .refused(code, message)?: notice = Self.refusalLine(code: code, message: message)
         case nil: notice = Self.couldNotSend
         }
     }

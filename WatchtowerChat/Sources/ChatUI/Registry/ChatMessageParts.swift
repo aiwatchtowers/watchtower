@@ -65,7 +65,7 @@ public enum ChatMessageParts {
                 "title": .string(draft.title),
                 "content": .string(draft.content),
                 "complete": .bool(draft.isComplete),
-                "meta": .object(draft.meta.mapValues(ChatJSONValue.string)),
+                "meta": .object(draft.meta.mapValues(ChatJSONValue.string))
             ]),
             fallback: ChatPartFallback(text: draft.title.isEmpty ? draft.content : draft.title)
         )
@@ -81,9 +81,9 @@ public enum ChatMessageParts {
                     .object([
                         "label": .string(option.label),
                         "description": .string(option.description),
-                        "recommended": .bool(option.recommended),
+                        "recommended": .bool(option.recommended)
                     ])
-                }),
+                })
             ])
         }
         return ChatPart(

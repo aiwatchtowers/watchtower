@@ -1,5 +1,6 @@
 import SwiftUI
 import WatchtowerCore
+import ChatUI
 
 /// One row of a Discuss thread, in the order it happened (spec 2026-11-08
 /// §3): the owner's words, the assistant's replies, a question the

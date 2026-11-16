@@ -159,4 +159,64 @@ type_name:
     warning: 50
     error: 60
 
+# The design kit's rules (docs/design/desktop-style-guide.md, D18) hold the shared chat views: tokens from
+# WatchtowerDesign, controls through the injected ChatUIStyle. Same regexes as WatchtowerDesktop/.swiftlint.yml's
+# kit_* rules (keep them in step), scoped to Sources/ChatUI; ChatWire has no views. No inline disable
+# (scripts/kit-lint-guard.sh).
+custom_rules:
+  kit_no_overlay_divider:
+    name: 'kit_no_overlay_divider'
+    regex: '\.(overlay|background)\(alignment:\s*\.(leading|trailing)\)\s*\{\s*Divider\(\)'
+    included: '.*/Sources/ChatUI/.*\.swift'
+    message: 'A Divider outside a stack lies flat across the view. Use Rectangle().fill(Stroke.hairlineColor).frame(width: Stroke.hairline).'
+    severity: error
+  kit_no_form:
+    name: 'kit_no_form'
+    regex: '\bForm\s*\{'
+    included: '.*/Sources/ChatUI/.*\.swift'
+    message: 'Use SettingsSection / SettingRow (the app kit, through ChatUIStyle).'
+    severity: error
+  kit_no_groupbox:
+    name: 'kit_no_groupbox'
+    regex: '\bGroupBox\b'
+    included: '.*/Sources/ChatUI/.*\.swift'
+    message: 'Use .card() or SettingsSection (the app kit, through ChatUIStyle).'
+    severity: error
+  kit_no_stock_buttons:
+    name: 'kit_no_stock_buttons'
+    regex: '\.buttonStyle\(\s*\.bordered(Prominent)?\s*\)'
+    included: '.*/Sources/ChatUI/.*\.swift'
+    message: 'Draw buttons through ChatUIStyle (the app injects its kit look).'
+    severity: error
+  kit_no_segmented_picker:
+    name: 'kit_no_segmented_picker'
+    regex: '\.pickerStyle\(\s*\.segmented\s*\)'
+    included: '.*/Sources/ChatUI/.*\.swift'
+    message: 'Use KitSegmentedPicker (the app kit, through ChatUIStyle).'
+    severity: error
+  kit_no_rounded_field:
+    name: 'kit_no_rounded_field'
+    regex: '\.textFieldStyle\(\s*\.roundedBorder\s*\)'
+    included: '.*/Sources/ChatUI/.*\.swift'
+    message: 'Use .textFieldStyle(.kit).'
+    severity: error
+  kit_no_raw_metrics:
+    name: 'kit_no_raw_metrics'
+    regex: '\.padding\((\s*\.\w+\s*,)?\s*[1-9][0-9.]*\s*\)|spacing:\s*[1-9][0-9.]*|cornerRadius:\s*[1-9][0-9.]*|\.cornerRadius\(\s*[1-9]|\.system\(size:\s*[0-9]'
+    included: '.*/Sources/ChatUI/.*\.swift'
+    message: 'Use Spacing / Radius / IconSize tokens.'
+    severity: error
+  kit_no_color_opacity:
+    name: 'kit_no_color_opacity'
+    regex: '\w\.opacity\(\s*0?\.[0-9]'
+    included: '.*/Sources/ChatUI/.*\.swift'
+    message: 'Use Fill / ChipTint tokens (view .opacity for dimming is fine).'
+    severity: error
+  kit_no_rgb_color:
+    name: 'kit_no_rgb_color'
+    regex: 'Color\(\s*(red:|hex)|NSColor\(\s*(calibratedRed|srgbRed|red):'
+    included: '.*/Sources/ChatUI/.*\.swift'
+    message: 'Use semantic system colours.'
+    severity: error
+
 reporter: xcode

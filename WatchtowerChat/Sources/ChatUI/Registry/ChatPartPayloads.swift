@@ -26,13 +26,18 @@ struct ChatTextPayload: Decodable, Equatable {
 struct ChatStepsPayload: Decodable, Equatable {
     struct Step: Decodable, Equatable {
         let name: String
-        let ok: Bool?
+        /// `ok` on the wire: absent while the tool runs, then true or false.
+        let outcome: ChatFeed.Step.Outcome
         let summary: String
 
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             name = try c.decode(String.self, forKey: .name)
-            ok = try c.decodeIfPresent(Bool.self, forKey: .ok)
+            outcome = switch try c.decodeIfPresent(Bool.self, forKey: .ok) {
+            case nil: .running
+            case true?: .succeeded
+            case false?: .failed
+            }
             summary = try c.decodeIfPresent(String.self, forKey: .summary) ?? ""
         }
 
@@ -86,7 +91,12 @@ public struct ChatApprovalPayload: Decodable, Hashable, Sendable {
     public let reason: String?
 
     public init(
-        id: Int64, tool: String, title: String, argsDisplay: String, argsSHA256: String, status: String,
+        id: Int64,
+        tool: String,
+        title: String,
+        argsDisplay: String,
+        argsSHA256: String,
+        status: String,
         reason: String? = nil
     ) {
         self.id = id
@@ -144,8 +154,14 @@ public struct ChatArtifactContent: Equatable, Sendable, Identifiable {
     public var id: String { key }
 
     public init(
-        key: String, kind: String, title: String, version: Int = 1, meta: [String: String] = [:], content: String,
-        contentCut: Bool = false, isComplete: Bool = true
+        key: String,
+        kind: String,
+        title: String,
+        version: Int = 1,
+        meta: [String: String] = [:],
+        content: String,
+        contentCut: Bool = false,
+        isComplete: Bool = true
     ) {
         self.key = key
         self.kind = kind

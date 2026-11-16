@@ -1,7 +1,7 @@
-import DesignKit
+#if os(macOS)
 import SwiftUI
-import WatchtowerCore
 import WatchtowerChatText
+import WatchtowerDesign
 
 /// The one markdown renderer for every chat surface (spec §3.3) — main chat,
 /// Discuss chats, setup assistants, recording notes, memory pages.
@@ -14,17 +14,23 @@ import WatchtowerChatText
 /// and the main, Settings, Progress and Logs window roots also install the
 /// app-wide gate. A surface's own handler (MemoryView's wiki links) is no
 /// longer shadowed.
-struct MarkdownView: View {
+public struct MarkdownView: View {
     let text: String
     /// Text the owner wrote: one newline is a new line
     /// (`MarkdownDocument.withLineBreaks`); the agent's text keeps markdown's
     /// soft breaks.
     var lineBreaks = false
+
+    public init(text: String, lineBreaks: Bool = false) {
+        self.text = text
+        self.lineBreaks = lineBreaks
+    }
+
     /// A code answer's `path:line` citations as links (`CodeLineLinks`);
     /// set by the code question popover, whose own `openURL` opens them.
     @Environment(\.markdownCodeLinks) private var codeLinks
 
-    var body: some View {
+    public var body: some View {
         let blocks = MarkdownDocument.parse(codeLinks ? CodeLineLinks.linkified(text) : text)
         MarkdownBlocksView(blocks: lineBreaks ? MarkdownDocument.withLineBreaks(blocks) : blocks)
             .textSelection(.enabled)
@@ -38,13 +44,13 @@ struct MarkdownView: View {
     /// Memoised per inline run and link context (`MarkdownInlineRenderer
     /// .memoized`): the stripped text is what the memo holds, so a hit is
     /// as gated as a fresh build.
-    static func inlineText(
+    public static func inlineText(
         _ inlines: [MarkdownInline], codeLinks: Bool = false, navScreens: Set<String> = []
     ) -> AttributedString {
         inlineText(inlines, links: InlineLinkContext(codeLinks: codeLinks, navScreens: navScreens))
     }
 
-    static func inlineText(_ inlines: [MarkdownInline], links: InlineLinkContext) -> AttributedString {
+    public static func inlineText(_ inlines: [MarkdownInline], links: InlineLinkContext) -> AttributedString {
         MarkdownInlineRenderer.memoized(inlines, context: links) {
             AllowedURLSchemes.strippingDisallowedLinks(MarkdownInlineRenderer.attributed($0),
                                                        renderOnly: links.renderOnly, navScreens: links.navScreens)
@@ -54,7 +60,7 @@ struct MarkdownView: View {
     /// One line of markdown as a label (a button's, an ask's focus place):
     /// its inline styling without links — the label's own action is the
     /// click. Text that is not a single paragraph shows as written.
-    static func inlineLabel(_ text: String) -> AttributedString {
+    public static func inlineLabel(_ text: String) -> AttributedString {
         let blocks = MarkdownDocument.parse(text)
         guard blocks.count == 1, case let .paragraph(inlines) = blocks[0] else { return AttributedString(text) }
         var result = MarkdownInlineRenderer.attributed(inlines)
@@ -68,7 +74,7 @@ struct MarkdownView: View {
 
 /// Everything besides the inlines that rendered markdown text depends on:
 /// the surface's link rules (`MarkdownView.inlineText`, `MarkdownRunText`).
-struct InlineLinkContext: Hashable, Sendable {
+public struct InlineLinkContext: Hashable, Sendable {
     let codeLinks: Bool
     let navScreens: Set<String>
 
@@ -76,10 +82,14 @@ struct InlineLinkContext: Hashable, Sendable {
     var renderOnly: Set<String> { codeLinks ? [CodeLineLinks.scheme] : [] }
 }
 
-struct MarkdownBlocksView: View {
+public struct MarkdownBlocksView: View {
     let blocks: [MarkdownBlock]
 
-    var body: some View {
+    public init(blocks: [MarkdownBlock]) {
+        self.blocks = blocks
+    }
+
+    public var body: some View {
         VStack(alignment: .leading, spacing: MarkdownRunBuilder.blockSpacing) {
             ForEach(blocks.indices, id: \.self) { index in
                 MarkdownBlockView(block: blocks[index])
@@ -105,13 +115,13 @@ struct MarkdownBlockView: View {
             MarkdownListView(list: list)
         case let .quote(children):
             HStack(spacing: 0) {
-                Rectangle().fill(Color.accentColor.opacity(0.4)).frame(width: 3)
-                MarkdownBlocksView(blocks: children).foregroundStyle(.secondary).padding(.leading, 8)
+                Rectangle().fill(Color.accentColor.opacity(ChipTint.strokeOpacity)).frame(width: 3)
+                MarkdownBlocksView(blocks: children).foregroundStyle(.secondary).padding(.leading, Spacing.regular)
             }
         case let .table(table):
             MarkdownTableView(table: table)
         case .rule:
-            Divider().padding(.vertical, 4)
+            Divider().padding(.vertical, Spacing.small)
         }
     }
 
@@ -179,7 +189,7 @@ struct MarkdownTableView: View {
         }
         .padding(Spacing.regular)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(.textBackgroundColor).opacity(0.4), in: RoundedRectangle(cornerRadius: 6))
+        .background(Color(.textBackgroundColor).opacity(0.4), in: RoundedRectangle(cornerRadius: Radius.control))
     }
 
     /// `columns` cells; a short row's missing ones are empty. A wrapped
@@ -304,15 +314,16 @@ private struct MarkdownNavScreensKey: EnvironmentKey {
 
 extension EnvironmentValues {
     /// Whether `MarkdownView` links `path:line` citations (code answers).
-    var markdownCodeLinks: Bool {
+    public var markdownCodeLinks: Bool {
         get { self[MarkdownCodeLinksKey.self] }
         set { self[MarkdownCodeLinksKey.self] = newValue }
     }
 
     /// The screens a `watchtower-nav://` link may open (the main window's
     /// visible sidebar screens); every other screen link renders as text.
-    var markdownNavScreens: Set<String> {
+    public var markdownNavScreens: Set<String> {
         get { self[MarkdownNavScreensKey.self] }
         set { self[MarkdownNavScreensKey.self] = newValue }
     }
 }
+#endif

@@ -1,5 +1,6 @@
 import XCTest
 @testable import WatchtowerCore
+import WatchtowerChatText
 
 final class SelectionCommentPlacementTests: XCTestCase {
     private let container = CGSize(width: 600, height: 400)

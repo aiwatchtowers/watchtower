@@ -105,7 +105,7 @@ public final class ChatComposerModel {
             mentions = []
             skill = nil
             editing = nil
-        case .refused(let code, let message)?:
+        case let .refused(code, message)?:
             notice = ChatConversationModel.refusalLine(code: code, message: message)
         case nil:
             break
@@ -123,7 +123,7 @@ public final class ChatComposerModel {
         switch await conversation.sendTurn(request) {
         case .applied?:
             notice = nil
-        case .refused(let code, let message)?:
+        case let .refused(code, message)?:
             notice = ChatConversationModel.refusalLine(code: code, message: message)
             if draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { draft = text }
         case nil:
@@ -145,7 +145,7 @@ public final class ChatComposerModel {
                 notice = nil
             case .applied:
                 break
-            case .refused(let code, let message):
+            case let .refused(code, message):
                 notice = ChatConversationModel.refusalLine(code: code, message: message)
             }
         } catch {
@@ -204,7 +204,7 @@ public final class ChatComposerModel {
             case .applied(.conversation(let id)):
                 conversation.adopt(id)
                 return id
-            case .refused(let code, let message):
+            case let .refused(code, message):
                 notice = ChatConversationModel.refusalLine(code: code, message: message)
             case .applied:
                 notice = ChatConversationModel.couldNotSend

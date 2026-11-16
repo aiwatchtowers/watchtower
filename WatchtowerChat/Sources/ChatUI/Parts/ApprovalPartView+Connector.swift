@@ -18,7 +18,7 @@ struct ConnectorApproval: Equatable {
         self.toolName = toolName
         if let raw = args["input"], JSONSerialization.isValidJSONObject(raw),
            let data = try? JSONSerialization.data(withJSONObject: raw, options: [.prettyPrinted, .sortedKeys]) {
-            input = String(decoding: data, as: UTF8.self)
+            input = String(bytes: data, encoding: .utf8) ?? ""
         } else {
             input = ""
         }

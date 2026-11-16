@@ -6,9 +6,19 @@ import XCTest
 final class ChatPartRegistryTests: XCTestCase {
     private struct FixtureEntry: Decodable {
         let kind: String
-        let clientDerived: Bool?
+        let clientDerived: Bool
         let message: ChatFeed.Message
         let part: ChatPart
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            kind = try c.decode(String.self, forKey: .kind)
+            clientDerived = try c.decodeIfPresent(Bool.self, forKey: .clientDerived) ?? false
+            message = try c.decode(ChatFeed.Message.self, forKey: .message)
+            part = try c.decode(ChatPart.self, forKey: .part)
+        }
+
+        enum CodingKeys: String, CodingKey { case kind, clientDerived, message, part }
     }
 
     private func fixture() throws -> [FixtureEntry] {
@@ -31,7 +41,7 @@ final class ChatPartRegistryTests: XCTestCase {
                       "kinds without a ChatUI view: \(kinds.subtracting(ChatPartRegistry.registered).sorted())")
         XCTAssertEqual(Set(ChatPartKind.all), kinds, "parts.json and ChatWire's kind list drifted")
         for entry in entries {
-            if entry.clientDerived == true {
+            if entry.clientDerived {
                 // The sample's text part, as the engine sends it on the message.
                 let message = ChatUIFixtures.message(entry.message.id, text: entry.message.text, parts: [entry.part])
                 let derived = ChatMessageParts.parts(for: message).filter { $0.kind == entry.kind }
@@ -51,14 +61,14 @@ final class ChatPartRegistryTests: XCTestCase {
         }
     }
 
-    func testUnknownPartRendersFallback() {
+    func testUnknownPartRendersFallback() throws {
         let part = ChatPart(
             kind: "future_kind",
             payload: .object(["anything": .string("x")]),
             fallback: ChatPartFallback(text: "Send a Slack message to #general — waiting for your approval", actions: [
                 .init(label: "Open on the Mac", action: "none"),
                 .init(label: "Try again", action: "chat_turn", text: "Please try again."),
-                .init(label: "Open", action: "open_url", url: "https://example.com/page"),
+                .init(label: "Open", action: "open_url", url: "https://example.com/page")
             ])
         )
         let message = ChatUIFixtures.message(2, parts: [part])
@@ -66,7 +76,7 @@ final class ChatPartRegistryTests: XCTestCase {
         let buttons = FallbackPartView.buttons(part.fallback)
         XCTAssertEqual(buttons.map(\.label), ["Open on the Mac", "Try again", "Open"], "one button per action")
         XCTAssertEqual(buttons.map(\.effect), [
-            .none, .turn("Please try again."), .open(URL(string: "https://example.com/page")!), // swiftlint:disable:this force_unwrapping
+            .none, .turn("Please try again."), .open(try XCTUnwrap(URL(string: "https://example.com/page")))
         ])
     }
 
@@ -106,7 +116,7 @@ final class ChatPartRegistryTests: XCTestCase {
         XCTAssertEqual(rows.last, .approvals([action]))
 
         let shown = ChatPart(kind: ChatPartKind.approval, payload: .object([
-            "id": .integer(9), "tool": .string("send_slack_message"), "status": .string("pending"),
+            "id": .integer(9), "tool": .string("send_slack_message"), "status": .string("pending")
         ]), fallback: ChatPartFallback(text: "Send"))
         let withPart = ChatFeedLayout.rows(messages: [ChatUIFixtures.message(2, parts: [shown])], actions: [action])
         XCTAssertEqual(withPart.count, 1, "an action a part already shows is not drawn again")

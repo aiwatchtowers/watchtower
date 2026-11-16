@@ -7,7 +7,7 @@ final class ChatListModelTests: XCTestCase {
     private func list() -> ChatList {
         ChatList(conversations: [
             .init(id: 1, title: "One", updatedAt: ChatUIFixtures.date, state: .read),
-            .init(id: 2, title: "Two", pinned: true, updatedAt: ChatUIFixtures.date, state: .unread),
+            .init(id: 2, title: "Two", pinned: true, updatedAt: ChatUIFixtures.date, state: .unread)
         ])
     }
 
@@ -63,7 +63,7 @@ final class ChatListModelTests: XCTestCase {
         await model.rename(1, "  New name ")
         XCTAssertEqual(client.ops, [
             .manage(conversationID: 2, op: .unpin, title: nil, projectID: nil),
-            .manage(conversationID: 1, op: .rename, title: "New name", projectID: nil),
+            .manage(conversationID: 1, op: .rename, title: "New name", projectID: nil)
         ])
     }
 

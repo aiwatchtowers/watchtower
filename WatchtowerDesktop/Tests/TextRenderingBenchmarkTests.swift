@@ -4,6 +4,7 @@ import XCTest
 @testable import WatchtowerDesktop
 import WatchtowerCore
 import WatchtowerChatText
+@testable import ChatUI
 
 /// Reproducible numbers for the large-text hot paths (#167): a streamed
 /// answer's per-delta re-render and the parses that feed it. The timed
@@ -71,7 +72,8 @@ final class TextRenderingBenchmarkTests: XCTestCase {
         let source = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-            .appendingPathComponent("Sources/Views/Chat/MarkdownView.swift")
+            .deletingLastPathComponent()
+            .appendingPathComponent("WatchtowerChat/Sources/ChatUI/Platform/macOS/MarkdownView.swift")
         let code = try String(contentsOf: source, encoding: .utf8)
             .split(separator: "\n")
             .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }

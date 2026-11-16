@@ -17,7 +17,10 @@ public struct ChatMessageRow: View {
     @Environment(\.chatUIStyle) private var style
 
     public init(
-        message: ChatFeed.Message, parts: [ChatPart], context: ChatPartContext, rowActions: ChatRowActions,
+        message: ChatFeed.Message,
+        parts: [ChatPart],
+        context: ChatPartContext,
+        rowActions: ChatRowActions,
         isTurnRunning: Bool
     ) {
         self.message = message

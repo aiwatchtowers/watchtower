@@ -1,14 +1,20 @@
+#if os(macOS)
 import SwiftUI
 import AppKit
-import WatchtowerCore
 import WatchtowerChatText
+import WatchtowerDesign
 
-struct CodeBlockView: View {
+public struct CodeBlockView: View {
     let language: String?
     let code: String
     @State private var didCopy = false
 
-    var body: some View {
+    public init(language: String?, code: String) {
+        self.language = language
+        self.code = code
+    }
+
+    public var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Text(language ?? "code").font(.caption).foregroundStyle(.secondary)
@@ -20,21 +26,21 @@ struct CodeBlockView: View {
                 .help("Copy code")
                 .accessibilityLabel("Copy code")
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 4)
+            .padding(.horizontal, Spacing.cozy)
+            .padding(.vertical, Spacing.small)
             Divider()
             ScrollView(.horizontal, showsIndicators: false) {
                 Text(Self.highlighted(code, language: language))
                     .font(.system(.callout, design: .monospaced))
                     .textSelection(.enabled)
-                    .padding(10)
+                    .padding(Spacing.cozy)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(.textBackgroundColor).opacity(0.6), in: RoundedRectangle(cornerRadius: 6))
+        .background(Color(.textBackgroundColor).opacity(0.6), in: RoundedRectangle(cornerRadius: Radius.control))
     }
 
-    static func highlighted(_ code: String, language: String?) -> AttributedString {
+    public static func highlighted(_ code: String, language: String?) -> AttributedString {
         CodeHighlighter.tokens(code, language: language).reduce(into: AttributedString()) { out, token in
             var part = AttributedString(token.text)
             switch token.kind {
@@ -55,3 +61,4 @@ struct CodeBlockView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { didCopy = false }
     }
 }
+#endif

@@ -53,7 +53,7 @@ public struct ChatPartRegistry {
         }),
         ChatPartKind.routingNote: (RoutingNotePartView.self, { part, _ in
             (try? part.decodePayload(ChatRoutingPayload.self)).map { AnyView(RoutingNotePartView(payload: $0)) }
-        }),
+        })
     ]
 
     /// The kinds this package draws.

@@ -110,7 +110,7 @@ public struct ChatFeedView: View {
     @ViewBuilder
     private func rowView(_ row: ChatFeedLayout.Row) -> some View {
         switch row {
-        case .message(let message, let parts):
+        case let .message(message, parts):
             ChatMessageRow(message: message, parts: parts, context: partContext(message), rowActions: context.rowActions,
                            isTurnRunning: context.isTurnRunning)
         case .approvals(let actions):

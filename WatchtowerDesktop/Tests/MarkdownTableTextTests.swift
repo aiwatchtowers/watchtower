@@ -5,6 +5,7 @@ import XCTest
 @testable import WatchtowerDesktop
 import WatchtowerCore
 import WatchtowerChatText
+@testable import ChatUI
 
 /// A finished answer's table drawn as one native text view (spec
 /// 2026-10-24 §5c, ask #541): copy as TSV, selection across cells and

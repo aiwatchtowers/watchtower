@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerChatText
 
 /// What "Hand to Claude Code" (⌥⌘↩, spec 2026-10-02 §9.5) types into a
 /// workbench session or starts a new one with: the fixed first line, where

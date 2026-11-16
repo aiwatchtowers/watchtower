@@ -45,7 +45,7 @@ final class ChatUISourceScanTests: XCTestCase {
     private static let forbidden = [
         "Process(", "CLIRunner", "URLSession", "findCLIPath", "WatchtowerAIService", "ChatSessionPool",
         ".send(", "sendDraft", "startTurn", "client.", "ChatClient",
-        "LocalPreviewServer", "HTMLBrowserOpener", "NWConnection", "NWListener",
+        "LocalPreviewServer", "HTMLBrowserOpener", "NWConnection", "NWListener"
     ]
 
     /// BEHAVIOR CHAT-05 — see docs/inventory/chat.md
@@ -60,7 +60,7 @@ final class ChatUISourceScanTests: XCTestCase {
             "Platform/macOS/ArtifactPrinter.swift",
             "Platform/macOS/SandboxedHTMLGlue.swift",
             "Platform/macOS/PresentWindow.swift",
-            "Platform/iOS/SandboxedArtifactWebView.swift",
+            "Platform/iOS/SandboxedArtifactWebView.swift"
         ]
         for file in files {
             let text = try String(contentsOf: ChatUIFixtures.chatUISources.appendingPathComponent(file), encoding: .utf8)
@@ -74,7 +74,7 @@ final class ChatUISourceScanTests: XCTestCase {
             (.init(label: "x", action: "open_url", url: "smb://host/share"), .none),
             (.init(label: "x", action: "chat_turn", text: "  "), .none),
             (.init(label: "x", action: "write_db", text: "drop"), .none),
-            (.init(label: "x", action: "chat_turn", text: "Go on"), .turn("Go on")),
+            (.init(label: "x", action: "chat_turn", text: "Go on"), .turn("Go on"))
         ]
         for (action, effect) in shapes {
             XCTAssertEqual(FallbackPartView.effect(action), effect, "\(action)")

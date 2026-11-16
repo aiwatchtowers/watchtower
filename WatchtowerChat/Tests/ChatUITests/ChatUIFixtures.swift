@@ -19,8 +19,13 @@ enum ChatUIFixtures {
     static let date = Date(timeIntervalSince1970: 1_794_000_000)
 
     static func message(
-        _ id: Int64, role: String = "assistant", text: String = "", status: String = "complete",
-        errorCode: String? = nil, steps: [ChatFeed.Step] = [], parts: [ChatPart]? = nil
+        _ id: Int64,
+        role: String = "assistant",
+        text: String = "",
+        status: String = "complete",
+        errorCode: String? = nil,
+        steps: [ChatFeed.Step] = [],
+        parts: [ChatPart]? = nil
     ) -> ChatFeed.Message {
         ChatFeed.Message(id: id, role: role, text: text, status: status, errorCode: errorCode, createdAt: date,
                          steps: steps, parts: parts)

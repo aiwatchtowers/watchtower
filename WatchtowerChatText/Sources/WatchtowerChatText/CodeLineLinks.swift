@@ -10,8 +10,8 @@ import Foundation
 /// link target that reads as a web address or a version (`www.example.com`,
 /// `example.com`, `v1.2`). A path is relative to the workbench folder and
 /// needs a folder or an extension (`main.go:7`, `cmd/run:3`).
-package enum CodeLineLinks {
-    package static let scheme = "watchtower-code"
+public enum CodeLineLinks {
+    public static let scheme = "watchtower-code"
 
     private static let path = #"(?:[\w.+-]+/)+[\w.+-]+|[\w+-][\w.+-]*\.[A-Za-z0-9_+-]+"#
     private static let suffix = #":(\d+)(?:-\d+)?(?::(\d+))?"#
@@ -32,7 +32,7 @@ package enum CodeLineLinks {
     // swiftlint:enable force_try
 
     /// `markdown` with its citations linked.
-    package static func linkified(_ markdown: String) -> String {
+    public static func linkified(_ markdown: String) -> String {
         var fence: (char: Character, count: Int)?
         let lines = markdown.components(separatedBy: "\n").map { line -> String in
             let trimmed = line.drop { $0 == " " }
@@ -56,25 +56,13 @@ package enum CodeLineLinks {
     }
 
     /// The link for one citation.
-    package static func url(path: String, line: Int, col: Int?) -> String {
+    public static func url(path: String, line: Int, col: Int?) -> String {
         var components = URLComponents()
         components.scheme = scheme
         components.host = "open"
         components.queryItems = [URLQueryItem(name: "path", value: path), URLQueryItem(name: "line", value: String(line))]
             + (col.map { [URLQueryItem(name: "col", value: String($0))] } ?? [])
         return components.string ?? "\(scheme)://open"
-    }
-
-    /// The file and line a link names; nil for another scheme or a path
-    /// that is absolute or climbs out of the workbench folder.
-    package static func target(from url: URL) -> OpenQuicklyTarget? {
-        guard url.scheme == scheme, url.host == "open",
-              let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems else { return nil }
-        let value = { (name: String) in items.first { $0.name == name }?.value }
-        guard let path = value("path"), !path.isEmpty, !path.hasPrefix("/"),
-              !path.split(separator: "/").contains(".."),
-              let line = value("line").flatMap(Int.init), line >= 1 else { return nil }
-        return OpenQuicklyTarget(path: path, line: line, col: value("col").flatMap(Int.init))
     }
 
     // MARK: - One line

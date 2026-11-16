@@ -138,8 +138,8 @@ final class ChatConversationModelTests: XCTestCase {
     func testRemoteTurnShowsStopAndStreams() async {
         let lease = ChatFeed.Lease(owner: "phone", turnID: "t9")
         let streaming = ChatUIFixtures.message(4, text: "Draft", status: "pending")
-        conversation.store.apply(.snapshot(ChatUIFixtures.feed(messages: [ChatUIFixtures.message(3, role: "user", text: "Q"), streaming],
-                                                                lease: lease)))
+        let owner = ChatUIFixtures.message(3, role: "user", text: "Q")
+        conversation.store.apply(.snapshot(ChatUIFixtures.feed(messages: [owner, streaming], lease: lease)))
         XCTAssertTrue(conversation.isTurnRunning)
         XCTAssertTrue(conversation.canStop, "a turn another device started has the normal Stop")
         conversation.store.apply(.messageUpsert(ChatUIFixtures.message(4, text: "Draft answer, streaming", status: "pending")))
@@ -158,7 +158,7 @@ final class ChatConversationModelTests: XCTestCase {
         XCTAssertTrue(parts.contains { $0.kind == ChatPartKind.steps }, "the waiting step shows while the turn runs")
         XCTAssertEqual(StepsPartView.header(count: 1, running: true), "Working… · 1 step")
         let ended = ChatUIFixtures.message(4, text: "Sent.", status: "complete", steps: [
-            ChatFeed.Step(name: "send_slack_message", outcome: .succeeded, summary: "Sent"),
+            ChatFeed.Step(name: "send_slack_message", outcome: .succeeded, summary: "Sent")
         ])
         XCTAssertTrue(ChatMessageParts.parts(for: ended).contains { $0.kind == ChatPartKind.steps }, "and after it ends")
         XCTAssertEqual(StepsPartView.header(count: 1, running: false), "Worked · 1 step")

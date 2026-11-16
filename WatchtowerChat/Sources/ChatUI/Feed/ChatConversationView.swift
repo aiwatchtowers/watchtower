@@ -11,7 +11,9 @@ public struct ChatConversationView: View {
     var onAttach: (() -> Void)?
 
     public init(
-        conversation: ChatConversationModel, composer: ChatComposerModel, partActions: ChatPartActions,
+        conversation: ChatConversationModel,
+        composer: ChatComposerModel,
+        partActions: ChatPartActions,
         onAttach: (() -> Void)? = nil
     ) {
         self.conversation = conversation
@@ -35,6 +37,11 @@ public struct ChatConversationView: View {
         actions.sendFixedText = { text in Task { await composer.sendFixed(text) } }
         actions.retry = { id in Task { await conversation.retry(id) } }
         actions.continueStopped = { id in Task { await conversation.continueStopped(id) } }
+        var rowActions = ChatRowActions(copy: partActions.copy)
+        rowActions.regenerate = { id in Task { await conversation.regenerate(id) } }
+        rowActions.edit = composer.beginEditing
+        rowActions.selectBranch = { id in Task { await conversation.selectBranch(id) } }
+        rowActions.loadEarlier = { Task { await conversation.loadEarlier() } }
         return ChatFeedContext(
             provider: conversation.feed?.conversation.actualProvider,
             artifacts: conversation.feed?.artifacts ?? [],
@@ -44,13 +51,7 @@ public struct ChatConversationView: View {
             staleLine: conversation.isStale ? ChatConversationModel.staleLine : nil,
             notice: nil,
             partActions: actions,
-            rowActions: ChatRowActions(
-                regenerate: { id in Task { await conversation.regenerate(id) } },
-                edit: { composer.beginEditing($0) },
-                selectBranch: { id in Task { await conversation.selectBranch(id) } },
-                copy: partActions.copy,
-                loadEarlier: { Task { await conversation.loadEarlier() } }
-            )
+            rowActions: rowActions
         )
     }
 }

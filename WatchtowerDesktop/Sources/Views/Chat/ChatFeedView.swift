@@ -1,6 +1,7 @@
 import SwiftUI
 import WatchtowerCore
 import WatchtowerChatText
+import ChatUI
 
 /// How roomy a chat is: the main chat and tab-sized embedded chats use
 /// `.regular`; docks, the setup side panel and collapsible sections `.compact`.

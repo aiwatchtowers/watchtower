@@ -4,6 +4,7 @@ import XCTest
 @testable import WatchtowerDesktop
 import WatchtowerCore
 import WatchtowerTestSupport
+@testable import ChatUI
 
 /// The Inbox read like mail (spec B1): a list with all three sections — a
 /// proposal, today's cards and an earlier card and reminder — and a selected

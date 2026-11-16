@@ -1,6 +1,7 @@
 import AppKit
 import WatchtowerCore
 import WebKit
+import WatchtowerChatText
 
 extension AppState {
     func toggleHelpChat() {

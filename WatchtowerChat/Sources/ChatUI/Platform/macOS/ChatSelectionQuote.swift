@@ -1,14 +1,18 @@
+#if os(macOS)
 import AppKit
 import SwiftUI
-import WatchtowerCore
 import WatchtowerChatText
 
 /// What a feed offers for a selection in an answer: "Ask about this", which
 /// hands the selected passage to the composer's quote batch. Only the main
 /// chat has a batch; an embedded chat passes none and keeps plain
 /// selection + ⌘C.
-struct ChatFeedSelectionQuote {
+public struct ChatFeedSelectionQuote {
     let onQuote: (String) -> Void
+
+    public init(onQuote: @escaping (String) -> Void) {
+        self.onQuote = onQuote
+    }
 }
 
 /// How the tracker listens: the notification center and the local event
@@ -43,7 +47,7 @@ struct ChatSelectionQuoteListening {
 /// steps, error or action cards, sources, or the streaming reply.
 @MainActor
 @Observable
-final class ChatSelectionQuoteTracker {
+public final class ChatSelectionQuoteTracker {
     struct Selection: Equatable {
         let text: String
         /// The selection's box in the anchor's coordinates (the feed's
@@ -71,7 +75,11 @@ final class ChatSelectionQuoteTracker {
     @ObservationIgnored private var geometryObservers: [NSObjectProtocol] = []
     @ObservationIgnored private var mouseMonitor: Any?
 
-    init(listening: ChatSelectionQuoteListening = .init()) {
+    public convenience init() {
+        self.init(listening: .init())
+    }
+
+    init(listening: ChatSelectionQuoteListening) {
         self.listening = listening
     }
 
@@ -262,11 +270,16 @@ final class ChatSelectionQuoteTracker {
 /// The feed's selection overlay: an invisible anchor over the visible area
 /// and the floating "Ask about this" chip next to the selection. Reads the
 /// tracker alone, so a selection change re-renders no row.
-struct ChatSelectionQuoteOverlay: View {
+public struct ChatSelectionQuoteOverlay: View {
     let tracker: ChatSelectionQuoteTracker
     let quote: ChatFeedSelectionQuote
 
-    var body: some View {
+    public init(tracker: ChatSelectionQuoteTracker, quote: ChatFeedSelectionQuote) {
+        self.tracker = tracker
+        self.quote = quote
+    }
+
+    public var body: some View {
         ZStack(alignment: .topLeading) {
             ChatSelectionAnchor(tracker: tracker, quote: quote).allowsHitTesting(false)
             if let button = tracker.selection?.button {
@@ -320,24 +333,28 @@ private struct ChatSelectionAnchor: NSViewRepresentable {
 
 /// An invisible view behind a finished answer's body: the region a
 /// selection must lie in to be quotable. No layout, no drawing, no hits.
-struct ChatAnswerRegionMarker: NSViewRepresentable {
+public struct ChatAnswerRegionMarker: NSViewRepresentable {
     let tracker: ChatSelectionQuoteTracker
 
-    final class RegionView: NSView {
-        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    public init(tracker: ChatSelectionQuoteTracker) {
+        self.tracker = tracker
     }
 
-    func makeCoordinator() -> ChatSelectionQuoteTracker { tracker }
+    public final class RegionView: NSView {
+        override public func hitTest(_ point: NSPoint) -> NSView? { nil }
+    }
 
-    func makeNSView(context: Context) -> RegionView {
+    public func makeCoordinator() -> ChatSelectionQuoteTracker { tracker }
+
+    public func makeNSView(context: Context) -> RegionView {
         let view = RegionView()
         tracker.addRegion(view)
         return view
     }
 
-    func updateNSView(_ view: RegionView, context: Context) {}
+    public func updateNSView(_ view: RegionView, context: Context) {}
 
-    static func dismantleNSView(_ view: RegionView, coordinator: ChatSelectionQuoteTracker) {
+    public static func dismantleNSView(_ view: RegionView, coordinator: ChatSelectionQuoteTracker) {
         coordinator.removeRegion(view)
     }
 }
@@ -349,8 +366,9 @@ private struct ChatAnswerRegionsKey: EnvironmentKey {
 extension EnvironmentValues {
     /// The feed's selection tracker, for finished answers to mark their
     /// body; nil in a feed without "Ask about this" (embedded chats).
-    var chatAnswerRegions: ChatSelectionQuoteTracker? {
+    public var chatAnswerRegions: ChatSelectionQuoteTracker? {
         get { self[ChatAnswerRegionsKey.self] }
         set { self[ChatAnswerRegionsKey.self] = newValue }
     }
 }
+#endif

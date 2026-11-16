@@ -4,6 +4,7 @@ import ViewInspector
 @testable import WatchtowerDesktop
 import WatchtowerCore
 import WatchtowerChatText
+@testable import ChatUI
 
 @MainActor
 final class SessionChatViewTests: XCTestCase {

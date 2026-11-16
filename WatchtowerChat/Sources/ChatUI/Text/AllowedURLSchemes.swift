@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
-import WatchtowerCore
+import WatchtowerChatText
+import WatchtowerChatText
 
 /// The single allowlist of URL schemes the app is willing to open.
 ///
@@ -12,21 +13,21 @@ import WatchtowerCore
 /// local bundle, and `x-apple.systempreferences:` opens an arbitrary settings
 /// pane. Every link surface consults this one list so a future surface cannot
 /// pick a different one.
-enum AllowedURLSchemes {
+public enum AllowedURLSchemes {
 
     /// Schemes a rendered link may open.
     ///
     /// `slack` is the deep-link scheme the app builds itself for channel and
     /// message permalinks; `watchtower-memory` carries vault wiki-link taps
-    /// (`MemoryMarkdown.linkScheme`). `watchtower-auth` is deliberately absent:
+    /// (`WatchtowerLinkScheme.memory`). `watchtower-auth` is deliberately absent:
     /// it is an inbound OAuth callback the app receives via `onOpenURL`, never
     /// a URL the app opens.
-    static let schemes: Set<String> = [
+    public static let schemes: Set<String> = [
         "https",
         "http",
         "mailto",
         "slack",
-        MemoryMarkdown.linkScheme
+        WatchtowerLinkScheme.memory
     ]
 
     /// Whether `url` may be handed to the system. A URL with no scheme
@@ -35,20 +36,20 @@ enum AllowedURLSchemes {
     /// The `lowercased()` is load-bearing, not defensive: `URL.scheme` returns
     /// the scheme with the author's casing intact, so `SMB://` would otherwise
     /// walk straight past the set (pinned by `testURLSchemeKeepsAuthorCase`).
-    static func permits(_ url: URL) -> Bool {
+    public static func permits(_ url: URL) -> Bool {
         guard let scheme = url.scheme else { return false }
         return schemes.contains(scheme.lowercased())
     }
 
     /// The app-wide `OpenURLAction`: an allowed scheme goes to the system
     /// handler, anything else is discarded rather than opened.
-    static var openURLAction: OpenURLAction {
+    public static var openURLAction: OpenURLAction {
         OpenURLAction { url in permits(url) ? .systemAction : .discarded }
     }
 
     /// The main window's gate: an in-app screen link goes to `navigate`
     /// (which ignores a hidden or unknown screen), the rest as `openURLAction`.
-    static func openURLAction(navigate: @escaping @MainActor (URL) -> Void) -> OpenURLAction {
+    public static func openURLAction(navigate: @escaping @MainActor (URL) -> Void) -> OpenURLAction {
         OpenURLAction { url in
             guard url.scheme?.lowercased() == NavLink.scheme else { return permits(url) ? .systemAction : .discarded }
             MainActor.assumeIsolated { navigate(url) }
@@ -72,7 +73,7 @@ enum AllowedURLSchemes {
     /// in the main window's sidebar, which alone opens them
     /// (`openURLAction(navigate:)`). An unknown or hidden screen's link is
     /// stripped like a disallowed scheme: plain text, never a dead link.
-    static func strippingDisallowedLinks(
+    public static func strippingDisallowedLinks(
         _ attributed: AttributedString, renderOnly: Set<String> = [], navScreens: Set<String> = []
     ) -> AttributedString {
         var result = attributed
@@ -90,7 +91,7 @@ enum AllowedURLSchemes {
     /// a `renderOnly` scheme of the surface, or a screen link to a listed
     /// screen. The one predicate behind `strippingDisallowedLinks` and a
     /// native text run's click (`MarkdownTextRun`).
-    static func keepsLink(_ link: URL, renderOnly: Set<String> = [], navScreens: Set<String> = []) -> Bool {
+    public static func keepsLink(_ link: URL, renderOnly: Set<String> = [], navScreens: Set<String> = []) -> Bool {
         permits(link) || renderOnly.contains(link.scheme?.lowercased() ?? "")
             || NavLink.destination(from: link, allowed: navScreens) != nil
     }

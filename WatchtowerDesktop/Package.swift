@@ -30,7 +30,8 @@ let package = Package(
         .package(path: "../WatchtowerChatText"),
         // The chat shared with the phone (unified chat spec §6.1): Core takes
         // ChatWire (Foundation only, imports nothing of ours), never ChatUI or
-        // the Kit (pinned by PublicAPISurfaceTests).
+        // the Kit (pinned by PublicAPISurfaceTests); the app takes ChatUI (its
+        // views and the Mac's answer text, D10).
         .package(path: "../WatchtowerChat"),
         // Pinned to 0.18.x: WhisperKitEngine uses 0.18.0-specific API surface
         // (including the misspelled `detectLangauge(audioArray:)`).
@@ -130,6 +131,7 @@ let package = Package(
                 .product(name: "Qwen3ASR", package: "speech-swift"),
                 .product(name: "SwiftTerm", package: "SwiftTerm"),
                 .product(name: "WatchtowerSync", package: "WatchtowerKit"),
+                .product(name: "ChatUI", package: "WatchtowerChat"),
                 "CloudBridgeCore",
             ],
             path: "Sources",
@@ -176,6 +178,7 @@ let package = Package(
                 "WatchtowerTestSupport",
                 .product(name: "GRDB", package: "GRDB.swift"),
                 .product(name: "ViewInspector", package: "ViewInspector"),
+                .product(name: "ChatUI", package: "WatchtowerChat"),
                 // The hub tests drive it on the Kit's InMemoryCloudTransport.
                 .product(name: "WatchtowerSync", package: "WatchtowerKit"),
                 // F25: the test hub and phone (fixed pairing) that seal and open what the hub publishes.

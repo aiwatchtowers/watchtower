@@ -1,6 +1,7 @@
 import SwiftUI
 import WatchtowerChatText
 import WatchtowerCore
+import ChatUI
 
 /// A question card from an assistant reply (spec 2026-10-02): each question
 /// with its options (radio or checkboxes, a description, a "Recommended"
