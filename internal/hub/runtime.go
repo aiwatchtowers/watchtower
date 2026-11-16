@@ -23,6 +23,7 @@ import (
 	"watchtower/internal/hub/alerts"
 	"watchtower/internal/hub/identity"
 	"watchtower/internal/hub/link"
+	"watchtower/internal/hub/logreason"
 	"watchtower/internal/hub/measure"
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/slices"
@@ -541,6 +542,12 @@ func (h *hubRuntime) heartbeat(st *state.Store, name string) slices.HeartbeatFac
 			}
 			return h.pub.LastPublishAt()
 		},
+		StuckSince: func() (time.Time, bool) {
+			if h.pub == nil {
+				return time.Time{}, false
+			}
+			return h.pub.StuckSince()
+		},
 		LastRelayAt: func() (time.Time, bool) {
 			h.mu.Lock()
 			defer h.mu.Unlock()
@@ -959,6 +966,10 @@ func (h *hubRuntime) relayIDNamed() {
 	}
 }
 
+// readersFailLog keeps a readers sync that fails on every link upkeep to one
+// line per logreason.RepeatEvery and reason (#1873).
+var readersFailLog = logreason.NewLimiter(logreason.RepeatEvery, time.Now)
+
 // syncReaders sets the relay's hub readers to the linked phones the account
 // state holds in a slot (link upkeep, and once before the first publish).
 func (h *hubRuntime) syncReaders(ctx context.Context, rt transport.Transport, vouched bool) {
@@ -979,7 +990,7 @@ func (h *hubRuntime) syncReaders(ctx context.Context, rt transport.Transport, vo
 		}
 		if err := h.center.SyncReaders(ctx, set); err != nil {
 			h.noteNotVouched(err)
-			log.Printf("hub: readers not synced (%s)", errClass(err))
+			readersFailLog.Printf("hub: readers not synced (%s)", logreason.With(errClass(err), err))
 			return
 		}
 		// A phone that became a reader (or stopped being one) gets its

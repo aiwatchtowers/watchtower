@@ -724,3 +724,23 @@ On a relay route the keyring rotates every 7 days (`relayRotationAge`; 90 days o
 ## iPhone chat (2026-11-15, board #1791)
 
 The hub runs phone-started chat turns: `internal/chatstore` (the Go turn store) and `internal/hub/chatrun` (a pool of 2 `ai session` processes, started at hub start with a sweep of orphan groups and dead leases, closed first at hub stop). A turn's rows are written by the lease holder's store, Swift or Go (`chat_turn_leases`, migration 00189). The ten `chat_*` kinds and the `chat_attachment` frame are registered in `handlers.Register`; the `chat` grant (`hub allow <device> chat [--revoke]`, sidecar migration 00017) is on by default; the heartbeat carries `capabilities.chat` and `chat_reason`; `hub desktop heartbeat --chat-lease 0|1` and the control socket's `chat_lease` tell the hub the Desktop honours the lease. Full note: [iphone-chat.md](iphone-chat.md); push: the `chat_answer` paragraph in Phase 4 above.
+
+## A failing publish is visible (2026-11-16, #1873, asks #1396/#1398)
+
+- **The log names the reason.** A failed publish cycle, a phone's mailbox read and the relay readers sync log a
+  content-free reason after their class (`internal/hub/logreason`): the relay's error code when the chain carries one
+  (`other: relay code CONFLICT`), else the deepest typed Go error (`unavailable: *net.OpError`), else `untyped` —
+  never the error's text. The cycle line lists the kinds it retries (`kinds retried: owner_ask, target`). Each of the
+  three lines goes through a `logreason.Limiter`: the first copy is logged, then at most one per
+  `logreason.RepeatEvery` (10 min) with "(repeated N more times over 10m0s)"; a different line logs at once. The
+  mailbox line keeps one key per device and reason; a line that stops repeating loses its held-back count.
+- **`hub status` text** shows a relay that is not connected: `hub: running, relay unavailable since 15:22 (last saved
+  15:20), 1 phone(s)` (local time, the date when not today; "never saved since the hub started" before the first
+  save). `--json` already carried `relay.state`/`since`/`last_saved_at`; Settings → Mobile's Relay row already reads
+  them ("Relay unavailable for <N> min.", "Connected · last change delivered … ago").
+- **Heartbeat `stuck_since`** (optional Unix seconds): when the oldest kind whose last attempt did not go through
+  whole first failed — a failed save or source read, or a record the cycle skipped (oversized, unsealable, refused by
+  the transport). `Publisher.StuckSince` keeps it per kind (`slices/stuck.go`) until an attempt goes through whole; an
+  epoch rotation's abort counts neither way. The heartbeat restamps at once when the value changes. `last_publish_at`
+  keeps its meaning (moves when any kind finished). The phone's use of it is in
+  [mobile-companion.md](mobile-companion.md) ("The data's age").

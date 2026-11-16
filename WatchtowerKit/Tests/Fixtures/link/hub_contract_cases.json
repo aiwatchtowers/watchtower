@@ -1345,6 +1345,40 @@
         "chat": "off",
         "chat_reason": "desktop_too_old"
       }
+    },
+    {
+      "name": "stuck_since",
+      "json": {
+        "accounts": [],
+        "app_version": "1.0.0",
+        "enabled_at": 1730000000,
+        "flavor": "default",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "mac_name": "Test Hub",
+        "owner_user": "",
+        "relay_backlog": 0,
+        "sharing": "none",
+        "stuck_since": 1730000050,
+        "updated_at": 1730000100
+      },
+      "expect": {
+        "accounts": [],
+        "app_version": "1.0.0",
+        "enabled_at": 1730000000,
+        "flavor": "default",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "mac_name": "Test Hub",
+        "owner_user": "",
+        "relay_backlog": 0,
+        "sharing": "none",
+        "stuck_since": 1730000050,
+        "updated_at": 1730000100
+      },
+      "kit": {
+        "recordings_offered": true,
+        "is_mac": true,
+        "stuck_since": 1730000050
+      }
     }
   ],
   "upload_echo": [

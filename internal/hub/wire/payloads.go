@@ -162,6 +162,10 @@ type Heartbeat struct {
 	// Capabilities is the host's switches (protocol §9); absent from an
 	// older hub, which the phone reads as every capability on.
 	Capabilities *HeartbeatCapabilities `json:"capabilities,omitempty"`
+	// StuckSince is when the oldest kind still not going through whole
+	// (a failed save, a refused or oversized record) first failed; absent
+	// while every kind goes through and from an older hub (#1873).
+	StuckSince *Time `json:"stuck_since,omitempty"`
 }
 
 // HeartbeatCapabilities is the heartbeat's capabilities object. Recordings

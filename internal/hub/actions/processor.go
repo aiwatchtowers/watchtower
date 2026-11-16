@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"watchtower/internal/hub/logreason"
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
@@ -442,6 +443,10 @@ func (p *Processor) passBoxes(ctx context.Context, boxes []mailbox, ps *pass) (P
 	return ps.report, errors.Join(append(errs, err)...)
 }
 
+// mailboxFailLog keeps a mailbox read that fails every pass to one line per
+// logreason.RepeatEvery per phone and reason (#1873).
+var mailboxFailLog = logreason.NewLimiter(logreason.RepeatEvery, time.Now)
+
 // passError logs the error that stopped b's phone and adds it to errs (nil
 // adds nothing). The batch limit and a re-link are no errors: the rest is
 // read next pass (Remaining counts the first).
@@ -457,7 +462,7 @@ func passError(b mailbox, err error, errs []error) []error {
 		return errs
 	}
 	// One phone's failure never holds back the other phones.
-	log.Printf("hub: reading device %s's mailbox: %s", b.id, errClass(err))
+	mailboxFailLog.Printf("hub: reading device %s's mailbox: %s", b.id, logreason.With(errClass(err), err))
 	return append(errs, err)
 }
 

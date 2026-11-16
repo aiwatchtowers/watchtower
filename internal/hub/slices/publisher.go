@@ -11,9 +11,11 @@ import (
 	"log"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
+	"watchtower/internal/hub/logreason"
 	"watchtower/internal/hub/platform"
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/state"
@@ -195,6 +197,9 @@ type Publisher struct {
 	lastDirty   time.Time       // monotonic, latest PublishSoon
 	nowDirty    map[Kind]bool   // PublishNow's kinds, due at once
 	lastPublish time.Time
+	// stuck is each kind whose last attempt did not go through whole, from
+	// its first such attempt (stuck.go, the heartbeat's stuck_since).
+	stuck map[Kind]time.Time
 	// resignal holds the alert keys Resignal asked to signal on CloudKit,
 	// kept until a cycle saved the alert with its signal or found it gone.
 	resignal map[string]bool
@@ -510,6 +515,9 @@ func (p *Publisher) Run(ctx context.Context) error {
 	retrying := map[Kind]bool{}         // kinds whose held time is a retry, not their spacing
 	var retryOn transport.Kind          // the transport the retries above failed on
 	nextFull := p.mono()
+	// A failing cycle repeats every few seconds: its line reaches the log
+	// once per logreason.RepeatEvery (#1873).
+	failLog := logreason.NewLimiter(logreason.RepeatEvery, p.mono)
 	for {
 		now := p.mono()
 		paused, resumed := p.pauseState()
@@ -573,7 +581,8 @@ func (p *Publisher) Run(ctx context.Context) error {
 				return ctx.Err()
 			}
 			if err != nil {
-				log.Printf("hub slices: publish cycle failed (%s); %d kinds retried", errClass(err), len(rep.Unfinished))
+				failLog.Printf("hub slices: publish cycle failed (%s); kinds retried: %s",
+					logreason.With(errClass(err), err), kindList(rep.Unfinished))
 				if p.c.OnError != nil {
 					p.c.OnError(err)
 				}
@@ -703,10 +712,14 @@ func (p *Publisher) Cycle(ctx context.Context, kinds []Kind) (CycleReport, error
 			continue
 		}
 		tried++
+		skipped := len(rep.Skipped)
 		wrote, err := p.publishKind(ctx, k, srcs, &rep)
 		if err == nil && !slices.Contains(rep.Failed, k) {
 			p.kindPublished(k)
 			published++
+		}
+		if !errors.Is(err, errEpochMoved) {
+			p.noteKindOutcome(k, err == nil && !slices.Contains(rep.Failed, k) && len(rep.Skipped) == skipped, now)
 		}
 		if wrote {
 			p.lastWrite[k] = now
@@ -1351,6 +1364,19 @@ func latestEpoch(epochs []state.Epoch, err error) (uint32, error) {
 		return 0, ErrNoKeys
 	}
 	return epochs[len(epochs)-1].Epoch, nil
+}
+
+// kindList is kinds for a log line, "none" when empty.
+func kindList(kinds []Kind) string {
+	if len(kinds) == 0 {
+		return "none"
+	}
+	names := make([]string, len(kinds))
+	for i, k := range kinds {
+		names[i] = string(k)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
 }
 
 // errClass names an error by its sentinel for a log line, never its text.
