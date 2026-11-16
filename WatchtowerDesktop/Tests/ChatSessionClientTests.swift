@@ -317,6 +317,46 @@ final class ChatSessionClientTests: XCTestCase {
         XCTAssertEqual(fake.turns.map(\.text), ["held"])
     }
 
+    /// A Stop between Send and `started` (the session is writing the turn)
+    /// is kept: the turn is stopped as soon as it starts, so the owner's
+    /// message stays with a `partial` reply, as for a Stop after the send.
+    func testStopBeforeStartedStopsTheTurnAtItsStart() async throws {
+        let fake = persistingFake()
+        fake.holdsStarts = true
+        let client = makeClient { fake }
+        let starting = Task { await client.startTurn(self.command("q")) }
+        await untilTurn { !fake.sent.isEmpty }
+        client.cancel(grace: .seconds(30))
+        XCTAssertFalse(fake.sent.contains(.cancel), "nothing to interrupt before started")
+        fake.releaseStarts()
+        guard case .started = await starting.value else { return XCTFail("not started") }
+        await untilTurn { fake.sent.contains(.cancel) }
+        fake.emit(.turnDone(turnID: "t1", status: .interrupted, sessionID: nil))
+        await untilTurn { !client.isBusy }
+        XCTAssertEqual(try assistant()?.status, "partial")
+        XCTAssertTrue(client.isAlive, "a launched session that answered the Stop stays warm")
+    }
+
+    /// A Stop on a turn held for launch asks the pool to launch it now; the
+    /// turn is written, stopped at its `started`, and the session goes after.
+    func testStopOnAHeldTurnLaunchesAndStopsItAtItsStart() async throws {
+        let fake = persistingFake()
+        let client = makeClient(launchImmediately: false) { fake }
+        var launchAsked = 0
+        client.onStopWhileHeld = { launchAsked += 1 }
+        let starting = Task { await client.startTurn(self.command("held")) }
+        await untilTurn { client.isBusy }
+        client.cancel()
+        XCTAssertEqual(launchAsked, 1)
+        client.launch()
+        guard case .started = await starting.value else { return XCTFail("not started") }
+        await untilTurn { fake.sent.contains(.cancel) }
+        fake.emit(.turnDone(turnID: "t1", status: .interrupted, sessionID: nil))
+        await untilTurn { !client.isBusy }
+        XCTAssertEqual(try assistant()?.status, "partial")
+        XCTAssertFalse(client.isAlive, "the extra process goes after its stopped turn")
+    }
+
     /// Stop without a `turn_done` (a hung provider): the watchdog ends the
     /// turn and kills the process.
     func testCancelWatchdogFinishesTheTurnWhenNoTurnDoneArrives() async throws {

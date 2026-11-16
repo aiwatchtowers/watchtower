@@ -63,6 +63,10 @@ final class PendingChatStart {
     }
 
     var isResolved: Bool { outcome != nil }
+    /// A Stop that came before `started`: the turn is stopped as soon as it
+    /// starts, so its rows (the owner's message, a `partial` reply) are on
+    /// disk as for a Stop just after the send. It moves with the turn.
+    var stopAtStart: (grace: Duration, killAfter: Duration)?
 
     func wait() async -> ChatStartOutcome {
         if let outcome { return outcome }
@@ -120,6 +124,9 @@ final class ChatSessionClient {
     /// The process ended with a started turn it never let go of (no
     /// `turn_saved`): its rows need `chat.recover` (spec §9).
     @ObservationIgnored var onTurnLost: ((_ conversationID: Int64, _ turnID: String) -> Void)?
+    /// A Stop on a held turn of this not-yet-launched session: the pool
+    /// launches it now, so the turn is written and stopped at its `started`.
+    @ObservationIgnored var onStopWhileHeld: (() -> Void)?
     @ObservationIgnored private var process: (any ChatSessionProcess)?
     @ObservationIgnored private let spawn: () throws -> any ChatSessionProcess
     @ObservationIgnored private let clock: () -> Date
@@ -244,7 +251,10 @@ final class ChatSessionClient {
     func begin(_ pending: PendingChatStart) {
         touch()
         pendingStart = pending
-        if isPending, !shutdownRequested { return }
+        if isPending, !shutdownRequested {
+            if pending.stopAtStart != nil { launchForHeldStop() }
+            return
+        }
         guard hasLiveProcess, isAlive else {
             let reason = exitError?.message ?? startupError?.message ?? "The chat session is not running."
             failStart(ChatSessionError(turnID: pending.command.turnID, code: .sessionLost, message: reason,
@@ -258,12 +268,13 @@ final class ChatSessionClient {
     /// `grace`, keep the partial text and kill the process (Go already kills
     /// its child after 5 s, so 7 s covers a Go side that hung too).
     func cancel(grace: Duration = .seconds(7), killAfter: Duration = ChatSessionClient.defaultKillAfter) {
-        if isPending, pendingStart != nil {
-            // Held, never sent: nothing to interrupt and nothing was written —
-            // the text goes back, and the pool drops the queued client instead
-            // of spawning a process that would idle until the TTL.
-            abandon()
-            onEnded?()
+        if let pending = pendingStart {
+            // Not started yet (held for launch, or sent and its rows being
+            // written): nothing to interrupt. The session still writes the
+            // turn, and it is stopped at its `started` — the owner's message
+            // stays in the transcript with a stopped reply, as for any Stop.
+            pending.stopAtStart = (grace, killAfter)
+            launchForHeldStop()
             return
         }
         guard let turn = driver.liveTurn, turn.isRunning else { return }
@@ -364,6 +375,15 @@ final class ChatSessionClient {
         Task { await terminateAndReap(killAfter: Self.defaultKillAfter) }
     }
 
+    /// A held turn was stopped on a session still waiting for its slot: the
+    /// pool launches it now (`onStopWhileHeld`), and the turn is its last, so
+    /// the extra process goes once the stopped turn is saved.
+    private func launchForHeldStop() {
+        guard isPending else { return }
+        retiresAfterTurn = true
+        onStopWhileHeld?()
+    }
+
     private func failStart(_ failure: ChatSessionError) {
         guard let pending = pendingStart else { return }
         pendingStart = nil
@@ -404,6 +424,7 @@ final class ChatSessionClient {
             unsavedTurnID = started.turnID
             driver.begin(messageID: started.assistantMessageID, turnID: started.turnID)
             pending.resolve(.started(started))
+            if let stop = pending.stopAtStart { cancel(grace: stop.grace, killAfter: stop.killAfter) }
             return
         case let .refused(refusal):
             guard let pending = pendingStart, refusal.turnID == nil || refusal.turnID == pending.command.turnID else { return }

@@ -467,9 +467,10 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertFalse(vm.isWaitingForSession)
     }
 
-    /// Stopping a held turn: it never reached its session, so nothing was
-    /// written and the send gives its text back.
-    func testStoppingAHeldTurnWritesNothing() async throws {
+    /// Stopping a held turn keeps its owner message answered (`partial`):
+    /// the session launches for it at once, writes the turn and stops it at
+    /// its `started` — the transcript is that of any Stop.
+    func testStoppingAHeldTurnLeavesAPartialReply() async throws {
         let vm = try makeViewModel()
         for index in 1...3 {
             _ = await vm.newConversation()
@@ -480,17 +481,23 @@ final class ChatViewModelTests: XCTestCase {
         let sending = Task { await vm.send(text: "q4") }
         await waitForCondition { vm.isWaitingForSession }
         vm.stop()
+        await waitForCondition { self.fakes.count == 4 && self.fakes[3].sent.contains(.cancel) }
         let sent = await sending.value
-        XCTAssertFalse(sent, "the text goes back")
-        XCTAssertFalse(vm.isBusy)
+        XCTAssertTrue(sent, "the message stays in the transcript, not back in the composer")
+        XCTAssertEqual(fakes[3].sent.filter { $0 == .cancel }.count, 1, "stopped at its started")
+        fakes[3].emit(.turnDone(turnID: "turn-4", status: .interrupted, sessionID: nil))
+        await waitForCondition { !vm.isBusy }
         XCTAssertFalse(vm.isWaitingForSession)
         XCTAssertNil(vm.errorMessage, "a Stop is not an error")
-        XCTAssertTrue(activePath(waiting).isEmpty)
+        await waitForCondition { self.activePath(waiting).map(\.status) == ["complete", "partial"] }
+        XCTAssertEqual(activePath(waiting).map(\.status), ["complete", "partial"])
+        XCTAssertEqual(activePath(waiting).filter(\.isUser).map(\.text), ["q4"])
     }
 
-    /// A held turn stopped before launch never reached the provider: the
-    /// next send must replay, or the stopped question is silently lost.
-    func testSendAfterStoppingAHeldTurnSendsOnlyTheNewOne() async throws {
+    /// The process a held Stop launched goes after its turn: the next send
+    /// gets a new session, which replays the history with the stopped q4,
+    /// so the stopped question is never silently lost.
+    func testSendAfterStoppingAHeldTurnReplays() async throws {
         let vm = try makeViewModel()
         for index in 1...3 {
             _ = await vm.newConversation()
@@ -501,17 +508,21 @@ final class ChatViewModelTests: XCTestCase {
         let stopped = Task { await vm.send(text: "q4") }
         await waitForCondition { vm.isWaitingForSession }
         vm.stop()
+        await waitForCondition { self.fakes.count == 4 && self.fakes[3].sent.contains(.cancel) }
         _ = await stopped.value
+        fakes[3].emit(.turnDone(turnID: "turn-4", status: .interrupted, sessionID: nil))
+        await waitForCondition { !vm.isBusy }
+
         let sending = Task { await vm.send(text: "q5") }
         await waitForCondition { vm.isWaitingForSession }
-
         fakes[0].emit(.turnDone(turnID: "turn-1", status: .complete, sessionID: nil))
         let sentResult = await sending.value
         XCTAssertTrue(sentResult)
-        let launched = await waitForCondition { self.fakes.count == 4 && self.fakes[3].turns.count == 1 }
+        let launched = await waitForCondition { self.fakes.count == 5 && self.fakes[4].turns.count == 1 }
         XCTAssertTrue(launched)
-        XCTAssertEqual(fakes[3].turns.first?.turnID, "turn-5")
-        XCTAssertEqual(activePath(convID).filter(\.isUser).map(\.text), ["q5"], "the stopped q4 was never written")
+        XCTAssertEqual(fakes[4].turns.first?.turnID, "turn-5")
+        XCTAssertEqual(fakes[4].turns.first?.replay, true, "the new session replays the stopped q4")
+        XCTAssertEqual(activePath(convID).filter(\.isUser).map(\.text), ["q4", "q5"])
     }
 
     // MARK: - Render isolation (skeleton Review Focus #5)

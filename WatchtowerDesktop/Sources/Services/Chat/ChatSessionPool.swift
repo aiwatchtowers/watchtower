@@ -113,6 +113,10 @@ final class ChatSessionPool {
         client.onTurnLost = { [weak self] id, turnID in self?.onTurnLost?(id, turnID) }
         client.onActionAwaited = { [weak self] in self?.onActionAwaited?(conversationID) }
         client.onEnded = { [weak self] in self?.admit() }
+        client.onStopWhileHeld = { [weak self, weak client] in
+            guard let self, let client else { return }
+            self.launchStopped(client)
+        }
         clients[conversationID] = client
         queue.removeAll { $0 == conversationID }
         queue.append(conversationID)
@@ -270,6 +274,18 @@ final class ChatSessionPool {
     }
 
     // MARK: - Private
+
+    /// A held turn the owner stopped: launched past the slot limit, so the
+    /// session writes the turn and stops it at once (the transcript keeps the
+    /// owner's message, as for any Stop). The client retires after that turn.
+    /// Admission still waits for the login environment (`admissionOpen`);
+    /// the stop then applies at that launch.
+    private func launchStopped(_ client: ChatSessionClient) {
+        guard admissionOpen, client.isPending, clients[client.conversationID] === client,
+              !retirements.values.contains(where: { $0.conversationID == client.conversationID }) else { return }
+        queue.removeAll { $0 == client.conversationID }
+        client.launch()
+    }
 
     /// Launches queued sessions, oldest first, while the policy grants slots.
     private func admit() {

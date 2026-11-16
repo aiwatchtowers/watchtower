@@ -114,9 +114,39 @@ final class ChatSessionPoolTests: XCTestCase {
         XCTAssertLessThanOrEqual(maxAlive, ChatSessionPolicy.maxLive)
     }
 
-    /// Stopping the held turn of a queued session ends that session: a freed
-    /// slot launches nothing for it, and the next request gets a new one.
-    func testStoppingAHeldTurnNeverLaunchesTheQueuedSession() async throws {
+    /// Stopping the held turn of a queued session launches it at once, past
+    /// the slot limit: the session writes the turn and stops it at its
+    /// `started` (the owner's message stays, with a `partial` reply), then
+    /// goes; the next request gets a new session.
+    func testStoppingAHeldTurnLaunchesItToSaveTheStoppedTurn() async throws {
+        for id: Int64 in 1...3 {
+            pool.session(for: id, config: config(id)).send(turn("t\(id)"))
+            clock.advance(1)
+        }
+        let fourth = pool.session(for: 4, config: config(4))
+        fourth.send(turn("t4"))
+        await untilTurn { fourth.isBusy }
+        XCTAssertTrue(fourth.isPending)
+        fourth.cancel()
+        XCTAssertFalse(fourth.isPending, "launched now, not when a slot frees")
+        XCTAssertEqual(fakes.count, 4)
+        await untilTurn { self.fakes[3].sent.contains(.cancel) }
+        fakes[3].emit(.turnDone(turnID: "t4", status: .interrupted, sessionID: nil))
+        await untilTurn { !fourth.isBusy }
+        let statuses = try await dbPool.read {
+            try String.fetchAll($0, sql: "SELECT status FROM chat_messages WHERE conversation_id = 4 ORDER BY id")
+        }
+        XCTAssertEqual(statuses, ["complete", "partial"])
+        XCTAssertFalse(fourth.isAlive, "the extra process goes after its stopped turn")
+
+        let again = pool.session(for: 4, config: config(4))
+        XCTAssertTrue(again.isAlive)
+        XCTAssertFalse(again === fourth)
+    }
+
+    /// `abandon` (quit, eviction) of a queued session's held turn ends it
+    /// unsent: a freed slot launches nothing for it.
+    func testAbandoningAHeldTurnNeverLaunchesTheQueuedSession() async throws {
         for id: Int64 in 1...3 {
             pool.session(for: id, config: config(id)).send(turn("t\(id)"))
             clock.advance(1)
@@ -127,16 +157,12 @@ final class ChatSessionPoolTests: XCTestCase {
         XCTAssertFalse(fourth.isBusy)
         XCTAssertFalse(fourth.isAlive)
         let rows = try await dbPool.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM chat_messages WHERE conversation_id = 4") }
-        XCTAssertEqual(rows, 0, "a held turn never reached its session: nothing was written, the draft comes back")
+        XCTAssertEqual(rows, 0, "a held turn never reached its session: nothing was written")
 
         fakes[1].emit(.turnDone(turnID: "t2", status: .complete, sessionID: nil))
         pool.tick()
         XCTAssertFalse(fourth.isPending, "admission dropped it rather than launching it")
-        XCTAssertEqual(fakes.count, 3, "no process for a session whose only turn was stopped")
-
-        let again = pool.session(for: 4, config: config(4))
-        XCTAssertTrue(again.isAlive)
-        XCTAssertFalse(again === fourth)
+        XCTAssertEqual(fakes.count, 3, "no process for an abandoned session")
     }
 
     /// A chat project's prompt changed: its idle sessions close at once, a
