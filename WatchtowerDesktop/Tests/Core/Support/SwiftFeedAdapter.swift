@@ -61,8 +61,6 @@ enum SwiftFeedAdapter {
         "cards[].link": "AutomationOutputCard.link, the common row's Open (InboxCardButtons.commonRow); "
             + "\"\" on every other card",
         "native approvals' content_hash": "SHA-256 of the args the card shows (ApproveSeen)",
-        "thread-briefs": "the Mac lists each brief as its own root entry; the feed carries them as one card "
-            + "at the newest one's place",
         "notice cards' id": "Swift keys a notice by built-in id; the feed's n<rowid> is read from builtin_migrations"
     ]
 
@@ -128,8 +126,6 @@ enum SwiftFeedAdapter {
         }
         var cards: [Card] = []
         for item in tree.folders where folder == nil || folder == item.id {
-            var briefs: [(action: AgentAction, row: InboxFolderListRow)] = []
-            var briefsAt: Int?
             for entry in InboxFolderEntries.build(folder: item, inputs) {
                 let row = InboxFolderEntries.row(entry, inputs)
                 switch entry {
@@ -140,16 +136,12 @@ enum SwiftFeedAdapter {
                 case let .approval(approval):
                     cards.append(try self.approval(approval, folder: item.id, row: row, context))
                 case let .brief(action):
-                    briefsAt = briefsAt ?? cards.count
-                    briefs.append((action, row))
+                    cards.append(threadBrief(action, folder: item.id, row: row))
                 case let .legacyDay(day):
                     cards.append(try self.day(day, folder: item.id, row: row, context))
                 case .legacyTracks, .legacyIdeas, .legacyMessages:
                     cards.append(legacyList(entry, folder: item.id, row: row, context))
                 }
-            }
-            if let at = briefsAt {
-                cards.insert(threadBriefs(briefs, folder: item.id), at: at)
             }
         }
         return Mapped(feed: Feed(v: 1, builtAt: "", folders: folders, cards: cards), unmapped: [])
@@ -502,22 +494,19 @@ enum SwiftFeedAdapter {
         return line.isEmpty ? "Message" : line
     }
 
-    /// The root's thread briefs as the feed's one card: an item per brief,
-    /// each the brief's row words and its card summary.
-    private static func threadBriefs(_ briefs: [(action: AgentAction, row: InboxFolderListRow)], folder: Int64) -> Card {
-        let items = briefs.map { action, row in
-            LegacyItem(
-                refKind: .action, id: action.id, title: row.title,
-                subtitle: "Thread brief",
-                preview: action.resultString("summary") ?? action.argString("summary") ?? action.argsJSON,
-                stamp: AutomationDates.parse(action.appliedAt).map(AutomationDates.format) ?? "",
-                end: "", unread: false, high: false, stopped: false, done: false, date: "")
-        }
+    /// A thread brief's card at its own place in the root: the brief's row
+    /// words, and the brief as its one item with its card summary.
+    private static func threadBrief(_ action: AgentAction, folder: Int64, row: InboxFolderListRow) -> Card {
+        let stamp = AutomationDates.parse(action.appliedAt).map(AutomationDates.format) ?? ""
+        let item = LegacyItem(
+            refKind: .action, id: action.id, title: row.title, subtitle: "Thread brief",
+            preview: action.resultString("summary") ?? action.argString("summary") ?? action.argsJSON,
+            stamp: stamp, end: "", unread: false, high: false, stopped: false, done: false, date: "")
         return Card(
-            id: "thread-briefs", folderID: folder, cardKind: .legacy, title: "Thread briefs", sourceLine: "Thread brief",
-            preview: "", stamp: items.first?.stamp ?? "", living: false, unread: false, priority: "medium",
+            id: "thread-brief-\(action.id)", folderID: folder, cardKind: .legacy, title: row.title,
+            sourceLine: "Thread brief", preview: "", stamp: stamp, living: false, unread: false, priority: "medium",
             pinned: false, blocks: "", body: "", bodyClipped: false, link: "", contentHash: "", actions: [], refFacts: [],
-            legacy: LegacySection(kind: .threadBriefs, items: items, attention: []))
+            legacy: LegacySection(kind: .threadBriefs, items: [item], attention: []))
     }
 
     private static func withoutTime(_ line: String) -> String {

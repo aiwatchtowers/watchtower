@@ -430,8 +430,8 @@ type timedCard struct {
 // every unread one, and today's placeholder), Track my threads while a
 // track exists (stopped ones included), Idea finder while an idea exists
 // or its built-in is indexed, Messages while it stands in for Waiting for
-// me and has a message, and Thread briefs while one was applied in the
-// last 24 hours.
+// me and has a message, and each thread brief applied in the last 24
+// hours at its own applied time (the Mac lists each as a root entry).
 func (s *snapshot) legacyCards(folder int64) []timedCard {
 	l := s.legacy
 	var out []timedCard
@@ -449,8 +449,8 @@ func (s *snapshot) legacyCards(folder int64) []timedCard {
 		c, at := messagesCard(l, folder)
 		out = append(out, timedCard{at, c})
 	}
-	if len(l.briefs) > 0 {
-		c, at := briefsCard(l, folder)
+	for _, b := range l.briefs {
+		c, at := threadBriefCard(b, folder)
 		out = append(out, timedCard{at, c})
 	}
 	return out
@@ -620,27 +620,21 @@ func messagesCard(l legacy, folder int64) (api.Card, time.Time) {
 		strconv.Itoa(len(msgs))+" waiting", at, unread, api.LegacySection{Kind: api.LegacyMessages, Items: items}), at
 }
 
-// briefsCard is Thread briefs: one item per brief the `:brief:` reaction
-// made in the last 24 hours, newest first — each a result, never unread
-// and never counted. Its time is the newest brief's.
-func briefsCard(l legacy, folder int64) (api.Card, time.Time) {
-	items := make([]api.LegacyItem, 0, len(l.briefs))
-	var at time.Time
-	for i, b := range l.briefs {
-		applied := parseStamp(b.AppliedAt)
-		if i == 0 {
-			at = applied
-		}
-		title := b.Reason
-		if title == "" {
-			title = "Thread brief"
-		}
-		items = append(items, api.LegacyItem{RefKind: api.RefAction, ID: b.ID, Title: title, Subtitle: "Thread brief",
-			Preview: strings.Join(summaryLines(b.Tool, jsonObject(b.ArgsJSON), b.ArgsJSON, jsonObject(b.ResultJSON)), "\n"),
-			Stamp:   formatStamp(applied)})
+// threadBriefCard is one brief the `:brief:` reaction made in the last 24
+// hours (InboxFolderEntries.row's brief): titled by its reason ("Thread
+// brief" without one), a result — never unread, never counted — at its
+// applied time, with the brief as its one legacy item.
+func threadBriefCard(b db.AgentAction, folder int64) (api.Card, time.Time) {
+	applied := parseStamp(b.AppliedAt)
+	title := b.Reason
+	if title == "" {
+		title = "Thread brief"
 	}
-	return legacyCard(ThreadBriefsCardID, folder, "Thread briefs", "Thread brief", "", at, false,
-		api.LegacySection{Kind: api.LegacyThreadBriefs, Items: items}), at
+	item := api.LegacyItem{RefKind: api.RefAction, ID: b.ID, Title: title, Subtitle: "Thread brief",
+		Preview: strings.Join(summaryLines(b.Tool, jsonObject(b.ArgsJSON), b.ArgsJSON, jsonObject(b.ResultJSON)), "\n"),
+		Stamp:   formatStamp(applied)}
+	return legacyCard(ThreadBriefCardID(b.ID), folder, title, "Thread brief", "", applied, false,
+		api.LegacySection{Kind: api.LegacyThreadBriefs, Items: []api.LegacyItem{item}}), applied
 }
 
 // countLine is "<n> <what>", or "" for none.

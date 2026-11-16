@@ -74,7 +74,7 @@ Stage 1 of #1170 (spec `docs/superpowers/specs/2026-11-15-mobile-inbox-design.md
 - **Track my threads** (`tracks`) while a track exists, stopped ones included: "N unread" over the active tracks, the active tracks newest first, then the stopped ones with `stopped`.
 - **Idea finder** (`ideas`) while an idea exists or the `idea-finder` built-in is indexed: "N to judge", the ideas to judge first, then the rest newest first.
 - **Messages** (`messages`) while it stands in for Waiting for me and has a message: "N waiting", "Mentions, DMs and replies", the open messages newest first.
-- **Thread briefs** (`thread-briefs`) while a `brief_context` was applied in the last 24 hours: one item per brief (`action` ref, its reason, its summary), never unread. The Mac lists each brief as its own root entry; the feed carries them as one card at the newest one's place.
+- **Thread briefs** (`thread-brief-<id>`): one card per `brief_context` applied in the last 24 hours, at its own applied time, as the Mac lists each brief as its own root entry. Each card is titled by the brief's reason ("Thread brief" without one), is never unread, and holds the brief as its one `thread_briefs` item (`action` ref, its summary).
 
 Each card's own time places it among the root's artifacts. The Mac keeps drawing the panes with its own views.
 
@@ -87,7 +87,8 @@ Each card's own time places it among the root's artifacts. The Mac keeps drawing
 | due reminder | `r<reminders.id>` | `ReminderCardID` |
 | failed built-in move | `n<builtin_migrations rowid>` (the upsert keeps the rowid) | `NoticeCardID` |
 | Morning brief day | `brief-<yyyy-MM-dd>` | `BriefCardID` |
-| legacy lists | `tracks`, `ideas`, `thread-briefs`, `messages` | constants |
+| legacy lists | `tracks`, `ideas`, `messages` | constants |
+| thread brief | `thread-brief-<agent_actions.id>` | `ThreadBriefCardID` |
 
 `ParseCardID` reads an id back into its kind, its number or its date. It refuses a malformed id, such as `o0`, `o01` or `brief-2026-13-01`.
 

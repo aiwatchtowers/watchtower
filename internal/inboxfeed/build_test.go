@@ -236,7 +236,7 @@ func TestCardIDs_RoundTripAndNeverCollide(t *testing.T) {
 		BriefCardID("2026-11-16"):   {KindBrief, 0, "2026-11-16"},
 		TracksCardID:                {KindTracks, 0, ""},
 		IdeasCardID:                 {KindIdeas, 0, ""},
-		ThreadBriefsCardID:          {KindThreadBriefs, 0, ""},
+		ThreadBriefCardID(7):        {KindThreadBrief, 7, ""},
 		MessagesCardID:              {KindMessages, 0, ""},
 		OutputCardID(1234567890123): {KindOutput, 1234567890123, ""},
 	}

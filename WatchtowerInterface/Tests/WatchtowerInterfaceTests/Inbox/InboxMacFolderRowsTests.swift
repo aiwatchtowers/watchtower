@@ -96,14 +96,16 @@ final class InboxMacFolderRowsTests: XCTestCase {
         ])
     }
 
-    func testThreadBriefsBecomeOneResultRowPerBrief() throws {
-        let card = try legacy("thread-briefs", .threadBriefs, title: "Thread briefs",
-                              items: [item(41, title: "Release thread"), item(40, title: "Thread brief", stamp: "")])
-        let rows = InboxMacFolderRows.rows([card], approvals: false, now: now)
+    func testEachThreadBriefIsAResultRow() throws {
+        let first = try legacy("thread-brief-41", .threadBriefs, title: "Release thread",
+                               items: [item(41, title: "Release thread")])
+        let second = try legacy("thread-brief-40", .threadBriefs, title: "Thread brief",
+                                items: [item(40, title: "Thread brief", stamp: "")])
+        let rows = InboxMacFolderRows.rows([first, second], approvals: false, now: now)
         XCTAssertEqual(rows, [
-            InboxMacFolderRow(cardID: "thread-briefs", briefID: 41, kind: .result, title: "Release thread",
+            InboxMacFolderRow(cardID: "thread-brief-41", briefID: 41, kind: .result, title: "Release thread",
                               detail: "Thread brief · 3 h ago"),
-            InboxMacFolderRow(cardID: "thread-briefs", briefID: 40, kind: .result, title: "Thread brief",
+            InboxMacFolderRow(cardID: "thread-brief-40", briefID: 40, kind: .result, title: "Thread brief",
                               detail: "Thread brief")
         ])
     }

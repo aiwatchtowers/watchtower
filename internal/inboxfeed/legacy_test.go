@@ -137,10 +137,12 @@ func TestLegacy_IdeaFinderAndThreadBriefsAndMessages(t *testing.T) {
 	}) {
 		t.Errorf("idea items %s", got)
 	}
-	briefs := cardByID(t, feed, ThreadBriefsCardID)
-	if briefs.Unread || len(briefs.Legacy.Items) != 1 || briefs.Legacy.Items[0].Title != "Brief of #eng" ||
-		briefs.Legacy.Items[0].Preview != "The thread agreed." || briefs.Legacy.Items[0].RefKind != api.RefAction {
-		t.Errorf("thread briefs %+v", briefs)
+	brief := cardByID(t, feed, ThreadBriefCardID(1))
+	if brief.Unread || brief.Title != "Brief of #eng" || brief.SourceLine != "Thread brief" ||
+		brief.Stamp != "2026-11-16T10:00:00Z" || brief.Legacy.Kind != api.LegacyThreadBriefs ||
+		len(brief.Legacy.Items) != 1 || brief.Legacy.Items[0].Title != "Brief of #eng" ||
+		brief.Legacy.Items[0].Preview != "The thread agreed." || brief.Legacy.Items[0].RefKind != api.RefAction {
+		t.Errorf("thread brief %+v", brief)
 	}
 	msgs := cardByID(t, feed, MessagesCardID)
 	if msgs.Preview != "1 waiting" || msgs.SourceLine != "Mentions, DMs and replies" || !msgs.Unread {
@@ -152,7 +154,7 @@ func TestLegacy_IdeaFinderAndThreadBriefsAndMessages(t *testing.T) {
 		t.Errorf("message items %s", got)
 	}
 	// Root order: newest first by each entry's own time.
-	if got := fmt.Sprint(cardIDs(feed.Cards)); got != "[thread-briefs messages ideas]" {
+	if got := fmt.Sprint(cardIDs(feed.Cards)); got != "[thread-brief-1 messages ideas]" {
 		t.Errorf("root %s", got)
 	}
 }
