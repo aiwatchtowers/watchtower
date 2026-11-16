@@ -136,13 +136,14 @@ func TestDecide_ParsesAndValidates(t *testing.T) {
 	} {
 		gen.out = bad
 		dec, err := Decide(context.Background(), d, gen, nil, decideItem(wb))
-		require.Error(t, err, name)
+		require.ErrorIs(t, err, ErrBadReply, name)
 		require.NotNil(t, dec.Usage, "%s: usage is kept for the cost", name)
 	}
 
 	gen.err = errors.New("provider down")
 	_, err = Decide(context.Background(), d, gen, nil, decideItem(wb))
 	require.ErrorContains(t, err, "provider down")
+	require.NotErrorIs(t, err, ErrBadReply, "a failed call is not the model's answer")
 }
 
 func TestDecide_DropsUnknownPrecedentIDs(t *testing.T) {
@@ -160,6 +161,7 @@ func TestDecide_ChoiceMustBeOffered(t *testing.T) {
 	gen := &decideGen{out: reply(t, map[string]any{"choice": "add memcached"})}
 	dec, err := Decide(context.Background(), d, gen, nil, decideItem(wb))
 	require.ErrorIs(t, err, ErrChoiceNotOffered)
+	require.ErrorIs(t, err, ErrBadReply)
 	require.Empty(t, dec.Choice)
 	require.NotNil(t, dec.Usage)
 }

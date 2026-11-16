@@ -1,0 +1,135 @@
+package cmd
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"watchtower/internal/config"
+	"watchtower/internal/db"
+	"watchtower/internal/digest"
+	"watchtower/internal/fsutil"
+	"watchtower/internal/prompts"
+	"watchtower/internal/watchman"
+)
+
+// watchmanBacktestGen answers the profile with one rule and every decision
+// with "allow".
+type watchmanBacktestGen struct{ calls int }
+
+func (g *watchmanBacktestGen) Generate(ctx context.Context, _, _, _ string) (string, *digest.Usage, string, error) {
+	g.calls++
+	if src, _ := digest.SourceFromContext(ctx); src == prompts.WatchmanProfile {
+		return `{"rules":["Allows reads in the repository"]}`, &digest.Usage{}, "", nil
+	}
+	return `{"choice":"allow","rationale":"r","precedent_ids":[],"confidence":"high","category":"permission","importance":"low"}`,
+		&digest.Usage{}, "", nil
+}
+
+// watchmanBacktestFixture is a workbench with 30 permission precedents (the
+// rest of the categories are not measured) and a fake generator; it returns
+// the workbench, the generator and the workspace folder.
+func watchmanBacktestFixture(t *testing.T) (int64, *watchmanBacktestGen, string) {
+	t.Helper()
+	wb := agentsFixture(t)
+	var path string
+	d := openAgentsTestMain(t, &path)
+	tx, err := d.Begin()
+	require.NoError(t, err)
+	var ps []db.WatchmanPrecedent
+	for i := 0; i < watchman.HiddenPerCategory; i++ {
+		ps = append(ps, db.WatchmanPrecedent{WorkbenchID: wb, Source: "permission", SourceKey: fmt.Sprint(i + 1),
+			Category: "permission", Situation: "Tool: Bash go test " + strconv.Itoa(i), Choice: "allow",
+			DecidedAt: time.Date(2026, 10, 1, i, 0, 0, 0, time.UTC), Weight: 1})
+	}
+	require.NoError(t, d.UpsertWatchmanPrecedents(tx, ps))
+	require.NoError(t, tx.Commit())
+	gen := &watchmanBacktestGen{}
+	prev := watchmanGeneratorFactory
+	watchmanGeneratorFactory = func(*config.Config) digest.Generator { return gen }
+	t.Cleanup(func() { watchmanGeneratorFactory = prev })
+	return wb, gen, filepath.Dir(path)
+}
+
+func runWatchmanBacktestCmd(t *testing.T, wb int64, extra ...string) (string, error) {
+	t.Helper()
+	reset := func() {
+		watchmanBacktestFlagWorkbench, watchmanBacktestFlagJSON = 0, false
+		rootCmd.SetArgs(nil)
+	}
+	t.Cleanup(reset)
+	var out, errOut bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&errOut)
+	rootCmd.SetArgs(append([]string{"watchman", "backtest", "--workbench", strconv.FormatInt(wb, 10)}, extra...))
+	err := rootCmd.Execute()
+	reset()
+	return out.String(), err
+}
+
+func TestWatchmanBacktest_JSONKeysPinned(t *testing.T) {
+	wb, gen, _ := watchmanBacktestFixture(t)
+	out, err := runWatchmanBacktestCmd(t, wb, "--json")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"backtest_id", "categories", "cost_usd", "ok", "status", "verdict", "workbench"}, jsonKeys(t, out))
+	var raw struct {
+		Categories []map[string]any `json:"categories"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &raw))
+	require.Len(t, raw.Categories, len(watchman.Categories))
+	keys := make([]string, 0)
+	for k := range raw.Categories[0] {
+		keys = append(keys, k)
+	}
+	assert.ElementsMatch(t, []string{"category", "total", "agree", "wrong_high", "cost_usd", "status"}, keys)
+	var r watchmanBacktestJSON
+	require.NoError(t, json.Unmarshal([]byte(out), &r))
+	assert.True(t, r.OK)
+	assert.Equal(t, wb, r.Workbench)
+	assert.Positive(t, r.BacktestID)
+	assert.Equal(t, "done", r.Status)
+	assert.Equal(t, "stop", r.Verdict, "one strong category is not go")
+	for _, c := range r.Categories {
+		if c.Category == "permission" {
+			assert.Equal(t, watchmanBacktestRowJSON{Category: "permission", Total: 30, Agree: 30, Status: "strong"}, c)
+		} else {
+			assert.Equal(t, "not_measured", c.Status, c.Category)
+		}
+	}
+	assert.Equal(t, 30, gen.calls) // 30 decisions; nothing older for a profile, no judge for allow/deny
+
+	out, err = runWatchmanBacktestCmd(t, wb)
+	require.NoError(t, err)
+	assert.Contains(t, out, "permission   strong: 30 of 30 agree, 0 wrong while sure")
+	assert.Contains(t, out, "Verdict: stop")
+}
+
+func TestWatchmanBacktest_BusyLock(t *testing.T) {
+	wb, gen, dir := watchmanBacktestFixture(t)
+	unlock, ok, err := fsutil.TryLockFile(watchman.LockPath(dir))
+	require.NoError(t, err)
+	require.True(t, ok)
+	defer unlock()
+	out, err := runWatchmanBacktestCmd(t, wb, "--json")
+	require.Error(t, err)
+	assert.JSONEq(t, `{"ok":false,"error":"busy"}`, strings.TrimSpace(out))
+	assert.Zero(t, gen.calls)
+}
+
+func TestWatchmanBacktest_RefusedUnderAgent(t *testing.T) {
+	wb, gen, _ := watchmanBacktestFixture(t)
+	t.Setenv(agentEnvMarkers[0], "1")
+	_, err := runWatchmanBacktestCmd(t, wb, "--json")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), agentEnvMarkers[0])
+	assert.Zero(t, gen.calls)
+}

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -11,8 +12,10 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/fsutil"
 	"watchtower/internal/instructions"
 	"watchtower/internal/sessionfeed"
+	"watchtower/internal/watchman"
 )
 
 type watchmanTestGen struct{ calls int }
@@ -136,4 +139,43 @@ func seedDesignPrecedents(t *testing.T, database *db.DB, wb int64) {
 	}
 	require.NoError(t, database.UpsertWatchmanPrecedents(tx, ps))
 	require.NoError(t, tx.Commit())
+}
+
+// TestBacktest_DaemonSkipsWhenBusy: while `watchman backtest` holds the lock
+// the weekly run writes no row and no stamp; the next free cycle runs it.
+func TestBacktest_DaemonSkipsWhenBusy(t *testing.T) {
+	d, _, logs := newBackfillDaemon(t)
+	gen, _ := stubWatchman(t)
+	database, err := db.Open(filepath.Join(d.config.WorkspaceDir(), "watchtower.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+	d.SetDB(database)
+	wb, err := database.CreateWorkbench("acme", t.TempDir())
+	require.NoError(t, err)
+	require.NoError(t, database.EnableWatchmanWorkbench(wb, time.Now(), 0))
+
+	unlock, ok, err := fsutil.TryLockFile(watchman.LockPath(d.config.WorkspaceDir()))
+	require.NoError(t, err)
+	require.True(t, ok)
+	d.phaseWatchmanBacktest(context.Background())
+	assert.Contains(t, logs.String(), "watchman backtest: busy")
+	assert.True(t, readUnixStamp(d.lastWatchmanBacktestPath()).IsZero())
+	assert.True(t, readUnixStamp(d.lastWatchmanBacktestFailedPath()).IsZero())
+	b, _, err := database.LatestWatchmanBacktest(wb)
+	require.NoError(t, err)
+	assert.Nil(t, b)
+
+	unlock()
+	d.phaseWatchmanBacktest(context.Background())
+	b, _, err = database.LatestWatchmanBacktest(wb)
+	require.NoError(t, err)
+	require.NotNil(t, b)
+	assert.Equal(t, "done", b.Status)
+	assert.Equal(t, "stop", b.Verdict)
+	assert.Zero(t, gen.calls, "no precedents: no model call")
+	assert.False(t, readUnixStamp(d.lastWatchmanBacktestPath()).IsZero())
+	d.phaseWatchmanBacktest(context.Background())
+	n := 0
+	require.NoError(t, database.QueryRow(`SELECT count(*) FROM watchman_backtests`).Scan(&n))
+	assert.Equal(t, 1, n, "within the week: no second run")
 }

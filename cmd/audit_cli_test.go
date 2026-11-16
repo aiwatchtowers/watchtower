@@ -413,6 +413,7 @@ var cliNoContentCommands = map[string]bool{
 	"watch add":                        true,
 	"watch list":                       true,
 	"watch remove":                     true,
+	"watchman backtest":                true,
 	"watchman learn":                   true,
 	"watchman profile":                 true,
 	"watchman profile set":             true,

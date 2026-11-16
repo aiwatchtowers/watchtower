@@ -1,0 +1,342 @@
+package watchman
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+
+	"watchtower/internal/asks"
+	"watchtower/internal/db"
+	"watchtower/internal/digest"
+	"watchtower/internal/fsutil"
+	"watchtower/internal/instructions"
+	"watchtower/internal/pricing"
+	"watchtower/internal/prompts"
+)
+
+// Backtest bars (spec 2026-11-16-watchman-design §9).
+const (
+	// HiddenPerCategory is how many of a category's newest decisions are
+	// hidden and re-decided; a category with fewer is not measured.
+	HiddenPerCategory = 30
+	// StrongAgreement is the least agreement of a strong category.
+	StrongAgreement = 0.80
+	// StrongMaxWrongHigh is the most wrong-while-high of a strong category.
+	StrongMaxWrongHigh = 0.05
+)
+
+// Backtest row statuses and verdicts.
+const (
+	BacktestStrong      = "strong"
+	BacktestWeak        = "weak"
+	BacktestNotMeasured = "not_measured"
+	VerdictGo           = "go"
+	VerdictStop         = "stop"
+)
+
+// ErrBusy reports that another process holds the Watchman lock: a backtest
+// is already running.
+var ErrBusy = errors.New("watchman: a backtest is already running")
+
+// Backtest re-decides each category's newest 30 owner decisions with the
+// twin, hidden from it, and stores how often it agreed (spec §9). Nothing the
+// twin sees postdates an item: retrieval is cut at the item's own time with
+// every hidden decision excluded, and the profile and instructions are cut at
+// the category's oldest hidden decision — the profile is rebuilt from the 60
+// precedents before it (a stored or pinned profile may have been written
+// after), and only owner_instructions rows updated before it are passed
+// (the workbench's own texts carry no edit time, so they are left out).
+// Items with fixed options (asks with options, permissions, review rounds
+// and lessons) agree on an exact match; the rest go to the judge. A reply
+// the twin cannot get right (ErrBadReply) is a disagreement. The run holds
+// LockPath (ErrBusy when held), closes any running row left by a dead
+// process, writes a row per finished category and progress after each item;
+// an error leaves the row failed with its message and the finished rows
+// kept.
+func Backtest(ctx context.Context, d *db.DB, gen digest.Generator, judge Judge, store *prompts.Store, workbenchID int64, now time.Time) (int64, error) {
+	unlock, err := lockBacktest(d)
+	if err != nil {
+		return 0, err
+	}
+	defer unlock()
+	// A running row while the lock is free belongs to a process that died.
+	if _, err := d.FailRunningWatchmanBacktests(workbenchID, "interrupted", now); err != nil {
+		return 0, err
+	}
+	id, err := d.InsertWatchmanBacktest(db.WatchmanBacktest{WorkbenchID: workbenchID, StartedAt: now, Status: "running"})
+	if err != nil {
+		return 0, err
+	}
+	bt := backtestRun{ctx: ctx, d: d, gen: gen, judge: judge, store: store, wb: workbenchID, id: id}
+	var rows []db.WatchmanBacktestRow
+	var cost float64
+	for k, c := range Categories {
+		row, err := bt.category(c, k)
+		cost += row.CostUSD
+		if err == nil {
+			err = d.AddWatchmanBacktestRow(id, row)
+		}
+		if err != nil {
+			err = fmt.Errorf("watchman backtest, category %s: %w", c, err)
+			if ferr := d.FinishWatchmanBacktest(id, "failed", "", err.Error(), cost, time.Now()); ferr != nil {
+				err = errors.Join(err, ferr)
+			}
+			return id, err
+		}
+		rows = append(rows, row)
+	}
+	if err := d.FinishWatchmanBacktest(id, "done", Verdict(rows), "", cost, time.Now()); err != nil {
+		return id, err
+	}
+	return id, nil
+}
+
+// lockBacktest takes LockPath next to the database file. An in-memory
+// database has no file and is private to this process: nothing to lock.
+func lockBacktest(d *db.DB) (func(), error) {
+	var file string
+	if err := d.QueryRow(`SELECT file FROM pragma_database_list WHERE name = 'main'`).Scan(&file); err != nil {
+		return nil, fmt.Errorf("watchman backtest: locating the database: %w", err)
+	}
+	if file == "" {
+		return func() {}, nil
+	}
+	unlock, ok, err := fsutil.TryLockFile(LockPath(filepath.Dir(file)))
+	if err != nil {
+		return nil, fmt.Errorf("watchman backtest: %w", err)
+	}
+	if !ok {
+		return nil, ErrBusy
+	}
+	return unlock, nil
+}
+
+type backtestRun struct {
+	ctx   context.Context
+	d     *db.DB
+	gen   digest.Generator
+	judge Judge
+	store *prompts.Store
+	wb    int64
+	id    int64
+}
+
+// category measures one category; k is how many categories are done. The
+// returned row carries the cost spent so far even with an error.
+func (bt backtestRun) category(c string, k int) (db.WatchmanBacktestRow, error) {
+	row := db.WatchmanBacktestRow{Category: c}
+	if err := bt.ctx.Err(); err != nil {
+		return row, err
+	}
+	hidden, err := bt.d.WatchmanRecentPrecedents(bt.wb, c, HiddenPerCategory)
+	if err != nil {
+		return row, err
+	}
+	if len(hidden) < HiddenPerCategory {
+		// Total is what there is, so the owner sees how far from 30 it is.
+		row.Total, row.Status = len(hidden), BacktestNotMeasured
+		return row, nil
+	}
+	// Grouped by the hidden decision's own category, never the twin's label
+	// of it: the model may relabel.
+	cutoff := hidden[len(hidden)-1].DecidedAt // newest first: the last is the oldest
+	exclude := make([]int64, len(hidden))
+	for i, p := range hidden {
+		exclude[i] = p.ID
+	}
+	profile, err := bt.profile(c, cutoff, &row)
+	if err != nil {
+		return row, err
+	}
+	g, err := bt.d.OwnerInstructionsBefore(cutoff)
+	if err != nil {
+		return row, err
+	}
+	instr := renderInstructions(instructions.Texts{Global: g})
+	for i, p := range hidden {
+		agree, high, err := bt.item(c, p, exclude, profile, instr, &row)
+		if err != nil {
+			return row, err
+		}
+		row.Total++
+		switch {
+		case agree:
+			row.Agree++
+		case high:
+			row.WrongHigh++
+		}
+		if err := bt.d.SetWatchmanBacktestProgress(bt.id,
+			fmt.Sprintf("%s, %d of %d · %d of %d categories done", c, i+1, len(hidden), k, len(Categories))); err != nil {
+			return row, err
+		}
+	}
+	row.Status = rowStatus(row)
+	return row, nil
+}
+
+// profile builds the backtest-local profile of category c from the newest 60
+// precedents decided before cutoff ("" with fewer than 5, as the live
+// rebuild would have none). It is never stored.
+func (bt backtestRun) profile(c string, cutoff time.Time, row *db.WatchmanBacktestRow) (string, error) {
+	ps, err := bt.d.WatchmanPrecedentsBefore(bt.wb, c, cutoff, profilePrecedents)
+	if err != nil || len(ps) < profileMinPrecedents {
+		return "", err
+	}
+	text, usage, err := ProfileText(bt.ctx, bt.gen, bt.store, c, ps)
+	row.CostUSD += usageCost(usage)
+	return text, err
+}
+
+// item re-decides one hidden precedent and scores it.
+func (bt backtestRun) item(c string, p db.WatchmanPrecedent, exclude []int64, profile, instr string, row *db.WatchmanBacktestRow) (agree, high bool, err error) {
+	opts, err := backtestOptions(bt.d, p)
+	if err != nil {
+		return false, false, err
+	}
+	dec, err := Decide(bt.ctx, bt.d, bt.gen, bt.store, Item{
+		WorkbenchID: bt.wb, Category: c, Situation: p.Situation, Options: opts,
+		DecidedBefore: p.DecidedAt, Exclude: exclude, Profile: profile, Instructions: instr,
+	})
+	row.CostUSD += usageCost(dec.Usage)
+	switch {
+	case errors.Is(err, ErrBadReply):
+		return false, false, nil // the twin gave no usable decision: not the owner's
+	case err != nil:
+		return false, false, err
+	case len(opts) > 0:
+		return dec.Choice == p.Choice, dec.Confidence == "high", nil
+	}
+	same, usage, err := bt.judge.Same(bt.ctx, ownerAnswer(p), twinAnswer(dec))
+	row.CostUSD += usageCost(usage)
+	if err != nil {
+		return false, false, err
+	}
+	return same, dec.Confidence == "high", nil
+}
+
+// backtestOptions returns the options the owner chose among, when the
+// precedent's source had fixed ones: a permission (allow/deny), a review
+// round (approve/changes), a review lesson (accepted/dismissed), a review
+// ask's verdict, or an ask with one single-choice question with options.
+// nil means a free answer (the judge scores it). The option texts go through
+// the same clean as the stored choice, so an exact match is meaningful.
+func backtestOptions(d *db.DB, p db.WatchmanPrecedent) ([]string, error) {
+	switch p.Source {
+	case SourcePermission:
+		return []string{"allow", "deny"}, nil
+	case SourceReview:
+		switch {
+		case strings.HasPrefix(p.SourceKey, db.WatchmanReviewRound+":"):
+			return []string{"approve", "changes"}, nil
+		case strings.HasPrefix(p.SourceKey, db.WatchmanReviewLesson+":"):
+			return []string{"accepted", "dismissed"}, nil
+		}
+		return nil, nil
+	case SourceAsk:
+		return askOptions(d, p)
+	}
+	return nil, nil
+}
+
+func askOptions(d *db.DB, p db.WatchmanPrecedent) ([]string, error) {
+	id, err := strconv.ParseInt(p.SourceKey, 10, 64)
+	if err != nil {
+		return nil, nil //nolint:nilerr // not an ask id: score it as a free answer
+	}
+	a, err := d.GetOwnerAsk(p.WorkbenchID, id)
+	if errors.Is(err, db.ErrAskNotFound) {
+		return nil, nil // the ask is gone: score it as a free answer
+	}
+	if err != nil {
+		return nil, err
+	}
+	switch a.Kind {
+	case asks.KindReview:
+		return []string{asks.VerdictApproved, asks.VerdictChanges}, nil
+	case asks.KindCheck:
+		return nil, nil
+	}
+	var payload asks.Payload
+	if err := json.Unmarshal([]byte(a.Payload), &payload); err != nil || len(payload.Questions) != 1 {
+		return nil, nil //nolint:nilerr // the source already skipped an unreadable payload; several questions are a free answer
+	}
+	q := payload.Questions[0]
+	if q.Multi || len(q.Options) == 0 {
+		return nil, nil
+	}
+	out := make([]string, 0, len(q.Options))
+	for _, o := range q.Options {
+		out = append(out, clean(o.Label))
+	}
+	return out, nil
+}
+
+// ownerAnswer and twinAnswer are the two texts the judge compares.
+func ownerAnswer(p db.WatchmanPrecedent) string {
+	return joinNonEmpty("\n", "Choice: "+p.Choice, wordsLine("Owner's words: ", p.OwnerWords))
+}
+
+func twinAnswer(dec Decision) string {
+	return joinNonEmpty("\n", "Choice: "+dec.Choice, wordsLine("Reasoning: ", dec.Rationale))
+}
+
+func wordsLine(head, s string) string {
+	if strings.TrimSpace(s) == "" {
+		return ""
+	}
+	return head + s
+}
+
+// rowStatus applies the bars to a measured row.
+func rowStatus(r db.WatchmanBacktestRow) string {
+	if r.Total < HiddenPerCategory {
+		return BacktestNotMeasured
+	}
+	agreement := float64(r.Agree) / float64(r.Total)
+	wrongHigh := float64(r.WrongHigh) / float64(r.Total)
+	if agreement >= StrongAgreement && wrongHigh <= StrongMaxWrongHigh {
+		return BacktestStrong
+	}
+	return BacktestWeak
+}
+
+// Verdict is the phase-1 exit (spec §9): go when at least 3 categories are
+// strong and permission or review_code is one of them, else stop.
+func Verdict(rows []db.WatchmanBacktestRow) string {
+	strong, key := 0, false
+	for _, r := range rows {
+		if r.Status != BacktestStrong {
+			continue
+		}
+		strong++
+		if r.Category == CategoryPermission || r.Category == CategoryReviewCode {
+			key = true
+		}
+	}
+	if strong >= 3 && key {
+		return VerdictGo
+	}
+	return VerdictStop
+}
+
+// usageCost is a call's reported cost, else its estimate from the token
+// counts (the Anthropic table, then the Codex one), else 0 for a model with
+// no price — never guessed.
+func usageCost(u *digest.Usage) float64 {
+	if u == nil {
+		return 0
+	}
+	if u.ReportedCostUSD != nil {
+		return *u.ReportedCostUSD
+	}
+	if usd, ok := pricing.Cost(pricing.Resolve(u.Model), "", u.Input, u.Output, u.CacheRead, u.CacheWrite5m, u.CacheWrite1h); ok {
+		return usd
+	}
+	usd, _ := pricing.CodexCost(u.Model, u.Input, u.Output, u.CacheRead, u.CacheWrite())
+	return usd
+}

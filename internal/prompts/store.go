@@ -67,6 +67,7 @@ const (
 	MediaDescribe              = "media.describe"
 	MediaSummarizeLink         = "media.summarize_link"
 	WatchmanDecide             = "watchman.decide"
+	WatchmanJudge              = "watchman.judge"
 	WatchmanLabel              = "watchman.label"
 	WatchmanProfile            = "watchman.profile"
 )

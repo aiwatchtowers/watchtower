@@ -1,0 +1,88 @@
+package db
+
+import (
+	"fmt"
+	"strconv"
+	"time"
+)
+
+// Watchman backtest storage helpers (Task 8): the leak-free reads a backtest
+// builds its context from, and the writes of a running backtest.
+
+// WatchmanPrecedentsBefore returns the newest limit precedents of a category
+// in a workbench decided strictly before `before`, newest first.
+func (db *DB) WatchmanPrecedentsBefore(workbenchID int64, category string, before time.Time, limit int) ([]WatchmanPrecedent, error) {
+	rows, err := db.Query(`SELECT id, workbench_id, source, source_key, category, situation, choice, owner_words, decided_at, weight
+		FROM watchman_precedents WHERE workbench_id = ? AND category = ? AND decided_at < ?
+		ORDER BY decided_at DESC, id DESC LIMIT ?`, workbenchID, category, wmTime(before), limit)
+	if err != nil {
+		return nil, fmt.Errorf("reading watchman precedents %d/%s before a cutoff: %w", workbenchID, category, err)
+	}
+	defer rows.Close()
+	var out []WatchmanPrecedent
+	for rows.Next() {
+		var p WatchmanPrecedent
+		var decided string
+		if err := rows.Scan(&p.ID, &p.WorkbenchID, &p.Source, &p.SourceKey, &p.Category, &p.Situation, &p.Choice, &p.OwnerWords, &decided, &p.Weight); err != nil {
+			return nil, fmt.Errorf("scanning watchman precedent: %w", err)
+		}
+		p.DecidedAt, _ = time.Parse(time.RFC3339, decided)
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// OwnerInstructionsBefore returns the global instructions whose row was last
+// updated strictly before `before`; a row updated later reads "" (its older
+// text is not kept, so it is left out rather than leak a newer one).
+func (db *DB) OwnerInstructionsBefore(before time.Time) (OwnerInstructions, error) {
+	rows, err := db.Query(`SELECT scope, body FROM owner_instructions WHERE updated_at < ?`, wmTime(before))
+	if err != nil {
+		return OwnerInstructions{}, fmt.Errorf("reading owner instructions before a cutoff: %w", err)
+	}
+	defer rows.Close()
+	var out OwnerInstructions
+	for rows.Next() {
+		var scope, body string
+		if err := rows.Scan(&scope, &body); err != nil {
+			return OwnerInstructions{}, fmt.Errorf("scanning owner instructions: %w", err)
+		}
+		switch InstructionField(scope) {
+		case InstructionSession:
+			out.Session = body
+		case InstructionProcedure:
+			out.Procedure = body
+		case InstructionChat:
+			out.Chat = body
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return OwnerInstructions{}, fmt.Errorf("reading owner instructions before a cutoff: %w", err)
+	}
+	return out, nil
+}
+
+// AddWatchmanBacktestRow stores one finished category's result of a backtest.
+func (db *DB) AddWatchmanBacktestRow(backtestID int64, r WatchmanBacktestRow) error {
+	if _, err := db.Exec(`INSERT INTO watchman_backtest_rows (backtest_id, category, total, agree, wrong_high, cost_usd, status)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`, backtestID, r.Category, r.Total, r.Agree, r.WrongHigh, r.CostUSD, r.Status); err != nil {
+		return fmt.Errorf("saving watchman backtest %d row %s: %w", backtestID, r.Category, err)
+	}
+	return nil
+}
+
+// FinishWatchmanBacktest closes a running backtest as done (with its verdict)
+// or failed (with its error). A row no longer running is left as it is.
+func (db *DB) FinishWatchmanBacktest(id int64, status, verdict, errText string, costUSD float64, at time.Time) error {
+	if _, err := db.Exec(`UPDATE watchman_backtests SET status = ?, verdict = ?, error = ?, cost_usd = ?, finished_at = ?
+		WHERE id = ? AND status = 'running'`, status, verdict, errText, costUSD, wmTime(at), id); err != nil {
+		return fmt.Errorf("finishing watchman backtest %d: %w", id, err)
+	}
+	return nil
+}
+
+// WatchmanBacktestByID returns backtest id of the workbench with its rows
+// (nil when there is no such row).
+func (db *DB) WatchmanBacktestByID(workbenchID, id int64) (*WatchmanBacktest, []WatchmanBacktestRow, error) {
+	return db.watchmanBacktestWhere("AND id = "+strconv.FormatInt(id, 10), workbenchID)
+}

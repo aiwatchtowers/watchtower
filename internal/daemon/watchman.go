@@ -121,7 +121,7 @@ func (d *Daemon) lastWatchmanProfileFailedPath() string {
 // writeWatchmanStamp writes now as unix seconds to path; a failure is logged.
 func (d *Daemon) writeWatchmanStamp(path string, now time.Time) {
 	if err := os.WriteFile(path, []byte(strconv.FormatInt(now.Unix(), 10)), 0o600); err != nil {
-		d.logger.Printf("watchman profile: failed to save stamp: %v", err)
+		d.logger.Printf("watchman: failed to save stamp %s: %v", filepath.Base(path), err)
 	}
 }
 
@@ -181,6 +181,74 @@ func (d *Daemon) phaseWatchmanProfile(ctx context.Context) {
 		d.writeWatchmanStamp(d.lastWatchmanProfilePath(), now)
 		if err := os.Remove(d.lastWatchmanProfileFailedPath()); err != nil && !os.IsNotExist(err) {
 			d.logger.Printf("watchman profile: failed to clear the failure stamp: %v", err)
+		}
+		return pipelineRunStats{items: len(ids)}
+	})
+}
+
+func (d *Daemon) lastWatchmanBacktestPath() string {
+	return filepath.Join(d.config.WorkspaceDir(), "last_watchman_backtest.txt")
+}
+
+func (d *Daemon) lastWatchmanBacktestFailedPath() string {
+	return filepath.Join(d.config.WorkspaceDir(), "last_watchman_backtest_failed.txt")
+}
+
+// phaseWatchmanBacktest reruns, once a week after the profile rebuild, the
+// backtest of every Watchman workbench (spec §9; strong-tier decisions, a
+// light-tier judge). The cadence is the profile phase's: success stamp
+// last_watchman_backtest.txt, failure stamp last_watchman_backtest_failed.txt
+// (retry a day later), no catch-up, nothing stamped on a cancelled cycle.
+// A backtest already running (watchman.ErrBusy: `watchman backtest` holds
+// the lock) leaves both stamps unwritten, so the next cycle tries again.
+// Logs carry ids and counts, never text.
+func (d *Daemon) phaseWatchmanBacktest(ctx context.Context) {
+	if d.db == nil || ctx.Err() != nil {
+		return
+	}
+	now := time.Now()
+	if last := readUnixStamp(d.lastWatchmanBacktestPath()); !last.IsZero() && now.Sub(last) < watchmanProfileInterval {
+		return
+	}
+	if failed := readUnixStamp(d.lastWatchmanBacktestFailedPath()); !failed.IsZero() && now.Sub(failed) < watchmanProfileRetryAfter {
+		return
+	}
+	ids, err := d.db.WatchmanWorkbenches()
+	if err != nil {
+		d.logger.Printf("watchman backtest: %v", err)
+		return
+	}
+	if len(ids) == 0 {
+		return
+	}
+	d.trackedPipelineRun("watchman-backtest", func() pipelineRunStats {
+		gen := d.watchmanGenerator(ctx)
+		store := prompts.New(d.db, nil)
+		judge := watchman.NewLLMJudge(gen, store)
+		var errs []error
+		for _, wb := range ids {
+			id, err := watchman.Backtest(ctx, d.db, gen, judge, store, wb, now)
+			if errors.Is(err, watchman.ErrBusy) {
+				d.logger.Printf("watchman backtest: busy, retried next cycle")
+				return pipelineRunStats{items: len(ids)}
+			}
+			if err != nil {
+				d.logger.Printf("watchman backtest: workbench %d (backtest %d): %v", wb, id, err) // errors carry no precedent text
+				errs = append(errs, err)
+			}
+		}
+		err := errors.Join(errs...)
+		if ctx.Err() != nil { // cancelled mid-run (sleep/wake): retried next cycle
+			return pipelineRunStats{items: len(ids), err: err}
+		}
+		if err != nil {
+			d.writeWatchmanStamp(d.lastWatchmanBacktestFailedPath(), now)
+			d.logger.Printf("watchman backtest: retried tomorrow")
+			return pipelineRunStats{items: len(ids), err: err}
+		}
+		d.writeWatchmanStamp(d.lastWatchmanBacktestPath(), now)
+		if err := os.Remove(d.lastWatchmanBacktestFailedPath()); err != nil && !os.IsNotExist(err) {
+			d.logger.Printf("watchman backtest: failed to clear the failure stamp: %v", err)
 		}
 		return pipelineRunStats{items: len(ids)}
 	})

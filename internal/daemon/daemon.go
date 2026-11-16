@@ -713,6 +713,8 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 	d.phaseWatchmanLearn(ctx)
 	// Weekly: category profiles (strong tier) and the learned sleep window.
 	d.phaseWatchmanProfile(ctx)
+	// Weekly, after the profiles: the backtest (its own lock, ErrBusy = next cycle).
+	d.phaseWatchmanBacktest(ctx)
 	// After the knowledge index: the fill is mechanical (no AI) and needs no
 	// fresh sync — Slack sync's own writes already reach the new index
 	// through the triggers — so it runs once the cycle's sync is done.

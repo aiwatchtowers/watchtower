@@ -21,6 +21,11 @@ const decidePrecedents = 8
 // options.
 var ErrChoiceNotOffered = errors.New("watchman: the choice is not one of the offered options")
 
+// ErrBadReply wraps every Decide error that comes from the model's reply
+// (not JSON, a missing choice, an unknown enum, a choice not offered) rather
+// than from the call: the backtest counts such an item as a disagreement.
+var ErrBadReply = errors.New("watchman decide: unusable reply")
+
 // decideCategories are the fixed decision categories (the CHECK of
 // watchman_precedents.category).
 var decideCategories = map[string]bool{
@@ -136,7 +141,10 @@ func Decide(ctx context.Context, d *db.DB, gen digest.Generator, store *prompts.
 	}
 	dec, err := parseDecision(raw, it.Options, ps)
 	dec.Usage = usage
-	return dec, err
+	if err != nil {
+		return dec, fmt.Errorf("%w: %w", ErrBadReply, err)
+	}
+	return dec, nil
 }
 
 // buildDecideUser fences the item and its context as data: one JSON object
