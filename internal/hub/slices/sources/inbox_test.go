@@ -7,9 +7,11 @@ import (
 	"os"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
+	"watchtower/internal/automations/blocks"
 	"watchtower/internal/db"
 	hubslices "watchtower/internal/hub/slices"
 	"watchtower/internal/hub/slices/sources/inboxlegacy"
@@ -77,8 +79,8 @@ func marshalWire(t *testing.T, v any) []byte {
 
 // TestInboxSource_RecordsMatchTheGoGolden: over the feed fixture, one record
 // per folder (with its cut count) and one per card, each the fixture's
-// folder or card; a legacy card carries its projected document and only its
-// section's kind.
+// folder or card; a legacy card carries its typed section and its
+// projected document.
 func TestInboxSource_RecordsMatchTheGoGolden(t *testing.T) {
 	ran := 0
 	for _, c := range inboxCases(t) {
@@ -99,7 +101,7 @@ func TestInboxSource_RecordsMatchTheGoGolden(t *testing.T) {
 				o.DisabledFeatures = c.DisabledFeatures
 				return inboxfeed.Build(ctx, d, o)
 			}
-			folders, cards := inboxItems(t, InboxSource(build, func() time.Time { return now }, time.UTC))
+			folders, cards := inboxItems(t, InboxSource(build, func() time.Time { return now }))
 
 			if len(folders) != len(c.Expect.Folders) || len(cards) != len(c.Expect.Cards) {
 				t.Fatalf("%d folders, %d cards; want %d, %d", len(folders), len(cards), len(c.Expect.Folders), len(c.Expect.Cards))
@@ -112,12 +114,11 @@ func TestInboxSource_RecordsMatchTheGoGolden(t *testing.T) {
 			}
 			for _, card := range c.Expect.Cards {
 				if card.Legacy != nil {
-					doc, err := inboxlegacy.Project(*card.Legacy, time.UTC)
+					doc, err := inboxlegacy.Project(*card.Legacy)
 					if err != nil {
 						t.Fatal(err)
 					}
 					card.Blocks = doc
-					card.Legacy = &api.LegacySection{Kind: card.Legacy.Kind, Items: []api.LegacyItem{}, Attention: []api.LegacyAttention{}}
 				}
 				if got, want := cards[card.ID], marshalWire(t, card); string(got) != string(want) {
 					t.Errorf("card %s:\n got %s\nwant %s", card.ID, got, want)
@@ -140,7 +141,7 @@ func TestInboxSource_LimitAndClipOnThePhone(t *testing.T) {
 		return api.Feed{V: 1, Folders: []api.Folder{{ID: 1, Kind: api.FolderRoot}}, Cards: []api.Card{},
 			More: []api.FolderMore{{FolderID: 1, Count: 7}}}, nil
 	}
-	folders, _ := inboxItems(t, InboxSource(build, func() time.Time { return now }, time.UTC))
+	folders, _ := inboxItems(t, InboxSource(build, func() time.Time { return now }))
 	if len(got) != 1 {
 		t.Fatalf("%d builds for one cycle, want 1", len(got))
 	}
@@ -168,7 +169,7 @@ func TestInboxSource_FailedBuildKeepsTheLastRecords(t *testing.T) {
 		}
 		return api.Feed{V: 1, Folders: []api.Folder{{ID: 1}}, Cards: []api.Card{{ID: "o1"}}}, nil
 	}
-	srcs := InboxSource(build, nil, time.UTC)
+	srcs := InboxSource(build, nil)
 	for _, s := range srcs {
 		if items, err := s.Items(context.Background()); err == nil {
 			t.Fatalf("%s: a failed build answered %d items", s.Kind(), len(items))
@@ -224,7 +225,7 @@ func TestInboxSource_EveryRecordUnder900KB(t *testing.T) {
 		INSERT INTO tracks (id, text, priority, updated_at) SELECT i, `+long(5000)+`, 'high', '2026-11-16T09:00:00Z' FROM n`)
 	build := func(ctx context.Context, o inboxfeed.Options) (api.Feed, error) { return inboxfeed.Build(ctx, d, o) }
 	now := time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
-	folders, cards := inboxItems(t, InboxSource(build, func() time.Time { return now }, time.UTC))
+	folders, cards := inboxItems(t, InboxSource(build, func() time.Time { return now }))
 	if len(cards) < 40 || cards["ideas"] == nil || cards["tracks"] == nil {
 		t.Fatalf("%d cards, ideas %v, tracks %v", len(cards), cards["ideas"] != nil, cards["tracks"] != nil)
 	}
@@ -241,5 +242,95 @@ func TestInboxSource_EveryRecordUnder900KB(t *testing.T) {
 				t.Errorf("%s-%s is %d bytes", name, id, len(p))
 			}
 		}
+	}
+}
+
+// TestInboxSource_PlanItemsKeepTheirUTCTimes: a Morning brief card carries
+// its typed plan items with their UTC start and end (the phone draws them in
+// its own zone), and its document writes no clock time.
+func TestInboxSource_PlanItemsKeepTheirUTCTimes(t *testing.T) {
+	d := db.OpenTestDB(t)
+	exec(t, d, `INSERT INTO email_accounts (id, provider, email_address) VALUES (1, 'imap', 'owner@example.com')`)
+	exec(t, d, `INSERT INTO day_plans (id, user_id, plan_date, generated_at) VALUES (1, 'U1', '2026-11-16', '2026-11-16T07:00:00Z')`)
+	exec(t, d, `INSERT INTO day_plan_items (id, day_plan_id, kind, source_type, title, start_time, end_time, status, order_index)
+		VALUES (1, 1, 'timeblock', 'manual', 'Standup', '2026-11-16T09:30:00Z', '2026-11-16T09:45:00Z', 'pending', 1)`)
+	build := func(ctx context.Context, o inboxfeed.Options) (api.Feed, error) { return inboxfeed.Build(ctx, d, o) }
+	now := time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
+	_, cards := inboxItems(t, InboxSource(build, func() time.Time { return now }))
+	var c api.Card
+	if err := json.Unmarshal(cards["brief-2026-11-16"], &c); err != nil {
+		t.Fatalf("brief card %s: %v", cards["brief-2026-11-16"], err)
+	}
+	if c.Legacy == nil || len(c.Legacy.Items) != 1 {
+		t.Fatalf("legacy %+v", c.Legacy)
+	}
+	if it := c.Legacy.Items[0]; it.Stamp != "2026-11-16T09:30:00Z" || it.End != "2026-11-16T09:45:00Z" {
+		t.Fatalf("item %+v, want its UTC start and end", it)
+	}
+	doc, err := blocks.Decode(c.Blocks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range doc.Blocks {
+		if b.List == nil {
+			continue
+		}
+		for _, r := range b.List.Rows {
+			if r.Badge != nil || strings.Contains(r.Title+r.Subtitle, ":") {
+				t.Errorf("plan row %+v carries a clock time", r)
+			}
+		}
+	}
+}
+
+// TestInboxSource_AnOversizedCardFallsBack: an approval whose summary and
+// error run to megabytes is published as a too-large notice; the other
+// cards and the kind go on.
+func TestInboxSource_AnOversizedCardFallsBack(t *testing.T) {
+	huge := strings.Repeat("x", 2_000_000)
+	build := func(context.Context, inboxfeed.Options) (api.Feed, error) {
+		return api.Feed{V: 1, Folders: []api.Folder{{ID: 1}}, Cards: []api.Card{
+			{ID: "a1", FolderID: 1, CardKind: api.CardApprovalNative, Title: strings.Repeat("t", 500), Stamp: "2026-11-16T10:00:00Z",
+				Unread: true, Priority: "high", ContentHash: "sha", Actions: []api.CardAction{}, RefFacts: []api.RefFacts{},
+				Approval: &api.Approval{Tool: "send", Summary: huge, Error: huge}},
+			{ID: "o2", FolderID: 1, CardKind: api.CardArtifact, Title: "small", Actions: []api.CardAction{}, RefFacts: []api.RefFacts{}},
+		}}, nil
+	}
+	_, cards := inboxItems(t, InboxSource(build, nil))
+	if len(cards) != 2 || cards["o2"] == nil {
+		t.Fatalf("cards %d", len(cards))
+	}
+	if n := len(cards["a1"]); n > inboxRecordBudget {
+		t.Fatalf("fallback is %d bytes", n)
+	}
+	var c api.Card
+	if err := json.Unmarshal(cards["a1"], &c); err != nil {
+		t.Fatal(err)
+	}
+	if c.CardKind != api.CardNotice || c.Approval != nil || c.Body != inboxfeed.TooLargeSentence ||
+		c.ContentHash != "sha" || c.FolderID != 1 || !c.Unread || c.Priority != "high" || len([]rune(c.Title)) != fallbackTitleChars {
+		t.Fatalf("fallback %+v", c)
+	}
+}
+
+// TestInboxSource_AnOldBuildIsNotShared: a kind built alone (a retry) is not
+// served to the other kind later: that one builds again.
+func TestInboxSource_AnOldBuildIsNotShared(t *testing.T) {
+	now := time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
+	builds := 0
+	build := func(context.Context, inboxfeed.Options) (api.Feed, error) {
+		builds++
+		return api.Feed{V: 1, Folders: []api.Folder{}, Cards: []api.Card{}}, nil
+	}
+	srcs := InboxSource(build, func() time.Time { return now })
+	if _, err := srcs[1].Items(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Minute)
+	if _, err := srcs[0].Items(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if builds != 2 {
+		t.Fatalf("%d builds, want 2: a minute-old feed was shared", builds)
 	}
 }

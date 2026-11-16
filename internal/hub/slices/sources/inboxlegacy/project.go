@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	"watchtower/internal/automations/blocks"
@@ -32,19 +31,17 @@ const (
 // and the plan_item refs of a Morning brief (the hub only).
 var validateOptions = blocks.Options{BuiltIn: true, PlanItemRefs: true}
 
-// Project is s as a canonical block document. loc is the zone a plan item's
-// time is written in (the hub's, the owner's Mac). A list longer than the
-// document caps keeps its first rows and says how many more are on the Mac.
-func Project(s api.LegacySection, loc *time.Location) (string, error) {
-	if loc == nil {
-		loc = time.UTC
-	}
+// Project is s as a canonical block document. It carries no clock time: the
+// phone draws a plan item's time from the card's typed items in its own
+// zone. A list longer than the document caps keeps its first rows and says
+// how many more are on the Mac.
+func Project(s api.LegacySection) (string, error) {
 	var err error
 	// A document over the caps (rows, bytes) is built again with half the
 	// rows per list, down to one.
 	for limit := blocks.MaxListRows; limit >= 1; limit /= 2 {
 		var raw []any
-		if raw, err = document(s, loc, limit); err != nil {
+		if raw, err = document(s, limit); err != nil {
 			return "", err
 		}
 		var doc blocks.Document
@@ -62,10 +59,10 @@ func Project(s api.LegacySection, loc *time.Location) (string, error) {
 
 // document is s as the validator's input (goja's shapes: []any, map[string]any,
 // int64), each list cut to limit rows.
-func document(s api.LegacySection, loc *time.Location, limit int) ([]any, error) {
+func document(s api.LegacySection, limit int) ([]any, error) {
 	switch s.Kind {
 	case api.LegacyMorningBrief:
-		return morningBrief(s, loc, limit), nil
+		return morningBrief(s, limit), nil
 	case api.LegacyTracks:
 		var active, stopped []api.LegacyItem
 		for _, it := range s.Items {
@@ -125,9 +122,9 @@ func StoppedTitle(n int) string { return "Stopped · " + strconv.Itoa(n) }
 // MoreOnYourMac is the line under a list cut by the caps.
 func MoreOnYourMac(n int) string { return strconv.Itoa(n) + " more on your Mac" }
 
-// morningBrief is a day's plan (a heading "Plan · done of all" and its items
-// with their times) and its attention lines.
-func morningBrief(s api.LegacySection, loc *time.Location, limit int) []any {
+// morningBrief is a day's plan (a heading "Plan · done of all" and its
+// items) and its attention lines.
+func morningBrief(s api.LegacySection, limit int) []any {
 	var out []any
 	if len(s.Items) > 0 {
 		done := 0
@@ -137,9 +134,7 @@ func morningBrief(s api.LegacySection, loc *time.Location, limit int) []any {
 			}
 		}
 		out = append(out, heading(PlanHeading(done, len(s.Items))))
-		out = append(out, list("", s.Items, limit, func(it api.LegacyItem) map[string]any {
-			return planRow(it, loc)
-		})...)
+		out = append(out, list("", s.Items, limit, planRow)...)
 	}
 	if len(s.Attention) > 0 {
 		out = append(out, heading(attentionHeading))
@@ -176,17 +171,14 @@ func list(title string, items []api.LegacyItem, limit int, row func(api.LegacyIt
 }
 
 // planRow is a plan item: "✓ " before a done one's title, its source as the
-// subtitle, its time (a block's range) as the badge, its plan_item ref.
-func planRow(it api.LegacyItem, loc *time.Location) map[string]any {
+// subtitle, its plan_item ref. Its time is not written here (it would be the
+// hub's zone): the phone draws it from the typed item's UTC start and end.
+func planRow(it api.LegacyItem) map[string]any {
 	title := titleOf(it)
 	if it.Done {
 		title = doneMark + title
 	}
-	r := row(title, it.Subtitle, it)
-	if at := timeRange(it, loc); at != "" {
-		r["badge"] = map[string]any{"text": at}
-	}
-	return r
+	return row(title, it.Subtitle, it)
 }
 
 // trackRow is a track: "Track", its "N new" as an accent badge.
@@ -237,20 +229,6 @@ func titleOf(it api.LegacyItem) string {
 	return untitled
 }
 
-// timeRange is a plan item's start, or "start–end" for a time block, in loc;
-// "" for a backlog item.
-func timeRange(it api.LegacyItem, loc *time.Location) string {
-	start, err := time.Parse(time.RFC3339, it.Stamp)
-	if err != nil {
-		return ""
-	}
-	out := start.In(loc).Format("15:04")
-	if end, err := time.Parse(time.RFC3339, it.End); err == nil {
-		out += "–" + end.In(loc).Format("15:04")
-	}
-	return out
-}
-
 func heading(t string) map[string]any {
 	return map[string]any{"type": blocks.TypeHeading, "text": clip(t, blocks.MaxHeadingChars), "level": int64(2)}
 }
@@ -278,4 +256,21 @@ func clip(s string, n int) string {
 	}
 	r := []rune(s)
 	return strings.TrimSpace(string(r[:n-1])) + "…"
+}
+
+// unprojectedLine is the one line of a section that does not project.
+const unprojectedLine = "Open it on your Mac."
+
+// Unprojected is the document a card carries when its section does not
+// project: one line sending the owner to the Mac.
+func Unprojected() string {
+	doc, err := blocks.Validate("inboxlegacy", []any{text(unprojectedLine)}, validateOptions)
+	if err != nil {
+		return ""
+	}
+	b, err := doc.Canonical()
+	if err != nil {
+		return ""
+	}
+	return string(b)
 }

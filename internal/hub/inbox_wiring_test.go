@@ -33,8 +33,7 @@ func sourceKinds(r *chatRig) []hubslices.Kind {
 }
 
 // TestInboxWiring_TheTowerFeedsThePhoneInbox: with the daemon's tower the
-// hub publishes the Inbox from inbox.feed, its handlers reach inbox.act and
-// the heartbeat says "on"; under workbench_only it publishes no Inbox kind
+// hub publishes the Inbox from inbox.feed and the heartbeat says "on"; under workbench_only it publishes no Inbox kind
 // and says policy_off; without a tower it says nothing.
 func TestInboxWiring_TheTowerFeedsThePhoneInbox(t *testing.T) {
 	r := inboxRig(t, policy.MobileAllowed)

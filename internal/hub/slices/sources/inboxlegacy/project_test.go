@@ -3,7 +3,6 @@ package inboxlegacy
 import (
 	"strings"
 	"testing"
-	"time"
 
 	"watchtower/internal/automations/blocks"
 	"watchtower/internal/tower/api"
@@ -12,7 +11,7 @@ import (
 // project projects s in UTC and decodes the document back.
 func project(t *testing.T, s api.LegacySection) *blocks.Document {
 	t.Helper()
-	out, err := Project(s, time.UTC)
+	out, err := Project(s)
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -70,14 +69,17 @@ func TestProject_MorningBrief(t *testing.T) {
 		t.Fatalf("%d lists, want plan and attention", len(ls))
 	}
 	plan := ls[0].Rows
-	if plan[0].Title != "✓ Review ACME-412 fix" || plan[0].Badge == nil || plan[0].Badge.Text != "09:00" {
-		t.Errorf("done row %+v", plan[0])
+	if plan[0].Title != "✓ Review ACME-412 fix" || plan[1].Title != "Standup" {
+		t.Errorf("plan rows %+v", plan)
 	}
-	if plan[1].Badge == nil || plan[1].Badge.Text != "09:30–09:45" {
-		t.Errorf("time block row %+v", plan[1])
-	}
-	if plan[2].Badge != nil || plan[2].Subtitle != "from Waiting for me" {
+	if plan[2].Subtitle != "from Waiting for me" {
 		t.Errorf("backlog row %+v", plan[2])
+	}
+	for _, r := range plan {
+		// No clock in the document: the phone draws times in its own zone.
+		if r.Badge != nil || strings.Contains(r.Title+r.Subtitle, ":") {
+			t.Errorf("row %+v carries a time", r)
+		}
 	}
 	for i, r := range plan {
 		wantRef(t, r, blocks.RefPlanItem, int64(i+1))
@@ -85,19 +87,6 @@ func TestProject_MorningBrief(t *testing.T) {
 	att := ls[1].Rows[0]
 	if att.Title != "Release 2.0 waits on your sign-off" || att.Subtitle != "docs link is red" || att.Tone != "danger" || att.Ref != nil {
 		t.Errorf("attention row %+v", att)
-	}
-}
-
-func TestProject_MorningBriefTimesInTheHubZone(t *testing.T) {
-	tokyo := time.FixedZone("JST", 9*3600)
-	out, err := Project(api.LegacySection{Kind: api.LegacyMorningBrief, Items: []api.LegacyItem{
-		{RefKind: api.RefPlanItem, ID: 1, Title: "Standup", Stamp: "2026-11-12T00:30:00Z"},
-	}}, tokyo)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out, `"text":"09:30"`) {
-		t.Fatalf("document %s, want the time in the hub's zone", out)
 	}
 }
 
@@ -173,7 +162,7 @@ func TestProject_MessagesIsANoticeOnYourMac(t *testing.T) {
 }
 
 func TestProject_UnknownKindFails(t *testing.T) {
-	if _, err := Project(api.LegacySection{Kind: "future"}, time.UTC); err == nil {
+	if _, err := Project(api.LegacySection{Kind: "future"}); err == nil {
 		t.Fatal("an unknown kind projected")
 	}
 }
@@ -183,7 +172,7 @@ func TestProject_UnknownKindFails(t *testing.T) {
 func TestProject_PlanItemNeedsTheHubOption(t *testing.T) {
 	raw, err := document(api.LegacySection{Kind: api.LegacyMorningBrief, Items: []api.LegacyItem{
 		{RefKind: api.RefPlanItem, ID: 1, Title: "Standup"},
-	}}, time.UTC, blocks.MaxListRows)
+	}}, blocks.MaxListRows)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +193,7 @@ func TestProject_LongListsFitTheCaps(t *testing.T) {
 	for i := range items {
 		items[i] = api.LegacyItem{RefKind: api.RefIdea, ID: int64(i + 1), Title: long, Subtitle: "Idea · active", Preview: long}
 	}
-	out, err := Project(api.LegacySection{Kind: api.LegacyIdeas, Items: items}, time.UTC)
+	out, err := Project(api.LegacySection{Kind: api.LegacyIdeas, Items: items})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,6 +209,16 @@ func TestProject_LongListsFitTheCaps(t *testing.T) {
 		t.Fatalf("kept %d rows", kept)
 	}
 	if got := texts(d); len(got) != 1 || got[0] != MoreOnYourMac(len(items)-kept) {
+		t.Fatalf("texts %q", got)
+	}
+}
+
+func TestUnprojectedSendsTheOwnerToTheMac(t *testing.T) {
+	d, err := blocks.Decode(Unprojected())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := texts(d); len(got) != 1 || got[0] != unprojectedLine {
 		t.Fatalf("texts %q", got)
 	}
 }

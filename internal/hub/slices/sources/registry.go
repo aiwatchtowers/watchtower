@@ -253,7 +253,7 @@ func All(c Config) (*Set, error) {
 			ChatList(c.DB, ChatListOptions{Grant: c.Store.AnyChatPhone, Models: c.ChatModels, Now: now}),
 			ChatFeed(c.DB, feed), ChatPage(c.DB, feed), ChatSearch(c.DB, feed))
 		if c.InboxFeed != nil {
-			set.Sources = append(set.Sources, InboxSource(c.InboxFeed, now, c.Location)...)
+			set.Sources = append(set.Sources, InboxSource(c.InboxFeed, now)...)
 		}
 	}
 	return set, nil

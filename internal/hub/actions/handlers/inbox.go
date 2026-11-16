@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"log"
 
 	"watchtower/internal/hub/actions"
 	"watchtower/internal/inboxfeed"
@@ -24,6 +25,7 @@ const (
 	inboxNoTowerMsg               = "Update Watchtower on your tower to use the Inbox from the phone"
 	inboxParamsMsg                = "This Inbox action could not be read"
 	inboxUnknownMsg               = "Your tower did not confirm this — check on the Mac"
+	inboxGrantsUnreadableMsg      = "Your tower could not read this phone's permissions — try again"
 )
 
 // inboxActOptions are inbox_act's kind options: an approve, a retry, a press
@@ -101,7 +103,8 @@ func (h *Handlers) inboxGrant(r actions.Request, grant string) (actions.Outcome,
 	}
 	d, linked, err := h.d.Store.Device(r.Device.String())
 	if err != nil {
-		return failed(reasonWriteFailed, err.Error()), false
+		log.Printf("hub handlers: inbox_act: the device grants are unreadable")
+		return failed(reasonWriteFailed, inboxGrantsUnreadableMsg), false
 	}
 	switch {
 	case grant == "permissions" && (!linked || !d.PermissionsAllowed):

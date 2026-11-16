@@ -112,9 +112,11 @@ final class HubContractFixtureTests: XCTestCase {
             let approval = row["approval_verb"] as? String
             let nonIdempotent = verb == "press" || verb == "run_now" || approval == "approve" || approval == "retry"
             XCTAssertEqual(idempotent, !nonIdempotent, "\(verb) \(approval ?? "")")
-            if verb == "reply_propose" || (verb == "press" && row["action_kind"] as? String == "reply") {
-                XCTAssertEqual(grant, "typing", verb)
-            }
+            // ask #1349: typing for a Reply; permissions for the other owner gestures; none for the rest.
+            let reply = verb == "reply_propose" || (verb == "press" && row["action_kind"] as? String == "reply")
+            let owner = verb == "press" || ["approve", "retry", "dismiss"].contains(approval ?? "")
+                || row["ref_verb"] as? String == "make_task"
+            XCTAssertEqual(grant, reply ? "typing" : owner ? "permissions" : "", verb)
             verbs.insert(verb)
         }
         XCTAssertEqual(verbs, ["read", "done", "dismiss", "press", "run_now", "ref", "reply_propose", "approval"])
