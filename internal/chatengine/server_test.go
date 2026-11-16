@@ -53,10 +53,14 @@ type client struct {
 	r    *bufio.Reader
 }
 
+// newClient wraps conn and reads the server's greeting.
 func newClient(t testing.TB, conn net.Conn) *client {
 	t.Helper()
 	t.Cleanup(func() { _ = conn.Close() })
-	return &client{t: t, conn: conn, r: bufio.NewReader(conn)}
+	c := &client{t: t, conn: conn, r: bufio.NewReader(conn)}
+	f := c.mustNext()
+	require.Equal(t, "ready", f.Event, "the server's first line")
+	return c
 }
 
 // send writes one request line.
@@ -149,9 +153,10 @@ func serveSocket(t testing.TB, e *Engine, o ServerOptions) string {
 
 func dialSocket(t testing.TB, path string) *client {
 	t.Helper()
-	conn, err := net.Dial("unix", path)
+	conn, r, err := Dial(context.Background(), path)
 	require.NoError(t, err)
-	return newClient(t, conn)
+	t.Cleanup(func() { _ = conn.Close() })
+	return &client{t: t, conn: conn, r: r}
 }
 
 // pipeListener is an in-memory listener for tests inside a synctest bubble
@@ -192,6 +197,7 @@ func servePipe(t *testing.T, e *Engine, o ServerOptions) *pipeListener {
 	l := newPipeListener()
 	s := NewServer(e, o)
 	s.peer = func(net.Conn) peerCreds { return peerCreds{uid: os.Getuid()} }
+	s.pending = func(net.Conn) (int, error) { return 0, nil }
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- s.Serve(ctx, l) }()
@@ -752,4 +758,55 @@ func TestServer_AppMustSayMac(t *testing.T) {
 	require.NotNil(t, f.Error)
 	assert.Equal(t, "invalid", f.Error.Code)
 	assert.True(t, c.ended())
+}
+
+// gatedListener holds Accept until the test opens the gate: the client's
+// bytes are then surely there before the server's greeting.
+type gatedListener struct {
+	net.Listener
+	gate chan struct{}
+}
+
+func (l *gatedListener) Accept() (net.Conn, error) {
+	<-l.gate
+	return l.Listener.Accept() //nolint:wrapcheck // the test's own listener
+}
+
+// TestServer_HelloBeforeGreetingRefused: the server speaks first. A client
+// whose hello (with a request behind it) was sent before the greeting —
+// what a process that writes and then execs the signed app does — is
+// refused forbidden and closed, nothing applied; a client that waits for
+// the greeting gets in.
+func TestServer_HelloBeforeGreetingRefused(t *testing.T) {
+	g := newRig(t, fakeOpts{})
+	path := filepath.Join(shortTempDir(t), "ws", SocketName)
+	inner, err := Listen(path)
+	require.NoError(t, err)
+	l := &gatedListener{Listener: inner, gate: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- NewServer(g.r, appOnly).Serve(ctx, l) }()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+
+	conn, err := net.Dial("unix", path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+	_, err = conn.Write([]byte(`{"id":"h","op":"hello","params":{"protocol":1,"client":"mac"}}` + "\n" +
+		`{"id":"n","op":"chat_new","params":{}}` + "\n"))
+	require.NoError(t, err)
+	close(l.gate)
+	early := &client{t: t, conn: conn, r: bufio.NewReader(conn)}
+	f := early.mustNext()
+	require.NotNil(t, f.Error, "an early client was greeted: %+v", f)
+	assert.Equal(t, "forbidden", f.Error.Code)
+	assert.True(t, early.ended())
+	assert.Zero(t, convCount(t, g), "an early client's request was applied")
+
+	c := dialSocket(t, path) // waits for ready
+	c.hello()
+	c.send("n", "chat_new", map[string]any{})
+	assert.True(t, c.mustNext().OK)
 }

@@ -1,14 +1,12 @@
 package cmd
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io/fs"
 	"log"
-	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -65,7 +63,7 @@ func TestSyncDaemon_StartsChatEngineBeforeHub(t *testing.T) {
 		sock := chatengine.SocketPath(cfg.WorkspaceDir(), os.TempDir())
 
 		err = withChatAndHub(context.Background(), cfg, database, logger, func() error {
-			conn, err := net.Dial("unix", sock)
+			conn, r, err := chatengine.Dial(context.Background(), sock) // waits for the greeting
 			if err != nil {
 				return err
 			}
@@ -73,7 +71,7 @@ func TestSyncDaemon_StartsChatEngineBeforeHub(t *testing.T) {
 			if _, err := conn.Write([]byte(`{"id":"h","op":"hello","params":{"protocol":1,"client":"mac"}}` + "\n")); err != nil {
 				return err
 			}
-			line, err := bufio.NewReader(conn).ReadBytes('\n')
+			line, err := r.ReadBytes('\n')
 			if err != nil {
 				return err
 			}

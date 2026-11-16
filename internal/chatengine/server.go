@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"sync"
 
+	"golang.org/x/sys/unix"
+
 	"watchtower/internal/ownerconfirm"
 	"watchtower/internal/platform"
 )
@@ -24,6 +26,28 @@ const MaxRequestBytes = 2 << 20
 // its writer, the subscription's queue fills, and the subscriber gets one
 // resync and then a fresh snapshot.
 const ConnQueue = subscriptionQueue
+
+// The chat.sock wire (spec §5.1, §5.2; clients: the Mac's SocketChatClient,
+// the CLI's chat_shutdown through Dial). One JSON object per line, both
+// ways; a request line is at most MaxRequestBytes.
+//
+//  1. The server speaks first: {"event":"ready","protocol":1}. The client
+//     sends nothing before it; a byte that arrived earlier is answered
+//     {"id":"","ok":false,"error":{"code":"forbidden",…}} and closes.
+//  2. The client's first request is hello:
+//     {"id":"<s>","op":"hello","params":{"protocol":1,"client":"mac","part_kinds":[…]}}
+//     → {"id":"<s>","ok":true,"result":{"protocol":1,"ops":[…]}}. Anything
+//     else first is invalid and closes; a peer that is not the signed app
+//     (or, for hello and chat_shutdown only, this team's CLI) is forbidden
+//     and closes. The app must say client "mac".
+//  3. Requests {"id":"<s>","op":"<op>","params":{…}} are answered
+//     {"id":"<s>","ok":true,"result":{…}} or
+//     {"id":"<s>","ok":false,"error":{"code":"busy|not_found|invalid|forbidden|closed|internal","message":"…"}},
+//     in any order. subscribe {"list":true} or {"conversation_id":N,
+//     "before_message_id":M?} answers {"subscription":"<s>"}, then pushes
+//     events {"event":"snapshot|message_upsert|conversation_update|list_update|resync",
+//     "subscription":"<s>",…}; unsubscribe {"subscription":"<s>"} answers
+//     ok, after which no event of it follows.
 
 // ProtocolVersion is chat.sock's protocol, answered by hello.
 const ProtocolVersion = 1
@@ -68,6 +92,9 @@ type Server struct {
 	// peer reads a connection's uid and audit token at accept (the unix
 	// socket's credentials); a test seam for in-memory connections.
 	peer func(net.Conn) peerCreds
+	// pending is how many bytes the client already sent (the unix socket's
+	// FIONREAD); a test seam for in-memory connections.
+	pending func(net.Conn) (int, error)
 
 	mu     sync.Mutex
 	conns  map[*conn]struct{}
@@ -83,7 +110,7 @@ func NewServer(e *Engine, o ServerOptions) *Server {
 	if o.VerifyCLI == nil {
 		o.VerifyCLI = ownerconfirm.VerifySameTeamCLI
 	}
-	return &Server{e: e, o: o, peer: unixPeer, conns: map[*conn]struct{}{}}
+	return &Server{e: e, o: o, peer: unixPeer, pending: unixPending, conns: map[*conn]struct{}{}}
 }
 
 // unixPeer is the uid and the audit token of the process at the other end
@@ -102,6 +129,31 @@ func unixPeer(c net.Conn) peerCreds {
 		return peerCreds{err: err}
 	}
 	return peerCreds{uid: uid, token: t}
+}
+
+// unixPending is whether bytes wait to be read on a unix connection (a
+// non-blocking peek: 1 when any do, 0 when none; a closed peer is 0 too, its
+// hello then never comes).
+func unixPending(c net.Conn) (int, error) {
+	uc, ok := c.(*net.UnixConn)
+	if !ok {
+		return 0, errors.New("chatengine: not a unix connection")
+	}
+	raw, err := uc.SyscallConn()
+	if err != nil {
+		return 0, err //nolint:wrapcheck // the caller refuses the peer either way
+	}
+	var n int
+	var perr error
+	if err := raw.Control(func(fd uintptr) {
+		n, _, perr = unix.Recvfrom(int(fd), make([]byte, 1), unix.MSG_PEEK|unix.MSG_DONTWAIT)
+	}); err != nil {
+		return 0, err //nolint:wrapcheck // as above
+	}
+	if errors.Is(perr, unix.EAGAIN) {
+		return 0, nil // nothing sent yet
+	}
+	return n, perr //nolint:wrapcheck // as above
 }
 
 // Listen binds chat.sock at socketPath: its folder made 0700 (created when

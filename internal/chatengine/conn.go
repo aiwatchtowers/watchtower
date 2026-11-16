@@ -14,6 +14,9 @@ import (
 	"time"
 )
 
+// eventReady is the server's greeting event.
+const eventReady = "ready"
+
 // The Client kinds of a chat.sock connection.
 const (
 	clientMac = "mac"
@@ -120,6 +123,9 @@ func (c *conn) serve(ctx context.Context) {
 		}
 		c.work.Wait()
 	}()
+	if !c.greet() {
+		return
+	}
 	r := bufio.NewReaderSize(c.nc, 64<<10)
 	for {
 		line, err := readLine(r, MaxRequestBytes)
@@ -153,6 +159,22 @@ func (c *conn) serve(ctx context.Context) {
 		}
 		c.dispatch(req)
 	}
+}
+
+// greet is the server's first line: {"event":"ready","protocol":1}. A
+// client waits for it before its hello; one that sent anything before it is
+// refused (forbidden, closed). With the audit token read at accept this
+// closes the exec race (D17): bytes a process wrote before it exec'd the
+// signed app are either already waiting here (refused) or were written by an
+// image the stored token no longer matches (refused at hello).
+func (c *conn) greet() bool {
+	if n, err := c.s.pending(c.nc); err != nil || n > 0 {
+		logf("refused a peer that sent before the greeting")
+		c.fail("", "forbidden", "wait for the ready event before hello")
+		return false
+	}
+	c.write(map[string]any{"event": eventReady, "protocol": ProtocolVersion})
+	return true
 }
 
 // errLineTooLong: a request line over the cap.
@@ -207,6 +229,12 @@ func (c *conn) hello(req request) bool {
 		c.fail(req.ID, "forbidden", "only the Watchtower app may use the chat socket")
 		return false
 	}
+	// The peer is the image the audit token read at accept names (an exec
+	// since then fails the check). Not covered, as in ownerconfirm's threat
+	// model (a process running as the owner is out of scope, see
+	// ownerconfirm.VerifyDesktop): a process that forks a child keeping the
+	// connection and then execs the signed app itself — the token is the
+	// app's, and the child can still write.
 	ctx, cancel := context.WithTimeout(c.ctx, verifyBudget)
 	defer cancel()
 	var kind string
