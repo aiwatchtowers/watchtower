@@ -3131,3 +3131,14 @@ Entry format:
 - rule-gap (candidate, dim 6): *a second writer/reader of a shared table that serves a subset of its rows (main chat = `context_type IS NULL`) applies the subset predicate at every entry point that takes an id from the client, not only at the listing.*
 - rule-gap (candidate, dim 7): *a name-keyed guard allowlist scanned across packages qualifies new entries by package/file; a bare generic name is the tell.*
 - outcome: TBD
+
+## 2026-11-16 — feature/1716-auto-cleanup (PR #778, 94b194ccf: auto cleanup on session delete — background `workbench cleanup --apply` per deleted row behind a per-workbench slot, `SessionAutoCleanupOutcome`, Not fully cleaned marks, subagent/scratchpad/HEAD-log ownership, migrations 00192/00193; 120 files +8335/−1164; panel: prosecutor (9) + codex (1, output truncated); pr-review-toolkit specialists unavailable; judge verified by reading, no runs) — verdict: changes-needed
+
+- contested: F1, the placed natural-exit cleanup marking its row busy before `applyCleanup` now waits on the slot behind background cleanups (up to 10 min each). The comment names the slot wait as deliberate, but it moved a wait that used to happen before the busy mark to after it, so Delete and quick delete silently no-op on that row for the whole queue. Held major; plain fix (mark busy once the slot is held). [8]
+- contested: F3, deleted rows counting as "a session in it" for each other. Real and cheap to fix, but the fix widens spec §3's own-row exemption to every deleted row, so it went to the owner, not a plain fix. [6]
+- false-positive: F5 (the extra clear-delete write on every Resume) is documented and deliberate: it covers a deleting row this launch did not mark, and the write is an idempotent UPDATE. F9 (`narrowWidth = 230`) is a named layout breakpoint, not a raw spacing value that the Design kit rule covers. [4/Design kit]
+- miss: codex alone caught `group()` returning `.removed` on `done` before reading `error`. Go's `dropBranchConfig` sets Done=true together with an Error, and spec §3's table says "an item with error = could not". The prosecutor checked the reason codes Go↔fixture↔Swift (30) but not the done/error combinations the Go producer emits. [6]
+- weak-dimension: 6. A pure outcome table was tested on hand-built items in the shapes the author expected, not on every (done, error, action, reason) combination the Go applier can produce.
+- rule-gap (candidate, dim 6/7): *a Swift classifier over a Go result item checks every field the spec's table names (error before done), and its test covers each state combination the Go writer can emit, including done-with-error.*
+- rule-gap (candidate, dim 8): *when a wait moves from before a busy mark to after it (here: the slot wait inside the apply), list what the busy mark refuses and how long it can now last.*
+- outcome: TBD
