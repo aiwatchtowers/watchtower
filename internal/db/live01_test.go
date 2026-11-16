@@ -198,12 +198,6 @@ var displayOnlyReadersAt = map[string]string{
 	"chatstore/conversations.go:pinTx":              "the pinned flag",
 	"chatstore/conversations.go:renameTx":           "writes the owner's title",
 	"chatstore/conversations.go:deleteTx":           "delete only",
-	// The embedded chats' turn store (ai query --persist, mobile-inbox
-	// Task 16): EmbeddedChatStore's twin writes the turn's own rows.
-	"chatstore/embedded.go:BeginEmbedded": "writes an embedded turn's owner and reply rows",
-	"chatstore/embedded.go:Apply":         "writes the turn's own reply text and steps",
-	"chatstore/embedded.go:saveActual":    "routing columns of the turn's own reply",
-	"chatstore/embedded.go:Finalize":      "writes the turn's own reply and touches its conversation",
 	// The chat.* tower commands (mobile-inbox spec §8): the Desktop's
 	// conversation-level writes, ported from its GRDB writers. They write
 	// rows and read ids, flags and counts, never text into a store.
