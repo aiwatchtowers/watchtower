@@ -315,7 +315,7 @@ func (s *Subscription) readFeed() (Feed, error) {
 	if err != nil && !errors.Is(err, chatstore.ErrConversationGone) {
 		s.logFailure(err)
 	}
-	return f, err
+	return FilterFeed(f, s.c), err // D15, F2: the subscriber's own part kinds
 }
 
 // feedRest is what a feed holds beside its messages and meta: a change of

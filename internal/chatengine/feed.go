@@ -82,6 +82,11 @@ func ReadFeed(ctx context.Context, d *db.DB, conv, before int64, now time.Time, 
 				if out.Messages, err = chatFeedMessagesTx(ctx, tx, path, window); err != nil {
 					return err
 				}
+				pageActions, err := chatFeedActionsTx(ctx, tx, conv, window)
+				if err != nil {
+					return err
+				}
+				fillParts(out.Messages, FeedConversation{LiveSlackSince: meta.LiveSlackSince}, pageActions)
 				out.HasMore = at > PageSize
 			}
 			return nil
@@ -110,10 +115,20 @@ func ReadFeed(ctx context.Context, d *db.DB, conv, before int64, now time.Time, 
 		if err != nil {
 			return err
 		}
+		fillParts(msgs, meta, actions)
 		out = Feed{Conversation: meta, Messages: msgs, HasMore: len(window) < len(path.nodes), Artifacts: artifacts, Actions: actions}
 		return nil
 	})
 	return out, err
+}
+
+// fillParts builds every message's parts, last, so the live text and
+// routing are in.
+func fillParts(msgs []FeedMessage, conv FeedConversation, actions []FeedAction) {
+	for i := range msgs {
+		msgs[i].liveSince = conv.LiveSlackSince
+		msgs[i].Parts = BuildParts(msgs[i], conv, actions)
+	}
 }
 
 // applyLiveRouting puts a live session's reported routing on the meta.
@@ -249,8 +264,14 @@ type FeedMessage struct {
 	Siblings     FeedSiblings     `json:"siblings"`
 	Attachments  []FeedAttachment `json:"attachments"`
 	Steps        []FeedStep       `json:"steps"`
+	// Parts are the typed pieces with their fallbacks (BuildParts); the flat
+	// fields above stay for a client one version behind.
+	Parts []Part `json:"parts"`
 
 	turnID string
+	// liveSince is the conversation's live_slack_since, kept so a refit
+	// after a record cut builds the marks the same way.
+	liveSince *int64
 }
 
 type FeedArtifact struct {
