@@ -11,10 +11,6 @@ import (
 	"watchtower/internal/db"
 )
 
-// InterfaceVersion is the version of the generated interface, answered by
-// tower.hello. Task 2's generator replaces it with a generated constant.
-var InterfaceVersion = "dev"
-
 // Origin says where a call came from.
 type Origin struct {
 	Transport string // "socket" | "hub"

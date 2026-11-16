@@ -30,6 +30,11 @@ const (
 	StatusUnknown Status = "unknown"
 )
 
+// EnumValues lists every Status (the generator's enum convention).
+func (Status) EnumValues() []string {
+	return []string{string(StatusOK), string(StatusRefused), string(StatusUnknown)}
+}
+
 // Response answers a Request with the same ID.
 type Response struct {
 	ID      string          `json:"id"`
@@ -50,6 +55,14 @@ const (
 	CodeNotPermitted RefusalCode = "not_permitted"
 	CodeUnsupported  RefusalCode = "unsupported"
 )
+
+// EnumValues lists every RefusalCode (the generator's enum convention).
+func (RefusalCode) EnumValues() []string {
+	return []string{
+		string(CodeNotFound), string(CodeChanged), string(CodeArgsChanged),
+		string(CodeReplyWaiting), string(CodeNotPermitted), string(CodeUnsupported),
+	}
+}
 
 // Refusal is a refused response's code and the sentence both clients show
 // as is.

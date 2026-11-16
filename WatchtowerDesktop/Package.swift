@@ -28,6 +28,9 @@ let package = Package(
         // The chat text helpers shared with the phone (artifact parser, Markdown
         // document and run builder, quote reply). Neither the Kit nor Core.
         .package(path: "../WatchtowerChatText"),
+        // The tower interface's Swift side (types generated from
+        // internal/tower/api), shared with the phone. Foundation only.
+        .package(path: "../WatchtowerInterface"),
         // Pinned to 0.18.x: WhisperKitEngine uses 0.18.0-specific API surface
         // (including the misspelled `detectLangauge(audioArray:)`).
         .package(url: "https://github.com/argmaxinc/WhisperKit.git", .upToNextMinor(from: "0.18.0")),
@@ -53,6 +56,7 @@ let package = Package(
                 .product(name: "Yams", package: "Yams"),
                 .product(name: "Markdown", package: "swift-markdown"),
                 .product(name: "WatchtowerChatText", package: "WatchtowerChatText"),
+                .product(name: "WatchtowerInterface", package: "WatchtowerInterface"),
             ],
             path: "Sources/WatchtowerCore"
         ),

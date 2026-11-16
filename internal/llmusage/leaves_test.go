@@ -55,6 +55,7 @@ var knownNonLLMExec = map[string]string{
 	"extract.runCodesign":                "codesign --verify of the OCR helper",
 	"gitbin.run":                         "git",
 	"hub.bridgeLauncher":                 "starts the CloudKit bridge helper (WatchtowerCloudBridge.app, no model call)",
+	"main.checkFiles":                    "diff -u for the tower interface generator's -check (internal/tower/gen), no model call",
 	"main.spawnGrandchild":               "the transport contract suite's fake CLI (internal/transporttest/fakecli) starting its own copy to hold stdout",
 	"media.runSips":                      "sips image conversion",
 	"oauthpage.openURL":                  "/usr/bin/open of an OAuth page",

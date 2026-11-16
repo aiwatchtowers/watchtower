@@ -21,6 +21,10 @@ packages:
   # builder, quote reply; iPhone chat spec D8). Dependency-free of the Kit.
   WatchtowerChatText:
     path: ../WatchtowerChatText
+  # The tower interface's Swift side (types generated from internal/tower/api),
+  # shared with the Mac. Foundation only.
+  WatchtowerInterface:
+    path: ../WatchtowerInterface
   # GRDB is transitive through WatchtowerKit, but the app and its tests use
   # its types directly (`ValueObservation`, `Database`). A testability build
   # dead-strips the autolink hint, so the app would fail with undefined GRDB
@@ -79,6 +83,8 @@ targets:
         product: WatchtowerHostedRelay
       - package: WatchtowerChatText
         product: WatchtowerChatText
+      - package: WatchtowerInterface
+        product: WatchtowerInterface
       - package: GRDB
         product: GRDB
       - package: SwiftProtobuf

@@ -1,0 +1,5 @@
+{
+  "id": "req-1",
+  "status": "refused",
+  "refusal": {"code": "changed", "sentence": "This item changed on the Mac. Look again."}
+}

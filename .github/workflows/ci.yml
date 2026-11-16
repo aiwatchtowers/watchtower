@@ -60,7 +60,7 @@ jobs:
             guide_input:
               - 'docs/guide/reference/keyboard-shortcuts.md'
             mobile:
-              - '{WatchtowerMobile/**,WatchtowerKit/**,WatchtowerChatText/**,Makefile,.github/workflows/ci.yml}'
+              - '{WatchtowerMobile/**,WatchtowerKit/**,WatchtowerChatText/**,WatchtowerInterface/**,Makefile,.github/workflows/ci.yml}'
             guide:
               - 'docs/guide/**'
 
@@ -208,6 +208,11 @@ jobs:
 
       - name: Build
         run: go build ./...
+
+      # The Swift side of the tower interface is generated from the Go types
+      # (internal/tower/gen): a stale generated file fails here with its diff.
+      - name: Generated interface check
+        run: make gen-interface-check
 
       # The shell suite over scripts/build-app.sh — it stubs `ps` and never
       # builds, so it rides this Linux job rather than paying for a macOS one.
@@ -398,6 +403,10 @@ jobs:
         working-directory: WatchtowerChatText
         run: swiftlint lint --strict
 
+      - name: SwiftLint (interface package)
+        working-directory: WatchtowerInterface
+        run: swiftlint lint --strict
+
       # The iPhone app has its own config: the `orange_outside_phone_tone`
       # rule is the only enforcement of "orange = waiting for you".
       - name: SwiftLint (mobile app)
@@ -413,6 +422,12 @@ jobs:
       - name: Test (chat text package)
         timeout-minutes: 10
         working-directory: WatchtowerChatText
+        run: swift test
+
+      # Its generated GoldenRoundTripTests read internal/tower/api/testdata.
+      - name: Test (interface package)
+        timeout-minutes: 10
+        working-directory: WatchtowerInterface
         run: swift test
 
   swift-test:
