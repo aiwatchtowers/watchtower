@@ -125,7 +125,7 @@ Stages 1 and 3 depend on stage 0, and stage 2 depends on stage 1. Stage 3 may ru
   - Stage 1: `inbox.feed`, `inbox.watch` (a stream of `changed` events), `inbox.act`, and the write commands the other screens need: `tracks.*`, `ideas.*`, `reminders.*`, `briefing.read`, `dayplan.*`, `outputs.*` and `inbox_items.*`. Each write command is a thin entry over the same Go writer the Inbox uses (§4.3). The plan names each one from the list of Swift call sites (§5.2).
   - Stage 3: `chat.*` for the conversation-level writes (§8).
 - **Envelope.** A request is `{v, id, command, params}`. A response is `{id, status: "ok" | "refused" | "unknown", result | refusal{code, sentence}}`. The `sentence` is written in Go, and both clients show it as is.
-- **Exactly once, with one mechanism for both transports.** Every write command carries `request_id`, a UUID the client makes and keeps across retries. `tower.Call` records it in the new table `tower_requests` (`request_id` PK, `command`, `state` `begun`|`done`, `result_json`, `at`), added by migration `NNNNN_tower_requests`. Rows are kept as long as the hub's own ledger: `actions.ActionMaxAge` (7 days) plus its `retentionMargin` (1 day), pruned by the same hygiene pass. The hub already refuses an action older than `ActionMaxAge` before it reaches a handler, so a phone action replayed after a long Mac sleep either finds its ledger row or is refused as too old; it never runs twice. Socket requests retry for at most 15 s, far inside the window.
+- **Exactly once, with one mechanism for both transports.** Every write command carries `request_id`, a UUID the client makes and keeps across retries. `tower.Call` records it in the new table `tower_requests` (`request_id` PK, `command`, `state` `begun`|`done`, `result_json`, `at`), added by migration `NNNNN_tower_requests`. Rows are kept as long as the hub's own ledger: `actions.ActionMaxAge` (7 days) plus its `retentionMargin` (1 day). The daemon prunes them itself, with or without the hub: once at start and then hourly, deleting `done` rows past the window and `begun` rows past it as well (an abandoned `begun` row older than any possible resend). The constants are shared with the hub's hygiene, so both ledgers keep the same window. Test: a daemon test with the hub off prunes old rows and keeps fresh ones. The hub already refuses an action older than `ActionMaxAge` before it reaches a handler, so a phone action replayed after a long Mac sleep either finds its ledger row or is refused as too old; it never runs twice. Socket requests retry for at most 15 s, far inside the window.
   - A guarded command writes its result row in the same transaction as its writes, so `done` exists exactly when the write committed.
   - A non-idempotent command commits `begun` in its own short transaction before it acts. The non-idempotent commands are approve, retry, Run Now and the `reply` press.
   - A repeat of a `done` id returns the stored result.
@@ -178,7 +178,7 @@ Stages 1 and 3 depend on stage 0, and stage 2 depends on stage 1. Stage 3 may ru
   - A watch is re-opened on reconnect, and the client reads the feed once.
 - **Change events.** The daemon owns a change watch of its own, independent of the hub (on a desktop host the hub may be off).
   - A write made through `tower.Call` emits `changed` for its command's `ChangeTables` at commit, so the Mac's own action redraws as fast as a GRDB write does today.
-  - Writes by other processes (an `ai session`, a CLI verb) are seen by a `PRAGMA data_version` poll every 250 ms while a watch is open. It cannot tell tables apart, so it emits `changed` with no table list, and the client re-reads.
+  - Writes by other processes (an `ai session`, a CLI verb) are seen by a `PRAGMA data_version` poll every 250 ms while a watch is open. The Mac opens the watch only while an Inbox window is on screen and closes it when the window hides; with no watch open, the poll does not run. It cannot tell tables apart, so it emits `changed` with no table list, and the client re-reads.
   - `inbox.watch` delivers only events whose table list meets the Inbox's `ChangeTables`, or that have no list.
   - Budget: a foreign write shows on the Mac within 0.5 s at the 95th percentile, measured by a daemon test.
 
@@ -442,7 +442,8 @@ A path that fails its check does not switch. Speed is a gate.
 | Exactly once on both transports | 0 / ledger | ledger kill tests (§9); hub replay suite |
 | The Mac reaches the tower over the socket | 0 / socket | `tower.ping` end to end; peer-uid test; `hello` mismatch test |
 | Stopping sync keeps the tower up | 0 / pause | daemon pause test across a restart; tray Pause/Resume test; paused daemon before onboarding |
-| Changes reach the Mac fast | 0 / change watch | own-write event at commit; foreign write ≤ 0.5 s p95 |
+| Changes reach the Mac fast | 0 / change watch | own-write event at commit; foreign write ≤ 0.5 s p95; poll stops with the last watch |
+| The request ledger stays bounded | 0 / ledger | daemon prune test with the hub off |
 | Reconnecting is honest | 0 / `TowerClient` | `TowerClientTests` (drop, return, never returns) |
 | Go builds the Mac's Inbox list exactly | 1 / core + parity | `inbox_feed_cases.json` |
 | Needs approval picks the Mac's card | 1 / core | APPROVAL-01 guards moved to Go |
@@ -487,8 +488,8 @@ A path that fails its check does not switch. Speed is a gate.
 
 **Decided by the agent:**
 - The tray gets Pause Sync / Resume Sync; every existing restart stays (config changes, resets, a new binary, quit, a crash), with the "Reconnecting…" line delayed by 1 s. A live config reload is not part of this work. This applies ask #1362.
-- The app starts the daemon at launch, paused until onboarding finishes.
-- The daemon owns its own change watch (own writes at commit, foreign writes by a 250 ms `data_version` poll), independent of the hub.
+- The app starts the daemon at launch; until onboarding finishes it runs with the start argument `--no-sync`, which is separate from the owner's pause (`sync.paused`) and never changes it.
+- The daemon owns its own change watch (own writes at commit, foreign writes by a 250 ms `data_version` poll), independent of the hub. The poll runs only while a client has a watch open, that is while an Inbox window is on screen (the Mac closes the watch when the window is hidden or the app goes to the tray). One `PRAGMA data_version` read is a page-cache lookup with no I/O, so four a second is negligible; a daemon test checks the poll stops when the last watch closes.
 - Edit… on the Mac sends a `patch` with the approval.
 - A warm `ai session` claims leases as `desktop` with the app launch id; the daemon never releases a `desktop` lease.
 - On a version mismatch, the Desktop restarts a daemon it started from its own CLI.
