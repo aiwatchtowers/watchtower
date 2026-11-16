@@ -14,6 +14,13 @@ const (
 	ChatLeaseHub     ChatLeaseOwner = "hub"
 )
 
+const (
+	markSessionLostSQL = `UPDATE chat_messages SET error_code = 'session_lost'
+WHERE conversation_id = ? AND turn_id = ? AND role = 'assistant' AND status = 'partial'`
+	requestCancelSQL = `UPDATE chat_turn_leases SET cancel_requested_at_ms = ? WHERE conversation_id = ? AND turn_id = ?`
+	releaseLeaseSQL  = `DELETE FROM chat_turn_leases WHERE conversation_id = ? AND turn_id = ?`
+)
+
 // ChatLeaseStaleMS is the heartbeat age after which anyone may take a lease.
 const ChatLeaseStaleMS = 60000
 
@@ -73,8 +80,7 @@ func (db *DB) HeartbeatChatLease(conv int64, turnID string, nowMS int64) (bool, 
 // RequestChatCancel marks turnID's lease as cancel-requested (the other
 // side's Stop); false means no such lease.
 func (db *DB) RequestChatCancel(conv int64, turnID string, nowMS int64) (bool, error) {
-	res, err := db.Exec(`UPDATE chat_turn_leases SET cancel_requested_at_ms = ? WHERE conversation_id = ? AND turn_id = ?`,
-		nowMS, conv, turnID)
+	res, err := db.Exec(requestCancelSQL, nowMS, conv, turnID)
 	if err != nil {
 		return false, fmt.Errorf("request chat cancel: %w", err)
 	}
@@ -88,7 +94,7 @@ func (db *DB) RequestChatCancel(conv int64, turnID string, nowMS int64) (bool, e
 // ReleaseChatLeaseTx deletes turnID's lease inside the finalize transaction;
 // a different turn's lease is left alone.
 func ReleaseChatLeaseTx(tx *sql.Tx, conv int64, turnID string) error {
-	if _, err := tx.Exec(`DELETE FROM chat_turn_leases WHERE conversation_id = ? AND turn_id = ?`, conv, turnID); err != nil {
+	if _, err := tx.Exec(releaseLeaseSQL, conv, turnID); err != nil {
 		return fmt.Errorf("release chat lease: %w", err)
 	}
 	return nil
@@ -158,8 +164,7 @@ FROM chat_turn_leases WHERE owner = ? AND owner_id = ? ORDER BY conversation_id`
 // session_lost error code (a turn whose runner died: the error card offers
 // Retry); the text is kept. It returns how many rows it marked.
 func (db *DB) MarkChatTurnSessionLost(conv int64, turnID string) (int64, error) {
-	res, err := db.Exec(`UPDATE chat_messages SET error_code = 'session_lost'
-WHERE conversation_id = ? AND turn_id = ? AND role = 'assistant' AND status = 'partial'`, conv, turnID)
+	res, err := db.Exec(markSessionLostSQL, conv, turnID)
 	if err != nil {
 		return 0, fmt.Errorf("mark chat turn session lost: %w", err)
 	}
@@ -190,4 +195,107 @@ func (db *DB) FreshChatLeases(nowMS int64) ([]int64, error) {
 		return nil, fmt.Errorf("fresh chat leases: %w", err)
 	}
 	return out, nil
+}
+
+// ReleaseDesktopLeasesExcept is the Desktop's launch cleanup (the Go port of
+// releaseEarlierLaunchesChatLeases, chat.release_launches): every desktop
+// lease whose owner id is not keep — left by an earlier launch that died —
+// is released, its turn's partial replies marked session_lost, in one
+// transaction. Hub leases are never touched. It returns the released leases.
+func (db *DB) ReleaseDesktopLeasesExcept(keep string) ([]ChatLease, error) {
+	var out []ChatLease
+	err := db.WithTx(func(tx *sql.Tx) error {
+		var err error
+		out, err = ReleaseDesktopLeasesExceptTx(tx, keep)
+		return err
+	})
+	return out, err
+}
+
+// ReleaseDesktopLeasesExceptTx is ReleaseDesktopLeasesExcept inside the
+// caller's transaction.
+func ReleaseDesktopLeasesExceptTx(tx *sql.Tx, keep string) ([]ChatLease, error) {
+	out, err := desktopLeasesExceptTx(tx, keep)
+	if err != nil {
+		return nil, err
+	}
+	for _, l := range out {
+		if _, err := MarkChatTurnSessionLostTx(tx, l.ConversationID, l.TurnID); err != nil {
+			return nil, err
+		}
+		if err := ReleaseChatLeaseTx(tx, l.ConversationID, l.TurnID); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+func desktopLeasesExceptTx(tx *sql.Tx, keep string) ([]ChatLease, error) {
+	rows, err := tx.Query(`SELECT conversation_id, owner, owner_id, turn_id, started_at_ms, heartbeat_at_ms, cancel_requested_at_ms
+FROM chat_turn_leases WHERE owner = ? AND owner_id <> ? ORDER BY conversation_id`, string(ChatLeaseDesktop), keep)
+	if err != nil {
+		return nil, fmt.Errorf("release desktop chat leases: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []ChatLease
+	for rows.Next() {
+		var l ChatLease
+		var o string
+		var cancel sql.NullInt64
+		if err := rows.Scan(&l.ConversationID, &o, &l.OwnerID, &l.TurnID, &l.StartedAtMS, &l.HeartbeatAtMS, &cancel); err != nil {
+			return nil, fmt.Errorf("release desktop chat leases: %w", err)
+		}
+		l.Owner = ChatLeaseOwner(o)
+		if cancel.Valid {
+			l.CancelRequestedAtMS = &cancel.Int64
+		}
+		out = append(out, l)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("release desktop chat leases: %w", err)
+	}
+	return out, nil
+}
+
+// RecoverChatTurnTx is chat.recover, what the hub's chatrun Sweep does for
+// one turn whose session died after it started: turnID's partial replies
+// are marked session_lost and turnID's lease is released (another turn's
+// lease is left alone). It returns how many replies it marked and whether a
+// lease went.
+func RecoverChatTurnTx(tx *sql.Tx, conv int64, turnID string) (marked int64, released bool, err error) {
+	if marked, err = MarkChatTurnSessionLostTx(tx, conv, turnID); err != nil {
+		return 0, false, err
+	}
+	res, err := tx.Exec(releaseLeaseSQL, conv, turnID)
+	if err != nil {
+		return 0, false, fmt.Errorf("release chat lease: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, false, fmt.Errorf("release chat lease: %w", err)
+	}
+	return marked, n > 0, nil
+}
+
+// MarkChatTurnSessionLostTx is MarkChatTurnSessionLost inside the caller's
+// transaction.
+func MarkChatTurnSessionLostTx(tx *sql.Tx, conv int64, turnID string) (int64, error) {
+	res, err := tx.Exec(markSessionLostSQL, conv, turnID)
+	if err != nil {
+		return 0, fmt.Errorf("mark chat turn session lost: %w", err)
+	}
+	return res.RowsAffected()
+}
+
+// RequestChatCancelTx is RequestChatCancel inside the caller's transaction.
+func RequestChatCancelTx(tx *sql.Tx, conv int64, turnID string, nowMS int64) (bool, error) {
+	res, err := tx.Exec(requestCancelSQL, nowMS, conv, turnID)
+	if err != nil {
+		return false, fmt.Errorf("request chat cancel: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("request chat cancel: %w", err)
+	}
+	return n == 1, nil
 }
