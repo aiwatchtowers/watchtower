@@ -31,7 +31,8 @@ final class WatchmanSettingsCopyTests: XCTestCase {
 
     /// The bars of spec §8.2: 80 % / 5 %, under 30 decisions not measured.
     func testBarNoteNamesTheBars() {
-        XCTAssertEqual(Copy.barNote, "Strong: 80 % agreement or more and 5 % or less wrong while sure. "
+        XCTAssertEqual(Copy.barNote, "Strong: 80 % agreement or more, 5 % or less wrong while sure, and above the base rate "
+            + "(always giving your most common answer). "
             + "Below that Watchman marks every night decision unsure. Under 30 decisions: not measured.")
     }
 
@@ -46,6 +47,7 @@ final class WatchmanSettingsCopyTests: XCTestCase {
         XCTAssertEqual(Copy.tokens(999_700), "1.0 M")
         XCTAssertEqual(Copy.tokens(2_340_000), "2.3 M")
         XCTAssertEqual(Copy.tokens(900), "900")
+        XCTAssertEqual(Copy.estimateUnavailable, "Couldn't count its decisions in time (a large repository).")
         XCTAssertEqual(Copy.count(1_234_567), "1 234 567")
 
         let learning = try WatchmanStatusFixtures.decode(WatchmanStatusFixtures.learning)
@@ -65,6 +67,9 @@ final class WatchmanSettingsCopyTests: XCTestCase {
         XCTAssertEqual(rows.map(\.category), Copy.categories)
         XCTAssertEqual(rows.map { Copy.agreement($0) }, ["83 %", "80 %", "60 %", "87 %", "80 %", "83 %", "97 %", "—"])
         XCTAssertEqual(rows.map { Copy.wrongHigh($0) }, ["3 %", "3 %", "10 %", "0 %", "7 %", "3 %", "0 %", "—"])
+        XCTAssertEqual(rows.map { Copy.baseRate($0) },
+                       ["base rate 50 %", "base rate 50 %", "base rate 50 %", "base rate 50 %", "base rate 50 %",
+                        "base rate 50 %", "base rate 50 %", nil])
         XCTAssertEqual(rows.map { Copy.rating($0) }.last, "Not measured")
         XCTAssertEqual(Copy.rating(rows[2]), "Weak")
         XCTAssertEqual(Copy.rating(rows[0]), "Strong")
@@ -78,6 +83,8 @@ final class WatchmanSettingsCopyTests: XCTestCase {
         """#)
         let sparseRows = Copy.tableRows(try XCTUnwrap(sparse.workbenches[0].lastDone))
         XCTAssertEqual(sparseRows.count, 8)
+        // An old row without the key decodes with a base rate of 0.
+        XCTAssertEqual(Copy.baseRate(sparseRows[6]), "base rate 0 %")
         XCTAssertEqual(sparseRows.filter { Copy.rating($0) == "Not measured" }.count, 7)
     }
 

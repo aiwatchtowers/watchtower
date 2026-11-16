@@ -141,21 +141,38 @@ package struct WatchmanBacktestCategory: Decodable, Equatable, Sendable {
     package let agree: Int
     package let wrongHigh: Int
     package let costUSD: Double
+    /// The share of the hidden decisions that always giving the owner's most
+    /// common choice would get right; strong needs an agreement above it.
+    package let baseline: Double
     /// `strong`, `weak` or `not_measured`.
     package let status: String
 
     enum CodingKeys: String, CodingKey {
-        case category, total, agree, status
+        case category, total, agree, status, baseline
         case wrongHigh = "wrong_high", costUSD = "cost_usd"
     }
 
-    package init(category: String, total: Int, agree: Int, wrongHigh: Int, costUSD: Double, status: String) {
+    package init(
+        category: String, total: Int, agree: Int, wrongHigh: Int, costUSD: Double, baseline: Double = 0, status: String
+    ) {
         self.category = category
         self.total = total
         self.agree = agree
         self.wrongHigh = wrongHigh
         self.costUSD = costUSD
+        self.baseline = baseline
         self.status = status
+    }
+
+    package init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        category = try container.decode(String.self, forKey: .category)
+        total = try container.decode(Int.self, forKey: .total)
+        agree = try container.decode(Int.self, forKey: .agree)
+        wrongHigh = try container.decode(Int.self, forKey: .wrongHigh)
+        costUSD = try container.decodeIfPresent(Double.self, forKey: .costUSD) ?? 0
+        baseline = try container.decodeIfPresent(Double.self, forKey: .baseline) ?? 0
+        status = try container.decode(String.self, forKey: .status)
     }
 }
 

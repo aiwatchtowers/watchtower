@@ -118,6 +118,7 @@ package enum WatchmanStatusFixtures {
         let rows = categories.map { row in
             #"{"category": "\#(row.name)", "total": \#(row.total), "agree": \#(row.agree), "#
                 + #""wrong_high": \#(row.wrong), "cost_usd": \#(row.rating == "not_measured" ? 0 : 0.4), "#
+                + #""baseline": \#(row.rating == "not_measured" ? 0 : 0.5), "#
                 + #""status": "\#(row.rating)"}"#
         }
         let cost = categories.isEmpty ? 0 : 2.75

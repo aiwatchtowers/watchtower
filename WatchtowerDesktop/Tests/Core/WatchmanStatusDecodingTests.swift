@@ -44,7 +44,7 @@ final class WatchmanStatusDecodingTests: XCTestCase {
         XCTAssertEqual(done.verdict, "go")
         XCTAssertEqual(done.costUSD, 1.25)
         XCTAssertEqual(done.categories, [WatchmanBacktestCategory(
-            category: "permission", total: 30, agree: 26, wrongHigh: 1, costUSD: 0.75, status: "strong")])
+            category: "permission", total: 30, agree: 26, wrongHigh: 1, costUSD: 0.75, baseline: 0.6, status: "strong")])
         guard case let .running(progress) = WatchmanWorkbenchPhase.of(first) else {
             return XCTFail("row 1 must be running")
         }
@@ -85,7 +85,7 @@ final class WatchmanStatusDecodingTests: XCTestCase {
         XCTAssertEqual(done.verdict, "go")
         XCTAssertEqual(done.costUSD, 2.75)
         XCTAssertEqual(done.categories.first, WatchmanBacktestCategory(
-            category: "design", total: 30, agree: 25, wrongHigh: 1, costUSD: 0.4, status: "strong"))
+            category: "design", total: 30, agree: 25, wrongHigh: 1, costUSD: 0.4, baseline: 0.5, status: "strong"))
         XCTAssertTrue(row.isLearned)
     }
 

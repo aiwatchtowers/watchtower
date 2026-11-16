@@ -19,6 +19,9 @@ package enum WatchmanSettingsCopy {
     package static let loading = "Reading Watchman's status…"
     package static let retry = "Retry"
 
+    /// A workbench whose commits could not be counted in time has no estimate.
+    package static let estimateUnavailable = "Couldn't count its decisions in time (a large repository)."
+
     /// "~1 850 decisions · est. 1.6 M tokens".
     package static func estimateLine(_ estimate: WatchmanEstimate) -> String {
         "~\(count(estimate.decisions)) decisions · est. \(tokens(estimate.tokens)) tokens"
@@ -74,7 +77,8 @@ package enum WatchmanSettingsCopy {
     package static let weak = "Weak"
     package static let notMeasured = "Not measured"
     package static let noValue = "—"
-    package static let barNote = "Strong: 80 % agreement or more and 5 % or less wrong while sure. "
+    package static let barNote = "Strong: 80 % agreement or more, 5 % or less wrong while sure, and above the base rate "
+        + "(always giving your most common answer). "
         + "Below that Watchman marks every night decision unsure. Under 30 decisions: not measured."
     package static let runBacktest = "Run Backtest Now"
     package static let runningButton = "Running…"
@@ -141,6 +145,13 @@ package enum WatchmanSettingsCopy {
 
     package static func wrongHigh(_ row: WatchmanBacktestCategory) -> String {
         measured(row) ? percent(row.wrongHigh, of: row.total) : noValue
+    }
+
+    /// "base rate 67 %" under a measured category: what always giving the
+    /// owner's most common answer would score (strong must beat it); nil
+    /// when the category is not measured.
+    package static func baseRate(_ row: WatchmanBacktestCategory) -> String? {
+        measured(row) ? "base rate \(Int((row.baseline * 100).rounded())) %" : nil
     }
 
     package static func rating(_ row: WatchmanBacktestCategory) -> String {

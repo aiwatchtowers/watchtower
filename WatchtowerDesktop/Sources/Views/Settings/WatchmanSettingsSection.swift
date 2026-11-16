@@ -100,6 +100,8 @@ struct WatchmanSettingsContent: View {
                 Text(row.name).font(.callout.weight(.semibold))
                 if let estimate = row.estimate {
                     Text(Copy.estimateLine(estimate)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                } else if !row.isEnabled {
+                    Text(Copy.estimateUnavailable).font(.caption).foregroundStyle(.secondary)
                 }
                 if let notice = notices[row.workbench] {
                     Text(notice)
@@ -215,7 +217,7 @@ struct WatchmanSettingsContent: View {
             .font(.caption.weight(.semibold))
             .foregroundStyle(.secondary)
             ForEach(Copy.tableRows(backtest), id: \.category) { row in
-                tableRow(row.category, Copy.agreement(row), Copy.wrongHigh(row)) {
+                tableRow(row.category, Copy.agreement(row), Copy.wrongHigh(row), baseRate: Copy.baseRate(row)) {
                     Chip(text: Copy.rating(row), color: ratingTone(row.status))
                 }
                 .font(.callout.monospacedDigit())
@@ -225,10 +227,20 @@ struct WatchmanSettingsContent: View {
     }
 
     private func tableRow(
-        _ category: String, _ agreement: String, _ wrong: String, @ViewBuilder rating: () -> some View
+        _ category: String,
+        _ agreement: String,
+        _ wrong: String,
+        baseRate: String? = nil,
+        @ViewBuilder rating: () -> some View
     ) -> some View {
         HStack(spacing: Spacing.regular) {
-            Text(category).frame(width: ListLayout.textColumn - Spacing.hero, alignment: .leading)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(category)
+                if let baseRate {
+                    Text(baseRate).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                }
+            }
+            .frame(width: ListLayout.textColumn - Spacing.hero, alignment: .leading)
             Text(agreement).frame(width: ListLayout.numberColumn, alignment: .trailing)
             Text(wrong).frame(width: ListLayout.dateColumn, alignment: .trailing)
             Spacer(minLength: Spacing.medium)
