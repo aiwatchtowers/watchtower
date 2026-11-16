@@ -43,3 +43,11 @@ func TestSource_BadCursorIsAnError(t *testing.T) {
 		require.Equal(t, "x|y", next, s.Name())
 	}
 }
+
+func TestDBSources_CountSkips(t *testing.T) {
+	for _, s := range DBSources() {
+		c, ok := s.(SkipCounter)
+		require.True(t, ok, s.Name())
+		require.Zero(t, c.Skipped(), s.Name())
+	}
+}

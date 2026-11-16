@@ -12,11 +12,11 @@ import (
 // of a sent round (choice "comment", the body as words), each sent round's
 // outcome (approve or changes), an undone hunk (weight 2) and a decided
 // review lesson (accepted or dismissed).
-type reviewSource struct{}
+type reviewSource struct{ skips }
 
-func (reviewSource) Name() string { return SourceReview }
+func (*reviewSource) Name() string { return SourceReview }
 
-func (reviewSource) Next(ctx context.Context, d *db.DB, workbenchID int64, cur string, limit int) ([]db.WatchmanPrecedent, string, bool, error) {
+func (s *reviewSource) Next(ctx context.Context, d *db.DB, workbenchID int64, cur string, limit int) ([]db.WatchmanPrecedent, string, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, cur, false, err
 	}
@@ -28,6 +28,10 @@ func (reviewSource) Next(ctx context.Context, d *db.DB, workbenchID int64, cur s
 	}
 	out := make([]db.WatchmanPrecedent, 0, len(rows))
 	for _, r := range rows {
+		if r.Mark.At == "" {
+			s.skip(SourceReview, fmt.Sprintf("%s:%d", r.Kind, r.ID), errNoStamp)
+			continue
+		}
 		at, err := decidedAt(r.Mark)
 		if err != nil {
 			return nil, cur, false, err

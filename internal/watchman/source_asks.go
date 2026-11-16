@@ -3,6 +3,7 @@ package watchman
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"strings"
 
@@ -13,18 +14,19 @@ import (
 // asksSource learns from answered owner asks. A review ask is a review_doc
 // decision (its verdict, its comments as the owner's words); a question or
 // check ask is left unlabelled (Category "") for the runner's labeller. A
-// dismissed ask, or one whose stored answer does not parse, is no decision
-// and is skipped (its cursor still moves on).
+// dismissed ask is no decision and is left out; a row that cannot be read
+// (payload or answer JSON, a review with no verdict, no answered_at) is
+// skipped, logged by id and counted (SkipCounter). The cursor moves past both.
 //
 // Handover asks (finish_session's handover_ask_id) carry no mark in the
 // database: the id is only checked and echoed by finish_session, and the ask
 // is an ordinary ask_owner with an agent-written title. They come through as
 // questions and are labelled like any other (finish is one of the labels).
-type asksSource struct{}
+type asksSource struct{ skips }
 
-func (asksSource) Name() string { return SourceAsk }
+func (*asksSource) Name() string { return SourceAsk }
 
-func (asksSource) Next(ctx context.Context, d *db.DB, workbenchID int64, cur string, limit int) ([]db.WatchmanPrecedent, string, bool, error) {
+func (s *asksSource) Next(ctx context.Context, d *db.DB, workbenchID int64, cur string, limit int) ([]db.WatchmanPrecedent, string, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, cur, false, err
 	}
@@ -38,7 +40,8 @@ func (asksSource) Next(ctx context.Context, d *db.DB, workbenchID int64, cur str
 	for _, r := range rows {
 		p, ok, err := askPrecedent(workbenchID, r)
 		if err != nil {
-			return nil, cur, false, err
+			s.skip(SourceAsk, strconv.FormatInt(r.ID, 10), err)
+			continue
 		}
 		if ok {
 			out = append(out, p)
@@ -47,13 +50,25 @@ func (asksSource) Next(ctx context.Context, d *db.DB, workbenchID int64, cur str
 	return out, next, done, nil
 }
 
+// askPrecedent maps one ask: ok false for a dismissed ask (no decision), an
+// error (log-safe) for a row that cannot be read, which the caller counts.
 func askPrecedent(workbenchID int64, r db.WatchmanAskRow) (db.WatchmanPrecedent, bool, error) {
+	if r.Mark.At == "" {
+		return db.WatchmanPrecedent{}, false, errNoStamp
+	}
 	at, err := decidedAt(r.Mark)
 	if err != nil {
 		return db.WatchmanPrecedent{}, false, err
 	}
-	payload, answer, ok := parseAsk(r)
-	if !ok || answer.Dismissed {
+	var payload asks.Payload
+	if err := json.Unmarshal([]byte(r.Payload), &payload); err != nil {
+		return db.WatchmanPrecedent{}, false, unreadable("payload", err)
+	}
+	answer, err := asks.ParseAnswer([]byte(r.Answer))
+	if err != nil {
+		return db.WatchmanPrecedent{}, false, unreadable("answer", err)
+	}
+	if answer.Dismissed {
 		return db.WatchmanPrecedent{}, false, nil
 	}
 	p := db.WatchmanPrecedent{
@@ -64,7 +79,7 @@ func askPrecedent(workbenchID int64, r db.WatchmanAskRow) (db.WatchmanPrecedent,
 	switch r.Kind {
 	case asks.KindReview:
 		if answer.Verdict == "" {
-			return db.WatchmanPrecedent{}, false, nil
+			return db.WatchmanPrecedent{}, false, errors.New("review answer has no verdict")
 		}
 		p.Category = CategoryReviewDoc
 		doc := "Review of " + r.DocPath
@@ -85,17 +100,6 @@ func askPrecedent(workbenchID int64, r db.WatchmanAskRow) (db.WatchmanPrecedent,
 	}
 	p.Situation, p.Choice, p.OwnerWords = clean(p.Situation), clean(p.Choice), clean(p.OwnerWords)
 	return p, true, nil
-}
-
-// parseAsk reads a row's stored payload and answer; false when either does not
-// parse (a bad row is skipped, not a stall of the whole source).
-func parseAsk(r db.WatchmanAskRow) (asks.Payload, asks.Answer, bool) {
-	var p asks.Payload
-	if json.Unmarshal([]byte(r.Payload), &p) != nil {
-		return asks.Payload{}, asks.Answer{}, false
-	}
-	a, err := asks.ParseAnswer([]byte(r.Answer))
-	return p, a, err == nil
 }
 
 func focusText(fs []asks.Focus) string {

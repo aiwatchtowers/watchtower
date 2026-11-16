@@ -9,11 +9,11 @@ import (
 
 // permissionSource learns from permission prompts the owner allowed or
 // denied: situation = the tool and its (redacted) input summary.
-type permissionSource struct{}
+type permissionSource struct{ skips }
 
-func (permissionSource) Name() string { return SourcePermission }
+func (*permissionSource) Name() string { return SourcePermission }
 
-func (permissionSource) Next(ctx context.Context, d *db.DB, workbenchID int64, cur string, limit int) ([]db.WatchmanPrecedent, string, bool, error) {
+func (s *permissionSource) Next(ctx context.Context, d *db.DB, workbenchID int64, cur string, limit int) ([]db.WatchmanPrecedent, string, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, cur, false, err
 	}
@@ -25,6 +25,10 @@ func (permissionSource) Next(ctx context.Context, d *db.DB, workbenchID int64, c
 	}
 	out := make([]db.WatchmanPrecedent, 0, len(rows))
 	for _, r := range rows {
+		if r.Mark.At == "" {
+			s.skip(SourcePermission, strconv.FormatInt(r.ID, 10), errNoStamp)
+			continue
+		}
 		at, err := decidedAt(r.Mark)
 		if err != nil {
 			return nil, cur, false, err

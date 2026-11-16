@@ -2,13 +2,16 @@ package watchman
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
 	"watchtower/internal/db"
+	"watchtower/internal/logredact"
 )
 
 // Source reads one kind of owner decision for one workbench, newest first, resumable by an opaque cursor ("" = nothing seen yet).
@@ -42,7 +45,34 @@ const SituationLimit = 2048
 
 // DBSources returns the database sources in learning order.
 func DBSources() []Source {
-	return []Source{asksSource{}, reviewSource{}, specSource{}, permissionSource{}}
+	return []Source{&asksSource{}, &reviewSource{}, &specSource{}, &permissionSource{}}
+}
+
+// SkipCounter is implemented by a Source that can meet rows it cannot learn
+// from (unreadable JSON, a missing decided_at): Skipped is how many it met
+// since it was made. Each one is also logged with its ids, never its text.
+type SkipCounter interface {
+	Skipped() int
+}
+
+// skips is the SkipCounter the database sources embed.
+type skips struct{ n int }
+
+func (s *skips) Skipped() int { return s.n }
+
+// skip counts one row and logs it by id; err must already be log-safe
+// (built by logredact.Errorf when it may hold row text).
+func (s *skips) skip(source, id string, err error) {
+	s.n++
+	log.Printf("watchman: %s %s skipped: %v", source, id, err)
+}
+
+// errNoStamp is a decided row with no readable decided_at.
+var errNoStamp = errors.New("no readable decided_at")
+
+// unreadable fingerprints a parse error, which may quote row text (FILES-01).
+func unreadable(what string, err error) error {
+	return logredact.Errorf("unreadable %s: %s", what, logredact.Text(err.Error()))
 }
 
 // clean redacts secrets and caps text at SituationLimit: every text a source

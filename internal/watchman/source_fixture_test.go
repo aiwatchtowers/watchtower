@@ -1,8 +1,10 @@
 package watchman
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"testing"
 	"time"
 
@@ -144,4 +146,14 @@ func checkNewestFirst(t *testing.T, d *db.DB, src Source, seed func(i int, at ti
 	require.NoError(t, err)
 	require.Empty(t, ps, "nothing is returned twice")
 	require.True(t, done)
+}
+
+// captureLog sends the standard logger to a buffer for the test.
+func captureLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(prev) })
+	return &buf
 }

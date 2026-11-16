@@ -81,7 +81,7 @@ func TestReviewSource_MapsRows(t *testing.T) {
 	other := seedRound(t, d, 2, "sent", "changes", &t1)
 	seedComment(t, d, other, "x.go", "", "another workbench", "sent", nil)
 
-	ps, _, done, err := reviewSource{}.Next(context.Background(), d, 1, "", 20)
+	ps, _, done, err := (&reviewSource{}).Next(context.Background(), d, 1, "", 20)
 	require.NoError(t, err)
 	require.True(t, done)
 	got := byKey(ps)
@@ -121,7 +121,7 @@ func TestReviewSource_IncludesLessons(t *testing.T) {
 	seedLesson(t, d, 1, "Still proposed.", "proposed", nil)
 	seedLesson(t, d, 2, "Another workbench.", "accepted", &t1)
 
-	ps, _, _, err := reviewSource{}.Next(context.Background(), d, 1, "", 20)
+	ps, _, _, err := (&reviewSource{}).Next(context.Background(), d, 1, "", 20)
 	require.NoError(t, err)
 	require.Equal(t, []string{fmt.Sprintf("lesson:%d", dis), fmt.Sprintf("lesson:%d", acc)}, keys(ps))
 	require.Equal(t, "dismissed", ps[0].Choice)
@@ -133,7 +133,20 @@ func TestReviewSource_IncludesLessons(t *testing.T) {
 func TestReviewSource_CursorNewestFirst(t *testing.T) {
 	d := openSourceDB(t)
 	round := seedRound(t, d, 1, "open", "", nil)
-	checkNewestFirst(t, d, reviewSource{}, func(i int, at time.Time) string {
+	checkNewestFirst(t, d, &reviewSource{}, func(i int, at time.Time) string {
 		return fmt.Sprintf("revert:%d", seedRevert(t, d, round, fmt.Sprintf("h%d", i), at))
 	})
+}
+
+func TestReviewSource_MissingStampCounted(t *testing.T) {
+	d := openSourceDB(t)
+	logs := captureLog(t)
+	bad := seedRound(t, d, 1, "sent", "approved", nil) // sent, but no sent_at
+	src := &reviewSource{}
+	ps, _, done, err := src.Next(context.Background(), d, 1, "", 10)
+	require.NoError(t, err)
+	require.True(t, done)
+	require.Empty(t, ps)
+	require.Equal(t, 1, src.Skipped())
+	require.Contains(t, logs.String(), fmt.Sprintf("watchman: review round:%d skipped", bad))
 }

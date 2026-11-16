@@ -18,7 +18,7 @@ func TestAsksSource_MapsRows(t *testing.T) {
 		answer: `{"answers":[],"checklist":[],"comments":[{"body":"say how long entries live","heading":"Cache","prefix":"","quote":"Read once.","suffix":""}],"note":"close","verdict":"changes"}`,
 		status: "delivered", answeredAt: srcT0.Add(time.Hour)})
 
-	ps, _, done, err := asksSource{}.Next(context.Background(), d, 1, "", 10)
+	ps, _, done, err := (&asksSource{}).Next(context.Background(), d, 1, "", 10)
 	require.NoError(t, err)
 	require.True(t, done)
 	require.Len(t, ps, 2)
@@ -53,7 +53,7 @@ func TestAsksSource_MapsCheckAsk(t *testing.T) {
 		payload:    `{"focus":[],"questions":[],"checklist":[{"id":"c1","text":"run the import"},{"id":"c2","text":"open the report"}]}`,
 		answer:     `{"answers":[],"checklist":[{"id":"c1","note":"","state":"ok"},{"id":"c2","note":"blank page","state":"broken"}],"comments":[],"note":"","verdict":""}`,
 		answeredAt: srcT0})
-	ps, _, _, err := asksSource{}.Next(context.Background(), d, 1, "", 10)
+	ps, _, _, err := (&asksSource{}).Next(context.Background(), d, 1, "", 10)
 	require.NoError(t, err)
 	require.Len(t, ps, 1)
 	require.Equal(t, "", ps[0].Category)
@@ -64,7 +64,7 @@ func TestAsksSource_MapsCheckAsk(t *testing.T) {
 
 func TestAsksSource_CursorNewestFirst(t *testing.T) {
 	d := openSourceDB(t)
-	checkNewestFirst(t, d, asksSource{}, func(_ int, at time.Time) string {
+	checkNewestFirst(t, d, &asksSource{}, func(_ int, at time.Time) string {
 		return strconv.FormatInt(seedAsk(t, d, askSeed{answeredAt: at}), 10)
 	})
 }
@@ -83,7 +83,7 @@ func TestAsksSource_SkipsAutomationAndOpen(t *testing.T) {
 	_, err := d.Exec(`UPDATE owner_asks SET origin = 'chat' WHERE id = ?`, chat)
 	require.NoError(t, err)
 
-	ps, _, done, err := asksSource{}.Next(context.Background(), d, 1, "", 50)
+	ps, _, done, err := (&asksSource{}).Next(context.Background(), d, 1, "", 50)
 	require.NoError(t, err)
 	require.True(t, done)
 	require.Equal(t, []string{strconv.FormatInt(chat, 10), strconv.FormatInt(keep, 10)}, keys(ps))
@@ -94,7 +94,7 @@ func TestAsksSource_RedactsSituation(t *testing.T) {
 	secret := "sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789" // leak-check:allow
 	seedAsk(t, d, askSeed{summary: "The importer fails with token " + secret + "\n" + strings.Repeat("long context ", 400),
 		answer: questionAnswer("sqlite", "use password="+secret), answeredAt: srcT0}) // leak-check:allow
-	ps, _, _, err := asksSource{}.Next(context.Background(), d, 1, "", 10)
+	ps, _, _, err := (&asksSource{}).Next(context.Background(), d, 1, "", 10)
 	require.NoError(t, err)
 	require.Len(t, ps, 1)
 	require.NotContains(t, ps[0].Situation, secret)
@@ -102,4 +102,24 @@ func TestAsksSource_RedactsSituation(t *testing.T) {
 	require.NotContains(t, ps[0].OwnerWords, secret)
 	require.LessOrEqual(t, len([]rune(ps[0].Situation)), SituationLimit)
 	require.True(t, strings.HasSuffix(ps[0].Situation, "…"))
+}
+
+func TestAsksSource_CorruptPayloadSkippedAndCounted(t *testing.T) {
+	d := openSourceDB(t)
+	logs := captureLog(t)
+	keep := seedAsk(t, d, askSeed{answeredAt: srcT0})
+	badPayload := seedAsk(t, d, askSeed{payload: "Acme launch codename", answeredAt: srcT0.Add(time.Minute)})
+	badAnswer := seedAsk(t, d, askSeed{answer: `{"note":"Acme launch codename`, answeredAt: srcT0.Add(2 * time.Minute)})
+	noStamp := seedAsk(t, d, askSeed{}) // answered, but answered_at is empty
+
+	src := &asksSource{}
+	ps, _, done, err := src.Next(context.Background(), d, 1, "", 10)
+	require.NoError(t, err)
+	require.True(t, done)
+	require.Equal(t, []string{strconv.FormatInt(keep, 10)}, keys(ps))
+	require.Equal(t, 3, src.Skipped())
+	for _, id := range []int64{badPayload, badAnswer, noStamp} {
+		require.Contains(t, logs.String(), "watchman: ask "+strconv.FormatInt(id, 10)+" skipped")
+	}
+	require.NotContains(t, logs.String(), "codename", "logs carry ids and fingerprints only")
 }
