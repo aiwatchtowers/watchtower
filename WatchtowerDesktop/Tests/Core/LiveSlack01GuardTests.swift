@@ -210,6 +210,8 @@ final class LiveSlack01GuardTests: XCTestCase {
         "CodeQuestionList.swift": "workbench Questions tab, never leaves it",
         "EmbeddedChatStore.swift": "the embedded chat's own rows",
         "ChatSurfaceSpec.swift": "surface wiring, no read of text",
+        "ChatToolCatalog.swift": "names the chat-history tools in step labels, no read",
+        "EmbeddedChatReplay.swift": "names the chat-history tools in the replay hint, no read",
         "AutomationListSections.swift": "automation editor chats list",
         "ChatViewModel.swift": "the chat screen's own state",
         "CodeQuestionSurface.swift": "workbench Questions tab, never leaves it",
