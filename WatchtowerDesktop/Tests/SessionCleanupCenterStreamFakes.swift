@@ -17,6 +17,9 @@ final class ScriptedCleanupStreamer: SessionCleanupStreaming, @unchecked Sendabl
         private var exit: SessionCleanupStream.Exit?
         private var waiters: [CheckedContinuation<SessionCleanupStream.Exit, Never>] = []
         private var stops = 0
+        private var groupStops: [Duration] = []
+        private var exitAwaited = false
+        private var exitAwaitedWatchers: [CheckedContinuation<Void, Never>] = []
 
         /// `ignoresCancellation`: the lines go through a channel whose
         /// reads ignore the reader's cancellation, as a pipe read already
@@ -35,6 +38,9 @@ final class ScriptedCleanupStreamer: SessionCleanupStreaming, @unchecked Sendabl
         }
 
         var stopCount: Int { lock.withLock { stops } }
+        /// The graces of the group stops (`stopWithin`: SIGTERM, then
+        /// SIGKILL after the grace); such a stop ends the run (exit 143).
+        var groupStopGraces: [Duration] { lock.withLock { groupStops } }
 
         func send(_ line: String) {
             continuation.yield(line)
@@ -57,17 +63,37 @@ final class ScriptedCleanupStreamer: SessionCleanupStreaming, @unchecked Sendabl
             SessionCleanupStream(
                 lines: lines,
                 exit: { [self] in await waitForExit() },
-                stop: { [self] in lock.withLock { stops += 1 } }
+                stop: { [self] in lock.withLock { stops += 1 } },
+                stopWithin: { [self] grace in
+                    lock.withLock { groupStops.append(grace) }
+                    finish(status: 143, message: "terminated")
+                }
             )
+        }
+
+        /// Returns once the reader waits for the exit (it has read every
+        /// line it will act on): an event, not a wait on the clock.
+        func untilExitAwaited() async {
+            await withCheckedContinuation { watcher in
+                let now: Bool = lock.withLock {
+                    if exitAwaited { return true }
+                    exitAwaitedWatchers.append(watcher)
+                    return false
+                }
+                if now { watcher.resume() }
+            }
         }
 
         private func waitForExit() async -> SessionCleanupStream.Exit {
             await withCheckedContinuation { waiter in
-                let ready: SessionCleanupStream.Exit? = lock.withLock {
-                    if let exit { return exit }
+                let (ready, watchers): (SessionCleanupStream.Exit?, [CheckedContinuation<Void, Never>]) = lock.withLock {
+                    exitAwaited = true
+                    defer { exitAwaitedWatchers = [] }
+                    if let exit { return (exit, exitAwaitedWatchers) }
                     waiters.append(waiter)
-                    return nil
+                    return (nil, exitAwaitedWatchers)
                 }
+                watchers.forEach { $0.resume() }
                 if let ready { waiter.resume(returning: ready) }
             }
         }
@@ -262,6 +288,7 @@ final class RepliedCleanupStreamer: SessionCleanupStreaming, @unchecked Sendable
     private let lock = NSLock()
     private var replies: [Result<Data, Error>]
     private var held: [CheckedContinuation<Void, Never>] = []
+    private var heldWatchers: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
     private var tornDown = false
     /// Runs started so far, and how many of them `release()` let go — a run
     /// released before its answer reached the hold does not hold at all.
@@ -278,6 +305,19 @@ final class RepliedCleanupStreamer: SessionCleanupStreaming, @unchecked Sendable
     var heldCount: Int { lock.withLock { held.count } }
     /// The runs the center stopped.
     var cancelledCount: Int { runs.filter { $0.stopCount > 0 }.count }
+
+    /// Returns once `count` runs are held (an event, not a wait on the
+    /// clock); at once when they already are.
+    func untilHeld(_ count: Int) async {
+        await withCheckedContinuation { watcher in
+            let now: Bool = lock.withLock {
+                if tornDown || held.count >= count { return true }
+                heldWatchers.append((count, watcher))
+                return false
+            }
+            if now { watcher.resume() }
+        }
+    }
 
     func release() {
         let waiting: [CheckedContinuation<Void, Never>] = lock.withLock {
@@ -300,11 +340,15 @@ final class RepliedCleanupStreamer: SessionCleanupStreaming, @unchecked Sendable
         Task.detached { [self] in
             if holds {
                 await withCheckedContinuation { continuation in
-                    let resume: Bool = lock.withLock {
-                        if tornDown || index <= released { return true }
+                    let (resume, reached): (Bool, [CheckedContinuation<Void, Never>]) = lock.withLock {
+                        if tornDown || index <= released { return (true, []) }
                         held.append(continuation)
-                        return false
+                        let count = held.count
+                        let reached = heldWatchers.filter { $0.count <= count }.map(\.continuation)
+                        heldWatchers.removeAll { $0.count <= count }
+                        return (false, reached)
                     }
+                    reached.forEach { $0.resume() }
                     if resume { continuation.resume() }
                 }
             }
@@ -321,7 +365,12 @@ final class RepliedCleanupStreamer: SessionCleanupStreaming, @unchecked Sendable
 
     /// Ends every run and every held answer (tearDown).
     func finishAll() {
-        lock.withLock { tornDown = true }
+        let watchers: [CheckedContinuation<Void, Never>] = lock.withLock {
+            tornDown = true
+            defer { heldWatchers = [] }
+            return heldWatchers.map(\.continuation)
+        }
+        watchers.forEach { $0.resume() }
         release()
         scripted.finishAll()
     }

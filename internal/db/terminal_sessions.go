@@ -13,6 +13,14 @@ import (
 
 var ErrTerminalSessionNotFound = errors.New("terminal session not found")
 
+// NotDeletingSQL is the one filter every list read of terminal_sessions
+// carries (spec §4, board #1716): a row with delete_requested_at set is
+// deleted as far as the owner is concerned, so it leaves every list, the
+// phone and every session start. Lookups by id stay unfiltered; the guard
+// TestProj17_DeletingRowsLeaveEveryList names them. Qualify it with the
+// table alias when the query has one ("s." + NotDeletingSQL).
+const NotDeletingSQL = "delete_requested_at IS NULL"
+
 // agentStateAtLayout is agent_state_at's fixed-width UTC form: string order
 // is time order, and the Desktop parses it pinned to UTC.
 const agentStateAtLayout = "2006-01-02T15:04:05.000Z"
@@ -236,6 +244,22 @@ func (db *DB) TerminalAgentCwd(id int64) (AgentCwd, error) {
 		return AgentCwd{}, fmt.Errorf("reading terminal session %d working directory: %w", id, err)
 	}
 	return AgentCwd{Path: cwd.String, At: parsedStampOrZero(cwdAt), RunStart: parsedStampOrZero(runStart)}, nil
+}
+
+// TerminalDeleteRequestedAt is row id's delete_requested_at (board #1716,
+// the Desktop's only): the moment the owner's delete took effect, when the
+// row's terminal had ended; "" when the row is not being deleted.
+// ErrTerminalSessionNotFound when there is no such row.
+func (db *DB) TerminalDeleteRequestedAt(ctx context.Context, id int64) (string, error) {
+	var at sql.NullString
+	err := db.QueryRowContext(ctx, `SELECT delete_requested_at FROM terminal_sessions WHERE id = ?`, id).Scan(&at)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrTerminalSessionNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("reading terminal session %d delete request: %w", id, err)
+	}
+	return at.String, nil
 }
 
 // runStartExpr is the row's run mark stamp, agent_turns' since; NULL when
