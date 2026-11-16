@@ -22,7 +22,7 @@
       "background_tasks": true,
       "app_session_id": true,
       "analytics_context": true,
-      "scratchpad_lanes": true
+      "claude_session_files": true
     },
     "codex": {
       "state_events": ["SessionStart", "UserPromptSubmit", "PermissionRequest", "PostToolUse", "SubagentStart", "SubagentStop", "Interrupt", "Stop"],
@@ -41,7 +41,7 @@
       "background_tasks": false,
       "app_session_id": false,
       "analytics_context": false,
-      "scratchpad_lanes": false
+      "claude_session_files": false
     }
   }
 }

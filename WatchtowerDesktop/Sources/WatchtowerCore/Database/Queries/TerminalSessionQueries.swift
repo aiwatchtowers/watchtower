@@ -161,9 +161,7 @@ package enum TerminalSessionQueries {
 
     /// Whether the session's own agent has worked in the worktree at one of
     /// `roots` on `branch` ('' = a detached HEAD): a pair the state hooks
-    /// recorded in `terminal_session_worktrees` (migration 00111) as a `cwd`
-    /// row; a `command` row (00187, board #1716) means the session created
-    /// the pair, not that an agent worked there. Pass the
+    /// recorded in `terminal_session_worktrees` (migration 00111). Pass the
     /// worktree top both as given and symlink-resolved — the hooks store the
     /// resolved path.
     package static func hasWorktree(_ db: Database, sessionID: Int64, roots: [String], branch: String) throws -> Bool {
@@ -173,7 +171,7 @@ package enum TerminalSessionQueries {
             db,
             sql: """
                 SELECT EXISTS (SELECT 1 FROM terminal_session_worktrees
-                WHERE session_id = ? AND source = 'cwd' AND branch = ? AND root IN (\(marks)))
+                WHERE session_id = ? AND branch = ? AND root IN (\(marks)))
                 """,
             arguments: StatementArguments([sessionID, branch] as [any DatabaseValueConvertible] + roots)
         ) ?? false
@@ -182,8 +180,7 @@ package enum TerminalSessionQueries {
     /// What workbench `projectID`'s sessions work on (board #987), by
     /// session id: the targets their agents linked (`terminal_session_targets`,
     /// PROJ-14), the worktrees their agents worked in (`terminal_session_worktrees`,
-    /// migration 00111; `cwd` rows only — a `command` row, 00187, is what the
-    /// session created, not where it worked) with each one's last sighting (`last_at`, 00174, else
+    /// migration 00111) with each one's last sighting (`last_at`, 00174, else
     /// `first_at`) and the run start they are judged against (`agent_turns`'
     /// `since`, as `fetchAgentCwds` reads it). A session
     /// with neither a link nor a worktree is left out. Read-only: Go writes
@@ -204,7 +201,7 @@ package enum TerminalSessionQueries {
                         THEN json_extract(s.agent_turns, '$.since') END AS run_start
             FROM terminal_session_worktrees w
             JOIN terminal_sessions s ON s.id = w.session_id
-            WHERE s.project_id = ? AND s.delete_requested_at IS NULL AND w.source = 'cwd' ORDER BY w.session_id, seen_at, w.root
+            WHERE s.project_id = ? AND s.delete_requested_at IS NULL ORDER BY w.session_id, seen_at, w.root
             """, arguments: [projectID])
         for row in worktrees {
             let id: Int64 = row["session_id"]

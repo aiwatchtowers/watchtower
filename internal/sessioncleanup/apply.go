@@ -91,7 +91,7 @@ type Result struct {
 // non-nil only when nothing was done.
 func Apply(ctx context.Context, d Deps, r Request, only []string) (Result, error) {
 	res := Result{SessionID: r.SessionID, WorkbenchID: r.WorkbenchID, Mode: ModeApply, Sweep: r.Sweep,
-		Plan: Plan{Items: []Item{}}}
+		Plan: Plan{Items: []Item{}, Notes: []string{}}}
 	if r.Sweep && len(only) == 0 {
 		return res, ErrSweepNeedsItems
 	}
@@ -100,9 +100,10 @@ func Apply(ctx context.Context, d Deps, r Request, only []string) (Result, error
 		return res, err
 	}
 	b.walked = map[string]string{}
-	a := newApplier(b, b.evaluate(ctx), only)
+	p := b.evaluate(ctx)
+	a := newApplier(b, p, only)
 	a.run(ctx)
-	res.WorkbenchID, res.Plan = b.req.WorkbenchID, Plan{Items: a.items, DefaultBranch: b.repo.defaultBranch}
+	res.WorkbenchID, res.Plan = b.req.WorkbenchID, Plan{Items: a.items, DefaultBranch: b.repo.defaultBranch, Notes: p.Notes}
 	res.RemovedBytes, res.RemovedBytesKnown = removedBytes(a.items)
 	res.Summary = Summarize(a.items)
 	a.save(ctx, &res)

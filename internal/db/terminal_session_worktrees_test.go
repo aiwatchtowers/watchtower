@@ -398,85 +398,6 @@ func setDeleteRequestedForTest(t *testing.T, d *DB, id int64, at string) {
 	}
 }
 
-func TestSessionCommandRows_CapIs512(t *testing.T) {
-	ctx := context.Background()
-	d := openTestDB(t)
-	id := newAgentStateRow(t, d, newTestWorkbench(t, d), "claude", agentStateUUID)
-	for i := range MaxSessionCommandRows {
-		recorded, full, err := d.RecordSessionCommandRow(ctx, id, "/tmp/example/repo", fmt.Sprintf("feat/b%d", i), "branch", ledgerAt)
-		if err != nil || !recorded || full {
-			t.Fatalf("record %d = %v, %v, %v; want true, false, nil", i, recorded, full, err)
-		}
-	}
-	recorded, full, err := d.RecordSessionCommandRow(ctx, id, "/tmp/example/repo", "feat/one-too-many", "branch", ledgerAt)
-	if err != nil || recorded || !full {
-		t.Fatalf("record 513 = %v, %v, %v; want false, true, nil", recorded, full, err)
-	}
-	rows, _ := d.SessionWorktrees(ctx, id)
-	if len(rows) != MaxSessionCommandRows {
-		t.Fatalf("%d rows, want %d", len(rows), MaxSessionCommandRows)
-	}
-	if rows[0].Source != "command" || rows[0].Kind != "branch" {
-		t.Fatalf("row = %+v; want source command, kind branch", rows[0])
-	}
-}
-
-func TestSessionCommandRows_DoNotCountAgainstCwdCap(t *testing.T) {
-	ctx := context.Background()
-	d := openTestDB(t)
-	id := newAgentStateRow(t, d, newTestWorkbench(t, d), "claude", agentStateUUID)
-	if recorded, _, err := d.RecordSessionCommandRow(ctx, id, "/tmp/example/cmd-wt", "feat/c", "worktree", ledgerAt); err != nil || !recorded {
-		t.Fatalf("command row before the cwd rows = %v, %v", recorded, err)
-	}
-	for i := range MaxSessionWorktrees {
-		if got, err := d.RecordSessionWorktree(ctx, nil, id, fmt.Sprintf("/tmp/example/wt%d", i), "", ledgerAt); err != nil || !got {
-			t.Fatalf("cwd record %d = %v, %v; a command row must not count against the cwd cap", i, got, err)
-		}
-	}
-	if recorded, full, err := d.RecordSessionCommandRow(ctx, id, "/tmp/example/repo", "feat/d", "branch", ledgerAt); err != nil || !recorded || full {
-		t.Fatalf("command row past 64 cwd rows = %v, %v, %v; want true, false, nil", recorded, full, err)
-	}
-	if _, _, full, err := d.HasSessionWorktree(ctx, id, "/tmp/example/new", ""); err != nil || !full {
-		t.Fatalf("HasSessionWorktree full = %v, %v; want the cwd cap reached", full, err)
-	}
-	rows, _ := d.SessionWorktrees(ctx, id)
-	if len(rows) != MaxSessionWorktrees+2 {
-		t.Fatalf("%d rows, want %d", len(rows), MaxSessionWorktrees+2)
-	}
-}
-
-func TestSessionCommandRows_ExistingCwdRowKeepsSource(t *testing.T) {
-	ctx := context.Background()
-	d := openTestDB(t)
-	id := newAgentStateRow(t, d, newTestWorkbench(t, d), "claude", agentStateUUID)
-	if got, err := d.RecordSessionWorktree(ctx, nil, id, "/tmp/example/wt", "feat/x", ledgerAt); err != nil || !got {
-		t.Fatalf("cwd record = %v, %v", got, err)
-	}
-	const later = "2026-10-12T13:00:00.000Z"
-	recorded, full, err := d.RecordSessionCommandRow(ctx, id, "/tmp/example/wt", "feat/x", "branch", later)
-	if err != nil || recorded || full {
-		t.Fatalf("command record of a cwd pair = %v, %v, %v; want not recorded, not full, nil", recorded, full, err)
-	}
-	var source, kind, lastAt string
-	if err := d.QueryRow(`SELECT source, kind, last_at FROM terminal_session_worktrees WHERE session_id = ?`, id).
-		Scan(&source, &kind, &lastAt); err != nil {
-		t.Fatal(err)
-	}
-	if source != "cwd" || kind != "worktree" || lastAt != later {
-		t.Fatalf("row = %s, %s, %s; want cwd, worktree, %s", source, kind, lastAt, later)
-	}
-	// An older sighting never moves last_at back.
-	if _, _, err := d.RecordSessionCommandRow(ctx, id, "/tmp/example/wt", "feat/x", "branch", ledgerAt); err != nil {
-		t.Fatal(err)
-	}
-	if err := d.QueryRow(`SELECT last_at FROM terminal_session_worktrees WHERE session_id = ?`, id).Scan(&lastAt); err != nil {
-		t.Fatal(err)
-	}
-	if lastAt != later {
-		t.Fatalf("last_at = %s after an older sighting; want %s", lastAt, later)
-	}
-}
-
 func TestSessionAutoCleanupColumns(t *testing.T) {
 	d := openTestDB(t)
 	id := newAgentStateRow(t, d, newTestWorkbench(t, d), "claude", agentStateUUID)
@@ -484,104 +405,54 @@ func TestSessionAutoCleanupColumns(t *testing.T) {
 	if err := d.QueryRow(`SELECT delete_requested_at FROM terminal_sessions WHERE id = ?`, id).Scan(&got); err != nil || got.Valid {
 		t.Fatalf("a new row's delete_requested_at = %v, %v; want NULL", got, err)
 	}
+	if at, err := d.TerminalDeleteRequestedAt(context.Background(), id); err != nil || at != "" {
+		t.Fatalf("TerminalDeleteRequestedAt of a new row = %q, %v; want \"\"", at, err)
+	}
 	setDeleteRequestedForTest(t, d, id, ledgerAt)
 	if err := d.QueryRow(`SELECT delete_requested_at FROM terminal_sessions WHERE id = ?`, id).Scan(&got); err != nil || got.String != ledgerAt {
 		t.Fatalf("delete_requested_at = %v, %v; want %s", got, err, ledgerAt)
 	}
-	for _, q := range []string{
-		`INSERT INTO terminal_session_worktrees (session_id, root, branch, first_at, source) VALUES (?, '/tmp/example/a', '', 'x', 'other')`,
-		`INSERT INTO terminal_session_worktrees (session_id, root, branch, first_at, kind) VALUES (?, '/tmp/example/b', '', 'x', 'other')`,
-	} {
-		if _, err := d.Exec(q, id); err == nil {
-			t.Fatalf("%s: accepted a value outside the CHECK", q)
-		}
+	if at, err := d.TerminalDeleteRequestedAt(context.Background(), id); err != nil || at != ledgerAt {
+		t.Fatalf("TerminalDeleteRequestedAt = %q, %v; want %s", at, err, ledgerAt)
 	}
-	if _, _, err := d.RecordSessionCommandRow(context.Background(), id, "/tmp/example/c", "", "other", ledgerAt); err == nil {
-		t.Fatal("RecordSessionCommandRow accepted kind \"other\"")
+	if _, err := d.TerminalDeleteRequestedAt(context.Background(), id+100); !errors.Is(err, ErrTerminalSessionNotFound) {
+		t.Fatalf("TerminalDeleteRequestedAt of a missing row = %v; want ErrTerminalSessionNotFound", err)
 	}
 }
 
-// A cwd sighting of a pair that so far exists only as a command row makes it
-// a cwd row ("an agent worked here") when it is a worktree row: source flips
-// to cwd and last_at moves forward; a branch row stays a command row. Until then the cwd path does not see the pair, and
-// a full cwd ledger does not block the upgrade.
-func TestSessionWorktree_CwdSightingUpgradesCommandRow(t *testing.T) {
-	ctx := context.Background()
-	d := openTestDB(t)
-	id := newAgentStateRow(t, d, newTestWorkbench(t, d), "claude", agentStateUUID)
-	for i := range MaxSessionWorktrees {
-		if got, err := d.RecordSessionWorktree(ctx, nil, id, fmt.Sprintf("/tmp/example/wt%d", i), "", ledgerAt); err != nil || !got {
-			t.Fatalf("cwd record %d = %v, %v", i, got, err)
-		}
-	}
-	const root, branch = "/tmp/example/cmd-wt", "feat/c"
-	if recorded, _, err := d.RecordSessionCommandRow(ctx, id, root, branch, "worktree", ledgerAt); err != nil || !recorded {
-		t.Fatalf("command record = %v, %v", recorded, err)
-	}
-	has, _, full, err := d.HasSessionWorktree(ctx, id, root, branch)
-	if err != nil || has || full {
-		t.Fatalf("HasSessionWorktree of a command-only pair = has %v, full %v, %v; want no cwd row and no cap in the way", has, full, err)
-	}
-	if touched, err := d.TouchSessionWorktree(ctx, id, root, branch, "2026-10-12T12:30:00.000Z"); err != nil || touched {
-		t.Fatalf("TouchSessionWorktree of a command-only pair = %v, %v; want untouched", touched, err)
-	}
-	const later = "2026-10-12T13:00:00.000Z"
-	if got, err := d.RecordSessionWorktree(ctx, nil, id, root, branch, later); err != nil || !got {
-		t.Fatalf("cwd sighting of a command row = %v, %v; want recorded (upgraded)", got, err)
-	}
-	var source, kind, lastAt string
-	if err := d.QueryRow(`SELECT source, kind, last_at FROM terminal_session_worktrees
-		WHERE session_id = ? AND root = ? AND branch = ?`, id, root, branch).Scan(&source, &kind, &lastAt); err != nil {
-		t.Fatal(err)
-	}
-	if source != "cwd" || kind != "worktree" || lastAt != later {
-		t.Fatalf("row = %s, %s, %s; want cwd, worktree, %s", source, kind, lastAt, later)
-	}
-	if has, _, _, err := d.HasSessionWorktree(ctx, id, root, branch); err != nil || !has {
-		t.Fatalf("HasSessionWorktree after the upgrade = %v, %v; want true", has, err)
-	}
-	if got, err := d.RecordSessionWorktree(ctx, nil, id, root, branch, later); err != nil || got {
-		t.Fatalf("a second cwd sighting = %v, %v; want already recorded", got, err)
-	}
-	// A branch row is never upgraded: it stays a command row of kind
-	// branch, and its last_at does not move.
-	const repo = "/tmp/example/repo"
-	if _, _, err := d.RecordSessionCommandRow(ctx, id, repo, "feat/b", "branch", ledgerAt); err != nil {
-		t.Fatal(err)
-	}
-	if got, err := d.RecordSessionWorktree(ctx, nil, id, repo, "feat/b", later); err != nil || got {
-		t.Fatalf("cwd sighting of a branch row = %v, %v; want not recorded", got, err)
-	}
-	if err := d.QueryRow(`SELECT source, kind, last_at FROM terminal_session_worktrees
-		WHERE session_id = ? AND root = ? AND branch = ?`, id, repo, "feat/b").Scan(&source, &kind, &lastAt); err != nil {
-		t.Fatal(err)
-	}
-	if source != "command" || kind != "branch" || lastAt != ledgerAt {
-		t.Fatalf("branch row = %s, %s, %s; want command, branch, %s", source, kind, lastAt, ledgerAt)
-	}
-}
-
-// The sweep's owner hints and agentlog's worktree roots read worktree rows
-// only: a branch row's root is the repository top level, never a worktree.
-func TestWorkbenchSessionWorktrees_SkipsBranchRows(t *testing.T) {
+// The ledger stays as it is on main (auto cleanup spec 2026-11-10 §6): cwd
+// sightings only, no source/kind columns. Every cwd-hook writer and reader
+// works on a freshly migrated database and sees the row — a leftover
+// source/kind reference would fail only at run time ("no such column"),
+// where the hook logs it and carries on.
+func TestSessionLedgerCwdWritersOnMigratedSchema(t *testing.T) {
 	ctx := context.Background()
 	d := openTestDB(t)
 	wb := newTestWorkbench(t, d)
 	id := newAgentStateRow(t, d, wb, "claude", agentStateUUID)
-	if _, _, err := d.RecordSessionCommandRow(ctx, id, "/tmp/example/repo", "feat/b", "branch", ledgerAt); err != nil {
-		t.Fatal(err)
+
+	var extra int
+	if err := d.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('terminal_session_worktrees')
+		WHERE name IN ('source', 'kind')`).Scan(&extra); err != nil || extra != 0 {
+		t.Fatalf("terminal_session_worktrees source/kind columns = %d, %v; the ledger keeps main's columns", extra, err)
 	}
-	if _, _, err := d.RecordSessionCommandRow(ctx, id, "/tmp/example/cmd-wt", "feat/c", "worktree", ledgerAt); err != nil {
-		t.Fatal(err)
+
+	const root, branch = "/tmp/example/wt", "feat/x"
+	if got, err := d.RecordSessionWorktree(ctx, nil, id, root, branch, ledgerAt); err != nil || !got {
+		t.Fatalf("RecordSessionWorktree = %v, %v; want recorded", got, err)
 	}
-	if _, err := d.RecordSessionWorktree(ctx, nil, id, "/tmp/example/wt", "", ledgerAt); err != nil {
-		t.Fatal(err)
+	if has, _, full, err := d.HasSessionWorktree(ctx, id, root, branch); err != nil || !has || full {
+		t.Fatalf("HasSessionWorktree = has %v, full %v, %v; want has, not full", has, full, err)
+	}
+	if touched, err := d.TouchSessionWorktree(ctx, id, root, branch, "2026-10-12T13:00:00.000Z"); err != nil || !touched {
+		t.Fatalf("TouchSessionWorktree = %v, %v; want touched", touched, err)
+	}
+	ws, err := d.SessionWorktrees(ctx, id)
+	if err != nil || len(ws) != 1 || ws[0].Root != root || ws[0].Branch != branch {
+		t.Fatalf("SessionWorktrees = %+v, %v; want the one row", ws, err)
 	}
 	m, err := d.WorkbenchSessionWorktrees(ctx, wb)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := m["/tmp/example/repo"]; ok || len(m) != 2 || len(m["/tmp/example/cmd-wt"]) != 1 || len(m["/tmp/example/wt"]) != 1 {
-		t.Fatalf("WorkbenchSessionWorktrees = %v; want the two worktree rows, no branch row", m)
+	if err != nil || len(m[root]) != 1 || m[root][0] != id {
+		t.Fatalf("WorkbenchSessionWorktrees = %v, %v; want %s → [%d]", m, err, root, id)
 	}
 }

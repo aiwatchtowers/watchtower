@@ -97,11 +97,15 @@ func ownerWrite(args []string) bool {
 // needs. PlacedCwd and PlacedBranch are the row's folder_path and
 // worktree_branch when Watchtower placed it in a worktree it created (board
 // #229), both "" otherwise. Kind is the row's kind (claude, codex, shell).
+// Ended is the row's delete_requested_at (board #1716): its terminal had
+// ended by then; zero when the row is not being deleted (or the stamp does
+// not parse), which bounds nothing.
 type SessionInfo struct {
 	ID, WorkbenchID         int64
 	CreatedAt               time.Time
 	PlacedCwd, PlacedBranch string
 	Kind                    string
+	Ended                   time.Time
 }
 
 // SessionActivity is one terminal session, of any workbench, as the in-use

@@ -81,6 +81,12 @@ func newCleanupFixture(t *testing.T) *cleanupFixture {
 	f := &cleanupFixture{t: t, database: writeActionsConfig(t), git: bin}
 	base, err := filepath.EvalSymlinks(t.TempDir())
 	require.NoError(t, err)
+	// The cleanup reads Claude Code's subagent records (auto cleanup spec
+	// 2026-11-10 §2a): an empty projects directory of the fixture's own,
+	// never the developer's, and never a missing one (that is a note).
+	claudeDir := filepath.Join(base, "claude-config")
+	require.NoError(t, os.MkdirAll(filepath.Join(claudeDir, "projects"), 0o755))
+	t.Setenv("CLAUDE_CONFIG_DIR", claudeDir)
 	f.base, f.repo = base, filepath.Join(base, "repo")
 	f.gitIn(base, "init", "-q", "--bare", "-b", "main", "remote.git")
 	f.gitIn(base, "init", "-q", "-b", "main", "repo")

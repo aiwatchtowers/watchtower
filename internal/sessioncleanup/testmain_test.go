@@ -18,6 +18,8 @@ import (
 //
 // It installs the db schema template cache too: the DBStore tests open
 // in-memory databases.
+//
+// And it points claudeProjectsDir at an empty temp dir.
 func TestMain(m *testing.M) {
 	for k, v := range map[string]string{
 		"GIT_CONFIG_GLOBAL": os.DevNull, "GIT_CONFIG_NOSYSTEM": "1",
@@ -33,5 +35,15 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "testmain: %v\n", err)
 		os.Exit(1)
 	}
-	os.Exit(m.Run())
+	// No test reads the owner's Claude Code projects directory: an empty
+	// one stands in, and the subagent tests point it at their own.
+	projects, err := os.MkdirTemp("", "sessioncleanup-projects-")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "testmain: %v\n", err)
+		os.Exit(1)
+	}
+	claudeProjectsDir = func() string { return projects }
+	code := m.Run()
+	_ = os.RemoveAll(projects)
+	os.Exit(code)
 }

@@ -10,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"watchtower/internal/db"
 	"watchtower/internal/gitbin"
 	"watchtower/internal/sessionagent"
 	"watchtower/internal/workbenchgit"
@@ -76,6 +75,8 @@ type builder struct {
 	walked map[string]string
 	walkMu sync.Mutex // guards walked: worktrees are checked concurrently
 	report *reporter
+	// notes are the plan's notes (Plan.Notes), in session mode.
+	notes []string
 	// extras are each worktree to remove's orphans and bundles, found
 	// right after its catches.
 	extras map[string][]Item
@@ -113,7 +114,7 @@ func (b *builder) evaluate(ctx context.Context) Plan {
 	items := b.worktreeItems(ctx)
 	items = append(items, b.branchItems(ctx, items)...)
 	items = append(items, b.extraItems(ctx, items)...)
-	return Plan{Items: items, DefaultBranch: b.repo.defaultBranch}
+	return Plan{Items: items, DefaultBranch: b.repo.defaultBranch, Notes: append([]string{}, b.notes...)}
 }
 
 func newBuilder(ctx context.Context, d Deps, r Request) (*builder, error) {
@@ -260,49 +261,59 @@ func (b *builder) loadObserved(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("reading session %d target branches: %w", b.session.ID, err)
 	}
-	b.seen = observe(b.ownRepoRows(rows), targets, b.req.DeclaredWorktrees, b.req.DeclaredBranches)
+	b.seen = observe(rows, targets, b.req.DeclaredWorktrees, b.req.DeclaredBranches)
 	b.observePlacement()
-	return b.loadScratch(ctx)
+	if err := b.loadAgentFiles(ctx); err != nil {
+		return err
+	}
+	return b.loadHeadLogs(ctx)
 }
 
-// ownRepoRows drops the command rows whose root is no worktree (main or
-// linked) of the planned repository: a branch an agent named in another
-// repository names nothing here. cwd rows are kept as they were. v1 limit:
-// a worktree row whose worktree the agent already removed is dropped too, so
-// its branch is not named (fail closed; the Clean Up screen removes it).
-func (b *builder) ownRepoRows(rows []db.SessionWorktree) []db.SessionWorktree {
-	roots := map[string]bool{}
-	for _, w := range b.repo.worktrees {
-		roots[resolvePath(w.Root)] = true
-	}
-	out := rows[:0:0]
-	for _, r := range rows {
-		if r.Source != sourceCommand || roots[resolvePath(r.Root)] {
-			out = append(out, r)
-		}
-	}
-	return out
-}
-
-// loadScratch adopts the session's Claude scratchpad lanes (auto cleanup
-// spec 2026-11-10 §2b), only for a kind whose caps have ScratchpadLanes
-// (an unknown kind adopts nothing). An agent session id of this row
-// counts only when this row is its only owner (history or current id of any
-// terminal session, and no deleted row's tombstone), and a lane — a linked worktree strictly inside
-// `<base>/claude-<uid>/<slug>/<uuid>/` — only when it was born at or after
-// the moment this row acquired the uuid (second precision, so +1 s, as
-// bornReason): the order rows were deleted in, or a history gap, can leave
-// this row the only owner of a uuid another row used first. The lane's
-// checked-out branch is named only when born after that moment too. An
-// unknown birth or acquisition time adopts nothing; a failed read fails the
-// plan.
-func (b *builder) loadScratch(ctx context.Context) error {
-	if !sessionagent.CapsOf(b.session.Kind).ScratchpadLanes {
+// loadAgentFiles adopts what the session's Claude Code sessions made, from
+// the files Claude Code writes itself (auto cleanup spec 2026-11-10 §2a,
+// §2b), only for a kind whose caps have ClaudeSessionFiles (an unknown kind
+// adopts nothing): the worktrees its subagents were started in, with their
+// branches (subagentWorktrees), and its scratchpad lanes
+// (adoptScratchLanes). A failed read fails the plan.
+func (b *builder) loadAgentFiles(ctx context.Context) error {
+	if !sessionagent.CapsOf(b.session.Kind).ClaudeSessionFiles {
 		return nil
 	}
+	acquired, err := b.countedAgentSessions(ctx)
+	if err != nil || len(acquired) == 0 {
+		return err
+	}
+	b.adoptScratchLanes(acquired)
+	ended := b.session.Ended
+	if b.live[b.session.ID] || b.req.CallerSessionID == b.session.ID {
+		ended = time.Time{}
+	}
+	roots, branches, note, err := subagentWorktrees(claudeProjectsDir(), acquired, ended, b.repo.worktrees,
+		bornAt{worktree: b.worktreeBirth, branch: b.repo.branchBirth})
+	if err != nil {
+		return fmt.Errorf("reading the subagent records of session %d: %w", b.session.ID, err)
+	}
+	for r := range roots {
+		b.seen.roots[r] = true
+	}
+	for br := range branches {
+		b.seen.branches[br] = true
+	}
+	if note {
+		b.notes = append(b.notes, NoteSubagentRecordsUnreadable)
+	}
+	return nil
+}
+
+// countedAgentSessions is every agent session id of this row that counts
+// (spec §2) with the moment the row acquired it: this row is its only
+// owner (history or current id of any terminal session, and no deleted
+// row's tombstone). A uuid shared by two rows, or with an unreadable
+// acquisition time, counts for neither (fail closed).
+func (b *builder) countedAgentSessions(ctx context.Context) (map[string]time.Time, error) {
 	ids, err := b.deps.DB.AgentSessionIDs(ctx, b.session.ID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	uuids := make([]string, 0, len(ids))
 	for _, a := range ids {
@@ -312,7 +323,7 @@ func (b *builder) loadScratch(ctx context.Context) error {
 	}
 	owners, err := b.deps.DB.AgentSessionIDOwners(ctx, uuids)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	acquired := map[string]time.Time{}
 	for _, a := range ids {
@@ -322,9 +333,17 @@ func (b *builder) loadScratch(ctx context.Context) error {
 			acquired[a.ID] = since
 		}
 	}
-	if len(acquired) == 0 {
-		return nil
-	}
+	return acquired, nil
+}
+
+// adoptScratchLanes adopts the session's Claude scratchpad lanes (spec
+// §2b): a linked worktree strictly inside `<base>/claude-<uid>/<slug>/<uuid>/`
+// for a counted uuid, born at or after the moment this row acquired the uuid
+// (second precision, so +1 s, as bornReason): the order rows were deleted
+// in, or a history gap, can leave this row the only owner of a uuid another
+// row used first. The lane's checked-out branch is named only when born
+// after that moment too. An unknown birth adopts nothing.
+func (b *builder) adoptScratchLanes(acquired map[string]time.Time) {
 	dirs := scratchDirs()
 	for _, w := range b.repo.worktrees {
 		if w.Main || w.Bare {
@@ -346,7 +365,57 @@ func (b *builder) loadScratch(ctx context.Context) error {
 			b.seen.branches[w.Branch], b.seen.named[w.Branch] = true, true
 		}
 	}
+}
+
+// loadHeadLogs adds the branches created in the session's own linked
+// worktrees (spec §2c, headLogBranches) for every agent kind: a worktree
+// the session owns — observed and born after the session started, or its
+// placed worktree — and whose folder is there. A branch another source
+// already holds keeps that source's standing; an undecided one (another
+// worktree's log unreadable) is kept as created_unknown. A worktree's own
+// unreadable log fails the plan.
+func (b *builder) loadHeadLogs(ctx context.Context) error {
+	unknown := false
+	named := map[string]bool{}
+	for _, w := range b.repo.worktrees {
+		if w.Main || w.Bare || w.Prunable || !b.ownsWorktree(w) {
+			continue
+		}
+		n, switched, unk, err := headLogBranches(ctx, b.repo, w)
+		if err != nil {
+			return fmt.Errorf("reading the branches of %s: %w", w.Root, err)
+		}
+		unknown = unknown || unk
+		for c := range n {
+			named[c] = true
+		}
+		for c := range switched {
+			b.seen.switchedTo[c] = true
+		}
+	}
+	for c := range named {
+		switch {
+		case b.seen.branches[c]:
+		case unknown:
+			b.seen.unknown[c] = true
+		default:
+			b.seen.branches[c] = true
+		}
+	}
 	return nil
+}
+
+// ownsWorktree: w is the row's placed worktree, or observed by the session
+// and born after it started.
+func (b *builder) ownsWorktree(w worktree) bool {
+	if b.seen.placedRoot != "" && w.Root == b.seen.placedRoot {
+		return true
+	}
+	if !b.seen.sawWorktree(w) {
+		return false
+	}
+	birth, known := b.worktreeBirth(w.Root)
+	return bornReason(birth, known, b.session.CreatedAt) == ""
 }
 
 // observePlacement records a placed row's own worktree and branch, each
@@ -609,8 +678,9 @@ func (b *builder) branchItems(ctx context.Context, worktreeItems []Item) []Item 
 	return items
 }
 
-// branchCandidates: in session mode the observed branches that exist, the
-// branches of listed worktrees and every declared one (the default branch
+// branchCandidates: in session mode the observed branches that exist (the
+// §2c candidates only switched to or undecided included), the branches of
+// listed worktrees and every declared one (the default branch
 // only when declared); in the sweep every local branch but the default and
 // the ones checked out in a worktree that stays.
 func (b *builder) branchCandidates(worktreeItems []Item) []string {
@@ -624,9 +694,11 @@ func (b *builder) branchCandidates(worktreeItems []Item) []string {
 		}
 		return sortedKeys(set)
 	}
-	for name := range b.seen.branches {
-		if _, ok := b.repo.branchTip(name); ok && name != b.repo.defaultBranch {
-			set[name] = true
+	for _, seen := range []map[string]bool{b.seen.branches, b.seen.switchedTo, b.seen.unknown} {
+		for name := range seen {
+			if _, ok := b.repo.branchTip(name); ok && name != b.repo.defaultBranch {
+				set[name] = true
+			}
 		}
 	}
 	for _, it := range worktreeItems {
