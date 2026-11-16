@@ -194,7 +194,7 @@ An unread entry has a blue dot. A folder's count is the Mac's <code>InboxFolderC
 <li>A long press, or a tap and then ⋯, opens the full menu: Reply…, Done, Snooze ▸ (1 day / 3 days / 1 week), Hide, Open in Slack.</li>
 <li>Tapping a row opens its detail (frame 2c).</li>
 <li>While an action runs, the row is dimmed with a spinner.</li>
-<li>After it applies, the row leaves at once. The phone hides it locally until the hub's next publish leaves it out.</li>
+<li>After it applies, the row leaves at once. The phone hides it locally until a publish leaves it out. If two publishes pass and the row is still there, the hub's state wins and the row shows again.</li>
 <li>If it fails, the row stays with the hub's error and <b>Retry</b>. A failed Done never hides a row.</li>
 </ul></div>
 <div class="row">
@@ -429,6 +429,8 @@ The bottom bar has <b>Done</b> and <b>Dismiss</b>, which mark only the drawn ver
 <li><b>Not delivered:</b> an action the hub refused shows with <b>Retry</b>.</li>
 <li><b>Old Mac:</b> the hub does not announce the <code>inbox</code> capability.</li>
 <li><b>Organization policy:</b> <code>MobileSync = workbench_only</code>.</li>
+<li><b>Didn't confirm:</b> the hub stopped in the middle of an action that must not run twice (approve, retry, Run Now, a reply). The phone never sends it again.</li>
+<li><b>Older cards:</b> a folder past the 300-card cap ends with a line counting what stays on the Mac.</li>
 </ul></div>
 <div class="row">
 <div class="col"><div class="tag">Loading — dark</div>
@@ -482,6 +484,18 @@ The bottom bar has <b>Done</b> and <b>Dismiss</b>, which mark only the drawn ver
 <div class="empty"><div class="h">The Inbox stays on your Mac</div><div class="s">Your organization lets this phone see only Workbench.</div></div>
 <div class="tabs"><div><span class="gl">◷</span>Now</div><div class="on"><span class="gl">▤</span>Inbox</div><div><span class="gl">⚒</span>Workbench</div><div><span class="gl">▦</span>Calendar</div></div>
 </div></div>
+<div class="col"><div class="tag">Didn't confirm — dark</div>
+<div class="phone"><div class="status"><span>9:41</span><span>●●●</span></div>
+<div class="top"><span class="back">‹ Inbox</span><span></span></div><div class="title">Reports</div>
+<div class="body"><div class="card"><div class="ct">Run "Weekly report" now</div><div class="cm">acme · Report digest</div><div class="cq err">Didn't confirm — check on the Mac.</div><div class="btns"><span class="btn">Refresh</span></div></div><div class="fr"><div class="ic">▤</div><div class="main"><div class="t">Release notes for acme</div><div class="m">Yesterday</div></div></div></div>
+<div class="tabs"><div><span class="gl">◷</span>Now</div><div class="on"><span class="gl">▤</span>Inbox</div><div><span class="gl">⚒</span>Workbench</div><div><span class="gl">▦</span>Calendar</div></div>
+</div></div>
+<div class="col"><div class="tag">Older cards on the Mac — light</div>
+<div class="phone lt"><div class="status"><span>9:41</span><span>●●●</span></div>
+<div class="top"><span class="back">‹ Inbox</span><span></span></div><div class="title">Reports</div>
+<div class="body"><div class="fr"><div class="ic">▤</div><div class="main"><div class="t">Weekly report for acme</div><div class="m">Mon 9:02</div></div></div><div class="fr"><div class="ic">▤</div><div class="main"><div class="t">Budget review</div><div class="m">Oct 30</div></div></div><div class="line">42 older cards are on your Mac.</div></div>
+<div class="tabs"><div><span class="gl">◷</span>Now</div><div class="on"><span class="gl">▤</span>Inbox</div><div><span class="gl">⚒</span>Workbench</div><div><span class="gl">▦</span>Calendar</div></div>
+</div></div>
 </div>
 
 <!-- ===================================================== 7 -->
@@ -500,6 +514,20 @@ The bottom bar has <b>Done</b> and <b>Dismiss</b>, which mark only the drawn ver
 <div class="col"><div class="tag">Reconnecting — light</div>
 <div class="mac lt"><div class="sb"><div class="it"><span>Needs approval</span><span class="cnt wait" style="color:var(--orange)">2</span></div><div class="it on"><span>Inbox</span><span class="ln">14</span></div><div class="it"><span>Work</span><span class="ln">5</span></div><div class="it"><span>Reports</span><span class="ln">3</span></div></div>
 <div class="mn"><div class="hd">Inbox</div><div class="ln"><span class="spin"></span>&nbsp; Reconnecting to Watchtower…</div><div class="rw">Weekly report for acme<div class="m">Report digest · 9:02</div></div><div class="rw">Reply to colleague A about the release<div class="m">Waiting for me · Slack</div></div></div></div></div>
+<div class="col"><div class="tag">Different version — dark</div>
+<div class="mac"><div class="sb"><div class="it on"><span>Inbox</span><span class="ln">14</span></div><div class="it"><span>Work</span><span class="ln">5</span></div></div><div class="mn"><div class="hd">Inbox</div><div class="bar"><span>Watchtower's background service is a different version.</span><span class="bt">Restart</span></div><div class="rw">Weekly report for acme<div class="m">Report digest · 9:02</div></div></div></div></div>
+</div>
+
+<!-- ===================================================== 8 -->
+<h2>8. Mac: tray Pause Sync, and actions on other screens (stage 0 and 1)</h2>
+<div class="note">The tray gains <b>Pause Sync</b>, which becomes <b>Resume Sync</b> while paused. The status line then reads "Sync paused". Pausing stops sync only: the Inbox, the phone and every write keep working. Screens that now write through the tower, such as Ideas, Home, Digests, Tracks and Day plan, share one row treatment. A pressed row shows busy. A refusal shows the tower's sentence with <b>Retry</b>. A press that waits on a restart shows nothing for the first second. "Didn't confirm" means the outcome is not known, and the screen re-reads instead of sending again.</div>
+<div class="row">
+<div class="col"><div class="tag">Tray menu, paused — dark</div>
+<div class="mac" style="width:260px;height:190px"><div class="mn"><div class="ln">Sync paused</div><div class="rw">Open Watchtower</div><div class="rw">Sync Now</div><div class="rw"><b>Resume Sync</b></div><div class="rw">Quit Watchtower</div></div></div></div>
+<div class="col"><div class="tag">Tray menu, running — light</div>
+<div class="mac lt" style="width:260px;height:190px"><div class="mn"><div class="ln">Synced 2 min ago</div><div class="rw">Open Watchtower</div><div class="rw">Sync Now</div><div class="rw"><b>Pause Sync</b></div><div class="rw">Quit Watchtower</div></div></div></div>
+<div class="col"><div class="tag">Ideas: busy, refused, didn't confirm — dark</div>
+<div class="mac" style="width:520px"><div class="sb"><div class="it on"><span>Ideas</span><span class="ln">14</span></div><div class="it"><span>Decisions</span><span class="ln">5</span></div></div><div class="mn"><div class="hd">Ideas</div><div class="rw">Share the release checklist with acme<div class="m"><span class="spin"></span>&nbsp; Approving…</div></div><div class="rw">Move standup to 10:00<div class="m" style="color:var(--red)">Couldn't approve it: this idea changed — look again. <span class="bt">Retry</span></div></div><div class="rw">Draft a note to colleague A<div class="m">Didn&#39;t confirm — checking again…</div></div></div></div></div>
 </div>
 
 </body></html>

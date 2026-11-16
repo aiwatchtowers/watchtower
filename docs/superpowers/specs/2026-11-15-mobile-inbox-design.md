@@ -125,7 +125,7 @@ Stages 1 and 3 depend on stage 0, and stage 2 depends on stage 1. Stage 3 may ru
   - Stage 1: `inbox.feed`, `inbox.watch` (a stream of `changed` events), `inbox.act`, and the write commands the other screens need: `tracks.*`, `ideas.*`, `reminders.*`, `briefing.read`, `dayplan.*`, `outputs.*` and `inbox_items.*`. Each write command is a thin entry over the same Go writer the Inbox uses (§4.3). The plan names each one from the list of Swift call sites (§5.2).
   - Stage 3: `chat.*` for the conversation-level writes (§8).
 - **Envelope.** A request is `{v, id, command, params}`. A response is `{id, status: "ok" | "refused" | "unknown", result | refusal{code, sentence}}`. The `sentence` is written in Go, and both clients show it as is.
-- **Exactly once, with one mechanism for both transports.** Every write command carries `request_id`, a UUID the client makes and keeps across retries. `tower.Call` records it in the new table `tower_requests` (`request_id` PK, `command`, `state` `begun`|`done`, `result_json`, `at`), added by migration `NNNNN_tower_requests` and pruned after 24 h.
+- **Exactly once, with one mechanism for both transports.** Every write command carries `request_id`, a UUID the client makes and keeps across retries. `tower.Call` records it in the new table `tower_requests` (`request_id` PK, `command`, `state` `begun`|`done`, `result_json`, `at`), added by migration `NNNNN_tower_requests`. Rows are kept as long as the hub's own ledger: `actions.ActionMaxAge` (7 days) plus its `retentionMargin` (1 day), pruned by the same hygiene pass. The hub already refuses an action older than `ActionMaxAge` before it reaches a handler, so a phone action replayed after a long Mac sleep either finds its ledger row or is refused as too old; it never runs twice. Socket requests retry for at most 15 s, far inside the window.
   - A guarded command writes its result row in the same transaction as its writes, so `done` exists exactly when the write committed.
   - A non-idempotent command commits `begun` in its own short transaction before it acts. The non-idempotent commands are approve, retry, Run Now and the `reply` press.
   - A repeat of a `done` id returns the stored result.
@@ -154,7 +154,7 @@ Stages 1 and 3 depend on stage 0, and stage 2 depends on stage 1. Stage 3 may ru
 - **Generated types.**
 - **`TowerClient`.** An actor over a `TowerTransport` protocol (`call`, `watch`), with one state machine for every screen: `idle`, `loading`, `ready(stale: Date?)`, `reconnecting`, `failed(sentence)`.
   - Each action has the states `busy`, `refused(sentence)` and `unknown`.
-  - In the `unknown` state the client shows "Didn't confirm — check again". It refreshes and never re-sends a non-idempotent call.
+  - In the `unknown` state the client shows "Didn't confirm — check again" (mockup §6 on the phone, §8 on the Mac). It refreshes and never re-sends a non-idempotent call.
   - The client makes the `request_id` for each press and keeps it until a final answer arrives.
 - **Screen models.** `InboxRootModel`, `InboxFolderModel`, `InboxCardModel`, `InboxRefRowModel`, `InboxApprovalModel`, `InboxTabState` and `TowerText` (every string), each with tests.
   - The Mac and the phone both bind to them.
@@ -166,9 +166,10 @@ Stages 1 and 3 depend on stage 0, and stage 2 depends on stage 1. Stage 3 may ru
 - **The socket.** The daemon (`watchtower sync --daemon`) serves `<workspace>/tower.sock`. The socket has mode 0600 inside a 0700 directory, and the daemon checks the peer's uid, as the hub's control socket does. Frames are newline-delimited JSON (§2.1). When the hub runs, it is in the same process and calls the same `tower.Call`. The socket does not depend on the hub.
 - **The handshake.** The client sends `tower.hello`. When the interface version differs:
   - A Desktop that started the daemon from its own CLI (`DaemonManager`, the CLI store) restarts it from that CLI. `ensureDaemonRunning` already stops whatever daemon runs at launch and starts the app's own, so a dev build gets a daemon of its own version from the start. The handshake covers a daemon that was replaced afterwards.
-  - When the client cannot restart the daemon, it shows "Watchtower's background service is a different version" with **Restart**.
-- **Always on from launch.** The app starts the daemon at launch, after the compaction step, also before onboarding is finished. Until onboarding finishes the daemon runs **paused**: socket, Inbox and writes work, and no sync cycle runs. Onboarding's finish restarts it unpaused, as today, so it picks up the feature set and accounts. Screens that write today without a daemon (Quick capture, Home, Day plan) therefore always have one.
-- **Pause.** `sync.pause` and `sync.resume` are tower commands. A pause stops starting new sync cycles, scheduled automation runs and the plan-usage poll, and lets a running cycle finish. The socket, the hub, approval apply, living rewrites and the Inbox keep running. The pause is kept in the config (`sync.paused`), so it survives a restart. The tray gets **Pause Sync** / **Resume Sync** (the owner's "only sync stops", ask #1362); there is no other new control.
+  - When the client cannot restart the daemon, it shows "Watchtower's background service is a different version" with **Restart** (mockup §7).
+- **Always on from launch.** The app starts the daemon at launch, after the compaction step, also before onboarding is finished. Until onboarding finishes, the app starts it with `--no-sync` (a start argument, never stored): socket, Inbox and writes work, and no sync cycle runs. Onboarding's finish restarts it without `--no-sync`, as today, so it picks up the feature set and accounts. This is separate from the owner's pause below: onboarding never sets or clears the owner's pause. Screens that write today without a daemon (Quick capture, Home, Day plan) therefore always have one.
+- **Pause.** `sync.pause` and `sync.resume` are tower commands. A pause stops starting new sync cycles, scheduled automation runs and the plan-usage poll, and lets a running cycle finish. The socket, the hub, approval apply, living rewrites and the Inbox keep running. The owner's pause is kept in a file the daemon alone writes, `<workspace>/sync.paused` (present = paused, written atomically), not in the config the app also writes, so it survives a restart and has one writer. `sync.pause` and `sync.resume` are the only ways to change it; the tray reads the state from `tower.hello`. The tray gets **Pause Sync** / **Resume Sync** (the owner's "only sync stops", ask #1362; mockup §8); there is no other new control. While paused, the tray's status line reads "Sync paused".
+- **Answer to the owner's question in ask #1362** ("the daemon always runs, and only sync turns off when I stop it — right?"): yes for stopping — the owner's stop is now a pause and the daemon keeps running. The daemon still restarts for a second when the app changes its config, resets data or installs a new binary, because the daemon reads its config once at start; a live reload is a separate, larger change and is not in this work. Those restarts are short and the Mac hides them (below).
 - **Restarts that stay.** Every place that restarts the daemon today keeps doing it: config changes (account view models' `restartLoggingQueued`, `restartOnChain` for Turn on, the feature offer, Settings and the action strip; Slack disconnect; onboarding finish), the data resets (`stopWipeRestart`, `stopDaemonAndRemoveEverything`), a new binary (`CLIBinaryStore`, an app update), quit, and a crash (the start queue restarts it). The daemon wires its syncers once at start, so a restart is still how config takes effect; a live reload is not part of this work. The launch compaction runs before the daemon starts.
 - **Reconnecting.** While the socket is down, `TowerClient` is `reconnecting`. It retries at 0.2 s, doubling to 2 s.
   - The line "Reconnecting to Watchtower…" shows only after 1 s down, so an ordinary restart (about a second) shows nothing.
@@ -218,7 +219,7 @@ These stay as Mac views over the screen models: `InboxFolderMenuModel`, `InboxFo
 - **Closed refs.** Rows whose ref is closed stay in the document, and the screen models hide them by `ref_facts.open`.
 - **Options.**
   - `opts.Folder` narrows the feed to one folder.
-  - `opts.Limit` (300 on the phone, none on the Mac) keeps Needs approval and Waiting for me first, then the rest newest first, and counts what is left out in `more`.
+  - `opts.Limit` (300 on the phone, none on the Mac) keeps Needs approval and Waiting for me first, then the rest newest first, and counts what is left out per folder in `more`. Every folder and its count are always sent; only old artifact cards past the cap are left out. On the phone, a folder with `more > 0` ends with the line "N older cards are on your Mac" (mockup §6). 300 cards hold far more than a normal Inbox; the cap only bounds a runaway one.
 
 #### 4.3 Writes (`inbox.act` and the screens' write commands)
 
@@ -280,6 +281,7 @@ How each client draws them:
   - Reconnecting: the line "Reconnecting to Watchtower…" above the last list.
 - **Speed budget.** On a fixture with 2 000 outputs, 200 approvals, 500 open items and 30 folders:
   - `inbox.feed` over the socket takes at most 100 ms median, and a write command at most 15 ms median (`BenchmarkInboxFeedBuild` and a socket round-trip benchmark).
+  - The earlier draft's 150 ms included a CLI process start per read; the socket removes it, so the budget is stricter.
   - Over budget, the first fixes are `--folder` reads and a counts-only mode. A cache table is never the fix.
 - **Parity before the switch.** Swift `InboxListBuilder` and Go `Build` run over the same fixture databases, and their outputs are compared (`inbox_feed_cases.json`). The fixture then stays as the Go golden.
 - **Shots.** The Mac Inbox's `DesignShotCatalog` shots, taken before and after the switch, match.
@@ -289,7 +291,7 @@ How each client draws them:
 These callers of the moved Swift writers call `TowerClient` write commands instead: `IdeasViewModel`, `DigestViewModel`, `TracksViewModel`, `DayPlanViewModel`, the Home actions in `AppState+Home`, `CatchUpViewModel`, `QuickCaptureView`, `IdeaDetailPane`, `DecisionsListView`, `ActionStripViewModel` and `Reminder`.
 - The plan lists every call site from a grep of the moved writers' names. The guard test in §4.3 proves none is left.
 - Their reads stay on GRDB, as today.
-- Each screen shows busy, refused and reconnecting through `TowerClient`'s action states, with sentences from `TowerText`.
+- Each screen shows busy, refused and reconnecting through `TowerClient`'s action states, with sentences from `TowerText`, in one shared row treatment (mockup §8, shown on Ideas).
 - A screen that refreshes after its GRDB write today refreshes after the command's `ok`.
 
 #### 5.3 Inventory
@@ -335,7 +337,7 @@ Contracts in `docs/inventory/` that name a moved Swift type are re-pointed to th
   - Reply… opens a sheet with "Propose".
 - **Optimistic hide, never optimistic success.**
   - A pressed row shows busy.
-  - On `ok`, the row hides until a publish leaves it out or reopens it, for at most 2 publishes.
+  - On `ok`, the row hides until a publish leaves it out or reopens it. If two publishes pass and the row is still there, the hub's state wins and the row shows again (mockup §2).
   - On a refusal, the row comes back with the sentence and **Retry**.
   - Queued actions show in the existing outbox lines.
 
@@ -373,11 +375,11 @@ Contracts in `docs/inventory/` that name a moved Swift type are re-pointed to th
 | What the owner feels | Rule after stage 3 | Check |
 |---|---|---|
 | The owner's bubble after Send | Shows at once, from the draft | A view-model test: the bubble shows before `started` |
-| The first answer text | The same stdout stream. `chatstore.Start` runs before the provider call, as `persistTurnStart` did | `BenchmarkPersistStart` is no slower than the Swift start on the same fixture. In a stub-provider timing test before and after, the median is no more than 20 ms worse |
+| The first answer text | The same stdout stream. `chatstore.Start` runs before the provider call, as `persistTurnStart` did | `BenchmarkPersistStart` is no slower than the Swift start on the same fixture. In a stub-provider timing test before and after, the median is no more than 20 ms worse. 20 ms is the run-to-run noise of that test on the dev Mac, not an allowed slowdown: the start does the same writes in the same order, only in Go |
 | Live text cadence | Every stdout delta | The existing stream tests |
 | Stop | stdin `cancel` | The existing Stop tests |
 | Warm sessions | A pool of 3 | The existing pool tests |
-| Pin, rename, delete, branch, read | A socket write. The row changes once the answer arrives, and a refusal shows the sentence | The 15 ms socket budget (§5.1) and a refusal test per command |
+| Pin, rename, delete, branch, read | The row changes at once in the view, as with the GRDB write today, and the socket write follows. A refusal puts the row back and shows the sentence. Delete keeps its existing confirmation | The 15 ms socket budget (§5.1); a refusal-reverts test per command |
 | A send survives a crash (CHAT-01) | The owner row commits before the provider runs, and the Desktop keeps the draft until `started` | The moved CHAT-01 guard and a kill-before-`started` test |
 
 A path that fails its check does not switch. Speed is a gate.
@@ -487,11 +489,11 @@ A path that fails its check does not switch. Speed is a gate.
 - The tray gets Pause Sync / Resume Sync; every existing restart stays (config changes, resets, a new binary, quit, a crash), with the "Reconnecting…" line delayed by 1 s. A live config reload is not part of this work. This applies ask #1362.
 - The app starts the daemon at launch, paused until onboarding finishes.
 - The daemon owns its own change watch (own writes at commit, foreign writes by a 250 ms `data_version` poll), independent of the hub.
-- Over the socket, approve and retry wait for the tool (capped at 120 s), as on the Mac today; over the hub they return after the decision. Edit… sends a `patch`.
+- Edit… on the Mac sends a `patch` with the approval.
 - A warm `ai session` claims leases as `desktop` with the app launch id; the daemon never releases a `desktop` lease.
 - On a version mismatch, the Desktop restarts a daemon it started from its own CLI.
 - One ledger, `tower_requests`, gives exactly-once delivery for both transports.
-- Approve, retry and the `reply` press return at once, and the long work runs in the daemon.
+- Over the socket, approve and retry wait for the tool (capped at 120 s); over the hub they return after the decision. The `reply` press always returns once the proposal is stored. No write transaction is held across the tool.
 - Run Now reuses the `automation_run` function and is non-idempotent.
 - Make a Task on a track is a `ref` verb over the existing propose path, with no grant.
 - On the phone, Thread briefs become a list document and Messages a notice card. Stopped tracks stay inside the tracks card.
