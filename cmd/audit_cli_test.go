@@ -418,6 +418,7 @@ var cliNoContentCommands = map[string]bool{
 	"watchman profile":                 true,
 	"watchman profile set":             true,
 	"watchman profile unpin":           true,
+	"watchman status":                  true,
 	"workbench ask-guard":              true,
 	"workbench asks":                   true,
 	"workbench board":                  true,

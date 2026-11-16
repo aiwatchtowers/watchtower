@@ -1,0 +1,140 @@
+{
+  "ok": true,
+  "workbenches": [
+    {
+      "workbench": 1,
+      "name": "acme",
+      "enabled_at": "2026-11-02T09:00:00Z",
+      "analytics_on": false,
+      "precedents": {
+        "design": 0,
+        "finish": 0,
+        "permission": 2,
+        "review_code": 0,
+        "review_doc": 0,
+        "scope": 3,
+        "tests": 0,
+        "ux_text": 0
+      },
+      "sources": {
+        "ask": {
+          "written": 3,
+          "done": false
+        },
+        "git": {
+          "written": 0,
+          "done": false
+        },
+        "permission": {
+          "written": 2,
+          "done": false
+        },
+        "review": {
+          "written": 0,
+          "done": false
+        },
+        "spec": {
+          "written": 0,
+          "done": false
+        },
+        "turn": {
+          "written": 0,
+          "done": false
+        }
+      },
+      "sleep_window": "23:00-07:00",
+      "sleep_window_pinned": true,
+      "estimate": null,
+      "learning": {
+        "written": 6,
+        "estimated": 120,
+        "done": false
+      },
+      "backtest": {
+        "id": 2,
+        "status": "running",
+        "started_at": "2026-11-02T11:00:00Z",
+        "finished_at": null,
+        "error": "",
+        "verdict": "",
+        "cost_usd": 0,
+        "progress": "permission 12 of 30",
+        "categories": []
+      },
+      "last_done": {
+        "id": 1,
+        "status": "done",
+        "started_at": "2026-11-02T09:00:00Z",
+        "finished_at": "2026-11-02T10:00:00Z",
+        "error": "",
+        "verdict": "go",
+        "cost_usd": 1.25,
+        "progress": "",
+        "categories": [
+          {
+            "category": "permission",
+            "total": 30,
+            "agree": 26,
+            "wrong_high": 1,
+            "status": "strong",
+            "cost_usd": 0.75
+          }
+        ]
+      },
+      "running": true
+    },
+    {
+      "workbench": 2,
+      "name": "acme-docs",
+      "enabled_at": null,
+      "analytics_on": false,
+      "precedents": {
+        "design": 0,
+        "finish": 0,
+        "permission": 0,
+        "review_code": 0,
+        "review_doc": 0,
+        "scope": 0,
+        "tests": 0,
+        "ux_text": 0
+      },
+      "sources": {
+        "ask": {
+          "written": 0,
+          "done": false
+        },
+        "git": {
+          "written": 0,
+          "done": false
+        },
+        "permission": {
+          "written": 0,
+          "done": false
+        },
+        "review": {
+          "written": 0,
+          "done": false
+        },
+        "spec": {
+          "written": 0,
+          "done": false
+        },
+        "turn": {
+          "written": 0,
+          "done": false
+        }
+      },
+      "sleep_window": "",
+      "sleep_window_pinned": false,
+      "estimate": {
+        "decisions": 5,
+        "need_labels": 5,
+        "tokens": 1750
+      },
+      "learning": null,
+      "backtest": null,
+      "last_done": null,
+      "running": true
+    }
+  ]
+}
