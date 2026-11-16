@@ -1,13 +1,9 @@
-import CryptoKit
 import Foundation
-import WatchtowerSync
 
 /// The `chat_search` slice, record `chat_search-<query hash>` (iPhone chat
 /// spec §4.6): up to 50 hits of the Mac's ⌘K chat search for one query,
 /// asked with `chat_search` and kept 5 minutes.
-public struct ChatSearch: SliceMirror, Equatable {
-    public static let sliceKind = SliceKind.chatSearch
-
+public struct ChatSearch: Decodable, Hashable, Sendable {
     /// The markers around a matched term in a snippet.
     public static let markStart = "\u{2}"
     public static let markEnd = "\u{3}"
@@ -55,12 +51,5 @@ public struct ChatSearch: SliceMirror, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case query, hits
-    }
-
-    /// `chat_search-<the first 16 hex digits of sha256(query)>`, over the
-    /// query exactly as sent (Go `sources.ChatSearchID`).
-    public static func recordName(query: String) -> String {
-        let hex = SHA256.hash(data: Data(query.utf8)).prefix(8).map { String(format: "%02x", $0) }.joined()
-        return SliceKind.chatSearch.recordName(id: hex)
     }
 }

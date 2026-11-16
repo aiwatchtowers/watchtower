@@ -1,3 +1,4 @@
+import ChatWire
 import Foundation
 import WatchtowerChatText
 import WatchtowerKit

@@ -1,5 +1,4 @@
 import Foundation
-import WatchtowerSync
 
 /// The `chat_feed` slice, record `chat_feed-<conversation id>` (iPhone chat
 /// spec §4.6): one conversation the phone watches (`chat_feed_request`
@@ -8,9 +7,7 @@ import WatchtowerSync
 /// artifact and the actions of those turns, within 600 000 bytes: over the
 /// cap the oldest messages go first (`hasMore`, "Load earlier messages"),
 /// then artifact contents (`contentCut`, "Open on your Mac").
-public struct ChatFeed: SliceMirror, Equatable {
-    public static let sliceKind = SliceKind.chatFeed
-
+public struct ChatFeed: Decodable, Hashable, Sendable {
     public struct Routing: Hashable, Sendable, Codable {
         /// "auto" or "pinned".
         public let mode: String
@@ -99,7 +96,7 @@ public struct ChatFeed: SliceMirror, Equatable {
         }
     }
 
-    public struct Attachment: Hashable, Sendable, Decodable, Identifiable {
+    public struct Attachment: Hashable, Sendable, Codable, Identifiable {
         public let id: Int64
         public let name: String
         public let mime: String
@@ -241,6 +238,9 @@ public struct ChatFeed: SliceMirror, Equatable {
         public let siblings: Siblings
         public let attachments: [Attachment]
         public let steps: [Step]
+        /// The typed pieces with their fallbacks (unified chat spec §5.3); nil when a Mac one version behind sent
+        /// none, then `resolvedParts` builds them from the flat fields above (D22).
+        public let parts: [ChatPart]?
 
         public init(
             id: Int64,
@@ -253,7 +253,8 @@ public struct ChatFeed: SliceMirror, Equatable {
             createdAt: Date,
             siblings: Siblings = Siblings(),
             attachments: [Attachment] = [],
-            steps: [Step] = []
+            steps: [Step] = [],
+            parts: [ChatPart]? = nil
         ) {
             self.id = id
             self.role = role
@@ -266,6 +267,7 @@ public struct ChatFeed: SliceMirror, Equatable {
             self.siblings = siblings
             self.attachments = attachments
             self.steps = steps
+            self.parts = parts
         }
 
         public init(from decoder: Decoder) throws {
@@ -281,10 +283,11 @@ public struct ChatFeed: SliceMirror, Equatable {
             siblings = try c.decodeIfPresent(Siblings.self, forKey: .siblings) ?? Siblings()
             attachments = try c.decodeIfPresent([Attachment].self, forKey: .attachments) ?? []
             steps = try c.decodeIfPresent([Step].self, forKey: .steps) ?? []
+            parts = try c.decodeIfPresent([ChatPart].self, forKey: .parts)
         }
 
         enum CodingKeys: String, CodingKey {
-            case id, role, text, textCut, status, errorCode, errorMessage, createdAt, siblings, attachments, steps
+            case id, role, text, textCut, status, errorCode, errorMessage, createdAt, siblings, attachments, steps, parts
         }
     }
 
@@ -404,10 +407,5 @@ public struct ChatFeed: SliceMirror, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case conversation, messages, hasMore, artifacts, actions
-    }
-
-    /// `chat_feed-<conversation id>`.
-    public static func recordName(conversationID: Int64) -> String {
-        SliceKind.chatFeed.recordName(id: "\(conversationID)")
     }
 }

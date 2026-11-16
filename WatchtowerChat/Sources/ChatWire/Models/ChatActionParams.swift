@@ -1,9 +1,9 @@
 import Foundation
-import WatchtowerSync
 
-// The typed `params` of the chat action kinds (iPhone chat spec §4.5). The keys are snake_case, as the Go hub reads
-// them (`internal/hub/actions/handlers/chat*.go`); `Tests/Fixtures/chat/actions.json` pins both sides. A nil
-// optional is an absent key. Chat actions carry no entity id.
+// The typed `params` of the chat action kinds (iPhone chat spec §4.5). The keys are snake_case (`ChatWireCoder`), as
+// the Go hub reads them (`internal/hub/actions/handlers/chat*.go`); `WatchtowerKit/Tests/Fixtures/chat/actions.json`
+// pins both sides. A nil optional is an absent key. Chat actions carry no entity id. Their relay `ActionParams`
+// conformance (the `actionKind`) is the phone's (`ChatWireKitConformances.swift`): ChatWire imports nothing of ours.
 
 /// How the hub picks the model of a conversation or a turn: `auto`, or `pinned` with a provider and optional model.
 public typealias ChatRouting = ChatFeed.Routing
@@ -22,9 +22,7 @@ public enum ChatLimits {
 }
 
 /// `chat_new`: a new conversation. `clientKey` makes a resend idempotent (the same key gives the same conversation).
-public struct ChatNewParams: ActionParams {
-    public static let actionKind = ActionKind.chatNew
-
+public struct ChatNewParams: Codable, Hashable, Sendable {
     public let clientKey: String
     /// nil = no project.
     public let projectID: Int64?
@@ -48,12 +46,14 @@ public enum ChatTurnMode: String, Codable, Hashable, Sendable {
     case send
     case regenerate
     case edit
+    /// A regenerate of a reply whose error a retry can help (chat.sock only).
+    case retry
+    /// Sends the text after the active branch's last reply (chat.sock only).
+    case `continue`
 }
 
 /// `chat_turn`: starts a turn. `messageID` names the answer to regenerate or the owner message to edit.
-public struct ChatTurnParams: ActionParams {
-    public static let actionKind = ActionKind.chatTurn
-
+public struct ChatTurnParams: Codable, Hashable, Sendable {
     public let conversationID: Int64
     public let mode: ChatTurnMode
     public let messageID: Int64?
@@ -89,9 +89,7 @@ public struct ChatTurnParams: ActionParams {
 }
 
 /// `chat_cancel`: stops the running turn.
-public struct ChatCancelParams: ActionParams {
-    public static let actionKind = ActionKind.chatCancel
-
+public struct ChatCancelParams: Codable, Hashable, Sendable {
     public let conversationID: Int64
     public let turnID: String
 
@@ -115,9 +113,7 @@ public enum ChatFeedPurpose: String, Codable, Hashable, Sendable {
 }
 
 /// `chat_feed_request`. `conversationID` 0 asks for the list alone (the list's Retry).
-public struct ChatFeedRequestParams: ActionParams {
-    public static let actionKind = ActionKind.chatFeedRequest
-
+public struct ChatFeedRequestParams: Codable, Hashable, Sendable {
     public let conversationID: Int64
     public let purpose: ChatFeedPurpose
 
@@ -133,9 +129,7 @@ public struct ChatFeedRequestParams: ActionParams {
 }
 
 /// `chat_page`: one older page of a conversation ("Load earlier messages").
-public struct ChatPageParams: ActionParams {
-    public static let actionKind = ActionKind.chatPage
-
+public struct ChatPageParams: Codable, Hashable, Sendable {
     public let conversationID: Int64
     public let beforeMessageID: Int64
 
@@ -151,9 +145,7 @@ public struct ChatPageParams: ActionParams {
 }
 
 /// `chat_search`: full-text search over the Mac's chats.
-public struct ChatSearchParams: ActionParams {
-    public static let actionKind = ActionKind.chatSearch
-
+public struct ChatSearchParams: Codable, Hashable, Sendable {
     public let query: String
 
     public init(query: String) {
@@ -162,9 +154,7 @@ public struct ChatSearchParams: ActionParams {
 }
 
 /// `chat_read`: marks the conversation read up to `messageID`.
-public struct ChatReadParams: ActionParams {
-    public static let actionKind = ActionKind.chatRead
-
+public struct ChatReadParams: Codable, Hashable, Sendable {
     public let conversationID: Int64
     public let messageID: Int64
 
@@ -180,9 +170,7 @@ public struct ChatReadParams: ActionParams {
 }
 
 /// `chat_branch_select`: makes the branch through `messageID` the shown one.
-public struct ChatBranchSelectParams: ActionParams {
-    public static let actionKind = ActionKind.chatBranchSelect
-
+public struct ChatBranchSelectParams: Codable, Hashable, Sendable {
     public let messageID: Int64
 
     public init(messageID: Int64) {
@@ -200,12 +188,12 @@ public enum ChatManageOp: String, Codable, Hashable, Sendable {
     case unpin
     case rename
     case delete
+    /// Moves the conversation into `projectID` (nil = out of its project; chat.sock only).
+    case move
 }
 
 /// `chat_manage`. `title` goes with `rename` only.
-public struct ChatManageParams: ActionParams {
-    public static let actionKind = ActionKind.chatManage
-
+public struct ChatManageParams: Codable, Hashable, Sendable {
     public let conversationID: Int64
     public let op: ChatManageOp
     public let title: String?
@@ -230,9 +218,7 @@ public enum ChatActionDecision: String, Codable, Hashable, Sendable {
 
 /// `chat_action_answer`; needs the permissions grant too. `argsSHA256` is the hash of the args the phone showed:
 /// the hub refuses an approval whose args changed since (`changed`).
-public struct ChatActionAnswerParams: ActionParams {
-    public static let actionKind = ActionKind.chatActionAnswer
-
+public struct ChatActionAnswerParams: Codable, Hashable, Sendable {
     public let actionID: Int64
     public let decision: ChatActionDecision
     public let argsSHA256: String
@@ -252,9 +238,7 @@ public struct ChatActionAnswerParams: ActionParams {
 
 /// `chat_entity_search`: the composer's `@` picker. No `kinds` (an empty list) is the mention search; named kinds
 /// search those, in order. The hits come back in the applied echo's result (`hits`, at most 20).
-public struct ChatEntitySearchParams: ActionParams {
-    public static let actionKind = ActionKind.chatEntitySearch
-
+public struct ChatEntitySearchParams: Codable, Hashable, Sendable {
     public let query: String
     public let kinds: [String]
 
@@ -265,8 +249,6 @@ public struct ChatEntitySearchParams: ActionParams {
 }
 
 /// `chat_skills_list`: the composer's `/` picker. The skills come back in the applied echo's result (`skills`).
-public struct ChatSkillsListParams: ActionParams {
-    public static let actionKind = ActionKind.chatSkillsList
-
+public struct ChatSkillsListParams: Codable, Hashable, Sendable {
     public init() {}
 }

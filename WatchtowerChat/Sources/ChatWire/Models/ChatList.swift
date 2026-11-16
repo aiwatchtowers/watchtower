@@ -1,21 +1,30 @@
 import Foundation
-import WatchtowerSync
 
 /// The `chat_list` slice, one record `chat_list-main` (iPhone chat spec
 /// §4.6): the Mac's main-chat conversations (up to 200, not archived,
 /// pinned first then newest), its chat projects and the models the
 /// composer offers. Published only while this phone holds the `chat`
 /// grant; it stays in the replica, so it is also the offline list.
-public struct ChatList: SliceMirror, Equatable {
-    public static let sliceKind = SliceKind.chatList
-    /// The one record's id.
-    public static let recordID = "main"
-
+public struct ChatList: Decodable, Hashable, Sendable {
     /// A row's state dot, by precedence: waiting for an approval >
     /// answering > unread > read. rawValues are wire format.
-    public struct State: OpenWireValue {
+    /// Open like the Kit's `OpenWireValue`: a state a newer Mac adds decodes, reads as `isKnown == false` and
+    /// re-encodes unchanged.
+    public struct State: RawRepresentable, Codable, Hashable, Sendable {
         public let rawValue: String
         public init(rawValue: String) { self.rawValue = rawValue }
+
+        public init(from decoder: Decoder) throws {
+            rawValue = try decoder.singleValueContainer().decode(String.self)
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var c = encoder.singleValueContainer()
+            try c.encode(rawValue)
+        }
+
+        /// False for a state written by a newer build.
+        public var isKnown: Bool { Self.knownValues.contains(self) }
 
         public static let waiting = Self(rawValue: "waiting")
         public static let answering = Self(rawValue: "answering")
@@ -125,7 +134,4 @@ public struct ChatList: SliceMirror, Equatable {
     enum CodingKeys: String, CodingKey {
         case conversations, projects, models, error
     }
-
-    /// `chat_list-main`.
-    public static var recordName: String { SliceKind.chatList.recordName(id: recordID) }
 }

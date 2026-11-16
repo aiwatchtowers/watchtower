@@ -26,4 +26,17 @@ final class ActionReasonTests: XCTestCase {
             decoded.errorMessage, "Codex sessions can't take messages from the phone yet. Type it on your tower."
         )
     }
+
+    /// The chat reasons (moved here with the chat models' move to ChatWire, #1822 T6).
+    func testChatReasonsMapAndAnOldCodeStaysNil() {
+        XCTAssertEqual(ActionReason(rawValue: "conversation_busy"), .conversationBusy)
+        XCTAssertEqual(ActionReason(rawValue: "attachment_missing"), .attachmentMissing)
+        XCTAssertEqual(ActionReason(rawValue: "changed"), .changed)
+        XCTAssertEqual(ChatActionReason(.conversationBusy), .conversationBusy)
+        XCTAssertEqual(ChatActionReason(.attachmentMissing), .attachmentMissing)
+        XCTAssertEqual(ChatActionReason(.changed), .actionChanged)
+        XCTAssertEqual(ChatActionReason(.notSupported), .notSupported)
+        XCTAssertNil(ChatActionReason(.writeFailed))
+        XCTAssertNil(ChatActionReason(nil))
+    }
 }
