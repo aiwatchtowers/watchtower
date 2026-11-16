@@ -23,3 +23,30 @@ type PingRequest struct{}
 type PingResponse struct {
 	At string `json:"at"`
 }
+
+// EventChanged is ChangedEvent.Event's one value.
+const EventChanged = "changed"
+
+// ChangedEvent is a frame a watch command streams after its ok answer, until
+// the client closes the connection: data its command reads may have changed,
+// so the client reads again. Tables lists the tables a write through
+// tower.Call changed; it is empty when the data_version poll saw a write by
+// another process, which cannot tell tables apart.
+type ChangedEvent struct {
+	// ID is the watch request's id.
+	ID string `json:"id"`
+	// Event is always "changed".
+	Event  string   `json:"event"`
+	Tables []string `json:"tables,omitempty"`
+}
+
+// PauseRequest asks to pause sync (sync.pause) or resume it (sync.resume).
+type PauseRequest struct {
+	WriteParams
+}
+
+// PauseResponse answers sync.pause and sync.resume with the owner's pause
+// as it is after the call.
+type PauseResponse struct {
+	Paused bool `json:"paused"`
+}

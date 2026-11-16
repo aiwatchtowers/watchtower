@@ -25,13 +25,20 @@ type Options struct {
 	Build string
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
-	// Paused reports whether sync is paused (tower.hello); nil means never.
+	// Workspace is the workspace directory: sync.pause and sync.resume write
+	// <Workspace>/sync.paused (pause.go). Empty refuses them.
+	Workspace string
+	// Paused reports whether the owner paused sync (tower.hello); nil means
+	// IsPaused(Workspace), or never without a Workspace.
 	Paused func() bool
 	// NoSync is true when the daemon runs without syncing (tower.hello).
 	NoSync bool
 	// Changed is called with a command's Spec.ChangeTables after each of its
 	// write transactions commits, never on a rollback.
 	Changed func(tables []string)
+	// Changes is the change watch a Watch command streams from (watch.go);
+	// New wires Changed to also publish into it. nil refuses Watch commands.
+	Changes *Changes
 	// Sentence words a handler's fault (not a refusal) for the refusal shown
 	// to the owner; nil means the error's text.
 	Sentence func(command string, err error) string
@@ -50,6 +57,19 @@ func New(d *db.DB, o Options) *Tower {
 	}
 	if o.Now == nil {
 		o.Now = time.Now
+	}
+	if o.Paused == nil && o.Workspace != "" {
+		ws := o.Workspace
+		o.Paused = func() bool { return IsPaused(ws) }
+	}
+	if ch := o.Changes; ch != nil {
+		changed := o.Changed
+		o.Changed = func(tables []string) {
+			ch.Publish(tables)
+			if changed != nil {
+				changed(tables)
+			}
+		}
 	}
 	return &Tower{db: d, opts: o}
 }

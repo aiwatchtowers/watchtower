@@ -150,7 +150,7 @@ func TestEveryRegisteredTypeHasAGolden(t *testing.T) {
 	for _, typ := range types {
 		names[typ.Name()] = true
 	}
-	for _, want := range []string{"Request", "Response", "HelloResponse", "PingResponse"} {
+	for _, want := range []string{"Request", "Response", "ChangedEvent", "HelloResponse", "PingResponse", "PauseRequest", "PauseResponse"} {
 		if !names[want] {
 			t.Errorf("golden types miss %s", want)
 		}

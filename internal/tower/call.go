@@ -10,7 +10,8 @@ import (
 )
 
 // Call runs one request and answers it; it never fails, every error becomes
-// a refused or unknown response. A read runs its handler. A write needs a
+// a refused or unknown response. A read runs its handler, and so does a
+// watch (the socket then streams its changed events). A write needs a
 // request_id and goes through the request ledger (ledger.go).
 func (t *Tower) Call(ctx context.Context, req api.Request, o Origin) api.Response {
 	resp := api.Response{ID: req.ID}
@@ -28,7 +29,7 @@ func (t *Tower) Call(ctx context.Context, req api.Request, o Origin) api.Respons
 		return t.fail(resp, req.Command, err)
 	}
 	c := &Ctx{DB: t.db, Origin: o, Now: t.opts.Now, tower: t, command: req.Command, spec: cmd.Spec}
-	if cmd.Spec.Read {
+	if cmd.Spec.Read || cmd.Spec.Watch {
 		out, err := run(ctx, c)
 		if err != nil {
 			return t.fail(resp, req.Command, err)

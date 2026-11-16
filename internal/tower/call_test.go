@@ -53,12 +53,20 @@ type fixture struct {
 	changed  [][]string
 	seenOnce string // the ledger state test.once saw before acting
 	path     string
+	opts     Options // what the Tower was built with
 	// beforeWrite runs in the write handlers just before c.Write.
 	beforeWrite func()
 	onChange    func()
 }
 
 func newFixture(t *testing.T) *fixture {
+	t.Helper()
+	return newFixtureWith(t, nil)
+}
+
+// newFixtureWith is newFixture with extra applied to the registry and the
+// options before the Tower is built (more commands, a workspace, a watch).
+func newFixtureWith(t *testing.T, extra func(r *Registry, o *Options)) *fixture {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "watchtower.db")
 	d, err := db.Open(path)
@@ -116,7 +124,7 @@ func newFixture(t *testing.T) *fixture {
 		}
 		return insert(ctx, c, p)
 	}, Spec{ChangeTables: []string{"test_rows"}})
-	f.tower = New(d, Options{
+	o := Options{
 		Registry: r,
 		Build:    "1.2.3",
 		Now:      func() time.Time { return fixedNow },
@@ -126,7 +134,12 @@ func newFixture(t *testing.T) *fixture {
 			}
 			f.changed = append(f.changed, tables)
 		},
-	})
+	}
+	if extra != nil {
+		extra(r, &o)
+	}
+	f.opts = o
+	f.tower = New(d, o)
 	return f
 }
 

@@ -48,6 +48,7 @@ import (
 	"watchtower/internal/sync"
 	"watchtower/internal/targets"
 	"watchtower/internal/tower"
+	"watchtower/internal/tower/commands"
 	"watchtower/internal/tracks"
 	"watchtower/internal/ui"
 
@@ -61,6 +62,7 @@ var (
 	syncFlagDetach       bool
 	syncFlagStop         bool
 	syncFlagNow          bool
+	syncFlagNoSync       bool
 	syncFlagChannels     []string
 	syncFlagWorkers      int
 	syncFlagSkipDMs      bool
@@ -107,6 +109,7 @@ func init() {
 	syncCmd.Flags().BoolVar(&syncFlagDaemon, "daemon", false, "run in daemon mode with periodic syncing")
 	syncCmd.Flags().BoolVar(&syncFlagDetach, "detach", false, "start daemon in the background (requires --daemon)")
 	syncCmd.Flags().BoolVar(&syncFlagStop, "stop", false, "stop a running detached daemon")
+	syncCmd.Flags().BoolVar(&syncFlagNoSync, "no-sync", false, "with --daemon: serve the tower socket and run no sync cycle, scheduled automation or plan-usage poll (the app's start before onboarding finishes; never stored)")
 	syncCmd.Flags().BoolVar(&syncFlagNow, "now", false, "ask the running daemon to sync immediately instead of waiting for its next poll")
 	syncCmd.Flags().StringSliceVar(&syncFlagChannels, "channels", nil, "limit sync to specific channel names or IDs")
 	syncCmd.Flags().IntVar(&syncFlagWorkers, "workers", 0, "number of concurrent sync workers (0 = use config default)")
@@ -455,9 +458,7 @@ func runSyncDetach(cfg *config.Config) error {
 		return fmt.Errorf("finding executable: %w", err)
 	}
 
-	// Re-exec ourselves with the detach env var set.
-	child := exec.Command(exe, os.Args[1:]...)
-	child.Env = detachedChildEnv(os.Environ())
+	child := detachedChild(exe, os.Args[1:])
 	child.Stdout = logFile
 	child.Stderr = logFile
 	child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
@@ -469,6 +470,14 @@ func runSyncDetach(cfg *config.Config) error {
 	fmt.Printf("Daemon started (PID %d)\n", child.Process.Pid)
 	fmt.Printf("Log: %s\n", logPath)
 	return nil
+}
+
+// detachedChild re-execs exe with args (this process's own, so --no-sync and
+// every other flag carry over) and the detach env var set.
+func detachedChild(exe string, args []string) *exec.Cmd {
+	child := exec.Command(exe, args...)
+	child.Env = detachedChildEnv(os.Environ())
+	return child
 }
 
 // detachedChildEnv is the detached daemon's environment: the parent's,
@@ -551,6 +560,9 @@ func runSync(cmd *cobra.Command, args []string) error {
 
 	// --detach re-execs the process in the background.
 	// Skip if we're already the detached child (env key is set).
+	if syncFlagNoSync && !syncFlagDaemon {
+		return fmt.Errorf("--no-sync requires --daemon")
+	}
 	if syncFlagDetach && os.Getenv(daemon.DetachEnvKey) != "1" {
 		if !syncFlagDaemon {
 			return fmt.Errorf("--detach requires --daemon")
@@ -930,6 +942,13 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	d.SetDB(database)
 	// #880: no scheduled cycle starts in a Power Nap dark wake.
 	d.SetFullWakeProbe(powerstate.Probe)
+	// The owner's pause (sync.paused, sync.pause/sync.resume) and --no-sync
+	// both hold sync; tower.hello reports them apart.
+	ws, noSync := cfg.WorkspaceDir(), syncFlagNoSync
+	d.SetSyncPaused(func() bool { return noSync || tower.IsPaused(ws) })
+	if noSync {
+		logger.Println("--no-sync: no sync cycle, scheduled automation or plan-usage poll runs")
+	}
 	if al != nil {
 		defer al.Close()
 		d.SetAgentLogDB(al, agentlogdb.PathFor(cfg.DBPath()))
@@ -1030,7 +1049,32 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	// The tower request ledger: pruned at start and hourly, hub or no hub;
 	// the loop has returned before the database closes.
 	defer tower.StartPrune(ctx, database, time.Now)()
+	// The tower socket, hub or no hub: stopped (its calls waited for) before
+	// the database closes.
+	defer serveTower(ctx, ws, database, noSync, logger)()
 	return d.Run(ctx)
+}
+
+// serveTower serves the tower interface on the workspace's socket
+// (tower.ServeWorkspace) with every registered command, the change watch and
+// the pause; a socket that cannot be served is logged and the daemon runs
+// without it. The returned func stops it.
+func serveTower(ctx context.Context, ws string, database *db.DB, noSync bool, logger *log.Logger) (stop func()) {
+	var reg tower.Registry
+	commands.RegisterAll(&reg, commands.Deps{})
+	t := tower.New(database, tower.Options{
+		Registry:  &reg,
+		Build:     Version,
+		Workspace: ws,
+		NoSync:    noSync,
+		Changes:   tower.NewChanges(database, tower.PollInterval),
+	})
+	stop, err := tower.ServeWorkspace(ctx, ws, t)
+	if err != nil {
+		logger.Printf("tower: socket not served: %v", err)
+		return func() {}
+	}
+	return stop
 }
 
 // startGoHub starts the Go hub beside the daemon when hub.Resolve says so
