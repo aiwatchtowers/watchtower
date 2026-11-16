@@ -21,6 +21,7 @@ import (
 	"watchtower/internal/hub/wire"
 	"watchtower/internal/sessionhost"
 	"watchtower/internal/sessionstart"
+	"watchtower/internal/skills"
 )
 
 // transcriptAssetDir is meeting_transcript's own staging dir inside the
@@ -545,7 +546,8 @@ func (h *hubRuntime) newChatRunner(o Options, spawn func(func()) bool) *chatengi
 		return nil
 	}
 	e := chatengine.New(chatengine.Config{Exe: exe, DBPath: path, Dir: o.Dir, DB: o.DB, Clock: o.Clock,
-		Title: o.ChatTitle, PreferredProvider: o.ChatPreferredProvider, FilesDir: chatFilesDir(path)})
+		Title: o.ChatTitle, PreferredProvider: o.ChatPreferredProvider, FilesDir: chatFilesDir(path),
+		SkillsDir: skills.Dir(filepath.Dir(path))})
 	// A turn's text, steps and end reach the phone's feed and list (the
 	// publisher coalesces the per-event calls).
 	e.OnChange(func(int64) { h.publishSoon(slices.KindChatFeed, slices.KindChatList) })
