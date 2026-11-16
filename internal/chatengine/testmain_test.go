@@ -1,4 +1,4 @@
-package chatrun
+package chatengine
 
 import (
 	"bufio"

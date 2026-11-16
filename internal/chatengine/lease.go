@@ -1,4 +1,4 @@
-package chatrun
+package chatengine
 
 import (
 	"log"
@@ -39,7 +39,7 @@ func (s *session) watchLease(now time.Time, heartbeat bool) {
 		s.heartbeat = now
 		ok, err := s.r.c.DB.HeartbeatChatLease(conv, turnID, now.UnixMilli())
 		if err != nil {
-			log.Printf("chatrun: conversation %d: lease heartbeat failed (%s)", conv, errClass(err))
+			log.Printf("chatengine: conversation %d: lease heartbeat failed (%s)", conv, errClass(err))
 		} else if !ok {
 			s.lost()
 			return
@@ -47,10 +47,10 @@ func (s *session) watchLease(now time.Time, heartbeat bool) {
 	}
 	l, err := s.r.c.DB.GetChatLease(conv)
 	if err != nil {
-		log.Printf("chatrun: conversation %d: reading the lease failed (%s)", conv, errClass(err))
+		log.Printf("chatengine: conversation %d: reading the lease failed (%s)", conv, errClass(err))
 		return
 	}
-	if l == nil || l.TurnID != turnID || l.Owner != db.ChatLeaseHub || l.OwnerID != s.r.c.HubID {
+	if l == nil || l.TurnID != turnID || l.Owner != db.ChatLeaseHub || l.OwnerID != LeaseOwnerID {
 		s.lost()
 		return
 	}
@@ -71,7 +71,7 @@ func (s *session) watchLease(now time.Time, heartbeat bool) {
 		s.r.changed(conv)
 		return
 	}
-	log.Printf("chatrun: conversation %d: turn %s cancelled", conv, turnID)
+	log.Printf("chatengine: conversation %d: turn %s cancelled", conv, turnID)
 	if err := s.send(chat.Command{Type: chat.CommandCancel}); err != nil {
 		// The pipe is gone: the process is exiting; end finalizes the turn.
 		return
@@ -94,7 +94,7 @@ func (s *session) onCancelDeadline() {
 	s.retire = true
 	s.r.mu.Unlock()
 	if err := cur.t.Finalize(chatstore.StatusPartial, nil); err != nil {
-		log.Printf("chatrun: conversation %d: finalizing a stopped turn failed (%s)", s.conv, errClass(err))
+		log.Printf("chatengine: conversation %d: finalizing a stopped turn failed (%s)", s.conv, errClass(err))
 		s.retry = func() error { return cur.t.Finalize(chatstore.StatusPartial, nil) }
 	}
 	s.beginShutdown(true) // before checkDone, whose retire path would send `close`

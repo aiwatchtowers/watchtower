@@ -171,6 +171,7 @@ var displayOnlyReadersAt = map[string]string{
 	"chatstore/store.go:readConversationTx": "the turn store reads its own conversation row (routing, leaf, title)",
 	"chatstore/store.go:loadMessagesTx":     "the turn store's own branch walk for the next turn",
 	"chatstore/store.go:insertMessageTx":    "writes a turn's message rows",
+	"chatstore/store.go:duplicateKey":       "matches an insert error naming the client-key index; reads nothing",
 	"chatstore/store.go:setPrefixTitleTx":   "writes the prefix title",
 	"chatstore/store.go:writeRoutingTx":     "routing columns only",
 	"chatstore/store.go:SelectBranch":       "moves the active leaf",
@@ -190,19 +191,23 @@ var displayOnlyReadersAt = map[string]string{
 	"chatstore/conversations.go:Pin":                "the pinned flag",
 	"chatstore/conversations.go:Rename":             "writes the owner's title",
 	"chatstore/conversations.go:Delete":             "delete only",
+	"chatstore/conversations.go:Move":               "the project column, an existence count, no text",
 	"chatstore/attachments.go:SaveAttachment":       "inserts an attachment row of an existing conversation, no text read",
 	// The phone's chat (iPhone chat spec §4.6): the hub's chat slices and the
 	// Go port of the Mac's ⌘K search show chat text on the phone and store
 	// nothing (the slices live in memory and the sealed relay records only).
-	"db/chat_search.go:chatTitleMatches":                     "the ⌘K search port: title hits shown on the phone",
-	"db/chat_search.go:chatMessageMatches":                   "the ⌘K search port: message hits shown on the phone",
-	"hub/slices/sources/chat_list.go:chatListRows":           "the phone's chat list (titles, states, last lines)",
-	"hub/slices/sources/chat_feed.go:chatFeedConversationTx": "the phone's chat feed: the conversation's meta",
-	"hub/slices/sources/chat_feed.go:chatBranchTx":           "the phone's chat feed: the active branch's ids",
-	"hub/slices/sources/chat_feed.go:chatFeedMessageRowsTx":  "the phone's chat feed: the messages shown",
-	"hub/slices/sources/chat_feed.go:chatFeedActionsTx":      "the phone's chat feed: the actions of the turns shown",
-	"hub/slices/sources/chat_feed.go:buildChatPage":          "the phone's chat page: older messages shown",
-	"hub/slices/sources/registry.go:ChangeTables":            "table names of the hub's data_version watch, no read",
+	"db/chat_search.go:chatTitleMatches":   "the ⌘K search port: title hits shown on the phone",
+	"db/chat_search.go:chatMessageMatches": "the ⌘K search port: message hits shown on the phone",
+	// The chat engine's reads (unified chat #1822): the feed, list and page
+	// every client shows, built in memory and never stored.
+	"chatengine/list.go:chatListRows":             "the chat list (titles, states, last lines)",
+	"chatengine/feed.go:chatFeedConversationTx":   "the chat feed: the conversation's meta",
+	"chatengine/feed.go:chatBranchTx":             "the chat feed: the active branch's ids",
+	"chatengine/feed.go:chatFeedMessageRowsTx":    "the chat feed: the messages shown",
+	"chatengine/feed.go:chatFeedActionsTx":        "the chat feed: the actions of the turns shown",
+	"chatengine/engine.go:clientKeyEcho":          "ids and the turn id of the row a client key started, no text",
+	"chatengine/engine.go:SelectBranch":           "the selected message's conversation id, no text",
+	"hub/slices/sources/registry.go:ChangeTables": "table names of the hub's data_version watch, no read",
 }
 
 // TestLIVE01_ReaderList fails when a non-test function in internal/ mentions

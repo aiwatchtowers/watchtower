@@ -1,7 +1,8 @@
-package chatrun
+package chatengine
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -71,16 +72,16 @@ func writeGroupFile(t *testing.T, dir string, conv int64, pgid int) string {
 	return path
 }
 
-// TestChatrun_SweepKillsOrphanGroup: a session child whose runner died
+// TestChatengine_SweepKillsOrphanGroup: a session child whose runner died
 // without Close (a kill -9 of the daemon) is killed with its whole group by
 // the next runner's sweep, and its group file removed; a group file naming
 // a process that is not `ai session`, or nothing at all, is removed
 // without a kill.
-func TestChatrun_SweepKillsOrphanGroup(t *testing.T) {
+func TestChatengine_SweepKillsOrphanGroup(t *testing.T) {
 	exe, err := os.Executable()
 	require.NoError(t, err)
 	hubDir := t.TempDir()
-	dir := filepath.Join(hubDir, "chatrun")
+	dir := filepath.Join(hubDir, "sessions")
 
 	stubCmd := exec.Command(exe, "ai", "session", "--conversation", "7", "--surface", "main")
 	stubCmd.Env = append(os.Environ(), stubEnv+"=1")
@@ -99,8 +100,8 @@ func TestChatrun_SweepKillsOrphanGroup(t *testing.T) {
 	require.NoError(t, gone.Run())
 	goneFile := writeGroupFile(t, dir, 9, gone.Process.Pid)
 
-	r := New(Config{HubID: testHub, DB: openDB(t), Dir: hubDir})
-	require.NoError(t, r.Sweep())
+	r := New(Config{DB: openDB(t), Dir: hubDir})
+	require.NoError(t, r.Start(context.Background()))
 
 	<-stub.waited
 	assert.True(t, groupGoneSoon(stubCmd.Process.Pid), "the stub's grandchild died with its group")
@@ -111,10 +112,10 @@ func TestChatrun_SweepKillsOrphanGroup(t *testing.T) {
 	}
 }
 
-// TestChatrun_ExecSessionWritesAndRemovesGroupFile: a real child gets its
+// TestChatengine_ExecSessionWritesAndRemovesGroupFile: a real child gets its
 // own process group, recorded in its 0600 group file while it runs and
 // removed once it was reaped.
-func TestChatrun_ExecSessionWritesAndRemovesGroupFile(t *testing.T) {
+func TestChatengine_ExecSessionWritesAndRemovesGroupFile(t *testing.T) {
 	p, err := execStart("/bin/sh")([]string{"-c", "read line; exit 0"})
 	require.NoError(t, err)
 	pgid := p.PGID()
@@ -131,7 +132,7 @@ func TestChatrun_ExecSessionWritesAndRemovesGroupFile(t *testing.T) {
 	r := New(Config{Dir: hubDir})
 	s := &session{r: r, conv: 3, proc: p}
 	s.writePGID(pgid)
-	info, err := os.Stat(filepath.Join(hubDir, "chatrun", "3.pgid"))
+	info, err := os.Stat(filepath.Join(hubDir, "sessions", "3.pgid"))
 	require.NoError(t, err)
 	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
 
@@ -139,6 +140,6 @@ func TestChatrun_ExecSessionWritesAndRemovesGroupFile(t *testing.T) {
 	require.NoError(t, err)
 	<-p.Exited()
 	s.removePGID()
-	_, err = os.Stat(filepath.Join(hubDir, "chatrun", "3.pgid"))
+	_, err = os.Stat(filepath.Join(hubDir, "sessions", "3.pgid"))
 	assert.True(t, os.IsNotExist(err))
 }

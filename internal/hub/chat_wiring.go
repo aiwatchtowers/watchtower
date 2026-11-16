@@ -19,7 +19,7 @@ import (
 )
 
 // The AI chat from the phone, the hub's side (iPhone chat spec §4.5–§4.8):
-// the runner (chatrun) behind the chat_* handlers, the chat sources fed by
+// the chat engine (chatengine) behind the chat_* handlers, the chat sources fed by
 // the handlers' requests, the relay-only capability and the timer that
 // republishes what only time changes.
 

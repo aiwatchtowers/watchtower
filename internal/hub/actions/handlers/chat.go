@@ -8,6 +8,7 @@ import (
 	"runtime/debug"
 	"time"
 
+	"watchtower/internal/chatengine"
 	"watchtower/internal/chatstore"
 	"watchtower/internal/hub/actions"
 	"watchtower/internal/hub/secure"
@@ -60,10 +61,10 @@ var chatOffMessages = map[string]string{
 	wire.ChatOffPolicy:        "Chat is turned off by your organization",
 }
 
-// ChatRunner runs hub chat turns (chatrun.Runner).
+// ChatRunner runs chat turns (chatengine.Engine).
 type ChatRunner interface {
-	// Run starts a turn and returns once its start transaction committed.
-	Run(ctx context.Context, req chatstore.StartRequest) (chatstore.Started, error)
+	// Turn starts a turn and returns once its start transaction committed.
+	Turn(ctx context.Context, req chatengine.TurnRequest) (chatstore.Started, error)
 	// Cancel asks the turn's lease holder (this hub or the Mac) to stop.
 	Cancel(conv int64, turnID string) (bool, error)
 }

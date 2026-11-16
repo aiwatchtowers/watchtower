@@ -1,9 +1,10 @@
-package chatrun
+package chatengine
 
 import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"sync"
 	"testing"
@@ -17,8 +18,6 @@ import (
 	"watchtower/internal/db"
 )
 
-const testHub = "hub-1"
-
 type turnEnd struct {
 	conv           int64
 	turnID, status string
@@ -27,7 +26,7 @@ type turnEnd struct {
 // rig is a runner over a fresh database with the in-process session twin.
 type rig struct {
 	d     *db.DB
-	r     *Runner
+	r     *Engine
 	f     *fakeStarter
 	cfg   Config
 	mu    sync.Mutex
@@ -46,18 +45,22 @@ func openDB(t *testing.T) *db.DB {
 func newRig(t *testing.T, o fakeOpts) *rig {
 	t.Helper()
 	g := &rig{d: openDB(t), f: &fakeStarter{opts: o}, dirty: map[int64]int{}}
-	g.cfg = Config{Exe: "/opt/watchtower", DBPath: "/data/watchtower.db", HubID: testHub, Dir: t.TempDir(), DB: g.d,
-		Store: chatstore.New(g.d, db.ChatLeaseHub, testHub), Start: g.f.start,
-		OnChange: func(conv int64) { g.mu.Lock(); g.dirty[conv]++; g.mu.Unlock() },
-		OnTurnEnd: func(conv int64, turnID, status string) {
-			g.mu.Lock()
-			g.ends = append(g.ends, turnEnd{conv, turnID, status})
-			g.mu.Unlock()
-		},
-	}
-	g.r = New(g.cfg)
+	g.cfg = Config{Exe: "/opt/watchtower", DBPath: "/data/watchtower.db", Dir: t.TempDir(), DB: g.d, Start: g.f.start}
+	g.r = g.newEngine()
 	t.Cleanup(func() { _ = g.r.Close(context.Background()) })
 	return g
+}
+
+// newEngine is an engine over the rig's config with the rig's hooks.
+func (g *rig) newEngine() *Engine {
+	e := New(g.cfg)
+	e.OnChange(func(conv int64) { g.mu.Lock(); g.dirty[conv]++; g.mu.Unlock() })
+	e.OnTurnEnd(func(conv int64, turnID, status string) {
+		g.mu.Lock()
+		g.ends = append(g.ends, turnEnd{conv, turnID, status})
+		g.mu.Unlock()
+	})
+	return e
 }
 
 func (g *rig) turnEnds() []turnEnd {
@@ -77,8 +80,8 @@ func newConversation(t *testing.T, d *db.DB) int64 {
 
 func (g *rig) send(t *testing.T, conv int64, text string, routing *chatstore.Routing) chatstore.Started {
 	t.Helper()
-	st, err := g.r.Run(context.Background(), chatstore.StartRequest{ConversationID: conv, Mode: chatstore.ModeSend,
-		Text: text, Routing: routing})
+	st, err := g.r.Turn(context.Background(), TurnRequest{StartRequest: chatstore.StartRequest{ConversationID: conv,
+		Mode: chatstore.ModeSend, Text: text, Routing: routing}})
 	require.NoError(t, err)
 	return st
 }
@@ -108,48 +111,58 @@ func lease(t *testing.T, d *db.DB, conv int64) *db.ChatLease {
 	return l
 }
 
-// TestChat03Go_PoolBound: three conversations whose turns block mid-answer
-// run two `ai session` children; the third waits ("Waiting for a free
+// TestChat03Go_PoolBound: four conversations whose turns block mid-answer
+// run three `ai session` children; the fourth waits ("Waiting for a free
 // slot") and starts as soon as one turn ends — the idle session is closed
-// first, so no more than two processes ever live (BEHAVIOR CHAT-03 — see
+// first, so no more than three processes ever live (BEHAVIOR CHAT-03 — see
 // docs/inventory/chat.md).
 func TestChat03Go_PoolBound(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		g := newRig(t, fakeOpts{block: true})
-		c1, c2, c3 := newConversation(t, g.d), newConversation(t, g.d), newConversation(t, g.d)
+		c1, c2, c3, c4 := newConversation(t, g.d), newConversation(t, g.d), newConversation(t, g.d), newConversation(t, g.d)
 		s1 := g.send(t, c1, "one", nil)
 		g.send(t, c2, "two", nil)
-		s3 := g.send(t, c3, "three", nil)
+		g.send(t, c3, "three", nil)
+		s4 := g.send(t, c4, "four", nil)
 		synctest.Wait()
 
 		alive, _ := g.f.aliveNow()
-		assert.Equal(t, 2, alive)
+		assert.Equal(t, 3, alive)
 		text, _, waiting, ok := g.r.Live(c1)
 		assert.True(t, ok)
 		assert.False(t, waiting)
 		assert.Equal(t, "partial answer", text)
-		_, _, waiting, ok = g.r.Live(c3)
+		_, _, waiting, ok = g.r.Live(c4)
 		assert.True(t, ok)
-		assert.True(t, waiting, "the third conversation waits for a free slot")
+		assert.True(t, waiting, "the fourth conversation waits for a free slot")
 
 		procs := g.f.all()
-		require.Len(t, procs, 2)
-		procs[0].finish()
+		require.Len(t, procs, 3)
+		// The sessions spawn on their own goroutines: find c1's by its argv.
+		first := slices.IndexFunc(procs, func(p *fakeProc) bool { return slices.Contains(p.argv, strconv.FormatInt(c1, 10)) })
+		require.GreaterOrEqual(t, first, 0)
+		procs[first].finish()
 		synctest.Wait()
 
 		procs = g.f.all()
-		require.Len(t, procs, 3)
-		assert.True(t, procs[0].isExited(), "the idle session made room")
-		assert.Contains(t, procs[0].log(), "close")
-		assert.False(t, procs[1].isExited(), "a running turn is never cut")
-		turns := procs[2].turnCommands()
+		require.Len(t, procs, 4)
+		for i, p := range procs[:3] {
+			if i == first {
+				assert.True(t, p.isExited(), "the idle session made room")
+				assert.Contains(t, p.log(), "close")
+			} else {
+				assert.False(t, p.isExited(), "a running turn is never cut")
+			}
+		}
+		turns := procs[3].turnCommands()
 		require.Len(t, turns, 1)
-		assert.Equal(t, s3.TurnID, turns[0].TurnID)
-		_, _, waiting, ok = g.r.Live(c3)
+		assert.Equal(t, s4.TurnID, turns[0].TurnID)
+		_, _, waiting, ok = g.r.Live(c4)
 		assert.True(t, ok)
 		assert.False(t, waiting)
 		_, maxAlive := g.f.aliveNow()
 		assert.Equal(t, MaxLive, maxAlive)
+		assert.Equal(t, 3, MaxLive)
 
 		r1, _ := readRow(t, g.d, s1.AssistantMessageID)
 		assert.Equal(t, chatstore.StatusComplete, r1.status)
@@ -159,40 +172,41 @@ func TestChat03Go_PoolBound(t *testing.T) {
 	})
 }
 
-// TestChatrun_IdleEvictedForNewTurn: with both slots warm but idle, a new
-// conversation's turn closes the least recently used session at once and
-// never waits for a slot.
-func TestChatrun_IdleEvictedForNewTurn(t *testing.T) {
+// TestChatengine_IdleEvictedForNewTurn: with every slot warm but idle, a
+// new conversation's turn closes the least recently used session at once
+// and never waits for a slot.
+func TestChatengine_IdleEvictedForNewTurn(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		g := newRig(t, fakeOpts{})
-		c1, c2, c3 := newConversation(t, g.d), newConversation(t, g.d), newConversation(t, g.d)
-		g.send(t, c1, "one", nil)
-		synctest.Wait()
-		time.Sleep(time.Second)
-		g.send(t, c2, "two", nil)
-		synctest.Wait()
-		time.Sleep(time.Second)
+		for i := range MaxLive {
+			g.send(t, newConversation(t, g.d), "warm "+strconv.Itoa(i), nil)
+			synctest.Wait()
+			time.Sleep(time.Second)
+		}
 
-		s3 := g.send(t, c3, "three", nil)
-		_, _, waiting, ok := g.r.Live(c3)
+		c := newConversation(t, g.d)
+		st := g.send(t, c, "next", nil)
+		_, _, waiting, ok := g.r.Live(c)
 		assert.True(t, ok)
 		assert.False(t, waiting, "an idle session is evicted, so the turn is not waiting for a slot")
 		synctest.Wait()
 
 		procs := g.f.all()
-		require.Len(t, procs, 3)
+		require.Len(t, procs, MaxLive+1)
 		assert.True(t, procs[0].isExited(), "the least recently used session was closed")
-		assert.False(t, procs[1].isExited())
-		assert.Equal(t, s3.TurnID, procs[2].turnCommands()[0].TurnID)
+		for _, p := range procs[1:MaxLive] {
+			assert.False(t, p.isExited())
+		}
+		assert.Equal(t, st.TurnID, procs[MaxLive].turnCommands()[0].TurnID)
 		_, maxAlive := g.f.aliveNow()
 		assert.Equal(t, MaxLive, maxAlive)
-		r3, _ := readRow(t, g.d, s3.AssistantMessageID)
-		assert.Equal(t, chatstore.StatusComplete, r3.status)
+		r, _ := readRow(t, g.d, st.AssistantMessageID)
+		assert.Equal(t, chatstore.StatusComplete, r.status)
 	})
 }
 
-// TestChatrun_IdleSessionExpires: an idle session closes after IdleTTL.
-func TestChatrun_IdleSessionExpires(t *testing.T) {
+// TestChatengine_IdleSessionExpires: an idle session closes after IdleTTL.
+func TestChatengine_IdleSessionExpires(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		g := newRig(t, fakeOpts{})
 		c := newConversation(t, g.d)
@@ -209,11 +223,11 @@ func TestChatrun_IdleSessionExpires(t *testing.T) {
 	})
 }
 
-// TestChatrun_RemoteCancelStopsTurn: the other side's Stop (a cancel
+// TestChatengine_RemoteCancelStopsTurn: the other side's Stop (a cancel
 // request on the lease) sends `cancel` within 1 s; a session that never
 // answers keeps the text as `partial` 7 s later, its lease released, and is
 // terminated, then killed after 3 s.
-func TestChatrun_RemoteCancelStopsTurn(t *testing.T) {
+func TestChatengine_RemoteCancelStopsTurn(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		g := newRig(t, fakeOpts{block: true, ignoreCancel: true, ignoreTerm: true})
 		c := newConversation(t, g.d)
@@ -254,9 +268,9 @@ func TestChatrun_RemoteCancelStopsTurn(t *testing.T) {
 	})
 }
 
-// TestChatrun_CancelThroughRunner: Runner.Cancel reaches the session at
+// TestChatengine_CancelThroughRunner: Engine.Cancel reaches the session at
 // once, and a session that answers ends the turn `partial` and stays warm.
-func TestChatrun_CancelThroughRunner(t *testing.T) {
+func TestChatengine_CancelThroughRunner(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		g := newRig(t, fakeOpts{block: true})
 		c := newConversation(t, g.d)
@@ -277,15 +291,16 @@ func TestChatrun_CancelThroughRunner(t *testing.T) {
 	})
 }
 
-// TestChatrun_CancelQueuedTurn: a Stop of a turn still waiting for a slot
+// TestChatengine_CancelQueuedTurn: a Stop of a turn still waiting for a slot
 // ends it `partial` without launching anything.
-func TestChatrun_CancelQueuedTurn(t *testing.T) {
+func TestChatengine_CancelQueuedTurn(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		g := newRig(t, fakeOpts{block: true})
-		c1, c2, c3 := newConversation(t, g.d), newConversation(t, g.d), newConversation(t, g.d)
-		g.send(t, c1, "one", nil)
-		g.send(t, c2, "two", nil)
-		s3 := g.send(t, c3, "three", nil)
+		for range MaxLive {
+			g.send(t, newConversation(t, g.d), "busy", nil)
+		}
+		c3 := newConversation(t, g.d)
+		s3 := g.send(t, c3, "queued", nil)
 		synctest.Wait()
 		ok, err := g.r.Cancel(c3, s3.TurnID)
 		require.NoError(t, err)
@@ -298,15 +313,15 @@ func TestChatrun_CancelQueuedTurn(t *testing.T) {
 		assert.False(t, ok)
 		g.f.all()[0].finish()
 		synctest.Wait()
-		assert.Len(t, g.f.all(), 2, "nothing launched for the cancelled turn")
+		assert.Len(t, g.f.all(), MaxLive, "nothing launched for the cancelled turn")
 	})
 }
 
-// TestChatrun_DaemonStopLeavesPartialAndSweepReleases: Close cuts a running
+// TestChatengine_DaemonStopLeavesPartialAndSweepReleases: Close cuts a running
 // turn (close, 2 s, SIGTERM): the row keeps its streamed text as `partial`
 // and the lease stays; the next start's sweep releases it and marks the
 // reply session_lost.
-func TestChatrun_DaemonStopLeavesPartialAndSweepReleases(t *testing.T) {
+func TestChatengine_DaemonStopLeavesPartialAndSweepReleases(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		g := newRig(t, fakeOpts{block: true, ignoreClose: true})
 		c := newConversation(t, g.d)
@@ -324,11 +339,12 @@ func TestChatrun_DaemonStopLeavesPartialAndSweepReleases(t *testing.T) {
 		assert.Equal(t, "partial answer", r.text)
 		assert.False(t, r.errorCode.Valid)
 		require.NotNil(t, lease(t, g.d, c), "the lease waits for the next start's sweep")
-		_, err := g.r.Run(context.Background(), chatstore.StartRequest{ConversationID: c, Mode: chatstore.ModeSend, Text: "x"})
+		_, err := g.r.Turn(context.Background(), TurnRequest{StartRequest: chatstore.StartRequest{ConversationID: c,
+			Mode: chatstore.ModeSend, Text: "x"}})
 		assert.ErrorIs(t, err, ErrClosed)
 
 		next := New(g.cfg)
-		require.NoError(t, next.Sweep())
+		require.NoError(t, next.Start(context.Background()))
 		assert.Nil(t, lease(t, g.d, c))
 		r, _ = readRow(t, g.d, st.AssistantMessageID)
 		assert.Equal(t, chatstore.StatusPartial, r.status)
@@ -337,10 +353,10 @@ func TestChatrun_DaemonStopLeavesPartialAndSweepReleases(t *testing.T) {
 	})
 }
 
-// TestChatrun_StartupSweepMarksSessionLost: a daemon killed mid-turn left
+// TestChatengine_StartupSweepMarksSessionLost: a daemon killed mid-turn left
 // the hub's lease and a `partial` reply; the sweep releases only this hub's
 // leases and marks only their replies.
-func TestChatrun_StartupSweepMarksSessionLost(t *testing.T) {
+func TestChatengine_StartupSweepMarksSessionLost(t *testing.T) {
 	d := openDB(t)
 	ctx := context.Background()
 	mine, mac, other := newConversation(t, d), newConversation(t, d), newConversation(t, d)
@@ -350,12 +366,12 @@ func TestChatrun_StartupSweepMarksSessionLost(t *testing.T) {
 		require.NoError(t, err)
 		return st
 	}
-	sMine := start(db.ChatLeaseHub, testHub, mine)
+	sMine := start(db.ChatLeaseHub, LeaseOwnerID, mine)
 	sMac := start(db.ChatLeaseDesktop, "app-1", mac)
 	sOther := start(db.ChatLeaseHub, "hub-2", other)
 
-	r := New(Config{HubID: testHub, DB: d, Dir: t.TempDir()})
-	require.NoError(t, r.Sweep())
+	r := New(Config{DB: d, Dir: t.TempDir()})
+	require.NoError(t, r.Start(ctx))
 
 	assert.Nil(t, lease(t, d, mine))
 	row, _ := readRow(t, d, sMine.AssistantMessageID)
@@ -368,12 +384,12 @@ func TestChatrun_StartupSweepMarksSessionLost(t *testing.T) {
 		r, _ := readRow(t, d, s.AssistantMessageID)
 		assert.False(t, r.errorCode.Valid)
 	}
-	require.NoError(t, r.Sweep(), "a second sweep finds nothing")
+	require.NoError(t, r.Start(ctx), "a second sweep finds nothing")
 }
 
-// TestChatrun_HeartbeatEvery15s: a running turn's lease heartbeat moves
+// TestChatengine_HeartbeatEvery15s: a running turn's lease heartbeat moves
 // every 15 s, not sooner.
-func TestChatrun_HeartbeatEvery15s(t *testing.T) {
+func TestChatengine_HeartbeatEvery15s(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		g := newRig(t, fakeOpts{block: true})
 		c := newConversation(t, g.d)
@@ -393,11 +409,11 @@ func TestChatrun_HeartbeatEvery15s(t *testing.T) {
 	})
 }
 
-// TestChatrun_RoutingChangeRecycles: a turn with the session's routing
+// TestChatengine_RoutingChangeRecycles: a turn with the session's routing
 // reuses the warm process (no replay; the session's session_ready recorded
 // on the new reply), a provider change closes it and spawns one with the
 // new argv, which replays.
-func TestChatrun_RoutingChangeRecycles(t *testing.T) {
+func TestChatengine_RoutingChangeRecycles(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		g := newRig(t, fakeOpts{})
 		c := newConversation(t, g.d)
@@ -438,10 +454,10 @@ func TestChatrun_RoutingChangeRecycles(t *testing.T) {
 	})
 }
 
-// TestChatrun_ConversationGoneClosesSession: the conversation deleted
+// TestChatengine_ConversationGoneClosesSession: the conversation deleted
 // mid-turn (the cascade takes the lease and the rows) — the next lease read
 // cancels and closes the session and nothing more is written.
-func TestChatrun_ConversationGoneClosesSession(t *testing.T) {
+func TestChatengine_ConversationGoneClosesSession(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		g := newRig(t, fakeOpts{block: true})
 		c := newConversation(t, g.d)
@@ -464,10 +480,10 @@ func TestChatrun_ConversationGoneClosesSession(t *testing.T) {
 	})
 }
 
-// TestChatrun_SessionDeathFinalizesLost: a session that dies mid-turn
+// TestChatengine_SessionDeathFinalizesLost: a session that dies mid-turn
 // leaves the text `partial` with session_lost, and the next turn replays on
 // a new process.
-func TestChatrun_SessionDeathFinalizesLost(t *testing.T) {
+func TestChatengine_SessionDeathFinalizesLost(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		g := newRig(t, fakeOpts{block: true})
 		c := newConversation(t, g.d)
@@ -488,11 +504,11 @@ func TestChatrun_SessionDeathFinalizesLost(t *testing.T) {
 	})
 }
 
-// TestChatrun_ChildThatReadsNoStdinStillKilled: a child that never reads
+// TestChatengine_ChildThatReadsNoStdinStillKilled: a child that never reads
 // its stdin blocks the turn's write; the loop does not wait on it, so Close
 // escalates to SIGTERM after closeGrace and to SIGKILL of the group
 // killAfter later, and a remote Stop terminates it after CancelGrace.
-func TestChatrun_ChildThatReadsNoStdinStillKilled(t *testing.T) {
+func TestChatengine_ChildThatReadsNoStdinStillKilled(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		g := newRig(t, fakeOpts{noRead: true, ignoreTerm: true})
 		c := newConversation(t, g.d)

@@ -8,21 +8,21 @@ import (
 	"testing"
 	"time"
 
+	"watchtower/internal/chatengine"
 	"watchtower/internal/chatstore"
 	"watchtower/internal/db"
 	"watchtower/internal/hub/actions"
-	"watchtower/internal/hub/chatrun"
 	"watchtower/internal/hub/identity"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/policy"
 )
 
-// TestRuntime_ChatrunSweepsBeforeHandlersAndClosesOnStop: building the
-// wiring makes the chat runner and runs its sweep before the handlers can
-// claim — this hub's lease of an earlier run is released, its reply marked
+// TestRuntime_ChatengineSweepsBeforeHandlersAndClosesOnStop: building the
+// wiring makes the chat engine and runs its sweep before the handlers can
+// claim — the engine's lease of an earlier run is released, its reply marked
 // session_lost, another owner's lease kept — and the wiring's close (the
 // hub's stop, before the daemon closes the database) closes the runner.
-func TestRuntime_ChatrunSweepsBeforeHandlersAndClosesOnStop(t *testing.T) {
+func TestRuntime_ChatengineSweepsBeforeHandlersAndClosesOnStop(t *testing.T) {
 	d, _ := fileDB(t)
 	st, err := state.Open(filepath.Join(t.TempDir(), "hub"))
 	if err != nil {
@@ -54,7 +54,7 @@ func TestRuntime_ChatrunSweepsBeforeHandlersAndClosesOnStop(t *testing.T) {
 		}
 		return s
 	}
-	sMine := start(db.ChatLeaseHub, kr.HubIDText(), mine)
+	sMine := start(db.ChatLeaseHub, chatengine.LeaseOwnerID, mine)
 	start(db.ChatLeaseDesktop, "app-1", mac)
 
 	o := Options{DB: d, Clock: time.Now, Dir: t.TempDir(), RecordingsDir: t.TempDir()}
@@ -83,15 +83,16 @@ func TestRuntime_ChatrunSweepsBeforeHandlersAndClosesOnStop(t *testing.T) {
 	}
 
 	w.close()
-	_, err = w.chat.Run(context.Background(), chatstore.StartRequest{ConversationID: mine, Mode: chatstore.ModeSend, Text: "x"})
-	if !errors.Is(err, chatrun.ErrClosed) {
-		t.Errorf("Run after the hub stopped = %v, want ErrClosed", err)
+	_, err = w.chat.Turn(context.Background(), chatengine.TurnRequest{StartRequest: chatstore.StartRequest{ConversationID: mine,
+		Mode: chatstore.ModeSend, Text: "x"}})
+	if !errors.Is(err, chatengine.ErrClosed) {
+		t.Errorf("Turn after the hub stopped = %v, want ErrClosed", err)
 	}
 }
 
-// TestRuntime_ChatrunInertWithoutDatabaseFile: an in-memory database (no
+// TestRuntime_ChatengineInertWithoutDatabaseFile: an in-memory database (no
 // file for a session's --db-path) leaves the hub without a chat runner.
-func TestRuntime_ChatrunInertWithoutDatabaseFile(t *testing.T) {
+func TestRuntime_ChatengineInertWithoutDatabaseFile(t *testing.T) {
 	d, err := db.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
@@ -111,7 +112,7 @@ func TestRuntime_ChatrunInertWithoutDatabaseFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := &hubRuntime{kr: kr}
-	if r := h.newChatRunner(Options{DB: d, Dir: t.TempDir()}, nil, func(func()) bool { return true }); r != nil {
+	if r := h.newChatRunner(Options{DB: d, Dir: t.TempDir()}, func(func()) bool { return true }); r != nil {
 		t.Error("a chat runner over a database with no file")
 	}
 }

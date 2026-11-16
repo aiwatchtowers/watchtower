@@ -12,6 +12,7 @@ import (
 	"github.com/rivo/uniseg"
 
 	"watchtower/internal/chat"
+	"watchtower/internal/chatengine"
 	"watchtower/internal/chatstore"
 	"watchtower/internal/db"
 	"watchtower/internal/hub/slices"
@@ -26,16 +27,21 @@ func chatGranted() (bool, error) { return true, nil }
 
 type fakeLive struct {
 	conv    int64
+	turnID  string
 	text    string
 	steps   []chatstore.Step
 	waiting bool
 }
 
-func (f fakeLive) Live(conv int64) (string, []chatstore.Step, bool, bool) {
+func (f fakeLive) LiveTurn(conv int64) (chatengine.LiveTurn, bool) {
 	if conv != f.conv {
-		return "", nil, false, false
+		return chatengine.LiveTurn{}, false
 	}
-	return f.text, f.steps, f.waiting, true
+	return chatengine.LiveTurn{TurnID: f.turnID, Text: f.text, Steps: f.steps, WaitingSlot: f.waiting}, true
+}
+
+func (fakeLive) LiveRouting(int64) (chatengine.LiveRouting, bool) {
+	return chatengine.LiveRouting{}, false
 }
 
 // chatSeed writes chat rows as the Swift and Go turn stores leave them.
@@ -308,7 +314,7 @@ func liveFeedRig(t *testing.T, owner string) (*db.DB, int64, int64) {
 
 func TestChatFeed_HubTurnUsesLiveText(t *testing.T) {
 	d, conv, _ := liveFeedRig(t, "hub")
-	live := fakeLive{conv: conv, text: "streaming now", waiting: true, steps: []chatstore.Step{
+	live := fakeLive{conv: conv, turnID: "turn-9", text: "streaming now", waiting: true, steps: []chatstore.Step{
 		{Name: "search_knowledge", State: chatstore.StepSucceeded, Summary: "1 result", Sources: []chat.Source{{Kind: "kb", Title: "Doc", Ref: "r"}}},
 		{Name: "list_messages", State: chatstore.StepRunning},
 	}}
@@ -332,7 +338,7 @@ func TestChatFeed_DesktopTurnReadsDB(t *testing.T) {
 	d, conv, _ := liveFeedRig(t, "desktop")
 	w := NewChatWatches()
 	w.Watch(conv, ChatPurposeOpen, chatNow.Add(ChatOpenWatch))
-	feed := chatRecords(t, ChatFeed(d, chatFeedOpts(w, fakeLive{conv: conv, text: "not this"})))[idStr(conv)]
+	feed := chatRecords(t, ChatFeed(d, chatFeedOpts(w, fakeLive{conv: conv, turnID: "turn-other", text: "not this"})))[idStr(conv)]
 	m := feed["messages"].([]any)[1].(map[string]any)
 	if m["text"] != "flushed" || m["steps"].([]any)[0].(map[string]any)["name"] != "old_step" {
 		t.Fatalf("message %v", m)
@@ -787,17 +793,5 @@ func TestChatFeed_OversizedLabelsClipped(t *testing.T) {
 	items, err := ChatPage(d, chatFeedOpts(w, nil)).Items(context.Background())
 	if err != nil || len(items) != 1 || len(items[0].Payload) > MaxChatFeedBytes {
 		t.Fatalf("page: %d items, %v", len(items), err)
-	}
-}
-
-// liveLease is the claim's complement and Swift's ChatLease.isLive: a
-// heartbeat exactly db.ChatLeaseStaleMS old is still held.
-func TestChatLease_LiveUntilStale(t *testing.T) {
-	now := time.UnixMilli(1_000_000)
-	if !liveLease(now.UnixMilli()-db.ChatLeaseStaleMS, now) {
-		t.Error("exactly 60 s old: still held")
-	}
-	if liveLease(now.UnixMilli()-db.ChatLeaseStaleMS-1, now) {
-		t.Error("60.001 s old: stale")
 	}
 }

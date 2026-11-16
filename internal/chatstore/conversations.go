@@ -88,6 +88,39 @@ func (s *Store) Delete(ctx context.Context, conv int64) error {
 	return requireConversation(res, err)
 }
 
+// Move is ChatConversationQueries.setProject: conv into projectID (nil =
+// out of any project). An actual move also clears the stored provider
+// session, so the next turn starts fresh and replays with the new
+// project's block. ErrConversationGone when conv is absent or not a main
+// chat, ErrProjectGone when the project does not exist.
+func (s *Store) Move(ctx context.Context, conv int64, projectID *int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("moving a chat: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var n int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM chat_conversations WHERE id = ? AND context_type IS NULL`, conv).Scan(&n); err != nil {
+		return fmt.Errorf("moving a chat: %w", err)
+	}
+	if n == 0 {
+		return ErrConversationGone
+	}
+	if projectID != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM chat_projects WHERE id = ?`, *projectID).Scan(&n); err != nil {
+			return fmt.Errorf("moving a chat: %w", err)
+		}
+		if n == 0 {
+			return ErrProjectGone
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE chat_conversations SET project_id = ?, session_id = NULL
+		WHERE id = ? AND project_id IS NOT ?`, projectID, conv, projectID); err != nil {
+		return fmt.Errorf("moving a chat: %w", err)
+	}
+	return tx.Commit()
+}
+
 func requireConversation(res sql.Result, err error) error {
 	if err != nil {
 		return fmt.Errorf("writing a chat: %w", err)
