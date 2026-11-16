@@ -610,6 +610,7 @@ enum DesignShotCatalog {
                     .detailBackground())
             }
         } + ProviderFallbackShotFixtures.runtimeShots + InboxBuilderAShotFixtures.shots + InboxBuilderBShotFixtures.shots
+            + AutoCleanupShotFixtures.shots
             + ClosedAsksShotFixtures.shots
             + TuningChatShotFixtures.shots // The tuning chat over the Analytics pane (#1517).
             + SlackFullLiveShotFixtures.shots // Slack Full / Live screens spec (#1779), design only.
@@ -650,6 +651,7 @@ enum DesignShotFixtures {
         AutomationShotFixtures.cleanUp()
         BuiltinShotFixtures.cleanUp()
         CleanupShotFixtures.cleanUp()
+        AutoCleanupShotFixtures.cleanUp()
         AgentSettingsShotFixtures.cleanUp()
         CoachShotFixtures.cleanUp()
         InboxFolderMenuShotFixtures.cleanUp()

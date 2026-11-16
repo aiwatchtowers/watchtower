@@ -31,12 +31,14 @@ type fakeChatRunner struct {
 	*chatengine.Engine
 	store   *chatstore.Store
 	runs    []chatstore.StartRequest
+	keys    []string
 	cancels []string
 	cancel  bool
 }
 
 func (f *fakeChatRunner) Turn(ctx context.Context, req chatengine.TurnRequest) (chatstore.Started, error) {
 	f.runs = append(f.runs, req.StartRequest)
+	f.keys = append(f.keys, req.ClientKey)
 	return f.store.Start(ctx, req.StartRequest)
 }
 
@@ -239,6 +241,33 @@ func TestChatHandlers_RefuseWhenNotOnRelay(t *testing.T) {
 	}
 }
 
+// TestChatTurn_PassesClientKeyAndCompose: the phone's send carries its
+// client_key (the engine answers a repeated key with the first turn) and the
+// composer's skill and mentions, as chat.sock does; a compose the Mac's
+// composer cannot make is refused before the engine.
+func TestChatTurn_PassesClientKeyAndCompose(t *testing.T) {
+	c := newChatEnv(t, false)
+	conv := c.conversation()
+	out := c.run("chat_turn", map[string]any{"conversation_id": conv, "mode": "send", "text": "hi @Alice",
+		"attachment_ids": []int64{}, "client_key": "K-1",
+		"compose": map[string]any{"skill": "weekly-report", "mentions": []any{map[string]any{"kind": "person", "id": "U1", "label": "Alice"}}}})
+	wantOutcome(t, out, wire.StatusApplied, "")
+	if len(c.runner.runs) != 1 || c.runner.keys[0] != "K-1" {
+		t.Fatalf("keys %v", c.runner.keys)
+	}
+	got := c.runner.runs[0].Compose
+	if got == nil || got.Skill != "weekly-report" || len(got.Mentions) != 1 || got.Mentions[0].ID != "U1" {
+		t.Fatalf("compose %+v", got)
+	}
+	wantOutcome(t, c.run("chat_turn", map[string]any{"conversation_id": conv, "mode": "send", "text": "x",
+		"compose": map[string]any{"mentions": []any{map[string]any{"kind": "planet", "id": "x"}}}}), wire.StatusFailed, reasonInvalidParams)
+	wantOutcome(t, c.run("chat_turn", map[string]any{"conversation_id": conv, "mode": "send", "text": "x", "client_key": 7}),
+		wire.StatusFailed, reasonInvalidParams)
+	if len(c.runner.runs) != 1 {
+		t.Fatalf("a refused compose reached the engine: %d runs", len(c.runner.runs))
+	}
+}
+
 func TestChatTurn_StartsAndAnswersWithIDs(t *testing.T) {
 	c := newChatEnv(t, false)
 	conv := c.conversation()
@@ -358,6 +387,8 @@ func TestChatManage_RenameSetsUserTitle(t *testing.T) {
 	}
 	wantOutcome(t, c.run("chat_manage", map[string]any{"conversation_id": conv, "op": "unpin"}), wire.StatusApplied, "")
 	wantOutcome(t, c.run("chat_manage", map[string]any{"conversation_id": conv, "op": "archive"}), wire.StatusFailed, reasonInvalidParams)
+	// discard (the Mac's untouched landing draft) is chat.sock only: the relay never deletes a chat by it.
+	wantOutcome(t, c.run("chat_manage", map[string]any{"conversation_id": conv, "op": "discard"}), wire.StatusFailed, reasonInvalidParams)
 	wantOutcome(t, c.run("chat_manage", map[string]any{"conversation_id": 9999, "op": "pin"}), wire.StatusFailed, reasonNotFound)
 }
 

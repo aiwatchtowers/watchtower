@@ -11,7 +11,7 @@
 - The new local package `WatchtowerChat/` has two targets: `ChatWire` (Foundation: models, operations, `ChatClient`, stores) and `ChatUI` (SwiftUI: one view per part kind, fallbacks, models, `Platform/macOS` + `Platform/iOS`). The Mac (`SocketChatClient`) and the phone (`RelayChatClient`) keep only their shells.
 
 **Tech Stack:**
-- Go 1.26: `testing/synctest`, goose (one migration, 00192 `chat_client_key`, in T1), the `internal/sqlcipher` driver.
+- Go 1.26: `testing/synctest`, goose (one migration, 00194 `chat_client_key`, in T1), the `internal/sqlcipher` driver.
 - SwiftUI on macOS 14 / iOS 17 in the Swift 5.10 language mode, SwiftPM local packages, xcodegen for the phone.
 
 **Spec:** `docs/superpowers/specs/2026-11-16-unified-chat-design.md` (approved, ask #1378; decisions in asks #1363 and #1371). Builds on `docs/features/iphone-chat.md` and `docs/inventory/chat.md`.
@@ -131,7 +131,7 @@
 - **cmd:** `go test ./cmd/... -run 'Sync|AISession|Chat'` (CI runs `-race` on cmd only with `-run`).
 - **Golden prompts:** `go test ./internal/chat -run 'Golden|Prompt'` for any change in `internal/chat`.
 - **Kit / Core surfaces:** `make test-swift FILTER=PublicAPISurfaceTests` and `make kit-test FILTER=SeamBoundaryTests` for any package-graph change.
-- **Schema:** one migration, `00192_chat_client_key.sql` (T1). T1 runs `go test ./internal/db -run 'TestSchemaGolden|TestDesktopTestSchema'` (regenerated with `-update`) and `go test ./internal/db`; any later task touching `internal/db` runs them too.
+- **Schema:** one migration, `00194_chat_client_key.sql` (T1). T1 runs `go test ./internal/db -run 'TestSchemaGolden|TestDesktopTestSchema'` (regenerated with `-update`) and `go test ./internal/db`; any later task touching `internal/db` runs them too.
 
 ---
 
@@ -177,7 +177,7 @@
   - `internal/hub/slices/sources/chat_{feed,list}.go` (call the engine builders);
   - the LIVE-01 keys in `internal/db/live01_test.go` (`displayOnlyReadersAt`) to the new `chatengine/...:<func>` names;
   - `docs/inventory/chat.md` (CHAT-01 and CHAT-03 amendments).
-- Create: `internal/db/migrations/00192_chat_client_key.sql`: `ALTER TABLE chat_messages ADD COLUMN client_key TEXT` (nullable) + `CREATE UNIQUE INDEX idx_chat_messages_client_key ON chat_messages(conversation_id, client_key) WHERE client_key IS NOT NULL`; Down drops the index and the column. Mirror it into `internal/db/schema.sql` and regenerate `internal/db/testdata` goldens and `WatchtowerDesktop/Tests/Support/TestDatabase+Schema.swift` (`go test ./internal/db -run 'TestSchemaGolden|TestDesktopTestSchema' -update`). Modify `internal/chatstore/store.go` (`StartRequest.ClientKey`, written on the owner row inside the start transaction; `newMessage.ClientKey`).
+- Create: `internal/db/migrations/00194_chat_client_key.sql`: `ALTER TABLE chat_messages ADD COLUMN client_key TEXT` (nullable) + `CREATE UNIQUE INDEX idx_chat_messages_client_key ON chat_messages(conversation_id, client_key) WHERE client_key IS NOT NULL`; Down drops the index and the column. Mirror it into `internal/db/schema.sql` and regenerate `internal/db/testdata` goldens and `WatchtowerDesktop/Tests/Support/TestDatabase+Schema.swift` (`go test ./internal/db -run 'TestSchemaGolden|TestDesktopTestSchema' -update`). Modify `internal/chatstore/store.go` (`StartRequest.ClientKey`, written on the owner row inside the start transaction; `newMessage.ClientKey`).
 
 **Interfaces:**
 - Consumes: `chatstore.Store`/`StartRequest`/`Started`/`Routing`/`Step`, `chat.Event`, `db.ChatLeaseHub`.

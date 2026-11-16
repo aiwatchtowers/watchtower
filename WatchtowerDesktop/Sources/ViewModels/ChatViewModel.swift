@@ -147,11 +147,10 @@ final class ChatViewModel {
         }
     }
     private var draftsToDiscardKey: String { "chat.landingDraftsToDiscard.engine.\(dbPool.path)" }
-    @ObservationIgnored private var discarding = false
+    /// The latest discard pass; the next one starts after it, so passes never overlap and none is skipped.
+    @ObservationIgnored private var discardFlush: Task<Void, Never>?
     @ObservationIgnored private var reachabilityWatch: Task<Void, Never>?
 
-    /// A search hit's message to bring into view (the feed scrolls once it is loaded).
-    private(set) var scrollTarget: Int64?
     /// The reply whose actions "Review actions" shows, and those actions' ids.
     private(set) var reviewedMessageID: Int64?
     private(set) var reviewedActionIDs: [Int64] = []
@@ -282,7 +281,10 @@ final class ChatViewModel {
                 await self.flushDiscards()
             }
         }
-        engineCalls.append(Task { [weak self] in await self?.flushDiscards() })
+        // Only a leftover from an earlier run: a discard queued later starts its own pass.
+        if !draftsToDiscard.isEmpty {
+            engineCalls.append(Task { [weak self] in await self?.flushDiscards() })
+        }
     }
 
     /// The first keystroke (or an open chat): the landing makes its chat now and the engine starts its session, so
@@ -316,11 +318,19 @@ final class ChatViewModel {
     }
 
     /// Sends every pending discard; an id leaves the list once the engine answered it (applied, or the chat is
-    /// gone already). A lost connection keeps it for the next `.connected`.
+    /// gone already). A lost connection keeps it for the next `.connected`. A pass already under way is awaited
+    /// first, then this one runs over what is still pending: returning means every earlier pass has finished.
     func flushDiscards() async {
-        guard !discarding else { return }
-        discarding = true
-        defer { discarding = false }
+        let previous = discardFlush
+        let pass = Task { [weak self] in
+            await previous?.value
+            await self?.sendDiscards()
+        }
+        discardFlush = pass
+        await pass.value
+    }
+
+    private func sendDiscards() async {
         for id in draftsToDiscard.sorted() {
             switch try? await client.send(.manage(conversationID: id, op: .discard, title: nil, projectID: nil)) {
             case .applied?, .refused("not_found", _)?:
@@ -457,37 +467,11 @@ final class ChatViewModel {
         show(nil)
     }
 
-    /// Opens a search hit's chat and brings its message into view, loading earlier pages until the message is
-    /// there (at most `maxPagesToHit`).
+    /// Opens a search hit's chat and brings its message into view: the conversation's focus (ChatUI's
+    /// `followFocus`, run by the thread view whenever the loaded messages change) pages back until it is loaded.
     func open(_ hit: ChatSearch.Hit) {
         select(conversationID: hit.conversationID)
-        scrollTarget = hit.messageID
-        guard let target = hit.messageID else { return }
-        let model = conversation
-        Task { [weak self] in
-            await self?.loadUntilLoaded(target, in: model)
-        }
-    }
-
-    static let maxPagesToHit = 20
-
-    /// Loads earlier pages of `model` until `messageID` is loaded (the feed's snapshot first).
-    func loadUntilLoaded(_ messageID: Int64, in model: ChatConversationModel) async {
-        for _ in 0..<Self.maxPagesToHit {
-            if model.messages.contains(where: { $0.id == messageID }) { return }
-            guard model.feed != nil else {
-                await Task.yield()
-                continue
-            }
-            guard model.hasEarlier else { return }
-            let before = model.messages.count
-            await model.loadEarlier()
-            if model.messages.count == before { return }
-        }
-    }
-
-    func consumeScrollTarget() {
-        scrollTarget = nil
+        conversation.focusMessageID = hit.messageID
     }
 
     // MARK: - Turns
@@ -818,7 +802,6 @@ final class ChatViewModel {
         dismissedArtifactKeys = []
         errorMessage = nil
         fullTexts = [:]
-        scrollTarget = nil
         reviewedMessageID = nil
         reviewedActionIDs = []
         messageTurnIDs = []
@@ -837,7 +820,7 @@ final class ChatViewModel {
         reviewedMessageID = messageID
         reviewedActionIDs = actionFeed.rows.filter { $0.turnID == turn }.map(\.id)
         isInspectorExpanded = false
-        scrollTarget = messageID
+        conversation.focusMessageID = messageID
     }
 
     /// The turn of a reply, read from its approval parts' actions; nil when it has none.

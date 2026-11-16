@@ -51,8 +51,8 @@ public struct ChatFeedContext {
     public var messageAccessory: ((ChatFeed.Message) -> AnyView?)?
     /// What the app draws after the last message (the Mac's cards of an interrupted turn).
     public var footer: AnyView?
-    /// The message to bring into view (a search hit); the feed scrolls to it once it is loaded.
-    public var scrollTarget: Int64?
+    /// A message to scroll to once it is loaded (a search hit); nil follows the newest message.
+    public var focusMessageID: Int64?
 
     public init(
         provider: String? = nil,
@@ -66,7 +66,7 @@ public struct ChatFeedContext {
         rowActions: ChatRowActions = ChatRowActions(),
         messageAccessory: ((ChatFeed.Message) -> AnyView?)? = nil,
         footer: AnyView? = nil,
-        scrollTarget: Int64? = nil
+        focusMessageID: Int64? = nil
     ) {
         self.provider = provider
         self.artifacts = artifacts
@@ -79,7 +79,7 @@ public struct ChatFeedContext {
         self.rowActions = rowActions
         self.messageAccessory = messageAccessory
         self.footer = footer
-        self.scrollTarget = scrollTarget
+        self.focusMessageID = focusMessageID
     }
 }
 
@@ -123,12 +123,12 @@ public struct ChatFeedView: View {
             }
             .defaultScrollAnchor(.bottom)
             .onChange(of: rows.last?.id) { _, last in
-                guard let last, context.scrollTarget == nil else { return }
+                guard let last, focusRow(in: rows) == nil else { return }
                 proxy.scrollTo(last, anchor: .bottom)
             }
-            .onChange(of: ScrollRequest(target: context.scrollTarget, loaded: targetRow(in: rows)), initial: true) { _, request in
-                guard let row = request.loaded else { return }
-                proxy.scrollTo(row, anchor: .center)
+            .onChange(of: focusRow(in: rows), initial: true) { _, focus in
+                guard let focus else { return }
+                proxy.scrollTo(focus, anchor: .center)
             }
         }
         .modifier(ChatFeedQuoteSupport(onQuote: context.rowActions.quote))
@@ -172,19 +172,12 @@ public struct ChatFeedView: View {
         return messages[(index + 1)...].first { $0.role == "user" }?.text
     }
 
-    private static let placeholder = ChatFeed.Message(id: 0, role: "assistant", text: "", createdAt: .distantPast)
-
-    /// The row holding the scroll target, once it is loaded.
-    private func targetRow(in rows: [ChatFeedLayout.Row]) -> ChatFeedLayout.Row.ID? {
-        guard let target = context.scrollTarget else { return nil }
-        return rows.first { row in
-            if case let .message(message, _) = row { return message.id == target }
-            return false
-        }?.id
+    /// The focused message's row id, once that message is loaded.
+    private func focusRow(in rows: [ChatFeedLayout.Row]) -> String? {
+        guard let focusMessageID = context.focusMessageID else { return nil }
+        let id = "m\(focusMessageID)"
+        return rows.contains { $0.id == id } ? id : nil
     }
-}
 
-private struct ScrollRequest: Equatable {
-    let target: Int64?
-    let loaded: ChatFeedLayout.Row.ID?
+    private static let placeholder = ChatFeed.Message(id: 0, role: "assistant", text: "", createdAt: .distantPast)
 }

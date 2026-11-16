@@ -19,6 +19,19 @@ final class RecordingChatClient: ChatClient, @unchecked Sendable {
     var disconnected = false
     struct Dropped: ChatConnectionError {}
     private var watchers: [AsyncStream<ChatReachability>.Continuation] = []
+    private var sendWaiters: [(count: Int, match: @Sendable (ChatOperation) -> Bool, done: CheckedContinuation<Void, Never>)] = []
+
+    /// Returns once `count` sent operations match `match` (a send made by a task the test cannot await).
+    func sent(_ count: Int, matching match: @escaping @Sendable (ChatOperation) -> Bool) async {
+        await withCheckedContinuation { done in
+            let reached = lock.withLock { () -> Bool in
+                if recorded.filter(match).count >= count { return true }
+                sendWaiters.append((count, match, done))
+                return false
+            }
+            if reached { done.resume() }
+        }
+    }
 
     /// Reports `state` to every reachability stream (a reconnect: `.connected`).
     func report(_ state: ChatReachability) {
@@ -33,10 +46,14 @@ final class RecordingChatClient: ChatClient, @unchecked Sendable {
     }
 
     func send(_ op: ChatOperation) async throws -> ChatEcho {
-        let down = lock.withLock { () -> Bool in
+        let (down, ready) = lock.withLock { () -> (Bool, [CheckedContinuation<Void, Never>]) in
             recorded.append(op)
-            return disconnected
+            let recorded = recorded
+            let ready = sendWaiters.filter { recorded.filter($0.match).count >= $0.count }.map(\.done)
+            sendWaiters.removeAll { recorded.filter($0.match).count >= $0.count }
+            return (disconnected, ready)
         }
+        ready.forEach { $0.resume() }
         if down { throw Dropped() }
         return answer(op) ?? .applied(.none)
     }
@@ -206,6 +223,11 @@ final class ChatViewModelKeptBehaviourTests: XCTestCase {
         TestDatabase.cleanup(path: path)
     }
 
+    private static let isDiscard: @Sendable (ChatOperation) -> Bool = { op in
+        if case .manage(_, .discard, _, _) = op { return true }
+        return false
+    }
+
     private func discards() -> [Int64] {
         client.ops.compactMap { op in
             guard case let .manage(id, .discard, _, _) = op else { return nil }
@@ -304,7 +326,8 @@ final class ChatViewModelKeptBehaviourTests: XCTestCase {
 
         client.disconnected = false
         client.report(.connected)
-        while discards().count < 2 { await Task.yield() }
+        await client.sent(2, matching: Self.isDiscard)
+        // Awaits the reconnect's own pass (already under way), then finds nothing left to send.
         await vm.flushDiscards()
         XCTAssertEqual(discards(), [9, 9], "sent again on the reconnect")
         XCTAssertTrue(vm.draftsToDiscard.isEmpty, "answered: off the list")
@@ -326,8 +349,10 @@ final class ChatViewModelKeptBehaviourTests: XCTestCase {
         XCTAssertEqual(next.draftsToDiscard, [9], "not connected yet: kept")
         client.disconnected = false
         client.report(.connected)
-        while next.draftsToDiscard.contains(9) { await Task.yield() }
-        XCTAssertTrue(discards().contains(9))
+        await client.sent(2, matching: Self.isDiscard)
+        await next.flushDiscards()
+        XCTAssertEqual(discards(), [9, 9], "tried at the start, sent again on the connect")
+        XCTAssertTrue(next.draftsToDiscard.isEmpty, "answered: off the list")
         next.conversation.stop()
     }
 
@@ -335,7 +360,7 @@ final class ChatViewModelKeptBehaviourTests: XCTestCase {
     func testASearchHitScrollsToItsMessage() async throws {
         let hit = ChatSearch.Hit(conversationID: 4, title: "Plan", snippet: "x", messageID: 2, date: Date())
         vm.open(hit)
-        XCTAssertEqual(vm.scrollTarget, 2)
+        XCTAssertEqual(vm.conversation.focusMessageID, 2)
         let late = ChatFeed.Message(id: 90, role: "assistant", text: "late", createdAt: Date())
         client.answer = { op in
             guard case .page = op else { return nil }
@@ -343,10 +368,11 @@ final class ChatViewModelKeptBehaviourTests: XCTestCase {
         }
         vm.conversation.store.apply(.snapshot(ChatFeed(conversation: ChatFeed.Conversation(id: 4, title: "Plan"),
                                                        messages: [late], hasMore: true)))
-        await vm.loadUntilLoaded(2, in: vm.conversation)
+        // What the thread view runs whenever the loaded messages change.
+        await vm.conversation.followFocus()
         XCTAssertTrue(vm.messages.contains { $0.id == 2 }, "the earlier page holding the hit is loaded")
-        vm.consumeScrollTarget()
-        XCTAssertNil(vm.scrollTarget)
+        XCTAssertEqual(vm.conversation.feedContext(composer: vm.composer, partActions: ChatPartActions()).focusMessageID, 2,
+                       "the feed scrolls to it")
     }
 
     /// I3: "Review actions" shows the reply's turn's actions under it; a proposal of a turn with no stored message
@@ -369,7 +395,7 @@ final class ChatViewModelKeptBehaviourTests: XCTestCase {
         await vm.reviewActions(messageID: reply)
         XCTAssertEqual(vm.reviewedMessageID, reply)
         XCTAssertEqual(vm.reviewedActionIDs, [mine])
-        XCTAssertEqual(vm.scrollTarget, reply)
+        XCTAssertEqual(vm.conversation.focusMessageID, reply)
 
         vm.conversation.store.apply(.snapshot(ChatFeed(
             conversation: ChatFeed.Conversation(id: conv, title: "Plan", lease: ChatFeed.Lease(owner: "hub", turnID: "turn-gone")),

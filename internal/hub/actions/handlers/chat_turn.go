@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log"
 	"unicode/utf8"
@@ -48,8 +49,12 @@ func (h *Handlers) chatNew(ctx context.Context, r actions.Request) actions.Outco
 }
 
 // chatTurn is `chat_turn` (params {conversation_id, mode send|regenerate|
-// edit, message_id?, text, attachment_ids, routing?}): a turn the daemon's
-// engine runs (chatengine.Engine). Non-idempotent with a received echo: the answer waits
+// edit, message_id?, text, attachment_ids, routing?, client_key?, compose?}):
+// a turn the daemon's engine runs (chatengine.Engine). client_key is the
+// phone's id of the send: a resend under a new action id with the same key
+// is answered with the first turn, never a second one (the engine's
+// chat_messages.client_key). compose is the composer's skill and mentions,
+// as the Mac sends them on chat.sock. Non-idempotent with a received echo: the answer waits
 // only for the start transaction (the owner's row, the lease); the turn then
 // runs in the background and reaches the phone through chat_feed. Result
 // {user_message_id, assistant_message_id, turn_id}; refusals
@@ -61,7 +66,7 @@ func (h *Handlers) chatTurn(ctx context.Context, r actions.Request) actions.Outc
 		if refused != nil {
 			return *refused
 		}
-		st, err := c.Engine.Turn(ctx, chatengine.TurnRequest{StartRequest: req})
+		st, err := c.Engine.Turn(ctx, chatengine.TurnRequest{StartRequest: req, ClientKey: req.ClientKey})
 		switch {
 		case errors.Is(err, chatstore.ErrBusy):
 			return failed(reasonConversationBusy, chatBusyMessage)
@@ -122,6 +127,18 @@ func chatTurnRequest(r actions.Request) (chatstore.StartRequest, *actions.Outcom
 	}
 	if req.Routing, ok = chatRouting(r); !ok {
 		return bad("routing must be {mode: auto} or {mode: pinned, provider, model?}")
+	}
+	if !isNull(r, "client_key") {
+		if req.ClientKey, ok = stringParam(r, "client_key"); !ok {
+			return bad("client_key must be a text")
+		}
+	}
+	if !isNull(r, "compose") {
+		var c chatstore.Compose
+		if err := json.Unmarshal(r.Action.Params["compose"], &c); err != nil || !c.Valid() {
+			return bad("compose must be {skill?, mentions, quotes} as the Mac's composer makes it")
+		}
+		req.Compose = &c
 	}
 	return req, nil
 }

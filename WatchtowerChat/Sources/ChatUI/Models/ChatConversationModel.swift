@@ -36,7 +36,10 @@ public final class ChatConversationModel {
     /// Older messages loaded with `loadEarlier`, before the feed's page.
     public private(set) var earlier: [ChatFeed.Message] = []
     public private(set) var isLoadingEarlier = false
+    /// A message to show first (a search hit): `followFocus` pages back until it is loaded, and the feed scrolls to it.
+    public var focusMessageID: Int64?
     private var ownTurnID: String?
+    private var earlierHasMore = false
     private var lastRead: Int64 = 0
 
     @ObservationIgnored private var feedTask: Task<Void, Never>?
@@ -144,8 +147,10 @@ public final class ChatConversationModel {
         }
     }
 
-    /// The first send created this conversation: follow it.
-    func adopt(_ id: Int64) {
+    /// The first send created this conversation: follow it. Public for a client that learns the new chat's id
+    /// before its turn is answered (the phone's relay hears `chat_new` first).
+    public func adopt(_ id: Int64) {
+        guard conversationID != id else { return }
         conversationID = id
         subscribeFeed()
         onConversationCreated?(id)
@@ -208,7 +213,22 @@ public final class ChatConversationModel {
         }
         let known = Set(messages.map(\.id))
         earlier = page.messages.filter { !known.contains($0.id) } + earlier
+        earlierHasMore = page.hasMore
     }
+
+    /// Loads earlier pages until the focused message is among the loaded ones, or there is nothing earlier. Called
+    /// whenever the loaded messages change; a page that does not bring it asks for the next one.
+    public func followFocus() async {
+        guard let focus = focusMessageID, conversationID != nil else { return }
+        while !messages.contains(where: { $0.id == focus }), hasEarlierToLoad, !isLoadingEarlier {
+            let before = messages.first?.id
+            await loadEarlier()
+            guard messages.first?.id != before else { return }
+        }
+    }
+
+    /// More history exists above the loaded messages: the feed's `hasMore` until a page loaded, then the last page's.
+    var hasEarlierToLoad: Bool { earlier.isEmpty ? hasEarlier : earlierHasMore }
 
     private func turn(_ mode: ChatTurnMode, messageID: Int64, text: String = "") async {
         guard let conversationID else { return }

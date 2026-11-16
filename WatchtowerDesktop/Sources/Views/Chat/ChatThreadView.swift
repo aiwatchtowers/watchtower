@@ -26,6 +26,7 @@ struct ChatThreadView: View {
         }
         .task(id: chatVM.conversationID) { await chatVM.loadArtifactContext() }
         .task(id: chatVM.messages.last?.id) { await chatVM.conversation.markRead() }
+        .task(id: chatVM.messages.first?.id) { await chatVM.conversation.followFocus() }
         .onChange(of: chatVM.conversation.messages, initial: true) { _, _ in chatVM.feedChanged() }
         .onChange(of: chatVM.actionFeed.rows) { _, _ in chatVM.feedChanged() }
     }
@@ -36,7 +37,6 @@ struct ChatThreadView: View {
         context.notice = chatVM.conversation.notice
         context.messageAccessory = { message in messageAccessory(message) }
         context.footer = unattachedCards
-        context.scrollTarget = chatVM.scrollTarget
         return context
     }
 

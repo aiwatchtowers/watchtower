@@ -23,6 +23,9 @@ final class FakeChatClient: ChatClient, @unchecked Sendable {
     let reachabilityContinuation: AsyncStream<ChatReachability>.Continuation
     private var listContinuation: AsyncStream<ChatListUpdate>.Continuation?
     private var opIterator: AsyncStream<ChatOperation>.Iterator
+    /// Answers `createsConversationOnTurn` (the phone's relay: a new chat is created by its first turn).
+    var createsOnTurn = false
+    var createsConversationOnTurn: Bool { createsOnTurn }
 
     init() {
         (opStream, opContinuation) = AsyncStream.makeStream(of: ChatOperation.self)
