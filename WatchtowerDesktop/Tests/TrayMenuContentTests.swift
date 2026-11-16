@@ -60,6 +60,11 @@ final class TrayMenuContentTests: XCTestCase {
         XCTAssertEqual([paused, resumed], [1, 1])
     }
 
+    func testSyncNowIsOffWhilePaused() throws {
+        XCTAssertTrue(try Self.content(syncPaused: true).inspect().find(button: "Sync Now").isDisabled())
+        XCTAssertFalse(try Self.content().inspect().find(button: "Sync Now").isDisabled())
+    }
+
     func testPauseIsOffWithoutADaemon() throws {
         let view = Self.content(isRunning: false)
         XCTAssertTrue(try view.inspect().find(button: "Pause Sync").isDisabled())

@@ -221,8 +221,9 @@ struct TrayMenuContent: View {
                 Button("Update to \(updateVersion) available…", action: updateAction)
             }
             Divider()
+            // Off while paused too: the paused daemon ignores a trigger.
             Button("Sync Now", action: syncNowAction)
-                .disabled(!isRunning || compactionInProgress)
+                .disabled(!isRunning || compactionInProgress || syncPaused)
             // Pausing stops sync only; the daemon, the Inbox and every write
             // keep running (mobile Inbox spec §3, mockup §8).
             Button(Self.pauseTitle(syncPaused: syncPaused), action: syncPaused ? resumeAction : pauseAction)
