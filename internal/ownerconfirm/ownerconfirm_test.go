@@ -385,60 +385,14 @@ func TestMaxRequestBytesMatchesTheDesktop(t *testing.T) {
 	assert.Equal(t, 8<<20, MaxRequestBytes)
 }
 
-// fakeCodesignExe is fakeCodesign whose `-d` also reports
-// Executable=/bin/exe-<pid>: every pid runs its own executable.
-func fakeCodesignExe(t *testing.T, team string, verifyExit int) string {
-	t.Helper()
-	dir := t.TempDir()
-	log := filepath.Join(dir, "argv.log")
-	script := filepath.Join(dir, "codesign")
-	body := "#!/bin/sh\n" +
-		"if [ \"$1\" = \"-d\" ]; then echo \"Executable=/bin/exe-$3\" >&2; echo \"TeamIdentifier=" + team + "\" >&2; exit 0; fi\n" +
-		"printf '%s\\n' \"$@\" >> '" + log + "'\n" +
-		"exit " + strconv.Itoa(verifyExit) + "\n"
-	require.NoError(t, os.WriteFile(script, []byte(body), 0o700))
-	orig := codesignPath
-	t.Cleanup(func() { codesignPath = orig })
-	codesignPath = script
-	return log
-}
-
-// A Team-ID CLI accepts a peer only through the team requirement (no
-// identifier: any binary of the team), and refuses when it fails.
-func TestVerifySameTeamCLIChecksTheTeam(t *testing.T) {
-	log := fakeCodesignExe(t, "ABCDE12345", 0)
-	require.NoError(t, VerifySameTeamCLI(context.Background(), 4242))
-	argv, err := os.ReadFile(log)
-	require.NoError(t, err)
-	assert.Equal(t, "-v\n-R\n"+`=anchor apple generic and certificate leaf[subject.OU] = "ABCDE12345"`+"\n4242\n", string(argv))
-
-	fakeCodesignExe(t, "ABCDE12345", 1)
-	assert.ErrorIs(t, VerifySameTeamCLI(context.Background(), 4242), ErrNotSameCLI)
-}
-
-// A development CLI (no Team ID) accepts only a process running its own
-// executable; the development override of the Desktop check plays no part.
-func TestVerifySameTeamCLIDevBuildNeedsTheSameExecutable(t *testing.T) {
-	log := fakeCodesignExe(t, "not set", 0)
-	t.Setenv(DevTrustUnsignedEnv, "1")
-	require.NoError(t, VerifySameTeamCLI(context.Background(), os.Getpid()))
-	assert.ErrorIs(t, VerifySameTeamCLI(context.Background(), 7), ErrNotSameCLI)
-	_, err := os.Stat(log)
-	assert.True(t, os.IsNotExist(err), "a development build runs no requirement check")
-}
-
-// The real thing: this test binary (ad-hoc signed, no team) is its own
-// development CLI peer.
-func TestVerifySameTeamCLIAcceptsItself(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("codesign is macOS only")
-	}
-	require.NoError(t, VerifySameTeamCLI(context.Background(), os.Getpid()))
-}
-
-func TestVerifySameTeamCLIFailsClosedWithoutCodesign(t *testing.T) {
-	orig := codesignPath
-	t.Cleanup(func() { codesignPath = orig })
-	codesignPath = "/nonexistent/codesign"
-	assert.Error(t, VerifySameTeamCLI(context.Background(), os.Getpid()))
+// The app and the CLI requirements name their own identifiers as well as
+// the team: neither is a team-only match, and they differ, so the CLI in the
+// app bundle never passes as the app (nor the app as the CLI).
+func TestRequirementsNameIdentifierAndTeam(t *testing.T) {
+	app, cli := appRequirement("ABCDE12345"), cliRequirement("ABCDE12345")
+	assert.NotEqual(t, app, cli)
+	assert.Equal(t, `identifier "com.watchtower.desktop" and anchor apple generic and certificate leaf[subject.OU] = "ABCDE12345"`, app)
+	assert.Equal(t, `identifier "watchtower" and anchor apple generic and certificate leaf[subject.OU] = "ABCDE12345"`, cli)
+	assert.Equal(t, "="+app, desktopRequirement("ABCDE12345"), "codesign's form of the same requirement")
+	assert.Equal(t, `identifier "com.watchtower.desktop"`, appRequirement(""), "a development build checks the identifier only")
 }

@@ -14,6 +14,12 @@ import (
 	"time"
 )
 
+// The Client kinds of a chat.sock connection.
+const (
+	clientMac = "mac"
+	clientCLI = "cli"
+)
+
 // verifyBudget bounds a hello's peer checks (codesign runs twice at most).
 const verifyBudget = 15 * time.Second
 
@@ -55,8 +61,9 @@ type wireEvent struct {
 
 // conn is one chat.sock connection.
 type conn struct {
-	s  *Server
-	nc net.Conn
+	s    *Server
+	nc   net.Conn
+	peer peerCreds // read at accept
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -83,9 +90,9 @@ type connSub struct {
 	stopped bool // unsubscribed: nothing more is written for it
 }
 
-func newConn(s *Server, nc net.Conn) *conn {
+func newConn(s *Server, nc net.Conn, peer peerCreds) *conn {
 	ctx, cancel := context.WithCancel(context.Background()) //nolint:gosec // G118: kept in the conn, called by kill
-	return &conn{s: s, nc: nc, ctx: ctx, cancel: cancel, subs: map[string]*connSub{},
+	return &conn{s: s, nc: nc, peer: peer, ctx: ctx, cancel: cancel, subs: map[string]*connSub{},
 		inFlight: make(chan struct{}, maxInFlight)}
 }
 
@@ -195,28 +202,34 @@ func (c *conn) hello(req request) bool {
 		c.fail(req.ID, "invalid", "hello needs protocol and client")
 		return false
 	}
-	uid, pid, err := c.s.peer(c.nc)
-	if err != nil || uid != os.Getuid() {
+	if c.peer.err != nil || c.peer.uid != os.Getuid() {
 		logf("refused a peer whose credentials are unreadable or another user's")
 		c.fail(req.ID, "forbidden", "only the Watchtower app may use the chat socket")
 		return false
 	}
 	ctx, cancel := context.WithTimeout(c.ctx, verifyBudget)
 	defer cancel()
+	var kind string
 	switch {
-	case c.s.o.VerifyApp(ctx, pid) == nil:
-		c.role = roleApp
-	case c.s.o.VerifyCLI(ctx, pid) == nil:
-		c.role = roleCLI
+	case c.s.o.VerifyApp(ctx, c.peer.token) == nil:
+		// The app is the Mac app: the engine's path-taking ops (attach,
+		// project files) are the Mac's alone (Kind "mac").
+		if p.Client != clientMac {
+			c.fail(req.ID, "invalid", `the Watchtower app says client "mac"`)
+			return false
+		}
+		c.role, kind = roleApp, clientMac
+	case c.s.o.VerifyCLI(ctx, c.peer.token) == nil:
+		c.role, kind = roleCLI, clientCLI // never "mac"
 	default:
-		logf("refused peer pid %d: not the signed Watchtower app", pid)
+		logf("refused peer pid %d: not the signed Watchtower app", c.peer.token.PID())
 		c.fail(req.ID, "forbidden", "only the Watchtower app may use the chat socket")
 		return false
 	}
 	// A socket client's part kinds are always a set: none named (or no
 	// part_kinds at all) is the empty set, so it gets every part's fallback
 	// only (D15); nil = all kinds is the in-process relay's alone (D21).
-	c.client = Client{Kind: p.Client, PartKinds: map[string]bool{}}
+	c.client = Client{Kind: kind, PartKinds: map[string]bool{}}
 	if p.PartKinds != nil {
 		for _, k := range *p.PartKinds {
 			c.client.PartKinds[k] = true

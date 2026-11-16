@@ -66,9 +66,18 @@ func pageOverSocket(tb testing.TB, c *client, id int, params json.RawMessage) {
 	}
 }
 
-// medians times a and b n times each, interleaved (so load moves both),
-// after a warm-up, and returns each one's median.
-func medians(n int, a, b func()) (ma, mb time.Duration) {
+// lowPercentile is the 10th percentile: noise (scheduling, a GC, another
+// process on the machine) only ever adds time, so the low end of many runs
+// is the operation's own cost.
+const lowPercentile = 10
+
+// latencySlack is the fixed allowance beside the 2× bound: one socket round
+// trip's syscalls and wakeups.
+const latencySlack = 100 * time.Microsecond
+
+// lows times a and b n times each, interleaved (so load moves both), after a
+// warm-up, and returns each one's low percentile.
+func lows(n int, a, b func()) (la, lb time.Duration) {
 	for range 20 {
 		a()
 		b()
@@ -84,21 +93,22 @@ func medians(n int, a, b func()) (ma, mb time.Duration) {
 	}
 	slices.Sort(da)
 	slices.Sort(db)
-	return da[n/2], db[n/2]
+	return da[n*lowPercentile/100], db[n*lowPercentile/100]
 }
 
 // TestChatengine_SocketLatencyWithinTwiceInProcess: a chat_page (60
-// messages) over chat.sock — encode, socket, decode both ways — takes at
-// most twice the same operation called in process. Relative, so machine
-// load moves both sides; outside -race only.
+// messages) over chat.sock — encode, socket, framing both ways — takes at
+// most twice the same operation called in process plus latencySlack,
+// compared at the low percentile of 500 interleaved runs each. Outside
+// -race only.
 func TestChatengine_SocketLatencyWithinTwiceInProcess(t *testing.T) {
 	e, c, params := pageRig(t, 80)
 	i := 0
-	direct, socket := medians(300, func() { pageInProcess(t, e, params) },
+	direct, socket := lows(500, func() { pageInProcess(t, e, params) },
 		func() { i++; pageOverSocket(t, c, i, params) })
-	t.Logf("chat_page median: in process %s, over chat.sock %s", direct, socket)
-	if socket > 2*direct {
-		t.Errorf("over chat.sock %s, more than twice in process (%s)", socket, direct)
+	t.Logf("chat_page p%d: in process %s, over chat.sock %s", lowPercentile, direct, socket)
+	if socket > 2*direct+latencySlack {
+		t.Errorf("over chat.sock %s, more than twice in process (%s) + %s", socket, direct, latencySlack)
 	}
 }
 

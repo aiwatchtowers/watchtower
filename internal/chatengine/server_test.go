@@ -21,6 +21,7 @@ import (
 
 	"watchtower/internal/chat"
 	"watchtower/internal/chatstore"
+	"watchtower/internal/ownerconfirm"
 	"watchtower/internal/platform"
 )
 
@@ -112,8 +113,10 @@ func (c *client) hello() []string {
 }
 
 // allow and refuse are VerifyApp/VerifyCLI stubs.
-func allow(context.Context, int) error  { return nil }
-func refuse(context.Context, int) error { return errors.New("not signed by the team") }
+func allow(context.Context, ownerconfirm.PeerToken) error { return nil }
+func refuse(context.Context, ownerconfirm.PeerToken) error {
+	return errors.New("not signed by the team")
+}
 
 // appOnly is a server that takes every peer as the app.
 var appOnly = ServerOptions{VerifyApp: allow, VerifyCLI: refuse}
@@ -188,7 +191,7 @@ func servePipe(t *testing.T, e *Engine, o ServerOptions) *pipeListener {
 	t.Helper()
 	l := newPipeListener()
 	s := NewServer(e, o)
-	s.peer = func(net.Conn) (int, int, error) { return os.Getuid(), 4242, nil }
+	s.peer = func(net.Conn) peerCreds { return peerCreds{uid: os.Getuid()} }
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- s.Serve(ctx, l) }()
@@ -212,7 +215,10 @@ func convCount(t *testing.T, g *rig) int {
 func TestChatengine_UnsignedPeerRefused(t *testing.T) {
 	g := newRig(t, fakeOpts{})
 	var seen atomic.Int64
-	verify := func(_ context.Context, pid int) error { seen.Store(int64(pid)); return errors.New("unsigned") }
+	verify := func(_ context.Context, tok ownerconfirm.PeerToken) error {
+		seen.Store(int64(tok.PID()))
+		return errors.New("unsigned")
+	}
 	path := serveSocket(t, g.r, ServerOptions{VerifyApp: verify, VerifyCLI: verify})
 	before := convCount(t, g)
 
@@ -225,7 +231,7 @@ func TestChatengine_UnsignedPeerRefused(t *testing.T) {
 	assert.Equal(t, "forbidden", f.Error.Code)
 	_, _ = c.conn.Write([]byte(`{"id":"2","op":"chat_new","params":{}}` + "\n"))
 	assert.True(t, c.ended(), "the connection stays open after forbidden")
-	assert.Equal(t, int64(os.Getpid()), seen.Load(), "the verifier got the socket's peer pid")
+	assert.Equal(t, int64(os.Getpid()), seen.Load(), "the verifier got the socket peer's audit token")
 	assert.Equal(t, before, convCount(t, g), "a refused peer wrote a row")
 }
 
@@ -234,8 +240,10 @@ func TestChatengine_UnsignedPeerRefused(t *testing.T) {
 func TestChatengine_CLIPeerMayOnlyShutdown(t *testing.T) {
 	g := newRig(t, fakeOpts{})
 	var shutdowns atomic.Int32
-	g.r.Register("chat_shutdown", func(context.Context, json.RawMessage, Client) (any, error) {
+	var kind atomic.Value
+	g.r.Register("chat_shutdown", func(_ context.Context, _ json.RawMessage, c Client) (any, error) {
 		shutdowns.Add(1)
+		kind.Store(c.Kind)
 		return struct{}{}, nil
 	})
 	path := serveSocket(t, g.r, ServerOptions{VerifyApp: refuse, VerifyCLI: allow})
@@ -255,6 +263,7 @@ func TestChatengine_CLIPeerMayOnlyShutdown(t *testing.T) {
 	f := c.mustNext()
 	assert.True(t, f.OK, "%+v", f.Error)
 	assert.Equal(t, int32(1), shutdowns.Load())
+	assert.Equal(t, "cli", kind.Load(), `a CLI peer saying client "mac" is never Kind mac`)
 	assert.Zero(t, ownerRows(t, g.d, conv), "a CLI peer started a turn")
 }
 
@@ -634,7 +643,7 @@ func TestServer_HelloListsOps(t *testing.T) {
 func TestServer_HelloPartKindsAreAlwaysASet(t *testing.T) {
 	g := newRig(t, fakeOpts{})
 	g.r.Register("test_client", func(_ context.Context, _ json.RawMessage, c Client) (any, error) {
-		return map[string]any{"nil": c.PartKinds == nil, "kinds": c.PartKinds}, nil
+		return map[string]any{"nil": c.PartKinds == nil, "kinds": c.PartKinds, "kind": c.Kind}, nil
 	})
 	path := serveSocket(t, g.r, appOnly)
 	for name, params := range map[string]map[string]any{
@@ -651,13 +660,96 @@ func TestServer_HelloPartKindsAreAlwaysASet(t *testing.T) {
 		var res struct {
 			Nil   bool            `json:"nil"`
 			Kinds map[string]bool `json:"kinds"`
+			Kind  string          `json:"kind"`
 		}
 		require.NoError(t, json.Unmarshal(f.Result, &res))
 		assert.False(t, res.Nil, "%s: nil part kinds (all) on chat.sock", name)
+		assert.Equal(t, "mac", res.Kind, "the signed app reaches the engine as Kind mac")
 		if name == "named" {
 			assert.Equal(t, map[string]bool{"text": true, "steps": true}, res.Kinds)
 		} else {
 			assert.Empty(t, res.Kinds, name)
 		}
 	}
+}
+
+// TestServer_HelloWithoutPartKindsGetsFallbacksOnly: end to end over
+// chat.sock — a client that named no part kinds gets a non-text part (the
+// answer's steps) with its fallback only, in the subscription's snapshot and
+// in chat_page; a client that named "steps" gets its payload (D15, F2).
+func TestServer_HelloWithoutPartKindsGetsFallbacksOnly(t *testing.T) {
+	g := newRig(t, fakeOpts{})
+	conv := newConversation(t, g.d)
+	res, err := g.d.Exec(`INSERT INTO chat_messages (conversation_id, role, text, created_at, status) VALUES (?, 'user', 'q', 1, 'complete')`, conv)
+	require.NoError(t, err)
+	owner, _ := res.LastInsertId()
+	res, err = g.d.Exec(`INSERT INTO chat_messages (conversation_id, role, text, created_at, parent_id, status, turn_id)
+		VALUES (?, 'assistant', 'answer', 2, ?, 'complete', 't1')`, conv, owner)
+	require.NoError(t, err)
+	reply, _ := res.LastInsertId()
+	_, err = g.d.Exec(`INSERT INTO chat_turn_steps (message_id, seq, tool_id, name, ok, summary, started_at, ended_at)
+		VALUES (?, 1, 'tool-1', 'search_knowledge', 1, 'Searched the knowledge base', 2, 2)`, reply)
+	require.NoError(t, err)
+	_, err = g.d.Exec(`UPDATE chat_conversations SET active_leaf_message_id = ? WHERE id = ?`, reply, conv)
+	require.NoError(t, err)
+	path := serveSocket(t, g.r, appOnly)
+
+	stepsOf := func(msgs []FeedMessage) Part {
+		t.Helper()
+		for _, m := range msgs {
+			if m.ID != reply {
+				continue
+			}
+			for _, p := range m.Parts {
+				if p.Kind == PartSteps {
+					return p
+				}
+			}
+		}
+		t.Fatalf("no steps part on the reply: %+v", msgs)
+		return Part{}
+	}
+	for name, hello := range map[string]map[string]any{
+		"no part_kinds": {"protocol": 1, "client": "mac"},
+		"steps listed":  {"protocol": 1, "client": "mac", "part_kinds": []string{PartSteps}},
+	} {
+		c := dialSocket(t, path)
+		c.send("h", "hello", hello)
+		require.True(t, c.mustNext().OK, name)
+		c.subscribe("s", map[string]any{"conversation_id": conv})
+		f := c.mustNext()
+		require.Equal(t, EventSnapshot, f.Event, name)
+		require.NotNil(t, f.Snapshot, name)
+		snap := stepsOf(f.Snapshot.Messages)
+		c.send("p", "chat_page", map[string]any{"conversation_id": conv, "before_message_id": reply})
+		f = c.mustNext()
+		require.True(t, f.OK, "%s: %+v", name, f.Error)
+		var page Feed
+		require.NoError(t, json.Unmarshal(f.Result, &page))
+		require.NotEmpty(t, page.Messages, name) // the owner row before the reply
+		for _, p := range page.Messages[0].Parts {
+			if name == "no part_kinds" {
+				assert.Empty(t, p.Payload, "%s: chat_page part %s kept its payload", name, p.Kind)
+			}
+		}
+		assert.NotEmpty(t, snap.Fallback.Text, name)
+		if name == "no part_kinds" {
+			assert.Empty(t, snap.Payload, "a client that named no kinds got the steps payload")
+		} else {
+			assert.NotEmpty(t, snap.Payload, "a client that named steps lost its payload")
+		}
+	}
+}
+
+// TestServer_AppMustSayMac: the signed app's hello names client "mac" (the
+// Kind the engine's path-taking ops require); any other client is invalid.
+func TestServer_AppMustSayMac(t *testing.T) {
+	g := newRig(t, fakeOpts{})
+	path := serveSocket(t, g.r, appOnly)
+	c := dialSocket(t, path)
+	c.send("h", "hello", map[string]any{"protocol": 1, "client": "phone"})
+	f := c.mustNext()
+	require.NotNil(t, f.Error)
+	assert.Equal(t, "invalid", f.Error.Code)
+	assert.True(t, c.ended())
 }

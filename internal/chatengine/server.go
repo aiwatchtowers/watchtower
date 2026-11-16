@@ -45,10 +45,19 @@ const maxInFlight = 32
 
 // ServerOptions are the peer checks of chat.sock (D17): the connecting
 // process must be the Watchtower app signed by this CLI's team; a process
-// that is this team's CLI may only say hello and ask for chat_shutdown.
+// that is this team's watchtower CLI may only say hello and ask for
+// chat_shutdown. Both check the peer's audit token read when the connection
+// was accepted, so a peer that exec'd since is refused.
 type ServerOptions struct {
-	VerifyApp func(ctx context.Context, pid int) error // default ownerconfirm.VerifyDesktop
-	VerifyCLI func(ctx context.Context, pid int) error // default ownerconfirm.VerifySameTeamCLI
+	VerifyApp func(ctx context.Context, t ownerconfirm.PeerToken) error // default ownerconfirm.VerifyDesktopPeer
+	VerifyCLI func(ctx context.Context, t ownerconfirm.PeerToken) error // default ownerconfirm.VerifySameTeamCLI
+}
+
+// peerCreds is what the server reads of a connection's peer at accept.
+type peerCreds struct {
+	uid   int
+	token ownerconfirm.PeerToken
+	err   error
 }
 
 // Server serves the engine on chat.sock: one goroutine per connection, one
@@ -56,9 +65,9 @@ type ServerOptions struct {
 type Server struct {
 	e *Engine
 	o ServerOptions
-	// peer reads a connection's uid and pid (nil = the unix socket's
-	// credentials); a test seam for in-memory connections.
-	peer func(net.Conn) (uid, pid int, err error)
+	// peer reads a connection's uid and audit token at accept (the unix
+	// socket's credentials); a test seam for in-memory connections.
+	peer func(net.Conn) peerCreds
 
 	mu     sync.Mutex
 	conns  map[*conn]struct{}
@@ -69,7 +78,7 @@ type Server struct {
 // NewServer returns a server of e.
 func NewServer(e *Engine, o ServerOptions) *Server {
 	if o.VerifyApp == nil {
-		o.VerifyApp = ownerconfirm.VerifyDesktop
+		o.VerifyApp = ownerconfirm.VerifyDesktopPeer
 	}
 	if o.VerifyCLI == nil {
 		o.VerifyCLI = ownerconfirm.VerifySameTeamCLI
@@ -77,19 +86,22 @@ func NewServer(e *Engine, o ServerOptions) *Server {
 	return &Server{e: e, o: o, peer: unixPeer, conns: map[*conn]struct{}{}}
 }
 
-// unixPeer is the uid and pid at the other end of a unix connection.
-func unixPeer(c net.Conn) (uid, pid int, err error) {
+// unixPeer is the uid and the audit token of the process at the other end
+// of a unix connection, read now.
+func unixPeer(c net.Conn) peerCreds {
 	uc, ok := c.(*net.UnixConn)
 	if !ok {
-		return 0, 0, errors.New("chatengine: not a unix connection")
+		return peerCreds{err: errors.New("chatengine: not a unix connection")}
 	}
-	if uid, err = platform.PeerUID(uc); err != nil {
-		return 0, 0, err //nolint:wrapcheck // platform's errors say what failed
+	uid, err := platform.PeerUID(uc)
+	if err != nil {
+		return peerCreds{err: err}
 	}
-	if pid, err = platform.PeerPID(uc); err != nil {
-		return 0, 0, err //nolint:wrapcheck // platform's errors say what failed
+	t, err := ownerconfirm.ReadPeerToken(uc)
+	if err != nil {
+		return peerCreds{err: err}
 	}
-	return uid, pid, nil
+	return peerCreds{uid: uid, token: t}
 }
 
 // Listen binds chat.sock at socketPath: its folder made 0700 (created when
@@ -127,7 +139,9 @@ func (s *Server) Serve(ctx context.Context, l net.Listener) error {
 			}
 			break
 		}
-		c := newConn(s, nc)
+		// The peer's audit token now, before it can exec other code (its
+		// hello is checked against this token).
+		c := newConn(s, nc, s.peer(nc))
 		s.mu.Lock()
 		if s.closed {
 			s.mu.Unlock()
