@@ -358,12 +358,45 @@ final class ScreenshotTourTests: XCTestCase {
         try await host.capture("09s-session-10-mac-asleep", NavigationStack {
             WorkchatView(replica: env.workbenchReplica, sessionID: 10, store: env.store, requester: env.chatRequests)
         })
+        // #1873: the stale line on the Workbench tab, then every state of the line side by side.
+        try await host.capture("05s-workbenches-stale", Self.app(.workbench)(env))
+        try await host.capture("06s-workbench-stale", NavigationStack {
+            WorkbenchView(replica: env.workbenchReplica, writer: env.boardWriter, workbenchID: DemoSeed.acmeID, segment: .sessions)
+        })
+        try await host.capture("06f-freshness-states", Self.freshnessStates(now: Date()))
+        let source = "Features/Workbench/ReplicaFreshness.swift"
         return [
             ScreenshotHost.IndexRow(number: "01s", view: "NowView", source: "Features/Now/NowView.swift", reached: "full app, Mac asleep"),
             ScreenshotHost.IndexRow(
                 number: "09s", view: "WorkchatView", source: "Features/Workbench/WorkchatView.swift", reached: "bare stack, Mac asleep"
-            )
+            ),
+            ScreenshotHost.IndexRow(
+                number: "05s", view: "WorkbenchListView", source: "Features/Workbench/WorkbenchListView.swift", reached: "full app, Mac asleep"
+            ),
+            ScreenshotHost.IndexRow(
+                number: "06s", view: "WorkbenchView", source: "Features/Workbench/WorkbenchView.swift", reached: "bare stack, Mac asleep"
+            ),
+            ScreenshotHost.IndexRow(number: "06f", view: "ReplicaFreshnessText", source: source, reached: "leaf views, stuck/stale/offline")
         ]
+    }
+
+    /// The freshness line's three states (#1873), from heartbeats built for each.
+    private static func freshnessStates(now: Date) -> some View {
+        func beat(age: TimeInterval, stuck: TimeInterval?) -> HeartbeatPayload {
+            HeartbeatPayload(
+                updatedAt: now.addingTimeInterval(-age), appVersion: "1", hubID: "h", macName: "Acme Mac", flavor: .default,
+                lastPublishAt: now.addingTimeInterval(-age), lastRelayAt: nil, relayBacklog: 0, accounts: [], enabledAt: now,
+                ownerUser: "", sharing: .none, stuckSince: stuck.map { now.addingTimeInterval(-$0) })
+        }
+        let models = [
+            ReplicaFreshness(heartbeat: beat(age: 60, stuck: 3_600), linked: true, relayUnansweredSince: nil, now: now),
+            ReplicaFreshness(heartbeat: beat(age: 7_200, stuck: nil), linked: true, relayUnansweredSince: nil, now: now),
+            ReplicaFreshness(heartbeat: beat(age: 60, stuck: nil), linked: true, relayUnansweredSince: now.addingTimeInterval(-120), now: now)
+        ].compactMap(\.self)
+        return VStack(alignment: .leading, spacing: Spacing.regular) {
+            ForEach(models, id: \.text) { ReplicaFreshnessText(model: $0) }
+        }
+        .padding(Spacing.large)
     }
 
     /// 16a–16c (#1786), after the Mac fell asleep so the earlier shots keep the demo as it was: an external
