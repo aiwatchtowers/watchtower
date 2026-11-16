@@ -1,6 +1,6 @@
 # Unified chat — one Go engine, one protocol, one chat UI for the Mac and the iPhone — design
 
-Date: 2026-11-16. Board: #1822. Status: draft for the owner's review.
+Date: 2026-11-16. Board: #1822. Status: draft for the owner's review; decisions in asks #1363 and #1371.
 Builds on: `docs/superpowers/specs/2026-11-15-iphone-chat-design.md` (#1791, merged in PR #885) and `docs/features/iphone-chat.md`.
 
 ## 1. Why
@@ -51,7 +51,7 @@ Today (after #1791) the chat is written twice on both layers:
 | D10 | The Mac keeps its polish through platform parts: TextKit 2 answer text, the NSTextView composer, selection quote, print, Present, Open in Window. | anti-goal |
 | D11 | No offline read path on the Mac. While the daemon is down the chat screen shows a "Chat is starting" / "Chat is unavailable" state with Retry; the composer keeps its draft. | decided by the agent (simplicity; one read path) |
 | D12 | `chat.sock` carries no approval verb. The Mac approves and rejects chat actions as today (`actions approve|reject` CLI with owner-confirm, AGENT-07). The phone approves through the hub as today (`chat_action_answer`). | decided by the agent (AGENT-07 unchanged) |
-| D13 | The daemon is no longer restarted at every app launch when it already runs the bundled CLI binary; it is restarted only when the binary differs (an update or a dev rebuild). Without this every app launch kills running turns. | decided by the agent — **needs the owner (separate ask)** |
+| D13 | The app's start chain is unchanged: the daemon is still restarted at every app launch. | ask #1371 ("как сейчас — всегда") |
 | D14 | Question cards are parsed in Go (`internal/chat/questions_contract.go` already owns the block) and sent as a `question` part; Swift `ChatQuestionCard` parsing is removed. | decided by the agent (one parser, the phone gets the card for free) |
 | D15 | Every client sends `hello{protocol, client, part_kinds}`. The engine always sends a part's fallback; for a kind the client did not list it sends only the fallback (no payload). | conversation ("клиенты сообщают, что умеют рисовать") |
 | D16 | Contract changes (§9) go to the owner in a separate ask before the review. | workbench rule |
@@ -61,7 +61,8 @@ Today (after #1791) the chat is written twice on both layers:
 | D20 | The engine opens its own database handle (one write connection + a small read-only pool), not the daemon's single-connection pool, so chat never waits behind a sync cycle's queries. | decided by the agent (builder check: `SetMaxOpenConns(1)` in `internal/db/db.go`) |
 | D21 | On the relay path the engine always sends a part's payload and its fallback (the phone declares no kinds; the hub publishes one record per conversation). D15's "fallback only" applies to `chat.sock` clients. | decided by the agent |
 | D22 | A new phone must work with a Mac one version behind: `ChatWire` builds parts from the flat fields when a feed carries no `parts` (one release). | decided by the agent |
-| D23 | Daemon restarts while a chat turn runs — see §7 "Restarts during a turn"; **needs the owner**. | builder check |
+| D23 | A daemon restart is instant and never waits for a turn; the turn runs on in its own `ai session` process, and the restarted engine reattaches to it and streams on (§7). | ask #1371 ("перезапуск моментальный — отдельный поток: перезапустился, переподключил сокет и льём") |
+| D24 | The contract changes of §9.2 (CHAT-01/03/05, new CHAT-06, the superseded iphone-chat decisions) are approved as written. | ask #1371 |
 
 ## 4. Architecture
 
@@ -177,10 +178,15 @@ Because the composer and the parts are shared: question cards, remember / knowle
 ## 7. Daemon lifecycle
 
 - The engine starts after the database opens and before the hub; `chat.sock` is served for the daemon's whole life, whatever the Mobile setting or MDM `MobileSync` (POLICY-03 still stops the hub and its published data; the Mac chat does not depend on it).
-- **Stop**: stop accepting turns, `cancel` running turns, 2 s grace, SIGTERM, SIGKILL after 3 s; finalize partial rows; close the socket; then the database.
-- **Startup sweep**: before the first turn, every assistant row left `partial` by a dead engine with no live process gets `error_code='session_lost'` (as `chatrun.Sweep` does today); orphan process groups from `<workspace>/chatengine/` pgid files are killed.
-- **App launch (D13)**: `AppState.ensureDaemonRunning` restarts a running daemon only when its CLI binary differs from the bundled one (path + size + mtime of the store copy, or `watchtower version` of the running daemon's pidfile). Otherwise it leaves it running, so a turn survives an app relaunch.
-- **Restarts during a turn (D23).** Besides launch, the app restarts a running daemon mid-session through `restartOnChain` (Turn on a feature, the related-features offer, Settings, Confluence spaces, the Inbox action strip, built-in automations) and stops it for Slack disconnect, onboarding finish, the data wipe and compaction. With the engine in the daemon each of these would cut a running chat turn, which today they do not. Proposed: `restartOnChain` waits until no chat turn runs (the engine answers a `turns_running` query on `chat.sock`), at most 2 minutes, showing "Applying after the current answer finishes"; then restarts. Stops for disconnect, wipe and compaction do not wait (the turn ends `partial`, as on quit).
+- **Turns outlive the daemon (D23).** A turn's `ai session` is no longer a child on the daemon's pipes:
+  - The engine starts it detached (own process group, `setsid`) with a new flag `ai session --listen <workspace>/chatengine/sessions/<conversation>.sock` (0600 in a 0700 folder). Protocol v2 is unchanged; only the transport moves from stdio to that socket. The session accepts one client at a time and checks that the peer is the Watchtower CLI signed by the same team (as D17).
+  - The session keeps the current turn's events in memory (the whole turn, capped like the feed record, 600 KB of text; past the cap it keeps the latest text snapshot plus every step event).
+  - **Reattach.** On start the engine lists `chatengine/sessions/*.sock`, connects to each, sends `attach`, and the session replays the current turn's events from its start. The engine's writes are idempotent (text is set whole, steps upsert by id, artifacts by key and message), so a replay rewrites the same rows. Then the stream continues live. No turn waits for a restart, and nothing waits for a turn.
+  - **Gap.** While no engine is attached nothing is written; the rows hold the last flush (≤ 1 s before the old engine went away). Clients reconnect to `chat.sock` with backoff (100 ms doubling to 2 s), resubscribe and get a fresh snapshot, then live events — the owner sees the answer pause for the length of the restart (about a second) and continue.
+  - **Orphans.** A session with no attached engine keeps running its turn. After its turn ends it waits for an engine 10 minutes (idle TTL, CHAT-03), then exits. A session whose turn ended while detached hands the whole turn over on the next `attach`, so its final text and status are written by the next engine.
+- **Restarts from the app** (`restartOnChain`: Turn on, the feature offer, Settings, Confluence spaces, the Inbox action strip, built-in automations; and every app launch, D13) are instant and need no change in the app. The engine stops without touching sessions: close `chat.sock`, detach from the session sockets, flush, close its database handle.
+- **Stops that must end the chat** close the sessions first, through `chat_shutdown` on `chat.sock` (`cancel` each running turn, finalize `partial`, `close` each session, 2 s grace, SIGTERM, SIGKILL after 3 s): app quit (`QuitCoordinator`, where it calls `closeChatSessions` today), the data wipe, a Slack or account removal that purges data (PURGE), and `watchtower sync stop`. Compaction at launch runs before any session exists.
+- **Startup sweep**: before reattaching, a `partial` assistant row of a running turn with no live session socket (the session died too) gets `error_code='session_lost'` (as `chatrun.Sweep` does today); stale socket files and pgid files of dead processes are removed.
 - **App quit**: unchanged — the `QuitCoordinator` still stops the daemon, so turns end with the app (as today for Mac turns). Keeping the daemon after quit is out of scope.
 
 ## 8. Failure paths
@@ -194,11 +200,14 @@ Because the composer and the parts are shared: question cards, remember / knowle
 | Two devices send to one conversation at once | First accepted wins; the other gets `busy` and its text stays in its composer (CHAT-01) | `TestChatengine_SecondTurnBusy`, `testBusyEchoReturnsTextToComposer` |
 | Owner text when the engine refuses or fails before commit | Not written, returned to the composer | `TestChat01_RefusedTurnWritesNothing`, `testRefusedSendRestoresDraft` |
 | Conversation deleted during a turn (from the other device) | Turn cancelled, no rows written after the delete | `TestChatengine_DeleteDuringTurnCancels` |
-| Daemon restart while a turn runs (update) | Turn ends `partial` + `session_lost`; app relaunch alone no longer restarts it (D13) | `TestChatengine_StopFinalizesPartial`, `testEnsureDaemonKeepsMatchingBinary` |
+| Daemon restart while a turn runs (Settings, launch, update) | The session keeps running; the new engine reattaches, replays the turn and streams on; clients reconnect and resubscribe | `TestChatengine_RestartMidTurnReattachesAndFinishes`, `TestChatengine_ReplayIsIdempotent`, `testClientReconnectsAndResubscribesAfterDrop` |
+| Turn ends while no engine is attached | Its end is written on the next `attach` | `TestChatengine_TurnEndedWhileDetachedIsWrittenOnAttach` |
+| Session with no engine for 10 min after its turn | Exits; nothing left running | `TestAISession_ListenIdleExit` |
+| Session and engine both die | Sweep marks `session_lost` | `TestChatengine_SweepWithoutSessionMarksLost` |
+| App quit / wipe / `sync stop` | `chat_shutdown` ends every turn `partial` and reaps every session | `TestChatengine_ShutdownReapsSessions` |
 | Unknown part kind on an older client | Fallback view | `testUnknownPartRendersFallback`, `TestChatengine_UnlistedKindSendsFallbackOnly` |
 | Old phone (flat fields) on a new engine | Flat fields still filled for one release | `TestChatengine_FeedKeepsFlatFields` |
 | A same-user process that is not the signed app dials `chat.sock` | `forbidden`, connection closed, nothing written | `TestChatengine_UnsignedPeerRefused` |
-| A settings change restarts the daemon during a turn | Restart waits for the turn (≤ 2 min), then runs | `testRestartOnChainWaitsForRunningTurn`, `TestChatengine_TurnsRunningQuery` |
 | A sync cycle holds the daemon's main DB handle | Chat reads/writes go on the engine's own handle | `TestChatengine_OwnHandleNotBlockedBySyncConn` |
 | New phone, Mac one version behind (no `parts`) | `ChatWire` builds parts from flat fields | `testFeedWithoutPartsBuildsPartsFromFlatFields` |
 | Attachment path the Mac passes is gone or too big | `attach` refused with the validator's reason; nothing stored | `TestChatengine_AttachRefusesMissingAndOversize` |
@@ -224,7 +233,7 @@ There is no race left between two chat writers: the engine serialises a conversa
 - **CHAT-05**: extended to fallbacks: a fallback action can only open or copy, or send a fixed owner text the owner taps. `ArtifactChat05ScanTests` moves to scan `ChatUI`.
 - **New CHAT-06**: every part kind the engine emits has a registered `ChatUI` view and a non-empty fallback; guard `TestCHAT06_EveryPartKindHasFallback` (Go) + `testChat06EveryFixtureKindIsRegistered` (ChatUI).
 - **iphone-chat D1, D5, D6, D11, D13, D18** are superseded (one engine, no lease table, one pool, live for every turn, no `desktop_too_old`).
-- **D13** (no daemon restart at launch when the binary matches) is a behaviour change of the app's start chain.
+- **CHAT-03** also gains: a detached session is bounded too — it exits 10 minutes after its turn with no engine attached; app quit, wipe and `sync stop` reap every session.
 
 ### 9.3 Retired
 
@@ -255,7 +264,7 @@ All interface texts (state lines, busy, unreachable, fallbacks built by the engi
 | T7 | `ChatUI` shared views and models + platform parts; `ChatTheme` (D18); `ChatPartRegistry`; CHAT-06 guard; flat-fields adapter (D22) | T6 |
 | T8 | Mac: `SocketChatClient`, split `ChatViewModel`, switch the chat screen and ⌘/ to `ChatUI`, delete the Swift writer and pool | T4, T7 |
 | T9 | Phone: `RelayChatClient`, switch to `ChatUI`, delete the duplicated views | T5, T7 |
-| T10 | D13 start chain change; D23 restart waits for running turns | T4 |
+| T10 | `ai session --listen`, turn event buffer, idle exit; engine detach/reattach and replay; `chat_shutdown` from `QuitCoordinator`, wipe, purge, `sync stop` | T1 |
 | T11 | Inventory, feature notes (`chat-redesign.md`, `iphone-chat.md`, new `unified-chat.md`), guide | all |
 
 Every promise above maps to a task and a test in §8 or §9.2.
@@ -264,7 +273,7 @@ Every promise above maps to a task and a test in §8 or §9.2.
 
 - Embedded chats and Workchat keep their own engines and the old Mac views.
 - No chat on the Mac while the daemon is down (seconds at launch and during compaction; longer only if the daemon fails).
-- Turns still end when the app quits (the daemon stops with it).
+- Turns still end when the app quits (`chat_shutdown`); they survive every daemon restart.
 - The phone gets no project editor.
 - `chat_turn_leases` lingers one release before it is dropped.
 
