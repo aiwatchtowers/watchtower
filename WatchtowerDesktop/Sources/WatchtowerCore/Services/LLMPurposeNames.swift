@@ -115,6 +115,12 @@ package enum LLMPurposeNames {
             ("review.reviewer", "Branch review — Reviewer"),
             ("terminal.title", "Session titles")
         ]),
+        ("Watchman", [
+            ("watchman.label", "Watchman — learning labels"),
+            ("watchman.profile", "Watchman — profiles"),
+            ("watchman.decide", "Watchman — decisions"),
+            ("watchman.judge", "Watchman — backtest judge")
+        ]),
         ("Assistant", [
             ("chat.title", "Chat titles"),
             ("ask", "Ask from the terminal"),

@@ -406,6 +406,8 @@ final class AppState {
     /// The Analytics pane's `agents report` runs and Turn On (#298), and its coach (#1120).
     private(set) var agentAnalyticsCenter: AgentAnalyticsCenter?
     private(set) var coachCenter: CoachCenter?
+    /// Settings → Profile → Watchman (#1823): status, Start Learning, the backtest.
+    private(set) var watchmanCenter: WatchmanCenter?
     /// Which workbench session the owner is in (owner asks v2, Part 2),
     /// written for Go's Stop guard and read by the chat question escalation.
     private(set) var ownerPresenceCenter: OwnerPresenceCenter?
@@ -1579,6 +1581,7 @@ final class AppState {
         if let vm = workbenchesViewModel { replaceAgentAnalytics(cliRunner: ProcessCLIRunner.makeDefault(), workbenches: vm) }
         applyUIVisibility(uiVisibility.isOnScreen)
         initPlanUsage(dbPool: manager.dbPool, cliRunner: ProcessCLIRunner.makeDefault())
+        if watchmanCenter == nil { watchmanCenter = WatchmanCenter(runner: ProcessCLIRunner.makeDefault() ?? UnresolvedCLIRunner()) }
         initAccountPurges(dbPool: manager.dbPool, cliRunner: ProcessCLIRunner.makeDefault())
         initSlackLive(dbPool: manager.dbPool, cliRunner: ProcessCLIRunner.makeDefault())
         startDigestWatcher(dbPool: manager.dbPool)

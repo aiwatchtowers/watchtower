@@ -2,11 +2,13 @@ import AppKit
 import DesignKit
 import SwiftUI
 import WatchtowerCore
+import WatchtowerTestSupport
 @testable import WatchtowerDesktop
 
 /// Design-only scenes for Watchman (#1824, spec
 /// `docs/superpowers/specs/2026-11-16-watchman-design.md` §2, §10, §11).
-/// Nothing here is wired into the app; the strings are `WatchmanMockCopy`.
+/// Nothing here is wired into the app (the strings are `WatchmanMockCopy`)
+/// except the `settings-*` frames, which draw the real section.
 /// Sample data only (`acme`, made-up ids).
 @MainActor
 enum WatchmanShotFixtures {
@@ -64,15 +66,15 @@ enum WatchmanShotFixtures {
             case .stripArmed: SessionStripMock(armed: true)
             case .stripUnarmed: SessionStripMock(armed: false)
             case .armFirstTime: ArmSheetMock()
-            case .settingsResults: WatchmanSettingsMock(state: .results)
-            case .settingsNeverRun: WatchmanSettingsMock(state: .neverRun)
-            case .settingsRunning: WatchmanSettingsMock(state: .running)
-            case .settingsFailed: WatchmanSettingsMock(state: .failed)
+            case .settingsResults: WatchmanSettingsShot(json: WatchmanStatusFixtures.results)
+            case .settingsNeverRun: WatchmanSettingsShot(json: WatchmanStatusFixtures.neverRun)
+            case .settingsRunning: WatchmanSettingsShot(json: WatchmanStatusFixtures.running)
+            case .settingsFailed: WatchmanSettingsShot(json: WatchmanStatusFixtures.failed)
             case .trayMenu: TrayMenuMock()
             case .targetPanelArmed: TargetPanelMock(armed: true)
             case .targetPanelUnarmed: TargetPanelMock(armed: false)
             case .inboxEntry: InboxEntryMock()
-            case .settingsNotLearned: NotLearnedSettingsMock()
+            case .settingsNotLearned: WatchmanSettingsShot(json: WatchmanStatusFixtures.learning)
             }
         }
     }
@@ -544,171 +546,16 @@ private struct ArmSheetMock: View {
 
 // MARK: - Settings → Watchman
 
-private enum SettingsState { case results, neverRun, running, failed }
-
-private struct WatchmanSettingsMock: View {
-    let state: SettingsState
-
-    private var hasResults: Bool { state != .neverRun }
+/// The real Settings → Profile → Watchman section (`WatchmanSettingsContent`)
+/// on a `watchman status --json` fixture per state.
+private struct WatchmanSettingsShot: View {
+    let json: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.large) {
-            sleepSection
-            backtestSection
-            profileSection
-            limitsSection
-        }
-        .controlSize(.small)
-        .padding(Spacing.page)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .detailBackground()
-    }
-
-    private var sleepSection: some View {
-        SettingsSection(title: Copy.sleepTitle, caption: Copy.sleepCaption) {
-            if hasResults {
-                HStack(spacing: Spacing.regular) {
-                    Text(Copy.sleepValue).font(.body.monospacedDigit())
-                    OutlineTag(text: Copy.sleepLearned)
-                    Spacer(minLength: Spacing.regular)
-                    Button(Copy.edit) {}.buttonStyle(.kitSecondary)
-                }
-            } else {
-                Text(Copy.sleepNotLearned).font(.callout).foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    private var backtestSection: some View {
-        SettingsSection(
-            title: Copy.backtestTitle,
-            caption: hasResults ? Copy.backtestCaption : nil,
-            isBusy: state == .running
-        ) {
-            switch state {
-            case .neverRun:
-                Text(Copy.backtestNeverRun).font(.callout).fixedSize(horizontal: false, vertical: true)
-            case .running:
-                VStack(alignment: .leading, spacing: Spacing.small) {
-                    ProgressView(value: 0.4).frame(width: ListLayout.progressBar)
-                    Text(Copy.backtestRunning).font(.caption).foregroundStyle(.secondary)
-                }
-            case .failed:
-                HStack(alignment: .top, spacing: Spacing.regular) {
-                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Tone.warning)
-                    Text(Copy.backtestFailed).font(.callout).fixedSize(horizontal: false, vertical: true)
-                }
-            case .results:
-                EmptyView()
-            }
-            if hasResults {
-                if state != .results {
-                    Text(Copy.lastResults)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .padding(.top, Spacing.small)
-                }
-                table.opacity(state == .running ? 0.6 : 1)
-                Text(Copy.barNote).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                Text(Copy.analyticsOffNote)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            HStack {
-                switch state {
-                case .running:
-                    Button(Copy.backtestRunningButton) {}.buttonStyle(.kitPrimary).disabled(true)
-                case .failed:
-                    Button(Copy.retry) {}.buttonStyle(.kitPrimary)
-                default:
-                    Button(Copy.runBacktest) {}.buttonStyle(.kitPrimary)
-                }
-            }
-            .padding(.top, Spacing.small)
-        }
-    }
-
-    private var table: some View {
-        VStack(alignment: .leading, spacing: Spacing.compact) {
-            tableRow(Copy.columnCategory, Copy.columnAgreement, Copy.columnWrongHigh) {
-                Text(Copy.columnRating)
-            }
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(.secondary)
-            ForEach(Copy.backtestRows, id: \.category) { row in
-                tableRow(row.category, row.agreement, row.wrongHigh) {
-                    Chip(text: row.rating, color: ratingTone(row.rating))
-                }
-                .font(.callout.monospacedDigit())
-            }
-        }
-        .padding(.vertical, Spacing.small)
-    }
-
-    private func tableRow(
-        _ category: String, _ agreement: String, _ wrong: String, @ViewBuilder rating: () -> some View
-    ) -> some View {
-        HStack(spacing: Spacing.regular) {
-            Text(category).frame(width: ListLayout.textColumn - Spacing.hero, alignment: .leading)
-            Text(agreement).frame(width: ListLayout.numberColumn, alignment: .trailing)
-            Text(wrong).frame(width: ListLayout.dateColumn, alignment: .trailing)
-            Spacer(minLength: Spacing.medium)
-            rating()
-        }
-        .frame(minHeight: ListLayout.lineMinHeight)
-    }
-
-    private func ratingTone(_ rating: String) -> Color {
-        switch rating {
-        case Copy.strong: Tone.success
-        case Copy.weak: Tone.warning
-        default: Tone.status("gray")
-        }
-    }
-
-    private var profileSection: some View {
-        SettingsSection(title: Copy.profileTitle, caption: Copy.profileCaption) {
-            if hasResults {
-                profileCard("design", tag: Copy.pinned, rules: Copy.profileDesign, pinned: true)
-                profileCard("ux_text", tag: Copy.learnedOn, rules: Copy.profileUXText, pinned: false)
-            } else {
-                Text(Copy.profileEmpty).font(.callout).foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    private func profileCard(_ category: String, tag: String, rules: [String], pinned: Bool) -> some View {
-        VStack(alignment: .leading, spacing: Spacing.compact) {
-            HStack(spacing: Spacing.regular) {
-                Text(category).font(.callout.weight(.semibold))
-                OutlineTag(text: tag)
-                Spacer(minLength: Spacing.regular)
-                Button(Copy.edit) {}.buttonStyle(.kitSecondary)
-                if pinned { Button(Copy.unpin) {}.buttonStyle(.kitQuiet) }
-            }
-            ForEach(rules, id: \.self) { rule in
-                HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
-                    Text("•").foregroundStyle(.secondary)
-                    Text(rule).font(.callout).fixedSize(horizontal: false, vertical: true)
-                }
-            }
-        }
-        .padding(.bottom, Spacing.regular)
-    }
-
-    private var limitsSection: some View {
-        SettingsSection(title: Copy.limitsTitle, caption: Copy.limitsCaption) {
-            ForEach(Copy.extraLimits, id: \.self) { limit in
-                HStack(spacing: Spacing.regular) {
-                    Image(systemName: "hand.raised").foregroundStyle(.secondary)
-                    Text(limit).font(.callout)
-                    Spacer(minLength: Spacing.regular)
-                    Button(Copy.remove) {}.buttonStyle(.kitQuiet)
-                }
-            }
-            Button(Copy.addLimit) {}.buttonStyle(.kitSecondary)
-        }
+        WatchmanSettingsContent(state: .of(WatchmanStatusFixtures.status(json)))
+            .padding(Spacing.page)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .detailBackground()
     }
 }
 
@@ -868,38 +715,6 @@ private struct InboxEntryMock: View {
         return InboxFolderContentList(content: InboxFolderListContent(
             folderKind: .root, folderTitle: Copy.inboxRoot, rows: [watchman] + others, selection: "watchman"
         ))
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .detailBackground()
-    }
-}
-
-/// Settings → Watchman before any workbench is learned: one row per
-/// workbench with its estimate and Start Learning; acme-api is learning.
-private struct NotLearnedSettingsMock: View {
-    var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.large) {
-            SettingsSection(title: Copy.notLearnedTitle, caption: Copy.notLearnedIntro) {
-                ForEach(Array(Copy.notLearnedRows.enumerated()), id: \.offset) { index, row in
-                    HStack(spacing: Spacing.regular) {
-                        Image(systemName: "square.stack").foregroundStyle(.secondary)
-                        VStack(alignment: .leading, spacing: Spacing.tight) {
-                            Text(row.name).font(.callout.weight(.semibold))
-                            Text(row.estimate).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                        }
-                        Spacer(minLength: Spacing.regular)
-                        if index == 0 {
-                            ProgressView().controlSize(.small)
-                            Text(Copy.learningProgress).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                        } else {
-                            Button(Copy.startLearning) {}.buttonStyle(.kitSecondary)
-                        }
-                    }
-                    .frame(minHeight: ListLayout.rowMinHeight)
-                }
-            }
-        }
-        .controlSize(.small)
-        .padding(Spacing.page)
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .detailBackground()
     }
