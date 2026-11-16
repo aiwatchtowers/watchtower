@@ -18,16 +18,18 @@ var ErrTowerRequestExists = errors.New("tower request already recorded")
 
 // TowerRequest is one tower_requests row: the ledger internal/tower keeps
 // so a write command resent with the same request_id applies once.
+// RefusalJSON is set (and ResultJSON empty) on a done row whose command
+// refused: a resend answers the same refusal.
 type TowerRequest struct {
-	RequestID, Command, State, ResultJSON, At string
+	RequestID, Command, State, ResultJSON, RefusalJSON, At string
 }
 
 // GetTowerRequest returns the ledger row of id, or nil when there is none.
 func (db *DB) GetTowerRequest(ctx context.Context, id string) (*TowerRequest, error) {
 	var r TowerRequest
 	err := db.QueryRowContext(ctx,
-		`SELECT request_id, command, state, result_json, at FROM tower_requests WHERE request_id = ?`, id).
-		Scan(&r.RequestID, &r.Command, &r.State, &r.ResultJSON, &r.At)
+		`SELECT request_id, command, state, result_json, refusal_json, at FROM tower_requests WHERE request_id = ?`, id).
+		Scan(&r.RequestID, &r.Command, &r.State, &r.ResultJSON, &r.RefusalJSON, &r.At)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -55,16 +57,28 @@ VALUES (?, ?, 'begun', '', ?) ON CONFLICT(request_id) DO NOTHING`,
 // to done. An id that is already done fails with ErrTowerRequestExists, so a
 // concurrent duplicate never overwrites the first result.
 func FinishTowerRequestTx(tx *sql.Tx, id, command, resultJSON string, at time.Time) error {
-	res, err := tx.Exec(`INSERT INTO tower_requests (request_id, command, state, result_json, at)
-VALUES (?, ?, 'done', ?, ?)
+	return finishTowerRequestTx(tx, id, command, resultJSON, "", at, "finish tower request")
+}
+
+// RefuseTowerRequestTx marks id done with the command's marshalled refusal,
+// as FinishTowerRequestTx does with a result: the command did not act, and a
+// resend of id answers the same refusal.
+func RefuseTowerRequestTx(tx *sql.Tx, id, command, refusalJSON string, at time.Time) error {
+	return finishTowerRequestTx(tx, id, command, "", refusalJSON, at, "refuse tower request")
+}
+
+func finishTowerRequestTx(tx *sql.Tx, id, command, resultJSON, refusalJSON string, at time.Time, what string) error {
+	res, err := tx.Exec(`INSERT INTO tower_requests (request_id, command, state, result_json, refusal_json, at)
+VALUES (?, ?, 'done', ?, ?, ?)
 ON CONFLICT(request_id) DO UPDATE SET
-  command = excluded.command, state = 'done', result_json = excluded.result_json, at = excluded.at
+  command = excluded.command, state = 'done', result_json = excluded.result_json,
+  refusal_json = excluded.refusal_json, at = excluded.at
 WHERE tower_requests.state = 'begun'`,
-		id, command, resultJSON, at.UTC().Format(towerRequestTimeLayout))
+		id, command, resultJSON, refusalJSON, at.UTC().Format(towerRequestTimeLayout))
 	if err != nil {
-		return fmt.Errorf("finish tower request: %w", err)
+		return fmt.Errorf("%s: %w", what, err)
 	}
-	return requireOneRow(res, "finish tower request")
+	return requireOneRow(res, what)
 }
 
 // requireOneRow turns a conflict that changed no row into

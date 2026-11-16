@@ -2494,6 +2494,7 @@ CREATE TABLE IF NOT EXISTS tower_requests (
     command     TEXT NOT NULL,
     state       TEXT NOT NULL CHECK (state IN ('begun','done')),
     result_json TEXT NOT NULL DEFAULT '',
+    refusal_json TEXT NOT NULL DEFAULT '',
     at          TEXT NOT NULL
 );
 CREATE VIEW IF NOT EXISTS tracker_issues AS

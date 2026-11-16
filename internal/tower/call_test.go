@@ -329,6 +329,25 @@ func TestCall_NonIdempotentFailureAfterBegunAnswersUnknown(t *testing.T) {
 	}
 }
 
+func TestCall_NonIdempotentRefusalResendAnswersTheSameRefusal(t *testing.T) {
+	f := newFixture(t)
+	p := write("o1", "a")
+	p.Refuse = true
+	first := f.call("test.once", p)
+	wantRefusal(t, first, api.CodeChanged)
+	row := f.ledger("o1")
+	if row == nil || row.State != "done" || row.ResultJSON != "" || row.RefusalJSON == "" {
+		t.Fatalf("ledger after a refusal = %+v, want done with the refusal", row)
+	}
+	// The reply was lost: the resend of the same id gets the same refusal,
+	// not unknown, and does not run again.
+	resend := f.call("test.once", p)
+	wantRefusal(t, resend, api.CodeChanged)
+	if *resend.Refusal != *first.Refusal || f.runs["test.once"] != 1 || f.rows() != 0 {
+		t.Fatalf("resend refusal %+v (first %+v), runs=%d rows=%d", resend.Refusal, first.Refusal, f.runs["test.once"], f.rows())
+	}
+}
+
 func TestCall_RequestIDOfAnotherCommandIsUnsupported(t *testing.T) {
 	f := newFixture(t)
 	wantStatus(t, f.call("test.guarded", write("x1", "a")), api.StatusOK)

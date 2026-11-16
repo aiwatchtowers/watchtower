@@ -34,3 +34,19 @@ func RunPrune(ctx context.Context, d *db.DB, now func() time.Time) {
 		}
 	}
 }
+
+// StartPrune runs RunPrune in a goroutine and returns its stop: stop ends
+// the loop and waits until it returned, so the daemon closes the database
+// only after the last prune finished.
+func StartPrune(ctx context.Context, d *db.DB, now func() time.Time) (stop func()) {
+	ctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		RunPrune(ctx, d, now)
+	}()
+	return func() {
+		cancel()
+		<-done
+	}
+}

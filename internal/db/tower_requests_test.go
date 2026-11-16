@@ -66,6 +66,22 @@ func TestTowerRequests_BeginThenFinish(t *testing.T) {
 	if got, _ := d.GetTowerRequest(ctx, "r2"); got == nil || got.State != "done" {
 		t.Fatalf("guarded done row = %+v", got)
 	}
+	// A refused begun row becomes done with its refusal, and stays final.
+	towerTx(t, d, func(tx *sql.Tx) error { return BeginTowerRequestTx(tx, "r3", "test.once", at) })
+	towerTx(t, d, func(tx *sql.Tx) error {
+		return RefuseTowerRequestTx(tx, "r3", "test.once", `{"code":"changed"}`, at)
+	})
+	if got, _ := d.GetTowerRequest(ctx, "r3"); got == nil || got.State != "done" || got.ResultJSON != "" || got.RefusalJSON != `{"code":"changed"}` {
+		t.Fatalf("refused row = %+v", got)
+	}
+	tx, err = d.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := FinishTowerRequestTx(tx, "r3", "test.once", `{}`, at); !errors.Is(err, ErrTowerRequestExists) {
+		t.Fatalf("finish of a refused id: %v", err)
+	}
+	_ = tx.Rollback()
 	if got, err := d.GetTowerRequest(ctx, "missing"); got != nil || err != nil {
 		t.Fatalf("missing id = %+v, %v", got, err)
 	}

@@ -44,7 +44,7 @@ func (t *Tower) callWrite(ctx context.Context, resp api.Response, c *Ctx,
 		case row.Command != c.command:
 			return refused(resp, api.CodeUnsupported, "Watchtower couldn't apply this: the request id belongs to another action.")
 		case row.State == "done":
-			return ok(resp, json.RawMessage(row.ResultJSON))
+			return t.storedAnswer(resp, c.command, row)
 		case !guarded:
 			return unknown(resp)
 		}
@@ -97,8 +97,19 @@ func (t *Tower) runOnce(ctx context.Context, resp api.Response, c *Ctx,
 	out, err := run(ctx, c)
 	var r *RefusalError
 	if errors.As(err, &r) {
-		// A refusal is a definite answer; the begun row stays, so a resend
-		// of this id answers unknown and never acts.
+		// A refusal is a definite no-act: record it done, so a resend of
+		// this id answers the same refusal instead of unknown.
+		ref := api.Refusal{Code: r.Code, Sentence: r.Sentence}
+		b, merr := json.Marshal(ref)
+		if merr == nil {
+			merr = t.ledgerTx(ctx, func(tx *sql.Tx) error {
+				return db.RefuseTowerRequestTx(tx, c.requestID, c.command, string(b), c.Now())
+			})
+		}
+		if merr != nil {
+			// The begun row stays: a resend answers unknown and never acts.
+			log.Printf("tower: %s refused, but its refusal was not recorded: %v", c.command, merr)
+		}
 		return refused(resp, r.Code, r.Sentence)
 	}
 	if err != nil {
@@ -129,7 +140,19 @@ func (t *Tower) storedResult(ctx context.Context, resp api.Response, c *Ctx) api
 	if row == nil || row.State != "done" {
 		return t.fail(resp, c.command, fmt.Errorf("tower: the done row of %s is gone", c.command))
 	}
-	return ok(resp, json.RawMessage(row.ResultJSON))
+	return t.storedAnswer(resp, c.command, row)
+}
+
+// storedAnswer answers a done row: its stored result, or its stored refusal.
+func (t *Tower) storedAnswer(resp api.Response, command string, row *db.TowerRequest) api.Response {
+	if row.RefusalJSON == "" {
+		return ok(resp, json.RawMessage(row.ResultJSON))
+	}
+	var r api.Refusal
+	if err := json.Unmarshal([]byte(row.RefusalJSON), &r); err != nil {
+		return t.fail(resp, command, fmt.Errorf("tower: read the stored refusal of %s: %w", command, err))
+	}
+	return refused(resp, r.Code, r.Sentence)
 }
 
 // ledgerTx runs fn in one short write transaction.

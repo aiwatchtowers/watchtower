@@ -1027,8 +1027,9 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	deployShippedSkills(cfg, logger)
 	// Go hub, phase 1: only behind WATCHTOWER_HUB_DIR in a hubtest-* workspace.
 	defer startGoHub(ctx, cfg, database, logger)()
-	// The tower request ledger: pruned at start and hourly, hub or no hub.
-	go tower.RunPrune(ctx, database, time.Now)
+	// The tower request ledger: pruned at start and hourly, hub or no hub;
+	// the loop has returned before the database closes.
+	defer tower.StartPrune(ctx, database, time.Now)()
 	return d.Run(ctx)
 }
 

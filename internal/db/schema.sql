@@ -3850,7 +3850,8 @@ CREATE TABLE IF NOT EXISTS tower_requests (
     request_id  TEXT PRIMARY KEY,                                  -- the client's UUID, kept across retries of one press
     command     TEXT NOT NULL,                                     -- the tower command name (domain.verb)
     state       TEXT NOT NULL CHECK (state IN ('begun','done')),   -- begun: a non-idempotent command is acting; done: its write committed
-    result_json TEXT NOT NULL DEFAULT '',                          -- the marshalled response a repeat returns ('' while begun)
+    result_json TEXT NOT NULL DEFAULT '',                          -- the marshalled response a repeat returns ('' while begun or refused)
+    refusal_json TEXT NOT NULL DEFAULT '',                         -- a non-idempotent command's marshalled refusal on a done row ('' otherwise)
     at          TEXT NOT NULL                                      -- last write, UTC %Y-%m-%dT%H:%M:%SZ
 );
 CREATE INDEX IF NOT EXISTS idx_tower_requests_at ON tower_requests(at);

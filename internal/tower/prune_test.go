@@ -106,3 +106,46 @@ func TestPrune_UsesTheHubLedgerWindow(t *testing.T) {
 		t.Fatalf("LedgerRetention = %v, want ActionMaxAge plus one day", actions.LedgerRetention)
 	}
 }
+
+func TestPrune_StopWaitsForTheLoop(t *testing.T) {
+	d := openPruneDB(t)
+	synctest.Test(t, func(t *testing.T) {
+		seedLedger(t, d, time.Now().Add(-9*24*time.Hour), "old")
+		stop := StartPrune(context.Background(), d, time.Now)
+		synctest.Wait()
+		if present(t, d, "old") {
+			t.Fatal("the start prune did not run")
+		}
+		returned := make(chan struct{})
+		go func() {
+			stop()
+			close(returned)
+		}()
+		synctest.Wait()
+		select {
+		case <-returned:
+		default:
+			t.Fatal("stop did not return after the loop ended")
+		}
+	})
+}
+
+func TestPrune_RunPruneReturnsOnCancel(t *testing.T) {
+	d := openPruneDB(t)
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		returned := make(chan struct{})
+		go func() {
+			RunPrune(ctx, d, time.Now)
+			close(returned)
+		}()
+		synctest.Wait()
+		cancel()
+		synctest.Wait()
+		select {
+		case <-returned:
+		default:
+			t.Fatal("RunPrune did not return after cancel")
+		}
+	})
+}
