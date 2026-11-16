@@ -27,6 +27,10 @@ enum WatchmanShotFixtures {
         case settingsNeverRun = "settings-never-run"
         case settingsRunning = "settings-running"
         case settingsFailed = "settings-failed"
+        case trayMenu = "tray-menu"
+        case targetPanelArmed = "target-panel-armed"
+        case targetPanelUnarmed = "target-panel-unarmed"
+        case inboxEntry = "inbox-entry"
 
         /// A zero height means "as tall as the content".
         var size: NSSize {
@@ -39,6 +43,9 @@ enum WatchmanShotFixtures {
             case .stripArmed, .stripUnarmed: NSSize(width: 760, height: 0)
             case .armFirstTime: NSSize(width: 460, height: 0)
             case .settingsResults, .settingsNeverRun, .settingsRunning, .settingsFailed: NSSize(width: 640, height: 0)
+            case .trayMenu: NSSize(width: 340, height: 0)
+            case .targetPanelArmed, .targetPanelUnarmed: NSSize(width: 380, height: 0)
+            case .inboxEntry: NSSize(width: 420, height: 300)
             }
         }
 
@@ -59,6 +66,10 @@ enum WatchmanShotFixtures {
             case .settingsNeverRun: WatchmanSettingsMock(state: .neverRun)
             case .settingsRunning: WatchmanSettingsMock(state: .running)
             case .settingsFailed: WatchmanSettingsMock(state: .failed)
+            case .trayMenu: TrayMenuMock()
+            case .targetPanelArmed: TargetPanelMock(armed: true)
+            case .targetPanelUnarmed: TargetPanelMock(armed: false)
+            case .inboxEntry: InboxEntryMock()
             }
         }
     }
@@ -695,5 +706,166 @@ private struct WatchmanSettingsMock: View {
             }
             Button(Copy.addLimit) {}.buttonStyle(.kitSecondary)
         }
+    }
+}
+
+// MARK: - Menu bar
+
+/// The menu bar menu (`TrayMenuContent`, a native menu) with Watchman's
+/// section between Sync Now and New Voice Idea. Drawn as the menu reads:
+/// status lines dimmed, a check on the item that is on.
+private struct TrayMenuMock: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.tight) {
+            item(Copy.trayStatus, status: true)
+            separator
+            item(Copy.traySyncNow)
+            separator
+            item(Copy.trayWatchmanStatus, status: true)
+            item(Copy.trayHandAll)
+            item(Copy.trayGoingToSleep, checked: true)
+            separator
+            item(Copy.trayVoiceIdea, shortcut: Copy.trayVoiceShortcut)
+            separator
+            item(Copy.trayOpen)
+            item(Copy.traySettings)
+            separator
+            item(Copy.trayQuit)
+        }
+        .padding(Spacing.small)
+        .popoverSurface()
+        .padding(Spacing.large)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .background(Surface.window)
+    }
+
+    private var separator: some View {
+        Rectangle().fill(.separator).frame(height: Stroke.hairline).padding(.vertical, Spacing.small)
+    }
+
+    private func item(_ title: String, status: Bool = false, checked: Bool = false, shortcut: String? = nil) -> some View {
+        HStack(spacing: Spacing.compact) {
+            Image(systemName: "checkmark")
+                .font(.caption.weight(.semibold))
+                .opacity(checked ? 1 : 0)
+                .frame(width: Spacing.medium)
+            Text(title).foregroundStyle(status ? .secondary : .primary).lineLimit(1)
+            Spacer(minLength: Spacing.large)
+            if let shortcut { Text(shortcut).foregroundStyle(.secondary) }
+        }
+        .font(.body)
+        .padding(.horizontal, Spacing.compact)
+        .padding(.vertical, Spacing.tight)
+    }
+}
+
+// MARK: - Target panel
+
+/// `WorkbenchTargetPanel`'s header in group mode with Watchman's line: the
+/// whole subtree's sessions are handed over (or taken back) here.
+private struct TargetPanelMock: View {
+    let armed: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: Spacing.cozy) {
+                topBar
+                Text(Copy.targetTitle).font(.title3.weight(.semibold))
+                HStack(spacing: Spacing.compact) {
+                    MenuLabel(text: Copy.targetStatus, systemImage: "circle.fill", color: Tone.status("blue"))
+                    MenuLabel(text: Copy.targetPriority, systemImage: "flag.fill", color: Tone.priority("high"))
+                }
+                VStack(alignment: .leading, spacing: Spacing.small) {
+                    ProgressView(value: 0.6).frame(width: ListLayout.progressBar)
+                    Text(Copy.targetProgress).font(.caption).foregroundStyle(.secondary)
+                }
+                watchman
+            }
+            .padding(Spacing.large)
+            Rectangle().fill(.separator).frame(height: Stroke.hairline)
+            children.padding(Spacing.large)
+        }
+        .controlSize(.small)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .detailBackground()
+    }
+
+    private var topBar: some View {
+        HStack(spacing: Spacing.regular) {
+            OutlineTag(text: Copy.targetNumber)
+            Chip(text: Copy.targetGroup, color: .secondary)
+            Spacer(minLength: 0)
+            Button {} label: { Label(Copy.targetWorkOnIt, systemImage: "play.fill") }
+                .buttonStyle(.kitSecondary)
+                .fixedSize()
+            Button {} label: { Image(systemName: "ellipsis") }.buttonStyle(.kitIcon(isOn: false))
+            Button {} label: { Image(systemName: "xmark") }.buttonStyle(.kitIcon(isOn: false))
+        }
+    }
+
+    @ViewBuilder private var watchman: some View {
+        if armed {
+            VStack(alignment: .leading, spacing: Spacing.compact) {
+                HStack(spacing: Spacing.regular) {
+                    Image(systemName: "moon.stars").foregroundStyle(watchmanTone)
+                    Text(Copy.targetArmed).font(.callout.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: Spacing.regular)
+                    Button(Copy.takeBack) {}.buttonStyle(.kitSecondary).fixedSize()
+                }
+                Text(Copy.targetArmedCaption)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(Spacing.medium)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(watchmanTone.opacity(ChipTint.fillOpacity), in: RoundedRectangle(cornerRadius: Radius.row))
+        } else {
+            VStack(alignment: .leading, spacing: Spacing.compact) {
+                Button {} label: { Label(Copy.handTo, systemImage: "moon.stars") }
+                    .buttonStyle(.kitSecondary)
+                    .fixedSize()
+                Text(Copy.targetUnarmedCaption)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var children: some View {
+        VStack(alignment: .leading, spacing: Spacing.small) {
+            Text(Copy.targetChildrenTitle).font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+            ForEach(Copy.targetChildren, id: \.title) { child in
+                HStack(spacing: Spacing.regular) {
+                    Text(child.title).font(.callout).lineLimit(1)
+                    Spacer(minLength: Spacing.regular)
+                    Text(child.status).font(.caption).foregroundStyle(.secondary)
+                }
+                .frame(minHeight: ListLayout.rowMinHeight)
+                .kitRow(isSelected: false)
+            }
+        }
+    }
+}
+
+// MARK: - Inbox source list
+
+/// The real `InboxFolderContentList` of the Inbox root with Watchman as one
+/// more built-in entry beside Morning brief, Track my threads and Idea
+/// finder; its summary carries what waits for the owner.
+private struct InboxEntryMock: View {
+    var body: some View {
+        let watchman = InboxFolderListRow(id: "watchman", kind: .legacy, title: Copy.journalTitle,
+                                          summary: Copy.inboxWatchmanSummary, detail: Copy.inboxWatchmanDetail,
+                                          unread: true)
+        let others = Copy.inboxOthers.map {
+            InboxFolderListRow(id: $0.id, kind: .legacy, title: $0.title, summary: $0.summary, detail: $0.detail)
+        }
+        return InboxFolderContentList(content: InboxFolderListContent(
+            folderKind: .root, folderTitle: Copy.inboxRoot, rows: [watchman] + others, selection: "watchman"
+        ))
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .detailBackground()
     }
 }

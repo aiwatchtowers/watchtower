@@ -129,6 +129,53 @@ enum WatchmanMockCopy {
     static let notNow = "Not now"
     static let start = "Start"
 
+    // MARK: Menu bar
+
+    static let trayStatus = "Synced 2 min ago"
+    static let traySyncNow = "Sync Now"
+    static let trayWatchmanStatus = "Watchman · Sleep · 3 sessions"
+    static let trayHandAll = "Hand all running sessions to Watchman"
+    static let trayGoingToSleep = "Going to sleep"
+    static let trayVoiceIdea = "New Voice Idea"
+    static let trayVoiceShortcut = "⌃⌥D"
+    static let trayOpen = "Open Watchtower"
+    static let traySettings = "Settings…"
+    static let trayQuit = "Quit Watchtower"
+
+    // MARK: Target panel
+
+    static let targetNumber = "#1820"
+    static let targetGroup = "GROUP"
+    static let targetWorkOnIt = "Work on It"
+    static let targetTitle = "Store the window per workbench"
+    static let targetStatus = "In progress"
+    static let targetPriority = "High"
+    static let targetProgress = "3 of 5 done"
+    static let targetArmed = "Watchman has this target · Sleep since 01:40"
+    static let targetArmedCaption = "Answers for you in the 3 running sessions under #1820 and in the ones "
+        + "started under it."
+    static let targetUnarmedCaption = "Watchman answers for you in every session under #1820 while you sleep "
+        + "or are away."
+    static let targetChildrenTitle = "Tasks"
+    static let targetChildren: [(title: String, status: String)] = [
+        ("#1826 Store window frame per workbench", "In progress"),
+        ("#1827 Migration for the window column", "Done"),
+        ("#1828 Settings row for the window", "In progress"),
+        ("#1829 Guide page update", "To do")
+    ]
+
+    // MARK: Inbox source list
+
+    static let inboxRoot = "Inbox"
+    static let inboxWatchmanSummary = "1 waiting"
+    static let inboxWatchmanDetail = "Night of 16 Nov · 14 decided · 2 unsure"
+    /// The Inbox root's other built-in entries, as the app names them today.
+    static let inboxOthers: [(id: String, title: String, summary: String, detail: String)] = [
+        ("day", "Morning brief", "today", "Your day · Mon 16 Nov"),
+        ("tracks", "Track my threads", "2 unread", "updated 1 h ago"),
+        ("ideas", "Idea finder", "1 to judge", "updated 3 h ago")
+    ]
+
     // MARK: Settings → Watchman
 
     static let sleepTitle = "Sleep window"

@@ -39,6 +39,14 @@ final class WatchmanMockCopyTests: XCTestCase {
         XCTAssertEqual([Copy.start, Copy.notNow], ["Start", "Not now"])
     }
 
+    func testTrayPanelAndInboxEntryCopy() {
+        XCTAssertEqual(Copy.trayHandAll, "Hand all running sessions to Watchman")
+        XCTAssertEqual(Copy.trayGoingToSleep, "Going to sleep")
+        XCTAssertEqual(Copy.trayWatchmanStatus, "Watchman · Sleep · 3 sessions")
+        XCTAssertEqual(Copy.targetArmed, "Watchman has this target · Sleep since 01:40")
+        XCTAssertEqual(Copy.inboxWatchmanSummary, "1 waiting")
+    }
+
     func testSettingsCopyMatchesTheBars() {
         XCTAssertEqual(Copy.sleepValue, "00:30–07:45")
         XCTAssertTrue(Copy.barNote.contains("80 %"))
@@ -61,7 +69,8 @@ final class WatchmanMockCopyTests: XCTestCase {
         for name in ["journal-night", "journal-empty", "journal-loading", "journal-error", "journal-busy",
                      "journal-narrow", "journal-correct-sheet", "home-row", "strip-armed", "strip-unarmed",
                      "arm-first-time", "settings-results", "settings-never-run", "settings-running",
-                     "settings-failed"] {
+                     "settings-failed", "tray-menu", "target-panel-armed", "target-panel-unarmed",
+                     "inbox-entry"] {
             XCTAssertTrue(names.contains("watchman-\(name)"), name)
         }
     }
