@@ -97,6 +97,13 @@ public final class ChatListModel {
         await manage(id, op: .move, projectID: projectID)
     }
 
+    /// Takes the chat off the list (its messages are kept). Whether the engine applied it.
+    @discardableResult
+    public func archive(_ id: Int64) async -> Bool {
+        await manage(id, op: .archive)
+        return notice == nil
+    }
+
     /// Full-text search over the chats; an empty query clears it.
     public func search(_ query: String) async {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)

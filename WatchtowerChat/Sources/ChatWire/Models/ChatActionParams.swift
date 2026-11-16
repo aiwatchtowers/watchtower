@@ -190,6 +190,8 @@ public enum ChatManageOp: String, Codable, Hashable, Sendable {
     case delete
     /// Moves the conversation into `projectID` (nil = out of its project; chat.sock only).
     case move
+    /// Takes the chat off the list, its messages kept (the Mac's Archive; chat.sock only).
+    case archive
 }
 
 /// `chat_manage`. `title` goes with `rename` only.

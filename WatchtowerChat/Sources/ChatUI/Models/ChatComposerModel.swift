@@ -80,7 +80,9 @@ public final class ChatComposerModel {
     }
 
     /// Sends the draft. The text stays until the echo is `applied` (CHAT-01); a lost echo resends with the same key.
-    public func send() async {
+    /// `screenContext` (the Mac's ⌘/ panel: the screen the owner asked from) goes to the provider only; the engine
+    /// never stores it, so the stored owner text is the typed text alone.
+    public func send(screenContext: String? = nil) async {
         guard canSend else { return }
         isSending = true
         defer { isSending = false }
@@ -95,6 +97,7 @@ public final class ChatComposerModel {
             attachmentIDs: attachments.map(\.id),
             routing: routing,
             compose: skill == nil && mentions.isEmpty ? nil : ChatCompose(skill: skill, mentions: mentions),
+            screenContext: screenContext,
             clientKey: UUID().uuidString
         )
         let echo = await conversation.sendTurn(request)
@@ -130,6 +133,28 @@ public final class ChatComposerModel {
             if draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { draft = text }
         case nil:
             break
+        }
+    }
+
+    /// Sends the open artifact comments with these ids as the owner's message (the Mac's "Send N comments"): the
+    /// engine composes them into the owner row and marks them sent in the same transaction (CHAT-05: a comment
+    /// reaches the assistant only as the owner's message). Whether the engine took the turn.
+    public func sendArtifactComments(_ ids: [Int64]) async -> Bool {
+        guard !ids.isEmpty, conversation.reachability == .connected, !conversation.isGone, !isSending,
+              !conversation.isTurnRunning, let conversationID = conversation.conversationID else { return false }
+        isSending = true
+        defer { isSending = false }
+        let request = ChatTurnRequest(conversationID: conversationID, mode: .send, text: "", artifactCommentIDs: ids,
+                                      clientKey: UUID().uuidString)
+        switch await conversation.sendTurn(request) {
+        case .applied?:
+            notice = nil
+            return true
+        case let .refused(code, message)?:
+            notice = ChatConversationModel.refusalLine(code: code, message: message)
+            return false
+        case nil:
+            return false
         }
     }
 
@@ -220,10 +245,10 @@ public final class ChatComposerModel {
         return edit.cursor
     }
 
-    /// Starts editing an owner message: its text goes into the field.
+    /// Starts editing an owner message: its words go into the field (the engine keeps its skill and mentions).
     public func beginEditing(_ message: ChatFeed.Message) {
         editing = message.id
-        draft = message.text
+        draft = ChatOwnerText.displayParts(message.text).body
     }
 
     public func cancelEditing() {
