@@ -136,20 +136,22 @@ type Daemon struct {
 	planUsage           PlanUsageRunner  // nil = Claude plan limits not wired
 	planUsageDisable    func() error
 	specReviewLaunch    func(askID int64) error // nil = the spec review sweep is off
-	pidPath             string
-	db                  *db.DB
-	agentLog            *agentlogdb.DB // nil = agentlog.db did not open; the analytics phase skips
-	agentLogPath        string         // agentLog's file, for the move lock beside it
-	digestPipe          *digest.Pipeline
-	tracksPipe          *tracks.Pipeline
-	peoplePipe          *guide.Pipeline
-	briefingPipe        *briefing.Pipeline
-	inboxPipe           *inbox.Pipeline
-	ideasPipe           *ideas.Pipeline
-	memoryPipe          *memory.Pipeline
-	memoryOpen          func() (*memory.Pipeline, error)
-	memoryOpenFailed    memoryOpenFailure // the last one recorded (recordMemoryOpenFailure)
-	memoryNow           func() time.Time  // its clock, nil = time.Now; a seam for tests
+	// watchmanBacktestLaunch starts a detached backtest child; nil = the weekly backtest is off.
+	watchmanBacktestLaunch func(workbenchID int64) error
+	pidPath                string
+	db                     *db.DB
+	agentLog               *agentlogdb.DB // nil = agentlog.db did not open; the analytics phase skips
+	agentLogPath           string         // agentLog's file, for the move lock beside it
+	digestPipe             *digest.Pipeline
+	tracksPipe             *tracks.Pipeline
+	peoplePipe             *guide.Pipeline
+	briefingPipe           *briefing.Pipeline
+	inboxPipe              *inbox.Pipeline
+	ideasPipe              *ideas.Pipeline
+	memoryPipe             *memory.Pipeline
+	memoryOpen             func() (*memory.Pipeline, error)
+	memoryOpenFailed       memoryOpenFailure // the last one recorded (recordMemoryOpenFailure)
+	memoryNow              func() time.Time  // its clock, nil = time.Now; a seam for tests
 	// backfillResume is where a held Gmail/Jira history-backfill chunk's
 	// stage-1 drain got to, so its retry starts there (backfillStreams).
 	// In memory only: a restart re-drains the chunk once. Touched only by
@@ -713,7 +715,7 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 	d.phaseWatchmanLearn(ctx)
 	// Weekly: category profiles (strong tier) and the learned sleep window.
 	d.phaseWatchmanProfile(ctx)
-	// Weekly, after the profiles: the backtest (its own lock, ErrBusy = next cycle).
+	// Weekly, after the profiles: launches a detached backtest child (never in-process).
 	d.phaseWatchmanBacktest(ctx)
 	// After the knowledge index: the fill is mechanical (no AI) and needs no
 	// fresh sync — Slack sync's own writes already reach the new index

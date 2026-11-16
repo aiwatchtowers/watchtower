@@ -11,10 +11,10 @@ import (
 )
 
 // Judge rates whether the twin's free-text decision is the same decision as
-// the owner's real one (spec 2026-11-16-watchman-design §9). The backtest
-// asks it only for items with no fixed options.
+// the owner's real one in situation (spec 2026-11-16-watchman-design §9).
+// The backtest asks it only for items with no fixed options.
 type Judge interface {
-	Same(ctx context.Context, owner, twin string) (bool, *digest.Usage, error)
+	Same(ctx context.Context, situation, owner, twin string) (bool, *digest.Usage, error)
 }
 
 // NewLLMJudge judges on the light tier (prompts.WatchmanJudge).
@@ -30,12 +30,13 @@ type llmJudge struct {
 // Same asks the model once. A reply that is not {"same": true|false} is an
 // error (with the call's Usage): the backtest cannot score the item, and
 // guessing either way would bend the number.
-func (j llmJudge) Same(ctx context.Context, owner, twin string) (bool, *digest.Usage, error) {
-	// json.Marshal escapes '<' and '>', so neither text can close the fence.
+func (j llmJudge) Same(ctx context.Context, situation, owner, twin string) (bool, *digest.Usage, error) {
+	// json.Marshal escapes '<' and '>', so no text can close the fence.
 	body, err := json.Marshal(struct {
-		Owner string `json:"owner"`
-		Twin  string `json:"twin"`
-	}{owner, twin})
+		Situation string `json:"situation"`
+		Owner     string `json:"owner"`
+		Twin      string `json:"twin"`
+	}{situation, owner, twin})
 	if err != nil {
 		return false, nil, fmt.Errorf("watchman judge: encoding the answers: %w", err)
 	}

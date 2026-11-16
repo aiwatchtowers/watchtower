@@ -61,3 +61,22 @@ func TestWatchmanBacktest_AddRowAndFinish(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "done", b.Status)
 }
+
+func TestWatchmanBacktestCandidates_SkipRoundsAndReverts(t *testing.T) {
+	d := openTestDB(t)
+	wmTestWorkbench(t, d, 1)
+	t0 := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
+	for i, k := range []string{"comment:1", "round:2", "revert:3", "lesson:4", "comment:5"} {
+		wmUpsert(t, d, WatchmanPrecedent{WorkbenchID: 1, Source: "review", SourceKey: k, Category: "review_code",
+			Situation: "s", Choice: "c", DecidedAt: t0.Add(time.Duration(i) * time.Hour), Weight: 1})
+	}
+	wmUpsert(t, d, WatchmanPrecedent{WorkbenchID: 1, Source: "ask", SourceKey: "round:9", Category: "review_code",
+		Situation: "s", Choice: "c", DecidedAt: t0, Weight: 1})
+	got, err := d.WatchmanBacktestCandidates(1, "review_code", 10)
+	require.NoError(t, err)
+	var keys []string
+	for _, p := range got {
+		keys = append(keys, p.Source+"/"+p.SourceKey)
+	}
+	require.Equal(t, []string{"review/comment:5", "review/lesson:4", "ask/round:9", "review/comment:1"}, keys)
+}

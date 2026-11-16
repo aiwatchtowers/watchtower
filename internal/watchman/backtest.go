@@ -43,6 +43,16 @@ const (
 // is already running.
 var ErrBusy = errors.New("watchman: a backtest is already running")
 
+// BacktestStampPath is the file a finished backtest of a workbench stamps
+// (unix seconds) in the workspace folder; the daemon's weekly launch reads it.
+func BacktestStampPath(workspaceDir string, workbenchID int64) string {
+	return filepath.Join(workspaceDir, "last_watchman_backtest_"+strconv.FormatInt(workbenchID, 10)+".txt")
+}
+
+// backtestClock stamps finished_at (the run is long; started_at is the
+// caller's now). Tests replace it.
+var backtestClock = time.Now
+
 // Backtest re-decides each category's newest 30 owner decisions with the
 // twin, hidden from it, and stores how often it agreed (spec §9). Nothing the
 // twin sees postdates an item: retrieval is cut at the item's own time with
@@ -51,9 +61,14 @@ var ErrBusy = errors.New("watchman: a backtest is already running")
 // precedents before it (a stored or pinned profile may have been written
 // after), and only owner_instructions rows updated before it are passed
 // (the workbench's own texts carry no edit time, so they are left out).
-// Items with fixed options (asks with options, permissions, review rounds
-// and lessons) agree on an exact match; the rest go to the judge. A reply
-// the twin cannot get right (ErrBadReply) is a disagreement. The run holds
+// Only decisions whose situation does not give the answer away are hidden:
+// a review round's outcome (its situation counts the round's comments) and
+// an undone hunk (only ever "undid hunk") are not measured in phase 1; they
+// stay retrievable for the other items. Items with fixed options (asks with
+// options, permissions, review lessons) agree on an exact match; the rest go
+// to the judge with the situation. A reply the twin cannot get right
+// (ErrBadReply) is a disagreement; a failed call, or a judge reply that
+// cannot be read, is tried once more and then fails the run. The run holds
 // LockPath (ErrBusy when held), closes any running row left by a dead
 // process, writes a row per finished category and progress after each item;
 // an error leaves the row failed with its message and the finished rows
@@ -83,14 +98,14 @@ func Backtest(ctx context.Context, d *db.DB, gen digest.Generator, judge Judge, 
 		}
 		if err != nil {
 			err = fmt.Errorf("watchman backtest, category %s: %w", c, err)
-			if ferr := d.FinishWatchmanBacktest(id, "failed", "", err.Error(), cost, time.Now()); ferr != nil {
+			if ferr := d.FinishWatchmanBacktest(id, "failed", "", err.Error(), cost, backtestClock()); ferr != nil {
 				err = errors.Join(err, ferr)
 			}
 			return id, err
 		}
 		rows = append(rows, row)
 	}
-	if err := d.FinishWatchmanBacktest(id, "done", Verdict(rows), "", cost, time.Now()); err != nil {
+	if err := d.FinishWatchmanBacktest(id, "done", Verdict(rows), "", cost, backtestClock()); err != nil {
 		return id, err
 	}
 	return id, nil
@@ -133,7 +148,7 @@ func (bt backtestRun) category(c string, k int) (db.WatchmanBacktestRow, error) 
 	if err := bt.ctx.Err(); err != nil {
 		return row, err
 	}
-	hidden, err := bt.d.WatchmanRecentPrecedents(bt.wb, c, HiddenPerCategory)
+	hidden, err := bt.d.WatchmanBacktestCandidates(bt.wb, c, HiddenPerCategory)
 	if err != nil {
 		return row, err
 	}
@@ -187,9 +202,24 @@ func (bt backtestRun) profile(c string, cutoff time.Time, row *db.WatchmanBackte
 	if err != nil || len(ps) < profileMinPrecedents {
 		return "", err
 	}
-	text, usage, err := ProfileText(bt.ctx, bt.gen, bt.store, c, ps)
-	row.CostUSD += usageCost(usage)
+	var text string
+	err = bt.retryOnce(func() error {
+		t, usage, err := ProfileText(bt.ctx, bt.gen, bt.store, c, ps)
+		row.CostUSD += usageCost(usage)
+		text = t
+		return err
+	})
 	return text, err
+}
+
+// retryOnce runs call and, when it fails while the run is not cancelled,
+// once more: one transient failure does not cost the whole run.
+func (bt backtestRun) retryOnce(call func() error) error {
+	err := call()
+	if err == nil || bt.ctx.Err() != nil {
+		return err
+	}
+	return call()
 }
 
 // item re-decides one hidden precedent and scores it.
@@ -198,21 +228,35 @@ func (bt backtestRun) item(c string, p db.WatchmanPrecedent, exclude []int64, pr
 	if err != nil {
 		return false, false, err
 	}
-	dec, err := Decide(bt.ctx, bt.d, bt.gen, bt.store, Item{
-		WorkbenchID: bt.wb, Category: c, Situation: p.Situation, Options: opts,
-		DecidedBefore: p.DecidedAt, Exclude: exclude, Profile: profile, Instructions: instr,
+	var dec Decision
+	bad := false
+	err = bt.retryOnce(func() error {
+		var err error
+		dec, err = Decide(bt.ctx, bt.d, bt.gen, bt.store, Item{
+			WorkbenchID: bt.wb, Category: c, Situation: p.Situation, Options: opts,
+			DecidedBefore: p.DecidedAt, Exclude: exclude, Profile: profile, Instructions: instr,
+		})
+		row.CostUSD += usageCost(dec.Usage)
+		if bad = errors.Is(err, ErrBadReply); bad {
+			return nil // the model's answer, not a failed call: scored below, not retried
+		}
+		return err
 	})
-	row.CostUSD += usageCost(dec.Usage)
 	switch {
-	case errors.Is(err, ErrBadReply):
-		return false, false, nil // the twin gave no usable decision: not the owner's
 	case err != nil:
 		return false, false, err
+	case bad:
+		return false, false, nil // the twin gave no usable decision: not the owner's
 	case len(opts) > 0:
 		return dec.Choice == p.Choice, dec.Confidence == "high", nil
 	}
-	same, usage, err := bt.judge.Same(bt.ctx, ownerAnswer(p), twinAnswer(dec))
-	row.CostUSD += usageCost(usage)
+	var same bool
+	err = bt.retryOnce(func() error {
+		s, usage, err := bt.judge.Same(bt.ctx, p.Situation, ownerAnswer(p), twinAnswer(dec))
+		row.CostUSD += usageCost(usage)
+		same = s
+		return err
+	})
 	if err != nil {
 		return false, false, err
 	}
@@ -221,7 +265,7 @@ func (bt backtestRun) item(c string, p db.WatchmanPrecedent, exclude []int64, pr
 
 // backtestOptions returns the options the owner chose among, when the
 // precedent's source had fixed ones: a permission (allow/deny), a review
-// round (approve/changes), a review lesson (accepted/dismissed), a review
+// lesson (accepted/dismissed), a review
 // ask's verdict, or an ask with one single-choice question with options.
 // nil means a free answer (the judge scores it). The option texts go through
 // the same clean as the stored choice, so an exact match is meaningful.
@@ -230,10 +274,8 @@ func backtestOptions(d *db.DB, p db.WatchmanPrecedent) ([]string, error) {
 	case SourcePermission:
 		return []string{"allow", "deny"}, nil
 	case SourceReview:
-		switch {
-		case strings.HasPrefix(p.SourceKey, db.WatchmanReviewRound+":"):
-			return []string{"approve", "changes"}, nil
-		case strings.HasPrefix(p.SourceKey, db.WatchmanReviewLesson+":"):
+		// Round outcomes and undone hunks are never hidden (Backtest).
+		if strings.HasPrefix(p.SourceKey, db.WatchmanReviewLesson+":") {
 			return []string{"accepted", "dismissed"}, nil
 		}
 		return nil, nil

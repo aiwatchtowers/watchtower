@@ -1,6 +1,7 @@
 package db
 
 import (
+	"database/sql"
 	"fmt"
 	"strconv"
 	"time"
@@ -8,6 +9,22 @@ import (
 
 // Watchman backtest storage helpers (Task 8): the leak-free reads a backtest
 // builds its context from, and the writes of a running backtest.
+
+// WatchmanBacktestCandidates returns the newest limit precedents of a
+// category the backtest may hide, newest first: every precedent except a
+// review round's outcome (its situation names the round's comments, which
+// gives the answer away) and an undone hunk (only ever "undid hunk").
+func (db *DB) WatchmanBacktestCandidates(workbenchID int64, category string, limit int) ([]WatchmanPrecedent, error) {
+	rows, err := db.Query(`SELECT id, workbench_id, source, source_key, category, situation, choice, owner_words, decided_at, weight
+		FROM watchman_precedents WHERE workbench_id = ? AND category = ?
+			AND NOT (source = 'review' AND (source_key LIKE ? OR source_key LIKE ?))
+		ORDER BY decided_at DESC, id DESC LIMIT ?`,
+		workbenchID, category, WatchmanReviewRound+":%", WatchmanReviewRevert+":%", limit)
+	if err != nil {
+		return nil, fmt.Errorf("reading watchman backtest candidates %d/%s: %w", workbenchID, category, err)
+	}
+	return scanWatchmanPrecedents(rows)
+}
 
 // WatchmanPrecedentsBefore returns the newest limit precedents of a category
 // in a workbench decided strictly before `before`, newest first.
@@ -18,6 +35,10 @@ func (db *DB) WatchmanPrecedentsBefore(workbenchID int64, category string, befor
 	if err != nil {
 		return nil, fmt.Errorf("reading watchman precedents %d/%s before a cutoff: %w", workbenchID, category, err)
 	}
+	return scanWatchmanPrecedents(rows)
+}
+
+func scanWatchmanPrecedents(rows *sql.Rows) ([]WatchmanPrecedent, error) {
 	defer rows.Close()
 	var out []WatchmanPrecedent
 	for rows.Next() {

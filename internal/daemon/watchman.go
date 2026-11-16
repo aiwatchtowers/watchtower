@@ -186,31 +186,36 @@ func (d *Daemon) phaseWatchmanProfile(ctx context.Context) {
 	})
 }
 
-func (d *Daemon) lastWatchmanBacktestPath() string {
-	return filepath.Join(d.config.WorkspaceDir(), "last_watchman_backtest.txt")
+// watchmanBacktestRetryAfter is how long after launching a backtest child
+// the daemon waits before launching one for the same workbench again when no
+// success stamp came back (the child failed or is still running).
+const watchmanBacktestRetryAfter = 24 * time.Hour
+
+// SetWatchmanBacktestLaunch wires the launcher of a detached
+// `watchtower watchman backtest --workbench N` child (cmd.LaunchWatchmanBacktest);
+// nil = the weekly backtest is off.
+func (d *Daemon) SetWatchmanBacktestLaunch(f func(workbenchID int64) error) {
+	d.watchmanBacktestLaunch = f
 }
 
-func (d *Daemon) lastWatchmanBacktestFailedPath() string {
-	return filepath.Join(d.config.WorkspaceDir(), "last_watchman_backtest_failed.txt")
+func (d *Daemon) watchmanBacktestLaunchedPath(workbenchID int64) string {
+	return filepath.Join(d.config.WorkspaceDir(), "last_watchman_backtest_launched_"+strconv.FormatInt(workbenchID, 10)+".txt")
 }
 
-// phaseWatchmanBacktest reruns, once a week after the profile rebuild, the
-// backtest of every Watchman workbench (spec §9; strong-tier decisions, a
-// light-tier judge). The cadence is the profile phase's: success stamp
-// last_watchman_backtest.txt, failure stamp last_watchman_backtest_failed.txt
-// (retry a day later), no catch-up, nothing stamped on a cancelled cycle.
-// A backtest already running (watchman.ErrBusy: `watchman backtest` holds
-// the lock) leaves both stamps unwritten, so the next cycle tries again.
-// Logs carry ids and counts, never text.
+// phaseWatchmanBacktest starts, once a week per Watchman workbench, its
+// backtest (spec §9) — never in-process: about 240 strong-tier calls do not
+// belong in the sync cycle. It launches a detached child for at most one due
+// workbench per cycle (the child's lock is workspace-wide) and does not wait.
+// A workbench is due when its success stamp (watchman.BacktestStampPath,
+// written by the child on a finished run, a manual run included) is a week
+// old or missing and no child was launched for it in the last day. Nothing
+// is launched while a backtest holds the lock.
 func (d *Daemon) phaseWatchmanBacktest(ctx context.Context) {
-	if d.db == nil || ctx.Err() != nil {
+	if d.db == nil || d.watchmanBacktestLaunch == nil || ctx.Err() != nil {
 		return
 	}
-	now := time.Now()
-	if last := readUnixStamp(d.lastWatchmanBacktestPath()); !last.IsZero() && now.Sub(last) < watchmanProfileInterval {
-		return
-	}
-	if failed := readUnixStamp(d.lastWatchmanBacktestFailedPath()); !failed.IsZero() && now.Sub(failed) < watchmanProfileRetryAfter {
+	dir := d.config.WorkspaceDir()
+	if watchman.Locked(watchman.LockPath(dir)) {
 		return
 	}
 	ids, err := d.db.WatchmanWorkbenches()
@@ -218,38 +223,20 @@ func (d *Daemon) phaseWatchmanBacktest(ctx context.Context) {
 		d.logger.Printf("watchman backtest: %v", err)
 		return
 	}
-	if len(ids) == 0 {
-		return
+	now := time.Now()
+	for _, wb := range ids {
+		if last := readUnixStamp(watchman.BacktestStampPath(dir, wb)); !last.IsZero() && now.Sub(last) < watchmanProfileInterval {
+			continue
+		}
+		if launched := readUnixStamp(d.watchmanBacktestLaunchedPath(wb)); !launched.IsZero() && now.Sub(launched) < watchmanBacktestRetryAfter {
+			continue
+		}
+		if err := d.watchmanBacktestLaunch(wb); err != nil {
+			d.logger.Printf("watchman backtest: workbench %d: launching: %v", wb, err)
+			return
+		}
+		d.writeWatchmanStamp(d.watchmanBacktestLaunchedPath(wb), now)
+		d.logger.Printf("watchman backtest: workbench %d: started in the background", wb)
+		return // one per cycle: the lock is workspace-wide
 	}
-	d.trackedPipelineRun("watchman-backtest", func() pipelineRunStats {
-		gen := d.watchmanGenerator(ctx)
-		store := prompts.New(d.db, nil)
-		judge := watchman.NewLLMJudge(gen, store)
-		var errs []error
-		for _, wb := range ids {
-			id, err := watchman.Backtest(ctx, d.db, gen, judge, store, wb, now)
-			if errors.Is(err, watchman.ErrBusy) {
-				d.logger.Printf("watchman backtest: busy, retried next cycle")
-				return pipelineRunStats{items: len(ids)}
-			}
-			if err != nil {
-				d.logger.Printf("watchman backtest: workbench %d (backtest %d): %v", wb, id, err) // errors carry no precedent text
-				errs = append(errs, err)
-			}
-		}
-		err := errors.Join(errs...)
-		if ctx.Err() != nil { // cancelled mid-run (sleep/wake): retried next cycle
-			return pipelineRunStats{items: len(ids), err: err}
-		}
-		if err != nil {
-			d.writeWatchmanStamp(d.lastWatchmanBacktestFailedPath(), now)
-			d.logger.Printf("watchman backtest: retried tomorrow")
-			return pipelineRunStats{items: len(ids), err: err}
-		}
-		d.writeWatchmanStamp(d.lastWatchmanBacktestPath(), now)
-		if err := os.Remove(d.lastWatchmanBacktestFailedPath()); err != nil && !os.IsNotExist(err) {
-			d.logger.Printf("watchman backtest: failed to clear the failure stamp: %v", err)
-		}
-		return pipelineRunStats{items: len(ids)}
-	})
 }

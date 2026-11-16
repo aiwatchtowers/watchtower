@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -77,7 +78,7 @@ func runWatchmanBacktestCmd(t *testing.T, wb int64, extra ...string) (string, er
 }
 
 func TestWatchmanBacktest_JSONKeysPinned(t *testing.T) {
-	wb, gen, _ := watchmanBacktestFixture(t)
+	wb, gen, dir := watchmanBacktestFixture(t)
 	out, err := runWatchmanBacktestCmd(t, wb, "--json")
 	require.NoError(t, err)
 	assert.Equal(t, []string{"backtest_id", "categories", "cost_usd", "ok", "status", "verdict", "workbench"}, jsonKeys(t, out))
@@ -107,10 +108,32 @@ func TestWatchmanBacktest_JSONKeysPinned(t *testing.T) {
 	}
 	assert.Equal(t, 30, gen.calls) // 30 decisions; nothing older for a profile, no judge for allow/deny
 
+	assert.False(t, readStampFile(t, watchman.BacktestStampPath(dir, wb)).IsZero(), "a finished run stamps the week")
+
 	out, err = runWatchmanBacktestCmd(t, wb)
 	require.NoError(t, err)
-	assert.Contains(t, out, "permission   strong: 30 of 30 agree, 0 wrong while sure")
-	assert.Contains(t, out, "Verdict: stop")
+	assert.Contains(t, out, "permission   strong: 30 of 30 agree, 0 wrong while sure (~$0.00)")
+	assert.Contains(t, out, "Review approvals and hunk undos are not measured in phase 1.")
+	assert.Contains(t, out, "Verdict: stop (cost ~$0.00, an estimate")
+}
+
+func readStampFile(t *testing.T, path string) time.Time {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return time.Time{}
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64)
+	require.NoError(t, err)
+	return time.Unix(n, 0)
+}
+
+func TestLaunchWatchmanBacktest_MissingBinary(t *testing.T) {
+	logs := filepath.Join(t.TempDir(), "logs")
+	err := LaunchWatchmanBacktest(filepath.Join(t.TempDir(), "no-such-binary"), 7, logs)
+	require.ErrorContains(t, err, "starting the backtest")
+	_, statErr := os.Stat(filepath.Join(logs, "watchman-backtest.log"))
+	require.NoError(t, statErr)
 }
 
 func TestWatchmanBacktest_BusyLock(t *testing.T) {
@@ -123,6 +146,7 @@ func TestWatchmanBacktest_BusyLock(t *testing.T) {
 	require.Error(t, err)
 	assert.JSONEq(t, `{"ok":false,"error":"busy"}`, strings.TrimSpace(out))
 	assert.Zero(t, gen.calls)
+	assert.True(t, readStampFile(t, watchman.BacktestStampPath(dir, wb)).IsZero(), "a busy run stamps nothing")
 }
 
 func TestWatchmanBacktest_RefusedUnderAgent(t *testing.T) {

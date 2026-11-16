@@ -83,14 +83,22 @@ func (g *btGen) Generate(ctx context.Context, system, user, _ string) (string, *
 }
 
 type btJudge struct {
-	same  func(owner, twin string) bool
-	calls int
+	same       func(owner, twin string) bool
+	err        func(call int) error // nil = never fails
+	calls      int
+	situations []string
 }
 
-func (j *btJudge) Same(_ context.Context, owner, twin string) (bool, *digest.Usage, error) {
+func (j *btJudge) Same(_ context.Context, situation, owner, twin string) (bool, *digest.Usage, error) {
 	j.calls++
+	j.situations = append(j.situations, situation)
 	cost := 0.001
 	u := &digest.Usage{Tokens: llmusage.Tokens{ReportedCostUSD: &cost}}
+	if j.err != nil {
+		if err := j.err(j.calls); err != nil {
+			return false, u, err
+		}
+	}
 	if j.same == nil {
 		return true, u, nil
 	}
@@ -356,7 +364,7 @@ func TestBacktest_FailureKeepsPartialRows(t *testing.T) {
 	require.NotNil(t, b.FinishedAt)
 	require.Len(t, rows, 1)
 	require.Equal(t, 30, rows[CategoryDesign].Agree)
-	require.InDelta(t, 0.31, b.CostUSD, 1e-9, "the design calls and the failed scope call are counted")
+	require.InDelta(t, 0.32, b.CostUSD, 1e-9, "the design calls and both failed scope attempts are counted")
 	done, _, err := d.LatestDoneWatchmanBacktest(wb)
 	require.NoError(t, err)
 	require.Nil(t, done)
@@ -407,7 +415,7 @@ func TestBacktest_AskOptions(t *testing.T) {
 	opts, err = backtestOptions(d, db.WatchmanPrecedent{WorkbenchID: wb, Source: SourceAsk, SourceKey: "999999"})
 	require.NoError(t, err)
 	require.Nil(t, opts, "a deleted ask is a free answer")
-	for key, want := range map[string][]string{"round:4": {"approve", "changes"}, "lesson:2": {"accepted", "dismissed"}, "comment:1": nil} {
+	for key, want := range map[string][]string{"lesson:2": {"accepted", "dismissed"}, "comment:1": nil} {
 		opts, err = backtestOptions(d, db.WatchmanPrecedent{WorkbenchID: wb, Source: SourceReview, SourceKey: key})
 		require.NoError(t, err)
 		require.Equal(t, want, opts, key)
@@ -439,21 +447,142 @@ func TestBacktest_BusyLock(t *testing.T) {
 
 func TestLLMJudge_ParsesReply(t *testing.T) {
 	gen := &decideGen{out: "```json\n{\"same\": false}\n```"}
-	same, usage, err := NewLLMJudge(gen, nil).Same(context.Background(), "Choice: a", "Choice: b")
+	same, usage, err := NewLLMJudge(gen, nil).Same(context.Background(), "Which cache?", "Choice: a", "Choice: b")
 	require.NoError(t, err)
 	require.False(t, same)
 	require.NotNil(t, usage)
 	require.Equal(t, prompts.WatchmanJudge, gen.source)
 	require.Equal(t, prompts.Defaults[prompts.WatchmanJudge], gen.system)
 	require.Contains(t, gen.user, "=== DATA ===\n<data>\n")
+	require.Contains(t, gen.user, `"situation":"Which cache?"`)
 	gen.out = `{"same": true}`
-	same, _, err = NewLLMJudge(gen, nil).Same(context.Background(), "a", "a")
+	same, _, err = NewLLMJudge(gen, nil).Same(context.Background(), "s", "a", "a")
 	require.NoError(t, err)
 	require.True(t, same)
 	for _, bad := range []string{"same", `{"verdict": "same"}`} {
 		gen.out = bad
-		_, usage, err = NewLLMJudge(gen, nil).Same(context.Background(), "a", "b")
+		_, usage, err = NewLLMJudge(gen, nil).Same(context.Background(), "s", "a", "b")
 		require.Error(t, err, bad)
 		require.NotNil(t, usage)
 	}
+}
+
+// btAddReview stores review_code precedents of the review source with the
+// given key kind ("comment", "round", "revert"), one hour apart from start.
+func btAddReview(t *testing.T, d *db.DB, wb int64, kind string, n int, start time.Time, choice string) []db.WatchmanPrecedent {
+	t.Helper()
+	ps := make([]db.WatchmanPrecedent, n)
+	for i := range ps {
+		ps[i] = db.WatchmanPrecedent{WorkbenchID: wb, Source: SourceReview, SourceKey: fmt.Sprintf("%s:%d", kind, i+1),
+			Category: CategoryReviewCode, Situation: fmt.Sprintf("review %s importer cache %d", kind, i), Choice: choice,
+			DecidedAt: start.Add(time.Duration(i) * time.Hour), Weight: 1}
+	}
+	tx, err := d.Begin()
+	require.NoError(t, err)
+	require.NoError(t, d.UpsertWatchmanPrecedents(tx, ps))
+	require.NoError(t, tx.Commit())
+	return ps
+}
+
+// TestBacktest_SkipsRoundOutcomesAndReverts: review_code is measured on its
+// comments; the newer round outcomes and undone hunks are not hidden.
+func TestBacktest_SkipsRoundOutcomesAndReverts(t *testing.T) {
+	d, wb := btDB(t)
+	btAddReview(t, d, wb, db.WatchmanReviewComment, 30, btT0, "comment")
+	later := btT0.Add(100 * time.Hour)
+	btAddReview(t, d, wb, db.WatchmanReviewRound, 10, later, "approve")
+	btAddReview(t, d, wb, db.WatchmanReviewRevert, 5, later, "undid hunk")
+	gen, judge := &btGen{}, &btJudge{}
+	_, err := Backtest(context.Background(), d, gen, judge, nil, wb, btT0.Add(1000*time.Hour))
+	require.NoError(t, err)
+	require.Len(t, gen.decideIn, 30)
+	for _, in := range gen.decideIn {
+		require.Contains(t, in.Situation, "review comment", "only comments are hidden")
+		require.Empty(t, in.Options)
+	}
+	require.Equal(t, 30, judge.calls)
+	_, rows := btRows(t, d, wb)
+	require.Equal(t, 30, rows[CategoryReviewCode].Total)
+	require.Equal(t, BacktestStrong, rows[CategoryReviewCode].Status)
+}
+
+// TestBacktest_RoundSituationNeverHidden: with only round outcomes and
+// undone hunks the category is not measured, with no model call.
+func TestBacktest_RoundSituationNeverHidden(t *testing.T) {
+	d, wb := btDB(t)
+	btAddReview(t, d, wb, db.WatchmanReviewRound, 40, btT0, "changes")
+	btAddReview(t, d, wb, db.WatchmanReviewRevert, 10, btT0, "undid hunk")
+	gen, judge := &btGen{}, &btJudge{}
+	_, err := Backtest(context.Background(), d, gen, judge, nil, wb, btT0.Add(1000*time.Hour))
+	require.NoError(t, err)
+	require.Empty(t, gen.sources)
+	require.Zero(t, judge.calls)
+	_, rows := btRows(t, d, wb)
+	require.Equal(t, BacktestNotMeasured, rows[CategoryReviewCode].Status)
+	require.Zero(t, rows[CategoryReviewCode].Total)
+}
+
+func TestBacktest_RetriesOnceThenFails(t *testing.T) {
+	// A decide call that fails once is retried and the run finishes.
+	d, wb := btDB(t)
+	btAdd(t, d, wb, SourcePermission, CategoryPermission, 30, btT0, "allow")
+	fails := 1
+	gen := &btGen{decide: func(decideInput) (string, string, error) {
+		if fails > 0 {
+			fails--
+			return "", "", errors.New("provider hiccup")
+		}
+		return "allow", "low", nil
+	}}
+	_, err := Backtest(context.Background(), d, gen, &btJudge{}, nil, wb, btT0.Add(100*time.Hour))
+	require.NoError(t, err)
+	require.Len(t, gen.decideIn, 31)
+	_, rows := btRows(t, d, wb)
+	require.Equal(t, 30, rows[CategoryPermission].Agree)
+
+	// A decide call that fails twice fails the run.
+	d, wb = btDB(t)
+	btAdd(t, d, wb, SourcePermission, CategoryPermission, 30, btT0, "allow")
+	gen = &btGen{decide: func(decideInput) (string, string, error) { return "", "", errors.New("provider down") }}
+	_, err = Backtest(context.Background(), d, gen, &btJudge{}, nil, wb, btT0.Add(100*time.Hour))
+	require.ErrorContains(t, err, "provider down")
+	require.Len(t, gen.decideIn, 2)
+
+	// A judge reply that cannot be read is retried once, then fails the run.
+	d, wb = btDB(t)
+	btAdd(t, d, wb, "turn", CategoryTests, 30, btT0, "add a test")
+	judge := &btJudge{err: func(call int) error {
+		if call == 1 {
+			return errors.New("watchman judge: the reply is not a JSON object")
+		}
+		return nil
+	}}
+	_, err = Backtest(context.Background(), d, &btGen{}, judge, nil, wb, btT0.Add(100*time.Hour))
+	require.NoError(t, err)
+	require.Equal(t, 31, judge.calls)
+	require.Equal(t, judge.situations[0], judge.situations[1], "the judge sees the hidden item's situation")
+	require.Contains(t, judge.situations[0], "importer cache case tests")
+
+	d, wb = btDB(t)
+	btAdd(t, d, wb, "turn", CategoryTests, 30, btT0, "add a test")
+	judge = &btJudge{err: func(int) error { return errors.New("watchman judge: the reply has no \"same\"") }}
+	_, err = Backtest(context.Background(), d, &btGen{}, judge, nil, wb, btT0.Add(100*time.Hour))
+	require.ErrorContains(t, err, "no \"same\"")
+	require.Equal(t, 2, judge.calls)
+	b, _ := btRows(t, d, wb)
+	require.Equal(t, "failed", b.Status)
+}
+
+func TestBacktest_FinishedAtFromClock(t *testing.T) {
+	end := btT0.Add(3 * time.Hour)
+	prev := backtestClock
+	backtestClock = func() time.Time { return end }
+	t.Cleanup(func() { backtestClock = prev })
+	d, wb := btDB(t)
+	_, err := Backtest(context.Background(), d, &btGen{}, &btJudge{}, nil, wb, btT0)
+	require.NoError(t, err)
+	b, _ := btRows(t, d, wb)
+	require.Equal(t, btT0, b.StartedAt)
+	require.NotNil(t, b.FinishedAt)
+	require.Equal(t, end, *b.FinishedAt)
 }
