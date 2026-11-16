@@ -167,7 +167,7 @@ Decisions taken by the twin are never precedents unless the owner confirmed them
 
 ### 8.2 Store
 
-- `watchman_precedents`: one row per owner decision — source, source id, workbench, category, situation (short text, ≤ 2 KB, redacted of secrets by the existing key scanners), choice, owner words, decided_at, `weight` (owner corrections of the twin weigh more). FTS5 index for retrieval, the same shape as `internal/kb`.
+- `watchman_precedents`: one row per owner decision — source, source id, workbench, category, situation (short text, ≤ 2 KB, redacted of secrets by a new redactor (no exported scanner existed)), choice, owner words, decided_at, `weight` (owner corrections of the twin weigh more). FTS5 index for retrieval, the same shape as `internal/kb`.
 - `watchman_profile`: per category, the distilled rules (≤ 20 lines each), version, built from precedents by one strong-tier call per category per week. Shown and editable in Settings → Watchman; an owner edit pins the text until he unpins it.
 
 Categories (v1, fixed): `design`, `scope`, `ux_text`, `tests`, `review_code`, `review_doc`, `permission`, `finish`. Source kind sets most of them mechanically (permission rows → `permission`, review comments → `review_code`, spec marks → `review_doc`, handover asks → `finish`); only questions and owner turns get a light-tier label call, batched 20 per call. The backfill reads the whole history, newest first; before it starts, the arm sheet shows the decision count and the estimated label cost (recorded as `watchman.label`), and the owner can start it or not — no cap cuts history off. A category with fewer than 30 owner decisions is **not measured** and treated as weak.

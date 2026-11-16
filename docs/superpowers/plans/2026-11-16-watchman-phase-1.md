@@ -50,16 +50,16 @@
   - `(*DB).WatchmanCursor(workbenchID int64, source string) (string, error)`, `(*DB).SetWatchmanCursor(tx *sql.Tx, workbenchID int64, source, cursor string) error`
   - `(*DB).WatchmanWorkbenches() ([]int64, error)`, `(*DB).EnableWatchmanWorkbench(id int64, at time.Time) error`
   - `(*DB).UpsertWatchmanProfile(p WatchmanProfile) error`, `(*DB).WatchmanProfiles(workbenchID int64) ([]WatchmanProfile, error)`; `type WatchmanProfile struct { WorkbenchID int64; Key, Text string; Pinned bool; Version int; UpdatedAt time.Time }` (`Key` = category or `sleep_window`).
-  - `(*DB).InsertWatchmanBacktest(b WatchmanBacktest) (int64, error)`, `(*DB).LatestWatchmanBacktest(workbenchID int64) (*WatchmanBacktest, []WatchmanBacktestRow, error)`; `type WatchmanBacktest struct { ID, WorkbenchID int64; StartedAt time.Time; FinishedAt *time.Time; Status, Error, Verdict string; CostUSD float64 }`; `type WatchmanBacktestRow struct { Category string; Total, Agree, WrongHigh int; Status string }`.
+  - `(*DB).InsertWatchmanBacktest(b WatchmanBacktest) (int64, error)`, `(*DB).LatestWatchmanBacktest(workbenchID int64) (*WatchmanBacktest, []WatchmanBacktestRow, error)`; `type WatchmanBacktest struct { ID, WorkbenchID int64; StartedAt time.Time; FinishedAt *time.Time; Status, Error, Verdict string; CostUSD float64 }`; `type WatchmanBacktestRow struct { Category string; Total, Agree, WrongHigh int; Status string; CostUSD float64 }`; `(*DB).LatestDoneWatchmanBacktest(workbenchID int64) (*WatchmanBacktest, []WatchmanBacktestRow, error)` (newest with `status='done'`, for the failed screen's kept results); `(*DB).SetWatchmanBacktestProgress(id int64, progress string) error`; `WatchmanBacktest` also carries `Progress string`.
 
 Tables (all `CHECK`ed enums as in the spec):
 - `watchman_workbenches(workbench_id PK → projects ON DELETE CASCADE, enabled_at)`
 - `watchman_precedents(id PK, workbench_id → projects CASCADE, source CHECK IN ('ask','review','spec','permission','turn','git'), source_key, category CHECK IN (8 categories), situation, choice, owner_words, decided_at, weight REAL DEFAULT 1, UNIQUE(source, source_key))` + `watchman_fts` (fts5 over situation, choice, owner_words; `content='watchman_precedents'`, porter unicode61 remove_diacritics 2) + `_ai/_ad/_au` triggers (copy the `kb_fts` shape).
 - `watchman_cursors(workbench_id, source, cursor, updated_at, PK(workbench_id, source))`
 - `watchman_profile(workbench_id, key, text, pinned INTEGER DEFAULT 0, version, updated_at, PK(workbench_id, key))`
-- `watchman_backtests(id PK, workbench_id CASCADE, started_at, finished_at, status CHECK IN ('running','done','failed'), error, verdict CHECK IN ('','go','stop'), cost_usd)` and `watchman_backtest_rows(backtest_id CASCADE, category, total, agree, wrong_high, status CHECK IN ('strong','weak','not_measured'), PK(backtest_id, category))`.
+- `watchman_backtests(id PK, workbench_id CASCADE, started_at, finished_at, status CHECK IN ('running','done','failed'), error, verdict CHECK IN ('','go','stop'), cost_usd, progress TEXT NOT NULL DEFAULT '')` and `watchman_backtest_rows(backtest_id CASCADE, category, total, agree, wrong_high, cost_usd, status CHECK IN ('strong','weak','not_measured'), PK(backtest_id, category))`.
 
-- [ ] **Step 1:** Write `TestWatchmanPrecedents_UpsertAndSearch` (upsert twice → one row; search finds by word; `before` and `exclude` filter), `TestWatchmanCursor_RoundTrip`, `TestWatchmanBacktest_LatestRows`, `TestWatchmanTables_CascadeOnWorkbenchDelete`.
+- [ ] **Step 1:** Write `TestWatchmanPrecedents_UpsertAndSearch` (upsert twice → one row; search finds by word; `before` and `exclude` filter), `TestWatchmanCursor_RoundTrip`, `TestWatchmanBacktest_LatestRows`, `TestWatchmanBacktest_LatestDoneSkipsFailed`, `TestWatchmanTables_CascadeOnWorkbenchDelete`.
 - [ ] **Step 2:** Run `go test ./internal/db -run 'TestWatchman'` — FAIL (no tables).
 - [ ] **Step 3:** Write the migration (real `Down`), mirror into `schema.sql`, add the six tables to `TestAllTablesExist`, implement the funcs.
 - [ ] **Step 4:** `go test ./internal/db/ -run 'TestSchemaGolden|TestDesktopTestSchema' -update`, then `go test ./internal/db/ -run 'TestWatchman|TestMigrationIdempotent|TestAllTablesExist|TestSchemaGolden|TestDesktopTestSchema'` — PASS.
@@ -69,6 +69,8 @@ Tables (all `CHECK`ed enums as in the spec):
 
 **Files:**
 - Create: `internal/watchman/redact.go`, `internal/watchman/redact_test.go`
+
+No exported secret scanner exists in the repo (the spec's "existing key scanners" has no match: `linkrule`'s checks are unexported URL rules), so this is a new, small one; `linkrule` is not changed.
 
 **Interfaces:**
 - Produces: `func Redact(s string) string` — replaces each secret with `[secret]`; `func Clip(s string, max int) string` — rune-safe cut with `…`.
@@ -95,9 +97,9 @@ Patterns: Slack `xox[abprs]-…`, GitHub `gh[pousr]_…`/`github_pat_…`, `sk-�
   - `func DBSources() []Source` — asks, review, spec, permission, in that order.
   - New `internal/db` readers, each `(…, after/before cursor, limit)` returning rows ordered by `(decided_at, id)`:
     - `AnsweredOwnerAsks(workbenchID, …)` — `status IN ('answered','delivered')`, `origin='agent'` and `'chat'`, not automation-born; includes `payload`, `answer`, `doc_snapshot`.
-    - `WatchmanReviewComments(workbenchID, …)` — comments with body, quote, lens, the round's `outcome`, plus each round's outcome as its own row (approve vs changes); `review_reverts` rows.
+    - `WatchmanReviewComments(workbenchID, …)` — comments with body, quote, lens, the round's `outcome`, plus each round's outcome as its own row (approve vs changes); `review_reverts` rows; `review_lessons` with `status='accepted'` (and `dismissed`, as the owner's "no").
     - `WatchmanSpecMarks(workbenchID, …)` — `spec_review_marks` joined to the ask, kind `ok|comment|not_useful`, and the ask's verdict.
-    - `WatchmanPermissionDecisions(workbenchID, …)` — `status IN ('allowed','denied','answered_on_mac')`, tool + input summary.
+    - `WatchmanPermissionDecisions(workbenchID, …)` — `status IN ('allowed','denied')` only, tool + input summary. `answered_on_mac` is not an owner decision (the row is closed when a newer request supersedes it; it carries no allow/deny) and `expired` is nobody's: both are skipped.
 
 Mapping (source → category, situation, choice, words):
 - ask question → `Category: ""`; the runner labels it before the upsert (Task 5), so the `category` CHECK never sees an empty value.
@@ -105,10 +107,11 @@ Mapping (source → category, situation, choice, words):
 - handover ask (title prefix from `finish_session`'s handover) → `finish`.
 - review comment → `review_code`, situation = file + quote, choice = "comment", words = body; round outcome → choice `approve|changes`.
 - revert → `review_code`, choice = "undid hunk", weight 2.
+- review lesson → `review_code`, situation = the lesson text, choice `accepted|dismissed`.
 - spec mark → `review_doc`; `not_useful` → choice "finding not useful".
-- permission → `permission`, situation = tool + redacted input (≤ 2 KB), choice `allow|deny`; `answered_on_mac` is the owner at the Mac (choice from the row's answer).
+- permission → `permission`, situation = tool + redacted input (≤ 2 KB), choice `allow|deny` from the status.
 
-- [ ] **Step 1:** Per source: `Test<X>Source_MapsRows` (seed rows → expected precedent fields), `Test<X>Source_CursorNewestFirst` (5 rows, limit 2: newest two, then older; then a new row appears and comes first), `TestAsksSource_SkipsAutomationAndOpen`, `TestAsksSource_RedactsSituation`, `TestPermissionSource_SkipsPendingAndExpired`.
+- [ ] **Step 1:** Per source: `Test<X>Source_MapsRows` (seed rows → expected precedent fields), `Test<X>Source_CursorNewestFirst` (5 rows, limit 2: newest two, then older; then a new row appears and comes first), `TestAsksSource_SkipsAutomationAndOpen`, `TestAsksSource_RedactsSituation`, `TestPermissionSource_SkipsPendingExpiredAndAnsweredOnMac`, `TestReviewSource_IncludesLessons`.
 - [ ] **Step 2:** `go test ./internal/watchman ./internal/db -run 'Source|Watchman'` — FAIL.
 - [ ] **Step 3:** Implement readers and sources.
 - [ ] **Step 4:** Same — PASS.
@@ -123,7 +126,7 @@ Mapping (source → category, situation, choice, words):
 - Consumes: `instructions.FeedReader`, `instructions.NewFeedReader(ctx, d, dirs)`, `db.RecentWorkbenchSession`, `sessionfeed.Entry`; `db.PRStates(workbenchID)`; `Workbench.FolderPath`.
 - Produces: `func TurnSource(read instructions.FeedReader) Source`, `func GitSource(git GitRunner) Source`; `type GitRunner func(ctx context.Context, dir string, args ...string) ([]byte, error)` with `ExecGit` as the production value.
 
-Turns: for each workbench session (newest first), walk its feed entries; every owner entry becomes a precedent with situation = the preceding agent text entry (redacted, clipped 2 KB) and words = the owner's text; category left `""` for labelling. Owner entries that are ask answers or Watchtower lines are skipped (the feed marks them). Cursor = session id + entry index.
+Turns: `agent_log_events` stores no turn text (only `src_path`/`src_offset`), and the spec says the text is read from the transcript; the session feed (`instructions.NewFeedReader` → `sessionfeed`) is that transcript reader and also gives the preceding agent text, so it is the source. Agent analytics (turned on at learn start, D21) feeds the sleep window's activity times (Task 6). For each workbench session (newest first), walk its feed entries; every owner entry becomes a precedent with situation = the preceding agent text entry (redacted, clipped 2 KB) and words = the owner's text; category left `""` for labelling. Owner entries that are ask answers or Watchtower lines are skipped (the feed marks them). Cursor = session id + entry index.
 
 Git: `git log --no-merges --format=%H%x1f%aI%x1f%B%x1e` over the workbench folder; a commit is the owner's when its body has no `Co-Authored-By:` trailer (case-insensitive) naming Claude, Codex or `noreply@anthropic.com`/`openai`; keep only owner commits that touch a path changed by an agent commit in the 7 days before it (`git log --since … --name-only`). Situation = the agent commit subject(s) + paths, choice = "rewrote", words = the owner commit subject; category `tests` when all paths are `_test.go`/`Tests/`, else `""` for labelling. Merges: from `PRStates` rows with `merged_at` → `finish`, choice "merged". Folder not a git repo → source `done` with no rows.
 
@@ -143,14 +146,14 @@ Git: `git log --no-merges --format=%H%x1f%aI%x1f%B%x1e` over the workbench folde
 - Consumes: Tasks 1–4.
 - Produces:
   - `type LearnOptions struct { Budget time.Duration; Now func() time.Time; Sources []Source; Labeler Labeler; BatchSize int }`
-  - `type LearnStats struct { Written int; BySource map[string]int; Incomplete bool; Labelled int }`
+  - `type LearnStats struct { Written int; BySource map[string]int; Incomplete bool; Labelled, Unlabelled int }`
   - `func Learn(ctx context.Context, d *db.DB, workbenchID int64, o LearnOptions) (LearnStats, error)` — per source: `Next` → label the ones with `Category==""` → upsert + cursor in one tx; stop when the budget is spent (`Incomplete=true`).
-  - `type Labeler interface { Label(ctx context.Context, items []LabelItem) ([]string, error) }`, `type LabelItem struct { Situation, Choice string }`; `func NewLLMLabeler(gen digest.Generator, store *prompts.Store) Labeler` — batches of 20, returns one category per item; an unknown category from the model → `scope`.
+  - `type Labeler interface { Label(ctx context.Context, items []LabelItem) ([]string, error) }`, `type LabelItem struct { Situation, Choice string }`; `func NewLLMLabeler(gen digest.Generator, store *prompts.Store) Labeler` — batches of 20, returns one category per item; an item whose returned category is not one of the eight is **not stored**: it is counted in `LearnStats.Unlabelled` and its cursor still advances (one bad label must not stall the source or inflate a category).
   - `func Estimate(ctx context.Context, d *db.DB, workbenchID int64, sources []Source) (Estimate, error)`; `type Estimate struct { Decisions int; NeedLabels int; Tokens int }` — tokens = `NeedLabels × 350` (constant `labelTokensPerItem`).
   - Daemon: `func (d *Daemon) phaseWatchmanLearn(ctx context.Context)` — for each `WatchmanWorkbenches()`: `Learn` with `watchmanLearnBudget = 5*time.Minute` shared across workbenches; tracked as pipeline run `watchman-learn`; benign shutdown filtered.
-  - CLI: `watchtower watchman learn --workbench N [--estimate] [--json]` — `--estimate` prints the estimate only; otherwise enables the workbench (`EnableWatchmanWorkbench`), turns Agent analytics on (`enableAgentAnalytics`, prints "Agent analytics turned on — Watchman learns from your sessions" once), runs one `Learn` with a 5-min budget, nudges the daemon. Refused under an agent marker (owner verb). Pinned JSON keys: `{"ok","workbench","written","by_source","incomplete","analytics_turned_on"}`; estimate: `{"ok","workbench","decisions","need_labels","tokens"}`.
+  - CLI: `watchtower watchman learn --workbench N [--start] [--json]` — **without `--start` it only prints the estimate** (the owner sees count and cost first, spec §8.2); with `--start` it enables the workbench (`EnableWatchmanWorkbench`), turns Agent analytics on (`enableAgentAnalytics`, prints "Agent analytics turned on — Watchman learns from your sessions" once), runs one `Learn` with a 5-min budget, nudges the daemon. Refused under an agent marker (owner verb). Pinned JSON keys (start): `{"ok","workbench","written","by_source","incomplete","unlabelled","analytics_turned_on"}`; estimate (no `--start`): `{"ok","workbench","decisions","need_labels","tokens"}`.
 
-- [ ] **Step 1:** `TestLearn_WritesAllSourcesWithinBudget` (fake sources + fake labeler), `TestLearn_ResumesWithoutDuplicates` (budget hits after first batch; second run continues; total rows == source rows), `TestLearn_LabelsOnlyUnlabelled`, `TestLLMLabeler_BatchesOf20AndUnknownToScope` (fake generator), `TestPhaseWatchmanLearn_SkipsWhenNoWorkbench`, `TestWatchmanLearn_JSONKeysPinned`, `TestWatchmanLearn_EstimateKeysPinned`, `TestWatchmanLearn_RefusedUnderAgent`.
+- [ ] **Step 1:** `TestLearn_WritesAllSourcesWithinBudget` (fake sources + fake labeler), `TestLearn_ResumesWithoutDuplicates` (budget hits after first batch; second run continues; total rows == source rows), `TestLearn_LabelsOnlyUnlabelled`, `TestLLMLabeler_BatchesOf20`, `TestLearn_UnknownLabelSkippedAndCounted` (fake generator), `TestWatchmanLearn_NoStartOnlyEstimates` (no rows, workbench not enabled), `TestPhaseWatchmanLearn_SkipsWhenNoWorkbench`, `TestWatchmanLearn_JSONKeysPinned`, `TestWatchmanLearn_EstimateKeysPinned`, `TestWatchmanLearn_RefusedUnderAgent`.
 - [ ] **Step 2:** `go test ./internal/watchman ./internal/daemon ./cmd -run 'Learn|Labeler|WatchmanLearn|PhaseWatchman'` — FAIL.
 - [ ] **Step 3:** Implement; the prompt through the `add-ai-prompt` skill (both providers, strict JSON array of categories).
 - [ ] **Step 4:** Same, plus `go test ./cmd -run 'TestPromptStore|TestLLMUSAGE01'` and `go test ./internal/prompts` — PASS.
@@ -164,7 +167,8 @@ Git: `git log --no-merges --format=%H%x1f%aI%x1f%B%x1e` over the workbench folde
 
 **Interfaces:**
 - Produces:
-  - `func BuildProfiles(ctx context.Context, d *db.DB, workbenchID int64, gen digest.Generator, store *prompts.Store, now time.Time) error` — per category with ≥ 5 precedents: newest 60 precedents → ≤ 20 rule lines; a `pinned` row is never replaced.
+  - `func ProfileText(ctx context.Context, gen digest.Generator, store *prompts.Store, category string, ps []db.WatchmanPrecedent) (string, *digest.Usage, error)` — pure over the given precedents (≤ 20 rule lines).
+  - `func BuildProfiles(ctx context.Context, d *db.DB, workbenchID int64, gen digest.Generator, store *prompts.Store, now time.Time) error` — per category with ≥ 5 precedents: `ProfileText` over the newest 60 → stored; a `pinned` row is never replaced.
   - `func SleepWindow(activity []time.Time, now time.Time, loc *time.Location) (start, end time.Duration, ok bool)` — pure; offsets from midnight; `ok=false` with < 7 active days in the last 28.
   - `func ActivityTimes(ctx context.Context, d *db.DB, agentLog *sql.DB, workbenchID int64, since time.Time) ([]time.Time, error)` — owner turns (`agent_log_events kind='owner_turn' trigger='owner'`, when `agentLog` is non-nil), ask answers, review comments, owner commits' author times.
   - Profile row `sleep_window` text `"HH:MM-HH:MM"`.
@@ -184,9 +188,10 @@ Git: `git log --no-merges --format=%H%x1f%aI%x1f%B%x1e` over the workbench folde
 
 **Interfaces:**
 - Produces:
-  - `type Item struct { WorkbenchID int64; Category string; Situation string; Options []string; DecidedBefore time.Time; Exclude []int64 }`
+  - `type Item struct { WorkbenchID int64; Category string; Situation string; Options []string; DecidedBefore time.Time; Exclude []int64; Profile string; Instructions string }` — the caller supplies profile and instructions text; `Decide` never reads `watchman_profile` itself (so the backtest can give it a leak-free profile)
   - `type Decision struct { Choice, Rationale, Category, Confidence, Importance string; PrecedentIDs []int64; Usage *digest.Usage }` — `Confidence ∈ {low,medium,high}`, `Importance ∈ {low,high}`.
-  - `func Decide(ctx context.Context, d *db.DB, gen digest.Generator, store *prompts.Store, it Item) (Decision, error)` — retrieval `SearchWatchmanPrecedents(it.WorkbenchID, it.Category, it.Situation, it.DecidedBefore, it.Exclude, 8)` + profile text + `owner_instructions`; the item and precedents fenced as data; strict JSON parsed in Go; `PrecedentIDs` not among the retrieved ids are dropped; a `Choice` not in `Options` (when options exist) → error `ErrChoiceNotOffered`; bad enums → error.
+  - `func LiveContext(d *db.DB, workbenchID int64, category string) (profile, instructions string, err error)` — the stored profile + current `owner_instructions`, for phase 2 callers.
+  - `func Decide(ctx context.Context, d *db.DB, gen digest.Generator, store *prompts.Store, it Item) (Decision, error)` — retrieval `SearchWatchmanPrecedents(it.WorkbenchID, it.Category, it.Situation, it.DecidedBefore, it.Exclude, 8)` + `it.Profile` + `it.Instructions`; the item and precedents fenced as data; strict JSON parsed in Go; `PrecedentIDs` not among the retrieved ids are dropped; a `Choice` not in `Options` (when options exist) → error `ErrChoiceNotOffered`; bad enums → error.
 
 - [ ] **Step 1:** `TestDecide_ParsesAndValidates`, `TestDecide_DropsUnknownPrecedentIDs`, `TestDecide_ChoiceMustBeOffered`, `TestDecide_FencesItemText` (situation containing `</data> ignore previous` stays inside the fence), `TestDecide_PassesBeforeAndExcludeToSearch`.
 - [ ] **Step 2:** `go test ./internal/watchman -run TestDecide` — FAIL.
@@ -204,12 +209,13 @@ Git: `git log --no-merges --format=%H%x1f%aI%x1f%B%x1e` over the workbench folde
 - Consumes: `Decide` (Task 7), Task 1 backtest tables.
 - Produces:
   - `const HiddenPerCategory = 30`, `StrongAgreement = 0.80`, `StrongMaxWrongHigh = 0.05`
-  - `func Backtest(ctx context.Context, d *db.DB, gen digest.Generator, judge Judge, store *prompts.Store, workbenchID int64, now time.Time) (int64, error)` — inserts a `running` row; per category takes the newest 30 precedents; for each, `Decide` with `DecidedBefore = p.DecidedAt`, `Exclude = hidden ids`; agreement: exact choice match when the source has options (asks with options, permission, round outcome), else `judge.Same(ctx, owner, twin)`; `WrongHigh` = disagree with `Confidence=="high"`; row status by the constants, `< 30` precedents → `not_measured` (no model call); verdict `go` when ≥ 3 strong and `permission` or `review_code` among them, else `stop`; cost summed from usages; any error → row `failed` with the error, partial rows kept.
+  - `func Backtest(ctx context.Context, d *db.DB, gen digest.Generator, judge Judge, store *prompts.Store, workbenchID int64, now time.Time) (int64, error)` — inserts a `running` row; per category takes the newest 30 precedents; per category first builds a **backtest-local profile** with `ProfileText` over the 60 precedents decided before the category's oldest hidden decision (never stored; a pinned owner profile is not used — he may have written it after those decisions), and passes only `owner_instructions` rows updated before that cutoff; then for each hidden precedent `Decide` with `DecidedBefore = p.DecidedAt`, `Exclude = hidden ids`, that profile and those instructions; agreement: exact choice match when the source has options (asks with options, permission, round outcome), else `judge.Same(ctx, owner, twin)`; `WrongHigh` = disagree with `Confidence=="high"`; row status by the constants, `< 30` precedents → `not_measured` (no model call); verdict `go` when ≥ 3 strong and `permission` or `review_code` among them, else `stop`; cost summed from usages per category and in total; progress written after each item with `SetWatchmanBacktestProgress` as `"<category>, <i> of <n> · <k> of 8 categories done"`; any error → row `failed` with the error, partial rows kept.
   - `type Judge interface { Same(ctx context.Context, owner, twin string) (bool, *digest.Usage, error) }`, `func NewLLMJudge(gen digest.Generator, store *prompts.Store) Judge`.
   - `func Verdict(rows []db.WatchmanBacktestRow) string` — pure.
-  - CLI `watchman backtest --workbench N [--json]` — runs one backtest (owner verb, refused under an agent; takes `<workspace>/watchman.lock` via `fsutil.TryLockFile`, busy → `{"ok":false,"error":"busy"}`); prints keys `{"ok","workbench","backtest_id","status","verdict","cost_usd","categories":[{"category","total","agree","wrong_high","status"}]}`.
+  - **One lock for every run:** `Backtest` itself takes `<workspace>/watchman.lock` (`fsutil.TryLockFile`) and returns `ErrBusy` when held, so the CLI and the daemon's weekly run can never overlap; the daemon on `ErrBusy` leaves its stamp unwritten and tries next cycle.
+  - CLI `watchman backtest --workbench N [--json]` — runs one backtest (owner verb, refused under an agent; `ErrBusy` → `{"ok":false,"error":"busy"}`); prints keys `{"ok","workbench","backtest_id","status","verdict","cost_usd","categories":[{"category","total","agree","wrong_high","cost_usd","status"}]}`.
 
-- [ ] **Step 1:** `TestBacktest_NoFutureLeak` (the fake generator records the retrieved ids; none is hidden or newer than the item), `TestBacktest_EmptyCategoryNotMeasured` (no model calls), `TestBacktest_StrongWeakBars` (exact 80 %/5 % edges), `TestVerdict_GoStop` (table incl. 3 strong without permission/review_code → stop), `TestBacktest_FailureKeepsPartialRows`, `TestWatchmanBacktest_JSONKeysPinned`, `TestWatchmanBacktest_BusyLock`.
+- [ ] **Step 1:** `TestBacktest_NoFutureLeak` (the fake generator records every precedent id it is shown — retrieval and the profile prompt — and every instruction text; none is hidden, newer than the item, or an instruction updated after the cutoff), `TestBacktest_IgnoresStoredAndPinnedProfile`, `TestBacktest_DaemonSkipsWhenBusy`, `TestBacktest_WritesProgress`, `TestBacktest_EmptyCategoryNotMeasured` (no model calls), `TestBacktest_StrongWeakBars` (exact 80 %/5 % edges), `TestVerdict_GoStop` (table incl. 3 strong without permission/review_code → stop), `TestBacktest_FailureKeepsPartialRows`, `TestWatchmanBacktest_JSONKeysPinned`, `TestWatchmanBacktest_BusyLock`.
 - [ ] **Step 2:** `go test ./internal/watchman ./cmd -run 'Backtest|Verdict'` — FAIL.
 - [ ] **Step 3:** Implement (judge prompt via `add-ai-prompt`).
 - [ ] **Step 4:** Same — PASS.
@@ -221,7 +227,7 @@ Git: `git log --no-merges --format=%H%x1f%aI%x1f%B%x1e` over the workbench folde
 - Modify: `cmd/watchman.go`, `cmd/watchman_test.go`; `internal/watchman/status.go` (+ test)
 
 **Interfaces:**
-- Produces: `func Status(ctx context.Context, d *db.DB, workbenchID int64) (StatusReport, error)`; CLI `watchman status [--workbench N] [--json]` — all enabled workbenches when none given. Keys: `{"ok","workbenches":[{"workbench","name","enabled_at","analytics_on","precedents":{"<category>":n},"sources":{"<source>":{"written","done"}},"sleep_window","sleep_window_pinned","backtest":{"id","status","started_at","finished_at","error","verdict","cost_usd","categories":[…]}|null,"running":bool}]}`. `running` = the lock is held.
+- Produces: `func Status(ctx context.Context, d *db.DB, workbenchID int64) (StatusReport, error)`; CLI `watchman status [--workbench N] [--json]` — all enabled workbenches when none given. Keys: `{"ok","workbenches":[{"workbench","name","enabled_at","analytics_on","precedents":{"<category>":n},"sources":{"<source>":{"written","done"}},"sleep_window","sleep_window_pinned","estimate":{"decisions","need_labels","tokens"}|null,"backtest":{"id","status","started_at","finished_at","error","verdict","cost_usd","progress","categories":[…]}|null,"last_done":{same shape}|null,"running":bool}]}` — workbenches not yet enabled are listed too, with `enabled_at:null` and their `estimate` (so the Desktop can offer Start). `running` = the lock is held.
 
 - [ ] **Step 1:** `TestStatus_EmptyWorkbench` (enabled, nothing learned: zeros, `backtest:null`), `TestStatus_AfterBacktest`, `TestWatchmanStatus_JSONKeysPinned`, `TestWatchmanStatus_RunningWhileLocked`.
 - [ ] **Step 2:** `go test ./internal/watchman ./cmd -run 'Status'` — FAIL.
@@ -237,10 +243,10 @@ Git: `git log --no-merges --format=%H%x1f%aI%x1f%B%x1e` over the workbench folde
 - Test: `WatchtowerDesktop/Tests/Core/WatchmanStatusDecodingTests.swift`, `WatchmanSettingsCopyTests.swift`, `WatchtowerDesktop/Tests/WatchmanCenterTests.swift`; DesignShots: replace the `settings-*` mock scenes' bodies with the real section on fixture JSON (keep shot names)
 
 **Interfaces:**
-- Consumes: `watchman status --json`, `watchman backtest --workbench N --json`, `watchman learn --workbench N --estimate --json`.
-- Produces: `@Observable final class WatchmanCenter { init(runner: any CLIRunnerProtocol); var state: WatchmanSettingsState; func load() async; func runBacktest(workbench: Int64) async }`; `enum WatchmanSettingsState { case loading, neverRun(WatchmanStatus), running(WatchmanStatus, progress: String), failed(WatchmanStatus, message: String), results(WatchmanStatus), readFailed(String) }`.
+- Consumes: `watchman status --json`, `watchman backtest --workbench N --json`, `watchman learn --workbench N --start --json`.
+- Produces: `@Observable final class WatchmanCenter { init(runner: any CLIRunnerProtocol); var state: WatchmanSettingsState; func load() async; func runBacktest(workbench: Int64) async; func startLearning(workbench: Int64) async }`; `enum WatchmanSettingsState { case loading, neverRun(WatchmanStatus), running(WatchmanStatus, progress: String), failed(WatchmanStatus, message: String), results(WatchmanStatus), readFailed(String) }`.
 
-Phase 1 is read-only except **Run Backtest Now** / **Retry**; no Edit / Unpin / extra limits (phase 2) — those controls are absent, not disabled. The night cost and arming are phase 2.
+A workbench not yet learned shows its estimate ("~1 850 decisions, est. 1.6 M tokens") with **Start Learning** (`learn --start`) — the owner starts it after seeing the cost; `running` shows the status's `progress` line; `failed` shows the error with **Retry** and the `last_done` results below it. Otherwise phase 1 is read-only except **Run Backtest Now** / **Retry**; no Edit / Unpin / extra limits (phase 2) — those controls are absent, not disabled. The night cost and arming are phase 2.
 
 - [ ] **Step 1:** Decoding test on a Go-produced fixture (`internal/watchman/testdata/status.json`, written by a Go test with `-update`, read by the Swift test — dual path), copy tests (every string, the 80 %/5 % note, "not measured" wording), `WatchmanCenterTests` (fake runner: state transitions loading → results; backtest busy → message; CLI failure → `readFailed` with Retry).
 - [ ] **Step 2:** `make test-swift FILTER='WatchmanStatusDecodingTests|WatchmanSettingsCopyTests|WatchmanCenterTests'` — FAIL.
@@ -254,7 +260,7 @@ Phase 1 is read-only except **Run Backtest Now** / **Retry**; no Edit / Unpin / 
 - Create: `docs/features/watchman.md`, `docs/inventory/watchman.md`, `docs/guide/<area>/watchman.md` (per `docs/guide/WRITING.md`, a Learn card block)
 - Modify: `CLAUDE.md` (feature list line), `docs/features/README.md` (summary), `docs/inventory/README.md` (module map), guide index
 
-Inventory for phase 1: WATCHMAN-03 (twin decisions never precedents — guard: `TestWATCHMAN03_SourcesAreOwnerOnly`, the closed `DBSources()+TurnSource+GitSource` list contains no twin source) and WATCHMAN-06 (phase 1 never acts — guard: `TestWATCHMAN06_NoActingImports`, `internal/watchman` imports none of `internal/hub`, `internal/sessionhost`, `internal/tools`). WATCHMAN-01/02/04/05 arrive with phase 2.
+Inventory for phase 1, worded as the spec words them so phase 2 does not weaken them: WATCHMAN-03 "twin decisions become precedents only after the owner's OK" (guard `TestWATCHMAN03_SourcesAreOwnerOnly`: the closed source list `DBSources()+TurnSource+GitSource` reads only owner-made rows; phase 2 adds the OK'd-journal source under the same id) and WATCHMAN-06 "learning and the backtest never act" (guard `TestWATCHMAN06_NoActingImports`: `internal/watchman` imports none of `internal/hub`, `internal/sessionhost`, `internal/tools`; phase 2's acting code lives in its own package, so the contract stays). WATCHMAN-06 is new, beyond the spec's five; WATCHMAN-01/02/04/05 arrive with phase 2.
 
 - [ ] **Step 1:** Write the two guard tests in `internal/watchman/guard_test.go`.
 - [ ] **Step 2:** `go test ./internal/watchman -run TestWATCHMAN` — PASS (they guard existing code); `go test ./docs/guide` — PASS (8 KB cap, cards valid).
