@@ -219,19 +219,10 @@ func cleanOwnerText(s string) (string, bool) {
 		return "", false
 	}
 	var parts []string
-	startPrompt := false
-	for _, l := range strings.Split(s, "\n") {
-		l = strings.Join(strings.Fields(l), " ")
-		switch {
-		case l == "":
-			continue
-		case hasAnyPrefix(l, appStartPromptPrefixes):
-			startPrompt = true
-			continue
-		case startPrompt && strings.HasPrefix(l, appPlanFirstPrefix):
-			continue
+	for _, l := range strings.Split(StripAppStartPrompts(s), "\n") {
+		if l = strings.Join(strings.Fields(l), " "); l != "" {
+			parts = append(parts, l)
 		}
-		parts = append(parts, l)
 	}
 	if len(parts) == 0 {
 		return "", false
@@ -241,6 +232,26 @@ func cleanOwnerText(s string) (string, bool) {
 		s = string([]rune(s)[:maxOwnerLineRunes]) + "…"
 	}
 	return s, true
+}
+
+// StripAppStartPrompts removes the app-typed start prompt lines from an
+// owner message (and the "Plan first" line after one) and returns the rest
+// trimmed, "" when nothing else is left. The watchman turn source uses it too.
+func StripAppStartPrompts(s string) string {
+	var keep []string
+	startPrompt := false
+	for _, l := range strings.Split(s, "\n") {
+		t := strings.Join(strings.Fields(l), " ")
+		switch {
+		case hasAnyPrefix(t, appStartPromptPrefixes):
+			startPrompt = true
+			continue
+		case startPrompt && strings.HasPrefix(t, appPlanFirstPrefix):
+			continue
+		}
+		keep = append(keep, l)
+	}
+	return strings.TrimSpace(strings.Join(keep, "\n"))
 }
 
 func hasAnyPrefix(s string, prefixes []string) bool {

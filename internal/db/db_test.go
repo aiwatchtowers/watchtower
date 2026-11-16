@@ -189,7 +189,7 @@ func TestAllTablesExist(t *testing.T) {
 		"external_connections",
 		"external_connection_tools",
 		"kb_documents", "kb_chunks", "kb_sources", "kb_dirty",
-		"watchman_workbenches", "watchman_precedents", "watchman_cursors", "watchman_profile", "watchman_backtests", "watchman_backtest_rows",
+		"watchman_workbenches", "watchman_precedents", "watchman_cursors", "watchman_profile", "watchman_backtests", "watchman_backtest_rows", "watchman_skipped_keys",
 		"ext_sources", "ext_documents", "ext_comments", "ext_users",
 		"doc_links", "ext_link_state",
 		"chat_conversations", "chat_messages", "chat_turn_steps", "chat_attachments",

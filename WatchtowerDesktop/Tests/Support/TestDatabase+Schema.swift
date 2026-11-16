@@ -2555,6 +2555,12 @@ CREATE TABLE IF NOT EXISTS watchman_backtest_rows (
     status      TEXT NOT NULL CHECK (status IN ('strong','weak','not_measured')),
     PRIMARY KEY (backtest_id, category)
 );
+CREATE TABLE IF NOT EXISTS watchman_skipped_keys (
+    source     TEXT NOT NULL,
+    source_key TEXT NOT NULL,
+    skipped_at TEXT NOT NULL,
+    PRIMARY KEY (source, source_key)
+);
 CREATE VIEW IF NOT EXISTS tracker_issues AS
 SELECT 'jira' AS tracker, ji.account_id, ji.id AS issue_id, ji.key, ji.project_key,
        ji.summary AS title, ji.description_text, ji.status, ji.status_category,
