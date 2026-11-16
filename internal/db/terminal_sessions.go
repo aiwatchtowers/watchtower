@@ -246,6 +246,22 @@ func (db *DB) TerminalAgentCwd(id int64) (AgentCwd, error) {
 	return AgentCwd{Path: cwd.String, At: parsedStampOrZero(cwdAt), RunStart: parsedStampOrZero(runStart)}, nil
 }
 
+// TerminalDeleteRequestedAt is row id's delete_requested_at (board #1716,
+// the Desktop's only): the moment the owner's delete took effect, when the
+// row's terminal had ended; "" when the row is not being deleted.
+// ErrTerminalSessionNotFound when there is no such row.
+func (db *DB) TerminalDeleteRequestedAt(ctx context.Context, id int64) (string, error) {
+	var at sql.NullString
+	err := db.QueryRowContext(ctx, `SELECT delete_requested_at FROM terminal_sessions WHERE id = ?`, id).Scan(&at)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrTerminalSessionNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("reading terminal session %d delete request: %w", id, err)
+	}
+	return at.String, nil
+}
+
 // runStartExpr is the row's run mark stamp, agent_turns' since; NULL when
 // agent_turns is NULL or not JSON (json_extract would fail on it).
 const runStartExpr = `CASE WHEN json_valid(agent_turns) THEN json_extract(agent_turns, '$.since') END`

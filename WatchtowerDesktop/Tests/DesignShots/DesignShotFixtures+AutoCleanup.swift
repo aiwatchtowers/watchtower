@@ -38,6 +38,11 @@ enum AutoCleanupShotFixtures {
                     ("Spec review", cleanPlan), ("Review payments PR", keptPlan)
                 ])
             },
+            DesignShot(
+                name: "auto-cleanup-6b-subagent-records-unreadable", size: NSSize(width: panelWidth, height: 130)
+            ) {
+                notice([("Plan run 1527", unreadPlan)])
+            },
             DesignShot(name: "auto-cleanup-7a-process-running", size: NSSize(width: panelWidth, height: 130)) {
                 markedRow(title: "Fix login flow", mark: mark(result: plan([worktree("a", reason: "process_running")])))
             },
@@ -188,6 +193,14 @@ enum AutoCleanupShotFixtures {
             worktree("d", bytes: 700_000_000, done: true), worktree("e", bytes: 700_000_000, done: true),
             branch("kept", reason: "unpushed_commits")
         ])
+    }
+
+    /// 1 worktree (~600 MB) removed; Claude Code's subagent records could
+    /// not be read (spec §2a).
+    private static var unreadPlan: SessionCleanupPlan {
+        var plan = plan([worktree("f", bytes: 600_000_000, done: true)])
+        plan.notes = [SessionCleanupPlan.subagentRecordsUnreadableNote]
+        return plan
     }
 
     private static func worktree(_ name: String, bytes: Int64 = 0, done: Bool = false, reason: String? = nil) -> SessionCleanupItem {

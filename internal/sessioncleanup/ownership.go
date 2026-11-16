@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -20,34 +21,50 @@ import (
 // worktree and worktree_branch owned by record (born no later than the row,
 // observePlacement); all "" for every other row.
 //
-// Command ledger rows (auto cleanup spec 2026-11-10 §2a) name what the
-// agent created: a worktree row adds its root and names its branch, a
-// branch row names its branch only — its root is the repository's top
-// level, never a worktree root. A command row counts only when its root is
-// a worktree of the planned repository (loadObserved). The session's Claude
-// scratchpad lanes (§2b) are added to roots and named by loadScratch.
+// The facts Claude Code and git write themselves add to it (auto cleanup
+// spec 2026-11-10 §2): the session's subagent worktrees and their branches
+// (§2a, loadAgentFiles), its Claude scratchpad lanes (§2b, loadAgentFiles)
+// and the branches created in its own worktrees (§2c, loadHeadLogs).
+// ownRoots are the roots the cwd ledger, a subagent record or the
+// scratchpad gave (never a declared one): the worktrees §2c reads.
+// ledgerBranches are the ledger's branches with the roots they were seen
+// at; loadHeadLogs decides them. switchedTo are §2c candidates only
+// checked out in a session's worktree, listed so the plan shows them kept
+// as not_this_session; unknown are §2c candidates left undecided
+// (created_unknown).
 type observed struct {
-	roots, branches, named              map[string]bool
+	roots, ownRoots, branches, named map[string]bool
+	switchedTo, unknown              map[string]bool
+	ledgerBranches                   map[string][]string
+	// checkedOutOnly are the switchedTo a HEAD log itself showed (a
+	// candidate only checked out in a session's worktree), not a ledger
+	// branch left unproven: an apply's re-check lets them win over the
+	// plan's evidence.
+	checkedOutOnly map[string]bool
+	// evidence maps a branch §2a, §2b or §2c made the session's to the
+	// worktrees that showed it: an apply that removes such a worktree
+	// still knows whose the branch was (applier.ownedByRemoved).
+	evidence                            map[string][]string
 	placedCwd, placedRoot, placedBranch string
 }
 
-const (
-	sourceCommand = "command"
-	kindBranch    = "branch"
-)
+// own makes branch the session's on the evidence of the worktree at root.
+func (o observed) own(branch, root string) {
+	o.branches[branch] = true
+	if !slices.Contains(o.evidence[branch], root) {
+		o.evidence[branch] = append(o.evidence[branch], root)
+	}
+}
 
 func observe(rows []db.SessionWorktree, targetBranches, declaredWorktrees, declaredBranches []string) observed {
-	o := observed{roots: map[string]bool{}, branches: map[string]bool{}, named: map[string]bool{}}
+	o := observed{roots: map[string]bool{}, ownRoots: map[string]bool{}, branches: map[string]bool{},
+		named: map[string]bool{}, switchedTo: map[string]bool{}, unknown: map[string]bool{},
+		checkedOutOnly: map[string]bool{}, ledgerBranches: map[string][]string{}, evidence: map[string][]string{}}
 	for _, r := range rows {
-		command := r.Source == sourceCommand
-		if !command || r.Kind != kindBranch {
-			o.roots[resolvePath(r.Root)] = true
-		}
+		root := resolvePath(r.Root)
+		o.roots[root], o.ownRoots[root] = true, true
 		if r.Branch != "" {
-			o.branches[r.Branch] = true
-			if command {
-				o.named[r.Branch] = true
-			}
+			o.ledgerBranches[r.Branch] = append(o.ledgerBranches[r.Branch], root)
 		}
 	}
 	for _, p := range declaredWorktrees {
@@ -61,9 +78,9 @@ func observe(rows []db.SessionWorktree, targetBranches, declaredWorktrees, decla
 	return o
 }
 
-// sawWorktree: the session recorded or declared the root (a scratchpad
-// lane included), or a branch a target or the agent named is checked out
-// there.
+// sawWorktree: the session recorded or declared the root (a subagent
+// worktree or a scratchpad lane included), or a branch a target, the agent
+// or an adopted lane named is checked out there.
 func (o observed) sawWorktree(w worktree) bool {
 	return o.roots[w.Root] || (w.Branch != "" && o.named[w.Branch])
 }

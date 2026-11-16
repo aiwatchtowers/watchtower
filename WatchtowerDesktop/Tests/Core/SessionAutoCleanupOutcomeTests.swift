@@ -188,6 +188,55 @@ final class SessionAutoCleanupOutcomeTests: XCTestCase {
         XCTAssertEqual(joined?.rest, ": removed 2 worktrees (~2.0 GB).")
     }
 
+    /// Spec §2a/§3, mockup state 6b: Claude Code's subagent records could
+    /// not be read — a second line, word for word, also when nothing was
+    /// removed; the row still goes.
+    func testSubagentRecordsNoteLine() {
+        let note = "Could not read the subagent records of “T” — check the Clean Up screen."
+        var removed = result([worktree("a", bytes: 600_000_000, done: true)])
+        removed.notes = [SessionCleanupPlan.subagentRecordsUnreadableNote]
+        let notice = SessionCleanupNotice(lead: "Cleaned up", rest: " “T”: removed 1 worktree (~600 MB).", note: note)
+        XCTAssertEqual(Outcome.evaluate(result: removed, title: "T", runError: nil), .clean(notice))
+        XCTAssertEqual(notice.text, "Cleaned up “T”: removed 1 worktree (~600 MB).\n" + note)
+
+        var nothing = result([branch("main", reason: "default_branch")])
+        nothing.notes = [SessionCleanupPlan.subagentRecordsUnreadableNote]
+        XCTAssertEqual(
+            Outcome.evaluate(result: nothing, title: "T", runError: nil),
+            .clean(SessionCleanupNotice(lead: "Cleaned up", rest: " “T”.", note: note))
+        )
+
+        var kept = result([branch("feat/a", reason: "unpushed_commits")])
+        kept.notes = [SessionCleanupPlan.subagentRecordsUnreadableNote]
+        XCTAssertEqual(
+            Outcome.evaluate(result: kept, title: "T", runError: nil),
+            .clean(SessionCleanupNotice(lead: "Cleaned up", rest: " “T”: kept 1 branch — unpushed commits.", note: note))
+        )
+
+        // An unknown note says nothing.
+        var other = result([branch("main", reason: "default_branch")])
+        other.notes = ["something_new"]
+        XCTAssertEqual(Outcome.evaluate(result: other, title: "T", runError: nil), .clean(nil))
+
+        // Joined: the sessions whose records could not be read, by title.
+        XCTAssertEqual(
+            SessionCleanupNotice.joined([("A", nothing), ("B", removed), ("C", result([]))])?.note,
+            "Could not read the subagent records of “A” and “B” — check the Clean Up screen."
+        )
+    }
+
+    func testNotesAbsentDecodesEmpty() throws {
+        let absent = try JSONDecoder().decode(SessionCleanupPlan.self, from: Data(#"{"mode":"apply","items":[]}"#.utf8))
+        XCTAssertEqual(absent.notes, [])
+        XCTAssertFalse(absent.subagentRecordsUnreadable)
+        let null = try JSONDecoder().decode(SessionCleanupPlan.self, from: Data(#"{"notes":null}"#.utf8))
+        XCTAssertEqual(null.notes, [])
+        let set = try JSONDecoder().decode(
+            SessionCleanupPlan.self, from: Data(#"{"notes":["subagent_records_unreadable"]}"#.utf8)
+        )
+        XCTAssertTrue(set.subagentRecordsUnreadable)
+    }
+
     // MARK: Not fully cleaned
 
     func testMarkCopy() {

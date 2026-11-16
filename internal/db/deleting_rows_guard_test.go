@@ -73,6 +73,7 @@ var lookupByID = map[string]allowedRead{
 	"internal/db/terminal_sessions.go:DB.HeldWorktreeBranches":                 {1, "a deleting row still reserves its worktree branch name"},
 	"internal/db/terminal_sessions.go:DB.TerminalAgentCwd":                     {1, "one row by id (hooks)"},
 	"internal/db/terminal_sessions.go:DB.TakeChatQuestion":                     {1, "one row by id in the escalation's write"},
+	"internal/db/terminal_sessions.go:DB.TerminalDeleteRequestedAt":            {1, "one row by id: when its terminal had ended, for its own cleanup (auto cleanup §2a)"},
 	"internal/db/terminal_watch_issue.go:DB.ClearAgentWatchIssue":              {1, "one row by id"},
 	"internal/db/terminal_watch_issue.go:DB.GetCodexWatchRow":                  {1, "one row by id"},
 	"internal/db/workbench_agent_analytics.go:DB.ClaudeTerminalSessionIDs":     {1, "agent analytics: a transcript uuid to its row (spec §4)"},

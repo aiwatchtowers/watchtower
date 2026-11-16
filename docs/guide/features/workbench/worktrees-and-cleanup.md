@@ -84,7 +84,8 @@ Each item is either ticked for removal or greyed out with the reason it is kept.
 Every session delete cleans up once its **Undo** bar goes away: the worktrees and branches the session and its agents created that are merged or pushed are removed, with no question. The sessions panel reads **Cleaning up 2 sessions…** meanwhile, then a notice such as **Cleaned up “Fix login flow”: removed 3 worktrees and 12 branches (~2.1 GB).** shows for six seconds.
 
 - Kept on purpose, and named in the notice: uncommitted changes, unpushed commits, a locked worktree, a git operation in progress, and branches while git cannot tell the default branch ("default branch unknown"). The session still goes.
-- Never touched and not mentioned: what the session did not create, such as the main folder, the default branch or a worktree that is older than the session.
+- Never touched and not mentioned: what the session did not create, such as the main folder, the default branch or a worktree that is older than the session. Nor is a worktree an agent made in a folder of its own, or a branch made in the main folder: remove those on the Clean Up screen.
+- If Claude Code's subagent records could not be read, the notice adds **Could not read the subagent records of “T” — check the Clean Up screen.**
 - If something could not be removed (a process runs in a worktree, git refused, the cleanup failed), the session comes back in **▸ N finished** with an orange line such as **Not fully cleaned: 1 worktree — a process is running in it.** Click it for its report and **Cleanup** section. Hover it, or use its **⋯** menu in a narrow panel:
   - **Clean Up Again** runs the cleanup again; the row reads **Cleaning up…** and goes once nothing is left.
   - **Delete Anyway** deletes the session now. What was not removed stays on disk, and the Clean Up screen still lists it.

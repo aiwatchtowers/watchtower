@@ -31,9 +31,10 @@ public struct AgentSessionCapabilities: Decodable, Equatable, Sendable {
     /// The transcript records the context parts and the skill listing that
     /// agent analytics' Context and Skills blocks read.
     public let analyticsContext: Bool
-    /// The agent may create git worktrees under its own per-session
-    /// scratchpad, which the session's cleanup adopts (Claude Code's).
-    public let scratchpadLanes: Bool
+    /// The agent keeps Claude Code's per-session files (subagent records,
+    /// the scratchpad) that the session's cleanup reads to adopt what the
+    /// session's agents made. Go's `Caps.ClaudeSessionFiles`.
+    public let claudeSessionFiles: Bool
 
     enum CodingKeys: String, CodingKey {
         case stateEvents = "state_events"
@@ -52,7 +53,7 @@ public struct AgentSessionCapabilities: Decodable, Equatable, Sendable {
         case backgroundTasks = "background_tasks"
         case appSessionID = "app_session_id"
         case analyticsContext = "analytics_context"
-        case scratchpadLanes = "scratchpad_lanes"
+        case claudeSessionFiles = "claude_session_files"
     }
 
     /// A line may go into the session while its agent works: mid-turn input,

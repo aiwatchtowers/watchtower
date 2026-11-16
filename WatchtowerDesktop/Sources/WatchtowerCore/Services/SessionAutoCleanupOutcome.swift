@@ -115,48 +115,63 @@ package enum SessionAutoCleanupOutcome: Equatable, Sendable {
 /// The notice on the Undo bar's place after a clean background cleanup:
 /// "Cleaned up “T”: removed 3 worktrees and 12 branches (~2.1 GB)." Built
 /// in two parts: `lead` ("Cleaned up", or "Cleaned up 4 sessions" when
-/// joined) is the view's emphasis, `rest` the remainder.
+/// joined) is the view's emphasis, `rest` the remainder. `note` is a second
+/// line when Claude Code's subagent records could not be read (spec §2a):
+/// "Could not read the subagent records of “T” — check the Clean Up
+/// screen."
 package struct SessionCleanupNotice: Equatable, Sendable {
     package let lead: String
     package let rest: String
+    package let note: String?
 
-    package var text: String { lead + rest }
+    package var text: String { lead + rest + (note.map { "\n" + $0 } ?? "") }
 
-    package init(lead: String, rest: String) {
+    package init(lead: String, rest: String, note: String? = nil) {
         self.lead = lead
         self.rest = rest
+        self.note = note
     }
 
     /// One session's notice; nil when nothing was removed or kept on
-    /// purpose.
+    /// purpose and the subagent records were read.
     package static func single(title: String, result: SessionCleanupPlan) -> Self? {
-        make(lead: "Cleaned up", subject: " “\(title)”", results: [result])
+        make(lead: "Cleaned up", subject: " “\(title)”", notices: [(title, result)])
     }
 
     /// Several deletes in a row as one notice: "Cleaned up 4 sessions:
     /// removed …"; one entry reads as `single`. Nil when nothing was removed
-    /// or kept on purpose.
+    /// or kept on purpose and every session's subagent records were read.
     package static func joined(_ notices: [(title: String, result: SessionCleanupPlan)]) -> Self? {
         guard notices.count != 1 else { return single(title: notices[0].title, result: notices[0].result) }
-        return make(lead: "Cleaned up \(notices.count) sessions", subject: "", results: notices.map(\.result))
+        return make(lead: "Cleaned up \(notices.count) sessions", subject: "", notices: notices)
     }
 
-    private static func make(lead: String, subject: String, results: [SessionCleanupPlan]) -> Self? {
+    private static func make(
+        lead: String,
+        subject: String,
+        notices: [(title: String, result: SessionCleanupPlan)]
+    ) -> Self? {
+        let results = notices.map(\.result)
+        let unread = notices.filter(\.result.subagentRecordsUnreadable).map { "“\($0.title)”" }
+        let note = unread.isEmpty
+            ? nil : "Could not read the subagent records of \(listText(unread)) — check the Clean Up screen."
         let items = results.flatMap(\.items)
         let removed = items.filter { SessionAutoCleanupOutcome.group($0) == .removed }
         let parts = SessionCleanupPresentation.countParts(removed)
         let kept = items.filter { SessionAutoCleanupOutcome.group($0) == .keptOnPurpose }
         let keptText = SessionCleanupPresentation.keptText(kept)
         guard !parts.isEmpty else {
-            // Nothing removed: the notice still names what was kept.
-            return keptText.map { Self(lead: lead, rest: "\(subject): kept \($0).") }
+            // Nothing removed: the notice still names what was kept, and
+            // still shows the note.
+            if let keptText { return Self(lead: lead, rest: "\(subject): kept \(keptText).", note: note) }
+            return note.map { Self(lead: lead, rest: "\(subject).", note: $0) }
         }
         let bytes = results.reduce(Int64(0)) { $0 + $1.removedBytes }
         var rest = "\(subject): removed \(listText(parts))"
         if bytes > 0 { rest += " (~\(SessionCleanupPresentation.byteText(bytes)))" }
         rest += "."
         if let keptText { rest += " Kept \(keptText)." }
-        return Self(lead: lead, rest: rest)
+        return Self(lead: lead, rest: rest, note: note)
     }
 
     /// "a", "a and b", "a, b and c".

@@ -1,9 +1,9 @@
 -- +goose Up
 -- Every agent session id a deleted terminal session had (auto cleanup spec
--- 2026-11-10 §2b). A row's ledger in terminal_session_agent_sessions
+-- 2026-11-10 §2a/§2b). A row's ledger in terminal_session_agent_sessions
 -- cascades away with it, so without this a uuid two rows shared would look
 -- like the survivor's alone once the other was deleted, and the survivor's
--- cleanup would adopt the deleted row's scratchpad lanes. No foreign key:
+-- cleanup would adopt the deleted row's subagent and scratchpad lanes. No foreign key:
 -- the tombstone outlives the row. Ids and times only.
 CREATE TABLE agent_session_tombstones (
     agent_session_id TEXT PRIMARY KEY,

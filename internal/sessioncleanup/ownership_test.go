@@ -13,15 +13,6 @@ import (
 	"watchtower/internal/db"
 )
 
-// recordCommand adds a command ledger row (auto cleanup spec 2026-11-10
-// §2a): kind "worktree" with its root and branch, or kind "branch" whose
-// root is the repository's top level.
-func (f *fixture) recordCommand(kind, root, branch string) {
-	f.store.ledger = append(f.store.ledger, db.SessionWorktree{
-		Root: root, Branch: branch, FirstAt: "2026-10-12T12:00:00.000Z", Source: "command", Kind: kind,
-	})
-}
-
 // useScratchBases points scratchBases at bases for one test. Tests that call
 // it must not be parallel: scratchBases is a package variable.
 func useScratchBases(t *testing.T, bases ...string) {
@@ -55,99 +46,6 @@ func (f *fixture) ownUUID(since time.Time) {
 	f.store.session.Kind = "claude"
 	f.store.agentIDs = []db.AgentSessionID{{ID: "older-id", Since: "2026-10-01T00:00:00Z"}, {ID: testUUID, Since: since.UTC().Format(time.RFC3339)}}
 	f.store.uuidOwners = map[string][]int64{testUUID: {testSession}}
-}
-
-func TestProj18_CommandLedgerAdoptsWorktree(t *testing.T) {
-	t.Parallel()
-	f := newFixture(t)
-	root := f.worktree("wt-agent", "feat/agent") // merged: HEAD is main's
-	f.recordCommand("worktree", root, "feat/agent")
-	// A branch row's root is the repository's top level and never a
-	// worktree root: a linked worktree recorded there adopts nothing.
-	other := f.pushedWork("wt-other", "feat/other")
-	f.recordCommand("branch", other, "feat/elsewhere")
-
-	p := f.plan(Request{})
-	wantItem(t, p, "worktree:"+root, ActionRemove, "")
-	wantItem(t, p, "branch:feat/agent", ActionRemove, "")
-	if hasItem(p, "worktree:"+other) {
-		t.Fatalf("a branch row's root was adopted as a worktree: %+v", p.Items)
-	}
-}
-
-// The agent's worktree branch counts as named: a worktree with it checked
-// out is observed although its root was never recorded.
-func TestCommandWorktreeBranchIsNamed(t *testing.T) {
-	t.Parallel()
-	f := newFixture(t)
-	a := f.worktree("wt-a", "feat/a")
-	b := f.pushedWork("wt-b", "feat/named")
-	f.recordCommand("worktree", a, "feat/named")
-
-	p := f.plan(Request{})
-	wantItem(t, p, "worktree:"+a, ActionRemove, "")
-	wantItem(t, p, "worktree:"+b, ActionRemove, "")
-}
-
-// A command run in another repository names nothing here, whichever its
-// kind: its root is no worktree of the planned repository.
-func TestProj18_CommandBranchFromOtherRepoNamesNothing(t *testing.T) {
-	t.Parallel()
-	f := newFixture(t)
-	otherRepo := filepath.Join(f.base, "other")
-	gitIn(t, f.base, "init", "-q", "-b", "main", "other")
-	f.commit(otherRepo, "README.md", "other\n")
-	otherWT := filepath.Join(f.base, "other-wt")
-	gitIn(t, otherRepo, "worktree", "add", "-q", "-b", "feat/shared-wt", otherWT, "main")
-	f.recordCommand("branch", otherRepo, "feat/shared")
-	f.recordCommand("worktree", otherWT, "feat/shared-wt")
-	f.recordCommand("worktree", filepath.Join(f.base, "gone"), "feat/shared-gone")
-
-	mine := f.pushedWork("wt-mine", "feat/shared")
-	mine2 := f.pushedWork("wt-mine2", "feat/shared-wt")
-	mine3 := f.pushedWork("wt-mine3", "feat/shared-gone")
-
-	p := f.plan(Request{})
-	for _, key := range []string{"worktree:" + mine, "worktree:" + mine2, "worktree:" + mine3, "worktree:" + otherWT} {
-		if hasItem(p, key) {
-			t.Fatalf("%s was adopted through another repository's command: %+v", key, p.Items)
-		}
-	}
-	for _, key := range []string{"branch:feat/shared", "branch:feat/shared-wt", "branch:feat/shared-gone"} {
-		if hasItem(p, key) {
-			t.Fatalf("%s was named through another repository's command: %+v", key, p.Items)
-		}
-	}
-}
-
-func TestProj18_CommandNamedBranchOlderThanSessionIsKept(t *testing.T) {
-	t.Parallel()
-	f := newFixture(t)
-	gitIn(t, f.repo, "branch", "feat/old", "main") // merged: only the age keeps it
-	wt := f.pushedWork("wt-old", "feat/old-wt")
-	f.sessionCreated = time.Now().Add(time.Hour) // another session made both earlier
-	f.recordCommand("branch", f.repo, "feat/old")
-	f.recordCommand("branch", f.repo, "feat/old-wt") // a failed `git checkout -b feat/old-wt`
-
-	p := f.plan(Request{})
-	wantItem(t, p, "branch:feat/old", ActionKeep, ReasonExistedBeforeSession)
-	wantItem(t, p, "worktree:"+wt, ActionKeep, ReasonExistedBeforeSession)
-	wantItem(t, p, "branch:feat/old-wt", ActionKeep, ReasonCheckedOut)
-}
-
-func TestProj18_CommandRowUnpushedIsKept(t *testing.T) {
-	t.Parallel()
-	f := newFixture(t)
-	root := f.worktree("wt", "feat/x")
-	f.commit(root, "local.txt", "only here\n")
-	f.recordCommand("worktree", root, "feat/x")
-	gitIn(t, f.repo, "branch", "feat/alone", "feat/x")
-	f.recordCommand("branch", f.repo, "feat/alone")
-
-	p := f.plan(Request{})
-	wantItem(t, p, "worktree:"+root, ActionKeep, ReasonUnpushedCommits)
-	wantItem(t, p, "branch:feat/x", ActionKeep, ReasonCheckedOut)
-	wantItem(t, p, "branch:feat/alone", ActionKeep, ReasonUnpushedCommits)
 }
 
 func TestProj18_ScratchpadWorktreeIsTheSessions(t *testing.T) {
@@ -365,7 +263,8 @@ func TestProj18_ScratchpadUUIDOfDeletedRowAdoptsNothing(t *testing.T) {
 	root := f.scratchWorktree("lane", "feat/lane")
 	plan := func() Plan {
 		t.Helper()
-		deps := Deps{Git: SystemGit{}, DB: DBStore{DB: d}, Procs: f.procs, WorktreeBirth: stampBirth}
+		deps := Deps{Git: SystemGit{}, DB: DBStore{DB: d}, Procs: f.procs, WorktreeBirth: stampBirth,
+			ClaudeProjects: func() string { return f.projects }}
 		res, err := PlanResult(context.Background(), deps, Request{SessionID: a})
 		if err != nil {
 			t.Fatalf("PlanResult: %v", err)
