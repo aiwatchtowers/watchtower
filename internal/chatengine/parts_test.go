@@ -318,3 +318,11 @@ func TestParts_LiveSlackHoldsOnTheOlderPagePath(t *testing.T) {
 	assert.Equal(t, []string{PartText, PartKnowledgeMark}, kindsOf(page.Messages[0].Parts))
 	assert.Equal(t, []string{PartText}, kindsOf(page.Messages[1].Parts))
 }
+
+func TestParts_SignInHintFollowsTheRegistry(t *testing.T) {
+	assert.Equal(t, "Open Terminal and run: claude login", signInHint(""))
+	assert.Equal(t, "Open Terminal and run: claude login", signInHint("claude"))
+	assert.Equal(t, "Open Terminal and run: codex login", signInHint("codex"))
+	assert.Equal(t, "Check its settings in Settings → AI.", signInHint("ollama"))
+	assert.Equal(t, "Check its settings in Settings → AI.", signInHint("nope"))
+}

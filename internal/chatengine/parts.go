@@ -19,6 +19,7 @@ import (
 	"watchtower/internal/chatstore"
 	"watchtower/internal/ideas"
 	"watchtower/internal/instructions"
+	"watchtower/internal/providers"
 )
 
 // The part kinds.
@@ -433,14 +434,14 @@ func errorRetryable(code string) bool {
 	return code != "quota_exhausted" && code != "auth" && code != "attachment_unsupported" && code != "workdir_unsafe"
 }
 
+// signInHint: a CLI provider signs in with `<id> login` (an empty provider is
+// the default one); any other (an HTTP server) has no login, only settings.
 func signInHint(provider string) string {
-	switch provider {
-	case "", "claude":
-		return "Open Terminal and run: claude login"
-	case "codex":
-		return "Open Terminal and run: codex login"
+	p := providers.ByID(provider)
+	if provider != "" && p.ID != provider || p.Kind != "cli" {
+		return "Check its settings in Settings → AI."
 	}
-	return "Check its settings in Settings → AI."
+	return "Open Terminal and run: " + p.ID + " login"
 }
 
 // routingNotePart is which provider answers the running turn (from the
