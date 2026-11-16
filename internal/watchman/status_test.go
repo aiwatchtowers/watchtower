@@ -85,7 +85,7 @@ func insertBacktest(t *testing.T, d *db.DB, wb int64, status string, started tim
 		b.Verdict, b.CostUSD = "go", 1.25
 	}
 	if status == "running" {
-		b.Progress = "permission 12 of 30"
+		b.Progress = "permission, 12 of 30 · 3 of 8 categories done"
 	}
 	id, err := d.InsertWatchmanBacktest(b)
 	require.NoError(t, err)
@@ -133,7 +133,7 @@ func TestStatus_RunningRowWithoutLockIsInterrupted(t *testing.T) {
 
 	s = statusOf(t, d, wb, true)
 	assert.Equal(t, "running", s.Backtest.Status)
-	assert.Equal(t, "permission 12 of 30", s.Backtest.Progress)
+	assert.Equal(t, "permission, 12 of 30 · 3 of 8 categories done", s.Backtest.Progress)
 	assert.True(t, s.Running)
 }
 
