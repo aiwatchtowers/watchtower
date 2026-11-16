@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"watchtower/internal/agentlog"
 )
 
 // NoteSubagentRecordsUnreadable is the plan's note that Claude Code's
@@ -27,20 +29,17 @@ const (
 	recordSlack          = 60 * time.Second
 )
 
-// claudeProjectsDir is Claude Code's projects directory:
-// $CLAUDE_CONFIG_DIR/projects when that is set and absolute, else
-// ~/.claude/projects; "" when neither is known (the home directory is
-// unknown). A package variable so tests point it at a temp dir; tests that
-// set it are not parallel.
-var claudeProjectsDir = func() string {
-	if d := os.Getenv("CLAUDE_CONFIG_DIR"); d != "" && filepath.IsAbs(d) {
-		return filepath.Join(d, "projects")
-	}
-	home, err := os.UserHomeDir()
-	if err != nil || !filepath.IsAbs(home) {
+// defaultClaudeProjectsDir is the projects directory the session feed
+// reads subagent records from: ~/.claude/projects (agentlog.DefaultClaudeDir,
+// never $CLAUDE_CONFIG_DIR — review-rules §5: an env override could point
+// Watchtower at a TCC-protected folder); "" when the home directory is
+// unknown.
+func defaultClaudeProjectsDir() string {
+	dir := agentlog.DefaultClaudeDir()
+	if !filepath.IsAbs(dir) {
 		return ""
 	}
-	return filepath.Join(home, ".claude", "projects")
+	return filepath.Join(dir, "projects")
 }
 
 // bornAt reads births: a worktree's (by root) and a branch's (by name).
@@ -87,9 +86,10 @@ type namedWorktree struct {
 // agent-<id>.meta.json sits in a counted uuid's folder (the keys moved or
 // were renamed) or it exists nowhere under the projects directory while no
 // record there was written at or after the worktree's birth − recordSlack
-// (the records stopped landing where this looks). A record file, or a
-// folder, that exists but cannot be read or parsed is err: a broken read is
-// never "nothing to clean".
+// (the records stopped landing where this looks), or a project folder could
+// not be searched. A counted uuid's subagents folder or record that exists
+// but cannot be read or parsed is err: a broken read of the session's own
+// records is never "nothing to clean".
 func subagentWorktrees(projectsDir string, ids map[string]time.Time, ended time.Time, wts []worktree,
 	born bornAt) (roots, branches map[string]bool, note bool, err error) {
 	roots, branches = map[string]bool{}, map[string]bool{}
@@ -106,10 +106,11 @@ func subagentWorktrees(projectsDir string, ids map[string]time.Time, ended time.
 	} else if !fi.IsDir() {
 		return roots, branches, true, nil
 	}
-	named, metaIn, err := readSessionRecords(projectsDir, ids)
+	named, metaIn, blind, err := readSessionRecords(projectsDir, ids)
 	if err != nil {
 		return nil, nil, false, err
 	}
+	note = blind
 	var lo time.Time
 	for _, at := range ids {
 		if lo.IsZero() || at.Before(lo) {
@@ -151,11 +152,7 @@ func subagentWorktrees(projectsDir string, ids map[string]time.Time, ended time.
 	if len(unnamed) == 0 {
 		return roots, branches, note, nil
 	}
-	moved, err := recordsMoved(projectsDir, unnamed)
-	if err != nil {
-		return nil, nil, false, err
-	}
-	return roots, branches, note || moved, nil
+	return roots, branches, note || recordsMoved(projectsDir, unnamed), nil
 }
 
 // agentWorktree is a linked worktree named agent-<id> no record names.
@@ -177,43 +174,52 @@ func bornWhileLived(birth, lo, ended time.Time) bool {
 // maps each worktreePath a record names (symlink-resolved) to its branch
 // and its uuid's acquisition, metaIn each record's agent-<id> to that
 // acquisition. A uuid with no transcript or no subagents folder has none.
-func readSessionRecords(projectsDir string, ids map[string]time.Time) (map[string]namedWorktree, map[string]time.Time, error) {
+// blind is a project folder that could not be searched for a transcript
+// (another project's, most likely): the records there are unseen, which is
+// the note, not a failed plan. A counted uuid's own subagents folder or
+// record that cannot be read is err.
+func readSessionRecords(projectsDir string, ids map[string]time.Time) (map[string]namedWorktree,
+	map[string]time.Time, bool, error) {
 	named, metaIn := map[string]namedWorktree{}, map[string]time.Time{}
 	dirs, err := os.ReadDir(projectsDir)
 	if err != nil {
-		return nil, nil, fmt.Errorf("reading %s: %w", projectsDir, err)
+		return nil, nil, false, fmt.Errorf("reading %s: %w", projectsDir, err)
 	}
+	blind := false
 	for _, d := range dirs {
 		if !d.IsDir() || d.Type()&fs.ModeSymlink != 0 {
 			continue
 		}
 		for uuid, acquired := range ids {
-			if err := readUUIDRecords(filepath.Join(projectsDir, d.Name()), uuid, acquired, named, metaIn); err != nil {
-				return nil, nil, err
+			found, err := readUUIDRecords(filepath.Join(projectsDir, d.Name()), uuid, acquired, named, metaIn)
+			if err != nil {
+				return nil, nil, false, err
 			}
+			blind = blind || !found
 		}
 	}
-	return named, metaIn, nil
+	return named, metaIn, blind, nil
 }
 
+// readUUIDRecords reads uuid's records under slugDir; searched is false when
+// slugDir could not be searched for uuid's transcript.
 func readUUIDRecords(slugDir, uuid string, acquired time.Time, named map[string]namedWorktree,
-	metaIn map[string]time.Time) error {
+	metaIn map[string]time.Time) (searched bool, err error) {
 	if fi, err := os.Lstat(filepath.Join(slugDir, uuid+".jsonl")); err != nil || !fi.Mode().IsRegular() {
-		if err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("reading the transcript of %s: %w", uuid, err)
-		}
-		return nil // no transcript: pruned, or never in this folder
+		// No transcript: pruned, or never in this folder; a folder that
+		// cannot be searched is the caller's note.
+		return err == nil || errors.Is(err, fs.ErrNotExist), nil
 	}
 	dir := filepath.Join(slugDir, uuid, "subagents")
 	if fi, err := os.Lstat(dir); err != nil || !fi.IsDir() {
 		if err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("reading %s: %w", dir, err)
+			return true, fmt.Errorf("reading %s: %w", dir, err)
 		}
-		return nil // no subagents (a symlinked folder is never followed)
+		return true, nil // no subagents (a symlinked folder is never followed)
 	}
 	files, err := os.ReadDir(dir)
 	if err != nil {
-		return fmt.Errorf("reading %s: %w", dir, err)
+		return true, fmt.Errorf("reading %s: %w", dir, err)
 	}
 	for _, f := range files {
 		id, ok := strings.CutSuffix(f.Name(), ".meta.json")
@@ -222,7 +228,7 @@ func readUUIDRecords(slugDir, uuid string, acquired time.Time, named map[string]
 		}
 		m, err := readSubagentMeta(filepath.Join(dir, f.Name()))
 		if err != nil {
-			return err
+			return true, err
 		}
 		if prev, ok := metaIn[id]; !ok || acquired.After(prev) {
 			metaIn[id] = acquired
@@ -235,7 +241,7 @@ func readUUIDRecords(slugDir, uuid string, acquired time.Time, named map[string]
 			named[root] = namedWorktree{branch: m.WorktreeBranch, acquired: acquired}
 		}
 	}
-	return nil
+	return true, nil
 }
 
 // readSubagentMeta reads one record: a regular file of at most
@@ -268,13 +274,16 @@ func readSubagentMeta(path string) (subagentMeta, error) {
 // record lies elsewhere (another session's subagent) says nothing, and so
 // does an old one whose transcript was pruned while later records exist.
 // Only record files count: the subagents' .jsonl transcripts beside them
-// are appended to all the time.
-func recordsMoved(projectsDir string, unnamed []agentWorktree) (bool, error) {
+// are appended to all the time. A folder the scan cannot read (another
+// project's session folder, most likely) reports true too: its records are
+// unseen, so the worktree stays unadopted and the plan carries the note
+// rather than failing.
+func recordsMoved(projectsDir string, unnamed []agentWorktree) bool {
 	exists := map[string]bool{}
 	var newest time.Time
 	slugs, err := os.ReadDir(projectsDir)
 	if err != nil {
-		return false, fmt.Errorf("reading %s: %w", projectsDir, err)
+		return true
 	}
 	for _, s := range slugs {
 		if !s.IsDir() || s.Type()&fs.ModeSymlink != 0 {
@@ -282,7 +291,7 @@ func recordsMoved(projectsDir string, unnamed []agentWorktree) (bool, error) {
 		}
 		sessions, err := os.ReadDir(filepath.Join(projectsDir, s.Name()))
 		if err != nil {
-			return false, fmt.Errorf("reading %s: %w", filepath.Join(projectsDir, s.Name()), err)
+			return true
 		}
 		for _, sess := range sessions {
 			if !sess.IsDir() || sess.Type()&fs.ModeSymlink != 0 {
@@ -294,7 +303,7 @@ func recordsMoved(projectsDir string, unnamed []agentWorktree) (bool, error) {
 				continue
 			}
 			if err != nil {
-				return false, fmt.Errorf("reading %s: %w", dir, err)
+				return true
 			}
 			for _, f := range files {
 				id, ok := strings.CutSuffix(f.Name(), ".meta.json")
@@ -304,7 +313,7 @@ func recordsMoved(projectsDir string, unnamed []agentWorktree) (bool, error) {
 				exists[id] = true
 				info, err := f.Info()
 				if err != nil {
-					return false, fmt.Errorf("reading %s: %w", filepath.Join(dir, f.Name()), err)
+					return true
 				}
 				if info.ModTime().After(newest) {
 					newest = info.ModTime()
@@ -314,8 +323,8 @@ func recordsMoved(projectsDir string, unnamed []agentWorktree) (bool, error) {
 	}
 	for _, w := range unnamed {
 		if !exists[w.id] && newest.Before(w.birth.Add(-recordSlack)) {
-			return true, nil
+			return true
 		}
 	}
-	return false, nil
+	return false
 }

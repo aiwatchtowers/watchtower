@@ -12,22 +12,13 @@ import (
 )
 
 // Source §2a of the auto cleanup spec (2026-11-10): the worktrees Claude
-// Code's subagent records name. These tests set the claudeProjectsDir
-// package variable, so none of them is parallel.
+// Code's subagent records name.
 
 // otherUUID is a Claude Code session of another row.
 const otherUUID = "5d4c3b2a-1f0e-4d9c-8b7a-6f5e4d3c2b1a"
 
-// useProjectsDir points claudeProjectsDir at dir for one test.
-func useProjectsDir(t *testing.T, dir string) {
-	t.Helper()
-	prev := claudeProjectsDir
-	claudeProjectsDir = func() string { return dir }
-	t.Cleanup(func() { claudeProjectsDir = prev })
-}
-
 // projectsDir is the fixture's Claude Code projects directory.
-func (f *fixture) projectsDir() string { return filepath.Join(f.base, "claude-projects") }
+func (f *fixture) projectsDir() string { return f.projects }
 
 // transcript writes uuid's main transcript in the fixture's project folder.
 func (f *fixture) transcript(uuid string) {
@@ -83,10 +74,6 @@ func (f *fixture) bornAtFor(births map[string]time.Time) {
 func newSubagentFixture(t *testing.T) *fixture {
 	t.Helper()
 	f := newFixture(t)
-	useProjectsDir(t, f.projectsDir())
-	if err := os.MkdirAll(f.projectsDir(), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	f.ownUUID(time.Now().Add(-30 * time.Minute))
 	return f
 }
@@ -252,11 +239,11 @@ func TestSubagentMetaUnreadableFailsPlan(t *testing.T) {
 
 func TestProjectsDirMissingGivesNote(t *testing.T) {
 	f := newSubagentFixture(t)
-	useProjectsDir(t, filepath.Join(f.base, "no-such-dir"))
+	f.projects = filepath.Join(f.base, "no-such-dir")
 	wantNote(t, f.plan(Request{}), true)
 
 	// The home directory is unknown: the same.
-	useProjectsDir(t, "")
+	f.projects = ""
 	wantNote(t, f.plan(Request{}), true)
 
 	// A row with no counted uuid reads nothing and notes nothing.
@@ -338,8 +325,54 @@ func TestClaudeSessionFilesCapGatesSubagentAndScratch(t *testing.T) {
 
 	// The projects directory gone: a claude row notes it, a codex row
 	// never reads it.
-	useProjectsDir(t, filepath.Join(f.base, "no-such-dir"))
+	f.projects = filepath.Join(f.base, "no-such-dir")
 	wantNote(t, f.plan(Request{}), false)
 	f.store.session.Kind = "claude"
 	wantNote(t, f.plan(Request{}), true)
+}
+
+// The projects path exists but is a file: no records can be read there.
+func TestProjectsDirIsAFileGivesNote(t *testing.T) {
+	f := newSubagentFixture(t)
+	f.projects = filepath.Join(f.base, "projects-file")
+	writeFile(t, f.projects, "not a folder\n")
+	wantNote(t, f.plan(Request{}), true)
+}
+
+// A folder of another project that cannot be read hides its records: the
+// worktree with no record stays unadopted and the plan carries the note,
+// it does not fail. A counted uuid's own unreadable record still fails it
+// (TestSubagentMetaUnreadableFailsPlan).
+func TestUnreadableOtherProjectFolderGivesNote(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads every folder")
+	}
+	for name, hidden := range map[string]string{
+		"a session folder (the freshness scan)":    filepath.Join("-tmp-other", otherUUID),
+		"a project folder (the transcript search)": "-tmp-other",
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newSubagentFixture(t)
+			f.transcript(testUUID)
+			root := f.agentWorktree("agent-anew", "worktree-agent-anew")
+			// A fresh record of another session: records still land here.
+			f.subagentRecord("6e5d4c3b-2a1f-4e0d-9c8b-7a6f5e4d3c2b", "agent-afresh",
+				recordJSON(t, "/tmp/acme/fresh", "feat/fresh"))
+			wantNote(t, f.plan(Request{}), false)
+
+			dir := filepath.Join(f.projects, hidden)
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(dir, 0); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+			p := f.plan(Request{})
+			if hasItem(p, "worktree:"+root) {
+				t.Fatalf("a worktree with no record was adopted: %+v", p.Items)
+			}
+			wantNote(t, p, true)
+		})
+	}
 }

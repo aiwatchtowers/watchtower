@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -71,6 +72,8 @@ var cleanupDeps = func(database *db.DB) sessioncleanup.Deps {
 		Sizer:   sessioncleanup.DiskSizer{},
 		LS:      sessioncleanup.SystemLaunchServices{},
 		Results: database,
+		// The projects directory the session feed reads (sessionfeed.Dirs).
+		ClaudeProjects: func() string { return filepath.Join(agentsClaudeDir(), "projects") },
 	}
 }
 

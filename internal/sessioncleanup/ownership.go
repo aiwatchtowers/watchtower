@@ -24,23 +24,29 @@ import (
 // spec 2026-11-10 §2): the session's subagent worktrees and their branches
 // (§2a, loadAgentFiles), its Claude scratchpad lanes (§2b, loadAgentFiles)
 // and the branches created in its own worktrees (§2c, loadHeadLogs).
-// switchedTo are §2c candidates only switched to in a session's worktree,
-// listed so the plan shows them kept as not_this_session; unknown are §2c
-// candidates another worktree's unreadable HEAD log left undecided
+// ownRoots are the roots the cwd ledger, a subagent record or the
+// scratchpad gave (never a declared one): the worktrees §2c reads.
+// ledgerBranches are the ledger's branches with the roots they were seen
+// at; loadHeadLogs decides them. switchedTo are §2c candidates only
+// checked out in a session's worktree, listed so the plan shows them kept
+// as not_this_session; unknown are §2c candidates left undecided
 // (created_unknown).
 type observed struct {
-	roots, branches, named              map[string]bool
+	roots, ownRoots, branches, named    map[string]bool
 	switchedTo, unknown                 map[string]bool
+	ledgerBranches                      map[string][]string
 	placedCwd, placedRoot, placedBranch string
 }
 
 func observe(rows []db.SessionWorktree, targetBranches, declaredWorktrees, declaredBranches []string) observed {
-	o := observed{roots: map[string]bool{}, branches: map[string]bool{}, named: map[string]bool{},
-		switchedTo: map[string]bool{}, unknown: map[string]bool{}}
+	o := observed{roots: map[string]bool{}, ownRoots: map[string]bool{}, branches: map[string]bool{},
+		named: map[string]bool{}, switchedTo: map[string]bool{}, unknown: map[string]bool{},
+		ledgerBranches: map[string][]string{}}
 	for _, r := range rows {
-		o.roots[resolvePath(r.Root)] = true
+		root := resolvePath(r.Root)
+		o.roots[root], o.ownRoots[root] = true, true
 		if r.Branch != "" {
-			o.branches[r.Branch] = true
+			o.ledgerBranches[r.Branch] = append(o.ledgerBranches[r.Branch], root)
 		}
 	}
 	for _, p := range declaredWorktrees {

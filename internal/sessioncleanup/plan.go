@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -288,13 +289,17 @@ func (b *builder) loadAgentFiles(ctx context.Context) error {
 	if b.live[b.session.ID] || b.req.CallerSessionID == b.session.ID {
 		ended = time.Time{}
 	}
-	roots, branches, note, err := subagentWorktrees(claudeProjectsDir(), acquired, ended, b.repo.worktrees,
+	projects := defaultClaudeProjectsDir
+	if b.deps.ClaudeProjects != nil {
+		projects = b.deps.ClaudeProjects
+	}
+	roots, branches, note, err := subagentWorktrees(projects(), acquired, ended, b.repo.worktrees,
 		bornAt{worktree: b.worktreeBirth, branch: b.repo.branchBirth})
 	if err != nil {
 		return fmt.Errorf("reading the subagent records of session %d: %w", b.session.ID, err)
 	}
 	for r := range roots {
-		b.seen.roots[r] = true
+		b.seen.roots[r], b.seen.ownRoots[r] = true, true
 	}
 	for br := range branches {
 		b.seen.branches[br] = true
@@ -357,7 +362,7 @@ func (b *builder) adoptScratchLanes(acquired map[string]time.Time) {
 		if birth, known := b.worktreeBirth(w.Root); !known || birth.Before(after) {
 			continue
 		}
-		b.seen.roots[w.Root] = true
+		b.seen.roots[w.Root], b.seen.ownRoots[w.Root] = true, true
 		if w.Branch == "" {
 			continue
 		}
@@ -368,28 +373,47 @@ func (b *builder) adoptScratchLanes(acquired map[string]time.Time) {
 }
 
 // loadHeadLogs adds the branches created in the session's own linked
-// worktrees (spec §2c, headLogBranches) for every agent kind: a worktree
-// the session owns — observed and born after the session started, or its
-// placed worktree — and whose folder is there. A branch another source
-// already holds keeps that source's standing; an undecided one (another
-// worktree's log unreadable) is kept as created_unknown. A worktree's own
-// unreadable log fails the plan.
+// worktrees (spec §2c, headLogBranches) for every agent kind, and decides
+// the cwd ledger's branches. The worktrees read are the ones the session
+// owns by the cwd ledger, by placement or by §2a/§2b (ownsWorktree) and
+// whose folder is there. A ledger branch recorded in a worktree read here
+// whose HEAD log exists counts only when §2c names it: a branch only
+// checked out there is not_this_session. Any other ledger branch counts as
+// before. A branch another source holds (a target, the agent's
+// declaration, placement by record, a subagent record or a scratchpad lane)
+// keeps that source's standing. When an exclusion could not be checked
+// (unknown), the named branches are kept as created_unknown. A worktree's
+// own unreadable log fails the plan.
 func (b *builder) loadHeadLogs(ctx context.Context) error {
 	unknown := false
-	named := map[string]bool{}
+	named, gated := map[string]bool{}, map[string]bool{}
 	for _, w := range b.repo.worktrees {
 		if w.Main || w.Bare || w.Prunable || !b.ownsWorktree(w) {
 			continue
 		}
-		n, switched, unk, err := headLogBranches(ctx, b.repo, w)
+		n, switched, found, unk, err := headLogBranches(ctx, b.repo, w)
 		if err != nil {
 			return fmt.Errorf("reading the branches of %s: %w", w.Root, err)
 		}
+		if !found {
+			continue
+		}
+		gated[w.Root] = true
 		unknown = unknown || unk
 		for c := range n {
 			named[c] = true
 		}
 		for c := range switched {
+			b.seen.switchedTo[c] = true
+		}
+	}
+	for c, roots := range b.seen.ledgerBranches {
+		if b.seen.branches[c] {
+			continue
+		}
+		if !slices.ContainsFunc(roots, func(r string) bool { return gated[r] }) {
+			b.seen.branches[c] = true
+		} else if !named[c] {
 			b.seen.switchedTo[c] = true
 		}
 	}
@@ -405,13 +429,14 @@ func (b *builder) loadHeadLogs(ctx context.Context) error {
 	return nil
 }
 
-// ownsWorktree: w is the row's placed worktree, or observed by the session
-// and born after it started.
+// ownsWorktree: w is the row's placed worktree, or one the cwd ledger,
+// a subagent record or the scratchpad gave the session (never a target's
+// or a declared name) and born after the session started.
 func (b *builder) ownsWorktree(w worktree) bool {
 	if b.seen.placedRoot != "" && w.Root == b.seen.placedRoot {
 		return true
 	}
-	if !b.seen.sawWorktree(w) {
+	if !b.seen.ownRoots[w.Root] {
 		return false
 	}
 	birth, known := b.worktreeBirth(w.Root)
@@ -678,9 +703,9 @@ func (b *builder) branchItems(ctx context.Context, worktreeItems []Item) []Item 
 	return items
 }
 
-// branchCandidates: in session mode the observed branches that exist (the
-// §2c candidates only switched to or undecided included), the branches of
-// listed worktrees and every declared one (the default branch
+// branchCandidates: in session mode the observed branches that exist
+// (the §2c candidates only switched to or undecided included), the
+// branches of listed worktrees and every declared one (the default branch
 // only when declared); in the sweep every local branch but the default and
 // the ones checked out in a worktree that stays.
 func (b *builder) branchCandidates(worktreeItems []Item) []string {

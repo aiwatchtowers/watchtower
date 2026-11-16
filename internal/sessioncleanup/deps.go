@@ -194,6 +194,10 @@ type Deps struct {
 	// Results stores a session-mode apply's result (cleanup_result); nil
 	// leaves it unsaved and says so in Result.ResultError.
 	Results ResultStore
+	// ClaudeProjects is Claude Code's projects directory, where the
+	// subagent records are read (auto cleanup spec 2026-11-10 §2a): the one
+	// the session feed reads; nil = ~/.claude/projects. "" = unknown.
+	ClaudeProjects func() string
 	// OrphanGrace is how long an apply waits for SIGTERMed orphans to exit
 	// before it keeps the worktree; 0 = 5 s (spec §7).
 	OrphanGrace time.Duration

@@ -263,7 +263,8 @@ func TestProj18_ScratchpadUUIDOfDeletedRowAdoptsNothing(t *testing.T) {
 	root := f.scratchWorktree("lane", "feat/lane")
 	plan := func() Plan {
 		t.Helper()
-		deps := Deps{Git: SystemGit{}, DB: DBStore{DB: d}, Procs: f.procs, WorktreeBirth: stampBirth}
+		deps := Deps{Git: SystemGit{}, DB: DBStore{DB: d}, Procs: f.procs, WorktreeBirth: stampBirth,
+			ClaudeProjects: func() string { return f.projects }}
 		res, err := PlanResult(context.Background(), deps, Request{SessionID: a})
 		if err != nil {
 			t.Fatalf("PlanResult: %v", err)

@@ -37,15 +37,22 @@ var goldenCommitDate = regexp.MustCompile(`"last_commit_at":"[^"]+"`)
 
 // TestCleanupCmd_StreamGoldenForTheDesktop pins the Desktop's decoding
 // fixture to what `workbench cleanup --json --stream` prints for one
-// session worktree with its branch, a bundle and an orphan process: the
-// Swift CleanupScreenModel test builds its row from these very lines, so
-// a name/root mix-up between the two sides fails there. Placeholders
-// only: the temp folder reads /work/acme and the commit dates are fixed.
+// session worktree with its branch, a bundle, an orphan process and the
+// subagent records note: the Swift CleanupScreenModel test builds its row
+// from these very lines and reads the note, so a name/root mix-up or a
+// renamed note between the two sides fails there. Placeholders only: the
+// temp folder reads /work/acme and the commit dates are fixed.
 //
 //	go test ./cmd -run TestCleanupCmd_StreamGoldenForTheDesktop -update
 func TestCleanupCmd_StreamGoldenForTheDesktop(t *testing.T) {
 	f := newCleanupFixture(t)
 	root := f.pushedWorktree("wt-golden", "feat/golden")
+	// No Claude Code projects directory: the plan carries the note
+	// subagent_records_unreadable, so the fixture pins its spelling for the
+	// Desktop too (auto cleanup spec 2026-11-10 §2a).
+	withProjects := agentsClaudeDir
+	agentsClaudeDir = func() string { return filepath.Join(f.base, "no-claude-home") }
+	t.Cleanup(func() { agentsClaudeDir = withProjects })
 	withFixture := cleanupDeps
 	cleanupDeps = func(d *db.DB) sessioncleanup.Deps {
 		deps := withFixture(d)
