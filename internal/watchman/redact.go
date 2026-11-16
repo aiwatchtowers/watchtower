@@ -20,8 +20,22 @@ var wholeSecrets = []*regexp.Regexp{
 
 // prefixedSecrets keep their label (group 1) and replace only the value.
 var prefixedSecrets = []*regexp.Regexp{
-	regexp.MustCompile(`(\bBearer\s+)[A-Za-z0-9._~+/=-]{8,}`),
-	regexp.MustCompile(`(?i)(\b(?:api[_-]?key|key|token|secret|password)=)[^\s&"'<>]+`),
+	regexp.MustCompile(`(?i)(\b[A-Za-z0-9_.-]*(?:key|token|secret|password|passwd)=)[^\s&"'<>]+`),
+}
+
+// bearer matches "Bearer <token>"; the token is redacted only when it looks
+// like one (16+ chars with a digit or mixed case), so prose such as
+// "Bearer authentication" stays.
+var bearer = regexp.MustCompile(`(\bBearer\s+)([A-Za-z0-9._~+/=-]{16,})`)
+
+var (
+	hasDigit = regexp.MustCompile(`[0-9]`)
+	hasLower = regexp.MustCompile(`[a-z]`)
+	hasUpper = regexp.MustCompile(`[A-Z]`)
+)
+
+func looksLikeToken(t string) bool {
+	return hasDigit.MatchString(t) || (hasLower.MatchString(t) && hasUpper.MatchString(t))
 }
 
 // Redact replaces every secret in s with "[secret]". Bearer tokens and
@@ -33,7 +47,13 @@ func Redact(s string) string {
 	for _, re := range prefixedSecrets {
 		s = re.ReplaceAllString(s, "${1}"+secretMark)
 	}
-	return s
+	return bearer.ReplaceAllStringFunc(s, func(m string) string {
+		g := bearer.FindStringSubmatch(m)
+		if !looksLikeToken(g[2]) {
+			return m
+		}
+		return g[1] + secretMark
+	})
 }
 
 // Clip cuts s to at most limit runes, ending in "…" when it was cut.

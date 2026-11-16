@@ -14,6 +14,11 @@ func TestRedact_KnownSecretShapes(t *testing.T) {
 		{"bearer", "Authorization: Bearer abcdef123456.xyz ok", "Authorization: Bearer [secret] ok"},                   // leak-check:allow
 		{"url param", "https://example.com/x?token=abc123&y=1", "https://example.com/x?token=[secret]&y=1"},            // leak-check:allow
 		{"env line", "export PASSWORD=hunter2 # note", "export PASSWORD=[secret] # note"},                              // leak-check:allow
+		{"github token env", "GITHUB_TOKEN=ghx1 run", "GITHUB_TOKEN=[secret] run"},                                     // leak-check:allow
+		{"db password env", "DB_PASSWORD=pw1 run", "DB_PASSWORD=[secret] run"},                                         // leak-check:allow
+		{"aws secret env", "AWS_SECRET_ACCESS_KEY=abc/def run", "AWS_SECRET_ACCESS_KEY=[secret] run"},                  // leak-check:allow
+		{"client secret", "client_secret=abc&x=1", "client_secret=[secret]&x=1"},                                       // leak-check:allow
+		{"access token param", "https://example.com/?access_token=abc1", "https://example.com/?access_token=[secret]"}, // leak-check:allow
 		{"jwt", "jwt eyJhbGciOiJI.eyJzdWIiOiIx.c2lnbmF0dXJl end", "jwt [secret] end"},                                  // leak-check:allow
 	}
 	for _, c := range cases {
@@ -31,6 +36,7 @@ func TestRedact_LeavesOrdinaryText(t *testing.T) {
 		"id 123e4567-e89b-12d3-a456-426614174000",
 		"func f() { token := next(); key = 3; max_tokens=5 }",
 		"the skill sk-1 and Bearer of news",
+		"max_tokens=5 and Bearer authentication is described",
 		"plain prose, nothing to see.",
 	} {
 		if got := Redact(s); got != s {
