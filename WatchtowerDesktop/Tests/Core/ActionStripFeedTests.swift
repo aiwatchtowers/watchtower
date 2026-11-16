@@ -154,4 +154,126 @@ final class ActionStripFeedTests: XCTestCase {
         XCTAssertEqual(vm.feedLoader?.isOpen, false, "the Inbox view left")
         await settle(vm)
     }
+
+    // MARK: - Writes through inbox.act (Task 11c)
+
+    /// A VM over `pool` that reads and writes through `transport`.
+    private func writing(_ transport: ScriptedFeedTransport) async throws -> ActionStripViewModel {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: UUID().uuidString))
+        let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner(), defaults: defaults)
+        await vm.refresh()
+        let client = TowerClient(transport: transport, clock: ContinuousClock(), restartDaemon: nil, startDaemon: nil)
+        vm.attachWrites(InboxTowerWrites(client: client))
+        return vm
+    }
+
+    func testDoneSendsInboxActWithTheContentHash() async throws {
+        let id = try await pool.write { db -> Int64 in
+            let automation = try TestDatabase.insertAutomation(db, slug: "mail-summary", name: "Mail summary")
+            let run = try TestDatabase.insertAutomationRun(db, automationID: automation)
+            return try TestDatabase.insertAutomationOutput(db, automationID: automation, runID: run, contentHash: "h-drawn")
+        }
+        let transport = ScriptedFeedTransport()
+        let vm = try await writing(transport)
+        let before = try await pool.read { db in try Row.fetchOne(db, sql: "SELECT * FROM automation_outputs") }
+
+        await vm.markOutputDone(id)
+
+        let act = try XCTUnwrap(transport.acts.last)
+        XCTAssertEqual(act.target, "o\(id)")
+        XCTAssertEqual(act.verb, .done)
+        XCTAssertEqual(act.params.contentHash, "h-drawn", "guarded by the version drawn")
+        XCTAssertFalse(act.requestID.isEmpty)
+        let after = try await pool.read { db in try Row.fetchOne(db, sql: "SELECT * FROM automation_outputs") }
+        XCTAssertEqual(after, before, "the Mac writes nothing itself; Go does")
+        XCTAssertNil(vm.lastError)
+    }
+
+    func testFailedActionKeepsTheRowWithTheSentenceAndRetry() async throws {
+        let id = try await pool.write { db in try TestDatabase.insertInboxItem(db) }
+        let transport = ScriptedFeedTransport()
+        let vm = try await writing(transport)
+        let sentence = "Couldn't mark it done: the database is busy."
+        transport.answerActs(refusal: Refusal(code: .changed, sentence: sentence))
+
+        await vm.messageDone(Int(id))
+
+        XCTAssertEqual(vm.rowErrors[.message(Int(id))], InboxRowFailure(message: sentence, press: .done),
+                       "the row stays with Go's sentence and Retry repeats Done")
+        let first = try XCTUnwrap(transport.acts.last)
+        XCTAssertEqual(first.target, "messages")
+        XCTAssertEqual(first.params.refKind, .inboxItem)
+        XCTAssertEqual(first.params.refID, id)
+        XCTAssertEqual(first.params.refVerb, .resolve)
+
+        transport.answerActs()
+        await vm.messageDone(Int(id)) // Retry repeats the failed press.
+
+        XCTAssertEqual(transport.acts.count, 2)
+        XCTAssertNil(vm.rowErrors[.message(Int(id))])
+    }
+
+    func testAVanishedRecordLeavesQuietly() async throws {
+        let transport = ScriptedFeedTransport()
+        let vm = try await writing(transport)
+        transport.answerActs(refusal: Refusal(code: .notFound, sentence: "Couldn't do that: it's no longer on the Mac."))
+
+        await vm.messageDone(4242)
+
+        XCTAssertNil(vm.rowErrors[.message(4242)])
+        XCTAssertNil(vm.lastError)
+    }
+
+    func testApproveSendsTheDrawnArgsAndEditsAndKeepsAToolFailureOnTheCard() async throws {
+        let args = #"{"text":"Ship it","reason":"r"}"#
+        let id = try await pool.write { db in try TestDatabase.insertAgentAction(db, argsJSON: args) }
+        let transport = ScriptedFeedTransport()
+        let vm = try await writing(transport)
+        transport.answerActs(ActResult(status: "failed", error: "Slack said no"))
+
+        await vm.approve(id, shownArgs: args, patch: #"{"text":"Ship it now"}"#)
+
+        let act = try XCTUnwrap(transport.acts.last)
+        XCTAssertEqual(act.target, "a\(id)")
+        XCTAssertEqual(act.verb, .approval)
+        XCTAssertEqual(act.params.approvalVerb, .approve)
+        XCTAssertEqual(act.params.argsSHA256, AgentActionFeed.argsSHA256(args), "pinned to the args drawn")
+        XCTAssertEqual(act.params.patch, try WatchtowerInterface.RawJSON(data: Data(#"{"text":"Ship it now"}"#.utf8)), "Edit… is a patch")
+        XCTAssertEqual(vm.actionFeed.rowErrors[id], AgentActionFeed.RowError(verb: "approve", message: "Slack said no"))
+        XCTAssertFalse(vm.actionFeed.inFlight.contains(id))
+
+        transport.answerActs(ActResult(status: "applied"))
+        await vm.retry(id)
+        XCTAssertEqual(transport.acts.last?.params.approvalVerb, .retry)
+        XCTAssertNil(vm.actionFeed.rowErrors[id], "a later success clears the card's error")
+    }
+
+    func testEveryPressNamesItsButtonKind() async throws {
+        let id = try await pool.write { db -> Int64 in
+            let automation = try TestDatabase.insertAutomation(db, slug: "triage", name: "Triage")
+            let run = try TestDatabase.insertAutomationRun(db, automationID: automation)
+            return try TestDatabase.insertAutomationOutput(db, automationID: automation, runID: run, contentHash: "h1")
+        }
+        let transport = ScriptedFeedTransport()
+        let vm = try await writing(transport)
+
+        await vm.pressReply(outputID: id, action: 0, contentHash: "h1")
+        let card = try XCTUnwrap(vm.outputRows.first { $0.id == id })
+        let target = InboxCardAction.Target(title: "Fix it", intent: nil, parent: nil, hash: "t")
+        await vm.proposeTarget(InboxTargetPress(card: card, index: 1, target: target))
+
+        XCTAssertEqual(transport.acts.map(\.verb), [.press, .press])
+        XCTAssertEqual(transport.acts.map(\.params.actionKind), ["reply", "target"])
+        XCTAssertEqual(transport.acts.map(\.params.index), [0, 1])
+        XCTAssertEqual(transport.acts.map(\.params.contentHash), ["h1", "h1"])
+    }
+
+    func testMessageSnoozeSendsTheCLIsLocalDate() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "Asia/Tokyo"))
+        let now = Date(timeIntervalSince1970: 1_794_830_400) // 2026-11-16T12:00:00Z = 21:00 in Tokyo
+        XCTAssertEqual(ActionStripViewModel.snoozeDate("1d", now: now, calendar: calendar), "2026-11-17")
+        XCTAssertEqual(ActionStripViewModel.snoozeDate("1w", now: now, calendar: calendar), "2026-11-23")
+        XCTAssertNil(ActionStripViewModel.snoozeDate("soon", now: now, calendar: calendar))
+    }
 }

@@ -61,7 +61,13 @@ The daemon (`runSyncDaemon` → `serveTower`) serves the tower on a unix socket,
   - With a feed, Go decides every folder's list and order, the counts, the row texts and the ref shown/waiting sets (`InboxTowerEntries.listed`/`sections`/`folders`).
   - The GRDB read only supplies the records that the panes draw, matched by id. A card whose record is not read yet waits for the next read.
   - The sidebar badge is `InboxRootModel.countBadge`: the open Inbox's feed, else `TowerClient.readAside(inbox.feed, limit: 1)`, a read that never becomes the screen's.
-  - Writes still go through the Swift paths until 11c.
+  - **Writes (Task 11c).** Every Inbox write is one `inbox.act` call (`InboxTowerWrites`, attached with the loader):
+    - opening a card is `read`; Done and Dismiss go at the drawn `content_hash`;
+    - row verbs are `ref` on `r<id>`, `tracks` or `messages` (a message's Snooze sends the CLI's local `yyyy-MM-dd`);
+    - Reply and target buttons are `press` with `action_kind`; Reply… is `reply_propose`;
+    - approvals go through `AgentActionFeed.towerDecide` (`approval` on `a<id>`, `args_sha256`, Edit… as `patch`).
+
+    A failure stays on its row with Go's sentence and **Retry**. A record gone meanwhile leaves quietly. Idea verdicts, a track's Make a Task (`createTask`) and Retry on a built-in move keep their own paths (Task 12 and the CLI).
 
 ## Change watch
 

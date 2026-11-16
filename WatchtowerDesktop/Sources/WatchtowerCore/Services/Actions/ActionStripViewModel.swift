@@ -375,6 +375,68 @@ package final class ActionStripViewModel {
         towerFeed.map { InboxRootModel(feed: $0, platform: .mac).countBadge }
     }
 
+    /// The tower's writer: with one (the app), every Inbox write is one
+    /// `inbox.act` call; without one (tests) the local writers run.
+    @ObservationIgnored package private(set) var towerWrites: InboxTowerWrites?
+
+    /// Writes the Inbox through the tower from now on, the approvals'
+    /// decisions included (`AgentActionFeed.towerDecide`).
+    package func attachWrites(_ writes: InboxTowerWrites) {
+        towerWrites = writes
+        actionFeed.towerDecide = { [weak self] decision, id in await self?.decide(decision, id) }
+    }
+
+    /// An approval's decision as `inbox.act approval` on its card `a<id>`:
+    /// Approve pinned to the arguments drawn, Edit…'s changes as `patch`.
+    private func decide(_ decision: AgentActionFeed.TowerDecision, _ id: Int64) async -> String? {
+        guard let towerWrites else { return nil }
+        let params: ActParams
+        switch decision {
+        case let .approve(sha, patch):
+            var json: WatchtowerInterface.RawJSON?
+            if let patch {
+                // Never approve without the owner's edits: an edit that does not encode fails the press.
+                guard let encoded = try? WatchtowerInterface.RawJSON(data: Data(patch.utf8)) else { return TowerText.couldNotSend }
+                json = encoded
+            }
+            params = ActParams(approvalVerb: .approve, argsSHA256: sha, patch: json)
+        case .reject: params = ActParams(approvalVerb: .reject)
+        case .retry: params = ActParams(approvalVerb: .retry)
+        case .dismiss: params = ActParams(approvalVerb: .dismiss)
+        }
+        if case let .failed(sentence) = await towerWrites.act(target: "a\(id)", verb: .approval, params: params) {
+            return sentence
+        }
+        return nil
+    }
+
+    /// One `inbox.act` write per card at a time, then a read. A failure stays
+    /// on its row (`press`) with **Retry**, which re-sends the same request;
+    /// a record gone meanwhile leaves quietly. Nil when no tower writes.
+    @discardableResult
+    private func towerWrite(
+        _ key: CardKey,
+        press: InboxRowPress? = nil,
+        target: String,
+        verb: ActVerb,
+        params: ActParams
+    ) async -> InboxTowerWrites.Outcome? {
+        guard let towerWrites else { return nil }
+        return await pendingWrites.run(key) {
+            lastError = nil
+            let item: InboxSelection? = if press != nil, case let .card(item) = key { item } else { nil }
+            if let item { rowErrors[item] = nil }
+            let outcome = await towerWrites.act(target: target, verb: verb, params: params)
+            await refresh()
+            if case let .failed(sentence) = outcome {
+                let gone = item.map { !isOpenRecord($0) } ?? false
+                if !gone { lastError = sentence }
+                if let item, let press, !gone { rowErrors[item] = InboxRowFailure(message: sentence, press: press) }
+            }
+            return outcome
+        }
+    }
+
     /// The selected folder's entries and rows from the tower's feed; nil
     /// without one (or before the first local read, which brings the records).
     private var towerListed: [InboxTowerEntries.Listed]? {
@@ -792,6 +854,12 @@ package final class ActionStripViewModel {
     /// approvals changed` so Needs approval's recipe redraws (STRIP-03) —
     /// after the press settles, so the CLI process never holds the row busy.
     package func markReminderDone(_ id: Int64) async {
+        if towerWrites != nil {
+            // Go runs the reminder's approval hook in the same call.
+            await towerWrite(.card(.reminder(id)), press: .done, target: "r\(id)", verb: .ref,
+                             params: ActParams(refKind: .reminder, refID: id, refVerb: .done))
+            return
+        }
         guard await write(.card(.reminder(id)), { try ReminderQueries.markDone($0, id: id) }, press: .done)
         else { return }
         await reminderChanged(id)
@@ -799,6 +867,11 @@ package final class ActionStripViewModel {
 
     /// Snooze on a reminder (Snooze 1h is the only one the cards offer).
     package func snoozeReminder(_ id: Int64, until: String) async {
+        if towerWrites != nil {
+            await towerWrite(.card(.reminder(id)), press: .snoozeHour, target: "r\(id)", verb: .ref,
+                             params: ActParams(refKind: .reminder, refID: id, refVerb: .snooze, until: until))
+            return
+        }
         // Labeled: `change` before it also takes a closure.
         // swiftlint:disable trailing_closure
         let snoozed = await write(.card(.reminder(id)), { try ReminderQueries.snooze($0, id: id, until: until) },
@@ -825,8 +898,31 @@ package final class ActionStripViewModel {
     /// for it, and a Done or Dismiss pressed meanwhile still lands.
     package func select(_ item: InboxSelection?) async {
         selection = item
+        if towerWrites != nil {
+            guard let item, let opening = towerOpening(item) else { return }
+            await towerWrite(.opening(item), target: opening.target, verb: .read, params: opening.params)
+            return
+        }
         guard let item, let change = openingWrite(item) else { return }
         await write(.opening(item), change)
+    }
+
+    /// `openingWrite` through the tower: `inbox.act read` on the card drawn,
+    /// only while it is unread.
+    private func towerOpening(_ item: InboxSelection) -> (target: String, params: ActParams)? {
+        switch item {
+        case .output(let id):
+            guard let card = outputRows.first(where: { $0.id == id }), card.isUnread else { return nil }
+            return ("o\(id)", ActParams(contentHash: card.contentHash))
+        case .day(let date):
+            guard let briefing = feed.days.first(where: { $0.date == date })?.briefing, !briefing.isRead else { return nil }
+            return ("brief-\(date)", ActParams())
+        case .message(let id):
+            guard feed.messages.first(where: { $0.item.id == id })?.item.isUnread == true else { return nil }
+            return ("messages", ActParams(refKind: .inboxItem, refID: Int64(id)))
+        case .proposal, .reminder, .track, .idea, .builtinNotice:
+            return nil
+        }
     }
 
     private func openingWrite(_ item: InboxSelection) -> (@Sendable (Database) throws -> Void)? {
@@ -855,6 +951,10 @@ package final class ActionStripViewModel {
     /// Done on a track card (R4): the track read (TRACKS-04, with its digests)
     /// and every event of it read, in one write.
     package func markTrackDone(_ id: Int) async {
+        if towerWrites != nil {
+            await trackRef(id, .done, press: .done)
+            return
+        }
         await write(.card(.track(id)), { db in
             try TrackQueries.markRead(db, id: id)
             try TrackEventQueries.markAllRead(db, trackId: id)
@@ -866,6 +966,11 @@ package final class ActionStripViewModel {
     /// track deleted meanwhile is quiet.
     package func stopWatching(_ track: Track) async {
         let id = track.id
+        if towerWrites != nil {
+            // Go stops a custom track's collection too.
+            await trackRef(id, .stop, press: .stopWatching)
+            return
+        }
         guard track.isCustom else {
             await write(.card(.track(id)), { db in
                 do { try TrackQueries.dismiss(db, id: id) } catch is RowNotFoundError {}
@@ -881,6 +986,10 @@ package final class ActionStripViewModel {
     /// from the Stopped fold back to the tracks. A track deleted meanwhile is quiet.
     package func restoreTrack(_ track: Track) async {
         let id = track.id
+        if towerWrites != nil {
+            await trackRef(id, .restore, press: nil)
+            return
+        }
         guard track.isCustom else {
             await write(.card(.track(id))) { db in
                 do { try TrackQueries.restore(db, id: id) } catch is RowNotFoundError {}
@@ -888,6 +997,11 @@ package final class ActionStripViewModel {
             return
         }
         await throughSeam(track) { try await $0.resumeWatching(track) }
+    }
+
+    private func trackRef(_ id: Int, _ verb: RefVerb, press: InboxRowPress?) async {
+        await towerWrite(.card(.track(id)), press: press, target: "tracks", verb: .ref,
+                         params: ActParams(refKind: .track, refID: Int64(id), refVerb: verb))
     }
 
     /// One seam call per card at a time, then a read; a vanished row is quiet.
@@ -917,17 +1031,48 @@ package final class ActionStripViewModel {
 
     /// Done on a message card: `watchtower inbox resolve <id>`.
     package func messageDone(_ id: Int) async {
+        if towerWrites != nil { return await messageRef(id, .resolve, press: .done) }
         await runInboxCLI(id, ["inbox", "resolve", "\(id)"], press: .done)
     }
 
     /// Hide on a message card: `watchtower inbox dismiss <id>`.
     package func hideMessage(_ id: Int) async {
+        if towerWrites != nil { return await messageRef(id, .dismiss, press: .hide) }
         await runInboxCLI(id, ["inbox", "dismiss", "\(id)"], press: .hide)
     }
 
     /// Snooze on a message card: `watchtower inbox snooze <id> <duration>`, `duration` "1d", "3d" or "1w".
     package func snoozeMessage(_ id: Int, duration: String) async {
+        if towerWrites != nil {
+            guard let until = Self.snoozeDate(duration, now: clock()) else { return }
+            return await messageRef(id, .snooze, press: .snooze(duration: duration), until: until)
+        }
         await runInboxCLI(id, ["inbox", "snooze", "\(id)", duration], press: .snooze(duration: duration))
+    }
+
+    private func messageRef(_ id: Int, _ verb: RefVerb, press: InboxRowPress, until: String? = nil) async {
+        await towerWrite(.card(.message(id)), press: press, target: "messages", verb: .ref,
+                         params: ActParams(refKind: .inboxItem, refID: Int64(id), refVerb: verb, until: until))
+    }
+
+    /// A message snooze's end as `watchtower inbox snooze` writes it: the
+    /// local date `duration` ("1d", "3d", "1w") from `now`; nil for another form.
+    nonisolated static func snoozeDate(_ duration: String, now: Date, calendar: Calendar = .current) -> String? {
+        let text = duration.trimmingCharacters(in: .whitespaces).lowercased()
+        guard let unit = text.last, let count = Int(text.dropLast()), count > 0 else { return nil }
+        let days: Int
+        switch unit {
+        case "d": days = count
+        case "w": days = count * 7
+        default: return nil
+        }
+        guard let date = calendar.date(byAdding: .day, value: days, to: now) else { return nil }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: date)
     }
 
     /// Go owns `inbox_items`' status, so the buttons run the CLI. Its
@@ -1008,6 +1153,7 @@ package final class ActionStripViewModel {
             replyDrafts[itemID]?.error = Self.replyNotBuilt
             return
         }
+        if towerWrites != nil { return await towerProposeReply(itemID, text: body) }
         let runner = cliRunner
         let sent = replyDrafts[itemID]?.text
         await pendingWrites.run(CardKey.card(.message(itemID))) {
@@ -1029,6 +1175,24 @@ package final class ActionStripViewModel {
             if failure == nil, replyDrafts[itemID]?.text == sent { replyDrafts[itemID] = nil }
             await refresh()
             if let failure { replyDrafts[itemID]?.error = failure }
+        }
+    }
+
+    /// Propose Reply through the tower: `inbox.act reply_propose` on the card
+    /// the row is on (the open artifact, else Messages); Go builds the
+    /// reply's tool and arguments. A refusal keeps the composer with Go's
+    /// sentence; never retried.
+    private func towerProposeReply(_ itemID: Int, text: String) async {
+        guard let towerWrites else { return }
+        let target = if case let .output(id)? = selection { "o\(id)" } else { "messages" }
+        let sent = replyDrafts[itemID]?.text
+        await pendingWrites.run(CardKey.card(.message(itemID))) {
+            replyDrafts[itemID]?.error = nil
+            let outcome = await towerWrites.act(
+                target: target, verb: .replyPropose, params: ActParams(text: text, refKind: .inboxItem, refID: Int64(itemID)))
+            if case .done = outcome, replyDrafts[itemID]?.text == sent { replyDrafts[itemID] = nil }
+            await refresh()
+            if case let .failed(sentence) = outcome { replyDrafts[itemID]?.error = sentence }
         }
     }
 
@@ -1061,6 +1225,7 @@ package final class ActionStripViewModel {
     package func markOutputDone(_ id: Int64) async {
         let now = Date()
         let hash = drawnHash(id)
+        if towerWrites != nil { return await closeOutput(id, .done, hash: hash) }
         await guardedWrite(.output(id)) { try AutomationQueries.markOutputDone($0, id: id, contentHash: hash, now: now) }
     }
 
@@ -1068,7 +1233,15 @@ package final class ActionStripViewModel {
     package func dismissOutput(_ id: Int64) async {
         let now = Date()
         let hash = drawnHash(id)
+        if towerWrites != nil { return await closeOutput(id, .dismiss, hash: hash) }
         await guardedWrite(.output(id)) { try AutomationQueries.dismissOutput($0, id: id, contentHash: hash, now: now) }
+    }
+
+    /// Done or Dismiss through the tower, at the version drawn: the card is
+    /// deselected only when its row changed.
+    private func closeOutput(_ id: Int64, _ verb: ActVerb, hash: String) async {
+        let outcome = await towerWrite(.card(.output(id)), target: "o\(id)", verb: verb, params: ActParams(contentHash: hash))
+        if outcome == .done(already: false) { deselect(.output(id)) }
     }
 
     /// The content hash of output `id` as the list drew it; `""` (a row from
@@ -1102,6 +1275,11 @@ package final class ActionStripViewModel {
     /// `contentHash` the version drawn: a card rewritten since is refused by
     /// the CLI ("This card changed — look again") and nothing is queued.
     package func pressReply(outputID: Int64, action: Int, contentHash: String) async {
+        if towerWrites != nil {
+            await towerWrite(.card(.output(outputID)), target: "o\(outputID)", verb: .press,
+                             params: ActParams(contentHash: contentHash, index: action, actionKind: "reply"))
+            return
+        }
         let runner = cliRunner
         await pendingWrites.run(CardKey.card(.output(outputID))) {
             lastError = nil
@@ -1280,6 +1458,7 @@ package final class ActionStripViewModel {
     /// the button's state moved (an open proposal, its task exists): no
     /// banner, the read draws it. Any other failure is kept for the button.
     package func proposeTarget(_ press: InboxTargetPress) async {
+        if let towerWrites { return await towerProposeTarget(press, towerWrites) }
         let runner = cliRunner
         let context = press.contextID
         await pendingWrites.run(CardKey.targetPress(context)) {
@@ -1298,6 +1477,29 @@ package final class ActionStripViewModel {
                 targetPressErrors[context] = nil
             } catch {
                 targetPressErrors[context] = TargetPressFailure(message: Self.pressRefusal(error), seenRowID: seen)
+            }
+            await refresh()
+        }
+    }
+
+    /// A target button through the tower: `inbox.act press` of the drawn
+    /// `target` action at the card's drawn version; Go proposes the
+    /// `create_target` (never approved). A refusal is kept for the button.
+    private func towerProposeTarget(_ press: InboxTargetPress, _ towerWrites: InboxTowerWrites) async {
+        let context = press.contextID
+        let parts = context.split(separator: ":")
+        guard parts.count >= 2, let outputID = Int64(parts[0]), let index = Int(parts[1]) else { return }
+        let hash = drawnHash(outputID)
+        await pendingWrites.run(CardKey.targetPress(context)) {
+            proposingTargets.insert(context)
+            defer { proposingTargets.remove(context) }
+            let seen = targetProposals[context]?.id
+            let outcome = await towerWrites.act(
+                target: "o\(outputID)", verb: .press, params: ActParams(contentHash: hash, index: index, actionKind: "target"))
+            if case let .failed(sentence) = outcome {
+                targetPressErrors[context] = TargetPressFailure(message: sentence, seenRowID: seen)
+            } else {
+                targetPressErrors[context] = nil
             }
             await refresh()
         }

@@ -30,12 +30,14 @@ extension AppState {
     }
 
     /// The Inbox reads its lists, counts and badge from the daemon's
-    /// `inbox.feed`: the whole tree, no limit, no clip. Only the app does
+    /// `inbox.feed` (the whole tree, no limit, no clip) and sends every
+    /// write as `inbox.act`. Only the app does
     /// this; a test run never reaches a daemon (its AppState may still wire
     /// the database the app's way).
     func attachTowerInbox(_ strip: ActionStripViewModel) {
         guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
         strip.attach(InboxFeedLoader(client: towerClient) { FeedRequest() })
+        strip.attachWrites(InboxTowerWrites(client: towerClient))
     }
 
     /// The sidebar's counts, loaded and observed, with the Inbox badge from

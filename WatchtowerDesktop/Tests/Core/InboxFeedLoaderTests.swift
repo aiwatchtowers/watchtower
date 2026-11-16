@@ -18,6 +18,9 @@ final class ScriptedFeedTransport: TowerTransport, @unchecked Sendable {
         var held: [CheckedContinuation<Void, Never>] = []
         var watches: [AsyncThrowingStream<ChangedEvent, Error>.Continuation] = []
         var watchesClosed = 0
+        var acts: [ActRequest] = []
+        var actResult = ActResult()
+        var actRefusal: Refusal?
         var waiters: [(due: @Sendable (Snapshot) -> Bool, continuation: CheckedContinuation<Void, Never>)] = []
     }
 
@@ -31,6 +34,13 @@ final class ScriptedFeedTransport: TowerTransport, @unchecked Sendable {
     private let state = OSAllocatedUnfairLock(initialState: State())
 
     var feedCalls: [FeedRequest] { state.withLock { $0.feedCalls } }
+    /// Every `inbox.act` request, in order.
+    var acts: [ActRequest] { state.withLock { $0.acts } }
+
+    /// How the next `inbox.act` calls answer: `refusal`, else ok with `result`.
+    func answerActs(_ result: ActResult = ActResult(), refusal: Refusal? = nil) {
+        state.withLock { $0.actResult = result; $0.actRefusal = refusal }
+    }
 
     func answer(_ feed: Feed) { state.withLock { $0.nextFeed = feed; $0.nextRefusal = nil } }
     func refuse(_ refusal: Refusal) { state.withLock { $0.nextRefusal = refusal } }
@@ -78,6 +88,14 @@ final class ScriptedFeedTransport: TowerTransport, @unchecked Sendable {
             let (feed, refusal) = state.withLock { ($0.nextFeed, $0.nextRefusal) }
             if let refusal { return Response(id: request.id, status: .refused, refusal: refusal) }
             return try Self.ok(request, feed)
+        case TowerCommand.inboxAct.rawValue:
+            let act = try JSONDecoder().decode(ActRequest.self, from: XCTUnwrap(request.params).data)
+            let (result, refusal) = state.withLock { state -> (ActResult, Refusal?) in
+                state.acts.append(act)
+                return (state.actResult, state.actRefusal)
+            }
+            if let refusal { return Response(id: request.id, status: .refused, refusal: refusal) }
+            return try Self.ok(request, result)
         default:
             return Response(id: request.id, status: .refused, refusal: Refusal(code: .unsupported, sentence: "no"))
         }

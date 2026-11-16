@@ -161,6 +161,10 @@ package final class AgentActionFeed {
     /// owner's card edits (`actions approve --patch`, e.g. a Slack message's
     /// text); Go merges and approves them in one write.
     package func approve(_ id: Int64, shownArgs: String, patch: String? = nil) async {
+        if let towerDecide {
+            await decide("approve", id) { await towerDecide(.approve(argsSHA256: Self.argsSHA256(shownArgs), patch: patch), id) }
+            return
+        }
         let pin = ["--args-sha256", Self.argsSHA256(shownArgs)]
         await run("approve", id: id, extra: pin + (patch.map { ["--patch", $0] } ?? []))
         await startWatchingIfTrack(id)
@@ -196,6 +200,10 @@ package final class AgentActionFeed {
     }
 
     package func reject(_ id: Int64) async {
+        if let towerDecide {
+            await decide("reject", id) { await towerDecide(.reject, id) }
+            return
+        }
         await run("reject", id: id)
     }
 
@@ -203,6 +211,11 @@ package final class AgentActionFeed {
     /// stranded in `executing` (`actions apply --force`): an Inbox target
     /// button's **Try again** on a stuck row, the owner's press.
     package func retry(_ id: Int64, force: Bool = false) async {
+        if let towerDecide {
+            // Go's retry reclaims a row stranded in executing itself.
+            await decide("apply", id) { await towerDecide(.retry, id) }
+            return
+        }
         await run("apply", id: id, extra: force ? ["--force"] : [])
         await startWatchingIfTrack(id)
     }
@@ -211,7 +224,36 @@ package final class AgentActionFeed {
     /// (`ConnectorCallProposal.awaitsDismissal`): `actions dismiss` stamps
     /// `dismissed_at`, which takes it off the Inbox badge.
     package func dismiss(_ id: Int64) async {
+        if let towerDecide {
+            await decide("dismiss", id) { await towerDecide(.dismiss, id) }
+            return
+        }
         await run("dismiss", id: id)
+    }
+
+    /// A decision the tower makes (`inbox.act` approval verbs, mobile Inbox
+    /// spec §5.1): the Inbox's own feed sets `towerDecide`; the chat's
+    /// feeds leave it nil and run `watchtower actions …`.
+    package enum TowerDecision: Equatable, Sendable {
+        case approve(argsSHA256: String, patch: String?)
+        case reject, retry, dismiss
+    }
+
+    /// Sends a decision through the tower and returns the failure's
+    /// sentence, or nil once it landed. Go then also starts watching an
+    /// approved `create_track` and wakes the automations executor.
+    @ObservationIgnored package var towerDecide: (@MainActor (TowerDecision, Int64) async -> String?)?
+
+    /// The tower's twin of `run`: the row busy meanwhile, its own error kept
+    /// on its card, then a read.
+    private func decide(_ verb: String, _ id: Int64, _ send: () async -> String?) async {
+        rowErrors[id] = nil
+        lastError = nil
+        inFlight.insert(id)
+        if let failure = await send() { rowErrors[id] = RowError(verb: verb, message: failure) }
+        inFlight.remove(id)
+        refresh()
+        onDecision?(id, rows.first { $0.id == id })
     }
 
     /// The rows "Approve all" covers. A session-applied call is left to its
