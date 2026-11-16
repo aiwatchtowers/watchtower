@@ -643,6 +643,120 @@ final class WorkbenchesViewModelAutoCleanupTests: XCTestCase {
         XCTAssertEqual(applies(streamer).count, 1, "no second cleanup")
     }
 
+    /// A second Resume of the row while the first one's write is in flight
+    /// (a fast A → B → A switch) joins it: it is not refused, and the row
+    /// stays busy until the last of them is past the write.
+    func testASecondResumeJoinsTheFirstInsteadOfBeingRefused() async throws {
+        let (vm, _, streamer) = makeVM([.success(AutoCleanupFixture.processRunning)])
+        let p = try await workbench()
+        let row = try await markedRow(vm, p)
+        let gate = WriteGate()
+        let store = try XCTUnwrap(pool)
+        vm.clearDeleteRequestWrite = { id in
+            await gate.wait()
+            try await store.write { try TerminalSessionQueries.clearDeleteRequested($0, id: id) }
+        }
+
+        let first = Task { try await vm.resume(row) }
+        await waitUntil("the first resume holds the row") { vm.autoCleanupBusy.contains(row.id) }
+        let second = Task { try await vm.resume(row) }
+        await waitUntil("the second resume joined") { vm.resumesClearing[row.id] == 2 }
+        vm.cleanUpAgain(row.id)
+        XCTAssertNil(vm.autoCleanupQueue[p], "Clean Up Again still refused")
+        await vm.deleteAnyway(row.id)
+        let still = try await stored(row.id)
+        XCTAssertNotNil(still, "Delete Anyway still refused")
+
+        gate.open()
+        _ = try await first.value
+        _ = try await second.value
+        XCTAssertTrue(terminals.liveIDs.contains(row.id), "resumed")
+        XCTAssertFalse(vm.autoCleanupBusy.contains(row.id))
+        XCTAssertNil(vm.resumesClearing[row.id])
+        XCTAssertEqual(applies(streamer).count, 1, "no second cleanup")
+    }
+
+    /// A row queued for its cleanup while a Resume's write is in flight:
+    /// a further Resume is refused before any write of its own, so the
+    /// delete request it would clear stays (here the first write fails).
+    func testAResumeOfARowQueuedMeanwhileIsRefusedBeforeItsWrite() async throws {
+        let (vm, _, _) = makeVM([.success(AutoCleanupFixture.processRunning)])
+        let p = try await workbench()
+        let row = try await markedRow(vm, p)
+        let gate = WriteGate()
+        let store = try XCTUnwrap(pool)
+        let writes = WriteCounter()
+        vm.clearDeleteRequestWrite = { id in
+            let call = await writes.next()
+            await gate.wait()
+            if call == 1 { throw WriteRefusedError() }
+            try await store.write { try TerminalSessionQueries.clearDeleteRequested($0, id: id) }
+        }
+
+        let first = Task { try await vm.resume(row) }
+        await waitUntil("the first resume holds the row") { vm.autoCleanupBusy.contains(row.id) }
+        vm.autoCleanupQueue[p] = [row.id]
+        let secondEnded = WriteCounter()
+        let second = Task {
+            defer { _ = secondEnded.next() }
+            try await vm.resume(row)
+        }
+        await waitUntil("the second resume refused or joined") {
+            secondEnded.count >= 1 || vm.resumesClearing[row.id] == 2
+        }
+        XCTAssertEqual(vm.resumesClearing[row.id], 1, "the refused resume did not join")
+
+        gate.open()
+        do {
+            _ = try await second.value
+            XCTFail("no resume of a queued row")
+        } catch let error as WorkbenchesViewModel.TargetStartError {
+            XCTAssertEqual(error, .cleaningUp)
+        }
+        do {
+            try await first.value
+            XCTFail("the first write fails")
+        } catch let error as WorkbenchesViewModel.TargetStartError {
+            guard case .failed = error else { return XCTFail("got \(error)") }
+        }
+        XCTAssertEqual(writes.count, 1, "one write: the refused resume wrote nothing")
+        let mark = try await deleteRequestedAt(row.id)
+        XCTAssertNotNil(mark, "the delete request is kept")
+        XCTAssertFalse(terminals.liveIDs.contains(row.id))
+    }
+
+    /// Joined Resumes whose writes fail: both report the failure and the
+    /// row is free again (no count, not busy).
+    func testFailedJoinedResumesLeaveTheRowFree() async throws {
+        let (vm, _, _) = makeVM([.success(AutoCleanupFixture.processRunning)])
+        let p = try await workbench()
+        let row = try await markedRow(vm, p)
+        let gate = WriteGate()
+        vm.clearDeleteRequestWrite = { _ in
+            await gate.wait()
+            throw WriteRefusedError()
+        }
+
+        let first = Task { try await vm.resume(row) }
+        await waitUntil("the first resume holds the row") { vm.autoCleanupBusy.contains(row.id) }
+        let second = Task { try await vm.resume(row) }
+        await waitUntil("the second resume joined") { vm.resumesClearing[row.id] == 2 }
+        gate.open()
+        for resume in [first, second] {
+            do {
+                _ = try await resume.value
+                XCTFail("the write fails")
+            } catch let error as WorkbenchesViewModel.TargetStartError {
+                guard case .failed = error else { return XCTFail("got \(error)") }
+            }
+        }
+        XCTAssertNil(vm.resumesClearing[row.id])
+        XCTAssertFalse(vm.autoCleanupBusy.contains(row.id))
+        XCTAssertTrue(vm.canResume(row.id))
+        let mark = try await deleteRequestedAt(row.id)
+        XCTAssertNotNil(mark, "nothing cleared")
+    }
+
     /// Delete Anyway first: while its DELETE runs, Resume (`.cleaningUp`)
     /// and Clean Up Again refuse the row.
     func testDeleteAnywayRefusesResumeAndCleanUpAgainMeanwhile() async throws {
@@ -912,6 +1026,21 @@ final class WorkbenchesViewModelAutoCleanupTests: XCTestCase {
 
 private struct WriteRefusedError: LocalizedError {
     var errorDescription: String? { "database is locked" }
+}
+
+/// Counts a seam's calls; `next` returns the call's number from 1.
+private final class WriteCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var calls = 0
+
+    var count: Int { lock.withLock { calls } }
+
+    func next() -> Int {
+        lock.withLock {
+            calls += 1
+            return calls
+        }
+    }
 }
 
 /// A write held until `open()`.
