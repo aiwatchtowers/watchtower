@@ -2,6 +2,313 @@
 
 import Foundation
 
+public enum ActionState: Codable, Hashable, Sendable {
+    case enabled
+    case disabled
+    case pressed
+    case macOnly
+    /// A value this build does not know (sent by a newer Watchtower).
+    case unknown(String)
+
+    public init(rawValue: String) {
+        switch rawValue {
+        case "enabled": self = .enabled
+        case "disabled": self = .disabled
+        case "pressed": self = .pressed
+        case "mac_only": self = .macOnly
+        default: self = .unknown(rawValue)
+        }
+    }
+
+    public var rawValue: String {
+        switch self {
+        case .enabled: "enabled"
+        case .disabled: "disabled"
+        case .pressed: "pressed"
+        case .macOnly: "mac_only"
+        case .unknown(let value): value
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        self.init(rawValue: try decoder.singleValueContainer().decode(String.self))
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.rawValue == rhs.rawValue
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(rawValue)
+    }
+}
+
+public struct Approval: Codable, Hashable, Sendable {
+    public var tool: String
+    public var title: String
+    public var summary: String
+    public var argsSHA256: String
+    public var status: String
+    public var error: String
+    public var proposer: String
+    public var reason: String
+    public var editOnMac: Bool
+
+    public init(
+        tool: String,
+        title: String,
+        summary: String,
+        argsSHA256: String,
+        status: String,
+        error: String,
+        proposer: String,
+        reason: String,
+        editOnMac: Bool
+    ) {
+        self.tool = tool
+        self.title = title
+        self.summary = summary
+        self.argsSHA256 = argsSHA256
+        self.status = status
+        self.error = error
+        self.proposer = proposer
+        self.reason = reason
+        self.editOnMac = editOnMac
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case tool
+        case title
+        case summary
+        case argsSHA256 = "args_sha256"
+        case status
+        case error
+        case proposer
+        case reason
+        case editOnMac = "edit_on_mac"
+    }
+}
+
+public struct Card: Codable, Hashable, Sendable {
+    public var id: String
+    public var folderID: Int64
+    public var cardKind: CardKind
+    public var title: String
+    public var sourceLine: String
+    public var preview: String
+    public var stamp: String
+    public var living: Bool
+    public var unread: Bool
+    public var priority: String
+    public var pinned: Bool
+    public var automation: CardAutomation?
+    public var blocks: String
+    public var body: String
+    public var bodyClipped: Bool
+    public var contentHash: String
+    public var actions: [CardAction]
+    public var refFacts: [RefFacts]
+    public var approval: Approval?
+    public var legacy: LegacySection?
+
+    public init(
+        id: String,
+        folderID: Int64,
+        cardKind: CardKind,
+        title: String,
+        sourceLine: String,
+        preview: String,
+        stamp: String,
+        living: Bool,
+        unread: Bool,
+        priority: String,
+        pinned: Bool,
+        automation: CardAutomation? = nil,
+        blocks: String,
+        body: String,
+        bodyClipped: Bool,
+        contentHash: String,
+        actions: [CardAction],
+        refFacts: [RefFacts],
+        approval: Approval? = nil,
+        legacy: LegacySection? = nil
+    ) {
+        self.id = id
+        self.folderID = folderID
+        self.cardKind = cardKind
+        self.title = title
+        self.sourceLine = sourceLine
+        self.preview = preview
+        self.stamp = stamp
+        self.living = living
+        self.unread = unread
+        self.priority = priority
+        self.pinned = pinned
+        self.automation = automation
+        self.blocks = blocks
+        self.body = body
+        self.bodyClipped = bodyClipped
+        self.contentHash = contentHash
+        self.actions = actions
+        self.refFacts = refFacts
+        self.approval = approval
+        self.legacy = legacy
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case folderID = "folder_id"
+        case cardKind = "card_kind"
+        case title
+        case sourceLine = "source_line"
+        case preview
+        case stamp
+        case living
+        case unread
+        case priority
+        case pinned
+        case automation
+        case blocks
+        case body
+        case bodyClipped = "body_clipped"
+        case contentHash = "content_hash"
+        case actions
+        case refFacts = "ref_facts"
+        case approval
+        case legacy
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try container.decode(String.self, forKey: .id)
+        self.folderID = try container.decode(Int64.self, forKey: .folderID)
+        self.cardKind = try container.decode(CardKind.self, forKey: .cardKind)
+        self.title = try container.decode(String.self, forKey: .title)
+        self.sourceLine = try container.decode(String.self, forKey: .sourceLine)
+        self.preview = try container.decode(String.self, forKey: .preview)
+        self.stamp = try container.decode(String.self, forKey: .stamp)
+        self.living = try container.decode(Bool.self, forKey: .living)
+        self.unread = try container.decode(Bool.self, forKey: .unread)
+        self.priority = try container.decode(String.self, forKey: .priority)
+        self.pinned = try container.decode(Bool.self, forKey: .pinned)
+        self.automation = try container.decodeIfPresent(CardAutomation.self, forKey: .automation)
+        self.blocks = try container.decode(String.self, forKey: .blocks)
+        self.body = try container.decode(String.self, forKey: .body)
+        self.bodyClipped = try container.decode(Bool.self, forKey: .bodyClipped)
+        self.contentHash = try container.decode(String.self, forKey: .contentHash)
+        self.actions = try container.decodeIfPresent([CardAction].self, forKey: .actions) ?? []
+        self.refFacts = try container.decodeIfPresent([RefFacts].self, forKey: .refFacts) ?? []
+        self.approval = try container.decodeIfPresent(Approval.self, forKey: .approval)
+        self.legacy = try container.decodeIfPresent(LegacySection.self, forKey: .legacy)
+    }
+}
+
+public struct CardAction: Codable, Hashable, Sendable {
+    public var index: Int
+    public var kind: String
+    public var label: String
+    public var state: ActionState
+
+    public init(
+        index: Int,
+        kind: String,
+        label: String,
+        state: ActionState
+    ) {
+        self.index = index
+        self.kind = kind
+        self.label = label
+        self.state = state
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case index
+        case kind
+        case label
+        case state
+    }
+}
+
+public struct CardAutomation: Codable, Hashable, Sendable {
+    public var id: Int64
+    public var name: String
+    public var builtinID: String
+    public var runID: Int64
+
+    public init(
+        id: Int64,
+        name: String,
+        builtinID: String,
+        runID: Int64
+    ) {
+        self.id = id
+        self.name = name
+        self.builtinID = builtinID
+        self.runID = runID
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case builtinID = "builtin_id"
+        case runID = "run_id"
+    }
+}
+
+public enum CardKind: Codable, Hashable, Sendable {
+    case artifact
+    case approvalNative
+    case reminder
+    case notice
+    case legacy
+    /// A value this build does not know (sent by a newer Watchtower).
+    case unknown(String)
+
+    public init(rawValue: String) {
+        switch rawValue {
+        case "artifact": self = .artifact
+        case "approval_native": self = .approvalNative
+        case "reminder": self = .reminder
+        case "notice": self = .notice
+        case "legacy": self = .legacy
+        default: self = .unknown(rawValue)
+        }
+    }
+
+    public var rawValue: String {
+        switch self {
+        case .artifact: "artifact"
+        case .approvalNative: "approval_native"
+        case .reminder: "reminder"
+        case .notice: "notice"
+        case .legacy: "legacy"
+        case .unknown(let value): value
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        self.init(rawValue: try decoder.singleValueContainer().decode(String.self))
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.rawValue == rhs.rawValue
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(rawValue)
+    }
+}
+
 public struct ChangedEvent: Codable, Hashable, Sendable {
     public var id: String
     public var event: String
@@ -21,6 +328,178 @@ public struct ChangedEvent: Codable, Hashable, Sendable {
         case id
         case event
         case tables
+    }
+}
+
+public struct Feed: Codable, Hashable, Sendable {
+    public var v: Int
+    public var builtAt: String
+    public var folders: [Folder]
+    public var cards: [Card]
+    public var more: [FolderMore]?
+
+    public init(
+        v: Int,
+        builtAt: String,
+        folders: [Folder],
+        cards: [Card],
+        more: [FolderMore]? = nil
+    ) {
+        self.v = v
+        self.builtAt = builtAt
+        self.folders = folders
+        self.cards = cards
+        self.more = more
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case v
+        case builtAt = "built_at"
+        case folders
+        case cards
+        case more
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.v = try container.decode(Int.self, forKey: .v)
+        self.builtAt = try container.decode(String.self, forKey: .builtAt)
+        self.folders = try container.decodeIfPresent([Folder].self, forKey: .folders) ?? []
+        self.cards = try container.decodeIfPresent([Card].self, forKey: .cards) ?? []
+        self.more = try container.decodeIfPresent([FolderMore].self, forKey: .more)
+    }
+}
+
+public struct FeedRequest: Codable, Hashable, Sendable {
+    public var folder: Int64?
+    public var limit: Int?
+    public var clip: Bool?
+
+    public init(
+        folder: Int64? = nil,
+        limit: Int? = nil,
+        clip: Bool? = nil
+    ) {
+        self.folder = folder
+        self.limit = limit
+        self.clip = clip
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case folder
+        case limit
+        case clip
+    }
+}
+
+public struct Folder: Codable, Hashable, Sendable {
+    public var id: Int64
+    public var kind: FolderKind
+    public var slug: String
+    public var title: String
+    public var icon: String
+    public var parentID: Int64?
+    public var position: Int
+    public var hidden: Bool
+    public var count: Int
+    public var waiting: Int
+
+    public init(
+        id: Int64,
+        kind: FolderKind,
+        slug: String,
+        title: String,
+        icon: String,
+        parentID: Int64? = nil,
+        position: Int,
+        hidden: Bool,
+        count: Int,
+        waiting: Int
+    ) {
+        self.id = id
+        self.kind = kind
+        self.slug = slug
+        self.title = title
+        self.icon = icon
+        self.parentID = parentID
+        self.position = position
+        self.hidden = hidden
+        self.count = count
+        self.waiting = waiting
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case kind
+        case slug
+        case title
+        case icon
+        case parentID = "parent_id"
+        case position
+        case hidden
+        case count
+        case waiting
+    }
+}
+
+public enum FolderKind: Codable, Hashable, Sendable {
+    case root
+    case approvals
+    case owner
+    /// A value this build does not know (sent by a newer Watchtower).
+    case unknown(String)
+
+    public init(rawValue: String) {
+        switch rawValue {
+        case "root": self = .root
+        case "approvals": self = .approvals
+        case "owner": self = .owner
+        default: self = .unknown(rawValue)
+        }
+    }
+
+    public var rawValue: String {
+        switch self {
+        case .root: "root"
+        case .approvals: "approvals"
+        case .owner: "owner"
+        case .unknown(let value): value
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        self.init(rawValue: try decoder.singleValueContainer().decode(String.self))
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.rawValue == rhs.rawValue
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(rawValue)
+    }
+}
+
+public struct FolderMore: Codable, Hashable, Sendable {
+    public var folderID: Int64
+    public var count: Int
+
+    public init(
+        folderID: Int64,
+        count: Int
+    ) {
+        self.folderID = folderID
+        self.count = count
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case folderID = "folder_id"
+        case count
     }
 }
 
@@ -51,6 +530,121 @@ public struct HelloResponse: Codable, Hashable, Sendable {
         case build
         case syncPaused = "sync_paused"
         case noSync = "no_sync"
+    }
+}
+
+public struct LegacyItem: Codable, Hashable, Sendable {
+    public var refKind: RefKind
+    public var id: Int64
+    public var title: String
+    public var subtitle: String
+    public var stamp: String
+    public var unread: Bool
+    public var stopped: Bool
+    public var date: String
+
+    public init(
+        refKind: RefKind,
+        id: Int64,
+        title: String,
+        subtitle: String,
+        stamp: String,
+        unread: Bool,
+        stopped: Bool,
+        date: String
+    ) {
+        self.refKind = refKind
+        self.id = id
+        self.title = title
+        self.subtitle = subtitle
+        self.stamp = stamp
+        self.unread = unread
+        self.stopped = stopped
+        self.date = date
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case refKind = "ref_kind"
+        case id
+        case title
+        case subtitle
+        case stamp
+        case unread
+        case stopped
+        case date
+    }
+}
+
+public enum LegacyKind: Codable, Hashable, Sendable {
+    case morningBrief
+    case tracks
+    case ideas
+    case threadBriefs
+    case messages
+    /// A value this build does not know (sent by a newer Watchtower).
+    case unknown(String)
+
+    public init(rawValue: String) {
+        switch rawValue {
+        case "morning_brief": self = .morningBrief
+        case "tracks": self = .tracks
+        case "ideas": self = .ideas
+        case "thread_briefs": self = .threadBriefs
+        case "messages": self = .messages
+        default: self = .unknown(rawValue)
+        }
+    }
+
+    public var rawValue: String {
+        switch self {
+        case .morningBrief: "morning_brief"
+        case .tracks: "tracks"
+        case .ideas: "ideas"
+        case .threadBriefs: "thread_briefs"
+        case .messages: "messages"
+        case .unknown(let value): value
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        self.init(rawValue: try decoder.singleValueContainer().decode(String.self))
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.rawValue == rhs.rawValue
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(rawValue)
+    }
+}
+
+public struct LegacySection: Codable, Hashable, Sendable {
+    public var kind: LegacyKind
+    public var items: [LegacyItem]
+
+    public init(
+        kind: LegacyKind,
+        items: [LegacyItem]
+    ) {
+        self.kind = kind
+        self.items = items
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case kind
+        case items
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.kind = try container.decode(LegacyKind.self, forKey: .kind)
+        self.items = try container.decodeIfPresent([LegacyItem].self, forKey: .items) ?? []
     }
 }
 
@@ -91,6 +685,96 @@ public struct PingResponse: Codable, Hashable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case at
+    }
+}
+
+public struct RefFacts: Codable, Hashable, Sendable {
+    public var kind: RefKind
+    public var id: Int64
+    public var open: Bool
+    public var waits: Bool
+    public var reply: Bool
+    public var replyWaiting: Bool
+    public var link: String
+
+    public init(
+        kind: RefKind,
+        id: Int64,
+        open: Bool,
+        waits: Bool,
+        reply: Bool,
+        replyWaiting: Bool,
+        link: String
+    ) {
+        self.kind = kind
+        self.id = id
+        self.open = open
+        self.waits = waits
+        self.reply = reply
+        self.replyWaiting = replyWaiting
+        self.link = link
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case kind
+        case id
+        case open
+        case waits
+        case reply
+        case replyWaiting = "reply_waiting"
+        case link
+    }
+}
+
+public enum RefKind: Codable, Hashable, Sendable {
+    case inboxItem
+    case track
+    case idea
+    case reminder
+    case action
+    case planItem
+    /// A value this build does not know (sent by a newer Watchtower).
+    case unknown(String)
+
+    public init(rawValue: String) {
+        switch rawValue {
+        case "inbox_item": self = .inboxItem
+        case "track": self = .track
+        case "idea": self = .idea
+        case "reminder": self = .reminder
+        case "action": self = .action
+        case "plan_item": self = .planItem
+        default: self = .unknown(rawValue)
+        }
+    }
+
+    public var rawValue: String {
+        switch self {
+        case .inboxItem: "inbox_item"
+        case .track: "track"
+        case .idea: "idea"
+        case .reminder: "reminder"
+        case .action: "action"
+        case .planItem: "plan_item"
+        case .unknown(let value): value
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        self.init(rawValue: try decoder.singleValueContainer().decode(String.self))
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.rawValue == rhs.rawValue
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(rawValue)
     }
 }
 
@@ -257,4 +941,12 @@ public enum Status: Codable, Hashable, Sendable {
     public func hash(into hasher: inout Hasher) {
         hasher.combine(rawValue)
     }
+}
+
+public struct WatchRequest: Codable, Hashable, Sendable {
+    public init() {}
+}
+
+public struct WatchResponse: Codable, Hashable, Sendable {
+    public init() {}
 }

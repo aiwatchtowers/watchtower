@@ -22,6 +22,14 @@ final class GoldenRoundTripTests: XCTestCase {
         try assertRoundTrip(ChangedEvent.self, golden: "ChangedEvent")
     }
 
+    func testFeedRoundTrip() throws {
+        try assertRoundTrip(Feed.self, golden: "Feed")
+    }
+
+    func testFeedRequestRoundTrip() throws {
+        try assertRoundTrip(FeedRequest.self, golden: "FeedRequest")
+    }
+
     func testHelloResponseRoundTrip() throws {
         try assertRoundTrip(HelloResponse.self, golden: "HelloResponse")
     }
@@ -47,7 +55,7 @@ final class GoldenRoundTripTests: XCTestCase {
     }
 
     func testUnknownEnumValueSurvives() throws {
-        let decoded = try JSONDecoder().decode(RefusalCode.self, from: Data(#""zz_future""#.utf8))
+        let decoded = try JSONDecoder().decode(ActionState.self, from: Data(#""zz_future""#.utf8))
         XCTAssertEqual(decoded, .unknown("zz_future"))
         XCTAssertEqual(try JSONEncoder().encode(decoded), Data(#""zz_future""#.utf8))
     }

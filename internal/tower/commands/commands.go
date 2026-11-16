@@ -2,7 +2,10 @@
 // commands, so the daemon socket, the hub and the generator see one table.
 package commands
 
-import "watchtower/internal/tower"
+import (
+	"watchtower/internal/inboxfeed"
+	"watchtower/internal/tower"
+)
 
 // Deps are what some commands need at call time. Its zero value is valid:
 // the generator and tests register with it, and a command whose dependency is
@@ -13,4 +16,5 @@ type Deps struct{}
 func RegisterAll(r *tower.Registry, _ Deps) {
 	tower.RegisterBuiltins(r)
 	tower.RegisterPause(r)
+	inboxfeed.Register(r)
 }
