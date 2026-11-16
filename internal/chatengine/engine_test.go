@@ -451,12 +451,23 @@ func TestChatengine_SessionReadyPublishesRoutingLive(t *testing.T) {
 		synctest.Wait()
 
 		var conv *FeedConversation
+		var note *Part
 		for _, ev := range drain(feed) {
 			if ev.Type == EventConversationUpdate {
 				conv = ev.ConversationUpdate
 			}
+			if ev.Type == EventMessageUpsert && ev.Message.Role == "assistant" {
+				for _, p := range ev.Message.Parts {
+					if p.Kind == PartRoutingNote {
+						note = &p
+					}
+				}
+			}
 		}
 		require.NotNil(t, conv, "a conversation_update came")
+		require.NotNil(t, note, "the live assistant message gained a routing_note part without a database re-read")
+		assert.Equal(t, "Current provider: codex · gpt-x", note.Fallback.Text)
+		assert.JSONEq(t, `{"mode":"pinned","provider":"codex","model":"gpt-x","actual_provider":"codex","actual_model":"gpt-x"}`, string(note.Payload))
 		assert.Equal(t, "pinned", conv.Routing.Mode)
 		require.NotNil(t, conv.Routing.Provider)
 		assert.Equal(t, "codex", *conv.Routing.Provider)

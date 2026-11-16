@@ -195,7 +195,7 @@ func (e *Engine) opCancel(_ context.Context, params json.RawMessage, _ Client) (
 	return struct{}{}, nil
 }
 
-func (e *Engine) opPage(ctx context.Context, params json.RawMessage, _ Client) (any, error) {
+func (e *Engine) opPage(ctx context.Context, params json.RawMessage, c Client) (any, error) {
 	var p struct {
 		ConversationID  int64 `json:"conversation_id"`
 		BeforeMessageID int64 `json:"before_message_id"`
@@ -206,7 +206,8 @@ func (e *Engine) opPage(ctx context.Context, params json.RawMessage, _ Client) (
 	if p.ConversationID <= 0 || p.BeforeMessageID <= 0 {
 		return nil, errBadParams
 	}
-	return e.Feed(ctx, p.ConversationID, p.BeforeMessageID)
+	f, err := e.Feed(ctx, p.ConversationID, p.BeforeMessageID)
+	return FilterFeed(f, c), err // D15: the client's own part kinds
 }
 
 func (e *Engine) opSearch(ctx context.Context, params json.RawMessage, _ Client) (any, error) {
