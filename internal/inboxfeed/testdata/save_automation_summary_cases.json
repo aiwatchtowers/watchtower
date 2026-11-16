@@ -1,0 +1,92 @@
+[
+  {
+    "name": "weekday_schedule_three_permissions",
+    "args": "{\"name\":\"Morning digest\",\"slug\":\"morning-digest\",\"trigger_kind\":\"schedule\",\"trigger_spec\":{\"schedule\":\"0 9 * * 1-5\"},\"permissions\":[\"slack:read@*\",\"llm:light\",\"targets:write\"]}",
+    "workbench_names": {},
+    "expect": {
+      "name": "Save automation Morning digest",
+      "scope": "Personal",
+      "when": "Every weekday at 09:00",
+      "may": "Read messages in all workspaces (Slack), Use the light model and 1 more"
+    }
+  },
+  {
+    "name": "known_workbench_manual_nothing",
+    "args": "{\"slug\":\"tidy\",\"trigger_kind\":\"manual\",\"trigger_spec\":{\"manual\":true},\"workbench_id\":3}",
+    "workbench_names": {
+      "3": "Acme"
+    },
+    "expect": {
+      "name": "Save automation tidy",
+      "scope": "Acme",
+      "when": "Only when you run it",
+      "may": "Nothing"
+    }
+  },
+  {
+    "name": "unknown_workbench_reaction_event",
+    "args": "{\"name\":\"Eyes\",\"trigger_kind\":\"event\",\"trigger_spec\":{\"event\":{\"type\":\"slack.reaction_added\",\"where\":{\"emoji\":\":eyes:\",\"channel\":\"general\"}}},\"permissions\":[\"mcp:acme/search\",\"shell:\\\"make test\\\"\"],\"workbench_id\":4}",
+    "workbench_names": {},
+    "expect": {
+      "name": "Save automation Eyes",
+      "scope": "Workbench #4",
+      "when": "On :eyes: reactions (general)",
+      "may": "Use search from acme (Quick Connection), Run the command make test"
+    }
+  },
+  {
+    "name": "builtin_sync_slot",
+    "args": "{\"name\":\"Brief\",\"trigger_kind\":\"sync\",\"trigger_spec\":{\"sync\":\"tracks\"},\"permissions\":[\"builtin:brief.compose\"]}",
+    "workbench_names": {},
+    "expect": {
+      "name": "Save automation Brief",
+      "scope": "Personal",
+      "when": "After every sync",
+      "may": "Write your daily brief"
+    }
+  },
+  {
+    "name": "one_weekday_two_hours",
+    "args": "{\"name\":\"Mail\",\"trigger_kind\":\"schedule\",\"trigger_spec\":{\"schedule\":\"30 8,17 * * 1\"},\"permissions\":[\"gmail:write@work\",\"something odd\"]}",
+    "workbench_names": {},
+    "expect": {
+      "name": "Save automation Mail",
+      "scope": "Personal",
+      "when": "Every Monday at 08:30, 17:30",
+      "may": "Send mail from work (Gmail), something odd"
+    }
+  },
+  {
+    "name": "cron_shape_not_worded",
+    "args": "{\"name\":\"Often\",\"trigger_kind\":\"schedule\",\"trigger_spec\":{\"schedule\":\"*/5 * * * *\"},\"permissions\":[\"session:start@claude\",\"jira:read@*\",\"dayplan:read\",\"agent:run\"]}",
+    "workbench_names": {},
+    "expect": {
+      "name": "Save automation Often",
+      "scope": "Personal",
+      "when": "Cron: */5 * * * *",
+      "may": "Start Claude Code sessions, Read issues in all projects (Jira) and 2 more"
+    }
+  },
+  {
+    "name": "button",
+    "args": "{\"name\":\"Ship\",\"trigger_kind\":\"button\",\"trigger_spec\":{\"button\":{\"label\":\"Release\"}}}",
+    "workbench_names": {},
+    "expect": {
+      "name": "Save automation Ship",
+      "scope": "Personal",
+      "when": "Button: Release",
+      "may": "Nothing"
+    }
+  },
+  {
+    "name": "args_not_json",
+    "args": "not json",
+    "workbench_names": {},
+    "expect": {
+      "name": "Save automation ",
+      "scope": "Personal",
+      "when": "—",
+      "may": "Nothing"
+    }
+  }
+]

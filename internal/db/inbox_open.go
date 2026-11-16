@@ -26,6 +26,10 @@ var openInboxClause = `status = 'pending' AND item_class = 'actionable' AND arch
 	AND (substr(trigger_type, 1, 5) != 'jira_' OR EXISTS (
 	  SELECT 1 FROM jira_issues j WHERE j.key = inbox_items.channel_id AND j.is_deleted = 0))`
 
+// OpenInboxClause returns openInboxClause, for a reader that runs it inside
+// its own transaction (internal/inboxfeed). Its one `?` is now.
+func OpenInboxClause() string { return openInboxClause }
+
 // OpenInboxItem is one open attention item with what its row shows.
 type OpenInboxItem struct {
 	InboxItem
