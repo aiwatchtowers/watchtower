@@ -122,6 +122,16 @@ package struct ChatTurnStore: Sendable {
         }
     }
 
+    /// Frees `turnID`'s lease on its own (a no-op when another turn holds
+    /// it): after a failed finalize, whose transaction rolled its release
+    /// back, so the next send is not refused as answering elsewhere until
+    /// the lease goes stale.
+    package func releaseLease(conversationID: Int64, turnID: String) async throws {
+        try await dbPool.write { db in
+            try ChatLeaseQueries.release(db, conversationID: conversationID, turnID: turnID)
+        }
+    }
+
     /// The lease watch's heartbeat (spec §4.4); false: the lease is gone or
     /// another turn's — the conversation was deleted or the lease taken.
     package func heartbeat(conversationID: Int64, turnID: String, nowMS: Int64) async throws -> Bool {

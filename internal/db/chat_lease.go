@@ -166,12 +166,13 @@ WHERE conversation_id = ? AND turn_id = ? AND role = 'assistant' AND status = 'p
 	return res.RowsAffected()
 }
 
-// FreshChatLeases lists the conversations whose lease heartbeat is younger
-// than ChatLeaseStaleMS at nowMS (a turn answering on some device), in id
+// FreshChatLeases lists the conversations whose lease heartbeat is at most
+// ChatLeaseStaleMS old at nowMS — nobody may take it yet, the claim needs
+// older; Swift's ChatLease.isLive — (a turn answering on some device), in id
 // order: the hub's chat slices republish when the set changes, since a lease
 // going stale changes no row.
 func (db *DB) FreshChatLeases(nowMS int64) ([]int64, error) {
-	rows, err := db.Query(`SELECT conversation_id FROM chat_turn_leases WHERE heartbeat_at_ms > ? ORDER BY conversation_id`,
+	rows, err := db.Query(`SELECT conversation_id FROM chat_turn_leases WHERE heartbeat_at_ms >= ? ORDER BY conversation_id`,
 		nowMS-ChatLeaseStaleMS)
 	if err != nil {
 		return nil, fmt.Errorf("fresh chat leases: %w", err)

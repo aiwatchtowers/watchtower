@@ -719,3 +719,85 @@ func TestChatRequests_ExpiredThenRepeatedRebuilds(t *testing.T) {
 		t.Fatalf("the repeat after expiry served the old record: %d hits", n)
 	}
 }
+
+// A Discuss chat (context_type set) is not a main chat: a watch on its id
+// publishes no feed record and a page request gets an empty page (iPhone
+// chat spec §1).
+func TestChatFeedAndPage_DiscussChatNotPublished(t *testing.T) {
+	d := openDB(t)
+	s := chatSeed{t, d}
+	conv := s.conversation("Standup", 1, "context_type = 'meeting', context_id = '7'")
+	u := s.message(conv, 0, "user", "q", "complete", "t", 1)
+	a := s.message(conv, u, "assistant", "secret answer", "complete", "t", 2)
+	w := NewChatWatches()
+	w.Watch(conv, ChatPurposeOpen, chatNow.Add(ChatOpenWatch))
+	if got := chatRecords(t, ChatFeed(d, chatFeedOpts(w, nil))); len(got) != 0 {
+		t.Fatalf("feed records %v", got)
+	}
+	k := ChatPageKey{Conversation: conv, Before: a}
+	w.Pages.Request(k, chatNow.Add(ChatRequestHold))
+	page := chatRecords(t, ChatPage(d, chatFeedOpts(w, nil)))[ChatPageID(k)]
+	if msgs := page["messages"].([]any); len(msgs) != 0 {
+		t.Fatalf("page of a Discuss chat has %d messages", len(msgs))
+	}
+}
+
+// An oversized artifact title, attachment name and error message (each
+// alone over the cap) are clipped at maxChatLabel graphemes and an artifact
+// with an oversized key is left out (keys stay exact), so the feed and the
+// page stay under MaxChatFeedBytes.
+func TestChatFeed_OversizedLabelsClipped(t *testing.T) {
+	d := openDB(t)
+	s := chatSeed{t, d}
+	conv := s.conversation("labels", 1, "")
+	huge := strings.Repeat(zwj, 30_000) // ~750 KB
+	u := s.message(conv, 0, "user", "q", "complete", "turn-1", 1)
+	exec(t, d, `INSERT INTO chat_attachments (conversation_id, message_id, name, mime, size, path, sha256, created_at)
+		VALUES (?, ?, ?, 'text/plain', 1, 'x', 'y', 1)`, conv, u, huge)
+	a := s.message(conv, u, "assistant", "a", "error", "turn-1", 2)
+	exec(t, d, `UPDATE chat_messages SET error_code = 'provider_error', error_message = ? WHERE id = ?`, huge, a)
+	exec(t, d, `INSERT INTO chat_artifacts (conversation_id, message_id, artifact_key, version, kind, title, content, created_at)
+		VALUES (?, ?, ?, 1, 'document', 'Too long a key', 'x', 1),
+		       (?, ?, 'rollout-plan', 1, 'document', ?, 'x', 2)`, conv, a, huge, conv, a, huge)
+	last := s.message(conv, a, "user", "next", "complete", "turn-2", 3)
+
+	feed := decode(t, feedRecord(t, d, conv))
+	arts := feed["artifacts"].([]any)
+	if len(arts) != 1 {
+		t.Fatalf("%d artifacts: the row with an oversized key is left out", len(arts))
+	}
+	art := arts[0].(map[string]any)
+	if art["key"] != "rollout-plan" {
+		t.Fatalf("key %v: a normal key stays exact", art["key"])
+	}
+	msgs := feed["messages"].([]any)
+	att := msgs[0].(map[string]any)["attachments"].([]any)[0].(map[string]any)
+	for name, v := range map[string]any{
+		"artifact title": art["title"], "attachment name": att["name"],
+		"error message": msgs[1].(map[string]any)["error_message"],
+	} {
+		if n := uniseg.GraphemeClusterCount(v.(string)); n != maxChatLabel {
+			t.Errorf("%s: %d graphemes", name, n)
+		}
+	}
+
+	w := NewChatWatches()
+	k := ChatPageKey{Conversation: conv, Before: last}
+	w.Pages.Request(k, chatNow.Add(ChatRequestHold))
+	items, err := ChatPage(d, chatFeedOpts(w, nil)).Items(context.Background())
+	if err != nil || len(items) != 1 || len(items[0].Payload) > MaxChatFeedBytes {
+		t.Fatalf("page: %d items, %v", len(items), err)
+	}
+}
+
+// liveLease is the claim's complement and Swift's ChatLease.isLive: a
+// heartbeat exactly db.ChatLeaseStaleMS old is still held.
+func TestChatLease_LiveUntilStale(t *testing.T) {
+	now := time.UnixMilli(1_000_000)
+	if !liveLease(now.UnixMilli()-db.ChatLeaseStaleMS, now) {
+		t.Error("exactly 60 s old: still held")
+	}
+	if liveLease(now.UnixMilli()-db.ChatLeaseStaleMS-1, now) {
+		t.Error("60.001 s old: stale")
+	}
+}

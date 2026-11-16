@@ -169,11 +169,25 @@ final class ChatOfflineCopy: @unchecked Sendable {
         try queue.write { db in try db.execute(sql: "DELETE FROM chat_outgoing WHERE client_key = ?", arguments: [clientKey]) }
     }
 
-    /// Every send a previous run left on its way; an unreadable row is dropped.
-    func outgoing() throws -> [ChatOutgoingSend] {
-        try queue.read { db in
-            try Data.fetchAll(db, sql: "SELECT body FROM chat_outgoing").compactMap { try? JSONDecoder().decode(ChatOutgoingSend.self, from: $0) }
+    /// Every send a previous run left on its way, and the client keys of the rows that no longer decode (each
+    /// logged by its error's type and key, never its text; the caller deletes them). A read that fails throws.
+    func outgoing() throws -> (sends: [ChatOutgoingSend], undecodableKeys: [String]) {
+        let rows = try queue.read { db in try Row.fetchAll(db, sql: "SELECT client_key, body FROM chat_outgoing") }
+        var sends: [ChatOutgoingSend] = []
+        var undecodable: [String] = []
+        for row in rows {
+            let key: String = row["client_key"]
+            do {
+                sends.append(try JSONDecoder().decode(ChatOutgoingSend.self, from: row["body"] as Data))
+            } catch {
+                Self.logger.error("""
+                    kept send unreadable, dropped: \(String(describing: type(of: error)), privacy: .public) \
+                    key \(key, privacy: .public)
+                    """)
+                undecodable.append(key)
+            }
         }
+        return (sends, undecodable)
     }
 
     /// When each chat was last prefetched.

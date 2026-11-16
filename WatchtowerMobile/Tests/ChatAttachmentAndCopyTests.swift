@@ -172,6 +172,29 @@ final class ChatOfflineCopyTests: XCTestCase {
         }
     }
 
+    /// m8: a copy that does not open leaves the tab working in memory, with its line; no path (the demo) has none.
+    func testACopyThatDoesNotOpenShowsItsLineAndTheTabStillWorks() throws {
+        // A folder where the file should be: SQLite cannot open it.
+        let blocked = directory.appendingPathComponent(ChatOfflineCopy.fileName, isDirectory: true)
+        try FileManager.default.createDirectory(at: blocked, withIntermediateDirectories: true)
+        let opened = HubSession.openChatCopy(path: blocked.path)
+        XCTAssertNil(opened.copy)
+        XCTAssertTrue(opened.unavailable)
+        let center = ChatsCenter(sender: RecordingChatSender().sender, copy: opened.copy, copyUnavailable: opened.unavailable)
+        XCTAssertEqual(
+            center.copyNotice,
+            "Saved chats are off on this phone — chats can't be read offline and an unsent message won't survive a restart."
+        )
+        try center.copy.saveFeed(conversationID: 3, payload: try payload(3))
+        XCTAssertNotNil(try center.copy.held(conversationID: 3), "the in-memory copy still holds what the tab shows")
+
+        XCTAssertFalse(HubSession.openChatCopy(path: nil).unavailable)
+        XCTAssertNil(ChatsCenter(sender: RecordingChatSender().sender).copyNotice)
+        let fine = HubSession.openChatCopy(path: directory.appendingPathComponent("other.sqlite").path)
+        XCTAssertNotNil(fine.copy)
+        XCTAssertFalse(fine.unavailable)
+    }
+
     func testOverBudgetTheLongestUnopenedChatGoesFirst() throws {
         let one = try payload(1)
         let copy = try ChatOfflineCopy(path: nil, budget: Int64(one.count * 2))
@@ -278,12 +301,19 @@ final class NotificationRouterChatTests: XCTestCase {
 /// CHAT-05 on the phone: the artifact files only open or copy.
 final class PhoneArtifactChat05ScanTests: XCTestCase {
     func testTheArtifactFilesSendNothing() throws {
-        let folder = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("Sources/Features/Chats")
-        for name in ["ChatArtifactSheet.swift", "SandboxedArtifactWebView.swift"] {
-            let source = try String(contentsOf: folder.appendingPathComponent(name), encoding: .utf8)
+        let app = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // Tests
+            .deletingLastPathComponent() // WatchtowerMobile
+        let files = [
+            app.appendingPathComponent("Sources/Features/Chats/ChatArtifactSheet.swift"),
+            app.appendingPathComponent("Sources/Features/Chats/SandboxedArtifactWebView.swift"),
+            // The artifact links the reply resolves (shared with the Mac).
+            app.deletingLastPathComponent()
+                .appendingPathComponent("WatchtowerChatText/Sources/WatchtowerChatText/ArtifactLinks.swift")
+        ]
+        for file in files {
+            let name = file.lastPathComponent
+            let source = try String(contentsOf: file, encoding: .utf8)
             for banned in ["URLSession", "enqueue", "send(", "ActionOutbox", "ChatSender", "addScriptMessageHandler"] {
                 XCTAssertFalse(source.contains(banned), "\(name) must not use \(banned)")
             }

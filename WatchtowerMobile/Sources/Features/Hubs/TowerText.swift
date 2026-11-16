@@ -136,6 +136,9 @@ enum ChatText {
     /// Only a Mac hub runs over iCloud: a server is on Relay or nowhere.
     static let relayLine = "This Mac talks to your phone through iCloud. Chat needs Relay, which streams the answer as it is written."
     static let macAllowLine = "On the Mac: Settings → Mobile → this phone → allow Chat."
+    /// The phone's chat copy (`chat-copy.sqlite`) did not open: the tab still works, in memory.
+    static let copyUnavailableLine =
+        "Saved chats are off on this phone — chats can't be read offline and an unsent message won't survive a restart."
 
     static func unavailableLine(_ host: TowerHost) -> String {
         host == .mac

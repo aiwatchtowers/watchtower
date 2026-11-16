@@ -55,6 +55,7 @@ An artifact card opens a sheet: documents, tables and code as text, **Open in Ma
 - **The Mac did not answer.** The phone waited 30 seconds; **Retry**, or check the Mac is awake (see [The iPhone is not syncing](../troubleshooting/iphone-not-syncing.md)).
 - **No Chat switch or the tab says it is not allowed.** On the Mac, Settings → **Mobile** → the phone's **Chat** switch.
 - **Older conversations are missing offline.** Only chats you opened or that were fetched in the background, and only the pages you loaded, are kept; search inside messages needs the Mac.
+- **"Saved chats are off on this phone".** The phone could not open its saved copy of your chats. The tab still works while the Mac answers, but nothing is kept for offline reading and a message still on its way is lost if the app restarts. Restarting the app tries again.
 
 ## Related
 

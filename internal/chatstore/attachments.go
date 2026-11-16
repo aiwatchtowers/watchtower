@@ -204,7 +204,7 @@ func RemoveConversationFiles(root string, conv int64) error {
 // pending chat_attachments row (message_id NULL) is inserted. A new file is
 // written to a temporary name and renamed into place; it is removed when the
 // row cannot be written. ErrConversationGone when the conversation does not
-// exist.
+// exist or is not a main chat (spec §1).
 func SaveAttachment(ctx context.Context, d *db.DB, root string, conv int64, name string, kind AttachmentKind, data []byte, now float64) (int64, error) {
 	sum := sha256.Sum256(data)
 	sha := hex.EncodeToString(sum[:])
@@ -227,7 +227,7 @@ func SaveAttachment(ctx context.Context, d *db.DB, root string, conv int64, name
 		fresh = true
 	}
 	res, err := d.ExecContext(ctx, `INSERT INTO chat_attachments (conversation_id, project_id, name, mime, size, path, sha256, created_at)
-		SELECT id, NULL, ?, ?, ?, ?, ?, ? FROM chat_conversations WHERE id = ?`,
+		SELECT id, NULL, ?, ?, ?, ?, ?, ? FROM chat_conversations WHERE id = ? AND context_type IS NULL`,
 		name, kind.Mime, len(data), path, sha, now, conv)
 	if err == nil {
 		var n int64

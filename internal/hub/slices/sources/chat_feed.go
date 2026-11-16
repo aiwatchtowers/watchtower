@@ -218,7 +218,7 @@ func (s *ChatPageSource) buildChatPage(ctx context.Context, k ChatPageKey) ([]by
 	var out []byte
 	err := readTx(ctx, s.d, func(tx *sql.Tx) error {
 		var leaf sql.NullInt64
-		err := tx.QueryRowContext(ctx, `SELECT active_leaf_message_id FROM chat_conversations WHERE id = ?`, k.Conversation).Scan(&leaf)
+		err := tx.QueryRowContext(ctx, `SELECT active_leaf_message_id FROM chat_conversations WHERE id = ? AND context_type IS NULL`, k.Conversation).Scan(&leaf)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("reading a chat page: %w", err)
 		}
@@ -475,7 +475,7 @@ type chatPagePayload struct {
 }
 
 // chatFeedConversationTx is the feed's conversation meta and its leaf; ok
-// is false when the conversation is gone. The lease is shown only while
+// is false when the conversation is gone or is not a main chat (spec §1). The lease is shown only while
 // its heartbeat is less than 60 s old.
 func chatFeedConversationTx(ctx context.Context, tx *sql.Tx, conv int64, now time.Time) (chatFeedConversation, sql.NullInt64, bool, error) {
 	var (
@@ -492,7 +492,7 @@ SELECT c.id, c.title, c.active_leaf_message_id, c.project_id, p.name, c.routing_
 FROM chat_conversations c
 LEFT JOIN chat_projects p ON p.id = c.project_id
 LEFT JOIN chat_turn_leases l ON l.conversation_id = c.id
-WHERE c.id = ?`, conv).Scan(&c.ID, &c.Title, &leaf, &projectID, &project, &mode, &provider, &mdl,
+WHERE c.id = ? AND c.context_type IS NULL`, conv).Scan(&c.ID, &c.Title, &leaf, &projectID, &project, &mode, &provider, &mdl,
 		&c.ActualProvider, &c.ActualModel, &slack, &leaseOwner, &leaseTurnID, &heartbeat)
 	if errors.Is(err, sql.ErrNoRows) {
 		return c, leaf, false, nil
@@ -657,7 +657,8 @@ func chatFeedMessageRowsTx(ctx context.Context, tx *sql.Tx, b chatBranch, in str
 			m.ErrorCode = &code.String
 		}
 		if message.String != "" {
-			m.ErrorMessage = &message.String
+			msg, _ := clipText(message.String, maxChatLabel)
+			m.ErrorMessage = &msg
 		}
 		m.CreatedAt = secondsTime(created)
 		m.Siblings = b.siblings[m.ID]
@@ -689,6 +690,7 @@ func chatFeedAttachmentsTx(ctx context.Context, tx *sql.Tx, in string, args []an
 		if err := rows.Scan(&a.ID, &msg, &a.Name, &a.Mime, &a.Size); err != nil {
 			return fmt.Errorf("reading chat attachments: %w", err)
 		}
+		a.Name, _ = clipText(a.Name, maxChatLabel)
 		if m := byID[msg]; m != nil {
 			m.Attachments = append(m.Attachments, a)
 		}
@@ -757,7 +759,8 @@ func applyLiveText(msgs []chatFeedMessage, turnID, text string, steps []chatstor
 func boolPtr(v bool) *bool { return &v }
 
 // chatFeedArtifactsTx is the latest version of each artifact key of conv,
-// in creation order.
+// in creation order; titles clipped at maxChatLabel graphemes, a key over it
+// left out.
 func chatFeedArtifactsTx(ctx context.Context, tx *sql.Tx, conv int64) ([]chatFeedArtifact, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT a.artifact_key, a.kind, a.title, a.version, a.content FROM chat_artifacts a
 		WHERE a.conversation_id = ? AND a.version = (SELECT MAX(b.version) FROM chat_artifacts b
@@ -774,6 +777,15 @@ func chatFeedArtifactsTx(ctx context.Context, tx *sql.Tx, conv int64) ([]chatFee
 		if err := rows.Scan(&a.Key, &a.Kind, &a.Title, &a.Version, &content); err != nil {
 			return nil, fmt.Errorf("reading chat artifacts: %w", err)
 		}
+		// The labels the cap's cuts never shrink are bounded here, so one
+		// oversized value cannot keep the record over MaxChatFeedBytes. The
+		// key stays exact (the phone finds an artifact by its fence's key):
+		// a row whose key is over maxChatLabel is left out, and the phone
+		// shows the fence's draft.
+		if uniseg.GraphemeClusterCount(a.Key) > maxChatLabel {
+			continue
+		}
+		a.Title, _ = clipText(a.Title, maxChatLabel)
 		a.Content = &content
 		out = append(out, a)
 	}

@@ -250,3 +250,45 @@ func TestChatPush_WiringBuildsTheWatch(t *testing.T) {
 		t.Fatal("the chat push watch is not wired")
 	}
 }
+
+// A Discuss chat (context_type set) is not a main chat: neither its turn
+// ends nor its approval waits push (iPhone chat spec §1).
+func TestChatPush_DiscussChatNeverPushes(t *testing.T) {
+	r := newChatPushRig(t)
+	r.exec(`UPDATE chat_conversations SET context_type = 'meeting', context_id = '7' WHERE id = ?`, r.conv)
+	r.w.turnEnded(r.conv, "t0", chatstore.StatusComplete)
+	r.lease("desktop", "t1")
+	r.check() // primes
+	r.assistant("t1", "complete")
+	r.release()
+	r.exec(`INSERT INTO agent_actions (tool, args_json, conversation_id, turn_id, status, trust_at_create)
+		VALUES ('send_slack_message', '{}', ?, 't2', 'pending', 'ask')`, r.conv)
+	r.check()
+	r.check()
+	if len(r.sent) != 0 {
+		t.Errorf("a Discuss chat pushed: %+v", r.sent)
+	}
+}
+
+// TestChatPush_TurnEndRunsOffTheRunner: the runner's OnTurnEnd only hands
+// the push to the hub's tracked background (the push reads the database);
+// a hub that stops refuses it and nothing is pushed.
+func TestChatPush_TurnEndRunsOffTheRunner(t *testing.T) {
+	r := newChatPushRig(t)
+	h := &hubRuntime{}
+	h.chatPush.Store(r.w)
+	var queued []func()
+	end := h.chatTurnEnded(func(work func()) bool { queued = append(queued, work); return true })
+	end(r.conv, "t1", chatstore.StatusComplete)
+	if len(r.sent) != 0 || len(queued) != 1 {
+		t.Fatalf("pushed on the runner's goroutine: %d sent, %d queued", len(r.sent), len(queued))
+	}
+	queued[0]()
+	r.only("answer", "Answer ready")
+
+	stopping := h.chatTurnEnded(func(func()) bool { return false })
+	stopping(r.conv, "t2", chatstore.StatusComplete)
+	if len(r.sent) != 1 {
+		t.Fatalf("pushed while the hub stops: %+v", r.sent)
+	}
+}

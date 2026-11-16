@@ -487,3 +487,44 @@ func TestChatrun_SessionDeathFinalizesLost(t *testing.T) {
 		assert.Len(t, g.f.all(), 2)
 	})
 }
+
+// TestChatrun_ChildThatReadsNoStdinStillKilled: a child that never reads
+// its stdin blocks the turn's write; the loop does not wait on it, so Close
+// escalates to SIGTERM after closeGrace and to SIGKILL of the group
+// killAfter later, and a remote Stop terminates it after CancelGrace.
+func TestChatrun_ChildThatReadsNoStdinStillKilled(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		g := newRig(t, fakeOpts{noRead: true, ignoreTerm: true})
+		c := newConversation(t, g.d)
+		g.send(t, c, "question", nil)
+		synctest.Wait()
+
+		start := time.Now()
+		require.NoError(t, g.r.Close(context.Background()))
+		assert.Equal(t, closeGrace+killAfter, time.Since(start))
+		p := g.f.all()[0]
+		assert.Equal(t, []string{"TERM", "KILL"}, p.log())
+		assert.True(t, p.isExited())
+	})
+	synctest.Test(t, func(t *testing.T) {
+		g := newRig(t, fakeOpts{noRead: true, ignoreTerm: true})
+		c := newConversation(t, g.d)
+		st := g.send(t, c, "question", nil)
+		synctest.Wait()
+		ok, err := g.d.RequestChatCancel(c, st.TurnID, time.Now().UnixMilli())
+		require.NoError(t, err)
+		require.True(t, ok)
+
+		time.Sleep(time.Second + CancelGrace)
+		synctest.Wait()
+		p := g.f.all()[0]
+		assert.Equal(t, []string{"TERM"}, p.log())
+		r, _ := readRow(t, g.d, st.AssistantMessageID)
+		assert.Equal(t, chatstore.StatusPartial, r.status)
+
+		time.Sleep(killAfter)
+		synctest.Wait()
+		assert.Equal(t, []string{"TERM", "KILL"}, p.log())
+		assert.True(t, p.isExited())
+	})
+}

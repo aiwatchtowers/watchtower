@@ -565,5 +565,62 @@
     }
    }
   ]
+ },
+ {
+  "name": "a lease exactly 60 s old still shows as live; 1 ms later it does not",
+  "steps": [
+   {
+    "op": "claim",
+    "owner": "desktop",
+    "owner_id": "app-1",
+    "turn_id": "t1",
+    "now_ms": 1000
+   },
+   {
+    "op": "live",
+    "turn_id": "t1",
+    "now_ms": 61000
+   },
+   {
+    "op": "live",
+    "turn_id": "t1",
+    "now_ms": 61001
+   }
+  ],
+  "expect": [
+   {
+    "ok": true,
+    "lease": {
+     "owner": "desktop",
+     "owner_id": "app-1",
+     "turn_id": "t1",
+     "started_at_ms": 1000,
+     "heartbeat_at_ms": 1000,
+     "cancel_requested_at_ms": null
+    }
+   },
+   {
+    "ok": true,
+    "lease": {
+     "owner": "desktop",
+     "owner_id": "app-1",
+     "turn_id": "t1",
+     "started_at_ms": 1000,
+     "heartbeat_at_ms": 1000,
+     "cancel_requested_at_ms": null
+    }
+   },
+   {
+    "ok": false,
+    "lease": {
+     "owner": "desktop",
+     "owner_id": "app-1",
+     "turn_id": "t1",
+     "started_at_ms": 1000,
+     "heartbeat_at_ms": 1000,
+     "cancel_requested_at_ms": null
+    }
+   }
+  ]
  }
 ]

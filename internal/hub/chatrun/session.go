@@ -28,6 +28,14 @@ const (
 	drainGrace = time.Second
 )
 
+// stdinBacklog bounds the commands waiting for the stdin writer; a send past
+// it fails as a gone pipe does (a session that reads none of a few commands
+// is escalated anyway).
+const stdinBacklog = 16
+
+// errStdinBacklog is a send refused because the child reads no stdin.
+var errStdinBacklog = errors.New("chatrun: the session reads no commands")
+
 // Process is one running `ai session` child.
 type Process interface {
 	// Stdin takes the JSONL commands; Stdout yields the NDJSON events.
@@ -83,6 +91,8 @@ type session struct {
 
 	// Owned by loop.
 	proc       Process
+	stdin      chan []byte       // encoded command lines for writeStdin; closed by end
+	stdinShut  bool              // the process's stdin was closed
 	events     <-chan chat.Event // nil once drained
 	exited     <-chan struct{}   // nil once seen
 	ready      *chat.Event       // the session's session_ready, re-applied to each turn
@@ -142,7 +152,7 @@ func (s *session) loop() {
 			s.escalate()
 		case <-timerC(s.drainAt):
 			s.drainAt = nil
-			_ = s.proc.Kill() // a group member holds stdout open
+			s.kill() // a group member holds stdout open
 		}
 		if s.finished() {
 			s.end()
@@ -201,6 +211,9 @@ func (s *session) spawn(held *heldTurn) bool {
 		return false
 	}
 	s.proc, s.exited = p, p.Exited()
+	s.stdin = make(chan []byte, stdinBacklog)
+	s.r.wg.Add(1)
+	go s.writeStdin(p.Stdin(), s.stdin)
 	s.events = readEvents(s.conv, p.Stdout())
 	s.writePGID(p.PGID())
 	s.r.mu.Lock()
@@ -227,13 +240,53 @@ func (s *session) startTurn(held *heldTurn) {
 	}
 }
 
+// send queues one command line for the stdin writer; it never blocks the
+// loop, so a child that stops reading stdin cannot stall the escalation.
 func (s *session) send(c chat.Command) error {
 	b, err := json.Marshal(c)
 	if err != nil {
 		return err
 	}
-	_, err = s.proc.Stdin().Write(append(b, '\n'))
-	return err
+	select {
+	case s.stdin <- append(b, '\n'):
+		return nil
+	default:
+		return errStdinBacklog
+	}
+}
+
+// writeStdin writes the queued command lines to the child, off the loop
+// goroutine; after a failed write the rest are dropped. It returns once end
+// closed lines (a blocked write is ended by closeStdin).
+func (s *session) writeStdin(w io.Writer, lines <-chan []byte) {
+	defer s.r.wg.Done()
+	failed := false
+	for line := range lines {
+		if failed {
+			continue
+		}
+		if _, err := w.Write(line); err != nil {
+			failed = true
+			log.Printf("chatrun: conversation %d: writing to the session failed (%s)", s.conv, errClass(err))
+		}
+	}
+}
+
+// kill sends SIGKILL to the group and closes its stdin, which ends a write
+// blocked on a child that never read it.
+func (s *session) kill() {
+	_ = s.proc.Kill()
+	s.closeStdin()
+}
+
+func (s *session) closeStdin() {
+	if s.stdinShut {
+		return
+	}
+	s.stdinShut = true
+	if c, ok := s.proc.Stdin().(io.Closer); ok {
+		_ = c.Close()
+	}
 }
 
 func (s *session) onEvent(ev chat.Event) {
@@ -427,7 +480,7 @@ func (s *session) escalateTo(stage int) {
 		s.stageAt = time.NewTimer(killAfter)
 	case 3:
 		s.stage = 3
-		_ = s.proc.Kill()
+		s.kill()
 	}
 }
 
@@ -469,6 +522,8 @@ func (s *session) end() {
 			}
 		}
 		s.cur = nil
+		close(s.stdin)
+		s.closeStdin()
 		s.removePGID()
 	}
 	s.r.ended(s)

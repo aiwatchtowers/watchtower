@@ -185,6 +185,33 @@ final class ChatTurnDriverTests: XCTestCase {
         XCTAssertNil(driver.liveTurn, "the turn still ends — a stuck retry loop is worse than a lost write")
     }
 
+    /// A failed finalize rolls its lease release back with it; the driver
+    /// then frees the lease in its own write, so the next send is not
+    /// refused as "answering elsewhere" until the lease goes stale.
+    func testFailedFinalizeStillReleasesTheLease() async throws {
+        let conv = conversationID
+        try await pool.write { db in
+            let lease = ChatLease(conversationID: conv, owner: .desktop, ownerID: "launch", turnID: "t",
+                                  startedAtMS: 1, heartbeatAtMS: 1)
+            XCTAssertTrue(try ChatLeaseQueries.claim(db, lease, nowMS: 1))
+            try db.execute(sql: """
+                CREATE TRIGGER fail_artifact BEFORE INSERT ON chat_artifacts
+                BEGIN SELECT RAISE(ABORT, 'boom'); END
+                """)
+        }
+        let driver = makeDriver()
+        driver.begin(messageID: messageID, turnID: "t")
+        driver.apply(.textDelta(turnID: "t", text: ":::artifact key=\"q3\" kind=\"document\" title=\"Q3\"\nbody\n:::"))
+        var finished: LiveTurn?
+        driver.onTurnFinished = { finished = $0 }
+        driver.apply(.turnDone(turnID: "t", status: .complete, sessionID: nil))
+
+        await driver.writesSettled()
+        XCTAssertNotNil(finished?.persistError, "the finalize failed")
+        let lease = try await pool.read { try ChatLeaseQueries.fetch($0, conversationID: conv) }
+        XCTAssertNil(lease, "released in its own write after the failed finalize")
+    }
+
     func testEventsForAnotherTurnAreIgnored() {
         let driver = makeDriver()
         driver.begin(messageID: messageID, turnID: "t")

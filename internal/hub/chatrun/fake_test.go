@@ -19,6 +19,7 @@ type fakeOpts struct {
 	ignoreCancel bool
 	ignoreClose  bool
 	ignoreTerm   bool
+	noRead       bool // never reads stdin: a write to it blocks
 }
 
 // fakeStarter is the Start seam's in-process twin of `watchtower ai
@@ -47,7 +48,9 @@ func (f *fakeStarter) start(argv []string) (Process, error) {
 	f.alive++
 	f.maxAlive = max(f.maxAlive, f.alive)
 	f.mu.Unlock()
-	go p.read()
+	if !f.opts.noRead {
+		go p.read()
+	}
 	go p.run(n)
 	return p, nil
 }

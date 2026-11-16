@@ -5,7 +5,8 @@ import WatchtowerTestSupport
 
 /// The Swift lease code over Go's shared case fixture
 /// (`internal/db/testdata/chat_lease_cases.json`, spec 2026-11-15 §4.4):
-/// claim, stale takeover, cancel, release — the same steps, the same rows.
+/// claim, stale takeover, cancel, release, the live display predicate — the
+/// same steps, the same rows.
 final class ChatLeaseQueriesTests: XCTestCase {
     private struct Step: Decodable {
         let op: String
@@ -85,6 +86,8 @@ final class ChatLeaseQueriesTests: XCTestCase {
                     case "release":
                         try ChatLeaseQueries.release(db, conversationID: conv, turnID: step.turnID)
                         return true
+                    case "live": // shown as answering: the display predicate
+                        return try ChatLeaseQueries.fetch(db, conversationID: conv)?.isLive(nowMS: now) ?? false
                     default:
                         XCTFail("unknown op \(step.op)")
                         return false

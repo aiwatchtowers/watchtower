@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"runtime/debug"
 	"time"
 
 	"watchtower/internal/chatstore"
@@ -167,13 +168,18 @@ func (h *Handlers) chatAction(ctx context.Context, name string, r actions.Reques
 
 // chatAsync runs work after the action's answer (an approved action's
 // apply): never cut by the pass, and tracked by the hub (ChatDeps.Spawn), so
-// a stop waits for it rather than close the database under it. False: the
-// hub is stopping and work did not start.
+// a stop waits for it rather than close the database under it; a panic is
+// logged and contained. False: the hub is stopping and work did not start.
 func (h *Handlers) chatAsync(name string, work func(context.Context)) bool {
 	run := func() {
 		defer func() {
 			if p := recover(); p != nil {
-				log.Printf("hub handlers: %s panicked", name)
+				// The value's type and the stack, never the value (FILES-01:
+				// it may carry content). The registry has no path that fails
+				// a claimed row from outside it, so an apply that panicked
+				// mid-run leaves its row `executing` for `watchtower actions
+				// apply --force`.
+				log.Printf("hub handlers: %s panicked (%T)\n%s", name, p, debug.Stack())
 			}
 		}()
 		work(context.Background())
