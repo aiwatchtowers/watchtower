@@ -130,4 +130,25 @@ final class DemoTourTests: XCTestCase {
         XCTAssertFalse(MacsView.offersAdd(backend: .inMemoryDemo))
         XCTAssertTrue(MacsView.offersAdd(backend: .live))
     }
+
+    /// Mobile Inbox spec §11: every frame of mockup §§1–6 has one named shot in `ScreenshotTourTests.testTheInboxShots`.
+    func testEveryInboxMockupFrameHasAShot() {
+        XCTAssertEqual(InboxTourFrames.all.map(\.slug), [
+            "inbox-root", "inbox-owner-folder", "inbox-waiting-swiped", "inbox-row-busy-failed", "inbox-row-detail",
+            "inbox-reply-sheet", "inbox-approvals", "inbox-approve-changed", "inbox-artifact", "inbox-artifact-table",
+            "inbox-card-menu", "inbox-card-unsupported", "inbox-legacy-brief", "inbox-legacy-tracks", "inbox-legacy-ideas",
+            "inbox-loading", "inbox-empty", "inbox-empty-folder", "inbox-mac-away", "inbox-too-old", "inbox-policy",
+            "inbox-didnt-confirm", "inbox-older-cards"
+        ])
+        XCTAssertEqual(Set(InboxTourFrames.all.map(\.slug)).count, 23, "one shot per frame")
+        // Each frame builds its own screen: a path, a state or a view of its own.
+        let now = Date()
+        for (_, slug) in InboxTourFrames.all where slug != "inbox-root" {
+            let frame = ScreenshotTourTests.inboxFrame(slug, now: now)
+            let base = ScreenshotTourTests.inboxFrame("inbox-root", now: now)
+            let differs = !frame.path.isEmpty || frame.alone != nil || frame.shot.inputs.capability != base.shot.inputs.capability
+                || frame.shot.inputs.macAway != nil || frame.shot.center.feed != base.shot.center.feed
+            XCTAssertTrue(differs, "\(slug) draws its own frame")
+        }
+    }
 }

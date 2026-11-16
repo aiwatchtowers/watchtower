@@ -39,6 +39,8 @@ final class ScreenshotTourTests: XCTestCase {
     private static let onlyRelayPhase5 = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_ONLY"] == "relay-phase5"
     /// `SHOTS_ONLY=chat` runs `testTheChatShots` alone: the Chats tab's states (iPhone chat mockups 1a–1j).
     private static let onlyChat = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_ONLY"] == "chat"
+    /// `SHOTS_ONLY=inbox` runs `testTheInboxShots` alone: the Inbox tab's frames (mobile Inbox mockups §§1–6).
+    private static let onlyInbox = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_ONLY"] == "inbox"
 
     func testTheRelayPhase4Shots() async throws {
         guard let path = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_DIR"], Self.onlyRelayPhase4 else {
@@ -82,9 +84,25 @@ final class ScreenshotTourTests: XCTestCase {
         XCTAssertEqual(written.count, 3 * rows.count)
     }
 
+    /// Every frame of mobile Inbox mockups §§1–6 as one named shot (`InboxTourFrames`), light and dark.
+    func testTheInboxShots() async throws {
+        guard let path = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_DIR"], Self.onlyInbox else {
+            throw XCTSkip("Only with make mobile-shots SHOTS_ONLY=inbox")
+        }
+        let dir = URL(fileURLWithPath: path, isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let (root, _) = try makeDemoRoot()
+        try await poll({ Self.isHydrated(root.env) }, "the demo seed hydrated")
+        let rows = try await captureInbox(host: ScreenshotHost(directory: dir, env: root.env, linking: root.linking))
+        XCTAssertEqual(rows.map(\.number), InboxTourFrames.all.map(\.slug))
+        let written = try FileManager.default.contentsOfDirectory(atPath: path)
+            .filter { name in rows.contains { name.hasPrefix($0.number + "-") } && name.hasSuffix(".png") }
+        XCTAssertEqual(written.count, 2 * rows.count)
+    }
+
     func testTheTour() async throws {
         guard let path = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_DIR"], !Self.onlyRelayPhase4, !Self.onlyRelayPhase5,
-              !Self.onlyChat else {
+              !Self.onlyChat, !Self.onlyInbox else {
             throw XCTSkip("Screenshot tour: run make mobile-shots")
         }
         let dir = URL(fileURLWithPath: path, isDirectory: true)
@@ -100,6 +118,7 @@ final class ScreenshotTourTests: XCTestCase {
         let meetingRows = try await captureMeetingSoon(host: host)
         // Before the Mac falls asleep for good: the chat frames' chip is online but in 1d.
         let chatRows = try await captureChats(demo: demo, host: host)
+        let inboxRows = try await captureInbox(host: host)
         let asleepRows = try await captureMacAsleep(root.env, demo: demo, host: host)
             + (try await captureSessionStates(root.env, demo: demo, host: host))
             + (try await captureAskSources(root.env, demo: demo, host: host))
@@ -111,7 +130,7 @@ final class ScreenshotTourTests: XCTestCase {
         let phase5Rows = try await captureParkedFeed(into: dir, linking: root.linking)
         try ScreenshotHost.writeIndex(
             Self.indexRows(shots) + meetingRows + asleepRows + recorderRows + outboxRows + relayRows + onRelayRows + phase4Rows + phase5Rows
-                + chatRows,
+                + chatRows + inboxRows,
             to: dir)
 
         let pngs = try FileManager.default
@@ -119,7 +138,8 @@ final class ScreenshotTourTests: XCTestCase {
             .filter { $0.pathExtension == "png" }
         XCTAssertEqual(
             pngs.count,
-            2 * (shots.count + shots.filter(\.hasEnd).count + meetingRows.count + asleepRows.count + recorderRows.count + outboxRows.count)
+            2 * (shots.count + shots.filter(\.hasEnd).count + meetingRows.count + asleepRows.count + recorderRows.count + outboxRows.count
+                + inboxRows.count)
                 + 3 * (relayRows.count + onRelayRows.count + phase4Rows.count + phase5Rows.count + chatRows.count)
         )
         for png in pngs {

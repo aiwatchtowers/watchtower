@@ -1,18 +1,19 @@
 import SwiftUI
 import UIKit
 
-/// The four tabs (design pass spec §5, amending mobile POC spec §13 A4; iPhone chat spec §6.1):
-/// Now, Workbench, Chats and Calendar. Settings is pushed from Now's gear; a voice
+/// The five tabs (design pass spec §5, amending mobile POC spec §13 A4; iPhone chat spec §6.1; mobile Inbox
+/// spec §7, ask #1349): Now, Inbox, Workbench, Chats and Calendar. Settings is pushed from Now's gear; a voice
 /// note is the Calendar's mic button.
 struct RootTabView: View {
     enum Tab: String, CaseIterable, Identifiable {
-        case now, workbench, chats, calendar
+        case now, inbox, workbench, chats, calendar
 
         var id: Self { self }
 
         var title: String {
             switch self {
             case .now: "Now"
+            case .inbox: InboxPhoneText.tabTitle
             case .workbench: "Workbench"
             case .chats: "Chats"
             case .calendar: "Calendar"
@@ -22,6 +23,7 @@ struct RootTabView: View {
         var systemImage: String {
             switch self {
             case .now: "clock"
+            case .inbox: "tray"
             case .workbench: "hammer"
             case .chats: "bubble.left.and.bubble.right"
             case .calendar: "calendar"
@@ -32,12 +34,18 @@ struct RootTabView: View {
         /// the hub on screen, open asks, pending permission requests and
         /// failed sessions to continue (`WorkbenchReplicaModel.waitingCount`;
         /// orange, set in `init`);
-        /// 0 hides it. Other tabs carry none: the asks are answered on Now.
-        /// The app icon's badge counts the same things summed over every hub
+        /// 0 hides it. The Inbox's is the sum of its folders' `waiting` (open
+        /// approvals and rows that wait on the owner, `InboxCenter.badge`;
+        /// ask #1349), orange too. The other tabs carry none.
+        /// The app icon's badge counts Now's things summed over every hub
         /// that can still answer them (`AppEnvironment.openAskTotal`), so with
         /// one Mac the two agree.
-        func badge(waitingCount: Int) -> Int {
-            self == .now ? waitingCount : 0
+        func badge(waitingCount: Int, inboxWaiting: Int = 0) -> Int {
+            switch self {
+            case .now: waitingCount
+            case .inbox: inboxWaiting
+            case .workbench, .chats, .calendar: 0
+            }
         }
     }
 
@@ -54,14 +62,17 @@ struct RootTabView: View {
 
     /// The Chats tab's frame in the screenshot tour; nil reads the hub on screen.
     private let chatsShot: ChatsShot?
+    /// The Inbox tab's frame in the screenshot tour; nil reads the hub on screen.
+    private let inboxShot: InboxShot?
 
-    init(chatsShot: ChatsShot? = nil) {
+    init(chatsShot: ChatsShot? = nil, inboxShot: InboxShot? = nil) {
         self.chatsShot = chatsShot
+        self.inboxShot = inboxShot
         Self.configureTabBarAppearance()
     }
 
-    /// The only tab badge is Now's waiting count: a waiting-for-you element,
-    /// orange. `UITabBarItem.appearance().badgeColor` alone did not reach
+    /// The tab badges (Now's waiting count, the Inbox's waiting rows) are
+    /// waiting-for-you elements, orange. `UITabBarItem.appearance().badgeColor` alone did not reach
     /// the iOS 26 tab bar in the review captures (it drew red), so every
     /// item layout of the tab bar's appearance carries the colour too.
     static func configureTabBarAppearance() {
@@ -82,7 +93,7 @@ struct RootTabView: View {
             ForEach(Tab.allCases) { tab in
                 content(for: tab)
                     .tabItem { Label(tab.title, systemImage: tab.systemImage) }
-                    .badge(tab.badge(waitingCount: env.workbenchReplica.waitingCount))
+                    .badge(tab.badge(waitingCount: env.workbenchReplica.waitingCount, inboxWaiting: (inboxShot?.center ?? env.inbox).badge))
                     .tag(tab)
             }
         }
@@ -127,6 +138,8 @@ struct RootTabView: View {
         switch tab {
         case .now:
             NowView()
+        case .inbox:
+            InboxTabView(shot: inboxShot)
         case .workbench:
             WorkbenchListView()
         case .chats:
