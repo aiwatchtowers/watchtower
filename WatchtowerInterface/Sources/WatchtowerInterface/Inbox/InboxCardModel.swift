@@ -8,10 +8,11 @@ public struct InboxCardModel: Equatable, Sendable {
     public let card: Card
     public let id: String
     public let title: String
-    /// The source, then " · " and the card's time in the client's zone.
+    /// The source, then " · " and `stamp` ("Threads · 09:14", "Threads · Oct 18",
+    /// "Threads · Updated 10 min ago").
     public let sourceLine: String
     public let preview: String
-    /// The card's time alone ("9:14", or "Nov 12, 9:14" on another day).
+    /// The card's time alone, in the client's zone.
     public let stamp: String
     /// Set when this app cannot read the card's blocks: its text is shown.
     public let unsupportedBanner: String?
@@ -34,7 +35,11 @@ public struct InboxCardModel: Equatable, Sendable {
         id = card.id
         title = card.title
         preview = card.preview
-        stamp = InboxTime.parse(card.stamp).map { InboxTime.clock($0, now: now, timeZone: timeZone) } ?? ""
+        // The Mac's InboxCardTexts.sourceLine: a living card's last write as
+        // "Updated 10 min ago", any other "09:14" today, else "Oct 18".
+        stamp = InboxTime.parse(card.stamp).map {
+            card.living ? TowerText.updatedAgo($0, now: now) : InboxTime.stamped($0, now: now, timeZone: timeZone)
+        } ?? ""
         sourceLine = [card.sourceLine, stamp].filter { !$0.isEmpty }.joined(separator: " · ")
         unsupportedBanner = blocksReadable ? nil : TowerText.unsupportedCard
         showsUnreadDot = card.unread
@@ -105,12 +110,13 @@ public struct InboxCardActionModel: Equatable, Sendable {
     }
 
     /// The phone's grant a press of `kind` needs (`inboxfeed.ActGrant`):
-    /// `typing` for a Reply, `permissions` for a target.
+    /// `typing` for a Reply, `permissions` for every other press. A link
+    /// opens on the phone itself and sends nothing.
     private static func granted(_ kind: String, _ grants: Grants) -> Bool {
         switch kind {
+        case "link": true
         case "reply": grants.typing
-        case "target": grants.permissions
-        default: true
+        default: grants.permissions
         }
     }
 }

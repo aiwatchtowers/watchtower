@@ -24,6 +24,7 @@ enum InboxFixtures {
         stamp: String = "2026-11-16T11:50:00Z",
         pinned: Bool = false,
         unread: Bool = false,
+        living: Bool = false,
         actions: [CardAction] = [],
         refs: [RefFacts] = []
     ) throws -> Card {
@@ -34,6 +35,7 @@ enum InboxFixtures {
         card.stamp = stamp
         card.pinned = pinned
         card.unread = unread
+        card.living = living
         card.actions = actions
         card.refFacts = refs
         return card
@@ -83,8 +85,20 @@ enum InboxFixtures {
         CardAction(index: index, kind: kind, label: label, state: state, detail: detail, note: note, until: until)
     }
 
-    static func ref(_ kind: RefKind, _ id: Int64, open: Bool = true, reply: Bool = false) -> RefFacts {
-        RefFacts(kind: kind, id: id, open: open, waits: open, reply: reply, replyWaiting: false, link: "")
+    static func ref(
+        _ kind: RefKind,
+        _ id: Int64,
+        open: Bool = true,
+        waits: Bool = true,
+        reply: Bool = false,
+        edit: (inout RefFacts) -> Void = { _ in }
+    ) -> RefFacts {
+        var facts = RefFacts(
+            kind: kind, id: id, open: open, waits: waits, reply: reply, replyWaiting: false, link: "",
+            triggerType: "", custom: false, linkedTargetID: 0, ideaKind: "", ideaStatus: ""
+        )
+        edit(&facts)
+        return facts
     }
 
     static func date(_ stamp: String) throws -> Date {

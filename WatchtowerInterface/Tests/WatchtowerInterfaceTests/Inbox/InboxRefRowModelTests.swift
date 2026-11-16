@@ -3,64 +3,126 @@ import XCTest
 
 final class InboxRefRowModelTests: XCTestCase {
     private typealias Fix = InboxFixtures
+    private let noGrants = Grants(permissions: false, typing: false)
 
-    private func row(_ kind: RefKind, platform: Platform = .phone, grants: Grants = .all, reply: Bool = false) -> InboxRefRowModel {
-        InboxRefRowModel(facts: Fix.ref(kind, 7, reply: reply), platform: platform, grants: grants)
+    private func row(
+        _ facts: RefFacts,
+        platform: Platform = .phone,
+        grants: Grants = .all
+    ) -> InboxRefRowModel {
+        InboxRefRowModel(facts: facts, platform: platform, grants: grants)
+    }
+
+    private func idea(_ kind: String, _ status: String, waits: Bool = false) -> RefFacts {
+        Fix.ref(.idea, 7, waits: waits) {
+            $0.ideaKind = kind
+            $0.ideaStatus = status
+        }
     }
 
     func testSwipesPerKind() {
-        let item = row(.inboxItem)
+        let item = row(Fix.ref(.inboxItem, 7))
         XCTAssertEqual(item.leadingSwipe, [.dismiss])
         XCTAssertEqual(item.trailingSwipe, [.resolve, .snooze])
-        XCTAssertEqual(item.trailingSwipe.map { InboxRefRowModel.label($0, kind: .inboxItem) }, ["Done", "Snooze"])
-        XCTAssertEqual(InboxRefRowModel.label(.dismiss, kind: .inboxItem), "Hide")
 
-        let track = row(.track)
+        let track = row(Fix.ref(.track, 7))
         XCTAssertEqual(track.leadingSwipe, [])
         XCTAssertEqual(track.trailingSwipe, [.done, .stop])
-        XCTAssertEqual(track.trailingSwipe.map { InboxRefRowModel.label($0, kind: .track) }, ["Done", "Stop watching"])
 
-        let reminder = row(.reminder)
+        let reminder = row(Fix.ref(.reminder, 7))
         XCTAssertEqual(reminder.trailingSwipe, [.done, .snooze])
-        XCTAssertEqual(reminder.trailingSwipe.map { InboxRefRowModel.label($0, kind: .reminder) }, ["Done", "Snooze 1h"])
+        XCTAssertEqual(reminder.buttons.map(\.label), ["Done", "Snooze 1h"])
 
-        let idea = row(.idea)
-        XCTAssertEqual(idea.leadingSwipe, [.reject])
-        XCTAssertEqual(idea.trailingSwipe, [.approve, .notNow])
+        let judged = row(idea("idea", "proposed", waits: true))
+        XCTAssertEqual(judged.leadingSwipe, [.reject])
+        XCTAssertEqual(judged.trailingSwipe, [.approve, .notNow])
+        // A note awaiting a verdict has no Not now.
+        XCTAssertEqual(row(idea("note", "proposed", waits: true)).trailingSwipe, [.approve])
 
-        let plan = row(.planItem)
-        XCTAssertEqual(plan.trailingSwipe, [.check])
-        XCTAssertEqual(plan.leadingSwipe, [])
+        XCTAssertEqual(row(Fix.ref(.planItem, 7)).trailingSwipe, [.check])
+    }
+
+    /// The Mac's `InboxRowActionsView` buttons, in its order.
+    func testButtonsAreTheMacRowButtons() {
+        var item = Fix.ref(.inboxItem, 7, reply: true)
+        item.link = "https://acme.example.com/browse/ACME-1"
+        item.triggerType = "jira_assigned"
+        XCTAssertEqual(
+            row(item, platform: .mac).buttons.map(\.label),
+            ["Open in Jira", "Reply…", "Done", "Hide", "Snooze", "Discuss in Chat", "Hand to Agent…"]
+        )
+        XCTAssertEqual(row(Fix.ref(.inboxItem, 7), platform: .mac).buttons.map(\.label),
+                       ["Done", "Hide", "Snooze", "Discuss in Chat", "Hand to Agent…"])
+
+        XCTAssertEqual(row(Fix.ref(.track, 7), platform: .mac).buttons.map(\.label), ["Done", "Stop watching", "Make a Task"])
+        let custom = Fix.ref(.track, 7) {
+            $0.custom = true
+            $0.linkedTargetID = 4
+        }
+        XCTAssertEqual(row(custom, platform: .mac).buttons.map(\.label), ["Done", "Stop watching", "Go to Target", "Delete…"])
+        XCTAssertEqual(row(custom, platform: .mac).buttons.map(\.inMore), [false, true, true, true])
+        let unlinked = Fix.ref(.track, 7) { $0.custom = true }
+        XCTAssertEqual(row(unlinked, platform: .mac).buttons.map(\.label), ["Done", "Stop watching", "Delete…"])
+    }
+
+    /// `InboxRowActionsContent.ideaButtons`, case by case.
+    func testIdeaButtonsFollowTheMac() {
+        func labels(_ kind: String, _ status: String, waits: Bool = false) -> [String] {
+            row(idea(kind, status, waits: waits), platform: .mac).buttons.map(\.label)
+        }
+        XCTAssertEqual(labels("idea", "proposed", waits: true), ["Approve", "Make a Task", "Not now", "Reject"])
+        XCTAssertEqual(labels("note", "proposed", waits: true), ["Approve", "Reject"])
+        XCTAssertEqual(labels("decision", "proposed", waits: true), ["Approve", "Not now", "Reject"])
+        XCTAssertEqual(labels("decision", "rejected"), ["Activate"])
+        XCTAssertEqual(labels("decision", "active"), [])
+        XCTAssertEqual(labels("idea", "active"), ["Make a Task", "Not now", "Drop"])
+        XCTAssertEqual(labels("idea", "not_now"), ["Activate", "Make a Task", "Drop"])
+        XCTAssertEqual(labels("note", "active"), ["Drop"])
+        XCTAssertEqual(labels("note", "dropped"), ["Activate"])
+        XCTAssertEqual(labels("idea", "merged"), [])
+    }
+
+    func testMacOnlyPressesAreDisabledOnThePhone() {
+        let phone = row(idea("idea", "active"))
+        XCTAssertEqual(phone.buttons.map(\.enabled), [false, true, false])
+        XCTAssertEqual(phone.buttons.map(\.note), ["On your Mac", nil, "On your Mac"])
+        XCTAssertEqual(phone.menu, [.notNow])
+        XCTAssertEqual(row(idea("idea", "active"), platform: .mac).buttons.map(\.enabled), [true, true, true])
+        let item = row(Fix.ref(.inboxItem, 7))
+        XCTAssertEqual(item.buttons.filter { !$0.enabled }.map(\.label), ["Discuss in Chat", "Hand to Agent…"])
     }
 
     func testMenuHoldsEveryVerbIncludingMakeATask() {
-        XCTAssertEqual(row(.inboxItem).menu, [.resolve, .snooze, .dismiss])
-        XCTAssertEqual(row(.track).menu, [.done, .stop, .makeTask])
-        XCTAssertEqual(InboxRefRowModel.label(.makeTask, kind: .track), "Make a Task")
-        XCTAssertEqual(row(.reminder).menu, [.done, .snooze])
-        XCTAssertEqual(row(.idea).menu, [.approve, .notNow, .reject])
-        XCTAssertEqual(row(.planItem).menu, [.check, .uncheck])
-        // Make a Task is an owner gesture: without permissions the phone leaves it out.
-        XCTAssertEqual(row(.track, grants: Grants(permissions: false, typing: true)).menu, [.done, .stop])
-        XCTAssertEqual(row(.track, platform: .mac, grants: Grants(permissions: false, typing: false)).menu, [.done, .stop, .makeTask])
+        XCTAssertEqual(row(Fix.ref(.inboxItem, 7)).menu, [.resolve, .dismiss, .snooze])
+        XCTAssertEqual(row(Fix.ref(.track, 7)).menu, [.done, .stop, .makeTask])
+        XCTAssertEqual(row(Fix.ref(.reminder, 7)).menu, [.done, .snooze])
+        XCTAssertEqual(row(idea("idea", "proposed", waits: true)).menu, [.approve, .notNow, .reject])
+        XCTAssertEqual(row(idea("idea", "rejected")).menu, [.approve])
+        XCTAssertEqual(row(Fix.ref(.planItem, 7)).menu, [.check, .uncheck])
+        // Make a Task is an owner gesture: without permissions the phone draws it disabled.
+        XCTAssertEqual(row(Fix.ref(.track, 7), grants: Grants(permissions: false, typing: true)).menu, [.done, .stop])
+        XCTAssertEqual(row(Fix.ref(.track, 7), platform: .mac, grants: noGrants).menu, [.done, .stop, .makeTask])
     }
 
     func testRequestCarriesRefKindIDAndVerb() {
-        let request = row(.inboxItem).request(.snooze, cardID: "o1", requestID: "r1", until: "2026-11-17T09:00:00Z")
+        let request = row(Fix.ref(.inboxItem, 7)).request(.snooze, cardID: "o1", requestID: "r1", until: "2026-11-17T09:00:00Z")
         XCTAssertEqual(request, ActRequest(
             requestID: "r1", target: "o1", verb: .ref,
             params: ActParams(refKind: .inboxItem, refID: 7, refVerb: .snooze, until: "2026-11-17T09:00:00Z")
         ))
-        let task = row(.track).request(.makeTask, cardID: "tracks", requestID: "r2", eventID: 42)
+        let task = row(Fix.ref(.track, 7)).request(.makeTask, cardID: "tracks", requestID: "r2", eventID: 42)
         XCTAssertEqual(task.params.eventID, 42)
         XCTAssertEqual(task.params.refKind, .track)
     }
 
     func testReplyNeedsTypingOnThePhone() {
-        XCTAssertTrue(row(.inboxItem, reply: true).canReply)
-        XCTAssertFalse(row(.inboxItem, grants: Grants(permissions: true, typing: false), reply: true).canReply)
-        XCTAssertFalse(row(.inboxItem).canReply)
-        let request = row(.inboxItem, reply: true).replyRequest(text: "On it", cardID: "o1", requestID: "r3")
+        XCTAssertTrue(row(Fix.ref(.inboxItem, 7, reply: true)).canReply)
+        XCTAssertFalse(row(Fix.ref(.inboxItem, 7, reply: true), grants: Grants(permissions: true, typing: false)).canReply)
+        XCTAssertFalse(row(Fix.ref(.inboxItem, 7)).canReply)
+        var waiting = Fix.ref(.inboxItem, 7, reply: true)
+        waiting.replyWaiting = true
+        XCTAssertFalse(row(waiting, platform: .mac).canReply)
+        let request = row(Fix.ref(.inboxItem, 7, reply: true)).replyRequest(text: "On it", cardID: "o1", requestID: "r3")
         XCTAssertEqual(request, ActRequest(
             requestID: "r3", target: "o1", verb: .replyPropose, params: ActParams(text: "On it", refID: 7)
         ))

@@ -46,6 +46,7 @@ final class InboxCardModelTests: XCTestCase {
         let card = try Fix.artifact("o1", actions: [Fix.action(0, kind: "reply"), Fix.action(1, kind: "target")])
         let none = try model(card, platform: .phone, grants: Grants(permissions: false, typing: false)).actions
         XCTAssertEqual(none.map(\.enabled), [false, false])
+        XCTAssertEqual(none.map(\.note), ["On your Mac", "On your Mac"])
         let typing = try model(card, platform: .phone, grants: Grants(permissions: false, typing: true)).actions
         XCTAssertEqual(typing.map(\.enabled), [true, false])
     }
@@ -58,6 +59,22 @@ final class InboxCardModelTests: XCTestCase {
         XCTAssertEqual(unread.title, read.title)
         XCTAssertEqual(unread.sourceLine, read.sourceLine)
         XCTAssertEqual(unread.sourceLine, "Waiting for me · 11:50")
+    }
+
+    /// The Mac's `InboxCardTexts.sourceLine` rules over the same stamps.
+    func testSourceLineFollowsTheMacRules() throws {
+        let now = "2026-11-16T12:00:00Z"
+        func line(stamp: String, living: Bool = false) throws -> String {
+            try model(Fix.artifact("o1", stamp: stamp, living: living), platform: .mac, now: now).sourceLine
+        }
+        XCTAssertEqual(try line(stamp: "2026-11-16T09:05:00Z"), "Waiting for me · 09:05")
+        XCTAssertEqual(try line(stamp: "2026-10-18T09:05:00Z"), "Waiting for me · Oct 18")
+        XCTAssertEqual(try line(stamp: "2026-11-16T11:59:30Z", living: true), "Waiting for me · Updated just now")
+        XCTAssertEqual(try line(stamp: "2026-11-16T11:50:00Z", living: true), "Waiting for me · Updated 10 min ago")
+        // Hours are rounded up to 48 h, then days are rounded.
+        XCTAssertEqual(try line(stamp: "2026-11-16T10:30:00Z", living: true), "Waiting for me · Updated 2 h ago")
+        XCTAssertEqual(try line(stamp: "2026-11-14T13:00:00Z", living: true), "Waiting for me · Updated 47 h ago")
+        XCTAssertEqual(try line(stamp: "2026-11-13T00:00:00Z", living: true), "Waiting for me · Updated 4 d ago")
     }
 
     func testCreatingTargetPastUntilIsStuck() throws {

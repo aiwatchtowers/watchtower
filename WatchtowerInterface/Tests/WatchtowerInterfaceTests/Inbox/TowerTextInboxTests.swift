@@ -30,12 +30,23 @@ final class TowerTextInboxTests: XCTestCase {
         XCTAssertEqual(TowerText.today, "Today")
         XCTAssertEqual(TowerText.earlier, "Earlier")
         XCTAssertEqual(TowerText.justNow, "just now")
-        XCTAssertEqual(TowerText.minutesAgo(6), "6 min ago")
-        XCTAssertEqual(TowerText.hoursAgo(2), "2 h ago")
-        XCTAssertEqual(TowerText.daysAgo(3), "3 d ago")
+        XCTAssertEqual(TowerText.secondsSpan(45), "45 s")
+        XCTAssertEqual(TowerText.minutesSpan(6), "6 min")
+        XCTAssertEqual(TowerText.hoursSpan(2), "2 h")
+        XCTAssertEqual(TowerText.daysSpan(3), "3 d")
+        XCTAssertEqual(TowerText.ago("6 min"), "6 min ago")
+        XCTAssertEqual(TowerText.discussInChat, "Discuss in Chat")
+        XCTAssertEqual(TowerText.handToAgent, "Hand to Agent…")
+        XCTAssertEqual(TowerText.goToTarget, "Go to Target")
+        XCTAssertEqual(TowerText.deleteTrack, "Delete…")
+        XCTAssertEqual(TowerText.activate, "Activate")
+        XCTAssertEqual(TowerText.drop, "Drop")
+        XCTAssertEqual(TowerText.openLabel(trigger: "mention"), "Open in Slack")
+        XCTAssertEqual(TowerText.openLabel(trigger: "jira_assigned"), "Open in Jira")
+        XCTAssertEqual(TowerText.openLabel(trigger: "linear_comment_mention"), "Open in Linear")
+        XCTAssertEqual(TowerText.openLabel(trigger: "email_received"), "Open in Mail")
         XCTAssertEqual(TowerText.notDone, "Not done")
         XCTAssertEqual(TowerText.stopWatching, "Stop watching")
-        XCTAssertEqual(TowerText.restore, "Restore")
         XCTAssertEqual(TowerText.thisIPhone, "this iPhone")
         XCTAssertEqual(TowerText.didntFinish, "Didn't finish")
         XCTAssertEqual(TowerText.tryAgain, "Try again")
@@ -47,11 +58,11 @@ final class TowerTextInboxTests: XCTestCase {
         let berlin = try Fix.zone("Europe/Berlin")
         XCTAssertEqual(
             TowerText.refreshFailed(reason: TowerText.daemonDown, shownAt: shownAt, timeZone: berlin, now: try Fix.date("2026-11-16T10:00:00Z")),
-            "Couldn't refresh the Inbox: Watchtower's background service isn't running. Showing the list from 9:14."
+            "Couldn't refresh the Inbox: Watchtower's background service isn't running. Showing the list from 09:14."
         )
         XCTAssertEqual(
             TowerText.refreshFailed(reason: "busy", shownAt: shownAt, timeZone: berlin, now: try Fix.date("2026-11-17T10:00:00Z")),
-            "Couldn't refresh the Inbox: busy. Showing the list from Nov 16, 9:14."
+            "Couldn't refresh the Inbox: busy. Showing the list from Nov 16, 09:14."
         )
     }
 
@@ -117,10 +128,10 @@ final class TowerTextInboxTests: XCTestCase {
         XCTAssertEqual(TowerText.failedPrefix("the team was archived"), "Failed: the team was archived")
         let fourteen = try Fix.date("2026-11-16T14:00:00Z")
         XCTAssertEqual(TowerText.reminderLine(at: fourteen, timeZone: utc), "Reminder · 14:00")
-        XCTAssertEqual(TowerText.assistantProposal(at: try Fix.date("2026-11-16T08:55:00Z"), timeZone: utc), "Assistant proposal · 8:55")
+        XCTAssertEqual(TowerText.assistantProposal(at: try Fix.date("2026-11-16T08:55:00Z"), timeZone: utc), "Assistant proposal · 08:55")
         XCTAssertEqual(
             TowerText.replyFromWaiting(device: TowerText.thisIPhone, at: try Fix.date("2026-11-16T09:40:00Z"), timeZone: utc),
-            "Reply from Waiting for me · this iPhone · 9:40"
+            "Reply from Waiting for me · this iPhone · 09:40"
         )
         // §4
         XCTAssertEqual(TowerText.chatOnYourMac, "Chat — on your Mac")

@@ -25,6 +25,9 @@ public struct Grants: Sendable, Equatable {
 /// The Inbox's times: the feed's stamps are RFC 3339 UTC, and every time
 /// shown is computed here in the zone the client passes (its own
 /// `TimeZone.current`), so the phone groups and labels by the phone's zone.
+/// The formats are the Mac's (`InboxCardTexts`, `AutomationCardPresentation.relative`):
+/// en_US_POSIX fixed patterns, so neither locale nor the 12/24-hour setting
+/// changes them.
 enum InboxTime {
     static func parse(_ stamp: String) -> Date? {
         if stamp.isEmpty { return nil }
@@ -38,30 +41,43 @@ enum InboxTime {
         return calendar
     }
 
-    /// "9:14", "14:00": the 24-hour clock in `timeZone`.
+    /// "09:14", "14:00".
     static func clock(_ date: Date, timeZone: TimeZone) -> String {
-        let parts = calendar(timeZone).dateComponents([.hour, .minute], from: date)
-        let minute = parts.minute ?? 0
-        return "\(parts.hour ?? 0):\(minute < 10 ? "0" : "")\(minute)"
+        format(date, "HH:mm", timeZone)
     }
 
-    /// The clock alone on `now`'s day in `timeZone`, else "Nov 12, 9:14".
-    static func clock(_ date: Date, now: Date, timeZone: TimeZone) -> String {
-        let calendar = calendar(timeZone)
-        if calendar.isDate(date, inSameDayAs: now) { return clock(date, timeZone: timeZone) }
-        let parts = calendar.dateComponents([.month, .day], from: date)
-        let month = months[((parts.month ?? 1) - 1 + 12) % 12]
-        return "\(month) \(parts.day ?? 1), \(clock(date, timeZone: timeZone))"
+    /// A list row's time (`InboxCardTexts.stamped`): "09:14" on `now`'s day
+    /// in `timeZone`, else its day alone, "Oct 18".
+    static func stamped(_ date: Date, now: Date, timeZone: TimeZone) -> String {
+        format(date, calendar(timeZone).isDate(date, inSameDayAs: now) ? "HH:mm" : "MMM d", timeZone)
     }
 
-    /// "just now", "6 min ago", "2 h ago", "3 d ago".
+    /// "09:14" on `now`'s day, else "Oct 18, 09:14" (the reading pane's day and time).
+    static func dayAndClock(_ date: Date, now: Date, timeZone: TimeZone) -> String {
+        format(date, calendar(timeZone).isDate(date, inSameDayAs: now) ? "HH:mm" : "MMM d, HH:mm", timeZone)
+    }
+
+    /// "just now", "6 min ago", "2 h ago" (hours rounded, up to 48 h), "3 d ago".
     static func ago(_ date: Date, now: Date) -> String {
-        let minutes = max(0, Int(now.timeIntervalSince(date) / 60))
-        if minutes < 1 { return TowerText.justNow }
-        if minutes < 60 { return TowerText.minutesAgo(minutes) }
-        if minutes < 24 * 60 { return TowerText.hoursAgo(minutes / 60) }
-        return TowerText.daysAgo(minutes / (24 * 60))
+        let seconds = now.timeIntervalSince(date)
+        return seconds < 60 ? TowerText.justNow : TowerText.ago(relative(seconds))
     }
 
-    private static let months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    /// `AutomationCardPresentation.relative`: "45 s", "6 min", "2 h", "3 d".
+    static func relative(_ seconds: TimeInterval) -> String {
+        let s = max(Int(seconds), 0)
+        if s < 60 { return TowerText.secondsSpan(s) }
+        if s < 3600 { return TowerText.minutesSpan(s / 60) }
+        if s < 48 * 3600 { return TowerText.hoursSpan(Int((Double(s) / 3600).rounded())) }
+        return TowerText.daysSpan(Int((Double(s) / 86400).rounded()))
+    }
+
+    private static func format(_ date: Date, _ pattern: String, _ timeZone: TimeZone) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = calendar(timeZone)
+        formatter.timeZone = timeZone
+        formatter.dateFormat = pattern
+        return formatter.string(from: date)
+    }
 }

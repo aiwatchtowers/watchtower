@@ -9,10 +9,11 @@ final class InboxFolderModelTests: XCTestCase {
         folder: Int64 = 1,
         now: String = "2026-11-16T12:00:00Z",
         zone: String = "UTC",
-        hidden: InboxHiddenRows = InboxHiddenRows()
+        hidden: InboxHiddenRows = InboxHiddenRows(),
+        platform: Platform = .phone
     ) throws -> InboxFolderModel {
         InboxFolderModel(
-            feed: feed, folderID: folder, platform: .phone, hidden: hidden,
+            feed: feed, folderID: folder, platform: platform, hidden: hidden,
             now: try Fix.date(now), timeZone: try Fix.zone(zone)
         )
     }
@@ -24,10 +25,10 @@ final class InboxFolderModelTests: XCTestCase {
         let now = "2026-11-16T09:00:00Z"
         let tokyo = try model(feed, now: now, zone: "Asia/Tokyo")
         XCTAssertEqual(tokyo.sections.map(\.title), ["Today"])
-        XCTAssertEqual(tokyo.cards.first?.stamp, "8:30")
+        XCTAssertEqual(tokyo.cards.first?.stamp, "08:30")
         let losAngeles = try model(feed, now: now, zone: "America/Los_Angeles")
         XCTAssertEqual(losAngeles.sections.map(\.title), ["Earlier"])
-        XCTAssertEqual(losAngeles.cards.first?.sourceLine, "Waiting for me · Nov 15, 15:30")
+        XCTAssertEqual(losAngeles.cards.first?.sourceLine, "Waiting for me · Nov 15")
     }
 
     func testClosedRefRowsAreHidden() throws {
@@ -57,17 +58,41 @@ final class InboxFolderModelTests: XCTestCase {
     }
 
     func testApprovalsAndWaitingFirst() throws {
+        // The feed's order (Go's: what waits first, then newest first) is kept as is.
         let cards = [
-            try Fix.artifact("o1", stamp: "2026-11-16T11:00:00Z"),
-            try Fix.artifact("o2", stamp: "2026-11-14T09:00:00Z"),
             try Fix.approval("a5", folder: 1),
             try Fix.artifact("o3", stamp: "2026-11-16T09:00:00Z", pinned: true),
-            try Fix.artifact("o4", stamp: "2026-11-16T11:30:00Z")
+            try Fix.artifact("o4", stamp: "2026-11-16T11:30:00Z"),
+            try Fix.artifact("o1", stamp: "2026-11-16T11:00:00Z"),
+            try Fix.artifact("o2", stamp: "2026-11-14T09:00:00Z")
         ]
         let folder = try model(Fix.feed(folders: [Fix.root], cards: cards))
         XCTAssertEqual(folder.sections.map(\.title), ["Needs your decision", "Today", "Earlier"])
         XCTAssertEqual(folder.sections.map { $0.cards.map(\.id) }, [["a5", "o3"], ["o4", "o1"], ["o2"]])
         XCTAssertEqual(folder.cards.map(\.id), ["a5", "o3", "o4", "o1", "o2"])
+    }
+
+    func testThePhoneGroupsWithoutReordering() throws {
+        // An older card the feed lists first stays first in its group: no client sort.
+        let cards = [
+            try Fix.artifact("o1", stamp: "2026-11-16T08:00:00Z"),
+            try Fix.artifact("o2", stamp: "2026-11-16T11:00:00Z"),
+            try Fix.artifact("o3", stamp: "2026-11-16T08:00:00Z")
+        ]
+        let folder = try model(Fix.feed(folders: [Fix.root], cards: cards))
+        XCTAssertEqual(folder.sections.map { $0.cards.map(\.id) }, [["o1", "o2", "o3"]])
+        XCTAssertEqual(folder.cards.map(\.id), ["o1", "o2", "o3"])
+    }
+
+    func testTheMacListIsFlatInTheFeedOrder() throws {
+        let cards = [
+            try Fix.artifact("o2", stamp: "2026-11-14T09:00:00Z"),
+            try Fix.approval("a5", folder: 1),
+            try Fix.artifact("o1", stamp: "2026-11-16T11:00:00Z")
+        ]
+        let folder = try model(Fix.feed(folders: [Fix.root], cards: cards), platform: .mac)
+        XCTAssertEqual(folder.sections, [])
+        XCTAssertEqual(folder.cards.map(\.id), ["o2", "a5", "o1"])
     }
 
     func testCardsHiddenOnOKAreLeftOut() throws {

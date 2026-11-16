@@ -47,9 +47,10 @@ public extension TowerText {
     static let policyBody = "Your organization lets this phone see only Workbench."
     static func olderCards(_ n: Int) -> String { "\(n) older cards are on your Mac." }
     /// A failed read that keeps the last list (mockup §7): the time the list
-    /// is from, in `timeZone`; a list from another day than `now` adds its date.
+    /// is from, in `timeZone` ("09:14"); a list from another day than `now`
+    /// adds its day ("Nov 16, 09:14").
     static func refreshFailed(reason: String, shownAt: Date, timeZone: TimeZone, now: Date = Date()) -> String {
-        "Couldn't refresh the Inbox: \(reason). Showing the list from \(InboxTime.clock(shownAt, now: now, timeZone: timeZone))."
+        "Couldn't refresh the Inbox: \(reason). Showing the list from \(InboxTime.dayAndClock(shownAt, now: now, timeZone: timeZone))."
     }
     /// A card whose blocks this app cannot draw (mockup §4).
     static let unsupportedCard = "This card needs a newer Watchtower on this iPhone. Showing its text."
@@ -66,6 +67,8 @@ public extension TowerText {
     static func waitingSubtitle(_ n: Int, updated: Date, now: Date) -> String {
         "\(n) waiting · updated \(InboxTime.ago(updated, now: now))"
     }
+    /// A living card's time (`InboxCardTexts.updated`): "Updated just now",
+    /// "Updated 10 min ago".
     static func updatedAgo(_ updated: Date, now: Date) -> String { "Updated \(InboxTime.ago(updated, now: now))" }
     static let living = "living"
     static func runLine(run: Int, at: Date, now: Date) -> String { "ϟ run #\(run) · \(InboxTime.ago(at, now: now))" }
@@ -73,9 +76,11 @@ public extension TowerText {
     static func withNews(_ n: Int) -> String { "\(n) with news" }
     static func toJudge(_ n: Int) -> String { "\(n) to judge" }
     static let justNow = "just now"
-    static func minutesAgo(_ n: Int) -> String { "\(n) min ago" }
-    static func hoursAgo(_ n: Int) -> String { "\(n) h ago" }
-    static func daysAgo(_ n: Int) -> String { "\(n) d ago" }
+    static func secondsSpan(_ n: Int) -> String { "\(n) s" }
+    static func minutesSpan(_ n: Int) -> String { "\(n) min" }
+    static func hoursSpan(_ n: Int) -> String { "\(n) h" }
+    static func daysSpan(_ n: Int) -> String { "\(n) d" }
+    static func ago(_ span: String) -> String { "\(span) ago" }
 
     // §2: Waiting for me rows, their detail and the Reply… sheet.
     static let done = "Done"
@@ -84,7 +89,6 @@ public extension TowerText {
     static let snoozeOneHour = "Snooze 1h"
     static let hide = "Hide"
     static let stopWatching = "Stop watching"
-    static let restore = "Restore"
     static let makeATask = "Make a Task"
     static let reply = "Reply…"
     static let propose = "Propose"
@@ -148,6 +152,21 @@ public extension TowerText {
     static let notNow = "Not now"
     static let recent = "Recent"
     static let trackHint = "Swipe: Done · Stop watching · long press: Make a Task"
+
+    // The Mac's row buttons (`InboxRowActionsView`), shared with the phone's menu.
+    static let discussInChat = "Discuss in Chat"
+    static let handToAgent = "Hand to Agent…"
+    static let goToTarget = "Go to Target"
+    static let deleteTrack = "Delete…"
+    static let activate = "Activate"
+    static let drop = "Drop"
+    /// An inbox item's Open button by its trigger (`InboxMessagePane.openLabel`).
+    static func openLabel(trigger: String) -> String {
+        if trigger.hasPrefix("jira_") { return openIn("Jira") }
+        if trigger.hasPrefix("linear_") { return openIn("Linear") }
+        if trigger == "email_received" { return openIn("Mail") }
+        return openIn("Slack")
+    }
 
     /// The line a row or button shows while `request` runs (mockup §2, §3,
     /// §4); nil for a request drawn with a spinner alone.

@@ -47,8 +47,9 @@ func TestRefFacts_InboxItemOpenAndWaits(t *testing.T) {
 			"item_class, created_at) VALUES (2, 'C1', '1.2', 'U1', 'email_received', 'mail', '', 'resolved', "+
 			"'actionable', '2026-11-16T08:00:00Z')"))
 	want := []api.RefFacts{
-		{Kind: api.RefInboxItem, ID: 1, Open: true, Waits: true, Reply: true, Link: "https://acme.slack.com/p1"},
-		{Kind: api.RefInboxItem, ID: 2},
+		{Kind: api.RefInboxItem, ID: 1, Open: true, Waits: true, Reply: true, Link: "https://acme.slack.com/p1",
+			TriggerType: "mention"},
+		{Kind: api.RefInboxItem, ID: 2, TriggerType: "email_received"},
 		{Kind: api.RefInboxItem, ID: 3},
 	}
 	if fmt.Sprint(facts) != fmt.Sprint(want) {
@@ -69,6 +70,20 @@ func TestRefFacts_TrackDoneIsClosed(t *testing.T) {
 	}
 }
 
+// A track carries what the Mac's row buttons read: a custom track (Delete…
+// and Go to Target in place of Make a Task) and its linked target.
+func TestRefFacts_TrackCustomAndLinkedTarget(t *testing.T) {
+	facts := refFacts(t, append(refCardSeed("track:1", "track:2"),
+		"INSERT INTO targets (id, text, period_start, period_end) VALUES (4, 'Ship', '2026-11-01', '2026-11-30')",
+		"INSERT INTO tracks (id, text, origin, linked_target_id) VALUES (1, 'Custom', 'custom', 4)",
+		"INSERT INTO tracks (id, text) VALUES (2, 'Extracted')"))
+	want := fmt.Sprint([]api.RefFacts{{Kind: api.RefTrack, ID: 1, Open: true, Waits: true, Custom: true, LinkedTargetID: 4},
+		{Kind: api.RefTrack, ID: 2, Open: true, Waits: true}})
+	if got := fmt.Sprint(facts); got != want {
+		t.Errorf("facts %s, want %s", got, want)
+	}
+}
+
 // An idea snoozed to a later day is closed until that day starts in the
 // owner's zone; an active idea is shown but waits on no verdict.
 func TestRefFacts_IdeaSnoozedIsClosedUntilDue(t *testing.T) {
@@ -77,8 +92,9 @@ func TestRefFacts_IdeaSnoozedIsClosedUntilDue(t *testing.T) {
 		"INSERT INTO ideas (id, kind, title, status, snooze_until) VALUES (2, 'idea', 'Today', 'proposed', '2026-11-16')",
 		"INSERT INTO ideas (id, kind, title, status) VALUES (3, 'idea', 'Active', 'active')")
 	facts := refFacts(t, seed)
-	want := fmt.Sprint([]api.RefFacts{{Kind: api.RefIdea, ID: 1}, {Kind: api.RefIdea, ID: 2, Open: true, Waits: true},
-		{Kind: api.RefIdea, ID: 3, Open: true}})
+	want := fmt.Sprint([]api.RefFacts{{Kind: api.RefIdea, ID: 1, IdeaKind: "idea", IdeaStatus: "proposed"},
+		{Kind: api.RefIdea, ID: 2, Open: true, Waits: true, IdeaKind: "idea", IdeaStatus: "proposed"},
+		{Kind: api.RefIdea, ID: 3, Open: true, IdeaKind: "idea", IdeaStatus: "active"}})
 	if got := fmt.Sprint(facts); got != want {
 		t.Errorf("facts %s, want %s", got, want)
 	}

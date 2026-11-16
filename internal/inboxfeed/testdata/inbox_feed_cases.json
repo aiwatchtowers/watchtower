@@ -490,7 +490,12 @@
               "waits": false,
               "reply": false,
               "reply_waiting": false,
-              "link": ""
+              "link": "",
+              "trigger_type": "",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
             }
           ]
         },
@@ -526,7 +531,12 @@
               "waits": true,
               "reply": false,
               "reply_waiting": false,
-              "link": ""
+              "link": "",
+              "trigger_type": "mention",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
             },
             {
               "kind": "track",
@@ -535,7 +545,12 @@
               "waits": true,
               "reply": false,
               "reply_waiting": false,
-              "link": ""
+              "link": "",
+              "trigger_type": "",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
             },
             {
               "kind": "track",
@@ -544,7 +559,12 @@
               "waits": false,
               "reply": false,
               "reply_waiting": false,
-              "link": ""
+              "link": "",
+              "trigger_type": "",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
             },
             {
               "kind": "reminder",
@@ -553,7 +573,12 @@
               "waits": true,
               "reply": false,
               "reply_waiting": false,
-              "link": ""
+              "link": "",
+              "trigger_type": "",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
             },
             {
               "kind": "reminder",
@@ -562,7 +587,12 @@
               "waits": false,
               "reply": false,
               "reply_waiting": false,
-              "link": ""
+              "link": "",
+              "trigger_type": "",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
             },
             {
               "kind": "track",
@@ -571,7 +601,12 @@
               "waits": false,
               "reply": false,
               "reply_waiting": false,
-              "link": ""
+              "link": "",
+              "trigger_type": "",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
             }
           ]
         },
@@ -695,7 +730,12 @@
               "waits": true,
               "reply": false,
               "reply_waiting": false,
-              "link": ""
+              "link": "",
+              "trigger_type": "",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
             }
           ]
         }
@@ -1142,7 +1182,12 @@
               "waits": true,
               "reply": false,
               "reply_waiting": false,
-              "link": ""
+              "link": "",
+              "trigger_type": "",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
             }
           ]
         },
@@ -1822,7 +1867,12 @@
               "waits": true,
               "reply": false,
               "reply_waiting": false,
-              "link": ""
+              "link": "",
+              "trigger_type": "",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "idea",
+              "idea_status": "proposed"
             },
             {
               "kind": "idea",
@@ -1831,7 +1881,12 @@
               "waits": false,
               "reply": false,
               "reply_waiting": false,
-              "link": ""
+              "link": "",
+              "trigger_type": "",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "idea",
+              "idea_status": "proposed"
             },
             {
               "kind": "idea",
@@ -1840,7 +1895,12 @@
               "waits": true,
               "reply": false,
               "reply_waiting": false,
-              "link": ""
+              "link": "",
+              "trigger_type": "",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "idea",
+              "idea_status": "proposed"
             },
             {
               "kind": "idea",
@@ -1849,7 +1909,12 @@
               "waits": false,
               "reply": false,
               "reply_waiting": false,
-              "link": ""
+              "link": "",
+              "trigger_type": "",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "idea",
+              "idea_status": "proposed"
             },
             {
               "kind": "idea",
@@ -1858,7 +1923,12 @@
               "waits": false,
               "reply": false,
               "reply_waiting": false,
-              "link": ""
+              "link": "",
+              "trigger_type": "",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "idea",
+              "idea_status": "active"
             },
             {
               "kind": "idea",
@@ -1867,7 +1937,12 @@
               "waits": false,
               "reply": false,
               "reply_waiting": false,
-              "link": ""
+              "link": "",
+              "trigger_type": "",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "decision",
+              "idea_status": "proposed"
             },
             {
               "kind": "idea",
@@ -1876,7 +1951,12 @@
               "waits": false,
               "reply": false,
               "reply_waiting": false,
-              "link": ""
+              "link": "",
+              "trigger_type": "",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
             }
           ]
         },
@@ -2096,7 +2176,12 @@
               "waits": true,
               "reply": false,
               "reply_waiting": false,
-              "link": ""
+              "link": "",
+              "trigger_type": "",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
             }
           ]
         }
@@ -2286,7 +2371,12 @@
               "waits": true,
               "reply": false,
               "reply_waiting": false,
-              "link": ""
+              "link": "",
+              "trigger_type": "",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
             }
           ],
           "approval": {
@@ -2341,7 +2431,12 @@
               "waits": true,
               "reply": false,
               "reply_waiting": false,
-              "link": "https://slack.com/archives/C1/p1700000000000100"
+              "link": "https://slack.com/archives/C1/p1700000000000100",
+              "trigger_type": "",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
             }
           ]
         },
@@ -2695,7 +2790,12 @@
               "waits": true,
               "reply": false,
               "reply_waiting": false,
-              "link": ""
+              "link": "",
+              "trigger_type": "",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
             },
             {
               "kind": "idea",
@@ -2704,7 +2804,12 @@
               "waits": true,
               "reply": false,
               "reply_waiting": false,
-              "link": ""
+              "link": "",
+              "trigger_type": "",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "idea",
+              "idea_status": "proposed"
             },
             {
               "kind": "track",
@@ -2713,7 +2818,12 @@
               "waits": false,
               "reply": false,
               "reply_waiting": false,
-              "link": ""
+              "link": "",
+              "trigger_type": "",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
             }
           ]
         },
@@ -2882,7 +2992,12 @@
               "waits": true,
               "reply": false,
               "reply_waiting": false,
-              "link": ""
+              "link": "",
+              "trigger_type": "",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
             }
           ]
         }
@@ -3024,7 +3139,12 @@
               "waits": true,
               "reply": false,
               "reply_waiting": false,
-              "link": ""
+              "link": "",
+              "trigger_type": "",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
             }
           ]
         }
@@ -3115,7 +3235,12 @@
               "waits": true,
               "reply": true,
               "reply_waiting": true,
-              "link": "https://acme.slack.com/archives/C1/p1"
+              "link": "https://acme.slack.com/archives/C1/p1",
+              "trigger_type": "mention",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
             },
             {
               "kind": "inbox_item",
@@ -3124,7 +3249,12 @@
               "waits": true,
               "reply": true,
               "reply_waiting": false,
-              "link": ""
+              "link": "",
+              "trigger_type": "linear_assigned",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
             },
             {
               "kind": "inbox_item",
@@ -3133,7 +3263,12 @@
               "waits": false,
               "reply": false,
               "reply_waiting": false,
-              "link": ""
+              "link": "",
+              "trigger_type": "email_received",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
             },
             {
               "kind": "idea",
@@ -3142,7 +3277,12 @@
               "waits": false,
               "reply": false,
               "reply_waiting": false,
-              "link": ""
+              "link": "",
+              "trigger_type": "",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "idea",
+              "idea_status": "proposed"
             },
             {
               "kind": "idea",
@@ -3151,7 +3291,12 @@
               "waits": false,
               "reply": false,
               "reply_waiting": false,
-              "link": ""
+              "link": "",
+              "trigger_type": "",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "idea",
+              "idea_status": "active"
             },
             {
               "kind": "reminder",
@@ -3160,7 +3305,12 @@
               "waits": false,
               "reply": false,
               "reply_waiting": false,
-              "link": "https://slack.com/archives/C1/p1700000000000100"
+              "link": "https://slack.com/archives/C1/p1700000000000100",
+              "trigger_type": "",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
             },
             {
               "kind": "action",
@@ -3169,7 +3319,12 @@
               "waits": true,
               "reply": false,
               "reply_waiting": false,
-              "link": ""
+              "link": "",
+              "trigger_type": "",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
             }
           ]
         },
@@ -3318,6 +3473,258 @@
             "recipe_text": "",
             "diff": [],
             "recipe_clipped": false
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "ref_facts_row_buttons",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO automations (id, slug, scope, path, name, enabled, disabled_reason, origin, builtin_id) VALUES (1, 'watch', 'personal', '/recipes/watch.md', 'Watch', 1, '', 'owner', NULL)",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status) VALUES (1, 1, 'manual', 'succeeded')",
+      "INSERT INTO targets (id, text, period_start, period_end) VALUES (4, 'Ship acme 2.0', '2026-11-01', '2026-11-30')",
+      "INSERT INTO tracks (id, text, origin, linked_target_id, updated_at) VALUES (1, 'Custom watch', 'custom', 4, '2026-11-15T09:00:00Z')",
+      "INSERT INTO tracks (id, text, updated_at) VALUES (2, 'Extracted track', '2026-11-15T09:00:00Z')",
+      "INSERT INTO ideas (id, kind, title, status, updated_at) VALUES (1, 'note', 'A note', 'active', '2026-11-15T09:30:00Z')",
+      "INSERT INTO ideas (id, kind, title, status, chat_born, updated_at) VALUES (2, 'decision', 'A decision', 'rejected', 1, '2026-11-15T09:30:00Z')",
+      "INSERT INTO inbox_items (id, channel_id, message_ts, sender_user_id, trigger_type, snippet, permalink, status, item_class, created_at) VALUES (1, 'ACME-1', '1.1', 'U1', 'jira_assigned', 'ACME-1 assigned', 'https://acme.example.com/browse/ACME-1', 'pending', 'actionable', '2026-11-16T08:00:00Z')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, blocks_json, content_hash, changed_at) VALUES (1, 1, 1, 'inbox', 'Row buttons', 'Row buttons.', 'medium', '2026-11-16T08:00:00Z', '{\"v\":1,\"blocks\":[{\"type\":\"list\",\"rows\":[{\"title\":\"Row 0\",\"ref\":{\"kind\":\"track\",\"id\":1}},{\"title\":\"Row 1\",\"ref\":{\"kind\":\"track\",\"id\":2}},{\"title\":\"Row 2\",\"ref\":{\"kind\":\"idea\",\"id\":1}},{\"title\":\"Row 3\",\"ref\":{\"kind\":\"idea\",\"id\":2}},{\"title\":\"Row 4\",\"ref\":{\"kind\":\"inbox_item\",\"id\":1}}]}]}', 'h1', '2026-11-16T08:00:00Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 2,
+          "waiting": 2
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "o1",
+          "folder_id": 1,
+          "card_kind": "artifact",
+          "title": "Row buttons",
+          "source_line": "Watch",
+          "preview": "Row buttons.",
+          "stamp": "2026-11-16T08:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "automation": {
+            "id": 1,
+            "name": "Watch",
+            "builtin_id": "",
+            "run_id": 1
+          },
+          "blocks": "{\"v\":1,\"blocks\":[{\"type\":\"list\",\"rows\":[{\"title\":\"Row 0\",\"ref\":{\"kind\":\"track\",\"id\":1}},{\"title\":\"Row 1\",\"ref\":{\"kind\":\"track\",\"id\":2}},{\"title\":\"Row 2\",\"ref\":{\"kind\":\"idea\",\"id\":1}},{\"title\":\"Row 3\",\"ref\":{\"kind\":\"idea\",\"id\":2}},{\"title\":\"Row 4\",\"ref\":{\"kind\":\"inbox_item\",\"id\":1}}]}]}",
+          "body": "Row buttons.",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "h1",
+          "actions": [],
+          "ref_facts": [
+            {
+              "kind": "track",
+              "id": 1,
+              "open": true,
+              "waits": true,
+              "reply": false,
+              "reply_waiting": false,
+              "link": "",
+              "trigger_type": "",
+              "custom": true,
+              "linked_target_id": 4,
+              "idea_kind": "",
+              "idea_status": ""
+            },
+            {
+              "kind": "track",
+              "id": 2,
+              "open": true,
+              "waits": true,
+              "reply": false,
+              "reply_waiting": false,
+              "link": "",
+              "trigger_type": "",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
+            },
+            {
+              "kind": "idea",
+              "id": 1,
+              "open": true,
+              "waits": false,
+              "reply": false,
+              "reply_waiting": false,
+              "link": "",
+              "trigger_type": "",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "note",
+              "idea_status": "active"
+            },
+            {
+              "kind": "idea",
+              "id": 2,
+              "open": true,
+              "waits": false,
+              "reply": false,
+              "reply_waiting": false,
+              "link": "",
+              "trigger_type": "",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "decision",
+              "idea_status": "rejected"
+            },
+            {
+              "kind": "inbox_item",
+              "id": 1,
+              "open": false,
+              "waits": false,
+              "reply": true,
+              "reply_waiting": false,
+              "link": "https://acme.example.com/browse/ACME-1",
+              "trigger_type": "jira_assigned",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
+            }
+          ]
+        },
+        {
+          "id": "ideas",
+          "folder_id": 1,
+          "card_kind": "legacy",
+          "title": "Idea finder",
+          "source_line": "",
+          "preview": "",
+          "stamp": "2026-11-15T09:30:00Z",
+          "living": false,
+          "unread": false,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [],
+          "legacy": {
+            "kind": "ideas",
+            "items": [
+              {
+                "ref_kind": "idea",
+                "id": 1,
+                "title": "A note",
+                "subtitle": "Note · active",
+                "preview": "",
+                "stamp": "2026-11-15T09:30:00Z",
+                "end": "",
+                "unread": false,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": ""
+              },
+              {
+                "ref_kind": "idea",
+                "id": 2,
+                "title": "A decision",
+                "subtitle": "Decision · rejected · Chat",
+                "preview": "",
+                "stamp": "2026-11-15T09:30:00Z",
+                "end": "",
+                "unread": false,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": ""
+              }
+            ],
+            "attention": []
+          }
+        },
+        {
+          "id": "tracks",
+          "folder_id": 1,
+          "card_kind": "legacy",
+          "title": "Track my threads",
+          "source_line": "",
+          "preview": "2 unread",
+          "stamp": "2026-11-15T09:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [],
+          "legacy": {
+            "kind": "tracks",
+            "items": [
+              {
+                "ref_kind": "track",
+                "id": 1,
+                "title": "Custom watch",
+                "subtitle": "Track",
+                "preview": "",
+                "stamp": "2026-11-15T09:00:00Z",
+                "end": "",
+                "unread": true,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": ""
+              },
+              {
+                "ref_kind": "track",
+                "id": 2,
+                "title": "Extracted track",
+                "subtitle": "Track",
+                "preview": "",
+                "stamp": "2026-11-15T09:00:00Z",
+                "end": "",
+                "unread": true,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": ""
+              }
+            ],
+            "attention": []
           }
         }
       ]
