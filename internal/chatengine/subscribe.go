@@ -127,31 +127,62 @@ func (s *Subscription) window() time.Duration {
 
 // run sends the snapshot, then one batch of changes per window after a
 // change (the window's first change starts its timer, so at most one batch
-// per window); a full queue turns into resync + snapshot.
+// per window); a full queue turns into resync + snapshot. A read that fails
+// sends nothing and is tried again one window later, so a failure never
+// shows as an empty chat and a change is never dropped.
 func (s *Subscription) run() {
 	defer close(s.out)
-	if !s.snapshot() {
-		return
-	}
 	var timer *time.Timer
 	var fire <-chan time.Time
+	arm := func() {
+		if timer == nil {
+			timer = time.NewTimer(s.window())
+			fire = timer.C
+		}
+	}
 	defer func() {
 		if timer != nil {
 			timer.Stop()
 		}
 	}()
+	needSnapshot := true
+	// step sends the snapshot still owed, else a batch; false once the
+	// subscription ended.
+	step := func() bool {
+		if !needSnapshot {
+			overflow, err := s.update()
+			if err != nil {
+				arm()
+				return true
+			}
+			if !overflow {
+				return true
+			}
+			if !s.sendWait(Event{Type: EventResync, Conversation: s.t.Conversation}) {
+				return false
+			}
+			needSnapshot = true
+		}
+		ok, err := s.snapshot()
+		if err != nil {
+			arm()
+			return true
+		}
+		needSnapshot = false
+		return ok
+	}
+	if !step() {
+		return
+	}
 	for {
 		select {
 		case <-s.done:
 			return
 		case <-s.kick:
-			if timer == nil {
-				timer = time.NewTimer(s.window())
-				fire = timer.C
-			}
+			arm()
 		case <-fire:
 			timer, fire = nil, nil
-			if !s.update() && !s.resync() {
+			if !step() {
 				return
 			}
 		}
@@ -178,71 +209,57 @@ func (s *Subscription) sendWait(ev Event) bool {
 	}
 }
 
-// resync tells a subscriber that fell behind to start over, then sends a
-// snapshot read after it made room, so it holds everything up to then.
-func (s *Subscription) resync() bool {
-	if !s.sendWait(Event{Type: EventResync, Conversation: s.t.Conversation}) {
-		return false
-	}
-	return s.snapshot()
-}
-
-// snapshot reads the target anew and sends it whole, waiting for room.
-func (s *Subscription) snapshot() bool {
+// snapshot reads the target anew and sends it whole, waiting for room. err
+// is a failed read (nothing sent); ok is false once the subscription ended.
+func (s *Subscription) snapshot() (ok bool, err error) {
 	if s.t.List {
-		l, err := s.e.List(context.Background())
+		l, err := s.readList()
 		if err != nil {
-			s.logFailure(err)
-			l = List{Conversations: []ListConversation{}, Projects: []ListProject{}, Models: []ChatModel{}}
+			return true, err
 		}
 		s.listJSON, _ = json.Marshal(l)
-		return s.sendWait(Event{Type: EventSnapshot, List: &l})
+		return s.sendWait(Event{Type: EventSnapshot, List: &l}), nil
 	}
-	f, err := s.e.Feed(context.Background(), s.t.Conversation, s.t.BeforeMessageID)
+	f, err := s.readFeed()
 	ev := Event{Type: EventSnapshot, Conversation: s.t.Conversation}
 	switch {
 	case errors.Is(err, chatstore.ErrConversationGone):
 		s.gone = true
 	case err != nil:
-		s.logFailure(err)
-		s.gone = false
-		s.remember(Feed{Messages: []FeedMessage{}})
-		ev.Snapshot = &Feed{Messages: []FeedMessage{}}
+		return true, err
 	default:
 		s.gone = false
 		s.remember(f)
 		ev.Snapshot = &f
 	}
-	return s.sendWait(ev)
+	return s.sendWait(ev), nil
 }
 
-// update sends what changed since the last batch; false when the queue
-// overflowed (the caller resyncs).
-func (s *Subscription) update() bool {
+// update sends what changed since the last batch. overflow: the queue was
+// full (the caller resyncs); err: the read failed, nothing was sent.
+func (s *Subscription) update() (overflow bool, err error) {
 	if s.t.List {
-		l, err := s.e.List(context.Background())
+		l, err := s.readList()
 		if err != nil {
-			s.logFailure(err)
-			return true
+			return false, err
 		}
 		b, _ := json.Marshal(l)
 		if bytes.Equal(b, s.listJSON) {
-			return true
+			return false, nil
 		}
 		s.listJSON = b
-		return s.send(Event{Type: EventListUpdate, List: &l})
+		return !s.send(Event{Type: EventListUpdate, List: &l}), nil
 	}
-	f, err := s.e.Feed(context.Background(), s.t.Conversation, s.t.BeforeMessageID)
+	f, err := s.readFeed()
 	switch {
 	case errors.Is(err, chatstore.ErrConversationGone):
 		if s.gone {
-			return true
+			return false, nil
 		}
 		s.gone = true
-		return s.send(Event{Type: EventSnapshot, Conversation: s.t.Conversation})
+		return !s.send(Event{Type: EventSnapshot, Conversation: s.t.Conversation}), nil
 	case err != nil:
-		s.logFailure(err)
-		return true
+		return false, err
 	}
 	ids := make([]int64, len(f.Messages))
 	for i, m := range f.Messages {
@@ -253,7 +270,7 @@ func (s *Subscription) update() bool {
 		// A branch switch, a deletion, new artifacts or actions: whole.
 		s.gone = false
 		s.remember(f)
-		return s.send(Event{Type: EventSnapshot, Conversation: s.t.Conversation, Snapshot: &f})
+		return !s.send(Event{Type: EventSnapshot, Conversation: s.t.Conversation, Snapshot: &f}), nil
 	}
 	var events []Event
 	if conv, _ := json.Marshal(f.Conversation); !bytes.Equal(conv, s.convJSON) {
@@ -269,10 +286,36 @@ func (s *Subscription) update() bool {
 	s.remember(f)
 	for _, ev := range events {
 		if !s.send(ev) {
-			return false
+			return true, nil
 		}
 	}
-	return true
+	return false, nil
+}
+
+// readList and readFeed are the subscription's reads; a failure other than
+// a gone conversation is logged (its class only).
+func (s *Subscription) readList() (List, error) {
+	if err := s.e.readFault(); err != nil {
+		s.logFailure(err)
+		return List{}, err
+	}
+	l, err := s.e.List(context.Background())
+	if err != nil {
+		s.logFailure(err)
+	}
+	return l, err
+}
+
+func (s *Subscription) readFeed() (Feed, error) {
+	if err := s.e.readFault(); err != nil {
+		s.logFailure(err)
+		return Feed{}, err
+	}
+	f, err := s.e.Feed(context.Background(), s.t.Conversation, s.t.BeforeMessageID)
+	if err != nil && !errors.Is(err, chatstore.ErrConversationGone) {
+		s.logFailure(err)
+	}
+	return f, err
 }
 
 // feedRest is what a feed holds beside its messages and meta: a change of
@@ -304,4 +347,13 @@ func (s *Subscription) logFailure(err error) {
 	default:
 	}
 	log.Printf("chatengine: a subscription's read of chat %d failed (%s)", s.t.Conversation, errClass(err))
+}
+
+// readFault is the failReads test seam: a subscription read fails while it
+// returns an error.
+func (e *Engine) readFault() error {
+	if fn := e.failReads.Load(); fn != nil {
+		return (*fn)()
+	}
+	return nil
 }

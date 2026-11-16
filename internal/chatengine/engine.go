@@ -103,6 +103,10 @@ type Engine struct {
 	opsMu sync.RWMutex
 	ops   map[string]OpHandler
 
+	// failReads, set by tests only, fails a subscription's reads while it
+	// returns an error.
+	failReads atomic.Pointer[func() error]
+
 	// beforeStart runs between the client-key lookup and the start
 	// transaction (tests: a concurrent duplicate).
 	beforeStart func()

@@ -3,8 +3,10 @@ package chatengine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -519,5 +521,67 @@ func TestChatengine_SendAfterStopReplaysSavedText(t *testing.T) {
 		for _, p := range g.f.all() {
 			assert.NotContains(t, p.argv, "--resume")
 		}
+	})
+}
+
+// TestChatengine_FailedReadRetriesNeverFakes: while the subscription's reads
+// fail it sends nothing — no empty snapshot standing in for the chat — and
+// tries again each window, so the snapshot and a turn's final status still
+// arrive once reads work, with no other change to wake it.
+func TestChatengine_FailedReadRetriesNeverFakes(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		g := newRig(t, fakeOpts{block: true, text: "answer"})
+		c := newConversation(t, g.d)
+		st, err := g.r.Turn(context.Background(), turnReq(c, "go", ""))
+		require.NoError(t, err)
+		synctest.Wait()
+
+		var failing atomic.Bool
+		failing.Store(true)
+		fail := func() error {
+			if failing.Load() {
+				return errors.New("disk I/O error")
+			}
+			return nil
+		}
+		g.r.failReads.Store(&fail)
+		feed := g.r.Subscribe(Target{Conversation: c}, Client{Kind: "mac"})
+		defer feed.Close()
+		list := g.r.Subscribe(Target{List: true}, Client{Kind: "mac"})
+		defer list.Close()
+		time.Sleep(2 * ListCoalesce)
+		synctest.Wait()
+		assert.Empty(t, drain(feed), "no snapshot while the read fails")
+		assert.Empty(t, drain(list), "no list while the read fails")
+
+		failing.Store(false)
+		time.Sleep(ListCoalesce)
+		synctest.Wait()
+		got := drain(feed)
+		require.Len(t, got, 1)
+		require.Equal(t, EventSnapshot, got[0].Type)
+		require.NotNil(t, got[0].Snapshot)
+		assert.Equal(t, c, got[0].Snapshot.Conversation.ID, "a real snapshot, not an empty stand-in")
+		lists := drain(list)
+		require.Len(t, lists, 1)
+		require.NotNil(t, lists[0].List)
+		assert.Len(t, lists[0].List.Conversations, 1)
+
+		// The turn ends while reads fail: the change is kept, not dropped.
+		failing.Store(true)
+		g.f.all()[0].finish()
+		time.Sleep(time.Second)
+		synctest.Wait()
+		assert.Empty(t, drain(feed))
+		failing.Store(false)
+		time.Sleep(FeedCoalesce)
+		synctest.Wait()
+		var final string
+		for _, ev := range drain(feed) {
+			if ev.Type == EventMessageUpsert && ev.Message.ID == st.AssistantMessageID {
+				final = ev.Message.Status
+			}
+		}
+		assert.Equal(t, chatstore.StatusComplete, final)
 	})
 }
