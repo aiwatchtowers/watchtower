@@ -51,11 +51,18 @@ var NudgeTable = map[string][]slices.Kind{
 	"chat_branch_select": chatSlices,
 	"chat_manage":        chatSlices,
 	"chat_action_answer": chatSlices,
-	// The composer's pickers answer in the echo; their nudge is the list,
-	// which carries the composer's other catalog (the models).
-	"chat_entity_search": {slices.KindChatList},
-	"chat_skills_list":   {slices.KindChatList},
+	// The composer's pickers answer in the echo: nothing to republish
+	// (EchoOnlyKinds).
+	"chat_entity_search": {},
+	"chat_skills_list":   {},
 }
+
+// EchoOnlyKinds are the kinds whose whole result is the applied echo's
+// result (the composer's pickers): their NudgeTable entry is empty on
+// purpose, so a keystroke republishes no slice and the phone times no
+// effect for them (ActionEffectKinds.swift mirrors it with empty lists).
+// Every other kind has a non-empty nudge.
+var EchoOnlyKinds = map[string]bool{"chat_entity_search": true, "chat_skills_list": true}
 
 // chatSlices are the records a chat write changes: the conversation's feed
 // and the chat list's row.

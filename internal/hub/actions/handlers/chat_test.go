@@ -18,7 +18,6 @@ import (
 	"watchtower/internal/chatstore"
 	"watchtower/internal/db"
 	"watchtower/internal/hub/actions"
-	hubslices "watchtower/internal/hub/slices"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/wire"
 	"watchtower/internal/tools"
@@ -602,8 +601,9 @@ func TestChatEntitySearchAction_ResultInEcho(t *testing.T) {
 		wire.StatusFailed, reasonInvalidParams)
 	wantOutcome(t, c.run("chat_entity_search", map[string]any{"query": strings.Repeat("q", MaxChatSearchQuery+1)}),
 		wire.StatusFailed, reasonInvalidParams)
-	if !slices.Contains(NudgeTable["chat_entity_search"], hubslices.KindChatList) || slices.Contains(actions.NonIdempotentKinds, "chat_entity_search") {
-		t.Error("chat_entity_search: idempotent with the list's nudge")
+	if !EchoOnlyKinds["chat_entity_search"] || len(NudgeTable["chat_entity_search"]) != 0 ||
+		slices.Contains(actions.NonIdempotentKinds, "chat_entity_search") {
+		t.Error("chat_entity_search: idempotent and echo-only (no nudge)")
 	}
 }
 
@@ -617,7 +617,8 @@ func TestChatSkillsListAction_ResultInEcho(t *testing.T) {
 	if !ok || len(list) != 1 || list[0].Name != "weekly-report" || list[0].Description != "Write the weekly report" {
 		t.Fatalf("skills %#v", out.Result["skills"])
 	}
-	if slices.Contains(actions.NonIdempotentKinds, "chat_skills_list") {
-		t.Error("chat_skills_list is idempotent")
+	if !EchoOnlyKinds["chat_skills_list"] || len(NudgeTable["chat_skills_list"]) != 0 ||
+		slices.Contains(actions.NonIdempotentKinds, "chat_skills_list") {
+		t.Error("chat_skills_list: idempotent and echo-only (no nudge)")
 	}
 }

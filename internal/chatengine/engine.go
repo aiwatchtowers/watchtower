@@ -507,6 +507,11 @@ func (e *Engine) title(conv int64) {
 		defer cancel()
 		if err := e.c.Title(ctx, conv); err != nil {
 			log.Printf("chatengine: chat %d got no AI title (%s)", conv, errClass(err))
+			return
 		}
+		// The title is a row change no turn event carries: the list and the
+		// conversation's subscribers (and the hub's OnChange) see it now,
+		// not at the next turn.
+		e.changed(conv)
 	}()
 }

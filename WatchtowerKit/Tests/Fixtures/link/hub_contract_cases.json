@@ -1843,15 +1843,11 @@
     },
     {
       "action_kind": "chat_entity_search",
-      "slice_kinds": [
-        "chat_list"
-      ]
+      "slice_kinds": []
     },
     {
       "action_kind": "chat_skills_list",
-      "slice_kinds": [
-        "chat_list"
-      ]
+      "slice_kinds": []
     }
   ],
   "epoch_ack": [

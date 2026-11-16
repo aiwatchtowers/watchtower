@@ -9,10 +9,12 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"watchtower/internal/chat"
 	"watchtower/internal/chatengine"
 	"watchtower/internal/chatstore"
+	"watchtower/internal/hub/secure"
 	hubslices "watchtower/internal/hub/slices"
 	"watchtower/internal/hub/slices/sources"
 	"watchtower/internal/hub/state"
@@ -158,4 +160,35 @@ func containsKind(kinds []hubslices.Kind, k hubslices.Kind) bool {
 		}
 	}
 	return false
+}
+
+// TestChatPush_ProductionHookOnTurnEnd: the hub built as the daemon builds it
+// (buildWiring over Options.ChatEngine, no hand-made hook) pushes a turn's
+// end: the engine's OnTurnEnd → chatTurnEnded → the tracked background →
+// the push watch's send. Only the pusher's sink is the test's.
+func TestChatPush_ProductionHookOnTurnEnd(t *testing.T) {
+	var eng *chatengine.Engine
+	r := newChatRigWith(t, policy.MobileAllowed, transport.KindRelay, func(o *Options) { eng = o.ChatEngine })
+	if r.w.chatPush == nil || r.h.chatPush.Load() != r.w.chatPush {
+		t.Fatal("the push watch is not the hub's")
+	}
+	pushed := make(chan secure.WorkAlertFields, 4)
+	r.w.chatPush.enqueue = func(_ string, f secure.WorkAlertFields, _ time.Time) { pushed <- f }
+	conv, err := eng.NewConversation(context.Background(), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := eng.Manage(context.Background(), chatengine.ManageRequest{Conversation: conv, Op: chatengine.ManageRename, Title: "Release plan"}); err != nil {
+		t.Fatal(err)
+	}
+	st, err := eng.Turn(context.Background(), chatengine.TurnRequest{StartRequest: chatstore.StartRequest{
+		ConversationID: conv, Mode: chatstore.ModeSend, Text: "a question"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := <-pushed // the rig's session (/usr/bin/false) dies: the turn ends
+	if f.Event != sources.EventChatAnswer || f.ConversationID != conv || f.Title != "Release plan" ||
+		f.Key != sources.ChatAlertKey(st.TurnID, sources.ChatAlertStopped) {
+		t.Fatalf("push %+v", f)
+	}
 }
