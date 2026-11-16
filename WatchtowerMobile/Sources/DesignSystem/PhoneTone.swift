@@ -34,10 +34,12 @@ enum PhoneTone: Equatable, Sendable {
         }
     }
 
-    /// An Inbox card block's tone (`ArtifactTone`), the colour the Mac's
-    /// `Tone.artifact(_:)` gives it: the only way a card's script picks a
-    /// colour on the phone. `warning` is the card's own word (mockup §4's
-    /// tone pill), named here so screens never name orange.
+    /// An Inbox card block's tone (`ArtifactTone`): the only way a card's
+    /// script picks a colour on the phone. The Mac's `Tone.artifact(_:)`
+    /// colours, except `accent`, which is the mockup's purple (§4 `.t-accent`):
+    /// the phone's accent is system blue, the same as `info`. `warning` is
+    /// the card's own word (mockup §4's tone pill), named here so screens
+    /// never name orange.
     static func artifact(_ tone: ArtifactTone) -> Self {
         switch tone {
         case .neutral: .secondary
@@ -45,7 +47,7 @@ enum PhoneTone: Equatable, Sendable {
         case .success: .green
         case .warning: .orange
         case .danger: .red
-        case .accent: .accent
+        case .accent: .purple
         }
     }
 

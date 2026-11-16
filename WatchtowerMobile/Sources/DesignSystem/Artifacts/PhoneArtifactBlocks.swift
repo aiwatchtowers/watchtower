@@ -196,7 +196,13 @@ struct PhoneArtifactTable: View {
                 if scrolls {
                     ScrollView(.horizontal) { grid }
                 } else {
-                    grid.frame(maxWidth: .infinity, alignment: .leading)
+                    // The layout's estimate let it through; content that is
+                    // still wider than the card scrolls rather than truncates.
+                    ViewThatFits(in: .horizontal) {
+                        grid
+                        ScrollView(.horizontal) { grid }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
             .card(padding: EdgeInsets(top: Spacing.compact, leading: Spacing.cozy, bottom: Spacing.compact, trailing: Spacing.cozy))

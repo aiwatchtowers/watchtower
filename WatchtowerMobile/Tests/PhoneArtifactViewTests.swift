@@ -81,14 +81,20 @@ final class PhoneArtifactViewTests: XCTestCase {
         XCTAssertEqual(indices, [1, 2, 3, 4, 5])
     }
 
+    /// The Mac's colours, except `accent`: the mockup's purple (§4
+    /// `.t-accent`), since the phone's accent is the system blue of `info`.
     func testEveryToneMapsThroughPhoneTone() {
         let expected: [ArtifactTone: PhoneTone] = [
-            .neutral: .secondary, .info: .blue, .success: .green, .warning: .orange, .danger: .red, .accent: .accent
+            .neutral: .secondary, .info: .blue, .success: .green, .warning: .orange, .danger: .red, .accent: .purple
         ]
         for tone in ArtifactTone.allCases {
             XCTAssertEqual(PhoneTone.artifact(tone), expected[tone], tone.rawValue)
-            XCTAssertEqual(PhoneTone.artifact(tone).color, Tone.artifact(tone), "the Mac's colour for \(tone.rawValue)")
+            if tone != .accent {
+                XCTAssertEqual(PhoneTone.artifact(tone).color, Tone.artifact(tone), "the Mac's colour for \(tone.rawValue)")
+            }
         }
+        XCTAssertEqual(PhoneTone.artifact(.accent).color, Tone.status("purple"))
+        XCTAssertNotEqual(PhoneTone.artifact(.accent), PhoneTone.artifact(.info), "accent stays apart from info")
     }
 
     func testTableScrollsSideways() throws {
@@ -100,6 +106,15 @@ final class PhoneArtifactViewTests: XCTestCase {
         let narrow = ArtifactBlock.Table(columns: [ArtifactTableColumn(title: "Service")], rows: [[ArtifactTableCell(text: "api")]])
         let items = PhoneArtifactLayout.items(ArtifactDocument(blocks: [.table(wide), .table(narrow)]))
         guard case .table(_, scrolls: true) = items[0] else { return XCTFail("a wide table scrolls: \(items[0])") }
+        // Long text in a few columns scrolls too, instead of truncating.
+        let long = ArtifactBlock.Table(
+            columns: [ArtifactTableColumn(title: "Item"), ArtifactTableColumn(title: "Note")],
+            rows: [[ArtifactTableCell(text: "Docs link"),
+                    ArtifactTableCell(text: "Waiting on the acme release page to move to the new wiki space")]]
+        )
+        guard case .table(_, scrolls: true) = PhoneArtifactLayout.items(ArtifactDocument(blocks: [.table(long)]))[0] else {
+            return XCTFail("a table with long text scrolls")
+        }
         guard case .table(_, scrolls: false) = items[1] else { return XCTFail("a narrow table fits: \(items[1])") }
         // The sample's three-column table fits a phone.
         let table = try XCTUnwrap(PhoneArtifactLayout.items(try sample("every-block")).first {
@@ -151,7 +166,7 @@ final class PhoneArtifactViewTests: XCTestCase {
         case let .metrics(items): items.flatMap { [$0.value, $0.label] + [$0.hint].compactMap { $0 } }
         case let .list(list):
             [list.title].compactMap { $0 } + (list.rows.isEmpty ? [list.empty] : list.rows.flatMap { row in
-                [row.title] + [row.badge?.text, row.subtitle].compactMap { $0 } + row.actions.map(\.label)
+                [row.title] + [row.subtitle, row.badge?.text].compactMap { $0 } + row.actions.map(\.label)
             })
         case let .table(table): [table.title].compactMap { $0 } + table.columns.map(\.title) + table.rows.flatMap { $0.map(\.text) }
         case let .person(person): [person.name] + [person.role].compactMap { $0 } + person.lines.map(\.text)

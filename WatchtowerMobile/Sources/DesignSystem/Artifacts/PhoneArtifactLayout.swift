@@ -43,15 +43,17 @@ enum PhoneArtifactItem: Equatable {
     case text(markdown: String)
     case metrics([ArtifactMetric], columns: Int)
     case list(PhoneArtifactList)
-    /// `scrolls`: too many columns for a phone's width, so the table scrolls
-    /// sideways inside its card.
+    /// `scrolls`: wider than a phone's card (`PhoneArtifactLayout.tableScrolls`),
+    /// so the table scrolls sideways inside it. The view also scrolls one the
+    /// estimate let through whose content still does not fit.
     case table(ArtifactBlock.Table, scrolls: Bool)
     case person(ArtifactBlock.Person, initials: String, link: URL?)
     /// `subtitle` is the block's, else its URL text.
     case link(title: String, subtitle: String, url: URL?)
     case actions([PhoneArtifactButton])
 
-    /// Every string the item draws, top to bottom.
+    /// Every string the item draws, in reading order: a list row's title,
+    /// its subtitle under it, its trailing badge, then its buttons.
     var texts: [String] {
         switch self {
         case let .heading(text, _): [text]
@@ -59,7 +61,7 @@ enum PhoneArtifactItem: Equatable {
         case let .metrics(metrics, _): metrics.flatMap { [$0.value, $0.label] + [$0.hint].compactMap { $0 } }
         case let .list(list):
             [list.title].compactMap { $0 } + (list.rows.isEmpty ? [list.empty] : list.rows.flatMap { row in
-                [row.title] + [row.badge?.text, row.subtitle].compactMap { $0 } + row.buttons.map(\.label)
+                [row.title] + [row.subtitle, row.badge?.text].compactMap { $0 } + row.buttons.map(\.label)
             })
         case let .table(table, _):
             [table.title].compactMap { $0 } + table.columns.map(\.title) + table.rows.flatMap { $0.map(\.text) }
@@ -86,6 +88,12 @@ enum PhoneArtifactLayout {
     /// The most columns a table shows at a phone's width before it scrolls
     /// sideways (mockup §4: four columns scroll).
     static let fittingColumns = 3
+    /// The text width a table card holds on the narrowest common iPhone
+    /// (375 pt less the card's insets and padding), and the estimate of one
+    /// character of the table's caption type.
+    static let tableTextWidth: CGFloat = 315
+    static let tableCharacterWidth: CGFloat = 7
+    static let tableColumnSpacing: CGFloat = 12
 
     /// `cardActionCount`: the card's own buttons, which take the first
     /// press addresses (`ArtifactDocument.blockActionOffsets`).
@@ -112,7 +120,7 @@ enum PhoneArtifactLayout {
             }
             return .list(PhoneArtifactList(title: list.title, rows: rows, empty: list.empty))
         case let .table(table):
-            return .table(table, scrolls: table.columns.count > fittingColumns)
+            return .table(table, scrolls: tableScrolls(table))
         case let .person(person):
             return .person(person, initials: initials(person.name), link: webURL(person.link))
         case let .link(title, url, subtitle):
@@ -126,6 +134,19 @@ enum PhoneArtifactLayout {
         actions.enumerated().map { offset, action in
             PhoneArtifactButton(label: action.label, kind: action.kind, primary: action.primary, index: start + offset)
         }
+    }
+
+    /// A table scrolls sideways past `fittingColumns` columns, or when its
+    /// widest cells (a header included) are estimated wider than the card:
+    /// cells keep one line, so long text scrolls instead of truncating.
+    static func tableScrolls(_ table: ArtifactBlock.Table) -> Bool {
+        guard table.columns.count <= fittingColumns else { return true }
+        let widths = table.columns.indices.map { column in
+            ([table.columns[column].title] + table.rows.map { $0[column].text }).map(\.count).max() ?? 0
+        }
+        let estimate = CGFloat(widths.reduce(0, +)) * tableCharacterWidth
+            + CGFloat(max(0, widths.count - 1)) * tableColumnSpacing
+        return estimate > tableTextWidth
     }
 
     /// Metrics draw 2- or 3-up (mockup §4); four go 2 by 2.
