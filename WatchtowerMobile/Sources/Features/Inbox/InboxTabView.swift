@@ -328,7 +328,7 @@ struct InboxCardList: View {
 
     var body: some View {
         ForEach(cards, id: \.id) { card in
-            if center.rowState(card.id)?.state == .unknown, !InboxCardRowModel.isDecision(card.card) {
+            if center.rowState(card.id) == .unknown, !InboxCardRowModel.isDecision(card.card) {
                 InboxUnconfirmedCard(center: center, card: card)
             } else if InboxCardRowModel.isDecision(card.card) {
                 InboxApprovalCard(center: center, card: card, grants: inputs.grants, now: inputs.now)

@@ -61,8 +61,8 @@ struct InboxApprovalCard: View {
 
     /// The newest press's refusal or unconfirmed line on this card.
     private var refusal: String? {
-        switch center.rowState(card.id)?.state {
-        case let .refused(sentence)?: sentence
+        switch center.rowState(card.id) {
+        case let .refused(sentence, _)?: sentence
         case .unknown?: InboxText.didntConfirmPhone
         default: nil
         }
@@ -86,7 +86,7 @@ struct InboxApprovalCard: View {
                 Text(InboxText.didntFinish).font(TypeScale.meta).foregroundStyle(.secondary)
                 verb(.retry, InboxText.tryAgain, primary: true, busy: InboxText.approving)
             case .decision:
-                let busy = Self.busyVerb(card.card) { center.state($0) }
+                let busy = Self.busyVerb(center.rowState(card.id))
                 if busy == nil, !model.canApprove, let note = model.approveNote {
                     Button(note) {}.buttonStyle(PhoneArtifactButtonStyle(primary: false)).disabled(true).opacity(PhoneOpacity.disabled)
                 }
@@ -109,9 +109,10 @@ struct InboxApprovalCard: View {
         ].compactMap { $0 }
     }
 
-    /// The approval verb of `card` whose press is on its way, if any.
-    static func busyVerb(_ card: InboxCard, state: (String) -> TowerActionState?) -> ApprovalVerb? {
-        [ApprovalVerb.approve, .retry, .reject, .dismiss].first { state(InboxPressKey.approval(card, $0)) == .busy }
+    /// The approval verb on its way on this card (its row state), if any.
+    static func busyVerb(_ state: InboxRowState?) -> ApprovalVerb? {
+        guard case let .busy(request)? = state, request.verb == .approval else { return nil }
+        return request.params.approvalVerb
     }
 
     static func title(_ verb: ApprovalVerb) -> String {
@@ -132,13 +133,10 @@ struct InboxApprovalCard: View {
     }
 
     private func verb(_ verb: ApprovalVerb, _ title: String, primary: Bool, busy: String?) -> some View {
-        let key = InboxPressKey.approval(card.card, verb)
-        let isBusy = center.state(key) == .busy
+        let isBusy = Self.busyVerb(center.rowState(card.id)) == verb
         let request = approval
         return Button {
-            Task {
-                await center.press(key, on: card.id, hides: verb != .retry, busy: busy) { request.request(verb, requestID: $0) }
-            }
+            Task { await center.press { request.request(verb, requestID: $0) } }
         } label: {
             if isBusy {
                 HStack(spacing: Spacing.compact) {
@@ -150,7 +148,7 @@ struct InboxApprovalCard: View {
             }
         }
         .buttonStyle(PhoneArtifactButtonStyle(primary: primary))
-        .disabled(isBusy || center.state(key) == .unknown)
+        .disabled(isBusy || center.rowState(card.id) == .unknown)
         .opacity(isBusy ? PhoneOpacity.dimmed : 1)
     }
 

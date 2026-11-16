@@ -36,19 +36,15 @@ const fallbackTitleChars = 200
 // daemon tower's own command, so the phone reads what the Mac reads.
 type InboxFeed func(ctx context.Context, o inboxfeed.Options) (api.Feed, error)
 
-// inboxFolderRecord is an inbox_folder record: the folder and how many of
-// its cards PhoneInboxLimit left out (Feed.More).
+// inboxFolderRecord is an inbox_folder record: the folder, how many of its
+// cards PhoneInboxLimit left out (Feed.More), and the ids of its cards in the
+// feed's order. The replica keeps no publish order, so the phone lists a
+// folder's cards by CardIDs; carrying the order here keeps card records
+// order-free, so a new card changes only its own record and its folder's.
 type inboxFolderRecord struct {
 	api.Folder
-	More int `json:"more,omitempty"`
-}
-
-// inboxCardRecord is an inbox_card record: the card and its place in the
-// feed's order (0 first). The replica keeps no publish order, so the phone
-// sorts by it to list cards as the Mac does.
-type inboxCardRecord struct {
-	api.Card
-	Position int `json:"position"`
+	More    int      `json:"more,omitempty"`
+	CardIDs []string `json:"card_ids"`
 }
 
 // InboxSource is the phone Inbox (mobile Inbox spec §6): inbox_folder-<id>,
@@ -123,9 +119,17 @@ func folderItems(feed *api.Feed) ([]slices.Item, error) {
 	for _, m := range feed.More {
 		more[m.FolderID] = m.Count
 	}
+	ids := map[int64][]string{}
+	for _, c := range feed.Cards {
+		ids[c.FolderID] = append(ids[c.FolderID], c.ID)
+	}
 	out := make([]slices.Item, 0, len(feed.Folders))
 	for _, f := range feed.Folders {
-		payload, err := wire.Marshal(inboxFolderRecord{Folder: f, More: more[f.ID]})
+		cardIDs := ids[f.ID]
+		if cardIDs == nil {
+			cardIDs = []string{}
+		}
+		payload, err := wire.Marshal(inboxFolderRecord{Folder: f, More: more[f.ID], CardIDs: cardIDs})
 		if err != nil {
 			return nil, err
 		}
@@ -136,25 +140,25 @@ func folderItems(feed *api.Feed) ([]slices.Item, error) {
 
 func cardItems(feed *api.Feed) ([]slices.Item, error) {
 	out := make([]slices.Item, 0, len(feed.Cards))
-	for i, c := range feed.Cards {
+	for _, c := range feed.Cards {
 		if c.Legacy != nil {
 			c = projectLegacy(c)
 		}
-		payload, err := wire.Marshal(inboxCardRecord{Card: c, Position: i})
+		payload, err := wire.Marshal(c)
 		if err != nil {
 			return nil, err
 		}
 		if len(payload) > inboxRecordBudget && c.Legacy != nil {
 			// A long legacy list: its document (capped) stands alone.
 			c.Legacy = &api.LegacySection{Kind: c.Legacy.Kind, Items: []api.LegacyItem{}, Attention: []api.LegacyAttention{}}
-			if payload, err = wire.Marshal(inboxCardRecord{Card: c, Position: i}); err != nil {
+			if payload, err = wire.Marshal(c); err != nil {
 				return nil, err
 			}
 		}
 		if len(payload) > inboxRecordBudget {
 			// One record over the envelope cap would fail the whole kind:
 			// the card goes out in its fallback form instead.
-			if payload, err = wire.Marshal(inboxCardRecord{Card: fallbackCard(c), Position: i}); err != nil {
+			if payload, err = wire.Marshal(fallbackCard(c)); err != nil {
 				return nil, err
 			}
 		}

@@ -107,12 +107,18 @@ func TestInboxSource_RecordsMatchTheGoGolden(t *testing.T) {
 				t.Fatalf("%d folders, %d cards; want %d, %d", len(folders), len(cards), len(c.Expect.Folders), len(c.Expect.Cards))
 			}
 			for _, f := range c.Expect.Folders {
-				want := marshalWire(t, inboxFolderRecord{Folder: f})
+				ids := []string{}
+				for _, card := range c.Expect.Cards {
+					if card.FolderID == f.ID {
+						ids = append(ids, card.ID)
+					}
+				}
+				want := marshalWire(t, inboxFolderRecord{Folder: f, CardIDs: ids})
 				if got := folders[strconv.FormatInt(f.ID, 10)]; string(got) != string(want) {
 					t.Errorf("folder %d:\n got %s\nwant %s", f.ID, got, want)
 				}
 			}
-			for i, card := range c.Expect.Cards {
+			for _, card := range c.Expect.Cards {
 				if card.Legacy != nil {
 					doc, err := inboxlegacy.Project(*card.Legacy)
 					if err != nil {
@@ -120,8 +126,7 @@ func TestInboxSource_RecordsMatchTheGoGolden(t *testing.T) {
 					}
 					card.Blocks = doc
 				}
-				// Each card carries its place in the feed's order.
-				if got, want := cards[card.ID], marshalWire(t, inboxCardRecord{Card: card, Position: i}); string(got) != string(want) {
+				if got, want := cards[card.ID], marshalWire(t, card); string(got) != string(want) {
 					t.Errorf("card %s:\n got %s\nwant %s", card.ID, got, want)
 				}
 			}
@@ -336,24 +341,44 @@ func TestInboxSource_AnOldBuildIsNotShared(t *testing.T) {
 	}
 }
 
-// TestInboxSource_CardsCarryTheirFeedPosition: the replica keeps no publish
-// order, so each inbox_card record carries its card's place in the feed (a
-// fallback card too), from which the phone lists cards as the Mac does.
-func TestInboxSource_CardsCarryTheirFeedPosition(t *testing.T) {
-	huge := strings.Repeat("x", inboxRecordBudget+1)
+// TestInboxSource_FoldersCarryTheirCardOrder: the replica keeps no publish
+// order, so each inbox_folder record lists its cards' ids in the feed's
+// order, and card records stay order-free: a new card at the top changes only
+// its own record and its folder's.
+func TestInboxSource_FoldersCarryTheirCardOrder(t *testing.T) {
+	cards := []api.Card{{ID: "a2", FolderID: 2}, {ID: "o9", FolderID: 1}, {ID: "o1", FolderID: 1}}
 	build := func(context.Context, inboxfeed.Options) (api.Feed, error) {
-		return api.Feed{V: 1, Folders: []api.Folder{{ID: 1, Kind: api.FolderRoot}}, Cards: []api.Card{
-			{ID: "a2", FolderID: 1}, {ID: "o9", FolderID: 1, Body: huge}, {ID: "o1", FolderID: 1},
-		}}, nil
+		return api.Feed{V: 1, Folders: []api.Folder{{ID: 1, Kind: api.FolderRoot}, {ID: 2, Kind: api.FolderApprovals}, {ID: 3}},
+			Cards: append([]api.Card(nil), cards...)}, nil
 	}
-	_, cards := inboxItems(t, InboxSource(build, nil))
-	for id, want := range map[string]int{"a2": 0, "o9": 1, "o1": 2} {
+	ids := func(record []byte) []string {
 		var rec struct {
-			Position *int   `json:"position"`
-			CardKind string `json:"card_kind"`
+			CardIDs []string `json:"card_ids"`
 		}
-		if err := json.Unmarshal(cards[id], &rec); err != nil || rec.Position == nil || *rec.Position != want {
-			t.Fatalf("card %s record %.120s (%v), want position %d", id, cards[id], err, want)
+		if err := json.Unmarshal(record, &rec); err != nil || rec.CardIDs == nil {
+			t.Fatalf("folder record %s (%v)", record, err)
 		}
+		return rec.CardIDs
+	}
+	folders, before := inboxItems(t, InboxSource(build, nil))
+	if got := ids(folders["1"]); strings.Join(got, ",") != "o9,o1" {
+		t.Fatalf("root card ids %v", got)
+	}
+	if got := ids(folders["3"]); len(got) != 0 {
+		t.Fatalf("an empty folder lists %v", got)
+	}
+
+	cards = append([]api.Card{{ID: "o10", FolderID: 1}}, cards...)
+	foldersAfter, after := inboxItems(t, InboxSource(build, nil))
+	if got := ids(foldersAfter["1"]); strings.Join(got, ",") != "o10,o9,o1" {
+		t.Fatalf("root card ids after %v", got)
+	}
+	for _, id := range []string{"a2", "o9", "o1"} {
+		if string(before[id]) != string(after[id]) {
+			t.Errorf("card %s changed: %s -> %s", id, before[id], after[id])
+		}
+	}
+	if string(folders["2"]) != string(foldersAfter["2"]) {
+		t.Errorf("an untouched folder's record changed")
 	}
 }

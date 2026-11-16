@@ -65,8 +65,6 @@ struct InboxReplySheet: View {
 
     /// Propose: `reply_propose` with the text, on the row (a refusal such as reply_waiting shows there).
     static func send(_ text: String, center: InboxCenter, cardID: String, row: InboxRefRowModel) async {
-        await center.press(InboxPressKey.reply(cardID: cardID, row: row.key), on: row.key, hides: false) { requestID in
-            row.replyRequest(text: text, cardID: cardID, requestID: requestID)
-        }
+        await center.press { requestID in row.replyRequest(text: text, cardID: cardID, requestID: requestID) }
     }
 }

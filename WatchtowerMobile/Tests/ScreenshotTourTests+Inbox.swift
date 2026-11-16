@@ -90,13 +90,14 @@ extension ScreenshotTourTests {
             frame.shot.revealed = [quick: .trailing]
         case "inbox-row-busy-failed":
             frame.path = [.card(waiting)]
-            let done = InboxPressKey.ref(cardID: waiting, row: ping, .resolve)
-            let snooze = InboxPressKey.ref(cardID: waiting, row: quick, .snooze, choice: "day")
-            center.showForTour(
-                feed: Seed.feed(now: now),
-                states: [done: .busy, snooze: .refused("Couldn't snooze: the item was already closed on the Mac.")],
-                busy: [done: InboxText.markingDone], lastPress: [ping: done, quick: snooze]
-            )
+            let done = ActRequest(
+                requestID: "r1", target: waiting, verb: .ref, params: ActParams(refKind: .inboxItem, refID: 301, refVerb: .resolve))
+            let snooze = ActRequest(
+                requestID: "r2", target: waiting, verb: .ref, params: ActParams(refKind: .inboxItem, refID: 302, refVerb: .snooze))
+            center.showForTour(feed: Seed.feed(now: now), rows: [
+                ping: .busy(done),
+                quick: .refused("Couldn't snooze: the item was already closed on the Mac.", .resend(snooze, dismiss: nil))
+            ])
         case "inbox-row-detail":
             frame.path = [.card(waiting), .row(cardID: waiting, row: ping)]
         case "inbox-reply-sheet":
@@ -114,13 +115,12 @@ extension ScreenshotTourTests {
             frame.path = [.folder(Seed.approvalsID)]
             let feed = Seed.feed(now: now)
             if let slack = feed.cards.first(where: { $0.id == Seed.slackProposal }), let reply = feed.cards.first(where: { $0.id == Seed.replyProposal }) {
-                let sending = InboxPressKey.approval(slack, .approve)
-                let changed = InboxPressKey.approval(reply, .approve)
-                center.showForTour(
-                    feed: feed,
-                    states: [sending: .busy, changed: .refused("This proposal changed on the Mac — look again before approving.")],
-                    busy: [sending: InboxText.approving], lastPress: [slack.id: sending, reply.id: changed]
-                )
+                let sending = ActRequest(requestID: "r3", target: slack.id, verb: .approval, params: ActParams(approvalVerb: .approve))
+                let changed = ActRequest(requestID: "r4", target: reply.id, verb: .approval, params: ActParams(approvalVerb: .approve))
+                center.showForTour(feed: feed, rows: [
+                    slack.id: .busy(sending),
+                    reply.id: .refused("This proposal changed on the Mac — look again before approving.", .resend(changed, dismiss: nil))
+                ])
             }
         case "inbox-artifact":
             frame.path = [.card(Seed.roundup)]
@@ -162,8 +162,7 @@ extension ScreenshotTourTests {
             let feed = Seed.reportsFeed(now: now, more: 0)
             frame.path = [.folder(Seed.reportsID)]
             if let report = feed.cards.first(where: { $0.id == Seed.weeklyReport }) {
-                let run = InboxPressKey.card(report, .runNow)
-                center.showForTour(feed: feed, states: [run: .unknown], lastPress: [report.id: run])
+                center.showForTour(feed: feed, rows: [report.id: .unknown])
             }
         case "inbox-older-cards":
             frame.path = [.folder(Seed.reportsID)]

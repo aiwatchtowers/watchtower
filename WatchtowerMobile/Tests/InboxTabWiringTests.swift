@@ -2,6 +2,7 @@ import SwiftUI
 import UIKit
 import WatchtowerDesign
 import WatchtowerInterface
+@testable import WatchtowerSync
 import XCTest
 @testable import WatchtowerMobile
 
@@ -42,11 +43,15 @@ final class InboxTabWiringTests: XCTestCase {
 
     func testBadgeIsOrangeSumOfWaiting() throws {
         let center = InboxCenter.detached()
-        XCTAssertEqual(center.badge, 0, "nothing read yet")
+        XCTAssertEqual(center.badge(capability: "on"), 0, "nothing read yet")
         center.showForTour(feed: feed)
-        XCTAssertEqual(center.badge, 5, "Needs approval's 2 and Waiting for me's 3")
-        XCTAssertEqual(RootTabView.Tab.inbox.badge(waitingCount: 9, inboxWaiting: center.badge), 5)
-        XCTAssertEqual(RootTabView.Tab.now.badge(waitingCount: 9, inboxWaiting: center.badge), 9)
+        let badge = center.badge(capability: "on")
+        XCTAssertEqual(badge, 5, "Needs approval's 2 and Waiting for me's 3")
+        // Records an organization's policy left behind (POLICY-03 deletes them on the hub) or an older hub count nothing.
+        XCTAssertEqual(center.badge(capability: InboxTabState.policyOffCapability), 0)
+        XCTAssertEqual(center.badge(capability: nil), 0)
+        XCTAssertEqual(RootTabView.Tab.inbox.badge(waitingCount: 9, inboxWaiting: badge), 5)
+        XCTAssertEqual(RootTabView.Tab.now.badge(waitingCount: 9, inboxWaiting: badge), 9)
         XCTAssertEqual(RootTabView.Tab.chats.badge(waitingCount: 9, inboxWaiting: 5), 0)
         RootTabView.configureTabBarAppearance()
         XCTAssertEqual(UITabBar.appearance().standardAppearance.stackedLayoutAppearance.normal.badgeBackgroundColor, .systemOrange)
@@ -58,7 +63,7 @@ final class InboxTabWiringTests: XCTestCase {
             return folder
         }
         center.showForTour(feed: hidden)
-        XCTAssertEqual(center.badge, 3)
+        XCTAssertEqual(center.badge(capability: "on"), 3)
     }
 
     func testOptimisticHideThenTheHubWinsAfterTwoPublishes() async throws {
@@ -189,21 +194,19 @@ final class InboxTabWiringTests: XCTestCase {
         let center = try await startedInboxCenter(hub)
         let proposal = try XCTUnwrap(center.feed?.cards.first { $0.id == DemoSeed.Inbox.slackProposal })
         let model = InboxApprovalModel(card: proposal, platform: .phone, grants: .all, now: now)
-        let state = { (key: String) in center.state(key) }
-        XCTAssertNil(InboxApprovalCard.busyVerb(proposal, state: state))
+        XCTAssertNil(InboxApprovalCard.busyVerb(center.rowState(proposal.id)))
         XCTAssertEqual(InboxApprovalCard.shownVerbs(model, busy: nil), [.approve, .reject])
 
-        let key = InboxPressKey.approval(proposal, .approve)
-        let press = Task { await center.press(key, on: proposal.id, hides: true) { model.approve(requestID: $0) } }
+        let press = Task { await center.press { model.approve(requestID: $0) } }
         try await poll({ hub.requests.count == 1 }, "Approve queued")
-        let busy = InboxApprovalCard.busyVerb(proposal, state: state)
+        let busy = InboxApprovalCard.busyVerb(center.rowState(proposal.id))
         XCTAssertEqual(busy, .approve)
         XCTAssertEqual(InboxApprovalCard.shownVerbs(model, busy: busy), [.approve], "Reject hides while approving")
         XCTAssertEqual(InboxApprovalCard.busyTitle(.approve), InboxText.approving)
 
         hub.transport.settle(actionID: "act-1", .refused(code: .argsChanged, sentence: "This proposal changed — look again."))
         await press.value
-        XCTAssertNil(InboxApprovalCard.busyVerb(proposal, state: state))
+        XCTAssertNil(InboxApprovalCard.busyVerb(center.rowState(proposal.id)))
         XCTAssertEqual(InboxApprovalCard.shownVerbs(model, busy: nil), [.approve, .reject], "the decision row is back")
     }
 
@@ -211,11 +214,8 @@ final class InboxTabWiringTests: XCTestCase {
         let hub = FakeInboxHub(feed: feed)
         let center = try await startedInboxCenter(hub)
         let roundup = try card(DemoSeed.Inbox.roundup, in: center)
-        let key = InboxPressKey.button(roundup.card, index: 0)
         let reply = try XCTUnwrap(roundup.actions.first)
-        let press = Task {
-            await center.press(key, on: InboxCardDetailView.buttonRow(roundup.id, 0), hides: false) { roundup.press(reply, requestID: $0) }
-        }
+        let press = Task { await center.press { roundup.press(reply, requestID: $0) } }
         try await poll({ hub.requests.count == 1 }, "the press queued")
         XCTAssertEqual(hub.requests[0].params.actionKind, "reply", "every press names its button's kind")
         hub.transport.settle(actionID: "act-1", .unknown)
@@ -227,7 +227,7 @@ final class InboxTabWiringTests: XCTestCase {
         let reads = center.reads
         await center.refresh()
         XCTAssertGreaterThan(center.reads, reads, "Refresh reads the Inbox again")
-        XCTAssertNil(center.state(key), "and the owner may press again")
+        XCTAssertNil(center.rowState(InboxPress.buttonRow(roundup.id, 0)), "and the owner may press again")
     }
 
     func testCardMenuOffersRunNow() async throws {
@@ -237,17 +237,15 @@ final class InboxTabWiringTests: XCTestCase {
         XCTAssertNotNil(roundup.card.automation, "an automation's card offers Run Now")
         XCTAssertEqual(InboxText.runNow, "Run Now")
         XCTAssertEqual(InboxText.macOnlyMenuNote, "Edit, Move to Folder, Turn Off and Delete are on your Mac")
-        let key = InboxPressKey.card(roundup.card, .runNow)
-
-        let first = Task { await center.press(key, on: roundup.id, hides: false) { roundup.request(.runNow, requestID: $0) } }
+        let first = Task { await center.press { roundup.request(.runNow, requestID: $0) } }
         try await poll({ hub.requests.count == 1 }, "Run Now queued")
-        await center.press(key, on: roundup.id, hides: false) { roundup.request(.runNow, requestID: $0) }
+        await center.press { roundup.request(.runNow, requestID: $0) }
         XCTAssertEqual(hub.requests.count, 1, "a tap while busy sends nothing")
         hub.transport.settle(actionID: "act-1", .unknown)
         await first.value
-        XCTAssertEqual(center.rowState(roundup.id)?.state, .unknown)
+        XCTAssertEqual(center.rowState(roundup.id), .unknown)
 
-        await center.press(key, on: roundup.id, hides: false) { roundup.request(.runNow, requestID: $0) }
+        await center.press { roundup.request(.runNow, requestID: $0) }
         XCTAssertEqual(hub.requests.count, 1, "non-idempotent: a tap while unknown sends nothing")
         XCTAssertEqual(InboxPhoneText.runNowTitle("Weekly report"), "Run “Weekly report” now")
     }
@@ -267,5 +265,42 @@ final class InboxTabWiringTests: XCTestCase {
     private static func document(_ card: InboxCardModel) -> ArtifactDocument? {
         if case let .document(document) = ArtifactDocument.decode(card.card.blocks) { return document }
         return nil
+    }
+
+    /// A refusal that settles with no press waiting (after the client's give-up, or a relaunch) shows on its row with
+    /// the hub's sentence and Retry, from the replica's failed row; Retry dismisses it and sends the press again
+    /// under a new request_id (review I2).
+    func testALateRefusalShowsOnItsRowWithRetry() async throws {
+        let hub = FakeInboxHub(feed: feed)
+        let center = try await startedInboxCenter(hub)
+        var dismissed: [String] = []
+        center.use(dismiss: { dismissed.append($0) }, retryUndelivered: { _ in XCTFail("not an undelivered row") })
+        let done = ActRequest(
+            requestID: "old", target: DemoSeed.Inbox.waitingForMe, verb: .ref, params: ActParams(refKind: .inboxItem, refID: 301, refVerb: .resolve))
+        let sentence = "Couldn't mark it done: the item was already closed."
+        center.receive(InboxReplicaSnapshot(actions: [try FakeInboxHub.failedRow(done, id: "act-old", reason: .conflict, message: sentence)]))
+
+        let card = try card(DemoSeed.Inbox.waitingForMe, in: center)
+        let row = actions(center, card)(ping)
+        XCTAssertFalse(row.hidden)
+        XCTAssertEqual(row.error, sentence)
+        XCTAssertEqual(row.retry?.title, InboxText.retry)
+        row.retry?.action()
+        try await poll({ hub.requests.count == 1 }, "Retry sent the press again")
+        XCTAssertEqual(dismissed, ["act-old"], "the failed row goes")
+        XCTAssertNotEqual(hub.requests[0].requestID, "old", "a refusal is stored by the hub's ledger: Retry is a new press")
+        XCTAssertEqual(hub.requests[0].params.refVerb, .resolve)
+    }
+
+    /// An `ok` that lands with no press waiting still hides its row (review I2).
+    func testALateOkStillHidesItsRow() async throws {
+        let hub = FakeInboxHub(feed: feed)
+        let center = try await startedInboxCenter(hub)
+        let done = ActRequest(
+            requestID: "late", target: DemoSeed.Inbox.waitingForMe, verb: .ref, params: ActParams(refKind: .inboxItem, refID: 301, refVerb: .resolve))
+        let echo = ActionRequestPayload(
+            id: "act-late", kind: .inboxAct, entityID: nil, params: try HubTransport.wireParams(done), createdAt: now, deviceID: "phone")
+        center.receiveApplied(echo)
+        XCTAssertTrue(center.hidden.isHidden("inbox_item:301"))
     }
 }

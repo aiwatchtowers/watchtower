@@ -32,12 +32,12 @@ final class InboxOutboxWiringTests: XCTestCase {
             params: ActParams(refKind: .inboxItem, refID: 301, refVerb: .resolve)
         )
         let center = first.inbox
-        let press = Task { await center.press("ref:kill", on: "inbox_item:301", hides: true) { _ in request } }
+        let press = Task { await center.press { _ in request } }
         try await poll({ (try? first.store.pendingActions().contains { $0.action.kind == .inboxAct }) == true }, "the inbox_act queued")
         await fetch(first)
         let queued = try XCTUnwrap(try first.store.pendingActions().first { $0.action.kind == .inboxAct })
         XCTAssertEqual(queued.delivery, .queued)
-        XCTAssertEqual(first.inbox.state("ref:kill"), .busy)
+        XCTAssertEqual(first.inbox.rowState("inbox_item:301"), .busy(request))
 
         // The kill: the session goes without the press ever answering.
         press.cancel()
@@ -55,6 +55,50 @@ final class InboxOutboxWiringTests: XCTestCase {
         XCTAssertEqual(try second.store.pendingActions().first { $0.id == queued.id }?.delivery, .sent)
         let saves = await transport.conditionalSaves
         XCTAssertFalse(saves.isEmpty, "the relaunch's flush reached the hub")
+    }
+
+    /// A press the outbox never delivered has one identity: the row's Retry and the Not delivered list's Retry are
+    /// the same outbox retry of the same action (same request_id), so pressing both sends one action (review I1).
+    func testAnUndeliveredPressRetriesAsOneAction() async throws {
+        let transport = InboxSwitchableTransport()
+        let env = try session(over: transport, path: try makeReplicaPath())
+        await env.waitForBoot()
+        try await publishGrant(over: transport)
+        await fetch(env)
+        await env.epochAckWork?.value
+        await env.outbox.drain()
+
+        await transport.refuse(.permanent(code: "zone_gone"))
+        let request = ActRequest(
+            requestID: "req-once", target: DemoSeed.Inbox.roundup, verb: .runNow, params: ActParams(contentHash: "hash-o205"))
+        let press = Task { await env.inbox.press { _ in request } }
+        try await poll({ (try? env.store.pendingActions().contains { $0.action.kind == .inboxAct }) == true }, "queued")
+        _ = try await env.outbox.flush()
+        try await poll({ InboxActSettlement.isUndelivered(env.inbox.actions.first ?? Self.none) }, "listed as Not delivered")
+        await press.value
+        guard case let .refused(sentence, .outbox(actionID))? = env.inbox.rowState(DemoSeed.Inbox.roundup) else {
+            return XCTFail("the row offers the outbox's Retry: \(String(describing: env.inbox.rowState(DemoSeed.Inbox.roundup)))")
+        }
+        XCTAssertEqual(sentence, InboxPhoneText.notDelivered(hub: ""))
+
+        await transport.refuse(nil)
+        async let fromRow: Void = env.inbox.retry(.outbox(actionID: actionID))
+        async let fromList: Void = { try? await env.retry(actionID: actionID) }()
+        _ = await (fromRow, fromList)
+        try await poll({ (try? env.store.pendingActions().filter { $0.action.kind == .inboxAct }.count) == 1 }, "one action left")
+        let rows = try env.store.pendingActions().filter { $0.action.kind == .inboxAct }
+        XCTAssertEqual(rows.count, 1, "both Retries sent one action")
+        XCTAssertNotEqual(rows[0].id, actionID, "the retried action replaced the undelivered one")
+        XCTAssertEqual(rows[0].action.params["request_id"], .string("req-once"), "under the same request_id")
+        await env.inbox.retry(.outbox(actionID: actionID))
+        XCTAssertEqual(try env.store.pendingActions().filter { $0.action.kind == .inboxAct }.count, 1, "a late Retry is a no-op")
+    }
+
+    private static var none: PendingAction {
+        PendingAction(
+            id: "", action: ActionRequestPayload(id: "", kind: .inboxAct, entityID: nil, params: [:], createdAt: Date(), deviceID: nil),
+            entityRecordName: nil, createdAt: Date(), state: .pending, errorMessage: nil, reason: nil, result: nil, echoStatus: nil,
+            actionSeq: nil, epoch: nil, delivery: nil, undeliveredReason: nil)
     }
 
     // MARK: - The session

@@ -23,18 +23,18 @@ final class HubTransportTests: XCTestCase {
         let assembled = try HubTransport.assemble(records)
 
         XCTAssertEqual(assembled.folders.map(\.id), feed.folders.sorted { ($0.position, $0.id) < ($1.position, $1.id) }.map(\.id))
-        XCTAssertEqual(assembled.cards.map(\.id), feed.cards.map(\.id), "each record's position: the feed's own order")
+        XCTAssertEqual(assembled.cards.map(\.id), feed.cards.map(\.id), "each folder's card_ids: the feed's own order")
         XCTAssertEqual(assembled.more, [FolderMore(folderID: DemoSeed.Inbox.releaseID, count: 42)])
         let approvals = { (cards: [InboxCard]) in cards.filter { $0.folderID == DemoSeed.Inbox.approvalsID }.map(\.id) }
         XCTAssertEqual(approvals(assembled.cards), approvals(feed.cards), "Needs approval lists as the feed does")
 
-        // An older hub sends no position: inboxfeed.Limit's order — Needs approval's open entries, the pinned card,
-        // then newest first.
-        let unpositioned = InboxRecords(folders: records.folders, cards: try records.cards.dropLast().map { payload in
+        // An older hub's folders list no card ids: inboxfeed.Limit's order — Needs approval's open entries, the
+        // pinned card, then newest first.
+        let unpositioned = InboxRecords(folders: try records.folders.map { payload in
             var object = try XCTUnwrap(JSONSerialization.jsonObject(with: payload) as? [String: Any])
-            object["position"] = nil
+            object["card_ids"] = nil
             return try JSONSerialization.data(withJSONObject: object)
-        })
+        }, cards: Array(records.cards.dropLast()))
         let fallback = try HubTransport.assemble(unpositioned).cards
         XCTAssertEqual(fallback.prefix { $0.folderID == DemoSeed.Inbox.approvalsID }.count, 4)
         XCTAssertEqual(fallback.dropFirst(4).first?.id, DemoSeed.Inbox.waitingForMe)
@@ -143,19 +143,72 @@ final class HubTransportTests: XCTestCase {
         let center = try await startedInboxCenter(hub)
         let card = try XCTUnwrap(center.feed?.cards.first { $0.id == DemoSeed.Inbox.roundup })
         let model = InboxCardModel(card: card, platform: .phone, grants: .all, blocksReadable: true, now: now)
-        let key = InboxPressKey.card(card, .runNow)
         let readsBefore = center.reads
 
-        let press = Task { await center.press(key, on: card.id, hides: false) { model.request(.runNow, requestID: $0) } }
+        let press = Task { await center.press { model.request(.runNow, requestID: $0) } }
         try await poll({ hub.requests.count == 1 }, "Run Now queued")
         hub.transport.settle(actionID: "act-1", .unknown)
         await press.value
 
-        XCTAssertEqual(center.state(key), .unknown)
+        XCTAssertEqual(center.rowState(card.id), .unknown)
         try await poll({ center.reads > readsBefore }, "the client re-read the feed")
-        await center.press(key, on: card.id, hides: false) { model.request(.runNow, requestID: $0) }
+        await center.press { model.request(.runNow, requestID: $0) }
         XCTAssertEqual(hub.requests.count, 1, "a second tap sends nothing")
         XCTAssertEqual(hub.requests.first?.verb, .runNow)
         XCTAssertEqual(hub.requests.first?.params.contentHash, card.contentHash)
+    }
+
+    /// A replica read or an outbox write that fails is a refusal with the phone's sentence — never "the tower is
+    /// down", which would reconnect and re-send forever (review I4).
+    func testLocalFailuresAreRefusalsNotADownTower() async throws {
+        let hub = FakeInboxHub(feed: DemoSeed.Inbox.feed(now: now))
+        hub.fail(true)
+        let read = try await hub.transport.call(Request(v: 1, id: "r", command: TowerCommand.inboxFeed.rawValue))
+        XCTAssertEqual(read.status, .refused)
+        XCTAssertEqual(read.refusal?.sentence, InboxPhoneText.localFailure)
+        let request = ActRequest(requestID: "q", target: "o205", verb: .done, params: ActParams(contentHash: "hash-o205"))
+        let act = try await hub.transport.call(
+            Request(v: 1, id: "a", command: TowerCommand.inboxAct.rawValue, params: try RawJSON(data: try JSONEncoder().encode(request))))
+        XCTAssertEqual(act.status, .refused)
+        XCTAssertEqual(act.refusal?.sentence, InboxPhoneText.localFailure)
+        XCTAssertTrue(hub.requests.isEmpty)
+
+        // Through the client: the press ends refused with Retry, once; nothing loops.
+        hub.fail(false)
+        let center = try await startedInboxCenter(hub)
+        hub.fail(true)
+        let card = try XCTUnwrap(center.feed?.cards.first { $0.id == DemoSeed.Inbox.roundup })
+        let model = InboxCardModel(card: card, platform: .phone, grants: .all, blocksReadable: true, now: now)
+        await center.press { model.request(.done, requestID: $0) }
+        guard case let .refused(sentence, .resend(again, nil))? = center.rowState(card.id) else {
+            return XCTFail("a local failure shows refused with Retry: \(String(describing: center.rowState(card.id)))")
+        }
+        XCTAssertEqual(sentence, InboxPhoneText.localFailure)
+        XCTAssertEqual(again.verb, .done)
+        hub.fail(false)
+        // The hub answers the re-sent press only when settled here: the Retry waits for that answer.
+        let retry = Task { await center.retry(.resend(again, dismiss: nil)) }
+        try await poll({ hub.requests.count == 1 }, "Retry sends it once the phone can")
+        hub.transport.settle(actionID: "act-1", .applied(result: nil))
+        await retry.value
+        XCTAssertNil(center.rowState(card.id), "ok clears the refusal")
+    }
+
+    /// A call the client abandoned (its write limit) and re-sent with the same request_id waits for the action it
+    /// already queued and gets its settlement, never a second action.
+    func testAnAbandonedCallReSentWaitsForTheSameAction() async throws {
+        let hub = FakeInboxHub(feed: DemoSeed.Inbox.feed(now: now))
+        let request = ActRequest(requestID: "same", target: "o205", verb: .runNow, params: ActParams(contentHash: "hash-o205"))
+        let call = Request(v: 1, id: "c", command: TowerCommand.inboxAct.rawValue, params: try RawJSON(data: try JSONEncoder().encode(request)))
+        let first = Task { try await hub.transport.call(call) }
+        try await poll({ hub.requests.count == 1 }, "queued")
+        first.cancel()
+        _ = try? await first.value
+        hub.transport.settle(actionID: "act-1", .refused(code: .changed, sentence: "This card changed — look again."))
+
+        let again = try await hub.transport.call(call)
+        XCTAssertEqual(again.status, .refused)
+        XCTAssertEqual(again.refusal?.sentence, "This card changed — look again.")
+        XCTAssertEqual(hub.requests.count, 1, "the same action, not a second one")
     }
 }

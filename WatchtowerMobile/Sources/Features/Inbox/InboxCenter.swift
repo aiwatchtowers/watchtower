@@ -24,15 +24,42 @@ struct InboxReplicaSnapshot: Equatable {
     }
 }
 
+/// How a row's press that did not go through gets another try.
+enum InboxRetry: Equatable {
+    /// The outbox never delivered it: the outbox's own Retry, the same action (one request_id) whichever screen
+    /// asks — the Not delivered list's Retry is the same call.
+    case outbox(actionID: String)
+    /// The hub (or this phone) refused it: the same press again under a new request_id, the failed row dismissed.
+    case resend(ActRequest, dismiss: String?)
+}
+
+/// A row's or card's press as the screen draws it.
+enum InboxRowState: Equatable {
+    /// On its way: sending, or queued in the outbox (also after a relaunch).
+    case busy(ActRequest)
+    /// Refused or not delivered, with the sentence and its Retry; kept in the replica, so it survives a relaunch.
+    case refused(String, InboxRetry)
+    /// The hub stopped mid-way (`outcome_unknown`): never sent again; Refresh.
+    case unknown
+
+    /// The busy line ("Marking done…"); nil when the press shows a spinner only.
+    var busyLabel: String? {
+        if case let .busy(request) = self { return InboxText.busyLabel(for: request) }
+        return nil
+    }
+}
+
 /// One hub's Inbox on the phone (mobile Inbox spec §7): the tab's `TowerClient` over `HubTransport`, the feed it
 /// last read, the presses and what became of them, and the optimistic hide. Owned by the `HubSession`, so a press
 /// waiting for the hub survives the tab switch.
 ///
 /// - A publish of `inbox_card` or `inbox_folder` reaches the client's watch, which re-reads the feed. Only a
 ///   publish of the cards counts toward the optimistic hide (`InboxHiddenRows`: two of them and the hub wins).
-/// - A press goes through `TowerClient.act` (one request_id per press, kept until a final answer). `ok` hides
-///   its row or card (`hides`); a refusal keeps it with the sentence and Retry; `unknown` ("Didn't confirm") is
-///   never sent again — a second tap does nothing until Refresh.
+/// - A press goes through `TowerClient.act` (one request_id per press). Its row's state (`rowState`) comes from the
+///   press on its way, then from the replica's `inbox_act` rows (queued: busy; failed: the hub's sentence and
+///   Retry, kept across a relaunch until Retry, Refresh or an `ok` on the row), then from the client's answer (a
+///   local failure). `ok` hides its row or card, also when it lands with no press waiting (the client gave up, or
+///   a relaunch); `unknown` is never sent again — a second tap does nothing until Refresh.
 @MainActor
 @Observable
 final class InboxCenter {
@@ -41,27 +68,39 @@ final class InboxCenter {
 
     private(set) var feed: Feed?
     private(set) var hidden = InboxHiddenRows()
-    /// Each press's state while it has one, by its key.
-    private(set) var states: [String: TowerActionState] = [:]
-    /// The line a busy press shows, by its key.
-    private(set) var busyLabels: [String: String] = [:]
-    /// The key a row or card last pressed (its hide key → the press key), for its row's state.
-    private(set) var lastPress: [String: String] = [:]
+    /// The presses on their way, by key.
+    private(set) var inflight: [String: ActRequest] = [:]
+    /// Each press's last answer that was not `ok` (a refusal, unknown, a local failure), by key.
+    private(set) var answered: [String: Answer] = [:]
+    /// The replica's `inbox_act` rows.
+    private(set) var actions: [PendingAction] = []
     /// The outbox's Inbox lines: the `inbox_act` rows still on their way, and the ones it could not deliver.
     private(set) var outbox = InboxOutboxModel()
+    /// The screenshot tour's row states.
+    private(set) var tourRows: [String: InboxRowState] = [:]
+
+    struct Answer: Equatable {
+        let request: ActRequest
+        let state: TowerActionState
+        let seq: Int
+    }
 
     @ObservationIgnored let transport: HubTransport
     @ObservationIgnored let client: TowerClient
     /// The hub's name for the not-delivered sentence.
     @ObservationIgnored var hubName: @MainActor () -> String = { "" }
-    @ObservationIgnored private var retries: [String: (row: String?, hides: Bool, request: @Sendable (String) -> ActRequest)] = [:]
     @ObservationIgnored private var tasks: [Task<Void, Never>] = []
     @ObservationIgnored private var observation: ResilientObservation?
     @ObservationIgnored private var replica = InboxReplicaSnapshot()
-    @ObservationIgnored private var dismiss: (String) -> Void = { _ in }
+    @ObservationIgnored private var dismissRow: (String) -> Void = { _ in }
+    @ObservationIgnored private var retryUndelivered: (String) async throws -> Void = { _ in }
+    @ObservationIgnored private var retrying: Set<String> = []
+    @ObservationIgnored private var answers = 0
     /// Card publishes the hide has not counted yet.
     @ObservationIgnored private var unseenPublishes = 0
     @ObservationIgnored private var settled: Set<String> = []
+    /// Feeds applied so far (tests wait on it).
+    @ObservationIgnored private(set) var reads = 0
     nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "InboxCenter")
 
     init(transport: HubTransport, clock: any Clock<Duration> = ContinuousClock()) {
@@ -69,9 +108,11 @@ final class InboxCenter {
         client = TowerClient(transport: transport, clock: clock, restartDaemon: nil, startDaemon: nil)
     }
 
-    /// The tab's badge: the shown folders' `waiting` (ask #1349).
-    var badge: Int {
-        feed.map { InboxRootModel(feed: $0, platform: .phone).badge } ?? 0
+    /// The tab's badge: the shown folders' `waiting` (ask #1349), while the hub publishes the Inbox (`inbox` on);
+    /// records an organization's policy left behind count nothing.
+    func badge(capability: String?) -> Int {
+        guard capability == InboxCapability.on else { return 0 }
+        return feed.map { InboxRootModel(feed: $0, platform: .phone).badge } ?? 0
     }
 
     /// The hub's first Inbox publish has arrived (the root folder is always in it).
@@ -79,14 +120,31 @@ final class InboxCenter {
         feed?.folders.isEmpty == false
     }
 
-    func state(_ key: String) -> TowerActionState? {
-        states[key]
-    }
-
-    /// The state of the press a row or card (`hideKey`) made last.
-    func rowState(_ hideKey: String) -> (key: String, state: TowerActionState)? {
-        guard let key = lastPress[hideKey], let state = states[key] else { return nil }
-        return (key, state)
+    /// The state of the press made last on a row or card (`InboxPress.row`).
+    func rowState(_ row: String) -> InboxRowState? {
+        if let tour = tourRows[row] { return tour }
+        if let request = inflight.values.first(where: { InboxPress.row(of: $0) == row }) { return .busy(request) }
+        if let newest = actions.filter({ InboxPress.row(of: $0) == row }).max(by: { $0.createdAt < $1.createdAt }),
+           let request = InboxPress.request(of: newest) {
+            switch newest.state {
+            case .pending: return .busy(request)
+            case .failed:
+                switch InboxActSettlement.of(newest, hubName: hubName()) {
+                case .unknown?: return .unknown
+                case let .notDelivered(sentence)?: return .refused(sentence, .outbox(actionID: newest.id))
+                case let .refused(_, sentence)?: return .refused(sentence, .resend(request, dismiss: newest.id))
+                case .applied?, nil: break
+                }
+            }
+        }
+        guard let last = answered.values.filter({ InboxPress.row(of: $0.request) == row }).max(by: { $0.seq < $1.seq }) else {
+            return nil
+        }
+        switch last.state {
+        case let .refused(sentence): return .refused(sentence, .resend(last.request, dismiss: nil))
+        case .unknown: return .unknown
+        case .busy: return .busy(last.request)
+        }
     }
 
     // MARK: - Reading
@@ -125,16 +183,16 @@ final class InboxCenter {
         }
     }
 
-    /// Didn't confirm's Refresh: the feed again, and the unconfirmed presses forgotten (the owner looks first).
+    /// Didn't confirm's Refresh: the unconfirmed presses forgotten (the owner looks first, then may press again),
+    /// and the feed again.
     func refresh() async {
-        for (key, state) in states where state == .unknown {
-            states[key] = nil
+        answered = answered.filter { $0.value.state != .unknown }
+        for row in actions where row.state == .failed && row.reason == .outcomeUnknown {
+            dismissRow(row.id)
         }
+        actions.removeAll { $0.state == .failed && $0.reason == .outcomeUnknown }
         await reload()
     }
-
-    /// Feeds applied so far (tests wait on it).
-    @ObservationIgnored private(set) var reads = 0
 
     /// A feed as read. A card publish since the last one counts once toward the optimistic hide.
     func apply(_ feed: Feed) {
@@ -154,62 +212,94 @@ final class InboxCenter {
 
     // MARK: - Pressing
 
-    /// Sends one press. `key` names the press (`InboxPressKey`); `row` is the row or card it was made on (its
-    /// state shows there), which an `ok` takes off the screen when `hides`; `busy` is the line it shows meanwhile.
-    /// A press on its way, or one that answered unknown, is not sent again.
-    func press(
-        _ key: String,
-        on row: String?,
-        hides: Bool,
-        busy: String? = nil,
-        request: @escaping @Sendable (String) -> ActRequest
-    ) async {
-        switch states[key] {
+    /// Sends one press, built by `request` from its request_id. Its key, row and whether an `ok` hides the row come
+    /// from the request (`InboxPress`). Nothing is sent while the row has a press on its way (queued included) or
+    /// one that answered unknown.
+    func press(_ request: @escaping @Sendable (String) -> ActRequest) async {
+        let probe = request("")
+        let key = InboxPress.key(of: probe)
+        let row = InboxPress.row(of: probe)
+        switch rowState(row) {
         case .busy?, .unknown?: return
         case .refused?, nil: break
         }
-        if let row { lastPress[row] = key }
-        retries[key] = (row, hides, request)
-        states[key] = .busy
-        busyLabels[key] = busy
+        inflight[key] = probe
+        answered[key] = nil
         let outcome: TowerActOutcome<RawJSON> = await client.act(.inboxAct, key: key, params: request)
-        busyLabels[key] = nil
+        inflight[key] = nil
         switch outcome {
         case .ok:
-            states[key] = nil
-            retries[key] = nil
-            if hides, let row { hidden.hideOnOK(row) }
+            succeeded(probe)
         case let .refused(sentence):
-            states[key] = .refused(sentence)
+            answer(key, probe, .refused(sentence))
         case .unknown:
-            states[key] = .unknown
+            answer(key, probe, .unknown)
         case let .failed(failure) where failure.kind == .down:
-            // The client stopped waiting (its write limit) while the action still sits in the outbox: the Waiting
-            // to send line shows it, and a second press waits for that same action (`HubTransport`).
-            states[key] = nil
+            // The client stopped waiting (its write limit) while the action still sits in the outbox: its replica
+            // row shows it busy, and its settlement shows on the row whenever it comes.
+            break
         case let .failed(failure):
-            states[key] = .refused(failure.sentence)
+            answer(key, probe, .refused(failure.sentence))
         }
     }
 
-    /// A refused press's Retry: the same press again.
-    func retry(_ key: String) async {
-        guard let last = retries[key] else { return }
-        await press(key, on: last.row, hides: last.hides, busy: busyLabels[key], request: last.request)
+    /// A refused or not delivered press's Retry (`InboxRowState.refused`).
+    func retry(_ retry: InboxRetry) async {
+        switch retry {
+        case let .outbox(actionID):
+            // The same action again: a second Retry (here or on the Not delivered list) finds it gone or running.
+            guard retrying.insert(actionID).inserted else { return }
+            defer { retrying.remove(actionID) }
+            do {
+                try await retryUndelivered(actionID)
+            } catch {
+                Self.logger.warning("inbox retry not queued: \(String(describing: type(of: error)), privacy: .public)")
+            }
+        case let .resend(request, dismiss):
+            if let dismiss {
+                dismissRow(dismiss)
+                actions.removeAll { $0.id == dismiss }
+            }
+            let row = InboxPress.row(of: request)
+            answered = answered.filter { InboxPress.row(of: $0.value.request) != row }
+            await press { requestID in
+                ActRequest(requestID: requestID, target: request.target, verb: request.verb, params: request.params)
+            }
+        }
+    }
+
+    private func answer(_ key: String, _ request: ActRequest, _ state: TowerActionState) {
+        answers += 1
+        answered[key] = Answer(request: request, state: state, seq: answers)
+    }
+
+    /// An `ok`: the row's earlier failures go (from the replica too), and a hiding verb hides it.
+    private func succeeded(_ request: ActRequest) {
+        let row = InboxPress.row(of: request)
+        answered = answered.filter { InboxPress.row(of: $0.value.request) != row }
+        for failed in actions where failed.state == .failed && InboxPress.row(of: failed) == row {
+            dismissRow(failed.id)
+        }
+        actions.removeAll { $0.state == .failed && InboxPress.row(of: $0) == row }
+        if InboxPress.hides(request) { hidden.hideOnOK(row) }
     }
 
     // MARK: - The replica
 
     /// Observes the replica's Inbox kinds and `inbox_act` rows for the session's lifetime: a publish reaches the
-    /// watch, a failed row settles its press (and leaves the replica, unless the outbox lists it as Not delivered).
-    func observe(store: ReplicaStore, gate: ReplicaObservationGate? = nil) {
+    /// watch, a failed row settles its press. `outbox` retries a Not delivered action (the same call as the Not
+    /// delivered list's Retry).
+    func observe(store: ReplicaStore, outbox: ActionOutbox?, gate: ReplicaObservationGate? = nil) {
         guard observation == nil else { return }
-        dismiss = { id in
+        dismissRow = { id in
             do {
                 _ = try store.dismissAction(id: id)
             } catch {
-                Self.logger.warning("settled inbox action not dismissed: \(String(describing: type(of: error)), privacy: .public)")
+                Self.logger.warning("inbox action not dismissed: \(String(describing: type(of: error)), privacy: .public)")
             }
+        }
+        if let outbox {
+            retryUndelivered = { id in _ = try await outbox.retry(id: id) }
         }
         observation = ResilientObservation(
             name: "inbox",
@@ -234,40 +324,42 @@ final class InboxCenter {
         } else if value.folderVersion != previous.folderVersion {
             transport.published()
         }
+        actions = value.actions
         outbox = InboxOutboxModel(
-            queued: value.actions.filter { $0.state == .pending }, undelivered: value.actions.filter { $0.delivery == .undelivered },
-            hubName: hubName()
+            queued: value.actions.filter { $0.state == .pending },
+            undelivered: value.actions.filter(InboxActSettlement.isUndelivered), hubName: hubName()
         )
         for row in value.actions where !settled.contains(row.id) {
             guard let settlement = InboxActSettlement.of(row, hubName: hubName()) else { continue }
             settled.insert(row.id)
             transport.settle(actionID: row.id, settlement)
-            if case .notDelivered = settlement { continue }
-            dismiss(row.id)
         }
     }
 
-    /// An applied echo of any action (the session's one applied observer).
+    /// An applied echo of any action (the session's one applied observer): the press waiting for it answers; with
+    /// none waiting (the client gave up, a relaunch) its row still hides.
     func receiveApplied(_ action: ActionRequestPayload) {
         guard action.kind == .inboxAct else { return }
         let result = action.result.flatMap { try? JSONEncoder().encode($0) }
         transport.settle(actionID: action.id, .applied(result: result))
+        if let request = InboxPress.request(params: action.params),
+           !inflight.values.contains(where: { $0.requestID == request.requestID }) {
+            succeeded(request)
+        }
+    }
+
+    /// The test seam for `observe`'s outbox and dismiss.
+    func use(dismiss: @escaping (String) -> Void, retryUndelivered: @escaping (String) async throws -> Void) {
+        dismissRow = dismiss
+        self.retryUndelivered = retryUndelivered
     }
 
     // MARK: - The screenshot tour
 
-    /// A feed and press states as the tour shows them, with no hub behind them.
-    func showForTour(
-        feed: Feed?,
-        states: [String: TowerActionState] = [:],
-        busy: [String: String] = [:],
-        lastPress: [String: String] = [:],
-        outbox: InboxOutboxModel = InboxOutboxModel()
-    ) {
+    /// A feed and row states as the tour shows them, with no hub behind them.
+    func showForTour(feed: Feed?, rows: [String: InboxRowState] = [:], outbox: InboxOutboxModel = InboxOutboxModel()) {
         self.feed = feed
-        self.states = states
-        busyLabels = busy
-        self.lastPress = lastPress
+        tourRows = rows
         self.outbox = outbox
     }
 
@@ -277,26 +369,56 @@ final class InboxCenter {
     }
 }
 
-/// The keys a press goes by in `TowerClient` (a row's id plus its verb, and the drawn version where the request
-/// carries it, so a changed card is a new press).
-enum InboxPressKey {
-    static func card(_ card: InboxCard, _ verb: ActVerb) -> String {
-        "card:\(card.id):\(verb.rawValue):\(card.contentHash)"
+/// A press as the screens and the client name it, all read off its `ActRequest`: its key (`TowerClient`'s, the
+/// drawn version included, so a changed card is a new press, and a Reply's text), its row (where its state shows:
+/// a ref row's `kind:id`, a card's id, a card button's `id#index`), and whether an `ok` hides that row.
+enum InboxPress {
+    static func key(of request: ActRequest) -> String {
+        let p = request.params
+        let parts: [String?] = [
+            request.verb.rawValue, request.target, p.refKind.map { "\($0.rawValue):\(p.refID ?? 0)" }, p.refVerb?.rawValue,
+            p.approvalVerb?.rawValue, p.index.map(String.init), p.contentHash, p.argsSHA256, p.until, p.text
+        ]
+        return parts.compactMap { $0 }.joined(separator: "|")
     }
 
-    static func button(_ card: InboxCard, index: Int) -> String {
-        "press:\(card.id):\(index):\(card.contentHash)"
+    static func row(of request: ActRequest) -> String {
+        let p = request.params
+        switch request.verb {
+        case .ref: return "\(p.refKind?.rawValue ?? ""):\(p.refID ?? 0)"
+        case .replyPropose: return "\(RefKind.inboxItem.rawValue):\(p.refID ?? 0)"
+        case .press: return buttonRow(request.target, p.index ?? 0)
+        // Opening marks it read in the background: never the card's state.
+        case .read: return "\(request.target)@read"
+        default: return request.target
+        }
     }
 
-    static func ref(cardID: String, row: String, _ verb: RefVerb, choice: String = "") -> String {
-        "ref:\(cardID):\(row):\(verb.rawValue)\(choice.isEmpty ? "" : ":\(choice)")"
+    /// A card button's row.
+    static func buttonRow(_ cardID: String, _ index: Int) -> String {
+        "\(cardID)#\(index)"
     }
 
-    static func reply(cardID: String, row: String) -> String {
-        "reply:\(cardID):\(row)"
+    static func row(of action: PendingAction) -> String? {
+        request(of: action).map(row(of:))
     }
 
-    static func approval(_ card: InboxCard, _ verb: ApprovalVerb) -> String {
-        "approval:\(card.id):\(verb.rawValue):\(card.approval?.argsSHA256 ?? "")"
+    static func hides(_ request: ActRequest) -> Bool {
+        switch request.verb {
+        case .ref: request.params.refVerb.map(InboxRefVerbs.hides) ?? false
+        case .approval: request.params.approvalVerb != .retry
+        case .done, .dismiss: true
+        default: false
+        }
+    }
+
+    /// The press an `inbox_act` row carries.
+    static func request(of action: PendingAction) -> ActRequest? {
+        request(params: action.action.params)
+    }
+
+    static func request(params: [String: JSONValue]) -> ActRequest? {
+        guard let data = try? JSONEncoder().encode(params) else { return nil }
+        return try? JSONDecoder().decode(ActRequest.self, from: data)
     }
 }

@@ -39,7 +39,7 @@ struct InboxCardDetailView: View {
         return ScrollView {
             VStack(alignment: .leading, spacing: Spacing.small) {
                 Text(header.line).font(TypeScale.meta).foregroundStyle(.secondary).padding(.horizontal, Spacing.large)
-                if center.rowState(model.id)?.state == .unknown {
+                if center.rowState(model.id) == .unknown {
                     InboxUnconfirmedCard(center: center, card: model).padding(.horizontal, Spacing.small)
                 }
                 content(model)
@@ -130,16 +130,12 @@ struct InboxCardDetailView: View {
         guard !markedRead, model.card.unread, model.card.cardKind == .artifact, shot == nil else { return }
         markedRead = true
         Task {
-            await center.press(InboxPressKey.card(model.card, .read), on: nil, hides: false) { model.request(.read, requestID: $0) }
+            await center.press { model.request(.read, requestID: $0) }
         }
     }
 
-    private func cardVerb(_ verb: ActVerb, _ model: InboxCardModel, busy: String? = nil) {
-        Task {
-            await center.press(InboxPressKey.card(model.card, verb), on: model.id, hides: verb != .runNow, busy: busy) {
-                model.request(verb, requestID: $0)
-            }
-        }
+    private func cardVerb(_ verb: ActVerb, _ model: InboxCardModel) {
+        Task { await center.press { model.request(verb, requestID: $0) } }
     }
 
     private func press(_ index: Int, _ model: InboxCardModel, _ document: ArtifactDocument) {
@@ -155,14 +151,17 @@ struct InboxCardDetailView: View {
             return
         }
         Task {
-            await center.press(InboxPressKey.button(model.card, index: index), on: Self.buttonRow(model.id, index), hides: false) {
-                model.press(action, requestID: $0)
-            }
+            await center.press { model.press(action, requestID: $0) }
         }
     }
 
     static func buttonRow(_ cardID: String, _ index: Int) -> String {
-        "\(cardID)#\(index)"
+        InboxPress.buttonRow(cardID, index)
+    }
+
+    private func isBusy(_ model: InboxCardModel) -> Bool {
+        if case .busy? = center.rowState(model.id) { return true }
+        return false
     }
 
     private func open(_ ref: ArtifactRef, _ model: InboxCardModel) {
@@ -174,10 +173,10 @@ struct InboxCardDetailView: View {
 
     private func bar(_ model: InboxCardModel) -> some View {
         PrimaryActionBar(
-            primary: BarAction(title: InboxText.done, isEnabled: center.state(InboxPressKey.card(model.card, .done)) != .busy) {
+            primary: BarAction(title: InboxText.done, isEnabled: !isBusy(model)) {
                 cardVerb(.done, model)
             },
-            secondary: BarAction(title: InboxText.dismiss, isEnabled: center.state(InboxPressKey.card(model.card, .dismiss)) != .busy) {
+            secondary: BarAction(title: InboxText.dismiss, isEnabled: !isBusy(model)) {
                 cardVerb(.dismiss, model)
             }
         )
@@ -188,10 +187,10 @@ struct InboxCardDetailView: View {
             if model.card.automation != nil {
                 Button(InboxText.runNow) {
                     showsMenu = false
-                    cardVerb(.runNow, model, busy: InboxText.runningNow)
+                    cardVerb(.runNow, model)
                 }
                 .font(TypeScale.rowTitle)
-                .disabled(center.state(InboxPressKey.card(model.card, .runNow)) == .unknown)
+                .disabled(center.rowState(model.id) == .unknown || isBusy(model))
             }
             Text(InboxText.macOnlyMenuNote).font(TypeScale.meta).foregroundStyle(.secondary)
         }
@@ -216,9 +215,9 @@ enum InboxCardButtons {
         } else {
             state.note = action.note
         }
-        switch center.rowState(InboxCardDetailView.buttonRow(model.id, index))?.state {
+        switch center.rowState(InboxPress.buttonRow(model.id, index)) {
         case .busy?: state.busyLabel = action.label
-        case let .refused(sentence)?: state.note = sentence
+        case let .refused(sentence, _)?: state.note = sentence
         case .unknown?: state.note = InboxText.didntConfirmPhone
         case nil: break
         }

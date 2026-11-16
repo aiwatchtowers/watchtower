@@ -93,7 +93,7 @@ struct RootTabView: View {
             ForEach(Tab.allCases) { tab in
                 content(for: tab)
                     .tabItem { Label(tab.title, systemImage: tab.systemImage) }
-                    .badge(tab.badge(waitingCount: env.workbenchReplica.waitingCount, inboxWaiting: (inboxShot?.center ?? env.inbox).badge))
+                    .badge(tab.badge(waitingCount: env.workbenchReplica.waitingCount, inboxWaiting: inboxBadge))
                     .tag(tab)
             }
         }
@@ -131,6 +131,13 @@ struct RootTabView: View {
         .onChange(of: scenePhase, initial: true) {
             env.setActive(Self.isActive(in: scenePhase))
         }
+    }
+
+    /// The Inbox's waiting count while the hub on screen publishes the Inbox.
+    private var inboxBadge: Int {
+        if let inboxShot { return inboxShot.center.badge(capability: inboxShot.inputs.capability) }
+        let heartbeat = env.workbenchReplica.snapshot.heartbeat
+        return env.inbox.badge(capability: heartbeat == nil ? InboxCapability.on : heartbeat?.capabilities?.inbox)
     }
 
     @ViewBuilder

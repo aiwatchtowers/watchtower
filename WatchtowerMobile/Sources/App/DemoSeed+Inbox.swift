@@ -41,18 +41,18 @@ extension DemoSeed {
         /// The hub's records of `feed(now:)`.
         static func records(now: Date) throws -> [CloudRecord] {
             let encoder = JSONEncoder()
+            let cards = cards(now: now)
+            // Each folder with its cards' ids in the feed's order, as the hub publishes it; the cards order-free.
             let folders = try folders().map { folder in
-                CloudRecordFactory.record(for: SliceRecord(
-                    kind: .inboxFolder, id: String(folder.id), modifiedAt: now, payload: try encoder.encode(folder)))
-            }
-            // Each card with its place in the feed, as the hub publishes it.
-            let cards = try cards(now: now).enumerated().map { position, card in
-                var object = try JSONSerialization.jsonObject(with: try encoder.encode(card)) as? [String: Any] ?? [:]
-                object["position"] = position
+                var object = try JSONSerialization.jsonObject(with: try encoder.encode(folder)) as? [String: Any] ?? [:]
+                object["card_ids"] = cards.filter { $0.folderID == folder.id }.map(\.id)
                 let payload = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
-                return CloudRecordFactory.record(for: SliceRecord(kind: .inboxCard, id: card.id, modifiedAt: now, payload: payload))
+                return CloudRecordFactory.record(for: SliceRecord(kind: .inboxFolder, id: String(folder.id), modifiedAt: now, payload: payload))
             }
-            return folders + cards
+            let cardRecords = try cards.map { card in
+                CloudRecordFactory.record(for: SliceRecord(kind: .inboxCard, id: card.id, modifiedAt: now, payload: try encoder.encode(card)))
+            }
+            return folders + cardRecords
         }
 
         static func folders() -> [Folder] {

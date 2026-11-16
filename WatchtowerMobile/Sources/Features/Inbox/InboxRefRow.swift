@@ -77,14 +77,13 @@ struct InboxRefRowActions {
             // An idea to judge is a waiting card with its verdicts (mockup §5).
             actions.inline = actions.menu.filter { $0.enabled && $0.children.isEmpty }
         }
-        if let pressed = center.rowState(row.key) {
-            switch pressed.state {
-            case .busy: actions.busyLabel = center.busyLabels[pressed.key] ?? ""
-            case let .refused(sentence):
-                actions.error = sentence
-                actions.retry = (InboxText.retry, { [center] in Task { await center.retry(pressed.key) } })
-            case .unknown: actions.error = InboxText.didntConfirmPhone
-            }
+        switch center.rowState(row.key) {
+        case let .busy(request)?: actions.busyLabel = InboxText.busyLabel(for: request) ?? ""
+        case let .refused(sentence, retry)?:
+            actions.error = sentence
+            actions.retry = (InboxText.retry, { [center] in Task { await center.retry(retry) } })
+        case .unknown?: actions.error = InboxText.didntConfirmPhone
+        case nil: break
         }
         return actions
     }
@@ -93,12 +92,8 @@ struct InboxRefRowActions {
         let choice = snooze ?? InboxRefVerbs.defaultSnooze(verb, kind: row.facts.kind)
         let until = choice?.until(from: now)
         let cardID = card.id
-        let key = InboxPressKey.ref(cardID: cardID, row: row.key, verb, choice: choice.map { "\($0)" } ?? "")
-        let busy = InboxText.busyLabel(for: row.request(verb, cardID: cardID, requestID: ""))
         Task {
-            await center.press(key, on: row.key, hides: InboxRefVerbs.hides(verb), busy: busy) { requestID in
-                row.request(verb, cardID: cardID, requestID: requestID, until: until)
-            }
+            await center.press { requestID in row.request(verb, cardID: cardID, requestID: requestID, until: until) }
         }
     }
 

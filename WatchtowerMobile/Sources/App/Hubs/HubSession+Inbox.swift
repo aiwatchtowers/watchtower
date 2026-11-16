@@ -8,7 +8,7 @@ extension HubSession {
         calendarReplica.start(store: store)
         chats.start(store: store)
         inbox.hubName = { [weak self] in self?.hubName ?? self?.workbenchReplica.snapshot.heartbeat?.macName ?? "" }
-        inbox.observe(store: store)
+        inbox.observe(store: store, outbox: outbox)
         inbox.start()
         phoneRecordings.start(store: store)
     }

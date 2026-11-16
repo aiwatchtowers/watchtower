@@ -20,6 +20,8 @@ enum InboxPhoneText {
         "Not delivered — \(TowerText.name(hub)) didn't get it."
     }
 
+    /// The phone could not read its copy of the Inbox or queue a press (a local failure): Retry tries again.
+    static let localFailure = "This iPhone couldn't read or send that. Try again."
     /// A refusal echo without a message.
     static let refusedFallback = "Watchtower refused this action."
     /// A command the phone's transport does not carry.

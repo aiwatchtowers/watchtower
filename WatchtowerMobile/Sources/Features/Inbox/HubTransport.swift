@@ -19,11 +19,17 @@ enum InboxActSettlement: Equatable, Sendable {
     case notDelivered(sentence: String)
     case unknown
 
+    /// The outbox could not deliver it (listed under Not delivered): one predicate for the row's state and the
+    /// outbox line.
+    static func isUndelivered(_ row: PendingAction) -> Bool {
+        row.state == .failed && (row.delivery == .undelivered || row.undeliveredReason != nil)
+    }
+
     /// A failed `inbox_act` row as the replica holds it; nil while it still waits.
     static func of(_ row: PendingAction, hubName: String) -> Self? {
         guard row.state == .failed else { return nil }
         if row.reason == .outcomeUnknown { return .unknown }
-        if row.delivery == .undelivered || row.undeliveredReason != nil {
+        if isUndelivered(row) {
             return .notDelivered(sentence: InboxPhoneText.notDelivered(hub: hubName))
         }
         let sentence = row.errorMessage.flatMap { $0.isEmpty ? nil : $0 } ?? InboxPhoneText.refusedFallback
@@ -65,6 +71,8 @@ final class HubTransport: TowerTransport, @unchecked Sendable {
     private var early: [String: InboxActSettlement] = [:]
     /// The action each request_id went out as, until it settles.
     private var actions: [String: String] = [:]
+    /// Enqueues on their way (their action ids are not known yet).
+    private var enqueuing = 0
     private var watchers: [UUID: AsyncThrowingStream<ChangedEvent, Error>.Continuation] = [:]
     private static let logger = Logger(subsystem: "WatchtowerMobile", category: "HubTransport")
 
@@ -91,7 +99,14 @@ final class HubTransport: TowerTransport, @unchecked Sendable {
             let hello = HelloResponse(interfaceVersion: InterfaceVersion.current, build: "hub", syncPaused: false, noSync: false)
             return try Self.ok(request.id, hello)
         case .inboxFeed?:
-            return try Self.ok(request.id, try Self.assemble(try records()))
+            do {
+                return try Self.ok(request.id, try Self.assemble(try records()))
+            } catch {
+                // A local failure is a refusal with Retry, never "the tower is down": that would reconnect and
+                // re-send forever.
+                Self.logger.error("inbox feed not read: \(String(describing: type(of: error)), privacy: .public)")
+                return Self.refusal(request.id, .unsupported, InboxPhoneText.localFailure)
+            }
         case .inboxAct?:
             return try await act(request)
         default:
@@ -123,17 +138,14 @@ final class HubTransport: TowerTransport, @unchecked Sendable {
     func settle(actionID: String, _ settlement: InboxActSettlement) {
         let waiter: CheckedContinuation<InboxActSettlement, Never>? = lock.withLock {
             guard let waiter = waiters.removeValue(forKey: actionID) else {
-                early[actionID] = settlement
+                // Kept only for a press about to wait (an echo racing the enqueue's return, or a re-send of an
+                // abandoned call); one nobody waits for shows from the replica, not from here.
+                if enqueuing > 0 || actions.values.contains(actionID) { early[actionID] = settlement }
                 return nil
             }
             return waiter
         }
         waiter?.resume(returning: settlement)
-    }
-
-    /// Whether a press waits on `actionID` (a settlement with no press is one a previous launch left).
-    func isAwaited(_ actionID: String) -> Bool {
-        lock.withLock { waiters[actionID] != nil || actions.values.contains(actionID) }
     }
 
     // MARK: - inbox.act
@@ -146,8 +158,19 @@ final class HubTransport: TowerTransport, @unchecked Sendable {
         if let queued = lock.withLock({ actions[act.requestID] }) {
             actionID = queued
         } else {
-            actionID = try await enqueue(act)
-            lock.withLock { actions[act.requestID] = actionID }
+            lock.withLock { enqueuing += 1 }
+            do {
+                let id = try await enqueue(act)
+                lock.withLock {
+                    enqueuing -= 1
+                    actions[act.requestID] = id
+                }
+                actionID = id
+            } catch {
+                lock.withLock { enqueuing -= 1 }
+                Self.logger.error("inbox_act not queued: \(String(describing: type(of: error)), privacy: .public)")
+                return Self.refusal(request.id, .unsupported, InboxPhoneText.localFailure)
+            }
         }
         let settlement = await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
@@ -187,32 +210,38 @@ final class HubTransport: TowerTransport, @unchecked Sendable {
 
     // MARK: - The feed
 
-    /// The records back into the generated `Feed`: folders as published (`more` read off each folder record), cards
-    /// in the feed's own order by each record's `position` (the replica keeps no publish order). A record without
-    /// one (an older hub) sorts after them in `inboxfeed.Limit`'s order — Needs approval's open entries, the pinned
-    /// cards, then newest first. Records that do not decode are left out.
+    /// The records back into the generated `Feed`: folders by position (`more` read off each folder record), cards
+    /// in the feed's own order from each folder record's `card_ids` (the replica keeps no publish order). A card no
+    /// folder lists (an older hub's records) sorts after them in `inboxfeed.Limit`'s order — Needs approval's open
+    /// entries, the pinned cards, then newest first. Records that do not decode are left out.
     static func assemble(_ records: InboxRecords) throws -> Feed {
         let decoder = JSONDecoder()
-        var folders: [Folder] = []
+        var folders: [(folder: Folder, cardIDs: [String])] = []
         var more: [FolderMore] = []
         for payload in records.folders {
             guard let folder = try? decoder.decode(Folder.self, from: payload) else {
                 logger.warning("an inbox folder record does not decode")
                 continue
             }
-            folders.append(folder)
-            if let extra = try? decoder.decode(RecordExtra.self, from: payload), let count = extra.more, count > 0 {
+            let extra = try? decoder.decode(RecordExtra.self, from: payload)
+            folders.append((folder, extra?.cardIDs ?? []))
+            if let count = extra?.more, count > 0 {
                 more.append(FolderMore(folderID: folder.id, count: count))
             }
         }
-        folders.sort { ($0.position, $0.id) < ($1.position, $1.id) }
-        let approvals = folders.first { $0.kind == .approvals }?.id
+        folders.sort { ($0.folder.position, $0.folder.id) < ($1.folder.position, $1.folder.id) }
+        let order = folders.map(\.cardIDs)
+        let approvals = folders.first { $0.folder.kind == .approvals }?.folder.id
+        var positions: [String: Int] = [:]
+        for id in order.flatMap({ $0 }) where positions[id] == nil {
+            positions[id] = positions.count
+        }
         let cards = records.cards.compactMap { payload -> (card: InboxCard, position: Int?)? in
             guard let card = try? decoder.decode(InboxCard.self, from: payload) else {
                 logger.warning("an inbox card record does not decode")
                 return nil
             }
-            return (card, (try? decoder.decode(RecordExtra.self, from: payload))?.position)
+            return (card, positions[card.id])
         }
         .sorted { lhs, rhs in
             switch (lhs.position, rhs.position) {
@@ -228,11 +257,11 @@ final class HubTransport: TowerTransport, @unchecked Sendable {
         }
         .map(\.card)
         more.sort { $0.folderID < $1.folderID }
-        return Feed(v: 1, builtAt: "", folders: folders, cards: cards, more: more.isEmpty ? nil : more)
+        return Feed(v: 1, builtAt: "", folders: folders.map(\.folder), cards: cards, more: more.isEmpty ? nil : more)
     }
 
     /// Needs approval (0), the pinned cards (1), the rest (2); inside Needs approval, an open proposal before a
-    /// settled one. Only for records from a hub that sends no position.
+    /// settled one. Only for cards no folder record lists.
     private static func tier(_ card: InboxCard, _ approvals: Int64?) -> Int {
         if card.folderID == approvals {
             let open = card.approval.map { $0.status == "pending" || $0.status == "failed" } ?? true
@@ -241,10 +270,15 @@ final class HubTransport: TowerTransport, @unchecked Sendable {
         return card.pinned ? 2 : 3
     }
 
-    /// What a record carries beside the generated type: a folder's `more`, a card's `position`.
+    /// What a folder record carries beside the generated `Folder`: `more` and `card_ids`.
     private struct RecordExtra: Decodable {
         let more: Int?
-        let position: Int?
+        let cardIDs: [String]?
+
+        enum CodingKeys: String, CodingKey {
+            case more
+            case cardIDs = "card_ids"
+        }
     }
 
     /// Every Inbox record of `store`.
