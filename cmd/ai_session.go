@@ -13,6 +13,7 @@ import (
 
 	"watchtower/internal/ai"
 	"watchtower/internal/chat"
+	"watchtower/internal/chatstore"
 	"watchtower/internal/claude"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
@@ -69,6 +70,14 @@ func runAISession(cmd *cobra.Command, _ []string) error {
 	if aiSessionFlagSurface != "main" && aiSessionFlagSurface != "target" {
 		return fail(chat.CodeInternal, "--surface must be main or target")
 	}
+	var leaseOwner db.ChatLeaseOwner
+	var leaseOwnerID string
+	if aiSessionFlagPersist {
+		var err error
+		if leaseOwner, leaseOwnerID, err = persistLeaseOwner(); err != nil {
+			return fail(chat.CodeInternal, err.Error())
+		}
+	}
 
 	cfg, database, dbPath, conv, err := openAISessionConversation(aiSessionFlagConversation, aiSessionFlagDBPath)
 	if err != nil {
@@ -95,7 +104,7 @@ func runAISession(cmd *cobra.Command, _ []string) error {
 	}
 	mcpArgs := sessionMCPArgs(aiSessionFlagSurface, conv, turnFile, chatProjectID)
 
-	backend, err := routedSessionBackend(cmd, cfg, database, dbPath, conv, turnFile, project, chatProjectID, mcpArgs, cancel)
+	backend, err := aiSessionBackend(cmd, cfg, database, dbPath, conv, turnFile, project, chatProjectID, mcpArgs, cancel)
 	if err != nil {
 		return fail(chat.CodeProviderUnavailable, err.Error())
 	}
@@ -106,8 +115,18 @@ func runAISession(cmd *cobra.Command, _ []string) error {
 	_, s.Model = providers.ResolveModelsFor(cfg, cfg.AI.Provider)
 
 	s.TurnFile = turnFile
-	return s.Run(ctx, cmd.InOrStdin())
+	if !aiSessionFlagPersist {
+		return s.Run(ctx, cmd.InOrStdin())
+	}
+	p := &sessionPersister{ctx: ctx, database: database, conv: conv.ID, owner: leaseOwner, ownerID: leaseOwnerID,
+		now: aiSessionPersistNow, out: out, queue: newEventQueue(),
+		store: chatstore.New(database, leaseOwner, leaseOwnerID, chatstore.WithClock(aiSessionPersistNow),
+			chatstore.WithPreferredProvider(cfg.AI.ConfiguredProviderID()))}
+	return runPersistedSession(ctx, s, p, cmd.InOrStdin())
 }
+
+// aiSessionBackend builds the session's provider backend; tests replace it.
+var aiSessionBackend = routedSessionBackend
 
 // openAISessionConversation loads the config, opens the database and reads
 // the conversation the session serves. The caller closes the database.

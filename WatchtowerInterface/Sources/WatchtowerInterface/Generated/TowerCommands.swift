@@ -6,6 +6,45 @@ import Foundation
 public enum TowerCommand: String, CaseIterable, Sendable {
     case briefingRead = "briefing.read"
     case catchupAcknowledge = "catchup.acknowledge"
+    case chatArchive = "chat.archive"
+    case chatArtifactKeep = "chat.artifact.keep"
+    case chatArtifactSaveEdit = "chat.artifact.save_edit"
+    case chatArtifactUnkeep = "chat.artifact.unkeep"
+    case chatAttach = "chat.attach"
+    case chatAttachDelete = "chat.attach_delete"
+    case chatAttachLink = "chat.attach_link"
+    case chatBranch = "chat.branch"
+    case chatCodeQuestionDeleteEmpty = "chat.code_question.delete_empty"
+    case chatCommentAdd = "chat.comment.add"
+    case chatCommentApply = "chat.comment.apply"
+    case chatCommentDeleteUnsent = "chat.comment.delete_unsent"
+    case chatCommentMarkSent = "chat.comment.mark_sent"
+    case chatCommentResolve = "chat.comment.resolve"
+    case chatContext = "chat.context"
+    case chatDelete = "chat.delete"
+    case chatDeleteUntouched = "chat.delete_untouched"
+    case chatDraftClear = "chat.draft.clear"
+    case chatDraftSave = "chat.draft.save"
+    case chatNew = "chat.new"
+    case chatPin = "chat.pin"
+    case chatProjectAddSource = "chat.project.add_source"
+    case chatProjectArchive = "chat.project.archive"
+    case chatProjectCreate = "chat.project.create"
+    case chatProjectDelete = "chat.project.delete"
+    case chatProjectInstructions = "chat.project.instructions"
+    case chatProjectRemoveFile = "chat.project.remove_file"
+    case chatProjectRemoveSource = "chat.project.remove_source"
+    case chatProjectRename = "chat.project.rename"
+    case chatRead = "chat.read"
+    case chatRecover = "chat.recover"
+    case chatReleaseLaunches = "chat.release_launches"
+    case chatRename = "chat.rename"
+    case chatReviewerThread = "chat.reviewer_thread"
+    case chatSetModel = "chat.set_model"
+    case chatSetProject = "chat.set_project"
+    case chatSetRouting = "chat.set_routing"
+    case chatSetTitle = "chat.set_title"
+    case chatStop = "chat.stop"
     case dayplanAdd = "dayplan.add"
     case dayplanDelete = "dayplan.delete"
     case dayplanDone = "dayplan.done"
@@ -31,6 +70,7 @@ public enum TowerCommand: String, CaseIterable, Sendable {
     case inboxFeed = "inbox.feed"
     case inboxWatch = "inbox.watch"
     case inboxItemsRead = "inbox_items.read"
+    case meetingsDelete = "meetings.delete"
     case outputsDismiss = "outputs.dismiss"
     case outputsDone = "outputs.done"
     case outputsRead = "outputs.read"
@@ -62,6 +102,45 @@ public enum TowerCommand: String, CaseIterable, Sendable {
         switch self {
         case .briefingRead: false
         case .catchupAcknowledge: false
+        case .chatArchive: false
+        case .chatArtifactKeep: false
+        case .chatArtifactSaveEdit: false
+        case .chatArtifactUnkeep: false
+        case .chatAttach: false
+        case .chatAttachDelete: false
+        case .chatAttachLink: false
+        case .chatBranch: false
+        case .chatCodeQuestionDeleteEmpty: false
+        case .chatCommentAdd: false
+        case .chatCommentApply: false
+        case .chatCommentDeleteUnsent: false
+        case .chatCommentMarkSent: false
+        case .chatCommentResolve: false
+        case .chatContext: false
+        case .chatDelete: false
+        case .chatDeleteUntouched: false
+        case .chatDraftClear: false
+        case .chatDraftSave: false
+        case .chatNew: false
+        case .chatPin: false
+        case .chatProjectAddSource: false
+        case .chatProjectArchive: false
+        case .chatProjectCreate: false
+        case .chatProjectDelete: false
+        case .chatProjectInstructions: false
+        case .chatProjectRemoveFile: false
+        case .chatProjectRemoveSource: false
+        case .chatProjectRename: false
+        case .chatRead: false
+        case .chatRecover: false
+        case .chatReleaseLaunches: false
+        case .chatRename: false
+        case .chatReviewerThread: false
+        case .chatSetModel: false
+        case .chatSetProject: false
+        case .chatSetRouting: false
+        case .chatSetTitle: false
+        case .chatStop: false
         case .dayplanAdd: false
         case .dayplanDelete: false
         case .dayplanDone: false
@@ -87,6 +166,7 @@ public enum TowerCommand: String, CaseIterable, Sendable {
         case .inboxFeed: true
         case .inboxWatch: false
         case .inboxItemsRead: false
+        case .meetingsDelete: false
         case .outputsDismiss: false
         case .outputsDone: false
         case .outputsRead: false

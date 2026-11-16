@@ -221,6 +221,15 @@ final class ArtifactBlocksTests: XCTestCase {
         }
     }
 
+    /// A legacy entry's plan items (the hub's `inboxlegacy` projection,
+    /// mobile Inbox spec) carry the `plan_item` ref kind.
+    func testPlanItemRefDecodes() throws {
+        let sample = try XCTUnwrap(try samples().documents.first { $0.name == "plan-items" })
+        let refs = try document(sample).refs
+        XCTAssertEqual(refs, [ArtifactRef(kind: .planItem, id: 21), ArtifactRef(kind: .planItem, id: 22)])
+        XCTAssertEqual(ArtifactRefKind.planItem.rawValue, "plan_item")
+    }
+
     func testZeroRowListAndTableDecode() throws {
         let sample = try XCTUnwrap(try samples().documents.first { $0.name == "empty-list-and-table" })
         XCTAssertEqual(try document(sample).blocks, [

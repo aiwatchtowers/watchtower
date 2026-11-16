@@ -140,14 +140,27 @@ func TestSocket_IsPrivateAndChecksPeer(t *testing.T) {
 		t.Fatalf("the owner's ping: %+v", r)
 	}
 
-	// Another user's connection is closed without an answer.
+	// Another user's connection is closed without an answer and its request
+	// never runs. The server may close before the write lands, so the write
+	// can fail (EPIPE/ECONNRESET): either way the read ends in an error.
 	setPeerUID(t, func(net.Conn) (int, error) { return os.Getuid() + 1, nil })
 	foreign := filepath.Join(dir, "foreign.sock")
 	serve(t, foreign, f)
 	c := dialTower(t, foreign)
-	c.send("p2", "tower.ping", nil)
+	raw, err := json.Marshal(api.Request{V: api.EnvelopeVersion, ID: "w-foreign", Command: "test.guarded",
+		Params: json.RawMessage(`{"request_id":"foreign-1","note":"foreign"}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = c.c.Write(append(raw, '\n')) // fails when the refusal closed it first
 	if b, err := c.line(); err == nil {
 		t.Fatalf("another user's connection was answered: %s", b)
+	}
+	if n := f.rows(); n != 0 {
+		t.Fatalf("another user's write ran: %d rows", n)
+	}
+	if row := f.ledger("foreign-1"); row != nil {
+		t.Fatalf("another user's write reached the ledger: %+v", row)
 	}
 }
 

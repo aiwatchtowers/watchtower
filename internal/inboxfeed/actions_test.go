@@ -39,6 +39,8 @@ func TestActions_StatesByKind(t *testing.T) {
 		`{"label":"Open","kind":"link","open":"https://example.com/x"},`+
 		`{"label":"Screen","kind":"link","open":"watchtower-nav://tracks"},`+
 		`{"label":"Bad","kind":"link","open":"ftp://example.com"},`+
+		`{"label":"NoHost","kind":"link","open":"https:///x"},`+
+		`{"label":"Upper","kind":"link","open":"HTTPS://example.com"},`+
 		`{"label":"","kind":"chat","chat":"x"},`+
 		`{"label":"Discuss","kind":"chat","chat":"Talk"},`+
 		`{"label":"Agent","kind":"agent","agent":{"task":"Do"}},`+
@@ -47,9 +49,11 @@ func TestActions_StatesByKind(t *testing.T) {
 		{Index: 0, Kind: "link", Label: "Open", State: api.ActionEnabled},
 		{Index: 1, Kind: "link", Label: "Screen", State: api.ActionMacOnly},
 		{Index: 2, Kind: "link", Label: "Bad", State: api.ActionDisabled},
-		{Index: 4, Kind: "chat", Label: "Discuss", State: api.ActionMacOnly},
-		{Index: 5, Kind: "agent", Label: "Agent", State: api.ActionMacOnly},
-		{Index: 6, Kind: "reply", Label: "Yes", State: api.ActionEnabled, Detail: replyReady},
+		{Index: 3, Kind: "link", Label: "NoHost", State: api.ActionDisabled},
+		{Index: 4, Kind: "link", Label: "Upper", State: api.ActionEnabled},
+		{Index: 6, Kind: "chat", Label: "Discuss", State: api.ActionMacOnly},
+		{Index: 7, Kind: "agent", Label: "Agent", State: api.ActionMacOnly},
+		{Index: 8, Kind: "reply", Label: "Yes", State: api.ActionEnabled, Detail: replyReady},
 	})
 	if fmt.Sprint(got) != want {
 		t.Errorf("actions %v\nwant    %v", got, want)
