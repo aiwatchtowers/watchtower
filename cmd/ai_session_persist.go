@@ -34,14 +34,23 @@ var (
 	aiSessionFlagLeaseOwnerID string
 )
 
-// reasonConversationBusy is a refused turn's reason: another owner holds the
-// conversation's lease (the hub's refusal reason for the phone too).
-const reasonConversationBusy = "conversation_busy"
+// Refused turns' reasons: another owner holds the conversation's lease (the
+// hub's refusal reason for the phone too), or the command has no turn_id —
+// refused up front, so no event of it can read as a session-level error that
+// would end another turn.
+const (
+	reasonConversationBusy = "conversation_busy"
+	reasonTurnIDRequired   = "turn_id_required"
+)
 
 // maxPersistCommandBytes bounds one stdin line, as the session's own reader.
 const maxPersistCommandBytes = 8 << 20
 
-// aiSessionPersistTick is the persister's 1 s clock; tests drive it.
+// aiSessionPersistNow is the persister's (and its store's) clock; tests
+// move it.
+var aiSessionPersistNow = time.Now
+
+// aiSessionPersistTick is the persister's 1 s tick; tests drive it.
 var aiSessionPersistTick = func() (<-chan time.Time, func()) {
 	t := time.NewTicker(time.Second)
 	return t.C, t.Stop
@@ -206,6 +215,10 @@ func (p *sessionPersister) command(line []byte) {
 		p.forward(line)
 		return
 	}
+	if c.TurnID == "" {
+		p.emit(chat.Event{Type: chat.EventRefused, Reason: reasonTurnIDRequired})
+		return
+	}
 	if p.cur != nil {
 		// The previous turn's end is not folded in yet: this one waits for it.
 		p.pending = append(p.pending, c)
@@ -243,8 +256,7 @@ func (p *sessionPersister) startTurn(c chat.Command) {
 		return
 	}
 	p.cur = &persistedTurn{st: st, t: p.store.Turn(st), heartbeat: p.now()}
-	p.emit(chat.Event{Type: chat.EventStarted, ConversationID: st.ConversationID, OwnerMessageID: st.UserMessageID,
-		AssistantMessageID: st.AssistantMessageID, TurnID: st.TurnID})
+	p.emit(startedEvent(st))
 	line, err := json.Marshal(chat.Command{Type: chat.CommandTurn, TurnID: st.TurnID, Text: st.SendText,
 		Attachments: st.Attachments, Replay: st.Replay || c.Replay})
 	if err != nil || !p.forward(line) {
@@ -252,6 +264,17 @@ func (p *sessionPersister) startTurn(c chat.Command) {
 		p.finalize(chatstore.StatusPartial, &chatstore.Failure{Code: chat.CodeSessionLost,
 			Message: "The chat session ended before the answer started."})
 	}
+}
+
+// startedEvent names the turn's rows and its prefix commands' results.
+func startedEvent(st chatstore.Started) chat.Event {
+	e := chat.Event{Type: chat.EventStarted, ConversationID: st.ConversationID, OwnerMessageID: st.UserMessageID,
+		AssistantMessageID: st.AssistantMessageID, TurnID: st.TurnID, RememberOutcome: st.RememberOutcome,
+		RememberLineID: st.RememberLineID, IdeaID: st.IdeaID, IdeaKind: st.IdeaKind}
+	if st.PrefixErr != nil {
+		e.PrefixError = logredact.Full(st.PrefixErr)
+	}
+	return e
 }
 
 // startRequest maps a turn command onto chatstore's request.

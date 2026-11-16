@@ -109,6 +109,16 @@ type Event struct {
 	OwnerMessageID     int64  `json:"owner_message_id,omitempty"`
 	AssistantMessageID int64  `json:"assistant_message_id,omitempty"`
 	Holder             string `json:"holder,omitempty"`
+	// A started event's prefix commands (what the Mac's RememberCenter and
+	// ChatKnowledgeCenter show under the owner's message): the remember
+	// outcome ("" = not a remember message) and the line it added, the
+	// chat-born idea a knowledge prefix wrote and its kind, and the first
+	// failure of either.
+	RememberOutcome string `json:"remember_outcome,omitempty"`
+	RememberLineID  int64  `json:"remember_line_id,omitempty"`
+	IdeaID          int64  `json:"idea_id,omitempty"`
+	IdeaKind        string `json:"idea_kind,omitempty"`
+	PrefixError     string `json:"prefix_error,omitempty"`
 	// Capabilities is the actual provider's capability row on a
 	// session_ready (EventWriter fills it from Provider): what this
 	// session's transport offers, a fallback route's included.

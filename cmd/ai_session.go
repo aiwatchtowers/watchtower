@@ -119,8 +119,9 @@ func runAISession(cmd *cobra.Command, _ []string) error {
 		return s.Run(ctx, cmd.InOrStdin())
 	}
 	p := &sessionPersister{ctx: ctx, database: database, conv: conv.ID, owner: leaseOwner, ownerID: leaseOwnerID,
-		now: time.Now, out: out, queue: newEventQueue(),
-		store: chatstore.New(database, leaseOwner, leaseOwnerID, chatstore.WithPreferredProvider(cfg.AI.ConfiguredProviderID()))}
+		now: aiSessionPersistNow, out: out, queue: newEventQueue(),
+		store: chatstore.New(database, leaseOwner, leaseOwnerID, chatstore.WithClock(aiSessionPersistNow),
+			chatstore.WithPreferredProvider(cfg.AI.ConfiguredProviderID()))}
 	return runPersistedSession(ctx, s, p, cmd.InOrStdin())
 }
 

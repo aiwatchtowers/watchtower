@@ -422,6 +422,7 @@ func TestPrefix_RememberAndIdeaRun(t *testing.T) {
 	st := send(t, s, conv, "remember: answer in   short bullets")
 	require.NoError(t, st.PrefixErr)
 	assert.Equal(t, string(db.RememberAdded), st.RememberOutcome)
+	assert.NotZero(t, st.RememberLineID, "the added line's id (the Mac's Undo)")
 	got, err := d.GetOwnerInstructions()
 	require.NoError(t, err)
 	assert.Contains(t, got.Chat, "answer in short bullets")
@@ -429,6 +430,7 @@ func TestPrefix_RememberAndIdeaRun(t *testing.T) {
 	st = send(t, s, newConversation(t, d), "решили: ship on Monday\nQA signed off")
 	require.NoError(t, st.PrefixErr)
 	require.NotZero(t, st.IdeaID)
+	assert.Equal(t, "decision", st.IdeaKind)
 	var kind, essence string
 	var chatBorn int
 	require.NoError(t, d.QueryRow(`SELECT kind, essence, chat_born FROM ideas WHERE id = ?`, st.IdeaID).Scan(&kind, &essence, &chatBorn))
@@ -626,7 +628,7 @@ func TestPrefix_RememberInLiveChatOnlyOwnerText(t *testing.T) {
 	require.NoError(t, st.PrefixErr)
 	assert.Equal(t, string(db.RememberAdded), st.RememberOutcome, "the owner's own words")
 
-	outcome, err := s.remember("the launch moved to Friday", conv, st.UserMessageID)
+	outcome, _, err := s.remember("the launch moved to Friday", conv, st.UserMessageID)
 	require.NoError(t, err)
 	assert.Equal(t, RememberNotOwnerText, outcome)
 	got, err := d.GetOwnerInstructions()

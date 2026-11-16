@@ -145,10 +145,13 @@ type Started struct {
 	Routing     Routing // the session config the turn runs with
 	ProjectID   *int64  // the conversation's chat project at start
 	// The prefix commands' results (send and edit only): the remember
-	// outcome ("" = not a remember message), the chat-born idea written by a
-	// knowledge prefix (0 = none) and the first failure of either.
+	// outcome ("" = not a remember message) and the line it added (0 =
+	// none), the chat-born idea written by a knowledge prefix (0 = none) and
+	// its kind, and the first failure of either.
 	RememberOutcome string
+	RememberLineID  int64
 	IdeaID          int64
+	IdeaKind        string
 	PrefixErr       error
 }
 
