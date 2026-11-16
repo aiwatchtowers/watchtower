@@ -9,7 +9,9 @@ package enum EmbeddedChatReplay {
     /// The main chat's cap (`chat.ReplayCapChars`), in characters; the
     /// header and footer are Go's `replayHeader`/`replayFooter`.
     package static let capCharacters = 24000
-    /// Go's omitted-line hint naming the chat-history reads.
+    /// Go's omitted-line hint naming the chat-history reads, written only for
+    /// a chat that mounts them (`historyTools`); a draft-only chat gets the
+    /// bare count.
     package static let omittedHint = " — get_chat_history reads them, list_chat_artifacts lists the artifacts"
     package static let header =
         "=== CONVERSATION SO FAR (replayed from Watchtower's history; the earlier model session is not available) ==="
@@ -22,7 +24,8 @@ package enum EmbeddedChatReplay {
     /// again, so it is left out too (as Go's `HistoryBefore` drops it); an
     /// unanswered question the owner moved on from stays.
     package static func block(
-        messages: [ChatMessageRecord], before turnID: String, prompt: String, capCharacters: Int = capCharacters
+        messages: [ChatMessageRecord], before turnID: String, prompt: String, capCharacters: Int = capCharacters,
+        historyTools: Bool = false
     ) -> String? {
         precondition(capCharacters > 0)
         var entries: [(role: String, text: String)] = []
@@ -64,7 +67,7 @@ package enum EmbeddedChatReplay {
             start = index
         }
         var lines = [header + "\n"]
-        if start > 0 { lines.append("[\(start) earlier messages omitted\(omittedHint)]\n") }
+        if start > 0 { lines.append("[\(start) earlier messages omitted\(historyTools ? omittedHint : "")]\n") }
         lines += kept[start...]
         lines.append(footer + "\n\n")
         return lines.joined()

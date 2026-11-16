@@ -265,3 +265,35 @@ func TestListChatArtifacts_LimitKeepsRecent(t *testing.T) {
 	assert.Len(t, all["artifacts"].([]any), 3)
 	assert.Equal(t, false, all["has_more"])
 }
+
+// assertIsolatedChatRefused: a conversation of contextType answers none of
+// the three reads, though it has a message and an artifact.
+func assertIsolatedChatRefused(t *testing.T, contextType string) {
+	t.Helper()
+	d := openDB(t)
+	reg := chatHistoryRegistry(t, d)
+	conv, ids := seedChatConversation(t, d, "secret question", "secret answer")
+	_, err := d.Exec(`UPDATE chat_conversations SET context_type = ? WHERE id = ?`, contextType, conv)
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO chat_artifacts (conversation_id, message_id, artifact_key, version, kind, content, created_at)
+		VALUES (?, ?, 'k', 1, 'code', 'secret code', 1)`, conv, ids[1])
+	require.NoError(t, err)
+	for name, args := range map[string]string{"get_chat_history": `{}`, "list_chat_artifacts": `{}`, "get_chat_artifact": `{"key":"k"}`} {
+		out, err := reg.CallRead(context.Background(), name, json.RawMessage(args), Binding{Surface: "main", ConversationID: conv})
+		var ve *ValidationError
+		require.ErrorAs(t, err, &ve, "%s read a %s chat: %v", name, contextType, out)
+	}
+}
+
+func TestChatHistory_RefusesCodeQuestionChats(t *testing.T) {
+	assertIsolatedChatRefused(t, "code_question")
+	assertIsolatedChatRefused(t, "review_reviewer")
+}
+
+func TestChatHistory_RefusesSpecReviewThreads(t *testing.T) {
+	assertIsolatedChatRefused(t, "spec_review_thread")
+}
+
+func TestChatHistory_RefusesTuningChats(t *testing.T) {
+	assertIsolatedChatRefused(t, "analytics_tuning")
+}

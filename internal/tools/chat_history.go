@@ -86,20 +86,28 @@ type chatArtifactRow struct {
 	CreatedAt string `json:"created_at"`
 }
 
-// boundConversation is the conversation the session is bound to; a session
-// bound to none, or to one since deleted, is refused rather than shown an
-// empty chat.
-func boundConversation(d *db.DB, call Call) (int64, error) {
+// boundConversation is the conversation the session is bound to. A session
+// bound to none, to one since deleted, or to an isolated thread is refused
+// rather than shown an empty chat: code questions, spec review threads,
+// tuning chats and branch reviewer threads stay in their own card
+// (TestCodeQuestionGuard_NoGoToolReadsChatHistory).
+func boundConversation(ctx context.Context, d *db.DB, call Call) (int64, error) {
 	id := call.Binding.ConversationID
 	if id <= 0 {
 		return 0, &ValidationError{Msg: "this session is not bound to a chat conversation, so there is no chat history to read"}
 	}
-	conv, err := d.GetChatConversation(id)
-	if err != nil {
-		return 0, err
-	}
-	if conv == nil {
+	var isolated bool
+	err := d.QueryRowContext(ctx, `SELECT COALESCE(context_type, '') IN
+  ('code_question', 'spec_review_thread', 'analytics_tuning', 'review_reviewer')
+FROM chat_conversations WHERE id = ?`, id).Scan(&isolated)
+	if errors.Is(err, sql.ErrNoRows) {
 		return 0, &ValidationError{Msg: fmt.Sprintf("chat conversation %d no longer exists", id)}
+	}
+	if err != nil {
+		return 0, fmt.Errorf("reading chat conversation %d: %w", id, err)
+	}
+	if isolated {
+		return 0, &ValidationError{Msg: "this chat's history is not readable through tools"}
 	}
 	return id, nil
 }
@@ -122,12 +130,12 @@ func NewGetChatHistory() *Tool {
 		Access:      AccessRead,
 		CompanyData: true,
 		Surfaces:    chatHistorySurfaces(),
-		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
+		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
 			var a getChatHistoryArgs
 			if err := json.Unmarshal(call.Args, &a); err != nil {
 				return nil, &ValidationError{Msg: "invalid arguments", Err: err}
 			}
-			conv, err := boundConversation(d, call)
+			conv, err := boundConversation(ctx, d, call)
 			if err != nil {
 				return nil, err
 			}
@@ -201,7 +209,7 @@ func NewListChatArtifacts() *Tool {
 			if err := json.Unmarshal(call.Args, &a); err != nil {
 				return nil, &ValidationError{Msg: "invalid arguments", Err: err}
 			}
-			conv, err := boundConversation(d, call)
+			conv, err := boundConversation(ctx, d, call)
 			if err != nil {
 				return nil, err
 			}
@@ -260,7 +268,7 @@ func NewGetChatArtifact() *Tool {
 			if err := json.Unmarshal(call.Args, &a); err != nil {
 				return nil, &ValidationError{Msg: "invalid arguments", Err: err}
 			}
-			conv, err := boundConversation(d, call)
+			conv, err := boundConversation(ctx, d, call)
 			if err != nil {
 				return nil, err
 			}
