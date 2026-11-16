@@ -257,7 +257,11 @@ func (p *sessionPersister) startTurn(c chat.Command) {
 	}
 	p.cur = &persistedTurn{st: st, t: p.store.Turn(st), heartbeat: p.now()}
 	p.emit(startedEvent(st))
-	line, err := json.Marshal(chat.Command{Type: chat.CommandTurn, TurnID: st.TurnID, Text: st.SendText,
+	text := st.SendText
+	if c.Screen != "" {
+		text = c.Screen + "\n\n" + text // ChatTurnText.compose: the screen block goes first
+	}
+	line, err := json.Marshal(chat.Command{Type: chat.CommandTurn, TurnID: st.TurnID, Text: text,
 		Attachments: st.Attachments, Replay: st.Replay || c.Replay})
 	if err != nil || !p.forward(line) {
 		// The session is gone: the turn never ran.

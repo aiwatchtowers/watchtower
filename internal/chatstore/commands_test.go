@@ -154,10 +154,10 @@ var chatCommandNames = []string{
 	"chat.attach", "chat.attach_delete", "chat.attach_link", "chat.branch",
 	"chat.code_question.delete_empty", "chat.comment.add", "chat.comment.apply",
 	"chat.comment.delete_unsent", "chat.comment.mark_sent", "chat.comment.resolve", "chat.context",
-	"chat.delete", "chat.delete_untouched", "chat.draft.clear", "chat.draft.save", "chat.new", "chat.pin",
+	"chat.delete", "chat.delete_untouched", "chat.draft.clear", "chat.draft.save", "chat.message.append", "chat.new", "chat.pin",
 	"chat.project.add_source", "chat.project.archive", "chat.project.create", "chat.project.delete",
 	"chat.project.instructions", "chat.project.remove_file", "chat.project.remove_source",
-	"chat.project.rename", "chat.read", "chat.recover", "chat.release_launches", "chat.rename",
+	"chat.project.rename", "chat.read", "chat.recover", "chat.release_launches", "chat.rename", "chat.reply.finish",
 	"chat.reviewer_thread", "chat.set_model", "chat.set_project", "chat.set_routing", "chat.set_title",
 	"chat.stop", "meetings.delete",
 }

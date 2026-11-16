@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -595,4 +596,36 @@ func TestPersist_StartedCarriesThePrefixResults(t *testing.T) {
 	assert.Equal(t, "decision", st.IdeaKind)
 	assert.Empty(t, st.RememberOutcome)
 	r.close()
+}
+
+// TestPersist_ScreenBlockIsSentButNotStored: the help popup's screen block
+// goes to the provider ahead of the text and is never stored (the Mac's
+// ChatTurnText.compose).
+func TestPersist_ScreenBlockIsSentButNotStored(t *testing.T) {
+	backend := newPersistBackend()
+	r, _ := startPersistSession(t, backend)
+	r.next(chat.EventSessionReady)
+	r.send(chat.Command{Type: chat.CommandTurn, TurnID: "t1", Text: "What is this?", Screen: "[SCREEN] Inbox"})
+	r.untilTurnEnd()
+	r.close()
+	backend.mu.Lock()
+	sent := backend.turns[0].Text
+	backend.mu.Unlock()
+	// The session puts its time line first, as for every turn.
+	assert.True(t, strings.HasSuffix(sent, "[SCREEN] Inbox\n\nWhat is this?"), "sent: %q", sent)
+	rows := persistedRows(t, openRunDB(t, r), r.convID)
+	require.NotEmpty(t, rows)
+	assert.Equal(t, "What is this?", rows[0].Text)
+}
+
+// TestStubSessionBackend_AnswersAtOnce: the hidden --test-stub-reply backend
+// (the Desktop's chat timing test) answers each turn with its text.
+func TestStubSessionBackend_AnswersAtOnce(t *testing.T) {
+	var evs []chat.Event
+	err := stubSessionBackend{reply: "ok"}.Turn(context.Background(), chat.Command{TurnID: "t1"},
+		func(e chat.Event) { evs = append(evs, e) })
+	require.NoError(t, err)
+	require.Len(t, evs, 3)
+	assert.Equal(t, chat.Event{Type: chat.EventTextDelta, TurnID: "t1", Text: "ok"}, evs[1])
+	assert.Equal(t, chat.StatusComplete, evs[2].Status)
 }

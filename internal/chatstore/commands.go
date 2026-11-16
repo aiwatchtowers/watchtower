@@ -178,6 +178,8 @@ func RegisterCommands(r *tower.Registry) {
 
 	// A recording's delete takes its meeting chat with it (the last Swift
 	// writer of the chat tables outside the chat screens).
+	register(r, "chat.message.append", []string{"chat_messages"}, chatMessageAppend)
+	register(r, "chat.reply.finish", []string{"chat_messages", "chat_conversations"}, chatReplyFinish)
 	register(r, "meetings.delete", []string{"meeting_transcripts", "meeting_recaps", "chat_conversations", "chat_messages"}, meetingsDelete)
 }
 
@@ -749,3 +751,53 @@ func changed(res sql.Result, err error) (bool, error) {
 }
 
 func nullString(s string) sql.NullString { return sql.NullString{String: s, Valid: s != ""} }
+
+// chatMessageAppend is ChatMessageQueries.insert behind requireConversation:
+// a complete row with no turn.
+func chatMessageAppend(ctx context.Context, c *tower.Ctx, q api.ChatMessageAppendRequest) (api.ChatMessageAppendResponse, error) {
+	if q.ConversationID <= 0 || !slices.Contains([]string{"user", "assistant", "system"}, q.Role) {
+		return api.ChatMessageAppendResponse{}, tower.Refuse(api.CodeUnsupported, sentenceBadRequest)
+	}
+	return write(ctx, c, sentenceChatGone, func(tx *sql.Tx) (api.ChatMessageAppendResponse, error) {
+		var one int
+		if err := tx.QueryRow(`SELECT 1 FROM chat_conversations WHERE id = ?`, q.ConversationID).Scan(&one); errors.Is(err, sql.ErrNoRows) {
+			return api.ChatMessageAppendResponse{}, ErrConversationGone
+		} else if err != nil {
+			return api.ChatMessageAppendResponse{}, fmt.Errorf("reading chat conversation %d: %w", q.ConversationID, err)
+		}
+		res, err := tx.Exec(`INSERT INTO chat_messages (conversation_id, role, text, created_at, turn_id) VALUES (?, ?, ?, ?, '')`,
+			q.ConversationID, q.Role, q.Text, seconds(c.Now()))
+		if err != nil {
+			return api.ChatMessageAppendResponse{}, fmt.Errorf("appending a chat message: %w", err)
+		}
+		id, err := res.LastInsertId()
+		return api.ChatMessageAppendResponse{MessageID: id}, err
+	})
+}
+
+// chatReplyFinish is ChatMessageQueries.finalizeEmbedded (and the store's
+// touch of a complete reply): the reply's text, status and error, by its id
+// within its conversation.
+func chatReplyFinish(ctx context.Context, c *tower.Ctx, q api.ChatReplyFinishRequest) (api.ChatDone, error) {
+	if q.ConversationID <= 0 || q.MessageID <= 0 ||
+		!slices.Contains([]string{StatusComplete, StatusPartial, StatusError}, q.Status) {
+		return api.ChatDone{}, tower.Refuse(api.CodeUnsupported, sentenceBadRequest)
+	}
+	code := sql.NullString{String: q.ErrorCode, Valid: q.ErrorCode != ""}
+	msg := sql.NullString{String: q.ErrorMessage, Valid: q.ErrorMessage != "" || q.ErrorCode != ""}
+	return write(ctx, c, sentenceMessageGone, func(tx *sql.Tx) (api.ChatDone, error) {
+		res, err := tx.Exec(`UPDATE chat_messages SET text = ?, status = ?, error_code = ?, error_message = ?
+			WHERE id = ? AND conversation_id = ? AND role = 'assistant'`,
+			q.Text, q.Status, code, msg, q.MessageID, q.ConversationID)
+		if err := requireRow(res, err); errors.Is(err, ErrConversationGone) {
+			return api.ChatDone{}, ErrNotFound
+		} else if err != nil {
+			return api.ChatDone{}, fmt.Errorf("finishing chat reply %d: %w", q.MessageID, err)
+		}
+		if q.Status != StatusComplete {
+			return api.ChatDone{}, nil
+		}
+		_, err = tx.Exec(`UPDATE chat_conversations SET updated_at = ? WHERE id = ?`, seconds(c.Now()), q.ConversationID)
+		return api.ChatDone{}, err
+	})
+}

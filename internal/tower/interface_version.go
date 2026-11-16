@@ -5,4 +5,4 @@ package tower
 // InterfaceVersion is the generated interface's version (the first 16 hex
 // characters of the SHA-256 of the generated TowerTypes.swift and
 // TowerCommands.swift), answered by tower.hello.
-const InterfaceVersion = "45d8e3c963f59cc8"
+const InterfaceVersion = "709b19cbed8682f2"

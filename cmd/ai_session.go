@@ -104,7 +104,10 @@ func runAISession(cmd *cobra.Command, _ []string) error {
 	}
 	mcpArgs := sessionMCPArgs(aiSessionFlagSurface, conv, turnFile, chatProjectID)
 
-	backend, err := aiSessionBackend(cmd, cfg, database, dbPath, conv, turnFile, project, chatProjectID, mcpArgs, cancel)
+	var backend chat.Backend = stubSessionBackend{reply: aiSessionFlagStubReply}
+	if aiSessionFlagStubReply == "" {
+		backend, err = aiSessionBackend(cmd, cfg, database, dbPath, conv, turnFile, project, chatProjectID, mcpArgs, cancel)
+	}
 	if err != nil {
 		return fail(chat.CodeProviderUnavailable, err.Error())
 	}

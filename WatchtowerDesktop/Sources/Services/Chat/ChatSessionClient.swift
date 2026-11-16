@@ -396,7 +396,9 @@ final class FoundationChatSessionProcess: ChatSessionProcess, @unchecked Sendabl
         return try FoundationChatSessionProcess(executable: cliPath, arguments: arguments)
     }
 
-    init(executable: String, arguments: [String]) throws {
+    /// `environment` replaces the app's resolved one (tests run the CLI
+    /// with their own HOME); nil keeps it.
+    init(executable: String, arguments: [String], environment: [String: String]? = nil) throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
@@ -404,7 +406,7 @@ final class FoundationChatSessionProcess: ChatSessionProcess, @unchecked Sendabl
         // Built on the main actor (`ChatSessionPool.ProcessFactory`): never wait
         // for the login-shell probe here. The app's pool holds admission until
         // the resolve is done (`holdAdmissionUntil` in `ensureChatSessionPool`).
-        process.environment = Constants.resolvedEnvironmentIfReady()
+        process.environment = environment ?? Constants.resolvedEnvironmentIfReady()
         let input = Pipe()
         let output = Pipe()
         let errors = Pipe()

@@ -23,6 +23,7 @@ public enum TowerCommand: String, CaseIterable, Sendable {
     case chatDeleteUntouched = "chat.delete_untouched"
     case chatDraftClear = "chat.draft.clear"
     case chatDraftSave = "chat.draft.save"
+    case chatMessageAppend = "chat.message.append"
     case chatNew = "chat.new"
     case chatPin = "chat.pin"
     case chatProjectAddSource = "chat.project.add_source"
@@ -37,6 +38,7 @@ public enum TowerCommand: String, CaseIterable, Sendable {
     case chatRecover = "chat.recover"
     case chatReleaseLaunches = "chat.release_launches"
     case chatRename = "chat.rename"
+    case chatReplyFinish = "chat.reply.finish"
     case chatReviewerThread = "chat.reviewer_thread"
     case chatSetModel = "chat.set_model"
     case chatSetProject = "chat.set_project"
@@ -73,6 +75,7 @@ public enum TowerCommand: String, CaseIterable, Sendable {
         case .chatDeleteUntouched: false
         case .chatDraftClear: false
         case .chatDraftSave: false
+        case .chatMessageAppend: false
         case .chatNew: false
         case .chatPin: false
         case .chatProjectAddSource: false
@@ -87,6 +90,7 @@ public enum TowerCommand: String, CaseIterable, Sendable {
         case .chatRecover: false
         case .chatReleaseLaunches: false
         case .chatRename: false
+        case .chatReplyFinish: false
         case .chatReviewerThread: false
         case .chatSetModel: false
         case .chatSetProject: false

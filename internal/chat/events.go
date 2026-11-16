@@ -201,6 +201,9 @@ type Command struct {
 	EditMessageID int64   `json:"edit_message_id,omitempty"`
 	Quotes        []int64 `json:"quotes,omitempty"`
 	TitleText     *string `json:"title_text,omitempty"`
+	// Screen (a send only) is the Mac help popup's current-screen block:
+	// sent to the provider ahead of the turn's text, never stored.
+	Screen string `json:"screen,omitempty"`
 }
 
 // errorEvent builds an error event. A non-empty turnID makes it the turn's

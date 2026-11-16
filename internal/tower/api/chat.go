@@ -372,6 +372,37 @@ type ChatArtifactSaveEditResponse struct {
 	Version int64 `json:"version"`
 }
 
+// ChatMessageAppendRequest is chat.message.append: one complete row of an
+// embedded chat that is not a turn (a system notice after a reply, a local
+// line), as ChatMessageQueries.insert wrote it. Role is user, assistant or
+// system.
+type ChatMessageAppendRequest struct {
+	WriteParams
+	ConversationID int64  `json:"conversation_id"`
+	Role           string `json:"role"`
+	Text           string `json:"text"`
+}
+
+// ChatMessageAppendResponse answers chat.message.append.
+type ChatMessageAppendResponse struct {
+	MessageID int64 `json:"message_id"`
+}
+
+// ChatReplyFinishRequest is chat.reply.finish: an embedded chat's reply as
+// the Mac shows it once its turn ended (`ai query --persist` saved the
+// streamed text): the surface's own reply text, or the turn's failure
+// (ChatMessageQueries.finalizeEmbedded). Status is complete, partial or
+// error; a complete reply touches its conversation.
+type ChatReplyFinishRequest struct {
+	WriteParams
+	ConversationID int64  `json:"conversation_id"`
+	MessageID      int64  `json:"message_id"`
+	Text           string `json:"text"`
+	Status         string `json:"status"`
+	ErrorCode      string `json:"error_code,omitempty"`
+	ErrorMessage   string `json:"error_message,omitempty"`
+}
+
 // MeetingsDeleteRequest is meetings.delete: a recording with its meeting
 // chat (MeetingTranscriptQueries.delete); its audio file goes after the
 // commit.

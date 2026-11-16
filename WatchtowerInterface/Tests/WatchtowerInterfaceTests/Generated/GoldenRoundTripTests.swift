@@ -114,6 +114,14 @@ final class GoldenRoundTripTests: XCTestCase {
         try assertRoundTrip(ChatDraftSaveRequest.self, golden: "ChatDraftSaveRequest")
     }
 
+    func testChatMessageAppendRequestRoundTrip() throws {
+        try assertRoundTrip(ChatMessageAppendRequest.self, golden: "ChatMessageAppendRequest")
+    }
+
+    func testChatMessageAppendResponseRoundTrip() throws {
+        try assertRoundTrip(ChatMessageAppendResponse.self, golden: "ChatMessageAppendResponse")
+    }
+
     func testChatNewRequestRoundTrip() throws {
         try assertRoundTrip(ChatNewRequest.self, golden: "ChatNewRequest")
     }
@@ -172,6 +180,10 @@ final class GoldenRoundTripTests: XCTestCase {
 
     func testChatRenameRequestRoundTrip() throws {
         try assertRoundTrip(ChatRenameRequest.self, golden: "ChatRenameRequest")
+    }
+
+    func testChatReplyFinishRequestRoundTrip() throws {
+        try assertRoundTrip(ChatReplyFinishRequest.self, golden: "ChatReplyFinishRequest")
     }
 
     func testChatReviewerThreadRequestRoundTrip() throws {
