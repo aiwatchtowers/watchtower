@@ -9,6 +9,7 @@ import (
 	"slices"
 	"testing"
 	"testing/synctest"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -21,12 +22,15 @@ var updateParts = flag.Bool("update", false, "rewrite testdata/parts.json from t
 // partsCase is one sample of testdata/parts.json: the builder's inputs and
 // the part it must yield. ChatWire (Swift) decodes the same file.
 type partsCase struct {
-	Kind         string           `json:"kind"`
-	TurnID       string           `json:"turn_id"`
-	Message      FeedMessage      `json:"message"`
-	Conversation FeedConversation `json:"conversation"`
-	Actions      []FeedAction     `json:"actions"`
-	Part         *Part            `json:"part"`
+	Kind string `json:"kind"`
+	// ClientDerived: the kind is split out of the text part by the client
+	// (D14); the engine emits no part of it and the text part is its fallback.
+	ClientDerived bool             `json:"client_derived,omitempty"`
+	TurnID        string           `json:"turn_id"`
+	Message       FeedMessage      `json:"message"`
+	Conversation  FeedConversation `json:"conversation"`
+	Actions       []FeedAction     `json:"actions"`
+	Part          *Part            `json:"part"`
 }
 
 func loadPartsCases(t *testing.T) []partsCase {
@@ -47,8 +51,12 @@ func loadPartsCases(t *testing.T) []partsCase {
 func (c partsCase) build() []Part { return BuildParts(c.Message, c.Conversation, c.Actions) }
 
 func (c partsCase) partOfKind() *Part {
+	want := c.Kind
+	if c.ClientDerived {
+		want = PartText
+	}
 	for _, p := range c.build() {
-		if p.Kind == c.Kind {
+		if p.Kind == want {
 			return &p
 		}
 	}
@@ -91,7 +99,12 @@ func TestCHAT06_EveryPartKindHasFallback(t *testing.T) {
 		require.GreaterOrEqual(t, i, 0, "parts.json has a sample of %s", kind)
 		c := cases[i]
 		got := c.partOfKind()
-		require.NotNil(t, got, "BuildParts yields a %s part", kind)
+		require.NotNil(t, got, "BuildParts yields a %s part (the text part for a client-derived kind)", kind)
+		if c.ClientDerived {
+			for _, p := range c.build() {
+				assert.NotEqual(t, kind, p.Kind, "the engine never emits a client-derived kind (D14)")
+			}
+		}
 		assert.NotEmpty(t, got.Fallback.Text, kind)
 		require.NotNil(t, c.Part, "the fixture holds the expected %s part", kind)
 		want, _ := json.Marshal(c.Part)
@@ -248,4 +261,60 @@ func TestParts_RefitAfterACapCut(t *testing.T) {
 	assert.Equal(t, []string{PartText, PartApproval}, kinds())
 	assert.Equal(t, "I propose…", m.Parts[0].Fallback.Text)
 	assert.JSONEq(t, `{"text":"I propose…","text_cut":true}`, string(m.Parts[0].Payload))
+}
+
+func kindsOf(parts []Part) []string {
+	var out []string
+	for _, p := range parts {
+		out = append(out, p.Kind)
+	}
+	return out
+}
+
+// TestParts_LiveSlackSuppressesMarksPerMessage: LIVE-01 holds from the
+// first Live Slack message on, not for the whole conversation.
+func TestParts_LiveSlackSuppressesMarksPerMessage(t *testing.T) {
+	since := int64(5)
+	conv := FeedConversation{LiveSlackSince: &since}
+	before := FeedMessage{ID: 4, Role: "user", Text: "decided: ship it"}
+	after := FeedMessage{ID: 5, Role: "user", Text: "decided: ship it"}
+	rem := FeedMessage{ID: 6, Role: "user", Text: "remember: short answers"}
+	assert.Equal(t, []string{PartText, PartKnowledgeMark}, kindsOf(BuildParts(before, conv, nil)))
+	assert.Equal(t, []string{PartText}, kindsOf(BuildParts(after, conv, nil)))
+	assert.Equal(t, []string{PartText}, kindsOf(BuildParts(rem, conv, nil)), "no remember promise in a Live Slack chat")
+	assert.Equal(t, []string{PartText, PartRememberMark}, kindsOf(BuildParts(
+		FeedMessage{ID: 3, Role: "user", Text: rem.Text}, conv, nil)))
+
+	// The refit after a hub cut builds the same way.
+	after.liveSince, before.liveSince = &since, &since
+	for _, m := range []*FeedMessage{&after, &before} {
+		m.Parts = BuildParts(*m, conv, nil)
+		m.Text += " (cut)"
+		m.RefitParts()
+	}
+	assert.Equal(t, []string{PartText}, kindsOf(after.Parts))
+	assert.Equal(t, []string{PartText, PartKnowledgeMark}, kindsOf(before.Parts))
+}
+
+// TestParts_LiveSlackHoldsOnTheOlderPagePath: a page read has no conversation
+// meta of its own; the Live Slack mark rule still applies per message.
+func TestParts_LiveSlackHoldsOnTheOlderPagePath(t *testing.T) {
+	d := openDB(t)
+	conv := newConversation(t, d)
+	var ids []int64
+	var parent any
+	for range 3 {
+		res, err := d.Exec(`INSERT INTO chat_messages (conversation_id, parent_id, role, text, created_at, turn_id)
+			VALUES (?, ?, 'user', 'decided: ship it', 1, '')`, conv, parent)
+		require.NoError(t, err)
+		id, _ := res.LastInsertId()
+		ids, parent = append(ids, id), id
+	}
+	_, err := d.Exec(`UPDATE chat_conversations SET active_leaf_message_id = ?, live_slack_since = ? WHERE id = ?`, ids[2], ids[1], conv)
+	require.NoError(t, err)
+	page, err := ReadFeed(context.Background(), d, conv, ids[2], time.Unix(10, 0), nil)
+	require.NoError(t, err)
+	require.Len(t, page.Messages, 2)
+	assert.Equal(t, []string{PartText, PartKnowledgeMark}, kindsOf(page.Messages[0].Parts))
+	assert.Equal(t, []string{PartText}, kindsOf(page.Messages[1].Parts))
 }

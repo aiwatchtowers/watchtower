@@ -289,18 +289,24 @@ child is never started without it.
 **Observable:** A chat message reaches every client as typed parts
 (`text`, `steps`, `sources`, `artifact`, `approval`, `question`, `error`,
 `remember_mark`, `knowledge_mark`, `published_link`, `attachment`,
-`routing_note`), each with a payload and a fallback: a non-empty text plus
-actions that may only open a permitted link (`open_url`, the CHAT-05 rule:
-`https://claude.ai/<page>` the turn published), send one fixed owner text the
-owner taps (`chat_turn`, from `FallbackTurnTexts`) or do nothing (`none`). A
-client that did not list a kind in `hello.part_kinds` gets the fallback and no
-payload (D15; the relay path always sends both, D21), so a kind added later
-never leaves an older client with a blank row. The engine builds every part
-(`internal/chatengine/parts.go`); only the question card and the artifact
-fences are also parsed out of the text on the client, by the one parser in
-`WatchtowerChatText` (`ChatQuestionParser`, pinned to its Go twin
-`chat.ParseQuestionCard` by `question_parse_cases.json`). The flat message
-fields (`text`, `steps`, `attachments`) stay beside `parts` for one release.
+`routing_note`). Every part kind the engine emits has a payload and a
+non-empty fallback: a text plus actions that may only open a permitted link
+(`open_url`, the CHAT-05 rule: `https://claude.ai/<page>` the turn published),
+send one fixed owner text the owner taps (`chat_turn`, from
+`FallbackTurnTexts`) or do nothing (`none`). A client that did not list a kind
+in `hello.part_kinds` gets the fallback and no payload (D15; the relay path
+always sends both, D21), so a kind added later never leaves an older client
+with a blank row. Two kinds, `artifact` and `question`, live inside the answer
+text: the engine never emits them (D14), every client splits them out of the
+`text` part with the one parser in `WatchtowerChatText` (`ChatQuestionParser`,
+pinned to its Go twin `chat.ParseQuestionCard` by `question_parse_cases.json`),
+and the `text` part's fallback stands in for them. Every kind in
+`testdata/parts.json`, the client-derived `artifact` and `question` included,
+has a registered `ChatUI` view (the Swift half of the guard lands with `ChatUI`,
+T7). The remember and knowledge marks are not built for a message at or after
+the conversation's first Live Slack message (LIVE-01), and a hub record cut that
+drops an action drops its approval part with it. The flat message fields
+(`text`, `steps`, `attachments`) stay beside `parts` for one release.
 
 **Guard:** `TestCHAT06_EveryPartKindHasFallback`,
 `TestParts_FixtureCoversEveryKind` (`internal/chatengine/parts_test.go`, over

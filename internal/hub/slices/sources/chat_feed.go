@@ -372,6 +372,7 @@ func fitFeed(p chatengine.Feed) ([]byte, error) {
 		case shrinkLargestText(p.Messages, over):
 		case clearSteps(p.Messages):
 		case len(p.Actions) > 0:
+			chatengine.DropApprovalPart(p.Messages, p.Actions[0].ID)
 			p.Actions = p.Actions[1:]
 		case uniseg.GraphemeClusterCount(p.Conversation.Title) > maxChatLabel:
 			p.Conversation.Title, _ = clipText(p.Conversation.Title, maxChatLabel)
@@ -407,7 +408,7 @@ func encodeChatPage(p chatPagePayload) ([]byte, error) {
 		if err != nil || len(b) <= MaxChatFeedBytes {
 			return b, err
 		}
-		if !shrinkLargestText(p.Messages, len(b)-MaxChatFeedBytes) && !clearSteps(p.Messages) {
+		if !shrinkLargestText(p.Messages, len(b)-MaxChatFeedBytes) && !clearSteps(p.Messages) && !chatengine.ClearApprovals(p.Messages) {
 			return b, nil
 		}
 	}

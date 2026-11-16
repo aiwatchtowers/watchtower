@@ -3,8 +3,8 @@ package chatengine
 // Message parts (unified chat spec §5.3, D14/D15): the typed pieces of a
 // message every chat client draws, each with a fallback an older client can
 // show instead. The engine builds every part that does not live in the answer
-// text; the text-derived ones (artifact, question) are only described here for
-// the fallback, the clients split them out of the text part themselves.
+// text; the text-derived ones (artifact, question) are never built here: the
+// clients split them out of the text part (D14), whose fallback stands in.
 // Pinned by testdata/parts.json (CHAT-06).
 
 import (
@@ -111,9 +111,9 @@ func FilterFeed(f Feed, c Client) Feed {
 }
 
 // BuildParts is m's parts: its text, attachments and marks, its steps and
-// sources, the artifacts and question card its text holds, the approvals of
-// its turn, published links, an error and, while its turn runs, the routing
-// note. actions are the feed's actions (any turn); conv the conversation meta.
+// sources, the approvals of its turn, published links, an error and, while
+// its turn runs, the routing note. The artifacts and the question card of the
+// text are not parts of the engine's: clients derive them (D14). actions are the feed's actions (any turn); conv the conversation meta.
 func BuildParts(m FeedMessage, conv FeedConversation, actions []FeedAction) []Part {
 	parts := []Part{}
 	live := m.Role == "assistant" && conv.Lease != nil && conv.Lease.TurnID != "" && conv.Lease.TurnID == m.turnID
@@ -125,7 +125,7 @@ func BuildParts(m FeedMessage, conv FeedConversation, actions []FeedAction) []Pa
 		parts = append(parts, newPart(PartAttachment, a, fmt.Sprintf("Attachment: %s (%s, %s)", a.Name, a.Mime, byteSize(a.Size)), nil))
 	}
 	if m.Role == "user" {
-		parts = append(parts, ownerMarks(m, conv)...)
+		parts = append(parts, ownerMarks(m, conv.LiveSlackSince)...)
 		return parts
 	}
 	if len(m.Steps) > 0 {
@@ -134,7 +134,6 @@ func BuildParts(m FeedMessage, conv FeedConversation, actions []FeedAction) []Pa
 			parts = append(parts, *src)
 		}
 	}
-	parts = append(parts, textDerivedParts(m, live)...)
 	for _, a := range actions {
 		if a.turnID == m.turnID && m.turnID != "" {
 			parts = append(parts, approvalPart(a))
@@ -170,7 +169,7 @@ func (m *FeedMessage) RefitParts() {
 		return p.Kind != PartApproval && p.Kind != PartError && p.Kind != PartRoutingNote
 	})
 	live := slices.ContainsFunc(m.Parts, func(p Part) bool { return p.Kind == PartRoutingNote })
-	conv := FeedConversation{}
+	conv := FeedConversation{LiveSlackSince: m.liveSince}
 	if live {
 		conv.Lease = &FeedLease{TurnID: m.turnID}
 	}
@@ -200,7 +199,12 @@ func newPart(kind string, payload any, text string, actions []FallbackAction) Pa
 // prefixes the Swift RememberCommand and KnowledgePrefix read (and the Go
 // twins that act on them). Whether the CLI stored the line stays the
 // Desktop's own note.
-func ownerMarks(m FeedMessage, conv FeedConversation) []Part {
+func ownerMarks(m FeedMessage, liveSince *int64) []Part {
+	// LIVE-01: from the first Live Slack message on, `instructions remember`
+	// refuses the line and knowledge is never saved; no mark promises it.
+	if liveSince != nil && m.ID >= *liveSince {
+		return nil
+	}
 	var out []Part
 	if rule, ok := instructions.ParseRemember(m.Text); ok {
 		text := "Remembering for all chats: " + rule
@@ -209,8 +213,7 @@ func ownerMarks(m FeedMessage, conv FeedConversation) []Part {
 		}
 		out = append(out, newPart(PartRememberMark, map[string]any{"rule": rule}, text, nil))
 	}
-	// LIVE-01: a chat that used Live Slack saves no knowledge.
-	if kind, body, ok := ideas.ParseKnowledgePrefix(m.Text); ok && conv.LiveSlackSince == nil {
+	if kind, body, ok := ideas.ParseKnowledgePrefix(m.Text); ok {
 		word := "a fact"
 		if kind == "decision" {
 			word = "a decision"
@@ -277,37 +280,6 @@ func sourcesPart(steps []FeedStep) *Part {
 	}
 	p := newPart(PartSources, map[string]any{"sources": list}, "Sources:\n"+strings.Join(lines, "\n"), nil)
 	return &p
-}
-
-// textDerivedParts describes the artifacts and the question card of the text;
-// clients take them from the text part (D14), so these are for a client that
-// reads parts only, and for the fallbacks.
-func textDerivedParts(m FeedMessage, live bool) []Part {
-	var out []Part
-	for _, a := range chatstore.ParseArtifacts(m.Text, !live) {
-		out = append(out, newPart(PartArtifact, map[string]any{"key": a.Key, "kind": a.Kind, "title": a.Title, "meta": a.Meta},
-			fmt.Sprintf("Artifact: %s (%s)", a.Title, a.Kind), nil))
-	}
-	if _, card := chat.ParseQuestionCard(m.Text, !live); card != nil {
-		out = append(out, newPart(PartQuestion, card, cardReadable(card), nil))
-	}
-	return out
-}
-
-func cardReadable(card *chat.QuestionCard) string {
-	blocks := make([]string, len(card.Questions))
-	for i, q := range card.Questions {
-		lines := []string{q.Question}
-		for _, o := range q.Options {
-			line := "- " + o.Label
-			if o.Recommended {
-				line += " (recommended)"
-			}
-			lines = append(lines, line)
-		}
-		blocks[i] = strings.Join(lines, "\n")
-	}
-	return strings.Join(blocks, "\n\n")
 }
 
 // approvalPart is an agent action waiting for, or decided by, the owner.
@@ -498,4 +470,45 @@ func byteSize(n int64) string {
 		return fmt.Sprintf("%.0f KB", float64(n)/(1<<10))
 	}
 	return fmt.Sprintf("%d B", n)
+}
+
+// DropApprovalPart removes the approval part of action id from msgs (the
+// hub's fit drops the flat action; its copy goes with it).
+func DropApprovalPart(msgs []FeedMessage, id int64) {
+	for i := range msgs {
+		msgs[i].Parts = slices.DeleteFunc(slices.Clone(msgs[i].Parts), func(p Part) bool {
+			return p.Kind == PartApproval && approvalID(p) == id
+		})
+	}
+}
+
+// ClearApprovals removes every approval part of the message whose approval
+// parts encode largest; false when no message has one (a page has no flat
+// actions to drop first).
+func ClearApprovals(msgs []FeedMessage) bool {
+	best, bestLen := -1, 0
+	for i := range msgs {
+		n := 0
+		for _, p := range msgs[i].Parts {
+			if p.Kind == PartApproval {
+				n += len(p.Payload) + len(p.Fallback.Text)
+			}
+		}
+		if n > bestLen {
+			best, bestLen = i, n
+		}
+	}
+	if best < 0 {
+		return false
+	}
+	msgs[best].Parts = slices.DeleteFunc(slices.Clone(msgs[best].Parts), func(p Part) bool { return p.Kind == PartApproval })
+	return true
+}
+
+func approvalID(p Part) int64 {
+	var v struct {
+		ID int64 `json:"id"`
+	}
+	_ = json.Unmarshal(p.Payload, &v)
+	return v.ID
 }

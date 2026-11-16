@@ -86,7 +86,7 @@ func ReadFeed(ctx context.Context, d *db.DB, conv, before int64, now time.Time, 
 				if err != nil {
 					return err
 				}
-				fillParts(out.Messages, FeedConversation{}, pageActions)
+				fillParts(out.Messages, FeedConversation{LiveSlackSince: meta.LiveSlackSince}, pageActions)
 				out.HasMore = at > PageSize
 			}
 			return nil
@@ -126,6 +126,7 @@ func ReadFeed(ctx context.Context, d *db.DB, conv, before int64, now time.Time, 
 // routing are in.
 func fillParts(msgs []FeedMessage, conv FeedConversation, actions []FeedAction) {
 	for i := range msgs {
+		msgs[i].liveSince = conv.LiveSlackSince
 		msgs[i].Parts = BuildParts(msgs[i], conv, actions)
 	}
 }
@@ -268,6 +269,9 @@ type FeedMessage struct {
 	Parts []Part `json:"parts"`
 
 	turnID string
+	// liveSince is the conversation's live_slack_since, kept so a refit
+	// after a record cut builds the marks the same way.
+	liveSince *int64
 }
 
 type FeedArtifact struct {

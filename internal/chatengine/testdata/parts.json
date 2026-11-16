@@ -153,6 +153,7 @@
   },
   {
     "kind": "artifact",
+    "client_derived": true,
     "turn_id": "t1",
     "message": {
       "id": 2,
@@ -180,15 +181,13 @@
     },
     "actions": [],
     "part": {
-      "kind": "artifact",
+      "kind": "text",
       "payload": {
-        "key": "q3",
-        "kind": "document",
-        "meta": {},
-        "title": "Q3 plan"
+        "text": "Here it is:\n:::artifact key=\"q3\" kind=\"document\" title=\"Q3 plan\"\n# Q3\n- ship\n:::\nDone.",
+        "text_cut": false
       },
       "fallback": {
-        "text": "Artifact: Q3 plan (document)",
+        "text": "Here it is:\n:::artifact key=\"q3\" kind=\"document\" title=\"Q3 plan\"\n# Q3\n- ship\n:::\nDone.",
         "actions": []
       }
     }
@@ -253,6 +252,7 @@
   },
   {
     "kind": "question",
+    "client_derived": true,
     "turn_id": "t1",
     "message": {
       "id": 2,
@@ -280,30 +280,13 @@
     },
     "actions": [],
     "part": {
-      "kind": "question",
+      "kind": "text",
       "payload": {
-        "questions": [
-          {
-            "id": "scope",
-            "question": "Which release?",
-            "multi": false,
-            "options": [
-              {
-                "label": "v1",
-                "description": "New",
-                "recommended": true
-              },
-              {
-                "label": "v2",
-                "description": "",
-                "recommended": false
-              }
-            ]
-          }
-        ]
+        "text": "Pick one.\n```watchtower-question\n{\"questions\":[{\"id\":\"scope\",\"question\":\"Which release?\",\"options\":[{\"label\":\"v1\",\"description\":\"New\",\"recommended\":true},{\"label\":\"v2\"}]}]}\n```",
+        "text_cut": false
       },
       "fallback": {
-        "text": "Which release?\n- v1 (recommended)\n- v2",
+        "text": "Pick one.\n\nWhich release?\n- v1 (recommended)\n- v2",
         "actions": []
       }
     }
