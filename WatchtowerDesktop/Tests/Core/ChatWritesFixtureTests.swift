@@ -11,13 +11,10 @@ import XCTest
 /// deletes these writers this pins every Go port to them. The writers that
 /// live in the app target run in `ChatWritesAppFixtureTests`.
 final class ChatWritesFixtureTests: XCTestCase {
-    /// The case writers this Core target cannot reach (the app target's).
-    static let appWriters: Set<String> = ["TuningChatSurface.setTitleIfEmpty"]
-
     func testSwiftWritersMatchEveryGoCase() async throws {
         let all = try ChatWritesFixture.cases()
         XCTAssertFalse(all.isEmpty)
-        for fixtureCase in all where !Self.appWriters.contains(fixtureCase.swift) {
+        for fixtureCase in all where !ChatWritesFixture.appWriters.contains(fixtureCase.swift) {
             let (pool, path) = try ChatWritesFixture.seeded(fixtureCase)
             defer { TestDatabase.cleanup(path: path) }
             let root = URL(fileURLWithPath: path).deletingLastPathComponent().appendingPathComponent("chat_files")

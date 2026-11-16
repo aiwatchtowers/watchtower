@@ -198,6 +198,14 @@ final class GoldenRoundTripTests: XCTestCase {
         try assertRoundTrip(HelloResponse.self, golden: "HelloResponse")
     }
 
+    func testMeetingsDeleteRequestRoundTrip() throws {
+        try assertRoundTrip(MeetingsDeleteRequest.self, golden: "MeetingsDeleteRequest")
+    }
+
+    func testMeetingsDeleteResponseRoundTrip() throws {
+        try assertRoundTrip(MeetingsDeleteResponse.self, golden: "MeetingsDeleteResponse")
+    }
+
     func testPingResponseRoundTrip() throws {
         try assertRoundTrip(PingResponse.self, golden: "PingResponse")
     }

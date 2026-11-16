@@ -159,7 +159,7 @@ var chatCommandNames = []string{
 	"chat.project.instructions", "chat.project.remove_file", "chat.project.remove_source",
 	"chat.project.rename", "chat.read", "chat.recover", "chat.release_launches", "chat.rename",
 	"chat.reviewer_thread", "chat.set_model", "chat.set_project", "chat.set_routing", "chat.set_title",
-	"chat.stop",
+	"chat.stop", "meetings.delete",
 }
 
 func TestChatCommands_RegisteredGuarded(t *testing.T) {
@@ -335,4 +335,56 @@ func mustJSON(t *testing.T, v any) string {
 	b, err := json.Marshal(v)
 	require.NoError(t, err)
 	return string(b)
+}
+
+// release_launches frees the Mac's own leases: a hub caller (the phone) is
+// refused, and so is an empty keep (it would free this launch's leases).
+func TestReleaseLaunches_MacOnlyAndNeedsKeep(t *testing.T) {
+	tw, d, _ := chatTower(t)
+	_, err := d.Exec(`INSERT INTO chat_conversations (id, title, created_at, updated_at) VALUES (1, 'A', 1, 1)`)
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO chat_turn_leases (conversation_id, owner, owner_id, turn_id, started_at_ms, heartbeat_at_ms) VALUES (1, 'desktop', 'L1', 'T1', 5, 5)`)
+	require.NoError(t, err)
+	resp := callChat(t, tw, "chat.release_launches", "h1", json.RawMessage(`{"keep":"other"}`), "hub")
+	require.Equal(t, api.StatusRefused, resp.Status)
+	assert.Equal(t, api.CodeNotPermitted, resp.Refusal.Code)
+	resp = callChat(t, tw, "chat.release_launches", "s1", json.RawMessage(`{"keep":""}`), "socket")
+	require.Equal(t, api.StatusRefused, resp.Status)
+	assert.Equal(t, api.CodeUnsupported, resp.Refusal.Code)
+	assert.Equal(t, [][]any{{1.0}}, rowsOf(t, d, `SELECT COUNT(*) FROM chat_turn_leases`))
+}
+
+// A hub caller's attach answer carries no Mac path.
+func TestChatAttach_NoPathForTheHub(t *testing.T) {
+	tw, d, _ := chatTower(t)
+	_, err := d.Exec(`INSERT INTO chat_conversations (id, title, created_at, updated_at) VALUES (1, 'A', 1, 1)`)
+	require.NoError(t, err)
+	resp := callChat(t, tw, "chat.attach", "h1", json.RawMessage(`{"conversation_id":1,"name":"n.txt","data_base64":"aGVsbG8K"}`), "hub")
+	require.Equal(t, api.StatusOK, resp.Status, "%+v", resp.Refusal)
+	var att api.ChatAttachResponse
+	require.NoError(t, json.Unmarshal(resp.Result, &att))
+	assert.Empty(t, att.Path)
+	assert.Positive(t, att.AttachmentID)
+}
+
+// A bad source kind is refused, not a constraint fault.
+func TestChatProjectAddSource_RefusesAnUnknownKind(t *testing.T) {
+	tw, d, _ := chatTower(t)
+	_, err := d.Exec(`INSERT INTO chat_projects (id, name, created_at, updated_at) VALUES (5, 'Alpha', 1, 1)`)
+	require.NoError(t, err)
+	resp := callChat(t, tw, "chat.project.add_source", "k1", json.RawMessage(`{"project_id":5,"kind":"wiki","ref":"x","label":"x"}`), "socket")
+	require.Equal(t, api.StatusRefused, resp.Status)
+	assert.Equal(t, api.CodeUnsupported, resp.Refusal.Code)
+}
+
+// meetings.delete removes the recording's audio file after the commit.
+func TestMeetingsDelete_RemovesTheAudioFile(t *testing.T) {
+	tw, d, _ := chatTower(t)
+	audio := filepath.Join(t.TempDir(), "rec.m4a")
+	require.NoError(t, os.WriteFile(audio, []byte("x"), 0o600))
+	_, err := d.Exec(`INSERT INTO meeting_transcripts (id, title, audio_path, transcript_text) VALUES (1, 'Sync', ?, 'hello')`, audio)
+	require.NoError(t, err)
+	resp := callChat(t, tw, "meetings.delete", "m1", json.RawMessage(`{"transcript_id":1}`), "socket")
+	require.Equal(t, api.StatusOK, resp.Status, "%+v", resp.Refusal)
+	assert.NoFileExists(t, audio)
 }

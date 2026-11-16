@@ -371,3 +371,17 @@ type ChatArtifactSaveEditRequest struct {
 type ChatArtifactSaveEditResponse struct {
 	Version int64 `json:"version"`
 }
+
+// MeetingsDeleteRequest is meetings.delete: a recording with its meeting
+// chat (MeetingTranscriptQueries.delete); its audio file goes after the
+// commit.
+type MeetingsDeleteRequest struct {
+	WriteParams
+	TranscriptID int64 `json:"transcript_id"`
+}
+
+// MeetingsDeleteResponse answers meetings.delete; Deleted is false when no
+// such recording existed.
+type MeetingsDeleteResponse struct {
+	Deleted bool `json:"deleted"`
+}

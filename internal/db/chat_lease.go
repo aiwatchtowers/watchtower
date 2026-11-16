@@ -18,6 +18,7 @@ const (
 	markSessionLostSQL = `UPDATE chat_messages SET error_code = 'session_lost'
 WHERE conversation_id = ? AND turn_id = ? AND role = 'assistant' AND status = 'partial'`
 	requestCancelSQL = `UPDATE chat_turn_leases SET cancel_requested_at_ms = ? WHERE conversation_id = ? AND turn_id = ?`
+	releaseLeaseSQL  = `DELETE FROM chat_turn_leases WHERE conversation_id = ? AND turn_id = ?`
 )
 
 // ChatLeaseStaleMS is the heartbeat age after which anyone may take a lease.
@@ -93,7 +94,7 @@ func (db *DB) RequestChatCancel(conv int64, turnID string, nowMS int64) (bool, e
 // ReleaseChatLeaseTx deletes turnID's lease inside the finalize transaction;
 // a different turn's lease is left alone.
 func ReleaseChatLeaseTx(tx *sql.Tx, conv int64, turnID string) error {
-	if _, err := tx.Exec(`DELETE FROM chat_turn_leases WHERE conversation_id = ? AND turn_id = ?`, conv, turnID); err != nil {
+	if _, err := tx.Exec(releaseLeaseSQL, conv, turnID); err != nil {
 		return fmt.Errorf("release chat lease: %w", err)
 	}
 	return nil
@@ -265,7 +266,7 @@ func RecoverChatTurnTx(tx *sql.Tx, conv int64, turnID string) (marked int64, rel
 	if marked, err = MarkChatTurnSessionLostTx(tx, conv, turnID); err != nil {
 		return 0, false, err
 	}
-	res, err := tx.Exec(`DELETE FROM chat_turn_leases WHERE conversation_id = ? AND turn_id = ?`, conv, turnID)
+	res, err := tx.Exec(releaseLeaseSQL, conv, turnID)
 	if err != nil {
 		return 0, false, fmt.Errorf("release chat lease: %w", err)
 	}

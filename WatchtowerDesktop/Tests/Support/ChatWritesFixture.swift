@@ -8,6 +8,9 @@ import GRDB
 /// `ChatWritesAppFixtureTests` (writers in the app target) run the Swift
 /// writer on the same seed and must leave the same rows.
 package enum ChatWritesFixture {
+    /// The case writers in the app target, which the Core tests cannot reach.
+    package static let appWriters: Set<String> = ["TuningChatSurface.setTitleIfEmpty", "MeetingTranscriptQueries.delete"]
+
     package struct Check {
         package let sql: String
         package let rows: [[Cell]]

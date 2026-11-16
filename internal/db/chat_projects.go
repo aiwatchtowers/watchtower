@@ -20,6 +20,10 @@ import (
 // ChatProjectDefaultName names a project created with a blank name.
 const ChatProjectDefaultName = "New project"
 
+// ChatProjectSourceKinds are the kinds chat_project_sources.kind takes
+// (ChatProjectSource.Kind).
+var ChatProjectSourceKinds = []string{"jira_project", "slack_channel", "confluence_space", "target", "track", "person"}
+
 // ErrChatProjectGone means no chat project has that id.
 var ErrChatProjectGone = errors.New("db: chat project not found")
 

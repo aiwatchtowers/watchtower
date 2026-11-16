@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -44,6 +45,8 @@ const (
 	sentenceBadRequest   = "Watchtower couldn't apply this: the request is incomplete. Update the app."
 	sentenceNoFilesDir   = "Watchtower couldn't find its attachments folder."
 	sentencePathOnMac    = "Only the Mac can attach a file by its path."
+	sentenceMacOnly      = "Only the Mac can do this."
+	sentenceBadKind      = "Watchtower can't add this kind of source to a project."
 	sentenceUnreadable   = "Watchtower couldn't read this file."
 	sentenceEmptyComment = "Write a comment first."
 	sentenceEmptyQuote   = "Select the text to comment on."
@@ -138,6 +141,9 @@ func RegisterCommands(r *tower.Registry) {
 		if q.Keep == "" {
 			return api.ChatReleaseLaunchesResponse{}, tower.Refuse(api.CodeUnsupported, sentenceBadRequest)
 		}
+		if c.Origin.Transport != "socket" {
+			return api.ChatReleaseLaunchesResponse{}, tower.Refuse(api.CodeNotPermitted, sentenceMacOnly)
+		}
 		return write(ctx, c, sentenceChatGone, func(tx *sql.Tx) (api.ChatReleaseLaunchesResponse, error) {
 			released, err := db.ReleaseDesktopLeasesExceptTx(tx, q.Keep)
 			return api.ChatReleaseLaunchesResponse{Released: int64(len(released))}, err
@@ -169,6 +175,26 @@ func RegisterCommands(r *tower.Registry) {
 		})
 	})
 	register(r, "chat.artifact.save_edit", []string{"chat_artifacts"}, chatArtifactSaveEdit)
+
+	// A recording's delete takes its meeting chat with it (the last Swift
+	// writer of the chat tables outside the chat screens).
+	register(r, "meetings.delete", []string{"meeting_transcripts", "meeting_recaps", "chat_conversations", "chat_messages"}, meetingsDelete)
+}
+
+// meetingsDelete is MeetingTranscriptQueries.delete; the audio file is
+// removed after the commit, a missing one being success (the daemon's
+// retention may have swept it).
+func meetingsDelete(ctx context.Context, c *tower.Ctx, q api.MeetingsDeleteRequest) (api.MeetingsDeleteResponse, error) {
+	var audio string
+	out, err := write(ctx, c, "", func(tx *sql.Tx) (api.MeetingsDeleteResponse, error) {
+		found, path, err := db.DeleteMeetingTranscriptTx(tx, q.TranscriptID)
+		audio = path
+		return api.MeetingsDeleteResponse{Deleted: found}, err
+	})
+	if err == nil && audio != "" {
+		removeStoredFile(audio)
+	}
+	return out, err
 }
 
 func registerProjectCommands(r *tower.Registry) {
@@ -216,6 +242,9 @@ func registerProjectCommands(r *tower.Registry) {
 			return out, nil
 		})
 	register(r, "chat.project.add_source", tSources, func(ctx context.Context, c *tower.Ctx, q api.ChatProjectAddSourceRequest) (api.ChatChanged, error) {
+		if !slices.Contains(db.ChatProjectSourceKinds, q.Kind) {
+			return api.ChatChanged{}, tower.Refuse(api.CodeUnsupported, sentenceBadKind)
+		}
 		return write(ctx, c, sentenceProjectGone, func(tx *sql.Tx) (api.ChatChanged, error) {
 			added, err := db.AddChatProjectSourceTx(tx, q.ProjectID, q.Kind, q.Ref, q.Label, seconds(c.Now()))
 			return api.ChatChanged{Changed: added}, err
@@ -516,7 +545,10 @@ func chatDeleteEmptyCodeQuestions(ctx context.Context, c *tower.Ctx, q api.ChatD
 			if err != nil {
 				return api.ChatCount{}, err
 			}
-			k, _ := res.RowsAffected()
+			k, err := res.RowsAffected()
+			if err != nil {
+				return api.ChatCount{}, err
+			}
 			n += k
 		}
 		return api.ChatCount{Count: n}, nil
@@ -596,7 +628,11 @@ func chatAttach(ctx context.Context, c *tower.Ctx, q api.ChatAttachRequest) (api
 		if err == nil && owner.project() {
 			err = db.DropChatProjectSessionsTx(tx, owner.id)
 		}
-		return api.ChatAttachResponse{AttachmentID: id, Mime: kind.Mime, Size: int64(len(data)), Path: f.path}, err
+		out := api.ChatAttachResponse{AttachmentID: id, Mime: kind.Mime, Size: int64(len(data))}
+		if c.Origin.Transport == "socket" {
+			out.Path = f.path // the Mac's own path; the phone gets none
+		}
+		return out, err
 	})
 	if err != nil {
 		f.discard()

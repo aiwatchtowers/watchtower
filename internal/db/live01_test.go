@@ -218,6 +218,7 @@ var displayOnlyReadersAt = map[string]string{
 	"chatstore/commands.go:chatAttach":                   "inserts an attachment row of an existing conversation, no text read",
 	"db/chat_artifact_keep.go:KeepChatArtifactTx":        "reads the LIVE-01 mark itself to refuse a keep; no text",
 	"db/chat_projects.go:DropChatProjectSessionsTx":      "clears session ids, no text",
+	"db/meeting_transcripts.go:DeleteMeetingTranscriptTx": "deletes a recording's meeting chat (meetings.delete), no text read",
 	"chatstore/attachments.go:SaveAttachment":            "inserts an attachment row of an existing conversation, no text read",
 	// The phone's chat (iPhone chat spec §4.6): the hub's chat slices and the
 	// Go port of the Mac's ⌘K search show chat text on the phone and store

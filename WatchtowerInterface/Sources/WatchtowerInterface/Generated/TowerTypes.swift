@@ -1076,6 +1076,36 @@ public struct HelloResponse: Codable, Hashable, Sendable {
     }
 }
 
+public struct MeetingsDeleteRequest: Codable, Hashable, Sendable {
+    public var requestID: String
+    public var transcriptID: Int64
+
+    public init(
+        requestID: String,
+        transcriptID: Int64
+    ) {
+        self.requestID = requestID
+        self.transcriptID = transcriptID
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case requestID = "request_id"
+        case transcriptID = "transcript_id"
+    }
+}
+
+public struct MeetingsDeleteResponse: Codable, Hashable, Sendable {
+    public var deleted: Bool
+
+    public init(deleted: Bool) {
+        self.deleted = deleted
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case deleted
+    }
+}
+
 public struct PingRequest: Codable, Hashable, Sendable {
     public init() {}
 }
