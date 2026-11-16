@@ -105,6 +105,9 @@ CREATE INDEX idx_chat_attachments_project ON chat_attachments(project_id)
 index	idx_chat_conversations_project
 CREATE INDEX idx_chat_conversations_project ON chat_conversations(project_id)
 
+index	idx_chat_messages_client_key
+CREATE UNIQUE INDEX idx_chat_messages_client_key ON chat_messages(conversation_id, client_key) WHERE client_key IS NOT NULL
+
 index	idx_chat_messages_conversation
 CREATE INDEX idx_chat_messages_conversation ON chat_messages(conversation_id)
 
@@ -1133,7 +1136,7 @@ text TEXT NOT NULL,
 created_at REAL NOT NULL,
 turn_id TEXT NOT NULL DEFAULT ''
 , status TEXT NOT NULL DEFAULT 'complete'
-CHECK(status IN ('complete','partial','error')), provider TEXT, model TEXT, tokens_in INTEGER, tokens_out INTEGER, parent_id INTEGER REFERENCES chat_messages(id) ON DELETE CASCADE, error_code TEXT, error_message TEXT)
+CHECK(status IN ('complete','partial','error')), provider TEXT, model TEXT, tokens_in INTEGER, tokens_out INTEGER, parent_id INTEGER REFERENCES chat_messages(id) ON DELETE CASCADE, error_code TEXT, error_message TEXT, client_key TEXT)
 
 table	chat_project_sources
 CREATE TABLE "chat_project_sources" (
@@ -4724,6 +4727,7 @@ GROUP BY up.ancestor
 11	parent_id	INTEGER	notnull=0	dflt=NULL	pk=0
 12	error_code	TEXT	notnull=0	dflt=NULL	pk=0
 13	error_message	TEXT	notnull=0	dflt=NULL	pk=0
+14	client_key	TEXT	notnull=0	dflt=NULL	pk=0
 
 ## chat_project_sources
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1

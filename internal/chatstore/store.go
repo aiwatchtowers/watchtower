@@ -35,6 +35,10 @@ var (
 	ErrNotFound          = errors.New("chatstore: message not found")
 	ErrInvalid           = errors.New("chatstore: invalid request")
 	ErrAttachmentMissing = errors.New("chatstore: attachment missing")
+	// ErrDuplicateClientKey: the request's client key is already on a row of
+	// the conversation (the unique index refused the insert); nothing was
+	// written, and the caller answers with the existing turn.
+	ErrDuplicateClientKey = errors.New("chatstore: client key already applied")
 )
 
 // Start modes.
@@ -108,6 +112,11 @@ type StartRequest struct {
 	// ContinuousLeafID is the last message the live session answered (nil
 	// for a new session): ChatContinuity decides Replay from it.
 	ContinuousLeafID *int64
+	// ClientKey ("" = none) is the client's id of this request, stored in
+	// chat_messages.client_key (unique per conversation) on the new owner
+	// row, or on the new reply for a regenerate (which reuses its owner
+	// row), so a repeated request is found and never applied twice.
+	ClientKey string
 }
 
 // Started is a turn whose rows are on disk.
@@ -273,9 +282,9 @@ func (s *Store) Start(ctx context.Context, r StartRequest) (Started, error) {
 			}
 		}
 		id, err := insertMessageTx(tx, newMessage{conv: r.ConversationID, parent: historyTip, role: "user", text: userText,
-			turnID: turnID, status: "complete", createdAt: createdAt})
+			turnID: turnID, status: "complete", createdAt: createdAt, ClientKey: r.ClientKey})
 		if err != nil {
-			return Started{}, err
+			return Started{}, duplicateKey(err, r.ClientKey)
 		}
 		st.UserMessageID = id
 		wroteUser = true
@@ -297,10 +306,14 @@ func (s *Store) Start(ctx context.Context, r StartRequest) (Started, error) {
 		model = sql.NullString{String: routing.Model, Valid: routing.Model != ""}
 	}
 	userID := st.UserMessageID
+	replyKey := ""
+	if r.Mode == ModeRegenerate {
+		replyKey = r.ClientKey // the reused owner row keeps its own key
+	}
 	asst, err := insertMessageTx(tx, newMessage{conv: r.ConversationID, parent: &userID, role: "assistant",
-		turnID: turnID, status: "partial", provider: provider, model: model, createdAt: createdAt})
+		turnID: turnID, status: "partial", provider: provider, model: model, createdAt: createdAt, ClientKey: replyKey})
 	if err != nil {
-		return Started{}, err
+		return Started{}, duplicateKey(err, replyKey)
 	}
 	if err := tx.Commit(); err != nil {
 		return Started{}, fmt.Errorf("starting chat turn: %w", err)
@@ -482,13 +495,15 @@ type newMessage struct {
 	turnID, status  string
 	provider, model sql.NullString
 	createdAt       float64
+	ClientKey       string // "" = NULL
 }
 
 // insertMessageTx is ChatTreeQueries.insert: the row, then the conversation's
 // active leaf and updated_at.
 func insertMessageTx(tx *sql.Tx, m newMessage) (int64, error) {
-	res, err := tx.Exec(`INSERT INTO chat_messages (conversation_id, parent_id, role, text, created_at, turn_id, status, provider, model)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, m.conv, m.parent, m.role, m.text, m.createdAt, m.turnID, m.status, m.provider, m.model)
+	key := sql.NullString{String: m.ClientKey, Valid: m.ClientKey != ""}
+	res, err := tx.Exec(`INSERT INTO chat_messages (conversation_id, parent_id, role, text, created_at, turn_id, status, provider, model, client_key)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, m.conv, m.parent, m.role, m.text, m.createdAt, m.turnID, m.status, m.provider, m.model, key)
 	if err != nil {
 		return 0, fmt.Errorf("inserting chat message: %w", err)
 	}
@@ -501,6 +516,15 @@ func insertMessageTx(tx *sql.Tx, m newMessage) (int64, error) {
 		return 0, fmt.Errorf("moving the chat leaf: %w", err)
 	}
 	return id, nil
+}
+
+// duplicateKey is an insert's error, as ErrDuplicateClientKey when key
+// is set and the client-key index refused it.
+func duplicateKey(err error, key string) error {
+	if key != "" && strings.Contains(err.Error(), "UNIQUE constraint failed: chat_messages.conversation_id, chat_messages.client_key") {
+		return ErrDuplicateClientKey
+	}
+	return err
 }
 
 // setPrefixTitleTx is ChatConversationQueries.setPrefixTitle: the first 80
