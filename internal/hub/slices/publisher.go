@@ -471,8 +471,13 @@ func (rep CycleReport) retryErr(k Kind, err error) error {
 }
 
 // cycleWide: err refuses the transport or the data zone as a whole, so a
-// cycle stops at it instead of trying every later kind.
+// cycle stops at it instead of trying every later kind. The relay's own
+// failure of an op (relay.ErrRelayInternal) is not: it answers that for one
+// op that throws too, so the other kinds still go (#1872).
 func cycleWide(err error) bool {
+	if errors.Is(err, relay.ErrRelayInternal) {
+		return false
+	}
 	for _, e := range []error{transport.ErrUnavailable, transport.ErrHubQuota, transport.ErrRateLimited, transport.ErrForbidden,
 		transport.ErrNotVouched, transport.ErrUnsupportedVersion, transport.ErrEntitlementInactive} {
 		if errors.Is(err, e) {
@@ -1361,6 +1366,7 @@ func errClass(err error) string {
 		{secure.ErrSignatureRequired, "no_signer"},
 		{errGrantID, "bad_device_id"},
 		{ErrNoKeys, "no_keys"},
+		{relay.ErrRelayInternal, "relay_internal"},
 		{transport.ErrUnavailable, "unavailable"},
 		{transport.ErrForbidden, "forbidden"},
 		{transport.ErrHubQuota, "hub_quota"},
@@ -1378,6 +1384,9 @@ func errClass(err error) string {
 		if errors.Is(err, c.err) {
 			return c.name
 		}
+	}
+	if c := relay.CodeClass(err); c != "" {
+		return c
 	}
 	return "error"
 }

@@ -3152,3 +3152,12 @@ Entry format:
 - weak-dimension: 7. The registration and surface wiring in `buildToolRegistry` had no cmd-level pin even though `TestAutomationEditorSurface_MountsOnlyDraftSaveAndReads` already lists editor tools by name.
 - rule-gap (candidate, dim 9): *a read tool with rune or char caps must keep its worst-case JSON encoding (6-byte escapes) under `MaxReadResultBytes`, or cap on encoded bytes.*
 - outcome: TBD
+
+## 2026-11-16 — fix/1872-hub-publish-failures (48f8e6da7: relay UNSPECIFIED "internal error" → `relay.ErrRelayInternal` (ErrUnavailable, not cycle-wide, pusher settles in_flight), non-200 without a protocol error is no answer, `relay.CodeClass` log fallback in four errClass tables; 16 files +357; panel: prosecutor (9) + codex (0); pr-review-toolkit specialists unavailable; judge verified by reading the HEAD diff and ran `go test ./internal/hub/...` green) — verdict: approve
+
+- contested: F7, `actions` gaining a production import of the concrete relay package for a log class. Dismissed: hub, slices and alerts already import it in production on main, and the use is log-only, so no seam is lost for mocking. F6 (four copied fallbacks and four copied tests) held as a nit: each package owns a private errClass by house pattern. [1/9]
+- false-positive: none dismissed outright; F3–F5, F8 and F9 were real and small, and all landed. [—]
+- miss: F1 and F2 came from the prosecutor alone. Mapping a new error to an existing sentinel (ErrUnavailable) silently inherits every policy that keys off the sentinel (`cycleWide`, the pusher's retry `classify`). Codex returned nothing. [8]
+- weak-dimension: 8. Widening what maps onto a shared sentinel needs a grep of every `errors.Is(err, <sentinel>)` consumer, not just the classifier the ticket names.
+- rule-gap (candidate, dim 8): *when a new error is wrapped as an existing transport sentinel, list every `errors.Is` consumer of that sentinel and state per consumer whether the inherited policy (cycle stop, retry, resend) is right for it. A non-idempotent op (push send) is the tell.*
+- outcome: TBD

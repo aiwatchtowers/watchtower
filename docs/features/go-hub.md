@@ -595,6 +595,15 @@ re-checked in its Task 0; the plan's Global Constraints, Decisions and Known lim
   `relay.Transport.SendAlert(ctx, phoneRelayID, secure.Push)` refuses an unsealed push before any I/O and sends the
   envelope only. On this op `NOT_FOUND` is `transport.ErrNoPushToken` and `UNSPECIFIED` "not implemented"
   `transport.ErrPushOff`; the rest maps through `MapError`; `relay.RetryAfter(err)` reads `retry_after_s`.
+- **Relay answers `MapError` has no code class for** (#1872). `UNSPECIFIED` "internal error" (the relay failed the
+  op: a 200 from the device object's catch around one op, a 500 when the call to the device object threw, a 200 on
+  a public op such as login) is `relay.ErrRelayInternal`, which is `transport.ErrUnavailable` (a mailbox pass and
+  `set_hub_readers` retry later) with two exceptions: the publisher does not take it as cycle-wide (one op may throw
+  alone, so the other kinds still go, #1761), and the alert pusher settles it `expired` (`in_flight`), never resent
+  (the push may already be queued). An HTTP status other than 200 whose body carries no protocol error (an empty 5xx
+  from the edge) is no answer (`client.Do` fails; unavailable), never a success. The publisher's, the hub's, the
+  mailbox processor's and the pusher's log classes name the former `relay_internal` and any other unclassed code
+  `relay_<code>` (`relay.CodeClass`) instead of a bare `error`/`other`.
 - **The pusher** (`internal/hub/alerts`, wired in `alerts_wiring.go`). The publisher calls
   `slices.Config.OnAlertSaved` once per alert key after its first successful save, only while the relay is the active
   transport (republishes and rotations never; on CloudKit the `sig-` signal path runs instead). `Pusher.Enqueue`
