@@ -83,6 +83,7 @@ Per-feature notes — architecture, contracts, dual paths, v1 limits — live in
 - Strong-tier cost fixes — `strong-tier-cost-fixes.md`
 - Audit fix wave 5 — `audit-fix-wave-5.md`
 - Owner identity — `owner-identity.md`
+- Tower interface — `tower-interface.md`
 
 ---
 
