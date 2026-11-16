@@ -45,6 +45,7 @@ Per-feature notes — architecture, contracts, dual paths, v1 limits — live in
 - Agent coach — `agent-coach.md`
 - Tuning chat — `tuning-chat.md`
 - Spec review — `spec-review.md`
+- Watchman — the owner's twin, phase 1 (learn and backtest, never acts) — `watchman.md`
 - Session chat feed — `session-chat-feed.md`
 - Diff reviewer / Branch review — `diff-reviewer.md`
 - Mobile companion — `mobile-companion.md`
