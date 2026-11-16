@@ -225,6 +225,33 @@ func checkAdmit(t *testing.T, e *Engine, name string, live, busyMask, retireMask
 		}
 	}
 	assert.LessOrEqual(t, launched, max(freeBefore, 0), "%s: a queued turn launches only into a free slot", name)
+
+	// The other half: the first queued turn is admitted exactly when a slot is free or an idle session can make
+	// room — it launches into a free slot; else waits for a slot already coming; else an idle session is told to
+	// close for it; else (every slot mid-turn) it is blocked.
+	coming, idle := 0, 0
+	for _, s := range running {
+		switch {
+		case retiredBefore[s] && !busyBefore[s]:
+			coming++
+		case !retiredBefore[s] && !busyBefore[s]:
+			idle++
+		}
+	}
+	first := pending[0]
+	switch {
+	case freeBefore > 0:
+		assert.Equal(t, phaseLaunch, first.phase, "%s: a free slot admits the queued turn", name)
+	case coming > 0:
+		assert.Equal(t, phasePending, first.phase, name)
+		assert.False(t, first.blocked, "%s: a slot is already coming", name)
+	case idle > 0:
+		assert.Equal(t, phasePending, first.phase, name)
+		assert.False(t, first.blocked, "%s: an idle session makes room", name)
+		assert.GreaterOrEqual(t, newlyRetired, 1, "%s: the idle session is told to close for it", name)
+	default:
+		assert.True(t, first.blocked, "%s: every slot is mid-turn", name)
+	}
 	if warm {
 		assert.Zero(t, newlyRetired-min(newlyRetired, queued), "%s: a warm request never evicts", name)
 		if w.phase == phaseLaunch {

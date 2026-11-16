@@ -134,6 +134,21 @@ final class ChatViewModel {
     @ObservationIgnored private var turnIDLoad: Task<Void, Never>?
     @ObservationIgnored private let defaults: UserDefaults
     private var landingDraftKey: String { "chat.landingDraft.engine.\(dbPool.path)" }
+    /// Draft chats left behind whose discard the engine has not answered yet (kept per workspace, so neither a
+    /// quit nor a crash leaves an empty chat): sent again on every `.connected` and at the next start.
+    private(set) var draftsToDiscard: Set<Int64> {
+        get { Set((defaults.array(forKey: draftsToDiscardKey) as? [Int] ?? []).map(Int64.init)) }
+        set {
+            if newValue.isEmpty {
+                defaults.removeObject(forKey: draftsToDiscardKey)
+            } else {
+                defaults.set(newValue.sorted().map(Int.init), forKey: draftsToDiscardKey)
+            }
+        }
+    }
+    private var draftsToDiscardKey: String { "chat.landingDraftsToDiscard.engine.\(dbPool.path)" }
+    @ObservationIgnored private var discarding = false
+    @ObservationIgnored private var reachabilityWatch: Task<Void, Never>?
 
     /// A search hit's message to bring into view (the feed scrolls once it is loaded).
     private(set) var scrollTarget: Int64?
@@ -253,10 +268,21 @@ final class ChatViewModel {
         list.start()
         conversation.start()
         // A landing draft abandoned by quitting: gone, unless a message or a file was added since.
+        // A landing draft left by a quit or a crash: discarded first (the engine deletes it only while it has no
+        // message and no attachment); its id is dropped only once the engine answered.
         if let stale = defaults.object(forKey: landingDraftKey) as? Int {
             defaults.removeObject(forKey: landingDraftKey)
-            fireAndForget(.manage(conversationID: Int64(stale), op: .discard, title: nil, projectID: nil))
+            draftsToDiscard.insert(Int64(stale))
         }
+        let reachability = client.reachability
+        reachabilityWatch?.cancel()
+        reachabilityWatch = Task { [weak self] in
+            for await state in reachability where state == .connected {
+                guard let self else { return }
+                await self.flushDiscards()
+            }
+        }
+        engineCalls.append(Task { [weak self] in await self?.flushDiscards() })
     }
 
     /// The first keystroke (or an open chat): the landing makes its chat now and the engine starts its session, so
@@ -284,8 +310,25 @@ final class ChatViewModel {
     /// The landing's draft chat, left without a send: discarded by the engine while it is untouched.
     private func discardLandingDraft(except keep: Int64? = nil) {
         guard let draft = landingDraftID, draft != keep else { return }
+        draftsToDiscard.insert(draft)
         landingDraftID = nil
-        fireAndForget(.manage(conversationID: draft, op: .discard, title: nil, projectID: nil))
+        engineCalls.append(Task { [weak self] in await self?.flushDiscards() })
+    }
+
+    /// Sends every pending discard; an id leaves the list once the engine answered it (applied, or the chat is
+    /// gone already). A lost connection keeps it for the next `.connected`.
+    func flushDiscards() async {
+        guard !discarding else { return }
+        discarding = true
+        defer { discarding = false }
+        for id in draftsToDiscard.sorted() {
+            switch try? await client.send(.manage(conversationID: id, op: .discard, title: nil, projectID: nil)) {
+            case .applied?, .refused("not_found", _)?:
+                draftsToDiscard.remove(id)
+            case .refused?, nil:
+                continue
+            }
+        }
     }
 
     /// An engine operation nobody waits for (a warm-up, a draft's discard); a failure changes nothing on screen.
@@ -300,6 +343,7 @@ final class ChatViewModel {
         engineCalls = []
         for call in calls { await call.value }
         await turnIDLoad?.value
+        if !engineCalls.isEmpty { await engineCallsSettled() }
     }
 
     // MARK: - Conversations

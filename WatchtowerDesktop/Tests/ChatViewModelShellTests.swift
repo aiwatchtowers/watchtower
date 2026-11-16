@@ -15,6 +15,16 @@ final class RecordingChatClient: ChatClient, @unchecked Sendable {
 
     var ops: [ChatOperation] { lock.withLock { recorded } }
 
+    /// The connection is down: every send is a lost answer (`ChatConnectionError`).
+    var disconnected = false
+    struct Dropped: ChatConnectionError {}
+    private var watchers: [AsyncStream<ChatReachability>.Continuation] = []
+
+    /// Reports `state` to every reachability stream (a reconnect: `.connected`).
+    func report(_ state: ChatReachability) {
+        lock.withLock { watchers }.forEach { $0.yield(state) }
+    }
+
     var turns: [ChatTurnRequest] {
         ops.compactMap { op in
             guard case .turn(let request) = op else { return nil }
@@ -23,13 +33,21 @@ final class RecordingChatClient: ChatClient, @unchecked Sendable {
     }
 
     func send(_ op: ChatOperation) async throws -> ChatEcho {
-        lock.withLock { recorded.append(op) }
+        let down = lock.withLock { () -> Bool in
+            recorded.append(op)
+            return disconnected
+        }
+        if down { throw Dropped() }
         return answer(op) ?? .applied(.none)
     }
 
     func feed(_ conversation: Int64) -> AsyncStream<ChatFeedUpdate> { AsyncStream { _ in } }
     func list() -> AsyncStream<ChatListUpdate> { AsyncStream { _ in } }
-    var reachability: AsyncStream<ChatReachability> { AsyncStream { _ in } }
+    var reachability: AsyncStream<ChatReachability> {
+        let (stream, continuation) = AsyncStream.makeStream(of: ChatReachability.self)
+        lock.withLock { watchers.append(continuation) }
+        return stream
+    }
 }
 
 /// The Mac chat's window shell over ChatUI's models (unified chat T8).
@@ -269,6 +287,47 @@ final class ChatViewModelKeptBehaviourTests: XCTestCase {
         next.start()
         await next.engineCallsSettled()
         XCTAssertEqual(discards(), [9])
+        next.conversation.stop()
+    }
+
+    /// A landing draft is never left behind: a discard the lost connection did not deliver stays listed and goes on
+    /// the next `.connected`; its id leaves the list only once the engine answered.
+    func testADiscardWhileDisconnectedIsRetriedAfterTheConnect() async throws {
+        vm.start()
+        vm.showLanding()
+        await vm.draftStarted()
+        client.disconnected = true
+        vm.select(conversationID: 4)
+        await vm.engineCallsSettled()
+        XCTAssertEqual(vm.draftsToDiscard, [9], "kept while the engine has not answered")
+        XCTAssertEqual(discards(), [9], "tried once")
+
+        client.disconnected = false
+        client.report(.connected)
+        while discards().count < 2 { await Task.yield() }
+        await vm.flushDiscards()
+        XCTAssertEqual(discards(), [9, 9], "sent again on the reconnect")
+        XCTAssertTrue(vm.draftsToDiscard.isEmpty, "answered: off the list")
+    }
+
+    /// A crash (or quit) leaves the landing's draft id stored: the next start discards it first, when the engine
+    /// answers — also when the socket connects only after the start. A chat that got a message in the meantime is
+    /// kept by the engine (`TestChatengine_DiscardDeletesOnlyAnUntouchedDraft`: one atomic DELETE … NOT EXISTS).
+    func testACrashLeftoverDraftIsDiscardedAtTheNextStart() async throws {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        vm.showLanding()
+        await vm.draftStarted()
+        XCTAssertEqual(vm.landingDraftID, 9, "stored: the app now crashes")
+
+        client.disconnected = true
+        let next = ChatViewModel(client: client, dbPool: pool, defaults: defaults)
+        next.start()
+        await next.engineCallsSettled()
+        XCTAssertEqual(next.draftsToDiscard, [9], "not connected yet: kept")
+        client.disconnected = false
+        client.report(.connected)
+        while next.draftsToDiscard.contains(9) { await Task.yield() }
+        XCTAssertTrue(discards().contains(9))
         next.conversation.stop()
     }
 
