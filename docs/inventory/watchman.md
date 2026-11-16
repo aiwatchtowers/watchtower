@@ -21,13 +21,13 @@ WATCHMAN-01, -02, -04 and -05 of the spec arrive with phase 2; this file holds t
 
 **Status:** Enforced (Go).
 
-**Observable:** Watchman learns from one closed list of sources, `DBSources()` + `TurnSource` + `GitSource` (`ask`, `review`, `spec`, `permission`, `turn`, `git`), each reading only decisions the owner made himself, in a workbench: answered asks (not an automation's, not dismissed), his diff-review and spec-review marks, permission prompts he allowed or denied, his own lines in agent sessions and his own commits and merges. No source reads a decision a twin took. Phase 2 adds the OK'd-journal source under this same id, so a twin decision becomes a precedent only after the owner confirms it.
+**Observable:** Watchman learns from one closed list of sources, `DBSources()` + `TurnSource` + `GitSource` (`ask`, `review`, `spec`, `permission`, `turn`, `git`), each reading only decisions the owner made himself, in a workbench: answered asks (not an automation's, not dismissed), his diff-review and spec-review marks, permission prompts he allowed or denied, his own lines in agent sessions he started (not an automation's) and his own commits (by the folder's `user.email`, no agent trailer) and merges. No source reads a decision a twin took. Phase 2 adds the OK'd-journal source under this same id, so a twin decision becomes a precedent only after the owner confirms it.
 
 **Why locked:** A twin that learns from its own unconfirmed decisions drifts away from the owner and then grades itself on its own answers; every precedent must trace to something the owner actually did or confirmed.
 
 **Test guards:**
 - `internal/watchman/guard_test.go::TestWATCHMAN03_SourcesAreOwnerOnly` (the source names are the closed list; automation, open and dismissed asks and pending, expired and answered-on-Mac permissions are not read)
-- `internal/watchman/source_asks_test.go::TestAsksSource_SkipsAutomationAndOpen`, `internal/watchman/source_permission_test.go::TestPermissionSource_SkipsPendingExpiredAndAnsweredOnMac`, `internal/watchman/source_git_test.go::TestGitSource_SkipsAgentCommits`
+- `internal/watchman/source_asks_test.go::TestAsksSource_SkipsAutomationAndOpen`, `internal/watchman/source_permission_test.go::TestPermissionSource_SkipsPendingExpiredAndAnsweredOnMac`, `internal/watchman/source_git_test.go::TestGitSource_SkipsAgentCommits`, `internal/watchman/source_git_test.go::TestGitSource_ForeignAuthorNotOwner` (a colleague's commit is not the owner's), `internal/watchman/source_turns_test.go::TestTurnSource_SkipsAutomationSessions`
 
 ## WATCHMAN-06 — learning and the backtest never act
 
@@ -47,3 +47,4 @@ WATCHMAN-01, -02, -04 and -05 of the spec arrive with phase 2; this file holds t
 ## Changelog
 
 - 2026-11-16 (phase 1, board #1823): file created with WATCHMAN-03 and WATCHMAN-06 (new, beyond the spec's five).
+- 2026-11-16 (final review fixes): WATCHMAN-03 tightened — git commits count only for the folder's `user.email`, automation-started sessions leave the turn source; guards added.
