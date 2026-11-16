@@ -2,7 +2,7 @@ import ChatWire
 import XCTest
 
 /// The feed and list stores (unified chat spec §5.4): a snapshot replaces, an upsert replaces or appends by id, a
-/// resync clears until the next snapshot.
+/// resync keeps what is shown, marked stale, until the next snapshot; gone empties the feed.
 @MainActor
 final class ChatStoreTests: XCTestCase {
     private let conversation = ChatFeed.Conversation(id: 3, title: "Rollout")
@@ -41,27 +41,60 @@ final class ChatStoreTests: XCTestCase {
         XCTAssertEqual(store.feed?.hasMore, false)
     }
 
-    func testFeedStoreResyncClearsUntilSnapshot() {
+    func testFeedStoreResyncKeepsTheFeedStaleUntilSnapshot() {
+        let store = ChatFeedStore()
+        store.apply(.resync)
+        XCTAssertNil(store.feed)
+        XCTAssertFalse(store.isStale, "nothing shown, nothing stale")
+
+        store.apply(.snapshot(ChatFeed(conversation: conversation, messages: [message(1, "Hi")])))
+        store.apply(.resync)
+        XCTAssertEqual(store.feed?.messages.map(\.text), ["Hi"], "the last feed stays on screen")
+        XCTAssertTrue(store.isStale)
+
+        // Updates in the gap still apply to the kept feed.
+        store.apply(.messageUpsert(message(2, "Hel")))
+        let renamed = ChatFeed.Conversation(id: 3, title: "Renamed")
+        store.apply(.conversation(renamed))
+        XCTAssertEqual(store.feed?.messages.map(\.text), ["Hi", "Hel"])
+        XCTAssertEqual(store.feed?.conversation.title, "Renamed")
+        XCTAssertTrue(store.isStale)
+
+        store.apply(.snapshot(ChatFeed(conversation: conversation, messages: [message(1, "Hi"), message(2, "Hello")])))
+        XCTAssertEqual(store.feed?.messages.map(\.text), ["Hi", "Hello"])
+        XCTAssertFalse(store.isStale)
+    }
+
+    func testFeedStoreGoneEmptiesUntilTheConversationComesBack() {
         let store = ChatFeedStore()
         store.apply(.snapshot(ChatFeed(conversation: conversation, messages: [message(1, "Hi")])))
         store.apply(.resync)
+        store.apply(.gone)
         XCTAssertNil(store.feed)
-        store.apply(.messageUpsert(message(2, "lost in the gap")))
-        store.apply(.conversation(conversation))
+        XCTAssertTrue(store.isGone)
+        XCTAssertFalse(store.isStale)
+        store.apply(.messageUpsert(message(2, "late")))
         XCTAssertNil(store.feed)
-        store.apply(.snapshot(ChatFeed(conversation: conversation, messages: [message(1, "Hi"), message(2, "Hello")])))
-        XCTAssertEqual(store.feed?.messages.map(\.text), ["Hi", "Hello"])
+
+        store.apply(.snapshot(ChatFeed(conversation: conversation, messages: [message(1, "Hi")])))
+        XCTAssertFalse(store.isGone)
+        XCTAssertEqual(store.feed?.messages.map(\.id), [1])
     }
 
-    func testListStoreTakesSnapshotsAndClearsOnResync() {
+    func testListStoreKeepsTheListStaleOnResync() {
         let store = ChatListStore()
         XCTAssertNil(store.list)
         let list = ChatList(conversations: [
             .init(id: 1, title: "A", updatedAt: Date(timeIntervalSince1970: 1), state: .unread)
         ])
         store.apply(.snapshot(list))
-        XCTAssertEqual(store.list, list)
+        XCTAssertFalse(store.isStale)
         store.apply(.resync)
-        XCTAssertNil(store.list)
+        XCTAssertEqual(store.list, list)
+        XCTAssertTrue(store.isStale)
+        let fresh = ChatList(conversations: [])
+        store.apply(.snapshot(fresh))
+        XCTAssertEqual(store.list, fresh)
+        XCTAssertFalse(store.isStale)
     }
 }

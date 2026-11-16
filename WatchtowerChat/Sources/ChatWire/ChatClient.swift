@@ -28,6 +28,10 @@ public enum ChatFeedUpdate: Sendable {
     case conversation(ChatFeed.Conversation)
     /// Events were lost: what is shown is stale until the next snapshot.
     case resync
+    /// The conversation no longer exists (deleted). chat.sock sends it as a `snapshot` event without a `snapshot`
+    /// (Go `chatengine.Subscription`, which keeps watching and sends a snapshot again if it comes back); the relay
+    /// refuses the phone's `chat_feed_request` `not_found` ("This chat no longer exists on your Mac").
+    case gone
 }
 
 /// One event of the list subscription (chat.sock `snapshot`/`list_update`, `resync`).
