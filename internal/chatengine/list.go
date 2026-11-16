@@ -96,6 +96,10 @@ type ListConversation struct {
 	State      string        `json:"state"`
 	LastLine   string        `json:"last_line"`
 	LeaseOwner *string       `json:"lease_owner,omitempty"`
+	// TurnID is the running turn's id while LeaseOwner is set: the Mac's
+	// Inbox strip tells a connector call its chat still holds from one whose
+	// session ended.
+	TurnID string `json:"turn_id,omitempty"`
 }
 
 type List struct {
@@ -146,7 +150,7 @@ SELECT c.id, c.title, c.pinned, c.updated_at, c.project_id, p.name, c.read_at,
        answer.created_at, substr(answer.text, 1, 2000),
        EXISTS (SELECT 1 FROM agent_actions x
                WHERE x.conversation_id = c.id AND x.status = 'pending'),
-       l.owner, l.heartbeat_at_ms
+       l.owner, l.heartbeat_at_ms, l.turn_id
 FROM listed c
 LEFT JOIN chat_projects p ON p.id = c.project_id
 LEFT JOIN last_answer la ON la.conversation_id = c.id
@@ -170,9 +174,10 @@ ORDER BY c.pinned DESC, c.updated_at DESC, c.id DESC`, MaxListConversations)
 			waiting    bool
 			owner      sql.NullString
 			heartbeat  sql.NullInt64
+			turnID     sql.NullString
 		)
 		if err := rows.Scan(&c.ID, &c.Title, &c.Pinned, &updated, &projectID, &project, &readAt,
-			&answeredAt, &answer, &waiting, &owner, &heartbeat); err != nil {
+			&answeredAt, &answer, &waiting, &owner, &heartbeat, &turnID); err != nil {
 			return nil, fmt.Errorf("reading the chat list: %w", err)
 		}
 		c.Title, _ = clipText(c.Title, maxLabel)
@@ -185,6 +190,7 @@ ORDER BY c.pinned DESC, c.updated_at DESC, c.id DESC`, MaxListConversations)
 		if live {
 			o := owner.String
 			c.LeaseOwner = &o
+			c.TurnID = turnID.String
 		}
 		unread := answeredAt.Valid && (!readAt.Valid || answeredAt.Float64 > readAt.Float64)
 		c.State = chatRowState(waiting, live, unread)

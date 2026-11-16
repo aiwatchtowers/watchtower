@@ -203,3 +203,29 @@ func TestProj01_EntitySearchNeverOffersAProjectTarget(t *testing.T) {
 		assert.Equal(t, []string{"Ship ordinary"}, labels, "kinds %v", kinds)
 	}
 }
+
+// TestChatengine_ListCarriesTheRunningTurnID: an answering chat's list row
+// names its running turn (the Mac's Inbox strip matches a connector call to
+// the turn that still holds it); an idle one names none.
+func TestChatengine_ListCarriesTheRunningTurnID(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		g := newRig(t, fakeOpts{block: true})
+		c := newConversation(t, g.d)
+		st := g.send(t, c, "q", nil)
+		synctest.Wait()
+		turnOf := func() string {
+			list, err := ReadList(context.Background(), g.d, time.Now())
+			require.NoError(t, err)
+			for _, conv := range list.Conversations {
+				if conv.ID == c {
+					return conv.TurnID
+				}
+			}
+			return "missing"
+		}
+		assert.Equal(t, st.TurnID, turnOf())
+		g.f.all()[0].finish()
+		synctest.Wait()
+		assert.Empty(t, turnOf())
+	})
+}

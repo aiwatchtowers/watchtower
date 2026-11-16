@@ -378,7 +378,7 @@ func (e *Engine) NewConversation(ctx context.Context, projectID *int64, r *chats
 // ManageRequest is one Chats-panel write.
 type ManageRequest struct {
 	Conversation int64
-	Op           string // pin|unpin|rename|delete|move|archive
+	Op           string // pin|unpin|rename|delete|move|archive|discard
 	Title        string
 	ProjectID    *int64
 }
@@ -410,6 +410,8 @@ func (e *Engine) Manage(ctx context.Context, r ManageRequest) error {
 		err = e.delete(ctx, r.Conversation)
 	case ManageArchive:
 		err = e.store.Archive(ctx, r.Conversation)
+	case ManageDiscard:
+		err = e.discard(ctx, r.Conversation)
 	default:
 		return chatstore.ErrInvalid
 	}
