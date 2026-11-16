@@ -30,7 +30,7 @@ func screenSnapshot(t *testing.T, d *DB) string {
 	for _, q := range []string{
 		`SELECT id, priority, COALESCE(read_at,''), has_updates FROM tracks`,
 		`SELECT entity_type, entity_id, comment FROM feedback`,
-		`SELECT id, status, COALESCE(merged_into_id, 0) FROM ideas`,
+		`SELECT id, status, COALESCE(merged_into_id, 0), COALESCE(converted_target_id, 0) FROM ideas`,
 		`SELECT id, idea_id FROM idea_mentions`,
 		`SELECT id, order_index FROM day_plan_items`,
 		`SELECT id, status, snooze_until, progress FROM targets`,
@@ -52,6 +52,7 @@ func TestScreenWriters_KillBetweenStatements(t *testing.T) {
 	}{
 		{"SetTrackPriorityTx", "track.priority", func(tx *sql.Tx) error { return SetTrackPriorityTx(tx, 1, "high") }},
 		{"MergeIdeaTx", "idea.merge", func(tx *sql.Tx) error { _, err := MergeIdeaTx(tx, 1, 2); return err }},
+		{"ConvertIdeaToTargetTx", "idea.convert", func(tx *sql.Tx) error { _, _, err := ConvertIdeaToTargetTx(tx, 1, "2026-11-16"); return err }},
 		{"DeleteIdeaTx", "idea.delete", func(tx *sql.Tx) error { _, err := DeleteIdeaTx(tx, 1); return err }},
 		{"ReorderPlanItemsTx", "plan.reorder", func(tx *sql.Tx) error { return ReorderPlanItemsTx(tx, 1, []int64{2, 1}) }},
 		{"SnoozeTargetOwnerTx", "target.snooze", func(tx *sql.Tx) error { _, err := SnoozeTargetOwnerTx(tx, 2, "2026-11-20"); return err }},

@@ -137,12 +137,20 @@ type IdeaCreateRequest struct {
 	Essence string `json:"essence"`
 }
 
-// IdeaConvertedRequest marks an idea converted into a target
+// IdeaConvertedRequest converts an idea into a day target of Today (the
+// Mac's local date, "2006-01-02") and marks it converted, in one write
 // (ideas.converted).
 type IdeaConvertedRequest struct {
 	WriteParams
-	ID       int64 `json:"id"`
+	ID    int64  `json:"id"`
+	Today string `json:"today"`
+}
+
+// IdeaConvertResult answers ideas.converted with the target: the new one,
+// or (Already) the one the idea was converted to before.
+type IdeaConvertResult struct {
 	TargetID int64 `json:"target_id"`
+	Already  bool  `json:"already,omitempty"`
 }
 
 // DecisionsSeenAllRequest marks every decision seen

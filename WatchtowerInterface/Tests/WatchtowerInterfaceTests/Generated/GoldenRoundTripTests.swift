@@ -58,6 +58,10 @@ final class GoldenRoundTripTests: XCTestCase {
         try assertRoundTrip(HelloResponse.self, golden: "HelloResponse")
     }
 
+    func testIdeaConvertResultRoundTrip() throws {
+        try assertRoundTrip(IdeaConvertResult.self, golden: "IdeaConvertResult")
+    }
+
     func testIdeaConvertedRequestRoundTrip() throws {
         try assertRoundTrip(IdeaConvertedRequest.self, golden: "IdeaConvertedRequest")
     }

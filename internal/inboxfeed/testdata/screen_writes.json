@@ -1638,25 +1638,99 @@
       "INSERT INTO ideas (id, kind, title, status, needs_review, review_reason, updated_at) VALUES (1, 'idea', 'Proposed idea', 'proposed', 1, 'resurfaced', '2026-11-15T09:30:00Z')",
       "INSERT INTO ideas (id, kind, title, status, updated_at) VALUES (2, 'idea', 'Survivor', 'active', '2026-11-15T09:30:00Z')",
       "INSERT INTO idea_mentions (id, idea_id, source, quote, said_at) VALUES (1, 1, 'owner', 'q1', '2026-11-15T09:00:00Z')",
-      "INSERT INTO targets (id, text, level, status, period_start, period_end) VALUES (4, 'From idea', 'day', 'todo', '2026-11-16', '2026-11-16')"
+      "INSERT INTO targets (id, text, level, status, period_start, period_end, source_type) VALUES (4, 'From idea', 'day', 'todo', '2026-11-16', '2026-11-16', 'manual')",
+      "UPDATE ideas SET essence = 'Turn it on' WHERE id = 1"
     ],
     "now": "2026-11-16T10:00:00Z",
     "command": "ideas.converted",
     "call": {
       "request_id": "00000000-0000-4000-8000-000000000048",
       "id": 1,
-      "target_id": 4
+      "today": "2026-11-16"
     },
     "swift": {
-      "writer": "IdeaQueries.markConverted",
+      "writer": "IdeaConvert",
       "args": {
         "id": 1,
-        "targetID": 4
+        "today": "2026-11-16"
       }
     },
     "expect": {
       "status": "ok",
+      "result": {
+        "target_id": 5
+      },
       "rows": {
+        "targets": [
+          {
+            "id": 4,
+            "source_type": "manual"
+          },
+          {
+            "id": 5,
+            "source_type": "idea"
+          }
+        ],
+        "ideas": [
+          {
+            "id": 1,
+            "status": "converted",
+            "converted_target_id": 5,
+            "needs_review": 0
+          },
+          {
+            "id": 2,
+            "status": "active",
+            "converted_target_id": null,
+            "needs_review": 0
+          }
+        ],
+        "targets WHERE id = 5": [
+          {
+            "text": "Proposed idea",
+            "intent": "Turn it on",
+            "level": "day",
+            "period_start": "2026-11-16",
+            "period_end": "2026-11-16",
+            "status": "todo",
+            "source_id": "1",
+            "project_id": null,
+            "CAST(progress AS INTEGER)": 0
+          }
+        ],
+        "target_status_history": []
+      }
+    }
+  },
+  {
+    "name": "ideas_converted_already",
+    "seed": [
+      "INSERT INTO ideas (id, kind, title, status, needs_review, review_reason, updated_at) VALUES (1, 'idea', 'Proposed idea', 'proposed', 1, 'resurfaced', '2026-11-15T09:30:00Z')",
+      "INSERT INTO ideas (id, kind, title, status, updated_at) VALUES (2, 'idea', 'Survivor', 'active', '2026-11-15T09:30:00Z')",
+      "INSERT INTO idea_mentions (id, idea_id, source, quote, said_at) VALUES (1, 1, 'owner', 'q1', '2026-11-15T09:00:00Z')",
+      "INSERT INTO targets (id, text, level, status, period_start, period_end, source_type) VALUES (4, 'From idea', 'day', 'todo', '2026-11-16', '2026-11-16', 'manual')",
+      "UPDATE ideas SET status = 'converted', converted_target_id = 4, needs_review = 0 WHERE id = 1"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "ideas.converted",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000049",
+      "id": 1,
+      "today": "2026-11-16"
+    },
+    "expect": {
+      "status": "ok",
+      "already": true,
+      "result": {
+        "target_id": 4
+      },
+      "rows": {
+        "targets": [
+          {
+            "id": 4,
+            "source_type": "manual"
+          }
+        ],
         "ideas": [
           {
             "id": 1,
@@ -1666,7 +1740,9 @@
           },
           {
             "id": 2,
-            "status": "active"
+            "status": "active",
+            "converted_target_id": null,
+            "needs_review": 0
           }
         ]
       }
@@ -1678,20 +1754,25 @@
       "INSERT INTO ideas (id, kind, title, status, needs_review, review_reason, updated_at) VALUES (1, 'idea', 'Proposed idea', 'proposed', 1, 'resurfaced', '2026-11-15T09:30:00Z')",
       "INSERT INTO ideas (id, kind, title, status, updated_at) VALUES (2, 'idea', 'Survivor', 'active', '2026-11-15T09:30:00Z')",
       "INSERT INTO idea_mentions (id, idea_id, source, quote, said_at) VALUES (1, 1, 'owner', 'q1', '2026-11-15T09:00:00Z')",
-      "INSERT INTO targets (id, text, level, status, period_start, period_end) VALUES (4, 'From idea', 'day', 'todo', '2026-11-16', '2026-11-16')"
+      "INSERT INTO targets (id, text, level, status, period_start, period_end, source_type) VALUES (4, 'From idea', 'day', 'todo', '2026-11-16', '2026-11-16', 'manual')"
     ],
     "now": "2026-11-16T10:00:00Z",
     "command": "ideas.converted",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000049",
+      "request_id": "00000000-0000-4000-8000-000000000050",
       "id": 9,
-      "target_id": 4
+      "today": "2026-11-16"
     },
     "expect": {
       "status": "refused",
       "code": "not_found",
       "sentence": "Couldn't convert it: it's no longer on the Mac.",
       "rows": {
+        "targets": [
+          {
+            "id": 4
+          }
+        ],
         "ideas": [
           {
             "id": 1,
@@ -1715,7 +1796,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "ideas.decision_seen",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000050",
+      "request_id": "00000000-0000-4000-8000-000000000051",
       "id": 2
     },
     "swift": {
@@ -1758,7 +1839,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "ideas.decisions_seen_all",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000051"
+      "request_id": "00000000-0000-4000-8000-000000000052"
     },
     "swift": {
       "writer": "IdeaQueries.markAllDecisionsSeen",
@@ -1794,7 +1875,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "ideas.create_from_chat",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000052",
+      "request_id": "00000000-0000-4000-8000-000000000053",
       "conversation_id": 7,
       "message_id": 9,
       "kind": "decision",
@@ -1847,7 +1928,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "ideas.undo_chat",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000053",
+      "request_id": "00000000-0000-4000-8000-000000000054",
       "id": 1,
       "created_updated_at": "2026-11-16T09:00:00Z"
     },
@@ -1880,7 +1961,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "ideas.undo_chat",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000054",
+      "request_id": "00000000-0000-4000-8000-000000000055",
       "id": 1,
       "created_updated_at": "2026-11-16T09:00:00Z"
     },
@@ -1923,7 +2004,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "dayplan.done",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000055",
+      "request_id": "00000000-0000-4000-8000-000000000056",
       "item_id": 1,
       "cascade": true
     },
@@ -1974,7 +2055,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "dayplan.done",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000056",
+      "request_id": "00000000-0000-4000-8000-000000000057",
       "item_id": 1,
       "cascade": true
     },
@@ -2018,7 +2099,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "dayplan.done",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000057",
+      "request_id": "00000000-0000-4000-8000-000000000058",
       "item_id": 1,
       "cascade": true
     },
@@ -2067,7 +2148,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "dayplan.pending",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000058",
+      "request_id": "00000000-0000-4000-8000-000000000059",
       "item_id": 1,
       "cascade": true
     },
@@ -2116,7 +2197,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "dayplan.delete",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000059",
+      "request_id": "00000000-0000-4000-8000-000000000060",
       "item_id": 2
     },
     "swift": {
@@ -2151,7 +2232,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "dayplan.delete",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000060",
+      "request_id": "00000000-0000-4000-8000-000000000061",
       "item_id": 3
     },
     "swift": {
@@ -2190,7 +2271,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "dayplan.reorder",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000061",
+      "request_id": "00000000-0000-4000-8000-000000000062",
       "plan_id": 1,
       "ordered_ids": [
         2,
@@ -2240,7 +2321,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "dayplan.add",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000062",
+      "request_id": "00000000-0000-4000-8000-000000000063",
       "plan_id": 1,
       "kind": "timeblock",
       "title": "Focus",
@@ -2311,7 +2392,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "dayplan.add",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000063",
+      "request_id": "00000000-0000-4000-8000-000000000064",
       "plan_id": 1,
       "kind": "backlog",
       "title": "Call"
@@ -2369,7 +2450,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "targets.set_status",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000064",
+      "request_id": "00000000-0000-4000-8000-000000000065",
       "id": 3,
       "status": "in_progress"
     },
@@ -2453,7 +2534,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "targets.set_status",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000065",
+      "request_id": "00000000-0000-4000-8000-000000000066",
       "id": 3,
       "status": "done"
     },
@@ -2532,7 +2613,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "targets.set_status",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000066",
+      "request_id": "00000000-0000-4000-8000-000000000067",
       "id": 9,
       "status": "done"
     },
@@ -2558,7 +2639,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "targets.set_column",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000067",
+      "request_id": "00000000-0000-4000-8000-000000000068",
       "id": 3,
       "status": "in_progress",
       "column_id": 2
@@ -2647,7 +2728,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "targets.set_column",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000068",
+      "request_id": "00000000-0000-4000-8000-000000000069",
       "id": 3,
       "status": "in_progress",
       "column_id": 2
@@ -2736,7 +2817,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "targets.set_column",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000069",
+      "request_id": "00000000-0000-4000-8000-000000000070",
       "id": 3,
       "status": "todo",
       "column_id": 2
@@ -2766,7 +2847,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "targets.snooze",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000070",
+      "request_id": "00000000-0000-4000-8000-000000000071",
       "id": 3,
       "until": "2026-11-20T09:00"
     },
@@ -2841,7 +2922,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "targets.set_status",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000071",
+      "request_id": "00000000-0000-4000-8000-000000000072",
       "id": 3,
       "status": "done"
     },
@@ -2897,7 +2978,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "targets.work_on",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000072",
+      "request_id": "00000000-0000-4000-8000-000000000073",
       "id": 3
     },
     "swift": {
@@ -2945,7 +3026,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "targets.work_on",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000073",
+      "request_id": "00000000-0000-4000-8000-000000000074",
       "id": 2
     },
     "swift": {
@@ -2990,7 +3071,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "catchup.acknowledge",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000074",
+      "request_id": "00000000-0000-4000-8000-000000000075",
       "id": 1
     },
     "swift": {
@@ -3049,7 +3130,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "catchup.acknowledge",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000075",
+      "request_id": "00000000-0000-4000-8000-000000000076",
       "id": 1
     },
     "expect": {
@@ -3082,7 +3163,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "catchup.acknowledge",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000076",
+      "request_id": "00000000-0000-4000-8000-000000000077",
       "id": 9
     },
     "expect": {
@@ -3103,7 +3184,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "digests.read",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000077",
+      "request_id": "00000000-0000-4000-8000-000000000078",
       "ids": [
         5,
         6
@@ -3145,7 +3226,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "digests.decision_read",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000078",
+      "request_id": "00000000-0000-4000-8000-000000000079",
       "digest_id": 5,
       "idx": 1
     },
@@ -3178,7 +3259,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "digests.decisions_read_all",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000079",
+      "request_id": "00000000-0000-4000-8000-000000000080",
       "digest_id": 5
     },
     "swift": {

@@ -18,8 +18,10 @@ import (
 // where the Inbox has the same write (outputs, reminders, inbox items,
 // briefings, a track's Done, Stop and Restore), else a writer in
 // internal/db ported from its Swift query. None is an AGENT-07 owner
-// gesture (no CLI twin in its list), so none needs the signed Desktop or a
-// hub grant. The SQL lives in internal/db: this package's own queries are
+// gesture (no CLI twin in its list), so none needs the signed Desktop
+// itself (Restore of a recipe-bound track keeps inbox.act's gate) or a hub
+// grant: every one is the Mac's only, refused from the hub (not_permitted,
+// "…: this is done on the Mac."). The SQL lives in internal/db: this package's own queries are
 // the feed's (TestChangeTables_CoverEveryTableBuildReads).
 
 // screenTables are what each group of commands writes (Spec.ChangeTables).
@@ -152,6 +154,12 @@ type screenHandler[Req, Resp any] func(ctx context.Context, c *tower.Ctx, req Re
 func screen[Req, Resp any](r *tower.Registry, name string, tables []string, h screenHandler[Req, Resp]) {
 	phrase := screenPhrases[name]
 	tower.Register(r, name, func(ctx context.Context, c *tower.Ctx, req Req) (Resp, error) {
+		if c.Origin.Transport == "hub" {
+			// The screens' writes are the Mac's own (coordinator ruling):
+			// refused here, whatever the hub routes.
+			var zero Resp
+			return zero, tower.Refuse(api.CodeNotPermitted, "Couldn't "+phrase+": "+reasonOnTheMac)
+		}
 		res, err := h(ctx, c, req)
 		return res, screenFault(phrase, err)
 	}, tower.Spec{Idempotent: true, ChangeTables: tables})
@@ -384,9 +392,13 @@ func ideaDelete(ctx context.Context, c *tower.Ctx, req api.ScreenIDRequest) (api
 	})
 }
 
-func ideaConverted(ctx context.Context, c *tower.Ctx, req api.IdeaConvertedRequest) (api.ActResult, error) {
-	return writeScreen(ctx, c, func(tx *sql.Tx) (api.ActResult, error) {
-		return done(db.MarkIdeaConvertedTx(tx, int(req.ID), req.TargetID))
+// ideaConverted is Convert to Target (IdeasViewModel.convert): the target
+// made and the idea marked converted in one transaction; an idea already
+// converted to a target that is there answers that target, already.
+func ideaConverted(ctx context.Context, c *tower.Ctx, req api.IdeaConvertedRequest) (api.IdeaConvertResult, error) {
+	return writeScreen(ctx, c, func(tx *sql.Tx) (api.IdeaConvertResult, error) {
+		id, already, err := db.ConvertIdeaToTargetTx(tx, int(req.ID), req.Today)
+		return api.IdeaConvertResult{TargetID: id, Already: already}, err
 	})
 }
 

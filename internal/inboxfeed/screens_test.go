@@ -3,8 +3,11 @@ package inboxfeed
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"maps"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -129,6 +132,56 @@ func TestScreenCommands_EveryCommandIsRegisteredGuarded(t *testing.T) {
 			t.Errorf("%s: %s does not embed WriteParams", name, c.Req)
 		}
 	}
+}
+
+// TestScreenCommands_HubIsRefused: every screen command is the Mac's own:
+// from the hub it answers not_permitted ("…: this is done on the Mac.")
+// before anything is written, whatever the hub routes.
+func TestScreenCommands_HubIsRefused(t *testing.T) {
+	seen := map[string]bool{}
+	for _, c := range loadScreenCases(t) {
+		if seen[c.Command] {
+			continue
+		}
+		seen[c.Command] = true
+		t.Run(c.Command, func(t *testing.T) {
+			d := seeded(t, c.Seed)
+			before := snapshotRows(t, d, c.Expect.Rows)
+			resp := callScreen(screenTower(d, time.Now(), fixtureDeps(t, d)), c.Command, c.Call, hub)
+			if resp.Status != api.StatusRefused || resp.Refusal.Code != api.CodeNotPermitted ||
+				!strings.HasSuffix(resp.Refusal.Sentence, ": "+reasonOnTheMac) {
+				t.Fatalf("answer %s %+v, want not_permitted on the Mac", resp.Status, resp.Refusal)
+			}
+			if after := snapshotRows(t, d, c.Expect.Rows); after != before {
+				t.Errorf("rows changed:\n%s\nwant\n%s", after, before)
+			}
+			var n int
+			if err := d.QueryRow(`SELECT COUNT(*) FROM tower_requests`).Scan(&n); err != nil || n != 0 {
+				t.Errorf("%d ledger rows (%v), want none", n, err)
+			}
+		})
+	}
+	if len(seen) != len(screenCommands) {
+		t.Errorf("%d commands checked, want %d", len(seen), len(screenCommands))
+	}
+}
+
+// snapshotRows is the rows of the tables want names, on its columns, as text.
+func snapshotRows(t *testing.T, d *db.DB, want map[string][]map[string]any) string {
+	t.Helper()
+	var b strings.Builder
+	for _, table := range slices.Sorted(maps.Keys(want)) {
+		got, err := readRows(d, table, columnsOf(want[table]))
+		if err != nil {
+			t.Fatal(err)
+		}
+		b.WriteString(table)
+		for _, r := range got {
+			b.WriteString(fmt.Sprint(r))
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
 }
 
 func TestScreenWritesCases(t *testing.T) {

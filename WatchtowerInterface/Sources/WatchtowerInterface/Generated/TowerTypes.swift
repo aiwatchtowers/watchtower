@@ -946,25 +946,43 @@ public struct HelloResponse: Codable, Hashable, Sendable {
     }
 }
 
+public struct IdeaConvertResult: Codable, Hashable, Sendable {
+    public var targetID: Int64
+    public var already: Bool?
+
+    public init(
+        targetID: Int64,
+        already: Bool? = nil
+    ) {
+        self.targetID = targetID
+        self.already = already
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case targetID = "target_id"
+        case already
+    }
+}
+
 public struct IdeaConvertedRequest: Codable, Hashable, Sendable {
     public var requestID: String
     public var id: Int64
-    public var targetID: Int64
+    public var today: String
 
     public init(
         requestID: String,
         id: Int64,
-        targetID: Int64
+        today: String
     ) {
         self.requestID = requestID
         self.id = id
-        self.targetID = targetID
+        self.today = today
     }
 
     enum CodingKeys: String, CodingKey {
         case requestID = "request_id"
         case id
-        case targetID = "target_id"
+        case today
     }
 }
 

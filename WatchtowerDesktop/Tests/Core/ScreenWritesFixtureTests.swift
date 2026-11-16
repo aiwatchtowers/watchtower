@@ -302,8 +302,15 @@ final class ScreenWritesFixtureTests: XCTestCase {
             )
         case "IdeaQueries.delete":
             try IdeaQueries.delete(db, id: id)
-        case "IdeaQueries.markConverted":
-            try IdeaQueries.markConverted(db, id: id, targetID: a.int("targetID") ?? 0)
+        case "IdeaConvert":
+            // IdeasViewModel.convert's one write.
+            let today = a.string("today") ?? ""
+            let idea = try XCTUnwrap(Row.fetchOne(db, sql: "SELECT title, essence FROM ideas WHERE id = ?", arguments: [id]))
+            let targetID = try TargetQueries.create(
+                db, text: idea["title"], intent: idea["essence"], level: "day", periodStart: today, periodEnd: today,
+                sourceType: "idea", sourceID: String(id)
+            )
+            try IdeaQueries.markConverted(db, id: id, targetID: Int64(targetID))
         case "IdeaQueries.markDecisionSeen":
             try IdeaQueries.markDecisionSeen(db, id: id)
         case "IdeaQueries.markAllDecisionsSeen":

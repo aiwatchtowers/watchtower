@@ -284,29 +284,55 @@ func SetIdeaRatingTx(tx *sql.Tx, id, rating int, comment string) error {
 	return requireRow(res, "idea", id)
 }
 
-// MarkIdeaConvertedTx marks idea id converted into target targetID
-// (IdeaQueries.markConverted): a link, not a delete (IDEA-03). already: it
-// is converted into that target.
-func MarkIdeaConvertedTx(tx *sql.Tx, id int, targetID int64) (already bool, err error) {
-	var cur string
+// ConvertIdeaToTargetTx is Convert to Target (IdeasViewModel.convert): a
+// personal day target of today from the idea's title and essence
+// (TargetQueries.create: todo, progress 0, source idea:<id>), then the idea
+// marked converted to it with its review flag cleared (IdeaQueries.
+// markConverted: a link, not a delete, IDEA-03), in the caller's
+// transaction. A personal target has no status history (PROJ-06) and no
+// board parent (PROJ-05). An idea already converted to a target that is
+// there answers that target, already; a missing idea is ErrRowNotFound
+// before anything is written.
+func ConvertIdeaToTargetTx(tx *sql.Tx, id int, today string) (targetID int64, already bool, err error) {
+	var title, essence, status string
 	var conv sql.NullInt64
-	var review bool
-	err = tx.QueryRow(`SELECT status, converted_target_id, needs_review != 0 FROM ideas WHERE id = ?`, id).
-		Scan(&cur, &conv, &review)
+	err = tx.QueryRow(`SELECT title, essence, status, converted_target_id FROM ideas WHERE id = ?`, id).
+		Scan(&title, &essence, &status, &conv)
 	if errors.Is(err, sql.ErrNoRows) {
-		return false, fmt.Errorf("idea %d: %w", id, ErrRowNotFound)
+		return 0, false, fmt.Errorf("idea %d: %w", id, ErrRowNotFound)
 	}
 	if err != nil {
-		return false, fmt.Errorf("reading idea %d: %w", id, err)
+		return 0, false, fmt.Errorf("reading idea %d: %w", id, err)
 	}
-	if cur == "converted" && conv.Valid && conv.Int64 == targetID && !review {
-		return true, nil
+	if status == "converted" && conv.Valid {
+		var one int
+		err := tx.QueryRow(`SELECT 1 FROM targets WHERE id = ?`, conv.Int64).Scan(&one)
+		if err == nil {
+			return conv.Int64, true, nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return 0, false, fmt.Errorf("reading idea %d's target: %w", id, err)
+		}
+	}
+	res, err := tx.Exec(`INSERT INTO targets (text, intent, level, custom_label, period_start, period_end,
+			parent_id, status, priority, ownership, ball_on, due_date, snooze_until,
+			blocking, tags, sub_items, notes, progress, source_type, source_id, ai_level_confidence)
+		VALUES (?, ?, 'day', '', ?, ?, NULL, 'todo', 'medium', 'mine', '', '', '', '', '[]', '[]', '[]', ?, 'idea', ?, NULL)`,
+		title, essence, today, today, statusToProgress("todo"), strconv.Itoa(id))
+	if err != nil {
+		return 0, false, fmt.Errorf("creating idea %d's target: %w", id, err)
+	}
+	if targetID, err = res.LastInsertId(); err != nil {
+		return 0, false, fmt.Errorf("creating idea %d's target: %w", id, err)
+	}
+	if err := fault("idea.convert"); err != nil {
+		return 0, false, err
 	}
 	if _, err := tx.Exec(`UPDATE ideas SET status = 'converted', converted_target_id = ?, `+ideaClearReview+`,
 		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?`, targetID, id); err != nil {
-		return false, fmt.Errorf("marking idea %d converted: %w", id, err)
+		return 0, false, fmt.Errorf("marking idea %d converted: %w", id, err)
 	}
-	return false, nil
+	return targetID, false, nil
 }
 
 // knowledgeVisible is IdeaQueries.knowledgeVisibleSQL: a chat-born item
