@@ -74,8 +74,17 @@ type Config struct {
 	FilesDir string
 	// SkillsDir is <workspace>/skills, the `/` picker's catalog ("" = none).
 	SkillsDir string
+	// Workspace is the workspace folder: when set, every session runs
+	// detached on its session socket (`ai session --listen`,
+	// SessionSocketPath) and outlives the engine, and Start reattaches to
+	// the sessions an earlier engine left ("" = sessions on stdio, ended with
+	// the engine). TempDir is the socket fallback's root ("" = os.TempDir()).
+	Workspace, TempDir string
 	// procArgs reads a process's command line (nil = ps); a test seam.
 	procArgs func(pid int) (string, error)
+	// dialSession connects to a session socket for a reattach (nil = the
+	// unix socket); a test seam.
+	dialSession func(ctx context.Context, path string) (Process, error)
 }
 
 // Engine is the main chat's engine.
@@ -98,6 +107,11 @@ type Engine struct {
 	titlesCtx    context.Context
 	titlesCancel context.CancelFunc
 	titles       sync.WaitGroup
+
+	// stopCtx ends with Detach, Shutdown or Close: a session still binding
+	// its socket stops being waited for.
+	stopCtx    context.Context
+	stopCancel context.CancelFunc
 
 	subMu sync.Mutex
 	subs  map[*Subscription]struct{}
@@ -128,17 +142,25 @@ func New(c Config) *Engine {
 	if c.Clock == nil {
 		c.Clock = time.Now
 	}
-	if c.Start == nil {
-		c.Start = execStart(c.Exe)
-	}
 	if c.procArgs == nil {
 		c.procArgs = psArgs
+	}
+	if c.dialSession == nil {
+		c.dialSession = dialSessionSocket
 	}
 	if c.Read == nil {
 		c.Read = c.DB
 	}
 	e := &Engine{c: c, turns: map[int64]*turnState{}, subs: map[*Subscription]struct{}{}, ops: map[string]OpHandler{}}
+	switch {
+	case e.c.Start != nil:
+	case e.c.Workspace != "":
+		e.c.Start = e.listenStart
+	default:
+		e.c.Start = execStart(c.Exe)
+	}
 	e.titlesCtx, e.titlesCancel = context.WithCancel(context.Background())
+	e.stopCtx, e.stopCancel = context.WithCancel(context.Background())
 	opts := []chatstore.Option{chatstore.WithClock(c.Clock), chatstore.WithPreferredProvider(c.PreferredProvider)}
 	if c.Title != nil {
 		opts = append(opts, chatstore.WithTitleHook(e.title))
@@ -148,10 +170,12 @@ func New(c Config) *Engine {
 	return e
 }
 
-// Start runs the startup sweep (the groups and leases a killed daemon left)
-// before the first turn can claim a lease.
-func (e *Engine) Start(_ context.Context) error {
-	return e.sweep()
+// Start reattaches to the sessions an earlier engine left running (their
+// turns replay and run on), then runs the startup sweep over the rest (the
+// groups and leases a killed daemon left), before the first turn can claim
+// a lease.
+func (e *Engine) Start(ctx context.Context) error {
+	return e.sweep(e.reattach(ctx))
 }
 
 // OnChange sets the hook called when a conversation's live state changed (a
@@ -454,14 +478,33 @@ func (e *Engine) Search(_ context.Context, q string) (SearchResult, error) {
 // turn cut here keeps its text as `partial` with its lease, which the next
 // start's sweep releases.
 func (e *Engine) Close(ctx context.Context) error {
+	return e.stop(ctx, func(s *session) {}, true)
+}
+
+// Detach stops the engine without touching its sessions (a daemon restart,
+// unified chat spec §7, D23): each running turn's text is flushed, its
+// session's connection dropped and its process left running with the
+// turn's lease; the next engine's Start reattaches and the turn streams on.
+// The subscriptions end; the caller closes chat.sock and the engine's
+// database handles.
+func (e *Engine) Detach(ctx context.Context) error {
+	return e.stop(ctx, func(s *session) { s.detaching = true }, true)
+}
+
+// stop marks the engine closed, marks every session (mark runs under e.mu),
+// waits for every session's goroutine and the titles, then (when endSubs) ends
+// the subscriptions.
+func (e *Engine) stop(ctx context.Context, mark func(*session), endSubs bool) error {
 	e.mu.Lock()
 	e.closed = true
 	for _, s := range e.sessions {
 		s.closing = true
+		mark(s)
 		s.poke()
 	}
 	e.mu.Unlock()
 	e.titlesCancel()
+	e.stopCancel()
 	done := make(chan struct{})
 	go func() {
 		e.wg.Wait()
@@ -472,6 +515,9 @@ func (e *Engine) Close(ctx context.Context) error {
 	case <-done:
 	case <-ctx.Done():
 		return ctx.Err()
+	}
+	if !endSubs {
+		return nil
 	}
 	e.subMu.Lock()
 	subs := make([]*Subscription, 0, len(e.subs))

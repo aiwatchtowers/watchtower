@@ -127,6 +127,7 @@ func (e *Engine) registerOps() {
 	e.Register("chat_read", e.opRead)
 	e.Register("chat_branch_select", e.opBranchSelect)
 	e.Register("chat_manage", e.opManage)
+	e.Register(opShutdown, e.opShutdownHandler)
 	e.registerMacOps()
 }
 
