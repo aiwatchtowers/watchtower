@@ -107,6 +107,18 @@ h2{font-size:14px;color:#a1a1a6;margin:32px 0 6px}
 .check{width:18px;height:18px;border-radius:50%;border:1.5px solid var(--ter);flex:none;display:flex;align-items:center;justify-content:center;font-size:11px}
 .check.on{background:var(--green);border-color:var(--green);color:#fff}
 .strike{text-decoration:line-through;color:var(--sec)}
+.mac{--bg:#1e1e1e;--fg:#e6e6e8;--sec:#98989d;--ter:#5a5a5e;--side:#262628;--card:#2c2c2e;--fill:#3a3a3c;--blue:#0a84ff;--red:#ff453a;--orange:#ff9f0a;--green:#30d158;width:620px;height:300px;background:var(--bg);color:var(--fg);border:1px solid #3a3a3c;border-radius:10px;display:flex;overflow:hidden;font-size:13px}
+.mac.lt{--bg:#fff;--fg:#1d1d1f;--sec:#6e6e73;--ter:#aeaeb2;--side:#f5f5f7;--card:#f2f2f7;--fill:#e5e5ea;--blue:#007aff;--red:#d70015;--orange:#c93400;--green:#248a3d;border-color:#c6c6c8}
+.mac .sb{width:190px;background:var(--side);padding:12px 8px;box-sizing:border-box}
+.mac .sb .it{padding:5px 8px;border-radius:6px;display:flex;justify-content:space-between}
+.mac .sb .it.on{background:var(--fill)}
+.mac .mn{flex:1;padding:12px 16px;box-sizing:border-box;display:flex;flex-direction:column;gap:8px}
+.mac .hd{font-size:15px;font-weight:600}
+.mac .ln{color:var(--sec);font-size:12px}
+.mac .bar{background:var(--card);border-radius:8px;padding:8px 10px;display:flex;justify-content:space-between;align-items:center;gap:10px}
+.mac .rw{padding:6px 0}
+.mac .rw .m{color:var(--sec);font-size:12px}
+.mac .bt{color:var(--blue);font-weight:600}
 </style></head><body>
 <h1>Phone Inbox: mockups (2026-11-15, target #1170)</h1>
 <div class="note">Spec: docs/superpowers/specs/2026-11-15-mobile-inbox-design.md. This is sub-project F of the Inbox builder (docs/superpowers/specs/2026-11-02-inbox-builder-design.md). Sample data only (acme, colleague A, example.com). Frames come in dark and light pairs where the layout differs. Colours follow PhoneTone. Orange is used only for waiting-for-you: Needs approval, rows that wait on the owner and the tab badge. Rows are flat with no separators, and cards are used only for waiting items and blocks. After the build, each frame is captured as a ScreenshotTourTests shot named <code>inbox-…</code> and compared against this file.</div>
@@ -358,8 +370,8 @@ The bottom bar has <b>Done</b> and <b>Dismiss</b>, which mark only the drawn ver
 </div>
 
 <!-- ===================================================== 5 -->
-<h2>5. The root's legacy entries (until sub-project C) — open in ask #1348</h2>
-<div class="note">The recommended answer is drawn here. The hub turns the Mac's Morning brief, Track my threads and Idea finder into block documents with <code>ref</code> rows, so the phone needs no separate screen for them. Plan items get a new ref kind, <code>plan_item</code>, whose check writes <code>day_plan_items.status</code>. Tracks and ideas use the native actions of their ref kinds.</div>
+<h2>5. The root's legacy entries (until sub-project C) — ask #1348</h2>
+<div class="note">Ask #1348 chose this. The hub turns the Mac's Morning brief, Track my threads and Idea finder into block documents with <code>ref</code> rows, so the phone needs no separate screen for them. Plan items get a new ref kind, <code>plan_item</code>, whose check writes <code>day_plan_items.status</code>. Tracks and ideas use the native actions of their ref kinds.</div>
 <div class="row">
 <div class="col"><div class="tag">Morning brief — dark</div>
 <div class="phone"><div class="status"><span>9:41</span><span>●●●</span></div>
@@ -470,6 +482,21 @@ The bottom bar has <b>Done</b> and <b>Dismiss</b>, which mark only the drawn ver
 <div class="empty"><div class="h">The Inbox stays on your Mac</div><div class="s">Your organization lets this phone see only Workbench.</div></div>
 <div class="tabs"><div><span class="gl">◷</span>Now</div><div class="on"><span class="gl">▤</span>Inbox</div><div><span class="gl">⚒</span>Workbench</div><div><span class="gl">▦</span>Calendar</div></div>
 </div></div>
+</div>
+
+<!-- ===================================================== 7 -->
+<h2>7. Mac: the Inbox now comes from the tower (stage 1)</h2>
+<div class="note">After stage 1 the Mac draws the list that <code>watchtower inbox feed --json</code> returns and sends every Inbox action through <code>watchtower inbox act</code>. The Inbox looks the same as before. These three states are new, because the list and the actions now go through a CLI call. First load: a spinner in place of the list, with no sample rows. A load that fails keeps the last list and shows the reason line with <b>Retry</b>. When there is no last list, the line shows on its own. A failed action keeps its row with the reason and <b>Retry</b>, as on the phone.</div>
+<div class="row">
+<div class="col"><div class="tag">First load — dark</div>
+<div class="mac"><div class="sb"><div class="it"><span>Needs approval</span><span class="cnt wait" style="color:var(--orange)">2</span></div><div class="it on"><span>Inbox</span><span class="ln">14</span></div><div class="it"><span>Work</span><span class="ln">5</span></div><div class="it"><span>Reports</span><span class="ln">3</span></div></div>
+<div class="mn"><div class="hd">Inbox</div><div class="ln"><span class="spin"></span>&nbsp; Loading the Inbox…</div></div></div></div>
+<div class="col"><div class="tag">Load failed, last list kept — light</div>
+<div class="mac lt"><div class="sb"><div class="it"><span>Needs approval</span><span class="cnt wait" style="color:var(--orange)">2</span></div><div class="it on"><span>Inbox</span><span class="ln">14</span></div><div class="it"><span>Work</span><span class="ln">5</span></div><div class="it"><span>Reports</span><span class="ln">3</span></div></div>
+<div class="mn"><div class="hd">Inbox</div><div class="bar"><span>Couldn't refresh the Inbox: the watchtower tool did not answer. Showing the list from 9:14.</span><span class="bt">Retry</span></div><div class="rw">Weekly report for acme<div class="m">Report digest · 9:02</div></div><div class="rw">Reply to colleague A about the release<div class="m">Waiting for me · Slack</div></div></div></div></div>
+<div class="col"><div class="tag">Action failed on a row — dark</div>
+<div class="mac"><div class="sb"><div class="it"><span>Needs approval</span><span class="cnt wait" style="color:var(--orange)">2</span></div><div class="it on"><span>Inbox</span><span class="ln">14</span></div><div class="it"><span>Work</span><span class="ln">5</span></div><div class="it"><span>Reports</span><span class="ln">3</span></div></div>
+<div class="mn"><div class="hd">Waiting for me</div><div class="rw">Reply to colleague A about the release<div class="m" style="color:var(--red)">Couldn't mark it done: the database is busy. <span class="bt">Retry</span></div></div><div class="rw">Review the acme budget<div class="m">Waiting for me · Jira</div></div></div></div></div>
 </div>
 
 </body></html>
