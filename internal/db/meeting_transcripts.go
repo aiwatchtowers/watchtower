@@ -270,3 +270,40 @@ func (db *DB) ClearMeetingTranscriptAudio(id int64) error {
 	}
 	return nil
 }
+
+// DeleteMeetingTranscriptTx is the Desktop's MeetingTranscriptQueries.delete
+// (the meetings.delete tower command), inside the caller's transaction: the
+// recording's newest "meeting" chat conversation and its messages, then the
+// transcript row. meeting_recaps are left to the schema (a public recording's
+// recap only loses its transcript_id; migration 00164's trigger deletes a
+// private recording's recaps, MEETPRIV-02). found is false when no such
+// recording exists; audioPath is the file for the caller to remove after the
+// commit ("" without one).
+func DeleteMeetingTranscriptTx(tx *sql.Tx, id int64) (found bool, audioPath string, err error) {
+	var audio sql.NullString
+	err = tx.QueryRow(`SELECT audio_path FROM meeting_transcripts WHERE id = ?`, id).Scan(&audio)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, "", nil
+	}
+	if err != nil {
+		return false, "", fmt.Errorf("delete meeting transcript: %w", err)
+	}
+	var conv int64
+	err = tx.QueryRow(`SELECT id FROM chat_conversations WHERE context_type = 'meeting' AND context_id = ?
+ORDER BY updated_at DESC LIMIT 1`, fmt.Sprint(id)).Scan(&conv)
+	switch {
+	case err == nil:
+		if _, err := tx.Exec(`DELETE FROM chat_messages WHERE conversation_id = ?`, conv); err != nil {
+			return false, "", fmt.Errorf("delete meeting transcript: %w", err)
+		}
+		if _, err := tx.Exec(`DELETE FROM chat_conversations WHERE id = ?`, conv); err != nil {
+			return false, "", fmt.Errorf("delete meeting transcript: %w", err)
+		}
+	case !errors.Is(err, sql.ErrNoRows):
+		return false, "", fmt.Errorf("delete meeting transcript: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM meeting_transcripts WHERE id = ?`, id); err != nil {
+		return false, "", fmt.Errorf("delete meeting transcript: %w", err)
+	}
+	return true, audio.String, nil
+}
