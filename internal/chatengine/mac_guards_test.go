@@ -168,3 +168,38 @@ func lastTurnID(t *testing.T, g *rig) string {
 	require.NotEmpty(t, id)
 	return id
 }
+
+// TestProj01_EntitySearchNeverOffersAProjectTarget: the `@` picker and the
+// project source picker (entity_search, kinds none or "target") never offer
+// a workbench target, only an ordinary one with the same text (the Go home
+// of the Mac's testProj01_MentionPickerNeverOffersAProjectTarget, whose
+// Swift search went with the picker's move to the engine) (BEHAVIOR
+// PROJ-01 — see docs/inventory/workbench.md).
+func TestProj01_EntitySearchNeverOffersAProjectTarget(t *testing.T) {
+	g := newRig(t, fakeOpts{})
+	res, err := g.d.Exec(`INSERT INTO projects (name, folder_path) VALUES ('acme', '/tmp/acme')`)
+	require.NoError(t, err)
+	project, err := res.LastInsertId()
+	require.NoError(t, err)
+	for _, target := range []struct {
+		text    string
+		project any
+	}{{"Ship ordinary", nil}, {"Ship board", project}} {
+		_, err := g.d.Exec(`INSERT INTO targets (text, level, custom_label, period_start, period_end, status,
+			priority, ownership, due_date, tags, source_type, project_id)
+			VALUES (?, 'custom', 'project', '2026-11-16', '2026-11-16', 'in_progress', 'high', 'mine', '2020-01-01T09:00', '[]', 'chat', ?)`,
+			target.text, target.project)
+		require.NoError(t, err)
+	}
+	for _, kinds := range [][]string{nil, {"target"}} {
+		hits, err := g.r.EntitySearch(context.Background(), "ship", kinds)
+		require.NoError(t, err)
+		var labels []string
+		for _, h := range hits {
+			if h.Kind == "target" {
+				labels = append(labels, h.Label)
+			}
+		}
+		assert.Equal(t, []string{"Ship ordinary"}, labels, "kinds %v", kinds)
+	}
+}
