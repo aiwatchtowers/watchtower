@@ -242,7 +242,16 @@ func TestSyncStop_InternalLeavesSessionsRunning(t *testing.T) {
 	require.NoError(t, err)
 	pgid, err := strconv.Atoi(strings.TrimSpace(string(b)))
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = syscall.Kill(-pgid, syscall.SIGKILL) })
+	t.Cleanup(func() {
+		_ = syscall.Kill(-pgid, syscall.SIGKILL)
+		for range 250 { // reaped by init: wait until the group is gone
+			if errors.Is(syscall.Kill(-pgid, 0), syscall.ESRCH) {
+				return
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		t.Errorf("session group %d outlived the test", pgid)
+	})
 	require.NoError(t, a.Detach(context.Background())) // the daemon's stop
 
 	order := &orderLog{}
@@ -298,4 +307,23 @@ func TestSyncDaemon_StartRemovesStoppedMarker(t *testing.T) {
 	_, ok, err := daemon.ReadStoppedMarker(cfg.WorkspaceDir())
 	require.NoError(t, err)
 	assert.False(t, ok)
+}
+
+// TestChatShutdown_ReportsSurvivingSessions: when the engine does not
+// answer and the direct reap leaves a session running, the chat shutdown
+// fails (`watchtower chat shutdown` exits non-zero).
+func TestChatShutdown_ReportsSurvivingSessions(t *testing.T) {
+	cfg, _ := syncStopTestConfig(t)
+	shortTempDir(t)
+	prevReq, prevReap := requestChatShutdown, shutdownChatSessions
+	t.Cleanup(func() { requestChatShutdown, shutdownChatSessions = prevReq, prevReap })
+	requestChatShutdown = func(context.Context, string) error { return errors.New("no engine") }
+	var budget time.Duration
+	shutdownChatSessions = func(ctx context.Context, _, _ string) error {
+		dl, _ := ctx.Deadline()
+		budget = time.Until(dl)
+		return errors.New("1 chat session is still running")
+	}
+	require.Error(t, shutdownChat(cfg))
+	assert.Greater(t, budget, chatShutdownBudget-time.Second, "the direct reap gets its own budget")
 }

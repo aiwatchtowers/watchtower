@@ -30,6 +30,10 @@ import (
 // Env turns a test binary into the stub.
 const Env = "WATCHTOWER_LISTEN_STUB"
 
+// GateEnv names a FIFO the stub reads one line from before it binds its
+// socket (a test holds the session in its bind window).
+const GateEnv = "WATCHTOWER_LISTEN_STUB_GATE"
+
 // Main runs the stub on the --listen path from os.Args and exits.
 func Main() {
 	path := ""
@@ -40,6 +44,12 @@ func Main() {
 	}
 	if path == "" {
 		os.Exit(2)
+	}
+	if gate := os.Getenv(GateEnv); gate != "" {
+		if f, err := os.Open(gate); err == nil {
+			_, _ = bufio.NewReader(f).ReadString('\n')
+			_ = f.Close()
+		}
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM)
 	defer stop()

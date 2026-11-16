@@ -87,14 +87,18 @@ func listSessionSockets(workspaceDir, tempDir string) map[int64]string {
 }
 
 // reattach dials every session socket and adopts each live session; a
-// socket nobody serves any more is removed. It returns the adopted
-// conversations (the sweep leaves their groups and leases alone).
+// socket nobody serves any more is removed. A session whose group is alive
+// but whose socket is not bound yet (the engine went away while it
+// started) is waited for in the background and adopted once it listens.
+// It returns the conversations so taken over: the sweep leaves their groups
+// and leases alone.
 func (e *Engine) reattach(ctx context.Context) map[int64]bool {
 	adopted := map[int64]bool{}
 	if !e.listening() {
 		return adopted
 	}
-	for conv, path := range listSessionSockets(e.c.Workspace, e.tempDir()) {
+	sockets := listSessionSockets(e.c.Workspace, e.tempDir())
+	for conv, path := range sockets {
 		p, err := e.c.dialSession(ctx, path)
 		if err != nil {
 			if errors.Is(err, errStaleSocket) {
@@ -102,8 +106,22 @@ func (e *Engine) reattach(ctx context.Context) map[int64]bool {
 			}
 			continue
 		}
-		e.adopt(conv, p)
+		if err := e.adopt(conv, p); err != nil {
+			// Its turn is unknown: the sweep ends it session_lost and kills
+			// the group; nothing is adopted half way.
+			detachProcess(p)
+			log.Printf("chatengine: conversation %d: not reattached (%s)", conv, errClass(err))
+			continue
+		}
 		adopted[conv] = true
+	}
+	for _, g := range sessionGroups(e.pgidDir(), e.c.procArgs) {
+		if adopted[g.conv] {
+			continue
+		}
+		adopted[g.conv] = true
+		e.wg.Add(1)
+		go e.adoptWhenBound(g)
 	}
 	if n := len(adopted); n > 0 {
 		log.Printf("chatengine: %d chat sessions of an earlier run reattached", n)
@@ -111,22 +129,89 @@ func (e *Engine) reattach(ctx context.Context) map[int64]bool {
 	return adopted
 }
 
+// adoptWhenBound waits for a still-starting session to bind its socket and
+// adopts it. It gives up when the group is gone, after bindTimeout, or when
+// this engine stops (a later engine tries again); a session that never
+// listens is killed and its turn ends session_lost.
+func (e *Engine) adoptWhenBound(g sessionGroup) {
+	defer e.wg.Done()
+	path := e.sessionSocket(g.conv)
+	deadline := time.NewTimer(bindTimeout)
+	defer deadline.Stop()
+	for {
+		p, err := e.c.dialSession(e.stopCtx, path)
+		if err == nil {
+			if err := e.adopt(g.conv, p); err == nil {
+				return
+			}
+			detachProcess(p)
+		} else if errors.Is(err, errStaleSocket) && syscall.Kill(-g.pgid, 0) == nil {
+			retry := time.NewTimer(bindRetry)
+			select {
+			case <-retry.C:
+				continue
+			case <-e.stopCtx.Done():
+				retry.Stop()
+				return
+			case <-deadline.C:
+				retry.Stop()
+			}
+		}
+		if e.stopCtx.Err() != nil {
+			return
+		}
+		_ = syscall.Kill(-g.pgid, syscall.SIGKILL)
+		_ = os.Remove(g.pgidPath)
+		if err := e.loseLease(g.conv); err != nil {
+			log.Printf("chatengine: conversation %d: ending a lost turn failed (%s)", g.conv, errClass(err))
+		}
+		e.changed(g.conv)
+		return
+	}
+}
+
+// loseLease ends conv's turn the engine's lease holds as session_lost (its
+// reply keeps its text `partial`) and releases the lease.
+func (e *Engine) loseLease(conv int64) error {
+	l, err := e.c.DB.GetChatLease(conv)
+	if err != nil || l == nil || l.Owner != db.ChatLeaseHub || l.OwnerID != LeaseOwnerID {
+		return err
+	}
+	if _, err := e.c.DB.MarkChatTurnSessionLost(conv, l.TurnID); err != nil {
+		return err
+	}
+	return e.c.DB.WithTx(func(tx *sql.Tx) error { return db.ReleaseChatLeaseTx(tx, conv, l.TurnID) })
+}
+
+// detachProcess drops a connection without touching the process.
+func detachProcess(p Process) {
+	if d, ok := p.(interface{ Detach() }); ok {
+		d.Detach()
+	}
+}
+
 // adopt takes a running session over: its turn, when the engine's lease
-// still holds one, is replayed and runs on; it is never reused for another
-// turn (its config is not known), so it closes once idle.
-func (e *Engine) adopt(conv int64, p Process) {
+// still holds one, is replayed and runs on (or, when the session never got
+// it, sent again); it is never reused for another turn (its config is not
+// known), so it closes once idle. A failed lookup of the turn adopts
+// nothing.
+func (e *Engine) adopt(conv int64, p Process) error {
 	held, err := e.heldTurnOf(conv)
 	if err != nil {
-		log.Printf("chatengine: conversation %d: reading its running turn failed (%s)", conv, errClass(err))
+		return err
 	}
-	s := &session{r: e, conv: conv, kick: make(chan struct{}, 1), lastActivity: e.c.Clock(),
-		phase: phaseLive, retire: true, turn: held, proc: p, adopted: true}
+	if held != nil {
+		held.t.HoldFlushes() // the replay rebuilds the text from its start
+	}
+	s := &session{r: e, conv: conv, kick: make(chan struct{}, 1), done: make(chan struct{}),
+		lastActivity: e.c.Clock(), phase: phaseLive, retire: true, turn: held, proc: p, adopted: true}
 	e.mu.Lock()
 	e.sessions = append(e.sessions, s)
 	e.wg.Add(1)
 	e.mu.Unlock()
 	s.poke()
 	go s.loop()
+	return nil
 }
 
 // heldTurnOf is conv's turn the engine's lease holds (nil = none).
@@ -243,7 +328,15 @@ func (e *Engine) listenStart(argv []string) (Process, error) {
 		close(exited)
 	}()
 	pid := cmd.Process.Pid
+	// The group file now: an engine that goes away while the session binds
+	// leaves it running, and the next one finds it by this file.
+	if conv, err := strconv.ParseInt(flagValue(argv, "--conversation"), 10, 64); err == nil {
+		e.writeGroupFile(conv, pid)
+	}
 	conn, err := e.dialSpawned(path, exited)
+	if errors.Is(err, ErrClosed) {
+		return nil, err // the engine stops: the session binds and the next engine adopts it (D23)
+	}
 	if err != nil {
 		_ = syscall.Kill(-pid, syscall.SIGKILL)
 		<-exited

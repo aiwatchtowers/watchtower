@@ -307,7 +307,9 @@ func runSyncStopOpts(cfg *config.Config, force, internal bool) error {
 		return fmt.Errorf("reading pid file: %w", err)
 	}
 	if !internal {
-		shutdownChat(cfg)
+		if err := shutdownChat(cfg); err != nil {
+			fmt.Fprintf(os.Stderr, "chat shutdown: %v\n", err)
+		}
 	}
 	err = stopDaemonPID(pidPath, pid, force)
 	if err == nil && !internal {
@@ -319,17 +321,19 @@ func runSyncStopOpts(cfg *config.Config, force, internal bool) error {
 }
 
 // shutdownChat ends every chat turn and session before the owner's stop:
-// through the engine on chat.sock, else (no daemon answers) directly.
-func shutdownChat(cfg *config.Config) {
+// through the engine on chat.sock, else (no daemon answers) directly, each
+// step on its own budget. An error means a session may still run.
+func shutdownChat(cfg *config.Config) error {
 	ws, tmp := cfg.WorkspaceDir(), os.TempDir()
 	ctx, cancel := context.WithTimeout(context.Background(), chatShutdownBudget)
+	err := requestChatShutdown(ctx, chatengine.SocketPath(ws, tmp))
+	cancel()
+	if err == nil {
+		return nil
+	}
+	ctx, cancel = context.WithTimeout(context.Background(), chatShutdownBudget)
 	defer cancel()
-	if requestChatShutdown(ctx, chatengine.SocketPath(ws, tmp)) == nil {
-		return
-	}
-	if err := shutdownChatSessions(ctx, ws, tmp); err != nil {
-		fmt.Fprintf(os.Stderr, "chat shutdown: %v\n", err)
-	}
+	return shutdownChatSessions(ctx, ws, tmp)
 }
 
 // stopDaemonPID sends the daemon pid (0 = none running) SIGTERM and waits

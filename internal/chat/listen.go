@@ -30,9 +30,10 @@ type ListenOptions struct {
 	// Path is the session socket (<workspace>/chatengine/sessions/<conv>.sock
 	// or its temp fallback): 0600 in a 0700 folder.
 	Path string
-	// Verify checks the client by its audit token, read when it connected
-	// (nil = ownerconfirm.VerifySameTeamCLI: the engine is this team's
-	// watchtower CLI, unified chat spec §7, D17).
+	// Verify checks the client by its token, read when it connected (nil =
+	// on macOS ownerconfirm.VerifySameTeamCLI — the engine is this team's
+	// watchtower CLI, unified chat spec §7, D17 —; elsewhere the client runs
+	// this session's own executable).
 	Verify func(ctx context.Context, t ownerconfirm.PeerToken) error
 	// Clock reads the time for the idle TTL (nil = time.Now).
 	Clock func() time.Time
@@ -58,7 +59,7 @@ type ListenOptions struct {
 // error is first handed to the next client to attach within IdleTTL.
 func ServeListen(ctx context.Context, o ListenOptions, s *Session) error {
 	if o.Verify == nil {
-		o.Verify = ownerconfirm.VerifySameTeamCLI
+		o.Verify = defaultListenVerify
 	}
 	if o.Clock == nil {
 		o.Clock = time.Now
@@ -151,8 +152,10 @@ func (srv *listenServer) serve(ctx context.Context) error {
 	)
 	closeCur := func() {
 		if cur != nil {
-			srv.s.w.detach(cur)
+			// Close first: an Emit blocked writing to a client that stopped
+			// reading holds the writer's lock until its write fails.
 			_ = cur.Close()
+			srv.s.w.detach(cur)
 			cur = nil
 		}
 	}

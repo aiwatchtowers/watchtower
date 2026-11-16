@@ -25,6 +25,7 @@ import (
 // is answered with its scripted replay and the attached line; close, a
 // signal or a detach ends it.
 type replayProc struct {
+	gate      chan struct{} // when set, the attached line waits for it
 	events    []chat.Event
 	turnID    string // the turn its buffer holds
 	inR, outR *io.PipeReader
@@ -52,20 +53,37 @@ func (p *replayProc) run() {
 			continue
 		}
 		p.mu.Lock()
-		p.got = append(p.got, c.Type)
+		p.got = append(p.got, c.Type+":"+c.TurnID+":"+c.Text+":"+strconv.FormatBool(c.Replay))
 		p.mu.Unlock()
 		switch c.Type {
 		case chat.CommandAttach:
-			for _, ev := range append(append([]chat.Event(nil), p.events...), chat.Event{Type: chat.EventAttached, TurnID: p.turnID}) {
-				b, _ := json.Marshal(ev)
-				if _, err := p.outW.Write(append(b, '\n')); err != nil {
+			for _, ev := range p.events {
+				if !p.write(ev) {
 					return
 				}
+			}
+			if p.gate != nil {
+				<-p.gate
+			}
+			if !p.write(chat.Event{Type: chat.EventAttached, TurnID: p.turnID}) {
+				return
 			}
 		case chat.CommandClose:
 			return
 		}
 	}
+}
+
+func (p *replayProc) write(ev chat.Event) bool {
+	b, _ := json.Marshal(ev)
+	_, err := p.outW.Write(append(b, '\n'))
+	return err == nil
+}
+
+func (p *replayProc) turns() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.got...)
 }
 
 func (p *replayProc) exit() {
@@ -114,6 +132,11 @@ func newReplayRig(t *testing.T) *replayRig {
 // waits until it folded them, and returns the engine and the process.
 func (g *replayRig) attach(t *testing.T, events []chat.Event) (*Engine, *replayProc) {
 	t.Helper()
+	return g.attachGated(t, events, nil)
+}
+
+func (g *replayRig) attachGated(t *testing.T, events []chat.Event, gate chan struct{}) (*Engine, *replayProc) {
+	t.Helper()
 	buffered := ""
 	for _, ev := range events {
 		if ev.TurnID != "" {
@@ -121,6 +144,7 @@ func (g *replayRig) attach(t *testing.T, events []chat.Event) (*Engine, *replayP
 		}
 	}
 	p := newReplayProc(buffered, events)
+	p.gate = gate
 	e := New(Config{DB: g.d, Dir: filepath.Join(g.ws, "chatengine"), Workspace: g.ws, TempDir: g.tmp,
 		dialSession: func(context.Context, string) (Process, error) { return p, nil }})
 	e.OnTurnEnd(func(conv int64, turnID, status string) {
@@ -216,20 +240,42 @@ func TestChatengine_ReplayIsIdempotent(t *testing.T) {
 	})
 }
 
-// TestChatengine_ReattachedSessionWithoutOurTurnLosesIt: the lease holds a
-// turn the session never got (it was still queued when the engine went
-// away): the reply ends `partial` with session_lost and the session is
-// closed.
-func TestChatengine_ReattachedSessionWithoutOurTurnLosesIt(t *testing.T) {
+// TestChatengine_ReattachedSessionGetsItsUnsentTurn: the lease holds a turn
+// the session never got (the engine went away while it was binding): the
+// next engine sends it, rebuilt from the owner row and replayed.
+func TestChatengine_ReattachedSessionGetsItsUnsentTurn(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		g := newReplayRig(t)
-		e, p := g.attach(t, replayOf("an-older-turn", true))
-		<-p.Exited()
+		e, p := g.attach(t, []chat.Event{{Type: chat.EventSessionReady, SessionID: "sid", Provider: "claude"}})
+		assert.Contains(t, p.turns(), "turn:"+g.st.TurnID+":question:true")
+		require.NotNil(t, lease(t, g.d, g.st.ConversationID), "the turn runs on")
 		require.NoError(t, e.Detach(context.Background()))
 		got := g.stored(t)
 		assert.Equal(t, chatstore.StatusPartial, got.status)
-		assert.Equal(t, chat.CodeSessionLost, got.errorCode)
-		assert.Nil(t, lease(t, g.d, g.st.ConversationID))
+		assert.Empty(t, got.errorCode)
+	})
+}
+
+// TestChatengine_ReplayNeverShrinksStoredText: until the replay is whole
+// (its attached line) the reattached turn writes nothing, so the row keeps
+// the longer text the earlier engine flushed.
+func TestChatengine_ReplayNeverShrinksStoredText(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		g := newReplayRig(t)
+		b, _ := g.attach(t, replayOf(g.st.TurnID, false))
+		require.NoError(t, b.Detach(context.Background()))
+		whole := g.stored(t).text
+
+		gate := make(chan struct{})
+		c, _ := g.attachGated(t, replayOf(g.st.TurnID, false), gate)
+		assert.Equal(t, whole, g.stored(t).text, "the first replayed delta is not written alone")
+		time.Sleep(2 * chatstore.FlushInterval) // ticks pass mid-replay
+		synctest.Wait()
+		assert.Equal(t, whole, g.stored(t).text, "no fragment written over the row")
+		close(gate)
+		synctest.Wait()
+		assert.Equal(t, whole, g.stored(t).text)
+		require.NoError(t, c.Detach(context.Background()))
 	})
 }
 
@@ -262,7 +308,7 @@ func TestChatengine_DetachLeavesSessionsAndLease(t *testing.T) {
 // TestChatengine_ShutdownReapsSessions: Shutdown cancels every running
 // turn, ends it `partial` with its text (no error, lease released), then
 // closes each session; one that ignores close gets SIGTERM 2 s later and
-// SIGKILL 3 s after that.
+// SIGKILL 3 s after that. The engine keeps taking turns afterwards.
 func TestChatengine_ShutdownReapsSessions(t *testing.T) {
 	t.Run("polite", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
@@ -285,8 +331,16 @@ func TestChatengine_ShutdownReapsSessions(t *testing.T) {
 				assert.Nil(t, lease(t, g.d, st.ConversationID))
 			}
 			assert.Len(t, g.turnEnds(), 2)
-			_, err := g.r.Turn(context.Background(), turnReq(c1, "again", ""))
-			assert.ErrorIs(t, err, ErrClosed)
+
+			// The engine stays open: a new turn runs on a new session.
+			again, err := g.r.Turn(context.Background(), turnReq(c1, "again", ""))
+			require.NoError(t, err)
+			synctest.Wait()
+			require.Len(t, g.f.all(), 3)
+			g.f.all()[2].finish()
+			synctest.Wait()
+			r, _ := readRow(t, g.d, again.AssistantMessageID)
+			assert.Equal(t, chatstore.StatusComplete, r.status)
 		})
 	})
 	t.Run("stubborn", func(t *testing.T) {

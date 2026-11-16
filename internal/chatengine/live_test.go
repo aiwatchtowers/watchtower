@@ -58,6 +58,9 @@ func newLiveRig(t *testing.T) *liveRig {
 		g.mu.Lock()
 		pgids := append([]int(nil), g.pgids...)
 		g.mu.Unlock()
+		for _, sg := range sessionGroups(filepath.Join(g.cfg.Dir, "sessions"), psArgs) {
+			pgids = append(pgids, sg.pgid)
+		}
 		for _, pg := range pgids {
 			_ = syscall.Kill(-pg, syscall.SIGKILL)
 		}
@@ -314,4 +317,31 @@ func TestChat04_ListenTurnContentOnlyOnSocket(t *testing.T) {
 	dir, err := os.Stat(filepath.Dir(SessionSocketPath(g.ws, g.cfg.TempDir, conv)))
 	require.NoError(t, err)
 	assert.Equal(t, os.FileMode(0o700), dir.Mode().Perm())
+}
+
+// TestChatengine_DetachWhileBindingKeepsTheTurn: the engine goes away while
+// a new turn's session is still starting (before it bound its socket); the
+// session is left running, and the next engine adopts it once it listens,
+// sends it the turn and finishes it (D23: a restart never cuts a turn).
+func TestChatengine_DetachWhileBindingKeepsTheTurn(t *testing.T) {
+	g := newLiveRig(t)
+	gate := filepath.Join(g.ws, "gate")
+	require.NoError(t, syscall.Mkfifo(gate, 0o600))
+	t.Setenv(listenstub.GateEnv, gate)
+	a := g.engine()
+	conv := newConversation(t, g.d)
+	fifo := g.fifo("f", false)
+	st := g.turn(a, conv, "fifo:"+fifo)
+	release := script(t, gate) // the session runs, held before it binds
+	require.NoError(t, a.Detach(context.Background()))
+	require.NotNil(t, lease(t, g.d, conv))
+
+	g.engine()
+	say(t, release, "bind")
+	w := script(t, fifo) // the turn reached the session
+	say(t, w, "text resent", "done")
+	assert.Equal(t, turnEnd{conv, st.TurnID, chatstore.StatusComplete}, <-g.ends)
+	r, _ := readRow(t, g.d, st.AssistantMessageID)
+	assert.Equal(t, chatstore.StatusComplete, r.status)
+	assert.Equal(t, "partial answer resent", r.text)
 }

@@ -11,10 +11,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -27,12 +27,30 @@ import (
 // 3 s, SIGKILL, and the last writes.
 const shutdownBudget = 10 * time.Second
 
-// Shutdown ends the chat: each running turn is cancelled and ends `partial`
-// with its text so far, every session is closed (close, closeGrace,
-// SIGTERM, killAfter, SIGKILL of its group) and waited for. The engine takes
-// no more turns; its subscriptions stay until Detach (the daemon's stop).
+// Shutdown ends the chat now: each running turn is cancelled and ends
+// `partial` with its text so far, every session is closed (close,
+// closeGrace, SIGTERM, killAfter, SIGKILL of its group) and waited for. The
+// engine stays open: a later turn starts a new session (a wipe or a purge
+// keeps the daemon running).
 func (e *Engine) Shutdown(ctx context.Context) error {
-	return e.stop(ctx, func(s *session) { s.shutdown = true }, false)
+	e.mu.Lock()
+	ss := slices.Clone(e.sessions)
+	for _, s := range ss {
+		s.closing, s.shutdown = true, true
+		s.poke()
+	}
+	e.mu.Unlock()
+	for _, s := range ss {
+		if s.done == nil {
+			continue
+		}
+		select {
+		case <-s.done:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
 }
 
 // opShutdown is chat_shutdown: the Mac app's or this team's CLI's only
@@ -104,6 +122,7 @@ func roundTrip(conn net.Conn, r *bufio.Reader, id, op string, params any) error 
 
 // sessionGroup is one session ShutdownSessions reaps.
 type sessionGroup struct {
+	conv     int64
 	pgid     int
 	pgidPath string
 }
@@ -113,7 +132,8 @@ type sessionGroup struct {
 // `close`; the sessions' groups (their group files, each checked to still
 // be that conversation's `ai session`) get SIGTERM after closeGrace and
 // SIGKILL after killAfter more. The rows are finalised by the next engine's
-// startup sweep (session_lost).
+// startup sweep (session_lost). It fails when a session is still running at
+// the end (or ctx ended first).
 func ShutdownSessions(ctx context.Context, workspaceDir, tempDir string) error {
 	for _, path := range listSessionSockets(workspaceDir, tempDir) {
 		conn, _, err := connectSession(ctx, path)
@@ -147,10 +167,11 @@ func ShutdownSessions(ctx context.Context, workspaceDir, tempDir string) error {
 	for _, g := range groups {
 		_ = syscall.Kill(-g.pgid, syscall.SIGKILL)
 	}
-	if left := waitGroups(ctx, alive, orphanWait); len(left) > 0 {
-		log.Printf("chatengine: %d chat session groups are still there after SIGKILL", len(left))
-	}
+	left := waitGroups(ctx, alive, orphanWait)
 	removeGroupFiles(filepath.Join(workspaceDir, "chatengine", "sessions"), psArgs)
+	if len(left) > 0 {
+		return fmt.Errorf("chatengine: %d chat sessions are still running after SIGKILL", len(left))
+	}
 	return ctx.Err()
 }
 
@@ -171,7 +192,7 @@ func sessionGroups(dir string, args func(int) (string, error)) []sessionGroup {
 		b, err2 := os.ReadFile(path)
 		pgid, err3 := strconv.Atoi(strings.TrimSpace(string(b)))
 		if err1 == nil && err2 == nil && err3 == nil && pgid > 1 && isChatSessionArgs(args, pgid, conv) {
-			out = append(out, sessionGroup{pgid: pgid, pgidPath: path})
+			out = append(out, sessionGroup{conv: conv, pgid: pgid, pgidPath: path})
 		}
 	}
 	return out

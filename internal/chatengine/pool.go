@@ -36,7 +36,8 @@ func (e *Engine) holding(conv int64) *session {
 }
 
 func (e *Engine) newSession(conv int64, cfg sessionConfig) *session {
-	s := &session{r: e, conv: conv, cfg: cfg, kick: make(chan struct{}, 1), lastActivity: e.c.Clock()}
+	s := &session{r: e, conv: conv, cfg: cfg, kick: make(chan struct{}, 1), done: make(chan struct{}),
+		lastActivity: e.c.Clock()}
 	e.sessions = append(e.sessions, s)
 	e.wg.Add(1)
 	go s.loop()

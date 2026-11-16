@@ -129,7 +129,9 @@ func runChatShutdown(cmd *cobra.Command, _ []string) error {
 	if err := cfg.ValidateWorkspace(); err != nil {
 		return fmt.Errorf("invalid config: %w", err)
 	}
-	shutdownChat(cfg)
+	if err := shutdownChat(cfg); err != nil {
+		return fmt.Errorf("chat shutdown: %w", err)
+	}
 	fmt.Fprintln(cmd.OutOrStdout(), "Chat sessions closed.")
 	return nil
 }
