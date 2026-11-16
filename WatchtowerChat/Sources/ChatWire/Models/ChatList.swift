@@ -54,6 +54,9 @@ public struct ChatList: Decodable, Hashable, Sendable {
         public let lastLine: String
         /// "hub" or "desktop" while a turn runs.
         public let leaseOwner: String?
+        /// The running turn's id while one runs (absent from an older engine): a connector call of that turn is
+        /// still held by its session.
+        public let turnID: String?
 
         public init(
             id: Int64,
@@ -63,7 +66,8 @@ public struct ChatList: Decodable, Hashable, Sendable {
             project: Project? = nil,
             state: State,
             lastLine: String = "",
-            leaseOwner: String? = nil
+            leaseOwner: String? = nil,
+            turnID: String? = nil
         ) {
             self.id = id
             self.title = title
@@ -73,6 +77,7 @@ public struct ChatList: Decodable, Hashable, Sendable {
             self.state = state
             self.lastLine = lastLine
             self.leaseOwner = leaseOwner
+            self.turnID = turnID
         }
 
         public init(from decoder: Decoder) throws {
@@ -85,10 +90,12 @@ public struct ChatList: Decodable, Hashable, Sendable {
             state = try c.decodeIfPresent(State.self, forKey: .state) ?? .read
             lastLine = try c.decodeIfPresent(String.self, forKey: .lastLine) ?? ""
             leaseOwner = try c.decodeIfPresent(String.self, forKey: .leaseOwner)
+            turnID = try c.decodeIfPresent(String.self, forKey: .turnID).flatMap { $0.isEmpty ? nil : $0 }
         }
 
         enum CodingKeys: String, CodingKey {
             case id, title, pinned, updatedAt, project, state, lastLine, leaseOwner
+            case turnID = "turnId"
         }
     }
 

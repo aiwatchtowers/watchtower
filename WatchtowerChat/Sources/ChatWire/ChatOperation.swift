@@ -24,6 +24,11 @@ public enum ChatOperation: Sendable, Equatable {
     case skillsList
     /// Mac only: stops the engine (`sync stop`).
     case shutdown
+    /// Mac only: start the chat's session ahead of its first turn (the landing's first keystroke, opening a chat);
+    /// it only takes a free slot. `routing` nil keeps the conversation's.
+    case warm(conversationID: Int64, routing: ChatRouting?)
+    /// Mac only: retire every session so the next turn starts a fresh one (a claude.ai connector switch).
+    case retireSessions
 }
 
 /// Why `wireParams()` cannot encode an operation.
@@ -51,6 +56,8 @@ extension ChatOperation {
         case .entitySearch: "entity_search"
         case .skillsList: "skills_list"
         case .shutdown: "chat_shutdown"
+        case .warm: "chat_warm"
+        case .retireSessions: "chat_sessions_retire"
         }
     }
 
@@ -86,9 +93,15 @@ extension ChatOperation {
             return try encoder.encode(AttachDiscardParams(conversationID: conversationID, attachmentID: attachmentID))
         case let .entitySearch(query, kinds):
             return try encoder.encode(ChatEntitySearchParams(query: query, kinds: kinds))
-        case .skillsList, .shutdown:
-            return Data("{}".utf8)
+        case .skillsList, .shutdown, .retireSessions, .warm:
+            return try macParams(encoder)
         }
+    }
+
+    /// The params of the Mac-only operations without a public params type.
+    private func macParams(_ encoder: JSONEncoder) throws -> Data {
+        guard case let .warm(conversationID, routing) = self else { return Data("{}".utf8) }
+        return try encoder.encode(WarmParams(conversationID: conversationID, routing: routing))
     }
 
     /// Reads the `result` of this operation's applied echo.
@@ -111,7 +124,7 @@ extension ChatOperation {
             return .entities(try decoder.decode(HitsResult.self, from: data).hits ?? [])
         case .skillsList:
             return .skills(try decoder.decode(SkillsResult.self, from: data).skills ?? [])
-        case .cancel, .read, .branchSelect, .manage, .attachDiscard, .shutdown:
+        case .cancel, .read, .branchSelect, .manage, .attachDiscard, .shutdown, .warm, .retireSessions:
             return .none
         }
     }
@@ -215,6 +228,16 @@ private struct ManageParams: Encodable {
         case conversationID = "conversationId"
         case op, title
         case projectID = "projectId"
+    }
+}
+
+private struct WarmParams: Encodable {
+    let conversationID: Int64
+    let routing: ChatRouting?
+
+    enum CodingKeys: String, CodingKey {
+        case conversationID = "conversationId"
+        case routing
     }
 }
 

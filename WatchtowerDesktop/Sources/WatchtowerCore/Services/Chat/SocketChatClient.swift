@@ -29,6 +29,13 @@ package enum ChatReachabilityPolicy {
     /// The reconnect backoff: 100 ms doubling to 2 s.
     package static let firstBackoff: Duration = .milliseconds(100)
     package static let maxBackoff: Duration = .seconds(2)
+    /// How long a new connection may take to greet and answer `hello`; past it the engine counts as unreachable.
+    package static let handshakeBound: Duration = .seconds(5)
+    /// How long any request may wait for its answer; past it the connection is taken as dead and dropped (a send's
+    /// answer is then lost, so the model resends with the same client key once the chat is back).
+    package static let requestBound: Duration = .seconds(30)
+    /// How long the quit waits for `chat_shutdown` (longer than the engine's 2 s grace + 3 s kill).
+    package static let shutdownBound: Duration = .seconds(8)
 
     package static func backoff(attempt: Int) -> Duration {
         let doubled = firstBackoff * (1 << min(max(attempt, 0), 5))
@@ -107,8 +114,11 @@ package final class SocketChatClient: ChatClient {
 
     /// Ends every chat turn and session (`chat_shutdown`): the app's quit, wipe and compaction stops (T10b). False
     /// when the engine could not be reached or refused it.
+    /// Bounded by `ChatReachabilityPolicy.shutdownBound`: a wedged engine never holds the quit.
     package func shutdown() async -> Bool {
-        guard case .applied? = try? await core.request(.shutdown) else { return false }
+        guard case .applied? = try? await core.request(.shutdown, bound: ChatReachabilityPolicy.shutdownBound) else {
+            return false
+        }
         return true
     }
 
@@ -173,6 +183,10 @@ extension SocketChatClient {
         private var forbidden = false
         private var sleeper: Task<Void, Never>?
         private let decoder = ChatWireCoder.makeDecoder()
+        /// The current connection's greeting-and-hello deadline.
+        private var handshake: Task<Void, Never>?
+        /// The answer deadline of each waiting request.
+        private var deadlines: [String: Task<Void, Never>] = [:]
         private var retryWaiter: CheckedContinuation<Void, Never>?
 
         init(
@@ -212,6 +226,15 @@ extension SocketChatClient {
         /// Talks on one connection until it drops.
         private func serve(_ line: SocketLine) async {
             connection = line
+            let clock = clock
+            handshake = Task { [weak self] in
+                do { try await clock.sleep(for: ChatReachabilityPolicy.handshakeBound) } catch { return }
+                await self?.handshakeTimedOut(line)
+            }
+            defer {
+                handshake?.cancel()
+                handshake = nil
+            }
             var greeted = false
             var reachedEngine = false
             reading: for await batch in line.lines {
@@ -248,7 +271,15 @@ extension SocketChatClient {
             }
         }
 
+        /// The engine accepted the connection but never greeted or answered `hello` in time.
+        private func handshakeTimedOut(_ line: SocketLine) {
+            guard connection === line, !connected else { return }
+            line.shutdown()
+        }
+
         private func becameConnected() {
+            handshake?.cancel()
+            handshake = nil
             connected = true
             attempt = 0
             outageStart = nil
@@ -265,6 +296,8 @@ extension SocketChatClient {
             let lost = pending
             pending = [:]
             byWireID = [:]
+            deadlines.values.forEach { $0.cancel() }
+            deadlines = [:]
             for (_, entry) in lost {
                 if case let .operation(_, continuation) = entry { continuation.resume(throwing: ChatSocketDropped()) }
             }
@@ -343,17 +376,34 @@ extension SocketChatClient {
 
         // MARK: Requests
 
-        func request(_ op: ChatOperation) async throws -> ChatEcho {
+        func request(_ op: ChatOperation, bound: Duration = ChatReachabilityPolicy.requestBound) async throws -> ChatEcho {
             guard connected, let connection else { throw ChatSocketDropped() }
             let params = try op.wireParams()
             let id = newID()
             return try await withCheckedThrowingContinuation { continuation in
                 pending[id] = .operation(op, continuation)
+                startDeadline(id, bound: bound)
                 if !write(connection, id: id, op: op.wireOp, params: params) {
                     // The write failed: the reader ends, and the drop answers the waiter.
                     connection.shutdown()
                 }
             }
+        }
+
+        /// An answer that does not come within `bound`: the connection is taken as dead and dropped, which
+        /// answers every waiter with `ChatSocketDropped` and reconnects.
+        private func startDeadline(_ id: String, bound: Duration) {
+            let clock = clock
+            deadlines[id] = Task { [weak self] in
+                do { try await clock.sleep(for: bound) } catch { return }
+                await self?.deadlinePassed(id)
+            }
+        }
+
+        private func deadlinePassed(_ id: String) {
+            deadlines[id] = nil
+            guard pending[id] != nil else { return }
+            connection?.shutdown()
         }
 
         private func sendHello() {
@@ -416,6 +466,7 @@ extension SocketChatClient {
             }
             let id = newID()
             pending[id] = .subscribe(token)
+            startDeadline(id, bound: ChatReachabilityPolicy.requestBound)
             let body = (try? JSONSerialization.data(withJSONObject: params)) ?? Data("{}".utf8)
             if !write(connection, id: id, op: "subscribe", params: body) { connection.shutdown() }
         }
@@ -453,6 +504,7 @@ extension SocketChatClient {
                 return
             }
             guard let answer = Answer(data), let entry = pending.removeValue(forKey: answer.id) else { return }
+            deadlines.removeValue(forKey: answer.id)?.cancel()
             switch entry {
             case let .operation(op, continuation):
                 continuation.resume(with: Result { try answer.echo(for: op) })

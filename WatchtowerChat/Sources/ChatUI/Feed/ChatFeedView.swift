@@ -47,6 +47,12 @@ public struct ChatFeedContext {
     public var notice: String?
     public var partActions: ChatPartActions
     public var rowActions: ChatRowActions
+    /// What the app draws under a message (the Mac's "Approve all" and action review); nil draws nothing.
+    public var messageAccessory: ((ChatFeed.Message) -> AnyView?)?
+    /// What the app draws after the last message (the Mac's cards of an interrupted turn).
+    public var footer: AnyView?
+    /// The message to bring into view (a search hit); the feed scrolls to it once it is loaded.
+    public var scrollTarget: Int64?
 
     public init(
         provider: String? = nil,
@@ -57,7 +63,10 @@ public struct ChatFeedContext {
         staleLine: String? = nil,
         notice: String? = nil,
         partActions: ChatPartActions = ChatPartActions(),
-        rowActions: ChatRowActions = ChatRowActions()
+        rowActions: ChatRowActions = ChatRowActions(),
+        messageAccessory: ((ChatFeed.Message) -> AnyView?)? = nil,
+        footer: AnyView? = nil,
+        scrollTarget: Int64? = nil
     ) {
         self.provider = provider
         self.artifacts = artifacts
@@ -68,6 +77,9 @@ public struct ChatFeedContext {
         self.notice = notice
         self.partActions = partActions
         self.rowActions = rowActions
+        self.messageAccessory = messageAccessory
+        self.footer = footer
+        self.scrollTarget = scrollTarget
     }
 }
 
@@ -92,6 +104,12 @@ public struct ChatFeedView: View {
                     }
                     ForEach(rows) { row in
                         rowView(row).id(row.id)
+                        if case let .message(message, _) = row, let accessory = context.messageAccessory?(message) {
+                            accessory
+                        }
+                    }
+                    if let footer = context.footer {
+                        footer
                     }
                     if let staleLine = context.staleLine {
                         SystemRow(kind: .line(staleLine))
@@ -105,8 +123,12 @@ public struct ChatFeedView: View {
             }
             .defaultScrollAnchor(.bottom)
             .onChange(of: rows.last?.id) { _, last in
-                guard let last else { return }
+                guard let last, context.scrollTarget == nil else { return }
                 proxy.scrollTo(last, anchor: .bottom)
+            }
+            .onChange(of: ScrollRequest(target: context.scrollTarget, loaded: targetRow(in: rows)), initial: true) { _, request in
+                guard let row = request.loaded else { return }
+                proxy.scrollTo(row, anchor: .center)
             }
         }
         .modifier(ChatFeedQuoteSupport(onQuote: context.rowActions.quote))
@@ -151,4 +173,18 @@ public struct ChatFeedView: View {
     }
 
     private static let placeholder = ChatFeed.Message(id: 0, role: "assistant", text: "", createdAt: .distantPast)
+
+    /// The row holding the scroll target, once it is loaded.
+    private func targetRow(in rows: [ChatFeedLayout.Row]) -> ChatFeedLayout.Row.ID? {
+        guard let target = context.scrollTarget else { return nil }
+        return rows.first { row in
+            if case let .message(message, _) = row { return message.id == target }
+            return false
+        }?.id
+    }
+}
+
+private struct ScrollRequest: Equatable {
+    let target: Int64?
+    let loaded: ChatFeedLayout.Row.ID?
 }

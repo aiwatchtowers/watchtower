@@ -192,6 +192,9 @@ public enum ChatManageOp: String, Codable, Hashable, Sendable {
     case move
     /// Takes the chat off the list, its messages kept (the Mac's Archive; chat.sock only).
     case archive
+    /// Deletes the chat only while it is an untouched draft — no message, no attachment (the Mac's landing draft
+    /// left without a send; chat.sock only).
+    case discard
 }
 
 /// `chat_manage`. `title` goes with `rename` only.

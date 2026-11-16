@@ -68,4 +68,39 @@ final class ChatMacShellModelTests: XCTestCase {
         XCTAssertEqual(composer.draft, "look at @PAY-1")
         XCTAssertEqual(composer.editing, 3)
     }
+
+    /// M7: a file being attached shows as importing, and a Send pressed meanwhile waits for it and carries it.
+    func testSendWaitsForAFileBeingAttached() async throws {
+        let gate = Gate()
+        client.respond { _ in
+            await gate.wait()
+            return .applied(.attachment(id: 31))
+        }
+        let attach = Task { await composer.attach(.path("/tmp/acme-notes.txt")) }
+        while composer.importing.isEmpty { await Task.yield() }
+        XCTAssertEqual(composer.importing, ["acme-notes.txt"])
+        composer.draft = "see the notes"
+        let send = Task { await composer.send() }
+        while !composer.isWaitingForAttachments { await Task.yield() }
+        XCTAssertFalse(client.ops.contains { if case .turn = $0 { true } else { false } }, "nothing goes before the file")
+        await gate.release()
+        await attach.value
+        let sent = await send.value
+        XCTAssertTrue(sent)
+        guard case .turn(let request)? = client.ops.last else { return XCTFail("no turn") }
+        XCTAssertEqual(request.attachmentIDs, [31])
+        XCTAssertTrue(composer.importing.isEmpty)
+    }
+
+    func testWarmAndRetireAreMacOperations() throws {
+        XCTAssertEqual(ChatOperation.warm(conversationID: 4, routing: nil).wireOp, "chat_warm")
+        let params = try JSONSerialization.jsonObject(
+            with: ChatOperation.warm(conversationID: 4, routing: ChatRouting(mode: "auto")).wireParams()) as? [String: Any]
+        XCTAssertEqual(params?["conversation_id"] as? Int, 4)
+        XCTAssertEqual((params?["routing"] as? [String: Any])?["mode"] as? String, "auto")
+        XCTAssertEqual(ChatOperation.retireSessions.wireOp, "chat_sessions_retire")
+        let discard = try JSONSerialization.jsonObject(
+            with: ChatOperation.manage(conversationID: 4, op: .discard, title: nil, projectID: nil).wireParams()) as? [String: Any]
+        XCTAssertEqual(discard?["op"] as? String, "discard")
+    }
 }

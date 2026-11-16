@@ -71,6 +71,8 @@ struct ChatComposerView: View {
                 onAttachFiles: { chatVM.attachFiles($0) },
                 onPasteData: { await chatVM.attachPasted($0, name: $1) },
                 onRemoveAttachment: { id in Task { await composer.removeAttachment(id) } },
+                attachmentProgress: AttachmentProgress(importing: composer.importing, removing: composer.removing,
+                                                       sendWaits: composer.isWaitingForAttachments),
                 attachUnavailableReason: chatVM.attachUnavailableReason,
                 pdfUnavailableReason: chatVM.pdfUnavailableReason,
                 onCursorChange: { text, cursor in
@@ -93,12 +95,15 @@ struct ChatComposerView: View {
         .onChange(of: chatVM.isBusy) { _, busy in
             if !busy { Task { await chatVM.refreshRoutingStatus() } }
         }
+        .onChange(of: chatVM.composer.draft) { old, new in
+            if old.isEmpty, !new.isEmpty { Task { await chatVM.draftStarted() } }
+        }
     }
 
     /// A composer attachment as the field's chip shows it (name only: the engine stored the file).
     private static func chip(_ attachment: ChatComposerAttachment) -> ChatAttachment {
         ChatAttachment(id: attachment.id, conversationID: nil, projectID: nil, messageID: nil, name: attachment.name,
-                       mime: "", size: 0, path: "", sha256: "", createdAt: 0)
+                       mime: attachment.mime, size: attachment.size, path: "", sha256: "", createdAt: 0)
     }
 
     @ViewBuilder private var routingState: some View {

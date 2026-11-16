@@ -64,10 +64,14 @@ final class ChatPanelModel {
 
     // MARK: - Rows
 
-    /// The level's chats, without the one waiting in the Undo window.
+    /// The level's chats, without the one waiting in the Undo window, and without an untouched draft (the
+    /// landing's chat before its first send: no title, no answer) unless it is the chat on screen.
     var rows: [ChatList.Conversation] {
         let level = resolvedLevel
-        return list.conversations.filter { level.lists(projectID: $0.project?.id) }
+        return list.conversations.filter { conv in
+            level.lists(projectID: conv.project?.id)
+                && (!conv.title.isEmpty || !conv.lastLine.isEmpty || conv.id == selectedConversationID)
+        }
     }
 
     var sections: [ChatHistorySection] {

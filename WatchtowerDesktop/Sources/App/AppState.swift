@@ -255,6 +255,9 @@ final class AppState {
     private(set) var chatClient: SocketChatClient?
     /// Re-reads the Inbox strip when a chat's state changes (`followChatForActionStrip`).
     @ObservationIgnored var chatActionStripWatch: Task<Void, Never>?
+    /// Every main chat's running turn, from the engine's list (`followChatForActionStrip`): the Inbox strip's
+    /// "the session still holds this call" for any chat, shown or not, Chat tab opened or not.
+    var chatRunningTurns: [Int64: String] = [:]
     /// Settings → Profile → claude.ai tools (#737); `AppState+Chat.swift`.
     @ObservationIgnored private(set) lazy var claudeAIConnectors = makeClaudeAIConnectors()
 
@@ -579,7 +582,6 @@ final class AppState {
         let panel = ChatPanelModel(list: cvm.list, workspace: db.dbPool.path)
         Self.wireChat(cvm, panel: panel)
         cvm.onStartDaemon = { [weak self] in self?.startChatDaemon() }
-        followChatForActionStrip(client)
         onboardingGoals.onProviderSwitched = { [weak cvm] provider in
             cvm?.switchProvider(AIProvider.fromConfig(provider))
         }
@@ -603,6 +605,7 @@ final class AppState {
             partKinds: Array(ChatPartRegistry.registered)
         )
         chatClient = client
+        followChatForActionStrip(client)
         return client
     }
 

@@ -20,6 +20,10 @@ final class FakeChatSocket: @unchecked Sendable {
     private var subscriptionSerial = 0
     private var waiters: [(due: ([[String: Any]]) -> Bool, continuation: CheckedContinuation<Void, Never>)] = []
     var forbidHello = false
+    /// The engine accepts but never speaks (an old build, a stuck accept loop).
+    var silent = false
+    /// Operations the engine never answers (a wedged engine).
+    var unanswered: Set<String> = []
     /// The answer line's `result` for an operation (nil: `{}`); a string answers it refused with that code.
     var answer: @Sendable (_ op: String, _ params: [String: Any]) -> Any? = { _, _ in nil }
     var feedJSON: @Sendable (Int64) -> String = { id in
@@ -124,7 +128,7 @@ final class FakeChatSocket: @unchecked Sendable {
             let kept = lock.withLock { () -> Bool in
                 guard !stopped else { return false }
                 open.append(c)
-                Self.send(c, #"{"event":"ready","protocol":1}"#)
+                if !silent { Self.send(c, #"{"event":"ready","protocol":1}"#) }
                 return true
             }
             guard kept else {
@@ -169,6 +173,7 @@ final class FakeChatSocket: @unchecked Sendable {
         let id = request["id"] as? String ?? ""
         let op = request["op"] as? String ?? ""
         let params = request["params"] as? [String: Any] ?? [:]
+        if unanswered.contains(op) { return [] }
         switch op {
         case "hello":
             if forbidHello {
@@ -210,7 +215,7 @@ final class ManualChatClientClock: ChatClientClock, @unchecked Sendable {
     private let lock = NSLock()
     private let start = ContinuousClock.now
     private var offset: Duration = .zero
-    private var sleepers: [(deadline: Duration, continuation: CheckedContinuation<Void, any Error>)] = []
+    private var sleepers: [(id: UUID, deadline: Duration, continuation: CheckedContinuation<Void, any Error>)] = []
     private var sleepWaiters: [CheckedContinuation<Void, Never>] = []
     private(set) var sleeps: [Duration] = []
 
@@ -219,24 +224,31 @@ final class ManualChatClientClock: ChatClientClock, @unchecked Sendable {
     var recordedSleeps: [Duration] { lock.withLock { sleeps } }
 
     func sleep(for duration: Duration) async throws {
+        let id = UUID()
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
-                let waiters = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+                let (waiters, cancelled) = lock.withLock { () -> ([CheckedContinuation<Void, Never>], Bool) in
+                    if Task.isCancelled { return ([], true) }
                     sleeps.append(duration)
-                    sleepers.append((offset + duration, continuation))
+                    sleepers.append((id, offset + duration, continuation))
                     defer { sleepWaiters = [] }
-                    return sleepWaiters
+                    return (sleepWaiters, false)
                 }
+                if cancelled { continuation.resume(throwing: CancellationError()) }
                 waiters.forEach { $0.resume() }
             }
         } onCancel: {
-            let cancelled = lock.withLock { () -> [CheckedContinuation<Void, any Error>] in
-                let all = sleepers.map(\.continuation)
-                sleepers = []
-                return all
+            let mine = lock.withLock { () -> CheckedContinuation<Void, any Error>? in
+                guard let index = sleepers.firstIndex(where: { $0.id == id }) else { return nil }
+                return sleepers.remove(at: index).continuation
             }
-            cancelled.forEach { $0.resume(throwing: CancellationError()) }
+            mine?.resume(throwing: CancellationError())
         }
+    }
+
+    /// The durations slept, the handshake and answer deadlines left out (the reconnect backoff alone).
+    var backoffSleeps: [Duration] {
+        recordedSleeps.filter { $0 <= ChatReachabilityPolicy.maxBackoff }
     }
 
     /// Returns once someone sleeps on this clock.
@@ -370,14 +382,14 @@ final class SocketChatClientTests: XCTestCase {
         let again = await states.next()
         XCTAssertEqual(again, .connected, ".connected is reported after every reconnect")
         XCTAssertEqual(server.ops("subscribe").count, 2, "the open feed is subscribed again")
-        XCTAssertEqual(clock.recordedSleeps, [.milliseconds(100)])
+        XCTAssertEqual(clock.backoffSleeps, [.milliseconds(100)])
     }
 
     func testReconnectBackoffDoublesTo2s() async throws {
         _ = makeClient()
         for _ in 0..<8 { await clock.finishNextSleep() }
         let expected: [Duration] = [100, 200, 400, 800, 1600, 2000, 2000, 2000].map { .milliseconds($0) }
-        XCTAssertEqual(Array(clock.recordedSleeps.prefix(8)), expected)
+        XCTAssertEqual(Array(clock.backoffSleeps.prefix(8)), expected)
         XCTAssertEqual(ChatReachabilityPolicy.backoff(attempt: 40), .seconds(2))
     }
 
@@ -414,6 +426,50 @@ final class SocketChatClientTests: XCTestCase {
         let unavailable = await waitFor(.unavailable, on: &states)
         XCTAssertTrue(unavailable)
         XCTAssertEqual(starts.value, 0, "a refused peer is no stopped daemon")
+    }
+
+    /// M2: an engine that accepts the connection but never greets is unreachable once the handshake bound passed
+    /// (the daemon is started once), never stuck in its old state.
+    func testSilentEngineIsUnreachableAfterTheHandshakeBound() async throws {
+        server.silent = true
+        try server.listen()
+        let client = makeClient()
+        var states = client.reachability.makeAsyncIterator()
+        await clock.untilSleeping()
+        XCTAssertEqual(clock.recordedSleeps, [ChatReachabilityPolicy.handshakeBound])
+        await clock.finishNextSleep()
+        let state = await states.next()
+        XCTAssertEqual(state, .starting)
+        await starts.until(1)
+    }
+
+    /// I2: a wedged engine never holds the quit: an unanswered `chat_shutdown` gives up after its bound (false), and
+    /// any other unanswered request drops the connection after its own, answering the waiter as a lost answer.
+    func testUnansweredRequestsGiveUpAfterTheirBound() async throws {
+        server.unanswered = ["chat_shutdown", "chat_read"]
+        try server.listen()
+        let client = makeClient()
+        var states = client.reachability.makeAsyncIterator()
+        _ = await waitFor(.connected, on: &states)
+        let quit = Task { await client.shutdown() }
+        await server.until(op: "chat_shutdown", count: 1)
+        await clock.finishNextSleep()
+        let shut = await quit.value
+        XCTAssertFalse(shut, "the quit goes on without the engine")
+        XCTAssertTrue(clock.recordedSleeps.contains(ChatReachabilityPolicy.shutdownBound))
+
+        await clock.finishNextSleep() // the reconnect backoff after the drop
+        _ = await waitFor(.connected, on: &states)
+        let read = Task { try await client.send(.read(conversationID: 1, messageID: 1)) }
+        await server.until(op: "chat_read", count: 1)
+        await clock.finishNextSleep()
+        do {
+            _ = try await read.value
+            XCTFail("an unanswered request must give up")
+        } catch {
+            XCTAssertTrue(error is any ChatConnectionError)
+        }
+        XCTAssertTrue(clock.recordedSleeps.contains(ChatReachabilityPolicy.requestBound))
     }
 
     func testOperationAnswersEchoTheirResult() async throws {

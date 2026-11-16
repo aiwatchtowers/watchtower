@@ -25,6 +25,8 @@ final class ChatSliceMirrorTests: XCTestCase {
         XCTAssertEqual(first.state, .answering)
         XCTAssertEqual(first.project, ChatList.Project(id: 1, name: "Acme launch"))
         XCTAssertEqual(first.leaseOwner, "hub")
+        XCTAssertEqual(first.turnID, "turn-2", "the running turn of an answering chat")
+        XCTAssertNil(list.conversations[1].turnID)
         XCTAssertEqual(first.lastLine, "The rollout slipped to Friday.")
         XCTAssertEqual(first.updatedAt, Date(timeIntervalSince1970: 1_700_000_300))
         XCTAssertEqual(list.conversations[1].state, .waiting)

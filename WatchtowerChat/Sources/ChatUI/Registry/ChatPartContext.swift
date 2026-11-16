@@ -30,6 +30,9 @@ public struct ChatPartActions {
     /// The Mac's own agent-action card (Slack editing, reconnect, the automation editor), shared with its Inbox. Nil
     /// on the phone and in tests: the shared approval card draws the action.
     public var approvalCard: ((ChatApprovalPayload) -> AnyView?)?
+    /// The Mac's "Review actions" on a reply stopped by the subscription quota: shows the reply's actions; nil hides
+    /// the button.
+    public var reviewActions: ((Int64) -> Void)?
 
     public init(
         sendFixedText: @escaping (String) -> Void = { _ in },
@@ -40,7 +43,8 @@ public struct ChatPartActions {
         openArtifact: @escaping (ChatArtifactContent) -> Void = { _ in },
         openSources: @escaping ([ChatSource]) -> Void = { _ in },
         decide: @escaping (ChatApprovalPayload, ChatApprovalDecision) -> Void = { _, _ in },
-        approvalCard: ((ChatApprovalPayload) -> AnyView?)? = nil
+        approvalCard: ((ChatApprovalPayload) -> AnyView?)? = nil,
+        reviewActions: ((Int64) -> Void)? = nil
     ) {
         self.sendFixedText = sendFixedText
         self.openURL = openURL
@@ -51,6 +55,7 @@ public struct ChatPartActions {
         self.openSources = openSources
         self.decide = decide
         self.approvalCard = approvalCard
+        self.reviewActions = reviewActions
     }
 }
 

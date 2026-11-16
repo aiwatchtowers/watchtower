@@ -117,6 +117,31 @@ final class ChatViewModel {
     /// Drafts of the chats left with text in the composer.
     @ObservationIgnored private var drafts: [Int64: String] = [:]
     @ObservationIgnored private var landingDraftText = ""
+    /// The chat the landing made on its first keystroke (so its session warms up) and has not sent in yet: it is
+    /// discarded (deleted only while untouched) when the landing leaves it. Kept per workspace, so one abandoned by
+    /// quitting goes at the next launch.
+    private(set) var landingDraftID: Int64? {
+        didSet {
+            if let landingDraftID {
+                defaults.set(Int(landingDraftID), forKey: landingDraftKey)
+            } else {
+                defaults.removeObject(forKey: landingDraftKey)
+            }
+        }
+    }
+    @ObservationIgnored private var makingLandingDraft = false
+    @ObservationIgnored private var engineCalls: [Task<Void, Never>] = []
+    @ObservationIgnored private var turnIDLoad: Task<Void, Never>?
+    @ObservationIgnored private let defaults: UserDefaults
+    private var landingDraftKey: String { "chat.landingDraft.engine.\(dbPool.path)" }
+
+    /// A search hit's message to bring into view (the feed scrolls once it is loaded).
+    private(set) var scrollTarget: Int64?
+    /// The reply whose actions "Review actions" shows, and those actions' ids.
+    private(set) var reviewedMessageID: Int64?
+    private(set) var reviewedActionIDs: [Int64] = []
+    /// The turn ids of the chat's stored messages: a proposal whose turn has none is from an interrupted turn.
+    private(set) var messageTurnIDs: Set<String> = []
 
     @ObservationIgnored private let dbPool: DatabasePool
     @ObservationIgnored private let cliRunner: CLIRunnerProtocol?
@@ -132,9 +157,11 @@ final class ChatViewModel {
         provider: AIProvider = .claude,
         cliRunner: CLIRunnerProtocol? = nil,
         preferredProviderSource: (() -> AIProvider)? = nil,
-        clock: any ChatUIClock = ContinuousChatUIClock()
+        clock: any ChatUIClock = ContinuousChatUIClock(),
+        defaults: UserDefaults = .standard
     ) {
         self.client = client
+        self.defaults = defaults
         self.dbPool = dbPool
         self.cliRunner = cliRunner
         self.uiClock = clock
@@ -196,9 +223,11 @@ final class ChatViewModel {
         return list.store.list?.conversations.first { $0.id == id }?.state == .answering
     }
 
-    /// The running turn's id of `id`'s chat when this window knows it (the chat on screen); else nil.
+    /// The running turn's id of `id`'s chat: the feed's for the chat on screen, else the engine's list row (every
+    /// main chat with a turn running names it).
     func runningTurnID(conversationID id: Int64) -> String? {
-        id == conversationID ? conversation.runningTurnID : nil
+        if id == conversationID, let turn = conversation.runningTurnID { return turn }
+        return list.store.list.flatMap { AppState.runningTurns(in: $0)[id] }
     }
 
     /// Whether the live session that proposed `action` still holds it: its chat runs that very turn.
@@ -223,17 +252,67 @@ final class ChatViewModel {
     func start() {
         list.start()
         conversation.start()
+        // A landing draft abandoned by quitting: gone, unless a message or a file was added since.
+        if let stale = defaults.object(forKey: landingDraftKey) as? Int {
+            defaults.removeObject(forKey: landingDraftKey)
+            fireAndForget(.manage(conversationID: Int64(stale), op: .discard, title: nil, projectID: nil))
+        }
+    }
+
+    /// The first keystroke (or an open chat): the landing makes its chat now and the engine starts its session, so
+    /// the first answer does not wait for a spawn; an open chat's session is warmed too. Never evicts anything.
+    func draftStarted() async {
+        if let id = conversationID {
+            if !isOnLanding || id == landingDraftID { warm(id) }
+            return
+        }
+        guard isOnLanding, !makingLandingDraft else { return }
+        makingLandingDraft = true
+        defer { makingLandingDraft = false }
+        composer.projectID = landingProjectID
+        composer.routing = routingRequest
+        guard let id = await composer.prepareConversation() else { return }
+        landingDraftID = id
+        warm(id)
+    }
+
+    private func warm(_ id: Int64) {
+        let routing = conversationID == nil || id == landingDraftID ? routingRequest : nil
+        fireAndForget(.warm(conversationID: id, routing: routing))
+    }
+
+    /// The landing's draft chat, left without a send: discarded by the engine while it is untouched.
+    private func discardLandingDraft(except keep: Int64? = nil) {
+        guard let draft = landingDraftID, draft != keep else { return }
+        landingDraftID = nil
+        fireAndForget(.manage(conversationID: draft, op: .discard, title: nil, projectID: nil))
+    }
+
+    /// An engine operation nobody waits for (a warm-up, a draft's discard); a failure changes nothing on screen.
+    private func fireAndForget(_ op: ChatOperation) {
+        let client = client
+        engineCalls.append(Task { _ = try? await client.send(op) })
+    }
+
+    /// Returns once every fire-and-forget operation so far was answered (tests).
+    func engineCallsSettled() async {
+        let calls = engineCalls
+        engineCalls = []
+        for call in calls { await call.value }
+        await turnIDLoad?.value
     }
 
     // MARK: - Conversations
 
     /// Shows `id`; the composer's draft of the chat left behind is kept for it.
     func select(conversationID id: Int64) {
+        discardLandingDraft(except: id)
         openProjectID = nil
         isOnLanding = false
         landingProjectID = nil
         guard id != conversationID else { return }
         show(id)
+        warm(id)
     }
 
     /// A new chat now (the Inbox's Discuss): created by the engine, then shown.
@@ -258,6 +337,13 @@ final class ChatViewModel {
     /// The landing: ⌘N, New Chat, and a tab entry outside the resume window. `projectID` is where its first send
     /// makes the chat.
     func showLanding(inProject projectID: Int64? = nil) {
+        if let draft = landingDraftID, conversationID == draft, composer.projectID == projectID {
+            // The landing's own draft in this project stays its draft.
+            openProjectID = nil
+            isOnLanding = true
+            return
+        }
+        discardLandingDraft()
         openProjectID = nil
         isOnLanding = true
         landingProjectID = projectID
@@ -270,7 +356,11 @@ final class ChatViewModel {
 
     /// A project page; its composer is the landing's, in this project.
     func openProject(_ id: Int64) {
-        if conversationID != nil { show(nil) }
+        let keepsDraft = conversationID != nil && conversationID == landingDraftID && composer.projectID == id
+        if !keepsDraft {
+            discardLandingDraft()
+            if conversationID != nil { show(nil) }
+        }
         openProjectID = id
         isOnLanding = true
         landingProjectID = id
@@ -323,9 +413,37 @@ final class ChatViewModel {
         show(nil)
     }
 
-    /// Opens a search hit's chat.
+    /// Opens a search hit's chat and brings its message into view, loading earlier pages until the message is
+    /// there (at most `maxPagesToHit`).
     func open(_ hit: ChatSearch.Hit) {
         select(conversationID: hit.conversationID)
+        scrollTarget = hit.messageID
+        guard let target = hit.messageID else { return }
+        let model = conversation
+        Task { [weak self] in
+            await self?.loadUntilLoaded(target, in: model)
+        }
+    }
+
+    static let maxPagesToHit = 20
+
+    /// Loads earlier pages of `model` until `messageID` is loaded (the feed's snapshot first).
+    func loadUntilLoaded(_ messageID: Int64, in model: ChatConversationModel) async {
+        for _ in 0..<Self.maxPagesToHit {
+            if model.messages.contains(where: { $0.id == messageID }) { return }
+            guard model.feed != nil else {
+                await Task.yield()
+                continue
+            }
+            guard model.hasEarlier else { return }
+            let before = model.messages.count
+            await model.loadEarlier()
+            if model.messages.count == before { return }
+        }
+    }
+
+    func consumeScrollTarget() {
+        scrollTarget = nil
     }
 
     // MARK: - Turns
@@ -341,6 +459,7 @@ final class ChatViewModel {
         let before = conversation
         let sent = await composer.send(screenContext: screen?.block)
         guard sent else { return }
+        if conversationID == landingDraftID { landingDraftID = nil }
         picker.reset()
         dismissedArtifactKeys = []
         if wasLanding, before === conversation, let id = conversationID {
@@ -601,6 +720,7 @@ final class ChatViewModel {
             sourcesPanel = nil
         }
         loadFullTexts(messages)
+        loadMessageTurnIDs()
     }
 
     private func loadFullTexts(_ messages: [ChatFeed.Message]) {
@@ -654,7 +774,60 @@ final class ChatViewModel {
         dismissedArtifactKeys = []
         errorMessage = nil
         fullTexts = [:]
+        scrollTarget = nil
+        reviewedMessageID = nil
+        reviewedActionIDs = []
+        messageTurnIDs = []
         if let id { actionFeed.start(conversationID: id) }
+    }
+
+    // MARK: - Agent actions (the Mac's cards, D12)
+
+    /// "Review actions" on a reply the quota stopped: its turn's actions show under it.
+    func reviewActions(messageID: Int64) async {
+        let turn = try? await dbPool.read { db in
+            try String.fetchOne(db, sql: "SELECT turn_id FROM chat_messages WHERE id = ?", arguments: [messageID])
+        }
+        guard let turn else { return }
+        actionFeed.refresh()
+        reviewedMessageID = messageID
+        reviewedActionIDs = actionFeed.rows.filter { $0.turnID == turn }.map(\.id)
+        isInspectorExpanded = false
+        scrollTarget = messageID
+    }
+
+    /// The turn of a reply, read from its approval parts' actions; nil when it has none.
+    func turnID(ofApprovalsIn message: ChatFeed.Message) -> String? {
+        let ids = Set(message.resolvedParts.compactMap { part -> Int64? in
+            guard part.kind == ChatPartKind.approval, case .object(let object)? = part.payload,
+                  case .integer(let id)? = object["id"] else { return nil }
+            return id
+        })
+        return actionFeed.rows.first { ids.contains($0.id) && !$0.turnID.isEmpty }?.turnID
+    }
+
+    /// The proposals of a turn that stored no message (an interrupted turn): no approval part shows them.
+    var unattachedActions: [AgentAction] {
+        AgentActionFeed.unattached(rows: actionFeed.rows, messageTurnIDs: messageTurnIDs)
+    }
+
+    /// A card a running turn waits on (its action is pending in the turn that runs): outlined.
+    func isAwaited(_ action: AgentAction) -> Bool {
+        (action.isPending && !action.turnID.isEmpty && action.turnID == conversation.runningTurnID)
+            || reviewedActionIDs.contains(action.id)
+    }
+
+    private func loadMessageTurnIDs() {
+        guard let id = conversationID else { return }
+        let pool = dbPool
+        turnIDLoad = Task { [weak self] in
+            let turns = try? await pool.read { db in
+                try String.fetchSet(db, sql: "SELECT DISTINCT turn_id FROM chat_messages WHERE conversation_id = ? AND turn_id != ''",
+                                    arguments: [id])
+            }
+            guard let self, let turns, self.conversationID == id else { return }
+            if turns != self.messageTurnIDs { self.messageTurnIDs = turns }
+        }
     }
 
     private func wire(_ model: ChatConversationModel) {

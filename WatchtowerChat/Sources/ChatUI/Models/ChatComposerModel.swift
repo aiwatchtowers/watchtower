@@ -7,10 +7,15 @@ import WatchtowerChatText
 public struct ChatComposerAttachment: Equatable, Identifiable, Sendable {
     public let id: Int64
     public let name: String
+    /// The file's type and size as attached ("" and 0 when unknown).
+    public let mime: String
+    public let size: Int64
 
-    public init(id: Int64, name: String) {
+    public init(id: Int64, name: String, mime: String = "", size: Int64 = 0) {
         self.id = id
         self.name = name
+        self.mime = mime
+        self.size = size
     }
 }
 
@@ -46,6 +51,12 @@ public final class ChatComposerModel {
     /// The `/` picker's catalog, read once.
     private var skillCatalog: [ChatSkill]?
     public private(set) var notice: String?
+    /// Files being attached (their names) and attachments being removed: the chips show it.
+    public private(set) var importing: [String] = []
+    public private(set) var removing: Set<Int64> = []
+    /// A send waits for the files attached just before it.
+    public private(set) var isWaitingForAttachments = false
+    private var importWaiters: [CheckedContinuation<Void, Never>] = []
 
     public init(conversation: ChatConversationModel) {
         self.conversation = conversation
@@ -63,7 +74,7 @@ public final class ChatComposerModel {
     public var canSend: Bool {
         guard conversation.reachability == .connected, !conversation.isGone, !isSending,
               !conversation.isTurnRunning else { return false }
-        return sendText != nil || (!attachments.isEmpty && conversation.conversationID != nil)
+        return sendText != nil || ((!attachments.isEmpty || !importing.isEmpty) && conversation.conversationID != nil)
     }
 
     public var placeholder: String {
@@ -88,6 +99,12 @@ public final class ChatComposerModel {
         guard canSend else { return false }
         isSending = true
         defer { isSending = false }
+        if !importing.isEmpty {
+            // The files dropped or pasted just before Send go with it.
+            isWaitingForAttachments = true
+            await withCheckedContinuation { importWaiters.append($0) }
+            isWaitingForAttachments = false
+        }
         let sentDraft = draft
         let text = sendText ?? ""
         guard let conversationID = await ensureConversation() else { return false }
@@ -164,15 +181,18 @@ public final class ChatComposerModel {
 
     /// Attaches a file: the Mac passes a path, the phone a sealed upload.
     public func attach(_ source: ChatAttachSource) async {
-        guard let conversationID = await ensureConversation() else { return }
         let name: String = switch source {
         case .path(let path): URL(fileURLWithPath: path).lastPathComponent
         case .sealedUpload(let upload): upload.name
         }
+        importing.append(name)
+        defer { importDone(name) }
+        guard let conversationID = await ensureConversation() else { return }
+        let (mime, size) = Self.facts(of: source)
         do {
             switch try await client.send(.attach(conversationID: conversationID, source: source)) {
             case .applied(.attachment(let id)):
-                attachments.append(ChatComposerAttachment(id: id, name: name))
+                attachments.append(ChatComposerAttachment(id: id, name: name, mime: mime, size: size))
                 notice = nil
             case .applied:
                 break
@@ -186,9 +206,45 @@ public final class ChatComposerModel {
 
     /// Drops an attachment from the draft (the engine deletes the stored file).
     public func removeAttachment(_ id: Int64) async {
-        attachments.removeAll { $0.id == id }
-        guard let conversationID = conversation.conversationID else { return }
+        guard let conversationID = conversation.conversationID else {
+            attachments.removeAll { $0.id == id }
+            return
+        }
+        removing.insert(id)
+        defer { removing.remove(id) }
         _ = try? await client.send(.attachDiscard(conversationID: conversationID, attachmentID: id))
+        attachments.removeAll { $0.id == id }
+    }
+
+    /// The chat the next send goes into, made now when there is none yet (the Mac's landing makes it on the first
+    /// keystroke so its session warms up). Nil when the engine could not make it (`line` says why).
+    public func prepareConversation() async -> Int64? {
+        await ensureConversation()
+    }
+
+    private func importDone(_ name: String) {
+        if let index = importing.firstIndex(of: name) { importing.remove(at: index) }
+        guard importing.isEmpty else { return }
+        let waiters = importWaiters
+        importWaiters = []
+        waiters.forEach { $0.resume() }
+    }
+
+    /// The type and size of an attachment's file, as far as the client can tell before the engine's answer.
+    static func facts(of source: ChatAttachSource) -> (mime: String, size: Int64) {
+        switch source {
+        case .sealedUpload(let upload):
+            return (upload.mime, upload.size)
+        case .path(let path):
+            let url = URL(fileURLWithPath: path)
+            let size = ((try? FileManager.default.attributesOfItem(atPath: path))?[.size] as? NSNumber)?.int64Value ?? 0
+            let head = (try? FileHandle(forReadingFrom: url)).flatMap { handle -> Data? in
+                defer { try? handle.close() }
+                return try? handle.read(upToCount: 64)
+            } ?? Data()
+            let kind = ChatAttachmentLimits.classify(head: head, fileName: url.lastPathComponent)?.0
+            return (kind?.mime ?? "", size)
+        }
     }
 
     /// The `@` picker's hits.

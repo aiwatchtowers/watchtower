@@ -37,6 +37,9 @@ struct HelpChatPanel: View {
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.primary.opacity(0.12)))
         .shadow(radius: 12, y: 4)
         .onExitCommand(perform: escape)
+        .onChange(of: chatVM.composer.draft) { old, new in
+            if old.isEmpty, !new.isEmpty { Task { await chatVM.draftStarted() } }
+        }
         .macChatStyle(hooks: .app)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Ask Watchtower")

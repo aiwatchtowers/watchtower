@@ -27,13 +27,44 @@ struct ChatThreadView: View {
         .task(id: chatVM.conversationID) { await chatVM.loadArtifactContext() }
         .task(id: chatVM.messages.last?.id) { await chatVM.conversation.markRead() }
         .onChange(of: chatVM.conversation.messages, initial: true) { _, _ in chatVM.feedChanged() }
+        .onChange(of: chatVM.actionFeed.rows) { _, _ in chatVM.feedChanged() }
     }
 
     private var feedContext: ChatFeedContext {
         var context = chatVM.conversation.feedContext(composer: chatVM.composer, partActions: partActions)
         context.rowActions.quote = { chatVM.addQuote($0) }
         context.notice = chatVM.conversation.notice
+        context.messageAccessory = { message in messageAccessory(message) }
+        context.footer = unattachedCards
+        context.scrollTarget = chatVM.scrollTarget
         return context
+    }
+
+    /// Under a reply: "Approve all" when its turn has two or more cards to approve, and the reviewed actions.
+    private func messageAccessory(_ message: ChatFeed.Message) -> AnyView? {
+        let turn = chatVM.turnID(ofApprovalsIn: message)
+        let bulk = turn.map { chatVM.actionFeed.bulkApprovable(forTurn: $0) } ?? []
+        let reviewed = chatVM.reviewedMessageID == message.id
+        guard bulk.count >= 2 || reviewed else { return nil }
+        return AnyView(VStack(alignment: .leading, spacing: Spacing.regular) {
+            if bulk.count >= 2, let turn {
+                Button("Approve all") { Task { await chatVM.actionFeed.approveAllPending(forTurn: turn) } }
+                    .font(.caption)
+            }
+            if reviewed {
+                ChatActionReviewView(actions: chatVM.actionFeed.rows.filter { chatVM.reviewedActionIDs.contains($0.id) })
+            }
+        })
+    }
+
+    /// Proposals of a turn that stored no message (it was interrupted): reachable only here.
+    private var unattachedCards: AnyView? {
+        let orphans = chatVM.unattachedActions
+        guard !orphans.isEmpty else { return nil }
+        return AnyView(VStack(alignment: .leading, spacing: Spacing.regular) {
+            Text("Proposals from an interrupted turn").font(.caption).foregroundStyle(.secondary)
+            ForEach(orphans) { action in agentActionCard(action) }
+        })
     }
 
     private var partActions: ChatPartActions {
@@ -61,7 +92,8 @@ struct ChatThreadView: View {
             approvalCard: { payload in
                 guard let action = chatVM.actionFeed.rows.first(where: { $0.id == payload.id }) else { return nil }
                 return AnyView(agentActionCard(action))
-            }
+            },
+            reviewActions: { id in Task { await chatVM.reviewActions(messageID: id) } }
         )
     }
 
@@ -80,9 +112,10 @@ struct ChatThreadView: View {
     }
 
     /// The Mac's own card (Slack editing and workspace pick, reconnect, the automation editor), shared with the
-    /// Inbox; a card a waiting step points at is outlined.
+    /// Inbox; a card the running turn waits on (or one under review) is outlined.
     private func agentActionCard(_ action: AgentAction) -> some View {
         let feed = chatVM.actionFeed
+        let awaited = chatVM.isAwaited(action)
         return AgentActionCardView(
             action: action,
             inFlight: feed.inFlight.contains(action.id),
@@ -95,6 +128,11 @@ struct ChatThreadView: View {
             onDismiss: { Task { await feed.dismiss(action.id) } },
             sessionHoldsCall: chatVM.holdsSessionCall(action)
         )
+        .overlay {
+            if awaited {
+                RoundedRectangle(cornerRadius: Radius.container).strokeBorder(Tone.warning, lineWidth: Stroke.selection)
+            }
+        }
     }
 }
 

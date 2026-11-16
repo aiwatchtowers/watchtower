@@ -159,6 +159,167 @@ final class ChatViewModelShellTests: XCTestCase {
     }
 }
 
+/// The Mac's behaviours kept through the move (T8 review I1, I3, I4).
+@MainActor
+final class ChatViewModelKeptBehaviourTests: XCTestCase {
+    private var pool: DatabasePool!
+    private var path: String!
+    private var client: RecordingChatClient!
+    private var vm: ChatViewModel!
+    private var suite: String!
+
+    override func setUpWithError() throws {
+        (pool, path) = try TestDatabase.createPool()
+        client = RecordingChatClient()
+        client.answer = { op in
+            switch op {
+            case .new: .applied(.conversation(id: 9))
+            case .turn: .applied(.turn(ChatTurnStarted(userMessageID: 1, assistantMessageID: 2, turnID: "t1")))
+            default: nil
+            }
+        }
+        suite = "ChatViewModelKeptBehaviourTests.\(UUID().uuidString)"
+        vm = ChatViewModel(client: client, dbPool: pool, defaults: try XCTUnwrap(UserDefaults(suiteName: suite)))
+    }
+
+    override func tearDown() {
+        vm.conversation.stop()
+        UserDefaults().removePersistentDomain(forName: suite)
+        TestDatabase.cleanup(path: path)
+    }
+
+    private func discards() -> [Int64] {
+        client.ops.compactMap { op in
+            guard case let .manage(id, .discard, _, _) = op else { return nil }
+            return id
+        }
+    }
+
+    private func warms() -> [Int64] {
+        client.ops.compactMap { op in
+            guard case let .warm(id, _) = op else { return nil }
+            return id
+        }
+    }
+
+    /// I1: a connector call of a chat that is not on screen is still held while its turn runs (the list names it),
+    /// so the Inbox strip keeps Approve on; another turn's call is not.
+    func testACallOfAChatNotOnScreenIsHeldWhileItsTurnRuns() throws {
+        vm.select(conversationID: 1)
+        vm.list.store.apply(.snapshot(ChatList(conversations: [
+            ChatList.Conversation(id: 5, title: "Slack draft", updatedAt: Date(), state: .waiting, leaseOwner: "hub",
+                                  turnID: "turn-7")
+        ])))
+        func action(_ id: Int64, turn: String) -> AgentAction {
+            AgentAction(row: ["id": id, "tool": "send_slack_message", "conversation_id": 5, "turn_id": turn,
+                              "status": "pending"])
+        }
+        let held = action(1, turn: "turn-7")
+        let older = action(2, turn: "turn-6")
+        XCTAssertTrue(vm.holdsSessionCall(held))
+        XCTAssertFalse(vm.holdsSessionCall(older))
+        let list = try XCTUnwrap(vm.list.store.list)
+        XCTAssertEqual(AppState.runningTurns(in: list), [5: "turn-7"])
+    }
+
+    /// I4a: the landing's first keystroke makes its chat (with the pill's routing) and warms its session; leaving
+    /// the landing unsent discards the draft; a sent draft is never discarded.
+    func testTheLandingWarmsItsChatOnTheFirstKeystrokeAndDiscardsItIfLeft() async throws {
+        vm.showLanding(inProject: 3)
+        vm.switchProvider(.codex)
+        vm.composer.draft = "S"
+        await vm.draftStarted()
+        await vm.engineCallsSettled()
+        guard case let .new(projectID, routing)? = client.ops.first else { return XCTFail("no chat_new") }
+        XCTAssertEqual(projectID, 3)
+        XCTAssertEqual(routing, ChatRouting(mode: "pinned", provider: "codex", model: nil))
+        XCTAssertEqual(warms(), [9])
+        XCTAssertEqual(vm.landingDraftID, 9)
+        XCTAssertTrue(vm.isOnLanding, "the landing stays until the first send")
+
+        vm.select(conversationID: 4)
+        await vm.engineCallsSettled()
+        XCTAssertEqual(discards(), [9])
+        XCTAssertEqual(warms(), [9, 4], "opening a chat warms its session too")
+        XCTAssertNil(vm.landingDraftID)
+
+        vm.showLanding()
+        vm.composer.draft = "next"
+        client.answer = { op in
+            switch op {
+            case .new: .applied(.conversation(id: 10))
+            case .turn: .applied(.turn(ChatTurnStarted(userMessageID: 1, assistantMessageID: 2, turnID: "t2")))
+            default: nil
+            }
+        }
+        await vm.draftStarted()
+        await vm.sendDraft()
+        XCTAssertNil(vm.landingDraftID, "sent: no longer a draft")
+        vm.select(conversationID: 4)
+        await vm.engineCallsSettled()
+        XCTAssertEqual(discards(), [9], "a sent chat is never discarded")
+    }
+
+    /// I4a: a draft abandoned by quitting is discarded at the next start (the engine deletes it only if untouched).
+    func testAnAbandonedDraftIsDiscardedAtTheNextStart() async throws {
+        vm.showLanding()
+        await vm.draftStarted()
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let next = ChatViewModel(client: client, dbPool: pool, defaults: defaults)
+        next.start()
+        await next.engineCallsSettled()
+        XCTAssertEqual(discards(), [9])
+        next.conversation.stop()
+    }
+
+    /// I4c: a search hit opens its chat and brings its message into view, loading earlier pages until it is there.
+    func testASearchHitScrollsToItsMessage() async throws {
+        let hit = ChatSearch.Hit(conversationID: 4, title: "Plan", snippet: "x", messageID: 2, date: Date())
+        vm.open(hit)
+        XCTAssertEqual(vm.scrollTarget, 2)
+        let late = ChatFeed.Message(id: 90, role: "assistant", text: "late", createdAt: Date())
+        client.answer = { op in
+            guard case .page = op else { return nil }
+            return .applied(.page(ChatPage(messages: [ChatFeed.Message(id: 2, role: "user", text: "the hit", createdAt: Date())])))
+        }
+        vm.conversation.store.apply(.snapshot(ChatFeed(conversation: ChatFeed.Conversation(id: 4, title: "Plan"),
+                                                       messages: [late], hasMore: true)))
+        await vm.loadUntilLoaded(2, in: vm.conversation)
+        XCTAssertTrue(vm.messages.contains { $0.id == 2 }, "the earlier page holding the hit is loaded")
+        vm.consumeScrollTarget()
+        XCTAssertNil(vm.scrollTarget)
+    }
+
+    /// I3: "Review actions" shows the reply's turn's actions under it; a proposal of a turn with no stored message
+    /// is listed as from an interrupted turn; a pending card of the running turn is the awaited one.
+    func testReviewUnattachedAndAwaitedCards() async throws {
+        let (conv, reply, orphan, mine) = try await pool.write { d -> (Int64, Int64, Int64, Int64) in
+            let conv = try TestDatabase.insertChatConversation(d, title: "Plan")
+            let reply = try TestDatabase.insertChatMessage(d, conversationID: conv, role: "assistant", text: "a",
+                                                           status: "error", turnID: "turn-1")
+            let mine = try TestDatabase.insertAgentAction(d, conversationID: conv, turnID: "turn-1")
+            let orphan = try TestDatabase.insertAgentAction(d, conversationID: conv, turnID: "turn-gone")
+            return (conv, reply, orphan, mine)
+        }
+        vm.select(conversationID: conv)
+        vm.actionFeed.refresh()
+        vm.feedChanged()
+        await vm.engineCallsSettled()
+        XCTAssertEqual(vm.unattachedActions.map(\.id), [orphan])
+
+        await vm.reviewActions(messageID: reply)
+        XCTAssertEqual(vm.reviewedMessageID, reply)
+        XCTAssertEqual(vm.reviewedActionIDs, [mine])
+        XCTAssertEqual(vm.scrollTarget, reply)
+
+        vm.conversation.store.apply(.snapshot(ChatFeed(
+            conversation: ChatFeed.Conversation(id: conv, title: "Plan", lease: ChatFeed.Lease(owner: "hub", turnID: "turn-gone")),
+            messages: [])))
+        let pending = try XCTUnwrap(vm.actionFeed.rows.first { $0.id == orphan })
+        XCTAssertTrue(vm.isAwaited(pending), "the running turn waits on its pending card")
+    }
+}
+
 /// The Chats panel's window state over the engine's list.
 @MainActor
 final class ChatPanelModelTests: XCTestCase {
