@@ -81,7 +81,7 @@ since: 0.24.0
 action: nav:catchUp
 -->
 
-Click **I'm caught up**. Everything in the window is marked read: digests, stream digests, tracks, attention items and briefings. The next **Auto** recap starts from there, and the badge on the tab and the **SINCE YOU WERE AWAY** card on Home go away.
+Click **I'm caught up**. Everything in the window is marked read: digests, stream digests, tracks, attention items and briefings. The next **Auto** recap starts from there, and the badge on the tab and the **new recap** mark on Home's **Catch-Up** link go away.
 
 ## When it's empty or wrong
 
