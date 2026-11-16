@@ -47,9 +47,9 @@ func (o *orderLog) get() []string {
 	return append([]string(nil), o.steps...)
 }
 
-// shortTempDir points TMPDIR (os.TempDir, the socket fallback's root) at a
+// shortSocketTempDir points TMPDIR (os.TempDir, the socket fallback's root) at a
 // short folder: a socket path has at most 103 bytes.
-func shortTempDir(t *testing.T) string {
+func shortSocketTempDir(t *testing.T) string {
 	t.Helper()
 	d, err := os.MkdirTemp("/tmp", "wts")
 	require.NoError(t, err)
@@ -127,7 +127,7 @@ func TestSyncStop_InternalFlagRegistered(t *testing.T) {
 // <workspace>/daemon.stopped (0600, by "cli") once the daemon is gone.
 func TestSyncStop_WritesStoppedMarker(t *testing.T) {
 	cfg, pidPath := syncStopTestConfig(t)
-	shortTempDir(t)
+	shortSocketTempDir(t)
 	helper := startDelayedHelper(t)
 	writeFakePIDFile(t, pidPath, helper.pid())
 	recordStop(t, helper)
@@ -145,7 +145,7 @@ func TestSyncStop_WritesStoppedMarker(t *testing.T) {
 // TestSyncStop_InternalWritesNoMarker: the app's own stop leaves no marker.
 func TestSyncStop_InternalWritesNoMarker(t *testing.T) {
 	cfg, pidPath := syncStopTestConfig(t)
-	shortTempDir(t)
+	shortSocketTempDir(t)
 	helper := startDelayedHelper(t)
 	writeFakePIDFile(t, pidPath, helper.pid())
 	recordStop(t, helper)
@@ -162,7 +162,7 @@ func TestSyncStop_InternalWritesNoMarker(t *testing.T) {
 func TestSyncStop_OwnerPathOrder(t *testing.T) {
 	t.Run("chat.sock answers", func(t *testing.T) {
 		cfg, pidPath := syncStopTestConfig(t)
-		shortTempDir(t)
+		shortSocketTempDir(t)
 		order := &orderLog{}
 		fakeChatSock(t, cfg, order)
 		helper := startDelayedHelper(t)
@@ -181,7 +181,7 @@ func TestSyncStop_OwnerPathOrder(t *testing.T) {
 	})
 	t.Run("chat.sock unreachable", func(t *testing.T) {
 		cfg, pidPath := syncStopTestConfig(t)
-		shortTempDir(t)
+		shortSocketTempDir(t)
 		order := &orderLog{}
 		helper := startDelayedHelper(t)
 		writeFakePIDFile(t, pidPath, helper.pid())
@@ -205,7 +205,7 @@ func TestSyncStop_OwnerPathOrder(t *testing.T) {
 // finishes the turn.
 func TestSyncStop_InternalLeavesSessionsRunning(t *testing.T) {
 	cfg, pidPath := syncStopTestConfig(t)
-	tmp := shortTempDir(t)
+	tmp := shortSocketTempDir(t)
 	// The fake daemon starts before the stub's env is set (it would run
 	// the stub too).
 	helper := startDelayedHelper(t)
@@ -314,7 +314,7 @@ func TestSyncDaemon_StartRemovesStoppedMarker(t *testing.T) {
 // fails (`watchtower chat shutdown` exits non-zero).
 func TestChatShutdown_ReportsSurvivingSessions(t *testing.T) {
 	cfg, _ := syncStopTestConfig(t)
-	shortTempDir(t)
+	shortSocketTempDir(t)
 	prevReq, prevReap := requestChatShutdown, shutdownChatSessions
 	t.Cleanup(func() { requestChatShutdown, shutdownChatSessions = prevReq, prevReap })
 	requestChatShutdown = func(context.Context, string) error { return errors.New("no engine") }

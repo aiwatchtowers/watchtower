@@ -107,8 +107,12 @@ func (e *Engine) reattach(ctx context.Context) map[int64]bool {
 			continue
 		}
 		if err := e.adopt(conv, p); err != nil {
-			// Its turn is unknown: the sweep ends it session_lost and kills
-			// the group; nothing is adopted half way.
+			// Its turn could not be read: nothing is adopted half way. Its
+			// live group is re-claimed by the group scan below, so the sweep
+			// leaves it alone and adoptWhenBound tries the adoption once
+			// more; failing again, it kills the group and ends the turn
+			// session_lost — or, with the database still failing, the lease
+			// stays until the next start.
 			detachProcess(p)
 			log.Printf("chatengine: conversation %d: not reattached (%s)", conv, errClass(err))
 			continue
