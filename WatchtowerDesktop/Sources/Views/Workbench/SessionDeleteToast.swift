@@ -48,16 +48,18 @@ struct SessionCleanupNoticeBar: View {
     let notice: SessionCleanupNotice
 
     var body: some View {
+        // Each part wraps in a narrow panel: the sentence (a joined notice
+        // with kept items is the longest) takes up to three lines, the note
+        // up to two, five in all.
         VStack(alignment: .leading, spacing: Spacing.tight) {
             Text(sentence)
+                .lineLimit(3)
             if let note = notice.note {
                 Text(note)
+                    .lineLimit(2)
             }
         }
         .font(.callout)
-        // The sentence and the note wrap in a narrow panel; together they
-        // fit five lines at the panel's narrowest.
-        .lineLimit(5)
         .fixedSize(horizontal: false, vertical: true)
         .frame(maxWidth: .infinity, alignment: .leading)
         .deleteBarChrome()
