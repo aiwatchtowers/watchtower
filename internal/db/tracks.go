@@ -1,6 +1,7 @@
 package db
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -270,53 +271,23 @@ func (db *DB) GetTracks(f TrackFilter) ([]Track, error) {
 	return tracks, rows.Err()
 }
 
-// MarkTrackRead sets read_at=now and has_updates=0 for a track.
-// Also cascade-marks linked digests as read if they are unread.
+// MarkTrackRead marks a track read (MarkTrackReadTx): read_at now,
+// has_updates cleared, and its related digests read with their decisions
+// (TRACKS-04).
 func (db *DB) MarkTrackRead(id int) error {
-	_, err := db.Exec(`UPDATE tracks SET read_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), has_updates = 0 WHERE id = ?`, id)
-	if err != nil {
-		return fmt.Errorf("marking track %d read: %w", id, err)
-	}
-
-	// Cascade: mark linked digests as read.
-	track, err := db.GetTrackByID(id)
-	if err != nil {
-		return nil //nolint:nilerr // track read was set, cascade is best-effort
-	}
-
-	var digestIDs []int
-	_ = json.Unmarshal([]byte(track.RelatedDigestIDs), &digestIDs)
-
-	if len(digestIDs) > 0 {
-		placeholders := make([]string, len(digestIDs))
-		args := make([]any, len(digestIDs))
-		for i, did := range digestIDs {
-			placeholders[i] = "?"
-			args[i] = did
-		}
-		q := `UPDATE digests SET read_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id IN (` + strings.Join(placeholders, ",") + `) AND read_at IS NULL`
-		_, _ = db.Exec(q, args...)
-	}
-
-	return nil
+	return db.WithTx(func(tx *sql.Tx) error { return MarkTrackReadTx(tx, id) })
 }
 
-// DismissTrack marks a track as dismissed.
+// DismissTrack marks a track as dismissed (StopTrackTx). A missing track is
+// no error here, as before StopTrackTx existed.
 func (db *DB) DismissTrack(id int) error {
-	_, err := db.Exec(`UPDATE tracks SET dismissed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?`, id)
-	if err != nil {
-		return fmt.Errorf("dismissing track %d: %w", id, err)
-	}
-	return nil
+	return ignoreNoRow(db.WithTx(func(tx *sql.Tx) error { return StopTrackTx(tx, []int{id}) }))
 }
 
-// RestoreTrack un-dismisses a track.
+// RestoreTrack un-dismisses a track (RestoreTrackTx). A missing track is no
+// error here, as before RestoreTrackTx existed.
 func (db *DB) RestoreTrack(id int) error {
-	_, err := db.Exec(`UPDATE tracks SET dismissed_at = '' WHERE id = ?`, id)
-	if err != nil {
-		return fmt.Errorf("restoring track %d: %w", id, err)
-	}
-	return nil
+	return ignoreNoRow(db.WithTx(func(tx *sql.Tx) error { return RestoreTrackTx(tx, id) }))
 }
 
 // SetTrackHasUpdates sets has_updates=1 for a track.

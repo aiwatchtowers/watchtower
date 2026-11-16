@@ -37,6 +37,7 @@ import (
 	"watchtower/internal/hub"
 	"watchtower/internal/imap"
 	"watchtower/internal/inbox"
+	"watchtower/internal/inboxfeed"
 	"watchtower/internal/issuekey"
 	"watchtower/internal/jira"
 	"watchtower/internal/linear"
@@ -1052,7 +1053,10 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	defer tower.StartPrune(ctx, database, time.Now)()
 	// The tower socket, hub or no hub: stopped (its calls waited for) before
 	// the database closes.
-	defer serveTower(ctx, ws, database, noSync, towerDisabledFeatures(cfg, logger), logger)()
+	defer serveTower(ctx, ws, database, noSync, commands.Deps{
+		DisabledFeatures: towerDisabledFeatures(cfg, logger),
+		Act:              towerActDeps(cfg, database, d.WakeAutomations),
+	}, logger)()
 	return d.Run(ctx)
 }
 
@@ -1061,15 +1065,20 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 // the pause; a socket that cannot be served is logged and the daemon runs
 // without it. The returned func stops it.
 func serveTower(ctx context.Context, ws string, database *db.DB, noSync bool,
-	disabledFeatures func() []string, logger *log.Logger) (stop func()) {
+	deps commands.Deps, logger *log.Logger) (stop func()) {
 	var reg tower.Registry
-	commands.RegisterAll(&reg, commands.Deps{DisabledFeatures: disabledFeatures})
+	commands.RegisterAll(&reg, deps)
 	t := tower.New(database, tower.Options{
 		Registry:  &reg,
 		Build:     Version,
 		Workspace: ws,
 		NoSync:    noSync,
 		Changes:   tower.NewChanges(database, tower.PollInterval),
+		// A fault's own text goes to the log; the owner reads a sentence.
+		Sentence: func(command string, err error) string {
+			logger.Printf("tower: %s: %v", command, err)
+			return inboxfeed.FaultSentence(command, err)
+		},
 	})
 	stop, err := tower.ServeWorkspace(ctx, ws, t)
 	if err != nil {
@@ -1077,6 +1086,37 @@ func serveTower(ctx context.Context, ws string, database *db.DB, noSync bool,
 		return func() {}
 	}
 	return stop
+}
+
+// towerActDeps are inbox.act's dependencies in the daemon: the tools
+// registry `watchtower actions` uses, Run Now as `automations run` queues it
+// (a slot run asks for a sync now, as the CLI does; any other wakes the
+// executor), and the in-process executor wake. The hub's Background is set
+// with the hub (Task 13).
+func towerActDeps(cfg *config.Config, database *db.DB, wake func()) inboxfeed.ActDeps {
+	return inboxfeed.ActDeps{
+		Registry: buildToolRegistry(cfg, database),
+		RunNow: func(_ context.Context, automationID int64) (int64, error) {
+			a, err := database.GetAutomation(automationID)
+			if errors.Is(err, db.ErrAutomationNotFound) {
+				return 0, &inboxfeed.CannotRunError{Reason: "this automation no longer exists"}
+			}
+			if err != nil {
+				return 0, err
+			}
+			q, err := queueRun(cfg, database, a, "", 0)
+			if err != nil {
+				return 0, err
+			}
+			if !q.slot {
+				wake()
+			} else if _, err := builtinRunSignal(cfg); err != nil {
+				log.Printf("tower: Run Now of automation %d: asking for a sync: %v", automationID, err)
+			}
+			return q.runID, nil
+		},
+		Wake: wake,
+	}
 }
 
 // towerDisabledFeatures returns the feature ids config.yaml has off, read

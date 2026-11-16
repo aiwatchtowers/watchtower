@@ -15,6 +15,10 @@ type Deps struct {
 	// now (inbox.feed reads attention detection's switch from it); nil
 	// means none.
 	DisabledFeatures func() []string
+	// Act is what inbox.act needs (the tools registry, Run Now, the
+	// executor's wake, the hub's Background); a missing one answers
+	// unsupported for the verbs that need it.
+	Act inboxfeed.ActDeps
 }
 
 // RegisterAll registers every tower command in r.
@@ -22,4 +26,5 @@ func RegisterAll(r *tower.Registry, d Deps) {
 	tower.RegisterBuiltins(r)
 	tower.RegisterPause(r)
 	inboxfeed.Register(r, d.DisabledFeatures)
+	inboxfeed.RegisterAct(r, d.Act)
 }

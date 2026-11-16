@@ -1,0 +1,1753 @@
+[
+  {
+    "name": "read_output",
+    "seed": [
+      "INSERT INTO automations (id, slug, scope, path, name, enabled, origin) VALUES (1, 'digest', 'personal', '/recipes/digest.md', 'Digest', 1, 'owner')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status) VALUES (1, 1, 'manual', 'succeeded')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, content_hash, written_at, changed_at) VALUES (1, 1, 1, 'inbox', 'Card', 'Body', 'medium', '2026-11-16T09:00:00Z', 'h1', '2026-11-16T09:00:00Z', '2026-11-16T09:00:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000001",
+      "target": "o1",
+      "verb": "read",
+      "params": {
+        "content_hash": "h1"
+      }
+    },
+    "swift": {
+      "writer": "AutomationQueries.markOutputOpened",
+      "args": {
+        "id": 1,
+        "contentHash": "h1",
+        "now": "2026-11-16T10:00:00Z"
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "automation_outputs": [
+          {
+            "id": 1,
+            "read_at": "2026-11-16T10:00:00Z",
+            "done_at": null,
+            "dismissed_at": null
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "read_output_stale_hash",
+    "seed": [
+      "INSERT INTO automations (id, slug, scope, path, name, enabled, origin) VALUES (1, 'digest', 'personal', '/recipes/digest.md', 'Digest', 1, 'owner')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status) VALUES (1, 1, 'manual', 'succeeded')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, content_hash, written_at, changed_at) VALUES (1, 1, 1, 'inbox', 'Card', 'Body', 'medium', '2026-11-16T09:00:00Z', 'h1', '2026-11-16T09:00:00Z', '2026-11-16T09:00:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000002",
+      "target": "o1",
+      "verb": "read",
+      "params": {
+        "content_hash": "h0"
+      }
+    },
+    "swift": {
+      "writer": "AutomationQueries.markOutputOpened",
+      "args": {
+        "id": 1,
+        "contentHash": "h0",
+        "now": "2026-11-16T10:00:00Z"
+      }
+    },
+    "expect": {
+      "status": "refused",
+      "code": "changed",
+      "rows": {
+        "automation_outputs": [
+          {
+            "id": 1,
+            "read_at": null,
+            "done_at": null,
+            "dismissed_at": null
+          }
+        ]
+      },
+      "sentence": "Couldn't mark it read: this card changed — look again."
+    }
+  },
+  {
+    "name": "read_output_already",
+    "seed": [
+      "INSERT INTO automations (id, slug, scope, path, name, enabled, origin) VALUES (1, 'digest', 'personal', '/recipes/digest.md', 'Digest', 1, 'owner')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status) VALUES (1, 1, 'manual', 'succeeded')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, content_hash, written_at, changed_at, read_at) VALUES (1, 1, 1, 'inbox', 'Card', 'Body', 'medium', '2026-11-16T09:00:00Z', 'h1', '2026-11-16T09:00:00Z', '2026-11-16T09:00:00Z', '2026-11-16T09:30:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000003",
+      "target": "o1",
+      "verb": "read",
+      "params": {
+        "content_hash": "h1"
+      }
+    },
+    "swift": {
+      "writer": "AutomationQueries.markOutputOpened",
+      "args": {
+        "id": 1,
+        "contentHash": "h1",
+        "now": "2026-11-16T10:00:00Z"
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "automation_outputs": [
+          {
+            "id": 1,
+            "read_at": "2026-11-16T09:30:00Z",
+            "done_at": null,
+            "dismissed_at": null
+          }
+        ]
+      },
+      "already": true
+    }
+  },
+  {
+    "name": "done_output",
+    "seed": [
+      "INSERT INTO automations (id, slug, scope, path, name, enabled, origin) VALUES (1, 'digest', 'personal', '/recipes/digest.md', 'Digest', 1, 'owner')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status) VALUES (1, 1, 'manual', 'succeeded')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, content_hash, written_at, changed_at) VALUES (1, 1, 1, 'inbox', 'Card', 'Body', 'medium', '2026-11-16T09:00:00Z', 'h1', '2026-11-16T09:00:00Z', '2026-11-16T09:00:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000004",
+      "target": "o1",
+      "verb": "done",
+      "params": {
+        "content_hash": "h1"
+      }
+    },
+    "swift": {
+      "writer": "AutomationQueries.markOutputDone",
+      "args": {
+        "id": 1,
+        "contentHash": "h1",
+        "now": "2026-11-16T10:00:00Z"
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "automation_outputs": [
+          {
+            "id": 1,
+            "read_at": null,
+            "done_at": "2026-11-16T10:00:00Z",
+            "dismissed_at": null
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "done_output_stale_hash",
+    "seed": [
+      "INSERT INTO automations (id, slug, scope, path, name, enabled, origin) VALUES (1, 'digest', 'personal', '/recipes/digest.md', 'Digest', 1, 'owner')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status) VALUES (1, 1, 'manual', 'succeeded')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, content_hash, written_at, changed_at) VALUES (1, 1, 1, 'inbox', 'Card', 'Body', 'medium', '2026-11-16T09:00:00Z', 'h1', '2026-11-16T09:00:00Z', '2026-11-16T09:00:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000005",
+      "target": "o1",
+      "verb": "done",
+      "params": {
+        "content_hash": "h0"
+      }
+    },
+    "swift": {
+      "writer": "AutomationQueries.markOutputDone",
+      "args": {
+        "id": 1,
+        "contentHash": "h0",
+        "now": "2026-11-16T10:00:00Z"
+      }
+    },
+    "expect": {
+      "status": "refused",
+      "code": "changed",
+      "rows": {
+        "automation_outputs": [
+          {
+            "id": 1,
+            "read_at": null,
+            "done_at": null,
+            "dismissed_at": null
+          }
+        ]
+      },
+      "sentence": "Couldn't mark it done: this card changed — look again."
+    }
+  },
+  {
+    "name": "done_output_already",
+    "seed": [
+      "INSERT INTO automations (id, slug, scope, path, name, enabled, origin) VALUES (1, 'digest', 'personal', '/recipes/digest.md', 'Digest', 1, 'owner')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status) VALUES (1, 1, 'manual', 'succeeded')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, content_hash, written_at, changed_at, done_at) VALUES (1, 1, 1, 'inbox', 'Card', 'Body', 'medium', '2026-11-16T09:00:00Z', 'h1', '2026-11-16T09:00:00Z', '2026-11-16T09:00:00Z', '2026-11-16T09:30:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000006",
+      "target": "o1",
+      "verb": "done",
+      "params": {
+        "content_hash": "h1"
+      }
+    },
+    "swift": {
+      "writer": "AutomationQueries.markOutputDone",
+      "args": {
+        "id": 1,
+        "contentHash": "h1",
+        "now": "2026-11-16T10:00:00Z"
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "automation_outputs": [
+          {
+            "id": 1,
+            "read_at": null,
+            "done_at": "2026-11-16T09:30:00Z",
+            "dismissed_at": null
+          }
+        ]
+      },
+      "already": true
+    }
+  },
+  {
+    "name": "dismiss_output",
+    "seed": [
+      "INSERT INTO automations (id, slug, scope, path, name, enabled, origin) VALUES (1, 'digest', 'personal', '/recipes/digest.md', 'Digest', 1, 'owner')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status) VALUES (1, 1, 'manual', 'succeeded')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, content_hash, written_at, changed_at) VALUES (1, 1, 1, 'inbox', 'Card', 'Body', 'medium', '2026-11-16T09:00:00Z', 'h1', '2026-11-16T09:00:00Z', '2026-11-16T09:00:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000007",
+      "target": "o1",
+      "verb": "dismiss",
+      "params": {
+        "content_hash": "h1"
+      }
+    },
+    "swift": {
+      "writer": "AutomationQueries.dismissOutput",
+      "args": {
+        "id": 1,
+        "contentHash": "h1",
+        "now": "2026-11-16T10:00:00Z"
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "automation_outputs": [
+          {
+            "id": 1,
+            "read_at": null,
+            "done_at": null,
+            "dismissed_at": "2026-11-16T10:00:00Z"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "dismiss_output_stale_hash",
+    "seed": [
+      "INSERT INTO automations (id, slug, scope, path, name, enabled, origin) VALUES (1, 'digest', 'personal', '/recipes/digest.md', 'Digest', 1, 'owner')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status) VALUES (1, 1, 'manual', 'succeeded')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, content_hash, written_at, changed_at) VALUES (1, 1, 1, 'inbox', 'Card', 'Body', 'medium', '2026-11-16T09:00:00Z', 'h1', '2026-11-16T09:00:00Z', '2026-11-16T09:00:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000008",
+      "target": "o1",
+      "verb": "dismiss",
+      "params": {
+        "content_hash": "h0"
+      }
+    },
+    "swift": {
+      "writer": "AutomationQueries.dismissOutput",
+      "args": {
+        "id": 1,
+        "contentHash": "h0",
+        "now": "2026-11-16T10:00:00Z"
+      }
+    },
+    "expect": {
+      "status": "refused",
+      "code": "changed",
+      "rows": {
+        "automation_outputs": [
+          {
+            "id": 1,
+            "read_at": null,
+            "done_at": null,
+            "dismissed_at": null
+          }
+        ]
+      },
+      "sentence": "Couldn't dismiss it: this card changed — look again."
+    }
+  },
+  {
+    "name": "dismiss_output_already",
+    "seed": [
+      "INSERT INTO automations (id, slug, scope, path, name, enabled, origin) VALUES (1, 'digest', 'personal', '/recipes/digest.md', 'Digest', 1, 'owner')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status) VALUES (1, 1, 'manual', 'succeeded')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, content_hash, written_at, changed_at, dismissed_at) VALUES (1, 1, 1, 'inbox', 'Card', 'Body', 'medium', '2026-11-16T09:00:00Z', 'h1', '2026-11-16T09:00:00Z', '2026-11-16T09:00:00Z', '2026-11-16T09:30:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000009",
+      "target": "o1",
+      "verb": "dismiss",
+      "params": {
+        "content_hash": "h1"
+      }
+    },
+    "swift": {
+      "writer": "AutomationQueries.dismissOutput",
+      "args": {
+        "id": 1,
+        "contentHash": "h1",
+        "now": "2026-11-16T10:00:00Z"
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "automation_outputs": [
+          {
+            "id": 1,
+            "read_at": null,
+            "done_at": null,
+            "dismissed_at": "2026-11-16T09:30:00Z"
+          }
+        ]
+      },
+      "already": true
+    }
+  },
+  {
+    "name": "done_output_dismissed_is_closed",
+    "seed": [
+      "INSERT INTO automations (id, slug, scope, path, name, enabled, origin) VALUES (1, 'digest', 'personal', '/recipes/digest.md', 'Digest', 1, 'owner')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status) VALUES (1, 1, 'manual', 'succeeded')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, content_hash, written_at, changed_at, dismissed_at) VALUES (1, 1, 1, 'inbox', 'Card', 'Body', 'medium', '2026-11-16T09:00:00Z', 'h1', '2026-11-16T09:00:00Z', '2026-11-16T09:00:00Z', '2026-11-16T09:30:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000010",
+      "target": "o1",
+      "verb": "done",
+      "params": {
+        "content_hash": "h1"
+      }
+    },
+    "swift": {
+      "writer": "AutomationQueries.markOutputDone",
+      "args": {
+        "id": 1,
+        "contentHash": "h1",
+        "now": "2026-11-16T10:00:00Z"
+      }
+    },
+    "expect": {
+      "status": "refused",
+      "code": "changed",
+      "rows": {
+        "automation_outputs": [
+          {
+            "id": 1,
+            "read_at": null,
+            "done_at": null,
+            "dismissed_at": "2026-11-16T09:30:00Z"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "done_output_not_found",
+    "seed": [
+      "INSERT INTO automations (id, slug, scope, path, name, enabled, origin) VALUES (1, 'digest', 'personal', '/recipes/digest.md', 'Digest', 1, 'owner')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status) VALUES (1, 1, 'manual', 'succeeded')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000011",
+      "target": "o1",
+      "verb": "done",
+      "params": {
+        "content_hash": "h1"
+      }
+    },
+    "swift": null,
+    "expect": {
+      "status": "refused",
+      "code": "not_found",
+      "rows": {
+        "automation_outputs": []
+      }
+    }
+  },
+  {
+    "name": "press_output_stale_hash",
+    "seed": [
+      "INSERT INTO automations (id, slug, scope, path, name, enabled, origin) VALUES (1, 'digest', 'personal', '/recipes/digest.md', 'Digest', 1, 'owner')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status) VALUES (1, 1, 'manual', 'succeeded')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, content_hash, written_at, changed_at, actions_json) VALUES (1, 1, 1, 'inbox', 'Card', 'Body', 'medium', '2026-11-16T09:00:00Z', 'h1', '2026-11-16T09:00:00Z', '2026-11-16T09:00:00Z', '[{\"label\":\"Backlog\",\"kind\":\"reply\",\"reply\":\"backlog\"}]')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000012",
+      "target": "o1",
+      "verb": "press",
+      "params": {
+        "content_hash": "h0",
+        "index": 0
+      }
+    },
+    "swift": null,
+    "expect": {
+      "status": "refused",
+      "code": "changed",
+      "rows": {
+        "automation_outputs": [
+          {
+            "id": 1,
+            "pressed_at": null
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "press_output_already_pressed",
+    "seed": [
+      "INSERT INTO automations (id, slug, scope, path, name, enabled, origin) VALUES (1, 'digest', 'personal', '/recipes/digest.md', 'Digest', 1, 'owner')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status) VALUES (1, 1, 'manual', 'succeeded')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status) VALUES (7, 1, 'reply', 'succeeded')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, content_hash, written_at, changed_at, actions_json, pressed_action, pressed_run_id, pressed_at) VALUES (1, 1, 1, 'inbox', 'Card', 'Body', 'medium', '2026-11-16T09:00:00Z', 'h1', '2026-11-16T09:00:00Z', '2026-11-16T09:00:00Z', '[{\"label\":\"Backlog\",\"kind\":\"reply\",\"reply\":\"backlog\"}]', 0, 7, '2026-11-16T09:30:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000013",
+      "target": "o1",
+      "verb": "press",
+      "params": {
+        "content_hash": "h1",
+        "index": 0
+      }
+    },
+    "swift": null,
+    "expect": {
+      "status": "ok",
+      "already": true,
+      "run_id": 7,
+      "rows": {
+        "automation_outputs": [
+          {
+            "id": 1,
+            "pressed_run_id": 7
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "read_brief",
+    "seed": [
+      "INSERT INTO briefings (id, user_id, date, created_at) VALUES (1, 'U1', '2026-11-16', '2026-11-16T06:00:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000014",
+      "target": "brief-2026-11-16",
+      "verb": "read",
+      "params": {}
+    },
+    "swift": {
+      "writer": "BriefingQueries.markRead",
+      "args": {
+        "ids": [
+          1
+        ]
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "briefings": [
+          {
+            "id": 1,
+            "read_at": "*"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "read_brief_already",
+    "seed": [
+      "INSERT INTO briefings (id, user_id, date, created_at) VALUES (1, 'U1', '2026-11-16', '2026-11-16T06:00:00Z')",
+      "UPDATE briefings SET read_at = '2026-11-16T07:00:00Z' WHERE id = 1"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000015",
+      "target": "brief-2026-11-16",
+      "verb": "read",
+      "params": {}
+    },
+    "swift": {
+      "writer": "BriefingQueries.markRead",
+      "args": {
+        "ids": [
+          1
+        ]
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "briefings": [
+          {
+            "id": 1,
+            "read_at": "2026-11-16T07:00:00Z"
+          }
+        ]
+      },
+      "already": true
+    }
+  },
+  {
+    "name": "read_reminder_writes_nothing",
+    "seed": [
+      "INSERT INTO reminders (id, note, remind_at) VALUES (1, 'Call back', '2026-11-16T09:00:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000016",
+      "target": "r1",
+      "verb": "read",
+      "params": {}
+    },
+    "swift": null,
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "reminders": [
+          {
+            "id": 1,
+            "status": "pending"
+          }
+        ]
+      },
+      "already": true
+    }
+  },
+  {
+    "name": "read_inbox_item",
+    "seed": [
+      "INSERT INTO inbox_items (id, channel_id, message_ts, sender_user_id, trigger_type, created_at) VALUES (1, 'C1', '1.0', 'U1', 'mention', '2026-11-16T07:00:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000017",
+      "target": "messages",
+      "verb": "read",
+      "params": {
+        "ref_kind": "inbox_item",
+        "ref_id": 1
+      }
+    },
+    "swift": {
+      "writer": "InboxQueries.markRead",
+      "args": {
+        "id": 1
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "inbox_items": [
+          {
+            "id": 1,
+            "status": "pending",
+            "resolved_reason": "",
+            "snooze_until": "",
+            "read_at": "*"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "read_inbox_item_already",
+    "seed": [
+      "INSERT INTO inbox_items (id, channel_id, message_ts, sender_user_id, trigger_type, created_at) VALUES (1, 'C1', '1.0', 'U1', 'mention', '2026-11-16T07:00:00Z')",
+      "UPDATE inbox_items SET read_at = '2026-11-16T08:00:00Z'"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000018",
+      "target": "messages",
+      "verb": "read",
+      "params": {
+        "ref_kind": "inbox_item",
+        "ref_id": 1
+      }
+    },
+    "swift": {
+      "writer": "InboxQueries.markRead",
+      "args": {
+        "id": 1
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "inbox_items": [
+          {
+            "id": 1,
+            "status": "pending",
+            "resolved_reason": "",
+            "snooze_until": "",
+            "read_at": "2026-11-16T08:00:00Z"
+          }
+        ]
+      },
+      "already": true
+    }
+  },
+  {
+    "name": "ref_inbox_item_resolve",
+    "seed": [
+      "INSERT INTO inbox_items (id, channel_id, message_ts, sender_user_id, trigger_type, created_at) VALUES (1, 'C1', '1.0', 'U1', 'mention', '2026-11-16T07:00:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000019",
+      "target": "messages",
+      "verb": "ref",
+      "params": {
+        "ref_kind": "inbox_item",
+        "ref_id": 1,
+        "ref_verb": "resolve"
+      }
+    },
+    "swift": null,
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "inbox_items": [
+          {
+            "id": 1,
+            "status": "resolved",
+            "resolved_reason": "Manually resolved",
+            "snooze_until": "",
+            "read_at": null
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "ref_inbox_item_resolve_already",
+    "seed": [
+      "INSERT INTO inbox_items (id, channel_id, message_ts, sender_user_id, trigger_type, created_at) VALUES (1, 'C1', '1.0', 'U1', 'mention', '2026-11-16T07:00:00Z')",
+      "UPDATE inbox_items SET status = 'resolved', resolved_reason = 'auto'"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000020",
+      "target": "messages",
+      "verb": "ref",
+      "params": {
+        "ref_kind": "inbox_item",
+        "ref_id": 1,
+        "ref_verb": "resolve"
+      }
+    },
+    "swift": null,
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "inbox_items": [
+          {
+            "id": 1,
+            "status": "resolved",
+            "resolved_reason": "auto",
+            "snooze_until": "",
+            "read_at": null
+          }
+        ]
+      },
+      "already": true
+    }
+  },
+  {
+    "name": "ref_inbox_item_dismiss",
+    "seed": [
+      "INSERT INTO inbox_items (id, channel_id, message_ts, sender_user_id, trigger_type, created_at) VALUES (1, 'C1', '1.0', 'U1', 'mention', '2026-11-16T07:00:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000021",
+      "target": "messages",
+      "verb": "ref",
+      "params": {
+        "ref_kind": "inbox_item",
+        "ref_id": 1,
+        "ref_verb": "dismiss"
+      }
+    },
+    "swift": null,
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "inbox_items": [
+          {
+            "id": 1,
+            "status": "dismissed",
+            "resolved_reason": "",
+            "snooze_until": "",
+            "read_at": null
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "ref_inbox_item_dismiss_already",
+    "seed": [
+      "INSERT INTO inbox_items (id, channel_id, message_ts, sender_user_id, trigger_type, created_at) VALUES (1, 'C1', '1.0', 'U1', 'mention', '2026-11-16T07:00:00Z')",
+      "UPDATE inbox_items SET status = 'dismissed'"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000022",
+      "target": "messages",
+      "verb": "ref",
+      "params": {
+        "ref_kind": "inbox_item",
+        "ref_id": 1,
+        "ref_verb": "dismiss"
+      }
+    },
+    "swift": null,
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "inbox_items": [
+          {
+            "id": 1,
+            "status": "dismissed",
+            "resolved_reason": "",
+            "snooze_until": "",
+            "read_at": null
+          }
+        ]
+      },
+      "already": true
+    }
+  },
+  {
+    "name": "ref_inbox_item_snooze",
+    "seed": [
+      "INSERT INTO inbox_items (id, channel_id, message_ts, sender_user_id, trigger_type, created_at) VALUES (1, 'C1', '1.0', 'U1', 'mention', '2026-11-16T07:00:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000023",
+      "target": "messages",
+      "verb": "ref",
+      "params": {
+        "ref_kind": "inbox_item",
+        "ref_id": 1,
+        "ref_verb": "snooze",
+        "until": "2026-11-17"
+      }
+    },
+    "swift": null,
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "inbox_items": [
+          {
+            "id": 1,
+            "status": "snoozed",
+            "resolved_reason": "",
+            "snooze_until": "2026-11-17",
+            "read_at": null
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "ref_inbox_item_snooze_already",
+    "seed": [
+      "INSERT INTO inbox_items (id, channel_id, message_ts, sender_user_id, trigger_type, created_at) VALUES (1, 'C1', '1.0', 'U1', 'mention', '2026-11-16T07:00:00Z')",
+      "UPDATE inbox_items SET status = 'snoozed', snooze_until = '2026-11-17'"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000024",
+      "target": "messages",
+      "verb": "ref",
+      "params": {
+        "ref_kind": "inbox_item",
+        "ref_id": 1,
+        "ref_verb": "snooze",
+        "until": "2026-11-17"
+      }
+    },
+    "swift": null,
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "inbox_items": [
+          {
+            "id": 1,
+            "status": "snoozed",
+            "resolved_reason": "",
+            "snooze_until": "2026-11-17",
+            "read_at": null
+          }
+        ]
+      },
+      "already": true
+    }
+  },
+  {
+    "name": "ref_inbox_item_snooze_closed",
+    "seed": [
+      "INSERT INTO inbox_items (id, channel_id, message_ts, sender_user_id, trigger_type, created_at) VALUES (1, 'C1', '1.0', 'U1', 'mention', '2026-11-16T07:00:00Z')",
+      "UPDATE inbox_items SET status = 'resolved'"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000025",
+      "target": "messages",
+      "verb": "ref",
+      "params": {
+        "ref_kind": "inbox_item",
+        "ref_id": 1,
+        "ref_verb": "snooze",
+        "until": "2026-11-17"
+      }
+    },
+    "swift": null,
+    "expect": {
+      "status": "refused",
+      "code": "changed",
+      "rows": {
+        "inbox_items": [
+          {
+            "id": 1,
+            "status": "resolved",
+            "resolved_reason": "",
+            "snooze_until": "",
+            "read_at": null
+          }
+        ]
+      },
+      "sentence": "Couldn't snooze: the item was already closed on the Mac."
+    }
+  },
+  {
+    "name": "ref_inbox_item_not_found",
+    "seed": [],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000026",
+      "target": "messages",
+      "verb": "ref",
+      "params": {
+        "ref_kind": "inbox_item",
+        "ref_id": 1,
+        "ref_verb": "resolve"
+      }
+    },
+    "swift": null,
+    "expect": {
+      "status": "refused",
+      "code": "not_found",
+      "rows": {
+        "inbox_items": []
+      }
+    }
+  },
+  {
+    "name": "ref_track_done_cascade",
+    "seed": [
+      "INSERT INTO tracks (id, text, updated_at, related_digest_ids, has_updates) VALUES (1, 'Review the plan', '2026-11-15T09:00:00Z', '[5]', 1)",
+      "INSERT INTO digests (id, channel_id, period_from, period_to, type, summary, decisions, model) VALUES (5, 'C1', 1, 2, 'channel', 's', '[{\"text\":\"a\"},{\"text\":\"b\"}]', 'm')",
+      "INSERT INTO track_events (id, track_id, summary, created_at) VALUES (1, 1, 'moved', '2026-11-16T09:00:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000027",
+      "target": "tracks",
+      "verb": "ref",
+      "params": {
+        "ref_kind": "track",
+        "ref_id": 1,
+        "ref_verb": "done"
+      }
+    },
+    "swift": {
+      "writer": "TrackDone",
+      "args": {
+        "id": 1
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "tracks": [
+          {
+            "id": 1,
+            "read_at": "*",
+            "has_updates": 0,
+            "dismissed_at": ""
+          }
+        ],
+        "digests": [
+          {
+            "id": 5,
+            "read_at": "*"
+          }
+        ],
+        "decision_reads": [
+          {
+            "digest_id": 5,
+            "decision_idx": 0
+          },
+          {
+            "digest_id": 5,
+            "decision_idx": 1
+          }
+        ],
+        "track_events": [
+          {
+            "id": 1,
+            "read_at": "*"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "ref_track_done_already",
+    "seed": [
+      "INSERT INTO tracks (id, text, updated_at, read_at) VALUES (1, 'Review the plan', '2026-11-15T09:00:00Z', '2026-11-16T08:00:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000028",
+      "target": "tracks",
+      "verb": "ref",
+      "params": {
+        "ref_kind": "track",
+        "ref_id": 1,
+        "ref_verb": "done"
+      }
+    },
+    "swift": null,
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "tracks": [
+          {
+            "id": 1,
+            "read_at": "2026-11-16T08:00:00Z"
+          }
+        ]
+      },
+      "already": true
+    }
+  },
+  {
+    "name": "ref_track_stop",
+    "seed": [
+      "INSERT INTO tracks (id, text, updated_at) VALUES (1, 'Review the plan', '2026-11-15T09:00:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000029",
+      "target": "tracks",
+      "verb": "ref",
+      "params": {
+        "ref_kind": "track",
+        "ref_id": 1,
+        "ref_verb": "stop"
+      }
+    },
+    "swift": {
+      "writer": "TrackQueries.dismiss",
+      "args": {
+        "id": 1
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "tracks": [
+          {
+            "id": 1,
+            "dismissed_at": "*"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "ref_track_stop_already",
+    "seed": [
+      "INSERT INTO tracks (id, text, updated_at) VALUES (1, 'Review the plan', '2026-11-15T09:00:00Z')",
+      "UPDATE tracks SET dismissed_at = '2026-11-16T08:00:00Z'"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000030",
+      "target": "tracks",
+      "verb": "ref",
+      "params": {
+        "ref_kind": "track",
+        "ref_id": 1,
+        "ref_verb": "stop"
+      }
+    },
+    "swift": null,
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "tracks": [
+          {
+            "id": 1,
+            "dismissed_at": "2026-11-16T08:00:00Z"
+          }
+        ]
+      },
+      "already": true
+    }
+  },
+  {
+    "name": "ref_track_stop_custom_is_the_macs",
+    "seed": [
+      "INSERT INTO tracks (id, text, updated_at) VALUES (1, 'Review the plan', '2026-11-15T09:00:00Z')",
+      "UPDATE tracks SET origin = 'custom'"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000031",
+      "target": "tracks",
+      "verb": "ref",
+      "params": {
+        "ref_kind": "track",
+        "ref_id": 1,
+        "ref_verb": "stop"
+      }
+    },
+    "swift": null,
+    "expect": {
+      "status": "refused",
+      "code": "unsupported",
+      "rows": {
+        "tracks": [
+          {
+            "id": 1,
+            "dismissed_at": ""
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "ref_track_restore",
+    "seed": [
+      "INSERT INTO tracks (id, text, updated_at) VALUES (1, 'Review the plan', '2026-11-15T09:00:00Z')",
+      "UPDATE tracks SET dismissed_at = '2026-11-16T08:00:00Z'"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000032",
+      "target": "tracks",
+      "verb": "ref",
+      "params": {
+        "ref_kind": "track",
+        "ref_id": 1,
+        "ref_verb": "restore"
+      }
+    },
+    "swift": {
+      "writer": "TrackQueries.restore",
+      "args": {
+        "id": 1
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "tracks": [
+          {
+            "id": 1,
+            "dismissed_at": ""
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "ref_track_restore_already",
+    "seed": [
+      "INSERT INTO tracks (id, text, updated_at) VALUES (1, 'Review the plan', '2026-11-15T09:00:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000033",
+      "target": "tracks",
+      "verb": "ref",
+      "params": {
+        "ref_kind": "track",
+        "ref_id": 1,
+        "ref_verb": "restore"
+      }
+    },
+    "swift": null,
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "tracks": [
+          {
+            "id": 1,
+            "dismissed_at": ""
+          }
+        ]
+      },
+      "already": true
+    }
+  },
+  {
+    "name": "ref_track_not_found",
+    "seed": [],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000034",
+      "target": "tracks",
+      "verb": "ref",
+      "params": {
+        "ref_kind": "track",
+        "ref_id": 1,
+        "ref_verb": "done"
+      }
+    },
+    "swift": null,
+    "expect": {
+      "status": "refused",
+      "code": "not_found",
+      "rows": {
+        "tracks": []
+      }
+    }
+  },
+  {
+    "name": "ref_idea_approve",
+    "seed": [
+      "INSERT INTO ideas (id, kind, title, status, needs_review, review_reason, updated_at) VALUES (1, 'idea', 'Proposed idea', 'proposed', 1, 'resurfaced', '2026-11-15T09:30:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000035",
+      "target": "ideas",
+      "verb": "ref",
+      "params": {
+        "ref_kind": "idea",
+        "ref_id": 1,
+        "ref_verb": "approve"
+      }
+    },
+    "swift": {
+      "writer": "IdeaQueries.setStatus",
+      "args": {
+        "id": 1,
+        "status": "active"
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "ideas": [
+          {
+            "id": 1,
+            "status": "active",
+            "snooze_until": "",
+            "needs_review": 0,
+            "review_reason": ""
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "ref_idea_reject",
+    "seed": [
+      "INSERT INTO ideas (id, kind, title, status, needs_review, review_reason, updated_at) VALUES (1, 'idea', 'Proposed idea', 'proposed', 1, 'resurfaced', '2026-11-15T09:30:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000036",
+      "target": "ideas",
+      "verb": "ref",
+      "params": {
+        "ref_kind": "idea",
+        "ref_id": 1,
+        "ref_verb": "reject"
+      }
+    },
+    "swift": {
+      "writer": "IdeaQueries.setStatus",
+      "args": {
+        "id": 1,
+        "status": "rejected"
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "ideas": [
+          {
+            "id": 1,
+            "status": "rejected",
+            "snooze_until": "",
+            "needs_review": 0,
+            "review_reason": ""
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "ref_idea_not_now",
+    "seed": [
+      "INSERT INTO ideas (id, kind, title, status, needs_review, review_reason, updated_at) VALUES (1, 'idea', 'Proposed idea', 'proposed', 1, 'resurfaced', '2026-11-15T09:30:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000037",
+      "target": "ideas",
+      "verb": "ref",
+      "params": {
+        "ref_kind": "idea",
+        "ref_id": 1,
+        "ref_verb": "not_now",
+        "until": "2026-12-01"
+      }
+    },
+    "swift": {
+      "writer": "IdeaQueries.snooze",
+      "args": {
+        "id": 1,
+        "until": "2026-12-01"
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "ideas": [
+          {
+            "id": 1,
+            "status": "not_now",
+            "snooze_until": "2026-12-01",
+            "needs_review": 0,
+            "review_reason": ""
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "ref_idea_approve_already",
+    "seed": [
+      "INSERT INTO ideas (id, kind, title, status, needs_review, review_reason, updated_at) VALUES (1, 'idea', 'Proposed idea', 'proposed', 1, 'resurfaced', '2026-11-15T09:30:00Z')",
+      "UPDATE ideas SET status = 'active'"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000038",
+      "target": "ideas",
+      "verb": "ref",
+      "params": {
+        "ref_kind": "idea",
+        "ref_id": 1,
+        "ref_verb": "approve"
+      }
+    },
+    "swift": null,
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "ideas": [
+          {
+            "id": 1,
+            "status": "active",
+            "snooze_until": "",
+            "needs_review": 1,
+            "review_reason": "resurfaced"
+          }
+        ]
+      },
+      "already": true
+    }
+  },
+  {
+    "name": "ref_idea_approve_merged_changed",
+    "seed": [
+      "INSERT INTO ideas (id, kind, title, status, needs_review, review_reason, updated_at) VALUES (1, 'idea', 'Proposed idea', 'proposed', 1, 'resurfaced', '2026-11-15T09:30:00Z')",
+      "INSERT INTO ideas (id, kind, title, status) VALUES (2, 'idea', 'Other', 'active')",
+      "UPDATE ideas SET status = 'merged', merged_into_id = 2 WHERE id = 1"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000039",
+      "target": "ideas",
+      "verb": "ref",
+      "params": {
+        "ref_kind": "idea",
+        "ref_id": 1,
+        "ref_verb": "approve"
+      }
+    },
+    "swift": null,
+    "expect": {
+      "status": "refused",
+      "code": "changed",
+      "rows": {
+        "ideas": [
+          {
+            "id": 1,
+            "status": "merged",
+            "snooze_until": "",
+            "needs_review": 1,
+            "review_reason": "resurfaced"
+          },
+          {
+            "id": 2,
+            "status": "active",
+            "snooze_until": "",
+            "needs_review": 0,
+            "review_reason": ""
+          }
+        ]
+      },
+      "sentence": "Couldn't approve it: this idea changed — look again."
+    }
+  },
+  {
+    "name": "ref_reminder_done",
+    "seed": [
+      "INSERT INTO reminders (id, note, remind_at) VALUES (1, 'Call back', '2026-11-16T09:00:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000040",
+      "target": "r1",
+      "verb": "ref",
+      "params": {
+        "ref_kind": "reminder",
+        "ref_id": 1,
+        "ref_verb": "done"
+      }
+    },
+    "swift": {
+      "writer": "ReminderQueries.markDone",
+      "args": {
+        "id": 1
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "reminders": [
+          {
+            "id": 1,
+            "status": "done",
+            "remind_at": "2026-11-16T09:00:00Z",
+            "done_at": "*"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "ref_reminder_done_already",
+    "seed": [
+      "INSERT INTO reminders (id, note, remind_at) VALUES (1, 'Call back', '2026-11-16T09:00:00Z')",
+      "UPDATE reminders SET status = 'done', done_at = '2026-11-16T09:10:00Z'"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000041",
+      "target": "r1",
+      "verb": "ref",
+      "params": {
+        "ref_kind": "reminder",
+        "ref_id": 1,
+        "ref_verb": "done"
+      }
+    },
+    "swift": null,
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "reminders": [
+          {
+            "id": 1,
+            "status": "done",
+            "remind_at": "2026-11-16T09:00:00Z",
+            "done_at": "2026-11-16T09:10:00Z"
+          }
+        ]
+      },
+      "already": true
+    }
+  },
+  {
+    "name": "ref_reminder_snooze_hook",
+    "seed": [
+      "INSERT INTO reminders (id, note, remind_at) VALUES (1, 'Call back', '2026-11-16T09:00:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000042",
+      "target": "r1",
+      "verb": "ref",
+      "params": {
+        "ref_kind": "reminder",
+        "ref_id": 1,
+        "ref_verb": "snooze",
+        "until": "2026-11-16T11:00:00Z"
+      }
+    },
+    "swift": {
+      "writer": "ReminderQueries.snooze",
+      "args": {
+        "id": 1,
+        "until": "2026-11-16T11:00:00Z"
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "reminders": [
+          {
+            "id": 1,
+            "status": "pending",
+            "remind_at": "2026-11-16T11:00:00Z",
+            "done_at": ""
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "ref_reminder_snooze_already",
+    "seed": [
+      "INSERT INTO reminders (id, note, remind_at) VALUES (1, 'Call back', '2026-11-16T09:00:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000043",
+      "target": "r1",
+      "verb": "ref",
+      "params": {
+        "ref_kind": "reminder",
+        "ref_id": 1,
+        "ref_verb": "snooze",
+        "until": "2026-11-16T09:00:00Z"
+      }
+    },
+    "swift": null,
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "reminders": [
+          {
+            "id": 1,
+            "status": "pending",
+            "remind_at": "2026-11-16T09:00:00Z",
+            "done_at": ""
+          }
+        ]
+      },
+      "already": true
+    }
+  },
+  {
+    "name": "ref_plan_item_check_cascades",
+    "seed": [
+      "INSERT INTO day_plans (id, user_id, plan_date, generated_at) VALUES (1, 'U1', '2026-11-16', '2026-11-16T07:00:00Z')",
+      "INSERT INTO targets (id, text, level, status, period_start, period_end) VALUES (3, 'Ship the release', 'day', 'todo', '2026-11-16', '2026-11-16')",
+      "INSERT INTO day_plan_items (id, day_plan_id, kind, source_type, source_id, title, status, order_index) VALUES (1, 1, 'backlog', 'task', '3', 'Ship the release', 'pending', 0)"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000044",
+      "target": "brief-2026-11-16",
+      "verb": "ref",
+      "params": {
+        "ref_kind": "plan_item",
+        "ref_id": 1,
+        "ref_verb": "check"
+      }
+    },
+    "swift": {
+      "writer": "DayPlanQueries.markItemDone",
+      "args": {
+        "id": 1,
+        "cascade": true
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "day_plan_items": [
+          {
+            "id": 1,
+            "status": "done"
+          }
+        ],
+        "targets": [
+          {
+            "id": 3,
+            "status": "done"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "ref_plan_item_uncheck_cascades",
+    "seed": [
+      "INSERT INTO day_plans (id, user_id, plan_date, generated_at) VALUES (1, 'U1', '2026-11-16', '2026-11-16T07:00:00Z')",
+      "INSERT INTO targets (id, text, level, status, period_start, period_end) VALUES (3, 'Ship the release', 'day', 'todo', '2026-11-16', '2026-11-16')",
+      "INSERT INTO day_plan_items (id, day_plan_id, kind, source_type, source_id, title, status, order_index) VALUES (1, 1, 'backlog', 'task', '3', 'Ship the release', 'pending', 0)",
+      "UPDATE day_plan_items SET status = 'done'",
+      "UPDATE targets SET status = 'done'"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000045",
+      "target": "brief-2026-11-16",
+      "verb": "ref",
+      "params": {
+        "ref_kind": "plan_item",
+        "ref_id": 1,
+        "ref_verb": "uncheck"
+      }
+    },
+    "swift": {
+      "writer": "DayPlanQueries.markItemPending",
+      "args": {
+        "id": 1,
+        "cascade": true
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "day_plan_items": [
+          {
+            "id": 1,
+            "status": "pending"
+          }
+        ],
+        "targets": [
+          {
+            "id": 3,
+            "status": "todo"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "ref_plan_item_check_task_gone",
+    "seed": [
+      "INSERT INTO day_plans (id, user_id, plan_date, generated_at) VALUES (1, 'U1', '2026-11-16', '2026-11-16T07:00:00Z')",
+      "INSERT INTO day_plan_items (id, day_plan_id, kind, source_type, source_id, title, status, order_index) VALUES (1, 1, 'backlog', 'task', '3', 'Ship the release', 'pending', 0)"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000046",
+      "target": "brief-2026-11-16",
+      "verb": "ref",
+      "params": {
+        "ref_kind": "plan_item",
+        "ref_id": 1,
+        "ref_verb": "check"
+      }
+    },
+    "swift": {
+      "writer": "DayPlanQueries.markItemDone",
+      "args": {
+        "id": 1,
+        "cascade": false
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "day_plan_items": [
+          {
+            "id": 1,
+            "status": "done"
+          }
+        ],
+        "targets": []
+      }
+    }
+  },
+  {
+    "name": "ref_plan_item_check_already",
+    "seed": [
+      "INSERT INTO day_plans (id, user_id, plan_date, generated_at) VALUES (1, 'U1', '2026-11-16', '2026-11-16T07:00:00Z')",
+      "INSERT INTO day_plan_items (id, day_plan_id, kind, source_type, source_id, title, status, order_index) VALUES (1, 1, 'backlog', 'task', '3', 'Ship the release', 'pending', 0)",
+      "UPDATE day_plan_items SET status = 'done'"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000047",
+      "target": "brief-2026-11-16",
+      "verb": "ref",
+      "params": {
+        "ref_kind": "plan_item",
+        "ref_id": 1,
+        "ref_verb": "check"
+      }
+    },
+    "swift": null,
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "day_plan_items": [
+          {
+            "id": 1,
+            "status": "done"
+          }
+        ]
+      },
+      "already": true
+    }
+  },
+  {
+    "name": "done_on_a_brief_is_unsupported",
+    "seed": [
+      "INSERT INTO briefings (id, user_id, date, created_at) VALUES (1, 'U1', '2026-11-16', '2026-11-16T06:00:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000048",
+      "target": "brief-2026-11-16",
+      "verb": "done",
+      "params": {}
+    },
+    "swift": null,
+    "expect": {
+      "status": "refused",
+      "code": "unsupported",
+      "rows": {
+        "briefings": [
+          {
+            "id": 1,
+            "read_at": null
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "ref_on_an_action_is_unsupported",
+    "seed": [],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000049",
+      "target": "messages",
+      "verb": "ref",
+      "params": {
+        "ref_kind": "action",
+        "ref_id": 1,
+        "ref_verb": "approve"
+      }
+    },
+    "swift": null,
+    "expect": {
+      "status": "refused",
+      "code": "unsupported",
+      "rows": {}
+    }
+  },
+  {
+    "name": "malformed_target_is_unsupported",
+    "seed": [],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000050",
+      "target": "o01",
+      "verb": "read",
+      "params": {
+        "content_hash": "h1"
+      }
+    },
+    "swift": null,
+    "expect": {
+      "status": "refused",
+      "code": "unsupported",
+      "rows": {}
+    }
+  },
+  {
+    "name": "approval_without_a_registry_is_unsupported",
+    "seed": [],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000051",
+      "target": "a1",
+      "verb": "approval",
+      "params": {
+        "approval_verb": "reject"
+      }
+    },
+    "swift": null,
+    "expect": {
+      "status": "refused",
+      "code": "unsupported",
+      "rows": {}
+    }
+  }
+]
