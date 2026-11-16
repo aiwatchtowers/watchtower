@@ -303,4 +303,51 @@ final class InboxTabWiringTests: XCTestCase {
         center.receiveApplied(echo)
         XCTAssertTrue(center.hidden.isHidden("inbox_item:301"))
     }
+
+    /// A press on a Not delivered row is that action's outbox Retry: the same action, the same request_id, never a
+    /// second hub action the Not delivered list could also retry (re-review I1).
+    func testAPressOnANotDeliveredRowRetriesTheSameAction() async throws {
+        let hub = FakeInboxHub(feed: feed)
+        let center = try await startedInboxCenter(hub)
+        var retried: [String] = []
+        center.use(
+            dismiss: { _ in XCTFail("an undelivered row stays for the outbox") }, retryUndelivered: { retried.append($0) })
+        let done = ActRequest(
+            requestID: "first", target: DemoSeed.Inbox.waitingForMe, verb: .ref,
+            params: ActParams(refKind: .inboxItem, refID: 301, refVerb: .resolve))
+        center.receive(InboxReplicaSnapshot(actions: [
+            try FakeInboxHub.failedRow(done, id: "act-undelivered", reason: nil, message: nil, undelivered: true)
+        ]))
+        let card = try card(DemoSeed.Inbox.waitingForMe, in: center)
+        let row = actions(center, card)(ping)
+        XCTAssertEqual(row.error, InboxPhoneText.notDelivered(hub: ""))
+
+        row.trailing[0].action() // Done again, by swipe
+        try await poll({ retried.count == 1 }, "the swipe retried the undelivered action")
+        let hide = InboxRefRowModel(facts: card.refRows[0].facts, platform: .phone, grants: .all)
+        await center.press { hide.request(.dismiss, cardID: DemoSeed.Inbox.waitingForMe, requestID: $0) }
+        XCTAssertEqual(retried, ["act-undelivered", "act-undelivered"], "every press on the row is the same action's Retry")
+        XCTAssertTrue(hub.requests.isEmpty, "no second hub action")
+    }
+
+    /// A new press on a refused row supersedes the old failure: its own outcome (here a local failure) is what the
+    /// row shows, and the old failed row leaves the replica.
+    func testTheNewestOutcomeWinsOnARow() async throws {
+        let hub = FakeInboxHub(feed: feed)
+        let center = try await startedInboxCenter(hub)
+        var dismissed: [String] = []
+        center.use(dismiss: { dismissed.append($0) }, retryUndelivered: { _ in })
+        let done = ActRequest(
+            requestID: "old", target: DemoSeed.Inbox.waitingForMe, verb: .ref, params: ActParams(refKind: .inboxItem, refID: 301, refVerb: .resolve))
+        center.receive(InboxReplicaSnapshot(actions: [
+            try FakeInboxHub.failedRow(done, id: "act-old", reason: .conflict, message: "An older refusal.")
+        ]))
+        hub.fail(true)
+        let card = try card(DemoSeed.Inbox.waitingForMe, in: center)
+        let hide = InboxRefRowModel(facts: card.refRows[0].facts, platform: .phone, grants: .all)
+        await center.press { hide.request(.dismiss, cardID: DemoSeed.Inbox.waitingForMe, requestID: $0) }
+        XCTAssertEqual(dismissed, ["act-old"])
+        guard case let .refused(sentence, _)? = center.rowState("inbox_item:301") else { return XCTFail("refused") }
+        XCTAssertEqual(sentence, InboxPhoneText.localFailure, "the newest outcome wins")
+    }
 }

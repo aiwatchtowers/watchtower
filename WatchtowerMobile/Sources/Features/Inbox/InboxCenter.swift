@@ -55,7 +55,8 @@ enum InboxRowState: Equatable {
 ///
 /// - A publish of `inbox_card` or `inbox_folder` reaches the client's watch, which re-reads the feed. Only a
 ///   publish of the cards counts toward the optimistic hide (`InboxHiddenRows`: two of them and the hub wins).
-/// - A press goes through `TowerClient.act` (one request_id per press). Its row's state (`rowState`) comes from the
+/// - A press goes through `TowerClient.act` (one request_id per press); on a Not delivered row it is that action's
+///   outbox Retry instead, and on a refused row it supersedes the failure. Its row's state (`rowState`) comes from the
 ///   press on its way, then from the replica's `inbox_act` rows (queued: busy; failed: the hub's sentence and
 ///   Retry, kept across a relaunch until Retry, Refresh or an `ok` on the row), then from the client's answer (a
 ///   local failure). `ok` hides its row or card, also when it lands with no press waiting (the client gave up, or
@@ -220,8 +221,19 @@ final class InboxCenter {
         let key = InboxPress.key(of: probe)
         let row = InboxPress.row(of: probe)
         switch rowState(row) {
-        case .busy?, .unknown?: return
-        case .refused?, nil: break
+        case .busy?, .unknown?:
+            return
+        case let .refused(_, .outbox(actionID))?:
+            // Not delivered: the row has one action. Any press on it is that action's Retry (same request_id), never
+            // a second action the Not delivered list could also retry.
+            await retry(.outbox(actionID: actionID))
+            return
+        case let .refused(_, .resend(_, dismiss))?:
+            // The new press supersedes the older failure: its outcome is the one the row shows.
+            if let dismiss { forget(dismiss) }
+            answered = answered.filter { InboxPress.row(of: $0.value.request) != row }
+        case nil:
+            break
         }
         inflight[key] = probe
         answered[key] = nil
@@ -256,16 +268,19 @@ final class InboxCenter {
                 Self.logger.warning("inbox retry not queued: \(String(describing: type(of: error)), privacy: .public)")
             }
         case let .resend(request, dismiss):
-            if let dismiss {
-                dismissRow(dismiss)
-                actions.removeAll { $0.id == dismiss }
-            }
+            if let dismiss { forget(dismiss) }
             let row = InboxPress.row(of: request)
             answered = answered.filter { InboxPress.row(of: $0.value.request) != row }
             await press { requestID in
                 ActRequest(requestID: requestID, target: request.target, verb: request.verb, params: request.params)
             }
         }
+    }
+
+    /// A failed replica row the row no longer shows: dismissed from the replica too.
+    private func forget(_ actionID: String) {
+        dismissRow(actionID)
+        actions.removeAll { $0.id == actionID }
     }
 
     private func answer(_ key: String, _ request: ActRequest, _ state: TowerActionState) {
