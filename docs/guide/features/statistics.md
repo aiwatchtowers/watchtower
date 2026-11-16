@@ -36,7 +36,7 @@ Pending inbox items or open targets block both muting and leaving suggestions; a
 <!-- learn
 id: statistics-stop-syncing
 title: Stop syncing a channel you never read
-text: In **Statistics** → **Channels**, press **Stop syncing** on a row; mentions of you still arrive.
+text: In **Statistics** → **Channels**, press **Stop syncing** on a row or a suggestion; mentions of you still arrive.
 area: communication
 level: next
 kind: feature

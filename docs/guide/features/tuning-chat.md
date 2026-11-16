@@ -47,7 +47,7 @@ For a workbench file the folded line reads **Accepted · wrote CLAUDE.md on main
 
 ## When it's empty or wrong
 
-- **Tuning tools need Claude or Codex — pick one in Settings → System → AI.** Your AI provider is neither Claude nor Codex. The chat still talks but cannot read the report or propose an edit; **Open Settings** takes you there.
+- **Tuning tools need Claude or Codex — pick one in Settings → System → AI**. Your AI provider is neither Claude nor Codex. The chat still talks but cannot read the report or propose an edit; **Open Settings** takes you there.
 - **No Tune button.** Analytics is off for this workbench; turn it on first.
 - **"… has uncommitted changes — commit or discard them, then press Accept again."** The file has changes git has not committed, maybe from a running session. Commit or discard them, then press **Accept** again.
 - **This workbench folder is not a git repository: …** Workbench files are edited only where you can review and commit the change, so the chat cannot propose them for this folder.
