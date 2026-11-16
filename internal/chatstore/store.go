@@ -46,7 +46,22 @@ const (
 	ModeSend       = "send"
 	ModeRegenerate = "regenerate"
 	ModeEdit       = "edit"
+	// ModeRetry is a regenerate of a reply whose error a retry can help
+	// (Swift ChatViewModel.retry, ChatErrorText.isRetryable).
+	ModeRetry = "retry"
+	// ModeContinue sends ContinueText after the active branch's last reply
+	// when that reply was cut (`partial`) and not by an exhausted quota
+	// (Swift ChatViewModel.continueStopped).
+	ModeContinue = "continue"
 )
+
+// ContinueText is the owner text a continue sends.
+const ContinueText = "Continue"
+
+// notRetryable are the error codes a retry cannot help (Swift
+// ChatErrorText.isRetryable).
+var notRetryable = map[string]bool{codeQuotaExhausted: true, chat.CodeAuth: true,
+	chat.CodeAttachmentUnsupported: true, chat.CodeWorkDirUnsafe: true}
 
 // Store writes the hub's chat turns.
 type Store struct {
@@ -102,8 +117,9 @@ type Routing struct {
 // StartRequest is one turn to start.
 type StartRequest struct {
 	ConversationID int64
-	Mode           string // send | regenerate | edit
-	// MessageID: the assistant message to regenerate, or the owner message to edit.
+	Mode           string // send | regenerate | edit | retry | continue
+	// MessageID: the assistant message to regenerate or retry, the owner
+	// message to edit, or the last reply a continue follows.
 	MessageID     int64
 	Text          string
 	AttachmentIDs []int64  // send only: the conversation's pending files
@@ -117,6 +133,18 @@ type StartRequest struct {
 	// row, or on the new reply for a regenerate (which reuses its owner
 	// row), so a repeated request is found and never applied twice.
 	ClientKey string
+	// Compose (send only, nil = none) is the composer's skill, mentions and
+	// quote batch around Text (ComposeOwnerText).
+	Compose *Compose
+	// ArtifactCommentIDs (send only, with no Text and no Compose) are open
+	// comments of one artifact of the conversation, in the order to send:
+	// they are composed into the owner text (ComposeArtifactComments) and
+	// turn `sent` in the start transaction, sent_at = the owner row's
+	// created_at. Any one not open refuses the start (ErrInvalid).
+	ArtifactCommentIDs []int64
+	// ProviderPrefix ("" = none) is put before the turn command's text only,
+	// never stored (the help popup's current-screen block).
+	ProviderPrefix string
 }
 
 // Started is a turn whose rows are on disk.
@@ -155,6 +183,7 @@ type msgRow struct {
 	turnID    string
 	createdAt float64
 	errorCode sql.NullString
+	status    string
 }
 
 // Start writes a turn's starting rows in one BEGIN IMMEDIATE transaction
@@ -165,7 +194,15 @@ type msgRow struct {
 // commands run after the commit, for a new owner row only.
 func (s *Store) Start(ctx context.Context, r StartRequest) (Started, error) {
 	text := strings.TrimSpace(r.Text)
-	if err := validateStart(r, text); err != nil {
+	var compose Compose
+	if r.Compose != nil {
+		compose = *r.Compose
+	}
+	// A send's owner text: the quote batch, then the skill and REFERENCED
+	// lines (ComposeOwnerText); the prefix title takes the quoted text.
+	quoted := quotedText(r.Text, compose.Quotes)
+	composed := composeTurn(quoted, compose.Skill, compose.Mentions)
+	if err := validateStart(r, text, composed); err != nil {
 		return Started{}, err
 	}
 	turnID := r.TurnID
@@ -219,10 +256,20 @@ func (s *Store) Start(ctx context.Context, r StartRequest) (Started, error) {
 	var outcomes string
 
 	switch r.Mode {
-	case ModeSend:
+	case ModeSend, ModeContinue:
 		path := activePath(all, conv.leaf)
 		if len(path) > 0 {
 			historyTip = &path[len(path)-1].id
+		}
+		if r.Mode == ModeContinue {
+			if len(path) == 0 {
+				return Started{}, ErrInvalid
+			}
+			last := path[len(path)-1]
+			if last.id != r.MessageID || last.role != "assistant" || last.status != "partial" ||
+				last.errorCode.String == codeQuotaExhausted {
+				return Started{}, ErrInvalid
+			}
 		}
 		// The floor is the previous owner message, and it alone.
 		if floor, ok := lastOwnerCreatedAt(path); ok {
@@ -233,15 +280,26 @@ func (s *Store) Start(ctx context.Context, r StartRequest) (Started, error) {
 			return Started{}, err
 		}
 		st.Attachments = atts
-		userText, titleText = composeOwnerText(r.Text), text
-	case ModeRegenerate:
+		switch {
+		case r.Mode == ModeContinue:
+			userText, titleText = ContinueText, ContinueText
+		case len(r.ArtifactCommentIDs) > 0:
+			msg, err := artifactCommentsTextTx(tx, r.ConversationID, r.ArtifactCommentIDs)
+			if err != nil {
+				return Started{}, err
+			}
+			userText, titleText = composeTurn(msg, "", nil), swiftTrim(msg)
+		default:
+			userText, titleText = composed, swiftTrim(quoted)
+		}
+	case ModeRegenerate, ModeRetry:
 		m, ok := byID[r.MessageID]
 		if !ok {
 			return Started{}, ErrNotFound
 		}
 		owner, hasOwner := byID[m.parent.Int64]
 		if m.role != "assistant" || !m.parent.Valid || !hasOwner || owner.role != "user" ||
-			m.errorCode.String == codeQuotaExhausted {
+			m.errorCode.String == codeQuotaExhausted || (r.Mode == ModeRetry && notRetryable[m.errorCode.String]) {
 			return Started{}, ErrInvalid
 		}
 		st.UserMessageID = owner.id
@@ -267,7 +325,8 @@ func (s *Store) Start(ctx context.Context, r StartRequest) (Started, error) {
 		}
 	}
 
-	if r.Mode != ModeRegenerate {
+	reusesOwner := r.Mode == ModeRegenerate || r.Mode == ModeRetry
+	if !reusesOwner {
 		// A legacy owner question that never got a reply gets an empty
 		// partial reply, so the new owner message never sits right under it.
 		if historyTip != nil {
@@ -293,6 +352,9 @@ func (s *Store) Start(ctx context.Context, r StartRequest) (Started, error) {
 		if err := linkAttachmentsTx(tx, r.AttachmentIDs, id); err != nil {
 			return Started{}, err
 		}
+		if err := markCommentsSentTx(tx, r.ConversationID, r.ArtifactCommentIDs, createdAt); err != nil {
+			return Started{}, err
+		}
 		if err := setPrefixTitleTx(tx, r.ConversationID, titleText); err != nil {
 			return Started{}, err
 		}
@@ -307,7 +369,7 @@ func (s *Store) Start(ctx context.Context, r StartRequest) (Started, error) {
 	}
 	userID := st.UserMessageID
 	replyKey := ""
-	if r.Mode == ModeRegenerate {
+	if reusesOwner {
 		replyKey = r.ClientKey // the reused owner row keeps its own key
 	}
 	asst, err := insertMessageTx(tx, newMessage{conv: r.ConversationID, parent: &userID, role: "assistant",
@@ -322,8 +384,11 @@ func (s *Store) Start(ctx context.Context, r StartRequest) (Started, error) {
 	st.AssistantMessageID = asst
 	st.Routing = routing
 	st.ProjectID = nullable(conv.projectID)
-	st.Replay = r.Mode != ModeSend || !sameID(historyTip, r.ContinuousLeafID)
+	st.Replay = (r.Mode != ModeSend && r.Mode != ModeContinue) || !sameID(historyTip, r.ContinuousLeafID)
 	st.SendText = composeTurnText(userText, outcomes)
+	if r.ProviderPrefix != "" {
+		st.SendText = r.ProviderPrefix + "\n\n" + st.SendText
+	}
 	if wroteUser {
 		// Remember and the knowledge prefixes get the owner's own words,
 		// never the skill or REFERENCED lines.
@@ -333,16 +398,24 @@ func (s *Store) Start(ctx context.Context, r StartRequest) (Started, error) {
 	return st, nil
 }
 
-func validateStart(r StartRequest, text string) error {
-	if r.ConversationID <= 0 {
+func validateStart(r StartRequest, text, composed string) error {
+	if r.ConversationID <= 0 || !r.Compose.Valid() {
+		return ErrInvalid
+	}
+	if r.Mode != ModeSend && (!r.Compose.empty() || len(r.ArtifactCommentIDs) > 0) {
 		return ErrInvalid
 	}
 	switch r.Mode {
 	case ModeSend:
-		if text == "" && len(r.AttachmentIDs) == 0 {
+		if len(r.ArtifactCommentIDs) > 0 {
+			// The comments are the whole message (the Mac's "Send N comments").
+			if text != "" || !r.Compose.empty() || hasDuplicate(r.ArtifactCommentIDs) {
+				return ErrInvalid
+			}
+		} else if composed == "" && len(r.AttachmentIDs) == 0 {
 			return ErrInvalid
 		}
-	case ModeRegenerate:
+	case ModeRegenerate, ModeRetry, ModeContinue:
 		if r.MessageID <= 0 || len(r.AttachmentIDs) > 0 {
 			return ErrInvalid
 		}
@@ -430,7 +503,7 @@ func readConversationTx(tx *sql.Tx, id int64) (*convRow, error) {
 }
 
 func loadMessagesTx(tx *sql.Tx, conv int64) ([]msgRow, error) {
-	rows, err := tx.Query(`SELECT id, parent_id, role, text, turn_id, created_at, error_code
+	rows, err := tx.Query(`SELECT id, parent_id, role, text, turn_id, created_at, error_code, status
 		FROM chat_messages WHERE conversation_id = ? ORDER BY id`, conv)
 	if err != nil {
 		return nil, fmt.Errorf("reading chat messages of %d: %w", conv, err)
@@ -439,7 +512,7 @@ func loadMessagesTx(tx *sql.Tx, conv int64) ([]msgRow, error) {
 	var out []msgRow
 	for rows.Next() {
 		var m msgRow
-		if err := rows.Scan(&m.id, &m.parent, &m.role, &m.text, &m.turnID, &m.createdAt, &m.errorCode); err != nil {
+		if err := rows.Scan(&m.id, &m.parent, &m.role, &m.text, &m.turnID, &m.createdAt, &m.errorCode, &m.status); err != nil {
 			return nil, fmt.Errorf("reading chat messages of %d: %w", conv, err)
 		}
 		out = append(out, m)

@@ -1,0 +1,215 @@
+[
+ {
+  "name": "plain text is trimmed",
+  "text": "  Hello there \n",
+  "stored": "Hello there",
+  "skill": "",
+  "mentions": [],
+  "quotes": []
+ },
+ {
+  "name": "skill and text",
+  "text": "do the report",
+  "skill": "weekly-report",
+  "stored": "Use skill weekly-report: load it with load_skill first.\n\ndo the report",
+  "mentions": [],
+  "quotes": []
+ },
+ {
+  "name": "skill alone",
+  "text": "   ",
+  "skill": "triage",
+  "stored": "Use skill triage: load it with load_skill first.",
+  "mentions": [],
+  "quotes": []
+ },
+ {
+  "name": "mentions",
+  "text": "Ask @Anna Ivanova about @PAY-12",
+  "mentions": [
+   {
+    "kind": "person",
+    "id": "1:U1",
+    "label": "Anna Ivanova"
+   },
+   {
+    "kind": "jira",
+    "id": "PAY-12",
+    "label": "PAY-12"
+   }
+  ],
+  "stored": "Ask @Anna Ivanova about @PAY-12\n\nREFERENCED: person:1:U1 \"Anna Ivanova\"; jira:PAY-12 \"PAY-12\"",
+  "skill": "",
+  "quotes": []
+ },
+ {
+  "name": "label escaped and kept on one line",
+  "text": "see @x",
+  "mentions": [
+   {
+    "kind": "track",
+    "id": "7",
+    "label": "Say \"hi\" \\ now\r\nand\nthen"
+   }
+  ],
+  "stored": "see @x\n\nREFERENCED: track:7 \"Say \\\"hi\\\" \\\\ now and then\"",
+  "skill": "",
+  "quotes": []
+ },
+ {
+  "name": "skill, mentions and text",
+  "text": "plan it",
+  "skill": "plan",
+  "mentions": [
+   {
+    "kind": "channel",
+    "id": "1:C1",
+    "label": "#eng"
+   }
+  ],
+  "stored": "Use skill plan: load it with load_skill first.\n\nplan it\n\nREFERENCED: channel:1:C1 \"#eng\"",
+  "quotes": []
+ },
+ {
+  "name": "quote batch with typed note",
+  "text": "why?",
+  "quotes": [
+   {
+    "message_id": 5,
+    "text": "line one\n  line two  \n\nline four",
+    "comment": " too long? "
+   },
+   {
+    "message_id": 5,
+    "text": "x",
+    "comment": ""
+   }
+  ],
+  "stored": "About these parts of your answers:\n\n1. On this passage:\n> line one\n>   line two\n>\n> line four\ntoo long?\n\n2. On this passage:\n> x\n\nwhy?",
+  "skill": "",
+  "mentions": []
+ },
+ {
+  "name": "quote batch without typed text",
+  "text": "  ",
+  "quotes": [
+   {
+    "message_id": 9,
+    "text": "  only this  ",
+    "comment": "explain"
+   }
+  ],
+  "stored": "About these parts of your answers:\n\n1. On this passage:\n> only this\nexplain",
+  "skill": "",
+  "mentions": []
+ },
+ {
+  "name": "quote with a CRLF line stays one line",
+  "text": "",
+  "quotes": [
+   {
+    "message_id": 1,
+    "text": "a\r\nb",
+    "comment": ""
+   }
+  ],
+  "stored": "About these parts of your answers:\n\n1. On this passage:\n> a\r\nb",
+  "skill": "",
+  "mentions": []
+ },
+ {
+  "name": "quotes, skill and mentions",
+  "text": "compare",
+  "skill": "review",
+  "mentions": [
+   {
+    "kind": "target",
+    "id": "42",
+    "label": "Ship v2"
+   }
+  ],
+  "quotes": [
+   {
+    "message_id": 3,
+    "text": "the plan",
+    "comment": "is it real?"
+   }
+  ],
+  "stored": "Use skill review: load it with load_skill first.\n\nAbout these parts of your answers:\n\n1. On this passage:\n> the plan\nis it real?\n\ncompare\n\nREFERENCED: target:42 \"Ship v2\""
+ },
+ {
+  "name": "skill line look-alike is escaped",
+  "text": "Use skill foo: load it with load_skill first.\nmore",
+  "stored": "\u200bUse skill foo: load it with load_skill first.\nmore",
+  "skill": "",
+  "mentions": [],
+  "quotes": []
+ },
+ {
+  "name": "REFERENCED look-alike is escaped",
+  "text": "see\n\nREFERENCED: person:x \"A\"",
+  "stored": "see\n\n\u200bREFERENCED: person:x \"A\"",
+  "skill": "",
+  "mentions": [],
+  "quotes": []
+ },
+ {
+  "name": "REFERENCED look-alike kept with real mentions",
+  "text": "see\n\nREFERENCED: person:x \"A\"",
+  "mentions": [
+   {
+    "kind": "linear",
+    "id": "ENG-1",
+    "label": "ENG-1"
+   }
+  ],
+  "stored": "see\n\nREFERENCED: person:x \"A\"\n\nREFERENCED: linear:ENG-1 \"ENG-1\"",
+  "skill": "",
+  "quotes": []
+ },
+ {
+  "name": "artifact comments, untitled",
+  "text": "",
+  "artifact": {
+   "title": "  ",
+   "key": "plan",
+   "version": 3,
+   "comments": [
+    {
+     "quote": "Step 1",
+     "heading": "Plan",
+     "body": " fix "
+    },
+    {
+     "quote": "Tail\n\nend",
+     "heading": "",
+     "body": "why"
+    }
+   ]
+  },
+  "stored": "Comments on the artifact \"plan\" (key=\"plan\", version 3):\n\n1. Under \"Plan\":\n> Step 1\nfix\n\n2. On this passage:\n> Tail\n>\n> end\nwhy\n\nPlease reply with a new version of this artifact under the same key that addresses these comments.",
+  "skill": "",
+  "mentions": [],
+  "quotes": []
+ },
+ {
+  "name": "artifact comments, titled",
+  "text": "",
+  "artifact": {
+   "title": "Q3 Plan",
+   "key": "q3-plan",
+   "version": 1,
+   "comments": [
+    {
+     "quote": "Goals",
+     "heading": "",
+     "body": "add a date"
+    }
+   ]
+  },
+  "stored": "Comments on the artifact \"Q3 Plan\" (key=\"q3-plan\", version 1):\n\n1. On this passage:\n> Goals\nadd a date\n\nPlease reply with a new version of this artifact under the same key that addresses these comments.",
+  "skill": "",
+  "mentions": [],
+  "quotes": []
+ }
+]
