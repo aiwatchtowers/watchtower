@@ -183,6 +183,14 @@ var displayOnlyReadersAt = map[string]string{
 	"chatstore/turn.go:stepStarted":         "writes a step and the LIVE-01 mark",
 	"chatstore/turn.go:markIfUsedTx":        "writes the LIVE-01 mark",
 	"chatstore/turn.go:titleIfNeeded":       "a count of complete answers, no text",
+	// internal/chatstore/embedded.go: an embedded chat's own `ai query
+	// --persist` turn (the DatabaseEmbeddedChatStore twin). It writes that
+	// turn's rows and reads no chat text; embedded chats never carry Slack
+	// connectors (main surface only).
+	"chatstore/embedded.go:BeginEmbedded": "an existence probe of the conversation, then inserts the turn's owner row and empty reply",
+	"chatstore/embedded.go:Apply":         "writes the turn's own reply text and steps",
+	"chatstore/embedded.go:saveActual":    "routing columns of the turn's own reply",
+	"chatstore/embedded.go:Finalize":      "writes the turn's own reply (text, status, tokens) and the conversation's updated_at",
 	// The phone's chat actions (iPhone chat §4.5): conversation rows the
 	// Mac's Chats panel writes too, and the attachment intake's row.
 	"chatstore/conversations.go:NewConversation":    "inserts an empty conversation row",
