@@ -42,13 +42,16 @@ func addSession(t *testing.T, d *db.DB, wb int64, agentID string) int64 {
 	return id
 }
 
-func fakeFeeds(feeds map[int64][]sessionfeed.Entry) func(db.RecentWorkbenchSession) ([]sessionfeed.Entry, error) {
+// fakeFeeds serves feeds by session id; a session in fail fails to read, one
+// in neither map has no transcript (no entries, like sessionfeed).
+func fakeFeeds(feeds map[int64][]sessionfeed.Entry, fail ...int64) func(db.RecentWorkbenchSession) ([]sessionfeed.Entry, error) {
 	return func(s db.RecentWorkbenchSession) ([]sessionfeed.Entry, error) {
-		e, ok := feeds[s.ID]
-		if !ok {
-			return nil, errors.New("no transcript")
+		for _, id := range fail {
+			if id == s.ID {
+				return nil, errors.New("transcript busy")
+			}
 		}
-		return e, nil
+		return feeds[s.ID], nil
 	}
 }
 
@@ -86,8 +89,8 @@ func TestTurnSource_PairsOwnerWithPrecedingAgentText(t *testing.T) {
 	if !done || next == "" {
 		t.Fatalf("done=%v next=%q", done, next)
 	}
-	if len(ps) != 3 {
-		t.Fatalf("got %d precedents, want 3: %+v", len(ps), ps)
+	if len(ps) != 2 { // "start with the parser" answers no agent text
+		t.Fatalf("got %d precedents, want 2: %+v", len(ps), ps)
 	}
 	// newest first
 	if ps[0].OwnerWords != "yes" || ps[0].Situation != "Rename the flag to --dry?" {
@@ -95,9 +98,6 @@ func TestTurnSource_PairsOwnerWithPrecedingAgentText(t *testing.T) {
 	}
 	if ps[1].OwnerWords != "no cache, keep it simple" || ps[1].Situation != "Shall I add a cache? token=[secret]" {
 		t.Errorf("second = %+v", ps[1])
-	}
-	if ps[2].OwnerWords != "start with the parser" || ps[2].Situation != "" {
-		t.Errorf("third = %+v", ps[2])
 	}
 	for _, p := range ps {
 		if p.Source != "turn" || p.Category != "" || p.WorkbenchID != wb || p.SourceKey == "" || p.DecidedAt.IsZero() {
@@ -132,11 +132,11 @@ func TestTurnSource_CursorNewestFirst(t *testing.T) {
 	wb := addWorkbench(t, d, t.TempDir())
 	s1 := addSession(t, d, wb, "a1")
 	s2 := addSession(t, d, wb, "a2")
-	s3 := addSession(t, d, wb, "a3") // unreadable transcript: skipped
-	_ = s3
+	addSession(t, d, wb, "a3") // no transcript yet: no turns
+	ask := func(id string, m int) sessionfeed.Entry { return entry(id, sessionfeed.KindAgent, "next?", m) }
 	feeds := map[int64][]sessionfeed.Entry{
-		s1: {entry("u1", sessionfeed.KindOwner, "one", 0), entry("u2", sessionfeed.KindOwner, "two", 1)},
-		s2: {entry("u3", sessionfeed.KindOwner, "three", 2)},
+		s1: {ask("a1", 0), entry("u1", sessionfeed.KindOwner, "one", 0), entry("u2", sessionfeed.KindOwner, "two", 1)},
+		s2: {ask("a2", 2), entry("u3", sessionfeed.KindOwner, "three", 2)},
 	}
 	src := TurnSource(fakeFeeds(feeds))
 	ctx := context.Background()
@@ -169,5 +169,47 @@ func TestTurnSource_CursorNewestFirst(t *testing.T) {
 	}
 	if _, _, _, err := src.Next(ctx, d, wb, "garbage", 2); err == nil {
 		t.Fatal("malformed cursor accepted")
+	}
+}
+
+func TestTurnSource_SkipsAppStartPrompts(t *testing.T) {
+	d := openWatchmanDB(t)
+	wb := addWorkbench(t, d, t.TempDir())
+	s1 := addSession(t, d, wb, "a1")
+	feeds := map[int64][]sessionfeed.Entry{s1: {
+		entry("a0", sessionfeed.KindAgent, "Ready.", 0),
+		entry("u1", sessionfeed.KindOwner, "Work on target #12 using the watchtower-workbench skill.", 1),
+		entry("u2", sessionfeed.KindOwner, "Work on group #3 using the watchtower-workbench skill.\nPlan first: put the plan on the board", 2),
+		entry("u3", sessionfeed.KindOwner, "Work on target #4 using the watchtower-workbench skill.\nkeep the old flag", 3),
+		entry("u4", sessionfeed.KindOwner, "look:\n```\npanic: boom\n```", 4),
+	}}
+	ps, _, _, err := TurnSource(fakeFeeds(feeds)).Next(context.Background(), d, wb, "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ps) != 1 || ps[0].OwnerWords != "keep the old flag" {
+		t.Fatalf("got %+v", ps)
+	}
+}
+
+func TestTurnSource_ReadErrorStopsNewerPass(t *testing.T) {
+	d := openWatchmanDB(t)
+	wb := addWorkbench(t, d, t.TempDir())
+	s1 := addSession(t, d, wb, "a1")
+	s2 := addSession(t, d, wb, "a2")
+	feeds := map[int64][]sessionfeed.Entry{
+		s1: {entry("a1", sessionfeed.KindAgent, "ok?", 0), entry("u1", sessionfeed.KindOwner, "one", 1)},
+		s2: {entry("a2", sessionfeed.KindAgent, "ok?", 2), entry("u2", sessionfeed.KindOwner, "two", 3)},
+	}
+	ctx := context.Background()
+	// Backfill skips an unreadable session.
+	ps, c, done, err := TurnSource(fakeFeeds(feeds, s2)).Next(ctx, d, wb, "", 10)
+	if err != nil || !done || len(ps) != 1 || ps[0].OwnerWords != "one" {
+		t.Fatalf("backfill: %+v done=%v err=%v", ps, done, err)
+	}
+	// The newer pass fails instead of moving hi past an unread session.
+	s3 := addSession(t, d, wb, "a3")
+	if _, _, _, err := TurnSource(fakeFeeds(feeds, s3)).Next(ctx, d, wb, c, 10); err == nil {
+		t.Fatal("newer pass read error not returned")
 	}
 }

@@ -25,13 +25,25 @@ const (
 	// gitRewriteWindow is how far back an agent commit counts as the work an
 	// owner commit rewrote.
 	gitRewriteWindow = 7 * 24 * time.Hour
-	gitTextLimit     = 2048
+	// gitLookback is how far behind the hi mark the incremental pass looks
+	// again: a worktree branch merged late brings commits dated before hi,
+	// and a PR's merge can be cached after newer ones.
+	gitLookback  = 30 * 24 * time.Hour
+	gitTextLimit = 2048
+	// gitBackfillDone is the lo mark once the backfill has nothing older.
+	gitBackfillDone = "end"
 )
 
 // GitSource reads the owner's own commits in the workbench folder that
 // rewrite paths an agent commit changed in the 7 days before (choice
 // "rewrote"), and the workbench's merged PRs (category finish, choice
 // "merged"). A folder that is not a git repository yields nothing and is done.
+//
+// The incremental pass rescans gitLookback behind the hi mark and returns
+// what it finds there that is not stored yet (outside the limit), so a late
+// commit or merge is not lost. Such an item can come back on a later call
+// while it is not stored (an unlabelled one); the upsert's
+// UNIQUE(source, source_key) keeps one row.
 func GitSource(git GitRunner) Source { return gitSource{git: git} }
 
 type gitSource struct{ git GitRunner }
@@ -52,6 +64,8 @@ type gitItem struct {
 	p   db.WatchmanPrecedent
 }
 
+func (it gitItem) pos() gitPos { return gitPos{it.at, it.key} }
+
 type gitPos struct {
 	at  time.Time
 	key string
@@ -63,9 +77,10 @@ func (a gitPos) less(b gitPos) bool {
 
 // Next returns items newer than the cursor's hi mark first (oldest of them
 // first), then items older than its lo mark, newest first. The cursor is
-// "<unix nanos>,<escaped key>|<unix nanos>,<escaped key>".
+// "<hi>|<lo>", each "<unix nanos>,<escaped key>"; lo is "end" once the
+// backfill is over.
 func (s gitSource) Next(ctx context.Context, d *db.DB, workbenchID int64, cursor string, limit int) ([]db.WatchmanPrecedent, string, bool, error) {
-	hi, lo, has, err := parseGitCursor(cursor)
+	hi, lo, loDone, has, err := parseGitCursor(cursor)
 	if err != nil {
 		return nil, "", false, err
 	}
@@ -85,36 +100,56 @@ func (s gitSource) Next(ctx context.Context, d *db.DB, workbenchID int64, cursor
 		}
 		return nil, cursor, true, nil // not a git repository: nothing to learn here
 	}
-	commits, err := s.commits(ctx, wb.FolderPath)
-	if err != nil {
-		return nil, "", false, err
+	next := func() string {
+		if loDone {
+			return encodeGitPos(hi) + "|" + gitBackfillDone
+		}
+		return encodeGitPos(hi) + "|" + encodeGitPos(lo)
 	}
-	items := gitRewrites(workbenchID, commits)
-	merges, err := gitMerges(d, workbenchID)
-	if err != nil {
-		return nil, "", false, err
-	}
-	items = append(items, merges...)
-	sort.Slice(items, func(i, j int) bool {
-		return gitPos{items[i].at, items[i].key}.less(gitPos{items[j].at, items[j].key})
-	})
-
 	var out []db.WatchmanPrecedent
-	next := func() string { return encodeGitPos(hi) + "|" + encodeGitPos(lo) }
+	n := 0 // rows counted toward limit; late finds are not
 	if has {
+		floor := hi.at.Add(-gitLookback)
+		items, err := s.items(ctx, d, workbenchID, wb.FolderPath, floor)
+		if err != nil {
+			return nil, "", false, err
+		}
+		// isLate: at or behind hi, and not left to the backfill still to come.
+		isLate := func(it gitItem) bool {
+			return !hi.less(it.pos()) && (loDone || lo.less(it.pos()))
+		}
+		var late []string
 		for _, it := range items {
-			pos := gitPos{it.at, it.key}
-			if !hi.less(pos) {
+			if isLate(it) {
+				late = append(late, it.key)
+			}
+		}
+		stored, err := d.WatchmanStoredKeys("git", late)
+		if err != nil {
+			return nil, "", false, fmt.Errorf("watchman git source: %w", err)
+		}
+		for _, it := range items {
+			if !hi.less(it.pos()) {
+				if isLate(it) && !stored[it.key] {
+					out = append(out, it.p) // a late find: outside the limit
+				}
 				continue
 			}
-			out, hi = append(out, it.p), pos
-			if len(out) == limit {
+			out, hi = append(out, it.p), it.pos()
+			if n++; n == limit {
 				return out, next(), false, nil
 			}
 		}
+		if loDone {
+			return out, next(), true, nil
+		}
+	}
+	items, err := s.items(ctx, d, workbenchID, wb.FolderPath, time.Time{})
+	if err != nil {
+		return nil, "", false, err
 	}
 	for i := len(items) - 1; i >= 0; i-- {
-		pos := gitPos{items[i].at, items[i].key}
+		pos := items[i].pos()
 		if has && !pos.less(lo) {
 			continue
 		}
@@ -122,21 +157,49 @@ func (s gitSource) Next(ctx context.Context, d *db.DB, workbenchID int64, cursor
 			hi, has = pos, true
 		}
 		out, lo = append(out, items[i].p), pos
-		if len(out) == limit {
+		if n++; n == limit {
 			return out, next(), false, nil
 		}
 	}
 	if !has {
 		return out, "", true, nil
 	}
+	loDone = true
 	return out, next(), true, nil
 }
 
-// commits lists every non-merge commit with its changed paths. A repository
+// items lists the rewrites and merges decided at or after floor (zero =
+// all), oldest first.
+func (s gitSource) items(ctx context.Context, d *db.DB, workbenchID int64, dir string, floor time.Time) ([]gitItem, error) {
+	var since []string
+	if !floor.IsZero() {
+		since = []string{"--since=" + floor.Add(-gitRewriteWindow).UTC().Format(time.RFC3339)}
+	}
+	commits, err := s.commits(ctx, dir, since...)
+	if err != nil {
+		return nil, err
+	}
+	merges, err := gitMerges(d, workbenchID)
+	if err != nil {
+		return nil, err
+	}
+	var items []gitItem
+	for _, it := range append(gitRewrites(workbenchID, commits), merges...) {
+		if !it.at.Before(floor) {
+			items = append(items, it)
+		}
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].pos().less(items[j].pos()) })
+	return items, nil
+}
+
+// commits lists the non-merge commits (narrowed by extra log args) with
+// their changed paths, oldest author date first. A repository
 // with no commit yet has none.
-func (s gitSource) commits(ctx context.Context, dir string) ([]gitCommit, error) {
-	out, err := s.git(ctx, dir, "-c", "core.quotePath=false", "log", "--no-merges",
-		"--format=%x1e%H%x1f%aI%x1f%B%x1d", "--name-only")
+func (s gitSource) commits(ctx context.Context, dir string, extra ...string) ([]gitCommit, error) {
+	args := append([]string{"-c", "core.quotePath=false", "log", "--no-merges",
+		"--format=%x1e%H%x1f%aI%x1f%B%x1d", "--name-only"}, extra...)
+	out, err := s.git(ctx, dir, args...)
 	if err != nil {
 		if _, herr := s.git(ctx, dir, "rev-parse", "--verify", "-q", "HEAD"); herr != nil {
 			return nil, nil //nolint:nilerr // no commit yet
@@ -166,6 +229,7 @@ func (s gitSource) commits(ctx context.Context, dir string) ([]gitCommit, error)
 		}
 		commits = append(commits, c)
 	}
+	sort.SliceStable(commits, func(i, j int) bool { return commits[i].at.Before(commits[j].at) })
 	return commits, nil
 }
 
@@ -187,7 +251,7 @@ func isAgentCommit(body string) bool {
 }
 
 // gitRewrites pairs each owner commit with the agent commits of the 7 days
-// before it that changed one of its paths.
+// before it that changed one of its paths; commits are oldest first.
 func gitRewrites(workbenchID int64, commits []gitCommit) []gitItem {
 	var items []gitItem
 	for _, o := range commits {
@@ -201,8 +265,11 @@ func gitRewrites(workbenchID int64, commits []gitCommit) []gitItem {
 		var subjects []string
 		seenSubject := map[string]bool{}
 		shared := map[string]bool{}
-		for _, a := range commits { // newest first, as git log lists them
-			if !a.agent || !a.at.Before(o.at) || o.at.Sub(a.at) > gitRewriteWindow {
+		// commits is sorted by author date: only the 7 days before o.
+		from := sort.Search(len(commits), func(i int) bool { return !commits[i].at.Before(o.at.Add(-gitRewriteWindow)) })
+		for j := len(commits) - 1; j >= from; j-- { // newest agent subject first
+			a := commits[j]
+			if !a.agent || !a.at.Before(o.at) {
 				continue
 			}
 			hit := false
@@ -305,21 +372,24 @@ func encodeGitPos(p gitPos) string {
 	return strconv.FormatInt(p.at.UnixNano(), 10) + "," + url.QueryEscape(p.key)
 }
 
-func parseGitCursor(c string) (hi, lo gitPos, has bool, err error) {
+func parseGitCursor(c string) (hi, lo gitPos, loDone, has bool, err error) {
 	if c == "" {
-		return hi, lo, false, nil
+		return hi, lo, false, false, nil
 	}
 	h, l, ok := strings.Cut(c, "|")
 	if !ok {
-		return hi, lo, false, fmt.Errorf("watchman git cursor %q: no lo mark", c)
+		return hi, lo, false, false, fmt.Errorf("watchman git cursor %q: no lo mark", c)
 	}
 	if hi, err = parseGitPos(h); err != nil {
-		return hi, lo, false, fmt.Errorf("watchman git cursor %q: %w", c, err)
+		return hi, lo, false, false, fmt.Errorf("watchman git cursor %q: %w", c, err)
+	}
+	if l == gitBackfillDone {
+		return hi, lo, true, true, nil
 	}
 	if lo, err = parseGitPos(l); err != nil {
-		return hi, lo, false, fmt.Errorf("watchman git cursor %q: %w", c, err)
+		return hi, lo, false, false, fmt.Errorf("watchman git cursor %q: %w", c, err)
 	}
-	return hi, lo, true, nil
+	return hi, lo, false, true, nil
 }
 
 func parseGitPos(s string) (gitPos, error) {

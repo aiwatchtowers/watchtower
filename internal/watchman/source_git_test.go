@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -174,13 +175,106 @@ func TestGitSource_CursorNewestFirst(t *testing.T) {
 	if err != nil || done || len(ps) != 2 || ps[0].OwnerWords != "owner three" || ps[1].OwnerWords != "owner two" {
 		t.Fatalf("page 1: %+v done=%v err=%v", ps, done, err)
 	}
+	store(t, d, ps)
 	r.commit(day(4), "owner four", "a.go")
 	ps, c, done, err = src.Next(ctx, d, wb, c, 2)
 	if err != nil || done || len(ps) != 2 || ps[0].OwnerWords != "owner four" || ps[1].OwnerWords != "owner one" {
 		t.Fatalf("page 2: %+v done=%v err=%v", ps, done, err)
 	}
+	store(t, d, ps)
 	ps, _, done, err = src.Next(ctx, d, wb, c, 2)
 	if err != nil || !done || len(ps) != 0 {
 		t.Fatalf("page 3: %+v done=%v err=%v", ps, done, err)
+	}
+}
+
+// store upserts emitted precedents as the runner would after labelling.
+func store(t *testing.T, d *db.DB, ps []db.WatchmanPrecedent) {
+	t.Helper()
+	tx, err := d.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range ps {
+		if ps[i].Category == "" {
+			ps[i].Category = "design"
+		}
+	}
+	if err := d.UpsertWatchmanPrecedents(tx, ps); err != nil {
+		_ = tx.Rollback()
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func ownerWords(ps []db.WatchmanPrecedent) []string {
+	var w []string
+	for _, p := range ps {
+		w = append(w, p.OwnerWords)
+	}
+	return w
+}
+
+func TestGitSource_LateMergedCommitStillEmitted(t *testing.T) {
+	r := newTestRepo(t)
+	r.commit(day(0), "agent work"+claudeTrailer, "a.go", "b.go")
+	r.git(day(0), "branch", "wt")
+	r.commit(day(3), "owner on main", "a.go")
+	d := openWatchmanDB(t)
+	wb := addWorkbench(t, d, r.dir)
+	src := GitSource(ExecGit)
+	ctx := context.Background()
+	ps, c, done, err := src.Next(ctx, d, wb, "", 10)
+	if err != nil || !done || len(ps) != 1 || ps[0].OwnerWords != "owner on main" {
+		t.Fatalf("first: %+v done=%v err=%v", ps, done, err)
+	}
+	store(t, d, ps)
+	// A worktree branch with an owner commit dated before hi merges late.
+	r.git(day(2), "checkout", "-q", "wt")
+	r.commit(day(2), "owner on branch", "b.go")
+	r.git(day(2), "checkout", "-q", "main")
+	r.git(day(5), "merge", "-q", "--no-ff", "-m", "merge wt", "wt")
+	ps, c, done, err = src.Next(ctx, d, wb, c, 10)
+	if err != nil || !done {
+		t.Fatalf("second: done=%v err=%v", done, err)
+	}
+	if got := ownerWords(ps); len(got) != 1 || got[0] != "owner on branch" {
+		t.Fatalf("second = %v", got)
+	}
+	store(t, d, ps)
+	ps, _, _, err = src.Next(ctx, d, wb, c, 10)
+	if err != nil || len(ps) != 0 {
+		t.Fatalf("third: %+v err=%v", ps, err)
+	}
+}
+
+func TestGitSource_LateCachedMergeStillEmitted(t *testing.T) {
+	r := newTestRepo(t)
+	r.commit(day(0), "initial", "a.go")
+	d := openWatchmanDB(t)
+	wb := addWorkbench(t, d, r.dir)
+	pr := func(n int64, merged time.Time) db.PRState {
+		return db.PRState{WorkbenchID: wb, Ref: "pr:" + strconv.FormatInt(n, 10), State: "merged",
+			PRNumber: sql.NullInt64{Int64: n, Valid: true}, Title: "PR", MergedAt: merged.Format(time.RFC3339)}
+	}
+	if err := d.UpsertPRState(pr(2, day(10))); err != nil {
+		t.Fatal(err)
+	}
+	src := GitSource(ExecGit)
+	ctx := context.Background()
+	ps, c, _, err := src.Next(ctx, d, wb, "", 10)
+	if err != nil || len(ps) != 1 {
+		t.Fatalf("first: %+v err=%v", ps, err)
+	}
+	store(t, d, ps)
+	// PR 1 merged earlier but its state is cached only now.
+	if err := d.UpsertPRState(pr(1, day(8))); err != nil {
+		t.Fatal(err)
+	}
+	ps, _, _, err = src.Next(ctx, d, wb, c, 10)
+	if err != nil || len(ps) != 1 || ps[0].SourceKey != "merge:pr:1" {
+		t.Fatalf("second: %+v err=%v", ps, err)
 	}
 }

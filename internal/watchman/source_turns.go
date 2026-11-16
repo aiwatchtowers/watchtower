@@ -20,8 +20,10 @@ const turnTextLimit = 2048
 // TurnSource reads the owner's own messages in the workbench's agent
 // sessions: each owner entry of a session feed is a precedent whose
 // situation is the agent text just before it. Ask answers and Watchtower
-// lines are other feed kinds and never count. The category is left "" for
-// the runner's labeller.
+// lines are other feed kinds and never count; app-typed start prompts and
+// pasted blocks (instructions.CleanOwnerText) and owner lines with no agent
+// text before them are skipped. The category is left "" for the runner's
+// labeller.
 func TurnSource(read instructions.FeedReader) Source { return turnSource{read: read} }
 
 type turnSource struct{ read instructions.FeedReader }
@@ -66,14 +68,18 @@ func (s turnSource) Next(ctx context.Context, d *db.DB, workbenchID int64, curso
 	}
 	sort.Slice(sessions, func(i, j int) bool { return sessions[i].ID < sessions[j].ID })
 
-	cache := map[int64][]turnItem{}
-	itemsOf := func(rs db.RecentWorkbenchSession) []turnItem {
-		if items, ok := cache[rs.ID]; ok {
-			return items
+	type feedResult struct {
+		items []turnItem
+		err   error
+	}
+	cache := map[int64]feedResult{}
+	itemsOf := func(rs db.RecentWorkbenchSession) ([]turnItem, error) {
+		r, ok := cache[rs.ID]
+		if !ok {
+			r.items, r.err = s.turnsOf(rs)
+			cache[rs.ID] = r
 		}
-		items := s.turnsOf(rs)
-		cache[rs.ID] = items
-		return items
+		return r.items, r.err
 	}
 	var out []db.WatchmanPrecedent
 	next := func() string { return fmt.Sprintf("%d:%d|%d:%d", hi.sid, hi.idx, lo.sid, lo.idx) }
@@ -86,7 +92,13 @@ func (s turnSource) Next(ctx context.Context, d *db.DB, workbenchID int64, curso
 			if err := ctx.Err(); err != nil {
 				return nil, "", false, err
 			}
-			for _, it := range itemsOf(rs) {
+			items, err := itemsOf(rs)
+			if err != nil {
+				// A newer session that cannot be read now may hold turns
+				// newer than hi: stop rather than move hi past them.
+				return nil, "", false, err
+			}
+			for _, it := range items {
 				if !hi.less(it.pos) {
 					continue
 				}
@@ -105,7 +117,13 @@ func (s turnSource) Next(ctx context.Context, d *db.DB, workbenchID int64, curso
 		if err := ctx.Err(); err != nil {
 			return nil, "", false, err
 		}
-		items := itemsOf(rs)
+		items, err := itemsOf(rs)
+		if err != nil {
+			// An older transcript that cannot be read is skipped so the
+			// backfill does not stall on it; the reason may name a file.
+			log.Printf("watchman: turns: skipping session %d: unreadable feed", rs.ID)
+			continue
+		}
 		for j := len(items) - 1; j >= 0; j-- {
 			it := items[j]
 			if has && !it.pos.less(lo) {
@@ -126,14 +144,12 @@ func (s turnSource) Next(ctx context.Context, d *db.DB, workbenchID int64, curso
 	return out, next(), true, nil
 }
 
-// turnsOf reads one session's feed. A session whose transcript cannot be
-// read (moved, never written) has no turns; the reason is not logged, it
-// may name a file.
-func (s turnSource) turnsOf(rs db.RecentWorkbenchSession) []turnItem {
+// turnsOf reads one session's owner turns. A missing transcript reads as
+// no entries (sessionfeed); any other read error is returned.
+func (s turnSource) turnsOf(rs db.RecentWorkbenchSession) ([]turnItem, error) {
 	entries, err := s.read(rs)
 	if err != nil {
-		log.Printf("watchman: turns: skipping session %d: unreadable feed", rs.ID)
-		return nil
+		return nil, fmt.Errorf("watchman turns of session %d: %w", rs.ID, err)
 	}
 	var items []turnItem
 	agentText, conv := "", ""
@@ -146,12 +162,16 @@ func (s turnSource) turnsOf(rs db.RecentWorkbenchSession) []turnItem {
 			continue
 		}
 		if e.Kind == sessionfeed.KindAgent {
-			agentText = e.Text
+			agentText = strings.TrimSpace(e.Text)
 			continue
 		}
-		words := strings.TrimSpace(e.Text)
-		if e.Kind != sessionfeed.KindOwner || words == "" {
-			continue // ask answers, Watchtower lines, briefs, markers
+		if e.Kind != sessionfeed.KindOwner || agentText == "" {
+			continue // ask answers, Watchtower lines, briefs, markers; an owner line with no agent text before it answers nothing
+		}
+		// App-typed start prompts and pasted blocks are not the owner's words.
+		words, ok := instructions.CleanOwnerText(e.Text)
+		if !ok {
+			continue
 		}
 		key := e.ID
 		if key == "" {
@@ -161,13 +181,13 @@ func (s turnSource) turnsOf(rs db.RecentWorkbenchSession) []turnItem {
 			WorkbenchID: rs.WorkbenchID,
 			Source:      "turn",
 			SourceKey:   strconv.FormatInt(rs.ID, 10) + ":" + key,
-			Situation:   Clip(Redact(strings.TrimSpace(agentText)), turnTextLimit),
+			Situation:   Clip(Redact(agentText), turnTextLimit),
 			OwnerWords:  Clip(Redact(words), turnTextLimit),
 			DecidedAt:   e.At,
 			Weight:      1,
 		}})
 	}
-	return items
+	return items, nil
 }
 
 func parseTurnCursor(c string) (hi, lo turnPos, has bool, err error) {

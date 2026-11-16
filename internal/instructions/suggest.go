@@ -169,7 +169,7 @@ func collectOwnerLines(d *db.DB, read FeedReader, since time.Time, logf func(str
 			if e.Kind != sessionfeed.KindOwner {
 				continue
 			}
-			if text, ok := cleanOwnerText(e.Text); ok {
+			if text, ok := CleanOwnerText(e.Text); ok {
 				lines = append(lines, OwnerLine{SessionID: s.ID, WorkbenchID: s.WorkbenchID, Text: text, at: e.At})
 			}
 		}
@@ -178,7 +178,7 @@ func collectOwnerLines(d *db.DB, read FeedReader, since time.Time, logf func(str
 		if _, remember := ParseRemember(t.Text); remember {
 			continue
 		}
-		if text, ok := cleanOwnerText(t.Text); ok {
+		if text, ok := CleanOwnerText(t.Text); ok {
 			lines = append(lines, OwnerLine{ChatID: t.ConversationID, Text: text, at: t.At})
 		}
 	}
@@ -210,10 +210,10 @@ var appStartPromptPrefixes = []string{"Work on target #", "Work on group #"}
 
 const appPlanFirstPrefix = "Plan first: put the plan on the board"
 
-// cleanOwnerText skips a pasted block (a fenced code block, or more than 15
+// CleanOwnerText skips a pasted block (a fenced code block, or more than 15
 // lines), drops app-typed start prompts, and returns the rest on one line,
-// truncated to 500 runes.
-func cleanOwnerText(s string) (string, bool) {
+// truncated to 500 runes. The watchman turn source uses it too.
+func CleanOwnerText(s string) (string, bool) {
 	s = strings.TrimSpace(s)
 	if s == "" || strings.Contains(s, "```") || strings.Count(s, "\n")+1 > maxOwnerLineLines {
 		return "", false
