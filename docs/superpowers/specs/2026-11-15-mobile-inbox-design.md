@@ -135,7 +135,7 @@ Stages 1 and 3 depend on stage 0, and stage 2 depends on stage 1. Stage 3 may ru
   - Approve and retry commit the decision in one short transaction, then run the tool outside any transaction. Over the socket, the call answers when the tool finishes, so the Mac shows the result as it does today (`actions approve` is synchronous now). The wait is capped at 120 s; after that the call answers `ok` with `status: "applying"` and the card's status line follows the feed.
   - Over the hub, the handler answers after the decision, and the tool runs in a hub goroutine, as the hub's background apply does today.
   - An apply cut by a daemon restart leaves the row `approved`, and the card offers the existing apply button, as a cut `actions approve` does today.
-  - The `reply` press stores the reply proposal and returns.
+  - The `reply` press queues the reply run and returns; the run's result shows in the feed.
   - No write transaction is held across network or LLM work.
 
 #### 2.2 The generator
@@ -191,7 +191,7 @@ Stages 1 and 3 depend on stage 0, and stage 2 depends on stage 1. Stage 3 may ru
 | `InboxFolderEntries.build`, `InboxListBuilder`, and the list and counts part of `ActionStripViewModel` | `inboxfeed.Build` |
 | `InboxFolderCounts` with `legacyCounts` | `inboxfeed` counts |
 | `NeedsApprovalSelection` (APPROVAL-01) | `inboxfeed` approvals, with a new reader across all automations next to `db.ReadApprovalsView`, which reads one automation |
-| `InboxCardTexts`, `InboxCardSubject`, `InboxCardNotice`, `SaveAutomationProposalSummary` | `inboxfeed` texts. `InboxCardTexts.preview` (used by `ChatPanelRow`) and `targetTitleLimit` (used by `WorkbenchNewTargetSheet`) stay as a small Swift remainder outside the Inbox |
+| `InboxCardTexts`, `InboxCardSubject`, `InboxCardNotice`, `SaveAutomationProposalSummary` | `inboxfeed` texts. A small Swift remainder stays: `InboxCardTexts.preview` (used by `ChatPanelRow`), `targetTitleLimit` (used by `WorkbenchNewTargetSheet`), and the Mac-only handoff texts (`discussMessage`, `handToAgentTask`, `agentActionTask`, `agentActionHelp`, `attachmentMarkdown`), which serve chat and agent handoff and never reach the phone |
 | `InboxRefState` (its track and idea parts), `InboxReplyPolicy` | `inboxfeed` ref facts, reusing `db.OpenInboxItems` and the open-approvals reader |
 | `InboxTargetButtonFacts`, the `InboxCardAction` button states | `inboxfeed` action states |
 | The legacy root entries | `inboxfeed` legacy sections (§4.4) |
@@ -229,7 +229,7 @@ These stay as Mac views over the screen models: `InboxFolderMenuModel`, `InboxFo
 |---|---|---|---|
 | `read` | `o…`, `brief-…`, `r…`, `n…` | `content_hash` | Output `read_at`, guarded by hash; briefing `read_at`; `inbox_items.read_at` |
 | `done`, `dismiss` | `o…` | `content_hash` | Output `done_at`/`dismissed_at`, guarded by hash, open rows only |
-| `press` | `o…` | `index`, `content_hash`, `text` | `reply`: stores the reply proposal (`ErrOutputChanged` → `changed`). `target`: the `create_target` propose path |
+| `press` | `o…` | `index`, `content_hash`, `text` | `reply`: queues the automation's reply run, as `PressInboxOutputAction` does today (`ErrOutputChanged` → `changed`). `target`: the `create_target` propose path |
 | `run_now` | `o…` | none | The function behind the `automation_run` action kind, where `Entry.RunNow`. Non-idempotent |
 | `ref` | any card | `ref_kind`, `ref_id`, `ref_verb`, `until` | See the list below |
 | `reply_propose` | any card | `ref_id`, `text` | `InsertInboxReplyProposal` (`ErrReplyAlreadyWaiting` → `reply_waiting`) |
@@ -266,7 +266,7 @@ How each client draws them:
   - Morning brief, Track my threads and Idea finder look as in mockup §5.
   - Thread briefs become a list of thread rows that carry the `track` ref.
   - Messages becomes a notice card with its Mac text and "On your Mac".
-- Plan items use the ref kind `plan_item`.
+- Plan items use the ref kind `plan_item`, added to the Kit `ArtifactRefKind` so the phone can read it.
 - C's PR deletes each section and its projection.
 
 ### 5. The Mac after stage 1
@@ -313,7 +313,7 @@ Contracts in `docs/inventory/` that name a moved Swift type are re-pointed to th
 
 ### 7. Phone (stage 2)
 
-- **The tab.** **Inbox** (`tray`), second: Now, Inbox, Workbench, Calendar (ask #1349).
+- **The tab.** **Inbox** (`tray`), second: Now, Inbox, Workbench, Chats, Calendar (ask #1349; Chats came with #1791).
   - The badge is the sum of the folders' `waiting`, in orange (ask #1349).
   - Unread artifacts show as dots only.
 - **`HubTransport`.**
@@ -336,7 +336,7 @@ Contracts in `docs/inventory/` that name a moved Swift type are re-pointed to th
   - A tap on a row pushes its detail.
   - Reply… opens a sheet with "Propose".
 - **Optimistic hide, never optimistic success.**
-  - A pressed row shows busy.
+  - A pressed row shows busy. The "Didn't confirm" text is the one in mockup §6.
   - On `ok`, the row hides until a publish leaves it out or reopens it. If two publishes pass and the row is still there, the hub's state wins and the row shows again (mockup §2).
   - On a refusal, the row comes back with the sentence and **Retry**.
   - Queued actions show in the existing outbox lines.
@@ -361,7 +361,7 @@ Contracts in `docs/inventory/` that name a moved Swift type are re-pointed to th
   - The Desktop draws the answer from the stdout events, as today, and reloads the rows at `started` and at the end.
   - The owner's bubble shows at once from the draft.
   - Stop is the existing stdin `cancel`.
-  - Embedded chats (target brief, Discuss, tuning, the automation editor) use the same path with their `--surface`.
+  - Embedded chats (target brief, Discuss, tuning, the automation editor) run `ai query --events v2` per turn and write their rows through `EmbeddedChatStore` today; `ai query` gains the same `--persist`, so they move to Go writes too.
 - **Every other chat write goes through `TowerClient`.** The commands are `chat.new`, `pin`, `rename`, `delete`, `branch`, `read`, `attach`, `project.*`, `comment.*`, `draft.*` and `recover`. They run on `chatstore`, plus new Go writers ported from `ChatProjectQueries`, `ArtifactCommentQueries`, `QueuedDraftQueries` and the knowledge-artifact writes. Each new writer is pinned by a fixture case until its Swift writer is deleted.
 - **Deleted in Swift:**
   - `ChatTurnStore` and the write half of `ChatTurnDriver`;
@@ -494,7 +494,7 @@ A path that fails its check does not switch. Speed is a gate.
 - A warm `ai session` claims leases as `desktop` with the app launch id; the daemon never releases a `desktop` lease.
 - On a version mismatch, the Desktop restarts a daemon it started from its own CLI.
 - One ledger, `tower_requests`, gives exactly-once delivery for both transports.
-- Over the socket, approve and retry wait for the tool (capped at 120 s); over the hub they return after the decision. The `reply` press always returns once the proposal is stored. No write transaction is held across the tool.
+- Over the socket, approve and retry wait for the tool (capped at 120 s); over the hub they return after the decision. The `reply` press always returns once its run is queued. No write transaction is held across the tool.
 - Run Now reuses the `automation_run` function and is non-idempotent.
 - Make a Task on a track is a `ref` verb over the existing propose path, with no grant.
 - On the phone, Thread briefs become a list document and Messages a notice card. Stopped tracks stay inside the tracks card.
