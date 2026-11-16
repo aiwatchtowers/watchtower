@@ -87,6 +87,13 @@ type fixtureAction struct {
 	Error        string
 }
 
+// fixtureComment is an artifact comment of the case's conversation: a
+// request's quotes name them by ref.
+type fixtureComment struct {
+	Ref    string `json:"ref"`
+	Status string `json:"status"`
+}
+
 type fixtureStep struct {
 	Message string          `json:"message"`
 	Seq     int             `json:"seq"`
@@ -107,6 +114,7 @@ type turnCase struct {
 	Artifacts    []fixtureArtifact   `json:"artifacts"`
 	Attachments  []fixtureAttachment `json:"attachments"`
 	Actions      []fixtureAction     `json:"actions"`
+	Comments     []fixtureComment    `json:"comments"`
 	Request      struct {
 		Mode        string   `json:"mode"`
 		Message     *string  `json:"message"`
@@ -118,6 +126,11 @@ type turnCase struct {
 			Provider, Model string
 		} `json:"routing"`
 		ContinuousLeaf *string `json:"continuous_leaf"`
+		// ReuseOwner names the owner message a regenerate answers again
+		// (the Mac's reuseUserMessageID), in place of Message.
+		ReuseOwner *string  `json:"reuse_owner"`
+		TitleText  *string  `json:"title_text"`
+		Quotes     []string `json:"quotes"`
 	} `json:"request"`
 	Events []json.RawMessage `json:"events"`
 	Expect struct {
@@ -130,6 +143,7 @@ type turnCase struct {
 		AttachmentLinks map[string]*string `json:"attachment_links"`
 		Conversation    fixtureConv        `json:"conversation"`
 		Lease           *db.ChatLease      `json:"lease"`
+		Comments        map[string]string  `json:"comments"` // ref → status; a sent one has sent_at
 	} `json:"expect"`
 }
 
@@ -159,7 +173,7 @@ type saveVersionCase struct {
 	} `json:"expect"`
 }
 
-func loadFixture(t *testing.T) fixtureFile {
+func loadFixture(t testing.TB) fixtureFile {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.Join("testdata", "chat_turn_cases.json"))
 	require.NoError(t, err)
@@ -192,7 +206,7 @@ func strOrNull(p *string) any {
 
 // seedTree writes a case's starting tree and returns its conversation id and
 // the ids of its refs.
-func seedTree(t *testing.T, d *db.DB, tc turnCase) (int64, map[string]int64) {
+func seedTree(t testing.TB, d *db.DB, tc turnCase) (int64, map[string]int64) {
 	t.Helper()
 	c := tc.Conversation
 	title := ""
@@ -249,6 +263,17 @@ func seedTree(t *testing.T, d *db.DB, tc turnCase) (int64, map[string]int64) {
 			VALUES (?, ?, '{}', ?, ?, ?, ?, ?, ?, ?)`, a.ID, a.Tool, conv, a.Status, a.ResultJSON, a.Error, a.CreatedAt, a.DecidedAt, a.AppliedAt)
 		require.NoError(t, err)
 	}
+	for _, c := range tc.Comments {
+		var sentAt any
+		if c.Status == "sent" {
+			sentAt = 1.0
+		}
+		res, err := d.Exec(`INSERT INTO chat_artifact_comments (conversation_id, artifact_key, artifact_version, body, anchor_quote, status, created_at, sent_at)
+			VALUES (?, 'doc', 1, 'body', 'quote', ?, 1, ?)`, conv, c.Status, sentAt)
+		require.NoError(t, err)
+		ids[c.Ref], err = res.LastInsertId()
+		require.NoError(t, err)
+	}
 	return conv, ids
 }
 
@@ -288,6 +313,13 @@ func TestChatstore_MatchesSwiftFixture(t *testing.T) {
 			r := StartRequest{ConversationID: conv, Mode: tc.Request.Mode, Text: tc.Request.Text, TurnID: tc.Request.TurnID}
 			if tc.Request.Message != nil {
 				r.MessageID = ids[*tc.Request.Message]
+			}
+			if tc.Request.ReuseOwner != nil {
+				r.ReuseOwnerMessageID = ids[*tc.Request.ReuseOwner]
+			}
+			r.TitleText = tc.Request.TitleText
+			for _, ref := range tc.Request.Quotes {
+				r.Quotes = append(r.Quotes, Quote{CommentID: ids[ref]})
 			}
 			for _, ref := range tc.Request.Attachments {
 				r.AttachmentIDs = append(r.AttachmentIDs, ids[ref])
@@ -463,6 +495,14 @@ func checkRows(t *testing.T, d *db.DB, conv int64, ids map[string]int64, tc turn
 	}
 	c.ActiveLeaf, c.LiveSlackSince = refPtr(leaf), refPtr(live)
 	assert.Equal(t, tc.Expect.Conversation, c, "conversation")
+
+	for ref, want := range tc.Expect.Comments {
+		var status string
+		var sentAt sql.NullFloat64
+		require.NoError(t, d.QueryRow(`SELECT status, sent_at FROM chat_artifact_comments WHERE id = ?`, ids[ref]).Scan(&status, &sentAt))
+		assert.Equal(t, want, status, "comment %s", ref)
+		assert.Equal(t, want == "sent", sentAt.Valid, "comment %s sent_at", ref)
+	}
 
 	lease, err := d.GetChatLease(conv)
 	require.NoError(t, err)
