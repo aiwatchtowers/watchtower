@@ -97,19 +97,22 @@ type zoneWatcher interface {
 // keyring, the transport, the link center, the processor and the publisher,
 // one worker goroutine and the publisher's.
 type hubRuntime struct {
-	stuck   stuckRotationNote // the daily stuck-rotation log line
-	sup     *supervisor
-	st      *state.Store
-	lat     *measure.Recorder // the content-free latency samples (RC §10)
-	mode    string
-	name    string
-	id      identity.Identity
-	kr      *identity.Keyring
-	tr      transport.Transport
-	relayID string
-	data    string
-	center  *link.Center
-	proc    *actions.Processor // nil on a desktop host: the switcher's (processor)
+	stuck stuckRotationNote // the daily stuck-rotation log line
+	// readersFailLog keeps a readers sync that fails on every link upkeep
+	// to one line per logreason.RepeatEvery and reason (#1873).
+	readersFailLog *logreason.Limiter
+	sup            *supervisor
+	st             *state.Store
+	lat            *measure.Recorder // the content-free latency samples (RC §10)
+	mode           string
+	name           string
+	id             identity.Identity
+	kr             *identity.Keyring
+	tr             transport.Transport
+	relayID        string
+	data           string
+	center         *link.Center
+	proc           *actions.Processor // nil on a desktop host: the switcher's (processor)
 	// A desktop host's two transports (phase 3 Task 21): rel the hosted
 	// relay (nil without a relay origin), ck the CloudKit bridge client, sw
 	// the switch between them, whose Front() is tr; bridge supervises the
@@ -272,7 +275,7 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 	h := &hubRuntime{
 		sup: s, st: st, mode: mode, name: name, id: id, watched: map[string]bool{}, subRetry: map[string]*subRetry{},
 		passKick: make(chan struct{}, 1), linkKick: make(chan struct{}, 1), houseKick: make(chan struct{}, 1),
-		soonKick: make(chan struct{}, 1),
+		soonKick: make(chan struct{}, 1), readersFailLog: logreason.NewLimiter(logreason.RepeatEvery, time.Now),
 	}
 	ok := false
 	defer func() {
@@ -966,10 +969,6 @@ func (h *hubRuntime) relayIDNamed() {
 	}
 }
 
-// readersFailLog keeps a readers sync that fails on every link upkeep to one
-// line per logreason.RepeatEvery and reason (#1873).
-var readersFailLog = logreason.NewLimiter(logreason.RepeatEvery, time.Now)
-
 // syncReaders sets the relay's hub readers to the linked phones the account
 // state holds in a slot (link upkeep, and once before the first publish).
 func (h *hubRuntime) syncReaders(ctx context.Context, rt transport.Transport, vouched bool) {
@@ -990,7 +989,7 @@ func (h *hubRuntime) syncReaders(ctx context.Context, rt transport.Transport, vo
 		}
 		if err := h.center.SyncReaders(ctx, set); err != nil {
 			h.noteNotVouched(err)
-			readersFailLog.Printf("hub: readers not synced (%s)", logreason.With(errClass(err), err))
+			h.readersFailLog.Printf("hub: readers not synced (%s)", logreason.With(errClass(err), err))
 			return
 		}
 		// A phone that became a reader (or stopped being one) gets its

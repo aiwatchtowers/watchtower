@@ -201,6 +201,8 @@ type Publisher struct {
 	// stuck is each kind whose last attempt did not go through whole, from
 	// its first such attempt (stuck.go, the heartbeat's stuck_since).
 	stuck map[Kind]time.Time
+	// failLog rate-limits the cycle and source failure lines.
+	failLog *logreason.Limiter
 	// resignal holds the alert keys Resignal asked to signal on CloudKit,
 	// kept until a cycle saved the alert with its signal or found it gone.
 	resignal map[string]bool
@@ -229,10 +231,14 @@ func NewPublisher(c Config) *Publisher {
 			log.Printf("hub slices: source of unknown kind %s is never published", s.Kind())
 		}
 	}
-	return &Publisher{
+	p := &Publisher{
 		c: c, spacing: spacing, clock: c.Clock, wake: make(chan struct{}, 1), mono: time.Now, timer: realTimer,
 		lastWrite: map[Kind]time.Time{}, warned: map[string]string{}, dirty: map[Kind]bool{}, nowDirty: map[Kind]bool{}, resignal: map[string]bool{},
 	}
+	// A failing cycle or source repeats every few seconds: its line reaches
+	// the log once per logreason.RepeatEvery (#1873), on Run's clock.
+	p.failLog = logreason.NewLimiter(logreason.RepeatEvery, func() time.Time { return p.mono() })
+	return p
 }
 
 func realTimer(d time.Duration) (<-chan time.Time, func()) {
@@ -516,9 +522,6 @@ func (p *Publisher) Run(ctx context.Context) error {
 	retrying := map[Kind]bool{}         // kinds whose held time is a retry, not their spacing
 	var retryOn transport.Kind          // the transport the retries above failed on
 	nextFull := p.mono()
-	// A failing cycle repeats every few seconds: its line reaches the log
-	// once per logreason.RepeatEvery (#1873).
-	failLog := logreason.NewLimiter(logreason.RepeatEvery, p.mono)
 	for {
 		now := p.mono()
 		paused, resumed := p.pauseState()
@@ -582,8 +585,10 @@ func (p *Publisher) Run(ctx context.Context) error {
 				return ctx.Err()
 			}
 			if err != nil {
-				failLog.Printf("hub slices: publish cycle failed (%s); kinds retried: %s",
-					logreason.With(errClass(err), err), kindList(rep.Unfinished))
+				// Keyed by the reason alone: the kinds retried vary from
+				// cycle to cycle through one outage (#1873).
+				why := logreason.With(errClass(err), err)
+				p.failLog.Keyed("cycle "+why, fmt.Sprintf("hub slices: publish cycle failed (%s); kinds retried: %s", why, kindList(rep.Unfinished)))
 				if p.c.OnError != nil {
 					p.c.OnError(err)
 				}
@@ -884,7 +889,7 @@ func (p *Publisher) readItems(ctx context.Context, k Kind, srcs []Source, rep *C
 			if ctx.Err() != nil {
 				return nil, false, ctx.Err()
 			}
-			log.Printf("hub slices: %s source failed (%s): kind skipped this cycle", k, errClass(err))
+			p.failLog.Printf("hub slices: %s source failed (%s): kind skipped this cycle", k, logreason.With(errClass(err), err))
 			rep.Failed = append(rep.Failed, k)
 			rep.Unfinished = append(rep.Unfinished, k)
 			return nil, false, nil

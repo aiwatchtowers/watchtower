@@ -90,8 +90,8 @@ and tone). The strings live there. `ReplicaFreshnessTests` covers each state, th
 (34:59 fresh, 35:00 stale), the 10 min stuck edge, the three date forms, an unnamed tower, the
 precedence, and an older hub (no `stuck_since`). The Go side: `TestStuckSince*` (a refused kind,
 a skipped record, clearing), `TestHeartbeatCarriesStuckSince` (present, restamped, cleared), the
-contract fixture on both sides. The screenshot tour gains the stuck, stale and offline frames on
-Now and both Workbench screens.
+contract fixture on both sides. The screenshot tour shows the stale line in place on Now (01s) and
+both Workbench screens (05s, 06s), and the stuck, stale and offline lines side by side (06f).
 
 ## Docs
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/transport/memfake"
 	"watchtower/internal/hub/wire"
+	"watchtower/internal/logcanary"
 )
 
 // #1873: a kind whose save the transport refuses is stuck from its first
@@ -34,6 +36,9 @@ func TestStuckSinceFollowsAFailingKind(t *testing.T) {
 	if at, ok := p.StuckSince(); !ok || !at.Equal(first) {
 		t.Fatalf("StuckSince = %v %v, want %v", at, ok, first)
 	}
+	if !p.DirtyForTest(KindHeartbeat) {
+		t.Fatal("a kind turning stuck did not mark the heartbeat for the next cycle")
+	}
 	r.advance(time.Minute)
 	target.set(item("1", `{"id":2}`))
 	_, _ = p.Cycle(context.Background(), nil)
@@ -47,6 +52,36 @@ func TestStuckSinceFollowsAFailingKind(t *testing.T) {
 	}
 	if at, ok := p.StuckSince(); ok {
 		t.Fatalf("StuckSince = %v after the kind went through", at)
+	}
+}
+
+// A source that fails keeps its kind stuck; the failure's line names a
+// content-free reason and repeats once per window, not every cycle.
+func TestStuckSinceCountsAFailedSource(t *testing.T) {
+	sink := logcanary.Capture(t)
+	r := newRig(t, transport.KindRelay)
+	src := &fakeSource{kind: "target"}
+	src.set(item("1", `{"id":1}`))
+	src.mu.Lock()
+	src.err = errors.New("db gone " + logcanary.Text("source"))
+	src.mu.Unlock()
+	p := r.publisher(src)
+	r.cycle(p)
+	r.advance(time.Second)
+	r.cycle(p)
+	if _, ok := p.StuckSince(); !ok {
+		t.Fatal("a failed source left its kind not stuck")
+	}
+	if n := strings.Count(sink.String(), "target source failed (error: untyped)"); n != 1 {
+		t.Fatalf("source failure logged %d times in one window, want 1: %q", n, sink.String())
+	}
+	src.mu.Lock()
+	src.err = nil
+	src.mu.Unlock()
+	r.advance(time.Second)
+	r.cycle(p)
+	if _, ok := p.StuckSince(); ok {
+		t.Fatal("still stuck after the source read")
 	}
 }
 

@@ -727,13 +727,14 @@ The hub runs phone-started chat turns: `internal/chatstore` (the Go turn store) 
 
 ## A failing publish is visible (2026-11-16, #1873, asks #1396/#1398)
 
-- **The log names the reason.** A failed publish cycle, a phone's mailbox read and the relay readers sync log a
+- **The log names the reason.** A failed publish cycle, a kind's source read, a phone's mailbox read and the relay readers sync log a
   content-free reason after their class (`internal/hub/logreason`): the relay's error code when the chain carries one
   (`other: relay code CONFLICT`), else the deepest typed Go error (`unavailable: *net.OpError`), else `untyped` —
   never the error's text. The cycle line lists the kinds it retries (`kinds retried: owner_ask, target`). Each of the
-  three lines goes through a `logreason.Limiter`: the first copy is logged, then at most one per
-  `logreason.RepeatEvery` (10 min) with "(repeated N more times over 10m0s)"; a different line logs at once. The
-  mailbox line keeps one key per device and reason; a line that stops repeating loses its held-back count.
+  lines goes through a `logreason.Limiter` (one per publisher, processor and hub runtime): the first copy is logged,
+  then at most one per `logreason.RepeatEvery` (10 min) with "(repeated N more times over 10m0s)"; a different line
+  logs at once. The cycle line is keyed by its reason alone (the kinds retried vary through one outage), the mailbox
+  line by device and reason, the source line by kind and reason; a line that stops repeating loses its held-back count.
 - **`hub status` text** shows a relay that is not connected: `hub: running, relay unavailable since 15:22 (last saved
   15:20), 1 phone(s)` (local time, the date when not today; "never saved since the hub started" before the first
   save). `--json` already carried `relay.state`/`since`/`last_saved_at`; Settings → Mobile's Relay row already reads

@@ -4,23 +4,27 @@ import "time"
 
 // noteKindOutcome records whether kind k's attempt in a cycle went through
 // whole (#1873): a failed save or source, or a record the cycle skipped
-// (oversized, unsealable, refused by the transport), keeps k stuck from its
-// first such attempt until an attempt goes through whole. at is the cycle's
-// clock.
+// (oversized, unsealable, refused by the transport, a refused delete), keeps
+// k stuck from its first such attempt until an attempt goes through whole.
+// at is the cycle's clock. The heartbeat reads StuckSince when its own kind
+// is published, which a cycle may do before k: a change marks it dirty, so
+// the next cycle carries the new value instead of the next full diff.
 func (p *Publisher) noteKindOutcome(k Kind, whole bool, at time.Time) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	if whole {
+	_, was := p.stuck[k]
+	switch {
+	case whole:
 		delete(p.stuck, k)
-		return
+	case !was:
+		if p.stuck == nil {
+			p.stuck = map[Kind]time.Time{}
+		}
+		p.stuck[k] = at
 	}
-	if _, ok := p.stuck[k]; ok {
-		return
+	p.mu.Unlock()
+	if was == whole && k != KindHeartbeat {
+		p.PublishSoon(KindHeartbeat)
 	}
-	if p.stuck == nil {
-		p.stuck = map[Kind]time.Time{}
-	}
-	p.stuck[k] = at
 }
 
 // StuckSince is when the oldest kind still stuck first failed to go through

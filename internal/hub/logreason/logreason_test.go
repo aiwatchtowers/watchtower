@@ -15,7 +15,7 @@ import (
 	"watchtower/internal/hub/transport/relay/relayv1"
 )
 
-func TestOf(t *testing.T) {
+func TestReasonOf(t *testing.T) {
 	conflict := &client.Error{E: &relayv1.Error{Code: relayv1.ErrorCode_ERROR_CODE_CONFLICT, Message: "record acme-secret"}}
 	opErr := &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused to acme.example.com")}
 	cases := []struct {
@@ -33,12 +33,12 @@ func TestOf(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := Of(c.err)
+			got := of(c.err)
 			if got != c.want {
-				t.Fatalf("Of = %q, want %q", got, c.want)
+				t.Fatalf("of = %q, want %q", got, c.want)
 			}
 			if strings.Contains(got, "acme") {
-				t.Fatalf("Of leaked the error's text: %q", got)
+				t.Fatalf("of leaked the error's text: %q", got)
 			}
 		})
 	}
@@ -114,4 +114,26 @@ func TestLimiterPrunesWhenFull(t *testing.T) {
 	if len(*out) != 2*maxLines+1 {
 		t.Fatalf("lines logged: %d", len(*out))
 	}
+}
+
+// Keyed holds copies by their key though their lines differ, and logs the
+// copy after the window with its own line.
+func TestLimiterKeyedHoldsByKey(t *testing.T) {
+	l, now, out := newTestLimiter(10 * time.Minute)
+	l.Keyed("unavailable", "failed; kinds: a")
+	*now = now.Add(time.Minute)
+	l.Keyed("unavailable", "failed; kinds: a, b")
+	*now = now.Add(10 * time.Minute)
+	l.Keyed("unavailable", "failed; kinds: b")
+	want := []string{"failed; kinds: a", "failed; kinds: b (repeated 1 more times over 11m0s)"}
+	if strings.Join(*out, "|") != strings.Join(want, "|") {
+		t.Fatalf("got %q, want %q", *out, want)
+	}
+}
+
+// A nil Limiter (a runtime a test built by hand) logs every line.
+func TestNilLimiterLogs(t *testing.T) {
+	var l *Limiter
+	l.Printf("line %d", 1)
+	l.Keyed("k", "line 2")
 }

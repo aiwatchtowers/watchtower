@@ -15,11 +15,11 @@ import (
 	"watchtower/internal/hub/transport/relay/client"
 )
 
-// Of names err for a log line: the hosted relay's error code when the chain
+// of names err for a log line: the hosted relay's error code when the chain
 // carries one ("relay code INTERNAL"), else the Go type of the deepest typed
 // error in it ("*net.OpError"), else "untyped" (only errors.New /
 // fmt.Errorf texts). Never the error's text.
-func Of(err error) string {
+func of(err error) string {
 	if err == nil {
 		return "no error"
 	}
@@ -40,7 +40,7 @@ func With(class string, err error) string {
 	if strings.HasPrefix(class, "relay_") {
 		return class
 	}
-	return class + ": " + Of(err)
+	return class + ": " + of(err)
 }
 
 // untyped is the wrappers and text-only errors that name nothing.
@@ -115,9 +115,22 @@ func NewLimiter(every time.Duration, now func() time.Time) *Limiter {
 // than every ago; the next copy logged after that says how many were held.
 func (l *Limiter) Printf(format string, args ...any) {
 	line := fmt.Sprintf(format, args...)
+	l.Keyed(line, line)
+}
+
+// Keyed logs line unless a line under key was logged less than every ago:
+// key is what repeats (a failure's class and reason), line may carry what
+// varies between the copies (the kinds a cycle retried); the copy logged
+// after the window is that copy's line.
+func (l *Limiter) Keyed(key, line string) {
+	if l == nil {
+		// A runtime a test built by hand has none: every line goes out.
+		log.Print(line)
+		return
+	}
 	now := l.now()
 	l.mu.Lock()
-	s, ok := l.lines[line]
+	s, ok := l.lines[key]
 	if ok && now.Sub(s.logged) < l.every {
 		s.held++
 		l.mu.Unlock()
@@ -130,7 +143,7 @@ func (l *Limiter) Printf(format string, args ...any) {
 	if !ok {
 		l.prune(now)
 		s = &seen{}
-		l.lines[line] = s
+		l.lines[key] = s
 	}
 	s.logged, s.held = now, 0
 	l.mu.Unlock()

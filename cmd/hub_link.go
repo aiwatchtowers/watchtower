@@ -219,7 +219,7 @@ func runHubStatus(cmd *cobra.Command, _ []string) error {
 // Times are local, with the date when not today; an unreadable time is
 // left out rather than failing the status.
 func hubRelayNote(r *hub.RelayHealth, now time.Time) string {
-	if r == nil || r.State == "" || r.State == "connected" {
+	if r == nil || r.State == "" || r.State == hub.RelayConnected {
 		return ""
 	}
 	note := " " + r.State
