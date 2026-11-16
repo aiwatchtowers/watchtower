@@ -245,6 +245,34 @@ final class RelayChatClientTests: XCTestCase {
         try await poll({ model.conversations.map(\.id) == [1, 2] }, "the next record")
     }
 
+    /// Mockup 2g: an opened chat with no feed within the patience says the Mac did not answer; Retry asks again.
+    func testAnOpenedChatWithNoFeedSaysTheMacDidNotAnswer() async throws {
+        let center = center()
+        let client = center.client
+        client.setGate(Self.ready)
+        let (_, task) = watch(client, 7)
+        defer { task.cancel() }
+        try await poll({ self.sleeper.requested.contains(RelayChatClient.recordPatience) }, "patience")
+        sleeper.tick()
+        try await poll({ client.unanswered.contains(7) }, "no answer")
+        client.retryFeed(7)
+        XCTAssertFalse(client.unanswered.contains(7))
+        try await poll({ ((try? self.recorder.params(ChatFeedRequestParams.self).count) ?? 0) >= 2 }, "asked again")
+        var snapshot = center.snapshot
+        snapshot.feeds[7] = try Self.entry(7, texts: ["Hi"])
+        center.apply(snapshot)
+        try await poll({ self.sleeper.requested.filter { $0 == RelayChatClient.recordPatience }.count >= 2 }, "fresh patience")
+        sleeper.tick()
+        await Task.yield()
+        XCTAssertFalse(client.unanswered.contains(7), "the feed came")
+    }
+
+    /// A search goes as the relay takes it: trimmed and cut at 200 characters.
+    func testTheSearchQueryIsTrimmedAndCut() {
+        XCTAssertEqual(RelayChatClient.searchQuery("  billing \n"), "billing")
+        XCTAssertEqual(RelayChatClient.searchQuery(String(repeating: "я", count: 250)).unicodeScalars.count, 200)
+    }
+
     /// Offline, nothing is queued (spec D3): every operation that needs the hub is refused with the gate's line.
     func testOfflineNothingIsQueued() async throws {
         let client = center().client

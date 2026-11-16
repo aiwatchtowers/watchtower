@@ -278,8 +278,15 @@ final class ChatsCenter {
     /// The models of one conversation screen: a saved chat, or a new one (`ChatRoute.new`). The composer starts from
     /// the conversation's kept draft (what was typed before, or a send a relaunch gave back).
     func conversation(_ route: ChatRoute) -> (ChatConversationModel, ChatComposerModel) {
-        let conversation = ChatConversationModel(client: client, conversationID: route.isNew ? nil : route.id)
+        let conversation = ChatConversationModel(
+            client: client, conversationID: route.isNew ? nil : route.id, clock: SleepClock(sleep: sleep)
+        )
+        conversation.focusMessageID = route.messageID
+        if route.isNew { client.follow(conversation) }
         let composer = ChatComposerModel(conversation: conversation)
+        if let list = snapshot.list {
+            composer.newChatChoices = ChatNewChatChoices(models: list.models, projects: list.projects)
+        }
         let draft = drafts.draft(route.id)
         composer.draft = draft.text
         composer.quotes = draft.quotes
@@ -297,6 +304,51 @@ final class ChatsCenter {
             draft.text = text
             draft.quotes = quotes
         }
+    }
+
+    // MARK: - Files waiting to go with the next send (the composer's pills)
+
+    /// A picked file, prepared and staged into the conversation's draft (0 is a new chat); it uploads with the next
+    /// send. Refused with the Mac's reason when it breaks a limit or the message's 30 MB: the reason comes back.
+    @discardableResult
+    func attach(data: Data, fileName: String, conversation: Int64) -> String? {
+        switch ChatAttachmentPrep.prepare(data: data, fileName: fileName) {
+        case let .failure(rejection):
+            return rejection.message
+        case let .success(prepared):
+            let held = drafts.draft(conversation).attachments
+            let all = held.map { (mime: $0.mime, size: $0.size) } + [(mime: prepared.mime, size: Int64(prepared.data.count))]
+            guard ChatAttachmentLimits.fitsMessage(all) else { return ChatAttachmentLimits.Rejection.overMessage.message }
+            do {
+                let staged = try ChatAttachmentPrep.stage(prepared, in: staging)
+                drafts.update(conversation) { $0.attachments.append(staged) }
+                return nil
+            } catch {
+                return ChatSendCoordinator.couldNotSend
+            }
+        }
+    }
+
+    func removeAttachment(_ id: String, conversation: Int64) {
+        if let file = drafts.draft(conversation).attachments.first(where: { $0.id == id }) { ChatAttachmentPrep.discard(file.file) }
+        drafts.update(conversation) { $0.attachments.removeAll { $0.id == id } }
+    }
+
+    /// Retry on a refused pill: the same file under a fresh upload id (a refused upload is a finished record).
+    func retryAttachment(_ id: String, conversation: Int64) {
+        drafts.update(conversation) { draft in
+            if let index = draft.attachments.firstIndex(where: { $0.id == id }) { draft.attachments[index] = draft.attachments[index].retried() }
+        }
+    }
+
+    /// Why a conversation's composer may not send now: a send of it is still on its way that this composer is not
+    /// waiting for — one the outbox could not take back after the patience (the hub may have it), one a previous run
+    /// kept, or one sent from this chat before the screen was opened again. "Waiting for your Mac…" until its echo
+    /// settles it; Send stays off, so it is never sent twice.
+    func hold(_ conversation: Int64?, composerSending: Bool, host: TowerHost) -> String? {
+        guard let id = conversation, let turn = sending.pending[id], !turn.isApplied else { return nil }
+        guard turn.isStalled || turn.isRecovered || !composerSending else { return nil }
+        return ChatText.waitingForHub(host)
     }
 
     /// The Chats tab's gate as the screen on top computes it: whether the hub answers, and the copy the chat shows

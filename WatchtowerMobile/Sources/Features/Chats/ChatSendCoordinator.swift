@@ -161,6 +161,8 @@ final class ChatSendCoordinator {
         /// The patience ran out but the action could not be taken back (the hub may have it): the bubble says it
         /// waits for the hub, and the echo settles it whenever it comes.
         var isStalled = false
+        /// Kept by a previous run of the app and still queued: no screen sent it, its echo settles it.
+        var isRecovered = false
 
         var isApplied: Bool { userMessageID != nil }
     }
@@ -179,6 +181,8 @@ final class ChatSendCoordinator {
         var draft: ChatDraft?
         /// Files the hub already holds (`chat_attachment` applied), sent with the turn before `attachments`.
         var attachmentIDs: [Int64] = []
+        /// The composer's skill and mentions, carried on `chat_turn` as the Mac sends them on chat.sock.
+        var compose: ChatCompose?
         /// A refusal puts the text back into `ChatDraftStore`. Off for a send from a `ChatUI` composer, which keeps its
         /// own draft until the echo is applied; the kept send (`chat_outgoing`) still guards a kill either way.
         var restoresDraft = true
@@ -190,11 +194,16 @@ final class ChatSendCoordinator {
         case applied(conversationID: Int64, result: [String: JSONValue]?)
         /// Refused by the hub (its reason and message), or never sent (no reason, `couldNotSend`).
         case refused(ActionReason?, String)
+        /// No echo within the patience and the outbox took the action back: the hub never had it, so the same send
+        /// may go again under its client key.
+        case lost
     }
 
     enum Echo: Equatable {
         case applied([String: JSONValue]?)
         case failed(ChatActionFailure)
+        /// No echo within the patience, and the outbox took the action back: the hub never had it.
+        case lost
     }
 
     static let couldNotSend = "Couldn't send that. Try again."
@@ -267,8 +276,11 @@ final class ChatSendCoordinator {
 
     /// `send`, telling how it ended: the applied echo's result, or the refusal's reason and message.
     func sendTurn(_ request: Request, clientKey: String = UUID().uuidString, onCreated: ((Int64) -> Void)? = nil) async -> Outcome {
-        var record = Self.record(request, clientKey: clientKey)
         sendsInFlight += 1
+        // A resend of a new chat's first turn goes to the chat its first try created.
+        var request = request
+        if request.conversationID == 0, let made = created[clientKey] { request.conversationID = made }
+        var record = Self.record(request, clientKey: clientKey)
         defer { ended(record) }
         keep(record)
         var conversation = request.conversationID
@@ -278,7 +290,7 @@ final class ChatSendCoordinator {
             let created: Int64
             switch await create(request, record: &record) {
             case let .success(id): created = id
-            case let .failure(refusal): return .refused(refusal.reason, refusal.message)
+            case let .failure(refusal): return refusal.lost ? .lost : .refused(refusal.reason, refusal.message)
             }
             pending[0] = nil
             pending[created] = PendingTurn(conversationID: created, mode: request.mode, text: request.text, attachments: names)
@@ -296,7 +308,7 @@ final class ChatSendCoordinator {
         }
         let turn = ChatTurnParams(
             conversationID: conversation, mode: request.mode, messageID: request.messageID, text: request.text,
-            attachmentIDs: request.attachmentIDs + uploaded, routing: nil
+            attachmentIDs: request.attachmentIDs + uploaded, routing: nil, clientKey: clientKey, compose: request.compose
         )
         switch await run(turn, record: &record, \.turnActionID) {
         case let .applied(result):
@@ -311,7 +323,20 @@ final class ChatSendCoordinator {
         case let .failed(failure):
             let message = refuse(request, conversation: conversation, message: failure.message, record: record)
             return .refused(failure.reason, message)
+        case .lost:
+            return lose(request, conversation: conversation, record: record)
         }
+    }
+
+    /// A send the outbox took back after the patience: one that keeps its own draft (`restoresDraft` off) hears `lost`
+    /// and may go again under its client key; an older caller gets its text back with "Couldn't send that".
+    private func lose(_ request: Request, conversation: Int64, record: ChatOutgoingSend) -> Outcome {
+        guard request.restoresDraft else {
+            forget(record)
+            pending[conversation] = nil
+            return .lost
+        }
+        return .refused(nil, refuse(request, conversation: conversation, message: Self.couldNotSend, record: record))
     }
 
     /// One chat action that is not a turn (a new chat, Stop, a read mark, a row action, a picker): queued, then its
@@ -395,7 +420,7 @@ final class ChatSendCoordinator {
                 guard pending[record.conversationID] == nil else { continue }
                 pending[record.conversationID] = PendingTurn(
                     conversationID: record.conversationID, mode: ChatTurnMode(rawValue: record.mode) ?? .send, text: record.text,
-                    attachments: record.files.map(\.name)
+                    attachments: record.files.map(\.name), isRecovered: true
                 )
                 waitRecovered(turn, conversation: record.conversationID)
                 continue
@@ -421,13 +446,19 @@ final class ChatSendCoordinator {
             return .failure(Refusal(reason: nil, message: refuse(request, conversation: 0, message: Self.couldNotSend, record: record)))
         case let .failed(failure):
             return .failure(Refusal(reason: failure.reason, message: refuse(request, conversation: 0, message: failure.message, record: record)))
+        case .lost:
+            if case let .refused(reason, message) = lose(request, conversation: 0, record: record) {
+                return .failure(Refusal(reason: reason, message: message))
+            }
+            return .failure(Refusal(reason: nil, message: Self.couldNotSend, lost: true))
         }
     }
 
-    /// Why a step of a send did not go on.
+    /// Why a step of a send did not go on: refused (or never queued), or lost (`Outcome.lost`).
     private struct Refusal: Error {
         let reason: ActionReason?
         let message: String
+        var lost = false
     }
 
     /// Uploads every attachment not uploaded yet, one at a time; nil (the draft back, the pill failed) on the first
@@ -507,7 +538,9 @@ final class ChatSendCoordinator {
     /// settles it. A `request` hears it either way: it carries no text of the owner's.
     private func giveUp(_ id: String, conversation: Int64, waits: Bool) async {
         guard waiters[id] != nil else { return }
-        if await withdraw(id) == .withdrawn || !waits {
+        if await withdraw(id) == .withdrawn {
+            waiters.removeValue(forKey: id)?.resume(returning: .lost)
+        } else if !waits {
             waiters.removeValue(forKey: id)?.resume(returning: .failed(ChatActionFailure(reason: nil, message: Self.couldNotSend)))
         } else {
             pending[conversation]?.isStalled = true

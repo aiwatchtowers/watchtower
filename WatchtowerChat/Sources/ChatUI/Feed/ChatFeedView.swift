@@ -47,6 +47,8 @@ public struct ChatFeedContext {
     public var notice: String?
     public var partActions: ChatPartActions
     public var rowActions: ChatRowActions
+    /// A message to scroll to once it is loaded (a search hit); nil follows the newest message.
+    public var focusMessageID: Int64?
 
     public init(
         provider: String? = nil,
@@ -57,7 +59,8 @@ public struct ChatFeedContext {
         staleLine: String? = nil,
         notice: String? = nil,
         partActions: ChatPartActions = ChatPartActions(),
-        rowActions: ChatRowActions = ChatRowActions()
+        rowActions: ChatRowActions = ChatRowActions(),
+        focusMessageID: Int64? = nil
     ) {
         self.provider = provider
         self.artifacts = artifacts
@@ -68,6 +71,7 @@ public struct ChatFeedContext {
         self.notice = notice
         self.partActions = partActions
         self.rowActions = rowActions
+        self.focusMessageID = focusMessageID
     }
 }
 
@@ -105,8 +109,12 @@ public struct ChatFeedView: View {
             }
             .defaultScrollAnchor(.bottom)
             .onChange(of: rows.last?.id) { _, last in
-                guard let last else { return }
+                guard let last, focusRow(in: rows) == nil else { return }
                 proxy.scrollTo(last, anchor: .bottom)
+            }
+            .onChange(of: focusRow(in: rows), initial: true) { _, focus in
+                guard let focus else { return }
+                proxy.scrollTo(focus, anchor: .center)
             }
         }
         .modifier(ChatFeedQuoteSupport(onQuote: context.rowActions.quote))
@@ -148,6 +156,13 @@ public struct ChatFeedView: View {
     private func ownerReply(after id: Int64) -> String? {
         guard let index = messages.firstIndex(where: { $0.id == id }) else { return nil }
         return messages[(index + 1)...].first { $0.role == "user" }?.text
+    }
+
+    /// The focused message's row id, once that message is loaded.
+    private func focusRow(in rows: [ChatFeedLayout.Row]) -> String? {
+        guard let focusMessageID = context.focusMessageID else { return nil }
+        let id = "m\(focusMessageID)"
+        return rows.contains { $0.id == id } ? id : nil
     }
 
     private static let placeholder = ChatFeed.Message(id: 0, role: "assistant", text: "", createdAt: .distantPast)

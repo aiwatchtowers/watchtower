@@ -29,11 +29,18 @@ extension ApprovalPartView {
 
     @ViewBuilder var decisionRow: some View {
         if payload.isPending {
-            HStack(spacing: Spacing.regular) {
-                style.primaryButton(Self.approveLabel) { context.actions.decide(payload, .approve) }
-                    .accessibilityIdentifier("chat.approval.approve")
-                style.secondaryButton(Self.rejectLabel) { context.actions.decide(payload, .reject) }
-                    .accessibilityIdentifier("chat.approval.reject")
+            let state = context.actions.approvalState?(payload)
+            if state?.showsButtons ?? true {
+                HStack(spacing: Spacing.regular) {
+                    style.primaryButton(Self.approveLabel) { context.actions.decide(payload, .approve) }
+                        .accessibilityIdentifier("chat.approval.approve")
+                    style.secondaryButton(Self.rejectLabel) { context.actions.decide(payload, .reject) }
+                        .accessibilityIdentifier("chat.approval.reject")
+                }
+                .disabled(!(state?.canAnswer ?? true))
+            }
+            if let line = state?.line {
+                Text(line).font(.caption).foregroundStyle(.secondary).lineLimit(4)
             }
         } else if payload.status == "failed" || payload.status == "rejected", let reason = payload.reason, !reason.isEmpty {
             Text(reason).font(.caption).foregroundStyle(.secondary).lineLimit(4)

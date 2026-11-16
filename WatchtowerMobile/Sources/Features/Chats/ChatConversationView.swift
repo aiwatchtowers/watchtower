@@ -16,6 +16,7 @@ struct ChatConversationView: View {
     static let newChatTitle = "New chat"
     static let waitingForSlot = "Waiting for a free slot"
     static let photoName = "Photo.jpg"
+    static let removeFileLabel = "Remove file"
     /// One style value: a fresh one per render would invalidate the whole feed each time.
     private static let style: any ChatUIStyle = PhoneChatStyle()
 
@@ -111,13 +112,30 @@ struct ChatConversationView: View {
     @ViewBuilder
     private func screen(inputs: ChatsGateInputs) -> some View {
         let gate = ChatsGateModel(inputs)
-        ChatUI.ChatConversationView(conversation: conversation, composer: composer, partActions: partActions(inputs)) {
-            attaching = true
-        }
+        let hold = center.hold(conversation.conversationID, composerSending: composer.isSending, host: inputs.host)
+        ChatUI.ChatConversationView(
+            conversation: conversation, composer: composer, partActions: partActions(inputs), onAttach: { attaching = true },
+            composerAccessory: pills, focusMessageID: route.messageID
+        )
         .environment(\.chatUIStyle, Self.style)
         .overlay(alignment: .center) {
             if conversation.messages.isEmpty { placeholder(inputs.host, online: gate.online) }
         }
+        .toolbar {
+            if let chip = ChatNavChip(mac: inputs.mac, relayUnreachable: inputs.relayUnreachable) {
+                ToolbarItem(placement: .topBarTrailing) {
+                    HStack(spacing: Spacing.small) {
+                        Circle().fill(chip.tone.color).frame(width: PhoneMetrics.macDot, height: PhoneMetrics.macDot)
+                        Text(chip.word).font(TypeScale.pill).foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, Spacing.regular)
+                    .padding(.vertical, Spacing.small)
+                    .background(Fill.rest, in: Capsule())
+                    .accessibilityElement(children: .combine)
+                }
+            }
+        }
+        .onChange(of: hold, initial: true) { composer.hold = hold }
         .safeAreaInset(edge: .top, spacing: 0) {
             if let line = topLine {
                 Text(line)
@@ -136,7 +154,6 @@ struct ChatConversationView: View {
 
     /// The phone's line over the feed, newest concern first.
     private var topLine: String? {
-        if let notice = center.client.approvalNotice { return notice }
         if let attachNotice { return attachNotice }
         if let id = conversation.conversationID ?? (route.isNew ? 0 : nil), let notice = center.drafts.draft(id).notice { return notice }
         if conversation.feed?.conversation.lease?.waitingSlot == true { return Self.waitingForSlot }
@@ -151,15 +168,55 @@ struct ChatConversationView: View {
                     Text(ChatText.newChatTitle(host)).font(TypeScale.screenTitle)
                     Text(Self.newChatLine).font(TypeScale.meta).foregroundStyle(.secondary)
                 }
-            } else if conversation.feed == nil {
-                Text(online ? ChatText.opening(host) : ChatText.neverLoaded(host))
-                    .font(TypeScale.meta)
-                    .foregroundStyle(.secondary)
+            } else if let id = conversation.conversationID, conversation.feed == nil {
+                if online, center.client.unanswered.contains(id) {
+                    // Mockup 2g: no feed within the patience.
+                    VStack(spacing: Spacing.regular) {
+                        Text(ChatText.noAnswer(host)).font(TypeScale.meta).foregroundStyle(.secondary)
+                        Button(ChatsGateModel.retry) { center.client.retryFeed(id) }
+                            .buttonStyle(SecondaryActionStyle())
+                            .frame(maxWidth: PhoneMetrics.gateButton)
+                    }
+                } else {
+                    Text(online ? ChatText.opening(host) : ChatText.neverLoaded(host))
+                        .font(TypeScale.meta)
+                        .foregroundStyle(.secondary)
+                        .allowsHitTesting(false)
+                }
             }
         }
         .multilineTextAlignment(.center)
         .padding(.horizontal, Spacing.large)
-        .allowsHitTesting(false)
+    }
+
+    /// The files waiting to go with the next send (mockup 2b's pills): their upload state, Retry on a refused one.
+    private var pills: AnyView? {
+        let key = conversation.conversationID ?? 0
+        let files = center.drafts.draft(key).attachments
+        guard !files.isEmpty else { return nil }
+        return AnyView(ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: Spacing.small) {
+                ForEach(files) { file in
+                    HStack(spacing: Spacing.small) {
+                        Image(systemName: file.isImage ? "photo" : "doc")
+                        Text(file.name).lineLimit(1)
+                        switch file.state {
+                        case .uploading: ProgressView().controlSize(.mini)
+                        case .failed: Button(ChatsGateModel.retry) { center.retryAttachment(file.id, conversation: key) }
+                        case .ready, .uploaded: EmptyView()
+                        }
+                        Button { center.removeAttachment(file.id, conversation: key) } label: { Image(systemName: "xmark") }
+                            .disabled(file.state == .uploading)
+                            .accessibilityLabel(Self.removeFileLabel)
+                    }
+                    .font(TypeScale.pill)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, Spacing.regular)
+                    .padding(.vertical, Spacing.small)
+                    .background(Fill.card, in: Capsule())
+                }
+            }
+        })
     }
 
     private func partActions(_ inputs: ChatsGateInputs) -> ChatPartActions {
@@ -172,8 +229,9 @@ struct ChatConversationView: View {
             openArtifact: { artifact = $0 },
             openSources: { sources = $0 },
             decide: { payload, decision in
-                Task { await client.decide(payload, decision, permissions: permissions, host: host) }
-            }
+                Task { await client.decide(payload, decision, permissions: permissions) }
+            },
+            approvalState: { payload in client.approvalCard(payload, permissions: permissions, host: host).state }
         )
     }
 
@@ -183,22 +241,9 @@ struct ChatConversationView: View {
 
     // MARK: - Files
 
-    /// Prepares a picked file (HEIC to JPEG, an image over the limit downsized, the shared limits) and stages it;
-    /// the composer uploads it (`chat_attachment`), creating the chat first when it is new.
+    /// Prepares and stages a picked file into the draft: it uploads with the next send (`chat_attachment` first).
     private func attach(data: Data, fileName: String) {
-        switch ChatAttachmentPrep.prepare(data: data, fileName: fileName) {
-        case let .failure(rejection):
-            attachNotice = rejection.message
-        case let .success(prepared):
-            do {
-                let staged = try ChatAttachmentPrep.stage(prepared, in: center.staging)
-                attachNotice = nil
-                let upload = ChatSealedUpload(uploadID: staged.id, name: staged.name, mime: staged.mime, size: staged.size, file: staged.file)
-                Task { await composer.attach(.sealedUpload(upload)) }
-            } catch {
-                attachNotice = ChatSendCoordinator.couldNotSend
-            }
-        }
+        attachNotice = center.attach(data: data, fileName: fileName, conversation: conversation.conversationID ?? 0)
     }
 
     private func loadPhotos(_ items: [PhotosPickerItem]) {
@@ -262,6 +307,28 @@ struct ChatSourcesList: View {
             Button { open(url) } label: { label }.buttonStyle(.plain)
         } else {
             label
+        }
+    }
+}
+
+/// The nav-bar chip while the hub does not answer (mockup 2e): "asleep" or "offline", in the Mac status chip's tone.
+struct ChatNavChip: Equatable {
+    static let asleep = "asleep"
+    static let offline = "offline"
+
+    let word: String
+    let tone: PhoneTone
+
+    /// Nil while the hub answers.
+    init?(mac: MacReachability, relayUnreachable: Bool) {
+        switch mac {
+        case .online:
+            guard relayUnreachable else { return nil }
+            (word, tone) = (Self.offline, .secondary)
+        case .asleep:
+            (word, tone) = (Self.asleep, .gray)
+        case .offline:
+            (word, tone) = (Self.offline, .secondary)
         }
     }
 }

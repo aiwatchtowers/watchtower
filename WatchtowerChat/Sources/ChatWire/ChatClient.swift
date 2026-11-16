@@ -15,6 +15,14 @@ public protocol ChatClient: Sendable {
     /// - after every reconnect the client yields `.connected` again, even when the drop was too short to report any
     ///   other state, so a send waiting on a lost answer goes again.
     var reachability: AsyncStream<ChatReachability> { get }
+    /// A new chat is created by its first turn (`chat_turn` with conversation 0, its `projectID` and `routing`), so the
+    /// send is kept with the chat's creation (the phone's relay keeps it across a kill). False: the composer sends
+    /// `chat_new` first (chat.sock).
+    var createsConversationOnTurn: Bool { get }
+}
+
+extension ChatClient {
+    public var createsConversationOnTurn: Bool { false }
 }
 
 /// What `ChatClient.send` throws when the connection dropped before the engine's answer arrived: the operation may

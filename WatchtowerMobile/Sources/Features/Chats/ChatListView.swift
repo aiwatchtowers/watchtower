@@ -33,6 +33,7 @@ struct ChatsTabView: View {
     @Environment(LinkingViewModel.self) private var linking
     private let shot: ChatsShot?
     @State private var renaming: ChatList.Conversation?
+    @State private var showsOlder = false
     @State private var renameText = ""
 
     init(shot: ChatsShot? = nil) {
@@ -118,24 +119,23 @@ struct ChatsTabView: View {
             if let notice = model.notice {
                 lineRow(notice)
             }
-            if searching, let result = model.searchResult {
-                // One list row per hit, each drawn by `ChatUI`'s search results view.
-                ForEach(Array(result.hits.enumerated()), id: \.offset) { _, hit in
-                    ChatSearchResultsView(search: ChatSearch(query: result.query, hits: [hit])) { hit in
-                        env.navigation.chatsPath.append(ChatRoute(id: hit.conversationID, messageID: hit.messageID))
-                    }
-                    .macsListRow()
+            // Pinned, Recent and the older fold; with a query the titles that have it, found here even with the hub away.
+            let sections = ChatListSections(model.conversations, now: now, query: query)
+            ForEach(sections.sections) { section in
+                Section {
+                    ForEach(section.conversations) { chatRow($0, now: now, editable: gate.allowsRowActions) }
+                } header: {
+                    SectionHeader(section.title).listRowInsets(Self.headerInsets)
                 }
-                if result.hits.isEmpty {
-                    lineRow(ChatSearchResultsView.emptyLine)
-                }
+            }
+            if searching {
+                messageRows(model, query: query, gate: gate, host: ChatsGateInputs.current(env, shot: shot, snapshot: center.snapshot, now: now).host)
             } else {
-                ForEach(model.conversations) { conversation in
-                    chatRow(conversation, now: now, editable: gate.allowsRowActions)
-                }
+                olderRows(sections, now: now, editable: gate.allowsRowActions)
             }
         }
         .macsList()
+        .listSectionSpacing(0)
         .environment(\.defaultMinListRowHeight, 0)
         .searchable(
             text: Binding(get: { center.listQuery }, set: { center.listQuery = $0 }),
@@ -145,7 +145,7 @@ struct ChatsTabView: View {
         .task(id: query) {
             // Search asks the hub only while it answers (the client refuses otherwise).
             // The hits already shown for this query stay (the hub keeps a search's record a few minutes).
-            guard model.searchResult?.query != query.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
+            guard model.searchResult?.query != RelayChatClient.searchQuery(query) else { return }
             do { try await Task.sleep(for: Self.searchPause) } catch { return }
             await model.search(query)
         }
@@ -163,6 +163,53 @@ struct ChatsTabView: View {
                 renaming = nil
             }
             Button(Self.renameCancel, role: .cancel) { renaming = nil }
+        }
+    }
+
+    @ViewBuilder
+    private func olderRows(_ sections: ChatListSections, now: Date, editable: Bool) -> some View {
+        if let label = sections.olderLabel {
+            Button {
+                withAnimation { showsOlder.toggle() }
+            } label: {
+                HStack(spacing: Spacing.compact) {
+                    Image(systemName: showsOlder ? "chevron.down" : "chevron.right").font(TypeScale.badge)
+                    Text(label).font(TypeScale.meta)
+                }
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, minHeight: PhoneMetrics.minTouch, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .macsListRow()
+            if showsOlder {
+                ForEach(sections.older) { chatRow($0, now: now, editable: editable) }
+            }
+        }
+    }
+
+    /// "In messages": the hub's hits for exactly this query (each drawn by `ChatUI`'s search results view), or why
+    /// there are none yet — the hub away, the search running, nothing found.
+    @ViewBuilder
+    private func messageRows(_ model: ChatListModel, query: String, gate: ChatsGateModel, host: TowerHost) -> some View {
+        let asked = RelayChatClient.searchQuery(query)
+        if let result = model.searchResult, result.query == asked {
+            if !result.hits.isEmpty {
+                Section {
+                    ForEach(Array(result.hits.enumerated()), id: \.offset) { _, hit in
+                        ChatSearchResultsView(search: ChatSearch(query: result.query, hits: [hit])) { hit in
+                            env.navigation.chatsPath.append(ChatRoute(id: hit.conversationID, messageID: hit.messageID))
+                        }
+                        .macsListRow()
+                    }
+                } header: {
+                    SectionHeader(ChatListSections.messagesTitle).listRowInsets(Self.headerInsets)
+                }
+            }
+        } else if !gate.online {
+            lineRow(ChatText.searchNeedsHub(host))
+        } else {
+            lineRow(ChatText.searching(host))
         }
     }
 
@@ -235,6 +282,9 @@ struct ChatsTabView: View {
             env.navigation.showTowerSettings(hubID: hubID, detail: detail)
         }
     }
+
+    /// A section header's list insets: with its own 4 on the sides it lines up with the rows' 16.
+    private static let headerInsets = EdgeInsets(top: 0, leading: Spacing.medium, bottom: 0, trailing: Spacing.medium)
 
     /// The share of the screen a centred message sits in, below the switcher (mockups 1b, 1e–1h).
     private static let messageHeightShare: CGFloat = 0.8

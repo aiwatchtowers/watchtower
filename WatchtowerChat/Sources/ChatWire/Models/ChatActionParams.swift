@@ -61,6 +61,11 @@ public struct ChatTurnParams: Codable, Hashable, Sendable {
     /// Ids from the `chat_attachment` echoes, in the order they are shown.
     public let attachmentIDs: [Int64]
     public let routing: ChatRouting?
+    /// The send's id: a resend under a new action with the same key is answered with the first turn (the engine's
+    /// `chat_messages.client_key`), never a second one. nil = none (an older sender).
+    public let clientKey: String?
+    /// The composer's skill and mentions, as the Mac sends them on chat.sock.
+    public let compose: ChatCompose?
 
     public init(
         conversationID: Int64,
@@ -68,7 +73,9 @@ public struct ChatTurnParams: Codable, Hashable, Sendable {
         messageID: Int64? = nil,
         text: String,
         attachmentIDs: [Int64] = [],
-        routing: ChatRouting? = nil
+        routing: ChatRouting? = nil,
+        clientKey: String? = nil,
+        compose: ChatCompose? = nil
     ) {
         self.conversationID = conversationID
         self.mode = mode
@@ -76,6 +83,8 @@ public struct ChatTurnParams: Codable, Hashable, Sendable {
         self.text = text
         self.attachmentIDs = attachmentIDs
         self.routing = routing
+        self.clientKey = clientKey
+        self.compose = compose
     }
 
     enum CodingKeys: String, CodingKey {
@@ -84,7 +93,7 @@ public struct ChatTurnParams: Codable, Hashable, Sendable {
         case messageID = "messageId"
         case text
         case attachmentIDs = "attachmentIds"
-        case routing
+        case routing, clientKey, compose
     }
 }
 

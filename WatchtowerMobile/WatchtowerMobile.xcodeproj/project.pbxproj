@@ -257,6 +257,7 @@
 		BB7B446082CF5A851F4A972D /* WorkbenchSessionsOrderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06939E899729BD12C86EE8EE /* WorkbenchSessionsOrderTests.swift */; };
 		BBFA0AEAFD6FEEE331DF0501 /* RelayAccountFakes.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4E25A38357841D623051CAD /* RelayAccountFakes.swift */; };
 		BC527F67856FEBEE8A0EC37D /* WorkchatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E34FE8AB2E6D5D3AE4DF1B07 /* WorkchatView.swift */; };
+		BD6C9E218D0DBB3969F36C61 /* ChatApprovalCardModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B0E4C6DD522D7E14879F41F /* ChatApprovalCardModel.swift */; };
 		BE065B6613140A83D5C37021 /* LinkingViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B07F0B15A0983525BEC4E560 /* LinkingViewModelTests.swift */; };
 		BF5B5153A31D5D65C21505E4 /* NextMeetingCardModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C5E4E06D5EE190C29F3F741 /* NextMeetingCardModel.swift */; };
 		C161807B04E6D17A004BB0E6 /* LinkSteps.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADAB325ABA1D19CB566809A7 /* LinkSteps.swift */; };
@@ -406,6 +407,7 @@
 		088E57AE5536807B7F6BCB48 /* RelaySubscriptionModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelaySubscriptionModel.swift; sourceTree = "<group>"; };
 		08D768F21290828AFDF991CD /* Metrics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Metrics.swift; sourceTree = "<group>"; };
 		0AAE61E8661239DBCD5FAAE6 /* PermissionCardTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionCardTests.swift; sourceTree = "<group>"; };
+		0B0E4C6DD522D7E14879F41F /* ChatApprovalCardModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatApprovalCardModel.swift; sourceTree = "<group>"; };
 		0B65C9C102B9642AC8CD236F /* MobileTestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileTestSupport.swift; sourceTree = "<group>"; };
 		0C5CD25DB0A6F118267E627D /* ScannedHubKeys.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScannedHubKeys.swift; sourceTree = "<group>"; };
 		0D403CB3F9A7FA2CB7C28C34 /* TargetStatusStyle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TargetStatusStyle.swift; sourceTree = "<group>"; };
@@ -802,6 +804,7 @@
 		0EB4097BB8A99B48209D5AAC /* Chats */ = {
 			isa = PBXGroup;
 			children = (
+				0B0E4C6DD522D7E14879F41F /* ChatApprovalCardModel.swift */,
 				D786F9863E12E0051CA2787F /* ChatAttachmentPicker.swift */,
 				B217981668550F76482FCC9E /* ChatConversationView.swift */,
 				5E777929DAE089EB36B2F37D /* ChatListView.swift */,
@@ -1525,6 +1528,7 @@
 				1E2DBADC13EAC353D9EDED50 /* CalendarReplicaModel.swift in Sources */,
 				54E8066B476CBC3BC9835B67 /* CalendarRow.swift in Sources */,
 				978E2301EEB5748A01430CCE /* Card.swift in Sources */,
+				BD6C9E218D0DBB3969F36C61 /* ChatApprovalCardModel.swift in Sources */,
 				57D3F8B1BA755EEEEF8F400A /* ChatAttachmentPicker.swift in Sources */,
 				5AAD4F0C5B9CCBD77ECB0714 /* ChatBubble.swift in Sources */,
 				5DFE9C537D29C8CE6C61C1DC /* ChatConversationView.swift in Sources */,

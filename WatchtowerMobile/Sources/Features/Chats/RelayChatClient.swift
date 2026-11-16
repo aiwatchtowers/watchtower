@@ -3,6 +3,7 @@ import ChatWire
 import Foundation
 import Observation
 import os
+import WatchtowerChatText
 import WatchtowerKit
 import WatchtowerSync
 
@@ -13,8 +14,11 @@ import WatchtowerSync
 /// first while the hub sends none; a feed request refused `not_found` is the conversation gone. Reachability follows
 /// the Chats tab's gate, its copy unchanged.
 ///
-/// No operation throws `ChatConnectionError`: the outbox sends an action at most once and a send the patience gives up
-/// on is one the outbox took back (never on the hub), so it is a refusal with the text kept, never a resend.
+/// A turn whose echo did not come within the patience, and that the outbox took back, throws `ChatConnectionError`
+/// (`RelayAnswerLost`): the shared model resends it under the same client key, which the hub hands to the engine
+/// (`chat_messages.client_key`), so it is applied once whatever reached the Mac. A turn the outbox could not take back
+/// waits for its echo, "Waiting for your Mac…" (`ChatsCenter.hold`). A new chat is created by its first turn
+/// (`createsConversationOnTurn`), so the send is kept in `chat_outgoing` from the start.
 @MainActor
 @Observable
 final class RelayChatClient: ChatClient {
@@ -22,15 +26,24 @@ final class RelayChatClient: ChatClient {
     static let noAnswerLine = "No answer came from your Mac. Try again."
     static let answeringLine = "Sending your answer…"
     static let changedLine = "The action changed — look again"
+    /// The relay's cap on a search query (Go `MaxChatSearchQuery`, runes).
+    static let maxSearchQuery = 200
     /// The open feed's request goes again this often while a screen shows it (the hub watches a feed for a while).
     static let repeatInterval: Duration = .seconds(60)
-    /// How long a page or a search waits for its record.
+    /// How long a page or a search waits for its record, and an opened chat for its feed ("The Mac did not answer").
     static let recordPatience: Duration = .seconds(30)
 
-    /// What the last Approve or Reject came to (nil once applied): the line the conversation shows over the feed.
-    private(set) var approvalNotice: String?
+    /// The approvals whose answer is on its way (agent action ids): their buttons are off.
+    private(set) var answering: Set<Int64> = []
+    /// The last refusal of an answer, by agent action id.
+    private(set) var approvalFailures: [Int64: ChatActionFailure] = [:]
+    /// The opened chats whose feed did not come within `recordPatience` of their request.
+    private(set) var unanswered: Set<Int64> = []
 
-    @ObservationIgnored private unowned let center: ChatsCenter
+    /// Weak: the center owns this client (a task of the client may outlive a center a test let go).
+    @ObservationIgnored private weak var center: ChatsCenter?
+    /// The center's sender (the outbox), for the requests a turn does not cover.
+    @ObservationIgnored private let actions: ChatSender
     @ObservationIgnored private let sender: ChatSendCoordinator
     @ObservationIgnored private let replica: ReplicaStore?
     @ObservationIgnored private let offline: ChatOfflineCopy
@@ -45,6 +58,9 @@ final class RelayChatClient: ChatClient {
     @ObservationIgnored private var feedRequests: [Int64: String] = [:]
     @ObservationIgnored private var repeats: [Int64: Task<Void, Never>] = [:]
     @ObservationIgnored private var recordWaiters: [UUID: RecordWaiter] = [:]
+    @ObservationIgnored private var feedPatience: [Int64: Task<Void, Never>] = [:]
+    /// New-chat screens, which follow the chat their first turn creates as soon as `chat_new` is applied.
+    @ObservationIgnored private var newChatScreens: [WeakConversation] = []
     nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "RelayChatClient")
 
     private struct FeedWatch {
@@ -57,6 +73,10 @@ final class RelayChatClient: ChatClient {
     private struct ListWatch {
         let continuation: AsyncStream<ChatListUpdate>.Continuation
         var shown: ChatList?
+    }
+
+    private struct WeakConversation {
+        weak var model: ChatConversationModel?
     }
 
     private struct RecordWaiter {
@@ -75,10 +95,26 @@ final class RelayChatClient: ChatClient {
         sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     ) {
         self.center = center
+        actions = center.sender
         self.sender = sender
         self.replica = replica
         self.offline = offline
         self.sleep = sleep
+    }
+
+    nonisolated var createsConversationOnTurn: Bool { true }
+
+    /// A new chat's screen: it adopts the chat its first turn creates.
+    func follow(_ model: ChatConversationModel) {
+        newChatScreens = newChatScreens.filter { $0.model != nil } + [WeakConversation(model: model)]
+    }
+
+    /// The center's snapshot now (empty once the center is gone).
+    private var snapshot: ChatsSnapshot { center?.snapshot ?? ChatsSnapshot() }
+
+    private func newChatCreated(_ id: Int64) {
+        newChatScreens = newChatScreens.filter { $0.model != nil }
+        newChatScreens.first { $0.model?.conversationID == nil }?.model?.adopt(id)
     }
 
     // MARK: - Reachability
@@ -150,7 +186,7 @@ final class RelayChatClient: ChatClient {
     private func startFeed(_ id: UUID, _ conversation: Int64, _ continuation: AsyncStream<ChatFeedUpdate>.Continuation) {
         guard ended.remove(id) == nil else { return }
         var watch = FeedWatch(conversation: conversation, continuation: continuation)
-        if let first = center.snapshot.feeds[conversation]?.feed ?? replicaFeed(conversation) ?? heldFeed(conversation) {
+        if let first = snapshot.feeds[conversation]?.feed ?? replicaFeed(conversation) ?? heldFeed(conversation) {
             continuation.yield(.snapshot(first))
             watch.shown = first
         }
@@ -181,7 +217,7 @@ final class RelayChatClient: ChatClient {
 
     private func startList(_ id: UUID, _ continuation: AsyncStream<ChatListUpdate>.Continuation) {
         guard ended.remove(id) == nil else { return }
-        let list = center.snapshot.list
+        let list = snapshot.list
         if let list { continuation.yield(.snapshot(list)) }
         listWatches[id] = ListWatch(continuation: continuation, shown: list)
     }
@@ -195,11 +231,24 @@ final class RelayChatClient: ChatClient {
         guard isConnected else { return }
         Task {
             do {
-                feedRequests[conversation] = try await center.sender(ChatFeedRequestParams(conversationID: conversation, purpose: .open))
+                feedRequests[conversation] = try await actions(ChatFeedRequestParams(conversationID: conversation, purpose: .open))
             } catch {
                 Self.logger.warning("chat feed request not queued: \(String(describing: type(of: error)), privacy: .public)")
             }
         }
+        guard snapshot.feeds[conversation] == nil, feedPatience[conversation] == nil else { return }
+        feedPatience[conversation] = Task { [weak self, sleep] in
+            do { try await sleep(Self.recordPatience) } catch { return }
+            guard let self else { return }
+            self.feedPatience[conversation] = nil
+            if self.snapshot.feeds[conversation] == nil { self.unanswered.insert(conversation) }
+        }
+    }
+
+    /// "The Mac did not answer" → Retry: the feed is asked for again, with a fresh patience.
+    func retryFeed(_ conversation: Int64) {
+        unanswered.remove(conversation)
+        requestFeed(conversation)
     }
 
     /// The replica's `chat_feed` record, read when the center has not delivered it yet.
@@ -222,11 +271,14 @@ final class RelayChatClient: ChatClient {
     /// The center's snapshot moved: each feed and the list yield what changed, a refused feed request ends its feed
     /// as gone, and a page or a search waiting for its record hears it.
     func snapshotChanged() {
-        let snapshot = center.snapshot
+        let snapshot = self.snapshot
         let gone = Set(feedRequests.compactMap { conversation, action in
             snapshot.failures[action]?.reason == .notFound ? conversation : nil
         })
         gone.forEach { feedRequests[$0] = nil }
+        for conversation in unanswered where snapshot.feeds[conversation] != nil {
+            unanswered.remove(conversation)
+        }
         for (id, var watch) in feedWatches {
             if gone.contains(watch.conversation), !watch.gone {
                 watch.gone = true
@@ -261,7 +313,7 @@ final class RelayChatClient: ChatClient {
         guard isConnected else { return offlineRefusal }
         switch op {
         case let .turn(request):
-            return await turn(request)
+            return try await turn(request)
         case let .new(projectID, routing):
             return await request(op, ChatNewParams(clientKey: UUID().uuidString, projectID: projectID, routing: routing))
         case let .cancel(conversationID, turnID):
@@ -271,8 +323,9 @@ final class RelayChatClient: ChatClient {
                 self?.page(conversationID, before: before).map { .page($0) }
             }
         case let .search(query):
-            return await awaitRecord(ChatSearchParams(query: query)) { [weak self] in
-                self?.center.snapshot.searches[query].map { .search($0) }
+            let asked = Self.searchQuery(query)
+            return await awaitRecord(ChatSearchParams(query: asked)) { [weak self] in
+                self?.snapshot.searches[asked].map { .search($0) }
             }
         case let .read(conversationID, messageID):
             return await request(op, ChatReadParams(conversationID: conversationID, messageID: messageID))
@@ -300,7 +353,7 @@ final class RelayChatClient: ChatClient {
         case let .page(conversationID, before):
             return page(conversationID, before: before).map { .applied(.page($0)) }
         case let .search(query):
-            return center.snapshot.searches[query].map { .applied(.search($0)) }
+            return snapshot.searches[Self.searchQuery(query)].map { .applied(.search($0)) }
         case .attachDiscard:
             // The hub drops an attachment no turn took; the phone's plaintext went when it was uploaded.
             return .applied(.none)
@@ -313,20 +366,40 @@ final class RelayChatClient: ChatClient {
         }
     }
 
+    /// The query as the relay takes it: trimmed and cut at its cap.
+    static func searchQuery(_ query: String) -> String {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        return String(String.UnicodeScalarView(trimmed.unicodeScalars.prefix(maxSearchQuery)))
+    }
+
     private static var unsupported: ChatEcho { .refused(code: "unsupported", message: unsupportedLine) }
 
     /// A turn through the coordinator: kept in the hub's copy until its echo is applied; a refusal leaves the text in
     /// the `ChatUI` composer (the draft store is left alone). Retry is the relay's regenerate of that answer.
-    private func turn(_ request: ChatTurnRequest) async -> ChatEcho {
+    private func turn(_ request: ChatTurnRequest) async throws -> ChatEcho {
+        let mode = request.mode == .retry ? ChatTurnMode.regenerate : request.mode
+        // The files staged on the phone (the composer's pills) go with a send or an edit, uploaded first.
+        let files = mode == .send || mode == .edit ? center?.drafts.draft(request.conversationID).attachments ?? [] : []
+        let draft = request.draft.map { draft in
+            ChatDraft(text: draft.text, quotes: draft.quotes.map { ChatQuoteDraft(quote: $0, comment: "") })
+        }
         let send = ChatSendCoordinator.Request(
-            conversationID: request.conversationID, mode: request.mode == .retry ? .regenerate : request.mode,
-            messageID: request.messageID, text: request.text, attachmentIDs: request.attachmentIDs, restoresDraft: false
+            conversationID: request.conversationID, mode: mode, messageID: request.messageID, text: request.text,
+            attachments: files, projectID: request.projectID, routing: request.routing, draft: draft,
+            attachmentIDs: request.attachmentIDs, compose: request.compose, restoresDraft: false
         )
-        switch await sender.sendTurn(send, clientKey: request.clientKey) {
-        case let .applied(_, result):
-            return .applied(Self.decode(.turn(request), result) ?? .none)
+        let outcome = await sender.sendTurn(send, clientKey: request.clientKey) { [weak self] id in self?.newChatCreated(id) }
+        switch outcome {
+        case let .applied(conversation, result):
+            guard case .turn(let started)? = Self.decode(.turn(request), result) else { return .applied(.none) }
+            return .applied(.turn(ChatTurnStarted(
+                userMessageID: started.userMessageID, assistantMessageID: started.assistantMessageID, turnID: started.turnID,
+                conversationID: request.conversationID == 0 ? conversation : nil
+            )))
         case let .refused(reason, message):
             return Self.refusal(reason, message)
+        case .lost:
+            throw RelayAnswerLost()
         }
     }
 
@@ -334,6 +407,7 @@ final class RelayChatClient: ChatClient {
         switch await sender.request(params) {
         case let .applied(result): .applied(Self.decode(op, result) ?? .none)
         case let .failed(failure): Self.refusal(failure.reason, failure.message)
+        case .lost: .refused(code: "unreachable", message: ChatSendCoordinator.couldNotSend)
         }
     }
 
@@ -353,7 +427,7 @@ final class RelayChatClient: ChatClient {
     private func awaitRecord<P: ActionParams>(_ params: P, read: @escaping @MainActor () -> ChatEchoResult?) async -> ChatEcho {
         let actionID: String
         do {
-            actionID = try await center.sender(params)
+            actionID = try await actions(params)
         } catch {
             Self.logger.warning("chat record request not queued: \(String(describing: type(of: error)), privacy: .public)")
             return .refused(code: "unreachable", message: ChatSendCoordinator.couldNotSend)
@@ -377,34 +451,39 @@ final class RelayChatClient: ChatClient {
 
     /// A page the replica or the copy holds: before `before` in `conversationID`.
     private func page(_ conversationID: Int64, before: Int64) -> ChatPage? {
-        if let page = center.snapshot.pages[conversationID]?[before]?.page { return page }
+        if let page = snapshot.pages[conversationID]?[before]?.page { return page }
         return (try? offline.held(conversationID: conversationID))?.pages[before]
     }
 
     // MARK: - Approvals
 
-    /// Approve or Reject (`chat_action_answer` with the hash the card shows; spec §4.5). Without the `permissions`
-    /// grant nothing is sent and the line points to the hub; a stale hash comes back as "The action changed".
-    func decide(_ payload: ChatApprovalPayload, _ decision: ChatApprovalDecision, permissions: Bool, host: TowerHost) async {
-        guard permissions else {
-            approvalNotice = ChatText.approveElsewhere(host)
-            return
-        }
-        guard isConnected else {
-            if case let .refused(_, line) = offlineRefusal { approvalNotice = line }
-            return
-        }
-        approvalNotice = Self.answeringLine
+    /// Approve or Reject (`chat_action_answer` with the hash the card shows; spec §4.5): once per action while its
+    /// answer is on its way, never without the `permissions` grant (the card has no buttons then), never while the hub
+    /// is away. A stale hash comes back as "The action changed — look again".
+    func decide(_ payload: ChatApprovalPayload, _ decision: ChatApprovalDecision, permissions: Bool) async {
+        guard permissions, isConnected, payload.status == "pending", !answering.contains(payload.id) else { return }
+        answering.insert(payload.id)
+        approvalFailures[payload.id] = nil
+        defer { answering.remove(payload.id) }
         let params = ChatActionAnswerParams(
             actionID: payload.id, decision: decision == .approve ? .approve : .reject, argsSHA256: payload.argsSHA256
         )
         switch await sender.request(params) {
         case .applied:
-            approvalNotice = nil
+            break
         case let .failed(failure):
-            approvalNotice = failure.reason == .changed
-                ? Self.changedLine : (failure.message.isEmpty ? ChatSendCoordinator.couldNotSend : failure.message)
+            approvalFailures[payload.id] = failure
+        case .lost:
+            approvalFailures[payload.id] = ChatActionFailure(reason: nil, message: ChatSendCoordinator.couldNotSend)
         }
+    }
+
+    /// The card of one action as this phone may answer it.
+    func approvalCard(_ payload: ChatApprovalPayload, permissions: Bool, host: TowerHost) -> ChatApprovalCardModel {
+        ChatApprovalCardModel(
+            payload: payload, permissions: permissions, online: isConnected, inFlight: answering.contains(payload.id),
+            failure: approvalFailures[payload.id], host: host
+        )
     }
 
     // MARK: - Echo mapping
@@ -415,11 +494,12 @@ final class RelayChatClient: ChatClient {
         return try? op.decodeResult(data)
     }
 
-    /// A relay refusal as a `ChatEcho` code: busy, not_found, invalid, forbidden, unsupported, internal; no reason
+    /// A relay refusal as a `ChatEcho` code: conversation_busy, not_found, invalid, forbidden, unsupported, internal; no reason
     /// (never sent, or no echo within the patience) is unreachable.
     static func refusal(_ reason: ActionReason?, _ message: String) -> ChatEcho {
         let code = switch reason {
-        case .conversationBusy?: "busy"
+        // The hub's own busy message is shown (ChatUI shows its generic line for "busy").
+        case .conversationBusy?: "conversation_busy"
         case .notFound?: "not_found"
         case .invalidParams?, .attachmentMissing?, .changed?: "invalid"
         case .deviceNotAllowed?: "forbidden"
@@ -430,3 +510,7 @@ final class RelayChatClient: ChatClient {
         return .refused(code: code, message: message.isEmpty ? ChatSendCoordinator.couldNotSend : message)
     }
 }
+
+/// A turn's echo did not come and the outbox took the action back: the shared model sends it again under the same
+/// client key.
+struct RelayAnswerLost: ChatConnectionError {}
