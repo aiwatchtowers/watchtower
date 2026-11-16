@@ -82,13 +82,15 @@ public final class ChatComposerModel {
     /// Sends the draft. The text stays until the echo is `applied` (CHAT-01); a lost echo resends with the same key.
     /// `screenContext` (the Mac's ⌘/ panel: the screen the owner asked from) goes to the provider only; the engine
     /// never stores it, so the stored owner text is the typed text alone.
-    public func send(screenContext: String? = nil) async {
-        guard canSend else { return }
+    /// Whether the engine applied the send.
+    @discardableResult
+    public func send(screenContext: String? = nil) async -> Bool {
+        guard canSend else { return false }
         isSending = true
         defer { isSending = false }
         let sentDraft = draft
         let text = sendText ?? ""
-        guard let conversationID = await ensureConversation() else { return }
+        guard let conversationID = await ensureConversation() else { return false }
         let request = ChatTurnRequest(
             conversationID: conversationID,
             mode: editing == nil ? .send : .edit,
@@ -110,10 +112,12 @@ public final class ChatComposerModel {
             mentions = []
             skill = nil
             editing = nil
+            return true
         case let .refused(code, message)?:
             notice = ChatConversationModel.refusalLine(code: code, message: message)
+            return false
         case nil:
-            break
+            return false
         }
     }
 

@@ -59,7 +59,7 @@ extension ChatConversationModel {
             actions: conversation.feed?.actions ?? [],
             isTurnRunning: conversation.isTurnRunning,
             hasEarlier: conversation.hasEarlier,
-            staleLine: conversation.isStale ? ChatConversationModel.staleLine : nil,
+            staleLine: conversation.isStale ? Self.staleLine : nil,
             notice: nil,
             partActions: actions,
             rowActions: rowActions
