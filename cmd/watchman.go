@@ -23,6 +23,9 @@ var (
 	watchmanFlagWorkbench int64
 	watchmanFlagStart     bool
 	watchmanFlagJSON      bool
+
+	watchmanStatusFlagWorkbench int64
+	watchmanStatusFlagJSON      bool
 )
 
 // watchmanLearnBudget caps the first learning pass `watchman learn --start`
@@ -58,7 +61,17 @@ func init() {
 	learn.Flags().BoolVar(&watchmanFlagStart, "start", false, "turn Watchman on and run the first learning pass")
 	learn.Flags().BoolVar(&watchmanFlagJSON, "json", false, "print JSON")
 	_ = learn.MarkFlagRequired("workbench")
-	watchmanCmd.AddCommand(learn)
+	status := &cobra.Command{
+		Use:   "status",
+		Short: "Show Watchman's state per workbench: learning, precedents, sleep window and backtest",
+		Long: "Lists every workbench (or --workbench N): for one Watchman is on for, the learning progress and what it learned; " +
+			"for one it is not on for, the learning estimate. A backtest that was running when its process died shows as interrupted.",
+		Args: cobra.NoArgs,
+		RunE: runWatchmanStatus,
+	}
+	status.Flags().Int64Var(&watchmanStatusFlagWorkbench, "workbench", 0, "workbench id (default: every workbench)")
+	status.Flags().BoolVar(&watchmanStatusFlagJSON, "json", false, "print JSON")
+	watchmanCmd.AddCommand(learn, status)
 	rootCmd.AddCommand(watchmanCmd)
 }
 
@@ -209,4 +222,64 @@ func bySourceText(m map[string]int) string {
 	}
 	sort.Strings(parts)
 	return " (" + strings.Join(parts, ", ") + ")"
+}
+
+// runWatchmanStatus is `watchman status`: it only reads (allowed under an
+// agent). --json is watchman.StatusReport, the Desktop's Settings source.
+func runWatchmanStatus(cmd *cobra.Command, _ []string) error {
+	cfg, err := workspaceConfigFromFlags()
+	if err != nil {
+		return err
+	}
+	database, err := db.Open(cfg.DBPath())
+	if err != nil {
+		return fmt.Errorf("opening database: %w", err)
+	}
+	defer database.Close()
+	rep, err := watchman.Status(cmd.Context(), database, watchmanStatusFlagWorkbench, watchman.StatusOptions{
+		Running: watchman.Locked(watchman.LockPath(cfg.WorkspaceDir())),
+		Git:     watchmanGit,
+	})
+	if err != nil {
+		return err
+	}
+	if watchmanStatusFlagJSON {
+		return writeJSON(cmd.OutOrStdout(), rep)
+	}
+	out := cmd.OutOrStdout()
+	for _, wb := range rep.Workbenches {
+		fmt.Fprintf(out, "Workbench %d (%s): ", wb.Workbench, wb.Name)
+		if wb.Learning == nil {
+			fmt.Fprintf(out, "Watchman is off; ~%d decisions to learn from.\n", wb.Estimate.Decisions)
+			continue
+		}
+		if wb.Learning.Done {
+			fmt.Fprintf(out, "learned %d decisions", wb.Learning.Written)
+		} else {
+			fmt.Fprintf(out, "learning… %d of ~%d", min(wb.Learning.Written, wb.Learning.Estimated), wb.Learning.Estimated)
+		}
+		fmt.Fprintln(out, bySourceText(sourceWritten(wb.Sources)))
+		if wb.SleepWindow != "" {
+			fmt.Fprintf(out, "  Sleep window: %s\n", wb.SleepWindow)
+		}
+		if b := wb.Backtest; b != nil {
+			fmt.Fprintf(out, "  Backtest #%d: %s", b.ID, b.Status)
+			switch {
+			case b.Verdict != "":
+				fmt.Fprintf(out, ", verdict %s", b.Verdict)
+			case b.Progress != "" && b.Status == "running":
+				fmt.Fprintf(out, " (%s)", b.Progress)
+			}
+			fmt.Fprintln(out)
+		}
+	}
+	return nil
+}
+
+func sourceWritten(m map[string]watchman.SourceStatus) map[string]int {
+	out := make(map[string]int, len(m))
+	for k, v := range m {
+		out[k] = v.Written
+	}
+	return out
 }
