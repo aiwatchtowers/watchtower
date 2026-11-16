@@ -95,7 +95,7 @@ package final class DatabaseEmbeddedChatStore: EmbeddedChatStore {
         }) {
             return existing.id
         }
-        let created: ChatNewResponse = try await writes.send(.chatNew) {
+        let created: ChatNewResponse = try await writes.perform(.chatNew) {
             ChatNewRequest(requestID: $0, context: ChatContext(type: contextType, id: contextID, title: title, reuse: true))
         }
         return created.conversationID
@@ -110,7 +110,7 @@ package final class DatabaseEmbeddedChatStore: EmbeddedChatStore {
     package nonisolated static func rekeyConversation(
         writes: ChatWrites, conversationID: Int64, toContextType: String, contextID: String
     ) async throws -> Bool {
-        let moved: ChatChanged = try await writes.send(.chatContext) {
+        let moved: ChatChanged = try await writes.perform(.chatContext) {
             ChatContextRequest(requestID: $0, conversationID: conversationID, contextType: toContextType,
                                contextID: contextID)
         }
@@ -140,7 +140,7 @@ package final class DatabaseEmbeddedChatStore: EmbeddedChatStore {
     package func finalize(messageID: Int64, text: String, status: String, errorCode: String?, errorMessage: String?) async throws {
         let id = conversationID
         do {
-            let _: ChatDone = try await writes.send(.chatReplyFinish) {
+            let _: ChatDone = try await writes.perform(.chatReplyFinish) {
                 ChatReplyFinishRequest(requestID: $0, conversationID: id, messageID: messageID, text: text,
                                        status: status, errorCode: errorCode, errorMessage: errorMessage)
             }
@@ -153,7 +153,7 @@ package final class DatabaseEmbeddedChatStore: EmbeddedChatStore {
     package func append(role: String, text: String) async throws -> Int64 {
         let id = conversationID
         do {
-            let added: ChatMessageAppendResponse = try await writes.send(.chatMessageAppend) {
+            let added: ChatMessageAppendResponse = try await writes.perform(.chatMessageAppend) {
                 ChatMessageAppendRequest(requestID: $0, conversationID: id, role: role, text: text)
             }
             return added.messageID

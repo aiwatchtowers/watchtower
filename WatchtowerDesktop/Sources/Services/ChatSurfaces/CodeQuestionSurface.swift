@@ -72,7 +72,7 @@ enum CodeQuestionSurface {
         let contextID = origin.contextID(workbenchID: workbenchID)
         let provider = choice.provider.rawValue
         let model = choice.model.isEmpty ? nil : choice.model
-        let created: ChatNewResponse = try await writes.send(.chatNew) {
+        let created: ChatNewResponse = try await writes.perform(.chatNew) {
             ChatNewRequest(requestID: $0, routing: ChatRouting(automatic: false, provider: provider, model: model),
                            context: ChatContext(type: contextType, id: contextID, title: title))
         }
@@ -91,7 +91,7 @@ enum CodeQuestionSurface {
     static func setModelChoice(_ choice: ModelChoice, conversationID: Int64, writes: ChatWrites) async throws {
         let provider = choice.provider.rawValue
         let model = choice.model.isEmpty ? nil : choice.model
-        let _: ChatDone = try await writes.send(.chatSetModel) {
+        let _: ChatDone = try await writes.perform(.chatSetModel) {
             ChatSetModelRequest(requestID: $0, conversationID: conversationID, provider: provider, model: model)
         }
     }

@@ -114,7 +114,7 @@ package final class ArtifactPanelModel {
         defer { isSavingEdit = false }
         let (chatWrites, conversationID, messageID, saved) = (chatWrites, conversationID, base.messageID, draft)
         do {
-            let _: ChatArtifactSaveEditResponse = try await chatWrites.send(.chatArtifactSaveEdit) {
+            let _: ChatArtifactSaveEditResponse = try await chatWrites.perform(.chatArtifactSaveEdit) {
                 ChatArtifactSaveEditRequest(requestID: $0, conversationID: conversationID, messageID: messageID,
                                             artifactKey: saved.key, kind: saved.kind, title: saved.title,
                                             content: saved.content, meta: saved.meta.isEmpty ? nil : saved.meta)
@@ -164,11 +164,11 @@ package final class ArtifactPanelModel {
         let (chatWrites, conversationID, key, version) = (chatWrites, conversationID, key, shown.version)
         do {
             if remove {
-                let _: ChatDone = try await chatWrites.send(.chatArtifactUnkeep) {
+                let _: ChatDone = try await chatWrites.perform(.chatArtifactUnkeep) {
                     ChatArtifactUnkeepRequest(requestID: $0, conversationID: conversationID, artifactKey: key)
                 }
             } else {
-                let _: ChatDone = try await chatWrites.send(.chatArtifactKeep) {
+                let _: ChatDone = try await chatWrites.perform(.chatArtifactKeep) {
                     ChatArtifactKeepRequest(requestID: $0, conversationID: conversationID, artifactKey: key,
                                             version: Int64(version))
                 }

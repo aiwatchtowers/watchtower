@@ -270,7 +270,7 @@ final class ProjectDetailViewModel {
         let id = projectID
         do {
             // Already in the chain: the tower directly, or it would wait for itself.
-            let _: ChatDone = try await chatWrites.send(.chatProjectInstructions) {
+            let _: ChatDone = try await chatWrites.perform(.chatProjectInstructions) {
                 ChatProjectInstructionsRequest(requestID: $0, projectID: id, instructions: text)
             }
             pendingSave = nil
@@ -325,6 +325,6 @@ extension ProjectDetailViewModel {
         _ command: TowerCommand, _ params: @escaping @Sendable (String) -> Params
     ) async throws -> Resp {
         let chatWrites = chatWrites
-        return try await writes.runThrowing { try await chatWrites.send(command, params) }
+        return try await writes.runThrowing { try await chatWrites.perform(command, params) }
     }
 }

@@ -65,7 +65,7 @@ package final class ChatAttachmentStore: Sendable {
     /// at it (`chat.attach_delete`).
     package func discard(_ attachment: ChatAttachment) async throws {
         let id = attachment.id
-        let _: ChatChanged = try await writes.send(.chatAttachDelete) {
+        let _: ChatChanged = try await writes.perform(.chatAttachDelete) {
             ChatAttachmentRequest(requestID: $0, attachmentID: id)
         }
     }
@@ -81,7 +81,7 @@ package final class ChatAttachmentStore: Sendable {
         case .project(let id): projectID = id
         }
         let (conversation, project) = (conversationID, projectID)
-        let added: ChatAttachResponse = try await writes.send(.chatAttach) { request($0, conversation, project) }
+        let added: ChatAttachResponse = try await writes.perform(.chatAttach) { request($0, conversation, project) }
         let id = added.attachmentID
         guard let row = try await db.read({ db in
             try ChatAttachment.fetchOne(db, sql: "SELECT * FROM chat_attachments WHERE id = ?", arguments: [id])

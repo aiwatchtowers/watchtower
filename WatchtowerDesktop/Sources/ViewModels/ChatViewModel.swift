@@ -442,7 +442,7 @@ final class ChatViewModel {
         _ command: TowerCommand, _ params: @escaping @Sendable (String) -> Params
     ) async throws -> Resp {
         let chatWrites = chatWrites
-        return try await writes.runThrowing { try await chatWrites.send(command, params) }
+        return try await writes.runThrowing { try await chatWrites.perform(command, params) }
     }
 
     /// A conversation is being deleted: close its session; stop showing it
@@ -539,7 +539,7 @@ final class ChatViewModel {
         let chatWrites = chatWrites
         writes.start { [weak self] in
             do {
-                let result: ChatChanged = try await chatWrites.send(.chatDeleteUntouched) {
+                let result: ChatChanged = try await chatWrites.perform(.chatDeleteUntouched) {
                     ChatDeleteUntouchedRequest(requestID: $0, conversationID: draft.id, createdAt: draft.createdAt,
                                                projectID: draft.projectID)
                 }
@@ -1337,7 +1337,7 @@ final class ChatViewModel {
         let chatWrites = chatWrites
         let task = Task { [weak self] in
             do {
-                let _: ChatRecoverResponse = try await chatWrites.send(.chatRecover) {
+                let _: ChatRecoverResponse = try await chatWrites.perform(.chatRecover) {
                     ChatTurnRequest(requestID: $0, conversationID: id, turnID: turnID)
                 }
             } catch {

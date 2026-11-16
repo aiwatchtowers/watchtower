@@ -49,7 +49,7 @@ enum TuningChatSurface {
 
     /// Another conversation for the workbench (**New**): always a new row.
     static func newConversation(writes: ChatWrites, workbenchID: Int64) async throws -> Int64 {
-        let created: ChatNewResponse = try await writes.send(.chatNew) {
+        let created: ChatNewResponse = try await writes.perform(.chatNew) {
             ChatNewRequest(requestID: $0, context: ChatContext(type: contextType, id: String(workbenchID)))
         }
         return created.conversationID
@@ -78,7 +78,7 @@ enum TuningChatSurface {
         let line = joined.trimmingCharacters(in: .whitespaces)
         let title = String(line.prefix(titleLimit)).trimmingCharacters(in: .whitespaces)
         guard !title.isEmpty else { return }
-        let _: ChatDone = try await writes.send(.chatSetTitle) {
+        let _: ChatDone = try await writes.perform(.chatSetTitle) {
             ChatSetTitleRequest(requestID: $0, conversationID: conversationID, title: title, ifEmpty: true)
         }
     }

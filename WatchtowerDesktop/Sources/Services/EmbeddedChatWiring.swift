@@ -210,11 +210,11 @@ final class DatabaseDraftMirror: EmbeddedDraftMirror {
             for (key, text) in changes {
                 do {
                     if let text {
-                        let _: ChatDone = try await writes.send(.chatDraftSave) {
+                        let _: ChatDone = try await writes.perform(.chatDraftSave) {
                             ChatDraftSaveRequest(requestID: $0, surfaceKey: key, text: text)
                         }
                     } else {
-                        let _: ChatDone = try await writes.send(.chatDraftClear) {
+                        let _: ChatDone = try await writes.perform(.chatDraftClear) {
                             ChatDraftClearRequest(requestID: $0, surfaceKey: key)
                         }
                     }

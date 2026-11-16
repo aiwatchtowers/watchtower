@@ -193,7 +193,7 @@ final class TargetAssistantViewModel {
         let contextID = String(targetID)
         do {
             let conversation = try await writes.runThrowing {
-                let created: ChatNewResponse = try await chatWrites.send(.chatNew) {
+                let created: ChatNewResponse = try await chatWrites.perform(.chatNew) {
                     ChatNewRequest(requestID: $0, context: ChatContext(type: "target", id: contextID, title: title))
                 }
                 guard let row = try await pool.read({ try ChatConversationQueries.fetchByID($0, id: created.conversationID) })
@@ -226,7 +226,7 @@ final class TargetAssistantViewModel {
         let chatWrites = chatWrites
         return writes.start { [weak self] in
             do {
-                let _: ChatDone = try await chatWrites.send(.chatSetTitle) {
+                let _: ChatDone = try await chatWrites.perform(.chatSetTitle) {
                     ChatSetTitleRequest(requestID: $0, conversationID: conversationID, title: trimmed)
                 }
             } catch {
@@ -264,7 +264,7 @@ final class TargetAssistantViewModel {
             try await writes.runThrowing {
                 // Go deletes the messages with the conversation, in one
                 // transaction (`chat.delete` scoped to target chats).
-                let _: ChatDone = try await chatWrites.send(.chatDelete) {
+                let _: ChatDone = try await chatWrites.perform(.chatDelete) {
                     ChatDeleteRequest(requestID: $0, conversationID: conversationID, contextType: "target")
                 }
             }

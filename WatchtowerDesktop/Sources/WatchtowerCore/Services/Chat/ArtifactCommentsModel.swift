@@ -96,7 +96,7 @@ package final class ArtifactCommentsModel {
         let chatWrites = chatWrites
         writes.start { [self] in
             do {
-                let _: ChatDone = try await chatWrites.send(.chatCommentApply) {
+                let _: ChatDone = try await chatWrites.perform(.chatCommentApply) {
                     ChatCommentApplyRequest(requestID: $0, moved: plan.moved, lost: plan.lost, version: Int64(version))
                 }
             } catch {
@@ -128,7 +128,7 @@ package final class ArtifactCommentsModel {
                                      heading: anchor.heading)
         return await writes.run { [self] in
             do {
-                let _: ChatCommentAddResponse = try await chatWrites.send(.chatCommentAdd) {
+                let _: ChatCommentAddResponse = try await chatWrites.perform(.chatCommentAdd) {
                     ChatCommentAddRequest(requestID: $0, conversationID: conversationID, artifactKey: key,
                                           version: Int64(version), anchor: wire, body: body)
                 }
@@ -177,7 +177,7 @@ package final class ArtifactCommentsModel {
         writes.start { [self] in
             defer { changing.remove(id) }
             do {
-                let _: ChatChanged = try await chatWrites.send(command) { ChatCommentRequest(requestID: $0, commentID: id) }
+                let _: ChatChanged = try await chatWrites.perform(command) { ChatCommentRequest(requestID: $0, commentID: id) }
                 load(latest: artifact)
             } catch {
                 errorMessage = "Could not update the comment: \(error.localizedDescription)"

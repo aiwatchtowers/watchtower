@@ -699,7 +699,7 @@ struct RecordingDetailView: View {
             do {
                 // Go deletes the recording with its meeting chat, then its
                 // audio file after the commit (`meetings.delete`).
-                let _: MeetingsDeleteResponse = try await writes.send(.meetingsDelete) {
+                let _: MeetingsDeleteResponse = try await writes.perform(.meetingsDelete) {
                     MeetingsDeleteRequest(requestID: $0, transcriptID: transcriptID)
                 }
                 appState.embeddedChatCenter.dropContext(type: MeetingChatSurface.contextType, id: String(transcriptID))

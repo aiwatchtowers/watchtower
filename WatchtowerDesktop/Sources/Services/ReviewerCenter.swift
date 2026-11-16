@@ -79,7 +79,7 @@ final class ReviewerCenter {
         }
         threads[id] = .loading
         do {
-            let thread: ChatNewResponse = try await writes.send(.chatReviewerThread) {
+            let thread: ChatNewResponse = try await writes.perform(.chatReviewerThread) {
                 ChatReviewerThreadRequest(requestID: $0, projectID: id.projectID, branch: id.branch)
             }
             threads[id] = .ready(conversationID: thread.conversationID)

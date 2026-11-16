@@ -39,8 +39,9 @@ package struct ChatWrites: Sendable {
         self.tower = tower
     }
 
-    /// Sends `command`; the response, or why it was not applied.
-    package func send<Resp: Decodable & Sendable, Params: Encodable & Sendable>(
+    /// Runs `command` (a local database write by the daemon); the response, or
+    /// why it was not applied.
+    package func perform<Resp: Decodable & Sendable, Params: Encodable & Sendable>(
         _ command: TowerCommand,
         _ params: (_ requestID: String) -> Params
     ) async throws -> Resp {

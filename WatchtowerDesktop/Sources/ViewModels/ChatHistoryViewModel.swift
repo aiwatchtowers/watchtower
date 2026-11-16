@@ -220,7 +220,7 @@ final class ChatHistoryViewModel {
         let chatWrites = chatWrites
         writes.start { [weak self] in
             do {
-                let _: ChatDone = try await chatWrites.send(.chatRead) { ChatReadRequest(requestID: $0, conversationID: id) }
+                let _: ChatDone = try await chatWrites.perform(.chatRead) { ChatReadRequest(requestID: $0, conversationID: id) }
             } catch {
                 NSLog("ChatHistoryViewModel: marking chat %lld read failed: %@", id, error.localizedDescription)
                 self?.reloadSynchronously()
@@ -239,7 +239,7 @@ final class ChatHistoryViewModel {
         guard !trimmed.isEmpty else { return }
         await mutate(id, { $0.title = trimmed; $0.titleSource = "user" },
                      params: { ChatRenameRequest(requestID: $0, conversationID: id, title: trimmed) },
-                     send: { writes, params in let _: ChatDone = try await writes.send(.chatRename, params) })
+                     send: { writes, params in let _: ChatDone = try await writes.perform(.chatRename, params) })
     }
 
     /// A second press while the pin is written does nothing (board #670).
@@ -248,7 +248,7 @@ final class ChatHistoryViewModel {
             let pinned = !(conversations.first { $0.id == id }?.pinned ?? false)
             await mutate(id, { $0.pinned = pinned },
                          params: { ChatPinRequest(requestID: $0, conversationID: id, pinned: pinned) },
-                         send: { writes, params in let _: ChatDone = try await writes.send(.chatPin, params) })
+                         send: { writes, params in let _: ChatDone = try await writes.perform(.chatPin, params) })
         }
     }
 
@@ -260,7 +260,7 @@ final class ChatHistoryViewModel {
     func archive(_ id: Int64) async -> Bool {
         let archived = await mutate(id, nil,
                                     params: { ChatConversationRequest(requestID: $0, conversationID: id) },
-                                    send: { writes, params in let _: ChatDone = try await writes.send(.chatArchive, params) })
+                                    send: { writes, params in let _: ChatDone = try await writes.perform(.chatArchive, params) })
         guard archived else { return false }
         if selectedConversationID == id { selectedConversationID = nil }
         return true
@@ -387,7 +387,7 @@ final class ChatHistoryViewModel {
         let chatWrites = chatWrites
         do {
             try await writes.runThrowing {
-                let _: ChatDone = try await chatWrites.send(.chatDelete) {
+                let _: ChatDone = try await chatWrites.perform(.chatDelete) {
                     ChatDeleteRequest(requestID: $0, conversationID: id)
                 }
             }

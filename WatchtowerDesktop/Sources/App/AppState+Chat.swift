@@ -23,7 +23,7 @@ extension AppState {
         _ writes: ChatWrites, launchID: String = ChatLease.desktopLaunchID
     ) async {
         do {
-            let _: ChatReleaseLaunchesResponse = try await writes.send(.chatReleaseLaunches) {
+            let _: ChatReleaseLaunchesResponse = try await writes.perform(.chatReleaseLaunches) {
                 ChatReleaseLaunchesRequest(requestID: $0, keep: launchID)
             }
         } catch {

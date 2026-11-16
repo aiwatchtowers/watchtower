@@ -798,7 +798,7 @@ final class CodeQuestionCenter {
         let writes = chatWrites
         Task {
             do {
-                let _: ChatCount = try await writes.send(.chatCodeQuestionDeleteEmpty) {
+                let _: ChatCount = try await writes.perform(.chatCodeQuestionDeleteEmpty) {
                     ChatDeleteEmptyCodeQuestionsRequest(
                         requestID: $0, workbenchID: workbenchID, createdBefore: cutoff, keeping: keeping.sorted())
                 }
@@ -827,7 +827,7 @@ final class CodeQuestionCenter {
     /// code questions); one already gone counts as deleted.
     private static func delete(_ conversationID: Int64, writes: ChatWrites) async throws {
         do {
-            let _: ChatDone = try await writes.send(.chatDelete) {
+            let _: ChatDone = try await writes.perform(.chatDelete) {
                 ChatDeleteRequest(requestID: $0, conversationID: conversationID, contextType: CodeQuestionList.contextType)
             }
         } catch let error as ChatWriteError where error.isGone {
