@@ -9,6 +9,8 @@ public struct ChatComposerView: View {
     @Bindable var model: ChatComposerModel
     /// Opens the platform's file picker (the Mac's open panel, the phone's attachment menu); nil hides the button.
     var onAttach: (() -> Void)?
+    /// The shell's own row over the field (the phone's attachment pills with their upload state and Retry).
+    var accessory: AnyView?
     @State private var cursor = 0
     @State private var hits: [ChatEntityHit] = []
     @State private var skillHits: [ChatSkill] = []
@@ -17,6 +19,12 @@ public struct ChatComposerView: View {
     public init(model: ChatComposerModel, onAttach: (() -> Void)? = nil) {
         self.model = model
         self.onAttach = onAttach
+    }
+
+    public init(model: ChatComposerModel, onAttach: (() -> Void)?, accessory: AnyView?) {
+        self.model = model
+        self.onAttach = onAttach
+        self.accessory = accessory
     }
 
     private var conversation: ChatConversationModel { model.conversation }
@@ -37,7 +45,9 @@ public struct ChatComposerView: View {
                     hits = []
                 }
             }
+            newChatChips
             chips
+            if let accessory { accessory }
             HStack(alignment: .bottom, spacing: Spacing.regular) {
                 if let onAttach {
                     Button(action: onAttach) { Image(systemName: "paperclip") }
@@ -77,6 +87,33 @@ public struct ChatComposerView: View {
             hits = await model.search(entities: query)
         }
         .accessibilityIdentifier("chat.composer")
+    }
+
+    /// The model and project chips (a menu each on a new chat, locked text once it is saved).
+    @ViewBuilder private var newChatChips: some View {
+        if let modelChip = model.modelChip, let projectChip = model.projectChip, let choices = model.newChatChoices {
+            HStack(spacing: Spacing.compact) {
+                if modelChip.editable {
+                    Menu {
+                        ForEach(Array(ChatComposerModel.modelOptions(choices.models).enumerated()), id: \.offset) { _, option in
+                            Button(option.label) { model.routing = option.routing }
+                        }
+                    } label: { style.chip(modelChip.label + " ⌄") }
+                    .accessibilityIdentifier("chat.composer.model")
+                } else {
+                    style.chip(modelChip.label)
+                }
+                if projectChip.editable {
+                    Menu {
+                        Button(ChatComposerModel.noProject) { model.projectID = nil }
+                        ForEach(choices.projects) { project in Button(project.name) { model.projectID = project.id } }
+                    } label: { style.chip(projectChip.label + " ⌄") }
+                    .accessibilityIdentifier("chat.composer.project")
+                } else {
+                    style.chip(projectChip.label)
+                }
+            }
+        }
     }
 
     @ViewBuilder private var chips: some View {

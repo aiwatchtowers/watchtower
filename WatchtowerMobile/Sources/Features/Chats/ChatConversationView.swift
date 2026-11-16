@@ -1,21 +1,35 @@
+import ChatUI
 import ChatWire
 import PhotosUI
 import SwiftUI
+import UIKit
 import WatchtowerChatText
 import WatchtowerKit
 import WatchtowerSync
 
-/// The conversation screen (iPhone chat spec §6.2–§6.4, mockups 2a–2i, 3a–3c): the feed, the lines over the
-/// composer, the composer with its chips, quotes and files, and the sheets. Every text comes from
-/// `ChatConversationModel`, `ChatFeedItems`, `ChatComposerModel` and `ChatText`.
+/// The conversation screen's shell (unified chat spec §6.3): `ChatUI`'s feed and composer over the hub's
+/// `RelayChatClient`, with the phone's own parts around them — the title, the placeholder while no feed is here, the
+/// line over the feed (an approval's answer, a send a relaunch gave back, a file that did not attach, a turn waiting
+/// for a slot), the attachment picker, the artifact and sources sheets, and the alert routing.
 struct ChatConversationView: View {
+    static let newChatLine = "It answers with your Slack, mail, Jira, meetings and memory."
+    static let newChatTitle = "New chat"
+    static let waitingForSlot = "Waiting for a free slot"
+    static let photoName = "Photo.jpg"
+    static let removeFileLabel = "Remove file"
+    /// One style value: a fresh one per render would invalidate the whole feed each time.
+    private static let style: any ChatUIStyle = PhoneChatStyle()
+
     @Environment(AppEnvironment.self) private var env
+    @Environment(\.openURL) private var openURL
     let center: ChatsCenter
     let shot: ChatsShot?
-    @State private var model: ChatConversationModel
+    private let route: ChatRoute
+    @State private var conversation: ChatConversationModel
+    @State private var composer: ChatComposerModel
     @State private var artifact: ChatArtifactContent?
-    @State private var sources: [ChatFeed.Source]?
-    @State private var quoting: String?
+    @State private var sources: [ChatSource]?
+    @State private var attachNotice: String?
     @State private var attaching = false
     @State private var camera = false
     @State private var library = false
@@ -23,24 +37,33 @@ struct ChatConversationView: View {
     @State private var photos: [PhotosPickerItem] = []
 
     init(route: ChatRoute, center: ChatsCenter, shot: ChatsShot? = nil) {
+        self.route = route
         self.center = center
         self.shot = shot
-        _model = State(initialValue: center.conversation(route))
+        let (conversation, composer) = center.conversation(route)
+        _conversation = State(initialValue: conversation)
+        _composer = State(initialValue: composer)
     }
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 30)) { context in
-            screen(ChatsGateModel(ChatsGateInputs.current(env, shot: shot, snapshot: center.snapshot, now: context.date)),
-                   inputs: ChatsGateInputs.current(env, shot: shot, snapshot: center.snapshot, now: context.date))
+            screen(inputs: ChatsGateInputs.current(env, shot: shot, snapshot: center.snapshot, now: context.date))
         }
-        .navigationTitle(model.title)
+        .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
-        .sheet(item: $artifact) { ChatArtifactSheet(artifact: $0, host: host) }
-        .sheet(isPresented: Binding(get: { sources != nil }, set: { if !$0 { sources = nil } })) {
-            ChatSourcesSheet(sources: sources ?? [])
+        .sheet(item: $artifact) { artifact in
+            NavigationStack {
+                ScrollView {
+                    ArtifactViewer(artifact: artifact, openURL: { openURL($0) }, copy: { UIPasteboard.general.string = $0 })
+                        .padding(Spacing.large)
+                        .environment(\.chatUIStyle, Self.style)
+                }
+                .navigationTitle(artifact.title)
+                .navigationBarTitleDisplayMode(.inline)
+            }
         }
-        .sheet(isPresented: Binding(get: { quoting != nil }, set: { if !$0 { quoting = nil } })) {
-            ChatQuotePicker(text: quoting ?? "") { model.addQuote($0) }
+        .sheet(isPresented: Binding(get: { sources != nil }, set: { if !$0 { sources = nil } })) {
+            ChatSourcesList(sources: sources ?? []) { openURL($0) }
         }
         .sheet(isPresented: $attaching) {
             ChatAttachmentMenu { source in
@@ -55,7 +78,7 @@ struct ChatConversationView: View {
         .fullScreenCover(isPresented: $camera) {
             ChatCameraPicker { data in
                 camera = false
-                if let data { model.attach(data: data, fileName: Self.photoName) }
+                if let data { attach(data: data, fileName: Self.photoName) }
             }
             .ignoresSafeArea()
         }
@@ -64,278 +87,168 @@ struct ChatConversationView: View {
         .fileImporter(isPresented: $files, allowedContentTypes: ChatAttachmentMenu.fileTypes, allowsMultipleSelection: true) { result in
             importFiles(result)
         }
-        .onDisappear {
-            model.disappear()
-            if let screen { env.navigation.screenDisappeared(screen) }
+        .onChange(of: composer.draft) { keepDraft() }
+        .onChange(of: composer.quotes) { keepDraft() }
+        .onChange(of: alertScreen) { old, new in
+            if let old { env.navigation.screenDisappeared(old) }
+            if let new { env.navigation.screenAppeared(new) }
         }
+        .onAppear { if let alertScreen { env.navigation.screenAppeared(alertScreen) } }
+        .onDisappear { if let alertScreen { env.navigation.screenDisappeared(alertScreen) } }
     }
 
-    static let photoName = "Photo.jpg"
-
-    private var host: TowerHost {
-        ChatsGateInputs.current(env, shot: shot, snapshot: center.snapshot, now: Date()).host
+    private var title: String {
+        if let title = conversation.feed?.conversation.title, !title.isEmpty { return title }
+        guard let id = conversation.conversationID else { return Self.newChatTitle }
+        return center.snapshot.list?.conversations.first { $0.id == id }?.title ?? ""
     }
 
-    private var screen: AlertDestination? {
-        guard !model.isNew, let hubID = env.activeHubID else { return nil }
-        return .chat(hubID: hubID, conversationID: model.conversationID)
-    }
-
-    @ViewBuilder
-    private func screen(_ gate: ChatsGateModel, inputs: ChatsGateInputs) -> some View {
-        let host = inputs.host
-        let permissions = inputs.grant?.permissionsAllowed ?? false
-        let canAct = gate.allowsRowActions && model.lease == nil
-        let items = model.items(permissions: permissions, host: host)
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: Spacing.medium) {
-                    ForEach(items) { item in
-                        row(item, host: host, canAct: canAct).id(item.id)
-                    }
-                }
-                .padding(.horizontal, Spacing.large)
-                .padding(.vertical, Spacing.regular)
-            }
-            .defaultScrollAnchor(.bottom)
-            .overlay(alignment: model.placeholder == .loading ? .top : .center) {
-                if let placeholder = model.placeholder, items.isEmpty {
-                    placeholderView(placeholder, host: host).padding(.horizontal, Spacing.large).padding(.vertical, Spacing.regular)
-                }
-            }
-            .onChange(of: model.messages.count) {
-                model.followFocus()
-                if let focus = model.focusMessageID { proxy.scrollTo("m\(focus)", anchor: .center) }
-            }
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            composer(gate: gate, inputs: inputs)
-        }
-        .toolbar { toolbar(gate: gate, inputs: inputs) }
-        .onAppear {
-            model.appear(online: gate.allowsRowActions)
-            if let screen { env.navigation.screenAppeared(screen) }
-        }
-        .onChange(of: gate.allowsRowActions) { _, online in model.setOnline(online) }
-        .onChange(of: model.newestCompleteAnswer) { model.markRead() }
-        .onChange(of: model.live == nil) { model.markRead() }
+    /// The alert routing's screen: a saved conversation on the hub on screen.
+    private var alertScreen: AlertDestination? {
+        guard let id = conversation.conversationID, let hubID = env.activeHubID else { return nil }
+        return .chat(hubID: hubID, conversationID: id)
     }
 
     @ViewBuilder
-    private func placeholderView(_ placeholder: ChatConversationModel.Placeholder, host: TowerHost) -> some View {
-        switch placeholder {
-        case .newChat:
-            VStack(spacing: Spacing.regular) {
-                Text(ChatText.newChatTitle(host)).font(TypeScale.screenTitle)
-                Text(ChatConversationModel.newChatLine).font(TypeScale.meta).foregroundStyle(.secondary)
-            }
-            .multilineTextAlignment(.center)
-            .frame(maxWidth: .infinity)
-        case .loading:
-            VStack(alignment: .leading, spacing: Spacing.regular) {
-                skeleton(0.5).frame(maxWidth: .infinity, alignment: .trailing)
-                skeleton(1)
-                skeleton(0.75)
-                Text(ChatText.opening(host)).font(TypeScale.meta).foregroundStyle(.secondary).frame(maxWidth: .infinity)
-            }
-        case .noAnswer:
-            VStack(spacing: Spacing.regular) {
-                Text(ChatText.noAnswer(host)).font(TypeScale.meta).foregroundStyle(.secondary)
-                Button(ChatsGateModel.retry) { model.retryOpen() }.buttonStyle(SecondaryActionStyle()).frame(maxWidth: PhoneMetrics.gateButton)
-            }
-            .frame(maxWidth: .infinity)
-        case .neverLoaded:
-            Text(ChatText.neverLoaded(host))
-                .font(TypeScale.meta)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: .infinity)
-        }
-    }
-
-    private func skeleton(_ share: CGFloat) -> some View {
-        GeometryReader { proxy in
-            RoundedRectangle(cornerRadius: Radius.control).fill(Fill.card).frame(width: proxy.size.width * share)
-        }
-        .frame(height: PhoneMetrics.skeletonBar)
-    }
-
-    @ViewBuilder
-    private func row(_ item: ChatFeedItem, host: TowerHost, canAct: Bool) -> some View {
-        let actions = ChatFeedRowActions(
-            toggleSteps: { model.toggleSteps($0) },
-            openArtifact: { key in artifact = model.artifact(key) },
-            openSources: { sources = $0 },
-            regenerate: { model.regenerate($0) },
-            selectBranch: { model.selectBranch($0, step: $1) },
-            edit: { model.startEdit($0, text: $1) },
-            askAbout: { quoting = ChatFeedItems.displayText($0) },
-            loadEarlier: { model.loadEarlier() },
-            answer: { model.answer($0, $1) }
+    private func screen(inputs: ChatsGateInputs) -> some View {
+        let gate = ChatsGateModel(inputs)
+        let hold = center.hold(conversation.conversationID, composerSending: composer.isSending, host: inputs.host)
+        ChatUI.ChatConversationView(
+            conversation: conversation, composer: composer, partActions: partActions(inputs), onAttach: { attaching = true },
+            composerAccessory: pills, focusMessageID: route.messageID
         )
-        switch item {
-        case let .earlier(state):
-            ChatEarlierRow(state: state, host: host) { model.loadEarlier() }
-        case let .owner(owner):
-            ChatOwnerBubble(owner: owner, actions: actions)
-        case let .answer(answer):
-            ChatAnswerView(
-                answer: answer, expanded: model.expandedSteps.contains(answer.message.id), canAct: canAct, online: model.online, actions: actions
-            )
-        case let .actions(cards):
-            VStack(spacing: Spacing.regular) {
-                ForEach(cards) { card in ChatApprovalCard(model: card) { actions.answer(card.action, $0) } }
-            }
+        .environment(\.chatUIStyle, Self.style)
+        .overlay(alignment: .center) {
+            if conversation.messages.isEmpty { placeholder(inputs.host, online: gate.online) }
         }
-    }
-
-    // MARK: - The composer
-
-    private func composerLine(gate: ChatsGateModel, inputs: ChatsGateInputs, composer: ChatComposerModel) -> String? {
-        if let line = composer.line { return line }
-        if let line = model.leaseLine(inputs.host) { return line }
-        guard !gate.allowsRowActions else { return nil }
-        if inputs.relayUnreachable, inputs.mac.isOnline { return ChatText.relayUnreachableSending }
-        if case .asleep = inputs.mac { return ChatText.asleepSending(inputs.host) }
-        return ChatText.offlineSending(inputs.host)
-    }
-
-    private func composer(gate: ChatsGateModel, inputs: ChatsGateInputs) -> some View {
-        let list = center.snapshot.list
-        let composer = model.composer(list: list)
-        return VStack(alignment: .leading, spacing: Spacing.compact) {
-            if let line = composerLine(gate: gate, inputs: inputs, composer: composer) {
-                HStack(spacing: Spacing.small) {
-                    Text(line).font(TypeScale.meta).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                    if composer.isEditing {
-                        Button { model.cancelEdit() } label: { Image(systemName: "xmark.circle.fill") }
-                            .accessibilityLabel(ChatComposerModel.cancelEditLabel)
+        .toolbar {
+            if let chip = ChatNavChip(mac: inputs.mac, relayUnreachable: inputs.relayUnreachable) {
+                ToolbarItem(placement: .topBarTrailing) {
+                    HStack(spacing: Spacing.small) {
+                        Circle().fill(chip.tone.color).frame(width: PhoneMetrics.macDot, height: PhoneMetrics.macDot)
+                        Text(chip.word).font(TypeScale.pill).foregroundStyle(.secondary)
                     }
+                    .padding(.horizontal, Spacing.regular)
+                    .padding(.vertical, Spacing.small)
+                    .background(Fill.rest, in: Capsule())
+                    .accessibilityElement(children: .combine)
                 }
-                .frame(maxWidth: .infinity)
-            }
-            chips(composer, list: list)
-            if !model.draft.attachments.isEmpty { attachmentPills }
-            HStack(alignment: .bottom, spacing: Spacing.small) {
-                Button { attaching = true } label: {
-                    Image(systemName: "plus").frame(width: PhoneMetrics.minTouch, height: PhoneMetrics.minTouch)
-                }
-                .disabled(!composer.canAttach)
-                .accessibilityLabel(ChatComposerModel.attachLabel)
-                TextField(composer.placeholder, text: Binding(get: { model.draft.text }, set: { model.setText($0) }), axis: .vertical)
-                    .font(TypeScale.rowTitle)
-                    .lineLimit(1...6)
-                    .padding(.vertical, Spacing.regular)
-                    .padding(.horizontal, Spacing.medium)
-                    .background(Fill.card, in: RoundedRectangle(cornerRadius: Radius.pill, style: .continuous))
-                sendButton(composer, list: list)
             }
         }
-        .padding(.horizontal, Spacing.regular)
-        .padding(.vertical, Spacing.compact)
-        .background(alignment: .top) { Divider() }
-        .background(PhoneSurface.page, ignoresSafeAreaEdges: .bottom)
+        .onChange(of: hold, initial: true) { composer.hold = hold }
+        .onChange(of: hasFiles, initial: true) { composer.hasShellAttachments = hasFiles }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if let line = topLine {
+                Text(line)
+                    .font(TypeScale.meta)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, Spacing.large)
+                    .padding(.vertical, Spacing.small)
+                    .background(PhoneSurface.page)
+                    .accessibilityIdentifier("chat.phoneLine")
+            }
+        }
+        .onChange(of: gate, initial: true) { center.setGate(gate, host: inputs.host) }
     }
 
-    private func sendButton(_ composer: ChatComposerModel, list: ChatList?) -> some View {
-        Button {
-            if composer.showsStop { model.stop() } else { model.send(list: list) }
-        } label: {
-            Image(systemName: composer.showsStop ? "stop.circle.fill" : "arrow.up.circle.fill")
-                .font(.title)
-                .symbolRenderingMode(.palette)
-                .foregroundStyle(
-                    composer.showsStop ? PhoneSurface.page : (composer.canSend ? Color.white : Color.secondary),
-                    composer.showsStop ? Color.primary : (composer.canSend ? Color.accentColor : Fill.card)
-                )
-                .frame(minWidth: PhoneMetrics.minTouch, minHeight: PhoneMetrics.minTouch)
-        }
-        .buttonStyle(.plain)
-        .disabled(composer.showsStop ? !composer.canStop : !composer.canSend)
-        .accessibilityLabel(composer.showsStop ? ChatComposerModel.stopLabel : ChatComposerModel.sendLabel)
+    /// The phone's line over the feed, newest concern first.
+    private var topLine: String? {
+        if let attachNotice { return attachNotice }
+        if let id = conversation.conversationID ?? (route.isNew ? 0 : nil), let notice = center.drafts.draft(id).notice { return notice }
+        if conversation.feed?.conversation.lease?.waitingSlot == true { return Self.waitingForSlot }
+        return nil
     }
 
     @ViewBuilder
-    private func chips(_ composer: ChatComposerModel, list: ChatList?) -> some View {
-        if !composer.quotes.isEmpty {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: Spacing.small) {
-                    ForEach(composer.quotes) { quote in
-                        Button { model.removeQuote(quote.id) } label: {
-                            Text("❝ \(quote.quote) ✕").lineLimit(1)
-                        }
-                        .buttonStyle(ChatChipStyle())
-                    }
+    private func placeholder(_ host: TowerHost, online: Bool) -> some View {
+        Group {
+            if conversation.conversationID == nil {
+                VStack(spacing: Spacing.regular) {
+                    Text(ChatText.newChatTitle(host)).font(TypeScale.screenTitle)
+                    Text(Self.newChatLine).font(TypeScale.meta).foregroundStyle(.secondary)
                 }
-            }
-        } else {
-            HStack(spacing: Spacing.small) {
-                if composer.modelChip.editable {
-                    Menu {
-                        ForEach(Array(ChatComposerModel.modelOptions(list).enumerated()), id: \.offset) { _, option in
-                            Button(option.label) { model.setRouting(option.routing) }
-                        }
-                    } label: { Text(composer.modelChip.label + " ⌄").modifier(ChatChipLook()) }
-                    Menu {
-                        Button(ChatComposerModel.noProject) { model.setProject(nil) }
-                        ForEach(list?.projects ?? []) { project in Button(project.name) { model.setProject(project.id) } }
-                    } label: { Label(composer.projectChip.label + " ⌄", systemImage: "folder").modifier(ChatChipLook()) }
+            } else if let id = conversation.conversationID, conversation.feed == nil {
+                if online, center.client.unanswered.contains(id) {
+                    // Mockup 2g: no feed within the patience.
+                    VStack(spacing: Spacing.regular) {
+                        Text(ChatText.noAnswer(host)).font(TypeScale.meta).foregroundStyle(.secondary)
+                        Button(ChatsGateModel.retry) { center.client.retryFeed(id) }
+                            .buttonStyle(SecondaryActionStyle())
+                            .frame(maxWidth: PhoneMetrics.gateButton)
+                    }
                 } else {
-                    Text(composer.modelChip.label).modifier(ChatChipLook())
-                    Label(composer.projectChip.label, systemImage: "folder").modifier(ChatChipLook())
+                    Text(online ? ChatText.opening(host) : ChatText.neverLoaded(host))
+                        .font(TypeScale.meta)
+                        .foregroundStyle(.secondary)
+                        .allowsHitTesting(false)
                 }
             }
         }
+        .multilineTextAlignment(.center)
+        .padding(.horizontal, Spacing.large)
     }
 
-    private var attachmentPills: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
+    /// Files wait in the draft: a saved chat may send them with no text.
+    private var hasFiles: Bool { !center.drafts.draft(conversation.conversationID ?? 0).attachments.isEmpty }
+
+    /// The files waiting to go with the next send (mockup 2b's pills): their upload state, Retry on a refused one.
+    private var pills: AnyView? {
+        let key = conversation.conversationID ?? 0
+        let files = center.drafts.draft(key).attachments
+        guard !files.isEmpty else { return nil }
+        return AnyView(ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: Spacing.small) {
-                ForEach(model.draft.attachments) { file in
+                ForEach(files) { file in
                     HStack(spacing: Spacing.small) {
                         Image(systemName: file.isImage ? "photo" : "doc")
                         Text(file.name).lineLimit(1)
                         switch file.state {
                         case .uploading: ProgressView().controlSize(.mini)
-                        case .failed: Button(ChatsGateModel.retry) { model.retryAttachment(file.id) }
+                        case .failed: Button(ChatsGateModel.retry) { center.retryAttachment(file.id, conversation: key) }
                         case .ready, .uploaded: EmptyView()
                         }
-                        Button { model.removeAttachment(file.id) } label: { Image(systemName: "xmark") }
+                        Button { center.removeAttachment(file.id, conversation: key) } label: { Image(systemName: "xmark") }
                             .disabled(file.state == .uploading)
+                            .accessibilityLabel(Self.removeFileLabel)
                     }
-                    .modifier(ChatChipLook())
+                    .font(TypeScale.pill)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, Spacing.regular)
+                    .padding(.vertical, Spacing.small)
+                    .background(Fill.card, in: Capsule())
                 }
             }
-        }
+        })
     }
 
-    @ToolbarContentBuilder
-    private func toolbar(gate: ChatsGateModel, inputs: ChatsGateInputs) -> some ToolbarContent {
-        if let chip = ChatNavChip(mac: inputs.mac, relayUnreachable: inputs.relayUnreachable) {
-            ToolbarItem(placement: .topBarTrailing) {
-                HStack(spacing: Spacing.small) {
-                    Circle().fill(chip.tone.color).frame(width: PhoneMetrics.macDot, height: PhoneMetrics.macDot)
-                    Text(chip.word).font(TypeScale.pill).foregroundStyle(.secondary)
-                }
-                .padding(.horizontal, Spacing.regular)
-                .padding(.vertical, Spacing.small)
-                .background(Fill.rest, in: Capsule())
-                .accessibilityElement(children: .combine)
-            }
-        } else if !model.isNew, let conversation = center.snapshot.list?.conversations.first(where: { $0.id == model.conversationID }) {
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    Button {
-                        Task { await center.rowActions.togglePin(conversation) }
-                    } label: {
-                        Label(ChatRowActions.pinActionTitle(pinned: conversation.pinned), systemImage: conversation.pinned ? "pin.slash" : "pin")
-                    }
-                } label: { Image(systemName: "ellipsis") }
-            }
-        }
+    private func partActions(_ inputs: ChatsGateInputs) -> ChatPartActions {
+        let client = center.client
+        let permissions = inputs.grant?.permissionsAllowed ?? false
+        let host = inputs.host
+        return ChatPartActions(
+            openURL: { openURL($0) },
+            copy: { UIPasteboard.general.string = $0 },
+            openArtifact: { artifact = $0 },
+            openSources: { sources = $0 },
+            decide: { payload, decision in
+                Task { await client.decide(payload, decision, permissions: permissions) }
+            },
+            approvalState: { payload in client.approvalCard(payload, permissions: permissions, host: host).state }
+        )
+    }
+
+    private func keepDraft() {
+        center.keepDraft(conversation.conversationID ?? 0, text: composer.draft, quotes: composer.quotes)
     }
 
     // MARK: - Files
+
+    /// Prepares and stages a picked file into the draft: it uploads with the next send (`chat_attachment` first).
+    private func attach(data: Data, fileName: String) {
+        attachNotice = center.attach(data: data, fileName: fileName, conversation: conversation.conversationID ?? 0)
+    }
 
     private func loadPhotos(_ items: [PhotosPickerItem]) {
         guard !items.isEmpty else { return }
@@ -344,7 +257,7 @@ struct ChatConversationView: View {
             for (index, item) in items.enumerated() {
                 guard let data = try? await item.loadTransferable(type: Data.self) else { continue }
                 let ext = item.supportedContentTypes.first?.preferredFilenameExtension ?? "jpg"
-                model.attach(data: data, fileName: "Photo \(index + 1).\(ext)")
+                attach(data: data, fileName: "Photo \(index + 1).\(ext)")
             }
         }
     }
@@ -355,28 +268,71 @@ struct ChatConversationView: View {
             let scoped = url.startAccessingSecurityScopedResource()
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
             guard let data = try? Data(contentsOf: url) else {
-                center.drafts.setNotice(ChatSendCoordinator.couldNotSend, conversation: model.conversationID)
+                attachNotice = ChatSendCoordinator.couldNotSend
                 continue
             }
-            model.attach(data: data, fileName: url.lastPathComponent)
+            attach(data: data, fileName: url.lastPathComponent)
         }
     }
 }
 
-/// A chip over the composer (mockups 2a, 2h, 2i).
-struct ChatChipLook: ViewModifier {
-    func body(content: Content) -> some View {
-        content
-            .font(TypeScale.pill)
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, Spacing.regular)
-            .padding(.vertical, Spacing.small)
-            .background(Fill.card, in: Capsule())
+/// An answer's sources, grouped as on the Mac (`ChatSourceGrouping`); a source with a link opens it.
+struct ChatSourcesList: View {
+    static let title = "Sources"
+
+    let sources: [ChatSource]
+    let open: (URL) -> Void
+
+    var body: some View {
+        NavigationStack {
+            List {
+                ForEach(ChatSourceGrouping.groups(sources)) { group in
+                    Section(group.name) {
+                        ForEach(Array(group.sources.enumerated()), id: \.offset) { _, source in
+                            row(source)
+                        }
+                    }
+                }
+            }
+            .navigationTitle(Self.title)
+            .navigationBarTitleDisplayMode(.inline)
+        }
+    }
+
+    @ViewBuilder
+    private func row(_ source: ChatSource) -> some View {
+        let label = VStack(alignment: .leading, spacing: Spacing.tight) {
+            Text(ChatSourceGrouping.displayTitle(source)).font(TypeScale.rowTitle).lineLimit(2)
+            if let snippet = source.snippet, !snippet.isEmpty {
+                Text(snippet).font(TypeScale.meta).foregroundStyle(.secondary).lineLimit(2)
+            }
+        }
+        if let url = SourceLinkResolver.url(for: source, jiraSiteURL: nil) {
+            Button { open(url) } label: { label }.buttonStyle(.plain)
+        } else {
+            label
+        }
     }
 }
 
-struct ChatChipStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label.modifier(ChatChipLook()).opacity(configuration.isPressed ? PhoneOpacity.pressed : 1)
+/// The nav-bar chip while the hub does not answer (mockup 2e): "asleep" or "offline", in the Mac status chip's tone.
+struct ChatNavChip: Equatable {
+    static let asleep = "asleep"
+    static let offline = "offline"
+
+    let word: String
+    let tone: PhoneTone
+
+    /// Nil while the hub answers.
+    init?(mac: MacReachability, relayUnreachable: Bool) {
+        switch mac {
+        case .online:
+            guard relayUnreachable else { return nil }
+            (word, tone) = (Self.offline, .secondary)
+        case .asleep:
+            (word, tone) = (Self.asleep, .gray)
+        case .offline:
+            (word, tone) = (Self.offline, .secondary)
+        }
     }
 }

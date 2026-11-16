@@ -9,6 +9,22 @@ public enum ChatApprovalDecision: Sendable, Equatable {
     case reject
 }
 
+/// How an approval card's decision row stands, as the screen knows it: whether Approve and Reject show at all (the
+/// device may answer), whether they are live (no answer on its way, the chat reachable), and the line under them (where
+/// to approve instead, the answer on its way, a refusal). Nil from `ChatPartActions.approvalState` keeps the default:
+/// buttons on a pending action.
+public struct ChatApprovalState: Equatable, Sendable {
+    public let showsButtons: Bool
+    public let canAnswer: Bool
+    public let line: String?
+
+    public init(showsButtons: Bool, canAnswer: Bool, line: String?) {
+        self.showsButtons = showsButtons
+        self.canAnswer = canAnswer
+        self.line = line
+    }
+}
+
 /// What a part view may do. Every effect goes back to the screen that owns the conversation; a part view never talks
 /// to the engine itself. CHAT-05: nothing here sends content on its own — `sendFixedText` posts an owner text the owner
 /// pressed (a fallback's `chat_turn`, a question card's answers), and links only open or copy.
@@ -30,6 +46,9 @@ public struct ChatPartActions {
     /// The Mac's own agent-action card (Slack editing, reconnect, the automation editor), shared with its Inbox. Nil
     /// on the phone and in tests: the shared approval card draws the action.
     public var approvalCard: ((ChatApprovalPayload) -> AnyView?)?
+    /// The decision row's state for a pending action (the phone: its `permissions` grant, an answer in flight, a
+    /// refusal). Nil keeps Approve and Reject live.
+    public var approvalState: ((ChatApprovalPayload) -> ChatApprovalState?)?
 
     public init(
         sendFixedText: @escaping (String) -> Void = { _ in },
@@ -40,7 +59,8 @@ public struct ChatPartActions {
         openArtifact: @escaping (ChatArtifactContent) -> Void = { _ in },
         openSources: @escaping ([ChatSource]) -> Void = { _ in },
         decide: @escaping (ChatApprovalPayload, ChatApprovalDecision) -> Void = { _, _ in },
-        approvalCard: ((ChatApprovalPayload) -> AnyView?)? = nil
+        approvalCard: ((ChatApprovalPayload) -> AnyView?)? = nil,
+        approvalState: ((ChatApprovalPayload) -> ChatApprovalState?)? = nil
     ) {
         self.sendFixedText = sendFixedText
         self.openURL = openURL
@@ -51,6 +71,7 @@ public struct ChatPartActions {
         self.openSources = openSources
         self.decide = decide
         self.approvalCard = approvalCard
+        self.approvalState = approvalState
     }
 }
 

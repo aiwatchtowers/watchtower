@@ -9,6 +9,8 @@ public struct ChatConversationView: View {
     let composer: ChatComposerModel
     let partActions: ChatPartActions
     var onAttach: (() -> Void)?
+    var composerAccessory: AnyView?
+    var focusMessageID: Int64?
 
     public init(
         conversation: ChatConversationModel,
@@ -22,12 +24,34 @@ public struct ChatConversationView: View {
         self.onAttach = onAttach
     }
 
+    /// With the shell's row over the composer field (`ChatComposerView.accessory`) and a message to show first (a
+    /// search hit: the feed pages back to it and scrolls to it).
+    public init(
+        conversation: ChatConversationModel,
+        composer: ChatComposerModel,
+        partActions: ChatPartActions,
+        onAttach: (() -> Void)?,
+        composerAccessory: AnyView?,
+        focusMessageID: Int64?
+    ) {
+        self.conversation = conversation
+        self.composer = composer
+        self.partActions = partActions
+        self.onAttach = onAttach
+        self.composerAccessory = composerAccessory
+        self.focusMessageID = focusMessageID
+    }
+
     public var body: some View {
         VStack(spacing: 0) {
             ChatFeedView(messages: conversation.messages, context: feedContext)
-            ChatComposerView(model: composer, onAttach: onAttach)
+            ChatComposerView(model: composer, onAttach: onAttach, accessory: composerAccessory)
         }
-        .onAppear { conversation.start() }
+        .onAppear {
+            if let focusMessageID { conversation.focusMessageID = focusMessageID }
+            conversation.start()
+        }
+        .task(id: conversation.messages.first?.id) { await conversation.followFocus() }
         .onDisappear { conversation.stop() }
         .task(id: conversation.messages.last?.id) { await conversation.markRead() }
     }
@@ -52,7 +76,8 @@ public struct ChatConversationView: View {
             staleLine: conversation.isStale ? ChatConversationModel.staleLine : nil,
             notice: nil,
             partActions: actions,
-            rowActions: rowActions
+            rowActions: rowActions,
+            focusMessageID: conversation.focusMessageID
         )
     }
 }

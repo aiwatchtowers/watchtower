@@ -21,6 +21,12 @@ public struct ChatTurnRequest: Sendable, Equatable, Codable {
     /// The artifact comments this turn sends to the assistant.
     public let artifactCommentIDs: [Int64]
     public let clientKey: String
+    /// A new chat's project, for a client that creates the chat with its first turn (`conversationID` 0,
+    /// `ChatClient.createsConversationOnTurn`). Never on chat.sock.
+    public var projectID: Int64?
+    /// What the composer held when it sent: kept with a send that may outlive the app, so a refused one comes back as
+    /// typed. Never on the wire.
+    public var draft: ChatTurnDraft?
 
     public init(
         conversationID: Int64,
@@ -32,7 +38,9 @@ public struct ChatTurnRequest: Sendable, Equatable, Codable {
         compose: ChatCompose? = nil,
         screenContext: String? = nil,
         artifactCommentIDs: [Int64] = [],
-        clientKey: String
+        clientKey: String,
+        projectID: Int64? = nil,
+        draft: ChatTurnDraft? = nil
     ) {
         self.conversationID = conversationID
         self.mode = mode
@@ -44,6 +52,8 @@ public struct ChatTurnRequest: Sendable, Equatable, Codable {
         self.screenContext = screenContext
         self.artifactCommentIDs = artifactCommentIDs
         self.clientKey = clientKey
+        self.projectID = projectID
+        self.draft = draft
     }
 
     enum CodingKeys: String, CodingKey {
@@ -55,6 +65,17 @@ public struct ChatTurnRequest: Sendable, Equatable, Codable {
         case routing, compose, screenContext
         case artifactCommentIDs = "artifactCommentIds"
         case clientKey
+    }
+}
+
+/// The composer's draft behind a sent turn: the typed text and the quoted passages, before they were composed.
+public struct ChatTurnDraft: Sendable, Hashable {
+    public let text: String
+    public let quotes: [String]
+
+    public init(text: String, quotes: [String] = []) {
+        self.text = text
+        self.quotes = quotes
     }
 }
 

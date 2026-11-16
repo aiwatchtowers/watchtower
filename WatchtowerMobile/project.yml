@@ -24,6 +24,8 @@ packages:
   # The chat shared with the Mac (unified chat spec §6.1): ChatWire carries the
   # chat wire models, operations and stores; the relay conformances of its
   # models are the app's (Sources/Features/Chats/ChatWireKitConformances.swift).
+  # ChatUI draws the Chats tab's conversation, list rows and search hits over
+  # the app's RelayChatClient (unified chat spec §6.3).
   WatchtowerChat:
     path: ../WatchtowerChat
   # GRDB is transitive through WatchtowerKit, but the app and its tests use
@@ -86,6 +88,8 @@ targets:
         product: WatchtowerChatText
       - package: WatchtowerChat
         product: ChatWire
+      - package: WatchtowerChat
+        product: ChatUI
       - package: GRDB
         product: GRDB
       - package: SwiftProtobuf

@@ -140,17 +140,21 @@ public struct ChatTurnStarted: Hashable, Sendable, Decodable {
     public let userMessageID: Int64
     public let assistantMessageID: Int64
     public let turnID: String
+    /// The chat the turn went to, when the turn created it (`ChatClient.createsConversationOnTurn`); nil otherwise.
+    public let conversationID: Int64?
 
-    public init(userMessageID: Int64, assistantMessageID: Int64, turnID: String) {
+    public init(userMessageID: Int64, assistantMessageID: Int64, turnID: String, conversationID: Int64? = nil) {
         self.userMessageID = userMessageID
         self.assistantMessageID = assistantMessageID
         self.turnID = turnID
+        self.conversationID = conversationID
     }
 
     enum CodingKeys: String, CodingKey {
         case userMessageID = "userMessageId"
         case assistantMessageID = "assistantMessageId"
         case turnID = "turnId"
+        case conversationID = "conversationId"
     }
 }
 

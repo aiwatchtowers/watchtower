@@ -24,6 +24,7 @@ public final class ChatComposerModel {
     public static let followUpPlaceholder = "Ask a follow-up"
     public static let quotePlaceholder = "Ask about the quote"
     public static let editingLine = "Editing your message"
+    public static let overLimitLine = "A message holds up to 32 000 characters."
     public static let sendLabel = "Send"
     public static let stopLabel = "Stop"
 
@@ -43,6 +44,14 @@ public final class ChatComposerModel {
     /// Editing this owner message instead of sending a new one.
     public var editing: Int64?
     public private(set) var isSending = false
+    /// What a new chat may be started with; set by a shell that shows the model and project chips.
+    public var newChatChoices: ChatNewChatChoices?
+    /// Why the shell holds sending (for example a send that waits for the hub after a relaunch): Send is off and the
+    /// line says so. Nil lets the composer send.
+    public var hold: String?
+    /// The shell holds files of its own that go with the next send (the phone's staged pills, uploaded by its client):
+    /// a saved chat may then send them with no text, as it may its own `attachments`.
+    public var hasShellAttachments = false
     /// The `/` picker's catalog, read once.
     private var skillCatalog: [ChatSkill]?
     public private(set) var notice: String?
@@ -61,10 +70,13 @@ public final class ChatComposerModel {
     }
 
     public var canSend: Bool {
-        guard conversation.reachability == .connected, !conversation.isGone, !isSending,
-              !conversation.isTurnRunning else { return false }
-        return sendText != nil || (!attachments.isEmpty && conversation.conversationID != nil)
+        guard conversation.reachability == .connected, !conversation.isGone, !isSending, hold == nil,
+              !conversation.isTurnRunning, fits else { return false }
+        return sendText != nil || ((!attachments.isEmpty || hasShellAttachments) && conversation.conversationID != nil)
     }
+
+    /// The text is within the hub's cap (32 000 Unicode scalars, `ChatLimits`).
+    public var fits: Bool { sendText.map(ChatLimits.textFits) ?? true }
 
     public var placeholder: String {
         if !quotes.isEmpty { return Self.quotePlaceholder }
@@ -76,7 +88,9 @@ public final class ChatComposerModel {
 
     /// The line under the field: a refusal, else the edit mode.
     public var line: String? {
-        notice ?? conversation.notice ?? (editing != nil ? Self.editingLine : nil)
+        if let hold { return hold }
+        if !fits { return Self.overLimitLine }
+        return notice ?? conversation.notice ?? (editing != nil ? Self.editingLine : nil)
     }
 
     /// Sends the draft. The text stays until the echo is `applied` (CHAT-01); a lost echo resends with the same key.
@@ -86,7 +100,15 @@ public final class ChatComposerModel {
         defer { isSending = false }
         let sentDraft = draft
         let text = sendText ?? ""
-        guard let conversationID = await ensureConversation() else { return }
+        // A client that creates the chat with its first turn sends conversation 0 (the send is kept from the start).
+        let createsOnTurn = conversation.conversationID == nil && client.createsConversationOnTurn
+        let conversationID: Int64
+        if createsOnTurn {
+            conversationID = 0
+        } else {
+            guard let id = await ensureConversation() else { return }
+            conversationID = id
+        }
         let request = ChatTurnRequest(
             conversationID: conversationID,
             mode: editing == nil ? .send : .edit,
@@ -95,9 +117,14 @@ public final class ChatComposerModel {
             attachmentIDs: attachments.map(\.id),
             routing: routing,
             compose: skill == nil && mentions.isEmpty ? nil : ChatCompose(skill: skill, mentions: mentions),
-            clientKey: UUID().uuidString
+            clientKey: UUID().uuidString,
+            projectID: createsOnTurn ? projectID : nil,
+            draft: ChatTurnDraft(text: draft, quotes: quotes.map(\.quote))
         )
         let echo = await conversation.sendTurn(request)
+        if case .applied(.turn(let started))? = echo, let created = started.conversationID, conversation.conversationID == nil {
+            conversation.adopt(created)
+        }
         switch echo {
         case .applied?:
             notice = nil

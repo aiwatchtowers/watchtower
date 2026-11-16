@@ -51,7 +51,9 @@ final class ChatActionParamsTests: XCTestCase {
 
     func testTurn() throws {
         try check("turn_send", ChatTurnParams(
-            conversationID: 2, mode: .send, text: "Summarize the rollout", routing: ChatRouting(mode: "auto")))
+            conversationID: 2, mode: .send, text: "Summarize the rollout for @Alice", routing: ChatRouting(mode: "auto"),
+            clientKey: "6F1C2D3E-4A5B-4C6D-8E7F-901A2B3C4D5E",
+            compose: ChatCompose(skill: "weekly-report", mentions: [.init(kind: "person", id: "U0001", label: "Alice")])))
         try check("turn_regenerate", ChatTurnParams(conversationID: 1, mode: .regenerate, messageID: 2, text: ""))
     }
 

@@ -1,7 +1,9 @@
+import ChatUI
 import ChatWire
 import CryptoKit
 import SwiftUI
 import UIKit
+import WatchtowerChatText
 import WatchtowerHostedRelay
 import WatchtowerKit
 @testable import WatchtowerSync
@@ -222,10 +224,12 @@ final class ScreenshotTourTests: XCTestCase {
             ChatsShot(center: center(ChatList(conversations: [], error: "read_failed")), heartbeat: on, route: relay)
         )
         let searching = center(list, searches: [DemoSeed.Chat.searchQuery: DemoSeed.Chat.search(now: now)])
-        searching.search.setQuery(DemoSeed.Chat.searchQuery)
+        // The hits are in before the frame (the search answers from the record the center holds).
+        searching.listQuery = DemoSeed.Chat.searchQuery
+        await searching.listModel.search(DemoSeed.Chat.searchQuery)
         try await shot("C1i", "chats-search", "search \"billing\" with the Mac's hits", ChatsShot(center: searching, heartbeat: on, route: relay))
         let deleting = Self.chatCenter(list, sleep: holds)
-        deleting.rowActions.delete(5)
+        deleting.listModel.delete(5)
         try await shot("C1j", "chats-undo-delete", "a chat deleted, the Undo bar up", ChatsShot(center: deleting, heartbeat: on, route: relay))
         try await shot(
             "C1k", "chats-turned-off", "the organization's policy",
@@ -256,19 +260,20 @@ final class ScreenshotTourTests: XCTestCase {
         return rows
     }
 
-    /// The unified chat's new parts (spec 2026-11-16 §10, #1822 T0) as static mocks: a question card, a Slack approval card and
-    /// the fallback card. T9 switches each to the real view under the same name. Named by shot, not by frame number.
+    /// The unified chat's new parts (spec 2026-11-16 §10, #1822 T0): a question card, a Slack approval card and the
+    /// fallback card, drawn by `ChatUI` in the phone's style (T9 replaced the T0 mocks under the same names). Named by
+    /// shot, not by frame number.
     private func captureUnifiedChatMocks(host: ScreenshotHost) async throws -> [ScreenshotHost.IndexRow] {
-        let frames: [(String, AnyView)] = [
-            ("iphone-chat-question-card", AnyView(UnifiedChatMock.questionCard)),
-            ("iphone-chat-approval-slack", AnyView(UnifiedChatMock.slackApproval)),
-            ("chat-part-fallback", AnyView(UnifiedChatMock.fallback))
+        let frames: [(String, String, AnyView)] = [
+            ("iphone-chat-question-card", "QuestionPartView", AnyView(UnifiedChatParts.questionCard)),
+            ("iphone-chat-approval-slack", "ApprovalPartView", AnyView(UnifiedChatParts.slackApproval)),
+            ("chat-part-fallback", "FallbackPartView", AnyView(UnifiedChatParts.fallback))
         ]
         var rows: [ScreenshotHost.IndexRow] = []
-        for (name, view) in frames {
-            try await host.captureThree(name, view)
+        for (name, view, frame) in frames {
+            try await host.captureThree(name, frame)
             rows.append(ScreenshotHost.IndexRow(
-                number: name, view: "UnifiedChatMock", source: "Tests/ScreenshotTourTests.swift", reached: "static mock, light/dark/narrow"
+                number: name, view: view, source: "WatchtowerChat/Sources/ChatUI/Parts", reached: "ChatUI part, phone style, light/dark/narrow"
             ))
         }
         return rows
@@ -317,20 +322,29 @@ final class ScreenshotTourTests: XCTestCase {
         try await shot("C2g", "chat-loading", "no feed yet", ChatRoute(id: Feeds.meeting), center(nil))
         try await shot("C2h", "chat-new", "a new chat", .new, center(nil))
         let quoting = center(Feeds.quoting(now: now))
-        quoting.drafts.update(Feeds.roadmap) { $0.quotes = [Feeds.quote] }
+        quoting.keepDraft(Feeds.roadmap, text: "", quotes: [Feeds.quote])
         try await shot("C2i", "chat-quote", "a quote waits, older history above", ChatRoute(id: Feeds.roadmap), quoting)
 
         let menu = NavigationStack {
             Color.clear
-                .navigationTitle(ChatConversationModel.newChatTitle)
+                .navigationTitle(ChatConversationView.newChatTitle)
                 .navigationBarTitleDisplayMode(.inline)
                 .safeAreaInset(edge: .bottom) { ChatAttachmentMenu { _ in }.padding(.bottom, Spacing.wide).background(.regularMaterial) }
         }
         try await sheet("C3a", "chat-attach-menu", menu, "ChatAttachmentPicker")
-        let vendor = center(Feeds.artifactAndError(now: now)).conversation(ChatRoute(id: Feeds.vendor))
-        let email = try XCTUnwrap(vendor.artifact("reply-to-vendor"))
-        try await sheet("C3b", "chat-artifact-email", ChatArtifactSheet(artifact: email, host: .mac), "ChatArtifactSheet")
-        try await sheet("C3c", "chat-sources", ChatSourcesSheet(sources: Feeds.roadmapSources), "ChatSourcesSheet")
+        let vendor = Feeds.artifactAndError(now: now)
+        let drafts = vendor.messages.flatMap { ArtifactParser.parse($0.text, final: true).artifacts }
+        let draft = try XCTUnwrap(drafts.last { $0.key == "reply-to-vendor" })
+        let email = ChatArtifactContent(draft: draft, stored: vendor.artifacts.first { $0.key == "reply-to-vendor" })
+        let viewer = NavigationStack {
+            ScrollView { ArtifactViewer(artifact: email, openURL: { _ in }, copy: { _ in }).padding(Spacing.large) }
+                .navigationTitle(email.title)
+                .navigationBarTitleDisplayMode(.inline)
+        }
+        .environment(\.chatUIStyle, PhoneChatStyle())
+        try await sheet("C3b", "chat-artifact-email", viewer, "ChatConversationView")
+        let sources = ChatSourcesList(sources: Feeds.roadmapSources.map(ChatSource.init(wire:))) { _ in }
+        try await sheet("C3c", "chat-sources", sources, "ChatConversationView")
         env.navigation.chatsPath = []
         return rows
     }
@@ -1688,18 +1702,11 @@ private actor RefusingTransport: ConditionalTransport {
 
 /// Static mocks of the unified chat's new phone parts (#1822 T0), from the tokens the chat cards use. The exact copy is
 /// the plan's Global Constraints.
-private enum UnifiedChatMock {
+/// The unified chat's part frames: `ChatUI`'s real cards on a page, in the phone's style.
+@MainActor
+private enum UnifiedChatParts {
     static let fallbackText = "Send a Slack message to #general — waiting for your approval"
     static let openOnMac = "Open on the Mac"
-
-    private static func card<Content: View>(waiting: Bool = false, @ViewBuilder _ content: () -> Content) -> some View {
-        let shape = RoundedRectangle(cornerRadius: Radius.container, style: .continuous)
-        return VStack(alignment: .leading, spacing: Spacing.small, content: content)
-            .padding(Spacing.cozy)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Fill.card, in: shape)
-            .overlay(shape.strokeBorder(waiting ? PhoneTone.waitingForYou.color : Stroke.hairlineColor, lineWidth: Stroke.hairline * 2))
-    }
 
     private static func page<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: Spacing.medium) {
@@ -1709,55 +1716,45 @@ private enum UnifiedChatMock {
         .padding(Spacing.large)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Color(uiColor: .systemBackground))
+        .environment(\.chatUIStyle, PhoneChatStyle())
     }
 
     static var questionCard: some View {
         page {
-            card(waiting: true) {
-                Text("Which session store should the redirect fix use?").font(TypeScale.rowEmphasis)
-                option("Server table", detail: "One row per session", selected: true)
-                option("Cookie", detail: "No extra table", selected: false)
-                option("Other…", detail: nil, selected: false)
-                Button("Send") {}
-                    .buttonStyle(ChatCardButtonStyle(fill: PhoneTone.waitingForYou.color, label: .black))
-                    .padding(.top, Spacing.small)
-            }
-        }
-    }
-
-    private static func option(_ title: String, detail: String?, selected: Bool) -> some View {
-        HStack(alignment: .top, spacing: Spacing.regular) {
-            Image(systemName: selected ? "largecircle.fill.circle" : "circle")
-            VStack(alignment: .leading, spacing: Spacing.tight) {
-                Text(title).font(TypeScale.rowEmphasis)
-                if let detail { Text(detail).font(TypeScale.meta).foregroundStyle(.secondary) }
-            }
+            QuestionPartView(
+                card: ChatQuestionCard(questions: [ChatQuestion(
+                    id: "store", question: "Which session store should the redirect fix use?",
+                    options: [
+                        ChatQuestionOption(label: "Server table", description: "One row per session", recommended: true),
+                        ChatQuestionOption(label: "Cookie", description: "No extra table")
+                    ]
+                )]),
+                answerText: nil
+            ) { _ in }
         }
     }
 
     static var slackApproval: some View {
-        page {
-            card(waiting: true) {
-                Text("Send a Slack message to #general").font(TypeScale.rowEmphasis)
-                Text("send_slack_message").font(TypeScale.meta).foregroundStyle(.secondary)
-                Text("channel: #general\ntext: The release is out.").font(TypeScale.code).padding(.top, Spacing.tight)
-                HStack(spacing: Spacing.regular) {
-                    Button("Approve") {}.buttonStyle(ChatCardButtonStyle(fill: PhoneTone.waitingForYou.color, label: .black))
-                    Button("Reject") {}.buttonStyle(ChatCardButtonStyle(fill: Fill.card, label: .primary))
-                }
-                .padding(.top, Spacing.small)
-            }
+        let action = ChatFeed.Action(
+            id: 31, tool: "send_slack_message", title: "Send a Slack message to #general",
+            argsDisplay: ##"{"channel": "#general", "text": "The release is out."}"##, argsSHA256: "abc123", status: "pending"
+        )
+        let message = ChatFeed.Message(
+            id: 1, role: "assistant", text: "I drafted the announcement.", createdAt: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+        return page {
+            ChatFeedView(messages: [message], context: ChatFeedContext(actions: [action]))
         }
     }
 
     static var fallback: some View {
         page {
-            card {
-                Text(fallbackText)
-                Button(openOnMac) {}
-                    .buttonStyle(ChatCardButtonStyle(fill: Fill.card, label: .primary))
-                    .padding(.top, Spacing.small)
-            }
+            FallbackPartView(
+                fallback: ChatPartFallback(
+                    text: fallbackText, actions: [.init(label: openOnMac, action: "open_url", url: "https://example.com/open")]
+                ),
+                actions: ChatPartActions()
+            )
         }
     }
 }

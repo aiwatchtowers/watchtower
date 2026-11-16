@@ -1,3 +1,4 @@
+import ChatUI
 import ChatWire
 import ImageIO
 import UIKit
@@ -248,8 +249,12 @@ final class PhoneArtifactChat05ScanTests: XCTestCase {
             .deletingLastPathComponent() // Tests
             .deletingLastPathComponent() // WatchtowerMobile
         let files = [
-            app.appendingPathComponent("Sources/Features/Chats/ChatArtifactSheet.swift"),
-            app.appendingPathComponent("Sources/Features/Chats/SandboxedArtifactWebView.swift"),
+            // The phone's artifact sheet is ChatUI's viewer and its iOS parts (unified chat T9; the phone's own copies
+            // are gone).
+            app.deletingLastPathComponent().appendingPathComponent("WatchtowerChat/Sources/ChatUI/Artifacts/ArtifactViewer.swift"),
+            app.deletingLastPathComponent().appendingPathComponent("WatchtowerChat/Sources/ChatUI/Platform/iOS/ArtifactViewerParts.swift"),
+            app.deletingLastPathComponent()
+                .appendingPathComponent("WatchtowerChat/Sources/ChatUI/Platform/iOS/SandboxedArtifactWebView.swift"),
             // The artifact links the reply resolves (shared with the Mac).
             app.deletingLastPathComponent()
                 .appendingPathComponent("WatchtowerChatText/Sources/WatchtowerChatText/ArtifactLinks.swift")
@@ -285,13 +290,17 @@ final class ChatArtifactActionsTests: XCTestCase {
         ChatArtifactContent(key: "k", kind: kind, title: "Design review", version: 2, meta: meta, content: content, contentCut: false)
     }
 
+    private func table(_ artifact: ChatArtifactContent, timeZone: TimeZone = .current) -> ChatArtifactActions {
+        ChatArtifactActions(artifact.draft, timeZone: timeZone)
+    }
+
     private func query(_ url: URL) -> [String: String] {
         Dictionary((URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []).map { ($0.name, $0.value ?? "") }) { $1 }
     }
 
     func testEmailOpensAMailtoWithEverythingEncoded() throws {
         let meta = ["to": "vendor@example.com", "subject": "Re: renewal & terms"]
-        let actions = ChatArtifactActions(artifact("email", meta: meta, content: "Hello, a+b"))
+        let actions = table(artifact("email", meta: meta, content: "Hello, a+b"))
         XCTAssertEqual(actions.buttons.map(\.title), ["Open in Mail", "Copy", "Share"])
         guard case let .open(url) = actions.buttons[0].effect else { return XCTFail("open") }
         XCTAssertTrue(url.absoluteString.hasPrefix("mailto:vendor%40example.com?"))
@@ -302,8 +311,8 @@ final class ChatArtifactActionsTests: XCTestCase {
 
     func testEventOpensTheGoogleCalendarTemplate() throws {
         let utc = try XCTUnwrap(TimeZone(identifier: "UTC"))
-        let actions = ChatArtifactActions(artifact("event", meta: ["start": "2026-09-30T10:00:00+03:00", "location": "Room 4"], content: "Agenda"),
-                                          timeZone: utc)
+        let event = artifact("event", meta: ["start": "2026-09-30T10:00:00+03:00", "location": "Room 4"], content: "Agenda")
+        let actions = table(event, timeZone: utc)
         guard case let .open(url) = actions.buttons[0].effect else { return XCTFail("open") }
         XCTAssertTrue(url.absoluteString.hasPrefix("https://calendar.google.com/calendar/render?action=TEMPLATE&"))
         XCTAssertEqual(query(url)["text"], "Design review")
@@ -312,19 +321,19 @@ final class ChatArtifactActionsTests: XCTestCase {
     }
 
     func testSlackCopiesTheTextAndOpensTheSlackApp() {
-        let actions = ChatArtifactActions(artifact("slack", meta: ["channel": "#release"], content: "Release 1.4 is out"))
+        let actions = table(artifact("slack", meta: ["channel": "#release"], content: "Release 1.4 is out"))
         XCTAssertEqual(actions.buttons[0].effect, .copyThenOpen(text: "Release 1.4 is out", url: URL(string: "slack://open")))
-        let permalink = ChatArtifactActions(artifact("slack", meta: ["permalink": "https://acme.slack.com/archives/C1/p1"], content: "x"))
+        let permalink = table(artifact("slack", meta: ["permalink": "https://acme.slack.com/archives/C1/p1"], content: "x"))
         XCTAssertEqual(permalink.buttons[0].effect, .copyThenOpen(text: "x", url: URL(string: "https://acme.slack.com/archives/C1/p1")))
     }
 
     func testCopyAndShareOnEveryKind() {
         for kind in ["document", "table", "code", "html", "email", "event", "slack"] {
-            let titles = ChatArtifactActions(artifact(kind)).buttons.map(\.title)
+            let titles = table(artifact(kind)).buttons.map(\.title)
             XCTAssertEqual(Array(titles.suffix(2)), ["Copy", "Share"], kind)
         }
-        XCTAssertEqual(ChatArtifactActions(artifact("document")).buttons.count, 2, "a document only copies and shares")
-        XCTAssertEqual(ChatArtifactActions.markdown(artifact("code", meta: ["language": "go"], content: "x := 1")), "```go\nx := 1\n```")
+        XCTAssertEqual(table(artifact("document")).buttons.count, 2, "a document only copies and shares")
+        XCTAssertEqual(ChatArtifactActions.markdown(artifact("code", meta: ["language": "go"], content: "x := 1").draft), "```go\nx := 1\n```")
     }
 }
 
