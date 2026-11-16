@@ -100,7 +100,7 @@ func buildReplay(path []db.ChatMessage, steps map[int64][]string, files map[int6
 	var b strings.Builder
 	b.WriteString(replayHeader + "\n")
 	if start > 0 {
-		fmt.Fprintf(&b, "[%d earlier messages omitted]\n", start)
+		fmt.Fprintf(&b, "[%d earlier messages omitted — get_chat_history reads them, list_chat_artifacts lists the artifacts]\n", start)
 	}
 	for _, e := range entries[start:] {
 		b.WriteString(e)

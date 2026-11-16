@@ -214,8 +214,10 @@ func TestAgent06_ChatModeReadToolsDoNotWrite(t *testing.T) {
 	if err := reg.Register(authoring.NewGetAutomation(authoring.Deps{DB: database})); err != nil {
 		t.Fatal(err)
 	}
-	if err := reg.Register(tools.NewListSlackChannels()); err != nil {
-		t.Fatal(err)
+	for _, ct := range []*tools.Tool{tools.NewListSlackChannels(), tools.NewGetChatHistory(), tools.NewListChatArtifacts()} {
+		if err := reg.Register(ct); err != nil {
+			t.Fatal(err)
+		}
 	}
 	before := countRows(t, database, tables)
 	gen := &automationstest.FakeGenerator{Replies: []string{"done"}}
@@ -285,6 +287,9 @@ func chatOnlyReadGuardCalls() []mcpsdk.CallToolParams {
 		{Name: "list_automations", Arguments: map[string]any{}},
 		{Name: "get_automation", Arguments: map[string]any{"automation": "guard-auto"}},
 		{Name: "list_slack_channels", Arguments: map[string]any{}},
+		// The chat's own history and artifacts (bound conversation 7).
+		{Name: "get_chat_history", Arguments: map[string]any{}},
+		{Name: "list_chat_artifacts", Arguments: map[string]any{}},
 	}
 }
 
