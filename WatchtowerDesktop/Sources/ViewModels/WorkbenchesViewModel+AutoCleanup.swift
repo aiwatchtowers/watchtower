@@ -21,9 +21,11 @@ extension WorkbenchesViewModel {
     /// How long the clean notice shows (spec §3).
     nonisolated static let cleanupNoticeDuration: Duration = .seconds(6)
 
-    /// Whether row `id` may be resumed: not while its background cleanup
-    /// is queued or runs (spec §4), nor while a Delete Anyway or another
-    /// Resume of it is in flight.
+    /// Whether row `id` may start a Resume, Delete Anyway or Clean Up
+    /// Again: not while its background cleanup is queued or runs (spec §4),
+    /// nor while a Delete Anyway or a Resume of it is in flight. A Resume
+    /// of a row only other Resumes hold joins them instead
+    /// (`clearDeleteRequestForResume`).
     func canResume(_ id: Int64) -> Bool {
         !closedForCleanup.contains(id) && !autoCleanupBusy.contains(id)
     }
@@ -169,18 +171,23 @@ extension WorkbenchesViewModel {
     /// an ordinary finished session again. The row is marked busy before
     /// the write — Clean Up Again and Delete Anyway refuse it until the mark
     /// is gone — and checked again after it. Throws `.cleaningUp` while the
-    /// row is queued or in another transition, `.failed` when the write
+    /// row is queued or a Delete Anyway holds it, `.failed` when the write
     /// failed (reported on the page). The write runs for a row with no mark
     /// in memory too (a deleting row this launch did not mark, such as one
     /// whose launch re-queue read failed); on an ordinary row it changes
     /// nothing.
-    /// A Resume of a row another Resume is clearing joins it (both writes
-    /// are the same idempotent UPDATE); only a Delete Anyway or a queued
-    /// cleanup refuses it.
+    ///
+    /// A Resume of a row that other Resumes are clearing joins them (a fast
+    /// A → B → A switch; the writes are the same idempotent UPDATE) instead
+    /// of being refused as a transition. A queued row is refused before any
+    /// write, joining or not, so its delete request is never cleared by a
+    /// Resume that started after it was queued. The row stays busy until
+    /// the last joined Resume is past its write.
     func clearDeleteRequestForResume(_ session: TerminalSession) async throws {
         let id = session.id
         let joinsAResume = resumesClearing[id, default: 0] > 0
-        guard joinsAResume || canResume(id) else { throw TargetStartError.cleaningUp }
+        let allowed = joinsAResume ? !closedForCleanup.contains(id) : canResume(id)
+        guard allowed else { throw TargetStartError.cleaningUp }
         autoCleanupBusy.insert(id)
         resumesClearing[id, default: 0] += 1
         defer {
