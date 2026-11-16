@@ -11,8 +11,19 @@ final class StoreKitRelayStoreTests: XCTestCase {
     private var session: SKTestSession!
     private var store: StoreKitRelayStore!
 
+    /// Whether this process has spoken to storekitd yet (see `setUp`).
+    @MainActor private static var storeKitConnected = false
+
     override func setUp() async throws {
         try await super.setUp()
+        // A freshly installed app's first call to storekitd runs storekitd's install handling, which clears the app's
+        // StoreKit state. When that first call is the session's configuration save, the clear can land after the save:
+        // the client is then bound to the sandbox store with no account, and every purchase in the process hangs. A
+        // plain transaction query goes first, so the session is created after the install handling.
+        if await !Self.storeKitConnected {
+            for await _ in StoreKit.Transaction.unfinished {}
+            await MainActor.run { Self.storeKitConnected = true }
+        }
         session = try SKTestSession(configurationFileNamed: "Relay")
         // storekitd keeps failTransactionsEnabled and askToBuyEnabled across sessions, and a new session or
         // assigning false does not clear them.
@@ -39,64 +50,10 @@ final class StoreKitRelayStoreTests: XCTestCase {
         }
     }
 
-    /// A test's listener: `updates()`, and a witness reading StoreKit's own `Transaction.updates`, both made in this
-    /// call. Each holds StoreKit's iterator from the moment it is made, so an event the test causes afterwards reaches
-    /// both, and the test needs no head start (it used to sleep two seconds for a subscription made in a task).
-    private struct Listening {
-        var updates: AsyncStream<RelayTransaction>.AsyncIterator
-        let witness: Witness
-    }
-
-    /// What StoreKit itself delivered to this process, read straight from `Transaction.updates`.
-    private final class Witness: @unchecked Sendable {
-        private struct Source: @unchecked Sendable {
-            let iterator: StoreKit.Transaction.Transactions.AsyncIterator
-        }
-
-        private let lock = NSLock()
-        private var seen: [RelayTransaction] = []
-        private var task: Task<Void, Never>?
-
-        init(productID: String) {
-            let source = Source(iterator: StoreKit.Transaction.updates.makeAsyncIterator())
-            task = Task { [weak self] in
-                var iterator = source.iterator
-                while let verification = await iterator.next() {
-                    guard case .verified(let value) = verification, value.productID == productID,
-                          let mapped = StoreKitRelayStore.map(
-                              id: value.id, originalID: value.originalID, appAccountToken: value.appAccountToken,
-                              jws: verification.jwsRepresentation, revocationDate: value.revocationDate,
-                              isRenewal: value.reason == .renewal, expirationDate: value.expirationDate
-                          ) else { continue }
-                    self?.lock.withLock { self?.seen.append(mapped) }
-                }
-            }
-        }
-
-        deinit { task?.cancel() }
-
-        func saw(_ wanted: (RelayTransaction) -> Bool) -> Bool {
-            lock.withLock { seen.contains(where: wanted) }
-        }
-    }
-
-    private func listening() -> Listening {
-        Listening(updates: store.updates().makeAsyncIterator(), witness: Witness(productID: Self.productID))
-    }
-
-    /// The event a test is about, from `updates()`. Under load the simulator's storekitd at times pushes nothing to
-    /// the test process for the rest of its run: it holds the renewal (`allTransactions()` lists it), yet neither
-    /// `Transaction.updates` nor `Transaction.unfinished` in the process ever shows it. When StoreKit's own listener
-    /// got nothing either, `updates()` had nothing to deliver, and the test is skipped with that reason; when StoreKit
-    /// delivered the event and `updates()` did not pass it on, the test fails.
-    private static func next(
-        _ listening: inout Listening, where wanted: (RelayTransaction) -> Bool
-    ) async throws -> RelayTransaction {
-        do {
-            return try await next(&listening.updates, where: wanted)
-        } catch is NoUpdate where !listening.witness.saw(wanted) {
-            throw XCTSkip("StoreKit delivered no update to this test process (a simulator storekitd fault), so updates() had none to pass on")
-        }
+    /// `updates()` holds StoreKit's iterator from the moment it is called, so an event a test causes afterwards is
+    /// delivered and the test needs no head start (it used to sleep two seconds for a subscription made in a task).
+    private func listening() -> AsyncStream<RelayTransaction>.AsyncIterator {
+        store.updates().makeAsyncIterator()
     }
 
     /// StoreKit's transaction lists catch up with a purchase shortly after it returns: reads until there is a value.
@@ -175,9 +132,9 @@ final class StoreKitRelayStoreTests: XCTestCase {
             return XCTFail("expected a purchase")
         }
         await store.finish(first)
-        var listening = listening()
+        var iterator = listening()
         try session.forceRenewalOfSubscription(productIdentifier: Self.productID)
-        let renewal = try await Self.next(&listening) { $0.id != first.id }
+        let renewal = try await Self.next(&iterator) { $0.id != first.id }
         XCTAssertEqual(renewal.originalID, first.originalID)
         XCTAssertNotEqual(renewal.id, first.id)
         XCTAssertGreaterThan(renewal.expiresAt, first.expiresAt)
@@ -189,9 +146,9 @@ final class StoreKitRelayStoreTests: XCTestCase {
         }
         await store.finish(bought)
         XCTAssertFalse(bought.revoked)
-        var listening = listening()
+        var iterator = listening()
         try session.refundTransaction(identifier: UInt(bought.id))
-        let refunded = try await Self.next(&listening) { $0.revoked }
+        let refunded = try await Self.next(&iterator) { $0.revoked }
         XCTAssertEqual(refunded.id, bought.id)
         XCTAssertTrue(refunded.revoked)
     }
@@ -258,9 +215,9 @@ final class StoreKitRelayStoreTests: XCTestCase {
         }
         XCTAssertFalse(first.isRenewal)
         await store.finish(first)
-        var listening = listening()
+        var iterator = listening()
         try session.forceRenewalOfSubscription(productIdentifier: Self.productID)
-        let renewal = try await Self.next(&listening) { $0.id != first.id }
+        let renewal = try await Self.next(&iterator) { $0.id != first.id }
         XCTAssertTrue(renewal.isRenewal)
     }
 
@@ -287,22 +244,13 @@ final class StoreKitRelayStoreTests: XCTestCase {
         XCTAssertEqual(entitlements, 1)
     }
 
-    /// The next update, or a failure after ten seconds.
+    /// The stream ended without the update.
     private struct NoUpdate: Error {}
 
+    /// The next update. It waits for StoreKit's event itself, with no clock: on a loaded CI runner storekitd took
+    /// 5–22 s per purchase, and a renewal there arrived after the ten-second bound this used to set.
     private static func next(_ iterator: inout AsyncStream<RelayTransaction>.AsyncIterator) async throws -> RelayTransaction {
-        try await withThrowingTaskGroup(of: RelayTransaction?.self) { [iterator] group in
-            var iterator = iterator
-            group.addTask { await iterator.next() }
-            group.addTask {
-                try await Task.sleep(nanoseconds: 10_000_000_000)
-                return nil
-            }
-            defer { group.cancelAll() }
-            guard let first = try await group.next(), let value = first else {
-                throw NoUpdate()
-            }
-            return value
-        }
+        guard let value = await iterator.next() else { throw NoUpdate() }
+        return value
     }
 }
