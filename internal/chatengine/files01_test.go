@@ -18,7 +18,7 @@ import (
 // non-event stdout line and a spawn error carry canaries through every
 // logging path of the runner (a cancel, a lost conversation, a failed
 // spawn, unreadable lines, the sweep): no canary reaches the log.
-func TestFILES01_Chatrun(t *testing.T) {
+func TestFILES01_Chatengine(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		c := logcanary.Text
 		sink := logcanary.Capture(t)

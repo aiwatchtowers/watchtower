@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"sync"
 	"testing"
@@ -137,15 +138,22 @@ func TestChat03Go_PoolBound(t *testing.T) {
 
 		procs := g.f.all()
 		require.Len(t, procs, 3)
-		procs[0].finish()
+		// The sessions spawn on their own goroutines: find c1's by its argv.
+		first := slices.IndexFunc(procs, func(p *fakeProc) bool { return slices.Contains(p.argv, strconv.FormatInt(c1, 10)) })
+		require.GreaterOrEqual(t, first, 0)
+		procs[first].finish()
 		synctest.Wait()
 
 		procs = g.f.all()
 		require.Len(t, procs, 4)
-		assert.True(t, procs[0].isExited(), "the idle session made room")
-		assert.Contains(t, procs[0].log(), "close")
-		assert.False(t, procs[1].isExited(), "a running turn is never cut")
-		assert.False(t, procs[2].isExited(), "a running turn is never cut")
+		for i, p := range procs[:3] {
+			if i == first {
+				assert.True(t, p.isExited(), "the idle session made room")
+				assert.Contains(t, p.log(), "close")
+			} else {
+				assert.False(t, p.isExited(), "a running turn is never cut")
+			}
+		}
 		turns := procs[3].turnCommands()
 		require.Len(t, turns, 1)
 		assert.Equal(t, s4.TurnID, turns[0].TurnID)
