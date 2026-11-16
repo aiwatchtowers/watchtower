@@ -30,6 +30,15 @@ const (
 	EventUsage    = "usage"
 	EventTurnDone = "turn_done"
 	EventError    = "error"
+	// EventStarted (a persisting process: `ai session --persist`, `ai query
+	// --persist`): the turn's starting rows are committed — ConversationID,
+	// OwnerMessageID (0 = none written), AssistantMessageID, TurnID — before
+	// its first delta.
+	EventStarted = "started"
+	// EventRefused: the turn was not started and nothing was written or
+	// sent; Reason "conversation_busy" while another owner (Holder: "hub" or
+	// "desktop") holds the conversation's lease.
+	EventRefused = "refused"
 )
 
 // turn_done statuses.
@@ -94,6 +103,12 @@ type Event struct {
 	Message           string   `json:"message,omitempty"`
 	Retryable         bool     `json:"retryable,omitempty"`
 	ActionID          int64    `json:"action_id,omitempty"`
+	// ConversationID, OwnerMessageID and AssistantMessageID: a started
+	// event's rows; Holder: a refused event's lease owner.
+	ConversationID     int64  `json:"conversation_id,omitempty"`
+	OwnerMessageID     int64  `json:"owner_message_id,omitempty"`
+	AssistantMessageID int64  `json:"assistant_message_id,omitempty"`
+	Holder             string `json:"holder,omitempty"`
 	// Capabilities is the actual provider's capability row on a
 	// session_ready (EventWriter fills it from Provider): what this
 	// session's transport offers, a fallback route's included.
@@ -159,6 +174,23 @@ type Command struct {
 	Text        string       `json:"text,omitempty"`
 	Attachments []Attachment `json:"attachments,omitempty"`
 	Replay      bool         `json:"replay,omitempty"`
+	// The turn's starting rows, read by `ai session --persist` only (the
+	// inputs of the Mac's persistTurnStart); a session without --persist
+	// ignores them. Mode is send (the default), regenerate or edit.
+	// Text is then the owner's text; Attachments are filled from
+	// AttachmentIDs (the conversation's pending files, a send only).
+	// ParentID names the owner message a regenerate answers again,
+	// EditMessageID the owner message an edit replaces. Quotes are the
+	// artifact comment ids of a "Send N comments" batch (a send only).
+	// TitleText, when present (a send only), says Text was composed by the
+	// client (skill line, mentions) and is stored as given, and is the
+	// prefix title's source.
+	Mode          string  `json:"mode,omitempty"`
+	AttachmentIDs []int64 `json:"attachment_ids,omitempty"`
+	ParentID      int64   `json:"parent_id,omitempty"`
+	EditMessageID int64   `json:"edit_message_id,omitempty"`
+	Quotes        []int64 `json:"quotes,omitempty"`
+	TitleText     *string `json:"title_text,omitempty"`
 }
 
 // errorEvent builds an error event. A non-empty turnID makes it the turn's

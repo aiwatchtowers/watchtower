@@ -79,6 +79,48 @@ final class ChatTurnStoreFixtureTests: XCTestCase {
         }
     }
 
+    /// The Swift half of the start's timing gate (spec 2026-11-15 mobile
+    /// inbox §8, Go's `BenchmarkPersistStart`): the median of the lease claim
+    /// + `persistTurnStart` writes on the fixture's first case, in one write
+    /// as the app does, the rows undone between runs. Prints only; runs when
+    /// `WT_CHAT_START_TIMING=1` is set (`make test-swift FILTER=ChatTurnStoreFixtureTests`).
+    func testPersistStartTiming() async throws {
+        guard ProcessInfo.processInfo.environment["WT_CHAT_START_TIMING"] == "1" else {
+            throw XCTSkip("set WT_CHAT_START_TIMING=1 to time the start")
+        }
+        let tc = try XCTUnwrap((try Self.fixture()["turns"] as? [[String: Any]])?.first)
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        let (conv, ids, files, comments) = try await pool.write { db in try Self.seed(db, tc) }
+        let request = try XCTUnwrap(tc["request"] as? [String: Any])
+        let config = try await pool.read { db in try Self.config(db, conv: conv, request: request) }
+        let plan = try await pool.read { db in
+            try Self.plan(db, conv: conv, request: request, ids: ids, files: files, comments: comments, floor: nil)
+        }
+        let clock = ContinuousClock()
+        var samples: [Duration] = []
+        for run in 0..<201 {
+            let turnID = "timing-\(run)"
+            let nowMS = ChatLease.milliseconds(Date())
+            let lease = ChatLease(conversationID: conv, owner: .desktop, ownerID: "launch", turnID: turnID,
+                                  startedAtMS: nowMS, heartbeatAtMS: nowMS)
+            let started = clock.now
+            _ = try await pool.write { db in
+                guard try ChatLeaseQueries.claim(db, lease, nowMS: nowMS) else { throw ChatBusyError() }
+                return try Self.persistStart(db, conv: conv, plan: plan, config: config, turnID: turnID)
+            }
+            samples.append(clock.now - started)
+            try await pool.write { db in
+                try ChatLeaseQueries.release(db, conversationID: conv, turnID: turnID)
+                try db.execute(sql: "DELETE FROM chat_messages WHERE conversation_id = ? AND turn_id = ?", arguments: [conv, turnID])
+                try db.execute(sql: "UPDATE chat_conversations SET active_leaf_message_id = NULL, title = '' WHERE id = ?",
+                               arguments: [conv])
+            }
+        }
+        let median = samples.sorted()[samples.count / 2]
+        print("ChatTurnStoreFixtureTests persist start median: \(median.components.attoseconds / 1_000_000_000_000) µs over \(samples.count) runs")
+    }
+
     // MARK: - One turn case
 
     private struct Config {
@@ -95,13 +137,16 @@ final class ChatTurnStoreFixtureTests: XCTestCase {
         let outcomes: String?
         let forceReplay: Bool
         let titleText: String?
+        /// The quote batch: artifact comments `persistTurnStart`'s `alsoWrite`
+        /// marks sent (`ChatViewModel.sendArtifactComments`).
+        var quoteIDs: [Int64] = []
     }
 
     private func run(_ tc: [String: Any]) async throws {
         let name = tc["name"] as? String ?? "?"
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
-        let (conv, ids, files) = try await pool.write { db in try Self.seed(db, tc) }
+        let (conv, ids, files, comments) = try await pool.write { db in try Self.seed(db, tc) }
         let request = try XCTUnwrap(tc["request"] as? [String: Any], name)
         let config = try await pool.read { db in try Self.config(db, conv: conv, request: request) }
         // The outcomes floor's formatter is main-actor isolated: format it here.
@@ -109,34 +154,14 @@ final class ChatTurnStoreFixtureTests: XCTestCase {
             try ChatTreeQueries.thread(db, conversationID: conv).last { $0.message.isUser }?.message.createdDate
         }
         let floor = lastOwner.map { AgentActionFeed.timestampString($0) }
-        let plan = try await pool.read { db in try Self.plan(db, conv: conv, request: request, ids: ids, files: files, floor: floor) }
+        let plan = try await pool.read { db in
+            try Self.plan(db, conv: conv, request: request, ids: ids, files: files, comments: comments, floor: floor)
+        }
         let turnID = request["turn_id"] as? String ?? "t1"
 
         // ChatViewModel.persistTurnStart, step by step.
-        let persisted = try await pool.write { db -> (assistant: Int64, historyTip: Int64?) in
-            var historyTip = plan.historyTipID
-            let userID: Int64
-            if let reuse = plan.reuseUserMessageID {
-                userID = reuse
-            } else {
-                if let tip = historyTip,
-                   let row = try ChatMessageRecord.fetchOne(db, sql: "SELECT * FROM chat_messages WHERE id = ?", arguments: [tip]),
-                   row.isUser {
-                    historyTip = try ChatTreeQueries.insertAssistant(db, conversationID: row.conversationID, parentID: row.id,
-                                                                     turnID: row.turnID, provider: config.provider, model: "").id
-                }
-                userID = try ChatTreeQueries.insertUser(db, conversationID: conv, parentID: historyTip,
-                                                        text: plan.userText, turnID: turnID).id
-                try ChatAttachmentQueries.link(db, attachmentIDs: plan.attachments.map(\.id), messageID: userID)
-                try ChatConversationQueries.setPrefixTitle(db, id: conv, text: plan.titleText ?? plan.userText)
-            }
-            if !config.automatic {
-                try ChatConversationQueries.setRouting(db, id: conv, automatic: false, provider: config.provider, model: config.model)
-            }
-            let assistant = try ChatTreeQueries.insertAssistant(db, conversationID: conv, parentID: userID, turnID: turnID,
-                                                                provider: config.automatic ? "" : config.provider,
-                                                                model: config.automatic ? "" : config.model ?? "")
-            return (assistant.id, historyTip)
+        let persisted = try await pool.write { db in
+            try Self.persistStart(db, conv: conv, plan: plan, config: config, turnID: turnID)
         }
 
         let expect = try XCTUnwrap(tc["expect"] as? [String: Any], name)
@@ -164,12 +189,48 @@ final class ChatTurnStoreFixtureTests: XCTestCase {
             driver.apply(parsed)
         }
         await driver.writesSettled()
-        try await pool.read { db in try Self.check(db, conv: conv, ids: ids, files: files, expect: expect, name: name) }
+        try await pool.read { db in try Self.check(db, conv: conv, ids: ids, files: files, comments: comments, expect: expect, name: name) }
+    }
+
+    /// `ChatViewModel.persistTurnStart` after its lease claim, step by step.
+    nonisolated private static func persistStart(
+        _ db: Database, conv: Int64, plan: Plan, config: Config, turnID: String
+    ) throws -> (assistant: Int64, historyTip: Int64?) {
+        var historyTip = plan.historyTipID
+        let userID: Int64
+        if let reuse = plan.reuseUserMessageID {
+            userID = reuse
+        } else {
+            if let tip = historyTip,
+               let row = try ChatMessageRecord.fetchOne(db, sql: "SELECT * FROM chat_messages WHERE id = ?", arguments: [tip]),
+               row.isUser {
+                historyTip = try ChatTreeQueries.insertAssistant(db, conversationID: row.conversationID, parentID: row.id,
+                                                                 turnID: row.turnID, provider: config.provider, model: "").id
+            }
+            userID = try ChatTreeQueries.insertUser(db, conversationID: conv, parentID: historyTip,
+                                                    text: plan.userText, turnID: turnID).id
+            try ChatAttachmentQueries.link(db, attachmentIDs: plan.attachments.map(\.id), messageID: userID)
+            try ChatConversationQueries.setPrefixTitle(db, id: conv, text: plan.titleText ?? plan.userText)
+            if !plan.quoteIDs.isEmpty {
+                _ = try ArtifactCommentQueries.markSent(db, ids: plan.quoteIDs, at: Date())
+            }
+        }
+        if !config.automatic {
+            try ChatConversationQueries.setRouting(db, id: conv, automatic: false, provider: config.provider, model: config.model)
+        }
+        let assistant = try ChatTreeQueries.insertAssistant(db, conversationID: conv, parentID: userID, turnID: turnID,
+                                                            provider: config.automatic ? "" : config.provider,
+                                                            model: config.automatic ? "" : config.model ?? "")
+        return (assistant.id, historyTip)
     }
 
     // MARK: - Seeding
 
-    nonisolated private static func seed(_ db: Database, _ tc: [String: Any]) throws -> (Int64, [String: Int64], [String: Int64]) {
+    /// The case's conversation and the ids of its message, attachment and
+    /// artifact-comment refs (apart: ids of different tables may repeat).
+    nonisolated private static func seed(
+        _ db: Database, _ tc: [String: Any]
+    ) throws -> (Int64, [String: Int64], [String: Int64], [String: Int64]) {
         let c = tc["conversation"] as? [String: Any] ?? [:]
         try db.execute(sql: """
             INSERT INTO chat_conversations (title, title_source, routing_mode, provider, model, actual_provider, actual_model,
@@ -181,6 +242,7 @@ final class ChatTurnStoreFixtureTests: XCTestCase {
         let conv = db.lastInsertedRowID
         var ids: [String: Int64] = [:]
         var files: [String: Int64] = [:]
+        var comments: [String: Int64] = [:]
         for (i, m) in (tc["messages"] as? [[String: Any]] ?? []).enumerated() {
             try db.execute(sql: """
                 INSERT INTO chat_messages (conversation_id, parent_id, role, text, created_at, turn_id, status, provider, model, error_code)
@@ -219,7 +281,15 @@ final class ChatTurnStoreFixtureTests: XCTestCase {
                                  a["error"] as? String, a["created_at"] as? String, a["decided_at"] as? String,
                                  a["applied_at"] as? String])
         }
-        return (conv, ids, files)
+        for c in tc["comments"] as? [[String: Any]] ?? [] {
+            let status = c["status"] as? String ?? "open"
+            try db.execute(sql: """
+                INSERT INTO chat_artifact_comments (conversation_id, artifact_key, artifact_version, body, anchor_quote, status,
+                    created_at, sent_at) VALUES (?, 'doc', 1, 'body', 'quote', ?, 1, ?)
+                """, arguments: [conv, status, status == "sent" ? 1.0 : nil])
+            comments[c["ref"] as? String ?? ""] = db.lastInsertedRowID
+        }
+        return (conv, ids, files, comments)
     }
 
     /// `ChatViewModel.sessionConfig` after `applyConversationSettings`, or the
@@ -241,13 +311,26 @@ final class ChatTurnStoreFixtureTests: XCTestCase {
 
     /// `ChatViewModel.send` / `regenerate` / `edit` → their `TurnPlan`.
     nonisolated private static func plan(
-        _ db: Database, conv: Int64, request: [String: Any], ids: [String: Int64], files: [String: Int64], floor: String?
+        _ db: Database,
+        conv: Int64,
+        request: [String: Any],
+        ids: [String: Int64],
+        files: [String: Int64],
+        comments: [String: Int64],
+        floor: String?
     ) throws -> Plan {
         let thread = try ChatTreeQueries.thread(db, conversationID: conv)
         let text = request["text"] as? String ?? ""
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let target = (request["message"] as? String).flatMap { ids[$0] }
         switch request["mode"] as? String {
+        case "regenerate" where request["reuse_owner"] is String:
+            // The Mac's regenerate hands persistTurnStart the owner row itself.
+            let ownerID = (request["reuse_owner"] as? String).flatMap { ids[$0] }
+            let owner = try XCTUnwrap(thread.first { $0.message.id == ownerID })
+            return Plan(historyTipID: owner.message.parentID, userText: owner.message.text,
+                        reuseUserMessageID: owner.message.id, attachments: owner.attachments, outcomes: nil,
+                        forceReplay: true, titleText: nil)
         case "regenerate":
             let index = try XCTUnwrap(thread.firstIndex { $0.message.id == target })
             let owner = thread[index - 1]
@@ -269,17 +352,27 @@ final class ChatTurnStoreFixtureTests: XCTestCase {
                 let decided = try AgentActionQueries.fetchDecidedAfter(db, conversationID: conv, after: floor)
                 outcomes = AgentToolsContract.actionsSinceLastTurnBlock(decided)
             }
+            // A request with title_text carries the text as the composer
+            // already built it (`send`'s turnText) and the owner's words apart.
+            let titleText = request["title_text"] as? String
             return Plan(historyTipID: thread.last?.message.id,
-                        userText: ChatTurnComposer.compose(text: text, skill: nil, mentions: []),
+                        userText: titleText == nil ? ChatTurnComposer.compose(text: text, skill: nil, mentions: []) : text,
                         reuseUserMessageID: nil, attachments: attachments, outcomes: outcomes, forceReplay: false,
-                        titleText: trimmed)
+                        titleText: titleText ?? trimmed,
+                        quoteIDs: (request["quotes"] as? [String] ?? []).compactMap { comments[$0] })
         }
     }
 
     // MARK: - Checking
 
     nonisolated private static func check(
-        _ db: Database, conv: Int64, ids: [String: Int64], files: [String: Int64], expect: [String: Any], name: String
+        _ db: Database,
+        conv: Int64,
+        ids: [String: Int64],
+        files: [String: Int64],
+        comments: [String: Int64],
+        expect: [String: Any],
+        name: String
     ) throws {
         var refOf = Dictionary(uniqueKeysWithValues: ids.map { ($1, $0) })
         let ref: (Int64?) -> Any? = { id in id.flatMap { refOf[$0] } }
@@ -337,6 +430,13 @@ final class ChatTurnStoreFixtureTests: XCTestCase {
             let message = try Int64.fetchOne(db, sql: "SELECT message_id FROM chat_attachments WHERE id = ?",
                                              arguments: [files[attachment]])
             XCTAssertEqual(ref(message) as? String, want as? String, "\(name): attachment \(attachment)")
+        }
+
+        for (comment, want) in expect["comments"] as? [String: String] ?? [:] {
+            let row = try XCTUnwrap(try Row.fetchOne(db, sql: "SELECT status, sent_at FROM chat_artifact_comments WHERE id = ?",
+                                                     arguments: [comments[comment]]), "\(name): comment \(comment)")
+            XCTAssertEqual(row["status"] as String, want, "\(name): comment \(comment)")
+            XCTAssertEqual((row["sent_at"] as Double?) != nil, want == "sent", "\(name): comment \(comment) sent_at")
         }
 
         let row = try XCTUnwrap(try Row.fetchOne(db, sql: "SELECT * FROM chat_conversations WHERE id = ?", arguments: [conv]))
