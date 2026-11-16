@@ -123,7 +123,7 @@ func (s DBStore) AllSessionActivity(ctx context.Context) ([]SessionActivity, err
 			ID: r.ID, WorkbenchID: r.WorkbenchID, Title: r.Title, AgentCwd: r.AgentCwd,
 			ReportedAt: activityStamp(r.AgentStateAt, now, db.ParseAgentStateStamp),
 			LastActive: activityStamp(r.LastActiveAt, now, parseRFC3339),
-			Finished:   r.Finished,
+			Finished:   r.Finished, DeleteRequested: r.DeleteRequested,
 		})
 	}
 	return out, nil

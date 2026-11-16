@@ -119,6 +119,8 @@ type SessionActivity struct {
 	ReportedAt  time.Time // agent_state_at; zero = never reported
 	LastActive  time.Time // last_active_at
 	Finished    bool
+	// DeleteRequested: the row has delete_requested_at (board #1716).
+	DeleteRequested bool
 }
 
 // Store is what a plan reads from the database. It has no write method: a
