@@ -8,17 +8,17 @@ import Foundation
 /// through the `scheme` handler and only scripts, style sheets, fonts and
 /// images from the CDN allowlist (`cdnHosts`, #563) — never fetch/XHR,
 /// sockets, media, documents or any other host.
-package enum HTMLPreviewPolicy {
+public enum HTMLPreviewPolicy {
     /// The only hosts a workbench html file may load from, in the app and in
     /// the browser (#563): the common CDNs a deck uses, and Google Fonts.
     /// Everything else external is blocked and named in a banner
     /// (`HTMLBlockedResources`); nothing is fetched on the page's behalf.
-    package static let cdnHosts = [
+    public static let cdnHosts = [
         "cdn.jsdelivr.net", "cdnjs.cloudflare.com", "unpkg.com", "fonts.googleapis.com", "fonts.gstatic.com"
     ]
 
     /// What a workbench file preview may load from a CDN.
-    package static let cdnResourceTypes = ["script", "style-sheet", "font", "image"]
+    public static let cdnResourceTypes = ["script", "style-sheet", "font", "image"]
 
     /// The URL scheme a workbench file preview is served under in the app
     /// (#563): `wtpreview://<token>/<path below the folder>`, the token one
@@ -27,11 +27,11 @@ package enum HTMLPreviewPolicy {
     /// the folder's own files, no hidden one, none through a symlink out or
     /// into a hidden one — the same rules the browser's loopback server
     /// applies, under `contentSecurityPolicy`.
-    package static let scheme = "wtpreview"
+    public static let scheme = "wtpreview"
 
     /// What the preview's own files may be loaded as: never fetch/XHR, so a
     /// page's script cannot read its siblings as text (the CSP says the same).
-    package static let fileResourceTypes = ["document", "image", "style-sheet", "script", "font", "media", "svg-document"]
+    public static let fileResourceTypes = ["document", "image", "style-sheet", "script", "font", "media", "svg-document"]
 
     /// WebKit content rules: block every load, then let back in only what
     /// stays on the machine — `about:`/`data:`/`blob:` always. A chat
@@ -42,7 +42,7 @@ package enum HTMLPreviewPolicy {
     /// documents over the network and every other host stay blocked, and
     /// http/ws and `file:` never load. (Content-rule regexes have no `|`,
     /// hence one rule per scheme and per host.)
-    package static func contentRules(allowFiles: Bool) -> String {
+    public static func contentRules(allowFiles: Bool) -> String {
         var rules = [#"{"trigger":{"url-filter":".*"},"action":{"type":"block"}}"#]
         rules += ["^about:", "^data:", "^blob:"].map { allow($0, types: nil) }
         if allowFiles {
@@ -60,7 +60,7 @@ package enum HTMLPreviewPolicy {
     /// The preview URL of `file` (under `folder`) for the load `token`
     /// (lowercase letters and digits): each path component below the folder
     /// percent-encoded, `%` included. Nil when `file` is not under `folder`.
-    package static func pageURL(file: URL, folder: URL, token: String) -> URL? {
+    public static func pageURL(file: URL, folder: URL, token: String) -> URL? {
         let base = folder.standardizedFileURL.path
         let prefix = base.hasSuffix("/") ? base : base + "/"
         let path = file.standardizedFileURL.path
@@ -73,25 +73,7 @@ package enum HTMLPreviewPolicy {
         return URL(string: "\(scheme)://\(token)/" + segments.joined(separator: "/"))
     }
 
-    /// The real file a preview request for `url` may be served from, or nil:
-    /// the `scheme` only (the handler picks `folder` by the URL's token),
-    /// each path segment percent-decoded, then
-    /// `LocalPreviewHTTP.resolve` — no `..` or hidden segment, and once every
-    /// symlink is resolved the file still lies under the folder with no
-    /// hidden component below it (a `notes.js` linking to `.secrets/…` or a
-    /// folder link to `.git` is refused).
-    package static func previewFile(for url: URL, folder: URL, fileManager: FileManager = .default) -> URL? {
-        guard url.scheme?.lowercased() == scheme,
-              let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
-        var segments: [String] = []
-        for raw in components.percentEncodedPath.split(separator: "/", omittingEmptySubsequences: false).dropFirst() {
-            guard let name = String(raw).removingPercentEncoding else { return nil }
-            segments.append(name)
-        }
-        return LocalPreviewHTTP.resolve(segments, under: folder, fileManager: fileManager)
-    }
-
-    package enum ByteRange: Equatable, Sendable {
+    public enum ByteRange: Equatable, Sendable {
         /// No header, or one this server ignores (malformed, several ranges):
         /// the whole body.
         case whole
@@ -102,7 +84,7 @@ package enum HTMLPreviewPolicy {
 
     /// The byte range a `Range: bytes=a-b` header asks of a body of
     /// `length` bytes (media seek), clamped to it.
-    package static func byteRange(_ header: String?, length: Int) -> ByteRange {
+    public static func byteRange(_ header: String?, length: Int) -> ByteRange {
         guard let header, header.lowercased().hasPrefix("bytes=") else { return .whole }
         let spec = header.dropFirst("bytes=".count).trimmingCharacters(in: .whitespaces)
         guard !spec.contains(","), let dash = spec.firstIndex(of: "-") else { return .whole }
@@ -125,7 +107,7 @@ package enum HTMLPreviewPolicy {
     /// same load (scheme and token) with no hidden (dot) segment (#563; the
     /// handler resolves symlinks). Every other navigation — a clicked link,
     /// `location = …`, a form — is cancelled: links open nothing.
-    package static func allowsNavigation(to url: URL?, isMainFrame: Bool, page: URL?) -> Bool {
+    public static func allowsNavigation(to url: URL?, isMainFrame: Bool, page: URL?) -> Bool {
         guard let url, let urlScheme = url.scheme?.lowercased() else { return false }
         if urlScheme == "about" { return true }
         guard let page, urlScheme == scheme, let token = page.host?.lowercased(),
@@ -138,7 +120,7 @@ package enum HTMLPreviewPolicy {
     }
 
     /// Html and htm files get a Preview in the code viewer.
-    package static func isHTMLFile(_ path: String) -> Bool {
+    public static func isHTMLFile(_ path: String) -> Bool {
         let ext = (path as NSString).pathExtension.lowercased()
         return ext == "html" || ext == "htm"
     }
@@ -146,7 +128,7 @@ package enum HTMLPreviewPolicy {
     // MARK: helpers
 
     /// `text` with the regex metacharacters of a content-rule url-filter escaped.
-    static func regexEscaped(_ text: String) -> String {
+    public static func regexEscaped(_ text: String) -> String {
         var out = ""
         for char in text {
             if #"\^$.*+?()[]{}|"#.contains(char) { out.append("\\") }

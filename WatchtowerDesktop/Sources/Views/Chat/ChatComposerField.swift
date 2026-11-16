@@ -2,6 +2,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 import AppKit
 import WatchtowerCore
+import WatchtowerChatText
 
 /// The input row of `ChatComposerBar` — the one text input every chat uses
 /// (Enter sends, Shift+Enter newline, Esc stops, dictation, attachments).

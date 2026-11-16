@@ -1,5 +1,5 @@
 import XCTest
-@testable import WatchtowerCore
+@testable import WatchtowerChatText
 
 /// Preflight ruling A12: a `jira:<KEY>` ref resolves to its site's browse
 /// URL; everything else that carries no `url` stays unresolved.

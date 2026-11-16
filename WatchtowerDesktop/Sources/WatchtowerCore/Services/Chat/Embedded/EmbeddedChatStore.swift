@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerChatText
 
 /// Where an embedded chat keeps its rows. Every write throws — a failure is
 /// shown to the owner, never swallowed — and is `async`: a database store

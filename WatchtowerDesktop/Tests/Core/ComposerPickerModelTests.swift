@@ -1,5 +1,6 @@
 import XCTest
 @testable import WatchtowerCore
+import WatchtowerChatText
 
 @MainActor
 final class ComposerPickerModelTests: XCTestCase {

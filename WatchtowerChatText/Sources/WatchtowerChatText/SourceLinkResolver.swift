@@ -11,8 +11,8 @@ import Foundation
 /// `Sources/Utilities/JiraHelpers.swift`) rather than sharing it: `WatchtowerCore`
 /// cannot depend on the app target, so this is a small, deliberate two-copy
 /// pin — `JiraHelpersTests` covers one side, `SourceLinkResolverTests` the other.
-package enum SourceLinkResolver {
-    package static func url(for source: ChatSource, jiraSiteURL: String?) -> URL? {
+public enum SourceLinkResolver {
+    public static func url(for source: ChatSource, jiraSiteURL: String?) -> URL? {
         if source.kind == PublishedLink.sourceKind {
             // The same fail-closed rule as the link card: anything but a
             // claude.ai page stays text.

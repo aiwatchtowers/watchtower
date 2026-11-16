@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import WatchtowerChatText
 
 package enum ComposerPickerKey: Sendable {
     case up, down, accept, dismiss

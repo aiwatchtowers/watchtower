@@ -1,5 +1,6 @@
 import XCTest
 @testable import WatchtowerCore
+import WatchtowerChatText
 
 final class MentionTokenizerTests: XCTestCase {
     private func utf16Count(_ s: String) -> Int { s.utf16.count }

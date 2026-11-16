@@ -1,5 +1,6 @@
 import SwiftUI
 import WatchtowerCore
+import WatchtowerChatText
 
 /// Whether the tuning chat's tools are on for the panel: off is shown only
 /// once the catalog has been read (or its read failed) — before the first

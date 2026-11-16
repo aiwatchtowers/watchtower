@@ -2,6 +2,7 @@ import XCTest
 import AppKit
 @testable import WatchtowerDesktop
 @testable import WatchtowerCore
+import WatchtowerChatText
 
 /// ⌘V routing in the composer's text view, on private named pasteboards
 /// (never the owner's clipboard). The view is never put in a window.

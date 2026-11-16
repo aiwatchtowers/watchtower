@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerChatText
 
 /// What a workbench html file's markup asks to load that the preview blocks
 /// (#563), for the "Blocked …" line over the preview. A read of the source,

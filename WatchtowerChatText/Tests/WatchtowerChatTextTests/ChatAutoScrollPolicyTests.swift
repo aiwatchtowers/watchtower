@@ -1,5 +1,5 @@
 import XCTest
-@testable import WatchtowerCore
+@testable import WatchtowerChatText
 
 /// The chat's "follow the latest content" decisions: a streaming delta, a
 /// tool step or a new row pulls the viewport down only while following, and a

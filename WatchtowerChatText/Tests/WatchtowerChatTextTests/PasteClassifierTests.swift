@@ -1,5 +1,5 @@
 import XCTest
-@testable import WatchtowerCore
+@testable import WatchtowerChatText
 
 final class PasteClassifierTests: XCTestCase {
     private let png = "public.png"
@@ -65,7 +65,7 @@ final class PasteClassifierTests: XCTestCase {
     }
 
     func testTextOverTheAttachmentLimitGetsNoOffer() {
-        let huge = String(repeating: "a", count: Int(AttachmentValidator.textLimit) + 1)
+        let huge = String(repeating: "a", count: Int(PasteClassifier.textAttachmentLimit) + 1)
         XCTAssertEqual(PasteClassifier.classify(types: [string], fileURLs: [], text: huge),
                        .insertText(offerAsFile: false))
     }

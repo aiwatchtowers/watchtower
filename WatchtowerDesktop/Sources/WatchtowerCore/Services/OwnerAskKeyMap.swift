@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerChatText
 
 /// Owner asks without the mouse (board #412, spec 2026-10-10 Part 9.4):
 /// which action a key press means where the keyboard is. Every key here is

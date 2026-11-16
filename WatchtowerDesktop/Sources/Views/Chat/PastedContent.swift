@@ -1,5 +1,6 @@
 import AppKit
 import WatchtowerCore
+import WatchtowerChatText
 
 /// Reads the pasteboard for a ⌘V in a composer that accepts attachments
 /// (board #534). Called ONLY from the text view's `paste(_:)` — a

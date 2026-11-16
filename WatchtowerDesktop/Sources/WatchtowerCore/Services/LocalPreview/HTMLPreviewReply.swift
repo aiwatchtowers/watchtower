@@ -1,5 +1,6 @@
 import Foundation
 import UniformTypeIdentifiers
+import WatchtowerChatText
 
 /// The answers of the in-app preview's scheme handler (#563), pure: which
 /// file and byte range a request gets, or why not, and the headers — the

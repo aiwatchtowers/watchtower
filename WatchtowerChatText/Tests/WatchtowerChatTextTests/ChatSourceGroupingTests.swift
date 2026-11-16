@@ -1,5 +1,5 @@
 import XCTest
-@testable import WatchtowerCore
+@testable import WatchtowerChatText
 
 final class ChatSourceGroupingTests: XCTestCase {
     private func slack(_ title: String, url: String? = nil, ref: String = "r", group: String? = nil) -> ChatSource {
@@ -133,24 +133,5 @@ final class ChatSourceGroupingTests: XCTestCase {
         XCTAssertEqual(one.countLabel, "1 source")
         XCTAssertEqual(one.topGroups, "", "an Other-only answer names no group")
         XCTAssertEqual(ChatSourceGrouping.summary([]).count, 0)
-    }
-
-    // MARK: - Inspector mode
-
-    func testInspectorShowsThePreferredOpenPanelAndFallsBack() {
-        XCTAssertEqual(ChatInspectorPolicy.visibleMode(preferred: .sources, artifactOpen: true, sourcesOpen: true),
-                       .sources)
-        XCTAssertEqual(ChatInspectorPolicy.visibleMode(preferred: .sources, artifactOpen: true, sourcesOpen: false),
-                       .artifacts, "closing Sources falls back to the still-open artifact")
-        XCTAssertEqual(ChatInspectorPolicy.visibleMode(preferred: .artifacts, artifactOpen: false, sourcesOpen: true),
-                       .sources)
-        XCTAssertNil(ChatInspectorPolicy.visibleMode(preferred: .artifacts, artifactOpen: false, sourcesOpen: false))
-        XCTAssertTrue(ChatInspectorPolicy.showsTabs(artifactOpen: true, sourcesOpen: true))
-        XCTAssertFalse(ChatInspectorPolicy.showsTabs(artifactOpen: false, sourcesOpen: true))
-    }
-
-    func testSelectionDedupesItsSources() {
-        let src = ChatSource(kind: "jira", title: "PAY-1", url: nil, ref: "jira:PAY-1")
-        XCTAssertEqual(ChatSourcesSelection(messageID: 1, sources: [src, src]).sources.count, 1)
     }
 }

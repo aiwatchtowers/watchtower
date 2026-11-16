@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerChatText
 
 /// The conversation of a running turn is gone (deleted on the Mac, from the
 /// phone, or with its project): an update by message id changed no row, or

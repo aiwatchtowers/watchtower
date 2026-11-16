@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import WatchtowerCore
+import WatchtowerChatText
 
 /// Routes a user-initiated ⌘V (board #534): Finder files, images and PDF
 /// data become attachments; text inserts as always, and a long one is

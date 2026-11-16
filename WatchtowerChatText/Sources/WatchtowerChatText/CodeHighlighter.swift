@@ -1,13 +1,13 @@
 import Foundation
 import WatchtowerChatText
 
-package struct CodeToken: Equatable, Sendable {
-    package enum Kind: Equatable, Sendable { case plain, keyword, string, comment, number }
+public struct CodeToken: Equatable, Sendable {
+    public enum Kind: Equatable, Sendable { case plain, keyword, string, comment, number }
 
-    package let kind: Kind
-    package let text: String
+    public let kind: Kind
+    public let text: String
 
-    package init(kind: Kind, text: String) {
+    public init(kind: Kind, text: String) {
         self.kind = kind
         self.text = text
     }
@@ -22,7 +22,7 @@ package struct CodeToken: Equatable, Sendable {
 /// streamed, growing code fence would otherwise be fully re-scanned on every
 /// re-render (each delta while streaming, and again on every scroll-driven
 /// row rebuild once finished).
-package enum CodeHighlighter {
+public enum CodeHighlighter {
     private struct Spec {
         let keywords: Set<String>
         let lineComments: [String]
@@ -42,7 +42,7 @@ package enum CodeHighlighter {
         return cache
     }()
 
-    package static func tokens(_ code: String, language: String?) -> [CodeToken] {
+    public static func tokens(_ code: String, language: String?) -> [CodeToken] {
         guard !code.isEmpty else { return [] }
         guard let spec = language.flatMap({ specs[$0.lowercased()] }) else { return [CodeToken(kind: .plain, text: code)] }
         let key = cacheKey(code, language: language)
@@ -56,7 +56,7 @@ package enum CodeHighlighter {
     /// Test-only: whether `code`/`language` already has a cached result,
     /// without triggering a scan — lets a test prove a repeat call is served
     /// from cache instead of re-scanning.
-    package static func isCached(_ code: String, language: String?) -> Bool {
+    public static func isCached(_ code: String, language: String?) -> Bool {
         cache.object(forKey: cacheKey(code, language: language)) != nil
     }
 

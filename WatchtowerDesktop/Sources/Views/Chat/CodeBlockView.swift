@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import WatchtowerCore
+import WatchtowerChatText
 
 struct CodeBlockView: View {
     let language: String?

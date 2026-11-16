@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import WatchtowerCore
+import WatchtowerChatText
 
 /// "Published on claude.ai": the page or doc the assistant published to the
 /// owner's own account (spec 2026-10-16-chat-claude-ai-tools-design §3.1).

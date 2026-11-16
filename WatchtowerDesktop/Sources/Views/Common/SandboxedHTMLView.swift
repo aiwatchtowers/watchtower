@@ -3,6 +3,7 @@ import os
 import SwiftUI
 import WatchtowerCore
 import WebKit
+import WatchtowerChatText
 
 private let htmlPreviewLog = Logger(subsystem: Constants.bundleID, category: "html-preview")
 

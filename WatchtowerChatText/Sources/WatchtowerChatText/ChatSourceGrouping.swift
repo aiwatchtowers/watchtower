@@ -2,24 +2,24 @@ import Foundation
 
 /// One bucket of the sources panel: a Slack channel, a Jira project, a
 /// Confluence space, "Mail", "Meetings", or "Other".
-package struct ChatSourceGroup: Identifiable, Equatable, Sendable {
-    package let name: String
+public struct ChatSourceGroup: Identifiable, Equatable, Sendable {
+    public let name: String
     /// The kind most of its items share — drives the header icon.
-    package let kind: String
-    package let sources: [ChatSource]
+    public let kind: String
+    public let sources: [ChatSource]
 
-    package var id: String { name }
+    public var id: String { name }
 }
 
 /// What the one-line row under a finished answer shows.
-package struct ChatSourcesSummary: Equatable, Sendable {
-    package let count: Int
+public struct ChatSourcesSummary: Equatable, Sendable {
+    public let count: Int
     /// Up to `ChatSourceGrouping.maxIcons` distinct kinds, most frequent first.
-    package let kinds: [String]
+    public let kinds: [String]
     /// "#payments ×6, #general, PAY" — the most frequent named groups.
-    package let topGroups: String
+    public let topGroups: String
 
-    package var countLabel: String { ChatSourceGrouping.countLabel(count) }
+    public var countLabel: String { ChatSourceGrouping.countLabel(count) }
 }
 
 /// Pure grouping/dedupe/formatting behind the collapsed sources row and the
@@ -27,21 +27,21 @@ package struct ChatSourcesSummary: Equatable, Sendable {
 /// `date` for new rows; for a row persisted before those fields existed the
 /// group is derived here from the kind, the ref, or a leading "#channel" in
 /// the title. The "Mail"/"Meetings" names match Go's `mailGroup`/`meetingGroup`.
-package enum ChatSourceGrouping {
-    package static let otherGroup = "Other"
-    package static let mailGroup = "Mail"
-    package static let meetingGroup = "Meetings"
-    package static let maxIcons = 4
-    package static let maxTopGroups = 3
+public enum ChatSourceGrouping {
+    public static let otherGroup = "Other"
+    public static let mailGroup = "Mail"
+    public static let meetingGroup = "Meetings"
+    public static let maxIcons = 4
+    public static let maxTopGroups = 3
 
     private static let titleSeparators = [" — ", " · "]
 
-    package static func countLabel(_ count: Int) -> String {
+    public static func countLabel(_ count: Int) -> String {
         count == 1 ? "1 source" : "\(count) sources"
     }
 
     /// The bucket a source belongs to; never empty.
-    package static func groupName(_ source: ChatSource) -> String {
+    public static func groupName(_ source: ChatSource) -> String {
         if let group = source.group, !group.isEmpty { return group }
         switch source.kind {
         case "slack": return legacySlackGroup(source.title) ?? otherGroup
@@ -54,7 +54,7 @@ package enum ChatSourceGrouping {
 
     /// The title without its group prefix ("#payments — refund is live" under
     /// "#payments" reads "refund is live"); the ref when there is no title.
-    package static func displayTitle(_ source: ChatSource) -> String {
+    public static func displayTitle(_ source: ChatSource) -> String {
         let base = source.title.isEmpty ? source.ref : source.title
         let group = groupName(source)
         guard group != otherGroup, base.hasPrefix(group) else { return base }
@@ -68,7 +68,7 @@ package enum ChatSourceGrouping {
 
     /// Deduplicated sources grouped by `groupName`, the biggest group first
     /// (ties keep first appearance), "Other" always last.
-    package static func groups(_ sources: [ChatSource]) -> [ChatSourceGroup] {
+    public static func groups(_ sources: [ChatSource]) -> [ChatSourceGroup] {
         var order: [String] = []
         var buckets: [String: [ChatSource]] = [:]
         for source in ChatSource.dedupe(sources) {
@@ -88,7 +88,7 @@ package enum ChatSourceGrouping {
         }
     }
 
-    package static func summary(_ sources: [ChatSource]) -> ChatSourcesSummary {
+    public static func summary(_ sources: [ChatSource]) -> ChatSourcesSummary {
         let unique = ChatSource.dedupe(sources)
         let named = groups(unique).filter { $0.name != otherGroup }.prefix(maxTopGroups)
         let top = named.map { $0.sources.count > 1 ? "\($0.name) ×\($0.sources.count)" : $0.name }
@@ -99,7 +99,7 @@ package enum ChatSourceGrouping {
 
     /// "May 13, 2026" for a `YYYY-MM-DD` day (rendered in UTC, so the day
     /// never shifts with the viewer's zone); nil for anything else.
-    package static func displayDate(_ day: String?) -> String? {
+    public static func displayDate(_ day: String?) -> String? {
         guard let day, day.count == 10,
               let date = try? Date(day, strategy: Date.ISO8601FormatStyle().year().month().day())
         else { return nil }
@@ -111,7 +111,7 @@ package enum ChatSourceGrouping {
     /// One key per Slack thread: a reply permalink (`…/archives/C1/p200?thread_ts=100.1`)
     /// and its root's (`…/archives/C1/p1001`) collapse together. nil for a
     /// non-Slack-archive URL.
-    package static func threadKey(_ url: String) -> String? {
+    public static func threadKey(_ url: String) -> String? {
         guard let parts = URLComponents(string: url), let host = parts.host,
               let range = parts.path.range(of: "/archives/") else { return nil }
         let pathTail = parts.path[range.upperBound...].split(separator: "/")

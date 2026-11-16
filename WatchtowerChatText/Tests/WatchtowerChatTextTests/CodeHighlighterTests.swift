@@ -1,6 +1,5 @@
 import XCTest
-@testable import WatchtowerCore
-import WatchtowerChatText
+@testable import WatchtowerChatText
 
 final class CodeHighlighterTests: XCTestCase {
     private func kinds(_ code: String, _ lang: String?) -> [(CodeToken.Kind, String)] {

@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import WatchtowerCore
+import WatchtowerChatText
 
 /// The centered thread column (spec §3.1, max ~760 pt) on the shared
 /// `ChatFeedView`. Reads `liveTurn` identity and `waitingActionIDs` only;

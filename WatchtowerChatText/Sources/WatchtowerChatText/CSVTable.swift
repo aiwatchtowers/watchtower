@@ -2,8 +2,8 @@ import Foundation
 
 /// Minimal RFC 4180 reader for `table` artifacts (quoted fields, `""`
 /// escapes, embedded newlines, LF or CRLF).
-package enum CSVTable {
-    package static func parse(_ text: String) -> [[String]] {
+public enum CSVTable {
+    public static func parse(_ text: String) -> [[String]] {
         var rows: [[String]] = []
         var row: [String] = []
         var field = ""
