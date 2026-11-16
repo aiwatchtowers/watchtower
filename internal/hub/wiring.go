@@ -10,11 +10,11 @@ import (
 	"sync"
 	"time"
 
+	"watchtower/internal/chatengine"
 	"watchtower/internal/chatstore"
 	"watchtower/internal/db"
 	"watchtower/internal/hub/actions"
 	"watchtower/internal/hub/actions/handlers"
-	"watchtower/internal/hub/chatrun"
 	"watchtower/internal/hub/slices"
 	"watchtower/internal/hub/slices/sources"
 	"watchtower/internal/hub/state"
@@ -93,9 +93,9 @@ type wiring struct {
 	live *liveness
 	// away nudges the work alerts when the owner leaves the Mac.
 	away *awayWatch
-	// chat runs the hub's AI chat turns (nil = no database file or no
-	// executable: chat is off). Nothing runs until a turn starts.
-	chat *chatrun.Runner
+	// chat is the chat engine that runs the AI chat turns (nil = no database
+	// file or no executable: chat is off). Nothing runs until a turn starts.
+	chat *chatengine.Engine
 	// chatStore writes the hub's chat rows (the runner's and the
 	// handlers'); chatTimer republishes what only time changes (nil under
 	// workbench_only); titles are the AI titles running, cancelled and
@@ -236,7 +236,7 @@ func (h *hubRuntime) buildWiring(o Options, st *state.Store, mode string, d *act
 	dbPath, _ := mainFile(context.Background(), o.DB)
 	w.titlesCtx, w.titlesCancel = context.WithCancel(context.Background())
 	w.chatStore = h.newChatStore(o, w)
-	w.chat = h.newChatRunner(o, w.chatStore, w.spawn)
+	w.chat = h.newChatRunner(o, w.spawn)
 	var chatLive sources.LiveText
 	if w.chat != nil {
 		chatLive = w.chat
@@ -528,12 +528,12 @@ func (w *wiring) retrySeed(ctx context.Context) {
 	}
 }
 
-// newChatRunner builds the hub's chat runner over o.DB and runs its startup
-// sweep (spec §4.3). A database with no file, or no path to this binary,
-// leaves the hub without one. spawn runs a turn end's push off the runner's
-// goroutine as tracked background work (wiring.spawn: close waits for it);
-// it refuses once the hub stops.
-func (h *hubRuntime) newChatRunner(o Options, store *chatstore.Store, spawn func(func()) bool) *chatrun.Runner {
+// newChatRunner builds the chat engine over o.DB and runs its startup
+// sweep (until the daemon owns the engine, the hub does). A database with no
+// file, or no path to this binary, leaves the hub without one. spawn runs a
+// turn end's push off the engine's goroutine as tracked background work
+// (wiring.spawn: close waits for it); it refuses once the hub stops.
+func (h *hubRuntime) newChatRunner(o Options, spawn func(func()) bool) *chatengine.Engine {
 	path, err := mainFile(context.Background(), o.DB)
 	if err != nil {
 		log.Printf("hub: no chat runner: the database has no file")
@@ -544,24 +544,16 @@ func (h *hubRuntime) newChatRunner(o Options, store *chatstore.Store, spawn func
 		log.Printf("hub: no chat runner: the executable is unknown (%s)", errClass(err))
 		return nil
 	}
-	clock := o.Clock
-	if clock == nil {
-		clock = time.Now
-	}
-	if store == nil {
-		store = chatstore.New(o.DB, db.ChatLeaseHub, h.kr.HubIDText(), chatstore.WithClock(clock))
-	}
-	r := chatrun.New(chatrun.Config{Exe: exe, DBPath: path, HubID: h.kr.HubIDText(), Dir: o.Dir, DB: o.DB, Clock: clock,
-		Store: store,
-		// A turn's text, steps and end reach the phone's feed and list (the
-		// publisher coalesces the per-event calls).
-		OnChange:  func(int64) { h.publishSoon(slices.KindChatFeed, slices.KindChatList) },
-		OnTurnEnd: h.chatTurnEnded(spawn),
-	})
-	if err := r.Sweep(); err != nil {
+	e := chatengine.New(chatengine.Config{Exe: exe, DBPath: path, Dir: o.Dir, DB: o.DB, Clock: o.Clock,
+		Title: o.ChatTitle, PreferredProvider: o.ChatPreferredProvider, FilesDir: chatFilesDir(path)})
+	// A turn's text, steps and end reach the phone's feed and list (the
+	// publisher coalesces the per-event calls).
+	e.OnChange(func(int64) { h.publishSoon(slices.KindChatFeed, slices.KindChatList) })
+	e.OnTurnEnd(h.chatTurnEnded(spawn))
+	if err := e.Start(context.Background()); err != nil {
 		log.Printf("hub: the chat sweep failed (%s)", errClass(err))
 	}
-	return r
+	return e
 }
 
 // chatTurnEnded is the runner's OnTurnEnd: the chat_answer push (spec

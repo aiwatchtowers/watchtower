@@ -1,4 +1,4 @@
-package chatrun
+package chatengine
 
 import (
 	"context"
@@ -14,7 +14,7 @@ import (
 	"watchtower/internal/logcanary"
 )
 
-// TestFILES01_Chatrun runs turns whose owner text, streamed answer, a
+// TestFILES01_Chatengine runs turns whose owner text, streamed answer, a
 // non-event stdout line and a spawn error carry canaries through every
 // logging path of the runner (a cancel, a lost conversation, a failed
 // spawn, unreadable lines, the sweep): no canary reaches the log.
@@ -45,9 +45,9 @@ func TestFILES01_Chatrun(t *testing.T) {
 		g.r = New(g.cfg)
 		g.send(t, failed, c("owner.third"), nil)
 		synctest.Wait()
-		require.NoError(t, g.r.Sweep())
-		_, err = g.r.Run(context.Background(), chatstore.StartRequest{ConversationID: failed, Mode: chatstore.ModeSend,
-			Text: c("owner.fourth")})
+		require.NoError(t, g.r.Start(context.Background()))
+		_, err = g.r.Turn(context.Background(), TurnRequest{StartRequest: chatstore.StartRequest{ConversationID: failed,
+			Mode: chatstore.ModeSend, Text: c("owner.fourth")}})
 		require.NoError(t, err)
 		synctest.Wait()
 		require.NoError(t, g.r.Close(context.Background()))

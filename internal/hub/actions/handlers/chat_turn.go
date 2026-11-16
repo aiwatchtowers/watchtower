@@ -6,9 +6,9 @@ import (
 	"log"
 	"unicode/utf8"
 
+	"watchtower/internal/chatengine"
 	"watchtower/internal/chatstore"
 	"watchtower/internal/hub/actions"
-	"watchtower/internal/hub/chatrun"
 	"watchtower/internal/hub/wire"
 )
 
@@ -50,7 +50,7 @@ func (h *Handlers) chatNew(ctx context.Context, r actions.Request) actions.Outco
 
 // chatTurn is `chat_turn` (params {conversation_id, mode send|regenerate|
 // edit, message_id?, text, attachment_ids, routing?}): a turn the hub runs
-// (chatrun.Runner). Non-idempotent with a received echo: the answer waits
+// (chatengine.Engine). Non-idempotent with a received echo: the answer waits
 // only for the start transaction (the owner's row, the lease); the turn then
 // runs in the background and reaches the phone through chat_feed. Result
 // {user_message_id, assistant_message_id, turn_id}; refusals
@@ -65,7 +65,7 @@ func (h *Handlers) chatTurn(ctx context.Context, r actions.Request) actions.Outc
 		if c.Runner == nil {
 			return failed(reasonNotSupported, chatOffMessages[wire.ChatOffRunnerDown])
 		}
-		st, err := c.Runner.Run(ctx, req)
+		st, err := c.Runner.Turn(ctx, chatengine.TurnRequest{StartRequest: req})
 		switch {
 		case errors.Is(err, chatstore.ErrBusy):
 			return failed(reasonConversationBusy, chatBusyMessage)
@@ -77,7 +77,7 @@ func (h *Handlers) chatTurn(ctx context.Context, r actions.Request) actions.Outc
 			return failed(reasonAttachmentMissing, chatAttachmentGone)
 		case errors.Is(err, chatstore.ErrInvalid):
 			return failed(reasonInvalidParams, "Your Mac can't send this message as it is")
-		case errors.Is(err, chatrun.ErrClosed):
+		case errors.Is(err, chatengine.ErrClosed):
 			return failed(reasonNotSupported, chatHubStoppingMessage)
 		case err != nil:
 			log.Printf("hub chat: starting a turn of chat %d failed (%s)", req.ConversationID, errClass(err))

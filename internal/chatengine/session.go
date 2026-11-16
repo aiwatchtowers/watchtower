@@ -1,4 +1,4 @@
-package chatrun
+package chatengine
 
 import (
 	"bufio"
@@ -34,7 +34,7 @@ const (
 const stdinBacklog = 16
 
 // errStdinBacklog is a send refused because the child reads no stdin.
-var errStdinBacklog = errors.New("chatrun: the session reads no commands")
+var errStdinBacklog = errors.New("chatengine: the session reads no commands")
 
 // Process is one running `ai session` child.
 type Process interface {
@@ -73,7 +73,7 @@ type heldTurn struct {
 // session is one conversation's `ai session` child and the goroutine that
 // owns it: every Apply, Flush and Finalize of its turns runs on loop.
 type session struct {
-	r    *Runner
+	r    *Engine
 	conv int64
 	cfg  sessionConfig
 	kick chan struct{}
@@ -82,12 +82,14 @@ type session struct {
 	phase        phase
 	turn         *heldTurn // nil = idle
 	lastActivity time.Time
-	leaf         *int64 // the last message this process answered (ChatContinuity)
-	blocked      bool   // pending with no slot coming: "Waiting for a free slot"
-	retire       bool   // close once idle; never reused
-	closing      bool   // the runner closes: stop now, leave a cut turn's lease
-	dropped      bool   // a pending session given up (cancelled, gone, failed spawn)
-	cancelPoke   bool   // Cancel asked for an immediate lease read
+	leaf         *int64      // the last message this process answered (ChatContinuity)
+	blocked      bool        // pending with no slot coming: "Waiting for a free slot"
+	retire       bool        // close once idle; never reused
+	closing      bool        // the runner closes: stop now, leave a cut turn's lease
+	dropped      bool        // a pending session given up (cancelled, gone, failed spawn)
+	cancelPoke   bool        // Cancel asked for an immediate lease read
+	gone         bool        // Manage deleted the conversation: drop the turn now
+	readyLive    *chat.Event // the last session_ready, for the live routing overlay
 
 	// Owned by loop.
 	proc       Process
@@ -174,12 +176,16 @@ func (s *session) finished() bool {
 
 func (s *session) onKick() {
 	s.r.mu.Lock()
-	ph, held, closing, retire, cancelPoke := s.phase, s.turn, s.closing, s.retire, s.cancelPoke
-	s.cancelPoke = false
+	ph, held, closing, retire, cancelPoke, gone := s.phase, s.turn, s.closing, s.retire, s.cancelPoke, s.gone
+	s.cancelPoke, s.gone = false, false
 	s.r.mu.Unlock()
 
 	if closing && s.proc == nil {
 		return // finished() ends it; a held turn keeps its lease for the sweep
+	}
+	if gone && held != nil {
+		s.lost()
+		return
 	}
 	if ph == phaseLaunch && s.proc == nil && !s.spawn(held) {
 		return
@@ -200,7 +206,7 @@ func (s *session) onKick() {
 func (s *session) spawn(held *heldTurn) bool {
 	p, err := s.r.c.Start(s.cfg.argv(s.conv, s.r.c.DBPath))
 	if err != nil {
-		log.Printf("chatrun: conversation %d: starting the session failed (%s)", s.conv, errClass(err))
+		log.Printf("chatengine: conversation %d: starting the session failed (%s)", s.conv, errClass(err))
 		if held != nil {
 			s.r.finalizeUnsent(held.st, held.t, chatstore.StatusError,
 				&chatstore.Failure{Code: chat.CodeProviderUnavailable, Message: "The chat session could not start."})
@@ -236,7 +242,7 @@ func (s *session) startTurn(held *heldTurn) {
 		Attachments: held.st.Attachments, Replay: held.st.Replay})
 	if err != nil {
 		// The pipe is gone: the process is exiting; end finalizes the turn.
-		log.Printf("chatrun: conversation %d: sending turn %s failed (%s)", s.conv, held.st.TurnID, errClass(err))
+		log.Printf("chatengine: conversation %d: sending turn %s failed (%s)", s.conv, held.st.TurnID, errClass(err))
 	}
 }
 
@@ -267,7 +273,7 @@ func (s *session) writeStdin(w io.Writer, lines <-chan []byte) {
 		}
 		if _, err := w.Write(line); err != nil {
 			failed = true
-			log.Printf("chatrun: conversation %d: writing to the session failed (%s)", s.conv, errClass(err))
+			log.Printf("chatengine: conversation %d: writing to the session failed (%s)", s.conv, errClass(err))
 		}
 	}
 }
@@ -293,8 +299,14 @@ func (s *session) onEvent(ev chat.Event) {
 	if ev.Type == chat.EventSessionReady {
 		e := ev
 		s.ready = &e
+		s.r.mu.Lock()
+		s.readyLive = &e
+		s.r.mu.Unlock()
 	}
 	if s.cur == nil {
+		if ev.Type == chat.EventSessionReady {
+			s.r.changed(s.conv) // the routing overlay moved
+		}
 		return
 	}
 	s.apply(ev)
@@ -310,7 +322,7 @@ func (s *session) apply(ev chat.Event) {
 		s.lost()
 		return
 	case err != nil:
-		log.Printf("chatrun: conversation %d: writing turn %s failed (%s)", s.conv, cur.st.TurnID, errClass(err))
+		log.Printf("chatengine: conversation %d: writing turn %s failed (%s)", s.conv, cur.st.TurnID, errClass(err))
 		if terminalFor(ev, cur.st.TurnID) {
 			if done, _ := cur.t.Done(); !done {
 				s.retry = func() error { return cur.t.Apply(ev) }
@@ -381,7 +393,7 @@ func (s *session) lost() {
 	if held != nil {
 		turnID = held.st.TurnID
 	}
-	log.Printf("chatrun: conversation %d: turn %s lost its conversation or lease; closing the session", s.conv, turnID)
+	log.Printf("chatengine: conversation %d: turn %s lost its conversation or lease; closing the session", s.conv, turnID)
 	s.cur, s.retry = nil, nil
 	s.stopCancelWatch()
 	if s.proc != nil {
@@ -397,7 +409,7 @@ func (s *session) onTick() {
 		retry := s.retry
 		s.retry = nil
 		if err := retry(); err != nil && !errors.Is(err, chatstore.ErrConversationGone) {
-			log.Printf("chatrun: conversation %d: the final write failed again (%s); the lease goes stale", s.conv, errClass(err))
+			log.Printf("chatengine: conversation %d: the final write failed again (%s); the lease goes stale", s.conv, errClass(err))
 			s.giveUp()
 			return
 		} else if err != nil {
@@ -413,7 +425,7 @@ func (s *session) onTick() {
 				s.lost()
 				return
 			} else if err != nil {
-				log.Printf("chatrun: conversation %d: flushing failed (%s)", s.conv, errClass(err))
+				log.Printf("chatengine: conversation %d: flushing failed (%s)", s.conv, errClass(err))
 			}
 		}
 	}
@@ -513,7 +525,7 @@ func (s *session) end() {
 			if done, _ := cur.t.Done(); !done {
 				if closing {
 					if err := cur.t.Flush(); err != nil {
-						log.Printf("chatrun: conversation %d: the last flush failed (%s)", s.conv, errClass(err))
+						log.Printf("chatengine: conversation %d: the last flush failed (%s)", s.conv, errClass(err))
 					}
 				} else {
 					s.retry = nil
@@ -550,7 +562,7 @@ func readEvents(conv int64, out io.ReadCloser) <-chan chat.Event {
 			}
 			if err != nil {
 				if bad > 0 {
-					log.Printf("chatrun: conversation %d: %d unreadable event lines skipped", conv, bad)
+					log.Printf("chatengine: conversation %d: %d unreadable event lines skipped", conv, bad)
 				}
 				return
 			}
@@ -560,11 +572,11 @@ func readEvents(conv int64, out io.ReadCloser) <-chan chat.Event {
 }
 
 // pgidDir is where the children's process-group files live.
-func (r *Runner) pgidDir() string {
-	if r.c.Dir == "" {
+func (e *Engine) pgidDir() string {
+	if e.c.Dir == "" {
 		return ""
 	}
-	return filepath.Join(r.c.Dir, "chatrun")
+	return filepath.Join(e.c.Dir, "sessions")
 }
 
 // writePGID records the child's group for a sweep after a kill -9 of the
@@ -575,12 +587,12 @@ func (s *session) writePGID(pgid int) {
 		return
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		log.Printf("chatrun: conversation %d: creating the group dir failed (%s)", s.conv, errClass(err))
+		log.Printf("chatengine: conversation %d: creating the group dir failed (%s)", s.conv, errClass(err))
 		return
 	}
 	path := filepath.Join(dir, strconv.FormatInt(s.conv, 10)+".pgid")
 	if err := os.WriteFile(path, []byte(strconv.Itoa(pgid)), 0o600); err != nil {
-		log.Printf("chatrun: conversation %d: writing the group file failed (%s)", s.conv, errClass(err))
+		log.Printf("chatengine: conversation %d: writing the group file failed (%s)", s.conv, errClass(err))
 		return
 	}
 	s.pgidPath = path
@@ -612,7 +624,7 @@ type execProcess struct {
 func execStart(exe string) StartFunc {
 	return func(argv []string) (Process, error) {
 		if exe == "" {
-			return nil, errors.New("chatrun: no watchtower executable")
+			return nil, errors.New("chatengine: no watchtower executable")
 		}
 		cmd := exec.Command(exe, argv...)
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/jsonschema-go/jsonschema"
 
+	"watchtower/internal/chatengine"
 	"watchtower/internal/chatstore"
 	"watchtower/internal/db"
 	"watchtower/internal/hub/actions"
@@ -30,9 +31,9 @@ type fakeChatRunner struct {
 	cancel  bool
 }
 
-func (f *fakeChatRunner) Run(ctx context.Context, req chatstore.StartRequest) (chatstore.Started, error) {
-	f.runs = append(f.runs, req)
-	return f.store.Start(ctx, req)
+func (f *fakeChatRunner) Turn(ctx context.Context, req chatengine.TurnRequest) (chatstore.Started, error) {
+	f.runs = append(f.runs, req.StartRequest)
+	return f.store.Start(ctx, req.StartRequest)
 }
 
 func (f *fakeChatRunner) Cancel(conv int64, turnID string) (bool, error) {
