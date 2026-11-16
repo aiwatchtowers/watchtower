@@ -182,6 +182,11 @@ e2e-vectors:  ## regenerate the Kit E2E vectors (expected XCTFail "regenerated")
 SIM ?= iPhone 18 Pro
 MOBILE_PROJ := WatchtowerMobile/WatchtowerMobile.xcodeproj
 MOBILE_DEST := platform=iOS Simulator,name=$(SIM)
+# Explicit precompiled modules go stale between the build and test xcodebuild runs
+# sharing DerivedData (SQLCipher-<hash>.pcm, then "missing required module
+# 'GRDBSQLCipher'"), so every phone xcodebuild turns them off (#1822).
+# MOBILE_XCB_EXTRA adds more xcodebuild arguments (e.g. -derivedDataPath).
+MOBILE_XCB := SWIFT_ENABLE_EXPLICIT_MODULES=NO $(MOBILE_XCB_EXTRA)
 MOBILE_BUNDLE_ID := com.aiwatchtowers.watchtower.mobile
 # make mobile-test MOBILE_FILTER=SomeTestClass runs only that class; an
 # alternation (MOBILE_FILTER='ClassA|ClassB') becomes one -only-testing per class.
@@ -193,7 +198,7 @@ mobile-gen:
 
 mobile-build:
 	xcodebuild build -project $(MOBILE_PROJ) -scheme WatchtowerMobile \
-		-destination '$(MOBILE_DEST)' CODE_SIGNING_ALLOWED=NO
+		-destination '$(MOBILE_DEST)' CODE_SIGNING_ALLOWED=NO $(MOBILE_XCB)
 
 # The test host shares one on-disk replica with the simulator's installed app
 # (spec §10), so the recipe boots the simulator and uninstalls the app first:
@@ -205,7 +210,7 @@ mobile-test:
 	xcrun simctl uninstall "$(SIM)" $(MOBILE_BUNDLE_ID) 2>/dev/null || true
 	xcodebuild test -project $(MOBILE_PROJ) -scheme WatchtowerMobile \
 		-destination '$(MOBILE_DEST)' CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=- \
-		CODE_SIGN_ENTITLEMENTS="$(CURDIR)/WatchtowerMobile/StoreKitTesting.entitlements" $(MOBILE_ONLY)
+		CODE_SIGN_ENTITLEMENTS="$(CURDIR)/WatchtowerMobile/StoreKitTesting.entitlements" $(MOBILE_XCB) $(MOBILE_ONLY)
 
 # Build, boot the simulator, install and launch: the mobile app-dev.
 mobile-run: mobile-build
@@ -229,7 +234,7 @@ mobile-shots:
 	xcrun simctl uninstall "$(SIM)" $(MOBILE_BUNDLE_ID) 2>/dev/null || true
 	mkdir -p "$(SHOTS_DIR)"
 	TEST_RUNNER_WATCHTOWER_SHOTS_ONLY="$(SHOTS_ONLY)" TEST_RUNNER_WATCHTOWER_SHOTS_DIR="$(abspath $(SHOTS_DIR))" xcodebuild test -project $(MOBILE_PROJ) \
-		-scheme WatchtowerMobile -destination '$(MOBILE_DEST)' CODE_SIGNING_ALLOWED=NO \
+		-scheme WatchtowerMobile -destination '$(MOBILE_DEST)' CODE_SIGNING_ALLOWED=NO $(MOBILE_XCB) \
 		-only-testing:WatchtowerMobileTests/ScreenshotTourTests$(if $(filter relay-phase5,$(SHOTS_ONLY)),/testTheRelayPhase5Shots,$(if $(filter chat,$(SHOTS_ONLY)),/testTheChatShots,$(if $(SHOTS_ONLY),/testTheRelayPhase4Shots)))
 
 # The Desktop style guide's shots (WatchtowerDesktop/Tests/DesignShots, #719):
