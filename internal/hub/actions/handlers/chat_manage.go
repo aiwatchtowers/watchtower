@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 
+	"watchtower/internal/chatengine"
 	"watchtower/internal/chatstore"
 	"watchtower/internal/hub/actions"
 )
@@ -21,7 +22,7 @@ func (h *Handlers) chatRead(ctx context.Context, r actions.Request) actions.Outc
 		if refused := h.chatExists(ctx, c, conv); refused != nil {
 			return *refused
 		}
-		if err := c.Store.MarkRead(ctx, conv, msg); err != nil {
+		if err := c.Engine.MarkRead(ctx, conv, msg); err != nil {
 			log.Printf("hub chat: marking chat %d read failed (%s)", conv, errClass(err))
 			return failed(reasonWriteFailed, chatWriteFailedMessage)
 		}
@@ -38,7 +39,7 @@ func (h *Handlers) chatBranchSelect(ctx context.Context, r actions.Request) acti
 		if !ok || msg <= 0 {
 			return failed(reasonInvalidParams, "chat_branch_select needs a message_id")
 		}
-		err := c.Store.SelectBranch(ctx, msg)
+		err := c.Engine.SelectBranch(ctx, msg)
 		switch {
 		case errors.Is(err, chatstore.ErrNotFound):
 			return failed(reasonNotFound, chatMessageGoneMessage)
@@ -52,11 +53,11 @@ func (h *Handlers) chatBranchSelect(ctx context.Context, r actions.Request) acti
 
 // chatManage is `chat_manage` (params {conversation_id, op pin|unpin|rename|
 // delete, title?}): what the Mac's Chats panel writes. rename sets
-// title_source 'user'. delete removes the row (its messages, files' rows and
-// lease go with it) and then, after the commit, the conversation's
-// attachment folder, as the Mac's ✕ does; a failed removal leaves only the
-// folder behind. The phone's 5 s Undo is the phone's: it sends delete once
-// the Undo bar ends. Non-idempotent.
+// title_source 'user'. delete (the engine's) removes the row (its messages,
+// files' rows and lease go with it), stops its running turn and then, after
+// the commit, the conversation's attachment folder, as the Mac's ✕ does. The
+// phone's 5 s Undo is the phone's: it sends delete once the Undo bar ends.
+// Non-idempotent.
 func (h *Handlers) chatManage(ctx context.Context, r actions.Request) actions.Outcome {
 	return h.chatAction(ctx, "chat_manage", r, false, func(ctx context.Context, c *ChatDeps) actions.Outcome {
 		conv, okConv := intParam(r, "conversation_id")
@@ -64,25 +65,19 @@ func (h *Handlers) chatManage(ctx context.Context, r actions.Request) actions.Ou
 		if !okConv || !okOp || conv <= 0 {
 			return failed(reasonInvalidParams, "chat_manage needs a conversation_id and an op")
 		}
-		var err error
+		req := chatengine.ManageRequest{Conversation: conv, Op: op}
 		switch op {
-		case "pin", "unpin":
-			err = c.Store.Pin(ctx, conv, op == "pin")
-		case "rename":
+		case chatengine.ManagePin, chatengine.ManageUnpin, chatengine.ManageDelete:
+		case chatengine.ManageRename:
 			title, ok := stringParam(r, "title")
 			if !ok {
 				return failed(reasonInvalidParams, "rename needs a title")
 			}
-			err = c.Store.Rename(ctx, conv, title)
-		case "delete":
-			if err = c.Store.Delete(ctx, conv); err == nil {
-				if rerr := chatstore.RemoveConversationFiles(c.FilesDir, conv); rerr != nil {
-					log.Printf("hub chat: chat %d deleted, its attachment folder was not removed", conv)
-				}
-			}
+			req.Title = title
 		default:
 			return failed(reasonInvalidParams, "op must be pin, unpin, rename or delete")
 		}
+		err := c.Engine.Manage(ctx, req)
 		switch {
 		case errors.Is(err, chatstore.ErrConversationGone):
 			return failed(reasonNotFound, chatGoneMessage)

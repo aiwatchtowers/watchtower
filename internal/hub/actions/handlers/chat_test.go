@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -17,14 +18,18 @@ import (
 	"watchtower/internal/chatstore"
 	"watchtower/internal/db"
 	"watchtower/internal/hub/actions"
+	hubslices "watchtower/internal/hub/slices"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/wire"
 	"watchtower/internal/tools"
 )
 
-// fakeChatRunner runs the start transaction through a real store (so the
-// lease, busy and refusals are the store's) and records the cancels.
+// fakeChatRunner is a real engine (every write but a turn's is the
+// engine's) whose Turn runs only the start transaction through a real store
+// (so the lease, busy and refusals are the store's) and whose Cancel records
+// the cancels: no session process is started.
 type fakeChatRunner struct {
+	*chatengine.Engine
 	store   *chatstore.Store
 	runs    []chatstore.StartRequest
 	cancels []string
@@ -82,7 +87,15 @@ func newChatEnv(t *testing.T, server bool) *chatEnv {
 	c := &chatEnv{env: e, requests: &fakeChatRequests{}, files: filepath.Join(t.TempDir(), "chat_files"), on: true,
 		now: time.Unix(1_800_000_000, 0)}
 	c.chat = chatstore.New(e.db, db.ChatLeaseHub, "hub-1", chatstore.WithClock(func() time.Time { return c.now }))
-	c.runner = &fakeChatRunner{store: c.chat, cancel: true}
+	skillsDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(skillsDir, "weekly-report.md"),
+		[]byte("---\ndescription: Write the weekly report\n---\nbody"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	eng := chatengine.New(chatengine.Config{Exe: "/usr/bin/false", DB: e.db, FilesDir: c.files, SkillsDir: skillsDir,
+		Clock: func() time.Time { return c.now }})
+	t.Cleanup(func() { _ = eng.Close(context.Background()) })
+	c.runner = &fakeChatRunner{Engine: eng, store: c.chat, cancel: true}
 	c.reg = tools.New(e.db)
 	if err := c.reg.Register(tools.NewClaudeAIConnectorCall()); err != nil {
 		t.Fatal(err)
@@ -104,7 +117,7 @@ func newChatEnv(t *testing.T, server bool) *chatEnv {
 		DB: e.db, Store: st, Sessions: e.port, ServerHost: server, Clock: func() time.Time { return c.now },
 		Chat: &ChatDeps{
 			Available: func() (bool, string) { return c.on, c.reason },
-			Runner:    c.runner, Store: c.chat, Requests: c.requests, Tools: c.reg, FilesDir: c.files,
+			Engine:    c.runner, Requests: c.requests, Tools: c.reg, FilesDir: c.files,
 		},
 	})
 	err = st.WithTx(context.Background(), func(tx *sql.Tx) error {
@@ -166,6 +179,8 @@ func chatKindParams(conv int64) map[string]map[string]any {
 		"chat_branch_select": {"message_id": 1},
 		"chat_manage":        {"conversation_id": conv, "op": "pin"},
 		"chat_action_answer": {"action_id": 1, "decision": "reject", "args_sha256": "x"},
+		"chat_entity_search": {"query": "al"},
+		"chat_skills_list":   {},
 	}
 }
 
@@ -201,7 +216,6 @@ func TestChatHandlers_RefuseWhenNotOnRelay(t *testing.T) {
 	for _, tc := range []struct{ reason, msg string }{
 		{wire.ChatOffNotRelay, "Chat works over Relay"},
 		{wire.ChatOffRunnerDown, "Chat can't run on your Mac right now"},
-		{wire.ChatOffDesktopTooOld, "Update Watchtower on your Mac"},
 		{wire.ChatOffPolicy, "Chat is turned off by your organization"},
 	} {
 		c.on, c.reason = false, tc.reason
@@ -556,5 +570,54 @@ func TestChatHandlers_DiscussChatIsNotFound(t *testing.T) {
 	}
 	if c.scalar(`SELECT status FROM agent_actions WHERE id = ?`, id) != "pending" {
 		t.Fatal("a Discuss chat's action was decided from the phone")
+	}
+}
+
+// TestChatEntitySearchAction_ResultInEcho: chat_entity_search answers the
+// engine's hits in the applied echo (nothing published for it), at most
+// MaxChatEntityHits; an unknown kind is invalid_params.
+func TestChatEntitySearchAction_ResultInEcho(t *testing.T) {
+	c := newChatEnv(t, false)
+	for i := range 25 {
+		if _, err := c.db.Exec(`INSERT INTO channels (id, name, type, is_archived, is_member) VALUES (?, ?, 'public', 0, 1)`,
+			fmt.Sprintf("C%03d", i), fmt.Sprintf("payments-%02d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out := c.run("chat_entity_search", map[string]any{"query": "pay", "kinds": []string{"channel"}})
+	wantOutcome(t, out, wire.StatusApplied, "")
+	hits, ok := out.Result["hits"].([]chatengine.EntityHit)
+	if !ok || len(hits) != MaxChatEntityHits {
+		t.Fatalf("hits %#v", out.Result["hits"])
+	}
+	if hits[0].Kind != "channel" || hits[0].ID != "C000" || hits[0].Label != "#payments-00" {
+		t.Errorf("first hit %+v", hits[0])
+	}
+	out = c.run("chat_entity_search", map[string]any{"query": "zzz"})
+	wantOutcome(t, out, wire.StatusApplied, "")
+	if hits, ok := out.Result["hits"].([]chatengine.EntityHit); !ok || hits == nil || len(hits) != 0 {
+		t.Errorf("no match: %#v", out.Result["hits"])
+	}
+	wantOutcome(t, c.run("chat_entity_search", map[string]any{"query": "pay", "kinds": []string{"galaxy"}}),
+		wire.StatusFailed, reasonInvalidParams)
+	wantOutcome(t, c.run("chat_entity_search", map[string]any{"query": strings.Repeat("q", MaxChatSearchQuery+1)}),
+		wire.StatusFailed, reasonInvalidParams)
+	if !slices.Contains(NudgeTable["chat_entity_search"], hubslices.KindChatList) || slices.Contains(actions.NonIdempotentKinds, "chat_entity_search") {
+		t.Error("chat_entity_search: idempotent with the list's nudge")
+	}
+}
+
+// TestChatSkillsListAction_ResultInEcho: chat_skills_list answers the
+// workspace's enabled skills in the applied echo.
+func TestChatSkillsListAction_ResultInEcho(t *testing.T) {
+	c := newChatEnv(t, false)
+	out := c.run("chat_skills_list", map[string]any{})
+	wantOutcome(t, out, wire.StatusApplied, "")
+	list, ok := out.Result["skills"].([]chatengine.SkillSummary)
+	if !ok || len(list) != 1 || list[0].Name != "weekly-report" || list[0].Description != "Write the weekly report" {
+		t.Fatalf("skills %#v", out.Result["skills"])
+	}
+	if slices.Contains(actions.NonIdempotentKinds, "chat_skills_list") {
+		t.Error("chat_skills_list is idempotent")
 	}
 }

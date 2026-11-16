@@ -16,7 +16,6 @@ import (
 
 	"watchtower/internal/chatengine"
 	"watchtower/internal/chatstore"
-	"watchtower/internal/db"
 	hubslices "watchtower/internal/hub/slices"
 	"watchtower/internal/hub/wire"
 )
@@ -30,18 +29,22 @@ const (
 	MaxChatSearchSnippet = chatengine.MaxSearchSnippet
 )
 
-// LiveText is the chat engine's memory of the turns it runs (its running
-// turn's text and steps, its session's reported routing): a feed shows it
-// over the last flush in the database.
-type LiveText = chatengine.Overlay
+// ChatReader is the daemon's chat engine as the chat sources read it
+// (*chatengine.Engine): a feed with the engine's live turn over the last
+// flush, a page, the list and the search. Every part carries its payload
+// and its fallback (the relay's phone is a nil Client: all kinds, D21).
+type ChatReader interface {
+	Feed(ctx context.Context, conv, beforeMessageID int64) (chatengine.Feed, error)
+	List(ctx context.Context) (chatengine.List, error)
+	Search(ctx context.Context, q string) (chatengine.SearchResult, error)
+}
 
 // ChatFeedOptions wires the chat_feed, chat_page and chat_search sources.
-// Watches and Grant are required; Live nil is no hub runner; Now nil is
-// time.Now and must be the clock the handlers stamp the requests with.
+// Watches and Grant are required; Now nil is time.Now and must be the clock
+// the handlers stamp the requests with.
 type ChatFeedOptions struct {
 	Watches *ChatWatches
 	Grant   ChatGrant
-	Live    LiveText
 	Now     func() time.Time
 }
 
@@ -70,17 +73,18 @@ func (o *ChatFeedOptions) granted() (bool, error) {
 // latest version of each artifact and the actions of those turns, capped at
 // 600 000 bytes (iPhone chat spec §4.6). A feed is published while its
 // watch lasts (open: 5 min, repeated by the phone; prefetch: 2 min) and is
-// read anew on every data_version change; a hub-run turn's text and steps
-// come from the runner's memory (LiveText). Urgent.
+// read anew on every change the engine reports (OnChange) or the
+// agent_actions table sees; a running turn's text and steps come from the
+// engine's memory. Urgent. A nil engine (chat off) publishes nothing.
 type ChatFeedSource struct {
-	d *db.DB
+	e ChatReader
 	o ChatFeedOptions
 }
 
-// ChatFeed builds the chat_feed source.
-func ChatFeed(d *db.DB, o ChatFeedOptions) *ChatFeedSource {
+// ChatFeed builds the chat_feed source over the engine e.
+func ChatFeed(e ChatReader, o ChatFeedOptions) *ChatFeedSource {
 	o.fill()
-	return &ChatFeedSource{d: d, o: o}
+	return &ChatFeedSource{e: e, o: o}
 }
 
 // Kind is "chat_feed".
@@ -88,6 +92,9 @@ func (s *ChatFeedSource) Kind() hubslices.Kind { return hubslices.KindChatFeed }
 
 // Items is one record per watched conversation that still exists.
 func (s *ChatFeedSource) Items(ctx context.Context) ([]hubslices.Item, error) {
+	if s.e == nil {
+		return nil, nil
+	}
 	if ok, err := s.o.granted(); err != nil || !ok {
 		return nil, err
 	}
@@ -106,7 +113,7 @@ func (s *ChatFeedSource) Items(ctx context.Context) ([]hubslices.Item, error) {
 
 // feed is one conversation's payload; ok is false when it is gone.
 func (s *ChatFeedSource) feed(ctx context.Context, conv int64) ([]byte, bool, error) {
-	f, err := chatengine.ReadFeed(ctx, s.d, conv, 0, s.o.Now(), s.o.Live)
+	f, err := s.e.Feed(ctx, conv, 0)
 	if errors.Is(err, chatstore.ErrConversationGone) {
 		return nil, false, nil
 	}
@@ -123,16 +130,16 @@ func (s *ChatFeedSource) feed(ctx context.Context, conv int64) ([]byte, bool, er
 // once on its request (Watches.Pages) and kept for 5 minutes; a message no
 // longer on the active branch gives an empty page.
 type ChatPageSource struct {
-	d     *db.DB
+	e     ChatReader
 	o     ChatFeedOptions
 	mu    sync.Mutex
 	cache map[ChatPageKey]cachedRecord
 }
 
 // ChatPage builds the chat_page source.
-func ChatPage(d *db.DB, o ChatFeedOptions) *ChatPageSource {
+func ChatPage(e ChatReader, o ChatFeedOptions) *ChatPageSource {
 	o.fill()
-	return &ChatPageSource{d: d, o: o, cache: map[ChatPageKey]cachedRecord{}}
+	return &ChatPageSource{e: e, o: o, cache: map[ChatPageKey]cachedRecord{}}
 }
 
 // Kind is "chat_page".
@@ -145,6 +152,9 @@ func ChatPageID(k ChatPageKey) string {
 
 // Items is the requested pages.
 func (s *ChatPageSource) Items(ctx context.Context) ([]hubslices.Item, error) {
+	if s.e == nil {
+		return nil, nil
+	}
 	if ok, err := s.o.granted(); err != nil || !ok {
 		s.prune(nil)
 		return nil, err
@@ -177,7 +187,7 @@ func (s *ChatPageSource) prune(keep []ChatPageKey) {
 
 func (s *ChatPageSource) buildChatPage(ctx context.Context, k ChatPageKey) ([]byte, error) {
 	page := chatPagePayload{Messages: []chatengine.FeedMessage{}}
-	f, err := chatengine.ReadFeed(ctx, s.d, k.Conversation, k.Before, s.o.Now(), nil)
+	f, err := s.e.Feed(ctx, k.Conversation, k.Before)
 	switch {
 	case errors.Is(err, chatstore.ErrConversationGone):
 	case err != nil:
@@ -194,16 +204,16 @@ func (s *ChatPageSource) buildChatPage(ctx context.Context, k ChatPageKey) ([]by
 // within MaxChatFeedBytes. Built once on
 // its request (Watches.Searches) and kept for 5 minutes.
 type ChatSearchSource struct {
-	d     *db.DB
+	e     ChatReader
 	o     ChatFeedOptions
 	mu    sync.Mutex
 	cache map[string]cachedRecord
 }
 
 // ChatSearch builds the chat_search source.
-func ChatSearch(d *db.DB, o ChatFeedOptions) *ChatSearchSource {
+func ChatSearch(e ChatReader, o ChatFeedOptions) *ChatSearchSource {
 	o.fill()
-	return &ChatSearchSource{d: d, o: o, cache: map[string]cachedRecord{}}
+	return &ChatSearchSource{e: e, o: o, cache: map[string]cachedRecord{}}
 }
 
 // Kind is "chat_search".
@@ -219,6 +229,9 @@ func ChatSearchID(query string) string {
 
 // Items is the requested searches.
 func (s *ChatSearchSource) Items(ctx context.Context) ([]hubslices.Item, error) {
+	if s.e == nil {
+		return nil, nil
+	}
 	if ok, err := s.o.granted(); err != nil || !ok {
 		s.prune(nil)
 		return nil, err
@@ -228,7 +241,7 @@ func (s *ChatSearchSource) Items(ctx context.Context) ([]hubslices.Item, error) 
 	slices.Sort(queries)
 	items := make([]hubslices.Item, 0, len(queries))
 	for _, q := range queries {
-		b, err := cached(&s.mu, s.cache, q, s.o.Watches.Searches.Gen(q), func() ([]byte, error) { return s.search(q) })
+		b, err := cached(&s.mu, s.cache, q, s.o.Watches.Searches.Gen(q), func() ([]byte, error) { return s.search(ctx, q) })
 		if err != nil {
 			return nil, err
 		}
@@ -247,8 +260,8 @@ func (s *ChatSearchSource) prune(keep []string) {
 	}
 }
 
-func (s *ChatSearchSource) search(q string) ([]byte, error) {
-	payload, err := chatengine.ReadSearch(s.d, q)
+func (s *ChatSearchSource) search(ctx context.Context, q string) ([]byte, error) {
+	payload, err := s.e.Search(ctx, q)
 	if err != nil {
 		return nil, err
 	}

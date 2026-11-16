@@ -94,8 +94,29 @@ func chatRecords(t *testing.T, src slices.Source) map[string]map[string]any {
 	return out
 }
 
-func chatFeedOpts(w *ChatWatches, live LiveText) ChatFeedOptions {
-	return ChatFeedOptions{Watches: w, Grant: chatGranted, Live: live, Now: func() time.Time { return chatNow }}
+func chatFeedOpts(w *ChatWatches) ChatFeedOptions {
+	return ChatFeedOptions{Watches: w, Grant: chatGranted, Now: func() time.Time { return chatNow }}
+}
+
+// chatReader reads the database as the engine does (its Feed, List and
+// Search), at chatNow, with live (nil = none) as the engine's live turns.
+type chatReader struct {
+	d    *db.DB
+	live chatengine.Overlay
+}
+
+func chatReaderOf(d *db.DB, live chatengine.Overlay) chatReader { return chatReader{d: d, live: live} }
+
+func (r chatReader) Feed(ctx context.Context, conv, before int64) (chatengine.Feed, error) {
+	return chatengine.ReadFeed(ctx, r.d, conv, before, chatNow, r.live)
+}
+
+func (r chatReader) List(ctx context.Context) (chatengine.List, error) {
+	return chatengine.ReadList(ctx, r.d, chatNow)
+}
+
+func (r chatReader) Search(_ context.Context, q string) (chatengine.SearchResult, error) {
+	return chatengine.ReadSearch(r.d, q)
 }
 
 func TestChatList_PayloadMatchesKitFixture(t *testing.T) {
@@ -105,9 +126,9 @@ func TestChatList_PayloadMatchesKitFixture(t *testing.T) {
 	conv := s.conversation("Payments rollout", 1_700_000_300, "pinned = 1, project_id = ?", project)
 	s.message(conv, 0, "assistant", "## The rollout slipped to **Friday**.\nMore.", "complete", "turn-1", 1_700_000_010)
 	s.lease(conv, "hub", "turn-2", chatNow.Add(-time.Second))
-	src := ChatList(d, ChatListOptions{Grant: chatGranted, Models: func() []ChatModel {
+	src := ChatList(chatReaderOf(d, nil), ChatListOptions{Grant: chatGranted, Models: func() []ChatModel {
 		return []ChatModel{{Provider: "claude", Model: "opus", DisplayName: "Claude", Images: true, PDF: true}}
-	}, Now: func() time.Time { return chatNow }})
+	}})
 	got := chatRecords(t, src)[ChatListID]
 	if got == nil {
 		t.Fatal("no chat_list record")
@@ -152,7 +173,7 @@ func TestChatList_StatePrecedence(t *testing.T) {
 	s.conversation("archived", 6, "archived_at = 1")
 	s.conversation("discuss", 7, "context_type = 'target'")
 
-	got := chatRecords(t, ChatList(d, ChatListOptions{Grant: chatGranted, Models: func() []ChatModel { return nil }, Now: func() time.Time { return chatNow }}))[ChatListID]
+	got := chatRecords(t, ChatList(chatReaderOf(d, nil), ChatListOptions{Grant: chatGranted, Models: func() []ChatModel { return nil }}))[ChatListID]
 	states := map[string]string{}
 	for _, c := range got["conversations"].([]any) {
 		m := c.(map[string]any)
@@ -171,7 +192,7 @@ func TestChatList_StatePrecedence(t *testing.T) {
 
 func TestChatList_ReadFailurePublishesError(t *testing.T) {
 	d := openDB(t)
-	src := ChatList(d, ChatListOptions{Grant: chatGranted, Models: func() []ChatModel { return nil }})
+	src := ChatList(chatReaderOf(d, nil), ChatListOptions{Grant: chatGranted, Models: func() []ChatModel { return nil }})
 	if err := d.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +234,7 @@ func TestChatFeed_PayloadMatchesKitFixture(t *testing.T) {
 	d, _, conv := feedRig(t)
 	w := NewChatWatches()
 	w.Watch(conv, ChatPurposeOpen, chatNow.Add(ChatOpenWatch))
-	got := chatRecords(t, ChatFeed(d, chatFeedOpts(w, nil)))
+	got := chatRecords(t, ChatFeed(chatReaderOf(d, nil), chatFeedOpts(w)))
 	feed := got[idStr(conv)]
 	if feed == nil {
 		t.Fatalf("records %v", got)
@@ -261,7 +282,7 @@ func TestChatFeed_CapsDropOldestThenArtifacts(t *testing.T) {
 	}
 	w := NewChatWatches()
 	w.Watch(conv, ChatPurposeOpen, chatNow.Add(ChatOpenWatch))
-	items, err := ChatFeed(d, chatFeedOpts(w, nil)).Items(context.Background())
+	items, err := ChatFeed(chatReaderOf(d, nil), chatFeedOpts(w)).Items(context.Background())
 	if err != nil || len(items) != 1 {
 		t.Fatalf("%d items, %v", len(items), err)
 	}
@@ -294,7 +315,7 @@ func TestChatFeed_MessageTextCut40000(t *testing.T) {
 	s.message(conv, 0, "assistant", strings.Repeat("é", 40_001), "complete", "turn", 1)
 	w := NewChatWatches()
 	w.Watch(conv, ChatPurposeOpen, chatNow.Add(ChatOpenWatch))
-	m := chatRecords(t, ChatFeed(d, chatFeedOpts(w, nil)))[idStr(conv)]["messages"].([]any)[0].(map[string]any)
+	m := chatRecords(t, ChatFeed(chatReaderOf(d, nil), chatFeedOpts(w)))[idStr(conv)]["messages"].([]any)[0].(map[string]any)
 	if m["text_cut"] != true || runes(m["text"]) != MaxChatMessageText {
 		t.Fatalf("text_cut %v, %d runes", m["text_cut"], runes(m["text"]))
 	}
@@ -320,7 +341,7 @@ func TestChatFeed_HubTurnUsesLiveText(t *testing.T) {
 	}}
 	w := NewChatWatches()
 	w.Watch(conv, ChatPurposeOpen, chatNow.Add(ChatOpenWatch))
-	feed := chatRecords(t, ChatFeed(d, chatFeedOpts(w, live)))[idStr(conv)]
+	feed := chatRecords(t, ChatFeed(chatReaderOf(d, live), chatFeedOpts(w)))[idStr(conv)]
 	m := feed["messages"].([]any)[1].(map[string]any)
 	steps := m["steps"].([]any)
 	if m["text"] != "streaming now" || len(steps) != 2 || steps[0].(map[string]any)["ok"] != true {
@@ -338,7 +359,7 @@ func TestChatFeed_DesktopTurnReadsDB(t *testing.T) {
 	d, conv, _ := liveFeedRig(t, "desktop")
 	w := NewChatWatches()
 	w.Watch(conv, ChatPurposeOpen, chatNow.Add(ChatOpenWatch))
-	feed := chatRecords(t, ChatFeed(d, chatFeedOpts(w, fakeLive{conv: conv, turnID: "turn-other", text: "not this"})))[idStr(conv)]
+	feed := chatRecords(t, ChatFeed(chatReaderOf(d, fakeLive{conv: conv, turnID: "turn-other", text: "not this"}), chatFeedOpts(w)))[idStr(conv)]
 	m := feed["messages"].([]any)[1].(map[string]any)
 	if m["text"] != "flushed" || m["steps"].([]any)[0].(map[string]any)["name"] != "old_step" {
 		t.Fatalf("message %v", m)
@@ -352,9 +373,9 @@ func TestChatFeed_UnlinkDropsWatches(t *testing.T) {
 	d, _, conv := feedRig(t)
 	granted := true
 	w := NewChatWatches()
-	o := chatFeedOpts(w, nil)
+	o := chatFeedOpts(w)
 	o.Grant = func() (bool, error) { return granted, nil }
-	feed, page, search := ChatFeed(d, o), ChatPage(d, o), ChatSearch(d, o)
+	feed, page, search := ChatFeed(chatReaderOf(d, nil), o), ChatPage(chatReaderOf(d, nil), o), ChatSearch(chatReaderOf(d, nil), o)
 	w.Watch(conv, ChatPurposeOpen, chatNow.Add(ChatOpenWatch))
 	w.Pages.Request(ChatPageKey{Conversation: conv, Before: 12}, chatNow.Add(ChatRequestHold))
 	w.Searches.Request("payments", chatNow.Add(ChatRequestHold))
@@ -384,9 +405,9 @@ func TestChatFeed_PrefetchRecordGoneAfter2Min(t *testing.T) {
 	d, _, conv := feedRig(t)
 	now := chatNow
 	w := NewChatWatches()
-	o := chatFeedOpts(w, nil)
+	o := chatFeedOpts(w)
 	o.Now = func() time.Time { return now }
-	src := ChatFeed(d, o)
+	src := ChatFeed(chatReaderOf(d, nil), o)
 	w.Watch(conv, ChatPurposePrefetch, chatNow.Add(ChatPrefetchHold))
 	if w.Open(conv, chatNow.Add(-time.Minute)) {
 		t.Fatal("a prefetch counts as looking")
@@ -428,7 +449,7 @@ func TestChatPage_SixtyBeforeID(t *testing.T) {
 		ids = append(ids, parent)
 	}
 	w := NewChatWatches()
-	page := ChatPage(d, chatFeedOpts(w, nil))
+	page := ChatPage(chatReaderOf(d, nil), chatFeedOpts(w))
 	k := ChatPageKey{Conversation: conv, Before: ids[90]}
 	w.Pages.Request(k, chatNow.Add(ChatRequestHold))
 	w.Pages.Request(ChatPageKey{Conversation: conv, Before: ids[30]}, chatNow.Add(ChatRequestHold))
@@ -454,7 +475,7 @@ func TestChatSearch_RecordShape(t *testing.T) {
 	s.message(notes, 0, "user", "payments again", "complete", "t", 1)
 	w := NewChatWatches()
 	w.Searches.Request("payments", chatNow.Add(ChatRequestHold))
-	got := chatRecords(t, ChatSearch(d, chatFeedOpts(w, nil)))[ChatSearchID("payments")]
+	got := chatRecords(t, ChatSearch(chatReaderOf(d, nil), chatFeedOpts(w)))[ChatSearchID("payments")]
 	if got == nil {
 		t.Fatal("no chat_search record")
 	}
@@ -485,8 +506,8 @@ func TestChatSources_OnlyWithChatGrant(t *testing.T) {
 	t.Cleanup(func() { _ = st.Close() })
 	w := NewChatWatches()
 	o := ChatFeedOptions{Watches: w, Grant: st.AnyChatPhone, Now: func() time.Time { return chatNow }}
-	list := ChatList(d, ChatListOptions{Grant: st.AnyChatPhone, Models: func() []ChatModel { return nil }, Now: o.Now})
-	srcs := []slices.Source{list, ChatFeed(d, o), ChatPage(d, o), ChatSearch(d, o)}
+	list := ChatList(chatReaderOf(d, nil), ChatListOptions{Grant: st.AnyChatPhone, Models: func() []ChatModel { return nil }})
+	srcs := []slices.Source{list, ChatFeed(chatReaderOf(d, nil), o), ChatPage(chatReaderOf(d, nil), o), ChatSearch(chatReaderOf(d, nil), o)}
 	request := func() {
 		w.Watch(conv, ChatPurposeOpen, chatNow.Add(ChatOpenWatch))
 		w.Pages.Request(ChatPageKey{Conversation: conv, Before: 12}, chatNow.Add(ChatRequestHold))
@@ -534,7 +555,7 @@ func feedRecord(t *testing.T, d *db.DB, conv int64) []byte {
 	t.Helper()
 	w := NewChatWatches()
 	w.Watch(conv, ChatPurposeOpen, chatNow.Add(ChatOpenWatch))
-	items, err := ChatFeed(d, chatFeedOpts(w, nil)).Items(context.Background())
+	items, err := ChatFeed(chatReaderOf(d, nil), chatFeedOpts(w)).Items(context.Background())
 	if err != nil || len(items) != 1 {
 		t.Fatalf("%d items, %v", len(items), err)
 	}
@@ -603,7 +624,7 @@ func TestChatPage_WideGraphemesStayUnderCap(t *testing.T) {
 	w := NewChatWatches()
 	k := ChatPageKey{Conversation: conv, Before: ids[3]}
 	w.Pages.Request(k, chatNow.Add(ChatRequestHold))
-	items, err := ChatPage(d, chatFeedOpts(w, nil)).Items(context.Background())
+	items, err := ChatPage(chatReaderOf(d, nil), chatFeedOpts(w)).Items(context.Background())
 	if err != nil || len(items) != 1 || len(items[0].Payload) > MaxChatFeedBytes {
 		t.Fatalf("%d items, %v", len(items), err)
 	}
@@ -623,7 +644,7 @@ func TestChatSearch_WideTitlesStayUnderCap(t *testing.T) {
 	}
 	w := NewChatWatches()
 	w.Searches.Request("payments", chatNow.Add(ChatRequestHold))
-	items, err := ChatSearch(d, chatFeedOpts(w, nil)).Items(context.Background())
+	items, err := ChatSearch(chatReaderOf(d, nil), chatFeedOpts(w)).Items(context.Background())
 	if err != nil || len(items) != 1 || len(items[0].Payload) > MaxChatFeedBytes {
 		t.Fatalf("%d items, %v, %d bytes", len(items), err, len(items[0].Payload))
 	}
@@ -644,7 +665,7 @@ func TestChatList_WideTitlesStayUnderCap(t *testing.T) {
 		conv := s.conversation(strings.Repeat(zwj, 5000), float64(i), "project_id = ?", project)
 		s.message(conv, 0, "assistant", strings.Repeat(zwj, 500), "complete", "t", 1)
 	}
-	src := ChatList(d, ChatListOptions{Grant: chatGranted, Models: func() []ChatModel { return nil }, Now: func() time.Time { return chatNow }})
+	src := ChatList(chatReaderOf(d, nil), ChatListOptions{Grant: chatGranted, Models: func() []ChatModel { return nil }})
 	items, err := src.Items(context.Background())
 	if err != nil || len(items) != 1 {
 		t.Fatalf("%d items, %v", len(items), err)
@@ -677,7 +698,7 @@ func TestChatRequests_RepeatRebuilds(t *testing.T) {
 	conv := s.conversation("Rollout", 1, "")
 	s.message(conv, 0, "user", "payments first", "complete", "t", 1_700_000_020)
 	w := NewChatWatches()
-	src := ChatSearch(d, chatFeedOpts(w, nil))
+	src := ChatSearch(chatReaderOf(d, nil), chatFeedOpts(w))
 	w.Searches.Request("payments", chatNow.Add(ChatRequestHold))
 	hits := func() int {
 		return len(chatRecords(t, src)[ChatSearchID("payments")]["hits"].([]any))
@@ -707,9 +728,9 @@ func TestChatRequests_ExpiredThenRepeatedRebuilds(t *testing.T) {
 	s.message(conv, 0, "user", "payments first", "complete", "t", 1_700_000_020)
 	w := NewChatWatches()
 	now := chatNow
-	o := chatFeedOpts(w, nil)
+	o := chatFeedOpts(w)
 	o.Now = func() time.Time { return now }
-	src := ChatSearch(d, o)
+	src := ChatSearch(chatReaderOf(d, nil), o)
 	w.Searches.Request("payments", now.Add(ChatRequestHold))
 	if n := len(chatRecords(t, src)[ChatSearchID("payments")]["hits"].([]any)); n != 1 {
 		t.Fatalf("first build: %d hits", n)
@@ -737,12 +758,12 @@ func TestChatFeedAndPage_DiscussChatNotPublished(t *testing.T) {
 	a := s.message(conv, u, "assistant", "secret answer", "complete", "t", 2)
 	w := NewChatWatches()
 	w.Watch(conv, ChatPurposeOpen, chatNow.Add(ChatOpenWatch))
-	if got := chatRecords(t, ChatFeed(d, chatFeedOpts(w, nil))); len(got) != 0 {
+	if got := chatRecords(t, ChatFeed(chatReaderOf(d, nil), chatFeedOpts(w))); len(got) != 0 {
 		t.Fatalf("feed records %v", got)
 	}
 	k := ChatPageKey{Conversation: conv, Before: a}
 	w.Pages.Request(k, chatNow.Add(ChatRequestHold))
-	page := chatRecords(t, ChatPage(d, chatFeedOpts(w, nil)))[ChatPageID(k)]
+	page := chatRecords(t, ChatPage(chatReaderOf(d, nil), chatFeedOpts(w)))[ChatPageID(k)]
 	if msgs := page["messages"].([]any); len(msgs) != 0 {
 		t.Fatalf("page of a Discuss chat has %d messages", len(msgs))
 	}
@@ -790,7 +811,7 @@ func TestChatFeed_OversizedLabelsClipped(t *testing.T) {
 	w := NewChatWatches()
 	k := ChatPageKey{Conversation: conv, Before: last}
 	w.Pages.Request(k, chatNow.Add(ChatRequestHold))
-	items, err := ChatPage(d, chatFeedOpts(w, nil)).Items(context.Background())
+	items, err := ChatPage(chatReaderOf(d, nil), chatFeedOpts(w)).Items(context.Background())
 	if err != nil || len(items) != 1 || len(items[0].Payload) > MaxChatFeedBytes {
 		t.Fatalf("page: %d items, %v", len(items), err)
 	}
@@ -858,8 +879,70 @@ func TestChatPage_ManyLargeApprovalsStayUnderCap(t *testing.T) {
 	}
 	w := NewChatWatches()
 	w.Pages.Request(ChatPageKey{Conversation: conv, Before: ids[2]}, chatNow.Add(ChatRequestHold))
-	items, err := ChatPage(d, chatFeedOpts(w, nil)).Items(context.Background())
+	items, err := ChatPage(chatReaderOf(d, nil), chatFeedOpts(w)).Items(context.Background())
 	if err != nil || len(items) != 1 || len(items[0].Payload) > MaxChatFeedBytes {
 		t.Fatalf("%d items, %v", len(items), err)
+	}
+}
+
+// TestChatSources_NoChatTablesInChangeWatch: the data_version watch reads no
+// chat_* table (every chat write goes through the daemon's engine, whose
+// OnChange publishes the chat kinds); agent_actions stays, as a session's
+// MCP process writes a proposal.
+func TestChatSources_NoChatTablesInChangeWatch(t *testing.T) {
+	for table := range ChangeTables {
+		if strings.HasPrefix(table, "chat_") {
+			t.Errorf("ChangeTables watches %s", table)
+		}
+	}
+	feeds := map[slices.Kind]bool{}
+	for _, k := range ChangeTables["agent_actions"] {
+		feeds[k] = true
+	}
+	if !feeds[slices.KindChatFeed] || !feeds[slices.KindChatList] {
+		t.Fatalf("agent_actions feeds %v", ChangeTables["agent_actions"])
+	}
+}
+
+// TestChatFeedSource_PartsWithPayloadAndFlatFields: the relay's chat_feed is
+// read from the engine with every part's payload and fallback and the flat
+// fields beside them (D21: the relay phone is a nil Client).
+func TestChatFeedSource_PartsWithPayloadAndFlatFields(t *testing.T) {
+	d, _, conv := feedRig(t)
+	eng := chatengine.New(chatengine.Config{Exe: "/usr/bin/false", DB: d, Clock: func() time.Time { return chatNow }})
+	t.Cleanup(func() { _ = eng.Close(context.Background()) })
+	w := NewChatWatches()
+	w.Watch(conv, ChatPurposeOpen, chatNow.Add(ChatOpenWatch))
+	feed := chatRecords(t, ChatFeed(eng, chatFeedOpts(w)))[idStr(conv)]
+	if feed == nil {
+		t.Fatal("no feed record")
+	}
+	if acts, _ := feed["actions"].([]any); len(acts) != 1 {
+		t.Fatalf("flat actions %v", feed["actions"])
+	}
+	kinds := map[string]bool{}
+	for _, m := range feed["messages"].([]any) {
+		msg := m.(map[string]any)
+		if _, ok := msg["text"].(string); !ok {
+			t.Errorf("message %v has no flat text", msg["id"])
+		}
+		parts, _ := msg["parts"].([]any)
+		if len(parts) == 0 {
+			t.Errorf("message %v has no parts", msg["id"])
+		}
+		for _, p := range parts {
+			part := p.(map[string]any)
+			kind, _ := part["kind"].(string)
+			if part["payload"] == nil {
+				t.Errorf("message %v: part %s without its payload", msg["id"], kind)
+			}
+			if part["fallback"] == nil {
+				t.Errorf("message %v: part %s without its fallback", msg["id"], kind)
+			}
+			kinds[kind] = true
+		}
+	}
+	if !kinds["text"] || !kinds["approval"] {
+		t.Errorf("part kinds %v: want text and the turn's approval", kinds)
 	}
 }

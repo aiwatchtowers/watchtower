@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"watchtower/internal/chatengine"
+	"watchtower/internal/chatstore"
 	"watchtower/internal/db"
 	"watchtower/internal/hub/actions"
 	"watchtower/internal/hub/identity"
@@ -76,21 +78,7 @@ func newChatRigWith(t *testing.T, mode string, kind transport.Kind, edit func(*O
 func TestChatCapability_OnWithoutDesktop(t *testing.T) {
 	r := newChatRig(t, policy.MobileAllowed, transport.KindRelay)
 	if on, reason := r.h.chatAvailable(); !on {
-		t.Fatalf("a relay hub with its runner and no Desktop: off (%s)", reason)
-	}
-	// A Desktop that went quiet more than 2 minutes ago is no running app.
-	if err := r.st.Heartbeat(r.now.Add(-3 * time.Minute)); err != nil {
-		t.Fatal(err)
-	}
-	if on, reason := r.h.chatAvailable(); !on {
-		t.Fatalf("an old app's stale heartbeat keeps chat off (%s)", reason)
-	}
-	// The new app's heartbeat says it honours the lease.
-	if err := r.st.HeartbeatChat(r.now.Add(-10*time.Second), true); err != nil {
-		t.Fatal(err)
-	}
-	if on, _ := r.h.chatAvailable(); !on {
-		t.Fatal("off beside an app that honours the lease")
+		t.Fatalf("a relay hub with the engine and no Desktop: off (%s)", reason)
 	}
 	hb := r.h.heartbeat(r.st, "Hub")
 	if on, _ := hb.Chat(); !on {
@@ -98,19 +86,49 @@ func TestChatCapability_OnWithoutDesktop(t *testing.T) {
 	}
 }
 
-func TestChatCapability_OffWhileOldDesktopRuns(t *testing.T) {
+// TestChatCapability_NoDesktopTooOld: a running Desktop app, of any
+// version, no longer turns chat off — every turn runs on the daemon's one
+// engine (unified chat §6.4); an older app's heartbeat (no chat_lease flag)
+// leaves chat on.
+func TestChatCapability_NoDesktopTooOld(t *testing.T) {
 	r := newChatRig(t, policy.MobileAllowed, transport.KindRelay)
-	if err := r.st.Heartbeat(r.now.Add(-90 * time.Second)); err != nil { // an app with no chat_lease flag
+	if err := r.st.Heartbeat(r.now.Add(-10 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	if on, reason := r.h.chatAvailable(); on || reason != wire.ChatOffDesktopTooOld {
-		t.Fatalf("beside an old app: %v %q", on, reason)
+	if on, reason := r.h.chatAvailable(); !on {
+		t.Fatalf("beside a running app: off (%s)", reason)
 	}
-	if err := r.st.HeartbeatChat(r.now, true); err != nil { // the new app's beat after the update
+}
+
+// TestChatWiring_UsesDaemonEngine: the hub builds no engine of its own: the
+// handlers and the sources use Options.ChatEngine, and a turn started
+// through the phone's chat_turn runs on it (its live turn is that engine's).
+func TestChatWiring_UsesDaemonEngine(t *testing.T) {
+	var eng *chatengine.Engine
+	r := newChatRigWith(t, policy.MobileAllowed, transport.KindRelay, func(o *Options) { eng = o.ChatEngine })
+	if r.w.chat != eng {
+		t.Fatal("the hub does not use the daemon's engine")
+	}
+	deps := r.h.chatDeps(r.h.sup.o, r.w, "")
+	if got, ok := deps.Engine.(*chatengine.Engine); !ok || got != eng {
+		t.Fatalf("the handlers' engine is %T, not the daemon's", deps.Engine)
+	}
+	conv, err := eng.NewConversation(context.Background(), nil, nil)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if on, _ := r.h.chatAvailable(); !on {
-		t.Fatal("still off once the new app heartbeats")
+	st, err := deps.Engine.Turn(context.Background(), chatengine.TurnRequest{StartRequest: chatstore.StartRequest{
+		ConversationID: conv, Mode: chatstore.ModeSend, Text: "hello"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var owner, ownerID string
+	if err := r.d.QueryRow(`SELECT owner, owner_id FROM chat_turn_leases WHERE conversation_id = ? AND turn_id = ?`,
+		conv, st.TurnID).Scan(&owner, &ownerID); err != nil {
+		t.Fatalf("no lease of the turn: %v", err)
+	}
+	if ownerID != chatengine.LeaseOwnerID {
+		t.Fatalf("the turn's lease is %s/%s, not the engine's", owner, ownerID)
 	}
 }
 
@@ -235,36 +253,28 @@ func TestChatTimer_RepublishesTimeOnlyChanges(t *testing.T) {
 		t.Fatal("a grant toggled in the sidecar: no publish")
 	}
 
-	// The capability changes: an old app starts heartbeating.
-	if err := r.st.Heartbeat(r.now); err != nil {
-		t.Fatal(err)
-	}
+	// The capability changes (the transport switches off the relay).
+	tm.available = func() (bool, string) { return false, wire.ChatOffNotRelay }
 	tm.check()
 	if !r.publishedHeartbeat() {
 		t.Fatal("the capability turned off: no heartbeat publish")
 	}
 }
 
-// TestControlHeartbeatKeepsTheChatLeaseFlag: the Desktop's
-// desktop_heartbeat over the control socket carries "chat_lease": 1 (T8);
-// the hub keeps the latest beat's flag with its time.
-func TestControlHeartbeatKeepsTheChatLeaseFlag(t *testing.T) {
+// TestControlHeartbeatAcceptsTheOldChatLeaseFlag: an app's
+// desktop_heartbeat with "chat_lease" (the field of the iPhone chat's
+// lease era) is accepted and ignored for one release: the beat is kept.
+func TestControlHeartbeatAcceptsTheOldChatLeaseFlag(t *testing.T) {
 	r := newViewRig(t)
 	var req ControlRequest
-	if err := json.Unmarshal([]byte(`{"op":"desktop_heartbeat","chat_lease":1}`), &req); err != nil || req.ChatLease != 1 {
+	if err := json.Unmarshal([]byte(`{"op":"desktop_heartbeat","chat_lease":1}`), &req); err != nil {
 		t.Fatalf("decode %+v %v", req, err)
 	}
 	if a := r.s.handle(req, nil); !a.OK {
 		t.Fatalf("answer %+v", a)
 	}
-	if old, err := r.s.st.OldDesktopRuns(r.clock()); err != nil || old {
-		t.Fatalf("after a beat with the flag: old %v %v", old, err)
-	}
-	if a := r.s.handle(ControlRequest{Op: OpDesktopHeartbeat}, nil); !a.OK {
-		t.Fatalf("answer %+v", a)
-	}
-	if old, err := r.s.st.OldDesktopRuns(r.clock()); err != nil || !old {
-		t.Fatalf("after an old app's beat: old %v %v", old, err)
+	if fresh, seen, err := r.s.st.DesktopHost(r.clock()); err != nil || !fresh || !seen {
+		t.Fatalf("the beat was not kept: %v %v %v", fresh, seen, err)
 	}
 }
 

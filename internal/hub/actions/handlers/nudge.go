@@ -51,6 +51,10 @@ var NudgeTable = map[string][]slices.Kind{
 	"chat_branch_select": chatSlices,
 	"chat_manage":        chatSlices,
 	"chat_action_answer": chatSlices,
+	// The composer's pickers answer in the echo; their nudge is the list,
+	// which carries the composer's other catalog (the models).
+	"chat_entity_search": {slices.KindChatList},
+	"chat_skills_list":   {slices.KindChatList},
 }
 
 // chatSlices are the records a chat write changes: the conversation's feed

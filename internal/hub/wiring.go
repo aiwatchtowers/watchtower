@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"watchtower/internal/chatengine"
-	"watchtower/internal/chatstore"
 	"watchtower/internal/db"
 	"watchtower/internal/hub/actions"
 	"watchtower/internal/hub/actions/handlers"
@@ -93,10 +92,8 @@ type wiring struct {
 	// runner_down). The hub uses it and never closes it: the daemon stops
 	// it after the hub.
 	chat *chatengine.Engine
-	// chatStore writes the handlers' chat rows that do not go through the
-	// engine yet; chatTimer republishes what only time changes (nil under
+	// chatTimer republishes what only time changes (nil under
 	// workbench_only).
-	chatStore *chatstore.Store
 	chatTimer *chatTimer
 	chatPush  *chatPushWatch
 	// bg is the chat's background work (turn-end pushes, approved actions'
@@ -223,15 +220,13 @@ func (h *hubRuntime) buildWiring(o Options, st *state.Store, mode string, d *act
 	w.away = &awayWatch{away: away, active: h.phoneLinked, nudge: func() { h.publishSoon(slices.KindAskAlert) }}
 	home, _ := os.UserHomeDir()
 	watches := handlers.NewChatWatchRegistry()
-	// The chat runner first: the chat sources read its live turns. Its sweep
-	// runs before the handlers register, so nothing claims a chat turn
-	// before this hub's leases of an earlier run are released.
+	// The daemon's chat engine first: the chat sources read it and the
+	// chat handlers call it.
 	dbPath, _ := mainFile(context.Background(), o.DB)
-	w.chatStore = h.newChatStore(o)
 	w.chat = h.useChatEngine(o, w.spawn)
-	var chatLive sources.LiveText
+	var chatReader sources.ChatReader
 	if w.chat != nil {
-		chatLive = w.chat
+		chatReader = w.chat
 	}
 	set, err := sources.All(sources.Config{
 		DB: o.DB, Store: st, Watches: watches, Sealer: h.kr, Mode: mode, Live: live,
@@ -244,7 +239,7 @@ func (h *hubRuntime) buildWiring(o Options, st *state.Store, mode string, d *act
 		GitFetch:       o.gitFetch,
 		RunnerGap:      o.runnerGap,
 		Now:            o.Clock,
-		ChatLive:       chatLive,
+		ChatEngine:     chatReader,
 	})
 	if err != nil {
 		w.close()
@@ -548,12 +543,6 @@ func (h *hubRuntime) chatTurnEnded(spawn func(func()) bool) func(conv int64, tur
 			log.Printf("hub: chat %d turn %s ended while the hub stops: no push", conv, turnID)
 		}
 	}
-}
-
-// newChatStore is the hub's chat store for the handlers' writes that do
-// not go through the engine yet (lease owner this hub).
-func (h *hubRuntime) newChatStore(o Options) *chatstore.Store {
-	return chatstore.New(o.DB, db.ChatLeaseHub, h.kr.HubIDText())
 }
 
 // close unhooks the chat engine (it keeps running: the daemon owns it) and

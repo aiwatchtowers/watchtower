@@ -44,7 +44,7 @@ func (h *Handlers) chatActionAnswer(ctx context.Context, r actions.Request) acti
 		}
 		// The phone answers only a main chat's actions (spec §1): a Discuss
 		// chat's or a deleted chat's action is not found here.
-		main, err := c.Store.ConversationExists(ctx, row.ConversationID)
+		main, err := c.Engine.ConversationExists(ctx, row.ConversationID)
 		if err != nil {
 			log.Printf("hub chat: reading the chat of action %d failed (%s)", id, errClass(err))
 			return failed(reasonWriteFailed, chatWriteFailedMessage)
