@@ -1,0 +1,5 @@
+{
+  "id": "watch-1",
+  "event": "changed",
+  "tables": ["inbox_items", "outputs"]
+}

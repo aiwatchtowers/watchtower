@@ -18,8 +18,20 @@ final class GoldenRoundTripTests: XCTestCase {
         .deletingLastPathComponent()  // the repository
         .appendingPathComponent("internal/tower/api/testdata")
 
+    func testChangedEventRoundTrip() throws {
+        try assertRoundTrip(ChangedEvent.self, golden: "ChangedEvent")
+    }
+
     func testHelloResponseRoundTrip() throws {
         try assertRoundTrip(HelloResponse.self, golden: "HelloResponse")
+    }
+
+    func testPauseRequestRoundTrip() throws {
+        try assertRoundTrip(PauseRequest.self, golden: "PauseRequest")
+    }
+
+    func testPauseResponseRoundTrip() throws {
+        try assertRoundTrip(PauseResponse.self, golden: "PauseResponse")
     }
 
     func testPingResponseRoundTrip() throws {

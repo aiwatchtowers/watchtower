@@ -12,4 +12,5 @@ type Deps struct{}
 // RegisterAll registers every tower command in r.
 func RegisterAll(r *tower.Registry, _ Deps) {
 	tower.RegisterBuiltins(r)
+	tower.RegisterPause(r)
 }

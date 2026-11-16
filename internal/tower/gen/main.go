@@ -69,8 +69,10 @@ func main() {
 	}
 }
 
-// envelopeTypes are generated besides the commands' own types.
-var envelopeTypes = []reflect.Type{reflect.TypeFor[api.Request](), reflect.TypeFor[api.Response]()}
+// envelopeTypes are generated besides the commands' own types: the request
+// and response every transport carries, and the changed event a watch
+// command streams.
+var envelopeTypes = []reflect.Type{reflect.TypeFor[api.Request](), reflect.TypeFor[api.Response](), reflect.TypeFor[api.ChangedEvent]()}
 
 // roots are the envelope and every command's request and response.
 func roots(r *tower.Registry) []reflect.Type {

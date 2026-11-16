@@ -4,12 +4,16 @@ import Foundation
 
 /// Every registered tower command.
 public enum TowerCommand: String, CaseIterable, Sendable {
+    case syncPause = "sync.pause"
+    case syncResume = "sync.resume"
     case towerHello = "tower.hello"
     case towerPing = "tower.ping"
 
     /// True for a read: it carries no request_id and is never ledgered.
     public var isRead: Bool {
         switch self {
+        case .syncPause: false
+        case .syncResume: false
         case .towerHello: true
         case .towerPing: true
         }

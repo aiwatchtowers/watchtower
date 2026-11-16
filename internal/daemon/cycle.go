@@ -128,7 +128,9 @@ type syncCycle struct {
 
 // startCycle runs runSync in a goroutine: its pipelines on ctx, its source
 // fetches and history backfill on a context derived from ctx that the loop
-// can cancel. A daemon shutdown cancels both.
+// can cancel. A daemon shutdown cancels both. While sync is paused
+// (SetSyncPaused) it starts nothing and returns nil, which the loop reads as
+// idle.
 func (d *Daemon) startCycle(ctx context.Context, resetTicker bool) *syncCycle {
 	return d.startCycleOn(ctx, resetTicker, false)
 }
@@ -140,6 +142,11 @@ func (d *Daemon) startManualCycle(ctx context.Context) *syncCycle {
 }
 
 func (d *Daemon) startCycleOn(ctx context.Context, resetTicker, manual bool) *syncCycle {
+	if d.isSyncPaused() {
+		// A cycle already running finishes; none starts until a resume.
+		d.logger.Println("sync paused: no cycle started")
+		return nil
+	}
 	fetchCtx, cancel := context.WithCancelCause(ctx)
 	runCtx := fetchCtx
 	if manual {

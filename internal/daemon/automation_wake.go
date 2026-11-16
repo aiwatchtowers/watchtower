@@ -180,7 +180,8 @@ func (d *Daemon) automationsActive() bool {
 // startAutomations starts the scheduler, the executor and the wake forwarder
 // as goroutines of their own — never inside the sync loop, so a wake is
 // served while a sync runs and never triggers one. With nothing wired it
-// starts nothing. The returned stop cancels
+// starts nothing. While sync is paused the scheduler is stopped (pause.go).
+// The returned stop cancels
 // them and waits until all three have returned (the executor finishes or
 // interrupts its in-flight runs first), so no goroutine outlives Run.
 func (d *Daemon) startAutomations(ctx context.Context) (stop func()) {
@@ -189,13 +190,16 @@ func (d *Daemon) startAutomations(ctx context.Context) (stop func()) {
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	var wg gosync.WaitGroup
-	for name, r := range map[string]AutomationRunner{"scheduler": d.automationScheduler, "executor": d.automationExecutor} {
-		wg.Go(func() {
-			if err := r.Run(runCtx); err != nil {
-				d.logger.Printf("automations: %s stopped: %v", name, err)
-			}
-		})
-	}
+	// The scheduler runs only while sync is not paused (no scheduled run
+	// starts); the executor always does (Run Now, approval apply).
+	wg.Go(func() {
+		d.runUnlessPaused(runCtx, "automations: scheduler", d.automationScheduler.Run)
+	})
+	wg.Go(func() {
+		if err := d.automationExecutor.Run(runCtx); err != nil {
+			d.logger.Printf("automations: executor stopped: %v", err)
+		}
+	})
 	wg.Go(func() {
 		d.forwardAutomationWakes(runCtx)
 	})

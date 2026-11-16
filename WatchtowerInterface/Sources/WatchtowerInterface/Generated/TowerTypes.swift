@@ -2,6 +2,28 @@
 
 import Foundation
 
+public struct ChangedEvent: Codable, Hashable, Sendable {
+    public var id: String
+    public var event: String
+    public var tables: [String]?
+
+    public init(
+        id: String,
+        event: String,
+        tables: [String]? = nil
+    ) {
+        self.id = id
+        self.event = event
+        self.tables = tables
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case event
+        case tables
+    }
+}
+
 public struct HelloRequest: Codable, Hashable, Sendable {
     public init() {}
 }
@@ -29,6 +51,30 @@ public struct HelloResponse: Codable, Hashable, Sendable {
         case build
         case syncPaused = "sync_paused"
         case noSync = "no_sync"
+    }
+}
+
+public struct PauseRequest: Codable, Hashable, Sendable {
+    public var requestID: String
+
+    public init(requestID: String) {
+        self.requestID = requestID
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case requestID = "request_id"
+    }
+}
+
+public struct PauseResponse: Codable, Hashable, Sendable {
+    public var paused: Bool
+
+    public init(paused: Bool) {
+        self.paused = paused
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case paused
     }
 }
 
