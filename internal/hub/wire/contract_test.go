@@ -244,7 +244,8 @@ func TestHubContractFixture_RecordingSwitch(t *testing.T) {
 	require.NoError(t, json.Unmarshal(raw, &f))
 	require.ElementsMatch(t, []string{"capabilities_on", "capabilities_off", "capabilities_absent",
 		"capabilities_unknown_value", "unknown_capability_key",
-		"hub_kind_mac", "hub_kind_server", "hub_kind_unknown_value", "chat_on", "chat_off_desktop_too_old"}, names(f.Heartbeat))
+		"hub_kind_mac", "hub_kind_server", "hub_kind_unknown_value", "chat_on", "chat_off_desktop_too_old",
+		"inbox_on", "inbox_policy_off"}, names(f.Heartbeat))
 	require.ElementsMatch(t, []string{"failed_not_supported", "failed_expired", "received",
 		"failed_legacy_no_reason"}, names(f.UploadEcho))
 	for _, c := range f.Heartbeat {
@@ -262,6 +263,13 @@ func TestHubContractFixture_RecordingSwitch(t *testing.T) {
 				require.Equal(t, want, hb.Capabilities.Chat)
 				reason, _ := c.Kit["chat_reason"].(string)
 				require.Equal(t, reason, hb.Capabilities.ChatReason)
+			}
+			if want, ok := c.Kit["inbox"]; ok {
+				// Mobile Inbox §6: "on", or "policy_off" with the reason.
+				require.NotNil(t, hb.Capabilities)
+				require.Equal(t, want, hb.Capabilities.Inbox)
+				reason, _ := c.Kit["inbox_reason"].(string)
+				require.Equal(t, reason, hb.Capabilities.InboxReason)
 			}
 			if c.Name == "capabilities_on" || c.Name == "capabilities_off" {
 				// Go's own capabilities, built rather than decoded, are these bytes.

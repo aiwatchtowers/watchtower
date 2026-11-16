@@ -62,6 +62,7 @@ import (
 	"watchtower/internal/sessionhost"
 	"watchtower/internal/sessionstart"
 	"watchtower/internal/tools"
+	"watchtower/internal/tower"
 )
 
 // The phase-1 environment.
@@ -182,6 +183,10 @@ type Options struct {
 	ChatTools             *tools.Registry
 	ChatTitle             func(ctx context.Context, conv int64) error
 	ChatPreferredProvider string
+	// Tower is the daemon's tower (the socket's): the phone Inbox's feed
+	// (inbox.feed) and writes (inbox.act, as the hub) go through it. nil =
+	// no Inbox on the phone and no inbox capability in the heartbeat.
+	Tower *tower.Tower
 
 	// Test seams (zero = production).
 	newTransport func(ctx context.Context, id identity.Identity, st *state.Store, zones []string) (transport.Transport, error)

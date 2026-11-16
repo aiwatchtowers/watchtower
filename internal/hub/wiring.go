@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -19,8 +20,11 @@ import (
 	"watchtower/internal/hub/slices/sources"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/wire"
+	"watchtower/internal/inboxfeed"
 	"watchtower/internal/sessionhost"
 	"watchtower/internal/sessionstart"
+	"watchtower/internal/tower"
+	"watchtower/internal/tower/api"
 )
 
 // transcriptAssetDir is meeting_transcript's own staging dir inside the
@@ -253,6 +257,7 @@ func (h *hubRuntime) buildWiring(o Options, st *state.Store, mode string, d *act
 		RunnerGap:      o.runnerGap,
 		Now:            o.Clock,
 		ChatLive:       chatLive,
+		InboxFeed:      towerInboxFeed(o.Tower),
 	})
 	if err != nil {
 		w.close()
@@ -327,6 +332,7 @@ func handlerDeps(o Options, st *state.Store, set *sources.Set, watches handlers.
 	deps := handlers.Deps{
 		DB: o.DB, Store: st, Sessions: port, RecordingsDir: o.RecordingsDir, Clock: o.Clock, Policy: o.mobileSync,
 		ChatWatches: watches, Sealer: sealer, LateEcho: lateEcho, ServerHost: hubKindOf(o.Desktop) == wire.HubKindServer,
+		Tower: o.Tower,
 	}
 	// Typed nils stay nil interfaces.
 	if set.Sessions != nil {
@@ -663,5 +669,34 @@ func pruneRecordingJobs(o Options, st *state.Store) {
 	}
 	if n > 0 {
 		log.Printf("hub: %d recording jobs older than 31 days removed", n)
+	}
+}
+
+// towerInboxFeed is the phone Inbox's feed: inbox.feed through the daemon's
+// tower, as the Mac reads it (the same registration, its feature switches
+// included); nil without a tower.
+func towerInboxFeed(t *tower.Tower) sources.InboxFeed {
+	if t == nil {
+		return nil
+	}
+	return func(ctx context.Context, o inboxfeed.Options) (api.Feed, error) {
+		params, err := json.Marshal(api.FeedRequest{Limit: o.Limit, Clip: o.Clip})
+		if err != nil {
+			return api.Feed{}, err
+		}
+		resp := t.Call(ctx, api.Request{V: api.EnvelopeVersion, ID: "hub-inbox-feed", Command: "inbox.feed", Params: params},
+			tower.Origin{Transport: "hub"})
+		if resp.Status != api.StatusOK {
+			code := api.RefusalCode("")
+			if resp.Refusal != nil {
+				code = resp.Refusal.Code
+			}
+			return api.Feed{}, fmt.Errorf("hub: inbox.feed answered %s %s", resp.Status, code)
+		}
+		var feed api.Feed
+		if err := json.Unmarshal(resp.Result, &feed); err != nil {
+			return api.Feed{}, fmt.Errorf("hub: inbox.feed: %w", err)
+		}
+		return feed, nil
 	}
 }

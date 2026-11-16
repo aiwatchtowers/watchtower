@@ -35,7 +35,8 @@ public enum ActionEffectKinds {
         "chat_read": ["chat_list"],
         "chat_branch_select": chat,
         "chat_manage": chat,
-        "chat_action_answer": chat
+        "chat_action_answer": chat,
+        "inbox_act": ["inbox_card", "inbox_folder"]
     ]
 
     public static func kinds(for actionKind: String) -> [String] {
