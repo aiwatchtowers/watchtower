@@ -122,9 +122,8 @@ action: nav:projects
 - Right-click an agent session, then **Session Target**, to pick the target its progress counts; **None — Count What It Touched** resets it.
 - Hover a **Ready to check** session for **Review Branch**, which opens its [Branch review](diff-review.md); the right-click menu has it for every session.
 - Hover a session that is finished, idle, failed or not running to get a **✕**. One click deletes it without a dialog. Any other session needs **Delete…**.
-- After a delete, **Undo** in the bar brings it back with its report, target links and asks. It stays for about five seconds.
-- Quitting before the bar goes away still deletes; a busy database can hold the quit a few seconds ("Finishing session deletes…").
-- When you delete a workbench session the dialog first checks what it left behind and may offer **Delete and Clean Up**. See [Worktrees and cleanup](worktrees-and-cleanup.md).
+- After a delete, **Undo** in the bar brings it back with its report, target links and asks for about five seconds. Then its merged or pushed worktrees and branches go in the background; one left **Not fully cleaned** stays listed ([details](worktrees-and-cleanup.md#what-a-delete-cleans-up)).
+- Quitting before the bar goes away deletes at the next launch; a busy database can hold the quit a few seconds ("Finishing session deletes…").
 
 ### Read a session's report and analytics
 

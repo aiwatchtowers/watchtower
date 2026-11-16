@@ -71,6 +71,8 @@ var cleanupDeps = func(database *db.DB) sessioncleanup.Deps {
 		Sizer:   sessioncleanup.DiskSizer{},
 		LS:      sessioncleanup.SystemLaunchServices{},
 		Results: database,
+		// The projects directory the session feed reads (sessionfeed.Dirs).
+		ClaudeProjects: func() string { return sessioncleanup.ClaudeProjectsDir(agentsClaudeDir()) },
 	}
 }
 

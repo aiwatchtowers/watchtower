@@ -19,6 +19,49 @@ final class QuitCoordinatorTests: XCTestCase {
         await fulfillment(of: [stopped, replied], timeout: 5)
     }
 
+    /// Board #1716: every quit — sessions kept or stopped — stops the
+    /// deleted sessions' background cleanups before it replies.
+    func testQuitStopsBackgroundCleanupsBeforeReplying() async {
+        for choice in [QuitChoice.quitKeepingSessions, .quitStoppingSessions] {
+            var order: [String] = []
+            let replied = expectation(description: "replied")
+            _ = QuitCoordinator.shouldTerminate(
+                hasBlockingWork: true,
+                confirmQuit: { choice },
+                stopDaemon: {},
+                stopBackgroundCleanups: { order.append("cleanups") },
+                reply: { _ in order.append("reply"); replied.fulfill() })
+            await fulfillment(of: [replied], timeout: 5)
+            XCTAssertEqual(order, ["cleanups", "reply"], "\(choice)")
+        }
+    }
+
+    /// The app's quit entry: `TrayAppDelegate.terminateDecision` passes the
+    /// step on, and its helper stops the view model's cleanups.
+    func testTrayQuitPathStopsTheViewModelsCleanups() async throws {
+        var stopped = false
+        let replied = expectation(description: "replied")
+        _ = TrayAppDelegate.terminateDecision(
+            managesLifecycle: true,
+            hasBlockingWork: false,
+            confirmQuit: { .quitStoppingSessions },
+            stopDaemon: {},
+            stopBackgroundCleanups: { stopped = true },
+            reply: { _ in replied.fulfill() })
+        await fulfillment(of: [replied], timeout: 5)
+        XCTAssertTrue(stopped)
+
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "QuitCoordinatorTests-\(UUID().uuidString)"))
+        let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: FakeCLIRunner()), defaults: defaults)
+        let center = SessionCleanupCenter(runner: nil, streamer: nil)
+        vm.sessionCleanup = center
+        await TrayAppDelegate.stopBackgroundCleanups(vm)
+        XCTAssertTrue(center.backgroundStopped)
+        XCTAssertTrue(vm.autoCleanupStopped)
+    }
+
     func testBlockingWorkCancelBlocksQuitWithoutStopping() {
         var stoppedCalled = false
         let reply = QuitCoordinator.shouldTerminate(

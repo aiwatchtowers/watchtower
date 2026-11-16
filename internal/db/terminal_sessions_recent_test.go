@@ -27,6 +27,8 @@ func TestListWorkbenchTerminalSessionsSince(t *testing.T) {
 	ins(nil, "claude", "c-free", nil, "2026-10-10T08:00:00Z") // no workbench
 	ins(wb, "shell", nil, nil, "2026-10-10T08:00:00Z")        // not an agent
 	ins(wb, "codex", nil, nil, "2026-10-10T08:00:00Z")        // codex before its first SessionStart
+	deleting := ins(wb, "claude", "c-del", nil, "2026-10-10T08:00:00Z")
+	setDeleteRequestedForTest(t, d, deleting, "2026-10-10T09:00:00Z") // being deleted (#1716)
 
 	got, err := d.ListWorkbenchTerminalSessionsSince(time.Date(2026, 10, 3, 0, 0, 0, 0, time.UTC))
 	require.NoError(t, err)
