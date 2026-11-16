@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -32,16 +33,28 @@ import (
 // as not_this_session; unknown are §2c candidates left undecided
 // (created_unknown).
 type observed struct {
-	roots, ownRoots, branches, named    map[string]bool
-	switchedTo, unknown                 map[string]bool
-	ledgerBranches                      map[string][]string
+	roots, ownRoots, branches, named map[string]bool
+	switchedTo, unknown              map[string]bool
+	ledgerBranches                   map[string][]string
+	// evidence maps a branch §2a, §2b or §2c made the session's to the
+	// worktrees that showed it: an apply that removes such a worktree
+	// still knows whose the branch was (applier.ownedByRemoved).
+	evidence                            map[string][]string
 	placedCwd, placedRoot, placedBranch string
+}
+
+// own makes branch the session's on the evidence of the worktree at root.
+func (o observed) own(branch, root string) {
+	o.branches[branch] = true
+	if !slices.Contains(o.evidence[branch], root) {
+		o.evidence[branch] = append(o.evidence[branch], root)
+	}
 }
 
 func observe(rows []db.SessionWorktree, targetBranches, declaredWorktrees, declaredBranches []string) observed {
 	o := observed{roots: map[string]bool{}, ownRoots: map[string]bool{}, branches: map[string]bool{},
 		named: map[string]bool{}, switchedTo: map[string]bool{}, unknown: map[string]bool{},
-		ledgerBranches: map[string][]string{}}
+		ledgerBranches: map[string][]string{}, evidence: map[string][]string{}}
 	for _, r := range rows {
 		root := resolvePath(r.Root)
 		o.roots[root], o.ownRoots[root] = true, true

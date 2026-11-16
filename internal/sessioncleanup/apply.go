@@ -123,11 +123,14 @@ type applier struct {
 	self   int               // this process: never an orphan
 	walked map[string]string // W9 walks of the evaluation, reused until the final re-check
 	report *reporter         // the request's Observer; the re-checks' builders have none
+	// evidence is the plan's observed.evidence: which worktrees showed a
+	// branch was the session's (§2a, §2b, §2c).
+	evidence map[string][]string
 }
 
 func newApplier(b *builder, p Plan, only []string) *applier {
 	a := &applier{deps: b.deps, req: b.req, git: b.repo.git, folder: b.repo.folder, items: p.Items,
-		tips: map[string]string{}, self: b.self, walked: b.walked, report: b.report}
+		tips: map[string]string{}, self: b.self, walked: b.walked, report: b.report, evidence: b.seen.evidence}
 	a.req.NoSize, a.req.Observer, a.req.recheck = true, nil, true
 	for _, br := range b.repo.branches {
 		a.tips[br.Name] = br.Sha
@@ -534,6 +537,13 @@ func (a *applier) recheckBranch(ctx context.Context, it *Item) (string, bool) {
 		keepItem(it, ReasonMoved, fmt.Sprintf("was %s, now %s", short(a.tips[it.Name]), short(tip)))
 		return "", false
 	}
+	// The worktree that showed the branch was the session's may be one this
+	// apply just removed, its HEAD log or record match gone with it: the
+	// plan's evidence stands, and every other catch still runs fresh.
+	if !b.seen.branches[it.Name] && a.ownedByRemoved(it.Name) {
+		b.seen.branches[it.Name] = true
+		delete(b.seen.unknown, it.Name)
+	}
 	// Every worktree left now stays: B2 keeps a branch checked out in any.
 	b.checkedOutIn, b.checkedOutStaying = map[string]string{}, map[string]string{}
 	for _, w := range b.repo.worktrees {
@@ -547,6 +557,17 @@ func (a *applier) recheckBranch(ctx context.Context, it *Item) (string, bool) {
 		return "", false
 	}
 	return tip, true
+}
+
+// ownedByRemoved: the plan owned branch name on the evidence of a worktree
+// this apply removed.
+func (a *applier) ownedByRemoved(name string) bool {
+	for _, root := range a.evidence[name] {
+		if it := a.find("worktree:" + root); it != nil && it.Done {
+			return true
+		}
+	}
+	return false
 }
 
 // notCheckedOutNow reads `git worktree list` once more right before the

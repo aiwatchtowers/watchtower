@@ -301,8 +301,8 @@ func (b *builder) loadAgentFiles(ctx context.Context) error {
 	for r := range roots {
 		b.seen.roots[r], b.seen.ownRoots[r] = true, true
 	}
-	for br := range branches {
-		b.seen.branches[br] = true
+	for br, root := range branches {
+		b.seen.own(br, root)
 	}
 	if note {
 		b.notes = append(b.notes, NoteSubagentRecordsUnreadable)
@@ -367,7 +367,8 @@ func (b *builder) adoptScratchLanes(acquired map[string]time.Time) {
 			continue
 		}
 		if birth, known := b.repo.branchBirth(w.Branch); known && !birth.Before(after) {
-			b.seen.branches[w.Branch], b.seen.named[w.Branch] = true, true
+			b.seen.own(w.Branch, w.Root)
+			b.seen.named[w.Branch] = true
 		}
 	}
 }
@@ -375,33 +376,35 @@ func (b *builder) adoptScratchLanes(acquired map[string]time.Time) {
 // loadHeadLogs adds the branches created in the session's own linked
 // worktrees (spec §2c, headLogBranches) for every agent kind, and decides
 // the cwd ledger's branches. The worktrees read are the ones the session
-// owns by the cwd ledger, by placement or by §2a/§2b (ownsWorktree) and
-// whose folder is there. A ledger branch recorded in a worktree read here
-// whose HEAD log exists counts only when §2c names it: a branch only
-// checked out there is not_this_session. Any other ledger branch counts as
+// owns by the cwd ledger, by placement or by §2a/§2b (ownsWorktree); a
+// prunable one's log is read from its admin dir. A ledger branch never
+// bypasses §2c for such a worktree, nor for a ledger root no longer listed
+// (removed, its HEAD log gone with it): it counts only when §2c names it,
+// so a branch only checked out there — or in a worktree without a HEAD log
+// — is not_this_session (left for the Clean Up screen). Any other ledger
+// branch (the main folder, a worktree older than the session) counts as
 // before. A branch another source holds (a target, the agent's
 // declaration, placement by record, a subagent record or a scratchpad lane)
 // keeps that source's standing. When an exclusion could not be checked
 // (unknown), the named branches are kept as created_unknown. A worktree's
-// own unreadable log fails the plan.
+// own unreadable log fails the plan. Each branch §2c names records the
+// worktrees that named it (observed.evidence).
 func (b *builder) loadHeadLogs(ctx context.Context) error {
 	unknown := false
-	named, gated := map[string]bool{}, map[string]bool{}
+	named, gated, listed := map[string][]string{}, map[string]bool{}, map[string]bool{}
 	for _, w := range b.repo.worktrees {
-		if w.Main || w.Bare || w.Prunable || !b.ownsWorktree(w) {
-			continue
-		}
-		n, switched, found, unk, err := headLogBranches(ctx, b.repo, w)
-		if err != nil {
-			return fmt.Errorf("reading the branches of %s: %w", w.Root, err)
-		}
-		if !found {
+		listed[w.Root] = true
+		if w.Main || w.Bare || !b.ownsWorktree(w) {
 			continue
 		}
 		gated[w.Root] = true
+		n, switched, _, unk, err := headLogBranches(ctx, b.repo, w)
+		if err != nil {
+			return fmt.Errorf("reading the branches of %s: %w", w.Root, err)
+		}
 		unknown = unknown || unk
 		for c := range n {
-			named[c] = true
+			named[c] = append(named[c], w.Root)
 		}
 		for c := range switched {
 			b.seen.switchedTo[c] = true
@@ -411,19 +414,21 @@ func (b *builder) loadHeadLogs(ctx context.Context) error {
 		if b.seen.branches[c] {
 			continue
 		}
-		if !slices.ContainsFunc(roots, func(r string) bool { return gated[r] }) {
+		if !slices.ContainsFunc(roots, func(r string) bool { return gated[r] || !listed[r] }) {
 			b.seen.branches[c] = true
-		} else if !named[c] {
+		} else if named[c] == nil {
 			b.seen.switchedTo[c] = true
 		}
 	}
-	for c := range named {
+	for c, roots := range named {
 		switch {
 		case b.seen.branches[c]:
 		case unknown:
 			b.seen.unknown[c] = true
 		default:
-			b.seen.branches[c] = true
+			for _, r := range roots {
+				b.seen.own(c, r)
+			}
 		}
 	}
 	return nil

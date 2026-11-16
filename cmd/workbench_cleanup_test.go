@@ -718,6 +718,18 @@ func (appLS) Stale(context.Context, string) ([]string, error) {
 	return nil, nil
 }
 
+// The cleanup reads the subagent records where the session feed does
+// (agentsClaudeDir); a relative directory (the home directory unknown) is
+// no projects directory, never one read against the working directory.
+func TestCleanupDeps_ClaudeProjectsFollowsTheSessionFeed(t *testing.T) {
+	prev := agentsClaudeDir
+	t.Cleanup(func() { agentsClaudeDir = prev })
+	agentsClaudeDir = func() string { return "/home/acme/.claude" }
+	assert.Equal(t, "/home/acme/.claude/projects", cleanupDeps(nil).ClaudeProjects())
+	agentsClaudeDir = func() string { return ".claude" }
+	assert.Equal(t, "", cleanupDeps(nil).ClaudeProjects())
+}
+
 func TestCleanupCmd_JSONItemKeys(t *testing.T) {
 	f := newCleanupFixture(t)
 	root := f.pushedWorktree("wt", "feat/x")

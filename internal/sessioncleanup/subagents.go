@@ -29,18 +29,20 @@ const (
 	recordSlack          = 60 * time.Second
 )
 
-// defaultClaudeProjectsDir is the projects directory the session feed
-// reads subagent records from: ~/.claude/projects (agentlog.DefaultClaudeDir,
-// never $CLAUDE_CONFIG_DIR — review-rules §5: an env override could point
-// Watchtower at a TCC-protected folder); "" when the home directory is
-// unknown.
-func defaultClaudeProjectsDir() string {
-	dir := agentlog.DefaultClaudeDir()
-	if !filepath.IsAbs(dir) {
+// ClaudeProjectsDir is the projects directory under Claude Code's
+// directory claudeDir (the session feed's ~/.claude, never
+// $CLAUDE_CONFIG_DIR — review-rules §5: an env override could point
+// Watchtower at a TCC-protected folder); "" when claudeDir is not absolute
+// (the home directory is unknown), which reads as no projects directory.
+func ClaudeProjectsDir(claudeDir string) string {
+	if !filepath.IsAbs(claudeDir) {
 		return ""
 	}
-	return filepath.Join(dir, "projects")
+	return filepath.Join(claudeDir, "projects")
 }
+
+// defaultClaudeProjectsDir is ClaudeProjectsDir of agentlog.DefaultClaudeDir.
+func defaultClaudeProjectsDir() string { return ClaudeProjectsDir(agentlog.DefaultClaudeDir()) }
 
 // bornAt reads births: a worktree's (by root) and a branch's (by name).
 type bornAt struct {
@@ -69,6 +71,7 @@ type namedWorktree struct {
 // sessions were started in. ids are the counted uuids with the moment this
 // row acquired each; ended is when the row's terminal ended (zero = still
 // live, no upper bound); wts are the planned repository's worktrees.
+// branches maps each adopted branch to the worktree its record named.
 //
 // For each uuid the record files sit in <projects dir>/<slug>/<uuid>/
 // subagents, beside the transcript <slug>/<uuid>.jsonl. A missing
@@ -91,8 +94,8 @@ type namedWorktree struct {
 // but cannot be read or parsed is err: a broken read of the session's own
 // records is never "nothing to clean".
 func subagentWorktrees(projectsDir string, ids map[string]time.Time, ended time.Time, wts []worktree,
-	born bornAt) (roots, branches map[string]bool, note bool, err error) {
-	roots, branches = map[string]bool{}, map[string]bool{}
+	born bornAt) (roots map[string]bool, branches map[string]string, note bool, err error) {
+	roots, branches = map[string]bool{}, map[string]string{}
 	if len(ids) == 0 {
 		return roots, branches, false, nil
 	}
@@ -133,7 +136,7 @@ func subagentWorktrees(projectsDir string, ids map[string]time.Time, ended time.
 				continue
 			}
 			if bb, ok := born.branch(n.branch); ok && !bb.Before(after) {
-				branches[n.branch] = true
+				branches[n.branch] = w.Root
 			}
 			continue
 		}

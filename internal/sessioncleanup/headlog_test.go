@@ -387,3 +387,67 @@ func TestHeadLogRefLogUnreadableIsCreatedUnknown(t *testing.T) {
 
 	wantItem(t, f.plan(Request{}), "branch:mine", ActionKeep, ReasonCreatedUnknown)
 }
+
+// An apply removes the worktree first, and with it the HEAD log that showed
+// its branch was made there (§2c): the branch still goes, on the plan's
+// evidence, with every other check run fresh. No ledger row names it.
+func TestApplyRemovesHeadLogBranchAfterItsWorktree(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root := f.pushedWork("wt", "feat/x")
+	f.record(root, "") // the hooks saw the folder, never the branch
+
+	p := f.plan(Request{})
+	wantItem(t, p, "worktree:"+root, ActionRemove, "")
+	wantItem(t, p, "branch:feat/x", ActionRemove, "")
+
+	res := f.apply(Request{}, nil, nil)
+	wantResultItem(t, res, "worktree:"+root, ActionRemove, "", true)
+	wantResultItem(t, res, "branch:feat/x", ActionRemove, "", true)
+	if f.branchExists("feat/x") {
+		t.Fatal("the branch was left behind after its worktree went")
+	}
+}
+
+// A prunable worktree (its folder gone) still has its HEAD log in its
+// admin dir: §2c reads it there, so the ledger's branches of it are decided
+// as for any other.
+func TestHeadLogOfAPrunableWorktreeIsReadFromItsAdminDir(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	t0 := time.Now().Add(-50 * time.Minute)
+	gitAt(t, f.repo, t0.Add(-2*time.Hour), "branch", "other", "main")
+	wt := f.sessionWorktree("wt", "feat/wt", t0)
+	gitAt(t, wt, t0.Add(time.Minute), "checkout", "-q", "-b", "mine")
+	gitAt(t, wt, t0.Add(2*time.Minute), "checkout", "-q", "other")
+	gitAt(t, wt, t0.Add(3*time.Minute), "checkout", "-q", "feat/wt")
+	f.record(wt, "other")
+	if err := os.RemoveAll(wt); err != nil {
+		t.Fatal(err)
+	}
+
+	p := f.plan(Request{})
+	wantItem(t, p, "branch:mine", ActionRemove, "")
+	wantItem(t, p, "branch:other", ActionKeep, ReasonNotThisSession)
+}
+
+// A worktree of the session without a HEAD log names nothing (§2c): its
+// ledger branches are not the session's, never adopted by the ledger
+// alone. Nor are the ledger branches of a worktree already gone.
+func TestLedgerBranchesOfAWorktreeWithoutHeadLogAreKept(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	t0 := time.Now().Add(-50 * time.Minute)
+	wt := f.sessionWorktree("wt", "feat/wt", t0)
+	if err := os.Remove(f.headLogPath(wt)); err != nil {
+		t.Fatal(err)
+	}
+	gone := f.pushedWork("wt-gone", "feat/gone")
+	f.record(gone, "feat/gone")
+	gitIn(t, f.repo, "worktree", "remove", gone)
+
+	p := f.plan(Request{})
+	wantItem(t, p, "worktree:"+wt, ActionRemove, "")
+	wantItem(t, p, "branch:feat/wt", ActionKeep, ReasonNotThisSession)
+	wantItem(t, p, "branch:feat/gone", ActionKeep, ReasonNotThisSession)
+}

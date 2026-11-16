@@ -51,7 +51,8 @@ type headLog struct {
 // worktree's HEAD log at or after its creation — the main worktree's log
 // included, read only for this — is moved to switchedTo as well.
 //
-// wt without a HEAD log names nothing (found false); wt's log that exists
+// A prunable wt (its folder gone) has its log read from its admin dir. wt
+// without a HEAD log names nothing (found false); wt's log that exists
 // but cannot be read is err (the plan fails). unknown is true when the
 // exclusion cannot be checked — another worktree's HEAD log missing,
 // unreadable or with a line that does not parse, its admin dir unknown, or
@@ -63,11 +64,21 @@ type headLog struct {
 func headLogBranches(ctx context.Context, r *repoState, wt worktree) (named, switchedTo map[string]bool, found,
 	unknown bool, err error) {
 	named, switchedTo = map[string]bool{}, map[string]bool{}
-	out, err := r.git.output(ctx, wt.Root, "rev-parse", "--git-path", "logs/HEAD")
-	if err != nil {
-		return nil, nil, false, false, fmt.Errorf("locating the HEAD log of %s: %w", wt.Root, err)
+	var path string
+	if wt.Prunable {
+		admin, ok := r.adminDirs[wt.Root]
+		if !ok {
+			return named, switchedTo, false, false, nil // no admin dir: no HEAD log
+		}
+		path = filepath.Join(admin, "logs", "HEAD")
+	} else {
+		out, err := r.git.output(ctx, wt.Root, "rev-parse", "--git-path", "logs/HEAD")
+		if err != nil {
+			return nil, nil, false, false, fmt.Errorf("locating the HEAD log of %s: %w", wt.Root, err)
+		}
+		path = absFrom(wt.Root, strings.TrimSpace(string(out)))
 	}
-	own, found, err := readHeadLog(absFrom(wt.Root, strings.TrimSpace(string(out))), wt.Branch)
+	own, found, err := readHeadLog(path, wt.Branch)
 	if err != nil || !found {
 		return named, switchedTo, false, false, err
 	}

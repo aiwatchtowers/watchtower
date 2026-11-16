@@ -18,7 +18,6 @@ import (
 //
 // It installs the db schema template cache too: the DBStore tests open
 // in-memory databases.
-
 func TestMain(m *testing.M) {
 	for k, v := range map[string]string{
 		"GIT_CONFIG_GLOBAL": os.DevNull, "GIT_CONFIG_NOSYSTEM": "1",

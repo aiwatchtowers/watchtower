@@ -376,3 +376,31 @@ func TestUnreadableOtherProjectFolderGivesNote(t *testing.T) {
 		})
 	}
 }
+
+// The apply removes the subagent's worktree first; its record then names a
+// worktree that is no longer listed, and no ledger row names the branch:
+// the branch still goes on the plan's evidence.
+func TestApplyRemovesSubagentBranchAfterItsWorktree(t *testing.T) {
+	f := newSubagentFixture(t)
+	root := f.agentWorktree("agent-a6", "worktree-agent-a6")
+	f.subagentRecord(testUUID, "agent-a6", recordJSON(t, root, "worktree-agent-a6"))
+
+	res := f.apply(Request{}, nil, nil)
+	wantResultItem(t, res, "worktree:"+root, ActionRemove, "", true)
+	wantResultItem(t, res, "branch:worktree-agent-a6", ActionRemove, "", true)
+	if f.branchExists("worktree-agent-a6") {
+		t.Fatal("the subagent's branch was left behind after its worktree went")
+	}
+}
+
+func TestClaudeProjectsDirNeedsAnAbsoluteDir(t *testing.T) {
+	for dir, want := range map[string]string{
+		"/home/acme/.claude": "/home/acme/.claude/projects",
+		".claude":            "",
+		"":                   "",
+	} {
+		if got := ClaudeProjectsDir(dir); got != want {
+			t.Errorf("ClaudeProjectsDir(%q) = %q, want %q", dir, got, want)
+		}
+	}
+}
