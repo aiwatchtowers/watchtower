@@ -4,7 +4,7 @@ New messages, mail or events do not show up, or the sync seems to run forever. E
 
 ## What you see
 
-The menu bar menu shows one of three lines:
+The menu bar menu shows one of these lines:
 
 - **Sync daemon not running**, with **Sync Now** greyed out.
 - **Daemon running · idle**, but nothing new has arrived for hours.

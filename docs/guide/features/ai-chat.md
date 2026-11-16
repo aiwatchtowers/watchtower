@@ -4,7 +4,7 @@ The **Chats** tab is the assistant you talk to about your work: it searches what
 
 ## Why use it
 
-You ask "what did we decide about the payments rollout?" and get an answer drawn from Slack, mail, Jira, meetings and digests, with the sources one click away. Nothing is pre-loaded into the conversation, so a question about your schedule or a colleague works the same way: the assistant looks it up when you ask.
+You ask "what did we decide about the payments rollout?" and get an answer drawn from Slack, mail, Jira, meetings and digests, with the sources one click away. Nothing is pre-loaded; the assistant looks it up.
 
 ## How it works
 <!-- learn
@@ -44,6 +44,17 @@ action: chat:What changed in the latest macOS release?
 -->
 
 <!-- learn
+id: chat-earlier-in-long-chat
+title: Pick up where a long chat began
+text: In a long chat, ask about something said or made early on; the assistant reopens it from the same chat.
+area: assistant
+level: next
+kind: tip
+since: next
+action: nav:chat
+-->
+
+<!-- learn
 id: chat-ask-about-watchtower
 title: Ask how Watchtower works
 text: Ask the chat about any Watchtower feature: it answers from this guide and links the section and the screen.
@@ -56,15 +67,17 @@ action: chat:How do I make an automation that runs every Monday?
 
 **Where answers come from.** The assistant searches everything Watchtower synced and indexed (Slack, mail, Jira with comments, calendar, transcripts and recaps, digests, decisions, ideas). That search follows the Knowledge search feature switch. Each answer folds its steps into "Worked for 12s · 4 steps", and a line below it opens the **Sources** panel, grouped by Slack channel, Jira project, Confluence space, mail, meetings and other.
 
-**The web.** On Claude and Codex the assistant can search the public web (documentation, products, news) and lists each page under **Web** in **Sources**. Your private data never goes into a search, and a link you give is never fetched; Codex sees only pages in its search index, so a very recent one can be missing. Ollama has no web search.
+**The web.** On Claude and Codex the assistant can search the public web and lists each page under **Web** in **Sources**. Your private data never goes into a search, and a link you give is never fetched; Codex's search index can miss a very recent page. Ollama has no web search.
 
 **Providers.** Choose **Preferred + reserve · Auto** or **Only** a provider. See [limits, pins and recovery](../concepts/ai-providers-and-cost.md#a-reserve-provider-for-quota-limits).
 
 **Warm sessions.** Up to three conversations keep a live assistant for ten idle minutes, so replies start fast; a fourth waits, no running reply cut off.
 
+**Long chats.** The assistant sees only a long chat's newest part; in the main chat, the target chat and the automation editor it rereads its earlier messages and artifacts when you ask.
+
 **Memory.** When the Memory feature's **Chat surface** switch is on, the assistant starts each chat with a short map of what it remembers and can look things up. See [Memory](memory.md).
 
-**Other assistant chats.** The same chat, steps included, appears in a target's **Assistant** tab, the track chat, an idea or decision, a recording's **Chat** tab, an automation's **Chat** and the setup assistant in Settings, without attachments, @-mentions or branches. Only the main chat, the target chat and the automation editor can act, through proposals; the others are draft-only. At most three replies across all of them run at once; a fourth shows **Queued**.
+**Other assistant chats.** The same chat appears in a target's **Assistant** tab, the track chat, an idea or decision, a recording's **Chat** tab, an automation's **Chat** and the setup assistant in Settings, without attachments, @-mentions or branches. Only the main chat, the target chat and the automation editor can act, through proposals; the others are draft-only. At most three replies across all of them run at once; a fourth shows **Queued**.
 
 **Questions about Watchtower itself.** The assistant searches this guide (built in, so it matches your version), links the section it used, and says so when the guide has nothing. An answer can also link a screen, such as **Inbox**: the link opens that tab, and only screens shown in your sidebar become links.
 

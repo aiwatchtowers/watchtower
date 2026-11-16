@@ -86,7 +86,7 @@ since: 0.25.0
 action: nav:home
 -->
 
-The last zone shows three cards about what Watchtower can do: this version's new ones first (marked **NEW**), then your setup areas. Each has a button to try it, **Read more** and **Ask about this**. Its button, **Got it** or using the feature marks it seen; **See all →** lists every card, with **Show again**.
+The last zone shows three cards about what Watchtower can do: this version's new ones first (marked **NEW IN** and the version), then your setup areas. Each has a button to try it, **Read more** and **Ask about this**. Its button, **Got it** or using the feature marks it seen; **See all →** lists every card, with **Show again**.
 
 ### Data scheduled for deletion
 
