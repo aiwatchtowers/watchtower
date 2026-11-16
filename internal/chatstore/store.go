@@ -644,13 +644,12 @@ func composeTurnText(userText, outcomes string) string {
 // ErrNotFound for a message of a Discuss chat: the phone reaches main chats
 // only (iPhone chat spec §1).
 func (s *Store) SelectBranch(ctx context.Context, messageID int64) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("selecting chat branch: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
+	return s.inTx(ctx, "selecting chat branch", func(tx *sql.Tx) error { return selectBranchTx(tx, messageID) })
+}
+
+func selectBranchTx(tx *sql.Tx, messageID int64) error {
 	var conv int64
-	err = tx.QueryRow(`SELECT m.conversation_id FROM chat_messages m
+	err := tx.QueryRow(`SELECT m.conversation_id FROM chat_messages m
 		JOIN chat_conversations c ON c.id = m.conversation_id
 		WHERE m.id = ? AND c.context_type IS NULL`, messageID).Scan(&conv)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -667,7 +666,7 @@ func (s *Store) SelectBranch(ctx context.Context, messageID int64) error {
 		newestLeaf(all, messageID), conv); err != nil {
 		return fmt.Errorf("selecting chat branch: %w", err)
 	}
-	return tx.Commit()
+	return nil
 }
 
 // newestLeaf is ChatTree.newestLeaf: the largest id among the leaves of
@@ -707,7 +706,11 @@ func newestLeaf(all []msgRow, id int64) int64 {
 // A positive messageID bounds the answer to ids ≤ messageID (what the phone
 // showed), so an answer that finished after it stays unread.
 func (s *Store) MarkRead(ctx context.Context, conv, messageID int64) error {
-	_, err := s.db.ExecContext(ctx, `WITH RECURSIVE path(message_id) AS (
+	return s.inTx(ctx, "marking a chat read", func(tx *sql.Tx) error { return markReadTx(tx, conv, messageID) })
+}
+
+func markReadTx(tx *sql.Tx, conv, messageID int64) error {
+	if _, err := tx.Exec(`WITH RECURSIVE path(message_id) AS (
 			SELECT active_leaf_message_id FROM chat_conversations WHERE id = ?1 AND active_leaf_message_id IS NOT NULL
 			UNION
 			SELECT m.parent_id FROM path JOIN chat_messages m ON m.id = path.message_id WHERE m.parent_id IS NOT NULL
@@ -723,8 +726,7 @@ func (s *Store) MarkRead(ctx context.Context, conv, messageID int64) error {
 			END
 		)
 		UPDATE chat_conversations SET read_at = MAX(COALESCE(read_at, 0), (SELECT m.created_at FROM chat_messages m JOIN answer a ON m.id = a.id))
-		WHERE id = ?1 AND (SELECT id FROM answer) IS NOT NULL`, conv, messageID)
-	if err != nil {
+		WHERE id = ?1 AND (SELECT id FROM answer) IS NOT NULL`, conv, messageID); err != nil {
 		return fmt.Errorf("marking chat %d read: %w", conv, err)
 	}
 	return nil
