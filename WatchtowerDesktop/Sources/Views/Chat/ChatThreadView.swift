@@ -1,194 +1,121 @@
-import SwiftUI
 import AppKit
-import WatchtowerCore
-import WatchtowerChatText
 import ChatUI
+import ChatWire
+import SwiftUI
+import WatchtowerChatText
+import WatchtowerCore
 
-/// The centered thread column (spec §3.1, max ~760 pt) on the shared
-/// `ChatFeedView`. Reads `liveTurn` identity and `waitingActionIDs` only;
-/// its text is read by `LiveAssistantRow` alone.
+/// The centered thread column (spec §3.1, max ~760 pt) on ChatUI's shared feed: the engine's messages, each part
+/// drawn by its registered view, with the Mac's own pieces injected — the agent-action card shared with the Inbox
+/// (approvals stay on `actions approve|reject`, D12), the inspector for artifacts and sources, and link handling.
 struct ChatThreadView: View {
     @Bindable var chatVM: ChatViewModel
     @Environment(AppState.self) private var appState
     let ownerName: String
 
     var body: some View {
-        ChatFeedView(state: threadState, lastRowID: chatVM.thread.last?.id,
-                     selectionQuote: selectionQuote,
-                     onScrollTargetConsumed: { chatVM.consumeScrollTarget() }, content: {
-            if chatVM.thread.isEmpty {
+        VStack(spacing: 0) {
+            if chatVM.messages.isEmpty, chatVM.conversation.feed != nil {
                 ChatEmptyState(ownerName: ownerName, onPrompt: usePrompt)
-            }
-            // One look-up table per pass, not a map and a scan per row.
-            let thread = ChatThreadIndex(chatVM.thread.map(\.message))
-            ForEach(chatVM.thread) { item in
-                row(item, thread).id(item.id)
-                if chatVM.reviewedMessageID == item.id {
-                    ChatActionReviewView(actions: chatVM.actionFeed.rows.filter { chatVM.reviewedActionIDs.contains($0.id) })
-                }
-                actionCards(forTurn: item.message.turnID)
-            }
-            unattachedActionCards
-            if chatVM.isWaitingForSession {
-                Text("Waiting for a free chat session…")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ChatUI.ChatFeedView(messages: chatVM.messages, context: feedContext)
             }
             ChatErrorStrip(chatVM: chatVM)
-        })
-    }
-
-    /// "Ask about this" on a selected passage: it joins the composer's
-    /// quote batch (`ChatViewModel.addQuote`), which focuses the composer.
-    private var selectionQuote: ChatFeedSelectionQuote {
-        ChatFeedSelectionQuote { chatVM.addQuote($0, comment: "") }
-    }
-
-    private var threadState: ChatAutoScrollPolicy.ThreadState {
-        .init(conversationID: chatVM.conversationID, lastMessageID: chatVM.thread.last?.id,
-              scrollTarget: chatVM.scrollTarget, liveMessageID: chatVM.liveTurn?.messageID)
-    }
-
-    @ViewBuilder
-    private func row(_ item: ChatThreadItem, _ thread: ChatThreadIndex) -> some View {
-        if let live = chatVM.liveTurn, live.messageID == item.id {
-            LiveAssistantRow(turn: live, onOpenArtifact: { chatVM.openArtifact(key: $0) },
-                             onOpenSources: { chatVM.openSources(messageID: live.messageID, sources: $0) },
-                             onStreamingTextChanged: { chatVM.updateLiveArtifacts(streamingText: $0) })
-        } else {
-            ChatMessageRow(item: item, isLast: item.id == chatVM.thread.last?.id,
-                           isEditing: chatVM.editingMessageID == item.id, actions: actions(for: item, thread),
-                           artifactVersions: chatVM.artifactVersionsByMessage[item.id] ?? [:],
-                           keptArtifactKeys: chatVM.keptArtifactKeys,
-                           questionAnswer: ownerReply(after: item, thread), showsRememberMark: true,
-                           answeringElsewhere: chatVM.foreignTurn.turnID.map { $0 == item.message.turnID } ?? false)
-                .equatable()
+                .padding(.horizontal, Spacing.cozy)
         }
+        .task(id: chatVM.conversationID) { await chatVM.loadArtifactContext() }
+        .task(id: chatVM.messages.last?.id) { await chatVM.conversation.markRead() }
+        .onChange(of: chatVM.conversation.messages, initial: true) { _, _ in chatVM.feedChanged() }
     }
 
-    /// A question card is answered from the latest reply only, while no
-    /// turn runs.
-    private func actions(for item: ChatThreadItem, _ thread: ChatThreadIndex) -> ChatRowActions {
-        var actions = baseActions
-        if thread.isAnswerable(item.id, busy: chatVM.isBusy) {
-            actions.answerQuestion = { answer in Task { await chatVM.send(text: answer, keepsComposer: true) } }
-        }
-        return actions
+    private var feedContext: ChatFeedContext {
+        var context = chatVM.conversation.feedContext(composer: chatVM.composer, partActions: partActions)
+        context.rowActions.quote = { chatVM.addQuote($0) }
+        context.notice = chatVM.conversation.notice
+        return context
     }
 
-    /// The owner's words right after `item` — a question card's answer.
-    private func ownerReply(after item: ChatThreadItem, _ thread: ChatThreadIndex) -> String? {
-        guard let text = thread.ownerReply(after: item.id) else { return nil }
-        return ChatTurnComposer.displayParts(text).body
-    }
-
-    private var baseActions: ChatRowActions {
-        ChatRowActions(
+    private var partActions: ChatPartActions {
+        ChatPartActions(
+            openURL: open,
             copy: { text in
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(text, forType: .string)
             },
-            regenerate: { id in Task { await chatVM.regenerate(messageID: id) } },
-            retry: { id in Task { await chatVM.retry(messageID: id) } },
-            reviewActions: { chatVM.reviewActions(messageID: $0) },
-            continueStopped: { id in Task { await chatVM.continueStopped(messageID: id) } },
-            showVariant: { id, offset in
-                if let target = chatVM.variant(of: id, offset: offset) {
-                    Task { await chatVM.selectVariant(messageID: target) }
+            openArtifact: { chatVM.openArtifact(key: $0.key) },
+            openSources: { sources in
+                let replyID = chatVM.messages.last { $0.role == "assistant" }?.id ?? 0
+                chatVM.openSources(messageID: replyID, sources: sources)
+            },
+            decide: { payload, decision in
+                let feed = chatVM.actionFeed
+                switch decision {
+                case .approve:
+                    let shown = feed.rows.first { $0.id == payload.id }?.argsJSON ?? ""
+                    Task { await feed.approve(payload.id, shownArgs: shown) }
+                case .reject:
+                    Task { await feed.reject(payload.id) }
                 }
             },
-            beginEdit: { chatVM.editingMessageID = $0 },
-            submitEdit: { id, text in Task { await chatVM.edit(messageID: id, newText: text) } },
-            cancelEdit: { chatVM.editingMessageID = nil },
-            openArtifact: { chatVM.openArtifact(key: $0) },
-            openSources: { chatVM.openSources(messageID: $0, sources: $1) }
+            approvalCard: { payload in
+                guard let action = chatVM.actionFeed.rows.first(where: { $0.id == payload.id }) else { return nil }
+                return AnyView(agentActionCard(action))
+            }
         )
+    }
+
+    /// A link in an answer: an in-app screen, else the system's handler for the schemes the chat allows.
+    private func open(_ url: URL) {
+        if url.scheme?.lowercased() == NavLink.scheme {
+            appState.openNavLink(url)
+        } else if AllowedURLSchemes.permits(url) {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     private func usePrompt(_ prompt: ChatStarterPrompt) {
-        if prompt.sendsImmediately {
-            Task { await chatVM.send(text: prompt.text) }
-        } else {
-            chatVM.draft = prompt.text
-        }
+        chatVM.composer.draft = prompt.text
+        if prompt.sendsImmediately { Task { await chatVM.sendDraft() } }
     }
 
-    @ViewBuilder
-    private func actionCards(forTurn turn: String) -> some View {
-        if !turn.isEmpty {
-            let cards = chatVM.actionFeed.cards(forTurn: turn)
-            if chatVM.actionFeed.bulkApprovable(forTurn: turn).count >= 2 {
-                Button("Approve all") { Task { await chatVM.actionFeed.approveAllPending(forTurn: turn) } }
-                    .font(.caption)
-            }
-            ForEach(cards) { action in agentActionCard(action) }
-        }
-    }
-
-    /// Proposals whose turn never persisted a message — unreachable otherwise.
-    @ViewBuilder
-    private var unattachedActionCards: some View {
-        let orphans = AgentActionFeed.unattached(
-            rows: chatVM.actionFeed.rows,
-            messageTurnIDs: Set(chatVM.thread.map(\.message.turnID).filter { !$0.isEmpty })
-        )
-        if !orphans.isEmpty {
-            Text("Proposals from an interrupted turn").font(.caption).foregroundStyle(.secondary)
-            ForEach(orphans) { action in agentActionCard(action) }
-        }
-    }
-
-    /// A card a live step waits on (`tool_wait`, same action id) is outlined,
-    /// so the step's "see the approval card below" points at one card.
+    /// The Mac's own card (Slack editing and workspace pick, reconnect, the automation editor), shared with the
+    /// Inbox; a card a waiting step points at is outlined.
     private func agentActionCard(_ action: AgentAction) -> some View {
-        let awaited = (chatVM.liveTurn?.waitingActionIDs.contains(action.id) ?? false) || chatVM.reviewedActionIDs.contains(action.id)
+        let feed = chatVM.actionFeed
         return AgentActionCardView(
             action: action,
-            inFlight: chatVM.actionFeed.inFlight.contains(action.id),
-            onApprove: { Task { await chatVM.actionFeed.approve(action.id, shownArgs: action.argsJSON) } },
-            onReject: { Task { await chatVM.actionFeed.reject(action.id) } },
-            onRetry: { Task { await chatVM.actionFeed.retry(action.id) } },
-            gestureError: chatVM.actionFeed.rowErrors[action.id],
-            onApproveEdited: { patch in Task { await chatVM.actionFeed.approve(action.id, shownArgs: action.argsJSON, patch: patch) } },
+            inFlight: feed.inFlight.contains(action.id),
+            onApprove: { Task { await feed.approve(action.id, shownArgs: action.argsJSON) } },
+            onReject: { Task { await feed.reject(action.id) } },
+            onRetry: { Task { await feed.retry(action.id) } },
+            gestureError: feed.rowErrors[action.id],
+            onApproveEdited: { patch in Task { await feed.approve(action.id, shownArgs: action.argsJSON, patch: patch) } },
             onReconnectSlack: { id in await appState.reconnectSlack(accountID: id) },
-            onDismiss: { Task { await chatVM.actionFeed.dismiss(action.id) } },
-            sessionHoldsCall: appState.chatSessionPool?.holdsSessionCall(action) ?? false
+            onDismiss: { Task { await feed.dismiss(action.id) } },
+            sessionHoldsCall: chatVM.holdsSessionCall(action)
         )
-        .overlay {
-            if awaited {
-                RoundedRectangle(cornerRadius: 10).strokeBorder(Color.orange, lineWidth: 1.5)
-            }
-        }
     }
 }
 
-/// The chat's error lines, under the thread or over the expanded panel
-/// (#786) — wherever the owner is looking.
+/// The chat's error lines, under the thread or over the expanded panel (#786) — wherever the owner is looking.
 struct ChatErrorStrip: View {
     let chatVM: ChatViewModel
 
     var body: some View {
         // Nothing at all without an error, so a caller's padding adds no gap.
-        if chatVM.errorMessage != nil || chatVM.liveTurn?.persistError != nil
-            || chatVM.sessionPersistenceError != nil || chatVM.actionFeed.lastError != nil {
+        if chatVM.errorMessage != nil || chatVM.actionFeed.lastError != nil {
             VStack(alignment: .leading, spacing: 6) {
                 if let error = chatVM.errorMessage {
                     Text(error)
                         .font(.callout)
-                        .foregroundStyle(.red)
-                        .padding(8)
+                        .foregroundStyle(Tone.error)
+                        .padding(Spacing.regular)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(.red.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
-                }
-                if let persist = chatVM.liveTurn?.persistError {
-                    Text(persist).font(.caption).foregroundStyle(.red)
-                }
-                if let error = chatVM.sessionPersistenceError, error != chatVM.liveTurn?.persistError {
-                    Text(error).font(.caption).foregroundStyle(Tone.error)
+                        .background(Tone.error.opacity(ChipTint.fillOpacity), in: RoundedRectangle(cornerRadius: Radius.control))
                 }
                 if let err = chatVM.actionFeed.lastError {
-                    Text(err).font(.caption).foregroundStyle(.red)
+                    Text(err).font(.caption).foregroundStyle(Tone.error)
                 }
             }
         }

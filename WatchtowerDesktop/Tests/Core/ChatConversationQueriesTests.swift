@@ -174,7 +174,6 @@ final class ChatConversationQueriesTests: XCTestCase {
             let byID = Dictionary(uniqueKeysWithValues: try ChatConversationQueries.fetchStandalone(d).map { ($0.id, $0) })
             XCTAssertEqual(byID[plain]?.hasAttachments, false)
             XCTAssertEqual(byID[withFile]?.hasAttachments, true)
-            XCTAssertEqual(ChatLandingPolicy.recents(Array(byID.values)).map(\.id), [withFile])
             XCTAssertEqual(try ChatAttachmentQueries.fetchPending(d, conversationID: withFile).count, 1)
             XCTAssertTrue(try ChatAttachmentQueries.fetchPending(d, conversationID: plain).isEmpty)
         }

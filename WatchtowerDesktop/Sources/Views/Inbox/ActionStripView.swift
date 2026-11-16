@@ -47,7 +47,7 @@ struct ActionStripView: View {
                         }
                     },
                     onReconnectSlack: { id in await appState.reconnectSlack(accountID: id) },
-                    sessionHoldsCall: { appState.chatSessionPool?.holdsSessionCall($0) ?? false },
+                    sessionHoldsCall: { appState.chatViewModel?.holdsSessionCall($0) ?? false },
                     emptyState: appState.emptyStateContext,
                     onOpenConnections: { appState.openConnections() },
                     ownerKnown: appState.owner.isKnown,

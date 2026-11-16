@@ -1,5 +1,5 @@
+import ChatWire
 import Foundation
-import GRDB
 import WatchtowerChatText
 
 /// One thing an `@` mention can point at (spec §6.2).
@@ -17,27 +17,23 @@ package struct MentionCandidate: Equatable, Hashable, Sendable, Identifiable {
         self.kind = kind
         self.ref = ref
         // A raw newline in the label would break the single-line REFERENCED
-        // format (`ChatTurnComposer`) and the `@Label` insertion text — every
+        // format (the engine's composer) and the `@Label` insertion text — every
         // label source is newline-free by construction today, but nothing
         // enforced it at this boundary (review Minor a).
         self.label = Self.sanitized(label)
         self.detail = detail
     }
 
-    /// nil for a Jira project or Confluence space hit — those are pinned, not
-    /// mentioned.
+    /// nil for a Jira project or Confluence space hit (those are pinned, not mentioned) or a kind this build does
+    /// not know (`entity_search`'s hits, Go `chatengine.EntityHit`).
     package init?(hit: ChatEntityHit) {
-        let kind: Kind
-        switch hit.kind {
-        case .person: kind = .person
-        case .channel: kind = .channel
-        case .jiraIssue: kind = .jira
-        case .linearIssue: kind = .linear
-        case .target: kind = .target
-        case .track: kind = .track
-        case .jiraProject, .confluenceSpace: return nil
-        }
-        self.init(kind: kind, ref: hit.ref, label: hit.label, detail: hit.detail)
+        guard let kind = Kind(rawValue: hit.kind) else { return nil }
+        self.init(kind: kind, ref: hit.id, label: hit.label, detail: hit.detail)
+    }
+
+    /// The mention as `chat_turn`'s `compose` carries it (the engine writes the REFERENCED line).
+    package var composeMention: ChatCompose.Mention {
+        ChatCompose.Mention(kind: kind.rawValue, id: ref, label: label)
     }
 
     package var id: String { referenceToken }
@@ -63,33 +59,5 @@ extension MentionTokenizer {
     package static func liveMentions(text: String, mentions: [MentionCandidate]) -> [MentionCandidate] {
         var seen = Set<String>()
         return mentions.filter { text.contains($0.insertionText) && seen.insert($0.referenceToken).inserted }
-    }
-}
-
-/// `@` picker search (spec §6.2): people, Jira and Linear issues, Slack channels,
-/// targets, tracks — prefix match, at most 8 results. Label-prefix hits come
-/// first; ties keep kind order then each kind's own SQL order.
-package enum MentionSearch {
-    package static let resultLimit = 8
-
-    package static func search(_ db: Database, query: String) throws -> [MentionCandidate] {
-        var hits: [ChatEntityHit] = []
-        for kind in [ChatEntityKind.person, .jiraIssue, .channel, .target, .track] {
-            hits += try ChatEntitySearch.search(db, kind: kind, query: query, limit: resultLimit)
-        }
-        let candidates = hits.compactMap(MentionCandidate.init(hit:))
-        let needle = query.trimmingCharacters(in: .whitespaces).lowercased()
-        let ranked = candidates.enumerated().sorted { lhs, rhs in
-            let lp = labelMatches(lhs.element, needle) ? 0 : 1
-            let rp = labelMatches(rhs.element, needle) ? 0 : 1
-            return lp != rp ? lp < rp : lhs.offset < rhs.offset
-        }
-        return Array(ranked.map(\.element).prefix(resultLimit))
-    }
-
-    private static func labelMatches(_ candidate: MentionCandidate, _ needle: String) -> Bool {
-        guard !needle.isEmpty else { return true }
-        let label = candidate.label.hasPrefix("#") ? String(candidate.label.dropFirst()) : candidate.label
-        return label.lowercased().hasPrefix(needle)
     }
 }

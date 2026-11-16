@@ -1,3 +1,4 @@
+import ChatWire
 import Foundation
 import Observation
 import WatchtowerChatText
@@ -9,10 +10,11 @@ package struct ComposerPickerItem: Equatable, Identifiable, Sendable {
     package let subtitle: String
 }
 
-/// The composer's `@` picker state (spec §6.2): what is open, the rows, the
-/// selection, and the mentions picked for the current draft. Lives on
-/// `ChatViewModel` (so a draft's mentions survive navigation with it); the
-/// search is injected so tests run without a database.
+/// The composer's `@` and `/` picker state (spec §6.2): what is open, the
+/// rows, the selection, and the mentions and skill picked for the current
+/// draft. The search and the skill catalog are injected (the main chat asks
+/// the engine: `entity_search`, `skills_list`); a result that arrives after
+/// the text moved on is dropped.
 @MainActor
 @Observable
 package final class ComposerPickerModel {
@@ -30,14 +32,18 @@ package final class ComposerPickerModel {
     package private(set) var skill: String?
 
     private var mentionHits: [MentionCandidate] = []
-    private var skillHits: [SkillSummary] = []
+    private var skillHits: [ChatSkill] = []
     private var suppressedStart: Int?
-    private let searchMentions: (String) -> [MentionCandidate]
-    private let skills: () -> [SkillSummary]
+    private let searchMentions: @MainActor (String) async -> [MentionCandidate]
+    private let skills: @MainActor () async -> [ChatSkill]
+    /// The skill catalog, read once.
+    private var skillCatalog: [ChatSkill]?
+    @ObservationIgnored private var search: Task<Void, Never>?
+    @ObservationIgnored private var generation = 0
 
     package init(
-        searchMentions: @escaping (String) -> [MentionCandidate],
-        skills: @escaping () -> [SkillSummary] = { [] }
+        searchMentions: @escaping @MainActor (String) async -> [MentionCandidate],
+        skills: @escaping @MainActor () async -> [ChatSkill] = { [] }
     ) {
         self.searchMentions = searchMentions
         self.skills = skills
@@ -47,20 +53,30 @@ package final class ComposerPickerModel {
 
     /// Called on every text/caret change. A `/` at the start of the draft
     /// opens the skill picker; otherwise an active `@` opens the mention one.
+    /// The rows follow once the search answers.
     package func update(text: String, cursor: Int) {
+        generation += 1
+        let current = generation
+        search?.cancel()
         if let trigger = MentionTokenizer.activeSkill(text: text, cursor: cursor) {
             guard trigger.start != suppressedStart else {
                 close()
                 return
             }
             suppressedStart = nil
-            skillHits = skills().filter { trigger.query.isEmpty || $0.name.hasPrefix(trigger.query) }
-            items = skillHits.map {
-                ComposerPickerItem(id: "skill:" + $0.name, icon: "wand.and.stars", title: $0.name, subtitle: $0.description)
-            }
-            mentionHits = []
             mode = .skill(query: trigger.query)
-            selectedIndex = 0
+            search = Task { [weak self] in
+                guard let self else { return }
+                let catalog = await self.catalog()
+                guard current == self.generation else { return }
+                self.skillHits = catalog.filter { trigger.query.isEmpty || $0.name.hasPrefix(trigger.query) }
+                self.items = self.skillHits.map {
+                    ComposerPickerItem(id: "skill:" + $0.name, icon: "wand.and.stars", title: $0.name,
+                                       subtitle: $0.description)
+                }
+                self.mentionHits = []
+                self.selectedIndex = 0
+            }
             return
         }
         guard let trigger = MentionTokenizer.activeMention(text: text, cursor: cursor) else {
@@ -73,10 +89,28 @@ package final class ComposerPickerModel {
             return
         }
         suppressedStart = nil
-        mentionHits = searchMentions(trigger.query)
-        items = mentionHits.map(Self.item(for:))
         mode = .mention(query: trigger.query)
-        selectedIndex = 0
+        let searchMentions = searchMentions
+        search = Task { [weak self] in
+            let hits = await searchMentions(trigger.query)
+            guard let self, current == self.generation else { return }
+            self.mentionHits = hits
+            self.items = hits.map(Self.item(for:))
+            self.skillHits = []
+            self.selectedIndex = 0
+        }
+    }
+
+    /// Returns once the search the last `update` started answered (tests).
+    package func searchSettled() async {
+        await search?.value
+    }
+
+    private func catalog() async -> [ChatSkill] {
+        if let skillCatalog { return skillCatalog }
+        let loaded = await skills()
+        if !loaded.isEmpty { skillCatalog = loaded }
+        return loaded
     }
 
     package func handle(_ key: ComposerPickerKey, text: String, cursor: Int) -> ComposerKeyResult {
@@ -139,6 +173,8 @@ package final class ComposerPickerModel {
     }
 
     private func close() {
+        generation += 1
+        search?.cancel()
         mode = .none
         items = []
         mentionHits = []

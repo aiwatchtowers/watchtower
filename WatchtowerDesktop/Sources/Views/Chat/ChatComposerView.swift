@@ -1,9 +1,12 @@
+import ChatUI
 import SwiftUI
 import WatchtowerCore
 
 /// Spec §3.5: Enter send, Shift+Enter newline, Esc stop, ↑ in an empty field
-/// edits the last message, dictation, and the provider/model pill. Grows to
-/// `maxHeight` (~40% of the window). The first keystroke prewarms the session.
+/// edits the last message, dictation, the `@`/`/` picker keys, attachment chips
+/// and the provider/model pill — the Mac's composer over ChatUI's
+/// `ChatComposerModel` (its send waits for the engine's echo, CHAT-01), with the
+/// state line when the chat cannot be reached. Grows to `maxHeight`.
 struct ChatComposerView: View {
     @Bindable var chatVM: ChatViewModel
     let modelSuggestions: [String]
@@ -14,57 +17,70 @@ struct ChatComposerView: View {
     /// no caret of its own (spec §6.2).
     @State private var lastCursor = 0
 
+    private var composer: ChatComposerModel { chatVM.composer }
+    private var picker: ComposerPickerModel { chatVM.picker }
+
+    /// The draft, read through the shell: the composer model changes with the chat on screen.
+    private var draft: Binding<String> {
+        Binding(get: { chatVM.composer.draft }, set: { chatVM.composer.draft = $0 })
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            if chatVM.composer.isOpen {
-                ComposerPickerList(items: chatVM.composer.items, selectedIndex: chatVM.composer.selectedIndex) { index in
-                    if let edit = chatVM.composer.accept(index: index, text: chatVM.draft, cursor: lastCursor) {
-                        chatVM.draft = edit.text
+            if let line = composer.stateLine {
+                ChatStateLineView(content: line) { chatVM.conversation.performStateAction() }
+                    .padding(.horizontal, Spacing.large)
+            }
+            if picker.isOpen {
+                ComposerPickerList(items: picker.items, selectedIndex: picker.selectedIndex) { index in
+                    if let edit = picker.accept(index: index, text: composer.draft, cursor: lastCursor) {
+                        composer.draft = edit.text
                         lastCursor = edit.cursor
                     }
                 }
             }
-            if !chatVM.pendingQuotes.isEmpty {
+            if !composer.quotes.isEmpty {
                 QuoteBatchView(
-                    quotes: chatVM.pendingQuotes,
-                    onEditComment: { chatVM.updateQuoteComment(id: $0, comment: $1) },
-                    onRemove: { chatVM.removeQuote(id: $0) }
+                    quotes: composer.quotes,
+                    onEditComment: { id, comment in
+                        if let index = composer.quotes.firstIndex(where: { $0.id == id }) {
+                            composer.quotes[index].comment = comment
+                        }
+                    },
+                    onRemove: { id in composer.quotes.removeAll { $0.id == id } }
                 )
             }
             ComposerChipsRow(
-                mentions: chatVM.composer.mentions,
-                skill: chatVM.composer.skill,
-                onRemoveMention: { chatVM.composer.removeMention($0) },
-                onRemoveSkill: { chatVM.composer.clearSkill() }
+                mentions: picker.mentions,
+                skill: picker.skill,
+                onRemoveMention: { picker.removeMention($0) },
+                onRemoveSkill: { picker.clearSkill() }
             )
-            ChatComposerBar(status: chatVM.foreignTurn.line.map(ChatComposerStatus.elsewhere), input: ChatComposerField(
-                text: $chatVM.draft,
+            ChatComposerBar(status: (composer.notice ?? chatVM.conversation.notice).map(ChatComposerStatus.error), input: ChatComposerField(
+                text: draft,
                 isStreaming: chatVM.isBusy,
                 onSend: { Task { await chatVM.sendDraft() } },
-                // Nothing to stop while the turn's rows are being written.
-                onStop: chatVM.canStop ? { chatVM.stop() } : nil,
+                onStop: chatVM.conversation.canStop ? { chatVM.stop() } : nil,
                 placeholder: placeholder,
                 dictationTargetID: "chat.workspace",
                 maxHeight: maxHeight,
                 onEscape: { chatVM.stop() },
                 onArrowUpWhenEmpty: { chatVM.beginEditingLast() },
-                attachments: chatVM.composerAttachments.pending,
-                attachmentError: chatVM.composerAttachments.errorMessage,
+                attachments: composer.attachments.map(Self.chip),
+                attachmentError: chatVM.errorMessage,
                 onAttachFiles: { chatVM.attachFiles($0) },
                 onPasteData: { await chatVM.attachPasted($0, name: $1) },
-                onRemoveAttachment: { chatVM.composerAttachments.remove(id: $0) },
-                attachmentProgress: AttachmentProgress(importing: chatVM.composerAttachments.importing,
-                                                       removing: chatVM.composerAttachments.removing,
-                                                       sendWaits: chatVM.isWaitingForAttachments),
+                onRemoveAttachment: { id in Task { await composer.removeAttachment(id) } },
                 attachUnavailableReason: chatVM.attachUnavailableReason,
                 pdfUnavailableReason: chatVM.pdfUnavailableReason,
                 onCursorChange: { text, cursor in
                     lastCursor = cursor
-                    chatVM.composer.update(text: text, cursor: cursor)
+                    picker.update(text: text, cursor: cursor)
                 },
-                onPickerKey: { key, text, cursor in chatVM.composer.handle(key, text: text, cursor: cursor) },
-                hasPendingContent: !chatVM.pendingQuotes.isEmpty,
-                focusRequest: chatVM.composerFocusRequest
+                onPickerKey: { key, text, cursor in picker.handle(key, text: text, cursor: cursor) },
+                hasPendingContent: !composer.quotes.isEmpty,
+                focusRequest: chatVM.composerFocusRequest,
+                sendBlocked: chatVM.conversation.reachability != .connected || chatVM.conversation.isGone
             )) {
                 routingState
                 modelPill.padding(.horizontal, 16).padding(.bottom, 6)
@@ -77,9 +93,12 @@ struct ChatComposerView: View {
         .onChange(of: chatVM.isBusy) { _, busy in
             if !busy { Task { await chatVM.refreshRoutingStatus() } }
         }
-        .onChange(of: chatVM.draft) { old, new in
-            if old.isEmpty, !new.isEmpty { Task { await chatVM.draftStarted() } }
-        }
+    }
+
+    /// A composer attachment as the field's chip shows it (name only: the engine stored the file).
+    private static func chip(_ attachment: ChatComposerAttachment) -> ChatAttachment {
+        ChatAttachment(id: attachment.id, conversationID: nil, projectID: nil, messageID: nil, name: attachment.name,
+                       mime: "", size: 0, path: "", sha256: "", createdAt: 0)
     }
 
     @ViewBuilder private var routingState: some View {
@@ -104,7 +123,7 @@ struct ChatComposerView: View {
 
     private func routingAction(for preview: ProviderFallbackPreview) -> (() -> Void)? {
         guard preview.state == .recovered else { return nil }
-        return { Task { await chatVM.useAutomaticRouting() } }
+        return { chatVM.requestAutomaticRouting() }
     }
 
     private var modelPill: some View {
@@ -113,12 +132,10 @@ struct ChatComposerView: View {
             model: chatVM.selectedModel,
             suggestions: modelSuggestions,
             onSelectProvider: { chatVM.switchProvider($0) },
-            onSelectModel: { chatVM.selectedModel = $0 },
+            onSelectModel: { chatVM.selectModel($0) },
             automatic: chatVM.automaticRouting,
             onSelectAutomatic: chatVM.requestAutomaticRouting
         )
-        // Also while a turn's end is written (board #670): a pick then would
-        // close the session under it.
         .disabled(chatVM.isBusy)
     }
 }

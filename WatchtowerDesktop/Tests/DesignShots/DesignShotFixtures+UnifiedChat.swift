@@ -1,4 +1,6 @@
 import AppKit
+import ChatUI
+import ChatWire
 import DesignKit
 import GRDB
 import SwiftUI
@@ -7,10 +9,10 @@ import XCTest
 import WatchtowerCore
 import WatchtowerTestSupport
 
-/// The unified chat's new states (spec 2026-11-16 §10) as static mocks, and
-/// "before" baselines of the real views the later tasks replace. The mock
-/// names are the ones T8, T9 and T12 switch to the real view; the baselines
-/// are compared with the real views after T12. Synthetic data only.
+/// The unified chat's new states (spec 2026-11-16 §10) — on the Mac's real
+/// views since T8: the shared feed and the Mac composer over ChatUI's models,
+/// with the state the client reports — and "before" baselines of the
+/// embedded surfaces T12 replaces. Synthetic data only.
 @MainActor
 enum UnifiedChatShotFixtures {
     /// The exact UI copy of the plan's Global Constraints.
@@ -26,24 +28,20 @@ enum UnifiedChatShotFixtures {
 
     private static var engines: [EmbeddedChatEngine] = []
     private static var poolPaths: [String] = []
+    private static var chats: [ChatViewModel] = []
 
     static func cleanUp() {
         engines = []
+        chats = []
         poolPaths.forEach(TestDatabase.cleanup(path:))
         poolPaths = []
     }
 
     static var shots: [DesignShot] {
         [
-            DesignShot(name: "chat-daemon-starting", size: NSSize(width: 560, height: 360)) {
-                unreachable(line: Copy.starting, action: nil)
-            },
-            DesignShot(name: "chat-daemon-unavailable", size: NSSize(width: 560, height: 360)) {
-                unreachable(line: Copy.unavailable, action: Copy.retry)
-            },
-            DesignShot(name: "chat-daemon-stopped", size: NSSize(width: 560, height: 360)) {
-                unreachable(line: Copy.stopped, action: Copy.start)
-            },
+            DesignShot(name: "chat-daemon-starting", size: NSSize(width: 560, height: 360)) { unreachable(.starting) },
+            DesignShot(name: "chat-daemon-unavailable", size: NSSize(width: 560, height: 360)) { unreachable(.unavailable) },
+            DesignShot(name: "chat-daemon-stopped", size: NSSize(width: 560, height: 360)) { unreachable(.stoppedOnPurpose) },
             DesignShot(name: "chat-part-fallback", size: NSSize(width: 560, height: 200)) { fallbackCard() },
             DesignShot(name: "chat-remote-turn-live", size: NSSize(width: 560, height: 320)) { remoteTurnLive() },
             DesignShot(name: "embedded-chat-target", size: NSSize(width: 460, height: 460)) {
@@ -59,72 +57,74 @@ enum UnifiedChatShotFixtures {
         ]
     }
 
-    // MARK: - Mocks (§10 sketches)
+    // MARK: - The Mac's chat on ChatUI (§10)
 
-    /// "Mac, chat unreachable": the feed as last loaded, a state line (and its
-    /// action), and the composer with the draft kept and Send off.
-    private static func unreachable(line: String, action: String?) -> AnyView {
-        AnyView(VStack(alignment: .leading, spacing: Spacing.medium) {
-            Text("Q3 roadmap summary").font(.headline)
-            UserMessageBubble(text: "Summarise the Q3 roadmap threads")
-            Text("The roadmap has three threads: onboarding, the phone chat and the background service.")
-                .frame(maxWidth: .infinity, alignment: .leading)
-            Spacer(minLength: 0)
-            HStack(spacing: Spacing.compact) {
-                if action == nil { ProgressView().controlSize(.mini) }
-                Text(line).font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                if let action { Button(action) {}.buttonStyle(.kitSecondary) }
-            }
-            draftComposer
-        }
-        .padding(Spacing.large)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .detailBackground())
-    }
-
-    /// The composer while the chat cannot send: the draft stays, Send is off.
-    private static var draftComposer: some View {
-        HStack(alignment: .bottom, spacing: Spacing.medium) {
-            Text("Also compare it with the Q2 plan")
-                .padding(Spacing.medium)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .card()
-            Button("Send") {}.buttonStyle(.kitPrimary).disabled(true)
-        }
-    }
-
-    /// "Any client, unknown part kind": the fallback text and its one button.
-    private static func fallbackCard() -> AnyView {
-        AnyView(VStack(alignment: .leading, spacing: Spacing.medium) {
-            Text(Copy.fallback)
-            Button(Copy.openOnMac) {}.buttonStyle(.kitSecondary)
-        }
-        .padding(Spacing.large)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .card()
-        .padding(Spacing.large)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .detailBackground())
-    }
-
-    /// "Mac, phone-started turn, live": the owner's text, the streaming
-    /// answer and the composer's line with Stop.
-    private static func remoteTurnLive() -> AnyView {
-        AnyView(VStack(alignment: .leading, spacing: Spacing.medium) {
-            Text("Q3 roadmap summary").font(.headline)
-            UserMessageBubble(text: "Summarise the Q3 roadmap threads")
-            Text("The roadmap has three threads: onboarding, the phone chat")
-                .frame(maxWidth: .infinity, alignment: .leading)
-            Spacer(minLength: 0)
-            ChatComposerBar(
-                status: .elsewhere(ChatForeignTurnModel.answeringFromPhone),
-                input: ChatComposerField(text: .constant(""), isStreaming: true, onSend: {}, onStop: {})
+    /// The open chat: the shared feed and the Mac composer over a shell whose client never answers (the shot shows
+    /// the state it is given).
+    private static func chat(
+        messages: [ChatFeed.Message], lease: ChatFeed.Lease? = nil, reachability: ChatReachability, draft: String
+    ) -> AnyView {
+        do {
+            let (pool, path) = try TestDatabase.createPool()
+            poolPaths.append(path)
+            let vm = ChatViewModel(client: ShotChatClient(), dbPool: pool)
+            chats.append(vm)
+            let feed = ChatFeed(
+                conversation: ChatFeed.Conversation(id: 7, title: "Q3 roadmap summary", lease: lease),
+                messages: messages
             )
+            vm.select(conversationID: 7)
+            vm.conversation.stop()
+            vm.conversation.store.apply(.snapshot(feed))
+            vm.conversation.reachability = reachability
+            vm.composer.draft = draft
+            return AnyView(VStack(alignment: .leading, spacing: Spacing.medium) {
+                Text(feed.conversation.title).font(.headline)
+                ChatUI.ChatFeedView(messages: vm.messages,
+                                    context: vm.conversation.feedContext(composer: vm.composer, partActions: ChatPartActions()))
+                ChatComposerView(chatVM: vm, modelSuggestions: [], maxHeight: 120)
+            }
+            .padding(Spacing.large)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .macChatStyle(hooks: ChatMacArtifactHooks())
+            .detailBackground())
+        } catch {
+            return DesignShotFixtures.failure(error)
         }
-        .padding(Spacing.large)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .detailBackground())
+    }
+
+    private static let question = ChatFeed.Message(id: 1, role: "user", text: "Summarise the Q3 roadmap threads",
+                                                   createdAt: Date(timeIntervalSince1970: 1_794_000_000))
+
+    /// "Mac, chat unreachable": the feed as last loaded, the state line (and its action) from the client's
+    /// reachability, and the composer with the draft kept and Send off.
+    private static func unreachable(_ state: ChatReachability) -> AnyView {
+        chat(messages: [
+            question,
+            ChatFeed.Message(id: 2, role: "assistant",
+                             text: "The roadmap has three threads: onboarding, the phone chat and the background service.",
+                             createdAt: Date(timeIntervalSince1970: 1_794_000_000))
+        ], reachability: state, draft: "Also compare it with the Q2 plan")
+    }
+
+    /// "Any client, unknown part kind": the shared fallback view and its one button.
+    private static func fallbackCard() -> AnyView {
+        let fallback = ChatPartFallback(text: Copy.fallback,
+                                        actions: [ChatPartFallback.Action(label: Copy.openOnMac, action: "none")])
+        return AnyView(FallbackPartView(fallback: fallback, actions: ChatPartActions())
+            .padding(Spacing.large)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .macChatStyle(hooks: ChatMacArtifactHooks())
+            .detailBackground())
+    }
+
+    /// "Mac, phone-started turn, live": the engine's turn streams like a Mac one, with the normal Stop.
+    private static func remoteTurnLive() -> AnyView {
+        chat(messages: [
+            question,
+            ChatFeed.Message(id: 2, role: "assistant", text: "The roadmap has three threads: onboarding, the phone chat",
+                             status: "pending", createdAt: Date(timeIntervalSince1970: 1_794_000_000))
+        ], lease: ChatFeed.Lease(owner: "hub", turnID: "hub-turn"), reachability: .connected, draft: "")
     }
 
     // MARK: - Baselines of today's real views
@@ -203,4 +203,12 @@ enum UnifiedChatShotFixtures {
             return DesignShotFixtures.failure(error)
         }
     }
+}
+
+/// A client that never answers: the shots set the conversation's state themselves.
+private final class ShotChatClient: ChatClient, @unchecked Sendable {
+    func send(_ op: ChatOperation) async throws -> ChatEcho { .applied(.none) }
+    func feed(_ conversation: Int64) -> AsyncStream<ChatFeedUpdate> { AsyncStream { _ in } }
+    func list() -> AsyncStream<ChatListUpdate> { AsyncStream { _ in } }
+    var reachability: AsyncStream<ChatReachability> { AsyncStream { _ in } }
 }

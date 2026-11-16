@@ -182,7 +182,8 @@ final class FakeChatSocket: @unchecked Sendable {
             }
             var lines = [#"{"id":"\#(id)","ok":true,"result":{"subscription":"\#(name)"}}"#]
             if let conversation = (params["conversation_id"] as? NSNumber)?.int64Value {
-                lines.append(#"{"event":"snapshot","subscription":"\#(name)","conversation_id":\#(conversation),"snapshot":\#(feedJSON(conversation))}"#)
+                let feed = feedJSON(conversation)
+                lines.append(#"{"event":"snapshot","subscription":"\#(name)","conversation_id":\#(conversation),"snapshot":\#(feed)}"#)
             } else {
                 lines.append(#"{"event":"snapshot","subscription":"\#(name)","list":{"conversations":[],"projects":[],"models":[]}}"#)
             }
@@ -192,7 +193,8 @@ final class FakeChatSocket: @unchecked Sendable {
             if let code = result as? String {
                 return [#"{"id":"\#(id)","ok":false,"error":{"code":"\#(code)","message":"no"}}"#]
             }
-            let body = result.flatMap { try? JSONSerialization.data(withJSONObject: $0) }.map { String(decoding: $0, as: UTF8.self) } ?? "{}"
+            let data = result.flatMap { try? JSONSerialization.data(withJSONObject: $0) }
+            let body = data.flatMap { String(bytes: $0, encoding: .utf8) } ?? "{}"
             return [#"{"id":"\#(id)","ok":true,"result":\#(body)}"#]
         }
     }
@@ -445,32 +447,48 @@ final class SocketChatClientTests: XCTestCase {
         var states = client.reachability.makeAsyncIterator()
         _ = await waitFor(.connected, on: &states)
         let lines = (1...1_000).map { i in
-            #"{"event":"message_upsert","subscription":"s1","conversation_id":9,"message":{"id":\#(i % 50 + 2),"role":"assistant","status":"pending","text":"\#(String(repeating: "word ", count: 40))\#(i)","created_at":2}}"#
+            let text = String(repeating: "word ", count: 40) + String(i)
+            return #"{"event":"message_upsert","subscription":"s1","conversation_id":9,"#
+                + #""message":{"id":\#(i % 50 + 2),"role":"assistant","status":"pending","text":"\#(text)","created_at":2}}"#
         }
         let clock = ContinuousClock()
-
-        let direct = ChatFeedStore()
         let decoder = ChatWireCoder.makeDecoder()
-        let directTime = try clock.measure {
-            direct.apply(.snapshot(try decoder.decode(ChatFeed.self, from: Data(server.feedJSON(9).utf8))))
-            for line in lines {
-                let event = try decoder.decode(ChatSocketEvent.self, from: Data(line.utf8))
-                if let update = event.feedUpdate { direct.apply(update) }
+        let snapshot = try decoder.decode(ChatFeed.self, from: Data(server.feedJSON(9).utf8))
+
+        // The lowest of five rounds of each path: a busy machine slows a round, never speeds one up.
+        var directTime = Duration.seconds(3600)
+        var direct = ChatFeedStore()
+        for _ in 0..<5 {
+            let store = ChatFeedStore()
+            let elapsed = try clock.measure {
+                store.apply(.snapshot(snapshot))
+                for line in lines {
+                    let event = try decoder.decode(ChatSocketEvent.self, from: Data(line.utf8))
+                    if let update = event.feedUpdate { store.apply(update) }
+                }
             }
+            directTime = min(directTime, elapsed)
+            direct = store
         }
 
-        let viaSocket = ChatFeedStore()
         var feed = client.feed(9).makeAsyncIterator()
-        guard case .snapshot(let snapshot)? = await feed.next() else { return XCTFail("no snapshot") }
-        let start = clock.now
-        viaSocket.apply(.snapshot(snapshot))
-        server.push(lines.joined(separator: "\n"))
+        guard case .snapshot? = await feed.next() else { return XCTFail("no snapshot") }
+        var socketTime = Duration.seconds(3600)
+        var viaSocket = ChatFeedStore()
         var applied = 0
-        while applied < lines.count, let update = await feed.next() {
-            viaSocket.apply(update)
-            applied += 1
+        for _ in 0..<5 {
+            let store = ChatFeedStore()
+            let start = clock.now
+            store.apply(.snapshot(snapshot))
+            server.push(lines.joined(separator: "\n"))
+            applied = 0
+            while applied < lines.count, let update = await feed.next() {
+                store.apply(update)
+                applied += 1
+            }
+            socketTime = min(socketTime, clock.now - start)
+            viaSocket = store
         }
-        let socketTime = clock.now - start
 
         XCTAssertEqual(applied, lines.count)
         XCTAssertEqual(viaSocket.feed?.messages.map(\.text), direct.feed?.messages.map(\.text))

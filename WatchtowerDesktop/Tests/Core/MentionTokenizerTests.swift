@@ -1,3 +1,4 @@
+import ChatWire
 import XCTest
 @testable import WatchtowerCore
 import WatchtowerChatText
@@ -69,15 +70,20 @@ final class MentionTokenizerTests: XCTestCase {
         XCTAssertEqual(MentionCandidate(kind: .channel, ref: "1:C1", label: "#pay", detail: "").insertionText, "@#pay")
     }
 
+    /// `entity_search`'s hits: a project or space is pinned, not mentioned; an unknown kind is skipped; the
+    /// mention travels in `compose` with its kind and id.
     func testCandidateFromHitSkipsJiraProjects() {
-        XCTAssertNil(MentionCandidate(hit: ChatEntityHit(kind: .jiraProject, ref: "PAY", label: "PAY", detail: "")))
-        XCTAssertNil(MentionCandidate(hit: ChatEntityHit(kind: .confluenceSpace, ref: "ENG", label: "ENG", detail: "")))
+        XCTAssertNil(MentionCandidate(hit: ChatEntityHit(kind: "board", id: "1", label: "x")))
+        XCTAssertEqual(MentionCandidate(kind: .jira, ref: "PAY-1", label: "PAY-1", detail: "").composeMention,
+                       ChatCompose.Mention(kind: "jira", id: "PAY-1", label: "PAY-1"))
+        XCTAssertNil(MentionCandidate(hit: ChatEntityHit(kind: "jira_project", id: "PAY", label: "PAY")))
+        XCTAssertNil(MentionCandidate(hit: ChatEntityHit(kind: "confluence_space", id: "ENG", label: "ENG")))
         XCTAssertEqual(
-            MentionCandidate(hit: ChatEntityHit(kind: .jiraIssue, ref: "PAY-1", label: "PAY-1", detail: "x"))?.kind,
+            MentionCandidate(hit: ChatEntityHit(kind: "jira", id: "PAY-1", label: "PAY-1", detail: "x"))?.kind,
             .jira
         )
         XCTAssertEqual(
-            MentionCandidate(hit: ChatEntityHit(kind: .linearIssue, ref: "ENG-1", label: "ENG-1", detail: "x"))?.kind,
+            MentionCandidate(hit: ChatEntityHit(kind: "linear", id: "ENG-1", label: "ENG-1", detail: "x"))?.kind,
             .linear
         )
     }
@@ -90,7 +96,7 @@ final class MentionTokenizerTests: XCTestCase {
         XCTAssertEqual(direct.label, "Anna Ivanova Jane")
         XCTAssertFalse(direct.insertionText.contains("\n"))
 
-        let hit = ChatEntityHit(kind: .target, ref: "5", label: "Ship\nit", detail: "")
+        let hit = ChatEntityHit(kind: "target", id: "5", label: "Ship\nit")
         XCTAssertEqual(MentionCandidate(hit: hit)?.label, "Ship it")
     }
 

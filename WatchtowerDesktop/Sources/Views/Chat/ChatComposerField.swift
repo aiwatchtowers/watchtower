@@ -55,6 +55,8 @@ struct ChatComposerField: View {
     var autoFocus = false
     /// Each new value puts the keyboard in the field, caret at the end.
     var focusRequest: UUID?
+    /// Send is off whatever the field holds (the main chat cannot be reached, or the chat is gone); the text stays.
+    var sendBlocked = false
     @Environment(\.dictationCenter) private var dictationCenter
 
     var body: some View {
@@ -81,7 +83,8 @@ struct ChatComposerField: View {
             onPickerKey: onPickerKey,
             hasPendingContent: hasPendingContent,
             autoFocus: autoFocus,
-            focusRequest: focusRequest
+            focusRequest: focusRequest,
+            sendBlocked: sendBlocked
         )
     }
 }
@@ -119,6 +122,7 @@ struct ChatComposerFieldContent: View {
     var hasPendingContent = false
     var autoFocus = false
     var focusRequest: UUID?
+    var sendBlocked = false
     @State private var inputHeight: CGFloat = 22
     /// The text of a long paste the field offers to attach as a file
     /// instead; nil once acted on, or once the field no longer holds it.
@@ -355,7 +359,8 @@ struct ChatComposerFieldContent: View {
 
     /// A message may carry only attachments, or only pending quotes (no text).
     private var canSend: Bool {
-        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty || hasPendingContent
+        guard !sendBlocked else { return false }
+        return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty || hasPendingContent
     }
 
     private var buttonActive: Bool {

@@ -140,6 +140,7 @@ calls on it.
 - `internal/tools/workbenches_test.go::TestProj01_TargetReadsFollowTheSessionScope`
 - `WatchtowerDesktop/Tests/Core/WorkbenchTargetExclusionTests.swift::testProj01_HomeSummaryNeverReturnsAProjectTarget` (Home, 2026-10-15)
 - `WatchtowerDesktop/Tests/Core/HomeFeedQueriesTests.swift::testProj01_FeedNeverReturnsAProjectTarget` (Home feed, 2026-10-19)
+- `internal/chatengine/mac_guards_test.go::TestProj01_EntitySearchNeverOffersAProjectTarget` (the chat's `@` and project-source pickers, which search through the engine since unified chat T8, 2026-11-16; it replaces the Swift `testProj01_MentionPickerNeverOffersAProjectTarget`)
 
 **Locked since:** 2026-09-29
 

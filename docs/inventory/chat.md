@@ -47,15 +47,16 @@ Added guards: `TestChat01Go_OwnerRowBeforeTurn`, `TestChatstore_StopKeepsPartial
 
 **Amendment (2026-11-16, #1822 unified chat T1, owner approval ask #1371, spec `docs/superpowers/specs/2026-11-16-unified-chat-design.md` §9.2):** the Go chat engine (`internal/chatengine`, which absorbs the hub's `chatrun` runner) writes the owner row before the turn is sent, through the same Go turn store and its same order and `partial` rules; a refused turn (busy, invalid, conversation gone) writes nothing. A `chat_turn` may carry a `client_key`, stored on the row its start transaction inserts (`chat_messages.client_key`, unique per conversation, migration 00192); a repeated key is answered with the turn it already started, also after a daemon restart, so a send whose answer was lost is neither lost nor applied twice. The Go guards move to `chatengine`; the Swift guards stay until the Mac's chat moves onto the engine (plan T8), assertions kept. Added guards (`internal/chatengine/engine_test.go`): `TestChat01_RefusedTurnWritesNothing`, `TestChatengine_SecondTurnBusy`, `TestChatengine_RepeatedClientKeyAppliesOnce`, `TestChatengine_ClientKeySurvivesRestart`, `TestChatengine_SendAfterStopReplaysSavedText`, `TestChatengine_DeleteDuringTurnCancels`; `TestMigration00192_ClientKeyUniquePerConversation` (`internal/db`).
 
-**Guard:** `testChat01UserMessageIsPersistedBeforeTheTurnIsSent`,
-`testChat01NothingIsSentWhenTheMessageCannotBeSaved`,
-`testChat01PartialTextSurvivesStop`,
-`testChat01PartialTextSurvivesProcessDeathAndTheNextTurnResumes`,
-`testChat01RegenerateRowExistsUnderTheNewTurnIDWhenSent`,
-`testChat01EditRowsExistUnderTheNewTurnIDWhenSent`,
-`testChat01FailedSendKeepsTheOwnerMessageAnswered`,
-`testChat01LegacyUnansweredQuestionIsKeptBeforeTheNextTurn`
-(`WatchtowerDesktop/Tests/ChatViewModelTests.swift`)
+**Amendment (2026-11-16, #1822 unified chat T8, owner approval ask #1371, spec §6.2, §9.2):** the Mac's chat runs on the engine over `chat.sock`: its Swift turn writer, lease and pool are gone, so every main-chat row is the engine's (the Go store's order and `partial` rules above). On the Mac the composer keeps its text until the engine's echo is `applied` (ChatUI's `ChatComposerModel`); a refused or failed send puts nothing on disk and the text stays. The Swift guards moved to Go and ChatUI with their assertions — table in the 2026-11-16 T8 changelog entry.
+
+**Guard:** `TestChat01Go_OwnerRowBeforeTurn`, `TestChat01_RefusedTurnWritesNothing`,
+`TestChat01_UnsavableOwnerRowSendsNothing`, `TestChat01_FailedSpawnLeavesOwnerMessageAnswered`,
+`TestChat01_RegenerateAndEditRowsBeforeTheTurnIsSent` (`internal/chatengine`);
+`TestChatstore_StopKeepsPartial`, `TestChatstore_ProcessDeathFinalizesPartial`,
+`TestChatstore_MatchesSwiftFixture` (`internal/chatstore`; its regenerate, edit and legacy-question cases);
+`testChat01DraftStaysUntilApplied`, `testRefusedSendRestoresDraft`, `testBusyEchoReturnsTextToComposer`,
+`testDroppedEchoResendsWithSameKeyNoDuplicate`
+(`WatchtowerChat/Tests/ChatUITests/ChatConversationModelTests.swift`)
 
 ## CHAT-02 — no silent tool activity
 
@@ -76,11 +77,10 @@ waiting step until it is approved, rejected or times out.
 
 **Guard:** `TestChat02_ToolCallNeverWipesText`
 (`internal/chat/claude_translate_test.go`);
-`testChat02ToolStepsArePersistedImmediately`
-(`WatchtowerDesktop/Tests/Core/ChatTurnDriverTests.swift`);
+`TestChat02Go_StepPersistedOnStart` (`internal/chatstore/store_test.go`);
 `TestChat02_GateDecisionsAreSteps` (`internal/chat/gate_test.go`);
-`testChat02WaitingStepIsVisibleUntilItEnds`
-(`WatchtowerDesktop/Tests/Core/ChatTurnDriverTests.swift`);
+`testChat02WaitingStepVisibleUntilEnd`
+(`WatchtowerChat/Tests/ChatUITests/ChatConversationModelTests.swift`);
 `TestTurnBackend_CodexToolCallsBecomeSteps`
 (`internal/chat/turn_backend_codex_test.go`);
 the transport contract suite's `two-messages`, `tool-ok` and
@@ -117,15 +117,11 @@ misbehaving child.
 
 **Amendment (2026-11-16, #1822 unified chat T10a, owner approval ask #1371, spec §7, §9.2):** a turn outlives a daemon restart (D23). The engine starts each `ai session` detached (its own session, `setsid`) with `--listen <workspace>/chatengine/sessions/<conversation>.sock` (temp fallback by the socket path rule), 0600 in a 0700 folder, peer-checked; the daemon's stop only detaches (`Engine.Detach`: flush, drop the connection, the lease kept) and the next engine reattaches and replays the turn — also a session still binding its socket, which is adopted once it listens and gets the turn resent from its stored rows. A detached session is bounded too: with no engine attached and no turn running it exits after the 10-minute idle TTL (`ListenIdleTTL`), its backend's child process group reaped as before. App quit, the data wipe, a purge and the owner's `watchtower sync stop` end every turn `partial` and reap every session through `chat_shutdown` (cancel, `close`, SIGTERM after 2 s, SIGKILL after 3 s more; the engine keeps taking new turns); with no daemon answering, `watchtower chat shutdown` does the same over the session sockets and group files. Added guards: `TestChat03_DetachedSessionBounded` (`internal/chat/listen_test.go`), `TestChatengine_ShutdownReapsSessions`, `TestChatShutdownCLI_ReapsWithoutEngine`, `TestChatengine_RestartMidTurnReattachesAndFinishes`, `TestChatengine_KilledMidTurnSweepsSessionLost` (`internal/chatengine`). No guard relaxed; `TestChatengine_DaemonStopLeavesPartialAndSweepReleases` keeps its assertions (it pins `Engine.Close`, which tests and the stdio mode still use).
 
-**Guard:** `testChat03NeverEvictsABusySessionQueuesInstead`,
-`testChat03DecisionNeverExceedsTheBound`
-(`WatchtowerDesktop/Tests/Core/ChatSessionPolicyTests.swift`);
-`testChat03PoolNeverRunsMoreThanThreeSessions`,
-`testChat03BusySessionsAreNeverEvictedTheFourthWaits`,
-`testChat03RetiringABusySessionNeverLetsTheQueuedFourthOverlap`,
-`testChat03IdleSessionIsClosedByTheNextTickAfterTTL`,
-`testChat03CloseAllClosesEverySessionAndKeepsPartialText`
-(`WatchtowerDesktop/Tests/ChatSessionPoolTests.swift`);
+**Amendment (2026-11-16, #1822 unified chat T8):** the Desktop's own pool is gone; the engine's pool of 3 is the only one. Quitting asks the engine to end every chat turn (`chat_shutdown` through `SocketChatClient.shutdown()`) before the daemon stops; T10b adds the CLI fallback.
+
+**Guard:** `TestChat03Go_PoolBound`, `TestChatengine_IdleEvictedForNewTurn`, `TestChatengine_IdleSessionExpires`,
+`TestChatengine_ShutdownReapsSessions`, `TestChatengine_DaemonStopLeavesPartialAndSweepReleases`
+(`internal/chatengine`);
 `testChat03QuitClosesChatSessionsBeforeStoppingTheDaemon`
 (`WatchtowerDesktop/Tests/QuitCoordinatorTests.swift`);
 `TestChat03_CloseReapsStubbornChild`,
@@ -193,9 +189,6 @@ Extends QC-03's "secrets never on argv" to all chat content.
 (`internal/codex/client_test.go`);
 `TestChat04_ChatTitleArgvCarriesNoContent` (`cmd/chat_test.go`);
 `TestChat04_TerminalTitleArgvCarriesNoContent` (`cmd/terminal_test.go`);
-`testChat04SessionArgvNeverCarriesContent`,
-`testChat04TurnContentTravelsOnlyOnStdin`
-(`WatchtowerDesktop/Tests/ChatSessionClientTests.swift`);
 `TestChat04_EngineSessionArgvCarriesNoContent`,
 `TestChat04_ListenTurnContentOnlyOnSocket` (`internal/chatengine`)
 
@@ -271,8 +264,8 @@ child is never started without it.
 (`WatchtowerDesktop/Tests/Core/ArtifactChat05ScanTests.swift`);
 `TestChat05_ContractSaysArtifactsNeverSend`
 (`internal/chat/artifacts_contract_test.go`);
-`testArtifactCommentsReachTheAssistantOnlyAsTheOwnersMessage`
-(`WatchtowerDesktop/Tests/ChatViewModelTests.swift`);
+`TestChatengine_ArtifactCommentsMarkedSentInStartTx` (`internal/chatengine/ops_mac_test.go`) and
+`testArtifactCommentsGoAsTheOwnersTurn` (`WatchtowerChat/Tests/ChatUITests/ChatMacShellModelTests.swift`);
 `TestChat05_ConnectorWriteWaitsForApproval`,
 `TestChat05_PublishOnlyFromThePublishDir`,
 `TestChat05_DeadSessionNeverRunsAnApprovedCall`
@@ -367,12 +360,37 @@ new non-test function in `internal/` that mentions the chat tables must join
 providers, `testEveryGoSlackStepNameMarks` over every step name in
 `internal/slacklive/testdata/slack_step_names.json` — the names Go's real Claude and Codex
 translators give each connector tool, pinned by `TestLIVE01_StepNamesFixture` —, no mark without a Slack step, the first mark kept, keep refused, the panel's
-reason, and `testReaderList` over the Swift sources, which is file-level: a Swift file that mentions a chat table must be listed as checked or display-only), `testStepStartMarksWithoutFinalize`; `TestInstructionsRemember_LiveSlackRefusesText` (`cmd/instructions_test.go`, the `not_owner_text` refusal).
+reason, and `testReaderList` over the Swift sources, which is file-level: a Swift file that mentions a chat table must be listed as checked or display-only); since unified chat T8 the turn store's marks are the engine's, guarded by `TestLIVE01_GoStoreStepStartMarksWithoutFinalize`, `TestLIVE01_GoStoreEveryGoSlackStepNameMarks`, `TestLIVE01_GoStoreFinalizeLeavesUnmarkedWithoutSlackStep`, `TestLIVE01_GoStoreFirstMarkIsKept` (`internal/chatstore/live01_test.go`) and keep's refusal by `TestChatengine_ArtifactKeepWritesKnowledgeRow`; `TestInstructionsRemember_LiveSlackRefusesText` (`cmd/instructions_test.go`, the `not_owner_text` refusal).
 
 **Locked since:** 2026-11-14
 
 ## Changelog
 
+- 2026-11-16 (unified chat T8, board #1822, owner approval ask #1371; spec `docs/superpowers/specs/2026-11-16-unified-chat-design.md` §6.2, §9.2): the Mac's main chat moves onto the engine over `chat.sock` (`SocketChatClient`) and ChatUI's models; the Swift turn writer, its lease, the session pool and the history view model are deleted (D3), and the Mac's chat writes (conversations, projects, artifacts, comments, attachments) are engine operations. **No guard relaxed**: every Swift CHAT guard keeps its assertion in Go or ChatUI (ruling F11; 25 Swift guards named above, mapped below). New Go guards (tests only): `TestChat01_UnsavableOwnerRowSendsNothing`, `TestChat01_FailedSpawnLeavesOwnerMessageAnswered`, `TestChat01_RegenerateAndEditRowsBeforeTheTurnIsSent` (`internal/chatengine/mac_guards_test.go`), the LIVE-01 store guards (`internal/chatstore/live01_test.go`) and PROJ-01's `TestProj01_EntitySearchNeverOffersAProjectTarget` (the `@` picker searches through the engine). `chat_manage` gains `archive` (the Mac's Archive had no engine op). CHAT-05: the artifact panel's writes go through `ChatArtifactWriting` (`ChatArtifactWriter`, `artifact_manage` only); `ArtifactChat05ScanTests` is unchanged and passes. LIVE-01's `testReaderList`: `ChatArtifactQueries.swift` is display-only now (its keep went to the engine), the deleted files left its lists.
+
+  | Deleted Swift guard | New home |
+  |---|---|
+  | `testChat01UserMessageIsPersistedBeforeTheTurnIsSent` | `TestChat01Go_OwnerRowBeforeTurn` + `testChat01DraftStaysUntilApplied` |
+  | `testChat01NothingIsSentWhenTheMessageCannotBeSaved` | `TestChat01_UnsavableOwnerRowSendsNothing` + `testRefusedSendRestoresDraft` |
+  | `testChat01PartialTextSurvivesStop` | `TestChatstore_StopKeepsPartial` |
+  | `testChat01PartialTextSurvivesProcessDeathAndTheNextTurnResumes` | `TestChatstore_ProcessDeathFinalizesPartial` + `TestChatengine_SessionDeathFinalizesLost` (next turn replays on a new process) + `TestChatengine_KilledMidTurnSweepsSessionLost` + `TestChat04_ClaudeArgsNeverResume` |
+  | `testSendAfterAStopReplaysTheStoppedReplysSavedText` | `TestChatengine_SendAfterStopReplaysSavedText` |
+  | `testChat01RegenerateRowExistsUnderTheNewTurnIDWhenSent` | `TestChat01_RegenerateAndEditRowsBeforeTheTurnIsSent` + `TestChatstore_MatchesSwiftFixture` ("regenerate reuses the owner row…") |
+  | `testChat01EditRowsExistUnderTheNewTurnIDWhenSent` | `TestChat01_RegenerateAndEditRowsBeforeTheTurnIsSent` + `TestChatstore_MatchesSwiftFixture` ("edit writes a sibling owner row…") |
+  | `testChat01FailedSendKeepsTheOwnerMessageAnswered` | `TestChat01_FailedSpawnLeavesOwnerMessageAnswered` |
+  | `testChat01LegacyUnansweredQuestionIsKeptBeforeTheNextTurn` | `TestChatstore_MatchesSwiftFixture` ("a legacy unanswered owner question gets an empty reply first") |
+  | `testChat02ToolStepsArePersistedImmediately` | `TestChat02Go_StepPersistedOnStart` |
+  | `testChat02WaitingStepIsVisibleUntilItEnds` | `testChat02WaitingStepVisibleUntilEnd` + `TestChatstore_MatchesSwiftFixture` ("a tool_wait with no prior start…") |
+  | `testChat03NeverEvictsABusySessionQueuesInstead`, `testChat03DecisionNeverExceedsTheBound`, `testChat03PoolNeverRunsMoreThanThreeSessions`, `testChat03BusySessionsAreNeverEvictedTheFourthWaits`, `testChat03RetiringABusySessionNeverLetsTheQueuedFourthOverlap` | `TestChat03Go_PoolBound` (busy never cut, the 4th waits, the idle one closes first, never more than 3 alive) + `TestChatengine_IdleEvictedForNewTurn` |
+  | `testChat03IdleSessionIsClosedByTheNextTickAfterTTL` | `TestChatengine_IdleSessionExpires` |
+  | `testChat03CloseAllClosesEverySessionAndKeepsPartialText` | `TestChatengine_ShutdownReapsSessions` + `TestChatengine_DaemonStopLeavesPartialAndSweepReleases` |
+  | `testChat03QuitClosesChatSessionsBeforeStoppingTheDaemon` | kept (`QuitCoordinatorTests`, unchanged); the closure now calls `SocketChatClient.shutdown()` |
+  | `testChat04SessionArgvNeverCarriesContent` | `TestChat04_EngineSessionArgvCarriesNoContent` |
+  | `testChat04TurnContentTravelsOnlyOnStdin` | `TestChat04_ListenTurnContentOnlyOnSocket` |
+  | `testArtifactCommentsReachTheAssistantOnlyAsTheOwnersMessage` | `TestChatengine_ArtifactCommentsMarkedSentInStartTx` + `testArtifactCommentsGoAsTheOwnersTurn` + `ArtifactChat05ScanTests` (unchanged) |
+  | `testSendRefusedWhileHubHoldsLeaseKeepsDraft`, `testConcurrentClaimOneWins` | `TestChatengine_SecondTurnBusy` + `TestLease_ConcurrentClaimOneWins` + `testBusyEchoReturnsTextToComposer` |
+  | `testDriverStopsWhenConversationDeleted` | `TestChatengine_DeleteDuringTurnCancels` |
+  | LIVE-01 turn-store tests (`testFinalizeMarks…`, `testStepStartMarksWithoutFinalize`, `testEveryGoSlackStepNameMarks`, `testFirstMarkIsKept`, `testKeepRefusedForLiveConversation`) | `TestLIVE01_GoStore*` + `TestChatengine_ArtifactKeepWritesKnowledgeRow`; the panel's two tests stay in `LiveSlack01GuardTests` |
 - 2026-11-16 (unified chat T7, board #1822, owner approval ask #1371; spec `docs/superpowers/specs/2026-11-16-unified-chat-design.md` §6.1, §9.2, §14): **CHAT-06** gains its Swift guard `testChat06EveryFixtureKindIsRegistered` (`ChatUITests`) and is now Enforced on both sides. **CHAT-05** strengthened, not changed: the shared `ChatUI` package's fallback, artifact, published-link and html surfaces are scanned by `testChat05FallbackAndArtifactActionsOnlyOpenOrCopy` (the same forbidden list as `ArtifactChat05ScanTests`, plus `client.` and `ChatClient`), which also pins the fallback action shapes (only an http(s) `open_url`, a non-empty `chat_turn`, else nothing). `ArtifactChat05ScanTests` and `ChatSelectionQuoteScanTests` read `HTMLPreviewPolicy.swift`, `PublishedLink.swift` (now `WatchtowerChatText`), `MarkdownView.swift` and `ChatSelectionQuote.swift` (now `ChatUI/Platform/macOS`) at their new paths, assertions unchanged. CHAT-01 is held by the new `ChatUI` model tests too (`testChat01DraftStaysUntilApplied`, `testBusyEchoReturnsTextToComposer`, `testRefusedSendRestoresDraft`, `testDroppedEchoResendsWithSameKeyNoDuplicate`), CHAT-02 by `testChat02WaitingStepVisibleUntilEnd`; the Mac's Swift CHAT guards stay until T8 maps them. No guard relaxed. Fix round 1: the artifact action table and the html sandbox rules collapse into one copy each in `WatchtowerChatText` (ruling F20): `ArtifactActions` (moved from Core; the Mac's Gmail button and Slack resolver are parameters, its Core `slackTarget(meta:links:)` an extension) under the new viewer table `ChatArtifactActions` that ChatUI's viewer and the phone's sheet both draw, and the phone's `ArtifactHTMLPolicy` is gone — its page uses `HTMLPreviewPolicy.contentRules(allowFiles: false)`, `allowsNavigation(to:isMainFrame:page:)` and `removeWebRTC`, the rules the Mac's chat artifacts already had (same JSON, same navigation). `ArtifactChat05ScanTests` scans the moved files; `PhoneArtifactChat05ScanTests.testTheHTMLPolicyBlocksEveryRemoteLoad` and `ChatArtifactActionsTests` call the shared types with their assertions unchanged.
 - 2026-11-16 (unified chat T10a, board #1822, owner approval ask #1371; spec `docs/superpowers/specs/2026-11-16-unified-chat-design.md` §7, §9.2): **CHAT-03** amended (detached sessions, see its amendment), no guard relaxed. **CHAT-04**: note only, its Observable unchanged — "nothing on argv" holds for the detached session (`ai session --listen`): its argv carries the flags and the socket path only, and the turn's text and attachment paths travel in the `turn` command over the session socket (0600 in a 0700 folder, the peer checked as this team's watchtower CLI by its audit token read at accept, server-greets-first) instead of stdin; protocol v2 is unchanged. New Go guard `TestChat04_ListenTurnContentOnlyOnSocket` (the Go home of `testChat04TurnContentTravelsOnlyOnStdin` for the engine's sessions; the Swift guard stays until T8). The LIVE-01 reader list gains `chatengine/reattach.go:heldTurnOf` (ids only) and LLMUSAGE-01's exec list `chatengine.(*Engine).listenStart`; the LIVE-01 list also gains `chatstore/resend.go:Resend` (the owner's own turn text resent to its session). Off macOS the session socket accepts only this user's process running the session's own executable (`/proc/<pid>/exe`).
 - 2026-11-16 (unified chat T3, board #1822, owner approval ask #1371; spec `docs/superpowers/specs/2026-11-16-unified-chat-design.md` §5.3, §9.2): new contract **CHAT-06** (every part kind has a fallback, Go guard `TestCHAT06_EveryPartKindHasFallback`) and a **CHAT-05** amendment (fallback actions only open, copy or send a fixed owner text). The question parser moved from WatchtowerCore to `WatchtowerChatText` with a Go twin and one shared fixture; no guard relaxed.

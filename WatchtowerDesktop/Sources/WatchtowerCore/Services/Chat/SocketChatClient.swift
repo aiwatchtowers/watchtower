@@ -175,8 +175,13 @@ extension SocketChatClient {
         private let decoder = ChatWireCoder.makeDecoder()
         private var retryWaiter: CheckedContinuation<Void, Never>?
 
-        init(socketPath: String, markerPath: String, startDaemon: @escaping @Sendable () async -> Void,
-             clock: any ChatClientClock, partKinds: [String]) {
+        init(
+            socketPath: String,
+            markerPath: String,
+            startDaemon: @escaping @Sendable () async -> Void,
+            clock: any ChatClientClock,
+            partKinds: [String]
+        ) {
             self.socketPath = socketPath
             self.markerPath = markerPath
             self.startDaemon = startDaemon
@@ -209,24 +214,26 @@ extension SocketChatClient {
             connection = line
             var greeted = false
             var reachedEngine = false
-            for await data in line.lines {
-                if !greeted {
-                    guard Self.isReady(data) else { break }
-                    greeted = true
-                    sendHello()
-                    continue
-                }
-                if !connected, let answer = Answer(data), case .hello? = pending[answer.id] {
-                    pending[answer.id] = nil
-                    guard answer.ok else {
-                        if answer.errorCode == "forbidden" { forbidden = true }
-                        break
+            reading: for await batch in line.lines {
+                for data in batch {
+                    if !greeted {
+                        guard Self.isReady(data) else { break reading }
+                        greeted = true
+                        sendHello()
+                        continue
                     }
-                    reachedEngine = true
-                    becameConnected()
-                    continue
+                    if !connected, let answer = Answer(data), case .hello? = pending[answer.id] {
+                        pending[answer.id] = nil
+                        guard answer.ok else {
+                            if answer.errorCode == "forbidden" { forbidden = true }
+                            break reading
+                        }
+                        reachedEngine = true
+                        becameConnected()
+                        continue
+                    }
+                    handle(data)
                 }
-                handle(data)
             }
             line.shutdown()
             connection = nil
@@ -354,7 +361,7 @@ extension SocketChatClient {
             let id = newID()
             pending[id] = .hello
             let params = (try? JSONSerialization.data(withJSONObject: [
-                "protocol": 1, "client": "mac", "part_kinds": partKinds,
+                "protocol": 1, "client": "mac", "part_kinds": partKinds
             ])) ?? Data("{}".utf8)
             if !write(connection, id: id, op: "hello", params: params) { connection.shutdown() }
         }
@@ -508,7 +515,8 @@ final class SocketLine: @unchecked Sendable {
     /// A write the peer does not take within this long fails (a socket whose peer stopped reading).
     static let writeBound: Double = 5
     private let fd: Int32
-    let lines: AsyncStream<Data>
+    /// The lines of each read, in order (one hop per read, not per line).
+    let lines: AsyncStream<[Data]>
     private let lock = NSLock()
     private var isShut = false
     private var isClosed = false
@@ -535,13 +543,13 @@ final class SocketLine: @unchecked Sendable {
             throw ChatSocketDropped()
         }
         self.fd = fd
-        let (stream, continuation) = AsyncStream.makeStream(of: Data.self)
+        let (stream, continuation) = AsyncStream.makeStream(of: [Data].self)
         lines = stream
         Thread.detachNewThread { [self] in read(into: continuation) }
     }
 
     /// Reads lines until the socket ends, closes the descriptor, then finishes the stream.
-    private func read(into continuation: AsyncStream<Data>.Continuation) {
+    private func read(into continuation: AsyncStream<[Data]>.Continuation) {
         var buffer = Data()
         var chunk = [UInt8](repeating: 0, count: 64 * 1024)
         while true {
@@ -550,10 +558,12 @@ final class SocketLine: @unchecked Sendable {
             guard n > 0 else { break }
             buffer.append(contentsOf: chunk[0..<n])
             var start = buffer.startIndex
+            var batch: [Data] = []
             while let end = buffer[start...].firstIndex(of: UInt8(ascii: "\n")) {
-                if end > start { continuation.yield(Data(buffer[start..<end])) }
+                if end > start { batch.append(Data(buffer[start..<end])) }
                 start = buffer.index(after: end)
             }
+            if !batch.isEmpty { continuation.yield(batch) }
             if start != buffer.startIndex { buffer = Data(buffer[start...]) }
         }
         lock.lock()
