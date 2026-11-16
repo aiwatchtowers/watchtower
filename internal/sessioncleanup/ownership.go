@@ -36,6 +36,11 @@ type observed struct {
 	roots, ownRoots, branches, named map[string]bool
 	switchedTo, unknown              map[string]bool
 	ledgerBranches                   map[string][]string
+	// checkedOutOnly are the switchedTo a HEAD log itself showed (a
+	// candidate only checked out in a session's worktree), not a ledger
+	// branch left unproven: an apply's re-check lets them win over the
+	// plan's evidence.
+	checkedOutOnly map[string]bool
 	// evidence maps a branch §2a, §2b or §2c made the session's to the
 	// worktrees that showed it: an apply that removes such a worktree
 	// still knows whose the branch was (applier.ownedByRemoved).
@@ -54,7 +59,7 @@ func (o observed) own(branch, root string) {
 func observe(rows []db.SessionWorktree, targetBranches, declaredWorktrees, declaredBranches []string) observed {
 	o := observed{roots: map[string]bool{}, ownRoots: map[string]bool{}, branches: map[string]bool{},
 		named: map[string]bool{}, switchedTo: map[string]bool{}, unknown: map[string]bool{},
-		ledgerBranches: map[string][]string{}, evidence: map[string][]string{}}
+		checkedOutOnly: map[string]bool{}, ledgerBranches: map[string][]string{}, evidence: map[string][]string{}}
 	for _, r := range rows {
 		root := resolvePath(r.Root)
 		o.roots[root], o.ownRoots[root] = true, true

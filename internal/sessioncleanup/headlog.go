@@ -100,8 +100,27 @@ func headLogBranches(ctx context.Context, r *repoState, wt worktree) (named, swi
 	if len(created) == 0 {
 		return named, switchedTo, true, unknown, nil
 	}
+	used, unk := r.usedElsewhere(wt.Root, created)
+	unknown = unknown || unk
+	for c := range used {
+		delete(created, c)
+		switchedTo[c] = true
+	}
+	for c := range created {
+		named[c] = true
+	}
+	return named, switchedTo, true, unknown, nil
+}
+
+// usedElsewhere is the "another worktree used it" half of §2c: the
+// candidates of created that a listed worktree other than skip — the main
+// one's included — names in its HEAD log at or after their creation.
+// unknown is true when a log cannot be checked: its admin dir unknown, the
+// log missing or unreadable, or a line of it unparsable.
+func (r *repoState) usedElsewhere(skip string, created map[string]headEntry) (used map[string]bool, unknown bool) {
+	used = map[string]bool{}
 	for _, o := range r.worktrees {
-		if o.Root == wt.Root || o.Bare {
+		if o.Root == skip || o.Bare {
 			continue
 		}
 		var path string
@@ -120,15 +139,28 @@ func headLogBranches(ctx context.Context, r *repoState, wt worktree) (named, swi
 		}
 		for c, birth := range created {
 			if mentionedSince(log.entries, c, birth.at) {
-				delete(created, c)
-				switchedTo[c] = true
+				used[c] = true
 			}
 		}
 	}
-	for c := range created {
-		named[c] = true
+	return used, unknown
+}
+
+// recheckCreated re-runs §2c for branch name after the worktree it was
+// created in is gone, its HEAD log with it: the plan saw the creation
+// there, which stands in for that log only. Everything else is read now:
+// name's ref log must still open with its creation (unreadable → unknown,
+// none → not owned) and no listed worktree may name it since.
+func (r *repoState) recheckCreated(name string) (owned, unknown bool) {
+	birth, ok, err := branchCreation(r.commonDir, name)
+	switch {
+	case err != nil:
+		return false, true
+	case !ok:
+		return false, false
 	}
-	return named, switchedTo, true, unknown, nil
+	used, unk := r.usedElsewhere("", map[string]headEntry{name: birth})
+	return !used[name] && !unk, !used[name] && unk
 }
 
 // enteredAtBirth: an entry of entries has the new sha of the branch's

@@ -407,7 +407,7 @@ func (b *builder) loadHeadLogs(ctx context.Context) error {
 			named[c] = append(named[c], w.Root)
 		}
 		for c := range switched {
-			b.seen.switchedTo[c] = true
+			b.seen.switchedTo[c], b.seen.checkedOutOnly[c] = true, true
 		}
 	}
 	for c, roots := range b.seen.ledgerBranches {

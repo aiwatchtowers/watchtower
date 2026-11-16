@@ -538,11 +538,21 @@ func (a *applier) recheckBranch(ctx context.Context, it *Item) (string, bool) {
 		return "", false
 	}
 	// The worktree that showed the branch was the session's may be one this
-	// apply just removed, its HEAD log or record match gone with it: the
-	// plan's evidence stands, and every other catch still runs fresh.
-	if !b.seen.branches[it.Name] && a.ownedByRemoved(it.Name) {
-		b.seen.branches[it.Name] = true
-		delete(b.seen.unknown, it.Name)
+	// apply just removed, its HEAD log or record match gone with it. The
+	// plan's evidence stands in for that worktree only: a fresh
+	// not_this_session or created_unknown wins, and the rest of §2c — the
+	// ref log, every other worktree's HEAD log — is read again now.
+	// A ledger branch whose worktree this apply removed reads as unproven
+	// now; that is the removal, not news, so only a HEAD log's own verdict
+	// (checkedOutOnly) counts here.
+	if a.ownedByRemoved(it.Name) && !b.seen.branches[it.Name] && !b.seen.checkedOutOnly[it.Name] &&
+		!b.seen.unknown[it.Name] {
+		switch owned, unknown := b.repo.recheckCreated(it.Name); {
+		case owned:
+			b.seen.branches[it.Name] = true
+		case unknown:
+			b.seen.unknown[it.Name] = true
+		}
 	}
 	// Every worktree left now stays: B2 keeps a branch checked out in any.
 	b.checkedOutIn, b.checkedOutStaying = map[string]string{}, map[string]string{}

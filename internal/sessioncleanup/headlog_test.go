@@ -451,3 +451,65 @@ func TestLedgerBranchesOfAWorktreeWithoutHeadLogAreKept(t *testing.T) {
 	wantItem(t, p, "branch:feat/wt", ActionKeep, ReasonNotThisSession)
 	wantItem(t, p, "branch:feat/gone", ActionKeep, ReasonNotThisSession)
 }
+
+// afterRemove is the real git that runs then once, right after the first
+// `git worktree remove` it ran — between an apply's evaluation and its
+// branch deletes.
+type afterRemove struct {
+	SystemGit
+	then func()
+	done bool
+}
+
+func (g *afterRemove) RunGit(ctx context.Context, dir, bin string, args ...string) ([]byte, int, error) {
+	out, code, err := g.SystemGit.RunGit(ctx, dir, bin, args...)
+	if err == nil && !g.done && len(args) >= 2 && args[0] == "worktree" && args[1] == "remove" {
+		g.done = true
+		g.then()
+	}
+	return out, code, err
+}
+
+// The plan's evidence stands in only for the removed worktree's own HEAD
+// log: what happens elsewhere between the evaluation and the branch delete
+// is checked fresh, and a fresh not_this_session or created_unknown wins.
+func TestApplyRecheckOfHeadLogBranchRunsTheExclusionFresh(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		reason string
+		act    func(f *fixture, other string)
+	}{
+		{"another worktree switched to it and away", ReasonNotThisSession, func(f *fixture, other string) {
+			gitIn(f.t, other, "checkout", "-q", "feat/x")
+			gitIn(f.t, other, "checkout", "-q", "feat/other")
+		}},
+		{"the main folder switched to it and away", ReasonNotThisSession, func(f *fixture, _ string) {
+			gitIn(f.t, f.repo, "checkout", "-q", "feat/x")
+			gitIn(f.t, f.repo, "checkout", "-q", "main")
+		}},
+		{"another worktree's HEAD log became unreadable", ReasonCreatedUnknown, func(f *fixture, other string) {
+			unreadable(f.t, f.headLogPath(other))
+		}},
+		{"its ref log became unreadable", ReasonCreatedUnknown, func(f *fixture, _ string) {
+			unreadable(f.t, filepath.Join(f.repo, ".git", "logs", "refs", "heads", "feat", "x"))
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := newFixture(t)
+			root := f.pushedWork("wt", "feat/x")
+			f.record(root, "")
+			other := f.worktree("wt-other", "feat/other")
+
+			g := &afterRemove{then: func() { tc.act(f, other) }}
+			res := f.apply(Request{}, nil, func(d *Deps) { d.Git = g })
+			wantResultItem(t, res, "worktree:"+root, ActionRemove, "", true)
+			wantResultItem(t, res, "branch:feat/x", ActionKeep, tc.reason, false)
+			if !f.branchExists("feat/x") {
+				t.Fatal("the branch was deleted")
+			}
+		})
+	}
+}
