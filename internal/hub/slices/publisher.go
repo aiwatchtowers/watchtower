@@ -1361,6 +1361,7 @@ func errClass(err error) string {
 		{secure.ErrSignatureRequired, "no_signer"},
 		{errGrantID, "bad_device_id"},
 		{ErrNoKeys, "no_keys"},
+		{relay.ErrRelayInternal, "relay_internal"},
 		{transport.ErrUnavailable, "unavailable"},
 		{transport.ErrForbidden, "forbidden"},
 		{transport.ErrHubQuota, "hub_quota"},
@@ -1378,6 +1379,9 @@ func errClass(err error) string {
 		if errors.Is(err, c.err) {
 			return c.name
 		}
+	}
+	if c := relay.CodeClass(err); c != "" {
+		return c
 	}
 	return "error"
 }

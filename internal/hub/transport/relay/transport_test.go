@@ -382,6 +382,41 @@ func TestRelayTransport_ErrorMapping(t *testing.T) {
 	}
 }
 
+// TestRelayTransport_InternalErrorIsUnavailable (#1872): the relay answers
+// UNSPECIFIED "internal error" when its device object fails (the Worker's
+// catch around the op dispatch, a public op's catch too). That is the relay
+// not finishing the op, so it reads as transport.ErrUnavailable (a retry
+// later, a cycle-wide stop) and as ErrRelayInternal for the log class, with
+// the code kept. Any other UNSPECIFIED answer stays unclassified.
+func TestRelayTransport_InternalErrorIsUnavailable(t *testing.T) {
+	internal := &relayv1.Error{Code: relayv1.ErrorCode_ERROR_CODE_UNSPECIFIED, Message: "internal error"}
+	err := MapError(&client.Error{E: internal})
+	if !errors.Is(err, transport.ErrUnavailable) || !errors.Is(err, ErrRelayInternal) || client.Code(err) != relayv1.ErrorCode_ERROR_CODE_UNSPECIFIED {
+		t.Errorf("internal error: %v", err)
+	}
+	for _, msg := range []string{"invalid request", "not implemented", ""} {
+		e := MapError(&client.Error{E: &relayv1.Error{Code: relayv1.ErrorCode_ERROR_CODE_UNSPECIFIED, Message: msg}})
+		if errors.Is(e, transport.ErrUnavailable) || errors.Is(e, ErrRelayInternal) {
+			t.Errorf("UNSPECIFIED %q read as unavailable: %v", msg, e)
+		}
+	}
+	// Through the transport, on the three ops the hub failed on: a mailbox
+	// read, the readers and a save.
+	h := newHarness(t)
+	h.relay.FailNextWith("changes", internal)
+	if _, err := h.tr.Changes(t.Context(), h.data, 0); !errors.Is(err, transport.ErrUnavailable) {
+		t.Errorf("changes: %v", err)
+	}
+	h.relay.FailNextWith("set_hub_readers", internal)
+	if err := h.tr.SetHubReaders(t.Context(), []string{"p"}); !errors.Is(err, transport.ErrUnavailable) {
+		t.Errorf("set_hub_readers: %v", err)
+	}
+	h.relay.FailNextWith("save", internal)
+	if _, err := h.tr.Save(t.Context(), h.items(t, 0, 1)); !errors.Is(err, transport.ErrUnavailable) {
+		t.Errorf("save: %v", err)
+	}
+}
+
 func TestRelayTransport_ConnectRegistersSubscribesAndPulls(t *testing.T) {
 	h := newHarness(t)
 	h.relay.SetAccountState(&relayv1.AccountState{Phones: []*relayv1.SlotHolder{{PhoneDeviceId: "phone1", Paying: true}}})
@@ -677,5 +712,31 @@ func TestRelayTransport_DeviceIDMatchesIdentity(t *testing.T) {
 	}
 	if identity.RelayDeviceID(pub) != client.DeviceID(pub) {
 		t.Fatal("identity.RelayDeviceID differs from the relay client's DeviceID")
+	}
+}
+
+// TestCodeClass (#1872): a protocol error is named by its code for a log
+// line ("relay_<code>", never its message), so a code the transport has no
+// class for is told apart in the hub's log; anything else has none.
+func TestCodeClass(t *testing.T) {
+	pe := func(c relayv1.ErrorCode, msg string) error {
+		return MapError(&client.Error{E: &relayv1.Error{Code: c, Message: msg}})
+	}
+	cases := []struct {
+		err  error
+		want string
+	}{
+		{pe(relayv1.ErrorCode_ERROR_CODE_PAIRING_EXPIRED, ""), "relay_pairing_expired"},
+		{pe(relayv1.ErrorCode_ERROR_CODE_NOT_FOUND, "not found"), "relay_not_found"},
+		{pe(relayv1.ErrorCode_ERROR_CODE_UNSPECIFIED, "invalid request"), "relay_unspecified"},
+		{fmt.Errorf("slices: saving x: %w", pe(relayv1.ErrorCode_ERROR_CODE_CONFLICT, "")), "relay_conflict"},
+		{MapError(errors.New("dial tcp: refused")), ""},
+		{errors.New("plain"), ""},
+		{nil, ""},
+	}
+	for _, c := range cases {
+		if got := CodeClass(c.err); got != c.want {
+			t.Errorf("CodeClass(%v) = %q, want %q", c.err, got, c.want)
+		}
 	}
 }

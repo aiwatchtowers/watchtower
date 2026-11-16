@@ -614,3 +614,26 @@ func TestCloseGoingAwayWithoutFrame(t *testing.T) {
 		})
 	}
 }
+
+// TestNon200WithoutAnErrorIsNoAnswer (#1872): an HTTP error status whose body
+// decodes to a Response without an error (an empty 502/503 from the edge
+// decodes as an empty Response) is no answer, never a success: Do fails with
+// an error that is not a protocol error, which the transport maps to
+// unavailable. A 200 with the same body is no failure of the client's.
+func TestNon200WithoutAnErrorIsNoAnswer(t *testing.T) {
+	for _, status := range []int{http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusInternalServerError} {
+		s := newFakeServer(t)
+		s.op = func(w http.ResponseWriter, _ *relayv1.Request) bool { w.WriteHeader(status); return true }
+		c := newClient(t, s)
+		resp, err := c.Do(t.Context(), &relayv1.Request{Op: &relayv1.Request_RemoveSlot{RemoveSlot: &relayv1.RemoveMacSlot{}}})
+		var pe *client.Error
+		if err == nil || resp != nil || errors.As(err, &pe) {
+			t.Errorf("HTTP %d with an empty body: resp %v, err %v", status, resp, err)
+		}
+	}
+	s := newFakeServer(t)
+	s.op = func(w http.ResponseWriter, _ *relayv1.Request) bool { w.WriteHeader(http.StatusOK); return true }
+	if _, err := newClient(t, s).Do(t.Context(), &relayv1.Request{Op: &relayv1.Request_RemoveSlot{RemoveSlot: &relayv1.RemoveMacSlot{}}}); err != nil {
+		t.Errorf("HTTP 200 with an empty body: %v", err)
+	}
+}

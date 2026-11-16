@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"watchtower/internal/hub/transport"
@@ -25,14 +26,24 @@ var (
 	ErrAttestationFailed = fmt.Errorf("relay: attestation failed: %w", transport.ErrForbidden)
 	// ErrSlotLimit: the account's slots (or its replacements) are used up.
 	ErrSlotLimit = errors.New("relay: slot limit reached")
+	// ErrRelayInternal: the relay failed the op itself (UNSPECIFIED
+	// "internal error": its device object threw, #1872). It is
+	// transport.ErrUnavailable, a retry later; logs name it apart from an
+	// unreachable relay.
+	ErrRelayInternal = fmt.Errorf("relay: internal error: %w", transport.ErrUnavailable)
 )
+
+// internalErrorMessage is the relay's message for an op its device object
+// failed (http/op.ts, both catches: a 500 on an authenticated op, a 200 on a
+// public one such as login), the only signal it gives of its own failure.
+const internalErrorMessage = "internal error"
 
 // MapError maps an error of the relay client to the transport errors (RC §7),
 // keeping the client's error in the chain (client.Code still reads it). A
 // protocol error the transport has no class for comes back wrapped as is; a
 // failure to reach the relay (no answer, a dropped connection) is
-// transport.ErrUnavailable; a cancelled or expired context is returned
-// unchanged.
+// transport.ErrUnavailable, and so is the relay's own failure of the op
+// (ErrRelayInternal); a cancelled or expired context is returned unchanged.
 func MapError(err error) error {
 	if err == nil {
 		return nil
@@ -49,6 +60,9 @@ func MapError(err error) error {
 	}
 	if class := classOf(pe.E.GetCode()); class != nil {
 		return fmt.Errorf("%w: %w", class, err)
+	}
+	if pe.E.GetCode() == relayv1.ErrorCode_ERROR_CODE_UNSPECIFIED && pe.E.GetMessage() == internalErrorMessage {
+		return fmt.Errorf("%w: %w", ErrRelayInternal, err)
 	}
 	return fmt.Errorf("relay: %w", err)
 }
@@ -87,6 +101,18 @@ func classOf(code relayv1.ErrorCode) error {
 	default:
 		return nil
 	}
+}
+
+// CodeClass names the relay protocol error in err's chain by its code for a
+// log line ("relay_not_found"), never its message; "" when err carries none.
+// The hub's log classes fall back to it after their sentinels, so a code the
+// transport has no class for is still told apart (#1872).
+func CodeClass(err error) string {
+	var pe *client.Error
+	if !errors.As(err, &pe) {
+		return ""
+	}
+	return "relay_" + strings.ToLower(strings.TrimPrefix(pe.E.GetCode().String(), "ERROR_CODE_"))
 }
 
 // pushOffMessage is the relay's message for send_alert with no push provider

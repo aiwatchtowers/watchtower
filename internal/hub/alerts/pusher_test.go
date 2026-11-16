@@ -564,6 +564,24 @@ func TestUnavailableRetriesOnTheNextConnect(t *testing.T) {
 	}
 }
 
+// The relay failing send_alert itself (UNSPECIFIED "internal error", #1872)
+// is retried as UNAVAILABLE is, never settled failed: the op did not run.
+func TestRelayInternalErrorRetried(t *testing.T) {
+	r := newRig(t, "phone-a")
+	r.send.answer("relay-phone-a", relayErr(relayv1.ErrorCode_ERROR_CODE_UNSPECIFIED, "internal error", nil), nil)
+	r.start()
+	r.enqueue("ask-1")
+	r.call()
+	if d := r.wait(); d != unavailableRetry {
+		t.Fatalf("wait %v; want %v", d, unavailableRetry)
+	}
+	r.p.Reconnected()
+	r.call()
+	if s := r.next(); s.outcome != state.AlertAccepted {
+		t.Fatalf("settled %v", s)
+	}
+}
+
 func TestRelayUnavailableRetriedAfterItsWait(t *testing.T) {
 	r := newRig(t, "phone-a")
 	r.send.answer("relay-phone-a", relayErr(relayv1.ErrorCode_ERROR_CODE_UNAVAILABLE, "", nil), nil)

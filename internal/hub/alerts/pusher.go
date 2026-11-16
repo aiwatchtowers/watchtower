@@ -690,6 +690,7 @@ func errClass(err error) string {
 	}{
 		{secure.ErrAlertTooLarge, "too_large"},
 		{secure.ErrNameMismatch, "key_mismatch"},
+		{relay.ErrRelayInternal, "relay_internal"},
 		{transport.ErrUnavailable, "unavailable"},
 		{transport.ErrForbidden, "forbidden"},
 		{transport.ErrEntitlementInactive, "entitlement_inactive"},
@@ -700,6 +701,9 @@ func errClass(err error) string {
 		if errors.Is(err, c.err) {
 			return c.name
 		}
+	}
+	if c := relay.CodeClass(err); c != "" {
+		return c
 	}
 	return "error"
 }
