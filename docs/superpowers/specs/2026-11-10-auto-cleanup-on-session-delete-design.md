@@ -50,7 +50,7 @@ Every Desktop session delete (✕, ⌘⌫ and the dialog) goes through `Workbenc
 
 Ownership comes from facts that Claude Code and git write themselves. Nothing parses the commands an agent ran (ask #1244: the owner rejected command parsing). Three new sources feed the `observed` set of `internal/sessioncleanup` (`observe`, `ownership.go`). Every catch and birth rule applies to them as to a ledger row: born after the session started, merged or pushed, clean, and not in use. Sources 2a and 2b read Claude Code's own session files, so they need the row's agent kind to have that session capability (`sessionagent` caps, `ClaudeSessionFiles` — the gate's `ScratchpadLanes` renamed; Claude yes, Codex no); a kind without it adopts nothing from them. Source 2c reads only git, so it works for every agent kind, Codex included.
 
-**The row's agent sessions.** Sources 2a and 2b start from the row's Claude session uuids (`terminal_session_agent_sessions`, migration 00127, every id the row has had). A uuid counts only when **no other `terminal_sessions` row has it** — in its history or its current `claude_session_id` — and no deleted row ever had it (migration 00189 `agent_session_tombstones`, written by a `BEFORE DELETE` trigger). A uuid shared by two rows (a conversation resumed in another tab) adopts nothing for either of them, which is fail-closed. Each counted uuid has the moment this row acquired it.
+**The row's agent sessions.** Sources 2a and 2b start from the row's Claude session uuids (`terminal_session_agent_sessions`, migration 00127, every id the row has had). A uuid counts only when **no other `terminal_sessions` row has it** — in its history or its current `claude_session_id` — and no deleted row ever had it (migration 00191 `agent_session_tombstones`, written by a `BEFORE DELETE` trigger). A uuid shared by two rows (a conversation resumed in another tab) adopts nothing for either of them, which is fail-closed. Each counted uuid has the moment this row acquired it.
 
 ### 2a. Subagent worktrees (Claude Code `isolation: worktree`)
 
@@ -159,9 +159,9 @@ A Go guard test (`TestProj17_DeletingRowsLeaveEveryList`) lists every `FROM term
 
 ## 6. Schema
 
-Two migrations, numbered after main's last one when the branch merges (main took 00186 and 00187 while this branch was open; at the time of writing they are 00188 and 00189):
-- 00188: `terminal_sessions.delete_requested_at TEXT` (NULL = not deleting). The `source`/`kind` columns of `terminal_session_worktrees` that the command parsing needed are removed from this migration before it ships, so the ledger stays as it is on main: `cwd` sightings only, cap 64.
-- 00189: `agent_session_tombstones` with its `BEFORE DELETE` trigger (§2).
+Two migrations, numbered after main's last one when the branch merges (main took 00186–00189 while this branch was open; at the time of writing they are 00190 and 00191):
+- 00190: `terminal_sessions.delete_requested_at TEXT` (NULL = not deleting). The `source`/`kind` columns of `terminal_session_worktrees` that the command parsing needed are removed from this migration before it ships, so the ledger stays as it is on main: `cwd` sightings only, cap 64.
+- 00191: `agent_session_tombstones` with its `BEFORE DELETE` trigger (§2).
 
 **Editing an unshipped migration in place.** goose never re-runs an applied version, so editing or renumbering a migration is safe only while no kept database has applied the branch's version. That holds here: the branch never reached main or a release, tests build each database fresh, and agents never run a branch CLI on the live install (repo rule). Checked read-only on the owner's install while writing this: it stands at main's version, without `delete_requested_at` or `source`/`kind`. The plan repeats that read-only check (`goose_db_version` and the columns) as a gate step before the merge; a database that did apply a branch version is a throwaway test copy and is recreated, never migrated by hand.
 
@@ -209,7 +209,7 @@ There is no empty state: a workbench with no deletes looks as today.
 - Automation session steps filter deleting rows instead of treating them as lookups by id (§4) — approved by the owner in the plan review, asks #1223/#1227.
 - Implementation decisions (agent's call, all fail-closed):
   - The branch checked out in an adopted scratchpad worktree is adopted too. Every branch catch still applies: born after the uuid was acquired, merged or pushed, not checked out elsewhere.
-  - A scratchpad lane is adopted only when it was born after this row acquired the uuid. A uuid ever held by a deleted row is treated as shared, using migration 00189 `agent_session_tombstones`, written by a `BEFORE DELETE` trigger on `terminal_sessions`.
+  - A scratchpad lane is adopted only when it was born after this row acquired the uuid. A uuid ever held by a deleted row is treated as shared, using migration 00191 `agent_session_tombstones`, written by a `BEFORE DELETE` trigger on `terminal_sessions`.
   - The deleted row is not "a session in it" of its own worktree unless its terminal is live (§3) — after the final review's blocker.
   - A HEAD-log branch also switched to by another worktree is not the session's (§2c) — after the spec review of ask #1249.
   - Source 2c works for every agent kind; only 2a/2b need the Claude session-files capability (§2) — ask #1249 review.
