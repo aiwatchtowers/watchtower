@@ -24,15 +24,19 @@ import (
 )
 
 // watchmanBacktestGen answers the profile with one rule and every decision
-// with "allow".
+// as the owner did: "deny" for an rm -rf, else "allow".
 type watchmanBacktestGen struct{ calls int }
 
-func (g *watchmanBacktestGen) Generate(ctx context.Context, _, _, _ string) (string, *digest.Usage, string, error) {
+func (g *watchmanBacktestGen) Generate(ctx context.Context, _, user, _ string) (string, *digest.Usage, string, error) {
 	g.calls++
 	if src, _ := digest.SourceFromContext(ctx); src == prompts.WatchmanProfile {
 		return `{"rules":["Allows reads in the repository"]}`, &digest.Usage{}, "", nil
 	}
-	return `{"choice":"allow","rationale":"r","precedent_ids":[],"confidence":"high","category":"permission","importance":"low"}`,
+	choice := "allow"
+	if strings.Contains(user, "rm -rf") {
+		choice = "deny"
+	}
+	return `{"choice":"` + choice + `","rationale":"r","precedent_ids":[],"confidence":"high","category":"permission","importance":"low"}`,
 		&digest.Usage{}, "", nil
 }
 
@@ -48,12 +52,18 @@ func watchmanBacktestFixture(t *testing.T) (int64, *watchmanBacktestGen, string)
 	require.NoError(t, err)
 	var ps []db.WatchmanPrecedent
 	for i := 0; i < watchman.HiddenPerCategory; i++ {
+		situation, choice := "Tool: Bash go test "+strconv.Itoa(i), "allow"
+		if i%3 == 0 { // a third denied: the base rate is 2/3
+			situation, choice = "Tool: Bash rm -rf build"+strconv.Itoa(i), "deny"
+		}
 		ps = append(ps, db.WatchmanPrecedent{WorkbenchID: wb, Source: "permission", SourceKey: fmt.Sprint(i + 1),
-			Category: "permission", Situation: "Tool: Bash go test " + strconv.Itoa(i), Choice: "allow",
+			Category: "permission", Situation: situation, Choice: choice,
 			DecidedAt: time.Date(2026, 10, 1, i, 0, 0, 0, time.UTC), Weight: 1})
 	}
 	require.NoError(t, d.UpsertWatchmanPrecedents(tx, ps))
 	require.NoError(t, tx.Commit())
+	require.NoError(t, d.EnableWatchmanWorkbench(wb, time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), 30))
+	require.NoError(t, d.MarkWatchmanLearned(wb, time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC)))
 	gen := &watchmanBacktestGen{}
 	prev := watchmanGeneratorFactory
 	watchmanGeneratorFactory = func(*config.Config) digest.Generator { return gen }
@@ -64,7 +74,7 @@ func watchmanBacktestFixture(t *testing.T) (int64, *watchmanBacktestGen, string)
 func runWatchmanBacktestCmd(t *testing.T, wb int64, extra ...string) (string, error) {
 	t.Helper()
 	reset := func() {
-		watchmanBacktestFlagWorkbench, watchmanBacktestFlagJSON = 0, false
+		watchmanBacktestFlagWorkbench, watchmanBacktestFlagJSON, watchmanBacktestFlagForce = 0, false, false
 		rootCmd.SetArgs(nil)
 	}
 	t.Cleanup(reset)
@@ -91,7 +101,7 @@ func TestWatchmanBacktest_JSONKeysPinned(t *testing.T) {
 	for k := range raw.Categories[0] {
 		keys = append(keys, k)
 	}
-	assert.ElementsMatch(t, []string{"category", "total", "agree", "wrong_high", "cost_usd", "status"}, keys)
+	assert.ElementsMatch(t, []string{"category", "total", "agree", "wrong_high", "cost_usd", "baseline", "status"}, keys)
 	var r watchmanBacktestJSON
 	require.NoError(t, json.Unmarshal([]byte(out), &r))
 	assert.True(t, r.OK)
@@ -101,6 +111,8 @@ func TestWatchmanBacktest_JSONKeysPinned(t *testing.T) {
 	assert.Equal(t, "stop", r.Verdict, "one strong category is not go")
 	for _, c := range r.Categories {
 		if c.Category == "permission" {
+			assert.InDelta(t, 2.0/3, c.Baseline, 1e-9)
+			c.Baseline = 0
 			assert.Equal(t, watchmanBacktestRowJSON{Category: "permission", Total: 30, Agree: 30, Status: "strong"}, c)
 		} else {
 			assert.Equal(t, "not_measured", c.Status, c.Category)
@@ -112,7 +124,7 @@ func TestWatchmanBacktest_JSONKeysPinned(t *testing.T) {
 
 	out, err = runWatchmanBacktestCmd(t, wb)
 	require.NoError(t, err)
-	assert.Contains(t, out, "permission   strong: 30 of 30 agree, 0 wrong while sure (~$0.00)")
+	assert.Contains(t, out, "permission   strong: 30 of 30 agree (base rate 67 %), 0 wrong while sure (~$0.00)")
 	assert.Contains(t, out, "Review approvals, hunk undos, merges and your own rewrites are not measured in phase 1")
 	assert.Contains(t, out, "review_code is measured on your review comments only")
 	assert.Contains(t, out, "Verdict: stop (cost ~$0.00, an estimate")
@@ -163,4 +175,21 @@ func TestWatchmanBacktestArgs_PassWorkspaceAndConfig(t *testing.T) {
 	assert.Equal(t, []string{"watchman", "backtest", "--workbench", "7", "--workspace", "acme", "--config", "/etc/wt.yaml"},
 		watchmanBacktestArgs(7, "acme", "/etc/wt.yaml"))
 	assert.Equal(t, []string{"watchman", "backtest", "--workbench", "7"}, watchmanBacktestArgs(7, "", ""))
+}
+
+func TestWatchmanBacktest_RefusedUntilLearned(t *testing.T) {
+	wb, gen, _ := watchmanBacktestFixture(t)
+	var path string
+	d := openAgentsTestMain(t, &path)
+	_, err := d.Exec(`UPDATE watchman_workbenches SET learned_through = NULL WHERE workbench_id = ?`, wb)
+	require.NoError(t, err)
+	_, err = runWatchmanBacktestCmd(t, wb, "--json")
+	require.ErrorContains(t, err, "has not finished learning")
+	require.ErrorContains(t, err, "--force")
+	assert.Zero(t, gen.calls)
+
+	out, err := runWatchmanBacktestCmd(t, wb, "--json", "--force")
+	require.NoError(t, err)
+	assert.Contains(t, out, `"status": "done"`)
+	assert.Positive(t, gen.calls)
 }

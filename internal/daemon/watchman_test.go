@@ -157,7 +157,23 @@ func enabledWatchmanWorkbench(t *testing.T, database *db.DB, name string) int64 
 	wb, err := database.CreateWorkbench(name, t.TempDir())
 	require.NoError(t, err)
 	require.NoError(t, database.EnableWatchmanWorkbench(wb, time.Now(), 0))
+	require.NoError(t, database.MarkWatchmanLearned(wb, time.Now()))
 	return wb
+}
+
+// A workbench still learning its history is not backtested.
+func TestPhaseWatchmanBacktest_SkipsHalfLearned(t *testing.T) {
+	d, database, _ := newBackfillDaemon(t)
+	stubWatchman(t)
+	launched := stubBacktestLaunch(d)
+	learning, err := database.CreateWorkbench("acme-learning", t.TempDir())
+	require.NoError(t, err)
+	require.NoError(t, database.EnableWatchmanWorkbench(learning, time.Now(), 0))
+	learned := enabledWatchmanWorkbench(t, database, "acme")
+	d.phaseWatchmanBacktest(context.Background())
+	d.phaseWatchmanBacktest(context.Background())
+	assert.Equal(t, []int64{learned}, *launched)
+	assert.True(t, readUnixStamp(d.watchmanBacktestLaunchedPath(learning)).IsZero(), "nothing stamped for the learning one")
 }
 
 // The weekly phase never runs a backtest in-process: it launches one

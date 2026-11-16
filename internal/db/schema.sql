@@ -3874,7 +3874,7 @@ CREATE TABLE IF NOT EXISTS watchman_precedents (
     owner_words  TEXT NOT NULL DEFAULT '',
     decided_at   TEXT NOT NULL,
     weight       REAL NOT NULL DEFAULT 1,
-    UNIQUE (source, source_key)
+    UNIQUE (workbench_id, source, source_key)
 );
 CREATE INDEX IF NOT EXISTS idx_watchman_precedents_wb ON watchman_precedents(workbench_id, category, decided_at);
 
@@ -3933,6 +3933,7 @@ CREATE TABLE IF NOT EXISTS watchman_backtest_rows (
     agree       INTEGER NOT NULL DEFAULT 0,
     wrong_high  INTEGER NOT NULL DEFAULT 0,
     cost_usd    REAL NOT NULL DEFAULT 0,
+    baseline    REAL NOT NULL DEFAULT 0,  -- share of the most common owner choice among the hidden items
     status      TEXT NOT NULL CHECK (status IN ('strong','weak','not_measured')),
     PRIMARY KEY (backtest_id, category)
 );
@@ -3940,8 +3941,9 @@ CREATE TABLE IF NOT EXISTS watchman_backtest_rows (
 -- Decisions a watchman source offered that the learner did not store (no
 -- category); a source's lookback does not offer them again.
 CREATE TABLE IF NOT EXISTS watchman_skipped_keys (
-    source     TEXT NOT NULL,
-    source_key TEXT NOT NULL,
-    skipped_at TEXT NOT NULL,
-    PRIMARY KEY (source, source_key)
+    workbench_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    source       TEXT NOT NULL,
+    source_key   TEXT NOT NULL,
+    skipped_at   TEXT NOT NULL,
+    PRIMARY KEY (workbench_id, source, source_key)
 );

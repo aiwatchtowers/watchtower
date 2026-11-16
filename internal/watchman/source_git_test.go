@@ -25,7 +25,21 @@ func newTestRepo(t *testing.T) *testRepo {
 	t.Helper()
 	r := &testRepo{t: t, dir: t.TempDir()}
 	r.git(gitT0, "init", "-q", "-b", "main")
+	// The owner is the folder's user.email (not the machine's global one).
+	r.git(gitT0, "config", "user.email", "owner@example.com")
 	return r
+}
+
+// commitAs is commit authored by email (a colleague).
+func (r *testRepo) commitAs(at time.Time, email, msg string, paths ...string) {
+	r.t.Helper()
+	for _, p := range paths {
+		if err := os.WriteFile(filepath.Join(r.dir, p), []byte(msg+at.String()), 0o600); err != nil {
+			r.t.Fatal(err)
+		}
+	}
+	r.git(at, "add", "-A")
+	r.git(at, "commit", "-q", "--author=Colleague <"+email+">", "-m", msg)
 }
 
 func (r *testRepo) git(at time.Time, args ...string) {
@@ -306,7 +320,7 @@ func TestGitSource_LateFindOfferedOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := d.MarkWatchmanSkippedKeys(tx, "git", []string{ps[0].SourceKey}, day(6)); err != nil {
+	if err := d.MarkWatchmanSkippedKeys(tx, wb, "git", []string{ps[0].SourceKey}, day(6)); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -345,5 +359,75 @@ func TestGitSource_LateFindsCountTowardLimit(t *testing.T) {
 	ps, _, done, err := src.Next(ctx, d, wb, c, 2)
 	if err != nil || done || len(ps) != 2 {
 		t.Fatalf("second: %d rows done=%v err=%v", len(ps), done, err)
+	}
+}
+
+// Two workbenches over identical histories share commit hashes and PR
+// numbers: each keeps its own rows and each learns a late merge.
+func TestGitSource_KeysPerWorkbench(t *testing.T) {
+	d := openWatchmanDB(t)
+	src := GitSource(ExecGit)
+	ctx := context.Background()
+	var wbs []int64
+	cursors := map[int64]string{}
+	for range 2 {
+		r := newTestRepo(t)
+		r.commit(day(0), "initial", "a.go")
+		r.commit(day(1), "feat: add parser"+claudeTrailer, "a.go")
+		r.commit(day(2), "rewrite the parser loop", "a.go")
+		wb := addWorkbench(t, d, r.dir)
+		wbs = append(wbs, wb)
+		if err := d.UpsertPRState(db.PRState{WorkbenchID: wb, Ref: "pr:2", State: "merged",
+			PRNumber: sql.NullInt64{Int64: 2, Valid: true}, Title: "PR", MergedAt: day(10).Format(time.RFC3339)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, wb := range wbs {
+		ps, c, _, err := src.Next(ctx, d, wb, "", 10)
+		if err != nil || len(ps) != 2 {
+			t.Fatalf("wb %d first: %+v err=%v", wb, ps, err)
+		}
+		store(t, d, ps)
+		cursors[wb] = c
+	}
+	for _, wb := range wbs { // PR 1 merged earlier, cached late in both
+		if err := d.UpsertPRState(db.PRState{WorkbenchID: wb, Ref: "pr:1", State: "merged",
+			PRNumber: sql.NullInt64{Int64: 1, Valid: true}, Title: "PR", MergedAt: day(8).Format(time.RFC3339)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, wb := range wbs {
+		ps, _, _, err := src.Next(ctx, d, wb, cursors[wb], 10)
+		if err != nil || len(ps) != 1 || ps[0].SourceKey != "merge:pr:1" {
+			t.Fatalf("wb %d late: %+v err=%v", wb, ps, err)
+		}
+		store(t, d, ps)
+	}
+	for _, wb := range wbs {
+		var n int
+		if err := d.QueryRow(`SELECT COUNT(*) FROM watchman_precedents WHERE workbench_id = ?`, wb).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n != 3 {
+			t.Fatalf("wb %d has %d rows, want 3", wb, n)
+		}
+	}
+}
+
+// A colleague's commit rewriting agent work is not the owner's decision.
+func TestGitSource_ForeignAuthorNotOwner(t *testing.T) {
+	r := newTestRepo(t)
+	r.commit(day(0), "initial", "a.go")
+	r.commit(day(1), "feat: add parser"+claudeTrailer, "a.go")
+	r.commitAs(day(2), "colleague@example.com", "colleague rewrite", "a.go")
+	r.commit(day(3), "owner rewrite", "a.go")
+	d := openWatchmanDB(t)
+	wb := addWorkbench(t, d, r.dir)
+	ps, _, _, err := GitSource(ExecGit).Next(context.Background(), d, wb, "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ps) != 1 || ps[0].OwnerWords != "owner rewrite" {
+		t.Fatalf("got %+v, want only the owner's rewrite", ps)
 	}
 }

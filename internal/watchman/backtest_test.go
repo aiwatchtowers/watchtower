@@ -267,20 +267,45 @@ func TestBacktest_StrongWeakBars(t *testing.T) {
 		got := rowStatus(db.WatchmanBacktestRow{Total: tc.total, Agree: tc.agree, WrongHigh: tc.wrongHigh})
 		assert.Equal(t, tc.want, got, "%+v", tc)
 	}
+	// Strong also needs an agreement above the base rate.
+	for _, tc := range []struct {
+		agree    int
+		baseline float64
+		want     string
+	}{
+		{30, 1, BacktestWeak},
+		{24, 0.8, BacktestWeak}, // exactly the base rate
+		{25, 0.8, BacktestStrong},
+		{24, 0.5, BacktestStrong},
+	} {
+		got := rowStatus(db.WatchmanBacktestRow{Total: 30, Agree: tc.agree, Baseline: tc.baseline})
+		assert.Equal(t, tc.want, got, "%+v", tc)
+	}
 
-	// End to end: 6 of 30 permissions wrong, one of them with high confidence.
+	// End to end: the owner allowed half and denied half; 6 of 30 are
+	// decided wrong, one of them with high confidence.
 	d, wb := btDB(t)
 	ps := btAdd(t, d, wb, SourcePermission, CategoryPermission, 40, btT0, "allow")
+	owner := map[string]string{}
+	for i, p := range ps {
+		owner[p.Situation] = "allow"
+		if i%2 == 1 {
+			owner[p.Situation] = "deny"
+			_, err := d.Exec(`UPDATE watchman_precedents SET choice = 'deny' WHERE id = ?`, p.ID)
+			require.NoError(t, err)
+		}
+	}
 	wrong := map[string]string{}
 	for i, p := range ps[34:] { // six of the hidden ones
 		wrong[p.Situation] = map[bool]string{true: "high", false: "low"}[i == 0]
 	}
 	gen := &btGen{decide: func(in decideInput) (string, string, error) {
 		require.Equal(t, []string{"allow", "deny"}, in.Options)
+		other := map[string]string{"allow": "deny", "deny": "allow"}
 		if conf, ok := wrong[in.Situation]; ok {
-			return "deny", conf, nil
+			return other[owner[in.Situation]], conf, nil
 		}
-		return "allow", "high", nil
+		return owner[in.Situation], "high", nil
 	}}
 	judge := &btJudge{}
 	_, err := Backtest(context.Background(), d, gen, judge, nil, wb, btT0.Add(1000*time.Hour))
@@ -291,8 +316,24 @@ func TestBacktest_StrongWeakBars(t *testing.T) {
 	require.Equal(t, 30, r.Total)
 	require.Equal(t, 24, r.Agree)
 	require.Equal(t, 1, r.WrongHigh)
+	require.InDelta(t, 0.5, r.Baseline, 1e-9)
 	require.Equal(t, BacktestStrong, r.Status)
 	require.InDelta(t, 0.31, r.CostUSD, 1e-9) // one profile call + 30 decide calls at 0.01
+}
+
+// TestBacktest_AlwaysAllowNotStrong: an owner who always allowed is matched
+// by a twin that always allows, which proves nothing: the base rate is 100 %.
+func TestBacktest_AlwaysAllowNotStrong(t *testing.T) {
+	d, wb := btDB(t)
+	btAdd(t, d, wb, SourcePermission, CategoryPermission, 30, btT0, "allow")
+	gen := &btGen{decide: func(decideInput) (string, string, error) { return "allow", "high", nil }}
+	_, err := Backtest(context.Background(), d, gen, &btJudge{}, nil, wb, btT0.Add(1000*time.Hour))
+	require.NoError(t, err)
+	_, rows := btRows(t, d, wb)
+	r := rows[CategoryPermission]
+	require.Equal(t, 30, r.Agree)
+	require.InDelta(t, 1.0, r.Baseline, 1e-9)
+	require.Equal(t, BacktestWeak, r.Status)
 }
 
 func TestVerdict_GoStop(t *testing.T) {
@@ -409,6 +450,13 @@ func TestBacktest_AskOptions(t *testing.T) {
 	opts, err := backtestOptions(d, qp)
 	require.NoError(t, err)
 	require.Equal(t, []string{"sqlite", "redis"}, opts)
+	// Answered with "Other": the choice is none of the options, so an exact
+	// match could never agree; the judge scores it.
+	other := qp
+	other.Choice = "postgres, as discussed"
+	opts, err = backtestOptions(d, other)
+	require.NoError(t, err)
+	require.Nil(t, opts)
 	opts, err = backtestOptions(d, db.WatchmanPrecedent{WorkbenchID: wb, Source: SourceAsk, SourceKey: fmt.Sprint(c)})
 	require.NoError(t, err)
 	require.Nil(t, opts)
@@ -416,13 +464,16 @@ func TestBacktest_AskOptions(t *testing.T) {
 	require.NoError(t, err)
 	require.Nil(t, opts, "a deleted ask is a free answer")
 	for key, want := range map[string][]string{"lesson:2": {"accepted", "dismissed"}, "comment:1": nil} {
-		opts, err = backtestOptions(d, db.WatchmanPrecedent{WorkbenchID: wb, Source: SourceReview, SourceKey: key})
+		opts, err = backtestOptions(d, db.WatchmanPrecedent{WorkbenchID: wb, Source: SourceReview, SourceKey: key, Choice: "accepted"})
 		require.NoError(t, err)
 		require.Equal(t, want, opts, key)
 	}
 	require.Equal(t, "Choice: comment\nOwner's words: add a nil check",
 		ownerAnswer(db.WatchmanPrecedent{Choice: "comment", OwnerWords: "add a nil check"}))
 	require.Equal(t, "Choice: approve", twinAnswer(Decision{Choice: "approve"}))
+	require.Equal(t, "Owner's words: add a nil check", ownerAnswer(db.WatchmanPrecedent{OwnerWords: "add a nil check"}),
+		"an empty choice leaves its line out")
+	require.Equal(t, "Reasoning: r", twinAnswer(Decision{Rationale: "r"}))
 }
 
 func TestBacktest_BusyLock(t *testing.T) {

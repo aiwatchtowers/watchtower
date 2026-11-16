@@ -19,6 +19,7 @@ import (
 var (
 	watchmanBacktestFlagWorkbench int64
 	watchmanBacktestFlagJSON      bool
+	watchmanBacktestFlagForce     bool
 )
 
 // watchmanBacktestExe names the binary the daemon's weekly backtest child
@@ -56,7 +57,8 @@ func init() {
 		Use:   "backtest",
 		Short: "Measure how often Watchman decides like you: re-decide your newest 30 decisions per category, hidden from it",
 		Long: "For each category Watchman hides your newest 30 decisions and decides them again from what came before. " +
-			"A category is strong at 80 % agreement or more with at most 5 % wrong answers it was sure of; " +
+			"A category is strong at 80 % agreement or more with at most 5 % wrong answers it was sure of, " +
+			"and agreeing more often than always giving your most common answer would (the base rate); " +
 			"fewer than 30 decisions is not measured (no AI call). The verdict is go when 3 categories are strong, " +
 			"permission or review_code among them. Review approvals, hunk undos, merges and your own rewrites are not " +
 			"measured in phase 1; review_code is measured on your review comments only. " +
@@ -67,6 +69,7 @@ func init() {
 	}
 	backtest.Flags().Int64Var(&watchmanBacktestFlagWorkbench, "workbench", 0, "workbench id")
 	backtest.Flags().BoolVar(&watchmanBacktestFlagJSON, "json", false, "print JSON")
+	backtest.Flags().BoolVar(&watchmanBacktestFlagForce, "force", false, "run before Watchman has finished learning the workbench's history")
 	_ = backtest.MarkFlagRequired("workbench")
 	watchmanCmd.AddCommand(backtest)
 }
@@ -92,6 +95,7 @@ type watchmanBacktestRowJSON struct {
 	Agree     int     `json:"agree"`
 	WrongHigh int     `json:"wrong_high"`
 	CostUSD   float64 `json:"cost_usd"`
+	Baseline  float64 `json:"baseline"`
 	Status    string  `json:"status"`
 }
 
@@ -118,6 +122,16 @@ func runWatchmanBacktest(cmd *cobra.Command, _ []string) error {
 	if _, err := database.GetWorkbench(wb); err != nil {
 		return err
 	}
+	if !watchmanBacktestFlagForce {
+		st, err := database.WatchmanWorkbench(wb)
+		if err != nil {
+			return err
+		}
+		if st == nil || st.LearnedThrough == nil {
+			return fmt.Errorf("watchman has not finished learning workbench %d yet, so a backtest would measure only part of your decisions: "+
+				"run it once `watchtower watchman status` shows the workbench learned, or pass --force", wb)
+		}
+	}
 	gen := watchmanGeneratorFactory(cfg)
 	store := prompts.New(database, nil)
 	id, runErr := watchman.Backtest(cmd.Context(), database, gen, watchman.NewLLMJudge(gen, store), store, wb, time.Now())
@@ -138,7 +152,7 @@ func runWatchmanBacktest(cmd *cobra.Command, _ []string) error {
 		CostUSD: b.CostUSD, Categories: []watchmanBacktestRowJSON{}, Error: b.Error}
 	for _, r := range rows {
 		res.Categories = append(res.Categories, watchmanBacktestRowJSON{Category: r.Category, Total: r.Total, Agree: r.Agree,
-			WrongHigh: r.WrongHigh, CostUSD: r.CostUSD, Status: r.Status})
+			WrongHigh: r.WrongHigh, CostUSD: r.CostUSD, Baseline: r.Baseline, Status: r.Status})
 	}
 	if runErr == nil {
 		// The daemon's weekly launch reads this stamp: a finished run, manual
@@ -160,8 +174,8 @@ func runWatchmanBacktest(cmd *cobra.Command, _ []string) error {
 		case watchman.BacktestNotMeasured:
 			fmt.Fprintf(out, "%-12s not measured (%d of %d decisions)\n", r.Category, r.Total, watchman.HiddenPerCategory)
 		default:
-			fmt.Fprintf(out, "%-12s %s: %d of %d agree, %d wrong while sure (~$%.2f)\n",
-				r.Category, r.Status, r.Agree, r.Total, r.WrongHigh, r.CostUSD)
+			fmt.Fprintf(out, "%-12s %s: %d of %d agree (base rate %.0f %%), %d wrong while sure (~$%.2f)\n",
+				r.Category, r.Status, r.Agree, r.Total, r.Baseline*100, r.WrongHigh, r.CostUSD)
 		}
 	}
 	fmt.Fprintln(out, watchmanBacktestNotMeasuredNote)

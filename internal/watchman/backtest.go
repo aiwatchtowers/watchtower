@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -174,8 +175,15 @@ func (bt backtestRun) category(c string, k int) (db.WatchmanBacktestRow, error) 
 		return row, err
 	}
 	instr := renderInstructions(instructions.Texts{Global: g})
+	opts := make([][]string, len(hidden))
 	for i, p := range hidden {
-		agree, high, err := bt.item(c, p, exclude, profile, instr, &row)
+		if opts[i], err = backtestOptions(bt.d, p); err != nil {
+			return row, err
+		}
+	}
+	row.Baseline = baseline(hidden, opts)
+	for i, p := range hidden {
+		agree, high, err := bt.item(c, p, opts[i], exclude, profile, instr, &row)
 		if err != nil {
 			return row, err
 		}
@@ -224,11 +232,7 @@ func (bt backtestRun) retryOnce(call func() error) error {
 }
 
 // item re-decides one hidden precedent and scores it.
-func (bt backtestRun) item(c string, p db.WatchmanPrecedent, exclude []int64, profile, instr string, row *db.WatchmanBacktestRow) (agree, high bool, err error) {
-	opts, err := backtestOptions(bt.d, p)
-	if err != nil {
-		return false, false, err
-	}
+func (bt backtestRun) item(c string, p db.WatchmanPrecedent, opts []string, exclude []int64, profile, instr string, row *db.WatchmanBacktestRow) (agree, high bool, err error) {
 	var dec Decision
 	bad := false
 	err = bt.retryOnce(func() error {
@@ -270,7 +274,18 @@ func (bt backtestRun) item(c string, p db.WatchmanPrecedent, exclude []int64, pr
 // single-choice question with options.
 // nil means a free answer (the judge scores it). The option texts go through
 // the same clean as the stored choice, so an exact match is meaningful.
+//
+// When the owner's choice is none of the options (an ask answered with
+// "Other"), it is nil too: an exact match could never agree.
 func backtestOptions(d *db.DB, p db.WatchmanPrecedent) ([]string, error) {
+	opts, err := fixedOptions(d, p)
+	if err != nil || slices.Contains(opts, p.Choice) {
+		return opts, err
+	}
+	return nil, nil
+}
+
+func fixedOptions(d *db.DB, p db.WatchmanPrecedent) ([]string, error) {
 	switch p.Source {
 	case SourcePermission:
 		return []string{"allow", "deny"}, nil
@@ -320,12 +335,13 @@ func askOptions(d *db.DB, p db.WatchmanPrecedent) ([]string, error) {
 }
 
 // ownerAnswer and twinAnswer are the two texts the judge compares.
+// An empty choice leaves its line out.
 func ownerAnswer(p db.WatchmanPrecedent) string {
-	return joinNonEmpty("\n", "Choice: "+p.Choice, wordsLine("Owner's words: ", p.OwnerWords))
+	return joinNonEmpty("\n", wordsLine("Choice: ", p.Choice), wordsLine("Owner's words: ", p.OwnerWords))
 }
 
 func twinAnswer(dec Decision) string {
-	return joinNonEmpty("\n", "Choice: "+dec.Choice, wordsLine("Reasoning: ", dec.Rationale))
+	return joinNonEmpty("\n", wordsLine("Choice: ", dec.Choice), wordsLine("Reasoning: ", dec.Rationale))
 }
 
 func wordsLine(head, s string) string {
@@ -335,14 +351,38 @@ func wordsLine(head, s string) string {
 	return head + s
 }
 
-// rowStatus applies the bars to a measured row.
+// baseline is the share of the hidden items that always giving the owner's
+// most common choice would get right: the items scored on fixed options
+// (opts[i] non-nil) with that choice, over all hidden items. A free answer
+// is scored by the judge on its substance, not its choice label (every
+// review comment's choice is "comment"), so it never counts as a constant
+// answer's win.
+func baseline(hidden []db.WatchmanPrecedent, opts [][]string) float64 {
+	if len(hidden) == 0 {
+		return 0
+	}
+	counts := map[string]int{}
+	top := 0
+	for i, p := range hidden {
+		if opts[i] == nil {
+			continue
+		}
+		counts[p.Choice]++
+		top = max(top, counts[p.Choice])
+	}
+	return float64(top) / float64(len(hidden))
+}
+
+// rowStatus applies the bars to a measured row: strong needs the agreement
+// and wrong-while-high bars and an agreement above the base rate (a twin
+// that always gives the owner's usual answer is not strong).
 func rowStatus(r db.WatchmanBacktestRow) string {
 	if r.Total < HiddenPerCategory {
 		return BacktestNotMeasured
 	}
 	agreement := float64(r.Agree) / float64(r.Total)
 	wrongHigh := float64(r.WrongHigh) / float64(r.Total)
-	if agreement >= StrongAgreement && wrongHigh <= StrongMaxWrongHigh {
+	if agreement >= StrongAgreement && wrongHigh <= StrongMaxWrongHigh && agreement > r.Baseline {
 		return BacktestStrong
 	}
 	return BacktestWeak

@@ -250,6 +250,10 @@ func runWatchmanStatus(cmd *cobra.Command, _ []string) error {
 	for _, wb := range rep.Workbenches {
 		fmt.Fprintf(out, "Workbench %d (%s): ", wb.Workbench, wb.Name)
 		if wb.Learning == nil {
+			if wb.Estimate == nil {
+				fmt.Fprintln(out, "Watchman is off; counting its decisions took too long (a large repository).")
+				continue
+			}
 			fmt.Fprintf(out, "Watchman is off; ~%d decisions to learn from.\n", wb.Estimate.Decisions)
 			continue
 		}

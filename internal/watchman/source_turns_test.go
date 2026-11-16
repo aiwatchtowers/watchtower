@@ -240,3 +240,63 @@ func TestTurnSource_PermanentlyUnreadableSessionSkippedAfterGrace(t *testing.T) 
 		t.Fatalf("after grace: %+v done=%v err=%v", ps, done, err)
 	}
 }
+
+// Once the backfill has drained, the cursor's lo mark is "end": the next
+// call reads only the sessions at or after hi, never the older transcripts.
+func TestTurnSource_DoneBackfillReadsNoOlderTranscript(t *testing.T) {
+	d := openWatchmanDB(t)
+	wb := addWorkbench(t, d, t.TempDir())
+	s1 := addSession(t, d, wb, "a1")
+	s2 := addSession(t, d, wb, "a2")
+	feeds := map[int64][]sessionfeed.Entry{
+		s1: {entry("a1", sessionfeed.KindAgent, "Add a cache?", 0), entry("u1", sessionfeed.KindOwner, "no", 1)},
+		s2: {entry("a2", sessionfeed.KindAgent, "Rename it?", 10), entry("u2", sessionfeed.KindOwner, "yes", 11)},
+	}
+	reads := map[int64]int{}
+	read := func(s db.RecentWorkbenchSession) ([]sessionfeed.Entry, error) {
+		reads[s.ID]++
+		return feeds[s.ID], nil
+	}
+	src := TurnSource(read)
+	ps, c, done, err := src.Next(context.Background(), d, wb, "", 10)
+	if err != nil || !done || len(ps) != 2 {
+		t.Fatalf("first: %+v done=%v err=%v", ps, done, err)
+	}
+	if !strings.HasSuffix(c, "|"+turnBackfillDone) {
+		t.Fatalf("cursor %q has no end mark", c)
+	}
+	clear(reads)
+	ps, c2, done, err := src.Next(context.Background(), d, wb, c, 10)
+	if err != nil || !done || len(ps) != 0 || c2 != c {
+		t.Fatalf("second: %+v cursor=%q done=%v err=%v", ps, c2, done, err)
+	}
+	if reads[s1] != 0 {
+		t.Fatalf("the older transcript was read again: %v", reads)
+	}
+	// A new turn in the newest session is still found.
+	feeds[s2] = append(feeds[s2], entry("a3", sessionfeed.KindAgent, "Ship it?", 12), entry("u3", sessionfeed.KindOwner, "ship", 13))
+	ps, _, _, err = src.Next(context.Background(), d, wb, c, 10)
+	if err != nil || len(ps) != 1 || ps[0].OwnerWords != "ship" {
+		t.Fatalf("third: %+v err=%v", ps, err)
+	}
+}
+
+// A session an automation started holds no owner decision.
+func TestTurnSource_SkipsAutomationSessions(t *testing.T) {
+	d := openWatchmanDB(t)
+	wb := addWorkbench(t, d, t.TempDir())
+	own := addSession(t, d, wb, "a1")
+	auto := addSession(t, d, wb, "a2")
+	run := seedAutomationRun(t, d)
+	if _, err := d.Exec(`UPDATE terminal_sessions SET automation_run_id = ? WHERE id = ?`, run, auto); err != nil {
+		t.Fatal(err)
+	}
+	feeds := map[int64][]sessionfeed.Entry{
+		own:  {entry("a1", sessionfeed.KindAgent, "Add a cache?", 0), entry("u1", sessionfeed.KindOwner, "no", 1)},
+		auto: {entry("a2", sessionfeed.KindAgent, "Rename it?", 10), entry("u2", sessionfeed.KindOwner, "yes", 11)},
+	}
+	ps, _, _, err := TurnSource(fakeFeeds(feeds)).Next(context.Background(), d, wb, "", 10)
+	if err != nil || len(ps) != 1 || ps[0].OwnerWords != "no" {
+		t.Fatalf("got %+v err=%v", ps, err)
+	}
+}

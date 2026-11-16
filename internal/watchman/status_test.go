@@ -72,6 +72,27 @@ func TestStatus_NotEnabledHasEstimate(t *testing.T) {
 	assert.Equal(t, &EstimateStatus{}, rep.Workbenches[1].Estimate)
 }
 
+// A repository whose commit count runs past the timeout leaves the
+// estimate null instead of holding the status up.
+func TestStatus_EstimateTimesOut(t *testing.T) {
+	prev := statusGitTimeout
+	statusGitTimeout = 0 // the context is past its deadline at once
+	t.Cleanup(func() { statusGitTimeout = prev })
+	d := openWatchmanDB(t)
+	off := addWorkbench(t, d, t.TempDir())
+	hadDeadline := false
+	git := func(ctx context.Context, _ string, _ ...string) ([]byte, error) {
+		_, hadDeadline = ctx.Deadline()
+		return nil, ctx.Err()
+	}
+	rep, err := Status(context.Background(), d, off, StatusOptions{Git: git})
+	require.NoError(t, err)
+	require.Len(t, rep.Workbenches, 1)
+	assert.True(t, hadDeadline)
+	assert.Nil(t, rep.Workbenches[0].Estimate)
+	assert.Nil(t, rep.Workbenches[0].Learning)
+}
+
 func TestStatus_UnknownWorkbench(t *testing.T) {
 	d := openWatchmanDB(t)
 	_, err := Status(context.Background(), d, 42, StatusOptions{Git: noGit})
@@ -198,7 +219,7 @@ func TestStatus_Fixture(t *testing.T) {
 	require.NoError(t, d.PinWatchmanProfile(on, SleepWindowKey, "23:00-07:00", learnT0))
 	fin := learnT0.Add(time.Hour)
 	insertBacktest(t, d, on, "done", learnT0, &fin,
-		db.WatchmanBacktestRow{Category: "permission", Total: 30, Agree: 26, WrongHigh: 1, Status: "strong", CostUSD: 0.75})
+		db.WatchmanBacktestRow{Category: "permission", Total: 30, Agree: 26, WrongHigh: 1, Status: "strong", CostUSD: 0.75, Baseline: 0.6})
 	insertBacktest(t, d, on, "running", learnT0.Add(2*time.Hour), nil)
 	off, err := d.CreateWorkbench("acme-docs", "/tmp/acme-docs")
 	require.NoError(t, err)

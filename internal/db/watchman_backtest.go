@@ -88,8 +88,8 @@ func (db *DB) OwnerInstructionsBefore(before time.Time) (OwnerInstructions, erro
 
 // AddWatchmanBacktestRow stores one finished category's result of a backtest.
 func (db *DB) AddWatchmanBacktestRow(backtestID int64, r WatchmanBacktestRow) error {
-	if _, err := db.Exec(`INSERT INTO watchman_backtest_rows (backtest_id, category, total, agree, wrong_high, cost_usd, status)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`, backtestID, r.Category, r.Total, r.Agree, r.WrongHigh, r.CostUSD, r.Status); err != nil {
+	if _, err := db.Exec(`INSERT INTO watchman_backtest_rows (backtest_id, category, total, agree, wrong_high, cost_usd, baseline, status)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, backtestID, r.Category, r.Total, r.Agree, r.WrongHigh, r.CostUSD, r.Baseline, r.Status); err != nil {
 		return fmt.Errorf("saving watchman backtest %d row %s: %w", backtestID, r.Category, err)
 	}
 	return nil

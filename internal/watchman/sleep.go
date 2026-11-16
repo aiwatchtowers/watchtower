@@ -201,20 +201,14 @@ func ownerCommitTimes(ctx context.Context, d *db.DB, workbenchID int64, since ti
 		}
 		return nil, nil // not a git repository
 	}
-	args := []string{"--since=" + since.UTC().Format(time.RFC3339)}
-	// No user.email (git exits 1) means every author counts.
-	if email, err := git(ctx, wb.FolderPath, "config", "user.email"); err == nil {
-		if e := strings.TrimSpace(string(email)); e != "" {
-			args = append(args, "--fixed-strings", "--author=<"+e+">")
-		}
-	}
-	commits, err := gitSource{git: git}.commits(ctx, wb.FolderPath, args...)
+	commits, err := gitSource{git: git}.commits(ctx, wb.FolderPath, "--since="+since.UTC().Format(time.RFC3339))
 	if err != nil {
 		return nil, fmt.Errorf("watchman activity: %w", err)
 	}
+	owner := gitOwnerEmail(ctx, git, wb.FolderPath)
 	var out []time.Time
 	for _, c := range commits {
-		if !c.agent && !c.at.Before(since) {
+		if c.byOwner(owner) && !c.at.Before(since) {
 			out = append(out, c.at)
 		}
 	}

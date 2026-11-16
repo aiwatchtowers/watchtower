@@ -17,7 +17,7 @@ type WatchmanPrecedent struct {
 	ID          int64
 	WorkbenchID int64
 	Source      string // ask, review, spec, permission, turn, git
-	SourceKey   string // unique within Source
+	SourceKey   string // unique within (WorkbenchID, Source)
 	Category    string
 	Situation   string
 	Choice      string
@@ -56,19 +56,21 @@ type WatchmanBacktestRow struct {
 	WrongHigh int
 	Status    string // strong, weak, not_measured
 	CostUSD   float64
+	Baseline  float64 // share of the most common owner choice among the hidden items
 }
 
 func wmTime(t time.Time) string { return t.UTC().Format(time.RFC3339) }
 
 // UpsertWatchmanPrecedents inserts or updates precedents keyed by
-// (source, source_key) inside tx.
+// (workbench_id, source, source_key) inside tx; a row never moves to
+// another workbench.
 func (db *DB) UpsertWatchmanPrecedents(tx *sql.Tx, ps []WatchmanPrecedent) error {
 	for _, p := range ps {
 		_, err := tx.Exec(`INSERT INTO watchman_precedents
 			(workbench_id, source, source_key, category, situation, choice, owner_words, decided_at, weight)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-			ON CONFLICT(source, source_key) DO UPDATE SET
-				workbench_id = excluded.workbench_id, category = excluded.category,
+			ON CONFLICT(workbench_id, source, source_key) DO UPDATE SET
+				category = excluded.category,
 				situation = excluded.situation, choice = excluded.choice,
 				owner_words = excluded.owner_words, decided_at = excluded.decided_at,
 				weight = excluded.weight`,
@@ -252,8 +254,8 @@ func (db *DB) InsertWatchmanBacktest(b WatchmanBacktest) (int64, error) {
 		return 0, fmt.Errorf("inserting watchman backtest: %w", err)
 	}
 	for _, r := range b.Rows {
-		if _, err := tx.Exec(`INSERT INTO watchman_backtest_rows (backtest_id, category, total, agree, wrong_high, cost_usd, status)
-			VALUES (?, ?, ?, ?, ?, ?, ?)`, id, r.Category, r.Total, r.Agree, r.WrongHigh, r.CostUSD, r.Status); err != nil {
+		if _, err := tx.Exec(`INSERT INTO watchman_backtest_rows (backtest_id, category, total, agree, wrong_high, cost_usd, baseline, status)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, id, r.Category, r.Total, r.Agree, r.WrongHigh, r.CostUSD, r.Baseline, r.Status); err != nil {
 			return 0, fmt.Errorf("inserting watchman backtest row %s: %w", r.Category, err)
 		}
 	}
@@ -281,7 +283,7 @@ func (db *DB) watchmanBacktestWhere(where string, workbenchID int64) (*WatchmanB
 		t, _ := time.Parse(time.RFC3339, fin.String)
 		b.FinishedAt = &t
 	}
-	rows, err := db.Query(`SELECT category, total, agree, wrong_high, status, cost_usd FROM watchman_backtest_rows WHERE backtest_id = ? ORDER BY category`, b.ID)
+	rows, err := db.Query(`SELECT category, total, agree, wrong_high, status, cost_usd, baseline FROM watchman_backtest_rows WHERE backtest_id = ? ORDER BY category`, b.ID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("reading watchman backtest rows %d: %w", b.ID, err)
 	}
@@ -289,7 +291,7 @@ func (db *DB) watchmanBacktestWhere(where string, workbenchID int64) (*WatchmanB
 	var out []WatchmanBacktestRow
 	for rows.Next() {
 		var r WatchmanBacktestRow
-		if err := rows.Scan(&r.Category, &r.Total, &r.Agree, &r.WrongHigh, &r.Status, &r.CostUSD); err != nil {
+		if err := rows.Scan(&r.Category, &r.Total, &r.Agree, &r.WrongHigh, &r.Status, &r.CostUSD, &r.Baseline); err != nil {
 			return nil, nil, fmt.Errorf("scanning watchman backtest row: %w", err)
 		}
 		out = append(out, r)

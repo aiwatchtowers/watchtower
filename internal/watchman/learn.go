@@ -194,7 +194,7 @@ func saveBatch(d *db.DB, workbenchID int64, source string, keep []db.WatchmanPre
 	if err := d.UpsertWatchmanPrecedents(tx, keep); err != nil {
 		return err
 	}
-	if err := d.MarkWatchmanSkippedKeys(tx, source, drop, at); err != nil {
+	if err := d.MarkWatchmanSkippedKeys(tx, workbenchID, source, drop, at); err != nil {
 		return err
 	}
 	if err := d.AddWatchmanUnlabelled(tx, workbenchID, len(drop)+skipped); err != nil {

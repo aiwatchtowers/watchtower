@@ -34,7 +34,8 @@ const (
 	gitBackfillDone = "end"
 )
 
-// GitSource reads the owner's own commits in the workbench folder that
+// GitSource reads the owner's own commits (by the folder's user.email, no
+// agent trailer) in the workbench folder that
 // rewrite paths an agent commit changed in the 7 days before (choice
 // "rewrote"), and the workbench's merged PRs (category finish, choice
 // "merged"). A folder that is not a git repository yields nothing and is done.
@@ -52,9 +53,27 @@ func (gitSource) Name() string { return "git" }
 type gitCommit struct {
 	hash    string
 	at      time.Time
+	email   string // author email
 	subject string
 	agent   bool
 	paths   []string
+}
+
+// byOwner reports whether c is the owner's own commit: no agent trailer and
+// authored by owner, the folder's user.email (any author when "").
+func (c gitCommit) byOwner(owner string) bool {
+	return !c.agent && (owner == "" || strings.EqualFold(c.email, owner))
+}
+
+// gitOwnerEmail is the folder's configured user.email, "" when none is set
+// (git exits 1) or it cannot be read: then every non-agent author counts as
+// the owner.
+func gitOwnerEmail(ctx context.Context, git GitRunner, dir string) string {
+	out, err := git(ctx, dir, "config", "user.email")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 type gitItem struct {
@@ -123,7 +142,7 @@ func (s gitSource) Next(ctx context.Context, d *db.DB, workbenchID int64, cursor
 				late = append(late, it.key)
 			}
 		}
-		known, err := d.WatchmanKnownKeys("git", late)
+		known, err := d.WatchmanKnownKeys(workbenchID, "git", late)
 		if err != nil {
 			return nil, "", false, fmt.Errorf("watchman git source: %w", err)
 		}
@@ -179,12 +198,16 @@ func (s gitSource) items(ctx context.Context, d *db.DB, workbenchID int64, dir s
 	if err != nil {
 		return nil, err
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	owner := gitOwnerEmail(ctx, s.git, dir)
 	merges, err := gitMerges(d, workbenchID)
 	if err != nil {
 		return nil, err
 	}
 	var items []gitItem
-	for _, it := range append(gitRewrites(workbenchID, commits), merges...) {
+	for _, it := range append(gitRewrites(workbenchID, commits, owner), merges...) {
 		if !it.at.Before(floor) {
 			items = append(items, it)
 		}
@@ -198,7 +221,7 @@ func (s gitSource) items(ctx context.Context, d *db.DB, workbenchID int64, dir s
 // with no commit yet has none.
 func (s gitSource) commits(ctx context.Context, dir string, extra ...string) ([]gitCommit, error) {
 	args := append([]string{"-c", "core.quotePath=false", "log", "--no-merges",
-		"--format=%x1e%H%x1f%aI%x1f%B%x1d", "--name-only"}, extra...)
+		"--format=%x1e%H%x1f%aI%x1f%aE%x1f%B%x1d", "--name-only"}, extra...)
 	out, err := s.git(ctx, dir, args...)
 	if err != nil {
 		if _, herr := s.git(ctx, dir, "rev-parse", "--verify", "-q", "HEAD"); herr != nil {
@@ -211,16 +234,16 @@ func (s gitSource) commits(ctx context.Context, dir string, extra ...string) ([]
 		if strings.TrimSpace(rec) == "" {
 			continue
 		}
-		f := strings.SplitN(rec, "\x1f", 3)
-		if len(f) != 3 {
+		f := strings.SplitN(rec, "\x1f", 4)
+		if len(f) != 4 {
 			continue
 		}
 		at, err := time.Parse(time.RFC3339, strings.TrimSpace(f[1]))
 		if err != nil {
 			continue
 		}
-		body, names, _ := strings.Cut(f[2], "\x1d")
-		c := gitCommit{hash: strings.TrimSpace(f[0]), at: at, agent: isAgentCommit(body)}
+		body, names, _ := strings.Cut(f[3], "\x1d")
+		c := gitCommit{hash: strings.TrimSpace(f[0]), at: at, email: strings.TrimSpace(f[2]), agent: isAgentCommit(body)}
 		c.subject, _, _ = strings.Cut(strings.TrimSpace(body), "\n")
 		for _, n := range strings.Split(names, "\n") {
 			if n = strings.TrimSpace(n); n != "" {
@@ -250,12 +273,13 @@ func isAgentCommit(body string) bool {
 	return false
 }
 
-// gitRewrites pairs each owner commit with the agent commits of the 7 days
+// gitRewrites pairs each owner commit (gitCommit.byOwner: a colleague's
+// commit is not the owner's decision) with the agent commits of the 7 days
 // before it that changed one of its paths; commits are oldest first.
-func gitRewrites(workbenchID int64, commits []gitCommit) []gitItem {
+func gitRewrites(workbenchID int64, commits []gitCommit, owner string) []gitItem {
 	var items []gitItem
 	for _, o := range commits {
-		if o.agent {
+		if !o.byOwner(owner) {
 			continue
 		}
 		own := map[string]bool{}

@@ -22,23 +22,30 @@ func TestWatchmanKnownKeys(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.MarkWatchmanSkippedKeys(tx, "git", []string{"commit:d", "commit:d"}, at); err != nil {
+	if err := d.MarkWatchmanSkippedKeys(tx, wb, "git", []string{"commit:d", "commit:d"}, at); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.MarkWatchmanSkippedKeys(tx, "turn", []string{"commit:c"}, at); err != nil {
+	if err := d.MarkWatchmanSkippedKeys(tx, wb, "turn", []string{"commit:c"}, at); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	got, err := d.WatchmanKnownKeys("git", []string{"commit:a", "commit:b", "commit:c", "commit:d", "commit:e"})
+	got, err := d.WatchmanKnownKeys(wb, "git", []string{"commit:a", "commit:b", "commit:c", "commit:d", "commit:e"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 2 || !got["commit:a"] || !got["commit:d"] {
 		t.Fatalf("got %v", got)
 	}
-	if got, err := d.WatchmanKnownKeys("git", nil); err != nil || len(got) != 0 {
+	if got, err := d.WatchmanKnownKeys(wb, "git", nil); err != nil || len(got) != 0 {
 		t.Fatalf("empty: %v %v", got, err)
+	}
+	other, err := d.CreateWorkbench("acme-2", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := d.WatchmanKnownKeys(other, "git", []string{"commit:a", "commit:d"}); err != nil || len(got) != 0 {
+		t.Fatalf("another workbench sees no keys: %v %v", got, err)
 	}
 }

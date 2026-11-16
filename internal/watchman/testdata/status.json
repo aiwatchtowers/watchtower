@@ -77,7 +77,8 @@
             "agree": 26,
             "wrong_high": 1,
             "status": "strong",
-            "cost_usd": 0.75
+            "cost_usd": 0.75,
+            "baseline": 0.6
           }
         ]
       },

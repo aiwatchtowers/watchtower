@@ -22,6 +22,8 @@ const (
 	// cannot be read still stops the newer pass (it may be live and the read
 	// error passing); after it the session is skipped.
 	turnReadGrace = 24 * time.Hour
+	// turnBackfillDone is the lo mark once the backfill has nothing older.
+	turnBackfillDone = "end"
 )
 
 // TurnSource reads the owner's own messages in the workbench's agent
@@ -31,7 +33,9 @@ const (
 // removed (instructions.StripAppStartPrompts); a message with nothing else,
 // one holding a fenced block (a paste), and an owner line with no agent text
 // before it are skipped. The words are the owner's text, redacted and
-// clipped. The category is left "" for the runner's labeller.
+// clipped. The category is left "" for the runner's labeller. Sessions an
+// automation started are left out (as the asks source leaves out their
+// asks): the owner did not start them.
 func TurnSource(read instructions.FeedReader) Source {
 	return turnSource{read: read, now: time.Now}
 }
@@ -60,9 +64,11 @@ type turnItem struct {
 
 // Next returns owner turns newer than the cursor's hi mark first (oldest of
 // them first, so hi moves without gaps), then older than its lo mark,
-// newest first. The cursor is "<hi sid>:<hi idx>|<lo sid>:<lo idx>".
+// newest first. The cursor is "<hi sid>:<hi idx>|<lo sid>:<lo idx>"; the lo
+// mark is "end" (turnBackfillDone) once the backfill has drained, so a done
+// source reads only the sessions at or after hi.
 func (s turnSource) Next(ctx context.Context, d *db.DB, workbenchID int64, cursor string, limit int) ([]db.WatchmanPrecedent, string, bool, error) {
-	hi, lo, has, err := parseTurnCursor(cursor)
+	hi, lo, loDone, has, err := parseTurnCursor(cursor)
 	if err != nil {
 		return nil, "", false, err
 	}
@@ -75,7 +81,7 @@ func (s turnSource) Next(ctx context.Context, d *db.DB, workbenchID int64, curso
 	}
 	var sessions []db.RecentWorkbenchSession // ascending id
 	for _, rs := range all {
-		if rs.WorkbenchID == workbenchID {
+		if rs.WorkbenchID == workbenchID && !rs.ByAutomation {
 			sessions = append(sessions, rs)
 		}
 	}
@@ -95,7 +101,12 @@ func (s turnSource) Next(ctx context.Context, d *db.DB, workbenchID int64, curso
 		return r.items, r.err
 	}
 	var out []db.WatchmanPrecedent
-	next := func() string { return fmt.Sprintf("%d:%d|%d:%d", hi.sid, hi.idx, lo.sid, lo.idx) }
+	next := func() string {
+		if loDone {
+			return fmt.Sprintf("%d:%d|%s", hi.sid, hi.idx, turnBackfillDone)
+		}
+		return fmt.Sprintf("%d:%d|%d:%d", hi.sid, hi.idx, lo.sid, lo.idx)
+	}
 
 	if has {
 		for _, rs := range sessions {
@@ -125,6 +136,9 @@ func (s turnSource) Next(ctx context.Context, d *db.DB, workbenchID int64, curso
 					return out, next(), false, nil
 				}
 			}
+		}
+		if loDone {
+			return out, next(), true, nil
 		}
 	}
 	for i := len(sessions) - 1; i >= 0; i-- {
@@ -159,6 +173,7 @@ func (s turnSource) Next(ctx context.Context, d *db.DB, workbenchID int64, curso
 	if !has {
 		return out, "", true, nil
 	}
+	loDone = true
 	return out, next(), true, nil
 }
 
@@ -209,21 +224,24 @@ func (s turnSource) turnsOf(rs db.RecentWorkbenchSession) ([]turnItem, error) {
 	return items, nil
 }
 
-func parseTurnCursor(c string) (hi, lo turnPos, has bool, err error) {
+func parseTurnCursor(c string) (hi, lo turnPos, loDone, has bool, err error) {
 	if c == "" {
-		return hi, lo, false, nil
+		return hi, lo, false, false, nil
 	}
 	h, l, ok := strings.Cut(c, "|")
 	if !ok {
-		return hi, lo, false, fmt.Errorf("watchman turn cursor %q: no lo mark", c)
+		return hi, lo, false, false, fmt.Errorf("watchman turn cursor %q: no lo mark", c)
 	}
 	if hi, err = parseTurnPos(h); err != nil {
-		return hi, lo, false, fmt.Errorf("watchman turn cursor %q: %w", c, err)
+		return hi, lo, false, false, fmt.Errorf("watchman turn cursor %q: %w", c, err)
+	}
+	if l == turnBackfillDone {
+		return hi, lo, true, true, nil
 	}
 	if lo, err = parseTurnPos(l); err != nil {
-		return hi, lo, false, fmt.Errorf("watchman turn cursor %q: %w", c, err)
+		return hi, lo, false, false, fmt.Errorf("watchman turn cursor %q: %w", c, err)
 	}
-	return hi, lo, true, nil
+	return hi, lo, false, true, nil
 }
 
 func parseTurnPos(s string) (turnPos, error) {

@@ -2,6 +2,7 @@ package watchman
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -24,8 +25,8 @@ type StatusReport struct {
 }
 
 // WorkbenchStatus is one workbench's Watchman state. A workbench Watchman is
-// not on for has EnabledAt nil, Estimate set and Learning nil; an enabled
-// one the reverse.
+// not on for has EnabledAt nil, Estimate set (nil when counting its commits
+// timed out) and Learning nil; an enabled one the reverse.
 type WorkbenchStatus struct {
 	Workbench         int64                   `json:"workbench"`
 	Name              string                  `json:"name"`
@@ -88,6 +89,7 @@ type CategoryResult struct {
 	WrongHigh int     `json:"wrong_high"`
 	Status    string  `json:"status"` // strong, weak, not_measured
 	CostUSD   float64 `json:"cost_usd"`
+	Baseline  float64 `json:"baseline"` // share of the owner's most common choice among the hidden items
 }
 
 // StatusOptions are what Status cannot read from the database: Running is
@@ -163,11 +165,11 @@ func workbenchStatus(ctx context.Context, d *db.DB, wb db.Workbench, o StatusOpt
 		}
 	}
 	if state == nil {
-		est, err := Estimate(ctx, d, o.Git, wb.ID)
+		est, err := statusEstimate(ctx, d, o.Git, wb.ID)
 		if err != nil {
 			return s, err
 		}
-		s.Estimate = &EstimateStatus{Decisions: est.Decisions, NeedLabels: est.NeedLabels, Tokens: est.Tokens}
+		s.Estimate = est
 	} else {
 		at := state.EnabledAt.UTC().Format(time.RFC3339)
 		s.EnabledAt = &at
@@ -184,6 +186,25 @@ func workbenchStatus(ctx context.Context, d *db.DB, wb db.Workbench, o StatusOpt
 	}
 	s.LastDone = backtestStatus(lastDone, rows, o.Running)
 	return s, nil
+}
+
+// statusGitTimeout bounds the `git rev-list` of one workbench's estimate: a
+// huge or stuck repository does not hold the whole status up. Tests replace it.
+var statusGitTimeout = 3 * time.Second
+
+// statusEstimate is a not-enabled workbench's estimate, nil when counting
+// its commits ran past statusGitTimeout.
+func statusEstimate(ctx context.Context, d *db.DB, git GitRunner, workbenchID int64) (*EstimateStatus, error) {
+	gctx, cancel := context.WithTimeout(ctx, statusGitTimeout)
+	defer cancel()
+	est, err := Estimate(gctx, d, git, workbenchID)
+	if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &EstimateStatus{Decisions: est.Decisions, NeedLabels: est.NeedLabels, Tokens: est.Tokens}, nil
 }
 
 // backtestStatus converts a backtest row; a running row while the lock is
@@ -203,7 +224,7 @@ func backtestStatus(b *db.WatchmanBacktest, rows []db.WatchmanBacktestRow, runni
 	}
 	for _, r := range rows {
 		out.Categories = append(out.Categories, CategoryResult{Category: r.Category, Total: r.Total, Agree: r.Agree,
-			WrongHigh: r.WrongHigh, Status: r.Status, CostUSD: r.CostUSD})
+			WrongHigh: r.WrongHigh, Status: r.Status, CostUSD: r.CostUSD, Baseline: r.Baseline})
 	}
 	return out
 }

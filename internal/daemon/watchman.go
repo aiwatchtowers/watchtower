@@ -208,8 +208,10 @@ func (d *Daemon) watchmanBacktestLaunchedPath(workbenchID int64) string {
 // workbench per cycle (the child's lock is workspace-wide) and does not wait.
 // A workbench is due when its success stamp (watchman.BacktestStampPath,
 // written by the child on a finished run, a manual run included) is a week
-// old or missing and no launch was tried for it in the last day. Nothing
-// is launched while a backtest holds the lock.
+// old or missing and no launch was tried for it in the last day. A workbench
+// still learning (learned_through unset) is not due: a backtest over part of
+// its history would measure the wrong thing. Nothing is launched while a
+// backtest holds the lock.
 func (d *Daemon) phaseWatchmanBacktest(ctx context.Context) {
 	if d.db == nil || d.watchmanBacktestLaunch == nil || ctx.Err() != nil {
 		return
@@ -225,6 +227,14 @@ func (d *Daemon) phaseWatchmanBacktest(ctx context.Context) {
 	}
 	now := time.Now()
 	for _, wb := range ids {
+		st, err := d.db.WatchmanWorkbench(wb)
+		if err != nil {
+			d.logger.Printf("watchman backtest: workbench %d: %v", wb, err)
+			continue
+		}
+		if st == nil || st.LearnedThrough == nil {
+			continue
+		}
 		if last := readUnixStamp(watchman.BacktestStampPath(dir, wb)); !last.IsZero() && now.Sub(last) < watchmanProfileInterval {
 			continue
 		}
